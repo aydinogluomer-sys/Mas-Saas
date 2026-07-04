@@ -9,7 +9,9 @@
     "lint": "eslint",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "spike": "tsx scripts/parse-spike.ts"
+    "spike": "tsx scripts/parse-spike.ts",
+    "db:verify": "bash scripts/db/verify.sh",
+    "db:types": "tsx scripts/db/gen-types.ts"
   },
   "dependencies": {
     "date-fns": "^4.4.0",
@@ -24,10 +26,12 @@
     "@eslint/eslintrc": "^3",
     "@tailwindcss/postcss": "^4",
     "@types/node": "^20",
+    "@types/pg": "^8.20.0",
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "eslint": "^9",
     "eslint-config-next": "15.5.20",
+    "pg": "^8.22.0",
     "tailwindcss": "^4",
     "tsx": "^4.23.0",
     "typescript": "^5",

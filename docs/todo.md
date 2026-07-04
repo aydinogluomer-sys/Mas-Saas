@@ -9,17 +9,18 @@
 - [x] Document import assumptions. (import-mapping.md, calculation-rules.md)
 - [→] source_* migrations: implementation.md §20 uyarınca Phase 1 teslimatı — Phase 1 listesine taşındı.
 
-## Phase 1
+## Phase 1 — DONE
 
-- [ ] Create source_workbooks/source_sheets/source_cells/import_rows/mapping_reviews migrations. (Phase 0'dan taşındı)
-- [ ] Create shared references: parties, categories, cash_accounts.
-- [ ] Create payment tables.
-- [ ] Create cashflow tables.
-- [ ] Create checks and loan tables.
-- [ ] Create settings/audit tables.
-- [ ] Add RLS.
-- [ ] Add seed data.
-- [ ] Generate types.
+- [x] source_* migrations (0001)
+- [x] parties/categories/cash_accounts (0002)
+- [x] payments/payment_instances + idempotency unique (0003)
+- [x] cashflow_months/lines/snapshots (0004)
+- [x] checks/check_events/loans/loan_installments (0005)
+- [x] settings/audit_logs + reminders/reminder_deliveries/reports (0002+0006)
+- [x] RLS all tables + policies (0007)
+- [x] seed (18 kategori · 16 parti · 6 hesap · 7 ayar · 5 hatırlatma kuralı)
+- [x] Types generated from verified schema (22 tables) — pnpm db:types
+- [x] Verify: pnpm db:verify — 2× tam sıfırlama, 10 iddia grubu PASS
 
 ## Phase 2
 
