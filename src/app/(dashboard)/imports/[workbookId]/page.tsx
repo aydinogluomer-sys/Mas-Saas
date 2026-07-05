@@ -4,6 +4,7 @@ import { getPool } from "@/lib/db";
 import { Badge, SHEET_TYPE_TONE, STATUS_TONE } from "@/components/ui/badge";
 import { Num, Panel } from "@/components/ui/panel";
 import { mapCandidatesAction } from "@/app/(dashboard)/radar/actions";
+import { mapCashflowAction } from "@/app/(dashboard)/cashflow/actions";
 
 export const dynamic = "force-dynamic";
 
@@ -57,6 +58,16 @@ export default async function WorkbookDetailPage({
               kabul edilenleri radar&apos;a aktar →
             </button>
             <span className="ml-2 text-[11px] text-zinc-500">açık/ret incelemeli ve isimsiz satırlar aktarılmaz; tekrar güvenlidir</span>
+          </form>
+        )}
+        {w.status === "parsed" && (
+          <form action={mapCashflowAction} className="mt-2">
+            <input type="hidden" name="workbookId" value={w.id} />
+            <button type="submit"
+              className="border border-sky-700 bg-sky-950/40 px-3 py-2 font-mono text-[10px] uppercase tracking-wider text-sky-300">
+              nakit akışını aktar →
+            </button>
+            <span className="ml-2 text-[11px] text-zinc-500">35 aylık sekmeler → cashflow; zincir kırıkları bayraklanır, düzeltilmez</span>
           </form>
         )}
         {w.status === "failed" && (

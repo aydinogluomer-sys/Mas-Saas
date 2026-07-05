@@ -41,3 +41,17 @@ Smallest vertical slice: (1) Supabase client util'leri (@supabase/ssr, env şabl
 
 ## Next — Phase 4 slice plan (cashflow)
 (1) monthly_cashflow accepted satırları → cashflow_months+lines mapping (kimlik zaten importta doğrulanıyor), (2) devir zinciri validator (continuity_break), (3) /cashflow ay listesi + ay detayı, (4) horizon projeksiyonu + first_negative_month/worst_month (cashflow_snapshots), (5) konsantrasyon oranları. Gate: birim (zincir/projeksiyon) + gerçek-veri (35 ay, bilinen kasa serisi birebir) + smoke.
+
+## Phase 4 — DONE
+- Kural-önce: findContinuityIssues / buildProjection / horizonCards / concentration → 8 birim test (toplam 62), sonra engine.
+- mapCashflowMonths: ay-seviyesi açık/ret inceleme → ay hariç; satır-seviyesi → yalnız o satır hariç (66 satır). 35/35 ay, 1.058 satır, %100 source_row_id izli, 17 null tutar NULL kaldı, party eşleşmesi yalnız normalize-birebir (268 satır).
+- **Kaynak mutabakatı iddiası**: 35 ayın beşli başlık değerleri source_cells B1/D1/F1/H1/J1 ile ±0.5 birebir (SQL cross-join kanıtı). Final kasa 2029-03 = −3.064.607,57 — Oturum-1'de elle doğrulanan değerle aynı.
+- Zincir: TEMİZ'de 0 kırık; enjekte edilen kırık → mapping_reviews(continuity_break) bayrağı, değer DEĞİŞMEDİ (sessiz-düzeltme yasağı kanıtlı); month_gap ayrı tip.
+- Projeksiyon çapraz-doğrulama (SQL vs pure fn): ilk negatif 2026-09, en kötü 2029-03, 31 ay ardışık negatif. Konsantrasyon: Hpt %79 (>%40 bayraklı) — beklenmedik ama gerçek; akon değil Hpt baskın müşteri.
+- UI: /cashflow (5 ufuk kartı + uyarılar + 2 SVG grafik + 2 konsantrasyon paneli + 35 ay tablosu), /cashflow/[monthId] (kimlik rozeti + gruplu satırlar + kaynak sekme linki), workbook sayfasında "nakit akışını aktar" butonu, nav NAKİT aktif.
+- scripts/seed-demo.ts: tam demo durumu (19 kalem + 35 ay) — smoke ve dev için.
+- Gate: lint ✓ typecheck ✓ vitest 62/62 ✓ db:verify ✓ import:real ✓ phase3:verify ✓ phase4:verify ✓ build ✓ smoke 4×200 (RSC payload'da ilk-negatif rozetleri ×5, 31-ardışık uyarısı, −3.064.608 ×8 doğrulandı).
+- Not: curl-grep RSC metin bölünmesine takılabiliyor; sayısal kanıtın esası phaseN-verify scriptleri.
+
+## Next — Phase 5 slice plan (checks + loans / financing)
+(1) ÇEKLER accepted satırları → checks (signed→direction, |amount| tutarlılığı DB'de zaten kısıtlı; duplicate_check open=hariç), (2) faiz hesaplama → loans + loan_installments (amortisman satırları 14..105; Σtaksit≈B10 mutabakat, sapma→loan_reconciliation review), (3) vade takvimi (hafta/ay gruplu çek vadeleri + kredi taksitleri), (4) /financing UI (çek listesi yön rozetli, kredi kartı + taksit tablosu), (5) nakit akış ayına borç-servisi bindirmesi (kredi taksit toplamı aylık satır). Gate: birim (amortisman/mutabakat) + phase5:verify (gerçek 143 çek satırı + 1.5M kredi) + smoke.

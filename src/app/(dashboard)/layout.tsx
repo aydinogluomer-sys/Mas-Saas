@@ -6,7 +6,7 @@ const NAV = [
   { href: "/calendar", label: "TAKVİM", active: true },
   { href: "/payments", label: "ÖDEMELER", active: true },
   { href: "/imports", label: "İÇE AKTARIM", active: true },
-  { href: "#", label: "NAKİT — Faz 4", active: false },
+  { href: "/cashflow", label: "NAKİT", active: true },
   { href: "#", label: "ÇEK/KREDİ — Faz 5", active: false },
 ];
 

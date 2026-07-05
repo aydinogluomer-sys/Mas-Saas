@@ -86,3 +86,7 @@ Day risk flags: cluster (count ≥ 3 pending same day), large (any known ≥ 50k
 - isimsiz satır → inceleme kabul edilse bile ASLA aktarılmaz (ad zorunlu)
 - kabul edilen günsüz kalem → recurrence='irregular' olarak aktarılır; takvime giremez, Radar "günsüz" raporunda görünür
 - kabul edilen negatif tutar → olduğu gibi korunur (confidence=variable), instance'ta negative_amount risk bayrağı sürer
+
+## Horizon cards (Phase 4)
+
+Çapa ay = bugünün ayı (veri aralığındaysa), değilse ilk veri ayı. Ufuklar 3/6/12/24/36 ay; pencere veri sonunu aşarsa kart "veri sonu" rozetiyle kesilir (uydurma projeksiyon yapılmaz). Pencere toplamları yalnız bilinen tutarlarla; eksik ay sayısı kartta beyan edilir.

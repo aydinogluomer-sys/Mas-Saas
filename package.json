@@ -14,7 +14,9 @@
     "db:types": "tsx scripts/db/gen-types.ts",
     "db:dev:reset": "bash scripts/db/dev-reset.sh",
     "import:real": "bash scripts/db/ensure.sh && tsx scripts/import-real.ts",
-    "phase3:verify": "bash scripts/db/ensure.sh && tsx scripts/phase3-verify.ts"
+    "phase3:verify": "bash scripts/db/ensure.sh && tsx scripts/phase3-verify.ts",
+    "phase4:verify": "bash scripts/db/ensure.sh && tsx scripts/phase4-verify.ts",
+    "seed:demo": "bash scripts/db/ensure.sh && tsx scripts/seed-demo.ts"
   },
   "dependencies": {
     "date-fns": "^4.4.0",
