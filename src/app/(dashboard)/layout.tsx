@@ -2,9 +2,11 @@ import type { ReactNode } from "react";
 import Link from "next/link";
 
 const NAV = [
+  { href: "/radar", label: "RADAR", active: true },
+  { href: "/calendar", label: "TAKVİM", active: true },
+  { href: "/payments", label: "ÖDEMELER", active: true },
   { href: "/imports", label: "İÇE AKTARIM", active: true },
-  { href: "#", label: "RADAR — Faz 3", active: false },
-  { href: "#", label: "NAKİT AKIŞ — Faz 4", active: false },
+  { href: "#", label: "NAKİT — Faz 4", active: false },
   { href: "#", label: "ÇEK/KREDİ — Faz 5", active: false },
 ];
 

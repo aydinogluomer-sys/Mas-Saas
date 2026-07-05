@@ -12,9 +12,9 @@ describe("PaymentMatrixPreview", () => {
     render(
       <PaymentMatrixPreview
         candidates={[
-          { rowIndex: 3, name: "MAS ELEKTRİK", dueDay: 3, amountCandidate: null, flags: [] },
-          { rowIndex: 16, name: "MAS TELEFON TİJEN", dueDay: 22, amountCandidate: -60000, flags: ["negative_amount"] },
-          { rowIndex: 25, name: null, dueDay: null, amountCandidate: 120000, flags: ["unlabeled_amount"] },
+          { rowIndex: 3, name: "MAS ELEKTRİK", dueDay: 3, amountCandidate: null, amountSource: null, flags: [] },
+          { rowIndex: 16, name: "MAS TELEFON TİJEN", dueDay: 22, amountCandidate: -60000, amountSource: "ag", flags: ["negative_amount"] },
+          { rowIndex: 25, name: null, dueDay: null, amountCandidate: 120000, amountSource: "ag", flags: ["unlabeled_amount"] },
         ]}
         issues={[{ rowIndex: 25, issue_type: "unlabeled_amount", severity: "high", message: "Etiketsiz tutar" }]}
       />,

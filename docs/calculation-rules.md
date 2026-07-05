@@ -73,3 +73,16 @@ Day risk flags: cluster (count ≥ 3 pending same day), large (any known ≥ 50k
 - Break-even TL/dk = allocated monthly fixed cost ÷ effective monthly minutes (minutes × efficiency).
 - Normal vs overtime compared on identical part mix; outputs labeled *analytics, not accounting truth*.
 - 2023 tariff rates in `kapasite` are stale ⇒ every derived figure carries `stale_rate` badge until user updates rates.
+
+## Risk ladder (instance level — Phase 3)
+
+`critical_payment → critical` · `overdue → high` · `large/cluster/negative → medium` · yalnız `missing_amount → low` · aksi `none`. Ödenmiş/iptal kayıtlar risk almaz. Yığılma sayımı aynı vade gününe düşen AÇIK kayıtlar üzerinden.
+
+## Review-status semantics (mapping eligibility)
+
+- inceleme yok (temiz satır) → aktarılabilir
+- tüm incelemeler ∈ {accepted, resolved} → aktarılabilir (accepted = "bu haliyle doğru, aktar")
+- herhangi biri ∈ {open, rejected} → AKTARILMAZ
+- isimsiz satır → inceleme kabul edilse bile ASLA aktarılmaz (ad zorunlu)
+- kabul edilen günsüz kalem → recurrence='irregular' olarak aktarılır; takvime giremez, Radar "günsüz" raporunda görünür
+- kabul edilen negatif tutar → olduğu gibi korunur (confidence=variable), instance'ta negative_amount risk bayrağı sürer

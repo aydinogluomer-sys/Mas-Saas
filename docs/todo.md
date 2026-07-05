@@ -34,13 +34,19 @@
 - [x] Checks preview (yön/çift-kayıt rozetleri)
 - [x] Verification: import:real — 43 sekme, 9.817 hücre sıfır kayıp, 58 review, bozuk dosya failed-path, E2E smoke 3×200
 
-## Phase 3
+## Phase 3 — DONE
 
-- [ ] Payment CRUD.
-- [ ] Instance generation.
-- [ ] Calendar.
-- [ ] Missing data.
-- [ ] Paid/unpaid marking.
+- [x] Accepted candidates → payments mapping (eligibility: temiz ∪ accepted/resolved; open/rejected/isimsiz hariç)
+- [x] Idempotent monthly instance generator (ON CONFLICT + partial-unique; tekrar=0 kanıtlı)
+- [x] Payment CRUD (create/update/archive, audit'li; aylıkta gün zorunlu doğrulaması)
+- [x] Today/tomorrow/next-7 view (/radar)
+- [x] Monthly payment calendar (/calendar, gün detayı + risk kenarlıkları)
+- [x] Missing amount report (instance'a özel tutar girme; null asla 0 olmaz)
+- [x] Overdue report
+- [x] Payment risk flags (ladder + gün bayrakları; eşikler settings'ten)
+- [x] Paid/unpaid marking → audit_logs (before/after doğrulandı)
+- [x] /radar dashboard
+- [x] Verification: phase3:verify ALL PASS (gerçek veri, 19 kalem, Şubat kırpma DB'de, DB-unique dupe engeli, +2 audit)
 
 ## Phase 4+
 

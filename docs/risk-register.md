@@ -17,3 +17,5 @@
 | api.telegram.org erişilemez | Medium | Reminder motoru deterministik + delivery log; gönderim testleri mock fetch ile |
 | Kaynak xlsx'ler repo dışı (data/ gitignored) | Low | Gizlilik: finansal ham veri commit edilmez; sha256 kanıtı raporda |
 | Bulut DB hedefi belirsiz (4 ilgisiz proje) | Medium | Faz 1 lokalde doğrulandı; kullanıcı hedef seçince MCP apply_migration ile uygulanır |
+| Kalem düzenlemesi mevcut ay kayıtlarını geriye dönük değiştirmiyor | Low | Bilinçli tasarım (audit bütünlüğü); ay-içi değişiklik instance-tutar girişiyle |
+| /radar GET'inde ensureWindow (idempotent yazma) | Low | Tek operatör MVP kabulü; çok kullanıcıda cron'a taşınır (Faz 6) |

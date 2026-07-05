@@ -27,6 +27,7 @@ export interface PaymentCandidate {
   name: string | null;
   dueDay: number | null;
   amountCandidate: number | null;
+  amountSource: "day_cell" | "ag" | null;
   flags: string[];
 }
 
@@ -68,6 +69,8 @@ export function extractPaymentMatrix(rows: SheetRow[]): {
 
     const isNameRow = !!name;
     const finalAmount = dayCellAmount ?? amountCandidate;
+    const amountSource: "day_cell" | "ag" | null =
+      dayCellAmount != null ? "day_cell" : amountCandidate != null ? "ag" : null;
 
     if (!isNameRow && finalAmount != null) {
       issues.push({
@@ -81,6 +84,7 @@ export function extractPaymentMatrix(rows: SheetRow[]): {
         name: null,
         dueDay,
         amountCandidate: finalAmount,
+        amountSource,
         flags: ["unlabeled_amount"],
       });
       continue;
@@ -129,7 +133,7 @@ export function extractPaymentMatrix(rows: SheetRow[]): {
         message: `"${name}" için AG hizalama şüphesi: ${amountCandidate}`,
       });
     }
-    candidates.push({ rowIndex: row.rowIndex, name, dueDay, amountCandidate: finalAmount, flags });
+    candidates.push({ rowIndex: row.rowIndex, name, dueDay, amountCandidate: finalAmount, amountSource, flags });
   }
   return { candidates, issues };
 }

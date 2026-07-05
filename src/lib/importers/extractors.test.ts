@@ -85,9 +85,11 @@ describe("extractPaymentMatrix — import-mapping §1 rules on real-shaped fixtu
     expect(byName["MAS TELEFON ÖMER"].dueDay).toBe(26);
   });
 
-  it("KİRA: numeric in day cell K = day 10 AND amount 35000", () => {
+  it("KİRA: numeric in day cell K = day 10 AND amount 35000 (source: day_cell)", () => {
     expect(byName["KİRA"].dueDay).toBe(10);
     expect(byName["KİRA"].amountCandidate).toBe(35000);
+    expect(byName["KİRA"].amountSource).toBe("day_cell");
+    expect(byName["garanti kredi"].amountSource).toBe("ag");
   });
 
   it("missing due day flagged (PRONET)", () => {
