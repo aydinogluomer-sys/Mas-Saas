@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Phase 1 gate: full reset -> migrations in order -> seed -> assertions. Run twice to prove reset repeatability.
 set -euo pipefail
+pg_lsclusters | grep -q online || pg_ctlcluster 16 main start
 DB=mas_radar_verify
 run_psql() { su postgres -c "psql -q -v ON_ERROR_STOP=1 -d $DB -f '$1'"; }
 su postgres -c "dropdb --if-exists $DB && createdb $DB"

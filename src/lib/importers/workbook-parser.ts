@@ -97,6 +97,10 @@ export function safeParseWorkbook(filePath: string): SafeParseResult {
   } catch (e) {
     return { ok: false, error: `read failed: ${(e as Error).message}`, fileSize: 0 };
   }
+  return safeParseWorkbookBuffer(buf);
+}
+
+export function safeParseWorkbookBuffer(buf: Buffer): SafeParseResult {
   if (buf.length === 0) {
     return { ok: false, error: "empty file (0 bytes)", fileSize: 0 };
   }

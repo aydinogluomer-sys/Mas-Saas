@@ -66,7 +66,7 @@ Day risk flags: cluster (count ≥ 3 pending same day), large (any known ≥ 50k
 
 - `direction = signed_amount < 0 ? outflow : inflow`; `amount = |signed_amount|`.
 - Maturity grouping: ISO week and calendar month, Europe/Istanbul.
-- Duplicate suspicion: same (payer, bank, amount) within ±3 days ⇒ review, never auto-merge.
+- Duplicate suspicion: same counterparty (KİMDEN if present, else KİME; TR-normalized so case variants like çağdaş/ÇAĞDAŞ match) + same |amount| within ±3 days ⇒ review, never auto-merge. (Real ÇEKLER sheet: KİMDEN empty; duplicates keyed by KİME.)
 
 ## Capacity / cost (analytics-only)
 

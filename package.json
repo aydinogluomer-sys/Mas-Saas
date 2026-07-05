@@ -3,15 +3,17 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "next dev --turbopack",
+    "dev": "bash scripts/db/ensure.sh && next dev",
     "build": "next build --turbopack",
     "start": "next start",
     "lint": "eslint",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "spike": "tsx scripts/parse-spike.ts",
-    "db:verify": "bash scripts/db/verify.sh",
-    "db:types": "tsx scripts/db/gen-types.ts"
+    "db:verify": "bash scripts/db/ensure.sh && bash scripts/db/verify.sh",
+    "db:types": "tsx scripts/db/gen-types.ts",
+    "db:dev:reset": "bash scripts/db/dev-reset.sh",
+    "import:real": "bash scripts/db/ensure.sh && tsx scripts/import-real.ts"
   },
   "dependencies": {
     "date-fns": "^4.4.0",
@@ -25,12 +27,16 @@
   "devDependencies": {
     "@eslint/eslintrc": "^3",
     "@tailwindcss/postcss": "^4",
+    "@testing-library/jest-dom": "^6.9.1",
+    "@testing-library/react": "^16.3.2",
     "@types/node": "^20",
     "@types/pg": "^8.20.0",
     "@types/react": "^19",
     "@types/react-dom": "^19",
+    "@vitejs/plugin-react": "^6.0.3",
     "eslint": "^9",
     "eslint-config-next": "15.5.20",
+    "jsdom": "^29.1.1",
     "pg": "^8.22.0",
     "tailwindcss": "^4",
     "tsx": "^4.23.0",

@@ -22,14 +22,17 @@
 - [x] Types generated from verified schema (22 tables) — pnpm db:types
 - [x] Verify: pnpm db:verify — 2× tam sıfırlama, 10 iddia grubu PASS
 
-## Phase 2
+## Phase 2 — DONE
 
-- [ ] Workbook upload UI.
-- [ ] Sheet browser.
-- [ ] Mapping review UI.
-- [ ] Payment-day matrix preview.
-- [ ] Monthly cash-flow preview.
-- [ ] Checks preview.
+- [x] Imports list + workbook upload (server action, raw preservation)
+- [x] Workbook detail (meta, sha256, failed parse_error yüzeyi)
+- [x] Sheet list + detected type / confidence badges
+- [x] Raw row/cell viewer (sayfalama, formül işareti, needs_review rozeti)
+- [x] Mapping review table (filtre + kabul/ret/çözüldü + audit_logs)
+- [x] Payment-day matrix preview
+- [x] Monthly cashflow preview (kimlik rozeti dahil)
+- [x] Checks preview (yön/çift-kayıt rozetleri)
+- [x] Verification: import:real — 43 sekme, 9.817 hücre sıfır kayıp, 58 review, bozuk dosya failed-path, E2E smoke 3×200
 
 ## Phase 3
 
