@@ -8,6 +8,7 @@ const NAV = [
   { href: "/imports", label: "İÇE AKTARIM", active: true },
   { href: "/cashflow", label: "NAKİT", active: true },
   { href: "/financing", label: "ÇEK/KREDİ", active: true },
+  { href: "/reports", label: "RAPOR", active: true },
 ];
 
 export default function DashboardLayout({ children }: { children: ReactNode }) {

@@ -17,6 +17,7 @@
     "phase3:verify": "bash scripts/db/ensure.sh && tsx scripts/phase3-verify.ts",
     "phase4:verify": "bash scripts/db/ensure.sh && tsx scripts/phase4-verify.ts",
     "phase5:verify": "bash scripts/db/ensure.sh && tsx scripts/phase5-verify.ts",
+    "phase6:verify": "bash scripts/db/ensure.sh && tsx scripts/phase6-verify.ts",
     "seed:demo": "bash scripts/db/ensure.sh && tsx scripts/seed-demo.ts"
   },
   "dependencies": {

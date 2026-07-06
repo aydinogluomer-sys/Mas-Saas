@@ -27,3 +27,6 @@
 | Kredi taksit vadeleri kaynakta satır-tarihi taşımıyor | Medium | first_payment_date'ten deterministik türetim (aynı gün + kısa-ay kırpma); scheduleDueDates birim-test + phase5-verify DB cross-check |
 | faiz hesaplama F1 "kredi taksit sayısı"=25 ≠ B5 vade=48 | Medium | loan_field_ambiguous review (insan kararı); çözülene dek kredi aktarılmaz — sessiz varsayım yok |
 | Banka adı Türkçe uppercase round-trip'i eşleşmeyi bozuyor (DENIZ→denız) | Low | Banka tokenları ASCII lowercase ile eşlenir (bankPartyId); phase5-verify bank-resolved sayısını doğrular |
+| Rapor/AI katmanının mali kaydı değiştirmesi (kaynak-of-truth ihlali) | Critical | Rapor engine yalnız reports+audit'e yazar; phase6-verify before==after fingerprint ile hiçbir mali tablonun değişmediğini kanıtlar; AI yalnız prompt-string üretir, model çağrılmaz, promptta update/insert/delete yasak |
+| "Bugün" UTC hesaplanırsa Istanbul gece yarısında yanlış gün | Medium | istanbulDateISO (Europe/Istanbul, en-CA) + phase6-verify tz sınır testi; raporlar/eligibility Istanbul tarihi kullanır |
+| Borç-servisi projeksiyon penceresi dışında (taksitler 2024-10'dan) | Low | Overlay yalnız cashflow ay aralığına bindirilir; pencere dışı borç gösterilmez (kasıt); phase6-verify overlay-yönlü SQL cross-check |

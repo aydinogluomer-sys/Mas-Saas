@@ -4,9 +4,12 @@ import {
   loadCashMonths, validateContinuity, writeSnapshots,
 } from "@/lib/cashflow/engine";
 import { buildProjection, concentration, horizonCards } from "@/lib/radar/rules";
-import { Badge } from "@/components/ui/badge";
+import { loadDebtOverlay } from "@/lib/reports/engine";
+import { Badge, type Tone } from "@/components/ui/badge";
 import { Num, Panel, fmtTL } from "@/components/ui/panel";
 import { CashTrendChart, ConcentrationBars, IncomeExpenseChart } from "@/components/cashflow/charts";
+
+const PRESSURE_TONE: Record<string, Tone> = { high: "red", watch: "amber", none: "neutral" };
 
 export const dynamic = "force-dynamic";
 
@@ -56,6 +59,11 @@ export default async function CashflowPage({
     `select cashflow_month_id, count(*)::int as n from public.cashflow_lines group by 1`,
   );
   const countOf = new Map(lineCounts.rows.map((r) => [r.cashflow_month_id, r.n]));
+
+  // Phase 6A: debt-service (çek + kredi taksiti) overlay onto projected closing balance
+  const overlay = await loadDebtOverlay(pool);
+  const overlayOf = new Map(overlay.map((o) => [o.monthStart, o]));
+  const highPressure = overlay.filter((o) => o.pressure === "high").length;
 
   return (
     <>
@@ -131,7 +139,10 @@ export default async function CashflowPage({
         </Panel>
       </div>
 
-      <Panel title={`AYLAR — ${months.length}`}>
+      <Panel
+        title={`AYLAR — ${months.length}`}
+        right={highPressure > 0 ? <Badge tone="red">{highPressure} ayda borç-servisi baskısı</Badge> : undefined}
+      >
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
             <thead>
@@ -142,6 +153,7 @@ export default async function CashflowPage({
                 <th className="py-1 pr-2 text-right">gider</th>
                 <th className="py-1 pr-2 text-right">fark</th>
                 <th className="py-1 pr-2 text-right">kasa</th>
+                <th className="py-1 pr-2 text-right">borç servisi</th>
                 <th className="py-1">satır</th>
               </tr>
             </thead>
@@ -152,6 +164,7 @@ export default async function CashflowPage({
                     {v != null ? new Intl.NumberFormat("tr-TR", { maximumFractionDigits: 0 }).format(v) : "—"}
                   </td>
                 );
+                const o = overlayOf.get(m.monthStart);
                 return (
                   <tr key={m.id} className="border-b border-zinc-900">
                     <td className="py-1 pr-2 font-mono text-xs">
@@ -162,6 +175,18 @@ export default async function CashflowPage({
                     {cell(m.opening)}{cell(m.income)}{cell(m.expense)}
                     {cell(m.income != null && m.expense != null ? m.income - m.expense : null)}
                     {cell(m.closing)}
+                    <td className="py-1 pr-2 text-right font-mono text-xs tabular-nums">
+                      {o && o.debtOutflow > 0 ? (
+                        <span className="inline-flex items-center gap-1">
+                          {o.pressure !== "none" && <Badge tone={PRESSURE_TONE[o.pressure]}>{o.pressure === "high" ? "baskı" : "izle"}</Badge>}
+                          <span className={o.pressure === "high" ? "text-red-400" : "text-zinc-400"}>
+                            {new Intl.NumberFormat("tr-TR", { maximumFractionDigits: 0 }).format(o.debtOutflow)}
+                          </span>
+                        </span>
+                      ) : (
+                        <span className="text-zinc-600">—</span>
+                      )}
+                    </td>
                     <td className="py-1 font-mono text-xs text-zinc-500">{countOf.get(m.id) ?? 0}</td>
                   </tr>
                 );
@@ -169,6 +194,10 @@ export default async function CashflowPage({
             </tbody>
           </table>
         </div>
+        <p className="mt-2 font-mono text-[10px] text-zinc-600">
+          Borç servisi = o ay vadesi gelen çek + kredi taksiti (bilinen). Kırmızı &quot;baskı&quot; = negatif kasa + borç yükü;
+          amber &quot;izle&quot; = kasa pozitif ama borç yükü kayda değer.
+        </p>
       </Panel>
     </>
   );

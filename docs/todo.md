@@ -64,9 +64,21 @@
 - [x] phase5-verify.ts (PHASE5_SRC ile dry-run edilebilir): eligibility+idempotency, signed→yön, negatif-anomali-değil, maturity SQL cross-check, banka exposure SQL, kredi mutabakatı (total=B10, cost=total−principal), 48 taksit türetimi, DB uniques, borç servisi. **Dry-run (ÇEKLER/faiz-özdeş orijinal): ALL PASS.**
 - [ ] **BEKLİYOR:** import:real / phase3:verify / phase4:verify / phase5:verify GERÇEK TEMİZ.xlsx üzerinde (dosya makinede yok — kullanıcıdan bekleniyor). Bu 4 gate yeşil olmadan commit YOK.
 
-## Phase 6+
+## Phase 6A — DONE (reports + debt-service overlay)
 
-- [ ] Reminder engine (Telegram).
-- [ ] Reports.
+- [x] reports/rules.ts saf fonksiyonlar + 9 birim test (istanbulDateISO tz, buildDaily/Weekly/Monthly, overlayDebtService pressure, buildCommentaryPrompt mutasyon-yasağı). null asla 0 ("TUTAR EKSİK").
+- [x] reports/engine.ts: generateDaily/Weekly/Monthly → reports tablosuna snapshot yazar, audit'li; loaders reuse (radar/queries, financing/engine, financing/rules). **Mali kayıt mutasyonu YOK** (before==after fingerprint kanıtlı).
+- [x] Borç-servisi × nakit-akış overlay (loadDebtOverlay) → /cashflow ay tablosuna "borç servisi" kolonu + baskı/izle rozetleri (kullanıcının "eklensin" isteği).
+- [x] AI yorum promptu yalnız string (buildCommentaryPrompt) — model çağrılmaz, mutasyon yasağı metni gömülü; /reports/[id]'de "model çağrılmadı" rozetiyle gösterilir.
+- [x] /reports (üret + geçmiş liste) + /reports/[reportId] (body_md + prompt) + nav RAPOR aktif.
+- [x] phase6-verify.ts: 3 rapor SQL cross-check, overlay 35 ay SQL-birebir, **mali bütünlük before==after**, commentary prompt-only, Istanbul tz, audit 3 satır. **ALL PASS (gerçek TEMİZ).**
+- [x] Gate: lint ✓ typecheck ✓ vitest 96/96 ✓ db:verify ✓ import:real ✓ phase3-6:verify ✓ build ✓ smoke (/reports, rapor detay, /cashflow overlay 200).
+
+## Phase 6B — TODO (reminders)
+
+- [ ] Reminder engine (eligibility saf fonksiyon + test), mock Telegram transport (api.telegram.org erişilemez), reminder_deliveries yazımı (duplicate önleme DB'de kısıtlı), delivery log.
+
+## Phase 7+
+
 - [ ] Capacity/cost analytics.
 - [ ] Scenario engine.
