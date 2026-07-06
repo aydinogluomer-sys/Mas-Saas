@@ -102,3 +102,14 @@
 - [x] phase8-verify.ts: **baseline immutable** (row-hash before==after), **mali bütünlük** (payments/cashflow/checks/loans/reminders/reports/production before==after), senaryo yalnız scenario_* tablolarına yazar, revenue%→yalnız gelir, expense%→yalnız gider, gecikme=zamanlama-değil-tutar, karşılaştırma=SQL, deterministik içgörü, güvenli cascade sil. ALL PASS.
 - [x] Gate: lint ✓ typecheck ✓ vitest 138/138 ✓ db:verify ✓ import:real ✓ phase3-8:verify ✓ build ✓ 8-route smoke (radar/cashflow/financing/reports/reminders/production/scenarios + senaryo detay 200).
 - [x] docs/mvp-runbook.md yazıldı; mas-nakit-radar-mvp.zip üretildi.
+
+## Deploy — DONE (yerel özel production hazırlığı, Option A)
+
+- [x] MVP zip doğrulandı + temiz klasörde fresh install (install/lint/typecheck/test 138/build) yeşil — zip kaynaktan yeniden derlenebilir.
+- [x] Deploy dosyaları: docker-compose.yml (kalıcı volume, 127.0.0.1 bind, healthcheck), .env.example (DATABASE_URL/APP_ACCESS_PASSWORD/TELEGRAM_*/version), scripts/deploy/{local-start,local-stop,backup-db,restore-db}.sh + check-env.ts (secret maskeler, presence-only).
+- [x] /health (app+DB erişilebilirlik, secret yok, 200/503) + /version (name/version/commit/build/node, secret yok) route handler'ları.
+- [x] Minimal access gate: APP_ACCESS_PASSWORD ayarlıysa dashboard route'ları httpOnly cookie session ister (HMAC, server-only, loglanmaz); /login + /logout + (dashboard) layout gate. Boşsa kapalı (tek makine). Çok-kullanıcı/RBAC değil.
+- [x] Güvenlik audit: tek client component (upload-form) yalnız server action referansı; token yalnız transport.ts (server); .xlsx client bundle'a girmez; env/secret loglanmaz.
+- [x] Backup/restore ispatı: pg_dump → taze DB restore (0 hata, sayaçlar birebir 2/9817/1601, 33 tablo, 0 RLS-kapalı, seed intact).
+- [x] docs/local-production-deploy.md + mvp-runbook güncellendi.
+- [x] Gate: lint ✓ typecheck ✓ vitest 138 ✓ db:verify ✓ import:real ✓ phase3-8:verify ✓ build ✓ 9-route smoke (+/health +/version).

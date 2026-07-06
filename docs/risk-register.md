@@ -43,3 +43,8 @@
 | Senaryo çıktısının muhasebe gerçeği sanılması | High | /scenarios disclaimer "Senaryo çıktısı tahmindir; muhasebe gerçeği değildir. Kaynak kayıtları değiştirmez."; her run confidence (belirsiz-ay oranına göre); varsayımlar açık beyan |
 | Senaryo belirsiz tutarı 0 sayar / gecikmede tutar uydurur | High | applyScenario: null gelir/gider ölçeklenmez (null kalır, closing null); gecikme yalnız zamanlamayı kaydırır, tutar korunur; phase8-verify null-handling + delay-timing kanıtı |
 | Senaryo varsayımı gizli/örtük kalır | Medium | scenario_assumptions tablosuna açık satır + run.assumptions jsonb; UI "VARSAYIMLAR (açık beyan)" paneli |
+| Dashboard route'ları kimlik doğrulamasız açık | High | Opsiyonel access gate (APP_ACCESS_PASSWORD): httpOnly cookie session (HMAC, server-only); DB 127.0.0.1 bind; yerel özel kullanım. Sınır: tek paylaşılan parola, RBAC yok → public ağa açılmaz (docs'ta belgeli) |
+| Telegram token / secret client bundle'a sızar | Critical | Token yalnız transport.ts (server fonksiyon içi); tek 'use client' bileşen yalnız server-action referansı; /health /version secret yaymaz; check-env secret VALUE yazmaz; audit temiz |
+| Yedek dosyaları özel finansal veri içerir | High | backups/ + *.dump gitignore'lu; pg_dump yerel container'dan; commit/arşiv dışı; docs uyarısı |
+| Restore bozuk/eksik DB üretir | Medium | restore-db.sh FORCE guard + roller idempotent + auth schema dump'tan; kanıt: restored sayaçlar birebir, 33 tablo, RLS intact, seed intact |
+| Bulut/uzak deploy istenmeden yapılır | High | Option A yalnız yerel; remote Supabase/Vercel bilinçli kapsam dışı (kullanıcı talimatı); app DB-URL-taşınabilir ama geçiş ayrı karar |

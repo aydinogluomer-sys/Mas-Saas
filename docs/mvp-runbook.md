@@ -25,7 +25,7 @@ implementation.md §0'daki 7 inşa adımının tamamı bitti.
 5. **Read-only analitik/senaryo** — üretim ve senaryo motorları mali tabloları değiştirmez (fingerprint before==after kanıtlı).
 6. **Idempotent aktarım** — tüm mapping'ler DB-seviyesinde tekrar-güvenli.
 
-## Kurulum (yerel)
+## Kurulum (yerel dev)
 
 ```bash
 # PostgreSQL 16 (Docker container mas-radar-pg, 127.0.0.1:5432) — scripts otomatik ayağa kaldırır
@@ -35,7 +35,26 @@ bash scripts/db/dev-reset.sh     # migrations 0001-0011 + seed
 pnpm dev                          # http://localhost:3000
 ```
 
-Ortam değişkenleri (opsiyonel, server-only): `DATABASE_URL`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`.
+## Yerel özel production (Option A)
+
+Kalıcı volume + build + serve için: **`docs/local-production-deploy.md`**.
+
+```bash
+cp .env.example .env.local        # DATABASE_URL + (ops.) APP_ACCESS_PASSWORD / TELEGRAM_*
+bash scripts/deploy/local-start.sh   # compose up + ilk-kurulum + build + start
+bash scripts/deploy/backup-db.sh mas_radar_dev              # yedek → backups/ (gitignore)
+bash scripts/deploy/restore-db.sh <dump> mas_radar_restored # taze DB'ye geri yükle
+```
+
+Sağlık/sürüm: `GET /health` (DB erişilebilirlik, secret yok), `GET /version` (commit/build, secret yok).
+
+Ortam değişkenleri (tümü server-only): `DATABASE_URL` (zorunlu), `APP_ACCESS_PASSWORD` (ops. erişim
+kapısı), `TELEGRAM_BOT_TOKEN`/`TELEGRAM_CHAT_ID` (ops. gönderim), `APP_COMMIT_SHA`/`APP_BUILD_TIME`
+(ops. /version). `.env.local`, `data/`, `backups/` git dışı.
+
+### Erişim kapısı
+`APP_ACCESS_PASSWORD` ayarlıysa tüm dashboard route'ları parola ister (httpOnly cookie, HMAC, server-only);
+boşsa kapı kapalı (tek makine güveni). Çok-kullanıcı/RBAC değildir. `/health` ve `/version` kapının dışındadır.
 
 ## Tam gate (commit öncesi)
 

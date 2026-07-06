@@ -105,6 +105,16 @@ implementation.md §0 sırası: kapasite/maliyet. Tablolar tasarımda var (machi
 - phase7-verify: no-silent-discard (68 parça talep=G5+H5), izlenebilirlik, stale-rate, başabaş=G6 birebir+mutabakat, süre-eksik null, ROI needs_review, idempotency, **mali bütünlük before==after**. ALL PASS.
 - Gate: lint ✓ typecheck ✓ vitest 128/128 ✓ db:verify ✓ import:real ✓ phase3/4/5/6/6b/7:verify ✓ build ✓ 6-route smoke ✓.
 
+## Deploy — DONE (yerel özel production hazırlığı, Option A — Phase 8 sonrası sprint)
+- Yeni ürün özelliği YOK; yalnız production-readiness. MVP zip (`../mas-nakit-radar-mvp.zip`) temiz klasörde fresh install ile doğrulandı (install/lint/typecheck/test 138/build) — kaynaktan yeniden derlenebilir, gizli veri içermez (0 xlsx, 0 hardcoded token, 0 .env).
+- Deploy dosyaları: `docker-compose.yml` (postgres:16, kalıcı volume `mas_radar_pgdata`, 127.0.0.1 bind, healthcheck), `.env.example`, `scripts/deploy/{local-start,local-stop,backup-db,restore-db}.sh`, `scripts/deploy/check-env.ts` (secret VALUE'ları yazmaz — yalnız presence + DSN maskeler). `.gitignore`'a `backups/` + `*.dump` eklendi.
+- `/health` (app+DB erişilebilirlik; select 1; 200/503; secret/finansal veri yok) ve `/version` (name/version/commit/build/node; secret yok) — (dashboard) grubunun DIŞINDA, access gate'e takılmaz.
+- **Minimal access gate** (`src/lib/auth.ts` + `/login` + `/logout` + (dashboard) layout): `APP_ACCESS_PASSWORD` ayarlıysa httpOnly cookie session (HMAC(password), timingSafeEqual, server-only, asla client'a gitmez/loglanmaz); boşsa kapalı (tek makine güveni). Çok-kullanıcı SaaS auth DEĞİL — bilinçli sınır.
+- Güvenlik audit: tek 'use client' (upload-form) yalnız server action referansı alır (doğru RSC); TELEGRAM token yalnız transport.ts'te (server fonksiyon içi); .xlsx client bundle'a girmez; hiçbir yerde env/secret console'a yazılmaz.
+- **Backup/restore kanıtı** (yerel Docker PG): backup-db.sh pg_dump -Fc → backups/ (gitignore); restore-db.sh taze DB'ye (FORCE guard) → **0 hata**, restored sayaçlar dev ile birebir (2 workbook/9817 hücre/1601 satır), 33 public tablo, 0 RLS-kapalı, seed (7 ayar/5 hatırlatma) intact. restore-db.sh yalnız cluster rollerini idempotent yaratır, auth schema'yı dump'a bırakır (spurious hata yok).
+- Docs: `docs/local-production-deploy.md` (env, start/stop, import, reminders, reports, scenarios, backup/restore, güvenlik sınırları, neden-Vercel/Supabase-değil), mvp-runbook güncellendi.
+- **Neden bulut değil:** finansal ham veri özel; kullanıcı talimatı "remote Supabase'e migration uygulama". App DB-URL-taşınabilir (aynı migration her yerde çalışır) → gelecekte hosted deploy config değişikliği, yeniden yazım değil; ama bilinçli ayrı karar.
+
 ## Next — Phase 8 slice plan (scenario engine)
 implementation.md §20 Phase 8: salt-okunur senaryo overlay'leri. baseline korunur; gelir/gider/kapasite/verim varsayımları ayarlanır; senaryo çıktısı kaynak-of-truth'a yazmaz (ayrı scenario_runs tablosu), baseline vs senaryo karşılaştırma, değişiklikler auditable. Kural-önce: senaryo uygulama saf fonksiyon (baseline + delta → projeksiyon) + test; sonra read-only overlay engine. Mali çekirdeği ve üretim analitiğini bozmaz.
 

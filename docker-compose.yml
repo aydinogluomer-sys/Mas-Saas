@@ -1,0 +1,25 @@
+# Local private production PostgreSQL 16 for MAS Nakit Radar (Option A).
+# Single-operator, bound to loopback only. Data persists in a named volume so it
+# survives container restarts (unlike the ad-hoc dev container). NOT for public exposure.
+services:
+  postgres:
+    image: postgres:16
+    container_name: mas-radar-pg
+    restart: unless-stopped
+    # loopback-only bind: the DB is never reachable from the network
+    ports:
+      - "127.0.0.1:5432:5432"
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+    volumes:
+      - mas_radar_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres}"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+volumes:
+  mas_radar_pgdata:
+    name: mas_radar_pgdata

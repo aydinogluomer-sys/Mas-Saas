@@ -1,5 +1,8 @@
 import type { ReactNode } from "react";
 import Link from "next/link";
+import { redirect } from "next/navigation";
+import { accessGateEnabled, hasValidSession } from "@/lib/auth";
+import { logoutAction } from "@/app/login/actions";
 
 const NAV = [
   { href: "/radar", label: "RADAR", active: true },
@@ -14,7 +17,9 @@ const NAV = [
   { href: "/scenarios", label: "SENARYO", active: true },
 ];
 
-export default function DashboardLayout({ children }: { children: ReactNode }) {
+export default async function DashboardLayout({ children }: { children: ReactNode }) {
+  // Single-operator access gate: when a password is configured, require a valid session.
+  if (accessGateEnabled() && !(await hasValidSession())) redirect("/login");
   return (
     <div className="min-h-screen bg-zinc-950 text-zinc-200">
       <header className="sticky top-0 z-10 border-b border-zinc-800 bg-zinc-950/95 px-4 py-3">
@@ -38,6 +43,14 @@ export default function DashboardLayout({ children }: { children: ReactNode }) {
                   {n.label}
                 </span>
               ),
+            )}
+            {accessGateEnabled() && (
+              <form action={logoutAction}>
+                <button type="submit" title="çıkış"
+                  className="border border-zinc-800 px-2 py-1 font-mono text-[10px] uppercase tracking-wider text-zinc-500 hover:text-red-300">
+                  çıkış
+                </button>
+              </form>
             )}
           </nav>
         </div>
