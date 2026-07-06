@@ -13,6 +13,7 @@ import {
 } from "./row-utils";
 import {
   extractChecks,
+  extractLoan,
   extractMonthlyCashflow,
   extractPaymentMatrix,
 } from "./extractors";
@@ -207,5 +208,77 @@ describe("extractChecks — signed direction, header detect, duplicates", () => 
     const r = extractChecks([row(1, { A: C("hiç") })]);
     expect(r.candidates).toHaveLength(0);
     expect(r.issues[0].issue_type).toBe("checks_header_not_found");
+  });
+});
+
+describe("extractLoan — faiz hesaplama anchors + amortization (import-mapping §3)", () => {
+  // Real anchor values from the workbook; 3-row amortization for the fixture.
+  const base: Record<string, CellVal> = {
+    D1: C("kredi taksit sayısı"), F1: C(25),
+    A4: C("Kredi Tutarı"), B4: C(1500000), D4: C("kredi ilk ödeme tarihi"), F4: C(45583),
+    A5: C("Kredi Vadesi"), B5: C(3), D5: C("kredi basit faiz oranı"), F5: C(3.63),
+    A6: C("Kredi Faizi"), B6: C(3.14), D6: C("uygulanan faiz oranı"), F6: C(3.63),
+    A7: C("BSMV"), B7: C(10), D7: C("aylık maliyet oranı"), F7: C(4.80116),
+    A8: C("KKDF"), B8: C(10), D8: C("yıllık maliyet oranı"),
+    A9: C("Taksit Tutarı"), B9: C(71744.11624119806),
+    A10: C("toplam ödeme"), B10: C(215232.34872359418),
+    A11: C("fark"), B11: C(-1284767.6512764059),
+    B12: C(215232.34872359418),
+    A13: C("Dönem Sayısı"), B13: C("Taksit Tutarı"), C13: C("Anapara"), D13: C("Faiz"), E13: C("KKDF"), F13: C("BSMV"),
+    A14: C(1), B14: C(71744.11624119806), C14: C(15224.12), D14: C(47100), E14: C(4710), F14: C(4710),
+    A15: C(2), B15: C(71744.11624119806), C15: C(15797.76), D15: C(46621.96), E15: C(6993.29), F15: C(2331.1),
+    A16: C(3), B16: C(71744.11624119806), C16: C(16393.02), D16: C(46125.91), E16: C(6918.89), F16: C(2306.3),
+    A17: C(""), // formula past term caches "" — must terminate the loop, not become no=0
+  };
+
+  it("maps every anchor; F4 serial → 2024-10-18; empty-string A cell stops rows", () => {
+    const { loan } = extractLoan(base);
+    expect(loan.principal).toBe(1500000);
+    expect(loan.termMonths).toBe(3);
+    expect(loan.simpleRate).toBe(3.14);
+    expect(loan.bsmvRate).toBe(10);
+    expect(loan.kkdfRate).toBe(10);
+    expect(loan.installmentAmount).toBeCloseTo(71744.12, 2);
+    expect(loan.totalPayment).toBeCloseTo(215232.35, 2);
+    expect(loan.totalFinanceCost).toBeCloseTo(-1284767.65, 2);
+    expect(loan.installmentSum).toBeCloseTo(215232.35, 2);
+    expect(loan.firstPaymentDate).toBe("2024-10-18");
+    expect(loan.appliedRate).toBe(3.63);
+    expect(loan.monthlyCostRate).toBe(4.80116);
+    expect(loan.annualCostRate).toBeNull(); // F8 empty in source — stays null
+    expect(loan.installments).toHaveLength(3);
+    expect(loan.installments[0]).toMatchObject({ no: 1, rowIndex: 14, amount: 71744.11624119806, interest: 47100 });
+    expect(loan.installments[2].kkdf).toBe(6918.89);
+  });
+
+  it("F1 ≠ B5 → loan_field_ambiguous (low), human decides", () => {
+    const { issues } = extractLoan(base);
+    const amb = issues.find((i) => i.issue_type === "loan_field_ambiguous");
+    expect(amb?.severity).toBe("low");
+    expect(amb?.message).toContain("25");
+  });
+
+  it("term/rows mismatch flagged (medium)", () => {
+    const { issues } = extractLoan({ ...base, B5: C(48) });
+    expect(issues.some((i) => i.issue_type === "loan_term_mismatch")).toBe(true);
+  });
+
+  it("missing F4 → loan_missing_first_date (high); missing B4 → critical", () => {
+    const noDate = { ...base };
+    delete noDate.F4;
+    expect(extractLoan(noDate).issues.some((i) => i.issue_type === "loan_missing_first_date")).toBe(true);
+    const noPrincipal = { ...base };
+    delete noPrincipal.B4;
+    const critical = extractLoan(noPrincipal).issues.find((i) => i.issue_type === "loan_header_missing");
+    expect(critical?.severity).toBe("critical");
+    expect(extractLoan(noPrincipal).loan.principal).toBeNull(); // null stays null
+  });
+
+  it("installment row with missing amount flagged, not zeroed", () => {
+    const holed = { ...base };
+    delete holed.B15;
+    const { loan, issues } = extractLoan(holed);
+    expect(loan.installments[1].amount).toBeNull();
+    expect(issues.some((i) => i.issue_type === "loan_installment_missing_amount")).toBe(true);
   });
 });

@@ -5,6 +5,7 @@ import { Badge, SHEET_TYPE_TONE, STATUS_TONE } from "@/components/ui/badge";
 import { Num, Panel } from "@/components/ui/panel";
 import { mapCandidatesAction } from "@/app/(dashboard)/radar/actions";
 import { mapCashflowAction } from "@/app/(dashboard)/cashflow/actions";
+import { mapFinancingAction } from "@/app/(dashboard)/financing/actions";
 
 export const dynamic = "force-dynamic";
 
@@ -68,6 +69,16 @@ export default async function WorkbookDetailPage({
               nakit akışını aktar →
             </button>
             <span className="ml-2 text-[11px] text-zinc-500">35 aylık sekmeler → cashflow; zincir kırıkları bayraklanır, düzeltilmez</span>
+          </form>
+        )}
+        {w.status === "parsed" && (
+          <form action={mapFinancingAction} className="mt-2">
+            <input type="hidden" name="workbookId" value={w.id} />
+            <button type="submit"
+              className="border border-violet-700 bg-violet-950/40 px-3 py-2 font-mono text-[10px] uppercase tracking-wider text-violet-300">
+              çek/kredi aktar →
+            </button>
+            <span className="ml-2 text-[11px] text-zinc-500">ÇEKLER → çek defteri (işaretli tutar=yön), faiz hesaplama → kredi+taksit; çift-kayıt/açık incelemeler hariç</span>
           </form>
         )}
         {w.status === "failed" && (

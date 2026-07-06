@@ -17,6 +17,7 @@ import {
 } from "./row-utils";
 import {
   extractChecks,
+  extractLoan,
   extractMonthlyCashflow,
   extractPaymentMatrix,
   type ReviewIssue,
@@ -209,6 +210,8 @@ export async function importWorkbook(
         issues = extractChecks(rows).issues;
       } else if (s.detectedType === "monthly_cashflow") {
         issues = extractMonthlyCashflow(s.sheetName, cellsToMap(cells)).issues;
+      } else if (s.detectedType === "loan_calculation") {
+        issues = extractLoan(cellsToMap(cells)).issues;
       }
       const r = await insertReviews(client, workbookId, sheetId, idByRow, issues);
       reviewsInserted += r.reviews;

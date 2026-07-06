@@ -21,3 +21,9 @@
 | /radar GET'inde ensureWindow (idempotent yazma) | Low | Tek operatör MVP kabulü; çok kullanıcıda cron'a taşınır (Faz 6) |
 | RSC streaming metni böldüğü için curl-grep smoke yanıltıcı olabilir | Low | Sayısal kanıt phaseN-verify'da; smoke payload-farkındalıklı |
 | /cashflow GET'i continuity+snapshot yazar (idempotent) | Low | Radar'la aynı tek-operatör kabulü; Faz 6'da cron |
+| Geliştirme Windows'a taşındı; PostgreSQL artık Docker (`mas-radar-pg`) | Low | `scripts/db/*.sh` docker exec'e uyarlandı, davranış birebir; container restart-unless-stopped; verify ×reset idempotent |
+| GERÇEK TEMİZ.xlsx (43 sekme) bu makinede yok; iki TEMİZ-4 indirmesi sıfır-bayt bozuk | High | Kod ÇEKLER/faiz-özdeş orijinalle dry-run edildi (ALL PASS); import:real/phase3/phase4/phase5 gerçek gate'i TEMİZ gelince çalışır, öncesinde commit yok |
+| Çek karşı-tarafı seed'de yoksa isim kaybı riski | Low | 0009 counterparty_label ham KİME/KİMDEN saklar; parti sessiz YARATILMAZ (Phase 4 deseni), FK insan bağlayana dek null |
+| Kredi taksit vadeleri kaynakta satır-tarihi taşımıyor | Medium | first_payment_date'ten deterministik türetim (aynı gün + kısa-ay kırpma); scheduleDueDates birim-test + phase5-verify DB cross-check |
+| faiz hesaplama F1 "kredi taksit sayısı"=25 ≠ B5 vade=48 | Medium | loan_field_ambiguous review (insan kararı); çözülene dek kredi aktarılmaz — sessiz varsayım yok |
+| Banka adı Türkçe uppercase round-trip'i eşleşmeyi bozuyor (DENIZ→denız) | Low | Banka tokenları ASCII lowercase ile eşlenir (bankPartyId); phase5-verify bank-resolved sayısını doğrular |

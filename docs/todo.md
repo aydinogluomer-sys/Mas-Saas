@@ -48,11 +48,25 @@
 - [x] /radar dashboard
 - [x] Verification: phase3:verify ALL PASS (gerçek veri, 19 kalem, Şubat kırpma DB'de, DB-unique dupe engeli, +2 audit)
 
-## Phase 4+
+## Phase 4 — DONE
 
-- [ ] Cash-flow dashboard.
-- [ ] Checks/loan dashboard.
-- [ ] Reminder engine.
+- [x] Cash-flow dashboard (/cashflow, /cashflow/[monthId]); 35 ay kaynak mutabakatı, zincir bayrağı, projeksiyon, konsantrasyon.
+
+## Phase 5 — DONE (checks + financing)
+
+- [x] financing/rules.ts saf fonksiyonlar + 20 birim test (signed→direction, hafta/ay maturity, ISO-week, exposure %40, scheduleDueDates, reconcileLoan flag-only, debtService).
+- [x] extractLoan (extractors.ts) + 5 birim test (faiz hesaplama çapaları, F4 serial, boş-A satırı döngüyü durdurur, null asla 0).
+- [x] Migration 0008: checks.source_row_id + loans.source_sheet_id partial-unique (idempotency) + 2 yeni assertion.
+- [x] Migration 0009: checks.counterparty_label (ham KİME/KİMDEN korunur — Phase 4 label deseni; parti sessiz yaratılmaz).
+- [x] Engine: mapAcceptedChecks (signed→yön, |amount|, banka ASCII-lowercase eşleşme, çift-kayıt açık=hariç), mapLoans (ambiguity açık=hariç, Σtaksit mutabakatı, sapma→loan_reconciliation, kaynak değeri kazanır), loaders + loadMaturityItems.
+- [x] extractLoan importer'a bağlandı (faiz hesaplama issue'ları review olur).
+- [x] /financing (ufuk pencereleri 7/14/30, kredi kartları, aylık borç servisi, banka+karşı-taraf exposure, vade takvimi 12 hafta, çek defteri yön rozetli) + /financing/loans/[loanId] (taksit planı, türetilmiş vadeler) + nav ÇEK/KREDİ aktif + workbook "çek/kredi aktar" butonu.
+- [x] phase5-verify.ts (PHASE5_SRC ile dry-run edilebilir): eligibility+idempotency, signed→yön, negatif-anomali-değil, maturity SQL cross-check, banka exposure SQL, kredi mutabakatı (total=B10, cost=total−principal), 48 taksit türetimi, DB uniques, borç servisi. **Dry-run (ÇEKLER/faiz-özdeş orijinal): ALL PASS.**
+- [ ] **BEKLİYOR:** import:real / phase3:verify / phase4:verify / phase5:verify GERÇEK TEMİZ.xlsx üzerinde (dosya makinede yok — kullanıcıdan bekleniyor). Bu 4 gate yeşil olmadan commit YOK.
+
+## Phase 6+
+
+- [ ] Reminder engine (Telegram).
 - [ ] Reports.
 - [ ] Capacity/cost analytics.
 - [ ] Scenario engine.

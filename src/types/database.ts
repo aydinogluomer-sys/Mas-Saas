@@ -195,6 +195,7 @@ export interface ChecksRow {
   notes: string | null;
   created_at: string;
   updated_at: string;
+  counterparty_label: string | null;
 }
 
 export interface ChecksInsert {
@@ -215,6 +216,7 @@ export interface ChecksInsert {
   notes?: string | null;
   created_at?: string;
   updated_at?: string;
+  counterparty_label?: string | null;
 }
 
 export interface ImportRowsRow {

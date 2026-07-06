@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
 # Dev database: same bootstrap+migrations+seed as verify, but persistent for the app.
 set -euo pipefail
-pg_ctlcluster 16 main status >/dev/null 2>&1 || pg_ctlcluster 16 main start
+bash "$(dirname "$0")/ensure.sh"
+CONTAINER=mas-radar-pg
 DB=mas_radar_dev
-su postgres -c "dropdb --if-exists $DB && createdb $DB"
+docker exec "$CONTAINER" dropdb -U postgres --if-exists "$DB"
+docker exec "$CONTAINER" createdb -U postgres "$DB"
 for f in scripts/db/local-bootstrap.sql supabase/migrations/*.sql supabase/seed.sql; do
-  su postgres -c "psql -q -v ON_ERROR_STOP=1 -d $DB -f '$f'"
+  docker exec -i "$CONTAINER" psql -q -v ON_ERROR_STOP=1 -U postgres -d "$DB" < "$f"
 done
-su postgres -c "psql -d $DB -qc \"alter user postgres password 'postgres';\""
+docker exec "$CONTAINER" psql -U postgres -d "$DB" -qc "alter user postgres password 'postgres';"
 echo "dev db ready: $DB"

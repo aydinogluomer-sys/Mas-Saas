@@ -385,7 +385,7 @@ export function extractChecks(rows: SheetRow[]): {
     });
   }
 
-  // duplicate suspicion: same payer + |amount| within ±3 days (calculation-rules)
+  // duplicate suspicion: same counterparty + |amount| within ±3 days (calculation-rules)
   for (let i = 0; i < candidates.length; i++) {
     for (let j = i + 1; j < candidates.length; j++) {
       const a = candidates[i];
@@ -414,4 +414,134 @@ export function extractChecks(rows: SheetRow[]): {
     }
   }
   return { candidates, issues };
+}
+
+/* ───────────────── 4) faiz hesaplama — loan + amortization ───────────────── */
+// Anchor map: docs/import-mapping.md §3. Amortization rows start at 14; the source
+// A-column formula yields "" past the term, and asNumber("") is 0 → loop guards no<1.
+
+export interface LoanInstallmentCandidate {
+  no: number;
+  rowIndex: number;
+  amount: number | null; // B — taksit
+  principal: number | null; // C — anapara
+  interest: number | null; // D — faiz
+  kkdf: number | null; // E
+  bsmv: number | null; // F
+}
+
+export interface LoanCandidate {
+  principal: number | null; // B4
+  termMonths: number | null; // B5
+  simpleRate: number | null; // B6
+  bsmvRate: number | null; // B7
+  kkdfRate: number | null; // B8
+  installmentAmount: number | null; // B9
+  totalPayment: number | null; // B10
+  totalFinanceCost: number | null; // B11
+  installmentSum: number | null; // B12 = SUM(B14:B105) — reconciliation source
+  firstPaymentDate: string | null; // F4
+  appliedRate: number | null; // F6
+  monthlyCostRate: number | null; // F7
+  annualCostRate: number | null; // F8
+  headerInstallmentCount: number | null; // F1 "kredi taksit sayısı" — anlamı belirsiz
+  installments: LoanInstallmentCandidate[];
+}
+
+const LOAN_AMORT_FIRST_ROW = 14;
+const LOAN_AMORT_MAX_ROW = 500; // hard stop; real sheet ends ~105
+
+export function extractLoan(map: Record<string, CellVal>): {
+  loan: LoanCandidate;
+  issues: ReviewIssue[];
+} {
+  const issues: ReviewIssue[] = [];
+
+  const f4 = map["F4"];
+  let firstPaymentDate: string | null = null;
+  if (f4 && typeof f4.v === "number") firstPaymentDate = serialToISO(f4.v);
+  else if (f4 && typeof f4.v === "string" && /\d{1,2}[./]\d{1,2}[./]\d{2,4}/.test(f4.v)) {
+    const [d, m, y] = f4.v.split(/[./]/).map(Number);
+    firstPaymentDate = `${y < 100 ? 2000 + y : y}-${String(m).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
+  }
+
+  const installments: LoanInstallmentCandidate[] = [];
+  for (let r = LOAN_AMORT_FIRST_ROW; r <= LOAN_AMORT_MAX_ROW; r++) {
+    const no = asNumber(map[`A${r}`]);
+    if (no == null || no < 1) break; // "" cached formula value → 0 → stop
+    installments.push({
+      no,
+      rowIndex: r,
+      amount: asNumber(map[`B${r}`]),
+      principal: asNumber(map[`C${r}`]),
+      interest: asNumber(map[`D${r}`]),
+      kkdf: asNumber(map[`E${r}`]),
+      bsmv: asNumber(map[`F${r}`]),
+    });
+  }
+
+  const loan: LoanCandidate = {
+    principal: asNumber(map["B4"]),
+    termMonths: asNumber(map["B5"]),
+    simpleRate: asNumber(map["B6"]),
+    bsmvRate: asNumber(map["B7"]),
+    kkdfRate: asNumber(map["B8"]),
+    installmentAmount: asNumber(map["B9"]),
+    totalPayment: asNumber(map["B10"]),
+    totalFinanceCost: asNumber(map["B11"]),
+    installmentSum: asNumber(map["B12"]),
+    firstPaymentDate,
+    appliedRate: asNumber(map["F6"]),
+    monthlyCostRate: asNumber(map["F7"]),
+    annualCostRate: asNumber(map["F8"]),
+    headerInstallmentCount: asNumber(map["F1"]),
+    installments,
+  };
+
+  if (loan.principal == null) {
+    issues.push({
+      rowIndex: 4,
+      issue_type: "loan_header_missing",
+      severity: "critical",
+      message: "Kredi tutarı (B4) kaynakta yok — kredi aktarılamaz",
+    });
+  }
+  if (firstPaymentDate == null) {
+    issues.push({
+      rowIndex: 4,
+      issue_type: "loan_missing_first_date",
+      severity: "high",
+      message: "İlk ödeme tarihi (F4) çözülemedi — taksit vadeleri türetilemez",
+    });
+  }
+  if (loan.termMonths != null && installments.length !== loan.termMonths) {
+    issues.push({
+      rowIndex: 13,
+      issue_type: "loan_term_mismatch",
+      severity: "medium",
+      message: `Amortisman satırı ${installments.length} ≠ vade ${loan.termMonths}`,
+    });
+  }
+  if (
+    loan.headerInstallmentCount != null &&
+    loan.termMonths != null &&
+    loan.headerInstallmentCount !== loan.termMonths
+  ) {
+    issues.push({
+      rowIndex: 1,
+      issue_type: "loan_field_ambiguous",
+      severity: "low",
+      message: `F1 "kredi taksit sayısı"=${loan.headerInstallmentCount} ≠ B5 vade=${loan.termMonths} — anlamı belirsiz, insan kararı gerekli`,
+    });
+  }
+  const missingAmounts = installments.filter((i) => i.amount == null);
+  if (missingAmounts.length > 0) {
+    issues.push({
+      rowIndex: missingAmounts[0].rowIndex,
+      issue_type: "loan_installment_missing_amount",
+      severity: "high",
+      message: `${missingAmounts.length} taksit satırında tutar yok (ilk: satır ${missingAmounts[0].rowIndex})`,
+    });
+  }
+  return { loan, issues };
 }

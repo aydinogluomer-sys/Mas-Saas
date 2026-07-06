@@ -32,12 +32,12 @@ See `implementation.md` for complete SQL snippets.
 - cashflow_lines
 - cashflow_snapshots
 
-## Financing radar
+## Financing radar (Phase 5 — active)
 
-- checks
-- check_events
-- loans
-- loan_installments
+- checks — `+counterparty_label` (0009): ham KİME/KİMDEN korunur, parti FK null olsa da isim kaybolmaz. `source_row_id` partial-unique (0008, idempotency). signed→direction + `amount=|signed_amount|` (DB check).
+- check_events — mapping'de 'created' olayı yazılır.
+- loans — `source_sheet_id` partial-unique (0008). total_payment/total_finance_cost/installment_amount kaynaktan birebir (mutabakat sapmasında bile kaynak kazanır).
+- loan_installments — vadeler kaynakta satır-tarihi olmadığından `first_payment_date`'ten TÜRETİLİR (aynı gün + kısa-ay kırpma); `unique(loan_id, installment_no)` idempotent.
 
 ## Operations analytics
 
@@ -65,6 +65,6 @@ See `implementation.md` for complete SQL snippets.
 - **reminder_deliveries** — duplicate önleme anahtarı unique(reminder_id, entity_table, entity_id, scheduled_for).
 - **reports**(report_type: daily|weekly|monthly|strategic|data_quality, period, body_md, meta).
 
-Schema hardening beyond spec snippets: `payment_instances` idempotency partial-unique (payment_id, instance_month); `instance_month`/`month_start` first-of-month check'leri; `checks.amount = |signed_amount|` tutarlılığı; `loan_installments` paid⇒paid_at; updated_at trigger'ları; sorgu indexleri. Dashboard view'ları Faz 3/4'te (slicer kuralı: ihtiyaç duyan dikey dilimle birlikte).
+Schema hardening beyond spec snippets: `payment_instances` idempotency partial-unique (payment_id, instance_month); `instance_month`/`month_start` first-of-month check'leri; `checks.amount = |signed_amount|` tutarlılığı; `loan_installments` paid⇒paid_at; updated_at trigger'ları; sorgu indexleri. Faz 5 eki (0008/0009): `checks.source_row_id` + `loans.source_sheet_id` partial-unique (mapping idempotency, DB-seviyesinde kanıtlı); `checks.counterparty_label`. Dashboard view'ları ihtiyaç duyan dikey dilimle birlikte (slicer kuralı).
 
 RLS modeli: tüm public tablolarında enabled + `to authenticated using(true) with check(true)` (tek-operatör modu, CLAUDE.md).

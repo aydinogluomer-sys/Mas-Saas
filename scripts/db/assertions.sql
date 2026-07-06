@@ -91,5 +91,25 @@ begin
     exception when check_violation then raise notice 'PASS installment_paid_requires_paid_at'; end;
   end;
 
+  -- 11) financing mapping idempotency uniques (0008)
+  declare wid uuid; sid uuid; rid uuid; lid2 uuid;
+  begin
+    insert into public.source_workbooks (original_filename) values ('assert.xlsx') returning id into wid;
+    insert into public.source_sheets (workbook_id, sheet_name, sheet_index) values (wid, 'ÇEKLER', 0) returning id into sid;
+    insert into public.import_rows (workbook_id, sheet_id, row_index, row_json) values (wid, sid, 2, '{}'::jsonb) returning id into rid;
+    insert into public.checks (maturity_date, signed_amount, amount, direction, source_row_id)
+    values (current_date, -100, 100, 'outflow', rid);
+    begin
+      insert into public.checks (maturity_date, signed_amount, amount, direction, source_row_id)
+      values (current_date, -100, 100, 'outflow', rid);
+      raise exception 'FAIL checks source_row idempotency did not fire';
+    exception when unique_violation then raise notice 'PASS checks source_row idempotency'; end;
+    insert into public.loans (name, principal, source_sheet_id) values ('K1', 1, sid) returning id into lid2;
+    begin
+      insert into public.loans (name, principal, source_sheet_id) values ('K2', 2, sid);
+      raise exception 'FAIL loans source_sheet idempotency did not fire';
+    exception when unique_violation then raise notice 'PASS loans source_sheet idempotency'; end;
+  end;
+
   raise notice 'ALL ASSERTIONS PASSED';
 end $$;
