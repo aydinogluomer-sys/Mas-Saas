@@ -111,5 +111,40 @@ begin
     exception when unique_violation then raise notice 'PASS loans source_sheet idempotency'; end;
   end;
 
+  -- 12) production analytics (0010): seed machines, ROI needs_review default, mapping uniques
+  declare wid2 uuid; sid2 uuid; rid2 uuid; pid3 uuid; cmid uuid; mid uuid; mcount int;
+  begin
+    select count(*) into mcount from public.machine_assets;
+    if mcount <> 4 then raise exception 'FAIL machine seed: %', mcount; end if;
+    -- ROI confidence defaults to needs_review
+    select id into mid from public.machine_assets limit 1;
+    insert into public.machine_roi_snapshots (machine_asset_id, snapshot_year, revenue)
+    values (mid, 2026, 100) returning id into rid2;
+    if (select confidence from public.machine_roi_snapshots where id=rid2) <> 'needs_review'
+      then raise exception 'FAIL ROI confidence default'; end if;
+    raise notice 'PASS machine seed + ROI needs_review default';
+    -- production_parts source-row idempotency
+    insert into public.source_workbooks (original_filename) values ('cap.xlsx') returning id into wid2;
+    insert into public.source_sheets (workbook_id, sheet_name, sheet_index) values (wid2,'kapasite',0) returning id into sid2;
+    insert into public.import_rows (workbook_id, sheet_id, row_index, row_json) values (wid2,sid2,10,'{}'::jsonb) returning id into rid2;
+    insert into public.production_parts (part_name, source_row_id) values ('TAKOZ', rid2) returning id into pid3;
+    begin
+      insert into public.production_parts (part_name, source_row_id) values ('TAKOZ', rid2);
+      raise exception 'FAIL production_parts idempotency did not fire';
+    exception when unique_violation then raise notice 'PASS production_parts source_row idempotency'; end;
+    -- capacity/cost one-per-sheet uniques + profitability unique
+    insert into public.capacity_models (name, scenario_type, source_sheet_id) values ('cap','normal',sid2);
+    begin
+      insert into public.capacity_models (name, scenario_type, source_sheet_id) values ('cap2','normal',sid2);
+      raise exception 'FAIL capacity_models idempotency did not fire';
+    exception when unique_violation then raise notice 'PASS capacity/cost source_sheet idempotency'; end;
+    insert into public.cost_models (model_name, source_sheet_id) values ('cm', sid2) returning id into cmid;
+    insert into public.part_profitability_runs (part_id, cost_model_id) values (pid3, cmid);
+    begin
+      insert into public.part_profitability_runs (part_id, cost_model_id) values (pid3, cmid);
+      raise exception 'FAIL profitability idempotency did not fire';
+    exception when unique_violation then raise notice 'PASS part_profitability idempotency'; end;
+  end;
+
   raise notice 'ALL ASSERTIONS PASSED';
 end $$;

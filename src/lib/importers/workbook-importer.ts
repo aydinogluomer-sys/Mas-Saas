@@ -16,7 +16,9 @@ import {
   sheetCells,
 } from "./row-utils";
 import {
+  extractCapacity,
   extractChecks,
+  extractCostModel,
   extractLoan,
   extractMonthlyCashflow,
   extractPaymentMatrix,
@@ -212,6 +214,12 @@ export async function importWorkbook(
         issues = extractMonthlyCashflow(s.sheetName, cellsToMap(cells)).issues;
       } else if (s.detectedType === "loan_calculation") {
         issues = extractLoan(cellsToMap(cells)).issues;
+      } else if (s.detectedType === "capacity") {
+        issues = extractCapacity(cellsToMap(cells)).issues;
+      } else if (s.detectedType === "cost_model_normal") {
+        issues = extractCostModel(cellsToMap(cells), "normal").issues;
+      } else if (s.detectedType === "cost_model_overtime") {
+        issues = extractCostModel(cellsToMap(cells), "overtime").issues;
       }
       const r = await insertReviews(client, workbookId, sheetId, idByRow, issues);
       reviewsInserted += r.reviews;

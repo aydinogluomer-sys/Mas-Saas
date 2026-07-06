@@ -10,6 +10,7 @@ const NAV = [
   { href: "/financing", label: "ÇEK/KREDİ", active: true },
   { href: "/reports", label: "RAPOR", active: true },
   { href: "/reminders", label: "HATIRLATMA", active: true },
+  { href: "/production", label: "ÜRETİM", active: true },
 ];
 
 export default function DashboardLayout({ children }: { children: ReactNode }) {

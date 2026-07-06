@@ -83,7 +83,16 @@
 - [x] phase6b-verify.ts: eligibility (6 teslimat doğru offset), duplicate önleme (schedule#2=0 + DB unique), mock success (sent+sent_at+mesaj alanları), idempotent gönderim, **failure yolu (failed+error loglandı)**, mali bütünlük before==after, Istanbul tz. **ALL PASS.**
 - [x] Gate: lint ✓ typecheck ✓ vitest 110/110 ✓ db:verify ✓ import:real ✓ phase3-6+6b:verify ✓ build ✓ smoke (/reminders 200).
 
-## Phase 7+
+## Phase 7 — DONE (kapasite/maliyet analitiği)
 
-- [ ] Capacity/cost analytics.
-- [ ] Scenario engine.
+- [x] Migration 0010: 6 üretim tablosu (implementation.md §14 + Phase-7 sertleştirme: kapasite rate/theoretical-revenue/stale kolonları, cost break-even/effective-minutes) + RLS/policy + idempotency uniques + machine seed (Awea/Arion/Sister/Doosan) + assertions (RLS 6 yeni tabloyu kapsar, ROI needs_review default, 3 idempotency).
+- [x] production/rules.ts saf fonksiyonlar + 18 birim test (effectiveMinutes, utilizationRate, breakEvenTLPerMin, capacityGap, theoreticalRevenue, compareScenarios normal/mesaili, partProfitability missing-op→needs_review, machineRoi needs_review, revenueGap, buildInsights). null asla 0.
+- [x] extractCapacity (C1/C2 rate + B3 verim + I8/K8 teorik + parça bloğu, **gap-toleranslı → sessiz atlama yok**) + extractCostModel (A2/A6/E6/F6/G6/B7 çapa + effective-minutes & break-even mutabakat) → importer'a bağlandı (stale_rate/missing_operation_time/reconciliation reviews).
+- [x] production/engine.ts: mapCapacitySheet (68 parça, source_row izli, ON CONFLICT idempotent), mapCostSheets (normal+mesaili, sapma→review kaynak kazanır), calculatePartProfitability (idempotent, süre-eksik→needs_review+null maliyet), calculateMachineRoiSnapshot (needs_review), loaders + demand/actual-income.
+- [x] /production UI: disclaimer "Analitik tahmindir; muhasebe gerçeği değildir." + kapasite kartları + NORMAL vs MESAİLİ + TL/dk maliyet + teorik vs gerçek gelir + kapasite kullanımı (aşırı yük/atıl) + maliyet tablosu + parça kârlılığı (en düşük 20 marj) + makine ROI + deterministik içgörüler + kaynak linkleri. nav ÜRETİM, workbook "üretim analitiğini aktar" butonu.
+- [x] phase7-verify.ts: **sessiz-atlama-yok (68 parça talep=kaynak G5+H5)**, kaynak izlenebilirlik, stale-rate bayrağı, başabaş=kaynak G6 birebir (normal 26.18/mesaili 21.54, mutabakat), süre-eksik→needs_review+null, ROI needs_review, idempotency, **mali bütünlük before==after (Phase 7 hiçbir mali tabloyu değiştirmez)**. ALL PASS.
+- [x] Gate: lint ✓ typecheck ✓ vitest 128/128 ✓ db:verify ✓ import:real ✓ phase3-7:verify ✓ build ✓ smoke (/radar,/cashflow,/financing,/reports,/reminders,/production 200).
+
+## Phase 8 — TODO (scenario engine)
+
+- [ ] Senaryo motoru: gelir/gider/kapasite varsayımı ayarlanabilir; salt-okunur overlay (kaynak-of-truth değişmez); baseline vs senaryo karşılaştırma; değişiklikler auditable.

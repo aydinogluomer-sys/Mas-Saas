@@ -545,3 +545,200 @@ export function extractLoan(map: Record<string, CellVal>): {
   }
   return { loan, issues };
 }
+
+/* ───────────────── 5) kapasite — capacity model + parts ───────────────── */
+// Anchors (docs/data-map.md + real audit): C1 freze TL/dk (2023 stale), C2 torna,
+// B3 verim, I8 total theoretical revenue, K8 monthly theoretical. Parts rows 10..66:
+// A code, B name, C qty, D torna-min/unit, E freze-min/unit, I FİYAT.
+
+export interface CapacityPartCandidate {
+  rowIndex: number;
+  code: string | null;
+  name: string | null;
+  quantity: number | null;
+  tornaMinutes: number | null;
+  frezeMinutes: number | null;
+  revenue: number | null;
+  missingOperationTime: boolean;
+}
+
+export interface CapacityCandidate {
+  frezeRateTLPerMin: number | null; // C1
+  tornaRateTLPerMin: number | null; // C2
+  efficiency: number | null; // B3
+  rateYear: number | null; // from "2023 TL/DK ..." label
+  theoreticalTotalRevenue: number | null; // I8
+  theoreticalMonthlyRevenue: number | null; // K8
+  minutesPerHour: number | null; // L2
+  workDaysPerMonth: number | null; // M2
+  hoursPerDay: number | null; // N2
+  parts: CapacityPartCandidate[];
+}
+
+const CAP_PART_FIRST_ROW = 10;
+const CAP_PART_MAX_ROW = 400;
+const CAP_PART_END_GAP = 20; // consecutive non-part rows that end the parts region
+
+export function extractCapacity(map: Record<string, CellVal>): {
+  capacity: CapacityCandidate;
+  issues: ReviewIssue[];
+} {
+  const issues: ReviewIssue[] = [];
+  const label = asText(map["B1"]) ?? "";
+  const yearMatch = label.match(/\b(20\d{2})\b/);
+  const rateYear = yearMatch ? Number(yearMatch[1]) : null;
+
+  // A PART row carries a quantity (C). Rows with only a label (A/B text, no qty) are
+  // group headers (ARS14000, TEKNOPAR…) and are skipped WITHOUT ending the block —
+  // gaps mid-block must not silently drop later parts. The region ends only after a
+  // long run of empty rows.
+  const parts: CapacityPartCandidate[] = [];
+  let missingCount = 0;
+  let started = false;
+  let gap = 0;
+  for (let r = CAP_PART_FIRST_ROW; r <= CAP_PART_MAX_ROW; r++) {
+    const code = asText(map[`A${r}`]);
+    const name = asText(map[`B${r}`]);
+    const quantity = asNumber(map[`C${r}`]);
+    if (quantity == null) {
+      // label or empty row: skip; only terminate after a long empty run once started
+      if (started && !code && !name) {
+        if (++gap >= CAP_PART_END_GAP) break;
+      }
+      continue;
+    }
+    gap = 0;
+    started = true;
+    const torna = asNumber(map[`D${r}`]);
+    const freze = asNumber(map[`E${r}`]);
+    const missing = torna == null && freze == null;
+    if (missing) missingCount++;
+    parts.push({
+      rowIndex: r,
+      code,
+      name,
+      quantity,
+      tornaMinutes: torna,
+      frezeMinutes: freze,
+      revenue: asNumber(map[`I${r}`]),
+      missingOperationTime: missing,
+    });
+  }
+
+  const capacity: CapacityCandidate = {
+    frezeRateTLPerMin: asNumber(map["C1"]),
+    tornaRateTLPerMin: asNumber(map["C2"]),
+    efficiency: asNumber(map["B3"]),
+    rateYear,
+    theoreticalTotalRevenue: asNumber(map["I8"]),
+    theoreticalMonthlyRevenue: asNumber(map["K8"]),
+    minutesPerHour: asNumber(map["L2"]),
+    workDaysPerMonth: asNumber(map["M2"]),
+    hoursPerDay: asNumber(map["N2"]),
+    parts,
+  };
+
+  // stale-rate flag (calculation-rules §Capacity): 2023 tariff is stale
+  if (rateYear != null && rateYear < new Date().getFullYear()) {
+    issues.push({
+      rowIndex: 1,
+      issue_type: "stale_rate",
+      severity: "medium",
+      message: `Kapasite TL/dk oranları ${rateYear} tarifesi — güncel değil (stale_rate)`,
+    });
+  }
+  if (missingCount > 0) {
+    issues.push({
+      rowIndex: CAP_PART_FIRST_ROW,
+      issue_type: "missing_operation_time",
+      severity: "medium",
+      message: `${missingCount} parçada torna+freze süresi eksik — parça maliyeti güveni düşük`,
+    });
+  }
+  if (capacity.frezeRateTLPerMin == null && capacity.tornaRateTLPerMin == null) {
+    issues.push({
+      rowIndex: 1,
+      issue_type: "capacity_rate_missing",
+      severity: "high",
+      message: "Kapasite TL/dk oranları (C1/C2) okunamadı",
+    });
+  }
+  return { capacity, issues };
+}
+
+/* ───────────────── 6) maliyet-mastechnic(mesaili) — cost model ───────────────── */
+// Anchors: A2 monthly minutes/machine, A6 machine count, B6 personel, C6 çırak,
+// E6 efficiency, F6 effective minutes, G6 break-even TL/dk, B7 monthly cost.
+// Reconciliation: F6 ≈ A6×A2×E6 and G6 ≈ B7÷F6 (flagged if diverging).
+
+export interface CostModelCandidate {
+  scenario: "normal" | "overtime";
+  monthlyMinutesPerMachine: number | null; // A2
+  monthlyHours: number | null; // B2
+  machineCount: number | null; // A6
+  staffCount: number | null; // B6
+  apprenticeCount: number | null; // C6
+  efficiency: number | null; // E6
+  effectiveMonthlyMinutes: number | null; // F6
+  breakEvenTLPerMin: number | null; // G6
+  monthlyCost: number | null; // B7
+  foodDailyCost: number | null; // E1
+  healthInsuranceCost: number | null; // H1
+  machineInsuranceCost: number | null; // H2
+}
+
+export function extractCostModel(
+  map: Record<string, CellVal>,
+  scenario: "normal" | "overtime",
+): { cost: CostModelCandidate; issues: ReviewIssue[] } {
+  const issues: ReviewIssue[] = [];
+  const cost: CostModelCandidate = {
+    scenario,
+    monthlyMinutesPerMachine: asNumber(map["A2"]),
+    monthlyHours: asNumber(map["B2"]),
+    machineCount: asNumber(map["A6"]),
+    staffCount: asNumber(map["B6"]),
+    apprenticeCount: asNumber(map["C6"]),
+    efficiency: asNumber(map["E6"]),
+    effectiveMonthlyMinutes: asNumber(map["F6"]),
+    breakEvenTLPerMin: asNumber(map["G6"]),
+    monthlyCost: asNumber(map["B7"]),
+    foodDailyCost: asNumber(map["E1"]),
+    healthInsuranceCost: asNumber(map["H1"]),
+    machineInsuranceCost: asNumber(map["H2"]),
+  };
+
+  // reconcile effective minutes = machines × minutes × efficiency (±1 dk)
+  if (cost.machineCount != null && cost.monthlyMinutesPerMachine != null && cost.efficiency != null && cost.effectiveMonthlyMinutes != null) {
+    const derived = cost.machineCount * cost.monthlyMinutesPerMachine * cost.efficiency;
+    if (Math.abs(derived - cost.effectiveMonthlyMinutes) > 1) {
+      issues.push({
+        rowIndex: 6,
+        issue_type: "capacity_minutes_reconciliation",
+        severity: "medium",
+        message: `Etkin dakika ${cost.effectiveMonthlyMinutes} ≠ makine×dk×verim ${derived.toFixed(0)} (${scenario})`,
+      });
+    }
+  }
+  // reconcile break-even = monthly cost ÷ effective minutes (±0.1 TL/dk)
+  if (cost.monthlyCost != null && cost.effectiveMonthlyMinutes != null && cost.effectiveMonthlyMinutes !== 0 && cost.breakEvenTLPerMin != null) {
+    const derived = cost.monthlyCost / cost.effectiveMonthlyMinutes;
+    if (Math.abs(derived - cost.breakEvenTLPerMin) > 0.1) {
+      issues.push({
+        rowIndex: 6,
+        issue_type: "break_even_reconciliation",
+        severity: "medium",
+        message: `Başabaş ${cost.breakEvenTLPerMin} ≠ maliyet÷dakika ${derived.toFixed(4)} (${scenario})`,
+      });
+    }
+  }
+  if (cost.breakEvenTLPerMin == null && cost.monthlyCost == null) {
+    issues.push({
+      rowIndex: 6,
+      issue_type: "cost_model_missing",
+      severity: "high",
+      message: `Maliyet modeli çapaları (B7/G6) okunamadı (${scenario})`,
+    });
+  }
+  return { cost, issues };
+}

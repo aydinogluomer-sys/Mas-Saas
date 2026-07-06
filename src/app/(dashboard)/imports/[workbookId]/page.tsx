@@ -6,6 +6,7 @@ import { Num, Panel } from "@/components/ui/panel";
 import { mapCandidatesAction } from "@/app/(dashboard)/radar/actions";
 import { mapCashflowAction } from "@/app/(dashboard)/cashflow/actions";
 import { mapFinancingAction } from "@/app/(dashboard)/financing/actions";
+import { mapProductionAction } from "@/app/(dashboard)/production/actions";
 
 export const dynamic = "force-dynamic";
 
@@ -79,6 +80,16 @@ export default async function WorkbookDetailPage({
               çek/kredi aktar →
             </button>
             <span className="ml-2 text-[11px] text-zinc-500">ÇEKLER → çek defteri (işaretli tutar=yön), faiz hesaplama → kredi+taksit; çift-kayıt/açık incelemeler hariç</span>
+          </form>
+        )}
+        {w.status === "parsed" && (
+          <form action={mapProductionAction} className="mt-2">
+            <input type="hidden" name="workbookId" value={w.id} />
+            <button type="submit"
+              className="border border-amber-700 bg-amber-950/40 px-3 py-2 font-mono text-[10px] uppercase tracking-wider text-amber-300">
+              üretim analitiğini aktar →
+            </button>
+            <span className="ml-2 text-[11px] text-zinc-500">kapasite → parçalar+model, maliyet-mastechnic(mesaili) → başabaş TL/dk; analitik tahmin, stale-rate bayraklı</span>
           </form>
         )}
         {w.status === "failed" && (
