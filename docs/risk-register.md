@@ -14,7 +14,10 @@
 | OCR/import automation delays MVP | Medium | Manual mapping first; OCR later |
 | shadcn CLI (ui.shadcn.com) bu ortamdan erişilemez | Medium | Radix paketleri npm'den kurulur, shadcn bileşenleri elle vendorlanır (Faz 2+) |
 | supabase.co ağı konteynerden erişilemez | High | Migration doğrulaması lokal PostgreSQL'de; buluta uygulama Supabase MCP veya kullanıcı CLI'ı ile |
-| api.telegram.org erişilemez | Medium | Reminder motoru deterministik + delivery log; gönderim testleri mock fetch ile |
+| api.telegram.org erişilemez | Medium | **Phase 6B:** Transport arayüzü + mockTransport ile test; telegramTransport token yoksa/erişilemezse fırlatmaz→'failed' loglar; phase6b-verify success+failure yollarını mock ile kanıtlar |
+| Telegram token client'a sızması | Critical | Token yalnız server-only env (TELEGRAM_BOT_TOKEN/CHAT_ID); transport.ts client'a import edilmez; token asla payload/log/mesaja yazılmaz |
+| Aynı hatırlatmanın tekrar gönderilmesi | High | reminder_deliveries unique(reminder_id,entity,scheduled_for) + ON CONFLICT do nothing; 'sent' yeniden gönderilmez; phase6b-verify DB-unique + idempotent dispatch kanıtı |
+| Bilinmeyen tutarlı kalem eşik filtresiyle sessizce atlanır | Medium | thresholdPasses: min_amount varsa bile null tutar HARİÇ TUTULMAZ (bilinmeyen büyük olabilir); yalnız bilinen-düşük tutar filtrelenir; birim test |
 | Kaynak xlsx'ler repo dışı (data/ gitignored) | Low | Gizlilik: finansal ham veri commit edilmez; sha256 kanıtı raporda |
 | Bulut DB hedefi belirsiz (4 ilgisiz proje) | Medium | Faz 1 lokalde doğrulandı; kullanıcı hedef seçince MCP apply_migration ile uygulanır |
 | Kalem düzenlemesi mevcut ay kayıtlarını geriye dönük değiştirmiyor | Low | Bilinçli tasarım (audit bütünlüğü); ay-içi değişiklik instance-tutar girişiyle |

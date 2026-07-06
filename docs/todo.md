@@ -74,9 +74,14 @@
 - [x] phase6-verify.ts: 3 rapor SQL cross-check, overlay 35 ay SQL-birebir, **mali bütünlük before==after**, commentary prompt-only, Istanbul tz, audit 3 satır. **ALL PASS (gerçek TEMİZ).**
 - [x] Gate: lint ✓ typecheck ✓ vitest 96/96 ✓ db:verify ✓ import:real ✓ phase3-6:verify ✓ build ✓ smoke (/reports, rapor detay, /cashflow overlay 200).
 
-## Phase 6B — TODO (reminders)
+## Phase 6B — DONE (reminders)
 
-- [ ] Reminder engine (eligibility saf fonksiyon + test), mock Telegram transport (api.telegram.org erişilemez), reminder_deliveries yazımı (duplicate önleme DB'de kısıtlı), delivery log.
+- [x] reminders/rules.ts saf fonksiyonlar + 14 birim test (scheduledForDate offset 7/3/1/0/−1, isEligible aktif+unpaid/partial+tz+eşik, thresholdPasses null-asla-hariç, eligibleDeliveries, buildReminderMessage tüm alanlar). null asla 0 → "tutar eksik".
+- [x] reminders/transport.ts: Transport arayüzü + mockTransport (success/failOn) + telegramTransport (token/chat SERVER-ONLY env, erişilemezse fırlatmaz→failed döner, token client'a sızmaz).
+- [x] reminders/engine.ts: scheduleReminders (eligibility→pending, ON CONFLICT duplicate önleme, DB-idempotent), dispatchPending (her denemeyi teslimat satırına LOGLAR: sent/failed+sent_at+error, exception fırlatmaz), loaders. **Mali kayıt mutasyonu YOK.**
+- [x] /reminders (durum sayaçları + planla/gönder butonları + teslimat kaydı tablosu) + nav HATIRLATMA aktif.
+- [x] phase6b-verify.ts: eligibility (6 teslimat doğru offset), duplicate önleme (schedule#2=0 + DB unique), mock success (sent+sent_at+mesaj alanları), idempotent gönderim, **failure yolu (failed+error loglandı)**, mali bütünlük before==after, Istanbul tz. **ALL PASS.**
+- [x] Gate: lint ✓ typecheck ✓ vitest 110/110 ✓ db:verify ✓ import:real ✓ phase3-6+6b:verify ✓ build ✓ smoke (/reminders 200).
 
 ## Phase 7+
 
