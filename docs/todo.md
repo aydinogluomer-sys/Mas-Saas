@@ -93,6 +93,12 @@
 - [x] phase7-verify.ts: **sessiz-atlama-yok (68 parça talep=kaynak G5+H5)**, kaynak izlenebilirlik, stale-rate bayrağı, başabaş=kaynak G6 birebir (normal 26.18/mesaili 21.54, mutabakat), süre-eksik→needs_review+null, ROI needs_review, idempotency, **mali bütünlük before==after (Phase 7 hiçbir mali tabloyu değiştirmez)**. ALL PASS.
 - [x] Gate: lint ✓ typecheck ✓ vitest 128/128 ✓ db:verify ✓ import:real ✓ phase3-7:verify ✓ build ✓ smoke (/radar,/cashflow,/financing,/reports,/reminders,/production 200).
 
-## Phase 8 — TODO (scenario engine)
+## Phase 8 — DONE (senaryo motoru) — MVP TAMAMLANDI
 
-- [ ] Senaryo motoru: gelir/gider/kapasite varsayımı ayarlanabilir; salt-okunur overlay (kaynak-of-truth değişmez); baseline vs senaryo karşılaştırma; değişiklikler auditable.
+- [x] Migration 0011: 5 senaryo tablosu (scenarios/scenario_runs/scenario_run_lines/scenario_assumptions/scenario_comparisons) + RLS/policy + assertions (run-line idempotency, comparison uniqueness, cascade delete).
+- [x] scenario/rules.ts saf fonksiyonlar + 10 birim test (applyScenario: revenue/expense %, customer delay=zamanlama, debt overlay, capacity/efficiency + closing zinciri yeniden kurma; compareScenarioToBaseline: ilk negatif/en kötü/maks açık/toparlanma/final Δ; scenarioConfidence; buildScenarioInsights). null asla 0; belirsiz tutar ölçeklenmez.
+- [x] scenario/engine.ts: createScenario, runScenario, createAndRun, loadScenarioRun, listScenarioRuns, compareScenarioToBaselineRun, deleteScenarioRun (güvenli cascade) — **salt-okunur** (baseline+mali tablolara yazmaz), her run audit'li + açık varsayım satırları.
+- [x] /scenarios UI: disclaimer + varsayım formu (gelir/gider/gecikme/kapasite/verim %, borç-servisi checkbox) + çalışma listesi; /scenarios/[runId]: sonuç kartları (final baz/senaryo/Δ, ilk negatif, en kötü, maks açık, toparlanma) + açık varsayımlar + içgörüler + baz-vs-senaryo SVG chart + aylık karşılaştırma tablosu + güvenli sil. nav SENARYO; /cashflow·/production·/financing'e "senaryo üret" linkleri.
+- [x] phase8-verify.ts: **baseline immutable** (row-hash before==after), **mali bütünlük** (payments/cashflow/checks/loans/reminders/reports/production before==after), senaryo yalnız scenario_* tablolarına yazar, revenue%→yalnız gelir, expense%→yalnız gider, gecikme=zamanlama-değil-tutar, karşılaştırma=SQL, deterministik içgörü, güvenli cascade sil. ALL PASS.
+- [x] Gate: lint ✓ typecheck ✓ vitest 138/138 ✓ db:verify ✓ import:real ✓ phase3-8:verify ✓ build ✓ 8-route smoke (radar/cashflow/financing/reports/reminders/production/scenarios + senaryo detay 200).
+- [x] docs/mvp-runbook.md yazıldı; mas-nakit-radar-mvp.zip üretildi.

@@ -100,6 +100,12 @@ export default async function FinancingPage({
         ))}
       </div>
 
+      <div className="flex justify-end">
+        <Link href="/scenarios?from=financing" className="border border-violet-800 bg-violet-950/30 px-3 py-1.5 font-mono text-[10px] uppercase tracking-wider text-violet-300">
+          borç-servisi overlay ile senaryo üret →
+        </Link>
+      </div>
+
       {/* loans */}
       {loans.length > 0 && (
         <Panel

@@ -100,6 +100,12 @@ export default async function ProductionPage() {
         />
       </div>
 
+      <div className="flex justify-end">
+        <Link href="/scenarios?from=production" className="border border-violet-800 bg-violet-950/30 px-3 py-1.5 font-mono text-[10px] uppercase tracking-wider text-violet-300">
+          kapasite varsayımıyla senaryo üret →
+        </Link>
+      </div>
+
       {/* insights */}
       <Panel title="ANALİTİK İÇGÖRÜ (deterministik, AI değil)">
         <ul className="space-y-1">

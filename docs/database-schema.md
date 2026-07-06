@@ -50,6 +50,16 @@ See `implementation.md` for complete SQL snippets.
 
 **Analitik-only:** bu tablolara yazım payments/instances/cashflow/checks/loans/reminders/reports'u DEĞİŞTİRMEZ (phase7-verify before==after). Stale-rate (2023) ve missing-operation-time bayraklıdır, sessizce düzeltilmez.
 
+## Scenario engine (Phase 8 — active, migration 0011)
+
+- scenarios — senaryo tanımı (name, scenario_type, baseline_label/month_count).
+- scenario_runs — bir çalıştırma + özet metrikler (final baz/senaryo/Δ, ilk negatif baz/senaryo, en kötü ay/bakiye, maks nakit açığı, toparlanma ayı, güven, açık `assumptions jsonb`).
+- scenario_run_lines — ay-bazlı baz vs senaryo (income/expense/closing + Δ); `unique(run_id, month_start)`.
+- scenario_assumptions — **açık beyan** edilen varsayım satırları (key/value/unit/description).
+- scenario_comparisons — metrik-bazlı baz/senaryo/Δ; `unique(run_id, metric)`.
+
+**Salt-okunur:** senaryo motoru baseline'ı (cashflow_months) ve tüm mali/üretim tablolarını OKUR, yalnız scenario_* + audit_logs'a yazar (phase8-verify baseline row-hash + fingerprint before==after). Silme yalnız scenario_* cascade.
+
 ## Core invariants
 
 - Null amount is unknown, not zero.

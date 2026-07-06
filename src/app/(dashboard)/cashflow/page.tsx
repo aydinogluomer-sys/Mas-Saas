@@ -122,6 +122,12 @@ export default async function CashflowPage({
         )}
       </Panel>
 
+      <div className="flex justify-end">
+        <Link href="/scenarios?from=cashflow" className="border border-violet-800 bg-violet-950/30 px-3 py-1.5 font-mono text-[10px] uppercase tracking-wider text-violet-300">
+          bu nakit akıştan senaryo üret →
+        </Link>
+      </div>
+
       <Panel title="KASA TRENDİ — 35 AY">
         <CashTrendChart months={months} firstNegative={proj.firstNegativeMonth} worstMonth={proj.worstMonth} />
       </Panel>

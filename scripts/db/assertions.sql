@@ -146,5 +146,28 @@ begin
     exception when unique_violation then raise notice 'PASS part_profitability idempotency'; end;
   end;
 
+  -- 13) scenario engine (0011): run-line idempotency + comparison uniqueness
+  declare scid uuid; runid uuid; lcount int;
+  begin
+    insert into public.scenarios (name, scenario_type, baseline_month_count)
+    values ('assert', 'revenue_up_down_percent', 35) returning id into scid;
+    insert into public.scenario_runs (scenario_id, assumptions) values (scid, '{"revenuePct":0.1}'::jsonb) returning id into runid;
+    insert into public.scenario_run_lines (run_id, month_start, scenario_closing) values (runid, date '2026-05-01', 100);
+    begin
+      insert into public.scenario_run_lines (run_id, month_start, scenario_closing) values (runid, date '2026-05-01', 200);
+      raise exception 'FAIL scenario_run_lines idempotency did not fire';
+    exception when unique_violation then raise notice 'PASS scenario_run_lines idempotency'; end;
+    insert into public.scenario_comparisons (run_id, metric, delta) values (runid, 'final_cash', 50);
+    begin
+      insert into public.scenario_comparisons (run_id, metric, delta) values (runid, 'final_cash', 60);
+      raise exception 'FAIL scenario_comparisons uniqueness did not fire';
+    exception when unique_violation then raise notice 'PASS scenario_comparisons uniqueness'; end;
+    -- cascade delete stays within scenario tables
+    delete from public.scenario_runs where id = runid;
+    select count(*) into lcount from public.scenario_run_lines where run_id = runid;
+    if lcount <> 0 then raise exception 'FAIL scenario cascade delete'; end if;
+    raise notice 'PASS scenario cascade delete';
+  end;
+
   raise notice 'ALL ASSERTIONS PASSED';
 end $$;

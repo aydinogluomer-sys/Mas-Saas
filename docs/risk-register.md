@@ -39,3 +39,7 @@
 | Makine ROI kişisel/şirket veri karışımı (tablo sekmesi) | High | machine_roi_snapshots confidence default needs_review; tablo sekmesi otomatik map edilmez; ROI insan onayı olmadan dashboard'a güvenilir girmez |
 | Parça işlem süresi eksikse maliyet 0 sanılabilir | Medium | partProfitability: torna+freze ikisi de null→missing_operation_time bayrağı + confidence needs_review + maliyet/marj NULL (asla 0); phase7-verify null-kalır kanıtı |
 | Üretim analitiği mali kaydı değiştirir | Critical | Engine yalnız üretim tablolarına+audit'e yazar; phase7-verify finance fingerprint before==after (payments/cashflow/checks/loans/reminders/reports değişmez) |
+| Senaryo motoru baseline'ı/mali kaydı değiştirir | Critical | Read-only engine; baseline cashflow OKUNUR, yalnız scenario_* + audit'e yazılır; phase8-verify baseline row-hash + tüm mali/üretim tablo fingerprint before==after; silme yalnız scenario_* cascade |
+| Senaryo çıktısının muhasebe gerçeği sanılması | High | /scenarios disclaimer "Senaryo çıktısı tahmindir; muhasebe gerçeği değildir. Kaynak kayıtları değiştirmez."; her run confidence (belirsiz-ay oranına göre); varsayımlar açık beyan |
+| Senaryo belirsiz tutarı 0 sayar / gecikmede tutar uydurur | High | applyScenario: null gelir/gider ölçeklenmez (null kalır, closing null); gecikme yalnız zamanlamayı kaydırır, tutar korunur; phase8-verify null-handling + delay-timing kanıtı |
+| Senaryo varsayımı gizli/örtük kalır | Medium | scenario_assumptions tablosuna açık satır + run.assumptions jsonb; UI "VARSAYIMLAR (açık beyan)" paneli |
