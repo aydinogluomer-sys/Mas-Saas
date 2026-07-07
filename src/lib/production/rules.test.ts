@@ -11,6 +11,7 @@ import {
   effectiveMinutes,
   machineRoi,
   partProfitability,
+  priceMargin,
   revenueGap,
   theoreticalRevenue,
   utilizationRate,
@@ -95,6 +96,27 @@ describe("partProfitability", () => {
     expect(p.estimatedTornaCost).toBeNull();
     expect(p.estimatedFrezeCost).toBeCloseTo(300 * 55 * 20.128, 0);
     expect(p.missingOperationTime).toBe(false);
+  });
+});
+
+describe("priceMargin (Akon TL/dk vs break-even — real numbers)", () => {
+  it("normal freze price 27.5 barely clears break-even 26.18 (thin margin)", () => {
+    const m = priceMargin(26.1836, 27.5);
+    expect(m.margin).toBeCloseTo(1.3164, 3);
+    expect(m.loss).toBe(false);
+    expect(m.marginRate).toBeCloseTo(0.0479, 3);
+  });
+  it("normal torna price 21.88 below break-even 26.18 ⇒ LOSS flagged", () => {
+    const m = priceMargin(26.1836, 21.88);
+    expect(m.margin).toBeCloseTo(-4.3036, 3);
+    expect(m.loss).toBe(true);
+  });
+  it("mesaili break-even 21.54 turns torna profitable", () => {
+    expect(priceMargin(21.5397, 21.88).loss).toBe(false);
+  });
+  it("null side ⇒ null margin, never 0", () => {
+    expect(priceMargin(null, 27.5).margin).toBeNull();
+    expect(priceMargin(26.18, null).margin).toBeNull();
   });
 });
 

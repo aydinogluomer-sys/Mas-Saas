@@ -671,6 +671,13 @@ export function extractCapacity(map: Record<string, CellVal>): {
 // E6 efficiency, F6 effective minutes, G6 break-even TL/dk, B7 monthly cost.
 // Reconciliation: F6 ≈ A6×A2×E6 and G6 ≈ B7÷F6 (flagged if diverging).
 
+export interface CostBreakdownLine {
+  rowIndex: number;
+  block: string; // 'fixed' | 'standart' | 'genel' | 'personel'
+  label: string;
+  amount: number | null;
+}
+
 export interface CostModelCandidate {
   scenario: "normal" | "overtime";
   monthlyMinutesPerMachine: number | null; // A2
@@ -685,6 +692,20 @@ export interface CostModelCandidate {
   foodDailyCost: number | null; // E1
   healthInsuranceCost: number | null; // H1
   machineInsuranceCost: number | null; // H2
+  // Phase 9A additions
+  akonFrezeTLPerMin: number | null; // K2 — current customer price (freze)
+  akonTornaTLPerMin: number | null; // K4 — current customer price (torna)
+  breakdown: CostBreakdownLine[]; // A8:B24 fixed ledger + E/F/G general/personnel blocks
+}
+
+// map an E-column header to a stable block key
+function costBlockOf(header: string | null): string | null {
+  if (!header) return null;
+  const n = normalizeTr(header);
+  if (n.includes("standart")) return "standart";
+  if (n.includes("genel")) return "genel";
+  if (n.includes("personel")) return "personel";
+  return null;
 }
 
 export function extractCostModel(
@@ -706,7 +727,26 @@ export function extractCostModel(
     foodDailyCost: asNumber(map["E1"]),
     healthInsuranceCost: asNumber(map["H1"]),
     machineInsuranceCost: asNumber(map["H2"]),
+    akonFrezeTLPerMin: asNumber(map["K2"]),
+    akonTornaTLPerMin: asNumber(map["K4"]),
+    breakdown: [],
   };
+
+  // fixed-cost ledger A8:B24 (A7 "maliyet" is the total, captured separately as monthlyCost)
+  for (let r = 8; r <= 24; r++) {
+    const label = asText(map[`A${r}`]);
+    if (!label) continue;
+    cost.breakdown.push({ rowIndex: r, block: "fixed", label, amount: asNumber(map[`B${r}`]) });
+  }
+  // general / standard / personnel blocks (E header, F label, G amount), rows 11..24
+  let block = "genel";
+  for (let r = 11; r <= 24; r++) {
+    const hdr = costBlockOf(asText(map[`E${r}`]));
+    if (hdr) block = hdr;
+    const label = asText(map[`F${r}`]);
+    const amount = asNumber(map[`G${r}`]);
+    if (label && (amount != null || true)) cost.breakdown.push({ rowIndex: r, block, label, amount });
+  }
 
   // reconcile effective minutes = machines × minutes × efficiency (±1 dk)
   if (cost.machineCount != null && cost.monthlyMinutesPerMachine != null && cost.efficiency != null && cost.effectiveMonthlyMinutes != null) {

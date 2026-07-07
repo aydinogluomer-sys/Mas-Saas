@@ -131,6 +131,27 @@ export function partProfitability(
   };
 }
 
+/* ── price margin: customer TL/dk price vs break-even TL/dk (decision-first) ── */
+
+export interface PriceMargin {
+  breakEven: number | null;
+  price: number | null;
+  margin: number | null; // price − break-even (TL/dk)
+  marginRate: number | null; // margin / price
+  loss: boolean; // price below break-even ⇒ selling at a loss
+}
+
+/**
+ * Margin of a customer price (e.g. Akon's freze/torna TL/dk) over the blended break-even.
+ * null-safe: any unknown side ⇒ null margin (never assumed 0). `loss` flags a price that
+ * fails to cover the break-even — the sharpest capacity/cost signal for the operator.
+ */
+export function priceMargin(breakEven: number | null, price: number | null): PriceMargin {
+  if (breakEven == null || price == null) return { breakEven, price, margin: null, marginRate: null, loss: false };
+  const margin = price - breakEven;
+  return { breakEven, price, margin, marginRate: price !== 0 ? margin / price : null, loss: margin < 0 };
+}
+
 /* ── machine ROI (always needs_review until a human confirms) ── */
 
 export interface RoiInput {

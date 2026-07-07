@@ -4,6 +4,7 @@ import {
   loadActualMonthlyIncome,
   loadCapacityDemand,
   loadCapacityModels,
+  loadCostBreakdown,
   loadCostModels,
   loadMachineRoi,
   loadPartProfitability,
@@ -11,13 +12,14 @@ import {
 import {
   buildInsights,
   compareScenarios,
+  priceMargin,
   revenueGap,
   utilizationRate,
   type ScenarioModel,
 } from "@/lib/production/rules";
 import { Badge } from "@/components/ui/badge";
 import { Panel, fmtTL } from "@/components/ui/panel";
-import { Disclaimer, PageHeader } from "@/components/ui/shell";
+import { DetailsDisclosure, Disclaimer, PageHeader } from "@/components/ui/shell";
 
 export const dynamic = "force-dynamic";
 
@@ -68,6 +70,19 @@ export default async function ProductionPage() {
   };
   const comparison = normal && overtime ? compareScenarios(normalModel, overtimeModel) : null;
 
+  // Phase 9A: margin of the customer (Akon) price over each scenario's OWN break-even.
+  // Each cost sheet carries its own Akon TL/dk assumption — use per-model rates.
+  const marginRows = costs
+    .filter((c) => c.breakEven != null && (c.akonFreze != null || c.akonTorna != null))
+    .map((c) => ({
+      scenario: c.scenario,
+      freze: priceMargin(c.breakEven, c.akonFreze),
+      torna: priceMargin(c.breakEven, c.akonTorna),
+    }));
+  const anyLoss = marginRows.some((m) => m.freze.loss || m.torna.loss);
+  // fixed-cost breakdown of the normal model (primary) for the detail section
+  const breakdown = normal ? await loadCostBreakdown(pool, normal.id) : [];
+
   // annual effective minutes (normal single shift) vs total part demand
   const annualEff = normal?.effectiveMinutes != null ? normal.effectiveMinutes * 12 : null;
   const utilization = utilizationRate(demand.demandMinutes, annualEff);
@@ -117,6 +132,31 @@ export default async function ProductionPage() {
           badge={cap?.isStaleRate ? <Badge tone="amber">{cap.rateYear} stale</Badge> : undefined}
         />
       </div>
+
+      {/* KÂR MARJI — Akon fiyatı vs başabaş (decision-first) */}
+      {marginRows.length > 0 && (
+        <Panel
+          title="KÂR MARJI — AKON FİYATI vs BAŞABAŞ"
+          right={anyLoss ? <Badge tone="red">zararına satış var</Badge> : <Badge tone="green" dot>marj pozitif</Badge>}
+        >
+          <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+            {marginRows.map((m) => (
+              <div key={m.scenario} className="border p-2.5" style={{ background: "var(--surface-2)", borderColor: "var(--line)", borderRadius: "var(--radius)" }}>
+                <div className="text-[11px]" style={{ color: "var(--text-3)" }}>
+                  {m.scenario === "normal" ? "Normal vardiya" : "Mesaili"} · başabaş {fmt2(m.freze.breakEven)} TL/dk
+                </div>
+                <div className="mt-1.5 grid grid-cols-2 gap-2">
+                  <MarginCell op="Freze" m={m.freze} />
+                  <MarginCell op="Torna" m={m.torna} />
+                </div>
+              </div>
+            ))}
+          </div>
+          <p className="mt-2 text-[11px]" style={{ color: "var(--text-4)" }}>
+            Marj = Akon TL/dk fiyatı − başabaş. Negatif marj = o operasyonu zararına yapıyorsun. Belirsiz oran 0 sayılmaz.
+          </p>
+        </Panel>
+      )}
 
       {/* insights */}
       <Panel title="ANALİTİK İÇGÖRÜ (deterministik, AI değil)">
@@ -229,6 +269,28 @@ export default async function ProductionPage() {
         </div>
       </Panel>
 
+      {/* fixed-cost breakdown (technical detail, collapsed) */}
+      {breakdown.length > 0 && (
+        <DetailsDisclosure label={`Sabit gider dökümü — ${breakdown.length} kalem (normal model, kaynak kayıt)`}>
+          <table className="w-full text-sm">
+            <tbody>
+              {breakdown.map((b, i) => (
+                <tr key={i} className="border-b" style={{ borderColor: "var(--line-faint)" }}>
+                  <td className="py-1 pr-2 font-mono text-[10px] uppercase" style={{ color: "var(--text-4)" }}>{b.block}</td>
+                  <td className="py-1 pr-2">{b.label}</td>
+                  <td className="py-1 text-right font-mono tabular-nums">
+                    {b.amount != null ? fmt0(b.amount) : <Badge tone="amber">TUTAR EKSİK</Badge>}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          <p className="mt-2 text-[11px]" style={{ color: "var(--text-4)" }}>
+            Kaynak: maliyet sekmesi sabit gider defteri + genel/personel blokları. Bilinmeyen tutar 0 sayılmaz.
+          </p>
+        </DetailsDisclosure>
+      )}
+
       {/* part profitability */}
       <Panel title={`PARÇA KÂRLILIĞI — en düşük 20 marj (${parts.length})`}>
         <div className="overflow-x-auto">
@@ -303,6 +365,21 @@ export default async function ProductionPage() {
         </p>
       </Panel>
     </>
+  );
+}
+
+function MarginCell({ op, m }: { op: string; m: ReturnType<typeof priceMargin> }) {
+  const color = m.margin == null ? "var(--text-4)" : m.loss ? "var(--neg)" : "var(--pos)";
+  return (
+    <div className="border p-1.5" style={{ borderColor: "var(--line-faint)", borderRadius: "var(--radius)" }}>
+      <div className="text-[10px] uppercase tracking-wider" style={{ color: "var(--text-3)" }}>{op}</div>
+      <div className="font-mono text-sm tabular-nums" style={{ color }}>
+        {m.margin == null ? "—" : `${m.margin > 0 ? "+" : ""}${fmt2(m.margin)} TL/dk`}
+      </div>
+      <div className="text-[10px]" style={{ color: "var(--text-4)" }}>
+        fiyat {fmt2(m.price)}{m.marginRate != null ? ` · %${(m.marginRate * 100).toFixed(0)}` : ""}{m.loss ? " · zarar" : ""}
+      </div>
+    </div>
   );
 }
 

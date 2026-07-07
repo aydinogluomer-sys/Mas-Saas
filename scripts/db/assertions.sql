@@ -169,5 +169,23 @@ begin
     raise notice 'PASS scenario cascade delete';
   end;
 
+  -- 14) cost breakdown (0012): RLS + line idempotency + akon columns
+  declare wid3 uuid; sid3 uuid; cm3 uuid; rls3 int;
+  begin
+    select count(*) into rls3 from pg_tables t join pg_class c on c.relname=t.tablename
+      join pg_namespace ns on ns.oid=c.relnamespace and ns.nspname='public'
+      where t.tablename='cost_breakdown_lines' and not c.relrowsecurity;
+    if rls3 > 0 then raise exception 'FAIL cost_breakdown_lines RLS off'; end if;
+    insert into public.source_workbooks (original_filename) values ('cost.xlsx') returning id into wid3;
+    insert into public.source_sheets (workbook_id, sheet_name, sheet_index) values (wid3,'maliyet',0) returning id into sid3;
+    insert into public.cost_models (model_name, source_sheet_id, akon_freze_tl_per_min, akon_torna_tl_per_min)
+      values ('cm', sid3, 27.5, 21.88) returning id into cm3;
+    insert into public.cost_breakdown_lines (cost_model_id, block, label, amount) values (cm3,'fixed','eleman',357442);
+    begin
+      insert into public.cost_breakdown_lines (cost_model_id, block, label, amount) values (cm3,'fixed','eleman',999);
+      raise exception 'FAIL cost_breakdown idempotency did not fire';
+    exception when unique_violation then raise notice 'PASS cost_breakdown idempotency + akon cols + RLS'; end;
+  end;
+
   raise notice 'ALL ASSERTIONS PASSED';
 end $$;

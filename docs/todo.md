@@ -93,6 +93,17 @@
 - [x] phase7-verify.ts: **sessiz-atlama-yok (68 parça talep=kaynak G5+H5)**, kaynak izlenebilirlik, stale-rate bayrağı, başabaş=kaynak G6 birebir (normal 26.18/mesaili 21.54, mutabakat), süre-eksik→needs_review+null, ROI needs_review, idempotency, **mali bütünlük before==after (Phase 7 hiçbir mali tabloyu değiştirmez)**. ALL PASS.
 - [x] Gate: lint ✓ typecheck ✓ vitest 128/128 ✓ db:verify ✓ import:real ✓ phase3-7:verify ✓ build ✓ smoke (/radar,/cashflow,/financing,/reports,/reminders,/production 200).
 
+## Phase 9 — IN PROGRESS (Excel kapsama boşlukları — docs/excel-coverage-gaps analizi)
+
+### 9A — DONE (maliyet detayı + Akon kâr marjı)
+- [x] `priceMargin` saf fonksiyon + 4 test (Akon TL/dk − başabaş; zarar bayrağı; null-asla-0). vitest 149.
+- [x] Migration 0012: `cost_breakdown_lines` (blok/etiket/tutar, kaynak-izli, idempotent) + `cost_models.akon_freze/torna` + assertions (RLS+idempotency).
+- [x] extractCostModel genişletildi: 28 gider döküm satırı (sabit defter A8:B24 + genel/personel blokları E/F/G) + Akon K2/K4. Engine mapCostSheets bunları yazar (kaynak-izli).
+- [x] /production: **"KÂR MARJI — AKON FİYATI vs BAŞABAŞ"** paneli (her senaryo kendi Akon oranıyla; **normal torna ZARARINA satış** bayraklı) + "Sabit gider dökümü" DetailsDisclosure. Ana Ekran "Üretim içgörüsü" şeridi zarar durumunu gösterir.
+- [x] **Gerçeklik:** iki maliyet sekmesinin kendi Akon oranları farklı (normal 27,5/21,88 · mesaili 25/19,89); her model kendi oranını kullanır.
+- [x] phase9a-verify: Akon kaynak K2/K4 birebir, 28 döküm kaynak-izli, marj=fiyat−başabaş, normal-torna zarar bayraklı, **mali bütünlük before==after**. Gate: typecheck/lint/test 149/db:verify/import:real/phase3-8+9a/build ✓.
+- [ ] 9B aylık gider dökümü · 9C makine ROI+ekipman (tablo, kişisel hariç) · 9D kapasite makine-dakika + faiz makine-tahsis.
+
 ## Phase 8 — DONE (senaryo motoru) — MVP TAMAMLANDI
 
 - [x] Migration 0011: 5 senaryo tablosu (scenarios/scenario_runs/scenario_run_lines/scenario_assumptions/scenario_comparisons) + RLS/policy + assertions (run-line idempotency, comparison uniqueness, cascade delete).

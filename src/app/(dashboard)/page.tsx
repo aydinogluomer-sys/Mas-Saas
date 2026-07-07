@@ -6,7 +6,8 @@ import { buildProjection, concentration } from "@/lib/radar/rules";
 import { loadCashMonths } from "@/lib/cashflow/engine";
 import { loadDebtOverlay, listReports } from "@/lib/reports/engine";
 import { deliveryCounts } from "@/lib/reminders/engine";
-import { loadCapacityModels } from "@/lib/production/engine";
+import { loadCapacityModels, loadCostModels } from "@/lib/production/engine";
+import { priceMargin } from "@/lib/production/rules";
 import { istanbulDateISO } from "@/lib/reports/rules";
 import { buildActions, pickHeadlineRisk, type CockpitFacts } from "@/lib/home/cockpit";
 import { Badge, type Tone } from "@/components/ui/badge";
@@ -66,17 +67,23 @@ export default async function AnaEkranPage() {
     );
   }
 
-  const [overlay, reports, reminders, caps, incomeLines, t] = await Promise.all([
+  const [overlay, reports, reminders, caps, costs, incomeLines, t] = await Promise.all([
     loadDebtOverlay(pool),
     listReports(pool),
     deliveryCounts(pool),
     loadCapacityModels(pool),
+    loadCostModels(pool),
     pool.query(`select coalesce(p.name, cl.label) as key, cl.amount::float8 as amount
                 from public.cashflow_lines cl left join public.parties p on p.id=cl.party_id
                 where cl.line_type='customer_income'`),
     loadThresholds(pool),
   ]);
   void t;
+
+  // production margin snapshot: any operation sold below its scenario's own break-even?
+  const marginLoss = costs.some(
+    (c) => priceMargin(c.breakEven, c.akonFreze).loss || priceMargin(c.breakEven, c.akonTorna).loss,
+  );
 
   const proj = buildProjection(months);
   const tOut = knownOutflow(todayRows);
@@ -167,8 +174,14 @@ export default async function AnaEkranPage() {
         </div>
         <div className="border p-2.5" style={{ borderColor: "var(--line)", borderRadius: "var(--radius)", background: "var(--surface-1)" }}>
           <div className="text-[10px] uppercase tracking-[0.12em]" style={{ color: "var(--text-3)" }}>Üretim içgörüsü</div>
-          <Link href="/production" className="mt-1 block text-sm" style={{ color: "var(--text-1)" }}>
-            {caps.length === 0 ? "Kapasite modeli yok" : facts.staleProductionRate ? "Oranlar eski tarife (stale) — analitik tahmin" : "Kapasite/maliyet güncel"}
+          <Link href="/production" className="mt-1 block text-sm" style={{ color: marginLoss ? "var(--neg)" : "var(--text-1)" }}>
+            {caps.length === 0
+              ? "Kapasite modeli yok"
+              : marginLoss
+                ? "Bazı operasyonlar başabaşın altında — zararına satış"
+                : facts.staleProductionRate
+                  ? "Oranlar eski tarife (stale) — analitik tahmin"
+                  : "Kapasite/maliyet güncel"}
           </Link>
         </div>
       </div>

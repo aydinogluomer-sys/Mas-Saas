@@ -174,14 +174,16 @@ export async function mapCostSheets(pool: Pool, workbookId: string): Promise<Cos
             food_daily_cost, health_insurance_cost, machine_insurance_cost,
             total_fixed_cost, monthly_allocated_cost,
             break_even_tl_per_min, break_even_torna_tl_per_min, break_even_freze_tl_per_min,
-            effective_monthly_minutes, source_workbook_id, source_sheet_id)
-         values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$9,$9,$10,$11,$12)
+            effective_monthly_minutes, akon_freze_tl_per_min, akon_torna_tl_per_min,
+            source_workbook_id, source_sheet_id)
+         values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$9,$9,$10,$11,$12,$13,$14)
          on conflict (source_sheet_id) where source_sheet_id is not null do nothing
          returning id`,
         [
           capacityId, `Maliyet ${scenario} — ${sheet.sheet_name}`, scenario,
           cost.foodDailyCost, cost.healthInsuranceCost, cost.machineInsuranceCost,
           cost.monthlyCost, cost.monthlyCost, breakEven, cost.effectiveMonthlyMinutes,
+          cost.akonFrezeTLPerMin, cost.akonTornaTLPerMin,
           workbookId, sheet.id,
         ],
       );
@@ -191,6 +193,20 @@ export async function mapCostSheets(pool: Pool, workbookId: string): Promise<Cos
       }
       res.created++;
       const costId: string = ins.rows[0].id;
+
+      // cost breakdown ledger (source-traced; idempotent per (model, block, label))
+      const idByRow = new Map((await client.query<{ id: string; row_index: number }>(
+        `select id, row_index from public.import_rows where sheet_id=$1`, [sheet.id],
+      )).rows.map((r) => [r.row_index, r.id]));
+      for (const b of cost.breakdown) {
+        await client.query(
+          `insert into public.cost_breakdown_lines
+             (cost_model_id, block, label, amount, source_workbook_id, source_sheet_id, source_row_id)
+           values ($1,$2,$3,$4,$5,$6,$7)
+           on conflict (cost_model_id, block, label) do nothing`,
+          [costId, b.block, b.label, b.amount, workbookId, sheet.id, idByRow.get(b.rowIndex) ?? null],
+        );
+      }
 
       // reconciliation issues → review (source value wins; never adjusted)
       const reconIssues = issues.filter((i) => i.issue_type.includes("reconciliation"));
@@ -351,17 +367,33 @@ export async function loadCapacityModels(pool: Pool): Promise<Array<CapacityCand
 
 export async function loadCostModels(pool: Pool): Promise<Array<{
   id: string; name: string; scenario: string; monthlyCost: number | null; breakEven: number | null;
-  effectiveMinutes: number | null; sheetId: string | null; workbookId: string | null;
+  effectiveMinutes: number | null; akonFreze: number | null; akonTorna: number | null;
+  sheetId: string | null; workbookId: string | null;
 }>> {
   const r = await pool.query(`
     select id, model_name as name, scenario_type as scenario,
            total_fixed_cost::float8 as monthly_cost, break_even_tl_per_min::float8 as break_even,
-           effective_monthly_minutes::float8 as eff_min, source_sheet_id, source_workbook_id
+           effective_monthly_minutes::float8 as eff_min,
+           akon_freze_tl_per_min::float8 as akon_freze, akon_torna_tl_per_min::float8 as akon_torna,
+           source_sheet_id, source_workbook_id
     from public.cost_models order by scenario_type`);
   return r.rows.map((x) => ({
     id: x.id, name: x.name, scenario: x.scenario, monthlyCost: x.monthly_cost, breakEven: x.break_even,
-    effectiveMinutes: x.eff_min, sheetId: x.source_sheet_id, workbookId: x.source_workbook_id,
+    effectiveMinutes: x.eff_min, akonFreze: x.akon_freze, akonTorna: x.akon_torna,
+    sheetId: x.source_sheet_id, workbookId: x.source_workbook_id,
   }));
+}
+
+/** Fixed-cost + general/personnel breakdown lines for a cost model, grouped-friendly. */
+export async function loadCostBreakdown(pool: Pool, costModelId: string) {
+  const r = await pool.query(
+    `select block, label, amount::float8 as amount, ir.row_index
+     from public.cost_breakdown_lines cbl
+     left join public.import_rows ir on ir.id = cbl.source_row_id
+     where cbl.cost_model_id = $1 order by block, ir.row_index nulls last`,
+    [costModelId],
+  );
+  return r.rows as Array<{ block: string; label: string; amount: number | null; row_index: number | null }>;
 }
 
 export async function loadPartProfitability(pool: Pool, limit = 100) {
