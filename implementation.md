@@ -1,3 +1,556 @@
+﻿# MAS Nakit Radar — Implementation Plan v3
+
+> 14 fazli uygulama yol haritasi. Bu bolum guncel kaynak-of-truth planidir.
+> Eski v2 plan asagida tarihsel detay ve domain referansi olarak korunur.
+
+---
+
+## 0. Product Boundary
+
+MAS Nakit Radar, MAS'in gercek Excel calisma seklini kaybetmeden; odeme,
+nakit akis, cek/kredi, uretim maliyeti, senaryo, rapor ve AI destekli
+yorum/cevap katmanina donusturen ozel bir finans-operasyon panelidir.
+
+Urun degildir:
+
+- public SaaS
+- ERP
+- muhasebe defteri / double-entry accounting sistemi
+- AI muhasebeci
+- cok kiracili platform
+- public landing / pricing / subscription urunu
+
+Degismez kurallar:
+
+- Ham Excel verisi once korunur; sonra staging/review; sonra domain tablolarina aktarilir.
+- Null tutar asla 0 sayilmaz.
+- Negatif tutar baglama gore yorumlanir; ceklerde yon, odeme tablosunda anomali olabilir.
+- Sessiz duzeltme yoktur; validator bayrak koyar, degeri degistirmez.
+- Her domain kaydi mumkun oldugunca source workbook/sheet/row izine doner.
+- AI kaynak-of-truth degildir; sadece deterministik hesaplari aciklar, soru cevaplar ve aksiyon onerir.
+- Senaryo/analitik ciktilari muhasebe gercegi degil, planlama katmanidir.
+
+---
+
+## 1. Faz Durumu
+
+| Faz | Baslik | Durum |
+|---:|---|---|
+| 1 | Kaynak veri haritasi ve parser foundation | DONE |
+| 2 | Veritabani foundation | DONE |
+| 3 | Import, raw viewer ve mapping review UI | DONE |
+| 4 | Odeme radari MVP | DONE |
+| 5 | Nakit akis radari | DONE |
+| 6 | Cek/kredi finansman radari | DONE |
+| 7 | Raporlar ve hatirlatmalar | DONE |
+| 8 | Uretim kapasite/maliyet analitigi | DONE |
+| 9 | Salt-okunur senaryo motoru MVP | DONE |
+| 10 | Excel coverage close-out: 9A/9B/9C/9D | IN PROGRESS |
+| 11 | Decision facts / metrics katmani | PLANNED |
+| 12 | AI soru-cevap ve rapor yorum katmani | PLANNED |
+| 13 | Senaryo v2 ve finansman optimizasyonu | PLANNED |
+| 14 | Veri kalite merkezi, disgoru ve aksiyon workflow | PLANNED |
+
+Mevcut git gercegi:
+
+- Faz 10A / 9A commitli: `feat(production): surface cost breakdown and Akon price margin (Phase 9A)`.
+- Faz 10B / 9B commitli: `feat(cashflow): surface monthly expense breakdown (Phase 9B)`.
+- Faz 10C / 9C kodu calisma agacinda yarim/commitlenmemis durumdadir.
+- Faz 10D / 9D henuz baslamamistir.
+
+---
+
+## 2. Faz 1 — Kaynak Veri Haritasi ve Parser Foundation
+
+Amac: Excel dosyasinin gercek yapisini kanitli bicimde okumak, bozuk dosyayi
+ayirt etmek ve hicbir sekmeyi sessizce atmamak.
+
+Teslimatlar:
+
+- Safe workbook parser.
+- Sheet classifier: loan, capacity, machine ROI, payment matrix, checks, cost models, monthly cashflow, unknown.
+- `docs/data-map.md`, `docs/import-mapping.md`, `docs/calculation-rules.md`.
+- Bozuk XLSX/ZIP signature failure yolu.
+
+Gate:
+
+- Tum sekmeler listelenir.
+- Typecheck, lint, unit tests.
+- Parse report guncellenir.
+
+---
+
+## 3. Faz 2 — Veritabani Foundation
+
+Amac: ham kaynak, staging ve normalize domain katmanlarini kurmak.
+
+Teslimatlar:
+
+- `source_workbooks`, `source_sheets`, `source_cells`, `import_rows`, `mapping_reviews`.
+- `parties`, `categories`, `cash_accounts`, `settings`, `audit_logs`.
+- Payments, cashflow, checks, loans, reminders, reports tablolari.
+- RLS ve seed verileri.
+
+Gate:
+
+- `pnpm db:verify`.
+- Constraints: null tutar korunur, paid status `paid_at` ister, idempotency unique'leri calisir.
+- Generated DB types guncel tutulur.
+
+Not: `src/types/database.ts` yeni production/scenario/cost tablolarini da kapsayacak sekilde guncellenmelidir.
+
+---
+
+## 4. Faz 3 — Import, Raw Viewer ve Mapping Review UI
+
+Amac: Excel'i domain tablolara dogrudan yazmadan once ham veriyi korumak ve
+insan onayi gereken satirlari review'a dusurmek.
+
+Teslimatlar:
+
+- Workbook upload.
+- Sheet listesi ve detected type rozetleri.
+- Raw row/cell viewer.
+- Payment/cashflow/check/loan/capacity/cost preview'lari.
+- Mapping review filtreleri ve kabul/ret/cozuldu aksiyonlari.
+
+Gate:
+
+- `pnpm import:real`.
+- Hucre ve satir sayisi source ile mutabik.
+- Anomaliler review'a duser.
+- Failed workbook partial row yazmaz.
+
+---
+
+## 5. Faz 4 — Odeme Radari MVP
+
+Amac: gunluk operasyon icin odemeleri gorunur ve aksiyonlanabilir yapmak.
+
+Teslimatlar:
+
+- Payment CRUD.
+- Idempotent monthly instance generation.
+- Bugun / yarin / 7 gun gorunumu.
+- Aylik takvim, riskli gunler, gecikenler, eksik tutar raporu.
+- Paid/unpaid ve tutar girisi.
+- Audit log.
+
+Gate:
+
+- `pnpm phase3:verify`.
+- Due-day 29/30/31 kisa-ay kurali.
+- Eksik tutar 0 olmaz.
+- Duplicate instance DB seviyesinde engellenir.
+
+---
+
+## 6. Faz 5 — Nakit Akis Radari
+
+Amac: 35 aylik Excel nakit akis sekmelerini projeksiyon ve karar ekranina cevirmek.
+
+Teslimatlar:
+
+- `cashflow_months`, `cashflow_lines`, `cashflow_snapshots`.
+- Devir/gelir/gider/fark/kasa kartlari.
+- Ilk negatif ay, en kotu ay, negatif seri.
+- Gelir/gider yogunlasma analizi.
+- Borc servisi overlay icin hazir temel.
+
+Gate:
+
+- `pnpm phase4:verify`.
+- Header hucreleri source ile +-0,5 TL mutabik.
+- Continuity break bayraklanir, deger degistirilmez.
+
+---
+
+## 7. Faz 6 — Cek/Kredi Finansman Radari
+
+Amac: cek vadeleri, kredi taksitleri, banka/karsi taraf exposure ve borc
+servisi yukunu nakit akisla birlikte gorunur yapmak.
+
+Teslimatlar:
+
+- Checks ledger.
+- Check events.
+- Loans ve loan installments.
+- Vade pencereleri 7/14/30 gun.
+- Banka/karsi taraf exposure.
+- Aylik borc servisi.
+
+Gate:
+
+- `pnpm phase5:verify`.
+- Negatif cek tutari anomali degil, outflow yonudur.
+- Cift kayit adaylari otomatik merge edilmez.
+- Loan total/payment/cost source ile mutabik.
+
+---
+
+## 8. Faz 7 — Raporlar ve Hatirlatmalar
+
+Amac: gunluk/haftalik/aylik ozetleri ve hatirlatma akisini karar destegine cevirmek.
+
+Teslimatlar:
+
+- Daily/weekly/monthly report builders.
+- Report snapshots.
+- AI commentary prompt template; model cagrisi yok.
+- Reminder rules: 7/3/1/0/-1 offset.
+- Mock ve Telegram transport.
+- Delivery log.
+
+Gate:
+
+- `pnpm phase6:verify`.
+- `pnpm phase6b:verify`.
+- Report/reminder finansal kayitlari mutasyona ugratmaz.
+- Istanbul timezone kullanilir.
+
+---
+
+## 9. Faz 8 — Uretim Kapasite/Maliyet Analitigi
+
+Amac: kapasite, maliyet, basabas TL/dk, parca karliligi ve normal/mesaili
+karsilastirmasini analitik katmana almak.
+
+Teslimatlar:
+
+- `machine_assets`, `production_parts`, `capacity_models`, `cost_models`,
+  `part_profitability_runs`, `machine_roi_snapshots`.
+- Normal vs mesaili.
+- Basabas TL/dk.
+- Parca karliligi.
+- Stale-rate ve missing operation time bayraklari.
+
+Gate:
+
+- `pnpm phase7:verify`.
+- Uretim analitigi finans cekirdegini degistirmez.
+- 2023 stale rate gorunur kalir.
+
+---
+
+## 10. Faz 9 — Salt-Okunur Senaryo Motoru MVP
+
+Amac: baseline nakit akis uzerinde varsayimlari uygulamak, source-of-truth'u
+degistirmeden baz vs senaryo karsilastirmasi uretmek.
+
+Teslimatlar:
+
+- `scenarios`, `scenario_runs`, `scenario_run_lines`,
+  `scenario_assumptions`, `scenario_comparisons`.
+- Gelir %, gider %, tum tahsilat gecikmesi, kapasite/verim proxy, borc servisi.
+- Baseline vs scenario chart/table.
+- Acik varsayim paneli.
+
+Gate:
+
+- `pnpm phase8:verify`.
+- Baseline row-hash ve finance/production fingerprint degismez.
+- Scenario sadece `scenario_*` tablolarina yazar.
+
+---
+
+## 11. Faz 10 — Excel Coverage Close-Out
+
+Amac: Excel'de MVP'nin yuzeysel kaldigi alanlari domain'e daha derin ve
+guvenli bicimde tasimak.
+
+### 10A / 9A — Maliyet Detayi ve Akon Kar Marji
+
+Durum: DONE, commitli.
+
+Teslimatlar:
+
+- `priceMargin` saf fonksiyon ve test.
+- `cost_breakdown_lines`.
+- `cost_models.akon_freze_tl_per_min`, `akon_torna_tl_per_min`.
+- `extractCostModel` gider dokumu + Akon oranlari.
+- `/production` kar marji paneli.
+- Ana Ekran uretim seridi.
+
+Gate:
+
+- `pnpm phase9a:verify`.
+- Tam gate ve commit.
+
+### 10B / 9B — Aylik Gider Dokumu
+
+Durum: DONE, commitli.
+
+Teslimatlar:
+
+- Aylik nakit akis sekmelerinde borclar, standart giderler, personel ve genel gider leaf satirlari.
+- `cashflow_lines` gider kompozisyonu.
+- `/cashflow/[monthId]` isletme gideri / vergi-SGK / kredi-finansman gruplari.
+
+Gate:
+
+- `pnpm phase9b:verify`.
+- Ay toplamlarini degistirmeden kompozisyonu acma.
+- Tam gate ve commit.
+
+### 10C / 9C — Makine ROI + Ekipman
+
+Durum: IN PROGRESS.
+
+Teslimatlar:
+
+- `tablo` sekmesinden yalniz makine ROI ve ekipman maliyeti cikarilir.
+- Kisisel/aile giderleri domain tablolara yazilmaz.
+- `personal_data_mixed` review cozulmeden ROI map edilmez.
+- `machine_assets.purchase_cost` guncellenir.
+- Per-machine ve aggregate ROI snapshot yazilir.
+- ROI confidence `needs_review` kalir.
+- `/production` ROI paneli bu veriyi gosterir.
+- `phase9c-verify.ts`.
+
+Gate:
+
+- `pnpm phase9c:verify`.
+- Privacy leak testi.
+- Idempotency testi.
+- Financial integrity before/after testi.
+- Tam gate ve commit.
+
+### 10D / 9D — Kapasite Makine-Dakika + Faiz Makine-Tahsis
+
+Durum: PLANNED.
+
+Amac:
+
+- Kapasite sekmesindeki parca/dakika bilgisini makine tipi ve mumkunse makine varligi seviyesine indirmek.
+- Kredi/faiz maliyetini kapasite veya makine bazli tahsis edilebilir analitik yuke cevirmek.
+
+Teslimatlar:
+
+- Yeni tablolar veya kolonlar:
+  - machine-minute allocation
+  - machine utilization snapshots
+  - finance cost allocation snapshots
+- Extractor:
+  - kapasite parca satirlarindan torna/freze dakika toplamlarini makine tipi seviyesine ayirir.
+  - faiz hesaplama kredi maliyetini tahsis edilebilir toplam finansman maliyeti olarak alir.
+- Engine:
+  - makine tipi basina dakika, kapasite, kullanim, atil/asiri yuk.
+  - finansman maliyeti / dakika veya finansman maliyeti / makine tahmini.
+- UI:
+  - `/production` icinde makine-dakika paneli.
+  - finansman tahsis paneli: "bu makine/kaynak maliyeti uretim fiyatina ne kadar bindiriyor?"
+
+Gate:
+
+- `pnpm phase9d:verify`.
+- Tahsis analitik olarak etiketlenir; muhasebe gercegi gibi sunulmaz.
+- Finance/cashflow source tablolarini degistirmez.
+- Tam gate ve commit.
+
+---
+
+## 12. Faz 11 — Decision Facts / Metrics Katmani
+
+Amac: Dashboard, AI ve raporlar icin guvenli, deterministik, tekil bir facts API'si
+olusturmak. AI ham SQL'e veya ham Excel'e gitmez; sadece bu facts katmanindan
+cevap uretir.
+
+Teslimatlar:
+
+- `src/lib/facts/` modulu.
+- Fact registry:
+  - first negative month
+  - worst cash month
+  - cash runway
+  - debt pressure months
+  - top customer concentration
+  - missing amount count
+  - overdue payment load
+  - check maturity load
+  - loan debt service
+  - production margin loss
+  - stale-rate flags
+  - unresolved review count
+- Her fact icin:
+  - value
+  - severity
+  - explanation
+  - source links
+  - freshness timestamp
+  - confidence
+- `/api/facts` veya server-only loader.
+- Ana Ekran ve raporlar bu facts katmanini kullanmaya baslar.
+
+Gate:
+
+- Unit tests: fact hesaplari mevcut engine'lerle mutabik.
+- No mutation.
+- Source trace zorunlu.
+
+---
+
+## 13. Faz 12 — AI Soru-Cevap ve Rapor Yorum Katmani
+
+Amac: Kullanici sorularini dogrudan cevaplamak ve cevabi tablo/grafik/kaynak linkiyle gostermek.
+
+Ornek sorular:
+
+- "Eylul 2026 neden eksiye dusuyor?"
+- "Onumuzdeki 3 ay en riskli odeme hangisi?"
+- "Hangi musterinin gecikmesi kasayi bozuyor?"
+- "Bu ay hangi cek/kredi yukleri ust uste biniyor?"
+- "Akon fiyatlari basabasi karsiliyor mu?"
+
+Teslimatlar:
+
+- `/ask` veya Ana Ekran icinde soru-cevap paneli.
+- AI tool contract:
+  - facts oku
+  - scenario calistir
+  - rapor oku
+  - source row linki getir
+  - finansal kayit mutasyonu yasak
+- Cevap formatlari:
+  - kisa cevap
+  - nedenler
+  - kaynak satir/sekme linkleri
+  - onerilen aksiyon
+  - ilgili grafik/table view
+- Raporlarda "AI yorum uret" butonu.
+- AI response snapshot ve audit.
+
+Gate:
+
+- AI hicbir payment/check/loan/cashflow kaydini degistiremez.
+- Prompt injection ve source-content safety.
+- Model cevaplari deterministik facts ile sinirlandirilir.
+- Unit/integration tests: tool whitelist ve mutation guard.
+
+---
+
+## 14. Faz 13 — Senaryo v2 ve Finansman Optimizasyonu
+
+Amac: "what-if" motorunu karar motoruna yaklastirmak.
+
+Teslimatlar:
+
+- Musteri bazli gecikme:
+  - "Hpt 30 gun gecikirse"
+  - "Akon tahsilati 2 ay kayarsa"
+- Tek odeme/cek/kredi taksit erteleme:
+  - "Garanti kredi 2 ay otelenirse"
+  - "Cagdas cekleri 30 gun kayarsa"
+- Cek iskonto/faktoring senaryosu:
+  - nakit girisi bugune cekilir
+  - iskonto maliyeti gider olarak eklenir
+- Minimum finansman ihtiyaci:
+  - "Kasayi hic eksiye dusurmemek icin hangi ay ne kadar lazim?"
+- Finansman optimizasyonu:
+  - en az maliyetli mudahale kombinasyonu
+  - odeme erteleme vs kredi vs cek iskonto karsilastirmasi
+- Production -> cash link:
+  - kapasite/verim degisiminin gelir/gider proxy'si acik varsayimla nakit akisa baglanir
+
+Gate:
+
+- Scenario output read-only kalir.
+- Her varsayim `scenario_assumptions` satiri olarak acik beyan edilir.
+- Baseline degismez.
+- SQL cross-check ve before/after fingerprint.
+
+---
+
+## 15. Faz 14 — Veri Kalite Merkezi, Disgoru ve Aksiyon Workflow
+
+Amac: Sistemin sadece gostermesini degil, karar almayi engelleyen sorunlari
+yonetmesini ve dis varsayimlarla projeksiyonu zenginlestirmesini saglamak.
+
+Teslimatlar:
+
+### Veri kalite merkezi
+
+- `/data-quality` veya Yonetim altinda yeni merkez.
+- "Karar almayi engelleyen 5 veri sorunu".
+- Eksik tutar tamamlama akisi.
+- Negatif/anomali onay-ret.
+- Excel versiyon farki:
+  - workbook A vs workbook B
+  - degisen aylar
+  - degisen odeme kalemleri
+  - degisen formuller
+- `01_DASHBOARD`, `02_AYLIK OZET`, `00_REHBER` sekmelerinin ozel taninmasi.
+- Excel dashboard degerleri ile uygulama hesaplari arasinda mutabakat paneli.
+
+### Disgoru katmani
+
+- Varsayim tablolari:
+  - faiz oranlari
+  - kur
+  - enflasyon
+  - personel/asgari ucret
+  - enerji maliyeti
+  - kredi oranlari
+- Dis veri her zaman source ve tarih ile kaydedilir.
+- Otomatik internet verisi varsa user-reviewed status ister.
+- Disgoru, kaynak-of-truth'u degistirmez; sadece scenario/report/AI yorum katmanini besler.
+
+### Aksiyon workflow
+
+- Ana Ekran "Ne yapmaliyim?" listesi gorevlesir.
+- Gorev alanlari:
+  - title
+  - severity
+  - owner
+  - due date
+  - status
+  - source fact
+  - related entity
+  - note
+- Rapor ve AI cevaplari gorev olusturabilir; finansal kayit degistiremez.
+
+Gate:
+
+- Data-quality actionlari audit log yazar.
+- Dis veri finansal source tablolarini degistirmez.
+- Gorev workflow'u payment/check/loan mutasyonu yapmaz.
+- AI task creation varsa onayli ve auditli olur.
+
+---
+
+## 16. Commit ve Gate Kurali
+
+Her faz veya alt-faz ayri commitlenir.
+
+Minimum gate:
+
+```bash
+pnpm lint
+pnpm typecheck
+pnpm test
+pnpm db:verify
+pnpm import:real
+pnpm phase3:verify
+pnpm phase4:verify
+pnpm phase5:verify
+pnpm phase6:verify
+pnpm phase6b:verify
+pnpm phase7:verify
+pnpm phase8:verify
+pnpm phase9a:verify
+pnpm phase9b:verify
+pnpm phase9c:verify   # Faz 10C tamamlaninca
+pnpm phase9d:verify   # Faz 10D tamamlaninca
+pnpm build
+```
+
+Gerekirse phase-specific verify script'i once eklenir, sonra implementasyon yapilir.
+
+---
+
+## 17. Legacy v2 Plan
+
+Asagidaki v2 plan, domain kararlarini ve tarihsel baglami korumak icin saklanmistir.
+
 # MAS Nakit Radar — Implementation Plan v2
 
 > Product type: private, single-company, single-operator internal finance/operations SaaS.  
