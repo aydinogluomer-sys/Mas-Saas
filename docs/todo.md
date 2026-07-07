@@ -102,7 +102,12 @@
 - [x] /production: **"KÂR MARJI — AKON FİYATI vs BAŞABAŞ"** paneli (her senaryo kendi Akon oranıyla; **normal torna ZARARINA satış** bayraklı) + "Sabit gider dökümü" DetailsDisclosure. Ana Ekran "Üretim içgörüsü" şeridi zarar durumunu gösterir.
 - [x] **Gerçeklik:** iki maliyet sekmesinin kendi Akon oranları farklı (normal 27,5/21,88 · mesaili 25/19,89); her model kendi oranını kullanır.
 - [x] phase9a-verify: Akon kaynak K2/K4 birebir, 28 döküm kaynak-izli, marj=fiyat−başabaş, normal-torna zarar bayraklı, **mali bütünlük before==after**. Gate: typecheck/lint/test 149/db:verify/import:real/phase3-8+9a/build ✓.
-- [ ] 9B aylık gider dökümü · 9C makine ROI+ekipman (tablo, kişisel hariç) · 9D kapasite makine-dakika + faiz makine-tahsis.
+### 9B — DONE (aylık gider dökümü)
+- [x] F1 gider formülü analizi: `gider = BORÇLAR(B17)+STANDART(B26)+vendor(G3, zaten var)+PERSONEL(G17)+GENEL(G24)+banka(K3)`. 4 eksik blok (BORÇLAR/STANDART/PERSONEL/GENEL) **bileşen satırları** (alt-toplam değil → çift-sayım yok) eklendi.
+- [x] extractMonthlyCashflow genişletildi: A18:B25, A27:B31, F18:G23, F25:G31 → cashflow_lines (loan_payment/tax/operational_cost; etiket keyword ile sınıflandırma). Etiketsiz-ama-tutarlı satır (ör. ÜCRET GİDERLERİ) düşmez. Engine değişmedi (data.lines otomatik yazar).
+- [x] /cashflow/[monthId]: İŞLETME GİDERLERİ · VERGİ/SGK · KREDİ/FİNANSMAN grupları eklendi.
+- [x] phase9b-verify: **35 ay Σgider-satırı = kaynak B17+B26+G17+G24 mutabakatı** (çift-sayım yok), 910 satır %100 kaynak-izli, idempotent, **ay toplamları değişmedi** (kompozisyon gider/kasayı bozmaz). Gate: typecheck/lint/test 149/db:verify/import:real/phase3-8+9a+9b/build ✓.
+- [ ] 9C makine ROI+ekipman (tablo, kişisel hariç) · 9D kapasite makine-dakika + faiz makine-tahsis.
 
 ## Phase 8 — DONE (senaryo motoru) — MVP TAMAMLANDI
 

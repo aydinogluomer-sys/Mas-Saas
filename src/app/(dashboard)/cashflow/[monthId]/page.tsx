@@ -9,6 +9,9 @@ export const dynamic = "force-dynamic";
 const GROUPS: Array<[string, string]> = [
   ["customer_income", "MÜŞTERİ GELİRLERİ"],
   ["vendor_payment", "CARİ ÖDEMELER"],
+  ["operational_cost", "İŞLETME GİDERLERİ (personel · genel)"],
+  ["tax", "VERGİ / SGK"],
+  ["loan_payment", "KREDİ / FİNANSMAN"],
   ["bank_balance", "BANKA / HESAP BAKİYELERİ"],
   ["adjustment", "YAN TAKİP (adjustment)"],
 ];

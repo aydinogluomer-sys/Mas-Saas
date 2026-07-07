@@ -146,11 +146,23 @@ export interface CashflowLinePreview {
     | "customer_income"
     | "vendor_payment"
     | "bank_balance"
+    | "loan_payment"
+    | "tax"
+    | "operational_cost"
     | "adjustment"
     | "unknown";
   direction: "inflow" | "outflow" | "balance" | "unknown";
   label: string;
   amount: number | null;
+}
+
+// Phase 9B: classify a monthly expense label into a cashflow line_type.
+function expenseLineType(label: string): "loan_payment" | "tax" | "operational_cost" {
+  const n = normalizeTr(label);
+  if (n.includes("kredi") || n.includes("finansman")) return "loan_payment";
+  if (n.includes("sgk") || n.includes("kdv") || n.includes("muhtasar") || n.includes("vergi") || n.includes("stopaj"))
+    return "tax";
+  return "operational_cost";
 }
 
 export interface MonthlyCashflowPreview {
@@ -254,6 +266,29 @@ export function extractMonthlyCashflow(
       }
     }
   }
+  // Phase 9B: monthly expense breakdown — the LEAF component lines that compose the
+  // gider total F1 = B17(BORÇLAR) + B26(STANDART GİDERLER) + G3(vendor, already mapped) +
+  // G17(PERSONEL) + G24(GENEL) + K3(bank). We capture the components (not the block
+  // subtotals) so there is no double-count; Σcomponents = B17+B26+G17+G24.
+  const pushExpense = (r: number, labelCol: string, amountCol: string, block: string) => {
+    const label = asText(map[`${labelCol}${r}`]);
+    const amount = asNumber(map[`${amountCol}${r}`]);
+    // capture on amount OR label — a labelled-but-empty month keeps the line at null,
+    // and a numeric-but-unlabelled leaf (e.g. ÜCRET GİDERLERİ) is never dropped (reconciles).
+    if (!label && amount == null) return;
+    lines.push({
+      rowIndex: r,
+      line_type: expenseLineType(label ?? block),
+      direction: "outflow",
+      label: label ?? `(${block})`,
+      amount,
+    });
+  };
+  for (let r = 18; r <= 25; r++) pushExpense(r, "A", "B", "borçlar"); // BORÇLAR components
+  for (let r = 27; r <= 31; r++) pushExpense(r, "A", "B", "standart gider"); // STANDART GİDERLER components
+  for (let r = 18; r <= 23; r++) pushExpense(r, "F", "G", "personel gideri"); // PERSONEL components
+  for (let r = 25; r <= 31; r++) pushExpense(r, "F", "G", "genel gider"); // GENEL components
+
   // stray O-column amounts (orphans)
   for (let r = 3; r <= 16; r++) {
     const orphan = asNumber(map[`O${r}`]);
