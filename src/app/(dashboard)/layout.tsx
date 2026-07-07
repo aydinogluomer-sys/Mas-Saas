@@ -4,17 +4,16 @@ import { accessGateEnabled, hasValidSession } from "@/lib/auth";
 import { logoutAction } from "@/app/login/actions";
 import { Nav, type NavItem } from "@/components/ui/nav";
 
+// Primary nav is decision-first: 6 items. Secondary/admin routes (Takvim, Ödeme
+// kalemleri CRUD, İçe Aktarım, Raporlar, Hatırlatmalar, Üretim, İncelemeler) live under
+// Yönetim (/admin) and stay fully reachable — no route is removed.
 const NAV: NavItem[] = [
-  { href: "/radar", label: "RADAR" },
-  { href: "/calendar", label: "TAKVİM" },
-  { href: "/payments", label: "ÖDEMELER" },
-  { href: "/imports", label: "İÇE AKTARIM" },
-  { href: "/cashflow", label: "NAKİT" },
-  { href: "/financing", label: "ÇEK/KREDİ" },
-  { href: "/reports", label: "RAPOR" },
-  { href: "/reminders", label: "HATIRLATMA" },
-  { href: "/production", label: "ÜRETİM" },
-  { href: "/scenarios", label: "SENARYO" },
+  { href: "/", label: "ANA EKRAN" },
+  { href: "/radar", label: "ÖDEMELER" },
+  { href: "/cashflow", label: "NAKİT AKIŞ" },
+  { href: "/financing", label: "FİNANSMAN" },
+  { href: "/scenarios", label: "SENARYOLAR" },
+  { href: "/admin", label: "YÖNETİM" },
 ];
 
 export default async function DashboardLayout({ children }: { children: ReactNode }) {

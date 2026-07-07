@@ -4,6 +4,7 @@ import { test, expect } from "@playwright/test";
 // <html> before each shot, which hides [data-volatile] elements (timestamps, "bugün"
 // badges) via CSS in globals.css. Seed the DB with a stable domain first.
 const ROUTES: Array<{ path: string; name: string }> = [
+  { path: "/", name: "home" },
   { path: "/radar", name: "radar" },
   { path: "/cashflow", name: "cashflow" },
   { path: "/financing", name: "financing" },

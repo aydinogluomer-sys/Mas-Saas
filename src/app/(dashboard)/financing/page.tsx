@@ -14,7 +14,7 @@ import {
 } from "@/lib/financing/rules";
 import { Badge, type Tone } from "@/components/ui/badge";
 import { Num, Panel, fmtTL } from "@/components/ui/panel";
-import { PageHeader } from "@/components/ui/shell";
+import { DetailsDisclosure, PageHeader } from "@/components/ui/shell";
 
 export const dynamic = "force-dynamic";
 
@@ -228,9 +228,9 @@ export default async function FinancingPage({
         </div>
       )}
 
-      {/* maturity calendar (weeks) */}
+      {/* maturity calendar (weeks) — detail, collapsed */}
       {weekGroups.length > 0 && (
-        <Panel title="VADE TAKVİMİ — İLK 12 HAFTA">
+        <DetailsDisclosure label="Vade takvimi — ilk 12 hafta">
           <div className="grid grid-cols-1 gap-1 sm:grid-cols-2">
             {weekGroups.map((w) => (
               <div key={w.key} className="flex items-center justify-between border border-zinc-900 bg-black/30 px-2 py-1">
@@ -246,12 +246,12 @@ export default async function FinancingPage({
               </div>
             ))}
           </div>
-        </Panel>
+        </DetailsDisclosure>
       )}
 
-      {/* checks ledger */}
+      {/* checks ledger — detail with source-trace links, collapsed */}
       {checks.length > 0 && (
-        <Panel title={`ÇEK DEFTERİ — ${checks.length}`}>
+        <DetailsDisclosure label={`Çek defteri — ${checks.length} çek (kaynak kayıt)`}>
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
@@ -295,10 +295,10 @@ export default async function FinancingPage({
               </tbody>
             </table>
           </div>
-          <p className="mt-2 font-mono text-[10px] text-zinc-600">
+          <p className="mt-2 text-[11px]" style={{ color: "var(--text-4)" }}>
             Negatif işaretli tutar = ödeme yükümlülüğü (anomali değil, yön). Toplam {monthGroups.length} ayda dağılıyor.
           </p>
-        </Panel>
+        </DetailsDisclosure>
       )}
     </>
   );

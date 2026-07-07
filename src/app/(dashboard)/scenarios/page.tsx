@@ -4,7 +4,7 @@ import { listScenarioRuns } from "@/lib/scenarios/engine";
 import { loadCashMonths } from "@/lib/cashflow/engine";
 import { Badge, type Tone } from "@/components/ui/badge";
 import { Panel } from "@/components/ui/panel";
-import { Disclaimer, PageHeader } from "@/components/ui/shell";
+import { Disclaimer, DetailsDisclosure, PageHeader } from "@/components/ui/shell";
 import { runScenarioAction } from "./actions";
 
 export const dynamic = "force-dynamic";
@@ -39,44 +39,64 @@ export default async function ScenariosPage({
 
       <Disclaimer tone="accent">⚠ Senaryo çıktısı tahmindir; muhasebe gerçeği değildir. Kaynak kayıtları değiştirmez.</Disclaimer>
 
-      <Panel title="SENARYO ÇALIŞTIR">
-        {!hasBaseline ? (
-          <p className="text-sm text-zinc-500">
+      {!hasBaseline ? (
+        <Panel title="SENARYO ÇALIŞTIR">
+          <p className="text-sm" style={{ color: "var(--text-3)" }}>
             Baz veri yok. Önce{" "}
             <Link className="underline underline-offset-2" href="/cashflow">nakit akışını</Link> aktarın.
           </p>
-        ) : (
-          <>
-            <p className="mb-3 font-mono text-[11px] text-zinc-500">
-              Baz senaryo: nakit akış <b>{baseline.length} ay</b> ({baseline[0].monthStart.slice(0, 7)}..{baseline[baseline.length - 1].monthStart.slice(0, 7)})
-              {sp.from ? ` · kaynak: ${sp.from}` : ""}
+        </Panel>
+      ) : (
+        <>
+          {/* Hızlı senaryolar: yalnız motorun BİREBİR desteklediği varsayımlar */}
+          <Panel title="HIZLI SENARYOLAR"
+            subtitle={`Baz: nakit akış ${baseline.length} ay (${baseline[0].monthStart.slice(0, 7)}..${baseline[baseline.length - 1].monthStart.slice(0, 7)})${sp.from ? ` · kaynak: ${sp.from}` : ""}`}>
+            <div className="flex flex-wrap gap-2">
+              <Preset name="Gelir %10 düşerse" fields={{ revenuePct: "-10" }} />
+              <Preset name="Gider %10 artarsa" fields={{ expensePct: "10" }} />
+              <Preset name="Borç-servisi dahil edilirse" fields={{ includeDebtService: "on" }} />
+              <button
+                type="button" disabled
+                title="Müşteri bazlı gecikme motoru henüz yok (mevcut motor tüm tahsilatı kaydırır)"
+                className="cursor-not-allowed border px-3 py-2 text-[11px] opacity-50"
+                style={{ borderColor: "var(--line-faint)", color: "var(--text-4)", borderRadius: "var(--radius)" }}
+              >
+                Hpt 30 gün gecikirse · müşteri bazlı gecikme yakında
+              </button>
+            </div>
+            <p className="mt-2 text-[11px]" style={{ color: "var(--text-4)" }}>
+              Her preset adı ne diyorsa motor tam onu uygular. Belirsiz tutar sıfır sayılmaz.
             </p>
+          </Panel>
+
+          <DetailsDisclosure label="Gelişmiş senaryo — özel varsayımlar">
             <form action={runScenarioAction} className="grid grid-cols-1 gap-3 sm:grid-cols-2">
               <Field label="Senaryo adı" name="name" type="text" placeholder="ör. Gelir %10 düşer + borç servisi" full />
               <Field label="Gelir değişimi %" name="revenuePct" hint="ör. -10 = %10 düşüş" />
               <Field label="Gider değişimi %" name="expensePct" hint="ör. +15 = %15 artış" />
-              <Field label="Müşteri gecikmesi (ay)" name="customerDelayMonths" hint="tahsilatı N ay ileri kaydırır" />
-              <Field label="Kapasite kullanım %" name="capacityUtilizationPct" hint="gelir vekili" />
+              <Field label="Müşteri gecikmesi (ay)" name="customerDelayMonths" hint="tüm tahsilatı N ay ileri kaydırır" />
+              <Field label="Kapasite kullanım %" name="capacityUtilizationPct" hint="gelir vekili (üretim verisine bağlı değil)" />
               <Field label="Verim %" name="efficiencyPct" hint="gider vekili (artış=gider düşer)" />
               <input type="hidden" name="scenarioType" value="combined_custom_scenario" />
-              <label className="flex items-center gap-2 font-mono text-[11px] text-zinc-300">
+              <label className="flex items-center gap-2 text-[12px]" style={{ color: "var(--text-2)" }}>
                 <input type="checkbox" name="includeDebtService" className="accent-violet-500" />
                 Borç-servisi overlay dahil et (çek + kredi taksiti gidere eklensin)
               </label>
               <div className="sm:col-span-2">
-                <button type="submit" className="border border-violet-700 bg-violet-950/40 px-4 py-2 font-mono text-[11px] uppercase tracking-wider text-violet-200">
+                <button type="submit" className="border px-4 py-2 font-mono text-[11px] uppercase tracking-wider"
+                  style={{ color: "var(--accent)", borderColor: "var(--accent)", background: "color-mix(in srgb, var(--accent) 12%, transparent)", borderRadius: "var(--radius)" }}>
                   senaryoyu çalıştır →
                 </button>
-                <span className="ml-2 text-[11px] text-zinc-500">boş bırakılan varsayım uygulanmaz; belirsiz tutar sıfır sayılmaz</span>
+                <span className="ml-2 text-[11px]" style={{ color: "var(--text-4)" }}>boş bırakılan varsayım uygulanmaz</span>
               </div>
             </form>
-          </>
-        )}
-      </Panel>
+          </DetailsDisclosure>
+        </>
+      )}
 
-      <Panel title={`SENARYO ÇALIŞMALARI — ${runs.length}`}>
+      <DetailsDisclosure label={`Geçmiş senaryo çalışmaları — ${runs.length}`} defaultOpen={runs.length > 0}>
         {runs.length === 0 ? (
-          <p className="text-sm text-zinc-500">Henüz senaryo çalıştırılmadı.</p>
+          <p className="text-sm" style={{ color: "var(--text-3)" }}>Henüz senaryo çalıştırılmadı.</p>
         ) : (
           <table className="w-full text-sm">
             <thead>
@@ -105,8 +125,25 @@ export default async function ScenariosPage({
             </tbody>
           </table>
         )}
-      </Panel>
+      </DetailsDisclosure>
     </>
+  );
+}
+
+/** Quick preset: a one-click form that reuses the unchanged runScenarioAction. */
+function Preset({ name, fields }: { name: string; fields: Record<string, string> }) {
+  return (
+    <form action={runScenarioAction}>
+      <input type="hidden" name="name" value={name} />
+      <input type="hidden" name="scenarioType" value="combined_custom_scenario" />
+      {Object.entries(fields).map(([k, v]) => (
+        <input key={k} type="hidden" name={k} value={v} />
+      ))}
+      <button type="submit" className="card-hover border px-3 py-2 text-[12px]"
+        style={{ color: "var(--accent)", borderColor: "var(--accent)", background: "color-mix(in srgb, var(--accent) 10%, transparent)", borderRadius: "var(--radius)" }}>
+        {name} →
+      </button>
+    </form>
   );
 }
 

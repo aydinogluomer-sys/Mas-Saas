@@ -123,3 +123,13 @@
 - [x] A11y: h1(PageHeader)/h2(Panel) semantik, `:focus-visible` ring, chart `role=img`+`aria-label`+`sr-only` özet, nav `aria-current`, TableShell labeled region, renk-tek-anlam yok. Responsive: KPI grid 4/5→2, nav wrap, geniş tablolar TableShell'de kayar.
 - [x] Playwright visual regression: 7 route baseline (`tests/visual/__snapshots__`), deterministik `data-vr` + `[data-volatile]` gizleme; `pnpm test:visual` / `test:visual:update`. Gate: lint ✓ typecheck ✓ vitest 138 ✓ db:verify ✓ import:real ✓ phase3-8:verify ✓ build ✓ 9-route smoke ✓ visual 7/7 ✓.
 - [x] docs/frontend-polish-guidelines.md yazıldı.
+
+## UX refactor — DONE (decision-first cockpit; mali mantık/hesaplama/modül DEĞİŞMEDİ)
+
+- [x] Gerçek Ana Ekran `/` (redirect kaldırıldı, `(dashboard)/page.tsx`): 5 KeyStat (bugün çıkış · 7 gün çıkış · geciken · ilk negatif ay · en kötü ay) + tek-cümle "en büyük risk" + "Ne yapmalıyım?" (max 5 deterministik aksiyon) + durum şeridi (son rapor / hatırlatma / üretim). Salt-okunur, mevcut loader'ları composla; yeni sorgu/math yok.
+- [x] `src/lib/home/cockpit.ts` saf modül (buildActions/pickHeadlineRisk) + 7 birim test — severity sıralama, max-5 cap, null-asla-0, boş-durum tek satır, no-LLM. vitest 145.
+- [x] Nav birincil 6'ya indirildi (Ana Ekran/Ödemeler=/radar/Nakit Akış/Finansman/Senaryolar/Yönetim); ikincil route'lar `/admin` Yönetim hub'ında (Takvim, ödeme kalemleri, içe aktarım, raporlar, hatırlatmalar, üretim, incelemeler) — hiçbir route silinmedi.
+- [x] Ana route'lar yeniden sıralandı (özet→içgörü→aksiyon→grafik→detay); teknik detaylar (cashflow 35-ay tablosu, financing çek defteri + vade takvimi, scenarios geçmiş) `DetailsDisclosure` (native `<details>`, JS'siz, erişilebilir) altında collapse.
+- [x] Senaryo: 3 hızlı preset (Gelir %10↓, Gider %10↑, Borç-servisi dahil — motor birebir) + disabled "Hpt 30 gün gecikirse · müşteri bazlı gecikme yakında" çipi; advanced özel form collapse. Kural: preset adı = motorun tam yaptığı.
+- [x] Görsel sadeleme: body fontu sans (sayılar/kodlar/etiketler mono kalır), büyük hero sayılar (KeyStat), düz Türkçe etiketler, daha az panel.
+- [x] Visual spec'e `/` eklendi; guidelines'a IA bölümü. Gate: lint ✓ typecheck ✓ vitest 145 ✓ db:verify ✓ import:real ✓ phase3-8:verify ✓ build ✓ 11-route smoke ✓ visual 8/8 ✓.

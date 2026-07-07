@@ -85,6 +85,23 @@ pnpm test:visual            # run visual smoke against a running prod server
 pnpm test:visual:update     # update snapshots after an intentional UI change
 ```
 
+## Information architecture (decision-first)
+
+- **Default screens explain; detail screens prove.** `/` is a real **Ana Ekran** cockpit
+  (not a redirect): 3–5 big `KeyStat` cards, a one-line headline risk, a deterministic
+  **"Ne yapmalıyım?"** list (max 5, `src/lib/home/cockpit.ts`), and a status strip (son
+  rapor / hatırlatma / üretim). It answers the 7 operator questions in ~20s.
+- **Primary nav = 6**: Ana Ekran, Ödemeler (`/radar`), Nakit Akış, Finansman, Senaryolar,
+  Yönetim. Secondary routes (Takvim, Ödeme kalemleri, İçe Aktarım, Raporlar, Hatırlatmalar,
+  Üretim, İncelemeler) live under **Yönetim** (`/admin`) — reachable, not deleted.
+- **Order per route**: summary → insight → action → chart → details/table last. Wrap
+  technical detail (long tables, source-trace links, review internals) in
+  `DetailsDisclosure` ("Detayları göster" / "Kaynak kayıt"), collapsed by default.
+- **Presets over forms**: `/scenarios` offers 3 one-click presets the engine supports
+  **exactly**; the custom form is collapsed under "Gelişmiş senaryo". A preset's name must
+  do exactly what the engine does — no approximate/mislabeled quick presets.
+- **Body font is sans; numbers/codes/section labels are mono** (`font-mono`/`.tnum`).
+
 ## Do / Don't
 
 - ✅ Use tokens, primitives, tabular numerals, disclosed nulls, dominant critical items.

@@ -141,6 +141,59 @@ export function TableShell({ children }: { children: ReactNode }) {
   );
 }
 
+/* ── KeyStat: large hero number for the Ana Ekran cockpit (decision-first) ── */
+export function KeyStat({
+  label,
+  value,
+  tone = "neutral",
+  sub,
+  href,
+}: {
+  label: ReactNode;
+  value: ReactNode;
+  tone?: "neutral" | "pos" | "neg" | "warn" | "info";
+  sub?: ReactNode;
+  href?: string;
+}) {
+  const color =
+    tone === "neg" ? "var(--neg)" : tone === "pos" ? "var(--pos)" : tone === "warn" ? "var(--warn)" : tone === "info" ? "var(--info)" : "var(--text-1)";
+  const inner = (
+    <div
+      className="card-hover flex h-full flex-col justify-between border p-3"
+      style={{ background: "var(--surface-2)", borderColor: "var(--line)", borderRadius: "var(--radius)" }}
+    >
+      <div className="text-[11px]" style={{ color: "var(--text-3)" }}>{label}</div>
+      <div className="mt-2 font-mono text-2xl leading-none tabular-nums" style={{ color }}>{value}</div>
+      {sub && <div className="mt-1.5 text-[11px]" style={{ color: "var(--text-4)" }}>{sub}</div>}
+    </div>
+  );
+  return href ? <a href={href} className="block">{inner}</a> : inner;
+}
+
+/* ── DetailsDisclosure: native, accessible, JS-free collapse for technical detail ── */
+export function DetailsDisclosure({
+  label,
+  children,
+  defaultOpen = false,
+}: {
+  label: ReactNode;
+  children: ReactNode;
+  defaultOpen?: boolean;
+}) {
+  return (
+    <details open={defaultOpen} className="group border" style={{ borderColor: "var(--line-faint)", borderRadius: "var(--radius)", background: "var(--surface-1)" }}>
+      <summary
+        className="cursor-pointer list-none px-3 py-2 text-[11px] uppercase tracking-[0.12em] outline-none [&::-webkit-details-marker]:hidden"
+        style={{ color: "var(--text-3)" }}
+      >
+        <span className="mr-1 inline-block transition-transform group-open:rotate-90" aria-hidden>▸</span>
+        {label}
+      </summary>
+      <div className="border-t p-3" style={{ borderColor: "var(--line-faint)" }}>{children}</div>
+    </details>
+  );
+}
+
 /* ── Disclaimer: analytics/scenario "not accounting truth" banner ── */
 export function Disclaimer({ tone = "warn", children }: { tone?: "warn" | "accent"; children: ReactNode }) {
   const color = tone === "accent" ? "var(--accent)" : "var(--warn)";

@@ -7,7 +7,7 @@ import { buildProjection, concentration, horizonCards } from "@/lib/radar/rules"
 import { loadDebtOverlay } from "@/lib/reports/engine";
 import { Badge, type Tone } from "@/components/ui/badge";
 import { Num, Panel, fmtTL } from "@/components/ui/panel";
-import { ChartShell, KpiCard, PageHeader, StatBox, TableShell } from "@/components/ui/shell";
+import { ChartShell, DetailsDisclosure, KpiCard, PageHeader, StatBox, TableShell } from "@/components/ui/shell";
 import { CashTrendChart, ConcentrationBars, IncomeExpenseChart } from "@/components/cashflow/charts";
 
 const PRESSURE_TONE: Record<string, Tone> = { high: "red", watch: "amber", none: "neutral" };
@@ -154,10 +154,7 @@ export default async function CashflowPage({
         </Panel>
       </div>
 
-      <Panel
-        title={`AYLAR — ${months.length}`}
-        right={highPressure > 0 ? <Badge tone="red">{highPressure} ayda borç-servisi baskısı</Badge> : undefined}
-      >
+      <DetailsDisclosure label={`Aylık detay tablosu — ${months.length} ay${highPressure > 0 ? ` · ${highPressure} ayda borç baskısı` : ""}`}>
         <TableShell>
           <table className="w-full text-sm">
             <thead>
@@ -209,11 +206,11 @@ export default async function CashflowPage({
             </tbody>
           </table>
         </TableShell>
-        <p className="mt-2 font-mono text-[10px] text-zinc-600">
+        <p className="mt-2 text-[11px]" style={{ color: "var(--text-4)" }}>
           Borç servisi = o ay vadesi gelen çek + kredi taksiti (bilinen). Kırmızı &quot;baskı&quot; = negatif kasa + borç yükü;
           amber &quot;izle&quot; = kasa pozitif ama borç yükü kayda değer.
         </p>
-      </Panel>
+      </DetailsDisclosure>
     </>
   );
 }

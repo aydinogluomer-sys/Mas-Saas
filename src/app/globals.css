@@ -36,9 +36,13 @@
 body {
   background: var(--surface-0);
   color: var(--text-1);
-  font-family: var(--font-mono, ui-monospace, "SFMono-Regular", "Menlo", "Consolas", monospace);
+  /* Body/prose is sans for readability; numbers, codes and section labels opt into mono
+     via Tailwind's font-mono / the .tnum helper. Reduces the terminal-heavy feel. */
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
+  font-size: 14px;
+  line-height: 1.5;
 }
 
 /* ── accessibility base ── */
