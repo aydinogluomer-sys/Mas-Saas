@@ -8,6 +8,7 @@ import { loadDebtOverlay, listReports } from "@/lib/reports/engine";
 import { deliveryCounts } from "@/lib/reminders/engine";
 import { loadCapacityModels, loadCostModels } from "@/lib/production/engine";
 import { priceMargin } from "@/lib/production/rules";
+import { loadDecisionFacts } from "@/lib/facts/engine";
 import { istanbulDateISO } from "@/lib/reports/rules";
 import { buildActions, pickHeadlineRisk, type CockpitFacts } from "@/lib/home/cockpit";
 import { Badge, type Tone } from "@/components/ui/badge";
@@ -67,7 +68,7 @@ export default async function AnaEkranPage() {
     );
   }
 
-  const [overlay, reports, reminders, caps, costs, incomeLines, t] = await Promise.all([
+  const [overlay, reports, reminders, caps, costs, incomeLines, decisionFacts, t] = await Promise.all([
     loadDebtOverlay(pool),
     listReports(pool),
     deliveryCounts(pool),
@@ -76,6 +77,7 @@ export default async function AnaEkranPage() {
     pool.query(`select coalesce(p.name, cl.label) as key, cl.amount::float8 as amount
                 from public.cashflow_lines cl left join public.parties p on p.id=cl.party_id
                 where cl.line_type='customer_income'`),
+    loadDecisionFacts(pool, today),
     loadThresholds(pool),
   ]);
   void t;
@@ -107,6 +109,10 @@ export default async function AnaEkranPage() {
   };
   const headline = pickHeadlineRisk(facts);
   const actions = buildActions(facts);
+  const topDecisionFacts = (decisionFacts.some((f) => f.severity !== "low")
+    ? decisionFacts.filter((f) => f.severity !== "low")
+    : decisionFacts
+  ).slice(0, 5);
   const lastReport = reports[0];
 
   return (
@@ -136,6 +142,28 @@ export default async function AnaEkranPage() {
         <div className="text-[10px] uppercase tracking-[0.14em]" style={{ color: "var(--text-3)" }}>En büyük risk</div>
         <div className="mt-0.5 text-sm" style={{ color: `var(--${headline.tone})` }}>{headline.text}</div>
       </div>
+
+      <Panel title="Karar sinyalleri">
+        <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+          {topDecisionFacts.map((f) => (
+            <Link
+              key={f.key}
+              href={f.sourceHref}
+              className="card-hover border px-2.5 py-2"
+              style={{ borderColor: "var(--line)", borderRadius: "var(--radius)", background: "var(--surface-2)" }}
+            >
+              <div className="flex items-start justify-between gap-2">
+                <div>
+                  <div className="font-mono text-[10px] uppercase tracking-wider" style={{ color: "var(--text-3)" }}>{f.title}</div>
+                  <div className="mt-0.5 font-mono text-sm tabular-nums" style={{ color: "var(--text-1)" }}>{f.value}</div>
+                </div>
+                <Badge tone={SEV_TONE[f.severity]}>{f.severity === "critical" ? "acil" : f.severity === "high" ? "yüksek" : f.severity === "medium" ? "orta" : "düşük"}</Badge>
+              </div>
+              <p className="mt-1 text-[11px]" style={{ color: "var(--text-4)" }}>{f.explanation}</p>
+            </Link>
+          ))}
+        </div>
+      </Panel>
 
       {/* 3) Ne yapmalıyım? (max 5, deterministik) */}
       <Panel title="Ne yapmalıyım?">

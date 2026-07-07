@@ -46,7 +46,7 @@ Degismez kurallar:
 | 8 | Uretim kapasite/maliyet analitigi | DONE |
 | 9 | Salt-okunur senaryo motoru MVP | DONE |
 | 10 | Excel coverage close-out: 9A/9B/9C/9D | DONE |
-| 11 | Decision facts / metrics katmani | PLANNED |
+| 11 | Decision facts / metrics katmani | IN PROGRESS |
 | 12 | AI soru-cevap ve rapor yorum katmani | PLANNED |
 | 13 | Senaryo v2 ve finansman optimizasyonu | PLANNED |
 | 14 | Veri kalite merkezi, disgoru ve aksiyon workflow | PLANNED |
@@ -350,6 +350,8 @@ Gate:
 ---
 
 ## 12. Faz 11 — Decision Facts / Metrics Katmani
+
+Durum: IN PROGRESS. 11A ile `src/lib/facts` registry, `/api/facts` ve Ana Ekran karar sinyalleri eklendi.
 
 Amac: Dashboard, AI ve raporlar icin guvenli, deterministik, tekil bir facts API'si
 olusturmak. AI ham SQL'e veya ham Excel'e gitmez; sadece bu facts katmanindan
