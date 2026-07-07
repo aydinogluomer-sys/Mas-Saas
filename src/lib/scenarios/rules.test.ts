@@ -66,6 +66,37 @@ describe("debt-service overlay adds to expense (read-only)", () => {
   });
 });
 
+describe("targeted Phase 13A overlays", () => {
+  it("moves only the disclosed income amount across months", () => {
+    const out = applyScenario(baseline, {}, [], [
+      { monthStart: "2026-05-01", incomeDelta: -50000 },
+      { monthStart: "2026-06-01", incomeDelta: 50000 },
+    ]);
+    expect(out.map((m) => m.scenarioIncome)).toEqual([50000, 150000, 100000]);
+    expect(out.map((m) => m.scenarioClosing)).toEqual([70000, 140000, 160000]);
+    expect(out[0].baselineIncome).toBe(100000);
+  });
+
+  it("delays a disclosed outflow without mutating baseline expenses", () => {
+    const out = applyScenario(baseline, {}, [], [
+      { monthStart: "2026-05-01", expenseDelta: -40000 },
+      { monthStart: "2026-06-01", expenseDelta: 40000 },
+    ]);
+    expect(out.map((m) => m.scenarioExpense)).toEqual([40000, 120000, 80000]);
+    expect(out.map((m) => m.baselineExpense)).toEqual([80000, 80000, 80000]);
+  });
+
+  it("factoring advances net cash and keeps the fee as expense", () => {
+    const out = applyScenario(baseline, {}, [], [
+      { monthStart: "2026-07-01", incomeDelta: -100000 },
+      { monthStart: "2026-05-01", incomeDelta: 96000, expenseDelta: 4000 },
+    ]);
+    expect(out[0].scenarioIncome).toBe(196000);
+    expect(out[0].scenarioExpense).toBe(84000);
+    expect(compareScenarioToBaseline(out).finalDelta).toBe(-8000);
+  });
+});
+
 describe("capacity utilization + efficiency assumptions", () => {
   it("capacity +10% raises income; efficiency +10% lowers expense", () => {
     const out = applyScenario(baseline, { capacityUtilizationPct: 0.1, efficiencyPct: 0.1 });

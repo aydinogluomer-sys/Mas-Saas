@@ -15,12 +15,23 @@ function numFromForm(v: FormDataEntryValue | null): number | null {
   const n = Number(v);
   return Number.isFinite(n) ? n : null;
 }
+function strFromForm(v: FormDataEntryValue | null): string | null {
+  const s = String(v ?? "").trim();
+  return s ? s : null;
+}
 
 export async function runScenarioAction(formData: FormData): Promise<void> {
   const assumptions: ScenarioAssumptions = {
     revenuePct: pctFromForm(formData.get("revenuePct")),
     expensePct: pctFromForm(formData.get("expensePct")),
     customerDelayMonths: numFromForm(formData.get("customerDelayMonths")),
+    targetIncomeLabel: strFromForm(formData.get("targetIncomeLabel")),
+    targetIncomeDelayMonths: numFromForm(formData.get("targetIncomeDelayMonths")),
+    targetOutflowLabel: strFromForm(formData.get("targetOutflowLabel")),
+    targetOutflowDelayMonths: numFromForm(formData.get("targetOutflowDelayMonths")),
+    factoringIncomeLabel: strFromForm(formData.get("factoringIncomeLabel")),
+    factoringAdvanceMonth: strFromForm(formData.get("factoringAdvanceMonth")),
+    factoringFeePct: pctFromForm(formData.get("factoringFeePct")),
     capacityUtilizationPct: pctFromForm(formData.get("capacityUtilizationPct")),
     efficiencyPct: pctFromForm(formData.get("efficiencyPct")),
     includeDebtService: formData.get("includeDebtService") === "on",

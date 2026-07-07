@@ -10,12 +10,25 @@ export interface ScenarioAssumptions {
   revenuePct?: number | null;            // income ×(1+revenuePct); e.g. -0.1 = %10 düşüş
   expensePct?: number | null;            // expense ×(1+expensePct)
   customerDelayMonths?: number | null;   // shift income forward N months (timing, not amount)
+  targetIncomeLabel?: string | null;
+  targetIncomeDelayMonths?: number | null;
+  targetOutflowLabel?: string | null;
+  targetOutflowDelayMonths?: number | null;
+  factoringIncomeLabel?: string | null;
+  factoringAdvanceMonth?: string | null;
+  factoringFeePct?: number | null;
   includeDebtService?: boolean;          // add debt-service outflow to expense
   capacityUtilizationPct?: number | null;// revenue proxy: income ×(1+util)
   efficiencyPct?: number | null;         // expense proxy: expense ×(1−eff)
 }
 
 export interface DebtMonthLite { monthStart: string; knownOutflow: number }
+export interface ScenarioAdjustment {
+  monthStart: string;
+  incomeDelta?: number;
+  expenseDelta?: number;
+  note?: string;
+}
 
 export interface ScenarioMonth {
   monthStart: string;
@@ -33,6 +46,11 @@ function scale(amount: number | null, factor: number): number | null {
   return amount == null ? null : amount * factor;
 }
 
+function addKnownDelta(amount: number | null, delta: number | undefined): number | null {
+  if (!delta) return amount;
+  return amount == null ? null : amount + delta;
+}
+
 /**
  * Applies assumptions to a baseline month series and RE-CHAINS closing balances.
  * scenarioClosing[i] = scenarioOpening[i] + adjIncome[i] − adjExpense[i], where
@@ -45,9 +63,18 @@ export function applyScenario(
   baseline: CashMonth[],
   assumptions: ScenarioAssumptions,
   debt: DebtMonthLite[] = [],
+  adjustments: ScenarioAdjustment[] = [],
 ): ScenarioMonth[] {
   const sorted = [...baseline].sort((a, b) => (a.monthStart < b.monthStart ? -1 : 1));
   const debtBy = new Map(debt.map((d) => [d.monthStart, d.knownOutflow]));
+  const adjBy = new Map<string, { incomeDelta: number; expenseDelta: number }>();
+  for (const a of adjustments) {
+    const key = a.monthStart.slice(0, 10);
+    const existing = adjBy.get(key) ?? { incomeDelta: 0, expenseDelta: 0 };
+    existing.incomeDelta += a.incomeDelta ?? 0;
+    existing.expenseDelta += a.expenseDelta ?? 0;
+    adjBy.set(key, existing);
+  }
   const revFactor = 1 + (assumptions.revenuePct ?? 0) + (assumptions.capacityUtilizationPct ?? 0);
   const expFactor = 1 + (assumptions.expensePct ?? 0);
   const effFactor = 1 - (assumptions.efficiencyPct ?? 0);
@@ -88,6 +115,15 @@ export function applyScenario(
     void i;
     return e;
   });
+
+  // 2b) targeted overlays from cashflow_lines. Unknown monthly totals stay unknown;
+  // scenario deltas are disclosed planning assumptions, not source-table mutations.
+  for (let i = 0; i < sorted.length; i++) {
+    const adj = adjBy.get(sorted[i].monthStart);
+    if (!adj) continue;
+    shiftedIncome[i] = addKnownDelta(shiftedIncome[i], adj.incomeDelta);
+    scenarioExpense[i] = addKnownDelta(scenarioExpense[i], adj.expenseDelta);
+  }
 
   // 3) re-chain closings
   const out: ScenarioMonth[] = [];
@@ -210,6 +246,9 @@ export function buildScenarioInsights(c: ScenarioComparison, a: ScenarioAssumpti
 
   if (c.worstMonth != null && c.worstBalance != null && c.worstBalance < 0)
     out.push(`En büyük baskı ayı ${ym(c.worstMonth)} (${fmtTL(c.worstBalance)}).`);
+
+  if (c.maxCashGap != null && c.maxCashGap > 0)
+    out.push(`Kasayi hic eksiye dusurmemek icin minimum finansman ihtiyaci ${fmtTL(c.maxCashGap)}.`);
 
   if (a.includeDebtService) out.push("Borç-servisi dahil edildiğinde nakit açığı artıyor (çek+kredi taksiti gidere eklendi).");
 

@@ -13,6 +13,7 @@ import {
   buildScenarioInsights,
   compareScenarioToBaseline,
   scenarioConfidence,
+  type ScenarioAdjustment,
   type ScenarioAssumptions,
   type ScenarioComparison,
 } from "./rules";
@@ -29,6 +30,101 @@ export type ScenarioType =
   | "revenue_up_down_percent" | "expense_up_down_percent" | "customer_delay_days"
   | "debt_service_overlay" | "capacity_utilization_change" | "efficiency_change"
   | "combined_custom_scenario";
+
+function norm(s: string): string {
+  return s
+    .normalize("NFD")
+    .replace(/\p{Diacritic}/gu, "")
+    .replace(/\u0131/g, "i")
+    .replace(/\u0130/g, "i")
+    .toLowerCase()
+    .trim();
+}
+
+function addMonthsISO(monthStart: string, months: number): string {
+  const [y, m] = monthStart.slice(0, 7).split("-").map(Number);
+  const d = new Date(Date.UTC(y, m - 1, 1));
+  d.setUTCMonth(d.getUTCMonth() + months);
+  return d.toISOString().slice(0, 10);
+}
+
+function monthStart(raw: string | null | undefined): string | null {
+  if (!raw) return null;
+  const m = raw.match(/^(\d{4})-(\d{2})/);
+  return m ? `${m[1]}-${m[2]}-01` : null;
+}
+
+function matchesNeedle(needle: string | null | undefined, ...hay: Array<string | null | undefined>): boolean {
+  const n = norm(needle ?? "");
+  if (!n) return false;
+  return hay.some((h) => norm(h ?? "").includes(n));
+}
+
+interface CashflowLineLite {
+  monthStart: string;
+  lineType: string;
+  direction: string;
+  label: string | null;
+  partyName: string | null;
+  amount: number;
+}
+
+async function loadCashflowLines(pool: Pool): Promise<CashflowLineLite[]> {
+  const r = await pool.query(
+    `select to_char(cm.month_start,'YYYY-MM-DD') as "monthStart",
+            cl.line_type as "lineType", cl.direction, cl.label,
+            p.name as "partyName", cl.amount::float8 as amount
+     from public.cashflow_lines cl
+     join public.cashflow_months cm on cm.id=cl.cashflow_month_id
+     left join public.parties p on p.id=cl.party_id
+     where cl.amount is not null
+     order by cm.month_start, cl.label`,
+  );
+  return r.rows as CashflowLineLite[];
+}
+
+async function buildScenarioAdjustments(pool: Pool, a: ScenarioAssumptions): Promise<ScenarioAdjustment[]> {
+  const adjustments: ScenarioAdjustment[] = [];
+  const lines = await loadCashflowLines(pool);
+
+  const incomeDelay = Math.max(0, Math.round(a.targetIncomeDelayMonths ?? 0));
+  if (incomeDelay > 0 && a.targetIncomeLabel) {
+    for (const l of lines) {
+      if (l.lineType !== "customer_income") continue;
+      if (!matchesNeedle(a.targetIncomeLabel, l.label, l.partyName)) continue;
+      const amount = Math.abs(l.amount);
+      adjustments.push({ monthStart: l.monthStart, incomeDelta: -amount, note: `delay income ${a.targetIncomeLabel}` });
+      adjustments.push({ monthStart: addMonthsISO(l.monthStart, incomeDelay), incomeDelta: amount, note: `receive delayed income ${a.targetIncomeLabel}` });
+    }
+  }
+
+  const outflowDelay = Math.max(0, Math.round(a.targetOutflowDelayMonths ?? 0));
+  if (outflowDelay > 0 && a.targetOutflowLabel) {
+    for (const l of lines) {
+      if (l.direction !== "outflow" && l.direction !== "out") continue;
+      if (!matchesNeedle(a.targetOutflowLabel, l.label, l.partyName)) continue;
+      const amount = Math.abs(l.amount);
+      adjustments.push({ monthStart: l.monthStart, expenseDelta: -amount, note: `delay outflow ${a.targetOutflowLabel}` });
+      adjustments.push({ monthStart: addMonthsISO(l.monthStart, outflowDelay), expenseDelta: amount, note: `pay delayed outflow ${a.targetOutflowLabel}` });
+    }
+  }
+
+  const advanceMonth = monthStart(a.factoringAdvanceMonth);
+  const feePct = Math.max(0, a.factoringFeePct ?? 0);
+  if (advanceMonth && a.factoringIncomeLabel) {
+    for (const l of lines) {
+      if (l.lineType !== "customer_income") continue;
+      if (l.monthStart <= advanceMonth) continue;
+      if (!matchesNeedle(a.factoringIncomeLabel, l.label, l.partyName)) continue;
+      const amount = Math.abs(l.amount);
+      const fee = amount * feePct;
+      adjustments.push({ monthStart: l.monthStart, incomeDelta: -amount, note: `factor income ${a.factoringIncomeLabel}` });
+      adjustments.push({ monthStart: advanceMonth, incomeDelta: amount - fee, expenseDelta: fee, note: `factoring advance ${a.factoringIncomeLabel}` });
+    }
+  }
+
+  return adjustments;
+}
 
 export async function createScenario(
   pool: Pool,
@@ -63,6 +159,14 @@ function assumptionRows(a: ScenarioAssumptions): Array<{ key: string; value: num
   if (a.capacityUtilizationPct != null && a.capacityUtilizationPct !== 0) rows.push({ key: "capacityUtilizationPct", value: a.capacityUtilizationPct, unit: "oran", description: "Kapasite kullanım değişimi (gelir vekili)" });
   if (a.efficiencyPct != null && a.efficiencyPct !== 0) rows.push({ key: "efficiencyPct", value: a.efficiencyPct, unit: "oran", description: "Verim değişimi (gider vekili)" });
   if (a.includeDebtService) rows.push({ key: "includeDebtService", value: 1, unit: "bayrak", description: "Borç-servisi (çek+taksit) gidere eklendi" });
+  if (a.targetIncomeLabel && a.targetIncomeDelayMonths != null && a.targetIncomeDelayMonths !== 0)
+    rows.push({ key: "targetIncomeDelayMonths", value: a.targetIncomeDelayMonths, unit: "ay", description: `Hedef gelir gecikmesi: ${a.targetIncomeLabel}` });
+  if (a.targetOutflowLabel && a.targetOutflowDelayMonths != null && a.targetOutflowDelayMonths !== 0)
+    rows.push({ key: "targetOutflowDelayMonths", value: a.targetOutflowDelayMonths, unit: "ay", description: `Hedef gider/odeme ertelemesi: ${a.targetOutflowLabel}` });
+  if (a.factoringIncomeLabel && a.factoringAdvanceMonth)
+    rows.push({ key: "factoringAdvanceMonth", value: null, unit: "ay", description: `Faktoring/iskonto advance: ${a.factoringIncomeLabel} -> ${a.factoringAdvanceMonth}` });
+  if (a.factoringFeePct != null && a.factoringFeePct !== 0)
+    rows.push({ key: "factoringFeePct", value: a.factoringFeePct, unit: "oran", description: "Faktoring/iskonto maliyeti" });
   return rows;
 }
 
@@ -70,6 +174,7 @@ const comparisonRows = (c: ScenarioComparison): Array<{ metric: string; base: nu
   { metric: "final_cash", base: c.baselineFinalCash, scen: c.scenarioFinalCash, delta: c.finalDelta },
   { metric: "worst_balance", base: null, scen: c.worstBalance, delta: null },
   { metric: "max_cash_gap", base: null, scen: c.maxCashGap, delta: null },
+  { metric: "minimum_financing_need", base: null, scen: c.maxCashGap, delta: null },
 ];
 
 export interface RunResult {
@@ -87,8 +192,9 @@ export async function runScenario(
   const baseline: CashMonth[] = await loadCashMonths(pool);
   const items = await loadMaturityItems(pool);
   const debt = debtServiceByMonth(items).map((d) => ({ monthStart: d.monthStart, knownOutflow: d.knownOutflow }));
+  const adjustments = await buildScenarioAdjustments(pool, assumptions);
 
-  const months = applyScenario(baseline, assumptions, debt);
+  const months = applyScenario(baseline, assumptions, debt, adjustments);
   const comparison = compareScenarioToBaseline(months);
   const confidence = scenarioConfidence(comparison);
   const insights = buildScenarioInsights(comparison, assumptions);
@@ -138,7 +244,7 @@ export async function runScenario(
         [runId, cr.metric, cr.base, cr.scen, cr.delta],
       );
     }
-    await audit(client, "run_scenario", runId, { scenarioId, assumptions, finalDelta: comparison.finalDelta, confidence });
+    await audit(client, "run_scenario", runId, { scenarioId, assumptions, adjustmentCount: adjustments.length, finalDelta: comparison.finalDelta, confidence });
     await client.query("commit");
     return { runId, comparison, insights };
   } catch (e) {

@@ -48,7 +48,7 @@ Degismez kurallar:
 | 10 | Excel coverage close-out: 9A/9B/9C/9D | DONE |
 | 11 | Decision facts / metrics katmani | IN PROGRESS |
 | 12 | AI soru-cevap ve rapor yorum katmani | IN PROGRESS |
-| 13 | Senaryo v2 ve finansman optimizasyonu | PLANNED |
+| 13 | Senaryo v2 ve finansman optimizasyonu | IN PROGRESS |
 | 14 | Veri kalite merkezi, disgoru ve aksiyon workflow | PLANNED |
 
 Mevcut git gercegi:
@@ -434,6 +434,9 @@ Gate:
 ---
 
 ## 14. Faz 13 — Senaryo v2 ve Finansman Optimizasyonu
+
+Durum: IN PROGRESS. 13A ile hedefli gelir gecikmesi, hedefli gider/odeme ertelemesi,
+faktoring/iskonto overlay'i ve minimum finansman ihtiyaci metrigi scenario motoruna eklendi.
 
 Amac: "what-if" motorunu karar motoruna yaklastirmak.
 

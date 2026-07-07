@@ -55,14 +55,9 @@ export default async function ScenariosPage({
               <Preset name="Gelir %10 düşerse" fields={{ revenuePct: "-10" }} />
               <Preset name="Gider %10 artarsa" fields={{ expensePct: "10" }} />
               <Preset name="Borç-servisi dahil edilirse" fields={{ includeDebtService: "on" }} />
-              <button
-                type="button" disabled
-                title="Müşteri bazlı gecikme motoru henüz yok (mevcut motor tüm tahsilatı kaydırır)"
-                className="cursor-not-allowed border px-3 py-2 text-[11px] opacity-50"
-                style={{ borderColor: "var(--line-faint)", color: "var(--text-4)", borderRadius: "var(--radius)" }}
-              >
-                Hpt 30 gün gecikirse · müşteri bazlı gecikme yakında
-              </button>
+              <Preset name="Hpt 1 ay gecikirse" fields={{ targetIncomeLabel: "Hpt", targetIncomeDelayMonths: "1" }} />
+              <Preset name="Akon 2 ay kayarsa" fields={{ targetIncomeLabel: "Akon", targetIncomeDelayMonths: "2" }} />
+              <Preset name="Cagdas 1 ay otelenirse" fields={{ targetOutflowLabel: "Cagdas", targetOutflowDelayMonths: "1" }} />
             </div>
             <p className="mt-2 text-[11px]" style={{ color: "var(--text-4)" }}>
               Her preset adı ne diyorsa motor tam onu uygular. Belirsiz tutar sıfır sayılmaz.
@@ -75,6 +70,13 @@ export default async function ScenariosPage({
               <Field label="Gelir değişimi %" name="revenuePct" hint="ör. -10 = %10 düşüş" />
               <Field label="Gider değişimi %" name="expensePct" hint="ör. +15 = %15 artış" />
               <Field label="Müşteri gecikmesi (ay)" name="customerDelayMonths" hint="tüm tahsilatı N ay ileri kaydırır" />
+              <Field label="Hedef gelir etiketi" name="targetIncomeLabel" type="text" hint="or. Hpt, Akon, musteri adi" />
+              <Field label="Hedef gelir gecikmesi (ay)" name="targetIncomeDelayMonths" hint="yalniz eslesen gelir satirlari kayar" />
+              <Field label="Hedef gider/odeme etiketi" name="targetOutflowLabel" type="text" hint="or. Cagdas, Garanti, tedarikci" />
+              <Field label="Hedef gider ertelemesi (ay)" name="targetOutflowDelayMonths" hint="yalniz eslesen outflow satirlari kayar" />
+              <Field label="Faktoring gelir etiketi" name="factoringIncomeLabel" type="text" hint="gelecek tahsilati bugune/aya cek" />
+              <Field label="Faktoring advance ay" name="factoringAdvanceMonth" type="text" placeholder="2026-06" hint="YYYY-MM" />
+              <Field label="Faktoring/iskonto %" name="factoringFeePct" hint="or. 4 = %4 maliyet" />
               <Field label="Kapasite kullanım %" name="capacityUtilizationPct" hint="gelir vekili (üretim verisine bağlı değil)" />
               <Field label="Verim %" name="efficiencyPct" hint="gider vekili (artış=gider düşer)" />
               <input type="hidden" name="scenarioType" value="combined_custom_scenario" />
