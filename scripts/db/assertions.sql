@@ -187,5 +187,38 @@ begin
     exception when unique_violation then raise notice 'PASS cost_breakdown idempotency + akon cols + RLS'; end;
   end;
 
+  -- 15) machine-minute + finance allocation (0013): RLS + idempotency
+  declare wid4 uuid; sid4 uuid; cap4 uuid; loan4 uuid; rls4 int;
+  begin
+    select count(*) into rls4 from pg_tables t join pg_class c on c.relname=t.tablename
+      join pg_namespace ns on ns.oid=c.relnamespace and ns.nspname='public'
+      where t.tablename in ('machine_minute_allocations','finance_cost_allocations') and not c.relrowsecurity;
+    if rls4 > 0 then raise exception 'FAIL allocation table RLS off'; end if;
+    insert into public.source_workbooks (original_filename) values ('alloc.xlsx') returning id into wid4;
+    insert into public.source_sheets (workbook_id, sheet_name, sheet_index) values (wid4,'kapasite',0) returning id into sid4;
+    insert into public.capacity_models (name, scenario_type, source_workbook_id, source_sheet_id)
+      values ('cap alloc','normal',wid4,sid4) returning id into cap4;
+    insert into public.machine_minute_allocations
+      (capacity_model_id, operation_type, machine_count, demand_minutes, available_minutes)
+      values (cap4,'torna',3,276750,285120);
+    begin
+      insert into public.machine_minute_allocations
+        (capacity_model_id, operation_type, machine_count, demand_minutes, available_minutes)
+        values (cap4,'torna',3,1,1);
+      raise exception 'FAIL machine-minute idempotency did not fire';
+    exception when unique_violation then raise notice 'PASS machine-minute idempotency'; end;
+    insert into public.loans (name, principal, total_finance_cost, source_workbook_id, source_sheet_id)
+      values ('alloc loan', 1500000, 1943717.58, wid4, sid4) returning id into loan4;
+    insert into public.finance_cost_allocations
+      (loan_id, capacity_model_id, operation_type, allocated_finance_cost, finance_cost_per_minute)
+      values (loan4, cap4, 'torna', 448000, 1.6);
+    begin
+      insert into public.finance_cost_allocations
+        (loan_id, capacity_model_id, operation_type, allocated_finance_cost, finance_cost_per_minute)
+        values (loan4, cap4, 'torna', 1, 1);
+      raise exception 'FAIL finance allocation idempotency did not fire';
+    exception when unique_violation then raise notice 'PASS finance allocation idempotency + RLS'; end;
+  end;
+
   raise notice 'ALL ASSERTIONS PASSED';
 end $$;

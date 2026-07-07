@@ -45,7 +45,7 @@ Degismez kurallar:
 | 7 | Raporlar ve hatirlatmalar | DONE |
 | 8 | Uretim kapasite/maliyet analitigi | DONE |
 | 9 | Salt-okunur senaryo motoru MVP | DONE |
-| 10 | Excel coverage close-out: 9A/9B/9C/9D | IN PROGRESS |
+| 10 | Excel coverage close-out: 9A/9B/9C/9D | DONE |
 | 11 | Decision facts / metrics katmani | PLANNED |
 | 12 | AI soru-cevap ve rapor yorum katmani | PLANNED |
 | 13 | Senaryo v2 ve finansman optimizasyonu | PLANNED |
@@ -55,8 +55,8 @@ Mevcut git gercegi:
 
 - Faz 10A / 9A commitli: `feat(production): surface cost breakdown and Akon price margin (Phase 9A)`.
 - Faz 10B / 9B commitli: `feat(cashflow): surface monthly expense breakdown (Phase 9B)`.
-- Faz 10C / 9C kodu calisma agacinda yarim/commitlenmemis durumdadir.
-- Faz 10D / 9D henuz baslamamistir.
+- Faz 10C / 9C commitli: `feat(production): add machine ROI mapping (Phase 9C)`.
+- Faz 10D / 9D commitli: `feat(production): allocate machine minutes and finance cost (Phase 9D)`.
 
 ---
 
@@ -294,7 +294,7 @@ Gate:
 
 ### 10C / 9C — Makine ROI + Ekipman
 
-Durum: IN PROGRESS.
+Durum: DONE, commitli.
 
 Teslimatlar:
 
@@ -317,7 +317,7 @@ Gate:
 
 ### 10D / 9D — Kapasite Makine-Dakika + Faiz Makine-Tahsis
 
-Durum: PLANNED.
+Durum: DONE, commitli.
 
 Amac:
 

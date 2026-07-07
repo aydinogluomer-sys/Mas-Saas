@@ -403,6 +403,238 @@ export async function mapMachineRoi(pool: Pool, workbookId: string): Promise<Mac
   }
 }
 
+/* ── 4c) Phase 9D: machine-minute utilization + finance-cost allocation.
+   ANALYTICS ONLY: allocates capacity demand and loan finance cost pressure without
+   mutating the source finance/cashflow/production facts. ── */
+
+type OperationType = "torna" | "freze" | "total";
+
+function utilizationFields(demand: number | null, available: number | null) {
+  if (demand == null || available == null || available <= 0) {
+    return { utilization: null, idle: null, over: null };
+  }
+  const gap = available - demand;
+  return {
+    utilization: demand / available,
+    idle: gap > 0 ? gap : 0,
+    over: gap < 0 ? Math.abs(gap) : 0,
+  };
+}
+
+export interface MachineMinuteAllocationResult {
+  created: number;
+  skipped: number;
+  excluded: Array<{ capacityModelId: string; reason: string }>;
+}
+
+export async function mapMachineMinuteAllocations(pool: Pool, workbookId: string): Promise<MachineMinuteAllocationResult> {
+  const client = await pool.connect();
+  try {
+    await client.query("begin");
+    const caps = await client.query<{
+      id: string;
+      source_sheet_id: string | null;
+      monthly_minutes: number | null;
+      efficiency: number | null;
+    }>(
+      `select id, source_sheet_id, monthly_minutes::float8 as monthly_minutes,
+              efficiency_rate::float8 as efficiency
+       from public.capacity_models
+       where source_workbook_id=$1
+       order by created_at`,
+      [workbookId],
+    );
+    const res: MachineMinuteAllocationResult = { created: 0, skipped: 0, excluded: [] };
+
+    const machineCounts = await client.query<{ machine_type: OperationType; n: number }>(
+      `select machine_type, count(*)::float8 as n
+       from public.machine_assets
+       where machine_type in ('torna','freze')
+       group by machine_type`,
+    );
+    const countFor = (op: "torna" | "freze") =>
+      Number(machineCounts.rows.find((x) => x.machine_type === op)?.n ?? 0);
+
+    for (const cap of caps.rows) {
+      if (!cap.source_sheet_id) {
+        res.excluded.push({ capacityModelId: cap.id, reason: "kaynak kapasite sekmesi yok" });
+        continue;
+      }
+      const demandRow = (await client.query<{
+        torna: number;
+        freze: number;
+      }>(
+        `select
+           coalesce(sum(coalesce(quantity,0) * coalesce(torna_minutes,0)),0)::float8 as torna,
+           coalesce(sum(coalesce(quantity,0) * coalesce(freze_minutes,0)),0)::float8 as freze
+         from public.production_parts
+         where source_sheet_id=$1`,
+        [cap.source_sheet_id],
+      )).rows[0];
+
+      const baseAnnualPerMachine =
+        cap.monthly_minutes != null && cap.efficiency != null
+          ? cap.monthly_minutes * 12 * cap.efficiency
+          : null;
+      const tornaCount = countFor("torna");
+      const frezeCount = countFor("freze");
+      const rows: Array<{ op: OperationType; machineCount: number; demand: number; available: number | null }> = [
+        {
+          op: "torna",
+          machineCount: tornaCount,
+          demand: demandRow.torna,
+          available: baseAnnualPerMachine != null ? baseAnnualPerMachine * tornaCount : null,
+        },
+        {
+          op: "freze",
+          machineCount: frezeCount,
+          demand: demandRow.freze,
+          available: baseAnnualPerMachine != null ? baseAnnualPerMachine * frezeCount : null,
+        },
+      ];
+      rows.push({
+        op: "total",
+        machineCount: tornaCount + frezeCount,
+        demand: rows[0].demand + rows[1].demand,
+        available: rows.every((r) => r.available != null) ? (rows[0].available ?? 0) + (rows[1].available ?? 0) : null,
+      });
+
+      for (const row of rows) {
+        const m = utilizationFields(row.demand, row.available);
+        const ins = await client.query(
+          `insert into public.machine_minute_allocations
+             (capacity_model_id, operation_type, machine_count, demand_minutes, available_minutes,
+              utilization_rate, idle_minutes, over_capacity_minutes,
+              source_workbook_id, source_sheet_id, notes)
+           values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+           on conflict (capacity_model_id, operation_type) do nothing`,
+          [
+            cap.id, row.op, row.machineCount, row.demand, row.available,
+            m.utilization, m.idle, m.over, workbookId, cap.source_sheet_id,
+            "analitik: kapasite aylık dakikası × 12 × verim × makine sayısı",
+          ],
+        );
+        if ((ins.rowCount ?? 0) > 0) res.created++;
+        else res.skipped++;
+      }
+      await audit(client, "map_machine_minutes", "machine_minute_allocations", cap.id, {
+        capacity_model_id: cap.id, torna: demandRow.torna, freze: demandRow.freze,
+      });
+    }
+    await client.query("commit");
+    return res;
+  } catch (e) {
+    await client.query("rollback");
+    throw e;
+  } finally {
+    client.release();
+  }
+}
+
+export interface FinanceCostAllocationResult {
+  created: number;
+  skipped: number;
+  excluded: Array<{ loanId: string | null; reason: string }>;
+}
+
+export async function mapFinanceCostAllocations(pool: Pool, workbookId: string): Promise<FinanceCostAllocationResult> {
+  const client = await pool.connect();
+  try {
+    await client.query("begin");
+    const loans = await client.query<{
+      id: string;
+      name: string;
+      total_finance_cost: number | null;
+      source_sheet_id: string | null;
+    }>(
+      `select id, name, total_finance_cost::float8 as total_finance_cost, source_sheet_id
+       from public.loans
+       where source_workbook_id=$1 and total_finance_cost is not null
+       order by created_at`,
+      [workbookId],
+    );
+    const caps = await client.query<{ id: string }>(
+      `select id from public.capacity_models where source_workbook_id=$1 order by created_at`,
+      [workbookId],
+    );
+    const res: FinanceCostAllocationResult = { created: 0, skipped: 0, excluded: [] };
+    if (caps.rowCount === 0) {
+      for (const loan of loans.rows) res.excluded.push({ loanId: loan.id, reason: "kapasite modeli yok" });
+      await client.query("commit");
+      return res;
+    }
+
+    for (const loan of loans.rows) {
+      for (const cap of caps.rows) {
+        const minutes = await client.query<{
+          operation_type: OperationType;
+          machine_count: number | null;
+          demand_minutes: number | null;
+        }>(
+          `select operation_type, machine_count::float8 as machine_count,
+                  demand_minutes::float8 as demand_minutes
+           from public.machine_minute_allocations
+           where capacity_model_id=$1
+           order by case operation_type when 'torna' then 1 when 'freze' then 2 else 3 end`,
+          [cap.id],
+        );
+        if (minutes.rowCount === 0) {
+          res.excluded.push({ loanId: loan.id, reason: "makine-dakika tahsisi yok" });
+          continue;
+        }
+        const totalDemand =
+          minutes.rows.find((r) => r.operation_type === "total")?.demand_minutes ??
+          minutes.rows.reduce((acc, r) => acc + (r.demand_minutes ?? 0), 0);
+        for (const row of minutes.rows) {
+          const demand = row.demand_minutes ?? null;
+          const ratio =
+            row.operation_type === "total"
+              ? 1
+              : totalDemand != null && totalDemand > 0 && demand != null
+                ? demand / totalDemand
+                : null;
+          const allocated =
+            loan.total_finance_cost != null && ratio != null
+              ? loan.total_finance_cost * ratio
+              : null;
+          const perMinute = allocated != null && demand != null && demand > 0 ? allocated / demand : null;
+          const perMachine =
+            allocated != null && row.machine_count != null && row.machine_count > 0
+              ? allocated / row.machine_count
+              : null;
+          const ins = await client.query(
+            `insert into public.finance_cost_allocations
+               (loan_id, capacity_model_id, operation_type, allocation_basis,
+                machine_count, demand_minutes, allocation_ratio, total_finance_cost,
+                allocated_finance_cost, finance_cost_per_minute, finance_cost_per_machine,
+                source_workbook_id, source_sheet_id, notes)
+             values ($1,$2,$3,'demand_minutes',$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+             on conflict (loan_id, capacity_model_id, operation_type, allocation_basis) do nothing`,
+            [
+              loan.id, cap.id, row.operation_type, row.machine_count, demand, ratio,
+              loan.total_finance_cost, allocated, perMinute, perMachine,
+              workbookId, loan.source_sheet_id,
+              "analitik tahsis: kredi toplam finansman maliyeti × operasyon talep dakika payı",
+            ],
+          );
+          if ((ins.rowCount ?? 0) > 0) res.created++;
+          else res.skipped++;
+        }
+        await audit(client, "map_finance_cost_allocation", "finance_cost_allocations", loan.id, {
+          loan: loan.name, capacity_model_id: cap.id, total_finance_cost: loan.total_finance_cost,
+        });
+      }
+    }
+    await client.query("commit");
+    return res;
+  } catch (e) {
+    await client.query("rollback");
+    throw e;
+  } finally {
+    client.release();
+  }
+}
+
 /* ── 4) machine ROI snapshots (always needs_review) ── */
 
 export async function calculateMachineRoiSnapshot(
@@ -524,6 +756,66 @@ export async function loadActualMonthlyIncome(pool: Pool): Promise<number | null
     `select avg(projected_income)::float8 as avg_income from public.cashflow_months where projected_income is not null`,
   );
   return r.rows[0]?.avg_income ?? null;
+}
+
+export async function loadMachineMinuteAllocations(pool: Pool) {
+  const r = await pool.query(
+    `select mma.operation_type, mma.machine_count::float8 as machine_count,
+            mma.demand_minutes::float8 as demand_minutes,
+            mma.available_minutes::float8 as available_minutes,
+            mma.utilization_rate::float8 as utilization_rate,
+            mma.idle_minutes::float8 as idle_minutes,
+            mma.over_capacity_minutes::float8 as over_capacity_minutes,
+            cm.name as capacity_model_name, mma.source_workbook_id, mma.source_sheet_id
+     from public.machine_minute_allocations mma
+     join public.capacity_models cm on cm.id = mma.capacity_model_id
+     order by cm.created_at, case mma.operation_type when 'torna' then 1 when 'freze' then 2 else 3 end`,
+  );
+  return r.rows as Array<{
+    operation_type: string;
+    machine_count: number | null;
+    demand_minutes: number | null;
+    available_minutes: number | null;
+    utilization_rate: number | null;
+    idle_minutes: number | null;
+    over_capacity_minutes: number | null;
+    capacity_model_name: string;
+    source_workbook_id: string | null;
+    source_sheet_id: string | null;
+  }>;
+}
+
+export async function loadFinanceCostAllocations(pool: Pool) {
+  const r = await pool.query(
+    `select fca.operation_type, fca.machine_count::float8 as machine_count,
+            fca.demand_minutes::float8 as demand_minutes,
+            fca.allocation_ratio::float8 as allocation_ratio,
+            fca.total_finance_cost::float8 as total_finance_cost,
+            fca.allocated_finance_cost::float8 as allocated_finance_cost,
+            fca.finance_cost_per_minute::float8 as finance_cost_per_minute,
+            fca.finance_cost_per_machine::float8 as finance_cost_per_machine,
+            fca.allocation_basis, l.name as loan_name, cm.name as capacity_model_name,
+            fca.source_workbook_id, fca.source_sheet_id
+     from public.finance_cost_allocations fca
+     join public.loans l on l.id = fca.loan_id
+     left join public.capacity_models cm on cm.id = fca.capacity_model_id
+     order by l.created_at, case fca.operation_type when 'torna' then 1 when 'freze' then 2 else 3 end`,
+  );
+  return r.rows as Array<{
+    operation_type: string;
+    machine_count: number | null;
+    demand_minutes: number | null;
+    allocation_ratio: number | null;
+    total_finance_cost: number | null;
+    allocated_finance_cost: number | null;
+    finance_cost_per_minute: number | null;
+    finance_cost_per_machine: number | null;
+    allocation_basis: string;
+    loan_name: string;
+    capacity_model_name: string | null;
+    source_workbook_id: string | null;
+    source_sheet_id: string | null;
+  }>;
 }
 
 export async function loadMachineRoi(pool: Pool) {

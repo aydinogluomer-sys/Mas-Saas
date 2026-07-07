@@ -6,8 +6,10 @@ import {
   loadCapacityModels,
   loadCostBreakdown,
   loadCostModels,
+  loadFinanceCostAllocations,
   loadMachineRoi,
   loadMachineRoiAggregate,
+  loadMachineMinuteAllocations,
   loadPartProfitability,
 } from "@/lib/production/engine";
 import {
@@ -28,15 +30,18 @@ const fmt0 = (v: number | null) =>
   v != null ? new Intl.NumberFormat("tr-TR", { maximumFractionDigits: 0 }).format(v) : "—";
 const fmt2 = (v: number | null) =>
   v != null ? new Intl.NumberFormat("tr-TR", { maximumFractionDigits: 2 }).format(v) : "—";
+const fmtPct = (v: number | null) => (v != null ? `%${(v * 100).toFixed(0)}` : "—");
 
 export default async function ProductionPage() {
   const pool = getPool();
-  const [caps, costs, parts, roi, roiAgg, demand, actualIncome] = await Promise.all([
+  const [caps, costs, parts, roi, roiAgg, machineMinutes, financeAllocations, demand, actualIncome] = await Promise.all([
     loadCapacityModels(pool),
     loadCostModels(pool),
     loadPartProfitability(pool, 20),
     loadMachineRoi(pool),
     loadMachineRoiAggregate(pool),
+    loadMachineMinuteAllocations(pool),
+    loadFinanceCostAllocations(pool),
     loadCapacityDemand(pool),
     loadActualMonthlyIncome(pool),
   ]);
@@ -102,7 +107,7 @@ export default async function ProductionPage() {
     <>
       <PageHeader
         title="Üretim Analitiği"
-        subtitle="Kapasite · başabaş TL/dk · normal vs mesaili · parça kârlılığı · makine ROI"
+        subtitle="Kapasite · başabaş TL/dk · makine-dakika · finansman tahsisi · makine ROI"
         meta={
           <>
             {cap?.isStaleRate && <Badge tone="amber" dot>{cap.rateYear} stale-rate</Badge>}
@@ -236,6 +241,83 @@ export default async function ProductionPage() {
           </div>
         </Panel>
       </div>
+
+      {machineMinutes.length > 0 && (
+        <Panel
+          title="MAKİNE-DAKİKA DAĞILIMI"
+          right={machineMinutes.some((m) => (m.over_capacity_minutes ?? 0) > 0) ? <Badge tone="red">kapasite aşımı</Badge> : <Badge tone="green">kapasite içinde</Badge>}
+        >
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b text-left font-mono text-[10px] uppercase tracking-wider" style={{ borderColor: "var(--line)", color: "var(--text-3)" }}>
+                  <th className="py-1 pr-2">operasyon</th>
+                  <th className="py-1 pr-2 text-right">makine</th>
+                  <th className="py-1 pr-2 text-right">talep dk/yıl</th>
+                  <th className="py-1 pr-2 text-right">kapasite dk/yıl</th>
+                  <th className="py-1 pr-2 text-right">kullanım</th>
+                  <th className="py-1 text-right">açık/fazla</th>
+                </tr>
+              </thead>
+              <tbody>
+                {machineMinutes.map((m) => {
+                  const overloaded = (m.over_capacity_minutes ?? 0) > 0;
+                  return (
+                    <tr key={`${m.capacity_model_name}-${m.operation_type}`} className="border-b" style={{ borderColor: "var(--line-faint)" }}>
+                      <td className="py-1 pr-2 font-mono text-xs">{opLabel(m.operation_type)}</td>
+                      <td className="py-1 pr-2 text-right font-mono tabular-nums">{fmt2(m.machine_count)}</td>
+                      <td className="py-1 pr-2 text-right font-mono tabular-nums">{fmt0(m.demand_minutes)}</td>
+                      <td className="py-1 pr-2 text-right font-mono tabular-nums">{fmt0(m.available_minutes)}</td>
+                      <td className={`py-1 pr-2 text-right font-mono tabular-nums ${overloaded ? "text-red-400" : ""}`}>{fmtPct(m.utilization_rate)}</td>
+                      <td className={`py-1 text-right font-mono tabular-nums ${overloaded ? "text-red-400" : "text-emerald-300"}`}>
+                        {overloaded ? `+${fmt0(m.over_capacity_minutes)}` : fmt0(m.idle_minutes)}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+          <p className="mt-2 text-[11px]" style={{ color: "var(--text-4)" }}>
+            Kapasite = kaynak aylık dakika × 12 × verim × makine sayısı. Bu tahsis planlama sinyalidir; fiyat/muhasebe kaydını değiştirmez.
+          </p>
+        </Panel>
+      )}
+
+      {financeAllocations.length > 0 && (
+        <Panel title="FİNANSMAN YÜKÜ — ÜRETİM TAHSİSİ" right={<Badge tone="amber">analitik tahsis</Badge>}>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b text-left font-mono text-[10px] uppercase tracking-wider" style={{ borderColor: "var(--line)", color: "var(--text-3)" }}>
+                  <th className="py-1 pr-2">kredi / operasyon</th>
+                  <th className="py-1 pr-2 text-right">pay</th>
+                  <th className="py-1 pr-2 text-right">tahsis maliyeti</th>
+                  <th className="py-1 pr-2 text-right">TL/dk</th>
+                  <th className="py-1 text-right">TL/makine</th>
+                </tr>
+              </thead>
+              <tbody>
+                {financeAllocations.map((f) => (
+                  <tr key={`${f.loan_name}-${f.operation_type}`} className="border-b" style={{ borderColor: "var(--line-faint)" }}>
+                    <td className="py-1 pr-2 text-xs">
+                      <span className="font-mono">{opLabel(f.operation_type)}</span>{" "}
+                      <span style={{ color: "var(--text-4)" }}>{f.loan_name}</span>
+                    </td>
+                    <td className="py-1 pr-2 text-right font-mono tabular-nums">{fmtPct(f.allocation_ratio)}</td>
+                    <td className="py-1 pr-2 text-right font-mono tabular-nums">{fmt0(f.allocated_finance_cost)}</td>
+                    <td className="py-1 pr-2 text-right font-mono tabular-nums text-sky-300">{fmt2(f.finance_cost_per_minute)}</td>
+                    <td className="py-1 text-right font-mono tabular-nums">{fmt0(f.finance_cost_per_machine)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <p className="mt-2 text-[11px]" style={{ color: "var(--text-4)" }}>
+            Kredi toplam finansman maliyeti talep dakikası payına göre dağıtılır. Amaç fiyat baskısını görmek; kredi/loan kaydı değişmez.
+          </p>
+        </Panel>
+      )}
 
       {/* cost model table */}
       <Panel title="MALİYET MODELLERİ">
@@ -412,4 +494,10 @@ function Row({ k, v, tone }: { k: string; v: string; tone?: "red" }) {
       <span className={`tabular-nums ${tone === "red" ? "text-red-400" : "text-zinc-200"}`}>{v}</span>
     </div>
   );
+}
+
+function opLabel(op: string) {
+  if (op === "torna") return "Torna";
+  if (op === "freze") return "Freze";
+  return "Toplam";
 }

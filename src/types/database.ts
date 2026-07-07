@@ -25,6 +25,54 @@ export interface AuditLogsInsert {
   created_at?: string;
 }
 
+export interface CapacityModelsRow {
+  id: string;
+  name: string;
+  scenario_type: string;
+  monthly_hours: number | null;
+  monthly_minutes: number | null;
+  work_days_per_month: number | null;
+  efficiency_rate: number | null;
+  staff_count: number | null;
+  apprentice_count: number | null;
+  machine_count: number | null;
+  effective_monthly_minutes: number | null;
+  freze_rate_tl_per_min: number | null;
+  torna_rate_tl_per_min: number | null;
+  rate_year: number | null;
+  is_stale_rate: boolean;
+  theoretical_monthly_revenue: number | null;
+  theoretical_total_revenue: number | null;
+  notes: string | null;
+  source_workbook_id: string | null;
+  source_sheet_id: string | null;
+  created_at: string;
+}
+
+export interface CapacityModelsInsert {
+  id?: string;
+  name: string;
+  scenario_type: string;
+  monthly_hours?: number | null;
+  monthly_minutes?: number | null;
+  work_days_per_month?: number | null;
+  efficiency_rate?: number | null;
+  staff_count?: number | null;
+  apprentice_count?: number | null;
+  machine_count?: number | null;
+  effective_monthly_minutes?: number | null;
+  freze_rate_tl_per_min?: number | null;
+  torna_rate_tl_per_min?: number | null;
+  rate_year?: number | null;
+  is_stale_rate?: boolean;
+  theoretical_monthly_revenue?: number | null;
+  theoretical_total_revenue?: number | null;
+  notes?: string | null;
+  source_workbook_id?: string | null;
+  source_sheet_id?: string | null;
+  created_at?: string;
+}
+
 export interface CashAccountsRow {
   id: string;
   name: string;
@@ -219,6 +267,116 @@ export interface ChecksInsert {
   counterparty_label?: string | null;
 }
 
+export interface CostBreakdownLinesRow {
+  id: string;
+  cost_model_id: string;
+  block: string;
+  label: string;
+  amount: number | null;
+  source_workbook_id: string | null;
+  source_sheet_id: string | null;
+  source_row_id: string | null;
+  created_at: string;
+}
+
+export interface CostBreakdownLinesInsert {
+  id?: string;
+  cost_model_id: string;
+  block: string;
+  label: string;
+  amount?: number | null;
+  source_workbook_id?: string | null;
+  source_sheet_id?: string | null;
+  source_row_id?: string | null;
+  created_at?: string;
+}
+
+export interface CostModelsRow {
+  id: string;
+  capacity_model_id: string | null;
+  model_name: string;
+  model_month: string | null;
+  scenario_type: string | null;
+  food_daily_cost: number | null;
+  transport_staff_daily_cost: number | null;
+  transport_apprentice_daily_cost: number | null;
+  health_insurance_cost: number | null;
+  machine_insurance_cost: number | null;
+  total_fixed_cost: number | null;
+  monthly_allocated_cost: number | null;
+  break_even_torna_tl_per_min: number | null;
+  break_even_freze_tl_per_min: number | null;
+  break_even_tl_per_min: number | null;
+  effective_monthly_minutes: number | null;
+  source_workbook_id: string | null;
+  source_sheet_id: string | null;
+  created_at: string;
+  akon_freze_tl_per_min: number | null;
+  akon_torna_tl_per_min: number | null;
+}
+
+export interface CostModelsInsert {
+  id?: string;
+  capacity_model_id?: string | null;
+  model_name: string;
+  model_month?: string | null;
+  scenario_type?: string | null;
+  food_daily_cost?: number | null;
+  transport_staff_daily_cost?: number | null;
+  transport_apprentice_daily_cost?: number | null;
+  health_insurance_cost?: number | null;
+  machine_insurance_cost?: number | null;
+  total_fixed_cost?: number | null;
+  monthly_allocated_cost?: number | null;
+  break_even_torna_tl_per_min?: number | null;
+  break_even_freze_tl_per_min?: number | null;
+  break_even_tl_per_min?: number | null;
+  effective_monthly_minutes?: number | null;
+  source_workbook_id?: string | null;
+  source_sheet_id?: string | null;
+  created_at?: string;
+  akon_freze_tl_per_min?: number | null;
+  akon_torna_tl_per_min?: number | null;
+}
+
+export interface FinanceCostAllocationsRow {
+  id: string;
+  loan_id: string;
+  capacity_model_id: string | null;
+  operation_type: string;
+  allocation_basis: string;
+  machine_count: number | null;
+  demand_minutes: number | null;
+  allocation_ratio: number | null;
+  total_finance_cost: number | null;
+  allocated_finance_cost: number | null;
+  finance_cost_per_minute: number | null;
+  finance_cost_per_machine: number | null;
+  source_workbook_id: string | null;
+  source_sheet_id: string | null;
+  notes: string | null;
+  created_at: string;
+}
+
+export interface FinanceCostAllocationsInsert {
+  id?: string;
+  loan_id: string;
+  capacity_model_id?: string | null;
+  operation_type: string;
+  allocation_basis?: string;
+  machine_count?: number | null;
+  demand_minutes?: number | null;
+  allocation_ratio?: number | null;
+  total_finance_cost?: number | null;
+  allocated_finance_cost?: number | null;
+  finance_cost_per_minute?: number | null;
+  finance_cost_per_machine?: number | null;
+  source_workbook_id?: string | null;
+  source_sheet_id?: string | null;
+  notes?: string | null;
+  created_at?: string;
+}
+
 export interface ImportRowsRow {
   id: string;
   workbook_id: string;
@@ -327,6 +485,88 @@ export interface LoansInsert {
   updated_at?: string;
 }
 
+export interface MachineAssetsRow {
+  id: string;
+  name: string;
+  machine_type: string | null;
+  purchase_cost: number | null;
+  notes: string | null;
+  created_at: string;
+}
+
+export interface MachineAssetsInsert {
+  id?: string;
+  name: string;
+  machine_type?: string | null;
+  purchase_cost?: number | null;
+  notes?: string | null;
+  created_at?: string;
+}
+
+export interface MachineMinuteAllocationsRow {
+  id: string;
+  capacity_model_id: string;
+  operation_type: string;
+  machine_count: number | null;
+  demand_minutes: number | null;
+  available_minutes: number | null;
+  utilization_rate: number | null;
+  idle_minutes: number | null;
+  over_capacity_minutes: number | null;
+  source_workbook_id: string | null;
+  source_sheet_id: string | null;
+  notes: string | null;
+  created_at: string;
+}
+
+export interface MachineMinuteAllocationsInsert {
+  id?: string;
+  capacity_model_id: string;
+  operation_type: string;
+  machine_count?: number | null;
+  demand_minutes?: number | null;
+  available_minutes?: number | null;
+  utilization_rate?: number | null;
+  idle_minutes?: number | null;
+  over_capacity_minutes?: number | null;
+  source_workbook_id?: string | null;
+  source_sheet_id?: string | null;
+  notes?: string | null;
+  created_at?: string;
+}
+
+export interface MachineRoiSnapshotsRow {
+  id: string;
+  source_workbook_id: string | null;
+  source_sheet_id: string | null;
+  machine_asset_id: string | null;
+  snapshot_year: number | null;
+  revenue: number | null;
+  cost: number | null;
+  remaining: number | null;
+  tax: number | null;
+  net_after_tax: number | null;
+  confidence: string;
+  notes: string | null;
+  created_at: string;
+}
+
+export interface MachineRoiSnapshotsInsert {
+  id?: string;
+  source_workbook_id?: string | null;
+  source_sheet_id?: string | null;
+  machine_asset_id?: string | null;
+  snapshot_year?: number | null;
+  revenue?: number | null;
+  cost?: number | null;
+  remaining?: number | null;
+  tax?: number | null;
+  net_after_tax?: number | null;
+  confidence?: string;
+  notes?: string | null;
+  created_at?: string;
+}
+
 export interface MappingReviewsRow {
   id: string;
   workbook_id: string;
@@ -354,6 +594,36 @@ export interface MappingReviewsInsert {
   status?: string;
   reviewed_by?: string | null;
   reviewed_at?: string | null;
+  created_at?: string;
+}
+
+export interface PartProfitabilityRunsRow {
+  id: string;
+  part_id: string;
+  cost_model_id: string;
+  estimated_torna_cost: number | null;
+  estimated_freze_cost: number | null;
+  estimated_total_cost: number | null;
+  estimated_revenue: number | null;
+  estimated_margin: number | null;
+  margin_rate: number | null;
+  confidence: string;
+  missing_operation_time: boolean;
+  created_at: string;
+}
+
+export interface PartProfitabilityRunsInsert {
+  id?: string;
+  part_id: string;
+  cost_model_id: string;
+  estimated_torna_cost?: number | null;
+  estimated_freze_cost?: number | null;
+  estimated_total_cost?: number | null;
+  estimated_revenue?: number | null;
+  estimated_margin?: number | null;
+  margin_rate?: number | null;
+  confidence?: string;
+  missing_operation_time?: boolean;
   created_at?: string;
 }
 
@@ -476,6 +746,32 @@ export interface PaymentsInsert {
   updated_at?: string;
 }
 
+export interface ProductionPartsRow {
+  id: string;
+  part_code: string | null;
+  part_name: string;
+  quantity: number | null;
+  torna_minutes: number | null;
+  freze_minutes: number | null;
+  source_workbook_id: string | null;
+  source_sheet_id: string | null;
+  source_row_id: string | null;
+  created_at: string;
+}
+
+export interface ProductionPartsInsert {
+  id?: string;
+  part_code?: string | null;
+  part_name: string;
+  quantity?: number | null;
+  torna_minutes?: number | null;
+  freze_minutes?: number | null;
+  source_workbook_id?: string | null;
+  source_sheet_id?: string | null;
+  source_row_id?: string | null;
+  created_at?: string;
+}
+
 export interface ReminderDeliveriesRow {
   id: string;
   reminder_id: string;
@@ -541,6 +837,134 @@ export interface ReportsInsert {
   period_end: string;
   body_md: string;
   meta?: Json | null;
+  created_at?: string;
+}
+
+export interface ScenarioAssumptionsRow {
+  id: string;
+  run_id: string;
+  key: string;
+  value_numeric: number | null;
+  unit: string | null;
+  description: string | null;
+}
+
+export interface ScenarioAssumptionsInsert {
+  id?: string;
+  run_id: string;
+  key: string;
+  value_numeric?: number | null;
+  unit?: string | null;
+  description?: string | null;
+}
+
+export interface ScenarioComparisonsRow {
+  id: string;
+  run_id: string;
+  metric: string;
+  baseline_value: number | null;
+  scenario_value: number | null;
+  delta: number | null;
+}
+
+export interface ScenarioComparisonsInsert {
+  id?: string;
+  run_id: string;
+  metric: string;
+  baseline_value?: number | null;
+  scenario_value?: number | null;
+  delta?: number | null;
+}
+
+export interface ScenarioRunLinesRow {
+  id: string;
+  run_id: string;
+  month_start: string;
+  baseline_income: number | null;
+  scenario_income: number | null;
+  baseline_expense: number | null;
+  scenario_expense: number | null;
+  baseline_closing: number | null;
+  scenario_closing: number | null;
+  delta: number | null;
+  created_at: string;
+}
+
+export interface ScenarioRunLinesInsert {
+  id?: string;
+  run_id: string;
+  month_start: string;
+  baseline_income?: number | null;
+  scenario_income?: number | null;
+  baseline_expense?: number | null;
+  scenario_expense?: number | null;
+  baseline_closing?: number | null;
+  scenario_closing?: number | null;
+  delta?: number | null;
+  created_at?: string;
+}
+
+export interface ScenarioRunsRow {
+  id: string;
+  scenario_id: string;
+  run_at: string;
+  assumptions: Json;
+  baseline_final_cash: number | null;
+  scenario_final_cash: number | null;
+  final_delta: number | null;
+  baseline_first_negative: string | null;
+  scenario_first_negative: string | null;
+  worst_month: string | null;
+  worst_balance: number | null;
+  max_cash_gap: number | null;
+  recovery_month: string | null;
+  month_count: number | null;
+  null_month_count: number | null;
+  confidence: string;
+  notes: string | null;
+  created_at: string;
+}
+
+export interface ScenarioRunsInsert {
+  id?: string;
+  scenario_id: string;
+  run_at?: string;
+  assumptions: Json;
+  baseline_final_cash?: number | null;
+  scenario_final_cash?: number | null;
+  final_delta?: number | null;
+  baseline_first_negative?: string | null;
+  scenario_first_negative?: string | null;
+  worst_month?: string | null;
+  worst_balance?: number | null;
+  max_cash_gap?: number | null;
+  recovery_month?: string | null;
+  month_count?: number | null;
+  null_month_count?: number | null;
+  confidence?: string;
+  notes?: string | null;
+  created_at?: string;
+}
+
+export interface ScenariosRow {
+  id: string;
+  name: string;
+  description: string | null;
+  scenario_type: string;
+  baseline_label: string | null;
+  baseline_month_count: number | null;
+  created_by: string | null;
+  created_at: string;
+}
+
+export interface ScenariosInsert {
+  id?: string;
+  name: string;
+  description?: string | null;
+  scenario_type: string;
+  baseline_label?: string | null;
+  baseline_month_count?: number | null;
+  created_by?: string | null;
   created_at?: string;
 }
 
@@ -644,6 +1068,7 @@ export interface Database {
   public: {
     Tables: {
       audit_logs: { Row: AuditLogsRow; Insert: AuditLogsInsert };
+      capacity_models: { Row: CapacityModelsRow; Insert: CapacityModelsInsert };
       cash_accounts: { Row: CashAccountsRow; Insert: CashAccountsInsert };
       cashflow_lines: { Row: CashflowLinesRow; Insert: CashflowLinesInsert };
       cashflow_months: { Row: CashflowMonthsRow; Insert: CashflowMonthsInsert };
@@ -651,16 +1076,29 @@ export interface Database {
       categories: { Row: CategoriesRow; Insert: CategoriesInsert };
       check_events: { Row: CheckEventsRow; Insert: CheckEventsInsert };
       checks: { Row: ChecksRow; Insert: ChecksInsert };
+      cost_breakdown_lines: { Row: CostBreakdownLinesRow; Insert: CostBreakdownLinesInsert };
+      cost_models: { Row: CostModelsRow; Insert: CostModelsInsert };
+      finance_cost_allocations: { Row: FinanceCostAllocationsRow; Insert: FinanceCostAllocationsInsert };
       import_rows: { Row: ImportRowsRow; Insert: ImportRowsInsert };
       loan_installments: { Row: LoanInstallmentsRow; Insert: LoanInstallmentsInsert };
       loans: { Row: LoansRow; Insert: LoansInsert };
+      machine_assets: { Row: MachineAssetsRow; Insert: MachineAssetsInsert };
+      machine_minute_allocations: { Row: MachineMinuteAllocationsRow; Insert: MachineMinuteAllocationsInsert };
+      machine_roi_snapshots: { Row: MachineRoiSnapshotsRow; Insert: MachineRoiSnapshotsInsert };
       mapping_reviews: { Row: MappingReviewsRow; Insert: MappingReviewsInsert };
+      part_profitability_runs: { Row: PartProfitabilityRunsRow; Insert: PartProfitabilityRunsInsert };
       parties: { Row: PartiesRow; Insert: PartiesInsert };
       payment_instances: { Row: PaymentInstancesRow; Insert: PaymentInstancesInsert };
       payments: { Row: PaymentsRow; Insert: PaymentsInsert };
+      production_parts: { Row: ProductionPartsRow; Insert: ProductionPartsInsert };
       reminder_deliveries: { Row: ReminderDeliveriesRow; Insert: ReminderDeliveriesInsert };
       reminders: { Row: RemindersRow; Insert: RemindersInsert };
       reports: { Row: ReportsRow; Insert: ReportsInsert };
+      scenario_assumptions: { Row: ScenarioAssumptionsRow; Insert: ScenarioAssumptionsInsert };
+      scenario_comparisons: { Row: ScenarioComparisonsRow; Insert: ScenarioComparisonsInsert };
+      scenario_run_lines: { Row: ScenarioRunLinesRow; Insert: ScenarioRunLinesInsert };
+      scenario_runs: { Row: ScenarioRunsRow; Insert: ScenarioRunsInsert };
+      scenarios: { Row: ScenariosRow; Insert: ScenariosInsert };
       settings: { Row: SettingsRow; Insert: SettingsInsert };
       source_cells: { Row: SourceCellsRow; Insert: SourceCellsInsert };
       source_sheets: { Row: SourceSheetsRow; Insert: SourceSheetsInsert };
