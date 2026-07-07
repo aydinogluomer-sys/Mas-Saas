@@ -5,6 +5,7 @@ import { loadScenarioRun } from "@/lib/scenarios/engine";
 import { buildScenarioInsights, type ScenarioAssumptions, type ScenarioComparison } from "@/lib/scenarios/rules";
 import { Badge, type Tone } from "@/components/ui/badge";
 import { Panel } from "@/components/ui/panel";
+import { ChartShell, Disclaimer, KpiCard } from "@/components/ui/shell";
 import { ScenarioChart } from "@/components/scenarios/chart";
 import { deleteScenarioRunAction } from "../actions";
 
@@ -46,11 +47,7 @@ export default async function ScenarioRunPage({
 
   return (
     <>
-      <div className="border border-violet-800 bg-violet-950/25 px-3 py-2">
-        <span className="font-mono text-[11px] uppercase tracking-wider text-violet-300">
-          ⚠ Senaryo çıktısı tahmindir; muhasebe gerçeği değildir. Kaynak kayıtları değiştirmez.
-        </span>
-      </div>
+      <Disclaimer tone="accent">⚠ Senaryo çıktısı tahmindir; muhasebe gerçeği değildir. Kaynak kayıtları değiştirmez.</Disclaimer>
 
       <Panel
         title={run.name}
@@ -63,13 +60,10 @@ export default async function ScenarioRunPage({
       >
         <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
           {cards.map(([k, v, bad]) => (
-            <div key={k} className="border border-zinc-800 bg-black/40 p-2">
-              <div className="font-mono text-[9px] uppercase tracking-wider text-zinc-500">{k}</div>
-              <div className={`font-mono text-sm tabular-nums ${bad ? "text-red-400" : "text-zinc-200"}`}>{v}</div>
-            </div>
+            <KpiCard key={k} label={k} value={v} tone={bad ? "neg" : "neutral"} />
           ))}
         </div>
-        <div className="mt-2 font-mono text-[10px] text-zinc-500">
+        <div className="mt-2 font-mono text-[10px]" style={{ color: "var(--text-3)" }}>
           baz: {run.baseline_label ?? "—"} · {run.month_count} ay{run.null_month_count > 0 ? ` · ${run.null_month_count} belirsiz ay` : ""} · {run.run_at}
         </div>
       </Panel>
@@ -94,9 +88,14 @@ export default async function ScenarioRunPage({
         </ul>
       </Panel>
 
-      <Panel title="BAZ vs SENARYO — KASA">
+      <ChartShell
+        title="Baz vs Senaryo — Kasa"
+        hint="kesikli: baz · düz: senaryo"
+        source="Baz senaryo değiştirilmez; senaryo yalnız overlay'dir."
+        summary={`Baz final kasa ${fmt0(run.base_final)}, senaryo final kasa ${fmt0(run.scen_final)}, fark ${fmt0(run.final_delta)}.`}
+      >
         <ScenarioChart lines={lines} />
-      </Panel>
+      </ChartShell>
 
       <Panel title={`AYLIK KARŞILAŞTIRMA — ${lines.length}`}>
         <div className="overflow-x-auto">

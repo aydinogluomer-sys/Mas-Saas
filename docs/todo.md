@@ -113,3 +113,13 @@
 - [x] Backup/restore ispatı: pg_dump → taze DB restore (0 hata, sayaçlar birebir 2/9817/1601, 33 tablo, 0 RLS-kapalı, seed intact).
 - [x] docs/local-production-deploy.md + mvp-runbook güncellendi.
 - [x] Gate: lint ✓ typecheck ✓ vitest 138 ✓ db:verify ✓ import:real ✓ phase3-8:verify ✓ build ✓ 9-route smoke (+/health +/version).
+
+## Frontend polish — DONE (UI/UX, mali mantık değişmedi)
+
+- [x] Tasarım sistemi: globals.css design tokenları (surface/line/text/financial/focus/radius) + a11y base (focus-visible ring, ::selection, scrollbar, reduced-motion) + subtle CSS motion (rise-in/stagger, prefers-reduced-motion'a saygılı).
+- [x] Shared primitives: PageHeader, KpiCard, StatBox, ChartShell (sr-only özet + empty), TableShell (a11y region + scroll), EmptyState, Disclaimer, Nav (aktif route aria-current). Panel/Badge geriye uyumlu zenginleştirildi (accent, dot, AA kontrast).
+- [x] Layout/nav: sticky header + marka accent rail + client Nav aktif-route state + logout; main `.stagger` giriş kaskadı.
+- [x] Route polish: radar/cashflow/financing/reports/reminders/production/scenarios → tutarlı PageHeader + KpiCard grid + ChartShell + Disclaimer bileşenleri; chart renkleri token paletine hizalandı.
+- [x] A11y: h1(PageHeader)/h2(Panel) semantik, `:focus-visible` ring, chart `role=img`+`aria-label`+`sr-only` özet, nav `aria-current`, TableShell labeled region, renk-tek-anlam yok. Responsive: KPI grid 4/5→2, nav wrap, geniş tablolar TableShell'de kayar.
+- [x] Playwright visual regression: 7 route baseline (`tests/visual/__snapshots__`), deterministik `data-vr` + `[data-volatile]` gizleme; `pnpm test:visual` / `test:visual:update`. Gate: lint ✓ typecheck ✓ vitest 138 ✓ db:verify ✓ import:real ✓ phase3-8:verify ✓ build ✓ 9-route smoke ✓ visual 7/7 ✓.
+- [x] docs/frontend-polish-guidelines.md yazıldı.

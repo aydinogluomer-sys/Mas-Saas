@@ -12,6 +12,7 @@ import {
 } from "@/lib/radar/queries";
 import { Badge } from "@/components/ui/badge";
 import { Num, Panel, fmtTL } from "@/components/ui/panel";
+import { KpiCard, PageHeader } from "@/components/ui/shell";
 import { InstanceRowView } from "@/components/radar/instance-row";
 
 export const dynamic = "force-dynamic";
@@ -41,8 +42,22 @@ export default async function RadarPage() {
 
   const openCount = (rows: typeof tToday) => rows.filter((r) => r.status !== "paid").length;
 
+  const next7Open = openCount(tWeek);
   return (
     <>
+      <PageHeader
+        title="Ödeme Radarı"
+        subtitle="Bugün, yarın ve önümüzdeki 7 gün · geciken · eksik tutar · riskli günler"
+        meta={
+          <>
+            <Badge tone="neutral" dot>bugün {fmtDay(today)}</Badge>
+            {overdue.length > 0 && <Badge tone="red">{overdue.length} geciken</Badge>}
+            {summary.missing_count > 0 && <Badge tone="amber">{summary.missing_count} tutar eksik</Badge>}
+            <Badge tone="neutral">7 günde {next7Open} açık</Badge>
+          </>
+        }
+      />
+
       {(missing.length > 0 || dayless.length > 0) && (
         <Panel title="EKSİK VERİ — ANALİZDEN ÖNCE TAMAMLAYIN" right={<Badge tone="red">{missing.length + dayless.length}</Badge>}>
           <p className="mb-2 text-xs text-zinc-500">
@@ -89,12 +104,9 @@ export default async function RadarPage() {
       <Panel title={`AY ÖZETİ — ${monthStart.slice(0, 7)}`}
         right={summary.missing_count > 0 ? <Badge tone="amber">{summary.missing_count} TUTAR EKSİK</Badge> : undefined}>
         <div className="grid grid-cols-3 gap-2">
-          {([["KALAN (bilinen)", summary.known_remaining], ["ÖDENEN (bilinen)", summary.paid_known], ["TOPLAM (bilinen)", summary.known_total]] as const).map(([k, v]) => (
-            <div key={k} className="border border-zinc-800 bg-black/40 p-2">
-              <div className="font-mono text-[9px] uppercase tracking-wider text-zinc-500">{k}</div>
-              <div className="font-mono text-sm tabular-nums">{fmtTL(v)}</div>
-            </div>
-          ))}
+          <KpiCard label="Kalan (bilinen)" value={fmtTL(summary.known_remaining)} tone={summary.known_remaining > 0 ? "warn" : "neutral"} />
+          <KpiCard label="Ödenen (bilinen)" value={fmtTL(summary.paid_known)} tone="pos" />
+          <KpiCard label="Toplam (bilinen)" value={fmtTL(summary.known_total)} />
         </div>
       </Panel>
 

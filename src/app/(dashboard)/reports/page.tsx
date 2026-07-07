@@ -3,6 +3,7 @@ import { getPool } from "@/lib/db";
 import { listReports } from "@/lib/reports/engine";
 import { Badge, type Tone } from "@/components/ui/badge";
 import { Panel } from "@/components/ui/panel";
+import { PageHeader } from "@/components/ui/shell";
 import { generateReportAction } from "./actions";
 
 export const dynamic = "force-dynamic";
@@ -28,6 +29,12 @@ export default async function ReportsPage() {
 
   return (
     <>
+      <PageHeader
+        title="Raporlar"
+        subtitle="Günlük · haftalık · aylık salt-okunur özetler (Europe/Istanbul)"
+        meta={<Badge tone="neutral" dot>{reports.length} rapor</Badge>}
+      />
+
       <Panel title="RAPOR ÜRET">
         <div className="flex flex-wrap gap-2">
           <GenButton type="daily" label="Günlük" />

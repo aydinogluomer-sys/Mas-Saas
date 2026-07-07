@@ -105,6 +105,16 @@ implementation.md §0 sırası: kapasite/maliyet. Tablolar tasarımda var (machi
 - phase7-verify: no-silent-discard (68 parça talep=G5+H5), izlenebilirlik, stale-rate, başabaş=G6 birebir+mutabakat, süre-eksik null, ROI needs_review, idempotency, **mali bütünlük before==after**. ALL PASS.
 - Gate: lint ✓ typecheck ✓ vitest 128/128 ✓ db:verify ✓ import:real ✓ phase3/4/5/6/6b/7:verify ✓ build ✓ 6-route smoke ✓.
 
+## Frontend polish — DONE (UI/UX sprint; mali mantık/import/hesaplama DEĞİŞMEDİ)
+- Yeni özellik yok. Design-system tutarlılığı + a11y (WCAG 2.2 AA hedefi) + responsive + subtle motion + visual regression.
+- **Tokens** (`globals.css`): finance paleti CSS değişkenleri (surface-0..3, line/text kademeleri, pos/neg/warn/info/accent, focus, radius). a11y base: `:focus-visible` ring (yalnız klavye), `::selection`, ince scrollbar, `prefers-reduced-motion` sıfırlama. Motion: rise-in + `.stagger` kaskadı (reduced-motion'da anında).
+- **Primitives** (`src/components/ui/`): `PageHeader` (h1+subtitle+meta+action), `KpiCard`/`StatBox` (finansal işaret renk-kodlu), `ChartShell` (`<figure>` + `sr-only` metin özeti + kaynak + empty), `TableShell` (role=region, tabIndex, scroll affordance), `EmptyState`, `Disclaimer`, `Nav` (client, aktif-route `aria-current`). `Panel`/`Badge` geriye uyumlu (accent/dot, AA kontrast). previews testi (Badge metin render) bozulmadı.
+- **Uygulama**: 7 ana route (radar/cashflow/financing/reports/reminders/production/scenarios) tutarlı PageHeader + KPI grid + ChartShell + Disclaimer'a taşındı; ad-hoc stat box'lar KpiCard/StatBox oldu; production/scenarios "analitik/senaryo tahmindir" banner'ları `Disclaimer` bileşeni; chart hex renkleri token paletine hizalandı (SVG'ler `role=img`+`aria-label` korudu).
+- **Layout**: sticky header + marka accent rail + client Nav (aktif route) + logout; `main.stagger` giriş kaskadı; body token renkleri.
+- **Visual regression** (Playwright): `playwright.config.ts` + `tests/visual/dashboard.spec.ts` 7 route full-page snapshot; determinizm için `data-vr="1"` → `[data-volatile]` (timestamp/"bugün") CSS ile gizli; `pnpm test:visual` / `test:visual:update`; baseline'lar `tests/visual/__snapshots__` (Windows-özel, commit'li). next.config `devIndicators:false` (temiz screenshot).
+- **Bilinen sınır:** radar en dinamik sayfa (her GET ensureWindow + "bugün" tarihine bağlı) → visual baseline günlük drift edebilir; docs: önce stabil domain seed + `test:visual:update`. Font render OS-özel → baseline'lar makineye bağlı.
+- Gate: lint ✓ typecheck ✓ vitest 138/138 ✓ db:verify ✓ import:real ✓ phase3-8:verify ✓ build ✓ 9-route smoke ✓ visual 7/7 ✓. `docs/frontend-polish-guidelines.md` eklendi.
+
 ## Deploy — DONE (yerel özel production hazırlığı, Option A — Phase 8 sonrası sprint)
 - Yeni ürün özelliği YOK; yalnız production-readiness. MVP zip (`../mas-nakit-radar-mvp.zip`) temiz klasörde fresh install ile doğrulandı (install/lint/typecheck/test 138/build) — kaynaktan yeniden derlenebilir, gizli veri içermez (0 xlsx, 0 hardcoded token, 0 .env).
 - Deploy dosyaları: `docker-compose.yml` (postgres:16, kalıcı volume `mas_radar_pgdata`, 127.0.0.1 bind, healthcheck), `.env.example`, `scripts/deploy/{local-start,local-stop,backup-db,restore-db}.sh`, `scripts/deploy/check-env.ts` (secret VALUE'ları yazmaz — yalnız presence + DSN maskeler). `.gitignore`'a `backups/` + `*.dump` eklendi.

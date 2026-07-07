@@ -14,6 +14,7 @@ import {
 } from "@/lib/financing/rules";
 import { Badge, type Tone } from "@/components/ui/badge";
 import { Num, Panel, fmtTL } from "@/components/ui/panel";
+import { PageHeader } from "@/components/ui/shell";
 
 export const dynamic = "force-dynamic";
 
@@ -69,9 +70,30 @@ export default async function FinancingPage({
 
   return (
     <>
+      <PageHeader
+        title="Finansman Radarı"
+        subtitle="Çek defteri · kredi + taksit planı · vade takvimi · banka exposure"
+        meta={
+          <>
+            <Badge tone="violet" dot>{checks.length} çek</Badge>
+            <Badge tone="amber">{loans.length} kredi</Badge>
+            {totalRemainingDebt > 0 && <Badge tone="neutral">kalan borç {fmt0(totalRemainingDebt)}</Badge>}
+          </>
+        }
+        action={
+          <Link
+            href="/scenarios?from=financing"
+            className="border px-3 py-1.5 font-mono text-[10px] uppercase tracking-wider"
+            style={{ color: "var(--accent)", borderColor: "var(--accent)", borderRadius: "var(--radius)", background: "color-mix(in srgb, var(--accent) 10%, transparent)" }}
+          >
+            borç-servisi senaryosu →
+          </Link>
+        }
+      />
+
       {sp.checks != null && (
-        <Panel title="AKTARIM SONUCU">
-          <p className="text-sm">
+        <Panel title="AKTARIM SONUCU" accent="pos">
+          <p className="text-sm" style={{ color: "var(--text-2)" }}>
             <Num>{sp.checks}</Num> çek · <Num>{sp.loans}</Num> kredi · <Num>{sp.installments}</Num> taksit
             aktarıldı (tekrar güvenli; çift-kayıt/açık incelemeler hariç).
           </p>
@@ -98,12 +120,6 @@ export default async function FinancingPage({
             </div>
           </div>
         ))}
-      </div>
-
-      <div className="flex justify-end">
-        <Link href="/scenarios?from=financing" className="border border-violet-800 bg-violet-950/30 px-3 py-1.5 font-mono text-[10px] uppercase tracking-wider text-violet-300">
-          borç-servisi overlay ile senaryo üret →
-        </Link>
       </div>
 
       {/* loans */}

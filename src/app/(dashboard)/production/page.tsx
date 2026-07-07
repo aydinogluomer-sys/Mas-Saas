@@ -17,6 +17,7 @@ import {
 } from "@/lib/production/rules";
 import { Badge } from "@/components/ui/badge";
 import { Panel, fmtTL } from "@/components/ui/panel";
+import { Disclaimer, PageHeader } from "@/components/ui/shell";
 
 export const dynamic = "force-dynamic";
 
@@ -82,11 +83,28 @@ export default async function ProductionPage() {
 
   return (
     <>
-      <div className="border border-amber-800 bg-amber-950/30 px-3 py-2">
-        <span className="font-mono text-[11px] uppercase tracking-wider text-amber-300">
-          ⚠ Analitik tahmindir; muhasebe gerçeği değildir.
-        </span>
-      </div>
+      <PageHeader
+        title="Üretim Analitiği"
+        subtitle="Kapasite · başabaş TL/dk · normal vs mesaili · parça kârlılığı · makine ROI"
+        meta={
+          <>
+            {cap?.isStaleRate && <Badge tone="amber" dot>{cap.rateYear} stale-rate</Badge>}
+            <Badge tone="neutral">{cap?.partCount ?? 0} parça</Badge>
+            {(cap?.missingPartCount ?? 0) > 0 && <Badge tone="amber">{cap!.missingPartCount} süre eksik</Badge>}
+          </>
+        }
+        action={
+          <Link
+            href="/scenarios?from=production"
+            className="border px-3 py-1.5 font-mono text-[10px] uppercase tracking-wider"
+            style={{ color: "var(--accent)", borderColor: "var(--accent)", borderRadius: "var(--radius)", background: "color-mix(in srgb, var(--accent) 10%, transparent)" }}
+          >
+            kapasite senaryosu →
+          </Link>
+        }
+      />
+
+      <Disclaimer>⚠ Analitik tahmindir; muhasebe gerçeği değildir.</Disclaimer>
 
       {/* capacity overview cards */}
       <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
@@ -98,12 +116,6 @@ export default async function ProductionPage() {
           v={`freze ${fmt2(cap?.frezeRateTLPerMin ?? null)} · torna ${fmt2(cap?.tornaRateTLPerMin ?? null)}`}
           badge={cap?.isStaleRate ? <Badge tone="amber">{cap.rateYear} stale</Badge> : undefined}
         />
-      </div>
-
-      <div className="flex justify-end">
-        <Link href="/scenarios?from=production" className="border border-violet-800 bg-violet-950/30 px-3 py-1.5 font-mono text-[10px] uppercase tracking-wider text-violet-300">
-          kapasite varsayımıyla senaryo üret →
-        </Link>
       </div>
 
       {/* insights */}

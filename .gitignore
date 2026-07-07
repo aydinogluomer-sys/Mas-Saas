@@ -48,3 +48,8 @@ data/
 /backups/
 *.dump
 *.sql.gz
+
+# playwright artifacts (baselines under tests/visual/__snapshots__ ARE committed)
+/test-results/
+/playwright-report/
+/blob-report/

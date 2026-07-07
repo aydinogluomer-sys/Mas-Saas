@@ -4,6 +4,7 @@ import { listScenarioRuns } from "@/lib/scenarios/engine";
 import { loadCashMonths } from "@/lib/cashflow/engine";
 import { Badge, type Tone } from "@/components/ui/badge";
 import { Panel } from "@/components/ui/panel";
+import { Disclaimer, PageHeader } from "@/components/ui/shell";
 import { runScenarioAction } from "./actions";
 
 export const dynamic = "force-dynamic";
@@ -24,11 +25,19 @@ export default async function ScenariosPage({
 
   return (
     <>
-      <div className="border border-violet-800 bg-violet-950/25 px-3 py-2">
-        <span className="font-mono text-[11px] uppercase tracking-wider text-violet-300">
-          ⚠ Senaryo çıktısı tahmindir; muhasebe gerçeği değildir. Kaynak kayıtları değiştirmez.
-        </span>
-      </div>
+      <PageHeader
+        title="Senaryo Motoru"
+        subtitle="Salt-okunur what-if: gelir/gider/gecikme/kapasite/verim + borç-servisi overlay"
+        meta={
+          <>
+            <Badge tone="violet" dot>{runs.length} çalışma</Badge>
+            {hasBaseline && <Badge tone="neutral">baz {baseline.length} ay</Badge>}
+            {sp.from && <Badge tone="neutral">kaynak: {sp.from}</Badge>}
+          </>
+        }
+      />
+
+      <Disclaimer tone="accent">⚠ Senaryo çıktısı tahmindir; muhasebe gerçeği değildir. Kaynak kayıtları değiştirmez.</Disclaimer>
 
       <Panel title="SENARYO ÇALIŞTIR">
         {!hasBaseline ? (

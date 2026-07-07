@@ -1,26 +1,91 @@
 @import "tailwindcss";
 
+/* ─────────────────────────────────────────────────────────────────────────
+   MAS Nakit Radar — design tokens. Premium internal finance-ops cockpit:
+   calm, precise, dense, executive-grade. Dark-first (single theme by design).
+   ───────────────────────────────────────────────────────────────────────── */
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
-}
+  /* surfaces (deepest → raised) */
+  --surface-0: #09090b;   /* page background */
+  --surface-1: #0c0c0e;   /* panels */
+  --surface-2: #101013;   /* raised cells / stat boxes */
+  --surface-3: #17171b;   /* controls / hover */
 
-@theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
-}
+  /* lines */
+  --line: #26262b;        /* default border */
+  --line-strong: #34343a; /* header / emphasis border */
+  --line-faint: #1a1a1e;  /* row dividers */
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+  /* text */
+  --text-1: #e7e7ea;      /* primary */
+  --text-2: #a1a1aa;      /* secondary */
+  --text-3: #71717a;      /* muted / labels */
+  --text-4: #52525b;      /* faint */
+
+  /* semantic (financial) — tuned for AA contrast on dark surfaces */
+  --pos: #34d399;         /* positive / paid / inflow */
+  --neg: #f87171;         /* negative / critical / outflow */
+  --warn: #fbbf24;        /* caution / missing / stale */
+  --info: #7fb0d9;        /* info / scenario / bank */
+  --accent: #a78bfa;      /* accent / financing / scenario */
+
+  --focus: #7fb0d9;       /* focus ring */
+  --radius: 3px;          /* subtle, still terminal-crisp */
 }
 
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  background: var(--surface-0);
+  color: var(--text-1);
+  font-family: var(--font-mono, ui-monospace, "SFMono-Regular", "Menlo", "Consolas", monospace);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
 }
+
+/* ── accessibility base ── */
+*:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+/* remove focus ring for mouse users, keep for keyboard */
+:focus:not(:focus-visible) { outline: none; }
+
+::selection { background: color-mix(in srgb, var(--info) 35%, transparent); color: #fff; }
+
+/* readable, unobtrusive scrollbars */
+* { scrollbar-width: thin; scrollbar-color: var(--line-strong) transparent; }
+*::-webkit-scrollbar { width: 10px; height: 10px; }
+*::-webkit-scrollbar-thumb { background: var(--line-strong); border-radius: 8px; border: 2px solid transparent; background-clip: content-box; }
+*::-webkit-scrollbar-thumb:hover { background: #45454c; background-clip: content-box; }
+
+/* numeric columns line up */
+.tnum { font-variant-numeric: tabular-nums; }
+
+/* ── subtle, production-grade motion (respects reduced-motion) ── */
+@keyframes rise-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+@keyframes fade-in { from { opacity: 0; } to { opacity: 1; } }
+
+.animate-rise { animation: rise-in 0.28s cubic-bezier(0.22, 1, 0.36, 1) both; }
+.animate-fade { animation: fade-in 0.24s ease both; }
+
+/* stagger helper: panels enter in sequence for a calm cascade */
+.stagger > * { animation: rise-in 0.3s cubic-bezier(0.22, 1, 0.36, 1) both; }
+.stagger > *:nth-child(1) { animation-delay: 0.02s; }
+.stagger > *:nth-child(2) { animation-delay: 0.05s; }
+.stagger > *:nth-child(3) { animation-delay: 0.08s; }
+.stagger > *:nth-child(4) { animation-delay: 0.11s; }
+.stagger > *:nth-child(5) { animation-delay: 0.14s; }
+.stagger > *:nth-child(6) { animation-delay: 0.17s; }
+.stagger > *:nth-child(n+7) { animation-delay: 0.2s; }
+
+/* card hover micro-interaction */
+.card-hover { transition: border-color 0.18s ease, background-color 0.18s ease, transform 0.18s ease; }
+.card-hover:hover { border-color: var(--line-strong); }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 0.001ms !important; animation-delay: 0ms !important; transition-duration: 0.001ms !important; scroll-behavior: auto !important; }
+  .animate-rise, .animate-fade, .stagger > * { opacity: 1 !important; transform: none !important; }
+}
+
+/* deterministic screenshots: neutralize volatile UI in visual-regression mode */
+:root[data-vr="1"] [data-volatile] { visibility: hidden !important; }

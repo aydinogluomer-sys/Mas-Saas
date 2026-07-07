@@ -1,7 +1,8 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
-  /* config options here */
+  // No dev overlay indicator — keeps visual-regression screenshots deterministic.
+  devIndicators: false,
 };
 
 export default nextConfig;

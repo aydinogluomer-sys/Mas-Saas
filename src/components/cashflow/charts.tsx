@@ -37,7 +37,7 @@ export function CashTrendChart({ months, firstNegative, worstMonth }: {
       <rect x={pad} y={zeroY} width={W - 2 * pad} height={Math.max(scaleY(min, min, max, H, pad) - zeroY, 0)} fill="#7f1d1d" opacity="0.12" />
       <line x1={pad} x2={W - pad} y1={zeroY} y2={zeroY} stroke="#52525b" strokeWidth="1" strokeDasharray="4 4" />
       {segments.map((pts, i) => (
-        <polyline key={i} points={pts} fill="none" stroke="#7FA6C9" strokeWidth="2" />
+        <polyline key={i} points={pts} fill="none" stroke="#7fb0d9" strokeWidth="2" />
       ))}
       {months.map((m, i) => {
         if (m.closing == null) return null;
@@ -46,8 +46,8 @@ export function CashTrendChart({ months, firstNegative, worstMonth }: {
         if (!isFN && !isW) return null;
         return (
           <g key={m.monthStart}>
-            <circle cx={x(i)} cy={scaleY(m.closing, min, max, H, pad)} r="4" fill={isW ? "#E5484D" : "#F5A83B"} />
-            <text x={x(i)} y={scaleY(m.closing, min, max, H, pad) - 8} fontSize="10" fill={isW ? "#E5484D" : "#F5A83B"}
+            <circle cx={x(i)} cy={scaleY(m.closing, min, max, H, pad)} r="4" fill={isW ? "#f87171" : "#fbbf24"} />
+            <text x={x(i)} y={scaleY(m.closing, min, max, H, pad) - 8} fontSize="10" fill={isW ? "#f87171" : "#fbbf24"}
               textAnchor="middle" fontFamily="monospace">
               {isW ? `en kötü ${kFmt(m.closing)}` : "ilk negatif"}
             </text>
@@ -75,8 +75,8 @@ export function IncomeExpenseChart({ months }: { months: CashMonth[] }) {
         const eh = m.expense != null ? (m.expense / max) * (H - 2 * pad) : 0;
         return (
           <g key={m.monthStart}>
-            {m.income != null && <rect x={x0} y={H - pad - ih} width={bw} height={ih} fill="#34C077" />}
-            {m.expense != null && <rect x={x0 + bw + 1} y={H - pad - eh} width={bw} height={eh} fill="#E5484D" />}
+            {m.income != null && <rect x={x0} y={H - pad - ih} width={bw} height={ih} fill="#34d399" />}
+            {m.expense != null && <rect x={x0 + bw + 1} y={H - pad - eh} width={bw} height={eh} fill="#f87171" />}
             {i % 6 === 0 && (
               <text x={x0} y={H - 3} fontSize="8" fill="#71717a" fontFamily="monospace">
                 {m.monthStart.slice(2, 7)}
@@ -85,8 +85,8 @@ export function IncomeExpenseChart({ months }: { months: CashMonth[] }) {
           </g>
         );
       })}
-      <text x={W - pad} y={12} fontSize="10" fill="#34C077" textAnchor="end" fontFamily="monospace">gelir</text>
-      <text x={W - pad} y={24} fontSize="10" fill="#E5484D" textAnchor="end" fontFamily="monospace">gider</text>
+      <text x={W - pad} y={12} fontSize="10" fill="#34d399" textAnchor="end" fontFamily="monospace">gelir</text>
+      <text x={W - pad} y={24} fontSize="10" fill="#f87171" textAnchor="end" fontFamily="monospace">gider</text>
     </svg>
   );
 }

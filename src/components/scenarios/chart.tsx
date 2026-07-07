@@ -42,7 +42,7 @@ export function ScenarioChart({ lines }: { lines: ScenarioLine[] }) {
           <polyline key={`b${i}`} points={pts} fill="none" stroke="#71717a" strokeWidth="2" strokeDasharray="5 4" />
         ))}
         {path((l) => l.scen_close).map((pts, i) => (
-          <polyline key={`s${i}`} points={pts} fill="none" stroke="#7FA6C9" strokeWidth="2.5" />
+          <polyline key={`s${i}`} points={pts} fill="none" stroke="#7fb0d9" strokeWidth="2.5" />
         ))}
         <text x={pad} y={12} fontSize="10" fill="#71717a" fontFamily="monospace">{kFmt(max)}</text>
         <text x={pad} y={H - 4} fontSize="10" fill="#71717a" fontFamily="monospace">{kFmt(min)}</text>

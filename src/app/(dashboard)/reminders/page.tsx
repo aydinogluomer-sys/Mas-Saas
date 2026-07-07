@@ -3,6 +3,7 @@ import { deliveryCounts, loadDeliveries } from "@/lib/reminders/engine";
 import { istanbulDateISO } from "@/lib/reports/rules";
 import { Badge, type Tone } from "@/components/ui/badge";
 import { Num, Panel } from "@/components/ui/panel";
+import { KpiCard, PageHeader } from "@/components/ui/shell";
 import { dispatchRemindersAction, scheduleRemindersAction } from "./actions";
 
 export const dynamic = "force-dynamic";
@@ -15,17 +16,25 @@ export default async function RemindersPage() {
   const [counts, deliveries] = await Promise.all([deliveryCounts(pool), loadDeliveries(pool)]);
   const today = istanbulDateISO();
 
+  const KTONE: Record<string, "neg" | "pos" | "warn" | "neutral"> = { failed: "neg", sent: "pos", pending: "warn", skipped: "neutral" };
   return (
     <>
-      <Panel title={`HATIRLATMA — bugün ${today} (Europe/Istanbul)`}>
+      <PageHeader
+        title="Hatırlatma"
+        subtitle="Teslimat planlama + gönderim kaydı (Europe/Istanbul)"
+        meta={
+          <>
+            <Badge tone="neutral" dot>bugün {today}</Badge>
+            {counts.failed > 0 && <Badge tone="red">{counts.failed} başarısız</Badge>}
+            {counts.pending > 0 && <Badge tone="amber">{counts.pending} bekleyen</Badge>}
+          </>
+        }
+      />
+
+      <Panel title="DURUM ÖZETİ">
         <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
           {(["pending", "sent", "failed", "skipped"] as const).map((k) => (
-            <div key={k} className="border border-zinc-800 bg-black/40 p-2">
-              <div className="font-mono text-[9px] uppercase tracking-wider text-zinc-500">{k}</div>
-              <div className={`font-mono text-lg tabular-nums ${k === "failed" ? "text-red-400" : k === "sent" ? "text-emerald-400" : "text-zinc-200"}`}>
-                <Num>{counts[k]}</Num>
-              </div>
-            </div>
+            <KpiCard key={k} label={k} value={<Num>{counts[k]}</Num>} tone={KTONE[k]} emphasize />
           ))}
         </div>
         <div className="mt-3 flex flex-wrap gap-2">

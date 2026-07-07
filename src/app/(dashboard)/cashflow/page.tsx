@@ -7,6 +7,7 @@ import { buildProjection, concentration, horizonCards } from "@/lib/radar/rules"
 import { loadDebtOverlay } from "@/lib/reports/engine";
 import { Badge, type Tone } from "@/components/ui/badge";
 import { Num, Panel, fmtTL } from "@/components/ui/panel";
+import { ChartShell, KpiCard, PageHeader, StatBox, TableShell } from "@/components/ui/shell";
 import { CashTrendChart, ConcentrationBars, IncomeExpenseChart } from "@/components/cashflow/charts";
 
 const PRESSURE_TONE: Record<string, Tone> = { high: "red", watch: "amber", none: "neutral" };
@@ -67,74 +68,82 @@ export default async function CashflowPage({
 
   return (
     <>
+      <PageHeader
+        title="Nakit Akış Radarı"
+        subtitle={`${months.length} aylık projeksiyon (${months[0].monthStart.slice(0, 7)}..${months[months.length - 1].monthStart.slice(0, 7)}) · devir → gelir → gider → kasa`}
+        meta={
+          <>
+            {proj.firstNegativeMonth
+              ? <Badge tone="red">ilk negatif {AYK(proj.firstNegativeMonth)}</Badge>
+              : <Badge tone="green" dot>negatif ay yok</Badge>}
+            {highPressure > 0 && <Badge tone="red">{highPressure} ay borç baskısı</Badge>}
+            {openChain.rows[0].n > 0
+              ? <Badge tone="amber">{openChain.rows[0].n} zincir sorunu</Badge>
+              : <Badge tone="neutral" dot>zincir temiz</Badge>}
+          </>
+        }
+        action={
+          <Link
+            href="/scenarios?from=cashflow"
+            className="border px-3 py-1.5 font-mono text-[10px] uppercase tracking-wider transition-colors"
+            style={{ color: "var(--accent)", borderColor: "var(--accent)", borderRadius: "var(--radius)", background: "color-mix(in srgb, var(--accent) 10%, transparent)" }}
+          >
+            senaryo üret →
+          </Link>
+        }
+      />
+
       {sp.months != null && (
-        <Panel title="AKTARIM SONUCU">
-          <p className="text-sm"><Num>{sp.months}</Num> ay · <Num>{sp.lines}</Num> satır aktarıldı (tekrar güvenli).</p>
+        <Panel title="AKTARIM SONUCU" accent="pos">
+          <p className="text-sm" style={{ color: "var(--text-2)" }}><Num>{sp.months}</Num> ay · <Num>{sp.lines}</Num> satır aktarıldı (tekrar güvenli).</p>
         </Panel>
       )}
 
       <div className="grid grid-cols-2 gap-2 sm:grid-cols-5">
         {cards.map((c) => (
-          <div key={c.horizonMonths} className="border border-zinc-800 bg-zinc-950 p-2">
-            <div className="flex items-center justify-between">
-              <span className="font-mono text-[10px] uppercase tracking-wider text-zinc-500">{c.horizonMonths} AY</span>
-              {c.truncated && <Badge tone="neutral">veri sonu</Badge>}
-            </div>
-            <div className={`mt-1 font-mono text-sm tabular-nums ${c.endClosing != null && c.endClosing < 0 ? "text-red-400" : "text-zinc-200"}`}>
-              {c.endClosing != null ? fmtTL(c.endClosing) : "—"}
-            </div>
-            <div className="font-mono text-[9px] text-zinc-500">{AYK(c.toMonth)} sonu kasa</div>
-            <div className="mt-1 font-mono text-[9px] text-zinc-500">
-              min {c.minClosing != null ? fmtTL(c.minClosing) : "—"} ({AYK(c.minMonth)})
-            </div>
-            {c.firstNegativeInside && (
-              <div className="mt-1"><Badge tone="red">ilk negatif: {AYK(c.firstNegativeInside)}</Badge></div>
-            )}
-            {c.missingCount > 0 && <div className="mt-1 font-mono text-[9px] text-amber-400">{c.missingCount} ay eksik veri</div>}
-          </div>
+          <KpiCard
+            key={c.horizonMonths}
+            label={`${c.horizonMonths} ay`}
+            value={c.endClosing != null ? fmtTL(c.endClosing) : "—"}
+            tone={c.endClosing != null && c.endClosing < 0 ? "neg" : "neutral"}
+            badge={c.truncated ? <Badge tone="neutral">veri sonu</Badge> : c.firstNegativeInside ? <Badge tone="red">neg {AYK(c.firstNegativeInside)}</Badge> : undefined}
+            note={
+              <>
+                {AYK(c.toMonth)} sonu · min {c.minClosing != null ? fmtTL(c.minClosing) : "—"}
+                {c.missingCount > 0 && <span style={{ color: "var(--warn)" }}> · {c.missingCount} eksik ay</span>}
+              </>
+            }
+          />
         ))}
       </div>
 
       <Panel title="NEGATİF KASA UYARILARI"
-        right={openChain.rows[0].n > 0 ? <Badge tone="red">{openChain.rows[0].n} zincir sorunu</Badge> : <Badge tone="green">zincir temiz</Badge>}>
+        right={openChain.rows[0].n > 0 ? <Badge tone="red">{openChain.rows[0].n} zincir sorunu</Badge> : <Badge tone="green" dot>zincir temiz</Badge>}
+        accent={proj.firstNegativeMonth ? "neg" : undefined}>
         <div className="grid grid-cols-1 gap-2 text-sm sm:grid-cols-3">
-          <div className="border border-zinc-800 bg-black/40 p-2">
-            <div className="font-mono text-[9px] uppercase text-zinc-500">ilk negatif ay</div>
-            <div className={`font-mono ${proj.firstNegativeMonth ? "text-red-400" : "text-emerald-400"}`}>
-              {proj.firstNegativeMonth ? AYK(proj.firstNegativeMonth) : "yok"}
-            </div>
-          </div>
-          <div className="border border-zinc-800 bg-black/40 p-2">
-            <div className="font-mono text-[9px] uppercase text-zinc-500">en kötü ay</div>
-            <div className="font-mono text-red-400">
-              {AYK(proj.worstMonth)} · {proj.worstBalance != null ? fmtTL(proj.worstBalance) : "—"}
-            </div>
-          </div>
-          <div className="border border-zinc-800 bg-black/40 p-2">
-            <div className="font-mono text-[9px] uppercase text-zinc-500">negatif ay sayısı / en uzun seri</div>
-            <div className="font-mono"><Num>{negMonths.length}</Num> ay · <Num>{proj.longestNegativeRun.length}</Num> ardışık{proj.longestNegativeRun.from ? ` (${AYK(proj.longestNegativeRun.from)}→)` : ""}</div>
-          </div>
+          <StatBox k="ilk negatif ay" v={proj.firstNegativeMonth ? AYK(proj.firstNegativeMonth) : "yok"} tone={proj.firstNegativeMonth ? "neg" : "pos"} />
+          <StatBox k="en kötü ay" v={`${AYK(proj.worstMonth)} · ${proj.worstBalance != null ? fmtTL(proj.worstBalance) : "—"}`} tone="neg" />
+          <StatBox k="negatif ay / en uzun seri" v={<><Num>{negMonths.length}</Num> ay · <Num>{proj.longestNegativeRun.length}</Num> ardışık{proj.longestNegativeRun.from ? ` (${AYK(proj.longestNegativeRun.from)}→)` : ""}</>} />
         </div>
         {cont.breaks > 0 && (
-          <p className="mt-2 font-mono text-[11px] text-red-400">
+          <p className="mt-2 font-mono text-[11px]" style={{ color: "var(--neg)" }}>
             Devir zinciri kırıkları bayraklandı (sessiz düzeltme YAPILMAZ) — İçe Aktarım &gt; incelemelerde.
           </p>
         )}
       </Panel>
 
-      <div className="flex justify-end">
-        <Link href="/scenarios?from=cashflow" className="border border-violet-800 bg-violet-950/30 px-3 py-1.5 font-mono text-[10px] uppercase tracking-wider text-violet-300">
-          bu nakit akıştan senaryo üret →
-        </Link>
-      </div>
-
-      <Panel title="KASA TRENDİ — 35 AY">
+      <ChartShell
+        title="Kasa Trendi — 35 ay"
+        hint="kesikli çizgi sıfır kasa"
+        source="Kaynak: nakit akış aylık sekmeleri (kaynak mutabakatı ±0,5 TL)."
+        summary={`Kasa ${months[0].monthStart.slice(0, 7)} ile ${months[months.length - 1].monthStart.slice(0, 7)} arası. İlk negatif ay ${AYK(proj.firstNegativeMonth)}, en kötü ay ${AYK(proj.worstMonth)} ${proj.worstBalance != null ? fmtTL(proj.worstBalance) : ""}.`}
+      >
         <CashTrendChart months={months} firstNegative={proj.firstNegativeMonth} worstMonth={proj.worstMonth} />
-      </Panel>
+      </ChartShell>
 
-      <Panel title="AYLIK GELİR vs GİDER">
+      <ChartShell title="Aylık Gelir vs Gider" hint="gelir üstte, gider altta" source="Bilinmeyen tutarlar çizilmez (0 sayılmaz).">
         <IncomeExpenseChart months={months} />
-      </Panel>
+      </ChartShell>
 
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
         <Panel title="MÜŞTERİ GELİR YOĞUNLAŞMASI">
@@ -149,7 +158,7 @@ export default async function CashflowPage({
         title={`AYLAR — ${months.length}`}
         right={highPressure > 0 ? <Badge tone="red">{highPressure} ayda borç-servisi baskısı</Badge> : undefined}
       >
-        <div className="overflow-x-auto">
+        <TableShell>
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b border-zinc-800 text-left font-mono text-[10px] uppercase tracking-wider text-zinc-500">
@@ -199,7 +208,7 @@ export default async function CashflowPage({
               })}
             </tbody>
           </table>
-        </div>
+        </TableShell>
         <p className="mt-2 font-mono text-[10px] text-zinc-600">
           Borç servisi = o ay vadesi gelen çek + kredi taksiti (bilinen). Kırmızı &quot;baskı&quot; = negatif kasa + borç yükü;
           amber &quot;izle&quot; = kasa pozitif ama borç yükü kayda değer.
