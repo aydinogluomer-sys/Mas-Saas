@@ -8,6 +8,7 @@ import { loadDebtOverlay, listReports } from "@/lib/reports/engine";
 import { deliveryCounts } from "@/lib/reminders/engine";
 import { loadCapacityModels, loadCostModels } from "@/lib/production/engine";
 import { priceMargin } from "@/lib/production/rules";
+import { createActionFromHomeAction } from "@/app/(dashboard)/data-quality/actions";
 import { loadDecisionFacts } from "@/lib/facts/engine";
 import { istanbulDateISO } from "@/lib/reports/rules";
 import { buildActions, pickHeadlineRisk, type CockpitFacts } from "@/lib/home/cockpit";
@@ -170,12 +171,24 @@ export default async function AnaEkranPage() {
         <ol className="space-y-1.5">
           {actions.map((a, i) => (
             <li key={a.key}>
-              <Link href={a.href} className="card-hover flex items-start gap-2 border px-2.5 py-2"
+              <div className="card-hover flex items-start gap-2 border px-2.5 py-2"
                 style={{ borderColor: "var(--line)", borderRadius: "var(--radius)", background: "var(--surface-2)" }}>
-                <span className="mt-0.5 font-mono text-[11px]" style={{ color: "var(--text-4)" }}>{i + 1}.</span>
-                <span className="flex-1 text-sm" style={{ color: "var(--text-1)" }}>{a.label}</span>
-                <Badge tone={SEV_TONE[a.severity]}>{a.severity === "critical" ? "acil" : a.severity === "high" ? "yüksek" : a.severity === "medium" ? "orta" : "düşük"}</Badge>
-              </Link>
+                <Link href={a.href} className="flex min-w-0 flex-1 items-start gap-2">
+                  <span className="mt-0.5 font-mono text-[11px]" style={{ color: "var(--text-4)" }}>{i + 1}.</span>
+                  <span className="flex-1 text-sm" style={{ color: "var(--text-1)" }}>{a.label}</span>
+                  <Badge tone={SEV_TONE[a.severity]}>{a.severity === "critical" ? "acil" : a.severity === "high" ? "yüksek" : a.severity === "medium" ? "orta" : "düşük"}</Badge>
+                </Link>
+                <form action={createActionFromHomeAction} className="shrink-0">
+                  <input type="hidden" name="title" value={a.label} />
+                  <input type="hidden" name="severity" value={a.severity} />
+                  <input type="hidden" name="sourceFactKey" value={a.key} />
+                  <input type="hidden" name="sourceHref" value={a.href} />
+                  <input type="hidden" name="backTo" value="/" />
+                  <button type="submit" className="border px-1.5 py-0.5 font-mono text-[9px] uppercase" style={{ borderColor: "var(--line-faint)", color: "var(--text-3)" }}>
+                    gorev
+                  </button>
+                </form>
+              </div>
             </li>
           ))}
         </ol>

@@ -237,5 +237,28 @@ begin
     raise notice 'PASS ai response snapshots append + RLS';
   end;
 
+  -- 17) action items (0015): RLS + open duplicate guards + status constraint
+  declare act1 uuid; rls6 int;
+  begin
+    select count(*) into rls6 from pg_tables t join pg_class c on c.relname=t.tablename
+      join pg_namespace ns on ns.oid=c.relnamespace and ns.nspname='public'
+      where t.tablename='action_items' and not c.relrowsecurity;
+    if rls6 > 0 then raise exception 'FAIL action_items RLS off'; end if;
+    insert into public.action_items (title, severity, source_type, source_fact_key)
+      values ('Kasa kontrolu', 'high', 'home_action', 'first_negative_month') returning id into act1;
+    begin
+      insert into public.action_items (title, severity, source_type, source_fact_key)
+        values ('Duplicate kasa kontrolu', 'high', 'home_action', 'first_negative_month');
+      raise exception 'FAIL action_items fact duplicate guard did not fire';
+    exception when unique_violation then raise notice 'PASS action_items fact duplicate guard'; end;
+    update public.action_items set status='done' where id=act1;
+    insert into public.action_items (title, severity, source_type, source_fact_key)
+      values ('Kasa kontrolu yeniden', 'high', 'home_action', 'first_negative_month');
+    begin
+      insert into public.action_items (title, status) values ('Bad status', 'paid');
+      raise exception 'FAIL action_items status constraint did not fire';
+    exception when check_violation then raise notice 'PASS action_items status constraint + RLS'; end;
+  end;
+
   raise notice 'ALL ASSERTIONS PASSED';
 end $$;

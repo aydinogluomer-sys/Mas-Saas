@@ -49,7 +49,7 @@ Degismez kurallar:
 | 11 | Decision facts / metrics katmani | IN PROGRESS |
 | 12 | AI soru-cevap ve rapor yorum katmani | IN PROGRESS |
 | 13 | Senaryo v2 ve finansman optimizasyonu | IN PROGRESS |
-| 14 | Veri kalite merkezi, disgoru ve aksiyon workflow | PLANNED |
+| 14 | Veri kalite merkezi, disgoru ve aksiyon workflow | IN PROGRESS |
 
 Mevcut git gercegi:
 
@@ -469,6 +469,9 @@ Gate:
 ---
 
 ## 15. Faz 14 — Veri Kalite Merkezi, Disgoru ve Aksiyon Workflow
+
+Durum: IN PROGRESS. 14A ile `/data-quality`, `action_items`, review/home-action gorevlestirme,
+gorev status akisi, ozel Excel sekme tanima paneli ve read-only action gate eklendi.
 
 Amac: Sistemin sadece gostermesini degil, karar almayi engelleyen sorunlari
 yonetmesini ve dis varsayimlarla projeksiyonu zenginlestirmesini saglamak.

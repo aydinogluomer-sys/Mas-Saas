@@ -3,6 +3,42 @@
 
 export type Json = string | number | boolean | null | { [key: string]: Json } | Json[];
 
+export interface ActionItemsRow {
+  id: string;
+  title: string;
+  severity: string;
+  owner: string | null;
+  due_date: string | null;
+  status: string;
+  source_type: string;
+  source_fact_key: string | null;
+  source_href: string | null;
+  related_entity_table: string | null;
+  related_entity_id: string | null;
+  note: string | null;
+  created_by: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ActionItemsInsert {
+  id?: string;
+  title: string;
+  severity?: string;
+  owner?: string | null;
+  due_date?: string | null;
+  status?: string;
+  source_type?: string;
+  source_fact_key?: string | null;
+  source_href?: string | null;
+  related_entity_table?: string | null;
+  related_entity_id?: string | null;
+  note?: string | null;
+  created_by?: string | null;
+  created_at?: string;
+  updated_at?: string;
+}
+
 export interface AiResponseSnapshotsRow {
   id: string;
   question: string;
@@ -1095,6 +1131,7 @@ export interface SourceWorkbooksInsert {
 export interface Database {
   public: {
     Tables: {
+      action_items: { Row: ActionItemsRow; Insert: ActionItemsInsert };
       ai_response_snapshots: { Row: AiResponseSnapshotsRow; Insert: AiResponseSnapshotsInsert };
       audit_logs: { Row: AuditLogsRow; Insert: AuditLogsInsert };
       capacity_models: { Row: CapacityModelsRow; Insert: CapacityModelsInsert };
