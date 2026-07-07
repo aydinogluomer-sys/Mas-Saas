@@ -27,10 +27,11 @@ export default async function DataQualityPage() {
         meta={<Badge tone={data.highOpenCount > 0 ? "red" : data.openReviewCount > 0 ? "amber" : "green"} dot>{data.openReviewCount} acik</Badge>}
       />
 
-      <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+      <div className="grid grid-cols-2 gap-2 sm:grid-cols-5">
         <KeyStat label="Acik inceleme" value={data.openReviewCount} tone={data.openReviewCount > 0 ? "warn" : "pos"} href="/imports" />
         <KeyStat label="Yuksek/acil" value={data.highOpenCount} tone={data.highOpenCount > 0 ? "neg" : "pos"} href="/data-quality" />
         <KeyStat label="Acik gorev" value={data.actionOpenCount} tone={data.actionOpenCount > 0 ? "warn" : "neutral"} href="/data-quality" />
+        <KeyStat label="Dis review" value={data.externalPendingCount} tone={data.externalPendingCount > 0 ? "warn" : "pos"} href="/assumptions" />
         <KeyStat label="Ozel sekme" value={data.specialSheets.length} tone={data.specialSheets.length > 0 ? "info" : "neutral"} href="/data-quality" />
       </div>
 

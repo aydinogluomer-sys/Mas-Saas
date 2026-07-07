@@ -238,26 +238,50 @@ begin
   end;
 
   -- 17) action items (0015): RLS + open duplicate guards + status constraint
-  declare act1 uuid; rls6 int;
+  declare act1 uuid; rls6 int; fact_key text;
   begin
+    fact_key := 'assert_' || replace(gen_random_uuid()::text, '-', '');
     select count(*) into rls6 from pg_tables t join pg_class c on c.relname=t.tablename
       join pg_namespace ns on ns.oid=c.relnamespace and ns.nspname='public'
       where t.tablename='action_items' and not c.relrowsecurity;
     if rls6 > 0 then raise exception 'FAIL action_items RLS off'; end if;
     insert into public.action_items (title, severity, source_type, source_fact_key)
-      values ('Kasa kontrolu', 'high', 'home_action', 'first_negative_month') returning id into act1;
+      values ('Kasa kontrolu', 'high', 'home_action', fact_key) returning id into act1;
     begin
       insert into public.action_items (title, severity, source_type, source_fact_key)
-        values ('Duplicate kasa kontrolu', 'high', 'home_action', 'first_negative_month');
+        values ('Duplicate kasa kontrolu', 'high', 'home_action', fact_key);
       raise exception 'FAIL action_items fact duplicate guard did not fire';
     exception when unique_violation then raise notice 'PASS action_items fact duplicate guard'; end;
     update public.action_items set status='done' where id=act1;
     insert into public.action_items (title, severity, source_type, source_fact_key)
-      values ('Kasa kontrolu yeniden', 'high', 'home_action', 'first_negative_month');
+      values ('Kasa kontrolu yeniden', 'high', 'home_action', fact_key);
     begin
       insert into public.action_items (title, status) values ('Bad status', 'paid');
       raise exception 'FAIL action_items status constraint did not fire';
     exception when check_violation then raise notice 'PASS action_items status constraint + RLS'; end;
+  end;
+
+  -- 18) external assumptions (0016): RLS + source/date + internet review gate
+  declare ext1 uuid; rls7 int;
+  begin
+    select count(*) into rls7 from pg_tables t join pg_class c on c.relname=t.tablename
+      join pg_namespace ns on ns.oid=c.relnamespace and ns.nspname='public'
+      where t.tablename='external_assumptions' and not c.relrowsecurity;
+    if rls7 > 0 then raise exception 'FAIL external_assumptions RLS off'; end if;
+    begin
+      insert into public.external_assumptions
+        (assumption_type, label, value_numeric, unit, source_kind, source_name, source_date, review_status)
+        values ('interest_rate','internet approved without review', 45, 'percent', 'internet', 'test source', current_date, 'approved');
+      raise exception 'FAIL internet assumption review gate did not fire';
+    exception when check_violation then raise notice 'PASS external assumption internet review gate'; end;
+    insert into public.external_assumptions
+      (assumption_type, label, value_numeric, unit, source_kind, source_name, source_date)
+      values ('energy_cost','manual electricity', 4.2, 'TRY/kWh', 'manual', 'manual estimate', current_date)
+      returning id into ext1;
+    update public.external_assumptions set review_status='approved', reviewed_at=now() where id=ext1;
+    if (select review_status from public.external_assumptions where id=ext1) <> 'approved'
+      then raise exception 'FAIL external assumption approve flow'; end if;
+    raise notice 'PASS external assumptions source/date + RLS';
   end;
 
   raise notice 'ALL ASSERTIONS PASSED';

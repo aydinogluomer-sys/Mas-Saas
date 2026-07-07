@@ -31,6 +31,7 @@ const GROUPS: Array<{ title: string; items: Array<{ href: string; label: string;
     title: "VERİ & KAYNAK",
     items: [
       { href: "/data-quality", label: "Veri kalite merkezi", desc: "Karari engelleyen veri sorunlari, gorevler ve kaynak izleri." },
+      { href: "/assumptions", label: "Dis varsayimlar", desc: "Faiz, kur, enflasyon, personel, enerji ve kredi oranlari icin kaynakli varsayimlar." },
       { href: "/imports", label: "İçe aktarım", desc: "Çalışma dosyası yükleme, sekme sınıflandırma, aktarım." },
       { href: "/imports", label: "İncelemeler / kaynak kayıt", desc: "Mapping incelemeleri ve ham sekme/satır izlenebilirliği (içe aktarım içinden)." },
     ],

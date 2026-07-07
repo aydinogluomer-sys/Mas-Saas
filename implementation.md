@@ -472,6 +472,8 @@ Gate:
 
 Durum: IN PROGRESS. 14A ile `/data-quality`, `action_items`, review/home-action gorevlestirme,
 gorev status akisi, ozel Excel sekme tanima paneli ve read-only action gate eklendi.
+14B ile `/assumptions`, `external_assumptions`, kaynak/tarih/review status akisi ve
+internet kaynaklari icin user-reviewed gate eklendi.
 
 Amac: Sistemin sadece gostermesini degil, karar almayi engelleyen sorunlari
 yonetmesini ve dis varsayimlarla projeksiyonu zenginlestirmesini saglamak.

@@ -403,6 +403,50 @@ export interface CostModelsInsert {
   akon_torna_tl_per_min?: number | null;
 }
 
+export interface ExternalAssumptionsRow {
+  id: string;
+  assumption_type: string;
+  label: string;
+  period_start: string | null;
+  period_end: string | null;
+  value_numeric: number;
+  unit: string;
+  currency: string;
+  source_kind: string;
+  source_name: string;
+  source_url: string | null;
+  source_date: string;
+  review_status: string;
+  reviewed_by: string | null;
+  reviewed_at: string | null;
+  notes: string | null;
+  created_by: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ExternalAssumptionsInsert {
+  id?: string;
+  assumption_type: string;
+  label: string;
+  period_start?: string | null;
+  period_end?: string | null;
+  value_numeric: number;
+  unit: string;
+  currency?: string;
+  source_kind?: string;
+  source_name: string;
+  source_url?: string | null;
+  source_date: string;
+  review_status?: string;
+  reviewed_by?: string | null;
+  reviewed_at?: string | null;
+  notes?: string | null;
+  created_by?: string | null;
+  created_at?: string;
+  updated_at?: string;
+}
+
 export interface FinanceCostAllocationsRow {
   id: string;
   loan_id: string;
@@ -1144,6 +1188,7 @@ export interface Database {
       checks: { Row: ChecksRow; Insert: ChecksInsert };
       cost_breakdown_lines: { Row: CostBreakdownLinesRow; Insert: CostBreakdownLinesInsert };
       cost_models: { Row: CostModelsRow; Insert: CostModelsInsert };
+      external_assumptions: { Row: ExternalAssumptionsRow; Insert: ExternalAssumptionsInsert };
       finance_cost_allocations: { Row: FinanceCostAllocationsRow; Insert: FinanceCostAllocationsInsert };
       import_rows: { Row: ImportRowsRow; Insert: ImportRowsInsert };
       loan_installments: { Row: LoanInstallmentsRow; Insert: LoanInstallmentsInsert };

@@ -28,6 +28,7 @@
     "phase12a:verify": "node --import tsx scripts/phase12a-verify.ts",
     "phase13a:verify": "node --import tsx scripts/phase13a-verify.ts",
     "phase14a:verify": "node --import tsx scripts/phase14a-verify.ts",
+    "phase14b:verify": "node --import tsx scripts/phase14b-verify.ts",
     "seed:demo": "bash scripts/db/ensure.sh && tsx scripts/seed-demo.ts",
     "test:visual": "playwright test",
     "test:visual:update": "playwright test --update-snapshots"

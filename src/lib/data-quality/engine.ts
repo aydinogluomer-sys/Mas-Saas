@@ -34,7 +34,7 @@ export interface DataQualityBlocker extends ReviewSignal {
 }
 
 export async function loadDataQualityCenter(pool: Pool) {
-  const [reviewCounts, issueCounts, openReviews, actions, specialSheets] = await Promise.all([
+  const [reviewCounts, issueCounts, openReviews, actions, specialSheets, externalPending] = await Promise.all([
     pool.query<{ status: string; severity: DqSeverity; n: number }>(
       `select status, severity, count(*)::int n
        from public.mapping_reviews group by status, severity`,
@@ -81,6 +81,9 @@ export async function loadDataQualityCenter(pool: Pool) {
           or lower(s.sheet_name) like '%aylık%özet%'
        order by w.imported_at desc, s.sheet_index`,
     ),
+    pool.query<{ n: number }>(
+      `select count(*)::int n from public.external_assumptions where review_status='pending_review'`,
+    ),
   ]);
 
   const blockers = rankReviewSignals(openReviews.rows, 5);
@@ -95,6 +98,7 @@ export async function loadDataQualityCenter(pool: Pool) {
     openReviewCount,
     highOpenCount,
     actionOpenCount: actions.rows.length,
+    externalPendingCount: Number(externalPending.rows[0]?.n ?? 0),
     reviewCounts: reviewCounts.rows,
     issueCounts: issueCounts.rows,
     blockers,
