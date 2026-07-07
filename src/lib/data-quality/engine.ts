@@ -203,6 +203,127 @@ export async function createActionFromHomeSignal(
   }
 }
 
+export async function createActionFromAiResponse(pool: Pool, aiResponseId: string): Promise<string | null> {
+  const client = await pool.connect();
+  try {
+    await client.query("begin");
+    const existing = await client.query<{ id: string }>(
+      `select id from public.action_items
+       where source_type='ai_response'
+         and related_entity_table='ai_response_snapshots'
+         and related_entity_id=$1
+         and status in ('open','in_progress','blocked')
+       limit 1`,
+      [aiResponseId],
+    );
+    if (existing.rows[0]) {
+      await client.query("commit");
+      return existing.rows[0].id;
+    }
+    const ai = await client.query<{
+      id: string;
+      question: string;
+      answer_md: string;
+      report_id: string | null;
+      source_hrefs: string[];
+    }>(
+      `select id, question, answer_md, report_id, source_hrefs
+       from public.ai_response_snapshots where id=$1 for update`,
+      [aiResponseId],
+    );
+    const r = ai.rows[0];
+    if (!r) {
+      await client.query("commit");
+      return null;
+    }
+    const sourceHref = r.report_id ? `/reports/${r.report_id}?ai=${r.id}` : `/ask?response=${r.id}`;
+    const ins = await client.query<{ id: string }>(
+      `insert into public.action_items
+         (title, severity, due_date, status, source_type, source_href,
+          related_entity_table, related_entity_id, note)
+       values ($1,'medium',$2,'open','ai_response',$3,'ai_response_snapshots',$4,$5)
+       returning id`,
+      [
+        `AI cevap aksiyonu: ${r.question.slice(0, 160)}`,
+        dueIn(3),
+        sourceHref,
+        r.id,
+        r.answer_md.slice(0, 1000),
+      ],
+    );
+    const id = ins.rows[0].id;
+    await audit(client, "create_action_from_ai_response", id, null, { aiResponseId, sourceHref });
+    await client.query("commit");
+    return id;
+  } catch (e) {
+    await client.query("rollback");
+    throw e;
+  } finally {
+    client.release();
+  }
+}
+
+export async function createActionFromReport(pool: Pool, reportId: string): Promise<string | null> {
+  const client = await pool.connect();
+  try {
+    await client.query("begin");
+    const existing = await client.query<{ id: string }>(
+      `select id from public.action_items
+       where source_type='report'
+         and related_entity_table='reports'
+         and related_entity_id=$1
+         and status in ('open','in_progress','blocked')
+       limit 1`,
+      [reportId],
+    );
+    if (existing.rows[0]) {
+      await client.query("commit");
+      return existing.rows[0].id;
+    }
+    const report = await client.query<{
+      id: string;
+      report_type: string;
+      period_start: string;
+      period_end: string;
+      body_md: string;
+    }>(
+      `select id, report_type, to_char(period_start,'YYYY-MM-DD') as period_start,
+              to_char(period_end,'YYYY-MM-DD') as period_end, body_md
+       from public.reports where id=$1 for update`,
+      [reportId],
+    );
+    const r = report.rows[0];
+    if (!r) {
+      await client.query("commit");
+      return null;
+    }
+    const sourceHref = `/reports/${r.id}`;
+    const ins = await client.query<{ id: string }>(
+      `insert into public.action_items
+         (title, severity, due_date, status, source_type, source_href,
+          related_entity_table, related_entity_id, note)
+       values ($1,'medium',$2,'open','report',$3,'reports',$4,$5)
+       returning id`,
+      [
+        `Rapor aksiyonu: ${r.report_type} ${r.period_start}`,
+        dueIn(3),
+        sourceHref,
+        r.id,
+        r.body_md.slice(0, 1000),
+      ],
+    );
+    const id = ins.rows[0].id;
+    await audit(client, "create_action_from_report", id, null, { reportId, sourceHref });
+    await client.query("commit");
+    return id;
+  } catch (e) {
+    await client.query("rollback");
+    throw e;
+  } finally {
+    client.release();
+  }
+}
+
 export async function createManualAction(
   pool: Pool,
   input: { title: string; severity: DqSeverity; owner?: string | null; dueDate?: string | null; note?: string | null },

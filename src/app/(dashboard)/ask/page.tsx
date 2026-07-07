@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { askQuestionAction } from "@/app/(dashboard)/ask/actions";
+import { createActionFromAiResponseAction } from "@/app/(dashboard)/data-quality/actions";
 import { Badge } from "@/components/ui/badge";
 import { Panel } from "@/components/ui/panel";
 import { PageHeader } from "@/components/ui/shell";
@@ -71,7 +72,18 @@ export default async function AskPage({
       {selected && (
         <Panel
           title="CEVAP"
-          right={<Badge tone={selected.response_mode === "openai" ? "green" : selected.response_mode === "fallback" ? "amber" : "neutral"}>{selected.response_mode}</Badge>}
+          right={
+            <span className="flex items-center gap-2">
+              <Badge tone={selected.response_mode === "openai" ? "green" : selected.response_mode === "fallback" ? "amber" : "neutral"}>{selected.response_mode}</Badge>
+              <form action={createActionFromAiResponseAction}>
+                <input type="hidden" name="aiResponseId" value={selected.id} />
+                <input type="hidden" name="backTo" value={`/ask?response=${selected.id}`} />
+                <button type="submit" className="border px-2 py-1 font-mono text-[10px] uppercase tracking-wider" style={{ borderColor: "var(--line-faint)", color: "var(--text-3)", borderRadius: "var(--radius)" }}>
+                  gorev
+                </button>
+              </form>
+            </span>
+          }
         >
           <div className="mb-2 text-[11px]" style={{ color: "var(--text-4)" }}>
             {selected.created_at}{selected.model ? ` / ${selected.model}` : ""}

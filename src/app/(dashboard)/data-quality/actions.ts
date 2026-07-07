@@ -5,6 +5,8 @@ import { redirect } from "next/navigation";
 import { getPool } from "@/lib/db";
 import {
   createActionFromHomeSignal,
+  createActionFromAiResponse,
+  createActionFromReport,
   createActionFromReview,
   createManualAction,
   setActionStatus,
@@ -48,6 +50,25 @@ export async function createActionFromHomeAction(formData: FormData): Promise<vo
   const b = backTo(formData, "/");
   revalidatePath("/data-quality");
   revalidatePath("/");
+  redirect(b);
+}
+
+export async function createActionFromAiResponseAction(formData: FormData): Promise<void> {
+  const aiResponseId = String(formData.get("aiResponseId") ?? "");
+  if (aiResponseId) await createActionFromAiResponse(getPool(), aiResponseId);
+  const b = backTo(formData, "/ask");
+  revalidatePath("/data-quality");
+  revalidatePath("/ask");
+  revalidatePath("/reports");
+  redirect(b);
+}
+
+export async function createActionFromReportAction(formData: FormData): Promise<void> {
+  const reportId = String(formData.get("reportId") ?? "");
+  if (reportId) await createActionFromReport(getPool(), reportId);
+  const b = backTo(formData, "/reports");
+  revalidatePath("/data-quality");
+  revalidatePath("/reports");
   redirect(b);
 }
 

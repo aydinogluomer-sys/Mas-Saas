@@ -4,6 +4,7 @@ import { getPool } from "@/lib/db";
 import { loadAiResponse, listAiResponses } from "@/lib/ai/engine";
 import { loadReport } from "@/lib/reports/engine";
 import { generateReportCommentaryAction } from "@/app/(dashboard)/reports/actions";
+import { createActionFromAiResponseAction, createActionFromReportAction } from "@/app/(dashboard)/data-quality/actions";
 import { Badge } from "@/components/ui/badge";
 import { Panel } from "@/components/ui/panel";
 
@@ -36,6 +37,13 @@ export default async function ReportDetailPage({
         right={
           <span className="flex items-center gap-2">
             <Badge tone="green">salt-okunur</Badge>
+            <form action={createActionFromReportAction}>
+              <input type="hidden" name="reportId" value={reportId} />
+              <input type="hidden" name="backTo" value={`/reports/${reportId}`} />
+              <button type="submit" className="border px-2 py-1 font-mono text-[10px] uppercase tracking-wider" style={{ borderColor: "var(--line-faint)", color: "var(--text-3)", borderRadius: "var(--radius)" }}>
+                gorev
+              </button>
+            </form>
             <Link href="/reports" className="font-mono text-[10px] uppercase text-zinc-400 underline underline-offset-2">
               {"<-"} raporlar
             </Link>
@@ -52,16 +60,27 @@ export default async function ReportDetailPage({
         <Panel
           title="AI RAPOR YORUMU"
           right={
-            <form action={generateReportCommentaryAction}>
-              <input type="hidden" name="reportId" value={reportId} />
-              <button
-                type="submit"
-                className="border px-2 py-1 font-mono text-[10px] uppercase tracking-wider"
-                style={{ borderColor: "var(--accent)", color: "var(--accent)", borderRadius: "var(--radius)" }}
-              >
-                yorum uret
-              </button>
-            </form>
+            <span className="flex items-center gap-2">
+              {selectedAi && (
+                <form action={createActionFromAiResponseAction}>
+                  <input type="hidden" name="aiResponseId" value={selectedAi.id} />
+                  <input type="hidden" name="backTo" value={`/reports/${reportId}?ai=${selectedAi.id}`} />
+                  <button type="submit" className="border px-2 py-1 font-mono text-[10px] uppercase tracking-wider" style={{ borderColor: "var(--line-faint)", color: "var(--text-3)", borderRadius: "var(--radius)" }}>
+                    gorev
+                  </button>
+                </form>
+              )}
+              <form action={generateReportCommentaryAction}>
+                <input type="hidden" name="reportId" value={reportId} />
+                <button
+                  type="submit"
+                  className="border px-2 py-1 font-mono text-[10px] uppercase tracking-wider"
+                  style={{ borderColor: "var(--accent)", color: "var(--accent)", borderRadius: "var(--radius)" }}
+                >
+                  yorum uret
+                </button>
+              </form>
+            </span>
           }
         >
           <p className="mb-2 font-mono text-[10px] text-amber-400">
