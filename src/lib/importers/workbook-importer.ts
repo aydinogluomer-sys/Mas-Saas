@@ -20,6 +20,7 @@ import {
   extractChecks,
   extractCostModel,
   extractLoan,
+  extractMachineRoi,
   extractMonthlyCashflow,
   extractPaymentMatrix,
   type ReviewIssue,
@@ -220,6 +221,8 @@ export async function importWorkbook(
         issues = extractCostModel(cellsToMap(cells), "normal").issues;
       } else if (s.detectedType === "cost_model_overtime") {
         issues = extractCostModel(cellsToMap(cells), "overtime").issues;
+      } else if (s.detectedType === "machine_roi") {
+        issues = extractMachineRoi(cellsToMap(cells)).issues;
       }
       const r = await insertReviews(client, workbookId, sheetId, idByRow, issues);
       reviewsInserted += r.reviews;

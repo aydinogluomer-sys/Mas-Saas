@@ -586,6 +586,90 @@ export function extractLoan(map: Record<string, CellVal>): {
 // B3 verim, I8 total theoretical revenue, K8 monthly theoretical. Parts rows 10..66:
 // A code, B name, C qty, D torna-min/unit, E freze-min/unit, I FİYAT.
 
+/* ───────────────── 7) tablo — machine ROI + equipment (personal EXCLUDED) ─────────────
+   The `tablo` sheet mixes machine economics with PERSONAL/family expenses (ev, esma,
+   harçlık, tiyatro…). We extract ONLY the machine ROI + company equipment cost; the
+   personal region (E:G) is NEVER read into any domain table and is flagged for review.
+   Machine ROI: r1-r2 pairs (A util%, B name, C value / D util%, E name, F value);
+   r4 rates (A freze, B torna) + year (F) + 2025 P&L (G kazanç, H maliyet, I kalan,
+   J vergi, K net). Equipment cost: A10:B27 (awea/arion/sister/doosan + tooling). */
+
+export interface MachineRoiRow {
+  name: string;
+  utilization: number | null; // %
+  value: number | null; // per-machine value (C/F)
+  purchaseCost: number | null; // acquisition cost from A10:B27
+}
+export interface MachineRoiCandidate {
+  machines: MachineRoiRow[];
+  frezeRate: number | null;
+  tornaRate: number | null;
+  year: number | null;
+  revenue: number | null; // kazanç
+  cost: number | null; // maliyet
+  remaining: number | null; // kalan
+  tax: number | null; // vergi
+  netAfterTax: number | null; // net
+}
+
+export function extractMachineRoi(map: Record<string, CellVal>): {
+  roi: MachineRoiCandidate;
+  issues: ReviewIssue[];
+} {
+  const issues: ReviewIssue[] = [];
+  // equipment acquisition costs A10:B27, keyed by normalized name
+  const equip = new Map<string, number>();
+  for (let r = 10; r <= 40; r++) {
+    const label = asText(map[`A${r}`]);
+    const amount = asNumber(map[`B${r}`]);
+    if (label && amount != null) equip.set(normalizeTr(label), amount);
+  }
+  const purchaseFor = (name: string): number | null => {
+    for (const [k, v] of equip) if (k.includes(name)) return v;
+    return null;
+  };
+
+  const pair = (uCol: string, nCol: string, vCol: string, r: number): MachineRoiRow | null => {
+    const name = asText(map[`${nCol}${r}`]);
+    if (!name) return null;
+    return { name, utilization: asNumber(map[`${uCol}${r}`]), value: asNumber(map[`${vCol}${r}`]), purchaseCost: purchaseFor(normalizeTr(name)) };
+  };
+  const machines = [
+    pair("A", "B", "C", 1), pair("D", "E", "F", 1),
+    pair("A", "B", "C", 2), pair("D", "E", "F", 2),
+  ].filter((m): m is MachineRoiRow => m != null);
+
+  const roi: MachineRoiCandidate = {
+    machines,
+    frezeRate: asNumber(map["A4"]),
+    tornaRate: asNumber(map["B4"]),
+    year: asNumber(map["F4"]),
+    revenue: asNumber(map["G4"]),
+    cost: asNumber(map["H4"]),
+    remaining: asNumber(map["I4"]),
+    tax: asNumber(map["J4"]),
+    netAfterTax: asNumber(map["K4"]),
+  };
+
+  // privacy: the E:G region carries personal/family expenses — flag, never extract.
+  let personalHits = 0;
+  for (let r = 7; r <= 40; r++) {
+    if (asText(map[`E${r}`]) || asText(map[`G${r}`])) personalHits++;
+  }
+  if (personalHits > 0) {
+    issues.push({
+      rowIndex: 7,
+      issue_type: "personal_data_mixed",
+      severity: "high",
+      message: `tablo sekmesinde ${personalHits} satır kişisel/aile gideri — asla aktarılmaz, yalnız incelemede`,
+    });
+  }
+  if (machines.length === 0) {
+    issues.push({ rowIndex: 1, issue_type: "machine_roi_missing", severity: "medium", message: "tablo makine satırları okunamadı" });
+  }
+  return { roi, issues };
+}
+
 export interface CapacityPartCandidate {
   rowIndex: number;
   code: string | null;

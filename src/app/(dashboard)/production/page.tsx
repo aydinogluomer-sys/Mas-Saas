@@ -7,6 +7,7 @@ import {
   loadCostBreakdown,
   loadCostModels,
   loadMachineRoi,
+  loadMachineRoiAggregate,
   loadPartProfitability,
 } from "@/lib/production/engine";
 import {
@@ -30,11 +31,12 @@ const fmt2 = (v: number | null) =>
 
 export default async function ProductionPage() {
   const pool = getPool();
-  const [caps, costs, parts, roi, demand, actualIncome] = await Promise.all([
+  const [caps, costs, parts, roi, roiAgg, demand, actualIncome] = await Promise.all([
     loadCapacityModels(pool),
     loadCostModels(pool),
     loadPartProfitability(pool, 20),
     loadMachineRoi(pool),
+    loadMachineRoiAggregate(pool),
     loadCapacityDemand(pool),
     loadActualMonthlyIncome(pool),
   ]);
@@ -338,30 +340,38 @@ export default async function ProductionPage() {
 
       {/* machine ROI */}
       <Panel title="MAKİNE ROI" right={<Badge tone="amber">inceleme gerekli</Badge>}>
+        {roiAgg && (
+          <div className="mb-2 border p-2.5" style={{ background: "var(--surface-2)", borderColor: "var(--line)", borderRadius: "var(--radius)" }}>
+            <div className="text-[11px]" style={{ color: "var(--text-3)" }}>{roiAgg.snapshot_year} toplam (tüm makineler)</div>
+            <div className="mt-1 flex flex-wrap gap-4 font-mono text-sm tabular-nums">
+              <span>kazanç {fmt0(roiAgg.revenue)}</span>
+              <span>vergi {fmt0(roiAgg.tax)}</span>
+              <span style={{ color: "var(--pos)" }}>net {fmt0(roiAgg.net)}</span>
+            </div>
+          </div>
+        )}
         <table className="w-full text-sm">
           <thead>
-            <tr className="border-b border-zinc-800 text-left font-mono text-[10px] uppercase tracking-wider text-zinc-500">
+            <tr className="border-b text-left font-mono text-[10px] uppercase tracking-wider" style={{ borderColor: "var(--line)", color: "var(--text-3)" }}>
               <th className="py-1 pr-2">makine</th>
-              <th className="py-1 pr-2 text-right">gelir</th>
-              <th className="py-1 pr-2 text-right">maliyet</th>
-              <th className="py-1 pr-2 text-right">net (vergi sonrası)</th>
+              <th className="py-1 pr-2 text-right">alım maliyeti</th>
+              <th className="py-1 pr-2 text-right">yıllık kazanç</th>
               <th className="py-1">güven</th>
             </tr>
           </thead>
           <tbody>
             {roi.map((m, i) => (
-              <tr key={i} className="border-b border-zinc-900">
+              <tr key={i} className="border-b" style={{ borderColor: "var(--line-faint)" }}>
                 <td className="py-1 pr-2 font-mono text-xs">{m.name}</td>
+                <td className="py-1 pr-2 text-right font-mono tabular-nums">{fmt0(m.purchase_cost)}</td>
                 <td className="py-1 pr-2 text-right font-mono tabular-nums">{fmt0(m.revenue)}</td>
-                <td className="py-1 pr-2 text-right font-mono tabular-nums">{fmt0(m.cost)}</td>
-                <td className="py-1 pr-2 text-right font-mono tabular-nums">{fmt0(m.net)}</td>
-                <td className="py-1">{m.confidence ? <Badge tone="amber">{m.confidence}</Badge> : <span className="text-zinc-600">—</span>}</td>
+                <td className="py-1">{m.confidence ? <Badge tone="amber">{m.confidence}</Badge> : <span style={{ color: "var(--text-4)" }}>—</span>}</td>
               </tr>
             ))}
           </tbody>
         </table>
-        <p className="mt-2 font-mono text-[10px] text-zinc-600">
-          ROI verisi &quot;tablo&quot; sekmesinden gelir (kişisel/şirket karışık) — insan incelemesi olmadan güvenilir sayılmaz.
+        <p className="mt-2 text-[11px]" style={{ color: "var(--text-4)" }}>
+          ROI verisi &quot;tablo&quot; sekmesinden gelir (kişisel/şirket karışık) — kişisel giderler ASLA aktarılmaz; makine kısmı insan onayı olmadan güvenilir sayılmaz.
         </p>
       </Panel>
     </>

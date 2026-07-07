@@ -8,9 +8,11 @@ import type { Pool, PoolClient } from "pg";
 import {
   extractCapacity,
   extractCostModel,
+  extractMachineRoi,
   type CapacityCandidate,
 } from "@/lib/importers/extractors";
 import type { CellVal, RowJson } from "@/lib/importers/row-utils";
+import { normalizeTr } from "@/lib/importers/workbook-parser";
 import { breakEvenTLPerMin, machineRoi, partProfitability } from "./rules";
 
 async function audit(client: PoolClient, action: string, entityTable: string, entityId: string | null, after: unknown): Promise<void> {
@@ -310,6 +312,97 @@ export async function calculatePartProfitability(pool: Pool, costModelId?: strin
   }
 }
 
+/* ── 4b) map `tablo` → machine ROI + equipment cost (Phase 9C). Personal/family data
+   is NEVER read; the personal_data_mixed review must be resolved first (human sign-off).
+   ROI stays needs_review. ── */
+
+export interface MachineRoiMapResult {
+  purchaseCostsUpdated: number;
+  perMachineSnapshots: number;
+  aggregateSnapshot: boolean;
+  excluded: Array<{ sheet: string; reason: string }>;
+}
+
+export async function mapMachineRoi(pool: Pool, workbookId: string): Promise<MachineRoiMapResult> {
+  const client = await pool.connect();
+  try {
+    await client.query("begin");
+    const sheets = await client.query(
+      `select id, sheet_name from public.source_sheets where workbook_id=$1 and detected_type='machine_roi'`,
+      [workbookId],
+    );
+    const res: MachineRoiMapResult = { purchaseCostsUpdated: 0, perMachineSnapshots: 0, aggregateSnapshot: false, excluded: [] };
+
+    for (const sheet of sheets.rows) {
+      const { map } = await sheetCellMap(client, sheet.id);
+      const { roi } = extractMachineRoi(map);
+      // eligibility: any open/rejected review (incl. personal_data_mixed) blocks until resolved
+      const blocked = await client.query<{ n: number }>(
+        `select count(*)::int n from public.mapping_reviews where sheet_id=$1 and status in ('open','rejected')`,
+        [sheet.id],
+      );
+      if ((blocked.rows[0]?.n ?? 0) > 0) {
+        res.excluded.push({ sheet: sheet.sheet_name, reason: "açık/ret inceleme (kişisel-veri onayı dâhil)" });
+        continue;
+      }
+
+      const year = roi.year ?? new Date().getFullYear();
+      for (const m of roi.machines) {
+        const key = normalizeTr(m.name); // machine names are ASCII (awea/arion/sister/doosan)
+        // update the matching seeded machine's purchase cost (never create silently)
+        if (m.purchaseCost != null) {
+          const u = await client.query(
+            `update public.machine_assets set purchase_cost=$2 where lower(name)=$1`,
+            [key, m.purchaseCost],
+          );
+          res.purchaseCostsUpdated += u.rowCount ?? 0;
+        }
+        // per-machine ROI snapshot (revenue = per-machine value); needs_review
+        const mid = (await client.query<{ id: string }>(
+          `select id from public.machine_assets where lower(name)=$1 limit 1`, [key],
+        )).rows[0]?.id ?? null;
+        if (mid) {
+          const ins = await client.query(
+            `insert into public.machine_roi_snapshots
+               (machine_asset_id, snapshot_year, revenue, cost, remaining, tax, net_after_tax, confidence,
+                source_workbook_id, source_sheet_id, notes)
+             values ($1,$2,$3,null,$3,null,$3,'needs_review',$4,$5,$6)
+             on conflict (machine_asset_id, snapshot_year) do nothing`,
+            [mid, year, m.value, workbookId, sheet.id,
+             `kullanım %${m.utilization ?? "?"} · alım maliyeti ${m.purchaseCost ?? "?"} · tablo (kişisel/şirket karışık, insan onayı gerekli)`],
+          );
+          res.perMachineSnapshots += ins.rowCount ?? 0;
+        }
+      }
+
+      // aggregate P&L snapshot (machine_asset_id null): 2025 kazanç/maliyet/vergi/net
+      if (roi.revenue != null || roi.netAfterTax != null) {
+        const agg = await client.query(
+          `insert into public.machine_roi_snapshots
+             (machine_asset_id, snapshot_year, revenue, cost, remaining, tax, net_after_tax, confidence,
+              source_workbook_id, source_sheet_id, notes)
+           select null,$1,$2,$3,$4,$5,$6,'needs_review',$7,$8,$9
+           where not exists (select 1 from public.machine_roi_snapshots
+             where machine_asset_id is null and snapshot_year=$1 and source_sheet_id=$8)`,
+          [year, roi.revenue, roi.cost, roi.remaining, roi.tax, roi.netAfterTax, workbookId, sheet.id,
+           `${year} toplam P&L (tüm makineler) · tablo sekmesi kişisel/şirket karışık — insan onayı gerekli`],
+        );
+        if ((agg.rowCount ?? 0) > 0) res.aggregateSnapshot = true;
+      }
+      await audit(client, "map_machine_roi", "machine_roi_snapshots", sheet.id, {
+        sheet: sheet.sheet_name, machines: roi.machines.length, year, net: roi.netAfterTax,
+      });
+    }
+    await client.query("commit");
+    return res;
+  } catch (e) {
+    await client.query("rollback");
+    throw e;
+  } finally {
+    client.release();
+  }
+}
+
 /* ── 4) machine ROI snapshots (always needs_review) ── */
 
 export async function calculateMachineRoiSnapshot(
@@ -435,11 +528,23 @@ export async function loadActualMonthlyIncome(pool: Pool): Promise<number | null
 
 export async function loadMachineRoi(pool: Pool) {
   const r = await pool.query(
-    `select ma.name, s.snapshot_year, s.revenue::float8 as revenue, s.cost::float8 as cost,
+    `select ma.name, ma.purchase_cost::float8 as purchase_cost,
+            s.snapshot_year, s.revenue::float8 as revenue, s.cost::float8 as cost,
             s.net_after_tax::float8 as net, s.confidence
      from public.machine_assets ma
      left join public.machine_roi_snapshots s on s.machine_asset_id = ma.id
      order by ma.name`,
   );
-  return r.rows as Array<{ name: string; snapshot_year: number | null; revenue: number | null; cost: number | null; net: number | null; confidence: string | null }>;
+  return r.rows as Array<{ name: string; purchase_cost: number | null; snapshot_year: number | null; revenue: number | null; cost: number | null; net: number | null; confidence: string | null }>;
+}
+
+/** Aggregate P&L snapshot (all machines, machine_asset_id null) if mapped from `tablo`. */
+export async function loadMachineRoiAggregate(pool: Pool) {
+  const r = await pool.query(
+    `select snapshot_year, revenue::float8 as revenue, cost::float8 as cost,
+            remaining::float8 as remaining, tax::float8 as tax, net_after_tax::float8 as net, confidence
+     from public.machine_roi_snapshots where machine_asset_id is null
+     order by snapshot_year desc limit 1`,
+  );
+  return (r.rows[0] as { snapshot_year: number; revenue: number | null; cost: number | null; remaining: number | null; tax: number | null; net: number | null; confidence: string } | undefined) ?? null;
 }
