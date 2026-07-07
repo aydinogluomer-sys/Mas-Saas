@@ -59,6 +59,28 @@ export async function listExternalAssumptions(pool: Pool, limit = 80): Promise<E
   return r.rows as ExternalAssumption[];
 }
 
+export async function loadApprovedExternalAssumptions(pool: Pool, limit = 12): Promise<ExternalAssumption[]> {
+  const r = await pool.query<ExternalAssumption>(
+    `select distinct on (assumption_type) id, assumption_type, label,
+            to_char(period_start,'YYYY-MM-DD') as period_start,
+            to_char(period_end,'YYYY-MM-DD') as period_end,
+            value_numeric::float8 as value_numeric,
+            unit, currency, source_kind, source_name, source_url,
+            to_char(source_date,'YYYY-MM-DD') as source_date,
+            review_status,
+            to_char(reviewed_at at time zone 'Europe/Istanbul','YYYY-MM-DD HH24:MI') as reviewed_at,
+            notes,
+            to_char(created_at at time zone 'Europe/Istanbul','YYYY-MM-DD HH24:MI') as created_at,
+            to_char(updated_at at time zone 'Europe/Istanbul','YYYY-MM-DD HH24:MI') as updated_at
+     from public.external_assumptions
+     where review_status='approved'
+     order by assumption_type, source_date desc, created_at desc
+     limit $1`,
+    [limit],
+  );
+  return r.rows;
+}
+
 export async function loadExternalAssumptionCenter(pool: Pool) {
   const [rows, counts, latestApproved] = await Promise.all([
     listExternalAssumptions(pool),
@@ -66,22 +88,7 @@ export async function loadExternalAssumptionCenter(pool: Pool) {
       `select review_status, source_kind, count(*)::int n
        from public.external_assumptions group by review_status, source_kind`,
     ),
-    pool.query<ExternalAssumption>(
-      `select distinct on (assumption_type) id, assumption_type, label,
-              to_char(period_start,'YYYY-MM-DD') as period_start,
-              to_char(period_end,'YYYY-MM-DD') as period_end,
-              value_numeric::float8 as value_numeric,
-              unit, currency, source_kind, source_name, source_url,
-              to_char(source_date,'YYYY-MM-DD') as source_date,
-              review_status,
-              to_char(reviewed_at at time zone 'Europe/Istanbul','YYYY-MM-DD HH24:MI') as reviewed_at,
-              notes,
-              to_char(created_at at time zone 'Europe/Istanbul','YYYY-MM-DD HH24:MI') as created_at,
-              to_char(updated_at at time zone 'Europe/Istanbul','YYYY-MM-DD HH24:MI') as updated_at
-       from public.external_assumptions
-       where review_status='approved'
-       order by assumption_type, source_date desc, created_at desc`,
-    ),
+    loadApprovedExternalAssumptions(pool),
   ]);
   const pendingCount = counts.rows.filter((r) => r.review_status === "pending_review").reduce((sum, r) => sum + r.n, 0);
   const internetPendingCount = counts.rows
@@ -90,7 +97,7 @@ export async function loadExternalAssumptionCenter(pool: Pool) {
   return {
     assumptions: rows,
     counts: counts.rows,
-    latestApproved: latestApproved.rows,
+    latestApproved,
     pendingCount,
     internetPendingCount,
   };

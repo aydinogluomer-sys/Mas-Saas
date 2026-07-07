@@ -23,6 +23,16 @@ const facts: DecisionFact[] = [
     freshness: "2026-07-07",
     sourceHref: "/financing",
   },
+  {
+    key: "external_energy_cost",
+    title: "Dis varsayim: Enerji maliyeti",
+    value: "4,2 TRY/kWh",
+    severity: "low",
+    explanation: "Onayli dis varsayim. Kaynak: MAS / 2026-07-08.",
+    confidence: "source",
+    freshness: "2026-07-08",
+    sourceHref: "/assumptions",
+  },
 ];
 
 describe("AI Q&A rules", () => {
@@ -34,6 +44,11 @@ describe("AI Q&A rules", () => {
   it("selects relevant facts for production questions", () => {
     const selected = selectFactsForQuestion("Akon fiyatlari basabasi karsiliyor mu?", facts);
     expect(selected[0].key).toBe("production_margin_loss");
+  });
+
+  it("selects approved external assumption facts for outside-view questions", () => {
+    const selected = selectFactsForQuestion("Enerji maliyeti varsayimi nedir?", facts);
+    expect(selected[0].key).toBe("external_energy_cost");
   });
 
   it("builds deterministic answer with sources and mutation refusal", () => {

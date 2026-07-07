@@ -52,6 +52,15 @@ export function selectFactsForQuestion(question: string, facts: DecisionFact[], 
     if (q.includes("eksik") || q.includes("veri") || q.includes("inceleme")) {
       if (fact.key.includes("missing") || fact.key.includes("review")) score += 3;
     }
+    if (q.includes("varsayim") || q.includes("dis") || q.includes("piyasa") || q.includes("oran")) {
+      if (fact.key.includes("external")) score += 3;
+    }
+    if (q.includes("faiz") && (fact.key.includes("interest_rate") || fact.key.includes("loan_rate"))) score += 3;
+    if (q.includes("kredi") && fact.key.includes("loan_rate")) score += 3;
+    if (q.includes("kur") && fact.key.includes("fx_rate")) score += 3;
+    if (q.includes("enflasyon") && fact.key.includes("inflation_rate")) score += 3;
+    if (q.includes("enerji") && fact.key.includes("energy_cost")) score += 3;
+    if (q.includes("personel") && fact.key.includes("personnel_cost")) score += 3;
     if (hay.includes(q)) score += 2;
     return { fact, score };
   });

@@ -5,6 +5,7 @@
 
 import type { Pool, PoolClient } from "pg";
 import { loadCashMonths } from "@/lib/cashflow/engine";
+import { loadApprovedExternalAssumptions, type ExternalAssumption } from "@/lib/external-assumptions/engine";
 import { debtServiceByMonth } from "@/lib/financing/rules";
 import { loadMaturityItems } from "@/lib/financing/engine";
 import type { CashMonth } from "@/lib/radar/rules";
@@ -69,6 +70,17 @@ interface CashflowLineLite {
   amount: number;
 }
 
+interface ScenarioExternalContext {
+  assumptionType: string;
+  label: string;
+  value: number;
+  unit: string;
+  currency: string;
+  sourceName: string;
+  sourceDate: string;
+  sourceHref: string;
+}
+
 async function loadCashflowLines(pool: Pool): Promise<CashflowLineLite[]> {
   const r = await pool.query(
     `select to_char(cm.month_start,'YYYY-MM-DD') as "monthStart",
@@ -126,6 +138,24 @@ async function buildScenarioAdjustments(pool: Pool, a: ScenarioAssumptions): Pro
   return adjustments;
 }
 
+function toScenarioExternalContext(a: ExternalAssumption): ScenarioExternalContext {
+  return {
+    assumptionType: a.assumption_type,
+    label: a.label,
+    value: a.value_numeric,
+    unit: a.unit,
+    currency: a.currency,
+    sourceName: a.source_name,
+    sourceDate: a.source_date,
+    sourceHref: "/assumptions",
+  };
+}
+
+async function loadScenarioExternalContext(pool: Pool): Promise<ScenarioExternalContext[]> {
+  const approved = await loadApprovedExternalAssumptions(pool);
+  return approved.map(toScenarioExternalContext);
+}
+
 export async function createScenario(
   pool: Pool,
   input: { name: string; description?: string; scenarioType: ScenarioType; baselineLabel?: string; baselineMonthCount?: number },
@@ -170,6 +200,15 @@ function assumptionRows(a: ScenarioAssumptions): Array<{ key: string; value: num
   return rows;
 }
 
+function externalContextRows(ctx: ScenarioExternalContext[]): Array<{ key: string; value: number | null; unit: string; description: string }> {
+  return ctx.map((a) => ({
+    key: `external:${a.assumptionType}`,
+    value: a.value,
+    unit: a.unit,
+    description: `Dis varsayim: ${a.label} (${a.sourceName} / ${a.sourceDate})`,
+  }));
+}
+
 const comparisonRows = (c: ScenarioComparison): Array<{ metric: string; base: number | null; scen: number | null; delta: number | null }> => [
   { metric: "final_cash", base: c.baselineFinalCash, scen: c.scenarioFinalCash, delta: c.finalDelta },
   { metric: "worst_balance", base: null, scen: c.worstBalance, delta: null },
@@ -193,6 +232,8 @@ export async function runScenario(
   const items = await loadMaturityItems(pool);
   const debt = debtServiceByMonth(items).map((d) => ({ monthStart: d.monthStart, knownOutflow: d.knownOutflow }));
   const adjustments = await buildScenarioAdjustments(pool, assumptions);
+  const externalContext = await loadScenarioExternalContext(pool);
+  const storedAssumptions = externalContext.length > 0 ? { ...assumptions, externalContext } : assumptions;
 
   const months = applyScenario(baseline, assumptions, debt, adjustments);
   const comparison = compareScenarioToBaseline(months);
@@ -209,7 +250,7 @@ export async function runScenario(
           max_cash_gap, recovery_month, month_count, null_month_count, confidence, notes)
        values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) returning id`,
       [
-        scenarioId, JSON.stringify(assumptions),
+        scenarioId, JSON.stringify(storedAssumptions),
         comparison.baselineFinalCash, comparison.scenarioFinalCash, comparison.finalDelta,
         comparison.baselineFirstNegative, comparison.scenarioFirstNegative,
         comparison.worstMonth, comparison.worstBalance, comparison.maxCashGap, comparison.recoveryMonth,
@@ -230,7 +271,7 @@ export async function runScenario(
          m.baselineClosing, m.scenarioClosing, m.delta],
       );
     }
-    for (const ar of assumptionRows(assumptions)) {
+    for (const ar of [...assumptionRows(assumptions), ...externalContextRows(externalContext)]) {
       await client.query(
         `insert into public.scenario_assumptions (run_id, key, value_numeric, unit, description)
          values ($1,$2,$3,$4,$5)`,
@@ -244,7 +285,7 @@ export async function runScenario(
         [runId, cr.metric, cr.base, cr.scen, cr.delta],
       );
     }
-    await audit(client, "run_scenario", runId, { scenarioId, assumptions, adjustmentCount: adjustments.length, finalDelta: comparison.finalDelta, confidence });
+    await audit(client, "run_scenario", runId, { scenarioId, assumptions: storedAssumptions, adjustmentCount: adjustments.length, externalContextCount: externalContext.length, finalDelta: comparison.finalDelta, confidence });
     await client.query("commit");
     return { runId, comparison, insights };
   } catch (e) {

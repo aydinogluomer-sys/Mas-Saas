@@ -475,6 +475,7 @@ gorev status akisi, ozel Excel sekme tanima paneli ve read-only action gate ekle
 14B ile `/assumptions`, `external_assumptions`, kaynak/tarih/review status akisi ve
 internet kaynaklari icin user-reviewed gate eklendi.
 14C ile rapor ve AI cevaplarindan auditli action_items gorevi olusturma eklendi.
+14D ile onayli dis varsayimlar facts/AI/senaryo baglamina salt-okunur ve kaynakli olarak baglandi.
 
 Amac: Sistemin sadece gostermesini degil, karar almayi engelleyen sorunlari
 yonetmesini ve dis varsayimlarla projeksiyonu zenginlestirmesini saglamak.

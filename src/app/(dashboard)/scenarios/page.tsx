@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { getPool } from "@/lib/db";
+import { loadApprovedExternalAssumptions } from "@/lib/external-assumptions/engine";
 import { listScenarioRuns } from "@/lib/scenarios/engine";
 import { loadCashMonths } from "@/lib/cashflow/engine";
 import { Badge, type Tone } from "@/components/ui/badge";
@@ -20,7 +21,11 @@ export default async function ScenariosPage({
 }) {
   const sp = await searchParams;
   const pool = getPool();
-  const [runs, baseline] = await Promise.all([listScenarioRuns(pool), loadCashMonths(pool)]);
+  const [runs, baseline, approvedExternal] = await Promise.all([
+    listScenarioRuns(pool),
+    loadCashMonths(pool),
+    loadApprovedExternalAssumptions(pool),
+  ]);
   const hasBaseline = baseline.length > 0;
 
   return (
@@ -32,6 +37,9 @@ export default async function ScenariosPage({
           <>
             <Badge tone="violet" dot>{runs.length} çalışma</Badge>
             {hasBaseline && <Badge tone="neutral">baz {baseline.length} ay</Badge>}
+            {approvedExternal.length > 0 && (
+              <Link href="/assumptions"><Badge tone="green">{approvedExternal.length} dis varsayim</Badge></Link>
+            )}
             {sp.from && <Badge tone="neutral">kaynak: {sp.from}</Badge>}
           </>
         }

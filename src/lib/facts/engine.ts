@@ -1,5 +1,6 @@
 import type { Pool } from "pg";
 import { loadCashMonths } from "@/lib/cashflow/engine";
+import { loadApprovedExternalAssumptions, type ExternalAssumption } from "@/lib/external-assumptions/engine";
 import { loadMaturityItems } from "@/lib/financing/engine";
 import { loadCapacityModels, loadCostModels } from "@/lib/production/engine";
 import { priceMargin } from "@/lib/production/rules";
@@ -31,6 +32,37 @@ const fmt0 = (v: number | null) =>
 const ym = (iso: string | null) => (iso ? iso.slice(0, 7) : "—");
 const addDays = (iso: string, days: number) => new Date(Date.parse(iso) + days * 86400000).toISOString().slice(0, 10);
 
+const EXTERNAL_TYPE_LABEL: Record<string, string> = {
+  interest_rate: "Faiz orani",
+  fx_rate: "Kur",
+  inflation_rate: "Enflasyon",
+  personnel_cost: "Personel maliyeti",
+  energy_cost: "Enerji maliyeti",
+  loan_rate: "Kredi orani",
+  other: "Diger varsayim",
+};
+
+function externalValue(a: ExternalAssumption): string {
+  const formatted = new Intl.NumberFormat("tr-TR", { maximumFractionDigits: 4 }).format(a.value_numeric);
+  const currency = a.currency && a.currency !== "TRY" ? ` ${a.currency}` : "";
+  return `${formatted} ${a.unit}${currency}`;
+}
+
+function externalAssumptionFact(a: ExternalAssumption): DecisionFact {
+  const label = EXTERNAL_TYPE_LABEL[a.assumption_type] ?? a.assumption_type;
+  const period = a.period_start ? ` Donem: ${a.period_start}${a.period_end ? `..${a.period_end}` : ""}.` : "";
+  return {
+    key: `external_${a.assumption_type}`,
+    title: `Dis varsayim: ${label}`,
+    value: externalValue(a),
+    severity: "low",
+    explanation: `Onayli dis varsayim: ${a.label}. Kaynak: ${a.source_name} / ${a.source_date}.${period} Finansal kayit degistirmez.`,
+    confidence: "source",
+    freshness: a.source_date,
+    sourceHref: "/assumptions",
+  };
+}
+
 export async function loadDecisionFacts(pool: Pool, todayISO = istanbulDateISO()): Promise<DecisionFact[]> {
   const monthStart = `${todayISO.slice(0, 7)}-01`;
   const next30 = addDays(todayISO, 30);
@@ -45,6 +77,7 @@ export async function loadDecisionFacts(pool: Pool, todayISO = istanbulDateISO()
     costs,
     incomeLines,
     reviews,
+    approvedExternal,
   ] = await Promise.all([
     loadCashMonths(pool),
     overdueOpen(pool, todayISO),
@@ -57,6 +90,7 @@ export async function loadDecisionFacts(pool: Pool, todayISO = istanbulDateISO()
                 from public.cashflow_lines cl left join public.parties p on p.id=cl.party_id
                 where cl.line_type='customer_income'`),
     pool.query(`select count(*)::int n from public.mapping_reviews where status in ('open','rejected')`),
+    loadApprovedExternalAssumptions(pool),
   ]);
 
   const projection = buildProjection(months);
@@ -191,5 +225,5 @@ export async function loadDecisionFacts(pool: Pool, todayISO = istanbulDateISO()
     },
   ];
 
-  return sortBySeverity(facts);
+  return sortBySeverity([...facts, ...approvedExternal.map(externalAssumptionFact)]);
 }
