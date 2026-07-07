@@ -220,5 +220,22 @@ begin
     exception when unique_violation then raise notice 'PASS finance allocation idempotency + RLS'; end;
   end;
 
+  -- 16) AI response snapshots (0014): RLS + commentary-only append
+  declare ai1 uuid; ai2 uuid; rls5 int;
+  begin
+    select count(*) into rls5 from pg_tables t join pg_class c on c.relname=t.tablename
+      join pg_namespace ns on ns.oid=c.relnamespace and ns.nspname='public'
+      where t.tablename='ai_response_snapshots' and not c.relrowsecurity;
+    if rls5 > 0 then raise exception 'FAIL ai_response_snapshots RLS off'; end if;
+    insert into public.ai_response_snapshots (question, answer_md, response_mode, source_fact_keys, source_hrefs)
+      values ('risk nedir?', 'salt-okunur cevap', 'deterministic', array['first_negative_month'], array['/cashflow'])
+      returning id into ai1;
+    insert into public.ai_response_snapshots (question, answer_md, response_mode)
+      values ('risk nedir?', 'ikinci snapshot', 'fallback')
+      returning id into ai2;
+    if ai1 = ai2 then raise exception 'FAIL ai snapshots should append distinct rows'; end if;
+    raise notice 'PASS ai response snapshots append + RLS';
+  end;
+
   raise notice 'ALL ASSERTIONS PASSED';
 end $$;

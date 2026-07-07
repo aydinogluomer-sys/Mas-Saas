@@ -16,6 +16,7 @@ const GROUPS: Array<{ title: string; items: Array<{ href: string; label: string;
   {
     title: "RAPOR & HATIRLATMA",
     items: [
+      { href: "/ask", label: "Soru-Cevap", desc: "Facts ve rapor kaynaklı salt-okunur finans yanıtları." },
       { href: "/reports", label: "Raporlar", desc: "Günlük / haftalık / aylık salt-okunur özetler." },
       { href: "/reminders", label: "Hatırlatmalar", desc: "Teslimat planlama ve gönderim kaydı (Telegram)." },
     ],

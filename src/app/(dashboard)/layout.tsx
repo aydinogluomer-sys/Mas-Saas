@@ -12,6 +12,7 @@ const NAV: NavItem[] = [
   { href: "/radar", label: "ÖDEMELER" },
   { href: "/cashflow", label: "NAKİT AKIŞ" },
   { href: "/financing", label: "FİNANSMAN" },
+  { href: "/ask", label: "SOR" },
   { href: "/scenarios", label: "SENARYOLAR" },
   { href: "/admin", label: "YÖNETİM" },
 ];

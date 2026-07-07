@@ -25,6 +25,7 @@
     "phase9b:verify": "bash scripts/db/ensure.sh && tsx scripts/phase9b-verify.ts",
     "phase9c:verify": "bash scripts/db/ensure.sh && tsx scripts/phase9c-verify.ts",
     "phase9d:verify": "bash scripts/db/ensure.sh && tsx scripts/phase9d-verify.ts",
+    "phase12a:verify": "node --import tsx scripts/phase12a-verify.ts",
     "seed:demo": "bash scripts/db/ensure.sh && tsx scripts/seed-demo.ts",
     "test:visual": "playwright test",
     "test:visual:update": "playwright test --update-snapshots"

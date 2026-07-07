@@ -47,7 +47,7 @@ Degismez kurallar:
 | 9 | Salt-okunur senaryo motoru MVP | DONE |
 | 10 | Excel coverage close-out: 9A/9B/9C/9D | DONE |
 | 11 | Decision facts / metrics katmani | IN PROGRESS |
-| 12 | AI soru-cevap ve rapor yorum katmani | PLANNED |
+| 12 | AI soru-cevap ve rapor yorum katmani | IN PROGRESS |
 | 13 | Senaryo v2 ve finansman optimizasyonu | PLANNED |
 | 14 | Veri kalite merkezi, disgoru ve aksiyon workflow | PLANNED |
 
@@ -392,6 +392,9 @@ Gate:
 ---
 
 ## 13. Faz 12 — AI Soru-Cevap ve Rapor Yorum Katmani
+
+Durum: IN PROGRESS. 12A ile `/ask`, `ai_response_snapshots`, optional OpenAI Responses API provider,
+deterministik fallback, rapor AI yorumu ve mutation guard eklendi.
 
 Amac: Kullanici sorularini dogrudan cevaplamak ve cevabi tablo/grafik/kaynak linkiyle gostermek.
 
