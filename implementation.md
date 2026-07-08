@@ -46,7 +46,7 @@ Degismez kurallar:
 | 8 | Uretim kapasite/maliyet analitigi | DONE |
 | 9 | Salt-okunur senaryo motoru MVP | DONE |
 | 10 | Excel coverage close-out: 9A/9B/9C/9D | DONE |
-| 11 | Decision facts / metrics katmani | IN PROGRESS |
+| 11 | Decision facts / metrics katmani | DONE |
 | 12 | AI soru-cevap ve rapor yorum katmani | IN PROGRESS |
 | 13 | Senaryo v2 ve finansman optimizasyonu | IN PROGRESS |
 | 14 | Veri kalite merkezi, disgoru ve aksiyon workflow | IN PROGRESS |
@@ -351,7 +351,8 @@ Gate:
 
 ## 12. Faz 11 — Decision Facts / Metrics Katmani
 
-Durum: IN PROGRESS. 11A ile `src/lib/facts` registry, `/api/facts` ve Ana Ekran karar sinyalleri eklendi.
+Durum: DONE. 11A ile `src/lib/facts` registry, `/api/facts` ve Ana Ekran karar sinyalleri eklendi.
+11B ile `cash_runway` fact'i tamamlandi ve rapor promptlari decision facts katmanini kullanmaya basladi.
 
 Amac: Dashboard, AI ve raporlar icin guvenli, deterministik, tekil bir facts API'si
 olusturmak. AI ham SQL'e veya ham Excel'e gitmez; sadece bu facts katmanindan
@@ -437,6 +438,7 @@ Gate:
 
 Durum: IN PROGRESS. 13A ile hedefli gelir gecikmesi, hedefli gider/odeme ertelemesi,
 faktoring/iskonto overlay'i ve minimum finansman ihtiyaci metrigi scenario motoruna eklendi.
+13B ile desteklenen mudahale adaylarini salt-okunur siralayan finansman optimizasyon paneli eklendi.
 
 Amac: "what-if" motorunu karar motoruna yaklastirmak.
 
@@ -476,6 +478,8 @@ gorev status akisi, ozel Excel sekme tanima paneli ve read-only action gate ekle
 internet kaynaklari icin user-reviewed gate eklendi.
 14C ile rapor ve AI cevaplarindan auditli action_items gorevi olusturma eklendi.
 14D ile onayli dis varsayimlar facts/AI/senaryo baglamina salt-okunur ve kaynakli olarak baglandi.
+14E ile Excel A/B surum farki, ozel dashboard/rehber sekme sinyali ve cashflow baslik mutabakati
+veri kalite merkezinde gorunur hale getirildi.
 
 Amac: Sistemin sadece gostermesini degil, karar almayi engelleyen sorunlari
 yonetmesini ve dis varsayimlarla projeksiyonu zenginlestirmesini saglamak.

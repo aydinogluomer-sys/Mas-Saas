@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { getPool } from "@/lib/db";
 import { loadApprovedExternalAssumptions } from "@/lib/external-assumptions/engine";
-import { listScenarioRuns } from "@/lib/scenarios/engine";
+import { estimateOptimizationCandidates, listScenarioRuns } from "@/lib/scenarios/engine";
 import { loadCashMonths } from "@/lib/cashflow/engine";
 import { Badge, type Tone } from "@/components/ui/badge";
 import { Panel } from "@/components/ui/panel";
@@ -27,6 +27,7 @@ export default async function ScenariosPage({
     loadApprovedExternalAssumptions(pool),
   ]);
   const hasBaseline = baseline.length > 0;
+  const optim = hasBaseline ? await estimateOptimizationCandidates(pool) : [];
 
   return (
     <>
@@ -56,6 +57,35 @@ export default async function ScenariosPage({
         </Panel>
       ) : (
         <>
+          <Panel title="FINANSMAN OPTIMIZASYONU ADAYLARI (FAZ 13B)">
+            <div className="flex flex-wrap items-center gap-2">
+              <Badge tone="green">hedefli gecikme</Badge>
+              <Badge tone="green">hedefli gider/odeme ertelemesi</Badge>
+              <Badge tone="green">faktoring/iskonto overlay</Badge>
+              <Badge tone="green">minimum finansman ihtiyaci</Badge>
+              <Badge tone="green">aday karsilastirma</Badge>
+            </div>
+            <p className="mt-2 text-[11px]" style={{ color: "var(--text-4)" }}>
+              Desteklenen overlay&apos;ler yan yana denenir ve en dusuk maksimum nakit acigina gore siralanir.
+              Yeni kredi maliyeti uydurulmaz; yalniz mevcut kaynak/onayli varsayim baglami kullanilir.
+            </p>
+            {optim.length > 0 && (
+              <div className="mt-2 space-y-1.5">
+                {optim.slice(0, 4).map((o, i) => (
+                  <div key={o.key} className="border px-2 py-1.5" style={{ borderColor: "var(--line)", borderRadius: "var(--radius)", background: "var(--surface-2)" }}>
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-sm" style={{ color: "var(--text-1)" }}>{i + 1}. {o.label}</span>
+                      <Badge tone={i === 0 ? "green" : "neutral"}>{i === 0 ? "onerilen" : "aday"}</Badge>
+                    </div>
+                    <div className="mt-0.5 font-mono text-[11px]" style={{ color: "var(--text-3)" }}>
+                      max acik {fmt0(o.maxCashGap)} · final {fmt0(o.finalCash)} · ilk negatif {o.firstNegative ? o.firstNegative.slice(0, 7) : "yok"}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </Panel>
+
           {/* Hızlı senaryolar: yalnız motorun BİREBİR desteklediği varsayımlar */}
           <Panel title="HIZLI SENARYOLAR"
             subtitle={`Baz: nakit akış ${baseline.length} ay (${baseline[0].monthStart.slice(0, 7)}..${baseline[baseline.length - 1].monthStart.slice(0, 7)})${sp.from ? ` · kaynak: ${sp.from}` : ""}`}>

@@ -138,6 +138,78 @@ async function buildScenarioAdjustments(pool: Pool, a: ScenarioAssumptions): Pro
   return adjustments;
 }
 
+export interface OptimizationCandidate {
+  key: string;
+  label: string;
+  assumptions: ScenarioAssumptions;
+  finalCash: number | null;
+  finalDelta: number | null;
+  maxCashGap: number | null;
+  firstNegative: string | null;
+}
+
+export async function estimateOptimizationCandidates(pool: Pool): Promise<OptimizationCandidate[]> {
+  const baseline: CashMonth[] = await loadCashMonths(pool);
+  if (baseline.length === 0) return [];
+
+  const items = await loadMaturityItems(pool);
+  const debt = debtServiceByMonth(items).map((d) => ({ monthStart: d.monthStart, knownOutflow: d.knownOutflow }));
+
+  const candidates: Array<{ key: string; label: string; assumptions: ScenarioAssumptions }> = [
+    {
+      key: "delay_cagdas_1m",
+      label: "Odeme erteleme: Cagdas 1 ay",
+      assumptions: { targetOutflowLabel: "Cagdas", targetOutflowDelayMonths: 1 },
+    },
+    {
+      key: "factor_hpt",
+      label: "Cek/faktoring: Hpt tahsilati one cek",
+      assumptions: { factoringIncomeLabel: "Hpt", factoringAdvanceMonth: baseline[0].monthStart.slice(0, 7), factoringFeePct: 0.04 },
+    },
+    {
+      key: "income_plus_10",
+      label: "Gelir artisi: +%10",
+      assumptions: { revenuePct: 0.1 },
+    },
+    {
+      key: "combo_delay_plus_factor",
+      label: "Kombinasyon: Cagdas ertele + Hpt faktoring",
+      assumptions: {
+        targetOutflowLabel: "Cagdas",
+        targetOutflowDelayMonths: 1,
+        factoringIncomeLabel: "Hpt",
+        factoringAdvanceMonth: baseline[0].monthStart.slice(0, 7),
+        factoringFeePct: 0.04,
+      },
+    },
+  ];
+
+  const out: OptimizationCandidate[] = [];
+  for (const c of candidates) {
+    const adj = await buildScenarioAdjustments(pool, c.assumptions);
+    const months = applyScenario(baseline, c.assumptions, debt, adj);
+    const cmp = compareScenarioToBaseline(months);
+    out.push({
+      key: c.key,
+      label: c.label,
+      assumptions: c.assumptions,
+      finalCash: cmp.scenarioFinalCash,
+      finalDelta: cmp.finalDelta,
+      maxCashGap: cmp.maxCashGap,
+      firstNegative: cmp.scenarioFirstNegative,
+    });
+  }
+
+  return out.sort((a, b) => {
+    const aGap = a.maxCashGap ?? Number.POSITIVE_INFINITY;
+    const bGap = b.maxCashGap ?? Number.POSITIVE_INFINITY;
+    if (aGap !== bGap) return aGap - bGap;
+    const aFinal = a.finalCash ?? Number.NEGATIVE_INFINITY;
+    const bFinal = b.finalCash ?? Number.NEGATIVE_INFINITY;
+    return bFinal - aFinal;
+  });
+}
+
 function toScenarioExternalContext(a: ExternalAssumption): ScenarioExternalContext {
   return {
     assumptionType: a.assumption_type,

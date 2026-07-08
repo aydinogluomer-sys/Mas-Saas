@@ -32,6 +32,12 @@ const fmt0 = (v: number | null) =>
 const ym = (iso: string | null) => (iso ? iso.slice(0, 7) : "—");
 const addDays = (iso: string, days: number) => new Date(Date.parse(iso) + days * 86400000).toISOString().slice(0, 10);
 
+function monthDiff(fromMonthStart: string, toMonthStart: string): number {
+  const [fy, fm] = fromMonthStart.split("-").map(Number);
+  const [ty, tm] = toMonthStart.split("-").map(Number);
+  return (ty - fy) * 12 + (tm - fm);
+}
+
 const EXTERNAL_TYPE_LABEL: Record<string, string> = {
   interest_rate: "Faiz orani",
   fx_rate: "Kur",
@@ -94,6 +100,21 @@ export async function loadDecisionFacts(pool: Pool, todayISO = istanbulDateISO()
   ]);
 
   const projection = buildProjection(months);
+  const anchorMonth = monthStart;
+  const horizonMonths = months.length > 0 ? monthDiff(anchorMonth, months[months.length - 1].monthStart) + 1 : 0;
+  const runwayMonths = projection.firstNegativeMonth == null
+    ? horizonMonths
+    : Math.max(0, monthDiff(anchorMonth, projection.firstNegativeMonth));
+  const runwaySeverity: FactSeverity = projection.firstNegativeMonth == null
+    ? "low"
+    : runwayMonths <= 1
+      ? "critical"
+      : runwayMonths <= 3
+        ? "high"
+        : "medium";
+  const runwayValue = projection.firstNegativeMonth == null
+    ? `${runwayMonths}+ ay`
+    : `${runwayMonths} ay`;
   const debtPressureMonths = debtOverlay.filter((m) => m.pressure === "high").length;
   const next30Maturities = maturities.filter((m) => m.dueDate >= todayISO && m.dueDate <= next30 && m.direction === "outflow");
   const checkLoad30 = next30Maturities
@@ -129,6 +150,18 @@ export async function loadDecisionFacts(pool: Pool, todayISO = istanbulDateISO()
       value: `${ym(projection.worstMonth)} · ${fmt0(projection.worstBalance)} TL`,
       severity: hasRiskSeverity((projection.worstBalance ?? 0) < 0, "high"),
       explanation: "35 aylık cashflow satırlarından en düşük kapanış bakiyesi.",
+      confidence: "calculated",
+      freshness: todayISO,
+      sourceHref: "/cashflow",
+    },
+    {
+      key: "cash_runway",
+      title: "Nakit runway",
+      value: runwayValue,
+      severity: runwaySeverity,
+      explanation: projection.firstNegativeMonth
+        ? `Mevcut projeksiyonda kasa yaklaşık ${runwayMonths} ay sonra negatif bölgeye geçiyor (${ym(projection.firstNegativeMonth)}).`
+        : `Mevcut projeksiyon ufkunda (${runwayMonths} ay) negatif kasa görünmüyor.`,
       confidence: "calculated",
       freshness: todayISO,
       sourceHref: "/cashflow",

@@ -5,6 +5,7 @@
 
 import type { Pool, PoolClient } from "pg";
 import { addDaysISO, debtServiceByMonth } from "@/lib/financing/rules";
+import { loadDecisionFacts } from "@/lib/facts/engine";
 import { loadMaturityItems } from "@/lib/financing/engine";
 import { loadThresholds } from "@/lib/radar/engine";
 import {
@@ -67,10 +68,11 @@ async function writeReport(
 export async function generateDaily(pool: Pool, todayISO: string): Promise<{ id: string; bodyMd: string }> {
   const to = addDaysISO(todayISO, 7);
   const t = await loadThresholds(pool);
-  const [soon, overdue, maturities] = await Promise.all([
+  const [soon, overdue, maturities, decisionFacts] = await Promise.all([
     instancesBetween(pool, todayISO, to),
     overdueOpen(pool, todayISO),
     maturitiesBetween(pool, todayISO, to),
+    loadDecisionFacts(pool, todayISO),
   ]);
   const open = new Set(["unpaid", "partial", "planned", "late"]);
   const report = buildDailyReport(
@@ -90,6 +92,7 @@ export async function generateDaily(pool: Pool, todayISO: string): Promise<{ id:
       `${report.overdueCount} geciken`,
       `${report.next7MissingCount} tutar eksik`,
       `${report.criticalItems.length} kritik`,
+      ...decisionFacts.slice(0, 3).map((f) => `${f.title}: ${f.value}`),
     ],
   });
   const id = await writeReport(pool, "daily", todayISO, to, report.bodyMd, {
@@ -105,11 +108,12 @@ export async function generateWeekly(pool: Pool, todayISO: string): Promise<{ id
   const to = addDaysISO(todayISO, 7);
   const monthStart = todayISO.slice(0, 7) + "-01";
   const t = await loadThresholds(pool);
-  const [week, matWeek, matMonth, rdays] = await Promise.all([
+  const [week, matWeek, matMonth, rdays, decisionFacts] = await Promise.all([
     instancesBetween(pool, todayISO, to),
     maturitiesBetween(pool, todayISO, to),
     maturitiesBetween(pool, monthStart, addMonths(monthStart, 1)),
     riskyDays(pool, todayISO, 7, t),
+    loadDecisionFacts(pool, todayISO),
   ]);
   const open = new Set(["unpaid", "partial", "planned", "late"]);
   const report = buildWeeklyReport(
@@ -129,6 +133,7 @@ export async function generateWeekly(pool: Pool, todayISO: string): Promise<{ id
       `çek yükü ${report.checkLoad}`,
       `ay kredi taksiti ${report.installmentLoadMonth}`,
       `${report.riskDays.length} riskli gün`,
+      ...decisionFacts.slice(0, 3).map((f) => `${f.title}: ${f.value}`),
     ],
   });
   const id = await writeReport(pool, "weekly", todayISO, to, report.bodyMd, {
@@ -155,7 +160,7 @@ async function distribution(pool: Pool, monthStart: string, joinCol: string, nam
 
 export async function generateMonthly(pool: Pool, monthStartISO: string): Promise<{ id: string; bodyMd: string }> {
   const monthEnd = addMonths(monthStartISO, 1);
-  const [summary, insts, providerDist, categoryDist, ownerDist, checks, installments, cashRow, unassigned] =
+  const [summary, insts, providerDist, categoryDist, ownerDist, checks, installments, cashRow, unassigned, decisionFacts] =
     await Promise.all([
       monthSummary(pool, monthStartISO),
       monthInstances(pool, monthStartISO),
@@ -175,6 +180,7 @@ export async function generateMonthly(pool: Pool, monthStartISO: string): Promis
                 count(*) filter (where category_id is null)::int as no_category
          from public.payments where status='active'`,
       ),
+      loadDecisionFacts(pool, monthStartISO),
     ]);
 
   const topPayments = [...insts]
@@ -206,6 +212,7 @@ export async function generateMonthly(pool: Pool, monthStartISO: string): Promis
       `ödenen ${summary.paid_known} kalan ${summary.known_remaining}`,
       `borç servisi ${report.debtServiceKnown}`,
       `${summary.missing_count} tutar eksik`,
+      ...decisionFacts.slice(0, 4).map((f) => `${f.title}: ${f.value}`),
     ],
   });
   const id = await writeReport(pool, "monthly", monthStartISO, addDaysISO(monthEnd, -1), report.bodyMd, {

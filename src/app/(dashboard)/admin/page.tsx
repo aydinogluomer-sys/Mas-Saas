@@ -30,6 +30,9 @@ const GROUPS: Array<{ title: string; items: Array<{ href: string; label: string;
   {
     title: "VERİ & KAYNAK",
     items: [
+      { href: "/phases", label: "Faz görünürlüğü", desc: "Hangi faz hangi ekranda görünür: tek sayfada kontrol tablosu." },
+      { href: "/data-quality#ab-diff", label: "Excel A/B farkı", desc: "Son iki workbook arasında sekme/satır/hücre/formül farkları." },
+      { href: "/data-quality#dashboard-mutabakat", label: "Dashboard mutabakatı", desc: "Cashflow başlık değerleri (devir/kasa) kaynak hücre mutabakatı." },
       { href: "/data-quality", label: "Veri kalite merkezi", desc: "Karari engelleyen veri sorunlari, gorevler ve kaynak izleri." },
       { href: "/assumptions", label: "Dis varsayimlar", desc: "Faiz, kur, enflasyon, personel, enerji ve kredi oranlari icin kaynakli varsayimlar." },
       { href: "/imports", label: "İçe aktarım", desc: "Çalışma dosyası yükleme, sekme sınıflandırma, aktarım." },

@@ -9,6 +9,7 @@ import { Nav, type NavItem } from "@/components/ui/nav";
 // Yönetim (/admin) and stay fully reachable — no route is removed.
 const NAV: NavItem[] = [
   { href: "/", label: "ANA EKRAN" },
+  { href: "/phases", label: "FAZLAR" },
   { href: "/radar", label: "ÖDEMELER" },
   { href: "/cashflow", label: "NAKİT AKIŞ" },
   { href: "/financing", label: "FİNANSMAN" },

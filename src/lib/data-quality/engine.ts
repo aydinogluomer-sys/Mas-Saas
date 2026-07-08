@@ -34,7 +34,7 @@ export interface DataQualityBlocker extends ReviewSignal {
 }
 
 export async function loadDataQualityCenter(pool: Pool) {
-  const [reviewCounts, issueCounts, openReviews, actions, specialSheets, externalPending] = await Promise.all([
+  const [reviewCounts, issueCounts, openReviews, actions, specialSheets, externalPending, workbookVersions, reconciliationSignals, workbookStats, changedSheets, cashflowReconciliation] = await Promise.all([
     pool.query<{ status: string; severity: DqSeverity; n: number }>(
       `select status, severity, count(*)::int n
        from public.mapping_reviews group by status, severity`,
@@ -84,6 +84,98 @@ export async function loadDataQualityCenter(pool: Pool) {
     pool.query<{ n: number }>(
       `select count(*)::int n from public.external_assumptions where review_status='pending_review'`,
     ),
+    pool.query<{ id: string; original_filename: string; imported_at: string; status: string }>(
+      `select id::text, original_filename,
+              to_char(imported_at at time zone 'Europe/Istanbul','YYYY-MM-DD HH24:MI') as imported_at,
+              status
+       from public.source_workbooks
+       order by imported_at desc
+       limit 6`,
+    ),
+    pool.query<{ n: number }>(
+      `select count(*)::int n
+       from public.mapping_reviews
+       where issue_type in ('cashflow_identity_mismatch','continuity_break','month_gap')
+         and status in ('open','rejected')`,
+    ),
+    pool.query<{
+      workbook_id: string;
+      original_filename: string;
+      imported_at: string;
+      sheet_count: number;
+      row_count: number;
+      cell_count: number;
+      formula_count: number;
+      monthly_sheet_count: number;
+    }>(
+      `with last2 as (
+         select id, original_filename,
+                to_char(imported_at at time zone 'Europe/Istanbul','YYYY-MM-DD HH24:MI') as imported_at
+         from public.source_workbooks
+         order by imported_at desc
+         limit 2
+       )
+       select l.id::text as workbook_id, l.original_filename, l.imported_at,
+              (select count(*)::int from public.source_sheets s where s.workbook_id=l.id) as sheet_count,
+              (select count(*)::int from public.import_rows r where r.workbook_id=l.id) as row_count,
+              (select count(*)::int from public.source_cells c where c.workbook_id=l.id) as cell_count,
+              (select count(*)::int from public.source_cells c where c.workbook_id=l.id and c.formula is not null and c.formula <> '') as formula_count,
+              (select count(*)::int from public.source_sheets s where s.workbook_id=l.id and s.detected_type='monthly_cashflow') as monthly_sheet_count
+       from last2 l
+       order by l.imported_at desc`,
+    ),
+    pool.query<{ sheet_name: string; side: string }>(
+      `with last2 as (
+         select id, row_number() over(order by imported_at desc) as rn
+         from public.source_workbooks
+         order by imported_at desc
+         limit 2
+       ),
+       a as (select lower(sheet_name) as sheet_name from public.source_sheets where workbook_id=(select id from last2 where rn=1)),
+       b as (select lower(sheet_name) as sheet_name from public.source_sheets where workbook_id=(select id from last2 where rn=2))
+       select coalesce(a.sheet_name,b.sheet_name) as sheet_name,
+              case when a.sheet_name is null then 'only_B'
+                   when b.sheet_name is null then 'only_A'
+                   else 'both' end as side
+       from a full outer join b using(sheet_name)
+       where a.sheet_name is null or b.sheet_name is null
+       order by 1
+       limit 20`,
+    ),
+    pool.query<{
+      month_start: string;
+      app_opening: number | null;
+      source_opening: number | null;
+      app_closing: number | null;
+      source_closing: number | null;
+      opening_diff: number | null;
+      closing_diff: number | null;
+    }>(
+      `select to_char(cm.month_start,'YYYY-MM-DD') as month_start,
+              cm.opening_balance::float8 as app_opening,
+              case
+                when b1.normalized_value is null then null
+                else nullif(regexp_replace(replace(replace(b1.normalized_value,'.',''),',','.'),'[^0-9\\.-]','','g'),'')::float8
+              end as source_opening,
+              cm.closing_balance::float8 as app_closing,
+              case
+                when j1.normalized_value is null then null
+                else nullif(regexp_replace(replace(replace(j1.normalized_value,'.',''),',','.'),'[^0-9\\.-]','','g'),'')::float8
+              end as source_closing,
+              case
+                when b1.normalized_value is null or cm.opening_balance is null then null
+                else cm.opening_balance::float8 - nullif(regexp_replace(replace(replace(b1.normalized_value,'.',''),',','.'),'[^0-9\\.-]','','g'),'')::float8
+              end as opening_diff,
+              case
+                when j1.normalized_value is null or cm.closing_balance is null then null
+                else cm.closing_balance::float8 - nullif(regexp_replace(replace(replace(j1.normalized_value,'.',''),',','.'),'[^0-9\\.-]','','g'),'')::float8
+              end as closing_diff
+       from public.cashflow_months cm
+       left join public.source_cells b1 on b1.sheet_id=cm.source_sheet_id and upper(b1.address)='B1'
+       left join public.source_cells j1 on j1.sheet_id=cm.source_sheet_id and upper(j1.address)='J1'
+       order by cm.month_start desc
+       limit 24`,
+    ),
   ]);
 
   const blockers = rankReviewSignals(openReviews.rows, 5);
@@ -104,6 +196,15 @@ export async function loadDataQualityCenter(pool: Pool) {
     blockers,
     actions: actions.rows,
     specialSheets: specialSheets.rows,
+    workbookVersions: workbookVersions.rows,
+    reconciliationSignalCount: Number(reconciliationSignals.rows[0]?.n ?? 0),
+    workbookDiff: {
+      ready: workbookStats.rows.length >= 2,
+      a: workbookStats.rows[0] ?? null,
+      b: workbookStats.rows[1] ?? null,
+      changedSheets: changedSheets.rows,
+    },
+    cashflowReconciliation: cashflowReconciliation.rows,
   };
 }
 

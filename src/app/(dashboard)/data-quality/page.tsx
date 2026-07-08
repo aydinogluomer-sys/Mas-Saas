@@ -16,6 +16,9 @@ const ACTION_STATUS_TONE: Record<string, Tone> = {
   cancelled: "neutral",
 };
 
+const fmt0 = (v: number | null) =>
+  v != null ? new Intl.NumberFormat("tr-TR", { maximumFractionDigits: 0 }).format(v) : "—";
+
 export default async function DataQualityPage() {
   const data = await loadDataQualityCenter(getPool());
 
@@ -33,6 +36,75 @@ export default async function DataQualityPage() {
         <KeyStat label="Acik gorev" value={data.actionOpenCount} tone={data.actionOpenCount > 0 ? "warn" : "neutral"} href="/data-quality" />
         <KeyStat label="Dis review" value={data.externalPendingCount} tone={data.externalPendingCount > 0 ? "warn" : "pos"} href="/assumptions" />
         <KeyStat label="Ozel sekme" value={data.specialSheets.length} tone={data.specialSheets.length > 0 ? "info" : "neutral"} href="/data-quality" />
+      </div>
+
+      <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
+        <div id="ab-diff">
+        <Panel title="EXCEL SURUM FARKI (A VS B)">
+          {!data.workbookDiff.ready ? (
+            <p className="text-sm" style={{ color: "var(--text-3)" }}>
+              Karsilastirma icin en az 2 workbook gerekiyor.
+            </p>
+          ) : (
+            <>
+              <div className="mt-2 grid grid-cols-1 gap-1.5">
+                {[data.workbookDiff.a, data.workbookDiff.b].filter(Boolean).map((w, i) => (
+                  <div key={w!.workbook_id} className="border px-2 py-1.5" style={{ borderColor: "var(--line)", borderRadius: "var(--radius)", background: "var(--surface-2)" }}>
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="font-mono text-[11px]" style={{ color: "var(--text-3)" }}>{i === 0 ? "Workbook A" : "Workbook B"}</span>
+                      <Badge tone="neutral">{w!.imported_at}</Badge>
+                    </div>
+                    <div className="mt-0.5 text-sm" style={{ color: "var(--text-1)" }}>{w!.original_filename}</div>
+                    <div className="mt-0.5 font-mono text-[10px]" style={{ color: "var(--text-4)" }}>
+                      sekme {w!.sheet_count} · satir {fmt0(w!.row_count)} · hucre {fmt0(w!.cell_count)} · formul {fmt0(w!.formula_count)}
+                    </div>
+                  </div>
+                ))}
+              </div>
+              <div className="mt-2 flex flex-wrap items-center gap-2">
+                <Badge tone="neutral">degisen sekme: {data.workbookDiff.changedSheets.length}</Badge>
+                <Badge tone="neutral">aylik nakit sekmesi A: {data.workbookDiff.a?.monthly_sheet_count ?? 0}</Badge>
+                <Badge tone="neutral">B: {data.workbookDiff.b?.monthly_sheet_count ?? 0}</Badge>
+              </div>
+              {data.workbookDiff.changedSheets.length > 0 && (
+                <div className="mt-2 text-[11px]" style={{ color: "var(--text-3)" }}>
+                  {data.workbookDiff.changedSheets.slice(0, 8).map((s) => `${s.sheet_name} (${s.side})`).join(" · ")}
+                </div>
+              )}
+            </>
+          )}
+        </Panel>
+        </div>
+
+        <div id="dashboard-mutabakat">
+        <Panel title="EXCEL DASHBOARD MUTABAKATI">
+          <p className="text-sm" style={{ color: "var(--text-3)" }}>01_DASHBOARD / 02_AYLIK OZET / 00_REHBER varligi ve aylik cashflow baslik mutabakati.</p>
+          <div className="mt-2 flex flex-wrap items-center gap-2">
+            <Badge tone={data.specialSheets.length > 0 ? "green" : "amber"}>ozel sekme: {data.specialSheets.length}</Badge>
+            <Badge tone={data.reconciliationSignalCount > 0 ? "red" : "green"}>acik mutabakat sinyali: {data.reconciliationSignalCount}</Badge>
+          </div>
+          <div className="mt-2 overflow-x-auto">
+            <table className="w-full text-xs">
+              <thead>
+                <tr className="border-b" style={{ borderColor: "var(--line-faint)", color: "var(--text-4)" }}>
+                  <th className="py-1 pr-2 text-left">ay</th>
+                  <th className="py-1 pr-2 text-right">devir diff</th>
+                  <th className="py-1 pr-2 text-right">kasa diff</th>
+                </tr>
+              </thead>
+              <tbody>
+                {data.cashflowReconciliation.slice(0, 12).map((r) => (
+                  <tr key={r.month_start} className="border-b" style={{ borderColor: "var(--line-faint)" }}>
+                    <td className="py-1 pr-2 font-mono" style={{ color: "var(--text-2)" }}>{r.month_start.slice(0, 7)}</td>
+                    <td className="py-1 pr-2 text-right font-mono" style={{ color: (r.opening_diff ?? 0) === 0 ? "var(--text-3)" : "var(--neg)" }}>{fmt0(r.opening_diff)}</td>
+                    <td className="py-1 pr-2 text-right font-mono" style={{ color: (r.closing_diff ?? 0) === 0 ? "var(--text-3)" : "var(--neg)" }}>{fmt0(r.closing_diff)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </Panel>
+        </div>
       </div>
 
       <Panel title="KARAR ALMAYI ENGELLEYEN 5 VERI SORUNU">
