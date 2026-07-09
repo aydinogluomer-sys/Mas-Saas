@@ -7,9 +7,9 @@
 :root {
   /* surfaces (deepest → raised) */
   --surface-0: #09090b;   /* page background */
-  --surface-1: #0c0c0e;   /* panels */
-  --surface-2: #101013;   /* raised cells / stat boxes */
-  --surface-3: #17171b;   /* controls / hover */
+  --surface-1: #0d0d10;   /* panels */
+  --surface-2: #121217;   /* raised cells / stat boxes */
+  --surface-3: #191a20;   /* controls / hover */
 
   /* lines */
   --line: #26262b;        /* default border */
@@ -43,6 +43,19 @@ body {
   text-rendering: optimizeLegibility;
   font-size: 14px;
   line-height: 1.5;
+}
+
+.app-bg {
+  background:
+    linear-gradient(180deg, rgba(127, 176, 217, 0.035), transparent 220px),
+    linear-gradient(90deg, rgba(52, 211, 153, 0.025), transparent 42%),
+    var(--surface-0);
+}
+
+.command-surface {
+  background: linear-gradient(180deg, color-mix(in srgb, var(--surface-1) 92%, white 8%), var(--surface-1));
+  border-color: var(--line);
+  box-shadow: 0 18px 44px rgba(0, 0, 0, 0.18);
 }
 
 /* ── accessibility base ── */
@@ -83,8 +96,12 @@ body {
 .stagger > *:nth-child(n+7) { animation-delay: 0.2s; }
 
 /* card hover micro-interaction */
-.card-hover { transition: border-color 0.18s ease, background-color 0.18s ease, transform 0.18s ease; }
-.card-hover:hover { border-color: var(--line-strong); }
+.card-hover { transition: border-color 0.18s ease, background-color 0.18s ease, transform 0.18s ease, box-shadow 0.18s ease; }
+.card-hover:hover {
+  border-color: var(--line-strong);
+  background-color: color-mix(in srgb, var(--surface-2) 86%, white 4%);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.14);
+}
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: 0.001ms !important; animation-delay: 0ms !important; transition-duration: 0.001ms !important; scroll-behavior: auto !important; }

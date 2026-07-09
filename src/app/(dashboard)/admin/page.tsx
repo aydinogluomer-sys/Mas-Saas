@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import Link from "next/link";
 import { promises as fs } from "fs";
 import path from "path";
@@ -12,7 +13,10 @@ export const dynamic = "force-dynamic";
 
 // Secondary / admin routes, grouped. Everything here used to be primary nav; it stays
 // reachable but out of the operator's daily decision path.
-const GROUPS: Array<{ title: string; items: Array<{ href: string; label: string; desc: string }> }> = [
+type AdminModule = { href: string; label: string; desc: string };
+type AdminGroup = { title: string; items: AdminModule[] };
+
+const GROUPS: AdminGroup[] = [
   {
     title: "OPERASYON",
     items: [
@@ -46,6 +50,10 @@ const GROUPS: Array<{ title: string; items: Array<{ href: string; label: string;
       { href: "/imports", label: "İncelemeler / kaynak kayıt", desc: "Mapping incelemeleri ve ham sekme/satır izlenebilirliği (içe aktarım içinden)." },
     ],
   },
+];
+const GROUP_COLUMNS = [
+  GROUPS.slice(0, 3),
+  GROUPS.slice(3),
 ];
 
 async function latestBackup() {
@@ -81,63 +89,89 @@ export default async function AdminPage() {
         subtitle="Takvim · ödeme kalemleri · içe aktarım · raporlar · hatırlatmalar · üretim · kaynak kayıt"
       />
       <Panel title="LOCAL PRIVATE PRODUCTION" subtitle="health / version / backup / import / aksiyon durumu" accent={dbProbe === "up" ? "pos" : "neg"}>
-        <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
-          <div className="border p-2" style={{ borderColor: "var(--line-faint)", borderRadius: "var(--radius)", background: "var(--surface-2)" }}>
-            <div className="font-mono text-[10px] uppercase tracking-wider" style={{ color: "var(--text-3)" }}>Health</div>
-            <div className="mt-1 flex flex-wrap gap-1.5">
-              <Badge tone="green">app up</Badge>
-              <Badge tone={dbProbe === "up" ? "green" : "red"}>db {dbProbe}</Badge>
-            </div>
-            <div className="mt-1 font-mono text-[10px]" style={{ color: "var(--text-4)" }}>/health / /version secret yaymaz</div>
-          </div>
-          <div className="border p-2" style={{ borderColor: "var(--line-faint)", borderRadius: "var(--radius)", background: "var(--surface-2)" }}>
-            <div className="font-mono text-[10px] uppercase tracking-wider" style={{ color: "var(--text-3)" }}>Version</div>
-            <div className="mt-1 text-sm" style={{ color: "var(--text-1)" }}>{pkg.name} {pkg.version}</div>
-            <div className="mt-1 font-mono text-[10px]" style={{ color: "var(--text-4)" }}>{process.env.APP_COMMIT_SHA ?? "commit unknown"}</div>
-          </div>
-          <div className="border p-2" style={{ borderColor: "var(--line-faint)", borderRadius: "var(--radius)", background: "var(--surface-2)" }}>
-            <div className="font-mono text-[10px] uppercase tracking-wider" style={{ color: "var(--text-3)" }}>Backup</div>
-            <div className="mt-1 text-sm" style={{ color: backup ? "var(--text-1)" : "var(--warn)" }}>{backup ? backup.name : "backup bulunmadi"}</div>
-            <div className="mt-1 font-mono text-[10px]" style={{ color: "var(--text-4)" }}>{backup ? `${backup.mtime} / ${backup.size} byte` : "docs/local-production-deploy.md"}</div>
-          </div>
-          <div className="border p-2" style={{ borderColor: "var(--line-faint)", borderRadius: "var(--radius)", background: "var(--surface-2)" }}>
-            <div className="font-mono text-[10px] uppercase tracking-wider" style={{ color: "var(--text-3)" }}>Son import</div>
-            <div className="mt-1 text-sm" style={{ color: latestImport ? "var(--text-1)" : "var(--warn)" }}>{latestImport?.original_filename ?? "import yok"}</div>
-            <div className="mt-1 font-mono text-[10px]" style={{ color: "var(--text-4)" }}>{latestImport?.imported_at ?? "once kaynak Excel yukle"}</div>
-          </div>
-          <div className="border p-2" style={{ borderColor: "var(--line-faint)", borderRadius: "var(--radius)", background: "var(--surface-2)" }}>
-            <div className="font-mono text-[10px] uppercase tracking-wider" style={{ color: "var(--text-3)" }}>Karar guveni</div>
-            <div className="mt-1 flex flex-wrap gap-1.5">
-              <Badge tone={dq.decisionConfidence >= 80 ? "green" : dq.decisionConfidence >= 55 ? "amber" : "red"}>%{dq.decisionConfidence}</Badge>
-              <Badge tone={dq.highOpenCount > 0 ? "red" : "green"}>{dq.highOpenCount} yuksek/acil</Badge>
-            </div>
-          </div>
-          <div className="border p-2" style={{ borderColor: "var(--line-faint)", borderRadius: "var(--radius)", background: "var(--surface-2)" }}>
-            <div className="font-mono text-[10px] uppercase tracking-wider" style={{ color: "var(--text-3)" }}>Runbook</div>
-            <Link href="/version" className="mt-1 block text-sm underline underline-offset-2" style={{ color: "var(--accent)" }}>/version</Link>
-            <Link href="/health" className="mt-1 block text-sm underline underline-offset-2" style={{ color: "var(--accent)" }}>/health</Link>
+        <div className="overflow-hidden border" style={{ borderColor: "var(--line-faint)", borderRadius: "var(--radius)" }}>
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-6">
+            <OpsCell label="Health">
+              <div className="mt-1 flex flex-wrap gap-1.5">
+                <Badge tone="green">app up</Badge>
+                <Badge tone={dbProbe === "up" ? "green" : "red"}>db {dbProbe}</Badge>
+              </div>
+              <div className="mt-1 font-mono text-[10px]" style={{ color: "var(--text-4)" }}>/health / /version secret yaymaz</div>
+            </OpsCell>
+            <OpsCell label="Version">
+              <div className="mt-1 text-sm" style={{ color: "var(--text-1)" }}>{pkg.name} {pkg.version}</div>
+              <div className="mt-1 font-mono text-[10px]" style={{ color: "var(--text-4)" }}>{process.env.APP_COMMIT_SHA ?? "commit unknown"}</div>
+            </OpsCell>
+            <OpsCell label="Backup">
+              <div className="mt-1 text-sm" style={{ color: backup ? "var(--text-1)" : "var(--warn)" }}>{backup ? backup.name : "backup bulunmadi"}</div>
+              <div className="mt-1 font-mono text-[10px]" style={{ color: "var(--text-4)" }}>{backup ? `${backup.mtime} / ${backup.size} byte` : "docs/local-production-deploy.md"}</div>
+            </OpsCell>
+            <OpsCell label="Son import">
+              <div className="mt-1 text-sm" style={{ color: latestImport ? "var(--text-1)" : "var(--warn)" }}>{latestImport?.original_filename ?? "import yok"}</div>
+              <div className="mt-1 font-mono text-[10px]" style={{ color: "var(--text-4)" }}>{latestImport?.imported_at ?? "once kaynak Excel yukle"}</div>
+            </OpsCell>
+            <OpsCell label="Karar guveni">
+              <div className="mt-1 flex flex-wrap gap-1.5">
+                <Badge tone={dq.decisionConfidence >= 80 ? "green" : dq.decisionConfidence >= 55 ? "amber" : "red"}>%{dq.decisionConfidence}</Badge>
+                <Badge tone={dq.highOpenCount > 0 ? "red" : "green"}>{dq.highOpenCount} yuksek/acil</Badge>
+              </div>
+            </OpsCell>
+            <OpsCell label="Runbook">
+              <Link href="/version" className="mt-1 block text-sm underline underline-offset-2" style={{ color: "var(--accent)" }}>/version</Link>
+              <Link href="/health" className="mt-1 block text-sm underline underline-offset-2" style={{ color: "var(--accent)" }}>/health</Link>
+            </OpsCell>
           </div>
         </div>
       </Panel>
 
-      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-        {GROUPS.map((g) => (
-          <section key={g.title} className="border p-3" style={{ borderColor: "var(--line)", borderRadius: "var(--radius)", background: "var(--surface-1)" }}>
-            <h2 className="font-mono text-[11px] uppercase tracking-[0.14em]" style={{ color: "var(--text-3)" }}>{g.title}</h2>
-            <ul className="mt-2 space-y-2">
-              {g.items.map((it) => (
-                <li key={it.label}>
-                  <Link href={it.href} className="card-hover block border p-2.5"
-                    style={{ borderColor: "var(--line-faint)", borderRadius: "var(--radius)", background: "var(--surface-2)" }}>
-                    <div className="text-sm" style={{ color: "var(--text-1)" }}>{it.label} →</div>
-                    <div className="mt-0.5 text-[11px]" style={{ color: "var(--text-4)" }}>{it.desc}</div>
-                  </Link>
-                </li>
-              ))}
-            </ul>
-          </section>
+      <div className="grid grid-cols-1 gap-3 lg:grid-cols-[minmax(0,0.92fr)_minmax(0,1.08fr)]">
+        {GROUP_COLUMNS.map((column, i) => (
+          <div key={i} className="space-y-3">
+            {column.map((g) => <ModuleGroup key={g.title} group={g} />)}
+          </div>
         ))}
       </div>
     </>
+  );
+}
+
+function OpsCell({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <div
+      className="min-w-0 border-b p-2.5 last:border-b-0 sm:border-r lg:border-b-0 lg:last:border-r-0"
+      style={{ borderColor: "var(--line-faint)" }}
+    >
+      <div className="font-mono text-[10px] uppercase tracking-wider" style={{ color: "var(--text-3)" }}>
+        {label}
+      </div>
+      {children}
+    </div>
+  );
+}
+
+function ModuleGroup({ group }: { group: AdminGroup }) {
+  return (
+    <section className="command-surface border p-3" style={{ borderRadius: "var(--radius)" }}>
+      <div className="flex items-center justify-between gap-2">
+        <h2 className="font-mono text-[11px] uppercase tracking-[0.14em]" style={{ color: "var(--text-3)" }}>
+          {group.title}
+        </h2>
+        <Badge tone="neutral">{group.items.length}</Badge>
+      </div>
+      <ul className="mt-2">
+        {group.items.map((it) => (
+          <li key={it.label}>
+            <Link
+              href={it.href}
+              className="block border-b py-2.5 transition-[padding,color] last:border-b-0 hover:pl-1"
+              style={{ borderColor: "var(--line-faint)" }}
+            >
+              <div className="text-sm" style={{ color: "var(--text-1)" }}>{it.label} -&gt;</div>
+              <div className="mt-0.5 text-[11px]" style={{ color: "var(--text-4)" }}>{it.desc}</div>
+            </Link>
+          </li>
+        ))}
+      </ul>
+    </section>
   );
 }

@@ -1,0 +1,12 @@
+{
+  "iteration": 2,
+  "status": "ITERATE",
+  "score": 86,
+  "lastEvidencePrefix": "iteration-02",
+  "server": "http://localhost:3001",
+  "remainingFocus": [
+    "visual QA for ask/data-quality/cashflow/scenarios/production",
+    "keyboard focus evidence",
+    "contrast pass for dense muted descriptions"
+  ]
+}

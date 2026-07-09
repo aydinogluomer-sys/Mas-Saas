@@ -41,6 +41,14 @@ const ACTION_FACT_KEY: Record<string, string> = {
   concentration: "top_customer_concentration",
   stale_rate: "stale_rate_flags",
 };
+const EMPTY_MODULES = [
+  { href: "/imports", title: "1. Excel yukle", desc: "Workbook, sekme ve ham hucre kaniti korunur." },
+  { href: "/data-quality", title: "2. Veri kalite", desc: "Review, mutabakat ve karar guveni izlenir." },
+  { href: "/radar", title: "3. Odeme radari", desc: "Bugun, 7 gun, geciken ve eksik tutarlar." },
+  { href: "/cashflow", title: "4. Nakit akis", desc: "Runway, ilk negatif ay ve en kotu ay." },
+  { href: "/ask", title: "5. Sor", desc: "Karar sorulari kanitli cevaplanir." },
+  { href: "/admin", title: "Tum moduller", desc: "Rapor, hatirlatma, uretim, fazlar ve kaynak." },
+];
 
 export default async function AnaEkranPage() {
   const pool = getPool();
@@ -69,10 +77,13 @@ export default async function AnaEkranPage() {
             çalışma dosyasını yükleyin ve modüllere aktarın; sonra bu ekran bugünkü ödemeleri, nakit riskini ve
             yapılacakları özetler.
           </p>
-          <div className="mt-2">
-            <Link href="/admin" className="font-mono text-[11px] underline underline-offset-2" style={{ color: "var(--info)" }}>
-              Yönetim → içe aktarım, ayarlar →
-            </Link>
+          <div className="mt-4 grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3">
+            {EMPTY_MODULES.map((m) => (
+              <Link key={m.href + m.title} href={m.href} className="card-hover border p-3" style={{ borderColor: "var(--line-faint)", borderRadius: "var(--radius)", background: "var(--surface-2)" }}>
+                <div className="text-sm font-medium" style={{ color: "var(--text-1)" }}>{m.title}</div>
+                <div className="mt-1 text-[11px]" style={{ color: "var(--text-4)" }}>{m.desc}</div>
+              </Link>
+            ))}
           </div>
         </Panel>
       </>

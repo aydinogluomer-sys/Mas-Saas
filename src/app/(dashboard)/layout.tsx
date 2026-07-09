@@ -8,14 +8,13 @@ import { Nav, type NavItem } from "@/components/ui/nav";
 // kalemleri CRUD, İçe Aktarım, Raporlar, Hatırlatmalar, Üretim, İncelemeler) live under
 // Yönetim (/admin) and stay fully reachable — no route is removed.
 const NAV: NavItem[] = [
-  { href: "/", label: "ANA EKRAN" },
-  { href: "/phases", label: "FAZLAR" },
-  { href: "/radar", label: "ÖDEMELER" },
-  { href: "/cashflow", label: "NAKİT AKIŞ" },
-  { href: "/financing", label: "FİNANSMAN" },
+  { href: "/", label: "ANA" },
+  { href: "/radar", label: "ODEME" },
+  { href: "/cashflow", label: "NAKIT" },
+  { href: "/financing", label: "FIN" },
   { href: "/ask", label: "SOR" },
-  { href: "/scenarios", label: "SENARYOLAR" },
-  { href: "/admin", label: "YÖNETİM" },
+  { href: "/scenarios", label: "SEN" },
+  { href: "/admin", label: "MODUL" },
 ];
 
 export default async function DashboardLayout({ children }: { children: ReactNode }) {
@@ -23,15 +22,15 @@ export default async function DashboardLayout({ children }: { children: ReactNod
   if (accessGateEnabled() && !(await hasValidSession())) redirect("/login");
   const gate = accessGateEnabled();
   return (
-    <div className="min-h-screen" style={{ background: "var(--surface-0)", color: "var(--text-1)" }}>
+    <div className="min-h-screen app-bg" style={{ color: "var(--text-1)" }}>
       {/* thin brand accent rail */}
       <div style={{ height: "2px", background: "linear-gradient(90deg, var(--info), var(--accent))", opacity: 0.5 }} />
       <header
         className="sticky top-0 z-20 border-b px-4 py-3 backdrop-blur"
         style={{ borderColor: "var(--line)", background: "color-mix(in srgb, var(--surface-0) 88%, transparent)" }}
       >
-        <div className="mx-auto flex max-w-6xl flex-wrap items-center justify-between gap-3">
-          <div className="min-w-0">
+        <div className="mx-auto flex max-w-6xl flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+          <div className="min-w-0 shrink-0">
             <div className="font-mono text-sm font-bold tracking-[0.2em]" style={{ color: "var(--text-1)" }}>
               MAS NAKİT RADAR
             </div>
@@ -39,7 +38,7 @@ export default async function DashboardLayout({ children }: { children: ReactNod
               kapalı devre finans operasyon paneli
             </div>
           </div>
-          <div className="flex items-center gap-1">
+          <div className="flex min-w-0 items-center gap-1">
             <Nav items={NAV} />
             {gate && (
               <form action={logoutAction}>

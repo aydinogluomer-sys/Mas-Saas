@@ -22,9 +22,8 @@ export function Panel({
   const accentColor = accent ? `var(--${accent === "accent" ? "accent" : accent})` : undefined;
   return (
     <section
-      className={`card-hover overflow-hidden border ${className}`}
+      className={`card-hover command-surface overflow-hidden border ${className}`}
       style={{
-        background: "var(--surface-1)",
         borderColor: "var(--line)",
         borderRadius: "var(--radius)",
         borderLeft: accentColor ? `2px solid ${accentColor}` : undefined,
