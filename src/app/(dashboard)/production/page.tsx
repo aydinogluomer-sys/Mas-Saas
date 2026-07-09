@@ -22,7 +22,7 @@ import {
 } from "@/lib/production/rules";
 import { Badge } from "@/components/ui/badge";
 import { Panel, fmtTL } from "@/components/ui/panel";
-import { DetailsDisclosure, Disclaimer, PageHeader } from "@/components/ui/shell";
+import { DetailsDisclosure, Disclaimer, ModuleEmptyState, PageHeader } from "@/components/ui/shell";
 
 export const dynamic = "force-dynamic";
 
@@ -48,13 +48,27 @@ export default async function ProductionPage() {
 
   if (caps.length === 0 && costs.length === 0) {
     return (
-      <Panel title="ÜRETİM — KAPASİTE / MALİYET">
-        <p className="text-sm text-zinc-500">
-          Henüz kapasite/maliyet modeli yok.{" "}
-          <Link className="underline underline-offset-2" href="/imports">İçe aktarım</Link>{" "}
-          sayfasından workbook detayına girip &quot;üretim analitiğini aktar&quot; ile başlayın.
-        </p>
-      </Panel>
+      <>
+        <PageHeader
+          title="Üretim Analitiği"
+          subtitle="Kapasite · başabaş TL/dk · makine-dakika · finansman tahsisi · makine ROI"
+          meta={<Badge tone="amber">model bekliyor</Badge>}
+        />
+        <ModuleEmptyState
+          eyebrow="Üretim modeli hazır değil"
+          title="Kapasite ve maliyet aktarıldığında üretim kararları burada görünür."
+          body="Bu ekran Excel kaynaklı kapasite, maliyet ve makine verisini salt-okunur analiz eder. Kişisel giderler içeri alınmaz; belirsiz süre veya tutarlar 0 sayılmaz."
+          primaryHref="/imports"
+          primaryLabel="üretim aktarımını aç"
+          secondaryHref="/data-quality"
+          secondaryLabel="kanıt/review kontrolü"
+          steps={[
+            "Workbook detayında üretim analitiği aktarımını çalıştır.",
+            "Eksik süre veya belirsiz tutar reviewlarını kapat.",
+            "Kapasite senaryosu ile fiyat ve başabaş baskısını karşılaştır.",
+          ]}
+        />
+      </>
     );
   }
 

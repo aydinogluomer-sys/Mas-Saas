@@ -5,7 +5,7 @@ import { estimateOptimizationCandidates, listScenarioRuns } from "@/lib/scenario
 import { loadCashMonths } from "@/lib/cashflow/engine";
 import { Badge, type Tone } from "@/components/ui/badge";
 import { Panel } from "@/components/ui/panel";
-import { Disclaimer, DetailsDisclosure, PageHeader } from "@/components/ui/shell";
+import { Disclaimer, DetailsDisclosure, ModuleEmptyState, PageHeader } from "@/components/ui/shell";
 import { runScenarioAction } from "./actions";
 
 export const dynamic = "force-dynamic";
@@ -49,12 +49,20 @@ export default async function ScenariosPage({
       <Disclaimer tone="accent">⚠ Senaryo çıktısı tahmindir; muhasebe gerçeği değildir. Kaynak kayıtları değiştirmez.</Disclaimer>
 
       {!hasBaseline ? (
-        <Panel title="SENARYO ÇALIŞTIR">
-          <p className="text-sm" style={{ color: "var(--text-3)" }}>
-            Baz veri yok. Önce{" "}
-            <Link className="underline underline-offset-2" href="/cashflow">nakit akışını</Link> aktarın.
-          </p>
-        </Panel>
+        <ModuleEmptyState
+          eyebrow="Baz veri bekleniyor"
+          title="Senaryo motoru nakit akış bazını gördüğünde çalışır."
+          body="What-if çıktıları kaynak kayıtları değiştirmez. Önce aylık nakit akışı aktarılır; sonra gelir/gider değişimi, gecikme, borç-servisi ve kapasite overlayleri karşılaştırılır."
+          primaryHref="/cashflow"
+          primaryLabel="nakit akışa git"
+          secondaryHref="/imports"
+          secondaryLabel="excel aktarımını aç"
+          steps={[
+            "Nakit akış aylarını içeri aktar.",
+            "Veri kalite merkezinde kritik reviewları kapat.",
+            "Hazır preset veya özel varsayım ile senaryoyu çalıştır.",
+          ]}
+        />
       ) : (
         <>
           <Panel title="FINANSMAN OPTIMIZASYONU ADAYLARI (FAZ 13B)">
@@ -129,8 +137,7 @@ export default async function ScenariosPage({
                 Borç-servisi overlay dahil et (çek + kredi taksiti gidere eklensin)
               </label>
               <div className="sm:col-span-2">
-                <button type="submit" className="border px-4 py-2 font-mono text-[11px] uppercase tracking-wider"
-                  style={{ color: "var(--accent)", borderColor: "var(--accent)", background: "color-mix(in srgb, var(--accent) 12%, transparent)", borderRadius: "var(--radius)" }}>
+                <button type="submit" className="button-accent px-4 py-2">
                   senaryoyu çalıştır →
                 </button>
                 <span className="ml-2 text-[11px]" style={{ color: "var(--text-4)" }}>boş bırakılan varsayım uygulanmaz</span>
@@ -185,8 +192,7 @@ function Preset({ name, fields }: { name: string; fields: Record<string, string>
       {Object.entries(fields).map(([k, v]) => (
         <input key={k} type="hidden" name={k} value={v} />
       ))}
-      <button type="submit" className="card-hover border px-3 py-2 text-[12px]"
-        style={{ color: "var(--accent)", borderColor: "var(--accent)", background: "color-mix(in srgb, var(--accent) 10%, transparent)", borderRadius: "var(--radius)" }}>
+      <button type="submit" className="button-accent px-3 py-2 text-[12px]">
         {name} →
       </button>
     </form>
@@ -198,12 +204,12 @@ function Field({ label, name, type = "number", hint, placeholder, full }: {
 }) {
   return (
     <label className={`block ${full ? "sm:col-span-2" : ""}`}>
-      <span className="font-mono text-[10px] uppercase tracking-wider text-zinc-500">{label}</span>
+      <span className="font-mono text-[10px] uppercase tracking-wider" style={{ color: "var(--text-3)" }}>{label}</span>
       <input
         name={name} type={type} step="any" placeholder={placeholder}
-        className="mt-1 w-full border border-zinc-700 bg-black/40 px-2 py-1.5 font-mono text-sm text-zinc-200 outline-none focus:border-zinc-500"
+        className="field-control mt-1 px-2 py-1.5 font-mono text-sm"
       />
-      {hint && <span className="mt-0.5 block font-mono text-[9px] text-zinc-600">{hint}</span>}
+      {hint && <span className="mt-0.5 block font-mono text-[9px]" style={{ color: "var(--text-4)" }}>{hint}</span>}
     </label>
   );
 }

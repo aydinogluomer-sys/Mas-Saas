@@ -19,8 +19,8 @@
   /* text */
   --text-1: #e7e7ea;      /* primary */
   --text-2: #a1a1aa;      /* secondary */
-  --text-3: #71717a;      /* muted / labels */
-  --text-4: #52525b;      /* faint */
+  --text-3: #878791;      /* muted / labels */
+  --text-4: #696973;      /* faint but readable */
 
   /* semantic (financial) — tuned for AA contrast on dark surfaces */
   --pos: #34d399;         /* positive / paid / inflow */
@@ -56,6 +56,61 @@ body {
   background: linear-gradient(180deg, color-mix(in srgb, var(--surface-1) 92%, white 8%), var(--surface-1));
   border-color: var(--line);
   box-shadow: 0 18px 44px rgba(0, 0, 0, 0.18);
+}
+
+.field-control {
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--surface-0) 78%, var(--surface-2));
+  color: var(--text-1);
+  outline: none;
+  transition: border-color 0.16s ease, background-color 0.16s ease, box-shadow 0.16s ease;
+}
+
+.field-control::placeholder {
+  color: var(--text-4);
+}
+
+.field-control:focus {
+  border-color: var(--info);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--info) 32%, transparent);
+}
+
+.button-accent,
+.button-ghost {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.4rem;
+  border: 1px solid;
+  border-radius: var(--radius);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  transition: border-color 0.16s ease, background-color 0.16s ease, color 0.16s ease;
+}
+
+.button-accent {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 11%, transparent);
+  color: var(--accent);
+}
+
+.button-accent:hover {
+  background: color-mix(in srgb, var(--accent) 17%, transparent);
+}
+
+.button-ghost {
+  border-color: var(--line-faint);
+  background: transparent;
+  color: var(--text-3);
+}
+
+.button-ghost:hover {
+  border-color: var(--line-strong);
+  color: var(--text-1);
 }
 
 /* ── accessibility base ── */

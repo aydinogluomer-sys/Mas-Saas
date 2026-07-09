@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import Link from "next/link";
 
 /* ── PageHeader: title + subtitle + meta + primary action, consistent per route ── */
 export function PageHeader({
@@ -129,6 +130,85 @@ export function EmptyState({ children, action }: { children: ReactNode; action?:
       <p className="font-mono text-xs" style={{ color: "var(--text-3)" }}>{children}</p>
       {action}
     </div>
+  );
+}
+
+export function CommandLink({
+  href,
+  children,
+  tone = "accent",
+}: {
+  href: string;
+  children: ReactNode;
+  tone?: "accent" | "ghost";
+}) {
+  return (
+    <Link href={href} className={`${tone === "accent" ? "button-accent" : "button-ghost"} px-3 py-2`}>
+      {children}
+    </Link>
+  );
+}
+
+export function ModuleEmptyState({
+  eyebrow,
+  title,
+  body,
+  primaryHref,
+  primaryLabel,
+  secondaryHref,
+  secondaryLabel,
+  steps,
+}: {
+  eyebrow: ReactNode;
+  title: ReactNode;
+  body: ReactNode;
+  primaryHref: string;
+  primaryLabel: ReactNode;
+  secondaryHref?: string;
+  secondaryLabel?: ReactNode;
+  steps?: ReactNode[];
+}) {
+  return (
+    <section
+      className="command-surface border p-4"
+      style={{ borderRadius: "var(--radius)", borderLeft: "2px solid var(--info)" }}
+    >
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-[minmax(0,1fr)_320px]">
+        <div className="min-w-0">
+          <div className="font-mono text-[10px] uppercase tracking-[0.14em]" style={{ color: "var(--text-3)" }}>
+            {eyebrow}
+          </div>
+          <h2 className="mt-2 text-lg font-semibold" style={{ color: "var(--text-1)" }}>
+            {title}
+          </h2>
+          <p className="mt-2 max-w-3xl text-sm leading-6" style={{ color: "var(--text-2)" }}>
+            {body}
+          </p>
+          <div className="mt-4 flex flex-wrap gap-2">
+            <CommandLink href={primaryHref}>{primaryLabel}</CommandLink>
+            {secondaryHref && secondaryLabel && <CommandLink href={secondaryHref} tone="ghost">{secondaryLabel}</CommandLink>}
+          </div>
+        </div>
+        {steps && steps.length > 0 && (
+          <div
+            className="border-t pt-3 lg:border-l lg:border-t-0 lg:pl-4 lg:pt-0"
+            style={{ borderColor: "var(--line-faint)" }}
+          >
+            <div className="font-mono text-[10px] uppercase tracking-[0.14em]" style={{ color: "var(--text-3)" }}>
+              Siradaki adimlar
+            </div>
+            <ol className="mt-2 space-y-2">
+              {steps.map((step, i) => (
+                <li key={i} className="flex gap-2 text-sm" style={{ color: "var(--text-2)" }}>
+                  <span className="font-mono text-[11px]" style={{ color: "var(--text-4)" }}>{i + 1}.</span>
+                  <span>{step}</span>
+                </li>
+              ))}
+            </ol>
+          </div>
+        )}
+      </div>
+    </section>
   );
 }
 

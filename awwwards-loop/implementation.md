@@ -57,3 +57,22 @@ Driven by visual evidence from `iteration-01b-*`:
    - verify no overflow or text collision after the layout change.
 4. Complete quality-loop reporting:
    - write a scored iteration report with screenshots, hard gates, defects, next actions, and tool limitation.
+
+## Iteration 03 Plan
+
+Driven by Iteration 02 report:
+
+1. Inspect the remaining high-value modules:
+   - `/ask`, `/data-quality`, `/cashflow`, `/scenarios`, `/production`;
+   - capture desktop/tablet/mobile viewport screenshots route-by-route to avoid Windows pagefile pressure.
+2. Improve dense operational surfaces:
+   - standardize form controls, buttons, and table rows through shared CSS classes;
+   - reduce card-in-card feeling on analysis routes;
+   - raise contrast for meaningful descriptions currently using very muted text.
+3. Strengthen decision-product signature:
+   - make question/scenario/action entry points feel like compact command bars;
+   - keep technical detail in disclosure/table regions instead of first-glance panels.
+4. Verify:
+   - `typecheck`, `lint`, `test`, `build`, `git diff --check`;
+   - `/health`;
+   - screenshot/overflow evidence for the newly inspected modules.

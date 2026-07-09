@@ -111,7 +111,7 @@ export default async function DataQualityPage() {
               <input type="hidden" name="title" value="Excel dashboard/cashflow mutabakat farkini incele" />
               <input type="hidden" name="severity" value="high" />
               <input type="hidden" name="note" value="Veri kalite merkezi mutabakat sinyali urettigi icin olusturuldu." />
-              <button type="submit" className="border px-2 py-1 font-mono text-[10px] uppercase tracking-wider" style={{ borderColor: "var(--accent)", color: "var(--accent)", borderRadius: "var(--radius)" }}>
+              <button type="submit" className="button-accent px-2 py-1">
                 mutabakat gorevi olustur
               </button>
             </form>
@@ -161,7 +161,7 @@ export default async function DataQualityPage() {
                 <form action={createActionFromReviewAction} className="self-start">
                   <input type="hidden" name="reviewId" value={b.id} />
                   <input type="hidden" name="backTo" value="/data-quality" />
-                  <button type="submit" className="border px-2 py-1 font-mono text-[10px] uppercase tracking-wider" style={{ borderColor: "var(--accent)", color: "var(--accent)", borderRadius: "var(--radius)" }}>
+                  <button type="submit" className="button-accent px-2 py-1">
                     gorevlestir
                   </button>
                 </form>
@@ -202,7 +202,7 @@ export default async function DataQualityPage() {
                           <input type="hidden" name="id" value={a.id} />
                           <input type="hidden" name="status" value={s} />
                           <input type="hidden" name="backTo" value="/data-quality" />
-                          <button type="submit" className="border px-1.5 py-0.5 font-mono text-[9px] uppercase" style={{ borderColor: "var(--line-faint)", color: "var(--text-3)" }}>
+                          <button type="submit" className="button-ghost px-1.5 py-0.5 text-[9px]">
                             {s === "in_progress" ? "basla" : s === "blocked" ? "blok" : "iptal"}
                           </button>
                         </form>
@@ -211,8 +211,8 @@ export default async function DataQualityPage() {
                         <input type="hidden" name="id" value={a.id} />
                         <input type="hidden" name="status" value="done" />
                         <input type="hidden" name="backTo" value="/data-quality" />
-                        <input name="completionNote" placeholder="kapanis notu" className="w-32 border bg-black/30 px-1.5 py-0.5 font-mono text-[9px] outline-none" style={{ borderColor: "var(--line-faint)", color: "var(--text-1)", borderRadius: "var(--radius)" }} />
-                        <button type="submit" className="border px-1.5 py-0.5 font-mono text-[9px] uppercase" style={{ borderColor: "var(--line-faint)", color: "var(--text-3)" }}>
+                        <input name="completionNote" placeholder="kapanis notu" className="field-control w-32 px-1.5 py-0.5 font-mono text-[9px]" />
+                        <button type="submit" className="button-ghost px-1.5 py-0.5 text-[9px]">
                           bitti
                         </button>
                       </form>
@@ -226,19 +226,19 @@ export default async function DataQualityPage() {
 
         <Panel title="MANUEL GOREV">
           <form action={createManualActionAction} className="space-y-2">
-            <input name="title" required placeholder="gorev basligi" className="w-full border bg-black/30 px-2 py-1.5 text-sm outline-none" style={{ borderColor: "var(--line)", borderRadius: "var(--radius)", color: "var(--text-1)" }} />
+            <input name="title" required placeholder="gorev basligi" className="field-control px-2 py-1.5 text-sm" />
             <div className="grid grid-cols-2 gap-2">
-              <select name="severity" className="border bg-black/30 px-2 py-1.5 text-sm outline-none" style={{ borderColor: "var(--line)", borderRadius: "var(--radius)", color: "var(--text-1)" }} defaultValue="medium">
+              <select name="severity" className="field-control px-2 py-1.5 text-sm" defaultValue="medium">
                 <option value="critical">critical</option>
                 <option value="high">high</option>
                 <option value="medium">medium</option>
                 <option value="low">low</option>
               </select>
-              <input name="dueDate" type="date" className="border bg-black/30 px-2 py-1.5 text-sm outline-none" style={{ borderColor: "var(--line)", borderRadius: "var(--radius)", color: "var(--text-1)" }} />
+              <input name="dueDate" type="date" aria-label="due date" className="field-control px-2 py-1.5 text-sm" />
             </div>
-            <input name="owner" placeholder="owner" className="w-full border bg-black/30 px-2 py-1.5 text-sm outline-none" style={{ borderColor: "var(--line)", borderRadius: "var(--radius)", color: "var(--text-1)" }} />
-            <textarea name="note" rows={3} placeholder="not" className="w-full border bg-black/30 px-2 py-1.5 text-sm outline-none" style={{ borderColor: "var(--line)", borderRadius: "var(--radius)", color: "var(--text-1)" }} />
-            <button type="submit" className="border px-3 py-2 font-mono text-[10px] uppercase tracking-wider" style={{ borderColor: "var(--accent)", color: "var(--accent)", borderRadius: "var(--radius)" }}>
+            <input name="owner" placeholder="owner" className="field-control px-2 py-1.5 text-sm" />
+            <textarea name="note" rows={3} placeholder="not" className="field-control px-2 py-1.5 text-sm" />
+            <button type="submit" className="button-accent px-3 py-2">
               olustur
             </button>
           </form>

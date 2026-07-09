@@ -7,7 +7,7 @@ import { buildProjection, concentration, horizonCards } from "@/lib/radar/rules"
 import { loadDebtOverlay } from "@/lib/reports/engine";
 import { Badge, type Tone } from "@/components/ui/badge";
 import { Num, Panel, fmtTL } from "@/components/ui/panel";
-import { ChartShell, DetailsDisclosure, KpiCard, PageHeader, StatBox, TableShell } from "@/components/ui/shell";
+import { ChartShell, DetailsDisclosure, KpiCard, ModuleEmptyState, PageHeader, StatBox, TableShell } from "@/components/ui/shell";
 import { CashTrendChart, ConcentrationBars, IncomeExpenseChart } from "@/components/cashflow/charts";
 
 const PRESSURE_TONE: Record<string, Tone> = { high: "red", watch: "amber", none: "neutral" };
@@ -25,12 +25,27 @@ export default async function CashflowPage({
 
   if (months.length === 0) {
     return (
-      <Panel title="NAKİT AKIŞ">
-        <p className="text-sm text-zinc-500">
-          Henüz nakit akış ayı yok. <Link className="underline underline-offset-2" href="/imports">İçe aktarım</Link> sayfasından
-          workbook detayına girip &quot;nakit akışını aktar&quot; ile başlayın. Açık/ret incelemeli aylar aktarılmaz.
-        </p>
-      </Panel>
+      <>
+        <PageHeader
+          title="Nakit Akış Radarı"
+          subtitle="Runway · ilk negatif ay · aylık gelir/gider · borç-servisi baskısı"
+          meta={<Badge tone="amber">veri bekliyor</Badge>}
+        />
+        <ModuleEmptyState
+          eyebrow="Nakit akış hazır değil"
+          title="Aylık cashflow aktarılınca bu ekran karar radarı olur."
+          body="Excel ham kaynağı korunur; açık veya reddedilmiş incelemeli aylar sessizce içeri alınmaz. Önce workbook detayından nakit akışını aktarın, sonra runway ve ilk negatif ay burada görünür."
+          primaryHref="/imports"
+          primaryLabel="içe aktarımı aç"
+          secondaryHref="/data-quality"
+          secondaryLabel="review durumuna bak"
+          steps={[
+            "Workbook detayına girip nakit akışı aktarımını çalıştır.",
+            "Açık review varsa veri kalite merkezinde kapat.",
+            "Aktarımdan sonra senaryo motoruna geçip risk etkisini dene.",
+          ]}
+        />
+      </>
     );
   }
 

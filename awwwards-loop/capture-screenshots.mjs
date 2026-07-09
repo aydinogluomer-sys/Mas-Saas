@@ -16,8 +16,22 @@ const viewports = [
 const allRoutes = [
   ["/", "home"],
   ["/admin", "admin"],
+  ["/ask", "ask"],
+  ["/data-quality", "data-quality"],
+  ["/cashflow", "cashflow"],
+  ["/scenarios", "scenarios"],
+  ["/production", "production"],
 ];
 const routes = routeFilter ? allRoutes.filter(([route]) => route === routeFilter) : allRoutes;
+const readyText = {
+  "/": "Ana Ekran",
+  "/admin": "Yönetim",
+  "/ask": "KARAR SORUSU",
+  "/data-quality": "Veri Kalite Merkezi",
+  "/cashflow": "Nakit Akış Radarı",
+  "/scenarios": "Senaryo Motoru",
+  "/production": "Üretim Analitiği",
+};
 
 const browser = await chromium.launch({ headless: true });
 for (const [name, width, height] of viewports) {
@@ -29,7 +43,12 @@ for (const [name, width, height] of viewports) {
       () => (document.querySelector("main")?.textContent ?? "").trim().length > 20,
       { timeout: 60000 },
     );
-    await page.waitForTimeout(250);
+    await page.waitForFunction(
+      (expected) => !expected || document.body.innerText.includes(expected),
+      readyText[route],
+      { timeout: 60000 },
+    );
+    await page.waitForTimeout(700);
     const file = path.join(outDir, `${prefix}-${name}-${slug}.png`);
     await page.screenshot({ path: file, fullPage: false });
     const overflow = await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth);

@@ -59,39 +59,44 @@ export default async function AskPage({
         meta={<Badge tone="amber">mutasyon yok</Badge>}
       />
 
-      <Panel title="SOR">
-        <form action={askQuestionAction} className="space-y-2">
-          <textarea
-            name="question"
-            rows={3}
-            required
-            className="w-full border bg-black/30 p-2 text-sm outline-none"
-            style={{ borderColor: "var(--line)", borderRadius: "var(--radius)", color: "var(--text-1)" }}
-            placeholder="Onumuzdeki 30 gunde cek ve kredi yuku ne kadar?"
-          />
-          <div className="flex flex-wrap items-center gap-2">
-            <button
-              type="submit"
-              className="border px-3 py-2 font-mono text-[10px] uppercase tracking-wider"
-              style={{ borderColor: "var(--accent)", color: "var(--accent)", borderRadius: "var(--radius)", background: "color-mix(in srgb, var(--accent) 10%, transparent)" }}
-            >
-              cevapla
-            </button>
-            <label className="flex items-center gap-1.5 font-mono text-[10px]" style={{ color: "var(--text-3)" }}>
-              <input name="forceDeterministic" type="checkbox" className="h-3 w-3" />
-              deterministic
-            </label>
-          </div>
-        </form>
-        <div className="mt-3 flex flex-wrap gap-1.5">
-          {SAMPLE_QUESTIONS.map((q) => (
-            <form key={q} action={askQuestionAction}>
-              <input type="hidden" name="question" value={q} />
-              <button type="submit" className="border px-2 py-1 text-[11px]" style={{ borderColor: "var(--line)", borderRadius: "var(--radius)", color: "var(--text-3)" }}>
-                {q}
+      <Panel title="KARAR SORUSU" subtitle="Cevap deterministik facts ile kanıtlanır; AI yalnız açıklar.">
+        <div className="grid grid-cols-1 gap-3 lg:grid-cols-[minmax(0,1fr)_320px]">
+          <form action={askQuestionAction} className="min-w-0 space-y-2">
+            <textarea
+              name="question"
+              rows={4}
+              required
+              className="field-control min-h-28 resize-y p-3 text-sm"
+              placeholder="Önümüzdeki 30 günde çek ve kredi yükü ne kadar?"
+            />
+            <div className="flex flex-wrap items-center gap-2">
+              <button type="submit" className="button-accent px-3 py-2">
+                cevapla
               </button>
-            </form>
-          ))}
+              <label className="button-ghost cursor-pointer px-2.5 py-2">
+                <input name="forceDeterministic" type="checkbox" className="h-3 w-3 accent-violet-400" />
+                deterministic
+              </label>
+              <span className="font-mono text-[10px]" style={{ color: "var(--text-4)" }}>
+                kaynak: facts / rapor / senaryo
+              </span>
+            </div>
+          </form>
+          <div className="border-t pt-3 lg:border-l lg:border-t-0 lg:pl-3 lg:pt-0" style={{ borderColor: "var(--line-faint)" }}>
+            <div className="font-mono text-[10px] uppercase tracking-[0.14em]" style={{ color: "var(--text-3)" }}>
+              Hazır karar soruları
+            </div>
+            <div className="mt-2 flex flex-wrap gap-1.5">
+              {SAMPLE_QUESTIONS.map((q) => (
+                <form key={q} action={askQuestionAction}>
+                  <input type="hidden" name="question" value={q} />
+                  <button type="submit" className="button-ghost px-2 py-1.5 text-left">
+                    {q}
+                  </button>
+                </form>
+              ))}
+            </div>
+          </div>
         </div>
       </Panel>
 
@@ -105,7 +110,7 @@ export default async function AskPage({
               <form action={createActionFromAiResponseAction}>
                 <input type="hidden" name="aiResponseId" value={selected.id} />
                 <input type="hidden" name="backTo" value={`/ask?response=${selected.id}`} />
-                <button type="submit" className="border px-2 py-1 font-mono text-[10px] uppercase tracking-wider" style={{ borderColor: "var(--line-faint)", color: "var(--text-3)", borderRadius: "var(--radius)" }}>
+                <button type="submit" className="button-ghost px-2 py-1">
                   gorev
                 </button>
               </form>
@@ -133,11 +138,11 @@ export default async function AskPage({
             </div>
           )}
           <div className="mt-3 flex flex-wrap gap-2">
-            <Link href={`/scenarios?from=ask-${selected.id}`} className="border px-2 py-1 font-mono text-[10px] uppercase tracking-wider" style={{ borderColor: "var(--accent)", color: "var(--accent)", borderRadius: "var(--radius)" }}>
+            <Link href={`/scenarios?from=ask-${selected.id}`} className="button-accent px-2 py-1">
               senaryo calistir
             </Link>
             {selected.source_hrefs[0] && (
-              <Link href={selected.source_hrefs[0]} className="border px-2 py-1 font-mono text-[10px] uppercase tracking-wider" style={{ borderColor: "var(--line-faint)", color: "var(--text-3)", borderRadius: "var(--radius)" }}>
+              <Link href={selected.source_hrefs[0]} className="button-ghost px-2 py-1">
                 ilk kaniti ac
               </Link>
             )}
