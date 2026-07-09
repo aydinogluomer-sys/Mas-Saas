@@ -87,7 +87,8 @@ export async function createManualActionAction(formData: FormData): Promise<void
 export async function setActionStatusAction(formData: FormData): Promise<void> {
   const id = String(formData.get("id") ?? "");
   const status = normalizeActionStatus(String(formData.get("status") ?? ""));
-  if (id && status) await setActionStatus(getPool(), id, status);
+  const completionNote = String(formData.get("completionNote") ?? "").trim() || null;
+  if (id && status) await setActionStatus(getPool(), id, status, completionNote);
   const b = backTo(formData);
   revalidatePath("/data-quality");
   revalidatePath("/");

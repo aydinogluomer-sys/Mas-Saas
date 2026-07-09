@@ -30,13 +30,29 @@ export default async function DataQualityPage() {
         meta={<Badge tone={data.highOpenCount > 0 ? "red" : data.openReviewCount > 0 ? "amber" : "green"} dot>{data.openReviewCount} acik</Badge>}
       />
 
-      <div className="grid grid-cols-2 gap-2 sm:grid-cols-5">
+      <div className="grid grid-cols-2 gap-2 sm:grid-cols-6">
+        <KeyStat label="Karar guveni" value={`%${data.decisionConfidence}`} tone={data.decisionConfidence >= 80 ? "pos" : data.decisionConfidence >= 55 ? "warn" : "neg"} href="/data-quality" />
         <KeyStat label="Acik inceleme" value={data.openReviewCount} tone={data.openReviewCount > 0 ? "warn" : "pos"} href="/imports" />
         <KeyStat label="Yuksek/acil" value={data.highOpenCount} tone={data.highOpenCount > 0 ? "neg" : "pos"} href="/data-quality" />
         <KeyStat label="Acik gorev" value={data.actionOpenCount} tone={data.actionOpenCount > 0 ? "warn" : "neutral"} href="/data-quality" />
         <KeyStat label="Dis review" value={data.externalPendingCount} tone={data.externalPendingCount > 0 ? "warn" : "pos"} href="/assumptions" />
         <KeyStat label="Ozel sekme" value={data.specialSheets.length} tone={data.specialSheets.length > 0 ? "info" : "neutral"} href="/data-quality" />
       </div>
+
+      <Panel title="KARAR GUVENI" accent={data.decisionConfidence >= 80 ? "pos" : data.decisionConfidence >= 55 ? "warn" : "neg"}>
+        <div className="flex flex-wrap items-center gap-2">
+          <Badge tone={data.decisionConfidence >= 80 ? "green" : data.decisionConfidence >= 55 ? "amber" : "red"}>
+            %{data.decisionConfidence} / {data.decisionConfidenceLabel}
+          </Badge>
+          <Badge tone={data.highOpenCount > 0 ? "red" : "green"}>yuksek/acil review: {data.highOpenCount}</Badge>
+          <Badge tone={data.reconciliationSignalCount > 0 ? "red" : "green"}>mutabakat sinyali: {data.reconciliationSignalCount}</Badge>
+          <Badge tone={data.missingAmountCount > 0 ? "amber" : "green"}>eksik tutar: {data.missingAmountCount}</Badge>
+          <Badge tone={data.staleProductionRateCount > 0 ? "amber" : "green"}>stale uretim: {data.staleProductionRateCount}</Badge>
+        </div>
+        <p className="mt-2 text-[11px]" style={{ color: "var(--text-4)" }}>
+          Skor yalniz karar guveni sinyalidir; ham Excel veya finansal kaynak kayitlarini degistirmez.
+        </p>
+      </Panel>
 
       <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
         <div id="ab-diff">
@@ -65,10 +81,17 @@ export default async function DataQualityPage() {
                 <Badge tone="neutral">degisen sekme: {data.workbookDiff.changedSheets.length}</Badge>
                 <Badge tone="neutral">aylik nakit sekmesi A: {data.workbookDiff.a?.monthly_sheet_count ?? 0}</Badge>
                 <Badge tone="neutral">B: {data.workbookDiff.b?.monthly_sheet_count ?? 0}</Badge>
+                <Badge tone={data.workbookDiff.changedSheets.some((s) => s.impact === "critical" || s.impact === "high") ? "amber" : "green"}>
+                  son import {data.workbookDiff.changedSheets.some((s) => s.impact === "critical" || s.impact === "high") ? "kontrol ister" : "dusuk risk"}
+                </Badge>
               </div>
               {data.workbookDiff.changedSheets.length > 0 && (
-                <div className="mt-2 text-[11px]" style={{ color: "var(--text-3)" }}>
-                  {data.workbookDiff.changedSheets.slice(0, 8).map((s) => `${s.sheet_name} (${s.side})`).join(" · ")}
+                <div className="mt-2 flex flex-wrap gap-1.5">
+                  {data.workbookDiff.changedSheets.slice(0, 8).map((s) => (
+                    <Badge key={`${s.sheet_name}-${s.side}`} tone={s.impact === "critical" ? "red" : s.impact === "high" ? "amber" : s.impact === "medium" ? "blue" : "neutral"}>
+                      {s.sheet_name} / {s.area} / {s.side}
+                    </Badge>
+                  ))}
                 </div>
               )}
             </>
@@ -83,6 +106,16 @@ export default async function DataQualityPage() {
             <Badge tone={data.specialSheets.length > 0 ? "green" : "amber"}>ozel sekme: {data.specialSheets.length}</Badge>
             <Badge tone={data.reconciliationSignalCount > 0 ? "red" : "green"}>acik mutabakat sinyali: {data.reconciliationSignalCount}</Badge>
           </div>
+          {data.reconciliationSignalCount > 0 && (
+            <form action={createManualActionAction} className="mt-2">
+              <input type="hidden" name="title" value="Excel dashboard/cashflow mutabakat farkini incele" />
+              <input type="hidden" name="severity" value="high" />
+              <input type="hidden" name="note" value="Veri kalite merkezi mutabakat sinyali urettigi icin olusturuldu." />
+              <button type="submit" className="border px-2 py-1 font-mono text-[10px] uppercase tracking-wider" style={{ borderColor: "var(--accent)", color: "var(--accent)", borderRadius: "var(--radius)" }}>
+                mutabakat gorevi olustur
+              </button>
+            </form>
+          )}
           <div className="mt-2 overflow-x-auto">
             <table className="w-full text-xs">
               <thead>
@@ -164,16 +197,25 @@ export default async function DataQualityPage() {
                       {a.note && <p className="mt-1 text-[11px]" style={{ color: "var(--text-3)" }}>{a.note}</p>}
                     </div>
                     <div className="flex flex-wrap gap-1">
-                      {(["in_progress", "blocked", "done", "cancelled"] as const).map((s) => (
+                      {(["in_progress", "blocked", "cancelled"] as const).map((s) => (
                         <form key={s} action={setActionStatusAction}>
                           <input type="hidden" name="id" value={a.id} />
                           <input type="hidden" name="status" value={s} />
                           <input type="hidden" name="backTo" value="/data-quality" />
                           <button type="submit" className="border px-1.5 py-0.5 font-mono text-[9px] uppercase" style={{ borderColor: "var(--line-faint)", color: "var(--text-3)" }}>
-                            {s === "in_progress" ? "basla" : s === "blocked" ? "blok" : s === "done" ? "bitti" : "iptal"}
+                            {s === "in_progress" ? "basla" : s === "blocked" ? "blok" : "iptal"}
                           </button>
                         </form>
                       ))}
+                      <form action={setActionStatusAction} className="flex flex-wrap gap-1">
+                        <input type="hidden" name="id" value={a.id} />
+                        <input type="hidden" name="status" value="done" />
+                        <input type="hidden" name="backTo" value="/data-quality" />
+                        <input name="completionNote" placeholder="kapanis notu" className="w-32 border bg-black/30 px-1.5 py-0.5 font-mono text-[9px] outline-none" style={{ borderColor: "var(--line-faint)", color: "var(--text-1)", borderRadius: "var(--radius)" }} />
+                        <button type="submit" className="border px-1.5 py-0.5 font-mono text-[9px] uppercase" style={{ borderColor: "var(--line-faint)", color: "var(--text-3)" }}>
+                          bitti
+                        </button>
+                      </form>
                     </div>
                   </div>
                 </div>
@@ -244,6 +286,22 @@ export default async function DataQualityPage() {
           )}
         </Panel>
       </div>
+
+      <Panel title="HAM VERI KANIT IZI">
+        {data.auditTrail.length === 0 ? (
+          <p className="text-sm" style={{ color: "var(--text-3)" }}>Audit kaydi yok.</p>
+        ) : (
+          <div className="space-y-1.5">
+            {data.auditTrail.map((a, i) => (
+              <div key={`${a.action}-${a.entity_id}-${i}`} className="flex flex-wrap items-center justify-between gap-2 border px-2 py-1.5" style={{ borderColor: "var(--line-faint)", borderRadius: "var(--radius)", background: "var(--surface-2)" }}>
+                <span className="font-mono text-[10px]" style={{ color: "var(--text-3)" }}>{a.created_at}</span>
+                <span className="text-sm" style={{ color: "var(--text-1)" }}>{a.action}</span>
+                <Badge tone="neutral">{a.entity_table}</Badge>
+              </div>
+            ))}
+          </div>
+        )}
+      </Panel>
     </>
   );
 }

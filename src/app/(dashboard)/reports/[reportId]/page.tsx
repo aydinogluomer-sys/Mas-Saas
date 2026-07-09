@@ -6,7 +6,9 @@ import { loadReport } from "@/lib/reports/engine";
 import { generateReportCommentaryAction } from "@/app/(dashboard)/reports/actions";
 import { createActionFromAiResponseAction, createActionFromReportAction } from "@/app/(dashboard)/data-quality/actions";
 import { Badge } from "@/components/ui/badge";
+import { SourceProofDisclosure, aggregateConfidence, confidenceLabel, confidenceTone, type ProofItem } from "@/components/facts/source-proof";
 import { Panel } from "@/components/ui/panel";
+import { loadDecisionFacts } from "@/lib/facts/engine";
 
 export const dynamic = "force-dynamic";
 
@@ -22,13 +24,31 @@ export default async function ReportDetailPage({
   const { reportId } = await params;
   const { ai } = await searchParams;
   const pool = getPool();
-  const [r, selectedAi, aiHistory] = await Promise.all([
+  const [r, selectedAi, aiHistory, facts] = await Promise.all([
     loadReport(pool, reportId),
     ai ? loadAiResponse(pool, ai) : Promise.resolve(undefined),
     listAiResponses(pool, 5, reportId),
+    loadDecisionFacts(pool),
   ]);
   if (!r) notFound();
   const prompt = (r.meta && typeof r.meta.commentary_prompt === "string" ? r.meta.commentary_prompt : null) as string | null;
+  const selectedProofs: ProofItem[] = selectedAi
+    ? selectedAi.source_fact_keys.map((key) => {
+        const fact = facts.find((f) => f.key === key);
+        return fact
+          ? {
+              key: fact.key,
+              title: fact.title,
+              value: fact.value,
+              confidence: fact.confidence,
+              freshness: fact.freshness,
+              explanation: fact.explanation,
+              sourceHref: fact.sourceHref,
+            }
+          : { key, title: key, confidence: "unknown", sourceHref: selectedAi.source_hrefs[0] };
+      })
+    : [];
+  const selectedConfidence = aggregateConfidence(selectedProofs);
 
   return (
     <>
@@ -62,6 +82,9 @@ export default async function ReportDetailPage({
           right={
             <span className="flex items-center gap-2">
               {selectedAi && (
+                <Badge tone={confidenceTone(selectedConfidence)}>{confidenceLabel(selectedConfidence)}</Badge>
+              )}
+              {selectedAi && (
                 <form action={createActionFromAiResponseAction}>
                   <input type="hidden" name="aiResponseId" value={selectedAi.id} />
                   <input type="hidden" name="backTo" value={`/reports/${reportId}?ai=${selectedAi.id}`} />
@@ -87,9 +110,14 @@ export default async function ReportDetailPage({
             Yorum yalniz deterministik facts ve rapor promptunu aciklar; finansal kayit degistirmez.
           </p>
           {selectedAi ? (
-            <pre className="overflow-x-auto whitespace-pre-wrap border p-2 font-mono text-[11px]" style={{ borderColor: "var(--line)", color: "var(--text-1)", background: "var(--surface-2)" }}>
-              {selectedAi.answer_md}
-            </pre>
+            <>
+              <pre className="overflow-x-auto whitespace-pre-wrap border p-2 font-mono text-[11px]" style={{ borderColor: "var(--line)", color: "var(--text-1)", background: "var(--surface-2)" }}>
+                {selectedAi.answer_md}
+              </pre>
+              <div className="mt-3">
+                <SourceProofDisclosure label="yorumun kanit paketi" items={selectedProofs} defaultOpen />
+              </div>
+            </>
           ) : (
             <pre className="overflow-x-auto whitespace-pre-wrap border p-2 font-mono text-[11px]" style={{ borderColor: "var(--line)", color: "var(--text-4)", background: "var(--surface-2)" }}>
               {prompt}

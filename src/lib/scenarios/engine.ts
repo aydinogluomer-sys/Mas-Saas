@@ -145,7 +145,9 @@ export interface OptimizationCandidate {
   finalCash: number | null;
   finalDelta: number | null;
   maxCashGap: number | null;
+  baselineFirstNegative: string | null;
   firstNegative: string | null;
+  confidence: "high" | "medium" | "low";
 }
 
 export async function estimateOptimizationCandidates(pool: Pool): Promise<OptimizationCandidate[]> {
@@ -196,7 +198,9 @@ export async function estimateOptimizationCandidates(pool: Pool): Promise<Optimi
       finalCash: cmp.scenarioFinalCash,
       finalDelta: cmp.finalDelta,
       maxCashGap: cmp.maxCashGap,
+      baselineFirstNegative: cmp.baselineFirstNegative,
       firstNegative: cmp.scenarioFirstNegative,
+      confidence: scenarioConfidence(cmp),
     });
   }
 

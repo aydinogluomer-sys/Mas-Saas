@@ -75,10 +75,16 @@ export default async function ScenariosPage({
                   <div key={o.key} className="border px-2 py-1.5" style={{ borderColor: "var(--line)", borderRadius: "var(--radius)", background: "var(--surface-2)" }}>
                     <div className="flex items-center justify-between gap-2">
                       <span className="text-sm" style={{ color: "var(--text-1)" }}>{i + 1}. {o.label}</span>
-                      <Badge tone={i === 0 ? "green" : "neutral"}>{i === 0 ? "onerilen" : "aday"}</Badge>
+                      <span className="flex shrink-0 gap-1">
+                        <Badge tone={i === 0 ? "green" : "neutral"}>{i === 0 ? "onerilen" : "aday"}</Badge>
+                        <Badge tone={CONF_TONE[o.confidence] ?? "neutral"}>{o.confidence}</Badge>
+                      </span>
                     </div>
                     <div className="mt-0.5 font-mono text-[11px]" style={{ color: "var(--text-3)" }}>
-                      max acik {fmt0(o.maxCashGap)} · final {fmt0(o.finalCash)} · ilk negatif {o.firstNegative ? o.firstNegative.slice(0, 7) : "yok"}
+                      max acik {fmt0(o.maxCashGap)} · final etki {(o.finalDelta ?? 0) > 0 ? "+" : ""}{fmt0(o.finalDelta)} · ilk negatif {o.baselineFirstNegative ? o.baselineFirstNegative.slice(0, 7) : "yok"} -&gt; {o.firstNegative ? o.firstNegative.slice(0, 7) : "yok"}
+                    </div>
+                    <div className="mt-1 text-[11px]" style={{ color: "var(--text-4)" }}>
+                      Kaynak kayitlari degismez; bu aday yalniz desteklenen overlay varsayimlarini karsilastirir.
                     </div>
                   </div>
                 ))}

@@ -2,18 +2,23 @@ import Link from "next/link";
 import { askQuestionAction } from "@/app/(dashboard)/ask/actions";
 import { createActionFromAiResponseAction } from "@/app/(dashboard)/data-quality/actions";
 import { Badge } from "@/components/ui/badge";
+import { SourceProofDisclosure, aggregateConfidence, confidenceLabel, confidenceTone, type ProofItem } from "@/components/facts/source-proof";
 import { Panel } from "@/components/ui/panel";
 import { PageHeader } from "@/components/ui/shell";
 import { getPool } from "@/lib/db";
 import { listAiResponses, loadAiResponse } from "@/lib/ai/engine";
+import { loadDecisionFacts } from "@/lib/facts/engine";
 
 export const dynamic = "force-dynamic";
 
 const SAMPLE_QUESTIONS = [
-  "Eylul 2026 neden eksiye dusuyor?",
-  "Onumuzdeki 30 gunde cek ve kredi yuku ne kadar?",
-  "Akon fiyatlari basabasi karsiliyor mu?",
-  "Hangi sinyal bugun en kritik?",
+  "Bugun ne odenecek?",
+  "7 gunde ne kadar cikis var?",
+  "Geciken odeme var mi?",
+  "Kasa ne zaman negatife dusuyor?",
+  "En kotu ay hangisi?",
+  "En buyuk yogunlasma nerede?",
+  "Hangi aksiyon oncelikli?",
 ];
 
 export default async function AskPage({
@@ -23,10 +28,28 @@ export default async function AskPage({
 }) {
   const { response } = await searchParams;
   const pool = getPool();
-  const [selected, recent] = await Promise.all([
+  const [selected, recent, facts] = await Promise.all([
     response ? loadAiResponse(pool, response) : Promise.resolve(undefined),
     listAiResponses(pool, 10),
+    loadDecisionFacts(pool),
   ]);
+  const selectedProofs: ProofItem[] = selected
+    ? selected.source_fact_keys.map((key) => {
+        const fact = facts.find((f) => f.key === key);
+        return fact
+          ? {
+              key: fact.key,
+              title: fact.title,
+              value: fact.value,
+              confidence: fact.confidence,
+              freshness: fact.freshness,
+              explanation: fact.explanation,
+              sourceHref: fact.sourceHref,
+            }
+          : { key, title: key, confidence: "unknown", sourceHref: selected.source_hrefs[0] };
+      })
+    : [];
+  const selectedConfidence = aggregateConfidence(selectedProofs);
 
   return (
     <>
@@ -62,9 +85,12 @@ export default async function AskPage({
         </form>
         <div className="mt-3 flex flex-wrap gap-1.5">
           {SAMPLE_QUESTIONS.map((q) => (
-            <span key={q} className="border px-2 py-1 text-[11px]" style={{ borderColor: "var(--line)", borderRadius: "var(--radius)", color: "var(--text-3)" }}>
-              {q}
-            </span>
+            <form key={q} action={askQuestionAction}>
+              <input type="hidden" name="question" value={q} />
+              <button type="submit" className="border px-2 py-1 text-[11px]" style={{ borderColor: "var(--line)", borderRadius: "var(--radius)", color: "var(--text-3)" }}>
+                {q}
+              </button>
+            </form>
           ))}
         </div>
       </Panel>
@@ -75,6 +101,7 @@ export default async function AskPage({
           right={
             <span className="flex items-center gap-2">
               <Badge tone={selected.response_mode === "openai" ? "green" : selected.response_mode === "fallback" ? "amber" : "neutral"}>{selected.response_mode}</Badge>
+              <Badge tone={confidenceTone(selectedConfidence)}>{confidenceLabel(selectedConfidence)}</Badge>
               <form action={createActionFromAiResponseAction}>
                 <input type="hidden" name="aiResponseId" value={selected.id} />
                 <input type="hidden" name="backTo" value={`/ask?response=${selected.id}`} />
@@ -105,6 +132,19 @@ export default async function AskPage({
               {selected.safety_notes.map((n) => <Badge key={n} tone="amber">{n}</Badge>)}
             </div>
           )}
+          <div className="mt-3 flex flex-wrap gap-2">
+            <Link href={`/scenarios?from=ask-${selected.id}`} className="border px-2 py-1 font-mono text-[10px] uppercase tracking-wider" style={{ borderColor: "var(--accent)", color: "var(--accent)", borderRadius: "var(--radius)" }}>
+              senaryo calistir
+            </Link>
+            {selected.source_hrefs[0] && (
+              <Link href={selected.source_hrefs[0]} className="border px-2 py-1 font-mono text-[10px] uppercase tracking-wider" style={{ borderColor: "var(--line-faint)", color: "var(--text-3)", borderRadius: "var(--radius)" }}>
+                ilk kaniti ac
+              </Link>
+            )}
+          </div>
+          <div className="mt-3">
+            <SourceProofDisclosure label="cevabin kanit paketi" items={selectedProofs} defaultOpen />
+          </div>
         </Panel>
       )}
 

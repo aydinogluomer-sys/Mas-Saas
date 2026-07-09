@@ -9,10 +9,12 @@ import { deliveryCounts } from "@/lib/reminders/engine";
 import { loadCapacityModels, loadCostModels } from "@/lib/production/engine";
 import { priceMargin } from "@/lib/production/rules";
 import { createActionFromHomeAction } from "@/app/(dashboard)/data-quality/actions";
+import { loadDataQualityCenter } from "@/lib/data-quality/engine";
 import { loadDecisionFacts } from "@/lib/facts/engine";
 import { istanbulDateISO } from "@/lib/reports/rules";
 import { buildActions, pickHeadlineRisk, type CockpitFacts } from "@/lib/home/cockpit";
 import { Badge, type Tone } from "@/components/ui/badge";
+import { SourceProofDisclosure, type ProofItem } from "@/components/facts/source-proof";
 import { Panel, fmtTL } from "@/components/ui/panel";
 import { KeyStat, PageHeader } from "@/components/ui/shell";
 
@@ -31,6 +33,14 @@ const knownOutflow = (rows: Array<{ amount: number | null; status: string }>) =>
 };
 const ym = (iso: string | null) => (iso ? iso.slice(0, 7) : "—");
 const SEV_TONE: Record<string, Tone> = { critical: "red", high: "red", medium: "amber", low: "neutral" };
+const ACTION_FACT_KEY: Record<string, string> = {
+  overdue: "overdue_payment_load",
+  first_negative: "first_negative_month",
+  debt_pressure: "debt_pressure_months",
+  missing: "missing_amount_count",
+  concentration: "top_customer_concentration",
+  stale_rate: "stale_rate_flags",
+};
 
 export default async function AnaEkranPage() {
   const pool = getPool();
@@ -69,7 +79,7 @@ export default async function AnaEkranPage() {
     );
   }
 
-  const [overlay, reports, reminders, caps, costs, incomeLines, decisionFacts, t] = await Promise.all([
+  const [overlay, reports, reminders, caps, costs, incomeLines, decisionFacts, dataQuality, t] = await Promise.all([
     loadDebtOverlay(pool),
     listReports(pool),
     deliveryCounts(pool),
@@ -79,6 +89,7 @@ export default async function AnaEkranPage() {
                 from public.cashflow_lines cl left join public.parties p on p.id=cl.party_id
                 where cl.line_type='customer_income'`),
     loadDecisionFacts(pool, today),
+    loadDataQualityCenter(pool),
     loadThresholds(pool),
   ]);
   void t;
@@ -114,6 +125,22 @@ export default async function AnaEkranPage() {
     ? decisionFacts.filter((f) => f.severity !== "low")
     : decisionFacts
   ).slice(0, 5);
+  const runwayFact = decisionFacts.find((f) => f.key === "cash_runway");
+  const proofForAction = (key: string): ProofItem[] => {
+    const action = actions.find((a) => a.key === key);
+    const fact = decisionFacts.find((f) => f.key === ACTION_FACT_KEY[key])
+      ?? decisionFacts.find((f) => f.sourceHref === action?.evidenceHref);
+    if (!fact) return [];
+    return [{
+      key: fact.key,
+      title: fact.title,
+      value: fact.value,
+      confidence: fact.confidence,
+      freshness: fact.freshness,
+      explanation: fact.explanation,
+      sourceHref: fact.sourceHref,
+    }];
+  };
   const lastReport = reports[0];
 
   return (
@@ -125,6 +152,19 @@ export default async function AnaEkranPage() {
       />
 
       {/* 1) 20 saniyede cevap: büyük sayılar */}
+      <div className="border px-3 py-3" style={{ borderColor: `var(--${headline.tone})`, background: `color-mix(in srgb, var(--${headline.tone}) 8%, transparent)`, borderRadius: "var(--radius)" }}>
+        <div className="font-mono text-[10px] uppercase tracking-[0.14em]" style={{ color: "var(--text-3)" }}>20 saniyede cevap</div>
+        <div className="mt-1 text-lg font-semibold" style={{ color: `var(--${headline.tone})` }}>{headline.text}</div>
+        <div className="mt-1 flex flex-wrap gap-1.5">
+          <Badge tone={dataQuality.decisionConfidence >= 80 ? "green" : dataQuality.decisionConfidence >= 55 ? "amber" : "red"}>
+            karar guveni %{dataQuality.decisionConfidence} / {dataQuality.decisionConfidenceLabel}
+          </Badge>
+          {dataQuality.decisionConfidence < 80 && (
+            <Badge tone="amber">{dataQuality.highOpenCount} yuksek/acil review · {dataQuality.missingAmountCount} eksik tutar</Badge>
+          )}
+        </div>
+      </div>
+
       <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-5">
         <KeyStat label="Bugün çıkış" value={fmtTL(tOut.total)} tone={tOut.total > 0 ? "warn" : "neutral"} href="/radar"
           sub={`${tOut.count} ödeme${tOut.missing > 0 ? ` · ${tOut.missing} eksik` : ""}`} />
@@ -132,16 +172,10 @@ export default async function AnaEkranPage() {
           sub={`${wOut.count} ödeme`} />
         <KeyStat label="Geciken" value={oOut.count} tone={oOut.count > 0 ? "neg" : "pos"} href="/radar"
           sub={oOut.count > 0 ? `bilinen ${fmtTL(oOut.total)}` : "yok"} />
+        <KeyStat label="Nakit runway" value={runwayFact?.value ?? "â€”"} tone={runwayFact?.severity === "critical" || runwayFact?.severity === "high" ? "neg" : runwayFact?.severity === "medium" ? "warn" : "pos"} href="/cashflow"
+          sub={runwayFact?.explanation ?? "projeksiyon"} />
         <KeyStat label="İlk negatif ay" value={ym(proj.firstNegativeMonth)} tone={proj.firstNegativeMonth ? "neg" : "pos"} href="/cashflow"
           sub={proj.firstNegativeMonth ? "kasa eksiye geçiyor" : "negatif ay yok"} />
-        <KeyStat label="En kötü ay" value={ym(proj.worstMonth)} tone={proj.worstBalance != null && proj.worstBalance < 0 ? "neg" : "neutral"} href="/cashflow"
-          sub={proj.worstBalance != null ? fmtTL(proj.worstBalance) : "—"} />
-      </div>
-
-      {/* 2) En büyük risk (tek cümle) */}
-      <div className="border px-3 py-2.5" style={{ borderColor: `var(--${headline.tone})`, background: `color-mix(in srgb, var(--${headline.tone}) 8%, transparent)`, borderRadius: "var(--radius)" }}>
-        <div className="text-[10px] uppercase tracking-[0.14em]" style={{ color: "var(--text-3)" }}>En büyük risk</div>
-        <div className="mt-0.5 text-sm" style={{ color: `var(--${headline.tone})` }}>{headline.text}</div>
       </div>
 
       <Panel title="Karar sinyalleri">
@@ -171,7 +205,7 @@ export default async function AnaEkranPage() {
         <ol className="space-y-1.5">
           {actions.map((a, i) => (
             <li key={a.key}>
-              <div className="card-hover flex items-start gap-2 border px-2.5 py-2"
+              <div className="card-hover border px-2.5 py-2"
                 style={{ borderColor: "var(--line)", borderRadius: "var(--radius)", background: "var(--surface-2)" }}>
                 <Link href={a.href} className="flex min-w-0 flex-1 items-start gap-2">
                   <span className="mt-0.5 font-mono text-[11px]" style={{ color: "var(--text-4)" }}>{i + 1}.</span>
@@ -182,12 +216,24 @@ export default async function AnaEkranPage() {
                   <input type="hidden" name="title" value={a.label} />
                   <input type="hidden" name="severity" value={a.severity} />
                   <input type="hidden" name="sourceFactKey" value={a.key} />
-                  <input type="hidden" name="sourceHref" value={a.href} />
+                  <input type="hidden" name="sourceHref" value={a.evidenceHref} />
+                  <input type="hidden" name="note" value={`${a.reason} ${a.impact}`} />
                   <input type="hidden" name="backTo" value="/" />
                   <button type="submit" className="border px-1.5 py-0.5 font-mono text-[9px] uppercase" style={{ borderColor: "var(--line-faint)", color: "var(--text-3)" }}>
                     gorev
                   </button>
                 </form>
+                <div className="mt-1 grid grid-cols-1 gap-1.5 sm:grid-cols-2">
+                  <div className="text-[11px]" style={{ color: "var(--text-3)" }}>{a.reason}</div>
+                  <div className="font-mono text-[10px]" style={{ color: "var(--text-4)" }}>{a.impact}</div>
+                </div>
+                <div className="mt-2 flex flex-wrap gap-2">
+                  <Link href={a.evidenceHref} className="font-mono text-[10px] underline underline-offset-2" style={{ color: "var(--accent)" }}>kanit ekrani -&gt;</Link>
+                  {a.scenarioHref && <Link href={a.scenarioHref} className="font-mono text-[10px] underline underline-offset-2" style={{ color: "var(--accent)" }}>senaryo onerisi -&gt;</Link>}
+                </div>
+                <div className="mt-2">
+                  <SourceProofDisclosure label="kanit paketi" items={proofForAction(a.key)} />
+                </div>
               </div>
             </li>
           ))}

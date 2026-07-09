@@ -1,5 +1,16 @@
 import type { Pool, PoolClient } from "pg";
-import { rankReviewSignals, reviewActionTitle, type ActionStatus, type DqSeverity, type ReviewSignal } from "./rules";
+import {
+  classifyWorkbookChange,
+  decisionConfidenceLabel,
+  decisionConfidenceScore,
+  rankReviewSignals,
+  reviewActionTitle,
+  type ActionStatus,
+  type DqSeverity,
+  type ReviewSignal,
+  type WorkbookChangeImpact,
+} from "./rules";
+import { loadCapacityModels } from "@/lib/production/engine";
 
 async function audit(client: PoolClient, action: string, entityId: string | null, before: unknown, after: unknown): Promise<void> {
   await client.query(
@@ -26,6 +37,13 @@ export interface ActionItem {
   updated_at: string;
 }
 
+export interface AuditTrailItem {
+  action: string;
+  entity_table: string;
+  entity_id: string | null;
+  created_at: string;
+}
+
 export interface DataQualityBlocker extends ReviewSignal {
   workbook_id: string;
   workbook_name: string;
@@ -34,7 +52,7 @@ export interface DataQualityBlocker extends ReviewSignal {
 }
 
 export async function loadDataQualityCenter(pool: Pool) {
-  const [reviewCounts, issueCounts, openReviews, actions, specialSheets, externalPending, workbookVersions, reconciliationSignals, workbookStats, changedSheets, cashflowReconciliation] = await Promise.all([
+  const [reviewCounts, issueCounts, openReviews, actions, specialSheets, externalPending, workbookVersions, reconciliationSignals, workbookStats, changedSheets, cashflowReconciliation, missingAmounts, auditTrail, capacityModels] = await Promise.all([
     pool.query<{ status: string; severity: DqSeverity; n: number }>(
       `select status, severity, count(*)::int n
        from public.mapping_reviews group by status, severity`,
@@ -176,6 +194,21 @@ export async function loadDataQualityCenter(pool: Pool) {
        order by cm.month_start desc
        limit 24`,
     ),
+    pool.query<{ n: number }>(
+      `select (
+         (select count(*)::int from public.payment_instances where amount is null and status in ('unpaid','partial','planned','late')) +
+         (select count(*)::int from public.cashflow_lines where amount is null)
+       )::int as n`,
+    ),
+    pool.query<AuditTrailItem>(
+      `select action, entity_table, entity_id::text,
+              to_char(created_at at time zone 'Europe/Istanbul','YYYY-MM-DD HH24:MI') as created_at
+       from public.audit_logs
+       where entity_table in ('source_workbooks','mapping_reviews','action_items','ai_response_snapshots','reports','scenario_runs')
+       order by created_at desc
+       limit 8`,
+    ),
+    loadCapacityModels(pool),
   ]);
 
   const blockers = rankReviewSignals(openReviews.rows, 5);
@@ -185,26 +218,46 @@ export async function loadDataQualityCenter(pool: Pool) {
   const highOpenCount = reviewCounts.rows
     .filter((r) => (r.status === "open" || r.status === "rejected") && (r.severity === "critical" || r.severity === "high"))
     .reduce((sum, r) => sum + r.n, 0);
+  const staleProductionRateCount = capacityModels.filter((c) => (c as unknown as { isStaleRate?: boolean }).isStaleRate).length;
+  const missingAmountCount = Number(missingAmounts.rows[0]?.n ?? 0);
+  const reconciliationSignalCount = Number(reconciliationSignals.rows[0]?.n ?? 0);
+  const decisionConfidence = decisionConfidenceScore({
+    openReviewCount,
+    highOpenCount,
+    reconciliationSignalCount,
+    missingAmountCount,
+    staleProductionRateCount,
+    externalPendingCount: Number(externalPending.rows[0]?.n ?? 0),
+  });
+  const workbookChangedSheets = changedSheets.rows.map((s) => {
+    const c = classifyWorkbookChange(s.sheet_name);
+    return { ...s, area: c.area, impact: c.impact as WorkbookChangeImpact };
+  });
 
   return {
     openReviewCount,
     highOpenCount,
     actionOpenCount: actions.rows.length,
     externalPendingCount: Number(externalPending.rows[0]?.n ?? 0),
+    missingAmountCount,
+    staleProductionRateCount,
+    decisionConfidence,
+    decisionConfidenceLabel: decisionConfidenceLabel(decisionConfidence),
     reviewCounts: reviewCounts.rows,
     issueCounts: issueCounts.rows,
     blockers,
     actions: actions.rows,
     specialSheets: specialSheets.rows,
     workbookVersions: workbookVersions.rows,
-    reconciliationSignalCount: Number(reconciliationSignals.rows[0]?.n ?? 0),
+    reconciliationSignalCount,
     workbookDiff: {
       ready: workbookStats.rows.length >= 2,
       a: workbookStats.rows[0] ?? null,
       b: workbookStats.rows[1] ?? null,
-      changedSheets: changedSheets.rows,
+      changedSheets: workbookChangedSheets,
     },
     cashflowReconciliation: cashflowReconciliation.rows,
+    auditTrail: auditTrail.rows,
   };
 }
 
@@ -451,14 +504,27 @@ export async function createManualAction(
   }
 }
 
-export async function setActionStatus(pool: Pool, id: string, status: ActionStatus): Promise<void> {
+export async function setActionStatus(pool: Pool, id: string, status: ActionStatus, completionNote?: string | null): Promise<void> {
   const client = await pool.connect();
   try {
     await client.query("begin");
-    const before = await client.query(`select id, status from public.action_items where id=$1 for update`, [id]);
+    const before = await client.query(`select id, status, note from public.action_items where id=$1 for update`, [id]);
     if (before.rowCount === 1) {
-      await client.query(`update public.action_items set status=$2 where id=$1`, [id, status]);
-      await audit(client, "set_action_status", id, before.rows[0], { id, status });
+      const note = completionNote?.trim()
+        ? `Kapanis notu (${new Date().toISOString().slice(0, 10)}): ${completionNote.trim().slice(0, 500)}`
+        : null;
+      await client.query(
+        `update public.action_items
+         set status=$2,
+             note=case
+               when $3::text is null then note
+               when note is null or note='' then $3
+               else note || E'\n\n' || $3
+             end
+         where id=$1`,
+        [id, status, note],
+      );
+      await audit(client, "set_action_status", id, before.rows[0], { id, status, completionNote: note });
     }
     await client.query("commit");
   } catch (e) {

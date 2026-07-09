@@ -4,6 +4,7 @@ import { getPool } from "@/lib/db";
 import { loadScenarioRun } from "@/lib/scenarios/engine";
 import { buildScenarioInsights, type ScenarioAssumptions, type ScenarioComparison } from "@/lib/scenarios/rules";
 import { Badge, type Tone } from "@/components/ui/badge";
+import { SourceProofDisclosure } from "@/components/facts/source-proof";
 import { Panel } from "@/components/ui/panel";
 import { ChartShell, Disclaimer, KpiCard } from "@/components/ui/shell";
 import { ScenarioChart } from "@/components/scenarios/chart";
@@ -65,6 +66,20 @@ export default async function ScenarioRunPage({
         </div>
         <div className="mt-2 font-mono text-[10px]" style={{ color: "var(--text-3)" }}>
           baz: {run.baseline_label ?? "—"} · {run.month_count} ay{run.null_month_count > 0 ? ` · ${run.null_month_count} belirsiz ay` : ""} · {run.run_at}
+        </div>
+        <div className="mt-3">
+          <SourceProofDisclosure
+            label="senaryo kanit paketi"
+            items={[{
+              key: run.id,
+              title: "Baz nakit akis + acik varsayimlar",
+              value: `${run.month_count} ay / guven ${run.confidence}`,
+              confidence: run.confidence === "low" ? "needs_review" : "calculated",
+              freshness: run.run_at,
+              explanation: "Senaryo kaynak kayitlari degistirmez; baz cashflow uzerine acik overlay uygular.",
+              sourceHref: "/cashflow",
+            }]}
+          />
         </div>
       </Panel>
 
