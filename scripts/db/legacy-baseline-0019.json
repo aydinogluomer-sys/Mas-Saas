@@ -1,0 +1,97 @@
+[
+  {
+    "version": "0001",
+    "name": "0001_source_layer.sql",
+    "checksum": "c239266ae4745f4d615c2e84bf7528640208b68f4b92e2244122eb49637b115f"
+  },
+  {
+    "version": "0002",
+    "name": "0002_shared_references.sql",
+    "checksum": "8b1bc45cb508a43a61a543009796abfaf59d35f5609d484c7395ef46dc1c0d6b"
+  },
+  {
+    "version": "0003",
+    "name": "0003_payments.sql",
+    "checksum": "b8296bff3987e9d8eb8b9f6e9fc9892e4926c905b55c6c2be62872d906d9f52d"
+  },
+  {
+    "version": "0004",
+    "name": "0004_cashflow.sql",
+    "checksum": "d0545270a926298df6696899c980d5fa7498f82bafe3077c632f94ea2355eeeb"
+  },
+  {
+    "version": "0005",
+    "name": "0005_financing.sql",
+    "checksum": "c258e747867227e4e3bb7e671fb5d1ecb69e797e3dc532775c9c6aa90c964d38"
+  },
+  {
+    "version": "0006",
+    "name": "0006_reminders_reports.sql",
+    "checksum": "a1113c8b97d9993793f7fc78720c80027158a4ef0a9a0bc10a89c738a1601450"
+  },
+  {
+    "version": "0007",
+    "name": "0007_rls.sql",
+    "checksum": "30346a5cef798172f3b0a3aecf0616635c8c4e6950b0470cf6d3862fd4bf7f8b"
+  },
+  {
+    "version": "0008",
+    "name": "0008_financing_idempotency.sql",
+    "checksum": "b3ce516c9d6a164c4960784832a25c33600ddb75d15f8a1caf5661a69accf3e6"
+  },
+  {
+    "version": "0009",
+    "name": "0009_check_counterparty_label.sql",
+    "checksum": "498ecf47f42c3793897a668fc6cca726b3da3ae02aa652531f8ce49d39c39b96"
+  },
+  {
+    "version": "0010",
+    "name": "0010_production.sql",
+    "checksum": "093ba20ea1f8ee2fdd3bb911c5239ce62bbb56bc628ad2b204b7df94f758eb23"
+  },
+  {
+    "version": "0011",
+    "name": "0011_scenarios.sql",
+    "checksum": "6339c4d72747f0600dc927a0e82a814e6f53a480c0c29906b52815885b92f433"
+  },
+  {
+    "version": "0012",
+    "name": "0012_cost_breakdown.sql",
+    "checksum": "3ef4ade6bb9b15dde036ca09883b2f1013b142e0f8d5956dea540e6dde706f50"
+  },
+  {
+    "version": "0013",
+    "name": "0013_machine_minute_finance_allocations.sql",
+    "checksum": "d67ea7a6a46ccc3a37703453b601534a6bf4f776a815f773842aabed35ec9f2e"
+  },
+  {
+    "version": "0014",
+    "name": "0014_ai_response_snapshots.sql",
+    "checksum": "05e3b5269027a337f266a03b925bc63d2eff913fd96e4358ba2d51051d3dac37"
+  },
+  {
+    "version": "0015",
+    "name": "0015_action_items.sql",
+    "checksum": "3995b0f6eb129273bb8986930b46336a19450e4f2438e7fbf587bc42b179979d"
+  },
+  {
+    "version": "0016",
+    "name": "0016_external_assumptions.sql",
+    "checksum": "22709f2a0e1120230258ba4e529d230d18cdbdf101a7af0aa371d637b18faf55"
+  },
+  {
+    "version": "0017",
+    "name": "0017_metric_snapshots.sql",
+    "checksum": "ba43c8252a45b8ef0c83c03c307e6a12f413b2a7595d594ba332cc1612875c45"
+  },
+  {
+    "version": "0018",
+    "name": "0018_record_lifecycle.sql",
+    "checksum": "80594344350f13b478e13e5775aabd2ecf19b49e677eec18a6e46287b18fdb2a"
+  },
+  {
+    "version": "0019",
+    "name": "0019_payment_flexibility.sql",
+    "checksum": "5a8f0fa9966aad570a9f2fdb15ce958441f8a58115de699ebdd3ddbdb9d8a546"
+  }
+]

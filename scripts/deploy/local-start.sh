@@ -17,14 +17,22 @@ for i in $(seq 1 40); do
 done
 
 # initialize DB only if it does not exist yet (idempotent, non-destructive)
+FIRST_RUN=false
 if docker exec "$CONTAINER" psql -U postgres -lqt | cut -d'|' -f1 | grep -qw "$DB"; then
-  echo "==> DB '$DB' already exists — leaving data intact"
+  echo "==> DB '$DB' already exists — running the migration ledger (safe on an existing DB)"
 else
-  echo "==> First run: creating '$DB' + migrations + seed"
+  FIRST_RUN=true
+  echo "==> First run: creating '$DB'"
   docker exec "$CONTAINER" createdb -U postgres "$DB"
-  for f in scripts/db/local-bootstrap.sql supabase/migrations/*.sql supabase/seed.sql; do
-    docker exec -i "$CONTAINER" psql -q -v ON_ERROR_STOP=1 -U postgres -d "$DB" < "$f"
-  done
+fi
+
+docker exec -i "$CONTAINER" psql -q -v ON_ERROR_STOP=1 -U postgres -d "$DB" < scripts/db/local-bootstrap.sql
+
+echo "==> Migration ledger (schema_migrations): checksum-verified, backed up, applied"
+DATABASE_URL="postgres://postgres:postgres@127.0.0.1:5432/$DB" pnpm exec tsx scripts/db/migrate.ts
+
+if [ "$FIRST_RUN" = true ]; then
+  docker exec -i "$CONTAINER" psql -q -v ON_ERROR_STOP=1 -U postgres -d "$DB" < supabase/seed.sql
   echo "==> DB initialized"
 fi
 

@@ -130,6 +130,17 @@
 - [x] docs/local-production-deploy.md + mvp-runbook güncellendi.
 - [x] Gate: lint ✓ typecheck ✓ vitest 138 ✓ db:verify ✓ import:real ✓ phase3-8:verify ✓ build ✓ 9-route smoke (+/health +/version).
 
+## P0-C (minimal) — DONE (migration ledger altyapısı, iki-AI denetim sonrası)
+
+- [x] `schema_migrations` ledger (migration 0020/0021), checksum (BOM+CRLF normalize), advisory lock, dört durumlu state machine (EMPTY/LEGACY_COMPLETE/LEDGER_MANAGED/LEDGER_EMPTY_RECOVERY) — `scripts/db/migrate.ts` (`npm run db:migrate`).
+- [x] Backup helper `scripts/db/backup-docker-postgres.ts` (streaming, pg_restore--list doğrulamalı, cluster-identity eşleşmesi `pg_control_system()`).
+- [x] `scripts/db/legacy-baseline-0019.json` — 0001-0019 için version-control'lü checksum manifest.
+- [x] Disposable-DB test paketi `scripts/db/migrate-verify.ts` (`npm run db:migrate:verify`): 31/31 assertion geçti (file-set validation, manifest-drift, EMPTY, LEGACY_COMPLETE+idempotency, checksum-drift, LEDGER_EMPTY_RECOVERY smoke, cluster-identity).
+- [x] `scripts/deploy/local-start.sh` artık var olan DB'de migrasyonu atlamıyor — her çalıştırmada `migrate.ts` çağırıyor.
+- [x] Gerçek `mas_radar_dev` 2026-07-18'de kontrollü migre edildi (LEGACY_COMPLETE, 21 satır, veri değişmedi, doğrulanmış yedek alındı).
+- [x] Gate: typecheck ✓ lint ✓ (0 hata, 1 önceden var olan uyarı) ✓ vitest 188/188 ✓ build ✓.
+- Kapsam dışı bırakıldı (sıradaki fazlar): yeni finansal DB constraint'leri (P0-B), auth (P0-A).
+
 ## Frontend polish — DONE (UI/UX, mali mantık değişmedi)
 
 - [x] Tasarım sistemi: globals.css design tokenları (surface/line/text/financial/focus/radius) + a11y base (focus-visible ring, ::selection, scrollbar, reduced-motion) + subtle CSS motion (rise-in/stagger, prefers-reduced-motion'a saygılı).
