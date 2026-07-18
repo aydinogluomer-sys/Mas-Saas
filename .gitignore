@@ -53,3 +53,10 @@ data/
 /test-results/
 /playwright-report/
 /blob-report/
+
+# generated recovery/build artifacts
+/.next-corrupt-*/
+/.next-turbopack-incomplete-*/
+
+# local pnpm content-addressable store
+/.pnpm-store/
