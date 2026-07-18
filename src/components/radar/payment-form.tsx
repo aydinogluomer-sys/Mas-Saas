@@ -118,10 +118,14 @@ export async function PaymentForm({
         </div>
         <div className="flex items-center justify-between sm:col-span-2">
           {values.id ? (
-            <button formAction={archivePaymentAction}
-              className="border border-red-800 px-3 py-2 font-mono text-[10px] uppercase tracking-wider text-red-400">
-              arşivle
-            </button>
+            <div className="flex items-center gap-2">
+              <input name="archive_reason" placeholder="arşivleme nedeni"
+                className="border border-zinc-700 bg-zinc-900 px-2 py-2 font-mono text-[10px] text-zinc-200" />
+              <button formAction={archivePaymentAction}
+                className="border border-red-800 px-3 py-2 font-mono text-[10px] uppercase tracking-wider text-red-400">
+                arşivle
+              </button>
+            </div>
           ) : <span />}
           <button type="submit"
             className="border border-zinc-200 bg-zinc-200 px-3 py-2 font-mono text-xs font-semibold uppercase tracking-wider text-zinc-950">

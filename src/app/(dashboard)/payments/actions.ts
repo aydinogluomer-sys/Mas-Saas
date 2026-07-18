@@ -3,6 +3,11 @@ import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { getPool } from "@/lib/db";
 import { ensureWindow } from "@/lib/radar/engine";
+import { archivePayment } from "@/lib/payments/engine";
+
+// No individual user identity exists in this app (src/lib/auth.ts is a single shared-password
+// access gate, not per-user accounts) — this is an explicit placeholder, not a silent null.
+const ARCHIVED_BY_LABEL = "mas-dashboard";
 
 const num = (v: FormDataEntryValue | null): number | null => {
   const s = String(v ?? "").trim();
@@ -122,25 +127,10 @@ export async function updatePaymentAction(formData: FormData): Promise<void> {
 
 export async function archivePaymentAction(formData: FormData): Promise<void> {
   const id = String(formData.get("id") ?? "");
+  const reason = String(formData.get("archive_reason") ?? "").trim();
   if (!id) return;
-  const pool = getPool();
-  const client = await pool.connect();
-  try {
-    await client.query("begin");
-    const before = await client.query(`select id, status from public.payments where id=$1 for update`, [id]);
-    await client.query(`update public.payments set status='archived' where id=$1`, [id]);
-    await client.query(
-      `insert into public.audit_logs (actor, action, entity_table, entity_id, before_data, after_data)
-       values (null,'archive_payment','payments',$1,$2,$3)`,
-      [id, JSON.stringify(before.rows[0]), JSON.stringify({ status: "archived" })],
-    );
-    await client.query("commit");
-  } catch (e) {
-    await client.query("rollback");
-    throw e;
-  } finally {
-    client.release();
-  }
+  if (!reason) redirect(`/payments/${id}/edit?error=${encodeURIComponent("Arşivleme nedeni zorunlu.")}`);
+  await archivePayment(getPool(), id, { reason, archivedByLabel: ARCHIVED_BY_LABEL });
   revalidatePath("/payments");
   redirect("/payments");
 }
