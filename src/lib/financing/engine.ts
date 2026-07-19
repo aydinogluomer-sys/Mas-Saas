@@ -13,6 +13,7 @@ import {
 } from "@/lib/importers/extractors";
 import type { RowJson, SheetRow } from "@/lib/importers/row-utils";
 import { normalizeTr } from "@/lib/importers/workbook-parser";
+import { DomainError } from "@/lib/domain-error";
 import {
   reconcileLoan,
   scheduleDueDates,
@@ -434,6 +435,67 @@ export async function loadMaturityItems(pool: Pool): Promise<MaturityItem[]> {
       direction: "outflow", kind: "loan_installment", label: i.name,
     });
   return items;
+}
+
+/* ── 4) cancellation — checks/loan_installments only, loans has no 'cancelled' enum value ── */
+
+const CHECK_CANCELLABLE_FROM = new Set(["planned"]);
+const LOAN_INSTALLMENT_CANCELLABLE_FROM = new Set(["planned"]);
+
+export async function cancelCheck(pool: Pool, checkId: string, reason: string): Promise<void> {
+  const trimmedReason = reason.trim();
+  const client = await pool.connect();
+  try {
+    await client.query("begin");
+    const before = await client.query(`select id, status from public.checks where id=$1 for update`, [checkId]);
+    if (before.rowCount !== 1) throw new DomainError("check not found");
+    const currentStatus = before.rows[0].status as string;
+    if (!CHECK_CANCELLABLE_FROM.has(currentStatus)) {
+      throw new DomainError(`checks ${checkId}: '${currentStatus}' durumundan iptal edilemez`);
+    }
+    await client.query(
+      `update public.checks set status='cancelled', cancelled_at=now(), cancel_reason=$2 where id=$1`,
+      [checkId, trimmedReason],
+    );
+    await audit(client, "cancel_check", "checks", checkId, { status: "cancelled", cancel_reason: trimmedReason });
+    await client.query("commit");
+  } catch (e) {
+    await client.query("rollback");
+    throw e;
+  } finally {
+    client.release();
+  }
+}
+
+export async function cancelLoanInstallment(pool: Pool, installmentId: string, reason: string): Promise<void> {
+  const trimmedReason = reason.trim();
+  const client = await pool.connect();
+  try {
+    await client.query("begin");
+    const before = await client.query(
+      `select id, status from public.loan_installments where id=$1 for update`,
+      [installmentId],
+    );
+    if (before.rowCount !== 1) throw new DomainError("loan installment not found");
+    const currentStatus = before.rows[0].status as string;
+    if (!LOAN_INSTALLMENT_CANCELLABLE_FROM.has(currentStatus)) {
+      throw new DomainError(`loan_installments ${installmentId}: '${currentStatus}' durumundan iptal edilemez`);
+    }
+    await client.query(
+      `update public.loan_installments set status='cancelled', cancelled_at=now(), cancel_reason=$2 where id=$1`,
+      [installmentId, trimmedReason],
+    );
+    await audit(client, "cancel_loan_installment", "loan_installments", installmentId, {
+      status: "cancelled",
+      cancel_reason: trimmedReason,
+    });
+    await client.query("commit");
+  } catch (e) {
+    await client.query("rollback");
+    throw e;
+  } finally {
+    client.release();
+  }
 }
 
 export type { LoanCandidate };

@@ -77,6 +77,51 @@ describe("computeRisk — gerçek örüntüler", () => {
   });
 });
 
+describe("computeRisk — overpaid (paid/partial, null/negatif güvenli)", () => {
+  const today = "2026-07-05";
+  it("paid + paidAmount>amount → overpaid, medium", () => {
+    const r = computeRisk(
+      [{ id: "p", dueDate: "2026-07-09", amount: 1000, paidAmount: 1200, status: "paid" }],
+      today, T,
+    );
+    expect(r.get("p")!.reasons).toContain("overpaid");
+    expect(r.get("p")!.level).toBe("medium");
+  });
+  it("partial + paidAmount>amount → overpaid de değerlendirilir (open dallarıyla birlikte)", () => {
+    const r = computeRisk(
+      [{ id: "q", dueDate: "2026-07-09", amount: 1000, paidAmount: 1500, status: "partial" }],
+      today, T,
+    );
+    expect(r.get("q")!.reasons).toContain("overpaid");
+  });
+  it("amount null veya paidAmount null iken hiç tetiklenmez (bilinmeyen ≠ sıfır)", () => {
+    const r1 = computeRisk(
+      [{ id: "n1", dueDate: "2026-07-09", amount: null, paidAmount: 500, status: "paid" }],
+      today, T,
+    );
+    expect(r1.get("n1")!.reasons).not.toContain("overpaid");
+    const r2 = computeRisk(
+      [{ id: "n2", dueDate: "2026-07-09", amount: 500, paidAmount: null, status: "paid" }],
+      today, T,
+    );
+    expect(r2.get("n2")!.reasons).not.toContain("overpaid");
+  });
+  it("negatif amount'ta asla overpaid üretilmez (negative_amount zaten ayrı sinyal)", () => {
+    const r = computeRisk(
+      [{ id: "neg", dueDate: "2026-07-09", amount: -100, paidAmount: 50, status: "paid" }],
+      today, T,
+    );
+    expect(r.get("neg")!.reasons).not.toContain("overpaid");
+  });
+  it("paidAmount<=amount iken overpaid üretilmez", () => {
+    const r = computeRisk(
+      [{ id: "ok", dueDate: "2026-07-09", amount: 1000, paidAmount: 1000, status: "paid" }],
+      today, T,
+    );
+    expect(r.get("ok")!.reasons).not.toContain("overpaid");
+  });
+});
+
 describe("dayFlags", () => {
   it("bilinen toplam kritik eşiği aşarsa gün kritik; null'lar toplamda yok ama sayımda var", () => {
     const f = dayFlags(

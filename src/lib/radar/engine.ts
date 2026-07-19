@@ -8,6 +8,7 @@
 import type { Pool, PoolClient } from "pg";
 import { extractPaymentMatrix } from "@/lib/importers/extractors";
 import type { RowJson, SheetRow } from "@/lib/importers/row-utils";
+import { DomainError } from "@/lib/domain-error";
 import {
   addMonths,
   computeRisk,
@@ -253,8 +254,9 @@ export async function refreshRiskFlags(pool: Pool, todayISO: string): Promise<nu
       due_date: string;
       amount: string | null;
       status: string;
+      paid_amount: string | null;
     }>(
-      `select id, to_char(due_date,'YYYY-MM-DD') as due_date, amount, status
+      `select id, to_char(due_date,'YYYY-MM-DD') as due_date, amount, status, paid_amount
        from public.payment_instances
        where instance_month >= $1 and instance_month < $2`,
       [from, to],
@@ -265,6 +267,7 @@ export async function refreshRiskFlags(pool: Pool, todayISO: string): Promise<nu
         dueDate: r.due_date,
         amount: r.amount == null ? null : Number(r.amount),
         status: r.status,
+        paidAmount: r.paid_amount == null ? null : Number(r.paid_amount),
       })),
       todayISO,
       t,
@@ -291,6 +294,9 @@ export async function refreshRiskFlags(pool: Pool, todayISO: string): Promise<nu
 
 /* ── 4) paid/unpaid + amount fill — every mutation audited ── */
 
+const PAYABLE_FROM = new Set(["unpaid", "planned", "late", "partial"]);
+const REVERSIBLE_FROM = new Set(["paid"]);
+
 export async function markInstancePaid(
   pool: Pool,
   instanceId: string,
@@ -303,7 +309,11 @@ export async function markInstancePaid(
       `select id, status, amount, paid_amount, paid_at from public.payment_instances where id=$1 for update`,
       [instanceId],
     );
-    if (before.rowCount !== 1) throw new Error("instance not found");
+    if (before.rowCount !== 1) throw new DomainError("instance not found");
+    const currentStatus = before.rows[0].status as string;
+    if (!PAYABLE_FROM.has(currentStatus)) {
+      throw new DomainError(`payment_instances ${instanceId}: '${currentStatus}' durumundan ödendi işaretlenemez`);
+    }
     const amount = before.rows[0].amount == null ? null : Number(before.rows[0].amount);
     const finalPaid = paidAmount ?? amount; // may stay null: unknown paid amount is honest
     await client.query(
@@ -333,7 +343,11 @@ export async function markInstanceUnpaid(pool: Pool, instanceId: string): Promis
       `select id, status, paid_amount, paid_at from public.payment_instances where id=$1 for update`,
       [instanceId],
     );
-    if (before.rowCount !== 1) throw new Error("instance not found");
+    if (before.rowCount !== 1) throw new DomainError("instance not found");
+    const currentStatus = before.rows[0].status as string;
+    if (!REVERSIBLE_FROM.has(currentStatus)) {
+      throw new DomainError(`payment_instances ${instanceId}: '${currentStatus}' durumundan geri alınamaz`);
+    }
     await client.query(
       `update public.payment_instances
          set status='unpaid', paid_at=null, paid_amount=null
@@ -371,6 +385,39 @@ export async function setInstanceAmount(
     );
     await audit(client, "set_instance_amount", "payment_instances", instanceId, before.rows[0], {
       amount,
+    });
+    await client.query("commit");
+  } catch (e) {
+    await client.query("rollback");
+    throw e;
+  } finally {
+    client.release();
+  }
+}
+
+const CANCELLABLE_FROM = new Set(["unpaid", "planned", "late"]);
+
+export async function cancelInstance(pool: Pool, instanceId: string, reason: string): Promise<void> {
+  const trimmedReason = reason.trim();
+  const client = await pool.connect();
+  try {
+    await client.query("begin");
+    const before = await client.query(
+      `select id, status, cancelled_at, cancel_reason from public.payment_instances where id=$1 for update`,
+      [instanceId],
+    );
+    if (before.rowCount !== 1) throw new DomainError("instance not found");
+    const currentStatus = before.rows[0].status as string;
+    if (!CANCELLABLE_FROM.has(currentStatus)) {
+      throw new DomainError(`payment_instances ${instanceId}: '${currentStatus}' durumundan iptal edilemez`);
+    }
+    await client.query(
+      `update public.payment_instances set status='cancelled', cancelled_at=now(), cancel_reason=$2 where id=$1`,
+      [instanceId, trimmedReason],
+    );
+    await audit(client, "cancel_instance", "payment_instances", instanceId, before.rows[0], {
+      status: "cancelled",
+      cancel_reason: trimmedReason,
     });
     await client.query("commit");
   } catch (e) {

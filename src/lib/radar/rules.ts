@@ -42,6 +42,7 @@ export interface RiskInputInstance {
   dueDate: string; // ISO
   amount: number | null;
   status: string; // 'unpaid' | 'paid' | ...
+  paidAmount?: number | null;
 }
 
 export type RiskReason =
@@ -50,7 +51,8 @@ export type RiskReason =
   | "large_payment"
   | "critical_payment"
   | "same_day_cluster"
-  | "overdue";
+  | "overdue"
+  | "overpaid";
 
 export type RiskLevel = "none" | "low" | "medium" | "high" | "critical";
 
@@ -71,7 +73,8 @@ export function riskLevelOf(reasons: RiskReason[]): RiskLevel {
   if (
     reasons.includes("large_payment") ||
     reasons.includes("same_day_cluster") ||
-    reasons.includes("negative_amount")
+    reasons.includes("negative_amount") ||
+    reasons.includes("overpaid")
   )
     return "medium";
   if (reasons.includes("missing_amount")) return "low";
@@ -100,6 +103,16 @@ export function computeRisk(
       }
       if ((openByDate.get(i.dueDate) ?? 0) >= t.clusterCount) reasons.push("same_day_cluster");
       if (i.dueDate < todayISO) reasons.push("overdue");
+    }
+    // paid/partial only — amount unknown or negative is not comparable, never flagged as overpaid
+    if (
+      (i.status === "paid" || i.status === "partial") &&
+      i.amount != null &&
+      i.paidAmount != null &&
+      i.amount >= 0 &&
+      i.paidAmount > i.amount
+    ) {
+      reasons.push("overpaid");
     }
     out.set(i.id, { reasons, level: riskLevelOf(reasons) });
   }

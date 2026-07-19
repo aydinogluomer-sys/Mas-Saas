@@ -23,8 +23,14 @@ export function RiskBadges({ reasons }: { reasons: string[] }) {
   );
 }
 
+// Must match src/lib/radar/engine.ts's PAYABLE_FROM — the set of statuses markInstancePaid
+// actually accepts. Showing "ödendi" outside this set (e.g. for cancelled/unknown) would offer
+// a button whose click always fails with a domain error.
+const PAYABLE_FROM = new Set(["unpaid", "planned", "late", "partial"]);
+
 export function InstanceRowView({ r, backTo, showDate = false }: { r: InstanceRow; backTo: string; showDate?: boolean }) {
   const paid = r.status === "paid";
+  const payable = PAYABLE_FROM.has(r.status);
   return (
     <div className="flex flex-wrap items-center gap-2 border-b border-zinc-900 py-2">
       <div className="min-w-0 flex-1">
@@ -56,7 +62,7 @@ export function InstanceRowView({ r, backTo, showDate = false }: { r: InstanceRo
           <input type="hidden" name="backTo" value={backTo} />
           <button className="border border-zinc-700 px-2 py-1 font-mono text-[10px] uppercase text-zinc-400">geri al</button>
         </form>
-      ) : (
+      ) : payable ? (
         <form action={markPaidAction} className="flex items-center gap-1">
           <input type="hidden" name="id" value={r.id} />
           <input type="hidden" name="backTo" value={backTo} />
@@ -66,7 +72,7 @@ export function InstanceRowView({ r, backTo, showDate = false }: { r: InstanceRo
           )}
           <button className="border border-zinc-200 bg-zinc-200 px-2 py-1 font-mono text-[10px] font-semibold uppercase text-zinc-950">ödendi</button>
         </form>
-      )}
+      ) : null}
     </div>
   );
 }

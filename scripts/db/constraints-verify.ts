@@ -272,19 +272,24 @@ async function main(): Promise<void> {
         "0025: payment_instances partial + paid_at/paid_amount kabul edilir",
       );
     }
-    const loanInst = await pool.query<{ id: string }>("select id from loan_installments limit 1");
+    // INSERT, not UPDATE: Slice 3's transition guard forbids planned→paid for loan_installments
+    // (only planned→cancelled is allowed there), so a status='paid' UPDATE is now rejected by
+    // that trigger regardless of paid_at — testing the 0025/0003 field constraints in isolation
+    // requires creating the row already in 'paid' status, which INSERT allows (not guarded by
+    // the before-update transition trigger).
+    const loanForInsert = await pool.query<{ id: string }>("select id from loans limit 1");
     await expectReject(
       pool,
-      "update public.loan_installments set status='paid', paid_at=null where id=$1",
-      [loanInst.rows[0].id],
+      "insert into public.loan_installments (loan_id, due_date, amount, status, paid_at) values ($1,'2020-01-05',100,'paid',null)",
+      [loanForInsert.rows[0].id],
       /paid_requires_paid_at|loan_installments_paid_fields_scoped/,
-      "0025: loan_installments status='paid' + paid_at null reddedilir (0003 kuralı)",
+      "0025: loan_installments status='paid' + paid_at null reddedilir (0003 kuralı, INSERT ile)",
     );
     await expectAccept(
       pool,
-      "update public.loan_installments set status='paid', paid_at=now() where id=$1",
-      [loanInst.rows[0].id],
-      "0025: loan_installments status='paid' + paid_at kabul edilir",
+      "insert into public.loan_installments (loan_id, due_date, amount, status, paid_at) values ($1,'2020-01-05',100,'paid',now())",
+      [loanForInsert.rows[0].id],
+      "0025: loan_installments status='paid' + paid_at kabul edilir (INSERT ile)",
     );
   } finally {
     await pool.end();
