@@ -8,7 +8,6 @@ import {
   buildDailyReport,
   buildMonthlyReport,
   buildWeeklyReport,
-  istanbulDateISO,
   overlayDebtService,
   type ReportInstance,
   type ReportMaturity,
@@ -21,14 +20,8 @@ const mat = (over: Partial<ReportMaturity>): ReportMaturity => ({
   label: "çek", dueDate: "2026-07-08", amount: 5000, direction: "outflow", kind: "check", ...over,
 });
 
-describe("istanbulDateISO", () => {
-  it("shifts civil date to Europe/Istanbul (UTC+3)", () => {
-    // 2026-07-06 22:30 UTC = 2026-07-07 01:30 Istanbul → next civil day
-    expect(istanbulDateISO(new Date("2026-07-06T22:30:00Z"))).toBe("2026-07-07");
-    // 2026-07-06 00:30 UTC = 2026-07-06 03:30 Istanbul → same day
-    expect(istanbulDateISO(new Date("2026-07-06T00:30:00Z"))).toBe("2026-07-06");
-  });
-});
+// istanbulDateISO's own tests moved to src/lib/time/istanbul.test.ts (implementation
+// moved to src/lib/time/istanbul.ts; this file now only re-exports it).
 
 describe("buildDailyReport", () => {
   const today = "2026-07-06";

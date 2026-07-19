@@ -178,7 +178,10 @@ async function main(): Promise<void> {
     const engineId: string = freshForEngine.rows[0].id;
     const appPool = new Pool({ connectionString: dbUrl(DB), max: 5 });
     try {
-      await archivePayment(appPool, engineId, { reason: "test archive", archivedByLabel: "mas-dashboard" });
+      // Slice 4: archivePayment() now takes an explicit todayISO — a far-future anchor keeps
+      // its cascade (due_date >= todayISO) from matching any realistic fixture instance, so
+      // this Slice 2-era test's archive-only assertions stay unaffected by that new behavior.
+      await archivePayment(appPool, engineId, { reason: "test archive", archivedByLabel: "mas-dashboard" }, "2030-01-01");
       const after = await pool.query<{ status: string; archived_at: Date | null; archive_reason: string | null; archived_by_label: string | null }>(
         "select status, archived_at, archive_reason, archived_by_label from payments where id=$1",
         [engineId],
@@ -216,7 +219,7 @@ async function main(): Promise<void> {
     await pool.query("alter table public.audit_logs add constraint test_force_fail check (false) not valid");
     let threw = false;
     try {
-      await archivePayment(appPool, rollbackId, { reason: "should rollback", archivedByLabel: "mas-dashboard" });
+      await archivePayment(appPool, rollbackId, { reason: "should rollback", archivedByLabel: "mas-dashboard" }, "2030-01-01");
     } catch {
       threw = true;
     }

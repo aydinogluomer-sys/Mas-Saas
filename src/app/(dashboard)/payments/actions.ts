@@ -3,7 +3,9 @@ import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { getPool } from "@/lib/db";
 import { ensureWindow } from "@/lib/radar/engine";
-import { archivePayment } from "@/lib/payments/engine";
+import { archivePayment, updatePaymentAndReconcile } from "@/lib/payments/engine";
+import { DomainError } from "@/lib/domain-error";
+import { istanbulDateISO } from "@/lib/time/istanbul";
 
 // No individual user identity exists in this app (src/lib/auth.ts is a single shared-password
 // access gate, not per-user accounts) — this is an explicit placeholder, not a silent null.
@@ -79,7 +81,7 @@ export async function createPaymentAction(formData: FormData): Promise<void> {
   } finally {
     client.release();
   }
-  await ensureWindow(pool, new Date().toISOString().slice(0, 10));
+  await ensureWindow(pool, istanbulDateISO());
   revalidatePath("/payments");
   revalidatePath("/radar");
   redirect("/payments");
@@ -90,36 +92,16 @@ export async function updatePaymentAction(formData: FormData): Promise<void> {
   const f = readForm(formData);
   const err = validate(f);
   if (err) redirect(`/payments/${id}/edit?error=${encodeURIComponent(err)}`);
-  const pool = getPool();
-  const client = await pool.connect();
   try {
-    await client.query("begin");
-    const before = await client.query(`select * from public.payments where id=$1 for update`, [id]);
-    if (before.rowCount !== 1) throw new Error("payment not found");
-    await client.query(
-      `update public.payments set
-         name=$2, recurrence_type=$3, due_day=$4, due_date=$5, default_amount=$6,
-         amount_confidence=$7, direction=$8, priority=$9, status=$10,
-         category_id=$11, provider_party_id=$12, owner_party_id=$13, cash_account_id=$14,
-         description=$15
-       where id=$1`,
-      [id, f.name, f.recurrence_type, f.due_day, f.due_date, f.default_amount,
-       f.amount_confidence, f.direction, f.priority, f.status,
-       f.category_id, f.provider_party_id, f.owner_party_id, f.cash_account_id, f.description],
-    );
-    await client.query(
-      `insert into public.audit_logs (actor, action, entity_table, entity_id, before_data, after_data)
-       values (null,'update_payment','payments',$1,$2,$3)`,
-      [id, JSON.stringify(before.rows[0]), JSON.stringify(f)],
-    );
-    await client.query("commit");
+    await updatePaymentAndReconcile(getPool(), id, f, istanbulDateISO());
   } catch (e) {
-    await client.query("rollback");
+    // Known domain failures (not found) become a safe redirect message. Anything else
+    // (unexpected DB/system errors) is never swallowed or rewritten — it propagates.
+    if (e instanceof DomainError) {
+      redirect(`/payments/${id}/edit?error=${encodeURIComponent(e.message)}`);
+    }
     throw e;
-  } finally {
-    client.release();
   }
-  await ensureWindow(pool, new Date().toISOString().slice(0, 10));
   revalidatePath("/payments");
   revalidatePath("/radar");
   redirect("/payments");
@@ -130,7 +112,7 @@ export async function archivePaymentAction(formData: FormData): Promise<void> {
   const reason = String(formData.get("archive_reason") ?? "").trim();
   if (!id) return;
   if (!reason) redirect(`/payments/${id}/edit?error=${encodeURIComponent("Arşivleme nedeni zorunlu.")}`);
-  await archivePayment(getPool(), id, { reason, archivedByLabel: ARCHIVED_BY_LABEL });
+  await archivePayment(getPool(), id, { reason, archivedByLabel: ARCHIVED_BY_LABEL }, istanbulDateISO());
   revalidatePath("/payments");
   redirect("/payments");
 }

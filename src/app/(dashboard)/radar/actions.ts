@@ -55,8 +55,16 @@ export async function setAmountAction(formData: FormData): Promise<void> {
   const id = String(formData.get("id") ?? "");
   const amount = Number(String(formData.get("amount") ?? ""));
   if (!id || !Number.isFinite(amount)) return;
-  await setInstanceAmount(getPool(), id, amount);
-  revalidatePath(backOf(formData));
+  const backTo = backOf(formData);
+  try {
+    await setInstanceAmount(getPool(), id, amount);
+  } catch (e) {
+    if (e instanceof DomainError) {
+      redirect(`${backTo}${backTo.includes("?") ? "&" : "?"}error=${encodeURIComponent(e.message)}`);
+    }
+    throw e;
+  }
+  revalidatePath(backTo);
 }
 
 export async function cancelInstanceAction(formData: FormData): Promise<void> {

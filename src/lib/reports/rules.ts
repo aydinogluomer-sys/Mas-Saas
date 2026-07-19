@@ -6,14 +6,12 @@
 
 import { addDaysISO } from "@/lib/financing/rules";
 
-/* ── timezone: "today" for reports is Europe/Istanbul (calculation-rules §status) ── */
+/* ── timezone: "today" for reports is Europe/Istanbul (calculation-rules §status) ──
+ * Re-exported from the shared time module (src/lib/time/istanbul.ts) — kept here so
+ * existing callers importing from this file don't need to change. New payment-domain
+ * code should import istanbulDateISO from "@/lib/time/istanbul" directly. */
 
-export function istanbulDateISO(now: Date = new Date()): string {
-  // en-CA yields YYYY-MM-DD; timeZone shifts the civil date correctly (UTC+3, no DST since 2016).
-  return new Intl.DateTimeFormat("en-CA", {
-    timeZone: "Europe/Istanbul", year: "numeric", month: "2-digit", day: "2-digit",
-  }).format(now);
-}
+export { istanbulDateISO } from "@/lib/time/istanbul";
 
 /* ── shared shapes (plain data so builders stay unit-testable without a DB) ── */
 

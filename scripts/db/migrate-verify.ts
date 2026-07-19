@@ -216,7 +216,7 @@ async function testEmpty(): Promise<void> {
     const rows = await pool.query<{ version: string; applied_by: string }>(
       "select version, applied_by from schema_migrations order by version",
     );
-    record("EMPTY: ledger 27 satır", rows.rows.length === 27, `got ${rows.rows.length}`);
+    record("EMPTY: ledger 29 satır", rows.rows.length === 29, `got ${rows.rows.length}`);
     record(
       "EMPTY: tüm satırlar applied_by='migrate-script'",
       rows.rows.every((r) => r.applied_by === "migrate-script"),
@@ -250,7 +250,7 @@ async function testLegacyCompleteAndIdempotency(): Promise<void> {
     const rows = await pool.query<{ version: string; applied_by: string }>(
       "select version, applied_by from schema_migrations order by version",
     );
-    record("LEGACY_COMPLETE: ledger 27 satır", rows.rows.length === 27, `got ${rows.rows.length}`);
+    record("LEGACY_COMPLETE: ledger 29 satır", rows.rows.length === 29, `got ${rows.rows.length}`);
     const backfill = rows.rows.filter((r) => r.version <= "0019");
     record(
       "LEGACY_COMPLETE: 0001-0019 applied_by='baseline-backfill' (19 satır)",
@@ -259,8 +259,8 @@ async function testLegacyCompleteAndIdempotency(): Promise<void> {
     );
     const scripted = rows.rows.filter((r) => r.version > "0019");
     record(
-      "LEGACY_COMPLETE: 0020-0027 applied_by='migrate-script' (8 satır)",
-      scripted.length === 8 && scripted.every((r) => r.applied_by === "migrate-script"),
+      "LEGACY_COMPLETE: 0020-0029 applied_by='migrate-script' (10 satır)",
+      scripted.length === 10 && scripted.every((r) => r.applied_by === "migrate-script"),
       `got ${scripted.length}`,
     );
 
@@ -285,7 +285,7 @@ async function testLegacyCompleteAndIdempotency(): Promise<void> {
     const pool2 = new Pool({ connectionString: dbUrl(db), max: 1 });
     try {
       const rows2 = await pool2.query<{ n: number }>("select count(*)::int as n from schema_migrations");
-      record("Idempotency: ledger hâlâ 27 satır (yeni satır eklenmedi)", rows2.rows[0]?.n === 27, `got ${rows2.rows[0]?.n}`);
+      record("Idempotency: ledger hâlâ 29 satır (yeni satır eklenmedi)", rows2.rows[0]?.n === 29, `got ${rows2.rows[0]?.n}`);
     } finally {
       await pool2.end();
     }
@@ -363,7 +363,7 @@ async function testLedgerEmptyRecovery(): Promise<void> {
   const pool = new Pool({ connectionString: dbUrl(db), max: 1 });
   try {
     const rows = await pool.query<{ n: number }>("select count(*)::int as n from schema_migrations");
-    record("LEDGER_EMPTY_RECOVERY smoke: ledger 27 satır", rows.rows[0]?.n === 27, `got ${rows.rows[0]?.n}`);
+    record("LEDGER_EMPTY_RECOVERY smoke: ledger 29 satır", rows.rows[0]?.n === 29, `got ${rows.rows[0]?.n}`);
   } finally {
     await pool.end();
   }
