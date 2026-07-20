@@ -6,6 +6,7 @@
 //   name missing → never importable (even if its review was accepted)
 
 import type { Pool, PoolClient } from "pg";
+import { z } from "zod";
 import { extractPaymentMatrix } from "@/lib/importers/extractors";
 import type { RowJson, SheetRow } from "@/lib/importers/row-utils";
 import { DomainError } from "@/lib/domain-error";
@@ -17,6 +18,14 @@ import {
   type RiskThresholds,
 } from "./rules";
 
+/** Returns the inserted row's id (RETURNING id) — existing callers that ignore the
+ * resolved value are unaffected; Slice 5's repair flow collects it for its receipts.
+ * `createdAt`, when given, overrides audit_logs' own `created_at` DEFAULT now() — used
+ * only where a specific historical or transaction-shared timestamp must be recorded
+ * instead of "when this INSERT happened to run". Deliberately NOT exported — an
+ * arbitrary-action/entity/payload audit writer is too broad a surface to hand to
+ * external tooling. legacy-repair-apply.ts gets only writeLegacyRepairSummaryWithClient
+ * below, which hardcodes the one action/entity shape it's allowed to write. */
 async function audit(
   client: PoolClient,
   action: string,
@@ -24,12 +33,99 @@ async function audit(
   entityId: string | null,
   before: unknown,
   after: unknown,
-): Promise<void> {
-  await client.query(
-    `insert into public.audit_logs (actor, action, entity_table, entity_id, before_data, after_data)
-     values (null, $1, $2, $3, $4, $5)`,
-    [action, entityTable, entityId, JSON.stringify(before ?? null), JSON.stringify(after ?? null)],
-  );
+  createdAt?: string,
+): Promise<string> {
+  const result = createdAt
+    ? await client.query<{ id: string }>(
+        `insert into public.audit_logs (actor, action, entity_table, entity_id, before_data, after_data, created_at)
+         values (null, $1, $2, $3, $4, $5, $6)
+         returning id`,
+        [action, entityTable, entityId, JSON.stringify(before ?? null), JSON.stringify(after ?? null), createdAt],
+      )
+    : await client.query<{ id: string }>(
+        `insert into public.audit_logs (actor, action, entity_table, entity_id, before_data, after_data)
+         values (null, $1, $2, $3, $4, $5)
+         returning id`,
+        [action, entityTable, entityId, JSON.stringify(before ?? null), JSON.stringify(after ?? null)],
+      );
+  if (result.rowCount !== 1 || !result.rows[0]?.id) {
+    throw new Error(`audit(): beklenen tam olarak 1 satır döndü, alınan ${result.rowCount}`);
+  }
+  return result.rows[0].id;
+}
+
+/* ── Slice 5 legacy repair — narrow audit-write surface ──
+   Everything below is deliberately self-contained (its own tiny Zod validators, not
+   imported from scripts/db/legacy-repair-types.ts — application code under src/ must not
+   depend on a dev-tooling module under scripts/). Kept in sync with
+   scripts/db/legacy-repair-types.ts's ReceiptCore/AppliedRepairResult shapes by the one
+   place both are used together: legacy-repair-apply.ts. */
+
+const sha256HexPattern = /^[0-9a-f]{64}$/;
+const isoInstantPattern = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.(?:\d{3}|\d{6})Z$/;
+const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+const AppliedRepairResultSchema = z
+  .object({
+    instanceId: z.string().regex(uuidPattern),
+    kind: z.enum(["archive_cascade_repair", "cancellation_metadata_repair"]),
+    auditId: z.string().regex(uuidPattern),
+    cancelledAt: z.string().regex(isoInstantPattern),
+    beforeHash: z.string().regex(sha256HexPattern),
+    afterHash: z.string().regex(sha256HexPattern),
+  })
+  .strict();
+
+/** Result of one applied repair mutation — the audit row and the row it describes are
+ * always recorded together, never as separately-sortable parallel arrays. */
+export type AppliedRepairResult = z.infer<typeof AppliedRepairResultSchema>;
+
+const LegacyRepairSummaryInputSchema = z
+  .object({
+    operationId: z.string().regex(uuidPattern),
+    receiptCoreSha256: z.string().regex(sha256HexPattern),
+    pendingFileSha256: z.string().regex(sha256HexPattern),
+    inventoryFileSha256: z.string().regex(sha256HexPattern),
+    approvalFileSha256: z.string().regex(sha256HexPattern),
+    backupSha256: z.string().regex(sha256HexPattern),
+    backupReceiptSha256: z.string().regex(sha256HexPattern),
+    transactionTimestamp: z.string().regex(isoInstantPattern),
+    appliedRepairs: z
+      .array(AppliedRepairResultSchema)
+      .min(1)
+      .superRefine((repairs, ctx) => {
+        const instanceIds = new Set<string>();
+        const auditIds = new Set<string>();
+        for (const r of repairs) {
+          if (instanceIds.has(r.instanceId)) ctx.addIssue({ code: "custom", message: `duplicate instanceId: ${r.instanceId}` });
+          instanceIds.add(r.instanceId);
+          if (auditIds.has(r.auditId)) ctx.addIssue({ code: "custom", message: `duplicate auditId: ${r.auditId}` });
+          auditIds.add(r.auditId);
+        }
+      }),
+    untouchedScopeAfterHash: z.string().regex(sha256HexPattern),
+  })
+  .strict();
+
+export type LegacyRepairSummaryInput = z.infer<typeof LegacyRepairSummaryInputSchema>;
+
+/** The ONLY way legacy-repair-apply.ts (or any external script) may write an audit_logs
+ * row through this module: action and entity_table are hardcoded, entity_id is always
+ * null (this is a whole-operation summary, not tied to one row), and the payload shape
+ * is strictly validated before the INSERT — no arbitrary action/entity/payload can ever
+ * reach audit_logs through this function. `eventTimestamp` becomes the row's own
+ * created_at (the shared transaction timestamp, not "when this INSERT happened to run"),
+ * matching every other write in the same repair transaction. */
+export async function writeLegacyRepairSummaryWithClient(
+  client: PoolClient,
+  input: LegacyRepairSummaryInput,
+  eventTimestamp: string,
+): Promise<string> {
+  const parsed = LegacyRepairSummaryInputSchema.safeParse(input);
+  if (!parsed.success) {
+    throw new DomainError(`writeLegacyRepairSummaryWithClient: geçersiz input — ${parsed.error.message}`);
+  }
+  return audit(client, "legacy_repair_summary", "legacy_repair", null, null, parsed.data, eventTimestamp);
 }
 
 export async function loadThresholds(client: PoolClient | Pool): Promise<RiskThresholds> {
@@ -430,11 +526,30 @@ export async function setInstanceAmount(
 
 const CANCELLABLE_FROM = new Set(["unpaid", "planned", "late"]);
 
+/** Result of a cancellation mutation — carries the value actually persisted (read back
+ * via RETURNING+to_char), never a JS-side approximation of "now". */
+export interface CancellationResult {
+  instanceId: string;
+  auditId: string;
+  cancelledAt: string;
+}
+
+/** Optional override for cancelInstanceWithClient — omitted entirely, every existing
+ * production caller (cancelInstanceAction, transitions-verify.ts, etc.) keeps today's
+ * exact behavior (auditAction="cancel_instance", cancelled_at=now()). Slice 5's legacy
+ * repair flow is the only caller that supplies eventTimestamp, and it must be the SAME
+ * transaction-wide timestamp used for every row and audit record in that repair. */
+export interface CancellationContext {
+  auditAction?: string;
+  eventTimestamp?: string;
+}
+
 export async function cancelInstanceWithClient(
   client: PoolClient,
   instanceId: string,
   reason: string,
-): Promise<void> {
+  ctx?: CancellationContext,
+): Promise<CancellationResult> {
   const trimmedReason = reason.trim();
   const before = await client.query(
     `select id, status, cancelled_at, cancel_reason from public.payment_instances where id=$1 for update`,
@@ -445,14 +560,27 @@ export async function cancelInstanceWithClient(
   if (!CANCELLABLE_FROM.has(currentStatus)) {
     throw new DomainError(`payment_instances ${instanceId}: '${currentStatus}' durumundan iptal edilemez`);
   }
-  await client.query(
-    `update public.payment_instances set status='cancelled', cancelled_at=now(), cancel_reason=$2 where id=$1`,
-    [instanceId, trimmedReason],
+  const updated = await client.query<{ cancelled_at_iso: string }>(
+    ctx?.eventTimestamp
+      ? `update public.payment_instances set status='cancelled', cancelled_at=$2, cancel_reason=$3
+         where id=$1
+         returning to_char(cancelled_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as cancelled_at_iso`
+      : `update public.payment_instances set status='cancelled', cancelled_at=now(), cancel_reason=$2
+         where id=$1
+         returning to_char(cancelled_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as cancelled_at_iso`,
+    ctx?.eventTimestamp ? [instanceId, ctx.eventTimestamp, trimmedReason] : [instanceId, trimmedReason],
   );
-  await audit(client, "cancel_instance", "payment_instances", instanceId, before.rows[0], {
-    status: "cancelled",
-    cancel_reason: trimmedReason,
-  });
+  const cancelledAt = updated.rows[0].cancelled_at_iso;
+  const auditId = await audit(
+    client,
+    ctx?.auditAction ?? "cancel_instance",
+    "payment_instances",
+    instanceId,
+    before.rows[0],
+    { status: "cancelled", cancel_reason: trimmedReason },
+    ctx?.eventTimestamp,
+  );
+  return { instanceId, auditId, cancelledAt };
 }
 
 export async function cancelInstance(pool: Pool, instanceId: string, reason: string): Promise<void> {
@@ -467,6 +595,55 @@ export async function cancelInstance(pool: Pool, instanceId: string, reason: str
   } finally {
     client.release();
   }
+}
+
+export interface MetadataRepairResult {
+  instanceId: string;
+  auditId: string;
+  cancelledAt: string;
+}
+
+/** Slice 5 legacy repair only — distinct from cancelInstanceWithClient because it does NOT
+ * perform a status transition: the target row is already status='cancelled' with both
+ * cancelled_at and cancel_reason null (the exact P0-B legacy-anomaly shape). This fills in
+ * historically-accurate metadata for a cancellation that already happened, using a fixed,
+ * evidence-derived cancelledAt supplied by the caller — never `now()`. The audit row's OWN
+ * created_at is deliberately left at its DEFAULT now() (the repair is happening now; the
+ * cancellation itself happened in the past — the two moments are not the same and must not
+ * be conflated). */
+export async function repairCancellationMetadataWithClient(
+  client: PoolClient,
+  instanceId: string,
+  cancelledAt: string,
+  cancelReason: string,
+): Promise<MetadataRepairResult> {
+  const trimmedReason = cancelReason.trim();
+  if (trimmedReason === "") {
+    throw new DomainError(`payment_instances ${instanceId}: cancel_reason boş olamaz`);
+  }
+  const before = await client.query(
+    `select id, status, cancelled_at, cancel_reason from public.payment_instances where id=$1 for update`,
+    [instanceId],
+  );
+  if (before.rowCount !== 1) throw new DomainError("instance not found");
+  const b = before.rows[0];
+  if (b.status !== "cancelled" || b.cancelled_at !== null || b.cancel_reason !== null) {
+    throw new DomainError(
+      `payment_instances ${instanceId}: legacy metadata repair yalnız status='cancelled' ve cancelled_at/cancel_reason ikisi de null olan satırlar için geçerli`,
+    );
+  }
+  const updated = await client.query<{ cancelled_at_iso: string }>(
+    `update public.payment_instances set cancelled_at=$2, cancel_reason=$3
+     where id=$1
+     returning to_char(cancelled_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as cancelled_at_iso`,
+    [instanceId, cancelledAt, trimmedReason],
+  );
+  const resultCancelledAt = updated.rows[0].cancelled_at_iso;
+  const auditId = await audit(client, "legacy_cancel_metadata_repair", "payment_instances", instanceId, b, {
+    cancelled_at: resultCancelledAt,
+    cancel_reason: trimmedReason,
+  });
+  return { instanceId, auditId, cancelledAt: resultCancelledAt };
 }
 
 /* ── 5) reconciliation — propagates a payment template edit onto its already-generated,

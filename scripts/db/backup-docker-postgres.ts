@@ -62,7 +62,9 @@ export function verifyBackupTarget(v: BackupTargetVerification): void {
   }
 }
 
-function verifyRestoreListable(container: string, dumpPath: string): void {
+/** Exported so legacy-repair-apply.ts's offline dump-readability check reuses the exact
+ * same docker/pg_restore invocation instead of a second, potentially-drifting copy. */
+export function verifyRestoreListable(container: string, dumpPath: string): void {
   const result = execFileSync("docker", ["exec", "-i", container, "pg_restore", "--list"], {
     input: readFileSync(dumpPath),
     encoding: "utf8",

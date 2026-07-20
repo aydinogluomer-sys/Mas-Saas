@@ -19,6 +19,7 @@
     "db:constraints:verify": "tsx scripts/db/constraints-verify.ts",
     "db:transitions:verify": "tsx scripts/db/transitions-verify.ts",
     "db:reconciliation:verify": "tsx scripts/db/reconciliation-verify.ts",
+    "db:legacy-repair:verify": "tsx scripts/db/legacy-repair-verify.ts",
     "import:real": "bash scripts/db/ensure.sh && tsx scripts/import-real.ts",
     "phase3:verify": "bash scripts/db/ensure.sh && tsx scripts/phase3-verify.ts",
     "phase4:verify": "bash scripts/db/ensure.sh && tsx scripts/phase4-verify.ts",
