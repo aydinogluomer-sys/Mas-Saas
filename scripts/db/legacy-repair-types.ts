@@ -10,6 +10,15 @@ import { openSync, writeSync, fsyncSync, closeSync, renameSync, readFileSync } f
 import path from "node:path";
 
 export const CANONICALIZATION_VERSION = "project-canonical-json-v1" as const;
+// inventoryManifestVersion is the SEMANTIC data-model version of the inventory manifest —
+// what the fields mean and which invariants the generator upholds (e.g. paymentId always
+// reflecting the live row, not a hardcoded/omitted value). This is independent from
+// canonicalizationVersion, which names only the JSON serialization algorithm — a manifest
+// can be byte-for-byte "project-canonical-json-v1" while its DATA MODEL is subtly wrong,
+// exactly as today's paymentId defect was. A materially different data model MUST bump
+// this literal so old-shape files are rejected by schema alone, never by accident of
+// which fields happen to still be present.
+export const INVENTORY_MANIFEST_VERSION = "legacy-repair-inventory-v3" as const;
 
 /* ── primitive schemas ── */
 
@@ -112,6 +121,7 @@ const InventoryEvidenceAuditRowSchema = z
 export const InventoryManifestSchema = z
   .object({
     canonicalizationVersion: z.literal(CANONICALIZATION_VERSION),
+    inventoryManifestVersion: z.literal(INVENTORY_MANIFEST_VERSION),
     generatedAt: IsoInstant,
     todayISO: IsoDate,
     timezone: z.literal("Europe/Istanbul"),
@@ -165,6 +175,10 @@ export type ApprovalEntry = z.infer<typeof ApprovalEntrySchema>;
 export const ApprovalManifestSchema = z
   .object({
     canonicalizationVersion: z.literal(CANONICALIZATION_VERSION),
+    // Carries the semantic version of the inventory this approval was generated from, so
+    // the receipt chain records which inventory data-model contract the approval is bound
+    // to — independent of canonicalizationVersion (serialization format only).
+    sourceInventoryManifestVersion: z.literal(INVENTORY_MANIFEST_VERSION),
     approvedAt: IsoInstant,
     inventoryFileSha256: Sha256Hex,
     approvals: z

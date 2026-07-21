@@ -22,7 +22,9 @@ import {
   CANONICALIZATION_VERSION,
   CommittedReceiptFileSchema,
   DurabilityMetadataSchema,
+  INVENTORY_MANIFEST_VERSION,
   InventoryManifestSchema,
+  InventoryTargetSchema,
   ReceiptCoreSchema,
   RolledBackReceiptFileSchema,
   attemptDirectoryFsync,
@@ -412,6 +414,167 @@ async function main(): Promise<void> {
       return payloadSha256(restA) === payloadSha256(restB);
     })());
 
+    // ── §2.6 inventoryManifestVersion / sourceInventoryManifestVersion — SEMANTIC manifest
+    // version, deliberately separate from canonicalizationVersion (serialization format
+    // only). Also covers the paymentId defect this field was introduced to guard against:
+    // the metadata-repair target's paymentId must reflect the live row's real payment_id,
+    // never a hardcoded/omitted value. ──
+    record("inventory: inventoryManifestVersion taşıyor", inventory.inventoryManifestVersion === INVENTORY_MANIFEST_VERSION);
+    record("approval: sourceInventoryManifestVersion taşıyor", happyApproval.sourceInventoryManifestVersion === INVENTORY_MANIFEST_VERSION);
+    record("payload hash: inventoryManifestVersion değişikliği payload hash'i değiştirir", (() => {
+      // eslint-disable-next-line @typescript-eslint/no-unused-vars -- deliberately stripped before hashing
+      const { generatedAt: _g1, inventoryPayloadSha256: _h1, durability: _d1, ...restA } = inventory;
+      const variantB = { ...inventory, inventoryManifestVersion: "legacy-repair-inventory-v4" };
+      // eslint-disable-next-line @typescript-eslint/no-unused-vars -- deliberately stripped before hashing
+      const { generatedAt: _g2, inventoryPayloadSha256: _h2, durability: _d2, ...restB } = variantB;
+      return payloadSha256(restA) !== payloadSha256(restB);
+    })());
+    record("payload hash: sourceInventoryManifestVersion değişikliği approval payload hash'i değiştirir", (() => {
+      // eslint-disable-next-line @typescript-eslint/no-unused-vars -- deliberately stripped before hashing
+      const { approvedAt: _a1, approvalPayloadSha256: _h1, durability: _d1, ...restA } = happyApproval;
+      const variantB = { ...happyApproval, sourceInventoryManifestVersion: "legacy-repair-inventory-v4" };
+      // eslint-disable-next-line @typescript-eslint/no-unused-vars -- deliberately stripped before hashing
+      const { approvedAt: _a2, approvalPayloadSha256: _h2, durability: _d2, ...restB } = variantB;
+      return payloadSha256(restA) !== payloadSha256(restB);
+    })());
+
+    // v2-shape fixture: has canonicalizationVersion + durability (exactly like the real,
+    // superseded v2 artifact, fileSha256
+    // 4685772479f41655c3b5da10f8fccf73d321bef30da2dc1145f4e2fe40501bef — NEVER touched or
+    // referenced by path here) but lacks inventoryManifestVersion, the field introduced in
+    // this round. Built from the CURRENT valid inventory object with only that one field
+    // stripped, so every other field is realistic and the real protected artifact is never
+    // read or written by this suite.
+    record("InventoryManifestSchema: v2-şekilli (inventoryManifestVersion eksik, canonicalizationVersion+durability mevcut) inventory reddedilir", (() => {
+      const v2ShapeInventory = withoutField(inventory, "inventoryManifestVersion");
+      return !InventoryManifestSchema.safeParse(v2ShapeInventory).success;
+    })());
+    record("approval: v2-şekilli (inventoryManifestVersion eksik) inventory dosyasını reddeder", (() => {
+      const v2ShapeInventory = withoutField(inventory, "inventoryManifestVersion");
+      const v2ShapeJson = JSON.stringify(v2ShapeInventory, null, 2);
+      const v2ShapePath = path.join(TMP, "v2-shape-inventory-for-approval.json");
+      writeFileSync(v2ShapePath, v2ShapeJson, { encoding: "utf8", flag: "wx" });
+      const v2ShapeSha256 = fileSha256(Buffer.from(v2ShapeJson, "utf8"));
+      const badOut = path.join(TMP, "should-not-exist-v2-approval.json");
+      const r = runTsx(APPROVAL_SCRIPT, [
+        "--inventory", v2ShapePath, "--expected-inventory-sha256", v2ShapeSha256,
+        "--approve-archive-instance", happyId1, "--confirm-archive-reason", "x",
+        "--confirm-archive-timestamp-policy", "apply_transaction_timestamp", "--out", badOut,
+      ]);
+      return r.code !== 0 && r.stderr.includes("inventoryManifestVersion") && !existsSync(badOut);
+    })());
+    record("apply: v2-şekilli (inventoryManifestVersion eksik) inventory dosyasını reddeder", (() => {
+      const v2ShapeInventory = withoutField(inventory, "inventoryManifestVersion");
+      const v2ShapeJson = JSON.stringify(v2ShapeInventory, null, 2);
+      const v2ShapePath = path.join(TMP, "v2-shape-inventory-for-apply.json");
+      writeFileSync(v2ShapePath, v2ShapeJson, { encoding: "utf8", flag: "wx" });
+      const v2ShapeSha256 = fileSha256(Buffer.from(v2ShapeJson, "utf8"));
+      const r = runTsx(APPLY_SCRIPT, [
+        "--inventory", v2ShapePath, "--expected-inventory-sha256", v2ShapeSha256,
+        "--approval", happyApprovalPath, "--expected-approval-sha256", happyApprovalSha256,
+        "--backup", "does-not-matter.dump", "--expected-backup-sha256", "0".repeat(64),
+        "--backup-receipt", "does-not-matter.receipt.json", "--expected-backup-receipt-sha256", "0".repeat(64),
+        "--expected-database-name", DB, "--container", CONTAINER, "--receipts-dir", path.join(TMP, "receipts"),
+      ], { DATABASE_URL: url });
+      return r.code !== 0 && r.stderr.includes("inventoryManifestVersion");
+    })());
+
+    // paymentId ground-truth check: compares the metadata-repair target's manifest
+    // paymentId directly against a fresh, independent live-DB query — proves the
+    // generator neither hardcodes null nor fabricates a value, for whatever the row's
+    // real relationship actually is.
+    {
+      const liveLegacy = await pool.query<{ payment_id: string | null }>(
+        `select payment_id from public.payment_instances where id=$1`,
+        [unresolvedTarget.instanceId],
+      );
+      record(
+        "inventory: metadata-repair hedefinin paymentId'si canlı satırdaki gerçek (non-null) payment_id ile birebir aynı, null'a çevrilmiyor",
+        liveLegacy.rows[0].payment_id !== null && unresolvedTarget.paymentId === liveLegacy.rows[0].payment_id,
+        `live=${liveLegacy.rows[0].payment_id} manifest=${unresolvedTarget.paymentId}`,
+      );
+    }
+    record("InventoryTargetSchema: paymentId=null (gerçek DB ilişkisi yokken) kabul edilir, fabrikasyon yapılmaz", (() => {
+      const nullTarget = { ...unresolvedTarget, paymentId: null };
+      const parsed = InventoryTargetSchema.safeParse(nullTarget);
+      return parsed.success && parsed.data.paymentId === null;
+    })());
+
+    // ── §2.8 metadata-repair paymentId=null RUNTIME proof — separate, single-use disposable
+    // DB (never touches DB/DB_MULTI's fixture state). The schema-level test above only
+    // proves InventoryTargetSchema is CAPABLE of accepting null; it says nothing about
+    // what the real generator actually produces. This test runs the REAL
+    // legacy-repair-inventory.ts subprocess against a real disposable Postgres row whose
+    // live payment_id IS NULL, and reads the real v3 manifest back off disk — proving the
+    // generator neither fabricates nor coerces this value in either direction. payment_id
+    // itself has no NOT NULL constraint (only a partial unique index over non-null values,
+    // supabase/migrations/0003_payments.sql) — but 0026's payment_instances_cancel_
+    // consistency check constraint re-validates the WHOLE row on ANY update to this
+    // specific grandfathered (NOT VALID, pre-existing-violation) legacy row, per that
+    // migration's own documented comment ("any future UPDATE to it — even unrelated
+    // columns — will be re-checked and rejected"). Dropped here ONLY on this single-use
+    // disposable DB (never re-added — DB_NULLPAY is dropped whole at the end, same
+    // pattern already used by the §6 multiplicity test above for the identical
+    // constraint), never on mas_radar_dev, never in any production tool. ──
+    const DB_NULLPAY = "mas_radar_legacy_repair_verify_nullpay";
+    assertSafeDisposableName(DB_NULLPAY, "null-payment-id disposable DB");
+    restoreManagedFixture(DB_NULLPAY);
+    const urlNullPay = dbUrl(DB_NULLPAY);
+    const migrateNullPayRes = runMigrateAgainstUrl(urlNullPay);
+    if (migrateNullPayRes.code !== 0) throw new Error(`null-payment-id DB migrate başarısız: ${migrateNullPayRes.stderr}`);
+    const poolNullPay = new Pool({ connectionString: urlNullPay, max: 2 });
+    try {
+      const legacyRow = await poolNullPay.query<{ id: string }>(
+        `select id from public.payment_instances where status='cancelled' and (cancelled_at is null or cancel_reason is null)`,
+      );
+      record("null-payment-id fixture: tam olarak 1 metadata-eksik cancelled satır bulundu", legacyRow.rowCount === 1, `rowCount=${legacyRow.rowCount}`);
+      const legacyInstanceId = legacyRow.rows[0].id;
+
+      await poolNullPay.query(`alter table public.payment_instances drop constraint payment_instances_cancel_consistency`);
+      await poolNullPay.query(`update public.payment_instances set payment_id = null where id = $1`, [legacyInstanceId]);
+
+      const liveAfterNull = await poolNullPay.query<{
+        payment_id: string | null; status: string; cancelled_at: string | null; cancel_reason: string | null;
+      }>(`select payment_id, status, cancelled_at, cancel_reason from public.payment_instances where id=$1`, [legacyInstanceId]);
+      record(
+        "null-payment-id fixture: canlı satır payment_id IS NULL + status='cancelled' + cancelled_at/cancel_reason IS NULL",
+        liveAfterNull.rows[0].payment_id === null
+          && liveAfterNull.rows[0].status === "cancelled"
+          && liveAfterNull.rows[0].cancelled_at === null
+          && liveAfterNull.rows[0].cancel_reason === null,
+      );
+
+      const auditEvidence = await poolNullPay.query<{ n: string }>(
+        `select count(*)::text as n from public.audit_logs where entity_table='payment_instances' and entity_id=$1 and action='cancel_instance'`,
+        [legacyInstanceId],
+      );
+      record("null-payment-id fixture: güvenilir cancel_instance audit kanıtı mevcut", Number(auditEvidence.rows[0].n) >= 1, auditEvidence.rows[0].n);
+
+      const nullPayInventoryPath = path.join(TMP, "nullpay-inventory.json");
+      const { inventory: nullPayInventory } = makeInventory(DB_NULLPAY, urlNullPay, nullPayInventoryPath);
+      const nullPayTarget = nullPayInventory.targets.find(
+        (t) => t.instanceId === legacyInstanceId && t.kind === "cancellation_metadata_repair",
+      );
+      record("null-payment-id: gerçek inventory subprocess'i metadata-repair hedefini üretti", Boolean(nullPayTarget));
+      record(
+        "null-payment-id: manifest hedefinin paymentId'si GERÇEKTEN null (gerçek CLI + gerçek disposable DB satırı üzerinden, fabrikasyon yok)",
+        nullPayTarget?.paymentId === null,
+      );
+
+      const liveFullRow = await poolNullPay.query<{ raw: string }>(
+        `select to_jsonb(t)::text as raw from public.payment_instances t where t.id=$1`,
+        [legacyInstanceId],
+      );
+      const liveFullRowHash = canonicalHash(liveFullRow.rows[0].raw);
+      record(
+        "null-payment-id: hedefin beforeStateHash'i canlı tam satır hash'iyle eşleşiyor",
+        nullPayTarget?.beforeStateHash === liveFullRowHash,
+      );
+    } finally {
+      await poolNullPay.end();
+      dropDb(DB_NULLPAY);
+    }
+
     // ── §3 backup-receipt ──
     const backup1 = makeBackup(DB, "verify-happy", path.join(TMP, "backups"));
     record("backup-receipt: dump + receipt üretildi, receipt.sha256 gerçek dump hash'iyle eşleşiyor", (() => {
@@ -696,6 +859,117 @@ async function main(): Promise<void> {
       const untouched = await pool.query<{ status: string }>(`select status from public.payment_instances where id=$1`, [driftPreconditionId]);
       record("apply: onaylanmamış diğer adaylar dokunulmamış", ["unpaid", "planned"].includes(untouched.rows[0].status));
     }
+
+    // ── forged manifest: metadata target's paymentId mutated to a value different from
+    // the true live payment_id, then the file rebuilt so it passes strict schema AND its
+    // own self-consistent payload hash — proving file-level integrity checks alone are
+    // NOT sufficient; only apply's live-DB semantic invariant (added to legacy-repair-
+    // apply.ts this round) catches it. Placed here (after the main happy-path apply block,
+    // which is the last test relying on receiptsDir starting out completely empty) rather
+    // than earlier, since both this test and the genuine metadata-repair happy path below
+    // write real receipt files — running them any earlier would break the two absolute
+    // zero-receipt-count checks near the top of §4 (dry-run, wrong-backup-sha256). Must
+    // run BEFORE the genuine metadata-repair happy path below: a successful apply there
+    // would change the row's status/cancel_reason, which would trip the earlier
+    // beforeStateHash precondition check instead of exercising the NEW paymentId
+    // invariant if the order were reversed. ──
+    const forgedWrongPaymentId = unresolvedTarget.paymentId === null ? "00000000-0000-4000-8000-0000000000ff" : null;
+    const forgedTargets = inventory.targets.map((t) =>
+      t.instanceId === unresolvedTarget.instanceId && t.kind === "cancellation_metadata_repair"
+        ? { ...t, paymentId: forgedWrongPaymentId }
+        : t,
+    );
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars -- deliberately stripped before hashing
+    const { generatedAt: _forgedGeneratedAt, inventoryPayloadSha256: _forgedOldHash, durability: _forgedOldDurability, ...forgedRest } = inventory;
+    const forgedWithoutHash = { ...forgedRest, targets: forgedTargets };
+    const forgedPayloadSha256 = payloadSha256(forgedWithoutHash);
+    const forgedManifest = {
+      generatedAt: inventory.generatedAt,
+      ...forgedWithoutHash,
+      inventoryPayloadSha256: forgedPayloadSha256,
+      durability: inventory.durability,
+    };
+    record("forged inventory: sahte paymentId ile de strict şemadan ve kendi self-hash kontrolünden geçer (dosya seviyesinde tespit edilemez)", InventoryManifestSchema.safeParse(forgedManifest).success);
+    const forgedInventoryPath = path.join(TMP, "forged-paymentid-inventory.json");
+    const forgedJson = JSON.stringify(forgedManifest, null, 2);
+    writeFileSync(forgedInventoryPath, forgedJson, { encoding: "utf8", flag: "wx" });
+    const forgedInventorySha256 = fileSha256(Buffer.from(forgedJson, "utf8"));
+
+    const forgedApprovalPath = apprOut("forged-paymentid");
+    const forgedApprRes = runTsx(APPROVAL_SCRIPT, [
+      "--inventory", forgedInventoryPath, "--expected-inventory-sha256", forgedInventorySha256,
+      "--approve-metadata-instance", unresolvedTarget.instanceId, "--reason", "Forged manifest testi",
+      "--confirm-timestamp", unresolvedTarget.proposedCancelledAt!,
+      "--out", forgedApprovalPath,
+    ]);
+    record("forged manifest: approval seviyesinde de üretilebiliyor (approval canlı DB'yi hiç bilmiyor, yalnız dosya-seviyesi kontrol yapar)", forgedApprRes.code === 0, forgedApprRes.stderr.slice(0, 300));
+    const forgedApprovalSha256 = fileSha256(readFileSync(forgedApprovalPath));
+    const forgedBackup = makeBackup(DB, "verify-forged-paymentid", path.join(TMP, "backups-forged-paymentid"));
+
+    const rolledBackBeforeForged = new Set(listRolledBackReceipts(receiptsDir));
+    const beforeForgedFiles = new Set(listReceiptFiles(receiptsDir));
+    const forgedApplyRes = runTsx(APPLY_SCRIPT, [
+      "--inventory", forgedInventoryPath, "--expected-inventory-sha256", forgedInventorySha256,
+      "--approval", forgedApprovalPath, "--expected-approval-sha256", forgedApprovalSha256,
+      "--backup", forgedBackup.dumpPath, "--expected-backup-sha256", forgedBackup.backupSha256,
+      "--backup-receipt", forgedBackup.receiptPath, "--expected-backup-receipt-sha256", forgedBackup.backupReceiptSha256,
+      "--expected-database-name", DB, "--container", CONTAINER, "--receipts-dir", receiptsDir, "--apply",
+    ], { DATABASE_URL: url });
+    record("forged manifest: apply canlı payment ilişkisi invariant'ında reddedildi (exit != 0)", forgedApplyRes.code !== 0, forgedApplyRes.stderr.slice(0, 400));
+    record("forged manifest: red mesajı instance ID'yi içeriyor (maskelenmemiş)", forgedApplyRes.stderr.includes(unresolvedTarget.instanceId));
+    const forgedNewReceipts = listReceiptFiles(receiptsDir).filter((f) => !beforeForgedFiles.has(f));
+    record("forged manifest: hiçbir pending/committed receipt yazılmadı, yalnız rolled-back", forgedNewReceipts.length === 1 && forgedNewReceipts[0].endsWith(".rolled-back.json"));
+    const forgedNewRolledBack = [...listRolledBackReceipts(receiptsDir)].filter((f) => !rolledBackBeforeForged.has(f));
+    const forgedRolledBack = forgedNewRolledBack.length === 1
+      ? RolledBackReceiptFileSchema.parse(JSON.parse(readFileSync(path.join(receiptsDir, forgedNewRolledBack[0]), "utf8")))
+      : null;
+    record(
+      "forged manifest: failureStage='precondition', pendingFileSha256=null (mutation'a hiç başlanmadı)",
+      forgedRolledBack?.failureStage === "precondition" && forgedRolledBack.pendingFileSha256 === null,
+    );
+    const forgedTargetAfter = await pool.query<{ status: string; cancel_reason: string | null }>(
+      `select status, cancel_reason from public.payment_instances where id=$1`,
+      [unresolvedTarget.instanceId],
+    );
+    record("forged manifest: hedef satır HİÇ değişmedi (status/cancel_reason aynı kaldı)", forgedTargetAfter.rows[0].status === "cancelled" && forgedTargetAfter.rows[0].cancel_reason === null);
+    const allSummariesAfterForged = await pool.query<{ after_data: { appliedRepairs?: Array<{ instanceId: string }> } }>(
+      `select after_data from public.audit_logs where action='legacy_repair_summary'`,
+    );
+    const forgedInstanceMentionedInAnySummary = allSummariesAfterForged.rows.some((r) =>
+      (r.after_data.appliedRepairs ?? []).some((ar) => ar.instanceId === unresolvedTarget.instanceId),
+    );
+    record("forged manifest: bu instance için hiçbir legacy_repair_summary audit satırı yazılmadı", !forgedInstanceMentionedInAnySummary);
+
+    // ── metadata-repair genuine happy path: paymentId matches the live row exactly, apply
+    // proceeds normally and is NOT blocked by the new invariant. Runs SECOND (after the
+    // forged-manifest test above), since this is the one test that actually consumes the
+    // single metadata-repair instance for real. ──
+    const metadataApprovalPath = apprOut("metadata-happy");
+    const metadataApprRes = runTsx(APPROVAL_SCRIPT, [
+      "--inventory", inventoryPath, "--expected-inventory-sha256", inventoryFileSha256,
+      "--approve-metadata-instance", unresolvedTarget.instanceId, "--reason", "Legacy repair verify: metadata mutlu yol",
+      "--confirm-timestamp", unresolvedTarget.proposedCancelledAt!,
+      "--out", metadataApprovalPath,
+    ]);
+    record("metadata-repair mutlu yol: approval üretildi", metadataApprRes.code === 0);
+    const metadataApprovalSha256 = fileSha256(readFileSync(metadataApprovalPath));
+    const metadataBackup = makeBackup(DB, "verify-metadata-happy", path.join(TMP, "backups-metadata-happy"));
+    const metadataApplyRes = runTsx(APPLY_SCRIPT, [
+      "--inventory", inventoryPath, "--expected-inventory-sha256", inventoryFileSha256,
+      "--approval", metadataApprovalPath, "--expected-approval-sha256", metadataApprovalSha256,
+      "--backup", metadataBackup.dumpPath, "--expected-backup-sha256", metadataBackup.backupSha256,
+      "--backup-receipt", metadataBackup.receiptPath, "--expected-backup-receipt-sha256", metadataBackup.backupReceiptSha256,
+      "--expected-database-name", DB, "--container", CONTAINER, "--receipts-dir", receiptsDir, "--apply",
+    ], { DATABASE_URL: url });
+    record("metadata-repair mutlu yol: paymentId doğru eşleştiği için apply bozulmadı, başarıyla commit edildi", metadataApplyRes.code === 0, metadataApplyRes.stderr.slice(0, 400));
+    const metadataAfter = await pool.query<{ status: string; cancel_reason: string | null }>(
+      `select status, cancel_reason from public.payment_instances where id=$1`,
+      [unresolvedTarget.instanceId],
+    );
+    record(
+      "metadata-repair mutlu yol: cancel_reason gerçekten DB'ye yazıldı",
+      metadataAfter.rows[0].status === "cancelled" && metadataAfter.rows[0].cancel_reason === "Legacy repair verify: metadata mutlu yol",
+    );
 
     // ── precondition-drift rollback: an approved-but-unrelated row mutated between
     // inventory and apply — the row's own hash no longer matches. ──

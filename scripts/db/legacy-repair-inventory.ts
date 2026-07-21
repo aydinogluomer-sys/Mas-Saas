@@ -15,6 +15,7 @@ import { Pool } from "pg";
 import { istanbulDateISO } from "../../src/lib/time/istanbul";
 import {
   CANONICALIZATION_VERSION,
+  INVENTORY_MANIFEST_VERSION,
   InventoryManifestSchema,
   canonicalHash,
   fileSha256,
@@ -107,10 +108,19 @@ async function main(): Promise<void> {
 
     if (legacyRows.rowCount === 1) {
       const instanceId = legacyRows.rows[0].id;
-      const rowRaw = await pool.query<{ raw: string }>(
-        `select to_jsonb(t)::text as raw from public.payment_instances t where t.id=$1`,
+      const rowRaw = await pool.query<{ payment_id: string | null; raw: string }>(
+        `select payment_id, to_jsonb(t)::text as raw from public.payment_instances t where t.id=$1`,
         [instanceId],
       );
+      if (rowRaw.rowCount !== 1) {
+        console.error(`Beklenmedik durum: instance ${instanceId} artık bulunamıyor (rowCount=${rowRaw.rowCount}). Çıkış.`);
+        process.exit(1);
+      }
+      // The instance's real, live payment_id — never hardcoded. A metadata-repair target
+      // is not necessarily payment-scoped in its REPAIR ACTION, but the manifest must
+      // still report the row's true relationship, whatever it is (including null), so
+      // apply.ts's live-DB semantic invariant has real ground truth to check against.
+      const legacyInstancePaymentId = rowRaw.rows[0].payment_id;
       const beforeStateHash = canonicalHash(rowRaw.rows[0].raw);
 
       const auditRes = await pool.query<{ id: string; created_at_iso: string; raw: string }>(
@@ -141,7 +151,7 @@ async function main(): Promise<void> {
 
       targets.push({
         kind: "cancellation_metadata_repair",
-        paymentId: null,
+        paymentId: legacyInstancePaymentId,
         instanceId,
         beforeStateHash,
         classification: "unresolved",
@@ -252,6 +262,7 @@ async function main(): Promise<void> {
     // inside writeExclusiveDurable, which happens after this hash is already fixed.
     const manifestWithoutHash = {
       canonicalizationVersion: CANONICALIZATION_VERSION,
+      inventoryManifestVersion: INVENTORY_MANIFEST_VERSION,
       todayISO,
       timezone: "Europe/Istanbul" as const,
       gitHead,

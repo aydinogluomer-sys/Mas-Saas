@@ -172,6 +172,10 @@ function main(): void {
   // inventoryPayloadSha256, see legacy-repair-inventory.ts's matching comment.
   const manifestWithoutHash = {
     canonicalizationVersion: CANONICALIZATION_VERSION,
+    // Sourced from the parsed (and therefore schema-guaranteed-correct) inventory itself,
+    // not re-derived from a constant — records which inventory data-model contract this
+    // specific approval is bound to.
+    sourceInventoryManifestVersion: inventory.inventoryManifestVersion,
     inventoryFileSha256: realInventoryFileSha256,
     approvals: sortedApprovals,
     archiveCascadePolicy: hasArchiveApproval ? { cancelledAtPolicy: "apply_transaction_timestamp" as const } : null,

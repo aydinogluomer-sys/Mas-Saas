@@ -319,6 +319,19 @@ async function runRepairTransaction(
       if (live.rowCount !== 1 || canonicalHash(live.rows[0].raw) !== target.beforeStateHash) {
         throw new Error(`onaylı hedef (${a.instanceId}) before-state hash sapması — TÜM apply reddedildi.`);
       }
+      // Semantic invariant, in ADDITION to (not instead of) the before-state hash check
+      // above: the inventory manifest's own paymentId field for this target must reflect
+      // the live row's real payment_id, exactly (UUID-to-UUID or null-to-null). A hash
+      // match only proves the row's CONTENT hasn't drifted since inventory time — it does
+      // not prove the manifest's separate paymentId field was ever populated correctly by
+      // the generator in the first place (paymentId is never part of beforeStateHash's own
+      // computation as a distinct claim being asserted here). instanceId and payment IDs
+      // are not secrets — shown unmasked.
+      if (live.rows[0].payment_id !== target.paymentId) {
+        throw new Error(
+          `onaylı hedef (${a.instanceId}) canlı payment_id ('${live.rows[0].payment_id}') inventory hedefinin paymentId'siyle ('${target.paymentId}') eşleşmiyor — semantic invariant ihlali, TÜM apply reddedildi.`,
+        );
+      }
       if (target.kind === "archive_cascade_repair") {
         stage = "eligibility";
         const row = live.rows[0];
