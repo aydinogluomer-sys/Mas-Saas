@@ -9,16 +9,18 @@
 // script never imports src/lib/radar/engine.ts or any getPool()-touching module — it is
 // pure SQL, so there is nothing to gate behind a dynamic import.
 import { execFileSync } from "node:child_process";
-import { writeFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import path from "node:path";
 import { Pool } from "pg";
 import { istanbulDateISO } from "../../src/lib/time/istanbul";
 import {
+  CANONICALIZATION_VERSION,
   InventoryManifestSchema,
   canonicalHash,
   fileSha256,
   payloadSha256,
   sortTargetsDeterministically,
+  writeExclusiveDurable,
   type InventoryTarget,
 } from "./legacy-repair-types";
 
@@ -244,7 +246,12 @@ async function main(): Promise<void> {
 
     const sortedTargets = sortTargetsDeterministically(targets);
 
+    // canonicalizationVersion is part of the semantic payload hash scope (it describes
+    // what the content MEANS); durability is transport/file-write metadata, deliberately
+    // excluded — it is only known after the write's own directory-fsync probe runs
+    // inside writeExclusiveDurable, which happens after this hash is already fixed.
     const manifestWithoutHash = {
+      canonicalizationVersion: CANONICALIZATION_VERSION,
       todayISO,
       timezone: "Europe/Istanbul" as const,
       gitHead,
@@ -258,28 +265,36 @@ async function main(): Promise<void> {
     };
     const inventoryPayloadSha256 = payloadSha256(manifestWithoutHash);
 
-    const manifest = {
+    const manifestWithoutDurability = {
       generatedAt: new Date().toISOString(),
       ...manifestWithoutHash,
       inventoryPayloadSha256,
     };
 
-    const parsed = InventoryManifestSchema.safeParse(manifest);
-    if (!parsed.success) {
-      console.error("Üretilen inventory manifest kendi şemasından geçemedi — bu bir programlama hatasıdır:");
-      console.error(parsed.error.message);
-      process.exit(1);
-    }
+    const confirmedDurability = writeExclusiveDurable(
+      args.out,
+      (durability) => {
+        const manifest = { ...manifestWithoutDurability, durability };
+        const parsed = InventoryManifestSchema.safeParse(manifest);
+        if (!parsed.success) {
+          throw new Error(`Üretilen inventory manifest kendi şemasından geçemedi (programlama hatası): ${parsed.error.message}`);
+        }
+        return JSON.stringify(parsed.data, null, 2);
+      },
+      (text) => {
+        const parsed = InventoryManifestSchema.safeParse(JSON.parse(text));
+        if (!parsed.success) throw new Error(`inventory manifest kendi şemasından geçemedi: ${parsed.error.message}`);
+      },
+    );
 
-    const json = JSON.stringify(parsed.data, null, 2);
-    writeFileSync(args.out, json, { encoding: "utf8", flag: "wx" });
-    const bytes = Buffer.byteLength(json, "utf8");
-    const sha256 = fileSha256(Buffer.from(json, "utf8"));
+    const finalBytes = readFileSync(args.out);
+    const sha256 = fileSha256(finalBytes);
 
     console.log(`Inventory manifest yazıldı: ${path.resolve(args.out)}`);
-    console.log(`  bytes: ${bytes}`);
+    console.log(`  bytes: ${finalBytes.length}`);
     console.log(`  fileSha256: ${sha256}`);
     console.log(`  inventoryPayloadSha256: ${inventoryPayloadSha256}`);
+    console.log(`  durability: ${JSON.stringify(confirmedDurability)}`);
     console.log(`  targets: ${sortedTargets.length} (candidate=${sortedTargets.filter((t) => t.classification === "candidate").length}, unresolved=${sortedTargets.filter((t) => t.classification === "unresolved").length}, ineligible=${sortedTargets.filter((t) => t.classification === "ineligible").length})`);
   } finally {
     await pool.end();

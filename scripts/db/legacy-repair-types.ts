@@ -48,6 +48,37 @@ export const SystemIdentifier = z.string().regex(/^\d+$/, "geçersiz system_iden
 export const MigrationVersion = z.string().regex(/^\d{4}$/, "geçersiz migration versiyonu");
 export const Uuid = z.uuid();
 
+/* ── durability metadata — every manifest/receipt-type write records its own. Defined
+   here (before inventory/approval manifests) since both now embed it directly. ── */
+
+export const DurabilityMetadataSchema = z
+  .object({
+    platform: z.enum(["win32", "linux", "darwin"]),
+    durabilityMode: z.enum(["full-directory-fsync", "windows-best-effort"]),
+    directoryFsyncAttempted: z.boolean(),
+    directoryFsyncSupported: z.boolean(),
+    directoryFsyncErrorCode: z.string().nullable(),
+  })
+  .strict()
+  .superRefine((d, ctx) => {
+    if (d.durabilityMode === "windows-best-effort" && d.platform !== "win32") {
+      ctx.addIssue({ code: "custom", message: "durabilityMode='windows-best-effort' yalnız platform='win32' için geçerli olabilir" });
+    }
+    if (d.durabilityMode === "windows-best-effort" && d.directoryFsyncSupported) {
+      ctx.addIssue({ code: "custom", message: "durabilityMode='windows-best-effort' iken directoryFsyncSupported=true olamaz" });
+    }
+    if (d.durabilityMode === "full-directory-fsync" && !d.directoryFsyncSupported) {
+      ctx.addIssue({ code: "custom", message: "durabilityMode='full-directory-fsync' iken directoryFsyncSupported=false olamaz" });
+    }
+    if (d.directoryFsyncSupported && d.directoryFsyncErrorCode !== null) {
+      ctx.addIssue({ code: "custom", message: "directoryFsyncSupported=true iken directoryFsyncErrorCode null olmalı" });
+    }
+    if (!d.directoryFsyncSupported && d.directoryFsyncErrorCode === null) {
+      ctx.addIssue({ code: "custom", message: "directoryFsyncSupported=false iken directoryFsyncErrorCode null olamaz" });
+    }
+  });
+export type DurabilityMetadata = z.infer<typeof DurabilityMetadataSchema>;
+
 /* ── inventory manifest ── */
 
 export const TargetKind = z.enum(["cancellation_metadata_repair", "archive_cascade_repair"]);
@@ -80,6 +111,7 @@ const InventoryEvidenceAuditRowSchema = z
 
 export const InventoryManifestSchema = z
   .object({
+    canonicalizationVersion: z.literal(CANONICALIZATION_VERSION),
     generatedAt: IsoInstant,
     todayISO: IsoDate,
     timezone: z.literal("Europe/Istanbul"),
@@ -108,6 +140,11 @@ export const InventoryManifestSchema = z
       }
     }),
     inventoryPayloadSha256: Sha256Hex,
+    // Transport/file-write metadata — deliberately NOT part of the semantic payload hash
+    // scope (see inventoryPayloadSha256's computation in legacy-repair-inventory.ts): it
+    // describes how this specific file was written, not what it says, and is only known
+    // after the write's own directory-fsync probe runs.
+    durability: DurabilityMetadataSchema,
   })
   .strict();
 export type InventoryManifest = z.infer<typeof InventoryManifestSchema>;
@@ -127,6 +164,7 @@ export type ApprovalEntry = z.infer<typeof ApprovalEntrySchema>;
 
 export const ApprovalManifestSchema = z
   .object({
+    canonicalizationVersion: z.literal(CANONICALIZATION_VERSION),
     approvedAt: IsoInstant,
     inventoryFileSha256: Sha256Hex,
     approvals: z
@@ -146,39 +184,12 @@ export const ApprovalManifestSchema = z
       .strict()
       .nullable(),
     approvalPayloadSha256: Sha256Hex,
+    // Transport/file-write metadata — same exclusion-from-payload-hash policy as
+    // InventoryManifestSchema's durability field; see that field's comment.
+    durability: DurabilityMetadataSchema,
   })
   .strict();
 export type ApprovalManifest = z.infer<typeof ApprovalManifestSchema>;
-
-/* ── durability metadata — every receipt-type write records its own ── */
-
-export const DurabilityMetadataSchema = z
-  .object({
-    platform: z.enum(["win32", "linux", "darwin"]),
-    durabilityMode: z.enum(["full-directory-fsync", "windows-best-effort"]),
-    directoryFsyncAttempted: z.boolean(),
-    directoryFsyncSupported: z.boolean(),
-    directoryFsyncErrorCode: z.string().nullable(),
-  })
-  .strict()
-  .superRefine((d, ctx) => {
-    if (d.durabilityMode === "windows-best-effort" && d.platform !== "win32") {
-      ctx.addIssue({ code: "custom", message: "durabilityMode='windows-best-effort' yalnız platform='win32' için geçerli olabilir" });
-    }
-    if (d.durabilityMode === "windows-best-effort" && d.directoryFsyncSupported) {
-      ctx.addIssue({ code: "custom", message: "durabilityMode='windows-best-effort' iken directoryFsyncSupported=true olamaz" });
-    }
-    if (d.durabilityMode === "full-directory-fsync" && !d.directoryFsyncSupported) {
-      ctx.addIssue({ code: "custom", message: "durabilityMode='full-directory-fsync' iken directoryFsyncSupported=false olamaz" });
-    }
-    if (d.directoryFsyncSupported && d.directoryFsyncErrorCode !== null) {
-      ctx.addIssue({ code: "custom", message: "directoryFsyncSupported=true iken directoryFsyncErrorCode null olmalı" });
-    }
-    if (!d.directoryFsyncSupported && d.directoryFsyncErrorCode === null) {
-      ctx.addIssue({ code: "custom", message: "directoryFsyncSupported=false iken directoryFsyncErrorCode null olamaz" });
-    }
-  });
-export type DurabilityMetadata = z.infer<typeof DurabilityMetadataSchema>;
 
 /* ── receipt core + discriminated receipt file union ── */
 

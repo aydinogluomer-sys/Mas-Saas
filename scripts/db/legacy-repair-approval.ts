@@ -3,14 +3,16 @@
 // every timestamp confirmation must be typed by the operator on this exact invocation —
 // nothing is silently copied from the inventory's own (merely advisory) proposals.
 // This script never touches the database.
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import path from "node:path";
 import {
   ApprovalManifestSchema,
+  CANONICALIZATION_VERSION,
   InventoryManifestSchema,
   fileSha256,
   payloadSha256,
   sortApprovalsDeterministically,
+  writeExclusiveDurable,
   type ApprovalEntry,
   type InventoryTarget,
 } from "./legacy-repair-types";
@@ -80,7 +82,7 @@ function main(): void {
   const inventory = inventoryParsed.data;
 
   // eslint-disable-next-line @typescript-eslint/no-unused-vars -- deliberately stripped before hashing
-  const { generatedAt: _generatedAt, inventoryPayloadSha256: _hash, ...rest } = inventory;
+  const { generatedAt: _generatedAt, inventoryPayloadSha256: _hash, durability: _durability, ...rest } = inventory;
   const recomputed = payloadSha256(rest);
   if (recomputed !== inventory.inventoryPayloadSha256) {
     fail(
@@ -165,33 +167,47 @@ function main(): void {
   const sortedApprovals = sortApprovalsDeterministically(approvals);
   const hasArchiveApproval = sortedApprovals.some((a) => a.kind === "archive_cascade_repair");
 
+  // canonicalizationVersion is part of the semantic payload hash scope; durability is
+  // transport/file-write metadata, deliberately excluded — same policy as inventory's
+  // inventoryPayloadSha256, see legacy-repair-inventory.ts's matching comment.
   const manifestWithoutHash = {
+    canonicalizationVersion: CANONICALIZATION_VERSION,
     inventoryFileSha256: realInventoryFileSha256,
     approvals: sortedApprovals,
     archiveCascadePolicy: hasArchiveApproval ? { cancelledAtPolicy: "apply_transaction_timestamp" as const } : null,
   };
   const approvalPayloadSha256 = payloadSha256(manifestWithoutHash);
 
-  const manifest = {
+  const manifestWithoutDurability = {
     approvedAt: new Date().toISOString(),
     ...manifestWithoutHash,
     approvalPayloadSha256,
   };
 
-  const parsed = ApprovalManifestSchema.safeParse(manifest);
-  if (!parsed.success) {
-    fail(`Üretilen approval manifest kendi şemasından geçemedi (programlama hatası):\n${parsed.error.message}`);
-  }
+  const confirmedDurability = writeExclusiveDurable(
+    args.out,
+    (durability) => {
+      const manifest = { ...manifestWithoutDurability, durability };
+      const parsed = ApprovalManifestSchema.safeParse(manifest);
+      if (!parsed.success) {
+        throw new Error(`Üretilen approval manifest kendi şemasından geçemedi (programlama hatası): ${parsed.error.message}`);
+      }
+      return JSON.stringify(parsed.data, null, 2);
+    },
+    (text) => {
+      const parsed = ApprovalManifestSchema.safeParse(JSON.parse(text));
+      if (!parsed.success) throw new Error(`approval manifest kendi şemasından geçemedi: ${parsed.error.message}`);
+    },
+  );
 
-  const json = JSON.stringify(parsed.data, null, 2);
-  writeFileSync(args.out, json, { encoding: "utf8", flag: "wx" });
-  const bytes = Buffer.byteLength(json, "utf8");
-  const sha256 = fileSha256(Buffer.from(json, "utf8"));
+  const finalBytes = readFileSync(args.out);
+  const sha256 = fileSha256(finalBytes);
 
   console.log(`Approval manifest yazıldı: ${path.resolve(args.out)}`);
-  console.log(`  bytes: ${bytes}`);
+  console.log(`  bytes: ${finalBytes.length}`);
   console.log(`  fileSha256: ${sha256}`);
   console.log(`  approvalPayloadSha256: ${approvalPayloadSha256}`);
+  console.log(`  durability: ${JSON.stringify(confirmedDurability)}`);
   console.log(`  onaylı hedef sayısı: ${sortedApprovals.length}`);
 }
 

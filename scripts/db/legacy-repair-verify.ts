@@ -303,8 +303,113 @@ async function main(): Promise<void> {
     const happyApproval = ApprovalManifestSchema.parse(JSON.parse(happyApprovalBytes.toString("utf8")));
     record("approval: manifest şeması + payload hash'i kendi içinde tutarlı", (() => {
       // eslint-disable-next-line @typescript-eslint/no-unused-vars -- deliberately stripped before hashing
-      const { approvedAt: _a, approvalPayloadSha256: _h, ...rest } = happyApproval;
+      const { approvedAt: _a, approvalPayloadSha256: _h, durability: _d, ...rest } = happyApproval;
       return payloadSha256(rest) === happyApproval.approvalPayloadSha256;
+    })());
+
+    // ── §2.5 canonicalizationVersion + durability on inventory/approval manifests ──
+    record("inventory: canonicalizationVersion taşıyor", inventory.canonicalizationVersion === CANONICALIZATION_VERSION);
+    record("approval: canonicalizationVersion taşıyor", happyApproval.canonicalizationVersion === CANONICALIZATION_VERSION);
+    record("inventory: durability metadata taşıyor ve strict şemadan geçiyor (directoryFsyncAttempted=true)", (() => {
+      const parsed = DurabilityMetadataSchema.safeParse(inventory.durability);
+      return parsed.success && inventory.durability.directoryFsyncAttempted === true;
+    })());
+    record("approval: durability metadata taşıyor ve strict şemadan geçiyor (directoryFsyncAttempted=true)", (() => {
+      const parsed = DurabilityMetadataSchema.safeParse(happyApproval.durability);
+      return parsed.success && happyApproval.durability.directoryFsyncAttempted === true;
+    })());
+    record("inventory: gerçek yazım win32 full-directory-fsync olarak raporlandı (bu host)", inventory.durability.durabilityMode === "full-directory-fsync");
+    record("approval: gerçek yazım win32 full-directory-fsync olarak raporlandı (bu host)", happyApproval.durability.durabilityMode === "full-directory-fsync");
+    record("inventory: durable-write ile yazılıp yeniden okunarak byte/hash/schema doğrulamasından geçti (makeInventory zaten throw etmedi + dış yeniden-doğrulama)", (() => {
+      const reReadBytes = readFileSync(inventoryPath);
+      const reReadSha256 = fileSha256(reReadBytes);
+      const reParsed = InventoryManifestSchema.safeParse(JSON.parse(reReadBytes.toString("utf8")));
+      return reReadSha256 === inventoryFileSha256 && reParsed.success;
+    })());
+    record("approval: durable-write ile yazılıp yeniden okunarak byte/hash/schema doğrulamasından geçti", (() => {
+      const reReadBytes = readFileSync(happyApprovalPath);
+      const reReadSha256 = fileSha256(reReadBytes);
+      const reParsed = ApprovalManifestSchema.safeParse(JSON.parse(reReadBytes.toString("utf8")));
+      return reReadSha256 === happyApprovalSha256 && reParsed.success;
+    })());
+
+    // Field-shape helper for the negative canonicalizationVersion tests below — clones
+    // the REAL, already-generated (and already schema-valid) inventory/approval objects
+    // and mutates exactly one field, so every other field stays realistic.
+    function withoutField<T extends object, K extends keyof T>(obj: T, key: K): Omit<T, K> {
+      const clone = { ...obj };
+      delete clone[key];
+      return clone;
+    }
+    record("InventoryManifestSchema: eksik canonicalizationVersion reddedilir", !InventoryManifestSchema.safeParse(withoutField(inventory, "canonicalizationVersion")).success);
+    record("ApprovalManifestSchema: eksik canonicalizationVersion reddedilir", !ApprovalManifestSchema.safeParse(withoutField(happyApproval, "canonicalizationVersion")).success);
+    record("InventoryManifestSchema: bilinmeyen canonicalizationVersion reddedilir", !InventoryManifestSchema.safeParse({ ...inventory, canonicalizationVersion: "project-canonical-json-v2" }).success);
+    record("ApprovalManifestSchema: bilinmeyen canonicalizationVersion reddedilir", !ApprovalManifestSchema.safeParse({ ...happyApproval, canonicalizationVersion: "project-canonical-json-v2" }).success);
+
+    // SIMULATED (schema-level, not live-reproduced — see the real durability tests above
+    // and the SIMULE attemptDirectoryFsync tests further below for why this host cannot
+    // organically produce EPERM/ENOSYS through the real write path): proves the artifact
+    // schemas correctly ACCEPT a valid windows-best-effort durability shape when embedded,
+    // i.e. the artifact CAN correctly represent that outcome if it ever occurs.
+    const bestEffortDurability = { platform: "win32" as const, durabilityMode: "windows-best-effort" as const, directoryFsyncAttempted: true, directoryFsyncSupported: false, directoryFsyncErrorCode: "EPERM" };
+    record("InventoryManifestSchema: SIMULE win32 best-effort durability şekli kabul edilir", InventoryManifestSchema.safeParse({ ...inventory, durability: bestEffortDurability }).success);
+    record("ApprovalManifestSchema: SIMULE win32 best-effort durability şekli kabul edilir", ApprovalManifestSchema.safeParse({ ...happyApproval, durability: bestEffortDurability }).success);
+
+    record("inventory: beklenmeyen directory hatası (nonexistent --out dizini) fail-closed reddedilir, dosya oluşmaz", (() => {
+      const badOut = path.join(TMP, "nonexistent-subdir-xyz", "should-not-be-created.json");
+      const r = runTsx(INVENTORY_SCRIPT, ["--expected-database-name", DB, "--out", badOut], { DATABASE_URL: url });
+      return r.code !== 0 && !existsSync(badOut);
+    })());
+
+    // Old-format inventory (pre-this-round shape: no canonicalizationVersion, no
+    // durability) — matching exactly what scripts/db/legacy-repair-inventory.ts produced
+    // before this correction, including the real artifact already on disk at
+    // backups/legacy-repair-manifests/legacy-repair-inventory-2026-07-20T14-23-39-599Z.json
+    // (sha256 82cdd01a53b59dc01970fbd07d3b5640e50d925db7fac40c12e63cf66a6b65e8, never
+    // touched by this suite). Built here from the real, current inventory object with
+    // both new fields stripped, so every OTHER field is realistic.
+    record("apply: eski formatlı (canonicalizationVersion/durability yok) inventory dosyası şema seviyesinde reddedilir", (() => {
+      const oldShapeInventory = withoutField(withoutField(inventory, "canonicalizationVersion"), "durability");
+      const oldShapePath = path.join(TMP, "old-shape-inventory.json");
+      const oldShapeJson = JSON.stringify(oldShapeInventory, null, 2);
+      writeFileSync(oldShapePath, oldShapeJson, { encoding: "utf8", flag: "wx" });
+      const oldShapeSha256 = fileSha256(Buffer.from(oldShapeJson, "utf8"));
+      const parsedDirectly = InventoryManifestSchema.safeParse(oldShapeInventory);
+      const r = runTsx(APPLY_SCRIPT, [
+        "--inventory", oldShapePath, "--expected-inventory-sha256", oldShapeSha256,
+        "--approval", happyApprovalPath, "--expected-approval-sha256", happyApprovalSha256,
+        "--backup", "does-not-matter.dump", "--expected-backup-sha256", "0".repeat(64),
+        "--backup-receipt", "does-not-matter.receipt.json", "--expected-backup-receipt-sha256", "0".repeat(64),
+        "--expected-database-name", DB, "--container", CONTAINER, "--receipts-dir", path.join(TMP, "receipts"),
+      ], { DATABASE_URL: url });
+      return !parsedDirectly.success && r.code !== 0 && r.stderr.includes("strict şemadan geçemedi");
+    })());
+
+    // payload-hash policy tests: generatedAt/durability excluded, canonicalizationVersion included.
+    record("payload hash: generatedAt değişse de semantic payload hash aynı kalır", (() => {
+      // eslint-disable-next-line @typescript-eslint/no-unused-vars -- deliberately stripped before hashing
+      const { generatedAt: _g1, inventoryPayloadSha256: _h1, durability: _d1, ...restA } = inventory;
+      const variantB = { ...inventory, generatedAt: "2020-01-01T00:00:00.000000Z" };
+      // eslint-disable-next-line @typescript-eslint/no-unused-vars -- deliberately stripped before hashing
+      const { generatedAt: _g2, inventoryPayloadSha256: _h2, durability: _d2, ...restB } = variantB;
+      return payloadSha256(restA) === payloadSha256(restB);
+    })());
+    record("payload hash: canonicalizationVersion değişikliği payload hash'i değiştirir", (() => {
+      // eslint-disable-next-line @typescript-eslint/no-unused-vars -- deliberately stripped before hashing
+      const { generatedAt: _g1, inventoryPayloadSha256: _h1, durability: _d1, ...restA } = inventory;
+      const variantB = { ...inventory, canonicalizationVersion: "project-canonical-json-v2" };
+      // eslint-disable-next-line @typescript-eslint/no-unused-vars -- deliberately stripped before hashing
+      const { generatedAt: _g2, inventoryPayloadSha256: _h2, durability: _d2, ...restB } = variantB;
+      return payloadSha256(restA) !== payloadSha256(restB);
+    })());
+    record("payload hash: durability değişikliği (dahil edilmediği için) payload hash'i DEĞİŞTİRMEZ — politika testle sabitlendi", (() => {
+      // eslint-disable-next-line @typescript-eslint/no-unused-vars -- deliberately stripped before hashing
+      const { generatedAt: _g1, inventoryPayloadSha256: _h1, durability: _d1, ...restA } = inventory;
+      const differentDurability = { platform: "linux" as const, durabilityMode: "full-directory-fsync" as const, directoryFsyncAttempted: true, directoryFsyncSupported: true, directoryFsyncErrorCode: null };
+      const variantB = { ...inventory, durability: differentDurability };
+      // eslint-disable-next-line @typescript-eslint/no-unused-vars -- deliberately stripped before hashing
+      const { generatedAt: _g2, inventoryPayloadSha256: _h2, durability: _d2, ...restB } = variantB;
+      return payloadSha256(restA) === payloadSha256(restB);
     })());
 
     // ── §3 backup-receipt ──

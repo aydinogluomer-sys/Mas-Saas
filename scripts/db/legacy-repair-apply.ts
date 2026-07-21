@@ -112,7 +112,7 @@ function verifyFilesOffline(args: Args): Stage2Result {
   const inventory = inventoryParsed.data;
   {
     // eslint-disable-next-line @typescript-eslint/no-unused-vars -- deliberately stripped before hashing
-    const { generatedAt: _g, inventoryPayloadSha256: _h, ...rest } = inventory;
+    const { generatedAt: _g, inventoryPayloadSha256: _h, durability: _d, ...rest } = inventory;
     if (payloadSha256(rest) !== inventory.inventoryPayloadSha256) {
       fail("inventory dosyasının iç inventoryPayloadSha256'sı tutarsız — elle değiştirilmiş olabilir.");
     }
@@ -128,7 +128,7 @@ function verifyFilesOffline(args: Args): Stage2Result {
   const approval = approvalParsed.data;
   {
     // eslint-disable-next-line @typescript-eslint/no-unused-vars -- deliberately stripped before hashing
-    const { approvedAt: _a, approvalPayloadSha256: _h, ...rest } = approval;
+    const { approvedAt: _a, approvalPayloadSha256: _h, durability: _d, ...rest } = approval;
     if (payloadSha256(rest) !== approval.approvalPayloadSha256) {
       fail("approval dosyasının iç approvalPayloadSha256'sı tutarsız — elle değiştirilmiş olabilir.");
     }
