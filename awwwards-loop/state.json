@@ -1,13 +1,16 @@
 {
-  "iteration": 3,
-  "status": "ITERATE",
-  "score": 92,
-  "lastEvidencePrefix": "iteration-03",
-  "server": "http://localhost:3001",
+  "iteration": 13,
+  "status": "PASS",
+  "score": 93,
+  "subIteration": "13",
+  "lastEvidencePrefix": "iteration-13",
+  "server": "http://127.0.0.1:3103",
   "remainingFocus": [
-    "visual QA for radar/imports/payments/financing/reports/reminders/calendar/assumptions",
-    "shared dense table style",
-    "contrast probe for token pairs",
-    "primary interaction checks for forms and presets"
+    "tooltip and chart annotations",
+    "SVG and PNG export",
+    "heatmap waterfall Pareto bullet scatter primitives",
+    "historical snapshot charts after real history accrues",
+    "masked staging target for TestSprite",
+    "TestSprite service availability"
   ]
 }
