@@ -1,61 +1,43 @@
 import type { ReactNode } from "react";
 import { redirect } from "next/navigation";
-import { accessGateEnabled, hasValidSession } from "@/lib/auth";
 import { logoutAction } from "@/app/login/actions";
-import { Nav, type NavItem } from "@/components/ui/nav";
+import { NavigationFeedbackProvider } from "@/components/ui/navigation-feedback";
+import { AppSidebar, type NavItem } from "@/components/ui/nav";
+import { AppToaster, FlashToaster } from "@/components/ui/primitives/toast";
+import { TooltipProvider } from "@/components/ui/primitives/tooltip";
+import { accessGateEnabled, hasValidSession } from "@/lib/auth";
 
-// Primary nav is decision-first: 6 items. Secondary/admin routes (Takvim, Ödeme
-// kalemleri CRUD, İçe Aktarım, Raporlar, Hatırlatmalar, Üretim, İncelemeler) live under
-// Yönetim (/admin) and stay fully reachable — no route is removed.
+// Financial workspaces must read current PostgreSQL data at request time.
+// This also prevents production builds from opening dozens of DB-backed pages
+// concurrently during static generation.
+export const dynamic = "force-dynamic";
+
 const NAV: NavItem[] = [
-  { href: "/", label: "ANA" },
-  { href: "/radar", label: "ODEME" },
-  { href: "/cashflow", label: "NAKIT" },
-  { href: "/financing", label: "FIN" },
-  { href: "/ask", label: "SOR" },
-  { href: "/scenarios", label: "SEN" },
-  { href: "/admin", label: "MODUL" },
+  { href: "/overview", label: "Genel Bakış", description: "Bugün ve öncelikler", icon: "overview", aliases: ["/"] },
+  { href: "/payments", label: "Ödemeler", description: "Radar, takvim ve kalemler", icon: "payments", aliases: ["/radar", "/calendar"] },
+  { href: "/cashflow", label: "Nakit Akışı", description: "Runway ve projeksiyon", icon: "cashflow" },
+  { href: "/finance", label: "Finansman", description: "Çek, kredi ve vadeler", icon: "finance", aliases: ["/financing"] },
+  { href: "/production", label: "Üretim", description: "Kapasite ve kârlılık", icon: "production" },
+  { href: "/scenarios", label: "Senaryolar", description: "What-if ve optimizasyon", icon: "scenarios" },
+  { href: "/insights/ask", label: "İçgörüler", description: "Soru, rapor ve görevler", icon: "insights", aliases: ["/insights", "/ask", "/reports", "/reminders"] },
+  { href: "/data/quality", label: "Veri Merkezi", description: "Kalite, Excel ve kaynaklar", icon: "data", aliases: ["/data", "/imports", "/data-quality", "/assumptions"] },
+  { href: "/system", label: "Sistem", description: "Durum, güvenlik ve denetim", icon: "system", aliases: ["/admin", "/phases"] },
 ];
 
 export default async function DashboardLayout({ children }: { children: ReactNode }) {
-  // Single-operator access gate: when a password is configured, require a valid session.
   if (accessGateEnabled() && !(await hasValidSession())) redirect("/login");
-  const gate = accessGateEnabled();
-  return (
-    <div className="min-h-screen app-bg" style={{ color: "var(--text-1)" }}>
-      {/* thin brand accent rail */}
-      <div style={{ height: "2px", background: "linear-gradient(90deg, var(--info), var(--accent))", opacity: 0.5 }} />
-      <header
-        className="sticky top-0 z-20 border-b px-4 py-3 backdrop-blur"
-        style={{ borderColor: "var(--line)", background: "color-mix(in srgb, var(--surface-0) 88%, transparent)" }}
-      >
-        <div className="mx-auto flex max-w-6xl flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-          <div className="min-w-0 shrink-0">
-            <div className="font-mono text-sm font-bold tracking-[0.2em]" style={{ color: "var(--text-1)" }}>
-              MAS NAKİT RADAR
-            </div>
-            <div className="font-mono text-[9px] uppercase tracking-[0.14em]" style={{ color: "var(--text-3)" }}>
-              kapalı devre finans operasyon paneli
-            </div>
-          </div>
-          <div className="flex min-w-0 items-center gap-1">
-            <Nav items={NAV} />
-            {gate && (
-              <form action={logoutAction}>
-                <button
-                  type="submit"
-                  title="çıkış"
-                  className="border px-2 py-1 font-mono text-[10px] uppercase tracking-wider transition-colors hover:text-red-300"
-                  style={{ color: "var(--text-3)", borderColor: "var(--line-faint)", borderRadius: "2px" }}
-                >
-                  çıkış
-                </button>
-              </form>
-            )}
-          </div>
-        </div>
+  return <NavigationFeedbackProvider><div className="app-shell">
+    <AppSidebar items={NAV} gate={accessGateEnabled()} logoutAction={logoutAction} />
+    <div className="workspace-shell">
+      <header className="workspace-bar">
+        <div><span className="workspace-product">MAS Nakit Radar</span><span className="workspace-separator">/</span><span className="workspace-context">Finans operasyon merkezi</span></div>
+        <div className="workspace-status"><span className="status-dot" /> Veriler bağlı <span className="workspace-date">Europe/Istanbul</span></div>
       </header>
-      <main className="stagger mx-auto max-w-6xl space-y-4 p-4">{children}</main>
+      <main className="workspace-content animate-rise">
+        <TooltipProvider delayDuration={150}>{children}</TooltipProvider>
+      </main>
     </div>
-  );
+    <AppToaster />
+    <FlashToaster />
+  </div></NavigationFeedbackProvider>;
 }

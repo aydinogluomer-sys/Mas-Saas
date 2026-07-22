@@ -80,8 +80,10 @@ export async function createManualActionAction(formData: FormData): Promise<void
     dueDate: String(formData.get("dueDate") ?? "").trim() || null,
     note: String(formData.get("note") ?? "").trim() || null,
   });
-  revalidatePath("/data-quality");
-  redirect("/data-quality");
+  const b = backTo(formData, "/insights/tasks");
+  revalidatePath("/data/quality");
+  revalidatePath("/insights/tasks");
+  redirect(b);
 }
 
 export async function setActionStatusAction(formData: FormData): Promise<void> {
@@ -90,7 +92,8 @@ export async function setActionStatusAction(formData: FormData): Promise<void> {
   const completionNote = String(formData.get("completionNote") ?? "").trim() || null;
   if (id && status) await setActionStatus(getPool(), id, status, completionNote);
   const b = backTo(formData);
-  revalidatePath("/data-quality");
+  revalidatePath("/data/quality");
+  revalidatePath("/insights/tasks");
   revalidatePath("/");
   redirect(b);
 }

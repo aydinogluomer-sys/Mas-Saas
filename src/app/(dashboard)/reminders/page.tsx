@@ -3,7 +3,7 @@ import { deliveryCounts, loadDeliveries } from "@/lib/reminders/engine";
 import { istanbulDateISO } from "@/lib/reports/rules";
 import { Badge, type Tone } from "@/components/ui/badge";
 import { Num, Panel } from "@/components/ui/panel";
-import { KpiCard, PageHeader } from "@/components/ui/shell";
+import { EmptyState, KpiCard, PageHeader } from "@/components/ui/shell";
 import { dispatchRemindersAction, scheduleRemindersAction } from "./actions";
 
 export const dynamic = "force-dynamic";
@@ -39,17 +39,17 @@ export default async function RemindersPage() {
         </div>
         <div className="mt-3 flex flex-wrap gap-2">
           <form action={scheduleRemindersAction}>
-            <button type="submit" className="border border-sky-700 bg-sky-950/40 px-3 py-2 font-mono text-[10px] uppercase tracking-wider text-sky-300">
+            <button type="submit" className="border border-info tint-info px-3 py-2 font-mono text-[10px] uppercase tracking-wider text-info">
               bugünü planla →
             </button>
           </form>
           <form action={dispatchRemindersAction}>
-            <button type="submit" className="border border-emerald-700 bg-emerald-950/40 px-3 py-2 font-mono text-[10px] uppercase tracking-wider text-emerald-300">
+            <button type="submit" className="border border-pos tint-pos px-3 py-2 font-mono text-[10px] uppercase tracking-wider text-pos">
               bekleyenleri gönder (Telegram) →
             </button>
           </form>
         </div>
-        <p className="mt-2 font-mono text-[10px] text-zinc-500">
+        <p className="mt-2 font-mono text-[10px] text-tone-3">
           Planlama, ödenmemiş kalemler için aktif kuralları bugüne uygular (aynı kayıt tekrar planlanmaz — DB
           benzersiz anahtar). Gönderim server-only Telegram token ister; tanımlı değilse teslimat &quot;failed&quot;
           olarak <em>loglanır</em> (hiçbir mali kayıt değişmez).
@@ -58,12 +58,15 @@ export default async function RemindersPage() {
 
       <Panel title={`TESLİMAT KAYDI — ${deliveries.length}`}>
         {deliveries.length === 0 ? (
-          <p className="text-sm text-zinc-500">Henüz teslimat yok. &quot;Bugünü planla&quot; ile başlayın.</p>
+          <EmptyState>
+            Henüz teslimat yok. &quot;Bugünü planla&quot; aktif kuralları bugüne uygular; aynı kayıt iki kez
+            planlanmaz. Gönderim için Telegram token tanımlı olmalıdır.
+          </EmptyState>
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
-                <tr className="border-b border-zinc-800 text-left font-mono text-[10px] uppercase tracking-wider text-zinc-500">
+                <tr className="border-b border-line text-left font-mono text-[10px] uppercase tracking-wider text-tone-3">
                   <th className="py-1 pr-2">planlanan</th>
                   <th className="py-1 pr-2">kural</th>
                   <th className="py-1 pr-2">kalem</th>
@@ -73,13 +76,13 @@ export default async function RemindersPage() {
               </thead>
               <tbody>
                 {deliveries.map((d) => (
-                  <tr key={d.id} className="border-b border-zinc-900 align-top">
+                  <tr key={d.id} className="border-b border-line-faint align-top">
                     <td className="py-1.5 pr-2 font-mono text-xs">{d.scheduled_for}</td>
-                    <td className="py-1.5 pr-2 font-mono text-[11px] text-zinc-400">{OFFSET_LABEL[d.offset_days] ?? d.rule_name}</td>
+                    <td className="py-1.5 pr-2 font-mono text-[11px] text-tone-2">{OFFSET_LABEL[d.offset_days] ?? d.rule_name}</td>
                     <td className="py-1.5 pr-2 text-xs">{d.target_name}</td>
                     <td className="py-1.5 pr-2"><Badge tone={STATUS_TONE[d.status] ?? "neutral"}>{d.status}</Badge></td>
-                    <td className="py-1.5 font-mono text-[10px] text-zinc-500">
-                      {d.status === "sent" ? d.sent_at : d.error ? <span className="text-red-400">{d.error}</span> : "—"}
+                    <td className="py-1.5 font-mono text-[10px] text-tone-3">
+                      {d.status === "sent" ? d.sent_at : d.error ? <span className="text-neg">{d.error}</span> : "—"}
                     </td>
                   </tr>
                 ))}

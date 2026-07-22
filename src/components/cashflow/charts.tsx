@@ -18,7 +18,7 @@ export function CashTrendChart({ months, firstNegative, worstMonth }: {
 }) {
   const H = 220, pad = 16;
   const vals = months.map((m) => m.closing).filter((v): v is number => v != null);
-  if (vals.length === 0) return <p className="text-sm text-zinc-500">Kasa verisi yok.</p>;
+  if (vals.length === 0) return <p className="text-sm text-tone-3">Kasa verisi yok.</p>;
   const min = Math.min(...vals, 0), max = Math.max(...vals, 0);
   const x = (i: number) => pad + (i / Math.max(months.length - 1, 1)) * (W - 2 * pad);
   const zeroY = scaleY(0, min, max, H, pad);
@@ -32,30 +32,42 @@ export function CashTrendChart({ months, firstNegative, worstMonth }: {
   });
   if (cur.length > 1) segments.push(cur.join(" "));
 
+  const midVal = (min + max) / 2;
+  const midY = scaleY(midVal, min, max, H, pad);
   return (
     <svg viewBox={`0 0 ${W} ${H}`} className="block w-full" role="img" aria-label="Kasa trend grafiği">
-      <rect x={pad} y={zeroY} width={W - 2 * pad} height={Math.max(scaleY(min, min, max, H, pad) - zeroY, 0)} fill="#7f1d1d" opacity="0.12" />
-      <line x1={pad} x2={W - pad} y1={zeroY} y2={zeroY} stroke="#52525b" strokeWidth="1" strokeDasharray="4 4" />
+      <rect x={pad} y={zeroY} width={W - 2 * pad} height={Math.max(scaleY(min, min, max, H, pad) - zeroY, 0)} fill="var(--neg)" opacity="0.08" />
+      <line x1={pad} x2={W - pad} y1={midY} y2={midY} stroke="var(--line)" strokeWidth="1" />
+      <line x1={pad} x2={W - pad} y1={zeroY} y2={zeroY} stroke="var(--text-4)" strokeWidth="1" strokeDasharray="4 4" />
       {segments.map((pts, i) => (
-        <polyline key={i} points={pts} fill="none" stroke="#7fb0d9" strokeWidth="2" />
+        <polyline key={i} points={pts} fill="none" stroke="var(--info)" strokeWidth="2" />
       ))}
+      {months.map((m, i) =>
+        i % 6 === 0 ? (
+          <text key={`x${m.monthStart}`} x={x(i)} y={H - 4} fontSize="8" fill="var(--text-4)" fontFamily="var(--font-mono)">
+            {m.monthStart.slice(2, 7)}
+          </text>
+        ) : null,
+      )}
       {months.map((m, i) => {
         if (m.closing == null) return null;
         const isFN = m.monthStart === firstNegative;
         const isW = m.monthStart === worstMonth;
         if (!isFN && !isW) return null;
+        const anchor = x(i) > W - 90 ? "end" : x(i) < 90 ? "start" : "middle";
         return (
           <g key={m.monthStart}>
-            <circle cx={x(i)} cy={scaleY(m.closing, min, max, H, pad)} r="4" fill={isW ? "#f87171" : "#fbbf24"} />
-            <text x={x(i)} y={scaleY(m.closing, min, max, H, pad) - 8} fontSize="10" fill={isW ? "#f87171" : "#fbbf24"}
-              textAnchor="middle" fontFamily="monospace">
+            <circle cx={x(i)} cy={scaleY(m.closing, min, max, H, pad)} r="4" fill={isW ? "var(--neg)" : "var(--warn)"} />
+            <text x={x(i)} y={scaleY(m.closing, min, max, H, pad) - 8} fontSize="10" fill={isW ? "var(--neg)" : "var(--warn)"}
+              textAnchor={anchor} fontFamily="var(--font-mono)">
               {isW ? `en kötü ${kFmt(m.closing)}` : "ilk negatif"}
             </text>
           </g>
         );
       })}
-      <text x={pad} y={12} fontSize="10" fill="#71717a" fontFamily="monospace">{kFmt(max)}</text>
-      <text x={pad} y={H - 4} fontSize="10" fill="#71717a" fontFamily="monospace">{kFmt(min)}</text>
+      <text x={pad} y={12} fontSize="10" fill="var(--text-4)" fontFamily="var(--font-mono)">{kFmt(max)}</text>
+      <text x={pad} y={midY - 4} fontSize="9" fill="var(--text-4)" fontFamily="var(--font-mono)">{kFmt(midVal)}</text>
+      <text x={pad} y={H - 14} fontSize="10" fill="var(--text-4)" fontFamily="var(--font-mono)">{kFmt(min)}</text>
     </svg>
   );
 }
@@ -63,30 +75,33 @@ export function CashTrendChart({ months, firstNegative, worstMonth }: {
 export function IncomeExpenseChart({ months }: { months: CashMonth[] }) {
   const H = 200, pad = 16;
   const vals = months.flatMap((m) => [m.income, m.expense]).filter((v): v is number => v != null);
-  if (vals.length === 0) return <p className="text-sm text-zinc-500">Gelir/gider verisi yok.</p>;
+  if (vals.length === 0) return <p className="text-sm text-tone-3">Gelir/gider verisi yok.</p>;
   const max = Math.max(...vals, 1);
   const slot = (W - 2 * pad) / months.length;
   const bw = Math.max(slot * 0.32, 2);
+  const midY = H - pad - (H - 2 * pad) / 2;
   return (
     <svg viewBox={`0 0 ${W} ${H}`} className="block w-full" role="img" aria-label="Aylık gelir gider grafiği">
+      <line x1={pad} x2={W - pad} y1={midY} y2={midY} stroke="var(--line)" strokeWidth="1" />
+      <text x={pad} y={midY - 4} fontSize="9" fill="var(--text-4)" fontFamily="var(--font-mono)">{kFmt(max / 2)}</text>
       {months.map((m, i) => {
         const x0 = pad + i * slot;
         const ih = m.income != null ? (m.income / max) * (H - 2 * pad) : 0;
         const eh = m.expense != null ? (m.expense / max) * (H - 2 * pad) : 0;
         return (
           <g key={m.monthStart}>
-            {m.income != null && <rect x={x0} y={H - pad - ih} width={bw} height={ih} fill="#34d399" />}
-            {m.expense != null && <rect x={x0 + bw + 1} y={H - pad - eh} width={bw} height={eh} fill="#f87171" />}
+            {m.income != null && <rect x={x0} y={H - pad - ih} width={bw} height={ih} fill="var(--pos)" />}
+            {m.expense != null && <rect x={x0 + bw + 1} y={H - pad - eh} width={bw} height={eh} fill="var(--neg)" />}
             {i % 6 === 0 && (
-              <text x={x0} y={H - 3} fontSize="8" fill="#71717a" fontFamily="monospace">
+              <text x={x0} y={H - 3} fontSize="8" fill="var(--text-4)" fontFamily="var(--font-mono)">
                 {m.monthStart.slice(2, 7)}
               </text>
             )}
           </g>
         );
       })}
-      <text x={W - pad} y={12} fontSize="10" fill="#34d399" textAnchor="end" fontFamily="monospace">gelir</text>
-      <text x={W - pad} y={24} fontSize="10" fill="#f87171" textAnchor="end" fontFamily="monospace">gider</text>
+      <text x={W - pad} y={12} fontSize="10" fill="var(--pos)" textAnchor="end" fontFamily="var(--font-mono)">gelir</text>
+      <text x={W - pad} y={24} fontSize="10" fill="var(--neg)" textAnchor="end" fontFamily="var(--font-mono)">gider</text>
     </svg>
   );
 }
@@ -95,27 +110,27 @@ export function ConcentrationBars({ entries, unknownCount }: {
   entries: ConcentrationEntry[]; unknownCount: number;
 }) {
   const top = entries.slice(0, 6);
-  if (top.length === 0) return <p className="text-sm text-zinc-500">Veri yok.</p>;
+  if (top.length === 0) return <p className="text-sm text-tone-3">Veri yok.</p>;
   return (
     <div>
       {top.map((e) => (
         <div key={e.key} className="mb-2">
           <div className="flex items-center justify-between text-xs">
-            <span className={e.flagged ? "text-red-300" : "text-zinc-300"}>
+            <span className={e.flagged ? "text-neg" : "text-tone-2"}>
               {e.key}
-              {e.flagged && <span className="ml-2 border border-red-800 px-1 font-mono text-[9px] uppercase text-red-400">&gt;%40 yoğunlaşma</span>}
+              {e.flagged && <span className="ml-2 border border-neg px-1 font-mono text-[9px] uppercase text-neg">&gt;%40 yoğunlaşma</span>}
             </span>
-            <span className="font-mono tabular-nums text-zinc-400">
+            <span className="font-mono tabular-nums text-tone-2">
               {new Intl.NumberFormat("tr-TR", { maximumFractionDigits: 0 }).format(e.sum)} · %{(e.ratio * 100).toFixed(1)}
             </span>
           </div>
           <div className="mt-1 h-1.5 bg-black/60">
-            <div className={`h-1.5 ${e.flagged ? "bg-red-500" : "bg-sky-600"}`} style={{ width: `${Math.min(e.ratio * 100, 100)}%` }} />
+            <div className={`h-1.5 ${e.flagged ? "bg-neg" : "bg-info"}`} style={{ width: `${Math.min(e.ratio * 100, 100)}%` }} />
           </div>
         </div>
       ))}
       {unknownCount > 0 && (
-        <p className="mt-1 font-mono text-[10px] text-amber-400">
+        <p className="mt-1 font-mono text-[10px] text-warn">
           +{unknownCount} satır tutarsız — orana dahil değil, karar verirken hesaba katın.
         </p>
       )}

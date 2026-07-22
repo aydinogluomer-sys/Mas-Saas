@@ -9,6 +9,6 @@ export async function askQuestionAction(formData: FormData): Promise<void> {
   if (!question.trim()) return;
   const forceDeterministic = formData.get("forceDeterministic") === "on";
   const { id } = await answerQuestion(getPool(), { question, forceDeterministic });
-  revalidatePath("/ask");
-  redirect(`/ask?response=${id}`);
+  revalidatePath("/insights/ask");
+  redirect(`/insights/ask/${id}`);
 }

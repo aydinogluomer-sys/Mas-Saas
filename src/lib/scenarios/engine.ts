@@ -433,6 +433,7 @@ export async function listScenarioRuns(pool: Pool) {
             to_char(r.scenario_first_negative,'YYYY-MM-DD') as scen_first_neg,
             to_char(r.run_at at time zone 'Europe/Istanbul','YYYY-MM-DD HH24:MI') as run_at
      from public.scenario_runs r join public.scenarios s on s.id=r.scenario_id
+     where r.archived_at is null
      order by r.run_at desc limit 50`,
   );
   return r.rows as Array<{ id: string; name: string; scenario_type: string; final_delta: number | null; confidence: string; scen_first_neg: string | null; run_at: string }>;

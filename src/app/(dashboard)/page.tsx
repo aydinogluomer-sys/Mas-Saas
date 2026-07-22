@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { getPool } from "@/lib/db";
-import { ensureWindow, loadThresholds } from "@/lib/radar/engine";
+import { loadThresholds } from "@/lib/radar/engine";
 import { instancesBetween, instancesOn, monthSummary, overdueOpen } from "@/lib/radar/queries";
 import { buildProjection, concentration } from "@/lib/radar/rules";
 import { loadCashMonths } from "@/lib/cashflow/engine";
@@ -14,7 +14,9 @@ import { loadDecisionFacts } from "@/lib/facts/engine";
 import { istanbulDateISO } from "@/lib/reports/rules";
 import { buildActions, pickHeadlineRisk, type CockpitFacts } from "@/lib/home/cockpit";
 import { Badge, type Tone } from "@/components/ui/badge";
-import { SourceProofDisclosure, type ProofItem } from "@/components/facts/source-proof";
+import type { ProofItem } from "@/components/facts/source-proof";
+import { EvidenceDrawer } from "@/components/facts/evidence-drawer";
+import { MiniTrend } from "@/components/home/mini-trends";
 import { Panel, fmtTL } from "@/components/ui/panel";
 import { KeyStat, PageHeader } from "@/components/ui/shell";
 
@@ -55,8 +57,6 @@ export default async function AnaEkranPage() {
   const today = istanbulDateISO();
   const monthStart = today.slice(0, 7) + "-01";
   const weekEnd = new Date(Date.parse(today) + 6 * 86400000).toISOString().slice(0, 10);
-  await ensureWindow(pool, today); // idempotent (same call radar makes)
-
   const [todayRows, weekRows, overdue, summary, months] = await Promise.all([
     instancesOn(pool, today),
     instancesBetween(pool, today, weekEnd),
@@ -132,10 +132,6 @@ export default async function AnaEkranPage() {
   };
   const headline = pickHeadlineRisk(facts);
   const actions = buildActions(facts);
-  const topDecisionFacts = (decisionFacts.some((f) => f.severity !== "low")
-    ? decisionFacts.filter((f) => f.severity !== "low")
-    : decisionFacts
-  ).slice(0, 5);
   const runwayFact = decisionFacts.find((f) => f.key === "cash_runway");
   const proofForAction = (key: string): ProofItem[] => {
     const action = actions.find((a) => a.key === key);
@@ -176,43 +172,19 @@ export default async function AnaEkranPage() {
         </div>
       </div>
 
-      <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-5">
+      <div className="stagger grid grid-cols-2 gap-2 lg:grid-cols-4">
         <KeyStat label="Bugün çıkış" value={fmtTL(tOut.total)} tone={tOut.total > 0 ? "warn" : "neutral"} href="/radar"
           sub={`${tOut.count} ödeme${tOut.missing > 0 ? ` · ${tOut.missing} eksik` : ""}`} />
         <KeyStat label="7 günde çıkış" value={fmtTL(wOut.total)} tone={wOut.total > 0 ? "warn" : "neutral"} href="/radar"
           sub={`${wOut.count} ödeme`} />
         <KeyStat label="Geciken" value={oOut.count} tone={oOut.count > 0 ? "neg" : "pos"} href="/radar"
           sub={oOut.count > 0 ? `bilinen ${fmtTL(oOut.total)}` : "yok"} />
-        <KeyStat label="Nakit runway" value={runwayFact?.value ?? "â€”"} tone={runwayFact?.severity === "critical" || runwayFact?.severity === "high" ? "neg" : runwayFact?.severity === "medium" ? "warn" : "pos"} href="/cashflow"
-          sub={runwayFact?.explanation ?? "projeksiyon"} />
-        <KeyStat label="İlk negatif ay" value={ym(proj.firstNegativeMonth)} tone={proj.firstNegativeMonth ? "neg" : "pos"} href="/cashflow"
-          sub={proj.firstNegativeMonth ? "kasa eksiye geçiyor" : "negatif ay yok"} />
+        <KeyStat label="Nakit runway" value={runwayFact?.value ?? "—"} tone={runwayFact?.severity === "critical" || runwayFact?.severity === "high" ? "neg" : runwayFact?.severity === "medium" ? "warn" : "pos"} href="/cashflow"
+          sub={`${runwayFact?.explanation ?? "projeksiyon"} · ilk negatif ${ym(proj.firstNegativeMonth)}`} />
       </div>
 
-      <Panel title="Karar sinyalleri">
-        <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-          {topDecisionFacts.map((f) => (
-            <Link
-              key={f.key}
-              href={f.sourceHref}
-              className="card-hover border px-2.5 py-2"
-              style={{ borderColor: "var(--line)", borderRadius: "var(--radius)", background: "var(--surface-2)" }}
-            >
-              <div className="flex items-start justify-between gap-2">
-                <div>
-                  <div className="font-mono text-[10px] uppercase tracking-wider" style={{ color: "var(--text-3)" }}>{f.title}</div>
-                  <div className="mt-0.5 font-mono text-sm tabular-nums" style={{ color: "var(--text-1)" }}>{f.value}</div>
-                </div>
-                <Badge tone={SEV_TONE[f.severity]}>{f.severity === "critical" ? "acil" : f.severity === "high" ? "yüksek" : f.severity === "medium" ? "orta" : "düşük"}</Badge>
-              </div>
-              <p className="mt-1 text-[11px]" style={{ color: "var(--text-4)" }}>{f.explanation}</p>
-            </Link>
-          ))}
-        </div>
-      </Panel>
-
       {/* 3) Ne yapmalıyım? (max 5, deterministik) */}
-      <Panel title="Ne yapmalıyım?">
+      <div className="grid items-start gap-3 xl:grid-cols-[minmax(0,1.35fr)_minmax(320px,.65fr)]"><Panel title="Bugün yapılacaklar">
         <ol className="space-y-1.5">
           {actions.map((a, i) => (
             <li key={a.key}>
@@ -239,17 +211,14 @@ export default async function AnaEkranPage() {
                   <div className="font-mono text-[10px]" style={{ color: "var(--text-4)" }}>{a.impact}</div>
                 </div>
                 <div className="mt-2 flex flex-wrap gap-2">
-                  <Link href={a.evidenceHref} className="font-mono text-[10px] underline underline-offset-2" style={{ color: "var(--accent)" }}>kanit ekrani -&gt;</Link>
+                  <EvidenceDrawer items={proofForAction(a.key)} />
                   {a.scenarioHref && <Link href={a.scenarioHref} className="font-mono text-[10px] underline underline-offset-2" style={{ color: "var(--accent)" }}>senaryo onerisi -&gt;</Link>}
-                </div>
-                <div className="mt-2">
-                  <SourceProofDisclosure label="kanit paketi" items={proofForAction(a.key)} />
                 </div>
               </div>
             </li>
           ))}
         </ol>
-      </Panel>
+      </Panel><aside className="space-y-3"><MiniTrend title="30 günlük ödeme baskısı" subtitle="Bilinen açık ödeme tutarları" values={weekRows.map(row=>row.amount??0)} href="/payments" tone="var(--warn)"/><MiniTrend title="12 aylık kasa eğilimi" subtitle="Aylık kapanış bakiyesi" values={months.slice(0,12).map(month=>month.closing??0)} href="/cashflow"/></aside></div>
 
       {/* 4) Durum şeridi: rapor / hatırlatma / üretim */}
       <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">

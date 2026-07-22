@@ -4,6 +4,7 @@ import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { getPool } from "@/lib/db";
 import { importWorkbook } from "@/lib/importers/workbook-importer";
+import { refreshMetricSnapshots } from "@/lib/analytics/snapshots";
 
 export async function uploadWorkbookAction(formData: FormData): Promise<void> {
   const file = formData.get("file");
@@ -12,6 +13,7 @@ export async function uploadWorkbookAction(formData: FormData): Promise<void> {
   }
   const buf = Buffer.from(await file.arrayBuffer());
   const result = await importWorkbook(getPool(), buf, file.name);
+  if (result.ok) await refreshMetricSnapshots(getPool()).catch(() => undefined);
   revalidatePath("/imports");
   // Failed imports are a recorded outcome, not an exception: user lands on the
   // detail page where parse_error is shown (risk-register: show technical failure).
@@ -58,4 +60,6 @@ export async function setReviewStatusAction(formData: FormData): Promise<void> {
     client.release();
   }
   revalidatePath(backTo);
+  revalidatePath("/data/reviews");
+  revalidatePath("/data/quality");
 }

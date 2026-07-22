@@ -73,7 +73,7 @@ export default async function CashflowMonthPage({
             ) : (
               <Badge tone="red">kimlik UYUŞMUYOR</Badge>
             )}
-            <Link href="/cashflow" className="font-mono text-[10px] uppercase text-zinc-400 underline underline-offset-2">
+            <Link href="/cashflow" className="font-mono text-[10px] uppercase text-tone-2 underline underline-offset-2">
               ← nakit akış
             </Link>
           </span>
@@ -81,19 +81,19 @@ export default async function CashflowMonthPage({
       >
         <div className="grid grid-cols-2 gap-2 sm:grid-cols-5">
           {head.map(([k, v]) => (
-            <div key={k} className="border border-zinc-800 bg-black/40 p-2">
-              <div className="font-mono text-[9px] uppercase tracking-wider text-zinc-500">{k}</div>
-              <div className={`font-mono text-sm tabular-nums ${v != null && v < 0 ? "text-red-400" : "text-zinc-200"}`}>
+            <div key={k} className="border border-line bg-black/40 p-2">
+              <div className="font-mono text-[9px] uppercase tracking-wider text-tone-3">{k}</div>
+              <div className={`font-mono text-sm tabular-nums ${v != null && v < 0 ? "text-neg" : "text-tone-1"}`}>
                 {fmt(v)}
               </div>
             </div>
           ))}
         </div>
-        <div className="mt-2 flex flex-wrap items-center gap-3 font-mono text-[10px] text-zinc-500">
+        <div className="mt-2 flex flex-wrap items-center gap-3 font-mono text-[10px] text-tone-3">
           <span>durum: {m.status} · güven: {m.confidence}</span>
           {m.source_workbook_id && m.source_sheet_id && (
             <Link
-              className="underline decoration-zinc-700 underline-offset-2"
+              className="underline decoration-line-strong underline-offset-2"
               href={`/imports/${m.source_workbook_id}/sheets/${m.source_sheet_id}`}
             >
               kaynak sekme: {m.sheet_name} →
@@ -110,15 +110,15 @@ export default async function CashflowMonthPage({
             <table className="w-full text-sm">
               <tbody>
                 {list.map((l) => (
-                  <tr key={l.id} className="border-b border-zinc-900">
-                    <td className="w-10 py-1 pr-2 font-mono text-xs text-zinc-500">
+                  <tr key={l.id} className="border-b border-line-faint">
+                    <td className="w-10 py-1 pr-2 font-mono text-xs text-tone-3">
                       {l.row_index != null ? `r${l.row_index}` : "—"}
                     </td>
                     <td className="py-1 pr-2">
                       {l.label}
-                      {l.party && <span className="ml-2 font-mono text-[10px] text-sky-400">↔ {l.party}</span>}
+                      {l.party && <span className="ml-2 font-mono text-[10px] text-info">↔ {l.party}</span>}
                     </td>
-                    <td className={`py-1 text-right font-mono tabular-nums ${l.amount != null && l.amount < 0 ? "text-red-400" : ""}`}>
+                    <td className={`py-1 text-right font-mono tabular-nums ${l.amount != null && l.amount < 0 ? "text-neg" : ""}`}>
                       {l.amount != null ? fmt(l.amount) : <Badge tone="amber">TUTAR EKSİK</Badge>}
                     </td>
                   </tr>
@@ -134,10 +134,10 @@ export default async function CashflowMonthPage({
           <table className="w-full text-sm">
             <tbody>
               {others.map((l) => (
-                <tr key={l.id} className="border-b border-zinc-900">
-                  <td className="w-24 py-1 pr-2 font-mono text-[10px] text-zinc-500">{l.line_type}</td>
+                <tr key={l.id} className="border-b border-line-faint">
+                  <td className="w-24 py-1 pr-2 font-mono text-[10px] text-tone-3">{l.line_type}</td>
                   <td className="py-1 pr-2">{l.label}</td>
-                  <td className={`py-1 text-right font-mono tabular-nums ${l.amount != null && l.amount < 0 ? "text-red-400" : ""}`}>
+                  <td className={`py-1 text-right font-mono tabular-nums ${l.amount != null && l.amount < 0 ? "text-neg" : ""}`}>
                     {l.amount != null ? fmt(l.amount) : "—"}
                   </td>
                 </tr>

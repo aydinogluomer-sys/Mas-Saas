@@ -1,13 +1,15 @@
 import type { ReactNode } from "react";
 
-// Tone → token-based colors. Tuned for WCAG AA text contrast on dark surfaces.
+// Tone → token-derived colors (color-mix over the global palette), so badge
+// tints track the design tokens. Tuned for WCAG AA text contrast on dark surfaces.
+const mix = (token: string, pct: number) => `color-mix(in srgb, var(${token}) ${pct}%, transparent)`;
 const TONES = {
-  neutral: { bg: "#1c1c20", fg: "#c4c4cb", bd: "#33333a" },
-  blue: { bg: "#0f2233", fg: "#9ecbec", bd: "#1e4a6b" },
-  green: { bg: "#0c2a20", fg: "#4ade80", bd: "#155e45" },
-  amber: { bg: "#2a2109", fg: "#fbbf24", bd: "#5a4712" },
-  red: { bg: "#2c1315", fg: "#f87171", bd: "#5c1f24" },
-  violet: { bg: "#1e1735", fg: "#c4b5fd", bd: "#3b2f66" },
+  neutral: { bg: mix("--surface-3", 85), fg: "var(--text-2)", bd: "var(--line-strong)" },
+  blue: { bg: mix("--info", 12), fg: "color-mix(in srgb, var(--info) 82%, white)", bd: mix("--info", 40) },
+  green: { bg: mix("--pos", 11), fg: "var(--pos)", bd: mix("--pos", 38) },
+  amber: { bg: mix("--warn", 10), fg: "var(--warn)", bd: mix("--warn", 38) },
+  red: { bg: mix("--neg", 11), fg: "var(--neg)", bd: mix("--neg", 38) },
+  violet: { bg: mix("--accent", 13), fg: "color-mix(in srgb, var(--accent) 82%, white)", bd: mix("--accent", 40) },
 } as const;
 
 export type Tone = keyof typeof TONES;
@@ -25,7 +27,7 @@ export function Badge({
   return (
     <span
       className="inline-flex items-center gap-1 border px-1.5 py-0.5 font-mono text-[10px] uppercase leading-none tracking-wider"
-      style={{ background: c.bg, color: c.fg, borderColor: c.bd, borderRadius: "2px" }}
+      style={{ background: c.bg, color: c.fg, borderColor: c.bd, borderRadius: "var(--radius-sm)" }}
     >
       {dot && <span className="inline-block h-1.5 w-1.5 rounded-full" style={{ background: c.fg }} aria-hidden />}
       {children}

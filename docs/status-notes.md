@@ -1,5 +1,13 @@
 # Status Notes
 
+## Kanonik modül tamamlama — AI / Senaryo v2 / Veri Kalitesi / Aksiyon
+
+- AI soru-cevap ve rapor yorumu `/insights/ask/*` ve `/insights/reports/*` kanonik rotalarında cevap modu, model, güvenlik notu, kaynak kanıtı ve göreve dönüştürme ile görünür.
+- Senaryo v2 hedefli tahsilat gecikmesi, ödeme ertelemesi, faktoring, kapasite, verim ve borç servisini açar; optimizasyon adayları çalıştırılıp kaydedilebilir ve iki çalışma karşılaştırılabilir.
+- Veri Sağlığı karar güveni, mutabakat, sorun dağılımı, eski üretim tarifesi, dış varsayım ve denetim sinyallerini gösterir. İnceleme Kuyruğu doğrudan karar ve görev aksiyonları sunar.
+- Görevler arama/durum filtresi, manuel oluşturma, başlatma, engelleme, tamamlama, iptal ve kapanış notu akışlarını kullanır. İnternet kaynaklı dış varsayımlarda URL zorunludur.
+- Merkezi özellik kayıt listesi motor/arayüz/test/kanonik rota durumlarını `/system/features` üzerinde üretir; eski üst seviye rotalar modül rotalarına yönlenir.
+
 ## Phase 0 — DONE
 - Next.js 15 + TS strict + Tailwind + ESLint scaffold (pnpm), src-dir, App Router.
 - Parser spike (`src/lib/importers/workbook-parser.ts` + `scripts/parse-spike.ts`): signature-guarded safe open; TR-normalized ad tabanlı sınıflandırıcı, DB enum'larıyla birebir.

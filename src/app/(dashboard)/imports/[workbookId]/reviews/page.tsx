@@ -54,7 +54,7 @@ export default async function ReviewsPage({
       <Panel
         title={`EŞLEME İNCELEMELERİ — ${wb.rows[0].original_filename}`}
         right={
-          <Link href={`/imports/${workbookId}`} className="font-mono text-[10px] uppercase text-zinc-400 underline underline-offset-2">
+          <Link href={`/imports/${workbookId}`} className="font-mono text-[10px] uppercase text-tone-2 underline underline-offset-2">
             ← workbook
           </Link>
         }
@@ -62,12 +62,12 @@ export default async function ReviewsPage({
         <div className="flex flex-wrap gap-1">
           {FILTERS.map((f) => (
             <Link key={f} href={`/imports/${workbookId}/reviews?status=${f}`}
-              className={`border px-2 py-1 font-mono text-[10px] uppercase tracking-wider ${f === filter ? "border-zinc-200 bg-zinc-200 text-zinc-950" : "border-zinc-700 text-zinc-300"}`}>
+              className={f === filter ? "button-primary px-2 py-1" : "button-ghost px-2 py-1"}>
               {f}{f !== "all" ? ` (${countOf(f)})` : ""}
             </Link>
           ))}
         </div>
-        <p className="mt-2 text-xs text-zinc-500">
+        <p className="mt-2 text-xs text-tone-3">
           Kural: belirsiz satırlar nihai tablolara YAZILMAZ — burada karar verilir. Kabul/ret yalnız inceleme
           durumunu değiştirir ve denetim kaydına işlenir; alan eşlemesi Faz 3+ işidir.
         </p>
@@ -75,11 +75,11 @@ export default async function ReviewsPage({
 
       <Panel title={`${reviews.rowCount} kayıt`}>
         {reviews.rowCount === 0 ? (
-          <p className="text-sm text-zinc-500">Bu filtrede kayıt yok.</p>
+          <p className="text-sm text-tone-3">Bu filtrede kayıt yok.</p>
         ) : (
           <table className="w-full text-sm">
             <thead>
-              <tr className="border-b border-zinc-800 text-left font-mono text-[10px] uppercase tracking-wider text-zinc-500">
+              <tr className="border-b border-line text-left font-mono text-[10px] uppercase tracking-wider text-tone-3">
                 <th className="py-1 pr-2">önem</th>
                 <th className="py-1 pr-2">tip</th>
                 <th className="py-1 pr-2">sekme / satır</th>
@@ -90,15 +90,15 @@ export default async function ReviewsPage({
             </thead>
             <tbody>
               {reviews.rows.map((m) => (
-                <tr key={m.id} className="border-b border-zinc-900 align-top">
+                <tr key={m.id} className="border-b border-line-faint align-top">
                   <td className="py-1.5 pr-2"><Badge tone={SEVERITY_TONE[m.severity]}>{m.severity}</Badge></td>
                   <td className="py-1.5 pr-2 font-mono text-xs">{m.issue_type}</td>
                   <td className="py-1.5 pr-2 text-xs">
-                    <Link className="underline decoration-zinc-700 underline-offset-2"
+                    <Link className="underline decoration-line-strong underline-offset-2"
                       href={`/imports/${workbookId}/sheets/${m.sheet_id}`}>
                       {m.sheet_name}
                     </Link>
-                    {m.row_index != null ? <span className="font-mono text-zinc-500"> · r{m.row_index}</span> : null}
+                    {m.row_index != null ? <span className="font-mono text-tone-3"> · r{m.row_index}</span> : null}
                   </td>
                   <td className="max-w-[360px] py-1.5 pr-2 text-xs">{m.message}</td>
                   <td className="py-1.5 pr-2"><Badge tone={STATUS_TONE[m.status] ?? "neutral"}>{m.status}</Badge></td>
@@ -110,7 +110,7 @@ export default async function ReviewsPage({
                           <input type="hidden" name="status" value={s} />
                           <input type="hidden" name="backTo" value={backTo} />
                           <button type="submit"
-                            className="border border-zinc-700 px-1.5 py-0.5 font-mono text-[9px] uppercase text-zinc-300 hover:border-zinc-400">
+                            className="border border-line-strong px-1.5 py-0.5 font-mono text-[9px] uppercase text-tone-2 hover:border-line-strong">
                             {s === "accepted" ? "kabul" : s === "rejected" ? "ret" : "çözüldü"}
                           </button>
                         </form>

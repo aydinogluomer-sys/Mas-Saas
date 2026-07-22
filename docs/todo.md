@@ -107,7 +107,7 @@
 - [x] extractMonthlyCashflow genişletildi: A18:B25, A27:B31, F18:G23, F25:G31 → cashflow_lines (loan_payment/tax/operational_cost; etiket keyword ile sınıflandırma). Etiketsiz-ama-tutarlı satır (ör. ÜCRET GİDERLERİ) düşmez. Engine değişmedi (data.lines otomatik yazar).
 - [x] /cashflow/[monthId]: İŞLETME GİDERLERİ · VERGİ/SGK · KREDİ/FİNANSMAN grupları eklendi.
 - [x] phase9b-verify: **35 ay Σgider-satırı = kaynak B17+B26+G17+G24 mutabakatı** (çift-sayım yok), 910 satır %100 kaynak-izli, idempotent, **ay toplamları değişmedi** (kompozisyon gider/kasayı bozmaz). Gate: typecheck/lint/test 149/db:verify/import:real/phase3-8+9a+9b/build ✓.
-- [ ] 9C makine ROI+ekipman (tablo, kişisel hariç) · 9D kapasite makine-dakika + faiz makine-tahsis.
+- [x] 9C makine ROI+ekipman (tablo, kişisel hariç) · 9D kapasite makine-dakika + finansman maliyeti makine tahsisi. Motor ve bağımsız `/production/roi` ile `/production/capacity` arayüzleri mevcut.
 
 ## Phase 8 — DONE (senaryo motoru) — MVP TAMAMLANDI
 

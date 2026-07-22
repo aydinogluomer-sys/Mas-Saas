@@ -33,11 +33,11 @@ function FlagBadges({ flags }: { flags: string[] }) {
 export function IssueList({ issues }: { issues: ReviewIssue[] }) {
   if (issues.length === 0) return null;
   return (
-    <ul className="mt-3 space-y-1 border-t border-zinc-800 pt-2">
+    <ul className="mt-3 space-y-1 border-t border-line pt-2">
       {issues.map((i, k) => (
-        <li key={k} className="flex items-start gap-2 text-xs text-zinc-400">
+        <li key={k} className="flex items-start gap-2 text-xs text-tone-2">
           <Badge tone={SEVERITY_TONE[i.severity]}>{i.severity}</Badge>
-          <span className="font-mono text-[10px] text-zinc-500">
+          <span className="font-mono text-[10px] text-tone-3">
             {i.rowIndex != null ? `r${i.rowIndex}` : "—"}
           </span>
           <span>{i.message}</span>
@@ -59,7 +59,7 @@ export function PaymentMatrixPreview({
     <div>
       <table className="w-full text-sm">
         <thead>
-          <tr className="border-b border-zinc-800 text-left font-mono text-[10px] uppercase tracking-wider text-zinc-500">
+          <tr className="border-b border-line text-left font-mono text-[10px] uppercase tracking-wider text-tone-3">
             <th className="py-1 pr-2">r</th>
             <th className="py-1 pr-2">ödeme</th>
             <th className="py-1 pr-2">gün</th>
@@ -69,13 +69,13 @@ export function PaymentMatrixPreview({
         </thead>
         <tbody>
           {candidates.map((c) => (
-            <tr key={c.rowIndex} className="border-b border-zinc-900">
-              <td className="py-1.5 pr-2 font-mono text-xs text-zinc-500">{c.rowIndex}</td>
+            <tr key={c.rowIndex} className="border-b border-line-faint">
+              <td className="py-1.5 pr-2 font-mono text-xs text-tone-3">{c.rowIndex}</td>
               <td className="py-1.5 pr-2">{c.name ?? <Badge tone="red">ETİKETSİZ</Badge>}</td>
               <td className="py-1.5 pr-2">
                 <Num>{c.dueDay != null ? `${c.dueDay}. gün` : "—"}</Num>
               </td>
-              <td className={`py-1.5 pr-2 ${c.amountCandidate != null && c.amountCandidate < 0 ? "text-red-400" : ""}`}>
+              <td className={`py-1.5 pr-2 ${c.amountCandidate != null && c.amountCandidate < 0 ? "text-neg" : ""}`}>
                 <Num>{c.amountCandidate != null ? fmtTL(c.amountCandidate) : "—"}</Num>
               </td>
               <td className="py-1.5"><FlagBadges flags={c.flags} /></td>
@@ -107,9 +107,9 @@ export function MonthlyCashflowPreviewView({ data }: { data: CashflowData }) {
     <div>
       <div className="mb-3 grid grid-cols-2 gap-2 sm:grid-cols-5">
         {head.map(([k, v]) => (
-          <div key={k} className="border border-zinc-800 bg-black/40 p-2">
-            <div className="font-mono text-[9px] uppercase tracking-wider text-zinc-500">{k}</div>
-            <div className={`font-mono text-sm tabular-nums ${v != null && v < 0 ? "text-red-400" : "text-zinc-200"}`}>
+          <div key={k} className="border border-line bg-black/40 p-2">
+            <div className="font-mono text-[9px] uppercase tracking-wider text-tone-3">{k}</div>
+            <div className={`font-mono text-sm tabular-nums ${v != null && v < 0 ? "text-neg" : "text-tone-1"}`}>
               {v != null ? new Intl.NumberFormat("tr-TR").format(v) : "—"}
             </div>
           </div>
@@ -127,14 +127,14 @@ export function MonthlyCashflowPreviewView({ data }: { data: CashflowData }) {
       {groups.map(([title, lines]) =>
         lines.length ? (
           <div key={title} className="mb-3">
-            <div className="mb-1 font-mono text-[10px] uppercase tracking-wider text-zinc-500">{title}</div>
+            <div className="mb-1 font-mono text-[10px] uppercase tracking-wider text-tone-3">{title}</div>
             <table className="w-full text-sm">
               <tbody>
                 {lines.map((l) => (
-                  <tr key={`${l.line_type}-${l.rowIndex}-${l.label}`} className="border-b border-zinc-900">
-                    <td className="py-1 pr-2 font-mono text-xs text-zinc-500">r{l.rowIndex}</td>
+                  <tr key={`${l.line_type}-${l.rowIndex}-${l.label}`} className="border-b border-line-faint">
+                    <td className="py-1 pr-2 font-mono text-xs text-tone-3">r{l.rowIndex}</td>
                     <td className="py-1 pr-2">{l.label}</td>
-                    <td className={`py-1 text-right font-mono tabular-nums ${l.amount != null && l.amount < 0 ? "text-red-400" : ""}`}>
+                    <td className={`py-1 text-right font-mono tabular-nums ${l.amount != null && l.amount < 0 ? "text-neg" : ""}`}>
                       {l.amount != null ? new Intl.NumberFormat("tr-TR").format(l.amount) : "—"}
                     </td>
                   </tr>
@@ -161,7 +161,7 @@ export function ChecksPreview({
     <div>
       <table className="w-full text-sm">
         <thead>
-          <tr className="border-b border-zinc-800 text-left font-mono text-[10px] uppercase tracking-wider text-zinc-500">
+          <tr className="border-b border-line text-left font-mono text-[10px] uppercase tracking-wider text-tone-3">
             <th className="py-1 pr-2">vade</th>
             <th className="py-1 pr-2">kime</th>
             <th className="py-1 pr-2">banka</th>
@@ -172,11 +172,11 @@ export function ChecksPreview({
         </thead>
         <tbody>
           {candidates.map((c) => (
-            <tr key={c.rowIndex} className="border-b border-zinc-900">
+            <tr key={c.rowIndex} className="border-b border-line-faint">
               <td className="py-1.5 pr-2 font-mono text-xs">{c.maturityDate ?? "—"}</td>
               <td className="py-1.5 pr-2">{c.payee ?? c.payer ?? "—"}</td>
               <td className="py-1.5 pr-2">{c.bank ?? "—"}</td>
-              <td className={`py-1.5 pr-2 font-mono tabular-nums ${c.signedAmount != null && c.signedAmount < 0 ? "text-red-400" : "text-emerald-400"}`}>
+              <td className={`py-1.5 pr-2 font-mono tabular-nums ${c.signedAmount != null && c.signedAmount < 0 ? "text-neg" : "text-pos"}`}>
                 {c.signedAmount != null ? new Intl.NumberFormat("tr-TR").format(c.signedAmount) : "—"}
               </td>
               <td className="py-1.5 pr-2">

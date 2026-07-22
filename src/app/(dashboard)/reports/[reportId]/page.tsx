@@ -59,21 +59,21 @@ export default async function ReportDetailPage({
             <Badge tone="green">salt-okunur</Badge>
             <form action={createActionFromReportAction}>
               <input type="hidden" name="reportId" value={reportId} />
-              <input type="hidden" name="backTo" value={`/reports/${reportId}`} />
+              <input type="hidden" name="backTo" value={`/insights/reports/${reportId}`} />
               <button type="submit" className="border px-2 py-1 font-mono text-[10px] uppercase tracking-wider" style={{ borderColor: "var(--line-faint)", color: "var(--text-3)", borderRadius: "var(--radius)" }}>
                 gorev
               </button>
             </form>
-            <Link href="/reports" className="font-mono text-[10px] uppercase text-zinc-400 underline underline-offset-2">
+            <Link href="/insights/reports" className="font-mono text-[10px] uppercase text-tone-2 underline underline-offset-2">
               {"<-"} raporlar
             </Link>
           </span>
         }
       >
-        <pre className="overflow-x-auto whitespace-pre-wrap font-mono text-[12px] leading-relaxed text-zinc-200">
+        <pre className="overflow-x-auto whitespace-pre-wrap font-mono text-[12px] leading-relaxed text-tone-1">
           {r.body_md}
         </pre>
-        <div className="mt-2 font-mono text-[10px] text-zinc-600">uretim: {r.created_at} (Europe/Istanbul)</div>
+        <div className="mt-2 font-mono text-[10px] text-tone-4">uretim: {r.created_at} (Europe/Istanbul)</div>
       </Panel>
 
       {prompt && (
@@ -87,7 +87,7 @@ export default async function ReportDetailPage({
               {selectedAi && (
                 <form action={createActionFromAiResponseAction}>
                   <input type="hidden" name="aiResponseId" value={selectedAi.id} />
-                  <input type="hidden" name="backTo" value={`/reports/${reportId}?ai=${selectedAi.id}`} />
+                  <input type="hidden" name="backTo" value={`/insights/reports/${reportId}?ai=${selectedAi.id}`} />
                   <button type="submit" className="border px-2 py-1 font-mono text-[10px] uppercase tracking-wider" style={{ borderColor: "var(--line-faint)", color: "var(--text-3)", borderRadius: "var(--radius)" }}>
                     gorev
                   </button>
@@ -106,7 +106,7 @@ export default async function ReportDetailPage({
             </span>
           }
         >
-          <p className="mb-2 font-mono text-[10px] text-amber-400">
+          <p className="mb-2 font-mono text-[10px] text-warn">
             Yorum yalniz deterministik facts ve rapor promptunu aciklar; finansal kayit degistirmez.
           </p>
           {selectedAi ? (
@@ -126,7 +126,7 @@ export default async function ReportDetailPage({
           {aiHistory.length > 0 && (
             <div className="mt-2 flex flex-wrap gap-1.5">
               {aiHistory.map((a) => (
-                <Link key={a.id} href={`/reports/${reportId}?ai=${a.id}`} className="font-mono text-[10px] underline underline-offset-2" style={{ color: "var(--accent)" }}>
+                <Link key={a.id} href={`/insights/reports/${reportId}?ai=${a.id}`} className="font-mono text-[10px] underline underline-offset-2" style={{ color: "var(--accent)" }}>
                   {a.created_at} / {a.response_mode}
                 </Link>
               ))}

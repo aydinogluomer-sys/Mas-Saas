@@ -252,7 +252,7 @@ export default async function DataQualityPage() {
           ) : (
             <table className="w-full text-sm">
               <thead>
-                <tr className="border-b border-zinc-800 text-left font-mono text-[10px] uppercase tracking-wider text-zinc-500">
+                <tr className="border-b border-line text-left font-mono text-[10px] uppercase tracking-wider text-tone-3">
                   <th className="py-1 pr-2">tip</th>
                   <th className="py-1 pr-2 text-right">acik</th>
                   <th className="py-1 text-right">toplam</th>
@@ -260,7 +260,7 @@ export default async function DataQualityPage() {
               </thead>
               <tbody>
                 {data.issueCounts.map((r) => (
-                  <tr key={r.issue_type} className="border-b border-zinc-900">
+                  <tr key={r.issue_type} className="border-b border-line-faint">
                     <td className="py-1.5 pr-2 font-mono text-xs">{r.issue_type}</td>
                     <td className="py-1.5 pr-2 text-right font-mono tabular-nums">{r.open_n}</td>
                     <td className="py-1.5 text-right font-mono tabular-nums">{r.n}</td>

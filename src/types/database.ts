@@ -820,6 +820,7 @@ export interface PaymentsRow {
   amount_confidence: string;
   direction: string;
   priority: string;
+  flexibility_class: string | null;
   status: string;
   source_workbook_id: string | null;
   source_sheet_id: string | null;
@@ -845,6 +846,7 @@ export interface PaymentsInsert {
   amount_confidence?: string;
   direction?: string;
   priority?: string;
+  flexibility_class?: string | null;
   status?: string;
   source_workbook_id?: string | null;
   source_sheet_id?: string | null;

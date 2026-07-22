@@ -5,6 +5,7 @@ import { getPool } from "@/lib/db";
 import { answerReportQuestion } from "@/lib/ai/engine";
 import { generateDaily, generateMonthly, generateWeekly } from "@/lib/reports/engine";
 import { istanbulDateISO } from "@/lib/reports/rules";
+import { refreshMetricSnapshots } from "@/lib/analytics/snapshots";
 
 export async function generateReportAction(formData: FormData): Promise<void> {
   const type = String(formData.get("type") ?? "");
@@ -15,14 +16,15 @@ export async function generateReportAction(formData: FormData): Promise<void> {
   else if (type === "weekly") ({ id } = await generateWeekly(pool, today));
   else if (type === "monthly") ({ id } = await generateMonthly(pool, today.slice(0, 7) + "-01"));
   else return;
-  revalidatePath("/reports");
-  redirect(`/reports/${id}`);
+  if (type === "daily") await refreshMetricSnapshots(pool, today).catch(() => undefined);
+  revalidatePath("/insights/reports");
+  redirect(`/insights/reports/${id}`);
 }
 
 export async function generateReportCommentaryAction(formData: FormData): Promise<void> {
   const reportId = String(formData.get("reportId") ?? "");
   if (!reportId) return;
   const { id } = await answerReportQuestion(getPool(), reportId);
-  revalidatePath(`/reports/${reportId}`);
-  redirect(`/reports/${reportId}?ai=${id}`);
+  revalidatePath(`/insights/reports/${reportId}`);
+  redirect(`/insights/reports/${reportId}?ai=${id}`);
 }

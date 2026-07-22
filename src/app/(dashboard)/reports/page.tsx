@@ -3,7 +3,7 @@ import { getPool } from "@/lib/db";
 import { listReports } from "@/lib/reports/engine";
 import { Badge, type Tone } from "@/components/ui/badge";
 import { Panel } from "@/components/ui/panel";
-import { PageHeader } from "@/components/ui/shell";
+import { EmptyState, PageHeader } from "@/components/ui/shell";
 import { generateReportAction } from "./actions";
 
 export const dynamic = "force-dynamic";
@@ -20,7 +20,7 @@ export default async function ReportsPage() {
       <input type="hidden" name="type" value={type} />
       <button
         type="submit"
-        className="border border-zinc-700 bg-zinc-900 px-3 py-2 font-mono text-[10px] uppercase tracking-wider text-zinc-200 hover:bg-zinc-800"
+        className="border border-line-strong bg-surface-2 px-3 py-2 font-mono text-[10px] uppercase tracking-wider text-tone-1 hover:bg-surface-3"
       >
         {label} üret →
       </button>
@@ -41,7 +41,7 @@ export default async function ReportsPage() {
           <GenButton type="weekly" label="Haftalık" />
           <GenButton type="monthly" label="Aylık" />
         </div>
-        <p className="mt-2 font-mono text-[10px] text-zinc-500">
+        <p className="mt-2 font-mono text-[10px] text-tone-3">
           Raporlar salt-okunur özetlerdir (Europe/Istanbul). Hiçbir mali kaydı değiştirmez; AI yalnız yorum
           promptu üretir, model çağrılmaz.
         </p>
@@ -49,11 +49,14 @@ export default async function ReportsPage() {
 
       <Panel title={`GEÇMİŞ RAPORLAR — ${reports.length}`}>
         {reports.length === 0 ? (
-          <p className="text-sm text-zinc-500">Henüz rapor üretilmedi. Yukarıdan başlayın.</p>
+          <EmptyState>
+            Henüz rapor üretilmedi. Yukarıdaki günlük / haftalık / aylık komutlarından biriyle başlayın —
+            raporlar salt-okunurdur, hiçbir mali kaydı değiştirmez.
+          </EmptyState>
         ) : (
           <table className="w-full text-sm">
             <thead>
-              <tr className="border-b border-zinc-800 text-left font-mono text-[10px] uppercase tracking-wider text-zinc-500">
+              <tr className="border-b border-line text-left font-mono text-[10px] uppercase tracking-wider text-tone-3">
                 <th className="py-1 pr-2">tip</th>
                 <th className="py-1 pr-2">dönem</th>
                 <th className="py-1">üretim</th>
@@ -61,17 +64,17 @@ export default async function ReportsPage() {
             </thead>
             <tbody>
               {reports.map((r) => (
-                <tr key={r.id} className="border-b border-zinc-900">
+                <tr key={r.id} className="border-b border-line-faint">
                   <td className="py-1.5 pr-2">
-                    <Link href={`/reports/${r.id}`}>
+                    <Link href={`/insights/reports/${r.id}`}>
                       <Badge tone={TYPE_TONE[r.report_type] ?? "neutral"}>{TYPE_LABEL[r.report_type] ?? r.report_type}</Badge>
                     </Link>
                   </td>
-                  <td className="py-1.5 pr-2 font-mono text-xs text-zinc-400">
+                  <td className="py-1.5 pr-2 font-mono text-xs text-tone-2">
                     {r.period_start === r.period_end ? r.period_start : `${r.period_start} → ${r.period_end}`}
                   </td>
-                  <td className="py-1.5 font-mono text-xs text-zinc-500">
-                    <Link className="underline decoration-zinc-700 underline-offset-2" href={`/reports/${r.id}`}>
+                  <td className="py-1.5 font-mono text-xs text-tone-3">
+                    <Link className="underline decoration-line-strong underline-offset-2" href={`/insights/reports/${r.id}`}>
                       {r.created_at} →
                     </Link>
                   </td>

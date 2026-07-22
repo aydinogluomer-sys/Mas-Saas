@@ -14,15 +14,24 @@ export interface InstanceRow {
   risk_level: string;
   risk_reasons: string[];
   note: string | null;
+  currency?: string;
+  direction?: string;
+  priority?: string | null;
+  category?: string | null;
+  source_linked?: boolean;
+  flexibility?: "critical" | "flexible" | "optional" | null;
 }
 
 const BASE = `
   select i.id, i.payment_id, coalesce(p.name,'(silinmiş kalem)') as name,
          to_char(i.due_date,'YYYY-MM-DD') as due_date,
          i.amount::float8 as amount, i.amount_status, i.status,
-         i.paid_amount::float8 as paid_amount, i.risk_level, i.risk_reasons, i.note
+         i.paid_amount::float8 as paid_amount, i.risk_level, i.risk_reasons, i.note,
+         i.currency, i.direction, p.priority, p.flexibility_class as flexibility, c.name as category,
+         (i.source_row_id is not null or p.source_row_id is not null) as source_linked
   from public.payment_instances i
   left join public.payments p on p.id = i.payment_id
+  left join public.categories c on c.id = p.category_id
 `;
 
 export async function instancesOn(pool: Pool, dateISO: string): Promise<InstanceRow[]> {
@@ -40,6 +49,22 @@ export async function overdueOpen(pool: Pool, todayISO: string): Promise<Instanc
     await pool.query(
       BASE + `where i.due_date < $1 and i.status in ('unpaid','partial','planned','late') order by i.due_date`,
       [todayISO],
+    )
+  ).rows;
+}
+
+/** One bounded read for the complete Payments overview. */
+export async function paymentOverviewInstances(
+  pool: Pool,
+  todayISO: string,
+  futureEndISO: string,
+): Promise<InstanceRow[]> {
+  return (
+    await pool.query(
+      BASE + `where i.due_date <= $2
+        and (i.due_date >= $1 or i.status in ('unpaid','partial','planned','late'))
+        order by i.due_date, i.amount desc nulls last`,
+      [todayISO, futureEndISO],
     )
   ).rows;
 }
@@ -100,6 +125,45 @@ export async function monthInstances(pool: Pool, monthStartISO: string): Promise
   return (
     await pool.query(BASE + `where i.instance_month = $1 order by i.due_date`, [monthStartISO])
   ).rows;
+}
+
+export async function paidInstances(pool: Pool, limit = 100): Promise<InstanceRow[]> {
+  return (
+    await pool.query(
+      BASE + `where i.status = 'paid' order by i.due_date desc limit $1`,
+      [limit],
+    )
+  ).rows;
+}
+
+export interface PaymentHistoryEvent {
+  id:string; instanceId:string; paymentName:string; eventType:"paid"|"partial"|"reopened"|"cancelled";
+  previousStatus:string|null; nextStatus:string; amount:number|null; paidAmount:number|null; remainingAmount:number|null;
+  occurredAt:string; sourceLinked:boolean;
+}
+
+export async function paymentHistoryEvents(pool:Pool, filters:{status?:string;q?:string;from?:string;to?:string;limit?:number}={}):Promise<PaymentHistoryEvent[]> {
+  const result=await pool.query(`
+    with audit_events as (
+      select a.id,a.entity_id instance_id,coalesce(p.name,'(silinmiş kalem)') payment_name,
+        case when a.action='mark_paid' then 'paid' when a.action='mark_unpaid' then 'reopened'
+             when a.after_data->>'status'='partial' then 'partial' else 'cancelled' end event_type,
+        a.before_data->>'status' previous_status,coalesce(a.after_data->>'status','unknown') next_status,
+        i.amount::float8 amount,nullif(a.after_data->>'paid_amount','')::float8 paid_amount,
+        case when i.amount is null then null else greatest(0,i.amount-coalesce(nullif(a.after_data->>'paid_amount','')::numeric,0))::float8 end remaining_amount,
+        to_char(a.created_at,'YYYY-MM-DD HH24:MI') occurred_at,(i.source_row_id is not null) source_linked
+      from public.audit_logs a left join public.payment_instances i on i.id=a.entity_id left join public.payments p on p.id=i.payment_id
+      where a.entity_table='payment_instances' and (a.action in ('mark_paid','mark_unpaid') or a.after_data->>'status' in ('partial','cancelled'))
+    ), current_events as (
+      select i.id,i.id,coalesce(p.name,'(silinmiş kalem)'),i.status,null,i.status,i.amount::float8,i.paid_amount::float8,
+        case when i.amount is null then null else greatest(0,i.amount-coalesce(i.paid_amount,0))::float8 end,
+        to_char(coalesce(i.paid_at,i.updated_at),'YYYY-MM-DD HH24:MI'),(i.source_row_id is not null)
+      from public.payment_instances i left join public.payments p on p.id=i.payment_id
+      where i.status in ('partial','cancelled') and not exists(select 1 from audit_events a where a.instance_id=i.id and a.next_status=i.status)
+    ) select * from (select * from audit_events union all select * from current_events) h
+    where ($1='' or event_type=$1) and ($2='' or payment_name ilike '%'||$2||'%') and ($3='' or occurred_at::text >= $3) and ($4='' or occurred_at::text <= $4||' 23:59')
+    order by occurred_at desc limit $5`,[filters.status??"",filters.q??"",filters.from??"",filters.to??"",filters.limit??250]);
+  return result.rows.map(r=>({id:r.id,instanceId:r.instance_id,paymentName:r.payment_name,eventType:r.event_type,previousStatus:r.previous_status,nextStatus:r.next_status,amount:r.amount,paidAmount:r.paid_amount,remainingAmount:r.remaining_amount,occurredAt:r.occurred_at,sourceLinked:r.source_linked}));
 }
 
 export { addMonths };

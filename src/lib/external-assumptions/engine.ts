@@ -51,6 +51,7 @@ export async function listExternalAssumptions(pool: Pool, limit = 80): Promise<E
             to_char(created_at at time zone 'Europe/Istanbul','YYYY-MM-DD HH24:MI') as created_at,
             to_char(updated_at at time zone 'Europe/Istanbul','YYYY-MM-DD HH24:MI') as updated_at
      from public.external_assumptions
+     where archived_at is null
      order by case review_status when 'pending_review' then 0 when 'approved' then 1 else 2 end,
               source_date desc, created_at desc
      limit $1`,
@@ -73,7 +74,7 @@ export async function loadApprovedExternalAssumptions(pool: Pool, limit = 12): P
             to_char(created_at at time zone 'Europe/Istanbul','YYYY-MM-DD HH24:MI') as created_at,
             to_char(updated_at at time zone 'Europe/Istanbul','YYYY-MM-DD HH24:MI') as updated_at
      from public.external_assumptions
-     where review_status='approved'
+     where review_status='approved' and archived_at is null
      order by assumption_type, source_date desc, created_at desc
      limit $1`,
     [limit],
@@ -86,7 +87,7 @@ export async function loadExternalAssumptionCenter(pool: Pool) {
     listExternalAssumptions(pool),
     pool.query<{ review_status: ExternalReviewStatus; source_kind: ExternalSourceKind; n: number }>(
       `select review_status, source_kind, count(*)::int n
-       from public.external_assumptions group by review_status, source_kind`,
+       from public.external_assumptions where archived_at is null group by review_status, source_kind`,
     ),
     loadApprovedExternalAssumptions(pool),
   ]);

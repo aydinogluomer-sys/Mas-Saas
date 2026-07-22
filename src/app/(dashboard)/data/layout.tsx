@@ -1,0 +1,3 @@
+import type { ReactNode } from "react"; import { ModuleFrame } from "@/components/ui/module-tabs";
+const tabs=[{href:"/data/quality",label:"Veri sağlığı"},{href:"/data/imports",label:"İçe aktarımlar"},{href:"/data/reviews",label:"İnceleme kuyruğu"},{href:"/data/reconciliation",label:"Mutabakat"},{href:"/data/assumptions",label:"Dış varsayımlar"},{href:"/data/sources",label:"Kaynak gezgini"}];
+export default function Layout({children}:{children:ReactNode}){return <ModuleFrame title="Veri Merkezi" description="Excel aktarımı, karar güveni, mutabakat ve kaynak kanıtları." tabs={tabs}>{children}</ModuleFrame>}

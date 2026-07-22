@@ -55,7 +55,7 @@ export default async function ScenarioRunPage({
         right={
           <span className="flex items-center gap-2">
             <Badge tone={CONF_TONE[run.confidence] ?? "neutral"}>güven: {run.confidence}</Badge>
-            <Link href="/scenarios" className="font-mono text-[10px] uppercase text-zinc-400 underline underline-offset-2">← senaryolar</Link>
+            <Link href="/scenarios" className="font-mono text-[10px] uppercase text-tone-2 underline underline-offset-2">← senaryolar</Link>
           </span>
         }
       >
@@ -85,11 +85,11 @@ export default async function ScenarioRunPage({
 
       <Panel title="VARSAYIMLAR (açık beyan)">
         {assumptions.length === 0 ? (
-          <p className="text-sm text-zinc-500">Varsayım uygulanmadı — senaryo baz senaryoya eşittir.</p>
+          <p className="text-sm text-tone-3">Varsayım uygulanmadı — senaryo baz senaryoya eşittir.</p>
         ) : (
           <ul className="space-y-1">
             {assumptions.map((a, i) => (
-              <li key={i} className="font-mono text-[11px] text-zinc-300">
+              <li key={i} className="font-mono text-[11px] text-tone-2">
                 • {a.description}: <span className="text-violet-300">{a.unit === "oran" ? `%${(a.value! * 100).toFixed(0)}` : a.unit === "bayrak" ? "evet" : `${a.value} ${a.unit}`}</span>
               </li>
             ))}
@@ -99,7 +99,7 @@ export default async function ScenarioRunPage({
 
       <Panel title="ANALİTİK İÇGÖRÜ (deterministik, AI değil)">
         <ul className="space-y-1">
-          {insights.map((s, i) => <li key={i} className="font-mono text-[12px] text-zinc-300">• {s}</li>)}
+          {insights.map((s, i) => <li key={i} className="font-mono text-[12px] text-tone-2">• {s}</li>)}
         </ul>
       </Panel>
 
@@ -116,7 +116,7 @@ export default async function ScenarioRunPage({
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
             <thead>
-              <tr className="border-b border-zinc-800 text-left font-mono text-[10px] uppercase tracking-wider text-zinc-500">
+              <tr className="border-b border-line text-left font-mono text-[10px] uppercase tracking-wider text-tone-3">
                 <th className="py-1 pr-2">ay</th>
                 <th className="py-1 pr-2 text-right">baz gelir</th>
                 <th className="py-1 pr-2 text-right">senaryo gelir</th>
@@ -130,13 +130,13 @@ export default async function ScenarioRunPage({
             <tbody>
               {lines.map((l) => {
                 const cell = (v: number | null) => (
-                  <td className={`py-1 pr-2 text-right font-mono tabular-nums ${v != null && v < 0 ? "text-red-400" : ""}`}>{v != null ? fmt0(v) : "—"}</td>
+                  <td className={`py-1 pr-2 text-right font-mono tabular-nums ${v != null && v < 0 ? "text-neg" : ""}`}>{v != null ? fmt0(v) : "—"}</td>
                 );
                 return (
-                  <tr key={l.month_start} className="border-b border-zinc-900">
+                  <tr key={l.month_start} className="border-b border-line-faint">
                     <td className="py-1 pr-2 font-mono text-xs">{l.month_start.slice(0, 7)}</td>
                     {cell(l.base_inc)}{cell(l.scen_inc)}{cell(l.base_exp)}{cell(l.scen_exp)}{cell(l.base_close)}{cell(l.scen_close)}
-                    <td className={`py-1 text-right font-mono tabular-nums ${l.delta != null && l.delta < 0 ? "text-red-400" : l.delta != null && l.delta > 0 ? "text-emerald-400" : "text-zinc-500"}`}>
+                    <td className={`py-1 text-right font-mono tabular-nums ${l.delta != null && l.delta < 0 ? "text-neg" : l.delta != null && l.delta > 0 ? "text-pos" : "text-tone-3"}`}>
                       {l.delta != null ? (l.delta > 0 ? "+" : "") + fmt0(l.delta) : "—"}
                     </td>
                   </tr>
@@ -149,7 +149,7 @@ export default async function ScenarioRunPage({
 
       <form action={deleteScenarioRunAction}>
         <input type="hidden" name="runId" value={run.id} />
-        <button type="submit" className="border border-zinc-700 bg-zinc-900 px-3 py-1.5 font-mono text-[10px] uppercase tracking-wider text-zinc-400 hover:text-red-300">
+        <button type="submit" className="border border-line-strong bg-surface-2 px-3 py-1.5 font-mono text-[10px] uppercase tracking-wider text-tone-2 hover:text-neg">
           bu çalıştırmayı sil (yalnız senaryo kaydı)
         </button>
       </form>

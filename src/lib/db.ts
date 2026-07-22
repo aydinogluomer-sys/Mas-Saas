@@ -11,9 +11,13 @@ declare global {
 
 export function getPool(): Pool {
   if (!global.__masPool) {
+    const configuredMax = Number(process.env.DATABASE_POOL_MAX ?? 10);
+    const max = Number.isFinite(configuredMax) ? Math.min(20, Math.max(2, configuredMax)) : 10;
     global.__masPool = new Pool({
       connectionString: process.env.DATABASE_URL ?? DEFAULT_LOCAL,
-      max: 5,
+      max,
+      idleTimeoutMillis: 30_000,
+      connectionTimeoutMillis: 5_000,
     });
   }
   return global.__masPool;

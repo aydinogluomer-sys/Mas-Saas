@@ -69,10 +69,10 @@ export default async function SheetPage({
   const base = `/imports/${workbookId}/sheets/${sheetId}`;
   const tab = (label: string, href: string, active: boolean, disabled = false) =>
     disabled ? (
-      <span className="border border-zinc-900 px-2 py-1 font-mono text-[10px] uppercase text-zinc-600">{label}</span>
+      <span className="border border-line-faint px-2 py-1 font-mono text-[10px] uppercase text-tone-4">{label}</span>
     ) : (
       <Link href={href}
-        className={`border px-2 py-1 font-mono text-[10px] uppercase tracking-wider ${active ? "border-zinc-200 bg-zinc-200 text-zinc-950" : "border-zinc-700 text-zinc-300"}`}>
+        className={active ? "button-primary px-2 py-1" : "button-ghost px-2 py-1"}>
         {label}
       </Link>
     );
@@ -99,7 +99,7 @@ export default async function SheetPage({
         right={
           <span className="flex items-center gap-2">
             <Badge tone={SHEET_TYPE_TONE[sheet.detected_type] ?? "neutral"}>{sheet.detected_type}</Badge>
-            <span className="font-mono text-[10px] text-zinc-500">{sheet.used_range}</span>
+            <span className="font-mono text-[10px] text-tone-3">{sheet.used_range}</span>
           </span>
         }
       >
@@ -111,7 +111,7 @@ export default async function SheetPage({
             view === "preview",
             !canPreview,
           )}
-          <span className="ml-auto font-mono text-[10px] text-zinc-500">
+          <span className="ml-auto font-mono text-[10px] text-tone-3">
             <Num>{totalRows}</Num> satır — önizleme staging&apos;dir, nihai tablolara yazmaz
           </span>
         </div>
@@ -122,7 +122,7 @@ export default async function SheetPage({
           <div className="overflow-x-auto">
             <table className="w-full text-xs">
               <thead>
-                <tr className="border-b border-zinc-800 text-left font-mono text-[9px] uppercase text-zinc-500">
+                <tr className="border-b border-line text-left font-mono text-[9px] uppercase text-tone-3">
                   <th className="py-1 pr-2">r</th>
                   <th className="py-1 pr-2">durum</th>
                   {cols.map((c) => <th key={c} className="py-1 pr-2">{c}</th>)}
@@ -130,12 +130,12 @@ export default async function SheetPage({
               </thead>
               <tbody>
                 {pageRows.map((r) => (
-                  <tr key={r.row_index} className="border-b border-zinc-900 align-top">
-                    <td className="py-1 pr-2 font-mono text-zinc-500">{r.row_index}</td>
+                  <tr key={r.row_index} className="border-b border-line-faint align-top">
+                    <td className="py-1 pr-2 font-mono text-tone-3">{r.row_index}</td>
                     <td className="py-1 pr-2">
                       {r.mapping_status === "needs_review"
                         ? <Badge tone="amber">inceleme</Badge>
-                        : <span className="font-mono text-[9px] text-zinc-600">{r.mapping_status}</span>}
+                        : <span className="font-mono text-[9px] text-tone-4">{r.mapping_status}</span>}
                     </td>
                     {cols.map((c) => {
                       const cell = r.row_json[c];
@@ -143,7 +143,7 @@ export default async function SheetPage({
                         <td key={c} className="max-w-[160px] truncate py-1 pr-2 font-mono tabular-nums"
                           title={cell?.f ? `= ${cell.f}` : undefined}>
                           {cell ? String(cell.w ?? cell.v) : ""}
-                          {cell?.f ? <span className="text-sky-500">ƒ</span> : null}
+                          {cell?.f ? <span className="text-info">ƒ</span> : null}
                         </td>
                       );
                     })}

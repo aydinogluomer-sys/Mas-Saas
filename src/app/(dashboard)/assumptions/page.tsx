@@ -3,8 +3,9 @@ import { loadExternalAssumptionCenter } from "@/lib/external-assumptions/engine"
 import { sourceLabel } from "@/lib/external-assumptions/rules";
 import { Badge, type Tone } from "@/components/ui/badge";
 import { Panel } from "@/components/ui/panel";
-import { KeyStat, PageHeader } from "@/components/ui/shell";
+import { EmptyState, KeyStat, PageHeader } from "@/components/ui/shell";
 import { createExternalAssumptionAction, setExternalAssumptionReviewStatusAction } from "./actions";
+import { archiveRecordAction } from "@/app/(dashboard)/system/archive/actions";
 
 export const dynamic = "force-dynamic";
 
@@ -68,7 +69,7 @@ export default async function AssumptionsPage() {
           <Field label="Period baslangic" name="periodStart" type="date" />
           <Field label="Period bitis" name="periodEnd" type="date" />
           <label className="block sm:col-span-3">
-            <span className="font-mono text-[10px] uppercase tracking-wider text-zinc-500">Not</span>
+            <span className="font-mono text-[10px] uppercase tracking-wider text-tone-3">Not</span>
             <textarea name="notes" rows={3} className="mt-1 w-full border bg-black/30 px-2 py-1.5 text-sm outline-none" style={{ borderColor: "var(--line)", borderRadius: "var(--radius)", color: "var(--text-1)" }} />
           </label>
           <div className="sm:col-span-3">
@@ -82,7 +83,10 @@ export default async function AssumptionsPage() {
 
       <Panel title={`SON ONAYLI VARSAYIMLAR - ${data.latestApproved.length}`}>
         {data.latestApproved.length === 0 ? (
-          <p className="text-sm" style={{ color: "var(--text-3)" }}>Onayli varsayim yok.</p>
+          <EmptyState>
+            Onaylı varsayım yok. Yukarıdan faiz, kur veya maliyet varsayımı ekleyin; onaylananlar
+            senaryo motoruna karar girdisi olarak akar.
+          </EmptyState>
         ) : (
           <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3">
             {data.latestApproved.map((a) => (
@@ -104,12 +108,14 @@ export default async function AssumptionsPage() {
 
       <Panel title={`TUM KAYITLAR - ${data.assumptions.length}`}>
         {data.assumptions.length === 0 ? (
-          <p className="text-sm" style={{ color: "var(--text-3)" }}>Dis varsayim kaydi yok.</p>
+          <EmptyState>
+            Dış varsayım kaydı yok. İlk kaydınız incelemeye düşer; onay/ret denetim iziyle saklanır.
+          </EmptyState>
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
-                <tr className="border-b border-zinc-800 text-left font-mono text-[10px] uppercase tracking-wider text-zinc-500">
+                <tr className="border-b border-line text-left font-mono text-[10px] uppercase tracking-wider text-tone-3">
                   <th className="py-1 pr-2">tip</th>
                   <th className="py-1 pr-2">baslik</th>
                   <th className="py-1 pr-2 text-right">deger</th>
@@ -120,7 +126,7 @@ export default async function AssumptionsPage() {
               </thead>
               <tbody>
                 {data.assumptions.map((a) => (
-                  <tr key={a.id} className="border-b border-zinc-900 align-top">
+                  <tr key={a.id} className="border-b border-line-faint align-top">
                     <td className="py-1.5 pr-2 font-mono text-xs">{TYPE_LABEL[a.assumption_type] ?? a.assumption_type}</td>
                     <td className="py-1.5 pr-2">
                       <div>{a.label}</div>
@@ -143,6 +149,7 @@ export default async function AssumptionsPage() {
                             </button>
                           </form>
                         ))}
+                        <form action={archiveRecordAction}><input type="hidden" name="entity" value="external_assumptions"/><input type="hidden" name="id" value={a.id}/><input type="hidden" name="backTo" value="/data/assumptions"/><input type="hidden" name="reason" value="Varsayım listesinden arşivlendi"/><button className="border px-1.5 py-0.5 font-mono text-[9px] uppercase" style={{borderColor:"var(--line-faint)",color:"var(--text-3)"}}>arşiv</button></form>
                       </div>
                     </td>
                   </tr>
@@ -165,7 +172,7 @@ function Field({ label, name, type = "number", placeholder, full }: {
 }) {
   return (
     <label className={`block ${full ? "sm:col-span-3" : ""}`}>
-      <span className="font-mono text-[10px] uppercase tracking-wider text-zinc-500">{label}</span>
+      <span className="font-mono text-[10px] uppercase tracking-wider text-tone-3">{label}</span>
       <input
         required={name === "label" || name === "valueNumeric" || name === "unit" || name === "sourceName" || name === "sourceDate"}
         name={name}
@@ -182,7 +189,7 @@ function Field({ label, name, type = "number", placeholder, full }: {
 function Select({ label, name, options }: { label: string; name: string; options: Array<[string, string]> }) {
   return (
     <label className="block">
-      <span className="font-mono text-[10px] uppercase tracking-wider text-zinc-500">{label}</span>
+      <span className="font-mono text-[10px] uppercase tracking-wider text-tone-3">{label}</span>
       <select name={name} className="mt-1 w-full border bg-black/30 px-2 py-1.5 text-sm outline-none" style={{ borderColor: "var(--line)", borderRadius: "var(--radius)", color: "var(--text-1)" }}>
         {options.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
       </select>

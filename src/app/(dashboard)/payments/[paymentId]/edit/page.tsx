@@ -15,7 +15,7 @@ export default async function EditPaymentPage({
   const sp = await searchParams;
   const r = await getPool().query(
     `select id, name, recurrence_type, due_day, to_char(due_date,'YYYY-MM-DD') as due_date,
-            default_amount::float8 as default_amount, amount_confidence, direction, priority, status,
+            default_amount::float8 as default_amount, amount_confidence, direction, priority, flexibility_class, status,
             category_id, provider_party_id, owner_party_id, cash_account_id, description
      from public.payments where id=$1`,
     [paymentId],

@@ -42,12 +42,12 @@ export default async function WorkbookDetailPage({
         right={<Badge tone={STATUS_TONE[w.status] ?? "neutral"}>{w.status}</Badge>}
       >
         <div className="grid grid-cols-2 gap-3 text-xs sm:grid-cols-4">
-          <div><div className="font-mono text-[9px] uppercase text-zinc-500">sha256</div><div className="truncate font-mono">{w.file_sha256}</div></div>
-          <div><div className="font-mono text-[9px] uppercase text-zinc-500">tarih</div><div className="font-mono">{w.imported_at}</div></div>
-          <div><div className="font-mono text-[9px] uppercase text-zinc-500">özet</div><div className="font-mono">{w.notes ?? "—"}</div></div>
+          <div><div className="font-mono text-[9px] uppercase text-tone-3">sha256</div><div className="truncate font-mono">{w.file_sha256}</div></div>
+          <div><div className="font-mono text-[9px] uppercase text-tone-3">tarih</div><div className="font-mono">{w.imported_at}</div></div>
+          <div><div className="font-mono text-[9px] uppercase text-tone-3">özet</div><div className="font-mono">{w.notes ?? "—"}</div></div>
           <div>
-            <div className="font-mono text-[9px] uppercase text-zinc-500">incelemeler</div>
-            <Link href={`/imports/${w.id}/reviews`} className="underline decoration-zinc-700 underline-offset-2">
+            <div className="font-mono text-[9px] uppercase text-tone-3">incelemeler</div>
+            <Link href={`/imports/${w.id}/reviews`} className="underline decoration-line-strong underline-offset-2">
               {openTotal} açık inceleme →
             </Link>
           </div>
@@ -56,20 +56,20 @@ export default async function WorkbookDetailPage({
           <form action={mapCandidatesAction} className="mt-3">
             <input type="hidden" name="workbookId" value={w.id} />
             <button type="submit"
-              className="border border-emerald-700 bg-emerald-950/40 px-3 py-2 font-mono text-[10px] uppercase tracking-wider text-emerald-300">
+              className="border border-pos tint-pos px-3 py-2 font-mono text-[10px] uppercase tracking-wider text-pos">
               kabul edilenleri radar&apos;a aktar →
             </button>
-            <span className="ml-2 text-[11px] text-zinc-500">açık/ret incelemeli ve isimsiz satırlar aktarılmaz; tekrar güvenlidir</span>
+            <span className="ml-2 text-[11px] text-tone-3">açık/ret incelemeli ve isimsiz satırlar aktarılmaz; tekrar güvenlidir</span>
           </form>
         )}
         {w.status === "parsed" && (
           <form action={mapCashflowAction} className="mt-2">
             <input type="hidden" name="workbookId" value={w.id} />
             <button type="submit"
-              className="border border-sky-700 bg-sky-950/40 px-3 py-2 font-mono text-[10px] uppercase tracking-wider text-sky-300">
+              className="border border-info tint-info px-3 py-2 font-mono text-[10px] uppercase tracking-wider text-info">
               nakit akışını aktar →
             </button>
-            <span className="ml-2 text-[11px] text-zinc-500">35 aylık sekmeler → cashflow; zincir kırıkları bayraklanır, düzeltilmez</span>
+            <span className="ml-2 text-[11px] text-tone-3">35 aylık sekmeler → cashflow; zincir kırıkları bayraklanır, düzeltilmez</span>
           </form>
         )}
         {w.status === "parsed" && (
@@ -79,24 +79,24 @@ export default async function WorkbookDetailPage({
               className="border border-violet-700 bg-violet-950/40 px-3 py-2 font-mono text-[10px] uppercase tracking-wider text-violet-300">
               çek/kredi aktar →
             </button>
-            <span className="ml-2 text-[11px] text-zinc-500">ÇEKLER → çek defteri (işaretli tutar=yön), faiz hesaplama → kredi+taksit; çift-kayıt/açık incelemeler hariç</span>
+            <span className="ml-2 text-[11px] text-tone-3">ÇEKLER → çek defteri (işaretli tutar=yön), faiz hesaplama → kredi+taksit; çift-kayıt/açık incelemeler hariç</span>
           </form>
         )}
         {w.status === "parsed" && (
           <form action={mapProductionAction} className="mt-2">
             <input type="hidden" name="workbookId" value={w.id} />
             <button type="submit"
-              className="border border-amber-700 bg-amber-950/40 px-3 py-2 font-mono text-[10px] uppercase tracking-wider text-amber-300">
+              className="border border-warn tint-warn px-3 py-2 font-mono text-[10px] uppercase tracking-wider text-warn">
               üretim analitiğini aktar →
             </button>
-            <span className="ml-2 text-[11px] text-zinc-500">kapasite → parçalar+model, maliyet-mastechnic(mesaili) → başabaş TL/dk; analitik tahmin, stale-rate bayraklı</span>
+            <span className="ml-2 text-[11px] text-tone-3">kapasite → parçalar+model, maliyet-mastechnic(mesaili) → başabaş TL/dk; analitik tahmin, stale-rate bayraklı</span>
           </form>
         )}
         {w.status === "failed" && (
-          <div className="mt-3 border border-red-900 bg-red-950/40 p-3">
-            <div className="font-mono text-[10px] uppercase tracking-wider text-red-400">parse hatası</div>
-            <div className="mt-1 font-mono text-xs text-red-300">{w.parse_error}</div>
-            <div className="mt-1 text-xs text-zinc-400">
+          <div className="mt-3 border border-neg tint-neg p-3">
+            <div className="font-mono text-[10px] uppercase tracking-wider text-neg">parse hatası</div>
+            <div className="mt-1 font-mono text-xs text-neg">{w.parse_error}</div>
+            <div className="mt-1 text-xs text-tone-2">
               Dosya bozuk görünüyor (ör. tamamen sıfır baytlık aktarım). Kaynağı yeniden dışa aktarıp tekrar yükleyin —
               bu kayıt denetim izi olarak saklanır.
             </div>
@@ -108,7 +108,7 @@ export default async function WorkbookDetailPage({
         <Panel title={`SEKMELER — ${sheets.rows.length} (hiçbiri atlanmadı)`}>
           <table className="w-full text-sm">
             <thead>
-              <tr className="border-b border-zinc-800 text-left font-mono text-[10px] uppercase tracking-wider text-zinc-500">
+              <tr className="border-b border-line text-left font-mono text-[10px] uppercase tracking-wider text-tone-3">
                 <th className="py-1 pr-2">#</th>
                 <th className="py-1 pr-2">sekme</th>
                 <th className="py-1 pr-2">tip</th>
@@ -119,10 +119,10 @@ export default async function WorkbookDetailPage({
             </thead>
             <tbody>
               {sheets.rows.map((s) => (
-                <tr key={s.id} className="border-b border-zinc-900">
-                  <td className="py-1.5 pr-2 font-mono text-xs text-zinc-500">{s.sheet_index}</td>
+                <tr key={s.id} className="border-b border-line-faint">
+                  <td className="py-1.5 pr-2 font-mono text-xs text-tone-3">{s.sheet_index}</td>
                   <td className="py-1.5 pr-2">
-                    <Link className="underline decoration-zinc-700 underline-offset-2 hover:text-white"
+                    <Link className="underline decoration-line-strong underline-offset-2 hover:text-tone-1"
                       href={`/imports/${workbookId}/sheets/${s.id}`}>
                       {s.sheet_name}
                     </Link>
@@ -130,11 +130,11 @@ export default async function WorkbookDetailPage({
                   <td className="py-1.5 pr-2">
                     <Badge tone={SHEET_TYPE_TONE[s.detected_type] ?? "neutral"}>{s.detected_type}</Badge>
                   </td>
-                  <td className="py-1.5 pr-2 font-mono text-xs text-zinc-400">{s.parse_confidence}</td>
-                  <td className="py-1.5 pr-2 font-mono text-xs text-zinc-400">
+                  <td className="py-1.5 pr-2 font-mono text-xs text-tone-2">{s.parse_confidence}</td>
+                  <td className="py-1.5 pr-2 font-mono text-xs text-tone-2">
                     {s.used_range ?? "—"} · <Num>{s.row_count}</Num>×<Num>{s.column_count}</Num>
                   </td>
-                  <td className="py-1.5">{s.open_reviews > 0 ? <Badge tone="amber">{s.open_reviews}</Badge> : <span className="text-zinc-600">—</span>}</td>
+                  <td className="py-1.5">{s.open_reviews > 0 ? <Badge tone="amber">{s.open_reviews}</Badge> : <span className="text-tone-4">—</span>}</td>
                 </tr>
               ))}
             </tbody>

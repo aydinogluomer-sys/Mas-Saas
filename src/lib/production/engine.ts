@@ -668,7 +668,7 @@ export async function calculateMachineRoiSnapshot(
 
 /* ── loaders for UI ── */
 
-export async function loadCapacityModels(pool: Pool): Promise<Array<CapacityCandidate & { id: string; name: string; sheetId: string | null; workbookId: string | null; partCount: number; missingPartCount: number }>> {
+export async function loadCapacityModels(pool: Pool): Promise<Array<CapacityCandidate & { id: string; name: string; monthlyMinutes: number | null; sheetId: string | null; workbookId: string | null; partCount: number; missingPartCount: number }>> {
   const r = await pool.query(`
     select cm.id, cm.name, cm.efficiency_rate::float8 as efficiency,
            cm.freze_rate_tl_per_min::float8 as freze, cm.torna_rate_tl_per_min::float8 as torna,

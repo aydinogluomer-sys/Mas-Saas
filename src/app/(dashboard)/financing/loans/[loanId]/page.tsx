@@ -36,20 +36,20 @@ export default async function LoanDetailPage({
       <Panel
         title={loan.name}
         right={
-          <Link href="/financing" className="font-mono text-[10px] uppercase text-zinc-400 underline underline-offset-2">
+          <Link href="/financing" className="font-mono text-[10px] uppercase text-tone-2 underline underline-offset-2">
             ← çek/kredi
           </Link>
         }
       >
         <div className="grid grid-cols-2 gap-2 sm:grid-cols-5">
           {head.map(([k, v]) => (
-            <div key={k} className="border border-zinc-800 bg-black/40 p-2">
-              <div className="font-mono text-[9px] uppercase tracking-wider text-zinc-500">{k}</div>
-              <div className="font-mono text-sm tabular-nums text-zinc-200">{v}</div>
+            <div key={k} className="border border-line bg-black/40 p-2">
+              <div className="font-mono text-[9px] uppercase tracking-wider text-tone-3">{k}</div>
+              <div className="font-mono text-sm tabular-nums text-tone-1">{v}</div>
             </div>
           ))}
         </div>
-        <div className="mt-2 flex flex-wrap items-center gap-3 font-mono text-[10px] text-zinc-500">
+        <div className="mt-2 flex flex-wrap items-center gap-3 font-mono text-[10px] text-tone-3">
           <span>
             ilk ödeme: {loan.firstPaymentDate ?? "—"} · uygulanan faiz %{loan.appliedRate ?? "—"} · aylık maliyet %
             {loan.monthlyCostRate ?? "—"}
@@ -59,7 +59,7 @@ export default async function LoanDetailPage({
           </span>
           {loan.sourceWorkbookId && loan.sourceSheetId && (
             <Link
-              className="underline decoration-zinc-700 underline-offset-2"
+              className="underline decoration-line-strong underline-offset-2"
               href={`/imports/${loan.sourceWorkbookId}/sheets/${loan.sourceSheetId}`}
             >
               kaynak: faiz hesaplama →
@@ -72,7 +72,7 @@ export default async function LoanDetailPage({
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
             <thead>
-              <tr className="border-b border-zinc-800 text-left font-mono text-[10px] uppercase tracking-wider text-zinc-500">
+              <tr className="border-b border-line text-left font-mono text-[10px] uppercase tracking-wider text-tone-3">
                 <th className="py-1 pr-2">#</th>
                 <th className="py-1 pr-2">vade</th>
                 <th className="py-1 pr-2 text-right">taksit</th>
@@ -86,13 +86,13 @@ export default async function LoanDetailPage({
               {installments.map((i) => {
                 const overdue = i.status !== "paid" && i.dueDate < today;
                 return (
-                  <tr key={i.id} className="border-b border-zinc-900">
-                    <td className="py-1 pr-2 font-mono text-xs text-zinc-500">{i.no}</td>
-                    <td className={`py-1 pr-2 font-mono text-xs ${overdue ? "text-red-400" : ""}`}>{i.dueDate}</td>
+                  <tr key={i.id} className="border-b border-line-faint">
+                    <td className="py-1 pr-2 font-mono text-xs text-tone-3">{i.no}</td>
+                    <td className={`py-1 pr-2 font-mono text-xs ${overdue ? "text-neg" : ""}`}>{i.dueDate}</td>
                     <td className="py-1 pr-2 text-right font-mono tabular-nums">{fmt0(i.amount)}</td>
-                    <td className="py-1 pr-2 text-right font-mono tabular-nums text-zinc-400">{fmt0(i.principal)}</td>
-                    <td className="py-1 pr-2 text-right font-mono tabular-nums text-zinc-400">{fmt0(i.interest)}</td>
-                    <td className="py-1 pr-2 text-right font-mono tabular-nums text-zinc-400">{fmt0(i.tax)}</td>
+                    <td className="py-1 pr-2 text-right font-mono tabular-nums text-tone-2">{fmt0(i.principal)}</td>
+                    <td className="py-1 pr-2 text-right font-mono tabular-nums text-tone-2">{fmt0(i.interest)}</td>
+                    <td className="py-1 pr-2 text-right font-mono tabular-nums text-tone-2">{fmt0(i.tax)}</td>
                     <td className="py-1">
                       <Badge tone={STATUS_TONE[i.status] ?? "neutral"}>{overdue ? "gecikmiş" : i.status}</Badge>
                     </td>

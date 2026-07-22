@@ -11,7 +11,7 @@ export default defineConfig({
   retries: 0,
   reporter: [["list"]],
   use: {
-    baseURL: process.env.BASE_URL ?? "http://127.0.0.1:3001",
+    baseURL: process.env.BASE_URL ?? "http://127.0.0.1:3103",
     // deterministic rendering
     colorScheme: "dark",
     viewport: { width: 1280, height: 900 },

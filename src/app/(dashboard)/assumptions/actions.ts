@@ -14,6 +14,9 @@ function numFromForm(v: FormDataEntryValue | null): number | null {
 
 export async function createExternalAssumptionAction(formData: FormData): Promise<void> {
   const valueNumeric = numFromForm(formData.get("valueNumeric"));
+  const sourceKind = String(formData.get("sourceKind") ?? "manual");
+  const sourceUrl = String(formData.get("sourceUrl") ?? "").trim();
+  if (sourceKind === "internet" && !sourceUrl) redirect("/data/assumptions?error=internet-source-url-required");
   if (valueNumeric != null) {
     await createExternalAssumption(getPool(), {
       assumptionType: String(formData.get("assumptionType") ?? "other"),
@@ -23,23 +26,23 @@ export async function createExternalAssumptionAction(formData: FormData): Promis
       valueNumeric,
       unit: String(formData.get("unit") ?? ""),
       currency: String(formData.get("currency") ?? "TRY"),
-      sourceKind: String(formData.get("sourceKind") ?? "manual"),
+      sourceKind,
       sourceName: String(formData.get("sourceName") ?? ""),
-      sourceUrl: String(formData.get("sourceUrl") ?? "") || null,
+      sourceUrl: sourceUrl || null,
       sourceDate: String(formData.get("sourceDate") ?? ""),
       notes: String(formData.get("notes") ?? "") || null,
     });
   }
-  revalidatePath("/assumptions");
-  revalidatePath("/data-quality");
-  redirect("/assumptions");
+  revalidatePath("/data/assumptions");
+  revalidatePath("/data/quality");
+  redirect("/data/assumptions?result=created");
 }
 
 export async function setExternalAssumptionReviewStatusAction(formData: FormData): Promise<void> {
   const id = String(formData.get("id") ?? "");
   const status = normalizeReviewStatus(String(formData.get("reviewStatus") ?? ""));
   if (id && status) await setExternalAssumptionReviewStatus(getPool(), id, status);
-  revalidatePath("/assumptions");
-  revalidatePath("/data-quality");
-  redirect("/assumptions");
+  revalidatePath("/data/assumptions");
+  revalidatePath("/data/quality");
+  redirect("/data/assumptions?result=reviewed");
 }

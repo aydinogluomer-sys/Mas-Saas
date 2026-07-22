@@ -2,7 +2,7 @@
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { getPool } from "@/lib/db";
-import { createAndRun, deleteScenarioRun, type ScenarioType } from "@/lib/scenarios/engine";
+import { createAndRun, deleteScenarioRun, estimateOptimizationCandidates, type ScenarioType } from "@/lib/scenarios/engine";
 import type { ScenarioAssumptions } from "@/lib/scenarios/rules";
 
 function pctFromForm(v: FormDataEntryValue | null): number | null {
@@ -52,4 +52,19 @@ export async function deleteScenarioRunAction(formData: FormData): Promise<void>
   await deleteScenarioRun(pool, runId);
   revalidatePath("/scenarios");
   redirect("/scenarios");
+}
+
+export async function runOptimizationCandidateAction(formData: FormData): Promise<void> {
+  const key = String(formData.get("candidateKey") ?? "");
+  const pool = getPool();
+  const candidate = (await estimateOptimizationCandidates(pool)).find((item) => item.key === key);
+  if (!candidate) redirect("/scenarios/optimization?result=not-found");
+  const { runId } = await createAndRun(pool, {
+    name: `Optimizasyon: ${candidate.label}`,
+    scenarioType: "combined_custom_scenario",
+    assumptions: candidate.assumptions,
+  });
+  revalidatePath("/scenarios/optimization");
+  revalidatePath("/scenarios/history");
+  redirect(`/scenarios/${runId}`);
 }

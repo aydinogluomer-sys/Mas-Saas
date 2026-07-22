@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { getPool } from "@/lib/db";
+import { istanbulDateISO } from "@/lib/reports/rules";
 import {
   loadChecks,
   loadLoans,
@@ -14,7 +15,7 @@ import {
 } from "@/lib/financing/rules";
 import { Badge, type Tone } from "@/components/ui/badge";
 import { Num, Panel, fmtTL } from "@/components/ui/panel";
-import { DetailsDisclosure, PageHeader } from "@/components/ui/shell";
+import { DetailsDisclosure, ModuleEmptyState, PageHeader } from "@/components/ui/shell";
 
 export const dynamic = "force-dynamic";
 
@@ -40,20 +41,31 @@ export default async function FinancingPage({
 
   if (checks.length === 0 && loans.length === 0) {
     return (
-      <Panel title="ÇEK / KREDİ">
-        <p className="text-sm text-zinc-500">
-          Henüz çek veya kredi yok.{" "}
-          <Link className="underline underline-offset-2" href="/imports">
-            İçe aktarım
-          </Link>{" "}
-          sayfasından workbook detayına girip &quot;çek/kredi aktar&quot; ile başlayın. Açık/ret incelemeli
-          satırlar (çift-kayıt adayları dâhil) aktarılmaz.
-        </p>
-      </Panel>
+      <>
+        <PageHeader
+          title="Finansman"
+          subtitle="Çek vadeleri · kredi taksitleri · banka ve karşı taraf yoğunlaşması"
+          meta={<Badge tone="amber">veri bekliyor</Badge>}
+        />
+        <ModuleEmptyState
+          eyebrow="Çek / kredi hazır değil"
+          title="Çek ve krediler aktarılınca bu ekran vade radarı olur."
+          body="Excel ham kaynağı korunur; açık veya reddedilmiş incelemeli satırlar (çift-kayıt adayları dâhil) sessizce içeri alınmaz. Önce workbook detayından çek/kredi aktarımını çalıştırın; vade pencereleri, borç servisi ve banka yoğunlaşması burada görünür."
+          primaryHref="/imports"
+          primaryLabel="içe aktarımı aç"
+          secondaryHref="/data-quality"
+          secondaryLabel="review durumuna bak"
+          steps={[
+            "Workbook detayına girip “çek/kredi aktar” komutunu çalıştır.",
+            "Açık veya ret incelemeleri veri kalite merkezinde kapat.",
+            "Aktarım sonrası vade riski ve borç servisi bu ekranda izlenir.",
+          ]}
+        />
+      </>
     );
   }
 
-  const today = new Date().toISOString().slice(0, 10);
+  const today = istanbulDateISO();
   const windows = maturityWindows(maturities, today);
   const monthGroups = groupMaturities(maturities, "month");
   const weekGroups = groupMaturities(maturities, "week").slice(0, 12);
@@ -103,19 +115,19 @@ export default async function FinancingPage({
       {/* horizon windows */}
       <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
         {windows.map((w) => (
-          <div key={w.days} className="border border-zinc-800 bg-zinc-950 p-2">
-            <div className="font-mono text-[10px] uppercase tracking-wider text-zinc-500">
+          <div key={w.days} className="border border-line bg-surface-0 p-2">
+            <div className="font-mono text-[10px] uppercase tracking-wider text-tone-3">
               ÖNÜMÜZDEKİ {w.days} GÜN
             </div>
-            <div className="mt-1 font-mono text-sm tabular-nums text-red-400">
-              {fmtTL(w.knownOutflow)} <span className="text-[10px] text-zinc-500">ödenecek</span>
+            <div className="mt-1 font-mono text-sm tabular-nums text-neg">
+              {fmtTL(w.knownOutflow)} <span className="text-[10px] text-tone-3">ödenecek</span>
             </div>
             {w.knownInflow > 0 && (
-              <div className="font-mono text-xs tabular-nums text-emerald-400">
+              <div className="font-mono text-xs tabular-nums text-pos">
                 +{fmt0(w.knownInflow)} tahsil
               </div>
             )}
-            <div className="mt-1 font-mono text-[9px] text-zinc-500">
+            <div className="mt-1 font-mono text-[9px] text-tone-3">
               <Num>{w.count}</Num> vade{w.missingCount > 0 ? ` · ${w.missingCount} tutar eksik` : ""}
             </div>
           </div>
@@ -127,18 +139,18 @@ export default async function FinancingPage({
         <Panel
           title={`KREDİLER — ${loans.length}`}
           right={
-            <span className="font-mono text-[10px] text-zinc-400">
+            <span className="font-mono text-[10px] text-tone-2">
               kalan borç {fmt0(totalRemainingDebt)} · finansman maliyeti {fmt0(totalFinanceCost)}
             </span>
           }
         >
           <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
             {loans.map((l) => (
-              <div key={l.id} className="border border-zinc-800 bg-black/40 p-3">
+              <div key={l.id} className="border border-line bg-black/40 p-3">
                 <div className="flex items-center justify-between">
                   <Link
                     href={`/financing/loans/${l.id}`}
-                    className="font-mono text-xs underline decoration-zinc-700 underline-offset-2 hover:text-white"
+                    className="font-mono text-xs underline decoration-line-strong underline-offset-2 hover:text-tone-1"
                   >
                     {l.name}
                   </Link>
@@ -173,7 +185,7 @@ export default async function FinancingPage({
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
-                <tr className="border-b border-zinc-800 text-left font-mono text-[10px] uppercase tracking-wider text-zinc-500">
+                <tr className="border-b border-line text-left font-mono text-[10px] uppercase tracking-wider text-tone-3">
                   <th className="py-1 pr-2">ay</th>
                   <th className="py-1 pr-2 text-right">vade adedi</th>
                   <th className="py-1 pr-2 text-right">ödenecek</th>
@@ -183,14 +195,14 @@ export default async function FinancingPage({
               </thead>
               <tbody>
                 {debt.map((d) => (
-                  <tr key={d.monthStart} className="border-b border-zinc-900">
+                  <tr key={d.monthStart} className="border-b border-line-faint">
                     <td className="py-1 pr-2 font-mono text-xs">{AYK(d.monthStart)}</td>
                     <td className="py-1 pr-2 text-right font-mono tabular-nums">{d.count}</td>
-                    <td className="py-1 pr-2 text-right font-mono tabular-nums text-red-400">{fmt0(d.knownOutflow)}</td>
-                    <td className="py-1 pr-2 text-right font-mono tabular-nums text-emerald-400">
+                    <td className="py-1 pr-2 text-right font-mono tabular-nums text-neg">{fmt0(d.knownOutflow)}</td>
+                    <td className="py-1 pr-2 text-right font-mono tabular-nums text-pos">
                       {d.knownInflow > 0 ? fmt0(d.knownInflow) : "—"}
                     </td>
-                    <td className="py-1 text-right font-mono tabular-nums text-amber-400">
+                    <td className="py-1 text-right font-mono tabular-nums text-warn">
                       {d.missingCount > 0 ? d.missingCount : "—"}
                     </td>
                   </tr>
@@ -233,14 +245,14 @@ export default async function FinancingPage({
         <DetailsDisclosure label="Vade takvimi — ilk 12 hafta">
           <div className="grid grid-cols-1 gap-1 sm:grid-cols-2">
             {weekGroups.map((w) => (
-              <div key={w.key} className="flex items-center justify-between border border-zinc-900 bg-black/30 px-2 py-1">
-                <span className="font-mono text-[11px] text-zinc-400">
-                  {w.key} <span className="text-zinc-600">({w.from.slice(5)}–{w.to.slice(5)})</span>
+              <div key={w.key} className="flex items-center justify-between border border-line-faint bg-black/30 px-2 py-1">
+                <span className="font-mono text-[11px] text-tone-2">
+                  {w.key} <span className="text-tone-4">({w.from.slice(5)}–{w.to.slice(5)})</span>
                 </span>
                 <span className="flex items-center gap-2 font-mono text-[11px] tabular-nums">
-                  <span className="text-zinc-500">{w.count} vade</span>
-                  {w.knownOutflow > 0 && <span className="text-red-400">−{fmt0(w.knownOutflow)}</span>}
-                  {w.knownInflow > 0 && <span className="text-emerald-400">+{fmt0(w.knownInflow)}</span>}
+                  <span className="text-tone-3">{w.count} vade</span>
+                  {w.knownOutflow > 0 && <span className="text-neg">−{fmt0(w.knownOutflow)}</span>}
+                  {w.knownInflow > 0 && <span className="text-pos">+{fmt0(w.knownInflow)}</span>}
                   {w.missingCount > 0 && <Badge tone="amber">{w.missingCount} eksik</Badge>}
                 </span>
               </div>
@@ -255,7 +267,7 @@ export default async function FinancingPage({
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
-                <tr className="border-b border-zinc-800 text-left font-mono text-[10px] uppercase tracking-wider text-zinc-500">
+                <tr className="border-b border-line text-left font-mono text-[10px] uppercase tracking-wider text-tone-3">
                   <th className="py-1 pr-2">vade</th>
                   <th className="py-1 pr-2">yön</th>
                   <th className="py-1 pr-2">kime</th>
@@ -267,21 +279,21 @@ export default async function FinancingPage({
               </thead>
               <tbody>
                 {checks.map((c) => (
-                  <tr key={c.id} className="border-b border-zinc-900">
+                  <tr key={c.id} className="border-b border-line-faint">
                     <td className="py-1 pr-2 font-mono text-xs">{c.maturityDate}</td>
                     <td className="py-1 pr-2">
                       <Badge tone={DIR_TONE[c.direction]}>{DIR_LABEL[c.direction]}</Badge>
                     </td>
                     <td className="py-1 pr-2 text-xs">{c.payee ?? c.payer ?? "—"}</td>
-                    <td className="py-1 pr-2 text-xs text-zinc-400">{c.bank ?? "—"}</td>
-                    <td className="py-1 pr-2 font-mono text-[11px] text-zinc-500">{c.serial ?? "—"}</td>
-                    <td className={`py-1 pr-2 text-right font-mono tabular-nums ${c.direction === "outflow" ? "text-red-400" : c.direction === "inflow" ? "text-emerald-400" : ""}`}>
+                    <td className="py-1 pr-2 text-xs text-tone-2">{c.bank ?? "—"}</td>
+                    <td className="py-1 pr-2 font-mono text-[11px] text-tone-3">{c.serial ?? "—"}</td>
+                    <td className={`py-1 pr-2 text-right font-mono tabular-nums ${c.direction === "outflow" ? "text-neg" : c.direction === "inflow" ? "text-pos" : ""}`}>
                       {c.amount != null ? fmt0(c.amount) : <Badge tone="amber">TUTAR EKSİK</Badge>}
                     </td>
-                    <td className="py-1 font-mono text-[10px] text-zinc-600">
+                    <td className="py-1 font-mono text-[10px] text-tone-4">
                       {c.sourceWorkbookId && c.sourceSheetId ? (
                         <Link
-                          className="underline decoration-zinc-800 underline-offset-2"
+                          className="underline decoration-line-strong underline-offset-2"
                           href={`/imports/${c.sourceWorkbookId}/sheets/${c.sourceSheetId}`}
                         >
                           {c.rowIndex != null ? `r${c.rowIndex}` : "kaynak"} →
@@ -307,8 +319,8 @@ export default async function FinancingPage({
 function Field({ k, v, tone }: { k: string; v: string; tone?: "red" }) {
   return (
     <div>
-      <div className="font-mono text-[9px] uppercase tracking-wider text-zinc-500">{k}</div>
-      <div className={`font-mono tabular-nums ${tone === "red" ? "text-red-400" : "text-zinc-200"}`}>{v}</div>
+      <div className="font-mono text-[9px] uppercase tracking-wider text-tone-3">{k}</div>
+      <div className={`font-mono tabular-nums ${tone === "red" ? "text-neg" : "text-tone-1"}`}>{v}</div>
     </div>
   );
 }
@@ -322,27 +334,27 @@ function ExposureList({
   knownTotal: number;
   unknownCount: number;
 }) {
-  if (entries.length === 0) return <p className="text-xs text-zinc-500">Bilinen tutarlı çek yok.</p>;
+  if (entries.length === 0) return <p className="text-xs text-tone-3">Bilinen tutarlı çek yok.</p>;
   const max = entries[0]?.total ?? 1;
   return (
     <div className="space-y-1">
       {entries.map((e) => (
         <div key={e.key}>
           <div className="flex items-center justify-between font-mono text-[11px]">
-            <span className={e.flagged ? "text-red-400" : "text-zinc-300"}>
+            <span className={e.flagged ? "text-neg" : "text-tone-2"}>
               {e.key} {e.flagged && <Badge tone="red">%{(e.ratio * 100).toFixed(0)}</Badge>}
             </span>
-            <span className="tabular-nums text-zinc-400">{fmt0(e.total)}</span>
+            <span className="tabular-nums text-tone-2">{fmt0(e.total)}</span>
           </div>
-          <div className="mt-0.5 h-1 bg-zinc-900">
+          <div className="mt-0.5 h-1 bg-surface-2">
             <div
-              className={`h-1 ${e.flagged ? "bg-red-700" : "bg-zinc-600"}`}
-              style={{ width: `${Math.max(2, (e.total / max) * 100)}%` }}
+              className="h-1"
+              style={{ width: `${Math.max(2, (e.total / max) * 100)}%`, background: e.flagged ? "var(--neg)" : "var(--text-4)" }}
             />
           </div>
         </div>
       ))}
-      <div className="pt-1 font-mono text-[10px] text-zinc-600">
+      <div className="pt-1 font-mono text-[10px] text-tone-4">
         bilinen toplam {fmt0(knownTotal)}
         {unknownCount > 0 ? ` · ${unknownCount} tutar eksik (orana katılmadı)` : ""}
       </div>
