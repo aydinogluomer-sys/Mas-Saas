@@ -1,0 +1,13 @@
+{
+  "projectId":"9e441666-c537-48fb-8f5f-e3608718a347","type":"frontend","name":"Checks loans exposure and debt service","description":"Verify financing overview, checks, loans, maturity schedule, exposure, and scenario handoff.","priority":"p0",
+  "planSteps":[
+    {"type":"action","description":"Navigate to /finance"},
+    {"type":"assertion","description":"The Finansman workspace shows summary, checks, loans, exposure, and maturity tabs plus debt-service information"},
+    {"type":"action","description":"Activate Çekler, Krediler, Maruziyet, and Vade takvimi one by one"},
+    {"type":"assertion","description":"Each view remains functional and shows check direction, loan totals, bank or counterparty exposure, or maturity information as appropriate"},
+    {"type":"action","description":"Open a loan detail if a loan exists"},
+    {"type":"assertion","description":"Loan detail shows principal, total payment, finance cost, installment count, and installment schedule without error"},
+    {"type":"action","description":"Use a visible Senaryoda dene or scenario link from finance if present"},
+    {"type":"assertion","description":"The scenario workspace opens with finance context or a debt-service scenario option"}
+  ]
+}

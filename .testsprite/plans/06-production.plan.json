@@ -1,0 +1,11 @@
+{
+  "projectId":"9e441666-c537-48fb-8f5f-e3608718a347","type":"frontend","name":"Production capacity cost profitability and ROI","description":"Verify every production analytics section and source warning.","priority":"p1",
+  "planSteps":[
+    {"type":"action","description":"Navigate to /production"},
+    {"type":"assertion","description":"The page visibly labels analytics as estimates and shows capacity utilization, break-even TL per minute, normal-versus-overtime comparison, and stale-rate status when applicable"},
+    {"type":"action","description":"Activate Kapasite, Maliyet, Parça kârlılığı, and Makine ve ROI tabs one by one"},
+    {"type":"assertion","description":"Capacity demand, cost models, lowest-margin parts, machine-minute allocation, finance allocation, and machine ROI content are reachable without errors"},
+    {"type":"action","description":"Open any available source link or technical detail disclosure"},
+    {"type":"assertion","description":"The source or calculation detail opens and the underlying analytics remain visible and readable"}
+  ]
+}

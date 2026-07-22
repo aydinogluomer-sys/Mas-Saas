@@ -1,0 +1,15 @@
+{
+  "projectId":"9e441666-c537-48fb-8f5f-e3608718a347","type":"frontend","name":"System status security feature map and route compatibility","description":"Verify health, version, backup visibility, feature map, and all legacy routes remain operational.","priority":"p1",
+  "planSteps":[
+    {"type":"action","description":"Navigate to /system"},
+    {"type":"assertion","description":"System status shows app and database health, version, backup information, latest import, decision confidence, and runbook links"},
+    {"type":"action","description":"Open the feature map tab"},
+    {"type":"assertion","description":"The feature or phase map loads and gives working links to the implemented modules"},
+    {"type":"action","description":"Open /health and then /version directly"},
+    {"type":"assertion","description":"Health returns a successful status with database reachability and version returns non-secret application metadata"},
+    {"type":"action","description":"Open legacy routes /radar, /calendar, /financing, /ask, /reports, /reminders, /imports, /data-quality, /assumptions, /admin, and /phases one by one"},
+    {"type":"assertion","description":"Every legacy route remains functional or redirects to its correct new workspace; none returns 404 or a server error"},
+    {"type":"action","description":"Use the sidebar collapse control and then expand it again"},
+    {"type":"assertion","description":"The workspace remains usable in both states and accessible labels remain available"}
+  ]
+}

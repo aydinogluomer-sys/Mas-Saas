@@ -1,0 +1,17 @@
+{
+  "projectId": "9e441666-c537-48fb-8f5f-e3608718a347",
+  "type": "frontend",
+  "name": "Overview and nine-workspace navigation",
+  "description": "Verify the decision cockpit, sidebar, module tabs, command palette, and every top-level workspace are usable.",
+  "priority": "p0",
+  "planSteps": [
+    {"type":"action","description":"Navigate to /overview"},
+    {"type":"assertion","description":"The page shows Genel Bakış navigation, today's outflow, seven-day outflow, overdue count, cash runway, first negative month, decision signals, and the Ne yapmalıyım action list"},
+    {"type":"action","description":"Click each sidebar workspace link one by one: Ödemeler, Nakit Akışı, Finansman, Üretim, Senaryolar, İçgörüler, Veri Merkezi, Sistem; after each click wait for the page to finish loading"},
+    {"type":"assertion","description":"Each workspace opens successfully without a 404, server error, blank screen, or broken active-navigation state"},
+    {"type":"action","description":"Return to Genel Bakış and open Hızlı erişim with the visible control or Ctrl+K"},
+    {"type":"assertion","description":"The command dialog contains navigation commands and quick actions for a new payment, finance question, report, and Excel import"},
+    {"type":"action","description":"Search for Nakit Akışı in quick access and activate the result"},
+    {"type":"assertion","description":"Nakit Akışı workspace opens and its active sidebar state is visible"}
+  ]
+}

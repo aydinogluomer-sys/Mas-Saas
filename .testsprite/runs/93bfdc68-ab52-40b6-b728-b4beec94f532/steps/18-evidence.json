@@ -1,0 +1,8 @@
+[
+  {
+    "kind": "snapshot",
+    "stepIndex": 18,
+    "summary": "Step 18 'Expected the payment name input to be visible.' failed. Error: TEST BLOCKED\n\nThe test could not be run to completion — the web application is throwing a client-side exception and the UI is not interactive.\n\nObservations:\n- The page displays: \"Application error: a client-side exception has occurred while loading collapse-diesel-kathy-intervention.trycloudflare.com (see the browser console for more information).\"\n- No interactive elements are available on the page, preventing opening the payment to verify edits or perform archive actions.\n- A payment named 'TESTSPRITE TEMP PAYMENT' was created earlier in this session, but the edit-to-124 and the archive action could not be verified because the UI is currently unavailable.",
+    "path": "steps/18-snapshot.html"
+  }
+]

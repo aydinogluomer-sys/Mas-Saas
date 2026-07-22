@@ -1,0 +1,14 @@
+{
+  "projectId":"9e441666-c537-48fb-8f5f-e3608718a347","type":"frontend","name":"Payment radar and instance actions","description":"Verify payment risk views and instance action controls work.","priority":"p0",
+  "planSteps":[
+    {"type":"action","description":"Navigate to /payments"},
+    {"type":"assertion","description":"The Ödemeler workspace shows tabs for Özet, Takvim, Ödeme kalemleri, Eksik veriler, and Geçmiş"},
+    {"type":"assertion","description":"The overview renders missing-data, overdue, today, tomorrow, next-seven-days, monthly-summary, and risky-days sections when applicable"},
+    {"type":"action","description":"If a missing-amount open payment exists, enter 1 in its amount field and click KAYDET; otherwise verify no missing amount action is offered"},
+    {"type":"assertion","description":"The action completes without server error and the edited row no longer shows an empty amount field"},
+    {"type":"action","description":"On an open payment click ÖDENDİ, wait for completion, then click GERİ AL on the same payment"},
+    {"type":"assertion","description":"The payment switches to paid and then back to open without duplication or page error"},
+    {"type":"action","description":"Open the Takvim tab and select a day containing payments"},
+    {"type":"assertion","description":"The selected day detail lists its payments and retains understandable risk and status labels"}
+  ]
+}

@@ -1,0 +1,13 @@
+{
+  "projectId":"9e441666-c537-48fb-8f5f-e3608718a347","type":"frontend","name":"Scenario presets advanced assumptions and history","description":"Verify read-only scenario creation, comparison, history, optimization, and deletion.","priority":"p0",
+  "planSteps":[
+    {"type":"action","description":"Navigate to /scenarios"},
+    {"type":"assertion","description":"The page states scenarios do not change source records and shows quick scenarios, advanced assumptions, history, and optimization candidates"},
+    {"type":"action","description":"Run the quick scenario Gelir %10 down or the equivalent visible revenue-decrease preset"},
+    {"type":"assertion","description":"A scenario result page opens with final delta, first negative month, worst balance or maximum gap, assumptions, insights, comparison chart, and monthly comparison"},
+    {"type":"action","description":"Return to scenarios and create an advanced scenario named TESTSPRITE TEMP SCENARIO with a small expense increase and debt service included"},
+    {"type":"assertion","description":"The advanced scenario is saved and appears in scenario history"},
+    {"type":"action","description":"Open TESTSPRITE TEMP SCENARIO and delete it using the safe delete control"},
+    {"type":"assertion","description":"Only that scenario disappears from history and the baseline cash-flow workspace still loads"}
+  ]
+}

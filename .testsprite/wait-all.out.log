@@ -1,0 +1,66 @@
+{
+  "results": [
+    {
+      "runId": "7d97d308-20c4-4409-876e-6eba5e4e97f9",
+      "status": "passed",
+      "testId": "1ce621af-3a43-4954-b07b-b4565c8fec3f"
+    },
+    {
+      "runId": "e0223585-739b-406d-8551-cc3fcdbaf956",
+      "status": "passed",
+      "testId": "0969f010-5e9c-4566-a595-49e7d6828503"
+    },
+    {
+      "runId": "76d34135-0fb3-4b37-850e-8d156f3fe596",
+      "status": "passed",
+      "testId": "26e8639d-a3b1-4364-9427-c5823f8850dd"
+    },
+    {
+      "runId": "5b54314e-8a66-440b-a297-bc44c24ef4eb",
+      "status": "passed",
+      "testId": "a2922180-b3c7-4e15-87c8-ce168d876ec3"
+    },
+    {
+      "runId": "1c63aa77-b469-4de2-bdfd-fe499aacf9c3",
+      "status": "passed",
+      "testId": "302e6ed4-1387-476c-b3de-9d7632c874c5"
+    },
+    {
+      "runId": "ea0ceab1-fdbc-4e63-ac3c-3af5bb44c0dd",
+      "status": "blocked",
+      "testId": "519eaf79-f6d3-4cc3-95a6-b0dcc241cdd0"
+    },
+    {
+      "runId": "34424bac-1906-4548-a0cd-a54e278f151e",
+      "status": "passed",
+      "testId": "a0c813aa-d103-4b32-a71c-d46254617a71"
+    },
+    {
+      "runId": "a6f5705a-ef98-40cf-a385-85e9467ca59d",
+      "status": "passed",
+      "testId": "a90c0ff5-fd2a-4bfd-8a67-f6898b5a9ad2"
+    },
+    {
+      "runId": "5f0345f6-af65-45fe-bb10-ebee9d45d296",
+      "status": "passed",
+      "testId": "29bd8d61-dd53-47d4-a16a-7629568d12e3"
+    },
+    {
+      "runId": "7be14987-fbbd-40f9-b96d-57e0c632dfb5",
+      "status": "passed",
+      "testId": "0ffa520c-2531-492b-b81e-e5f5ccce54d5"
+    },
+    {
+      "runId": "e4094bda-a745-42fe-adcc-3bd17e805acc",
+      "status": "passed",
+      "testId": "5c306bd2-0140-4ddf-a3bd-1f03e81f049e"
+    }
+  ],
+  "summary": {
+    "total": 11,
+    "passed": 10,
+    "failed": 1,
+    "timedOut": 0,
+    "errors": 0
+  }
+}

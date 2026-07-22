@@ -1,0 +1,18 @@
+{
+  "testId": "1ce621af-3a43-4954-b07b-b4565c8fec3f",
+  "status": "blocked",
+  "startedAt": "2026-07-13T06:31:10.207Z",
+  "finishedAt": "2026-07-13T06:42:01.262Z",
+  "videoUrl": "https://testsprite-videos.s3.us-east-1.amazonaws.com/d42854e8-7091-7042-3517-238d4b6d0c94/1783924920902136//tmp/c908d596-3408-4166-a24a-eb5c221bb288/result.webm",
+  "failureAnalysisUrl": null,
+  "snapshotId": "snap_2f2211161e659244",
+  "runIdIfAvailable": "b4b46c90-a74d-48d3-a507-69086334c15b",
+  "codeVersion": "v1",
+  "targetUrl": "https://dimensional-missile-dis-nhs.trycloudflare.com",
+  "targetUrlSource": "run",
+  "failedStepIndex": 20,
+  "failureKind": null,
+  "verdict": "blocked",
+  "executionStatus": "completed",
+  "summary": "Blocked before a verdict could be produced: TEST BLOCKED\n\nThe test could not be run — the payments page failed to load due to a client-side application error, preventing interaction with the UI.\n\nObservations:\n- The page displays: \"Application error: a client-side exception has occurred while loading dimensional-missile-dis-nhs.trycloudflare.com (see the browser console for more information).\"\n- The browser state shows 0 interactive elements and no visible tabs or buttons to operate."
+}

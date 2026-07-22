@@ -1,0 +1,8 @@
+[
+  {
+    "kind": "snapshot",
+    "stepIndex": 17,
+    "summary": "Step 17 'Open the 'TESTSPRITE TEMP PAYMENT' payment item by clicking the 'TESTSPRITE TEMP PAYMENT' entry in the payments list to verify the saved amount and any validation messages' passed.",
+    "path": "steps/17-snapshot.html"
+  }
+]

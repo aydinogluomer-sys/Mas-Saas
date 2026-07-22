@@ -1,0 +1,14 @@
+{
+  "projectId":"9e441666-c537-48fb-8f5f-e3608718a347","type":"frontend","name":"Finance questions reports and tasks","description":"Verify evidence-backed Q&A, report generation, commentary, history, and action creation.","priority":"p0",
+  "planSteps":[
+    {"type":"action","description":"Navigate to /insights/ask"},
+    {"type":"action","description":"Ask: İlk negatif ay ne zaman?"},
+    {"type":"assertion","description":"A non-empty answer appears with evidence or source facts, and no financial mutation is performed"},
+    {"type":"action","description":"If available click the control that converts the answer into a task"},
+    {"type":"assertion","description":"The task action completes without duplication or server error"},
+    {"type":"action","description":"Open the Raporlar tab, generate a daily report, then open the newly generated report"},
+    {"type":"assertion","description":"The report contains daily payment and risk sections and appears in report history"},
+    {"type":"action","description":"Click the AI report commentary action if present"},
+    {"type":"assertion","description":"Commentary or a transparent unavailable/error state is shown without changing source financial records"}
+  ]
+}

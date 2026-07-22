@@ -1,0 +1,13 @@
+{
+  "projectId":"9e441666-c537-48fb-8f5f-e3608718a347","type":"frontend","name":"Payment template create edit archive","description":"Verify payment definitions can be created, edited, and archived without breaking history.","priority":"p0",
+  "planSteps":[
+    {"type":"action","description":"Navigate to /payments/items and click Yeni ödeme"},
+    {"type":"assertion","description":"The new payment form renders all required controls and save action"},
+    {"type":"action","description":"Create a monthly payment named TESTSPRITE TEMP PAYMENT with due day 15 and amount 123"},
+    {"type":"assertion","description":"The payment is saved and appears in the payment items list"},
+    {"type":"action","description":"Open TESTSPRITE TEMP PAYMENT for editing, change its amount to 124, and save"},
+    {"type":"assertion","description":"The updated amount is visible and the page reports no validation or server error"},
+    {"type":"action","description":"Open the same payment and use the archive action"},
+    {"type":"assertion","description":"The archived payment no longer appears in the active payment items list"}
+  ]
+}

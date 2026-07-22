@@ -1,0 +1,13 @@
+{
+  "schemaVersion": "cli-v1",
+  "snapshotId": "snap_f8e68731a21ef6d1",
+  "testId": "0969f010-5e9c-4566-a595-49e7d6828503",
+  "projectId": "9e441666-c537-48fb-8f5f-e3608718a347",
+  "codeVersion": "v1",
+  "runIdIfAvailable": "93bfdc68-ab52-40b6-b728-b4beec94f532",
+  "targetUrl": "https://collapse-diesel-kathy-intervention.trycloudflare.com",
+  "failedStepIndex": 18,
+  "failureKind": null,
+  "capturedAt": "2026-07-12T04:07:17.416Z",
+  "fetchedAt": "2026-07-12T04:10:35.144Z"
+}

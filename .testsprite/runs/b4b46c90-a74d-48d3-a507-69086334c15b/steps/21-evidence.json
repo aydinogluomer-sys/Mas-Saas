@@ -1,0 +1,8 @@
+[
+  {
+    "kind": "snapshot",
+    "stepIndex": 21,
+    "summary": "Step 21 'Expected the KAYDET button to be visible after the action completed to show no server error occurred.' failed. Error: TEST BLOCKED\n\nThe test could not be run — the payments page failed to load due to a client-side application error, preventing interaction with the UI.\n\nObservations:\n- The page displays: \"Application error: a client-side exception has occurred while loading dimensional-missile-dis-nhs.trycloudflare.com (see the browser console for more information).\"\n- The browser state shows 0 interactive elements and no visible tabs or buttons to operate.",
+    "path": "steps/21-snapshot.html"
+  }
+]

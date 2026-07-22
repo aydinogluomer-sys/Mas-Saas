@@ -1,0 +1,8 @@
+[
+  {
+    "kind": "snapshot",
+    "stepIndex": 20,
+    "summary": "Step 20 'Expected the edited row's amount input to equal '1' after saving.' failed. Error: TEST BLOCKED\n\nThe test could not be run — the payments page failed to load due to a client-side application error, preventing interaction with the UI.\n\nObservations:\n- The page displays: \"Application error: a client-side exception has occurred while loading dimensional-missile-dis-nhs.trycloudflare.com (see the browser console for more information).\"\n- The browser state shows 0 interactive elements and no visible tabs or buttons to operate.",
+    "path": "steps/20-snapshot.html"
+  }
+]

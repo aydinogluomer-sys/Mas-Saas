@@ -1,0 +1,13 @@
+{
+  "schemaVersion": "cli-v1",
+  "snapshotId": "snap_2f2211161e659244",
+  "testId": "1ce621af-3a43-4954-b07b-b4565c8fec3f",
+  "projectId": "9e441666-c537-48fb-8f5f-e3608718a347",
+  "codeVersion": "v1",
+  "runIdIfAvailable": "b4b46c90-a74d-48d3-a507-69086334c15b",
+  "targetUrl": "https://dimensional-missile-dis-nhs.trycloudflare.com",
+  "failedStepIndex": 20,
+  "failureKind": null,
+  "capturedAt": "2026-07-13T06:42:01.262Z",
+  "fetchedAt": "2026-07-13T06:42:11.063Z"
+}

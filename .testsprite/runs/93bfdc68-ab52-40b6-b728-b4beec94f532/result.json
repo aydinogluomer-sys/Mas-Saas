@@ -1,0 +1,18 @@
+{
+  "testId": "0969f010-5e9c-4566-a595-49e7d6828503",
+  "status": "blocked",
+  "startedAt": "2026-07-12T03:58:04.329Z",
+  "finishedAt": "2026-07-12T04:07:17.416Z",
+  "videoUrl": "https://testsprite-videos.s3.us-east-1.amazonaws.com/d42854e8-7091-7042-3517-238d4b6d0c94/1783829237134741//tmp/78cff17e-2a0b-4035-a925-21ebd05737ba/result.webm",
+  "failureAnalysisUrl": null,
+  "snapshotId": "snap_f8e68731a21ef6d1",
+  "runIdIfAvailable": "93bfdc68-ab52-40b6-b728-b4beec94f532",
+  "codeVersion": "v1",
+  "targetUrl": "https://collapse-diesel-kathy-intervention.trycloudflare.com",
+  "targetUrlSource": "run",
+  "failedStepIndex": 18,
+  "failureKind": null,
+  "verdict": "blocked",
+  "executionStatus": "completed",
+  "summary": "Blocked before a verdict could be produced: TEST BLOCKED\n\nThe test could not be run to completion — the web application is throwing a client-side exception and the UI is not interactive.\n\nObservations:\n- The page displays: \"Application error: a client-side exception has occurred while loading collapse-diesel-kathy-intervention.trycloudflare.com (see the browser console for more information).\"\n- No interactive elements are available on the page, preventing opening the payment to verify edits or …"
+}

@@ -1,0 +1,10 @@
+
+> mas-nakit-radar@0.1.0 start:testsprite
+> tsx scripts/start-testsprite.ts --production
+
+   ▲ Next.js 15.5.20
+   - Local:        http://localhost:3103
+   - Network:      http://169.254.83.107:3103
+
+ ✓ Starting...
+ ✓ Ready in 1483ms

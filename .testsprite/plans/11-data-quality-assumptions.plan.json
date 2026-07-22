@@ -1,0 +1,13 @@
+{
+  "projectId":"9e441666-c537-48fb-8f5f-e3608718a347","type":"frontend","name":"Data quality tasks reconciliation and external assumptions","description":"Verify data confidence, workbook comparison, reconciliation, task workflow, evidence, and assumption review.","priority":"p0",
+  "planSteps":[
+    {"type":"action","description":"Navigate to /data/quality"},
+    {"type":"assertion","description":"Decision confidence, top blocking issues, workbook A/B difference, dashboard reconciliation, issue distribution, open tasks, and evidence trail are visible"},
+    {"type":"action","description":"Create a manual task titled TESTSPRITE TEMP TASK, move it to in progress, then complete it with a completion note"},
+    {"type":"assertion","description":"The task status changes are saved and auditable without duplicate task creation"},
+    {"type":"action","description":"Open Dış varsayımlar and create a user-sourced interest assumption named TESTSPRITE TEMP ASSUMPTION with a current date and small value"},
+    {"type":"assertion","description":"The assumption appears with its source, date, type, and review state"},
+    {"type":"action","description":"Approve the TESTSPRITE TEMP ASSUMPTION using the review control"},
+    {"type":"assertion","description":"The record moves to approved and appears among approved assumptions without changing source financial facts"}
+  ]
+}

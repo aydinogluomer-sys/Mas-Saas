@@ -1,0 +1,15 @@
+{
+  "projectId":"9e441666-c537-48fb-8f5f-e3608718a347","type":"frontend","name":"Excel import source explorer and review queue","description":"Verify workbook history, sheet classification, source cells, previews, reviews, and safe import actions.","priority":"p0",
+  "planSteps":[
+    {"type":"action","description":"Navigate to /data/imports"},
+    {"type":"assertion","description":"The import page shows upload control and workbook history"},
+    {"type":"action","description":"Open the most recent successfully imported workbook"},
+    {"type":"assertion","description":"Workbook detail shows metadata, classified sheet list, review access, and available module import actions"},
+    {"type":"action","description":"Open one sheet and inspect raw data plus extraction preview"},
+    {"type":"assertion","description":"Raw cell values, formulas when present, pagination, source coordinates, and preview content render without error"},
+    {"type":"action","description":"Open the workbook review queue and use filters; open one review without changing its status"},
+    {"type":"assertion","description":"Review reason, status, source row, audit information, and accept/resolve/reject controls are visible"},
+    {"type":"action","description":"Return to workbook detail and click each safe idempotent module import action that is available"},
+    {"type":"assertion","description":"Repeated import actions complete without duplicate records or server errors and show a clear result"}
+  ]
+}

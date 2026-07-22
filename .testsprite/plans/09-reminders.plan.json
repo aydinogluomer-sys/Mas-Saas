@@ -1,0 +1,12 @@
+{
+  "projectId":"9e441666-c537-48fb-8f5f-e3608718a347","type":"frontend","name":"Reminder scheduling dispatch and delivery log","description":"Verify reminder scheduling, duplicate prevention, Telegram dispatch result, and delivery history.","priority":"p1",
+  "planSteps":[
+    {"type":"action","description":"Navigate to /insights/reminders"},
+    {"type":"assertion","description":"The page shows pending, sent, failed, and skipped delivery counts plus scheduling and dispatch controls"},
+    {"type":"action","description":"Click Bugünü planla once, wait for completion, then click it a second time"},
+    {"type":"assertion","description":"The second scheduling action does not create duplicate deliveries and the page remains functional"},
+    {"type":"action","description":"If pending deliveries exist, click Bekleyenleri gönder"},
+    {"type":"assertion","description":"Each attempted delivery is recorded as sent or failed with an honest status; no fake success or page crash occurs"},
+    {"type":"assertion","description":"The delivery log lists schedule date, entity, message or status, and error details for failures"}
+  ]
+}

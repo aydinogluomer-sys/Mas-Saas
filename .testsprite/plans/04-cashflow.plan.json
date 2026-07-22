@@ -1,0 +1,13 @@
+{
+  "projectId":"9e441666-c537-48fb-8f5f-e3608718a347","type":"frontend","name":"Cash flow projections and evidence","description":"Verify horizons, charts, concentration, monthly detail, debt pressure, and data controls.","priority":"p0",
+  "planSteps":[
+    {"type":"action","description":"Navigate to /cashflow"},
+    {"type":"assertion","description":"The page shows cash horizons, first negative month, worst month, consecutive negative period, cash trend, income-versus-expense chart, and debt-service pressure"},
+    {"type":"action","description":"Activate Aylık görünüm, Yoğunlaşma, and Veri kontrolleri tabs one by one"},
+    {"type":"assertion","description":"Each tab or anchored section opens without a broken route and exposes the corresponding monthly, concentration, or data-control content"},
+    {"type":"action","description":"Open one month from the monthly cash-flow list"},
+    {"type":"assertion","description":"The month detail shows opening balance, income, expense, closing balance, grouped lines, and a source workbook or source-sheet link"},
+    {"type":"action","description":"Follow the source evidence link and then return"},
+    {"type":"assertion","description":"The source page opens successfully and cash-flow navigation remains available after returning"}
+  ]
+}
