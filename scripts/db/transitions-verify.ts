@@ -17,6 +17,15 @@ import { execFileSync } from "node:child_process";
 import { readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
 import { Pool } from "pg";
+import {
+  LEGACY_ANOMALY_INSTANCE_ID,
+  countCancelConsistencyViolations,
+  countPaymentInstancesCancelViolations,
+  fingerprintPaymentInstancesExcluding,
+  getConstraintCatalogState,
+  getTableRowCounts,
+  prepareLegacyCheckpointForCancellationValidation,
+} from "./legacy-cancellation-fixture";
 
 const ROOT = process.cwd();
 const CONTAINER = process.env.MAS_DB_CONTAINER ?? "mas-radar-pg";
@@ -284,40 +293,48 @@ async function main(): Promise<void> {
   const { markPaidAction, markUnpaidAction } = await import("../../src/app/(dashboard)/radar/actions");
   const { getPool } = await import("../../src/lib/db");
 
-  try {
-    const migrateResult = runMigrateAgainstUrl(disposableUrl);
-    record("0026-0027 migrate.ts ile başarıyla uygulandı", migrateResult.code === 0, migrateResult.code === 0 ? undefined : migrateResult.stderr.slice(0, 300));
-    if (migrateResult.code !== 0) {
-      dropDb(DB);
-      process.exit(1);
-    }
-
+  // Everything after the migration/fixture-prep chain below — unchanged in substance from
+  // before this fix, only moved into a function so it can be called conditionally (only once
+  // the disposable DB has genuinely reached a fully-migrated, 0030-validated state).
+  async function runTransitionAssertions(): Promise<void> {
     // Zod boundary — tested directly against the schema, no Next.js runtime needed.
     record("Zod: boş reason reddedilir", !cancelActionSchema.safeParse({ id: "0e8af5cc-ad81-4c52-9dbd-cb2f51b095e9", reason: "" }).success);
     record("Zod: yalnız-boşluk reason reddedilir", !cancelActionSchema.safeParse({ id: "0e8af5cc-ad81-4c52-9dbd-cb2f51b095e9", reason: "   " }).success);
     record("Zod: geçersiz UUID reddedilir", !cancelActionSchema.safeParse({ id: "not-a-uuid", reason: "geçerli neden" }).success);
     record("Zod: geçerli girdi kabul edilir", cancelActionSchema.safeParse({ id: "0e8af5cc-ad81-4c52-9dbd-cb2f51b095e9", reason: "geçerli neden" }).success);
 
-    // Legacy cancelled+null-metadata satırı — gerçek fixture'dan, iki AYRI test.
-    const legacy = await pool.query<{ id: string }>(
-      "select id from payment_instances where status='cancelled' and cancelled_at is null limit 1",
+    // Legacy cancelled+null-metadata satırı: 0030 gerekliliği yüzünden fixture preparation bu
+    // ÖZEL satırın (LEGACY_ANOMALY_INSTANCE_ID) cancellation metadata'sını artık migrate.ts
+    // zincirinin bir ÖNKOŞULU olarak dolduruyor — status='cancelled' + cancelled_at IS NULL
+    // durumu artık tamamen migre edilmiş bir DB'de YAPISAL OLARAK İMKANSIZ (0030 validate
+    // edildiği için CHECK constraint her satırı kapsar). Bu yüzden orijinal "satır hâlâ kırık
+    // bulunur" senaryosu artık test edilemez — ama asıl korunan invariant hâlâ anlamlı ve
+    // test edilebilir: bu tarihsel olarak istisnai satırın kendisi bile artık constraint
+    // tarafından korunuyor, geriye kırık duruma döndürülemiyor.
+    const legacy = await pool.query<{ id: string; cancelled_at: string | null; cancel_reason: string | null }>(
+      "select id, cancelled_at, cancel_reason from payment_instances where id=$1",
+      [LEGACY_ANOMALY_INSTANCE_ID],
     );
-    record("Legacy cancelled satır fixture'da bulundu", legacy.rowCount === 1, `rowCount=${legacy.rowCount}`);
+    record(
+      "Legacy cancelled satır (fixture preparation ile onarılmış) fixture'da bulundu ve metadata dolu",
+      legacy.rowCount === 1 && legacy.rows[0].cancelled_at !== null && legacy.rows[0].cancel_reason !== null,
+      JSON.stringify(legacy.rows[0]),
+    );
     if (legacy.rowCount === 1) {
       const legacyId = legacy.rows[0].id;
       await expectReject(
         pool,
-        "update public.payment_instances set note='legacy-test' where id=$1",
+        "update public.payment_instances set cancelled_at=null where id=$1",
         [legacyId],
         /cancel_consistency/,
-        "Legacy satır: aynı-durum (status değişmiyor) UPDATE trigger'ı geçer ama 0026 CHECK constraint'i reddeder",
+        "Legacy satır (onarılmış): geriye null metadata'ya döndürme denemesi 0030 tarafından validate edilmiş CHECK constraint tarafından reddedilir",
       );
       await expectReject(
         pool,
         "update public.payment_instances set status='unpaid' where id=$1",
         [legacyId],
         /status_transition_guard|izinli değil/,
-        "Legacy satır: status değiştirme denemesi ayrıca trigger tarafından da reddedilir",
+        "Legacy satır (onarılmış): status değiştirme denemesi ayrıca trigger tarafından da reddedilir",
       );
     }
 
@@ -569,6 +586,111 @@ async function main(): Promise<void> {
       record("cancelLoanInstallment rollback: satır değişmedi", afterLI.rows[0].status === "planned" && afterLI.rows[0].cancelled_at === null);
     } finally {
       await pool.query("alter table public.audit_logs drop constraint test_force_fail");
+    }
+  }
+
+  try {
+    // backups/p0b-managed-baseline-*.dump is frozen from before Slice 5's legacy-repair apply
+    // ever ran, so it still carries the one known payment_instances anomaly 0026 grandfathered
+    // (see 0026's own comment) — applying every pending migration in one run therefore fails
+    // exactly at 0030, same root cause as migrate-verify.ts's LEGACY_COMPLETE/Checksum-drift
+    // and constraints-verify.ts's own fixture. applyPendingSequentially (migrate.ts:142-157)
+    // commits each pending migration in its own transaction, so 0022-0029 (0026 included — the
+    // migration that adds the cancelled_at/cancel_reason columns this fixture doesn't have
+    // yet) commit for real before 0030 reaches the still-unrepaired row and fails.
+    const bootstrapRun = runMigrateAgainstUrl(disposableUrl);
+    record(
+      "0026-0029 migrate.ts ile uygulandı, 0030 bilinen ihlal nedeniyle beklenen şekilde durdu",
+      bootstrapRun.code !== 0
+        && /Pending migration 0030/.test(bootstrapRun.stderr)
+        && /payment_instances_cancel_consistency/.test(bootstrapRun.stderr),
+      bootstrapRun.stderr.slice(0, 300),
+    );
+
+    let migrationOk = false;
+    if (bootstrapRun.code !== 0 && /Pending migration 0030/.test(bootstrapRun.stderr)) {
+      const violationsBeforePrep = await countPaymentInstancesCancelViolations(pool);
+      record(
+        "p0b-managed-baseline: 0026-0029 sonrası hâlâ bilinen legacy ihlalini taşıyor (1 satır)",
+        violationsBeforePrep === 1,
+        `got ${violationsBeforePrep}`,
+      );
+
+      // Test-setup-only fixture preparation (NOT a production repair — see the shared
+      // helper's own doc comment). Narrow before/after checks prove it touched only the
+      // one named row.
+      const countsBeforePrep = await getTableRowCounts(pool, []);
+      const fpBeforePrep = await fingerprintPaymentInstancesExcluding(pool, LEGACY_ANOMALY_INSTANCE_ID);
+
+      await prepareLegacyCheckpointForCancellationValidation(disposableUrl);
+
+      const countsAfterPrep = await getTableRowCounts(pool, []);
+      const fpAfterPrep = await fingerprintPaymentInstancesExcluding(pool, LEGACY_ANOMALY_INSTANCE_ID);
+      const violationsAfterPrep = await countPaymentInstancesCancelViolations(pool);
+
+      const sameRowCounts = JSON.stringify(countsBeforePrep) === JSON.stringify(countsAfterPrep);
+      record(
+        "fixture preparation başka hiçbir tablonun satır sayısını değiştirmedi",
+        sameRowCounts,
+        sameRowCounts ? undefined : JSON.stringify({ before: countsBeforePrep, after: countsAfterPrep }).slice(0, 400),
+      );
+      record(
+        "fixture preparation yalnız hedef satırın cancellation metadata'sını değiştirdi (diğer payment_instances satırları aynı fingerprint)",
+        fpBeforePrep === fpAfterPrep,
+      );
+      record("preparation sonrası ihlal sayısı 0", violationsAfterPrep === 0, `got ${violationsAfterPrep}`);
+
+      const secondRun = runMigrateAgainstUrl(disposableUrl);
+      record(
+        "0026-0030 migrate.ts ile başarıyla uygulandı (fixture düzeltmesinden sonra)",
+        secondRun.code === 0,
+        secondRun.code === 0 ? undefined : secondRun.stderr.slice(0, 300),
+      );
+      migrationOk = secondRun.code === 0;
+
+      if (migrationOk) {
+        const violationsAfterMigrate = await countCancelConsistencyViolations(pool);
+        record("0030 sonrası ihlal sayısı hâlâ 0", violationsAfterMigrate === 0, `got ${violationsAfterMigrate}`);
+
+        for (const conname of [
+          "payment_instances_cancel_consistency",
+          "checks_cancel_consistency",
+          "loan_installments_cancel_consistency",
+        ] as const) {
+          const state = await getConstraintCatalogState(pool, conname);
+          record(`${conname} convalidated=true`, state.found && state.convalidated === true, JSON.stringify(state));
+        }
+        for (const conname of [
+          "payment_instances_paid_fields_scoped",
+          "loan_installments_paid_fields_scoped",
+          "payments_archive_consistency",
+          "checks_archive_triplet_consistency",
+          "loans_archive_triplet_consistency",
+          "scenario_runs_archive_triplet_consistency",
+          "external_assumptions_archive_triplet_consistency",
+          "action_items_archive_triplet_consistency",
+        ] as const) {
+          const state = await getConstraintCatalogState(pool, conname);
+          record(`kapsam dışı ${conname} hâlâ convalidated=false (dokunulmadı)`, state.found && state.convalidated === false, JSON.stringify(state));
+        }
+
+        const thirdRun = runMigrateAgainstUrl(disposableUrl);
+        record("migrate.ts üçüncü çalıştırma no-op olarak başarıyla tamamlandı", thirdRun.code === 0, thirdRun.code === 0 ? undefined : thirdRun.stderr.slice(0, 300));
+        if (thirdRun.code === 0) {
+          const ledgerRes = await pool.query<{ n: number; last_version: string | null }>(
+            "select count(*)::int as n, max(version) as last_version from schema_migrations",
+          );
+          record(
+            "ledger üçüncü çalıştırma sonrası hâlâ 30 satır, last migration 0030",
+            ledgerRes.rows[0]?.n === 30 && ledgerRes.rows[0]?.last_version === "0030",
+            `got n=${ledgerRes.rows[0]?.n} last=${ledgerRes.rows[0]?.last_version}`,
+          );
+        }
+      }
+    }
+
+    if (migrationOk) {
+      await runTransitionAssertions();
     }
   } finally {
     await appPool.end();

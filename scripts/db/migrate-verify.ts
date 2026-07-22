@@ -6,13 +6,34 @@ import { execFileSync } from "node:child_process";
 import { readFileSync, readdirSync, unlinkSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { Pool } from "pg";
-import { MIGRATIONS_DIR } from "./migration-lib";
+import { MIGRATIONS_DIR, validateFileSet } from "./migration-lib";
 import { verifyBackupTarget } from "./backup-docker-postgres";
+import {
+  LEGACY_ANOMALY_INSTANCE_ID,
+  countCancelConsistencyViolations,
+  countPaymentInstancesCancelViolations,
+  fingerprintPaymentInstancesExcluding,
+  getConstraintCatalogState,
+  getTableRowCounts,
+  prepareLegacyCheckpointForCancellationValidation,
+} from "./legacy-cancellation-fixture";
 
 const ROOT = process.cwd();
 const CONTAINER = process.env.MAS_DB_CONTAINER ?? "mas-radar-pg";
 const TSX_CLI = path.join(ROOT, "node_modules", "tsx", "dist", "cli.mjs");
 const MIGRATE_SCRIPT = path.join(ROOT, "scripts", "db", "migrate.ts");
+
+// Canonical migration count — derived from the actual files on disk (same discovery
+// migrate.ts itself uses via validateFileSet), never hardcoded. A flow that applies every
+// migration file from a truly empty/fresh DB always ends up with exactly this many ledger
+// rows; hardcoding the number here would go stale every time a migration file is added,
+// exactly what happened when 0030 was added.
+const CANONICAL_MIGRATION_COUNT = validateFileSet(MIGRATIONS_DIR).files.length;
+// 0001-0019 are backfilled from the frozen legacy-baseline-0019.json manifest and never
+// grow — see migrate.ts's LEGACY_COMPLETE flow. Everything after that is applied for real
+// by migrate-script, so its expected count is simply the remainder.
+const EXPECTED_BASELINE_BACKFILL_COUNT = 19;
+const EXPECTED_MIGRATE_SCRIPT_COUNT = CANONICAL_MIGRATION_COUNT - EXPECTED_BASELINE_BACKFILL_COUNT;
 
 interface TestOutcome {
   name: string;
@@ -101,23 +122,6 @@ function restoreCheckpointInto(db: string): void {
     input: readFileSync(dump),
     quiet: true,
   });
-}
-
-function quoteIdent(name: string): string {
-  return '"' + name.replace(/"/g, '""') + '"';
-}
-
-async function getTableRowCounts(pool: Pool, excludeTables: string[]): Promise<Record<string, number>> {
-  const tablesRes = await pool.query<{ tablename: string }>(
-    "select tablename from pg_tables where schemaname='public' and tablename <> all($1::text[]) order by tablename",
-    [excludeTables],
-  );
-  const counts: Record<string, number> = {};
-  for (const { tablename } of tablesRes.rows) {
-    const r = await pool.query<{ n: number }>(`select count(*)::int as n from public.${quoteIdent(tablename)}`);
-    counts[tablename] = r.rows[0]?.n ?? 0;
-  }
-  return counts;
 }
 
 async function assertPolicyCountZero(db: string, label: string): Promise<void> {
@@ -216,7 +220,11 @@ async function testEmpty(): Promise<void> {
     const rows = await pool.query<{ version: string; applied_by: string }>(
       "select version, applied_by from schema_migrations order by version",
     );
-    record("EMPTY: ledger 29 satır", rows.rows.length === 29, `got ${rows.rows.length}`);
+    record(
+      `EMPTY: ledger ${CANONICAL_MIGRATION_COUNT} satır (canonical dosya sayısı)`,
+      rows.rows.length === CANONICAL_MIGRATION_COUNT,
+      `got ${rows.rows.length}`,
+    );
     record(
       "EMPTY: tüm satırlar applied_by='migrate-script'",
       rows.rows.every((r) => r.applied_by === "migrate-script"),
@@ -233,34 +241,111 @@ async function testLegacyCompleteAndIdempotency(): Promise<void> {
   const db = "mas_radar_migrate_legacy_test";
   restoreCheckpointInto(db);
 
-  const preePool = new Pool({ connectionString: dbUrl(db), max: 1 });
-  const preCounts = await getTableRowCounts(preePool, []);
-  await preePool.end();
-
-  const firstRun = runMigrate(db);
-  record("LEGACY_COMPLETE: migrate.ts başarıyla tamamlandı", firstRun.code === 0, firstRun.code === 0 ? undefined : firstRun.stderr.slice(0, 300));
-  if (firstRun.code !== 0) {
+  // First run: applyPendingSequentially commits each pending migration in its OWN
+  // transaction (scripts/db/migrate.ts:142-157), so LEGACY_COMPLETE's bootstrap
+  // (0001-0020, one atomic block) plus 0021-0029 (one at a time) commit for real before
+  // 0030 reaches the checkpoint's still-unrepaired payment_instances row and fails. This
+  // first run is EXPECTED to fail in exactly this way — the p0c-checkpoint dump is frozen
+  // from before Slice 5's legacy-repair apply ever ran, so it still carries the exact
+  // anomaly 0026 grandfathered (see 0026's own comment). A differently-shaped failure here
+  // would mean the checkpoint or 0030 changed in some other way, so the exact error text is
+  // asserted, not just a nonzero exit code.
+  const bootstrapRun = runMigrate(db);
+  record(
+    "LEGACY_COMPLETE: ilk çalıştırma 0001-0029'u uyguladı, 0030 bilinen ihlal nedeniyle beklenen şekilde durdu",
+    bootstrapRun.code !== 0
+      && /Pending migration 0030/.test(bootstrapRun.stderr)
+      && /payment_instances_cancel_consistency/.test(bootstrapRun.stderr),
+    bootstrapRun.stderr.slice(0, 300),
+  );
+  if (bootstrapRun.code === 0) {
+    // Only possible if the checkpoint no longer carries the anomaly at all — the fixture
+    // assumptions below would then be meaningless, so stop rather than continue on a
+    // premise that no longer holds.
     dropDb(db);
     return;
   }
-  record("LEGACY_COMPLETE: state=LEGACY_COMPLETE raporlandı", /state=LEGACY_COMPLETE(\s|$)/.test(firstRun.stdout));
+
+  const restorePool = new Pool({ connectionString: dbUrl(db), max: 1 });
+  const ledgerAfterBootstrap = await restorePool.query<{ n: number }>("select count(*)::int as n from schema_migrations");
+  const violationsBeforePrep = await countPaymentInstancesCancelViolations(restorePool);
+  await restorePool.end();
+  record(
+    `LEGACY_COMPLETE: 0001-0029 gerçekten commit oldu (${EXPECTED_BASELINE_BACKFILL_COUNT + EXPECTED_MIGRATE_SCRIPT_COUNT - 1} satır)`,
+    ledgerAfterBootstrap.rows[0]?.n === EXPECTED_BASELINE_BACKFILL_COUNT + EXPECTED_MIGRATE_SCRIPT_COUNT - 1,
+    `got ${ledgerAfterBootstrap.rows[0]?.n}`,
+  );
+  record(
+    "LEGACY_COMPLETE: 0001-0029 sonrası checkpoint hâlâ bilinen ihlali taşıyor (1 satır)",
+    violationsBeforePrep === 1,
+    `got ${violationsBeforePrep}`,
+  );
+
+  // Test-setup-only fixture preparation (NOT a production repair — see the helper's own
+  // doc comment). Narrow before/after checks prove it touched only the one named row.
+  const prepPool = new Pool({ connectionString: dbUrl(db), max: 1 });
+  const countsBeforePrep = await getTableRowCounts(prepPool, ["schema_migrations"]);
+  const fpBeforePrep = await fingerprintPaymentInstancesExcluding(prepPool, LEGACY_ANOMALY_INSTANCE_ID);
+  await prepPool.end();
+
+  await prepareLegacyCheckpointForCancellationValidation(dbUrl(db));
+
+  const postPrepPool = new Pool({ connectionString: dbUrl(db), max: 1 });
+  const countsAfterPrep = await getTableRowCounts(postPrepPool, ["schema_migrations"]);
+  const fpAfterPrep = await fingerprintPaymentInstancesExcluding(postPrepPool, LEGACY_ANOMALY_INSTANCE_ID);
+  const violationsAfterPrep = await countPaymentInstancesCancelViolations(postPrepPool);
+  await postPrepPool.end();
+
+  const sameRowCountsAcrossPrep = JSON.stringify(countsBeforePrep) === JSON.stringify(countsAfterPrep);
+  record(
+    "LEGACY_COMPLETE: fixture preparation başka hiçbir tablonun satır sayısını değiştirmedi",
+    sameRowCountsAcrossPrep,
+    sameRowCountsAcrossPrep ? undefined : JSON.stringify({ before: countsBeforePrep, after: countsAfterPrep }).slice(0, 400),
+  );
+  record(
+    "LEGACY_COMPLETE: fixture preparation yalnız hedef satırın cancellation metadata'sını değiştirdi (diğer payment_instances satırları aynı fingerprint)",
+    fpBeforePrep === fpAfterPrep,
+  );
+  record("LEGACY_COMPLETE: preparation sonrası ihlal sayısı 0", violationsAfterPrep === 0, `got ${violationsAfterPrep}`);
+
+  const preePool = new Pool({ connectionString: dbUrl(db), max: 1 });
+  const preCounts = await getTableRowCounts(preePool, ["schema_migrations"]);
+  await preePool.end();
+
+  // Second run: 0001-0029 are already in the ledger (no-op — takes the LEDGER_MANAGED
+  // path this time, not LEGACY_COMPLETE again, since schema_migrations now exists from the
+  // first run), only 0030 is pending, and the fixture is now consistent with it.
+  const secondRun = runMigrate(db);
+  record(
+    "LEGACY_COMPLETE: 0030 fixture düzeltmesinden sonra başarıyla uygulandı",
+    secondRun.code === 0,
+    secondRun.code === 0 ? undefined : secondRun.stderr.slice(0, 300),
+  );
+  if (secondRun.code !== 0) {
+    dropDb(db);
+    return;
+  }
 
   const pool = new Pool({ connectionString: dbUrl(db), max: 1 });
   try {
     const rows = await pool.query<{ version: string; applied_by: string }>(
       "select version, applied_by from schema_migrations order by version",
     );
-    record("LEGACY_COMPLETE: ledger 29 satır", rows.rows.length === 29, `got ${rows.rows.length}`);
+    record(
+      `LEGACY_COMPLETE: ledger ${CANONICAL_MIGRATION_COUNT} satır (canonical dosya sayısı)`,
+      rows.rows.length === CANONICAL_MIGRATION_COUNT,
+      `got ${rows.rows.length}`,
+    );
     const backfill = rows.rows.filter((r) => r.version <= "0019");
     record(
-      "LEGACY_COMPLETE: 0001-0019 applied_by='baseline-backfill' (19 satır)",
-      backfill.length === 19 && backfill.every((r) => r.applied_by === "baseline-backfill"),
+      `LEGACY_COMPLETE: 0001-0019 applied_by='baseline-backfill' (${EXPECTED_BASELINE_BACKFILL_COUNT} satır)`,
+      backfill.length === EXPECTED_BASELINE_BACKFILL_COUNT && backfill.every((r) => r.applied_by === "baseline-backfill"),
       `got ${backfill.length}`,
     );
     const scripted = rows.rows.filter((r) => r.version > "0019");
     record(
-      "LEGACY_COMPLETE: 0020-0029 applied_by='migrate-script' (10 satır)",
-      scripted.length === 10 && scripted.every((r) => r.applied_by === "migrate-script"),
+      `LEGACY_COMPLETE: 0020 sonrası applied_by='migrate-script' (${EXPECTED_MIGRATE_SCRIPT_COUNT} satır)`,
+      scripted.length === EXPECTED_MIGRATE_SCRIPT_COUNT && scripted.every((r) => r.applied_by === "migrate-script"),
       `got ${scripted.length}`,
     );
 
@@ -270,22 +355,52 @@ async function testLegacyCompleteAndIdempotency(): Promise<void> {
     const sameTableSet = JSON.stringify(preKeys) === JSON.stringify(postKeys);
     const sameCounts = sameTableSet && preKeys.every((k) => preCounts[k] === postCounts[k]);
     record(
-      "LEGACY_COMPLETE: tüm mevcut public tabloların satır sayıları öncesi/sonrası birebir aynı (schema_migrations hariç)",
+      "LEGACY_COMPLETE: 0030'un tek başına uygulanması diğer hiçbir tablonun satır sayısını değiştirmedi",
       sameCounts,
       sameCounts ? undefined : JSON.stringify({ pre: preCounts, post: postCounts }).slice(0, 400),
     );
+
+    const violationsAfterMigrate = await countCancelConsistencyViolations(pool);
+    record("LEGACY_COMPLETE: 0030 sonrası ihlal sayısı hâlâ 0", violationsAfterMigrate === 0, `got ${violationsAfterMigrate}`);
+
+    for (const conname of [
+      "payment_instances_cancel_consistency",
+      "checks_cancel_consistency",
+      "loan_installments_cancel_consistency",
+    ] as const) {
+      const state = await getConstraintCatalogState(pool, conname);
+      record(`LEGACY_COMPLETE: ${conname} convalidated=true`, state.found && state.convalidated === true, JSON.stringify(state));
+    }
+    for (const conname of [
+      "payment_instances_paid_fields_scoped",
+      "loan_installments_paid_fields_scoped",
+      "payments_archive_consistency",
+      "checks_archive_triplet_consistency",
+      "loans_archive_triplet_consistency",
+      "scenario_runs_archive_triplet_consistency",
+      "external_assumptions_archive_triplet_consistency",
+      "action_items_archive_triplet_consistency",
+    ] as const) {
+      const state = await getConstraintCatalogState(pool, conname);
+      record(`LEGACY_COMPLETE: kapsam dışı ${conname} hâlâ convalidated=false (dokunulmadı)`, state.found && state.convalidated === false, JSON.stringify(state));
+    }
   } finally {
     await pool.end();
   }
   await assertPolicyCountZero(db, "LEGACY_COMPLETE");
 
-  const secondRun = runMigrate(db);
-  record("Idempotency: ikinci çalıştırma başarıyla tamamlandı", secondRun.code === 0, secondRun.code === 0 ? undefined : secondRun.stderr.slice(0, 300));
-  if (secondRun.code === 0) {
+  // Idempotency: third run, everything already applied — pure no-op.
+  const thirdRun = runMigrate(db);
+  record("Idempotency: üçüncü çalıştırma başarıyla tamamlandı (no-op)", thirdRun.code === 0, thirdRun.code === 0 ? undefined : thirdRun.stderr.slice(0, 300));
+  if (thirdRun.code === 0) {
     const pool2 = new Pool({ connectionString: dbUrl(db), max: 1 });
     try {
       const rows2 = await pool2.query<{ n: number }>("select count(*)::int as n from schema_migrations");
-      record("Idempotency: ledger hâlâ 29 satır (yeni satır eklenmedi)", rows2.rows[0]?.n === 29, `got ${rows2.rows[0]?.n}`);
+      record(
+        `Idempotency: ledger hâlâ ${CANONICAL_MIGRATION_COUNT} satır (yeni satır eklenmedi)`,
+        rows2.rows[0]?.n === CANONICAL_MIGRATION_COUNT,
+        `got ${rows2.rows[0]?.n}`,
+      );
     } finally {
       await pool2.end();
     }
@@ -299,9 +414,32 @@ async function testLegacyCompleteAndIdempotency(): Promise<void> {
 async function testChecksumDrift(): Promise<void> {
   const db = "mas_radar_migrate_checksumdrift_test";
   restoreCheckpointInto(db);
+
+  // Same two-run precondition as testLegacyCompleteAndIdempotency: the p0c-checkpoint
+  // dump is frozen from before Slice 5's legacy-repair apply ever ran and payment_instances
+  // doesn't even have a cancelled_at/cancel_reason column yet at this point (0026 — one of
+  // the pending migrations — is what adds it), so the fixture can only be prepared AFTER a
+  // first run has committed 0001-0029 (each in its own transaction) and failed at 0030.
+  const bootstrapRun = runMigrate(db);
+  if (
+    bootstrapRun.code === 0
+    || !/Pending migration 0030/.test(bootstrapRun.stderr)
+    || !/payment_instances_cancel_consistency/.test(bootstrapRun.stderr)
+  ) {
+    record(
+      "Checksum-drift: ön koşul (0001-0029) beklenen şekilde 0030'da durdu",
+      false,
+      bootstrapRun.code === 0 ? "beklenmedik şekilde tamamen başarılı oldu" : bootstrapRun.stderr.slice(0, 300),
+    );
+    dropDb(db);
+    return;
+  }
+
+  await prepareLegacyCheckpointForCancellationValidation(dbUrl(db));
+
   const firstRun = runMigrate(db);
+  record("Checksum-drift: ön koşul migrasyonu başarılı (0030 fixture düzeltmesinden sonra)", firstRun.code === 0, firstRun.code === 0 ? undefined : firstRun.stderr.slice(0, 300));
   if (firstRun.code !== 0) {
-    record("Checksum-drift: ön koşul migrasyonu başarılı", false, firstRun.stderr.slice(0, 300));
     dropDb(db);
     return;
   }
@@ -363,7 +501,11 @@ async function testLedgerEmptyRecovery(): Promise<void> {
   const pool = new Pool({ connectionString: dbUrl(db), max: 1 });
   try {
     const rows = await pool.query<{ n: number }>("select count(*)::int as n from schema_migrations");
-    record("LEDGER_EMPTY_RECOVERY smoke: ledger 29 satır", rows.rows[0]?.n === 29, `got ${rows.rows[0]?.n}`);
+    record(
+      `LEDGER_EMPTY_RECOVERY smoke: ledger ${migrationFiles.length} satır (canonical dosya sayısı)`,
+      rows.rows[0]?.n === migrationFiles.length,
+      `got ${rows.rows[0]?.n}`,
+    );
   } finally {
     await pool.end();
   }

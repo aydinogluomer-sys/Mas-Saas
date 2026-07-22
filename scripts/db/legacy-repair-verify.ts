@@ -13,7 +13,7 @@
 // confirmed the target DB is a disposable, non-production database.
 import { randomUUID } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { Pool } from "pg";
 import { verifyBackupTarget, verifyRestoreListable, type BackupOptions, type BackupResult, type BackupTargetVerification, type BackupTargetVerificationResult } from "./backup-docker-postgres";
@@ -288,6 +288,47 @@ async function main(): Promise<void> {
   TEST_GIT_BRANCH = tempGitIdentity.branch;
   TEST_GIT_HEAD = tempGitIdentity.head;
 
+  // backups/p0b-managed-baseline-*.dump is frozen from before Slice 5's legacy-repair apply
+  // ever ran, so it still carries the one known payment_instances anomaly 0026 grandfathered
+  // (0026's own comment) — that anomaly is EXACTLY what this whole suite's inventory/approval/
+  // apply/recover-receipt tests exercise repairing. 0030 (VALIDATE CONSTRAINT) requires that
+  // row already fixed, which would make it structurally impossible for this suite's inventory
+  // tool to ever discover it as "unresolved" — the two requirements are incompatible within
+  // one disposable DB. 0030 isn't what this suite tests (it tests the 0022-0029-era repair
+  // tooling, mirroring the real Slice 5→6 order where repair happened before validation), so
+  // it's temporarily hidden from MIGRATIONS_DIR for this suite's entire run — every
+  // runMigrateAgainstUrl call below (DB, DB_NULLPAY, DB_MULTI) then applies 0001-0029 only,
+  // exactly as it did before 0030 existed — and restored in the outer finally below,
+  // unconditionally, so a real 0030 file is never left missing on disk after this suite runs
+  // (success, assertion failure, or crash).
+  const v0030Path = path.join(ROOT, "supabase", "migrations", "0030_validate_cancellation_consistency.sql");
+  const v0030HiddenPath = `${v0030Path}.hidden-for-legacy-repair-verify-${process.pid}-${Date.now()}`;
+  const v0030Sha256BeforeHide = fileSha256(readFileSync(v0030Path));
+  renameSync(v0030Path, v0030HiddenPath);
+  try {
+    await runMainBody();
+  } finally {
+    renameSync(v0030HiddenPath, v0030Path);
+    const v0030Sha256AfterRestore = fileSha256(readFileSync(v0030Path));
+    if (v0030Sha256AfterRestore !== v0030Sha256BeforeHide) {
+      throw new Error(
+        `GÜVENLİK DURDURMASI: 0030 migration dosyası geri yüklendi ama byte SHA-256'sı değişti — beklenen ${v0030Sha256BeforeHide}, bulunan ${v0030Sha256AfterRestore}.`,
+      );
+    }
+  }
+
+  console.log("\n=== Özet ===");
+  let pass = 0;
+  for (const r of results) {
+    console.log(`${r.pass ? "PASS" : "FAIL"}  ${r.name}`);
+    if (r.pass) pass++;
+  }
+  console.log(`\n${pass}/${results.length} test geçti`);
+  process.exit(pass === results.length ? 0 : 1);
+}
+
+async function runMainBody(): Promise<void> {
+  const receiptsDir = path.join(TMP, "receipts");
   restoreManagedFixture(DB);
   const url = dbUrl(DB);
   const migrateRes = runMigrateAgainstUrl(url);
@@ -1961,15 +2002,6 @@ async function main(): Promise<void> {
     dropDb(DB_MULTI);
     rmSync(TMP, { recursive: true, force: true });
   }
-
-  console.log("\n=== Özet ===");
-  let pass = 0;
-  for (const r of results) {
-    console.log(`${r.pass ? "PASS" : "FAIL"}  ${r.name}`);
-    if (r.pass) pass++;
-  }
-  console.log(`\n${pass}/${results.length} test geçti`);
-  process.exit(pass === results.length ? 0 : 1);
 }
 
 /** Inserts a schema_migrations row with a version LOWER than every real applied
