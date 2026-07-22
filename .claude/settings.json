@@ -1,0 +1,26 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(node -e ' *)",
+      "Bash(pnpm vitest *)",
+      "Bash(pnpm db:verify)",
+      "Bash(pnpm typecheck *)",
+      "Bash(pnpm lint *)",
+      "Bash(pnpm phase9a:verify)",
+      "Bash(bash scripts/db/dev-reset.sh)",
+      "Bash(pnpm test *)",
+      "Bash(curl -s http://localhost:3001/production)",
+      "Bash(curl -s http://localhost:3001/)",
+      "Read(//tmp/**)",
+      "Bash(docker exec *)",
+      "Bash(BASE_URL=http://127.0.0.1:3001 pnpm test:visual)",
+      "Bash(pnpm phase9b:verify)",
+      "Bash(npm run *)",
+      "Bash(npx vitest *)",
+      "PowerShell($r = Test-NetConnection -ComputerName 127.0.0.1 -Port 5432 -WarningAction SilentlyContinue; \"DB_5432_OPEN=$\\($r.TcpTestSucceeded\\)\"; $docker = \\(docker ps --format \"{{.Names}} {{.Ports}}\" 2>$null | Select-String -Pattern \"5432|postgres\"\\); if \\($docker\\) { \"DOCKER_PG: $docker\" } else { \"DOCKER_PG: none\" })",
+      "Bash(PORT=3120 npm start)",
+      "Bash(tee \"C:\\\\Users\\\\TRADEB~1\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\c--Users-Trade-Bilisim-Mas-Saas\\\\88282d63-1657-4971-b54d-52026b4cce27\\\\tasks\\\\server3120.log\")",
+      "Bash(curl -s -m 8 -o /dev/null -w \"health=%{http_code} time=%{time_total}s\\\\n\" http://localhost:3120/health)"
+    ]
+  }
+}
