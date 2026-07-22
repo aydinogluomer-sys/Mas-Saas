@@ -10,9 +10,9 @@
 // happens strictly BEFORE the COMMIT call is ever reported as rolled_back; a failure
 // during or after COMMIT never assumes an outcome and never touches the pending file.
 import { randomUUID } from "node:crypto";
-import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import { Pool, type PoolClient } from "pg";
 import { istanbulDateISO } from "../../src/lib/time/istanbul";
 import { verifyRestoreListable } from "./backup-docker-postgres";
@@ -23,10 +23,12 @@ import {
   CommittedReceiptFileSchema,
   InventoryManifestSchema,
   PendingReceiptFileSchema,
+  REAL_GIT_STATE_PROVIDER,
   RolledBackReceiptFileSchema,
   canonicalHash,
   fileSha256,
   payloadSha256,
+  readGitState,
   sortIdsDeterministically,
   sortAppliedRepairsDeterministically,
   writeExclusiveDurable,
@@ -34,12 +36,45 @@ import {
   type ApprovalManifest,
   type BackupReceipt,
   type CommittedReceiptFile,
+  type GitState,
+  type GitStateProvider,
   type InventoryManifest,
   type InventoryTarget,
   type PendingReceiptFile,
   type ReceiptCore,
   type RolledBackReceiptFile,
 } from "./legacy-repair-types";
+
+/** Fail-closed git provenance for apply: current HEAD must match BOTH the inventory's and
+ * the backup receipt's recorded gitHead, current branch must match the receipt's
+ * gitBranch, and the working tree must be clean — checked BEFORE any DB connection is
+ * opened (see main(), below: this runs before `new Pool(...)`), so a violation never
+ * connects to the database, never opens a transaction, never writes any receipt
+ * (pending/rolled-back/committed), and never writes an audit row. Production's main()
+ * ALWAYS calls this with the real provider (the default parameter) — there is no CLI
+ * flag or environment bypass. The injection seam is this exported function's own
+ * `provider` parameter, reachable only by importing this module directly (see
+ * legacy-repair-verify.ts's orchestration-level git-provenance tests), never via argv. */
+export function assertApplyGitProvenance(
+  inventoryGitHead: string,
+  backupReceipt: BackupReceipt,
+  provider: GitStateProvider = REAL_GIT_STATE_PROVIDER,
+): GitState {
+  const state = readGitState(provider);
+  if (state.head !== inventoryGitHead) {
+    throw new Error("Canlı git HEAD, inventory'nin gitHead'iyle eşleşmiyor.");
+  }
+  if (state.head !== backupReceipt.gitHead) {
+    throw new Error("Canlı git HEAD, backup receipt'in gitHead'iyle eşleşmiyor — backup farklı bir kod sürümünde alınmış.");
+  }
+  if (state.branch !== backupReceipt.gitBranch) {
+    throw new Error("Canlı git branch, backup receipt'in gitBranch'ıyla eşleşmiyor.");
+  }
+  if (!state.clean) {
+    throw new Error("Git working tree temiz değil — DB mutation başlatılamaz.");
+  }
+  return state;
+}
 
 const FRESHNESS_WINDOW_MS = 30 * 60 * 1000;
 const TO_CHAR_INSTANT = `to_char($COL$ at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')`;
@@ -183,8 +218,12 @@ async function main(): Promise<void> {
   const parsedName = dbNameFromUrl(databaseUrl);
   if (parsedName !== args.expectedDatabaseName) fail("DATABASE_URL'deki DB adı --expected-database-name ile eşleşmiyor.");
 
-  const gitHead = execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim();
-  if (gitHead !== inventory.gitHead) fail("Canlı git HEAD, inventory'nin gitHead'iyle eşleşmiyor.");
+  let gitHead: string;
+  try {
+    gitHead = assertApplyGitProvenance(inventory.gitHead, backupReceipt).head;
+  } catch (err) {
+    fail((err as Error).message);
+  }
 
   const pool = new Pool({ connectionString: databaseUrl, max: 5 });
   try {
@@ -546,7 +585,17 @@ async function fingerprintScope(client: PoolClient, ids: string[]): Promise<stri
   return canonicalHash(r.rows[0].raw);
 }
 
-main().catch((err) => {
-  console.error("legacy-repair-apply beklenmedik hata ile durdu:", err);
-  process.exit(1);
-});
+const isDirectRun = (() => {
+  try {
+    return import.meta.url === pathToFileURL(process.argv[1] ?? "").href;
+  } catch {
+    return false;
+  }
+})();
+
+if (isDirectRun) {
+  main().catch((err) => {
+    console.error("legacy-repair-apply beklenmedik hata ile durdu:", err);
+    process.exit(1);
+  });
+}

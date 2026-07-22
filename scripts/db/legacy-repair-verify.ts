@@ -16,20 +16,27 @@ import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { Pool } from "pg";
+import { verifyBackupTarget, verifyRestoreListable, type BackupOptions, type BackupResult, type BackupTargetVerification, type BackupTargetVerificationResult } from "./backup-docker-postgres";
+import { runBackupReceipt, type BackupReceiptDeps, type BackupReceiptParams } from "./backup-receipt";
+import { assertApplyGitProvenance } from "./legacy-repair-apply";
 import {
   AppliedRepairResultSchema,
   ApprovalManifestSchema,
+  BackupReceiptSchema,
   CANONICALIZATION_VERSION,
   CommittedReceiptFileSchema,
+  DumpVerificationSchema,
   DurabilityMetadataSchema,
   INVENTORY_MANIFEST_VERSION,
   InventoryManifestSchema,
   InventoryTargetSchema,
   ReceiptCoreSchema,
   RolledBackReceiptFileSchema,
+  assertExpectedCleanGitState,
   attemptDirectoryFsync,
   canonicalHash,
   fileSha256,
+  isCleanWorkingTree,
   payloadSha256,
   sameVolume,
   sortAppliedRepairsDeterministically,
@@ -37,6 +44,8 @@ import {
   writeViaTempAndRename,
   type BackupReceipt,
   type DirectoryFsyncImpl,
+  type DurabilityMetadata,
+  type GitStateProvider,
   type InventoryManifest,
   type ReceiptCore,
 } from "./legacy-repair-types";
@@ -49,8 +58,9 @@ const INVENTORY_SCRIPT = path.join(ROOT, "scripts", "db", "legacy-repair-invento
 const APPROVAL_SCRIPT = path.join(ROOT, "scripts", "db", "legacy-repair-approval.ts");
 const APPLY_SCRIPT = path.join(ROOT, "scripts", "db", "legacy-repair-apply.ts");
 const BACKUP_RECEIPT_SCRIPT = path.join(ROOT, "scripts", "db", "backup-receipt.ts");
+const BACKUP_DOCKER_POSTGRES_SCRIPT = path.join(ROOT, "scripts", "db", "backup-docker-postgres.ts");
 const RECOVER_SCRIPT = path.join(ROOT, "scripts", "db", "legacy-repair-recover-receipt.ts");
-const PRODUCTION_SCRIPTS = [INVENTORY_SCRIPT, APPROVAL_SCRIPT, APPLY_SCRIPT, RECOVER_SCRIPT, BACKUP_RECEIPT_SCRIPT];
+const PRODUCTION_SCRIPTS = [INVENTORY_SCRIPT, APPROVAL_SCRIPT, APPLY_SCRIPT, RECOVER_SCRIPT, BACKUP_RECEIPT_SCRIPT, BACKUP_DOCKER_POSTGRES_SCRIPT];
 
 const DB = "mas_radar_legacy_repair_verify";
 const DB_MULTI = "mas_radar_legacy_repair_verify_multi";
@@ -121,11 +131,37 @@ function restoreManagedFixture(db: string): void {
   });
 }
 interface RunResult { code: number; stdout: string; stderr: string; }
+
+// legacy-repair-inventory.ts / backup-receipt.ts / legacy-repair-apply.ts all read git
+// state (via `execFileSync("git", ...)` with no explicit cwd, so they inherit whatever
+// `process.cwd()` their OWN process was launched with). This project's own real repo is
+// legitimately dirty for the entire duration of a correction round like this one (edit →
+// test → stage → report, before any commit) — so these three scripts are instead run
+// against a throwaway, isolated git repository (set up once in main(), see
+// TEMP_GIT_REPO below) rather than this repo, letting the new fail-closed git-provenance
+// gates in backup-receipt.ts/legacy-repair-apply.ts be satisfied by a genuinely clean
+// repository without ever touching this project's own working tree. Confirmed safe:
+// none of these three scripts read any OTHER cwd-relative path (migrate.ts and
+// migration-lib.ts do, which is exactly why MIGRATE_SCRIPT is deliberately NOT included
+// here and keeps running against ROOT).
+let TEMP_GIT_REPO = "";
+const GIT_AWARE_SCRIPTS = new Set<string>([INVENTORY_SCRIPT, BACKUP_RECEIPT_SCRIPT, APPLY_SCRIPT]);
+
 function runTsx(script: string, args: string[], env: Record<string, string | undefined> = {}): RunResult {
+  // `{...process.env, ...env}` alone would stringify an explicitly-`undefined`-valued key
+  // (e.g. `{ DATABASE_URL: undefined }`, used to test "env var genuinely absent") into the
+  // literal 4-character string "undefined" — Node's own env-building coerces every value
+  // with template-literal semantics. Deleting `undefined` entries after the merge is what
+  // actually makes that key absent from the child's environment.
+  const mergedEnv: Record<string, string | undefined> = { ...process.env, ...env };
+  for (const key of Object.keys(mergedEnv)) {
+    if (mergedEnv[key] === undefined) delete mergedEnv[key];
+  }
+  const cwd = GIT_AWARE_SCRIPTS.has(script) && TEMP_GIT_REPO ? TEMP_GIT_REPO : ROOT;
   try {
     const stdout = execFileSync(process.execPath, [TSX_CLI, script, ...args], {
-      cwd: ROOT,
-      env: { ...process.env, ...env },
+      cwd,
+      env: mergedEnv as NodeJS.ProcessEnv,
       encoding: "utf8",
       stdio: ["ignore", "pipe", "pipe"],
       maxBuffer: 128 * 1024 * 1024,
@@ -140,9 +176,51 @@ function runMigrateAgainstUrl(url: string): RunResult {
   return runTsx(MIGRATE_SCRIPT, [], { DATABASE_URL: url });
 }
 
+/** Creates a fresh, isolated, single-commit git repository under `dir` and returns its
+ * branch name and HEAD SHA — used as the "expected" git identity for every
+ * inventory/backup/apply invocation that needs a genuinely clean, real repository rather
+ * than a fake provider (see GIT_AWARE_SCRIPTS above). Never touches this project's own
+ * repository in any way. */
+function setUpTempGitRepo(dir: string): { branch: string; head: string } {
+  mkdirSync(dir, { recursive: true });
+  execFileSync("git", ["init", "-q"], { cwd: dir });
+  execFileSync("git", ["config", "user.email", "legacy-repair-verify@localhost"], { cwd: dir });
+  execFileSync("git", ["config", "user.name", "legacy-repair-verify"], { cwd: dir });
+  writeFileSync(path.join(dir, "marker.txt"), "legacy-repair-verify disposable git fixture repository\n");
+  execFileSync("git", ["add", "marker.txt"], { cwd: dir });
+  execFileSync("git", ["commit", "-q", "-m", "legacy-repair-verify: initial disposable commit"], { cwd: dir });
+  const branch = execFileSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], { cwd: dir, encoding: "utf8" }).trim();
+  const head = execFileSync("git", ["rev-parse", "HEAD"], { cwd: dir, encoding: "utf8" }).trim();
+  return { branch, head };
+}
+function dirtyTempGitRepo(dir: string): void {
+  writeFileSync(path.join(dir, "uncommitted-scratch-file.txt"), "makes the tree dirty for a fail-closed test\n");
+}
+function cleanTempGitRepo(dir: string): void {
+  const scratchPath = path.join(dir, "uncommitted-scratch-file.txt");
+  if (existsSync(scratchPath)) rmSync(scratchPath, { force: true });
+}
+
+// Set once near the top of main() (queried from the already-open disposable-DB pool) —
+// every database in this suite lives in the SAME running mas-radar-pg cluster, so they
+// all share this one cluster-level system_identifier.
+let SYSTEM_IDENTIFIER = "";
+// Set once main() creates TEMP_GIT_REPO — the expected git identity every
+// inventory/backup/apply invocation is told to require.
+let TEST_GIT_BRANCH = "";
+let TEST_GIT_HEAD = "";
+
 interface BackupBundle { dumpPath: string; receiptPath: string; backupSha256: string; backupReceiptSha256: string; }
 function makeBackup(db: string, label: string, outDir: string): BackupBundle {
-  const res = runTsx(BACKUP_RECEIPT_SCRIPT, [CONTAINER, db, label, outDir]);
+  const res = runTsx(BACKUP_RECEIPT_SCRIPT, [
+    "--expected-database-name", db,
+    "--expected-system-identifier", SYSTEM_IDENTIFIER,
+    "--expected-git-branch", TEST_GIT_BRANCH,
+    "--expected-git-head", TEST_GIT_HEAD,
+    "--container", CONTAINER,
+    "--label", label,
+    "--out-dir", outDir,
+  ], { DATABASE_URL: dbUrl(db) });
   if (res.code !== 0) throw new Error(`backup-receipt başarısız (${label}): ${res.stderr}`);
   const line = res.stdout.split("\n").find((l) => l.startsWith("Backup tamam: "));
   if (!line) throw new Error(`backup-receipt çıktısında dosya yolu bulunamadı: ${res.stdout}`);
@@ -202,11 +280,21 @@ async function main(): Promise<void> {
   const receiptsDir = path.join(TMP, "receipts");
   mkdirSync(receiptsDir, { recursive: true });
 
+  // Isolated, disposable git repository — see GIT_AWARE_SCRIPTS's comment above for why
+  // inventory/backup-receipt/apply are run against THIS, never this project's own
+  // (legitimately mid-round-dirty) working tree.
+  TEMP_GIT_REPO = path.join(TMP, "_git_fixture_repo");
+  const tempGitIdentity = setUpTempGitRepo(TEMP_GIT_REPO);
+  TEST_GIT_BRANCH = tempGitIdentity.branch;
+  TEST_GIT_HEAD = tempGitIdentity.head;
+
   restoreManagedFixture(DB);
   const url = dbUrl(DB);
   const migrateRes = runMigrateAgainstUrl(url);
   if (migrateRes.code !== 0) throw new Error(`migrate başarısız: ${migrateRes.stderr}`);
   const pool = new Pool({ connectionString: url, max: 5 });
+  const sysidRes = await pool.query<{ sysid: string }>(`select system_identifier::text as sysid from pg_control_system()`);
+  SYSTEM_IDENTIFIER = sysidRes.rows[0].sysid;
 
   try {
     // ── §1 inventory ──
@@ -581,10 +669,541 @@ async function main(): Promise<void> {
       const receipt: BackupReceipt = JSON.parse(readFileSync(backup1.receiptPath, "utf8"));
       return receipt.sha256 === backup1.backupSha256 && receipt.databaseName === DB;
     })());
-    record("backup-receipt: durability metadata strict şemadan geçiyor ve directoryFsyncAttempted=true", (() => {
+    record("backup-receipt: dumpDurability strict şemadan geçiyor ve directoryFsyncAttempted=true", (() => {
       const receipt: BackupReceipt = JSON.parse(readFileSync(backup1.receiptPath, "utf8"));
-      const parsed = DurabilityMetadataSchema.safeParse(receipt.durability);
-      return parsed.success && receipt.durability.directoryFsyncAttempted === true;
+      const parsed = DurabilityMetadataSchema.safeParse(receipt.dumpDurability);
+      return parsed.success && receipt.dumpDurability.directoryFsyncAttempted === true;
+    })());
+    record("backup-receipt: receiptDurability strict şemadan geçiyor ve directoryFsyncAttempted=true", (() => {
+      const receipt: BackupReceipt = JSON.parse(readFileSync(backup1.receiptPath, "utf8"));
+      const parsed = DurabilityMetadataSchema.safeParse(receipt.receiptDurability);
+      return parsed.success && receipt.receiptDurability.directoryFsyncAttempted === true;
+    })());
+
+    // ── §3.6 explicit-connection backup CLI, cluster-binding, git provenance, durable
+    // dump temp→rename flow, and old-receipt-format rejection. Everything here reuses the
+    // suite's own disposable DB/pool/container — never mas_radar_dev. ──
+    record("backup-receipt CLI: DATABASE_URL eksikken reddedilir", (() => {
+      const outDir = path.join(TMP, "backups-no-dburl");
+      const r = runTsx(BACKUP_RECEIPT_SCRIPT, [
+        "--expected-database-name", DB, "--expected-system-identifier", SYSTEM_IDENTIFIER,
+        "--container", CONTAINER, "--label", "verify-no-dburl", "--out-dir", outDir,
+      ], { DATABASE_URL: undefined });
+      return r.code !== 0 && !existsSync(outDir);
+    })());
+    record("backup-receipt CLI: yanlış --expected-database-name reddedilir", (() => {
+      const outDir = path.join(TMP, "backups-wrong-dbname");
+      const r = runTsx(BACKUP_RECEIPT_SCRIPT, [
+        "--expected-database-name", "baska_bir_db", "--expected-system-identifier", SYSTEM_IDENTIFIER,
+        "--container", CONTAINER, "--label", "verify-wrong-dbname", "--out-dir", outDir,
+      ], { DATABASE_URL: url });
+      return r.code !== 0 && !existsSync(outDir);
+    })());
+    record("backup-receipt CLI: yanlış --expected-system-identifier reddedilir", (() => {
+      const outDir = path.join(TMP, "backups-wrong-sysid");
+      const r = runTsx(BACKUP_RECEIPT_SCRIPT, [
+        "--expected-database-name", DB, "--expected-system-identifier", "9".repeat(19),
+        "--container", CONTAINER, "--label", "verify-wrong-sysid", "--out-dir", outDir,
+      ], { DATABASE_URL: url });
+      return r.code !== 0 && !existsSync(outDir);
+    })());
+
+    // Cluster-binding core logic: this suite runs against a single real Postgres cluster
+    // (mas-radar-pg), so a genuine second cluster with a DIFFERENT system_identifier
+    // can't be constructed here — verifyBackupTarget() is instead exercised DIRECTLY
+    // (the exact function the real execution path calls) with a deliberately wrong
+    // expectation, proving it correctly discriminates a cluster-identity mismatch.
+    record("verifyBackupTarget: container'ın gerçek system_identifier'ı yanlış bir expectedSystemIdentifier ile karşılaştırıldığında reddeder (cluster-binding çekirdek mantığı)", (() => {
+      try {
+        verifyBackupTarget({ container: CONTAINER, dbName: DB, expectedSystemIdentifier: "1".repeat(19) });
+        return false;
+      } catch (e) {
+        return (e as Error).message.includes("Cluster kimliği eşleşmedi");
+      }
+    })());
+    record("verifyBackupTarget: doğru expectedSystemIdentifier ile gerçek container+DB üzerinden başarıyla geçer", (() => {
+      const result = verifyBackupTarget({ container: CONTAINER, dbName: DB, expectedSystemIdentifier: SYSTEM_IDENTIFIER });
+      return result.containerDatabaseName === DB && result.containerSystemIdentifier === SYSTEM_IDENTIFIER;
+    })());
+    record("backup-receipt.ts: verifyTarget() (varsayılanı gerçek verifyBackupTarget olan DI noktası) kaynak kodda pre-dump ve post-dump olarak en az iki kez çağrılıyor", (() => {
+      const source = readFileSync(BACKUP_RECEIPT_SCRIPT, "utf8");
+      const defaultsToRealImplementation = /const verifyTarget = deps\.verifyTarget \?\? verifyBackupTarget;/.test(source);
+      const callSites = source.match(/(?<!\.)\bverifyTarget\(/g) ?? [];
+      return defaultsToRealImplementation && callSites.length >= 2;
+    })());
+
+    record("backup-receipt: yeni format alanları doğru taşınıyor (gitBranch/gitHead/containerName/sourceDatabaseName/sourceSystemIdentifier/targetVerificationCompleted)", (() => {
+      const receipt = BackupReceiptSchema.parse(JSON.parse(readFileSync(backup1.receiptPath, "utf8")));
+      return receipt.gitBranch === TEST_GIT_BRANCH
+        && receipt.gitHead === TEST_GIT_HEAD
+        && receipt.containerName === CONTAINER
+        && receipt.sourceDatabaseName === DB
+        && receipt.sourceSystemIdentifier === SYSTEM_IDENTIFIER
+        && receipt.targetVerificationCompleted === true;
+    })());
+    record("backup-receipt: dumpVerification tüm kanıtları taşıyor (fsync/temp-listable/rename/final-size/final-sha256/final-listable/TOC/kritik tablolar)", (() => {
+      const receipt = BackupReceiptSchema.parse(JSON.parse(readFileSync(backup1.receiptPath, "utf8")));
+      const dv = receipt.dumpVerification;
+      return dv.fileFsyncCompleted === true
+        && dv.tempRestoreListable === true
+        && dv.atomicRenameCompleted === true
+        && dv.finalByteSizeVerified === true
+        && dv.finalSha256Verified === true
+        && dv.finalRestoreListable === true
+        && dv.tocEntryCount > 0
+        && dv.criticalTablesPresent.paymentInstances === true
+        && dv.criticalTablesPresent.payments === true
+        && dv.criticalTablesPresent.auditLogs === true
+        && dv.criticalTablesPresent.schemaMigrations === true;
+    })());
+    record("DumpVerificationSchema: eksik bir alan (tocEntryCount) ile reddedilir", (() => {
+      const receiptRaw = JSON.parse(readFileSync(backup1.receiptPath, "utf8"));
+      // eslint-disable-next-line @typescript-eslint/no-unused-vars -- deliberately stripped to test schema rejection
+      const { tocEntryCount: _omitted, ...incompleteDv } = receiptRaw.dumpVerification;
+      return !DumpVerificationSchema.safeParse(incompleteDv).success;
+    })());
+    record("DumpVerificationSchema: bir kanıt alanı false olursa (finalRestoreListable) reddedilir", (() => {
+      const receiptRaw = JSON.parse(readFileSync(backup1.receiptPath, "utf8"));
+      const falsifiedDv = { ...receiptRaw.dumpVerification, finalRestoreListable: false };
+      return !DumpVerificationSchema.safeParse(falsifiedDv).success;
+    })());
+    record("DumpVerificationSchema: kritik tablo kanıtı eksik/false olursa reddedilir", (() => {
+      const receiptRaw = JSON.parse(readFileSync(backup1.receiptPath, "utf8"));
+      const falsifiedDv = { ...receiptRaw.dumpVerification, criticalTablesPresent: { ...receiptRaw.dumpVerification.criticalTablesPresent, auditLogs: false } };
+      return !DumpVerificationSchema.safeParse(falsifiedDv).success;
+    })());
+    record("apply: dumpVerification eksik/geçersiz bir receipt'i reddeder (schema seviyesinde)", (() => {
+      const receiptRaw = JSON.parse(readFileSync(backup1.receiptPath, "utf8"));
+      const falsifiedReceipt = { ...receiptRaw, dumpVerification: { ...receiptRaw.dumpVerification, finalRestoreListable: false } };
+      const falsifiedPath = path.join(TMP, "falsified-dumpverification-backup-receipt.json");
+      const falsifiedJson = JSON.stringify(falsifiedReceipt, null, 2);
+      writeFileSync(falsifiedPath, falsifiedJson, { encoding: "utf8", flag: "wx" });
+      const falsifiedSha256 = fileSha256(Buffer.from(falsifiedJson, "utf8"));
+      const r = runTsx(APPLY_SCRIPT, [
+        "--inventory", inventoryPath, "--expected-inventory-sha256", inventoryFileSha256,
+        "--approval", happyApprovalPath, "--expected-approval-sha256", happyApprovalSha256,
+        "--backup", "does-not-matter.dump", "--expected-backup-sha256", "0".repeat(64),
+        "--backup-receipt", falsifiedPath, "--expected-backup-receipt-sha256", falsifiedSha256,
+        "--expected-database-name", DB, "--container", CONTAINER, "--receipts-dir", receiptsDir,
+      ], { DATABASE_URL: url });
+      return r.code !== 0 && r.stderr.includes("strict şemadan geçemedi");
+    })());
+    record("backup receipt: dumpDurability ve receiptDurability şemada AYRI, bağımsız alanlar (tek bir ortak 'durability' alanı yok)", (() => {
+      const raw = JSON.parse(readFileSync(backup1.receiptPath, "utf8"));
+      return Object.prototype.hasOwnProperty.call(raw, "dumpDurability")
+        && Object.prototype.hasOwnProperty.call(raw, "receiptDurability")
+        && !Object.prototype.hasOwnProperty.call(raw, "durability");
+    })());
+
+    record("isCleanWorkingTree: boş porcelain çıktısı temiz kabul edilir", isCleanWorkingTree(""));
+    record(
+      "isCleanWorkingTree: boş-olmayan porcelain çıktısı kirli kabul edilir (gerçek repo'ya dokunulmadan, sahte çıktıyla test edilir)",
+      !isCleanWorkingTree(" M scripts/db/some-file.ts\n"),
+    );
+
+    // Old-format backup receipt (two rounds ago's shape: no gitBranch/gitHead/
+    // containerName/sourceDatabaseName/sourceSystemIdentifier/targetVerificationCompleted/
+    // dumpVerification, single "durability" field instead of dumpDurability+
+    // receiptDurability) — built here from the CURRENT valid receipt with those fields
+    // stripped/collapsed, never touching any real protected artifact.
+    const backup1ReceiptRaw = JSON.parse(readFileSync(backup1.receiptPath, "utf8"));
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars -- deliberately stripped to build the old-shape fixture
+    const { gitBranch: _oldGitBranch, gitHead: _oldGitHead, containerName: _oldContainerName, sourceDatabaseName: _oldSourceDb, sourceSystemIdentifier: _oldSourceSys, targetVerificationCompleted: _oldTvc, dumpVerification: _oldDumpVerification, receiptDurability: _oldReceiptDurability, dumpDurability: oldDurability, ...oldReceiptRest } = backup1ReceiptRaw;
+    const oldShapeReceipt = { ...oldReceiptRest, durability: oldDurability };
+    record("BackupReceiptSchema: eski (gitBranch/gitHead/containerName/dumpVerification/... eksik) receipt reddedilir", !BackupReceiptSchema.safeParse(oldShapeReceipt).success);
+    const oldShapeReceiptPath = path.join(TMP, "old-shape-backup-receipt.json");
+    const oldShapeReceiptJson = JSON.stringify(oldShapeReceipt, null, 2);
+    writeFileSync(oldShapeReceiptPath, oldShapeReceiptJson, { encoding: "utf8", flag: "wx" });
+    const oldShapeReceiptSha256 = fileSha256(Buffer.from(oldShapeReceiptJson, "utf8"));
+    record("apply: eski backup receipt formatını reddeder", (() => {
+      const r = runTsx(APPLY_SCRIPT, [
+        "--inventory", inventoryPath, "--expected-inventory-sha256", inventoryFileSha256,
+        "--approval", happyApprovalPath, "--expected-approval-sha256", happyApprovalSha256,
+        "--backup", "does-not-matter.dump", "--expected-backup-sha256", "0".repeat(64),
+        "--backup-receipt", oldShapeReceiptPath, "--expected-backup-receipt-sha256", oldShapeReceiptSha256,
+        "--expected-database-name", DB, "--container", CONTAINER, "--receipts-dir", receiptsDir,
+      ], { DATABASE_URL: url });
+      return r.code !== 0 && r.stderr.includes("strict şemadan geçemedi");
+    })());
+
+    // gitHead mismatch: a schema-valid receipt whose gitHead differs from the live repo's
+    // current HEAD must be rejected by apply's own live comparison (schema alone cannot
+    // catch this, since any well-formed 40-hex-char value passes InventoryManifestSchema-
+    // style literal checks — there is no "expected" git SHA baked into the schema).
+    const wrongGitHeadReceipt = { ...backup1ReceiptRaw, gitHead: "0".repeat(40) };
+    record("BackupReceiptSchema: sahte ama şekli geçerli gitHead ile de strict şemadan geçer (yalnız apply'ın canlı karşılaştırması yakalar)", BackupReceiptSchema.safeParse(wrongGitHeadReceipt).success);
+    const wrongGitHeadPath = path.join(TMP, "wrong-githead-backup-receipt.json");
+    const wrongGitHeadJson = JSON.stringify(wrongGitHeadReceipt, null, 2);
+    writeFileSync(wrongGitHeadPath, wrongGitHeadJson, { encoding: "utf8", flag: "wx" });
+    const wrongGitHeadSha256 = fileSha256(Buffer.from(wrongGitHeadJson, "utf8"));
+    record("apply: backup receipt'in gitHead'i canlı git HEAD'iyle eşleşmezse reddedilir", (() => {
+      const r = runTsx(APPLY_SCRIPT, [
+        "--inventory", inventoryPath, "--expected-inventory-sha256", inventoryFileSha256,
+        "--approval", happyApprovalPath, "--expected-approval-sha256", happyApprovalSha256,
+        "--backup", backup1.dumpPath, "--expected-backup-sha256", backup1.backupSha256,
+        "--backup-receipt", wrongGitHeadPath, "--expected-backup-receipt-sha256", wrongGitHeadSha256,
+        "--expected-database-name", DB, "--container", CONTAINER, "--receipts-dir", receiptsDir,
+      ], { DATABASE_URL: url });
+      return r.code !== 0 && r.stderr.includes("gitHead");
+    })());
+
+    // branch mismatch: same idea, but for gitBranch — a receipt claiming a different
+    // branch than what's actually checked out must be rejected by apply's live check.
+    const wrongGitBranchReceipt = { ...backup1ReceiptRaw, gitBranch: "not-the-real-branch" };
+    record("BackupReceiptSchema: sahte ama şekli geçerli gitBranch ile de strict şemadan geçer (yalnız apply'ın canlı karşılaştırması yakalar)", BackupReceiptSchema.safeParse(wrongGitBranchReceipt).success);
+    const wrongGitBranchPath = path.join(TMP, "wrong-gitbranch-backup-receipt.json");
+    const wrongGitBranchJson = JSON.stringify(wrongGitBranchReceipt, null, 2);
+    writeFileSync(wrongGitBranchPath, wrongGitBranchJson, { encoding: "utf8", flag: "wx" });
+    const wrongGitBranchSha256 = fileSha256(Buffer.from(wrongGitBranchJson, "utf8"));
+    record("apply: backup receipt'in gitBranch'ı canlı git branch'iyle eşleşmezse reddedilir", (() => {
+      const r = runTsx(APPLY_SCRIPT, [
+        "--inventory", inventoryPath, "--expected-inventory-sha256", inventoryFileSha256,
+        "--approval", happyApprovalPath, "--expected-approval-sha256", happyApprovalSha256,
+        "--backup", backup1.dumpPath, "--expected-backup-sha256", backup1.backupSha256,
+        "--backup-receipt", wrongGitBranchPath, "--expected-backup-receipt-sha256", wrongGitBranchSha256,
+        "--expected-database-name", DB, "--container", CONTAINER, "--receipts-dir", receiptsDir,
+      ], { DATABASE_URL: url });
+      return r.code !== 0 && r.stderr.includes("gitBranch");
+    })());
+
+    // Durable dump temp→fsync→listable→rename→final-verify flow — structural (source)
+    // proof for the parts not independently observable as black-box behavior, plus
+    // behavioral proof (no leftover temp file after a real backup) for the parts that are.
+    record("backup-docker-postgres.ts: dump önce benzersiz bir temp dosyaya yazılıyor (.tmp- deseni)", readFileSync(BACKUP_DOCKER_POSTGRES_SCRIPT, "utf8").includes(".tmp-"));
+    record("backup-docker-postgres.ts: tamamlanan temp dosyada file fsync uygulanıyor (fsyncSync)", readFileSync(BACKUP_DOCKER_POSTGRES_SCRIPT, "utf8").includes("fsyncSync"));
+    record("backup-docker-postgres.ts: doğrulanmış temp dosya atomic rename ile final oluyor (renameSync)", readFileSync(BACKUP_DOCKER_POSTGRES_SCRIPT, "utf8").includes("renameSync"));
+    record("backup-docker-postgres.ts: restore-listable hem temp hem final dosya üzerinde ayrı ayrı çağrılıyor", (() => {
+      const source = readFileSync(BACKUP_DOCKER_POSTGRES_SCRIPT, "utf8");
+      return source.includes("verifyRestoreListable(opts.container, tempPath, opts.requireCriticalTables)") && source.includes("verifyRestoreListable(opts.container, finalPath, opts.requireCriticalTables)");
+    })());
+    record("backup-docker-postgres: gerçek backup sonrası çıktı dizininde hiçbir .tmp- dosyası kalmadı (temp dosya rename ile final oldu)", (() => {
+      const files = readdirSync(path.dirname(backup1.dumpPath));
+      return !files.some((f) => f.includes(".tmp-"));
+    })());
+    record("verifyRestoreListable: bozuk/rastgele içerikli dosya reddedilir (pg_restore --list başarısız olur)", (() => {
+      const garbagePath = path.join(TMP, "garbage-not-a-dump.bin");
+      writeFileSync(garbagePath, Buffer.from("bu bir pg_dump dosyası değil, rastgele veri".repeat(50), "utf8"));
+      try {
+        verifyRestoreListable(CONTAINER, garbagePath);
+        return false;
+      } catch {
+        return true;
+      }
+    })());
+    record("verifyRestoreListable: kritik tablo eksik GERÇEK dump reddedilir (payment_instances --exclude-table ile üretildi)", (() => {
+      const excludedDumpPath = path.join(TMP, "dump-missing-payment-instances.dump");
+      const dumpBuffer = execFileSync(
+        "docker",
+        ["exec", CONTAINER, "pg_dump", "-U", "postgres", "-Fc", "--exclude-table=public.payment_instances", DB],
+        { maxBuffer: 128 * 1024 * 1024 },
+      );
+      writeFileSync(excludedDumpPath, dumpBuffer);
+      try {
+        verifyRestoreListable(CONTAINER, excludedDumpPath, true);
+        return false;
+      } catch (e) {
+        return (e as Error).message.includes("payment_instances");
+      }
+    })());
+    record("verifyRestoreListable: requireCriticalTables=false (varsayılan) iken kritik tablo eksik dump reddedilmez, yalnız false raporlanır (migrate.ts'in ön-migrasyon backup'ları için)", (() => {
+      const excludedDumpPath = path.join(TMP, "dump-missing-payment-instances-lenient.dump");
+      const dumpBuffer = execFileSync(
+        "docker",
+        ["exec", CONTAINER, "pg_dump", "-U", "postgres", "-Fc", "--exclude-table=public.payment_instances", DB],
+        { maxBuffer: 128 * 1024 * 1024 },
+      );
+      writeFileSync(excludedDumpPath, dumpBuffer);
+      const result = verifyRestoreListable(CONTAINER, excludedDumpPath);
+      return result.criticalTablesPresent.paymentInstances === false
+        && result.criticalTablesPresent.payments === true
+        && result.criticalTablesPresent.auditLogs === true
+        && result.criticalTablesPresent.schemaMigrations === true;
+    })());
+
+    // ── §3.7 git-state provenance — dependency-injected orchestration tests. Both
+    // assertExpectedCleanGitState (backup) and assertApplyGitProvenance (apply) are
+    // exercised DIRECTLY, in-process, with fake providers — never by dirtying this
+    // repository's own working tree, and never through any CLI-level bypass (there isn't
+    // one: the injection seam is these functions' own optional parameter, reachable only
+    // by importing the module). ──
+    const FAKE_HEAD = "a".repeat(40);
+    record("assertExpectedCleanGitState: doğru branch+HEAD+temiz → başarılı", (() => {
+      const fake: GitStateProvider = { getBranch: () => "fake-branch", getHead: () => FAKE_HEAD, isClean: () => true };
+      const state = assertExpectedCleanGitState({ branch: "fake-branch", head: FAKE_HEAD }, fake);
+      return state.branch === "fake-branch" && state.head === FAKE_HEAD && state.clean === true;
+    })());
+    record("assertExpectedCleanGitState: kirli working tree reddedilir", (() => {
+      const fake: GitStateProvider = { getBranch: () => "fake-branch", getHead: () => FAKE_HEAD, isClean: () => false };
+      try {
+        assertExpectedCleanGitState({ branch: "fake-branch", head: FAKE_HEAD }, fake);
+        return false;
+      } catch (e) {
+        return (e as Error).message.includes("temiz değil");
+      }
+    })());
+    record("assertExpectedCleanGitState: yanlış HEAD reddedilir", (() => {
+      const fake: GitStateProvider = { getBranch: () => "fake-branch", getHead: () => "b".repeat(40), isClean: () => true };
+      try {
+        assertExpectedCleanGitState({ branch: "fake-branch", head: FAKE_HEAD }, fake);
+        return false;
+      } catch (e) {
+        return (e as Error).message.includes("HEAD uyuşmuyor");
+      }
+    })());
+    record("assertExpectedCleanGitState: yanlış branch reddedilir", (() => {
+      const fake: GitStateProvider = { getBranch: () => "different-branch", getHead: () => FAKE_HEAD, isClean: () => true };
+      try {
+        assertExpectedCleanGitState({ branch: "fake-branch", head: FAKE_HEAD }, fake);
+        return false;
+      } catch (e) {
+        return (e as Error).message.includes("branch uyuşmuyor");
+      }
+    })());
+
+    record("assertApplyGitProvenance: doğru HEAD+branch+temiz → başarılı", (() => {
+      const fake: GitStateProvider = { getBranch: () => "fake-branch", getHead: () => FAKE_HEAD, isClean: () => true };
+      const fakeReceipt = { ...backup1ReceiptRaw, gitBranch: "fake-branch", gitHead: FAKE_HEAD } as BackupReceipt;
+      const state = assertApplyGitProvenance(FAKE_HEAD, fakeReceipt, fake);
+      return state.head === FAKE_HEAD;
+    })());
+    record("assertApplyGitProvenance: kirli working tree reddedilir", (() => {
+      const fake: GitStateProvider = { getBranch: () => "fake-branch", getHead: () => FAKE_HEAD, isClean: () => false };
+      const fakeReceipt = { ...backup1ReceiptRaw, gitBranch: "fake-branch", gitHead: FAKE_HEAD } as BackupReceipt;
+      try {
+        assertApplyGitProvenance(FAKE_HEAD, fakeReceipt, fake);
+        return false;
+      } catch (e) {
+        return (e as Error).message.includes("temiz değil");
+      }
+    })());
+    record("assertApplyGitProvenance: yanlış inventory gitHead reddedilir", (() => {
+      const fake: GitStateProvider = { getBranch: () => "fake-branch", getHead: () => FAKE_HEAD, isClean: () => true };
+      const fakeReceipt = { ...backup1ReceiptRaw, gitBranch: "fake-branch", gitHead: FAKE_HEAD } as BackupReceipt;
+      try {
+        assertApplyGitProvenance("b".repeat(40), fakeReceipt, fake);
+        return false;
+      } catch (e) {
+        return (e as Error).message.includes("inventory'nin gitHead'iyle");
+      }
+    })());
+    record("assertApplyGitProvenance: yanlış receipt gitHead reddedilir", (() => {
+      const fake: GitStateProvider = { getBranch: () => "fake-branch", getHead: () => FAKE_HEAD, isClean: () => true };
+      const fakeReceipt = { ...backup1ReceiptRaw, gitBranch: "fake-branch", gitHead: "b".repeat(40) } as BackupReceipt;
+      try {
+        assertApplyGitProvenance(FAKE_HEAD, fakeReceipt, fake);
+        return false;
+      } catch (e) {
+        return (e as Error).message.includes("backup receipt'in gitHead'iyle");
+      }
+    })());
+    record("assertApplyGitProvenance: yanlış receipt gitBranch reddedilir", (() => {
+      const fake: GitStateProvider = { getBranch: () => "fake-branch", getHead: () => FAKE_HEAD, isClean: () => true };
+      const fakeReceipt = { ...backup1ReceiptRaw, gitBranch: "different-branch", gitHead: FAKE_HEAD } as BackupReceipt;
+      try {
+        assertApplyGitProvenance(FAKE_HEAD, fakeReceipt, fake);
+        return false;
+      } catch (e) {
+        return (e as Error).message.includes("gitBranch'ıyla");
+      }
+    })());
+    record("backup-receipt.ts: main() runBackupReceipt'i deps override etmeden çağırıyor (gitStateProvider/verifyTarget/runBackup için gerçek varsayılanlar kullanılıyor)", (() => {
+      const source = readFileSync(BACKUP_RECEIPT_SCRIPT, "utf8");
+      return source.includes("await runBackupReceipt(")
+        && !source.includes("gitStateProvider:")
+        && !source.includes("verifyTarget:")
+        && !/\brunBackup:/.test(source);
+    })());
+
+    // ── §3.8 runBackupReceipt orchestration-level DI tests — container/TCP mismatch,
+    // post-dump identity change, and mid-flight git-state change, all WITHOUT a real
+    // second Postgres cluster: only the leaf dependencies are faked, the REAL
+    // orchestration function (runBackupReceipt itself, imported unmodified) runs. ──
+    const FAKE_DURABILITY: DurabilityMetadata = {
+      platform: "win32", durabilityMode: "full-directory-fsync",
+      directoryFsyncAttempted: true, directoryFsyncSupported: true, directoryFsyncErrorCode: null,
+    };
+    const fakeBackupResult = (dumpPath: string): BackupResult => ({
+      path: dumpPath,
+      bytes: 100,
+      sha256: "0".repeat(64),
+      dumpDurability: FAKE_DURABILITY,
+      dumpVerification: {
+        fileFsyncCompleted: true, tempRestoreListable: true, atomicRenameCompleted: true,
+        finalByteSizeVerified: true, finalSha256Verified: true, finalRestoreListable: true,
+        tocEntryCount: 1,
+        criticalTablesPresent: { paymentInstances: true, payments: true, auditLogs: true, schemaMigrations: true },
+      },
+    });
+    const alwaysCleanFakeGit: GitStateProvider = { getBranch: () => "fake-branch", getHead: () => FAKE_HEAD, isClean: () => true };
+    const baseFakeDeps = (): BackupReceiptDeps => ({
+      gitStateProvider: alwaysCleanFakeGit,
+      queryTcpIdentity: async () => ({ databaseName: "mas_radar_dev", systemIdentifier: "1111111111111111111" }),
+      queryLedger: async () => ({ ledgerCount: 1, lastMigrationVersion: "0001" }),
+      readDbTimestamp: async () => "2026-01-01T00:00:00.000000Z",
+    });
+    const baseFakeParams = (label: string, outDir: string): BackupReceiptParams => ({
+      expectedDatabaseName: "mas_radar_dev",
+      expectedSystemIdentifier: "1111111111111111111",
+      expectedGitBranch: "fake-branch",
+      expectedGitHead: FAKE_HEAD,
+      container: CONTAINER,
+      label,
+      outDir,
+    });
+
+    {
+      let runBackupCallCount = 0;
+      const outDir = path.join(TMP, "backups-orchestration-mismatch");
+      let threw: Error | null = null;
+      try {
+        await runBackupReceipt(baseFakeParams("verify-mismatch-orchestration", outDir), {
+          ...baseFakeDeps(),
+          // eslint-disable-next-line @typescript-eslint/no-unused-vars -- signature must match verifyTarget; param intentionally unused, this fake always rejects
+          verifyTarget: (_v: BackupTargetVerification): BackupTargetVerificationResult => {
+            throw new Error("Cluster kimliği eşleşmedi — backup/migration iptal edildi. (SIMULE: container systemIdentifier='2222222222222222222' TCP'nin '1111111111111111111' değeriyle eşleşmiyor)");
+          },
+          // eslint-disable-next-line @typescript-eslint/no-unused-vars -- signature must match runBackup; param intentionally unused, only call count matters
+          runBackup: async (_opts: BackupOptions): Promise<BackupResult> => {
+            runBackupCallCount++;
+            return fakeBackupResult(path.join(outDir, "should-not-be-created.dump"));
+          },
+        });
+      } catch (e) {
+        threw = e as Error;
+      }
+      record(
+        "runBackupReceipt: TCP identity (systemIdentifier=A) ile container identity (systemIdentifier=B) uyuşmazsa dump başlamadan reddedilir, pg_dump hiç çağrılmaz",
+        threw !== null && threw.message.includes("Cluster kimliği eşleşmedi") && runBackupCallCount === 0 && !existsSync(outDir),
+      );
+    }
+
+    {
+      let verifyCallCount = 0;
+      const outDir = path.join(TMP, "backups-orchestration-postmismatch");
+      const fakeDumpPath = path.join(outDir, "fake-not-real.dump");
+      let threw: Error | null = null;
+      try {
+        await runBackupReceipt(baseFakeParams("verify-postmismatch", outDir), {
+          ...baseFakeDeps(),
+          verifyTarget: (v: BackupTargetVerification): BackupTargetVerificationResult => {
+            verifyCallCount++;
+            if (verifyCallCount === 1) return { containerDatabaseName: v.dbName, containerSystemIdentifier: v.expectedSystemIdentifier };
+            throw new Error("Cluster kimliği eşleşmedi — backup/migration iptal edildi. (SIMULE: post-dump identity changed)");
+          },
+          runBackup: async (): Promise<BackupResult> => fakeBackupResult(fakeDumpPath),
+        });
+      } catch (e) {
+        threw = e as Error;
+      }
+      record(
+        "runBackupReceipt: post-dump container identity değişirse (mismatch) receipt yazılmaz",
+        threw !== null && threw.message.includes("Cluster kimliği eşleşmedi") && !existsSync(`${fakeDumpPath}.receipt.json`),
+      );
+    }
+
+    {
+      let gitCallCount = 0;
+      const outDir = path.join(TMP, "backups-orchestration-gitchange");
+      const fakeDumpPath = path.join(outDir, "fake-not-real-2.dump");
+      const changingGit: GitStateProvider = {
+        getBranch: () => "fake-branch",
+        getHead: () => {
+          gitCallCount++;
+          return gitCallCount === 1 ? FAKE_HEAD : "c".repeat(40);
+        },
+        isClean: () => true,
+      };
+      let threw: Error | null = null;
+      try {
+        await runBackupReceipt(baseFakeParams("verify-gitchange", outDir), {
+          ...baseFakeDeps(),
+          gitStateProvider: changingGit,
+          verifyTarget: (v: BackupTargetVerification): BackupTargetVerificationResult => ({ containerDatabaseName: v.dbName, containerSystemIdentifier: v.expectedSystemIdentifier }),
+          runBackup: async (): Promise<BackupResult> => fakeBackupResult(fakeDumpPath),
+        });
+      } catch (e) {
+        threw = e as Error;
+      }
+      record(
+        "runBackupReceipt: pre-check sonrası HEAD değişirse receipt yazılmaz",
+        threw !== null && threw.message.includes("Git HEAD uyuşmuyor") && !existsSync(`${fakeDumpPath}.receipt.json`),
+      );
+    }
+
+    {
+      let cleanCallCount = 0;
+      const outDir = path.join(TMP, "backups-orchestration-dirtymidflight");
+      const fakeDumpPath = path.join(outDir, "fake-not-real-3.dump");
+      const dirtyingMidFlight: GitStateProvider = {
+        getBranch: () => "fake-branch",
+        getHead: () => FAKE_HEAD,
+        isClean: () => {
+          cleanCallCount++;
+          return cleanCallCount === 1;
+        },
+      };
+      let threw: Error | null = null;
+      try {
+        await runBackupReceipt(baseFakeParams("verify-dirtymidflight", outDir), {
+          ...baseFakeDeps(),
+          gitStateProvider: dirtyingMidFlight,
+          verifyTarget: (v: BackupTargetVerification): BackupTargetVerificationResult => ({ containerDatabaseName: v.dbName, containerSystemIdentifier: v.expectedSystemIdentifier }),
+          runBackup: async (): Promise<BackupResult> => fakeBackupResult(fakeDumpPath),
+        });
+      } catch (e) {
+        threw = e as Error;
+      }
+      record(
+        "runBackupReceipt: pre-check sonrası working tree kirlenirse receipt yazılmaz",
+        threw !== null && threw.message.includes("temiz değil") && !existsSync(`${fakeDumpPath}.receipt.json`),
+      );
+    }
+
+    // ── §3.9 real subprocess, isolated temp git repo — proves the REAL CLI entrypoints
+    // (not just the extracted functions) genuinely enforce this, without ever touching
+    // this project's own working tree. ──
+    record("backup-receipt CLI: yanlış --expected-git-head reddedilir (gerçek izole repo, doğru branch)", (() => {
+      const outDir = path.join(TMP, "backups-wrong-git-head-cli");
+      const r = runTsx(BACKUP_RECEIPT_SCRIPT, [
+        "--expected-database-name", DB, "--expected-system-identifier", SYSTEM_IDENTIFIER,
+        "--expected-git-branch", TEST_GIT_BRANCH, "--expected-git-head", "0".repeat(40),
+        "--container", CONTAINER, "--label", "verify-wrong-git-head-cli", "--out-dir", outDir,
+      ], { DATABASE_URL: url });
+      return r.code !== 0 && r.stderr.includes("HEAD uyuşmuyor") && !existsSync(outDir);
+    })());
+    record("backup-receipt CLI: yanlış --expected-git-branch reddedilir (gerçek izole repo, doğru HEAD)", (() => {
+      const outDir = path.join(TMP, "backups-wrong-git-branch-cli");
+      const r = runTsx(BACKUP_RECEIPT_SCRIPT, [
+        "--expected-database-name", DB, "--expected-system-identifier", SYSTEM_IDENTIFIER,
+        "--expected-git-branch", "not-the-real-branch", "--expected-git-head", TEST_GIT_HEAD,
+        "--container", CONTAINER, "--label", "verify-wrong-git-branch-cli", "--out-dir", outDir,
+      ], { DATABASE_URL: url });
+      return r.code !== 0 && r.stderr.includes("branch uyuşmuyor") && !existsSync(outDir);
+    })());
+    record("backup-receipt CLI: gerçek izole repo kirletilince reddedilir, temizlenince tekrar kullanılabilir", (() => {
+      dirtyTempGitRepo(TEMP_GIT_REPO);
+      const outDir = path.join(TMP, "backups-dirty-repo-cli");
+      const r = runTsx(BACKUP_RECEIPT_SCRIPT, [
+        "--expected-database-name", DB, "--expected-system-identifier", SYSTEM_IDENTIFIER,
+        "--expected-git-branch", TEST_GIT_BRANCH, "--expected-git-head", TEST_GIT_HEAD,
+        "--container", CONTAINER, "--label", "verify-dirty-repo-cli", "--out-dir", outDir,
+      ], { DATABASE_URL: url });
+      cleanTempGitRepo(TEMP_GIT_REPO);
+      return r.code !== 0 && r.stderr.includes("temiz değil") && !existsSync(outDir);
+    })());
+    record("apply CLI: gerçek izole repo kirliyken DB'ye bağlanmadan, hiçbir yeni receipt üretmeden reddedilir", (() => {
+      dirtyTempGitRepo(TEMP_GIT_REPO);
+      const beforeCount = listReceiptFiles(receiptsDir).length;
+      const r = runTsx(APPLY_SCRIPT, [
+        "--inventory", inventoryPath, "--expected-inventory-sha256", inventoryFileSha256,
+        "--approval", happyApprovalPath, "--expected-approval-sha256", happyApprovalSha256,
+        "--backup", backup1.dumpPath, "--expected-backup-sha256", backup1.backupSha256,
+        "--backup-receipt", backup1.receiptPath, "--expected-backup-receipt-sha256", backup1.backupReceiptSha256,
+        "--expected-database-name", DB, "--container", CONTAINER, "--receipts-dir", receiptsDir,
+      ], { DATABASE_URL: url });
+      cleanTempGitRepo(TEMP_GIT_REPO);
+      const afterCount = listReceiptFiles(receiptsDir).length;
+      return r.code !== 0 && r.stderr.includes("temiz değil") && afterCount === beforeCount;
     })());
 
     // ── §3.5 Windows durability infrastructure ──

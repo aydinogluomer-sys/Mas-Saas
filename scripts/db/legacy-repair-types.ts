@@ -5,6 +5,7 @@
 // SHA-256 helpers, and durable-write helpers with explicit Windows durability metadata.
 
 import { z } from "zod";
+import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { openSync, writeSync, fsyncSync, closeSync, renameSync, readFileSync } from "node:fs";
 import path from "node:path";
@@ -56,6 +57,71 @@ export const GitHead = z.string().regex(/^[0-9a-f]{40}$/, "geçersiz git HEAD");
 export const SystemIdentifier = z.string().regex(/^\d+$/, "geçersiz system_identifier");
 export const MigrationVersion = z.string().regex(/^\d{4}$/, "geçersiz migration versiyonu");
 export const Uuid = z.uuid();
+
+/* ── git-state provenance, dependency-injectable ── shared by backup-receipt.ts's
+   pre/post-dump provenance gate and legacy-repair-apply.ts's pre-transaction gate.
+   Production entrypoints (both scripts' `main()`) ALWAYS call these with the REAL
+   provider (the default parameter) — there is no CLI flag, environment variable, or
+   `--allow-dirty`-style switch that lets a real invocation substitute anything else.
+   The injection seam exists ONLY at the programmatic/module level, exercised by
+   legacy-repair-verify.ts importing these functions directly and passing a controlled
+   fake provider — never reachable through either script's command-line surface. */
+
+export interface GitStateProvider {
+  getBranch: () => string;
+  getHead: () => string;
+  isClean: () => boolean;
+}
+
+export interface GitState {
+  branch: string;
+  head: string;
+  clean: boolean;
+}
+
+/** Pure predicate over `git status --porcelain` output, kept side-effect-free so it can
+ * be unit-tested directly against a FABRICATED string — never by dirtying this
+ * repository's own real working tree as a test side effect. */
+export function isCleanWorkingTree(porcelainOutput: string): boolean {
+  return porcelainOutput.trim().length === 0;
+}
+
+/** The one real implementation, used by every production entrypoint by default. Reads
+ * whatever git repository contains the calling process's own `process.cwd()` — this is
+ * what lets legacy-repair-verify.ts point a real `tsx` subprocess at an isolated,
+ * disposable git repository (via the subprocess's `cwd`) instead of this project's own
+ * working tree, for the handful of tests that need a real, genuinely clean repository
+ * rather than a fake provider. */
+export const REAL_GIT_STATE_PROVIDER: GitStateProvider = {
+  getBranch: () => execFileSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], { encoding: "utf8" }).trim(),
+  getHead: () => execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim(),
+  isClean: () => isCleanWorkingTree(execFileSync("git", ["status", "--porcelain"], { encoding: "utf8" })),
+};
+
+export function readGitState(provider: GitStateProvider = REAL_GIT_STATE_PROVIDER): GitState {
+  return { branch: provider.getBranch(), head: provider.getHead(), clean: provider.isClean() };
+}
+
+/** Fail-closed: throws unless the live git state exactly matches `expected` AND the
+ * working tree is clean. Used by backup-receipt.ts's runBackupReceipt() both before and
+ * after the dump (a dirty/mismatched read at EITHER point invalidates the whole backup —
+ * see runBackupReceipt's own comment for why post-dump re-verification matters). */
+export function assertExpectedCleanGitState(
+  expected: { branch: string; head: string },
+  provider: GitStateProvider = REAL_GIT_STATE_PROVIDER,
+): GitState {
+  const state = readGitState(provider);
+  if (state.branch !== expected.branch) {
+    throw new Error(`Git branch uyuşmuyor: canlı='${state.branch}' beklenen='${expected.branch}'`);
+  }
+  if (state.head !== expected.head) {
+    throw new Error(`Git HEAD uyuşmuyor: canlı='${state.head}' beklenen='${expected.head}'`);
+  }
+  if (!state.clean) {
+    throw new Error(`Git working tree temiz değil — işlem başlatılamaz.`);
+  }
+  return state;
+}
 
 /* ── durability metadata — every manifest/receipt-type write records its own. Defined
    here (before inventory/approval manifests) since both now embed it directly. ── */
@@ -338,19 +404,75 @@ export type ReceiptFile = z.infer<typeof ReceiptFileSchema>;
 
 /* ── backup receipt ── */
 
+// Structured proof that the dump's own file-level integrity flow (backup-docker-
+// postgres.ts's temp-write → fsync → restore-listable → atomic-rename → final-reverify)
+// genuinely ran and passed — not merely printed to a console log. Every field is a
+// `z.literal(true)` (or a positive count / a strict nested object of literals): a receipt
+// produced by code that skipped or failed any one of these steps is missing the field
+// entirely and is rejected by strict-schema parsing alone, exactly like
+// targetVerificationCompleted above.
+export const DumpVerificationSchema = z
+  .object({
+    fileFsyncCompleted: z.literal(true),
+    tempRestoreListable: z.literal(true),
+    atomicRenameCompleted: z.literal(true),
+    finalByteSizeVerified: z.literal(true),
+    finalSha256Verified: z.literal(true),
+    finalRestoreListable: z.literal(true),
+    tocEntryCount: z.number().int().positive(),
+    criticalTablesPresent: z
+      .object({
+        paymentInstances: z.literal(true),
+        payments: z.literal(true),
+        auditLogs: z.literal(true),
+        schemaMigrations: z.literal(true),
+      })
+      .strict(),
+  })
+  .strict();
+export type DumpVerification = z.infer<typeof DumpVerificationSchema>;
+
 export const BackupReceiptSchema = z
   .object({
     canonicalizationVersion: z.literal(CANONICALIZATION_VERSION),
+    // Real `git branch --show-current`/`rev-parse HEAD` at backup time — lets apply.ts
+    // refuse a backup taken on a different branch or against a different code version
+    // than the one currently checked out.
+    gitBranch: z.string().min(1),
+    gitHead: GitHead,
+    // The Docker container the dump was actually taken from — recorded so the cluster-
+    // binding provenance below (sourceDatabaseName/sourceSystemIdentifier) is traceable
+    // back to a concrete backup source, not just an abstract claim.
+    containerName: z.string().min(1),
     path: z.string().min(1),
     bytes: z.number().int().positive(),
     sha256: Sha256Hex,
     databaseName: z.string().min(1),
     systemIdentifier: SystemIdentifier,
+    // Independently re-derived by querying the CONTAINER (via `docker exec ... psql`),
+    // not the TCP connection above — proves the dump's actual source is the same
+    // Postgres cluster as `databaseName`/`systemIdentifier`, not a same-named database on
+    // a different cluster. See verifyBackupTarget() in backup-docker-postgres.ts.
+    sourceDatabaseName: z.string().min(1),
+    sourceSystemIdentifier: SystemIdentifier,
+    // Only ever `true` — its role is structural, not informational: a receipt produced by
+    // code that never ran the container-vs-TCP cross-check (e.g. an old-format receipt)
+    // is missing this field entirely and is rejected by strict-schema parsing alone.
+    targetVerificationCompleted: z.literal(true),
     ledgerCount: z.number().int().nonnegative(),
     lastMigrationVersion: MigrationVersion,
     backupStartedDbTimestamp: IsoInstant,
     backupCompletedDbTimestamp: IsoInstant,
-    durability: DurabilityMetadataSchema,
+    // Structured proof of the dump's own file-integrity flow — see DumpVerificationSchema
+    // above. Immutable and hash-scoped: this is not merely printed to the console.
+    dumpVerification: DumpVerificationSchema,
+    // Durability of the DUMP file itself (backupDockerPostgres's own temp-write + atomic
+    // rename + directory-fsync) and durability of the RECEIPT file's own write are
+    // deliberately separate fields — they are two different files, written at two
+    // different times by two different functions, and conflating them into one field
+    // would leave it ambiguous which file's write behavior is actually being described.
+    dumpDurability: DurabilityMetadataSchema,
+    receiptDurability: DurabilityMetadataSchema,
   })
   .strict();
 export type BackupReceipt = z.infer<typeof BackupReceiptSchema>;
