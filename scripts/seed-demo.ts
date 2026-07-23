@@ -72,7 +72,7 @@ async function main() {
   const futurePartial = await pool.query<{id:string;amount:number}>(`select id,amount::float8 amount from public.payment_instances where due_date>=$1 and amount is not null and amount>1000 and status='unpaid' order by due_date limit 1`,[today]);
   if(futurePartial.rows[0]) await markInstancePartial(pool,futurePartial.rows[0].id,Math.max(1,Math.floor(futurePartial.rows[0].amount*.4)));
   if(lifecycle.rows[3]) { await markInstancePaid(pool,lifecycle.rows[3].id,lifecycle.rows[3].amount); await markInstanceUnpaid(pool,lifecycle.rows[3].id); }
-  if(lifecycle.rows[4]) await cancelInstance(pool,lifecycle.rows[4].id);
+  if(lifecycle.rows[4]) await cancelInstance(pool,lifecycle.rows[4].id,"Demo: yaşam döngüsü örneği için iptal edildi.");
   await pool.query(`with future as (select id from public.payment_instances where due_date>=$1 and status='unpaid' order by due_date limit 2) update public.payment_instances i set status='planned',note=concat_ws(' · ',i.note,'Demo yaşam döngüsü') from future f where i.id=f.id`,[today]);
   const cf = await mapCashflowMonths(pool, r.workbookId);
   const cont = await validateContinuity(pool);

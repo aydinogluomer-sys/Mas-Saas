@@ -847,7 +847,7 @@ async function main(): Promise<void> {
         await expectFnReject(
           () => updatePaymentAndReconcile(appPool, paymentA, {
             name: "Reconciliation Test Ödeme", recurrence_type: "monthly", due_day: 10, due_date: null,
-            default_amount: 1000, amount_confidence: "known", direction: "outflow", priority: "normal",
+            default_amount: 1000, amount_confidence: "known", direction: "outflow", priority: "normal", flexibility_class: null,
             status: "active", category_id: null, provider_party_id: null, owner_party_id: null,
             cash_account_id: null, description: null,
           }, TODAY),
@@ -881,7 +881,7 @@ async function main(): Promise<void> {
       // Şimdi engelsiz, gerçek başarı yolu — tek transaction'da reconciliation + generation + risk refresh.
       await updatePaymentAndReconcile(appPool, paymentA, {
         name: "Reconciliation Test Ödeme", recurrence_type: "monthly", due_day: 10, due_date: null,
-        default_amount: 1000, amount_confidence: "known", direction: "outflow", priority: "normal",
+        default_amount: 1000, amount_confidence: "known", direction: "outflow", priority: "normal", flexibility_class: null,
         status: "active", category_id: null, provider_party_id: null, owner_party_id: null,
         cash_account_id: null, description: null,
       }, TODAY);
@@ -903,7 +903,7 @@ async function main(): Promise<void> {
       await expectFnReject(
         () => updatePaymentAndReconcile(appPool, "00000000-0000-0000-0000-000000000000", {
           name: "x", recurrence_type: "monthly", due_day: 1, due_date: null, default_amount: null,
-          amount_confidence: "known", direction: "outflow", priority: "normal", status: "active",
+          amount_confidence: "known", direction: "outflow", priority: "normal", flexibility_class: null, status: "active",
           category_id: null, provider_party_id: null, owner_party_id: null, cash_account_id: null, description: null,
         }, TODAY),
         /payment not found/,
@@ -920,7 +920,7 @@ async function main(): Promise<void> {
         await expectFnReject(
           () => updatePaymentAndReconcile(appPool, paymentC, {
             name: "Reconciliation Test Ödeme", recurrence_type: "monthly", due_day: 11, due_date: null,
-            default_amount: 500, amount_confidence: "known", direction: "outflow", priority: "normal",
+            default_amount: 500, amount_confidence: "known", direction: "outflow", priority: "normal", flexibility_class: null,
             status: "active", category_id: null, provider_party_id: null, owner_party_id: null,
             cash_account_id: null, description: null,
           }, TODAY),
@@ -972,7 +972,7 @@ async function main(): Promise<void> {
         await expectFnReject(
           () => updatePaymentAndReconcile(appPool, paymentD, {
             name: "Reconciliation Test Ödeme", recurrence_type: "monthly", due_day: 15, due_date: null,
-            default_amount: 1000, amount_confidence: "known", direction: "outflow", priority: "normal",
+            default_amount: 1000, amount_confidence: "known", direction: "outflow", priority: "normal", flexibility_class: null,
             status: "active", category_id: null, provider_party_id: null, owner_party_id: null,
             cash_account_id: null, description: null,
           }, TODAY),
