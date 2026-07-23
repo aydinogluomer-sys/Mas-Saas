@@ -43,6 +43,9 @@ next-env.d.ts
 
 # local source data (private financials)
 data/
+# The application route `/data` is source code, not private workbook data.
+!src/app/(dashboard)/data/
+!src/app/(dashboard)/data/**
 
 # database backups (private financial dumps — never commit)
 /backups/
@@ -60,3 +63,7 @@ data/
 
 # local pnpm content-addressable store
 /.pnpm-store/
+
+# stray local artifacts — never commit
+/debug.log
+/cloudflared-windows-amd64.msi
