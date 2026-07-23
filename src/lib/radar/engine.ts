@@ -336,10 +336,11 @@ export async function generateInstancesForMonth(
   }
 }
 
-export async function ensureWindow(pool: Pool, todayISO: string): Promise<GenerateResult[]> {
+export async function ensureWindow(pool: Pool, todayISO: string, futureMonths = 1): Promise<GenerateResult[]> {
   const m0 = todayISO.slice(0, 7) + "-01";
   const out: GenerateResult[] = [];
-  for (const m of [addMonths(m0, -1), m0, addMonths(m0, 1)]) {
+  for (let delta = -1; delta <= Math.max(1, futureMonths); delta++) {
+    const m = addMonths(m0, delta);
     out.push(await generateInstancesForMonth(pool, m));
   }
   await refreshRiskFlags(pool, todayISO);
@@ -475,6 +476,36 @@ export async function markInstanceUnpaid(pool: Pool, instanceId: string): Promis
   } catch (e) {
     await client.query("rollback");
     throw e;
+  } finally {
+    client.release();
+  }
+}
+
+export async function markInstancePartial(pool: Pool, instanceId: string, paidAmount: number): Promise<void> {
+  const client = await pool.connect();
+  try {
+    await client.query("begin");
+    const before = await client.query(
+      `select id, status, amount, paid_amount from public.payment_instances where id=$1 for update`,
+      [instanceId],
+    );
+    if (before.rowCount !== 1) throw new DomainError("instance not found");
+    const total = before.rows[0].amount == null ? null : Number(before.rows[0].amount);
+    if (!Number.isFinite(paidAmount) || paidAmount <= 0 || (total != null && paidAmount >= total)) {
+      throw new DomainError("Kısmi tutar toplamdan küçük ve sıfırdan büyük olmalı");
+    }
+    await client.query(
+      `update public.payment_instances set status='partial', paid_amount=$2, paid_at=now() where id=$1`,
+      [instanceId, paidAmount],
+    );
+    await audit(client, "mark_partial", "payment_instances", instanceId, before.rows[0], {
+      status: "partial",
+      paid_amount: paidAmount,
+    });
+    await client.query("commit");
+  } catch (error) {
+    await client.query("rollback");
+    throw error;
   } finally {
     client.release();
   }

@@ -336,6 +336,7 @@ export async function loadChecks(pool: Pool): Promise<CheckRow[]> {
     left join public.parties pa on pa.id=c.payer_party_id
     left join public.parties pb on pb.id=c.bank_party_id
     left join public.import_rows ir on ir.id=c.source_row_id
+    where c.archived_at is null
     order by c.maturity_date`);
   return r.rows.map((x) => ({
     id: x.id, maturityDate: x.maturity_date, serial: x.serial,
@@ -379,6 +380,7 @@ export async function loadLoans(pool: Pool): Promise<LoanRow[]> {
            coalesce(sum(li.amount) filter (where li.status <> 'paid'),0)::float8 as remaining_amount
     from public.loans l
     left join public.loan_installments li on li.loan_id=l.id
+    where l.archived_at is null
     group by l.id
     order by l.first_payment_date nulls last`);
   return r.rows.map((x) => ({
@@ -418,11 +420,11 @@ export async function loadMaturityItems(pool: Pool): Promise<MaturityItem[]> {
     left join public.parties pe on pe.id=c.payee_party_id
     left join public.parties pa on pa.id=c.payer_party_id
     left join public.parties pb on pb.id=c.bank_party_id
-    where c.status in ('planned','unknown')`);
+    where c.status in ('planned','unknown') and c.archived_at is null`);
   const inst = await pool.query(`
     select li.id, to_char(li.due_date,'YYYY-MM-DD') as due, li.amount::float8 as amount, l.name
     from public.loan_installments li join public.loans l on l.id=li.loan_id
-    where li.status in ('planned','unpaid','partial','late')`);
+    where li.status in ('planned','unpaid','partial','late') and l.archived_at is null`);
   const items: MaturityItem[] = [];
   for (const c of checks.rows)
     items.push({

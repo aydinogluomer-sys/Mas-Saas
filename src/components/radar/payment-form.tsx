@@ -13,6 +13,7 @@ export interface PaymentFormValues {
   amount_confidence?: string;
   direction?: string;
   priority?: string;
+  flexibility_class?: string | null;
   status?: string;
   category_id?: string | null;
   provider_party_id?: string | null;
@@ -22,9 +23,9 @@ export interface PaymentFormValues {
 }
 
 const L = ({ children }: { children: React.ReactNode }) => (
-  <label className="mb-1 block font-mono text-[10px] uppercase tracking-wider text-zinc-500">{children}</label>
+  <label className="mb-1 block font-mono text-[10px] uppercase tracking-wider text-tone-3">{children}</label>
 );
-const inputCls = "w-full border border-zinc-800 bg-black/40 px-2 py-2 text-sm";
+const inputCls = "w-full border border-line bg-black/40 px-2 py-2 text-sm";
 
 function Select({ name, value, options, allowEmpty = true }: {
   name: string; value: string | null | undefined; options: Array<[string, string]>; allowEmpty?: boolean;
@@ -56,7 +57,7 @@ export async function PaymentForm({
 
   return (
     <Panel title={title}>
-      {error && <div className="mb-3 border border-red-900 bg-red-950/40 p-2 font-mono text-xs text-red-300">{error}</div>}
+      {error && <div className="mb-3 border border-neg tint-neg p-2 font-mono text-xs text-neg">{error}</div>}
       <form action={action} className="grid grid-cols-1 gap-3 sm:grid-cols-2">
         {values.id && <input type="hidden" name="id" value={values.id} />}
         <div className="sm:col-span-2">
@@ -95,6 +96,10 @@ export async function PaymentForm({
           <Select name="status" value={values.status ?? "active"} allowEmpty={false}
             options={[["active", "Aktif"], ["paused", "Duraklatıldı"]]} />
         </div>
+        <div>
+          <L>Ödeme esnekliği</L>
+          <Select name="flexibility_class" value={values.flexibility_class} options={[["critical", "Kritik · ertelenemez"], ["flexible", "Esnek · müzakere edilebilir"], ["optional", "İsteğe bağlı · durdurulabilir"]]} />
+        </div>
         <input type="hidden" name="direction" value={values.direction ?? "outflow"} />
         <div>
           <L>Kategori</L>
@@ -119,21 +124,20 @@ export async function PaymentForm({
         <div className="flex items-center justify-between sm:col-span-2">
           {values.id ? (
             <div className="flex items-center gap-2">
-              <input name="archive_reason" placeholder="arşivleme nedeni"
-                className="border border-zinc-700 bg-zinc-900 px-2 py-2 font-mono text-[10px] text-zinc-200" />
+              <input required name="archive_reason" placeholder="arşivleme nedeni"
+                className="border border-line bg-black/40 px-2 py-2 font-mono text-[10px] text-tone-2" />
               <button formAction={archivePaymentAction}
-                className="border border-red-800 px-3 py-2 font-mono text-[10px] uppercase tracking-wider text-red-400">
+                className="border border-neg px-3 py-2 font-mono text-[10px] uppercase tracking-wider text-neg">
                 arşivle
               </button>
             </div>
           ) : <span />}
-          <button type="submit"
-            className="border border-zinc-200 bg-zinc-200 px-3 py-2 font-mono text-xs font-semibold uppercase tracking-wider text-zinc-950">
+          <button type="submit" className="button-primary px-3 py-2 text-xs">
             kaydet
           </button>
         </div>
         {values.id && (
-          <p className="text-[11px] text-zinc-500 sm:col-span-2">
+          <p className="text-[11px] text-tone-3 sm:col-span-2">
             Not: değişiklikler geçmiş ve bu ay üretilmiş kayıtları değiştirmez; yeni aylar yeni değerlerle üretilir.
             Eksik tutarı bu aya özel girmek için Radar &gt; Eksik Veri panelini kullanın.
           </p>

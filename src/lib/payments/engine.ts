@@ -96,6 +96,7 @@ export interface UpdatePaymentFields {
   amount_confidence: string;
   direction: string;
   priority: string;
+  flexibility_class: string | null;
   status: string;
   category_id: string | null;
   provider_party_id: string | null;
@@ -124,12 +125,12 @@ export async function updatePaymentAndReconcile(
     await client.query(
       `update public.payments set
          name=$2, recurrence_type=$3, due_day=$4, due_date=$5, default_amount=$6,
-         amount_confidence=$7, direction=$8, priority=$9, status=$10,
-         category_id=$11, provider_party_id=$12, owner_party_id=$13, cash_account_id=$14,
-         description=$15
+         amount_confidence=$7, direction=$8, priority=$9, flexibility_class=$10, status=$11,
+         category_id=$12, provider_party_id=$13, owner_party_id=$14, cash_account_id=$15,
+         description=$16
        where id=$1`,
       [id, f.name, f.recurrence_type, f.due_day, f.due_date, f.default_amount,
-       f.amount_confidence, f.direction, f.priority, f.status,
+       f.amount_confidence, f.direction, f.priority, f.flexibility_class, f.status,
        f.category_id, f.provider_party_id, f.owner_party_id, f.cash_account_id, f.description],
     );
     await audit(client, "update_payment", "payments", id, before.rows[0], f);

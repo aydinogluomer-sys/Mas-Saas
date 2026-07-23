@@ -32,6 +32,7 @@ function readForm(formData: FormData) {
     amount_confidence: String(formData.get("amount_confidence") ?? "known"),
     direction: String(formData.get("direction") ?? "outflow"),
     priority: String(formData.get("priority") ?? "normal"),
+    flexibility_class: opt(formData.get("flexibility_class")),
     status: String(formData.get("status") ?? "active"),
     category_id: opt(formData.get("category_id")),
     provider_party_id: opt(formData.get("provider_party_id")),
@@ -61,11 +62,11 @@ export async function createPaymentAction(formData: FormData): Promise<void> {
     const res = await client.query(
       `insert into public.payments
          (name, recurrence_type, due_day, due_date, default_amount, amount_confidence,
-          direction, priority, status, category_id, provider_party_id, owner_party_id,
+          direction, priority, flexibility_class, status, category_id, provider_party_id, owner_party_id,
           cash_account_id, description)
-       values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) returning id`,
+       values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) returning id`,
       [f.name, f.recurrence_type, f.due_day, f.due_date, f.default_amount, f.amount_confidence,
-       f.direction, f.priority, f.status, f.category_id, f.provider_party_id, f.owner_party_id,
+       f.direction, f.priority, f.flexibility_class, f.status, f.category_id, f.provider_party_id, f.owner_party_id,
        f.cash_account_id, f.description],
     );
     id = res.rows[0].id;
@@ -83,8 +84,9 @@ export async function createPaymentAction(formData: FormData): Promise<void> {
   }
   await ensureWindow(pool, istanbulDateISO());
   revalidatePath("/payments");
+  revalidatePath("/payments/items");
   revalidatePath("/radar");
-  redirect("/payments");
+  redirect("/payments/items");
 }
 
 export async function updatePaymentAction(formData: FormData): Promise<void> {
@@ -103,8 +105,9 @@ export async function updatePaymentAction(formData: FormData): Promise<void> {
     throw e;
   }
   revalidatePath("/payments");
+  revalidatePath("/payments/items");
   revalidatePath("/radar");
-  redirect("/payments");
+  redirect("/payments/items");
 }
 
 export async function archivePaymentAction(formData: FormData): Promise<void> {
@@ -114,5 +117,6 @@ export async function archivePaymentAction(formData: FormData): Promise<void> {
   if (!reason) redirect(`/payments/${id}/edit?error=${encodeURIComponent("Arşivleme nedeni zorunlu.")}`);
   await archivePayment(getPool(), id, { reason, archivedByLabel: ARCHIVED_BY_LABEL }, istanbulDateISO());
   revalidatePath("/payments");
-  redirect("/payments");
+  revalidatePath("/payments/items");
+  redirect("/payments/items");
 }
