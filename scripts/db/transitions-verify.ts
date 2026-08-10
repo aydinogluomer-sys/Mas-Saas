@@ -225,6 +225,7 @@ function acceptSql(table: string, to: string): { sql: string; params: (id: strin
 const PI_STATUSES = ["planned", "unpaid", "partial", "paid", "late", "cancelled", "unknown"];
 const PI_ALLOWED = new Set([
   "unpaid|paid", "planned|paid", "late|paid", "partial|paid",
+  "unpaid|partial", "planned|partial", "late|partial", // 0033: markInstancePartial's matching gap
   "paid|unpaid",
   "unpaid|cancelled", "planned|cancelled", "late|cancelled",
 ]);

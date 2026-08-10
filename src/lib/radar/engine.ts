@@ -510,6 +510,16 @@ export async function markInstancePartial(pool: Pool, instanceId: string, paidAm
       [instanceId],
     );
     if (before.rowCount !== 1) throw new DomainError("instance not found");
+    const currentStatus = before.rows[0].status as string;
+    // Same source-status set as markInstancePaid: 'partial' and 'paid' are both "some payment
+    // was recorded" outcomes reachable from exactly the same starting statuses (including
+    // 'partial' itself, so correcting an already-recorded partial amount doesn't require
+    // unmarking first). Was missing entirely — every call reached the DB trigger and failed
+    // there instead, for every caller, always (found via scripts/seed-demo.ts against a
+    // freshly migrated DB; migration 0033 closes the matching gap in the trigger's allow-list).
+    if (!PAYABLE_FROM.has(currentStatus)) {
+      throw new DomainError(`payment_instances ${instanceId}: '${currentStatus}' durumundan kısmi ödendi işaretlenemez`);
+    }
     const total = before.rows[0].amount == null ? null : Number(before.rows[0].amount);
     if (!Number.isFinite(paidAmount) || paidAmount <= 0 || (total != null && paidAmount >= total)) {
       throw new DomainError("Kısmi tutar toplamdan küçük ve sıfırdan büyük olmalı");

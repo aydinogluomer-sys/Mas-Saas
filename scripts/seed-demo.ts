@@ -33,6 +33,13 @@ const pool = new Pool({
 
 async function main() {
   const actorId = await ensureSystemActor(pool);
+  // public.audit_logs is deliberately NOT in this list: it's append-only by DB trigger
+  // (0022/P0-B, audit_logs_block_truncate) on any fully-migrated database, so including it
+  // here made this whole statement fail atomically the moment that trigger existed — this
+  // script hadn't been run against a post-P0-B database until now. Nothing else has a hard
+  // FK into audit_logs (entity_id is a generic polymorphic reference, not enforced), so
+  // leaving prior rows in place across re-seeds is both safe and, for an append-only table,
+  // the only honest option — an audit trail that gets wiped on every demo reset isn't one.
   await pool.query(
     `truncate public.source_workbooks, public.payments, public.payment_instances,
        public.cashflow_months, public.cashflow_snapshots, public.checks, public.check_events,
@@ -40,7 +47,7 @@ async function main() {
        public.production_parts, public.part_profitability_runs, public.scenarios, public.scenario_runs,
        public.reports, public.reminder_deliveries, public.external_assumptions,
        public.machine_roi_snapshots, public.action_items, public.ai_response_snapshots,
-       public.metric_snapshots, public.audit_logs restart identity cascade`,
+       public.metric_snapshots restart identity cascade`,
   );
   const r = await importWorkbook(
     pool,
@@ -76,7 +83,13 @@ async function main() {
   if(futurePartial.rows[0]) await markInstancePartial(pool,futurePartial.rows[0].id,Math.max(1,Math.floor(futurePartial.rows[0].amount*.4)),actorId);
   if(lifecycle.rows[3]) { await markInstancePaid(pool,lifecycle.rows[3].id,lifecycle.rows[3].amount,actorId); await markInstanceUnpaid(pool,lifecycle.rows[3].id,actorId); }
   if(lifecycle.rows[4]) await cancelInstance(pool,lifecycle.rows[4].id,"Demo: yaşam döngüsü örneği için iptal edildi.",actorId);
-  await pool.query(`with future as (select id from public.payment_instances where due_date>=$1 and status='unpaid' order by due_date limit 2) update public.payment_instances i set status='planned',note=concat_ws(' · ',i.note,'Demo yaşam döngüsü') from future f where i.id=f.id`,[today]);
+  // NOT: burada bir zamanlar payment_instances'ı elle 'planned' durumuna geçiren bir satır
+  // vardı. payment_instances_status_transition_guard (0027) bunu haklı olarak engelliyor —
+  // unpaid→planned motorun desteklediği bir geçiş değil; gerçek kodda payment_instances
+  // hiçbir yerde 'planned' HEDEFLEMİYOR (yalnız okuma tarafında "açık" kümesinde var; checks/
+  // loan_installments'ta gerçek bir başlangıç durumu ama burada değil). Satır kaldırıldı,
+  // uydurma değil — gelecek aylık örnekler zaten ensureWindow(...,24) ile doğal 'unpaid'
+  // durumunda üretiliyor.
   const cf = await mapCashflowMonths(pool, r.workbookId, actorId);
   const cont = await validateContinuity(pool);
   await writeSnapshots(pool, today);
