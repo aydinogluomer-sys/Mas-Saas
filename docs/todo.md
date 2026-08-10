@@ -93,7 +93,7 @@
 - [x] phase7-verify.ts: **sessiz-atlama-yok (68 parça talep=kaynak G5+H5)**, kaynak izlenebilirlik, stale-rate bayrağı, başabaş=kaynak G6 birebir (normal 26.18/mesaili 21.54, mutabakat), süre-eksik→needs_review+null, ROI needs_review, idempotency, **mali bütünlük before==after (Phase 7 hiçbir mali tabloyu değiştirmez)**. ALL PASS.
 - [x] Gate: lint ✓ typecheck ✓ vitest 128/128 ✓ db:verify ✓ import:real ✓ phase3-7:verify ✓ build ✓ smoke (/radar,/cashflow,/financing,/reports,/reminders,/production 200).
 
-## Phase 9 — IN PROGRESS (Excel kapsama boşlukları — docs/excel-coverage-gaps analizi)
+## Phase 9 — DONE (Excel kapsama boşlukları — docs/excel-coverage-gaps analizi; 9A/9B/9C/9D tamam, implementation.md Faz 10)
 
 ### 9A — DONE (maliyet detayı + Akon kâr marjı)
 - [x] `priceMargin` saf fonksiyon + 4 test (Akon TL/dk − başabaş; zarar bayrağı; null-asla-0). vitest 149.
