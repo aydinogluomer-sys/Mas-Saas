@@ -45,14 +45,35 @@ export interface AttemptLoginResult {
   userId?: string;
 }
 
+// A real argon2id hash of a random, never-recorded value — compared against on every
+// login attempt where the username doesn't exist (or is submitted empty), so that path
+// pays the same CPU cost as a real wrong-password check. Computed once per process and
+// memoized: `attemptLogin` below never branches on found-vs-not-found before this point,
+// which is the actual fix — see its own comment. This constant is never a valid credential
+// for any account.
+let dummyPasswordHash: Promise<string> | null = null;
+function getDummyPasswordHash(): Promise<string> {
+  if (!dummyPasswordHash) dummyPasswordHash = argon2Hash(randomBytes(32).toString("base64url"), ARGON2_OPTIONS);
+  return dummyPasswordHash;
+}
+
 /** Username lookup + password verification + brute-force lockout, all in one transaction
  * (SELECT ... FOR UPDATE) so two concurrent attempts against the same account can't race
  * past the failed-attempt counter. Every failure path (unknown username, wrong password,
  * locked account, inactive account) returns the same shape — the caller must show one
- * generic message for all of them to avoid revealing which case occurred. */
+ * generic message for all of them to avoid revealing which case occurred.
+ *
+ * Response SHAPE alone isn't enough — response TIME leaks the same information if a real
+ * argon2 verify only runs for usernames that exist. So `argon2Verify` runs exactly once on
+ * every call, unconditionally, against the real hash if found or `getDummyPasswordHash()`
+ * if not (empty input included) — every branch below (not-found, inactive, locked, wrong
+ * password) is decided only AFTER that fixed-cost call, never before it. */
 export async function attemptLogin(rawUsername: string, password: string): Promise<AttemptLoginResult> {
   const username = rawUsername.trim().toLowerCase();
-  if (!username || !password) return { ok: false };
+  if (!username || !password) {
+    await argon2Verify(await getDummyPasswordHash(), password || " ");
+    return { ok: false };
+  }
   const client = await getPool().connect();
   try {
     await client.query("begin");
@@ -67,17 +88,17 @@ export async function attemptLogin(rawUsername: string, password: string): Promi
        from public.users where username = $1 for update`,
       [username],
     );
-    if (res.rowCount !== 1) {
+    const row = res.rowCount === 1 ? res.rows[0] : null;
+    const validPassword = await argon2Verify(row?.password_hash ?? (await getDummyPasswordHash()), password);
+    if (!row) {
       await client.query("commit");
       return { ok: false };
     }
-    const row = res.rows[0];
     const lockedNow = row.locked_until != null && new Date(row.locked_until).getTime() > Date.now();
     if (!row.is_active || lockedNow) {
       await client.query("commit");
       return { ok: false };
     }
-    const validPassword = await argon2Verify(row.password_hash, password);
     if (!validPassword) {
       const nextCount = row.failed_login_count + 1;
       const lockUntil = nextCount >= MAX_FAILED_LOGIN_ATTEMPTS
