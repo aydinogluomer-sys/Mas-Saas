@@ -5,6 +5,7 @@ import { Badge } from "@/components/ui/badge";
 import { fmtTL } from "@/components/ui/panel";
 import { DataTable } from "@/components/ui/primitives/data-table";
 import { ArchiveForm } from "@/components/system/archive-form";
+import { CheckSettleForms } from "@/components/finance/check-settle-forms";
 
 export interface CheckRow {
   id: string;
@@ -39,7 +40,10 @@ const columns: ColumnDef<CheckRow>[] = [
   {
     id: "actions", header: "İşlem", enableSorting: false, enableHiding: false, meta: { align: "right" },
     cell: ({ row }) => (
-      <ArchiveForm entity="checks" id={row.original.id} backTo="/finance/checks?flash=archived" reason="Çek defterinden arşivlendi" />
+      <span className="flex flex-wrap items-center justify-end gap-1">
+        <CheckSettleForms id={row.original.id} status={row.original.status} backTo="/finance/checks" />
+        <ArchiveForm entity="checks" id={row.original.id} backTo="/finance/checks?flash=archived" reason="Çek defterinden arşivlendi" />
+      </span>
     ),
   },
 ];

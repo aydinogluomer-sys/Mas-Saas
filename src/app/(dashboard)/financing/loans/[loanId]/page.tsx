@@ -4,8 +4,14 @@ import { getPool } from "@/lib/db";
 import { loadLoanInstallments, loadLoans } from "@/lib/financing/engine";
 import { Badge, STATUS_TONE } from "@/components/ui/badge";
 import { Panel, fmtTL } from "@/components/ui/panel";
+import { markInstallmentPaidAction } from "@/app/(dashboard)/finance/actions";
 
 export const dynamic = "force-dynamic";
+
+// Must match LOAN_INSTALLMENT_PAYABLE_FROM in src/lib/financing/engine.ts — the statuses
+// markInstallmentPaid accepts, mirroring 0034's trigger allow-list. Showing the button on an
+// already-paid or cancelled installment would offer an action whose click always fails.
+const PAYABLE_FROM = new Set(["planned", "late"]);
 
 const fmt0 = (v: number | null) =>
   v != null ? new Intl.NumberFormat("tr-TR", { maximumFractionDigits: 0 }).format(v) : "—";
@@ -80,6 +86,7 @@ export default async function LoanDetailPage({
                 <th className="py-1 pr-2 text-right">faiz</th>
                 <th className="py-1 pr-2 text-right">vergi (KKDF+BSMV)</th>
                 <th className="py-1">durum</th>
+                <th className="py-1 pl-2">işlem</th>
               </tr>
             </thead>
             <tbody>
@@ -95,6 +102,23 @@ export default async function LoanDetailPage({
                     <td className="py-1 pr-2 text-right font-mono tabular-nums text-tone-2">{fmt0(i.tax)}</td>
                     <td className="py-1">
                       <Badge tone={STATUS_TONE[i.status] ?? "neutral"}>{overdue ? "gecikmiş" : i.status}</Badge>
+                    </td>
+                    <td className="py-1 pl-2">
+                      {PAYABLE_FROM.has(i.status) && (
+                        <form action={markInstallmentPaidAction} className="flex items-center gap-1">
+                          <input type="hidden" name="id" value={i.id} />
+                          <input type="hidden" name="backTo" value={`/financing/loans/${loanId}`} />
+                          {/* Empty = "paid today"; a past installment can be back-dated to its
+                              real payment date rather than silently stamped with now(). */}
+                          <input
+                            type="date"
+                            name="paidAt"
+                            defaultValue={i.dueDate <= today ? i.dueDate : undefined}
+                            className="border border-line bg-black/40 px-1.5 py-0.5 font-mono text-[11px]"
+                          />
+                          <button className="button-ghost px-2 py-0.5 text-pos">ödendi</button>
+                        </form>
+                      )}
                     </td>
                   </tr>
                 );

@@ -230,9 +230,15 @@ const PI_ALLOWED = new Set([
   "unpaid|cancelled", "planned|cancelled", "late|cancelled",
 ]);
 const CHECK_STATUSES = ["planned", "cleared", "bounced", "cancelled", "unknown"];
-const CHECK_ALLOWED = new Set(["planned|cancelled"]);
+const CHECK_ALLOWED = new Set([
+  "planned|cleared", "planned|bounced", // 0034: settlement outcomes 0027 never allowed
+  "planned|cancelled",
+]);
 const LI_STATUSES = ["planned", "unpaid", "partial", "paid", "late", "cancelled"];
-const LI_ALLOWED = new Set(["planned|cancelled"]);
+const LI_ALLOWED = new Set([
+  "planned|paid", "late|paid", "planned|late", // 0034: settlement outcomes 0027 never allowed
+  "planned|cancelled", "late|cancelled",
+]);
 
 // Harmless self-assignment per table used to probe the same-status no-op path — proves the
 // trigger doesn't block on an unrelated field change, without depending on a text column that

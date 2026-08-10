@@ -20,6 +20,10 @@ import {
   type MaturityItem,
 } from "./rules";
 
+/** `before` is optional and trailing so every pre-existing call site keeps its exact
+ * behaviour (before_data stays null). Settlement mutations pass it: for a status transition
+ * the prior status IS the audit-relevant fact — "this check went planned -> cleared" is not
+ * recoverable from the after-image alone once the row has moved on. */
 async function audit(
   client: PoolClient,
   actor: string,
@@ -27,11 +31,12 @@ async function audit(
   entityTable: string,
   entityId: string | null,
   after: unknown,
+  before?: unknown,
 ): Promise<void> {
   await client.query(
     `insert into public.audit_logs (actor, action, entity_table, entity_id, before_data, after_data)
-     values ($1,$2,$3,$4,null,$5)`,
-    [actor, action, entityTable, entityId, JSON.stringify(after ?? null)],
+     values ($1,$2,$3,$4,$5,$6)`,
+    [actor, action, entityTable, entityId, JSON.stringify(before ?? null), JSON.stringify(after ?? null)],
   );
 }
 
@@ -438,6 +443,118 @@ export async function loadMaturityItems(pool: Pool): Promise<MaturityItem[]> {
       direction: "outflow", kind: "loan_installment", label: i.name,
     });
   return items;
+}
+
+/* ── 4) settlement — recording the outcome a check or installment actually reached ──
+   Mirrors the cancellation functions below exactly (transaction, `for update` row lock,
+   allow-list Set + DomainError guard, audit, commit/rollback/finally). The Sets here must
+   stay in sync with 0034's trigger allow-lists: the DB is the real authority, and these
+   guards exist so a wrong source status fails as a clean domain error the UI can show
+   instead of a raw Postgres trigger message. */
+
+const CHECK_SETTLEABLE_FROM = new Set(["planned"]);
+const LOAN_INSTALLMENT_PAYABLE_FROM = new Set(["planned", "late"]);
+
+/** Shared by markCheckCleared/markCheckBounced — the two differ only in the status they
+ *  write and the check_events row they append, never in their guard or audit shape. */
+async function settleCheck(
+  pool: Pool,
+  checkId: string,
+  outcome: "cleared" | "bounced",
+  actorId: string,
+): Promise<void> {
+  const client = await pool.connect();
+  try {
+    await client.query("begin");
+    const before = await client.query(`select id, status from public.checks where id=$1 for update`, [checkId]);
+    if (before.rowCount !== 1) throw new DomainError("check not found");
+    const currentStatus = before.rows[0].status as string;
+    if (!CHECK_SETTLEABLE_FROM.has(currentStatus)) {
+      throw new DomainError(
+        `checks ${checkId}: '${currentStatus}' durumundan ${outcome === "cleared" ? "tahsil edildi" : "karşılıksız"} işaretlenemez`,
+      );
+    }
+    await client.query(`update public.checks set status=$2 where id=$1`, [checkId, outcome]);
+    // check_events is the per-check history the schema has carried since 0005 (event_type
+    // already allows 'cleared'/'bounced', implementation.md:1320) but which only ever held
+    // 'created' rows until now. event_note stays null: there is no note to record here, and
+    // an invented one would be fabricated provenance.
+    await client.query(
+      `insert into public.check_events (check_id, event_type, event_note, created_by)
+       values ($1,$2,null,$3)`,
+      [checkId, outcome, actorId],
+    );
+    await audit(
+      client,
+      actorId,
+      outcome === "cleared" ? "mark_check_cleared" : "mark_check_bounced",
+      "checks",
+      checkId,
+      { status: outcome },
+      { status: currentStatus },
+    );
+    await client.query("commit");
+  } catch (e) {
+    await client.query("rollback");
+    throw e;
+  } finally {
+    client.release();
+  }
+}
+
+/** Check honoured by the bank. */
+export async function markCheckCleared(pool: Pool, checkId: string, actorId: string): Promise<void> {
+  await settleCheck(pool, checkId, "cleared", actorId);
+}
+
+/** Check returned unpaid. Not an error state to be hidden — a bounced check is a real,
+ *  reportable outcome, so it is recorded exactly like a cleared one. */
+export async function markCheckBounced(pool: Pool, checkId: string, actorId: string): Promise<void> {
+  await settleCheck(pool, checkId, "bounced", actorId);
+}
+
+/** `paidAt` is an ISO date/instant string, or null to record "paid now". It is never left
+ *  unset: loan_installments carries the installment_paid_requires_paid_at CHECK (0005:85),
+ *  so status='paid' without a timestamp is rejected by the database itself. */
+export async function markInstallmentPaid(
+  pool: Pool,
+  installmentId: string,
+  paidAt: string | null,
+  actorId: string,
+): Promise<void> {
+  const client = await pool.connect();
+  try {
+    await client.query("begin");
+    const before = await client.query(
+      `select id, status from public.loan_installments where id=$1 for update`,
+      [installmentId],
+    );
+    if (before.rowCount !== 1) throw new DomainError("loan installment not found");
+    const currentStatus = before.rows[0].status as string;
+    if (!LOAN_INSTALLMENT_PAYABLE_FROM.has(currentStatus)) {
+      throw new DomainError(`loan_installments ${installmentId}: '${currentStatus}' durumundan ödendi işaretlenemez`);
+    }
+    const result = await client.query(
+      `update public.loan_installments set status='paid', paid_at=coalesce($2::timestamptz, now()) where id=$1
+       returning to_char(paid_at,'YYYY-MM-DD') as paid_at`,
+      [installmentId, paidAt],
+    );
+    await audit(
+      client,
+      actorId,
+      "mark_installment_paid",
+      "loan_installments",
+      installmentId,
+      { status: "paid", paid_at: result.rows[0].paid_at },
+      { status: currentStatus },
+    );
+    await client.query("commit");
+  } catch (e) {
+    await client.query("rollback");
+    throw e;
+  } finally {
+    client.release();
+  }
 }
 
 /* ── 4) cancellation — checks/loan_installments only, loans has no 'cancelled' enum value ── */
