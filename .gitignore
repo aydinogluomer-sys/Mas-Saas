@@ -67,3 +67,4 @@ data/
 # stray local artifacts — never commit
 /debug.log
 /cloudflared-windows-amd64.msi
+__pycache__/
