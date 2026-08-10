@@ -1,7 +1,7 @@
 "use client";
 
 import { type ColumnDef } from "@tanstack/react-table";
-import { Badge } from "@/components/ui/badge";
+import { Badge, STATUS_TONE } from "@/components/ui/badge";
 import { fmtTL } from "@/components/ui/panel";
 import { DataTable } from "@/components/ui/primitives/data-table";
 import { ArchiveForm } from "@/components/system/archive-form";
@@ -17,6 +17,11 @@ export interface CheckRow {
   amount: number | null;
   status: string;
 }
+
+const CHECK_STATUS_TR: Record<string, string> = {
+  planned: "planlı", cleared: "tahsil edildi", bounced: "karşılıksız",
+  cancelled: "iptal", unknown: "bilinmiyor",
+};
 
 const columns: ColumnDef<CheckRow>[] = [
   { accessorKey: "maturityDate", header: "Vade", meta: { label: "Vade" }, cell: ({ getValue }) => <span className="font-mono">{getValue<string>()}</span> },
@@ -36,7 +41,14 @@ const columns: ColumnDef<CheckRow>[] = [
       return value == null ? <Badge tone="amber">Tutar eksik</Badge> : <span className="font-mono tabular-nums">{fmtTL(value)}</span>;
     },
   },
-  { accessorKey: "status", header: "Durum", meta: { label: "Durum" } },
+  {
+    accessorKey: "status", header: "Durum", meta: { label: "Durum" },
+    // The raw enum stays the sorted/exported value; only the rendering is Turkish.
+    cell: ({ getValue }) => {
+      const v = getValue<string>();
+      return <Badge tone={STATUS_TONE[v] ?? "neutral"}>{CHECK_STATUS_TR[v] ?? v}</Badge>;
+    },
+  },
   {
     id: "actions", header: "İşlem", enableSorting: false, enableHiding: false, meta: { align: "right" },
     cell: ({ row }) => (

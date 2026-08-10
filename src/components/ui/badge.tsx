@@ -52,4 +52,8 @@ export const SEVERITY_TONE: Record<string, Tone> = {
 export const STATUS_TONE: Record<string, Tone> = {
   pending: "amber", parsed: "green", mapped: "blue", failed: "red",
   open: "amber", accepted: "green", rejected: "neutral", resolved: "blue",
+  // Financing lifecycle (checks + loan_installments). Without these every settlement
+  // status rendered "neutral", so a bounced check looked exactly like a planned one.
+  planned: "neutral", cleared: "green", bounced: "red",
+  paid: "green", late: "amber", cancelled: "neutral", unknown: "amber",
 };

@@ -17,12 +17,16 @@ export default async function FinanceSummaryPage() {
   const window30 = maturityWindows(maturities, today, [30])[0];
   const debt = debtServiceByMonth(maturities).filter((row)=>row.monthStart.slice(0,7)>=today.slice(0,7)).slice(0, 6);
   const remaining = loans.reduce((sum, loan) => sum + (loan.remainingAmount ?? 0), 0);
+  // "Açık çek" means still outstanding. Until 0034 no check could leave 'planned', so
+  // checks.length happened to be right; now that cleared/bounced/cancelled are reachable,
+  // counting every row would overstate the open position.
+  const openChecks = checks.filter((c) => c.status === "planned" || c.status === "unknown").length;
   return <>
     <PageHeader title="Finansman Özeti" subtitle="Borç servisi, yaklaşan vadeler ve toplam finansman yükü" action={<Link className="button-accent px-3 py-2" href="/scenarios?from=finance">Senaryoda dene</Link>} />
     <div className="grid grid-cols-2 gap-2 lg:grid-cols-4">
       <KpiCard label="Kalan kredi borcu" value={fmtTL(remaining)} tone="neg" emphasize />
       <KpiCard label="30 günlük ödeme" value={fmtTL(window30?.knownOutflow)} tone="warn" emphasize />
-      <KpiCard label="Açık çek" value={checks.length} />
+      <KpiCard label="Açık çek" value={openChecks} />
       <KpiCard label="Aktif kredi" value={loans.length} />
     </div>
     <AnalyticsChart model={debtServiceModel(maturities, today)} kind="bar" defaultPeriod="12m" />
