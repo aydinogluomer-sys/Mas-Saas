@@ -4,6 +4,7 @@
 import { Pool } from "pg";
 import { loadDecisionFacts } from "../src/lib/facts/engine";
 import { generateDaily } from "../src/lib/reports/engine";
+import { ensureSystemActor } from "./db/seed-system-actor";
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL ?? "postgres://postgres:postgres@127.0.0.1:5432/mas_radar_dev",
@@ -40,8 +41,14 @@ async function financeFingerprint(): Promise<string> {
 }
 
 async function main() {
-  await pool.query(`truncate public.cashflow_months, public.cashflow_lines,
-    public.reports, public.ai_response_snapshots, public.audit_logs restart identity cascade`);
+  // audit_logs is append-only since 0022 (no UPDATE/DELETE/TRUNCATE, ever) — it is
+  // deliberately NOT in the reset below. Each verify run gets a freshly created
+  // disposable database instead, so the audit table starts empty without weakening
+  // the invariant.
+  // audit_logs.actor_id is an FK to public.users(id) since 0032; verify scripts run
+  // without a session, so they attribute to the reserved "system" account.
+  const actorId = await ensureSystemActor(pool);
+  await pool.query(`truncate public.cashflow_months, public.cashflow_lines, public.reports, public.ai_response_snapshots restart identity cascade`);
   await pool.query(
     `insert into public.cashflow_months
        (month_start, opening_balance, projected_income, projected_expense, monthly_delta, closing_balance, confidence, status)
@@ -63,7 +70,7 @@ async function main() {
   if (runway.sourceHref !== "/cashflow" || runway.confidence !== "calculated")
     fail("cash_runway must be calculated and source-linked to /cashflow");
 
-  const report = await generateDaily(pool, "2026-07-08");
+  const report = await generateDaily(pool, "2026-07-08", actorId);
   const stored = (await q(`select meta from public.reports where id=$1`, [report.id]))[0]?.meta;
   const prompt = String(stored?.commentary_prompt ?? "");
   if (!prompt.includes("Nakit runway: 1 ay"))

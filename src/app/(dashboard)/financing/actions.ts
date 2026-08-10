@@ -4,18 +4,21 @@ import { redirect } from "next/navigation";
 import { getPool } from "@/lib/db";
 import { mapAcceptedChecks, mapLoans, cancelCheck, cancelLoanInstallment } from "@/lib/financing/engine";
 import { cancelActionSchema } from "@/lib/validation/financial";
+import { requireSession } from "@/lib/auth";
 
 export async function mapFinancingAction(formData: FormData): Promise<void> {
+  const session = await requireSession();
   const workbookId = String(formData.get("workbookId") ?? "");
   if (!workbookId) return;
   const pool = getPool();
-  const c = await mapAcceptedChecks(pool, workbookId);
-  const l = await mapLoans(pool, workbookId);
+  const c = await mapAcceptedChecks(pool, workbookId, session.id);
+  const l = await mapLoans(pool, workbookId, session.id);
   revalidatePath("/financing");
   redirect(`/financing?checks=${c.created}&loans=${l.created}&installments=${l.installmentsCreated}`);
 }
 
 export async function cancelCheckAction(formData: FormData): Promise<void> {
+  const session = await requireSession();
   const parsed = cancelActionSchema.safeParse({
     id: formData.get("id"),
     reason: formData.get("reason"),
@@ -23,11 +26,12 @@ export async function cancelCheckAction(formData: FormData): Promise<void> {
   if (!parsed.success) {
     redirect(`/financing?error=${encodeURIComponent("İptal için geçerli bir neden gerekli.")}`);
   }
-  await cancelCheck(getPool(), parsed.data.id, parsed.data.reason);
+  await cancelCheck(getPool(), parsed.data.id, parsed.data.reason, session.id);
   revalidatePath("/financing");
 }
 
 export async function cancelLoanInstallmentAction(formData: FormData): Promise<void> {
+  const session = await requireSession();
   const parsed = cancelActionSchema.safeParse({
     id: formData.get("id"),
     reason: formData.get("reason"),
@@ -35,6 +39,6 @@ export async function cancelLoanInstallmentAction(formData: FormData): Promise<v
   if (!parsed.success) {
     redirect(`/financing?error=${encodeURIComponent("İptal için geçerli bir neden gerekli.")}`);
   }
-  await cancelLoanInstallment(getPool(), parsed.data.id, parsed.data.reason);
+  await cancelLoanInstallment(getPool(), parsed.data.id, parsed.data.reason, session.id);
   revalidatePath("/financing");
 }

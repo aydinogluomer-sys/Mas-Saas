@@ -22,6 +22,7 @@ import {
 
 async function audit(
   client: PoolClient,
+  actor: string,
   action: string,
   entityTable: string,
   entityId: string | null,
@@ -29,8 +30,8 @@ async function audit(
 ): Promise<void> {
   await client.query(
     `insert into public.audit_logs (actor, action, entity_table, entity_id, before_data, after_data)
-     values (null,$1,$2,$3,null,$4)`,
-    [action, entityTable, entityId, JSON.stringify(after ?? null)],
+     values ($1,$2,$3,$4,null,$5)`,
+    [actor, action, entityTable, entityId, JSON.stringify(after ?? null)],
   );
 }
 
@@ -74,7 +75,7 @@ export interface ChecksMapResult {
   excluded: Array<{ rowIndex: number; reason: string }>;
 }
 
-export async function mapAcceptedChecks(pool: Pool, workbookId: string): Promise<ChecksMapResult> {
+export async function mapAcceptedChecks(pool: Pool, workbookId: string, actorId: string): Promise<ChecksMapResult> {
   const client = await pool.connect();
   try {
     await client.query("begin");
@@ -146,16 +147,16 @@ export async function mapAcceptedChecks(pool: Pool, workbookId: string): Promise
         }
         const checkId: string = ins.rows[0].id;
         await client.query(
-          `insert into public.check_events (check_id, event_type, event_note)
-           values ($1,'created',$2)`,
-          [checkId, `import satır ${c.rowIndex}`],
+          `insert into public.check_events (check_id, event_type, event_note, created_by)
+           values ($1,'created',$2,$3)`,
+          [checkId, `import satır ${c.rowIndex}`, actorId],
         );
         await client.query(
           `update public.import_rows set mapping_status='mapped',
              mapped_entity_table='checks', mapped_entity_id=$2 where id=$1`,
           [row.id, checkId],
         );
-        await audit(client, "map_check", "checks", checkId, {
+        await audit(client, actorId, "map_check", "checks", checkId, {
           maturity: c.maturityDate, amount, direction: c.direction, bank: c.bank, source_row_id: row.id,
         });
         result.created++;
@@ -181,7 +182,7 @@ export interface LoansMapResult {
   excluded: Array<{ sheet: string; reason: string }>;
 }
 
-export async function mapLoans(pool: Pool, workbookId: string): Promise<LoansMapResult> {
+export async function mapLoans(pool: Pool, workbookId: string, actorId: string): Promise<LoansMapResult> {
   const client = await pool.connect();
   try {
     await client.query("begin");
@@ -291,7 +292,7 @@ export async function mapLoans(pool: Pool, workbookId: string): Promise<LoansMap
           [mappedRows, loanId],
         );
       }
-      await audit(client, "map_loan", "loans", loanId, {
+      await audit(client, actorId, "map_loan", "loans", loanId, {
         principal: loan.principal, installments: loan.installments.length,
         total_payment: loan.totalPayment, reconciled: recon.ok, sheet: sheet.sheet_name,
       });
@@ -444,7 +445,7 @@ export async function loadMaturityItems(pool: Pool): Promise<MaturityItem[]> {
 const CHECK_CANCELLABLE_FROM = new Set(["planned"]);
 const LOAN_INSTALLMENT_CANCELLABLE_FROM = new Set(["planned"]);
 
-export async function cancelCheck(pool: Pool, checkId: string, reason: string): Promise<void> {
+export async function cancelCheck(pool: Pool, checkId: string, reason: string, actorId: string): Promise<void> {
   const trimmedReason = reason.trim();
   const client = await pool.connect();
   try {
@@ -459,7 +460,7 @@ export async function cancelCheck(pool: Pool, checkId: string, reason: string): 
       `update public.checks set status='cancelled', cancelled_at=now(), cancel_reason=$2 where id=$1`,
       [checkId, trimmedReason],
     );
-    await audit(client, "cancel_check", "checks", checkId, { status: "cancelled", cancel_reason: trimmedReason });
+    await audit(client, actorId, "cancel_check", "checks", checkId, { status: "cancelled", cancel_reason: trimmedReason });
     await client.query("commit");
   } catch (e) {
     await client.query("rollback");
@@ -469,7 +470,7 @@ export async function cancelCheck(pool: Pool, checkId: string, reason: string): 
   }
 }
 
-export async function cancelLoanInstallment(pool: Pool, installmentId: string, reason: string): Promise<void> {
+export async function cancelLoanInstallment(pool: Pool, installmentId: string, reason: string, actorId: string): Promise<void> {
   const trimmedReason = reason.trim();
   const client = await pool.connect();
   try {
@@ -487,7 +488,7 @@ export async function cancelLoanInstallment(pool: Pool, installmentId: string, r
       `update public.loan_installments set status='cancelled', cancelled_at=now(), cancel_reason=$2 where id=$1`,
       [installmentId, trimmedReason],
     );
-    await audit(client, "cancel_loan_installment", "loan_installments", installmentId, {
+    await audit(client, actorId, "cancel_loan_installment", "loan_installments", installmentId, {
       status: "cancelled",
       cancel_reason: trimmedReason,
     });

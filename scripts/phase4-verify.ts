@@ -10,6 +10,7 @@ import {
   loadCashMonths, mapCashflowMonths, validateContinuity, writeSnapshots,
 } from "../src/lib/cashflow/engine";
 import { buildProjection, concentration, horizonCards } from "../src/lib/radar/rules";
+import { ensureSystemActor } from "./db/seed-system-actor";
 
 const pool = new Pool({
   connectionString:
@@ -19,17 +20,24 @@ const fail = (m: string): never => { console.error("PHASE4 VERIFY FAIL:", m); pr
 const q = async (sql: string, p: unknown[] = []) => (await pool.query(sql, p)).rows;
 
 async function main() {
-  await pool.query("truncate public.source_workbooks, public.cashflow_months, public.cashflow_snapshots, public.audit_logs restart identity cascade");
-  const r = await importWorkbook(pool, readFileSync("data/source/mesaili_nakit_akış_tek_vardiya_TEMİZ.xlsx"), "TEMİZ.xlsx");
+  // audit_logs is append-only since 0022 (no UPDATE/DELETE/TRUNCATE, ever) — it is
+  // deliberately NOT in the reset below. Each verify run gets a freshly created
+  // disposable database instead, so the audit table starts empty without weakening
+  // the invariant.
+  // audit_logs.actor_id is an FK to public.users(id) since 0032; verify scripts run
+  // without a session, so they attribute to the reserved "system" account.
+  const actorId = await ensureSystemActor(pool);
+  await pool.query("truncate public.source_workbooks, public.cashflow_months, public.cashflow_snapshots restart identity cascade");
+  const r = await importWorkbook(pool, readFileSync("data/source/mesaili_nakit_akış_tek_vardiya_TEMİZ.xlsx"), "TEMİZ.xlsx", actorId);
   if (!r.ok) fail("import failed");
   const wb = r.workbookId;
 
   // 1) mapping — reviews left as-is (line-level opens only block their lines)
-  const m1 = await mapCashflowMonths(pool, wb);
+  const m1 = await mapCashflowMonths(pool, wb, actorId);
   console.log("map#1:", JSON.stringify(m1));
   if (m1.monthsCreated !== 35) fail(`expected 35 months, got ${m1.monthsCreated}`);
   if (m1.monthsExcluded.length !== 0) fail(`unexpected month exclusions: ${JSON.stringify(m1.monthsExcluded)}`);
-  const m2 = await mapCashflowMonths(pool, wb);
+  const m2 = await mapCashflowMonths(pool, wb, actorId);
   if (m2.monthsCreated !== 0 || m2.monthsSkippedExisting !== 35) fail("month mapping not idempotent");
   console.log(`months=35, lines=${m1.linesCreated} (excluded ${m1.linesExcluded} — açık line-inceleme) · rerun idempotent ✓`);
 

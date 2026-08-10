@@ -24,9 +24,11 @@ async function financeFingerprint(): Promise<string> {
 }
 
 async function main() {
-  await pool.query(`truncate public.source_workbooks, public.cashflow_months,
-    public.cashflow_lines, public.action_items, public.external_assumptions,
-    public.audit_logs restart identity cascade`);
+  // audit_logs is append-only since 0022 (no UPDATE/DELETE/TRUNCATE, ever) — it is
+  // deliberately NOT in the reset below. Each verify run gets a freshly created
+  // disposable database instead, so the audit table starts empty without weakening
+  // the invariant.
+  await pool.query(`truncate public.source_workbooks, public.cashflow_months, public.cashflow_lines, public.action_items, public.external_assumptions restart identity cascade`);
 
   const newer = String((await q(
     `insert into public.source_workbooks (original_filename, imported_at, status)

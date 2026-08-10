@@ -17,6 +17,7 @@ import {
 
 async function audit(
   client: import("pg").PoolClient,
+  actor: string,
   action: string,
   entityTable: string,
   entityId: string | null,
@@ -24,8 +25,8 @@ async function audit(
 ): Promise<void> {
   await client.query(
     `insert into public.audit_logs (actor, action, entity_table, entity_id, before_data, after_data)
-     values (null,$1,$2,$3,null,$4)`,
-    [action, entityTable, entityId, JSON.stringify(after ?? null)],
+     values ($1,$2,$3,$4,null,$5)`,
+    [actor, action, entityTable, entityId, JSON.stringify(after ?? null)],
   );
 }
 
@@ -37,7 +38,7 @@ export interface CashflowMapResult {
   linesExcluded: number;
 }
 
-export async function mapCashflowMonths(pool: Pool, workbookId: string): Promise<CashflowMapResult> {
+export async function mapCashflowMonths(pool: Pool, workbookId: string, actorId: string): Promise<CashflowMapResult> {
   const client = await pool.connect();
   try {
     await client.query("begin");
@@ -131,7 +132,7 @@ export async function mapCashflowMonths(pool: Pool, workbookId: string): Promise
           );
         }
       }
-      await audit(client, "map_cashflow_month", "cashflow_months", monthId, {
+      await audit(client, actorId, "map_cashflow_month", "cashflow_months", monthId, {
         month: data.monthStart, sheet: sheet.sheet_name,
         lines: data.lines.length,
       });

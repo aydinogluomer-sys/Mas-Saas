@@ -8,6 +8,7 @@ import { Pool } from "pg";
 import { importWorkbook } from "../src/lib/importers/workbook-importer";
 import { loadCostBreakdown, loadCostModels, mapCapacitySheet, mapCostSheets } from "../src/lib/production/engine";
 import { priceMargin } from "../src/lib/production/rules";
+import { ensureSystemActor } from "./db/seed-system-actor";
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL ?? "postgres://postgres:postgres@127.0.0.1:5432/mas_radar_dev",
@@ -29,11 +30,15 @@ async function financeFingerprint(): Promise<string> {
 }
 
 async function main() {
-  await pool.query(`truncate public.source_workbooks, public.capacity_models, public.cost_models,
-    public.cost_breakdown_lines, public.production_parts, public.part_profitability_runs,
-    public.payments, public.payment_instances, public.cashflow_months, public.checks, public.loans,
-    public.audit_logs restart identity cascade`);
-  const r = await importWorkbook(pool, readFileSync(SRC), "TEMİZ.xlsx");
+  // audit_logs is append-only since 0022 (no UPDATE/DELETE/TRUNCATE, ever) — it is
+  // deliberately NOT in the reset below. Each verify run gets a freshly created
+  // disposable database instead, so the audit table starts empty without weakening
+  // the invariant.
+  // audit_logs.actor_id is an FK to public.users(id) since 0032; verify scripts run
+  // without a session, so they attribute to the reserved "system" account.
+  const actorId = await ensureSystemActor(pool);
+  await pool.query(`truncate public.source_workbooks, public.capacity_models, public.cost_models, public.cost_breakdown_lines, public.production_parts, public.part_profitability_runs, public.payments, public.payment_instances, public.cashflow_months, public.checks, public.loans restart identity cascade`);
+  const r = await importWorkbook(pool, readFileSync(SRC), "TEMİZ.xlsx", actorId);
   if (!r.ok) fail("import failed");
   const wb = r.workbookId;
   await pool.query(`update public.mapping_reviews set status='resolved'
@@ -41,10 +46,10 @@ async function main() {
                          'break_even_reconciliation','capacity_rate_missing','cost_model_missing')`);
 
   const before = await financeFingerprint();
-  await mapCapacitySheet(pool, wb);
-  const c1 = await mapCostSheets(pool, wb);
+  await mapCapacitySheet(pool, wb, actorId);
+  const c1 = await mapCostSheets(pool, wb, actorId);
   if (c1.created !== 2) fail(`expected 2 cost models, got ${c1.created}`);
-  const c2 = await mapCostSheets(pool, wb);
+  const c2 = await mapCostSheets(pool, wb, actorId);
   if (c2.created !== 0) fail("cost mapping not idempotent");
 
   // 1) Akon rates mapped source-exact (K2 freze 27.5, K4 torna 21.88)

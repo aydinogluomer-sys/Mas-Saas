@@ -22,7 +22,8 @@ Required / optional vars:
 |---|---|---|
 | `DATABASE_URL` | ✅ | App + scripts DB connection (loopback Postgres) |
 | `POSTGRES_USER` / `POSTGRES_PASSWORD` | – | docker-compose Postgres credentials (change password for real use) |
-| `APP_ACCESS_PASSWORD` | – | When set, dashboard routes require this password (cookie session). Server-only. |
+| `SEED_ADMIN_PASSWORD` | – | Non-interactive password for `scripts/db/seed-admin.ts`. Server-only, never logged. Omit to be prompted (masked). |
+| `MAS_QA_BYPASS_AUTH` | – | TestSprite QA harness only. Never set in production (ignored when `NODE_ENV=production`). |
 | `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID` | – | Reminder delivery. Server-only. Unset → reminders log `failed` (no send). |
 | `APP_COMMIT_SHA` / `APP_BUILD_TIME` | – | Shown on `/version` |
 
@@ -102,8 +103,14 @@ pnpm build
 ## 8. Security posture (local private)
 
 - DB bound to `127.0.0.1` only (docker-compose); not reachable from the network.
-- Optional single-operator access gate: set `APP_ACCESS_PASSWORD` → dashboard routes require it
-  (httpOnly cookie session; password HMAC, server-only, never sent to client or logged).
+- Real multi-user auth (P0-A): named accounts in `public.users`, argon2id password hashes,
+  admin/operator roles, DB-backed sessions (random opaque token; only its SHA-256 is stored).
+  A default-deny middleware matcher covers every route except `/login`, `/health`, `/version`.
+  Bootstrap the first admin with `tsx scripts/db/seed-admin.ts --username <ad> --display-name "<Ad>"`;
+  after that, manage accounts in the app at `/system/security` (admin only).
+- Brute-force lockout: 5 failed logins lock the account for 15 minutes.
+- At least one active admin must always exist — enforced by a DB constraint trigger (0031),
+  not by the UI, so an admin script or a race between two sessions cannot bypass it.
 - No service-role key or Telegram token in the client bundle (token read only inside
   `src/lib/reminders/transport.ts`, server-side).
 - No `.xlsx` bundled to the client; workbook parsing is server-only.

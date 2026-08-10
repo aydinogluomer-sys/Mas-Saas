@@ -19,6 +19,7 @@ import { Pool } from "pg";
 import { verifyBackupTarget, verifyRestoreListable, type BackupOptions, type BackupResult, type BackupTargetVerification, type BackupTargetVerificationResult } from "./backup-docker-postgres";
 import { runBackupReceipt, type BackupReceiptDeps, type BackupReceiptParams } from "./backup-receipt";
 import { assertApplyGitProvenance } from "./legacy-repair-apply";
+import { getSystemActorId } from "./seed-system-actor";
 import {
   AppliedRepairResultSchema,
   ApprovalManifestSchema,
@@ -296,23 +297,40 @@ async function main(): Promise<void> {
   // tool to ever discover it as "unresolved" — the two requirements are incompatible within
   // one disposable DB. 0030 isn't what this suite tests (it tests the 0022-0029-era repair
   // tooling, mirroring the real Slice 5→6 order where repair happened before validation), so
-  // it's temporarily hidden from MIGRATIONS_DIR for this suite's entire run — every
-  // runMigrateAgainstUrl call below (DB, DB_NULLPAY, DB_MULTI) then applies 0001-0029 only,
-  // exactly as it did before 0030 existed — and restored in the outer finally below,
-  // unconditionally, so a real 0030 file is never left missing on disk after this suite runs
-  // (success, assertion failure, or crash).
-  const v0030Path = path.join(ROOT, "supabase", "migrations", "0030_validate_cancellation_consistency.sql");
-  const v0030HiddenPath = `${v0030Path}.hidden-for-legacy-repair-verify-${process.pid}-${Date.now()}`;
-  const v0030Sha256BeforeHide = fileSha256(readFileSync(v0030Path));
-  renameSync(v0030Path, v0030HiddenPath);
+  // it's temporarily hidden from MIGRATIONS_DIR for this suite's entire run.
+  //
+  // Every migration from 0030 onward is hidden together, not just 0030 itself — hiding a
+  // single file out of the middle of the sequence leaves a version GAP (0029 then 0031),
+  // which validateFileSet's own sequential-numbering check correctly rejects. Hiding the
+  // whole contiguous tail starting at 0030 avoids that: the sequence simply ends at 0029
+  // for the duration of this suite, exactly as it did before 0030 ever existed. Discovered
+  // dynamically (>= "0030"), not hardcoded to a fixed list, so this doesn't go stale again
+  // the next time a migration is added after 0030 (the same class of bug that made this
+  // suite crash the moment 0031/0032 were added).
+  const migrationsDir = path.join(ROOT, "supabase", "migrations");
+  const hiddenFromVersion = readdirSync(migrationsDir)
+    .filter((f) => f.endsWith(".sql") && f.slice(0, 4) >= "0030")
+    .sort()
+    .map((f) => {
+      const filePath = path.join(migrationsDir, f);
+      const hiddenPath = `${filePath}.hidden-for-legacy-repair-verify-${process.pid}-${Date.now()}`;
+      return { filePath, hiddenPath, sha256BeforeHide: fileSha256(readFileSync(filePath)) };
+    });
+  for (const f of hiddenFromVersion) renameSync(f.filePath, f.hiddenPath);
   try {
     await runMainBody();
   } finally {
-    renameSync(v0030HiddenPath, v0030Path);
-    const v0030Sha256AfterRestore = fileSha256(readFileSync(v0030Path));
-    if (v0030Sha256AfterRestore !== v0030Sha256BeforeHide) {
+    const mismatches: string[] = [];
+    for (const f of hiddenFromVersion) {
+      renameSync(f.hiddenPath, f.filePath);
+      const sha256AfterRestore = fileSha256(readFileSync(f.filePath));
+      if (sha256AfterRestore !== f.sha256BeforeHide) {
+        mismatches.push(`${path.basename(f.filePath)} (beklenen ${f.sha256BeforeHide}, bulunan ${sha256AfterRestore})`);
+      }
+    }
+    if (mismatches.length > 0) {
       throw new Error(
-        `GÜVENLİK DURDURMASI: 0030 migration dosyası geri yüklendi ama byte SHA-256'sı değişti — beklenen ${v0030Sha256BeforeHide}, bulunan ${v0030Sha256AfterRestore}.`,
+        `GÜVENLİK DURDURMASI: gizlenen migration dosyaları geri yüklendi ama byte SHA-256'sı değişti — ${mismatches.join("; ")}.`,
       );
     }
   }
@@ -1813,6 +1831,12 @@ async function runMainBody(): Promise<void> {
     const crashId = restCandidates[1];
     const crashTarget = inventory.targets.find((t) => t.instanceId === crashId)!;
     const { cancelInstanceWithClient, writeLegacyRepairSummaryWithClient } = await import("../../src/lib/radar/engine");
+    // Same conditional as legacy-repair-apply.ts: this suite hides every migration from 0030
+    // onward (see main()), so public.users does not exist here and null is the truthful actor.
+    const crashUsersExists = await pool.query<{ present: boolean }>(
+      `select to_regclass('public.users') is not null as present`,
+    );
+    const crashActorId = crashUsersExists.rows[0].present ? await getSystemActorId(pool) : null;
     const crashClient = await pool.connect();
     const crashOperationId = randomUUID();
     const crashPendingPath = path.join(receiptsDir, `${crashOperationId}.receipt.pending.json`);
@@ -1822,7 +1846,7 @@ async function runMainBody(): Promise<void> {
       await crashClient.query(`select pg_advisory_xact_lock(hashtextextended('mas_nakit_radar:legacy_repair', 0))`);
       const tsRes = await crashClient.query<{ ts: string }>(`select to_char(transaction_timestamp() at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as ts`);
       const eventTimestamp = tsRes.rows[0].ts;
-      const cancelResult = await cancelInstanceWithClient(crashClient, crashId, "Recovery crash simülasyonu", {
+      const cancelResult = await cancelInstanceWithClient(crashClient, crashId, "Recovery crash simülasyonu", crashActorId, {
         auditAction: "legacy_archive_cascade_repair",
         eventTimestamp,
       });
@@ -1856,7 +1880,7 @@ async function runMainBody(): Promise<void> {
         backupSha256: backup1.backupSha256, backupReceiptSha256: backup1.backupReceiptSha256,
         transactionTimestamp: eventTimestamp, appliedRepairs: receiptCore.appliedRepairs,
         untouchedScopeAfterHash: receiptCore.untouchedScopeAfterHash,
-      }, eventTimestamp);
+      }, eventTimestamp, crashActorId);
       await crashClient.query("commit");
     } finally {
       crashClient.release();

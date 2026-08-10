@@ -14,6 +14,7 @@ import {
   markInstanceUnpaid,
   refreshRiskFlags,
 } from "../src/lib/radar/engine";
+import { ensureSystemActor } from "./db/seed-system-actor";
 
 const pool = new Pool({
   connectionString:
@@ -26,14 +27,22 @@ const fail = (m: string): never => {
 const q = async (sql: string, params: unknown[] = []) => (await pool.query(sql, params)).rows;
 
 async function main() {
+  // audit_logs is append-only since 0022 (no UPDATE/DELETE/TRUNCATE, ever) — it is
+  // deliberately NOT in the reset below. Each verify run gets a freshly created
+  // disposable database instead, so the audit table starts empty without weakening
+  // the invariant.
+  // audit_logs.actor_id is an FK to public.users(id) since 0032; verify scripts run
+  // without a session, so they attribute to the reserved "system" account.
+  const actorId = await ensureSystemActor(pool);
   // 0) fresh staging + fresh domain
   await pool.query(
-    "truncate public.source_workbooks, public.payments, public.payment_instances, public.audit_logs restart identity cascade",
+    "truncate public.source_workbooks, public.payments, public.payment_instances restart identity cascade",
   );
   const r = await importWorkbook(
     pool,
     readFileSync("data/source/mesaili_nakit_akış_tek_vardiya_TEMİZ.xlsx"),
     "TEMİZ.xlsx",
+    actorId,
   );
   if (!r.ok) fail("import failed");
   const wb = r.workbookId;
@@ -64,7 +73,7 @@ async function main() {
   );
 
   // 2) mapping — accepted-only
-  const m1 = await mapAcceptedCandidates(pool, wb);
+  const m1 = await mapAcceptedCandidates(pool, wb, actorId);
   console.log("map#1:", JSON.stringify(m1));
   if (m1.created === 0) fail("nothing mapped");
   const names = (await q(`select name from public.payments order by name`)).map((x) => x.name);
@@ -83,15 +92,15 @@ async function main() {
   console.log(`payments: ${names.length} (${names.join(" | ")})`);
 
   // idempotent mapping
-  const m2 = await mapAcceptedCandidates(pool, wb);
+  const m2 = await mapAcceptedCandidates(pool, wb, actorId);
   if (m2.created !== 0) fail("mapping not idempotent");
   console.log("map#2 idempotent ✓ (created=0, skipped=" + m2.skippedAlreadyMapped + ")");
 
   // 3) generation — real months + Şubat clamp months
   const today = new Date().toISOString().slice(0, 10);
-  await ensureWindow(pool, today);
-  const g1 = await generateInstancesForMonth(pool, "2027-02-01");
-  const g2 = await generateInstancesForMonth(pool, "2027-02-01"); // duplicate attempt
+  await ensureWindow(pool, today, actorId);
+  const g1 = await generateInstancesForMonth(pool, "2027-02-01", actorId);
+  const g2 = await generateInstancesForMonth(pool, "2027-02-01", actorId); // duplicate attempt
   if (g2.created !== 0) fail("duplicate generation created rows");
   console.log(`gen Şubat27: created=${g1.created} shortMonthAdjusted=${g1.shortMonthAdjusted}; rerun created=${g2.created} ✓`);
 
@@ -151,10 +160,10 @@ async function main() {
      where instance_month = date_trunc('month', current_date)::date and status='unpaid' limit 1`,
   ))[0].id;
   const auditBefore = (await q(`select count(*)::int as n from public.audit_logs where action in ('mark_paid','mark_unpaid')`))[0].n;
-  await markInstancePaid(pool, target, null);
+  await markInstancePaid(pool, target, null, actorId);
   const paidRow = await q(`select status, paid_at from public.payment_instances where id=$1`, [target]);
   if (paidRow[0].status !== "paid" || paidRow[0].paid_at == null) fail("paid state wrong");
-  await markInstanceUnpaid(pool, target);
+  await markInstanceUnpaid(pool, target, actorId);
   const auditAfter = (await q(`select count(*)::int as n from public.audit_logs where action in ('mark_paid','mark_unpaid')`))[0].n;
   if (auditAfter - auditBefore !== 2) fail(`audit entries missing: ${auditAfter - auditBefore}`);
   const auditShape = await q(

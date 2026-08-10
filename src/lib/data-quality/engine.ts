@@ -12,11 +12,11 @@ import {
 } from "./rules";
 import { loadCapacityModels } from "@/lib/production/engine";
 
-async function audit(client: PoolClient, action: string, entityId: string | null, before: unknown, after: unknown): Promise<void> {
+async function audit(client: PoolClient, actor: string, action: string, entityId: string | null, before: unknown, after: unknown): Promise<void> {
   await client.query(
     `insert into public.audit_logs (actor, action, entity_table, entity_id, before_data, after_data)
-     values (null,$1,'action_items',$2,$3,$4)`,
-    [action, entityId, JSON.stringify(before ?? null), JSON.stringify(after ?? null)],
+     values ($1,$2,'action_items',$3,$4,$5)`,
+    [actor, action, entityId, JSON.stringify(before ?? null), JSON.stringify(after ?? null)],
   );
 }
 
@@ -267,7 +267,7 @@ function dueIn(days: number): string {
   return d.toISOString().slice(0, 10);
 }
 
-export async function createActionFromReview(pool: Pool, reviewId: string): Promise<string | null> {
+export async function createActionFromReview(pool: Pool, reviewId: string, actorId: string): Promise<string | null> {
   const client = await pool.connect();
   try {
     await client.query("begin");
@@ -305,13 +305,13 @@ export async function createActionFromReview(pool: Pool, reviewId: string): Prom
     const ins = await client.query<{ id: string }>(
       `insert into public.action_items
          (title, severity, due_date, status, source_type, source_href,
-          related_entity_table, related_entity_id, note)
-       values ($1,$2,$3,'open','mapping_review',$4,'mapping_reviews',$5,$6)
+          related_entity_table, related_entity_id, note, created_by)
+       values ($1,$2,$3,'open','mapping_review',$4,'mapping_reviews',$5,$6,$7)
        returning id`,
-      [reviewActionTitle(r), r.severity, dueIn(r.severity === "critical" || r.severity === "high" ? 1 : 3), r.source_href, r.id, r.message],
+      [reviewActionTitle(r), r.severity, dueIn(r.severity === "critical" || r.severity === "high" ? 1 : 3), r.source_href, r.id, r.message, actorId],
     );
     const id = ins.rows[0].id;
-    await audit(client, "create_action_from_review", id, null, { reviewId, title: reviewActionTitle(r) });
+    await audit(client, actorId, "create_action_from_review", id, null, { reviewId, title: reviewActionTitle(r) });
     await client.query("commit");
     return id;
   } catch (e) {
@@ -325,6 +325,7 @@ export async function createActionFromReview(pool: Pool, reviewId: string): Prom
 export async function createActionFromHomeSignal(
   pool: Pool,
   input: { title: string; severity: DqSeverity; sourceFactKey: string; sourceHref: string; note?: string | null },
+  actorId: string,
 ): Promise<string> {
   const client = await pool.connect();
   try {
@@ -341,12 +342,12 @@ export async function createActionFromHomeSignal(
     }
     const ins = await client.query<{ id: string }>(
       `insert into public.action_items
-         (title, severity, due_date, status, source_type, source_fact_key, source_href, note)
-       values ($1,$2,$3,'open','home_action',$4,$5,$6) returning id`,
-      [input.title, input.severity, dueIn(input.severity === "critical" || input.severity === "high" ? 1 : 7), input.sourceFactKey, input.sourceHref, input.note ?? null],
+         (title, severity, due_date, status, source_type, source_fact_key, source_href, note, created_by)
+       values ($1,$2,$3,'open','home_action',$4,$5,$6,$7) returning id`,
+      [input.title, input.severity, dueIn(input.severity === "critical" || input.severity === "high" ? 1 : 7), input.sourceFactKey, input.sourceHref, input.note ?? null, actorId],
     );
     const id = ins.rows[0].id;
-    await audit(client, "create_action_from_home", id, null, input);
+    await audit(client, actorId, "create_action_from_home", id, null, input);
     await client.query("commit");
     return id;
   } catch (e) {
@@ -357,7 +358,7 @@ export async function createActionFromHomeSignal(
   }
 }
 
-export async function createActionFromAiResponse(pool: Pool, aiResponseId: string): Promise<string | null> {
+export async function createActionFromAiResponse(pool: Pool, aiResponseId: string, actorId: string): Promise<string | null> {
   const client = await pool.connect();
   try {
     await client.query("begin");
@@ -394,8 +395,8 @@ export async function createActionFromAiResponse(pool: Pool, aiResponseId: strin
     const ins = await client.query<{ id: string }>(
       `insert into public.action_items
          (title, severity, due_date, status, source_type, source_href,
-          related_entity_table, related_entity_id, note)
-       values ($1,'medium',$2,'open','ai_response',$3,'ai_response_snapshots',$4,$5)
+          related_entity_table, related_entity_id, note, created_by)
+       values ($1,'medium',$2,'open','ai_response',$3,'ai_response_snapshots',$4,$5,$6)
        returning id`,
       [
         `AI cevap aksiyonu: ${r.question.slice(0, 160)}`,
@@ -403,10 +404,11 @@ export async function createActionFromAiResponse(pool: Pool, aiResponseId: strin
         sourceHref,
         r.id,
         r.answer_md.slice(0, 1000),
+        actorId,
       ],
     );
     const id = ins.rows[0].id;
-    await audit(client, "create_action_from_ai_response", id, null, { aiResponseId, sourceHref });
+    await audit(client, actorId, "create_action_from_ai_response", id, null, { aiResponseId, sourceHref });
     await client.query("commit");
     return id;
   } catch (e) {
@@ -417,7 +419,7 @@ export async function createActionFromAiResponse(pool: Pool, aiResponseId: strin
   }
 }
 
-export async function createActionFromReport(pool: Pool, reportId: string): Promise<string | null> {
+export async function createActionFromReport(pool: Pool, reportId: string, actorId: string): Promise<string | null> {
   const client = await pool.connect();
   try {
     await client.query("begin");
@@ -455,8 +457,8 @@ export async function createActionFromReport(pool: Pool, reportId: string): Prom
     const ins = await client.query<{ id: string }>(
       `insert into public.action_items
          (title, severity, due_date, status, source_type, source_href,
-          related_entity_table, related_entity_id, note)
-       values ($1,'medium',$2,'open','report',$3,'reports',$4,$5)
+          related_entity_table, related_entity_id, note, created_by)
+       values ($1,'medium',$2,'open','report',$3,'reports',$4,$5,$6)
        returning id`,
       [
         `Rapor aksiyonu: ${r.report_type} ${r.period_start}`,
@@ -464,10 +466,11 @@ export async function createActionFromReport(pool: Pool, reportId: string): Prom
         sourceHref,
         r.id,
         r.body_md.slice(0, 1000),
+        actorId,
       ],
     );
     const id = ins.rows[0].id;
-    await audit(client, "create_action_from_report", id, null, { reportId, sourceHref });
+    await audit(client, actorId, "create_action_from_report", id, null, { reportId, sourceHref });
     await client.query("commit");
     return id;
   } catch (e) {
@@ -481,6 +484,7 @@ export async function createActionFromReport(pool: Pool, reportId: string): Prom
 export async function createManualAction(
   pool: Pool,
   input: { title: string; severity: DqSeverity; owner?: string | null; dueDate?: string | null; note?: string | null },
+  actorId: string,
 ): Promise<string | null> {
   const title = input.title.trim().slice(0, 240);
   if (!title) return null;
@@ -488,12 +492,12 @@ export async function createManualAction(
   try {
     await client.query("begin");
     const ins = await client.query<{ id: string }>(
-      `insert into public.action_items (title, severity, owner, due_date, status, source_type, note)
-       values ($1,$2,$3,$4,'open','manual',$5) returning id`,
-      [title, input.severity, input.owner ?? null, input.dueDate || null, input.note ?? null],
+      `insert into public.action_items (title, severity, owner, due_date, status, source_type, note, created_by)
+       values ($1,$2,$3,$4,'open','manual',$5,$6) returning id`,
+      [title, input.severity, input.owner ?? null, input.dueDate || null, input.note ?? null, actorId],
     );
     const id = ins.rows[0].id;
-    await audit(client, "create_manual_action", id, null, input);
+    await audit(client, actorId, "create_manual_action", id, null, input);
     await client.query("commit");
     return id;
   } catch (e) {
@@ -504,7 +508,7 @@ export async function createManualAction(
   }
 }
 
-export async function setActionStatus(pool: Pool, id: string, status: ActionStatus, completionNote?: string | null): Promise<void> {
+export async function setActionStatus(pool: Pool, id: string, status: ActionStatus, actorId: string, completionNote?: string | null): Promise<void> {
   const client = await pool.connect();
   try {
     await client.query("begin");
@@ -524,7 +528,7 @@ export async function setActionStatus(pool: Pool, id: string, status: ActionStat
          where id=$1`,
         [id, status, note],
       );
-      await audit(client, "set_action_status", id, before.rows[0], { id, status, completionNote: note });
+      await audit(client, actorId, "set_action_status", id, before.rows[0], { id, status, completionNote: note });
     }
     await client.query("commit");
   } catch (e) {

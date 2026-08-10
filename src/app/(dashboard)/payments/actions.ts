@@ -6,10 +6,7 @@ import { ensureWindow } from "@/lib/radar/engine";
 import { archivePayment, updatePaymentAndReconcile } from "@/lib/payments/engine";
 import { DomainError } from "@/lib/domain-error";
 import { istanbulDateISO } from "@/lib/time/istanbul";
-
-// No individual user identity exists in this app (src/lib/auth.ts is a single shared-password
-// access gate, not per-user accounts) — this is an explicit placeholder, not a silent null.
-const ARCHIVED_BY_LABEL = "mas-dashboard";
+import { requireSession } from "@/lib/auth";
 
 const num = (v: FormDataEntryValue | null): number | null => {
   const s = String(v ?? "").trim();
@@ -51,6 +48,7 @@ function validate(f: ReturnType<typeof readForm>): string | null {
 }
 
 export async function createPaymentAction(formData: FormData): Promise<void> {
+  const session = await requireSession();
   const f = readForm(formData);
   const err = validate(f);
   if (err) redirect(`/payments/new?error=${encodeURIComponent(err)}`);
@@ -72,8 +70,8 @@ export async function createPaymentAction(formData: FormData): Promise<void> {
     id = res.rows[0].id;
     await client.query(
       `insert into public.audit_logs (actor, action, entity_table, entity_id, before_data, after_data)
-       values (null,'create_payment','payments',$1,null,$2)`,
-      [id, JSON.stringify(f)],
+       values ($1,'create_payment','payments',$2,null,$3)`,
+      [session.id, id, JSON.stringify(f)],
     );
     await client.query("commit");
   } catch (e) {
@@ -82,7 +80,7 @@ export async function createPaymentAction(formData: FormData): Promise<void> {
   } finally {
     client.release();
   }
-  await ensureWindow(pool, istanbulDateISO());
+  await ensureWindow(pool, istanbulDateISO(), session.id);
   revalidatePath("/payments");
   revalidatePath("/payments/items");
   revalidatePath("/radar");
@@ -90,12 +88,13 @@ export async function createPaymentAction(formData: FormData): Promise<void> {
 }
 
 export async function updatePaymentAction(formData: FormData): Promise<void> {
+  const session = await requireSession();
   const id = String(formData.get("id") ?? "");
   const f = readForm(formData);
   const err = validate(f);
   if (err) redirect(`/payments/${id}/edit?error=${encodeURIComponent(err)}`);
   try {
-    await updatePaymentAndReconcile(getPool(), id, f, istanbulDateISO());
+    await updatePaymentAndReconcile(getPool(), id, f, istanbulDateISO(), session.id);
   } catch (e) {
     // Known domain failures (not found) become a safe redirect message. Anything else
     // (unexpected DB/system errors) is never swallowed or rewritten — it propagates.
@@ -111,11 +110,12 @@ export async function updatePaymentAction(formData: FormData): Promise<void> {
 }
 
 export async function archivePaymentAction(formData: FormData): Promise<void> {
+  const session = await requireSession();
   const id = String(formData.get("id") ?? "");
   const reason = String(formData.get("archive_reason") ?? "").trim();
   if (!id) return;
   if (!reason) redirect(`/payments/${id}/edit?error=${encodeURIComponent("Arşivleme nedeni zorunlu.")}`);
-  await archivePayment(getPool(), id, { reason, archivedByLabel: ARCHIVED_BY_LABEL }, istanbulDateISO());
+  await archivePayment(getPool(), id, { reason, archivedByLabel: session.displayName }, istanbulDateISO(), session.id);
   revalidatePath("/payments");
   revalidatePath("/payments/items");
   redirect("/payments/items");

@@ -1,11 +1,13 @@
 import { getPool } from "../src/lib/db";
 import { ensureWindow } from "../src/lib/radar/engine";
 import { istanbulDateISO } from "../src/lib/reports/rules";
+import { ensureSystemActor } from "./db/seed-system-actor";
 
 async function main() {
   const pool = getPool();
   try {
-    await ensureWindow(pool, istanbulDateISO(), 24);
+    const actorId = await ensureSystemActor(pool);
+    await ensureWindow(pool, istanbulDateISO(), actorId, 24);
     console.log("Ödeme penceresi 24 aylık ufukla hazır.");
   } finally {
     await pool.end();

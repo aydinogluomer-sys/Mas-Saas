@@ -5,6 +5,7 @@ import { redirect } from "next/navigation";
 import { createExternalAssumption, setExternalAssumptionReviewStatus } from "@/lib/external-assumptions/engine";
 import { normalizeReviewStatus } from "@/lib/external-assumptions/rules";
 import { getPool } from "@/lib/db";
+import { requireSession } from "@/lib/auth";
 
 function numFromForm(v: FormDataEntryValue | null): number | null {
   if (v == null || v === "") return null;
@@ -13,6 +14,7 @@ function numFromForm(v: FormDataEntryValue | null): number | null {
 }
 
 export async function createExternalAssumptionAction(formData: FormData): Promise<void> {
+  const session = await requireSession();
   const valueNumeric = numFromForm(formData.get("valueNumeric"));
   const sourceKind = String(formData.get("sourceKind") ?? "manual");
   const sourceUrl = String(formData.get("sourceUrl") ?? "").trim();
@@ -31,7 +33,7 @@ export async function createExternalAssumptionAction(formData: FormData): Promis
       sourceUrl: sourceUrl || null,
       sourceDate: String(formData.get("sourceDate") ?? ""),
       notes: String(formData.get("notes") ?? "") || null,
-    });
+    }, session.id);
   }
   revalidatePath("/data/assumptions");
   revalidatePath("/data/quality");
@@ -39,9 +41,10 @@ export async function createExternalAssumptionAction(formData: FormData): Promis
 }
 
 export async function setExternalAssumptionReviewStatusAction(formData: FormData): Promise<void> {
+  const session = await requireSession();
   const id = String(formData.get("id") ?? "");
   const status = normalizeReviewStatus(String(formData.get("reviewStatus") ?? ""));
-  if (id && status) await setExternalAssumptionReviewStatus(getPool(), id, status);
+  if (id && status) await setExternalAssumptionReviewStatus(getPool(), id, status, session.id);
   revalidatePath("/data/assumptions");
   revalidatePath("/data/quality");
   redirect("/data/assumptions?result=reviewed");

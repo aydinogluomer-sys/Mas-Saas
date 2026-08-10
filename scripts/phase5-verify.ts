@@ -16,6 +16,7 @@ import {
 import {
   debtServiceByMonth, exposureBy, groupMaturities, isoWeekOf, scheduleDueDates,
 } from "../src/lib/financing/rules";
+import { ensureSystemActor } from "./db/seed-system-actor";
 
 const pool = new Pool({
   connectionString:
@@ -29,15 +30,22 @@ const approx = (a: number, b: number, tol = 0.01) => Math.abs(a - b) <= tol;
 const SRC = process.env.PHASE5_SRC ?? "data/source/mesaili_nakit_akış_tek_vardiya_TEMİZ.xlsx";
 
 async function main() {
+  // audit_logs is append-only since 0022 (no UPDATE/DELETE/TRUNCATE, ever) — it is
+  // deliberately NOT in the reset below. Each verify run gets a freshly created
+  // disposable database instead, so the audit table starts empty without weakening
+  // the invariant.
+  // audit_logs.actor_id is an FK to public.users(id) since 0032; verify scripts run
+  // without a session, so they attribute to the reserved "system" account.
+  const actorId = await ensureSystemActor(pool);
   await pool.query(
-    "truncate public.source_workbooks, public.checks, public.check_events, public.loans, public.loan_installments, public.audit_logs restart identity cascade",
+    "truncate public.source_workbooks, public.checks, public.check_events, public.loans, public.loan_installments restart identity cascade",
   );
-  const r = await importWorkbook(pool, readFileSync(SRC), "TEMİZ.xlsx");
+  const r = await importWorkbook(pool, readFileSync(SRC), "TEMİZ.xlsx", actorId);
   if (!r.ok) fail("import failed");
   const wb = r.workbookId;
 
   /* ── 1) CHECKS eligibility + idempotency ── */
-  const c1 = await mapAcceptedChecks(pool, wb);
+  const c1 = await mapAcceptedChecks(pool, wb, actorId);
   console.log("checks map#1:", JSON.stringify(c1));
   if (c1.excluded.length === 0) fail("expected duplicate_check rows excluded on first map");
   if (!c1.excluded.every((e) => e.reason.includes("açık/ret") || e.reason.includes("vade")))
@@ -51,9 +59,9 @@ async function main() {
   // human resolves the duplicate suspicions (keep all — genuinely distinct) → remap
   await pool.query(`update public.mapping_reviews set status='resolved', reviewed_at=now()
                     where issue_type in ('duplicate_check','unparsed_row')`);
-  const c2 = await mapAcceptedChecks(pool, wb);
+  const c2 = await mapAcceptedChecks(pool, wb, actorId);
   console.log("checks map#2 (dup resolved):", JSON.stringify(c2));
-  const c3 = await mapAcceptedChecks(pool, wb);
+  const c3 = await mapAcceptedChecks(pool, wb, actorId);
   if (c3.created !== 0) fail("check mapping not idempotent");
   console.log(`checks: ${c1.created}+${c2.created} created, rerun created=0 ✓`);
 
@@ -129,15 +137,15 @@ async function main() {
   console.log(`bank exposure ✓ top=${exp.entries[0].key} %${(exp.entries[0].ratio * 100).toFixed(0)} flagged (bilinen toplam ${exp.knownTotal})`);
 
   /* ── 5) LOANS: eligibility blocked until ambiguity resolved ── */
-  const l1 = await mapLoans(pool, wb);
+  const l1 = await mapLoans(pool, wb, actorId);
   console.log("loans map#1:", JSON.stringify(l1));
   if (l1.created !== 0 || l1.excluded.length === 0) fail("loan should be blocked by open ambiguity review");
   await pool.query(`update public.mapping_reviews set status='resolved', reviewed_at=now()
                     where issue_type in ('loan_field_ambiguous','loan_term_mismatch')`);
-  const l2 = await mapLoans(pool, wb);
+  const l2 = await mapLoans(pool, wb, actorId);
   console.log("loans map#2 (ambiguity resolved):", JSON.stringify(l2));
   if (l2.created !== 1) fail(`expected 1 loan, got ${l2.created}`);
-  const l3 = await mapLoans(pool, wb);
+  const l3 = await mapLoans(pool, wb, actorId);
   if (l3.created !== 0 || l3.skippedExisting !== 1) fail("loan mapping not idempotent");
   console.log(`loans: 1 created, ${l2.installmentsCreated} installments, rerun created=0 ✓`);
 

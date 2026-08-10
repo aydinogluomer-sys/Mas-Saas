@@ -21,7 +21,7 @@ begin
 
 end $$;
 do $$
-declare pid uuid; iid uuid; amt numeric; dd int; rls_missing int; pol_missing int;
+declare pid uuid; iid uuid; amt numeric; dd int; rls_missing int; pol_missing int; ledger_check int;
 begin
   insert into public.payments (name, recurrence_type, due_day) values ('Test Kalem','monthly',31) returning id into pid;
 
@@ -74,11 +74,29 @@ begin
     join pg_namespace ns on ns.oid = c.relnamespace and ns.nspname = 'public'
   where t.schemaname = 'public' and not c.relrowsecurity;
   if rls_missing > 0 then raise exception 'FAIL RLS missing on % tables', rls_missing; end if;
+  -- schema_migrations is a deliberate exception (0020 + docs/database-schema.md): the ledger
+  -- records real schema history and must NOT be writable by ordinary app sessions, so it gets
+  -- RLS with zero policies and no grants instead of 0007's blanket authenticated-all policy.
+  -- Exempting it here is paired with the positive assertions below, so the exception stays a
+  -- verified invariant rather than a hole this check silently stops covering.
   select count(*) into pol_missing from pg_tables t
   where t.schemaname='public'
+    and t.tablename <> 'schema_migrations'
     and not exists (select 1 from pg_policies p where p.schemaname='public' and p.tablename=t.tablename);
   if pol_missing > 0 then raise exception 'FAIL policy missing on % tables', pol_missing; end if;
-  raise notice 'PASS RLS enabled + policies on all public tables';
+
+  select count(*) into ledger_check from pg_policies
+  where schemaname='public' and tablename='schema_migrations';
+  if ledger_check <> 0 then raise exception 'FAIL schema_migrations must have no policy, found %', ledger_check; end if;
+  select count(*) into ledger_check from pg_class c
+    join pg_namespace ns on ns.oid = c.relnamespace and ns.nspname='public'
+  where c.relname='schema_migrations' and c.relrowsecurity;
+  if ledger_check <> 1 then raise exception 'FAIL schema_migrations RLS not enabled'; end if;
+  select count(*) into ledger_check from information_schema.role_table_grants
+  where table_schema='public' and table_name='schema_migrations'
+    and grantee in ('PUBLIC','public','anon','authenticated');
+  if ledger_check <> 0 then raise exception 'FAIL schema_migrations must not be granted to app roles, found %', ledger_check; end if;
+  raise notice 'PASS RLS enabled + policies on all public tables (schema_migrations: RLS on, no policy, no app grants)';
 
   -- 10) loan installment paid requires paid_at
   declare lid uuid;

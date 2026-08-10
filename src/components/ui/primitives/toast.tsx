@@ -33,6 +33,14 @@ const FLASH_MESSAGES: Record<string, { text: string; kind: "success" | "error" |
   saved: { text: "Kaydedildi.", kind: "success" },
   deleted: { text: "Silindi.", kind: "success" },
   error: { text: "İşlem tamamlanamadı.", kind: "error" },
+  user_created: { text: "Kullanıcı oluşturuldu.", kind: "success" },
+  password_reset: { text: "Parola sıfırlandı; kullanıcının açık oturumları kapatıldı.", kind: "success" },
+  user_deactivated: { text: "Kullanıcı pasifleştirildi; oturumları kapatıldı.", kind: "success" },
+  user_activated: { text: "Kullanıcı yeniden aktifleştirildi.", kind: "success" },
+  role_changed: { text: "Rol güncellendi.", kind: "success" },
+  user_unlocked: { text: "Hesap kilidi kaldırıldı.", kind: "success" },
+  user_self: { text: "Kendi hesabınızın erişimini kaldıramazsınız.", kind: "error" },
+  user_error: { text: "Kullanıcı işlemi tamamlanamadı. Girilen bilgileri kontrol edin.", kind: "error" },
 };
 
 function FlashBridge() {

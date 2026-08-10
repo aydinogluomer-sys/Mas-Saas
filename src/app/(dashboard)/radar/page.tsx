@@ -17,17 +17,19 @@ import { Badge } from "@/components/ui/badge";
 import { Num, Panel, fmtTL } from "@/components/ui/panel";
 import { KpiCard, PageHeader } from "@/components/ui/shell";
 import { InstanceRowView } from "@/components/radar/instance-row";
+import { requireSession } from "@/lib/auth";
 
 export const dynamic = "force-dynamic";
 
 const fmtDay = (iso: string) => `${iso.slice(8)}.${iso.slice(5, 7)}`;
 
 export default async function RadarPage({ searchParams }: { searchParams?: Promise<{ view?: string }> }) {
+  const session = await requireSession();
   const view = (await searchParams)?.view;
   const pool = getPool();
   const today = istanbulDateISO();
   const monthStart = today.slice(0, 7) + "-01";
-  await ensureWindow(pool, today); // idempotent: generate window + refresh risk
+  await ensureWindow(pool, today, session.id); // idempotent: generate window + refresh risk
 
   const tomorrow = new Date(Date.parse(today) + 86400000).toISOString().slice(0, 10);
   const weekEnd = new Date(Date.parse(today) + 6 * 86400000).toISOString().slice(0, 10);

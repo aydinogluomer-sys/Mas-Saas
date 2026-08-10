@@ -6,6 +6,7 @@ import { addMonths, monthInstances, overdueOpen } from "@/lib/radar/queries";
 import { dayFlags, daysInMonth } from "@/lib/radar/rules";
 import { Panel } from "@/components/ui/panel";
 import { InstanceRowView } from "@/components/radar/instance-row";
+import { requireSession } from "@/lib/auth";
 
 export const dynamic = "force-dynamic";
 
@@ -15,6 +16,7 @@ const GUN = ["Pzt","Sal","Çar","Per","Cum","Cmt","Paz"];
 export default async function CalendarPage({
   searchParams,
 }: { searchParams: Promise<{ ym?: string; day?: string; date?: string; instance?: string; age?: string }> }) {
+  const session = await requireSession();
   const sp = await searchParams;
   const today = istanbulDateISO();
   const pool = getPool();
@@ -26,7 +28,7 @@ export default async function CalendarPage({
   const monthStart = ym + "-01";
   const selDay = sp.day && /^\d{1,2}$/.test(sp.day) ? Number(sp.day) : explicitDate ? Number(explicitDate.slice(8)) : null;
 
-  await generateInstancesForMonth(pool, monthStart); // idempotent
+  await generateInstancesForMonth(pool, monthStart, session.id); // idempotent
   await refreshRiskFlags(pool, today);
   const [rows, t] = await Promise.all([monthInstances(pool, monthStart), loadThresholds(pool)]);
 

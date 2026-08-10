@@ -15,6 +15,7 @@ import { mapAcceptedChecks, mapLoans } from "../src/lib/financing/engine";
 import { createAndRun, loadScenarioRun, deleteScenarioRun } from "../src/lib/scenarios/engine";
 import { applyScenario, compareScenarioToBaseline, buildScenarioInsights } from "../src/lib/scenarios/rules";
 import { loadCashMonths } from "../src/lib/cashflow/engine";
+import { ensureSystemActor } from "./db/seed-system-actor";
 
 const pool = new Pool({
   connectionString:
@@ -42,18 +43,23 @@ async function nonScenarioFingerprint(): Promise<string> {
 }
 
 async function main() {
-  await pool.query(`truncate public.source_workbooks, public.payments, public.payment_instances,
-    public.cashflow_months, public.cashflow_snapshots, public.checks, public.check_events, public.loans,
-    public.loan_installments, public.scenarios, public.scenario_runs, public.audit_logs restart identity cascade`);
+  // audit_logs is append-only since 0022 (no UPDATE/DELETE/TRUNCATE, ever) — it is
+  // deliberately NOT in the reset below. Each verify run gets a freshly created
+  // disposable database instead, so the audit table starts empty without weakening
+  // the invariant.
+  // audit_logs.actor_id is an FK to public.users(id) since 0032; verify scripts run
+  // without a session, so they attribute to the reserved "system" account.
+  const actorId = await ensureSystemActor(pool);
+  await pool.query(`truncate public.source_workbooks, public.payments, public.payment_instances, public.cashflow_months, public.cashflow_snapshots, public.checks, public.check_events, public.loans, public.loan_installments, public.scenarios, public.scenario_runs restart identity cascade`);
 
-  const r = await importWorkbook(pool, readFileSync(SRC), "TEMİZ.xlsx");
+  const r = await importWorkbook(pool, readFileSync(SRC), "TEMİZ.xlsx", actorId);
   if (!r.ok) fail("import failed");
   const wb = r.workbookId;
-  await mapCashflowMonths(pool, wb);
+  await mapCashflowMonths(pool, wb, actorId);
   await pool.query(`update public.mapping_reviews set status='accepted' where issue_type in ('missing_due_day','amount_alignment','unlabeled_amount','multiple_day_markers')`);
-  await mapAcceptedCandidates(pool, wb);
+  await mapAcceptedCandidates(pool, wb, actorId);
   await pool.query(`update public.mapping_reviews set status='resolved' where issue_type in ('duplicate_check','unparsed_row','loan_field_ambiguous','loan_term_mismatch')`);
-  await mapAcceptedChecks(pool, wb); await mapLoans(pool, wb);
+  await mapAcceptedChecks(pool, wb, actorId); await mapLoans(pool, wb, actorId);
 
   const baseline = await loadCashMonths(pool);
   if (baseline.length !== 35) fail(`expected 35 baseline months, got ${baseline.length}`);
@@ -69,7 +75,7 @@ async function main() {
   const { runId, comparison } = await createAndRun(pool, {
     name: "Kombine: gelir −%10, gider +%5, borç servisi, 1 ay gecikme",
     scenarioType: "combined_custom_scenario", assumptions,
-  });
+  }, actorId);
   console.log(`run ✓ finalΔ=${comparison.finalDelta?.toFixed(0)} scenFirstNeg=${comparison.scenarioFirstNegative?.slice(0,7)} maxGap=${comparison.maxCashGap?.toFixed(0)}`);
 
   // 2) BASELINE IMMUTABLE + non-scenario tables unmutated
@@ -91,14 +97,14 @@ async function main() {
   console.log(`scenario tables ✓ (1 run, ${scenRows.lines} satır, ${scenRows.asmp} varsayım, ${scenRows.comp} karşılaştırma)`);
 
   // 4) revenue% affects ONLY scenario income; expense% ONLY scenario expense (vs baseline)
-  const revRun = await createAndRun(pool, { name: "rev-only −20%", scenarioType: "revenue_up_down_percent", assumptions: { revenuePct: -0.2 } });
+  const revRun = await createAndRun(pool, { name: "rev-only −20%", scenarioType: "revenue_up_down_percent", assumptions: { revenuePct: -0.2 } }, actorId);
   const revLine = (await q(`select baseline_income::float8 bi, scenario_income::float8 si, baseline_expense::float8 be, scenario_expense::float8 se
      from public.scenario_run_lines where run_id=$1 and baseline_income is not null order by month_start limit 1`, [revRun.runId]))[0];
   if (!approx(revLine.si, revLine.bi * 0.8, 1)) fail(`revenue -20% not applied: ${revLine.si} vs ${revLine.bi}*0.8`);
   if (!approx(revLine.se, revLine.be, 1)) fail("revenue scenario wrongly changed expense");
   console.log(`revenue% ✓ (gelir ${revLine.bi.toFixed(0)}→${revLine.si.toFixed(0)}, gider değişmedi)`);
 
-  const expRun = await createAndRun(pool, { name: "exp-only +30%", scenarioType: "expense_up_down_percent", assumptions: { expensePct: 0.3 } });
+  const expRun = await createAndRun(pool, { name: "exp-only +30%", scenarioType: "expense_up_down_percent", assumptions: { expensePct: 0.3 } }, actorId);
   const expLine = (await q(`select baseline_income::float8 bi, scenario_income::float8 si, baseline_expense::float8 be, scenario_expense::float8 se
      from public.scenario_run_lines where run_id=$1 and baseline_expense is not null order by month_start limit 1`, [expRun.runId]))[0];
   if (!approx(expLine.se, expLine.be * 1.3, 1)) fail("expense +30% not applied");
@@ -106,7 +112,7 @@ async function main() {
   console.log(`expense% ✓ (gider ${expLine.be.toFixed(0)}→${expLine.se.toFixed(0)}, gelir değişmedi)`);
 
   // 5) customer delay changes TIMING not the original baseline amount
-  const delayRun = await createAndRun(pool, { name: "delay 1 ay", scenarioType: "customer_delay_days", assumptions: { customerDelayMonths: 1 } });
+  const delayRun = await createAndRun(pool, { name: "delay 1 ay", scenarioType: "customer_delay_days", assumptions: { customerDelayMonths: 1 } }, actorId);
   const dl = await q(`select to_char(month_start,'YYYY-MM-DD') m, baseline_income::float8 bi, scenario_income::float8 si
      from public.scenario_run_lines where run_id=$1 order by month_start`, [delayRun.runId]);
   // first month: baseline income known but scenario income shifted away (null or from prior)
@@ -141,7 +147,7 @@ async function main() {
   console.log(`insights ✓ deterministik (${i1.length} satır, notes saklandı)`);
 
   // 8) delete is safe: removes scenario rows only, baseline still intact
-  await deleteScenarioRun(pool, delayRun.runId);
+  await deleteScenarioRun(pool, delayRun.runId, actorId);
   const afterDelete = await nonScenarioFingerprint();
   if (afterDelete !== before) fail("delete touched a non-scenario table");
   const gone = (await q(`select count(*)::int n from public.scenario_run_lines where run_id=$1`, [delayRun.runId]))[0].n;

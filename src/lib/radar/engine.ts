@@ -18,16 +18,27 @@ import {
   type RiskThresholds,
 } from "./rules";
 
+/** The Slice-5 legacy-repair tooling is the ONLY thing that may pass null: it operates on a
+ * frozen pre-0031 database (scripts/db/legacy-repair-verify.ts deliberately hides every
+ * migration from 0030 onward, so public.users does not exist there) and null is the only
+ * truthful actor in that world — the same value every pre-P0-A audit row already carries per
+ * 0032 ("actor stays nullable here — every pre-P0-A row keeps actor=null forever"). On any
+ * real, migrated database that tool resolves the reserved "system" account instead, and every
+ * interactive/app path passes a real session user id typed `string` at its own call site. */
+export type LegacyRepairActorId = string | null;
+
 /** Returns the inserted row's id (RETURNING id) — existing callers that ignore the
  * resolved value are unaffected; Slice 5's repair flow collects it for its receipts.
  * `createdAt`, when given, overrides audit_logs' own `created_at` DEFAULT now() — used
  * only where a specific historical or transaction-shared timestamp must be recorded
- * instead of "when this INSERT happened to run". Deliberately NOT exported — an
+ * instead of "when this INSERT happened to run". `actor` is nullable only for the case
+ * LegacyRepairActorId documents. Deliberately NOT exported — an
  * arbitrary-action/entity/payload audit writer is too broad a surface to hand to
  * external tooling. legacy-repair-apply.ts gets only writeLegacyRepairSummaryWithClient
  * below, which hardcodes the one action/entity shape it's allowed to write. */
 async function audit(
   client: PoolClient,
+  actor: string | null,
   action: string,
   entityTable: string,
   entityId: string | null,
@@ -38,15 +49,15 @@ async function audit(
   const result = createdAt
     ? await client.query<{ id: string }>(
         `insert into public.audit_logs (actor, action, entity_table, entity_id, before_data, after_data, created_at)
-         values (null, $1, $2, $3, $4, $5, $6)
+         values ($1, $2, $3, $4, $5, $6, $7)
          returning id`,
-        [action, entityTable, entityId, JSON.stringify(before ?? null), JSON.stringify(after ?? null), createdAt],
+        [actor, action, entityTable, entityId, JSON.stringify(before ?? null), JSON.stringify(after ?? null), createdAt],
       )
     : await client.query<{ id: string }>(
         `insert into public.audit_logs (actor, action, entity_table, entity_id, before_data, after_data)
-         values (null, $1, $2, $3, $4, $5)
+         values ($1, $2, $3, $4, $5, $6)
          returning id`,
-        [action, entityTable, entityId, JSON.stringify(before ?? null), JSON.stringify(after ?? null)],
+        [actor, action, entityTable, entityId, JSON.stringify(before ?? null), JSON.stringify(after ?? null)],
       );
   if (result.rowCount !== 1 || !result.rows[0]?.id) {
     throw new Error(`audit(): beklenen tam olarak 1 satır döndü, alınan ${result.rowCount}`);
@@ -120,12 +131,13 @@ export async function writeLegacyRepairSummaryWithClient(
   client: PoolClient,
   input: LegacyRepairSummaryInput,
   eventTimestamp: string,
+  actorId: LegacyRepairActorId,
 ): Promise<string> {
   const parsed = LegacyRepairSummaryInputSchema.safeParse(input);
   if (!parsed.success) {
     throw new DomainError(`writeLegacyRepairSummaryWithClient: geçersiz input — ${parsed.error.message}`);
   }
-  return audit(client, "legacy_repair_summary", "legacy_repair", null, null, parsed.data, eventTimestamp);
+  return audit(client, actorId, "legacy_repair_summary", "legacy_repair", null, null, parsed.data, eventTimestamp);
 }
 
 export async function loadThresholds(client: PoolClient | Pool): Promise<RiskThresholds> {
@@ -151,7 +163,7 @@ export interface MapResult {
   excluded: Array<{ rowIndex: number; reason: string }>;
 }
 
-export async function mapAcceptedCandidates(pool: Pool, workbookId: string): Promise<MapResult> {
+export async function mapAcceptedCandidates(pool: Pool, workbookId: string, actorId: string): Promise<MapResult> {
   const client = await pool.connect();
   try {
     await client.query("begin");
@@ -235,7 +247,7 @@ export async function mapAcceptedCandidates(pool: Pool, workbookId: string): Pro
            where id=$1`,
           [row.id, paymentId],
         );
-        await audit(client, "map_payment_candidate", "payments", paymentId, null, {
+        await audit(client, actorId, "map_payment_candidate", "payments", paymentId, null, {
           name: c.name,
           due_day: c.dueDay,
           default_amount: c.amountCandidate,
@@ -266,6 +278,7 @@ export interface GenerateResult {
 export async function generateInstancesForMonthWithClient(
   client: PoolClient,
   monthStartISO: string,
+  actorId: string,
 ): Promise<GenerateResult> {
   assertISODateString(monthStartISO);
   const payments = await client.query<{
@@ -305,7 +318,7 @@ export async function generateInstancesForMonthWithClient(
     );
     created += res.rowCount ?? 0;
   }
-  await audit(client, "generate_instances", "payment_instances", null, null, {
+  await audit(client, actorId, "generate_instances", "payment_instances", null, null, {
     monthStart: monthStartISO,
     created,
     total: payments.rowCount,
@@ -321,11 +334,12 @@ export async function generateInstancesForMonthWithClient(
 export async function generateInstancesForMonth(
   pool: Pool,
   monthStartISO: string,
+  actorId: string,
 ): Promise<GenerateResult> {
   const client = await pool.connect();
   try {
     await client.query("begin");
-    const result = await generateInstancesForMonthWithClient(client, monthStartISO);
+    const result = await generateInstancesForMonthWithClient(client, monthStartISO, actorId);
     await client.query("commit");
     return result;
   } catch (e) {
@@ -336,12 +350,17 @@ export async function generateInstancesForMonth(
   }
 }
 
-export async function ensureWindow(pool: Pool, todayISO: string, futureMonths = 1): Promise<GenerateResult[]> {
+export async function ensureWindow(
+  pool: Pool,
+  todayISO: string,
+  actorId: string,
+  futureMonths = 1,
+): Promise<GenerateResult[]> {
   const m0 = todayISO.slice(0, 7) + "-01";
   const out: GenerateResult[] = [];
   for (let delta = -1; delta <= Math.max(1, futureMonths); delta++) {
     const m = addMonths(m0, delta);
-    out.push(await generateInstancesForMonth(pool, m));
+    out.push(await generateInstancesForMonth(pool, m, actorId));
   }
   await refreshRiskFlags(pool, todayISO);
   return out;
@@ -416,6 +435,7 @@ export async function markInstancePaid(
   pool: Pool,
   instanceId: string,
   paidAmount: number | null,
+  actorId: string,
 ): Promise<void> {
   const client = await pool.connect();
   try {
@@ -437,7 +457,7 @@ export async function markInstancePaid(
        where id=$1`,
       [instanceId, finalPaid],
     );
-    await audit(client, "mark_paid", "payment_instances", instanceId, before.rows[0], {
+    await audit(client, actorId, "mark_paid", "payment_instances", instanceId, before.rows[0], {
       status: "paid",
       paid_amount: finalPaid,
     });
@@ -450,7 +470,7 @@ export async function markInstancePaid(
   }
 }
 
-export async function markInstanceUnpaid(pool: Pool, instanceId: string): Promise<void> {
+export async function markInstanceUnpaid(pool: Pool, instanceId: string, actorId: string): Promise<void> {
   const client = await pool.connect();
   try {
     await client.query("begin");
@@ -469,7 +489,7 @@ export async function markInstanceUnpaid(pool: Pool, instanceId: string): Promis
        where id=$1`,
       [instanceId],
     );
-    await audit(client, "mark_unpaid", "payment_instances", instanceId, before.rows[0], {
+    await audit(client, actorId, "mark_unpaid", "payment_instances", instanceId, before.rows[0], {
       status: "unpaid",
     });
     await client.query("commit");
@@ -481,7 +501,7 @@ export async function markInstanceUnpaid(pool: Pool, instanceId: string): Promis
   }
 }
 
-export async function markInstancePartial(pool: Pool, instanceId: string, paidAmount: number): Promise<void> {
+export async function markInstancePartial(pool: Pool, instanceId: string, paidAmount: number, actorId: string): Promise<void> {
   const client = await pool.connect();
   try {
     await client.query("begin");
@@ -498,7 +518,7 @@ export async function markInstancePartial(pool: Pool, instanceId: string, paidAm
       `update public.payment_instances set status='partial', paid_amount=$2, paid_at=now() where id=$1`,
       [instanceId, paidAmount],
     );
-    await audit(client, "mark_partial", "payment_instances", instanceId, before.rows[0], {
+    await audit(client, actorId, "mark_partial", "payment_instances", instanceId, before.rows[0], {
       status: "partial",
       paid_amount: paidAmount,
     });
@@ -515,6 +535,7 @@ export async function setInstanceAmount(
   pool: Pool,
   instanceId: string,
   amount: number,
+  actorId: string,
 ): Promise<void> {
   const client = await pool.connect();
   try {
@@ -540,7 +561,7 @@ export async function setInstanceAmount(
         `update public.payment_instances set amount=$2, amount_status='known', amount_source='manual' where id=$1`,
         [instanceId, amount],
       );
-      await audit(client, "set_instance_amount", "payment_instances", instanceId, b, {
+      await audit(client, actorId, "set_instance_amount", "payment_instances", instanceId, b, {
         amount,
         amount_status: "known",
         amount_source: "manual",
@@ -579,6 +600,7 @@ export async function cancelInstanceWithClient(
   client: PoolClient,
   instanceId: string,
   reason: string,
+  actorId: LegacyRepairActorId,
   ctx?: CancellationContext,
 ): Promise<CancellationResult> {
   const trimmedReason = reason.trim();
@@ -604,6 +626,7 @@ export async function cancelInstanceWithClient(
   const cancelledAt = updated.rows[0].cancelled_at_iso;
   const auditId = await audit(
     client,
+    actorId,
     ctx?.auditAction ?? "cancel_instance",
     "payment_instances",
     instanceId,
@@ -614,11 +637,11 @@ export async function cancelInstanceWithClient(
   return { instanceId, auditId, cancelledAt };
 }
 
-export async function cancelInstance(pool: Pool, instanceId: string, reason: string): Promise<void> {
+export async function cancelInstance(pool: Pool, instanceId: string, reason: string, actorId: string): Promise<void> {
   const client = await pool.connect();
   try {
     await client.query("begin");
-    await cancelInstanceWithClient(client, instanceId, reason);
+    await cancelInstanceWithClient(client, instanceId, reason, actorId);
     await client.query("commit");
   } catch (e) {
     await client.query("rollback");
@@ -647,6 +670,7 @@ export async function repairCancellationMetadataWithClient(
   instanceId: string,
   cancelledAt: string,
   cancelReason: string,
+  actorId: LegacyRepairActorId,
 ): Promise<MetadataRepairResult> {
   const trimmedReason = cancelReason.trim();
   if (trimmedReason === "") {
@@ -670,7 +694,7 @@ export async function repairCancellationMetadataWithClient(
     [instanceId, cancelledAt, trimmedReason],
   );
   const resultCancelledAt = updated.rows[0].cancelled_at_iso;
-  const auditId = await audit(client, "legacy_cancel_metadata_repair", "payment_instances", instanceId, b, {
+  const auditId = await audit(client, actorId, "legacy_cancel_metadata_repair", "payment_instances", instanceId, b, {
     cancelled_at: resultCancelledAt,
     cancel_reason: trimmedReason,
   });
@@ -707,6 +731,7 @@ export async function reconcileInstancesWithClient(
   paymentId: string,
   fields: ReconcileFields,
   todayISO: string,
+  actorId: string,
 ): Promise<ReconcileResult> {
   assertISODateString(todayISO);
   const rows = await client.query<{
@@ -770,7 +795,7 @@ export async function reconcileInstancesWithClient(
 
   const totalEligible = rows.rowCount ?? 0;
   if (dueDateChanged > 0 || amountChanged > 0) {
-    await audit(client, "reconcile_instances", "payment_instances", null, null, {
+    await audit(client, actorId, "reconcile_instances", "payment_instances", null, null, {
       paymentId,
       dueDateChanged,
       amountChanged,

@@ -40,21 +40,30 @@ pnpm dev                          # http://localhost:3000
 Kalıcı volume + build + serve için: **`docs/local-production-deploy.md`**.
 
 ```bash
-cp .env.example .env.local        # DATABASE_URL + (ops.) APP_ACCESS_PASSWORD / TELEGRAM_*
+cp .env.example .env.local        # DATABASE_URL + (ops.) TELEGRAM_*
 bash scripts/deploy/local-start.sh   # compose up + ilk-kurulum + build + start
+# ilk (ve tek seferlik) admin hesabı — parola argv'den DEĞİL, maskeli girişten ya da
+# SEED_ADMIN_PASSWORD ortam değişkeninden okunur:
+npx tsx scripts/db/seed-admin.ts --username omer --display-name "Ömer"
+npx tsx scripts/db/seed-system-actor.ts   # otomatik araçların denetim kimliği (bir kez)
 bash scripts/deploy/backup-db.sh mas_radar_dev              # yedek → backups/ (gitignore)
 bash scripts/deploy/restore-db.sh <dump> mas_radar_restored # taze DB'ye geri yükle
 ```
 
 Sağlık/sürüm: `GET /health` (DB erişilebilirlik, secret yok), `GET /version` (commit/build, secret yok).
 
-Ortam değişkenleri (tümü server-only): `DATABASE_URL` (zorunlu), `APP_ACCESS_PASSWORD` (ops. erişim
-kapısı), `TELEGRAM_BOT_TOKEN`/`TELEGRAM_CHAT_ID` (ops. gönderim), `APP_COMMIT_SHA`/`APP_BUILD_TIME`
-(ops. /version). `.env.local`, `data/`, `backups/` git dışı.
+Ortam değişkenleri (tümü server-only): `DATABASE_URL` (zorunlu), `SEED_ADMIN_PASSWORD` (ops., yalnız
+ilk admin bootstrap'ı için), `TELEGRAM_BOT_TOKEN`/`TELEGRAM_CHAT_ID` (ops. gönderim),
+`APP_COMMIT_SHA`/`APP_BUILD_TIME` (ops. /version). `.env.local`, `data/`, `backups/` git dışı.
 
-### Erişim kapısı
-`APP_ACCESS_PASSWORD` ayarlıysa tüm dashboard route'ları parola ister (httpOnly cookie, HMAC, server-only);
-boşsa kapı kapalı (tek makine güveni). Çok-kullanıcı/RBAC değildir. `/health` ve `/version` kapının dışındadır.
+### Kimlik doğrulama (P0-A)
+Gerçek çok-kullanıcılı auth: adlandırılmış hesaplar (`public.users`), argon2id parola özeti,
+admin/operatör rolleri, DB-destekli oturum (rastgele opak token; DB'de yalnız SHA-256'sı durur),
+5 hatalı girişte 15 dk kilit. `src/middleware.ts` **default-deny** matcher'ı `/login`, `/health`,
+`/version` dışında her rotayı kapsar — sonradan eklenen rotalar otomatik korunur.
+Hesap yönetimi uygulama içinde: **`/system/security`** (yalnız admin) — kullanıcı oluşturma,
+parola sıfırlama, rol değiştirme, pasifleştirme, kilit açma; hepsi audit'li. Parola hiçbir zaman
+denetim kaydına yazılmaz. En az bir aktif admin kalması DB constraint trigger'ı ile zorunludur.
 
 ## Tam gate (commit öncesi)
 

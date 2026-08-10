@@ -19,11 +19,11 @@ import {
   type ScenarioComparison,
 } from "./rules";
 
-async function audit(client: PoolClient, action: string, entityId: string | null, after: unknown): Promise<void> {
+async function audit(client: PoolClient, actor: string, action: string, entityId: string | null, after: unknown): Promise<void> {
   await client.query(
     `insert into public.audit_logs (actor, action, entity_table, entity_id, before_data, after_data)
-     values (null,$1,'scenario_runs',$2,null,$3)`,
-    [action, entityId, JSON.stringify(after ?? null)],
+     values ($1,$2,'scenario_runs',$3,null,$4)`,
+    [actor, action, entityId, JSON.stringify(after ?? null)],
   );
 }
 
@@ -235,17 +235,18 @@ async function loadScenarioExternalContext(pool: Pool): Promise<ScenarioExternal
 export async function createScenario(
   pool: Pool,
   input: { name: string; description?: string; scenarioType: ScenarioType; baselineLabel?: string; baselineMonthCount?: number },
+  actorId: string,
 ): Promise<string> {
   const client = await pool.connect();
   try {
     await client.query("begin");
     const ins = await client.query(
-      `insert into public.scenarios (name, description, scenario_type, baseline_label, baseline_month_count)
-       values ($1,$2,$3,$4,$5) returning id`,
-      [input.name, input.description ?? null, input.scenarioType, input.baselineLabel ?? null, input.baselineMonthCount ?? null],
+      `insert into public.scenarios (name, description, scenario_type, baseline_label, baseline_month_count, created_by)
+       values ($1,$2,$3,$4,$5,$6) returning id`,
+      [input.name, input.description ?? null, input.scenarioType, input.baselineLabel ?? null, input.baselineMonthCount ?? null, actorId],
     );
     const id: string = ins.rows[0].id;
-    await audit(client, "create_scenario", id, { name: input.name, type: input.scenarioType });
+    await audit(client, actorId, "create_scenario", id, { name: input.name, type: input.scenarioType });
     await client.query("commit");
     return id;
   } catch (e) {
@@ -302,6 +303,7 @@ export async function runScenario(
   pool: Pool,
   scenarioId: string,
   assumptions: ScenarioAssumptions,
+  actorId: string,
 ): Promise<RunResult> {
   // baseline is READ (never written)
   const baseline: CashMonth[] = await loadCashMonths(pool);
@@ -361,7 +363,7 @@ export async function runScenario(
         [runId, cr.metric, cr.base, cr.scen, cr.delta],
       );
     }
-    await audit(client, "run_scenario", runId, { scenarioId, assumptions: storedAssumptions, adjustmentCount: adjustments.length, externalContextCount: externalContext.length, finalDelta: comparison.finalDelta, confidence });
+    await audit(client, actorId, "run_scenario", runId, { scenarioId, assumptions: storedAssumptions, adjustmentCount: adjustments.length, externalContextCount: externalContext.length, finalDelta: comparison.finalDelta, confidence });
     await client.query("commit");
     return { runId, comparison, insights };
   } catch (e) {
@@ -376,6 +378,7 @@ export async function runScenario(
 export async function createAndRun(
   pool: Pool,
   input: { name: string; scenarioType: ScenarioType; assumptions: ScenarioAssumptions },
+  actorId: string,
 ): Promise<RunResult & { scenarioId: string }> {
   const baseline = await loadCashMonths(pool);
   const first = baseline[0]?.monthStart?.slice(0, 7);
@@ -384,8 +387,8 @@ export async function createAndRun(
     name: input.name, scenarioType: input.scenarioType,
     baselineLabel: baseline.length ? `nakit akış ${baseline.length} ay ${first}..${last}` : "baz veri yok",
     baselineMonthCount: baseline.length,
-  });
-  const run = await runScenario(pool, scenarioId, input.assumptions);
+  }, actorId);
+  const run = await runScenario(pool, scenarioId, input.assumptions, actorId);
   return { scenarioId, ...run };
 }
 
@@ -440,12 +443,12 @@ export async function listScenarioRuns(pool: Pool) {
 }
 
 /** Safe: only removes scenario_* rows (cascade). Baseline is untouched. Audited. */
-export async function deleteScenarioRun(pool: Pool, runId: string): Promise<void> {
+export async function deleteScenarioRun(pool: Pool, runId: string, actorId: string): Promise<void> {
   const client = await pool.connect();
   try {
     await client.query("begin");
     await client.query(`delete from public.scenario_runs where id=$1`, [runId]);
-    await audit(client, "delete_scenario_run", runId, { deleted: true });
+    await audit(client, actorId, "delete_scenario_run", runId, { deleted: true });
     await client.query("commit");
   } catch (e) {
     await client.query("rollback");

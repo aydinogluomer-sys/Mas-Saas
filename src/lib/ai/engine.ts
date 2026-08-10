@@ -10,11 +10,11 @@ import {
   type AiResponseMode,
 } from "./rules";
 
-async function audit(client: PoolClient, action: string, entityId: string | null, after: unknown): Promise<void> {
+async function audit(client: PoolClient, actor: string, action: string, entityId: string | null, after: unknown): Promise<void> {
   await client.query(
     `insert into public.audit_logs (actor, action, entity_table, entity_id, before_data, after_data)
-     values (null,$1,'ai_response_snapshots',$2,null,$3)`,
-    [action, entityId, JSON.stringify(after ?? null)],
+     values ($1,$2,'ai_response_snapshots',$3,null,$4)`,
+    [actor, action, entityId, JSON.stringify(after ?? null)],
   );
 }
 
@@ -73,6 +73,7 @@ export interface AskAnswerResult {
 export async function answerQuestion(
   pool: Pool,
   input: { question: string; reportId?: string | null; forceDeterministic?: boolean },
+  actorId: string,
 ): Promise<AskAnswerResult> {
   const question = sanitizeQuestion(input.question);
   const facts = await loadDecisionFacts(pool, istanbulDateISO());
@@ -119,7 +120,7 @@ export async function answerQuestion(
       ],
     );
     const id = ins.rows[0].id;
-    await audit(client, "answer_question", id, { responseMode, model, reportId: input.reportId ?? null, sourceFactKeys });
+    await audit(client, actorId, "answer_question", id, { responseMode, model, reportId: input.reportId ?? null, sourceFactKeys });
     await client.query("commit");
     return { id, question, answerMd, responseMode, model, sourceFactKeys, sourceHrefs, safetyNotes };
   } catch (e) {
@@ -130,7 +131,7 @@ export async function answerQuestion(
   }
 }
 
-export async function answerReportQuestion(pool: Pool, reportId: string): Promise<AskAnswerResult> {
+export async function answerReportQuestion(pool: Pool, reportId: string, actorId: string): Promise<AskAnswerResult> {
   const report = await pool.query<{ report_type: string; body_md: string; meta: Record<string, unknown> | null }>(
     `select report_type, body_md, meta from public.reports where id=$1`,
     [reportId],
@@ -143,7 +144,7 @@ export async function answerReportQuestion(pool: Pool, reportId: string): Promis
   return answerQuestion(pool, {
     question: `Rapor yorumu (${r?.report_type ?? "rapor"}): ${prompt}`,
     reportId,
-  });
+  }, actorId);
 }
 
 export async function loadAiResponse(pool: Pool, id: string) {

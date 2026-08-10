@@ -7,6 +7,7 @@ import { readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
 import { Pool } from "pg";
 import { archivePayment } from "../../src/lib/payments/engine";
+import { ensureSystemActor } from "./seed-system-actor";
 import {
   LEGACY_ANOMALY_INSTANCE_ID,
   countCancelConsistencyViolations,
@@ -130,7 +131,7 @@ async function expectAccept(pool: Pool, sql: string, params: unknown[], label: s
 /** The suite's own original Slice 2 constraint assertions (0022-0025 + archivePayment()) —
  * extracted out of main() so they only run once the disposable DB has genuinely reached a
  * fully-migrated, 0030-validated state; unchanged in substance from before this fix. */
-async function runConstraintAssertions(pool: Pool, anomalyId: string): Promise<void> {
+async function runConstraintAssertions(pool: Pool, anomalyId: string, actorId: string): Promise<void> {
   // audit_logs append-only
   const auditRow = await pool.query<{ id: string }>("select id from audit_logs limit 1");
   await expectReject(pool, "update public.audit_logs set action='x' where id=$1", [auditRow.rows[0].id], /append-only/, "audit_logs: UPDATE reddedilir");
@@ -169,7 +170,7 @@ async function runConstraintAssertions(pool: Pool, anomalyId: string): Promise<v
     // Slice 4: archivePayment() now takes an explicit todayISO — a far-future anchor keeps
     // its cascade (due_date >= todayISO) from matching any realistic fixture instance, so
     // this Slice 2-era test's archive-only assertions stay unaffected by that new behavior.
-    await archivePayment(appPool, engineId, { reason: "test archive", archivedByLabel: "mas-dashboard" }, "2030-01-01");
+    await archivePayment(appPool, engineId, { reason: "test archive", archivedByLabel: "mas-dashboard" }, "2030-01-01", actorId);
     const after = await pool.query<{ status: string; archived_at: Date | null; archive_reason: string | null; archived_by_label: string | null }>(
       "select status, archived_at, archive_reason, archived_by_label from payments where id=$1",
       [engineId],
@@ -207,7 +208,7 @@ async function runConstraintAssertions(pool: Pool, anomalyId: string): Promise<v
   await pool.query("alter table public.audit_logs add constraint test_force_fail check (false) not valid");
   let threw = false;
   try {
-    await archivePayment(appPool, rollbackId, { reason: "should rollback", archivedByLabel: "mas-dashboard" }, "2030-01-01");
+    await archivePayment(appPool, rollbackId, { reason: "should rollback", archivedByLabel: "mas-dashboard" }, "2030-01-01", actorId);
   } catch {
     threw = true;
   }
@@ -389,7 +390,8 @@ async function main(): Promise<void> {
     }
 
     if (migrationOk) {
-      await runConstraintAssertions(pool, anomalyId);
+      const actorId = await ensureSystemActor(pool);
+      await runConstraintAssertions(pool, anomalyId, actorId);
     }
   } finally {
     await pool.end();

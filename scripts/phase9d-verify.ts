@@ -14,6 +14,7 @@ import {
   mapFinanceCostAllocations,
   mapMachineMinuteAllocations,
 } from "../src/lib/production/engine";
+import { ensureSystemActor } from "./db/seed-system-actor";
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL ?? "postgres://postgres:postgres@127.0.0.1:5432/mas_radar_dev",
@@ -43,13 +44,16 @@ async function coreFinanceFingerprint(): Promise<string> {
 }
 
 async function main() {
-  await pool.query(`truncate public.source_workbooks, public.capacity_models, public.cost_models,
-    public.cost_breakdown_lines, public.production_parts, public.part_profitability_runs,
-    public.machine_roi_snapshots, public.machine_minute_allocations, public.finance_cost_allocations,
-    public.loans, public.loan_installments, public.payments, public.payment_instances,
-    public.cashflow_months, public.checks, public.audit_logs restart identity cascade`);
+  // audit_logs is append-only since 0022 (no UPDATE/DELETE/TRUNCATE, ever) — it is
+  // deliberately NOT in the reset below. Each verify run gets a freshly created
+  // disposable database instead, so the audit table starts empty without weakening
+  // the invariant.
+  // audit_logs.actor_id is an FK to public.users(id) since 0032; verify scripts run
+  // without a session, so they attribute to the reserved "system" account.
+  const actorId = await ensureSystemActor(pool);
+  await pool.query(`truncate public.source_workbooks, public.capacity_models, public.cost_models, public.cost_breakdown_lines, public.production_parts, public.part_profitability_runs, public.machine_roi_snapshots, public.machine_minute_allocations, public.finance_cost_allocations, public.loans, public.loan_installments, public.payments, public.payment_instances, public.cashflow_months, public.checks restart identity cascade`);
 
-  const r = await importWorkbook(pool, readFileSync(SRC), "TEMİZ.xlsx");
+  const r = await importWorkbook(pool, readFileSync(SRC), "TEMİZ.xlsx", actorId);
   if (!r.ok) fail("import failed");
   const wb = r.workbookId;
 
@@ -58,12 +62,12 @@ async function main() {
                          'break_even_reconciliation','capacity_rate_missing','cost_model_missing',
                          'loan_field_ambiguous','loan_term_mismatch')`);
 
-  const cap = await mapCapacitySheet(pool, wb);
+  const cap = await mapCapacitySheet(pool, wb, actorId);
   if (cap.capacityCreated !== 1) fail(`expected 1 capacity model, got ${cap.capacityCreated}`);
 
-  const m1 = await mapMachineMinuteAllocations(pool, wb);
+  const m1 = await mapMachineMinuteAllocations(pool, wb, actorId);
   if (m1.created !== 3) fail(`expected 3 machine-minute rows, got ${m1.created}`);
-  const m2 = await mapMachineMinuteAllocations(pool, wb);
+  const m2 = await mapMachineMinuteAllocations(pool, wb, actorId);
   if (m2.created !== 0 || m2.skipped !== 3) fail("machine-minute allocation not idempotent");
 
   const minutes = await loadMachineMinuteAllocations(pool);
@@ -86,13 +90,13 @@ async function main() {
   if ((freze.over_capacity_minutes ?? 0) <= 0) fail("freze overload should be visible in this workbook");
   console.log(`makine-dakika ✓ torna=${torna.demand_minutes} freze=${freze.demand_minutes} = kaynak G5/H5; freze açık=${freze.over_capacity_minutes}`);
 
-  const loanMap = await mapLoans(pool, wb);
+  const loanMap = await mapLoans(pool, wb, actorId);
   if (loanMap.created !== 1) fail(`expected 1 loan, got ${loanMap.created}`);
   const beforeAllocation = await coreFinanceFingerprint();
 
-  const f1 = await mapFinanceCostAllocations(pool, wb);
+  const f1 = await mapFinanceCostAllocations(pool, wb, actorId);
   if (f1.created !== 3) fail(`expected 3 finance allocations, got ${f1.created}`);
-  const f2 = await mapFinanceCostAllocations(pool, wb);
+  const f2 = await mapFinanceCostAllocations(pool, wb, actorId);
   if (f2.created !== 0 || f2.skipped !== 3) fail("finance-cost allocation not idempotent");
 
   const finance = await loadFinanceCostAllocations(pool);

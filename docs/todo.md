@@ -124,7 +124,7 @@
 - [x] MVP zip doğrulandı + temiz klasörde fresh install (install/lint/typecheck/test 138/build) yeşil — zip kaynaktan yeniden derlenebilir.
 - [x] Deploy dosyaları: docker-compose.yml (kalıcı volume, 127.0.0.1 bind, healthcheck), .env.example (DATABASE_URL/APP_ACCESS_PASSWORD/TELEGRAM_*/version), scripts/deploy/{local-start,local-stop,backup-db,restore-db}.sh + check-env.ts (secret maskeler, presence-only).
 - [x] /health (app+DB erişilebilirlik, secret yok, 200/503) + /version (name/version/commit/build/node, secret yok) route handler'ları.
-- [x] Minimal access gate: APP_ACCESS_PASSWORD ayarlıysa dashboard route'ları httpOnly cookie session ister (HMAC, server-only, loglanmaz); /login + /logout + (dashboard) layout gate. Boşsa kapalı (tek makine). Çok-kullanıcı/RBAC değil.
+- [x] ~~Minimal access gate: APP_ACCESS_PASSWORD…~~ **(GEÇERSİZ — P0-A ile kaldırıldı; aşağıdaki P0-A bölümüne bakın.)** Tarihsel kayıt olarak duruyor.
 - [x] Güvenlik audit: tek client component (upload-form) yalnız server action referansı; token yalnız transport.ts (server); .xlsx client bundle'a girmez; env/secret loglanmaz.
 - [x] Backup/restore ispatı: pg_dump → taze DB restore (0 hata, sayaçlar birebir 2/9817/1601, 33 tablo, 0 RLS-kapalı, seed intact).
 - [x] docs/local-production-deploy.md + mvp-runbook güncellendi.
@@ -160,3 +160,34 @@
 - [x] Senaryo: 3 hızlı preset (Gelir %10↓, Gider %10↑, Borç-servisi dahil — motor birebir) + disabled "Hpt 30 gün gecikirse · müşteri bazlı gecikme yakında" çipi; advanced özel form collapse. Kural: preset adı = motorun tam yaptığı.
 - [x] Görsel sadeleme: body fontu sans (sayılar/kodlar/etiketler mono kalır), büyük hero sayılar (KeyStat), düz Türkçe etiketler, daha az panel.
 - [x] Visual spec'e `/` eklendi; guidelines'a IA bölümü. Gate: lint ✓ typecheck ✓ vitest 145 ✓ db:verify ✓ import:real ✓ phase3-8:verify ✓ build ✓ 11-route smoke ✓ visual 8/8 ✓.
+
+
+## P0-A — DONE (gerçek çok-kullanıcılı auth, kullanıcı yönetimi, yarım kalan geçişin kapatılması)
+
+- [x] Migration 0031 `users` + `sessions`: argon2id hash, username CHECK, admin/operatör rolü,
+      5 hatalı giriş → 15 dk kilit, RLS **default-deny** (kimlik bilgisi tutan tek tablolar),
+      "en az bir aktif admin" deferred constraint trigger (DB seviyesinde, arayüzde değil).
+- [x] Migration 0032: `audit_logs.actor_id` → `public.users(id)` FK. Oturumsuz araçlar rezerve
+      `system` hesabına yazar (`scripts/db/seed-system-actor.ts`) — sessiz null actor yok.
+- [x] `src/middleware.ts` default-deny matcher (`/login`,`/health`,`/version`,`_next/*` hariç her yol).
+      Gerçek boşluk kapatıldı: `src/app/api/facts` auth'suz finansal veri servis ediyordu.
+- [x] Eski `APP_ACCESS_PASSWORD` tek-paylaşılan-parola gate'i tamamen kaldırıldı (kod + docs).
+- [x] `scripts/db/seed-admin.ts`: ilk admin bootstrap; parola argv'den kabul edilmez
+      (`SEED_ADMIN_PASSWORD` env veya maskeli TTY girişi), min 12 karakter, idempotent.
+- [x] **Kullanıcı yönetimi ekranı** `/system/security` (tamamı `requireAdmin()` arkasında):
+      liste (rol/durum/kilit/açık oturum/son görülme) + oluştur + parola sıfırla + rol değiştir +
+      pasifleştir/aktifleştir + kilit aç. Motor `src/lib/users/engine.ts`, hepsi audit'li.
+      Parola denetim kaydına ASLA yazılmaz; sıfırlama/pasifleştirme oturumları aynı transaction'da
+      iptal eder; rezerve hesaplar yönetilemez; admin kendi erişimini kaldıramaz.
+- [x] **135 typecheck hatası kapatıldı** (20 script dosyası): engine imzalarına eklenen `actorId`
+      çağrı yerlerine işlenmedi ve repo build alamıyordu. `reconciliation-verify` + `transitions-verify`
+      dahil hepsi rezerve `system` actor'ına bağlandı.
+- [x] Phase verify script'leri `audit_logs` TRUNCATE etmiyor artık (0022 append-only değişmezi
+      **zayıflatılmadı**); her verify çalışması taze oluşturulan atılabilir DB alıyor.
+- [x] `scripts/db/assertions.sql`: `schema_migrations` policy istisnası — sessiz atlama değil,
+      karşılığında RLS açık / 0 policy / 0 uygulama-grant'i açıkça iddia ediliyor.
+- [x] `src/lib/feature-registry.ts`: sahte `tested: true` kaldırıldı → `verifiedBy` (özelliği gerçekten
+      çalıştıran gate script'i). `/phases` artık "elle tutulan envanter, canlı durum değil" diyor.
+- [x] **Gate:** lint ✓ (0 hata, 1 önceden var olan uyarı) · typecheck ✓ 0 hata · vitest 200/200 ✓ ·
+      db:verify ✓ · db:migrate:verify ✓ · build ✓ · phase3…14e verify **20/20 PASS** (atılabilir DB,
+      `mas_radar_dev`'e dokunulmadan) · 9-modül smoke ✓.

@@ -1,28 +1,22 @@
 "use server";
-import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
-import { accessGateEnabled, passwordMatches, sessionToken, SESSION_COOKIE } from "@/lib/auth";
+import { attemptLogin, createSessionCookie, revokeCurrentSession, safeRedirectPath } from "@/lib/auth";
 
 export async function loginAction(formData: FormData): Promise<void> {
-  if (!accessGateEnabled()) redirect("/radar");
+  const username = String(formData.get("username") ?? "");
   const password = String(formData.get("password") ?? "");
-  if (!passwordMatches(password)) {
-    // no password value is logged or echoed back
-    redirect("/login?error=1");
+  const next = safeRedirectPath(String(formData.get("next") ?? ""), "/overview");
+  const result = await attemptLogin(username, password);
+  if (!result.ok || !result.userId) {
+    // Same generic message regardless of unknown-username, wrong-password, or
+    // locked-account — no case reveals whether the username exists.
+    redirect(`/login?error=1&next=${encodeURIComponent(next)}`);
   }
-  const jar = await cookies();
-  jar.set(SESSION_COOKIE, sessionToken(process.env.APP_ACCESS_PASSWORD ?? ""), {
-    httpOnly: true,
-    sameSite: "lax",
-    secure: process.env.NODE_ENV === "production",
-    path: "/",
-    maxAge: 60 * 60 * 24 * 7, // 7 days
-  });
-  redirect("/radar");
+  await createSessionCookie(result.userId);
+  redirect(next);
 }
 
 export async function logoutAction(): Promise<void> {
-  const jar = await cookies();
-  jar.delete(SESSION_COOKIE);
+  await revokeCurrentSession();
   redirect("/login");
 }

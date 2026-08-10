@@ -139,14 +139,15 @@ export async function importWorkbook(
   pool: Pool,
   buf: Buffer,
   originalFilename: string,
+  actorId: string,
 ): Promise<ImportResult> {
   const client = await pool.connect();
   try {
     await client.query("begin");
     const wbRes = await client.query(
-      `insert into public.source_workbooks (original_filename, file_sha256, status)
-       values ($1, $2, 'pending') returning id`,
-      [originalFilename, sha256(buf)],
+      `insert into public.source_workbooks (original_filename, file_sha256, status, imported_by)
+       values ($1, $2, 'pending', $3) returning id`,
+      [originalFilename, sha256(buf), actorId],
     );
     const workbookId: string = wbRes.rows[0].id;
 

@@ -17,6 +17,8 @@ import { execFileSync } from "node:child_process";
 import { readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
 import { Pool } from "pg";
+import { MIGRATIONS_DIR, validateFileSet } from "./migration-lib";
+import { ensureSystemActor } from "./seed-system-actor";
 import {
   LEGACY_ANOMALY_INSTANCE_ID,
   countCancelConsistencyViolations,
@@ -32,6 +34,12 @@ const CONTAINER = process.env.MAS_DB_CONTAINER ?? "mas-radar-pg";
 const TSX_CLI = path.join(ROOT, "node_modules", "tsx", "dist", "cli.mjs");
 const MIGRATE_SCRIPT = path.join(ROOT, "scripts", "db", "migrate.ts");
 const DB = "mas_radar_transitions_verify";
+// Derived from files on disk, not hardcoded — a fixed "30 satır, last migration 0030"
+// literal here went stale the moment 0031/0032 were added, same class of bug
+// CANONICAL_MIGRATION_COUNT in migrate-verify.ts already exists to avoid.
+const CANONICAL_MIGRATION_FILES = validateFileSet(MIGRATIONS_DIR).files;
+const CANONICAL_MIGRATION_COUNT = CANONICAL_MIGRATION_FILES.length;
+const CANONICAL_LAST_VERSION = CANONICAL_MIGRATION_FILES.map((f) => f.version).sort().at(-1);
 const DISPOSABLE_PREFIX = "mas_radar_transitions_verify";
 const FORBIDDEN_DB_NAME = "mas_radar_dev";
 
@@ -297,6 +305,22 @@ async function main(): Promise<void> {
   // before this fix, only moved into a function so it can be called conditionally (only once
   // the disposable DB has genuinely reached a fully-migrated, 0030-validated state).
   async function runTransitionAssertions(): Promise<void> {
+    // Every mutation below writes audit_logs.actor_id, an FK to public.users(id) since 0032.
+    // This harness has no logged-in session, so it attributes to the reserved is_active=false
+    // "system" account — same convention as every other non-interactive script.
+    const actorId = await ensureSystemActor(pool);
+
+    // The reserved, never-loggable account that MAS_QA_BYPASS_AUTH resolves to (see
+    // getQaBypassUser() in src/lib/auth.ts). Seeded with the same idempotent, is_active=false
+    // shape scripts/db/sanitize-testsprite.sql uses, so the bypass resolves identically here
+    // and in the TestSprite harness rather than through a second, divergent mechanism.
+    // is_active=false is what makes the flag fail closed: a real dev/prod DB never has this
+    // row, so leaving MAS_QA_BYPASS_AUTH set anywhere else yields no session at all.
+    await pool.query(
+      `insert into public.users (username, password_hash, display_name, role, is_active)
+       values ('testsprite-qa', 'sanitized-unusable-hash', 'TestSprite QA', 'admin', false)
+       on conflict (username) do nothing`,
+    );
     // Zod boundary — tested directly against the schema, no Next.js runtime needed.
     record("Zod: boş reason reddedilir", !cancelActionSchema.safeParse({ id: "0e8af5cc-ad81-4c52-9dbd-cb2f51b095e9", reason: "" }).success);
     record("Zod: yalnız-boşluk reason reddedilir", !cancelActionSchema.safeParse({ id: "0e8af5cc-ad81-4c52-9dbd-cb2f51b095e9", reason: "   " }).success);
@@ -346,18 +370,18 @@ async function main(): Promise<void> {
 
     // markInstancePaid/markInstanceUnpaid — gerçek fonksiyonlar, app-layer domain hatası.
     const freshUnpaid = await seedPI(pool, "unpaid");
-    await expectFnAccept(async () => markInstancePaid(appPool, freshUnpaid, 100), "markInstancePaid: unpaid→paid gerçek fonksiyonla başarılı");
+    await expectFnAccept(async () => markInstancePaid(appPool, freshUnpaid, 100, actorId), "markInstancePaid: unpaid→paid gerçek fonksiyonla başarılı");
     const freshPaidForUnpaid = await seedPI(pool, "paid");
-    await expectFnAccept(async () => markInstanceUnpaid(appPool, freshPaidForUnpaid), "markInstanceUnpaid: paid→unpaid gerçek fonksiyonla başarılı");
+    await expectFnAccept(async () => markInstanceUnpaid(appPool, freshPaidForUnpaid, actorId), "markInstanceUnpaid: paid→unpaid gerçek fonksiyonla başarılı");
     const freshCancelledForPaid = await seedPI(pool, "cancelled");
     await expectFnReject(
-      async () => markInstancePaid(appPool, freshCancelledForPaid, 100),
+      async () => markInstancePaid(appPool, freshCancelledForPaid, 100, actorId),
       /durumundan ödendi işaretlenemez/,
       "markInstancePaid: cancelled kaynaktan app-layer domain hatası (DB trigger'a düşmeden)",
     );
     const freshUnpaidForUnmark = await seedPI(pool, "unpaid");
     await expectFnReject(
-      async () => markInstanceUnpaid(appPool, freshUnpaidForUnmark),
+      async () => markInstanceUnpaid(appPool, freshUnpaidForUnmark, actorId),
       /durumundan geri alınamaz/,
       "markInstanceUnpaid: unpaid kaynaktan app-layer domain hatası",
     );
@@ -371,7 +395,7 @@ async function main(): Promise<void> {
         "select count(*)::text as n from audit_logs where entity_table='payment_instances' and entity_id=$1", [alreadyPaid],
       );
       await expectFnReject(
-        async () => markInstancePaid(appPool, alreadyPaid, 999),
+        async () => markInstancePaid(appPool, alreadyPaid, 999, actorId),
         /durumundan ödendi işaretlenemez/,
         "Tekrar çağrı: zaten paid → mark paid tekrar → domain hatası",
       );
@@ -388,7 +412,7 @@ async function main(): Promise<void> {
       const alreadyCancelled = await seedPI(pool, "cancelled");
       const before = await pool.query("select cancelled_at, cancel_reason from payment_instances where id=$1", [alreadyCancelled]);
       await expectFnReject(
-        async () => cancelInstance(appPool, alreadyCancelled, "tekrar iptal"),
+        async () => cancelInstance(appPool, alreadyCancelled, "tekrar iptal", actorId),
         /durumundan iptal edilemez/,
         "Tekrar çağrı: zaten cancelled (payment_instances) → cancel tekrar → domain hatası",
       );
@@ -401,7 +425,7 @@ async function main(): Promise<void> {
     {
       const alreadyCancelledCheck = await seedCheck(pool, "cancelled");
       await expectFnReject(
-        async () => cancelCheck(appPool, alreadyCancelledCheck, "tekrar iptal"),
+        async () => cancelCheck(appPool, alreadyCancelledCheck, "tekrar iptal", actorId),
         /durumundan iptal edilemez/,
         "Tekrar çağrı: zaten cancelled (checks) → cancel tekrar → domain hatası",
       );
@@ -409,7 +433,7 @@ async function main(): Promise<void> {
     {
       const alreadyCancelledLI = await seedLI(pool, "cancelled", loanId);
       await expectFnReject(
-        async () => cancelLoanInstallment(appPool, alreadyCancelledLI, "tekrar iptal"),
+        async () => cancelLoanInstallment(appPool, alreadyCancelledLI, "tekrar iptal", actorId),
         /durumundan iptal edilemez/,
         "Tekrar çağrı: zaten cancelled (loan_installments) → cancel tekrar → domain hatası",
       );
@@ -422,7 +446,7 @@ async function main(): Promise<void> {
     {
       const cancelledForClassify = await seedPI(pool, "cancelled");
       try {
-        await markInstancePaid(appPool, cancelledForClassify, 100);
+        await markInstancePaid(appPool, cancelledForClassify, 100, actorId);
         record("Sınıflandırma: bilinen hata DomainError örneğidir", false, "beklenmedik başarı");
       } catch (e) {
         record("Sınıflandırma: bilinen hata (yanlış kaynak status) DomainError örneğidir", e instanceof DomainError);
@@ -436,7 +460,7 @@ async function main(): Promise<void> {
       try {
         const freshForSystemError = await seedPI(pool, "unpaid");
         try {
-          await markInstancePaid(appPool, freshForSystemError, 100);
+          await markInstancePaid(appPool, freshForSystemError, 100, actorId);
           record("Sınıflandırma: bilinmeyen sistem hatası DomainError DEĞİLDİR", false, "beklenmedik başarı");
         } catch (e) {
           record("Sınıflandırma: bilinmeyen sistem hatası (audit INSERT başarısız) DomainError DEĞİLDİR — yutulmaz, olduğu gibi kalır", !(e instanceof DomainError));
@@ -450,6 +474,16 @@ async function main(): Promise<void> {
     // DB'ye pinlenmiş process.env.DATABASE_URL sayesinde getPool() de disposable DB'ye bağlanır).
     // Bilinen domain hatası → redirect() (NEXT_REDIRECT) ile güvenli mesaj; ham Postgres/
     // stack-trace metni asla kullanıcıya gitmez.
+    //
+    // P0-A sonrası bu action'lar kendi içlerinde requireSession() → cookies() çağırıyor; çıplak
+    // fonksiyon olarak çağrıldıklarında gerçek bir Next.js request scope'u olmadığı için
+    // "`cookies` was called outside a request scope" ile patlıyorlardı. Yeni bir test kancası
+    // icat etmek yerine var olan QA bypass'ı kullanıyoruz (yukarıda seed'lenen testsprite-qa
+    // satırı + bu bayrak). Bayrak SADECE bu blok boyunca açık: try/finally ile eski değerine
+    // döndürülüyor, böylece script'in geri kalanı auth açısından fail-closed kalıyor.
+    const qaFlagBefore = process.env.MAS_QA_BYPASS_AUTH;
+    process.env.MAS_QA_BYPASS_AUTH = "1";
+    try {
     {
       const cancelledForAction = await seedPI(pool, "cancelled");
       const fd = new FormData();
@@ -517,34 +551,38 @@ async function main(): Promise<void> {
         );
       }
     }
+    } finally {
+      if (qaFlagBefore === undefined) delete process.env.MAS_QA_BYPASS_AUTH;
+      else process.env.MAS_QA_BYPASS_AUTH = qaFlagBefore;
+    }
 
     // Yeni cancel fonksiyonları — başarı + kayıt yok + yasak kaynak status.
     const freshUnpaidForCancel = await seedPI(pool, "unpaid");
-    await expectFnAccept(async () => cancelInstance(appPool, freshUnpaidForCancel, "test iptal"), "cancelInstance: unpaid→cancelled başarılı");
+    await expectFnAccept(async () => cancelInstance(appPool, freshUnpaidForCancel, "test iptal", actorId), "cancelInstance: unpaid→cancelled başarılı");
     await expectFnReject(
-      async () => cancelInstance(appPool, "00000000-0000-0000-0000-000000000000", "x"),
+      async () => cancelInstance(appPool, "00000000-0000-0000-0000-000000000000", "x", actorId),
       /instance not found/,
       "cancelInstance: kayıt yok hatası",
     );
     const freshPaidForCancel = await seedPI(pool, "paid");
     await expectFnReject(
-      async () => cancelInstance(appPool, freshPaidForCancel, "x"),
+      async () => cancelInstance(appPool, freshPaidForCancel, "x", actorId),
       /durumundan iptal edilemez/,
       "cancelInstance: paid kaynaktan app-layer domain hatası",
     );
 
     const freshPlannedCheck = await seedCheck(pool, "planned");
-    await expectFnAccept(async () => cancelCheck(appPool, freshPlannedCheck, "test iptal"), "cancelCheck: planned→cancelled başarılı");
+    await expectFnAccept(async () => cancelCheck(appPool, freshPlannedCheck, "test iptal", actorId), "cancelCheck: planned→cancelled başarılı");
     await expectFnReject(
-      async () => cancelCheck(appPool, "00000000-0000-0000-0000-000000000000", "x"),
+      async () => cancelCheck(appPool, "00000000-0000-0000-0000-000000000000", "x", actorId),
       /check not found/,
       "cancelCheck: kayıt yok hatası",
     );
 
     const freshPlannedLI = await seedLI(pool, "planned", loanId);
-    await expectFnAccept(async () => cancelLoanInstallment(appPool, freshPlannedLI, "test iptal"), "cancelLoanInstallment: planned→cancelled başarılı");
+    await expectFnAccept(async () => cancelLoanInstallment(appPool, freshPlannedLI, "test iptal", actorId), "cancelLoanInstallment: planned→cancelled başarılı");
     await expectFnReject(
-      async () => cancelLoanInstallment(appPool, "00000000-0000-0000-0000-000000000000", "x"),
+      async () => cancelLoanInstallment(appPool, "00000000-0000-0000-0000-000000000000", "x", actorId),
       /loan installment not found/,
       "cancelLoanInstallment: kayıt yok hatası",
     );
@@ -555,7 +593,7 @@ async function main(): Promise<void> {
       const rbInstance = await seedPI(pool, "unpaid");
       let threw = false;
       try {
-        await cancelInstance(appPool, rbInstance, "should rollback");
+        await cancelInstance(appPool, rbInstance, "should rollback", actorId);
       } catch {
         threw = true;
       }
@@ -566,7 +604,7 @@ async function main(): Promise<void> {
       const rbCheck = await seedCheck(pool, "planned");
       threw = false;
       try {
-        await cancelCheck(appPool, rbCheck, "should rollback");
+        await cancelCheck(appPool, rbCheck, "should rollback", actorId);
       } catch {
         threw = true;
       }
@@ -577,7 +615,7 @@ async function main(): Promise<void> {
       const rbLI = await seedLI(pool, "planned", loanId);
       threw = false;
       try {
-        await cancelLoanInstallment(appPool, rbLI, "should rollback");
+        await cancelLoanInstallment(appPool, rbLI, "should rollback", actorId);
       } catch {
         threw = true;
       }
@@ -681,8 +719,8 @@ async function main(): Promise<void> {
             "select count(*)::int as n, max(version) as last_version from schema_migrations",
           );
           record(
-            "ledger üçüncü çalıştırma sonrası hâlâ 30 satır, last migration 0030",
-            ledgerRes.rows[0]?.n === 30 && ledgerRes.rows[0]?.last_version === "0030",
+            `ledger üçüncü çalıştırma sonrası hâlâ ${CANONICAL_MIGRATION_COUNT} satır, last migration ${CANONICAL_LAST_VERSION}`,
+            ledgerRes.rows[0]?.n === CANONICAL_MIGRATION_COUNT && ledgerRes.rows[0]?.last_version === CANONICAL_LAST_VERSION,
             `got n=${ledgerRes.rows[0]?.n} last=${ledgerRes.rows[0]?.last_version}`,
           );
         }

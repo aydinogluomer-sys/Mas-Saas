@@ -8,6 +8,7 @@ import { readFileSync } from "node:fs";
 import { Pool } from "pg";
 import { importWorkbook } from "../src/lib/importers/workbook-importer";
 import { mapCashflowMonths } from "../src/lib/cashflow/engine";
+import { ensureSystemActor } from "./db/seed-system-actor";
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL ?? "postgres://postgres:postgres@127.0.0.1:5432/mas_radar_dev",
@@ -18,14 +19,20 @@ const SRC = process.env.PHASE9B_SRC ?? "data/source/mesaili_nakit_akış_tek_var
 const approx = (a: number, b: number, tol = 1) => Math.abs(a - b) <= tol;
 
 async function main() {
-  await pool.query(`truncate public.source_workbooks, public.cashflow_months, public.cashflow_snapshots,
-    public.audit_logs restart identity cascade`);
-  const r = await importWorkbook(pool, readFileSync(SRC), "TEMİZ.xlsx");
+  // audit_logs is append-only since 0022 (no UPDATE/DELETE/TRUNCATE, ever) — it is
+  // deliberately NOT in the reset below. Each verify run gets a freshly created
+  // disposable database instead, so the audit table starts empty without weakening
+  // the invariant.
+  // audit_logs.actor_id is an FK to public.users(id) since 0032; verify scripts run
+  // without a session, so they attribute to the reserved "system" account.
+  const actorId = await ensureSystemActor(pool);
+  await pool.query(`truncate public.source_workbooks, public.cashflow_months, public.cashflow_snapshots restart identity cascade`);
+  const r = await importWorkbook(pool, readFileSync(SRC), "TEMİZ.xlsx", actorId);
   if (!r.ok) fail("import failed");
   const wb = r.workbookId;
 
   // snapshot month totals before/after — surfacing lines must not change gider/kasa
-  const m1 = await mapCashflowMonths(pool, wb);
+  const m1 = await mapCashflowMonths(pool, wb, actorId);
   if (m1.monthsCreated !== 35) fail(`expected 35 months, got ${m1.monthsCreated}`);
   const totalsHash = JSON.stringify(await q(
     `select to_char(month_start,'YYYY-MM') m, projected_expense, closing_balance
@@ -70,7 +77,7 @@ async function main() {
   console.log(`izlenebilirlik ✓ ${total} gider satırı %100 kaynak-izli · ${nulls} null tutar (0 sayılmadı)`);
 
   // 4) idempotent re-map; totals unchanged
-  const m2 = await mapCashflowMonths(pool, wb);
+  const m2 = await mapCashflowMonths(pool, wb, actorId);
   if (m2.monthsCreated !== 0) fail("cashflow mapping not idempotent");
   const totalsAfter = JSON.stringify(await q(
     `select to_char(month_start,'YYYY-MM') m, projected_expense, closing_balance

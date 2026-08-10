@@ -4,7 +4,8 @@
 
 const REQUIRED = ["DATABASE_URL"] as const;
 const OPTIONAL = [
-  "APP_ACCESS_PASSWORD",
+  "SEED_ADMIN_PASSWORD",
+  "MAS_QA_BYPASS_AUTH",
   "TELEGRAM_BOT_TOKEN",
   "TELEGRAM_CHAT_ID",
   "POSTGRES_USER",
@@ -47,7 +48,10 @@ for (const name of OPTIONAL) {
 
 // Security posture notes (no values printed)
 console.log("\nPosture:");
-console.log(`  access gate: ${present("APP_ACCESS_PASSWORD") ? "ON (password required)" : "OFF (trust single machine)"}`);
+console.log(`  auth:        always required (named accounts, no env toggle disables it — see docs/local-production-deploy.md)`);
+if (present("MAS_QA_BYPASS_AUTH")) {
+  console.log(`  ⚠ MAS_QA_BYPASS_AUTH is set — must only ever be used against a disposable TestSprite DB, never a real one.`);
+}
 console.log(`  telegram:    ${present("TELEGRAM_BOT_TOKEN") && present("TELEGRAM_CHAT_ID") ? "configured (server-only)" : "not configured → reminders log 'failed'"}`);
 
 if (!ok) {

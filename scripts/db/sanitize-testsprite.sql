@@ -181,3 +181,22 @@ update public.audit_logs set
   actor=null, before_data='{"synthetic":true}'::jsonb,
   after_data='{"synthetic":true}'::jsonb;
 
+-- Real credentials must never travel into this synthetic copy. Sanitize in place (not
+-- delete+reinsert) — deleting every row here would momentarily leave zero active admins,
+-- which users_require_active_admin (a deferred constraint trigger) would reject at the
+-- next implicit-transaction commit; an UPDATE that never touches role/is_active never
+-- fires that trigger at all.
+update public.users set
+  username='sanitized-' || left(id::text,8),
+  password_hash='sanitized-unusable-hash',
+  display_name='Synthetic Account';
+
+delete from public.sessions;
+
+-- The one reserved, is_active=false account MAS_QA_BYPASS_AUTH looks up (src/lib/auth.ts) —
+-- never a real credential; is_active=false means it can never log in even if queried
+-- outside the bypass path.
+insert into public.users (username, password_hash, display_name, role, is_active)
+values ('testsprite-qa', 'sanitized-unusable-hash', 'TestSprite QA', 'admin', false)
+on conflict (username) do nothing;
+

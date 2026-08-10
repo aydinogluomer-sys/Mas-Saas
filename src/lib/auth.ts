@@ -1,37 +1,204 @@
-// Minimal single-operator access gate for local private deployment.
-// NOT multi-user SaaS auth. When APP_ACCESS_PASSWORD is set, dashboard routes require a
-// cookie session whose value is a deterministic HMAC of the password (server-only). When
-// the var is unset, the gate is OFF (trust the single machine). The password is never
-// sent to the client and never logged. (node:crypto + next/headers keep this server-only.)
-import { createHmac, timingSafeEqual } from "node:crypto";
+// Real multi-user auth (P0-A). Replaces the old single-shared-password HMAC gate with
+// named accounts, admin/operator roles, and DB-backed sessions (random opaque token,
+// hashed server-side — never a recomputed HMAC, never stored in plaintext).
+import { createHash, randomBytes } from "node:crypto";
 import { cookies } from "next/headers";
+import { redirect } from "next/navigation";
+import { hash as argon2Hash, verify as argon2Verify } from "@node-rs/argon2";
+import { getPool } from "@/lib/db";
+import { SESSION_COOKIE } from "@/lib/auth-constants";
 
-export const SESSION_COOKIE = "mas_session";
-const SIGNING_CONTEXT = "mas-nakit-radar/access-gate/v1";
+export { SESSION_COOKIE };
+const SESSION_DURATION_MS = 7 * 24 * 60 * 60 * 1000; // 7 days — unchanged from the old gate's UX
+const MAX_FAILED_LOGIN_ATTEMPTS = 5;
+const LOCKOUT_MINUTES = 15;
 
-export function accessGateEnabled(): boolean {
-  const p = process.env.APP_ACCESS_PASSWORD;
-  return p != null && p !== "";
+// OWASP's current minimum-recommended Argon2id parameters — more than adequate for a
+// handful of logins/day on a single internal-tool deployment. `2` is Algorithm.Argon2id
+// (@node-rs/argon2's `Algorithm` is a const enum — importing it by value fails under this
+// project's isolatedModules; its own .d.ts documents 2 as Argon2id, also the package default).
+const ARGON2_OPTIONS = { algorithm: 2, memoryCost: 19456, timeCost: 2, parallelism: 1 };
+
+export type UserRole = "admin" | "operator";
+
+export interface SessionUser {
+  id: string;
+  username: string;
+  displayName: string;
+  role: UserRole;
 }
 
-/** Deterministic session token derived from the password. Requires the password to forge. */
-export function sessionToken(password: string): string {
-  return createHmac("sha256", password).update(SIGNING_CONTEXT).digest("hex");
+export async function hashPassword(password: string): Promise<string> {
+  return argon2Hash(password, ARGON2_OPTIONS);
 }
 
-export function passwordMatches(candidate: string): boolean {
-  const secret = process.env.APP_ACCESS_PASSWORD ?? "";
-  if (secret === "") return false;
-  const a = Buffer.from(candidate);
-  const b = Buffer.from(secret);
-  return a.length === b.length && timingSafeEqual(a, b);
+/** Destination must be same-origin and relative — never follow a user-supplied redirect
+ * target that could point off-site (protocol-relative `//evil.com`, or an absolute URL). */
+export function safeRedirectPath(input: string | null | undefined, fallback: string): string {
+  if (!input) return fallback;
+  if (!input.startsWith("/") || input.startsWith("//") || input.includes("://")) return fallback;
+  return input;
 }
 
-/** True when the gate is off, or a valid session cookie is present. */
-export async function hasValidSession(): Promise<boolean> {
-  if (!accessGateEnabled()) return true;
-  const val = (await cookies()).get(SESSION_COOKIE)?.value ?? "";
-  const expected = sessionToken(process.env.APP_ACCESS_PASSWORD ?? "");
-  if (val.length !== expected.length) return false;
-  return timingSafeEqual(Buffer.from(val), Buffer.from(expected));
+export interface AttemptLoginResult {
+  ok: boolean;
+  userId?: string;
+}
+
+/** Username lookup + password verification + brute-force lockout, all in one transaction
+ * (SELECT ... FOR UPDATE) so two concurrent attempts against the same account can't race
+ * past the failed-attempt counter. Every failure path (unknown username, wrong password,
+ * locked account, inactive account) returns the same shape — the caller must show one
+ * generic message for all of them to avoid revealing which case occurred. */
+export async function attemptLogin(rawUsername: string, password: string): Promise<AttemptLoginResult> {
+  const username = rawUsername.trim().toLowerCase();
+  if (!username || !password) return { ok: false };
+  const client = await getPool().connect();
+  try {
+    await client.query("begin");
+    const res = await client.query<{
+      id: string;
+      password_hash: string;
+      is_active: boolean;
+      locked_until: string | null;
+      failed_login_count: number;
+    }>(
+      `select id, password_hash, is_active, locked_until, failed_login_count
+       from public.users where username = $1 for update`,
+      [username],
+    );
+    if (res.rowCount !== 1) {
+      await client.query("commit");
+      return { ok: false };
+    }
+    const row = res.rows[0];
+    const lockedNow = row.locked_until != null && new Date(row.locked_until).getTime() > Date.now();
+    if (!row.is_active || lockedNow) {
+      await client.query("commit");
+      return { ok: false };
+    }
+    const validPassword = await argon2Verify(row.password_hash, password);
+    if (!validPassword) {
+      const nextCount = row.failed_login_count + 1;
+      const lockUntil = nextCount >= MAX_FAILED_LOGIN_ATTEMPTS
+        ? new Date(Date.now() + LOCKOUT_MINUTES * 60_000).toISOString()
+        : null;
+      await client.query(`update public.users set failed_login_count = $2, locked_until = $3 where id = $1`, [
+        row.id,
+        nextCount,
+        lockUntil,
+      ]);
+      await client.query("commit");
+      return { ok: false };
+    }
+    await client.query(`update public.users set failed_login_count = 0, locked_until = null where id = $1`, [row.id]);
+    await client.query("commit");
+    return { ok: true, userId: row.id };
+  } catch (e) {
+    await client.query("rollback");
+    throw e;
+  } finally {
+    client.release();
+  }
+}
+
+/** Random opaque token — never deterministic. Only its SHA-256 lives in the DB; the raw
+ * token exists only in the client's cookie, same principle as never storing a plaintext
+ * password. */
+export async function createSessionCookie(userId: string): Promise<void> {
+  const token = randomBytes(32).toString("base64url");
+  const tokenHash = createHash("sha256").update(token).digest("hex");
+  const expiresAt = new Date(Date.now() + SESSION_DURATION_MS).toISOString();
+  await getPool().query(`insert into public.sessions (user_id, token_hash, expires_at) values ($1, $2, $3)`, [
+    userId,
+    tokenHash,
+    expiresAt,
+  ]);
+  const jar = await cookies();
+  jar.set(SESSION_COOKIE, token, {
+    httpOnly: true,
+    sameSite: "lax",
+    secure: process.env.NODE_ENV === "production",
+    path: "/",
+    maxAge: SESSION_DURATION_MS / 1000,
+  });
+}
+
+// Reserved, is_active=false account used only by the TestSprite QA harness — never a real
+// login. Deliberately never created by any migration (production/dev databases never carry
+// it); only disposable/test DB fixtures seed this row. If MAS_QA_BYPASS_AUTH is left on by
+// accident anywhere the row doesn't exist, this simply falls through to a real (failing)
+// session check — fail-closed, not fail-open.
+const QA_BYPASS_USERNAME = "testsprite-qa";
+
+async function getQaBypassUser(): Promise<SessionUser | null> {
+  if (process.env.MAS_QA_BYPASS_AUTH !== "1" || process.env.NODE_ENV === "production") return null;
+  const res = await getPool().query<{ id: string; username: string; display_name: string; role: UserRole }>(
+    `select id, username, display_name, role from public.users where username = $1 and is_active = false`,
+    [QA_BYPASS_USERNAME],
+  );
+  if (res.rowCount !== 1) return null;
+  const row = res.rows[0];
+  return { id: row.id, username: row.username, displayName: row.display_name, role: row.role };
+}
+
+export async function getCurrentUser(): Promise<SessionUser | null> {
+  const qaUser = await getQaBypassUser();
+  if (qaUser) return qaUser;
+
+  const jar = await cookies();
+  const token = jar.get(SESSION_COOKIE)?.value;
+  if (!token) return null;
+  const tokenHash = createHash("sha256").update(token).digest("hex");
+  const pool = getPool();
+  const res = await pool.query<{
+    id: string;
+    username: string;
+    display_name: string;
+    role: UserRole;
+    session_id: string;
+    last_seen_at: string | null;
+  }>(
+    `select u.id, u.username, u.display_name, u.role, s.id as session_id, s.last_seen_at
+     from public.sessions s join public.users u on u.id = s.user_id
+     where s.token_hash = $1 and s.revoked_at is null and s.expires_at > now() and u.is_active`,
+    [tokenHash],
+  );
+  if (res.rowCount !== 1) return null;
+  const row = res.rows[0];
+
+  // Throttled — only bump if stale by more than 5 minutes, not on every single request.
+  const lastSeenMs = row.last_seen_at ? new Date(row.last_seen_at).getTime() : 0;
+  if (Date.now() - lastSeenMs > 5 * 60_000) {
+    await pool.query(`update public.sessions set last_seen_at = now() where id = $1`, [row.session_id]);
+  }
+
+  return { id: row.id, username: row.username, displayName: row.display_name, role: row.role };
+}
+
+export async function requireSession(): Promise<SessionUser> {
+  const user = await getCurrentUser();
+  if (!user) redirect("/login");
+  return user;
+}
+
+export async function requireAdmin(): Promise<SessionUser> {
+  const user = await requireSession();
+  if (user.role !== "admin") redirect("/overview");
+  return user;
+}
+
+/** Marks the current cookie's session revoked in the DB (not just deleting the client's
+ * copy) — a stolen/leaked token stops working immediately, not just once the browser
+ * forgets it. */
+export async function revokeCurrentSession(): Promise<void> {
+  const jar = await cookies();
+  const token = jar.get(SESSION_COOKIE)?.value;
+  if (token) {
+    const tokenHash = createHash("sha256").update(token).digest("hex");
+    await getPool().query(`update public.sessions set revoked_at = now() where token_hash = $1 and revoked_at is null`, [
+      tokenHash,
+    ]);
+  }
+  jar.delete(SESSION_COOKIE);
 }

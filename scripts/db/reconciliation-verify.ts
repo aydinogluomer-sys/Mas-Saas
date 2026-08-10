@@ -13,6 +13,8 @@ import { execFileSync } from "node:child_process";
 import { readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
 import { Pool, type PoolClient } from "pg";
+import { MIGRATIONS_DIR, validateFileSet } from "./migration-lib";
+import { ensureSystemActor } from "./seed-system-actor";
 import {
   LEGACY_ANOMALY_INSTANCE_ID,
   countCancelConsistencyViolations,
@@ -27,6 +29,12 @@ const ROOT = process.cwd();
 const CONTAINER = process.env.MAS_DB_CONTAINER ?? "mas-radar-pg";
 const TSX_CLI = path.join(ROOT, "node_modules", "tsx", "dist", "cli.mjs");
 const MIGRATE_SCRIPT = path.join(ROOT, "scripts", "db", "migrate.ts");
+// Derived from files on disk, not hardcoded — a fixed "30 satır, last migration 0030"
+// literal here went stale the moment 0031/0032 were added, same class of bug
+// CANONICAL_MIGRATION_COUNT in migrate-verify.ts already exists to avoid.
+const CANONICAL_MIGRATION_FILES = validateFileSet(MIGRATIONS_DIR).files;
+const CANONICAL_MIGRATION_COUNT = CANONICAL_MIGRATION_FILES.length;
+const CANONICAL_LAST_VERSION = CANONICAL_MIGRATION_FILES.map((f) => f.version).sort().at(-1);
 const DB = "mas_radar_reconciliation_verify";
 const DISPOSABLE_PREFIX = "mas_radar_reconciliation_verify";
 const FORBIDDEN_DB_NAME = "mas_radar_dev";
@@ -518,8 +526,8 @@ async function main(): Promise<void> {
             "select count(*)::int as n, max(version) as last_version from schema_migrations",
           );
           record(
-            "ledger üçüncü çalıştırma sonrası hâlâ 30 satır, last migration 0030",
-            ledgerRes.rows[0]?.n === 30 && ledgerRes.rows[0]?.last_version === "0030",
+            `ledger üçüncü çalıştırma sonrası hâlâ ${CANONICAL_MIGRATION_COUNT} satır, last migration ${CANONICAL_LAST_VERSION}`,
+            ledgerRes.rows[0]?.n === CANONICAL_MIGRATION_COUNT && ledgerRes.rows[0]?.last_version === CANONICAL_LAST_VERSION,
             `got n=${ledgerRes.rows[0]?.n} last=${ledgerRes.rows[0]?.last_version}`,
           );
         }
@@ -527,6 +535,9 @@ async function main(): Promise<void> {
     }
 
   async function runReconciliationAssertions(): Promise<void> {
+    // audit_logs.actor_id is an FK to public.users(id) since 0032; this harness has no
+    // logged-in session, so it attributes to the reserved "system" account.
+    const actorId = await ensureSystemActor(pool);
     // ── 0028 güvenlik testleri: kolon önceden yanlış şekilde mevcutsa migration sessizce kabul
     // ── etmemeli, açık hata ile durmalı. 4 senaryo, her biri kendi BEGIN...ROLLBACK'inde izole —
     // ── gerçek amount_source kolonuna kalıcı dokunulmaz (migrate.ts'in az önce kurduğu hâli sağlam kalır).
@@ -677,7 +688,7 @@ async function main(): Promise<void> {
         paymentId: p, instanceMonth: NEXT_MONTH, dueDate: "2026-09-10", amount: 500, amountStatus: "known", amountSource: "generated",
       });
       const res = await withTransaction(appPool, (c) =>
-        reconcileInstancesWithClient(c, p, { dueDay: 10, defaultAmount: 1000, amountConfidence: "known" }, TODAY),
+        reconcileInstancesWithClient(c, p, { dueDay: 10, defaultAmount: 1000, amountConfidence: "known" }, TODAY, actorId),
       );
       const after = await getInstance(pool, inst);
       const afterDueDate = await dueDateOf(pool, inst);
@@ -697,7 +708,7 @@ async function main(): Promise<void> {
       const before = await getInstance(pool, inst);
       const auditBefore = await fingerprintAuditLogs(pool);
       const res = await withTransaction(appPool, (c) =>
-        reconcileInstancesWithClient(c, p, { dueDay: 10, defaultAmount: 1000, amountConfidence: "known" }, TODAY),
+        reconcileInstancesWithClient(c, p, { dueDay: 10, defaultAmount: 1000, amountConfidence: "known" }, TODAY, actorId),
       );
       const after = await getInstance(pool, inst);
       const auditAfter = await fingerprintAuditLogs(pool);
@@ -718,7 +729,7 @@ async function main(): Promise<void> {
         paymentId: p, instanceMonth: NEXT_MONTH, dueDate: "2026-09-25", amount: 1000, amountStatus: "known", amountSource: "generated",
       });
       await withTransaction(appPool, (c) =>
-        reconcileInstancesWithClient(c, p, { dueDay: 5, defaultAmount: 1000, amountConfidence: "known" }, TODAY),
+        reconcileInstancesWithClient(c, p, { dueDay: 5, defaultAmount: 1000, amountConfidence: "known" }, TODAY, actorId),
       );
       const thisAfterDueDate = await dueDateOf(pool, thisMonthInst);
       const nextAfterDueDate = await dueDateOf(pool, nextMonthInst);
@@ -741,7 +752,7 @@ async function main(): Promise<void> {
         paymentId: p, instanceMonth: CURRENT_MONTH, dueDate: "2026-08-05", amount: 1000, amountStatus: "known", amountSource: "generated",
       });
       const res = await withTransaction(appPool, (c) =>
-        reconcileInstancesWithClient(c, p, { dueDay: 25, defaultAmount: 2000, amountConfidence: "known" }, TODAY),
+        reconcileInstancesWithClient(c, p, { dueDay: 25, defaultAmount: 2000, amountConfidence: "known" }, TODAY, actorId),
       );
       const after = await getInstance(pool, inst);
       const afterDueDate = await dueDateOf(pool, inst);
@@ -758,7 +769,7 @@ async function main(): Promise<void> {
         paymentId: p, instanceMonth: NEXT_MONTH, dueDate: "2026-09-25", amount: 1000, amountStatus: "known", amountSource: "generated", status: "late",
       });
       const res = await withTransaction(appPool, (c) =>
-        reconcileInstancesWithClient(c, p, { dueDay: 5, defaultAmount: 2000, amountConfidence: "known" }, TODAY),
+        reconcileInstancesWithClient(c, p, { dueDay: 5, defaultAmount: 2000, amountConfidence: "known" }, TODAY, actorId),
       );
       const after = await getInstance(pool, inst);
       const afterDueDate = await dueDateOf(pool, inst);
@@ -777,7 +788,7 @@ async function main(): Promise<void> {
         paymentId: pManual, instanceMonth: NEXT_MONTH, dueDate: "2026-09-10", amount: 777, amountStatus: "known", amountSource: "manual",
       });
       await withTransaction(appPool, (c) =>
-        reconcileInstancesWithClient(c, pManual, { dueDay: 20, defaultAmount: 2000, amountConfidence: "known" }, TODAY),
+        reconcileInstancesWithClient(c, pManual, { dueDay: 20, defaultAmount: 2000, amountConfidence: "known" }, TODAY, actorId),
       );
       const manualAfter = await getInstance(pool, manualInst);
       const manualAfterDueDate = await dueDateOf(pool, manualInst);
@@ -791,7 +802,7 @@ async function main(): Promise<void> {
         paymentId: pLegacy, instanceMonth: NEXT_MONTH, dueDate: "2026-09-10", amount: 888, amountStatus: "known", amountSource: "legacy_unknown",
       });
       await withTransaction(appPool, (c) =>
-        reconcileInstancesWithClient(c, pLegacy, { dueDay: 20, defaultAmount: 2000, amountConfidence: "known" }, TODAY),
+        reconcileInstancesWithClient(c, pLegacy, { dueDay: 20, defaultAmount: 2000, amountConfidence: "known" }, TODAY, actorId),
       );
       const legacyAfter = await getInstance(pool, legacyInst);
       const legacyAfterDueDate = await dueDateOf(pool, legacyInst);
@@ -816,7 +827,7 @@ async function main(): Promise<void> {
           paymentId: p, instanceMonth: NEXT_MONTH, dueDate: "2026-09-10", amount: s.amount, amountStatus: "known", amountSource: "generated", status: s.status,
         });
         const res = await withTransaction(appPool, (c) =>
-          reconcileInstancesWithClient(c, p, { dueDay: 20, defaultAmount: 2000, amountConfidence: "known" }, TODAY),
+          reconcileInstancesWithClient(c, p, { dueDay: 20, defaultAmount: 2000, amountConfidence: "known" }, TODAY, actorId),
         );
         const after = await getInstance(pool, inst);
         const afterDueDate = await dueDateOf(pool, inst);
@@ -850,7 +861,7 @@ async function main(): Promise<void> {
             default_amount: 1000, amount_confidence: "known", direction: "outflow", priority: "normal", flexibility_class: null,
             status: "active", category_id: null, provider_party_id: null, owner_party_id: null,
             cash_account_id: null, description: null,
-          }, TODAY),
+          }, TODAY, actorId),
           /.*/,
           "updatePaymentAndReconcile rollback (audit hatası): çağrı hata fırlattı",
         );
@@ -884,7 +895,7 @@ async function main(): Promise<void> {
         default_amount: 1000, amount_confidence: "known", direction: "outflow", priority: "normal", flexibility_class: null,
         status: "active", category_id: null, provider_party_id: null, owner_party_id: null,
         cash_account_id: null, description: null,
-      }, TODAY);
+      }, TODAY, actorId);
       const instAAfter = await getInstance(pool, instA);
       record("updatePaymentAndReconcile: reconciliation aynı transaction'da amount günceller", Number(instAAfter.amount) === 1000);
       record(
@@ -905,7 +916,7 @@ async function main(): Promise<void> {
           name: "x", recurrence_type: "monthly", due_day: 1, due_date: null, default_amount: null,
           amount_confidence: "known", direction: "outflow", priority: "normal", flexibility_class: null, status: "active",
           category_id: null, provider_party_id: null, owner_party_id: null, cash_account_id: null, description: null,
-        }, TODAY),
+        }, TODAY, actorId),
         /payment not found/,
         "updatePaymentAndReconcile: kayıt yok → DomainError",
       );
@@ -923,7 +934,7 @@ async function main(): Promise<void> {
             default_amount: 500, amount_confidence: "known", direction: "outflow", priority: "normal", flexibility_class: null,
             status: "active", category_id: null, provider_party_id: null, owner_party_id: null,
             cash_account_id: null, description: null,
-          }, TODAY),
+          }, TODAY, actorId),
           /.*/,
           "updatePaymentAndReconcile rollback (generation hatası): çağrı hata fırlattı",
         );
@@ -975,7 +986,7 @@ async function main(): Promise<void> {
             default_amount: 1000, amount_confidence: "known", direction: "outflow", priority: "normal", flexibility_class: null,
             status: "active", category_id: null, provider_party_id: null, owner_party_id: null,
             cash_account_id: null, description: null,
-          }, TODAY),
+          }, TODAY, actorId),
           /risk update for specific instance/,
           "updatePaymentAndReconcile rollback (risk refresh hatası): çağrı hata fırlattı (deterministik olarak seçilen tek instance'ın risk UPDATE'i reddedildi)",
         );
@@ -1015,7 +1026,7 @@ async function main(): Promise<void> {
     /* ── setInstanceAmount — tam davranış seti ── */
     {
       await expectFnReject(
-        () => setInstanceAmount(appPool, "00000000-0000-0000-0000-000000000000", 100),
+        () => setInstanceAmount(appPool, "00000000-0000-0000-0000-000000000000", 100, actorId),
         /instance not found/,
         "setInstanceAmount: kayıt yok → DomainError",
       );
@@ -1024,7 +1035,7 @@ async function main(): Promise<void> {
       const inst = await seedInstance(pool, {
         paymentId: p, instanceMonth: NEXT_MONTH, dueDate: "2026-09-15", amount: 100, amountStatus: "missing", amountSource: "legacy_unknown",
       });
-      await setInstanceAmount(appPool, inst, 555);
+      await setInstanceAmount(appPool, inst, 555, actorId);
       const after = await getInstance(pool, inst);
       record(
         "setInstanceAmount: amount+amount_status+amount_source='manual' aynı transaction'da güncellenir",
@@ -1034,7 +1045,7 @@ async function main(): Promise<void> {
       // Aynı değer tekrar girilirse: no-op (UPDATE/audit/timestamp yok).
       const before2 = await getInstance(pool, inst);
       const auditBefore3 = await fingerprintAuditLogs(pool);
-      await setInstanceAmount(appPool, inst, 555);
+      await setInstanceAmount(appPool, inst, 555, actorId);
       const after2 = await getInstance(pool, inst);
       const auditAfter3 = await fingerprintAuditLogs(pool);
       record(
@@ -1050,7 +1061,7 @@ async function main(): Promise<void> {
       await pool.query("alter table public.audit_logs add constraint test_force_fail_setamount check (false) not valid");
       try {
         await expectFnReject(
-          () => setInstanceAmount(appPool, instForFail, 999),
+          () => setInstanceAmount(appPool, instForFail, 999, actorId),
           /.*/,
           "setInstanceAmount rollback (audit hatası): çağrı hata fırlattı",
         );
@@ -1076,7 +1087,7 @@ async function main(): Promise<void> {
 
       const keepFingerprintsBefore = await fingerprintInstances(pool, [keepPastUnpaid, keepLate, keepPartial, keepPaid, keepCancelled]);
 
-      await archivePayment(appPool, p, { reason: "test arşiv", archivedByLabel: "test" }, TODAY);
+      await archivePayment(appPool, p, { reason: "test arşiv", archivedByLabel: "test" }, TODAY, actorId);
 
       const paymentAfter = await getPayment(pool, p);
       const cancelUnpaidAfter = await getInstance(pool, cancelUnpaid);
@@ -1117,7 +1128,7 @@ async function main(): Promise<void> {
       );
       try {
         await expectFnReject(
-          () => archivePayment(appPool, p2, { reason: "rollback test", archivedByLabel: "test" }, TODAY),
+          () => archivePayment(appPool, p2, { reason: "rollback test", archivedByLabel: "test" }, TODAY, actorId),
           /cancel_instance audit/,
           "archivePayment tam-zincir rollback: cascade döngüsü ortasında (cancel_instance audit'i) hata fırlattı",
         );

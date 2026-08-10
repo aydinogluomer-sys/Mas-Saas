@@ -18,11 +18,11 @@ import {
   type ReportInstance, type ReportMaturity,
 } from "./rules";
 
-async function audit(client: PoolClient, action: string, entityId: string | null, after: unknown): Promise<void> {
+async function audit(client: PoolClient, actor: string, action: string, entityId: string | null, after: unknown): Promise<void> {
   await client.query(
     `insert into public.audit_logs (actor, action, entity_table, entity_id, before_data, after_data)
-     values (null,$1,'reports',$2,null,$3)`,
-    [action, entityId, JSON.stringify(after ?? null)],
+     values ($1,$2,'reports',$3,null,$4)`,
+    [actor, action, entityId, JSON.stringify(after ?? null)],
   );
 }
 
@@ -41,7 +41,7 @@ async function maturitiesBetween(pool: Pool, fromISO: string, toISO: string): Pr
 }
 
 async function writeReport(
-  pool: Pool, type: string, periodStart: string, periodEnd: string, bodyMd: string, meta: unknown,
+  pool: Pool, type: string, periodStart: string, periodEnd: string, bodyMd: string, meta: unknown, actorId: string,
 ): Promise<string> {
   const client = await pool.connect();
   try {
@@ -52,7 +52,7 @@ async function writeReport(
       [type, periodStart, periodEnd, bodyMd, JSON.stringify(meta ?? null)],
     );
     const id: string = ins.rows[0].id;
-    await audit(client, `generate_report_${type}`, id, { periodStart, periodEnd });
+    await audit(client, actorId, `generate_report_${type}`, id, { periodStart, periodEnd });
     await client.query("commit");
     return id;
   } catch (e) {
@@ -65,7 +65,7 @@ async function writeReport(
 
 /* ── daily ── */
 
-export async function generateDaily(pool: Pool, todayISO: string): Promise<{ id: string; bodyMd: string }> {
+export async function generateDaily(pool: Pool, todayISO: string, actorId: string): Promise<{ id: string; bodyMd: string }> {
   const to = addDaysISO(todayISO, 7);
   const t = await loadThresholds(pool);
   const [soon, overdue, maturities, decisionFacts] = await Promise.all([
@@ -98,13 +98,13 @@ export async function generateDaily(pool: Pool, todayISO: string): Promise<{ id:
   const id = await writeReport(pool, "daily", todayISO, to, report.bodyMd, {
     next7KnownTotal: report.next7KnownTotal, overdueCount: report.overdueCount,
     missingCount: report.next7MissingCount, commentary_prompt: prompt,
-  });
+  }, actorId);
   return { id, bodyMd: report.bodyMd };
 }
 
 /* ── weekly ── */
 
-export async function generateWeekly(pool: Pool, todayISO: string): Promise<{ id: string; bodyMd: string }> {
+export async function generateWeekly(pool: Pool, todayISO: string, actorId: string): Promise<{ id: string; bodyMd: string }> {
   const to = addDaysISO(todayISO, 7);
   const monthStart = todayISO.slice(0, 7) + "-01";
   const t = await loadThresholds(pool);
@@ -139,7 +139,7 @@ export async function generateWeekly(pool: Pool, todayISO: string): Promise<{ id
   const id = await writeReport(pool, "weekly", todayISO, to, report.bodyMd, {
     knownTotal: report.knownTotal, checkLoad: report.checkLoad,
     installmentLoadMonth: report.installmentLoadMonth, commentary_prompt: prompt,
-  });
+  }, actorId);
   return { id, bodyMd: report.bodyMd };
 }
 
@@ -158,7 +158,7 @@ async function distribution(pool: Pool, monthStart: string, joinCol: string, nam
   return r.rows as Array<{ key: string; amount: number }>;
 }
 
-export async function generateMonthly(pool: Pool, monthStartISO: string): Promise<{ id: string; bodyMd: string }> {
+export async function generateMonthly(pool: Pool, monthStartISO: string, actorId: string): Promise<{ id: string; bodyMd: string }> {
   const monthEnd = addMonths(monthStartISO, 1);
   const [summary, insts, providerDist, categoryDist, ownerDist, checks, installments, cashRow, unassigned, decisionFacts] =
     await Promise.all([
@@ -217,7 +217,7 @@ export async function generateMonthly(pool: Pool, monthStartISO: string): Promis
   });
   const id = await writeReport(pool, "monthly", monthStartISO, addDaysISO(monthEnd, -1), report.bodyMd, {
     knownTotal: summary.known_total, debtServiceKnown: report.debtServiceKnown, commentary_prompt: prompt,
-  });
+  }, actorId);
   return { id, bodyMd: report.bodyMd };
 }
 

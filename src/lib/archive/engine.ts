@@ -34,6 +34,7 @@ const assertEntity = (entity: string): ArchiveEntity => {
 
 const audit = (
   client: PoolClient,
+  actorId: string,
   action: string,
   table: string,
   id: string,
@@ -42,16 +43,22 @@ const audit = (
 ) =>
   client.query(
     `insert into public.audit_logs(actor,action,entity_table,entity_id,before_data,after_data)
-     values(null,$1,$2,$3,$4,$5)`,
-    [action, table, id, JSON.stringify(before), JSON.stringify(after)],
+     values($1,$2,$3,$4,$5,$6)`,
+    [actorId, action, table, id, JSON.stringify(before), JSON.stringify(after)],
   );
 
+// actorDisplayName is a free-text label for the entity's own archived_by_label column —
+// distinct from actorId (the real audit_logs.actor uuid FK). No default value: this used
+// to silently fall back to a hardcoded "Yerel kullanıcı" string, exactly the kind of
+// unattributable placeholder P0-A exists to eliminate — every caller must now supply the
+// real logged-in user's display name.
 export async function archiveRecord(
   pool: Pool,
   entityRaw: string,
   id: string,
   reason: string,
-  actor = "Yerel kullanıcı",
+  actorId: string,
+  actorDisplayName: string,
 ) {
   const entity = assertEntity(entityRaw);
   const client = await pool.connect();
@@ -63,9 +70,9 @@ export async function archiveRecord(
       `update public.${entity}
        set archived_at=now(),archive_reason=$2,archived_by_label=$3${entity === "payments" ? ",status='archived'" : ""}
        where id=$1`,
-      [id, reason || null, actor],
+      [id, reason || null, actorDisplayName],
     );
-    await audit(client, "archive_record", entity, id, before.rows[0], { archived: true, reason, actor });
+    await audit(client, actorId, "archive_record", entity, id, before.rows[0], { archived: true, reason, actor: actorDisplayName });
     await client.query("commit");
   } catch (error) {
     await client.query("rollback");
@@ -75,7 +82,7 @@ export async function archiveRecord(
   }
 }
 
-export async function restoreRecord(pool: Pool, entityRaw: string, id: string) {
+export async function restoreRecord(pool: Pool, entityRaw: string, id: string, actorId: string) {
   const entity = assertEntity(entityRaw);
   const client = await pool.connect();
   try {
@@ -88,7 +95,7 @@ export async function restoreRecord(pool: Pool, entityRaw: string, id: string) {
        where id=$1`,
       [id],
     );
-    await audit(client, "restore_record", entity, id, before.rows[0], { archived: false });
+    await audit(client, actorId, "restore_record", entity, id, before.rows[0], { archived: false });
     await client.query("commit");
   } catch (error) {
     await client.query("rollback");

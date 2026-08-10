@@ -4,6 +4,7 @@ import { redirect } from "next/navigation";
 import { getPool } from "@/lib/db";
 import { createAndRun, deleteScenarioRun, estimateOptimizationCandidates, type ScenarioType } from "@/lib/scenarios/engine";
 import type { ScenarioAssumptions } from "@/lib/scenarios/rules";
+import { requireSession } from "@/lib/auth";
 
 function pctFromForm(v: FormDataEntryValue | null): number | null {
   if (v == null || v === "") return null;
@@ -21,6 +22,7 @@ function strFromForm(v: FormDataEntryValue | null): string | null {
 }
 
 export async function runScenarioAction(formData: FormData): Promise<void> {
+  const session = await requireSession();
   const assumptions: ScenarioAssumptions = {
     revenuePct: pctFromForm(formData.get("revenuePct")),
     expensePct: pctFromForm(formData.get("expensePct")),
@@ -40,21 +42,23 @@ export async function runScenarioAction(formData: FormData): Promise<void> {
   const scenarioType = (String(formData.get("scenarioType") ?? "combined_custom_scenario")) as ScenarioType;
 
   const pool = getPool();
-  const { runId } = await createAndRun(pool, { name, scenarioType, assumptions });
+  const { runId } = await createAndRun(pool, { name, scenarioType, assumptions }, session.id);
   revalidatePath("/scenarios");
   redirect(`/scenarios/${runId}`);
 }
 
 export async function deleteScenarioRunAction(formData: FormData): Promise<void> {
+  const session = await requireSession();
   const runId = String(formData.get("runId") ?? "");
   if (!runId) return;
   const pool = getPool();
-  await deleteScenarioRun(pool, runId);
+  await deleteScenarioRun(pool, runId, session.id);
   revalidatePath("/scenarios");
   redirect("/scenarios");
 }
 
 export async function runOptimizationCandidateAction(formData: FormData): Promise<void> {
+  const session = await requireSession();
   const key = String(formData.get("candidateKey") ?? "");
   const pool = getPool();
   const candidate = (await estimateOptimizationCandidates(pool)).find((item) => item.key === key);
@@ -63,7 +67,7 @@ export async function runOptimizationCandidateAction(formData: FormData): Promis
     name: `Optimizasyon: ${candidate.label}`,
     scenarioType: "combined_custom_scenario",
     assumptions: candidate.assumptions,
-  });
+  }, session.id);
   revalidatePath("/scenarios/optimization");
   revalidatePath("/scenarios/history");
   redirect(`/scenarios/${runId}`);

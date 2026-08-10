@@ -3,6 +3,7 @@
 // tables.
 import { Pool } from "pg";
 import { createActionFromAiResponse, createActionFromReport } from "../src/lib/data-quality/engine";
+import { ensureSystemActor } from "./db/seed-system-actor";
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL ?? "postgres://postgres:postgres@127.0.0.1:5432/mas_radar_dev",
@@ -24,8 +25,14 @@ async function financeFingerprint(): Promise<string> {
 }
 
 async function main() {
-  await pool.query(`truncate public.action_items, public.ai_response_snapshots,
-    public.reports, public.audit_logs restart identity cascade`);
+  // audit_logs is append-only since 0022 (no UPDATE/DELETE/TRUNCATE, ever) — it is
+  // deliberately NOT in the reset below. Each verify run gets a freshly created
+  // disposable database instead, so the audit table starts empty without weakening
+  // the invariant.
+  // audit_logs.actor_id is an FK to public.users(id) since 0032; verify scripts run
+  // without a session, so they attribute to the reserved "system" account.
+  const actorId = await ensureSystemActor(pool);
+  await pool.query(`truncate public.action_items, public.ai_response_snapshots, public.reports restart identity cascade`);
   const before = await financeFingerprint();
 
   const reportId = String((await q(
@@ -49,12 +56,12 @@ async function main() {
   ))[0]?.id ?? "");
   if (!aiId) fail("ai response snapshot not inserted");
 
-  const reportAction1 = await createActionFromReport(pool, reportId);
-  const reportAction2 = await createActionFromReport(pool, reportId);
+  const reportAction1 = await createActionFromReport(pool, reportId, actorId);
+  const reportAction2 = await createActionFromReport(pool, reportId, actorId);
   if (!reportAction1 || reportAction1 !== reportAction2) fail("report action must be idempotent while open");
 
-  const aiAction1 = await createActionFromAiResponse(pool, aiId);
-  const aiAction2 = await createActionFromAiResponse(pool, aiId);
+  const aiAction1 = await createActionFromAiResponse(pool, aiId, actorId);
+  const aiAction2 = await createActionFromAiResponse(pool, aiId, actorId);
   if (!aiAction1 || aiAction1 !== aiAction2) fail("ai response action must be idempotent while open");
 
   const actions = await q(

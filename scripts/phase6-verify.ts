@@ -13,6 +13,7 @@ import { mapCashflowMonths, validateContinuity } from "../src/lib/cashflow/engin
 import { mapAcceptedChecks, mapLoans } from "../src/lib/financing/engine";
 import { generateDaily, generateMonthly, generateWeekly, loadDebtOverlay } from "../src/lib/reports/engine";
 import { istanbulDateISO } from "../src/lib/reports/rules";
+import { ensureSystemActor } from "./db/seed-system-actor";
 
 const pool = new Pool({
   connectionString:
@@ -38,12 +39,17 @@ async function financialFingerprint(): Promise<string> {
 }
 
 async function main() {
-  await pool.query(`truncate public.source_workbooks, public.payments, public.payment_instances,
-    public.cashflow_months, public.cashflow_snapshots, public.checks, public.check_events,
-    public.loans, public.loan_installments, public.reports, public.audit_logs restart identity cascade`);
+  // audit_logs is append-only since 0022 (no UPDATE/DELETE/TRUNCATE, ever) — it is
+  // deliberately NOT in the reset below. Each verify run gets a freshly created
+  // disposable database instead, so the audit table starts empty without weakening
+  // the invariant.
+  // audit_logs.actor_id is an FK to public.users(id) since 0032; verify scripts run
+  // without a session, so they attribute to the reserved "system" account.
+  const actorId = await ensureSystemActor(pool);
+  await pool.query(`truncate public.source_workbooks, public.payments, public.payment_instances, public.cashflow_months, public.cashflow_snapshots, public.checks, public.check_events, public.loans, public.loan_installments, public.reports restart identity cascade`);
 
   // 0) build the full domain (payments + cashflow + financing), resolving known reviews
-  const r = await importWorkbook(pool, readFileSync(SRC), "TEMİZ.xlsx");
+  const r = await importWorkbook(pool, readFileSync(SRC), "TEMİZ.xlsx", actorId);
   if (!r.ok) fail("import failed");
   const wb = r.workbookId;
   const resolve = (types: string) =>
@@ -51,12 +57,12 @@ async function main() {
                 where workbook_id=$1 and issue_type = any($2::text[])`, [wb, types]);
   await pool.query(`update public.mapping_reviews set status='accepted' where workbook_id=$1
                     and issue_type in ('missing_due_day','amount_alignment','unlabeled_amount','multiple_day_markers')`, [wb]);
-  await mapAcceptedCandidates(pool, wb);
-  await ensureWindow(pool, TODAY); // generate instances + risk for prev/cur/next month
-  await mapCashflowMonths(pool, wb);
+  await mapAcceptedCandidates(pool, wb, actorId);
+  await ensureWindow(pool, TODAY, actorId); // generate instances + risk for prev/cur/next month
+  await mapCashflowMonths(pool, wb, actorId);
   await validateContinuity(pool);
-  await resolve("{duplicate_check,unparsed_row}"); await mapAcceptedChecks(pool, wb);
-  await resolve("{loan_field_ambiguous,loan_term_mismatch}"); await mapLoans(pool, wb);
+  await resolve("{duplicate_check,unparsed_row}"); await mapAcceptedChecks(pool, wb, actorId);
+  await resolve("{loan_field_ambiguous,loan_term_mismatch}"); await mapLoans(pool, wb, actorId);
 
   const payments = (await q(`select count(*)::int n from public.payments`))[0].n;
   const checks = (await q(`select count(*)::int n from public.checks`))[0].n;
@@ -68,9 +74,9 @@ async function main() {
   const before = await financialFingerprint();
 
   // 2) generate all three reports (return handles unused — assertions read from DB)
-  await generateDaily(pool, TODAY);
-  await generateWeekly(pool, TODAY);
-  await generateMonthly(pool, TODAY.slice(0, 7) + "-01");
+  await generateDaily(pool, TODAY, actorId);
+  await generateWeekly(pool, TODAY, actorId);
+  await generateMonthly(pool, TODAY.slice(0, 7) + "-01", actorId);
   const reportRows = await q(`select report_type, body_md, meta from public.reports order by report_type`);
   if (reportRows.length !== 3) fail(`expected 3 reports, got ${reportRows.length}`);
   for (const rr of reportRows) if (!rr.body_md || rr.body_md.length < 20) fail(`empty report body: ${rr.report_type}`);

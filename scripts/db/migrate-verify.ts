@@ -34,6 +34,16 @@ const CANONICAL_MIGRATION_COUNT = validateFileSet(MIGRATIONS_DIR).files.length;
 // by migrate-script, so its expected count is simply the remainder.
 const EXPECTED_BASELINE_BACKFILL_COUNT = 19;
 const EXPECTED_MIGRATE_SCRIPT_COUNT = CANONICAL_MIGRATION_COUNT - EXPECTED_BASELINE_BACKFILL_COUNT;
+// The checkpoint's known legacy anomaly is grandfathered by a specific migration (0030),
+// fixed by name — not "whichever migration happens to be last." Migrations added after it
+// (0031, 0032, ...) must not change how many migrate-script rows commit on the first run
+// before hitting 0030's expected failure. Derived from files on disk, same discipline as
+// CANONICAL_MIGRATION_COUNT, so this doesn't go stale again the next time something is
+// added after 0030 (exactly what happened here: this used to be computed as
+// EXPECTED_MIGRATE_SCRIPT_COUNT - 1, which silently assumed 0030 was the last file).
+const KNOWN_VIOLATION_VERSION = "0030";
+const EXPECTED_MIGRATE_SCRIPT_COUNT_BEFORE_KNOWN_VIOLATION = validateFileSet(MIGRATIONS_DIR).files
+  .filter((f) => f.version > "0019" && f.version < KNOWN_VIOLATION_VERSION).length;
 
 interface TestOutcome {
   name: string;
@@ -271,8 +281,8 @@ async function testLegacyCompleteAndIdempotency(): Promise<void> {
   const violationsBeforePrep = await countPaymentInstancesCancelViolations(restorePool);
   await restorePool.end();
   record(
-    `LEGACY_COMPLETE: 0001-0029 gerçekten commit oldu (${EXPECTED_BASELINE_BACKFILL_COUNT + EXPECTED_MIGRATE_SCRIPT_COUNT - 1} satır)`,
-    ledgerAfterBootstrap.rows[0]?.n === EXPECTED_BASELINE_BACKFILL_COUNT + EXPECTED_MIGRATE_SCRIPT_COUNT - 1,
+    `LEGACY_COMPLETE: 0001-0029 gerçekten commit oldu (${EXPECTED_BASELINE_BACKFILL_COUNT + EXPECTED_MIGRATE_SCRIPT_COUNT_BEFORE_KNOWN_VIOLATION} satır)`,
+    ledgerAfterBootstrap.rows[0]?.n === EXPECTED_BASELINE_BACKFILL_COUNT + EXPECTED_MIGRATE_SCRIPT_COUNT_BEFORE_KNOWN_VIOLATION,
     `got ${ledgerAfterBootstrap.rows[0]?.n}`,
   );
   record(
@@ -350,14 +360,19 @@ async function testLegacyCompleteAndIdempotency(): Promise<void> {
     );
 
     const postCounts = await getTableRowCounts(pool, ["schema_migrations"]);
-    const preKeys = Object.keys(preCounts).sort();
-    const postKeys = Object.keys(postCounts).sort();
-    const sameTableSet = JSON.stringify(preKeys) === JSON.stringify(postKeys);
-    const sameCounts = sameTableSet && preKeys.every((k) => preCounts[k] === postCounts[k]);
+    const preKeys = Object.keys(preCounts);
+    // 0031/0032 are now pending alongside 0030 in this same second run (they weren't a
+    // separate later slice — they're just more migrate-script files after it), and 0031
+    // adds two brand-new tables (users, sessions). A table that didn't exist "before" has
+    // no prior count to compare against; it only needs to be empty, not absent entirely.
+    const newTables = Object.keys(postCounts).filter((k) => !(k in preCounts));
+    const newTablesAreEmpty = newTables.every((k) => postCounts[k] === 0);
+    const preExistingTablesUnchanged = preKeys.every((k) => preCounts[k] === postCounts[k]);
+    const sameCounts = preExistingTablesUnchanged && newTablesAreEmpty;
     record(
-      "LEGACY_COMPLETE: 0030'un tek başına uygulanması diğer hiçbir tablonun satır sayısını değiştirmedi",
+      "LEGACY_COMPLETE: 0030+0031+0032 uygulanması mevcut hiçbir tablonun satır sayısını değiştirmedi (yeni tablolar boş)",
       sameCounts,
-      sameCounts ? undefined : JSON.stringify({ pre: preCounts, post: postCounts }).slice(0, 400),
+      sameCounts ? undefined : JSON.stringify({ pre: preCounts, post: postCounts, newTables }).slice(0, 400),
     );
 
     const violationsAfterMigrate = await countCancelConsistencyViolations(pool);

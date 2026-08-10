@@ -24,6 +24,7 @@ import { createActionFromReview, createActionFromReport, createManualAction, set
 import { archiveRecord } from "../src/lib/archive/engine";
 import { refreshMetricSnapshots } from "../src/lib/analytics/snapshots";
 import { answerQuestion } from "../src/lib/ai/engine";
+import { ensureSystemActor } from "./db/seed-system-actor";
 
 const pool = new Pool({
   connectionString:
@@ -31,6 +32,7 @@ const pool = new Pool({
 });
 
 async function main() {
+  const actorId = await ensureSystemActor(pool);
   await pool.query(
     `truncate public.source_workbooks, public.payments, public.payment_instances,
        public.cashflow_months, public.cashflow_snapshots, public.checks, public.check_events,
@@ -44,6 +46,7 @@ async function main() {
     pool,
     readFileSync("data/source/mesaili_nakit_akış_tek_vardiya_TEMİZ.xlsx"),
     "TEMİZ.xlsx",
+    actorId,
   );
   if (!r.ok) throw new Error("import failed: " + r.error);
 
@@ -64,17 +67,17 @@ async function main() {
   );
 
   const today = new Date().toISOString().slice(0, 10);
-  const pm = await mapAcceptedCandidates(pool, r.workbookId);
-  await ensureWindow(pool, today, 24);
+  const pm = await mapAcceptedCandidates(pool, r.workbookId, actorId);
+  await ensureWindow(pool, today, actorId, 24);
   const lifecycle = await pool.query<{id:string;amount:number;due_date:string}>(`select id,amount::float8 amount,to_char(due_date,'YYYY-MM-DD') due_date from public.payment_instances where amount is not null and amount>1000 order by due_date,id limit 8`);
-  if(lifecycle.rows[0]) await markInstancePaid(pool,lifecycle.rows[0].id,lifecycle.rows[0].amount);
-  if(lifecycle.rows[1]) await markInstancePaid(pool,lifecycle.rows[1].id,lifecycle.rows[1].amount);
+  if(lifecycle.rows[0]) await markInstancePaid(pool,lifecycle.rows[0].id,lifecycle.rows[0].amount,actorId);
+  if(lifecycle.rows[1]) await markInstancePaid(pool,lifecycle.rows[1].id,lifecycle.rows[1].amount,actorId);
   const futurePartial = await pool.query<{id:string;amount:number}>(`select id,amount::float8 amount from public.payment_instances where due_date>=$1 and amount is not null and amount>1000 and status='unpaid' order by due_date limit 1`,[today]);
-  if(futurePartial.rows[0]) await markInstancePartial(pool,futurePartial.rows[0].id,Math.max(1,Math.floor(futurePartial.rows[0].amount*.4)));
-  if(lifecycle.rows[3]) { await markInstancePaid(pool,lifecycle.rows[3].id,lifecycle.rows[3].amount); await markInstanceUnpaid(pool,lifecycle.rows[3].id); }
-  if(lifecycle.rows[4]) await cancelInstance(pool,lifecycle.rows[4].id,"Demo: yaşam döngüsü örneği için iptal edildi.");
+  if(futurePartial.rows[0]) await markInstancePartial(pool,futurePartial.rows[0].id,Math.max(1,Math.floor(futurePartial.rows[0].amount*.4)),actorId);
+  if(lifecycle.rows[3]) { await markInstancePaid(pool,lifecycle.rows[3].id,lifecycle.rows[3].amount,actorId); await markInstanceUnpaid(pool,lifecycle.rows[3].id,actorId); }
+  if(lifecycle.rows[4]) await cancelInstance(pool,lifecycle.rows[4].id,"Demo: yaşam döngüsü örneği için iptal edildi.",actorId);
   await pool.query(`with future as (select id from public.payment_instances where due_date>=$1 and status='unpaid' order by due_date limit 2) update public.payment_instances i set status='planned',note=concat_ws(' · ',i.note,'Demo yaşam döngüsü') from future f where i.id=f.id`,[today]);
-  const cf = await mapCashflowMonths(pool, r.workbookId);
+  const cf = await mapCashflowMonths(pool, r.workbookId, actorId);
   const cont = await validateContinuity(pool);
   await writeSnapshots(pool, today);
 
@@ -87,19 +90,19 @@ async function main() {
       'break_even_reconciliation','capacity_rate_missing','cost_model_missing'
     )`, [r.workbookId]);
 
-  const checks = await mapAcceptedChecks(pool, r.workbookId);
-  const loans = await mapLoans(pool, r.workbookId);
-  const capacity = await mapCapacitySheet(pool, r.workbookId);
-  const costs = await mapCostSheets(pool, r.workbookId);
+  const checks = await mapAcceptedChecks(pool, r.workbookId, actorId);
+  const loans = await mapLoans(pool, r.workbookId, actorId);
+  const capacity = await mapCapacitySheet(pool, r.workbookId, actorId);
+  const costs = await mapCostSheets(pool, r.workbookId, actorId);
   const profitability = await calculatePartProfitability(pool);
-  const machineMinutes = await mapMachineMinuteAllocations(pool, r.workbookId);
-  const financeAllocations = await mapFinanceCostAllocations(pool, r.workbookId);
+  const machineMinutes = await mapMachineMinuteAllocations(pool, r.workbookId, actorId);
+  const financeAllocations = await mapFinanceCostAllocations(pool, r.workbookId, actorId);
 
   // Machine ROI: prefer the real workbook mapping (it self-blocks while the source sheet
   // has an open/rejected review — e.g. personal/company data mixed — never bypassed here).
   // The manual snapshots below always run too (ON CONFLICT DO NOTHING per machine×year),
   // so every machine has demo-visible ROI even when the workbook path is blocked.
-  const roiMap = await mapMachineRoi(pool, r.workbookId);
+  const roiMap = await mapMachineRoi(pool, r.workbookId, actorId);
   const machines = (await pool.query<{ id: string }>("select id from public.machine_assets order by created_at")).rows;
   const roiYears = [new Date().getFullYear(), new Date().getFullYear() - 1];
   let roiSnapshotsCreated = 0;
@@ -129,7 +132,7 @@ async function main() {
     sourceDate: today,
     reviewStatus: "approved",
     notes: "Yalnız yerel demo/TestSprite doğrulaması için.",
-  });
+  }, actorId);
   const moreAssumptions: Array<{ assumptionType: string; label: string; value: number; unit: string; reviewStatus: "approved" | "pending_review" }> = [
     { assumptionType: "fx_rate", label: "Demo USD/TRY kur varsayımı", value: 34.5, unit: "TRY", reviewStatus: "approved" },
     { assumptionType: "inflation_rate", label: "Demo yıllık TÜFE varsayımı", value: 55, unit: "%", reviewStatus: "approved" },
@@ -143,19 +146,19 @@ async function main() {
       assumptionType: a.assumptionType, label: a.label, valueNumeric: a.value, unit: a.unit,
       currency: "TRY", sourceKind: "user", sourceName: "Demo veri", sourceDate: today,
       reviewStatus: a.reviewStatus, notes: "Yalnız yerel demo/TestSprite doğrulaması için.",
-    });
+    }, actorId);
     if (id) assumptionsCreated++;
   }
 
   // Reports: keep today's daily, add weekly/monthly + one period back each for history depth.
-  await generateDaily(pool, today);
+  await generateDaily(pool, today, actorId);
   const yesterday = new Date(Date.parse(today) - 86400000).toISOString().slice(0, 10);
-  await generateDaily(pool, yesterday);
-  const weekly = await generateWeekly(pool, today);
+  await generateDaily(pool, yesterday, actorId);
+  const weekly = await generateWeekly(pool, today, actorId);
   const lastWeekAnchor = new Date(Date.parse(today) - 7 * 86400000).toISOString().slice(0, 10);
-  await generateWeekly(pool, lastWeekAnchor);
+  await generateWeekly(pool, lastWeekAnchor, actorId);
   const monthStart = `${today.slice(0, 7)}-01`;
-  await generateMonthly(pool, monthStart);
+  await generateMonthly(pool, monthStart, actorId);
 
   // Reminder deliveries: eligibility is an EXACT date match (scheduled_for === that day's
   // date), so schedule across a trailing window before dispatching — a single "today" call
@@ -175,45 +178,45 @@ async function main() {
     name: "Demo gelir -%10",
     scenarioType: "revenue_up_down_percent",
     assumptions: { revenuePct: -0.1 },
-  });
+  }, actorId);
   await createAndRun(pool, {
     name: "Demo gider +%10",
     scenarioType: "expense_up_down_percent",
     assumptions: { expensePct: 0.1 },
-  });
+  }, actorId);
   await createAndRun(pool, {
     name: "Demo müşteri gecikmesi 1 ay",
     scenarioType: "customer_delay_days",
     assumptions: { customerDelayMonths: 1 },
-  });
+  }, actorId);
   await createAndRun(pool, {
     name: "Demo borç servisi dahil",
     scenarioType: "debt_service_overlay",
     assumptions: { includeDebtService: true },
-  });
+  }, actorId);
 
   // Tasks: from an existing open review, from the weekly report just generated, and two
   // manual entries — then a status mix so the queue isn't all "open".
   const openReviews = await pool.query<{ id: string }>(`select id from public.mapping_reviews where status='open' order by created_at limit 2`);
   const taskIds: string[] = [];
   for (const row of openReviews.rows) {
-    const id = await createActionFromReview(pool, row.id);
+    const id = await createActionFromReview(pool, row.id, actorId);
     if (id) taskIds.push(id);
   }
-  const reportTaskId = await createActionFromReport(pool, weekly.id);
+  const reportTaskId = await createActionFromReport(pool, weekly.id, actorId);
   if (reportTaskId) taskIds.push(reportTaskId);
-  const manual1 = await createManualAction(pool, { title: "Demo: Nisan ayı kasa mutabakatını gözden geçir", severity: "medium", owner: "Demo Kullanıcı", note: "Yalnız yerel demo verisi." });
-  const manual2 = await createManualAction(pool, { title: "Demo: Kritik çeklerin banka teyidini al", severity: "high", owner: "Demo Kullanıcı" });
+  const manual1 = await createManualAction(pool, { title: "Demo: Nisan ayı kasa mutabakatını gözden geçir", severity: "medium", owner: "Demo Kullanıcı", note: "Yalnız yerel demo verisi." }, actorId);
+  const manual2 = await createManualAction(pool, { title: "Demo: Kritik çeklerin banka teyidini al", severity: "high", owner: "Demo Kullanıcı" }, actorId);
   if (manual1) taskIds.push(manual1);
   if (manual2) taskIds.push(manual2);
-  if (taskIds[0]) await setActionStatus(pool, taskIds[0], "in_progress");
-  if (taskIds[1]) await setActionStatus(pool, taskIds[1], "done", "Demo: tamamlandı olarak işaretlendi.");
+  if (taskIds[0]) await setActionStatus(pool, taskIds[0], "in_progress", actorId);
+  if (taskIds[1]) await setActionStatus(pool, taskIds[1], "done", actorId, "Demo: tamamlandı olarak işaretlendi.");
 
   // Metric trend history: a weekly cadence of snapshot dates ending today, so /overview
   // sparklines and /system trend have more than a single point.
   for (let w = 7; w >= 0; w--) {
     const d = new Date(Date.parse(today) - w * 7 * 86400000).toISOString().slice(0, 10);
-    await refreshMetricSnapshots(pool, d);
+    await refreshMetricSnapshots(pool, actorId, d);
   }
 
   // Check lifecycle events: mapAcceptedChecks already wrote "created"; add a few more
@@ -228,7 +231,7 @@ async function main() {
   for (const [index, plan] of checkEventPlan.entries()) {
     const check = someChecks[index];
     if (!check) continue;
-    await pool.query(`insert into public.check_events (check_id, event_type, event_note) values ($1,$2,$3)`, [check.id, plan.type, plan.note]);
+    await pool.query(`insert into public.check_events (check_id, event_type, event_note, created_by) values ($1,$2,$3,$4)`, [check.id, plan.type, plan.note, actorId]);
     checkEventsAdded++;
   }
 
@@ -243,7 +246,7 @@ async function main() {
   ];
   let aiAnswersCreated = 0;
   for (const question of aiQuestions) {
-    await answerQuestion(pool, { question, forceDeterministic: true });
+    await answerQuestion(pool, { question, forceDeterministic: true }, actorId);
     aiAnswersCreated++;
   }
 
@@ -252,9 +255,9 @@ async function main() {
   // and the aggregate /system/archive are never empty. The single loan is left alone —
   // archiving it would just move the empty-state to /finance/loans.
   const archivePaymentId = (await pool.query<{ id: string }>("select id from public.payments order by name desc limit 1")).rows[0]?.id;
-  if (archivePaymentId) await archiveRecord(pool, "payments", archivePaymentId, "Demo: arşiv ekranını göstermek için arşivlendi.", "Demo Kullanıcı");
+  if (archivePaymentId) await archiveRecord(pool, "payments", archivePaymentId, "Demo: arşiv ekranını göstermek için arşivlendi.", actorId, "Demo Kullanıcı");
   const archiveCheckId = (await pool.query<{ id: string }>("select id from public.checks order by maturity_date desc limit 1")).rows[0]?.id;
-  if (archiveCheckId) await archiveRecord(pool, "checks", archiveCheckId, "Demo: arşiv ekranını göstermek için arşivlendi.", "Demo Kullanıcı");
+  if (archiveCheckId) await archiveRecord(pool, "checks", archiveCheckId, "Demo: arşiv ekranını göstermek için arşivlendi.", actorId, "Demo Kullanıcı");
 
   console.log(
     `SEED OK — payments=${pm.created} · cashflow months=${cf.monthsCreated} lines=${cf.linesCreated} · chain breaks=${cont.breaks}` +

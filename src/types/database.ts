@@ -19,6 +19,9 @@ export interface ActionItemsRow {
   created_by: string | null;
   created_at: string;
   updated_at: string;
+  archived_at: string | null;
+  archive_reason: string | null;
+  archived_by_label: string | null;
 }
 
 export interface ActionItemsInsert {
@@ -37,6 +40,9 @@ export interface ActionItemsInsert {
   created_by?: string | null;
   created_at?: string;
   updated_at?: string;
+  archived_at?: string | null;
+  archive_reason?: string | null;
+  archived_by_label?: string | null;
 }
 
 export interface AiResponseSnapshotsRow {
@@ -308,6 +314,11 @@ export interface ChecksRow {
   created_at: string;
   updated_at: string;
   counterparty_label: string | null;
+  archived_at: string | null;
+  archive_reason: string | null;
+  archived_by_label: string | null;
+  cancelled_at: string | null;
+  cancel_reason: string | null;
 }
 
 export interface ChecksInsert {
@@ -329,6 +340,11 @@ export interface ChecksInsert {
   created_at?: string;
   updated_at?: string;
   counterparty_label?: string | null;
+  archived_at?: string | null;
+  archive_reason?: string | null;
+  archived_by_label?: string | null;
+  cancelled_at?: string | null;
+  cancel_reason?: string | null;
 }
 
 export interface CostBreakdownLinesRow {
@@ -423,6 +439,9 @@ export interface ExternalAssumptionsRow {
   created_by: string | null;
   created_at: string;
   updated_at: string;
+  archived_at: string | null;
+  archive_reason: string | null;
+  archived_by_label: string | null;
 }
 
 export interface ExternalAssumptionsInsert {
@@ -445,6 +464,9 @@ export interface ExternalAssumptionsInsert {
   created_by?: string | null;
   created_at?: string;
   updated_at?: string;
+  archived_at?: string | null;
+  archive_reason?: string | null;
+  archived_by_label?: string | null;
 }
 
 export interface FinanceCostAllocationsRow {
@@ -527,6 +549,8 @@ export interface LoanInstallmentsRow {
   status: string;
   paid_at: string | null;
   created_at: string;
+  cancelled_at: string | null;
+  cancel_reason: string | null;
 }
 
 export interface LoanInstallmentsInsert {
@@ -541,6 +565,8 @@ export interface LoanInstallmentsInsert {
   status?: string;
   paid_at?: string | null;
   created_at?: string;
+  cancelled_at?: string | null;
+  cancel_reason?: string | null;
 }
 
 export interface LoansRow {
@@ -566,6 +592,9 @@ export interface LoansRow {
   notes: string | null;
   created_at: string;
   updated_at: string;
+  archived_at: string | null;
+  archive_reason: string | null;
+  archived_by_label: string | null;
 }
 
 export interface LoansInsert {
@@ -591,6 +620,9 @@ export interface LoansInsert {
   notes?: string | null;
   created_at?: string;
   updated_at?: string;
+  archived_at?: string | null;
+  archive_reason?: string | null;
+  archived_by_label?: string | null;
 }
 
 export interface MachineAssetsRow {
@@ -705,6 +737,34 @@ export interface MappingReviewsInsert {
   created_at?: string;
 }
 
+export interface MetricSnapshotsRow {
+  id: string;
+  snapshot_date: string;
+  metric_key: string;
+  dimension_key: string;
+  value_numeric: number | null;
+  value_text: string | null;
+  unknown_count: number;
+  confidence: string;
+  source_cutoff: string;
+  meta: Json;
+  created_at: string;
+}
+
+export interface MetricSnapshotsInsert {
+  id?: string;
+  snapshot_date: string;
+  metric_key: string;
+  dimension_key?: string;
+  value_numeric?: number | null;
+  value_text?: string | null;
+  unknown_count?: number;
+  confidence?: string;
+  source_cutoff: string;
+  meta?: Json;
+  created_at?: string;
+}
+
 export interface PartProfitabilityRunsRow {
   id: string;
   part_id: string;
@@ -779,6 +839,9 @@ export interface PaymentInstancesRow {
   source_row_id: string | null;
   created_at: string;
   updated_at: string;
+  cancelled_at: string | null;
+  cancel_reason: string | null;
+  amount_source: string;
 }
 
 export interface PaymentInstancesInsert {
@@ -802,6 +865,9 @@ export interface PaymentInstancesInsert {
   source_row_id?: string | null;
   created_at?: string;
   updated_at?: string;
+  cancelled_at?: string | null;
+  cancel_reason?: string | null;
+  amount_source?: string;
 }
 
 export interface PaymentsRow {
@@ -820,7 +886,6 @@ export interface PaymentsRow {
   amount_confidence: string;
   direction: string;
   priority: string;
-  flexibility_class: string | null;
   status: string;
   source_workbook_id: string | null;
   source_sheet_id: string | null;
@@ -828,6 +893,10 @@ export interface PaymentsRow {
   source_notes: string | null;
   created_at: string;
   updated_at: string;
+  archived_at: string | null;
+  archive_reason: string | null;
+  archived_by_label: string | null;
+  flexibility_class: string | null;
 }
 
 export interface PaymentsInsert {
@@ -846,7 +915,6 @@ export interface PaymentsInsert {
   amount_confidence?: string;
   direction?: string;
   priority?: string;
-  flexibility_class?: string | null;
   status?: string;
   source_workbook_id?: string | null;
   source_sheet_id?: string | null;
@@ -854,6 +922,10 @@ export interface PaymentsInsert {
   source_notes?: string | null;
   created_at?: string;
   updated_at?: string;
+  archived_at?: string | null;
+  archive_reason?: string | null;
+  archived_by_label?: string | null;
+  flexibility_class?: string | null;
 }
 
 export interface ProductionPartsRow {
@@ -1033,6 +1105,9 @@ export interface ScenarioRunsRow {
   confidence: string;
   notes: string | null;
   created_at: string;
+  archived_at: string | null;
+  archive_reason: string | null;
+  archived_by_label: string | null;
 }
 
 export interface ScenarioRunsInsert {
@@ -1054,6 +1129,9 @@ export interface ScenarioRunsInsert {
   confidence?: string;
   notes?: string | null;
   created_at?: string;
+  archived_at?: string | null;
+  archive_reason?: string | null;
+  archived_by_label?: string | null;
 }
 
 export interface ScenariosRow {
@@ -1076,6 +1154,42 @@ export interface ScenariosInsert {
   baseline_month_count?: number | null;
   created_by?: string | null;
   created_at?: string;
+}
+
+export interface SchemaMigrationsRow {
+  version: string;
+  name: string;
+  checksum: string;
+  applied_at: string;
+  applied_by: string;
+}
+
+export interface SchemaMigrationsInsert {
+  version: string;
+  name: string;
+  checksum: string;
+  applied_at?: string;
+  applied_by?: string;
+}
+
+export interface SessionsRow {
+  id: string;
+  user_id: string;
+  token_hash: string;
+  created_at: string;
+  expires_at: string;
+  revoked_at: string | null;
+  last_seen_at: string | null;
+}
+
+export interface SessionsInsert {
+  id?: string;
+  user_id: string;
+  token_hash: string;
+  created_at?: string;
+  expires_at: string;
+  revoked_at?: string | null;
+  last_seen_at?: string | null;
 }
 
 export interface SettingsRow {
@@ -1174,6 +1288,32 @@ export interface SourceWorkbooksInsert {
   notes?: string | null;
 }
 
+export interface UsersRow {
+  id: string;
+  username: string;
+  password_hash: string;
+  display_name: string;
+  role: string;
+  is_active: boolean;
+  failed_login_count: number;
+  locked_until: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface UsersInsert {
+  id?: string;
+  username: string;
+  password_hash: string;
+  display_name: string;
+  role?: string;
+  is_active?: boolean;
+  failed_login_count?: number;
+  locked_until?: string | null;
+  created_at?: string;
+  updated_at?: string;
+}
+
 export interface Database {
   public: {
     Tables: {
@@ -1199,6 +1339,7 @@ export interface Database {
       machine_minute_allocations: { Row: MachineMinuteAllocationsRow; Insert: MachineMinuteAllocationsInsert };
       machine_roi_snapshots: { Row: MachineRoiSnapshotsRow; Insert: MachineRoiSnapshotsInsert };
       mapping_reviews: { Row: MappingReviewsRow; Insert: MappingReviewsInsert };
+      metric_snapshots: { Row: MetricSnapshotsRow; Insert: MetricSnapshotsInsert };
       part_profitability_runs: { Row: PartProfitabilityRunsRow; Insert: PartProfitabilityRunsInsert };
       parties: { Row: PartiesRow; Insert: PartiesInsert };
       payment_instances: { Row: PaymentInstancesRow; Insert: PaymentInstancesInsert };
@@ -1212,10 +1353,13 @@ export interface Database {
       scenario_run_lines: { Row: ScenarioRunLinesRow; Insert: ScenarioRunLinesInsert };
       scenario_runs: { Row: ScenarioRunsRow; Insert: ScenarioRunsInsert };
       scenarios: { Row: ScenariosRow; Insert: ScenariosInsert };
+      schema_migrations: { Row: SchemaMigrationsRow; Insert: SchemaMigrationsInsert };
+      sessions: { Row: SessionsRow; Insert: SessionsInsert };
       settings: { Row: SettingsRow; Insert: SettingsInsert };
       source_cells: { Row: SourceCellsRow; Insert: SourceCellsInsert };
       source_sheets: { Row: SourceSheetsRow; Insert: SourceSheetsInsert };
       source_workbooks: { Row: SourceWorkbooksRow; Insert: SourceWorkbooksInsert };
+      users: { Row: UsersRow; Insert: UsersInsert };
     };
   };
 }

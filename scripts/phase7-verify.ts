@@ -14,6 +14,7 @@ import {
   loadActualMonthlyIncome, loadCapacityDemand, loadCapacityModels, loadCostModels,
   mapCapacitySheet, mapCostSheets,
 } from "../src/lib/production/engine";
+import { ensureSystemActor } from "./db/seed-system-actor";
 
 const pool = new Pool({
   connectionString:
@@ -39,12 +40,16 @@ async function financeFingerprint(): Promise<string> {
 }
 
 async function main() {
-  await pool.query(`truncate public.source_workbooks, public.capacity_models, public.cost_models,
-    public.production_parts, public.part_profitability_runs, public.machine_roi_snapshots,
-    public.payments, public.payment_instances, public.cashflow_months, public.checks,
-    public.loans, public.reminder_deliveries, public.reports, public.audit_logs restart identity cascade`);
+  // audit_logs is append-only since 0022 (no UPDATE/DELETE/TRUNCATE, ever) — it is
+  // deliberately NOT in the reset below. Each verify run gets a freshly created
+  // disposable database instead, so the audit table starts empty without weakening
+  // the invariant.
+  // audit_logs.actor_id is an FK to public.users(id) since 0032; verify scripts run
+  // without a session, so they attribute to the reserved "system" account.
+  const actorId = await ensureSystemActor(pool);
+  await pool.query(`truncate public.source_workbooks, public.capacity_models, public.cost_models, public.production_parts, public.part_profitability_runs, public.machine_roi_snapshots, public.payments, public.payment_instances, public.cashflow_months, public.checks, public.loans, public.reminder_deliveries, public.reports restart identity cascade`);
 
-  const r = await importWorkbook(pool, readFileSync(SRC), "TEMİZ.xlsx");
+  const r = await importWorkbook(pool, readFileSync(SRC), "TEMİZ.xlsx", actorId);
   if (!r.ok) fail("import failed");
   const wb = r.workbookId;
 
@@ -56,10 +61,10 @@ async function main() {
   const before = await financeFingerprint();
 
   // 1) capacity mapping + idempotency
-  const c1 = await mapCapacitySheet(pool, wb);
+  const c1 = await mapCapacitySheet(pool, wb, actorId);
   console.log("capacity map#1:", JSON.stringify(c1));
   if (c1.capacityCreated !== 1) fail("expected 1 capacity model");
-  const c2 = await mapCapacitySheet(pool, wb);
+  const c2 = await mapCapacitySheet(pool, wb, actorId);
   if (c2.capacityCreated !== 0 || c2.partsCreated !== 0) fail("capacity mapping not idempotent");
 
   // 2) NO SILENT DISCARD: mapped part demand == source kapasite G5+H5
@@ -84,9 +89,9 @@ async function main() {
   console.log(`capacity ✓ freze=${cap.frezeRateTLPerMin} torna=${cap.tornaRateTLPerMin} stale=${cap.isStaleRate}(${cap.rateYear})`);
 
   // 5) cost mapping: break-even == source, reconciles; idempotent
-  const cm1 = await mapCostSheets(pool, wb);
+  const cm1 = await mapCostSheets(pool, wb, actorId);
   if (cm1.created !== 2) fail(`expected 2 cost models, got ${cm1.created}`);
-  const cm2 = await mapCostSheets(pool, wb);
+  const cm2 = await mapCostSheets(pool, wb, actorId);
   if (cm2.created !== 0) fail("cost mapping not idempotent");
   const costs = await loadCostModels(pool);
   const normal = costs.find((x) => x.scenario === "normal")!;

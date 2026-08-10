@@ -16,6 +16,7 @@ import { pathToFileURL } from "node:url";
 import { Pool, type PoolClient } from "pg";
 import { istanbulDateISO } from "../../src/lib/time/istanbul";
 import { verifyRestoreListable } from "./backup-docker-postgres";
+import { getSystemActorId } from "./seed-system-actor";
 import {
   ApprovalManifestSchema,
   BackupReceiptSchema,
@@ -298,6 +299,18 @@ async function runRepairTransaction(
   );
 
   const operationId = randomUUID();
+  // Actor resolution is conditional ON PURPOSE. On any real, migrated database (0031+) this
+  // tool has no logged-in session, so it attributes to the reserved "system" account like
+  // every other maintenance script. But this tool is also designed to run against the frozen
+  // pre-0031 era it was built for — scripts/db/legacy-repair-verify.ts deliberately hides
+  // every migration from 0030 onward, so public.users genuinely does not exist there. In that
+  // world null is the only truthful actor, and it is exactly what 0032 blesses: "actor stays
+  // nullable here — every pre-P0-A row keeps actor=null forever".
+  // Probing for the table (rather than catching the error) keeps the two cases explicit.
+  const usersTableExists = await pool.query<{ present: boolean }>(
+    `select to_regclass('public.users') is not null as present`,
+  );
+  const actorId = usersTableExists.rows[0].present ? await getSystemActorId(pool) : null;
   const client = await pool.connect();
   let stage: ApplyStage = "precondition";
   let commitConfirmed = false;
@@ -410,7 +423,7 @@ async function runRepairTransaction(
     for (const a of approval.approvals) {
       const target = targetByKey.get(`${a.instanceId}|${a.kind}`)!;
       if (a.kind === "archive_cascade_repair") {
-        const result = await cancelInstanceWithClient(client, a.instanceId, a.approvedCancelReason, {
+        const result = await cancelInstanceWithClient(client, a.instanceId, a.approvedCancelReason, actorId, {
           auditAction: "legacy_archive_cascade_repair",
           eventTimestamp,
         });
@@ -420,7 +433,7 @@ async function runRepairTransaction(
           cancelledAt: result.cancelledAt, beforeHash: target.beforeStateHash, afterHash,
         });
       } else {
-        const result = await repairCancellationMetadataWithClient(client, a.instanceId, a.approvedCancelledAt!, a.approvedCancelReason);
+        const result = await repairCancellationMetadataWithClient(client, a.instanceId, a.approvedCancelledAt!, a.approvedCancelReason, actorId);
         const afterHash = await fingerprintOne(client, a.instanceId);
         appliedRepairs.push({
           instanceId: a.instanceId, kind: a.kind, auditId: result.auditId,
@@ -486,6 +499,7 @@ async function runRepairTransaction(
         untouchedScopeAfterHash,
       },
       eventTimestamp,
+      actorId,
     );
 
     stage = "commit";

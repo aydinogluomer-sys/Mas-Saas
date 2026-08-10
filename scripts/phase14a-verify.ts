@@ -12,6 +12,7 @@ import {
   loadDataQualityCenter,
   setActionStatus,
 } from "../src/lib/data-quality/engine";
+import { ensureSystemActor } from "./db/seed-system-actor";
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL ?? "postgres://postgres:postgres@127.0.0.1:5432/mas_radar_dev",
@@ -34,11 +35,16 @@ async function financeFingerprint(): Promise<string> {
 }
 
 async function main() {
-  await pool.query(`truncate public.source_workbooks, public.payments, public.payment_instances,
-    public.cashflow_months, public.checks, public.loans, public.loan_installments,
-    public.action_items, public.audit_logs restart identity cascade`);
+  // audit_logs is append-only since 0022 (no UPDATE/DELETE/TRUNCATE, ever) — it is
+  // deliberately NOT in the reset below. Each verify run gets a freshly created
+  // disposable database instead, so the audit table starts empty without weakening
+  // the invariant.
+  // audit_logs.actor_id is an FK to public.users(id) since 0032; verify scripts run
+  // without a session, so they attribute to the reserved "system" account.
+  const actorId = await ensureSystemActor(pool);
+  await pool.query(`truncate public.source_workbooks, public.payments, public.payment_instances, public.cashflow_months, public.checks, public.loans, public.loan_installments, public.action_items restart identity cascade`);
 
-  const imported = await importWorkbook(pool, readFileSync(SRC), "TEM\u0130Z.xlsx");
+  const imported = await importWorkbook(pool, readFileSync(SRC), "TEM\u0130Z.xlsx", actorId);
   if (!imported.ok || imported.reviewsInserted === 0) fail("import did not create mapping reviews");
   const review = (await q(`
     select id, issue_type, severity from public.mapping_reviews
@@ -48,8 +54,8 @@ async function main() {
   if (!review?.id) fail("missing open review to task");
 
   const before = await financeFingerprint();
-  const reviewAction1 = await createActionFromReview(pool, review.id);
-  const reviewAction2 = await createActionFromReview(pool, review.id);
+  const reviewAction1 = await createActionFromReview(pool, review.id, actorId);
+  const reviewAction2 = await createActionFromReview(pool, review.id, actorId);
   if (!reviewAction1 || reviewAction1 !== reviewAction2) fail("review action must be idempotent while open");
 
   const homeAction1 = await createActionFromHomeSignal(pool, {
@@ -57,19 +63,19 @@ async function main() {
     severity: "high",
     sourceFactKey: "first_negative_month",
     sourceHref: "/cashflow",
-  });
+  }, actorId);
   const homeAction2 = await createActionFromHomeSignal(pool, {
     title: "duplicate should reuse",
     severity: "high",
     sourceFactKey: "first_negative_month",
     sourceHref: "/cashflow",
-  });
+  }, actorId);
   if (homeAction1 !== homeAction2) fail("home action must be idempotent by source fact");
 
-  const manual = await createManualAction(pool, { title: "Manuel veri kontrolu", severity: "medium", owner: "MAS" });
+  const manual = await createManualAction(pool, { title: "Manuel veri kontrolu", severity: "medium", owner: "MAS" }, actorId);
   if (!manual) fail("manual action not created");
   const manualId = manual as string;
-  await setActionStatus(pool, manualId, "done");
+  await setActionStatus(pool, manualId, "done", actorId);
 
   const center = await loadDataQualityCenter(pool);
   if (center.blockers.length === 0 || center.blockers.length > 5) fail("center blockers must be 1..5");

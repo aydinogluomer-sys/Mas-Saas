@@ -7,6 +7,7 @@ import { importWorkbook } from "../src/lib/importers/workbook-importer";
 import { mapCashflowMonths } from "../src/lib/cashflow/engine";
 import { mapAcceptedChecks, mapLoans } from "../src/lib/financing/engine";
 import { createAndRun } from "../src/lib/scenarios/engine";
+import { ensureSystemActor } from "./db/seed-system-actor";
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL ?? "postgres://postgres:postgres@127.0.0.1:5432/mas_radar_dev",
@@ -29,20 +30,24 @@ async function coreFingerprint(): Promise<string> {
 }
 
 async function main() {
-  await pool.query(`truncate public.source_workbooks, public.cashflow_months, public.cashflow_snapshots,
-    public.loans, public.loan_installments, public.payments, public.payment_instances, public.checks,
-    public.scenarios, public.scenario_runs, public.scenario_run_lines, public.scenario_assumptions,
-    public.scenario_comparisons, public.audit_logs restart identity cascade`);
+  // audit_logs is append-only since 0022 (no UPDATE/DELETE/TRUNCATE, ever) — it is
+  // deliberately NOT in the reset below. Each verify run gets a freshly created
+  // disposable database instead, so the audit table starts empty without weakening
+  // the invariant.
+  // audit_logs.actor_id is an FK to public.users(id) since 0032; verify scripts run
+  // without a session, so they attribute to the reserved "system" account.
+  const actorId = await ensureSystemActor(pool);
+  await pool.query(`truncate public.source_workbooks, public.cashflow_months, public.cashflow_snapshots, public.loans, public.loan_installments, public.payments, public.payment_instances, public.checks, public.scenarios, public.scenario_runs, public.scenario_run_lines, public.scenario_assumptions, public.scenario_comparisons restart identity cascade`);
 
-  const imported = await importWorkbook(pool, readFileSync(SRC), "TEM\u0130Z.xlsx");
+  const imported = await importWorkbook(pool, readFileSync(SRC), "TEM\u0130Z.xlsx", actorId);
   if (!imported.ok) fail("import failed");
   const wb = imported.workbookId;
   await pool.query(`update public.mapping_reviews set status='resolved', reviewed_at=now()
     where issue_type in ('cashflow_identity_mismatch','cashflow_header_missing',
                          'loan_field_ambiguous','loan_term_mismatch','checks_header_not_found')`);
-  await mapCashflowMonths(pool, wb);
-  await mapAcceptedChecks(pool, wb);
-  await mapLoans(pool, wb);
+  await mapCashflowMonths(pool, wb, actorId);
+  await mapAcceptedChecks(pool, wb, actorId);
+  await mapLoans(pool, wb, actorId);
 
   const income = (await q(`
     select cl.label, to_char(cm.month_start,'YYYY-MM-DD') as month_start, cl.amount::float8 amount
@@ -76,7 +81,7 @@ async function main() {
       factoringFeePct: 0.04,
       includeDebtService: true,
     },
-  });
+  }, actorId);
 
   const assumptionKeys = (await q(`select key from public.scenario_assumptions where run_id=$1 order by key`, [run.runId])).map((r) => r.key);
   for (const key of ["targetIncomeDelayMonths", "targetOutflowDelayMonths", "factoringAdvanceMonth", "factoringFeePct", "includeDebtService"])

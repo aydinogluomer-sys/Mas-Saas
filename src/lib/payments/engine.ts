@@ -12,6 +12,7 @@ import {
 
 async function audit(
   client: PoolClient,
+  actor: string,
   action: string,
   entityTable: string,
   entityId: string | null,
@@ -20,8 +21,8 @@ async function audit(
 ): Promise<void> {
   await client.query(
     `insert into public.audit_logs (actor, action, entity_table, entity_id, before_data, after_data)
-     values (null, $1, $2, $3, $4, $5)`,
-    [action, entityTable, entityId, JSON.stringify(before ?? null), JSON.stringify(after ?? null)],
+     values ($1, $2, $3, $4, $5, $6)`,
+    [actor, action, entityTable, entityId, JSON.stringify(before ?? null), JSON.stringify(after ?? null)],
   );
 }
 
@@ -40,6 +41,7 @@ export async function archivePayment(
   id: string,
   input: ArchivePaymentInput,
   todayISO: string,
+  actorId: string,
 ): Promise<void> {
   assertISODateString(todayISO);
   const client = await pool.connect();
@@ -57,7 +59,7 @@ export async function archivePayment(
        where id=$1`,
       [id, input.reason, input.archivedByLabel],
     );
-    await audit(client, "archive_payment", "payments", id, before.rows[0], {
+    await audit(client, actorId, "archive_payment", "payments", id, before.rows[0], {
       status: "archived",
       archive_reason: input.reason,
       archived_by_label: input.archivedByLabel,
@@ -75,7 +77,7 @@ export async function archivePayment(
       [id, ARCHIVE_CASCADE_FROM, todayISO],
     );
     for (const row of eligible.rows) {
-      await cancelInstanceWithClient(client, row.id, `Ödeme arşivlendi: ${input.reason}`);
+      await cancelInstanceWithClient(client, row.id, `Ödeme arşivlendi: ${input.reason}`, actorId);
     }
 
     await client.query("commit");
@@ -115,6 +117,7 @@ export async function updatePaymentAndReconcile(
   id: string,
   f: UpdatePaymentFields,
   todayISO: string,
+  actorId: string,
 ): Promise<void> {
   assertISODateString(todayISO);
   const client = await pool.connect();
@@ -133,18 +136,18 @@ export async function updatePaymentAndReconcile(
        f.amount_confidence, f.direction, f.priority, f.flexibility_class, f.status,
        f.category_id, f.provider_party_id, f.owner_party_id, f.cash_account_id, f.description],
     );
-    await audit(client, "update_payment", "payments", id, before.rows[0], f);
+    await audit(client, actorId, "update_payment", "payments", id, before.rows[0], f);
 
     const reconcileFields: ReconcileFields = {
       dueDay: f.due_day,
       defaultAmount: f.default_amount,
       amountConfidence: f.amount_confidence,
     };
-    await reconcileInstancesWithClient(client, id, reconcileFields, todayISO);
+    await reconcileInstancesWithClient(client, id, reconcileFields, todayISO, actorId);
 
     const m0 = todayISO.slice(0, 7) + "-01";
     for (const m of [addMonths(m0, -1), m0, addMonths(m0, 1)]) {
-      await generateInstancesForMonthWithClient(client, m);
+      await generateInstancesForMonthWithClient(client, m, actorId);
     }
     await refreshRiskFlagsWithClient(client, todayISO);
 

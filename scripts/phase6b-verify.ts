@@ -12,6 +12,7 @@ import { ensureWindow, mapAcceptedCandidates } from "../src/lib/radar/engine";
 import { dispatchPending, scheduleReminders } from "../src/lib/reminders/engine";
 import { mockTransport } from "../src/lib/reminders/transport";
 import { istanbulDateISO } from "../src/lib/reports/rules";
+import { ensureSystemActor } from "./db/seed-system-actor";
 
 const pool = new Pool({
   connectionString:
@@ -34,15 +35,21 @@ async function financialFingerprint(): Promise<string> {
 }
 
 async function main() {
-  await pool.query(`truncate public.source_workbooks, public.payments, public.payment_instances,
-    public.reminder_deliveries, public.audit_logs restart identity cascade`);
+  // audit_logs is append-only since 0022 (no UPDATE/DELETE/TRUNCATE, ever) — it is
+  // deliberately NOT in the reset below. Each verify run gets a freshly created
+  // disposable database instead, so the audit table starts empty without weakening
+  // the invariant.
+  // audit_logs.actor_id is an FK to public.users(id) since 0032; verify scripts run
+  // without a session, so they attribute to the reserved "system" account.
+  const actorId = await ensureSystemActor(pool);
+  await pool.query(`truncate public.source_workbooks, public.payments, public.payment_instances, public.reminder_deliveries restart identity cascade`);
 
-  const r = await importWorkbook(pool, readFileSync(SRC), "TEMİZ.xlsx");
+  const r = await importWorkbook(pool, readFileSync(SRC), "TEMİZ.xlsx", actorId);
   if (!r.ok) fail("import failed");
   await pool.query(`update public.mapping_reviews set status='accepted' where workbook_id=$1
     and issue_type in ('missing_due_day','amount_alignment','unlabeled_amount','multiple_day_markers')`, [r.workbookId]);
-  await mapAcceptedCandidates(pool, r.workbookId);
-  await ensureWindow(pool, TODAY);
+  await mapAcceptedCandidates(pool, r.workbookId, actorId);
+  await ensureWindow(pool, TODAY, actorId);
 
   const rules = (await q(`select count(*)::int n from public.reminders where is_active`))[0].n;
   const openInst = (await q(`select count(*)::int n from public.payment_instances where status in ('unpaid','partial')`))[0].n;

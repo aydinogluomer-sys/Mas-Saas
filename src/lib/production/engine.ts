@@ -15,11 +15,11 @@ import type { CellVal, RowJson } from "@/lib/importers/row-utils";
 import { normalizeTr } from "@/lib/importers/workbook-parser";
 import { breakEvenTLPerMin, machineRoi, partProfitability } from "./rules";
 
-async function audit(client: PoolClient, action: string, entityTable: string, entityId: string | null, after: unknown): Promise<void> {
+async function audit(client: PoolClient, actor: string, action: string, entityTable: string, entityId: string | null, after: unknown): Promise<void> {
   await client.query(
     `insert into public.audit_logs (actor, action, entity_table, entity_id, before_data, after_data)
-     values (null,$1,$2,$3,null,$4)`,
-    [action, entityTable, entityId, JSON.stringify(after ?? null)],
+     values ($1,$2,$3,$4,null,$5)`,
+    [actor, action, entityTable, entityId, JSON.stringify(after ?? null)],
   );
 }
 
@@ -54,7 +54,7 @@ export interface CapacityMapResult {
   excluded: Array<{ sheet: string; reason: string }>;
 }
 
-export async function mapCapacitySheet(pool: Pool, workbookId: string): Promise<CapacityMapResult> {
+export async function mapCapacitySheet(pool: Pool, workbookId: string, actorId: string): Promise<CapacityMapResult> {
   const client = await pool.connect();
   try {
     await client.query("begin");
@@ -122,7 +122,7 @@ export async function mapCapacitySheet(pool: Pool, workbookId: string): Promise<
         );
         res.partsCreated += p.rowCount ?? 0;
       }
-      await audit(client, "map_capacity", "capacity_models", capacityId, {
+      await audit(client, actorId, "map_capacity", "capacity_models", capacityId, {
         sheet: sheet.sheet_name, parts: capacity.parts.length, stale: isStale,
       });
     }
@@ -145,7 +145,7 @@ export interface CostMapResult {
   excluded: Array<{ sheet: string; reason: string }>;
 }
 
-export async function mapCostSheets(pool: Pool, workbookId: string): Promise<CostMapResult> {
+export async function mapCostSheets(pool: Pool, workbookId: string, actorId: string): Promise<CostMapResult> {
   const client = await pool.connect();
   try {
     await client.query("begin");
@@ -222,7 +222,7 @@ export async function mapCostSheets(pool: Pool, workbookId: string): Promise<Cos
         );
         res.reconciliationReviews += r.rowCount ?? 0;
       }
-      await audit(client, "map_cost_model", "cost_models", costId, { scenario, sheet: sheet.sheet_name, breakEven });
+      await audit(client, actorId, "map_cost_model", "cost_models", costId, { scenario, sheet: sheet.sheet_name, breakEven });
     }
     await client.query("commit");
     return res;
@@ -323,7 +323,7 @@ export interface MachineRoiMapResult {
   excluded: Array<{ sheet: string; reason: string }>;
 }
 
-export async function mapMachineRoi(pool: Pool, workbookId: string): Promise<MachineRoiMapResult> {
+export async function mapMachineRoi(pool: Pool, workbookId: string, actorId: string): Promise<MachineRoiMapResult> {
   const client = await pool.connect();
   try {
     await client.query("begin");
@@ -389,7 +389,7 @@ export async function mapMachineRoi(pool: Pool, workbookId: string): Promise<Mac
         );
         if ((agg.rowCount ?? 0) > 0) res.aggregateSnapshot = true;
       }
-      await audit(client, "map_machine_roi", "machine_roi_snapshots", sheet.id, {
+      await audit(client, actorId, "map_machine_roi", "machine_roi_snapshots", sheet.id, {
         sheet: sheet.sheet_name, machines: roi.machines.length, year, net: roi.netAfterTax,
       });
     }
@@ -427,7 +427,7 @@ export interface MachineMinuteAllocationResult {
   excluded: Array<{ capacityModelId: string; reason: string }>;
 }
 
-export async function mapMachineMinuteAllocations(pool: Pool, workbookId: string): Promise<MachineMinuteAllocationResult> {
+export async function mapMachineMinuteAllocations(pool: Pool, workbookId: string, actorId: string): Promise<MachineMinuteAllocationResult> {
   const client = await pool.connect();
   try {
     await client.query("begin");
@@ -517,7 +517,7 @@ export async function mapMachineMinuteAllocations(pool: Pool, workbookId: string
         if ((ins.rowCount ?? 0) > 0) res.created++;
         else res.skipped++;
       }
-      await audit(client, "map_machine_minutes", "machine_minute_allocations", cap.id, {
+      await audit(client, actorId, "map_machine_minutes", "machine_minute_allocations", cap.id, {
         capacity_model_id: cap.id, torna: demandRow.torna, freze: demandRow.freze,
       });
     }
@@ -537,7 +537,7 @@ export interface FinanceCostAllocationResult {
   excluded: Array<{ loanId: string | null; reason: string }>;
 }
 
-export async function mapFinanceCostAllocations(pool: Pool, workbookId: string): Promise<FinanceCostAllocationResult> {
+export async function mapFinanceCostAllocations(pool: Pool, workbookId: string, actorId: string): Promise<FinanceCostAllocationResult> {
   const client = await pool.connect();
   try {
     await client.query("begin");
@@ -620,7 +620,7 @@ export async function mapFinanceCostAllocations(pool: Pool, workbookId: string):
           if ((ins.rowCount ?? 0) > 0) res.created++;
           else res.skipped++;
         }
-        await audit(client, "map_finance_cost_allocation", "finance_cost_allocations", loan.id, {
+        await audit(client, actorId, "map_finance_cost_allocation", "finance_cost_allocations", loan.id, {
           loan: loan.name, capacity_model_id: cap.id, total_finance_cost: loan.total_finance_cost,
         });
       }

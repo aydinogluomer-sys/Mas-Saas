@@ -7,6 +7,7 @@ import { readFileSync } from "node:fs";
 import { Pool } from "pg";
 import { importWorkbook } from "../src/lib/importers/workbook-importer";
 import { loadMachineRoi, loadMachineRoiAggregate, mapMachineRoi } from "../src/lib/production/engine";
+import { ensureSystemActor } from "./db/seed-system-actor";
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL ?? "postgres://postgres:postgres@127.0.0.1:5432/mas_radar_dev",
@@ -28,12 +29,17 @@ async function financeFingerprint(): Promise<string> {
 }
 
 async function main() {
-  await pool.query(`truncate public.source_workbooks, public.machine_roi_snapshots,
-    public.payments, public.payment_instances, public.cashflow_months, public.checks, public.loans, public.cost_models,
-    public.audit_logs restart identity cascade`);
+  // audit_logs is append-only since 0022 (no UPDATE/DELETE/TRUNCATE, ever) — it is
+  // deliberately NOT in the reset below. Each verify run gets a freshly created
+  // disposable database instead, so the audit table starts empty without weakening
+  // the invariant.
+  // audit_logs.actor_id is an FK to public.users(id) since 0032; verify scripts run
+  // without a session, so they attribute to the reserved "system" account.
+  const actorId = await ensureSystemActor(pool);
+  await pool.query(`truncate public.source_workbooks, public.machine_roi_snapshots, public.payments, public.payment_instances, public.cashflow_months, public.checks, public.loans, public.cost_models restart identity cascade`);
   // machine_assets keeps its 4 seeded rows (not truncated); reset their purchase_cost
   await pool.query(`update public.machine_assets set purchase_cost=null`);
-  const r = await importWorkbook(pool, readFileSync(SRC), "TEMİZ.xlsx");
+  const r = await importWorkbook(pool, readFileSync(SRC), "TEMİZ.xlsx", actorId);
   if (!r.ok) fail("import failed");
   const wb = r.workbookId;
 
@@ -45,16 +51,16 @@ async function main() {
   const before = await financeFingerprint();
 
   // 2) while the review is OPEN, machine ROI is blocked (nothing mapped)
-  const blocked = await mapMachineRoi(pool, wb);
+  const blocked = await mapMachineRoi(pool, wb, actorId);
   if (blocked.perMachineSnapshots !== 0 || blocked.excluded.length === 0) fail("ROI should be blocked until review resolved");
   console.log(`bloke ✓ (kişisel-veri incelemesi açıkken makine ROI aktarılmıyor)`);
 
   // 3) human resolves the personal-data review → machine ROI maps (personal STILL excluded)
   await pool.query(`update public.mapping_reviews set status='resolved' where issue_type='personal_data_mixed'`);
-  const m1 = await mapMachineRoi(pool, wb);
+  const m1 = await mapMachineRoi(pool, wb, actorId);
   if (m1.perMachineSnapshots < 4) fail(`expected ≥4 machine snapshots, got ${m1.perMachineSnapshots}`);
   if (!m1.aggregateSnapshot) fail("aggregate P&L snapshot missing");
-  const m2 = await mapMachineRoi(pool, wb);
+  const m2 = await mapMachineRoi(pool, wb, actorId);
   if (m2.perMachineSnapshots !== 0) fail("machine ROI mapping not idempotent");
   console.log(`aktarım ✓ ${m1.perMachineSnapshots} makine snapshot + toplam P&L (inceleme çözülünce), tekrar=0`);
 

@@ -4,6 +4,7 @@
 import { readFileSync } from "node:fs";
 import { Pool } from "pg";
 import { importWorkbook } from "../src/lib/importers/workbook-importer";
+import { ensureSystemActor } from "./db/seed-system-actor";
 
 const pool = new Pool({
   connectionString:
@@ -16,11 +17,12 @@ function fail(msg: string): never {
 }
 
 async function main() {
+  const actorId = await ensureSystemActor(pool);
   await pool.query("truncate public.source_workbooks cascade"); // staging only, dev db
 
   // 1) valid TEMİZ workbook
   const validPath = "data/source/mesaili_nakit_akış_tek_vardiya_TEMİZ.xlsx";
-  const r1 = await importWorkbook(pool, readFileSync(validPath), "TEMİZ.xlsx");
+  const r1 = await importWorkbook(pool, readFileSync(validPath), "TEMİZ.xlsx", actorId);
   console.log("valid import:", JSON.stringify(r1));
   if (!r1.ok) fail("valid workbook import failed");
   if (r1.sheets !== 43) fail(`expected 43 sheets, got ${r1.sheets}`);
@@ -30,7 +32,7 @@ async function main() {
 
   // 2) corrupt workbook → failed status, no partial rows
   const corruptPath = "data/source/mesaili_nakit_akış_tek_vardiya_TEMİZ-4.xlsx";
-  const r2 = await importWorkbook(pool, readFileSync(corruptPath), "TEMİZ-4.xlsx");
+  const r2 = await importWorkbook(pool, readFileSync(corruptPath), "TEMİZ-4.xlsx", actorId);
   console.log("corrupt import:", JSON.stringify(r2));
   if (r2.ok) fail("corrupt workbook must fail");
   const partial = await pool.query(

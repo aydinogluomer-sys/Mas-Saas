@@ -1,11 +1,10 @@
 import type { ReactNode } from "react";
-import { redirect } from "next/navigation";
 import { logoutAction } from "@/app/login/actions";
 import { NavigationFeedbackProvider } from "@/components/ui/navigation-feedback";
 import { AppSidebar, type NavItem } from "@/components/ui/nav";
 import { AppToaster, FlashToaster } from "@/components/ui/primitives/toast";
 import { TooltipProvider } from "@/components/ui/primitives/tooltip";
-import { accessGateEnabled, hasValidSession } from "@/lib/auth";
+import { requireSession } from "@/lib/auth";
 
 // Financial workspaces must read current PostgreSQL data at request time.
 // This also prevents production builds from opening dozens of DB-backed pages
@@ -25,9 +24,9 @@ const NAV: NavItem[] = [
 ];
 
 export default async function DashboardLayout({ children }: { children: ReactNode }) {
-  if (accessGateEnabled() && !(await hasValidSession())) redirect("/login");
+  await requireSession();
   return <NavigationFeedbackProvider><div className="app-shell">
-    <AppSidebar items={NAV} gate={accessGateEnabled()} logoutAction={logoutAction} />
+    <AppSidebar items={NAV} gate={true} logoutAction={logoutAction} />
     <div className="workspace-shell">
       <header className="workspace-bar">
         <div><span className="workspace-product">MAS Nakit Radar</span><span className="workspace-separator">/</span><span className="workspace-context">Finans operasyon merkezi</span></div>

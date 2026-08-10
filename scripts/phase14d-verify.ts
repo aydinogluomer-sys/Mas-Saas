@@ -6,6 +6,7 @@ import { answerQuestion } from "../src/lib/ai/engine";
 import { createExternalAssumption } from "../src/lib/external-assumptions/engine";
 import { loadDecisionFacts } from "../src/lib/facts/engine";
 import { createAndRun } from "../src/lib/scenarios/engine";
+import { ensureSystemActor } from "./db/seed-system-actor";
 
 process.env.AI_FORCE_DETERMINISTIC = "1";
 
@@ -42,10 +43,15 @@ async function ensureBaseline() {
 }
 
 async function main() {
+  // audit_logs is append-only since 0022 (no UPDATE/DELETE/TRUNCATE, ever) — it is
+  // deliberately NOT in the reset below. Each verify run gets a freshly created
+  // disposable database instead, so the audit table starts empty without weakening
+  // the invariant.
+  // audit_logs.actor_id is an FK to public.users(id) since 0032; verify scripts run
+  // without a session, so they attribute to the reserved "system" account.
+  const actorId = await ensureSystemActor(pool);
   await ensureBaseline();
-  await pool.query(`truncate public.external_assumptions, public.scenario_assumptions,
-    public.scenario_comparisons, public.scenario_run_lines, public.scenario_runs,
-    public.scenarios, public.ai_response_snapshots, public.audit_logs restart identity cascade`);
+  await pool.query(`truncate public.external_assumptions, public.scenario_assumptions, public.scenario_comparisons, public.scenario_run_lines, public.scenario_runs, public.scenarios, public.ai_response_snapshots restart identity cascade`);
   const before = await financeFingerprint();
 
   const energyId = await createExternalAssumption(pool, {
@@ -57,7 +63,7 @@ async function main() {
     sourceKind: "manual",
     sourceName: "MAS manuel varsayim",
     sourceDate: "2026-07-08",
-  });
+  }, actorId);
   if (!energyId) fail("approved manual external assumption not created");
 
   const pendingLoanRateId = await createExternalAssumption(pool, {
@@ -70,7 +76,7 @@ async function main() {
     sourceName: "ornek internet kaynagi",
     sourceUrl: "https://example.com/rates",
     sourceDate: "2026-07-08",
-  });
+  }, actorId);
   if (!pendingLoanRateId) fail("pending internet external assumption not created");
 
   const facts = await loadDecisionFacts(pool, "2026-07-08");
@@ -82,7 +88,7 @@ async function main() {
   const answer = await answerQuestion(pool, {
     question: "Enerji maliyeti varsayimi nedir?",
     forceDeterministic: true,
-  });
+  }, actorId);
   if (!answer.sourceFactKeys.includes("external_energy_cost"))
     fail(`AI answer did not cite external energy fact: ${answer.sourceFactKeys.join(",")}`);
   if (answer.sourceFactKeys.includes("external_loan_rate"))
@@ -92,7 +98,7 @@ async function main() {
     name: "Dis varsayim baglam smoke",
     scenarioType: "combined_custom_scenario",
     assumptions: { includeDebtService: true },
-  });
+  }, actorId);
   const scenarioRows = await q(`select key, description from public.scenario_assumptions where run_id=$1 order by key`, [run.runId]);
   if (!scenarioRows.some((r) => r.key === "external:energy_cost" && /MAS manuel/.test(r.description)))
     fail("scenario run did not disclose approved external energy assumption");

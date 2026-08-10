@@ -47,9 +47,10 @@ Degismez kurallar:
 | 9 | Salt-okunur senaryo motoru MVP | DONE |
 | 10 | Excel coverage close-out: 9A/9B/9C/9D | DONE |
 | 11 | Decision facts / metrics katmani | DONE |
-| 12 | AI soru-cevap ve rapor yorum katmani | IN PROGRESS |
-| 13 | Senaryo v2 ve finansman optimizasyonu | IN PROGRESS |
-| 14 | Veri kalite merkezi, disgoru ve aksiyon workflow | IN PROGRESS |
+| 12 | AI soru-cevap ve rapor yorum katmani | DONE (12A; phase12a:verify PASS) |
+| 13 | Senaryo v2 ve finansman optimizasyonu | DONE (13A+13B; phase13a/13b:verify PASS) |
+| 14 | Veri kalite merkezi, disgoru ve aksiyon workflow | DONE (14A-14E; phase14a-14e:verify PASS) |
+| P0-A | Gercek cok-kullanicili auth + kullanici yonetimi | DONE |
 
 Mevcut git gercegi:
 
@@ -394,7 +395,7 @@ Gate:
 
 ## 13. Faz 12 — AI Soru-Cevap ve Rapor Yorum Katmani
 
-Durum: IN PROGRESS. 12A ile `/ask`, `ai_response_snapshots`, optional OpenAI Responses API provider,
+Durum: DONE (12A). `phase12a:verify` PASS. 12A ile `/ask`, `ai_response_snapshots`, optional OpenAI Responses API provider,
 deterministik fallback, rapor AI yorumu ve mutation guard eklendi.
 
 Amac: Kullanici sorularini dogrudan cevaplamak ve cevabi tablo/grafik/kaynak linkiyle gostermek.
@@ -436,7 +437,7 @@ Gate:
 
 ## 14. Faz 13 — Senaryo v2 ve Finansman Optimizasyonu
 
-Durum: IN PROGRESS. 13A ile hedefli gelir gecikmesi, hedefli gider/odeme ertelemesi,
+Durum: DONE (13A+13B). `phase13a:verify` ve `phase13b:verify` PASS. 13A ile hedefli gelir gecikmesi, hedefli gider/odeme ertelemesi,
 faktoring/iskonto overlay'i ve minimum finansman ihtiyaci metrigi scenario motoruna eklendi.
 13B ile desteklenen mudahale adaylarini salt-okunur siralayan finansman optimizasyon paneli eklendi.
 
@@ -472,7 +473,7 @@ Gate:
 
 ## 15. Faz 14 — Veri Kalite Merkezi, Disgoru ve Aksiyon Workflow
 
-Durum: IN PROGRESS. 14A ile `/data-quality`, `action_items`, review/home-action gorevlestirme,
+Durum: DONE (14A-14E). `phase14a:verify` … `phase14e:verify` PASS. 14A ile `/data-quality`, `action_items`, review/home-action gorevlestirme,
 gorev status akisi, ozel Excel sekme tanima paneli ve read-only action gate eklendi.
 14B ile `/assumptions`, `external_assumptions`, kaynak/tarih/review status akisi ve
 internet kaynaklari icin user-reviewed gate eklendi.

@@ -137,7 +137,7 @@ implementation.md §0 sırası: kapasite/maliyet. Tablolar tasarımda var (machi
 - Yeni ürün özelliği YOK; yalnız production-readiness. MVP zip (`../mas-nakit-radar-mvp.zip`) temiz klasörde fresh install ile doğrulandı (install/lint/typecheck/test 138/build) — kaynaktan yeniden derlenebilir, gizli veri içermez (0 xlsx, 0 hardcoded token, 0 .env).
 - Deploy dosyaları: `docker-compose.yml` (postgres:16, kalıcı volume `mas_radar_pgdata`, 127.0.0.1 bind, healthcheck), `.env.example`, `scripts/deploy/{local-start,local-stop,backup-db,restore-db}.sh`, `scripts/deploy/check-env.ts` (secret VALUE'ları yazmaz — yalnız presence + DSN maskeler). `.gitignore`'a `backups/` + `*.dump` eklendi.
 - `/health` (app+DB erişilebilirlik; select 1; 200/503; secret/finansal veri yok) ve `/version` (name/version/commit/build/node; secret yok) — (dashboard) grubunun DIŞINDA, access gate'e takılmaz.
-- **Minimal access gate** (`src/lib/auth.ts` + `/login` + `/logout` + (dashboard) layout): `APP_ACCESS_PASSWORD` ayarlıysa httpOnly cookie session (HMAC(password), timingSafeEqual, server-only, asla client'a gitmez/loglanmaz); boşsa kapalı (tek makine güveni). Çok-kullanıcı SaaS auth DEĞİL — bilinçli sınır.
+- ~~**Minimal access gate**~~ (`APP_ACCESS_PASSWORD`, tek paylaşılan parola + HMAC cookie): **P0-A ile tamamen kaldırıldı**, yerine gerçek çok-kullanıcılı auth geldi. Bu satır tarihsel kayıt olarak duruyor; güncel durum için aşağıdaki "P0-A" bölümüne bakın.
 - Güvenlik audit: tek 'use client' (upload-form) yalnız server action referansı alır (doğru RSC); TELEGRAM token yalnız transport.ts'te (server fonksiyon içi); .xlsx client bundle'a girmez; hiçbir yerde env/secret console'a yazılmaz.
 - **Backup/restore kanıtı** (yerel Docker PG): backup-db.sh pg_dump -Fc → backups/ (gitignore); restore-db.sh taze DB'ye (FORCE guard) → **0 hata**, restored sayaçlar dev ile birebir (2 workbook/9817 hücre/1601 satır), 33 public tablo, 0 RLS-kapalı, seed (7 ayar/5 hatırlatma) intact. restore-db.sh yalnız cluster rollerini idempotent yaratır, auth schema'yı dump'a bırakır (spurious hata yok).
 - Docs: `docs/local-production-deploy.md` (env, start/stop, import, reminders, reports, scenarios, backup/restore, güvenlik sınırları, neden-Vercel/Supabase-değil), mvp-runbook güncellendi.
@@ -153,3 +153,103 @@ implementation.md §20 Phase 8: salt-okunur senaryo overlay'leri. baseline korun
 - UI: /scenarios (disclaimer "Senaryo çıktısı tahmindir; muhasebe gerçeği değildir. Kaynak kayıtları değiştirmez." + varsayım formu + çalışma listesi), /scenarios/[runId] (7 sonuç kartı + açık varsayımlar + içgörüler + baz-vs-senaryo SVG chart + 35-ay karşılaştırma tablosu + güvenli sil). nav SENARYO; /cashflow·/production·/financing "senaryo üret" linkleri.
 - **Gerçek çalışma (phase8-verify kombine senaryo):** gelir −%10 + gider +%5 + borç-servisi + 1 ay gecikme → final Δ ≈ −13,1M, ilk negatif 2026-08'e çekiliyor, maks açık ≈ 16,2M. revenue%→yalnız gelir, expense%→yalnız gider (SQL cross-check), karşılaştırma=SQL, baseline row-hash + tüm mali tablo fingerprint before==after.
 - Gate: lint ✓ typecheck ✓ vitest 138/138 ✓ db:verify ✓ import:real ✓ phase3/4/5/6/6b/7/8:verify ✓ build ✓ 8-route smoke ✓. **MVP tamam** — implementation.md §0 tüm 7 inşa adımı bitti.
+
+
+## P0-A — DONE (gerçek çok-kullanıcılı auth + kullanıcı yönetimi)
+
+- **Kaldırıldı:** tek paylaşılan parolalı `APP_ACCESS_PASSWORD` access gate (HMAC cookie). Yerine
+  adlandırılmış hesaplar geldi; eski env değişkeni artık hiçbir yerde okunmuyor.
+- **Migration 0031** (`users` + `sessions`): argon2id `password_hash`, `username` CHECK'i
+  (`^[a-z0-9_.-]{3,32}$`), admin/operatör rolü, `failed_login_count`/`locked_until` (5 hata → 15 dk
+  kilit). RLS burada **default-deny** (`using(false)`) — diğer tabloların "authenticated her şeyi
+  yapar" modelinden bilinçli sapma, çünkü bu tablolar canlı kimlik bilgisi tutuyor.
+  **Fail-closed değişmez:** en az bir aktif admin kalmalı — `deferrable initially deferred`
+  constraint trigger ile DB seviyesinde; arayüz kontrolü tek başına yeterli değil (admin script'i
+  veya iki admin oturumu arasındaki yarış onu aşabilirdi).
+- **Migration 0032:** `audit_logs.actor_id` artık `public.users(id)`'ye FK. Oturumsuz çalışan
+  otomatik araçlar (`seed-demo`, `import-real`, verify script'leri, `legacy-repair-apply`) rezerve
+  edilmiş, `is_active=false` **"system"** hesabına yazıyor (`scripts/db/seed-system-actor.ts`) —
+  sessiz `null` actor yok.
+- **Oturum modeli:** rastgele opak token (`randomBytes(32)`), DB'de yalnız SHA-256'sı; httpOnly
+  cookie, 7 gün. Çıkış ve parola sıfırlama oturumu **gerçekten** iptal eder (`revoked_at`), sadece
+  client kopyasını silmez.
+- **`src/middleware.ts`:** default-deny matcher — `/login`, `/health`, `/version`, `_next/*` dışında
+  her yol cookie varlığı ister. Yapısal düzeltme: `src/app/api/facts` (dashboard route grubunun
+  dışındaydı) hiçbir auth kontrolü olmadan finansal veri servis ediyordu. Artık **sonradan eklenen
+  her rota otomatik korunuyor** — kimsenin kontrol eklemeyi hatırlaması gerekmiyor. Edge-safe:
+  yalnız cookie varlığına bakar, DB'ye gitmez; gerçek doğrulama `requireSession()`/`requireAdmin()`.
+- **Kullanıcı yönetimi** (`/system/security`, tamamı `requireAdmin()` arkasında): kullanıcı listesi
+  (rol/durum/kilit/açık oturum/son görülme), yeni hesap oluşturma, parola sıfırlama, rol değiştirme,
+  pasifleştirme/aktifleştirme, kilit açma. Motor: `src/lib/users/engine.ts`.
+  - **Parola asla denetim kaydına yazılmaz** — `before_data`/`after_data` yalnız gizli olmayan
+    alanları taşır; parola değişikliği "oldu" bilgisi olarak kaydedilir, değeri veya özeti değil.
+  - Parola sıfırlama ve pasifleştirme, hedefin canlı oturumlarını **aynı transaction'da** iptal eder.
+  - Rezerve hesaplar (`system`, `testsprite-qa`) listede gösterilmez ve id'si doğrudan gönderilse
+    bile yönetilemez.
+  - Admin kendi erişimini kaldıramaz (kendini pasifleştirme/operatöre düşürme engelli); son-admin
+    durumu ayrıca DB trigger'ı tarafından kesin olarak bloklanır.
+- **Bootstrap:** `tsx scripts/db/seed-admin.ts --username <ad> --display-name "<Ad>"`. Parola argv'den
+  **kabul edilmiyor** (shell geçmişinde ve process listesinde görünür); `SEED_ADMIN_PASSWORD` env
+  veya maskeli interaktif giriş.
+- **Gate:** typecheck ✓ (135 → 0 hata) · lint ✓ (0 hata, 1 önceden var olan uyarı) · vitest 200/200 ✓ ·
+  db:verify ✓ · db:migrate:verify ✓ · build ✓ · phase3…14e verify 20/20 PASS (atılabilir DB) ·
+  9-modül smoke ✓.
+
+### Bu sprintte düzeltilen yarım kalmış işler
+- `scripts/` altındaki 20 dosyada **135 typecheck hatası**: engine imzalarına `actorId` eklendiğinde
+  çağrı yerleri güncellenmemişti; repo hiç build alamıyordu. Hepsi rezerve "system" actor'ına bağlandı.
+- **Phase verify script'leri `audit_logs`'u TRUNCATE ediyordu** — 0022 ile bu tablo append-only
+  (UPDATE/DELETE/TRUNCATE yok, kalıcı olarak). Script'ler 0022'den önce yazılmıştı. Değişmez
+  zayıflatılmadı; bunun yerine `audit_logs` reset listelerinden çıkarıldı ve her verify çalışması
+  **taze oluşturulmuş** atılabilir DB alıyor.
+- `scripts/db/assertions.sql`'deki "her public tabloda policy olmalı" kontrolü `schema_migrations`
+  için başarısız oluyordu. Sessizce atlamak yerine: tablo kontrolden çıkarıldı **ve** karşılığında
+  RLS'inin açık, policy sayısının 0, uygulama rollerine grant'inin 0 olduğu açıkça iddia edildi —
+  istisna, doğrulanmış bir değişmez olarak duruyor.
+- `src/lib/feature-registry.ts` her satırda `tested: true` hardcode ediyordu; ekranda canlı test
+  sonucu gibi okunan, asla kırmızıya dönemeyen bir rozet üretiyordu. `tested` alanı kaldırıldı,
+  yerine o özelliği gerçekten çalıştıran gate script'ini adlandıran `verifiedBy` geldi; `/phases`
+  ekranı artık bunun **elle tutulan bir envanter** olduğunu açıkça söylüyor.
+
+### P0-A kapanış turu — verify script'lerinin gerçek `pnpm` komutlarıyla doğrulanması
+
+- **`db:transitions:verify` 163/167 → 167/167** (`EXIT=0`). P0-A sonrası `markPaidAction`/
+  `markUnpaidAction` kendi içlerinde `requireSession()` → `cookies()` çağırıyor; script bunları
+  çıplak fonksiyon olarak çağırdığı için gerçek bir Next.js request scope'u yoktu ve dördü
+  "`cookies` was called outside a request scope" ile düşüyordu. Yeni bir test kancası icat
+  edilmedi: var olan QA bypass kullanıldı (`getQaBypassUser()`, `src/lib/auth.ts`). Script
+  `sanitize-testsprite.sql` ile **birebir aynı** idempotent `testsprite-qa` (is_active=false)
+  satırını seed ediyor ve `MAS_QA_BYPASS_AUTH` bayrağını **yalnız o dört assertion boyunca**
+  açıyor (try/finally ile eski değerine dönüyor) — script'in geri kalanı auth açısından
+  fail-closed kalıyor.
+- **`start-testsprite.ts` yorumu düzeltildi:** `testsprite-qa` satırının
+  `scripts/db/create-testsprite-db.ts` tarafından seed edildiğini söylüyordu; o dosyada böyle bir
+  insert yok. Satır aslında onun çalıştırdığı `scripts/db/sanitize-testsprite.sql`'de. Mekanizma
+  çalışıyordu, yalnız yorum yanlış dosyayı işaret ediyordu.
+- **`db:legacy-repair:verify` düzeltildi (183/183, `EXIT=0`).** Bu suite 0030'dan itibaren **tüm**
+  migration'ları kasıtlı olarak gizliyor (0031/0032 dahil), çünkü test ettiği şey 0022-0029 dönemi
+  onarım araçları — yani `public.users` orada tasarım gereği yok. Bir önceki turda
+  `legacy-repair-apply.ts`'e eklenen koşulsuz `getSystemActorId()` çağrısı bu bağlamda
+  "relation public.users does not exist" ile patlıyordu. Actor artık **koşullu** çözülüyor:
+  `to_regclass('public.users')` varsa rezerve "system" hesabı, yoksa `null` — ki bu, 0032'nin
+  açıkça meşru saydığı değer ("actor stays nullable here — every pre-P0-A row keeps actor=null
+  forever"). Tip düzeyinde `LegacyRepairActorId` ile belgelendi; etkileşimli çağrı yolları
+  `string` olarak kalıyor.
+
+### Doğrulanmış operasyonel uyarı — `phase*:verify` script'leri gerçek DB'ye yazar
+
+`scripts/db/*-verify.ts` script'lerinin aksine **`phase*-verify.ts` dosyaları kendi atılabilir
+veritabanlarını KURMAZ.** `pnpm phaseN:verify` = `tsx scripts/db/ensure.ts && tsx scripts/phaseN-verify.ts`;
+`ensure.ts` yalnız Docker konteynerini başlatır. `DATABASE_URL` verilmezse script'ler
+`postgres://…/mas_radar_dev` varsayılanına düşer ve ilk iş olarak
+`truncate public.payments, public.payment_instances … cascade` çalıştırır — yani **gerçek finansal
+veriyi siler.**
+
+Bu yüzden bu script'ler daima açık bir hedefle çalıştırılmalıdır:
+
+```bash
+DATABASE_URL=postgres://postgres:postgres@127.0.0.1:5432/<atilabilir_db> pnpm phase3:verify
+```
+
+Ayrıca `audit_logs` 0022'den beri append-only olduğu için her phase **taze oluşturulmuş** bir DB
+ister; aynı DB'de arka arkaya çalıştırmak audit sayımlarını bozar.
