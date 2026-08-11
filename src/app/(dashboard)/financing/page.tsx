@@ -294,7 +294,7 @@ export default async function FinancingPage({
                       {c.sourceWorkbookId && c.sourceSheetId ? (
                         <Link
                           className="underline decoration-line-strong underline-offset-2"
-                          href={`/imports/${c.sourceWorkbookId}/sheets/${c.sourceSheetId}`}
+                          href={`/data/imports/${c.sourceWorkbookId}/sheets/${c.sourceSheetId}`}
                         >
                           {c.rowIndex != null ? `r${c.rowIndex}` : "kaynak"} →
                         </Link>

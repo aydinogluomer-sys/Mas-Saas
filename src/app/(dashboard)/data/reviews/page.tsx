@@ -55,7 +55,7 @@ export default async function ReviewsPage({ searchParams }: { searchParams: Prom
                 <p className="mt-1 text-xs text-tone-3">Etkilenen kaynak: {r.workbook_name} · {r.sheet_name ?? "sekme yok"}{r.row_index ? ` · satır ${r.row_index}` : ""}</p>
               </div>
               <div className="flex flex-wrap items-start gap-1">
-                <Link className="button-ghost px-2 py-1" href={`/imports/${r.workbook_id}/reviews`}>Kaynağı aç</Link>
+                <Link className="button-ghost px-2 py-1" href={`/data/imports/${r.workbook_id}/reviews`}>Kaynağı aç</Link>
                 {([["accepted", "Kabul"], ["resolved", "Çöz"], ["rejected", "Reddet"]] as const).map(([s, l]) => (
                   <form key={s} action={setReviewStatusAction}>
                     <input type="hidden" name="id" value={r.id} />

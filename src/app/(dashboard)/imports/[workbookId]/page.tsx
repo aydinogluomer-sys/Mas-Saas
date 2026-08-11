@@ -47,7 +47,7 @@ export default async function WorkbookDetailPage({
           <div><div className="font-mono text-[9px] uppercase text-tone-3">özet</div><div className="font-mono">{w.notes ?? "—"}</div></div>
           <div>
             <div className="font-mono text-[9px] uppercase text-tone-3">incelemeler</div>
-            <Link href={`/imports/${w.id}/reviews`} className="underline decoration-line-strong underline-offset-2">
+            <Link href={`/data/imports/${w.id}/reviews`} className="underline decoration-line-strong underline-offset-2">
               {openTotal} açık inceleme →
             </Link>
           </div>
@@ -123,7 +123,7 @@ export default async function WorkbookDetailPage({
                   <td className="py-1.5 pr-2 font-mono text-xs text-tone-3">{s.sheet_index}</td>
                   <td className="py-1.5 pr-2">
                     <Link className="underline decoration-line-strong underline-offset-2 hover:text-tone-1"
-                      href={`/imports/${workbookId}/sheets/${s.id}`}>
+                      href={`/data/imports/${workbookId}/sheets/${s.id}`}>
                       {s.sheet_name}
                     </Link>
                   </td>

@@ -56,7 +56,7 @@ export default async function ImportsPage() {
               {rows.map((w) => (
                 <tr key={w.id} className="border-b border-line-faint">
                   <td className="max-w-[280px] truncate py-2 pr-2">
-                    <Link className="underline decoration-line-strong underline-offset-2 hover:text-tone-1" href={`/imports/${w.id}`}>
+                    <Link className="underline decoration-line-strong underline-offset-2 hover:text-tone-1" href={`/data/imports/${w.id}`}>
                       {w.original_filename}
                     </Link>
                     {w.status === "failed" && w.parse_error ? (

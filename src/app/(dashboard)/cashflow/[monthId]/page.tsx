@@ -94,7 +94,7 @@ export default async function CashflowMonthPage({
           {m.source_workbook_id && m.source_sheet_id && (
             <Link
               className="underline decoration-line-strong underline-offset-2"
-              href={`/imports/${m.source_workbook_id}/sheets/${m.source_sheet_id}`}
+              href={`/data/imports/${m.source_workbook_id}/sheets/${m.source_sheet_id}`}
             >
               kaynak sekme: {m.sheet_name} →
             </Link>

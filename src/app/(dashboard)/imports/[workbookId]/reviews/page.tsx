@@ -54,14 +54,14 @@ export default async function ReviewsPage({
       <Panel
         title={`EŞLEME İNCELEMELERİ — ${wb.rows[0].original_filename}`}
         right={
-          <Link href={`/imports/${workbookId}`} className="font-mono text-[10px] uppercase text-tone-2 underline underline-offset-2">
+          <Link href={`/data/imports/${workbookId}`} className="font-mono text-[10px] uppercase text-tone-2 underline underline-offset-2">
             ← workbook
           </Link>
         }
       >
         <div className="flex flex-wrap gap-1">
           {FILTERS.map((f) => (
-            <Link key={f} href={`/imports/${workbookId}/reviews?status=${f}`}
+            <Link key={f} href={`/data/imports/${workbookId}/reviews?status=${f}`}
               className={f === filter ? "button-primary px-2 py-1" : "button-ghost px-2 py-1"}>
               {f}{f !== "all" ? ` (${countOf(f)})` : ""}
             </Link>
@@ -95,7 +95,7 @@ export default async function ReviewsPage({
                   <td className="py-1.5 pr-2 font-mono text-xs">{m.issue_type}</td>
                   <td className="py-1.5 pr-2 text-xs">
                     <Link className="underline decoration-line-strong underline-offset-2"
-                      href={`/imports/${workbookId}/sheets/${m.sheet_id}`}>
+                      href={`/data/imports/${workbookId}/sheets/${m.sheet_id}`}>
                       {m.sheet_name}
                     </Link>
                     {m.row_index != null ? <span className="font-mono text-tone-3"> · r{m.row_index}</span> : null}

@@ -66,7 +66,7 @@ export default async function LoanDetailPage({
           {loan.sourceWorkbookId && loan.sourceSheetId && (
             <Link
               className="underline decoration-line-strong underline-offset-2"
-              href={`/imports/${loan.sourceWorkbookId}/sheets/${loan.sourceSheetId}`}
+              href={`/data/imports/${loan.sourceWorkbookId}/sheets/${loan.sourceSheetId}`}
             >
               kaynak: faiz hesaplama →
             </Link>
