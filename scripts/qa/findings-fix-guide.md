@@ -358,5 +358,45 @@ Yani rota, hedef sayfa ve genel istemci-taraflı navigasyon sağlam; sorun yaln�
 ### Bulgu #5'in link temizliğiyle ilgisi yok — önceden vardı
 Commit 890f619 bu linki `/imports/{id}` → `/data/imports/{id}` yaptı. Regresyon şüphesi doğrudan test edildi: aynı sayfada anchor'ın `href`'i DOM'da **eski hâline** çevrilip tekrar tıklandı — **aynı şekilde gitmiyor**. İki biçim de eşit derecede etkileniyor, yani hata link temizliğinden önce de vardı.
 
-### Sıradaki adım
-`net::ERR_ABORTED`'ın kaynağı: `NavigationFeedbackProvider`'ın `pendingHref` state'i hedef mevcut yolun alt yolu olduğunda bir yeniden render tetikleyip transition'ı iptal ediyor olabilir. Doğrulanmadı — tahmin olarak bırakıldı.
+### Teşhis turu (kod değişikliği yok) — hipotez ÇÜRÜTÜLDÜ, kök neden HÂLÂ AÇIK
+
+Önceki tahmin (`NavigationFeedbackProvider`'ın state'i transition'ı iptal ediyor) **yanlış çıktı.**
+
+**Kesin kanıt — provider suçsuz:**
+1. Provider geçici olarak enstrümante edildi. Başarısız vakada sıra: `onClick yakaladı` → `beginNavigation` (erken çıkış YOK) → tek `setState` → `rAF → router.push`. `beginNavigation` ile `router.push` arasında **ikinci bir state güncellemesi veya yeniden render YOK**. Başarılı vakada sıra birebir aynı; tek fark `router.push`'un commit edip etmemesi.
+2. Interceptor tamamen devre dışı bırakıldı (geçici bayrakla) → sayfanın kendi Next `<Link>`'i devreye girdi → **aynı şekilde gitmiyor**. Provider olmadan da hata sürüyor.
+
+**Ağ zaman çizelgesi (CDP):** Hedefin RSC yükü tıklamadan **önce** prefetch ile çekiliyor ve **200 dönüyor** (+411ms istek, +439ms yanıt). Tıklamadan sonra yalnız rota chunk'ı isteniyor (200), ardından +784ms'de `net::ERR_ABORTED`. Yani veri hazırdı; sorun fetch'te değil, transition'ın commit edilmemesinde.
+
+**Elenen açıklamalar (hepsi deneyle):**
+
+| Hipotez | Sonuç |
+|---|---|
+| NavigationFeedbackProvider | **elendi** (interceptor kapalıyken de olur) |
+| "Alt yol (descendant) navigasyonu bozuk" | **elendi** — `/payments→/payments/new`, `/payments/items`, `/payments/history`, `/system→/system/security`, `/finance→/finance/checks`, `/finance/checks→/finance/checks/new`, `/scenarios→/scenarios/history` hepsi çalışıyor |
+| "Re-export rotalar bozuk" | **elendi** — `/insights/reports → /insights/reports/{id}` (ebeveyn ve çocuk ikisi de re-export) çalışıyor |
+| "Dinamik segmentli çocuk bozuk" | **elendi** — `/payments/{id}/edit`, `/cashflow/{id}` çalışıyor |
+| `next.config.ts` dinamik redirect'leri | **elendi** — dördü de geçici kaldırıldı, hata aynen sürdü |
+| Sayfadaki formlar / UploadForm | **elendi** — DOM'dan kaldırıldı, hata sürdü |
+| `notFound()` kullanımı | **elendi** — çalışan hedefler de (`reports/[reportId]`, `cashflow/[monthId]`) kullanıyor |
+| Yutulmuş JS hatası | **elendi** — console error, pageerror, unhandledrejection: hiçbiri yok |
+| Link markup'ı / üstte çakışan eleman | **elendi** — DOM'a enjekte edilen düz `<a>` ile de birebir tekrarlanıyor |
+
+**Kesin tekrar kapsamı (4 geçiş):**
+- `/data/imports` → `/data/imports/{id}`
+- `/data/imports` → `/data/imports/{id}/reviews`
+- `/data/imports/{id}` → `/data/imports/{id}/reviews`
+- `/finance/loans` → `/finance/loans/{id}`  ← **yeni**: imports ağacına özgü değilmiş
+
+Test edilen diğer 11 geçişin tamamı çalışıyor. `/data/quality → /data/imports/{id}` ve `/data/reviews → /data/imports/{id}` de çalışıyor — yani hedef tek başına suçlu değil, **kaynak+hedef çifti** belirleyici.
+
+**Bulgu #5'in link temizliğiyle ilgisizliği bağımsız olarak doğrulandı:** `/finance/loans → /finance/loans/{id}` geçişi 890f619'un hiç dokunmadığı bir linkte ve aynı şekilde başarısız.
+
+**Kalan olası açıklamalar (hiçbiri doğrulanmadı):**
+- Next.js App Router istemci-taraflı router cache'inde, bu iki spesifik ebeveyn→çocuk çiftine özgü bir segment eşleşme/geçersizleştirme sorunu.
+- Prefetch ile alınan RSC yükünün cache'te, tıklama anında beklenen anahtarla eşleşmemesi (prefetch 200 dönüyor ama transition onu kullanamıyor olabilir).
+- Sunucu tarafında bu iki rotanın render'ının transition sırasında (prefetch'te değil) hata verip sessizce iptale yol açması — sunucu logları bu turda incelenmedi.
+
+**Sıradaki adım önerisi:** `next start` yerine `next dev` ile tekrarlayıp Next'in geliştirme uyarılarını/router loglarını okumak; ayrıca `router.push`'un döndürdüğü promise'i ve `useRouter` state'ini doğrudan gözlemleyen küçük bir test bileşeni. İkisi de ayrı bir tur.
+
+**Geçici enstrümantasyon geri alındı** — `git status` temiz, `navigation-feedback.tsx` ve `next.config.ts` değişmedi.
