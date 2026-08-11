@@ -106,9 +106,19 @@ Tam işlevli, doğru yazılmış bir fonksiyon (`src/lib/production/engine.ts`) 
 
 ---
 
-## Bulgu #4 — Çalışması için ek kurulum adımı gereken özellikler
+## Bulgu #4 — Çalışması için ek kurulum adımı gereken özellikler — **DOĞRULANDI (2026-08-11)**
 
-**Önem: Bilgilendirici** — kod hatası değil, operasyonel adım eksikliği.
+**Önem: Bilgilendirici** — kod hatası değil, operasyonel adım eksikliği. Kod değişikliği yapılmadı; üç madde de tek tek **davranışsal olarak kanıtlandı**.
+
+> **Doğrulama sonucu (atılabilir DB kopyasında, gerçek admin oturumuyla):**
+>
+> | Madde | Ortam | Kanıt |
+> |---|---|---|
+> | AI soru-cevap | `OPENAI_API_KEY` bu ortamda **ayarlı** (rehberin "yok" varsayımı geçerli değil) | Anahtarsız dalı dış çağrı yapmadan kanıtlamak için `AI_FORCE_DETERMINISTIC=1` kullanıldı — `callOpenAI` aynı şekilde `null` döner. UI'dan sorulan soru `ai_response_snapshots`'a `response_mode=deterministic`, `model=NULL` olarak yazıldı; sayfa çökmedi, konsol hatası 0. |
+> | Telegram | `TELEGRAM_BOT_TOKEN`/`TELEGRAM_CHAT_ID` **boş** | "Bekleyenleri gönder" → 5 bekleyen teslimat `failed`'a döndü, her biri `error='TELEGRAM_BOT_TOKEN/CHAT_ID tanımlı değil'` ve `sent_at=NULL`. Sessiz "sent" yok. |
+> | seed-admin.ts | — | `--password` argv'den **reddediliyor** (exit 1, "shell geçmişinde/process listesinde görünür"); TTY yokken maskeli giriş yerine açık hata (exit 1); 12 karakterden kısa parola reddediliyor (exit 1). Üç denemede de hesap oluşmadı. |
+>
+> **Not:** `OPENAI_API_KEY` ayarlı olduğu için bu ortamda AI gerçek model çağrısı yapar ve şirketin finansal bağlamını dışarıya gönderir. Doğrulama sırasında bilinçli olarak dış çağrı yapılmadı.
 
 | Özellik | Gereken adım |
 |---|---|
