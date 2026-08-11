@@ -12,6 +12,13 @@ export default async function CapacityPage() {
   const pool = getPool();
   const [models, demand, allocations, actualIncome] = await Promise.all([loadCapacityModels(pool), loadCapacityDemand(pool), loadMachineMinuteAllocations(pool), loadActualMonthlyIncome(pool)]);
   const available = models.reduce((sum, model) => sum + (model.monthlyMinutes ?? 0), 0);
+  // UNIT MISMATCH, flagged not fixed: demand comes from production_parts (the source's
+  // G5/H5 minute sums, which I8 totals as a YEARLY figure ≈18,57M) while `available` is
+  // capacity_models.monthly_minutes (K8, MONTHLY). Subtracting them overstates the gap by
+  // roughly 12x. Which normalisation is correct — divide demand by 12, multiply capacity
+  // by 12, or surface yearly and monthly demand as separate KPIs — is a product/data
+  // decision, so the number is left exactly as it was and the card says so instead of
+  // silently changing it (docs rule: flag, never silently correct).
   const gap = available - demand.demandMinutes;
 
   // "null asla 0 sayılmaz": a model whose rate never resolved has no theoretical revenue,
@@ -31,7 +38,13 @@ export default async function CapacityPage() {
     <div className="grid grid-cols-2 gap-2 lg:grid-cols-5">
       <KpiCard label="Etkin dakika" value={available.toLocaleString("tr-TR")} />
       <KpiCard label="Talep dakika" value={demand.demandMinutes.toLocaleString("tr-TR")} />
-      <KpiCard label="Açık / fazla" value={gap.toLocaleString("tr-TR")} tone={gap < 0 ? "neg" : "pos"} />
+      <KpiCard
+        label="Açık / fazla"
+        value={gap.toLocaleString("tr-TR")}
+        tone={gap < 0 ? "neg" : "pos"}
+        badge={<Badge tone="amber">birim uyumsuz</Badge>}
+        note="talep yıllık toplam, etkin dakika aylık — birebir kıyaslanamaz"
+      />
       <KpiCard
         label="Teorik aylık gelir"
         value={theoreticalRevenue == null ? "—" : fmtTL(theoreticalRevenue)}
