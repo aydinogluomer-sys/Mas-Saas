@@ -137,7 +137,7 @@ Tam işlevli, doğru yazılmış bir fonksiyon (`src/lib/production/engine.ts`) 
 > - `/financing/loans/:loanId` → `/finance/loans/:loanId` (a4a8d1e). Gerçek kredi id'siyle 308 + doğru `Location` doğrulandı; yönlendirme sonrası sayfa kanonikle birebir aynı (h1, 5 KPI, 48 taksit satırı, 47 "ödendi" butonu).
 > - `/imports/:workbookId`, `.../reviews`, `.../sheets/:sheetId` → `/data/imports/...` (c0f9c1c). Kanonik konum **önce yaratıldı** (üç 1-satırlık re-export, `default` ile birlikte `dynamic` de aktarılıyor — kaynak sayfaların üçü de `force-dynamic`), sonra üç redirect eklendi. Gerçek workbook/sheet id'leriyle 3×308 + 3×200 doğrulandı, içerik uzunlukları birebir eşleşti.
 >
-> **Açık kalan (isteğe bağlı temizlik):** Uygulama içinde hâlâ **11 link, 8 dosyada** eski `/imports/...` yolunu gösteriyor — `/data/imports` liste sayfasındaki workbook linki dâhil. Hepsi çalışıyor (her biri bir 308 sıçraması yapıyor). Kanonik yollara çevirmek ayrı ve isteğe bağlı bir iş; routing değişikliğine dâhil edilmedi.
+> **Link temizliği de tamamlandı (commit 890f619):** 11 linkin 11'i `/data/imports/...`'a çevrildi (grep: eski 0, yeni 11, 8 dosya). Canlı doğrulama: `/data/reviews` (52 link), `/cashflow/{ay}`, `/finance/loans/{id}`, `/data/imports` sayfalarında eski yol kalmadı; `/data/reviews`'dan takip edilen link 308 sıçraması olmadan hedefe gidiyor.
 
 ### Kök neden (kesin — kaynak kodda doğrulandı)
 `next.config.ts`'nin `redirects()`'i `/financing` ve `/imports` için **yalnız liste sayfasını** yönlendiriyor (`{ source: "/financing", destination: "/finance" }`), `/reports` için yapıldığı gibi **dinamik alt-rotayı** (`/reports/:reportId`) kapsamıyor:
@@ -184,7 +184,7 @@ Bunların **kanonik bir eşdeğeri yok** (`/data/imports/` altında yalnız list
 
 7. ~~**#6**~~ — **DONE** (7bc9a13 + 4ecaea7), karar: ayrı KPI'lar.
 
-**Kalan açık iş (isteğe bağlı):** #5'in link temizliği (11 link, 8 dosya — hepsi 308 üzerinden çalışıyor) ve aşağıdaki `PageHeader action` düzeltmesinin kozmetik kalıntısı (buton sola hizalı).
+**Kalan açık iş:** yok — #1…#6 ve `PageHeader action` düzeltmesi kapandı. Yeni bulgu için aşağıdaki "Bulgu #7" bölümüne bakın.
 
 ---
 
@@ -310,13 +310,53 @@ tanımı, `.browserslistrc` veya dokümante edilmiş hedef yok) ve bu bir iç ko
 
 45 rota önce/sonra ölçüldü: aksiyonlu 11 rotanın **11'i de görünür** oldu (önce 0), aksiyonsuz
 **33 rotanın 32'si aynen `display:none`** kaldı (33.'sü `/production/costs` — yeniden ölçümde o da
-`none`, ilk okuma geçici bir artefakttı). 8 sayfanın hepsinde aksiyon **`force` olmadan** tıklandı
-ve doğru hedefe gitti. Header 46px, bir sonraki blok 16px altında — çakışma yok, yatay taşma yok,
-konsol hatası 0.
+`none`, ilk okuma geçici bir artefakttı). **Tıklanabilirlik kanıtı (düzeltildi):** İlk turda "8/8 tıklandı" denmişti ama yöntem yanlıştı —
+tıklamadan sonra `networkidle` bekleyip URL okumak, bu uygulamanın iki tasarım özelliğini hesaba
+katmıyor: (1) `NavigationFeedbackProvider` her link tıklamasını `requestAnimationFrame` ile bir kare
+erteliyor, (2) URL değiştikten sonra rota önce skeleton render edip içeriği stream ediyor (ölçüldü:
+`waitForURL` çözüldüğünde `main` 155 karakter, +500ms'de 940 karakter). Doğru yöntemle —
+`waitForURL` + içerik işaretini **bekleyen** (örnekleyen değil) kontrol, işaretler tr-locale büyük
+harfe çevrilerek karşılaştırılıyor çünkü Panel başlıkları CSS ile uppercase — **8 rota × 5 tekrar =
+40/40 PASS**, `force` kullanılmadan, konsol hatası 0. Header 46px, bir sonraki blok 16px altında —
+çakışma yok, yatay taşma yok.
 
-### Bilinen kozmetik yan etki (kapsam dışı)
+### Kozmetik kalıntı da giderildi (commit ddaf39d)
 
-`.min-w-0` gizlenince `.shrink-0` tek flex öğe kalıyor ve `justify-content: space-between`
-dağıtacak boşluk bulamadığı için buton **sola** hizalanıyor (ölçüm: `actionSol 297 = headerSol 297`).
-Fonksiyonel değil. İstenirse bu özel durum için `justify-content: flex-end` eklenebilir — ayrı ve
-isteğe bağlı bir iyileştirme.
+`.min-w-0` gizlenince `.shrink-0` tek flex öğe kalıyordu ve `space-between` dağıtacak boşluk
+bulamadığı için buton sola düşüyordu (ölçüm: `actionSol 297 = headerSol 297`). Kurala
+`justify-content: flex-end` eklendi; beş sayfada ölçüldü, aksiyonun sağ kenarı artık header'ın sağ
+kenarıyla hizalı (`actionSag 1325 = headerSag 1325`).
+
+---
+
+## Bulgu #7 — `/data/imports` liste sayfasında workbook linki tıklanınca hiç gitmiyor
+
+**Önem: Orta** — içe aktarım detayına listeden ulaşılamıyor. **Düzeltilmedi**, kök neden araştırması gerekiyor.
+
+### Belirti
+`/data/imports` listesinde bir workbook adına tıklayınca URL değişmiyor, sayfa aynı kalıyor. Konsol hatası ve `pageerror` yok.
+
+### Ölçülen mekanizma
+Tıklama yakalanıyor ve `router.push` çalışıyor; ağ trafiğinde hedefin RSC isteği başlıyor, rota chunk'ı yükleniyor, sonra **RSC isteği iptal ediliyor**:
+
+```
+GET /data/imports/{id}?_rsc=…            ← başlıyor
+GET /_next/static/chunks/…/[workbookId]/page-….js
+FAILED /data/imports/{id}?_rsc=…  net::ERR_ABORTED   ← iptal
+```
+
+### Kapsam (izole edildi)
+| Deneme | Sonuç |
+|---|---|
+| `/data/imports` → workbook linki | **gitmiyor** |
+| `/data/imports` → modül sekmesi (`/data/quality`) | gidiyor |
+| `/data/reviews` → aynı `/data/imports/{id}/reviews` hedefi | gidiyor |
+| Doğrudan URL ile `/data/imports/{id}` | açılıyor (3214 karakter) |
+
+Yani rota, hedef sayfa ve genel istemci-taraflı navigasyon sağlam; sorun yalnız **bu sayfadan bu hedefe** geçişte.
+
+### Bulgu #5'in link temizliğiyle ilgisi yok — önceden vardı
+Commit 890f619 bu linki `/imports/{id}` → `/data/imports/{id}` yaptı. Regresyon şüphesi doğrudan test edildi: aynı sayfada anchor'ın `href`'i DOM'da **eski hâline** çevrilip tekrar tıklandı — **aynı şekilde gitmiyor**. İki biçim de eşit derecede etkileniyor, yani hata link temizliğinden önce de vardı.
+
+### Sıradaki adım
+`net::ERR_ABORTED`'ın kaynağı: `NavigationFeedbackProvider`'ın `pendingHref` state'i hedef mevcut yolun alt yolu olduğunda bir yeniden render tetikleyip transition'ı iptal ediyor olabilir. Doğrulanmadı — tahmin olarak bırakıldı.
