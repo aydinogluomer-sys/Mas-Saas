@@ -715,12 +715,17 @@ export async function loadPartProfitability(pool: Pool, limit = 100) {
 
 /** Total demanded operation minutes across mapped parts (qty × (torna+freze)).
  *  Matches source kapasite G5+H5 totals when all parts are captured. */
-export async function loadCapacityDemand(pool: Pool): Promise<{ demandMinutes: number; partCount: number }> {
+/** The sum is a YEARLY total: it comes from production_parts, i.e. the source workbook's
+ * G5/H5 minute sums that I8 totals as the year's theoretical capacity (docs/import-mapping.md
+ * §5). The field name says so because capacity_models.monthly_minutes is MONTHLY, and the two
+ * were being subtracted and divided as if they shared a period (Bulgu #6). Naming the period
+ * makes that mistake visible at the call site instead of only in the rendered number. */
+export async function loadCapacityDemand(pool: Pool): Promise<{ demandMinutesPerYear: number; partCount: number }> {
   const r = await pool.query(
     `select coalesce(sum(coalesce(quantity,0) * (coalesce(torna_minutes,0) + coalesce(freze_minutes,0))),0)::float8 as demand,
             count(*)::int as n from public.production_parts`,
   );
-  return { demandMinutes: r.rows[0].demand, partCount: r.rows[0].n };
+  return { demandMinutesPerYear: r.rows[0].demand, partCount: r.rows[0].n };
 }
 
 /** Actual planned monthly income from the cashflow radar (avg projected income). */

@@ -74,9 +74,9 @@ async function main() {
           + max(case when address='H5' then normalized_value end)::float8) as tot
     from public.source_cells sc join public.source_sheets ss on ss.id=sc.sheet_id
     where ss.detected_type='capacity' and address in ('G5','H5')`))[0].tot;
-  if (!approx(demand.demandMinutes, Number(srcTotals), 20))
-    fail(`part demand ${demand.demandMinutes} ≠ source G5+H5 ${srcTotals} (silent discard?)`);
-  console.log(`no-silent-discard ✓ ${demand.partCount} parça, talep=${demand.demandMinutes.toFixed(0)} = kaynak G5+H5=${Number(srcTotals).toFixed(0)}`);
+  if (!approx(demand.demandMinutesPerYear, Number(srcTotals), 20))
+    fail(`part demand ${demand.demandMinutesPerYear} ≠ source G5+H5 ${srcTotals} (silent discard?)`);
+  console.log(`no-silent-discard ✓ ${demand.partCount} parça, talep=${demand.demandMinutesPerYear.toFixed(0)} = kaynak G5+H5=${Number(srcTotals).toFixed(0)}`);
 
   // 3) source traceability: every part links to a source row
   const traced = (await q(`select count(*)::int n from public.production_parts where source_row_id is not null`))[0].n;
