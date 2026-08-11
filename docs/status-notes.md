@@ -275,3 +275,20 @@ Sonrası: `machine_roi_snapshots` = 0 (bu ortamda gerçek ROI aktarımı `person
 incelemesiyle hâlâ bloklu, dolayısıyla boş olması beklenen durum). `/production/roi` ve
 `/production` HTTP 200 render ediyor, konsol hatası yok, uydurma rakamlar ekrandan kalktı.
 Mali veri değişmedi: payments=19, checks=7, loans=1, cashflow_months=35.
+
+### Veri temizliği — hatalı capacity_utilization metrikleri silindi (2026-08-11)
+
+Bulgu #6 ile `collectMetricSnapshots`'tan `capacity_utilization` metriği kaldırıldı (commit 7bc9a13),
+ama kod kaldırmak onun daha önce yazdığı satırları silmez. `mas_radar_dev`'de 8 haftalık snapshot
+(2026-05-29 … 2026-07-17) **yıllık talep ÷ aylık kapasite** ile hesaplanmış hatalı oranı taşıyordu
+— örnek değer `37.8605`, yani %3786.
+
+Silme ölçütü `metric_key='capacity_utilization'` — bu tek metriğe scoped; başka metrik ve tarih
+etkilenmedi (diğer 184 satır yerinde). Silme öncesi salt-okunur sayım tam 8 çıktı (farklı olsaydı
+işlem durdurulacaktı).
+
+Silinen veri `audit_logs`'ta `delete_stale_capacity_utilization_snapshots` eylemiyle, actor=`system`,
+`before_data` içinde 8 satırın tam JSON'ı (id/snapshot_date/value_numeric/confidence/meta dahil)
+kanıt olarak saklandı.
+
+Mali veri değişmedi: payments=19, checks=7, loans=1, cashflow_months=35.
