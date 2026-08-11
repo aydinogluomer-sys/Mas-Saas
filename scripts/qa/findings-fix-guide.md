@@ -184,7 +184,7 @@ Bunların **kanonik bir eşdeğeri yok** (`/data/imports/` altında yalnız list
 
 7. ~~**#6**~~ — **DONE** (7bc9a13 + 4ecaea7), karar: ayrı KPI'lar.
 
-**Kalan açık iş (ikisi de isteğe bağlı):** #5'in link temizliği (11 link, 8 dosya — hepsi 308 üzerinden çalışıyor) ve aşağıdaki `PageHeader action` gözlemi.
+**Kalan açık iş (isteğe bağlı):** #5'in link temizliği (11 link, 8 dosya — hepsi 308 üzerinden çalışıyor) ve aşağıdaki `PageHeader action` düzeltmesinin kozmetik kalıntısı (buton sola hizalı).
 
 ---
 
@@ -259,9 +259,9 @@ Fonksiyonel etkisi yok: redirect'ler devrede olduğu için legacy URL'ler kullan
 
 ---
 
-## Küçük UI notu — modül içi `PageHeader` gizlendiğinde `action` butonu da erişilemez oluyor
+## Küçük UI notu — modül içi `PageHeader` gizlendiğinde `action` butonu da erişilemez oluyordu — **DONE (commit sonrası)**
 
-Bulgu #6 doğrulanırken bulundu (yeni bulgu numarası açılmadı; kullanıcı isterse açar).
+Bulgu #6 doğrulanırken bulundu (yeni bulgu numarası açılmadı).
 
 `globals.css:410` — `.module-content > header:first-child { display: none; }` — modül çerçevesi
 zaten başlık gösterdiği için sayfanın kendi `PageHeader`'ını gizliyor. Kasıtlı bir kural. Ancak
@@ -271,11 +271,52 @@ Somut sonuç: `/system` sayfasındaki **"Metrikleri yenile" butonu DOM'da var am
 Playwright `force: true` ile bile tıklayamıyor (`display: none` zincirin üstünde). Yani metrik
 yenileme özelliği arayüzden **çalıştırılamıyor**.
 
-Bu turda kapsam dışı bırakıldı (Bulgu #6 ile ilgisi yok, ondan önce de vardı). Doğrulama, motor
-(`refreshMetricSnapshots`) doğrudan çağrılarak yapıldı — 24 metrik yazıldı, hiçbiri
-`capacity_utilization` değil.
+### Gerçek etki alanı (sistematik ölçüldü — ilk not yalnız `/system`'i sanıyordu)
 
-Çözüm seçenekleri: (a) `action` içeriğini `header` dışına taşımak, (b) kuralı
-`.module-content > header:first-child > :not(.shrink-0)` gibi daraltmak, (c) modül sayfalarında
-`PageHeader` yerine `ModuleFrame`'in kendi action yuvasını kullanmak. Hangisi olacağı bir tasarım
-kararı.
+`PageHeader` kullanan **45 rota** canlı tarandı (`getComputedStyle` ile, gerçek admin oturumu).
+Aksiyonu olan **11 rota** vardı ve **11'inin de aksiyonu gizliydi**. Takma adlar sadeleşince
+**8 farklı sayfa**:
+
+| Sayfa | Gizli olan aksiyon | Tıklayınca (düzeltmeden sonra) |
+|---|---|---|
+| `/payments` (=`/radar`) | Ödeme ekle | `/payments/new` |
+| `/payments/history` | Ödeme ekle | `/payments/new` |
+| `/payments/archive` | Ödeme kalemlerine git | `/payments/items` |
+| `/finance` (=`/financing`) | Senaryoda dene | `/scenarios?from=finance` |
+| `/cashflow` | Senaryoda dene | `/scenarios` |
+| `/finance/loans` | Yeni kredi | `/finance/loans/new` |
+| `/finance/checks` | Yeni çek | `/finance/checks/new` |
+| `/system` (=`/admin`) | Metrikleri yenile | `/system?metrics=24` (gerçekten yeniledi) |
+
+En kritik olanı `/payments`: yeni ödeme ekleme, ana ödeme ekranından erişilemiyordu.
+
+### Çözüm (uygulanan)
+
+Seçenek (b) — sayfa dosyalarına hiç dokunmadan, `globals.css`'te tek kural üçe çıkarıldı:
+
+```css
+.module-content > header:first-child { display: none; }
+.module-content > header:first-child:has(.shrink-0) { display: flex; }
+.module-content > header:first-child:has(.shrink-0) > .min-w-0 { display: none; }
+```
+
+Temel kural korunur (yalnız başlık taşıyan header'lar tamamen gizli — kasıtlı ve doğru); aksiyon
+İÇEREN header geri gelir, başlık bloğu (`.min-w-0`) gizli kalır.
+
+`:has()` bu kod tabanında ilk kullanım. Belgelenmiş bir tarayıcı-desteği kısıtı yok (`browserslist`
+tanımı, `.browserslistrc` veya dokümante edilmiş hedef yok) ve bu bir iç kontrol paneli.
+
+### Doğrulama
+
+45 rota önce/sonra ölçüldü: aksiyonlu 11 rotanın **11'i de görünür** oldu (önce 0), aksiyonsuz
+**33 rotanın 32'si aynen `display:none`** kaldı (33.'sü `/production/costs` — yeniden ölçümde o da
+`none`, ilk okuma geçici bir artefakttı). 8 sayfanın hepsinde aksiyon **`force` olmadan** tıklandı
+ve doğru hedefe gitti. Header 46px, bir sonraki blok 16px altında — çakışma yok, yatay taşma yok,
+konsol hatası 0.
+
+### Bilinen kozmetik yan etki (kapsam dışı)
+
+`.min-w-0` gizlenince `.shrink-0` tek flex öğe kalıyor ve `justify-content: space-between`
+dağıtacak boşluk bulamadığı için buton **sola** hizalanıyor (ölçüm: `actionSol 297 = headerSol 297`).
+Fonksiyonel değil. İstenirse bu özel durum için `justify-content: flex-end` eklenebilir — ayrı ve
+isteğe bağlı bir iyileştirme.
