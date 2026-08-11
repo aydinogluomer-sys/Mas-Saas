@@ -400,3 +400,44 @@ Test edilen diğer 11 geçişin tamamı çalışıyor. `/data/quality → /data/
 **Sıradaki adım önerisi:** `next start` yerine `next dev` ile tekrarlayıp Next'in geliştirme uyarılarını/router loglarını okumak; ayrıca `router.push`'un döndürdüğü promise'i ve `useRouter` state'ini doğrudan gözlemleyen küçük bir test bileşeni. İkisi de ayrı bir tur.
 
 **Geçici enstrümantasyon geri alındı** — `git status` temiz, `navigation-feedback.tsx` ve `next.config.ts` değişmedi.
+
+### `next dev` turu — **KÖK NEDEN KESİNLEŞTİ** (kod değişikliği yok)
+
+**Dev modda dört geçişin dördü de çalışıyor.** Aynı kaynak kod, aynı veri, aynı tıklama — yalnız `next start` yerine `next dev`. Konsolda tek uyarı yok (`[Fast Refresh] rebuilding/done` dışında hiçbir şey), Next hata overlay'i açılmıyor (DOM'daki `nextjs-portal` yalnız dev overlay'in kendi stil sayfası), sunucu logları tertemiz: tüm rotalar derlendi ve 200 döndü. Yani arıza **yalnız production build'e özgü**.
+
+**ADIM B — router debug yüzeyi:** `window.next.router` var ama yalnız metotlar açık (`back, forward, prefetch, push, replace, refresh, hmrRefresh`); `window.next.router.state` **undefined**, `window.__NEXT_DATA__` yok. Bu sürümde okunabilir bir App Router state'i **yok** — gözlemlenemedi.
+
+Dev'de prefetch devre dışıdır. Bu ipucu üretim build'inde sınandı ve **kesin tekrar kuralı** çıktı:
+
+> **Prefetch edilmiş + hedef rota bir re-export + hedef rotada dinamik segment var → navigasyon iptal oluyor.**
+> Üç koşuldan biri eksikse çalışıyor.
+
+**Kanıt matrisi (hepsi production build, 2500ms bekleme = prefetch tamamlanmış):**
+
+| Hedef | Prefetch | Re-export | Dinamik | Sonuç |
+|---|---|---|---|---|
+| `/data/imports/{id}` | ✓ | ✓ | ✓ | **gitmiyor** |
+| `/data/imports/{id}/reviews` | ✓ | ✓ | ✓ | **gitmiyor** |
+| `/finance/loans/{id}` | ✓ | ✓ | ✓ | **gitmiyor** |
+| `/insights/reports/{id}` | ✓ | ✓ | ✓ | **gitmiyor** |
+| `/data/imports/{id}/sheets/{id}` | ✗ (sayfada Link yok) | ✓ | ✓ | gidiyor |
+| `/data/imports/{id}` (`/data/quality`'den) | ✗ | ✓ | ✓ | gidiyor |
+| `/system/features` | ✓ | ✓ | ✗ | gidiyor |
+| `/insights/reminders` | ✓ | ✓ | ✗ | gidiyor |
+| `/payments/{id}/edit` | ✓ | ✗ | ✓ | gidiyor |
+| `/payments/items`, `/payments/new` | ✓ | ✗ | ✗ | gidiyor |
+| dört başarısız geçiş, **dev modda** | (dev'de prefetch yok) | ✓ | ✓ | gidiyor |
+
+**Önceki turun iki sonucu bu ışıkta düzeltilmelidir:**
+- "`/insights/reports → /insights/reports/{id}` çalışıyor, demek ki re-export suçlu değil" — **yanlıştı**. O ölçüm tıklamadan önce beklemiyordu; prefetch tamamlanmadan tıklanınca geçiş başarılı oluyor. 2500ms beklemeyle aynı geçiş **başarısız**. Yani sonuç bir yarış koşuluna bağlı, ve "re-export suçsuz" çıkarımı geçersiz.
+- Aynı nedenle kapsam 4 geçişten büyük: **prefetch edilen her dinamik re-export hedefi** etkileniyor (bilinen dördü + `/insights/reports/{id}`).
+
+**Çıkarılan mekanizma (iç işleyiş okunmadı, kanıt buraya kadar):** Üretim build'inde dinamik+re-export bir rota için prefetch ile oluşan istemci RSC cache girdisi, sonraki gerçek geçişte kullanılamıyor ve transition sessizce iptal ediliyor (`net::ERR_ABORTED`, konsola hiçbir şey düşmüyor). Next'in kaynak kodu incelenmedi; bu tanım gözlemlenen davranışın kuralıdır, Next-içi çağrı zincirinin kanıtı değildir.
+
+### Düzeltme seçenekleri — UYGULANMADI, karar kullanıcıya ait
+
+1. **Re-export'ları gerçek dosyaya çevir (dinamik olanlar için).** Etkilenen dört rotanın içeriği alias tarafına taşınır, legacy taraf ya silinir ya kanonik tarafı re-export eder. En temiz çözüm; aynı zamanda daha önce rehbere not düşülen "gerçek içerik legacy tarafta duruyor" konvansiyon tersliğini de giderir. Maliyet: dosya taşıma + import güncellemesi, davranış değişmez.
+2. **Bu hedeflere işaret eden linklerde prefetch'i kapat** (`<Link prefetch={false}>`). Küçük ve hedefe yönelik; ama kök nedeni bırakır, ileride eklenecek yeni bir link aynı tuzağa düşer.
+3. **Alias rotayı tamamen kaldır**, tek kanonik gerçek dosya bırak, diğerini `next.config.ts` redirect'iyle karşıla. Rota sayısını azaltır; hangi tarafın kanonik olacağı ürün kararı.
+
+Seçenek 1 kök nedeni ortadan kaldırır, 2 semptomu bastırır, 3 hem kök nedeni giderir hem yüzeyi küçültür.
