@@ -83,9 +83,15 @@ Motor/migration değişikliği yok — yalnız ekleyici bir UI değişikliği. D
 
 ---
 
-## Bulgu #3 — `calculateMachineRoiSnapshot`: kullanılmayan motor fonksiyonu (karar gerektirir)
+## Bulgu #3 — `calculateMachineRoiSnapshot`: kullanılmayan motor fonksiyonu — **DONE (seçenek B, commit 2185d03)**
 
-**Önem: Düşük** — önce bir ürün kararı gerekiyor, sonra kod.
+**Önem: Düşük** — ürün kararı verildi: elle ROI girişi istenmiyor, ölü kod kaldırıldı.
+
+> **Karar notu:** Seçenek A yalnız "form ekle" değildi. `calculateMachineRoiSnapshot` denetim kaydı yazmıyordu ve `actorId` almıyordu (`mapMachineRoi` yazıyor), yani A finansal bir tabloya denetlenmeyen bir yazma yolu açardı. Ayrıca gerçek ROI kaynak sekmesi `personal_data_mixed` incelemesiyle **bilerek** bloklu; elle giriş formu tam olarak o kapının yanına ikinci bir kapı olurdu.
+>
+> **Kabul edilen ödün:** `seed-demo.ts`'in her makine×yıl için manuel snapshot yazan ikinci geçişi kalktı; workbook yolu bloklandığında demo artık ROI göstermiyor (üretimin gerçekte gösterdiğiyle aynı).
+>
+> **Açık kalan:** Kodu kaldırmak, onun daha önce yazdığı satırları silmez. `mas_radar_dev`'de 8 demo ROI snapshot'ı (2025/2026 × 4 makine) duruyor ve `/production/roi`'de gerçek veriymiş gibi görünüyor. Gerçek veritabanından satır silmek kullanıcı kararıdır.
 
 ### Sorun
 Tam işlevli, doğru yazılmış bir fonksiyon (`src/lib/production/engine.ts`) var ama hiçbir form/buton onu çağırmıyor; yalnız `seed-demo.ts` ve `phase7-verify.ts` kullanıyor. Gerçek yol yalnız `mapMachineRoi` (workbook'tan içe aktarma).
@@ -158,3 +164,29 @@ Bunların **kanonik bir eşdeğeri yok** (`/data/imports/` altında yalnız list
 4. **#3** — önce karar (kullanıcıya sorulmalı), sonra ya UI ya temizlik.
 5. **#5'in `/imports/*` kısmı** — orta efor, isteğe bağlı (alternatif: yalnız h1 ekle).
 6. **#4** — kod değil, operasyonel; kullanıcı ne zaman isterse o zaman.
+
+---
+
+## Bulgu #6 — Kapasite açığı hesaplamasında yıl/ay birim uyumsuzluğu (yalnız uyarıldı, tam düzeltme bekliyor)
+
+**Önem: Düşük-Orta** — sayı yanlış değil, karşılaştırma yanlış. Şu an ekranda **bayraklı** duruyor (commit 222d604), düzeltilmedi.
+
+### Sorun
+`loadCapacityDemand()` (`src/lib/production/engine.ts`) `production_parts` üzerinden `quantity×(torna+freze)` topluyor. Bu, kaynak Excel'in G5/H5 dakika toplamları — `docs/import-mapping.md §5`'e göre I8'in **yıllık** teorik toplam olarak özetlediği rakam (≈18,57M).
+
+Buna karşı `capacity_models.monthly_minutes` (K8, **aylık**) doğrudan çıkarılıyor/bölünüyor:
+- `src/app/(dashboard)/production/capacity/page.tsx` → `gap = available - demand.demandMinutes`
+- `src/app/(dashboard)/production/page.tsx` → `utilization = demand.demandMinutes / capacity`
+
+Gerçek veride: talep 1.199.420 (yıllık) vs etkin 31.680 (aylık) → **−1.167.740 açık / %3786 kullanım**. Aylık-aylık karşılaştırma ≈ **−68.272** verir; hâlâ ciddi bir açık ama ~12× daha küçük.
+
+### Neden şimdi düzeltilmedi
+Hangi normalizasyonun doğru olduğu bir ürün/veri kararı: talebi 12'ye mi bölmeli, etkin dakikayı 12'yle mi çarpmalı, yoksa "yıllık talep" ve "aylık talep" ayrı iki KPI olarak mı gösterilmeli? Kullanıcıların halihazırda okuyor olabileceği bir sayıyı sessizce yeniden ölçeklemek, `docs/database-schema.md`'nin yasakladığı sessiz düzeltme olurdu.
+
+### Şu anki durum
+Her iki kart da değerini **aynen** koruyor ve amber `birim uyumsuz` rozeti + "talep yıllık toplam, etkin dakika aylık — birebir kıyaslanamaz" notu taşıyor. Hesaplamanın yapıldığı yerde de aynı açıklama yorum olarak duruyor.
+
+### Çözüm için gereken
+1. Ürün kararı: hangi periyot esas alınacak.
+2. Karar sonrası `loadCapacityDemand`'e açık bir periyot semantiği (ör. `demandMinutesPerYear` + `demandMinutesPerMonth`) ve iki sayfanın buna göre güncellenmesi.
+3. `phase7-verify.ts`'e periyot tutarlılığı iddiası eklenmesi (şu an talep toplamını kaynak G5+H5 ile doğruluyor ama periyodunu iddia etmiyor).
