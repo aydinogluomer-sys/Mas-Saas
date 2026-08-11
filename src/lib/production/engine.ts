@@ -668,7 +668,11 @@ export async function calculateMachineRoiSnapshot(
 
 /* ── loaders for UI ── */
 
-export async function loadCapacityModels(pool: Pool): Promise<Array<CapacityCandidate & { id: string; name: string; monthlyMinutes: number | null; sheetId: string | null; workbookId: string | null; partCount: number; missingPartCount: number }>> {
+// isStaleRate is selected and returned below (cm.is_stale_rate) but was missing from this
+// declared shape, so callers could not read the flag the schema keeps precisely so a
+// 2023-derived rate is never presented as a current one. Type-only correction: the query,
+// the mapping and the returned values are unchanged.
+export async function loadCapacityModels(pool: Pool): Promise<Array<CapacityCandidate & { id: string; name: string; monthlyMinutes: number | null; isStaleRate: boolean | null; sheetId: string | null; workbookId: string | null; partCount: number; missingPartCount: number }>> {
   const r = await pool.query(`
     select cm.id, cm.name, cm.efficiency_rate::float8 as efficiency,
            cm.freze_rate_tl_per_min::float8 as freze, cm.torna_rate_tl_per_min::float8 as torna,
