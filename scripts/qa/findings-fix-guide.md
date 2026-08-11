@@ -128,9 +128,16 @@ Tam işlevli, doğru yazılmış bir fonksiyon (`src/lib/production/engine.ts`) 
 
 ---
 
-## Bulgu #5 — Eski `/financing/loans/[id]` ve `/imports/[workbookId]/*` rotaları kanonik rotalara yönlenmiyor
+## Bulgu #5 — Eski `/financing/loans/[id]` ve `/imports/[workbookId]/*` rotaları kanonik rotalara yönlenmiyor — **DONE (commit a4a8d1e + c0f9c1c)**
 
 **Önem: Düşük** — sayfalar çalışıyor, veri doğru; yalnız URL/tutarlılık meselesi.
+
+> **Çözüldü.** Alternatif ("yalnız h1 ekle, URL'leri bırak") seçilmedi; tam redirect altyapısı kuruldu.
+>
+> - `/financing/loans/:loanId` → `/finance/loans/:loanId` (a4a8d1e). Gerçek kredi id'siyle 308 + doğru `Location` doğrulandı; yönlendirme sonrası sayfa kanonikle birebir aynı (h1, 5 KPI, 48 taksit satırı, 47 "ödendi" butonu).
+> - `/imports/:workbookId`, `.../reviews`, `.../sheets/:sheetId` → `/data/imports/...` (c0f9c1c). Kanonik konum **önce yaratıldı** (üç 1-satırlık re-export, `default` ile birlikte `dynamic` de aktarılıyor — kaynak sayfaların üçü de `force-dynamic`), sonra üç redirect eklendi. Gerçek workbook/sheet id'leriyle 3×308 + 3×200 doğrulandı, içerik uzunlukları birebir eşleşti.
+>
+> **Açık kalan (isteğe bağlı temizlik):** Uygulama içinde hâlâ **11 link, 8 dosyada** eski `/imports/...` yolunu gösteriyor — `/data/imports` liste sayfasındaki workbook linki dâhil. Hepsi çalışıyor (her biri bir 308 sıçraması yapıyor). Kanonik yollara çevirmek ayrı ve isteğe bağlı bir iş; routing değişikliğine dâhil edilmedi.
 
 ### Kök neden (kesin — kaynak kodda doğrulandı)
 `next.config.ts`'nin `redirects()`'i `/financing` ve `/imports` için **yalnız liste sayfasını** yönlendiriyor (`{ source: "/financing", destination: "/finance" }`), `/reports` için yapıldığı gibi **dinamik alt-rotayı** (`/reports/:reportId`) kapsamıyor:
@@ -169,11 +176,13 @@ Bunların **kanonik bir eşdeğeri yok** (`/data/imports/` altında yalnız list
 ## Öneri sırası
 
 1. **#1** (çek/taksit ayarlama) — en yüksek etki, tek başına bir "faz" büyüklüğünde (migration + motor + UI + test).
-2. **#5'in `/financing/loans/[id]` kısmı** — 1 satırlık, sıfır riskli, hemen yapılabilir.
-3. **#2** (gerçek gelir paneli) — küçük, ekleyici, düşük risk.
-4. **#3** — önce karar (kullanıcıya sorulmalı), sonra ya UI ya temizlik.
-5. **#5'in `/imports/*` kısmı** — orta efor, isteğe bağlı (alternatif: yalnız h1 ekle).
-6. **#4** — kod değil, operasyonel; kullanıcı ne zaman isterse o zaman.
+2. ~~**#5'in `/financing/loans/[id]` kısmı**~~ — **DONE** (a4a8d1e), 1 satırlık redirect.
+3. ~~**#2** (gerçek gelir paneli)~~ — **DONE** (66ed07c).
+4. ~~**#3**~~ — **DONE**, karar seçenek B: ölü kod kaldırıldı (2185d03) + veri kalıntısı temizlendi (43cadea).
+5. ~~**#5'in `/imports/*` kısmı**~~ — **DONE** (c0f9c1c). "Yalnız h1 ekle" alternatifi seçilmedi; kanonik rotalar yaratılıp tam redirect kuruldu.
+6. ~~**#4**~~ — **DOĞRULANDI** (dc67b58), kod değişikliği gerekmedi.
+
+**Kalan açık iş:** #6 (kapasite yıl/ay birim uyumsuzluğu — ürün kararı bekliyor) ve #5'in isteğe bağlı link temizliği (11 link, 8 dosya).
 
 ---
 
@@ -200,3 +209,21 @@ Her iki kart da değerini **aynen** koruyor ve amber `birim uyumsuz` rozeti + "t
 1. Ürün kararı: hangi periyot esas alınacak.
 2. Karar sonrası `loadCapacityDemand`'e açık bir periyot semantiği (ör. `demandMinutesPerYear` + `demandMinutesPerMonth`) ve iki sayfanın buna göre güncellenmesi.
 3. `phase7-verify.ts`'e periyot tutarlılığı iddiası eklenmesi (şu an talep toplamını kaynak G5+H5 ile doğruluyor ama periyodunu iddia etmiyor).
+
+---
+
+## Küçük mimari not — alias rotalarda gerçek içerik legacy tarafta duruyor
+
+Bulgu #5 sırasında ölçüldü (yeni bulgu numarası açılmadı; kullanıcı isterse açar).
+
+Alias'lı rota çiftlerinde **gerçek içerik legacy dosyada, kanonik dosya 1 satırlık re-export**:
+
+| Kanonik | Legacy (içerik burada) |
+|---|---|
+| `finance/loans/[loanId]/page.tsx` — 1 satır | `financing/loans/[loanId]/page.tsx` — 132 satır |
+| `system/features/page.tsx` — 1 satır | `phases/page.tsx` — 67 satır |
+| `data/imports/page.tsx` — 1 satır | `imports/page.tsx` |
+
+Bu **tutarlı bir konvansiyon**, çelişki değil: her iki çift de aynı yönde. (Bu turun görev tanımında `system/features` çiftinin ters yönde olduğu varsayılmıştı; ölçüm bunu doğrulamadı — o dosya da 1 satırlık re-export.)
+
+Fonksiyonel etkisi yok: redirect'ler devrede olduğu için legacy URL'ler kullanıcıya hiç görünmüyor, ikisi de aynı bileşeni render ediyor. Tek maliyeti okunabilirlik — kanonik yolu açan biri gerçek JSX'i bulmak için legacy dosyaya gitmek zorunda. Tersine çevirmek istenirse dosya taşıma + import güncellemesi gerektiren ayrı bir temizliktir; davranış değişmez.
