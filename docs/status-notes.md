@@ -253,3 +253,25 @@ DATABASE_URL=postgres://postgres:postgres@127.0.0.1:5432/<atilabilir_db> pnpm ph
 
 Ayrıca `audit_logs` 0022'den beri append-only olduğu için her phase **taze oluşturulmuş** bir DB
 ister; aynı DB'de arka arkaya çalıştırmak audit sayımlarını bozar.
+
+### Veri temizliği — mas_radar_dev'deki sentetik ROI satırları silindi (2026-08-11)
+
+Bulgu #3 ile `calculateMachineRoiSnapshot` kaldırıldı (commit 2185d03), ama kodu kaldırmak
+onun daha önce **gerçek veritabanına yazdığı** satırları silmez. `scripts/seed-demo.ts`'in
+manuel geçişi `mas_radar_dev`'e 8 adet uydurma ROI snapshot'ı yazmıştı (2025 + 2026 × 4 makine,
+`3.000.000 + index×800.000 − yearIndex×300.000` formülüyle) ve `/production/roi` bunları
+gerçek veriymiş gibi gösteriyordu.
+
+Silme ölçütü **`source_sheet_id is null`** oldu — gerçek `mapMachineRoi` satırları her zaman bir
+kaynak sekmeden gelir ve hem `source_workbook_id` hem `source_sheet_id` taşır; sentetik olanlar
+yalnız workbook id taşıyordu. Silme öncesi salt-okunur doğrulama: 8 satırın 8'i `has_sheet=false`,
+`source_sheet_id is not null` olan **tek satır bile yoktu** (olsaydı işlem durdurulacaktı).
+
+Silinen veri kaybolmadı: `audit_logs`'a `delete_synthetic_roi_rows` eylemiyle, actor=`system`,
+`before_data` içinde **8 satırın tam JSON'ı** (id/revenue/cost/tax/net dahil) kanıt olarak
+saklandı. "8 satır silindi" demekle yetinilmedi.
+
+Sonrası: `machine_roi_snapshots` = 0 (bu ortamda gerçek ROI aktarımı `personal_data_mixed`
+incelemesiyle hâlâ bloklu, dolayısıyla boş olması beklenen durum). `/production/roi` ve
+`/production` HTTP 200 render ediyor, konsol hatası yok, uydurma rakamlar ekrandan kalktı.
+Mali veri değişmedi: payments=19, checks=7, loans=1, cashflow_months=35.
