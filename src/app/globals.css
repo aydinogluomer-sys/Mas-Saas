@@ -415,7 +415,7 @@ body {
    So: keep hiding the header when it is only a title, and when it does carry an
    action, bring the header back and hide just the title block (.min-w-0) instead. */
 .module-content > header:first-child { display: none; }
-.module-content > header:first-child:has(.shrink-0) { display: flex; }
+.module-content > header:first-child:has(.shrink-0) { display: flex; justify-content: flex-end; }
 .module-content > header:first-child:has(.shrink-0) > .min-w-0 { display: none; }
 .workspace-content table { border-collapse: separate; border-spacing: 0; }
 .workspace-content th { border-bottom: 1px solid var(--line); padding: 9px 10px; color: var(--text-4); font-size: 9px; font-weight: 700; letter-spacing: .08em; text-align: left; text-transform: uppercase; }
