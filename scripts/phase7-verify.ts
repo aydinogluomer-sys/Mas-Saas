@@ -2,7 +2,7 @@
 //   capacity + cost mapping cross-checks source anchors (break-even == source G6,
 //     effective minutes == machines×dk×verim); ALL 68 parts captured (demand == source
 //     G5+H5, no silent discard) and traceable to source rows; stale-rate flagged;
-//   part profitability + missing-op confidence; ROI defaults needs_review;
+//   part profitability + missing-op confidence;
 //   idempotent mapping + profitability (re-run creates 0);
 //   FINANCIAL INTEGRITY: Phase-7 mapping mutates NO finance table
 //     (payments/instances/cashflow/checks/loans/reminders/reports before==after).
@@ -10,7 +10,7 @@ import { readFileSync } from "node:fs";
 import { Pool } from "pg";
 import { importWorkbook } from "../src/lib/importers/workbook-importer";
 import {
-  calculateMachineRoiSnapshot, calculatePartProfitability,
+  calculatePartProfitability,
   loadActualMonthlyIncome, loadCapacityDemand, loadCapacityModels, loadCostModels,
   mapCapacitySheet, mapCostSheets,
 } from "../src/lib/production/engine";
@@ -113,14 +113,6 @@ async function main() {
   if (missingConf === 0) fail("missing-op parts not flagged needs_review");
   if (nullCost !== 0) fail("missing-op part got a non-null cost (null must stay null)");
   console.log(`profitability ✓ ${p1.runsCreated} run, ${missingConf} needs_review (süre eksik→maliyet null)`);
-
-  // 7) ROI defaults needs_review
-  const mid = (await q(`select id from public.machine_assets limit 1`))[0].id;
-  await calculateMachineRoiSnapshot(pool, { machineAssetId: mid, year: 2026, revenue: 5000000, cost: 3000000, tax: 400000, sourceWorkbookId: wb });
-  const roi = (await q(`select confidence, net_after_tax::float8 as net from public.machine_roi_snapshots where machine_asset_id=$1 and snapshot_year=2026`, [mid]))[0];
-  if (roi.confidence !== "needs_review") fail("ROI confidence not needs_review");
-  if (!approx(roi.net, 1600000, 1)) fail(`ROI net ${roi.net} ≠ 1.6M (rev-cost-tax)`);
-  console.log(`ROI ✓ net=${roi.net} confidence=${roi.confidence} (asla otomatik güvenilir değil)`);
 
   // 8) theoretical vs actual revenue loader sanity (no cashflow here → null actual)
   const actual = await loadActualMonthlyIncome(pool);

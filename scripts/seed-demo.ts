@@ -7,7 +7,6 @@ import { cancelInstance, ensureWindow, mapAcceptedCandidates, markInstancePaid, 
 import { mapCashflowMonths, validateContinuity, writeSnapshots } from "../src/lib/cashflow/engine";
 import { mapAcceptedChecks, mapLoans } from "../src/lib/financing/engine";
 import {
-  calculateMachineRoiSnapshot,
   calculatePartProfitability,
   mapCapacitySheet,
   mapCostSheets,
@@ -111,25 +110,12 @@ async function main() {
   const machineMinutes = await mapMachineMinuteAllocations(pool, r.workbookId, actorId);
   const financeAllocations = await mapFinanceCostAllocations(pool, r.workbookId, actorId);
 
-  // Machine ROI: prefer the real workbook mapping (it self-blocks while the source sheet
-  // has an open/rejected review — e.g. personal/company data mixed — never bypassed here).
-  // The manual snapshots below always run too (ON CONFLICT DO NOTHING per machine×year),
-  // so every machine has demo-visible ROI even when the workbook path is blocked.
+  // Machine ROI comes solely from the real workbook mapping, which self-blocks while the
+  // source sheet has an open/rejected review (e.g. personal/company data mixed) and is never
+  // bypassed. A second, manual seeding pass used to run alongside it so every machine showed
+  // demo ROI even when the workbook path was blocked; that path is gone (Bulgu #3, option B),
+  // so a blocked sheet now means no ROI rows — the same thing production would show.
   const roiMap = await mapMachineRoi(pool, r.workbookId, actorId);
-  const machines = (await pool.query<{ id: string }>("select id from public.machine_assets order by created_at")).rows;
-  const roiYears = [new Date().getFullYear(), new Date().getFullYear() - 1];
-  let roiSnapshotsCreated = 0;
-  for (const [index, m] of machines.entries()) {
-    for (const [yearIndex, year] of roiYears.entries()) {
-      const revenue = 3_000_000 + index * 800_000 - yearIndex * 300_000;
-      const res = await calculateMachineRoiSnapshot(pool, {
-        machineAssetId: m.id, year,
-        revenue, cost: Math.round(revenue * 0.6), tax: Math.round(revenue * 0.08),
-        sourceWorkbookId: r.workbookId,
-      });
-      if (res.created) roiSnapshotsCreated++;
-    }
-  }
 
   // External assumptions: keep the existing interest-rate demo row, add the remaining
   // catalogue types (exact assumption_type enum values — unrecognized strings silently
@@ -278,7 +264,7 @@ async function main() {
     ` · capacity=${capacity.capacityCreated} parts=${capacity.partsCreated} · costs=${costs.created}` +
     ` · profitability=${profitability.runsCreated} · machineMinutes=${machineMinutes.created}` +
     ` · financeAllocations=${financeAllocations.created}` +
-    ` · roiSnapshots=${roiSnapshotsCreated} (workbook mapped=${roiMap.perMachineSnapshots}, excluded=${roiMap.excluded.length})` +
+    ` · roiSnapshots=${roiMap.perMachineSnapshots} (workbook mapped; excluded=${roiMap.excluded.length})` +
     ` · assumptions=${assumptionsCreated + 1} · reminderDispatch(attempted=${dispatch.attempted},sent=${dispatch.sent},failed=${dispatch.failed})` +
     ` · scenarios=4 · tasks=${taskIds.length} · metricSnapshotDates=8 · checkEvents=${checkEventsAdded} · aiAnswers=${aiAnswersCreated}`,
   );

@@ -13,7 +13,7 @@ import {
 } from "@/lib/importers/extractors";
 import type { CellVal, RowJson } from "@/lib/importers/row-utils";
 import { normalizeTr } from "@/lib/importers/workbook-parser";
-import { breakEvenTLPerMin, machineRoi, partProfitability } from "./rules";
+import { breakEvenTLPerMin, partProfitability } from "./rules";
 
 async function audit(client: PoolClient, actor: string, action: string, entityTable: string, entityId: string | null, after: unknown): Promise<void> {
   await client.query(
@@ -627,37 +627,6 @@ export async function mapFinanceCostAllocations(pool: Pool, workbookId: string, 
     }
     await client.query("commit");
     return res;
-  } catch (e) {
-    await client.query("rollback");
-    throw e;
-  } finally {
-    client.release();
-  }
-}
-
-/* ── 4) machine ROI snapshots (always needs_review) ── */
-
-export async function calculateMachineRoiSnapshot(
-  pool: Pool,
-  input: { machineAssetId: string; year: number; revenue: number | null; cost: number | null; tax: number | null; sourceWorkbookId?: string; sourceSheetId?: string },
-): Promise<{ created: boolean }> {
-  const roi = machineRoi(input);
-  const client = await pool.connect();
-  try {
-    await client.query("begin");
-    const ins = await client.query(
-      `insert into public.machine_roi_snapshots
-         (machine_asset_id, snapshot_year, revenue, cost, remaining, tax, net_after_tax, confidence,
-          source_workbook_id, source_sheet_id, notes)
-       values ($1,$2,$3,$4,$5,$6,$7,'needs_review',$8,$9,$10)
-       on conflict (machine_asset_id, snapshot_year) do nothing
-       returning id`,
-      [input.machineAssetId, input.year, input.revenue, input.cost, roi.remaining, input.tax, roi.netAfterTax,
-       input.sourceWorkbookId ?? null, input.sourceSheetId ?? null,
-       "İncelenmeden güvenilir sayılmaz (tablo sekmesi kişisel/şirket karışık)"],
-    );
-    await client.query("commit");
-    return { created: (ins.rowCount ?? 0) > 0 };
   } catch (e) {
     await client.query("rollback");
     throw e;
