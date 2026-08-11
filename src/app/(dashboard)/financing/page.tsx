@@ -149,7 +149,7 @@ export default async function FinancingPage({
               <div key={l.id} className="border border-line bg-black/40 p-3">
                 <div className="flex items-center justify-between">
                   <Link
-                    href={`/financing/loans/${l.id}`}
+                    href={`/finance/loans/${l.id}`}
                     className="font-mono text-xs underline decoration-line-strong underline-offset-2 hover:text-tone-1"
                   >
                     {l.name}
