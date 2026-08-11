@@ -18,6 +18,7 @@ const nextConfig: NextConfig = {
       { source: "/ask", destination: "/insights/ask", permanent: true },
       { source: "/reports", destination: "/insights/reports", permanent: true },
       { source: "/reports/:reportId", destination: "/insights/reports/:reportId", permanent: true },
+      { source: "/financing/loans/:loanId", destination: "/finance/loans/:loanId", permanent: true },
       { source: "/reminders", destination: "/insights/reminders", permanent: true },
       { source: "/assumptions", destination: "/data/assumptions", permanent: true },
       { source: "/data-quality", destination: "/data/quality", permanent: true },
