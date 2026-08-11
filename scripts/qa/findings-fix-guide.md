@@ -401,7 +401,7 @@ Test edilen diğer 11 geçişin tamamı çalışıyor. `/data/quality → /data/
 
 **Geçici enstrümantasyon geri alındı** — `git status` temiz, `navigation-feedback.tsx` ve `next.config.ts` değişmedi.
 
-### `next dev` turu — **KÖK NEDEN KESİNLEŞTİ** (kod değişikliği yok)
+### `next dev` turu — ~~KÖK NEDEN KESİNLEŞTİ~~ **GERİ ÇEKİLDİ** (aşağıdaki "swap turu"na bakın)
 
 **Dev modda dört geçişin dördü de çalışıyor.** Aynı kaynak kod, aynı veri, aynı tıklama — yalnız `next start` yerine `next dev`. Konsolda tek uyarı yok (`[Fast Refresh] rebuilding/done` dışında hiçbir şey), Next hata overlay'i açılmıyor (DOM'daki `nextjs-portal` yalnız dev overlay'in kendi stil sayfası), sunucu logları tertemiz: tüm rotalar derlendi ve 200 döndü. Yani arıza **yalnız production build'e özgü**.
 
@@ -409,8 +409,8 @@ Test edilen diğer 11 geçişin tamamı çalışıyor. `/data/quality → /data/
 
 Dev'de prefetch devre dışıdır. Bu ipucu üretim build'inde sınandı ve **kesin tekrar kuralı** çıktı:
 
-> **Prefetch edilmiş + hedef rota bir re-export + hedef rotada dinamik segment var → navigasyon iptal oluyor.**
-> Üç koşuldan biri eksikse çalışıyor.
+> ~~**Prefetch edilmiş + hedef rota bir re-export + hedef rotada dinamik segment var → navigasyon iptal oluyor.**~~
+> **BU KURAL ÇÜRÜTÜLDÜ** — aşağıdaki "swap turu" bölümüne bakın. Aşağıdaki matris o turda alınmış ölçümlerdir; bir satırı (`/insights/reports/{id}`) sonradan tekrarlanamadı.
 
 **Kanıt matrisi (hepsi production build, 2500ms bekleme = prefetch tamamlanmış):**
 
@@ -441,3 +441,47 @@ Dev'de prefetch devre dışıdır. Bu ipucu üretim build'inde sınandı ve **ke
 3. **Alias rotayı tamamen kaldır**, tek kanonik gerçek dosya bırak, diğerini `next.config.ts` redirect'iyle karşıla. Rota sayısını azaltır; hangi tarafın kanonik olacağı ürün kararı.
 
 Seçenek 1 kök nedeni ortadan kaldırır, 2 semptomu bastırır, 3 hem kök nedeni giderir hem yüzeyi küçültür.
+
+---
+
+## Bulgu #7 — swap turu: seçenek 1 uygulandı, **Bulgu #7'yi ÇÖZMEDİ** (commit 114c702)
+
+**Durum: kök neden yeniden AÇIK.**
+
+### Ne yapıldı
+"Kanonik rotalar re-export olmasın" hipotezi gereği beş alias çiftinde gerçek içerik kanonik tarafa taşındı, legacy taraf 1 satırlık re-export oldu (yön tersine döndü):
+
+`data/imports/[workbookId]` · `.../reviews` · `.../sheets/[sheetId]` · `finance/loans/[loanId]` · `insights/reports/[reportId]`
+
+### Sonuç: değişmedi
+Swap sonrası, swap öncesiyle **birebir aynı** (dört ardışık çalıştırmada tekrarlanabilir):
+
+| Geçiş | Swap öncesi | Swap sonrası |
+|---|---|---|
+| `/data/imports → /data/imports/{id}` | gitmiyor | **gitmiyor** |
+| `/data/imports/{id} → .../reviews` | gitmiyor | **gitmiyor** |
+| `/finance/loans → /finance/loans/{id}` | gitmiyor | **gitmiyor** |
+| `.../sheets/{id}` | gidiyor | gidiyor |
+| `/insights/reports/{id}` | gidiyor | gidiyor |
+
+### Çürütülen: "hedefin re-export olması"
+Kanonik hedefler artık re-export **değil** ve hâlâ başarısız. Ayrıca `sheets/{id}` ve `reports/{id}` üç koşulu da (prefetch + re-export + dinamik) sağladıkları hâlde hem önce hem sonra **çalışıyor**.
+
+**98841fb'deki bir ölçüm yanlıştı:** `/insights/reports/{id}`'nin 2500ms beklemeyle başarısız olduğu rapor edilmişti; bu turda dört çalıştırmanın hiçbirinde tekrarlanmadı. Kural kısmen o tek gözlemin üzerine kurulmuştu.
+
+**Gerçek başarısız küme baştan beri aynı üç geçiş.**
+
+### Swap yine de commit'lendi (114c702) — ama başka bir sebeple
+Bulgu #7'yi çözmüyor; Bulgu #5 kapanışında not düşülen **"gerçek içerik legacy tarafta duruyor"** tersliğini gideriyor. O not artık geçersiz: beş çiftte kanonik taraf gerçek içeriği taşıyor.
+
+Doğrulandı: typecheck/lint/vitest 200/build ✓ · içerik bütünlüğü birebir (kredi detayı 48 taksit satırı + 47 "ödendi" butonu, a4a8d1e referansı) · beş legacy yol hâlâ 308 ile kanoniğe gidiyor · konsol hatası 0.
+
+İki yan not: `imports/[workbookId]/reviews`'daki `../../actions` göreli import'u taşıma sonrası kırılacağı için mutlak alias'a çevrildi (davranış değişikliği değil). `financing/page.tsx:152`'deki link düzeltmesi **ölü dosyada** — `/financing` kalıcı olarak `/finance`'e yönlendiği için o sayfa hiç render edilmiyor; zararsız ama etkisiz.
+
+### Sıradaki tur için açık öneri (bu turda ARAŞTIRILMADI)
+Hedef tarafı artık **elendi**: beş aday rotanın hepsi hedefte aynı üç özelliği taşıyordu, ikisi çalışıyor üçü çalışmıyor. Yani ayrım hedefte değil, büyük olasılıkla **kaynak sayfada**.
+
+Üç kırık geçişin kaynakları: `/data/imports`, `/data/imports/{id}`, `/finance/loans`.
+Çalışan geçişlerin kaynakları: `/data/imports/{id}` (sheets'e giderken **çalışıyor**), `/insights/reports`, `/data/quality`, `/payments`, `/system`.
+
+Dikkat: `/data/imports/{id}` hem kırık (→ reviews) hem çalışan (→ sheets) bir kaynak. Yani "kaynak sayfa" da tek başına yetmeyebilir; ayrım **kaynak+hedef çiftinde** kalıyor olabilir. Kaynak sayfaların ortak özellikleri (render ettikleri bileşenler, `<Link>` sayısı/konumu, `loading.tsx` sınırları, aynı segment altındaki kardeş rota sayısı) hiç sistematik incelenmedi — sonraki turun başlangıç noktası bu olmalı.
