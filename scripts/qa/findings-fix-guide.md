@@ -182,13 +182,42 @@ Bunların **kanonik bir eşdeğeri yok** (`/data/imports/` altında yalnız list
 5. ~~**#5'in `/imports/*` kısmı**~~ — **DONE** (c0f9c1c). "Yalnız h1 ekle" alternatifi seçilmedi; kanonik rotalar yaratılıp tam redirect kuruldu.
 6. ~~**#4**~~ — **DOĞRULANDI** (dc67b58), kod değişikliği gerekmedi.
 
-**Kalan açık iş:** #6 (kapasite yıl/ay birim uyumsuzluğu — ürün kararı bekliyor) ve #5'in isteğe bağlı link temizliği (11 link, 8 dosya).
+7. ~~**#6**~~ — **DONE** (7bc9a13 + 4ecaea7), karar: ayrı KPI'lar.
+
+**Kalan açık iş (ikisi de isteğe bağlı):** #5'in link temizliği (11 link, 8 dosya — hepsi 308 üzerinden çalışıyor) ve aşağıdaki `PageHeader action` gözlemi.
 
 ---
 
-## Bulgu #6 — Kapasite açığı hesaplamasında yıl/ay birim uyumsuzluğu (yalnız uyarıldı, tam düzeltme bekliyor)
+## Bulgu #6 — Kapasite açığı hesaplamasında yıl/ay birim uyumsuzluğu — **DONE (commit 7bc9a13 + 4ecaea7)**
 
-**Önem: Düşük-Orta** — sayı yanlış değil, karşılaştırma yanlış. Şu an ekranda **bayraklı** duruyor (commit 222d604), düzeltilmedi.
+**Önem: Düşük-Orta** — sayı yanlış değil, karşılaştırma yanlıştı. Önce bayraklandı (222d604), sonra kaldırıldı.
+
+> **Karar: seçenek 3 — iki periyot ayrı KPI olarak yan yana, aralarında çıkarma/bölme YOK.**
+> Talebi 12'ye bölmek ya da kapasiteyi 12'yle çarpmak, işletmenin hangi periyotta planladığına dair
+> bir tahmin olurdu ve bu tahmin sonuçta görünmezdi.
+>
+> **Üçüncü çağrı noktası (bu turda keşfedildi):** `src/lib/analytics/snapshots.ts`'deki
+> `collectMetricSnapshots` aynı hatalı oranı `capacity_utilization` metriği olarak **kalıcı
+> yazıyordu**. Hiçbir önceki raporda yoktu. Metrik tamamen kaldırıldı (Bulgu #3'ün seçenek-B
+> mantığı: yanlış tek sayı üreten kaynağı yamamak yerine kaldır).
+>
+> **Veri kalıntısı temizliği:** `mas_radar_dev`'de 8 haftalık snapshot (2026-05-29 … 2026-07-17)
+> `37.8605` (=%3786) değerini taşıyordu; `metric_key`'e scoped silindi, 8 satırın tamamı
+> `audit_logs.before_data`'da kanıt olarak duruyor (4ecaea7).
+>
+> **Yapılanlar:** `loadCapacityDemand` alan adı `demandMinutes` → `demandMinutesPerYear` (SQL aynı;
+> amaç periyodu çağrı yerinde görünür kılmak) · `/production/capacity` "Açık / fazla" kartı
+> kaldırıldı, kalan iki kart "Etkin dakika (aylık)" / "Talep dakika (yıllık)" olarak etiketlendi ·
+> `/production` "Kapasite kullanımı" kartı ve ölü girdileri kaldırıldı.
+>
+> **phase7-verify'a neden yeni assertion eklenmedi:** Bu değişiklikten sonra doğrulanacak tek bir
+> "doğru oran" kalmadı — düzeltmenin özü zaten o tek sayıyı üretmemek. Mevcut iddia (talep = kaynak
+> G5+H5) korundu ve geçiyor. `phase7-verify.ts` promptta listelenmeyen **4. çağrı noktasıydı**;
+> yeniden adlandırmanın derlenmesi için güncellendi.
+>
+> **Dokunulmayan:** `production/rules.ts`'teki `utilizationRate`/`capacityGap` saf fonksiyonları
+> duruyor (testleri var, açık argüman alıyorlar — hata onlarda değil, çağıranların ne verdiğindeydi).
+> Artık üretim çağıranları yok.
 
 ### Sorun
 `loadCapacityDemand()` (`src/lib/production/engine.ts`) `production_parts` üzerinden `quantity×(torna+freze)` topluyor. Bu, kaynak Excel'in G5/H5 dakika toplamları — `docs/import-mapping.md §5`'e göre I8'in **yıllık** teorik toplam olarak özetlediği rakam (≈18,57M).
@@ -227,3 +256,26 @@ Alias'lı rota çiftlerinde **gerçek içerik legacy dosyada, kanonik dosya 1 sa
 Bu **tutarlı bir konvansiyon**, çelişki değil: her iki çift de aynı yönde. (Bu turun görev tanımında `system/features` çiftinin ters yönde olduğu varsayılmıştı; ölçüm bunu doğrulamadı — o dosya da 1 satırlık re-export.)
 
 Fonksiyonel etkisi yok: redirect'ler devrede olduğu için legacy URL'ler kullanıcıya hiç görünmüyor, ikisi de aynı bileşeni render ediyor. Tek maliyeti okunabilirlik — kanonik yolu açan biri gerçek JSX'i bulmak için legacy dosyaya gitmek zorunda. Tersine çevirmek istenirse dosya taşıma + import güncellemesi gerektiren ayrı bir temizliktir; davranış değişmez.
+
+---
+
+## Küçük UI notu — modül içi `PageHeader` gizlendiğinde `action` butonu da erişilemez oluyor
+
+Bulgu #6 doğrulanırken bulundu (yeni bulgu numarası açılmadı; kullanıcı isterse açar).
+
+`globals.css:410` — `.module-content > header:first-child { display: none; }` — modül çerçevesi
+zaten başlık gösterdiği için sayfanın kendi `PageHeader`'ını gizliyor. Kasıtlı bir kural. Ancak
+`PageHeader`'ın `action` yuvasına konan buton da onunla birlikte gizleniyor.
+
+Somut sonuç: `/system` sayfasındaki **"Metrikleri yenile" butonu DOM'da var ama görünmez** —
+Playwright `force: true` ile bile tıklayamıyor (`display: none` zincirin üstünde). Yani metrik
+yenileme özelliği arayüzden **çalıştırılamıyor**.
+
+Bu turda kapsam dışı bırakıldı (Bulgu #6 ile ilgisi yok, ondan önce de vardı). Doğrulama, motor
+(`refreshMetricSnapshots`) doğrudan çağrılarak yapıldı — 24 metrik yazıldı, hiçbiri
+`capacity_utilization` değil.
+
+Çözüm seçenekleri: (a) `action` içeriğini `header` dışına taşımak, (b) kuralı
+`.module-content > header:first-child > :not(.shrink-0)` gibi daraltmak, (c) modül sayfalarında
+`PageHeader` yerine `ModuleFrame`'in kendi action yuvasını kullanmak. Hangisi olacağı bir tasarım
+kararı.
