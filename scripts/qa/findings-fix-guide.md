@@ -524,3 +524,44 @@ Kök neden bulunana kadar aynı arıza başka bir yerde görülürse, çözümü
 
 ### Kök neden araştırması hâlâ AÇIK (isteğe bağlı)
 Bu geçici çözüm hiçbir teşhis sorusunu cevaplamıyor. Bir önceki turda bırakılan iz geçerliliğini koruyor: hedef tarafı elendi, ayrım muhtemelen kaynak+hedef **çiftinde**; `/data/imports/{id}` hem kırık (→ reviews) hem çalışan (→ sheets) bir kaynak olduğu için tek bir değişkene sabitlenemiyor. Kaynak sayfaların ortak özellikleri hiç sistematik incelenmedi.
+
+---
+
+## Bulgu #7 — framework-seviyesi teşhis turu: **kök neden yine bulunamadı**, geçici çözüm korunuyor
+
+Bu tur uygulama katmanından çıkıp Next'in kendi istemci router kaynağını (`node_modules/next/dist/client/components/router-reducer/`) okudu ve geçici olarak enstrümante etti. **Kod değişikliği yok, commit'lenen kaynak dosya yok, `data-hard-nav` yerinde bırakıldı.**
+
+### FAZ 1 — yukarı akış düzeltmesi yok
+Kurulu sürüm 15.5.20. Sonrasındaki üç kararlı yama (15.5.21 / 15.5.22 / 15.5.23) **yalnız güvenlik düzeltmesi** içeriyor (DoS, SSRF, middleware bypass, ReplyServer traversal guard). Navigasyon, router cache, prefetch veya iptal ile ilgili hiçbir kayıt yok. **Sürüm yükseltmesi bu arıza için aday değil.**
+
+### FAZ 2 — router akışında okunanlar
+- `fetch-server-response.js` modül seviyesinde **tek bir global `AbortController`** tutuyor; `pagehide`'da abort, `pageshow`'da yeniden yaratılıyor. `catch` bloğu hatayı **yalnız signal abort edilmemişse** loglar — bizim vakadaki konsol sessizliğiyle uyumlu.
+- İptal/başarısızlık durumunda bile Next `flightData: url.toString()` döndürüp **MPA (tam sayfa) navigasyonuna düşmeyi** amaçlıyor (`handleExternalUrl`). Bizde bu geri düşüş de gerçekleşmiyordu — yani arıza, bu tasarlanmış güvenlik ağının da devreye girmediği bir noktada.
+- `navigate-reducer.js` içinde "aliased prefetch" yolu var (`handleAliasedPrefetchEntry`): dinamik rotalar için alınan prefetch başka URL'lere yeniden kullanılıyor, ve **loading bileşeni olmayan segmentler atlanıyor** (`hasLoadingComponentInSeedData`). Hipotez olarak çok uygun görünüyordu.
+
+### FAZ 3 — enstrümantasyon: dört hipotez birden elendi
+Next'in kendi kaynağına geçici `console.log`'lar konup üç kırık + iki çalışan geçiş karşılaştırıldı:
+
+| Şüpheli mekanizma | Sonuç |
+|---|---|
+| Aliased prefetch yolu | **elendi** — hiçbir geçişte devreye girmiyor |
+| `AbortController` / fetch catch | **elendi** — catch bloğu hiç çalışmıyor |
+| MPA geri düşüşü (`flightData` string) | **elendi** — hiç tetiklenmiyor |
+| Ağaç yaması başarısızlığı (`applyRouterStatePatchToTree === null`) | **elendi** — yama **her vakada başarıyla** uygulanıyor (`currentTree-null=false`) |
+
+**Kırık ve çalışan geçişler router içinde birebir aynı yolu izliyor** ("normal istemci geçişi" dalı), aynı segment path'leriyle, aynı başarılı ağaç yamasıyla. Ayrım bu enstrümantasyonun görebildiği noktaların **hiçbirinde** değil.
+
+### Yeni ve rahatsız edici gözlem: sonuç kararsız
+`/insights/reports/{id}` bu turda **taraf değiştirdi** — aynı build, aynı yöntem, farklı koşuda bir kez GİDİYOR bir kez GİTMİYOR. Daha önce de (98841fb ↔ swap turu) aynı geçişte çelişkili ölçüm alınmıştı. Yani en az bir geçiş **deterministik değil**; üç çekirdek geçiş (`/data/imports → {id}`, `→ reviews`, `/finance/loans → {id}`) ise tüm turlarda tutarlı biçimde kırık.
+
+Bu, önceki turlarda kurulan "kural"ların neden sürekli çürüdüğünü de açıklıyor: kararsız bir vakayı sabit veri sanıp üzerine kural inşa edilmiş.
+
+### Durum ve öneri
+Kök neden **hâlâ bilinmiyor**. `data-hard-nav` geçici çözümü korunuyor ve üç geçişi kullanıcı için sorunsuz çalıştırıyor (30/30 doğrulanmıştı).
+
+Bundan sonrası için gerçekçi seçenekler:
+1. **Olduğu gibi bırak.** Geçici çözüm ucuz, dar kapsamlı ve kanıtlanmış. Yeni bir alias rota eklenirse aynı tuzak için `data-hard-nav` hazır.
+2. **Yukarı akışa bildir.** Elde minimal repro üretmek için ciddi emek gerekir (bu depo dışında, temiz bir Next projesinde tekrar üretmek) — ama gerçek bir framework hatasıysa tek kalıcı çözüm budur.
+3. **Segment cache deneysel bayrağını dene** (`experimental.clientSegmentCache`): router'ın bu kod yolunu tamamen baypas eden alternatif bir navigasyon uygulaması var (`__NEXT_CLIENT_SEGMENT_CACHE`). Deneysel; ayrı ve dikkatli bir tur gerektirir.
+
+Hiçbiri yapılmazsa mevcut durum kabul edilebilir: kullanıcıya görünen arıza yok, teknik borç kayıtlı.
