@@ -329,9 +329,9 @@ kenarıyla hizalı (`actionSag 1325 = headerSag 1325`).
 
 ---
 
-## Bulgu #7 — `/data/imports` liste sayfasında workbook linki tıklanınca hiç gitmiyor
+## Bulgu #7 — üç gezinme yolunda istemci navigasyonu sessizce iptal oluyor — **GEÇİCİ ÇÖZÜM UYGULANDI (6542b36), kök neden HÂLÂ BİLİNMİYOR**
 
-**Önem: Orta** — içe aktarım detayına listeden ulaşılamıyor. **Düzeltilmedi**, kök neden araştırması gerekiyor.
+**Önem: Orta.** Kullanıcıya görünen arıza kapandı; altındaki hata duruyor.
 
 ### Belirti
 `/data/imports` listesinde bir workbook adına tıklayınca URL değişmiyor, sayfa aynı kalıyor. Konsol hatası ve `pageerror` yok.
@@ -485,3 +485,42 @@ Hedef tarafı artık **elendi**: beş aday rotanın hepsi hedefte aynı üç öz
 Çalışan geçişlerin kaynakları: `/data/imports/{id}` (sheets'e giderken **çalışıyor**), `/insights/reports`, `/data/quality`, `/payments`, `/system`.
 
 Dikkat: `/data/imports/{id}` hem kırık (→ reviews) hem çalışan (→ sheets) bir kaynak. Yani "kaynak sayfa" da tek başına yetmeyebilir; ayrım **kaynak+hedef çiftinde** kalıyor olabilir. Kaynak sayfaların ortak özellikleri (render ettikleri bileşenler, `<Link>` sayısı/konumu, `loading.tsx` sınırları, aynı segment altındaki kardeş rota sayısı) hiç sistematik incelenmedi — sonraki turun başlangıç noktası bu olmalı.
+
+---
+
+## Bulgu #7 — geçici çözüm turu (commit 6542b36)
+
+**Durum: kullanıcıya görünen arıza kapandı, kök neden hâlâ bilinmiyor.** Bu tur kök nedeni aramadı; kanıtlanmış tek güvenilir davranışa (gerçek tarayıcı navigasyonu) zorladı.
+
+### Yapılan
+`navigation-feedback.tsx`'teki tıklama yakalayıcısına tek bir erken çıkış eklendi:
+
+```ts
+if (target.hasAttribute("data-hard-nav")) return;
+```
+
+İşaretli bir `<a>` için `preventDefault`/`stopPropagation`/`router.push` zincirinin **hiçbiri** çalışmaz; tarayıcı linke normal, tam sayfa yüklemesiyle gider — adres çubuğuna yazmakla birebir aynı yol, ve bu hatanın hiç görülmediği tek yol.
+
+Dört link düz `<a data-hard-nav="true">`'ya çevrildi (className ve children birebir korundu, yalnız eleman tipi değişti):
+
+| Dosya | Link |
+|---|---|
+| `imports/page.tsx` | workbook adı → `/data/imports/{id}` |
+| `data/imports/[workbookId]/page.tsx` | "N açık inceleme →" → `.../reviews` |
+| `components/finance/loans-table.tsx` | kredi adı → `/finance/loans/{id}` |
+| `components/finance/loans-table.tsx` | "Taksit planı" → `/finance/loans/{id}` |
+
+### Doğrulama (kanıt yükü bilinçli olarak yüksek tutuldu)
+Bu konuda bu oturumda iki kez yanlış ölçüm yapıldığı (98841fb'nin geri çekilmesi) için tek koşuya güvenilmedi:
+
+- **30/30** — üç geçiş × (0ms ve 2500ms bekleme) × 5 tekrar, **gerçek sayfa linklerine** tıklanarak (enjekte edilmiş eleman değil), `force` kullanılmadan.
+- Her deneme ayrıca **gerçekten tam sayfa yüklemesi** olduğunu kanıtlamak zorundaydı: `load` olayı **ve** hedef URL için document tipi yanıt. Yalnızca URL değişip içerik SPA tarzı gelseydi o deneme **başarısız** sayılacaktı — yani kaçış kapısının fiilen tetiklendiği doğrulandı, geçişin şans eseri başarılı olması yeterli sayılmadı.
+
+### Regresyon: kapsam dar olduğu doğrulandı
+Dokunulmayan geçişler hâlâ çalışıyor **ve hâlâ istemci geçişi** (tam sayfa yüklemesi yok): `.../sheets/{id}`, `/insights/reports/{id}`, `/payments → /payments/items`, ve kenar çubuğundan `/overview → /cashflow`. "Anlık geçiş" hissi yalnız bu üç noktada bilinçli olarak feda edildi — daha önce hiçbir şey yapmayan linkler için kabul edilebilir takas.
+
+### `data-hard-nav` genel bir kaçış mekanizması olarak kalıyor
+Kök neden bulunana kadar aynı arıza başka bir yerde görülürse, çözümün tamamı o anchor'ı işaretlemek.
+
+### Kök neden araştırması hâlâ AÇIK (isteğe bağlı)
+Bu geçici çözüm hiçbir teşhis sorusunu cevaplamıyor. Bir önceki turda bırakılan iz geçerliliğini koruyor: hedef tarafı elendi, ayrım muhtemelen kaynak+hedef **çiftinde**; `/data/imports/{id}` hem kırık (→ reviews) hem çalışan (→ sheets) bir kaynak olduğu için tek bir değişkene sabitlenemiyor. Kaynak sayfaların ortak özellikleri hiç sistematik incelenmedi.
