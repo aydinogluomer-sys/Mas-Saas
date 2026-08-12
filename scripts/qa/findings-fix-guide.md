@@ -607,3 +607,44 @@ Kırık üç kaynak sayfanın paylaştığı, çalışanlarda olmayan bir render
 Kök neden hâlâ **bulunamadı**, ama arızanın **doğası** değişti: yapısal bir hata değil, zamanlama yarışı. Sonraki turlar bunu bilerek tasarlanmalı — her ölçüm en az 10, tercihen 20 tekrar; tek koşu ve 5 tekrar bu problemde anlamsız.
 
 En umut verici, henüz sınanmamış iki yol: (1) bol bellekli bir koşu, (2) yarışın iki tarafını (prefetch tamamlanması ile transition başlangıcı) doğrudan zamanlayan bir ölçüm.
+
+---
+
+## Bulgu #8 — başarısız navigasyon arayüzü kalıcı olarak "yükleniyor" durumunda bırakıyor
+
+**Önem: Orta-Yüksek.** Bulgu #7'yi araştırırken bulundu, **ayrı ve bağımsız bir kusur**, ve #7'nin aksine **mekanizması kesinleşti**. Düzeltme uygulanmadı — karar kullanıcıya.
+
+### Ölçüm (tıklamadan 3 sn sonra, hiçbir ek etkileşim yapılmadan)
+
+| Geçiş | Sonuç | `navigation-pending` | `aria-busy` | asılı `is-pending` link | skeleton görünür |
+|---|---|---|---|---|---|
+| `/finance/loans → {id}` | gitmiyor | **true** | **true** | **2** | **EVET** |
+| `/data/imports → {id}` | gitmiyor | **true** | **true** | **2** | **EVET** |
+| `/data/quality → {id}` | gidiyor | false | null | 1 | hayır |
+| `/payments → /payments/items` | gidiyor | false | null | 1 | hayır |
+
+Ayrıca: başarısız navigasyon **30 saniye beklendiğinde de gelmiyor** — yani askıda değil, ölü.
+
+### Mekanizma (kesin)
+`src/components/ui/navigation-feedback.tsx:54-56`:
+
+```ts
+useEffect(() => {
+  setState(current => current.isNavigating ? { pendingHref: null, isNavigating: false, startedAt: null } : current);
+}, [pathname, searchParams]);
+```
+
+Bekleme durumu **yalnız `pathname`/`searchParams` değişince** temizleniyor. Navigasyon hiç commit etmezse pathname değişmez → durum **hiç temizlenmez**. Zaman aşımı yok.
+
+Sonuç: kullanıcı linke tıklar, sayfa "yükleniyor" iskeletini gösterir ve **sonsuza kadar öyle kalır**; kök öğede `aria-busy="true"` asılı kalır (ekran okuyucu için sayfa hâlâ meşgul), linkler `is-pending` sınıfında donar. Elle yeniden yükleme dışında çıkış yok.
+
+### Neden bu, #7'den daha geniş bir risk
+Bulgu #7 bir **yarış** (bkz. bir önceki bölüm): `/insights/reports → {id}` bile 10 denemede 1 kez kaybediyor. Yani bu asılı-iskelet durumu **yalnız bilinen üç linkte değil, uygulamadaki herhangi bir gezinmede** ara sıra tetiklenebilir. Üç bilinen link `data-hard-nav` ile router'ı baypas ettiği için korunuyor; **geri kalan her link korunmuyor.**
+
+### Önerilen düzeltme (UYGULANMADI)
+`beginNavigation`'a bir zaman aşımı ekle: N ms içinde `pathname` değişmezse bekleme durumunu (`navigation-pending`, `aria-busy`, `is-pending`, iskelet) geri al. Bu #7'yi çözmez — navigasyon yine başarısız olur — ama arayüz kilitli kalmak yerine normale döner ve kullanıcı tekrar deneyebilir.
+
+Karar noktaları: zaman aşımı süresi ne olmalı (navigasyon bütçesi 50-100 ms olduğu için 2-3 sn fazlasıyla güvenli), ve geri alındığında kullanıcıya bir şey gösterilmeli mi (sessiz geri alma vs "sayfa açılamadı" uyarısı).
+
+### Ortam notu (bu turda ayrıca gözlendi)
+Makine bu tur boyunca **0,37-0,93 GB boş bellekle** çalıştı; Docker konteynerleri bir kez kendiliğinden yeniden başladı ve `pnpm build` iki kez ortam kaynaklı hatayla düştü (`.next/export/500.html` rename ENOENT, ardından `PageNotFoundError: /_document`), üçüncüde geçti. Bu, teşhis çalışmasının kendisini de yavaşlatıyor. Disk yeterli (8,2 GB boş) — sorun bellek.
