@@ -565,3 +565,45 @@ Bundan sonrası için gerçekçi seçenekler:
 3. **Segment cache deneysel bayrağını dene** (`experimental.clientSegmentCache`): router'ın bu kod yolunu tamamen baypas eden alternatif bir navigasyon uygulaması var (`__NEXT_CLIENT_SEGMENT_CACHE`). Deneysel; ayrı ve dikkatli bir tur gerektirir.
 
 Hiçbiri yapılmazsa mevcut durum kabul edilebilir: kullanıcıya görünen arıza yok, teknik borç kayıtlı.
+
+---
+
+## Bulgu #7 — **arıza deterministik DEĞİL, bir YARIŞ** (bu turun ana bulgusu)
+
+Bu tur üç yeni açı denedi (bellek korelasyonu, DOM stabilitesi, bileşen ağacı envanteri) ve önceki **altı turun tamamındaki çelişkileri açıklayan** bir gerçeği ortaya çıkardı. Kod değişikliği yok; `data-hard-nav` yerinde.
+
+### Ana bulgu: kazanma oranı, ikili sonuç değil
+
+Her geçiş 10 kez (C1 5 kez) tekrarlandı — daha önce hep 5 tekrar yapılmıştı:
+
+| Geçiş | Sonuç | Önceki turlarda nasıl raporlanmıştı |
+|---|---|---|
+| `/finance/loans → {id}` | **0/10 gidiyor** | "tutarlı kırık" ✓ |
+| `/data/imports/{id} → reviews` | **1/10 gidiyor** | "tutarlı kırık" ✗ |
+| `/data/imports → {id}` | **2/10 gidiyor** | "tutarlı kırık" ✗ |
+| `/insights/reports → {id}` | **9/10 gidiyor** | "bazen kırık bazen değil" ✓ |
+| `.../sheets/{id}` | **5/5 gidiyor** | "çalışıyor" ✓ |
+
+Yani **hiçbiri ikili değil** — hepsi farklı kazanma oranlarına sahip bir yarış. "Kırık" dediğimiz üç geçiş %0-20 kazanıyor, "çalışıyor" dediklerimiz %90-100.
+
+**Bu, bu oturumda kurulan ve tek tek çöken bütün kuralları açıklıyor.** 5 tekrarlı ölçümler, %10-20 kazanma oranlı bir vakayı kolayca "hep başarısız" veya "hep başarılı" gösterebiliyordu. 98841fb'nin kuralı, swap turunun beklenmedik sonucu ve `/insights/reports/{id}`'nin sürekli taraf değiştirmesi — üçü de aynı istatistiksel yanılgının ürünü.
+
+### FAZ 2 (DOM) — spesifik hipotez çürütüldü, ama temiz bir gösterge çıktı
+Tıklanan `<a>` **hiçbir denemede kaldırılmadı** (0/45) — "React remount in-flight fetch'i iptal ediyor" hipotezi yanlış.
+
+Ancak mutasyon sayısı sonuçla **kusursuz** örtüşüyor: başarısız denemelerin **hepsi tam 8 mutasyon**, başarılıların hepsi **17-23**. Bu bir *sonuç* göstergesi (navigasyon başlıyor, içerik değişimi hiç gelmiyor), *sebep* değil — ama bundan sonraki teşhis turları için ucuz ve güvenilir bir sinyal.
+
+### FAZ 1 (bellek) — **test EDİLEMEDİ**, korelasyon yok denemez
+Ölçüm boyunca boş bellek neredeyse sabit **~0,37-0,45 GB** kaldı (8 GB'lık makinede). Korelasyon hesaplanamaz çünkü **varyans yok** — değişken sabitse ona karşı korelasyon aranamaz.
+
+Elde edilen tek veri kırıntısı: K1 iki kez ~0,00 GB'de başarılı oldu ve bir kez 1,00 GB'de başarısız — yani attempt-bazlı basit bir ilişki görünmüyor. Ama bu, "bellek baskısı bu yarışı kaybettiriyor" hipotezini **çürütmez**; makine sürekli tükenmiş durumda olduğu için hipotez sınanamadı.
+
+**Kullanıcıdan istenen:** bu testi belleğin gerçekten bol olduğu bir anda (ör. ≥3 GB boş) tekrarlamak ayırt edici olur. Editör/tarayıcı pencerelerini kapatmak sizin ortamınız olduğu için kendi başıma yapılmadı.
+
+### FAZ 3 (bileşen ağacı) — ayırt edici değil
+Kırık üç kaynak sayfanın paylaştığı, çalışanlarda olmayan bir render mekanizması yok: `/payments` (çalışan) client bileşen taşıyor, `/data/imports/{id}` (kırık) hiç taşımıyor.
+
+### Durum
+Kök neden hâlâ **bulunamadı**, ama arızanın **doğası** değişti: yapısal bir hata değil, zamanlama yarışı. Sonraki turlar bunu bilerek tasarlanmalı — her ölçüm en az 10, tercihen 20 tekrar; tek koşu ve 5 tekrar bu problemde anlamsız.
+
+En umut verici, henüz sınanmamış iki yol: (1) bol bellekli bir koşu, (2) yarışın iki tarafını (prefetch tamamlanması ile transition başlangıcı) doğrudan zamanlayan bir ölçüm.
