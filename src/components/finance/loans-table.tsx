@@ -1,6 +1,5 @@
 "use client";
 
-import Link from "next/link";
 import { type ColumnDef } from "@tanstack/react-table";
 import { fmtTL } from "@/components/ui/panel";
 import { DataTable } from "@/components/ui/primitives/data-table";
@@ -23,7 +22,7 @@ const tl = (value: number | null, tone?: "neg") => (
 const columns: ColumnDef<LoanRow>[] = [
   {
     accessorKey: "name", header: "Kredi", meta: { label: "Kredi" },
-    cell: ({ row }) => <Link className="underline underline-offset-2" href={`/finance/loans/${row.original.id}`}>{row.original.name}</Link>,
+    cell: ({ row }) => <a data-hard-nav="true" className="underline underline-offset-2" href={`/finance/loans/${row.original.id}`}>{row.original.name}</a>,
   },
   { accessorKey: "principal", header: "Anapara", meta: { label: "Anapara", align: "right" }, cell: ({ getValue }) => tl(getValue<number | null>()) },
   { accessorKey: "totalPayment", header: "Toplam ödeme", meta: { label: "Toplam ödeme", align: "right" }, cell: ({ getValue }) => tl(getValue<number | null>()) },
@@ -34,7 +33,7 @@ const columns: ColumnDef<LoanRow>[] = [
     cell: ({ row }) => (
       <ActionMenu>
         <DropdownMenuItem asChild>
-          <Link href={`/finance/loans/${row.original.id}`}>Taksit planı</Link>
+          <a data-hard-nav="true" href={`/finance/loans/${row.original.id}`}>Taksit planı</a>
         </DropdownMenuItem>
         <DropdownMenuSeparator />
         <ArchiveForm asMenuItem entity="loans" id={row.original.id} backTo="/finance/loans?flash=archived" reason="Kredi listesinden arşivlendi" />

@@ -47,9 +47,9 @@ export default async function WorkbookDetailPage({
           <div><div className="font-mono text-[9px] uppercase text-tone-3">özet</div><div className="font-mono">{w.notes ?? "—"}</div></div>
           <div>
             <div className="font-mono text-[9px] uppercase text-tone-3">incelemeler</div>
-            <Link href={`/data/imports/${w.id}/reviews`} className="underline decoration-line-strong underline-offset-2">
+            <a data-hard-nav="true" href={`/data/imports/${w.id}/reviews`} className="underline decoration-line-strong underline-offset-2">
               {openTotal} açık inceleme →
-            </Link>
+            </a>
           </div>
         </div>
         {w.status === "parsed" && (

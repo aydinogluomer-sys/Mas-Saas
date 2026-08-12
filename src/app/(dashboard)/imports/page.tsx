@@ -1,4 +1,3 @@
-import Link from "next/link";
 import { getPool } from "@/lib/db";
 import { Badge, STATUS_TONE } from "@/components/ui/badge";
 import { Num, Panel } from "@/components/ui/panel";
@@ -56,9 +55,9 @@ export default async function ImportsPage() {
               {rows.map((w) => (
                 <tr key={w.id} className="border-b border-line-faint">
                   <td className="max-w-[280px] truncate py-2 pr-2">
-                    <Link className="underline decoration-line-strong underline-offset-2 hover:text-tone-1" href={`/data/imports/${w.id}`}>
+                    <a data-hard-nav="true" className="underline decoration-line-strong underline-offset-2 hover:text-tone-1" href={`/data/imports/${w.id}`}>
                       {w.original_filename}
-                    </Link>
+                    </a>
                     {w.status === "failed" && w.parse_error ? (
                       <div className="mt-1 truncate font-mono text-[10px] text-neg">{w.parse_error}</div>
                     ) : null}
