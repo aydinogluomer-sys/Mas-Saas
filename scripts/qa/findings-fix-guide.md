@@ -660,3 +660,46 @@ Bulgu #7 bir **yarış** (bkz. bir önceki bölüm): `/insights/reports → {id}
 
 ### Ortam notu (bu turda ayrıca gözlendi)
 Makine bu tur boyunca **0,37-0,93 GB boş bellekle** çalıştı; Docker konteynerleri bir kez kendiliğinden yeniden başladı ve `pnpm build` iki kez ortam kaynaklı hatayla düştü (`.next/export/500.html` rename ENOENT, ardından `PageNotFoundError: /_document`), üçüncüde geçti. Bu, teşhis çalışmasının kendisini de yavaşlatıyor. Disk yeterli (8,2 GB boş) — sorun bellek.
+
+---
+
+## Bulgu #7 — zamanlama turu: `staleTimes` çürütüldü, **iptal imzası bulundu**, kök neden hâlâ açık
+
+Kod değişikliği yok; `next.config.ts`'ye eklenen deney geri alındı, `git status` temiz, `data-hard-nav` ve #8'in kurtarma zaman aşımı yerinde.
+
+### FAZ A — `staleTimes` hipotezi: **çürütüldü**
+Next'in kendi varsayılanı kaynaktan okundu (`config-shared.js:202`): **`staleTimes: { dynamic: 0, static: 300 }`**. Tip tanımındaki doküman yorumu: *"`prefetch` prop'u belirtilmemişse `dynamic` değeri kullanılır."* Etkilenen tüm rotalar `dynamic = "force-dynamic"` olduğu için dinamik sınıfa giriyor ve prefetch girdileri **anında bayat** sayılıyor — gözlemlenen yarışa çok uygun görünen bir aday.
+
+`experimental.staleTimes.dynamic = 30` ile geçici olarak denendi:
+
+| Geçiş | Varsayılan (dynamic: 0) | dynamic: 30 |
+|---|---|---|
+| `/finance/loans → {id}` | 0/10 | **0/15** |
+| `/data/imports → {id}` | 2/10 | **2/15** |
+
+Kazanma oranı **değişmedi**. Config geri alındı.
+
+### FAZ B — yarışın iki tarafı zamanlandı (CDP, ms hassasiyetinde)
+
+15'er tekrar, kırık (`/finance/loans → {id}`) ve çalışan (`.../sheets/{id}`) geçiş:
+
+| Ölçüm | Kırık (0/15) | Çalışan (15/15) |
+|---|---|---|
+| Tıklamadan önce prefetch tamamlandı mı | **0/15** | **0/15** |
+| Tıklama → yeni fetch **tamamlanma** | hiç olmadı | **~107 ms** |
+| Tıklama → fetch **iptali** | **~172 ms** | hiç olmadı |
+
+**İki önemli sonuç:**
+
+1. **"Prefetch zehirlenmesi" çerçevesi yanlıştı.** Prefetch iki tarafta da tıklamadan önce tamamlanmıyor (0/15 ve 0/15). Daha önceki turlarda "hedefin prefetch'i 200 aldı" gözlemi vardı ama bu ölçümde prefetch penceresi hiç kapanmıyor — yani prefetch'in tamamlanmış olması başarı için ne gerekli ne yeterli.
+
+2. **En keskin imza bu:** kırık geçişlerde tıklama sonrası RSC isteği **tutarlı biçimde ~172 ms'de iptal ediliyor** ve hiçbir zaman tamamlanmıyor; çalışanlarda iptal hiç olmuyor, istek ~107 ms'de bitiyor. Yani sorun "istek geç geliyor" değil, **birileri isteği iptal ediyor**.
+
+### Idle prefetch mekanizması — elendi (gerekçeyle)
+`navigation-feedback.tsx`'teki `IDLE_PREFETCH_ROUTES` döngüsü `sessionStorage` kilidi ile **oturum başına yalnız bir kez** çalışıyor (9 rota, 750 ms aralıklarla, ilk sayfa yüklemesinden sonra ~6,75 sn). 15 denemenin tamamında görülen tutarlı iptali açıklayamaz; test bağlamında zaten ilk gezinmede tükeniyor.
+
+### Kalan şüpheli (kanıtlanmadı)
+Next'in istemci router'ı **tüm RSC istekleri için modül seviyesinde tek bir paylaşılan `AbortController`** kullanıyor (`fetch-server-response.js:48`, `pagehide`'da abort / `pageshow`'da yenilenir). Paylaşılan tek bir signal, bir isteği iptal eden herhangi bir olayın **uçuştaki diğer tüm istekleri** de öldürmesi anlamına gelir. ~172 ms'lik tutarlı iptal bununla uyumlu, ama **hangi olayın abort'u tetiklediği bulunamadı** — `pagehide` bu senaryoda beklenmiyor ve doğrulanmadı.
+
+### Ortam notu — teşhis çalışması sınırda
+Bu tur sırasında **Docker Desktop tamamen çöktü** (hiç süreç kalmadı, yeniden başlatıldı), `pnpm build` daha önce iki kez ortam hatasıyla düştü, bir vitest worker'ı açılamadı, bir `page.goto` `ERR_ABORTED` verdi. Boş bellek 0,4-1,4 GB arasında. Ölçümler alınabildi ama ortam artık güvenilir değil; bu, bellek hipotezinin neden hâlâ sınanamadığının da cevabı.
