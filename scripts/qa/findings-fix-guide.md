@@ -612,7 +612,7 @@ En umut verici, henüz sınanmamış iki yol: (1) bol bellekli bir koşu, (2) ya
 
 ## Bulgu #8 — başarısız navigasyon arayüzü kalıcı olarak "yükleniyor" durumunda bırakıyor
 
-**Önem: Orta-Yüksek.** Bulgu #7'yi araştırırken bulundu, **ayrı ve bağımsız bir kusur**, ve #7'nin aksine **mekanizması kesinleşti**. Düzeltme uygulanmadı — karar kullanıcıya.
+**Önem: Orta-Yüksek.** Bulgu #7'yi araştırırken bulundu, **ayrı ve bağımsız bir kusur**, ve #7'nin aksine **mekanizması kesinleşti**. **DÜZELTİLDİ (commit b39852e).**
 
 ### Ölçüm (tıklamadan 3 sn sonra, hiçbir ek etkileşim yapılmadan)
 
@@ -641,10 +641,22 @@ Sonuç: kullanıcı linke tıklar, sayfa "yükleniyor" iskeletini gösterir ve *
 ### Neden bu, #7'den daha geniş bir risk
 Bulgu #7 bir **yarış** (bkz. bir önceki bölüm): `/insights/reports → {id}` bile 10 denemede 1 kez kaybediyor. Yani bu asılı-iskelet durumu **yalnız bilinen üç linkte değil, uygulamadaki herhangi bir gezinmede** ara sıra tetiklenebilir. Üç bilinen link `data-hard-nav` ile router'ı baypas ettiği için korunuyor; **geri kalan her link korunmuyor.**
 
-### Önerilen düzeltme (UYGULANMADI)
-`beginNavigation`'a bir zaman aşımı ekle: N ms içinde `pathname` değişmezse bekleme durumunu (`navigation-pending`, `aria-busy`, `is-pending`, iskelet) geri al. Bu #7'yi çözmez — navigasyon yine başarısız olur — ama arayüz kilitli kalmak yerine normale döner ve kullanıcı tekrar deneyebilir.
+### Uygulanan düzeltme (commit b39852e)
+`beginNavigation` artık **3 saniyelik bir son tarih** kuruyor. O süre içinde konum değişmezse tarayıcı hedefe kendisi gönderiliyor (`window.location.href`).
 
-Karar noktaları: zaman aşımı süresi ne olmalı (navigasyon bütçesi 50-100 ms olduğu için 2-3 sn fazlasıyla güvenli), ve geri alındığında kullanıcıya bir şey gösterilmeli mi (sessiz geri alma vs "sayfa açılamadı" uyarısı).
+Önerilen "durumu geri al" seçeneği yerine **hedefe tam sayfa yüklemesiyle gitmek** seçildi: kullanıcı hem kilitlenmekten kurtuluyor **hem de gitmek istediği yere varıyor** — yoksa linkin hiçbir şey yapmadığı bir sayfaya dönmüş olurdu. Zamanlayıcı, navigasyon commit ettiğinde ve bileşen unmount olduğunda temizleniyor; tetiklendiğinde konumu tekrar kontrol ediyor, böylece varmış bir navigasyonu veya kullanıcının başlattığı başka bir geçişi asla ele geçirmiyor.
+
+3 sn, buradaki sağlıklı istemci navigasyonunun (ölçülen 61-100 ms) çok üstünde — yavaş ama çalışan bir geçiş bunu tetiklemez.
+
+### Doğrulama
+| | Öncesi | Sonrası |
+|---|---|---|
+| `/finance/loans → {id}` | 0/10 varıyordu | **5/5 varıyor** (~3,2 sn, tam sayfa) |
+| `/data/imports → {id}` | 2/10 varıyordu | **5/5 varıyor** (4'ü ~3,2 sn tam sayfa, 1'i yarışı kazanıp 127 ms'de istemci geçişiyle) |
+| Sağlıklı kenar çubuğu gezinmesi | — | **15/15**, **0 yanlış tetikleme**, medyan 69 ms |
+| Sonrasında bekleme durumu | asılı kalıyordu | `navigation-pending=false`, `aria-busy=null`, iskelet gizli |
+
+**Bu #7'yi çözmez** — alttaki navigasyon yine başarısız oluyor, yalnız 3 sn sonra kurtarılıyor. Ama #7 bir yarış olduğu için, artık **uygulamadaki her link** kilitlenmek yerine kurtuluyor; önceden yalnız `data-hard-nav`'lı üç link korunuyordu. O üç link `data-hard-nav`'da bırakıldı: onlar için tam sayfa yüklemesi **anında** oluyor, 3 sn beklemiyorlar.
 
 ### Ortam notu (bu turda ayrıca gözlendi)
 Makine bu tur boyunca **0,37-0,93 GB boş bellekle** çalıştı; Docker konteynerleri bir kez kendiliğinden yeniden başladı ve `pnpm build` iki kez ortam kaynaklı hatayla düştü (`.next/export/500.html` rename ENOENT, ardından `PageNotFoundError: /_document`), üçüncüde geçti. Bu, teşhis çalışmasının kendisini de yavaşlatıyor. Disk yeterli (8,2 GB boş) — sorun bellek.
