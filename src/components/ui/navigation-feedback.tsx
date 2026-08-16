@@ -1,6 +1,6 @@
 "use client";
 
-import { createContext, startTransition, useCallback, useContext, useEffect, useState, type ReactNode } from "react";
+import { createContext, startTransition, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 
 export interface NavigationState {
@@ -13,6 +13,16 @@ interface NavigationContextValue extends NavigationState {
   beginNavigation: (href: string) => void;
   prefetch: (href: string) => void;
 }
+
+/** A client navigation that never commits used to leave the pending UI up forever: the
+ * skeleton stayed visible, aria-busy stayed "true" and the clicked links stayed .is-pending,
+ * because the only thing that clears that state is the effect keyed on [pathname], and the
+ * pathname never changes when the navigation dies (Bulgu #8). This is the deadline after
+ * which we stop waiting and send the browser to the destination ourselves — the user both
+ * gets unstuck AND arrives, rather than being left staring at a skeleton.
+ * 3s is deliberately far above a healthy client navigation (measured ~100ms here), so a
+ * merely slow-but-working transition will not trip it. */
+const STUCK_NAVIGATION_TIMEOUT_MS = 3000;
 
 const IDLE_PREFETCH_ROUTES = ["/overview", "/payments", "/cashflow", "/finance", "/production", "/scenarios", "/insights/ask", "/data/quality", "/system"];
 const NavigationContext = createContext<NavigationContextValue | null>(null);
@@ -32,6 +42,13 @@ export function NavigationFeedbackProvider({ children }: { children: ReactNode }
   const searchParams = useSearchParams();
   const router = useRouter();
   const [state, setState] = useState<NavigationState>({ pendingHref: null, isNavigating: false, startedAt: null });
+  const stuckTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const clearStuckTimer = useCallback(() => {
+    if (stuckTimer.current !== null) {
+      clearTimeout(stuckTimer.current);
+      stuckTimer.current = null;
+    }
+  }, []);
 
   const beginNavigation = useCallback((href: string) => {
     const currentHref = `${window.location.pathname}${window.location.search}${window.location.hash}`;
@@ -48,12 +65,26 @@ export function NavigationFeedbackProvider({ children }: { children: ReactNode }
         anchor.classList.add("is-pending");
       }
     });
+    // If the navigation still has not committed by the deadline, hand the URL to the browser.
+    // Guarded on the location being unchanged so we never hijack a navigation that did land, or
+    // one the user started somewhere else in the meantime.
+    clearStuckTimer();
+    stuckTimer.current = setTimeout(() => {
+      stuckTimer.current = null;
+      const nowHref = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+      if (nowHref !== currentHref) return;
+      window.location.href = href;
+    }, STUCK_NAVIGATION_TIMEOUT_MS);
     startTransition(() => setState({ pendingHref: href, isNavigating: true, startedAt: performance.now() }));
-  }, []);
+  }, [clearStuckTimer]);
 
   useEffect(() => {
+    // The navigation committed — the deadline above is no longer needed.
+    clearStuckTimer();
     setState((current) => current.isNavigating ? { pendingHref: null, isNavigating: false, startedAt: null } : current);
-  }, [pathname, searchParams]);
+  }, [pathname, searchParams, clearStuckTimer]);
+
+  useEffect(() => clearStuckTimer, [clearStuckTimer]);
 
   useEffect(() => {
     document.documentElement.dataset.navigationReady = "true";
