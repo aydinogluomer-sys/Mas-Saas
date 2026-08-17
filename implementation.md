@@ -567,7 +567,475 @@ Gerekirse phase-specific verify script'i once eklenir, sonra implementasyon yapi
 
 ---
 
-## 17. Legacy v2 Plan
+## 17. Implementation Plan v4 — Faz 15-38 Kurumsal Genisleme Yol Haritasi
+
+> Kaynak: kullanici-saglanan `MAS_Nakit_Radar_Revize_Mimari_Listesi.md` (34 bolum, ~700 madde),
+> kod tabaninin gercek durumuna gore mutabakatlandirilmis. v3'un Faz 1-14 + P0-A/B/C bolumleri
+> (yukarida) degismedi; bu bolum onlarin uzerine gelen genisleme yol haritasidir. Plan icindeki
+> alt basliklar bir seviye indirilmistir (bu bolumun altinda yer alsinlar diye); metin aynidir.
+
+### 1. Mutabakat (Reconciliation) — listeyi kör kopyalamamak için
+
+#### 1a. Zaten büyük ölçüde yapılmış — yeniden inşa etme
+
+| Liste maddesi | Gerçek karşılığı |
+|---|---|
+| "LLM finansal çekirdekten ayrık, sıfır DB yazma, sıfır SQL" (§1/§28, 40+ kez tekrarlanıyor) | `src/lib/ai/engine.ts` (179 satır) — tek LLM çağrı noktası, ham `fetch`, SDK yok. DB'ye hiç dokunmuyor. Yalnız önceden hesaplanmış `DecisionFact[]` görüyor. `mutationIntent()` regex koruması mutasyon niyetinde modeli hiç çağırmıyor. Deterministik cevap her zaman önce hesaplanıyor, model isteğe bağlı iyileştirme; hata `try/catch` ile deterministik cevaba dönüyor. Her yanıt `response_mode` (`deterministic\|openai\|fallback`) + `source_fact_keys`/`source_hrefs` ile izlenebilir. `AI_FORCE_DETERMINISTIC=1` sert kapatma anahtarı var. |
+| "Deterministik sorgu + allowlist" (§24/§28) | `src/lib/facts/engine.ts` (262 satır) — `loadDecisionFacts()`, tamamen SQL/TS, 12 sabit fact + onaylı her dış varsayım için bir tane, `/api/facts` ile dışa açık. Çalışan bir prototip. |
+| "Finansal invariant test gate'leri" (CI altyapısı, §1) | 26 faz/DB doğrulama script'i (`scripts/phase{3..14e}-verify.ts` + `scripts/db/{constraints,legacy-repair,migrate,reconciliation,transitions}-verify.ts`) + 17 saf `rules.ts` birim test dosyası + implementation.md §16'da belgeli pnpm gate zinciri. Bu zaten istenen desen — CI onu sarmalamalı, paralel bir tane icat etmemeli. |
+| "Audit log kapsamı" (temel) | `audit_logs`, BEFORE-trigger'larla (migration 0022) append-only — superuser dahil UPDATE/DELETE/TRUNCATE engelleniyor. Gerçek boşluk yokluk değil, tekrar (13 bağımsız `audit()` kopyası — bkz. 1b). |
+| "Immutable finansal kayıt", "correction/reversal modeli" (kısmi, §2) | `archived_immutability_trigger` (0024), `cancellation_fields` (0026), `payment_instance_amount_source` (0028/0029) zaten iptal-et-ve-koru desenini kuruyor. |
+| Loan schedule (§2) | `loan_installments`, gerçek. |
+| Check lifecycle (§2) | `checks`+`check_events` — settlement (cleared/bounced/paid) DB'de yalnız migration 0034'ten SONRA fiilen çalışır hâle geldi. Bu "yapıldı, unut" değil, "yapıldı, ve bu sınıf hatanın bu repoda bir kez gerçekten yaşandığının kanıtı" (bkz. §2 madde 3). |
+| Machine (§2) | `machine_assets`, gerçek, üretim kârlılığına zaten bağlı. |
+| Data lineage / Source evidence (§2/§23) | `source_workbooks/source_sheets/source_cells/import_rows` — şemanın en olgun parçası. **Her yeni entity'nin lineage ihtiyacı bu deseni tekrar kullanmalı, ikinci bir mekanizma icat edilmemeli.** |
+| Financial period (yumuşak, §2/§21) | `cashflow_months.status` (`draft/review_needed/reviewed/locked`) — Dönem Kapatma'nın gerçek alt yapısı. |
+| Management Cockpit (§26) | `src/lib/home/cockpit.ts` — `overview/` sayfasını zaten besliyor (doğrulandı: `page.tsx` içe aktarıyor). Genişlet, sıfırdan kurma. |
+| Forecast/Scenario (kısmi, §11/§12) | `scenarios/scenario_runs/scenario_run_lines/scenario_assumptions/scenario_comparisons` (Faz 9/13, DONE) — "what-if overlay"e "rolling forecast"tan daha yakın ama sağlam bir temel. |
+| CFO Morning Brief (kısmi, §25) | `reports/engine.ts` + Telegram hatırlatmaları (Faz 6) zaten günlük/haftalık özet + AI yorumu üretiyor. |
+| Notification & Action (kısmi, §30) | `action_items` (Faz 14) + `reminders`/`reminder_deliveries` — owner/severity/due-date/status alanları var, dar kapsamlı. |
+| Financial Control / Anomaly (kısmi, §18/§19) | `mapping_reviews` + `metric_snapshots` + `action_items` bugünkü veri kalite merkezinde (Faz 14) ince yayılmış hâlde var. |
+| "RLS enabled" (§1) | Zaten her tabloda blanket `0007_rls.sql` deseniyle (`for all to authenticated using(true) with check(true)`, 11 dosyada 25 kez) + 3 kasıtlı istisna (schema_migrations, users/sessions, audit_logs). **Bu, CLAUDE.md'nin "tek şirket iç paneli" ilkesine göre bilinçli bir tasarım — ama kullanıcı tam rol matrisi + satır-seviyesi RLS istedi (bkz. Çözülen Kararlar #3), yani Faz 24B'de GERÇEKTEN yeniden işlenecek.** |
+| Chart/analitik altyapısı (§1) | `analytics/chart.ts` (202 satır, ChartModel sözleşmesi) + `analytics/models.ts` (~8 model builder) + `analytics-chart.tsx` (241 satır, el yazımı SVG, line/bar/stacked-bar). Üzerine inşa edilecek gerçek bir temel, yıkılacak bir duvar değil. |
+
+#### 1b. Kısmen var, gerçekten genişletilecek
+
+| Liste entity'si | Mevcut tablo/dosya | Gerçekte eksik olan |
+|---|---|---|
+| Counterparty/Customer/Supplier/Contact | `parties` (0002) | Tek polimorfik tablo, adres/vergi-no/IBAN kolonu yok. Çekler/krediler bilinçli olarak ham `counterparty_label` metni tutuyor çünkü **uygulama mapping sırasında sessizce parties satırı YARATMIYOR** — bu kural korunmalı. |
+| Bank account | `cash_accounts` | Genel defter hesabı, IBAN/şube-farkında değil. |
+| Credit facility | `loans` | Sabit-planlı tek kredi modeli, revolving limit/draw değil. |
+| Approval / Approval step | İki bağımsız tekrar: `mapping_reviews` + `external_assumptions.review_status` | Gerçek bir Approval entity yok — üçüncü bir özel varyant eklemek yerine ikisi birleştirilmeli. |
+| Notification/alert | `reminders`+`reminder_deliveries` | Yalnız 3 hedef türü, 2 kanal — genişletilecek. |
+| Anomaly/Control result | `mapping_reviews`+`metric_snapshots`+`action_items`'a ince yayılmış | Skorlama/durumlu ayrık tablo yok. |
+| Forecast/Forecast line | `scenario_runs`/`scenario_run_lines` | What-if'e yakın; kaynak sınıflandırması (contracted/scheduled/historical/manual/estimated), güven skoru, forecast-vs-actual eksik. |
+| Financial period | `cashflow_months.status` | Kavram var, kapanış checklist/blocker akışı yok. |
+| Chart registry | `analytics/chart.ts`+`analytics-chart.tsx` | Yalnız line/bar/stacked-bar; liste ~40 tip istiyor — gerçek yeni iş. |
+
+#### 1c. Gerçekten yeni (greenfield)
+
+Bank transaction, Invoice/Invoice line, Collection/Payable/Receivable (ayrık entity olarak), Payment/Collection allocation, Cost center/Department/Project, Order, Product (production_parts yalnız işleme-odaklı dar bir analog), genel Document/Attachment, Budget/Budget line, FX position/FX rate snapshot tablosu, kalıcı Reconciliation entity'si (bugün yalnız uygulama içi kod), Promise-to-pay, Integration connection/sync job, Universal Search, CSRF koruması, rate limiting, çerez-varlığı ötesi oturum sertleştirmesi, migration-vs-runtime DB kullanıcı ayrımı, `.github/workflows` (hiç yok), secret rotation aracı, GitHub repo görünürlüğü aksiyonu.
+
+#### 1d. Kod tabanına uymayan tek madde, düzeltilmiş hâliyle
+
+**Liste diyor ki:** "float8'i kaldır → NUMERIC/decimal'e geç" (paranın float8 olarak saklandığını varsayıyor).
+**Gerçek:** 41 tablonun, 34 migrasyonun TAMAMINDA her para kolonu `numeric(p,s)`. Sıfır float8/double precision/real kolonu var — **bizzat doğrulandı** (`grep -rc "::float8"` ve tablo taraması). Bu haliyle iddia yanlış.
+**Gerçek, farklı risk:** **141 adet `::float8` SQL cast'i, 25 dosyada** (bizzat doğrulandı — en yoğun: `production/engine.ts` 45, `scenarios/engine.ts` 11, `financing/engine.ts` 10, `radar/queries.ts` 9). node-postgres `numeric`'i varsayılan olarak string döndürüyor, kod bunu SQL içinde JS'e vermeden önce `double precision`'a cast ediyor. Paylaşılan "money" yardımcı modülü yok, `decimal.js`/`big.js` bağımlılığı yok. `radar/queries.ts:152-153` aynı ifadede hem `::numeric` hem `::float8` kullanıyor. **Risk depoda değil, SQL/JS sınırında.**
+
+---
+
+### 2. Her fazda geçerli, tek seferlik değil, standart kurallar
+
+1. **Migration ledger disiplini.** `scripts/db/migrate.ts`'in checksum/anchor kontrollü 4-durumlu mekanizması her yeni migration için aynen işler — asla elle şema değişikliği yok.
+2. **Yeni her tabloya kendi migration'ında blanket RLS politikası** (`for all to authenticated using(true) with check(true)`) — Faz 24B'den SONRA bu, gerçek rol-bazlı politikalarla değiştirilecek; o ana kadar mevcut desen aynen sürer.
+3. **Status-transition-guard doğruluğu gün-1'den.** Yaşam döngüsü olan HER yeni entity (Invoice, Approval, Reconciliation, Period, Bank transaction eşleşme durumu, Budget/Forecast versiyon durumu) allow-list'ini CHECK constraint'le AYNI migration'da, doğru kurmalı. **Bu genel bir temkin değil — migration 0027, checks/loan_installments'ı yalnız `planned→cancelled` ile açtı, halbuki `cleared/bounced/paid` 0005'ten beri CHECK constraint'te geçerliydi; gerçek dev DB'de 7/7 çek ve 48/48 taksit `planned`de SIKIŞIP KALDI, 0034'e kadar (8 migration sonra) düzelmedi.** Aşağıdaki her fazın gate'i bunu kendi maddesi olarak tekrar eder.
+4. **Tek paylaşılan `audit()`, tek `DomainError` kuralı, tek Zod sınırı** — Faz 18'de kurulur, Faz 19'dan itibaren ZORUNLU (opsiyonel değil).
+5. **`docs/database-schema.md` şema değişen HER fazda güncellenir** — bugün ~migration 0021'den sonrası eksik; Faz 18 yakalar, sonraki her faz kendi definition-of-done'ında tutar.
+6. **Para matematiği Faz 17'nin decimal-safe katmanından geçer** — Faz 17'den sonra yeni `::float8` cast'i YASAK, standing `phase17:verify` grep kontrolüyle.
+7. **Gate zinciri genişler, yerini almaz.** implementation.md §16'daki mevcut pnpm zincirine (`lint && typecheck && test && db:verify && import:real && phase3:verify ... phase14e:verify && build`) `phase15:verify`...`phase38:verify` sırayla eklenir, `scripts/phaseN-verify.ts` adlandırma deseni aynen sürer.
+
+---
+
+### 3. Çözülen kararlar (kullanıcı onayladı — artık açık soru değil)
+
+1. **Kapsam: tam 24 faz, hepsi bu belgede detaylı.** Hiçbir faz "sonra detaylandırılır" özetine indirgenmedi.
+2. **Python runtime: YOK.** Faz 29 (Senaryo/Optimizasyon) ve Faz 34 (Agresif Analiz) dahil tüm deterministik hesaplama TypeScript/SQL'de kalır — mevcut mimariyle birebir tutarlı, yeni bir servis/süreç eklenmez.
+3. **Tam 5 katmanlı rol matrisi (Viewer/Finance-Operator/Finance-Approver/Finance-Manager/Admin) + satır-seviyesi RLS uygulanacak.** Bu, Faz 24'ü ikiye ayırmayı gerektirdi: **24A** (Approval entity + basit workflow, küçük kapsam) ve **24B** (tam rol matrisi + RLS'in bugünkü blanket-allow politikasından gerçek rol-bazlı politikalara geçirilmesi — TÜM tabloları etkileyen büyük, kendi başına bir faz).
+4. **Entegrasyon Merkezi (Faz 37) kapsamı onaylandı:** Banka API'si (canlı hesap hareketi), e-Fatura/e-Arşiv, bir muhasebe yazılımı (Paraşüt/Logo/Mikro/Luca — **hangisi olduğu Faz 37 başlarken netleştirilecek**, kullanıcı henüz tek bir vendor seçmedi), TCMB kur entegrasyonu (Faz 27'nin FX çalışmasıyla kesişiyor — Faz 27 manuel/anlık-kayıt sürümünü yapar, canlı bağlantı Faz 37/38'de).
+
+#### Hâlâ açık, faz başlarken sorulacak (kullanıcı şimdi karar vermek istemedi/gerek yok)
+
+1. Tam self-servis parola sıfırlama + MFA + oturum rotasyonu derinliği (Faz 15/16).
+2. Monte Carlo simülasyon altyapısı gerçekten gerekli mi (Faz 34).
+3. ~40 chart tipi / ~40 analiz tipinin tam listesi mi, ilk dilim mi (Faz 34 — ilk dilim olarak 5-8 analiz tipi + birkaç yeni chart tipiyle scoped, onaylanırsa genişler).
+4. WhatsApp entegrasyon iskeleti (Faz 25).
+5. Sesli soru sorma modalitesi (Faz 38).
+6. n8n bağlantısı — kullanıcı zaten n8n kullanıyor mu, yoksa aspirasyonel mi (Faz 37/38).
+7. Doküman Merkezi depolama arka ucu — yerel disk/Postgres large object/harici obje depolama (Faz 35).
+8. CI/CD'nin amacı — yalnız pre-merge gate runner mı (öneri), yoksa sürekli-açık bir hosting hedefi de ima ediyor mu (Faz 16; `docs/local-production-deploy.md` remote deploy'u zaten "bilinçli kapsam dışı" diyor).
+9. Order/Product'ın tam sipariş-yönetimi derinliği mi, yalnız referans veri mi (Faz 19 — öneri: minimal referans, CLAUDE.md'nin "muhasebe programını yeniden yazma" sınırına saygıyla).
+
+---
+
+### 4. Faz yol haritası — Faz 15 ile Faz 38 arası (24 faz numarası, Faz 24 iki alt-faza bölündü)
+
+#### Faz 15 — Acil Güvenlik ve Repo Hijyeni
+
+**Aciliyet notu:** Bu repo bu oturumda İLK KEZ GitHub'a push edildi (`aydinogluomer-sys/Mas-Saas`). Bu fazın ilk maddesi, planın geri kalanından bağımsız olarak, plan onaylanır onaylanmaz HEMEN yapılmalı.
+
+**Amaç:** Bu oturumdaki ilk push'un yarattığı açığı, başka hiçbir çalışma başlamadan kapatmak.
+
+**Teslimatlar:**
+- GitHub repo görünürlüğünü private yap/doğrula — **planın en ucuz, en acil maddesi.**
+- Secret rotation: DB parolası, `SEED_ADMIN_PASSWORD`, `TELEGRAM_BOT_TOKEN`, `OPENAI_API_KEY` yenilenir; git geçmişinde secret taraması yapılır.
+- Dağınık `process.env.X` okumaları yerine tek, Zod-doğrulamalı `src/lib/env.ts`.
+- Migration/runtime rolünden ayrı, gerçek düşük-yetkili bir runtime DB rolü (örn. `mas_radar_app`) — migrasyonlar hâlâ owner rolüyle çalışır, Next.js sunucusu artık `BYPASSRLS`'siz, superuser olmayan bu rolle bağlanır. RLS bundan sonra fiilen bir şey engellemeye başlar.
+- `README.md`'yi (bugün varsayılan create-next-app şablonu) gerçek proje tanıtımıyla değiştir.
+- `.env.example` eksiksizlik denetimi.
+
+**Gate:** `pnpm typecheck/lint/test/db:verify` yeni runtime rolüne karşı geçer; yeni `db:roles:verify` runtime rolünün BYPASSRLS/superuser taşımadığını ve RLS'in tek başına erişimi kapadığını doğrular; repo-private + secret-rotation elle onayı `docs/status-notes.md`'ye kaydedilir.
+
+---
+
+#### Faz 16 — CI/CD, Gözlemlenebilirlik, API/Oturum Güvenliği Temeli
+
+**16A — CI/CD + Observability:**
+- `.github/workflows/ci.yml`: mevcut pnpm gate zincirini (lint/typecheck/test/db:verify/phase3-14e:verify/build) geçici Postgres konteynerine karşı sarmalar + sıfırdan migration testi.
+- `/health`, `/ready`, `/version` route handler'ları (`.env.example`'da zaten var olan `APP_COMMIT_SHA`/`APP_BUILD_TIME`'ı devreye sokar).
+- Structured logging + correlation ID; `DomainError`'ın etrafına paylaşılan bir global hata-yanıt biçimi.
+- `system/` altında admin diagnostics ekranı (mevcut `system/{actions,archive,audit,backup,features,security}` desenine uygun).
+
+**16B — API sözleşmesi + oturum sertleştirme:**
+- Route handler'lar için API yanıt/hata zarfı standardı.
+- Auth ve mutasyon endpoint'lerinde rate limiting.
+- CSRF doğrulaması (bugün doğrulanmış şekilde YOK).
+- Oturum sertleştirme (yetki değişiminde rotasyon, boşta-kalma zaman aşımı).
+
+**Gate:** yeni `phase16:verify` — `/health`/`/ready`/`/version` doğru yanıt veriyor, sahte bir CSRF/rate-limit isteği reddediliyor mu kontrol eder; CI yeşili artık sonraki her fazın gate'inin parçası.
+
+---
+
+#### Faz 17 — Para Hassasiyeti: Uçtan Uca Numeric Katmanı
+
+**Amaç:** ~20 yeni para-taşıyan entity kendi float8 cast'ini eklemeden önce, doğrulanmış 141 cast'i ortadan kaldırmak.
+
+**Teslimatlar:**
+- Paylaşılan `src/lib/money.ts`: tipli decimal yardımcıları (`decimal.js` veya `big.js` bağımlılığı eklenir — bugün yok), Postgres `numeric` string'lerinin güvenli ayrıştırılması.
+- İsteğe bağlı: `numeric` OID için özel `pg` type parser'ı — sorgu-başına `::float8` yerine standart string-giriş/decimal-çıkış davranışı.
+- 141 mevcut çağrı noktasını öncelik sırasına göre taşı: `production/engine.ts` (45), `scenarios/engine.ts` (11), `financing/engine.ts` (10), `radar/queries.ts` (9, `152-153`'teki karışık `::numeric`/`::float8` dahil), `data-quality/engine.ts` (6), kalan 20 dosya.
+- Büyük TL tutarları ve yüzde-üstü-yüzde hesaplamalarında hassasiyet kaybı olmadığını kanıtlayan birim testleri.
+
+**Gate:** yeni `phase17:verify`, izin-listesi dışında hiç `::float8` kalmadığını doğrular (küçük, gerekçeli bir istisna dosyası kabul edilir, her satır yorumlu); mevcut phase3-14e zinciri değişmeden geçmeli (çıktı değerleri yalnız yuvarlama toleransı içinde kalabilir, bu ayrıca test edilir).
+
+---
+
+#### Faz 18 — Paylaşılan `audit()`/`DomainError`/Zod Sınırı + Şema Dokümanı Yenilemesi
+
+**Amaç:** 13 bağımsız `audit()` kopyasını (bizzat doğrulandı) ~20 yeni entity 14'üncü bir varyant eklemeden konsolide etmek; `docs/database-schema.md`'yi ~migration 0021'den yakalamak.
+
+**Teslimatlar:**
+- `src/lib/audit.ts`: tek kanonik `audit(client, {actor, action, entityTable, entityId, before, after, ...})` — `radar/engine.ts`'in en eksiksiz imzası (opsiyonel legacy-repair zaman damgası override'ı dahil) temel alınır. 13 çağrı noktası (ai, analytics/snapshots, archive, cashflow, data-quality, external-assumptions, financing, payments, production, radar, reports, scenarios, users) taşınır.
+- `DomainError` kuralı (bugün 14 engine.ts'in yalnız birkaçında) bu fazdan itibaren tüm yeni kod için ZORUNLU olarak belgelenir (mevcut kodun toptan retrofit'i kapsam dışı — istenirse ayrı bir temizlik fazı önerilir).
+- `src/lib/validation/` gerçek Zod sınırına dönüşür: `parseOrThrow` tarzı yardımcı + server-action-başına-şema kuralı, bu fazdan itibaren tüm yeni kod için.
+- `docs/database-schema.md`, migration 0022-0034'ü (audit append-only, archived immutability, payment-instance amount-source, cancellation fields, status-transition guard'lar, users/sessions, actor-FK repoint, check/loan settlement) + "yeni tablo eklerken checklist" (RLS politikası, yaşam-döngüsü varsa transition guard, `audit()` çağrısı, migration-ledger anchor) ile güncellenir.
+
+**Gate:** yeni `phase18:verify` — `audit.ts` dışında hiçbir yerde `insert into public.audit_logs` olmadığını grep ile doğrular; mevcut zincir geçer; `docs/database-schema.md` gözden geçirmesi elle işaretlenir.
+
+---
+
+#### Faz 19 — Karşı Taraf (Cari Hesap) ve Organizasyonel Boyutlar Çekirdek Veri Modeli
+
+**Bağımlılık:** Faz 17, 18.
+**Amaç:** Bu yol haritasındaki en büyük paylaşılan bağımlılık — Banka Merkezi, Cari Hesap, Fatura Merkezi, Alacak/Borç, Tahsilat hepsi bundan önce başlayamaz.
+
+**Teslimatlar:**
+- `parties`'e 1:1 `counterparty_profiles` tablosu (adres, vergi no, kredi limiti) — `parties`'i değiştirmek/yeniden adlandırmak yerine, mevcut FK grafiğini (checks/loans/payments'taki payee/payer/bank_party_id) bozmadan.
+- `ibans` tablosu, per-counterparty append-only değişiklik-audit trigger'ıyla (0024'ün immutability deseni).
+- "Mapping sırasında sessizce parties yaratma" kuralı yeni counterparty-oluşturma UI/action'ında açıkça korunur.
+- Counterparty exposure/risk skoru bir SQL view olarak (ikinci, sessizce bayatlayabilecek bir kaynak yaratmamak için stored mutable kolon değil).
+- **Minimal** referans tabloları: `cost_centers`, `departments`, `projects`, `products`, `orders` — yalnız ad/kod/opsiyonel counterparty bağlantısı, henüz tahsis mantığı veya sipariş-yaşam-döngüsü yok (§3'teki açık soru #9 uyarınca minimal tutuldu).
+
+**Gate:** `phase19:verify`; `db:constraints:verify` yeni FK'lar için genişletilir; ham `counterparty_label` taşıyan eski çek/kredi satırları zorla geri-doldurulmaz. Yaşam-döngüsü kolonu yok, transition-guard maddesi bilinçli olarak N/A.
+
+---
+
+#### Faz 20 — Banka Merkezi (çekirdek)
+
+**Bağımlılık:** Faz 19, 17, 18.
+**Amaç:** Bugün zaten var olan entity'lere (payments/checks/loan_installments) karşı eşleşen gerçek banka hesabı/hareketi. Fatura/tahsilat eşleşmesi Faz 22'ye ertelendi.
+
+**Teslimatlar:**
+- Gerçek banka hesabı modeli: `cash_accounts`'a IBAN/şube/kullanılabilir/bloke/KMH kolonları eklemek veya ayrık `bank_accounts` tablosu — **faz başlarken netleştirilecek açık bir mimari karar.**
+- `bank_transactions` (ham içe aktarılan satırlar), Faz 2'nin source-lineage desenini tekrar kullanarak.
+- CSV/XLSX ekstre import pipeline'ı, mevcut workbook-import desenlerini tekrar kullanarak.
+- Deterministik kural-tabanlı otomatik sınıflandırma.
+- Mevcut `payments`/`checks`/`loan_installments`'a karşı mutabakat eşleştirme (fatura/tahsilat eşleştirmesi Faz 22'de eklenir), eşleşme-güven skoru, önerilen-eşleşme, eşleşmemiş-işlem kuyruğu, duplicate tespiti.
+- Banka API entegrasyon iskeleti **açıkça Faz 37'ye ertelendi** — bu faz yalnız ekstre-importu.
+
+**Gate:** `phase20:verify`; **transition-guard zorunluluğu:** `bank_transactions.status` (`unmatched→suggested→matched→reconciled` + red yolu) allow-list'i, sütunla AYNI migration'da, CHECK constraint'in izin verdiği her değerle eşleşerek kurulmalı — 0027→0034 emsali bu fazın kendi gate maddesi olarak tekrarlanır.
+
+---
+
+#### Faz 21 — Fatura Merkezi
+
+**Bağımlılık:** Faz 19.
+**Teslimatlar:**
+- `invoices`+`invoice_lines`, `parties` (müşteri/tedarikçi) ve nullable `cost_centers`/`projects` FK'ları.
+- Fatura durum yaşam döngüsü (`draft/open/partial/paid/closed/cancelled`).
+- Duplicate-fatura tespiti (counterparty+numara+tutar+tarih sezgisi).
+- İptal/reversal, sessiz durum değişimi değil bağlı bir reversal kaydı (Faz 18 audit kuralı + 0024/0026 immutable-kayıt emsaliyle uyumlu).
+
+**Gate:** `phase21:verify`; **transition-guard zorunluluğu** (§2 madde 3): fatura durum allow-list unit testi merge öncesi zorunlu gate maddesi.
+
+---
+
+#### Faz 22 — Tahsilat/Ödeme Eşleme ve Cari Hesap Hareketleri
+
+**Bağımlılık:** Faz 19, 20, 21.
+**Teslimatlar:**
+- `payment_allocations`/`collection_allocations` (çok-faturaya-çok-ödeme bağlantısı — bugünkü `payment_instances` yalnız tek-örnek kısmi ödemeyi kapsıyor).
+- Receivables/Payables önce fatura+allocation üzerinde SQL view olarak; bağımsız bir yaşam döngüsü gerekirse gerçek tabloya terfi ettirilir — **faz başlarken netleştirilecek açık tasarım kararı.**
+- Cari Hesap müşteri/tedarikçi kartı: bakiye, hareket geçmişi, açık alacak/borç, ortalama ödeme/tahsilat süresi — Faz 19-21 üzerine read-model sorguları, yeni kaynak veri değil.
+- Faz 20'nin banka-işlemi mutabakatı artık fatura/tahsilata karşı da eşleşir.
+- Yaşlandırma kovaları (1-7/8-30/31-60/60+), DSO/DPO temel hesapları.
+
+**Gate:** `phase22:verify`; §18'in "ödenen>fatura", "tahsilat>alacak" invariant'larının ilk gerçek testi — allocation toplamı fatura tutarını asla aşamaz, PostgreSQL CHECK/trigger olarak burada uygulanır ve `db:constraints:verify`'e eklenir.
+
+---
+
+#### Faz 23 — Alacak/Borç Yönetimi Genişletme
+
+**Bağımlılık:** Faz 22.
+**Teslimatlar:**
+- Gecikme/risk bayrağı hesaplama, expected-collection-date, collection-probability deterministik sezgiyle (ML değil).
+- Ödeme önceliklendirme/cash-aware scheduling view'ı, mevcut payments modülünü besler.
+- Ödeme takvimi genişletmesi.
+- Bad-debt işaretleme yalnız elle, denetlenen bir bayrak — asla otomatik silme.
+
+**Gate:** `phase23:verify`; mevcut `phase4:verify`/`phase5:verify`'ın (ödeme/nakit akış radarı) değişmeden geçtiği regresyon zorunluluğu — bu faz mevcut vade/gecikme mantığını genişletir, bozmaz.
+
+---
+
+#### Faz 24A — Onay/Maker-Checker Entity ve Basit Workflow
+
+**Bağımlılık:** Faz 21, 22, 23.
+**Amaç:** Bugün var olan iki bağımsız tekrarı (mapping_reviews + external_assumptions.review_status) tek gerçek entity'de birleştirmek.
+
+**Teslimatlar:**
+- `approvals`+`approval_steps`, iki mevcut çağrı noktası buraya taşınır (üçüncü özel bir varyant BIRAKILMAZ).
+- Onay-kuralı yapılandırması: tutar-eşiği, yeni-IBAN, yeni-tedarikçi, fatura/ödeme tetikleyicileri (bütçe/forecast/senaryo tetikleyicileri Faz 28/29'da eklenir).
+
+**Gate:** `phase24a:verify`; **transition-guard zorunluluğu:** `approvals.status` (`pending→approved/rejected/reworked`) allow-list'i gün-1'den doğru.
+
+---
+
+#### Faz 24B — Tam Rol Matrisi + Satır-Seviyesi RLS Uygulaması
+
+**Bağımlılık:** Faz 24A, Faz 15 (BYPASSRLS/superuser kaldırılmış olmalı — yoksa RLS politikaları hiçbir şeyi engellemez).
+**Amaç:** Kullanıcının onayladığı büyük genişleme — bugünkü blanket-allow RLS politikasını (`using(true)`, 11 dosyada 25 kez) gerçek 5-katmanlı rol-bazlı politikalarla değiştirmek. **Bu, planın en geniş kapsamlı tek fazı — neredeyse her tabloya dokunur.**
+
+**Teslimatlar:**
+- `users.role` enum'unu (bugün yalnız `admin|operator`) `viewer|finance_operator|finance_approver|finance_manager|admin` olarak genişlet — mevcut `admin`/`operator` değerlerinin yeni enum'a güvenli migration'ı (veri kaybı yok, açık bir eşleme tablosuyla).
+- Permission matrix: her rolün hangi tablo/aksiyon üzerinde ne yapabileceğinin merkezi tanımı (kod içi sabit + doğrulanabilir).
+- 41 mevcut tablo + Faz 19-24A'da eklenen yenilerin HER BİRİ için, bugünkü tek blanket politika yerine role-farkında RLS politikaları — örn. `viewer` yalnız SELECT, `finance_operator` kendi girdiği kayıtları INSERT/UPDATE edebilir ama onaylayamaz, `finance_approver`/`finance_manager` Faz 24A'nın approval adımlarını yürütebilir, yalnız `admin` şema-seviyesi işlemler.
+- Role-based navigation'ın backend tarafı (UI tarafı Faz 36'da).
+- Mevcut `authenticated`-all politikalarının HİÇBİRİ sessizce bırakılmaz — her biri ya rol-bazlı bir politikayla değiştirilir ya da (view/reference tablolar gibi düşük riskli olanlar için) neden blanket kaldığı açıkça yorumla belgelenir.
+
+**Gate:** yeni `db:roles-rls:verify` — her rol için "şunu yapabilmeli/yapamamalı" matrisini gerçek DB bağlantılarıyla test eder (ör. `viewer` rolüyle bağlanan bir oturumun bir ödeme INSERT etmeye çalışması reddedilmeli); mevcut phase3-23 zincirinin YENİ rol modeliyle de değişmeden geçtiği ayrıca doğrulanır (regresyon riski yüksek, bu fazın en kritik testi budur); `db:constraints:verify`/`db:transitions:verify` yeniden çalıştırılır.
+
+---
+
+#### Faz 25 — Tahsilat Merkezi
+
+**Bağımlılık:** Faz 22, 23.
+**Teslimatlar:**
+- `promise_to_pay` tablosu, tarih takibi + broken-promise tespit işi.
+- Tahsilat notları/aksiyon geçmişi — mevcut `action_items` deseni tekrar kullanılır, ikinci bir görev modeli icat edilmez.
+- Tahsilat KPI'ları (customer collection score) hesaplanan view olarak.
+- `reminders`/`reminder_deliveries` hedef-türü genişletilir (bugün 3 tür/Telegram+1 kanal); e-posta kanalı eklenir.
+- **WhatsApp iskeleti §3 açık soru #4 — varsayılan olarak ertelenir.**
+
+**Gate:** `phase25:verify`; mevcut hatırlatma duplicate-önleme testi yeni hedef türlerini kapsayacak şekilde genişletilir.
+
+---
+
+#### Faz 26 — Hazine/Likidite Merkezi (Treasury)
+
+**Bağımlılık:** Faz 20, 17.
+**Teslimatlar:**
+- Günlük/banka-bazlı/para-birimi-bazlı cash position view'ı, `bank_accounts`+`bank_transactions`+mevcut `cashflow_months` üzerine.
+- 7/30/90 günlük likidite tahmini — mevcut cashflow-forecast motorunu (Faz 5) genişletir, paralel bir tahmin motoru değil.
+- Minimum-cash/likidite-açığı/finansman-ihtiyacı tespiti, yapılandırılabilir cash-buffer politika eşiği.
+- `finance/` altında yeni treasury dashboard'u (mevcut rota ağacına göre doğal ev).
+
+**Gate:** `phase26:verify`; yeni treasury cash position'ın `cashflow_months`'un mevcut closing-balance rakamından hiç sessizce sapmadığını doğrulayan tutarlılık testi.
+
+---
+
+#### Faz 27 — Finansman Merkezi Genişletme + FX/Kur Riski
+
+**Bağımlılık:** Faz 19, 20.
+**Teslimatlar:**
+- `credit_facilities` (limit/kullanılan/kullanılabilir/çekim) — bugünkü sabit-planlı `loans`'tan ayrık, gerçek yeni bir kavram.
+- `collateral_records`, `covenant_records`.
+- Debt-maturity ladder (30/90/180/365 gün), `loan_installments`+`credit_facilities` üzerine hesaplanan view.
+- `fx_positions`+`fx_rate_snapshots` (gerçek yeni tablolar).
+- TCMB kur entegrasyonu bu fazda MANUEL/programlı-çekim+kayıt olarak (canlı akış değil) — canlı/otomatik bağlantı Faz 37/38'e ertelenir.
+- FX revaluation, gain/loss, stres testleri (±%5/10/20) — deterministik SQL/TS.
+
+**Gate:** `phase27:verify`; tüm yeni FX/finansman matematiği gün-1'den Faz 17'nin para yardımcısından geçer (yeni `::float8` cast'i yasak, standing kontrol).
+
+---
+
+#### Faz 28 — Bütçe ve Rolling Forecast
+
+**Bağımlılık:** Faz 21-27.
+**Teslimatlar:**
+- `budgets`+`budget_lines` (yıllık/aylık/departman/cost-center/proje — Faz 19'un boyut tablolarını kullanarak).
+- Bütçe-vs-gerçekleşen, varyans analizi (deterministik SQL; açıklamalar mevcut AI-yorum desenini [Faz 12] tekrar kullanır — yeni LLM matematiği yok, sınır zaten doğru).
+- `scenario_runs`/`scenario_run_lines`'ı (veya paralel `forecasts`/`forecast_lines`'ı) kaynak sınıflandırması (contracted/scheduled/historical/manual/estimated), güven skoru, forecast-vs-actual, doğruluk KPI'larıyla gerçek bir rolling forecast'e genişletir — mevcut senaryo motorunun ciddi bir genişlemesi, basit bir yeniden kullanım değil.
+- 13 haftalık cash forecast, adlandırılmış bir ufuk view'ı olarak.
+- **Pekiştirme, yeni iş değil:** forecast matematiği TS/SQL'de kalır (Çözülen Karar #2); LLM forecast zincirinin dışında kalır — `ai/engine.ts`'in mevcut mimarisi zaten bunu sağlıyor, bu faz onu bozmamalı.
+
+**Gate:** `phase28:verify`; **transition-guard zorunluluğu:** `budget_lines`/`forecast_lines` versiyon-durum kolonu (`draft/approved/superseded`) allow-list'i gün-1'den doğru.
+
+---
+
+#### Faz 29 — Senaryo/Optimizasyon Genişletme
+
+**Bağımlılık:** Faz 28, 22, 27.
+**Teslimatlar:**
+- Optimal ödeme zamanlaması/finansman karması/cash-buffer önerisi, **deterministik TypeScript/SQL çözücü mantığıyla (Çözülen Karar #2 — Python YOK)**.
+- Çok-değişkenli senaryo karşılaştırma/versiyonlama, Faz 24A'nın Approval entity'sine senaryo-onayı için bağlanır (ters yönde değil).
+
+**Gate:** `phase29:verify`; Faz 8/13'te kurulan baseline-korunur/salt-okunur-overlay invariant'ı her yeni senaryo tipine karşı yeniden test edilir — bu asla bozulmamalı.
+
+---
+
+#### Faz 30 — Maliyet Merkezi + Kârlılık Motoru + İşletme Sermayesi
+
+**Bağımlılık:** Faz 19, 21, mevcut `production/engine.ts` (kârlılık emsali zaten orada var).
+**Teslimatlar:**
+- Masraf-dağıtım kuralları (ortak/makine/personel/enerji/proje) `cost_centers`/`departments`/`projects` üzerine.
+- Kârlılık view'ları: şirket/departman/cost-center/müşteri/tedarikçi/proje/ürün/sipariş/makine — `production/engine.ts`'in mevcut kârlılık-hesaplama desenini şablon olarak tekrar kullanır, yeniden icat etmez.
+- Working-capital dashboard: AR/AP analizi, cash-conversion cycle, DSO/DPO/DIO trendi — Faz 22/23/26 read-model'lerinden çekilir, yeni kaynak veri yok.
+
+**Gate:** `phase30:verify`; tüm para matematiği Faz 17'nin yardımcısından geçer (standing kontrol).
+
+---
+
+#### Faz 31 — Finansal Kontrol Merkezi + Anomali/Fraud Tespiti + Bildirim/Eskalasyon
+
+**Bağımlılık:** Faz 19-30 (neredeyse tamamı) — bu, tüm entity'ler arası bir sentez katmanı.
+**Teslimatlar:**
+- Finansal invariant motoru: duplicate fatura/ödeme/banka-işlemi, ödenen>fatura, tahsilat>alacak, faturasız-ödeme, eşleşmemiş-banka-işlemi, bilinmeyen-counterparty/IBAN, yeni/değişmiş-IBAN, büyük/olağandışı-ödeme, kapalı-dönem-mutasyonu (Faz 24B'nin dönem-kilidini gerektirir), eksik-doküman kontrolleri — PostgreSQL CHECK + SQL view + TS kural fonksiyonu olarak, mevcut `db/constraints-verify.ts`+`phaseN-verify` altyapısı üzerinden.
+- PASS/WARNING/CRITICAL kontrol dashboard'u (`data/` veya `system/` altında doğal ev).
+- Anomali tespiti (tutar/frekans/counterparty/IBAN, duplicate/split-payment, round-number, olağandışı-saat, yeni-alıcı, tarihsel-baseline karşılaştırması, approval-bypass [Faz 24A'nın Approval entity'sini gerektirir]) — yalnız TS/SQL'de deterministik istatistiksel kurallar. **Pekiştirme:** LLM kontrol/anomali sonucu üretiminin dışında kalır — `ai/engine.ts`'in mevcut sınırı zaten bunu sağlıyor.
+- Anomali skorlama + inceleme workflow'u + false-positive geri bildirimi, yine `action_items` deseniyle.
+- §30 bildirim genişletmesi: alert acknowledge/resolve/snooze, eskalasyon kuralları — bu fazın ürettiği uyarılar buradan yönlenir.
+
+**Gate:** `phase31:verify`; her yeni CHECK constraint kendi `db:constraints:verify` girdisini alır (mevcut script'i genişletir, değiştirmez).
+
+---
+
+#### Faz 32 — CFO Sabah Brifingi + Yönetim Kokpiti + Finansal Takvim
+
+**Bağımlılık:** Faz 26, 30, 31.
+**Teslimatlar:**
+- `cockpit.ts`'i (zaten `overview/`'u besliyor) net-borç, AR/AP, EBITDA, işletme sermayesi, DSO/DPO, kapasite kullanımı, bütçe/forecast varyansı, borç vadesi, FX exposure, konsantrasyon widget'larıyla genişlet.
+- CFO Sabah Brifingi: deterministik SQL/TS özet (güncel nakit, bugünkü ödeme/tahsilat, gecikmiş, kritik kalemler, Faz 31'in yeni anomalileri, 7/30 günlük min. nakit, likidite açığı, bugünün aksiyonları) — `reports/engine.ts` + mevcut Telegram + Faz 25'in yeni e-posta kanalını tekrar kullanır.
+- Birleşik finansal-takvim read-model view'ı, mevcut vade/taksit/promise-to-pay tarihlerini toplar — var olan için yeni kaynak-of-truth tablosu yok; maaş/SGK/vergi/kira/sigorta/CapEx tarihlerinin yeni hafif tekrar-eden-yükümlülük kaydı mı gerektirdiği, yoksa mevcut payments modülüne mi oturduğu faz başlarken netleştirilir.
+
+**Gate:** `phase32:verify`; brifing rakamlarının alttaki dashboard rakamlarıyla tutarlılık çaprazlaması — özet ile detay arasında sapma yasak.
+
+---
+
+#### Faz 33 — Performans, Ölçeklenebilirlik ve Arka Plan İşleri
+
+**Bağımlılık:** Faz 20 (import hacmi), Faz 34/35 (export hacmi).
+**Teslimatlar:**
+- Büyük Excel/CSV importları (özellikle Faz 20'nin banka ekstreleri) için job queue + retry policy + dead-letter queue.
+- Faz 22-32'de eklenen en ağır read-model sorguları için materialized view/aggregate table.
+- Query optimizasyonu/index audit/N+1 audit/slow-query logging.
+- Rapor-üretim kuyruğu, büyük-export kuyruğu, import-progress takibi.
+
+**Gate:** `phase33:verify`; en yavaş N sorgu için önce/sonra query-plan karşılaştırması.
+
+---
+
+#### Faz 34 — Agresif Analiz + Görselleştirme Motoru (ilk dilim)
+
+**Bağımlılık:** Faz 30, 31, 32.
+**Amaç:** Wishlist'in ~150 satırlık kapsamlı listesinden, "en küçük güvenli dilim" ilkesiyle bilinçli olarak daraltılmış gerçek, genişletilebilir bir kayıt (registry) altyapısı.
+
+**Teslimatlar:**
+- Metric/dimension/calculation registry — mevcut `facts/engine.ts`+`analytics/models.ts` desenini bağımlılık grafiği + reproducibility metadata'sıyla (input snapshot/hesap versiyonu/zaman damgası/kaynak lineage — Faz 2'nin olgun lineage desenini tekrar kullanarak) gerçek bir registry'ye dönüştürür.
+- Rolling 7/30/90/365 gün + MoM/QoQ/YoY analiz fonksiyonları (mevcut `analytics/chart.ts`'teki dönem-filtrelemeyi genişletir).
+- İlk 5-8 adlandırılmış analiz tipi (§3 açık soru #3 uyarınca, tam ~40 değil) — varyans decomposition, konsantrasyon/Pareto, DSO/DPO/DIO decomposition en güçlü ilk adaylar (mevcut veriye göre).
+- Chart registry: `ChartModel`/`analytics-chart.tsx`'i birkaç yeni tiple genişlet — waterfall, heatmap, treemap (wishlist'in en çok vurguladığı tipler) — tam ~40 tip listesi değil. PNG/SVG/PDF/XLSX export.
+- **Python YOK (Çözülen Karar #2)** — tüm istatistiksel hesaplama TS'de.
+
+**Gate:** `phase34:verify`; bu fazdan itibaren standing bir "LLM-bağımsızlığı" kontrolü (analytics/chart hesaplama modülü `src/lib/ai`'yi import etmiyor) tek seferlik değil kalıcı bir repo-geneli kontrole dönüşür.
+
+---
+
+#### Faz 35 — Evrensel Arama + Doküman Merkezi
+
+**Bağımlılık:** Faz 20-31.
+**Teslimatlar:**
+- `documents`+`attachments` (checksum, versiyonlama, etiketleme) — **depolama arka ucu §3 açık soru #7, faz başlarken çözülecek; bugünkü yerel-Docker-Postgres-yalnız yığında obje depolama yok.**
+- Doküman-işlem bağlantısı, Faz 2'nin source-lineage FK desenini tekrar kullanarak.
+- Müşteri/tedarikçi/fatura/ödeme/tahsilat/banka-işlemi/çek/kredi/doküman/audit-log genel arama; ⌘K komut paleti.
+- Doğal-dil arama, `ai/engine.ts`'in mevcut sınırıyla birebir aynı şekilde scoped: LLM yalnız niyet/entity/tarih/filtre çıkarımı yapar, deterministik bir query builder çalıştırır, LLM'den sıfır doğrudan SQL — Faz 18'in Zod sınırı + mevcut `mutationIntent()`-tarzı korumayı tekrar kullanır, yeni bir LLM mimarisi gerekmez.
+
+**Gate:** `phase35:verify`; arama sonuçlarının Faz 24B'nin RLS/rol kapsamını asla atlamadığını doğrulayan kontrol.
+
+---
+
+#### Faz 36 — UX Standardizasyon Süpürmesi
+
+**Bağımlılık:** Faz 19-35 (çoğu, gezinecek modül olarak).
+**Teslimatlar:**
+- Sidebar bilgi mimarisi yeniden düzenlemesi, rol-bazlı navigasyon (Faz 24B'nin backend'ini UI'ye bağlar), global filtre sistemi (tarih aralığı/para birimi/entity/cost-center/proje/müşteri-tedarikçi), saved views.
+- Tablo pagination/filtre/sort standardı, toplu işlemler, CSV/XLSX/PDF export standardı, klavye kısayolları.
+- Loading/error/empty-state standardizasyonu, erişilebilirlik denetimi, performans denetimi.
+
+**Gate:** `phase36:verify`; örneklenen bir çapraz-modül UI tutarlılık kontrol listesi (her sayfa değil, örneklem).
+
+---
+
+#### Faz 37 — Entegrasyon Merkezi (Integration Hub)
+
+**Bağımlılık:** Faz 20-36'nın büyük çoğunluğu (senkronize edilecek gerçek iç veri gerekiyor).
+**Amaç (Çözülen Karar #4 ile netleşti):** Banka API'si, e-Fatura/e-Arşiv, bir muhasebe yazılımı, TCMB kur entegrasyonu — dördü de gerçek kapsam.
+
+**Teslimatlar:**
+- **Banka API'si:** Faz 20'nin ekstre-import akışının canlı/otomatik uzantısı.
+- **e-Fatura/e-Arşiv:** Faz 21'in Invoice entity'sine bağlı, resmi e-fatura sistemine entegrasyon.
+- **TCMB kur entegrasyonu:** Faz 27'nin manuel/anlık-kayıt sürümünün canlı/otomatik uzantısı.
+- **Muhasebe yazılımı** (Paraşüt/Logo/Mikro/Luca — **hangisi olduğu faz başlarken netleştirilecek**, tek bir vendor'a odaklanılacak, dördü birden değil).
+- Excel/CSV import-export (bugün zaten büyük ölçüde kapsanıyor — genişletilir, yeniden kurulmaz).
+- Programlı senkronizasyon + durum + retry + dead-letter kuyruğu (Faz 33'ün job-queue altyapısını tekrar kullanır).
+- Entegrasyon audit trail'i (Faz 18'in `audit()`'ini tekrar kullanır).
+
+**Gate:** `phase37:verify`; dört entegrasyon ayrı ayrı, birbirinden bağımsız teslim edilebilir olacak şekilde gate'lenir — biri diğerini bloklamaz.
+
+---
+
+#### Faz 38 — Konuşma Tabanlı Finans Asistanı Genişletme (son faz, her şeyin ince arayüzü)
+
+**Bağımlılık:** Faz 35 (query builder); Faz 37'den faydalanır ama zorunlu bağımlı değil.
+**Amaç:** Zaten büyük ölçüde kurulmuş `ai/engine.ts`/`facts/engine.ts` sınırını (bkz. 1a), zaten çalışan mimariyi yeniden kurmadan tam konuşmalı asistana genişletmek.
+
+**Teslimatlar:**
+- Faz 34'ün artık çok daha büyük fact/metric registry'si üzerinde Türkçe doğal-dil soru-cevap.
+- Takip-sorusu bağlamı, konuşma geçmişi, rol-bazlı veri görünürlüğü (Faz 24B'ye bağlı derinlik).
+- Drill-down bağlantıları, chat→dashboard/rapor görünümü çağırma.
+- Her yanıt için tam kaynak/sorgu izlenebilirliği (Faz 2'nin lineage deseni + Faz 34'ün reproducibility metadata'sını tekrar kullanır).
+- LLM hatasında deterministik-yalnız-fact fallback — zaten mevcut mimari, bozulmamalı.
+- **Sesli soru sorma §3 açık soru #5 — flag'lenir, sessizce kurulmaz.**
+
+**Gate:** `phase38:verify`; prompt-injection/tool-abuse test paketi; genişlemiş fact yüzeyine karşı mevcut `mutationIntent()` koruması ve `AI_FORCE_DETERMINISTIC` kapatma anahtarının hâlâ çalıştığının yeniden teyidi.
+
+---
+
+### 5. Kapsam kontrolü (34 bölümün hiçbiri sessizce düşürülmedi)
+
+§1→Faz15/16/17/18 · §2→Faz19/20/21/22/24A/24B/27/28/31/35 · §3→Faz20/22 · §4→Faz19/22/23 · §5→Faz21 · §6/§7→Faz23 · §8→Faz25 · §9→Faz26 · §10/§11→Faz28 · §12→Faz29 · §13/§14→Faz27 · §15/§16/§17→Faz30 · §18/§19→Faz31 · §20/§21→Faz24A/24B · §22→Faz35 · §23→zaten-yapılmış grubu, Faz31/35/38'de genişler · §24→Faz35 · §25/§26/§27→Faz32 · §28→Faz38 · §29→Faz37 (tam kapsam, Çözülen Karar #4) · §30→Faz25/31 · §31→Faz36 · §32→Faz33 · §33→Faz16 · §34/35 (analiz+görsel)→Faz34.
+
+---
+
+### Doğrulama (uçtan uca nasıl test edilir)
+
+Bu bir dokümantasyon değişikliği — kod değişikliği yok, bu yüzden doğrulama iki katmanlı:
+
+1. **Belge tutarlılığı:** `implementation.md`'ye eklenen v4 bölümü, mevcut v3'ün 14 fazlık biçimini (amaç/teslimat/gate) birebir taklit ediyor mu; `## 16. Commit ve Gate Kurali`'ndeki pnpm zinciri `phase15:verify`...`phase38:verify` ile genişletiliyor mu (yerine geçmiyor mu) — elle gözden geçirme.
+2. **Faz 15'in aciliyeti ayrıca doğrulanır:** plan onaylandıktan hemen sonra, GitHub repo görünürlüğü GERÇEKTEN kontrol edilip private yapılmalı — bu, planın geri kalanının uygulanmasını beklemeden yapılacak tek adım.
+3. **Her fazın kendi gate'i o faz fiilen uygulanmaya başladığında çalışır** — bu roadmap dokümanının kendisi hiçbir `pnpm` script'i çalıştırmaz; CLAUDE.md'nin "en küçük güvenli dilimi belirle → uygula → doğrula → dokümanı güncelle → o fazdan sonra dur" akışı Faz 15'ten başlayarak, bu belge onaylandıktan sonra, HER FAZ İÇİN AYRI AYRI ve sırayla işletilir — plan onayı, 24 fazın hepsinin tek seferde uygulanacağı anlamına gelmez, yalnız yol haritasının kabul edildiği anlamına gelir.
+
+---
+
+## 18. Legacy v2 Plan
 
 Asagidaki v2 plan, domain kararlarini ve tarihsel baglami korumak icin saklanmistir.
 

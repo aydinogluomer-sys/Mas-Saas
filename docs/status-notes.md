@@ -292,3 +292,48 @@ Silinen veri `audit_logs`'ta `delete_stale_capacity_utilization_snapshots` eylem
 kanıt olarak saklandı.
 
 Mali veri değişmedi: payments=19, checks=7, loans=1, cashflow_months=35.
+
+## Implementation Plan v4 — Faz 15-38 yol haritası belgeye eklendi (2026-08-17)
+
+`implementation.md`'ye `## 17. Implementation Plan v4 — Faz 15-38 Kurumsal Genisleme Yol Haritasi`
+bölümü eklendi. Kaynak: kullanıcının verdiği `MAS_Nakit_Radar_Revize_Mimari_Listesi.md` (34 bölüm,
+~700 madde), kod tabanının gerçek durumuna göre mutabakatlandırılmış hâli. Mevcut `## 17. Legacy v2
+Plan` bölümü `## 18` olarak kaydı; gövdesi karakterine kadar aynı kaldı.
+
+Kapsam: 24 faz numarası, 25 faz başlığı (Faz 24, rol matrisi + RLS'in büyüklüğü nedeniyle **24A**
+approval-workflow ve **24B** tam 5 katmanlı rol matrisi + satır-seviyesi RLS olarak ikiye ayrıldı).
+34 kaynak bölümün hiçbiri sessizce düşürülmedi — bölüm→faz eşlemesi v4'ün "Kapsam kontrolü"
+alt başlığında satır satır duruyor. Çözülen kararlar: Python runtime YOK (Faz 29 ve Faz 34 dahil
+tüm deterministik hesap TypeScript/SQL'de kalır), Entegrasyon Merkezi (Faz 37) tam kapsam onaylı,
+muhasebe yazılımı vendor seçimi Faz 37 başında netleşecek. Dokuz konu bilinçli olarak açık bırakıldı
+ve ilgili faz başlarken sorulacak.
+
+**Bu tur yalnızca dokümantasyondur.** Kod, migration, tablo, script eklenmedi; v3'ün Faz 1-14 +
+P0-A/B/C bölümlerine ve DONE işaretlerine dokunulmadı (1-568. satırlar bit-bit aynı).
+
+Bilinçli yapılmayan: `## 16. Commit ve Gate Kurali`'ndeki pnpm zincirine `phase15:verify` …
+`phase38:verify` **eklenmedi**. Bu script'ler henüz yok; şimdi eklemek çalıştırılamayan bir gate
+üretirdi. Her faz kendi verify script'ini o faz uygulanırken zincire ekler — v4'ün Doğrulama
+maddesi de bunu "genişletiliyor mu (yerine geçmiyor mu)" diye kontrol etmeyi şart koşuyor.
+
+Plan onayı 24 fazın tek seferde uygulanacağı anlamına gelmez; CLAUDE.md'nin "en küçük güvenli
+dilimi belirle → uygula → doğrula → dokümanı güncelle → o fazdan sonra dur" akışı Faz 15'ten
+başlayarak her faz için ayrı ayrı işletilir.
+
+## Kullanıcı eylemi bekleniyor — implementasyon oturumunun yapamayacağı iki iş (2026-08-17)
+
+Aşağıdaki ikisi kod veya migration değil, hesap/panel işidir. Bir Claude oturumu bunları
+yapamaz; yalnızca burada kayıt altına alır. İkisi de **Faz 15 başlamadan** yapılmalı.
+
+1. **GitHub repo görünürlüğü private yapılacak — `aydinogluomer-sys/Mas-Saas`.**
+   Depo gerçek finansal iş mantığını, şema kararlarını ve operasyon dokümanlarını taşıyor.
+   v4'ün Doğrulama bölümü bunu "planın geri kalanının uygulanmasını beklemeden yapılacak tek
+   adım" olarak işaretliyor. Durum: **beklemede** — görünürlüğün mevcut değeri bu oturumda
+   doğrulanmadı, kullanıcının GitHub panelinden kontrol edip private'a çekmesi gerekiyor.
+
+2. **Secret rotation — DB parolası, `SEED_ADMIN_PASSWORD`, `TELEGRAM_BOT_TOKEN`, `OPENAI_API_KEY`.**
+   Depo bir süre public kaldıysa bu değerlerin sızmış sayılması gerekir; görünürlüğü private
+   yapmak zaten dışarı çıkmış bir sırrı geri getirmez. Rotasyon GitHub / hosting / ilgili servis
+   panellerinden yapılır (Telegram BotFather, OpenAI panel, DB kullanıcı parolası), **koddan
+   değil** — bu değerler yalnızca ortam değişkeni olarak okunuyor, depoda tutulmuyor.
+   Durum: **beklemede**.
