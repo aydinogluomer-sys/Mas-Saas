@@ -64,6 +64,11 @@ DYNAMIC_TEMPLATES = [
     "/cashflow/{cashflow_month}",
     "/finance/loans/{loan_id}",
     "/financing/loans/{loan_id}",
+    # canonical (content lives here since the Bulgu #5/#7 rounds)
+    "/data/imports/{workbook_id}",
+    "/data/imports/{workbook_id}/reviews",
+    "/data/imports/{workbook_id}/sheets/{sheet_id}",
+    # legacy aliases - must still 308 to the canonical path above
     "/imports/{workbook_id}",
     "/imports/{workbook_id}/reviews",
     "/imports/{workbook_id}/sheets/{sheet_id}",

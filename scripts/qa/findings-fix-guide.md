@@ -703,3 +703,40 @@ Next'in istemci router'ı **tüm RSC istekleri için modül seviyesinde tek bir 
 
 ### Ortam notu — teşhis çalışması sınırda
 Bu tur sırasında **Docker Desktop tamamen çöktü** (hiç süreç kalmadı, yeniden başlatıldı), `pnpm build` daha önce iki kez ortam hatasıyla düştü, bir vitest worker'ı açılamadı, bir `page.goto` `ERR_ABORTED` verdi. Boş bellek 0,4-1,4 GB arasında. Ölçümler alınabildi ama ortam artık güvenilir değil; bu, bellek hipotezinin neden hâlâ sınanamadığının da cevabı.
+
+---
+
+## Bulgu #9 — QA crawler'ın form testi hiç var olmamış alan adlarını arıyor (test altyapısı, uygulama değil)
+
+**Önem: Düşük.** 2026-08-12 final regresyonunda bulundu. **Düzeltilmedi** — karar kullanıcıya.
+
+### Sorun
+`scripts/qa/browser_crawl.py`'deki `FORM_TESTS` içinde `Yeni dış varsayım ekle` testi
+`/data/assumptions` sayfasında `description` ve `url` adlı alanlar arıyor:
+
+```python
+{"name": "Yeni dış varsayım ekle", "path": "/data/assumptions",
+ "fields": {"description": "...", "url": "..."}, "submit_text": "ekle"}
+```
+
+Sayfadaki gerçek alan adları: `label`, `assumptionType`, `valueNumeric`, `unit`, `currency`,
+`sourceKind`, `sourceName`, `sourceDate`, `sourceUrl`, `periodStart`, `periodEnd`, `notes`.
+
+`git log -S'name="description"' -- src/app/(dashboard)/assumptions/page.tsx` **boş** döndü — yani
+bu alanlar hiç var olmadı; test baştan yanlış seçiciyle yazılmış, bir regresyon sonucu bozulmadı.
+
+### Etkisi
+Crawler her çalıştığında bu test FAIL veriyor ve **dış varsayım ekleme formu fiilen hiç test
+edilmiyor**. Yanlış negatif değil — yanlış alarm + kapsam boşluğu.
+
+### Neden bu turda düzeltilmedi
+Test beklentisini uygulamaya uydurmak, gerçek bir regresyonu maskeleme riski taşır; ayrıca bu tur
+bir **doğrulama** turuydu ve kaynak/test kodu değiştirmemek üzere tanımlanmıştı.
+
+### Seçenekler
+1. `fields`'ı gerçek alan adlarıyla değiştir (`label` + `sourceUrl`), submit metnini doğrula —
+   forma gerçek kapsam kazandırır.
+2. Testi tamamen kaldır — kapsamı azaltır, yanlış alarmı bitirir.
+3. Olduğu gibi bırak — her koşuda bir FAIL gürültüsü kalır.
+
+Seçenek 1 önerilir; küçük ve kapsam kazandırır.
