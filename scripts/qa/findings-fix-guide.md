@@ -706,9 +706,9 @@ Bu tur sırasında **Docker Desktop tamamen çöktü** (hiç süreç kalmadı, y
 
 ---
 
-## Bulgu #9 — QA crawler'ın form testi hiç var olmamış alan adlarını arıyor (test altyapısı, uygulama değil)
+## Bulgu #9 — QA crawler'ın form testi hiç var olmamış alan adlarını arıyor (test altyapısı) — **DÜZELTİLDİ**
 
-**Önem: Düşük.** 2026-08-12 final regresyonunda bulundu. **Düzeltilmedi** — karar kullanıcıya.
+**Önem: Düşük.** 2026-08-12 final regresyonunda bulundu, aynı gün düzeltildi.
 
 ### Sorun
 `scripts/qa/browser_crawl.py`'deki `FORM_TESTS` içinde `Yeni dış varsayım ekle` testi
@@ -733,10 +733,74 @@ edilmiyor**. Yanlış negatif değil — yanlış alarm + kapsam boşluğu.
 Test beklentisini uygulamaya uydurmak, gerçek bir regresyonu maskeleme riski taşır; ayrıca bu tur
 bir **doğrulama** turuydu ve kaynak/test kodu değiştirmemek üzere tanımlanmıştı.
 
-### Seçenekler
-1. `fields`'ı gerçek alan adlarıyla değiştir (`label` + `sourceUrl`), submit metnini doğrula —
-   forma gerçek kapsam kazandırır.
-2. Testi tamamen kaldır — kapsamı azaltır, yanlış alarmı bitirir.
-3. Olduğu gibi bırak — her koşuda bir FAIL gürültüsü kalır.
+### Uygulanan çözüm (seçenek 1)
+`FORM_TESTS` girdisi gerçek alan adlarıyla yeniden yazıldı: `label`, `valueNumeric`, `unit`,
+`sourceName`, `sourceDate` + `assumptionType` seçimi, submit metni **`kaydet`** (crawler `ekle`
+arıyordu — spec'teki ikinci hata). `sourceKind` bilinçli olarak varsayılanda (`manual`) bırakıldı;
+`internet` seçmek kaydı inceleme kapısına yönlendirir, bu smoke'un kapsadığı yol değil.
 
-Seçenek 1 önerilir; küçük ve kapsam kazandırır.
+### Ara adımda yakalanan tuzak
+İlk düzeltmede yalnız `label` + `valueNumeric` + `sourceName` dolduruldu. Test **PASS** verdi ama
+**hiçbir kayıt oluşmadı** (6 → 6). Sebep: crawler'ın PASS ölçütü "sayfa çökmedi", "kayıt oluştu"
+değil. Yani test yeşile döner ama formu hâlâ doğrulamazdı — düzeltmenin maskeleme riski tam da
+buydu. `unit` ve `sourceDate` eklendikten sonra doğrulandı: **6 → 7**, satır doğru alanlarla
+(`other / 42 / percent / QA crawl / approved`) oluştu.
+
+**Not:** Crawler'ın form testleri tasarım gereği smoke seviyesindedir (yalnız çökme arar). Diğer
+form testi (`Yeni ödeme kalemi ekle`) da doğrulama hatasıyla dönüyor ve yine PASS sayılıyor —
+bu bilinçli bir sınır, ama "PASS = özellik çalışıyor" diye okunmamalı.
+
+---
+
+## Bulgu #10 — dış varsayım formu girdiyi sessizce yutuyor, üstelik "oluşturuldu" diye yönlendiriyor
+
+**Önem: Orta-Yüksek** — mali veri giriş yolunda sessiz veri kaybı. Bulgu #9 düzeltilirken bulundu.
+**Düzeltilmedi** — karar kullanıcıya.
+
+### Sorun
+`src/lib/external-assumptions/engine.ts:132`:
+
+```ts
+if (!label || !sourceName || !unit || !Number.isFinite(input.valueNumeric) || !input.sourceDate) return null;
+```
+
+Motor, bu beş alandan biri eksikse **sessizce `null`** döner — hata fırlatmaz.
+
+`src/app/(dashboard)/assumptions/actions.ts` bu dönüş değerini **hiç kontrol etmiyor**:
+
+```ts
+if (valueNumeric != null) {
+  await createExternalAssumption(...);      // donus degeri yok sayiliyor
+}
+revalidatePath(...);
+redirect("/data/assumptions?result=created");   // KOSULSUZ "created"
+```
+
+`valueNumeric` boşsa `if` bloğu tamamen atlanıyor ve **yine** `result=created` ile yönlendiriliyor.
+
+### Canlı doğrulama
+Formu `unit` ve `sourceDate` boş bırakarak doldurup "kaydet"e basıldı:
+
+| | |
+|---|---|
+| Kayıt oluştu mu | **hayır** (tablo 6 → 6) |
+| Ekranda hata/uyarı | **yok** |
+| Ekranda başarı mesajı | yok |
+| Yönlendirme | `?result=created` (kullanıcı sayfada hiçbir değişiklik görmüyor) |
+
+Kullanıcı açısından: formu doldurur, kaydete basar, **hiçbir şey olmaz ve hiçbir şey söylenmez**.
+
+### Neden bu projede özellikle önemli
+`CLAUDE.md`: eksik veri bayraklanır, sessizce düzeltilmez; her mutasyon izlenebilir olmalı. Burada
+girdi ne kaydediliyor ne de reddedildiği söyleniyor — üçüncü ve en kötü seçenek: sessiz kayıp.
+Ayrıca zorunlu alanların hiçbirinde HTML `required` yok, yani tarayıcı da uyarmıyor.
+
+### Düzeltme seçenekleri (uygulanmadı)
+1. **Action dönüş değerini kontrol et:** `null` ise `redirect("/data/assumptions?error=…")`, curated
+   flash mesajıyla (`toast.tsx`'teki mevcut desen). En küçük ve en dürüst düzeltme.
+2. **Zorunlu alanları formda işaretle** (`required` + `aria-required`), böylece tarayıcı gönderimden
+   önce uyarır. (1) ile birlikte yapılmalı — istemci doğrulaması sunucu doğrulamasının yerine geçmez.
+3. **Motor `DomainError` fırlatsın**, action yakalayıp mesajı göstersin — diğer motorlardaki
+   (`markCheckCleared`, `markInstallmentPaid`) yerleşik desenle tutarlı olur.
+
+(1) + (2) önerilir; (3) daha tutarlı ama motor imzasını değiştirir ve çağıranları etkiler.

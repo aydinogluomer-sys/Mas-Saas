@@ -280,10 +280,26 @@ FORM_TESTS = [
         "submit_text": "kaydet",
     },
     {
+        # Field names verified against src/app/(dashboard)/assumptions/page.tsx. The original
+        # spec looked for "description"/"url" and a button reading "ekle"; git history shows
+        # neither field ever existed here and the button reads "kaydet", so this test had been
+        # failing since it was written and the form was never actually exercised (Bulgu #9).
+        # sourceKind is deliberately left at its default (manual): choosing "internet" would
+        # route the row into the review gate, which is a different path than this smoke covers.
         "name": "Yeni dış varsayım ekle",
         "path": "/data/assumptions",
-        "fields": {"description": "QA crawl test varsayımı", "url": "https://example.com/qa-crawl"},
-        "submit_text": "ekle",
+        # unit and sourceDate are load-bearing: createExternalAssumption returns null (silently)
+        # unless label, sourceName, unit, a finite valueNumeric AND sourceDate are all present.
+        # Omitting either one makes this test pass without creating anything (Bulgu #10).
+        "fields": {
+            "label": "QA crawl test varsayımı",
+            "valueNumeric": "42",
+            "unit": "percent",
+            "sourceName": "QA crawl",
+            "sourceDate": "2026-08-12",
+        },
+        "select": {"assumptionType": "other"},
+        "submit_text": "kaydet",
     },
 ]
 

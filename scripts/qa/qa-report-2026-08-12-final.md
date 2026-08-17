@@ -94,7 +94,21 @@ Menü açılarak tekrarlandı: link `data-hard-nav`'lı, çalışıyor, tam sayf
 
 ---
 
-## Yeni bulgu
+## Yeni bulgular
 
-Bu turda **uygulamada yeni bir sorun bulunamadı.** Tek yeni kayıt, test altyapısına ait olan
-Bulgu #9'dur (aşağıda ve `findings-fix-guide.md`'de) — kod düzeltmesi yapılmadı, karar kullanıcıya.
+Regresyon taramasının kendisinde **uygulamada yeni bir sorun bulunamadı** (150 rota, 0 çöküş,
+0 konsol hatası; 5 maddelik gerçek-tıklama kontrolü tam geçti).
+
+Ancak Bulgu #9 (crawler'ın bayat form seçicisi) düzeltilirken **gerçek bir uygulama kusuru**
+ortaya çıktı:
+
+| Bulgu | Konu | Durum |
+|---|---|---|
+| **#9** | Crawler'ın varsayım form testi hiç var olmamış alan adlarını arıyordu; form fiilen test edilmiyordu | **düzeltildi** — test artık gerçekten kayıt oluşturuyor (6 → 7, doğrulandı) |
+| **#10** | Dış varsayım formu eksik girdiyi **sessizce yutuyor** ve yine `?result=created` ile yönlendiriyor | **düzeltilmedi**, karar kullanıcıya |
+
+Bulgu #10, #9'un düzeltilme sürecinde ortaya çıktı: testi yalnız üç alanla doldurunca **PASS**
+verdi ama hiçbir kayıt oluşmadı. Crawler'ın PASS ölçütü "sayfa çökmedi" olduğu için yeşil
+görünüyordu. Bu iz sürülünce, motorun beş zorunlu alandan biri eksikse sessizce `null` döndüğü ve
+action'ın bu dönüşü hiç kontrol etmeden koşulsuz "created" yönlendirmesi yaptığı görüldü.
+Ayrıntı ve düzeltme seçenekleri için `findings-fix-guide.md` → Bulgu #10.
