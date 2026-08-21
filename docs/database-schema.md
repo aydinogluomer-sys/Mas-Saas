@@ -79,7 +79,39 @@ See `implementation.md` for complete SQL snippets.
 
 Schema hardening beyond spec snippets: `payment_instances` idempotency partial-unique (payment_id, instance_month); `instance_month`/`month_start` first-of-month check'leri; `checks.amount = |signed_amount|` tutarlılığı; `loan_installments` paid⇒paid_at; updated_at trigger'ları; sorgu indexleri. Faz 5 eki (0008/0009): `checks.source_row_id` + `loans.source_sheet_id` partial-unique (mapping idempotency, DB-seviyesinde kanıtlı); `checks.counterparty_label`. Dashboard view'ları ihtiyaç duyan dikey dilimle birlikte (slicer kuralı).
 
-RLS modeli: tüm public tablolarında enabled + `to authenticated using(true) with check(true)` (tek-operatör modu, CLAUDE.md).
+## Roller ve RLS modeli (Faz 15, migration 0035)
+
+İki veritabanı rolü vardır ve bu ayrım RLS'in çalışması için şarttır:
+
+- **`mas_radar_app`** — Next.js runtime'ının bağlandığı rol (`DATABASE_URL`). `NOSUPERUSER`,
+  `NOBYPASSRLS`. `authenticated` rolüne üyedir; policy'ler rol **üyeliği** üzerinden eşleştiği
+  için 0007'nin `to authenticated` politikaları bu role uygulanır.
+- **`postgres`** (owner) — yalnız şema/rol/seed değiştiren script'ler (`MIGRATION_DATABASE_URL`).
+
+Faz 15'ten önce tek rol vardı (`postgres`) ve PostgreSQL superuser'ları RLS'i **her zaman**
+bypass ettiği için buradaki politikaların hiçbiri fiilen devrede değildi.
+
+Politika modeli:
+
+- Çoğu public tablosunda: RLS enabled + `to authenticated using(true) with check(true)`
+  (tek-operatör modu, CLAUDE.md).
+- **İstisna — `schema_migrations`**: RLS açık, policy yok, `revoke all ... from authenticated`
+  (0020 + 0035). Ledger yalnız owner'a aittir.
+- **İstisna — `users` / `sessions`**: 0031'in `users_deny_all` / `sessions_deny_all`
+  (`using(false)`) politikaları duruyor; 0035 bunların yanına `mas_radar_app` hedefli
+  `users_app_runtime` / `sessions_app_runtime` (`using(true)`) ekler. PERMISSIVE politikalar
+  OR'landığı için uygulama kendi auth tablolarına erişir, `authenticated`'ın diğer üyeleri
+  erişemez. Bu ek olmadan giriş yapmak imkânsız olurdu.
+- **İstisna — `audit_logs`**: ek REVOKE yok; 0022'den beri BEFORE trigger'larla append-only.
+- `TRUNCATE` hiçbir tabloda `authenticated`'e verilmez. Uygulama hiç TRUNCATE kullanmaz;
+  yalnız operatör/gate script'leri kullanır ve onlar owner bağlantısıyla çalışır.
+
+**Bilinen açık:** 0007'nin döngüsü yalnız o an var olan tabloları kapsadığı için sonradan
+eklenen 11 tabloda RLS hiç açılmamıştır (`capacity_models`, `cost_models`, `machine_assets`,
+`machine_roi_snapshots`, `part_profitability_runs`, `production_parts`, `scenario_assumptions`,
+`scenario_comparisons`, `scenario_run_lines`, `scenario_runs`, `scenarios`). Bunlarda erişimi
+yalnız GRANT'ler yönetir; kırılma değil, savunma derinliği eksiğidir. Faz 15 kapsamına
+alınmadı, ayrı bir dilim olarak kapatılmalıdır.
 
 ## Migration ledger (P0-C, migration 0020/0021)
 

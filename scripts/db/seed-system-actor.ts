@@ -12,6 +12,7 @@ import { randomBytes } from "node:crypto";
 import { pathToFileURL } from "node:url";
 import { Pool } from "pg";
 import { hash as argon2Hash } from "@node-rs/argon2";
+import { ownerDatabaseUrl } from "./owner-url";
 
 // `2` is Algorithm.Argon2id — @node-rs/argon2's Algorithm is a const enum, which can't be
 // imported by value under this project's isolatedModules; see src/lib/auth.ts.
@@ -50,8 +51,8 @@ export async function ensureSystemActor(pool: Pool): Promise<string> {
 }
 
 async function main(): Promise<void> {
-  const databaseUrl = process.env.DATABASE_URL;
-  if (!databaseUrl) throw new Error("DATABASE_URL tanımlı değil.");
+  const databaseUrl = ownerDatabaseUrl();
+  if (!databaseUrl) throw new Error("MIGRATION_DATABASE_URL (veya DATABASE_URL) tanımlı değil.");
   const pool = new Pool({ connectionString: databaseUrl, max: 1 });
   try {
     const id = await ensureSystemActor(pool);

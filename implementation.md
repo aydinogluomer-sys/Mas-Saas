@@ -548,6 +548,7 @@ pnpm lint
 pnpm typecheck
 pnpm test
 pnpm db:verify
+pnpm db:roles:verify   # Faz 15'ten sonra: uygulama gercekten dusuk-yetkili rolle mi bagli
 pnpm import:real
 pnpm phase3:verify
 pnpm phase4:verify

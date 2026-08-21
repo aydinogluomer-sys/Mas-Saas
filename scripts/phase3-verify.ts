@@ -15,10 +15,10 @@ import {
   refreshRiskFlags,
 } from "../src/lib/radar/engine";
 import { ensureSystemActor } from "./db/seed-system-actor";
+import { requireOwnerDatabaseUrl } from "./db/owner-url";
 
 const pool = new Pool({
-  connectionString:
-    process.env.DATABASE_URL ?? "postgres://postgres:postgres@127.0.0.1:5432/mas_radar_dev",
+  connectionString: requireOwnerDatabaseUrl(),
 });
 const fail = (m: string): never => {
   console.error("PHASE3 VERIFY FAIL:", m);

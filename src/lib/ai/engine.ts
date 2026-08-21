@@ -1,4 +1,5 @@
 import type { Pool, PoolClient } from "pg";
+import { env } from "@/lib/env";
 import { loadDecisionFacts, type DecisionFact } from "@/lib/facts/engine";
 import { istanbulDateISO } from "@/lib/reports/rules";
 import {
@@ -38,9 +39,9 @@ function extractOutputText(json: unknown): string | null {
 }
 
 async function callOpenAI(question: string, facts: DecisionFact[]): Promise<{ text: string; model: string } | null> {
-  const apiKey = process.env.OPENAI_API_KEY;
-  if (!apiKey || process.env.AI_FORCE_DETERMINISTIC === "1") return null;
-  const model = process.env.OPENAI_MODEL || "gpt-5.5";
+  const apiKey = env.openaiApiKey;
+  if (!apiKey || env.aiForceDeterministic) return null;
+  const model = env.openaiModel;
   const prompt = buildModelPrompt(question, facts);
   const res = await fetch("https://api.openai.com/v1/responses", {
     method: "POST",

@@ -6,6 +6,7 @@ import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import { hash as argon2Hash, verify as argon2Verify } from "@node-rs/argon2";
 import { getPool } from "@/lib/db";
+import { env } from "@/lib/env";
 import { SESSION_COOKIE } from "@/lib/auth-constants";
 
 export { SESSION_COOKIE };
@@ -153,7 +154,9 @@ export async function createSessionCookie(userId: string): Promise<void> {
 const QA_BYPASS_USERNAME = "testsprite-qa";
 
 async function getQaBypassUser(): Promise<SessionUser | null> {
-  if (process.env.MAS_QA_BYPASS_AUTH !== "1" || process.env.NODE_ENV === "production") return null;
+  // NODE_ENV stays a direct read (Next.js inlines it at build time); only the bypass flag
+  // itself comes from the validated env module.
+  if (!env.qaBypassAuth || process.env.NODE_ENV === "production") return null;
   const res = await getPool().query<{ id: string; username: string; display_name: string; role: UserRole }>(
     `select id, username, display_name, role from public.users where username = $1 and is_active = false`,
     [QA_BYPASS_USERNAME],

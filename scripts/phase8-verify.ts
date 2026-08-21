@@ -16,10 +16,10 @@ import { createAndRun, loadScenarioRun, deleteScenarioRun } from "../src/lib/sce
 import { applyScenario, compareScenarioToBaseline, buildScenarioInsights } from "../src/lib/scenarios/rules";
 import { loadCashMonths } from "../src/lib/cashflow/engine";
 import { ensureSystemActor } from "./db/seed-system-actor";
+import { requireOwnerDatabaseUrl } from "./db/owner-url";
 
 const pool = new Pool({
-  connectionString:
-    process.env.DATABASE_URL ?? "postgres://postgres:postgres@127.0.0.1:5432/mas_radar_dev",
+  connectionString: requireOwnerDatabaseUrl(),
 });
 const fail = (m: string): never => { console.error("PHASE8 VERIFY FAIL:", m); process.exit(1); };
 const q = async (sql: string, p: unknown[] = []) => (await pool.query(sql, p)).rows;

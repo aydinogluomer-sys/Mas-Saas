@@ -6,6 +6,7 @@ import { Badge } from "@/components/ui/badge";
 import { Panel } from "@/components/ui/panel";
 import { PageHeader } from "@/components/ui/shell";
 import { getPool } from "@/lib/db";
+import { env } from "@/lib/env";
 import { loadDataQualityCenter } from "@/lib/data-quality/engine";
 import pkg from "../../../../package.json";
 
@@ -100,7 +101,7 @@ export default async function AdminPage() {
             </OpsCell>
             <OpsCell label="Version">
               <div className="mt-1 text-sm" style={{ color: "var(--text-1)" }}>{pkg.name} {pkg.version}</div>
-              <div className="mt-1 font-mono text-[10px]" style={{ color: "var(--text-4)" }}>{process.env.APP_COMMIT_SHA ?? "commit unknown"}</div>
+              <div className="mt-1 font-mono text-[10px]" style={{ color: "var(--text-4)" }}>{env.appCommitSha}</div>
             </OpsCell>
             <OpsCell label="Backup">
               <div className="mt-1 text-sm" style={{ color: backup ? "var(--text-1)" : "var(--warn)" }}>{backup ? backup.name : "backup bulunmadi"}</div>

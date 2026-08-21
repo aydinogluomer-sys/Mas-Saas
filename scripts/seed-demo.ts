@@ -24,11 +24,16 @@ import { archiveRecord } from "../src/lib/archive/engine";
 import { refreshMetricSnapshots } from "../src/lib/analytics/snapshots";
 import { answerQuestion } from "../src/lib/ai/engine";
 import { ensureSystemActor } from "./db/seed-system-actor";
+import { ownerDatabaseUrl } from "./db/owner-url";
 
-const pool = new Pool({
-  connectionString:
-    process.env.DATABASE_URL ?? "postgres://postgres:postgres@127.0.0.1:5432/mas_radar_dev",
-});
+// Owner connection: this script TRUNCATEs before re-seeding, and TRUNCATE is not granted to
+// the application role (see scripts/import-real.ts for the reasoning).
+const connectionString = ownerDatabaseUrl();
+if (!connectionString) {
+  console.error("MIGRATION_DATABASE_URL (veya DATABASE_URL) tanımlı değil.");
+  process.exit(1);
+}
+const pool = new Pool({ connectionString });
 
 async function main() {
   const actorId = await ensureSystemActor(pool);

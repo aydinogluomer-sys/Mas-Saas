@@ -337,3 +337,143 @@ yapamaz; yalnızca burada kayıt altına alır. İkisi de **Faz 15 başlamadan**
    panellerinden yapılır (Telegram BotFather, OpenAI panel, DB kullanıcı parolası), **koddan
    değil** — bu değerler yalnızca ortam değişkeni olarak okunuyor, depoda tutulmuyor.
    Durum: **beklemede**.
+
+## Faz 15 — DONE (acil güvenlik ve repo hijyeni: runtime DB rolü ayrımı, env merkezi, README)
+
+### Fazı başlatan bulgu: RLS bugüne kadar hiç devrede olmamıştı
+
+`src/lib/db.ts` ve `scripts/db/migrate.ts` aynı `DATABASE_URL`'i kullanıyordu ve kümede tek rol
+vardı: `postgres` (superuser). PostgreSQL superuser'ları RLS'i policy'nin hedef rolünden bağımsız
+olarak **her zaman** bypass eder. Dolayısıyla 0007'den beri yazılan bütün `to authenticated
+using(true)` politikaları dekoratifti. Faz 15 uygulamayı düşük yetkili `mas_radar_app` rolüne
+taşıyarak bu politikaları ilk kez fiilen devreye soktu.
+
+### Uygulamadan ÖNCE bulunan bloker: plan olduğu gibi uygulansaydı login tamamen ölürdü
+
+Faz 15 planı `users`/`sessions` için "ek revoke gerekmiyor, RLS `using(false)` zaten tüm satırları
+engelliyor" diyordu ve bunu bir güvenlik özelliği sayıyordu. Oysa 0031'in `users_deny_all` /
+`sessions_deny_all` politikaları, o migration'ın **kendi yorumunda yazdığı gibi**, uygulamanın
+superuser olduğu varsayımıyla yazılmıştı: *"The app itself connects as the Postgres superuser
+(src/lib/db.ts) and bypasses RLS like everywhere else."* Faz 15 tam da bu varsayımı kaldırıyor.
+`src/lib/auth.ts` bu iki tabloya 8 noktada dokunur (login select/update, session insert, getSession
+join, last_seen_at, logout).
+
+**Karşı-olgu deneysel olarak kanıtlandı.** Disposable DB'de 0035'in runtime policy'leri düşürülüp
+`db:roles:verify` çalıştırıldığında: `public.users` **okunabiliyor ama 0 satır dönüyor** — oysa
+`system` hesabı az önce seed edilmişti. Yani her hesap için "kullanıcı bulunamadı". Kritik olan:
+planın önerdiği **dört kontrolün dördü de bu bozuk halde PASS veriyor** (current_user, rolsuper/
+bypassrls, schema_migrations reddi, payments okunabilirliği). Gate yeşil yanar, login ölü olurdu.
+
+Çözüm (kullanıcı onayıyla): `deny_all` yerinde bırakıldı, yanına `mas_radar_app` hedefli
+`users_app_runtime` / `sessions_app_runtime` (`using(true)`) eklendi. PERMISSIVE politikalar
+OR'landığı için uygulama erişir, `authenticated`'ın diğer üyeleri hâlâ erişemez — 0031'in
+savunma derinliği niyeti korunur. `db:roles:verify` bu iki policy'nin **ikisinin birden**
+durduğunu ayrıca kontrol eder.
+
+### İkinci bulgu: TRUNCATE uygulama yetkisi değildir
+
+`import:real` düşük yetkili rolle `permission denied for table source_workbooks` verdi. Sebep:
+**23 script SQL `TRUNCATE` kullanıyor, uygulama runtime'ı (`src/`) hiç kullanmıyor** (`src/`'deki
+tüm eşleşmeler Tailwind'in `truncate` CSS sınıfı). `TRUNCATE`'i `authenticated`'a vermek runtime
+rolüne `payments`/`checks`/`loans`'u tek komutla silme yetkisi verirdi — üstelik `TRUNCATE` satır
+tetikleyicilerini atladığı için `audit_logs`'a **hiçbir iz düşmeden**. Verilmedi; truncate eden
+operatör araçları owner bağlantısına taşındı.
+
+### Üçüncü bulgu: 20 gate script'inde gerçek veritabanına superuser düşüşü
+
+20 faz script'i `process.env.DATABASE_URL ?? "postgres://postgres:postgres@127.0.0.1:5432/mas_radar_dev"`
+kalıbını taşıyordu: env değişkeni unutulursa **gerçek geliştirme veritabanına superuser olarak
+bağlanıp TRUNCATE ediyorlardı**. Hepsi `requireOwnerDatabaseUrl()`'e çevrildi — varsayılana düşmek
+yerine yüksek sesle hata verir. `scripts/import-real.ts` ve `scripts/seed-demo.ts` de aynı şekilde.
+
+### Bilinçli olarak UYGULANMAYAN plan maddesi
+
+Plan, `migrate.ts`'in `ANCHORS` dizisine 0035 için bir kayıt eklenmesini istiyordu. **Eklenmedi.**
+`ANCHORS` yalnız "ledger yok / ledger boş" yolunda, şemanın *legacy* (≤0019) olup olmadığını
+anlamak için kullanılır ve karar `allPass` / `allFail` üzerinden verilir. Gerçek bir legacy DB'de
+0035 anchor'ı kaçınılmaz olarak fail eder → `allPass=false, allFail=false` → `INCONSISTENT_PARTIAL`
+hard-fail. Legacy onarım yolu tamamen kilitlenirdi. `legacy-baseline-0019.json` sınırı kasıtlıdır.
+
+Ayrıca planın `backup-docker-postgres.ts` ve `create-testsprite-db.ts` için istediği env değişikliği
+uygulanamadı çünkü **bu iki script hiç bağlantı stringi okumuyor**; `docker exec ... -U postgres`
+ile çalışıyorlar, yani zaten owner tarafındalar.
+
+### Env düzeni (Faz 15 sonrası)
+
+| Değişken | Kim okur | Ne |
+| --- | --- | --- |
+| `DATABASE_URL` | yalnız `src/lib/env.ts` → `getPool()` | düşük yetkili `mas_radar_app` |
+| `MIGRATION_DATABASE_URL` | şema/rol/seed/gate script'leri | owner (`postgres`) |
+| `MAS_RADAR_APP_DB_PASSWORD` | yalnız `set-app-role-password.ts` | asla loglanmaz |
+
+`src/lib/env.ts` yedi dosyaya dağılmış `process.env` okumalarını tek, Zod ile doğrulanmış ve
+dondurulmuş bir objede topladı; hatalar tek seferde toplu raporlanır. `NODE_ENV` bilinçli olarak
+dışarıda bırakıldı (Next.js build-time inline eder, client bileşeninden de okunur). `db.ts`'in
+`DEFAULT_LOCAL` superuser fallback'i kaldırıldı — fazın anlamını sessizce geri alırdı.
+`APP_COMMIT_SHA` için iki farklı fallback ("unknown" / "commit unknown") tek bir "unknown"a indirildi.
+
+### Doğrulama sırasında yakalanan kendi regresyonum: dondurulmuş env bayrakları
+
+`env.ts`'in ilk hâli **bütün** değerleri modül yüklenirken bir kez okuyup donduruyordu.
+`db:transitions:verify` bunu 167/167'den **163/167**'ye düşürerek yakaladı: dört testin dördü de
+`cookies was called outside a request scope` veriyordu. Sebep, yetki değil zamanlama —
+`transitions-verify.ts:498` `MAS_QA_BYPASS_AUTH="1"`'i dynamic import'lardan **sonra**, yalnız tek
+bir blok boyunca ayarlıyor (`try/finally` ile geri alıyor, script'in geri kalanı fail-closed kalsın
+diye). Donmuş snapshot bu geçici açılışı görmüyordu.
+
+Aynı hata ikinci bir yerde daha vardı ve **testler onu maskeledi**: `phase12a-verify.ts:17` ve
+`phase14d-verify.ts:12`, `AI_FORCE_DETERMINISTIC="1"`'i modül gövdesinde ayarlıyor — oysa statik
+import'lar gövdeden önce çalışır, yani `env.ts` çoktan donmuş olur. Bu iki faz yine de PASS verdi,
+çünkü bu makinede `OPENAI_API_KEY` tanımsız ve `!apiKey` kontrolü zaten deterministik yola
+düşürüyordu. `OPENAI_API_KEY`'in tanımlı olduğu bir makinede bu iki doğrulama **gerçek OpenAI
+API'sine gidecekti**.
+
+Düzeltme: `qaBypassAuth` ve `aiForceDeterministic` canlı getter'a çevrildi (diğer her şey
+dondurulmuş kalır — onlar süreç iş yapmaya başlamadan önce sabitlenen değerler). Gerekçe env.ts'te
+yorum olarak duruyor.
+
+### Gate sonuçları (hepsi disposable DB üzerinde, `mas_radar_dev`'e dokunulmadan)
+
+| Adım | Sonuç |
+| --- | --- |
+| `pnpm lint` | exit 0 (1 uyarı: `analytics-chart.tsx`, önceden var, dokunulmadı) |
+| `pnpm typecheck` | exit 0 |
+| `pnpm test` | 200/200, exit 0 |
+| `pnpm db:verify` | ALL ASSERTIONS PASSED, exit 0 |
+| `pnpm db:roles:verify` | 8/8 PASS, exit 0 |
+| `pnpm import:real` | ALL PASS — 43 sekme / 9.817 hücre / 1.601 satır / 62 review |
+| `phase3…phase14e:verify` (20 faz) | 20/20 PASS — her faz TAZE bir DB'de |
+| `pnpm db:migrate:verify` | PASS |
+| `pnpm db:constraints:verify` | PASS |
+| `pnpm db:transitions:verify` | 167/167 PASS |
+| `pnpm db:reconciliation:verify` | PASS |
+| `pnpm db:legacy-repair:verify` | 183/183 PASS |
+| `pnpm build` | exit 0 |
+
+Faz zinciri gerçek üretim düzeniyle koşuldu: **aynı veritabanı, iki farklı rol** —
+`DATABASE_URL`=`mas_radar_app`, `MIGRATION_DATABASE_URL`=owner.
+
+Login yazma yolu ayrıca kanıtlandı (`users` SELECT/UPDATE, `sessions` INSERT/UPDATE düşük yetkili
+rolle çalışıyor); tümü transaction içinde yapılıp geri alındı, hiçbir satır yazılmadı.
+
+`mas_radar_dev` doğrulaması: şema **0034**'te (0035 uygulanmadı), `app_runtime` policy sayısı **0**,
+payments=19 · checks=7 · loans=1 · cashflow_months=35 · users=12 — hepsi baseline ile birebir.
+
+### Kullanıcı eylemi gereken tek adım
+
+Doğrulama sırasında role geçici bir parola atandı; **oturum sonunda geri alındı** — `mas_radar_app`
+şu an migration 0035'in tanımladığı hâlde, yani `NOLOGIN`. Disposable DB'ler (`mas_faz15`,
+`mas_faz15_ph`) düşürüldü; kümede yalnız `mas_radar_dev`, `mas_radar_restored`,
+`mas_radar_testsprite` kaldı. Kullanıcı kendi parolasını belirleyip `.env.local`'i güncellemelidir:
+
+```bash
+pnpm db:app-role:password     # MAS_RADAR_APP_DB_PASSWORD'den okur, yoksa maskeli sorar
+# sonra .env.local: DATABASE_URL=postgres://mas_radar_app:<parola>@127.0.0.1:5432/mas_radar_dev
+#                   MIGRATION_DATABASE_URL=postgres://postgres:postgres@127.0.0.1:5432/mas_radar_dev
+pnpm db:migrate               # mas_radar_dev'e 0035'i uygular (bu oturumda UYGULANMADI)
+pnpm db:roles:verify
+```
+
+**Önemli:** `mas_radar_dev` bu oturumda kasıtlı olarak hiç değiştirilmedi — şeması hâlâ 0034'te,
+`app_runtime` policy'si yok. Doğrulamaların tamamı disposable DB'lerde yapıldı. Faz 15'in gerçek
+ortamda etkinleşmesi yukarıdaki adımlara bağlıdır.

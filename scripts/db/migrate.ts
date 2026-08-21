@@ -17,6 +17,7 @@ import {
   type LedgerRow,
 } from "./migration-lib";
 import { backupDockerPostgres, verifyBackupTarget, type BackupResult } from "./backup-docker-postgres";
+import { ownerDatabaseUrl } from "./owner-url";
 
 const CONTAINER = process.env.MAS_DB_CONTAINER ?? "mas-radar-pg";
 const BASELINE_PATH = path.join(process.cwd(), "scripts", "db", "legacy-baseline-0019.json");
@@ -401,9 +402,9 @@ function printReport(report: MigrateReport, connection: { database: string; user
 }
 
 async function main(): Promise<void> {
-  const databaseUrl = process.env.DATABASE_URL;
+  const databaseUrl = ownerDatabaseUrl();
   if (!databaseUrl) {
-    throw new HardFailError("DATABASE_URL tanımlı değil.");
+    throw new HardFailError("MIGRATION_DATABASE_URL (veya DATABASE_URL) tanımlı değil.");
   }
 
   const fileSet = validateFileSet();

@@ -79,7 +79,11 @@ function runMigrateAgainstUrl(url: string): RunResult {
   try {
     const stdout = execFileSync(process.execPath, [TSX_CLI, MIGRATE_SCRIPT], {
       cwd: ROOT,
-      env: { ...process.env, DATABASE_URL: url },
+      // Faz 15: owner ve runtime URL'leri birlikte pinlenir. Yalnız DATABASE_URL
+      // pinlenseydi, ebeveyn ortamda kalmış bir MIGRATION_DATABASE_URL çocuk süreçte
+      // kazanır ve migration'lar disposable DB yerine ONUN gösterdiği veritabanına
+      // uygulanırdı.
+      env: { ...process.env, DATABASE_URL: url, MIGRATION_DATABASE_URL: url },
       encoding: "utf8",
       stdio: ["ignore", "pipe", "pipe"],
     });

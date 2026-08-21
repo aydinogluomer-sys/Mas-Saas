@@ -2,6 +2,7 @@
 // and never leave the server (this module must not be imported client-side).
 // api.telegram.org is unreachable in this environment, so the engine is written
 // against the Transport interface and driven by mockTransport in tests/verify.
+import { env } from "@/lib/env";
 
 export interface DeliveryResult {
   ok: boolean;
@@ -36,8 +37,8 @@ export function telegramTransport(): Transport {
   return {
     channel: "telegram",
     async send(message: string): Promise<DeliveryResult> {
-      const token = process.env.TELEGRAM_BOT_TOKEN;
-      const chatId = process.env.TELEGRAM_CHAT_ID;
+      const token = env.telegramBotToken;
+      const chatId = env.telegramChatId;
       if (!token || !chatId) return { ok: false, error: "TELEGRAM_BOT_TOKEN/CHAT_ID tanımlı değil" };
       try {
         const res = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {

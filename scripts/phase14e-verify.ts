@@ -3,9 +3,10 @@
 // reconciliation without mutating finance/cashflow source tables.
 import { Pool } from "pg";
 import { loadDataQualityCenter } from "../src/lib/data-quality/engine";
+import { requireOwnerDatabaseUrl } from "./db/owner-url";
 
 const pool = new Pool({
-  connectionString: process.env.DATABASE_URL ?? "postgres://postgres:postgres@127.0.0.1:5432/mas_radar_dev",
+  connectionString: requireOwnerDatabaseUrl(),
 });
 const fail = (m: string): never => { console.error("PHASE14E VERIFY FAIL:", m); process.exit(1); };
 const q = async (sql: string, p: unknown[] = []) => (await pool.query(sql, p)).rows;

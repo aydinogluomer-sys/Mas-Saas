@@ -40,6 +40,7 @@ import {
   type BackupReceipt,
   type GitStateProvider,
 } from "./legacy-repair-types";
+import { ownerDatabaseUrl } from "./owner-url";
 
 interface Args {
   expectedDatabaseName: string;
@@ -235,8 +236,8 @@ export async function runBackupReceipt(params: BackupReceiptParams, deps: Backup
 async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
 
-  const databaseUrl = process.env.DATABASE_URL;
-  if (!databaseUrl) fail("DATABASE_URL açıkça verilmeli — varsayılan bağlantı kabul edilmez.");
+  const databaseUrl = ownerDatabaseUrl();
+  if (!databaseUrl) fail("MIGRATION_DATABASE_URL (veya DATABASE_URL) açıkça verilmeli — varsayılan bağlantı kabul edilmez.");
   const parsedName = dbNameFromUrl(databaseUrl);
   if (parsedName !== args.expectedDatabaseName) {
     fail(`DATABASE_URL'deki DB adı ('${parsedName}') --expected-database-name ('${args.expectedDatabaseName}') ile eşleşmiyor. Çıkış.`);

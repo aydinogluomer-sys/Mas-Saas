@@ -155,6 +155,16 @@ function runTsx(script: string, args: string[], env: Record<string, string | und
   // with template-literal semantics. Deleting `undefined` entries after the merge is what
   // actually makes that key absent from the child's environment.
   const mergedEnv: Record<string, string | undefined> = { ...process.env, ...env };
+  // Faz 15: these scripts now resolve their owner connection through
+  // scripts/db/owner-url.ts, which prefers MIGRATION_DATABASE_URL and only then falls back
+  // to DATABASE_URL. Every caller below pins DATABASE_URL, so the owner URL has to follow it
+  // in lockstep — including the `{ DATABASE_URL: undefined }` cases that assert "env var
+  // genuinely absent", which would otherwise still find an inherited owner URL and pass the
+  // check they are supposed to fail. Setting it to undefined here lets the loop below delete
+  // it, exactly as it does for DATABASE_URL itself.
+  if (Object.prototype.hasOwnProperty.call(env, "DATABASE_URL")) {
+    mergedEnv.MIGRATION_DATABASE_URL = env.DATABASE_URL;
+  }
   for (const key of Object.keys(mergedEnv)) {
     if (mergedEnv[key] === undefined) delete mergedEnv[key];
   }

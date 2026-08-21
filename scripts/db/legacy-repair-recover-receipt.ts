@@ -21,6 +21,7 @@ import {
   type AppliedRepairResult,
   type CommittedReceiptFile,
 } from "./legacy-repair-types";
+import { ownerDatabaseUrl } from "./owner-url";
 
 const TO_CHAR_INSTANT = `to_char($COL$ at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')`;
 
@@ -85,8 +86,8 @@ async function main(): Promise<void> {
     console.log(`RAPOR MODU (--expected-pending-sha256 verilmedi, hiçbir committed receipt üretilmeyecek).`);
     console.log(`  operationId: ${pending.operationId}`);
     console.log(`  pending dosyasının gerçek fileSha256'sı: ${realPendingSha256}`);
-    const databaseUrl = process.env.DATABASE_URL;
-    if (!databaseUrl) fail("DATABASE_URL açıkça verilmeli.");
+    const databaseUrl = ownerDatabaseUrl();
+    if (!databaseUrl) fail("MIGRATION_DATABASE_URL (veya DATABASE_URL) açıkça verilmeli.");
     const parsedName = dbNameFromUrl(databaseUrl);
     if (parsedName !== args.expectedDatabaseName) fail("DATABASE_URL'deki DB adı --expected-database-name ile eşleşmiyor.");
     const pool = new Pool({ connectionString: databaseUrl, max: 1 });
@@ -115,8 +116,8 @@ async function main(): Promise<void> {
     fail("pending dosyasının gerçek byte SHA-256'sı --expected-pending-sha256 ile eşleşmiyor.");
   }
 
-  const databaseUrl = process.env.DATABASE_URL;
-  if (!databaseUrl) fail("DATABASE_URL açıkça verilmeli.");
+  const databaseUrl = ownerDatabaseUrl();
+  if (!databaseUrl) fail("MIGRATION_DATABASE_URL (veya DATABASE_URL) açıkça verilmeli.");
   const parsedName = dbNameFromUrl(databaseUrl);
   if (parsedName !== args.expectedDatabaseName) fail("DATABASE_URL'deki DB adı --expected-database-name ile eşleşmiyor.");
   if (receiptCore.databaseName !== args.expectedDatabaseName) fail("receiptCore.databaseName --expected-database-name ile eşleşmiyor.");

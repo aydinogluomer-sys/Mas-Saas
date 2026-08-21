@@ -9,9 +9,10 @@ import { Pool } from "pg";
 import { importWorkbook } from "../src/lib/importers/workbook-importer";
 import { mapCashflowMonths } from "../src/lib/cashflow/engine";
 import { ensureSystemActor } from "./db/seed-system-actor";
+import { requireOwnerDatabaseUrl } from "./db/owner-url";
 
 const pool = new Pool({
-  connectionString: process.env.DATABASE_URL ?? "postgres://postgres:postgres@127.0.0.1:5432/mas_radar_dev",
+  connectionString: requireOwnerDatabaseUrl(),
 });
 const fail = (m: string): never => { console.error("PHASE9B VERIFY FAIL:", m); process.exit(1); };
 const q = async (sql: string, p: unknown[] = []) => (await pool.query(sql, p)).rows;

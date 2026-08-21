@@ -96,7 +96,11 @@ function runMigrateAgainstUrl(url: string): RunResult {
   try {
     const stdout = execFileSync(process.execPath, [TSX_CLI, MIGRATE_SCRIPT], {
       cwd: ROOT,
-      env: { ...process.env, DATABASE_URL: url },
+      // Faz 15: owner ve runtime URL'leri birlikte pinlenir. Yalnız DATABASE_URL
+      // pinlenseydi, ebeveyn ortamda kalmış bir MIGRATION_DATABASE_URL çocuk süreçte
+      // kazanır ve migration'lar disposable DB yerine ONUN gösterdiği veritabanına
+      // uygulanırdı.
+      env: { ...process.env, DATABASE_URL: url, MIGRATION_DATABASE_URL: url },
       encoding: "utf8",
       stdio: ["ignore", "pipe", "pipe"],
     });
@@ -284,6 +288,8 @@ async function main(): Promise<void> {
 
   const disposableUrl = dbUrl(DB);
   process.env.DATABASE_URL = disposableUrl;
+  // Aynı gerekçe: owner URL'i de bu sürece pinle (bkz. scripts/db/owner-url.ts).
+  process.env.MIGRATION_DATABASE_URL = disposableUrl;
   assertSafeDisposableName(dbNameFromUrl(process.env.DATABASE_URL), "process.env.DATABASE_URL");
 
   const pool = new Pool({ connectionString: disposableUrl, max: 1 });

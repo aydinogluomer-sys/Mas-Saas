@@ -45,6 +45,7 @@ import {
   type ReceiptCore,
   type RolledBackReceiptFile,
 } from "./legacy-repair-types";
+import { ownerDatabaseUrl } from "./owner-url";
 
 /** Fail-closed git provenance for apply: current HEAD must match BOTH the inventory's and
  * the backup receipt's recorded gitHead, current branch must match the receipt's
@@ -214,8 +215,8 @@ async function main(): Promise<void> {
   if (inventory.databaseName !== args.expectedDatabaseName) {
     fail("--expected-database-name inventory'nin databaseName'iyle eşleşmiyor.");
   }
-  const databaseUrl = process.env.DATABASE_URL;
-  if (!databaseUrl) fail("DATABASE_URL açıkça verilmeli.");
+  const databaseUrl = ownerDatabaseUrl();
+  if (!databaseUrl) fail("MIGRATION_DATABASE_URL (veya DATABASE_URL) açıkça verilmeli.");
   const parsedName = dbNameFromUrl(databaseUrl);
   if (parsedName !== args.expectedDatabaseName) fail("DATABASE_URL'deki DB adı --expected-database-name ile eşleşmiyor.");
 

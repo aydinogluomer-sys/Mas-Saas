@@ -24,6 +24,7 @@ import {
   writeExclusiveDurable,
   type InventoryTarget,
 } from "./legacy-repair-types";
+import { ownerDatabaseUrl } from "./owner-url";
 
 interface Args {
   expectedDatabaseName: string;
@@ -51,9 +52,9 @@ const TO_CHAR_INSTANT = `to_char($COL$ at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI
 async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
 
-  const databaseUrl = process.env.DATABASE_URL;
+  const databaseUrl = ownerDatabaseUrl();
   if (!databaseUrl) {
-    console.error("DATABASE_URL açıkça verilmeli — varsayılan bağlantı kabul edilmez.");
+    console.error("MIGRATION_DATABASE_URL (veya DATABASE_URL) açıkça verilmeli — varsayılan bağlantı kabul edilmez.");
     process.exit(1);
   }
   const parsedName = dbNameFromUrl(databaseUrl);

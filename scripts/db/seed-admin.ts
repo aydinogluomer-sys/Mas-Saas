@@ -13,6 +13,7 @@
 // the admin UI exists to do it, and safe to run more than once by accident.
 import { Pool } from "pg";
 import { hash as argon2Hash } from "@node-rs/argon2";
+import { ownerDatabaseUrl } from "./owner-url";
 
 // `2` is Algorithm.Argon2id — @node-rs/argon2's Algorithm is a const enum, which can't be
 // imported by value under this project's isolatedModules; see src/lib/auth.ts.
@@ -110,8 +111,8 @@ async function main(): Promise<void> {
   if (password.length < 12) throw new Error("Parola en az 12 karakter olmalı.");
   if (password.toLowerCase() === args.username.toLowerCase()) throw new Error("Parola kullanıcı adıyla aynı olamaz.");
 
-  const databaseUrl = process.env.DATABASE_URL;
-  if (!databaseUrl) throw new Error("DATABASE_URL tanımlı değil.");
+  const databaseUrl = ownerDatabaseUrl();
+  if (!databaseUrl) throw new Error("MIGRATION_DATABASE_URL (veya DATABASE_URL) tanımlı değil.");
   const pool = new Pool({ connectionString: databaseUrl, max: 1 });
   try {
     const passwordHash = await argon2Hash(password, ARGON2_OPTIONS);

@@ -7,11 +7,12 @@ import { createExternalAssumption } from "../src/lib/external-assumptions/engine
 import { loadDecisionFacts } from "../src/lib/facts/engine";
 import { createAndRun } from "../src/lib/scenarios/engine";
 import { ensureSystemActor } from "./db/seed-system-actor";
+import { requireOwnerDatabaseUrl } from "./db/owner-url";
 
 process.env.AI_FORCE_DETERMINISTIC = "1";
 
 const pool = new Pool({
-  connectionString: process.env.DATABASE_URL ?? "postgres://postgres:postgres@127.0.0.1:5432/mas_radar_dev",
+  connectionString: requireOwnerDatabaseUrl(),
 });
 const fail = (m: string): never => { console.error("PHASE14D VERIFY FAIL:", m); process.exit(1); };
 const q = async (sql: string, p: unknown[] = []) => (await pool.query(sql, p)).rows;
