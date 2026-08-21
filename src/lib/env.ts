@@ -133,3 +133,36 @@ export const env = Object.freeze({
 });
 
 export type Env = typeof env;
+
+export interface EnvPresence {
+  name: string;
+  required: boolean;
+  set: boolean;
+  /** Why it exists, for the diagnostics screen. Never a value. */
+  note: string;
+}
+
+/**
+ * Faz 16 — which variables are configured, for src/app/(dashboard)/system/diagnostics.
+ *
+ * Returns booleans ONLY. Not the values, not a prefix, not a masked form, not a length: a
+ * "first four characters" hint is still a leak, and a length narrows a brute force. The
+ * screen is admin-only anyway; this function is written so that even if that ever regressed,
+ * there would be nothing here worth stealing.
+ */
+export function envPresence(): EnvPresence[] {
+  const isSet = (v: string | undefined): boolean => v !== undefined && v !== "";
+  return [
+    { name: "DATABASE_URL", required: true, set: isSet(process.env.DATABASE_URL), note: "Uygulama runtime bağlantısı (mas_radar_app)" },
+    { name: "MIGRATION_DATABASE_URL", required: false, set: isSet(process.env.MIGRATION_DATABASE_URL), note: "Owner bağlantısı; yoksa DATABASE_URL'e düşer" },
+    { name: "DATABASE_POOL_MAX", required: false, set: isSet(process.env.DATABASE_POOL_MAX), note: "Havuz boyutu; varsayılan 10" },
+    { name: "TELEGRAM_BOT_TOKEN", required: false, set: isSet(process.env.TELEGRAM_BOT_TOKEN), note: "Hatırlatma gönderimi; yoksa dürüstçe 'failed' loglanır" },
+    { name: "TELEGRAM_CHAT_ID", required: false, set: isSet(process.env.TELEGRAM_CHAT_ID), note: "Hatırlatma hedefi" },
+    { name: "OPENAI_API_KEY", required: false, set: isSet(process.env.OPENAI_API_KEY), note: "Yoksa AI yanıtları deterministik olgulara düşer" },
+    { name: "OPENAI_MODEL", required: false, set: isSet(process.env.OPENAI_MODEL), note: `Varsayılan: ${env.openaiModel}` },
+    { name: "AI_FORCE_DETERMINISTIC", required: false, set: isSet(process.env.AI_FORCE_DETERMINISTIC), note: "1 ise model hiç çağrılmaz" },
+    { name: "MAS_QA_BYPASS_AUTH", required: false, set: isSet(process.env.MAS_QA_BYPASS_AUTH), note: "Yalnız TestSprite; production'da etkisiz" },
+    { name: "APP_COMMIT_SHA", required: false, set: isSet(process.env.APP_COMMIT_SHA), note: "Sürüm izlenebilirliği" },
+    { name: "APP_BUILD_TIME", required: false, set: isSet(process.env.APP_BUILD_TIME), note: "Sürüm izlenebilirliği" },
+  ];
+}

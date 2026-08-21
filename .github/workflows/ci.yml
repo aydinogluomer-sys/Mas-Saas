@@ -1,0 +1,148 @@
+name: CI
+
+# Faz 16 — pre-merge gate runner. NOTHING here deploys.
+#
+# docs/local-production-deploy.md deliberately puts remote deploy (Vercel / hosted Supabase)
+# out of scope: this is a single-company internal panel that runs on the operator's own
+# machine. So CI has exactly one job — run the same gate a human would run before merging,
+# on a clean checkout, so "works on my machine" cannot hide a broken commit. There is no
+# deploy step, no hosting target, and no environment secret beyond what is written here in
+# plain sight.
+
+on:
+  push:
+  pull_request:
+
+# A second push to the same branch makes the first run's answer irrelevant.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # NOT a secret, and deliberately committed. The database it belongs to is created from
+  # scratch inside this runner and destroyed with it; the role has no existence outside the
+  # job. Putting it in GitHub Secrets would imply it guards something, which would be
+  # misleading. Real credentials never appear in this repository — see README.md.
+  CI_APP_DB_PASSWORD: ci-only-not-a-secret-0123456789
+  PGHOST: 127.0.0.1
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          # Known divergence from the maintainer's machine (Node 26 locally). Pinned to the
+          # current LTS because that is what the runner offers reliably; if a Node-version
+          # specific bug ever appears, this line is the first place to look.
+          node-version: 22
+          cache: pnpm
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Lint
+        run: pnpm lint
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Unit tests
+        run: pnpm test
+
+      # ── Database ───────────────────────────────────────────────────────────────────────
+      # GitHub Actions' built-in `services:` Postgres is NOT used, on purpose. scripts/db/
+      # ensure.ts starts its own `mas-radar-pg` container bound to 127.0.0.1:5432, and a
+      # service container would already own that port — the two would collide, and whichever
+      # won, CI would then be exercising a different Postgres than every local run does.
+      # Letting ensure.ts do here exactly what it does locally keeps the two identical, which
+      # is the whole point of running the gate twice.
+      - name: Full reset + migrations + seed + invariant assertions
+        run: pnpm db:verify
+
+      - name: Migration ledger state machine (disposable databases)
+        run: pnpm db:migrate:verify
+
+      - name: Create the application database via the ledger runner
+        run: |
+          set -euo pipefail
+          docker exec mas-radar-pg createdb -U postgres mas_ci
+          docker exec -i mas-radar-pg psql -q -v ON_ERROR_STOP=1 -U postgres -d mas_ci \
+            < scripts/db/local-bootstrap.sql
+          # The ledger runner on an empty database exercises the real EMPTY flow, so CI proves
+          # the migration path an operator would actually take — not a raw psql replay.
+          MIGRATION_DATABASE_URL=postgres://postgres:postgres@127.0.0.1:5432/mas_ci \
+            pnpm db:migrate
+
+      - name: Give the low-privilege runtime role its password (Faz 15)
+        run: |
+          set -euo pipefail
+          MIGRATION_DATABASE_URL=postgres://postgres:postgres@127.0.0.1:5432/mas_ci \
+          MAS_RADAR_APP_DB_PASSWORD="$CI_APP_DB_PASSWORD" \
+            pnpm db:app-role:password
+          MIGRATION_DATABASE_URL=postgres://postgres:postgres@127.0.0.1:5432/mas_ci \
+            pnpm exec tsx scripts/db/seed-system-actor.ts
+
+      - name: Prove the app really runs as the low-privilege role (Faz 15)
+        env:
+          DATABASE_URL: postgres://mas_radar_app:ci-only-not-a-secret-0123456789@127.0.0.1:5432/mas_ci
+          MIGRATION_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/mas_ci
+        run: pnpm db:roles:verify
+
+      # ── Phase verifies ─────────────────────────────────────────────────────────────────
+      # Only the data-independent ones run here. The other fourteen (phase3..phase9d,
+      # phase12a, phase13a, phase14a and import:real) read the real workbooks under data/,
+      # which is gitignored because it is private financial data — they cannot pass on a clean
+      # checkout and are not made to "pass" with a fake fixture, because they assert exact
+      # figures from the real files (43 sheets, 9.817 cells, TİJEN −60.000). Those stay a
+      # local pre-merge gate; see docs/status-notes.md.
+      #
+      # audit_logs has been append-only since 0022, so each phase gets a freshly created
+      # database — running them back to back in one database corrupts the audit counts.
+      - name: Data-independent phase verifies (fresh database per phase)
+        env:
+          MIGRATION_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/mas_phase
+        run: |
+          set -uo pipefail
+          fail=0
+          for p in phase11b:verify phase13b:verify phase14b:verify phase14c:verify phase14d:verify phase14e:verify; do
+            docker exec mas-radar-pg dropdb -U postgres --if-exists mas_phase
+            docker exec mas-radar-pg createdb -U postgres mas_phase
+            docker exec -i mas-radar-pg psql -q -v ON_ERROR_STOP=1 -U postgres -d mas_phase \
+              < scripts/db/local-bootstrap.sql
+            for f in supabase/migrations/*.sql; do
+              docker exec -i mas-radar-pg psql -q -v ON_ERROR_STOP=1 -U postgres -d mas_phase < "$f"
+            done
+            docker exec -i mas-radar-pg psql -q -v ON_ERROR_STOP=1 -U postgres -d mas_phase \
+              < supabase/seed.sql
+            pnpm exec tsx scripts/db/seed-system-actor.ts >/dev/null
+            echo "::group::$p"
+            if DATABASE_URL="postgres://mas_radar_app:${CI_APP_DB_PASSWORD}@127.0.0.1:5432/mas_phase" pnpm "$p"; then
+              echo "PASS $p"
+            else
+              echo "FAIL $p"; fail=1
+            fi
+            echo "::endgroup::"
+          done
+          exit $fail
+
+      # ── Build and HTTP-level gate ──────────────────────────────────────────────────────
+      - name: Build
+        env:
+          DATABASE_URL: postgres://mas_radar_app:ci-only-not-a-secret-0123456789@127.0.0.1:5432/mas_ci
+          APP_COMMIT_SHA: ${{ github.sha }}
+        run: pnpm build
+
+      - name: Faz 16 gate (health/ready/version, rate limit, CSRF, error envelope)
+        env:
+          DATABASE_URL: postgres://mas_radar_app:ci-only-not-a-secret-0123456789@127.0.0.1:5432/mas_ci
+          APP_COMMIT_SHA: ${{ github.sha }}
+        run: pnpm phase16:verify

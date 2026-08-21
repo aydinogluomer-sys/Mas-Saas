@@ -477,3 +477,137 @@ pnpm db:roles:verify
 **Önemli:** `mas_radar_dev` bu oturumda kasıtlı olarak hiç değiştirilmedi — şeması hâlâ 0034'te,
 `app_runtime` policy'si yok. Doğrulamaların tamamı disposable DB'lerde yapıldı. Faz 15'in gerçek
 ortamda etkinleşmesi yukarıdaki adımlara bağlıdır.
+
+## Faz 16 — DONE (CI/CD, gözlemlenebilirlik, API/oturum güvenliği temeli)
+
+Faz 15'in üzerine eklenir, hiçbir parçasını geri almaz. Düşük yetkili `mas_radar_app` rolü,
+`MIGRATION_DATABASE_URL` ayrımı ve `db:roles:verify` aynen yerinde; CI bu ayrımı kendi de kurar.
+
+### DOKUNULMAYAN dosyalar (bilinçli)
+
+- **`src/lib/domain-error.ts`** — sınıfın kendisi değişmedi. Faz 16 yalnız onu *yakalayan* bir
+  route-handler sarmalayıcısı ekledi. Kalan engine'lerin DomainError'a geçirilmesi Faz 18'in işi.
+- **`src/app/(dashboard)/system/page.tsx`** — yapısı değişmedi; yalnızca başlığa
+  `/system/diagnostics` bağlantısı eklendi. KPI rolü (uygulama/DB/sürüm/karar güveni) aynen duruyor.
+  Tanılama, `system/security` ve `system/backup` gibi bağımsız bir alt sayfa olarak eklendi.
+- **Mevcut `console.log`/`console.error` çağrıları** — yapılandırılmış log yalnız Faz 16'nın kendi
+  kodunda kullanılıyor. Hepsini toplu değiştirmek büyük ve riskli bir diff olurdu; üstelik verify
+  script'lerinin bir kısmı o çıktıyı ayrıştırıyor.
+- **Mevcut route handler'ların toplu retrofit'i yapılmadı** — zarf yalnız `/api/facts`'e ve yeni
+  eklenen `/ready`'ye uygulandı.
+
+### /ready ile /health kasıtlı olarak FARKLI sinyaller
+
+`/ready` hiçbir şeye dokunmaz, hep 200 döner — "süreç yaşıyor mu". `/health` `select 1` çalıştırır,
+DB düşükse 503 — "trafik gönderilebilir mi / DBA çağrılmalı mı". Yeniden başlatma politikası
+`/health`'e bağlanırsa PostgreSQL her hıçkırdığında sağlam uygulama yeniden başlatılır; ayrım tam
+olarak bunu önlemek için. `src/middleware.ts` matcher'ına `ready` eklendi — eklenmeseydi izleme
+aracı login sayfasını ölçüp "ayakta" derdi.
+
+### Plandan sapma 1: rate limit route handler'da değil MIDDLEWARE'de
+
+İlk uygulama limiti `/api/facts` route handler'ına koydu ve `phase16:verify` **429'u hiç göremedi**.
+Sebep: middleware default-deny; kimliksiz istek route'a hiç ulaşmadan 307 ile login'e yönleniyor.
+Limit middleware'e, cookie kontrolünden **önce** taşındı. Bu hem testi mümkün kıldı hem de daha
+doğru davranış: sele verilecek cevap login'e yönlendirme değil, 429'dur. Route handler'daki ikinci
+sayaç kaldırıldı — aynı bütçeyi iki kovaya bölmek limiti anlaşılmaz yapardı.
+
+Middleware Edge runtime'da çalıştığı için `src/lib/rate-limit.ts` node API'si kullanmıyor
+(`global` yerine `globalThis`), ve middleware `api-response.ts`/`logger.ts`'i **import edemez**
+(ikisi de `process.stderr`'a uzanır) — 429 zarfı orada elle yazıldı, şekli `api-response.ts` ile
+uyumlu tutuluyor.
+
+### Plandan sapma 2: CSRF durum koduyla değil, framework'ün kendi kararıyla doğrulandı
+
+Next 15'in server-action Origin/Host kontrolünü **varsaymadık, ölçtük** — ama bu üç deneme aldı:
+
+1. Uydurma bir `Next-Action` id'siyle POST: iki Origin için de **404**. Next önce action'ı çözüyor,
+   bulamayınca 404 dönüyor; test hiçbir şey kanıtlamıyordu.
+2. Derleme çıktısındaki `server-reference-manifest.json`'dan **gerçek** action id okundu, ama
+   `application/x-www-form-urlencoded` gövdeyle yine 404 — Next bir server action'ı ancak form
+   (multipart) gövdesiyle tanıyor.
+3. Multipart'la iki taraf da **500**. Durum kodu ayırt edici değil.
+
+Kesin kanıt sunucu logunda çıktı:
+
+```
+`x-forwarded-host` header with value `127.0.0.1:3118` does not match `origin` header
+with value `saldirgan.example` from a forwarded Server Actions request. Aborting the action.
+⨯ [Error: Invalid Server Actions request.]
+```
+
+`phase16:verify` artık bunu ölçüyor: yabancı Origin'li istekten sonra sunucu logunda iptal izi
+**oluşmalı**, aynı Origin'li istekten sonra **oluşmamalı**. Durum kodundan daha doğrudan kanıt.
+Route handler'lar için ayrıca `checkOrigin()` yazıldı (şu an mutasyon yapan route handler yok;
+birim testleri dört senaryoyu kapsıyor).
+
+### CI kapsamı: 14 faz doğrulaması CI'da ÇALIŞAMAZ, sahte veriyle "çalıştırılmadı"
+
+`data/` gitignore'da — gerçek çalışma kitapları özel finansal veri. Temiz bir checkout'ta
+`import:real` ve ona bağlı 14 faz script'i (phase3…phase9d, phase12a, phase13a, phase14a)
+kaynak dosyayı bulamaz. Bunları sahte bir fixture'la "geçirmek" mümkün değil: gerçek rakamları
+iddia ediyorlar (43 sekme, 9.817 hücre, TİJEN −60.000). Uydurma veriyle geçen bir test, test değil.
+
+CI bu yüzden veriden bağımsız olanları koşar: lint, typecheck, test, `db:verify`,
+`db:migrate:verify`, ledger ile DB kurulumu, `db:app-role:password`, `db:roles:verify`,
+6 faz doğrulaması (phase11b, 13b, 14b, 14c, 14d, 14e), `build`, `phase16:verify`.
+Veriye bağlı 14'ü **yerel pre-merge kapısı** olarak kalır — bugünkü durumdan bir gerileme değil,
+sadece artık yazılı.
+
+### CI neden GitHub'ın `services:` Postgres'ini kullanmıyor
+
+`scripts/db/ensure.ts` kendi `mas-radar-pg` container'ını `127.0.0.1:5432`'ye bağlayarak başlatır.
+Bir `services:` container'ı o portu zaten tutardı; ikisi çakışır ve hangisi kazanırsa kazansın CI,
+her yerel çalıştırmanın kullandığından **farklı** bir Postgres'i test etmiş olurdu. Kapıyı iki kez
+çalıştırmanın tüm anlamı ikisinin aynı olması olduğu için `ensure.ts` CI'da da yerelde yaptığının
+aynısını yapıyor. CI'da **hiçbir deploy adımı yok** — `docs/local-production-deploy.md` uzaktan
+deploy'u kapsam dışı bırakıyor; CI yalnız pre-merge gate runner'dır.
+
+CI'daki `CI_APP_DB_PASSWORD` bilerek açık yazılmıştır ve sır değildir: ait olduğu veritabanı
+runner içinde sıfırdan yaratılıp runner'la birlikte yok olur. GitHub Secrets'a koymak, bir şeyi
+koruduğu izlenimi verirdi.
+
+**Bilinen sapma:** CI Node 22 (LTS) kullanıyor, geliştirici makinesi Node 26. Node sürümüne özgü
+bir hata çıkarsa bakılacak ilk yer burasıdır.
+
+### Oturum sertleştirme kanıtı (8/8)
+
+Bu kontroller `phase16:verify`'a **konmadı**, çünkü kullanıcı ve oturum satırı yazıyorlar;
+phase16:verify bir operatörün gerçek DB'ye karşı da çalıştırabileceği bir kapı olduğu için
+salt-okunur kaldı. Disposable DB'de tek seferlik probla doğrulandı, prob dosyası silindi:
+
+- taze oturum korumalı sayfaya erişir (200)
+- 2 saat boşta kalan oturum reddedilir (307 → /login)
+- boşta kalan oturum DB'de `revoked_at` ile **iptal edilir**, yalnızca görmezden gelinmez
+- **mutlak 7 günlük `expires_at` DEĞİŞMEDİ** — boşta penceresi ona ek, yerine değil
+- rol değişince hedefin tüm açık oturumları iptal edilir (açık oturum sayısı 0)
+- iptal edilen oturum artık korumalı sayfaya erişemez
+- iptal sayısı `audit_logs.after_data.sessions_revoked` olarak kaydedilir
+
+`last_seen_at` NULL başladığı için boşta ölçümü `created_at`'e düşer; aksi halde yeni açılmış her
+oturum epoch'tan ölçülüp anında öldürülürdü.
+
+### Gate sonuçları
+
+| Adım | Sonuç |
+| --- | --- |
+| `pnpm lint` | exit 0 (1 uyarı: `analytics-chart.tsx`, önceden var) |
+| `pnpm typecheck` | exit 0 |
+| `pnpm test` | 218/218 (200 mevcut + 18 yeni), exit 0 |
+| `pnpm build` | exit 0 |
+| `pnpm phase16:verify` | **18/18 PASS** |
+| `pnpm db:roles:verify` | 8/8 PASS (Faz 15 gerilemedi) |
+| `pnpm db:transitions:verify` | 167/167 PASS (auth.ts değişti, gerileme yok) |
+| CI'ın koşacağı 6 faz doğrulaması | 6/6 PASS (her biri taze DB'de) |
+| Oturum sertleştirme probu | 8/8 PASS |
+
+Bir build hatası yaşandı ve **kod kaynaklı değildi**: webpack'in `WasmHash._updateWithBuffer`
+çağrısında `Cannot read properties of undefined`. `.next` temizlenince geçti — bayat derleme
+önbelleği. Makine boyunca boş bellek 0,4–0,6 GB civarındaydı (başka projelerin dev sunucuları
+çalışıyor); bu tür hataları gerçek gerileme sanmamak gerekiyor.
+
+Doğrulama sonrası ortam Faz 15'teki gibi geri alındı: disposable DB'ler düşürüldü,
+`mas_radar_app` yeniden `NOLOGIN` (migration 0035'teki hâli). `mas_radar_dev` bu fazda da hiç
+değiştirilmedi — şema hâlâ 0034, payments=19, users=12. Faz 15'in kullanıcı adımları
+(`pnpm db:app-role:password` → `.env.local` → `pnpm db:migrate`) hâlâ bekliyor; Faz 16 kodu
+onlardan bağımsız olarak derlenip test edildi.

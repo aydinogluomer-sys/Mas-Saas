@@ -11,6 +11,10 @@ import { SESSION_COOKIE } from "@/lib/auth-constants";
 
 export { SESSION_COOKIE };
 const SESSION_DURATION_MS = 7 * 24 * 60 * 60 * 1000; // 7 days — unchanged from the old gate's UX
+/** Faz 16 — inactivity window layered UNDER the 7-day absolute expiry, not replacing it.
+ * The cookie's own maxAge stays at 7 days on purpose: the server, not the browser, decides
+ * when an idle session dies, so shortening the cookie would only hide the check. */
+const IDLE_TIMEOUT_MS = 60 * 60 * 1000; // 60 minutes
 const MAX_FAILED_LOGIN_ATTEMPTS = 5;
 const LOCKOUT_MINUTES = 15;
 
@@ -182,14 +186,31 @@ export async function getCurrentUser(): Promise<SessionUser | null> {
     role: UserRole;
     session_id: string;
     last_seen_at: string | null;
+    created_at: string;
   }>(
-    `select u.id, u.username, u.display_name, u.role, s.id as session_id, s.last_seen_at
+    `select u.id, u.username, u.display_name, u.role, s.id as session_id, s.last_seen_at, s.created_at
      from public.sessions s join public.users u on u.id = s.user_id
      where s.token_hash = $1 and s.revoked_at is null and s.expires_at > now() and u.is_active`,
     [tokenHash],
   );
   if (res.rowCount !== 1) return null;
   const row = res.rows[0];
+
+  // Faz 16 — idle window, IN ADDITION TO the 7-day absolute expiry above (which stays as the
+  // hard ceiling). A laptop left open on a finance dashboard is the realistic threat here,
+  // and an absolute-only lifetime does nothing about it.
+  //
+  // `created_at` is the fallback because last_seen_at is NULL until the first bump: a
+  // brand-new session would otherwise measure its idle time from epoch and be killed on the
+  // very next request.
+  const referenceMs = new Date(row.last_seen_at ?? row.created_at).getTime();
+  if (Date.now() - referenceMs > IDLE_TIMEOUT_MS) {
+    // Revoked, not merely ignored — the token must stop working everywhere, not just here.
+    await pool.query(`update public.sessions set revoked_at = now() where id = $1 and revoked_at is null`, [
+      row.session_id,
+    ]);
+    return null;
+  }
 
   // Throttled — only bump if stale by more than 5 minutes, not on every single request.
   const lastSeenMs = row.last_seen_at ? new Date(row.last_seen_at).getTime() : 0;

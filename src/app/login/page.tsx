@@ -36,7 +36,11 @@ export default async function LoginPage({
               className="field-control mt-1 px-2 py-1.5 font-mono text-sm"
             />
           </label>
-          {sp.error && <p className="font-mono text-[11px] text-neg">Kullanıcı adı veya parola hatalı.</p>}
+          {sp.error === "rate" ? (
+            <p className="font-mono text-[11px] text-neg">Çok fazla deneme yapıldı. Lütfen bir dakika bekleyip tekrar deneyin.</p>
+          ) : (
+            sp.error && <p className="font-mono text-[11px] text-neg">Kullanıcı adı veya parola hatalı.</p>
+          )}
           <button type="submit"
             className="w-full border border-pos tint-pos px-3 py-2 font-mono text-[11px] uppercase tracking-wider text-pos transition-colors"
             style={{ borderRadius: "var(--radius-sm)" }}>

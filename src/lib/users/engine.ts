@@ -225,7 +225,19 @@ export async function setUserRole(pool: Pool, id: string, role: "admin" | "opera
     await assertNotReserved(client, id);
     const before = await loadForAudit(client, id);
     await client.query(`update public.users set role=$2 where id=$1`, [id, parsed.data]);
-    await audit(client, actorId, "set_user_role", id, before, { ...before, role: parsed.data });
+    // Faz 16 — a role change must not wait for the target's session to expire. Role is read
+    // once per request from public.users, so a demoted admin would otherwise keep admin-level
+    // access for up to seven days on their existing cookie. Revoking forces a fresh login and
+    // therefore a fresh role. Same transaction as the role write: the two cannot diverge.
+    const revoked = await client.query(
+      `update public.sessions set revoked_at=now() where user_id=$1 and revoked_at is null`,
+      [id],
+    );
+    await audit(client, actorId, "set_user_role", id, before, {
+      ...before,
+      role: parsed.data,
+      sessions_revoked: revoked.rowCount ?? 0,
+    });
     await client.query("commit");
   } catch (e) {
     await client.query("rollback");
