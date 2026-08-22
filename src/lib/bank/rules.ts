@@ -310,7 +310,9 @@ export function classifyTransaction(input: {
 /* ── match scoring ────────────────────────────────────────────────────────────────────── */
 
 export interface MatchTarget {
-  table: "payment_instances" | "checks" | "loan_installments";
+  // Faz 22 added "invoices" here in step with migration 0049, which widened the matching
+  // CHECK on both bank_transactions and bank_transaction_match_candidates.
+  table: "payment_instances" | "checks" | "loan_installments" | "invoices";
   id: string;
   /** Expected amount, unsigned. null = unknown, which is NOT zero. */
   amount: number | null;

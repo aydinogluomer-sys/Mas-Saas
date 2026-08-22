@@ -566,6 +566,7 @@ pnpm phase18:verify   # Faz 18'den sonra: kaynak taramasi, DB gerektirmez
 pnpm phase19:verify   # Faz 19'dan sonra: yeni tablo/view/trigger davranisi, DB gerektirir
 pnpm phase20:verify   # Faz 20'den sonra: banka merkezi + TAM durum-gecisi matrisi, DB gerektirir
 pnpm phase21:verify   # Faz 21'den sonra: fatura merkezi + 36 ciftlik durum matrisi, DB gerektirir
+pnpm phase22:verify   # Faz 22'den sonra: dagitim tavani + alacak/borc read-model, DB gerektirir
 pnpm build
 pnpm phase16:verify   # Faz 16'dan sonra: build'i gerektirir, bu yuzden build'den SONRA
 ```

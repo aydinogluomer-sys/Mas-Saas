@@ -49,7 +49,10 @@ export const upsertBankAccountSchema = z.object({
 
 export const matchDecisionSchema = z.object({
   transactionId: z.uuid(),
-  targetTable: z.enum(["payment_instances", "checks", "loan_installments"]),
+  // Faz 22 widened this alongside migration 0049, which extended the matching CHECK on both
+  // bank_transactions and bank_transaction_match_candidates. Widening one half without the
+  // other is the 0027 shape of failure.
+  targetTable: z.enum(["payment_instances", "checks", "loan_installments", "invoices"]),
   targetId: z.uuid(),
 });
 
@@ -356,7 +359,20 @@ async function loadMatchTargets(client: PoolClient, txnDate: string, windowDays 
        from public.loan_installments li
        join public.loans l on l.id = li.loan_id
       where li.status in ('planned','unpaid','partial','late') and l.archived_at is null
-        and li.due_date between $1::date - $2::int and $1::date + $2::int`,
+        and li.due_date between $1::date - $2::int and $1::date + $2::int
+     union all
+     -- Faz 22: invoices join the candidate pool. The amount offered is what is STILL OPEN
+     -- (gross − allocated), not the invoice total: once half an invoice is settled, a statement
+     -- line matching the remaining half is the interesting candidate, and offering the full
+     -- gross would score that match as a mismatch.
+     select 'invoices', inv.id::text, (inv.gross_amount - inv.allocated_amount),
+            to_char(coalesce(inv.due_date, inv.issue_date),'YYYY-MM-DD'),
+            coalesce(pa.name, inv.invoice_no)
+       from public.invoices inv
+       join public.parties pa on pa.id = inv.party_id
+      where inv.status in ('open','partial')
+        and inv.gross_amount > inv.allocated_amount
+        and coalesce(inv.due_date, inv.issue_date) between $1::date - $2::int and $1::date + $2::int`,
     [txnDate, windowDays],
   );
   return res.rows.map((r) => ({

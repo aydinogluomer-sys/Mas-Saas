@@ -1686,3 +1686,153 @@ veritabanlarında yapıldı, ikisi de düşürüldü, `mas_radar_app` yeniden `N
 3. Faz 17-20'den devam: `scripts/**`'daki 47 `::float8`, `rules.ts` biriktiricileri,
    `createCheckAction`'ın transaction dışı audit'i, mevcut action'ların Zod'a geçirilmesi,
    kredi `lender_party_id` eşleştirme UI'ı, ekstre bakiyesi ↔ hesaplanan bakiye mutabakatı.
+
+---
+
+## Faz 22 — DONE (tahsilat/ödeme dağıtımı, alacak/borç read-model, cari hesap kartı)
+
+Üç migration (0048-0050), bir tablo, dokuz view. **Gerçek `mas_radar_dev`'e uygulanmadı**.
+
+### §18'in ilk gerçek testi: dağıtım tavanı, veritabanı seviyesinde
+
+`Σ(açık dağıtım) ≤ invoices.gross_amount` — trigger olarak kuruldu, konvansiyon olarak değil.
+implementation.md §18 uygulama-seviyesi kontrolün yetmeyeceğini açıkça söylüyor.
+
+**Neden CHECK değil trigger:** CHECK tek satır görür; bu değişmez BAŞKA bir tablodaki bir değere
+karşı ÇOK satırın toplamıdır. Hiçbir CHECK bunu ifade edemez. `db:constraints:verify`'e eklenen
+11 test bunu ayrıca vurguluyor — özellikle *"dağıtım TOPLAMI fatura tutarını aşamaz (satır bazlı
+CHECK yakalayamazdı)"*.
+
+Disposable DB'de doğrulanan davranışlar: tek dağıtım > fatura RED · toplam > fatura RED ·
+tam tutar KABUL · UPDATE ile tavan aşma RED · **dağıtım başka faturaya taşınınca İKİ taraf da
+yeniden hesaplanıyor** (INV-A 120→0, INV-B 0→120) · iptal edilen dağıtım toplamdan düşülüyor ·
+taslak/iptal edilmiş faturaya dağıtım RED · `invoices.allocated_amount` trigger tarafından doğru
+tutuluyor. `constraints-verify` 54 → **65**.
+
+### Tek tablo, iki isim
+
+Plan `payment_allocations`/`collection_allocations` diyor; ikisi kolon kolon aynı olurdu (yön
+zaten `invoices.direction`'dan belli) ve ayırmak, tavan değişmezinin iki tablo üzerinden iki
+trigger'la toplanmasını gerektirirdi. **Tek tablo = tek trigger = değişmezin yaşadığı tek yer.**
+Planın istediği iki isim 0050'de filtrelenmiş view olarak sağlandı, söz dağarcığı korundu.
+
+### `paid_amount` ile `allocated_amount`: muhasebe farkı
+
+- `paid_amount` (Faz 21): bu faturaya karşı **kaydedilmiş** para. Tavanı YOK — fazla tahsilat
+  gerçektir ve engellemek operatörü kaydı çarpıtmaya zorlar.
+- `allocated_amount` (Faz 22): bu paranın faturaya **resmen atanmış** kısmı. Fatura tutarıyla
+  sınırlı — 120'lik faturaya 130 atamak fazla tahsilat değil, 10'unun başka yere ait olmasıdır.
+
+Fazla tahsilat artık `settlement_unallocated` view'inde görünüyor: para var, o faturaya ait
+değil. Gate bunu ölçüyor (130 TL hareket, 120 dağıtıldı, 10 dağıtılmamış olarak raporlandı).
+
+### AÇIK TASARIM KARARI: receivables/payables VIEW, tablo DEĞİL
+
+Uygulanan test: bir alacağın bugün, faturasının zaten taşımadığı tek bir özniteliği var mı?
+Karşı taraf/tutar/tarihler faturada, kalan `gross − allocated`, yaşlandırma `due_date`'ten,
+durum `invoices.status`. **Geriye hiçbir şey kalmıyor.**
+
+Bugün bir receivables tablosu her kolonu kopyalar ve faturada yaşayan tutarlar için anında
+ikinci bir gerçek kaynak olurdu — bu şemanın zaten ısırıldığı bayatlama (0034 öncesi
+`paid_count` Faz 5'ten beri 0 dönüyordu; 0039/0043/0047 hep aynı sebeple view).
+
+Tabloyu haklı çıkaracak şeyler gerçek ama bu fazda yok: **promise-to-pay** (implementation.md
+§1c ayrı bir gelecek entity olarak listeliyor), dunning/tahsilat durumu, alacak-bazlı sorumluluk
+ataması. Bunlar kendi öznitelikleri ve kendi yaşam döngüleriyle geldiğinde terfi edilir — kendi
+migration'ı ve kendi eksiksiz transition-guard'ıyla. Şimdi terfi ettirmek, içine koyacak bir şey
+olmadan yaşam döngüsü icat etmek olurdu.
+
+### `bank_transactions` CHECK genişletmesi — ayrı ve açık bir adım (0049)
+
+Faz 20 `matched_entity_table` CHECK'ini o gün var olan üç entity ile göndermişti; 0043'ün notu
+bu genişletmeyi Faz 22'ye yazılı olarak bırakmıştı.
+
+`bank_transactions` üzerinde `matched_entity_table` geçen **iki** CHECK var (değer listesi ve
+null-eşleşme tutarlılığı). Yalnız birincisi değiştirildi ve **adıyla** hedeflendi — metin
+aramasıyla değil. **Faz 20'nin gate dersi DDL için de geçerli:** `like '%matched_entity_table%'`
+ikisini de bulur ve "bulduğunu düşüren" bir migration, tutarlılık kuralını sessizce silebilirdi.
+
+`bank_transaction_match_candidates.target_table` CHECK'i **aynı anda** genişletildi. Birini
+genişletip diğerini bırakmak, eşleştiricinin artık eşleşmesine izin verilen şeyi hiç
+ÖNEREMEMESİ demekti — tam olarak 0027'nin biçimi. Gate ikisini ayrı ayrı doğruluyor, ve Faz
+20'nin üç hedefinin KORUNDUĞUNU da (genişletme, daraltma değil).
+
+Eşleştirici (`bank/engine.ts`) artık açık faturaları da aday havuzuna alıyor — ve teklif edilen
+tutar **hâlâ açık olan** kısım (`gross − allocated`), fatura toplamı değil: yarısı tahsil edilmiş
+bir faturada kalan yarıyı tutan ekstre satırı asıl ilginç adaydır, toplamı teklif etmek onu
+uyuşmazlık olarak skorlardı.
+
+### Yaşlandırma kovaları Faz 21'den farklı — kasıtlı
+
+0047 1-30/31-60/61-90/90+ kullanıyor (klasik AR **raporlama** yaşlandırması). Faz 22
+1-7/8-30/31-60/60+ kullanıyor (**tahsilat aciliyeti**): ilk ayı böler çünkü müşterinin üç gün mü
+üç hafta mı geciktiği bugün ne yapacağını değiştirir; 60'tan sonra bölmez çünkü aksiyon aynıdır.
+İkisi de korunuyor ve `phase22:verify` TS ile SQL uygulamasını aynı satırlara karşı
+karşılaştırıyor.
+
+`summarizeAgeing` **her kovayı** döndürüyor, boş olanlar dahil — eksik bir satırla sıfır satır,
+sorun arayan birine çok farklı okunur.
+
+### DSO/DPO: view bileşen verir, oran değil
+
+Bir view parametre alamaz; dönemi SQL'e gömmek, herkesin alıntıladığı ama azının aynı tanımladığı
+bir metrikte en kritik varsayımı gizlemek olurdu. Oran `rules.ts`'te, formülü yazılı ve
+birim-testli. **Dönemde satış yoksa sonuç null, sıfır değil** — sıfır, hiçbir şey satmamış bir
+şirket için "müşteriler anında ödüyor" demektir.
+
+### Cari hesap: alacak ve borç NETLEŞTİRİLMEZ
+
+Mahsup iki taraf arasında hukuki bir işlemdir, aritmetik değil; netlemek var olmayan bir
+anlaşmayı varsaymak olurdu. `counterparty_settlement_speed` **gerçekleşmiş** süredir: yalnız
+tahsil edilmiş faturaları sayar, çünkü ödenmemiş bir faturanın süresi yoktur ve sıfır saymak
+karşı tarafı olmadığı kadar iyi gösterirdi.
+
+### Gate yazarken uygulanan (ve bir kez daha gereken) dersler
+
+1. **Kardinalite kuralı** baştan uygulandı: `matched_entity_table` için `like` ile **iki**
+   constraint eşleşiyor, `conkey` ile bir. Gate bunu ayrı bir kontrol olarak raporluyor.
+2. **Vakumda geçen sonda yok:** her negatif kontrolün yanında pozitif kontrol var (tam tutar
+   KABUL ediliyor), ve iptal sondası ihtiyacı olan kullanıcıyı **kendisi yaratıyor** — ilk hâli
+   `select id from public.users limit 1` okuyordu ve seed'siz bir DB'de sahte FAIL verirdi. Aynı
+   ambient-veri tuzağı Faz 20/21'de iki kez vakumda PASS üretmişti.
+3. **`constraints-verify`'da Türkçe regex:** ilk yazımda `/asamaz/i` ve `/baglanamaz/i` kullandım,
+   trigger ise `aşamaz`/`bağlanamaz` fırlatıyor — dört test "başarısız" göründü hâlbuki kısıt
+   çalışıyordu. Kısıtı değil kendi desenimi düzelttim.
+
+### Gate sonuçları
+
+| Adım | Sonuç |
+| --- | --- |
+| `pnpm lint` | exit 0 (1 uyarı: `analytics-chart.tsx`, önceden var) |
+| `pnpm typecheck` | exit 0 |
+| `pnpm test` | **470/470** (432 + 38 yeni) |
+| `pnpm db:verify` | ALL ASSERTIONS PASSED |
+| `db:migrate:verify` | 49/49 (ledger 50 migration) |
+| `db:constraints:verify` | **65/65** (54 + **11 yeni dağıtım tavanı testi**) |
+| `db:transitions:verify` | 167/167 |
+| `db:reconciliation:verify` | 77/77 |
+| `pnpm db:roles:verify` | 8/8 |
+| `pnpm import:real` | ALL PASS |
+| phase3…phase14e (20 script) | 20/20 |
+| `pnpm build` | exit 0 |
+| phase16/17/18 | 18/18 · 10/10 · 12/12 |
+| phase19/20/21 | 26/26 · 31/31 · 35/35 |
+| `pnpm phase22:verify` | **35/35** — beş koşunun beşinde de (üçünde katalog karıştırılarak), her seferinde `conkey ile 1` |
+
+### GERÇEK VERİTABANINA UYGULANMADI
+
+Commit öncesi teyit: `schema=0034 · payments=19 · invoice_allocations=YOK`. Doğrulamanın tamamı
+`mas_radar_verify` ve `mas_radar_p22` disposable veritabanlarında yapıldı.
+
+### Faz 23'e devredilen açık noktalar
+
+1. **Promise-to-pay / dunning** — receivables'ı tabloya terfi ettirecek asıl gerekçe; geldiğinde
+   kendi migration'ı ve kendi eksiksiz transition-guard'ıyla gelmeli.
+2. **Kaynak tarafı tavanı trigger'sız:** bir banka hareketinin taşıdığından fazlasını dağıtmasını
+   `allocateBankTransaction` engelliyor ama arkasında DB trigger'ı yok (fatura tarafındaki tavan
+   var). Kaynak-tarafı değişmezini de veritabanına indirmek ayrı bir dilim.
+3. **Faz 21'in `recordInvoicePayment`'ı** hâlâ `paid_amount`'ı doğrudan hareket ettiriyor;
+   allocation yolu tercih edilen yol oldu ama eski yol kaldırılmadı (Faz 21 gate'ini bozmamak
+   için). İkisinin tek yola indirilmesi ayrı bir temizlik.
+4. Faz 17-21'den devam: `scripts/**`'daki 47 `::float8`, `rules.ts` biriktiricileri,
+   `createCheckAction`'ın transaction dışı audit'i, çok kalemli fatura UI'ı, iade faturası akışı.

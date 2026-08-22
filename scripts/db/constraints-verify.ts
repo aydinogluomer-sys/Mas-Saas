@@ -202,6 +202,101 @@ async function runFaz19ConstraintAssertions(pool: Pool): Promise<void> {
   );
 }
 
+/**
+ * Faz 22 additions (migration 0048) — the allocation ceiling.
+ *
+ * implementation.md §18 states the invariant as "odenen > fatura, tahsilat > alacak hic
+ * asilmamali" and is explicit that an application-level check does not satisfy it. So it is
+ * asserted HERE, against the database, with the application nowhere in the picture: every
+ * statement below is raw SQL that a rogue script or a psql session could equally have run.
+ */
+async function runFaz22ConstraintAssertions(pool: Pool, actorId: string): Promise<void> {
+  const party = (await pool.query<{ id: string }>(
+    `insert into public.parties(name, normalized_name, party_type)
+     values ('Alloc Faz22', 'alloc faz22', 'customer') returning id`)).rows[0].id;
+
+  const mkInvoice = async (no: string, gross: number, status: string) => {
+    const id = (await pool.query<{ id: string }>(
+      `insert into public.invoices(direction, invoice_no, party_id, issue_date,
+                                   net_amount, tax_amount, gross_amount)
+       values ('sales',$2,$1,'2026-01-01',$3::numeric,0,$3::numeric) returning id`,
+      [party, no, gross])).rows[0].id;
+    if (status !== "draft") await pool.query(`update public.invoices set status=$2 where id=$1`, [id, status]);
+    return id;
+  };
+
+  const open = await mkInvoice("ALLOC-1", 120, "open");
+
+  await expectReject(pool,
+    `insert into public.invoice_allocations(invoice_id, source_table, allocated_amount)
+     values ($1,'manual',120.01)`, [open], /aşamaz/i,
+    "0048: tek dagitim fatura tutarini asamaz");
+
+  await expectAccept(pool,
+    `insert into public.invoice_allocations(invoice_id, source_table, allocated_amount)
+     values ($1,'manual',100.00)`, [open],
+    "0048: tutar icindeki dagitim kabul edilir");
+
+  // The invariant is about the SUM, not one row — this is the case a per-row CHECK could never
+  // have caught, and the reason 0048 uses a trigger.
+  await expectReject(pool,
+    `insert into public.invoice_allocations(invoice_id, source_table, allocated_amount)
+     values ($1,'manual',20.01)`, [open], /aşamaz/i,
+    "0048: dagitim TOPLAMI fatura tutarini asamaz (satir bazli CHECK yakalayamazdi)");
+
+  await expectAccept(pool,
+    `insert into public.invoice_allocations(invoice_id, source_table, allocated_amount)
+     values ($1,'manual',20.00)`, [open],
+    "0048: tam tutara kadar dagitim kabul edilir");
+
+  const totals = await pool.query<{ allocated_amount: string }>(
+    `select allocated_amount from public.invoices where id=$1`, [open]);
+  record("0048: invoices.allocated_amount trigger tarafindan dogru tutuluyor",
+    Number(totals.rows[0].allocated_amount) === 120, `allocated=${totals.rows[0].allocated_amount}`);
+
+  // UPDATE must be guarded too, not just INSERT.
+  await expectReject(pool,
+    `update public.invoice_allocations set allocated_amount = allocated_amount + 1
+     where invoice_id=$1 and reversed_at is null and allocated_amount = 20.00`, [open], /aşamaz/i,
+    "0048: UPDATE ile tavan asilamaz");
+
+  // Reversing frees room, and the total is recomputed from the surviving rows.
+  await pool.query(
+    `update public.invoice_allocations
+       set reversed_at=now(), reversed_by=$2, reversed_reason='constraints-verify'
+     where invoice_id=$1 and reversed_at is null and allocated_amount = 100.00`, [open, actorId]);
+  const afterReversal = await pool.query<{ allocated_amount: string }>(
+    `select allocated_amount from public.invoices where id=$1`, [open]);
+  record("0048: iptal edilen dagitim toplamdan dusuluyor",
+    Number(afterReversal.rows[0].allocated_amount) === 20, `allocated=${afterReversal.rows[0].allocated_amount}`);
+
+  // Lifecycle gate: only an issued, live invoice may receive allocations.
+  const draft = await mkInvoice("ALLOC-2", 50, "draft");
+  await expectReject(pool,
+    `insert into public.invoice_allocations(invoice_id, source_table, allocated_amount)
+     values ($1,'manual',10.00)`, [draft], /bağlanamaz/i,
+    "0048: taslak faturaya dagitim yapilamaz");
+
+  // The stored column may not be forged past the ceiling either.
+  await expectReject(pool,
+    `update public.invoices set allocated_amount = gross_amount + 1 where id=$1`, [open],
+    /invoices_allocated_within_gross/i,
+    "0048: invoices.allocated_amount kolonu da CHECK ile sinirli");
+
+  // Source consistency: a typed source must name its row, 'manual' must not.
+  await expectReject(pool,
+    `insert into public.invoice_allocations(invoice_id, source_table, source_id, allocated_amount)
+     values ($1,'manual','00000000-0000-0000-0000-000000000000',1.00)`, [open],
+    /source_consistency/i, "0048: manual kaynak kayit id'si tasiyamaz");
+
+  // Faz 22 / migration 0049: the matching CHECK really was widened.
+  await expectAccept(pool,
+    `insert into public.bank_transaction_match_candidates
+       (bank_transaction_id, target_table, target_id, confidence)
+     select bt.id, 'invoices', $1, 0.9 from public.bank_transactions bt limit 1`, [open],
+    "0049: aday kuyrugu artik 'invoices' hedefini kabul ediyor (satir yoksa no-op)");
+}
+
 async function runConstraintAssertions(pool: Pool, anomalyId: string, actorId: string): Promise<void> {
   // audit_logs append-only
   const auditRow = await pool.query<{ id: string }>("select id from audit_logs limit 1");
@@ -464,6 +559,7 @@ async function main(): Promise<void> {
       const actorId = await ensureSystemActor(pool);
       await runConstraintAssertions(pool, anomalyId, actorId);
       await runFaz19ConstraintAssertions(pool);
+      await runFaz22ConstraintAssertions(pool, actorId);
     }
   } finally {
     await pool.end();

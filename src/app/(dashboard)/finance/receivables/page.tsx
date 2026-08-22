@@ -1,0 +1,227 @@
+// Faz 22 — Alacak / Borç ve Cari Hesap.
+//
+// Ageing first (that is the collection worklist), then the current-account cards, then the
+// money that has arrived but belongs to no invoice yet. That last panel matters more than its
+// size suggests: since 0048 caps allocations at the invoice total, an over-receipt no longer
+// hides inside a paid_amount — it sits there until somebody decides where it belongs.
+
+import { getPool } from "@/lib/db";
+import {
+  loadCurrentAccounts, loadDsoDpo, loadPayables, loadReceivables,
+  loadSettlementSpeed, loadUnallocatedSettlements,
+} from "@/lib/receivables/engine";
+import { COLLECTION_BUCKETS, summarizeAgeing } from "@/lib/receivables/rules";
+import { istanbulDateISO } from "@/lib/reports/rules";
+import { Badge, type Tone } from "@/components/ui/badge";
+import { Panel, fmtTL } from "@/components/ui/panel";
+import { PageHeader } from "@/components/ui/shell";
+import { allocateAction } from "./actions";
+
+export const dynamic = "force-dynamic";
+
+const BUCKET_TONE: Record<string, Tone> = {
+  "vadesi gelmemiş": "green", "1-7 gün": "amber", "8-30 gün": "amber",
+  "31-60 gün": "red", "60+ gün": "red", "tarihsiz": "neutral",
+};
+
+export default async function ReceivablesPage({
+  searchParams,
+}: { searchParams: Promise<{ error?: string; result?: string }> }) {
+  const sp = await searchParams;
+  const pool = getPool();
+  const today = istanbulDateISO();
+  const [receivables, payables, accounts, dsoDpo, unallocated, speed] = await Promise.all([
+    loadReceivables(pool, 150),
+    loadPayables(pool, 150),
+    loadCurrentAccounts(pool, 40),
+    loadDsoDpo(pool, 365),
+    loadUnallocatedSettlements(pool, 20),
+    loadSettlementSpeed(pool, 20),
+  ]);
+
+  const recAgeing = summarizeAgeing(
+    receivables.map((r) => ({ dueDate: r.dueDate, openAmount: r.openAmount })), today);
+  const payAgeing = summarizeAgeing(
+    payables.map((r) => ({ dueDate: r.dueDate, openAmount: r.openAmount })), today);
+  const recTotal = receivables.reduce((n, r) => n + r.openAmount, 0);
+  const payTotal = payables.reduce((n, r) => n + r.openAmount, 0);
+  const overdue = receivables.filter((r) => (r.daysOverdue ?? 0) > 0);
+
+  return (
+    <>
+      <PageHeader
+        title="Alacak / Borç ve Cari Hesap"
+        subtitle="Yaşlandırma, dağıtım (allocation), cari hesap kartı ve DSO/DPO"
+        meta={
+          <Badge tone={overdue.length > 0 ? "red" : unallocated.length > 0 ? "amber" : "green"} dot>
+            {overdue.length > 0 ? `${overdue.length} vadesi geçmiş alacak`
+              : unallocated.length > 0 ? `${unallocated.length} dağıtılmamış tahsilat`
+              : `${receivables.length} açık alacak`}
+          </Badge>
+        }
+      />
+
+      {sp.error && <div className="mb-3 rounded border border-neg/40 bg-neg/10 p-2 text-sm text-neg">{sp.error}</div>}
+      {sp.result && <div className="mb-3 rounded border border-pos/40 bg-pos/10 p-2 text-sm text-pos">{sp.result}</div>}
+
+      <div className="mb-4 grid grid-cols-2 gap-2 lg:grid-cols-4">
+        <Panel title="AÇIK ALACAK"><b className="font-mono text-lg text-pos">{fmtTL(recTotal)}</b></Panel>
+        <Panel title="AÇIK BORÇ"><b className="font-mono text-lg text-neg">{fmtTL(payTotal)}</b></Panel>
+        <Panel title="DSO (365g)">
+          {/* null means "no sales in the period" — reporting 0 would claim customers pay
+              instantly at a company that sold nothing. */}
+          <b className="font-mono text-lg">{dsoDpo.dso == null ? "—" : `${dsoDpo.dso} gün`}</b>
+        </Panel>
+        <Panel title="DPO (365g)">
+          <b className="font-mono text-lg">{dsoDpo.dpo == null ? "—" : `${dsoDpo.dpo} gün`}</b>
+        </Panel>
+      </div>
+
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+        {([["ALACAK YAŞLANDIRMA", recAgeing], ["BORÇ YAŞLANDIRMA", payAgeing]] as const).map(([title, buckets]) => (
+          <Panel key={title} title={title}>
+            <table className="w-full text-sm">
+              <tbody>
+                {/* Every bucket is rendered, including empty ones: an absent row and a zero row
+                    read very differently to someone scanning for problems. */}
+                {COLLECTION_BUCKETS.map((b) => {
+                  const row = buckets.find((x) => x.bucket === b)!;
+                  return (
+                    <tr key={b} className="border-b border-line-faint">
+                      <td className="py-1"><Badge tone={BUCKET_TONE[b] ?? "neutral"}>{b}</Badge></td>
+                      <td className="py-1 text-right tabular-nums text-tone-3">{row.count}</td>
+                      <td className="py-1 text-right font-mono tabular-nums">{fmtTL(row.amount)}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </Panel>
+        ))}
+      </div>
+
+      <div className="mt-4">
+        <Panel title={`AÇIK ALACAKLAR — ${receivables.length}`}>
+          {receivables.length === 0 ? (
+            <p className="py-2 text-sm text-tone-3">Açık alacak yok.</p>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="text-left text-xs text-tone-3">
+                    <th>Fatura</th><th>Karşı taraf</th><th>Vade</th>
+                    <th className="text-right">Tutar</th><th className="text-right">Dağıtılan</th>
+                    <th className="text-right">Açık</th><th>Yaşlandırma</th><th>Dağıt</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {receivables.map((r) => (
+                    <tr key={r.invoiceId} className="border-t border-line-faint">
+                      <td className="py-2 font-mono text-xs">{r.invoiceNo}</td>
+                      <td>{r.partyName}</td>
+                      <td className="font-mono text-xs">{r.dueDate ?? "—"}</td>
+                      <td className="text-right font-mono tabular-nums">{fmtTL(r.grossAmount)}</td>
+                      <td className="text-right font-mono tabular-nums text-tone-3">{fmtTL(r.allocatedAmount)}</td>
+                      <td className="text-right font-mono tabular-nums">{fmtTL(r.openAmount)}</td>
+                      <td><Badge tone={BUCKET_TONE[r.ageingBucket] ?? "neutral"}>{r.ageingBucket}</Badge></td>
+                      <td>
+                        {/* Capped at the open amount client-side for convenience; 0048's trigger
+                            is what actually guarantees it. */}
+                        <form action={allocateAction} className="flex items-center gap-1">
+                          <input type="hidden" name="invoiceId" value={r.invoiceId} />
+                          <input type="hidden" name="sourceTable" value="manual" />
+                          <input
+                            name="amount" type="number" step="0.01" min="0.01" max={r.openAmount}
+                            placeholder="tutar"
+                            className="w-20 rounded border border-line-faint bg-transparent px-1 py-0.5 text-xs"
+                          />
+                          <button className="text-xs text-pos hover:underline">dağıt</button>
+                        </form>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </Panel>
+      </div>
+
+      <div className="mt-4 grid grid-cols-1 gap-4 lg:grid-cols-2">
+        <Panel title={`DAĞITILMAMIŞ TAHSİLAT — ${unallocated.length}`}>
+          <p className="mb-2 text-xs text-tone-3">
+            Hesaba giren ama hiçbir faturaya bağlanmamış para. Dağıtım toplamı fatura tutarını
+            aşamadığı için (0048) fazla tahsilat burada görünür — kaybolmaz.
+          </p>
+          {unallocated.length === 0 ? (
+            <p className="py-2 text-sm text-tone-3">Dağıtılmamış tahsilat yok.</p>
+          ) : (
+            unallocated.map((u) => (
+              <div key={u.sourceId} className="grid grid-cols-[1fr_auto_auto] gap-2 border-b border-line-faint py-1 text-sm">
+                <span className="truncate">{u.description || u.sourceTable}</span>
+                <span className="font-mono text-xs text-tone-3">{u.sourceDate}</span>
+                <span className="font-mono tabular-nums text-warn">{fmtTL(u.unallocatedAmount)}</span>
+              </div>
+            ))
+          )}
+        </Panel>
+
+        <Panel title="ORTALAMA TAHSİLAT/ÖDEME SÜRESİ">
+          <p className="mb-2 text-xs text-tone-3">
+            Gerçekleşmiş süre — yalnız tahsil edilmiş faturalar sayılır. Ödenmemiş bir faturanın
+            süresi yoktur; sıfır saymak karşı tarafı olmadığı kadar iyi gösterirdi.
+          </p>
+          {speed.length === 0 ? (
+            <p className="py-2 text-sm text-tone-3">Henüz tahsil edilmiş fatura yok.</p>
+          ) : (
+            speed.map((s) => (
+              <div key={`${s.partyId}-${s.direction}`} className="grid grid-cols-[1fr_auto_auto] gap-2 border-b border-line-faint py-1 text-sm">
+                <span>{s.partyName}</span>
+                <span className="text-xs text-tone-3">{s.direction === "sales" ? "tahsilat" : "ödeme"}</span>
+                <span className="font-mono tabular-nums">{s.avgDaysToSettle ?? "—"} gün</span>
+              </div>
+            ))
+          )}
+        </Panel>
+      </div>
+
+      <div className="mt-4">
+        <Panel title={`CARİ HESAP KARTLARI — ${accounts.length}`}>
+          <p className="mb-2 text-xs text-tone-3">
+            Alacak ve borç <b>netleştirilmez</b>: mahsup iki taraf arasında hukuki bir işlemdir,
+            aritmetik bir işlem değil — burada netlemek var olmayan bir anlaşmayı varsaymak olurdu.
+          </p>
+          {accounts.length === 0 ? (
+            <p className="py-2 text-sm text-tone-3">Hareketli cari hesap yok.</p>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="text-left text-xs text-tone-3">
+                    <th>Karşı taraf</th><th>Tip</th>
+                    <th className="text-right">Açık alacak</th><th className="text-right">Açık borç</th>
+                    <th className="text-right">Vadesi geçen</th><th>En yakın vade</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {accounts.map((a) => (
+                    <tr key={a.partyId} className="border-t border-line-faint">
+                      <td className="py-2">{a.partyName}</td>
+                      <td className="text-xs text-tone-3">{a.partyType}</td>
+                      <td className="text-right font-mono tabular-nums text-pos">{fmtTL(a.receivableOpen)}</td>
+                      <td className="text-right font-mono tabular-nums text-neg">{fmtTL(a.payableOpen)}</td>
+                      <td className={`text-right tabular-nums ${a.overdueCount > 0 ? "text-warn" : "text-tone-3"}`}>
+                        {a.overdueCount || "—"}
+                      </td>
+                      <td className="font-mono text-xs">{a.earliestDueDate ?? "—"}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </Panel>
+      </div>
+    </>
+  );
+}

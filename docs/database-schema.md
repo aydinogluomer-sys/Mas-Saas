@@ -624,3 +624,127 @@ yazılır, dolayısıyla engelleyen bir trigger ya deferred olmak (ve tek bozuk 
 aktarma transaction'ını düşürmek) ya da normal ekleme sırasını yasaklamak zorunda kalırdı. Bu
 sınıf için deponun yerleşik cevabı nakit-akış kimlik kontrolüdür: hesapla, göster, insan karar
 versin.
+
+## Tahsilat/Ödeme Eşleme ve Cari Hesap (Faz 22, migration 0048-0050)
+
+### 0048 — invoice_allocations ve §18'in ilk gerçek testi
+
+**Zorlanan değişmez:** `Σ(açık dağıtım) ≤ invoices.gross_amount` — her zaman, istisnasız.
+implementation.md §18 bunu "ödenen > fatura, tahsilat > alacak hiç aşılmamalı" diye yazıyor ve
+uygulama-seviyesi kontrolün yetmeyeceğini açıkça söylüyor. Bu yüzden **trigger**, konvansiyon
+değil.
+
+**Neden CHECK değil trigger:** CHECK tek satır görür. Bu değişmez, BAŞKA bir tablodaki bir
+değere karşı ÇOK satırın toplamı hakkındadır; hiçbir CHECK bunu ifade edemez.
+`allocations_enforce_invoice_ceiling()` INSERT/UPDATE/DELETE'in üçünde de çalışır — arada boşluk
+kalmasın diye.
+
+**Tek tablo, iki değil.** Plan `payment_allocations`/`collection_allocations` diyor. İkisi
+kolon kolon aynı olurdu (yön zaten `invoices.direction`'dan belli) ve ayırmak, tavan
+değişmezinin İKİ tablo üzerinden İKİ trigger'la toplanmasını gerektirirdi — sonsuza dek
+birbiriyle uyumlu kalmaları gereken iki trigger. Tek tablo = tek trigger = değişmezin yaşadığı
+tek yer. Planın istediği iki isim 0050'de **filtrelenmiş view** olarak sağlanıyor, yani söz
+dağarcığı korunuyor.
+
+**Status kolonu YOK.** Bir dağıtım ya vardır ya iptal edilmiştir; `reversed_at` nullable bir
+zaman damgasıdır ve kısıtlanacak geçişi yoktur. Faz 20 (`match_candidates`) ve Faz 19 (boyut
+tabloları) ile aynı karar: §17 kural 3 her yeni yaşam döngüsü için EKSİKSİZ bir guard şart
+koşuyor, ve gerekmeyen bir fazda ona uymanın yolu yaşam döngüsü icat etmemektir.
+
+#### `paid_amount` ile `allocated_amount` farkı — muhasebe farkı, ayrıntıcılık değil
+
+| kolon | anlamı | tavan |
+| --- | --- | --- |
+| `paid_amount` (Faz 21) | bu faturaya karşı **kaydedilmiş** para | YOK — fazla tahsilat gerçektir (mükerrer transfer, bankada kur farkı) ve engellemek operatörü kaydı çarpıtmaya zorlar |
+| `allocated_amount` (Faz 22) | bu paranın faturaya **resmen atanmış** kısmı | fatura tutarı — 120'lik faturaya 130 atamak fazla tahsilat değil, 10'unun **başka yere ait olması**dır |
+
+Sonuç: fazla tahsilat `paid_amount > gross`, `allocated_amount = gross` olarak görünür ve
+dağıtılmamış kalan **kaynak tarafında** (`settlement_unallocated`) durur.
+
+#### CASCADE burada güvenli — ve 0046'nın hatası değil
+
+`invoice_allocations.invoice_id` FK'sı `ON DELETE CASCADE`. Bu tabloda salt-ekleme trigger'ı
+YOK, dolayısıyla staging'den gelen bir `TRUNCATE CASCADE` onu temizler ki geliştirme sıfırlaması
+için doğru davranış budur. 0046'nın yaşadığı sorun tam olarak append-only bir kanıt tablosuna
+cascade edilmesiydi; burada öyle bir tablo yok.
+
+Trigger, fatura satırı yoksa (cascade/truncate çalışıyordur) sessizce geçiyor — orada hata
+vermek meşru bir sıfırlamayı imkânsız kılardı, 0046'nın öğrendiği ders.
+
+**Yaşam döngüsü kapısı:** dağıtım yalnız `open`/`partial`/`paid` faturaya yapılabilir. `draft`
+düzenlenmemiştir, `cancelled` geçersizdir, `closed` kapatılmıştır (önce açılmalı). Kontrol
+yalnız dağıtım kümesi BÜYÜRKEN uygulanıyor; iptal/temizlik kapalı veya iptal edilmiş faturada da
+mümkün kalıyor — temizliği engelleyen bir guard, çok geniş çizilmiş bir guard'dır.
+
+### 0049 — bank_transactions eşleşme hedefinin GENİŞLETİLMESİ
+
+Faz 20 `matched_entity_table` CHECK'ini o gün var olan üç entity ile göndermişti; 0043'ün notu
+"invoices/collections Faz 22'de kendi migration'ında bu CHECK'i genişletecek" diyordu. Bu, o
+migration.
+
+`bank_transactions` üzerinde `matched_entity_table` geçen **iki** CHECK var
+(`..._matched_entity_table_check` = değer listesi, `..._match_consistency` = null eşleşmesi).
+Yalnız birincisi değiştirildi ve **adıyla** hedeflendi — metin aramasıyla değil. Faz 20'nin gate
+dersi DDL için de geçerli: `like '%matched_entity_table%'` ikisini de bulur ve "bulduğunu
+düşüreni" değiştiren bir migration, tutarlılık kuralını sessizce silebilirdi.
+
+`bank_transaction_match_candidates.target_table` CHECK'i **aynı anda** genişletildi. Birini
+genişletip diğerini bırakmak, eşleştiricinin artık eşleşmesine izin verilen şeyi hiç
+ÖNEREMEMESİ demekti — tam olarak 0027'nin biçimi.
+
+**Genişletme, daraltma değil:** mevcut her satır yeni constraint'i inşaen sağlıyor, doğrulanacak
+bir şey yok. "NOT VALID ekle, ayrı dilimde VALIDATE" kuralı (0023/0026 → 0029/0030) mevcut veriyi
+REDDEDEBİLECEK constraint'ler içindir; 0041'in `detected_type` genişletmesiyle aynı gerekçe.
+
+### 0050 — receivables/payables VIEW olarak (açık tasarım kararı, kapatıldı)
+
+implementation.md bunu açık bırakmıştı. Uygulanan test basitti: bir alacağın BUGÜN, faturasının
+zaten taşımadığı tek bir özniteliği var mı?
+
+| | |
+| --- | --- |
+| karşı taraf, tutar, para birimi, düzenleme/vade tarihi | faturada |
+| ne kadarı hâlâ borçlu | `gross − allocated` (0048) |
+| yaşlandırma kovası | `due_date`'ten türetilir |
+| tahsil / zarar yazıldı / iptal | `invoices.status` |
+
+Geriye hiçbir şey kalmıyor. Bugün bir receivables TABLOSU bu kolonların her birini kopyalar ve
+faturada yaşayan tutarlar için **anında ikinci bir gerçek kaynak** olurdu — bu şemanın zaten
+ısırıldığı bayatlama (0034 öncesi `paid_count` KPI'ı Faz 5'ten beri 0 dönüyordu; 0039/0043/0047
+hep aynı sebeple view).
+
+Tabloyu haklı çıkaracak şeyler gerçek ama bu fazda yok: **promise-to-pay** tarihi
+(implementation.md §1c ayrı bir gelecek entity olarak listeliyor), dunning/tahsilat durumu,
+alacak-bazlı sorumluluk ataması. Bunlar geldiğinde kendi öznitelikleriyle ve kendi yaşam
+döngüleriyle gelir — terfi anı O'dur, kendi migration'ı ve kendi eksiksiz transition-guard'ıyla.
+Şimdi terfi ettirmek, içine koyacak bir şey olmadan yaşam döngüsü icat etmek olurdu; §17 kural 3
+tam da bunu önlemek için var.
+
+#### Yaşlandırma: Faz 22'nin kovaları Faz 21'den FARKLI, kasıtlı
+
+0047'nin `invoice_open_items`'ı 1-30/31-60/61-90/90+ kullanıyor — klasik AR **raporlama**
+yaşlandırması. Faz 22 ise 1-7/8-30/31-60/60+ istiyor: bu bir **tahsilat-aciliyeti**
+yaşlandırmasıdır. İlk ayı böler çünkü müşterinin üç gün mü üç hafta mı geciktiği bugün ne
+yapacağını değiştirir; 60'tan sonra bölmeyi bırakır çünkü orada aksiyon zaten aynıdır. İkisi de
+amacına göre doğru, ikisi de korunuyor, ve `phase22:verify` TS ile SQL uygulamasını aynı
+satırlara karşı karşılaştırıyor ki birbirinden ayrılmasınlar.
+
+#### DSO/DPO: view bileşenleri verir, oranı DEĞİL
+
+Bir view parametre alamaz ve bir dönemi SQL'e gömmek, herkesin alıntıladığı ama pek azının aynı
+tanımladığı bir metrikte en kritik varsayımı gizlemek olurdu. `dso_dpo_components` ham sayıları
+verir; `src/lib/receivables/rules.ts` oranı formülü yazılı ve birim-testli biçimde hesaplar.
+
+    DSO = (açık alacak / dönem satışı) × dönem günü
+
+Dönemde satış yoksa sonuç **null**, sıfır değil: sıfır, hiçbir şey satmamış bir şirket için
+"müşteriler anında ödüyor" demektir — mümkün olan en kötü çeyreğin en pohpohlayıcı okuması.
+
+#### Cari hesap kartı: alacak ve borç NETLEŞTİRİLMEZ
+
+`current_account_summary` ikisini ayrı tutar. Mahsup, iki taraf arasında **hukuki** bir işlemdir,
+aritmetik bir işlem değil; burada netlemek var olmayan bir anlaşmayı sessizce varsaymak olurdu.
+
+`counterparty_settlement_speed` **gerçekleşmiş** süredir: yalnız tahsil edilmiş faturaları sayar.
+Ödenmemiş bir faturanın tahsilat süresi yoktur, ve onu sıfır (ya da bugün−düzenleme) saymak karşı
+tarafı olmadığı kadar iyi ya da kötü gösterirdi.
