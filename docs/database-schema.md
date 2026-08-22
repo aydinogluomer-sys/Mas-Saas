@@ -1988,3 +1988,79 @@ derecesi denetçiye savunulamaz ve "model tuhaf buldu" bir kontrol değildir.
 
 Planın şartı gereği her yeni CHECK kendi girdisini aldı: `runFaz31ConstraintAssertions()` eklendi,
 mevcut `runFaz19`/`runFaz22` fonksiyonlarına dokunulmadı. Script 65 → **75** teste çıktı.
+
+## CFO Brifingi, Yönetim Kokpiti ve Finansal Takvim (Faz 32, migration 0079-0080)
+
+Bu faz **iki migration** ekliyor ve **hiç yeni tablo** açmıyor. Sebebi aşağıda; kısaca: bu fazın
+işi yeni bir gerçeklik üretmek değil, var olan gerçekliği **tek ekranda** ve **tek dille**
+göstermek.
+
+### 0079 — `reports.report_type` bir değer genişliyor
+
+`reports` tablosuna `'cfo_briefing'` eklendi. Paralel bir `briefings` tablosu **açılmadı**:
+brifing, `body_md`'si, dönemi, geçmişi ve denetim izi olan bir rapordur — `reports` tam olarak
+bunu modelliyor. İkinci bir tablo, aynı şeyin iki ayrı yaşam döngüsü, iki ayrı RLS sınıfı ve iki
+ayrı arşivleme kuralı demek olurdu.
+
+> Sonraki fazlar için not: bu kümenin **boyutunu** sabitleyen bir gate, bir sonraki genişlemede
+> kırılır (Faz 31'in `action_items.source_type` dersi). Faz 32'nin gate'i bu yüzden **üst-küme**
+> iddiası kuruyor: `'cfo_briefing'` var **ve** eski beş değer duruyor.
+
+### 0080 — `financial_calendar` + `financial_calendar_daily` (VIEW)
+
+#### Planın açık bıraktığı soru, kapatıldı: yeni tekrar-eden-yükümlülük tablosu YOK
+
+implementation.md §3, maaş/SGK/vergi/kira/sigorta/CapEx tarihlerinin **yeni hafif bir
+tekrar-eden-yükümlülük kaydı** mı gerektirdiğini, yoksa mevcut payments modülüne mi oturduğunu bu
+faz başlarken netleştirmemizi istiyordu. Karar: **mevcut modül**.
+
+Karar iddiaya değil ölçüme dayanıyor — `public.payments` zaten şunları taşıyor:
+
+| Kolon | Ne modelliyor |
+| --- | --- |
+| `recurrence_type` | `one_off / monthly / weekly / yearly / irregular` |
+| `due_day` | ayın kaçında (monthly ise CHECK ile zorunlu) |
+| `category_id` | maaş / SGK / vergi / kira / sigorta ayrımı |
+| `provider_party_id` | kime ödendiği |
+
+ve `payment_instances` her tekrarı zaten **maddeleştiriyor**. Aylık bordro, SGK primi, üç aylık
+vergi ve kira tam olarak bu şekil: kategorili, tekrar eden ödeme. İkinci bir tablo, `payments`'ın
+var olma sebebi olan tek şey için **rakip bir doğruluk kaynağı** kurardı; her ekran "hangisine
+inanayım" diye sormak, birileri de aradaki mutabakatı sürdürmek zorunda kalırdı.
+
+Gate bu kararı iki yönden kilitliyor: adında `recurring`/`obligation` geçen yeni tablo
+**olmadığını** ve `payments.recurrence_type` CHECK'inin tekrar modelini **gerçekten** taşıdığını
+doğruluyor.
+
+#### View ne topluyor
+
+Altı kaynak, tek tarih ekseninde: `payment_instances`, `loan_installments`, `checks`, `invoices`,
+`promise_to_pay`, `credit_facilities` (vade).
+
+**İşaret tek kolonda.** `amount_signed` negatifse para çıkıyor. Yön ayrı bir kolonda dursaydı, bir
+tüketicinin onu unutup toplaması an meselesiydi. `checks` zaten işaretli tutar taşıdığı için (0009)
+işareti yeniden hesaplanmıyor, **alınıyor**.
+
+**Kesinlik ayrı bir eksen.** `contracted` (imzalı yükümlülük) / `expected` (ödeme sözü) /
+`renewal` (limit vadesi). Faz 25'in ödeme sözü `expected` sayılıyor: söz verilmiş bir tahsilat,
+imzalı bir taksitle **aynı ağırlıkta** takvime girerse, taahhüt edilmiş olanı olduğundan güçlü
+gösterir.
+
+**Limit vadesi bir tarihtir, nakit hareketi değildir.** `credit_facilities.expiry_date` satırının
+`amount_signed`'ı `0` değil **NULL**. Sıfır olsaydı günün netine sessizce karışırdı; NULL olduğu
+için toplanamaz. Vadesi gelen limitte olan şey, çekilen bakiyenin muaccel olması ve kullanılmayan
+başlığın **var olmayı bırakması** — ikisi de o günkü çıkış değil. Faz 27'nin vade merdiveninin
+yaptığı ayrımın aynısı.
+
+**Tutarı bilinmeyen satır dışarıda.** Tutarsız bir ödeme sözü takvime `0` olarak girmiyor;
+girmiyor. Bilinmeyen bir rakam bir toplama eklenemez ve `0,00` yazmak hiçbir şeyi eksik
+göstermezken **kesinliği** olduğundan yüksek gösterirdi.
+
+`financial_calendar_daily` bunu güne indirger ve `net_contracted` ile `net_expected`'ı **ayrı
+kolonlarda** verir — iyimser rakam sessizce manşet olamasın diye.
+
+### Neden VIEW, neden tablo değil
+
+Her iki read-model de VIEW. Faz 22-31 boyunca uygulanan kural: türetilmiş rakam saklanmaz, çünkü
+saklandığı anda kaynağıyla ayrışabilen ikinci bir doğruluk kaynağı olur. Bu faz özellikle
+"özet ile detay **sapamaz**" şartı taşıdığı için, kuralın gevşetilmesi en son burada düşünülebilirdi.

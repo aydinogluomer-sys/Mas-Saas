@@ -1,3 +1,3 @@
 import type { ReactNode } from "react"; import { ModuleFrame } from "@/components/ui/module-tabs";
-const tabs=[{href:"/insights/ask",label:"Soru-Cevap"},{href:"/insights/reports",label:"Raporlar"},{href:"/insights/reminders",label:"Hatırlatmalar"},{href:"/insights/tasks",label:"Görevler"}];
+const tabs=[{href:"/insights/ask",label:"Soru-Cevap"},{href:"/insights/briefing",label:"CFO brifingi"},{href:"/insights/reports",label:"Raporlar"},{href:"/insights/reminders",label:"Hatırlatmalar"},{href:"/insights/tasks",label:"Görevler"}];
 export default function Layout({children}:{children:ReactNode}){return <ModuleFrame title="İçgörüler" description="Kanıta dayalı cevaplar, raporlar, hatırlatmalar ve takip edilecek işler." tabs={tabs}>{children}</ModuleFrame>}

@@ -3080,3 +3080,87 @@ env -u DATABASE_URL MIGRATION_DATABASE_URL="postgres://..." pnpm phase31:verify
 ```
 **42/42, 4 kez art arda**; `DATABASE_URL`'in tanımsız olduğu ayrıca doğrulandı.
 `db:roles-rls:verify` artık **78 tablo / 390 (katman × tablo) INSERT kombinasyonu** görüyor.
+
+## Faz 32 — DONE (CFO sabah brifingi, yönetim kokpiti, birleşik finansal takvim)
+
+Migration **0079-0080**, **yeni tablo yok**. Faz 26-31'in ürettiği rakamlar tek ekranda ve tek
+dilde toplanıyor; bu fazın işi yeni bir gerçeklik üretmek değil.
+
+### Planın açık sorusu kapatıldı: yeni tekrar-eden-yükümlülük tablosu YOK
+
+implementation.md §3, maaş/SGK/vergi/kira/sigorta/CapEx için yeni hafif bir yükümlülük kaydı mı
+gerektiğini bu faz başlarken netleştirmemizi istiyordu. Önce **ölçtüm**: `payments` zaten
+`recurrence_type` (`one_off|monthly|weekly|yearly|irregular`), `due_day` (monthly ise CHECK ile
+zorunlu), `category_id` ve `provider_party_id` taşıyor; `payment_instances` her tekrarı zaten
+maddeleştiriyor. Aylık bordro ile aylık kira arasında **şema farkı yok** — ikisi de kategorili,
+tekrar eden ödeme.
+
+Yeni tablo, `payments`'ın var olma sebebi olan tek şey için rakip bir doğruluk kaynağı olurdu.
+Gate kararı iki yönden kilitliyor: `recurring`/`obligation` adlı yeni tablo **olmadığı**, ve
+`payments.recurrence_type` CHECK'inin tekrar modelini **gerçekten** taşıdığı doğrulanıyor —
+gerekçe iddia değil, kısıt.
+
+### "Sapma yasak" şartı: yapısal olarak imkânsız kılındı, test edilerek umulmadı
+
+Planın kritik şartı, brifing rakamlarının alttaki panolardan **sapmaması**. Bunu bir eşitlik
+testiyle "kontrol etmek" yeterli olmazdı: test, sapmayı yalnız **kendi fixture'ında** görür.
+
+`src/lib/briefing/engine.ts` bu yüzden hiçbir manşet rakamı için **kendi SQL'ini yazmıyor**.
+Sayfaların çağırdığı **aynı** yükleyicileri çağırıyor: `loadPositionSummary` / `loadLiquidityGap`
+(hazine), `loadWorkingCapital` (maliyet), `loadControlDashboard` / `loadAlerts` (kontrol),
+`loadOpenPromises` (tahsilat), `instancesOn` / `overdueOpen` (radar). Sapma için aynı fonksiyonun
+tek istekte iki farklı cevap vermesi gerekirdi.
+
+**Faz 26'dan bilinçli fark:** orada hazine ile `cashflow_months` gerçekten **iki ayrı kaynaktı** ve
+dürüst olan farkı **raporlamaktı**. Burada tek kaynak var, dolayısıyla fark bir bulgu değil
+**hata**; gate fark raporlamıyor, **eşitlik** iddia ediyor.
+
+Gate her iki katmanı da tutuyor: yükleyici çağrılarının varlığı kaynak seviyesinde (yorumlar
+ayıklanarak), rakamlar ise gerçek fixture üzerinde karşılaştırılıyor.
+
+### Karşılaştırmanın boş kümede yapılmadığı ayrıca iddia ediliyor
+
+İlk sürümde üç karşılaştırma `0 === 0` ve `null === null` ile geçiyordu — yani hiçbir şey
+kanıtlamıyordu. Fixture, üç rakamı da gerçekten dolduracak şekilde yeniden kuruldu (3 gün sonrasına
+5.000.000 TL çıkış → **4.250.000 TL** likidite açığı; satış/alış faturası → **DSO 365**; 40 gün
+gecikmiş kalem), ve gate artık **rakamların dolu olduğunu da** ayrı bir kontrol olarak iddia
+ediyor. Vakum geçiş, geçmeyen testten daha tehlikelidir.
+
+**Negatif kontrol:** `availableCash`'e kasten `+1` eklendim; gate `brifing=750001 pano=750000`
+diyerek düştü. 1 TL'lik sapmayı yakalıyor.
+
+### Bilinmeyen "—" olarak gösteriliyor, 0 TL olarak değil
+
+Hem brifing metninde hem kokpit tile'larında. `0 TL` ile "hesaplanamadı" farklı ifadeler ve
+ikincisini birincisi gibi gösteren ekran, tam olarak yanlışken güvenilen ekrandır. Ekranın
+kendisi de bunu yazıyor, yalnız kod yorumunda kalmıyor.
+
+Takvimde aynı ayrım iki yerde daha: limit vadesi satırının tutarı **NULL** (sıfır olsaydı günün
+netine karışırdı), ve tutarı bilinmeyen ödeme sözü takvime **girmiyor**.
+
+### `cockpit.ts` genişletildi, değiştirilmedi
+
+Widget katmanı mevcut `CockpitFacts`/`buildActions` yanına **ayrı bir arayüzle** eklendi;
+`/overview` sayfasının bağlı olduğu şey bozulmadı. Dosyanın kendi sözü de korundu — yeni finansal
+matematik yok, veritabanı yok, LLM yok: her rakam onu üreten fazdan **okunuyor**, bu modül yalnız
+sıralama ve ifade seçiyor. Gate saflığı kaynak seviyesinde doğruluyor.
+
+### LLM zincirin tamamen dışında
+
+`src/lib/briefing/*` ve `cockpit.ts` `@/lib/ai`'yi import etmiyor; negatif kontrolle kanıtlandı.
+Gerekçe pratik: brifingi okuyan kişinin rakamları panoya karşı **yeniden üretebilmesi** gerekir.
+
+### UI: onuncu modül açılmadı
+
+Dokuz modül mimarisi korundu. CFO brifingi + kokpit **İçgörüler**e (`/insights/briefing`),
+birleşik takvim **Finansman**a (`/finance/calendar`) sekme olarak eklendi. Brifing üretimi sayfa
+açılışında **otomatik değil**: kaydedilen bir `reports` satırı ve denetim kaydı üretmek, birinin
+ekranı açmasının yan etkisi olmamalı.
+
+### Doğrulama
+
+```
+env -u DATABASE_URL MIGRATION_DATABASE_URL="postgresql://..." pnpm phase32:verify
+```
+**44/44, 3 kez art arda**; `DATABASE_URL`'in tanımsız olduğu ayrıca doğrulandı. Fixture temizliği
+de bununla kanıtlandı — sızsaydı ikinci koşu iki gecikmiş kalem görürdü.

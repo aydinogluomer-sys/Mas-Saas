@@ -139,3 +139,170 @@ export function pickHeadlineRisk(f: CockpitFacts): { text: string; tone: "neg" |
     return { text: `${f.monthMissingCount + f.todayMissing} kalemde tutar eksik — veri kalitesi.`, tone: "warn" };
   return { text: "Belirgin risk yok — tablo sakin.", tone: "pos" };
 }
+
+/* ═══════════ Faz 32 — management cockpit widgets ═══════════ */
+
+/**
+ * The widget layer, added ALONGSIDE the Faz-14 action list rather than replacing it.
+ *
+ * Same contract as the rest of this file, restated because it is what makes the widgets safe:
+ * NO new financial math, NO database, NO LLM. Every number arrives already computed by the phase
+ * that owns it — treasury (26), financing/FX (27), budget/forecast (28), costing (30), controls
+ * (31) — and this module only decides how to RANK and PHRASE it.
+ *
+ * That is also why `CockpitFacts` above is untouched: the existing overview page depends on it,
+ * and widening a shared interface to add unrelated fields would make every existing caller supply
+ * values it has no business knowing.
+ */
+export interface CockpitWidgetFacts {
+  /** Treasury (Faz 26). */
+  availableCash: number | null;
+  minCashFloor: number | null;
+  liquidityGap7: number | null;
+  liquidityGap30: number | null;
+  /** Receivables / payables (Faz 22, 30). */
+  receivablesOpen: number | null;
+  payablesOpen: number | null;
+  dsoDays: number | null;
+  dpoDays: number | null;
+  /** Financing (Faz 27). */
+  netDebt: number | null;
+  facilityAvailable: number | null;
+  debtDue30: number | null;
+  /** FX (Faz 27). NULL when no position has a rate. */
+  fxWorstCase20: number | null;
+  /** Budget / forecast (Faz 28). */
+  budgetVarianceOverCount: number | null;
+  /** Costing (Faz 30). */
+  cycleExcludingInventory: number | null;
+  /** Controls (Faz 31). */
+  criticalControlCount: number;
+  openAlertCount: number;
+  /** Concentration (Faz 23). */
+  topConcentrationRatio: number | null;
+}
+
+export type WidgetTone = "pos" | "neutral" | "warn" | "neg";
+
+export interface CockpitWidget {
+  key: string;
+  label: string;
+  /** Already formatted for display, or "—" when the underlying value is unknown. */
+  value: string;
+  tone: WidgetTone;
+  /** Why this tone — shown so a red tile can be interrogated rather than just believed. */
+  note: string;
+  href: string;
+}
+
+/**
+ * Build the management cockpit tiles.
+ *
+ * UNKNOWN IS RENDERED AS "—", NEVER AS ZERO. A cash figure of 0 TL and "we could not compute the
+ * cash figure" are different statements, and a cockpit that shows the second as the first is
+ * exactly the screen that gets trusted while being wrong. Every tile below returns `neutral` with
+ * an explicit note when its input is null.
+ */
+export function buildWidgets(f: CockpitWidgetFacts): CockpitWidget[] {
+  const w: CockpitWidget[] = [];
+  const unknown = (key: string, label: string, href: string, why: string): CockpitWidget =>
+    ({ key, label, value: "—", tone: "neutral", note: why, href });
+
+  // Cash against the configured floor.
+  if (f.availableCash == null) {
+    w.push(unknown("cash", "Kullanılabilir nakit", "/finance/treasury", "Pozisyon hesaplanamadı"));
+  } else {
+    const belowFloor = f.minCashFloor != null && f.availableCash < f.minCashFloor;
+    w.push({
+      key: "cash", label: "Kullanılabilir nakit", value: tl(f.availableCash),
+      tone: belowFloor ? "neg" : "pos",
+      note: belowFloor ? `Taban ${tl(f.minCashFloor ?? 0)} altında` : "Taban korunuyor",
+      href: "/finance/treasury",
+    });
+  }
+
+  // Liquidity gap — judged on the 7-day horizon because that is the one you cannot refinance out of.
+  if (f.liquidityGap7 == null) {
+    w.push(unknown("liquidity", "7 günlük likidite açığı", "/finance/treasury", "Likidite verisi yok"));
+  } else {
+    w.push({
+      key: "liquidity", label: "7 günlük likidite açığı",
+      value: f.liquidityGap7 > 0 ? tl(f.liquidityGap7) : "yok",
+      tone: f.liquidityGap7 > 0 ? "neg" : "pos",
+      note: f.liquidityGap7 > 0 ? "Finansman ihtiyacı var" : "7 gün içinde açık yok",
+      href: "/finance/treasury",
+    });
+  }
+
+  w.push(f.receivablesOpen == null
+    ? unknown("ar", "Açık alacak", "/finance/receivables", "Alacak verisi yok")
+    : { key: "ar", label: "Açık alacak", value: tl(f.receivablesOpen), tone: "neutral",
+        note: f.dsoDays == null ? "DSO hesaplanamıyor" : `DSO ${f.dsoDays} gün`,
+        href: "/finance/receivables" });
+
+  w.push(f.payablesOpen == null
+    ? unknown("ap", "Açık borç", "/finance/receivables", "Borç verisi yok")
+    : { key: "ap", label: "Açık borç", value: tl(f.payablesOpen), tone: "neutral",
+        note: f.dpoDays == null ? "DPO hesaplanamıyor" : `DPO ${f.dpoDays} gün`,
+        href: "/finance/receivables" });
+
+  w.push(f.netDebt == null
+    ? unknown("netdebt", "Net borç", "/finance/facilities", "Borç pozisyonu yok")
+    : { key: "netdebt", label: "Net borç", value: tl(f.netDebt),
+        tone: f.netDebt > 0 ? "warn" : "pos",
+        note: f.facilityAvailable == null ? "Limit bilgisi yok"
+          : `Kullanılabilir limit ${tl(f.facilityAvailable)}`,
+        href: "/finance/facilities" });
+
+  w.push(f.debtDue30 == null
+    ? unknown("debt30", "30 günde vadesi gelen borç", "/finance/facilities", "Vade merdiveni boş")
+    : { key: "debt30", label: "30 günde vadesi gelen borç", value: tl(f.debtDue30),
+        tone: f.debtDue30 > 0 ? "warn" : "pos", note: "Taksit + çekilen limit",
+        href: "/finance/facilities" });
+
+  // FX worst case is ALWAYS a loss by construction (Faz 27), so a non-null value is never good news.
+  w.push(f.fxWorstCase20 == null
+    ? unknown("fx", "FX en kötü hâl (%20)", "/finance/fx", "Kuru olan pozisyon yok")
+    : { key: "fx", label: "FX en kötü hâl (%20)", value: tl(f.fxWorstCase20),
+        tone: f.fxWorstCase20 < 0 ? "warn" : "neutral", note: "Yön duyarlı hesaplanır",
+        href: "/finance/fx" });
+
+  w.push(f.cycleExcludingInventory == null
+    ? unknown("ccc", "Nakit döngüsü (env. hariç)", "/finance/profitability", "DSO/DPO hesaplanamıyor")
+    : { key: "ccc", label: "Nakit döngüsü (env. hariç)",
+        value: `${f.cycleExcludingInventory} gün`,
+        tone: f.cycleExcludingInventory > 45 ? "warn" : "pos",
+        // Named for what it omits — this system has no inventory data (Faz 30).
+        note: "Envanter verisi yok, DIO hariç",
+        href: "/finance/profitability" });
+
+  w.push(f.budgetVarianceOverCount == null
+    ? unknown("budget", "Bütçe aşımı", "/cashflow/budget", "Onaylı bütçe satırı yok")
+    : { key: "budget", label: "Bütçe aşımı", value: String(f.budgetVarianceOverCount),
+        tone: f.budgetVarianceOverCount > 0 ? "warn" : "pos", note: "Onaylı satırlar üzerinden",
+        href: "/cashflow/budget" });
+
+  w.push({
+    key: "controls", label: "Kritik kontrol", value: String(f.criticalControlCount),
+    tone: f.criticalControlCount > 0 ? "neg" : "pos",
+    note: `${f.openAlertCount} açık uyarı`,
+    href: "/system/controls",
+  });
+
+  w.push(f.topConcentrationRatio == null
+    ? unknown("concentration", "En yüksek yoğunlaşma", "/cashflow/concentration", "Yoğunlaşma verisi yok")
+    : { key: "concentration", label: "En yüksek yoğunlaşma",
+        value: `%${Math.round(f.topConcentrationRatio * 100)}`,
+        tone: f.topConcentrationRatio >= 0.4 ? "warn" : "pos", note: "Tek karşı taraf payı",
+        href: "/cashflow/concentration" });
+
+  return w;
+}
+
+/** Tiles that warrant attention, worst first — the cockpit's own triage. */
+export function widgetsNeedingAttention(widgets: CockpitWidget[]): CockpitWidget[] {
+  const rank: Record<WidgetTone, number> = { neg: 0, warn: 1, neutral: 2, pos: 3 };
+  return widgets
+    .filter((x) => x.tone === "neg" || x.tone === "warn")
+    .sort((a, b) => (rank[a.tone] - rank[b.tone]) || (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
+}
