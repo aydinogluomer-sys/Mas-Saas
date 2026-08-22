@@ -136,11 +136,35 @@ const CRITICAL_TABLE_PROPERTY: Record<(typeof CRITICAL_TABLES)[number], keyof Re
  * that legitimately don't have schema_migrations yet, so that caller leaves it false and
  * merely gets the true/false evidence back without rejection. */
 export function verifyRestoreListable(container: string, dumpPath: string, requireCriticalTables = false): RestoreVerificationResult {
-  const result = execFileSync("docker", ["exec", "-i", container, "pg_restore", "--list"], {
-    input: readFileSync(dumpPath),
-    encoding: "utf8",
-    maxBuffer: 64 * 1024 * 1024,
-  });
+  // Faz 33: the dump is COPIED into the container and pg_restore reads it as a file, rather than
+  // being read into memory and pushed through the child's stdin.
+  //
+  // Found by measurement, not review: after loading a realistic volume (24.000 invoices, 60.000
+  // bank transactions) every `db:migrate` began failing with `spawnSync docker EOF`. The previous
+  // form did `input: readFileSync(dumpPath)` — it buffered the ENTIRE dump and wrote it down a
+  // spawnSync stdin pipe, which breaks on a large payload. The consequence was not cosmetic: no
+  // migration could be applied to any database holding real data, because the mandatory backup
+  // could never be verified. The bug was invisible for 82 migrations because every test database
+  // was small.
+  //
+  // What is verified is unchanged: the same pg_restore --list, over the same dump bytes. Only the
+  // transport moved off a memory buffer. The listing itself is small (one line per object), so it
+  // still fits the output buffer comfortably.
+  const inContainer = `/tmp/mas-backup-verify-${process.pid}-${Date.now()}.dump`;
+  let result: string;
+  execFileSync("docker", ["cp", dumpPath, `${container}:${inContainer}`]);
+  try {
+    result = execFileSync("docker", ["exec", container, "pg_restore", "--list", inContainer], {
+      encoding: "utf8",
+      maxBuffer: 64 * 1024 * 1024,
+    });
+  } finally {
+    // Best-effort: a leftover temp file in the container must never mask the real verification
+    // result, so a failure to clean up is not allowed to throw over it.
+    try {
+      execFileSync("docker", ["exec", container, "rm", "-f", inContainer]);
+    } catch { /* cleanup only */ }
+  }
   if (!result || result.trim().length === 0) {
     throw new Error(`Yedek doğrulanamadı: 'pg_restore --list' boş çıktı döndürdü (${dumpPath}).`);
   }

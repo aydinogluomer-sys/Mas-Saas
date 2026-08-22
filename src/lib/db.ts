@@ -29,6 +29,7 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { Pool, type PoolClient, type QueryResult, type QueryResultRow } from "pg";
 import { env } from "@/lib/env";
+import { recordQuery } from "@/lib/perf/slow-query";
 
 declare global {
   var __masPool: Pool | undefined;
@@ -149,12 +150,22 @@ export function getPool(): Pool {
 
     const scopedQuery = async (...args: unknown[]): Promise<QueryResult<QueryResultRow>> => {
       const client = (await base.connect()) as TaggedClient;
+      // Faz 33: the one choke point every pooled query already passes through, which is why the
+      // slow-query timer lives here rather than at ~530 call sites. Only the DURATION and the
+      // query SHAPE are recorded — never the parameters, which are financial values.
+      const startedAt = process.hrtime.bigint();
       try {
         await prepare(client);
         // @ts-expect-error — pg's query() overloads are wider than this passthrough can express.
         return await client.query(...args);
       } finally {
         client.release();
+        // In the finally block deliberately: a query that FAILED after ten seconds is exactly the
+        // one worth seeing, and recording only successes would hide the worst cases.
+        const text = typeof args[0] === "string"
+          ? args[0]
+          : (args[0] as { text?: string } | undefined)?.text;
+        if (text) recordQuery(text, Number(process.hrtime.bigint() - startedAt) / 1e6);
       }
     };
 

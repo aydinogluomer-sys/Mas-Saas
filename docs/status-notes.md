@@ -3164,3 +3164,169 @@ env -u DATABASE_URL MIGRATION_DATABASE_URL="postgresql://..." pnpm phase32:verif
 ```
 **44/44, 3 kez art arda**; `DATABASE_URL`'in tanımsız olduğu ayrıca doğrulandı. Fixture temizliği
 de bununla kanıtlandı — sızsaydı ikinci koşu iki gecikmiş kalem görürdü.
+
+## Faz 33 — DONE (arka plan kuyruğu, ölçülmüş sorgu optimizasyonu, indeks/N+1 denetimi)
+
+Migration **0081-0082**. Bu faz diğerlerinden farklı bir kategori: yeni bir iş alanı değil,
+altyapı. İki özel şart vardı ve ikisi de ölçümle karşılandı.
+
+### Önce ölçtüm, sonra yazdım — sıralama tahmini yalanladı
+
+77 read model gerçekçi hacimde (24.000 fatura, 60.000 banka hareketi, 12.500 taksit) üçer kez
+çalıştırılıp medyanla sıralandı. Dosyaları okuyup "en çok JOIN'i olan" seçilseydi yanlış hedefe
+çalışılacaktı. Gerçek aykırı değer: **`working_capital_trend`, 37 satır için 5.995 ms** — 77
+view'ın toplamının %55'i, üstelik kârlılık sayfasını besliyor.
+
+`EXPLAIN (ANALYZE, BUFFERS)` sebebi söyledi: dört bağıntılı alt sorgu, faturaları **ay başına**
+yeniden tarıyor — 37 satır için **234.882 buffer hit**.
+
+### Dört aday kuruldu, biri ölçümle ELENDİ
+
+| | ms | buffer |
+| --- | ---: | ---: |
+| A eski view, indekssiz | 6.478 | 234.879 |
+| B eski view + kapsayan indeks | 2.185 | |
+| D tek geçişli yeniden yazım, indeksiz | 969 | |
+| **C ikisi birden (uygulanan)** | **683** | **5.247** |
+
+**9,5× hız, 45× daha az buffer**, iki değişiklik de bağımsız katkılı.
+
+Beşinci bir aday — kümülatif toplam + as-of arama — yazıldı, çıktısının birebir aynı olduğu
+kanıtlandı ve **3.225 ms ölçüldü**: yerine geçeceği şeyden yavaş. Atıldı. Ölçmeseydim
+"optimizasyon" diye girecekti, çünkü zekice görünüyordu. Koordinatörün uyardığı hata tam buydu.
+
+### Materialized view'a gerek kalmadı — ve bu bir karar
+
+Plan MV öneriyor, koordinatör de dikkatli olmamı istedi. Kullanmadım: MV **saklanmış türetilmiş
+veridir**, girdisi olan faturalar sürekli değişiyor (bugün girilen tahsilat iki yıl önceki ayın
+alacağını değiştirir), yani tazelemeler arasında bayat kalırdı. Altındaki faturalarla sessizce
+çelişen bir işletme sermayesi trendi, Faz 19/22/23/26'nın kaçındığı ikinci doğruluk kaynağının
+ta kendisi. 9,5×, hiçbir rakamı değiştirmeyen bir yeniden yazım ve bir indeksten geldi; kalan
+milisaniyeleri bayatlık karşılığında almak 683 ms'de kötü bir takas.
+
+### Rakamların değişmediği KANITLANDI, söz verilmedi
+
+Eski tanım `working_capital_trend_reference` olarak birebir korundu — hiçbir katmana grant yok,
+hiçbir sayfa okumuyor. Gate **her koşuda** simetrik `EXCEPT` ile iki tanımı karşılaştırıyor: sıfır
+fark. Yalnız yeniden yazım günü karşılaştırsaydım bir sonraki düzenleme sessizce geçerdi.
+
+Korunan zor ayrıntı: 365 günlük pencere ay sınırına oturmuyor. Aya yuvarlayan ilk taslağım yılda
+bir güne denk gelen faturaları düşürürdü.
+
+### Kuyruk: tek tablo, dört teslimat
+
+Plan dört kuyruk sayıyor; bunlar tek mekanizma. Dört tablo, dört durum sözlüğü ve birbirinden
+sürüklenen dört retry politikası demekti. `job_type` bir kolon. Ölü mektup da ayrı tablo değil
+ayrı **durum** — geçmişi (denemeler, hata, payload) aynı satırda kalıyor.
+
+Geçiş koruyucusu CHECK ile aynı migration'da. Reddedilenin gerekçesi somut: `succeeded → running`
+olsaydı bir retry döngüsü bitmiş bir importu yeniden çalıştırıp yazdığı her satırı ikiye
+katlardı. SQL guard'ı ile TS izin listesi gate'te küme olarak karşılaştırılıyor (Faz 29 dersi).
+
+### Yol boyunca bulunan gerçek bir hata: hacimde HİÇBİR migration uygulanamıyordu
+
+Hacmi yükledikten sonra `db:migrate` her seferinde `spawnSync docker EOF` ile düştü. Sebep:
+zorunlu yedeğin doğrulaması dump'ın **tamamını belleğe alıp** `spawnSync` stdin'inden
+`pg_restore --list`'e veriyordu. 82 migration boyunca görünmemişti çünkü her test veritabanı
+küçüktü. Sonucu kozmetik değil: **gerçek veri taşıyan hiçbir veritabanına migration
+uygulanamazdı.**
+
+Düzeltme transportu değiştiriyor, doğrulamayı değil: dump `docker cp` ile konteynere kopyalanıp
+aynı `pg_restore --list` dosya üzerinde çalıştırılıyor. Doğrulanan baytlar aynı. Onu kıran hacmin
+ta kendisinde kanıtlandı.
+
+### Gate'in kendi hatası da düzeltildi
+
+İlk koşu `unusedIndexes`'te belirsiz kolon yüzünden **fırlatarak** çıktı, temizlik hiç çalışmadı,
+artık işler kuyrukta kaldı ve **ikinci koşu bambaşka bir sebepten** düştü (claim, test edilen
+satır yerine artığı kaptı). Fixture'lar artık payload ile etiketleniyor, başlangıçta da
+temizleniyor ve temizlik `finally`'de — kendi başarısızlığından sağ çıkan bir fixture, sonraki
+her koşuyu sebep hakkında yalan söyletir.
+
+### Yavaş sorgu kaydı: bellekte, tabloda değil
+
+`getPool()`'un query proxy'sine bağlandı — 530 çağrı yerine tek geçiş noktası. Tablo olmamasının
+üç ölçülü sebebi var: her sorguyu kaydeden bir tabloya yazmak **kendini kaydeder** (özyineleme);
+yazma yükü bu fazın tersidir; ve RLS yüzünden yavaş bir SELECT çalıştıran viewer log satırı
+ekleyemez — yani en çok ilgilenilen katmanda tam da çalışmazdı. Bedeli kalıcı olmaması, ve bu
+ekranda yazıyor.
+
+**Parametre değerleri asla saklanmıyor** — yalnız sorgu şekli. Bu sorguların parametreleri fatura
+tutarları ve karşı taraf adları; bir tanı ekranı finansal verinin sızacağı yer değil.
+
+### İndeks denetimi: 110 aday, 1 indeks
+
+110 indekssiz yabancı anahtar, 0 gereksiz ön-ek indeksi bulundu. 110'unu birden indekslemek bu
+fazın kendi disiplinine aykırı olurdu — her indeks her insert'e **ölçülmemiş** yazma maliyeti
+bindirir. Ölçüm neyi haklı çıkardıysa o eklendi: bir tane.
+
+### Gate kendi optimizasyonunda düştü — ve haklıydı: görünürlük haritası
+
+Taze bir veritabanında gate kendi indeksini kullanmadığını bildirdi: **455.011 buffer**, index-only
+scan yok. Dakikalar sonra aynı veritabanında **7.185 buffer** ve index-only scan. Optimizasyon
+değişmemişti; eksik olan **VACUUM**'du.
+
+Bir index-only scan, heap'i yalnızca **görünürlük haritasının** "tümü görünür" işaretlediği
+sayfalar için atlayabilir ve o haritayı yalnız VACUUM kurar. Toplu insert'ten hemen sonra hiçbir
+sayfa öyle işaretli değildir, dolayısıyla planner index-only scan'i **doğru olarak** reddediyordu —
+plan tablonun o anki durumu için doğruydu, yalnızca autovacuum'dan önce gelmişti.
+
+`ANALYZE` yerine `VACUUM ANALYZE`. Bu olmadan tüm önce/sonra karşılaştırması autovacuum
+zamanlamasına atılmış bir yazı-tura olurdu.
+
+### Duvar saati eşiği: ısıtma, ve neden gevşetildiği
+
+Aynı taze veritabanında oran **1,9×** ölçüldü; ısınmış hâlde **2,4-3,4×**. Buffer sayıları iki
+ölçümde de **birebir aynıydı** (7.185 / 35.421) — yani plan değişmemişti, yalnız önbellek durumu.
+Bu bir performans özelliği değil ölçüm artefaktı, o yüzden **her iki sorgu da eşit şekilde** birer
+kez ısıtılıyor.
+
+Eşik 1,5×'e çekildi, bilerek pay bırakarak: kesin ve tekrarlanabilir kanıt **buffer sayısı**
+(4,9×, üç koşuda da aynı rakam); duvar saati gerçek bir kontrol olarak duruyor ama makine
+gürültüsünde çırpınan bir gate, insanlara "geçene kadar tekrar çalıştır" öğretir.
+
+### Faz 33 REGRESYONU DEĞİL — taban çizgisinde de düşenler
+
+Zinciri taze bir veritabanında tek geçişte çalıştırınca beş script düştü. "Benim mi?" sorusunu
+tahminle değil **deneyle** cevapladım: önceki commit'ten (Faz 32) ayrı bir git worktree kurup aynı
+sırayı aynı şekilde taze bir veritabanında çalıştırdım.
+
+| | Faz 32 tabanı | Faz 33 (bu çalışma) |
+| --- | --- | --- |
+| phase5, phase6, phase6b, phase26 | **düşüyor** | düşüyor |
+| phase24a | **düşüyor** | **geçiyor (düzelttim)** |
+
+**Aynı küme, eksi bir tane.** Faz 33 sıfır regresyon getirdi ve bir tanesini düzeltti. Bu dördü
+ortam/birikmiş duruma bağlı (phase26 `cash_accounts` istiyor ve taze kurulumda o tablo boş;
+phase6 denetim satırlarını global sayıp tam 3 bekliyor ve her koşuda artıyor). Bilerek
+**dokunmadım**: yazmadığım dört gate'e fixture uydurmak, anlamadığım bir şeyi sessizce maskeleme
+riskidir. Kanıtı raporluyorum, düzeltmeyi ilgili faza bırakıyorum.
+
+Not: worktree denemesinde phase17/18 de kırmızı çıktı, ama bu bir artefakt — karşılaştırma adil
+olsun diye `data/source/*.xlsx` dosyalarını oraya kopyalamıştım ve o gate'ler takip edilmeyen
+dosyaları tarıyor. Kendi depomda ikisi de geçiyor.
+
+### Yol boyunca düzeltilen ÖNCEDEN VAR OLAN üç gate açığı
+
+1. `db:roles-rls:verify` — `update public.payments` arşivlenmiş satıra çarpıyordu (seed:demo bir
+   ödemeyi arşivliyor, 0026 tetikleyicisi her güncellemeyi reddediyor). Gate RLS'i ölçüyor, arşiv
+   değişmezliğini değil; `archived_at is null` ile kapsandı. Owner bağlantısıyla da yeniden
+   üretildi, yani RLS'e özgü değildi.
+2. `db:roles-rls:verify` — `settings` fixture'ı **yoktu** ve taze kurulumda tablo boş, dolayısıyla
+   "yalnız admin değiştirebilir" kontrolü admin için de 0 satır görüp hiçbir şey zorlamıyordu.
+   Dosyanın kendi başlığındaki vakumluluk kuralı, fixture'ı olmayan tek özneye uygulanmamıştı.
+3. `phase24a:verify` — `settings.critical_payment_threshold_try` satırını **hiçbir migration
+   yazmıyor**; `radar/engine.ts` yoksa 100.000 varsayılanını kullanıyor. Gate "yok"u 0 sanıp
+   karşılaştırıyordu. Artık yürürlükteki eşikle karşılaştırıyor: satır varsa o, yoksa motorun
+   belgelenmiş varsayılanı. Test edilen özellik aynı — onay kuralı **ikinci** bir sayı icat
+   etmemeli.
+
+### Doğrulama
+
+```
+env -u DATABASE_URL MIGRATION_DATABASE_URL="postgresql://..." pnpm phase33:verify
+```
+**58/58, 3 kez art arda**, hacmin ilk kez üretildiği TAZE bir veritabanında (yani hatayı üreten
+senaryonun ta kendisinde). Buffer sayıları üç koşuda da birebir aynı: **7.185 / 35.421**. Duvar
+saati beklendiği gibi oynuyor ama her zaman ≥2,4×. `DATABASE_URL`'in tanımsız olduğu ayrıca
+doğrulandı.

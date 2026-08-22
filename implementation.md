@@ -578,6 +578,7 @@ pnpm phase29:verify   # Faz 29'dan sonra: deterministik optimizasyon + baseline-
 pnpm phase30:verify   # Faz 30'dan sonra: karlilik view'lari + masraf dagitimi + isletme sermayesi, DB gerektirir
 pnpm phase31:verify   # Faz 31'den sonra: finansal kontroller + anomali tespiti + uyari yasam dongusu, DB gerektirir
 pnpm phase32:verify   # Faz 32'den sonra: CFO brifingi + yonetim kokpiti + birlesik takvim, brifing=pano SAPMA YOK testi, DB gerektirir
+pnpm phase33:verify   # Faz 33ten sonra: arka plan kuyrugu + ONCE/SONRA query-plan karsilastirmasi + indeks denetimi, DB gerektirir
 pnpm build
 pnpm phase16:verify   # Faz 16'dan sonra: build'i gerektirir, bu yuzden build'den SONRA
 ```

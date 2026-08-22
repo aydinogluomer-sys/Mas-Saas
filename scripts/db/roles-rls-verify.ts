@@ -125,6 +125,14 @@ async function ensureFixtures(): Promise<void> {
     `insert into public.payments(name, recurrence_type, due_day, default_amount, currency)
      select 'P24B fixture', 'monthly', 15, 1000, 'TRY'
      where not exists (select 1 from public.payments where name = 'P24B fixture')`);
+  // Faz 33: settings was NOT fixtured, and on a freshly migrated + seed:demo'd database it is
+  // EMPTY — so `update public.settings` affected 0 rows for admin too, and the check that only
+  // admin may change settings failed while enforcing nothing. Exactly the vacuous-pass rule this
+  // file's own header cites, in the one subject that had no fixture.
+  await owner.query(
+    `insert into public.settings(key, value, description)
+     select 'p24b_fixture_setting', '{"fixture": true}'::jsonb, 'roles-rls gate fixture'
+     where not exists (select 1 from public.settings where key = 'p24b_fixture_setting')`);
   // At least two users, so "a tier sees exactly one row" is a restriction rather than a tautology.
   for (const tag of ['a', 'b']) {
     await owner.query(
@@ -267,10 +275,20 @@ async function main(): Promise<void> {
   /* ── D. UPDATE / DELETE judged by AFFECTED ROWS, not by exceptions ──────────────────── */
   // The trap this avoids: with no matching policy PostgreSQL does not raise on UPDATE/DELETE,
   // it reports zero rows. A gate that awaited an exception would pass while enforcing nothing.
+  // `archived_at is null` scoping added in Faz 33, when running the full chain against a freshly
+  // migrated + seed:demo'd database reproduced a failure that has nothing to do with RLS:
+  // seed:demo archives one payment, and 0026's archived-immutability trigger rejects ANY update
+  // touching it — including this no-op, and including one made by the owner. The blanket UPDATE
+  // was therefore testing two invariants at once and reporting the wrong one.
+  //
+  // What this check exists to measure is whether a TIER may update payments, judged by affected
+  // rows. Scoping to live rows measures exactly that; the archive invariant has its own coverage
+  // in db:constraints:verify and db:transitions:verify.
   const updateResults: string[] = [];
   for (const tier of TIERS) {
     const affected = await asTier(tier, async (c) =>
-      (await c.query(`update public.payments set source_notes = source_notes`)).rowCount ?? 0);
+      (await c.query(
+        `update public.payments set source_notes = source_notes where archived_at is null`)).rowCount ?? 0);
     const expected = can(tier, "payments", "update");
     const observed = affected > 0;
     if (observed !== expected) updateResults.push(`${tier}: beklenen=${expected} gerçek=${observed} (${affected} satır)`);
@@ -282,7 +300,10 @@ async function main(): Promise<void> {
   const deleteResults: string[] = [];
   for (const tier of TIERS) {
     const affected = await asTier(tier, async (c) =>
-      (await c.query(`delete from public.payments`)).rowCount ?? 0);
+      // Scoped for the same reason as the UPDATE above: an archived payment is protected by a
+      // different invariant, and this check is about tier permissions. (Every statement here is
+      // rolled back by asTier, so nothing is actually deleted either way.)
+      (await c.query(`delete from public.payments where archived_at is null`)).rowCount ?? 0);
     const expected = can(tier, "payments", "delete");
     const observed = affected > 0;
     if (observed !== expected) deleteResults.push(`${tier}: beklenen=${expected} gerçek=${observed}`);

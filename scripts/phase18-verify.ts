@@ -50,6 +50,15 @@ const ALLOWED_DIRECT_INSERT: Record<string, { occurrences: number; reason: strin
       "UPDATE/DELETE'in reddedildiğini gösteriyor. audit() üzerinden geçirmek constraint'i " +
       "değil yardımcıyı test etmek olurdu.",
   },
+  "scripts/perf/volume.ts": {
+    occurrences: 1,
+    reason:
+      "Faz 33: TEK KULLANIMLIK veritabanına performans ölçümü için hacim üreteci. audit_logs'a " +
+      "doğrudan yazan tek yer, çünkü üretilen şey denetim OLAYI değil, denetim TABLOSUNUN " +
+      "kendisinin hacmi — 40.000 satır generate_series ile toplu yazılıyor. audit() üzerinden " +
+      "geçirmek, ölçülmek istenen tabloyu doldurmak için 40.000 ayrı çağrı yapmak olurdu. " +
+      "mas_radar_dev'e asla çalıştırılmıyor; gate'in Usage satırı disposable URL'i adlandırıyor.",
+  },
 };
 
 /** This file names the patterns it hunts for, so it never scans itself. */

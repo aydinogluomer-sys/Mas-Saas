@@ -205,6 +205,10 @@ export const TABLE_CLASS: Record<string, AccessClass> = {
   optimization_runs: "operational",
   optimization_recommendations: "operational",
   // Faz 31. An operator triages control findings; a manager clears them.
+  // Faz 33. Enqueuing an import is data entry; everyone may watch the queue; only a manager or
+  // admin may DELETE a row — cancelling leaves the record, deleting destroys the evidence that
+  // the job ever ran.
+  background_jobs: "operational",
   control_alerts: "operational",
   source_sheets: "operational",
   import_rows: "operational",

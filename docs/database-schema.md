@@ -2064,3 +2064,122 @@ kolonlarda** verir — iyimser rakam sessizce manşet olamasın diye.
 Her iki read-model de VIEW. Faz 22-31 boyunca uygulanan kural: türetilmiş rakam saklanmaz, çünkü
 saklandığı anda kaynağıyla ayrışabilen ikinci bir doğruluk kaynağı olur. Bu faz özellikle
 "özet ile detay **sapamaz**" şartı taşıdığı için, kuralın gevşetilmesi en son burada düşünülebilirdi.
+
+## Arka Plan İşleri ve Ölçülmüş Performans (Faz 33, migration 0081-0082)
+
+Bu faz yeni bir iş alanı (domain) eklemiyor — altyapı işi. İki migration: biri kuyruk, biri
+**ölçümle gerekçelendirilmiş** optimizasyon.
+
+### 0081 — `background_jobs`: TEK kuyruk, dört teslimat
+
+Plan dört şey sayıyor: büyük Excel/CSV importları için kuyruk, rapor-üretim kuyruğu,
+büyük-export kuyruğu, import-progress takibi. Bunlar **tek mekanizma**. Bir iş, "istekten uzun
+süren, başarısız olabilen, sınırlı sayıda yeniden denenmesi gereken ve ilerleme bildiren iş"tir;
+bu tanım yük banka ekstresi yerine PDF export olduğunda değişmiyor.
+
+Dört tablo demek, dört durum sözlüğü, birbirinden sürüklenen dört retry politikası, dört RLS
+sınıflandırması ve bir şey takıldığında bakılacak dört yer demekti. `job_type` bir kolondur.
+
+| Alan | Neden var |
+| --- | --- |
+| `status` | queued/running/succeeded/failed/dead_letter/cancelled — CHECK + geçiş koruyucusu |
+| `attempts` / `max_attempts` | retry politikası satırın kendisinde, işçinin aklında değil |
+| `next_run_at` | geri çekilme (backoff) — bekleyen iş "henüz uygun değil"dir, herkes sebebini görür |
+| `progress_done` / `progress_total` | import ilerlemesi |
+| `dead_lettered_at` / `dead_letter_reason` | ölü mektup, ayrı tablo değil ayrı **durum** |
+| `dedupe_key` | kısmi unique: yalnız CANLI işler arasında |
+
+**Ölü mektup neden ayrı tablo değil.** Ölü mektuba düşen iş, geçmişi yerinde duran **aynı
+satırdır**: harcadığı denemeler, onu öldüren hata, sebep olan payload. Ayrı tabloya taşımak ya bu
+geçmişi kopyalardı (iki kaynak) ya da kaybederdi. `dead_letter` durumundan tek çıkış var ve
+koruyucu buna izin veriyor: **elle tekrar oynatma**.
+
+**Kısmi unique, düz unique değil.** `dedupe_key` yalnız `queued/running/failed` satırları arasında
+tekil. Düz bir unique olsaydı her aylık import, geçen ayınki başarılı olduğu için başarısız
+olurdu.
+
+**NULL yine sıfır değil.** `progress_total` NULL olabilir: sayfaları henüz açılmamış bir Excel
+dosyasının toplamı **bilinmiyordur**, ve 0 yazmak ekranda "0/0 — tamamlandı" diye okunur.
+`progress_done` ise 0 varsayılan, çünkü "henüz satır işlenmedi" gerçek bir sıfırdır.
+
+**Geçiş koruyucusu, CHECK ile AYNI migration'da** (0027 dersi). İzinli dokuz hamle ve reddedilen
+ikisi:
+
+- `succeeded → herhangi bir şey` **REDDEDİLİR** — tamamlanmış bir iş geri alınamaz. Olmasaydı bir
+  retry döngüsü bitmiş bir importu yeniden çalıştırıp yazdığı her satırı ikiye katlardı.
+- `cancelled → herhangi bir şey` **REDDEDİLİR** — birinin bilerek geri çektiği iş için aynısı.
+
+TS tarafındaki `ALLOWED_TRANSITIONS` listesi aynı kümeyi tarif ediyor ve **gate ikisini
+karşılaştırıyor** (Faz 29'un Zod/DB sürüklenme dersi): SQL'e hamle eklenip TS'e eklenmezse gate
+düşer, üretimde değil.
+
+`background_job_queue_health` bir VIEW — türetilmiş sayı saklanmaz.
+
+### 0082 — ölçülmüş optimizasyon
+
+**Önce ölçüldü, sonra yazıldı.** 77 read model gerçekçi hacimde (24.000 fatura, 60.000 banka
+hareketi, 12.500 taksit, 6.000 çek) üçer kez çalıştırılıp medyanla sıralandı. Sıralama, dosyaları
+okuyup tahmin edilecek şeyle uyuşmadı:
+
+```
+5.995 ms      37 satır   working_capital_trend      <- 77 view'ın TOPLAMININ %55'i
+  708 ms  60.000 satır   anomaly_unusual_record_hour
+  650 ms  60.000 satır   bank_unmatched_queue
+  477 ms       0 satır   invoice_duplicate_suspects
+  291 ms      11 satır   control_dashboard
+```
+
+60.000 satırlıkların maliyeti 60.000 satırı taşımak; hiçbir sayfa onları filtresiz çekmiyor.
+Gerçekten **patolojik** olan `working_capital_trend`: 37 satır için altı saniye, üstelik gerçek
+bir ekranı besliyor (`costing/engine.ts` → kârlılık sayfası).
+
+`EXPLAIN (ANALYZE, BUFFERS)` sebebi tam olarak söyledi: dört bağıntılı alt sorgu, her biri
+faturaları **ay başına** yeniden tarıyor — 37 satır üretmek için **234.882 shared buffer hit**.
+
+**Dört aday kuruldu ve ölçüldü:**
+
+| | ms | buffer |
+| --- | ---: | ---: |
+| A eski view, indekssiz | 6.478 | 234.879 |
+| B eski view + kapsayan indeks | 2.185 | |
+| D tek geçişli yeniden yazım, indeksiz | 969 | |
+| **C yeniden yazım + indeks (uygulanan)** | **683** | **5.247** |
+
+**9,5× hız, 45× daha az buffer.** İki değişiklik de bağımsız katkı veriyor.
+
+> **Ölçüm için VACUUM şart, yalnız ANALYZE yetmez.** Bir index-only scan heap'i yalnızca
+> görünürlük haritasının "tümü görünür" işaretlediği sayfalar için atlayabilir ve o haritayı yalnız
+> VACUUM kurar. Toplu insert'ten hemen sonra hiçbir sayfa öyle değildir; gate bunu yaşadı —
+> aynı veritabanında önce 455.011 buffer ve index-only scan yok, autovacuum'dan sonra 7.185 ve var.
+> Plan her iki seferde de tablonun o anki durumu için doğruydu. `scripts/perf/volume.ts` ve
+> `phase33:verify` bu yüzden `vacuum analyze` çalıştırıyor.
+
+**Reddedilen aday.** Kümülatif toplam + as-of arama ile beşinci bir yeniden yazım da yazıldı,
+çıktısının birebir aynı olduğu kanıtlandı ve **3.225 ms ölçüldü** — yerine geçtiği şeyden yavaş.
+Atıldı. Ölçülmeseydi "optimizasyon" diye girecekti, çünkü zekice görünüyordu.
+
+**Materialized view neden YOK.** Plan bunu öneriyor; bilerek kullanılmadı. Faz 19/22/23/26'nın
+tekrar tekrar vardığı sebep: materialized view **saklanmış türetilmiş veridir**. Buradaki girdiler
+faturalar ve sürekli değişiyorlar — bugün girilen bir tahsilat, iki yıl önceki bir ayın
+`receivables_open`'ını değiştirir — yani tazelemeler arasında bayat kalırdı. Altındaki faturalarla
+sessizce çelişen bir işletme sermayesi trendi, bu sistemin her fazda kaçındığı ikinci doğruluk
+kaynağının ta kendisi. Ve **gerek kalmadı**: 9,5× hiçbir rakamı değiştirmeyen bir yeniden yazım ve
+bir indeksten geldi.
+
+**Hiçbir rakam değişmedi — söz değil, kanıt.** DSO/DPO gerçek kararları besliyor. Yeniden yazım,
+önceki tanımla tam sonuç kümesi üzerinde simetrik `EXCEPT` ile karşılaştırıldı: iki yönde de sıfır
+fark. Eski tanım `working_capital_trend_reference` olarak **birebir korundu** — hiçbir katmana
+grant verilmedi, hiçbir sayfa okumuyor; tek işi gate'in **her koşuda** eşdeğerliği yeniden
+doğrulaması. Yalnız yeniden yazım günü karşılaştıran bir gate, bir sonraki düzenlemeyi kaçırırdı.
+
+Korunan zor ayrıntı: 365 günlük pencere `issue_date > (period_start - 365 gün)` — ay sınırına
+**oturmuyor**. Aya yuvarlayan bir taslak, yılda bir güne denk gelen faturaları sessizce düşürürdü.
+
+### İndeks denetimi: 110 aday, 1 indeks
+
+`scripts/perf/index-audit.ts` üç soruyu katalogdan yanıtlıyor: indekssiz yabancı anahtarlar
+(**110** bulundu), gereksiz ön-ek indeksleri (**0**), hiç kullanılmamış indeksler (yalnız bilgi —
+taze migrate edilmiş bir DB'de hepsi sıfırdır, gate bunun üzerine hata **vermez**).
+
+110'unun hepsini indekslemek bu fazın kendi disiplinine aykırı olurdu: her indeks, her insert'e
+ölçülmemiş bir yazma maliyeti bindirir. Ölçüm neyi haklı çıkardıysa o eklendi — bir tane.

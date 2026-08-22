@@ -345,9 +345,22 @@ async function main(): Promise<void> {
   const thresholdMatch = await q(
     `select (select threshold_amount from public.approval_rules where code='amount_over_100k')::text as rule_v,
             (select value from public.settings where key='critical_payment_threshold_try') as setting_v`);
-  const rv = Number(thresholdMatch[0].rule_v), sv = Number(thresholdMatch[0].setting_v);
-  record("100k eşiği settings.critical_payment_threshold_try ile AYNI sayı (ikinci eşik icat edilmedi)",
-    Number.isFinite(rv) && Number.isFinite(sv) && rv === sv, `kural=${rv} ayar=${sv}`);
+  const rv = Number(thresholdMatch[0].rule_v);
+  // Faz 33, running the whole chain on a fresh database: this check failed with `ayar=0`, because
+  // NO migration writes `critical_payment_threshold_try` — the row only exists if an operator
+  // sets it. src/lib/radar/engine.ts already knows that and falls back to a documented default of
+  // 100.000, so on a fresh install the one true threshold IS that default.
+  //
+  // Comparing against 0 was therefore comparing against "absent", not against a rival threshold.
+  // The property under test is unchanged and still real: the approval rule must not invent a
+  // SECOND number. It is now compared against whichever value actually governs — the stored
+  // setting when present, the engine's documented default when not.
+  const ENGINE_DEFAULT_CRITICAL_TRY = 100_000;
+  const rawSetting = thresholdMatch[0].setting_v;
+  const sv = rawSetting == null ? ENGINE_DEFAULT_CRITICAL_TRY : Number(rawSetting);
+  record("100k eşiği yürürlükteki kritik eşikle AYNI sayı (ikinci eşik icat edilmedi)",
+    Number.isFinite(rv) && Number.isFinite(sv) && rv === sv,
+    `kural=${rv} eşik=${sv}${rawSetting == null ? " (settings satırı yok — engine.ts varsayılanı)" : " (settings)"}`);
 
   /* ── 8. LESSON 3: ordering compares the KEY's value, not a row position ─────────────── */
   const ordering = await inRollback(async (c) => {
