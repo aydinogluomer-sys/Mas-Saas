@@ -50,7 +50,7 @@ async function refuses(c: PoolClient, sql: string, params: unknown[] = []): Prom
 async function mkUser(c: PoolClient, tag: string): Promise<string> {
   return (await c.query(
     `insert into public.users(username, password_hash, display_name, role)
-     values ($1,'x',$2,'operator') returning id`,
+     values ($1,'x',$2,'finance_manager') returning id`,
     [`p24a_${tag}_${Math.random().toString(36).slice(2, 8)}`, `P24A ${tag}`])).rows[0].id;
 }
 async function mkReview(c: PoolClient, status = "open"): Promise<string> {

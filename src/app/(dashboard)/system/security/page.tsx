@@ -1,9 +1,10 @@
 import { getPool } from "@/lib/db";
 import { Panel } from "@/components/ui/panel";
-import { Badge } from "@/components/ui/badge";
+import { Badge, type Tone } from "@/components/ui/badge";
 import { KpiCard, PageHeader, TableShell } from "@/components/ui/shell";
 import { requireAdmin } from "@/lib/auth";
 import { listUsers } from "@/lib/users/engine";
+import { APP_ROLES, ROLE_LABEL } from "@/lib/authz/matrix";
 import {
   activateUserAction,
   createUserAction,
@@ -17,6 +18,18 @@ export const dynamic = "force-dynamic";
 
 const fmt = (iso: string | null): string =>
   iso ? new Date(iso).toLocaleString("tr-TR", { timeZone: "Europe/Istanbul", dateStyle: "short", timeStyle: "short" }) : "—";
+
+
+// Tier colouring: the two tiers that can change money or accounts are visually distinct from
+// the ones that cannot, so a wrong assignment is noticeable in the list rather than only in
+// an audit log.
+const ROLE_TONE: Record<string, Tone> = {
+  viewer: "neutral",
+  finance_operator: "blue",
+  finance_approver: "amber",
+  finance_manager: "amber",
+  admin: "violet",
+};
 
 export default async function SecurityPage() {
   // Admin-only: an operator reaching this URL is redirected before any user data is read.
@@ -67,9 +80,7 @@ export default async function SecurityPage() {
                       </div>
                     </td>
                     <td>
-                      <Badge tone={u.role === "admin" ? "violet" : "neutral"}>
-                        {u.role === "admin" ? "admin" : "operatör"}
-                      </Badge>
+                      <Badge tone={ROLE_TONE[u.role] ?? "neutral"}>{ROLE_LABEL[u.role] ?? u.role}</Badge>
                     </td>
                     <td>
                       <span className="flex flex-wrap gap-1">
@@ -95,13 +106,17 @@ export default async function SecurityPage() {
                           <button className="button-ghost px-2 py-1">sıfırla</button>
                         </form>
 
+                        {/* Faz 24B: five tiers cannot be a two-way toggle any more — the
+                            operator picks the tier explicitly and submits it. */}
                         {!isSelf && (
-                          <form action={setRoleAction}>
+                          <form action={setRoleAction} className="flex items-center gap-1">
                             <input type="hidden" name="id" value={u.id} />
-                            <input type="hidden" name="role" value={u.role === "admin" ? "operator" : "admin"} />
-                            <button className="button-ghost px-2 py-1">
-                              {u.role === "admin" ? "operatör yap" : "admin yap"}
-                            </button>
+                            <select name="role" defaultValue={u.role} className="field-control px-1 py-0.5 text-[10px]">
+                              {APP_ROLES.map((r) => (
+                                <option key={r} value={r}>{ROLE_LABEL[r]}</option>
+                              ))}
+                            </select>
+                            <button className="button-ghost px-2 py-1">rolü değiştir</button>
                           </form>
                         )}
 
@@ -157,9 +172,12 @@ export default async function SecurityPage() {
           </label>
           <label className="flex flex-col gap-1">
             <span className="font-mono text-[10px] uppercase tracking-wider text-tone-3">Rol</span>
-            <select name="role" defaultValue="operator" className="field-control px-2 py-1.5 text-xs">
-              <option value="operator">operatör</option>
-              <option value="admin">admin</option>
+            {/* Least privilege by default: a new account starts as izleyici and is raised
+                deliberately, matching the column default set in migration 0056. */}
+            <select name="role" defaultValue="viewer" className="field-control px-2 py-1.5 text-xs">
+              {APP_ROLES.map((r) => (
+                <option key={r} value={r}>{ROLE_LABEL[r]}</option>
+              ))}
             </select>
           </label>
           <label className="flex flex-col gap-1">

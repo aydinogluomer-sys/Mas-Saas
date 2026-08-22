@@ -5,6 +5,7 @@ import { AppSidebar, type NavItem } from "@/components/ui/nav";
 import { AppToaster, FlashToaster } from "@/components/ui/primitives/toast";
 import { TooltipProvider } from "@/components/ui/primitives/tooltip";
 import { requireSession } from "@/lib/auth";
+import { navigationFor } from "@/lib/authz/matrix";
 
 // Financial workspaces must read current PostgreSQL data at request time.
 // This also prevents production builds from opening dozens of DB-backed pages
@@ -24,9 +25,13 @@ const NAV: NavItem[] = [
 ];
 
 export default async function DashboardLayout({ children }: { children: ReactNode }) {
-  await requireSession();
+  const session = await requireSession();
+  // Faz 24B: the nav is filtered server-side, so a module a tier may not use is never sent to
+  // the browser at all. The pages behind it keep their own guards — this removes the dead door,
+  // it does not replace the lock.
+  const nav = navigationFor(session.role, NAV);
   return <NavigationFeedbackProvider><div className="app-shell">
-    <AppSidebar items={NAV} gate={true} logoutAction={logoutAction} />
+    <AppSidebar items={nav} gate={true} logoutAction={logoutAction} />
     <div className="workspace-shell">
       <header className="workspace-bar">
         <div><span className="workspace-product">MAS Nakit Radar</span><span className="workspace-separator">/</span><span className="workspace-context">Finans operasyon merkezi</span></div>

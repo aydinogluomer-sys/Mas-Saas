@@ -948,3 +948,149 @@ davrandığı** hakkında. Anonim `resolved` yazımının legacy'de başarılı 
 legacy yazımını öldürmediği, `reviewed_at` koruma semantiğinin bozulmadığı ve legacy kolonlara
 guard **eklenmediği** ayrı ayrı kontrol ediliyor. Köprünün ilk iki sürümü legacy yazımlarını iptal
 etti; her ikisinde de yalnız `approvals`'a bakan bir doğrulama memnun kalırdı.
+
+---
+
+## Tam rol matrisi ve satır-seviyesi RLS (Faz 24B, migration 0056-0058)
+
+Planın en geniş kapsamlı fazı: 58 tablonun blanket `for all to authenticated using(true)`
+politikası, beş katmanlı gerçek bir rol matrisiyle değiştirildi. Hiçbir blanket politika sessizce
+bırakılmadı — `db:roles-rls:verify` kalan sayısının **sıfır** olduğunu kontrol ediyor.
+
+### Mimari karar: GUC değil, GERÇEK veritabanı rolleri
+
+Uygulama tek bir login rolüyle bağlanıyor (`mas_radar_app`, Faz 15), dolayısıyla veritabanı kendi
+başına bir izleyicinin isteğini bir yöneticininkinden ayıramaz. İki seçenek vardı: politikaların
+okuduğu bir oturum değişkeni (GUC) ya da bağlantının içine geçtiği gerçek roller. Gerçek roller
+seçildi, çünkü `to <role>` PostgreSQL'in politika eşleştiricisinin zaten üzerine kurulu olduğu
+mekanizma: kontrol planlayıcıda, her ifadede, gelecekteki bir politika yazarının eklemeyi
+unutabileceği bir ifade olmadan yapılıyor.
+
+**Kalıtım tuzağı ve onu çözen PG16 özelliği.** Politikalar bağlanılan kimliğe değil rol
+**üyeliğine** göre eşleşiyor. Düz bir `grant mas_radar_viewer to mas_radar_app` uygulamayı beş
+katmanın da üyesi yapardı; yani her katmanın politikalarının **birleşimini** sağlardı — kalıcı
+olarak admin. PostgreSQL 16 üyeliğin iki yarısını ayırıyor:
+
+    grant mas_radar_viewer to mas_radar_app with inherit false, set true;
+
+Tasarıma bağlanmadan önce bu kümede ölçüldü: `SET ROLE` yapılmamış bir uygulama bağlantısı,
+yalnız katman politikaları taşıyan bir tablodan **sıfır** satır görüyor; `set role` sonrası
+katmanın politikaları tam olarak uygulanıyor; `reset role` sonrası yine sıfıra dönüyor. Son
+özellik havuzlanmış bağlantıda güvenliğin temeli: sızan bir rol checkout'u aşamaz, çünkü reset
+bağlantıyı hiçbir şey okuyamayan bir kimliğe geri bırakıyor.
+
+**Bunun bedeli, açıkça:** 0058'den sonra katmana geçmemiş `mas_radar_app` iş tablolarını
+okuyamaz. Bu kasıtlı. Meşru olarak geçişsiz çalışan tek yol giriş/oturum sorguları; onlar Faz
+15'in users/sessions üzerindeki `mas_radar_app` hedefli politikalarını kullanmaya devam ediyor.
+
+### 0056 — `users.role` beş katmana genişledi
+
+| Eski | Yeni | Gerekçe |
+|---|---|---|
+| `admin` | `admin` | Değişmedi. |
+| `operator` | **`finance_manager`** | `finance_operator` DEĞİL. |
+
+İsim benzerliği `operator → finance_operator` diyor ama bu **yanlış** olurdu. Bugün `operator`
+"admin sayfaları dışında her şey": ödeme girme, inceleme çözme, senaryo çalıştırma ve Faz 24A'nın
+onaylarını karara bağlama. Yeni matriste `finance_operator` **onaylayamaz**. Bu eşleme, her mevcut
+hesabın günlük kullandığı bir yetkiyi sessizce **geri alırdı**; ilk belirti kendi onay kuyruğunu
+temizleyemeyen bir operatör olurdu. Bir migration operatörün seçtiği kısıtlamaları ekleyebilir;
+bir hesabın zaten sahip olduğunu sessizce alamaz. `finance_manager` bugünkü davranışı birebir
+koruyor. Daha dar olması gereken herkes güvenlik ekranından **bilinçli** olarak indirilebilir —
+denetim kaydına düşen, insanın verdiği bir karar.
+
+Yeni hesap varsayılanı `operator`'dan **`viewer`**'a düştü (en az yetki); mevcut hiçbir satırı
+değiştirmez.
+
+### 0057 — katman başına bir PostgreSQL rolü
+
+Beş rol (`mas_radar_viewer` … `mas_radar_admin`), hepsi **NOLOGIN**: kimse bir katman *olarak*
+bağlanmaz, katmanlar yalnız içine geçilmek ve politikalarca adlandırılmak için var. Hepsi
+`authenticated` üyesi olduğundan 0035'in tablo GRANT'lerini devralıyorlar — GRANT komutun
+denenebilir olup olmadığına, politika hangi satıra dokunabileceğine karar veriyor; ikisi de gerekli.
+
+İki yardımcı fonksiyon: `current_app_user()` (`app.user_id` GUC'undan; satır-seviyesi kurallar
+kişiyi bilmek zorunda, SET ROLE yalnız katmanı söyler) ve `current_app_role()`. İkisi de
+`current_setting(..., true)` kullanıyor: ayar yoksa **NULL** döner, ve politikalar NULL'ı "hiçbir
+şeyle eşleşmez" olarak okur, asla joker olarak değil.
+
+### 0058 — sınıf bazlı politikalar
+
+61 tablo × 5 katman × 4 komut = binden fazla karar. Hepsini tek tek yazan bir migration
+incelenemez olurdu — yanlış hücrenin saklanacağı yer tam olarak orasıdır. Bunun yerine her tablo
+**tek bir erişim sınıfına** atandı, politikalar bu atamadan üretiliyor:
+
+| Sınıf | Tablo | viewer | finance_operator | finance_approver | finance_manager | admin |
+|---|---|---|---|---|---|---|
+| `reference` | 16 | S | S | S | SIUD | SIUD |
+| `operational` | 21 | S | SIU | S | SIUD | SIUD |
+| `evidence` | 7 | S | SI | SI | SI | SI |
+| `derived` | 11 | S | SIU | S | SIUD | SIUD |
+| `config` (`settings`) | 1 | S | S | S | S | SIUD |
+| `approval` (`approvals`) | 1 | S | SI | SU | SIU | SIU |
+| `approval_config` (`approval_rules`) | 1 | S | S | S | S | SIUD |
+| `auth_users` (`users`) | 1 | S(kendi) | S(kendi) | S(kendi) | S(kendi) | SIUD |
+| `auth_sessions` (`sessions`) | 1 | S(kendi) | S(kendi) | S(kendi) | S(kendi) | S(kendi) |
+| `ledger` (`schema_migrations`) | 1 | — | — | — | — | — |
+
+(S=select, I=insert, U=update, D=delete)
+
+Dikkat çeken hücreler ve gerekçeleri:
+
+- **`evidence` hiç kimseye UPDATE/DELETE vermiyor, admin dahil.** Bu tablolar 0022 deseniyle
+  zaten salt-ekleme; RLS'in trigger ile aynı şeyi söylemesi, reddin iki katmandan hangisinin
+  değiştiğine bağlı kalmamasını sağlıyor.
+- **`finance_approver` `approvals`'a INSERT edemiyor** — talep açmak veri girişidir; kararını
+  verdiği talepleri kendisi açabilen bir onaylayıcı, yalnız isimde bir maker-checker ayrımıdır.
+  Bunu **gate yakaladı**: kod matrisi başta `ENTER` diyordu, migration doğruyu söylüyordu.
+- **`approval_rules` yalnız admin'e yazılıyor, manager'a değil.** Kendi onaylarını yöneten eşiği
+  indirebilen bir yönetici, maker-checker tasarımını bir ayar ekranından çözerdi.
+- **`sessions`'a hiçbir katman yazamıyor**, admin dahil. Oturumları giriş yolu yazıyor (geçişsiz,
+  `sessions_app_runtime` üzerinden); yazabilen bir katman başka bir hesap adına oturum basabilirdi.
+- **`schema_migrations` politikasız** (0020/0035, değişmedi) — ledger yalnız owner'ındır.
+
+### Satır seviyesi: dürüstçe kapsanmış
+
+Plan `finance_operator`'ın "kendi girdiği kayıtları" düzenlemesini öneriyor. Bu bir sahiplik
+kolonu gerektiriyor ve **61 tablonun yalnız 8'inde** var — varsayılmadı, ölçüldü. Diğer 53'e
+`created_by` ekleyip NULL doldurmak, sahiplik politikası altında **hiçbir operatörün hiçbir
+geçmiş kaydı düzenleyememesi** demekti: sıkılaştırmanın değerinden çok daha büyük bir erişim
+kaybı ve mali geçmişin yazarlığının sessizce yeniden yazılması. Bu yüzden sahiplik, verinin
+desteklediği yerde uygulanıyor:
+
+- `action_items`, `invoice_allocations`, `scenarios` — operatörün UPDATE'i `created_by =
+  current_app_user()` ile sınırlı; manager/admin sınırsız (yazarı ayrılmış bir kaydı birinin
+  düzeltebilmesi gerekir).
+- `approvals` — onaylayıcı **kendi talebini** güncelleyemiyor (`requested_by is distinct from
+  current_app_user()`). Faz 24A bunu bir CHECK'e koymuştu; bu, aynı kuralı bir katman altta
+  tekrarlıyor: kısıt geçerli satırın neye benzediğini, politika satıra kimin ulaşabileceğini
+  söyler. NULL `requested_by` (24A'nın anonim legacy geçmişi) güncellenebilir kalıyor.
+- `users`/`sessions` — katman yalnız **kendi** satırını görüyor (`users_self_read`).
+
+### Faz 15'in giriş akışı: genişletildi, değiştirilmedi
+
+`users_deny_all`/`sessions_deny_all` (0031) ve `users_app_runtime`/`sessions_app_runtime` (0035)
+**aynen** duruyor; gate dördünü de hedef rolleriyle birlikte kontrol ediyor. Eklenen tek şey
+isteğin diğer yarısı: runtime bir katmana geçtikten sonra `current_user` artık `mas_radar_app`
+değil, dolayısıyla `app_runtime` eşleşmeyi bırakıyor ve aynı istekteki sonraki her
+`requireSession()` okunabilir kullanıcı satırı bulamazdı. `users_self_read`/`sessions_self_read`
+tam olarak bu kadarını geri veriyor: tabloyu değil, **kendi satırını**.
+
+Uygulama tarafında `src/lib/db.ts` artık iki havuz tutuyor — `getPool()` (her checkout'ta katmana
+geçer) ve `getRawPool()` (giriş/oturum, geçişsiz). Ayrı örnekler olmaları güvenlik argümanının
+kendisi: scoped havuzdaki fiziksel bağlantı checkout'lar arasında katman rolünü taşıyabilir,
+raw havuzdaki asla taşıyamaz.
+
+### `migrate.ts` ANCHORS: 0007 çapası ONARILDI (eklenmedi)
+
+0007 çapası `payments_authenticated_all` politikasını arıyordu; 0058 o politikayı kasıtlı olarak
+düşürüyor. Sonuç: 0058'den sonra çapa, 0007'nin açıkça çalıştığı bir veritabanında "çalışmamış"
+diyordu. Bu kozmetik değil — `LEDGER_EMPTY_RECOVERY` ledger'ı boş bir veritabanının
+legacy-complete olup olmadığına çapalara bakarak karar veriyor ve on dokuz geçen çapa arasında
+bir tanesinin kalması tam olarak hard-fail eden `INCONSISTENT_PARTIAL` durumu. Herhangi bir 24B
+veritabanının ham geri yüklemesi migrate etmeyi reddederdi.
+
+0007 iki şey yapıyor: her tabloda RLS'i **açıyor** ve blanket politikaları yaratıyor. 24B yalnız
+ikincisinin yerine geçiyor. Çapa artık kalıcı yarıyı parmak izi alıyor
+(`payments.relrowsecurity`) — aynı soruyu soruyor, ve hem 24B öncesinde hem sonrasında doğru
+cevaplıyor. **Dizi uzamadı**: aynı sayıda, aynı versiyonlar.

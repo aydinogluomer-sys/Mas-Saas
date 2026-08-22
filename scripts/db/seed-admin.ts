@@ -14,6 +14,7 @@
 import { Pool } from "pg";
 import { hash as argon2Hash } from "@node-rs/argon2";
 import { ownerDatabaseUrl } from "./owner-url";
+import { APP_ROLES, type AppRole } from "../../src/lib/authz/matrix";
 
 // `2` is Algorithm.Argon2id — @node-rs/argon2's Algorithm is a const enum, which can't be
 // imported by value under this project's isolatedModules; see src/lib/auth.ts.
@@ -28,7 +29,7 @@ const BACKSPACE_BS = String.fromCharCode(8);
 interface Args {
   username: string;
   displayName: string;
-  role: "admin" | "operator";
+  role: AppRole;
 }
 
 function parseArgs(argv: string[]): Args {
@@ -41,14 +42,18 @@ function parseArgs(argv: string[]): Args {
   const role = get("--role") ?? "admin";
   if (!username) throw new Error("--username zorunlu.");
   if (!displayName) throw new Error("--display-name zorunlu.");
-  if (role !== "admin" && role !== "operator") throw new Error("--role yalnız 'admin' veya 'operator' olabilir.");
+  // Faz 24B: five tiers. Validated against the matrix's own list so this script can never
+  // create an account in a tier the permission matrix does not know how to enforce.
+  if (!(APP_ROLES as readonly string[]).includes(role)) {
+    throw new Error(`--role yalnız şunlardan biri olabilir: ${APP_ROLES.join(", ")}`);
+  }
   if (argv.includes("--password")) {
     throw new Error(
       "--password argv üzerinden kabul edilmiyor (shell geçmişinde/process listesinde görünür). " +
         "SEED_ADMIN_PASSWORD ortam değişkenini kullanın veya bayraksız çalıştırıp maskeli girişi kullanın.",
     );
   }
-  return { username, displayName, role };
+  return { username, displayName, role: role as AppRole };
 }
 
 /** Raw-mode stdin, echoes '*' per character, never the real character — no external

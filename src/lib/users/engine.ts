@@ -14,6 +14,7 @@ import { z } from "zod";
 import { DomainError } from "@/lib/domain-error";
 import { hashPassword } from "@/lib/auth";
 import { audit } from "@/lib/audit";
+import { APP_ROLES, type AppRole } from "@/lib/authz/matrix";
 
 /** Mirrors the DB CHECK in 0031 — kept in sync deliberately so a bad value fails at the
  * boundary with a Turkish message instead of as a raw Postgres constraint error. */
@@ -23,7 +24,9 @@ const usernameSchema = z
   .toLowerCase()
   .regex(/^[a-z0-9_.-]{3,32}$/, "Kullanıcı adı 3-32 karakter olmalı; yalnız küçük harf, rakam, nokta, tire, alt tire.");
 const displayNameSchema = z.string().trim().min(1, "Görünen ad zorunlu.").max(120, "Görünen ad çok uzun.");
-const roleSchema = z.enum(["admin", "operator"]);
+// Faz 24B: the five tiers, taken from the permission matrix rather than restated, so the form
+// can never accept a role the matrix does not know how to enforce.
+const roleSchema = z.enum(APP_ROLES);
 /** 12 is the same floor scripts/db/seed-admin.ts enforces — one rule, both entry points. */
 const passwordSchema = z.string().min(12, "Parola en az 12 karakter olmalı.");
 
@@ -39,7 +42,7 @@ export interface UserListRow {
   id: string;
   username: string;
   displayName: string;
-  role: "admin" | "operator";
+  role: AppRole;
   isActive: boolean;
   lockedUntil: string | null;
   failedLoginCount: number;
@@ -56,7 +59,7 @@ const RESERVED_USERNAMES = ["system", "testsprite-qa"];
 
 export async function listUsers(pool: Pool): Promise<UserListRow[]> {
   const res = await pool.query<{
-    id: string; username: string; display_name: string; role: "admin" | "operator";
+    id: string; username: string; display_name: string; role: AppRole;
     is_active: boolean; locked_until: string | null; failed_login_count: number;
     created_at: string; last_seen_at: string | null; active_sessions: number;
   }>(
@@ -206,7 +209,7 @@ export async function setUserActive(pool: Pool, id: string, isActive: boolean, a
   }
 }
 
-export async function setUserRole(pool: Pool, id: string, role: "admin" | "operator", actorId: string): Promise<void> {
+export async function setUserRole(pool: Pool, id: string, role: AppRole, actorId: string): Promise<void> {
   const parsed = roleSchema.safeParse(role);
   if (!parsed.success) throw new DomainError("Geçersiz rol.");
   const client = await pool.connect();

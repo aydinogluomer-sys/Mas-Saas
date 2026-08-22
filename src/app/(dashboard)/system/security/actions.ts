@@ -9,6 +9,7 @@ import { getPool } from "@/lib/db";
 import { requireAdmin } from "@/lib/auth";
 import { DomainError } from "@/lib/domain-error";
 import { createUser, resetUserPassword, setUserActive, setUserRole, unlockUser } from "@/lib/users/engine";
+import { APP_ROLES, type AppRole } from "@/lib/authz/matrix";
 
 const PAGE = "/system/security";
 
@@ -26,16 +27,26 @@ function fail(e: unknown): never {
   throw e;
 }
 
+
+/** Narrow untrusted form input to a known tier, defaulting to the least privileged one. */
+function asAppRole(raw: FormDataEntryValue | null, fallback: AppRole): AppRole {
+  const value = String(raw ?? "");
+  return (APP_ROLES as readonly string[]).includes(value) ? (value as AppRole) : fallback;
+}
+
 export async function createUserAction(formData: FormData): Promise<void> {
   const admin = await requireAdmin();
-  const role = String(formData.get("role") ?? "operator");
+  // Faz 24B: the tier arrives as free text from a form, so it is narrowed against the matrix's
+  // own list. An unrecognised value becomes `viewer` — the least privileged tier — rather than
+  // the most convenient one, so a malformed request can never mint an approver.
+  const role = asAppRole(formData.get("role"), "viewer");
   try {
     await createUser(
       getPool(),
       {
         username: String(formData.get("username") ?? ""),
         displayName: String(formData.get("displayName") ?? ""),
-        role: role === "admin" ? "admin" : "operator",
+        role,
         password: String(formData.get("password") ?? ""),
       },
       admin.id,
@@ -84,8 +95,10 @@ export async function activateUserAction(formData: FormData): Promise<void> {
 export async function setRoleAction(formData: FormData): Promise<void> {
   const admin = await requireAdmin();
   const id = String(formData.get("id") ?? "");
-  const role = String(formData.get("role") ?? "") === "admin" ? "admin" : "operator";
-  if (id === admin.id && role === "operator") redirect(`${PAGE}?flash=user_self`);
+  const role = asAppRole(formData.get("role"), "viewer");
+  // An admin must not be able to demote themselves out of the only tier that can promote
+  // anyone back — that is how a system ends up with no administrator at all.
+  if (id === admin.id && role !== "admin") redirect(`${PAGE}?flash=user_self`);
   try {
     await setUserRole(getPool(), id, role, admin.id);
   } catch (e) {

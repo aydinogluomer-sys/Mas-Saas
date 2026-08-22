@@ -2159,3 +2159,113 @@ girmesin diye.
   noktaları** (fatura/ödeme/IBAN/cari yaratımında otomatik onay talebi açmak) bu fazın kapsamında
   değil — `approvals` varlığı ve workflow'u kuruldu, entegrasyon Faz 24B/28'e ait.
 - `invoice_requires_approval` ve `payment_requires_approval` pasif geliyor (gerekçe 0054'te).
+
+---
+
+## Faz 24B — DONE (beş katmanlı rol matrisi, gerçek DB rolleri, satır-seviyesi RLS)
+
+**migration 0056-0058 · `src/lib/authz/{matrix,context}.ts` · `src/lib/db.ts` iki havuz ·
+`scripts/db/roles-rls-verify.ts` (29/29, 3 ardışık koşuda aynı) · 58 blanket politika → 225
+rol-farkında politika**
+
+Planın en geniş kapsamlı fazı ve koordinatörün uyardığı gibi en yüksek regresyon riskini taşıyanı.
+Bu yüzden aşağıda ne çalıştığından çok **ne kırıldığı** yazıyor.
+
+### Mimari karar: gerçek DB rolleri, ve onları güvenli kılan PG16 özelliği
+
+Uygulama tek login rolüyle bağlanıyor, yani veritabanı kendi başına izleyiciyi yöneticiden
+ayıramaz. Seçenekler: politikaların okuduğu bir GUC, ya da bağlantının içine geçtiği gerçek
+roller. Gerçek roller seçildi — `to <role>` planlayıcıda, her ifadede çalışır; unutulabilecek bir
+ifade yoktur.
+
+Tuzak şu: politikalar rol **üyeliğine** göre eşleşiyor, yani düz bir grant uygulamayı beş katmanın
+da üyesi yapar ve **birleşim** yetkisi verirdi — kalıcı admin, fazın tam tersi. PostgreSQL 16
+üyeliğin iki yarısını ayırıyor: `grant ... with inherit false, set true`. **Tasarıma bağlanmadan
+önce bu kümede ölçtüm**: geçişsiz uygulama bağlantısı sıfır satır görüyor, `set role` sonrası
+katman politikaları uygulanıyor, `reset role` sonrası yine sıfır. Sonuncusu havuzlanmış bağlantıda
+güvenliğin temeli.
+
+### `operator → finance_manager`, `finance_operator` DEĞİL
+
+İsim benzerliği yanıltıcı. Bugünkü `operator` onay da veriyor; yeni matriste `finance_operator`
+veremiyor. `operator → finance_operator` eşlemesi her mevcut hesaptan günlük kullandığı bir yetkiyi
+**sessizce alırdı**. Bir migration operatörün seçtiği kısıtlamaları ekleyebilir, hesabın zaten
+sahip olduğunu sessizce alamaz. Daraltma güvenlik ekranından, insanın kararıyla, denetim kaydına
+düşerek yapılır.
+
+### Dört gerçek kırılma — ve hepsini farklı bir kontrol yakaladı
+
+**1. `users_role_check`: tüm zincir çöktü (28 gate'ten 26'sı).** `seed-system-actor.ts`,
+`seed-admin.ts` ve üç phase gate'i hâlâ `role='operator'` yazıyordu; yeni CHECK reddetti. Enum'u
+genişletirken `src/` içini taradım ama `scripts/` içini taramadım — enum genişletmesinin yazarları
+yalnız uygulamada değil.
+
+**2. ANCHORS 0007 çapası: `LEDGER_EMPTY_RECOVERY` hard-fail.** Çapa
+`payments_authenticated_all` politikasını arıyordu; 0058 onu kasıtlı düşürüyor. Sonuç: 0007'nin
+açıkça çalıştığı bir DB'de "çalışmamış" — ve on dokuz geçen çapa arasında bir kalan tam olarak
+`INCONSISTENT_PARTIAL`, yani herhangi bir 24B veritabanının ham geri yüklemesi migrate etmeyi
+reddederdi. **Koordinatörün "ANCHORS'a dokunma" kuralı ekleme yapmayı yasaklıyor; burada mevcut
+bir çapa bu fazın meşru bir değişikliğiyle geçersizleşti.** 0007 iki şey yapıyor: RLS'i açıyor ve
+blanket politikaları kuruyor; 24B yalnız ikincisinin yerine geçiyor. Çapa artık kalıcı yarıyı
+(`payments.relrowsecurity`) parmak izi alıyor — aynı soru, hem 24B öncesi hem sonrası doğru cevap.
+**Dizi uzamadı**: aynı sayıda, aynı versiyonlar. Bunu ayrıca raporda işaretledim.
+
+**3. `getPool().end()` artık havuzun yarısını kapatıyordu.** Tek havuzu ikiye böldüm; disposable
+DB'sini düşürmeye çalışan `db:transitions:verify` "başka oturum kullanıyor" hatası aldı — hiç
+istemediği raw havuz açık kalmıştı. Çağıran için tek bir veritabanı katmanı var, o yüzden `end`
+artık ikisini birden kapatıyor.
+
+**4. `pnpm start` HİÇ AÇILMADI — ve bunu yalnız gerçekten çalıştırmak gösterdi.** DB gate'lerinin
+29/29'u bunu yakalayamazdı: `prepare-runtime.ts` ilk istekten önce çalışıyor, oturum yok, dolayısıyla
+katman yok, dolayısıyla hiçbir yazma hakkı yok. İki ayrı hata olarak patladı (önce `audit_logs`,
+sonra `users`) ve çözümü mekanik değil kavramsaldı: **arka plan işleri gerçek bir kategoridir ve
+kimliklerini sessizce miras almak yerine açıkça istemeliler.** `runAsSystem()` katmanı açıkça
+söylüyor (`finance_manager` — üretim için yeterli, ayar/kural/hesap değiştirmek için kasıtlı olarak
+yetersiz); sistem hesabının kendisini sağlamak ise uygulamanın **kendi** servis hesabını bakımı
+olduğu için Faz 15'in `mas_radar_app` politikası üzerinden geçişsiz raw havuzda kalıyor.
+
+### Gate kendi hatasını iki kez yakaladı
+
+- **Kod matrisi ile migration çeliştiğinde migration haklıydı.** Kod `finance_approver`'a
+  `approvals` INSERT'i veriyordu; 0058 vermiyordu. Doğru olan 0058: talep açmak veri girişidir ve
+  kararını verdiği talepleri kendisi açabilen bir onaylayıcı yalnız isimde maker-checker'dır. Aynı
+  şekilde tek bir `auth` sınıfı admin'in `sessions`'a INSERT edebildiğini iddia ediyordu; veritabanı
+  (doğru olarak) reddediyordu — sınıf `auth_users`/`auth_sessions` olarak ayrıldı.
+- **Kendi boşlukta geçen testim.** İlk koşuda dört kontrol "reddedildi" dedi; gerçek "reddedilecek
+  bir şey yoktu" idi (`payments` boştu, tek kullanıcı vardı). Faz 20/23'ün kuralını onurlandırmak
+  için yazılan gate, tam o kurala takıldı. Artık kendi fixture'ını kuruyor.
+
+### RLS semantiğiyle ilgili, gate tasarımını belirleyen ölçüm
+
+Politikası olmayan bir UPDATE/DELETE **hata fırlatmıyor** — PostgreSQL sessizce sıfır satır
+etkiliyor. İstisna bekleyen bir gate hiçbir şey zorlamadan geçerdi. Bu yüzden yazma kontrolleri
+**etkilenen satır sayısıyla** yargılanıyor. INSERT ise farklı: RLS reddi `42501` ile ve **NOT
+NULL'dan ÖNCE** geliyor (ölçüldü), bu da `insert ... default values` ile 61 tablonun tamamı için
+tek satır bile yazmadan gerçek bir INSERT verdicti veriyor — 5 katman × 61 tablo = **305
+kombinasyon** tek kontrolde.
+
+### Satır seviyesi: dürüstçe kapsanmış
+
+61 tablonun yalnız 8'inde sahiplik kolonu var (ölçüldü). Diğer 53'e `created_by` ekleyip NULL
+doldurmak, sahiplik politikası altında hiçbir operatörün hiçbir geçmiş kaydı düzenleyememesi
+demekti — sıkılaştırmanın değerinden büyük bir erişim kaybı. Sahiplik verinin desteklediği yerde:
+`action_items`/`invoice_allocations`/`scenarios` (operatör yalnız kendi kaydı) ve `approvals`
+(onaylayıcı kendi talebini güncelleyemez). Kalanı komut granülerliğinde — hâlâ gerçek ve test
+edilmiş bir kısıt.
+
+### Giriş akışının bozulmadığının kanıtı
+
+- `users_deny_all`/`sessions_deny_all` + `users_app_runtime`/`sessions_app_runtime` dördü de
+  **aynen** duruyor; gate hedef rolleriyle birlikte kontrol ediyor.
+- Katmana geçmemiş bağlantı `users`'ı **okuyabiliyor** (pozitif kontrol) ama `payments`'ı
+  okuyamıyor — giriş yolu çalışıyor, iş tabloları kapalı.
+- **Gerçek sunucu smoke testi:** `pnpm start` açıldı; admin oturumuyla `/overview`, `/payments`,
+  `/data/approvals`, `/system/security`, `/cashflow` hepsi 200; viewer oturumuyla veriler görünüyor,
+  `/system` nav'dan düşüyor, `/system/security` admin içeriği vermiyor.
+
+### Kalan sınırlar
+
+- Rol-bazlı navigasyonun yalnız **backend** yarısı yapıldı (`navigationFor`/`canSeeModule`); UI
+  tarafı plana göre Faz 36.
+- `settings` tüm katmanlarca okunabiliyor (eşikler neredeyse her ekranı besliyor), yalnız admin
+  yazabiliyor. Sır barındırmıyor — token'lar ortam değişkenlerinde.

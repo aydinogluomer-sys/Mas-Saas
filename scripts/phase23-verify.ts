@@ -58,7 +58,7 @@ async function party(c: PoolClient, tag: string): Promise<string> {
 async function user(c: PoolClient, name: string): Promise<string> {
   return (await c.query(
     `insert into public.users(username, password_hash, display_name, role)
-     values ($1,'x',$2,'operator') returning id`, [name, name])).rows[0].id;
+     values ($1,'x',$2,'finance_manager') returning id`, [name, name])).rows[0].id;
 }
 async function invoice(
   c: PoolClient, p: string, no: string, gross: number,

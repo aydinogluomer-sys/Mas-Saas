@@ -41,7 +41,7 @@ export async function ensureSystemActor(pool: Pool): Promise<string> {
   const unusablePasswordHash = await argon2Hash(randomBytes(32).toString("base64url"), ARGON2_OPTIONS);
   const res = await pool.query<{ id: string }>(
     `insert into public.users (username, password_hash, display_name, role, is_active)
-     values ($1, $2, 'Sistem (otomatik araçlar)', 'operator', false)
+     values ($1, $2, 'Sistem (otomatik araçlar)', 'finance_manager', false)
      on conflict (username) do nothing
      returning id`,
     [SYSTEM_ACTOR_USERNAME, unusablePasswordHash],

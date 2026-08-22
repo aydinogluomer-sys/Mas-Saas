@@ -197,7 +197,7 @@ async function main(): Promise<void> {
     // depend-on-ambient-data trap that produced a vacuous pass in Faz 20 and Faz 21.
     const actor = (await c.query(
       `insert into public.users(username, password_hash, display_name, role)
-       values ('p22probe','x','P22 Probe','operator') returning id`)).rows[0].id;
+       values ('p22probe','x','P22 Probe','finance_manager') returning id`)).rows[0].id;
     await c.query(
       `update public.invoice_allocations set reversed_at=now(), reversed_by=$2, reversed_reason='sonda'
        where invoice_id=$1 and reversed_at is null`, [inv2, actor]);

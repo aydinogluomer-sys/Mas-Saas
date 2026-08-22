@@ -41,8 +41,24 @@ const ANCHORS: Anchor[] = [
   { version: "0006", label: "public.reports", sql: "select to_regclass('public.reports') is not null as pass" },
   {
     version: "0007",
-    label: "pg_policies payments_authenticated_all",
-    sql: "select exists(select 1 from pg_policies where schemaname='public' and policyname='payments_authenticated_all') as pass",
+    // Faz 24B REPAIRED this anchor — it did not add one, and the array is the same length and
+    // the same versions it has always been.
+    //
+    // It used to look for the policy `payments_authenticated_all`. Migration 0058 deliberately
+    // drops that policy (and its 57 siblings) when it replaces the blanket rule with the
+    // tier-aware ones, so from 0058 onward the anchor reported "0007 never ran" on a database
+    // where 0007 plainly had. That is not cosmetic: LEDGER_EMPTY_RECOVERY consults the anchors
+    // to decide whether a ledger-less database is legacy-complete, and one failing anchor among
+    // nineteen passing ones is exactly the INCONSISTENT_PARTIAL state that hard-fails. A raw
+    // restore of any 24B database would have refused to migrate.
+    //
+    // 0007 does two things: it enables RLS on every table AND creates the blanket policies.
+    // The second is what 24B legitimately supersedes; the first it leaves untouched. So the
+    // anchor now fingerprints the durable half. It answers the same question — did 0007 run —
+    // and answers it correctly both before 24B (a real legacy DB has RLS on payments) and
+    // after, which the policy test no longer could.
+    label: "payments row level security enabled",
+    sql: "select coalesce((select relrowsecurity from pg_class c join pg_namespace n on n.oid=c.relnamespace where n.nspname='public' and c.relname='payments'), false) as pass",
   },
   { version: "0008", label: "public.checks_source_row_uq", sql: "select to_regclass('public.checks_source_row_uq') is not null as pass" },
   {

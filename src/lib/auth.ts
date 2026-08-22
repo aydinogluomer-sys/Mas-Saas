@@ -5,7 +5,8 @@ import { createHash, randomBytes } from "node:crypto";
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import { hash as argon2Hash, verify as argon2Verify } from "@node-rs/argon2";
-import { getPool } from "@/lib/db";
+import { getRawPool } from "@/lib/db";
+import type { AppRole } from "@/lib/authz/matrix";
 import { env } from "@/lib/env";
 import { SESSION_COOKIE } from "@/lib/auth-constants";
 
@@ -24,7 +25,10 @@ const LOCKOUT_MINUTES = 15;
 // project's isolatedModules; its own .d.ts documents 2 as Argon2id, also the package default).
 const ARGON2_OPTIONS = { algorithm: 2, memoryCost: 19456, timeCost: 2, parallelism: 1 };
 
-export type UserRole = "admin" | "operator";
+// Faz 24B widened this from admin|operator to the five tiers. It is an alias rather than a
+// second list so the roles are defined in exactly one place — @/lib/authz/matrix, which is also
+// what the permission matrix and the RLS gate read.
+export type UserRole = AppRole;
 
 export interface SessionUser {
   id: string;
@@ -79,7 +83,7 @@ export async function attemptLogin(rawUsername: string, password: string): Promi
     await argon2Verify(await getDummyPasswordHash(), password || " ");
     return { ok: false };
   }
-  const client = await getPool().connect();
+  const client = await getRawPool().connect();
   try {
     await client.query("begin");
     const res = await client.query<{
@@ -135,7 +139,7 @@ export async function createSessionCookie(userId: string): Promise<void> {
   const token = randomBytes(32).toString("base64url");
   const tokenHash = createHash("sha256").update(token).digest("hex");
   const expiresAt = new Date(Date.now() + SESSION_DURATION_MS).toISOString();
-  await getPool().query(`insert into public.sessions (user_id, token_hash, expires_at) values ($1, $2, $3)`, [
+  await getRawPool().query(`insert into public.sessions (user_id, token_hash, expires_at) values ($1, $2, $3)`, [
     userId,
     tokenHash,
     expiresAt,
@@ -161,7 +165,7 @@ async function getQaBypassUser(): Promise<SessionUser | null> {
   // NODE_ENV stays a direct read (Next.js inlines it at build time); only the bypass flag
   // itself comes from the validated env module.
   if (!env.qaBypassAuth || process.env.NODE_ENV === "production") return null;
-  const res = await getPool().query<{ id: string; username: string; display_name: string; role: UserRole }>(
+  const res = await getRawPool().query<{ id: string; username: string; display_name: string; role: UserRole }>(
     `select id, username, display_name, role from public.users where username = $1 and is_active = false`,
     [QA_BYPASS_USERNAME],
   );
@@ -178,7 +182,10 @@ export async function getCurrentUser(): Promise<SessionUser | null> {
   const token = jar.get(SESSION_COOKIE)?.value;
   if (!token) return null;
   const tokenHash = createHash("sha256").update(token).digest("hex");
-  const pool = getPool();
+  // Deliberately the RAW pool: this lookup is what DECIDES the tier, so it cannot already be
+  // running inside one. It reaches users/sessions through the mas_radar_app-targeted policies
+  // Faz 15 added, which exist for precisely this moment in the request.
+  const pool = getRawPool();
   const res = await pool.query<{
     id: string;
     username: string;
@@ -241,7 +248,7 @@ export async function revokeCurrentSession(): Promise<void> {
   const token = jar.get(SESSION_COOKIE)?.value;
   if (token) {
     const tokenHash = createHash("sha256").update(token).digest("hex");
-    await getPool().query(`update public.sessions set revoked_at = now() where token_hash = $1 and revoked_at is null`, [
+    await getRawPool().query(`update public.sessions set revoked_at = now() where token_hash = $1 and revoked_at is null`, [
       tokenHash,
     ]);
   }
