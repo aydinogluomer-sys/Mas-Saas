@@ -10,7 +10,7 @@ import { addDaysISO } from "@/lib/financing/rules";
 export interface ReminderRule {
   id: string;
   name: string;
-  targetKind: "payment_instance" | "check" | "loan_installment";
+  targetKind: "payment_instance" | "check" | "loan_installment" | "invoice" | "promise_to_pay";
   offsetDays: number; // 7,3,1,0 before due; -1 = overdue check
   channel: "telegram" | "email";
   minAmount: number | null;
@@ -29,7 +29,25 @@ export interface ReminderTarget {
   riskReasons: string[];
 }
 
-const OPEN = new Set(["unpaid", "partial"]); // skill: unpaid or partial only
+/**
+ * Which statuses still deserve a reminder, PER TARGET KIND — Faz 25.
+ *
+ * This was a single set (`unpaid`/`partial`) written when every target was a payment. Those two
+ * words do not exist in the invoice or promise vocabularies: an open invoice is 'open', an
+ * outstanding promise is 'pending'. Keeping the single set and adding the new kinds would have
+ * made every invoice and every promise permanently ineligible — a reminder engine that silently
+ * reminds about nothing, which is the failure mode hardest to notice because nothing errors.
+ *
+ * A 'draft' invoice is deliberately absent: chasing a customer for a document that has not been
+ * issued would be chasing them for nothing.
+ */
+const OPEN_BY_KIND: Record<ReminderRule["targetKind"], ReadonlySet<string>> = {
+  payment_instance: new Set(["unpaid", "partial"]),
+  check: new Set(["unpaid", "partial"]),
+  loan_installment: new Set(["unpaid", "partial"]),
+  invoice: new Set(["open", "partial"]),
+  promise_to_pay: new Set(["pending"]),
+};
 
 /** Date a reminder should fire = due_date shifted back by offset (offset 7 → 7 days before). */
 export function scheduledForDate(dueDateISO: string, offsetDays: number): string {
@@ -50,16 +68,29 @@ export function thresholdPasses(minAmount: number | null, amount: number | null)
 /** True when this rule fires for this target on todayISO (Europe/Istanbul date). */
 export function isEligible(rule: ReminderRule, target: ReminderTarget, todayISO: string): boolean {
   if (!rule.isActive) return false;
-  if (rule.targetKind !== targetKindOf(target.entityTable)) return false;
-  if (!OPEN.has(target.status)) return false;
+  const kind = targetKindOf(target.entityTable);
+  // An unrecognised table matches NOTHING. Before Faz 25 this function fell through to
+  // 'loan_installment' for anything it did not recognise, which was harmless while three kinds
+  // existed and would have silently filed every invoice and every promise under loans the moment
+  // a fourth appeared. Unknown now means unknown.
+  if (kind === null) return false;
+  if (rule.targetKind !== kind) return false;
+  if (!(OPEN_BY_KIND[kind] ?? new Set<string>()).has(target.status)) return false;
   if (scheduledForDate(target.dueDate, rule.offsetDays) !== todayISO) return false;
   return thresholdPasses(rule.minAmount, target.amount);
 }
 
-function targetKindOf(entityTable: string): ReminderRule["targetKind"] {
-  if (entityTable === "payment_instances") return "payment_instance";
-  if (entityTable === "checks") return "check";
-  return "loan_installment";
+/** Explicit table -> kind map. Returns null for anything not listed; never guesses. */
+const KIND_BY_TABLE: Record<string, ReminderRule["targetKind"]> = {
+  payment_instances: "payment_instance",
+  checks: "check",
+  loan_installments: "loan_installment",
+  invoices: "invoice",
+  promise_to_pay: "promise_to_pay",
+};
+
+export function targetKindOf(entityTable: string): ReminderRule["targetKind"] | null {
+  return KIND_BY_TABLE[entityTable] ?? null;
 }
 
 export interface EligibleDelivery {

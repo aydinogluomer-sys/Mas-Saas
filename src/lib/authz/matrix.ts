@@ -180,6 +180,11 @@ export const TABLE_CLASS: Record<string, AccessClass> = {
   action_items: "operational",
   mapping_reviews: "operational",
   source_workbooks: "operational",
+  // Faz 25. Recording that a customer promised to pay is day-to-day collections work, so it
+  // lands in the same class as payments and invoices: operator enters and revises, manager and
+  // admin may also delete. Classified here as well as in migration 0059 — db:roles-rls:verify
+  // executes both against a live database and fails if they disagree.
+  promise_to_pay: "operational",
   source_sheets: "operational",
   import_rows: "operational",
   // evidence (7)

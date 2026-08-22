@@ -46,6 +46,12 @@ const schema = z.object({
   DATABASE_POOL_MAX: z.string().optional(),
   TELEGRAM_BOT_TOKEN: z.string().optional(),
   TELEGRAM_CHAT_ID: z.string().optional(),
+  // Faz 25 — the email channel. Optional exactly like the Telegram pair: unset means the
+  // transport reports an honest failure, never a silent success. No SMTP client is introduced;
+  // this posts to a configured HTTP endpoint, the same shape the Telegram transport uses.
+  EMAIL_API_URL: z.string().optional(),
+  EMAIL_API_KEY: z.string().optional(),
+  EMAIL_TO: z.string().optional(),
   OPENAI_API_KEY: z.string().optional(),
   OPENAI_MODEL: z.string().optional(),
   // Left as a loose string rather than z.enum(["0","1"]) on purpose: the original reads were
@@ -63,6 +69,9 @@ const parsed = schema.safeParse({
   DATABASE_POOL_MAX: process.env.DATABASE_POOL_MAX,
   TELEGRAM_BOT_TOKEN: optional(process.env.TELEGRAM_BOT_TOKEN),
   TELEGRAM_CHAT_ID: optional(process.env.TELEGRAM_CHAT_ID),
+  EMAIL_API_URL: optional(process.env.EMAIL_API_URL),
+  EMAIL_API_KEY: optional(process.env.EMAIL_API_KEY),
+  EMAIL_TO: optional(process.env.EMAIL_TO),
   OPENAI_API_KEY: optional(process.env.OPENAI_API_KEY),
   OPENAI_MODEL: optional(process.env.OPENAI_MODEL),
   AI_FORCE_DETERMINISTIC: optional(process.env.AI_FORCE_DETERMINISTIC),
@@ -100,6 +109,9 @@ export const env = Object.freeze({
   databasePoolMax: resolvePoolMax(raw.DATABASE_POOL_MAX),
   telegramBotToken: raw.TELEGRAM_BOT_TOKEN,
   telegramChatId: raw.TELEGRAM_CHAT_ID,
+  emailApiUrl: raw.EMAIL_API_URL,
+  emailApiKey: raw.EMAIL_API_KEY,
+  emailTo: raw.EMAIL_TO,
   openaiApiKey: raw.OPENAI_API_KEY,
   openaiModel: raw.OPENAI_MODEL ?? "gpt-5.5",
 

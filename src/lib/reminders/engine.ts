@@ -51,6 +51,60 @@ export async function loadPaymentTargets(pool: Pool, todayISO: string): Promise<
   }));
 }
 
+
+/**
+ * invoice targets — Faz 25. Open sales receivables in the same window.
+ *
+ * Sales only: a purchase invoice is our own obligation and is already reminded about through its
+ * payment_instance, so including it would produce two reminders for one payment. Draft invoices
+ * are excluded by the status filter — chasing a customer for an unissued document is chasing
+ * them for nothing.
+ */
+export async function loadInvoiceTargets(pool: Pool, todayISO: string): Promise<ReminderTarget[]> {
+  const r = await pool.query(
+    `select v.id, coalesce(pa.name, v.invoice_no, '(cari yok)') as name,
+            to_char(v.due_date,'YYYY-MM-DD') as due_date,
+            (v.gross_amount - coalesce(v.allocated_amount,0)) as amount,
+            v.status, pa.name as owner
+     from public.invoices v
+     left join public.parties pa on pa.id = v.party_id
+     where v.direction = 'sales'
+       and v.status in ('open','partial')
+       and v.due_date between ($1::date - 1) and ($1::date + 7)`,
+    [todayISO],
+  );
+  return r.rows.map((x) => ({
+    entityTable: "invoices", entityId: x.id, name: x.name,
+    dueDate: x.due_date, amount: moneyOrNull(x.amount), status: x.status,
+    owner: x.owner, provider: null, riskReasons: [],
+  }));
+}
+
+/**
+ * promise_to_pay targets — Faz 25.
+ *
+ * The point of reminding on a promise is that a PERSON notices it before the detection job turns
+ * it into a statistic. The window therefore reaches one day past the promised date, which is the
+ * first day `detectBrokenPromises` would act on it.
+ */
+export async function loadPromiseTargets(pool: Pool, todayISO: string): Promise<ReminderTarget[]> {
+  const r = await pool.query(
+    `select p.id, pa.name as name,
+            to_char(p.promised_date,'YYYY-MM-DD') as due_date,
+            p.promised_amount as amount, p.status, pa.name as owner
+     from public.promise_to_pay p
+     join public.parties pa on pa.id = p.party_id
+     where p.status = 'pending'
+       and p.promised_date between ($1::date - 1) and ($1::date + 7)`,
+    [todayISO],
+  );
+  return r.rows.map((x) => ({
+    entityTable: "promise_to_pay", entityId: x.id, name: x.name,
+    dueDate: x.due_date, amount: moneyOrNull(x.amount), status: x.status,
+    owner: x.owner, provider: null, riskReasons: [],
+  }));
+}
+
 export interface ScheduleResult {
   eligible: number;
   inserted: number;
@@ -58,10 +112,20 @@ export interface ScheduleResult {
 }
 
 export async function scheduleReminders(pool: Pool, todayISO = istanbulDateISO()): Promise<ScheduleResult> {
-  const [rules, targets] = await Promise.all([
+  // Faz 25 widened this from one loader to three.
+  //
+  // NOTE ON A PRE-EXISTING GAP, left as it was found rather than quietly half-fixed: the
+  // `check` and `loan_installment` rule kinds have been allowed by the CHECK since 0006 but have
+  // never had a target loader, so rules of those kinds have always produced zero deliveries.
+  // Faz 25 is the collections phase and adds the two kinds collections needs; wiring checks and
+  // loan installments is a financing concern and belongs with that work, not smuggled in here.
+  const [rules, paymentTargets, invoiceTargets, promiseTargets] = await Promise.all([
     loadActiveRules(pool),
     loadPaymentTargets(pool, todayISO),
+    loadInvoiceTargets(pool, todayISO),
+    loadPromiseTargets(pool, todayISO),
   ]);
+  const targets = [...paymentTargets, ...invoiceTargets, ...promiseTargets];
   const eligible = eligibleDeliveries(rules, targets, todayISO);
   let inserted = 0;
   const client = await pool.connect();

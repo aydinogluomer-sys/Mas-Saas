@@ -1094,3 +1094,174 @@ veritabanının ham geri yüklemesi migrate etmeyi reddederdi.
 ikincisinin yerine geçiyor. Çapa artık kalıcı yarıyı parmak izi alıyor
 (`payments.relrowsecurity`) — aynı soruyu soruyor, ve hem 24B öncesinde hem sonrasında doğru
 cevaplıyor. **Dizi uzamadı**: aynı sayıda, aynı versiyonlar.
+
+---
+
+## Tahsilat Merkezi (Faz 25, migration 0059-0061)
+
+Bu faz tek bir ayrımın üzerine kurulu: **bir söz, bir alacak değildir.** `invoices` bir
+yükümlülüğü kaydeder; `promise_to_pay` bir telefon görüşmesinde söylenmiş bir cümleyi kaydeder.
+Ayrı tablolarda durmalarının sebebi tam olarak budur — söz muhasebe ağırlığı taşımaz, üzerine
+dağıtım yapılamaz, hiçbir faturanın bakiyesini değiştirmez. Var olma sebebi, ikisi arasındaki
+farkın ölçülebilmesidir.
+
+### 0059 — `promise_to_pay`
+
+Neden `action_items` üzerine binmedi: plan tahsilat **notlarının** mevcut görev modelini
+kullanmasını ve ikinci bir görev modeli icat edilmemesini şart koşuyor, ve bu faz buna uyuyor —
+kırılan sözün doğurduğu takip işi bir `action_item` (0060 `source_type`'ı bunun için genişletiyor).
+Ama sözün kendisi bir görev değil: karşı tarafı, tutarı, gerçekle karşılaştırılan bir **tarihi** ve
+bir puana beslenen bir sonucu var. `action_item` olarak modellemek bunların hepsini `note` alanına
+sıkıştırmak ve serbest metne kaybetmek olurdu.
+
+Kolonların taşıdığı kararlar:
+
+- **`promised_amount` NULL olabilir** — "haftaya bir şeyler gönderirim" gerçek bir sözdür ve
+  0,00 TL olarak kaydetmek bu kolonu toplayan her view'da maruziyeti olduğundan küçük gösterirdi.
+  NULL = bilinmiyor, 0 = açıkça hiç (CLAUDE.md).
+- **`promised_date` NOT NULL** — tablonun tamamı bu kolonu bugünle karşılaştırmak için var;
+  tarihsiz bir söz ne tutulabilir ne kırılabilir.
+- **`invoice_id` NULL olabilir** — müşteriler rutin olarak belge adı vermeden bakiye üzerine söz
+  verir; zorunlu kılmak ya bunu engeller ya da yanlış bir tahmine davet ederdi.
+- **`resolved_by` NULL olabilir** — Faz 24A dersinin tekrarı: kırılan söz tespit işinin arkasında
+  oturum açmış bir kullanıcı yok. Aktör zorunlu olsaydı iş bir tane **uydurmak** zorunda kalırdı.
+  NULL burada "bunu bir insan kararlaştırmadı" demek; `resolution_source` hangi mekanizmanın
+  kararlaştırdığını söylüyor (`manual` / `auto_detection`).
+
+#### Durum izin listesi (CHECK ile AYNI migration'da)
+
+| Eski | Yeni | Anlam |
+|---|---|---|
+| pending | kept | para geldi |
+| pending | broken | tarih geçti, para gelmedi |
+| pending | cancelled | söz tarihinden önce geri çekildi |
+| **broken** | **kept** | **geç ödeme — atlanması en kolay olan** |
+
+`broken → kept` gerçekten önemli: geç ödeme, kırılan bir sözün **olağan** sonucudur, istisnası
+değil. Bu geçiş olmasaydı üç gün geç ödeyen müşteri sonsuza kadar `broken` olarak donar ve bu
+tabloya dayanan her puan onu kalıcı olarak olduğundan kötü gösterirdi.
+
+`kept` ve `cancelled` terminal. Karara bağlanmış bir sözü yeniden açmak tahsilat geçmişini
+sessizce yeniden yazmak olurdu; dürüst yol **yeni bir söz** kaydetmektir — ki puanın görmesi
+gereken de zaten budur.
+
+Guard 0027'nin dersiyle yazıldı: izin listesi CHECK'in tamamına karşı kuruldu, bugün işe yarayan
+geçişlere göre değil. `phase25:verify` 12 sıralı çiftin tamamını gerçek satırlar üstünde deniyor
+(4 kabul, 8 ret) ve ayrıca koddaki `canTransition` ile birebir aynı olduğunu kanıtlıyor.
+
+#### `promise_to_pay_open_unique` ve NULLS NOT DISTINCT
+
+Aynı cari + aynı tarih için ikinci bir **açık** söz engelleniyor. `nulls not distinct` burada
+kozmetik değil: sözlerin çoğunda `invoice_id` NULL ve varsayılan kuralda her NULL benzersiz
+sayıldığı için indeks **en yaygın durumda hiçbir şeyi korumazdı**.
+
+#### RLS: Faz 24B'nin `operational` sınıfı
+
+Yeni tablo blanket politikayla değil, 24B'nin beş katmanlı modeliyle yazıldı: `viewer` okur,
+`finance_operator` girer ve düzeltir, `finance_manager`/`admin` ayrıca siler. Sınıf 0058'in kendi
+mantığından seçildi (payments/invoices ile aynı sınıf) ve `src/lib/authz/matrix.ts` aynı
+sınıflandırmayı taşıyor — `db:roles-rls:verify` ikisini canlı veritabanında çalıştırıp
+uyuştuklarını kanıtlıyor.
+
+**Kasıtlı olarak owner-scoped DEĞİL**, `action_items`'ın aksine: tahsilat ekip işidir, para
+geldiğinde telefonu kim açtıysa sözü "tutuldu" işaretleyebilmeli — sözü meslektaşı kaydetmiş
+olsa bile. Düzenlemeyi kaydı girene kilitlemek, biri izinliyken sözlerin `pending` takılı
+kalması demekti; erişim maliyeti sıkılaştırmanın değerinden büyük.
+
+### 0060 — iki CHECK enum'unun genişletilmesi (başka hiçbir şey yapmayan bir migration)
+
+Faz 22'nin kuralı: enum CHECK genişletmesi kendi açık migration'ını alır. Gerekçe denetlenebilirlik
+— bu iki ifade şemanın **geri kalanının** bundan sonra neyi kabul edeceğini değiştiriyor.
+
+- `reminders.target_kind`: 3 → 5 (`invoice`, `promise_to_pay` eklendi).
+- `action_items.source_type`: 6 → 7 (`collection` eklendi). **Tek değer**, üç değil:
+  `related_entity_table`/`related_entity_id` çifti zaten neyle ilgili olduğunu, `severity` zaten
+  aciliyeti söylüyor; sınıflandırmayı enum'a itmek her değişikliği bir migration'a bağlardı.
+- `reminders.channel` **zaten** 0006'dan beri `('telegram','email')` içeriyordu — ölçüldü,
+  varsayılmadı. Faz 25 kanal değerini değil **taşıyıcıyı** ekliyor, bu yüzden burada bilerek ALTER
+  yok; yokluğun bir bulgu olarak okunması için migration içinde açıkça yazılı.
+
+İki genişletme de eski değer kümesinin **üst kümesi**, dolayısıyla mevcut hiçbir satırı
+geçersizleştiremez — dolu bir veritabanında güvenle çalışmalarının ve NOT VALID + sonradan
+doğrulama yerine doğrudan değiştirilmelerinin sebebi bu.
+
+### 0061 — üç read-model, hepsi VIEW
+
+Faz 19/22/23'ün kaydettiği gerekçe aynen geçerli: saklanmış bir puan, bir fatura kapandığı anda
+bayatlayan ikinci bir doğruluk kaynağıdır ve bayatlığı görünmez, çünkü sayı hâlâ sayı gibi durur.
+
+- `promise_to_pay_open` — açık sözler + `days_late`. Kolon adı bilerek `days_overdue` değil:
+  faturanın gecikmesiyle karıştırılmamalı, ekran ikisini birlikte gösteriyor.
+- `party_promise_history` — cari başına tutulan/kırılan sayıları ve `kept_ratio`.
+  **`cancelled` orandan dışlanıyor**: geri çekilmiş bir söz, müşterinin ödeyip ödemediği hakkında
+  hiçbir şey söylemez. **Hiç çözülmemişse oran NULL**, 0 değil — hiç söz vermemiş müşteri, sözünü
+  tutmayan müşteri değildir.
+- `customer_collection_score` — 100'den başlayıp **adlandırılmış** kurallarla düşen puan.
+
+#### Puan: deterministik ve adlandırılmış, asla öğrenilmiş değil
+
+Her düşüş bir kuraldır ve adı `score_reasons` içinde sayıyla birlikte taşınır. Bu Faz 23'ün
+kuralı ve sebebi şu: tahsilat puanı bir müşteriye karşı bir kararı gerekçelendirmek için
+kullanılır. "82, çünkü iki söz kırıldı ve en eski fatura 47 gün gecikmiş" savunulabilir; çıplak
+bir 82 savunulamaz.
+
+| Kural | Ceza |
+|---|---|
+| `gecikmis_fatura_yasi` | 90+ gün 30 · 60+ 20 · 30+ 12 · 1+ 5 |
+| `suepheli_alacak` | 25 |
+| `tutulmayan_odeme_sozu` | oran <0.34 → 25 · <0.67 → 15 · <1.00 → 7 |
+| `gec_odeme_aliskanligi` | late_ratio ≥0.75 → 15 · ≥0.50 → 10 · ≥0.25 → 5 |
+
+Bantlar: ≥85 `good`, ≥60 `watch`, ≥35 `risk`, altı `critical` — eşikler tek yerde, ekran kendi
+renklendirmesini icat edemesin diye. Aritmetik baştan sona `numeric`; hiçbir yerde `::float8` yok
+(Faz 17).
+
+**Söz geçmişi olmayan cari cezalandırılmıyor**: `kept_ratio` NULL ise ceza 0. Yeni bir karşı
+tarafı geçmişi olmadığı için cezalandırmak, kanıt yokluğunu kanıt saymak olurdu.
+
+### Kırılan söz tespit işi
+
+`detectBrokenPromises(pool, todayISO, actorId)` — vadesi geçmiş bekleyen sözleri `broken`
+işaretler ve her biri için bir `action_item` açar.
+
+**Neden bu otomatik olabiliyor da şüpheli alacak olamıyor** (CLAUDE.md sınırı): ikisi farklı türde
+olgu kaydediyor. Şüpheli alacak paranın **asla gelmeyeceği yargısıdır** ve bir insan ister. Kırılan
+söz, **bir tarihin geçtiği ve paranın gelmediği gözlemidir** — kimsenin görüşü işin içinde değil ve
+altta yatan olgu bu iş çalışsa da çalışmasa da zaten doğru. İş yine de hiçbir mali kaydı
+değiştirmiyor: faturaya, tutara, vadeye, ödemeye dokunmuyor; söz tablosuna bir durum yazıyor ve
+bir insana görev açıyor. Her kayıt `automated: true` ile denetleniyor.
+
+**İdempotent, iki bağımsız yolla**: söz UPDATE'i `status='pending'` filtreliyor, ve action_item
+INSERT'i 0015'in kısmi unique indeksine dayanıyor (açık görev varken aynı kayda ikincisi açılamaz).
+
+**Sınır `<`, `<=` değil**: bugün vadesi olan söz kırılmış sayılmaz — paranın günün geri kalanı
+var. Sabah 09:00'da kırılmış diyen bir iş, henüz olmamış bir başarısızlığı kaydederdi. İşin tüm
+doğruluğu bu tek karakterde.
+
+`todayISO` içeriden saatten okunmuyor, parametre — gate'in tarihi sürüp kesin davranış iddia
+edebilmesi için.
+
+### Hatırlatma hedef türleri ve e-posta kanalı
+
+`targetKindOf()` artık **açık bir eşleme**: tanımadığı tablo için `null` döner. Önceden tanımadığı
+her şey için `'loan_installment'` dönüyordu — üç tür varken zararsız, dördüncü eklendiği anda her
+faturayı ve her sözü sessizce kredi taksiti diye dosyalayacak bir fallthrough.
+
+`OPEN` tek bir küme (`unpaid`/`partial`) idi; artık **tür başına**. Bu kelimeler fatura ve söz
+sözlüğünde yok (açık fatura `open`, bekleyen söz `pending`), dolayısıyla tek kümeyi korumak her
+faturayı ve her sözü kalıcı olarak uygunsuz yapardı — hiçbir şey hatırlatmayan bir hatırlatma
+motoru, fark edilmesi en zor arıza.
+
+**Bulunduğu gibi bırakılan, sessizce yarım düzeltilmeyen bir eksik**: `check` ve
+`loan_installment` türleri 0006'dan beri CHECK'te izinli ama hiçbir zaman hedef yükleyicileri
+olmadı, yani bu türdeki kurallar her zaman sıfır teslimat üretti. Faz 25 tahsilatın ihtiyaç
+duyduğu iki türü ekliyor; çek ve kredi taksiti bağlamak finansman işidir ve buraya kaçak
+sokulmaz.
+
+**E-posta taşıyıcısı kasıtlı olarak SMTP istemcisi DEĞİL.** Bu depo bu ortamda çalışan dış ağ
+çağrısı yapmıyor; nodemailer + bir kimlik kümesi eklemek, burada hiç çalıştırılamayacak bir kod
+yolu için bir bağımlılık ve sızacak bir sır eklemek olurdu. Telegram deseni birebir izlendi: env
+ile adlandırılmış HTTP uç noktası, tanımsız/erişilemezken **fırlatmayan** başarısız
+`DeliveryResult`, ve gerçek davranışın `mockTransport({ channel: "email" })` ile sınanması.
+`mockTransport` artık kanalı parametre alıyor — `"telegram"` sabit kodluydu ve e-posta yolu var
+olduğu anda onu test edilemez kılardı.

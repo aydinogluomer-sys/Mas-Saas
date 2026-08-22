@@ -2269,3 +2269,121 @@ edilmiş bir kısıt.
   tarafı plana göre Faz 36.
 - `settings` tüm katmanlarca okunabiliyor (eşikler neredeyse her ekranı besliyor), yalnız admin
   yazabiliyor. Sır barındırmıyor — token'lar ortam değişkenlerinde.
+
+---
+
+## Faz 25 — DONE (Tahsilat Merkezi: ödeme sözü, kırılan söz tespiti, müşteri tahsilat puanı)
+
+**migration 0059-0061 · `src/lib/collections/{promises,promises-engine}.ts` · `/finance/promises` ·
+`scripts/phase25-verify.ts` (51/51, 4 ardışık koşuda aynı)**
+
+Fazın tamamı tek bir ayrım üzerine kurulu: **bir söz, bir alacak değildir.** `promise_to_pay`
+muhasebe ağırlığı taşımıyor — hiçbir faturanın bakiyesini değiştirmiyor, üzerine dağıtım
+yapılamıyor. Var olma sebebi söylenen ile geleni arasındaki farkın ölçülebilmesi.
+
+### İkinci bir görev modeli icat edilmedi
+
+Koordinatör `action_items`'ın gerçek şemasını okumamı, uydurmamamı istedi. Okudum ve tasarımı o
+belirledi: tablo zaten `related_entity_table`/`related_entity_id` genel bağını ve **açık görev
+varken ikincisini engelleyen kısmi unique indeksleri** taşıyor — kırılan söz işinin idempotent
+olması için gereken şeyin tam olarak kendisi. Yani takip işi bir `action_item`; 0060 yalnız tek
+bir `source_type` değeri ekliyor (`collection`), üç değil, çünkü neyle ilgili olduğunu zaten
+`related_entity_*`, aciliyeti zaten `severity` söylüyor.
+
+Sözün **kendisi** ayrı bir tablo, çünkü bir görev değil: karşı tarafı, tutarı, gerçekle
+karşılaştırılan bir tarihi ve bir puana beslenen bir sonucu var. `action_item` olarak modellemek
+hepsini `note` alanına sıkıştırmak olurdu.
+
+### Atlanması en kolay geçiş: `broken → kept`
+
+İzin listesi dört geçiş: `pending→kept`, `pending→broken`, `pending→cancelled` ve **`broken→kept`**.
+Sonuncusu tasarımın en kolay kaçırılan yeri: **geç ödeme, kırılan bir sözün olağan sonucudur**,
+istisnası değil. Bu geçiş olmasaydı üç gün geç ödeyen müşteri sonsuza kadar `broken` donar ve bu
+tabloya dayanan her puan onu kalıcı olarak olduğundan kötü gösterirdi. `kept`/`cancelled` terminal —
+karara bağlanmış bir sözü yeniden açmak tahsilat geçmişini sessizce yeniden yazmaktır; dürüst yol
+yeni bir söz kaydetmek, ki puanın görmesi gereken de budur.
+
+CHECK ve guard aynı migration'da (0027 dersi), ve gate 12 sıralı çiftin tamamını gerçek satırlar
+üstünde deniyor: 4 kabul, 8 ret, üstelik koddaki `canTransition` ile **birebir aynı** olduğu ayrıca
+kanıtlanıyor.
+
+### İşin tüm doğruluğu tek karakterde: `<` mi `<=` mi
+
+Kırılan söz tespiti **bugün** vadesi olan sözü kırılmış saymıyor — paranın günün geri kalanı var.
+Sabah 09:00'da "kırıldı" diyen bir iş, henüz olmamış bir başarısızlığı kaydeder. Hem SQL hem
+`isBroken()` bu sınırı `<` ile kuruyor ve gate ikisini de ayrı ayrı, 2099 tarihli kendi
+fixture'ıyla sınıyor.
+
+### Otomatik yazmaya neden İZİN var (şüpheli alacakta yokken)
+
+CLAUDE.md şüpheli alacağı insana ayırıyor; bu iş ise otomatik yazıyor. Çelişki değil, çünkü ikisi
+farklı türde olgu:
+
+- **şüpheli alacak** — paranın asla gelmeyeceği **yargısı**. İnsan ister.
+- **kırılan söz** — bir tarihin geçtiği ve paranın gelmediği **gözlemi**. Takvim yeter; kimsenin
+  görüşü işin içinde değil ve olgu bu iş çalışsa da çalışmasa da zaten doğru.
+
+İş yine de hiçbir mali kaydı değiştirmiyor (gate `invoices/payments/payment_instances/checks`
+üzerine UPDATE olmadığını kaynak seviyesinde kontrol ediyor) ve her kayıt `automated: true` ile
+denetleniyor. Otomatik karar bir aktör **uydurmuyor**: `resolved_by` null kalıyor,
+`resolution_source='auto_detection'` hangi mekanizmanın karar verdiğini söylüyor — Faz 24A'nın
+kararının aynen tekrarı.
+
+### Ölçtükten sonra değişen üç şey
+
+**1. `reminders.channel` zaten `email` içeriyordu.** 0006'dan beri. Faz 25 kanal değerini değil
+**taşıyıcıyı** ekliyor; 0060'ta bu yüzden bilerek ALTER yok ve yokluğun bir bulgu olarak okunması
+için migration içine yazıldı.
+
+**2. `targetKindOf()` bir fallthrough'du.** Tanımadığı her tablo için `'loan_installment'`
+dönüyordu — üç tür varken zararsız, ama dördüncü eklendiği anda **her faturayı ve her sözü sessizce
+kredi taksiti diye dosyalardı**. Artık açık eşleme, bilinmeyen için `null`.
+
+**3. `OPEN` tek bir kümeydi (`unpaid`/`partial`).** Bu kelimeler fatura ve söz sözlüğünde yok
+(açık fatura `open`, bekleyen söz `pending`). Tek kümeyi koruyup yeni türleri eklemek her faturayı
+ve her sözü **kalıcı olarak uygunsuz** yapardı: hiçbir şey hatırlatmayan bir hatırlatma motoru,
+fark edilmesi en zor arıza türü. Küme artık tür başına.
+
+### Bulunduğu gibi bırakılan eksik
+
+`check` ve `loan_installment` hatırlatma türleri 0006'dan beri CHECK'te izinli ama **hiçbir zaman
+hedef yükleyicileri olmadı** — yani bu türdeki kurallar her zaman sıfır teslimat üretti. Faz 25
+tahsilatın ihtiyaç duyduğu iki türü (`invoice`, `promise_to_pay`) ekliyor; çek ve kredi taksitini
+bağlamak finansman işidir ve bu faza kaçak sokulmadı. Eksik `scheduleReminders` içinde yorumla
+kayıtlı.
+
+### E-posta: gerçek SMTP kurulmadı
+
+Telegram deseni birebir izlendi — env ile adlandırılmış HTTP uç noktası, tanımsız/erişilemezken
+**fırlatmayan** başarısız `DeliveryResult`, hatada API anahtarı yok. `nodemailer` eklenmedi (gate
+`package.json`'da olmadığını kontrol ediyor): burada hiç çalıştırılamayacak bir kod yolu için bir
+bağımlılık ve sızacak bir sır eklemek olurdu. `mockTransport` artık kanalı **parametre** alıyor —
+`"telegram"` sabit kodluydu ve e-posta yolu var olduğu anda onu test edilemez kılardı.
+
+### Puan: adlandırılmış kurallar, ve "geçmişi yok" ≠ "kötü"
+
+100'den başlayıp adlandırılmış kurallarla düşüyor; ad `score_reasons` içinde sayıyla birlikte
+taşınıyor (Faz 23 kuralı). Sebebi pratik: "82, çünkü iki söz kırıldı ve en eski fatura 47 gün
+gecikmiş" bir müşteriye savunulabilir, çıplak 82 savunulamaz.
+
+`kept_ratio` hiç söz çözülmemişse **NULL**, 0 değil — hiç söz vermemiş müşteri, sözünü tutmayan
+müşteri değildir; 0'a çevirmek kanıt yokluğunu kanıt saymak olurdu. `cancelled` orandan dışlanıyor:
+geri çekilmiş söz, müşterinin ödeyip ödemediği hakkında hiçbir şey söylemez. Gate ikisini de
+pozitif olarak sınıyor (söz geçmişi olmayan cari 100 puan alıyor).
+
+### Faz 24B rol matrisine entegrasyon (koordinatörün ayrıca istediği doğrulama)
+
+`promise_to_pay` blanket politikayla değil, 24B'nin beş katmanlı modeliyle yazıldı; sınıf 0058'in
+kendi mantığından seçildi: **operational** (payments/invoices ile aynı). `src/lib/authz/matrix.ts`
+aynı sınıflandırmayı taşıyor. `db:roles-rls:verify` artık **62 tablo / 310 (katman × tablo) INSERT
+kombinasyonu** görüyor ve hepsi kodla uyuşuyor; yeni tabloda `authenticated` hedefli politika
+sayısı sıfır.
+
+**Kasıtlı olarak owner-scoped değil**, `action_items`'ın aksine: tahsilat ekip işidir, para
+geldiğinde telefonu kim açtıysa sözü "tutuldu" işaretleyebilmeli. Kaydı girene kilitlemek, biri
+izinliyken sözlerin `pending` takılı kalması demekti.
+
+### Kapsam dışı
+
+WhatsApp iskeleti — implementation.md §3 açık soru #4 gereği ertelendi, eklenmedi; gate kaynak
+seviyesinde eklenmediğini kontrol ediyor.
