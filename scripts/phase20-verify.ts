@@ -121,14 +121,71 @@ async function main(): Promise<void> {
     `${fkOk[0].n} FK (payments, payment_instances, cashflow_lines, checks + Faz 20)`);
 
   // ── 3) THE TRANSITION PROOF ─────────────────────────────────────────────────────────────
-  // Statuses are read from the CHECK constraint, not from this file, so a value added there
-  // without transitions is caught rather than assumed away.
-  const conDef = (await q(
-    `select pg_get_constraintdef(oid) as def from pg_constraint
-     where conrelid='public.bank_transactions'::regclass and contype='c'
-       and pg_get_constraintdef(oid) like '%status%'`))[0]?.def as string | undefined;
-  const statuses = [...new Set([...(conDef ?? "").matchAll(/'([a-z_]+)'::text/g)].map((m) => m[1]))];
-  record("status CHECK constraint'i okundu", statuses.length > 0, statuses.join(", ") || "OKUNAMADI");
+  //
+  // Statuses are read from the live CHECK constraint, not from this file, so a value added
+  // there without transitions is caught rather than assumed away.
+  //
+  // HOW THIS WENT WRONG ONCE, AND WHY THE QUERY LOOKS LIKE THIS NOW.
+  // The first version selected `pg_get_constraintdef(oid) like '%status%'` and took row [0]
+  // with no ORDER BY. THREE constraints on this table mention `status`:
+  //
+  //   bank_transactions_ignore_reason      CHECK (status <> 'ignored' OR ...)          1 value
+  //   bank_transactions_match_consistency  CHECK ((status = ANY (ARRAY['matched',
+  //                                                'reconciled'])) = ...)              2 values
+  //   bank_transactions_status_check       CHECK (status = ANY (ARRAY[...5 values]))   <- wanted
+  //
+  // Postgres does not guarantee row order without ORDER BY. On the author's machine row [0]
+  // happened to be the right one and the gate reported 30/30; on the reviewer's machine it was
+  // `ignore_reason`, whose only quoted literal is 'ignored' — so the value regex produced a
+  // SINGLE status, the proof ran a 1×1 matrix, and the gate still printed PASS. A gate that
+  // can silently "prove" a five-state machine by testing one state is worse than no gate.
+  //
+  // That is a micro-version of the very failure this phase exists to prevent: 0027 was
+  // "I read the migration and assumed it was right"; this was "I read one query row and
+  // assumed it was the right one".
+  //
+  // The fix targets the constraint STRUCTURALLY rather than by text search: the status enum is
+  // the only CHECK on this table whose `conkey` is exactly the single `status` column (the
+  // other two span 2 and 3 columns). Cardinality is then ASSERTED — exactly one match, or the
+  // gate fails loudly instead of picking one. Same discipline phase3-verify.ts already used
+  // for its PRONET lookup (`if (pronet.length !== 1) fail(...)`).
+  const statusEnumCons = await q(
+    `select c.conname, pg_get_constraintdef(c.oid) as def
+     from pg_constraint c
+     join pg_attribute a
+       on a.attrelid = c.conrelid and a.attnum = c.conkey[1]
+     where c.conrelid = 'public.bank_transactions'::regclass
+       and c.contype = 'c'
+       and array_length(c.conkey, 1) = 1
+       and a.attname = 'status'
+     order by c.conname`);
+
+  record(
+    "status enum CHECK'i TEK ve kesin olarak belirlendi (metin araması değil, conkey ile)",
+    statusEnumCons.length === 1,
+    statusEnumCons.length === 1
+      ? `${statusEnumCons[0].conname} (yalnız status kolonuna bağlı tek CHECK)`
+      : `BELİRSİZ: ${statusEnumCons.length} aday — ${statusEnumCons.map((r) => r.conname).join(", ") || "hiç"}`,
+  );
+
+  const conDef = statusEnumCons.length === 1 ? (statusEnumCons[0].def as string) : "";
+  const statuses = [...new Set([...conDef.matchAll(/'([a-z_]+)'::text/g)].map((m) => m[1]))];
+
+  // A second, independent guard on the same mistake: whatever we extracted must actually look
+  // like a multi-value enum. If a future refactor makes the query ambiguous again, a 1- or
+  // 2-value result fails here even if the cardinality check above were somehow satisfied.
+  record(
+    "çıkarılan durum kümesi gerçekten çok-değerli bir enum (≥3) ve ANY(ARRAY[…]) biçiminde",
+    statuses.length >= 3 && /status\s*=\s*ANY\s*\(ARRAY\[/.test(conDef),
+    statuses.length > 0 ? `${statuses.length} değer: ${statuses.join(", ")}` : "OKUNAMADI",
+  );
+
+  if (statuses.length < 3) {
+    // Refusing to continue is the point: the matrix below would otherwise "pass" on a subset.
+    throw new Error(
+      `status kümesi güvenilir şekilde okunamadı (${statuses.length} değer) — geçiş matrisi eksik bir kümeyle çalıştırılmaz`,
+    );
+  }
 
   await inRollback(async (c) => {
     const acct = (await c.query(

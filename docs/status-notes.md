@@ -1396,3 +1396,129 @@ yeniden `NOLOGIN`.
 4. Faz 17/18/19'dan devam: `scripts/**`'daki 47 `::float8`, `rules.ts` biriktiricileri,
    `createCheckAction`'ın transaction dışı audit'i, mevcut action'ların Zod'a geçirilmesi,
    kredi `lender_party_id` eşleştirme UI'ı.
+
+---
+
+## Faz 20 düzeltmesi — `phase20:verify` kendi kanıtını sessizce eksik kümeyle "geçirebiliyordu"
+
+Bağımsız doğrulamada bulundu. Faz 20 commit'i (`07ebc26`) yazarın makinesinde **30/30**
+veriyordu; doğrulayan aynı script'i kendi ortamında çalıştırdığında **29/30** aldı. Fark koddan
+değil, **satır sırasından** kaynaklanıyordu — yani gate'in kendisi ortama göre farklı sonuç
+üretiyordu.
+
+### Hata
+
+`scripts/phase20-verify.ts` durum kümesini canlı CHECK constraint'inden okuyordu — doğru fikir,
+yanlış sorgu:
+
+```sql
+select pg_get_constraintdef(oid) as def from pg_constraint
+ where conrelid='public.bank_transactions'::regclass and contype='c'
+   and pg_get_constraintdef(oid) like '%status%'      -- ORDER BY yok
+```
+
+…ve `[0]?.def` ile **ilk satırı** alıyordu. Oysa bu tabloda `status` geçen **üç** CHECK var, ve
+her biri değer-çıkarma regex'ine farklı bir küme veriyor (disposable DB'de bizzat ölçüldü):
+
+| constraint | çıkarılan değerler | üretilen matris |
+| --- | --- | --- |
+| `bank_transactions_status_check` (**istenen**) | unmatched, suggested, matched, reconciled, ignored | 5×5 = **25** |
+| `bank_transactions_match_consistency` | matched, reconciled | 2×2 = 4 |
+| `bank_transactions_ignore_reason` | ignored | 1×1 = **1** |
+
+Postgres `ORDER BY` olmadan satır sırasını garanti etmez. Doğrulayanın ortamında `[0]`
+`ignore_reason` oldu: regex tek bir `'ignored'` değeri çıkardı, geçiş kanıtı **1×1 matrisle**
+koştu — ve gate yine **PASS** bastı. Beş durumlu bir makineyi tek durum test ederek
+"kanıtlayabilen" bir gate, gate olmaktan çıkar.
+
+**Bu, Faz 20'nin önlemek için var olduğu hatanın mikro-versiyonu.** 0027 "migration'ı okudum ve
+doğru sandım"dı; bu "sorgunun ilk satırını okudum ve doğrusu sandım"dı. Kanıt üreten kodun
+kendisi de kanıtlanmak zorunda.
+
+### Düzeltme — metin araması değil, yapısal hedefleme
+
+Durum enum'u, bu tabloda `conkey`'i **tam olarak tek başına `status` kolonu** olan yegâne
+CHECK'tir (diğer ikisi 2 ve 3 kolona yayılıyor). Sorgu artık bunu hedefliyor:
+
+```sql
+select c.conname, pg_get_constraintdef(c.oid) as def
+from pg_constraint c
+join pg_attribute a on a.attrelid = c.conrelid and a.attnum = c.conkey[1]
+where c.conrelid = 'public.bank_transactions'::regclass
+  and c.contype = 'c' and array_length(c.conkey, 1) = 1
+  and a.attname = 'status'
+order by c.conname
+```
+
+Ve kritik olarak: **aday sayısı 1 değilse gate düşer**, bir tanesini seçmez. Bu tam olarak
+`phase3-verify.ts`'in PRONET sorgusunda zaten uyguladığı disiplin
+(`if (pronet.length !== 1) fail(...)`) — önce kardinaliteyi doğrula, sonra `[0]`'ı oku.
+
+İki bağımsız koruma eklendi:
+1. `status enum CHECK'i TEK ve kesin olarak belirlendi (metin araması değil, conkey ile)` —
+   aday sayısı tam 1 olmalı.
+2. `çıkarılan durum kümesi gerçekten çok-değerli bir enum (≥3) ve ANY(ARRAY[…]) biçiminde` —
+   ileride sorgu yeniden belirsizleşse bile 1 veya 2 değerli bir sonuç burada düşer.
+
+Ayrıca küme 3'ten azsa script **exception fırlatıyor**; matris eksik bir kümeyle hiç
+çalıştırılmıyor. Kontrol sayısı 30 → **31**.
+
+### Determinizm kanıtı (tek seferlik şans değil)
+
+Yapısal argüman: yeni sorgu **tam olarak 1 aday** döndürüyor, dolayısıyla sıralamadan bağımsız
+(eski sorgu 3 aday döndürüyordu). Buna ek olarak aynı disposable DB'de **6 kez art arda**
+çalıştırıldı ve üç koşuda `pg_constraint`'in fiziksel düzeni kasıtlı olarak bozuldu (araya geçici
+bir CHECK constraint eklenip düşürülerek):
+
+```
+koşu 1                        31/31
+koşu 2 (katalog karıştırıldı) 31/31
+koşu 3                        31/31
+koşu 4 (katalog karıştırıldı) 31/31
+koşu 5                        31/31
+koşu 6 (katalog karıştırıldı) 31/31
+```
+
+### Aynı desen başka yerde var mı? — tarandı, yok
+
+`pg_constraint`/`pg_get_constraintdef` kullanan her yer ve `like '%…%'` ile satır seçen her
+sorgu tarandı:
+
+- `scripts/db/reconciliation-verify.ts`, `legacy-cancellation-fixture.ts` ve migration
+  0028/0029/0030/0032 → hepsi `where conname = '…'` ile **tam ada** göre hedefliyor
+  (`conname` benzersiz), belirsizlik yok.
+- `scripts/import-real.ts`'in üç `like '%…%'` sorgusu → `count(*)` agregası, inşaen tek satır.
+- `scripts/phase3-verify.ts:83` (`name ilike '%PRONET%'`) → `[0]`'ı okumadan ÖNCE
+  `pronet.length !== 1` kontrolü yapıyor. **Doğru desen zaten buydu.**
+
+Yani `phase20-verify.ts:127` tek örnekti ve düzeltildi.
+
+### Gate sonuçları (düzeltmeden sonra, tam zincir yeniden koşuldu)
+
+| Adım | Sonuç |
+| --- | --- |
+| `pnpm lint` | exit 0 (1 uyarı: `analytics-chart.tsx`, önceden var) |
+| `pnpm typecheck` | exit 0 |
+| `pnpm test` | 388/388 |
+| `pnpm db:verify` | ALL ASSERTIONS PASSED |
+| `db:migrate:verify` | 49/49 |
+| `db:constraints:verify` | 54/54 |
+| `db:transitions:verify` | 167/167 |
+| `db:reconciliation:verify` | 77/77 |
+| `pnpm db:roles:verify` | 8/8 |
+| `pnpm build` | exit 0 |
+| `pnpm phase16:verify` | 18/18 |
+| `pnpm phase17:verify` | 10/10 |
+| `pnpm phase18:verify` | 12/12 |
+| `pnpm phase19:verify` | 26/26 |
+| `pnpm phase20:verify` | **31/31** (6 koşuda da) |
+
+`mas_radar_dev` yine hiç değiştirilmedi (şema 0034, `bank_transactions=YOK`); disposable
+veritabanları düşürüldü, `mas_radar_app` yeniden `NOLOGIN`.
+
+### Alınan ders (yeni bir standing kural)
+
+**Bir katalog sorgusu birden fazla satır döndürebiliyorsa, `[0]`'ı okumadan önce kardinalite
+doğrulanır** — ya sorgu tek satıra indirgenir (benzersiz anahtarla), ya da sayı açıkça
+assert edilir. `like '%kolon_adı%'` bir hedefleme yöntemi değildir; aynı kolonu anan her
+constraint'i toplar.
