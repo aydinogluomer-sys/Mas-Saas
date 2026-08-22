@@ -222,3 +222,117 @@ yeni bir yaşam döngüsü) eklerken hepsi AYNI migration'da düşünülmeli:
    `parseOrThrow`'undan geçirmeli (aksiyon başına bir şema). Ham `ZodError.message` asla
    `DomainError`'a gömülmemeli — Zod v4'te o bir JSON dökümüdür ve `api-response.ts` DomainError
    mesajını istemciye aynen geçirir; `formatIssues` bunun için var.
+
+## Karşı taraf (cari hesap) ve organizasyonel boyutlar (Faz 19, migration 0036-0039)
+
+Faz 19'un tamamı `parties`'in ÜZERİNE eklenir; `parties` tablosu değiştirilmedi, yeniden
+adlandırılmadı, anahtarı değişmedi. Sebebi ölçüldü: `parties.id`'ye **6 tabloda 8 foreign key**
+işaret ediyor (`cash_accounts.provider_party_id`, `cashflow_lines.party_id`,
+`checks.payee_party_id`, `checks.payer_party_id`, `checks.bank_party_id`,
+`loans.lender_party_id`, `payments.owner_party_id`, `payments.provider_party_id`) — şemadaki en
+çok referans verilen tablo. `phase19:verify` bu sekizinin hâlâ yerinde olduğunu her koşuda
+kontrol eder.
+
+### 0036 — counterparty_profiles (1:1 sidecar)
+
+- **1:1 yapısal olarak zorlanır:** `party_id` birincil anahtardır. İkinci bir profil ifade
+  edilemez (sonradan eklenmiş bir unique index değil).
+- `ON DELETE CASCADE` — bir gevşetme DEĞİL: yukarıdaki 8 FK'nın hepsi `NO ACTION`, yani mali
+  kaydı olan bir parti zaten silinemez; cascade yalnız hiç geçmişi olmayan bir parti için
+  çalışır ve orada öksüz profil bırakmak yanlış olurdu.
+- Vergi no/dairesi **format doğrulaması YOK** — kaynak çalışma kitapları yabancı karşı taraf,
+  boşluk ve yazım hatası taşıyor; bunlar korunup işaretlenir, reddedilmez (CLAUDE.md). Yalnız
+  "boşluktan ibaret" reddedilir.
+- `credit_limit`: sıfır **gerçek bir değerdir** ("peşin"), null ise "limit kaydedilmemiş" —
+  ikisi aynı şey değildir.
+- `tax_number` index'i unique DEĞİL: `parties` (normalized_name, party_type) üzerinden unique
+  olduğu için aynı firma bir kez `customer` bir kez `vendor` olarak var olabilir ve aynı vergi
+  numarasını taşır. Unique yapmak doğru bir içe aktarmayı başarısız kılardı.
+
+### 0037 — ibans + append-only değişiklik geçmişi
+
+- **Neden yalnız bu tabloya geçmiş:** IBAN değişikliği bu uygulamadaki en yüksek sonuçlu düzenleme
+  — parayı sessizce başka hesaba yönlendirir ve klasik fatura dolandırıcılığı vektörüdür. Diğer
+  her alan kaynak kitaptan yeniden kurulabilir; yanlış hesaba giden ödeme kurulamaz.
+- `iban_normalized` **generated column** (`upper(regexp_replace(iban,'\s','','g'))`); uniqueness
+  onun üzerinde. `src/lib/counterparties/rules.ts`'in `normalizeIban()`'ı birebir aynı olmak
+  zorunda — `phase19:verify` ikisini karşılaştırır. Aksi halde uygulama, index'in reddedeceği
+  bir IBAN'ı kaydetmeyi teklif ederdi.
+- **Uniqueness parti-kapsamlı, global DEĞİL** (`unique(party_id, iban_normalized)`): aynı firma
+  iki `party_type` satırı olarak var olabildiği için global unique doğru bir durumu ifade
+  edilemez kılardı. Farklı karşı taraflarda aynı IBAN bir **sinyaldir**, engel değil — 0039'un
+  `iban_shared_across_parties` view'i raporlar.
+- `ibans_one_primary_per_party` partial unique index: parti başına en fazla bir birincil hesap.
+- **`iban_change_events` salt-ekleme**, 0022'nin `audit_logs` deseniyle birebir: REVOKE savunma
+  derinliği, asıl zorlayıcı BEFORE trigger'ları — UPDATE/DELETE/TRUNCATE **superuser için de**
+  reddedilir.
+- `iban_id`/`party_id` **kasıtlı olarak FK DEĞİL**: satır, tarif ettiği IBAN'dan uzun yaşamalı.
+  `ON DELETE CASCADE` olsaydı, saklanmaya en değer olay olan silme, tam da ilginçleştiği anda
+  kanıtını silerdi.
+- Recorder AFTER trigger'dır ve `to_jsonb(row)` kullanır: ileride eklenecek bir kolon, bu
+  fonksiyona dokunulmadan var olduğu andan itibaren kaydedilir. No-op UPDATE geçmişe satır
+  yazmaz (`to_jsonb(new) - 'updated_at'` karşılaştırması).
+- **audit_logs'un yerini ALMAZ:** engine ayrıca Faz 18'in `audit()`'ini çağırır. İkisi farklı
+  soruları yanıtlar — `audit_logs` "hangi operatör ne yaptı" (uygulama yazar),
+  `iban_change_events` "bu IBAN ne dedi" (veritabanı yazar, değişiklik uygulamadan mı script'ten
+  mi psql'den mi geldiğine bakmadan).
+
+### 0038 — cost_centers / departments / projects / products / orders (MİNİMAL)
+
+Kapsam implementation.md §3 açık soru #9 ile sınırlandı: yalnız kod/ad referans verisi. Tahsis
+mantığı, sipariş yaşam döngüsü, satır kalemi, tutar **yok** — ve bunlar "var ama kullanılmıyor"
+değil, hiç eklenmedi; boş bir kolon ikinci ve çelişkili bir gerçek kaynağı davet eder.
+
+- `departments.parent_department_id` self-FK, `ON DELETE RESTRICT` — üst birimi silmek alt
+  birimleri sessizce silmemeli.
+- `projects.party_id` / `orders.party_id` opsiyonel ve `NO ACTION` (parties'e giden diğer her FK
+  gibi).
+- `products`, `production_parts`'ın yerine GEÇMEZ: o süreç-odaklı (torna/freze dakikaları), bu
+  ticari referans verisi. Kaynak kitaplar bir eşleme ifade etmediği için bağ kurulmadı.
+
+### Statü/yaşam döngüsü kolonu neden YOK (§17 kural 3 gerçekten N/A)
+
+Faz 19'un **hiçbir** tablosunda `status` enum'u yok; yalnız `is_active` boolean'ları var ve
+boolean'ın kısıtlanacak geçişi yoktur. Bu, kuraldan kaçış değil kurala uyumdur: §17 kural 3,
+yaşam döngüsü olan her yeni entity'nin geçiş izin listesini AYNI migration'da ve **eksiksiz**
+kurmasını şart koşar, çünkü 0027 üç eksik izin listesiyle çıktı ve 7/7 çeki, 48/48 taksiti sekiz
+migration boyunca `planned`de kilitledi. Yarım tasarlanmış bir yaşam döngüsünü kötü korumaktansa
+hiç eklememek doğru olan. Sipariş yaşam döngüsü gerçekten gerektiğinde, guard'ıyla aynı
+migration'da gelir. `phase19:verify` bu iddiayı her koşuda doğrular (yeni tablolarda
+`status`/`state`/`lifecycle` kolonu aranır).
+
+### 0039 — dört VIEW (kalıcı kolon değil)
+
+- **`counterparty_exposure`** — parti başına açık çek + ödenmemiş taksit + açık ödeme kalemi,
+  yoğunlaşma payı, kredi limiti kullanımı. **Materialized DEĞİL, stored kolon DEĞİL:** ikinci bir
+  gerçek kaynak sessizce bayatlar; bu şemada zaten yaşanmış bir yara var (0027/0034 öncesi
+  `paid_count` KPI'ı Faz 5'ten beri 0 dönüyordu). View girdilerinden sapamaz.
+- **Bilinmeyen tutarlar SAYILIR, sıfır olarak toplanmaz** (`unknown_amount_count`) — üç tutarsız
+  çeki olan bir karşı taraf "sıfır risk" olarak okunmamalı.
+- `exposure_ratio` ve `credit_limit_utilization` bölecek bir şey yoksa **null**, sıfır değil —
+  "bilinen toplam yok" ile "%0 yoğunlaşma" farklı ifadelerdir (money.ts'in `ratioOrNull`'ıyla
+  aynı ayrım). Sıfır limit ise gerçek bir değerdir: aşım işaretlenir ama bölme yapılmaz.
+- Çek ataması payee/payer üzerinden, **banka üzerinden DEĞİL**: `bank_party_id` "hangi bankaya
+  keşide" demektir ve katılsaydı bankanın riskini çok abartırdı.
+- **`counterparty_unresolved`** — geri-doldurmanın yerine geçen görünürlük yüzeyi (aşağıda).
+- **`iban_shared_across_parties`** — 0037'nin bilerek engellemediği çakışmayı raporlar.
+
+### Geri-doldurma neden YAPILMADI
+
+İçe aktarma bir ismi çözemediğinde ham metni saklar ve FK'yı boş bırakır
+(`src/lib/financing/engine.ts` → `partyIdByName`: "Never creates parties silently"). Faz 19 bu
+satırları **geri doldurmaz**: serbest metni bir karşı tarafa eşlemek bir yargıdır ve CLAUDE.md
+yargıyı incelenmiş, açık bir insan eylemine ayırır.
+
+Karar veriye dayandırıldı (gerçek veritabanında salt-okunur ölçüm): **7 çekin 7'si zaten bir
+partiye çözülmüş, 0'ı çözümsüz etiket taşıyor**; tek çözümsüz karşı taraf 1 kredinin
+`lender_party_id`'si. Üstelik **`loans`'ta `counterparty_label` kolonu YOK** (introspection ile
+doğrulandı — yalnız `checks`'te var); kredinin karşı tarafı ancak `loans.name`'den, yani kredinin
+kendi adından tahmin edilebilirdi ki bu tam da kuralın yasakladığı çıkarım. Yani reddedilen
+geri-doldurma bugün `checks`'te zaten hiçbir şeye dokunmayacaktı ve `loans`'ta dokunamazdı.
+
+Bunun yerine eklenen: `counterparty_unresolved` view'i + `/finance/counterparties` sayfasındaki
+öneri listesi. Öneriler bigram benzerliğiyle **sıralanır ama asla otomatik bağlanmaz**;
+`suggestCounterparties()` dönüş tipinde bilerek `autoLinkable` benzeri bir alan yoktur.
+Eşleştirme yapıldığında `counterparty_label` **SİLİNMEZ** — ham metin kaynak kanıtıdır, çözülen
+FK onun üzerine eklenen bir yorumdur.

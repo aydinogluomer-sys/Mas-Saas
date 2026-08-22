@@ -55,6 +55,18 @@ const ALLOWED_DIRECT_INSERT: Record<string, { occurrences: number; reason: strin
 /** This file names the patterns it hunts for, so it never scans itself. */
 const SELF = "scripts/phase18-verify.ts";
 
+/** Tracked + untracked-but-not-ignored, with no extension filter. */
+function sourceFilesRaw(prefixes: string[]): string[] {
+  const run = (args: string[]) =>
+    execFileSync("git", args, { cwd: ROOT, encoding: "utf8", maxBuffer: 32 * 1024 * 1024 })
+      .split("\n")
+      .map((f) => f.trim())
+      .filter(Boolean);
+  return [
+    ...new Set([...run(["ls-files", ...prefixes]), ...run(["ls-files", "--others", "--exclude-standard", ...prefixes])]),
+  ];
+}
+
 function sourceFiles(prefixes: string[]): string[] {
   const run = (args: string[]) =>
     execFileSync("git", args, { cwd: ROOT, encoding: "utf8", maxBuffer: 32 * 1024 * 1024 })
@@ -222,11 +234,11 @@ function main(): void {
   // ── 6) the schema document is current ──────────────────────────────────────────────────
   // docs/database-schema.md fell ~14 migrations behind before this phase. Pinning it to the
   // highest migration on disk is what stops that from happening again quietly.
-  const migrations = execFileSync("git", ["ls-files", "supabase/migrations"], {
-    cwd: ROOT,
-    encoding: "utf8",
-  })
-    .split("\n")
+  // Faz 19 caught a blind spot here: this used tracked files only, so on the day migrations
+  // 0036-0039 were written (still untracked) the check computed `latest` as 0035 and happily
+  // passed while the document said nothing about the four new ones. sourceFiles() already
+  // includes untracked-but-not-ignored files, which is exactly what a gate needs.
+  const migrations = sourceFilesRaw(["supabase/migrations"])
     .map((f) => f.trim())
     .filter((f) => f.endsWith(".sql"))
     .map((f) => path.basename(f).slice(0, 4))

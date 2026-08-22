@@ -1004,3 +1004,209 @@ users=12 (commit öncesi teyit edildi).
 2. **Mevcut server action'ların Zod'a geçirilmesi** — yardımcı hazır, retrofit yapılmadı.
 3. Faz 17'den devam: `scripts/**`'daki 47 `::float8` (Faz 17B) ve `financing/rules.ts` +
    `production/rules.ts`'teki `+=` biriktiricileri.
+
+---
+
+## Faz 19 — DONE (karşı taraf / cari hesap ve organizasyonel boyutlar çekirdek veri modeli)
+
+Faz 15-18'den **kategori olarak farklı**: bu depoda ilk kez yeni tablo ve migration eklendi
+(0036-0039). Dört migration, sekiz tablo, dört view. **Gerçek `mas_radar_dev`'e UYGULANMADI** —
+aşağıda.
+
+### FK grafiği önce ÖLÇÜLDÜ, sonra tasarlandı
+
+Plan "checks/loans/payments'taki payee/payer/bank_party_id" diyordu — üç FK. Taze migre edilmiş
+bir veritabanına `information_schema` sorgusu atıldı ve gerçek grafik **6 tabloda 8 FK** çıktı:
+
+```
+cash_accounts.provider_party_id   cashflow_lines.party_id
+checks.payee_party_id             checks.payer_party_id      checks.bank_party_id
+loans.lender_party_id             payments.owner_party_id    payments.provider_party_id
+```
+
+Hepsi `NO ACTION`. Yani `parties`, şemanın en çok referans verilen tablosu ve yeniden
+şekillendirilmesi en riskli olanı. Bu yüzden Faz 19 `parties`'e **hiç dokunmadı**: ne kolon
+ekledi, ne yeniden adlandırdı, ne anahtarını değiştirdi. Tüm detay 1:1 sidecar olarak asıldı.
+`phase19:verify` bu sekizinin her koşuda hâlâ yerinde olduğunu kontrol ediyor (şu an 12 FK:
+8 eski + 4 Faz 19).
+
+### 0036 — counterparty_profiles
+
+1:1 **yapısal olarak** zorlanıyor: `party_id` birincil anahtar, ikinci profil ifade edilemez.
+`ON DELETE CASCADE` bir gevşetme değil — 8 FK'nın hepsi `NO ACTION` olduğu için mali kaydı olan
+parti zaten silinemiyor; cascade yalnız hiç geçmişi olmayan parti için çalışıyor.
+
+Vergi no/dairesinde **format doğrulaması yok** (yabancı karşı taraf, boşluk, yazım hatası
+korunup işaretlenir — reddedilmez); yalnız "boşluktan ibaret" reddediliyor. `credit_limit`:
+sıfır **gerçek bir değer** ("peşin"), null "limit kaydedilmemiş" — `constraints-verify` ikisini
+ayrı ayrı test ediyor.
+
+### 0037 — ibans + salt-ekleme değişiklik geçmişi
+
+Neden yalnız bu tabloya geçmiş: IBAN değişikliği bu uygulamadaki **en yüksek sonuçlu düzenleme**
+— parayı sessizce başka hesaba yönlendirir, klasik fatura dolandırıcılığı vektörü. Diğer her alan
+kaynak kitaptan yeniden kurulabilir; yanlış hesaba giden ödeme kurulamaz.
+
+- `iban_normalized` **generated column**; uniqueness onun üzerinde. TS'teki `normalizeIban()`
+  birebir aynı olmak zorunda — `phase19:verify` ikisini karşılaştırıyor. Sapsalardı uygulama,
+  index'in reddedeceği bir IBAN'ı kaydetmeyi teklif ederdi.
+- **Uniqueness parti-kapsamlı, global DEĞİL.** `parties` (normalized_name, party_type) üzerinden
+  unique olduğu için aynı firma bir kez `customer` bir kez `vendor` olarak var olabilir ve aynı
+  IBAN'ı taşır; global unique bu **doğru** durumu ifade edilemez kılar ve dürüst bir içe
+  aktarmayı başarısız ederdi. Farklı karşı taraflarda aynı IBAN bir sinyaldir → 0039'un
+  `iban_shared_across_parties` view'i raporluyor.
+- `iban_change_events` 0022'nin `audit_logs` deseniyle salt-ekleme: REVOKE savunma derinliği,
+  asıl zorlayıcı BEFORE trigger'ları, **superuser dahil** reddediyor.
+- `iban_id`/`party_id` **kasıtlı olarak FK DEĞİL**: satır, tarif ettiği IBAN'dan uzun yaşamalı.
+  CASCADE olsaydı saklanmaya en değer olay olan silme, kanıtını tam da ilginçleştiği anda
+  silerdi. Disposable DB'de doğrulandı: IBAN silindi, `deleted` olayı kaldı.
+- **audit_logs'un yerini almaz.** Engine ayrıca Faz 18'in `audit()`'ini çağırıyor. `audit_logs`
+  "hangi operatör ne yaptı" (uygulama yazar); `iban_change_events` "bu IBAN ne dedi" (veritabanı
+  yazar — değişiklik uygulamadan mı, script'ten mi, psql'den mi geldiğine bakmadan).
+
+### 0038 — beş referans tablosu, gerçekten minimal
+
+`cost_centers`, `departments`, `projects`, `products`, `orders` — yalnız kod/ad/aktiflik +
+opsiyonel karşı taraf bağı. Tahsis mantığı, sipariş yaşam döngüsü, satır kalemi, tutar **hiç
+eklenmedi** (var-ama-kullanılmıyor değil): boş bir kolon ikinci ve çelişkili bir gerçek kaynağı
+davet eder. §3 açık soru #9'un cevabı bu.
+
+### §17 kural 3 (transition guard) neden N/A — ve bunun kanıtlanması
+
+Faz 19'un hiçbir tablosunda `status` enum'u **yok**; yalnız `is_active` boolean'ları var ve
+boolean'ın kısıtlanacak geçişi yoktur. Bu kuraldan kaçış değil, kurala uyum: 0027 üç eksik izin
+listesiyle çıktı ve 7/7 çeki, 48/48 taksiti sekiz migration boyunca `planned`de kilitledi. Yarım
+tasarlanmış bir yaşam döngüsünü kötü korumaktansa hiç eklememek doğru olan. Sipariş yaşam
+döngüsü gerçekten gerektiğinde guard'ıyla aynı migration'da gelir.
+
+**İddia kontrol ediliyor:** `phase19:verify` yeni tabloların hepsinde `status`/`state`/`lifecycle`
+kolonu arıyor ve bulmamayı şart koşuyor. Bir sonraki faz sessizce bir statü kolonu eklerse gate
+düşer.
+
+### 0039 — dört VIEW, kalıcı kolon yok
+
+`counterparty_exposure` materialized bile değil: ikinci bir gerçek kaynak sessizce bayatlar ve bu
+şemada zaten yaşanmış bir yara var (0034 öncesi `paid_count` KPI'ı Faz 5'ten beri 0 dönüyordu).
+Tek operatörlü bir panelde birkaç bin satır için yeniden hesaplama maliyeti yok; matview
+bayatlığı geri getirir + kimsenin hatırlamayacağı bir refresh takvimi ekler.
+
+Doğrulanan davranışlar (gerçek veriyle dolu disposable DB'de):
+- **Bilinmeyen tutar SAYILIR, sıfır olarak toplanmaz.** Bir çekin tutarı null yapıldı →
+  `item_count` 4'te kaldı, `unknown_amount_count` 1 oldu, `total_exposure` 400.000→300.000
+  düştü. Üç tutarsız çeki olan karşı taraf "sıfır risk" okunmuyor.
+- `exposure_ratio` / `credit_limit_utilization` bölecek bir şey yoksa **null**, sıfır değil
+  (money.ts'in `ratioOrNull`'ıyla aynı ayrım). Sıfır limit ise gerçek değer: aşım işaretleniyor
+  ama bölme yapılmıyor.
+- Çek ataması payee/payer üzerinden, **banka üzerinden değil** — `bank_party_id` "hangi bankaya
+  keşide" demek ve katılsaydı bankanın riskini çok abartırdı.
+
+### Geri-doldurma kararı: YAPILMADI, ve karar veriye dayandırıldı
+
+Kural: içe aktarma bir ismi çözemezse ham metni saklar, FK'yı boş bırakır
+(`partyIdByName`: "Never creates parties silently"). Faz 19 bu satırları geri **doldurmadı** —
+serbest metni bir karşı tarafa eşlemek bir yargıdır, CLAUDE.md yargıyı incelenmiş insan eylemine
+ayırır.
+
+Gerçek veritabanında **salt-okunur** ölçüldü:
+
+| | Sonuç |
+| --- | --- |
+| checks | 7 satır, **7'si zaten bir partiye çözülmüş**, **0'ı çözümsüz etiket taşıyor** |
+| loans | 1 satır, `lender_party_id` **null** |
+| parties | 16 |
+
+Üstelik introspection ile doğrulandı: **`loans`'ta `counterparty_label` kolonu YOK** — yalnız
+`checks`'te var. Planın "çekler/krediler ham counterparty_label tutuyor" ifadesi yarı doğru.
+Kredinin karşı tarafı ancak `loans.name`'den, yani **kredinin kendi adından** tahmin edilebilirdi
+ki bu tam da kuralın yasakladığı çıkarım.
+
+Yani reddedilen geri-doldurma bugün `checks`'te **zaten hiçbir şeye dokunmayacaktı** ve
+`loans`'ta **dokunamazdı**. Karar prensipten değil, ölçümle desteklenerek verildi.
+
+Yerine eklenen: `counterparty_unresolved` view'i + `/finance/counterparties` sayfasında bigram
+benzerliğiyle **sıralanan ama asla otomatik bağlanmayan** öneri listesi.
+`suggestCounterparties()`'in dönüş tipinde bilerek `autoLinkable` benzeri bir alan **yok** — bir
+sonraki çağıranın "izin" sanabileceği alan bırakılmadı; birim testi bunu da kontrol ediyor.
+Eşleştirme yapıldığında `counterparty_label` **SİLİNMİYOR**: ham metin kaynak kanıtı, çözülen FK
+onun üzerine eklenen yorum. Audit satırı `counterparty_label_preserved` alanıyla bunu açıkça
+kaydediyor.
+
+### Gate yazarken bulunan iki gerçek hata (ikisi de kendi kontrollerimde)
+
+1. **Satır-seviyesi trigger boş tabloda ateşlenmez.** İlk append-only sondası, IBAN'ı hiç
+   olmayan taze bir DB'de `iban_change_events`'e UPDATE/DELETE denedi ve **sahte PASS** verdi —
+   satır yoksa BEFORE ROW trigger'ı hiç çalışmıyor. (TRUNCATE statement-seviyesi olduğu için
+   üçünden yalnız ikisi etkilenmişti.) Sonda artık önce bir olay yaratıyor, sonra reddi ölçüyor,
+   ve tamamı geri alınan bir transaction içinde çalışıyor.
+2. **`git ls-files` yeni dosyayı görmez.** Aynı tuzak Faz 18'in gate'inde de vardı ve Faz 19
+   ortaya çıkardı: `phase18:verify`'ın şema-belgesi kontrolü yalnız *tracked* migration'ları
+   sayıyordu, bu yüzden 0036-0039 henüz commit'lenmemişken "en son migration 0035" deyip
+   **memnuniyetle geçiyordu**. Düzeltildi (`--others --exclude-standard`); artık 39 migration
+   görüyor ve 0022-0039'un tamamının belgede anıldığını şart koşuyor. Faz 18'in gate'i bu fazda
+   gerçekten güçlendi.
+
+Ayrıca `phase19:verify`'da "audit'siz parti yaratılmamış" şeklindeki **veri-şekilli** bir kontrol
+denendi ve **atıldı**: ledger zaman damgalarına ve hangi seed'in yüklü olduğuna bağlı olduğu için
+seeded disposable DB ile gerçek DB'de farklı rapor veriyordu. Yerine yapısal ve kesin olan kondu:
+`src/` içinde `insert into public.parties` **tam olarak bir** dosyada — açık operatör eyleminde.
+Kurt masalı anlatan bir kontrol, kontrolsüzlükten kötüdür.
+
+### Migration ledger disiplini
+
+- **`ANCHORS`'a EKLEME YAPILMADI** (`git diff scripts/db/migrate.ts` boş). O dizi yalnız
+  0001-0019 legacy tespiti için; ötesine eklemek allPass/allFail mantığını bozup gerçek bir
+  legacy DB'de `INCONSISTENT_PARTIAL` hard-fail üretirdi (Faz 15'te bizzat doğrulanmıştı).
+- Dört migration da **idempotent** (`if not exists` / `create or replace` / policy-varlık
+  kontrolü) — hepsi arka arkaya iki kez çalıştırılıp doğrulandı, `LEDGER_EMPTY_RECOVERY` şartı.
+- `db:migrate:verify` **49/49**: ledger artık 39 satır görüyor, checksum sürüklenmesi hard-fail
+  ediyor, LEDGER_EMPTY_RECOVERY doğru state'i seçiyor.
+- Her yeni tabloda **RLS açıkça** açıldı + policy yazıldı (0035'in ALTER DEFAULT PRIVILEGES'ine
+  güvenilmedi): grant ayrı şey, RLS ayrı şey — belgede kayıtlı olan 11 tablolu boşluk tam da bu
+  karışıklıktan doğmuştu.
+
+### Gate sonuçları
+
+| Adım | Sonuç |
+| --- | --- |
+| `pnpm lint` | exit 0 (1 uyarı: `analytics-chart.tsx`, önceden var) |
+| `pnpm typecheck` | exit 0 |
+| `pnpm test` | **323/323** (292 mevcut + 31 yeni counterparty kuralı) |
+| `pnpm db:verify` | ALL ASSERTIONS PASSED |
+| `db:migrate:verify` | **49/49** (ledger 39 migration) |
+| `db:constraints:verify` | **54/54** (38 mevcut + **16 yeni Faz 19 FK/CHECK**) |
+| `db:transitions:verify` | 167/167 |
+| `db:reconciliation:verify` | 77/77 |
+| `db:legacy-repair:verify` | 183/183 |
+| `pnpm db:roles:verify` | **8/8** (Faz 15 gerilemedi) |
+| `pnpm import:real` | ALL PASS (43 sekme, 9.817 hücre, TİJEN −60.000) |
+| phase3…phase14e (20 script) | 20/20 PASS |
+| `pnpm build` | exit 0 |
+| `pnpm phase16:verify` | **18/18** |
+| `pnpm phase17:verify` | **10/10** |
+| `pnpm phase18:verify` | **12/12** (artık 0039'a kadar kontrol ediyor) |
+| `pnpm phase19:verify` | **26/26 PASS** (hem boş hem veri dolu DB'de) |
+
+### GERÇEK VERİTABANINA UYGULANMADI — bilinçli
+
+`mas_radar_dev` bu fazda da hiç değiştirilmedi ve **0036-0039 ORAYA UYGULANMADI**. Commit
+öncesi teyit edildi:
+
+```
+schema=0034 · payments=19 · users=12 · counterparty_profiles=YOK · ibans=YOK
+```
+
+Bu depoda yerleşik kural: gerçek veriye geçiş her zaman ayrı, kullanıcının kendi onayladığı bir
+adımdır. Faz 15'in kullanıcı adımları (`pnpm db:app-role:password` → `.env.local` →
+`pnpm db:migrate`) hâlâ bekliyor; Faz 19'un migration'ları o adım çalıştırıldığında 0035'ten
+sonra sırayla uygulanacak. Doğrulamanın tamamı `mas_radar_verify` ve `mas_radar_p19` disposable
+veritabanlarında yapıldı, ikisi de düşürüldü, `mas_radar_app` yeniden `NOLOGIN`.
+
+### Faz 20'ye devredilen açık noktalar
+
+1. **`orders`/`products` henüz hiçbir mali kayda bağlı değil** — bilinçli (minimal referans
+   verisi). Fatura Merkezi bunları gerçekten kullanacak.
+2. **Kredi `lender_party_id` çözümü için UI yok** — `counterparty_unresolved` krediyi listeliyor
+   ama eşleştirme action'ı yalnız çekler için var (kredide farklı bir kolon ve farklı bir karar).
+3. Faz 17/18'den devam: `scripts/**`'daki 47 `::float8` (Faz 17B), `rules.ts` biriktiricileri,
+   `finance/actions.ts:createCheckAction`'ın transaction dışı audit'i, mevcut action'ların Zod'a
+   geçirilmesi.

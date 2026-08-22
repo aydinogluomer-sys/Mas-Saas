@@ -135,6 +135,73 @@ async function expectAccept(pool: Pool, sql: string, params: unknown[], label: s
 /** The suite's own original Slice 2 constraint assertions (0022-0025 + archivePayment()) —
  * extracted out of main() so they only run once the disposable DB has genuinely reached a
  * fully-migrated, 0030-validated state; unchanged in substance from before this fix. */
+/**
+ * Faz 19 additions (migrations 0036-0039).
+ *
+ * Extended here rather than only in phase19-verify because these are CONSTRAINTS, and this is
+ * the script that owns constraint coverage. phase19-verify proves the behaviour of the views
+ * and the change-recorder; this proves the FKs and CHECKs refuse what they must.
+ */
+async function runFaz19ConstraintAssertions(pool: Pool): Promise<void> {
+  const party = (await pool.query<{ id: string }>(
+    `insert into public.parties(name, normalized_name, party_type)
+     values ('CV Faz19', 'cv faz19', 'vendor') returning id`)).rows[0].id;
+
+  // ── FK integrity: every new reference must refuse an unknown parent ──────────────────────
+  const ghost = "00000000-0000-0000-0000-000000000000";
+  await expectReject(pool, `insert into public.counterparty_profiles(party_id) values ($1)`, [ghost],
+    /foreign key|violates/i, "counterparty_profiles: bilinmeyen party_id reddedilir");
+  await expectReject(pool, `insert into public.ibans(party_id, iban) values ($1,'TR330006100519786457841326')`, [ghost],
+    /foreign key|violates/i, "ibans: bilinmeyen party_id reddedilir");
+  await expectReject(pool, `insert into public.projects(code,name,party_id) values ('P19-P1','Proje',$1)`, [ghost],
+    /foreign key|violates/i, "projects: bilinmeyen party_id reddedilir");
+  await expectReject(pool, `insert into public.orders(code,party_id) values ('P19-O1',$1)`, [ghost],
+    /foreign key|violates/i, "orders: bilinmeyen party_id reddedilir");
+  await expectReject(pool, `insert into public.departments(code,name,parent_department_id) values ('P19-D1','Bölüm',$1)`, [ghost],
+    /foreign key|violates/i, "departments: bilinmeyen parent_department_id reddedilir");
+
+  // ── CHECK constraints ───────────────────────────────────────────────────────────────────
+  await expectReject(pool, `insert into public.counterparty_profiles(party_id, credit_limit) values ($1, -0.01)`, [party],
+    /credit_limit/i, "counterparty_profiles: negatif kredi limiti reddedilir");
+  await expectReject(pool, `insert into public.counterparty_profiles(party_id, tax_number) values ($1, '   ')`, [party],
+    /tax_number/i, "counterparty_profiles: boşluktan ibaret vergi no reddedilir");
+  await expectReject(pool, `insert into public.counterparty_profiles(party_id, country_code) values ($1, 'TUR')`, [party],
+    /country_code/i, "counterparty_profiles: 2 harf olmayan ülke kodu reddedilir");
+  await expectAccept(pool, `insert into public.counterparty_profiles(party_id, credit_limit) values ($1, 0)`, [party],
+    "counterparty_profiles: SIFIR kredi limiti kabul edilir (gerçek bir değer, 'limit yok' değil)");
+
+  await expectReject(pool, `insert into public.ibans(party_id, iban) values ($1,'   ')`, [party],
+    /iban/i, "ibans: boş IBAN reddedilir");
+  await expectReject(pool, `insert into public.ibans(party_id, iban, currency) values ($1,'TR330006100519786457841326','TRYX')`, [party],
+    /currency/i, "ibans: 3 harf olmayan para birimi reddedilir");
+
+  await expectReject(pool, `insert into public.cost_centers(code,name) values ('  ','Ad')`, [],
+    /code/i, "cost_centers: boş kod reddedilir");
+  await expectAccept(pool, `insert into public.cost_centers(code,name) values ('P19-CC','Masraf Merkezi')`, [],
+    "cost_centers: normal kayıt kabul edilir");
+  await expectReject(pool, `insert into public.cost_centers(code,name) values ('P19-CC','Kopya')`, [],
+    /unique|duplicate/i, "cost_centers: yinelenen kod reddedilir");
+
+  // ── the 1:1 guarantee, as a constraint rather than a convention ──────────────────────────
+  await expectReject(pool, `insert into public.counterparty_profiles(party_id) values ($1)`, [party],
+    /unique|duplicate|pkey/i, "counterparty_profiles: aynı party için ikinci profil reddedilir (1:1)");
+
+  // ── parties may not be deleted out from under a financial record ─────────────────────────
+  // All eight pre-existing FKs into parties are NO ACTION; the Faz 19 additions must not have
+  // quietly loosened that into a cascade that erases financial history.
+  const guarded = (await pool.query<{ n: string }>(
+    `select count(*) n from information_schema.referential_constraints rc
+     join information_schema.constraint_column_usage ccu on ccu.constraint_name = rc.constraint_name
+     where ccu.table_name = 'parties' and rc.delete_rule = 'CASCADE'
+       and rc.constraint_name not like 'counterparty_profiles%'
+       and rc.constraint_name not like 'ibans%'`)).rows[0].n;
+  record(
+    "parties'e giden mali FK'lar hâlâ CASCADE DEĞİL (yalnız profil/IBAN sidecar'ları cascade eder)",
+    Number(guarded) === 0,
+    `${guarded} beklenmeyen cascade`,
+  );
+}
+
 async function runConstraintAssertions(pool: Pool, anomalyId: string, actorId: string): Promise<void> {
   // audit_logs append-only
   const auditRow = await pool.query<{ id: string }>("select id from audit_logs limit 1");
@@ -396,6 +463,7 @@ async function main(): Promise<void> {
     if (migrationOk) {
       const actorId = await ensureSystemActor(pool);
       await runConstraintAssertions(pool, anomalyId, actorId);
+      await runFaz19ConstraintAssertions(pool);
     }
   } finally {
     await pool.end();
