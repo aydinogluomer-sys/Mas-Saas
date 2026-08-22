@@ -9,27 +9,13 @@ import type { Pool } from "pg";
 import { moneyOrNull } from "@/lib/money";
 import { extractMonthlyCashflow } from "@/lib/importers/extractors";
 import type { CellVal, RowJson } from "@/lib/importers/row-utils";
+import { audit } from "@/lib/audit";
 import {
   buildProjection,
   findContinuityIssues,
   horizonCards,
   type CashMonth,
 } from "@/lib/radar/rules";
-
-async function audit(
-  client: import("pg").PoolClient,
-  actor: string,
-  action: string,
-  entityTable: string,
-  entityId: string | null,
-  after: unknown,
-): Promise<void> {
-  await client.query(
-    `insert into public.audit_logs (actor, action, entity_table, entity_id, before_data, after_data)
-     values ($1,$2,$3,$4,null,$5)`,
-    [actor, action, entityTable, entityId, JSON.stringify(after ?? null)],
-  );
-}
 
 export interface CashflowMapResult {
   monthsCreated: number;
@@ -133,9 +119,9 @@ export async function mapCashflowMonths(pool: Pool, workbookId: string, actorId:
           );
         }
       }
-      await audit(client, actorId, "map_cashflow_month", "cashflow_months", monthId, {
-        month: data.monthStart, sheet: sheet.sheet_name,
-        lines: data.lines.length,
+      await audit(client, {
+        actor: actorId, action: "map_cashflow_month", entityTable: "cashflow_months", entityId: monthId,
+        after: { month: data.monthStart, sheet: sheet.sheet_name, lines: data.lines.length },
       });
     }
     await client.query("commit");

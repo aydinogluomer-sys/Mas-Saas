@@ -6,6 +6,7 @@ import { getPool } from "@/lib/db";
 import { importWorkbook } from "@/lib/importers/workbook-importer";
 import { refreshMetricSnapshots } from "@/lib/analytics/snapshots";
 import { requireSession } from "@/lib/auth";
+import { audit } from "@/lib/audit";
 
 export async function uploadWorkbookAction(formData: FormData): Promise<void> {
   const session = await requireSession();
@@ -47,11 +48,10 @@ export async function setReviewStatusAction(formData: FormData): Promise<void> {
          where id=$1`,
         [id, status, session.id],
       );
-      await client.query(
-        `insert into public.audit_logs (actor, action, entity_table, entity_id, before_data, after_data)
-         values ($1, 'review_status_change', 'mapping_reviews', $2, $3, $4)`,
-        [session.id, id, JSON.stringify(before.rows[0]), JSON.stringify({ id, status })],
-      );
+      await audit(client, {
+        actor: session.id, action: "review_status_change", entityTable: "mapping_reviews", entityId: id,
+        before: before.rows[0], after: { id, status },
+      });
     }
     await client.query("commit");
   } catch (e) {

@@ -1,5 +1,6 @@
-import type { Pool, PoolClient } from "pg";
+import type { Pool } from "pg";
 import { rate } from "@/lib/money";
+import { audit } from "@/lib/audit";
 import {
   defaultReviewStatus,
   normalizeAssumptionType,
@@ -9,14 +10,6 @@ import {
   type ExternalReviewStatus,
   type ExternalSourceKind,
 } from "./rules";
-
-async function audit(client: PoolClient, actor: string, action: string, entityId: string | null, before: unknown, after: unknown): Promise<void> {
-  await client.query(
-    `insert into public.audit_logs (actor, action, entity_table, entity_id, before_data, after_data)
-     values ($1,$2,'external_assumptions',$3,$4,$5)`,
-    [actor, action, entityId, JSON.stringify(before ?? null), JSON.stringify(after ?? null)],
-  );
-}
 
 export interface ExternalAssumption {
   id: string;
@@ -175,7 +168,10 @@ export async function createExternalAssumption(pool: Pool, input: CreateExternal
       ],
     );
     const id = ins.rows[0].id;
-    await audit(client, actorId, "create_external_assumption", id, null, { assumptionType, sourceKind, reviewStatus, label });
+    await audit(client, {
+      actor: actorId, action: "create_external_assumption", entityTable: "external_assumptions", entityId: id,
+      before: null, after: { assumptionType, sourceKind, reviewStatus, label },
+    });
     await client.query("commit");
     return id;
   } catch (e) {
@@ -203,7 +199,10 @@ export async function setExternalAssumptionReviewStatus(
          where id=$1`,
         [id, status, actorId],
       );
-      await audit(client, actorId, "set_external_assumption_review_status", id, before.rows[0], { id, reviewStatus: status });
+      await audit(client, {
+        actor: actorId, action: "set_external_assumption_review_status", entityTable: "external_assumptions",
+        entityId: id, before: before.rows[0], after: { id, reviewStatus: status },
+      });
     }
     await client.query("commit");
   } catch (e) {

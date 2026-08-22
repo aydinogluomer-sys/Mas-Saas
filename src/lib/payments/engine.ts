@@ -1,7 +1,8 @@
-import type { Pool, PoolClient } from "pg";
+import type { Pool } from "pg";
 import { DomainError } from "@/lib/domain-error";
 import { assertISODateString } from "@/lib/time/istanbul";
 import { addMonths } from "@/lib/radar/rules";
+import { audit } from "@/lib/audit";
 import {
   cancelInstanceWithClient,
   generateInstancesForMonthWithClient,
@@ -9,22 +10,6 @@ import {
   refreshRiskFlagsWithClient,
   type ReconcileFields,
 } from "@/lib/radar/engine";
-
-async function audit(
-  client: PoolClient,
-  actor: string,
-  action: string,
-  entityTable: string,
-  entityId: string | null,
-  before: unknown,
-  after: unknown,
-): Promise<void> {
-  await client.query(
-    `insert into public.audit_logs (actor, action, entity_table, entity_id, before_data, after_data)
-     values ($1, $2, $3, $4, $5, $6)`,
-    [actor, action, entityTable, entityId, JSON.stringify(before ?? null), JSON.stringify(after ?? null)],
-  );
-}
 
 export interface ArchivePaymentInput {
   reason: string;
@@ -59,10 +44,14 @@ export async function archivePayment(
        where id=$1`,
       [id, input.reason, input.archivedByLabel],
     );
-    await audit(client, actorId, "archive_payment", "payments", id, before.rows[0], {
-      status: "archived",
-      archive_reason: input.reason,
-      archived_by_label: input.archivedByLabel,
+    await audit(client, {
+      actor: actorId, action: "archive_payment", entityTable: "payments", entityId: id,
+      before: before.rows[0],
+      after: {
+        status: "archived",
+        archive_reason: input.reason,
+        archived_by_label: input.archivedByLabel,
+      },
     });
 
     // Cascade: only future (due_date >= todayISO) unpaid/planned instances — a
@@ -136,7 +125,10 @@ export async function updatePaymentAndReconcile(
        f.amount_confidence, f.direction, f.priority, f.flexibility_class, f.status,
        f.category_id, f.provider_party_id, f.owner_party_id, f.cash_account_id, f.description],
     );
-    await audit(client, actorId, "update_payment", "payments", id, before.rows[0], f);
+    await audit(client, {
+      actor: actorId, action: "update_payment", entityTable: "payments", entityId: id,
+      before: before.rows[0], after: f,
+    });
 
     const reconcileFields: ReconcileFields = {
       dueDay: f.due_day,

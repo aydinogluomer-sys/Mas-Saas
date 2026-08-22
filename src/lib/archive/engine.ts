@@ -1,4 +1,5 @@
-import type { Pool, PoolClient } from "pg";
+import type { Pool } from "pg";
+import { audit } from "@/lib/audit";
 
 export type ArchiveEntity =
   | "payments"
@@ -32,21 +33,6 @@ const assertEntity = (entity: string): ArchiveEntity => {
   return entity as ArchiveEntity;
 };
 
-const audit = (
-  client: PoolClient,
-  actorId: string,
-  action: string,
-  table: string,
-  id: string,
-  before: unknown,
-  after: unknown,
-) =>
-  client.query(
-    `insert into public.audit_logs(actor,action,entity_table,entity_id,before_data,after_data)
-     values($1,$2,$3,$4,$5,$6)`,
-    [actorId, action, table, id, JSON.stringify(before), JSON.stringify(after)],
-  );
-
 // actorDisplayName is a free-text label for the entity's own archived_by_label column —
 // distinct from actorId (the real audit_logs.actor uuid FK). No default value: this used
 // to silently fall back to a hardcoded "Yerel kullanıcı" string, exactly the kind of
@@ -72,7 +58,10 @@ export async function archiveRecord(
        where id=$1`,
       [id, reason || null, actorDisplayName],
     );
-    await audit(client, actorId, "archive_record", entity, id, before.rows[0], { archived: true, reason, actor: actorDisplayName });
+    await audit(client, {
+      actor: actorId, action: "archive_record", entityTable: entity, entityId: id,
+      before: before.rows[0], after: { archived: true, reason, actor: actorDisplayName },
+    });
     await client.query("commit");
   } catch (error) {
     await client.query("rollback");
@@ -95,7 +84,10 @@ export async function restoreRecord(pool: Pool, entityRaw: string, id: string, a
        where id=$1`,
       [id],
     );
-    await audit(client, actorId, "restore_record", entity, id, before.rows[0], { archived: false });
+    await audit(client, {
+      actor: actorId, action: "restore_record", entityTable: entity, entityId: id,
+      before: before.rows[0], after: { archived: false },
+    });
     await client.query("commit");
   } catch (error) {
     await client.query("rollback");

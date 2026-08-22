@@ -15,6 +15,7 @@ import type { RowJson, SheetRow } from "@/lib/importers/row-utils";
 import { normalizeTr } from "@/lib/importers/workbook-parser";
 import { DomainError } from "@/lib/domain-error";
 import { moneyOrNull, rateOrNull } from "@/lib/money";
+import { audit } from "@/lib/audit";
 import {
   reconcileLoan,
   scheduleDueDates,
@@ -25,22 +26,6 @@ import {
  * behaviour (before_data stays null). Settlement mutations pass it: for a status transition
  * the prior status IS the audit-relevant fact — "this check went planned -> cleared" is not
  * recoverable from the after-image alone once the row has moved on. */
-async function audit(
-  client: PoolClient,
-  actor: string,
-  action: string,
-  entityTable: string,
-  entityId: string | null,
-  after: unknown,
-  before?: unknown,
-): Promise<void> {
-  await client.query(
-    `insert into public.audit_logs (actor, action, entity_table, entity_id, before_data, after_data)
-     values ($1,$2,$3,$4,$5,$6)`,
-    [actor, action, entityTable, entityId, JSON.stringify(before ?? null), JSON.stringify(after ?? null)],
-  );
-}
-
 /** Resolve a label to an existing party id by TR-normalized name. Never creates
  *  parties silently (source-of-truth rule; mirrors Phase 4); unresolved stays null
  *  but the raw label + source_row keep full traceability. */
@@ -162,8 +147,9 @@ export async function mapAcceptedChecks(pool: Pool, workbookId: string, actorId:
              mapped_entity_table='checks', mapped_entity_id=$2 where id=$1`,
           [row.id, checkId],
         );
-        await audit(client, actorId, "map_check", "checks", checkId, {
-          maturity: c.maturityDate, amount, direction: c.direction, bank: c.bank, source_row_id: row.id,
+        await audit(client, {
+          actor: actorId, action: "map_check", entityTable: "checks", entityId: checkId,
+          after: { maturity: c.maturityDate, amount, direction: c.direction, bank: c.bank, source_row_id: row.id },
         });
         result.created++;
       }
@@ -298,9 +284,12 @@ export async function mapLoans(pool: Pool, workbookId: string, actorId: string):
           [mappedRows, loanId],
         );
       }
-      await audit(client, actorId, "map_loan", "loans", loanId, {
-        principal: loan.principal, installments: loan.installments.length,
-        total_payment: loan.totalPayment, reconciled: recon.ok, sheet: sheet.sheet_name,
+      await audit(client, {
+        actor: actorId, action: "map_loan", entityTable: "loans", entityId: loanId,
+        after: {
+          principal: loan.principal, installments: loan.installments.length,
+          total_payment: loan.totalPayment, reconciled: recon.ok, sheet: sheet.sheet_name,
+        },
       });
     }
     await client.query("commit");
@@ -490,15 +479,17 @@ async function settleCheck(
        values ($1,$2,null,$3)`,
       [checkId, outcome, actorId],
     );
-    await audit(
-      client,
-      actorId,
-      outcome === "cleared" ? "mark_check_cleared" : "mark_check_bounced",
-      "checks",
-      checkId,
-      { status: outcome },
-      { status: currentStatus },
-    );
+    await audit(client, {
+      actor: actorId,
+      action: outcome === "cleared" ? "mark_check_cleared" : "mark_check_bounced",
+      entityTable: "checks",
+      entityId: checkId,
+      // The old local helper took (…, after, before?) — the OPPOSITE order of every other
+      // copy in the repo. Preserved field-for-field here: `currentStatus` is the status read
+      // before the update, `outcome` is the new one.
+      before: { status: currentStatus },
+      after: { status: outcome },
+    });
     await client.query("commit");
   } catch (e) {
     await client.query("rollback");
@@ -545,15 +536,15 @@ export async function markInstallmentPaid(
        returning to_char(paid_at,'YYYY-MM-DD') as paid_at`,
       [installmentId, paidAt],
     );
-    await audit(
-      client,
-      actorId,
-      "mark_installment_paid",
-      "loan_installments",
-      installmentId,
-      { status: "paid", paid_at: result.rows[0].paid_at },
-      { status: currentStatus },
-    );
+    await audit(client, {
+      actor: actorId,
+      action: "mark_installment_paid",
+      entityTable: "loan_installments",
+      entityId: installmentId,
+      // Same reversed-order helper as above; `currentStatus` is the prior status.
+      before: { status: currentStatus },
+      after: { status: "paid", paid_at: result.rows[0].paid_at },
+    });
     await client.query("commit");
   } catch (e) {
     await client.query("rollback");
@@ -583,7 +574,10 @@ export async function cancelCheck(pool: Pool, checkId: string, reason: string, a
       `update public.checks set status='cancelled', cancelled_at=now(), cancel_reason=$2 where id=$1`,
       [checkId, trimmedReason],
     );
-    await audit(client, actorId, "cancel_check", "checks", checkId, { status: "cancelled", cancel_reason: trimmedReason });
+    await audit(client, {
+      actor: actorId, action: "cancel_check", entityTable: "checks", entityId: checkId,
+      after: { status: "cancelled", cancel_reason: trimmedReason },
+    });
     await client.query("commit");
   } catch (e) {
     await client.query("rollback");
@@ -611,9 +605,10 @@ export async function cancelLoanInstallment(pool: Pool, installmentId: string, r
       `update public.loan_installments set status='cancelled', cancelled_at=now(), cancel_reason=$2 where id=$1`,
       [installmentId, trimmedReason],
     );
-    await audit(client, actorId, "cancel_loan_installment", "loan_installments", installmentId, {
-      status: "cancelled",
-      cancel_reason: trimmedReason,
+    await audit(client, {
+      actor: actorId, action: "cancel_loan_installment", entityTable: "loan_installments",
+      entityId: installmentId,
+      after: { status: "cancelled", cancel_reason: trimmedReason },
     });
     await client.query("commit");
   } catch (e) {

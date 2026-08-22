@@ -11,6 +11,8 @@ import { extractPaymentMatrix } from "@/lib/importers/extractors";
 import type { RowJson, SheetRow } from "@/lib/importers/row-utils";
 import { DomainError } from "@/lib/domain-error";
 import { assertISODateString } from "@/lib/time/istanbul";
+import { audit } from "@/lib/audit";
+import { formatIssues } from "@/lib/validation";
 import {
   addMonths,
   computeRisk,
@@ -36,34 +38,6 @@ export type LegacyRepairActorId = string | null;
  * arbitrary-action/entity/payload audit writer is too broad a surface to hand to
  * external tooling. legacy-repair-apply.ts gets only writeLegacyRepairSummaryWithClient
  * below, which hardcodes the one action/entity shape it's allowed to write. */
-async function audit(
-  client: PoolClient,
-  actor: string | null,
-  action: string,
-  entityTable: string,
-  entityId: string | null,
-  before: unknown,
-  after: unknown,
-  createdAt?: string,
-): Promise<string> {
-  const result = createdAt
-    ? await client.query<{ id: string }>(
-        `insert into public.audit_logs (actor, action, entity_table, entity_id, before_data, after_data, created_at)
-         values ($1, $2, $3, $4, $5, $6, $7)
-         returning id`,
-        [actor, action, entityTable, entityId, JSON.stringify(before ?? null), JSON.stringify(after ?? null), createdAt],
-      )
-    : await client.query<{ id: string }>(
-        `insert into public.audit_logs (actor, action, entity_table, entity_id, before_data, after_data)
-         values ($1, $2, $3, $4, $5, $6)
-         returning id`,
-        [actor, action, entityTable, entityId, JSON.stringify(before ?? null), JSON.stringify(after ?? null)],
-      );
-  if (result.rowCount !== 1 || !result.rows[0]?.id) {
-    throw new Error(`audit(): beklenen tam olarak 1 satır döndü, alınan ${result.rowCount}`);
-  }
-  return result.rows[0].id;
-}
 
 /* ── Slice 5 legacy repair — narrow audit-write surface ──
    Everything below is deliberately self-contained (its own tiny Zod validators, not
@@ -135,9 +109,16 @@ export async function writeLegacyRepairSummaryWithClient(
 ): Promise<string> {
   const parsed = LegacyRepairSummaryInputSchema.safeParse(input);
   if (!parsed.success) {
-    throw new DomainError(`writeLegacyRepairSummaryWithClient: geçersiz input — ${parsed.error.message}`);
+    // Faz 18: was `parsed.error.message`, which in Zod v4 is a JSON dump of the raw issue
+    // array. Since Faz 16 a DomainError's message is passed through to the client verbatim
+    // (api-response.ts), so that dump was reachable from outside. formatIssues renders the
+    // same failure as one readable line without the internal structure.
+    throw new DomainError(`writeLegacyRepairSummaryWithClient: geçersiz input — ${formatIssues(parsed.error)}`);
   }
-  return audit(client, actorId, "legacy_repair_summary", "legacy_repair", null, null, parsed.data, eventTimestamp);
+  return audit(client, {
+    actor: actorId, action: "legacy_repair_summary", entityTable: "legacy_repair", entityId: null,
+    before: null, after: parsed.data, createdAt: eventTimestamp,
+  });
 }
 
 export async function loadThresholds(client: PoolClient | Pool): Promise<RiskThresholds> {
@@ -247,11 +228,15 @@ export async function mapAcceptedCandidates(pool: Pool, workbookId: string, acto
            where id=$1`,
           [row.id, paymentId],
         );
-        await audit(client, actorId, "map_payment_candidate", "payments", paymentId, null, {
-          name: c.name,
-          due_day: c.dueDay,
-          default_amount: c.amountCandidate,
-          source_row_id: row.id,
+        await audit(client, {
+          actor: actorId, action: "map_payment_candidate", entityTable: "payments", entityId: paymentId,
+          before: null,
+          after: {
+            name: c.name,
+            due_day: c.dueDay,
+            default_amount: c.amountCandidate,
+            source_row_id: row.id,
+          },
         });
         result.created++;
       }
@@ -318,10 +303,10 @@ export async function generateInstancesForMonthWithClient(
     );
     created += res.rowCount ?? 0;
   }
-  await audit(client, actorId, "generate_instances", "payment_instances", null, null, {
-    monthStart: monthStartISO,
-    created,
-    total: payments.rowCount,
+  await audit(client, {
+    actor: actorId, action: "generate_instances", entityTable: "payment_instances", entityId: null,
+    before: null,
+    after: { monthStart: monthStartISO, created, total: payments.rowCount },
   });
   return {
     monthStart: monthStartISO,
@@ -457,9 +442,9 @@ export async function markInstancePaid(
        where id=$1`,
       [instanceId, finalPaid],
     );
-    await audit(client, actorId, "mark_paid", "payment_instances", instanceId, before.rows[0], {
-      status: "paid",
-      paid_amount: finalPaid,
+    await audit(client, {
+      actor: actorId, action: "mark_paid", entityTable: "payment_instances", entityId: instanceId,
+      before: before.rows[0], after: { status: "paid", paid_amount: finalPaid },
     });
     await client.query("commit");
   } catch (e) {
@@ -489,8 +474,9 @@ export async function markInstanceUnpaid(pool: Pool, instanceId: string, actorId
        where id=$1`,
       [instanceId],
     );
-    await audit(client, actorId, "mark_unpaid", "payment_instances", instanceId, before.rows[0], {
-      status: "unpaid",
+    await audit(client, {
+      actor: actorId, action: "mark_unpaid", entityTable: "payment_instances", entityId: instanceId,
+      before: before.rows[0], after: { status: "unpaid" },
     });
     await client.query("commit");
   } catch (e) {
@@ -528,9 +514,9 @@ export async function markInstancePartial(pool: Pool, instanceId: string, paidAm
       `update public.payment_instances set status='partial', paid_amount=$2, paid_at=now() where id=$1`,
       [instanceId, paidAmount],
     );
-    await audit(client, actorId, "mark_partial", "payment_instances", instanceId, before.rows[0], {
-      status: "partial",
-      paid_amount: paidAmount,
+    await audit(client, {
+      actor: actorId, action: "mark_partial", entityTable: "payment_instances", entityId: instanceId,
+      before: before.rows[0], after: { status: "partial", paid_amount: paidAmount },
     });
     await client.query("commit");
   } catch (error) {
@@ -571,10 +557,10 @@ export async function setInstanceAmount(
         `update public.payment_instances set amount=$2, amount_status='known', amount_source='manual' where id=$1`,
         [instanceId, amount],
       );
-      await audit(client, actorId, "set_instance_amount", "payment_instances", instanceId, b, {
-        amount,
-        amount_status: "known",
-        amount_source: "manual",
+      await audit(client, {
+        actor: actorId, action: "set_instance_amount", entityTable: "payment_instances",
+        entityId: instanceId, before: b,
+        after: { amount, amount_status: "known", amount_source: "manual" },
       });
     }
     await client.query("commit");
@@ -634,16 +620,16 @@ export async function cancelInstanceWithClient(
     ctx?.eventTimestamp ? [instanceId, ctx.eventTimestamp, trimmedReason] : [instanceId, trimmedReason],
   );
   const cancelledAt = updated.rows[0].cancelled_at_iso;
-  const auditId = await audit(
-    client,
-    actorId,
-    ctx?.auditAction ?? "cancel_instance",
-    "payment_instances",
-    instanceId,
-    before.rows[0],
-    { status: "cancelled", cancel_reason: trimmedReason },
-    ctx?.eventTimestamp,
-  );
+  const auditId = await audit(client, {
+    actor: actorId,
+    action: ctx?.auditAction ?? "cancel_instance",
+    entityTable: "payment_instances",
+    entityId: instanceId,
+    before: before.rows[0],
+    after: { status: "cancelled", cancel_reason: trimmedReason },
+    // Legacy repair backdates the row to when the change actually happened; see audit.ts.
+    createdAt: ctx?.eventTimestamp,
+  });
   return { instanceId, auditId, cancelledAt };
 }
 
@@ -704,9 +690,10 @@ export async function repairCancellationMetadataWithClient(
     [instanceId, cancelledAt, trimmedReason],
   );
   const resultCancelledAt = updated.rows[0].cancelled_at_iso;
-  const auditId = await audit(client, actorId, "legacy_cancel_metadata_repair", "payment_instances", instanceId, b, {
-    cancelled_at: resultCancelledAt,
-    cancel_reason: trimmedReason,
+  const auditId = await audit(client, {
+    actor: actorId, action: "legacy_cancel_metadata_repair", entityTable: "payment_instances",
+    entityId: instanceId, before: b,
+    after: { cancelled_at: resultCancelledAt, cancel_reason: trimmedReason },
   });
   return { instanceId, auditId, cancelledAt: resultCancelledAt };
 }
@@ -805,11 +792,10 @@ export async function reconcileInstancesWithClient(
 
   const totalEligible = rows.rowCount ?? 0;
   if (dueDateChanged > 0 || amountChanged > 0) {
-    await audit(client, actorId, "reconcile_instances", "payment_instances", null, null, {
-      paymentId,
-      dueDateChanged,
-      amountChanged,
-      totalEligible,
+    await audit(client, {
+      actor: actorId, action: "reconcile_instances", entityTable: "payment_instances", entityId: null,
+      before: null,
+      after: { paymentId, dueDateChanged, amountChanged, totalEligible },
     });
   }
 

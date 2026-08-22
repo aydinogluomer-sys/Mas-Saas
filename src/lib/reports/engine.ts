@@ -3,7 +3,7 @@
 // (payments/instances/checks/loans/cashflow) — only appends to reports + audit_logs.
 // AI stays commentary-only: meta.commentary_prompt is a string, no model is called.
 
-import type { Pool, PoolClient } from "pg";
+import type { Pool } from "pg";
 import { addDaysISO, debtServiceByMonth } from "@/lib/financing/rules";
 import { loadDecisionFacts } from "@/lib/facts/engine";
 import { loadMaturityItems } from "@/lib/financing/engine";
@@ -13,19 +13,12 @@ import {
   instancesBetween, monthInstances, monthSummary, overdueOpen, riskyDays,
 } from "@/lib/radar/queries";
 import { addMonths } from "@/lib/radar/rules";
+import { audit } from "@/lib/audit";
 import {
   buildCommentaryPrompt, buildDailyReport, buildMonthlyReport, buildWeeklyReport,
   overlayDebtService,
   type ReportInstance, type ReportMaturity,
 } from "./rules";
-
-async function audit(client: PoolClient, actor: string, action: string, entityId: string | null, after: unknown): Promise<void> {
-  await client.query(
-    `insert into public.audit_logs (actor, action, entity_table, entity_id, before_data, after_data)
-     values ($1,$2,'reports',$3,null,$4)`,
-    [actor, action, entityId, JSON.stringify(after ?? null)],
-  );
-}
 
 const toReportInstance = (r: {
   name: string; due_date: string; amount: number | null; status: string; risk_level: string; risk_reasons: string[];
@@ -53,7 +46,10 @@ async function writeReport(
       [type, periodStart, periodEnd, bodyMd, JSON.stringify(meta ?? null)],
     );
     const id: string = ins.rows[0].id;
-    await audit(client, actorId, `generate_report_${type}`, id, { periodStart, periodEnd });
+    await audit(client, {
+      actor: actorId, action: `generate_report_${type}`, entityTable: "reports", entityId: id,
+      after: { periodStart, periodEnd },
+    });
     await client.query("commit");
     return id;
   } catch (e) {

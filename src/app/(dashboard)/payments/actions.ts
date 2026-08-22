@@ -7,6 +7,7 @@ import { archivePayment, updatePaymentAndReconcile } from "@/lib/payments/engine
 import { DomainError } from "@/lib/domain-error";
 import { istanbulDateISO } from "@/lib/time/istanbul";
 import { requireSession } from "@/lib/auth";
+import { audit } from "@/lib/audit";
 
 const num = (v: FormDataEntryValue | null): number | null => {
   const s = String(v ?? "").trim();
@@ -68,11 +69,10 @@ export async function createPaymentAction(formData: FormData): Promise<void> {
        f.cash_account_id, f.description],
     );
     id = res.rows[0].id;
-    await client.query(
-      `insert into public.audit_logs (actor, action, entity_table, entity_id, before_data, after_data)
-       values ($1,'create_payment','payments',$2,null,$3)`,
-      [session.id, id, JSON.stringify(f)],
-    );
+    await audit(client, {
+      actor: session.id, action: "create_payment", entityTable: "payments", entityId: id,
+      before: null, after: f,
+    });
     await client.query("commit");
   } catch (e) {
     await client.query("rollback");

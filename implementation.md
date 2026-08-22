@@ -562,6 +562,7 @@ pnpm phase9b:verify
 pnpm phase9c:verify   # Faz 10C tamamlaninca
 pnpm phase9d:verify   # Faz 10D tamamlaninca
 pnpm phase17:verify   # Faz 17'den sonra: kaynak taramasi, DB gerektirmez
+pnpm phase18:verify   # Faz 18'den sonra: kaynak taramasi, DB gerektirmez
 pnpm build
 pnpm phase16:verify   # Faz 16'dan sonra: build'i gerektirir, bu yuzden build'den SONRA
 ```

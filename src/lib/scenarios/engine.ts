@@ -3,13 +3,14 @@
 // (+ audit_logs). It never mutates payments/instances/cashflow/checks/loans/reminders/
 // reports/production. Every run stores its explicit assumptions and the baseline it used.
 
-import type { Pool, PoolClient } from "pg";
+import type { Pool } from "pg";
 import { loadCashMonths } from "@/lib/cashflow/engine";
 import { loadApprovedExternalAssumptions, type ExternalAssumption } from "@/lib/external-assumptions/engine";
 import { debtServiceByMonth } from "@/lib/financing/rules";
 import { loadMaturityItems } from "@/lib/financing/engine";
 import { moneyOrNull, rateOrNull } from "@/lib/money";
 import type { CashMonth } from "@/lib/radar/rules";
+import { audit } from "@/lib/audit";
 import {
   applyScenario,
   buildScenarioInsights,
@@ -19,14 +20,6 @@ import {
   type ScenarioAssumptions,
   type ScenarioComparison,
 } from "./rules";
-
-async function audit(client: PoolClient, actor: string, action: string, entityId: string | null, after: unknown): Promise<void> {
-  await client.query(
-    `insert into public.audit_logs (actor, action, entity_table, entity_id, before_data, after_data)
-     values ($1,$2,'scenario_runs',$3,null,$4)`,
-    [actor, action, entityId, JSON.stringify(after ?? null)],
-  );
-}
 
 export type ScenarioType =
   | "revenue_up_down_percent" | "expense_up_down_percent" | "customer_delay_days"
@@ -247,7 +240,10 @@ export async function createScenario(
       [input.name, input.description ?? null, input.scenarioType, input.baselineLabel ?? null, input.baselineMonthCount ?? null, actorId],
     );
     const id: string = ins.rows[0].id;
-    await audit(client, actorId, "create_scenario", id, { name: input.name, type: input.scenarioType });
+    await audit(client, {
+      actor: actorId, action: "create_scenario", entityTable: "scenario_runs", entityId: id,
+      after: { name: input.name, type: input.scenarioType },
+    });
     await client.query("commit");
     return id;
   } catch (e) {
@@ -364,7 +360,10 @@ export async function runScenario(
         [runId, cr.metric, cr.base, cr.scen, cr.delta],
       );
     }
-    await audit(client, actorId, "run_scenario", runId, { scenarioId, assumptions: storedAssumptions, adjustmentCount: adjustments.length, externalContextCount: externalContext.length, finalDelta: comparison.finalDelta, confidence });
+    await audit(client, {
+      actor: actorId, action: "run_scenario", entityTable: "scenario_runs", entityId: runId,
+      after: { scenarioId, assumptions: storedAssumptions, adjustmentCount: adjustments.length, externalContextCount: externalContext.length, finalDelta: comparison.finalDelta, confidence },
+    });
     await client.query("commit");
     return { runId, comparison, insights };
   } catch (e) {
@@ -470,7 +469,10 @@ export async function deleteScenarioRun(pool: Pool, runId: string, actorId: stri
   try {
     await client.query("begin");
     await client.query(`delete from public.scenario_runs where id=$1`, [runId]);
-    await audit(client, actorId, "delete_scenario_run", runId, { deleted: true });
+    await audit(client, {
+      actor: actorId, action: "delete_scenario_run", entityTable: "scenario_runs", entityId: runId,
+      after: { deleted: true },
+    });
     await client.query("commit");
   } catch (e) {
     await client.query("rollback");

@@ -823,3 +823,184 @@ Faz 15/16'daki gibi geri alındı: `mas_radar_verify` ve `mas_radar_money_probe`
 
 `scripts/**`'daki 47 cast (Faz 17B) ve `financing/rules.ts` + `production/rules.ts`'teki
 `+=` biriktiricileri. İkisi de `phase17:verify` tarafından kayıt altında; sessizce büyüyemezler.
+
+---
+
+## Faz 18 — DONE (paylaşılan `audit()` / `DomainError` / Zod sınırı + şema dokümanı yenilemesi)
+
+Faz 15/16/17'nin hiçbir parçasını geri almaz. **Şema değişmedi, migration eklenmedi** — bu faz
+tamamen uygulama katmanı. Riskli taraf da buydu: on üç `audit()` kopyasını birleştirmek, mali
+denetim izini yazan kodun tamamına dokunmak demek.
+
+### Plandaki sayı doğruydu ama EKSİKTİ: 13 değil 16 dosya
+
+`grep` ile bizzat sayıldı:
+
+| Ne | Bulunan |
+| --- | --- |
+| Yerel `audit()` yardımcısı | **13** — planın saydığı 13'ün aynısı (ai, analytics/snapshots, archive, cashflow, data-quality, external-assumptions, financing, payments, production, radar, reports, scenarios, users) |
+| Yardımcısı OLMAYAN, satır içi `insert into public.audit_logs` yazan server action | **3** — `finance/actions.ts` (2 adet), `payments/actions.ts`, `imports/actions.ts` |
+| **Toplam insert ifadesi** | **18, 16 dosyada** |
+
+Plan yalnız yardımcıları saymıştı; ama gate "audit.ts dışında hiçbir yerde
+`insert into public.audit_logs` olmayacak" dediği için üç action dosyasının da taşınması
+zorunluydu. Hepsi taşındı; `pnpm phase18:verify` artık sıfır tolerans uyguluyor.
+
+### Kanonik imza: radar taban alındı ama KONUMSAL DEĞİL
+
+Plan `radar/engine.ts`'in imzasını taban öneriyordu ve bu doğruydu — on üçü arasında tek
+eksiksiz olan oydu: `actor` nullable, `entityTable` parametre, hem `before` hem `after`,
+legacy-repair için opsiyonel `createdAt` override'ı, ve eklenen satırın id'sini döndürüyor.
+
+Ama imzanın **konumsal şekli** kopyalanmadı, çünkü eski kodun en kötü özelliği tam olarak oydu:
+
+```
+payments/engine.ts    audit(client, actor, action, entityTable, entityId, before, after)
+financing/engine.ts   audit(client, actor, action, entityTable, entityId, after, before?)
+                                                                          ^^^^^  ^^^^^^
+```
+
+**Aynı depoda iki yardımcı, `before`/`after`'ı TERS sırada alıyordu.** Kopyala-yapıştır bir
+çağrının yeni değeri eski değer olarak kaydetmesini engelleyen tek şey dikkatti. Kanonik API
+adlandırılmış alanlı bir nesne alıyor (`audit(client, { actor, action, entityTable, entityId,
+before, after, createdAt })`), böylece bu hata **temsil edilemez** hale geliyor. Bu fazın
+diff'e değmesinin asıl sebebi bu; `phase18:verify` nesne imzasının konumsala geri dönmediğini
+de kontrol ediyor.
+
+Taşıma sırasında financing'in iki settlement çağrısı ayrı ayrı elle doğrulandı: 6. konumsal
+argüman `after`, 7. `before` idi (`currentStatus` güncellemeden ÖNCE okunan statü). Yeni
+çağrılarda alanlar bu anlamla eşleştirildi ve çağrı noktalarına yorum düşüldü.
+
+### Kapsam disiplini: NE yazıldığı değil, NEREDE yazıldığı değişti
+
+Her çağrı noktası alan-alan taşındı: tablosunu sabit yazan bir yardımcı artık aynı literali
+parametre olarak geçiyor, `before`'ı hep null yazan biri hâlâ `before` geçmiyor, JSON kodlaması
+(`JSON.stringify(x ?? null)`) birebir aynı. 46 yardımcı çağrısı + 4 satır içi insert = 50 nokta.
+
+**Tek bilinçli normalleştirme, ölçülerek zararsız bulundu.** Üç server action `before_data`'yı
+ya hiç yazmıyor ya da SQL `null` geçiyordu (→ SQL NULL); `audit()` ise diğer 13 yardımcı gibi
+jsonb `'null'` yazıyor. Fark yalnız depolama seviyesinde:
+
+- `system/audit/page.tsx` `x.before_data == null ? "—" : …` diyor. node-postgres **hem** SQL
+  NULL'ı **hem** jsonb `'null'`'ı JS `null` olarak veriyor — bizzat ölçüldü:
+  `select null::jsonb, 'null'::jsonb` → ikisi de `js=null, ==null:true`. İkisi de "—" basıyor.
+- `radar/queries.ts`'in `before_data->>'status'` okuması her iki biçimde de SQL NULL veriyor.
+- Doğrulama script'lerinin hiçbiri ayrımı kullanmıyor.
+
+Yani okuyan hiç kimse farkı göremiyor, ve tablo artık tek biçimli (gerçek veriyle dolu
+doğrulama DB'sinde 378 satırın 378'i jsonb `'null'`, 0 SQL NULL).
+
+### Yol boyunca bulunan gerçek bir sızıntı: ham `ZodError.message`
+
+`radar/engine.ts:111` şunu yapıyordu:
+
+```ts
+throw new DomainError(`… geçersiz input — ${parsed.error.message}`);
+```
+
+Zod v4'te `ZodError.message` **ham issue dizisinin JSON dökümüdür** (ölçüldü):
+`[{ "origin": "string", "code": "invalid_format", "format": "uuid", "path": ["id"], … }]`.
+Ve Faz 16'dan beri `api-response.ts` bir DomainError'ın mesajını **istemciye aynen geçiriyor**
+(diğer her şey jenerik 500). Yani iç doğrulama yapısı dışarıya açılabiliyordu.
+`formatIssues()` aynı hatayı tek okunur satıra indiriyor; `phase18:verify` bu kalıbın geri
+gelmediğini kontrol ediyor.
+
+### Zod sınırı: `src/lib/validation/` gerçek bir sınır oldu
+
+Önce yalnız 6 satırlık `financial.ts` vardı. Eklenen `index.ts`:
+
+- `parseOrThrow(schema, value, label)` → başarısızlıkta **DomainError** (düz `Error` değil:
+  geçersiz form girdisi BEKLENEN bir hatadır ve operatöre gösterilmelidir; düz Error jenerik
+  "beklenmeyen hata"ya düşer ve "vade tarihi zorunlu"yu gizlerdi).
+- `formatIssues(error)` → `alan: mesaj; alan: mesaj` — kod/origin/expected iç yapısı yok.
+- `parseOrIssues(...)` → fırlatmayan varyant.
+- `formObject(formData)` → tekrar eden anahtarları **diziye** topluyor (`Object.fromEntries`
+  sonuncusu hariç hepsini sessizce düşürür — çoklu seçimde gerçek bir tuzak), `File` girdilerini
+  atıyor, boş string'i koruyor ("operatör alanı temizledi" ile "alan gönderilmedi" farklı
+  ifadelerdir).
+
+**Kural bu fazdan itibaren YENİ kod için zorunlu**, mevcut action'lar bilinçli olarak
+retrofit EDİLMEDİ (aşağıda).
+
+### DOKUNULMAYANLAR (bilinçli)
+
+- **Mevcut server action'ların form ayrıştırması.** Bugün hâlâ `String(formData.get("x") ?? "")`
+  ve elle `Number()` kullanıyorlar. On üç audit yardımcısını birleştirirken aynı anda her form
+  ayrıştırmasını da yeniden yazmak, iki değişikliği de gözden geçirilemez yapardı. Yardımcı
+  artık var; sırada yazılacak şeyin gidecek doğru bir yeri var.
+- **`DomainError` sınıfının kendisi** (tek satır) — değişmedi. Mevcut kodun toptan
+  DomainError'a geçirilmesi plan gereği kapsam dışı; yalnız audit taşımasında dokunulan
+  `radar/engine.ts`'in sızıntısı düzeltildi.
+- **`scripts/db/constraints-verify.ts`'in doğrudan insert'i** — 0022'nin append-only
+  trigger'ını kanıtlayan sonda. `audit()`'ten geçirmek constraint'i değil yardımcıyı test
+  etmek olurdu. `phase18:verify`'da gerekçeli izin listesinde, sayımı sabit.
+- **`finance/actions.ts`'in ATOMIK OLMAYAN audit yazımı.** `createCheckAction` çeki ve denetim
+  satırını iki ayrı `pool.query` ile, transaction DIŞINDA yazıyor — yani çek yaratılıp denetim
+  satırı yazılmayabilir. `audit()` bu yüzden `Pool | PoolClient` kabul ediyor: bu fazın kuralı
+  "her çağrı noktasının davranışını birebir koru" idi ve 16 dosyalık bir refactor'ın içinde
+  sessizce transaction semantiği değiştirmek doğru olmazdı. **Gerçek bir açık, ayrı bir dilimde
+  kapatılmalı** (`createLoanAction` zaten transaction içinde — desen orada doğru).
+
+### Şema dokümanı ~0021'den 0035'e getirildi
+
+`docs/database-schema.md` gerçekten geride kalmıştı: 0022, 0031, 0035 anılıyordu ama
+0023-0030 ve 0032-0034 hiç yoktu (11 migration). `phase18:verify` bunu **kendisi yakaladı** —
+kontrol yazıldıktan sonra ilk çalıştırmada 11/12 verip eksikleri tek tek listeledi.
+
+Eklenen bölüm konu bazlı: denetim izi dokunulmazlığı (0022), arşiv yaşam döngüsü (0023/0024),
+ödeme kalemi alan tutarlılığı (0025/0028/0029), iptal meta verisi (0026/0030), statü geçiş
+guard'ları (0027/0033/0034) ve kimlik/aktör (0031/0032). Guard bölümü bu deponun en pahalı
+dersini açıkça yazıyor: 0027'nin izin listeleri eksik çıktı, 7/7 çek ve 48/48 taksit
+`planned`de sıkıştı, `paid_count` KPI'ı Faz 5'ten beri 0 döndürdü, ve kısmi ödeme **hiç**
+kaydedilemedi — 0033/0034'e kadar.
+
+Ayrıca **"yeni tablo eklerken checklist"** eklendi (RLS politikası · EKSİKSİZ transition guard ·
+`audit()` çağrısı, mutasyonla aynı transaction'da · migration ledger/idempotency, VALIDATE ayrı
+dilim · Zod sınırı). Beş madde de bu şemanın geçmişte gerçekten kırıldığı beş yer.
+`phase18:verify` belgenin en son migration'ı ve 0022+ aralığının tamamını andığını sürekli
+kontrol ediyor, böylece bir daha sessizce geride kalamaz.
+
+### Gate sonuçları
+
+| Adım | Sonuç |
+| --- | --- |
+| `pnpm lint` | exit 0 (1 uyarı: `analytics-chart.tsx`, önceden var) |
+| `pnpm typecheck` | exit 0 |
+| `pnpm test` | **292/292** (265 mevcut + 27 yeni: 12 audit, 15 validation) |
+| `pnpm db:verify` | ALL ASSERTIONS PASSED |
+| `pnpm db:roles:verify` | **8/8** (Faz 15 gerilemedi) |
+| `db:transitions:verify` | **167/167** — taşınan cancel/settlement audit yollarını koşan gate |
+| `db:constraints:verify` | 38/38 |
+| `db:reconciliation:verify` | 77/77 |
+| `db:legacy-repair:verify` | **183/183** — `createdAt` override'ını ve dönen id'yi koşan gate |
+| `pnpm import:real` | ALL PASS (43 sekme, 9.817 hücre, TİJEN −60.000) |
+| phase3…phase14e (20 script) | 20/20 PASS |
+| `pnpm build` | exit 0 |
+| `pnpm phase16:verify` | **18/18** (Faz 16 gerilemedi) |
+| `pnpm phase17:verify` | **10/10** (Faz 17 gerilemedi) |
+| `pnpm phase18:verify` | **12/12 PASS** |
+
+Refactor'ın davranışsal kanıtı `transitions` (167/167) ve `legacy-repair` (183/183): ikisi de
+denetim satırı yazan yolları gerçek bir veritabanına karşı koşuyor, ve legacy-repair
+`createdAt` override'ı ile dönen audit id'sini birebir doğruluyor. Ayrıca gerçek veriyle dolu
+doğrulama DB'sinde 378 audit satırı `action`/`entity_table`/`before`/`after` dolulukları
+bakımından tek tek gözden geçirildi.
+
+`audit.test.ts` bilerek sahte bir client'a karşı SQL ve **bind parametre dizisini** assert
+ediyor, veritabanına gitmiyor: burada gerileyebilecek şey adlandırılmış alanların konumsal
+parametrelere eşlenmesi, ve gerçek bir veritabanı bunu YAKALAYAMAZ — her kolon nullable jsonb,
+`before` ile `after`'ı takas etmek kusursuz geçerli ama yanlış bir satır üretir.
+
+### Doğrulama sonrası ortam
+
+`mas_radar_verify` düşürüldü, `mas_radar_app` yeniden `NOLOGIN` (0035'teki hâli), geçici prob
+dosyaları silindi. **`mas_radar_dev` bu fazda da hiç değiştirilmedi** — şema 0034, payments=19,
+users=12 (commit öncesi teyit edildi).
+
+### Faz 19'a devredilen açık noktalar
+
+1. **`finance/actions.ts:createCheckAction` audit'i transaction dışında** — çek yaratılıp
+   denetim satırı yazılmayabilir. Küçük ve tek başına gözden geçirilebilir bir düzeltme.
+2. **Mevcut server action'ların Zod'a geçirilmesi** — yardımcı hazır, retrofit yapılmadı.
+3. Faz 17'den devam: `scripts/**`'daki 47 `::float8` (Faz 17B) ve `financing/rules.ts` +
+   `production/rules.ts`'teki `+=` biriktiricileri.

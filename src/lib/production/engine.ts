@@ -15,14 +15,7 @@ import type { CellVal, RowJson } from "@/lib/importers/row-utils";
 import { normalizeTr } from "@/lib/importers/workbook-parser";
 import { decimal, divOrNull, money, moneyOrNull, mul, rate, rateOrNull } from "@/lib/money";
 import { breakEvenTLPerMin, partProfitability } from "./rules";
-
-async function audit(client: PoolClient, actor: string, action: string, entityTable: string, entityId: string | null, after: unknown): Promise<void> {
-  await client.query(
-    `insert into public.audit_logs (actor, action, entity_table, entity_id, before_data, after_data)
-     values ($1,$2,$3,$4,null,$5)`,
-    [actor, action, entityTable, entityId, JSON.stringify(after ?? null)],
-  );
-}
+import { audit } from "@/lib/audit";
 
 async function sheetCellMap(client: PoolClient | Pool, sheetId: string): Promise<{ map: Record<string, CellVal>; idByRow: Map<number, string> }> {
   const rows = await client.query<{ id: string; row_index: number; row_json: RowJson }>(
@@ -123,8 +116,9 @@ export async function mapCapacitySheet(pool: Pool, workbookId: string, actorId: 
         );
         res.partsCreated += p.rowCount ?? 0;
       }
-      await audit(client, actorId, "map_capacity", "capacity_models", capacityId, {
-        sheet: sheet.sheet_name, parts: capacity.parts.length, stale: isStale,
+      await audit(client, {
+        actor: actorId, action: "map_capacity", entityTable: "capacity_models", entityId: capacityId,
+        after: { sheet: sheet.sheet_name, parts: capacity.parts.length, stale: isStale },
       });
     }
     await client.query("commit");
@@ -223,7 +217,10 @@ export async function mapCostSheets(pool: Pool, workbookId: string, actorId: str
         );
         res.reconciliationReviews += r.rowCount ?? 0;
       }
-      await audit(client, actorId, "map_cost_model", "cost_models", costId, { scenario, sheet: sheet.sheet_name, breakEven });
+      await audit(client, {
+        actor: actorId, action: "map_cost_model", entityTable: "cost_models", entityId: costId,
+        after: { scenario, sheet: sheet.sheet_name, breakEven },
+      });
     }
     await client.query("commit");
     return res;
@@ -395,8 +392,9 @@ export async function mapMachineRoi(pool: Pool, workbookId: string, actorId: str
         );
         if ((agg.rowCount ?? 0) > 0) res.aggregateSnapshot = true;
       }
-      await audit(client, actorId, "map_machine_roi", "machine_roi_snapshots", sheet.id, {
-        sheet: sheet.sheet_name, machines: roi.machines.length, year, net: roi.netAfterTax,
+      await audit(client, {
+        actor: actorId, action: "map_machine_roi", entityTable: "machine_roi_snapshots", entityId: sheet.id,
+        after: { sheet: sheet.sheet_name, machines: roi.machines.length, year, net: roi.netAfterTax },
       });
     }
     await client.query("commit");
@@ -529,8 +527,9 @@ export async function mapMachineMinuteAllocations(pool: Pool, workbookId: string
         if ((ins.rowCount ?? 0) > 0) res.created++;
         else res.skipped++;
       }
-      await audit(client, actorId, "map_machine_minutes", "machine_minute_allocations", cap.id, {
-        capacity_model_id: cap.id, torna: demandRow.torna, freze: demandRow.freze,
+      await audit(client, {
+        actor: actorId, action: "map_machine_minutes", entityTable: "machine_minute_allocations", entityId: cap.id,
+        after: { capacity_model_id: cap.id, torna: demandRow.torna, freze: demandRow.freze },
       });
     }
     await client.query("commit");
@@ -641,8 +640,10 @@ export async function mapFinanceCostAllocations(pool: Pool, workbookId: string, 
           if ((ins.rowCount ?? 0) > 0) res.created++;
           else res.skipped++;
         }
-        await audit(client, actorId, "map_finance_cost_allocation", "finance_cost_allocations", loan.id, {
-          loan: loan.name, capacity_model_id: cap.id, total_finance_cost: loan.total_finance_cost,
+        await audit(client, {
+          actor: actorId, action: "map_finance_cost_allocation", entityTable: "finance_cost_allocations",
+          entityId: loan.id,
+          after: { loan: loan.name, capacity_model_id: cap.id, total_finance_cost: loan.total_finance_cost },
         });
       }
     }

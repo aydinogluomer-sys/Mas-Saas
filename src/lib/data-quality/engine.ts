@@ -1,4 +1,4 @@
-import type { Pool, PoolClient } from "pg";
+import type { Pool } from "pg";
 import {
   classifyWorkbookChange,
   decisionConfidenceLabel,
@@ -12,14 +12,7 @@ import {
 } from "./rules";
 import { loadCapacityModels } from "@/lib/production/engine";
 import { moneyOrNull } from "@/lib/money";
-
-async function audit(client: PoolClient, actor: string, action: string, entityId: string | null, before: unknown, after: unknown): Promise<void> {
-  await client.query(
-    `insert into public.audit_logs (actor, action, entity_table, entity_id, before_data, after_data)
-     values ($1,$2,'action_items',$3,$4,$5)`,
-    [actor, action, entityId, JSON.stringify(before ?? null), JSON.stringify(after ?? null)],
-  );
-}
+import { audit } from "@/lib/audit";
 
 export interface ActionItem {
   id: string;
@@ -323,7 +316,10 @@ export async function createActionFromReview(pool: Pool, reviewId: string, actor
       [reviewActionTitle(r), r.severity, dueIn(r.severity === "critical" || r.severity === "high" ? 1 : 3), r.source_href, r.id, r.message, actorId],
     );
     const id = ins.rows[0].id;
-    await audit(client, actorId, "create_action_from_review", id, null, { reviewId, title: reviewActionTitle(r) });
+    await audit(client, {
+      actor: actorId, action: "create_action_from_review", entityTable: "action_items", entityId: id,
+      before: null, after: { reviewId, title: reviewActionTitle(r) },
+    });
     await client.query("commit");
     return id;
   } catch (e) {
@@ -359,7 +355,10 @@ export async function createActionFromHomeSignal(
       [input.title, input.severity, dueIn(input.severity === "critical" || input.severity === "high" ? 1 : 7), input.sourceFactKey, input.sourceHref, input.note ?? null, actorId],
     );
     const id = ins.rows[0].id;
-    await audit(client, actorId, "create_action_from_home", id, null, input);
+    await audit(client, {
+      actor: actorId, action: "create_action_from_home", entityTable: "action_items", entityId: id,
+      before: null, after: input,
+    });
     await client.query("commit");
     return id;
   } catch (e) {
@@ -420,7 +419,10 @@ export async function createActionFromAiResponse(pool: Pool, aiResponseId: strin
       ],
     );
     const id = ins.rows[0].id;
-    await audit(client, actorId, "create_action_from_ai_response", id, null, { aiResponseId, sourceHref });
+    await audit(client, {
+      actor: actorId, action: "create_action_from_ai_response", entityTable: "action_items", entityId: id,
+      before: null, after: { aiResponseId, sourceHref },
+    });
     await client.query("commit");
     return id;
   } catch (e) {
@@ -482,7 +484,10 @@ export async function createActionFromReport(pool: Pool, reportId: string, actor
       ],
     );
     const id = ins.rows[0].id;
-    await audit(client, actorId, "create_action_from_report", id, null, { reportId, sourceHref });
+    await audit(client, {
+      actor: actorId, action: "create_action_from_report", entityTable: "action_items", entityId: id,
+      before: null, after: { reportId, sourceHref },
+    });
     await client.query("commit");
     return id;
   } catch (e) {
@@ -509,7 +514,10 @@ export async function createManualAction(
       [title, input.severity, input.owner ?? null, input.dueDate || null, input.note ?? null, actorId],
     );
     const id = ins.rows[0].id;
-    await audit(client, actorId, "create_manual_action", id, null, input);
+    await audit(client, {
+      actor: actorId, action: "create_manual_action", entityTable: "action_items", entityId: id,
+      before: null, after: input,
+    });
     await client.query("commit");
     return id;
   } catch (e) {
@@ -540,7 +548,10 @@ export async function setActionStatus(pool: Pool, id: string, status: ActionStat
          where id=$1`,
         [id, status, note],
       );
-      await audit(client, actorId, "set_action_status", id, before.rows[0], { id, status, completionNote: note });
+      await audit(client, {
+        actor: actorId, action: "set_action_status", entityTable: "action_items", entityId: id,
+        before: before.rows[0], after: { id, status, completionNote: note },
+      });
     }
     await client.query("commit");
   } catch (e) {

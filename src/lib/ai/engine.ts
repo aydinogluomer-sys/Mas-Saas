@@ -1,7 +1,8 @@
-import type { Pool, PoolClient } from "pg";
+import type { Pool } from "pg";
 import { env } from "@/lib/env";
 import { loadDecisionFacts, type DecisionFact } from "@/lib/facts/engine";
 import { istanbulDateISO } from "@/lib/reports/rules";
+import { audit } from "@/lib/audit";
 import {
   buildDeterministicAnswer,
   buildModelPrompt,
@@ -10,14 +11,6 @@ import {
   selectFactsForQuestion,
   type AiResponseMode,
 } from "./rules";
-
-async function audit(client: PoolClient, actor: string, action: string, entityId: string | null, after: unknown): Promise<void> {
-  await client.query(
-    `insert into public.audit_logs (actor, action, entity_table, entity_id, before_data, after_data)
-     values ($1,$2,'ai_response_snapshots',$3,null,$4)`,
-    [actor, action, entityId, JSON.stringify(after ?? null)],
-  );
-}
 
 function extractOutputText(json: unknown): string | null {
   if (!json || typeof json !== "object") return null;
@@ -121,7 +114,10 @@ export async function answerQuestion(
       ],
     );
     const id = ins.rows[0].id;
-    await audit(client, actorId, "answer_question", id, { responseMode, model, reportId: input.reportId ?? null, sourceFactKeys });
+    await audit(client, {
+      actor: actorId, action: "answer_question", entityTable: "ai_response_snapshots", entityId: id,
+      after: { responseMode, model, reportId: input.reportId ?? null, sourceFactKeys },
+    });
     await client.query("commit");
     return { id, question, answerMd, responseMode, model, sourceFactKeys, sourceHrefs, safetyNotes };
   } catch (e) {

@@ -13,6 +13,7 @@ import type { Pool, PoolClient } from "pg";
 import { z } from "zod";
 import { DomainError } from "@/lib/domain-error";
 import { hashPassword } from "@/lib/auth";
+import { audit } from "@/lib/audit";
 
 /** Mirrors the DB CHECK in 0031 — kept in sync deliberately so a bad value fails at the
  * boundary with a Turkish message instead of as a raw Postgres constraint error. */
@@ -77,21 +78,6 @@ export async function listUsers(pool: Pool): Promise<UserListRow[]> {
   }));
 }
 
-async function audit(
-  client: PoolClient,
-  actorId: string,
-  action: string,
-  entityId: string,
-  before: unknown,
-  after: unknown,
-): Promise<void> {
-  await client.query(
-    `insert into public.audit_logs (actor, action, entity_table, entity_id, before_data, after_data)
-     values ($1,$2,'users',$3,$4,$5)`,
-    [actorId, action, entityId, JSON.stringify(before ?? null), JSON.stringify(after ?? null)],
-  );
-}
-
 /** Non-secret projection used for audit before/after. Never includes password_hash. */
 interface UserAuditShape { username: string; display_name: string; role: string; is_active: boolean; }
 async function loadForAudit(client: PoolClient, id: string): Promise<UserAuditShape> {
@@ -135,8 +121,9 @@ export async function createUser(pool: Pool, input: CreateUserInput, actorId: st
       [username, passwordHash, displayName, role],
     );
     const id = res.rows[0].id;
-    await audit(client, actorId, "create_user", id, null, {
-      username, display_name: displayName, role, is_active: true,
+    await audit(client, {
+      actor: actorId, action: "create_user", entityTable: "users", entityId: id, before: null,
+      after: { username, display_name: displayName, role, is_active: true },
     });
     await client.query("commit");
     return id;
@@ -171,8 +158,9 @@ export async function resetUserPassword(pool: Pool, id: string, newPassword: str
       [id],
     );
     // The new password itself is never recorded — only that a reset happened, and its effect.
-    await audit(client, actorId, "reset_user_password", id, before, {
-      ...before, password_changed: true, sessions_revoked: revoked.rowCount ?? 0,
+    await audit(client, {
+      actor: actorId, action: "reset_user_password", entityTable: "users", entityId: id, before,
+      after: { ...before, password_changed: true, sessions_revoked: revoked.rowCount ?? 0 },
     });
     await client.query("commit");
   } catch (e) {
@@ -204,8 +192,10 @@ export async function setUserActive(pool: Pool, id: string, isActive: boolean, a
       );
       sessionsRevoked = revoked.rowCount ?? 0;
     }
-    await audit(client, actorId, isActive ? "activate_user" : "deactivate_user", id, before, {
-      ...before, is_active: isActive, sessions_revoked: sessionsRevoked,
+    await audit(client, {
+      actor: actorId, action: isActive ? "activate_user" : "deactivate_user", entityTable: "users",
+      entityId: id, before,
+      after: { ...before, is_active: isActive, sessions_revoked: sessionsRevoked },
     });
     await client.query("commit");
   } catch (e) {
@@ -233,10 +223,13 @@ export async function setUserRole(pool: Pool, id: string, role: "admin" | "opera
       `update public.sessions set revoked_at=now() where user_id=$1 and revoked_at is null`,
       [id],
     );
-    await audit(client, actorId, "set_user_role", id, before, {
-      ...before,
-      role: parsed.data,
-      sessions_revoked: revoked.rowCount ?? 0,
+    await audit(client, {
+      actor: actorId, action: "set_user_role", entityTable: "users", entityId: id, before,
+      after: {
+        ...before,
+        role: parsed.data,
+        sessions_revoked: revoked.rowCount ?? 0,
+      },
     });
     await client.query("commit");
   } catch (e) {
@@ -255,7 +248,10 @@ export async function unlockUser(pool: Pool, id: string, actorId: string): Promi
     await assertNotReserved(client, id);
     const before = await loadForAudit(client, id);
     await client.query(`update public.users set failed_login_count=0, locked_until=null where id=$1`, [id]);
-    await audit(client, actorId, "unlock_user", id, before, { ...before, unlocked: true });
+    await audit(client, {
+      actor: actorId, action: "unlock_user", entityTable: "users", entityId: id, before,
+      after: { ...before, unlocked: true },
+    });
     await client.query("commit");
   } catch (e) {
     await client.query("rollback");
