@@ -2568,3 +2568,136 @@ hâlâ bu gate'i düşürüyor. Bu, mekanizmanın tasarlandığı gibi çalışt
 Her pozisyon kur bazında gruplanıyor; hiçbir view kurlar arası toplama yapmıyor. Faz 27'ye kadar
 kur tablosu yok ve burada TRY ile EUR'yu toplamak bir kur **icat etmeyi** gerektirirdi. Sessizce
 kur icat eden bir hazine ekranı, iki satır gösterenden kötüdür.
+
+---
+
+## Faz 27 — DONE (Finansman genişletme: kredi limitleri, teminat/kovenant, vade merdiveni, FX riski)
+
+**migration 0064-0067 · `src/lib/fx/{rules,provider,engine}.ts` · `src/lib/financing/facilities.ts` ·
+`/finance/facilities` + `/finance/fx` · `scripts/phase27-verify.ts` (53/53, KENDİ Usage komutuyla
+4 kez art arda)**
+
+### `credit_facilities` neden `loans`'a bir kolon değil
+
+Tasarımdan önce ölçüldü. `loans` **sabit planlı**: `principal`, `term_months`,
+`installment_count`, `first_payment_date`, tek `installment_amount` — ve 0005 tüm amortismanı
+yaratıldığı anda materyalize ediyor. Bu kolonların hepsi paranın **zaten alındığını** varsayıyor.
+
+Limit bunu varsaymaz: bir **tavan**dır, bir yıl sıfır kullanımda durabilir ve yine de hazine
+ekranındaki en önemli sayı olabilir — çünkü **henüz borçlanılmadan var olan likidite**dir. Kredi
+olarak modellemek, kimsenin çekmediği para için sahte anapara ve sahte taksit planı uydurmak
+olurdu. İkisi buluştuğunda (rotatiften çekim çoğu zaman planlı bir kredi yaratır) bağ
+`facility_drawdowns.loan_id` nullable FK'sı — birleştirilmiş tablo değil.
+
+`drawn`/`available` **saklanmıyor**; 0067'de view kolonu. Saklanan kullanım rakamı bir sonraki
+çekimde bayatlar ve yanlışken makul görünür.
+
+### Atlanması kolay iki geçiş
+
+Sekiz geçişlik allow-list'te ikisi ayrıca yazılmayı hak ediyor:
+- **`suspended → expired`** — dondurulmuş limit de yaşlanır; bu olmasaydı her donmuş hat vadesi
+  geçtiğinde sonsuza kadar `suspended` kalırdı.
+- **`expired → active`** — yenileme. Bankalar yıllık limitleri rutin yeniler; yeni satır açmak
+  limiti kendi çekim geçmişinden koparırdı.
+
+Kovenantlarda aynı sınıftan bir karar: **`waived → active`**, çünkü muafiyetler süreli verilir ve
+bu geçiş olmasaydı madde kalıcı muaf görünürdü — unutulan kovenant tam olarak odur.
+
+**Kovenant kaydı MADDEnin kendisi, ölçüm değil.** Uyum bir test sonucudur ve veri kolonu
+(`last_test_date`/`last_test_result`); yaşam döngüsü değil. Aksi hâlde rutin aylık bir testin
+geçip kalması maddeyi sahibi olmadığı bir durum makinesinde sürüklerdi.
+
+### Teminat/kovenant bağı: polimorfizm DEĞİL, gerçek FK
+
+0053 approvals polimorfik (tablo, id) kullandı çünkü yedi ilgisiz tabloyu kapsıyordu. Burada tam
+iki hedef var ve ikisi de gerçek tablo — iki nullable FK + "tam olarak biri" CHECK'i. Gerçek FK
+simetriden değerli: artık var olmayan bir krediyi işaret eden kovenantı engeller.
+
+### FX: gözlem ile maruziyet farklı karakterde
+
+`fx_rate_snapshots` bir **gözlem** ve **SALT-EKLEME** (0022 deseni + Faz 24B `evidence` sınıfı).
+Sonradan düzenlenebilen bir kur, üzerine kurulan her değerlemeyi **çürütülemez** yapar — geçen
+çeyreğin kârını her zaman istediğiniz gibi gösterebilirsiniz. Aynı gün + aynı kaynak için ikinci
+kayıt reddediliyor; **düzeltme farklı bir kaynaktır**, üzerine yazma değil (motor bunu okunur bir
+cümleyle söylüyor).
+
+`fx_positions.amount` **işaretli** (pozitif varlık, negatif yükümlülük): net pozisyon düz bir
+toplam oluyor ve hiçbir tüketici işareti unutamıyor.
+
+### En kolay yapılacak hata: işaretsiz stres
+
+`worst_case_20_delta` pozisyonun **yönüne** göre hesaplanıyor: uzun pozisyon kur düşünce, kısa
+pozisyon kur yükselince zarar eder. İşaretsiz tek bir "±%20 etkisi" yayımlamak, hazineciye **en
+büyük yükümlülüğünün en büyük tamponu olduğunu** söylerdi. Birim test her iki yönde de sonucun
+zarar olduğunu çiviliyor.
+
+Stres bantları deterministik: aynı pozisyonun sabit yüzde oynatılmış kurla değeri — her hücre
+hesap makinesiyle yeniden üretilebilir. Model/volatilite/dağılım yok.
+
+`entry_rate` yoksa kazanç **NULL**, sıfır değil: sıfır "kazanç yok" iddiasıdır, bilinmiyor iddia
+değildir (Faz 26'nın `no_bank_movement` kararıyla aynı ayrım).
+
+### Vade merdiveni: kullanılmayan limit çıkış değil
+
+30/90/180/365. İki farklı yükümlülük aynı merdivende ama **etiketli**: taksit hesaptan çıkacak bir
+tutar, limit vadesi ise yenilenmesi gereken bir tavan. Tek "vadesi gelen tutar"a toplamak
+**kullanılmayan her lira kadar** çıkışı şişirirdi; nakit maruziyeti sütunu yalnız **çekilen** kısmı
+sayıyor.
+
+Aynı dürüstlük kullanımda da: `available` sıfırda sabitleniyor ve **aşım ayrıca** bildiriliyor —
+negatif başlık, aşağı akan her toplamda grup likiditesini birinin aşımı kadar sessizce azaltırdı.
+
+### TCMB: manuel/talep üzerine, canlı akış DEĞİL
+
+Faz 20/25 taşıyıcı deseni: arayüz + erişilemezken **dürüst hata dönen (fırlatmayan)** gerçek
+uygulama + deterministik mock. Zamanlayıcı/polling yok (gate kod üzerinde kontrol ediyor).
+**Ortam değişkeni yok** — uç nokta belgelenmiş varsayılanı olan bir parametre; `@/lib/env`'i modül
+yüklenirken import etmek `phase25-verify`/`phase6b-verify`'ı kendi komutlarıyla çalışamaz hâle
+getiren şeydi.
+
+`parseTcmbXml`'de iki incelik, ikisi de makul ama yanlış sayı üretirdi: **`Unit`** (bazı kurlar 100
+birim üzerinden kotalı — yok saymak JPY maruziyetini yüz kat şişirirdi) ve **boş elemanlar**
+(`<ForexBuying/>` → NULL, 0 değil; sıfır kur pozisyonu değersiz gösterirdi, değerlenmemiş değil).
+
+`importRates` **başarısız çekimde hiçbir şey kaydetmiyor**: yarım aktarılmış bülten bazı pariteleri
+güncel bazılarını bayat bırakır ve değerleme ikisini ayırt edemez.
+
+### Para: gün-1'den decimal, ve ölçülmüş bir sapma
+
+Tüm FX/finansman matematiği `money.ts` üzerinden. Birim test **ölçülmüş** bir yarım-kuruş sapması
+çiviliyor: `1 × 1,005` decimal half-up ile **1,01**, float'ta **1,00** (1.005 aslında
+1.00499999999999989). Yazdığım ilk hassasiyet testinin iddiası fazlaydı — 1.000.000 × yakın kurlar
+float'ta 99,9999999962 veriyor ama 2 haneye yuvarlanınca aynı kuruşa dönüyor, yani sapmayı
+göstermiyordu. Testi dürüst hâline çevirdim ve gerçekten farklılaşan vakayı ekledim. Ayrıca bir
+beklenen değerim düpedüz yanlış aritmetikti (458.270,31 → doğrusu 458.313,95); kod doğruydu.
+
+### Gate kendi dokümantasyonuna takıldı — iki kez
+
+Kaynak seviyesindeki üç kontrol (`::float8` yok, env import yok, zamanlayıcı yok) **ham metni**
+tarıyordu ve taranan dosyaların hepsi bunları içermediğini **bir yorumda açıklıyordu**. Açıklama ile
+suç birbirinden ayırt edilemez hâle geldi. Kontroller artık **kodu** tarıyor (`codeOnly()` ile
+yorumlar ayıklanıyor) ve regex'ler gerçek ifadeleri hedefliyor (`setInterval(` çağrısı, gerçek
+`import ... "@/lib/env"` ifadesi). **Negatif kontrolle** kanıtlandı: koda gerçek bir cast
+enjekte edildiğinde gate 53/53'ten 52/53'e düşüp dosyayı adıyla bildirdi; yorumdaki metin ise
+tetiklemiyor.
+
+Aynı sınıftan ikinci vaka: `phase17:verify` benim gate script'imi yakaladı — başlık yorumumda
+literal cast geçiyordu. Yorum yeniden yazıldı, kontrol için literal parça parça birleştiriliyor.
+
+**Ders:** bir yorumun tetikleyebildiği kontrol, sonsuza kadar kurt masalı anlatır.
+
+### Doğrulama
+
+Gate **kendi Usage komutuyla** çalıştırıldı, fazladan hiçbir env değişkeni olmadan:
+
+```
+env -u DATABASE_URL MIGRATION_DATABASE_URL="postgres://..." pnpm phase27:verify
+```
+
+**53/53, 4 kez art arda**; `DATABASE_URL`'in tanımsız olduğu ayrıca doğrulandı. Import grafiği
+yazmadan önce modül modül tarandı (fx/rules, fx/provider, fx/engine, financing/facilities, money,
+audit, validation, authz/matrix) — hiçbiri `@/lib/env`'e ulaşmıyor.
+
+`db:roles-rls:verify` artık **69 tablo / 345 (katman × tablo) INSERT kombinasyonu** görüyor; altı
+yeni tablonun hepsi Faz 24B sınıflandırmasında (`fx_rate_snapshots` → `evidence`, kalanı
+`operational`), blanket politika sayısı sıfır.

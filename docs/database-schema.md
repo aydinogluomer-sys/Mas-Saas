@@ -1382,3 +1382,133 @@ iki kez sayılmaz; bugünkü akış **dahil** (bu sabah hareket eden para bugün
 `bufferDaysFloor` gider geçmişi yoksa **null** döndürüyor, 0 değil: 0 "tampon gerekmiyor" diye
 okunur ve ikisinden tehlikeli olanı odur. İki taban da aktifse `effectiveFloor` **yükseğini**
 seçiyor — ikisi de asgari, düşüğü sağlamak diğerini ihlal bırakır.
+
+---
+
+## Finansman Genişletme ve Kur Riski (Faz 27, migration 0064-0067)
+
+### 0064 — `credit_facilities`: borçlanma **izni**, borcun kendisi değil
+
+Tasarımdan önce ölçüldü. `loans` **sabit planlı** bir enstrüman: `principal`, `term_months`,
+`installment_count`, `first_payment_date` ve tek bir `installment_amount` taşıyor, ve 0005 tüm
+amortismanı yaratıldığı anda `loan_installments`'a materyalize ediyor. Bu kolonların hepsi
+**paranın zaten alındığını ve geri ödeme tarihlerinin bilindiğini** varsayıyor.
+
+Bir limit bunların hiçbirini varsaymaz. O bir **tavan** — bankanın çekim yapma izni — ve
+tanımlayıcı durumları "ne kadar alabiliriz" ile "ne kadar aldık". Bir limit bir yıl boyunca sıfır
+kullanımda durabilir ve yine de hazine ekranındaki en önemli sayı olabilir, çünkü **henüz
+borçlanılmadan var olan likidite**dir. Bunu bir kredi olarak modellemek, kimsenin çekmediği para
+için sahte bir anapara ve sahte bir taksit planı uydurmayı gerektirirdi.
+
+İkisi buluşuyor: rotatif bir limitten çekim yapmak çoğu zaman kendi planı olan bir **kredi
+yaratır**. Bu ilişki `facility_drawdowns.loan_id` (nullable FK) — birleştirilmiş tablo değil.
+
+**Kasıtlı olarak SAKLANMAYAN:** `drawn`, `available`. İkisi de çekim satırları üzerinde toplam ve
+0067'de view kolonu olarak veriliyor. Saklanan bir kullanım rakamı bir sonraki çekimde bayatlar ve
+yanlışken gayet makul görünür.
+
+Türler arasında `guarantee_letter` (teminat mektubu) ve `letter_of_credit` **gayrinakdî**: hiç
+nakit üretmeden limit tüketirler, ki aynı tavana karşı izlenmelerinin sebebi tam olarak budur.
+
+#### Durum izin listesi (CHECK ile AYNI migration'da, 0027 dersi)
+
+Sekiz geçiş; ikisi atlanması kolay olduğu için ayrıca yazılıyor:
+
+| Eski | Yeni | Neden önemli |
+|---|---|---|
+| suspended | expired | **Dondurulmuş limit de yaşlanır.** Bu olmasaydı her donmuş hat, vadesi geçtiğinde sonsuza kadar `suspended` kalırdı. |
+| expired | active | **Yenileme.** Bankalar yıllık limitleri rutin olarak yeniler; bunun yerine yeni satır açmak limiti kendi çekim geçmişinden koparırdı. |
+
+`closed` terminal; `expired → suspended` reddediliyor (çoktan sona ermiş bir şeyi dondurmak kimsenin
+aksiyon alamayacağı bir durum). Gate 12 sıralı çiftin tamamını gerçek satırlarda deniyor: 8 kabul,
+4 ret, ve koddaki `canTransition` ile birebir aynı olduğu ayrıca kanıtlanıyor.
+
+`facility_drawdowns.signed_amount` **generated**: işareti `movement_type` taşıyor, operatörün elle
+eksi yazmasına bırakılmıyor.
+
+### 0065 — teminat ve kovenantlar
+
+İkisi de **ya bir krediye ya bir limite** bağlanıyor ve bağ, tam olarak birinin dolu olmasını
+zorlayan CHECK ile **iki nullable FK** — polimorfik (tablo, id) çifti değil. 0053 approvals'ta
+polimorfizm kullandı çünkü yedi ilgisiz tabloyu kapsıyordu ve hiçbir FK bunu yapamazdı. Burada tam
+iki hedef var ve ikisi de gerçek tablo, yani gerçek FK mümkün — ve gerçek bir FK simetriden değerli:
+artık var olmayan bir krediyi işaret eden kovenantı engeller.
+
+`collateral_records.value_amount` NULL olabilir: **değerlenmemiş, değersiz değil**. Değerlemeyi kimin
+yaptığı da kayıtlı (`valuation_source`) — bankanın ekspertizi ile sahibin tahmini aynı iddia değildir.
+
+**Kovenant kaydı MADDEnin kendisi, ölçüm değil.** Yaşam döngüsü bu yüzden üç durumlu: madde
+yürürlükte, banka tarafından muaf tutulmuş, ya da kalkmış. Uyumlu olup olmadığımız bir **test
+sonucudur** ve test sonuçları veri kolonu (`last_test_date` / `last_test_result`), yaşam döngüsü
+durumu değil — aksi hâlde rutin aylık bir testin geçip kalması, maddeyi sahibi olmadığı bir durum
+makinesinde sürüklerdi. `waived → active` izinli: **muafiyetler süreli verilir**, ve bu geçiş
+olmasaydı madde kalıcı olarak muaf görünürdü — ki unutulan kovenant tam olarak odur.
+
+### 0066 — FX: gözlemlenen kurlar ve taşınan pozisyon
+
+İki tablo, bilinçli olarak farklı karakterde:
+
+- **`fx_rate_snapshots` bir GÖZLEM.** "21.08.2026'da TCMB USD/TRY satış kuru X idi." Bu tarihsel bir
+  olgudur ve **SALT-EKLEME** (0022 deseni: trigger + REVOKE + Faz 24B `evidence` sınıfı). Sonradan
+  düzenlenebilen bir kur, üzerine kurulan her değerlemeyi **çürütülemez** yapar — geçen çeyreğin
+  kârını her zaman istediğiniz gibi gösterebilirsiniz. Aynı gün + aynı kaynak için ikinci kayıt
+  reddediliyor; **düzeltme farklı bir kaynaktır**, üzerine yazma değil.
+- **`fx_positions` bir MARUZİYET** — kaydettiğimiz ve revize ettiğimiz sıradan operasyonel veri.
+
+TCMB dört rakam yayımlıyor ve bunlar birbirinin yerine geçmez (alışta biri, satışta diğeri).
+Dördü de kaydediliyor; `rate` değerlemenin kullandığıdır. `fx_positions.amount` **işaretli**:
+pozitif varlık, negatif yükümlülük — tek işaretli kolon, net pozisyonu düz toplama çeviriyor ve
+hiçbir tüketicinin işareti unutmasına izin vermiyor. `entry_rate` olmadan kazanç **hesaplanamaz**,
+tahmin edilebilir; bu yüzden NULL entry_rate NULL kazanç verir.
+
+### 0067 — read-model'ler
+
+**`credit_facility_utilization`** — limit/çekilen/kullanılabilir. `available` sıfırda sabitleniyor
+ve **aşım ayrıca bildiriliyor** (`over_limit`): negatif bir başlık, aşağı akan her toplamda grup
+likiditesini birinin kredi aşımı kadar sessizce azaltırdı.
+
+**`debt_maturity_ladder` (30/90/180/365)** — iki gerçekten farklı yükümlülük aynı merdivende ama
+**etiketli, birleştirilmemiş**: taksit hesaptan çıkacak bir tutardır; limit vadesi ise yenilenmesi
+ya da kapatılması gereken bir tavandır. İkisini tek "vadesi gelen tutar"a toplamak, **kullanılmayan
+her lira kadar** çıkışı şişirirdi. Bu yüzden nakit maruziyeti sütunu yalnız **çekilen** kısmı
+sayıyor; kullanılmadan sona eren limit hiçbir şeye mal olmaz, sadece kullanılabilir olmaktan çıkar.
+
+**`fx_position_revaluation`** — deterministik. Her rakam kayıtlı bir kur ve kayıtlı bir pozisyon
+üzerinde aritmetik; model, volatilite tahmini, dağılım yok. ±%5/10/20 bantları tam olarak şudur:
+aynı pozisyonun, sabit bir yüzde oynatılmış kurla değeri — okuyan biri her hücreyi hesap makinesiyle
+yeniden üretebilir, ki sahibe gösterilmeye değer tek stres rakamı türü budur.
+
+`worst_case_20_delta` **pozisyonun yönüne göre**: uzun pozisyon kur düşünce, kısa pozisyon kur
+yükselince zarar eder. İşaretsiz tek bir "±%20 etkisi" yayımlamak, hazineciye **en büyük
+yükümlülüğünün en büyük tamponu olduğunu** söylerdi.
+
+### Para: gün-1'den decimal
+
+Bu fazın tüm FX/finansman matematiği `money.ts` üzerinden geçiyor ve dört migration ile üç motorun
+hiçbirinde `::float8` yok (`phase27:verify` bunu **kod üzerinde**, yorumları ayıklayarak kontrol
+ediyor). Sebep somut: gerçekleşmemiş kazanç, birbirine çok yakın iki büyük sayının farkıdır
+(`tutar × kur_şimdi − tutar × kur_giriş`) — ikili kayan noktanın cevabı kaybettiği aritmetiğin ta
+kendisi. Birim test yarım-kuruş sınırında **ölçülmüş** bir sapma çiviliyor: `1 × 1,005` decimal
+half-up ile 1,01, float'ta 1,00 (çünkü 1.005 aslında 1.00499999999999989).
+
+### TCMB: manuel/talep üzerine, canlı akış DEĞİL
+
+Plan canlı bağlantıyı Faz 37/38'e koyuyor. Bu faz Faz 20/25'in taşıyıcı desenini izliyor: bir
+arayüz, erişilemezken **dürüst bir hata** dönen (asla fırlatmayan) gerçek bir uygulama, ve testlerin
+sürdüğü deterministik bir mock. Zamanlayıcı/polling yok — gate bunu da kod üzerinde kontrol ediyor.
+
+**Ortam değişkeni YOK:** uç nokta belgelenmiş varsayılanı olan bir **parametre**. Bu bilinçli — modül
+yüklenirken `@/lib/env` import etmek, `phase25-verify` ve `phase6b-verify`'ı kendi belgeledikleri
+komutla çalışamaz hâle getiren şeydi. Bir kur sağlayıcısının veritabanıyla işi yoktur, dolayısıyla
+buradaki hiçbir şey bir veritabanı talep edebilmemeli.
+
+İki incelik `parseTcmbXml`'de, ikisi de makul ama yanlış sayı üretirdi:
+1. **`Unit`.** TCMB bazı kurları 100 birim üzerinden kotalıyor; birim başı kur yayımlanan rakamın
+   `Unit`'e bölümüdür. Yok saymak JPY maruziyetini **yüz kat** şişirirdi.
+2. **Boş elemanlar.** Bülten kotasyonu olmayan kurlar için `<ForexBuying/>` gönderiyor. Bunlar
+   **NULL** olmalı, 0 değil — sıfır kur pozisyonu değersiz gösterirdi, değerlenmemiş değil.
+
+`importRates` **başarısız çekimde hiçbir şey kaydetmiyor**: yarım aktarılmış bir bülten bazı
+pariteleri güncel bazılarını bayat bırakır ve üzerine kurulan değerleme ikisini ayırt edemez.
+Yeniden çalıştırmak güvenli (unique kısıt), ve `skipped` zaten var olanları **yeni gibi göstermeden**
+raporluyor.

@@ -185,6 +185,13 @@ export const TABLE_CLASS: Record<string, AccessClass> = {
   // admin may also delete. Classified here as well as in migration 0059 — db:roles-rls:verify
   // executes both against a live database and fails if they disagree.
   promise_to_pay: "operational",
+  // Faz 27 financing tables. Same class as loans/loan_installments: an operator records a
+  // facility or a drawdown, a manager corrects or removes one.
+  credit_facilities: "operational",
+  facility_drawdowns: "operational",
+  collateral_records: "operational",
+  covenant_records: "operational",
+  fx_positions: "operational",
   source_sheets: "operational",
   import_rows: "operational",
   // evidence (7)
@@ -195,6 +202,9 @@ export const TABLE_CLASS: Record<string, AccessClass> = {
   approval_steps: "evidence",
   source_cells: "evidence",
   reminder_deliveries: "evidence",
+  // Faz 27. An observed FX rate is a historical fact, append-only by trigger in 0066. A rate that
+  // could be edited afterwards would make every revaluation built on it unfalsifiable.
+  fx_rate_snapshots: "evidence",
   // derived (11)
   metric_snapshots: "derived",
   cashflow_snapshots: "derived",
