@@ -3330,3 +3330,141 @@ env -u DATABASE_URL MIGRATION_DATABASE_URL="postgresql://..." pnpm phase33:verif
 senaryonun ta kendisinde). Buffer sayıları üç koşuda da birebir aynı: **7.185 / 35.421**. Duvar
 saati beklendiği gibi oynuyor ama her zaman ≥2,4×. `DATABASE_URL`'in tanımsız olduğu ayrıca
 doğrulandı.
+
+## Faz 34 — DONE (analiz kaydı, dönem fonksiyonları, yedi analiz, üç chart tipi, export)
+
+**Migration YOK.** Bu faz kod ekliyor, şema eklemiyor — gerekçesi aşağıda. İki açık soruyu da
+planın kendi dar önerisiyle kapattım.
+
+### AÇIK SORU #2 — Monte Carlo: EKLENMEDİ, ve gerekçe ölçüldü
+
+Monte Carlo'nun girdisi **dağılımdır**. Bu sistemde dağılım verisi **yok** — iddia değil, ölçüm:
+
+- 82 migration'ın tamamında `stddev / variance / distribution / probability / percentile /
+  confidence_interval` adında **tek bir kolon bile yok**. Arama yalnız üç dosyada, üçü de
+  **yorum** olarak eşleşti — ve üçü de aynı kararı bağımsız olarak vermiş: 0052 "no probability
+  and no score", 0067 "no model, no volatility estimate and no distribution", 0078 "no learned
+  weighting, no distribution fitting".
+- `external_assumptions` bir faiz oranını `value_numeric` **tek nokta değeri** + kaynak + tarih +
+  inceleme durumu olarak tutuyor. Ortalama+varyans değil.
+- Faz 8/11'in senaryo tipleri adlandırılmış ve yönlü (`revenue_up_down_percent`,
+  `customer_delay_days`…), Faz 27'nin FX stresi ±%5/10/20 sabit bantlar, Faz 29'un çözücüsü
+  deterministik.
+
+Simülasyon kurmak için dağılımları **uydurmam** gerekirdi (normal varsay, bir σ seç). O σ'dan
+türeyen bir P95, otoriter görünen ama arkasında hiçbir şey olmayan bir rakamdır ve okuyanın
+yeniden üretmesi imkânsızdır — Faz 27'nin volatilite modeli yerine "hesap makinesiyle
+doğrulanabilir" bantları seçerken kullandığı gerekçenin aynısı. CLAUDE.md'nin "belirsiz satırdan
+kesin doğru çıkarma" kuralına da doğrudan aykırı olurdu.
+
+Gate bu kararı **kanıtla bağlıyor**: şemada dağılım kolonu olmadığını ve `external_assumptions`'ın
+tek nokta değer taşıdığını her koşuda doğruluyor. Bir gün biri varyans kolonu eklerse karar
+yeniden değerlendirilmeyi hak eder ve gate bunu haber verir.
+
+### AÇIK SORU #3 — Kapsam: YEDİ analiz, ~40 değil
+
+Wishlist ~40 tip sayıyor. Kırk sığ analiz, kimsenin güvenmediği kırk ekran ve doğru tutulacak
+kırk şey demekti. Yedisini seçtim, ve seçim kriteri tek: **bugün bu sistemde arkasında gerçek
+veri olması** — şemaya bakarak doğruladım, wishlist'ten adı kulağa hoş geldiği için almadım.
+
+| Analiz | Arkasındaki veri |
+| --- | --- |
+| Varyans ayrıştırma | `budget_vs_actual` (Faz 28) |
+| Yoğunlaşma (Pareto) | `invoices` + `parties` (Faz 21/23) |
+| İşletme sermayesi ayrıştırma | `working_capital_metrics` (Faz 30) |
+| Nakit köprüsü | `cashflow_months` (Faz 5) |
+| Yaşlandırma dağılımı | `invoices.due_date` (Faz 21/22) |
+| Dönemsel karşılaştırma (MoM/QoQ/YoY) | herhangi bir aylık seri |
+| Hareketli pencere (7/30/90/365) | herhangi bir günlük seri |
+
+**Sekizinci aday REDDEDİLDİ:** envanter devir hızı. Envanter verisi yok; yapmak için uydurmak
+gerekirdi. Kayıt bu eksikliği `dio_days` metriği olarak **taşıyor** — silseydim DSO−DPO tam nakit
+dönüşüm döngüsü sanılırdı.
+
+### Kayıt neden TABLO değil, KOD
+
+Bir kaydın gerçek olması için üç şey gerekir: neye **bağımlı** olduğu, hangi **sürümün** ürettiği,
+sayıların **nereden** geldiği. Üçü de hesabın özelliği, satırın değil — ve hesap git'te duruyor;
+git, bu fazın açabileceği herhangi bir tablodan daha iyi sürümlenmiş, denetlenebilir bir depo.
+
+`metric_definitions` tablosu, tarif ettiği fonksiyonlarla **elle** senkron tutulmak zorunda
+kalırdı. Biri formülü değiştirip satırı güncellemediği ilk gün, kayıt tam da tarif etmek için var
+olduğu sistem hakkında yalan söylerdi — ve hiçbir şey fark etmezdi.
+
+Veritabanına ait olan şey metriğin **zaman içindeki değeri**, ve Faz 17 bunu zaten tutuyor:
+`metric_snapshots` (snapshot_date, value, unknown_count, confidence, **source_cutoff**, **meta**).
+Yeniden üretilebilirlik damgası o mevcut `meta`'ya yazılır — Faz 32'nin kararı, yine.
+
+**Sonucu:** bu faz migration eklemedi, tablo eklemedi, dolayısıyla yaşam-döngüsü kolonu da yok —
+CHECK+guard disiplini burada atlanmadı, **yapısal olarak N/A**. Gate bunu iddia etmiyor,
+kanıtlıyor: en son migration hâlâ 0082 (Faz 33'ten kalan).
+
+### KALICI KURAL: LLM-bağımsızlığı artık repo-geneli
+
+Plan bu fazdan itibaren tek seferlik değil **kalıcı** bir kontrol istiyordu. Gate dosya listesi
+tutmuyor — `src/lib/analytics`, `src/lib/facts` ve `src/components/charts` ağaçlarını **yürüyerek**
+tarıyor (şu an 21 dosya). Faz 40'ta eklenecek bir dosya, kimse listeyi güncellemeyi hatırlamadan,
+yazıldığı gün kapsama giriyor. Kalıcı bir kuralın kalıcı kalmasının tek yolu bu.
+
+**Negatif kontrol:** `periods.ts`'e kasten `@/lib/ai/engine` import'u ekledim; gate dosyayı
+adıyla bildirerek düştü. Ayrıca dedektörün `@/lib/aircraft`'ı yanlışlıkla yakalamadığı da
+doğrulandı.
+
+### Python yok, istatistik kütüphanesi de yok
+
+Çözülen Karar #2 Python'u yasaklıyor. İhtiyaç da olmadı: tamamı toplama, sıralama, oran ve
+kümülatif toplam. Bir istatistik paketi çekmek, sayısal davranışını bu projede kimsenin bir
+denetçiye anlatamayacağı bir bağımlılığı, tek ekrana sığan aritmetik karşılığında eklemek olurdu.
+
+### Grafik geometrisi göz kararı değil, kanıtlanıyor
+
+Üç chart tipi (şelale, ısı haritası, ağaç haritası) **yerleşim modeli** olarak yazıldı; React
+bileşeni yalnız verileni çiziyor. Bu ayrım sayesinde geometri birim testlenebiliyor: gate
+treemap'in birim kareyi **tam** kapladığını (alan = 1,000000000000), her karonun alanının payıyla
+orantılı olduğunu ve **hiçbir karonun çakışmadığını** ölçüyor. Karoları çakışan bir ağaç
+haritası, ekrana gözlerini kısarak bakan birinin fark edeceği bir hata olmamalı.
+
+### Null yine sıfır değil — her katmanda
+
+- Varyans: eksik gerçekleşen **dışlanıyor** (0 sayılsaydı en gurur verici tasarruf raporu çıkardı).
+- Hareketli pencere: tamamen bilinmeyen pencere **null**, ve penceresi dolmayan noktalar **kısmi**
+  işaretleniyor — gizlenseydi verinin başladığı yer bir "trend" gibi görünürdü.
+- Dönemsel: önceki dönem yoksa **%-100 değil "ölçülemez"**; olmayan bir çöküş icat etmek en kolay
+  yoldur.
+- Yaşlandırma: vadesi olmayan kalem "vadesi gelmemiş" sayılmıyor — bu, eksik verinin en iyimser
+  okuması olurdu.
+- Isı haritası: eksik hücre **null yoğunluk**, en soğuk renk değil. En soğuk renk "en küçük değer"
+  demektir; bilmediğini iddia etmek olurdu.
+- XLSX/CSV: bilinmeyen hücre **boş** çıkıyor, 0 değil — sahte sıfırlarla dolu bir tabloda `SUM()`
+  sessizce yanlış toplar.
+
+### Saçmalık üretmek yerine reddetmek
+
+Pareto negatif değerde hesap yapmıyor (−100 ile +100'ün toplamı sıfır, her pay sonsuz olurdu),
+treemap negatif değeri reddediyor (alan negatif bir büyüklüğü temsil edemez; büyüklüğe göre
+çizmek borcu aynı boyda alacak gibi gösterirdi), ve nakit köprüsü tutmayan mutabakatı
+**raporluyor** — sessizce çizilen, altındaki defterle çelişen bir grafik olurdu.
+
+### Yol boyunca bulunan bir hata
+
+`toXlsxBuffer` aynı adlı iki sayfada **çöküyordu** (SheetJS uyarı vermiyor, fırlatıyor). Aynı
+başlığı paylaşan iki grafik tamamen normal; adlar artık tekilleştiriliyor. Gate bunu üç modeli de
+"t" diye adlandırdığı için yakaladı.
+
+### Export
+
+SVG/CSV/XLSX sunucuda üretiliyor. **PNG ve PDF tarayıcıda**: sayfadaki SVG'yi canvas ile
+rasterlemek ve tarayıcının kendi yazdırma hattını kullanmak, zaten görüntülenen bir resmi
+dönüştürmek için runtime'a headless tarayıcı eklemekten iyi bir takas. Bu, gizlenmiş bir eksik
+değil — "PNG export" deyip "ekran görüntüsü alın" demenin bu projenin reddettiği yarım teslimat
+olduğunu bildiğim için açıkça yazdım. XLSX'e **Kaynak sayfası** ekleniyor: e-postayla dolaşan bir
+tabloda rakamın hangi hesap sürümünden çıktığı yazılı olmalı.
+
+### Doğrulama
+
+```
+env -u DATABASE_URL MIGRATION_DATABASE_URL="postgresql://..." pnpm phase34:verify
+```
+**60/60, 3 kez art arda**, gate'in kendi kurduğu fixture üzerinde (Pareto her koşuda aynı sonucu
+verdi: 3/4 karşı taraf açık alacağın %80'ini taşıyor). `DATABASE_URL`'in tanımsız olduğu ayrıca
+doğrulandı. 99 yeni birim testi.
