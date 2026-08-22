@@ -451,6 +451,85 @@ async function runConstraintAssertions(pool: Pool, anomalyId: string, actorId: s
   );
 }
 
+
+/**
+ * Faz 31 — control alerts. Every new CHECK gets its own entry here, per the phase's own gate
+ * requirement: this EXTENDS the script rather than altering any existing assertion.
+ */
+async function runFaz31ConstraintAssertions(pool: Pool, actorId: string): Promise<void> {
+  const base = `insert into public.control_alerts (check_code, severity, title, rule_codes`;
+
+  // has_rules — the coalesce() case. array_length() on an EMPTY array returns NULL, and a CHECK
+  // evaluating to NULL PASSES; Faz 29 found that the hard way, so this pins the fixed form.
+  await expectReject(
+    pool,
+    `${base}) values ('p31_x','warning','no rules','{}')`,
+    [], /has_rules/, "control_alerts: gerekçesiz uyarı (boş dizi) reddedilir",
+  );
+  await expectAccept(
+    pool,
+    `${base}) values ('p31_ok','warning','has rule','{round_number}')`,
+    [], "control_alerts: kural adı taşıyan uyarı kabul edilir",
+  );
+
+  // status_consistency — an open alert may not carry resolution or acknowledgement stamps.
+  await expectReject(
+    pool,
+    `${base}, acknowledged_at, acknowledged_by)
+     values ('p31_a','warning','open with ack','{round_number}', now(), $1)`,
+    [actorId], /status_consistency/, "control_alerts: açık uyarı onay damgası taşıyamaz",
+  );
+  await expectReject(
+    pool,
+    `${base}, status, snooze_until) values ('p31_b','warning','snooze no date','{round_number}','snoozed', null)`,
+    [], /status_consistency/, "control_alerts: erteleme tarihsiz olamaz",
+  );
+
+  // resolution_reason — closing without a reason is how a control gets quietly switched off.
+  await expectReject(
+    pool,
+    `${base}, status, resolved_at, resolved_by)
+     values ('p31_c','warning','resolved no note','{round_number}','resolved', now(), $1)`,
+    [actorId], /resolution_reason/, "control_alerts: gerekçesiz kapatma reddedilir",
+  );
+  await expectAccept(
+    pool,
+    `${base}, status, resolved_at, resolved_by, resolution_note)
+     values ('p31_d','warning','resolved ok','{round_number}','resolved', now(), $1, 'incelendi')`,
+    [actorId], "control_alerts: gerekçeli kapatma kabul edilir",
+  );
+
+  // subject_pair — a subject id without its table points nowhere.
+  await expectReject(
+    pool,
+    `${base}, subject_table) values ('p31_e','warning','half subject','{round_number}','invoices')`,
+    [], /subject_pair/, "control_alerts: özne tablosu id'siz olamaz",
+  );
+
+  // seen_order — last_seen cannot precede first_seen.
+  await expectReject(
+    pool,
+    `${base}, first_seen_at, last_seen_at)
+     values ('p31_f','warning','time travel','{round_number}', now(), now() - interval '1 day')`,
+    [], /seen_order/, "control_alerts: son görülme ilk görülmeden önce olamaz",
+  );
+
+  // anomaly_score range.
+  await expectReject(
+    pool,
+    `${base}, anomaly_score) values ('p31_g','warning','bad score','{round_number}', 1.5)`,
+    [], /anomaly_score/, "control_alerts: anomali skoru 0..1 dışına çıkamaz",
+  );
+
+  // alert_escalation_rules — a non-positive window would escalate instantly and forever.
+  await expectReject(
+    pool,
+    `insert into public.alert_escalation_rules (code, description, severity, escalate_after_hours)
+     values ('p31_esc','x','warning', 0)`,
+    [], /escalate_after_hours/, "alert_escalation_rules: sıfır saatlik eskalasyon penceresi reddedilir",
+  );
+}
+
 async function main(): Promise<void> {
   console.log("=== constraints-verify: P0-B Slice 2 disposable-DB test suite ===\n");
   assertContainerReachable();
@@ -560,6 +639,7 @@ async function main(): Promise<void> {
       await runConstraintAssertions(pool, anomalyId, actorId);
       await runFaz19ConstraintAssertions(pool);
       await runFaz22ConstraintAssertions(pool, actorId);
+      await runFaz31ConstraintAssertions(pool, actorId);
     }
   } finally {
     await pool.end();

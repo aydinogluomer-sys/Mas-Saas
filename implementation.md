@@ -576,6 +576,7 @@ pnpm phase27:verify   # Faz 27'den sonra: kredi limitleri + vade merdiveni + FX 
 pnpm phase28:verify   # Faz 28'den sonra: butce-gerceklesen varyansi + 13 haftalik ufuk + tahmin dogrulugu, DB gerektirir
 pnpm phase29:verify   # Faz 29'dan sonra: deterministik optimizasyon + baseline-korunur invariant'i, DB gerektirir
 pnpm phase30:verify   # Faz 30'dan sonra: karlilik view'lari + masraf dagitimi + isletme sermayesi, DB gerektirir
+pnpm phase31:verify   # Faz 31'den sonra: finansal kontroller + anomali tespiti + uyari yasam dongusu, DB gerektirir
 pnpm build
 pnpm phase16:verify   # Faz 16'dan sonra: build'i gerektirir, bu yuzden build'den SONRA
 ```

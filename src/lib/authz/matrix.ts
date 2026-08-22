@@ -204,6 +204,8 @@ export const TABLE_CLASS: Record<string, AccessClass> = {
   // record, governed by that record's own policies.
   optimization_runs: "operational",
   optimization_recommendations: "operational",
+  // Faz 31. An operator triages control findings; a manager clears them.
+  control_alerts: "operational",
   source_sheets: "operational",
   import_rows: "operational",
   // evidence (7)
@@ -241,6 +243,9 @@ export const TABLE_CLASS: Record<string, AccessClass> = {
   // manager-writable — re-basing allocation moves cost between cost centres without any
   // financial record changing.
   cost_allocation_rules: "config",
+  // Faz 31. Escalation windows are config: everyone reads, only admin changes — someone who
+  // could lengthen the window on their own alerts would be silencing the alarm.
+  alert_escalation_rules: "config",
   approvals: "approval",
   approval_rules: "approval_config",
   users: "auth_users",

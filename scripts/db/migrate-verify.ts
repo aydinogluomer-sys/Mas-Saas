@@ -397,8 +397,12 @@ async function testLegacyCompleteAndIdempotency(): Promise<void> {
     //                          database built only from migrations would have NO allocation basis
     //                          configured, so every profitability view would silently allocate
     //                          nothing. Two of the four ship inactive on purpose.
+    //   alert_escalation_rules (0076) two default escalation windows. Both ship ACTIVE on purpose:
+    //                          an escalation rule that arrived inactive would mean the phase
+    //                          delivered alerting that silently never escalates.
     const DECLARED_POPULATING_MIGRATIONS = new Set([
       "approval_rules", "approvals", "treasury_policies", "cost_allocation_rules",
+      "alert_escalation_rules",
     ]);
     const undeclaredPopulated = newTables.filter(
       (k) => postCounts[k] !== 0 && !DECLARED_POPULATING_MIGRATIONS.has(k),

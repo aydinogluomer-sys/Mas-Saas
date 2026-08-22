@@ -2973,3 +2973,110 @@ env -u DATABASE_URL MIGRATION_DATABASE_URL="postgres://..." pnpm phase30:verify
 ```
 **40/40, 4 kez art arda**; `DATABASE_URL`'in tanımsız olduğu ayrıca doğrulandı. Kârlılık
 matematiğinin `@/lib/ai`'yi import etmediği kod üzerinde (yorumlar ayıklanarak) kontrol ediliyor.
+
+---
+
+## Faz 31 — DONE (finansal kontrol merkezi, anomali tespiti, uyarı yaşam döngüsü)
+
+**migration 0076-0078 · `src/lib/controls/{rules,engine}.ts` · `/system/controls` ·
+`scripts/phase31-verify.ts` (42/42, KENDİ Usage komutuyla 4 kez art arda) ·
+`db:constraints:verify` 65 → 75**
+
+### Tekrar etmeme disiplini: her kontrol önce sınıflandırıldı
+
+Bu sentez fazının en önemli işi, zaten tutan bir invariant'ı ikinci kez zorlamamaktı. Her kontrol
+yazılmadan **önce** ilgili mevcut mekanizma okundu; sınıflandırma `control_registry.enforcement`
+kolonunda **veri olarak** duruyor ve gate her "zaten zorlanıyor" iddiasını **mekanizmayı
+çalıştırarak** kanıtlıyor:
+
+**ZATEN ZORLANIYOR — yalnız görünürlük eklendi (4):**
+- `allocation_over_invoice` — Faz 22'nin tavan trigger'ı. Gate fatura üstü dağıtımın **hâlâ**
+  reddedildiğini deneyerek doğruluyor.
+- `near_duplicate_bank_txn` — `bank_transactions_dedupe_uq` **UNIQUE** (gate `indisunique`'i
+  okuyor). Birebir kopya imkânsız, o yüzden kontrol **yakın** kopyaları arıyor.
+- `iban_changed` — Faz 19'un `iban_change_events`'i zaten salt-ekleme kaydediyor.
+- `unknown_counterparty` — Faz 19 kararı: uygulama sessizce `parties` yaratmıyor.
+
+**GERÇEKTEN YENİ (7):** `duplicate_invoice`, `payment_without_invoice`, `approval_bypass`,
+`closed_period_mutation`, `missing_source_document`, `unmatched_bank_txn_aged`, `large_payment`.
+
+Ölçülen en keskin ayrım: **`invoices_dedupe_idx` unique DEĞİL**, `bank_transactions_dedupe_uq` ise
+unique. Yani yinelenen banka hareketi imkânsız ama yinelenen **fatura** tamamen mümkün — gate
+ikisini de indeks kataloğundan okuyarak kanıtlıyor.
+
+### Planın bir atfı düzeltildi
+
+Plan kapalı-dönem kontrolünün "Faz 24B'nin dönem kilidini gerektirdiğini" söylüyor. Faz 24B
+aslında rol-tabanlı RLS teslim etti; **dönem kilidi kavramı ondan önce vardı** —
+`cashflow_months.status` erken fazlardan beri `'locked'` taşıyor. Kontrol o çıpaya bağlandı ve
+gate `locked` bir ay + sonradan güncellenmiş fatura fixture'ıyla tetiklendiğini gösteriyor.
+
+### Uyarı yaşam döngüsü: iki kritik geçiş
+
+20 sıralı çiftin 11'i izinli. İkisi ayrıca yazılmayı hak ediyor:
+- **`snoozed → open`** — erteleme SÜRESİ DOLAR. Olmasaydı ertelenen her uyarı kalıcı susturulurdu;
+  kimsenin güvenmediği bir alarm sisteminin tam arıza biçimi.
+- **`resolved`/`false_positive` terminal** — kapatılmış bulguyu yeniden açmak kontrol geçmişini
+  yeniden yazmak olurdu. Tekrar ederse yeni uyarı açılır (kısmi unique indeks buna izin veriyor).
+
+**`false_positive` `resolved`'ın çeşidi değil, birinci sınıf sonuç** — kural başına yanlış-alarm
+oranını hesaplanabilir kılan tam olarak bu ayrım. Oran yalnız **kapanmış** uyarılardan
+hesaplanıyor: triyaj edilmemiş bir kontrol "kusursuz" görünmemeli (Faz 28'in "ölçülmemiş ≠
+mükemmel" dersinin aynısı).
+
+### Boş küme kanıt değil
+
+Gate her tespit görünümünü bir fixture'la **gerçekten tetikliyor**: duplicate_invoice=1,
+missing_source_document=2, large_payment=1, approval_bypass=1, payment_without_invoice=1,
+closed_period_mutation=1, round_number=1, split_payment=1. Boş bir veritabanında sıfır satır
+döndüren bir kontrol hiçbir şey kanıtlamaz.
+
+### Dürüstçe adlandırılan bir sınır
+
+**`bank_transactions`'ta işlem saati YOK** — yalnız `txn_date` (tarih). Ölçüldü. Dolayısıyla
+"gece 3'te yapılan ödeme" tespit **edilemiyor**; tespit edilen "gece 3'te **kaydedilen** satır".
+Bu da gerçek bir sinyal ama farklı bir sinyal; view'ın adı (`anomaly_unusual_record_hour`), bir
+`caveat` kolonu ve ekrandaki uyarı bunu söylüyor. İşlem saati demek, verinin desteklemediği bir
+iddiada bulunmak olurdu.
+
+### İkinci görev modeli yok, LLM yok
+
+Takip görevi bir `action_item` (Faz 14 modeli, Faz 25'in tahsilatta yaptığı gibi); 0077 tek bir
+`source_type` değeri ekliyor. Motor `control_alerts`, `action_items` ve `audit_logs` yazıyor,
+**hiçbir mali kayda yazmıyor** — bulduğunu "düzelten" bir kontrol, otomasyonun tutar/vade
+değiştirmesi olurdu. `src/lib/controls/*` `@/lib/ai`'yi import etmiyor (negatif kontrol): bir
+kontrol bulgusu, aynı kuralları aynı satırlara uygulayan ikinci bir kişi tarafından **yeniden
+üretilebilmeli**.
+
+### İki gerçek hata, ikisi de gate zinciri tarafından yakalandı
+
+**1. Paylaşılan enum'un tam boyutunu sabitleyen bir gate (cross-phase kırılma).**
+`phase25:verify` `action_items.source_type` kümesinin boyutunu **7'ye sabitlemişti**; Faz 31
+meşru olarak `'control'` ekleyince phase25 kırıldı. Sonraki her genişletme ilgisiz bir fazın
+gate'ini kıracaktı. Assertion, Faz 25'in gerçekten önemsediği şeye çevrildi: **kendi değeri var
+VE kendisinden önceki değerlerin hiçbiri silinmemiş** (üst küme kontrolü).
+
+Bunun bir **sınıf** olup olmadığını taradım: diğer `size === N` iddialarının hepsi DB enum'unu bir
+**kod sabitiyle** karşılaştırıyor (`ALERT_STATUSES`, `SOURCE_KINDS`, `FACILITY_STATUSES`…), yani
+ikisi birlikte genişlediğinde kendiliğinden senkron kalıyorlar — doğru kuplaj. Kod sabiti
+olmayan tek enum `action_items.source_type` idi, ve kırılan da tam olarak oydu.
+
+**2. Lint'in yakaladığı sahte tip daraltması.** `ruleCodes.filter((r): r is AnomalyRule => true)`
+her şeyi kabul eden bir predicate'ti; lint kullanılmayan parametreyi bildirdi ama asıl sorun
+başkaydı: kontrol-özel bir kural kodu (ya da bir yazım hatası) `ANOMALY_WEIGHT[undefined]`
+üzerinden skora karışabilirdi. Artık kayıt defterine göre filtreleniyor — tanınmayan kod uyarıda
+kayıt olarak taşınıyor ama **skoru sessizce oynatamıyor**.
+
+### `db:constraints:verify` genişletildi, değiştirilmedi
+
+Planın şartı: her yeni CHECK kendi girdisini aldı. `runFaz31ConstraintAssertions()` eklendi,
+mevcut `runFaz19`/`runFaz22` fonksiyonlarına dokunulmadı. **65 → 75 test.** `has_rules` kısıtı
+Faz 29'un `coalesce(array_length(...),0)` dersiyle baştan yazıldı ve kendi girdisi var.
+
+### Doğrulama
+
+```
+env -u DATABASE_URL MIGRATION_DATABASE_URL="postgres://..." pnpm phase31:verify
+```
+**42/42, 4 kez art arda**; `DATABASE_URL`'in tanımsız olduğu ayrıca doğrulandı.
+`db:roles-rls:verify` artık **78 tablo / 390 (katman × tablo) INSERT kombinasyonu** görüyor.

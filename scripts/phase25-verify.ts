@@ -404,8 +404,16 @@ async function main(): Promise<void> {
      where c.conrelid='public.action_items'::regclass and c.contype='c'
        and cardinality(c.conkey)=1 and a.attname='source_type'`);
   const sources = new Set([...(sourceTypeCheck[0]?.def ?? "").matchAll(/'([a-z_]+)'/g)].map((m) => m[1]));
-  record("action_items.source_type 'collection' değerini kabul ediyor",
-    sourceTypeCheck.length === 1 && sources.has("collection") && sources.size === 7,
+  // Asserts what Faz 25 actually cares about: its own value is present AND none of the values
+  // that existed before it were removed. The original form pinned the set SIZE at 7, which made
+  // this gate fail the moment Faz 31 legitimately added 'control' — a later phase widening a
+  // shared enum should not break an earlier phase's gate, only removing a value should.
+  const PRE_FAZ25_SOURCES = [
+    "manual", "home_action", "fact", "mapping_review", "report", "ai_response",
+  ] as const;
+  record("action_items.source_type 'collection' değerini kabul ediyor (önceki değerler korunmuş)",
+    sourceTypeCheck.length === 1 && sources.has("collection")
+      && PRE_FAZ25_SOURCES.every((v) => sources.has(v)),
     [...sources].sort().join(", "));
 
   record("bilinmeyen tablo artık 'loan_installment'a DÜŞMÜYOR (fallthrough kaldırıldı)",

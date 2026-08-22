@@ -1873,3 +1873,118 @@ eşit toplandığını garanti ediyor. Birim test bunu 100 / 0,01 / 1 / 999,99 /
 
 Sıfır ya da negatif toplam sürücüde dağıtım **boş** dönüyor — NaN üretmek yerine "hiçbir şey
 dağıtılamadı" bilgisi veriliyor.
+
+---
+
+## Finansal Kontrol Merkezi ve Anomali Tespiti (Faz 31, migration 0076-0078)
+
+Bu bir **sentez** fazı, ve en önemli disiplin zaten tutan bir invariant'ı ikinci kez zorlamamak.
+Her kontrol yazılmadan ÖNCE ilgili mevcut mekanizma okundu ve sınıflandırıldı; sınıflandırma
+`control_registry.enforcement` kolonunda **veri olarak** duruyor, yorumda iddia olarak değil.
+
+### Kontrol envanteri — hangisi zaten var, hangisi gerçekten yeni
+
+| Kontrol | Sınıf | Gerekçe |
+|---|---|---|
+| `allocation_over_invoice` | **zaten zorlanıyor** | Faz 22'nin `allocations_enforce_invoice_ceiling()` trigger'ı engelliyor. İkinci bir CHECK, ilkiyle çelişebilecek bir yetki olurdu. |
+| `near_duplicate_bank_txn` | **zaten zorlanıyor** | `bank_transactions_dedupe_uq` **UNIQUE** (doğrulandı). Birebir kopya imkânsız; bu yüzden kontrol hash'in göremediği **yakın** kopyaları arıyor. |
+| `iban_changed` | **zaten zorlanıyor** | Faz 19'un `iban_change_events`'i her değişimi salt-ekleme kaydediyor. Yeniden icat edilmedi. |
+| `unknown_counterparty` | **zaten zorlanıyor** | Faz 19 kararı: uygulama eşleme sırasında sessizce `parties` satırı YARATMIYOR; ham `counterparty_label` kasıtlı. |
+| `duplicate_invoice` | **gerçekten yeni** | `invoices_dedupe_idx` **unique DEĞİL** (doğrulandı) — banka tarafının aksine. Bunu yalnız bu kontrol yakalıyor. |
+| `payment_without_invoice` | **gerçekten yeni** | Hiçbir mekanizma engellemiyor. |
+| `approval_bypass` | **gerçekten yeni** | Faz 24A onay varlığını kurdu; eşiği aşan kaydın onayı olup olmadığını kimse kontrol etmiyordu. |
+| `closed_period_mutation` | **gerçekten yeni** | Çıpa var, kontrol yoktu (aşağıya bakın). |
+| `missing_source_document` | **gerçekten yeni** | Kaynak soyağacı Faz 2'den beri var; eksikliği bulgu olarak raporlanmıyordu. |
+| `unmatched_bank_txn_aged` | **gerçekten yeni** | `status='unmatched'` bir veri durumu; **yaşlanması** bir bulgu. |
+| `large_payment` | **gerçekten yeni** | Eşik `settings.critical_payment_threshold_try`'den okunuyor — ikinci bir sayı icat edilmedi. |
+
+`phase31:verify` "zaten zorlanıyor" iddialarının her birini **mekanizmayı çalıştırarak kanıtlıyor**:
+banka indeksinin gerçekten unique olduğu, fatura indeksinin gerçekten olmadığı, Faz 22 trigger'ının
+fatura üstü dağıtımı hâlâ reddettiği. Sınıflandırma iddia değil, test.
+
+### Planın bir atfı düzeltildi
+
+Plan kapalı-dönem kontrolünün "Faz 24B'nin dönem-kilidini gerektirdiğini" söylüyor. Faz 24B
+aslında rol-tabanlı RLS teslim etti; **dönem kilidi kavramı ondan önce zaten vardı**:
+`cashflow_months.status` erken fazlardan beri `'locked'` değerini taşıyor. Kontrol o çıpaya
+bağlandı. Kontrolün dayanağı olduğu için kaydedildi.
+
+### 0076 — `control_alerts` ve `alert_escalation_rules`
+
+Bu fazın **tek yeni durumu**. Bir bulgunun onaylanacak bir yere ihtiyacı var ve mevcut tabloların
+hiçbiri bunu taşımıyor.
+
+Yaşam döngüsü beş durumlu, yirmi sıralı çiftin **on biri** izinli. İkisi ayrıca yazılmayı hak
+ediyor:
+
+- **`snoozed → open`** — erteleme **süresi dolar**. Bu geçiş olmasaydı ertelenen her uyarı kalıcı
+  susturulurdu; kimsenin güvenmediği bir alarm sisteminin tam olarak arıza biçimi budur.
+- **`resolved`/`false_positive` terminal** — kapatılmış bir bulguyu yeniden açmak, var olma
+  sebebi olan kontrol geçmişini yeniden yazmak olurdu. Tekrar ederse **yeni bir uyarı** açılır,
+  ki kısmi unique indeks de tam olarak buna izin veriyor.
+
+**`false_positive` `resolved`'ın bir çeşidi değil, birinci sınıf bir sonuç.** Ayrı tutulması,
+kural başına yanlış-alarm oranını hesaplanabilir kılan şey — planın istediği geri bildirim
+sinyali. Hangi kontrolün kurt masalı anlattığını ancak böyle görebilirsiniz.
+
+Kısıtlar tüketici biçimde yazıldı (Faz 28 deseni): her durum hangi damgaları taşıyabileceğini tek
+tek söylüyor. `control_alerts_has_rules` **`coalesce(array_length(...), 0) >= 1`** kullanıyor —
+Faz 29'un zor yoldan öğrendiği ders baştan uygulandı: boş dizide `array_length()` NULL döner ve
+NULL'a düşen CHECK **geçer**.
+
+Kapatma **gerekçe zorunlu** kılıyor: "kimse tarafından, sebepsiz çözüldü" bir kontrolün sessizce
+kapatılma biçimidir.
+
+Kısmi unique indeks canlı uyarıları kapsıyor, yani **tekrar koşu liste şişirmiyor** —
+`occurrence_count` artıyor. Her çalıştırmada büyüyen bir uyarı listesi, kimsenin okumadığı listedir.
+
+`alert_escalation_rules` yapılandırma; yaşam döngüsü kolonu yok ve §17 kural 3'ün N/A olduğu
+**yapısal olarak** doğrulanıyor. İki kural tohumlanıyor ve **ikisi de aktif** — pasif gelen bir
+eskalasyon kuralı, hiç yükseltmeyen bir alarm demek olurdu.
+
+### 0078 — kontroller ve anomali dedektörleri
+
+**Kontrol kaydı (`control_registry`)** her denetimi listeliyor, bulgu bulmasa bile. Temizken
+kaybolan bir kontrol, bozulduğu fark edilmeyen kontroldür. `control_dashboard` bunun üzerine
+PASS/WARNING/CRITICAL veriyor.
+
+Anomali dedektörleri **deterministik**: adlandırılmış eşikler, sabit ağırlıklar, öğrenilmiş hiçbir
+şey yok. Öne çıkan iki tanesi:
+
+- **Bölünmüş ödeme** — aynı karşı tarafa aynı gün, her biri onay eşiğinin **altında** ama toplamı
+  **üstünde**. Onay kapısının etrafından dolaşmanın klasik yolu, ve Faz 24A'nın eşiğini okuyarak
+  tespit ediliyor.
+- **Geçmiş ortalamaya göre tutar** — taban, karşı tarafın **kendi** ortalaması, yani büyük bir
+  tedarikçi büyük olduğu için işaretlenmiyor. **Dört gözlemin altındaki geçmiş taban sayılmıyor**:
+  ince geçmişten sinyal değil gürültü üretirdi.
+
+**Olağandışı saat kontrolü dürüstçe adlandırıldı.** Ölçüldü: `bank_transactions`'ta **işlem saati
+yok** — yalnız `txn_date` (tarih). Dolayısıyla "gece 3'te yapılan ödeme" tespit **edilemiyor**;
+tespit edilen, **gece 3'te kaydedilen** satır. Bu da gerçek bir sinyal ama farklı bir sinyal, ve
+view'ın kolon adı ile `caveat` alanı bunu söylüyor. İşlem saati demek, verinin desteklemediği bir
+iddiada bulunmak olurdu.
+
+### İnceleme iş akışı — ikinci görev modeli yok
+
+Takip görevi bir `action_item` (Faz 14 modeli, Faz 25'in tahsilat için yaptığı gibi). 0077 tek bir
+`source_type` değeri ekliyor (`'control'`), birkaç tane değil: bulgu türünü zaten
+`control_alerts.check_code`, neyle ilgili olduğunu zaten `related_entity_*` söylüyor.
+
+### Motor neyi yazar, neyi yazmayı reddeder
+
+`control_alerts`, `action_items` ve `audit_logs` yazar. **Hiçbir mali kayda yazmaz**: bulduğunu
+"düzeltebilen" bir kontrol, otomasyonun tutar ve vade değiştirmesi olurdu — CLAUDE.md'nin
+doğrudan yasakladığı şey. Bulgu bir insanın önüne konur; kararı insan verir. Gate bunu kaynak
+seviyesinde (yorumlar ayıklanarak) kontrol ediyor.
+
+### LLM kontrol zincirinin tamamen dışında
+
+`src/lib/controls/*` `@/lib/ai`'yi import etmiyor ve gate bunu negatif kontrolle kanıtlıyor.
+Gerekçe politika değil pratik: bir kontrol bulgusunun, aynı kuralları aynı satırlara uygulayan
+ikinci bir kişi tarafından **yeniden üretilebilmesi** gerekir. Bir dil modelinden çıkmış ciddiyet
+derecesi denetçiye savunulamaz ve "model tuhaf buldu" bir kontrol değildir.
+
+### `db:constraints:verify` genişletildi (değiştirilmedi)
+
+Planın şartı gereği her yeni CHECK kendi girdisini aldı: `runFaz31ConstraintAssertions()` eklendi,
+mevcut `runFaz19`/`runFaz22` fonksiyonlarına dokunulmadı. Script 65 → **75** teste çıktı.
