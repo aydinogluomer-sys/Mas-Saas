@@ -564,6 +564,7 @@ pnpm phase9d:verify   # Faz 10D tamamlaninca
 pnpm phase17:verify   # Faz 17'den sonra: kaynak taramasi, DB gerektirmez
 pnpm phase18:verify   # Faz 18'den sonra: kaynak taramasi, DB gerektirmez
 pnpm phase19:verify   # Faz 19'dan sonra: yeni tablo/view/trigger davranisi, DB gerektirir
+pnpm phase20:verify   # Faz 20'den sonra: banka merkezi + TAM durum-gecisi matrisi, DB gerektirir
 pnpm build
 pnpm phase16:verify   # Faz 16'dan sonra: build'i gerektirir, bu yuzden build'den SONRA
 ```

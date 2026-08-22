@@ -14,6 +14,15 @@ export type SheetDetectedType =
   | "cost_model_normal"
   | "cost_model_overtime"
   | "monthly_cashflow"
+  // Faz 20. Present so this union stays identical to source_sheets.detected_type (migration
+  // 0041 added the same member to that CHECK) — the header rule above is "do not drift".
+  //
+  // classifySheetName NEVER returns it, on purpose. A statement import is an explicit act in
+  // which the operator chooses which bank account they are importing for, so the type is set
+  // by the statement importer rather than guessed from a sheet name. Guessing would also be
+  // actively dangerous here: the real workbook contains a sheet called "faiz hesaplama", and a
+  // plausible "hesap" keyword would have stolen it from loan_calculation.
+  | "bank_statement"
   | "unknown";
 
 export type ParseConfidence = "high" | "medium" | "low" | "unknown";

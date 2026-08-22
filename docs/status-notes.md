@@ -1210,3 +1210,189 @@ veritabanlarında yapıldı, ikisi de düşürüldü, `mas_radar_app` yeniden `N
 3. Faz 17/18'den devam: `scripts/**`'daki 47 `::float8` (Faz 17B), `rules.ts` biriktiricileri,
    `finance/actions.ts:createCheckAction`'ın transaction dışı audit'i, mevcut action'ların Zod'a
    geçirilmesi.
+
+---
+
+## Faz 20 — DONE (Banka Merkezi: ekstre importu, kural-tabanlı sınıflandırma, mutabakat eşleştirmesi)
+
+Dört migration (0040-0043), üç tablo, üç view, bir CSV/XLSX import hattı, deterministik
+sınıflandırma ve eşleştirme. **Gerçek `mas_radar_dev`'e uygulanmadı** — aşağıda.
+
+### Mimari karar: ayrık `bank_accounts`, veriye bakılarak verildi
+
+Plan bunu bilerek açık bırakmıştı ("cash_accounts'a kolon eklemek **veya** ayrık tablo"). Karar
+tahminle değil, gerçek tablo içeriğine bakılarak verildi:
+
+| name | account_type |
+| --- | --- |
+| Deniz · HESAP Halk | bank_account |
+| **Kasa** | **cash** — kasa kutusu; IBAN'ı, şubesi, KMH'si yok |
+| Vinov | check_account |
+| **Halk Business · Halk KK - Paraf** | **credit_card** — IBAN'ı, şubesi yok |
+
+**Altı satırın yalnız ikisi banka hesabı.** `cash_accounts`'ı genişletmek satırların üçte
+ikisinde kalıcı olarak null ve anlamsız beş kolon eklerdi, ve tablonun anlamını sessizce
+değiştirirdi — belge onu "genel defter nakit pozisyonu" diye tanımlıyor ve `cashflow_lines`,
+`payments`, `payment_instances`, `checks` buna bağlı. Ayrıca `cash_accounts`'a **4 FK** işaret
+ediyor. Faz 19'un `parties` emsali aynen uygulandı: referans verilen tabloyu yeniden
+şekillendirme, detayı yanına as.
+
+`bank_accounts.cash_account_id` birincil anahtar, yani banka hesabı aynı paranın ikinci bir
+kimliği değil — bir kasa hesabının banka detayı. `phase20:verify` `cash_accounts`'a banka-özel
+kolon sızmadığını her koşuda kontrol ediyor.
+
+Karşıt bir karar da bilinçli: **kendi IBAN'ımız GLOBAL unique**, oysa 0037'de karşı taraf IBAN'ı
+parti-kapsamlıydı. Gerekçe transfer olmuyor: 0037'de aynı firma `parties`'te iki kez
+bulunabildiği için aynı hesabı iki satırda taşıyabilir; burada bunlar MAS'ın **kendi** hesapları
+ve iki kasa hesabının aynı IBAN'ı iddia etmesi, o hesabın ekstresini ikiye bölen bir veri hatası.
+
+### Durum geçişi: ÜÇÜNCÜ kez tekrarlanmadı, ve kanıtı sayımla
+
+`bank_transactions.status` CHECK'i beş değer kabul ediyor
+(`unmatched · suggested · matched · reconciled · ignored`); izin listesi **aynı migration'da**
+(0042) ve **on bir geçişle** kuruldu; red yolu (`suggested → unmatched`) dahil. Bilerek
+yasaklananların her biri gerekçeli (ör. `reconciled → unmatched` yok; önce `matched`'e dönülür ki
+yeniden açma kendi başına denetlenebilsin).
+
+**Kanıt okumayla değil sayımla:** `phase20:verify` izin verilen durumları **canlı CHECK
+constraint'inden türetiyor** (bu dosyadan değil), 5×5 = **25 çiftin tamamını** gerçek bir satır
+üzerinde deniyor ve gözlenen kabul/ret matrisini beyanla karşılaştırıyor. Sonuç: **25/25 uyum,
+0 uyuşmazlık**, beş durumun **beşi de** başlangıçtan erişilebilir, ölü değer yok. Ayrıca ters
+yön de kontrol ediliyor: guard, CHECK'te olmayan bir duruma atıfta bulunamaz.
+
+0027'de başarısız olan şey tam olarak "migration'ı okuyup doğru sanmak"tı; bu yüzden gate
+okumuyor, deniyor. CHECK'e geçişleri olmayan bir durum eklenirse gate "ÖLÜ DURUM" diyerek düşer.
+
+### Faz 2'nin lineage deseni yeniden kullanıldı, ikincisi icat edilmedi
+
+Ekstreler **aynı** staging katmanından geçiyor: `source_workbooks → source_sheets →
+source_cells → import_rows`, ve her `bank_transaction` `source_row_id` taşıyor. Uçtan uca
+testte dört satırın dördünde de lineage doğrulandı.
+
+Bunun bir bedeli vardı ve ödendi: `source_sheets.detected_type` bir CHECK enum'u ve
+`workbook-parser.ts`'in `SheetDetectedType` union'ıyla birebir aynı olmak zorunda (dosyanın kendi
+başlığı "Do not drift" diyor). 0041 CHECK'i genişletiyor, union da aynı üyeyi alıyor.
+
+**`classifySheetName` bu türü asla döndürmüyor** — ekstre importu, operatörün hangi hesaba
+aktardığını seçtiği açık bir eylem, tür sayfa adından tahmin edilmiyor. Tahmin burada ayrıca
+tehlikeliydi: gerçek çalışma kitabında **"faiz hesaplama"** adlı bir sayfa var ve makul görünen
+bir "hesap" anahtar kelimesi onu `loan_calculation`'dan çalardı.
+
+### CSV desteği, §1.1 koruması bozulmadan
+
+`safeParseWorkbookBuffer` ZIP/CFB imzası olmayan her şeyi reddediyor ve bu **belirtilmiş, testli**
+bir davranış (§1.1: tamamı sıfır bayt olan bozuk yükleme "ayrıştırılmış" sayılmamalı). Ekstreler
+sık sık CSV geliyor — ama imza kontrolünü gevşetmek uygulamadaki HER workbook importu için
+bozuk-dosya deliğini yeniden açardı.
+
+Workbook yoluna **dokunulmadı**; CSV kendi kapısını ve kendi korumasını aldı
+(`statement-parser.ts`): boş dosya, NUL bayt içeren içerik ve ayırıcısız metin reddediliyor —
+`phase20:verify` all-zero bir dosyanın `.csv` adıyla bile reddedildiğini ayrıca kontrol ediyor.
+UTF-8 BOM stripleniyor (aksi halde ilk başlık hücresi "﻿İşlem Tarihi" olur ve sütun tanıma
+çöker). Ayırıcı ilk satırdan sayılarak bulunuyor; Türkçe CSV'ler `;` kullanıyor çünkü `,`
+ondalık ayırıcı.
+
+### Kendi testimin yakaladığı gerçek tasarım hatası
+
+İlk `MATCH_WEIGHTS` tablosunda `amountExact = 0.6` idi ve öneri eşiği 0.5 — yani **tek başına
+tutar tutması öneri üretiyordu**, tam da doc comment'in "asla olmamalı" dediği şey. Birim testi
+yakaladı. Ağırlıklar düşürüldü (`amountExact = 0.45`) ve artık **hiçbir tek ağırlık eşiği tek
+başına geçemiyor**; bu yapısal değişmez ayrıca tüm tablo üzerinde test ediliyor. 10.000 TL gibi
+yuvarlak bir tutarın tek başına tutması, güvenle yanlış mutabakat üreten klasik rastlantıdır.
+
+### Sınıflandırma: kural, model değil
+
+Sıralı kural tablosu, **ilk eşleşen kazanır**, ve sıra spesifikasyonun kendisi ("kredi kartı"
+mutlaka "kredi taksit"ten önce). Her hareket hangi kuralın çalıştığını (`category_rule`)
+saklıyor ve arayüzde gösteriyor. Eşleşme yoksa `unknown` + **null kural** — en iyi tahmin
+üretilmiyor. Açıklanamayan bir sınıflandırma güvenilmemesi gereken bir sınıflandırmadır.
+
+### Uçtan uca kanıt (disposable DB, gerçek pipeline)
+
+5 satırlık TR formatlı bir CSV (`;` ayırıcı, `1.234,56` sayı, `Borç`/`Alacak` sütunları):
+
+```
+import #1: rowsSeen=6 inserted=4 duplicates=0 skipped=1 ("satır 6: tarih okunamadı" — TOPLAM satırı)
+import #2 (aynı dosya): inserted=0 duplicates=4        ← yinelenen tespiti
+2026-03-01      -15.00 outflow bank_fee         rule=eft_havale_fee    lineage=true
+2026-03-05   -45000.00 outflow salary           rule=salary            lineage=true
+2026-03-10    10000.00 inflow  incoming_payment rule=incoming_transfer lineage=true
+2026-03-10  -100000.00 outflow check_settlement rule=check_settlement  lineage=true
+matcher: scanned=4 suggested=1 candidates=1
+aday: checks conf=0.8500 ["amount_exact","date_same_day","label_contained"]
+kabul edildi → çekin durumu: planned (DEĞİŞMEDİ ✓)
+```
+
+Son satır bu fazın en önemli davranışı: **bir eşleşmeyi kabul etmek mali kaydı değiştirmez.**
+Ekstre planla ilişkilendirilir; ödemeyi "ödendi" yapmak ayrı ve ayrıca denetlenen bir işlemdir.
+Denetim satırı bunu `financial_record_mutated: false` alanıyla açıkça kaydediyor.
+
+Ayrıca atlanan satır **gerekçesiyle bildiriliyor** (sessiz atlama, gerçek bir işlemin mutabakattan
+kaybolma yolu) ve yok sayma **gerekçe zorunlu** (0042'de CHECK ile de zorlanıyor).
+
+### İkinci bir durum makinesi kurulmadı
+
+`bank_transaction_match_candidates`'ın statü enum'u **yok**: bir aday ya vardır ya
+reddedilmiştir. Statü olarak modellemek ikinci bir tam guard gerektirirdi ve §17 kural 3 tam da
+bu yüzden var. `rejected_at` nullable bir zaman damgası — kısıtlanacak geçişi yok. Redler
+silinmiyor, **hatırlanıyor**; yoksa eşleştirici aynı adayı her koşuda yeniden önerirdi.
+
+### Faz 18'in gate'i yine işini yaptı
+
+Docs yazılmadan önce `phase18:verify` **10/12** verip eksik migration'ları (0040-0043) tek tek
+listeledi. Faz 19'da düzeltilen "untracked dosyayı görme" hatası olmasaydı bu sessizce
+geçecekti. Docs yazıldıktan sonra 12/12.
+
+Ayrıca koordinatörün bildirdiği kozmetik sorun düzeltildi: `phase17-verify.ts`'teki sabit
+"41 tablonun tamamında" metni artık dinamik (`44 migration dosyasının tamamında`).
+
+### DOKUNULMAYANLAR (bilinçli)
+
+- **`cash_accounts`** — hiç değiştirilmedi; banka detayı sidecar'da.
+- **`safeParseWorkbookBuffer` ve workbook import yolu** — CSV için gevşetilmedi, ayrı kapı açıldı.
+- **`payments`/`checks`/`loan_installments`** — eşleştirme bu kayıtları OKUR, yazmaz.
+- **Fatura/tahsilat eşleştirmesi** — Faz 22'nin işi; o tablolar henüz yok, aday CHECK'i bugün
+  var olan üç entity ile sınırlı ve Faz 22 kendi migration'ında genişletecek.
+- **Banka API'si** — Faz 37. `phase20:verify` engine'de ağ çağrısı olmadığını kontrol ediyor.
+
+### Gate sonuçları
+
+| Adım | Sonuç |
+| --- | --- |
+| `pnpm lint` | exit 0 (1 uyarı: `analytics-chart.tsx`, önceden var) |
+| `pnpm typecheck` | exit 0 |
+| `pnpm test` | **388/388** (323 mevcut + 65 yeni banka kuralı) |
+| `pnpm db:verify` | ALL ASSERTIONS PASSED |
+| `db:migrate:verify` | **49/49** (ledger 43 migration) |
+| `db:constraints:verify` | 54/54 |
+| `db:transitions:verify` | 167/167 |
+| `db:reconciliation:verify` | 77/77 |
+| `db:legacy-repair:verify` | 183/183 |
+| `pnpm db:roles:verify` | **8/8** |
+| `pnpm import:real` | ALL PASS (43 sekme, 9.817 hücre) |
+| phase3…phase14e (20 script) | 20/20 PASS |
+| `pnpm build` | exit 0 |
+| `pnpm phase16:verify` | 18/18 |
+| `pnpm phase17:verify` | 10/10 |
+| `pnpm phase18:verify` | **12/12** (0043'e kadar) |
+| `pnpm phase19:verify` | 26/26 |
+| `pnpm phase20:verify` | **30/30 PASS** |
+
+### GERÇEK VERİTABANINA UYGULANMADI
+
+Commit öncesi teyit: `schema=0034 · payments=19 · users=12 · bank_accounts=YOK ·
+bank_transactions=YOK`. Bu depoda yerleşik kural: gerçek veriye geçiş her zaman ayrı,
+kullanıcının kendi onayladığı bir adım. Doğrulamanın tamamı `mas_radar_verify` ve
+`mas_radar_p20` disposable veritabanlarında yapıldı, ikisi de düşürüldü, `mas_radar_app`
+yeniden `NOLOGIN`.
+
+### Faz 21'e devredilen açık noktalar
+
+1. **Ekstre bakiyesi ile hesaplanan bakiye karşılaştırılmıyor.** `balance_after` içe aktarılıyor
+   ama bir "ekstre bakiyesi ↔ uygulama bakiyesi" mutabakat kontrolü yok; kendi başına bir dilim.
+2. **Kredi kartı ekstreleri** `bank_accounts` sidecar'ını alabilir ama IBAN'sız; kart ekstresi
+   biçimi ayrıca ele alınmalı.
+3. **`matched → reconciled` toplu işlemi yok** — dönem kapatma Faz 21/23'ün konusu.
+4. Faz 17/18/19'dan devam: `scripts/**`'daki 47 `::float8`, `rules.ts` biriktiricileri,
+   `createCheckAction`'ın transaction dışı audit'i, mevcut action'ların Zod'a geçirilmesi,
+   kredi `lender_party_id` eşleştirme UI'ı.

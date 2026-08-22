@@ -198,7 +198,9 @@ function main(): void {
   // Faz 17's premise was that the schema is already clean; this keeps it that way. The
   // pattern deliberately looks for column TYPES, not the word appearing in a comment.
   const migrationOffenders: string[] = [];
+  let migrationFileCount = 0;
   for (const file of sourceFiles(["supabase"])) {
+    if (file.endsWith(".sql")) migrationFileCount++;
     const content = readFileSync(path.join(ROOT, file), "utf8");
     content.split("\n").forEach((line, i) => {
       const t = line.trim();
@@ -212,7 +214,10 @@ function main(): void {
     "migration'larda hiç float8/double precision/real kolon yok (para hep numeric)",
     migrationOffenders.length === 0,
     migrationOffenders.length === 0
-      ? "41 tablonun tamamında para kolonları numeric(p,s)"
+      // Sayı dinamik: tablo sayısı her yeni fazla büyüyor ve sabit bir metin bayatlıyor
+      // (Faz 19/20 sekiz + üç tablo ekledi). Tarama zaten migration dosyalarının tamamı
+      // üzerinde; burada yalnız kaç dosyanın tarandığı bildiriliyor.
+      ? `${migrationFileCount} migration dosyasının tamamında para kolonları numeric(p,s)`
       : migrationOffenders.join(" | "),
   );
 

@@ -336,3 +336,165 @@ Bunun yerine eklenen: `counterparty_unresolved` view'i + `/finance/counterpartie
 `suggestCounterparties()` dönüş tipinde bilerek `autoLinkable` benzeri bir alan yoktur.
 Eşleştirme yapıldığında `counterparty_label` **SİLİNMEZ** — ham metin kaynak kanıtıdır, çözülen
 FK onun üzerine eklenen bir yorumdur.
+
+## Banka Merkezi (Faz 20, migration 0040-0043)
+
+### Mimari karar: ayrık `bank_accounts`, `cash_accounts` genişletilmedi
+
+implementation.md bu kararı bilerek açık bırakmıştı ("cash_accounts'a IBAN/şube kolonu eklemek
+**veya** ayrık bank_accounts tablosu — faz başlarında netleştirilecek"). Karar verinin kendisine
+bakılarak verildi. Gerçek `cash_accounts` içeriği:
+
+| name | account_type |
+| --- | --- |
+| Deniz | bank_account |
+| HESAP Halk | bank_account |
+| Kasa | **cash** — kasa kutusu; IBAN'ı, şubesi, KMH'si yok |
+| Vinov | check_account |
+| Halk Business | **credit_card** — IBAN'ı, şubesi yok |
+| Halk KK - Paraf | **credit_card** |
+
+**Altı satırın yalnız ikisi banka hesabı.** `cash_accounts`'ı genişletmek, satırların üçte
+ikisinde kalıcı olarak null ve anlamsız beş kolon eklemek ve tablonun ne anlama geldiğini
+sessizce değiştirmek olurdu — oysa bu belge onu "genel defter nakit pozisyonu" diye tanımlıyor
+ve `cashflow_lines`, `payments`, `payment_instances`, `checks` tam olarak buna bağlı.
+
+Ayrıca `cash_accounts`'a **4 FK** işaret ediyor (`payments.cash_account_id`,
+`payment_instances.paid_from_account_id`, `cashflow_lines.account_id`, `checks.account_id`).
+Faz 19'un `parties` için kurduğu emsal aynen geçerli: referans verilen tabloyu yeniden
+şekillendirme, detayı yanına as.
+
+`bank_accounts.cash_account_id` **birincil anahtardır**, yani banka hesabı aynı paranın ikinci
+bir kimliği değil, bir kasa hesabının banka detayıdır. `phase20:verify` `cash_accounts`'a
+banka-özel kolon sızmadığını her koşuda kontrol eder.
+
+### 0040 — bank_accounts
+
+- IBAN, şube kodu/adı, hesap no, SWIFT/BIC, kullanılabilir/bloke bakiye, **KMH limiti**
+  (`overdraft_limit`), `balance_as_of`, `last_statement_date`.
+- Bakiyeler nullable: "henüz içe aktarılmadı" gerçek bir durum ve sıfır olarak okunmamalı.
+  `overdraft_limit` sıfır olabilir ("KMH yok"), negatif olamaz.
+- `iban_normalized` generated column, 0037'yle aynı teknik.
+- **IBAN GLOBAL unique** — ve bu 0037'yle bilinçli bir KARŞITLIK. 0037 karşı taraf IBAN'ını
+  parti-kapsamlı unique yapar, çünkü aynı firma `parties`'te iki kez bulunabilir. O gerekçe
+  burada geçmez: bunlar MAS'ın **kendi** hesapları. Bir IBAN bir hesaptır; iki kasa hesabının
+  aynı IBAN'ı iddia etmesi, o hesabın ekstresini ikiye bölen bir veri hatasıdır.
+
+### 0041 — `source_sheets.detected_type`'a `bank_statement`
+
+`workbook-parser.ts`'in `SheetDetectedType` union'ı ile bu CHECK birbirinin aynası olmak zorunda
+(dosyanın kendi başlığı "Do not drift" diyor). Ekstre importu eklemek bu yüzden saf uygulama işi
+değil; iki taraf birlikte hareket etmezse ilk import INSERT'te patlar. Genişletme olduğu için
+(kabul edilen küme büyüyor, daralmıyor) mevcut her satır yeni constraint'i inşaen sağlar —
+"NOT VALID ekle, ayrı dilimde VALIDATE" kuralı burada geçerli değildir.
+
+**`classifySheetName` bu türü ASLA döndürmez.** Ekstre importu, operatörün hangi banka hesabına
+aktardığını seçtiği açık bir eylemdir; tür sayfa adından tahmin edilmez. Tahmin etmek burada
+ayrıca tehlikeliydi: gerçek çalışma kitabında **"faiz hesaplama"** adlı bir sayfa var ve makul
+görünen bir "hesap" anahtar kelimesi onu `loan_calculation`'dan çalardı.
+
+### 0042 — bank_transactions ve TAM durum izin listesi
+
+Ham ekstre satırları. Faz 2'nin staging deseni yeniden kullanılır: her satır
+`source_workbook_id`/`source_sheet_id`/`source_row_id` taşır, yani ham hücrelere kadar izlenir.
+İkinci bir lineage mekanizması icat edilmedi.
+
+- `amount` **NOT NULL** ve işaretli (negatif = hesaptan çıkış, `checks.signed_amount` ile aynı
+  sözleşme). Planlanmış bir ödemeden farklı olarak, tutarsız bir ekstre satırı zaten ekstre
+  satırı değildir.
+- `direction` generated column — elle yanlış yazılamaz.
+- `dedupe_hash` + `unique(bank_account_id, dedupe_hash)`: örtüşen dönemi tekrar indirmek
+  NORMALDİR; aynı satır çoğalmak yerine mevcut satıra düşer. Hash'e **yürüyen bakiye dahil
+  edilmez** — geriye tarihli bir kayıt araya girdiğinde kayar ve aynı işlemi yeni gösterirdi.
+- İki tutarlılık CHECK'i: `matched`/`reconciled` eşleştiği kaydı adlandırmak ZORUNDA;
+  `ignored` **gerekçesiz olamaz** (sessiz bir "beni ilgilendirmiyor", gerçek bir ödemenin
+  kaybolma yoludur).
+
+#### Durum izin listesi — 0027'nin dersinin uygulanışı
+
+CHECK'in kabul ettiği değerler: `unmatched · suggested · matched · reconciled · ignored`.
+İzin verilen geçişler, **kolonla aynı migration'da**:
+
+| Geçiş | Anlamı |
+| --- | --- |
+| unmatched → suggested | eşleştirici aday buldu |
+| unmatched → matched | operatör doğrudan eşleştirdi |
+| unmatched → ignored | eşleşme gerekmiyor (banka masrafı, kendi virmanı) |
+| suggested → matched | öneri kabul edildi |
+| **suggested → unmatched** | **öneri REDDEDİLDİ — red yolu** |
+| suggested → ignored | öneri yerine yok sayıldı |
+| matched → reconciled | dönem kapatıldı |
+| matched → unmatched | yanlış eşleşme geri alındı |
+| matched → ignored | "eşleşme" aslında masrafmış |
+| reconciled → matched | kapanmış mutabakat düzeltme için yeniden açıldı |
+| ignored → unmatched | yok sayma geri alındı |
+
+Aynı-durum güncellemesi HER değer için no-op (0027'nin doğru olan kısmı).
+
+**Erişilebilirlik** — 0027'nin kırdığı özellik: `unmatched` başlangıç; `suggested` unmatched'ten;
+`matched` unmatched/suggested/reconciled'dan; `reconciled` matched'ten; `ignored`
+unmatched/suggested/matched'ten. **Beşi de erişilebilir, ölü değer yok.**
+
+Bilerek yasaklananlar (ihmal değil, gerekçeli): `unmatched→reconciled` (mutabakata alınacak bir
+eşleşme yok), `suggested→reconciled` (öneri kabul değildir), `reconciled→unmatched` ve
+`reconciled→ignored` (önce `matched`'e dönülür, böylece yeniden açma kendi başına denetlenir),
+`ignored→suggested/matched/reconciled` (önce yok sayma geri alınır).
+
+**Kanıt okumayla değil SAYIMLA yapılır:** `scripts/phase20-verify.ts` izin verilen durumları
+canlı CHECK constraint'inden **türetir**, 5×5 = **25 çiftin tamamını** gerçek bir satır üzerinde
+dener ve gözlenen kabul/ret matrisini beyanla karşılaştırır. CHECK'e geçişleri olmayan bir durum
+eklenirse gate "ÖLÜ DURUM" diyerek düşer. 0027'de başarısız olan şey tam olarak migration'ı
+okuyup doğru sanmaktı.
+
+### 0043 — eşleşme adayları ve üç view
+
+`bank_transaction_match_candidates`'ın **statü enum'u YOKTUR** — bilinçli. Bir aday ya vardır ya
+reddedilmiştir; bunu statü olarak modellemek İKİNCİ bir durum makinesi ve ikinci bir tam guard
+gerektirirdi. `rejected_at` nullable bir zaman damgasıdır; kısıtlanacak geçişi yoktur. Kabul,
+ait olduğu yerde — hareketin kendisinde — kaydedilir. **Redler silinmez, hatırlanır**, yoksa
+eşleştirici aynı adayı her koşuda yeniden önerirdi.
+
+View'ler (kalıcı kolon değil, 0039'la aynı gerekçe):
+- `bank_unmatched_queue` — insanın karar vermesi gereken her şey, açık aday sayısı ve en iyi
+  güven skoruyla.
+- `bank_reconciliation_summary` — hesap başına mutabakat sağlığı.
+- `bank_match_conflicts` — **iki farklı ekstre satırının aynı mali kaydı iddia etmesi.** 0042'nin
+  unique index'i aynı satırın iki kez içe aktarılmasını durdurur; gerçekten farklı iki satırın
+  tek bir ödemeye eşleştirilmesini hiçbir şey durdurmaz ve asıl ilginç hata odur — bu yüzden
+  engellenmez, **bildirilir**.
+
+### Sınıflandırma ve eşleştirme: kural, model değil
+
+`src/lib/bank/rules.ts` saf ve test edilebilir. Sınıflandırma sıralı bir kural tablosudur, **ilk
+eşleşen kazanır** (sıra spesifikasyonun kendisidir: "kredi kartı" mutlaka "kredi taksit"ten önce
+gelmeli). Her satır hangi kuralın çalıştığını (`category_rule`) saklar; eşleşme yoksa `unknown`
+ve **null kural** — en iyi tahmin üretilmez.
+
+Eşleştirme skoru adlandırılmış sinyallerin toplamıdır (`amount_exact`, `date_same_day`,
+`label_contained`…) ve `reasons` olarak saklanır. **İki bağımsız sinyal şarttır:** hiçbir tek
+ağırlık öneri eşiğini (0.5) tek başına geçemez, çünkü 10.000 TL gibi yuvarlak bir tutarın tek
+başına tutması tam da güvenle yanlış mutabakat üreten rastlantıdır. Bu kural bir birim testiyle
+yapısal olarak korunuyor — ilk ağırlık tablosu bunu ihlal ediyordu ve test yakaladı.
+
+**Bir eşleşmeyi kabul etmek mali kaydı DEĞİŞTİRMEZ.** Ekstre planla ilişkilendirilir; ödemeyi
+"ödendi" yapmak ayrı ve ayrıca denetlenen bir işlemdir. Denetim satırı bunu
+`financial_record_mutated: false` alanıyla açıkça kaydeder.
+
+### CSV desteği ve §1.1 korumasının bozulmaması
+
+`safeParseWorkbookBuffer` ZIP/CFB imzası olmayan her şeyi reddeder ve bu **belirtilmiş, testli**
+bir davranıştır (implementation.md §1.1: tamamı sıfır bayt olan bozuk yükleme "ayrıştırılmış"
+sayılmamalı). Ekstreler sık sık CSV geldiği için destek şart — ama imza kontrolünü gevşetmek,
+uygulamadaki HER workbook importu için bozuk-dosya deliğini yeniden açardı.
+
+Bu yüzden workbook yoluna **dokunulmadı**; CSV kendi kapısını ve kendi korumasını aldı
+(`src/lib/importers/statement-parser.ts`): boş dosya, NUL bayt içeren (aslında ikili) içerik ve
+ayırıcısı olmayan metin reddedilir. UTF-8 BOM striplenir — aksi halde ilk başlık hücresi
+"﻿İşlem Tarihi" olur ve sütun tanıma başarısız olurdu. Ayırıcı ilk satırdan sayılarak bulunur;
+Türkçe CSV'ler `;` kullanır çünkü `,` ondalık ayırıcıdır.
+
+### Banka API'si YOK
+
+implementation.md canlı banka bağlantısını Faz 37'ye erteler. Bu faz yalnız dosya importudur ve
+`phase20:verify` `src/lib/bank/engine.ts` içinde ağ çağrısı olmadığını kontrol eder — kapsam
+kaymasını başka hiçbir gate yakalamazdı.
