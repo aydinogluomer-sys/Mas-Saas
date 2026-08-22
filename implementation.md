@@ -571,6 +571,7 @@ pnpm phase23:verify   # Faz 23'ten sonra: tahsilat riski + elle bad-debt bayragi
 pnpm phase24a:verify  # Faz 24A'dan sonra: onay varligi + 12 ciftlik gecis matrisi + legacy kopru regresyonu, DB gerektirir
 pnpm db:roles-rls:verify # Faz 24B'den sonra: bes katmanli rol matrisi, GERCEK mas_radar_app baglantisiyla + SET ROLE, DB gerektirir
 pnpm phase25:verify   # Faz 25'ten sonra: odeme sozu + kirilan soz tespiti + tahsilat puani, DB gerektirir
+pnpm phase26:verify   # Faz 26'dan sonra: hazine pozisyonu + 7/30/90 gun likidite + cashflow tutarlilik testi, DB gerektirir
 pnpm build
 pnpm phase16:verify   # Faz 16'dan sonra: build'i gerektirir, bu yuzden build'den SONRA
 ```

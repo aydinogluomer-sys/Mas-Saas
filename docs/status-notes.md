@@ -2468,3 +2468,103 @@ ve hatayı adıyla bildirdi.
 Bir gate'in determinizmini kanıtlamak, onu **doğru komutla** çalıştırmadıkça hiçbir şey kanıtlamaz.
 Bundan sonra yeni bir gate'in ilk koşusu, kendi başlığındaki `Usage:` satırı kopyalanarak —
 fazladan hiçbir ortam değişkeni verilmeden — yapılmalı.
+
+---
+
+## Faz 26 — DONE (Hazine/Likidite Merkezi: nakit pozisyonu, 7/30/90 gün likidite, tutarlılık kuralı)
+
+**migration 0062-0063 · `src/lib/treasury/{rules,engine}.ts` · `/finance/treasury` ·
+`scripts/phase26-verify.ts` (40/40, kendi Usage komutuyla 3+ kez art arda)**
+
+Hazine yeni bir defter değil, mevcut veriye bakan bir mercek: 0063 hiçbir yeni kaynak veri
+üretmiyor, altı read-model'in hepsi VIEW.
+
+### Yeni standing kural ilk kez baştan uygulandı
+
+Faz 25'in dersi bu fazda kural olarak işletildi: gate, **kendi Usage yorumundaki komutla**
+çalıştırıldı —
+
+```
+env -u DATABASE_URL MIGRATION_DATABASE_URL="postgres://..." pnpm phase26:verify
+```
+
+`DATABASE_URL`'in gerçekten tanımsız olduğu ayrıca doğrulandı (`node -e` ile `UNSET` basıldı).
+Yazmadan önce de import grafiği modül modül kontrol edildi: `treasury/rules.ts`,
+`treasury/engine.ts`, `radar/rules.ts`, `audit.ts`, `validation`, `money.ts`, `domain-error.ts`,
+`authz/matrix.ts` — hiçbiri `@/lib/env`'e ulaşmıyor, yani transport'ta olan kaza burada
+tekrarlanamaz.
+
+### Tutarlılık kuralı: sapma BİLDİRİLİR, düzeltilmez
+
+Planın merkezî şartı tek seferlik bir assertion değil, birinci sınıf bir read-model oldu
+(`treasury_cashflow_reconciliation`). İki rakam gerçekten farklı yerlerden geliyor — biri gözden
+geçirilmiş aylık workbook projeksiyonu (`cashflow_months.closing_balance`), diğeri içe aktarılmış
+banka hareketlerinin toplamı — dolayısıyla farklı olabilirler ve sık sık meşru şekilde olurlar.
+
+View onları mutabık kılmıyor: ortalamıyor, birini tercih etmiyor, "düzeltmiyor". Yan yana koyup
+farkı ve dört durumdan birini veriyor. Gate bunu **kasıtlı olarak uyuşmayan fixture'larla**
+kanıtlıyor:
+
+| Ay | Nakit akışı | Hazine | Sonuç |
+|---|---|---|---|
+| 2099-01 | 600,00 | 600,00 | `aligned`, fark 0 |
+| 2099-02 | 1.600,00 | 850,00 | **`divergent`, fark −750,00 tam olarak bildiriliyor** |
+| 2099-03 | 1.600,00 | (hareket yok) | `no_bank_movement`, fark **null** — sıfır sayılmıyor |
+
+Ayrıca aynı karar TypeScript'te de hesaplanıyor (`reconciliationVerdict`) ve gate ikisinin üç ayda
+da **birebir aynı** olduğunu kanıtlıyor. Tolerans 1,00 TL ve `findContinuityIssues`'un mevcut
+yuvarlama payıyla aynı — hazine "yeterince yakın"ın ikinci bir tanımını icat etmiyor.
+
+Aynı dürüstlük hesap bazında da var: `bank_cash_position` bankanın beyan ettiği bakiye ile
+hareketlerden türetileni **yan yana** veriyor ve farkı hesaplıyor. Birini sessizce seçmek bu fazın
+uyarıldığı arızanın ta kendisi olurdu.
+
+### Faz 5 motoru GENİŞLETİLDİ, çatallanmadı
+
+`treasury/rules.ts` aylık primitifleri `@/lib/radar/rules`'tan **içe aktarıyor**; `monthlyProjection`
+`buildProjection`'ın döndürdüğünün aynısını döndürüyor ve birim test bunu `toEqual` ile çiviliyor.
+Bölüm: `radar/rules` → **aylar** (workbook projeksiyonu), `treasury/rules` → **günler** (tarihli
+yükümlülükler). Gate, import'un varlığını kaynak seviyesinde kontrol ediyor — "paralel motor icat
+etme" kuralı iddia değil, test.
+
+Ufuk penceresi **yarı açık** `[bugün, bugün+N)`: tam N gün sonraki akış bir sonraki ufka ait, iki
+kez sayılmıyor; bugünkü akış dahil.
+
+### Alarmı susturamayan söz
+
+`treasury_liquidity_gap` iki projeksiyon birden veriyor: `projected_contracted` (yalnız
+yükümlülükler) ve `projected_expected` (Faz 25 sözlerine de inanan). **Taban ihlali SÖZLEŞMELİ
+rakamla yargılanıyor** — bir müşteri sözü finansman ihtiyacını gizleyememeli. `financing_need` asla
+negatif değil. **Tutarı bilinmeyen söz tahmine hiç girmiyor**, sıfır olarak değil (gate: 2 sözden
+yalnız tutarlı olan, toplam 5.000).
+
+### Eşik kod değil veri, ve ikinci sayı icat edilmedi
+
+`treasury_policies` Faz 24A'nın `approval_rules` emsalini izliyor. Varsayılan `min_cash` tabanı 0
+ve bu **`settings.negative_cash_threshold_try` ile aynı sayı** — gate eşitliği kontrol ediyor.
+`buffer_days` **pasif** geliyor: açmak neyin "açık" sayıldığını değiştirir, bu operatörün bilinçli
+kararı olmalı.
+
+Yaşam döngüsü kolonu yok ve bu **yapısal olarak** doğrulanıyor (§17 kural 3 gerçekten N/A —
+`status`/`state`/`lifecycle` kolonu olmadığı sorgulanıyor, yalnız yorumda iddia edilmiyor).
+Kapsam CHECK'i iki yönlü, sıfır taban geçerli (0 ≠ null), aynı kur için ikinci **aktif** politika
+engelli (NULLS NOT DISTINCT) — olsaydı view hangi tabanı seçeceğini bilemezdi.
+
+**RLS: `config` sınıfı**, `settings` ile aynı — her katman okur, yalnız **admin** yazar. Bilerek
+yöneticiye kapalı: kendi likidite uyarılarını yöneten tabanı indirebilen bir yönetici, soruyu
+cevaplamak yerine alarmı kapatıyor olurdu.
+
+### 24B mekanizması yine iş gördü
+
+`db:migrate:verify` 48/49'a düştü: `treasury_policies` iki satır tohumluyor ve "yeni tablolar boş"
+değişmezini kırdı. Kural gevşetilmedi — tablo **adıyla beyan edildi** (Faz 24B'nin
+`DECLARED_POPULATING_MIGRATIONS` listesi), böylece beyan edilmeden dolu gelen bir sonraki tablo
+hâlâ bu gate'i düşürüyor. Bu, mekanizmanın tasarlandığı gibi çalıştığının kanıtı.
+
+`db:roles-rls:verify` artık **63 tablo / 315 (katman × tablo) INSERT kombinasyonu** görüyor.
+
+### Para birimleri asla netleştirilmiyor
+
+Her pozisyon kur bazında gruplanıyor; hiçbir view kurlar arası toplama yapmıyor. Faz 27'ye kadar
+kur tablosu yok ve burada TRY ile EUR'yu toplamak bir kur **icat etmeyi** gerektirirdi. Sessizce
+kur icat eden bir hazine ekranı, iki satır gösterenden kötüdür.

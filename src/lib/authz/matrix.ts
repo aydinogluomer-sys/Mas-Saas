@@ -209,6 +209,11 @@ export const TABLE_CLASS: Record<string, AccessClass> = {
   part_profitability_runs: "derived",
   // config / approval / auth / ledger (5)
   settings: "config",
+  // Faz 26. Same class as settings: every tier reads the floor (it explains why a liquidity
+  // warning is showing), only admin changes it. Deliberately not manager-writable — a manager
+  // who could lower the floor governing their own alerts would be silencing the alarm rather
+  // than answering it, the argument 0058 used to keep approval_rules admin-only.
+  treasury_policies: "config",
   approvals: "approval",
   approval_rules: "approval_config",
   users: "auth_users",

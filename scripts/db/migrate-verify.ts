@@ -382,11 +382,20 @@ async function testLegacyCompleteAndIdempotency(): Promise<void> {
     //   approvals      (0055)  round 1 for every pre-existing mapping_review and external
     //                          assumption, so the unified queue is complete the moment it ships
     //                          rather than starting blind to everything already under review.
+    //   treasury_policies (0062) the min-cash floor and the (inactive) buffer-days policy. Same
+    //                          argument as approval_rules: a database built only from migrations
+    //                          would otherwise have NO configured floor, so every liquidity
+    //                          screen would silently report "no breach" because there is nothing
+    //                          to breach. The seeded floor is 0, matching
+    //                          settings.negative_cash_threshold_try exactly.
     //
-    // Both are documented in docs/database-schema.md. They are listed BY NAME here rather than
-    // relaxing the rule to "new tables may contain anything", so a new table that arrives
-    // populated WITHOUT being declared still fails this gate — which is the whole point.
-    const DECLARED_POPULATING_MIGRATIONS = new Set(["approval_rules", "approvals"]);
+    // All three are documented in docs/database-schema.md. They are listed BY NAME here rather
+    // than relaxing the rule to "new tables may contain anything", so a new table that arrives
+    // populated WITHOUT being declared still fails this gate — which is the whole point, and it
+    // is what caught treasury_policies on the Faz 26 run rather than letting it through.
+    const DECLARED_POPULATING_MIGRATIONS = new Set([
+      "approval_rules", "approvals", "treasury_policies",
+    ]);
     const undeclaredPopulated = newTables.filter(
       (k) => postCounts[k] !== 0 && !DECLARED_POPULATING_MIGRATIONS.has(k),
     );

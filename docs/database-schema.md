@@ -1265,3 +1265,120 @@ ile adlandırılmış HTTP uç noktası, tanımsız/erişilemezken **fırlatmaya
 `DeliveryResult`, ve gerçek davranışın `mockTransport({ channel: "email" })` ile sınanması.
 `mockTransport` artık kanalı parametre alıyor — `"telegram"` sabit kodluydu ve e-posta yolu var
 olduğu anda onu test edilemez kılardı.
+
+---
+
+## Hazine / Likidite Merkezi (Faz 26, migration 0062-0063)
+
+Hazine yeni bir defter değil, mevcut veriye bakan bir **mercek**. 0063 hiçbir yeni kaynak veri
+üretmiyor: Faz 20'nin `bank_accounts`/`bank_transactions`'ı, üzerine oturdukları `cash_accounts`,
+tarihli yükümlülükler (`payment_instances`, `checks`, `loan_installments`, `invoices`,
+`promise_to_pay`) ve Faz 4/5'in `cashflow_months`'u — hepsi zaten var.
+
+### 0062 — `treasury_policies`: eşik kod değil VERİ
+
+Plan "yapılandırılabilir nakit tamponu eşiği" istiyor ve belirleyici kelime *yapılandırılabilir*.
+TypeScript sabitine gömülü bir taban, yalnız bir geliştiricinin değiştirebileceği bir sayıdır —
+hazine kararı için yanlış sahip. Faz 24A'nın `approval_rules` emsali izlendi: kural bir satırda
+durur, motor okur, değiştirmek denetlenen bir operatör işlemidir.
+
+**İkinci bir sayı icat EDİLMEDİ.** `settings.negative_cash_threshold_try = 0` zaten var — Faz 4/5
+projeksiyonunun "kasa eksiye düştü" saydığı taban. Tohumlanan varsayılan `min_cash` politikası bu
+yüzden 0 ve `phase26:verify` bu eşitliği kontrol ediyor (Faz 24A'nın `amount_over_100k` ↔
+`critical_payment_threshold_try` kontrolüyle aynı desen). Tabanı sıfırın üstüne çıkarmak zaten
+tampon politikasının varlık sebebi, ve artık bir satır düzenlemesi.
+
+İki tür, fazlası değil: `min_cash` (mutlak taban) ve `buffer_days` (ortalama giderin N günü).
+Konsantrasyon limiti bilinçli olarak yok — Faz 23 karşı taraf konsantrasyonunu zaten puanlıyor ve
+buraya eklemek aynı soruya ikinci bir cevap yeri açardı.
+
+**Yaşam döngüsü kolonu YOK ve bu ölçülerek iddia ediliyor.** §17 kural 3 (her yaşam döngüsü
+varlığına gün-1'den transition guard) burada gerçekten N/A: politika ya aktiftir ya değildir,
+`is_active` boolean'ının kısıtlanacak ara durumu yok. 0054'ün `approval_rules` için kaydettiği
+gerekçenin aynısı; `phase26:verify` `status`/`state`/`lifecycle` kolonu olmadığını **yapısal
+olarak** kontrol ediyor, yalnız yorumda iddia etmiyor.
+
+Kapsam CHECK'i iki yönlü (`treasury_policies_kind_scope`): `min_cash` tutarsız, `buffer_days`
+günsüz olamaz; eşik onu okumayan bir türe iliştirilemez. **Sıfır taban geçerli** ("sıfırın altına
+inme") — 0 ile NULL farklı ifadeler ve varsayılan tam olarak sıfırdır.
+
+`treasury_policies_active_unique` (NULLS NOT DISTINCT): aynı kur+hesap için ikinci bir **aktif**
+politika olamaz. Olsaydı view hangi tabanı seçeceğini bilemez, planlayıcının döndürdüğü ilk satırı
+sessizce kullanırdı.
+
+**RLS: `config` sınıfı** — `settings` ile aynı. Her katman okur (taban, bir uyarının neden
+göründüğünü açıklar), yalnız admin yazar. Bilerek yöneticiye açık değil: kendi likidite
+uyarılarını yöneten tabanı indirebilen bir yönetici, soruyu cevaplamak yerine alarmı kapatıyor
+olurdu — 0058'in `approval_rules`'u admin'e sabitlerken kullandığı argümanın aynısı.
+
+### 0063 — altı read-model, hepsi VIEW
+
+**Para birimleri ASLA netleştirilmiyor.** Her pozisyon kur bazında gruplanıyor ve hiçbir view
+kurlar arası toplama yapmıyor. Faz 27'ye kadar kur tablosu yok; burada TRY ile EUR'yu toplamak bir
+kur **icat etmeyi** gerektirirdi ve sessizce kur icat eden bir hazine ekranı, iki satır gösteren
+ekrandan kötüdür.
+
+1. **`bank_cash_position`** — "bu hesapta ne kadar var" sorusunun **iki dürüst cevabı** yan yana:
+   `stated_balance` (bankanın son ekstrede söylediği) ve `derived_balance` (açılış + içe
+   aktarılmış hareketler). Farkı `stated_minus_derived` olarak açıkça hesaplanıyor. Birini sessizce
+   seçmek, bu fazın uyarıldığı arıza türünün ta kendisi olurdu. `ignored` hareketler türetilen
+   bakiyeye girmiyor (0042: onlar açıkça para değil), ama `unmatched` giriyor — eşleştirme bir
+   belgeye bağlamakla ilgilidir, hareketin gerçekleşip gerçekleşmediğiyle değil.
+2. **`daily_cash_movement`** — günlük giriş/çıkış/net ve kur bazında pencere fonksiyonuyla
+   yürüyen pozisyon (saklanan kolon değil: sayı, hesaplandığı satırlardan sapamamalı).
+3. **`treasury_position_summary`** — kur bazında toplamlar, `available_now` (bloke düşülmüş) ve
+   `available_with_overdraft`.
+4. **`liquidity_forecast_daily`** — her satır zaten başka bir yerde kayıtlı, **tarihli, bilinen**
+   bir yükümlülük ya da beklenti. Trend uydurmuyor. `certainty` sütunu sözleşmeli yükümlülüğü
+   müşterinin beyanından ayırıyor: Faz 25'in ödeme sözü dahil, çünkü hazineci onunla plan yapar —
+   ama imzalı bir taksitle aynı ağırlıkta toplanmamalı. **Tutarı bilinmeyen söz tahmine hiç
+   girmiyor**, sıfır olarak değil.
+5. **`treasury_liquidity_gap`** — 7/30/90 **GÜN**. İki projeksiyon birden döndürüyor:
+   `projected_contracted` (yalnız yükümlülükler, muhafazakâr) ve `projected_expected` (sözlere de
+   inanan). **Taban ihlali SÖZLEŞMELİ rakamla yargılanıyor** — bir müşteri sözü alarmı
+   susturamamalı. `financing_need` asla negatif değil (taban aşılmışsa fark, değilse 0), böylece
+   toplanabilir.
+6. **`treasury_cashflow_reconciliation`** — aşağıya bakın.
+
+### Tutarlılık kuralı: sapma **bildirilir**, düzeltilmez
+
+Planın gate şartı burada tek seferlik bir assertion değil, birinci sınıf bir read-model:
+hazine pozisyonu `cashflow_months.closing_balance`'tan **sessizce sapmamalı**.
+
+İki rakam gerçekten farklı yerlerden geliyor — biri gözden geçirilmiş aylık workbook projeksiyonu,
+diğeri içe aktarılmış banka hareketlerinin toplamı — dolayısıyla **farklı olabilirler ve sık sık
+meşru şekilde olurlar** (ekstresi henüz aktarılmamış bir ay, ayın tamamı kadar farklı çıkar).
+
+View bu yüzden onları **mutabık kılmıyor**: ortalamıyor, birini tercih etmiyor, "düzeltmiyor".
+Yan yana koyuyor, farkı ve dört durumdan birini (`aligned` / `divergent` / `cashflow_missing` /
+`no_bank_movement`) veriyor. Başka her davranış, CLAUDE.md'nin doğrudan yasakladığı şey olurdu:
+belirsiz satırlardan nihai gerçeği çıkarmak.
+
+Tolerans 1,00 TL ve `findContinuityIssues`'un mevcut yuvarlama payıyla **aynı** — hazine "yeterince
+yakın"ın ikinci bir tanımını icat etmiyor. Aynı karar `src/lib/treasury/rules.ts` içindeki
+`reconciliationVerdict` ile TypeScript tarafında da hesaplanıyor; `phase26:verify` ikisini aynı
+fixture üstünde çalıştırıp **birebir aynı** olduklarını kanıtlıyor (üç ay: uyumlu, sapan,
+hareketsiz).
+
+### Faz 5 motoru GENİŞLETİLDİ, çatallanmadı
+
+`src/lib/treasury/rules.ts` aylık primitifleri `@/lib/radar/rules`'tan **içe aktarıyor** —
+`buildProjection` hâlâ "hangi ayda bakiye ilk kez eksiye düşer" sorusunu cevaplıyor; bu modül
+hazinenin gerçekten sorduğu kısa ufuk sorusunu ekliyor: "önümüzdeki 7, 30, 90 **GÜN**de tabanı
+koruyacak mıyım". Aynı yükümlülükler, bilinmeyen değerler için aynı kurallar, farklı pencere.
+
+Bölüm bilinçli:
+- `radar/rules.ts` → **aylar**, `cashflow_months`'tan (gözden geçirilmiş workbook projeksiyonu)
+- `treasury/rules.ts` → **günler**, tarihli yükümlülüklerden (fiilen hareket etmesi planlanan)
+
+Örtüştükleri yerde aynı fikirde olmalılar, ve `reconciliationVerdict` anlaşmazlığın **düzeltilmek
+yerine bildirilme** biçimi. `phase26:verify` `treasury/rules.ts`'in `radar/rules`'tan import
+ettiğini kaynak seviyesinde kontrol ediyor — "paralel motor icat etme" kuralı böylece iddia değil,
+test.
+
+Ufuk penceresi **yarı açık**: `[bugün, bugün+N)`. Tam N gün sonraki bir akış bir sonraki ufka ait,
+iki kez sayılmaz; bugünkü akış **dahil** (bu sabah hareket eden para bugünün likiditesidir).
+
+`bufferDaysFloor` gider geçmişi yoksa **null** döndürüyor, 0 değil: 0 "tampon gerekmiyor" diye
+okunur ve ikisinden tehlikeli olanı odur. İki taban da aktifse `effectiveFloor` **yükseğini**
+seçiyor — ikisi de asgari, düşüğü sağlamak diğerini ihlal bırakır.
