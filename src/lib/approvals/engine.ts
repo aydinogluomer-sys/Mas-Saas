@@ -20,9 +20,15 @@ import { firingRules, type ApprovalRuleConfig, type RuleInput } from "./rules";
 
 /* ── schemas ──────────────────────────────────────────────────────────────────────────── */
 
-const SUBJECT_TABLES = [
+// MUST stay in lockstep with approvals_subject_table_check in the migrations. The schema takes
+// `raw: unknown`, so TypeScript cannot catch a drift here — widening only the database CHECK
+// (as Faz 29 first did) leaves this enum rejecting the new value at runtime with a validation
+// error and no compile-time warning. phase29:verify now compares the two lists directly.
+export const SUBJECT_TABLES = [
   "mapping_reviews", "external_assumptions", "invoices",
   "payment_instances", "ibans", "parties", "bank_transactions",
+  // Faz 29 — optimisation runs are approved through this same entity, not a forked one.
+  "optimization_runs",
 ] as const;
 
 export const requestApprovalSchema = z.object({

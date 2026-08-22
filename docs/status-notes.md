@@ -2801,3 +2801,89 @@ env -u DATABASE_URL MIGRATION_DATABASE_URL="postgres://..." pnpm phase28:verify
 ```
 **46/46, 4 kez art arda**; `DATABASE_URL`'in tanımsız olduğu ayrıca doğrulandı.
 `db:roles-rls:verify` artık **73 tablo / 365 (katman × tablo) INSERT kombinasyonu** görüyor.
+
+---
+
+## Faz 29 — DONE (deterministik optimizasyon, senaryo karşılaştırma, approvals bağlantısı)
+
+**migration 0071-0073 · `src/lib/optimization/{rules,engine}.ts` ·
+`scripts/phase29-verify.ts` (36/36, KENDİ Usage komutuyla 4 kez art arda)**
+
+Bu faz bir oturum limiti yüzünden ikiye bölündü; kesinti anında üç migration uygulanmış ve
+`rules.ts` yazılmıştı. Devam ederken diskteki durum `git status` ve dosya okumasıyla doğrulandı
+(hiçbiri yarım yazılmamıştı), sonra kalan iş tamamlandı — baştan başlanmadı.
+
+### Baseline korunur invariant'ı, yeni çalışma tipine karşı nasıl kanıtlandı
+
+Plan bunu şart koşuyor ve gate **alt küme kontrolüyle değil, tam satır karşılaştırmasıyla** yapıyor:
+
+1. Bir baseline `scenario_run`'ın **her kolonu**, `scenario_comparisons` satırları, **tüm**
+   `cashflow_months` ve **tüm** `payment_instances` satırları anlık görüntüye alınıyor
+   (`select *`, seçilmiş alanlar değil).
+2. Optimizatör uçtan uca çalıştırılıyor: `runOptimization` + `requestOptimizationApproval`.
+3. Anlık görüntüler `JSON.stringify` ile birebir karşılaştırılıyor.
+
+**İlk sürümde bu kontrol boş kümeyle geçiyordu** — `payment_instances` sıfır satırdı, yani hiçbir
+şey kanıtlamıyordu. Fixture artık iki gerçek taksit kuruyor (biri `normal`, biri `critical`
+öncelikli), yani optimizatörün gerçekten mutasyona uğratabileceği adaylar var; kontrol artık boş
+küme olduğunda **başarısız oluyor** (`>= 2` şartı).
+
+Buna ek olarak kaynak seviyesinde: motorun mali/senaryo tablolarına yazan hiçbir ifadesi olmadığı
+(yorumlar ayıklanarak) ve çözücü kurallarının veritabanına **hiç erişmediği** — yani yapısal olarak
+mutasyon yapamayacağı — doğrulanıyor.
+
+### Approvals'a bağlanma, çatallama değil
+
+`optimization_runs`'ta **yaşam döngüsü/onay kolonu yok** ve gate bunu yapısal olarak kontrol
+ediyor. Onay durumu `approvals`'ta yaşıyor; 0072 polimorfik `subject_table`'a bir değer ekliyor ve
+motor Faz 24A'nın `requestApproval`'ını değiştirmeden çağırıyor. Buraya bir statü koymak, bir öneri
+kümesinin onaylı olup olmadığı hakkında ikinci bir doğruluk kaynağı yaratırdı — Faz 24A'nın bir
+fazını harcayarak kaldırdığı arıza. `optimization_run_summary` onay durumunu **JOIN ediyor**,
+kopyalamıyor.
+
+### Üç gerçek hata, üçü de farklı bir mekanizmayla yakalandı
+
+**1. `array_length()` boş dizide NULL döner — ve NULL'a düşen CHECK GEÇER.**
+`array_length(rationale_codes,1) >= 1` kısıtı, tam olarak engellemek için var olduğu boş-gerekçe
+satırlarını kabul ediyordu, üstelik çalışıyormuş gibi okunuyordu. Kümede ölçüldü
+(`(array_length('{}',1) >= 1) is null` → `t`) ve `coalesce(...,0) >= 1` ile düzeltildi. Migration
+hem yeni veritabanları hem de bozuk sürümü çalıştırmış olanlar için idempotent onarım içeriyor.
+
+**2. Zod enum'u ile DB CHECK'i sürüklendi ve typecheck göremedi.**
+`requestApprovalSchema` `raw: unknown` alıyor, dolayısıyla önce CHECK'i genişletip
+`SUBJECT_TABLES`'ı genişletmemek derleyiciye görünmez; hata ancak çağrı anında bir Zod doğrulama
+hatası olarak çıkardı. Gate artık iki listeyi doğrudan karşılaştırıp yalnız-DB/yalnız-kod farkını
+adıyla bildiriyor.
+
+**3. Çözücü, erteleme hedefini yanlış seçiyordu (birim test yakaladı).**
+İlk sürüm ödemeyi ihlalden **bir gün sonrasına** taşıyordu; kapatıcı giriş üç gün sonraysa bakiye
+yeni tarihte de tabanın altında kalıyor ve en kötü bakiye hiç değişmiyordu (−400 → −400). Hedef
+artık ödemenin **gerçekten karşılanabildiği ilk gün**. Ufuk içinde böyle bir gün yoksa öneri
+üretilmiyor — yalnızca ilerleme gibi görünen bir hamle yapmaktansa hiçbir şey önermemek doğru.
+Testteki beklenen değer de düzeltildi (01-03 → 01-05); kod doğruydu, beklentim eski davranışa
+yazılmıştı.
+
+Ayrıca `payment_instances`'ta olmayan bir `priority` kolonu okunuyordu; introspection ile
+düzeltildi (`priority` `payments`'ta, `risk_level` instance'ta) ve ikisinden biri `critical` ise
+ödeme taşınamaz sayılıyor — muhafazakâr okuma bilinçli.
+
+### Deterministik çözücü, kütüphane değil
+
+Açık kural tabanlı sezgisel: LP/MIP yok, istatistiksel optimizatör yok, öğrenilmiş ağırlık yok,
+Python yok. Her öneri adlandırılmış bir kuralla üretiliyor ve o kuralın adını taşıyor
+(`rationale_codes` boş olamaz). Sert vadeli ödeme asla ertelenmeye önerilmiyor ve **ertelenemediği
+ayrıca bildiriliyor**; kapatılamayan açık da `limit_yetersiz` ile raporlanıyor — sessiz bir kısmi
+cevap "çözüldü" diye okunurdu.
+
+Determinizm gereklilik: çalışma bir `result_digest` saklıyor, gate optimizatörü yeniden koşup
+karşılaştırıyor. Bu her sıralamanın **tam sıra** olmasını zorunlu kıldı — her karşılaştırıcı id
+eşitlik-bozucuyla bitiyor. Gate hem tekrarlanabilirliği hem **girdi sırasından bağımsızlığı** ayrı
+ayrı kanıtlıyor.
+
+### Doğrulama
+
+```
+env -u DATABASE_URL MIGRATION_DATABASE_URL="postgres://..." pnpm phase29:verify
+```
+**36/36, 4 kez art arda**; `DATABASE_URL`'in tanımsız olduğu ayrıca doğrulandı.
+`db:roles-rls:verify` artık **75 tablo / 375 (katman × tablo) INSERT kombinasyonu** görüyor.

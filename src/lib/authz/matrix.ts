@@ -199,6 +199,11 @@ export const TABLE_CLASS: Record<string, AccessClass> = {
   budget_lines: "operational",
   forecasts: "operational",
   forecast_lines: "operational",
+  // Faz 29. Optimisation runs and their recommendations are PROPOSALS — an operator produces
+  // them and reads them; acting on one is a separate approved action against the underlying
+  // record, governed by that record's own policies.
+  optimization_runs: "operational",
+  optimization_recommendations: "operational",
   source_sheets: "operational",
   import_rows: "operational",
   // evidence (7)

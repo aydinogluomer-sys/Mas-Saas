@@ -1630,3 +1630,133 @@ Bağımlılık tek yönlü: AI katmanı bu modüllerin **çıktısını** herhan
 tersi olamaz. Bir dil modelinden geçmiş varyans rakamı yeniden üretilemez olurdu ve varyans
 raporunun bütün anlamı, iki kişinin aynı sayıyı bulmasıdır. `ai/engine.ts`'in "önce deterministik,
 LLM yalnız yorum" sınırı (Faz 12) olduğu gibi duruyor.
+
+---
+
+## Senaryo/Optimizasyon Genişletme (Faz 29, migration 0071-0073)
+
+### 0071 — `optimization_runs` + `optimization_recommendations`
+
+**Bir öneri ÖNERİDİR, mutasyon değil.** Bu fazın yük taşıyan kuralı. CLAUDE.md otomasyonun ödemeyi
+ödendi işaretlemesini, vade değiştirmesini, tutar değiştirmesini yasaklıyor. Optimizatör bu yüzden
+`payment_instances`, `invoices`, `checks`, `loans`, `cashflow_months` tablolarına **hiç yazmıyor**.
+Onları okuyor ve BURAYA bir insanın seçebileceği eylemleri tarif eden satırlar yazıyor. Bir öneriye
+göre hareket etmek insan eylemi olarak kalıyor ve Faz 24A'nın onay varlığı bunu kapıda tutuyor.
+
+**Yaşam döngüsü kolonu YOK, bilerek.** İlk içgüdü bir `status` (draft/approved/applied) kolonu;
+yanlış içgüdü. Bir optimizasyon çalışmasının onay durumu `approvals`'a ait — Faz 24A tam olarak
+üçüncü bir özel inceleme varyantı olmasın diye kuruldu. 0072 polimorfik `subject_table`'a
+`optimization_runs` ekliyor, yani bu **bağlanıyor**, çatallamıyor. Buraya bir statü koymak,
+bir öneri kümesinin onaylı olup olmadığı hakkında **ikinci bir doğruluk kaynağı** yaratırdı ve
+ikisi er ya da geç ayrışırdı — Faz 24A'nın bir fazını harcayarak ortadan kaldırdığı arıza.
+§17 kural 3 uygulanmıyor çünkü korunacak bir yaşam döngüsü yok; gate bunu yorumda iddia etmek
+yerine **yapısal olarak** doğruluyor.
+
+`rationale_codes` NOT NULL ve en az bir kural adı taşımak zorunda (Faz 23 konvansiyonu: karar
+her zaman onu üreten kural adlarıyla birlikte gezer). Sorgulanamayan bir optimizasyon önerisi,
+hazinecinin haklı olarak yok sayacağı bir öneridir.
+
+#### `coalesce(array_length(...), 0)` — gate'in yakaladığı gerçek bir hata
+
+Kısıt önce `array_length(rationale_codes, 1) >= 1` yazılmıştı. **Boş bir dizide `array_length()`
+0 değil NULL döner**, dolayısıyla `'{}'` için ifade NULL'a düşer — ve **NULL'a düşen bir CHECK
+GEÇER**. Kısıt tam olarak engellemek için var olduğu satırları kabul ediyordu, üstelik çalışıyormuş
+gibi okunuyordu. Kümede ölçüldü:
+
+```
+array_length('{}',1) is null            -> t
+(array_length('{}',1) >= 1) is null     -> t     (CHECK geçiyor)
+coalesce(array_length('{}',1),0) >= 1   -> f     (doğru reddediyor)
+```
+
+Yön kısıtları da aynı sınıftan: `defer_payment` ileri, `advance_payment` geri gitmek zorunda. Yön
+ters olsaydı her öneri sessizce tersine döner ve bütün sayılar yine makul görünürdü.
+
+### 0072 — `approvals.subject_table` genişletmesi (başka hiçbir şey yapmayan migration)
+
+Faz 22/25 emsali: enum CHECK genişletmesi kendi açık migration'ını alır. **Bu bağlantıdır,
+çatallama değil** — Faz 24A `approvals`'ı polimorfik `(subject_table, subject_id)` ile tam olarak
+yeni bir onaylanabilir şeyin bir enum değerine mal olması için kurdu. Senaryo/optimizasyon onayı
+bu yüzden bir değer ekliyor ve `requestApproval`/`decideApproval`'ı değiştirmeden kullanıyor.
+
+#### Tipin yakalayamadığı çalışma-zamanı hatası
+
+`requestApprovalSchema` `raw: unknown` alıyor, dolayısıyla koddaki Zod enum'u ile veritabanı
+CHECK'i arasındaki **sürüklenme derleyiciye görünmez**. Faz 29 tam olarak buna çarptı: önce CHECK
+genişletildi, `SUBJECT_TABLES` genişletilmedi; typecheck temiz geçti ve hata ancak
+`requestOptimizationApproval` çağrıldığında bir Zod doğrulama hatası olarak çıkardı.
+`phase29:verify` artık iki listeyi **doğrudan karşılaştırıyor** (yalnız-DB / yalnız-kod farkını
+adıyla bildiriyor), böylece bir sonraki genişletme yarım kalamaz.
+
+### 0073 — view'lar
+
+`scenario_comparisons` tablosu **çalışma başına**: (run_id, metric, baseline_value,
+scenario_value, delta) — "bu tek koşu tabandan nasıl ayrıldı" sorusunu cevaplıyor. Birkaç koşuyu
+birbiriyle karşılaştırmak farklı bir soru ve **tablo eklemeden** view olarak cevaplanıyor, çünkü
+ihtiyaç duyduğu her sayı zaten mevcut.
+
+`optimization_run_summary` onay durumunu `approvals`'tan **JOIN ediyor**, kopyalamıyor. Faz 24A'nın
+varlığına bağlanmanın bütün anlamı bu: bir şeyin onaylı olup olmadığını bilen tam olarak tek bir
+yer var.
+
+### Deterministik çözücü (`src/lib/optimization/rules.ts`)
+
+Açık, kural tabanlı bir sezgisel çözücü. LP/MIP kütüphanesi yok, istatistiksel optimizatör yok,
+öğrenilmiş ağırlık yok, Python yok (Çözülen Karar #2). Her öneri adlandırılmış bir kural tarafından
+üretiliyor, o kuralın adını taşıyor ve girdilerden elle yeniden türetilebiliyor.
+
+Sıra sabit: (1) bakiyeleri projekte et ve tabanın ilk ihlal edildiği günü bul; (2) o günün açığını
+**ertelenebilir** ödemeleri kaydırarak kapatmayı dene, büyükten küçüğe; (3) kalan açık için en
+düşük maliyetli limitten çekim öner; (4) hiç ihlal yoksa ve nakit tabanın rahatça üzerindeyse,
+gereksiz yere faiz ödenmesin diye geri ödeme öner.
+
+**Sert vadeli ödemeler hiçbir zaman ertelenmeye önerilmiyor** ve bu bir girdi, çözücünün kararı
+değil. Ertelenemeyeceği ayrıca `sert_vade_ertelenemez` koduyla **bildiriliyor** — sessizce atlamak,
+kalan açığın neden zamanlama ile kapanamadığını okunamaz kılardı.
+
+**Kapatılamayan açık raporlanıyor** (`limit_yetersiz`). Sessiz bir kısmi cevap "çözüldü" diye
+okunurdu.
+
+#### Determinizm bir gereklilik, umut değil
+
+Çalışma bir `result_digest` saklıyor ve gate optimizatörü yeniden koşup karşılaştırıyor. Bu, her
+sıralamanın **tam sıra** olmasını zorunlu kılıyor: her karşılaştırıcı bir id eşitlik-bozucuyla
+bitiyor, böylece iş anahtarlarında eşit iki aday bile sabit ve tekrarlanabilir bir sıra alıyor.
+Eşitliği çözmeyen bir karşılaştırıcı çıktıyı girdi sırasına bağımlı kılardı — Faz 23'ün sıralama
+dersi. Gate hem tekrarlanabilirliği hem de **girdi sırasından bağımsızlığı** ayrı ayrı kanıtlıyor.
+
+#### Bir birim testin yakaladığı çözücü hatası
+
+İlk sürüm ertelenen ödemeyi **ihlalden bir gün sonrasına** taşıyordu. Test gösterdi ki bu çoğu
+zaman hiçbir şey başarmıyor: kapatıcı giriş üç gün sonraysa bakiye yeni tarihte de tabanın altında
+kalıyor ve "düzeltme" en kötü bakiyeyi hiç değiştirmiyor (−400 → −400). Hedef artık ödemenin
+**gerçekten karşılanabildiği ilk gün**: bu ödeme hariç hesaplanan bakiyenin, ödemeyi tabanın
+üzerinde taşıyabildiği en erken tarih. Ufuk içinde böyle bir gün yoksa öneri **üretilmiyor** —
+yalnızca ilerleme gibi görünen bir hamle yapmaktansa hiçbir şey önermemek doğru.
+
+### Baseline korunur invariant'ı (Faz 8/13), yeni çalışma tipine karşı yeniden kanıtlandı
+
+Plan bu invariant'ın her yeni senaryo tipine karşı yeniden test edilmesini şart koşuyor.
+`phase29:verify` bunu **alt küme kontrolüyle değil, tam satır karşılaştırmasıyla** yapıyor:
+
+1. bir baseline `scenario_run`'ın **her kolonu**, `scenario_comparisons` satırları, **tüm**
+   `cashflow_months` satırları ve **tüm** `payment_instances` satırları anlık görüntüye alınıyor;
+2. optimizatör uçtan uca çalıştırılıyor (`runOptimization` + `requestOptimizationApproval`);
+3. anlık görüntüler `JSON.stringify` ile birebir karşılaştırılıyor.
+
+İlk sürümde `payment_instances` **sıfır satırla** karşılaştırılıyordu — hiçbir şey kanıtlamayan
+boş bir kontrol. Artık fixture iki gerçek taksit kuruyor (biri `normal`, biri `critical`
+öncelikli), yani optimizatörün gerçekten mutasyona uğratabileceği adaylar var ve kontrol boş küme
+olduğunda **başarısız oluyor**.
+
+Ayrıca kaynak seviyesinde: motorun mali/senaryo tablolarına yazan hiçbir ifadesi olmadığı
+(yorumlar ayıklanarak) ve çözücü kurallarının veritabanına **hiç erişmediği** — yani yapısal olarak
+mutasyon yapamayacağı — kontrol ediliyor.
+
+### `hardDeadline` iki sinyalden okunuyor
+
+`priority` `payments`'ta, `risk_level` `payment_instances`'ta — introspection'la doğrulandı, çünkü
+ilk sürüm `payment_instances`'ta olmayan bir `priority` kolonunu okuyordu. İkisinden biri
+`critical` ise ödeme taşınamaz sayılıyor. Muhafazakâr okuma bilinçli: taşınamaz bir şeyi yanlışlıkla
+ertelemeyi önermek, operatörün sonraki her öneriye olan güvenini götürür — kaçırılan bir
+optimizasyondan çok daha pahalı.
