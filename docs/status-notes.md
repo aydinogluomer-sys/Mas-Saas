@@ -2074,3 +2074,88 @@ yerde `rows[0]` tanımsız bir cevaptır.
 | `pnpm phase23:verify` | **30/30** (üç ortamda, toplam 11 koşu) |
 
 `mas_radar_dev` yine hiç değiştirilmedi (şema 0034).
+
+---
+
+## Faz 24A — DONE (Onay/Maker-Checker varlığı, kural yapılandırması, iki legacy sistemin birleştirilmesi)
+
+**migration 0053-0055 · `src/lib/approvals/{rules,rules.test,engine}.ts` · `/data/approvals` ·
+`scripts/phase24a-verify.ts` (39/39, 3 ardışık koşuda aynı)**
+
+### Önce ölçtüm, sonra taşıdım
+
+Koordinatör bu fazın Faz 18 benzeri bir refactor riski taşıdığını söyledi ve haklıydı. İki mevcut
+sistemin davranışını introspection + kod okumasıyla çıkarmak, tasarımın tamamını belirledi:
+
+- **Hiçbirinde transition guard yok.** Altı gate scripti statüyü keyfî sıçratıyor
+  (`phase3`→accepted, `phase4`/`phase5`/`phase12a`/`phase13a`→resolved), satırın o an ne olduğuna
+  bakmadan. Bu kolonlara guard eklemek altı doğrulanmış gate'i ilk sıçramada kırardı — yani 0027
+  hatasının tam bilgiyle tekrarı. **Guard eklemedim.** Bunun yerine, legacy bir sıçrama yeni
+  tablonun guard'ını ihlal edecekse köprü yeni bir onay **turu** açıyor.
+- `external_assumptions.reviewed_at` yalnız `approved`'da taşınıyor, diğer durumlarda korunuyor —
+  ve bu `external_assumptions_check1` için yük taşıyan bir semantik. Korundu, testle çivilendi.
+
+Birleştirme "iki çalışan durum makinesini yeniden yazmak" değil: `approvals` tek Onay **varlığı**
+oldu, iki legacy sistem de ilk günden onu besliyor. Üçüncü bir çeşit kalmadı.
+
+### İki gerçek hata — ikisi de legacy yazımını İPTAL ETTİRDİ
+
+Bunları ayrıca yazıyorum, çünkü ikisi de fazın merkezî vaadini (hiçbir mevcut yazım yolu bozulmaz)
+fiilen çiğnedi ve **yalnız `approvals`'a bakan bir doğrulama ikisinde de memnun kalırdı**.
+
+**1. `record "old" has no field "review_status"`.** Köprü fonksiyonu ilk sürümde
+`case when v_subject_table='mapping_reviews' then old.status else old.review_status end` yazıyordu.
+PL/pgSQL alan aramasını, hangi CASE dalının seçileceğine bakmadan gerçek rowtype'a karşı çözüyor;
+`mapping_reviews` için `old.review_status` yok ve exception AFTER trigger'dan dışarı taşıp
+**legacy INSERT'i öldürdü**. NEW/OLD artık ayrı `if` dallarında, tek bir ifadenin içinde değil.
+
+**2. `approvals_decision_consistency` ihlali.** Kısıtın ilk hâli her karar için isimli bir karar
+verici istiyordu (`(decided_at is not null) = (decided_by is not null)`). Altı gate scripti
+`mapping_reviews`'ı **anonim** çözüyor — `set status='resolved', reviewed_at=now()`, kullanıcı yok —
+ve köprü `decided_at` yazıp `decided_by`'ı boş bırakınca kısıt patladı, **legacy UPDATE iptal oldu**
+(`legacy=open`, `resolved` denenmesine rağmen).
+
+İkincisinin çözümü mekanik değil, bir doğruluk kararıydı: bu geçmişi boş bir karar vericiyle doğru
+temsil etmek mi, yoksa kısıtı sağlamak için bir aktör **uydurmak** mı? Faz 19'un arşiv motorundan
+sabit kodlanmış "Yerel kullanıcı" fallback'i tam da bunun için kaldırılmıştı. Kısıt gevşetildi:
+`decided_at` karara bağlı kalıyor, `decided_by` boş olabiliyor ve boş olması "bu karar
+maker-checker akışını öncelemiş ya da atlamıştır" demek. Motor üzerinden verilen her karar
+vericisini isimlendiriyor ve `phase24a:verify` bunu **tablodan değil motordan** talep ediyor
+(kaynak kodu üzerinde yapısal kontrol). Ekranda da boş karar verici "— (legacy kayıt)" olarak
+görünüyor, doldurulmuş bir isim olarak değil.
+
+### Üç gate dersi baştan uygulandı
+
+Faz 20/22/23'te pahalıya öğrenilen üç kural bu script'e sonradan eklenmedi, ilk satırdan itibaren
+içindeydi:
+
+1. **Yapısal hedefleme.** `approvals.status` CHECK'i `conkey` üzerinden (kısıtladığı kolondan)
+   bulunuyor ve aday sayısının **tam 1** olduğu ayrıca kontrol ediliyor. `like '%status%'` Faz
+   20'de bozuk bir kontrolü geçirmişti.
+2. **Boşlukta geçen kontrol yok.** Her probe kendi satırlarını kuruyor, her negatif kontrolün bir
+   pozitif kontrolü var: aynı kullanıcı onaylayamıyor **ve** farklı kontrolör onaylayabiliyor;
+   `approval_steps` UPDATE/DELETE/TRUNCATE engelli **ve** INSERT çalışıyor; eşik CHECK'i iki yönlü
+   **ve** sıfır eşik geçerli.
+3. **Sıralama anahtar DEĞERİYLE.** Kuyruk sırası `sort_key` değerleri karşılaştırılarak
+   doğrulanıyor, satır konumuyla değil — ve `approved`/`rejected` beraberliği **pozitif olarak**
+   test ediliyor (tasarım gereği eşit öncelikli).
+
+12 sıralı geçiş çiftinin tamamı gerçek satırlar üstünde deneniyor: 5 kabul, 7 ret, allow-list'le
+birebir. Dört durumun her birinde kendine-geçişin no-op olduğu ayrıca kontrol ediliyor.
+
+### Birim testte kendi hatam
+
+`rules.test.ts`'e "float'ın yanlış hesaplayacağı bir değerde kural tetiklenir" diye bir test
+yazdım ve **test yanlıştı, kod doğruydu** — Faz 21'deki hatanın aynısı. `99999.98 + 0.01 + 0.01`
+float'ta 99999.999999999985 ediyor; bu gerçekten eşiğin altında, dolayısıyla kural haklı olarak
+tetiklenmiyor. Kusur yukarıda, toplamada. Testi dürüst hâline çevirdim: aynı parçalar float
+toplanınca eşiği **geçemiyor**, `sumDecimal` ile toplanınca geçiyor. Bu arada `RuleInput.amount`
+tipini `NumericInput`'a genişlettim — pg'nin numeric'i string döndürdüğü yerde araya hiç float
+girmesin diye.
+
+### Kalan sınırlar
+
+- Onay kuralları tanımlı ve `evaluateRules` ile okunuyor; **kuralları fiilen tetikleyen çağrı
+  noktaları** (fatura/ödeme/IBAN/cari yaratımında otomatik onay talebi açmak) bu fazın kapsamında
+  değil — `approvals` varlığı ve workflow'u kuruldu, entegrasyon Faz 24B/28'e ait.
+- `invoice_requires_approval` ve `payment_requires_approval` pasif geliyor (gerekçe 0054'te).

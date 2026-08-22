@@ -843,3 +843,108 @@ Bu faz mevcut vade/gecikme mantığını **genişletir, değiştirmez**: `paymen
 `cashflow_months` şemasına dokunulmadı, `payments`'ın öncelik kolonları olduğu gibi okundu.
 `phase23:verify` radar kolonlarının yerinde olduğunu yapısal olarak kontrol ediyor;
 `phase4:verify` ve `phase5:verify` gate zincirinde değişmeden koşuyor.
+
+---
+
+## Onay / Maker-Checker (Faz 24A, migration 0053-0055)
+
+Bu faz **yeni bir iş alanı açmıyor**; var olan iki bağımsız inceleme sistemini tek bir Onay
+varlığında topluyor. Faz 24A'nın asıl teslimatı `approvals` tablosu değil, **hiçbir eski yazım
+yolunun davranışının değişmemiş olması**.
+
+### Önce ölçüldü: ortada tam olarak ne vardı
+
+| Sistem | Kolon | Değerler | Guard | Yazan |
+|---|---|---|---|---|
+| `mapping_reviews` | `status` | open · accepted · rejected · resolved | **yok** | `imports/actions.ts` + 6 gate scripti |
+| `external_assumptions` | `review_status` | pending_review · approved · rejected | **yok** | `external-assumptions/engine.ts` |
+
+İki ayrıntı taşımayı tümüyle belirledi:
+
+1. **Hiçbirinde transition guard yok** ve altı gate scripti (`phase3`, `phase4`, `phase5`,
+   `phase12a`, `phase13a`) statüyü keyfî olarak sıçratıyor — `update mapping_reviews set
+   status='resolved'` satırın o an ne olduğuna bakmadan yazılıyor. Bu kolonlara guard eklemek
+   altı doğrulanmış gate'i ilk keyfî sıçramada kırardı; yani 0027 hatasının bilerek tekrarı olurdu.
+2. `external_assumptions.reviewed_at` **yalnız `approved`'da** taşınıyor, diğer durumlarda
+   korunuyor. Bu yük taşıyan bir semantik: `external_assumptions_check1` kısıtı
+   "internet kaynaklı + approved ⇒ reviewed_at dolu" diyor.
+
+Bu yüzden **legacy kolonların hiçbiri değiştirilmedi**: guard eklenmedi, değer yeniden yazılmadı,
+varsayılan oynatılmadı.
+
+### 0053 — `approvals` + `approval_steps`
+
+`approvals` polimorfik özneli tek onay varlığı (`subject_table` + `subject_id`); iki legacy sistem
+ilk günden üye. Statü izin listesi CHECK ile **aynı migration'da**:
+
+| Eski | Yeni | Anlam |
+|---|---|---|
+| pending | approved | kontrolör onayladı |
+| pending | rejected | kontrolör reddetti |
+| pending | reworked | düzeltilmek üzere geri |
+| reworked | pending | talep eden yeniden gönderdi |
+| reworked | rejected | yeniden gönderilmeden bırakıldı |
+
+`approved` ve `rejected` **terminal**. Sessizce geri alınabilen bir karar, karar değildir; yeniden
+açmak yeni bir **tur**dur (`round_no`). `phase24a:verify` 12 sıralı çiftin tamamını gerçek satırlar
+üstünde deniyor: 5 kabul, 7 ret.
+
+**`approvals_maker_is_not_checker`** — talep eden ile karar veren aynı kişi olamaz, ve bu kural
+veritabanında duruyor. Yalnız server action'da duran bir maker-checker kontrolü, bir refactor
+uzaklıktadır.
+
+**`approvals_decision_consistency` neden `decided_by`'ı ZORUNLU TUTMUYOR** — bu, ölçtükten sonra
+yapılmış bir düzeltme. İlk sürüm her karar için isimli bir karar verici istiyordu; 0055'in köprüsü
+o zaman **legacy yazımları iptal etti**, çünkü altı gate scripti `mapping_reviews`'ı anonim
+çözüyor (`set status='resolved', reviewed_at=now()`, kullanıcı yok) ve P0-A öncesi geçmiş de aynı
+biçimde. Seçim, bu geçmişi boş bir karar vericiyle **doğru** temsil etmek ile kısıtı sağlamak için
+bir aktör **uydurmak** arasındaydı. Faz 19'un arşiv motorundan sabit kodlanmış "Yerel kullanıcı"
+fallback'i tam da bunun için kaldırılmıştı. Boş `decided_by` artık "bu karar maker-checker akışını
+öncelemiş ya da atlamıştır" demek; `src/lib/approvals/engine.ts` üzerinden verilen her karar
+vericisini isimlendiriyor ve `phase24a:verify` bunu **tablodan değil motordan** talep ediyor.
+
+`approval_steps` salt-ekleme (0022 deseni: BEFORE UPDATE/DELETE/TRUNCATE trigger + REVOKE).
+`audit_logs`'tan ayrı ve ikisi de korunuyor: `audit_logs` "hangi operatör ne yaptı", `approval_steps`
+"BU onay buraya nasıl geldi". `approval_id` **kasıtlı olarak FK değil** — 0037 ve 0046'nın kaydettiği
+gerekçe: TRUNCATE CASCADE, ON DELETE ne olursa olsun FK'ları izler ve salt-ekleme kanıtını yok eder
+(`pnpm import:real` bunu Faz 21'de fiilen yaşattı).
+
+### 0054 — `approval_rules`
+
+Hangi durumun ikinci göz istediği **veri**, engine'lere serpiştirilmiş `if` değil. Beş varsayılan
+kural yükleniyor; `amount_over_100k` eşiği `public.settings.critical_payment_threshold_try` ile
+**aynı sayı** (ikinci bir eşik icat edilmedi ve `phase24a:verify` bu eşitliği kontrol ediyor).
+`invoice_requires_approval` ve `payment_requires_approval` **pasif** geliyor: küçük bir ekipte her
+faturayı iki kişiye bağlamak akışı durdurur ve toptan kapatılan bir kontrol panelinden kötüsü yoktur.
+
+`approval_rules_threshold_scope` CHECK'i iki yönlü: `amount_threshold` eşiksiz olamaz, eşik de
+tutara bakmayan bir kurala iliştirilemez. Sıfır eşik geçerli ("her şey onay ister"); `0` ile `null`
+farklı ifadeler (CLAUDE.md).
+
+**Statü kolonu YOK.** Bir kural aktiftir ya da değildir; `is_active` boolean'ının kısıtlanacak
+geçişi yok, §17 kural 3 burada gerçekten N/A.
+
+### 0055 — legacy köprüsü
+
+Yön: **legacy → approvals**, AFTER trigger ile. Mevcut her yazım yolu — UI action'ı, altı gate
+scripti, elle açılmış bir psql oturumu — bu tablonun varlığından habersiz onay kaydı üretiyor.
+Ters yön (bir onayı karara bağlamak legacy kolonu geri yazar) `src/lib/approvals/engine.ts`
+içinde ve **yalnız yeni bir yol**; daha önce çalışan hiçbir şeye dokunmuyor.
+
+AFTER seçimi tasarımın kendisi: BEFORE trigger bir legacy yazımını düşürebilir, ki bu köprünün var
+olma sebebi tam olarak bunu imkânsız kılmak.
+
+Guard'ın reddedeceği bir legacy sıçraması (`resolved` → `open`, yani approved → pending) geldiğinde
+köprü **yeni bir tur açıyor**. Bu bir kaçamak değil: çözülmüş bir incelemeyi yeniden açmak gerçekten
+ikinci bir onay turudur, ve böyle modellemek hem geçmişi hem guard'ı sağlam bırakıyor.
+
+`approval_queue` view'i tek çalışma listesi. **View, tablo değil** — ikinci bir doğruluk kaynağı
+üretmemek için (Faz 22'nin `receivables/payables` kararıyla aynı gerekçe).
+
+### Bu fazın gerçek regresyon yüzeyi
+
+`phase24a:verify`'ın en ağır kontrolleri `approvals` hakkında değil: legacy'nin **hâlâ eskisi gibi
+davrandığı** hakkında. Anonim `resolved` yazımının legacy'de başarılı olduğu, yasak sıçramanın
+legacy yazımını öldürmediği, `reviewed_at` koruma semantiğinin bozulmadığı ve legacy kolonlara
+guard **eklenmediği** ayrı ayrı kontrol ediliyor. Köprünün ilk iki sürümü legacy yazımlarını iptal
+etti; her ikisinde de yalnız `approvals`'a bakan bir doğrulama memnun kalırdı.

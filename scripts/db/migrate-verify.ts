@@ -370,13 +370,34 @@ async function testLegacyCompleteAndIdempotency(): Promise<void> {
     // adds two brand-new tables (users, sessions). A table that didn't exist "before" has
     // no prior count to compare against; it only needs to be empty, not absent entirely.
     const newTables = Object.keys(postCounts).filter((k) => !(k in preCounts));
-    const newTablesAreEmpty = newTables.every((k) => postCounts[k] === 0);
+    // The invariant being defended is "a migration does not SILENTLY change data", and until Faz
+    // 24A "every new table is empty" expressed it exactly. It stopped being the same statement
+    // when two migrations began populating their own tables ON PURPOSE:
+    //
+    //   approval_rules (0054)  five default rules. Structural configuration the application reads,
+    //                          not sample data: a database built only from migrations would
+    //                          otherwise have NO approval rules and silently require no approvals
+    //                          at all — the wrong default for a control panel. seed.sql cannot own
+    //                          this, because production is built from migrations alone.
+    //   approvals      (0055)  round 1 for every pre-existing mapping_review and external
+    //                          assumption, so the unified queue is complete the moment it ships
+    //                          rather than starting blind to everything already under review.
+    //
+    // Both are documented in docs/database-schema.md. They are listed BY NAME here rather than
+    // relaxing the rule to "new tables may contain anything", so a new table that arrives
+    // populated WITHOUT being declared still fails this gate — which is the whole point.
+    const DECLARED_POPULATING_MIGRATIONS = new Set(["approval_rules", "approvals"]);
+    const undeclaredPopulated = newTables.filter(
+      (k) => postCounts[k] !== 0 && !DECLARED_POPULATING_MIGRATIONS.has(k),
+    );
     const preExistingTablesUnchanged = preKeys.every((k) => preCounts[k] === postCounts[k]);
-    const sameCounts = preExistingTablesUnchanged && newTablesAreEmpty;
+    const sameCounts = preExistingTablesUnchanged && undeclaredPopulated.length === 0;
     record(
-      "LEGACY_COMPLETE: 0030+0031+0032 uygulanması mevcut hiçbir tablonun satır sayısını değiştirmedi (yeni tablolar boş)",
+      "LEGACY_COMPLETE: 0030+ uygulanması mevcut hiçbir tablonun satır sayısını değiştirmedi (yeni tablolar, beyan edilenler dışında, boş)",
       sameCounts,
-      sameCounts ? undefined : JSON.stringify({ pre: preCounts, post: postCounts, newTables }).slice(0, 400),
+      sameCounts
+        ? undefined
+        : JSON.stringify({ pre: preCounts, post: postCounts, newTables, undeclaredPopulated }).slice(0, 400),
     );
 
     const violationsAfterMigrate = await countCancelConsistencyViolations(pool);
