@@ -2701,3 +2701,103 @@ audit, validation, authz/matrix) — hiçbiri `@/lib/env`'e ulaşmıyor.
 `db:roles-rls:verify` artık **69 tablo / 345 (katman × tablo) INSERT kombinasyonu** görüyor; altı
 yeni tablonun hepsi Faz 24B sınıflandırmasında (`fx_rate_snapshots` → `evidence`, kalanı
 `operational`), blanket politika sayısı sıfır.
+
+---
+
+## Faz 28 — DONE (Bütçe, varyans, rolling forecast ve 13 haftalık ufuk)
+
+**migration 0068-0070 · `src/lib/budget/{rules,engine}.ts` · `/cashflow/budget` ·
+`scripts/phase28-verify.ts` (46/46, KENDİ Usage komutuyla 4 kez art arda)**
+
+### Mimari karar: yeni `forecasts` tabloları, `scenario_runs`'ın genişletilmesi değil
+
+Plan iki seçeneği de açık bırakıyor ve gerekçe istiyor. Önce introspect ettim; şekil kararı verdi:
+
+`scenario_run_lines` = `(month_start, baseline_income, scenario_income, baseline_expense,
+scenario_expense, baseline_closing, scenario_closing, delta)` — **her değer kolonu bir
+baseline/senaryo ÇİFTİ**. O tablo "bu iki dünya nasıl farklılaşıyor" sorusunu cevaplıyor. Rolling
+forecast iki dünyanın karşılaştırması değil; revize edilen, kaynağına göre sınıflanan, güven skoru
+verilen ve sonradan gerçekleşenle ölçülen **TEK** projeksiyon. Oraya koymak her satırın yarısını
+anlamsız bırakır ve "bu run aslında what-if değil" diyen bir ayırt edici kolon gerektirirdi.
+
+Üç somut uyumsuzluk daha: **granülerlik** (13 haftalık ufuk HAFTALIK, `month_start` kesin aylık —
+hafta başlangıçlarını oraya yazmak sonraki her okuyucunun devraldığı bir yalan olurdu);
+**yaşam döngüsü** (`scenario_runs` arşivsel/değişmez çıktı, bu faz versiyon döngüsü istiyor —
+takmak mevcut her senaryo satırının anlamını değiştirirdi); **kimlik** (senaryo bir kez üretilir ve
+okunur, tahmin sürdürülür).
+
+Kopyalanmak yerine yeniden kullanılan: `forecasts.scenario_run_id` nullable FK. Senaryo motoru
+**bağlanarak** genişletiliyor, aşırı yüklenerek değil.
+
+### Ölçülmüş bir sınır: departman gerçekleşeni izlenemiyor
+
+Boyutlardan yalnız `cost_center` ve `project` bir işlem tablosuna bağlı (`invoices`), `category`
+yalnız `payments`'a. **Hiçbir tablo departmanı bir işleme bağlamıyor.** Departman bütçesi
+yazılabiliyor ama karşılaştırılacak gerçekleşeni yok — view gerçekleşeni **NULL bırakıyor**, tahsis
+kuralı icat etmiyor, ve ekran bunu "departman gerçekleşeni izlenemiyor" diye **söylüyor** (boş
+hücre bırakmak yerine). Uydurmak, bu veritabanında hiçbir satırın kaydetmediği bir soruyu
+cevaplamak olurdu. Gate boşluğu yapısal olarak doğruluyor.
+
+### Çift sayma tuzağı
+
+Aynı para hem fatura hem onu kapatan ödeme olarak görünür; ikisini toplamak gerçekleşen gideri
+kabaca **iki katına** çıkarır ve sayı yine makul görünürdü. Gerçekleşen yalnız **faturalardan**
+geliyor; ödeme tarafı bilerek katılmıyor.
+
+### Guard: `approved → draft` reddediliyor
+
+Her iki tabloda (budget_lines, forecast_lines) altı sıralı çiftten üçü izinli:
+`draft→approved`, `draft→superseded`, `approved→superseded`. **Onaylanmış satırı yeniden açmak**,
+birinin imzaladığı rakamı sessizce yeniden yazardı ve üzerine kurulu her varyans raporu
+okuyucularının altında, hiçbir kayıt bırakmadan değişirdi. Revizyon = eskisini supersede eden yeni
+satır. Gate her iki tabloda 6 çiftin tamamını gerçek satırlarda deniyor ve koddaki
+`canTransition` ile birebir aynı olduğunu ayrıca kanıtlıyor.
+
+Tutarlılık kısıtı imalar yığını yerine **tüketici**: superseded bir satır önce onaylanmış da
+olabilir, taslaktan doğrudan supersede edilmiş de.
+
+### Yön duyarlı varyans, ve "ölçülmedi" ≠ sıfır
+
+Gider bütçesini aşmak ile gelir hedefini aşmak zıt sonuçlar; işaretsiz tek bir varyans **iyi bir
+ayı kırmızıya boyardı**. Gate aynı +200 farkın giderde `over_budget`, gelirde
+`on_or_above_target` olduğunu kanıtlıyor. Gerçekleşen yoksa sonuç **NULL ve `not_measured`** —
+sıfır "hiç harcanmadı" iddiasıdır. Açık sıfır gerçekleşen ise ölçülmüş sayılıyor.
+
+Yalnız **ONAYLI** satırlar ölçülüyor: taslak çalışma notu, superseded geçmiştir; ikisine karşı
+varyans raporlamak, birileri hâlâ düzenlerken bir sayının değişmesine izin vermek olurdu.
+
+### 13 haftalık ufuk ve doğruluk
+
+Haftalar **üretiliyor**, var olan satırlardan türetilmiyor: ufuk her zaman tam 13 kova. Tahmin
+satırı olmayan hafta boş görünmeli — nakit tahmininden sessizce düşen bir hafta, boşluğun
+görünmez hâle gelme biçimidir. Yanında iki alternatif net akış: **yalnız sözleşmeli** (her tahmin
+yanlış çıkarsa ayakta kalan) ve **güven ağırlıklı** (skoru olmayan satır tam ağırlıkla girer —
+sessizce para eksilten bir tahmin daha kötüdür).
+
+Doğruluk yalnız **ölçülmüş** satırları sayıyor: ölçülmemiş satırı dahil etmek, tahmini ne kadar az
+kontrol edilmişse o kadar doğru göstermek olurdu — tam tersi. MAPE'de sıfır tahminli satırlar
+hariç ve **hariç tutulan sayı ayrıca raporlanıyor**.
+
+### Pekiştirme: LLM forecast zincirinin dışında (negatif kontrolle kanıtlandı)
+
+`src/lib/budget/{rules,engine}.ts` `@/lib/ai`'yi **hiç import etmiyor**; gate bunu kod üzerinde
+(yorumlar ayıklanarak) kontrol ediyor. **Negatif kontrol:** gerçek bir `import` enjekte edildiğinde
+gate 46/46'dan 45/46'ya düştü ve satırı adıyla bildirdi; dosyadaki iki açıklama yorumu (`@/lib/ai`
+geçen) tetiklemedi — Faz 27'nin yorum/kod ayrımı dersi baştan uygulandı. `ai/engine.ts`'in "önce
+deterministik" sınırı (Faz 12) olduğu gibi duruyor; Python/dış çözücü yok.
+
+### Bir ölçüm tutarsızlığı, kovalandı
+
+Ara bir koşuda test sayısı 33 dosya / 662 test göründü (beklenen 34/665). Dosya silinmiş olabilir
+diye kontrol ettim: diskte 34 dosya vardı, git'te silinme yoktu, ve peş peşe üç koşu 34/665
+verdi. Negatif kontrol geri yüklemesiyle aynı komut bloğunda alınmış geçici/eskimiş bir okumaydı —
+kayıp dosya değil. Yine de kovalandı, çünkü "bir test dosyası sessizce çalışmıyor" göz ardı
+edilecek bir sinyal değil.
+
+### Doğrulama
+
+```
+env -u DATABASE_URL MIGRATION_DATABASE_URL="postgres://..." pnpm phase28:verify
+```
+**46/46, 4 kez art arda**; `DATABASE_URL`'in tanımsız olduğu ayrıca doğrulandı.
+`db:roles-rls:verify` artık **73 tablo / 365 (katman × tablo) INSERT kombinasyonu** görüyor.

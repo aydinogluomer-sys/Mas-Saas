@@ -192,6 +192,13 @@ export const TABLE_CLASS: Record<string, AccessClass> = {
   collateral_records: "operational",
   covenant_records: "operational",
   fx_positions: "operational",
+  // Faz 28. Budgets and forecasts are day-to-day financial planning records: an operator drafts
+  // lines, a manager corrects or removes them. The version lifecycle (draft/approved/superseded)
+  // governs WHICH lines are measured; it is not an access question.
+  budgets: "operational",
+  budget_lines: "operational",
+  forecasts: "operational",
+  forecast_lines: "operational",
   source_sheets: "operational",
   import_rows: "operational",
   // evidence (7)

@@ -1512,3 +1512,121 @@ buradaki hiçbir şey bir veritabanı talep edebilmemeli.
 pariteleri güncel bazılarını bayat bırakır ve üzerine kurulan değerleme ikisini ayırt edemez.
 Yeniden çalıştırmak güvenli (unique kısıt), ve `skipped` zaten var olanları **yeni gibi göstermeden**
 raporluyor.
+
+---
+
+## Bütçe ve Rolling Forecast (Faz 28, migration 0068-0070)
+
+### 0068 — `budgets` + `budget_lines`
+
+Boyutlar Faz 19'un tablolarından (`cost_centers`, `departments`, `projects`) ve mevcut
+`categories`'den geliyor; gerçek kolon adları yazmadan önce introspection'la doğrulandı — hepsi
+`(id, code, name, is_active)`, dolayısıyla satır adlandırdığı boyuttan sapabilecek bir kod metni
+yerine düz nullable FK taşıyor.
+
+**ÖLÇÜLMÜŞ BİR SINIR, üstü örtülmek yerine kaydedildi:** bu boyutlardan yalnız `cost_center` ve
+`project` herhangi bir işlem tablosuna bağlı (`invoices`/`invoice_lines`), `category` ise yalnız
+`payments`'a. **Hiçbir tablo departmanı bir işleme bağlamıyor.** Yani bir departman bütçesi
+yazılabilir ama karşılaştırılacak gerçekleşeni yoktur — 0070'in varyans view'ı var olan boyutlar
+için gerçekleşen üretiyor ve departman gerçekleşenini **NULL bırakıyor**, tahsis kuralı icat
+etmiyor. Uydurmak, bu veritabanında hiçbir satırın kaydetmediği "bu parayı hangi departman
+harcadı" sorusunu cevaplamak olurdu. `phase28:verify` bu boşluğu yapısal olarak doğruluyor.
+
+**Başlıkta yaşam döngüsü kolonu YOK, bilerek.** Plan versiyon döngüsünü SATIRLARA koyuyor
+(`draft/approved/superseded`) ve bütçe revizyonu gerçekten orada oluyor: finans ekibi tek tek
+satırları yeniden keser, bir yılı atomik olarak taslaktan onaya çevirmez. Başlığa ayrı bir statü
+vermek, kendi satırlarıyla çelişebilecek ikinci bir yaşam döngüsü yaratırdı — taslak satırlarla
+dolu "onaylı" bir bütçe. §17 kural 3 versiyonun fiilen yaşadığı tabloda karşılanıyor.
+
+`amount` NOT NULL: bu şemada null'ın "bilinmiyor ama geçerli" olmadığı tek yer — satırın tüm amacı
+ölçülecek bir sayı beyan etmek. Sıfır geçerli ("bu kaleme ödenek yok").
+
+### 0069 — `forecasts` + `forecast_lines`
+
+#### Neden `scenario_runs`'ı genişletmek yerine yeni tablolar (plan iki seçeneği de açık bırakıyor)
+
+Önce mevcut tabloları introspect ettim; şekil kararı veriyor:
+
+`scenario_run_lines` = `(month_start, baseline_income, scenario_income, baseline_expense,
+scenario_expense, baseline_closing, scenario_closing, delta)`.
+
+**Her değer kolonu bir baseline/senaryo ÇİFTİ.** O tablo tek bir soruyu cevaplıyor — "bu iki dünya
+nasıl farklılaşıyor" — ve iyi cevaplıyor. Rolling forecast iki dünyanın karşılaştırması değil;
+revize edilen, kaynağına göre sınıflanan, güven skoru verilen ve sonradan gerçekleşenle ölçülen
+**TEK** bir projeksiyon. Oraya koymak her satırın yarısını anlamsız bırakır (bir tahmin satırının
+baseline'ı ne?) ve "bu run aslında what-if değil" diyen bir ayırt edici kolon gerektirirdi.
+
+Üç somut uyumsuzluk daha:
+1. **Granülerlik.** `scenario_run_lines.month_start` kesin olarak aylık. Bu fazın teslim etmesi
+   gereken 13 haftalık nakit tahmini **HAFTALIK**. Hafta başlangıçlarını `month_start` adlı bir
+   kolona yazmak, sonraki her okuyucunun devraldığı bir yalan olurdu.
+2. **Yaşam döngüsü.** `scenario_runs` arşivsel — `archived_at`/`archive_reason` ve triplet
+   tutarlılık kısıtı taşıyor, yani bir hesaplamanın **değişmez ÇIKTISI**. Bu faz tahmin
+   satırlarında versiyon döngüsü istiyor; `scenario_runs`'a versiyonlama takmak mevcut her senaryo
+   satırının anlamını değiştirirdi.
+3. **Kimlik.** Senaryo koşusu bir kez üretilir ve okunur; tahmin **sürdürülür** — haftalık revize
+   edilir, yeniden onaylanır ve sonradan doğruluğu ölçülür.
+
+**Kopyalanmak yerine yeniden kullanılan:** `forecasts.scenario_run_id` nullable FK — bir what-if
+koşusundan üretilen tahmin, kendisini üreten mekanizmayla bağını koruyor. Senaryo motoru
+**bağlanarak** genişletiliyor, aşırı yüklenerek değil.
+
+#### Kaynak sınıflandırması ve güven
+
+`source_kind`: `contracted` / `scheduled` / `historical` / `manual` / `estimated` — sayının
+**NEREDEN GELDİĞİNİN** özelliği, birinin ona ne kadar güvendiğinin değil; kolon olmasının sebebi
+bu. Varsayılan güven skorları (0,95 → 0,50) sabit bir tablo, öğrenilmiş ağırlık değil; kolonda
+**fiilen kullanılan** değer saklanıyor, böylece varsayılanların sonradan değişmesi geçmiş güveni
+sessizce yeniden yazamıyor.
+
+`actual_amount` NULL = dönem henüz ölçülmedi, "hiçbir şey olmadı" DEĞİL — doğruluk view'ının yalnız
+ölçülmüş satırları saymasının sebebi tam olarak bu.
+
+#### Versiyon geçiş guard'ı (CHECK ile AYNI migration'da, her iki tabloda)
+
+Altı sıralı çiftten üçü izinli: `draft→approved`, `draft→superseded`, `approved→superseded`.
+
+**`approved → draft` REDDEDİLİYOR** ve guard'ın bütün mesele bu: onaylanmış bir satırı yeniden
+açmak, birinin imzaladığı rakamı sessizce yeniden yazardı ve üzerine kurulu her varyans raporu
+okuyucularının altında, hiçbir kayıt bırakmadan değişirdi. Revizyon, eskisini **supersede eden yeni
+bir satırdır** — `superseded_by_line_id`'nin varlık sebebi de bu. `superseded` terminal.
+
+Tutarlılık kısıtı imalar yığını yerine **tüketici**: her durum hangi damgaları taşıyabileceğini
+tek tek söylüyor. Superseded bir satır önce onaylanmış da olabilir, taslaktan doğrudan da
+supersede edilmiş olabilir — `approved_at` yalnız o dalda serbest bırakılmasının sebebi bu.
+
+### 0070 — read-model'ler
+
+**ÇİFT SAYMA TUZAĞI, açıkça kaçınıldı:** aynı para hem fatura hem onu kapatan ödeme olarak görünür.
+İkisini toplamak gerçekleşen gideri kabaca iki katına çıkarır ve sayı yine makul görünürdü.
+Gerçekleşen **yalnız FATURALARDAN** geliyor; ödeme tarafı bilerek katılmıyor.
+
+`budget_vs_actual` yalnız **ONAYLI** satırları ölçüyor. Taslak satırlar çalışma notu, superseded
+satırlar geçmiştir; ikisine karşı varyans raporlamak, birileri hâlâ düzenlerken bir sayının
+değişmesine izin vermek olurdu — versiyon döngüsünün var olma sebebi.
+
+**Karar YÖN duyarlı:** gider bütçesini aşmak ile gelir hedefini aşmak zıt sonuçlardır; işaretsiz
+tek bir "varyans" iyi bir ayı kırmızıya boyardı. Gerçekleşen yoksa sonuç **NULL ve
+`not_measured`**, sıfır değil — sıfır "hiç harcanmadı" iddiasıdır.
+
+`cash_forecast_13w` haftaları **üretiyor**, var olan satırlardan türetmiyor: ufuk her zaman tam 13
+kova. Tahmin satırı olmayan bir hafta boş hafta olarak görünmeli — nakit tahmininden sessizce
+düşen bir hafta, boşluğun görünmez hâle gelme biçimidir. Yanında iki alternatif net akış:
+**yalnız sözleşmeli** (her tahmin yanlış çıkarsa ayakta kalan) ve **güven ağırlıklı**.
+
+`forecast_accuracy` yalnız ölçülmüş satırları sayıyor — ölçülmemiş bir satırı dahil etmek,
+tahmini ne kadar az kontrol edilmişse o kadar doğru göstermek olurdu; tam tersi. MAPE'de sıfır
+tahminli satırlar hariç (sıfıra bölme tanımsız, %100 hata saymak tek satırın KPI'yı domine etmesine
+yol açardı) ve **hariç tutulan sayı ayrıca raporlanıyor**.
+
+### Pekiştirme: LLM forecast zincirinin tamamen dışında
+
+`src/lib/budget/{rules,engine}.ts` **`@/lib/ai`'yi hiç import etmiyor** ve `phase28:verify` bunu
+kod üzerinde (yorumlar ayıklanarak) kontrol ediyor — negatif kontrolle kanıtlandı: gerçek bir
+import enjekte edildiğinde gate 46/46'dan 45/46'ya düşüyor, dosyadaki açıklama yorumları ise
+tetiklemiyor.
+
+Bağımlılık tek yönlü: AI katmanı bu modüllerin **çıktısını** herhangi bir olgu gibi okuyabilir,
+tersi olamaz. Bir dil modelinden geçmiş varyans rakamı yeniden üretilemez olurdu ve varyans
+raporunun bütün anlamı, iki kişinin aynı sayıyı bulmasıdır. `ai/engine.ts`'in "önce deterministik,
+LLM yalnız yorum" sınırı (Faz 12) olduğu gibi duruyor.

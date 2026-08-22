@@ -573,6 +573,7 @@ pnpm db:roles-rls:verify # Faz 24B'den sonra: bes katmanli rol matrisi, GERCEK m
 pnpm phase25:verify   # Faz 25'ten sonra: odeme sozu + kirilan soz tespiti + tahsilat puani, DB gerektirir
 pnpm phase26:verify   # Faz 26'dan sonra: hazine pozisyonu + 7/30/90 gun likidite + cashflow tutarlilik testi, DB gerektirir
 pnpm phase27:verify   # Faz 27'den sonra: kredi limitleri + vade merdiveni + FX degerleme/stres, DB gerektirir
+pnpm phase28:verify   # Faz 28'den sonra: butce-gerceklesen varyansi + 13 haftalik ufuk + tahmin dogrulugu, DB gerektirir
 pnpm build
 pnpm phase16:verify   # Faz 16'dan sonra: build'i gerektirir, bu yuzden build'den SONRA
 ```
