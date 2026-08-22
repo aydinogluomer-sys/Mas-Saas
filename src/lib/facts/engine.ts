@@ -2,6 +2,7 @@ import type { Pool } from "pg";
 import { loadCashMonths } from "@/lib/cashflow/engine";
 import { loadApprovedExternalAssumptions, type ExternalAssumption } from "@/lib/external-assumptions/engine";
 import { loadMaturityItems } from "@/lib/financing/engine";
+import { moneyOrNull, sumMoney } from "@/lib/money";
 import { loadCapacityModels, loadCostModels } from "@/lib/production/engine";
 import { priceMargin } from "@/lib/production/rules";
 import { monthSummary, overdueOpen } from "@/lib/radar/queries";
@@ -92,7 +93,7 @@ export async function loadDecisionFacts(pool: Pool, todayISO = istanbulDateISO()
     loadMaturityItems(pool),
     loadCapacityModels(pool),
     loadCostModels(pool),
-    pool.query(`select coalesce(p.name, cl.label) as key, cl.amount::float8 as amount
+    pool.query(`select coalesce(p.name, cl.label) as key, cl.amount
                 from public.cashflow_lines cl left join public.parties p on p.id=cl.party_id
                 where cl.line_type='customer_income'`),
     pool.query(`select count(*)::int n from public.mapping_reviews where status in ('open','rejected')`),
@@ -117,13 +118,18 @@ export async function loadDecisionFacts(pool: Pool, todayISO = istanbulDateISO()
     : `${runwayMonths} ay`;
   const debtPressureMonths = debtOverlay.filter((m) => m.pressure === "high").length;
   const next30Maturities = maturities.filter((m) => m.dueDate >= todayISO && m.dueDate <= next30 && m.direction === "outflow");
-  const checkLoad30 = next30Maturities
-    .filter((m) => m.kind === "check")
-    .reduce((acc, m) => acc + (m.amount ?? 0), 0);
-  const loanLoad30 = next30Maturities
-    .filter((m) => m.kind === "loan_installment")
-    .reduce((acc, m) => acc + (m.amount ?? 0), 0);
-  const conc = concentration(incomeLines.rows);
+  // These two feed DecisionFacts the AI layer quotes verbatim, so an accumulated float tail
+  // would be published as a fact. `sumMoney` skips unknown amounts rather than adding 0 —
+  // the same "null is unknown, not zero" rule the old `?? 0` reduce quietly broke.
+  const checkLoad30 = sumMoney(
+    next30Maturities.filter((m) => m.kind === "check").map((m) => m.amount),
+  );
+  const loanLoad30 = sumMoney(
+    next30Maturities.filter((m) => m.kind === "loan_installment").map((m) => m.amount),
+  );
+  const conc = concentration(
+    incomeLines.rows.map((r) => ({ key: r.key as string | null, amount: moneyOrNull(r.amount) })),
+  );
   const topConc = conc.entries[0] ?? null;
   const marginLossCount = costs.filter(
     (c) => priceMargin(c.breakEven, c.akonFreze).loss || priceMargin(c.breakEven, c.akonTorna).loss,

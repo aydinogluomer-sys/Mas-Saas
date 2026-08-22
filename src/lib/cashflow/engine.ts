@@ -6,6 +6,7 @@
 // by construction and re-verified in scripts/phase4-verify.ts against source_cells.
 
 import type { Pool } from "pg";
+import { moneyOrNull } from "@/lib/money";
 import { extractMonthlyCashflow } from "@/lib/importers/extractors";
 import type { CellVal, RowJson } from "@/lib/importers/row-utils";
 import {
@@ -150,13 +151,17 @@ export async function mapCashflowMonths(pool: Pool, workbookId: string, actorId:
 export async function loadCashMonths(pool: Pool): Promise<Array<CashMonth & { id: string; status: string; sheetId: string | null; workbookId: string | null }>> {
   const r = await pool.query(`
     select id, to_char(month_start,'YYYY-MM-DD') as month_start,
-           opening_balance::float8 as opening, projected_income::float8 as income,
-           projected_expense::float8 as expense, closing_balance::float8 as closing,
+           opening_balance as opening, projected_income as income,
+           projected_expense as expense, closing_balance as closing,
            status, source_sheet_id as "sheetId", source_workbook_id as "workbookId"
     from public.cashflow_months order by month_start`);
+  // devir/gelir/gider/kasa — the continuity chain checked by findContinuityIssues compares
+  // one month's closing against the next month's opening, so both sides must be decoded the
+  // same exact way or a chain that balances in the database would look broken here.
   return r.rows.map((x) => ({
-    id: x.id, monthStart: x.month_start, opening: x.opening, income: x.income,
-    expense: x.expense, closing: x.closing, status: x.status,
+    id: x.id, monthStart: x.month_start,
+    opening: moneyOrNull(x.opening), income: moneyOrNull(x.income),
+    expense: moneyOrNull(x.expense), closing: moneyOrNull(x.closing), status: x.status,
     sheetId: x.sheetId, workbookId: x.workbookId,
   }));
 }

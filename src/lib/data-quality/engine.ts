@@ -11,6 +11,7 @@ import {
   type WorkbookChangeImpact,
 } from "./rules";
 import { loadCapacityModels } from "@/lib/production/engine";
+import { moneyOrNull } from "@/lib/money";
 
 async function audit(client: PoolClient, actor: string, action: string, entityId: string | null, before: unknown, after: unknown): Promise<void> {
   await client.query(
@@ -169,24 +170,28 @@ export async function loadDataQualityCenter(pool: Pool) {
       opening_diff: number | null;
       closing_diff: number | null;
     }>(
+      // Faz 17: the Turkish-formatted source cell is parsed to `numeric`, not `float8`, and the
+      // app-vs-source difference is therefore computed exactly by Postgres. This query decides
+      // whether an imported month MATCHES its source workbook cell, so a drift of a few ulps
+      // used to be indistinguishable from a genuine 0.01 TL mapping error.
       `select to_char(cm.month_start,'YYYY-MM-DD') as month_start,
-              cm.opening_balance::float8 as app_opening,
+              cm.opening_balance as app_opening,
               case
                 when b1.normalized_value is null then null
-                else nullif(regexp_replace(replace(replace(b1.normalized_value,'.',''),',','.'),'[^0-9\\.-]','','g'),'')::float8
+                else nullif(regexp_replace(replace(replace(b1.normalized_value,'.',''),',','.'),'[^0-9\\.-]','','g'),'')::numeric
               end as source_opening,
-              cm.closing_balance::float8 as app_closing,
+              cm.closing_balance as app_closing,
               case
                 when j1.normalized_value is null then null
-                else nullif(regexp_replace(replace(replace(j1.normalized_value,'.',''),',','.'),'[^0-9\\.-]','','g'),'')::float8
+                else nullif(regexp_replace(replace(replace(j1.normalized_value,'.',''),',','.'),'[^0-9\\.-]','','g'),'')::numeric
               end as source_closing,
               case
                 when b1.normalized_value is null or cm.opening_balance is null then null
-                else cm.opening_balance::float8 - nullif(regexp_replace(replace(replace(b1.normalized_value,'.',''),',','.'),'[^0-9\\.-]','','g'),'')::float8
+                else cm.opening_balance - nullif(regexp_replace(replace(replace(b1.normalized_value,'.',''),',','.'),'[^0-9\\.-]','','g'),'')::numeric
               end as opening_diff,
               case
                 when j1.normalized_value is null or cm.closing_balance is null then null
-                else cm.closing_balance::float8 - nullif(regexp_replace(replace(replace(j1.normalized_value,'.',''),',','.'),'[^0-9\\.-]','','g'),'')::float8
+                else cm.closing_balance - nullif(regexp_replace(replace(replace(j1.normalized_value,'.',''),',','.'),'[^0-9\\.-]','','g'),'')::numeric
               end as closing_diff
        from public.cashflow_months cm
        left join public.source_cells b1 on b1.sheet_id=cm.source_sheet_id and upper(b1.address)='B1'
@@ -256,7 +261,14 @@ export async function loadDataQualityCenter(pool: Pool) {
       b: workbookStats.rows[1] ?? null,
       changedSheets: workbookChangedSheets,
     },
-    cashflowReconciliation: cashflowReconciliation.rows,
+    // Five numeric columns, decoded once. The two *_diff values are what the UI thresholds
+    // against, so they must be the exact difference Postgres computed.
+    cashflowReconciliation: cashflowReconciliation.rows.map((r) => ({
+      ...r,
+      app_opening: moneyOrNull(r.app_opening), source_opening: moneyOrNull(r.source_opening),
+      app_closing: moneyOrNull(r.app_closing), source_closing: moneyOrNull(r.source_closing),
+      opening_diff: moneyOrNull(r.opening_diff), closing_diff: moneyOrNull(r.closing_diff),
+    })),
     auditTrail: auditTrail.rows,
   };
 }

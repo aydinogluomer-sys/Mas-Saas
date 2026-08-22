@@ -611,3 +611,215 @@ Doğrulama sonrası ortam Faz 15'teki gibi geri alındı: disposable DB'ler dü�
 değiştirilmedi — şema hâlâ 0034, payments=19, users=12. Faz 15'in kullanıcı adımları
 (`pnpm db:app-role:password` → `.env.local` → `pnpm db:migrate`) hâlâ bekliyor; Faz 16 kodu
 onlardan bağımsız olarak derlenip test edildi.
+
+---
+
+## Faz 17 — DONE (para hassasiyeti: uçtan uca numeric katmanı)
+
+Faz 15/16'nın hiçbir parçasını geri almaz. Bu faz **şema değiştirmedi, migration eklemedi** —
+gerekmedi (aşağıdaki ilk başlık nedenini anlatıyor). Değişen şey yalnız SQL/JS sınırı.
+
+### Planın iddiası doğrulandı, ama sayı ve kapsam düzeltildi
+
+implementation.md §17 1d "141 adet `::float8`, 25 dosyada" diyordu. Bizzat sayıldı:
+
+| Nerede | Bulunan | Ne yapıldı |
+| --- | --- | --- |
+| `src/**` (uygulama kodu) | **136 cast, 16 dosyada** | tamamı kaldırıldı |
+| `scripts/**` (doğrulama oracle'ı) | **47 cast, 9 dosyada** | **bilinçli olarak ERTELENDİ** (aşağıda) |
+| `supabase/migrations/**` | **0** float8/double precision/real kolon | doğrulandı, kontrol altına alındı |
+
+Yani plandaki "141" `src` için 136, ve planın hiç saymadığı 47 cast daha doğrulama
+script'lerinde duruyordu. Toplam 183. Bu, sayının eskimiş olmasından değil, `scripts/`in hiç
+taranmamış olmasından kaynaklanıyor.
+
+Şemaya dair iddia da doğrulandı: 41 tablonun tamamında para kolonları `numeric(p,s)`; tek bir
+float8/double precision/real kolon yok. Yani risk gerçekten depoda değil, sınırdaydı.
+
+### Ölçüldü, varsayılmadı: cast'i kaldırmak TEK BAŞINA yetmiyor
+
+Tek kullanımlık DB'de (Postgres 16) ölçülen:
+
+```
+select (100000::numeric / 3::numeric)          -> "33333.333333333333"   (string, tam)
+select (100000::numeric / 3::numeric)::float8  ->  33333.333333333336    (number, yanlış)
+Number("33333.333333333333")                   ->  33333.333333333336    (aynı yanlış!)
+```
+
+Kritik bulgu: cast'i kaldırıp değeri düz `Number()` ile okumak **aynı hatayı** veriyor.
+Bu yüzden faz yalnız "cast'leri sil" değil, "değeri decimal olarak taşı" olmak zorundaydı —
+`src/lib/money.ts`'in var oluş sebebi bu.
+
+### Kütüphane seçimi: big.js (decimal.js değil) — ölçümle
+
+İkisi de Postgres numeric string'lerini doğru ayrıştırıyor (ölçüldü). Ayrım, sayı OLMAYAN
+girdide ne yaptıkları:
+
+| Girdi | decimal.js | big.js |
+| --- | --- | --- |
+| `NaN` | `NaN` (yayılır) | **fırlatır** |
+| `Infinity` | `Infinity` (yayılır) | **fırlatır** |
+| `1 / 0` | `Infinity` (yayılır) | **fırlatır** |
+
+CLAUDE.md'nin ilk mali kuralı "null tutar bilinmeyendir, sıfır değildir". Sessizce yayılan bir
+`NaN`, nakit akış toplamında "NaN TL" olarak görünen ya da daha kötüsü aşağıda bir yerde 0'a
+çevrilen tam olarak o hata sınıfı. decimal.js'in IEEE benzeri NaN/Infinity semantiği bilimsel
+hesap için doğru, para için yanlış. big.js hatayı bozulmanın olduğu yerde reddediyor.
+
+İkincil gerekçeler: ~6KB'a karşı ~32KB; ve kod tabanında **sıfır** `pow`/`sqrt`/`ln`/`exp`
+kullanımı var (grep ile doğrulandı — bütün `**` eşleşmeleri `/**` yorum açacıydı), yani
+decimal.js'in kesirli üs ve transandantal fonksiyonları burada hiçbir şey satın almıyor. Kredi
+matematiği bu depoda analitik bileşik faiz değil, kaynak-güdümlü mutabakat. İleride analitik
+bileşiklendirme gerekirse seçim o zaman yeniden değerlendirilmeli, şimdiden değil.
+
+`money.ts` global `Big`'i değil, **kendi yapıcısını** (`Big()`) kullanıyor: big.js DP/RM/strict
+değerlerini yapıcı üzerinde değiştirilebilir statik olarak tutuyor, global olanı paylaşmak
+herhangi bir bağımlılığın (ya da "burada 4 basamak lazım" diyen ileriki bir çağrı noktasının)
+süreçteki bütün mali rakamların yuvarlamasını sessizce değiştirebilmesi demekti. Yalıtım
+çalışma zamanında doğrulandı: sonradan `Big.DP` değiştirmek `MoneyBig.DP`'yi oynatmıyor.
+`phase17:verify` bu yapıcının yerinde durduğunu kontrol ediyor.
+
+### Yuvarlama: uygulama ile veritabanı artık AYNI cevabı veriyor
+
+Postgres `round(numeric, n)` sıfırdan uzağa yarı-yukarı yuvarlar. JS `toFixed` ikili double'ı
+yuvarladığı için sıradan değerlerde veritabanıyla **anlaşamıyor** (ölçüldü):
+
+| Değer | `toFixed(2)` | pg `round(_,2)` | money.ts |
+| --- | --- | --- | --- |
+| 2.675 | `2.67` ✗ | 2.68 | `2.68` ✓ |
+| 1.005 | `1.00` ✗ | 1.01 | `1.01` ✓ |
+| 1262.145 | `1262.14` ✗ | 1262.15 | `1262.15` ✓ |
+| 70.285 | `70.28` ✗ | 70.29 | `70.29` ✓ |
+
+Dürüst not: `fmtTL` zaten `Intl.NumberFormat` kullanıyor ve o, decimal değeri doğru yuvarlıyor
+— yani **ana TL gösterimi bu hatadan zaten etkilenmiyordu**. Hata `toFixed(2)` kullanılan
+yerlerde gerçekti: TL/dk değerleri (`breakEven`, `finance_cost_per_minute`) ve
+`reconcileLoan`'ın mutabakat mesajları.
+
+### Dürüstlük notu: yüzde-üstü-yüzde her zaman kaymıyor
+
+İlk ölçümde denenen dört `anapara × oran + BSMV + KKDF` vakasının **dördü de** float ile decimal
+arasında aynı çıktı. Bu "sorun yok" demek değil, "o dördü şanslıydı" demek: 8 anapara × 8 oran
+taranınca **30 vakada gerçek kayma** bulundu, ör.
+
+```
+1234567.89 × 0.0825 + %5 + %15   float 122222.22110999998   exact 122222.22111
+987654.32  × 0.0349 + %5 + %15   float  41362.962921599996  exact  41362.9629216
+```
+
+`money.test.ts` bu vakaları, **float'ın yanlış değerini de assert ederek** tutuyor — yoksa V8
+davranışı değiştiği gün test sessizce hiçbir şey kanıtlamamaya başlardı.
+
+Yine dürüstlük: 2 basamağa yuvarlandığında bu kaymaların çoğu aynı stringe düşüyor, ve 36 aya
+kadar bileşiklendirmede float ile decimal aynı sonucu verdi. Asıl ölçülebilir kazanç
+**biriktirmede**: 20.000 satır × 0,07 float `+=` ile 1399.9999999999804, decimal ile tam 1400
+(Postgres `sum()` de 1400.00 diyor). 1.000 satır × 33,33 → float 33330.00000000085.
+
+### Tip yalanı: asıl tehlike cast değil, haritalanmamış satırdı
+
+Bu fazın en riskli tarafı cast'leri silmek değildi. `radar/queries.ts`'te yedi fonksiyon
+`return (...).rows` ile `Promise<InstanceRow[]>` döndürüyordu ve `InstanceRow.amount`
+`number | null` diye ilan edilmişti. Cast kaldırılınca node-postgres **string** döndürür;
+haritalama eklenmeseydi TypeScript sayıya inanmaya devam ederken çalışma zamanı string
+taşıyacaktı — cast'ten çok daha sinsi bir hata. Aynı desen `external-assumptions`,
+`scenarios`, `production`, `reports`, `data-quality` ve dört sayfa bileşeninde de vardı; hepsine
+açık decode eklendi (`mapInstanceRow`, `mapAssumption`, satır-içi `.map()`'ler).
+
+### Gerçekten bir hata düzeltildi: karışık `::numeric`/`::float8`
+
+`radar/queries.ts`'in `paymentHistoryEvents`'i, `audit_events` CTE'sinde **aynı JSON alanını iki
+farklı şekilde** okuyordu: `paid_amount` kolonu için `::float8`, `remaining_amount`
+aritmetiğinin içinde `::numeric`. Yani iki kolon aynı değer hakkında farklı şey söyleyebiliyordu
+ve `amount − paid_amount` her zaman bildirilen `remaining_amount`'a eşit olmuyordu. İkisi de
+`numeric` yapıldı. Bu, planın "karışık satır" dediği şeyin gerçekte ne olduğu.
+
+### Kapsam kararı: doğrulama script'leri BİLİNÇLİ olarak ertelendi
+
+`scripts/**`'daki 47 cast'e **dokunulmadı**, ve bu bir ihmal değil bir gerekçe:
+
+Bu script'ler uygulamanın rakamlarının kaynak çalışma kitabıyla hâlâ eşleştiğini kanıtlayan
+**bağımsız oracle**. Kontrol ettikleri kodu değiştiren commit'te onları da değiştirmek,
+**cetveli ve ölçülen nesneyi birlikte değiştirmek** olurdu — iki tarafta birbirini götüren bir
+hata görünmez hale gelirdi. Mevcut float8 yollarında bırakıldılar ki Faz 17 gate'leri yeni
+uygulamayı **DEĞİŞMEMİŞ** bir referansa karşı ölçsün. Nitekim 20 faz doğrulamasının tamamı
+gerçek veriyle, değişmemiş oracle'a karşı geçti — Faz 17'nin hiçbir mali çıktıyı
+değiştirmediğinin asıl kanıtı bu.
+
+`phase17:verify` bu yüzden üç farklı standart uyguluyor: `src/` sıfır tolerans,
+`supabase/` sıfır float8 kolon, `scripts/` **sabitlenmiş sayım** (yeni cast eklenemez, mevcut
+47 kayıtlı). Sayım düşerse script uyarı basıp baseline'ın güncellenmesini istiyor. Migrasyonu
+Faz 17B yapmalı.
+
+### `pg` tip ayrıştırıcısı EKLENMEDİ (plandaki isteğe bağlı madde)
+
+Plan `numeric` OID'i için global bir `setTypeParser` öneriyordu. Yapılmadı, çünkü bu, her
+`numeric` kolonun tipini tek hamlede **her tüketici için** değiştirirdi — üstelik depoda zaten
+cast'siz `numeric` okuyup kendi `Number()`'ını çağıran yerler var (`radar/engine.ts:394,396,776`,
+`users/engine.ts:76`, `analytics/snapshots.ts`). Bunlar çağrı noktası başına gözden geçirilmeden
+sessizce davranış değiştirirdi; bu fazın disiplininin tam tersi. Decode, her çağrı noktasında
+açık.
+
+### DOKUNULMAYAN dosyalar (bilinçli)
+
+- **`scripts/phase{4,5,6,7,8,9b,9d,13a}-verify.ts`, `scripts/seed-demo.ts`** — yukarıdaki
+  oracle gerekçesi.
+- **`src/lib/financing/rules.ts`, `production/rules.ts`, `reports/rules.ts`** — `+=` ile
+  biriktiren fonksiyonları (`groupMaturities`, `maturityWindows`, `exposureBy`) DURUYOR.
+  Yalnız `radar/rules.ts`'in `concentration`'ı decimal'e taşındı, çünkü doğrudan bu fazda
+  taşınan sorgulardan besleniyor ve **%40 eşiğiyle karşılaştırma** yapıyor — yuvarlama hatasının
+  gösterilen rakamı değil, VERİLEN CEVABI değiştirdiği tek yer sınıfı. Kalan biriktiricilerin
+  taşınması ayrı ve gözden geçirilebilir bir dilim olmalı.
+- **`fmtTL` / `Intl.NumberFormat` çağrıları** — zaten doğru yuvarlıyorlar (yukarıda ölçüldü),
+  toptan değiştirmek gereksiz büyük bir diff olurdu.
+- **`src/lib/domain-error.ts`, 13 `audit()` kopyası** — Faz 18'in işi, bu fazda dokunulmadı.
+
+### `numeric(14,2)` float64'e sığıyor mu? — evet, ve bu kayıt altında
+
+Money yardımcıları decimal olarak ayrıştırıp **bir kez** TL ölçeğinde yuvarlıyor ve sonra
+`number` döndürüyor. Bu güvenli: `numeric(14,2)` en fazla 10^14 kuruş, float64'ün tam tamsayı
+aralığı 2^53 ≈ 9,0×10^15. Yani sınır 90 trilyon TL civarında — MAS'ın ölçeğinin çok üstünde.
+Bu bir gün aşılırsa dönüş tipleri `Decimal` yapılmalı. Oranlar `RATE_DP = 10` ile yuvarlanıyor
+(şemadaki en geniş oran ölçeği `numeric(18,6)`), yani oran hassasiyeti de kaybolmuyor.
+
+### Gate sonuçları
+
+| Adım | Sonuç |
+| --- | --- |
+| `pnpm lint` | exit 0 (1 uyarı: `analytics-chart.tsx`, önceden var) |
+| `pnpm typecheck` | exit 0 |
+| `pnpm test` | **265/265** (218 mevcut + 47 yeni money testi), exit 0 |
+| `pnpm db:verify` | ALL ASSERTIONS PASSED (27 invariant) |
+| `pnpm db:roles:verify` | **8/8** (Faz 15 gerilemedi) |
+| `db:transitions:verify` | 167/167 |
+| `db:constraints:verify` | 38/38 |
+| `db:reconciliation:verify` | 77/77 |
+| `pnpm import:real` | ALL PASS (43 sekme, 9.817 hücre, TİJEN −60.000, kimlik uyuşmazlığı 0) |
+| phase3…phase9d (7 script) | 7/7 PASS |
+| phase9a…phase14e (13 script) | 13/13 PASS |
+| `pnpm build` | exit 0 |
+| `pnpm phase16:verify` | **18/18** (Faz 16 gerilemedi) |
+| `pnpm phase17:verify` | **10/10 PASS** |
+
+`db:roles:verify` ilk çalıştırmada 7/8 verdi: "users satırları RLS üzerinden görünüyor" kontrolü
+0 satır gördü. Gerileme DEĞİLDİ — kontrolün kendi mesajının söylediği ikinci ihtimaldi, taze
+`mas_radar_verify` veritabanında hiç kullanıcı seed'lenmemişti. `seed-system-actor` çalıştırılınca
+8/8. Bu, kontrolün hata mesajını iyi yazmanın karşılığı.
+
+`pnpm test` bir çalıştırmada 215/218 gösterdi: `previews.test.tsx` için vitest worker'ı
+başlatılamadı ("Timeout waiting for worker to respond"). Kod kaynaklı değil — dosya tek başına
+koşturulunca 3/3 geçiyor ve sonraki tam çalıştırmada 20/20 dosya sorunsuz koştu. Faz 16'nın
+kaydettiği bellek baskısıyla aynı sınıf (`WasmHash` build hatası) — bu tür şeyleri gerileme
+sanmamak gerekiyor.
+
+### Doğrulama sonrası ortam
+
+Faz 15/16'daki gibi geri alındı: `mas_radar_verify` ve `mas_radar_money_probe` düşürüldü,
+`mas_radar_app` yeniden `NOLOGIN` (migration 0035'teki hâli), ölçüm prob dosyaları silindi.
+**`mas_radar_dev` bu fazda da hiç değiştirilmedi** — şema hâlâ 0034, payments=19, users=12
+(commit öncesi teyit edildi). Faz 15'in kullanıcı adımları
+(`pnpm db:app-role:password` → `.env.local` → `pnpm db:migrate`) hâlâ bekliyor.
+
+### Faz 18'e devredilen açık nokta
+
+`scripts/**`'daki 47 cast (Faz 17B) ve `financing/rules.ts` + `production/rules.ts`'teki
+`+=` biriktiricileri. İkisi de `phase17:verify` tarafından kayıt altında; sessizce büyüyemezler.

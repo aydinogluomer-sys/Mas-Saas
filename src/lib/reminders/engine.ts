@@ -7,6 +7,7 @@
 // Reminders never mutate payments/instances/checks/loans. Telegram token stays server-side.
 
 import type { Pool } from "pg";
+import { moneyOrNull } from "@/lib/money";
 import { istanbulDateISO } from "@/lib/reports/rules";
 import {
   eligibleDeliveries,
@@ -17,12 +18,15 @@ import type { Transport } from "./transport";
 
 export async function loadActiveRules(pool: Pool): Promise<ReminderRule[]> {
   const r = await pool.query(
-    `select id, name, target_kind, offset_days, channel, min_amount::float8 as min_amount, is_active
+    `select id, name, target_kind, offset_days, channel, min_amount, is_active
      from public.reminders where is_active = true`,
   );
+  // minAmount is an eligibility THRESHOLD compared against a target's amount in
+  // eligibleDeliveries — both sides now decode through the same helper, so a reminder can no
+  // longer fire or stay silent because the two values were rounded by different rules.
   return r.rows.map((x) => ({
     id: x.id, name: x.name, targetKind: x.target_kind, offsetDays: x.offset_days,
-    channel: x.channel, minAmount: x.min_amount, isActive: x.is_active,
+    channel: x.channel, minAmount: moneyOrNull(x.min_amount), isActive: x.is_active,
   }));
 }
 
@@ -30,7 +34,7 @@ export async function loadActiveRules(pool: Pool): Promise<ReminderRule[]> {
 export async function loadPaymentTargets(pool: Pool, todayISO: string): Promise<ReminderTarget[]> {
   const r = await pool.query(
     `select i.id, coalesce(p.name,'(silinmiş kalem)') as name,
-            to_char(i.due_date,'YYYY-MM-DD') as due_date, i.amount::float8 as amount, i.status,
+            to_char(i.due_date,'YYYY-MM-DD') as due_date, i.amount, i.status,
             po.name as owner, pr.name as provider, i.risk_reasons
      from public.payment_instances i
      left join public.payments p on p.id = i.payment_id
@@ -42,7 +46,7 @@ export async function loadPaymentTargets(pool: Pool, todayISO: string): Promise<
   );
   return r.rows.map((x) => ({
     entityTable: "payment_instances", entityId: x.id, name: x.name,
-    dueDate: x.due_date, amount: x.amount, status: x.status,
+    dueDate: x.due_date, amount: moneyOrNull(x.amount), status: x.status,
     owner: x.owner, provider: x.provider, riskReasons: x.risk_reasons ?? [],
   }));
 }

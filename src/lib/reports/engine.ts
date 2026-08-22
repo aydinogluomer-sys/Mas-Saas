@@ -7,6 +7,7 @@ import type { Pool, PoolClient } from "pg";
 import { addDaysISO, debtServiceByMonth } from "@/lib/financing/rules";
 import { loadDecisionFacts } from "@/lib/facts/engine";
 import { loadMaturityItems } from "@/lib/financing/engine";
+import { moneyOrNull } from "@/lib/money";
 import { loadThresholds } from "@/lib/radar/engine";
 import {
   instancesBetween, monthInstances, monthSummary, overdueOpen, riskyDays,
@@ -147,7 +148,7 @@ export async function generateWeekly(pool: Pool, todayISO: string, actorId: stri
 
 async function distribution(pool: Pool, monthStart: string, joinCol: string, nameSelect: string) {
   const r = await pool.query(
-    `select coalesce(${nameSelect}, '(atanmadı)') as key, sum(i.amount)::float8 as amount
+    `select coalesce(${nameSelect}, '(atanmadı)') as key, sum(i.amount) as amount
      from public.payment_instances i
      join public.payments p on p.id = i.payment_id
      ${joinCol}
@@ -155,7 +156,9 @@ async function distribution(pool: Pool, monthStart: string, joinCol: string, nam
      group by 1 order by amount desc nulls last`,
     [monthStart],
   );
-  return r.rows as Array<{ key: string; amount: number }>;
+  // Postgres already summed these exactly; only the trip into JS needed fixing. Ordering is
+  // still done in SQL on the numeric, so the ranking is unaffected by the decode.
+  return r.rows.map((x) => ({ key: x.key as string, amount: moneyOrNull(x.amount) ?? 0 }));
 }
 
 export async function generateMonthly(pool: Pool, monthStartISO: string, actorId: string): Promise<{ id: string; bodyMd: string }> {
@@ -170,8 +173,8 @@ export async function generateMonthly(pool: Pool, monthStartISO: string, actorId
       maturitiesBetween(pool, monthStartISO, monthEnd),
       maturitiesBetween(pool, monthStartISO, monthEnd),
       pool.query(
-        `select opening_balance::float8 as opening, projected_income::float8 as income,
-                projected_expense::float8 as expense, closing_balance::float8 as closing
+        `select opening_balance as opening, projected_income as income,
+                projected_expense as expense, closing_balance as closing
          from public.cashflow_months where month_start = $1`,
         [monthStartISO],
       ),
@@ -202,7 +205,12 @@ export async function generateMonthly(pool: Pool, monthStartISO: string, actorId
     providerDist, categoryDist, ownerDist,
     checksInMonth: checks.filter((m) => m.kind === "check"),
     installmentsInMonth: installments.filter((m) => m.kind === "loan_installment"),
-    cashMonth: cashRow.rows[0] ?? null,
+    cashMonth: cashRow.rows[0]
+      ? {
+          opening: moneyOrNull(cashRow.rows[0].opening), income: moneyOrNull(cashRow.rows[0].income),
+          expense: moneyOrNull(cashRow.rows[0].expense), closing: moneyOrNull(cashRow.rows[0].closing),
+        }
+      : null,
     dataQualityIssues: dq,
   });
   const prompt = buildCommentaryPrompt({
@@ -226,14 +234,14 @@ export async function generateMonthly(pool: Pool, monthStartISO: string, actorId
 export async function loadDebtOverlay(pool: Pool) {
   const [monthsRes, items] = await Promise.all([
     pool.query(
-      `select to_char(month_start,'YYYY-MM-DD') as month_start, closing_balance::float8 as closing
+      `select to_char(month_start,'YYYY-MM-DD') as month_start, closing_balance as closing
        from public.cashflow_months order by month_start`,
     ),
     loadMaturityItems(pool),
   ]);
   const debt = debtServiceByMonth(items);
   return overlayDebtService(
-    monthsRes.rows.map((m) => ({ monthStart: m.month_start, closing: m.closing })),
+    monthsRes.rows.map((m) => ({ monthStart: m.month_start, closing: moneyOrNull(m.closing) })),
     debt.map((d) => ({ monthStart: d.monthStart, knownOutflow: d.knownOutflow, count: d.count, missingCount: d.missingCount })),
   );
 }

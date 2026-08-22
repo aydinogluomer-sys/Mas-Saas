@@ -14,6 +14,7 @@ import {
 import type { RowJson, SheetRow } from "@/lib/importers/row-utils";
 import { normalizeTr } from "@/lib/importers/workbook-parser";
 import { DomainError } from "@/lib/domain-error";
+import { moneyOrNull, rateOrNull } from "@/lib/money";
 import {
   reconcileLoan,
   scheduleDueDates,
@@ -333,7 +334,7 @@ export interface CheckRow {
 export async function loadChecks(pool: Pool): Promise<CheckRow[]> {
   const r = await pool.query(`
     select c.id, to_char(c.maturity_date,'YYYY-MM-DD') as maturity_date, c.serial_no as serial,
-           c.amount::float8 as amount, c.signed_amount::float8 as signed_amount,
+           c.amount, c.signed_amount,
            c.direction, c.status,
            coalesce(pe.name, pa.name, c.counterparty_label) as payee, pa.name as payer, pb.name as bank,
            c.source_workbook_id, c.source_sheet_id, ir.row_index
@@ -346,7 +347,7 @@ export async function loadChecks(pool: Pool): Promise<CheckRow[]> {
     order by c.maturity_date`);
   return r.rows.map((x) => ({
     id: x.id, maturityDate: x.maturity_date, serial: x.serial,
-    amount: x.amount, signedAmount: x.signed_amount, direction: x.direction, status: x.status,
+    amount: moneyOrNull(x.amount), signedAmount: moneyOrNull(x.signed_amount), direction: x.direction, status: x.status,
     payee: x.payee, payer: x.payer, bank: x.bank,
     sourceWorkbookId: x.source_workbook_id, sourceSheetId: x.source_sheet_id, rowIndex: x.row_index,
   }));
@@ -374,28 +375,32 @@ export interface LoanRow {
 
 export async function loadLoans(pool: Pool): Promise<LoanRow[]> {
   const r = await pool.query(`
-    select l.id, l.name, l.principal::float8 as principal, l.term_months, l.installment_count,
+    select l.id, l.name, l.principal, l.term_months, l.installment_count,
            to_char(l.first_payment_date,'YYYY-MM-DD') as first_payment_date,
-           l.installment_amount::float8 as installment_amount,
-           l.total_payment::float8 as total_payment, l.total_finance_cost::float8 as total_finance_cost,
-           l.applied_interest_rate::float8 as applied_rate, l.monthly_cost_rate::float8 as monthly_cost_rate,
+           l.installment_amount,
+           l.total_payment, l.total_finance_cost,
+           l.applied_interest_rate as applied_rate, l.monthly_cost_rate,
            l.source_workbook_id, l.source_sheet_id,
            count(li.id)::int as installments_loaded,
            count(li.id) filter (where li.status='paid')::int as paid_count,
            count(li.id) filter (where li.status <> 'paid')::int as remaining_count,
-           coalesce(sum(li.amount) filter (where li.status <> 'paid'),0)::float8 as remaining_amount
+           coalesce(sum(li.amount) filter (where li.status <> 'paid'),0) as remaining_amount
     from public.loans l
     left join public.loan_installments li on li.loan_id=l.id
     where l.archived_at is null
     group by l.id
     order by l.first_payment_date nulls last`);
   return r.rows.map((x) => ({
-    id: x.id, name: x.name, principal: x.principal, termMonths: x.term_months,
+    // The four TL figures decode at money scale; the two interest rates are numeric(8,4)
+    // and decode at RATE_DP so their fourth decimal survives (reconcileLoan compares
+    // total_payment − principal − finance_cost against a ±1 TL tolerance).
+    id: x.id, name: x.name, principal: moneyOrNull(x.principal), termMonths: x.term_months,
     installmentCount: x.installment_count, firstPaymentDate: x.first_payment_date,
-    installmentAmount: x.installment_amount, totalPayment: x.total_payment,
-    totalFinanceCost: x.total_finance_cost, appliedRate: x.applied_rate, monthlyCostRate: x.monthly_cost_rate,
+    installmentAmount: moneyOrNull(x.installment_amount), totalPayment: moneyOrNull(x.total_payment),
+    totalFinanceCost: moneyOrNull(x.total_finance_cost),
+    appliedRate: rateOrNull(x.applied_rate), monthlyCostRate: rateOrNull(x.monthly_cost_rate),
     installmentsLoaded: x.installments_loaded, paidCount: x.paid_count,
-    remainingCount: x.remaining_count, remainingAmount: x.remaining_amount,
+    remainingCount: x.remaining_count, remainingAmount: moneyOrNull(x.remaining_amount),
     sourceWorkbookId: x.source_workbook_id, sourceSheetId: x.source_sheet_id,
   }));
 }
@@ -406,21 +411,22 @@ export async function loadLoanInstallments(pool: Pool, loanId: string): Promise<
 }>> {
   const r = await pool.query(
     `select id, installment_no as no, to_char(due_date,'YYYY-MM-DD') as due_date,
-            amount::float8 as amount, principal_component::float8 as principal,
-            interest_component::float8 as interest, tax_component::float8 as tax, status
+            amount, principal_component as principal,
+            interest_component as interest, tax_component as tax, status
      from public.loan_installments where loan_id=$1 order by installment_no`,
     [loanId],
   );
   return r.rows.map((x) => ({
-    id: x.id, no: x.no, dueDate: x.due_date, amount: x.amount,
-    principal: x.principal, interest: x.interest, tax: x.tax, status: x.status,
+    id: x.id, no: x.no, dueDate: x.due_date, amount: moneyOrNull(x.amount) ?? 0,
+    principal: moneyOrNull(x.principal), interest: moneyOrNull(x.interest),
+    tax: moneyOrNull(x.tax), status: x.status,
   }));
 }
 
 /** Union of open checks + unpaid loan installments as a single maturity stream. */
 export async function loadMaturityItems(pool: Pool): Promise<MaturityItem[]> {
   const checks = await pool.query(`
-    select c.id, to_char(c.maturity_date,'YYYY-MM-DD') as due, c.amount::float8 as amount,
+    select c.id, to_char(c.maturity_date,'YYYY-MM-DD') as due, c.amount,
            c.direction, coalesce(pe.name, pa.name, c.counterparty_label, pb.name, 'çek') as label
     from public.checks c
     left join public.parties pe on pe.id=c.payee_party_id
@@ -428,18 +434,18 @@ export async function loadMaturityItems(pool: Pool): Promise<MaturityItem[]> {
     left join public.parties pb on pb.id=c.bank_party_id
     where c.status in ('planned','unknown') and c.archived_at is null`);
   const inst = await pool.query(`
-    select li.id, to_char(li.due_date,'YYYY-MM-DD') as due, li.amount::float8 as amount, l.name
+    select li.id, to_char(li.due_date,'YYYY-MM-DD') as due, li.amount, l.name
     from public.loan_installments li join public.loans l on l.id=li.loan_id
     where li.status in ('planned','unpaid','partial','late') and l.archived_at is null`);
   const items: MaturityItem[] = [];
   for (const c of checks.rows)
     items.push({
-      id: `chk:${c.id}`, dueDate: c.due, amount: c.amount,
+      id: `chk:${c.id}`, dueDate: c.due, amount: moneyOrNull(c.amount),
       direction: c.direction, kind: "check", label: c.label,
     });
   for (const i of inst.rows)
     items.push({
-      id: `ins:${i.id}`, dueDate: i.due, amount: i.amount,
+      id: `ins:${i.id}`, dueDate: i.due, amount: moneyOrNull(i.amount),
       direction: "outflow", kind: "loan_installment", label: i.name,
     });
   return items;

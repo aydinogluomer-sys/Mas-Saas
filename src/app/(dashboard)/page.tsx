@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { getPool } from "@/lib/db";
+import { moneyOrNull } from "@/lib/money";
 import { loadThresholds } from "@/lib/radar/engine";
 import { instancesBetween, instancesOn, monthSummary, overdueOpen } from "@/lib/radar/queries";
 import { buildProjection, concentration } from "@/lib/radar/rules";
@@ -96,7 +97,7 @@ export default async function AnaEkranPage() {
     deliveryCounts(pool),
     loadCapacityModels(pool),
     loadCostModels(pool),
-    pool.query(`select coalesce(p.name, cl.label) as key, cl.amount::float8 as amount
+    pool.query(`select coalesce(p.name, cl.label) as key, cl.amount
                 from public.cashflow_lines cl left join public.parties p on p.id=cl.party_id
                 where cl.line_type='customer_income'`),
     loadDecisionFacts(pool, today),
@@ -114,7 +115,9 @@ export default async function AnaEkranPage() {
   const tOut = knownOutflow(todayRows);
   const wOut = knownOutflow(weekRows);
   const oOut = knownOutflow(overdue);
-  const conc = concentration(incomeLines.rows);
+  const conc = concentration(
+    incomeLines.rows.map((r) => ({ key: r.key as string | null, amount: moneyOrNull(r.amount) })),
+  );
   const topConc = conc.entries[0] ? { key: conc.entries[0].key, ratio: conc.entries[0].ratio } : null;
   const debtPressureMonths = overlay.filter((o) => o.pressure === "high").length;
   const cap = caps[0] as unknown as { isStaleRate?: boolean } | undefined;

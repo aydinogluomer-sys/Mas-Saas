@@ -8,6 +8,7 @@ import { loadCashMonths } from "@/lib/cashflow/engine";
 import { loadApprovedExternalAssumptions, type ExternalAssumption } from "@/lib/external-assumptions/engine";
 import { debtServiceByMonth } from "@/lib/financing/rules";
 import { loadMaturityItems } from "@/lib/financing/engine";
+import { moneyOrNull, rateOrNull } from "@/lib/money";
 import type { CashMonth } from "@/lib/radar/rules";
 import {
   applyScenario,
@@ -85,14 +86,14 @@ async function loadCashflowLines(pool: Pool): Promise<CashflowLineLite[]> {
   const r = await pool.query(
     `select to_char(cm.month_start,'YYYY-MM-DD') as "monthStart",
             cl.line_type as "lineType", cl.direction, cl.label,
-            p.name as "partyName", cl.amount::float8 as amount
+            p.name as "partyName", cl.amount
      from public.cashflow_lines cl
      join public.cashflow_months cm on cm.id=cl.cashflow_month_id
      left join public.parties p on p.id=cl.party_id
      where cl.amount is not null
      order by cm.month_start, cl.label`,
   );
-  return r.rows as CashflowLineLite[];
+  return r.rows.map((x) => ({ ...x, amount: moneyOrNull(x.amount) })) as CashflowLineLite[];
 }
 
 async function buildScenarioAdjustments(pool: Pool, a: ScenarioAssumptions): Promise<ScenarioAdjustment[]> {
@@ -394,22 +395,26 @@ export async function createAndRun(
 
 export async function compareScenarioToBaselineRun(pool: Pool, runId: string) {
   return (await pool.query(
-    `select metric, baseline_value::float8 as base, scenario_value::float8 as scen, delta::float8 as delta
+    // A scenario comparison is exactly `scen − base`; decoding all three the same way keeps
+    // the published delta consistent with the two values it is derived from.
+    `select metric, baseline_value as base, scenario_value as scen, delta
      from public.scenario_comparisons where run_id=$1 order by metric`,
     [runId],
-  )).rows;
+  )).rows.map((x) => ({
+    metric: x.metric, base: moneyOrNull(x.base), scen: moneyOrNull(x.scen), delta: moneyOrNull(x.delta),
+  }));
 }
 
 export async function loadScenarioRun(pool: Pool, runId: string) {
   const run = await pool.query(
     `select r.id, r.scenario_id, s.name, s.scenario_type, s.baseline_label,
             to_char(r.run_at at time zone 'Europe/Istanbul','YYYY-MM-DD HH24:MI') as run_at,
-            r.assumptions, r.baseline_final_cash::float8 as base_final, r.scenario_final_cash::float8 as scen_final,
-            r.final_delta::float8 as final_delta,
+            r.assumptions, r.baseline_final_cash as base_final, r.scenario_final_cash as scen_final,
+            r.final_delta,
             to_char(r.baseline_first_negative,'YYYY-MM-DD') as base_first_neg,
             to_char(r.scenario_first_negative,'YYYY-MM-DD') as scen_first_neg,
-            to_char(r.worst_month,'YYYY-MM-DD') as worst_month, r.worst_balance::float8 as worst_balance,
-            r.max_cash_gap::float8 as max_gap, to_char(r.recovery_month,'YYYY-MM-DD') as recovery_month,
+            to_char(r.worst_month,'YYYY-MM-DD') as worst_month, r.worst_balance,
+            r.max_cash_gap as max_gap, to_char(r.recovery_month,'YYYY-MM-DD') as recovery_month,
             r.month_count, r.null_month_count, r.confidence, r.notes
      from public.scenario_runs r join public.scenarios s on s.id=r.scenario_id where r.id=$1`,
     [runId],
@@ -417,29 +422,46 @@ export async function loadScenarioRun(pool: Pool, runId: string) {
   if (run.rowCount === 0) return null;
   const lines = await pool.query(
     `select to_char(month_start,'YYYY-MM-DD') as month_start,
-            baseline_income::float8 as base_inc, scenario_income::float8 as scen_inc,
-            baseline_expense::float8 as base_exp, scenario_expense::float8 as scen_exp,
-            baseline_closing::float8 as base_close, scenario_closing::float8 as scen_close, delta::float8 as delta
+            baseline_income as base_inc, scenario_income as scen_inc,
+            baseline_expense as base_exp, scenario_expense as scen_exp,
+            baseline_closing as base_close, scenario_closing as scen_close, delta
      from public.scenario_run_lines where run_id=$1 order by month_start`,
     [runId],
   );
   const assumptions = await pool.query(
-    `select key, value_numeric::float8 as value, unit, description from public.scenario_assumptions where run_id=$1`,
+    `select key, value_numeric as value, unit, description from public.scenario_assumptions where run_id=$1`,
     [runId],
   );
-  return { run: run.rows[0], lines: lines.rows, assumptions: assumptions.rows };
+  // scenario_assumptions.value_numeric is numeric(14,4) and carries ratios ("oran") as often
+  // as TL, so it decodes at RATE_DP; the run/line figures are all TL.
+  return {
+    run: {
+      ...run.rows[0],
+      base_final: moneyOrNull(run.rows[0].base_final), scen_final: moneyOrNull(run.rows[0].scen_final),
+      final_delta: moneyOrNull(run.rows[0].final_delta), worst_balance: moneyOrNull(run.rows[0].worst_balance),
+      max_gap: moneyOrNull(run.rows[0].max_gap),
+    },
+    lines: lines.rows.map((x) => ({
+      ...x,
+      base_inc: moneyOrNull(x.base_inc), scen_inc: moneyOrNull(x.scen_inc),
+      base_exp: moneyOrNull(x.base_exp), scen_exp: moneyOrNull(x.scen_exp),
+      base_close: moneyOrNull(x.base_close), scen_close: moneyOrNull(x.scen_close),
+      delta: moneyOrNull(x.delta),
+    })),
+    assumptions: assumptions.rows.map((x) => ({ ...x, value: rateOrNull(x.value) })),
+  };
 }
 
 export async function listScenarioRuns(pool: Pool) {
   const r = await pool.query(
-    `select r.id, s.name, s.scenario_type, r.final_delta::float8 as final_delta, r.confidence,
+    `select r.id, s.name, s.scenario_type, r.final_delta, r.confidence,
             to_char(r.scenario_first_negative,'YYYY-MM-DD') as scen_first_neg,
             to_char(r.run_at at time zone 'Europe/Istanbul','YYYY-MM-DD HH24:MI') as run_at
      from public.scenario_runs r join public.scenarios s on s.id=r.scenario_id
      where r.archived_at is null
      order by r.run_at desc limit 50`,
   );
-  return r.rows as Array<{ id: string; name: string; scenario_type: string; final_delta: number | null; confidence: string; scen_first_neg: string | null; run_at: string }>;
+  return r.rows.map((x) => ({ ...x, final_delta: moneyOrNull(x.final_delta) })) as Array<{ id: string; name: string; scenario_type: string; final_delta: number | null; confidence: string; scen_first_neg: string | null; run_at: string }>;
 }
 
 /** Safe: only removes scenario_* rows (cascade). Baseline is untouched. Audited. */

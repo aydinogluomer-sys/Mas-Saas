@@ -1,5 +1,12 @@
 // Read-side queries for radar/calendar/payments pages.
+//
+// Faz 17: money columns are selected as `numeric` and parsed with @/lib/money instead of
+// being cast to `::float8` in SQL. Every query below feeds a typed interface whose amount
+// fields are `number | null`, so the parse is not optional bookkeeping — node-postgres hands
+// back `numeric` as a STRING, and returning `.rows` unmapped would leave TypeScript believing
+// in numbers while the runtime carried strings. `mapInstanceRow` is that boundary.
 import type { Pool } from "pg";
+import { moneyOrNull, intOrNull } from "@/lib/money";
 import { addMonths, dayFlags, type RiskThresholds } from "./rules";
 
 export interface InstanceRow {
@@ -25,8 +32,8 @@ export interface InstanceRow {
 const BASE = `
   select i.id, i.payment_id, coalesce(p.name,'(silinmiş kalem)') as name,
          to_char(i.due_date,'YYYY-MM-DD') as due_date,
-         i.amount::float8 as amount, i.amount_status, i.status,
-         i.paid_amount::float8 as paid_amount, i.risk_level, i.risk_reasons, i.note,
+         i.amount, i.amount_status, i.status,
+         i.paid_amount, i.risk_level, i.risk_reasons, i.note,
          i.currency, i.direction, p.priority, p.flexibility_class as flexibility, c.name as category,
          (i.source_row_id is not null or p.source_row_id is not null) as source_linked
   from public.payment_instances i
@@ -34,14 +41,24 @@ const BASE = `
   left join public.categories c on c.id = p.category_id
 `;
 
+/** The single decode point for every `BASE` query. Ordering still happens in SQL on the
+ * exact `numeric`, so dropping the cast did not change any `order by i.amount` result. */
+function mapInstanceRow(r: Record<string, unknown>): InstanceRow {
+  return {
+    ...(r as unknown as InstanceRow),
+    amount: moneyOrNull(r.amount as string | null),
+    paid_amount: moneyOrNull(r.paid_amount as string | null),
+  };
+}
+
 export async function instancesOn(pool: Pool, dateISO: string): Promise<InstanceRow[]> {
-  return (await pool.query(BASE + `where i.due_date = $1 order by i.amount desc nulls last`, [dateISO])).rows;
+  return (await pool.query(BASE + `where i.due_date = $1 order by i.amount desc nulls last`, [dateISO])).rows.map(mapInstanceRow);
 }
 
 export async function instancesBetween(pool: Pool, fromISO: string, toISO: string): Promise<InstanceRow[]> {
   return (
     await pool.query(BASE + `where i.due_date >= $1 and i.due_date <= $2 order by i.due_date, i.amount desc nulls last`, [fromISO, toISO])
-  ).rows;
+  ).rows.map(mapInstanceRow);
 }
 
 export async function overdueOpen(pool: Pool, todayISO: string): Promise<InstanceRow[]> {
@@ -50,7 +67,7 @@ export async function overdueOpen(pool: Pool, todayISO: string): Promise<Instanc
       BASE + `where i.due_date < $1 and i.status in ('unpaid','partial','planned','late') order by i.due_date`,
       [todayISO],
     )
-  ).rows;
+  ).rows.map(mapInstanceRow);
 }
 
 /** One bounded read for the complete Payments overview. */
@@ -66,23 +83,30 @@ export async function paymentOverviewInstances(
         order by i.due_date, i.amount desc nulls last`,
       [todayISO, futureEndISO],
     )
-  ).rows;
+  ).rows.map(mapInstanceRow);
 }
 
 export async function monthSummary(pool: Pool, monthStartISO: string) {
   const r = await pool.query(
     `select
-       coalesce(sum(amount) filter (where amount is not null),0)::float8 as known_total,
-       coalesce(sum(amount) filter (where amount is not null and status in ('unpaid','partial','planned','late')),0)::float8 as known_remaining,
-       coalesce(sum(coalesce(paid_amount, amount)) filter (where status='paid'),0)::float8 as paid_known,
+       coalesce(sum(amount) filter (where amount is not null),0) as known_total,
+       coalesce(sum(amount) filter (where amount is not null and status in ('unpaid','partial','planned','late')),0) as known_remaining,
+       coalesce(sum(coalesce(paid_amount, amount)) filter (where status='paid'),0) as paid_known,
        count(*) filter (where amount is null and status <> 'cancelled')::int as missing_count,
        count(*)::int as total_count
      from public.payment_instances where instance_month = $1`,
     [monthStartISO],
   );
-  return r.rows[0] as {
-    known_total: number; known_remaining: number; paid_known: number;
-    missing_count: number; total_count: number;
+  // The three sums are computed exactly by Postgres and only lose their exactness on the way
+  // into JS; `money()` rounds once at TL scale instead of letting float8 do it in binary.
+  // The two counts keep their `::int` casts — int4 already arrives as a JS number.
+  const row = r.rows[0] as Record<string, unknown>;
+  return {
+    known_total: moneyOrNull(row.known_total as string) ?? 0,
+    known_remaining: moneyOrNull(row.known_remaining as string) ?? 0,
+    paid_known: moneyOrNull(row.paid_known as string) ?? 0,
+    missing_count: intOrNull(row.missing_count as number) ?? 0,
+    total_count: intOrNull(row.total_count as number) ?? 0,
   };
 }
 
@@ -92,7 +116,7 @@ export async function missingAmountInstances(pool: Pool, monthStartISO: string):
       BASE + `where i.instance_month = $1 and i.amount is null and i.status in ('unpaid','partial','planned','late') order by i.due_date nulls last`,
       [monthStartISO],
     )
-  ).rows;
+  ).rows.map(mapInstanceRow);
 }
 
 export async function daylessPayments(pool: Pool) {
@@ -124,7 +148,7 @@ export async function riskyDays(pool: Pool, todayISO: string, horizonDays: numbe
 export async function monthInstances(pool: Pool, monthStartISO: string): Promise<InstanceRow[]> {
   return (
     await pool.query(BASE + `where i.instance_month = $1 order by i.due_date`, [monthStartISO])
-  ).rows;
+  ).rows.map(mapInstanceRow);
 }
 
 export async function paidInstances(pool: Pool, limit = 100): Promise<InstanceRow[]> {
@@ -133,7 +157,7 @@ export async function paidInstances(pool: Pool, limit = 100): Promise<InstanceRo
       BASE + `where i.status = 'paid' order by i.due_date desc limit $1`,
       [limit],
     )
-  ).rows;
+  ).rows.map(mapInstanceRow);
 }
 
 export interface PaymentHistoryEvent {
@@ -142,6 +166,14 @@ export interface PaymentHistoryEvent {
   occurredAt:string; sourceLinked:boolean;
 }
 
+/**
+ * Faz 17 fixed a genuine inconsistency here, not merely a cast: `audit_events` read the same
+ * JSON field `after_data->>'paid_amount'` TWO different ways in one select list — as
+ * `::float8` for the `paid_amount` column and as `::numeric` inside the `remaining_amount`
+ * arithmetic. The two columns could therefore disagree about the same underlying value, so
+ * `amount − paid_amount` did not always equal the reported `remaining_amount`. Both now parse
+ * as `numeric` and the whole row is decoded once in JS.
+ */
 export async function paymentHistoryEvents(pool:Pool, filters:{status?:string;q?:string;from?:string;to?:string;limit?:number}={}):Promise<PaymentHistoryEvent[]> {
   const result=await pool.query(`
     with audit_events as (
@@ -149,21 +181,21 @@ export async function paymentHistoryEvents(pool:Pool, filters:{status?:string;q?
         case when a.action='mark_paid' then 'paid' when a.action='mark_unpaid' then 'reopened'
              when a.after_data->>'status'='partial' then 'partial' else 'cancelled' end event_type,
         a.before_data->>'status' previous_status,coalesce(a.after_data->>'status','unknown') next_status,
-        i.amount::float8 amount,nullif(a.after_data->>'paid_amount','')::float8 paid_amount,
-        case when i.amount is null then null else greatest(0,i.amount-coalesce(nullif(a.after_data->>'paid_amount','')::numeric,0))::float8 end remaining_amount,
+        i.amount amount,nullif(a.after_data->>'paid_amount','')::numeric paid_amount,
+        case when i.amount is null then null else greatest(0,i.amount-coalesce(nullif(a.after_data->>'paid_amount','')::numeric,0)) end remaining_amount,
         to_char(a.created_at,'YYYY-MM-DD HH24:MI') occurred_at,(i.source_row_id is not null) source_linked
       from public.audit_logs a left join public.payment_instances i on i.id=a.entity_id left join public.payments p on p.id=i.payment_id
       where a.entity_table='payment_instances' and (a.action in ('mark_paid','mark_unpaid') or a.after_data->>'status' in ('partial','cancelled'))
     ), current_events as (
-      select i.id,i.id,coalesce(p.name,'(silinmiş kalem)'),i.status,null,i.status,i.amount::float8,i.paid_amount::float8,
-        case when i.amount is null then null else greatest(0,i.amount-coalesce(i.paid_amount,0))::float8 end,
+      select i.id,i.id,coalesce(p.name,'(silinmiş kalem)'),i.status,null,i.status,i.amount,i.paid_amount,
+        case when i.amount is null then null else greatest(0,i.amount-coalesce(i.paid_amount,0)) end,
         to_char(coalesce(i.paid_at,i.updated_at),'YYYY-MM-DD HH24:MI'),(i.source_row_id is not null)
       from public.payment_instances i left join public.payments p on p.id=i.payment_id
       where i.status in ('partial','cancelled') and not exists(select 1 from audit_events a where a.instance_id=i.id and a.next_status=i.status)
     ) select * from (select * from audit_events union all select * from current_events) h
     where ($1='' or event_type=$1) and ($2='' or payment_name ilike '%'||$2||'%') and ($3='' or occurred_at::text >= $3) and ($4='' or occurred_at::text <= $4||' 23:59')
     order by occurred_at desc limit $5`,[filters.status??"",filters.q??"",filters.from??"",filters.to??"",filters.limit??250]);
-  return result.rows.map(r=>({id:r.id,instanceId:r.instance_id,paymentName:r.payment_name,eventType:r.event_type,previousStatus:r.previous_status,nextStatus:r.next_status,amount:r.amount,paidAmount:r.paid_amount,remainingAmount:r.remaining_amount,occurredAt:r.occurred_at,sourceLinked:r.source_linked}));
+  return result.rows.map(r=>({id:r.id,instanceId:r.instance_id,paymentName:r.payment_name,eventType:r.event_type,previousStatus:r.previous_status,nextStatus:r.next_status,amount:moneyOrNull(r.amount),paidAmount:moneyOrNull(r.paid_amount),remainingAmount:moneyOrNull(r.remaining_amount),occurredAt:r.occurred_at,sourceLinked:r.source_linked}));
 }
 
 export { addMonths };

@@ -1,5 +1,9 @@
 // Payment radar domain rules (Phase 3). Pure & deterministic —
 // sources: docs/calculation-rules.md + .claude/skills/mas-payment-risk-engine.
+//
+// Faz 17: still pure — @/lib/money is a decimal helper with no DB or IO of its own, so this
+// module remains unit-testable exactly as before.
+import { decimal, money, ratioOrNull, zero, type Decimal } from "@/lib/money";
 
 export function daysInMonth(year: number, month1to12: number): number {
   return new Date(Date.UTC(year, month1to12, 0)).getUTCDate();
@@ -268,23 +272,46 @@ export function horizonCards(
 }
 
 export interface ConcentrationEntry { key: string; sum: number; ratio: number; flagged: boolean }
+
+/**
+ * Faz 17: the accumulation is exact, the public shape is unchanged.
+ *
+ * This function decides whether a single customer carries more than `flagRatio` of all known
+ * income — a threshold comparison, which is the one place a rounding error changes an ANSWER
+ * rather than a displayed digit. It used to add hundreds of `cashflow_lines` amounts with
+ * `+=` on floats and then divide; summing 20 000 rows of 0.07 that way yields
+ * 1399.9999999999804 where Postgres `sum()` yields 1400.00 (measured). Totals are now
+ * accumulated as decimals and rounded once at the end, so an entry sitting exactly on 0.40
+ * is no longer flagged or spared by accumulated binary error.
+ *
+ * Callers and tests still receive plain numbers — the boundary types did not move.
+ */
 export function concentration(
   items: Array<{ key: string | null; amount: number | null }>,
   flagRatio = 0.4,
 ): { entries: ConcentrationEntry[]; knownTotal: number; unknownCount: number } {
-  const sums = new Map<string, number>();
-  let knownTotal = 0, unknownCount = 0;
+  const sums = new Map<string, Decimal>();
+  let knownTotal = zero();
+  let unknownCount = 0;
   for (const it of items) {
     if (it.amount == null) { unknownCount++; continue; }
-    const v = Math.max(it.amount, 0);
-    if (v === 0) continue;
-    knownTotal += v;
+    const d = decimal(it.amount);
+    if (d.lte(0)) continue; // negatives are not concentration; explicit 0 adds nothing
+    knownTotal = knownTotal.plus(d);
     const k = it.key ?? "(atanmadı)";
-    sums.set(k, (sums.get(k) ?? 0) + v);
+    sums.set(k, (sums.get(k) ?? zero()).plus(d));
   }
   const entries = [...sums.entries()]
-    .map(([key, sum]) => ({ key, sum, ratio: knownTotal > 0 ? sum / knownTotal : 0, flagged: false }))
+    .map(([key, sum]) => ({
+      key,
+      sum: money(sum),
+      // ratioOrNull returns null when there is no denominator; "no known total" is not the
+      // same statement as "0% concentration", but the published shape is a number, so the
+      // null collapses to 0 here exactly as before rather than changing the contract.
+      ratio: ratioOrNull(sum, knownTotal) ?? 0,
+      flagged: false,
+    }))
     .sort((a, b) => b.sum - a.sum)
     .map((e) => ({ ...e, flagged: e.ratio > flagRatio }));
-  return { entries, knownTotal, unknownCount };
+  return { entries, knownTotal: money(knownTotal), unknownCount };
 }

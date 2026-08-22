@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { getPool } from "@/lib/db";
+import { add, decimal, moneyOrNull, sub } from "@/lib/money";
 import { Badge } from "@/components/ui/badge";
 import { Panel } from "@/components/ui/panel";
 
@@ -23,9 +24,9 @@ export default async function CashflowMonthPage({
   const pool = getPool();
   const mRes = await pool.query(
     `select cm.id, to_char(cm.month_start,'YYYY-MM') as ym,
-            cm.opening_balance::float8 as opening, cm.projected_income::float8 as income,
-            cm.projected_expense::float8 as expense, cm.monthly_delta::float8 as delta,
-            cm.closing_balance::float8 as closing, cm.status, cm.confidence,
+            cm.opening_balance as opening, cm.projected_income as income,
+            cm.projected_expense as expense, cm.monthly_delta as delta,
+            cm.closing_balance as closing, cm.status, cm.confidence,
             cm.source_workbook_id, cm.source_sheet_id, ss.sheet_name
      from public.cashflow_months cm
      left join public.source_sheets ss on ss.id = cm.source_sheet_id
@@ -33,10 +34,16 @@ export default async function CashflowMonthPage({
     [monthId],
   );
   if (mRes.rowCount === 0) notFound();
-  const m = mRes.rows[0];
+  const raw = mRes.rows[0];
+  const m = {
+    ...raw,
+    opening: moneyOrNull(raw.opening), income: moneyOrNull(raw.income),
+    expense: moneyOrNull(raw.expense), delta: moneyOrNull(raw.delta),
+    closing: moneyOrNull(raw.closing),
+  };
 
   const lines = await pool.query(
-    `select cl.id, cl.line_type, cl.direction, cl.label, cl.amount::float8 as amount,
+    `select cl.id, cl.line_type, cl.direction, cl.label, cl.amount,
             cl.amount_status, p.name as party, ir.row_index
      from public.cashflow_lines cl
      left join public.parties p on p.id = cl.party_id
@@ -45,10 +52,17 @@ export default async function CashflowMonthPage({
      order by cl.line_type, ir.row_index nulls last`,
     [monthId],
   );
+  // Decoded once here: the rows are read in several places below (sign colouring, per-group
+  // tables, the "others" bucket) and each of them expects a number.
+  const lineRows = lines.rows.map((l) => ({ ...l, amount: moneyOrNull(l.amount) }));
 
+  // devir + gelir − gider = kasa, checked within ±1 TL. Faz 17: evaluated in decimal, so the
+  // verdict comes from the stored values rather than from four floats that each drifted a
+  // little on the way in. A month sitting exactly on the 1 TL tolerance no longer flips on
+  // accumulated binary error.
   const identity =
     m.opening != null && m.income != null && m.expense != null && m.closing != null
-      ? Math.abs(m.opening + m.income - m.expense - m.closing) <= 1
+      ? sub(sub(add(m.opening, m.income), m.expense), m.closing).abs().lte(decimal(1))
       : null;
 
   const head: Array<[string, number | null]> = [
@@ -58,7 +72,7 @@ export default async function CashflowMonthPage({
   const fmt = (v: number | null) =>
     v != null ? new Intl.NumberFormat("tr-TR", { maximumFractionDigits: 0 }).format(v) : "—";
 
-  const others = lines.rows.filter((l) => !GROUPS.some(([t]) => t === l.line_type));
+  const others = lineRows.filter((l) => !GROUPS.some(([t]) => t === l.line_type));
 
   return (
     <>
@@ -103,7 +117,7 @@ export default async function CashflowMonthPage({
       </Panel>
 
       {GROUPS.map(([type, title]) => {
-        const list = lines.rows.filter((l) => l.line_type === type);
+        const list = lineRows.filter((l) => l.line_type === type);
         if (list.length === 0) return null;
         return (
           <Panel key={type} title={`${title} — ${list.length}`}>

@@ -1,4 +1,5 @@
 import type { Pool, PoolClient } from "pg";
+import { rate } from "@/lib/money";
 import {
   defaultReviewStatus,
   normalizeAssumptionType,
@@ -37,12 +38,26 @@ export interface ExternalAssumption {
   updated_at: string;
 }
 
+/**
+ * `value_numeric` is deliberately decoded at RATE precision, not money precision: this one
+ * column holds whatever the assumption's `unit` says it holds — an interest rate (0.4250), an
+ * FX rate, an index, or a TL amount. Rounding it to 2 decimals because it is *sometimes*
+ * money would silently destroy every rate stored here.
+ *
+ * The column is `numeric(18,6) not null` (migration 0016), so `rate()` — which throws rather
+ * than inventing a value — is correct here; a null would mean the NOT NULL constraint failed.
+ * RATE_DP (10) is wider than the stored scale of 6, so nothing is lost.
+ */
+function mapAssumption(r: ExternalAssumption): ExternalAssumption {
+  return { ...r, value_numeric: rate(r.value_numeric) };
+}
+
 export async function listExternalAssumptions(pool: Pool, limit = 80): Promise<ExternalAssumption[]> {
   const r = await pool.query(
     `select id, assumption_type, label,
             to_char(period_start,'YYYY-MM-DD') as period_start,
             to_char(period_end,'YYYY-MM-DD') as period_end,
-            value_numeric::float8 as value_numeric,
+            value_numeric,
             unit, currency, source_kind, source_name, source_url,
             to_char(source_date,'YYYY-MM-DD') as source_date,
             review_status,
@@ -57,7 +72,7 @@ export async function listExternalAssumptions(pool: Pool, limit = 80): Promise<E
      limit $1`,
     [limit],
   );
-  return r.rows as ExternalAssumption[];
+  return r.rows.map(mapAssumption);
 }
 
 export async function loadApprovedExternalAssumptions(pool: Pool, limit = 12): Promise<ExternalAssumption[]> {
@@ -65,7 +80,7 @@ export async function loadApprovedExternalAssumptions(pool: Pool, limit = 12): P
     `select distinct on (assumption_type) id, assumption_type, label,
             to_char(period_start,'YYYY-MM-DD') as period_start,
             to_char(period_end,'YYYY-MM-DD') as period_end,
-            value_numeric::float8 as value_numeric,
+            value_numeric,
             unit, currency, source_kind, source_name, source_url,
             to_char(source_date,'YYYY-MM-DD') as source_date,
             review_status,
@@ -79,7 +94,7 @@ export async function loadApprovedExternalAssumptions(pool: Pool, limit = 12): P
      limit $1`,
     [limit],
   );
-  return r.rows;
+  return r.rows.map(mapAssumption);
 }
 
 export async function loadExternalAssumptionCenter(pool: Pool) {
