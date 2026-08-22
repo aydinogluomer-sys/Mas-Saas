@@ -459,6 +459,16 @@ async function main(): Promise<void> {
     transportFor("email").channel === "email" && transportFor("telegram").channel === "telegram",
     "yeni kanal yarım bağlanamaz");
 
+  // Regression guard for the defect the coordinator found: this gate declares in its own header
+  // that MIGRATION_DATABASE_URL is all it needs, and that was false — importing the transport
+  // pulled in @/lib/env, which validates DATABASE_URL at module load. A STATIC import here would
+  // break the documented usage again, silently, for any future gate that imports a transport.
+  const transportSrc = readFileSync(path.join(process.cwd(), "src/lib/reminders/transport.ts"), "utf8");
+  const staticEnvImport = /^import\s+\{[^}]*\}\s+from\s+["']@\/lib\/env["']/m.test(transportSrc);
+  record("transport.ts @/lib/env'i MODÜL SEVİYESİNDE import etmiyor (mock DATABASE_URL istemesin)",
+    !staticEnvImport && /await import\("@\/lib\/env"\)/.test(transportSrc),
+    staticEnvImport ? "statik import geri gelmiş" : "env yalnız send() içinde, tembel yükleniyor");
+
   record("dış ağ çağrısı kurulmadı: gerçek SMTP istemcisi eklenmedi",
     !readFileSync(path.join(process.cwd(), "package.json"), "utf8").includes("nodemailer"),
     "Telegram deseniyle aynı: env + HTTP, mock ile test edilir");

@@ -2387,3 +2387,84 @@ izinliyken sözlerin `pending` takılı kalması demekti.
 
 WhatsApp iskeleti — implementation.md §3 açık soru #4 gereği ertelendi, eklenmedi; gate kaynak
 seviyesinde eklenmediğini kontrol ediyor.
+
+---
+
+## Faz 25 düzeltmesi — gate'ler kendi belgeledikleri kullanım şekliyle çalışmıyordu
+
+Koordinatör `phase25:verify`'ı script'in **kendi başındaki dokümantasyonla birebir** çalıştırdı
+(`MIGRATION_DATABASE_URL=... node --import tsx scripts/phase25-verify.ts`) ve 3 kez art arda aynı
+şekilde çöktü — 51/51 değil, **hiç başlamadan**:
+
+```
+Error: Ortam değişkeni doğrulaması başarısız (1 sorun):
+  - DATABASE_URL: DATABASE_URL zorunlu.
+    at src/lib/env.ts:87
+    ... at src/lib/reminders/transport.ts:5:21
+```
+
+### Neden benim koşularımda çıkmadı
+
+Çünkü ben her koşuda alışkanlıkla `export DATABASE_URL="$MIGRATION_DATABASE_URL"` yazıyordum.
+Yani **belgelediğim yolu bir kez bile denemedim**; her zaman ikisini birden verdiğim için hata
+maskelendi. Determinizmi 4 kez kanıtlamış olmam da işe yaramadı — dördü de yanlış komutla.
+
+### Kök neden: mekanik bir "DATABASE_URL da ekle" yaması DEĞİL
+
+`transport.ts` en üstte `import { env } from "@/lib/env"` yapıyordu. `env.ts` tasarım gereği
+**modül yüklenirken** doğruluyor (Faz 15 kararı) ve `DATABASE_URL` zorunlu. Yani bir transport'u
+**içe aktarmak**, yalnızca `send()` çağrıldığında okunan değerler için sert bir veritabanı
+zorunluluğu getiriyordu.
+
+Sonucun ne kadar ters olduğu kök nedeni de kanıtlıyor: **`mockTransport` — hiçbir yapılandırma
+istemeden yerine geçmesi tek amacı olan bağımlılıksız test ikizi — `DATABASE_URL` olmadan içe
+aktarılamıyordu.**
+
+Ve bu Faz 25'in getirdiği bir hata değil: `scripts/phase6b-verify.ts` **Faz 6B'den beri** yalnız
+`mockTransport` içe aktarıyor ve `DATABASE_URL` olmadan aynı şekilde çöküyordu. Ölçtüm, ikisini
+de aynı komutla tekrar ürettim. Faz 25 hatayı üretmedi, **görünür kıldı**.
+
+### Seçilen çözüm
+
+Üç seçenek vardı (dokümantasyonu düzeltmek, gerçek modülü import etmemek, bağımlılığı kaldırmak).
+Doğrusu üçüncüsü — ama sahte bir `DATABASE_URL` enjekte ederek değil, **gereksiz modül-yükleme
+bağını kaldırarak**: `env` okuması `send()` içine, `try` bloğunun içine taşındı.
+
+Hiçbir şey zayıflamıyor:
+- `env.ts` hâlâ tek doğrulanmış kaynak — bu dosya `process.env`'e **dokunmuyor** (Faz 15'in var
+  olma sebebi olan kural).
+- Başlangıç doğrulaması hâlâ yapılıyor, çünkü `@/lib/db` `env`'i statik import ediyor ve her
+  sunucu yolu havuzdan geçiyor.
+- `import`, `send()`'in `try`'ı **içinde**: yanlış yapılandırılmış bir ortam, fırlatma değil
+  raporlanan bir `DeliveryResult` hatası olarak yüzeye çıkmalı — `reminder_deliveries`'in
+  `'failed'` durumunun dayandığı özellik bu.
+
+Değişen tek gözlemlenebilir davranış: `DATABASE_URL` yokken e-posta hatası artık
+"EMAIL_API_URL/EMAIL_TO tanımlı değil" yerine ortam doğrulama mesajını taşıyor. Üretimde bu yol
+erişilemez (DATABASE_URL yoksa uygulama zaten açılmıyor), ve `ok:false` + sır sızdırmama
+özellikleri aynen duruyor.
+
+### Tekrarını engelleyen yapısal kontrol
+
+`phase25:verify`'a bir kontrol eklendi: `transport.ts` `@/lib/env`'i **modül seviyesinde** import
+etmemeli (ve `await import` ile tembel yüklemeli). Kontrolün gerçekten işe yaradığı **negatif
+kontrolle** kanıtlandı: statik import geçici olarak geri konduğunda gate 52/52'den 51/52'ye düştü
+ve hatayı adıyla bildirdi.
+
+### Doğrulama
+
+- `phase25:verify` **kendi belgelediği kullanım şekliyle** (yalnız `MIGRATION_DATABASE_URL`)
+  **4 kez art arda 52/52**.
+- `phase6b:verify` aynı komutla ALL PASS (eski gizli hata da kapandı).
+- Tüm zincir regresyonsuz: phase3-25 **29/29**, db:migrate:verify 49/49,
+  db:constraints:verify 65/65, db:transitions:verify 167/167, db:reconciliation:verify 77/77,
+  db:legacy-repair:verify 183/183, db:roles:verify 8/8, **db:roles-rls:verify 29/29 (×3)**,
+  test 564/564, build, phase16 18/18.
+- Faz 24B iddiası yeniden doğrulandı: **62 tablo / 310 (katman × tablo) INSERT kombinasyonu**,
+  kalan blanket politika 0.
+
+### Ders
+
+Bir gate'in determinizmini kanıtlamak, onu **doğru komutla** çalıştırmadıkça hiçbir şey kanıtlamaz.
+Bundan sonra yeni bir gate'in ilk koşusu, kendi başlığındaki `Usage:` satırı kopyalanarak —
+fazladan hiçbir ortam değişkeni verilmeden — yapılmalı.
