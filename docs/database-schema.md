@@ -498,3 +498,129 @@ Türkçe CSV'ler `;` kullanır çünkü `,` ondalık ayırıcıdır.
 implementation.md canlı banka bağlantısını Faz 37'ye erteler. Bu faz yalnız dosya importudur ve
 `phase20:verify` `src/lib/bank/engine.ts` içinde ağ çağrısı olmadığını kontrol eder — kapsam
 kaymasını başka hiçbir gate yakalamazdı.
+
+## Fatura Merkezi (Faz 21, migration 0044-0047)
+
+Faz 19'un `parties`/`cost_centers`/`projects`/`orders`/`products` referans verisi üzerine kurulu.
+Gerçek kolon adları migration yazılmadan ÖNCE introspection'la doğrulandı (`projects.party_id`,
+`projects.cost_center_id`, `orders.party_id` — plandan tahmin edilmedi).
+
+### 0044 — invoices ve ALTI durumlu yaşam döngüsü
+
+Kolonlar: yön (`sales`/`purchase`), fatura no, karşı taraf (NOT NULL), opsiyonel
+masraf merkezi / proje / sipariş, düzenleme+vade tarihi, para birimi, net/KDV/brüt, ödenen tutar,
+durum, 0026 desenli iptal alanları, kapatma alanları, Faz 2 lineage üçlüsü, dedupe_hash.
+
+**Zorlanan mali değişmez:** `gross_amount = net_amount + tax_amount`. Parçaları toplamayan bir
+fatura, aylar sonra nakit-akış tahmininde açıklanamayan bir fark olarak ortaya çıkacak bir
+veri-giriş hatasıdır; yazma anında düşer.
+
+**`paid_amount`'a üst sınır YOK** — fazla ödeme gerçekte oluyor (mükerrer transfer, bankada kur
+yuvarlaması) ve engellemek operatörü kaydı çarpıtmaya zorlardı. `invoice_overpaid` view'i
+raporluyor. Flag, never fix.
+
+#### Durum izin listesi (CHECK ile AYNI migration'da)
+
+CHECK: `draft · open · partial · paid · closed · cancelled`. On dört geçiş:
+
+| | |
+| --- | --- |
+| draft → open | fatura düzenlendi |
+| draft → cancelled | hiç ticarileşmemiş taslak iptali |
+| open → partial / paid | kısmen / tamamen tahsil |
+| open → closed | tam tahsil olmadan kapatma (iskonto, zarar yazma) |
+| open → cancelled | DÜZENLENMİŞ faturanın iptali — reversal kaydı şart |
+| partial → paid / open / closed / cancelled | kalan tahsil / tek ödeme geri alındı / kalan silindi / iptal |
+| paid → partial / open | ödeme(ler) geri alındı |
+| paid → closed | tahsil sonrası arşiv |
+| closed → open | düzeltme için yeniden açma |
+
+**Erişilebilirlik:** altı durumun altısı da `draft`'tan erişilebilir. Bilerek yasaklananlar:
+- **hiçbir şey → draft** — düzenlenmiş fatura "düzenlenmemiş" yapılamaz; bu, karşı tarafın
+  eline geçtiği gerçeğini silmek ve içerik dokunulmazlığını yeniden açmak olurdu.
+- draft → partial/paid/closed — düzenlenmeden tahsil olmaz.
+- closed → partial/paid/cancelled — önce `open`'a dönülür, böylece yeniden açma kendi başına
+  denetlenen bir eylem olur (Faz 20'nin `reconciled → matched` kurgusuyla aynı).
+- **cancelled → hiçbir şey (TERMİNAL)** — iptal, 0046'daki reversal kaydıyla belgelenir; çare
+  yeni fatura düzenlemektir, iptal edilmiş bir faturayı diriltmek değil. Denetim izi ile
+  yeniden yazma arasındaki fark budur.
+
+`phase21:verify` bunu **36 çiftin tamamını gerçek satırlar üzerinde deneyerek** kanıtlıyor;
+yorumu okumuyor.
+
+#### İçerik dokunulmazlığı (0024 deseni)
+
+**`draft` tek düzenlenebilir durumdur.** Fatura düzenlendikten sonra kimin için olduğu, numarası,
+tarihleri ve tutarları donar. Bu temkin değil, faturanın ne OLDUĞUdur: karşı tarafın elindeki bir
+belge. Düzeltme iptal+yeniden düzenleme ya da iade faturasıyla yapılır.
+
+**Bilerek DONMAYAN:** `status`, `paid_amount`, iptal/kapatma meta verisi, `notes`, `updated_at`.
+Düzenlenmiş faturaya tahsilat işlenebilmeli — guard'ı buraya kadar genişletmek, 0027'nin
+"satır kullanılamaz hale geldi" hatasını başka kılıkta tekrarlamak olurdu. `phase21:verify`
+guard'ın çok geniş OLMADIĞINI ayrıca test ediyor.
+
+### 0045 — invoice_lines
+
+Miktar ve birim fiyat `numeric(_,4)` (talaşlı imalatta 12,3456 TL birim fiyat olağan; kalem
+düzeyinde kuruşa yuvarlamak tedarikçinin kendi belgesiyle uyuşmazlık yaratır), kalem tutarları
+TL ölçeğinde ve aynı `gross = net + tax` değişmezi.
+
+Kalemler başlığın dokunulmazlığını izler: başlığı dondurup kalemleri serbest bırakmak tiyatro
+olurdu — toplam sabit kalırken altındaki detay değişirdi. Tek fonksiyon INSERT/UPDATE/DELETE'i
+birlikte kapsıyor ki arada boşluk kalmasın. Parent satır yoksa (ON DELETE CASCADE çalışıyordur)
+guard geçit veriyor, aksi halde taslak fatura bile silinemezdi.
+
+**Düzenlenmiş fatura SİLİNEMEZ** (ayrı trigger): iptal reversal kaydı bırakır, DELETE hiçbir şey
+bırakmaz — denetim izinin atlatamayacağı tek sonuç budur. Taslaklar silinebilir kalır.
+
+### 0046 — invoice_reversals: iptal = bağlı kayıt, sessiz durum değişimi DEĞİL
+
+`status='cancelled'` yalnız "geçersiz mi" sorusunu yanıtlar; kimin, ne zaman, neden iptal
+ettiğini ve — asıl önemlisi — **faturanın iptal anında NE DEDİĞİNİ** yanıtlayamaz. Bu yüzden her
+iptal, faturanın ve kalemlerinin dondurulmuş JSON kopyasını taşıyan bir kayıt yazar.
+
+- 0022'nin **salt-ekleme** kurgusu (UPDATE/DELETE/TRUNCATE superuser dahil reddedilir).
+- Fatura başına **en fazla bir `cancellation`** (partial unique index); iade faturası birden
+  fazla olabilir.
+- **`invoices_require_reversal_record`** — DEFERRABLE constraint trigger: bağlı kaydı olmayan bir
+  `cancelled` fatura COMMIT edilemez. Bu olmasaydı tasarım tavsiye niteliğinde kalırdı; bir kod
+  yolu 0044'ün CHECK'ini sağlayıp arkasında hiçbir kayıt bırakmayabilirdi.
+
+#### `invoice_id` neden FK DEĞİL — ve bunu ne ortaya çıkardı
+
+İlk taslak `references public.invoices(id) on delete restrict` diyordu ve **`pnpm import:real`
+anında düştü**. `scripts/import-real.ts` `truncate public.source_workbooks cascade` çalıştırıyor;
+faturalar `source_workbook_id` lineage kolonu taşıyor; ve **TRUNCATE CASCADE, ON DELETE
+eylemine bakmaksızın referans veren HER tabloyu izliyor** — böylece cascade bu tabloya ulaştı ve
+salt-ekleme trigger'ı meşru bir geliştirme sıfırlamasını iptal etti.
+
+Normal işleyişi bozacak kadar geniş çizilmiş bir guard, 0027 hatasının başka kılığıdır.
+
+FK'yı kaldırmak bunu yan etki olarak çözüyor ama bağımsız olarak da doğru şekil — ve bu depoda
+zaten emsali var: 0037'nin `iban_change_events.iban_id`'si aynı gerekçeyle FK değil. **Bir
+append-only kanıt tablosuna cascade edebilen her tablo, o kanıtı yok edebilir.** Bütünlük ait
+olduğu yerde korunuyor: engine faturayı yazmadan önce çözüp kilitliyor, ve yukarıdaki deferred
+trigger kayıtsız bir iptali reddediyor.
+
+### 0047 — beş view
+
+`invoice_open_items` (yaşlandırma kovalarıyla), `invoice_duplicate_suspects`,
+`invoice_line_mismatches`, `invoice_overpaid`, `invoice_party_summary`. Kalıcı kolon değil —
+0039/0043 ile aynı gerekçe.
+
+**Duplicate tespiti** (karşı taraf + numara + tutar + tarih) iki ayrı sinyal olarak raporlanıyor:
+`same_number` (neredeyse her zaman gerçek duplicate) ve `near_match` (aynı tutar, 7 gün içinde,
+FARKLI numara — tedarikçinin yeni numarayla yeniden gönderdiği durumu yakalar). İptal edilen
+faturalar listeden düşüyor, çünkü birini iptal etmek duplicate'i çözmenin ta kendisidir.
+
+**Duplicate ENGELLENMEZ.** `bank_transactions.dedupe_hash` unique'tir çünkü örtüşen ekstre
+dönemini yeniden indirmek mekanik ve beklenen bir iştir; doğru cevap "mevcut satıra düş"tür.
+Fatura duplicate'i başka bir hayvandır: insan ya da tedarikçi hatasıdır, iki satır anlamlı
+şekilde farklı olabilir, ve ikincisini reddetmek operatörü ya rakamı çarpıtmaya ya içe aktarmayı
+bırakmaya zorlar. Tespit edilir ve bildirilir; sessizce birleştirilmez de engellenmez de.
+
+**Başlık/kalem uyuşmazlığı** da raporlanır, engellenmez: kalemler zorunlu olarak başlıktan SONRA
+yazılır, dolayısıyla engelleyen bir trigger ya deferred olmak (ve tek bozuk satır için tüm içe
+aktarma transaction'ını düşürmek) ya da normal ekleme sırasını yasaklamak zorunda kalırdı. Bu
+sınıf için deponun yerleşik cevabı nakit-akış kimlik kontrolüdür: hesapla, göster, insan karar
+versin.

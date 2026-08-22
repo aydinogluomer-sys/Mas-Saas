@@ -1522,3 +1522,167 @@ veritabanları düşürüldü, `mas_radar_app` yeniden `NOLOGIN`.
 doğrulanır** — ya sorgu tek satıra indirgenir (benzersiz anahtarla), ya da sayı açıkça
 assert edilir. `like '%kolon_adı%'` bir hedefleme yöntemi değildir; aynı kolonu anan her
 constraint'i toplar.
+
+---
+
+## Faz 21 — DONE (Fatura Merkezi: 6 durumlu yaşam döngüsü, duplicate tespiti, reversal kaydıyla iptal)
+
+Dört migration (0044-0047), üç tablo, beş view. **Gerçek `mas_radar_dev`'e uygulanmadı** —
+aşağıda. Faz 19'un referans verisi üzerine kurulu; gerçek kolon adları migration yazılmadan
+ÖNCE introspection'la doğrulandı (`projects.party_id`, `projects.cost_center_id`,
+`orders.party_id` — plandan tahmin edilmedi).
+
+### Altı durum, 36 çift, sayımla kanıtlandı
+
+`draft · open · partial · paid · closed · cancelled` — CHECK ile izin listesi **aynı
+migration'da** (0044), on dört geçişle. `phase21:verify` **36 çiftin tamamını gerçek satırlar
+üzerinde** deniyor ve gözlenen matrisi beyanla karşılaştırıyor: **36/36 uyum, 6/6 durum
+erişilebilir, ölü değer yok.**
+
+İki karar özellikle gerekçeli:
+- **Hiçbir şey → draft yok.** Düzenlenmiş bir fatura "düzenlenmemiş" yapılamaz; bu hem karşı
+  tarafın eline geçtiği gerçeğini silmek hem de içerik dokunulmazlığını yeniden açmak olurdu.
+- **`cancelled` TERMİNAL.** İptal, bağlı reversal kaydıyla belgelenir; çare yeni fatura
+  düzenlemektir. Denetim izi ile yeniden yazma arasındaki fark tam olarak budur.
+
+### Faz 20'nin gate dersi baştan uygulandı — ve burada da gerekliydi
+
+Faz 20'nin düzeltmesinde öğrenilen kural (`like '%kolon%'` ile constraint hedefleme + ORDER BY'sız
+`[0]` = belirsizlik) bu fazın gate'inde **en baştan** uygulandı: constraint `conkey` ile yapısal
+olarak hedefleniyor ve **aday sayısı 1 değilse gate düşüyor**.
+
+Bunun boş bir tedbir olmadığı ölçüldü: `invoices` üzerinde `like '%status%'` **üç** constraint
+eşliyor (`invoices_status_check`, `invoices_cancel_consistency`, `invoices_close_consistency`).
+Faz 20'nin hatası burada birebir tekrarlanacaktı. `phase21:verify` bunu ayrı bir kontrol olarak
+da raporluyor: *"metin araması burada da belirsiz olurdu (bu yüzden kullanılmadı) — like
+'%status%' 3 constraint eşliyor; conkey ile 1 tanesi kalıyor."*
+
+### İptal = bağlı kayıt, sessiz durum değişimi DEĞİL
+
+`status='cancelled'` yalnız "geçersiz mi" sorusunu yanıtlar; kimin/ne zaman/neden iptal ettiğini
+ve **faturanın iptal anında ne dediğini** yanıtlayamaz. Her iptal, faturanın ve kalemlerinin
+dondurulmuş JSON kopyasını taşıyan bir `invoice_reversals` kaydı yazar (0022 salt-ekleme kurgusu,
+0026 iptal alanları, 0024 dokunulmazlık duruşu — üçü de yeniden kullanıldı, dördüncü bir
+mekanizma icat edilmedi).
+
+Asıl zorlayıcı **`invoices_require_reversal_record`**, DEFERRABLE constraint trigger: bağlı kaydı
+olmayan bir `cancelled` fatura COMMIT edilemiyor. Bu olmasaydı tasarım tavsiye niteliğinde
+kalırdı. `phase21:verify` sessiz iptalin reddedildiğini, reversal kaydıyla iptalin geçtiğini,
+ikinci bir cancellation'ın reddedildiğini ve kaydın UPDATE/DELETE edilemediğini ayrı ayrı
+ölçüyor.
+
+### İçerik dokunulmazlığı — ve guard'ın ÇOK GENİŞ olmadığının kanıtı
+
+`draft` tek düzenlenebilir durum. Düzenlendikten sonra karşı taraf, numara, tarihler ve tutarlar
+donuyor; düzeltme iptal+yeniden düzenlemeyle yapılıyor. Kalemler başlığın dokunulmazlığını
+izliyor (başlığı dondurup kalemleri serbest bırakmak tiyatro olurdu). Düzenlenmiş fatura
+silinemiyor; taslak silinebiliyor.
+
+Ama guard bilerek dar: `status`, `paid_amount`, iptal/kapatma meta verisi ve `notes` donmuyor —
+düzenlenmiş faturaya tahsilat işlenebilmeli. **Guard'ı buraya kadar genişletmek 0027'nin "satır
+kullanılamaz hale geldi" hatasını başka kılıkta tekrarlamak olurdu**, ve gate bunu ayrıca test
+ediyor ("guard ÇOK GENİŞ değil: paid_amount ve status hâlâ değişebiliyor").
+
+### `import:real` gerçek bir tasarım hatası yakaladı: TRUNCATE CASCADE
+
+0046'nın ilk hâli `invoice_id uuid not null references public.invoices(id) on delete restrict`
+diyordu. **`pnpm import:real` anında düştü.**
+
+Kök neden: `scripts/import-real.ts` `truncate public.source_workbooks cascade` çalıştırıyor,
+faturalar `source_workbook_id` lineage kolonu taşıyor, ve **TRUNCATE CASCADE `ON DELETE`
+eylemine bakmaksızın referans veren HER tabloyu izliyor** — cascade `invoice_reversals`'a ulaştı
+ve salt-ekleme trigger'ı meşru bir geliştirme sıfırlamasını iptal etti.
+
+Normal işleyişi bozacak kadar geniş çizilmiş bir guard, 0027 hatasının başka kılığı.
+
+Düzeltme FK'yı kaldırmak — ve bu, hatayı çözmek için uydurulmuş bir kaçamak değil, bu depoda
+**zaten var olan emsalin** aynısı: 0037'nin `iban_change_events.iban_id`'si aynı gerekçeyle FK
+değil ("satır, tarif ettiği şeyden uzun yaşamalı"). Genel kural olarak: **bir append-only kanıt
+tablosuna cascade edebilen her tablo, o kanıtı yok edebilir.** Bütünlük ait olduğu yerde
+korunuyor — engine faturayı yazmadan önce çözüp kilitliyor, deferred trigger kayıtsız iptali
+reddediyor.
+
+Faz 20'de `iban_change_events` bu sorunu hiç yaşamamıştı çünkü zaten FK'sızdı; yani emsal
+doğruydu, ben Faz 21'de ona uymayı ilk denemede atlamıştım.
+
+### Temiz DB'de ortaya çıkan ikinci gate hatası (yine kendi kontrolümde)
+
+`invoice_reversals` düzeltildikten sonra `mas_radar_p21` sıfırdan kurulunca **"kalem gross <>
+net + tax REDDEDİLİR" kontrolü düştü**. Sebep kısıt değildi: sonda
+`select id ... from public.invoices limit 1` ile rastgele bir fatura seçiyordu ve daha önce
+yalnız elle yapılan bir testten kalan **commit edilmiş** bir satır olduğu için geçiyordu. Temiz
+veritabanında sıfır satır seçildi, INSERT hiçbir şey yazmadı, "reddedildi" false döndü.
+
+**Faz 20'nin boş-tablo tuzağıyla aynı aile:** vakumda başarılı olabilen bir sonda hiçbir şey
+kanıtlamaz. Sonda artık kendi taslak faturasını yaratıyor, ve yanına bir **pozitif kontrol**
+eklendi (doğru aritmetikli kalem KABUL EDİLİYOR) ki reddin gerçekten CHECK'ten geldiği belli
+olsun. Kontrol sayısı 34 → **35**.
+
+### Birim testinde üçüncü bir ders: değişmezi float ile doğrulamak
+
+`rules.test.ts` ilk hâlinde `expect(t.grossAmount).toBe(t.netAmount + t.taxAmount)` yazıyordu ve
+q=7, p=1.115'te düştü: **kod doğru olarak 9.22 üretti, TEST ise 7.81 + 1.41 = 9.219999999999999
+hesapladı.** Test, kodun kaçınmak için var olduğu aritmetiği kullanıyordu ve "düzeltmesi" kodu
+bozmak olurdu. 0044'ün CHECK'i Postgres'te `numeric` ile değerlendiriliyor; assertion da öyle
+olmak zorunda. `expectGrossInvariant` yardımcısı decimal ile karşılaştırıyor.
+
+### Duplicate: tespit var, kısıt YOK
+
+Karşı taraf + numara + tutar + tarih sezgisi iki ayrı sinyal olarak raporlanıyor: `same_number`
+ve `near_match` (aynı tutar, ≤7 gün, FARKLI numara — tedarikçinin yeni numarayla yeniden
+gönderdiği durum). İptal edilenler listeden düşüyor.
+
+**Engellenmiyor**, ve bu Faz 20'yle bilinçli bir karşıtlık: `bank_transactions.dedupe_hash`
+unique'tir çünkü örtüşen ekstre dönemini yeniden indirmek mekanik ve beklenen bir iştir. Fatura
+duplicate'i insan/tedarikçi hatasıdır, iki satır anlamlı şekilde farklı olabilir, ve ikincisini
+reddetmek operatörü ya rakamı çarpıtmaya ya içe aktarmayı bırakmaya zorlar.
+
+Başlık/kalem uyuşmazlığı da aynı mantıkla raporlanıyor: kalemler zorunlu olarak başlıktan SONRA
+yazılır, engelleyen bir trigger normal ekleme sırasını yasaklardı. Deponun bu sınıf için yerleşik
+cevabı nakit-akış kimlik kontrolü.
+
+### DOKUNULMAYANLAR (bilinçli)
+
+- **`payments`/`checks`/`bank_transactions`** — fatura tahsilatı bu kayıtlara dokunmuyor.
+  Tahsilatı üreten parayla bağlantı **Faz 22'nin** işi; audit satırı bunu
+  `linked_settlement_source: null` ile açıkça kaydediyor.
+- **Çok kalemli fatura editörü** — UI tek kalemli taslak açıyor; engine dizi alıyor.
+- **İade faturası (credit_note) akışı** — tablo ve tip destekliyor, UI akışı bu fazda yok.
+
+### Gate sonuçları
+
+| Adım | Sonuç |
+| --- | --- |
+| `pnpm lint` | exit 0 (1 uyarı: `analytics-chart.tsx`, önceden var) |
+| `pnpm typecheck` | exit 0 |
+| `pnpm test` | **432/432** (388 mevcut + 44 yeni fatura kuralı) |
+| `pnpm db:verify` | ALL ASSERTIONS PASSED |
+| `db:migrate:verify` | 49/49 (ledger 47 migration) |
+| `db:constraints:verify` | 54/54 |
+| `db:transitions:verify` | 167/167 |
+| `db:reconciliation:verify` | 77/77 |
+| `pnpm db:roles:verify` | 8/8 |
+| `pnpm import:real` | ALL PASS (TRUNCATE CASCADE hatası düzeltildikten sonra) |
+| phase3…phase14e (20 script) | 20/20 PASS |
+| `pnpm build` | exit 0 |
+| `pnpm phase16/17/18:verify` | 18/18 · 10/10 · 12/12 |
+| `pnpm phase19:verify` | 26/26 |
+| `pnpm phase20:verify` | 31/31 |
+| `pnpm phase21:verify` | **35/35** — beş koşunun beşinde de (üçünde katalog karıştırılarak), her seferinde 6×6 matris |
+
+### GERÇEK VERİTABANINA UYGULANMADI
+
+Commit öncesi teyit: `schema=0034 · payments=19 · users=12 · invoices=YOK ·
+invoice_reversals=YOK`. Doğrulamanın tamamı `mas_radar_verify` ve `mas_radar_p21` disposable
+veritabanlarında yapıldı, ikisi de düşürüldü, `mas_radar_app` yeniden `NOLOGIN`.
+
+### Faz 22'ye devredilen açık noktalar
+
+1. **Tahsilat ↔ para bağlantısı yok.** `recordInvoicePayment` yalnız `paid_amount`'ı hareket
+   ettiriyor; hangi banka hareketi veya ödeme kaleminin onu ürettiği kaydedilmiyor — Faz 22'nin
+   çekirdek işi. `bank_transaction_match_candidates.target_table` CHECK'i o zaman
+   `invoices`/`invoice_lines` ile genişletilecek.
+2. **Çok kalemli fatura UI'ı** ve **iade faturası akışı**.
+3. Faz 17-20'den devam: `scripts/**`'daki 47 `::float8`, `rules.ts` biriktiricileri,
+   `createCheckAction`'ın transaction dışı audit'i, mevcut action'ların Zod'a geçirilmesi,
+   kredi `lender_party_id` eşleştirme UI'ı, ekstre bakiyesi ↔ hesaplanan bakiye mutabakatı.
