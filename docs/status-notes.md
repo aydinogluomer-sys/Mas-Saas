@@ -3468,3 +3468,120 @@ env -u DATABASE_URL MIGRATION_DATABASE_URL="postgresql://..." pnpm phase34:verif
 **60/60, 3 kez art arda**, gate'in kendi kurduğu fixture üzerinde (Pareto her koşuda aynı sonucu
 verdi: 3/4 karşı taraf açık alacağın %80'ini taşıyor). `DATABASE_URL`'in tanımsız olduğu ayrıca
 doğrulandı. 99 yeni birim testi.
+
+## Faz 35 — DONE (doküman merkezi, evrensel arama, ⌘K paleti, doğal-dil sınırı)
+
+Migration **0083**. Açık soru #7'yi kapattım; kritik güvenlik şartını üç ayrı yoldan kanıtladım.
+
+### AÇIK SORU #7 — Depolama: YEREL DİSK, ve precedent zaten repoda
+
+Karar iddiaya değil, mevcut koda dayanıyor: **Faz 2 bunu zaten çözmüş ve kimse yazmamış.**
+`source_workbooks` (migration 0001) şu iki kolonu taşıyor:
+
+```
+storage_path text,
+file_sha256  text,
+```
+
+Yani baytlar yerel diskte, veritabanı yol + sağlama tutuyor. `attachments` bilerek **aynı şekil**;
+ikinci bir depolama geleneği kurmak, öğrenilecek ikinci bir şey olurdu.
+
+İki alternatif, bu projenin gösterebileceği sebeplerle reddedildi:
+
+- **Obje depolama (S3 vb.)**, CLAUDE.md'nin tek şirketli, özel, yerel Docker Postgres üzerinde
+  çalışan bir iç kontrol paneli olarak tanımladığı sisteme **harici bulut bağımlılığı** eklerdi.
+  Ayrıca finansal dokümanları, sahibinin bir dosya yöneticisiyle açamayacağı bir yere koyardı.
+- **Baytları Postgres'e koymak** (bytea/large object) her taranmış sözleşmeyi yedeğe sokardı.
+  **Faz 33 bunun bedelini ölçtü**: 24.000 faturada pg_dump zaten yedek doğrulama yolunu tamamen
+  kıracak kadar büyüktü. Zorunlu migration-öncesi yedek, pratik olmaktan çıkmaması gereken tek
+  şey.
+
+**Yerel diskin bedeli, açıkça yazıldı:** veritabanı tek başına geri yükleme için yeterli değil —
+dump + kayıp doküman dizini = ölü bağlantılarla dolu bir dump. Bu yüzden iki şey yapıldı,
+umulmadı:
+
+1. `file_sha256` burada **NOT NULL** (0001'de nullable) — bir geri yükleme hangi dosyanın eksik
+   veya bozuk olduğunu en azından **kanıtlayabilir**.
+2. `verifyStored()` okurken yeniden sağlama alır; bozulma hata olarak yüzeye çıkar, sessizce
+   değişmiş bir doküman olarak değil. Doküman sayfası bunu bir bütünlük süpürmesi olarak gösterir.
+
+**İçerik adresli yerleşim** (`<kök>/aa/bb/<sha256>`): aynı baytlar bir kez saklanır, dosyanın adı
+kendi bütünlük kontrolüdür, ve **kullanıcı metni yola hiç girmediği için** dizin dışına çıkma
+yapısal olarak imkânsızdır. Gate `../../etc/passwd` denemesinin reddedildiğini doğruluyor.
+
+### KRİTİK ŞART — Arama RLS'i atlamıyor: ÜÇ YOLDAN kanıtlandı
+
+Uyarılan tuzak gerçek ve yaygın: aramayı "performans için" tek geniş bağlantı üzerinden çalıştırıp
+sonuçları uygulama katmanında filtrelemek. O zaman bir viewer, ürünün geri kalanının ondan
+sakladığı satırları arama sonuçlarında görür — ve sızıntı bir özellik gibi görünür.
+
+1. **YAPISAL** — `src/lib/search/*` hiçbir bağlantı **almıyor**: `new Pool` yok, `getPool` yok,
+   `getRawPool` yok, `runAsSystem` yok. Havuz çağırandan geliyor.
+   *Negatif kontrol:* motora kasten `getRawPool()` çağrısı ekledim; gate dosyayı adıyla bildirerek
+   düştü.
+2. **SINIFLANDIRMAYLA** — arama kaydındaki 9 tablonun hepsi Faz 24B'de sınıflandırılmış ve
+   **hiçbiri** herhangi bir katmanın göremeyeceği bir tablo değil. `ledger` sınıfı
+   (`schema_migrations`) aranabilir değil. Arama, kısıtlı bir tablonun göründüğü tek ekran olamaz.
+3. **DAVRANIŞSAL — gerçek `SET ROLE` ile** — aynı `runSearch()` fonksiyonu, sahibin gördüğü bir
+   fixture dokümanı üzerinde:
+   - **katmana geçmemiş** `mas_radar_app` bağlantısında → **0 sonuç**
+   - **`SET ROLE mas_radar_viewer`** ile → dokümanı **görüyor** (pozitif kontrol: (a)'daki sıfır
+     RLS yüzünden, alakasız bir sebepten değil)
+   - viewer `schema_migrations`'ı **doğrudan** da okuyamıyor
+   Parola verilmediğinde gate bu kontrolü **sessizce atlamıyor, yüksek sesle düşüyor** — çalışmayan
+   bir güvenlik kontrolü, olmayan bir güvenlik kontrolünden kötüdür.
+
+### Doğal-dil sınırı: model daraltabilir, ASLA genişletemez
+
+`ai/engine.ts`'in zaten çizdiği sınırın aynısı, yeni mimari yok:
+
+- Türkçe sorgu **önce ve her zaman deterministik** ayrıştırılır. Model isteğe bağlı bir
+  iyileştirmedir; API anahtarı bittiğinde çalışmayı durduran şey arama değildir.
+- Modelin döndürebileceği tek şey, kayıt anahtarlarından kurulmuş bir **Zod enum**'una uyan
+  yapısal niyettir. `"users"` veya `"parties; drop table invoices"` ayrıştırmayı geçemez —
+  modelin bir tablo adı katabileceği kod yolu **yoktur**.
+- `reconcileModelIntent()` modelin listesini kullanıcının kendi sözleriyle **kesiştirir**:
+  kapsam yalnız **daraltılabilir**. Kullanıcı "faturaları" dediyse, prompt-injection ile gelen
+  "her şeyi ara" `audit_logs`'a ulaşamaz.
+- Arama **metni** her zaman kullanıcıdan gelir; model onu yeniden yazamaz.
+- `mutationIntent()` (Faz 6'nın mevcut koruması, yeniden kullanıldı) veri değiştiren ifadeleri
+  arama olarak çalıştırmayı reddediyor.
+
+Sorgu üreteci tarafında: her tanımlayıcı **kayıttan gelen bir literal** ve `assertSafeIdentifiers`
+ile sorgu kurulurken yeniden kontrol ediliyor; her **değer** bağlı parametre. Gate bunu yapısal
+olarak doğruluyor — SQL kuran iki yapıda (`where.push(...)` parçaları ve `sql` şablonu) `intent.`
+geçmiyor.
+
+### Türkçe ayrıştırıcı: iki gerçek hata testlerle yakalandı
+
+1. **Ekler.** `\b(fatura|faturalar)\b` "faturaları"yı eşleştirmiyordu — yani en bariz sorgu hiçbir
+   entity bulmuyordu. Türkçe eklemeli; artık **gövde + ek** olarak eşleşiyor.
+2. **Filtre kelimeleri metinde kalıyordu.** Eşleştirme normalize metinde, silme ham metinde
+   yapılıyordu: desen "gun" diyor, ham metin "gün". Ayrıştırıcı **token tabanlı** yeniden yazıldı —
+   karar normalize biçimde, saklanan ham biçimde.
+
+### Şema disiplini
+
+`documents.status` (active/archived/superseded) CHECK + geçiş koruyucusu **aynı migration'da**.
+Reddedilenin gerekçesi somut: `superseded → active` olsaydı, ikisi de güncel olduğunu iddia eden
+iki doküman kalırdı ve her bağlantı sessizce belirsizleşirdi. `archived → active` ise gerçek bir
+operatör hamlesi, izinli.
+
+`attachments` **append-only** (0022 deseni): düzeltilebilen bir sürüm geçmişi geçmiş değildir;
+düzeltme, sürüm N+1 eklemektir — zaten olan da budur. Faz 24B sınıfı **evidence**: hiçbir katmanda
+UPDATE/DELETE policy'si yok, ve tetikleyiciler bunu veritabanında da zorluyor.
+
+`(document_id, file_sha256)` tekil: birebir aynı baytları "sürüm 2" diye kaydetmek, **olmayan bir
+değişikliği** kaydeder. Motor bunu hata değil, "duplicate" olarak bildiriyor.
+
+Güncel sürüm bir **VIEW** (`document_current_version`), `current_attachment_id` kolonu değil —
+saklanan bir işaretçi, `max(version_no)`'nun zaten cevapladığı şey için ikinci kaynaktır.
+
+### Doğrulama
+
+```
+env -u DATABASE_URL MAS_RADAR_APP_DB_PASSWORD=... \
+  MIGRATION_DATABASE_URL="postgresql://..." pnpm phase35:verify
+```
+**43/43, 3 kez art arda.** 923 birim testi (+34). RLS davranış testi gerçek bir
+`mas_radar_app` girişi ve gerçek `SET ROLE` kullanıyor.

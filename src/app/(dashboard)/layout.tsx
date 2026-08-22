@@ -2,6 +2,7 @@ import type { ReactNode } from "react";
 import { logoutAction } from "@/app/login/actions";
 import { NavigationFeedbackProvider } from "@/components/ui/navigation-feedback";
 import { AppSidebar, type NavItem } from "@/components/ui/nav";
+import { CommandPalette } from "@/components/search/command-palette";
 import { AppToaster, FlashToaster } from "@/components/ui/primitives/toast";
 import { TooltipProvider } from "@/components/ui/primitives/tooltip";
 import { requireSession } from "@/lib/auth";
@@ -35,7 +36,7 @@ export default async function DashboardLayout({ children }: { children: ReactNod
     <div className="workspace-shell">
       <header className="workspace-bar">
         <div><span className="workspace-product">MAS Nakit Radar</span><span className="workspace-separator">/</span><span className="workspace-context">Finans operasyon merkezi</span></div>
-        <div className="workspace-status"><span className="status-dot" /> Veriler bağlı <span className="workspace-date">Europe/Istanbul</span></div>
+        <div className="workspace-status"><CommandPalette /><span className="status-dot" /> Veriler bağlı <span className="workspace-date">Europe/Istanbul</span></div>
       </header>
       <main className="workspace-content animate-rise">
         <TooltipProvider delayDuration={150}>{children}</TooltipProvider>

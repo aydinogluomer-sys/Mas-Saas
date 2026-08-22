@@ -2183,3 +2183,68 @@ taze migrate edilmiş bir DB'de hepsi sıfırdır, gate bunun üzerine hata **ve
 
 110'unun hepsini indekslemek bu fazın kendi disiplinine aykırı olurdu: her indeks, her insert'e
 ölçülmemiş bir yazma maliyeti bindirir. Ölçüm neyi haklı çıkardıysa o eklendi — bir tane.
+
+## Doküman Merkezi (Faz 35, migration 0083)
+
+Üç tablo (`documents`, `attachments`, `document_links`) ve bir VIEW
+(`document_current_version`). Yeni bir depolama geleneği kurmuyor — Faz 2'ninkini sürdürüyor.
+
+### Açık soru #7 kapatıldı: YEREL DİSK
+
+Karar mevcut koda dayanıyor. `source_workbooks` (0001) zaten `storage_path` + `file_sha256`
+taşıyor: baytlar diskte, veritabanında yol ve sağlama. `attachments` bilerek **aynı iki kolon**.
+
+| Reddedilen | Sebep |
+| --- | --- |
+| Obje depolama (S3 vb.) | CLAUDE.md'nin "tek şirket, özel, yerel" konumlandırmasına harici bulut bağımlılığı eklerdi; dokümanları sahibinin dosya yöneticisiyle açamayacağı bir yere koyardı. |
+| Postgres'te bayt (bytea / large object) | Her taranmış sözleşme yedeğe girerdi. **Faz 33 ölçtü**: 24.000 faturada pg_dump zaten yedek doğrulamasını kırıyordu. Zorunlu migration-öncesi yedek pratik kalmalı. |
+
+**Bedeli açıkça:** veritabanı yedeği tek başına geri yükleme değildir; doküman dizini de
+yedeklenmeli. Karşılığında iki koruma:
+
+- `attachments.file_sha256` **NOT NULL** (0001'de nullable) — geri yükleme hangi dosyanın eksik
+  veya bozuk olduğunu **kanıtlayabilir**.
+- Okuma sırasında yeniden sağlama alınır; uyuşmazlık hata verir. Sessizce bozulmuş dosya sunan bir
+  arşiv, kapalı olandan kötüdür — bozulma dosyalanır, e-postayla dolaşır ve güvenilir sanılır.
+
+**İçerik adresli yerleşim:** `<kök>/aa/bb/<sha256>`. Aynı baytlar bir kez saklanır, dosyanın adı
+kendi bütünlük kontrolüdür, ve **yola hiç kullanıcı metni girmediği için** dizin dışına çıkma
+yapısal olarak imkânsızdır.
+
+### `documents` — mantıksal doküman
+
+`status`: `active / archived / superseded`. `superseded` ile `archived` bilerek ayrı: ilki
+**yeni bir doküman bunun yerine geçti** (ve hangisi olduğunu söyler), ikincisi yalnız aktif
+kullanımdan çıktı. Birleştirmek sebebi kaybederdi.
+
+Geçiş koruyucusu CHECK ile **aynı migration'da** (0027 dersi). İzinli dört hamle; reddedilen:
+`superseded → herhangi bir şey`. Canlandırılan bir doküman, ikisi de güncel olduğunu iddia eden
+iki doküman bırakır ve her bağlantı sessizce belirsizleşir.
+
+`tags text[]` — join tablosu değil: etiketlerin özniteliği yok ve hiçbir şey onlara referans
+vermiyor. Ayrı tablo, "kira etiketli dokümanlar" sorusunu üç join'e çevirirdi. GIN indeksi var.
+
+### `attachments` — fiziksel dosyalar ve SÜRÜM geçmişi
+
+Versiyonlama burada, `documents`'ta değil: değişen şey dosyadır. Aynı sözleşmenin yeniden
+taranması yeni bir **sürüm**dür, yeni bir doküman değil.
+
+**Append-only** (0022 deseni, BEFORE UPDATE/DELETE tetikleyicileri): düzeltilebilen bir sürüm
+geçmişi geçmiş değildir. Hatalı bir yüklemenin düzeltmesi sürüm N+1 eklemektir — zaten olan da
+budur. Faz 24B sınıfı **evidence**: hiçbir katmanda UPDATE/DELETE policy'si yok.
+
+`unique (document_id, file_sha256)`: birebir aynı baytları "sürüm 2" diye kaydetmek, **olmayan
+bir değişikliği** kaydeder. Aynı baytlar iki farklı dokümanda meşru olabileceği için sha256
+**global olarak tekil değil**.
+
+### `document_links` — polimorfik bağlantı
+
+`entity_table` + `entity_id`, tam olarak `approvals` (0053) ve `audit_logs` gibi. Bu şema zaten
+"varlıklardan birine işaret et"i böyle yapıyor; üçüncü bir gelenek öğrenilecek üçüncü şey olurdu.
+Kapalı liste güvenlik özelliği: açık bir metin kolonu, hiçbir zaman çözülemeyecek bir bağlantıyı
+bir yazım hatasıyla yaratmaya izin verirdi.
+
+### `document_current_version` — VIEW, kolon değil
+
+Güncel sürüm `max(version_no)` ile türetilir. `current_attachment_id` kolonu, zaten cevaplanan bir
+soru için **ikinci kaynak** olurdu ve biri onu güncellemeden sürüm eklediği ilk gün bayatlardı.

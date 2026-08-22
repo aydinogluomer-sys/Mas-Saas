@@ -209,6 +209,12 @@ export const TABLE_CLASS: Record<string, AccessClass> = {
   // admin may DELETE a row — cancelling leaves the record, deleting destroys the evidence that
   // the job ever ran.
   background_jobs: "operational",
+  // Faz 35. documents/document_links: filing a document is data entry. attachments is EVIDENCE —
+  // append-only in the database (0083 triggers), insert+select only, no update or delete for any
+  // tier, because a version history that can be edited is not a history.
+  documents: "operational",
+  document_links: "operational",
+  attachments: "evidence",
   control_alerts: "operational",
   source_sheets: "operational",
   import_rows: "operational",

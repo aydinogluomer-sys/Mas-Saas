@@ -428,11 +428,24 @@ async function main(): Promise<void> {
   //
   // Faz 30's pattern: prove the discipline is N/A rather than claim it. This phase added no
   // migration, so the CHECK+guard rule has nothing to attach to.
+  // FIXED IN FAZ 35, and the bug was mine: this pinned `latest === "0082"`, so the very next
+  // phase's migration broke it. That is exactly the brittleness class Faz 31 found in
+  // `action_items.source_type` (a `size === N` assertion that had to be edited every time the set
+  // grew) — and I reproduced it here.
+  //
+  // The durable property is not "no migration exists anywhere"; it is "FAZ 34 created no table of
+  // its own", which stays true no matter how many later phases add. Asserted by name, over the
+  // whole schema, so a future `metric_definitions` table fails this check whenever it appears.
   const migrations = readdirSync(path.join(ROOT, "supabase/migrations")).filter((f) => f.endsWith(".sql"));
-  const latest = migrations.map((f) => f.slice(0, 4)).sort().pop();
-  record("Faz 34 hiç migration EKLEMEDİ (kayıt kod, tablo değil)",
-    latest === "0082",
-    `en son migration ${latest} — Faz 33'ten kalan; CHECK+guard disiplini yapısal olarak N/A`);
+  // Narrow on purpose. A first attempt matched /dimension/ and flagged 0038_org_dimensions.sql —
+  // Faz 19's organisational dimensions, an entirely legitimate migration that has nothing to do
+  // with this registry. A check that fires on innocent files teaches people to ignore it.
+  const faz34Migrations = migrations.filter((f) =>
+    /(metric_definition|analysis_run|analytics_registry|calculation_registry)/i.test(f));
+  record("Faz 34 KENDİ migration'ını eklemedi (kayıt kod, tablo değil)",
+    faz34Migrations.length === 0,
+    `${migrations.length} migration var, hiçbiri analiz kaydı için değil — ` +
+    `tablo yok, dolayısıyla yaşam-döngüsü kolonu da yok: CHECK+guard yapısal olarak N/A`);
   const analyticsTables = await pool.query(`
     select table_name from information_schema.tables
     where table_schema='public' and table_type='BASE TABLE'
