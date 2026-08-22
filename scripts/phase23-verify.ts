@@ -229,20 +229,46 @@ async function main(): Promise<void> {
   });
 
   // ── 6) payment priority queue draws from every obligation kind ──────────────────────────
+  //
+  // WHY THIS BLOCK USES 2099 DATES AND COMPARES RANKS INSTEAD OF ROW ORDER.
+  //
+  // The first version queried the whole queue over a 2026-03 window and asserted that row [0]
+  // was the check. It passed here and failed on the reviewer's machine, three runs out of
+  // three, with `loan_installment:-30 check:-30 invoice:90`. Two independent defects, both in
+  // the probe rather than in the view:
+  //
+  //   a) AMBIENT DATA. The window caught whatever the database already held. A full gate-chain
+  //      run leaves the real loan's 48 instalments behind (2024-10 → 2028-09), one of which is
+  //      due 2026-03-18. The probe was silently measuring production fixtures.
+  //   b) AN UNDEFINED TIE. Checks and loan instalments are BOTH critical/critical, so both
+  //      score the same rank, and `order by priority_rank` gives no defined order among equal
+  //      keys. Which one landed at [0] was luck. The tie itself is CORRECT — two critical
+  //      obligations genuinely have equal priority — so asserting an order between them was
+  //      asserting something the design never promised.
+  //
+  // The date-relative term makes (b) worse rather than rarer: priority_rank contains
+  // `least(greatest(due_date - current_date, -30), 60)`, so every item more than 30 days past
+  // due clamps to the same -30 and ties become the normal case, not the exception.
+  //
+  // Fixed by removing both dependencies: the probe now builds obligations on a far-future date
+  // no real or seeded row can occupy, and asserts the INVARIANT — for the same due date a
+  // critical obligation ranks strictly before a flexible one — rather than a position in a list
+  // it does not control.
   await inRollback(async (c) => {
     const p = await party(c, "Queue");
-    await invoice(c, p, "Q-1", 300, { status: "open", due: "2026-03-01" });
+    // 2099: outside every real, seeded and fixture date in this repo.
+    await invoice(c, p, "Q-1", 300, { status: "open", due: "2099-03-01" });
     await c.query(
       `insert into public.invoices(direction,invoice_no,party_id,issue_date,due_date,net_amount,tax_amount,gross_amount)
-       values ('purchase','Q-2',$1,'2026-01-01','2026-03-05',200.00,0,200.00)`, [p]);
+       values ('purchase','Q-2',$1,'2099-01-01','2099-03-02',200.00,0,200.00)`, [p]);
     await c.query(`update public.invoices set status='open' where invoice_no='Q-2'`);
     await c.query(
       `insert into public.checks(maturity_date, amount, signed_amount, direction, status, counterparty_label)
-       values ('2026-03-02', 900.00, -900.00, 'outflow', 'planned', 'Q çek')`);
+       values ('2099-03-02', 900.00, -900.00, 'outflow', 'planned', 'Q çek')`);
 
     const kinds = await c.query(
       `select distinct kind from public.payment_priority_queue
-       where due_date between '2026-03-01' and '2026-03-31' order by kind`);
+       where due_date between '2099-03-01' and '2099-03-31' order by kind`);
     const found = kinds.rows.map((r) => r.kind as string);
     record("öncelik kuyruğu alış faturasını ve çeki birlikte listeliyor",
       found.includes("invoice") && found.includes("check"), found.join(", "));
@@ -255,19 +281,38 @@ async function main(): Promise<void> {
     record("satış faturası ödeme kuyruğuna GİRMİYOR", Number(sales.rows[0].n) === 0,
       "yalnız alış tarafı");
 
-    // Critical items must rank ahead of flexible ones on the same date.
-    const ranks = await c.query(
+    // THE INVARIANT: same due date, critical ranks strictly before flexible. Both rows are the
+    // probe's own, and the comparison is between ranks rather than between list positions.
+    const pair = await c.query(
       `select kind, priority_rank from public.payment_priority_queue
-       where due_date between '2026-03-01' and '2026-03-31' order by priority_rank`);
-    record("kritik yükümlülük esnek olanın ÖNÜNDE sıralanıyor",
-      ranks.rows.length >= 2 && String(ranks.rows[0].kind) === "check",
-      ranks.rows.map((r) => `${r.kind}:${r.priority_rank}`).join(" "));
+       where due_date = '2099-03-02' and kind in ('check','invoice')`);
+    const checkRank = pair.rows.find((r) => r.kind === "check")?.priority_rank;
+    const invoiceRank = pair.rows.find((r) => r.kind === "invoice")?.priority_rank;
+    record(
+      "AYNI vadede kritik yükümlülüğün sırası esnek olanınkinden KESİN küçük",
+      checkRank != null && invoiceRank != null && Number(checkRank) < Number(invoiceRank),
+      `check=${checkRank} < invoice=${invoiceRank} (satır sırası değil, sıra DEĞERİ karşılaştırılıyor)`,
+    );
+
+    // Two critical obligations on one date SHOULD tie — that is the design, not a defect, and
+    // pinning an order between them is what made the first version of this check flaky.
+    await c.query(
+      `insert into public.loans(name, principal, status) values ('Q kredi', 100000, 'active')`);
+    await c.query(
+      `insert into public.loan_installments(loan_id, installment_no, due_date, amount, status)
+       select id, 1, '2099-03-02', 5000, 'planned' from public.loans where name='Q kredi'`);
+    const criticals = await c.query(
+      `select distinct priority_rank from public.payment_priority_queue
+       where due_date = '2099-03-02' and flexibility_class = 'critical'`);
+    record("iki kritik yükümlülük AYNI sırayı paylaşır (beraberlik tasarım gereği)",
+      criticals.rowCount === 1,
+      `${criticals.rowCount} farklı sıra değeri — çek ve kredi taksiti eşit öncelikte`);
 
     const cal = await c.query(
-      `select item_count, known_total from public.payment_calendar_extended where due_date='2026-03-02'`);
+      `select item_count, known_total from public.payment_calendar_extended where due_date='2099-03-02'`);
     record("genişletilmiş takvim gün toplamını veriyor",
-      cal.rowCount === 1 && Number(cal.rows[0].known_total) === 900,
-      `2026-03-02: ${cal.rows[0]?.item_count} kalem / ${cal.rows[0]?.known_total} TL`);
+      cal.rowCount === 1 && Number(cal.rows[0].known_total) === 6100,
+      `2099-03-02: ${cal.rows[0]?.item_count} kalem / ${cal.rows[0]?.known_total} TL (900 çek + 200 fatura + 5000 taksit)`);
   });
 
   // ── 7) unknown amounts are disclosed, never summed as zero ──────────────────────────────
@@ -278,11 +323,11 @@ async function main(): Promise<void> {
        values ('P23 tutarsız','monthly',10,'outflow','active',$1) returning id`, [p])).rows[0].id;
     await c.query(
       `insert into public.payment_instances(payment_id, due_date, instance_month, amount, amount_status, status)
-       values ($1,'2026-04-10','2026-04-01',null,'missing','unpaid')`, [pay]);
+       values ($1,'2099-04-10','2099-04-01',null,'missing','unpaid')`, [pay]);
 
     const cal = await c.query(
       `select item_count, unknown_amount_count, known_total
-       from public.payment_calendar_extended where due_date='2026-04-10'`);
+       from public.payment_calendar_extended where due_date='2099-04-10'`);
     record("tutarı bilinmeyen yükümlülük SAYILIYOR, sıfır olarak toplanmıyor",
       cal.rowCount === 1 && Number(cal.rows[0].unknown_amount_count) === 1 && Number(cal.rows[0].known_total) === 0,
       `${cal.rows[0]?.item_count} kalem, ${cal.rows[0]?.unknown_amount_count} tutarsız — dört tutarsız yükümlülüğü olan gün ucuz bir gün değildir`);

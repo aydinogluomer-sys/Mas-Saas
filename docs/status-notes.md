@@ -1961,3 +1961,116 @@ Commit öncesi teyit: `schema=0034 · payments=19 · bad_debt kolonu=YOK`. Doğr
 3. Faz 17-22'den devam: `scripts/**`'daki 47 `::float8`, `rules.ts` biriktiricileri,
    `createCheckAction`'ın transaction dışı audit'i, kaynak-tarafı dağıtım tavanının trigger'sız
    oluşu, Faz 21'in `recordInvoicePayment`'ının allocation yoluna indirilmesi.
+
+---
+
+## Faz 23 düzeltmesi — `phase23:verify` ortam bağımlıydı: hem sahipsiz veri hem tanımsız beraberlik
+
+Bağımsız doğrulamada bulundu. Faz 23 commit'i (`6e1e269`) yazarın makinesinde **29/29** veriyordu;
+doğrulayan aynı script'i kendi ortamında çalıştırdığında **28/29** aldı — ve Faz 20'nin aksine
+bu bir kerelik şans değildi: **üç koşuda da aynı** şekilde düştü.
+
+```
+- kritik yükümlülük esnek olanın ÖNÜNDE sıralanıyor: loan_installment:-30 check:-30 invoice:90
+```
+
+### Kök neden — İKİ bağımsız kusur, ikisi de sondada, view'de değil
+
+Sonda şunu yapıyordu: `payment_priority_queue`'yu 2026-03 penceresinde sorgula, `order by
+priority_rank` ile sırala, **ilk satırın** `check` olduğunu iddia et.
+
+**(a) SAHİPSİZ VERİ.** Pencere, veritabanında zaten ne varsa onu da yakalıyordu. Tam gate
+zinciri koşulduğunda gerçek kredinin **48 taksiti** geride kalıyor (2024-10 → 2028-09) ve
+bunlardan biri **2026-03-18** vadeli. Yani sonda, kendi kurduğu satırları değil üretim
+fixture'larını ölçüyordu.
+
+**(b) TANIMSIZ BERABERLİK.** Çek ve kredi taksiti **ikisi de** critical/critical, dolayısıyla
+ikisi de aynı `priority_rank` değerini alıyor; `order by priority_rank` eşit anahtarlar arasında
+hiçbir sıra garanti etmez. `[0]`'a hangisinin geleceği şanstı — bende `check`, doğrulayanda
+`loan_installment`. **Beraberliğin kendisi DOĞRU** (iki kritik yükümlülüğün önceliği gerçekten
+eşittir), dolayısıyla aralarında bir sıra iddia etmek tasarımın hiç vaat etmediği bir şeyi iddia
+etmekti.
+
+Doğrulayanın tarih-görelilik şüphesi de haklıydı ve (b)'yi **seyrekleştirmiyor, ağırlaştırıyor**:
+`priority_rank` içinde `least(greatest(due_date - current_date, -30), 60)` var, yani vadesi 30
+günden fazla geçmiş HER kalem aynı −30'a kırpılıyor ve beraberlik istisna değil kural hâline
+geliyor.
+
+### Neden bende geçti — ortam farkı bulundu ve ölçüldü
+
+İki farklı disposable DB kullanmışım:
+- Determinizm koşularında `mas_radar_p23` — bootstrap + migration + `seed.sql`, **import yok**,
+  dolayısıyla hiç kredi taksiti yok → pencerede tek kritik kalem (çek) → beraberlik hiç oluşmadı.
+- Tam zincir koşusunda `mas_radar_verify` — 48 taksit vardı, beraberlik oluştu, ama `[0]`'a
+  tesadüfen `check` geldi.
+
+Yani "5/5 koşu 29/29" doğruydu ama **yanlış soruyu** ölçüyordu. Kusur ilk koşuda görünmeliydi;
+görünmemesi test kurgusunun sahipsiz veriye bağımlı olmasındandı.
+
+**Kusur birebir yeniden üretildi:** `pnpm db:verify` ile kurulan temiz DB'ye 2026-03-18 vadeli
+tek bir kredi taksiti eklendiğinde script **5 koşuda 5 kez** doğrulayanın gördüğü çıktının
+aynısını verdi.
+
+### Düzeltme — konum değil DEĞİŞMEZ ölçülüyor
+
+İki bağımlılık da kaldırıldı:
+
+1. **Sonda kendi yükümlülüklerini 2099 tarihlerinde kuruyor** — bu depodaki hiçbir gerçek,
+   seed veya fixture satırının işgal edemeyeceği bir aralık. Aynı düzeltme takvim sondalarına da
+   uygulandı (2026-03-02 → 2099-03-02, 2026-04-10 → 2099-04-10), çünkü
+   `payment_calendar_extended` güne göre topluyor ve aynı gündeki sahipsiz satırlar toplamı
+   kirletirdi.
+2. **İddia satır sırası değil SIRA DEĞERİ karşılaştırması:** aynı vadede kritik bir
+   yükümlülüğün `priority_rank`'i esnek olanınkinden **kesin küçük** olmalı. Bu değişmez,
+   kırpma nedeniyle mutlak değerler kayarken bile doğru kalır.
+3. **Beraberliğin tasarım gereği olduğu artık POZİTİF olarak test ediliyor:** aynı güne bir çek
+   ve bir kredi taksiti konuluyor ve ikisinin **tek bir** `priority_rank` değeri paylaştığı
+   doğrulanıyor. Böylece gelecekte biri "beraberliği kıralım" diye sıralamaya keyfi bir ikincil
+   anahtar eklerse gate bunu yakalar.
+
+Kontrol sayısı 29 → **30**.
+
+### Determinizm kanıtı — üç farklı ortam, 11 koşu
+
+| Ortam | Koşu | Sonuç |
+| --- | --- | --- |
+| Kusuru üreten kirli DB (2026-03-18 vadeli taksit eklenmiş) | 5 | **5/5 → 30/30** |
+| `pnpm db:verify` ile tertemiz DB (0 taksit) | 3 | **3/3 → 30/30** |
+| Tam zincir sonrası (48 gerçek taksit, 1'i 2026-03 penceresinde) | 3 | **3/3 → 30/30** |
+
+Üçüncü satır kritik: kusurun oluşması için gereken tam koşul (pencerede gerçek bir kredi
+taksiti) mevcutken bile geçiyor.
+
+### Alınan ders (Faz 20/21/22'nin kuralına eklenen madde)
+
+Depoda zaten şu kural vardı: *bir sonda vakumda başarılı olabiliyorsa hiçbir şey kanıtlamaz.*
+Bu bulgu ikinci bir maddeyi ekliyor:
+
+**Bir sonda, kendi kurmadığı satırları kapsayan bir sorgu üzerinden iddiada bulunmamalı; ve
+sıralama iddiaları satır konumuna değil, sıralama ANAHTARININ kendisine dayanmalı** — `ORDER BY`
+eşit anahtarlar arasında hiçbir şey garanti etmez, dolayısıyla beraberliğin mümkün olduğu her
+yerde `rows[0]` tanımsız bir cevaptır.
+
+### Gate sonuçları (düzeltmeden sonra, tam zincir yeniden koşuldu)
+
+| Adım | Sonuç |
+| --- | --- |
+| `pnpm lint` | exit 0 (1 uyarı: `analytics-chart.tsx`, önceden var) |
+| `pnpm typecheck` | exit 0 |
+| `pnpm test` | 500/500 |
+| `pnpm db:verify` | ALL ASSERTIONS PASSED |
+| `db:migrate:verify` | 49/49 |
+| `db:constraints:verify` | 65/65 |
+| `db:transitions:verify` | 167/167 |
+| `db:reconciliation:verify` | 77/77 |
+| `pnpm db:roles:verify` | 8/8 |
+| `pnpm import:real` | ALL PASS |
+| **`pnpm phase4:verify`** | **ALL PASS (regresyon şartı hâlâ karşılanıyor)** |
+| **`pnpm phase5:verify`** | **ALL PASS (regresyon şartı hâlâ karşılanıyor)** |
+| phase3 + phase6…phase14e | 18/18 |
+| `pnpm build` | exit 0 |
+| phase16/17/18 | 18/18 · 10/10 · 12/12 |
+| phase19/20/21/22 | 26/26 · 31/31 · 35/35 · 35/35 |
+| `pnpm phase23:verify` | **30/30** (üç ortamda, toplam 11 koşu) |
+
+`mas_radar_dev` yine hiç değiştirilmedi (şema 0034).
