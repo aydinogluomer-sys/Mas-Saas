@@ -748,3 +748,98 @@ aritmetik bir işlem değil; burada netlemek var olmayan bir anlaşmayı sessizc
 `counterparty_settlement_speed` **gerçekleşmiş** süredir: yalnız tahsil edilmiş faturaları sayar.
 Ödenmemiş bir faturanın tahsilat süresi yoktur, ve onu sıfır (ya da bugün−düzenleme) saymak karşı
 tarafı olmadığı kadar iyi ya da kötü gösterirdi.
+
+## Alacak/Borç Yönetimi Genişletme (Faz 23, migration 0051-0052)
+
+Faz 19-22'nin üzerine read-model; yeni kaynak veri yok. Tek yazılabilir ekleme, elle konulan
+şüpheli-alacak bayrağı.
+
+### 0051 — bad-debt: ELLE konulan, DENETLENEN bayrak
+
+**Bu fazda bu kolonları yazan hiçbir kural, trigger veya zamanlanmış iş YOK.** "90 günü geçerse
+işaretle" türü hiçbir sezgi eklenmedi. CLAUDE.md'nin kaynak-doğruluk kuralı açık — AI hiçbir
+kaydı ödendi işaretleyemez, silemez, belirsiz satırdan nihai gerçeği çıkaramaz — ve bir alacağı
+zarar yazmak tam olarak o kuralın insan elinde tutmak istediği yargıdır. 0052'nin skorları bir
+faturanın tahsil edilemez göründüğünü söyleyebilir; **o görüşe göre hareket edemez.**
+
+Kolonları yazan tek kod yolu `src/lib/collections/engine.ts`'in `markBadDebt()`/`clearBadDebt()`
+fonksiyonları: tipli bir gerekçe şart ve kanonik `audit()` üzerinden kaydediliyor.
+`phase23:verify` bunu iki yönden doğruluyor — `src/` içinde başka yazar olmadığını grep'le, ve
+`bad_debt_at`'i güncelleyen bir PL/pgSQL fonksiyonu olmadığını katalogdan.
+
+**Neden bayrak, neden durum değil.** `invoices.status` zaten zarar yazma için `closed`, iptal
+için `cancelled` taşıyor. Şüpheli alacak ikisi de değil: hâlâ **açık** olan ve hâlâ tahsil
+edilebilecek bir faturanın üzerine konan bir **değerlendirme**. Firmalar işaretli alacağı
+düzenli olarak tahsil eder; görüşü kaydetmek için faturayı `open`'dan çıkarmak, o tahsilatı bir
+diriliş gibi gösterirdi. Dolayısıyla nullable bir zaman damgası — 0048'in `reversed_at`'i ve
+0037'nin `is_active`'iyle aynı şekil — ve §17 kural 3 N/A kalıyor çünkü ortada yaşam döngüsü yok.
+
+Kısıtlar: üç kolon (`bad_debt_at`/`bad_debt_reason`/`bad_debt_by`) birlikte hareket eder ve
+gerekçe boş olamaz — **gerekçesi ve yazarı olmayan bir zarar yazma, imzasız bir suçlamadır.**
+Ayrıca iptal edilmiş faturaya bayrak konamaz (ortada borç yok); iki bayrağın farklı kod
+yollarından gelip çelişmesi tam da böyle olur.
+
+Bu kolonlar 0044'ün içerik-dokunulmazlık listesinde **bilerek yok**: düzenlenmiş faturanın
+ticari içeriği donmuştur, ama tahsil edilebilirliğe dair bir değerlendirme o içeriğin parçası
+değildir ve belgenin ömrü boyunca yazılabilir kalmalıdır.
+
+### 0052 — dört read-model view
+
+**Yalnız OLGU üretirler.** Gün cinsinden gecikme, bu karşı tarafın geçmişte gerçekte ne yaptığı,
+ne kadarının açık olduğu, bir insanın bayrak koyup koymadığı. Olasılık ya da skor
+hesaplamazlar — skorlama `src/lib/collections/rules.ts`'te adlandırılmış kurallar tablosu
+olarak duruyor ki her sonuç onu üreten kurala kadar izlenebilsin ve o kural düzeltilerek
+düzeltilebilsin. implementation.md "deterministik sezgi (ML değil)" istiyor; bir model bir mali
+operatöre "neden" sorusunu yanıtlayamaz ve birini kovalayıp kovalamamaya karar verirken önemli
+olan tek soru odur.
+
+- **`receivable_collection_signals`** — açık alacak başına ham girdi. Karşı tarafın geçmişi Faz
+  22'nin gerçekleşmiş tahsilat hızından geliyor (GÖZLENMİŞ değer, tahmin değil) ve bu karşı
+  taraf hiç bir şey ödememişse **null** — skorlayıcı bunu "bilinmiyor" saymak zorunda, "hızlı"
+  değil. `late_ratio` da gözlemdir: vadesi olmayan faturalar hesaba **katılmaz**, çünkü tarihsiz
+  bir fatura geç kalamaz ve onu "zamanında" saymak karşı tarafı pohpohlardı.
+- **`payment_priority_queue`** — ödeme kalemleri + alış faturaları + kredi taksitleri + çıkış
+  çekleri tek listede. **MEVCUT payments modülünü besler**: sıralama girdileri `payments`'ın
+  zaten taşıdığı `flexibility_class` ve `priority` kolonları, burada icat edilmiş yeni bir
+  taksonomi değil — paralel bir öncelik şeması "önce neyi ödeyeceğiz" sorusuna iki cevap demek
+  olurdu. View bir **SIRA** üretir, bir karar değil: nakit bakiyesini bilmez, kesme noktası
+  okuma anında TypeScript'te uygulanır. Hangi tedarikçinin ödenmeyeceğine SQL'de sessizce karar
+  veren bir view, iş kararını yanlış yerde vermiş olurdu.
+- **`payment_calendar_extended`** — gün bazında toplam; **tutarı bilinmeyen yükümlülükler
+  SAYILIR, sıfır olarak toplanmaz.** Dört tutarsız yükümlülüğü olan gün ucuz bir gün değildir.
+- **`counterparty_collection_profile`** — karşı taraf karnesi; her kolon olmuş bir şeyin sayımı
+  veya ortalaması, hiçbiri öngörü değil.
+
+### Deterministik skorlama (`src/lib/collections/rules.ts`)
+
+**Beklenen tahsilat tarihi**, ilk eşleşen kural kazanır:
+1. Karşı taraf **en az 3** fatura tahsil etmişse → düzenleme tarihi + gerçekleşmiş ortalaması.
+   Üç bilinçli bir alt sınır: tek faturalık ortalama bir anekdottur ve onu tahmin diye sunmak
+   tam da bu fazın kaçınması gereken sahte güvendir.
+2. Vade varsa → vade (karşı tarafın kendi sözü, elde kalan en iyi kanıt).
+3. Hiçbiri yoksa → düzenleme + 30, **açıkça "fallback" etiketiyle**.
+Sonuç ödenmemiş bir fatura için asla geçmişte olamaz; geçmişteki bir "beklenen" tarih beklenti
+değil gecikme ihbarıdır. `basis` her zaman hangi kuralın çalıştığını söyler.
+
+**Tahsilat olasılığı** taban 0.95'ten adlandırılmış ayarlamalarla iniyor; her sonuç **onu üreten
+sinyalleri** birlikte döndürür. Gerekçesiz bir sayı eyleme dönüştürülemez — operatör 0.45'in
+"bu müşteri yavaş" mı yoksa "geçen hafta işaretledik" mi demek olduğunu ayırt edemez ve ikisi
+zıt tepkiler gerektirir. Şüpheli-alacak bayrağı her şeyi bastırır ama **sıfıra indirmez**:
+işaretli alacak da tahsil edilir ve sert bir sıfır, tahsilat listesine "denemeyi bırak" derdi.
+
+**Risk bayrakları** yalnız olgudan; yoğunlaşma eşiği deponun başka yerlerinde zaten kullanılan
+**0.40** (radar/rules.ts, financing/rules.ts), neredeyse aynı şeyi ifade eden ikinci bir sayı
+değil.
+
+**Nakde duyarlı sıralama** bir öneridir: hiçbir kalem atlanmaz, karşılanamayan kalem **düşürülmez
+işaretlenir** — liste operatörün pazarlık edeceği şeydir ve sığmayan kalemleri gizlemek asıl
+sorunu gizlerdi. **Tutarı bilinmeyen kalemler sıralanır ama kümülatif toplama katılmaz** ve asla
+"karşılanıyor" sayılmaz; onları sıfır saymak nakdin gittiğinden daha uzağa gittiğini
+göstermek olurdu — bu uygulamanın yapabileceği en tehlikeli yuvarlama.
+
+### Faz 4/5 regresyon yüzeyi
+
+Bu faz mevcut vade/gecikme mantığını **genişletir, değiştirmez**: `payment_instances` ve
+`cashflow_months` şemasına dokunulmadı, `payments`'ın öncelik kolonları olduğu gibi okundu.
+`phase23:verify` radar kolonlarının yerinde olduğunu yapısal olarak kontrol ediyor;
+`phase4:verify` ve `phase5:verify` gate zincirinde değişmeden koşuyor.

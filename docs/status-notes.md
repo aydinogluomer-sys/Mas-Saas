@@ -1836,3 +1836,128 @@ Commit öncesi teyit: `schema=0034 · payments=19 · invoice_allocations=YOK`. D
    için). İkisinin tek yola indirilmesi ayrı bir temizlik.
 4. Faz 17-21'den devam: `scripts/**`'daki 47 `::float8`, `rules.ts` biriktiricileri,
    `createCheckAction`'ın transaction dışı audit'i, çok kalemli fatura UI'ı, iade faturası akışı.
+
+---
+
+## Faz 23 — DONE (tahsilat riski, ödeme önceliklendirme, elle şüpheli-alacak bayrağı)
+
+İki migration (0051-0052), sıfır yeni tablo, dört view + üç kolon. Ağırlıklı olarak Faz 19-22'nin
+üzerine read-model. **Gerçek `mas_radar_dev`'e uygulanmadı.**
+
+### KRİTİK REGRESYON ŞARTI KARŞILANDI
+
+Planın kendi sözü: bu faz mevcut vade/gecikme mantığını **genişletir, bozmaz**.
+
+```
+phase4   PHASE4 VERIFY: ALL PASS
+phase5   PHASE5 VERIFY: ALL PASS
+```
+
+`payment_instances` ve `cashflow_months` şemasına dokunulmadı; `payments`'ın `priority` ve
+`flexibility_class` kolonları **okundu**, değiştirilmedi. `phase23:verify` radar kolonlarının
+yerinde olduğunu ayrıca yapısal olarak kontrol ediyor.
+
+### Bad-debt: elle, denetlenen, ve otomasyonun YOKLUĞU kanıtlanan
+
+Bu fazda bu kolonları yazan hiçbir kural, trigger veya zamanlanmış iş yok. "90 günü geçerse
+işaretle" türü hiçbir sezgi eklenmedi. CLAUDE.md'nin kaynak-doğruluk kuralı bunu insan elinde
+tutuyor; 0052'nin skorları bir faturanın tahsil edilemez göründüğünü söyleyebilir, **o görüşe
+göre hareket edemez.**
+
+`phase23:verify` bunu **iki yönden** doğruluyor:
+1. `src/` içinde `bad_debt_at =` yazan tek dosya `collections/engine.ts` (yorum satırları
+   ayıklanarak; kolonu yalnız ANLATAN dosyalar yazar sanılmıyor).
+2. Katalogda `bad_debt_at`'i güncelleyen bir PL/pgSQL fonksiyonu yok — SQL tarafından yapılacak
+   bir otomasyon grep'i atlatırdı.
+
+**Neden bayrak, neden durum değil:** `status` zaten zarar yazma için `closed`, iptal için
+`cancelled` taşıyor. Şüpheli alacak ikisi de değil — hâlâ **açık** ve hâlâ tahsil edilebilir bir
+faturanın üzerine konan bir değerlendirme. Görüşü kaydetmek için faturayı `open`'dan çıkarmak,
+sonraki tahsilatı bir diriliş gibi gösterirdi. Gate bunu ölçüyor: işaretli fatura hem `open`
+kalıyor hem de açık alacak listesinden düşmüyor.
+
+Kısıtlar: üç kolon birlikte hareket eder, gerekçe boş olamaz (**gerekçesi ve yazarı olmayan bir
+zarar yazma, imzasız bir suçlamadır**), ve iptal edilmiş faturaya bayrak konamaz.
+
+### Deterministik sezgi — model değil, adlandırılmış kural tablosu
+
+**Beklenen tahsilat tarihi:** karşı taraf **en az 3** fatura tahsil etmişse gerçekleşmiş
+ortalaması; yoksa vade; o da yoksa düzenleme+30 ve **açıkça "fallback" etiketi**. Üç bilinçli
+bir alt sınır — tek faturalık ortalama anekdottur ve onu tahmin diye sunmak tam da kaçınılması
+gereken sahte güvendir. Her sonuç `basis` alanıyla hangi kuralın çalıştığını söylüyor; arayüz de
+tarihi değil tarih+gerekçeyi gösteriyor.
+
+**Tahsilat olasılığı** taban 0.95'ten adlandırılmış ayarlamalarla iniyor ve **onu üreten
+sinyalleri birlikte döndürüyor.** Gerekçesiz bir sayı eyleme dönüştürülemez: operatör 0.45'in
+"bu müşteri yavaş" mı "geçen hafta işaretledik" mi demek olduğunu ayırt edemez, ve ikisi zıt
+tepkiler gerektirir. Şüpheli-alacak bayrağı her şeyi bastırır ama **sıfıra indirmez** — işaretli
+alacak da tahsil edilir ve sert sıfır, listeye "denemeyi bırak" derdi (gate ölçtü: 0.05).
+
+**Yoğunlaşma eşiği 0.40** — deponun başka yerlerinde zaten kullanılan sayı (radar/rules.ts,
+financing/rules.ts), neredeyse aynı şeyi ifade eden ikinci bir sayı değil.
+
+### Ödeme önceliği: mevcut modülü besler, yenisini icat etmez
+
+Sıralama girdileri `payments`'ın zaten taşıdığı `flexibility_class` (critical/flexible/optional)
+ve `priority` (low/normal/high/critical) — introspection'la doğrulandı, plandan tahmin edilmedi.
+Paralel bir öncelik şeması "önce neyi ödeyeceğiz" sorusuna iki cevap demek olurdu.
+
+View bir **SIRA** üretir, karar değil: nakit bakiyesini bilmez, kesme noktası okuma anında
+TypeScript'te uygulanır. Hangi tedarikçinin ödenmeyeceğine SQL'de sessizce karar veren bir view,
+iş kararını yanlış yerde verirdi.
+
+**Karşılanamayan kalem gizlenmez, işaretlenir** — sığmayanları listeden düşürmek sorunu değil
+yalnız görüntüsünü ortadan kaldırırdı. **Tutarı bilinmeyen kalemler kümülatif toplama katılmaz
+ve asla "karşılanıyor" sayılmaz**; sıfır saymak nakdin gittiğinden daha uzağa gittiğini
+göstermek olurdu — bu uygulamanın yapabileceği en tehlikeli yuvarlama. Takvim de tutarsız
+yükümlülükleri ayrıca sayıyor: dört tutarsız yükümlülüğü olan gün ucuz bir gün değildir.
+
+### Gate yazarken düzeltilen iki şey (ikisi de kendi kontrolümde)
+
+1. **`pg_get_functiondef()` aggregate'lerde patlıyor.** Trigger taraması `public` şemasındaki
+   tüm fonksiyonları dolaşıyordu ve `array_agg` üzerinde hata verdi; `prokind='f'` ile düz
+   fonksiyonlara daraltıldı.
+2. **`amount_status='unknown'` diye bir değer yok** — şema eksik tutarı `'missing'` diye
+   adlandırıyor. Sondayı şemaya uydurdum; kısıt doğruydu, varsayımım yanlıştı.
+
+Ayrıca yazar taraması yorum satırlarını ayıklıyor, yoksa kolonu yalnız **anlatan** dosyalar
+(migration açıklamaları, bu gate'in kendi başlığı) yazar sanılırdı.
+
+### Gate sonuçları
+
+| Adım | Sonuç |
+| --- | --- |
+| `pnpm lint` | exit 0 (1 uyarı: `analytics-chart.tsx`, önceden var) |
+| `pnpm typecheck` | exit 0 |
+| `pnpm test` | **500/500** (470 + 30 yeni) |
+| `pnpm db:verify` | ALL ASSERTIONS PASSED |
+| `db:migrate:verify` | 49/49 (ledger 52 migration) |
+| `db:constraints:verify` | 65/65 |
+| `db:transitions:verify` | 167/167 |
+| `db:reconciliation:verify` | 77/77 |
+| `pnpm db:roles:verify` | 8/8 |
+| `pnpm import:real` | ALL PASS |
+| **`pnpm phase4:verify`** | **ALL PASS (kritik regresyon şartı)** |
+| **`pnpm phase5:verify`** | **ALL PASS (kritik regresyon şartı)** |
+| phase3 + phase6…phase14e (18 script) | 18/18 |
+| `pnpm build` | exit 0 |
+| phase16/17/18 | 18/18 · 10/10 · 12/12 |
+| phase19/20/21/22 | 26/26 · 31/31 · 35/35 · 35/35 |
+| `pnpm phase23:verify` | **29/29** — beş koşunun beşinde de (üçünde katalog karıştırılarak) |
+
+### GERÇEK VERİTABANINA UYGULANMADI
+
+Commit öncesi teyit: `schema=0034 · payments=19 · bad_debt kolonu=YOK`. Doğrulamanın tamamı
+`mas_radar_verify` ve `mas_radar_p23` disposable veritabanlarında yapıldı.
+
+### Faz 24'e devredilen açık noktalar
+
+1. **Olasılık ağırlıkları ölçüm değil, başlangıç noktası.** Adlandırılmış sabitler olarak
+   duruyorlar ki değiştirmek görünür bir diff olsun; gerçek tahsilat verisi biriktikçe
+   kalibre edilmeleri gerekir — ama kalibrasyon da elle ve gerekçeli olmalı, öğrenilen bir
+   ağırlık olarak değil.
+2. **Şüpheli alacak muhasebeleştirilmiyor** — bayrak bir görüştür, karşılık ayırma (provision)
+   kaydı üretmez. Gerçek karşılık muhasebesi ayrı bir faz.
+3. Faz 17-22'den devam: `scripts/**`'daki 47 `::float8`, `rules.ts` biriktiricileri,
+   `createCheckAction`'ın transaction dışı audit'i, kaynak-tarafı dağıtım tavanının trigger'sız
+   oluşu, Faz 21'in `recordInvoicePayment`'ının allocation yoluna indirilmesi.
