@@ -393,8 +393,12 @@ async function testLegacyCompleteAndIdempotency(): Promise<void> {
     // than relaxing the rule to "new tables may contain anything", so a new table that arrives
     // populated WITHOUT being declared still fails this gate — which is the whole point, and it
     // is what caught treasury_policies on the Faz 26 run rather than letting it through.
+    //   cost_allocation_rules (0074) four default allocation rules. Same argument again: a
+    //                          database built only from migrations would have NO allocation basis
+    //                          configured, so every profitability view would silently allocate
+    //                          nothing. Two of the four ship inactive on purpose.
     const DECLARED_POPULATING_MIGRATIONS = new Set([
-      "approval_rules", "approvals", "treasury_policies",
+      "approval_rules", "approvals", "treasury_policies", "cost_allocation_rules",
     ]);
     const undeclaredPopulated = newTables.filter(
       (k) => postCounts[k] !== 0 && !DECLARED_POPULATING_MIGRATIONS.has(k),

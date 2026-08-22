@@ -2887,3 +2887,89 @@ env -u DATABASE_URL MIGRATION_DATABASE_URL="postgres://..." pnpm phase29:verify
 ```
 **36/36, 4 kez art arda**; `DATABASE_URL`'in tanımsız olduğu ayrıca doğrulandı.
 `db:roles-rls:verify` artık **75 tablo / 375 (katman × tablo) INSERT kombinasyonu** görüyor.
+
+---
+
+## Faz 30 — DONE (maliyet dağıtımı, kârlılık view'ları, işletme sermayesi)
+
+**migration 0074-0075 · `src/lib/costing/{rules,engine}.ts` · `/finance/profitability` ·
+`scripts/phase30-verify.ts` (40/40, KENDİ Usage komutuyla 4 kez art arda)**
+
+### Kârlılık deseni kopyalandı, yeniden icat edilmedi
+
+`production/rules.ts:partProfitability` bu depoda marjın nasıl hesaplandığını zaten belirlemişti;
+`costing/rules.ts` birebir onu izliyor: `margin = revenue − cost` ve iki taraftan biri
+bilinmiyorsa **NULL** (asla 0), `marginRate` ciro 0 ya da bilinmiyorsa **NULL**, eksik girdi bir
+`confidence` bayrağıyla söyleniyor.
+
+Gerekçe estetik değil: maliyeti kaydedilmediği için 0 görünen bir marj **gerçek bir başabaştan
+ayırt edilemez**. Birim test iki hesabın aynı sayıyı verdiğini `partProfitability`'yi içe aktarıp
+karşılaştırarak çiviliyor; gate ayrıca SQL view'ı ile TS fonksiyonunun aynı fixture üzerinde
+birebir aynı sonucu verdiğini kanıtlıyor (400 marj / `estimated`, maliyet yokken NULL /
+`needs_review`).
+
+### İki ölçülmüş sınır, ikisi de uydurulmadı
+
+**Departman kârlılığı hesaplanamıyor.** Hiçbir işlem tablosu `department_id` taşımıyor (Faz 28
+aynı bulguyu bütçe gerçekleşeni için kaydetmişti). View her departmanı NULL rakamlar ve
+`unmeasurable_reason='no_transaction_link'` ile listeliyor; ekran nedeni yazıyor, böylece boşluk
+"kâr sıfır" diye okunmuyor.
+
+**DIO ve dolayısıyla CCC hesaplanamıyor.** Şemada envanter yok — stok tablosu yok, eldeki-miktar
+kolonu yok. Cazip kısayol DIO'yu 0 saymaktı; bu, döngüyü işletmenin malzeme tuttuğu gün sayısı
+kadar **kısaltır**, yani işletme sermayesini olduğundan **İYİ** gösterir — bu metrik için yanlış
+olmanın en tehlikeli yönü. Onun yerine `cash_cycle_excluding_inventory` veriliyor ve **tam olarak
+neyi dışladığıyla adlandırılıyor**. Gate hem envanter tablosunun yokluğunu hem de DIO/CCC'nin
+NULL + gerekçeli olduğunu ayrı ayrı kontrol ediyor.
+
+Faz 22 `dso_dpo_components`'ı bilerek oransız bırakmıştı; bölme bu fazda yapıldı — sıfır paydada
+**NULL**, çünkü DSO 0 "müşteriler anında ödüyor" diye okunur, gerçek ise "satış geçmişimiz yok".
+
+### Dağıtımda kaybolan kuruş
+
+100,00'ü üçe bölmek 33,33 veriyor ve 33,33 × 3 = 99,99 — bir kuruşun bir yere gitmesi gerekiyor,
+yoksa dağıtım **sessizce para kaybeder** ve bir yıllık aylık koşuda her maliyet merkezinde
+açıklanamayan gerçek bir sapma bırakır. Kalan en büyük paya veriliyor (eşitlikler id ile
+çözülüyor, seçim tekrarlanabilir) ve `allocate` parçaların girdiye **tam** eşit toplandığını
+garanti ediyor. Test bunu 100 / 0,01 / 1 / 999,99 / 1234,56 tutarlarını 3, 6, 7 ve 11 hedefe
+bölerek doğruluyor; gate 33,34 + 33,33 + 33,33 = 100,00 çıktısını gösteriyor.
+
+### Yanlış tabloya bağlanma, introspection'la yakalandı
+
+`profitability_by_machine`'in ilk taslağı `machine_minute_allocations`'ı join ediyordu; migration
+uygulanırken `column a.machine_id does not exist` hatası verdi. İnceleme o tablonun
+`(capacity_model_id, operation_type)` ile anahtarlandığını ve **hiç makine taşımadığını** gösterdi
+— **kapasite kullanımını** ölçüyor, farklı bir eksen. Kullanmak atölye geneli dakikaları tek tek
+makinelere atfetmek olurdu. View `machine_roi_snapshots` üzerine kuruldu: zaten makine başına
+ciro/maliyet ve kendi `confidence` kolonunu taşıyor — bu fazın şablon alması söylenen kârlılık
+emsalinin ta kendisi.
+
+### Cari rolü: iddia değil gözlem
+
+Müşteri/tedarikçi için iki ayrı view yerine tek view — aynı cari çoğu zaman ikisidir ve ayrı
+raporlamak net ilişkiyi görünmez kılardı. `observed_role` verinin **gösterdiğini** söylüyor
+(`both` dahil), `party_type` kolonunun iddia ettiğini değil. Gate bunu 800 satış + 300 alış olan
+bir cariyle kanıtlıyor: rol `both`, net katkı 500.
+
+### Dağıtım tabanı veri, ve yalnız admin'e açık
+
+`cost_allocation_rules` `approval_rules`/`treasury_policies` emsalini izliyor. **Yaşam döngüsü
+kolonu yok** ve §17 kural 3'ün N/A olduğu **yapısal olarak** doğrulanıyor. RLS `config` sınıfı:
+her katman okur, yalnız **admin** yazar — dağıtımı yeniden tabanlayabilen bir yönetici, hiçbir
+mali kayıt değişmeden maliyeti kendi merkezinden başkasınınkine kaydırabilirdi.
+
+### 24B mekanizması yine iş gördü
+
+`db:migrate:verify` 48/49'a düştü: `cost_allocation_rules` dört satır tohumluyor ve "yeni tablolar
+boş" değişmezini kırdı. Kural gevşetilmedi — tablo **adıyla beyan edildi**, böylece beyan edilmeden
+dolu gelen bir sonraki tablo hâlâ bu gate'i düşürüyor.
+
+`db:roles-rls:verify` artık **76 tablo / 380 (katman × tablo) INSERT kombinasyonu** görüyor.
+
+### Doğrulama
+
+```
+env -u DATABASE_URL MIGRATION_DATABASE_URL="postgres://..." pnpm phase30:verify
+```
+**40/40, 4 kez art arda**; `DATABASE_URL`'in tanımsız olduğu ayrıca doğrulandı. Kârlılık
+matematiğinin `@/lib/ai`'yi import etmediği kod üzerinde (yorumlar ayıklanarak) kontrol ediliyor.

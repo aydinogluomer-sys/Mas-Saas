@@ -62,6 +62,7 @@
     "phase27:verify": "tsx scripts/db/ensure.ts && node --import tsx scripts/phase27-verify.ts",
     "phase28:verify": "tsx scripts/db/ensure.ts && node --import tsx scripts/phase28-verify.ts",
     "phase29:verify": "tsx scripts/db/ensure.ts && node --import tsx scripts/phase29-verify.ts",
+    "phase30:verify": "tsx scripts/db/ensure.ts && node --import tsx scripts/phase30-verify.ts",
     "seed:demo": "tsx scripts/db/ensure.ts && tsx scripts/seed-demo.ts",
     "test:visual": "playwright test",
     "test:visual:update": "playwright test --update-snapshots"

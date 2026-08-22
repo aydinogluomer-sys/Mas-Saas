@@ -1760,3 +1760,116 @@ ilk sürüm `payment_instances`'ta olmayan bir `priority` kolonunu okuyordu. İk
 `critical` ise ödeme taşınamaz sayılıyor. Muhafazakâr okuma bilinçli: taşınamaz bir şeyi yanlışlıkla
 ertelemeyi önermek, operatörün sonraki her öneriye olan güvenini götürür — kaçırılan bir
 optimizasyondan çok daha pahalı.
+
+---
+
+## Maliyet Merkezi, Kârlılık ve İşletme Sermayesi (Faz 30, migration 0074-0075)
+
+### 0074 — `cost_allocation_rules`: dağıtım tabanı kod değil VERİ
+
+`approval_rules` (0054) ve `treasury_policies` (0062) emsali: kural bir satırda durur, view'lar
+okur, genel giderin nasıl dağıtıldığını değiştirmek bir yeniden dağıtım değil **denetlenen bir
+operatör işlemi**dir. Bir SQL view'ının içine gömülü dağıtım tabanı, yalnız bir geliştiricinin
+değiştirebileceği bir sayıdır — maliyet kararı için yanlış sahip.
+
+Planın beş gider türü (`common`/`machine`/`personnel`/`energy`/`project`) ve beş dağıtım tabanı.
+Her taban bu veritabanının **gerçekten ölçebildiği** bir sürücüye karşılık geliyor:
+`machine_minutes` → `machine_minute_allocations`, `revenue_share` → faturalar. Sürücüsü olmayan
+bir taban, sessizce hiçbir şey dağıtmayan bir kural olurdu.
+
+**Yaşam döngüsü kolonu YOK ve §17 kural 3 gerçekten N/A** — `phase30:verify` bunu yorumda iddia
+etmek yerine `status`/`state`/`version_status`/`lifecycle`/`approved_at` kolonlarının yokluğunu
+sorgulayarak **yapısal olarak** doğruluyor (Faz 26/28 deseni). Kural aktiftir ya da değildir;
+`is_active` boolean'ının transition guard'ın koruyacağı bir ara durumu yok.
+
+Kapsam CHECK'i iki yönlü (`fixed_percent` yalnız ve ancak taban `fixed_percent` ise), pay 0..1
+aralığında, **sıfır pay geçerli** ("buraya bir şey dağıtma" — 0 ile null farklı ifadeler). Aynı
+hedef için ikinci **aktif** kural `NULLS NOT DISTINCT` kısmi unique indeksle engelleniyor; olsaydı
+view hangi tabanı seçeceğini bilemez, planlayıcının döndürdüğü ilk satırı sessizce kullanırdı.
+
+Personel ve enerji kuralları **pasif** geliyor: bunları açmak ekrandaki her marjı değiştirir ve bu
+operatörün bilinçli kararı olmalı, migration'ın onun yerine verdiği bir karar değil.
+
+**RLS: `config` sınıfı** — her katman okur (taban, bir marjın neden öyle göründüğünü açıklar),
+yalnız **admin** yazar. Bilerek yöneticiye kapalı: dağıtımı yeniden tabanlayabilen bir yönetici,
+hiçbir mali kayıt değişmeden maliyeti kendi merkezinden başkasınınkine kaydırabilirdi.
+
+### 0075 — kârlılık ve işletme sermayesi view'ları
+
+#### Kârlılık deseni kopyalandı, yeniden icat edilmedi
+
+`src/lib/production/rules.ts:partProfitability` bu depoda marjın nasıl hesaplandığını zaten
+belirlemişti; view'lar birebir onu izliyor:
+
+- `margin = revenue − cost`, ve **iki taraftan biri bilinmiyorsa NULL** (asla 0)
+- `margin_rate = margin / revenue`, ve ciro 0 ya da bilinmiyorsa **NULL** (asla 0, asla ∞)
+- eksik girdi bir `confidence` bayrağıyla söyleniyor
+
+Gerekçe estetik değil: maliyeti kaydedilmediği için 0 görünen bir marj, **gerçek bir başabaştan
+ayırt edilemez** — ve bu depo "bilinmeyen bilinmeyen kalır" kararını zaten vermişti. Birim test
+iki hesabın aynı sayıyı verdiğini `partProfitability`'yi içe aktararak çiviliyor.
+
+**Açık sıfır ciro ölçülmüş sayılıyor:** para harcayıp hiç satmamış bir merkezde marj gerçek bir
+negatif sayıdır, yalnız yüzdesi tanımsızdır.
+
+#### Tek kaynak — çift sayma yok
+
+Ciro ve maliyetin ikisi de **yalnız faturalardan** geliyor. Aynı para ödemeler ve banka
+hareketleri olarak da var; faturayı onu kapatan ödemeyle birlikte toplamak rakamı kabaca iki
+katına çıkarır ve sayı yine makul görünürdü. Faz 28 bu tuzağı bütçe gerçekleşeni için kaydetmişti;
+burada aynı kural aynı sebeple geçerli.
+
+#### `profitability_by_party` — rol iddia değil gözlem
+
+Müşteri ve tedarikçi için iki ayrı view yerine tek view: aynı cari çoğu zaman ikisidir ve ayrı
+raporlamak net ilişkiyi görünmez kılardı. `observed_role` verinin **gösterdiği** rolü söylüyor
+(`customer`/`supplier`/`both`/`no_activity`), `party_type` kolonunun iddia ettiğini değil.
+
+#### Departman: ölçülemiyor, ve nedeni satırla birlikte geziyor
+
+**Ölçüldü, varsayılmadı:** bu şemada hiçbir işlem tablosu `department_id` taşımıyor (Faz 28 aynı
+bulguyu bütçe gerçekleşeni için kaydetmişti). View her departmanı NULL rakamlar ve
+`unmeasurable_reason = 'no_transaction_link'` ile listeliyor; tahsis kuralı **icat etmiyor**.
+Uydurmak, "bu parayı hangi departman kazandı" sorusunu kimsenin savunamayacağı bir sayıyla
+cevaplamak olurdu. Ekran nedeni yazıyor, böylece boşluk "kâr sıfır" diye okunmuyor.
+
+#### Makine kârlılığı: doğru tabloya bağlandı
+
+İlk taslak `machine_minute_allocations`'ı join ediyordu; introspection o tablonun
+`(capacity_model_id, operation_type)` ile anahtarlandığını ve **hiç makine taşımadığını** gösterdi
+— o tablo **kapasite kullanımını** ölçüyor, farklı bir eksen. Kullanmak, atölye geneli dakikaları
+tek tek makinelere atfetmek olurdu. View artık zaten makine başına ciro/maliyet ve kendi
+`confidence` kolonunu taşıyan `machine_roi_snapshots` üzerine kurulu — bu fazın şablon alması
+söylenen kârlılık emsalinin ta kendisi.
+
+### İşletme sermayesi: DSO/DPO hesaplanıyor, DIO ve CCC **dürüstçe** hesaplanmıyor
+
+Faz 22 `dso_dpo_components`'ı bilerek **oransız** bırakmıştı ("view bileşenleri verir, oranı
+DEĞİL"); bölme işte bu fazda yapılıyor — 365 gün üzerinden ve cevabı dürüst kılan korumalarla:
+
+- **sıfır ya da NULL payda → NULL**, 0 değil ve sonsuz değil. DSO 0, "müşteriler anında ödüyor"
+  diye okunur; gerçek ise "satış geçmişimiz yok".
+- **DIO HER ZAMAN NULL** ve bu ölçülmüş bir olgu: şemada envanter **yok** — stok tablosu yok,
+  eldeki-miktar kolonu yok, tutulan malı kaydeden hiçbir şey yok.
+- **CCC de NULL**, çünkü `DSO + DIO − DPO` üç terimden ikisiyle hesaplanamaz.
+
+Cazip kısayol DIO'yu 0 saymaktı. Bu, döngüyü bu işletmenin malzeme tuttuğu gün sayısı kadar
+**kısaltır** — yani işletme sermayesini olduğundan **İYİ** gösterir, ki bu metrik için yanlış
+olmanın en tehlikeli yönü budur. Onun yerine `cash_cycle_excluding_inventory` ayrıca veriliyor ve
+**tam olarak neyi dışladığıyla adlandırılıyor**, böylece hesaplanabilir kısım hiçbir şey CCC
+taklidi yapmadan kullanılabiliyor.
+
+`working_capital_trend` her ay için kendi 365 günlük kayan paydasını kullanıyor — noktasal
+`dso_dpo_components` "bugünü" cevaplıyor, trend ise her ayın kendi pozisyonunu gerektiriyor.
+
+### Dağıtımda kaybolan kuruş (`allocate`)
+
+100,00'ü üçe bölmek 33,33 veriyor ve 33,33 × 3 = 99,99. Bir kuruşun bir yere gitmesi gerekiyor,
+yoksa dağıtım sessizce para kaybeder — bir yıllık aylık genel gider koşusunda bu, her maliyet
+merkezinde açıklanamayan gerçek bir sapmadır. Artık kalan **en büyük paya** veriliyor (eşitlikler
+id ile çözülüyor, yani seçim tekrarlanabilir) ve `allocate` parçaların girdiye **tam olarak**
+eşit toplandığını garanti ediyor. Birim test bunu 100 / 0,01 / 1 / 999,99 / 1234,56 tutarlarını
+3, 6, 7 ve 11 hedefe bölerek doğruluyor.
+
+Sıfır ya da negatif toplam sürücüde dağıtım **boş** dönüyor — NaN üretmek yerine "hiçbir şey
+dağıtılamadı" bilgisi veriliyor.

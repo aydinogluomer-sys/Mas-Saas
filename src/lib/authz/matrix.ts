@@ -236,6 +236,11 @@ export const TABLE_CLASS: Record<string, AccessClass> = {
   // who could lower the floor governing their own alerts would be silencing the alarm rather
   // than answering it, the argument 0058 used to keep approval_rules admin-only.
   treasury_policies: "config",
+  // Faz 30. Same class as settings/treasury_policies: every tier reads the allocation basis (it
+  // explains why a margin looks the way it does), only admin changes it. Deliberately not
+  // manager-writable — re-basing allocation moves cost between cost centres without any
+  // financial record changing.
+  cost_allocation_rules: "config",
   approvals: "approval",
   approval_rules: "approval_config",
   users: "auth_users",
