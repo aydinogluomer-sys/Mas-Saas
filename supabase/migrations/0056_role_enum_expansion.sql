@@ -35,6 +35,44 @@ alter table public.users drop constraint if exists users_role_check;
 -- ── 2) carry the existing accounts across ──────────────────────────────────────────────
 update public.users set role = 'finance_manager' where role = 'operator';
 
+-- ── 2b) drain the deferred guard BEFORE the next ALTER TABLE ───────────────────────────
+--
+-- MEASURED, NOT ANTICIPATED. Without this line the migration above is a live grenade, and
+-- the reason is invisible from reading 0056 alone.
+--
+-- 0031 put a DEFERRABLE INITIALLY DEFERRED constraint trigger on this table
+-- (`users_require_active_admin`, AFTER UPDATE OF role, is_active OR DELETE, FOR EACH ROW).
+-- The UPDATE above matches that trigger's event, so every rewritten row queues a pending
+-- trigger event that, being INITIALLY DEFERRED, is not checked until COMMIT. PostgreSQL
+-- refuses to run ALTER TABLE on a relation that has such a queue:
+--
+--   ERROR:  cannot ALTER TABLE "users" because it has pending trigger events
+--
+-- and migrate.ts runs each migration inside one transaction, so step 3 below hits exactly
+-- that error and the whole migration rolls back. Reproduced against a disposable database
+-- migrated to 0055 and seeded with the two role='operator' rows the real database holds
+-- today; with ZERO operator rows the UPDATE matches nothing, queues nothing, and 0056
+-- passes — which is precisely why every gate so far ran green. The failure is data-
+-- dependent, and the data that triggers it is the production data.
+--
+-- SET CONSTRAINTS ... IMMEDIATE checks the queued events NOW instead of at COMMIT. They
+-- pass (the UPDATE moved operator→finance_manager and left every admin untouched, so "at
+-- least one active admin" still holds), the queue empties, and ALTER TABLE is free.
+--
+-- WHY THE CONSTRAINT IS NAMED RATHER THAN `SET CONSTRAINTS ALL IMMEDIATE`:
+-- two deferrable constraints exist at this point in the schema — this one and
+-- `invoices_require_reversal_record` (0044). `ALL` would arm the invoice guard as well and
+-- give 0056 a way to fail for a reason that has nothing to do with roles. Naming the
+-- constraint fires only the invariant this UPDATE could actually have disturbed.
+-- The named form errors if no such constraint exists; that cannot happen here, because
+-- 0031 creates it unconditionally and no migration between 0031 and 0056 drops, renames or
+-- replaces it (verified by grep across the whole migration set).
+--
+-- THIS DOES NOT WEAKEN THE GUARD, IT ONLY MOVES WHEN IT FIRES. If the invariant is
+-- genuinely violated — no active admin left — the exception is raised HERE and the
+-- migration refuses to complete, exactly as it would have at COMMIT.
+set constraints users_require_active_admin immediate;
+
 -- ── 3) the new constraint ──────────────────────────────────────────────────────────────
 alter table public.users
   add constraint users_role_check check (role in (
