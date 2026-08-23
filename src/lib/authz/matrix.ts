@@ -33,6 +33,7 @@ export type AccessClass =
   | "evidence"
   | "derived"
   | "config"
+  | "personal"
   | "approval"
   | "approval_config"
   | "auth_users"
@@ -92,6 +93,26 @@ export const CLASS_MATRIX: Record<AccessClass, Record<AppRole, Action[]>> = {
   config: {
     viewer: READ, finance_operator: READ, finance_approver: READ,
     finance_manager: READ, admin: ALL,
+  },
+  // Faz 36. A saved view is a PERSONAL WORKING PREFERENCE, not company data, and `operational`
+  // was written for financial records — an approver may keep their own filters even though they
+  // may not edit an invoice. Row-level ownership (migration 0084) limits the blast radius; this
+  // class only says "you may manage personal rows at all".
+  //
+  // Precedent for splitting rather than bending a class: Faz 24B separated auth_users from
+  // auth_sessions for exactly this reason.
+  //
+  // VIEWER IS READ-ONLY HERE, AND THAT WAS A DELIBERATE CLIMB-DOWN.
+  //
+  // The first version gave viewer ALL, reasoning that a read-only colleague still benefits from
+  // naming the filter they open every morning. db:roles-rls:verify then failed a Faz 24B
+  // invariant it asserts in as many words: a viewer cannot write to ANY table. That invariant is
+  // worth more than the convenience — it is a single sentence anyone can check, and the moment it
+  // acquires one exception, every future reader has to re-derive whether their case is the
+  // exception or the rule. A viewer can still USE saved views; they just cannot create one.
+  personal: {
+    viewer: READ, finance_operator: ALL, finance_approver: ALL,
+    finance_manager: ALL, admin: ALL,
   },
   // Requesting is data entry; deciding is the approver's job; nobody deletes an approval,
   // because it is the record that a control was exercised.
@@ -212,6 +233,8 @@ export const TABLE_CLASS: Record<string, AccessClass> = {
   // Faz 35. documents/document_links: filing a document is data entry. attachments is EVIDENCE —
   // append-only in the database (0083 triggers), insert+select only, no update or delete for any
   // tier, because a version history that can be edited is not a history.
+  // Faz 36. Personal working preference, owner-scoped like action_items/scenarios (0058).
+  saved_views: "personal",
   documents: "operational",
   document_links: "operational",
   attachments: "evidence",
@@ -268,7 +291,7 @@ export const TABLE_CLASS: Record<string, AccessClass> = {
  * `c_owned` list in 0058 — only tables that already carry `created_by`, because inventing an
  * owner column for the other 53 would have made every historical row unowned.
  */
-export const OWNER_SCOPED_TABLES = ["action_items", "invoice_allocations", "scenarios"] as const;
+export const OWNER_SCOPED_TABLES = ["action_items", "invoice_allocations", "scenarios", "saved_views"] as const;
 
 /** Does this tier may run this command on this table? */
 export function can(role: AppRole, table: string, action: Action): boolean {
@@ -337,4 +360,94 @@ export function canSeeModule(role: AppRole, href: string): boolean {
 /** Filter a navigation list for a tier. Used by the dashboard layout. */
 export function navigationFor<T extends { href: string }>(role: AppRole, items: T[]): T[] {
   return items.filter((item) => canSeeModule(role, item.href));
+}
+
+/* ── role-based navigation, UI half (Faz 36) ─────────────────────────────────────────── */
+//
+// Faz 24B deliberately shipped only the backend answer and left "how that is presented" to this
+// phase. Measured before writing this: the SIDEBAR was already filtered by navigationFor(), but
+// `ModuleFrame` — the component that renders every module's TABS — had no role awareness at all,
+// and all eight module layouts handed it a hard-coded list. So the gap was never the sidebar; it
+// was one level down, where a tier could still be offered a tab into a screen that refuses it.
+//
+// Sub-route entitlements. Only routes whose entitlement DIFFERS from their module's are listed;
+// everything else inherits, which keeps this table small enough to stay true.
+
+const ROUTE_MIN_TIER: Record<string, AppRole[]> = {
+  // Backup/restore and access control are administration, not finance work. A manager can read
+  // the system module but has nothing actionable on these two, and both pages already refuse
+  // them server-side — this stops the door being drawn at all.
+  "/system/backup": ["admin"],
+  "/system/security": ["admin"],
+  // The approval queue is the maker-checker control surface. An operator RAISES requests but may
+  // not decide them (Faz 24A), and a viewer has no part in it; offering the queue to either
+  // implies an action they cannot take.
+  "/data/approvals": ["finance_approver", "finance_manager", "admin"],
+};
+
+/**
+ * Whether a tier may see a specific route, tab included.
+ *
+ * Resolution order matters and is the point: the most specific entry wins, but a route always
+ * inherits its MODULE's gate when it has no entry of its own. Without that inheritance a tab
+ * under /system would be visible to a viewer purely because nobody remembered to list it — the
+ * failure mode is silent, and it is exactly the one this function exists to prevent.
+ */
+export function canSeeRoute(role: AppRole, href: string): boolean {
+  const explicit = ROUTE_MIN_TIER[href];
+  if (explicit !== undefined) return explicit.includes(role);
+
+  // Longest matching module prefix, so /system/jobs inherits /system.
+  const modules = Object.keys(MODULE_MIN_TIER)
+    .filter((m) => href === m || href.startsWith(`${m}/`))
+    .sort((a, b) => b.length - a.length);
+  if (modules.length > 0) return canSeeModule(role, modules[0]);
+  return true;
+}
+
+/**
+ * Filter a module's tabs for a tier.
+ *
+ * Called from the SERVER component that owns each module layout, so a tab a tier may not use is
+ * never serialised into the page at all. Filtering in the browser would put the full list in the
+ * HTML and merely hide it with CSS — which is not access control, it is a rendering choice with
+ * a security-shaped name.
+ */
+export function tabsFor<T extends { href: string }>(role: AppRole, tabs: T[]): T[] {
+  return tabs.filter((tab) => canSeeRoute(role, tab.href));
+}
+
+/** Every route this tier may see, for the gate to enumerate. */
+export const GATED_ROUTES: readonly string[] = Object.freeze([
+  ...Object.keys(MODULE_MIN_TIER), ...Object.keys(ROUTE_MIN_TIER),
+]);
+
+/* ── capability gates for in-page actions (Faz 36) ────────────────────────────────────── */
+//
+// A hidden tab is only half the job: a page a tier may READ can still render a button that writes.
+// These are named capabilities rather than raw can(role, table, action) calls at each call site,
+// so the same question is answered the same way everywhere and the gate can enumerate them.
+
+export const UI_CAPABILITIES = {
+  create_document: { table: "documents", action: "insert" },
+  upload_attachment: { table: "attachments", action: "insert" },
+  enqueue_job: { table: "background_jobs", action: "insert" },
+  replay_dead_letter: { table: "background_jobs", action: "update" },
+  generate_report: { table: "reports", action: "insert" },
+  save_view: { table: "saved_views", action: "insert" },
+  decide_approval: { table: "approvals", action: "update" },
+  edit_payment: { table: "payments", action: "update" },
+} as const satisfies Record<string, { table: string; action: Action }>;
+
+export type UiCapability = keyof typeof UI_CAPABILITIES;
+
+/**
+ * Whether a tier may perform a named UI action.
+ *
+ * Delegates to `can()` — the same matrix the database policies were generated from — so a button
+ * can never be offered on the strength of a second, drifting opinion about who may write.
+ */
+export function canPerform(role: AppRole, capability: UiCapability): boolean {
+  const spec = UI_CAPABILITIES[capability];
+  return can(role, spec.table, spec.action);
 }

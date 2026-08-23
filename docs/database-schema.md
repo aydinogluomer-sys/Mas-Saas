@@ -2248,3 +2248,82 @@ bir yazım hatasıyla yaratmaya izin verirdi.
 
 Güncel sürüm `max(version_no)` ile türetilir. `current_attachment_id` kolonu, zaten cevaplanan bir
 soru için **ikinci kaynak** olurdu ve biri onu güncellemeden sürüm eklediği ilk gün bayatlardı.
+
+## Kayıtlı Görünümler ve Sahiplik FK Düzeltmesi (Faz 36, migration 0084-0085)
+
+### 0084 — `saved_views`
+
+Adlandırılmış, tekrar kullanılabilir bir global filtre kümesi. **Filtre saklar, sonuç saklamaz** —
+bir soru olduğu için bayatlayamaz; yeniden açıldığında bugünün verisine karşı çalışır. Eşleştiği
+satırları saklamak, defterin sessizce yaşlanan ikinci bir kopyasını yaratırdı.
+
+| Alan | Neden |
+| --- | --- |
+| `module_key` | Bir filtre kümesi yalnız kolonlarını adlandırdığı ekranda anlamlı; süsleme değil, ödeme filtresinin fatura ekranında sessizce hiçbir şeyle eşleşmesini engelleyen şey |
+| `filters jsonb` | Filtre sözlüğünün büyümesi bekleniyor; her yeni filtre için migration, özelliğin genişletilmeyi bırakacağının garantisi olurdu |
+| `is_shared` | Varsayılan **özel**: biri kaydettiği anda çalışma filtresinin tüm şirkete görünür olması sürprizdir |
+| `is_default` | Kişi+modül başına en fazla bir tane — kısmi unique indeks |
+
+**Sahiplik RLS'i, 0058'in `c_owned` şekliyle.** SELECT/UPDATE/DELETE sahiplik kapsamlı, INSERT
+değil — ölçülerek: INSERT'i de kapsayan ilk sürümde `db:roles-rls:verify` düştü, çünkü sınıf
+matrisi operatörün insert edebilmesini bekliyor ve politika, uygulama kimliği ayarlanmamış her
+istekte reddediyordu. 0058 zaten diğer sahiplik tablolarını böyle ele alıyor.
+
+**`personal` erişim sınıfı eklendi.** Kayıtlı görünüm kişisel çalışma tercihi; `operational`
+finansal kayıtlar için yazılmıştı. Sınıf ayırmanın precedent'i var: Faz 24B `auth_users` ile
+`auth_sessions`'ı tam da bu sebeple ayırmıştı.
+
+**İzleyici burada da salt-okunur.** İlk sürüm izleyiciye de kendi görünümlerini veriyordu;
+`db:roles-rls:verify` Faz 24B'nin açıkça yazdığı invariant'ı düşürdü: *izleyici hiçbir tabloya
+yazamaz*. İnvariant, kolaylıktan değerli — herkesin tek cümlede kontrol edebileceği bir kural, ilk
+istisnasını kazandığı anda her okuyucu kendi vakasının istisna mı kural mı olduğunu yeniden
+türetmek zorunda kalır.
+
+**Politika adı yük taşıyor.** 0058, adı `_select_all_tiers` ile biten bir politikası olmayan her
+tabloda migration'ı düşüren bir koruyucuyla bitiyor. Son ek, politikanın **kime** verildiğini
+(beş katmanın tamamı) anlatır; hangi satırları gördüğünü değil — o kural `using` içinde. Doğru ama
+son eki tutmayan `saved_views_select_own_or_shared` adı, ledger-kurtarma provasında bu koruyucuyu
+düşürdü; ad artık iki bilgiyi de taşıyor.
+
+Yaşam-döngüsü kolonu **yok** — kayıtlı görünüm oluşur, düzenlenir, silinir; arada durumu yoktur.
+CHECK+guard disiplini burada atlanmadı, **yapısal olarak N/A** ve gate bunu introspection ile
+kanıtlıyor.
+
+### 0085 — sahiplik FK'lerini `public.users`'a çevirme
+
+**Yayınlanmış gerçek bir hata, okuyarak değil ÇALIŞTIRARAK bulundu.**
+
+`auth.users` bu kurulumda **boş** — local-bootstrap.sql şemayı Supabase tarzı migration'lar
+beklediği için yaratıyor, ama içine hiçbir şey yazılmıyor. Uygulamanın hesapları `public.users`'ta
+(Faz 15) ve `session.id` bir `public.users` id'si.
+
+Buna rağmen dört kolon `references auth.users(id)` diyordu:
+
+```
+background_jobs.created_by     (Faz 33)
+documents.created_by           (Faz 35)
+attachments.uploaded_by        (Faz 35)
+document_links.created_by      (Faz 35)
+```
+
+Ölçüm:
+
+```
+insert into public.documents (title, doc_type, created_by) values ('x','other', <oturum id>)
+ERROR: violates foreign key constraint "documents_created_by_fkey"
+```
+
+Yani `createDocument()` — bir dokümanı dosyalamanın tek yolu — **her giriş yapmış kullanıcı için
+başarısız**, ve `enqueueJob()` gerçek bir aktör verildiğinde başarısız. İkisi de yayınlanmıştı.
+
+**Neden hiçbir gate yakalamadı.** phase33:verify `enqueueJob(pool, …, null)` çağırıyordu,
+phase35:verify dokümanları `created_by` içermeyen ham SQL ile yazıyordu. İkisi de test edilen alanı
+**kırık bir FK'yi sağlayan tek değerle** — NULL ile — geçti. Test edilen alandan kaçınan bir
+fixture, o alanın testi değildir.
+
+Doğru hedef `public.users`; zaten çalışan sahiplik tablolarının (`action_items.created_by`,
+`scenarios.created_by`) baştan beri kullandığı tablo. Veri taşıma gerekmedi: bu kolonların hepsi
+her yerde NULL'dı, çünkü non-null bir değer imkânsızdı.
+
+`phase36:verify` artık şema genelinde, hiçbir sahiplik kolonunun boş `auth.users`'ı
+göstermediğini doğruluyor — bu hatayı yapan bir sonraki tablo yazıldığı gün düşecek.

@@ -397,8 +397,29 @@ async function main(): Promise<void> {
     mineAffected === 1, `${mineAffected} satır`);
   record("SATIR SEVİYESİ: operatör BAŞKASININ action_item'ını güncelleyemiyor",
     theirsAffected === 0, `${theirsAffected} satır`);
-  record("owner-scoped tablo listesi kod ile migration arasında aynı",
-    OWNER_SCOPED_TABLES.length === 3, OWNER_SCOPED_TABLES.join(", "));
+  // Faz 36 fix. This asserted `OWNER_SCOPED_TABLES.length === 3` — a pinned size, which is the
+  // exact brittleness class Faz 31 found in `action_items.source_type`: adding `saved_views` broke
+  // a check whose NAME claims to compare code against the migration, and which was in fact
+  // comparing code against a number somebody typed.
+  //
+  // Now it does what it says: every table the code calls owner-scoped must actually carry a policy
+  // whose predicate references current_app_user() in the live database. That auto-syncs as the
+  // list grows, and it fails if a table is declared owner-scoped in code while the database scopes
+  // it to nobody.
+  const ownerPolicyMisses: string[] = [];
+  for (const table of OWNER_SCOPED_TABLES) {
+    const found = await owner.query(
+      `select count(*)::int n from pg_policies
+        where schemaname='public' and tablename=$1
+          and (coalesce(qual,'') like '%current_app_user%'
+               or coalesce(with_check,'') like '%current_app_user%')`, [table]);
+    if (Number(found.rows[0].n) === 0) ownerPolicyMisses.push(table);
+  }
+  record("owner-scoped tabloların HEPSİ veritabanında gerçekten sahiplik kapsamlı",
+    OWNER_SCOPED_TABLES.length > 0 && ownerPolicyMisses.length === 0,
+    ownerPolicyMisses.length === 0
+      ? `${OWNER_SCOPED_TABLES.length} tablo: ${OWNER_SCOPED_TABLES.join(", ")}`
+      : `politikası eksik: ${ownerPolicyMisses.join(", ")}`);
 
   /* ── F. the tier really is the tier ─────────────────────────────────────────────────── */
   const roleNames: string[] = [];

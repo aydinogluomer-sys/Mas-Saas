@@ -581,6 +581,7 @@ pnpm phase32:verify   # Faz 32'den sonra: CFO brifingi + yonetim kokpiti + birle
 pnpm phase33:verify   # Faz 33ten sonra: arka plan kuyrugu + ONCE/SONRA query-plan karsilastirmasi + indeks denetimi, DB gerektirir
 pnpm phase34:verify   # Faz 34ten sonra: analiz kaydi + bagimlilik grafigi + KALICI repo-geneli LLM-bagimsizligi kontrolu, DB gerektirir
 pnpm phase35:verify   # Faz 35ten sonra: dokuman merkezi + evrensel arama + GERCEK SET ROLE ile RLS-atlamama kaniti, DB gerektirir
+pnpm phase36:verify   # Faz 36dan sonra: rol-bazli navigasyonun UI yarisi + ornekleme dayali UI tutarlilik listesi, DB gerektirir
 pnpm build
 pnpm phase16:verify   # Faz 16'dan sonra: build'i gerektirir, bu yuzden build'den SONRA
 ```

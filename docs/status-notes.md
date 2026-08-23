@@ -3585,3 +3585,107 @@ env -u DATABASE_URL MAS_RADAR_APP_DB_PASSWORD=... \
 ```
 **43/43, 3 kez art arda.** 923 birim testi (+34). RLS davranış testi gerçek bir
 `mas_radar_app` girişi ve gerçek `SET ROLE` kullanıyor.
+
+## Faz 36 — DONE (rol-bazlı navigasyonun UI yarısı, global filtreler, kayıtlı görünümler, tablo standardı)
+
+Migration **0084-0085**. Faz 24B'nin bilerek ertelediği tek eksik kapatıldı, ve yol boyunca üç
+fazın (33, 35, 36) paylaştığı **yayınlanmış bir hata** bulundu.
+
+### Boşluk sidebar'da değildi — bir kat altındaydı
+
+Yazmadan önce **ölçtüm**: sidebar zaten `navigationFor(session.role, NAV)` ile filtreleniyordu.
+Faz 24B'nin UI yarısı orada eksik değildi. Eksik olan bir kat aşağıdaydı — `ModuleFrame` her
+modülün **sekmelerini** çiziyor ve **rol farkındalığı sıfırdı** (`grep -c "role" module-tabs.tsx`
+→ 0); sekiz modül layout'unun hepsi ona sabit bir liste veriyordu. Bir izleyiciye, kendisini
+reddedecek bir ekrana açılan sekme sunulabiliyordu.
+
+`ROUTE_MIN_TIER` + `canSeeRoute()` + `tabsFor()` eklendi. Kritik tasarım ayrıntısı **devralma**:
+kendi girdisi olmayan bir rota, **modülünün** kapısını devralır. Olmasaydı `/system` altındaki bir
+sekme, yalnızca kimse listeye eklemeyi hatırlamadığı için izleyiciye görünür kalırdı — sessiz
+başarısızlık, ve bu fonksiyonun var olma sebebi tam da o.
+
+### UI tarafı nasıl KANITLANDI
+
+Üç yoldan, ve iddiaya değil ölçüme dayanarak:
+
+1. **Sekiz layout'un hepsi gerçekten `tabsFor()` çağırıyor** — kaynak seviyesinde, yorumlar
+   ayıklanarak. *Negatif kontrol:* `finance` layout'unu filtresiz bıraktım, gate modülü adıyla
+   bildirerek düştü.
+2. **Filtreleme SUNUCUDA** — layout'lar client component değil ve `requireSession()` çağırıyor.
+   Gizlenen sekme tarayıcıya hiç gönderilmiyor; CSS ile saklamak erişim kontrolü değil, güvenlik
+   adı taşıyan bir render tercihidir.
+3. **Sızıntı taraması gerçek listeler üzerinde** — sekiz layout'tan `href`'ler ayrıştırıldı
+   (**59 sekme**), 5 katman × 59 sekme denendi: hiçbir katmana göremeyeceği bir sekme sunulmuyor.
+   **İki pozitif kontrol**: izleyiciden gerçekten 9 sekme gizleniyor (yoksa "sızıntı yok" hiçbir
+   şey yapmayan bir filtre için de geçerdi) ve yöneticiden hiçbiri gizlenmiyor.
+
+Ayrıca sayfa içi **yetenek kapıları**: gizli sekme işin yarısı — okunabilen bir sayfa hâlâ yazan
+bir buton çizebilir. `UI_CAPABILITIES` + `canPerform()` aynı `can()` matrisine delege ediyor, yani
+bir buton, kimin yazabileceği hakkında ikinci bir görüşe dayanarak sunulamıyor.
+
+### `saved_views`: iki kez geri adım attım, ikisi de gate yüzünden
+
+1. INSERT'i sahiplikle kapsadım → `db:roles-rls:verify` düştü: sınıf matrisi operatörün insert
+   edebilmesini bekliyor. 0058 zaten sahipliği UPDATE'te uyguluyor; precedent'e uydum.
+2. İzleyiciye kendi görünümlerini verdim → Faz 24B'nin **"izleyici hiçbir tabloya yazamaz"**
+   invariant'ı düştü. Geri aldım. İnvariant, kolaylıktan değerli: herkesin tek cümlede kontrol
+   edebileceği bir kural, ilk istisnasını kazandığı anda her okuyucu kendi vakasının istisna mı
+   kural mı olduğunu yeniden türetmek zorunda kalır.
+
+Bir de politika **adı**: 0058'in koruyucusu `_select_all_tiers` son ekine bakıyor. Doğru ama son
+eki tutmayan `saved_views_select_own_or_shared`, ledger-kurtarma provasında migration'ı düşürdü.
+Ad artık iki bilgiyi de taşıyor.
+
+### Yayınlanmış gerçek bir hata: sahiplik FK'leri boş bir tabloyu gösteriyordu
+
+`auth.users` bu kurulumda **boş**; uygulamanın hesapları `public.users`'ta ve `session.id` oradan
+geliyor. Dört kolon yine de `references auth.users(id)` diyordu — `background_jobs.created_by`
+(Faz 33), `documents.created_by` / `attachments.uploaded_by` / `document_links.created_by`
+(Faz 35).
+
+Sonucu kozmetik değil: **`createDocument()` her giriş yapmış kullanıcı için başarısız**,
+`enqueueJob()` gerçek bir aktör verildiğinde başarısız. İkisi de yayınlanmıştı.
+
+**Neden hiçbir gate yakalamadı:** phase33:verify `actorId=null` geçiyordu, phase35:verify
+dokümanları `created_by` içermeyen ham SQL ile yazıyordu. İkisi de test edilen alanı, **kırık bir
+FK'yi sağlayan tek değerle** geçti. *Test edilen alandan kaçınan bir fixture, o alanın testi
+değildir* — bu fazın en pahalı dersi ve gate'e kalıcı olarak yazıldı: artık hem şema genelinde
+hiçbir sahiplik FK'sinin boş `auth.users`'ı göstermediği, hem de **gerçek bir oturum kullanıcısıyla**
+doküman oluşturulabildiği doğrulanıyor.
+
+### Global filtreler ve tablo standardı
+
+Filtreler bir **değer**; URL doğruluk kaynağı. Bellekte tutulan bir filtre adlandırılamaz,
+paylaşılamaz, bağlantılanamaz — ve iki kişinin farklı sayılara bakıp bunu fark edemediği o klasik
+destek konuşmasını üretir. Paylaşılan bir bağlantıdaki **tek bozuk parametre**, gönderenin diğer
+seçimlerini silmiyor. `describeFilters()` her export'a giriyor: filtrelendiğini söylemeyen bir
+tablo, yanlış toplamı dolaştırmanın en kolay yolu.
+
+Tablo standardında üç ayrıntı ölçülerek kondu: sıralama anahtarı **beyaz listeden** geçiyor
+(query string'den gelir), sıralamaya her zaman **eşitlik bozucu** ekleniyor (yoksa sayfa 2, sayfa
+1'in satırını tekrar edebilir), ve null'lar **iki yönde de sona** (bilinmeyen tutar en küçük tutar
+değildir). Toplu işlem onayı kapsamı açıkça söylüyor: 12 görünen satır ile 40.000 görülmemiş satır
+farklı kararlardır.
+
+**İkinci bir export mekanizması icat edilmedi** — Faz 34'ün `analytics/export` rotası tek yol,
+gate bunu doğruluyor.
+
+### Örneklenen tutarlılık kontrol listesi (planın istediği gibi)
+
+Her sayfa değil, **modül başına bir**, ve seçim gerekçeli: her modülün en **veri-yoğun** sayfası —
+tablosu, boş durumu ve yükleme yolu olması en muhtemel, yani tutarsızlığın bulunmaya değer olduğu
+ekran. ~60 sayfanın tamamını taramak çoğunlukla önemsiz özet ekranlarını yeniden doğrulardı ve
+gate'i insanların çalıştırmayı bıraktığı kadar yavaşlatırdı.
+
+Örneklem gerçek bir tutarsızlık buldu: `payments/items` ortak `PageHeader`'ı kullanmıyordu.
+Düzeltildi. Bir modülde tek ekranın kendini farklı tanıtması, ürünün tasarlanmış değil monte
+edilmiş hissettirmeye başladığı yerdir.
+
+### Doğrulama
+
+```
+env -u DATABASE_URL MAS_RADAR_APP_DB_PASSWORD=... \
+  MIGRATION_DATABASE_URL="postgresql://..." pnpm phase36:verify
+```
+**53/53, 3 kez art arda.** 949 birim testi (+26). `db:migrate:verify` 49/49,
+`db:roles-rls:verify` 29/29.

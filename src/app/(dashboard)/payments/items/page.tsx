@@ -2,6 +2,8 @@ import Link from "next/link";
 import { getPool } from "@/lib/db";
 import { moneyOrNull } from "@/lib/money";
 import { Num, Panel } from "@/components/ui/panel";
+import { PageHeader } from "@/components/ui/shell";
+import { Badge } from "@/components/ui/badge";
 import { PaymentItemsTable, type PaymentItemRow } from "@/components/payments/payment-items-table";
 
 export const dynamic = "force-dynamic";
@@ -26,12 +28,21 @@ export default async function PaymentItems({ searchParams }: { searchParams: Pro
   }));
   return (
     <>
+      {/* Faz 36: this page carried no PageHeader while every comparable screen did — the sampled
+          consistency check found it. A module where one screen announces itself differently is
+          how a product starts feeling assembled rather than designed. */}
+      <PageHeader
+        title="Ödeme Kalemleri"
+        subtitle="Düzenli ve tek seferlik ödeme tanımları"
+        meta={<Badge tone="neutral" dot>{data.length} kalem</Badge>}
+        action={<Link href="/payments/new" className="button-accent px-3 py-2">Ödeme ekle</Link>}
+      />
       {sp.mapped != null && (
         <Panel title="Eşleme sonucu">
           <p className="text-sm"><Num>{sp.mapped}</Num> kalem aktarıldı · <Num>{sp.skipped}</Num> zaten eşliydi · <Num>{sp.excluded}</Num> inceleme nedeniyle hariç.</p>
         </Panel>
       )}
-      <Panel title={`Ödeme kalemleri · ${data.length}`} right={<Link href="/payments/new" className="button-accent px-3 py-2">Ödeme ekle</Link>}>
+      <Panel title="Ödeme kalemleri">
         <PaymentItemsTable rows={data} />
       </Panel>
     </>

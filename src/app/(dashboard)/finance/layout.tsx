@@ -1,3 +1,5 @@
-import type { ReactNode } from "react"; import { ModuleFrame } from "@/components/ui/module-tabs";
+import type { ReactNode } from "react";
+import { requireSession } from "@/lib/auth";
+import { tabsFor } from "@/lib/authz/matrix"; import { ModuleFrame } from "@/components/ui/module-tabs";
 const tabs=[{href:"/finance",label:"Özet"},{href:"/finance/checks",label:"Çekler"},{href:"/finance/loans",label:"Krediler"},{href:"/finance/facilities",label:"Kredi limitleri"},{href:"/finance/fx",label:"Kur riski"},{href:"/finance/exposure",label:"Maruziyet"},{href:"/finance/counterparties",label:"Karşı taraflar"},{href:"/finance/profitability",label:"Kârlılık"},{href:"/finance/bank",label:"Banka"},{href:"/finance/treasury",label:"Hazine"},{href:"/finance/invoices",label:"Faturalar"},{href:"/finance/receivables",label:"Alacak/Borç"},{href:"/finance/collections",label:"Tahsilat riski"},{href:"/finance/promises",label:"Ödeme sözleri"},{href:"/finance/maturities",label:"Vade takvimi"},{href:"/finance/calendar",label:"Finansal takvim"},{href:"/finance/archive",label:"Arşiv"}];
-export default function Layout({children}:{children:ReactNode}){return <ModuleFrame title="Finansman" description="Çekler, krediler, taksitler ve birleşik borç servisi." tabs={tabs}>{children}</ModuleFrame>}
+export default async function Layout({children}:{children:ReactNode}){const session=await requireSession();return <ModuleFrame title="Finansman" description="Çekler, krediler, taksitler ve birleşik borç servisi." tabs={tabsFor(session.role, tabs)}>{children}</ModuleFrame>}
