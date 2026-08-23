@@ -296,10 +296,66 @@ async function main(): Promise<void> {
   const expectReject = async (sql: string, p: unknown[] = []) => {
     try { await pool.query(sql, p); return false; } catch { return true; }
   };
-  record("turn tutarlılığı zorunlu (conversation_id ile turn_index birlikte)",
-    await expectReject(
-      `update public.ai_response_snapshots set turn_index = 5 where conversation_id is null and id = (select id from public.ai_response_snapshots limit 1)`),
-    "biri varsa diğeri de olmalı");
+  const expectAccept = async (sql: string, p: unknown[] = []) => {
+    try { await pool.query(sql, p); return { ok: true, detail: "kabul edildi" }; }
+    catch (e) { return { ok: false, detail: messageOf(e).slice(0, 120) }; }
+  };
+
+  /* ── turn tutarlılığı: assertion KENDİ satırını kurar, ortamdan satır DEVŞİRMEZ ────────
+   *
+   * ÖNCEKİ HALİ SESSİZCE ANLAMSIZDI VE BU YÜZDEN YANLIŞ FAIL VERİYORDU. Şöyleydi:
+   *
+   *   update public.ai_response_snapshots set turn_index = 5
+   *    where conversation_id is null and id = (select id from public.ai_response_snapshots limit 1)
+   *
+   * Boş bir tabloda `limit 1` NULL döner, `id = NULL` hiçbir satırı eşlemez, UPDATE 0 satır
+   * etkiler ve HATA FIRLATMAZ — expectReject bunu "reddedilmedi" diye okur ve kısıt kusursuz
+   * çalışırken kontrol FAIL verir. Ölçüldü: 0087'ye kadar migrate edilmiş temiz bir disposable
+   * DB'ye karşı bu gate 45/46 veriyordu ve tek başarısız kontrol buydu; kısıtın kendisi
+   * katalogda doğru duruyordu. İkinci ve daha sinsi hali de var — tabloda conversation_id'si
+   * DOLU bir satır varsa `where conversation_id is null` yine hiçbir şeyi eşlemez, yani
+   * assertion'ın sonucu kısıta değil, o an veritabanında hangi satırların bulunduğuna bağlıydı.
+   *
+   * ÜRÜN DAVRANIŞI DEĞİŞMEDİ: ai_response_snapshots_turn_consistency doğru, dokunulmadı.
+   * Düzeltilen yalnız testin kurgusu — assertion artık doğruladığı satırı kendisi üretiyor.
+   *
+   * ÜÇ DEĞİL BEŞ KONTROL, ÇÜNKÜ "REDDEDİYOR" TEK BAŞINA HİÇBİR ŞEY KANITLAMAZ: her yazımı
+   * reddeden bozuk bir kısıt da salt-red testini geçerdi. Kısıtın gerçekten EŞLEŞTİRME yaptığı
+   * ancak kabul ettiklerini de göstererek kanıtlanır.
+   */
+  const probeId = (await pool.query<{ id: string }>(
+    `insert into public.ai_response_snapshots (question, answer_md) values ($1,$2) returning id`,
+    [`${TAG} turn tutarlılığı sondası`, "sonda"])).rows[0].id;
+  record("POZİTİF KONTROL: conversation_id ve turn_index'in İKİSİ DE boş olan satır kabul ediliyor",
+    probeId.length > 0, "asistan dışında üretilen bir cevap hiçbir konuşmaya ait değildir");
+  record("turn tutarlılığı: conversation_id boşken turn_index verilemez",
+    await expectReject(`update public.ai_response_snapshots set turn_index = 5 where id = $1`, [probeId]),
+    "hangi konuşmanın 5. turn'ü olduğu söylenmeden turn numarası anlamsızdır");
+
+  const convoUser = (await pool.query<{ id: string }>(`select id from public.users limit 1`)).rows[0]?.id;
+  if (!convoUser) {
+    record("turn tutarlılığı: turn_index boşken conversation_id verilemez", false, "users boş — fixture yok");
+    record("POZİTİF KONTROL: conversation_id ve turn_index BİRLİKTE verilince kabul ediliyor", false, "users boş — fixture yok");
+    record("turn tutarlılığı: turn_index 1'den küçük olamaz", false, "users boş — fixture yok");
+  } else {
+    const convoId = (await pool.query<{ id: string }>(
+      `insert into public.assistant_conversations (title, created_by) values ($1,$2) returning id`,
+      [`${TAG} turn tutarlılığı sondası`, convoUser])).rows[0].id;
+    record("turn tutarlılığı: turn_index boşken conversation_id verilemez",
+      await expectReject(
+        `update public.ai_response_snapshots set conversation_id = $2 where id = $1`, [probeId, convoId]),
+      "kısıt TEK YÖNLÜ değil — eksik olan hangi yarı olursa olsun reddediyor");
+    record("turn tutarlılığı: turn_index 1'den küçük olamaz",
+      await expectReject(
+        `update public.ai_response_snapshots set conversation_id = $2, turn_index = 0 where id = $1`,
+        [probeId, convoId]),
+      "turn numaralandırması 1'den başlar; 0. turn diye bir şey yok");
+    const both = await expectAccept(
+      `update public.ai_response_snapshots set conversation_id = $2, turn_index = 1 where id = $1`,
+      [probeId, convoId]);
+    record("POZİTİF KONTROL: conversation_id ve turn_index BİRLİKTE verilince kabul ediliyor",
+      both.ok, `${both.detail} — kısıt EŞLEŞTİRME yapıyor, kör bir red değil`);
+  }
   record("assistant_conversations Faz 24B'de 'personal' sınıfında",
     TABLE_CLASS.assistant_conversations === "personal",
     "kişinin kendi çalışma kaydı — kayıtlı görünüm gibi");
