@@ -238,6 +238,8 @@ export const TABLE_CLASS: Record<string, AccessClass> = {
   // the closest thing here to granting access to an external system. Credentials are NEVER stored
   // in this table; it holds the NAME of the env var that has them.
   integration_connections: "config",
+  // Faz 38. A conversation thread is a person's own working record, like a saved view.
+  assistant_conversations: "personal",
   saved_views: "personal",
   documents: "operational",
   document_links: "operational",
@@ -295,7 +297,7 @@ export const TABLE_CLASS: Record<string, AccessClass> = {
  * `c_owned` list in 0058 — only tables that already carry `created_by`, because inventing an
  * owner column for the other 53 would have made every historical row unowned.
  */
-export const OWNER_SCOPED_TABLES = ["action_items", "invoice_allocations", "scenarios", "saved_views"] as const;
+export const OWNER_SCOPED_TABLES = ["action_items", "invoice_allocations", "scenarios", "saved_views", "assistant_conversations"] as const;
 
 /** Does this tier may run this command on this table? */
 export function can(role: AppRole, table: string, action: Action): boolean {

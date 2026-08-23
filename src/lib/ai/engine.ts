@@ -1,5 +1,4 @@
 import type { Pool } from "pg";
-import { env } from "@/lib/env";
 import { loadDecisionFacts, type DecisionFact } from "@/lib/facts/engine";
 import { istanbulDateISO } from "@/lib/reports/rules";
 import { audit } from "@/lib/audit";
@@ -31,7 +30,25 @@ function extractOutputText(json: unknown): string | null {
   return parts.join("").trim() || null;
 }
 
+/**
+ * Read env lazily — the Faz 25 fix, applied to the same trap in a second place.
+ *
+ * `import { env }` at module scope made this file (and therefore facts/engine, and therefore any
+ * gate that touches the assistant) unimportable without a DATABASE_URL, because env.ts validates
+ * at module load. phase38:verify hit exactly that and could not run under its own documented
+ * command. Startup validation still happens — @/lib/db imports env statically and every server
+ * path goes through the pool.
+ *
+ * BEHAVIOUR IS UNCHANGED: the same two values are read, in the same place, before any request.
+ * The kill switch below is evaluated exactly as before.
+ */
+async function readEnv() {
+  const { env } = await import("@/lib/env");
+  return env;
+}
+
 async function callOpenAI(question: string, facts: DecisionFact[]): Promise<{ text: string; model: string } | null> {
+  const env = await readEnv();
   const apiKey = env.openaiApiKey;
   if (!apiKey || env.aiForceDeterministic) return null;
   const model = env.openaiModel;

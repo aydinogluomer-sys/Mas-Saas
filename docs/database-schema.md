@@ -2384,3 +2384,41 @@ yalnız zamanlanmış ve açık bir bağlantı için anlamlı. Ölü mektup say�
 `config` sınıfı: herkes hangi entegrasyonların var olduğunu ve sağlıklı olup olmadıklarını
 görebilir; yalnız **admin** yapılandırabilir. Canlı bir banka akışını açmak yönetim işidir, finans
 veri girişi değil — bu sistemde harici bir sisteme erişim vermeye en yakın şey.
+
+## Asistan Konuşmaları (Faz 38, migration 0087)
+
+Bir tablo (`assistant_conversations`) ve `ai_response_snapshots`'a iki kolon. **Cevap üretme
+hattına dokunulmadı.**
+
+### Mevcut hat değişmedi
+
+`ai_response_snapshots` zaten her cevabı sorusu, yanıt modu, modeli, kaynak fact anahtarları ve
+kaynak href'leriyle saklıyordu. 0087 onu değiştirmiyor; takip sorusunun ihtiyaç duyduğu iki
+kolonu ekliyor: bir turn'ün hangi konuşmaya ait olduğu ve sıradaki yeri.
+
+Asistanı güvenli kılan her şey `src/lib/ai`'de kalıyor — `mutationIntent()`, deterministik-önce
+akış, `AI_FORCE_DETERMINISTIC`. Hiçbiri buraya taşınmadı.
+
+### `conversation_id` neden NULLABLE
+
+Bugüne kadar kaydedilmiş her cevap konuşmalardan önce üretildi. NOT NULL bir kolon ya o geçmişi
+reddederdi ya da uydurulmuş bir ipliğe zorlardı. NULL `conversation_id` **"tek seferlik soru"**
+demek — o cevapların gerçekte olduğu şey.
+
+`ai_response_snapshots_turn_consistency`: ikisi birlikte var ya da birlikte yok, ve `turn_index >= 1`.
+
+### Durum ve geçiş koruyucusu
+
+`active / archived`, CHECK ile **aynı migration'da** koruyucu. İki yön de izinli: bir konuşmayı
+arşivlemek toplamaktır, sonucu olan bir karar değil; hâlâ ihtiyaç duyulan birini geri almak da
+normal. Üçüncü bir durum yok — koruyucunun buradaki dar işi, ileride bir durum eklenirse ona giren
+ve çıkan hamlelere birinin karar vermesini zorunlu kılmak.
+
+### RLS: sahiplik, Faz 36'nın `personal` sınıfı
+
+Bir konuşma kişinin kendi çalışma ipliği — finansal kayıttan çok kayıtlı görünüme yakın. Aynı
+sebeple sahiplik kapsamlı: birinin asistana ne sorduğu ve hangi sırayla sorduğu **kendisine ait**.
+
+İzleyici yine **yalnız okur** (Faz 36'da yerleşen karar): Faz 24B "izleyici hiçbir tabloya yazamaz"
+invariant'ını iddia ediyor. İzleyici yine de **soru sorabilir** — cevap `ai_response_snapshots`'a
+uygulama yolu tarafından yazılır, ki bu katman-kapsamlı bir yazma değildir.
