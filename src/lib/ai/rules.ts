@@ -28,6 +28,34 @@ const MUTATION_PATTERNS = [
   /\b(isaretle|onayla|reddet|iptal et|geri al|sifirla)\b/i,
   // "…yap/…et" as a command applied to a record ("ödendi yap" is above; this covers the rest).
   /\bkaydi (sil|kapat|ac)\b/i,
+
+  // ── Faz 17-38 denetimi: the synonyms that were still open ────────────────────────────
+  //
+  // MEASURED AGAIN, NOT REVIEWED. Three sentences were run through this guard and passed:
+  //   "şunu kapat"        → norm "sunu kapat"
+  //   "onayı ver"         → norm "onayi ver"
+  //   "bu kaydı düzenle"  → norm "bu kaydi duzenle"
+  // None of the four patterns above match any of them. This is the SAME failure the
+  // "işaretle" note records one screen up — a verb form is covered and its nearest synonym
+  // is not — so the fix is not three more literals but the MEANING FAMILIES those three
+  // belong to. The next sentence that gets through will come from one of these families.
+  //
+  // WHY WORD STEMS AND NOT PREFIXES, WHICH IS WHERE THIS WOULD GO WRONG. Turkish inflects by
+  // suffix, so `kapat\w*` would swallow "kapatma", and — worse — a bare `kaldir` prefix would
+  // swallow "kaldıraç" (leverage), a term this dashboard uses in its ordinary sense. Every
+  // entry below therefore stays inside \b…\b, which matches the IMPERATIVE and leaves the
+  // inflected noun/past forms alone: "kapat" fires, "kapandı"/"kapanış" do not; "değiştir"
+  // fires, "değişti" does not; "öde" fires, "ödeme"/"ödendi" do not. rules.test.ts pins
+  // exactly these near-miss pairs, because that boundary is the whole design.
+  //
+  // The asymmetry argument at the top of this list still governs: a false positive costs one
+  // less fluent answer, a false negative sends a mutation request to a language model.
+  /\b(kapat|duzenle|duzelt|kaldir|temizle|tamamla|ekle|olustur|kaydet|aktar|gonder|ode)\b/i,
+  // The "onay ver" construction — "onayla" is covered above, but a Turkish speaker just as
+  // naturally writes the noun plus the verb, in any of its possessive/plural cases.
+  /\bonay(i|ini|inizi|lari)? ver(in|iniz)?\b/i,
+  // Two-word compound verbs, which \b…\b on a single stem cannot reach.
+  /\b(geri cek|devre disi birak|aktif et|pasif et|revize et|yeniden hesapla)\b/i,
 ];
 
 export function sanitizeQuestion(raw: string): string {
