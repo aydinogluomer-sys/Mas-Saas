@@ -4,10 +4,10 @@
 import { Pool } from "pg";
 import { createActionFromAiResponse, createActionFromReport } from "../src/lib/data-quality/engine";
 import { ensureSystemActor } from "./db/seed-system-actor";
-import { requireOwnerDatabaseUrl } from "./db/owner-url";
+import { requireDisposableOwnerDatabaseUrl } from "./db/owner-url";
 
 const pool = new Pool({
-  connectionString: requireOwnerDatabaseUrl(),
+  connectionString: requireDisposableOwnerDatabaseUrl("phase14c:verify"),
 });
 const fail = (m: string): never => { console.error("PHASE14C VERIFY FAIL:", m); process.exit(1); };
 const q = async (sql: string, p: unknown[] = []) => (await pool.query(sql, p)).rows;

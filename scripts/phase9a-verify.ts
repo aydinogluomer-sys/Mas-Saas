@@ -9,10 +9,10 @@ import { importWorkbook } from "../src/lib/importers/workbook-importer";
 import { loadCostBreakdown, loadCostModels, mapCapacitySheet, mapCostSheets } from "../src/lib/production/engine";
 import { priceMargin } from "../src/lib/production/rules";
 import { ensureSystemActor } from "./db/seed-system-actor";
-import { requireOwnerDatabaseUrl } from "./db/owner-url";
+import { requireDisposableOwnerDatabaseUrl } from "./db/owner-url";
 
 const pool = new Pool({
-  connectionString: requireOwnerDatabaseUrl(),
+  connectionString: requireDisposableOwnerDatabaseUrl("phase9a:verify"),
 });
 const fail = (m: string): never => { console.error("PHASE9A VERIFY FAIL:", m); process.exit(1); };
 const q = async (sql: string, p: unknown[] = []) => (await pool.query(sql, p)).rows;

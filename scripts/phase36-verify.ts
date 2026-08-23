@@ -36,9 +36,9 @@ import {
   DEFAULT_TABLE_STATE, MAX_ROWS_PER_REQUEST, buildPage, describeSelection,
   orderByClause, pageBounds, parseTableState, selectionSize,
 } from "../src/lib/ui/table";
-import { requireOwnerDatabaseUrl } from "./db/owner-url";
+import { requireDisposableOwnerDatabaseUrl } from "./db/owner-url";
 
-const ownerUrl = requireOwnerDatabaseUrl();
+const ownerUrl = requireDisposableOwnerDatabaseUrl("phase36:verify");
 const pool = new Pool({ connectionString: ownerUrl });
 
 function appUrl(): string | null {

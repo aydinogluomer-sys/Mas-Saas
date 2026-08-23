@@ -19,9 +19,9 @@ import {
   ALLOCATION_BASES, COST_KINDS, allocate, allocationTotal, cashCycle, dpo, dso, profitability,
 } from "../src/lib/costing/rules";
 import { TABLE_CLASS } from "../src/lib/authz/matrix";
-import { requireOwnerDatabaseUrl } from "./db/owner-url";
+import { requireDisposableOwnerDatabaseUrl } from "./db/owner-url";
 
-const pool = new Pool({ connectionString: requireOwnerDatabaseUrl() });
+const pool = new Pool({ connectionString: requireDisposableOwnerDatabaseUrl("phase30:verify") });
 
 interface Check { name: string; pass: boolean; detail: string }
 const checks: Check[] = [];

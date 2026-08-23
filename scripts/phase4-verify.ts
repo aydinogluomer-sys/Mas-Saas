@@ -1,3 +1,11 @@
+// Usage:
+//   DATABASE_URL=…/mas_radar_ornek_verify MIGRATION_DATABASE_URL=… pnpm phase4:verify
+//
+// Target database supplied from outside, same deliberate choice as phase3-verify.ts (see its
+// header for why chaining beats self-provisioning here), and same Faz 17-38 gate in front of it:
+// requireDisposableOwnerDatabaseUrl() refuses mas_radar_dev and refuses any name that does not
+// declare itself disposable — this file truncates three tables before it asserts anything.
+//
 // Phase 4 verification on REAL data.
 // Proves: accepted-only mapping, 35 months, cashflow_months == source header cells
 // (reconciliation, every month), null stays null, continuity flags (0 on TEMİZ;
@@ -11,10 +19,10 @@ import {
 } from "../src/lib/cashflow/engine";
 import { buildProjection, concentration, horizonCards } from "../src/lib/radar/rules";
 import { ensureSystemActor } from "./db/seed-system-actor";
-import { requireOwnerDatabaseUrl } from "./db/owner-url";
+import { requireDisposableOwnerDatabaseUrl } from "./db/owner-url";
 
 const pool = new Pool({
-  connectionString: requireOwnerDatabaseUrl(),
+  connectionString: requireDisposableOwnerDatabaseUrl("phase4:verify"),
 });
 const fail = (m: string): never => { console.error("PHASE4 VERIFY FAIL:", m); process.exit(1); };
 const q = async (sql: string, p: unknown[] = []) => (await pool.query(sql, p)).rows;

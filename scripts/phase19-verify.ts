@@ -15,9 +15,9 @@ import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { Pool } from "pg";
 import { normalizeIban } from "../src/lib/counterparties/rules";
-import { requireOwnerDatabaseUrl } from "./db/owner-url";
+import { requireDisposableOwnerDatabaseUrl } from "./db/owner-url";
 
-const pool = new Pool({ connectionString: requireOwnerDatabaseUrl() });
+const pool = new Pool({ connectionString: requireDisposableOwnerDatabaseUrl("phase19:verify") });
 
 interface Check { name: string; pass: boolean; detail: string }
 const checks: Check[] = [];

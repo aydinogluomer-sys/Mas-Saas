@@ -33,9 +33,9 @@ import { loadPositionSummary, loadLiquidityGap } from "../src/lib/treasury/engin
 import { loadWorkingCapital } from "../src/lib/costing/engine";
 import { loadControlDashboard } from "../src/lib/controls/engine";
 import { overdueOpen } from "../src/lib/radar/queries";
-import { requireOwnerDatabaseUrl } from "./db/owner-url";
+import { requireDisposableOwnerDatabaseUrl } from "./db/owner-url";
 
-const pool = new Pool({ connectionString: requireOwnerDatabaseUrl() });
+const pool = new Pool({ connectionString: requireDisposableOwnerDatabaseUrl("phase32:verify") });
 
 interface Check { name: string; pass: boolean; detail: string }
 const checks: Check[] = [];

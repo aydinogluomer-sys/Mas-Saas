@@ -28,9 +28,9 @@ import { revalue, parseTcmbXml } from "../src/lib/fx/rules";
 import { mockRateProvider, tcmbProvider, TCMB_TODAY_URL } from "../src/lib/fx/provider";
 import { importRates } from "../src/lib/fx/engine";
 import { TABLE_CLASS } from "../src/lib/authz/matrix";
-import { requireOwnerDatabaseUrl } from "./db/owner-url";
+import { requireDisposableOwnerDatabaseUrl } from "./db/owner-url";
 
-const pool = new Pool({ connectionString: requireOwnerDatabaseUrl() });
+const pool = new Pool({ connectionString: requireDisposableOwnerDatabaseUrl("phase27:verify") });
 
 interface Check { name: string; pass: boolean; detail: string }
 const checks: Check[] = [];

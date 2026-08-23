@@ -13,10 +13,10 @@ import { dispatchPending, scheduleReminders } from "../src/lib/reminders/engine"
 import { mockTransport } from "../src/lib/reminders/transport";
 import { istanbulDateISO } from "../src/lib/reports/rules";
 import { ensureSystemActor } from "./db/seed-system-actor";
-import { requireOwnerDatabaseUrl } from "./db/owner-url";
+import { requireDisposableOwnerDatabaseUrl } from "./db/owner-url";
 
 const pool = new Pool({
-  connectionString: requireOwnerDatabaseUrl(),
+  connectionString: requireDisposableOwnerDatabaseUrl("phase6b:verify"),
 });
 const fail = (m: string): never => { console.error("PHASE6B VERIFY FAIL:", m); process.exit(1); };
 const q = async (sql: string, p: unknown[] = []) => (await pool.query(sql, p)).rows;

@@ -29,9 +29,9 @@ import {
 import { runOptimization, requestOptimizationApproval } from "../src/lib/optimization/engine";
 import { SUBJECT_TABLES } from "../src/lib/approvals/engine";
 import { TABLE_CLASS } from "../src/lib/authz/matrix";
-import { requireOwnerDatabaseUrl } from "./db/owner-url";
+import { requireDisposableOwnerDatabaseUrl } from "./db/owner-url";
 
-const pool = new Pool({ connectionString: requireOwnerDatabaseUrl() });
+const pool = new Pool({ connectionString: requireDisposableOwnerDatabaseUrl("phase29:verify") });
 
 interface Check { name: string; pass: boolean; detail: string }
 const checks: Check[] = [];

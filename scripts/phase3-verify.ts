@@ -3,6 +3,23 @@
 //   idempotent mapping + generation (duplicate impossible),
 //   due-day 29/30/31 clamping in DB, missing amount stays NULL,
 //   paid/unpaid mutations write audit_logs, risk flags land.
+//
+// Usage:
+//   DATABASE_URL=…/mas_radar_ornek_verify MIGRATION_DATABASE_URL=… pnpm phase3:verify
+//
+// THE TARGET DATABASE IS SUPPLIED FROM OUTSIDE, DELIBERATELY — and Faz 17-38 audit added the
+// gate that makes that safe. This script is NOT self-provisioning like scripts/db/*-verify.ts,
+// and the difference is a real design choice rather than an oversight: it exercises the actual
+// engine functions against the actual workbook in data/source/, and phase4/phase5 then measure
+// the state phase3 leaves behind (phase5's regression condition depends on it). A script that
+// created and dropped its own database each run could not be chained that way, and would
+// re-apply 87 migrations per gate.
+//
+// What that costs is that the caller chooses the target — and the caller can choose wrong. So
+// the connection now resolves through requireDisposableOwnerDatabaseUrl(), which refuses
+// mas_radar_dev outright and refuses any name that does not DECLARE itself disposable, before a
+// connection is opened. That gate exists because this file's very first act is a TRUNCATE; see
+// scripts/db/owner-url.ts for the reproduction that motivated it.
 import { readFileSync } from "node:fs";
 import { Pool } from "pg";
 import { importWorkbook } from "../src/lib/importers/workbook-importer";
@@ -15,10 +32,10 @@ import {
   refreshRiskFlags,
 } from "../src/lib/radar/engine";
 import { ensureSystemActor } from "./db/seed-system-actor";
-import { requireOwnerDatabaseUrl } from "./db/owner-url";
+import { requireDisposableOwnerDatabaseUrl } from "./db/owner-url";
 
 const pool = new Pool({
-  connectionString: requireOwnerDatabaseUrl(),
+  connectionString: requireDisposableOwnerDatabaseUrl("phase3:verify"),
 });
 const fail = (m: string): never => {
   console.error("PHASE3 VERIFY FAIL:", m);

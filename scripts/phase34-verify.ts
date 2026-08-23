@@ -40,9 +40,9 @@ import {
   runPeriodOverPeriod, runRollingTrend, runVarianceDecomposition,
   runWorkingCapitalDecomposition,
 } from "../src/lib/analytics/engine";
-import { requireOwnerDatabaseUrl } from "./db/owner-url";
+import { requireDisposableOwnerDatabaseUrl } from "./db/owner-url";
 
-const pool = new Pool({ connectionString: requireOwnerDatabaseUrl() });
+const pool = new Pool({ connectionString: requireDisposableOwnerDatabaseUrl("phase34:verify") });
 
 interface Check { name: string; pass: boolean; detail: string }
 const checks: Check[] = [];

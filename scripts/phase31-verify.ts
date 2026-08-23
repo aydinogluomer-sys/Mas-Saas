@@ -26,9 +26,9 @@ import {
   falsePositiveRate, isEscalationDue, isRoundNumber, isSplitPayment,
 } from "../src/lib/controls/rules";
 import { TABLE_CLASS } from "../src/lib/authz/matrix";
-import { requireOwnerDatabaseUrl } from "./db/owner-url";
+import { requireDisposableOwnerDatabaseUrl } from "./db/owner-url";
 
-const pool = new Pool({ connectionString: requireOwnerDatabaseUrl() });
+const pool = new Pool({ connectionString: requireDisposableOwnerDatabaseUrl("phase31:verify") });
 
 interface Check { name: string; pass: boolean; detail: string }
 const checks: Check[] = [];

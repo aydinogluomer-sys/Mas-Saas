@@ -20,9 +20,9 @@
 //   MIGRATION_DATABASE_URL=... pnpm phase21:verify
 import { Pool, type PoolClient } from "pg";
 import { ageingBucket, assessDuplicate, computeLineTotals, sumLineTotals } from "../src/lib/invoices/rules";
-import { requireOwnerDatabaseUrl } from "./db/owner-url";
+import { requireDisposableOwnerDatabaseUrl } from "./db/owner-url";
 
-const pool = new Pool({ connectionString: requireOwnerDatabaseUrl() });
+const pool = new Pool({ connectionString: requireDisposableOwnerDatabaseUrl("phase21:verify") });
 
 interface Check { name: string; pass: boolean; detail: string }
 const checks: Check[] = [];

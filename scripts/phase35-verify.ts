@@ -35,9 +35,9 @@ import { parseSearchQuery, reconcileModelIntent, searchIntentSchema } from "../s
 import { runSearch, groupHits } from "../src/lib/search/engine";
 import { sha256, storagePathFor, storeFile, verifyStored } from "../src/lib/documents/storage";
 import { CLASS_MATRIX, TABLE_CLASS, can, APP_ROLES, DB_ROLE } from "../src/lib/authz/matrix";
-import { requireOwnerDatabaseUrl } from "./db/owner-url";
+import { requireDisposableOwnerDatabaseUrl } from "./db/owner-url";
 
-const ownerUrl = requireOwnerDatabaseUrl();
+const ownerUrl = requireDisposableOwnerDatabaseUrl("phase35:verify");
 const pool = new Pool({ connectionString: ownerUrl });
 
 /** Same database, but as the low-privilege runtime role — the connection the app really uses. */

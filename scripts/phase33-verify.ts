@@ -39,9 +39,9 @@ import {
 import { fingerprint, recordQuery, resetSlowQueryStats, slowQueryReport, setSlowThreshold } from "../src/lib/perf/slow-query";
 import { redundantIndexes, unindexedForeignKeys, unusedIndexes } from "./perf/index-audit";
 import { DEFAULT_SCALE, generateVolume } from "./perf/volume";
-import { requireOwnerDatabaseUrl } from "./db/owner-url";
+import { requireDisposableOwnerDatabaseUrl } from "./db/owner-url";
 
-const pool = new Pool({ connectionString: requireOwnerDatabaseUrl() });
+const pool = new Pool({ connectionString: requireDisposableOwnerDatabaseUrl("phase33:verify") });
 
 interface Check { name: string; pass: boolean; detail: string }
 const checks: Check[] = [];

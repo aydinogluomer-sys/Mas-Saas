@@ -5,10 +5,10 @@ import { Pool } from "pg";
 import { loadDecisionFacts } from "../src/lib/facts/engine";
 import { generateDaily } from "../src/lib/reports/engine";
 import { ensureSystemActor } from "./db/seed-system-actor";
-import { requireOwnerDatabaseUrl } from "./db/owner-url";
+import { requireDisposableOwnerDatabaseUrl } from "./db/owner-url";
 
 const pool = new Pool({
-  connectionString: requireOwnerDatabaseUrl(),
+  connectionString: requireDisposableOwnerDatabaseUrl("phase11b:verify"),
 });
 const fail = (m: string): never => { console.error("PHASE11B VERIFY FAIL:", m); process.exit(1); };
 const q = async (sql: string, p: unknown[] = []) => (await pool.query(sql, p)).rows;

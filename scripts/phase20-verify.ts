@@ -23,9 +23,9 @@ import {
   parseStatementDate, rankCandidates, resolveSignedAmount, SUGGESTION_THRESHOLD,
 } from "../src/lib/bank/rules";
 import { safeParseStatementBuffer } from "../src/lib/importers/statement-parser";
-import { requireOwnerDatabaseUrl } from "./db/owner-url";
+import { requireDisposableOwnerDatabaseUrl } from "./db/owner-url";
 
-const pool = new Pool({ connectionString: requireOwnerDatabaseUrl() });
+const pool = new Pool({ connectionString: requireDisposableOwnerDatabaseUrl("phase20:verify") });
 
 interface Check { name: string; pass: boolean; detail: string }
 const checks: Check[] = [];
