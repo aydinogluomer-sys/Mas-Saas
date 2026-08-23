@@ -7,6 +7,7 @@ import { generateBriefingAction } from "./actions";
 import { Badge, type Tone } from "@/components/ui/badge";
 import { Panel } from "@/components/ui/panel";
 import { KeyStat, PageHeader } from "@/components/ui/shell";
+import { requireRouteAccess } from "@/lib/authz/route-guard";
 
 export const dynamic = "force-dynamic";
 
@@ -17,6 +18,10 @@ const TONE: Record<string, "neutral" | "pos" | "neg" | "warn"> = {
 const BADGE: Record<string, Tone> = { pos: "green", neg: "red", warn: "amber", neutral: "neutral" };
 
 export default async function BriefingPage() {
+  // Faz 17-38 denetimi — sayfa seviyesi rol kapisi. Navigasyonun kullandigi AYNI karar
+  // (canSeeRoute); ikinci bir liste, ikinci bir fikir ve kacinilmaz bir kayma demekti.
+  const denied = await requireRouteAccess("/insights/briefing");
+  if (denied) return denied;
   const pool = getPool();
   const today = istanbulDateISO();
 

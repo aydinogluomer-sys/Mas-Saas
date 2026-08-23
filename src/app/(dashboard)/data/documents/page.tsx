@@ -4,6 +4,7 @@ import { documentRoot } from "@/lib/documents/storage";
 import { Badge, type Tone } from "@/components/ui/badge";
 import { Panel } from "@/components/ui/panel";
 import { EmptyState, KeyStat, PageHeader, TableShell } from "@/components/ui/shell";
+import { requireRouteAccess } from "@/lib/authz/route-guard";
 
 export const dynamic = "force-dynamic";
 
@@ -18,6 +19,10 @@ const STATUS_TONE: Record<string, Tone> = {
 const kb = (n: number | null) => (n == null ? "—" : `${Math.round(n / 1024)} KB`);
 
 export default async function DocumentsPage() {
+  // Faz 17-38 denetimi — sayfa seviyesi rol kapisi. Navigasyonun kullandigi AYNI karar
+  // (canSeeRoute); ikinci bir liste, ikinci bir fikir ve kacinilmaz bir kayma demekti.
+  const denied = await requireRouteAccess("/data/documents");
+  if (denied) return denied;
   const pool = getPool();
   const [docs, integrity] = await Promise.all([
     listDocuments(pool, 200),

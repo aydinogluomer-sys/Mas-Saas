@@ -18,6 +18,7 @@ import { Badge, type Tone } from "@/components/ui/badge";
 import { Panel, fmtTL } from "@/components/ui/panel";
 import { PageHeader } from "@/components/ui/shell";
 import { clearBadDebtAction, markBadDebtAction } from "./actions";
+import { requireRouteAccess } from "@/lib/authz/route-guard";
 
 export const dynamic = "force-dynamic";
 
@@ -35,6 +36,10 @@ function addDays(iso: string, n: number): string {
 export default async function CollectionsPage({
   searchParams,
 }: { searchParams: Promise<{ error?: string; result?: string }> }) {
+  // Faz 17-38 denetimi — sayfa seviyesi rol kapisi. Navigasyonun kullandigi AYNI karar
+  // (canSeeRoute); ikinci bir liste, ikinci bir fikir ve kacinilmaz bir kayma demekti.
+  const denied = await requireRouteAccess("/finance/collections");
+  if (denied) return denied;
   const sp = await searchParams;
   const pool = getPool();
   const today = istanbulDateISO();

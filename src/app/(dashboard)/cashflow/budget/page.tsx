@@ -6,6 +6,7 @@ import { SOURCE_LABEL, VERDICT_LABEL, type SourceKind } from "@/lib/budget/rules
 import { Badge, type Tone } from "@/components/ui/badge";
 import { Panel, fmtTL } from "@/components/ui/panel";
 import { EmptyState, KeyStat, PageHeader, TableShell } from "@/components/ui/shell";
+import { requireRouteAccess } from "@/lib/authz/route-guard";
 
 export const dynamic = "force-dynamic";
 
@@ -18,6 +19,10 @@ const VERDICT_TONE: Record<string, Tone> = {
 };
 
 export default async function BudgetPage() {
+  // Faz 17-38 denetimi — sayfa seviyesi rol kapisi. Navigasyonun kullandigi AYNI karar
+  // (canSeeRoute); ikinci bir liste, ikinci bir fikir ve kacinilmaz bir kayma demekti.
+  const denied = await requireRouteAccess("/cashflow/budget");
+  if (denied) return denied;
   const pool = getPool();
   const [rows, weeks, accuracy, coverage] = await Promise.all([
     loadBudgetVsActual(pool),

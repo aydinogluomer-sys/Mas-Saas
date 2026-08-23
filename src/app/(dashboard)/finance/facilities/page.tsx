@@ -6,6 +6,7 @@ import {
 import { Badge, type Tone } from "@/components/ui/badge";
 import { Panel, fmtTL } from "@/components/ui/panel";
 import { EmptyState, KeyStat, PageHeader, TableShell } from "@/components/ui/shell";
+import { requireRouteAccess } from "@/lib/authz/route-guard";
 
 export const dynamic = "force-dynamic";
 
@@ -14,6 +15,10 @@ const STATUS_TONE: Record<FacilityStatus, Tone> = {
 };
 
 export default async function FacilitiesPage() {
+  // Faz 17-38 denetimi — sayfa seviyesi rol kapisi. Navigasyonun kullandigi AYNI karar
+  // (canSeeRoute); ikinci bir liste, ikinci bir fikir ve kacinilmaz bir kayma demekti.
+  const denied = await requireRouteAccess("/finance/facilities");
+  if (denied) return denied;
   const pool = getPool();
   const [facilities, ladder, collateral, covenants] = await Promise.all([
     pool.query(

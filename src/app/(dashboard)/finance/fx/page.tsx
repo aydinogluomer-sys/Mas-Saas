@@ -5,12 +5,17 @@ import { Badge } from "@/components/ui/badge";
 import { Panel, fmtTL } from "@/components/ui/panel";
 import { EmptyState, KeyStat, PageHeader, TableShell } from "@/components/ui/shell";
 import { recordRateAction } from "./actions";
+import { requireRouteAccess } from "@/lib/authz/route-guard";
 
 export const dynamic = "force-dynamic";
 
 export default async function FxPage({
   searchParams,
 }: { searchParams: Promise<{ error?: string; result?: string }> }) {
+  // Faz 17-38 denetimi — sayfa seviyesi rol kapisi. Navigasyonun kullandigi AYNI karar
+  // (canSeeRoute); ikinci bir liste, ikinci bir fikir ve kacinilmaz bir kayma demekti.
+  const denied = await requireRouteAccess("/finance/fx");
+  if (denied) return denied;
   const sp = await searchParams;
   const pool = getPool();
   const [summary, rates, positions] = await Promise.all([

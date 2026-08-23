@@ -19,6 +19,7 @@ import { PageHeader } from "@/components/ui/shell";
 import {
   cancelInvoiceAction, changeStatusAction, createInvoiceAction, recordPaymentAction,
 } from "./actions";
+import { requireRouteAccess } from "@/lib/authz/route-guard";
 
 export const dynamic = "force-dynamic";
 
@@ -34,6 +35,10 @@ const AGE_TONE: Record<string, Tone> = {
 export default async function InvoicesPage({
   searchParams,
 }: { searchParams: Promise<{ error?: string; result?: string }> }) {
+  // Faz 17-38 denetimi — sayfa seviyesi rol kapisi. Navigasyonun kullandigi AYNI karar
+  // (canSeeRoute); ikinci bir liste, ikinci bir fikir ve kacinilmaz bir kayma demekti.
+  const denied = await requireRouteAccess("/finance/invoices");
+  if (denied) return denied;
   const sp = await searchParams;
   const pool = getPool();
   const [openItems, duplicates, mismatches, invoices, parties] = await Promise.all([

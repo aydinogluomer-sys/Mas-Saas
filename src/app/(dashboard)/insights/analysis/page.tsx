@@ -13,10 +13,15 @@ import { HeatmapChart, TreemapChart, WaterfallChart } from "@/components/charts/
 import { Badge } from "@/components/ui/badge";
 import { Panel } from "@/components/ui/panel";
 import { EmptyState, KeyStat, PageHeader, TableShell } from "@/components/ui/shell";
+import { requireRouteAccess } from "@/lib/authz/route-guard";
 
 export const dynamic = "force-dynamic";
 
 export default async function AnalysisPage() {
+  // Faz 17-38 denetimi — sayfa seviyesi rol kapisi. Navigasyonun kullandigi AYNI karar
+  // (canSeeRoute); ikinci bir liste, ikinci bir fikir ve kacinilmaz bir kayma demekti.
+  const denied = await requireRouteAccess("/insights/analysis");
+  if (denied) return denied;
   const pool = getPool();
   const asOf = istanbulDateISO();
 

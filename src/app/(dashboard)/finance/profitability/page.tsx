@@ -11,6 +11,7 @@ import {
 import { Badge, type Tone } from "@/components/ui/badge";
 import { Panel, fmtTL } from "@/components/ui/panel";
 import { EmptyState, KeyStat, PageHeader, TableShell } from "@/components/ui/shell";
+import { requireRouteAccess } from "@/lib/authz/route-guard";
 
 export const dynamic = "force-dynamic";
 
@@ -30,6 +31,10 @@ function marginCell(margin: number | null, rate: number | null) {
 }
 
 export default async function ProfitabilityPage() {
+  // Faz 17-38 denetimi — sayfa seviyesi rol kapisi. Navigasyonun kullandigi AYNI karar
+  // (canSeeRoute); ikinci bir liste, ikinci bir fikir ve kacinilmaz bir kayma demekti.
+  const denied = await requireRouteAccess("/finance/profitability");
+  if (denied) return denied;
   const pool = getPool();
   const [centers, projects, parties, departments, machines, wc, trend, rules] = await Promise.all([
     loadCostCenterProfitability(pool),

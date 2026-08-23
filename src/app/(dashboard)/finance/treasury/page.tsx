@@ -8,6 +8,7 @@ import { Badge, type Tone } from "@/components/ui/badge";
 import { Panel, fmtTL } from "@/components/ui/panel";
 import { EmptyState, KeyStat, PageHeader, TableShell } from "@/components/ui/shell";
 import { updatePolicyAction } from "./actions";
+import { requireRouteAccess } from "@/lib/authz/route-guard";
 
 export const dynamic = "force-dynamic";
 
@@ -21,6 +22,10 @@ const RECON_TONE: Record<ReconciliationStatus, Tone> = {
 export default async function TreasuryPage({
   searchParams,
 }: { searchParams: Promise<{ error?: string; result?: string }> }) {
+  // Faz 17-38 denetimi — sayfa seviyesi rol kapisi. Navigasyonun kullandigi AYNI karar
+  // (canSeeRoute); ikinci bir liste, ikinci bir fikir ve kacinilmaz bir kayma demekti.
+  const denied = await requireRouteAccess("/finance/treasury");
+  if (denied) return denied;
   const sp = await searchParams;
   const pool = getPool();
   const [positions, summary, gaps, recon, policies] = await Promise.all([

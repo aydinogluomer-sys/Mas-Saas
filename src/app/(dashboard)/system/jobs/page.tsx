@@ -6,6 +6,7 @@ import { replayJobAction, sweepQueueAction } from "./actions";
 import { Badge, type Tone } from "@/components/ui/badge";
 import { Panel } from "@/components/ui/panel";
 import { EmptyState, KeyStat, PageHeader, TableShell } from "@/components/ui/shell";
+import { requireRouteAccess } from "@/lib/authz/route-guard";
 
 export const dynamic = "force-dynamic";
 
@@ -26,6 +27,10 @@ const TYPE_LABEL: Record<string, string> = {
 };
 
 export default async function JobsPage() {
+  // Faz 17-38 denetimi — sayfa seviyesi rol kapisi. Navigasyonun kullandigi AYNI karar
+  // (canSeeRoute); ikinci bir liste, ikinci bir fikir ve kacinilmaz bir kayma demekti.
+  const denied = await requireRouteAccess("/system/jobs");
+  if (denied) return denied;
   const pool = getPool();
   const [jobs, health] = await Promise.all([listJobs(pool, 100), loadQueueHealth(pool)]);
   // Read from this process's own ring buffer — see slow-query.ts for why it is not a table.
