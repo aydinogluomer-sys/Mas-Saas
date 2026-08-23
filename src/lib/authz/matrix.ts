@@ -234,6 +234,10 @@ export const TABLE_CLASS: Record<string, AccessClass> = {
   // append-only in the database (0083 triggers), insert+select only, no update or delete for any
   // tier, because a version history that can be edited is not a history.
   // Faz 36. Personal working preference, owner-scoped like action_items/scenarios (0058).
+  // Faz 37. Turning on a live bank feed is an administrative act, not finance data entry — it is
+  // the closest thing here to granting access to an external system. Credentials are NEVER stored
+  // in this table; it holds the NAME of the env var that has them.
+  integration_connections: "config",
   saved_views: "personal",
   documents: "operational",
   document_links: "operational",

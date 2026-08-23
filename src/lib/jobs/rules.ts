@@ -8,6 +8,13 @@ export const JOB_TYPES = [
   "report_generation",
   "large_export",
   "read_model_refresh",
+  // Faz 37 — integration syncs. Added HERE as well as in the DB CHECK (0086): widening only one
+  // side is the Faz 29 drift, and it surfaced exactly that way — enqueueJob() rejected a job type
+  // the database would have accepted. phase37:verify now compares the two lists.
+  "bank_api_sync",
+  "einvoice_sync",
+  "fx_rate_sync",
+  "accounting_sync",
 ] as const;
 export type JobType = (typeof JOB_TYPES)[number];
 

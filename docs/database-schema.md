@@ -2327,3 +2327,60 @@ her yerde NULL'dı, çünkü non-null bir değer imkânsızdı.
 
 `phase36:verify` artık şema genelinde, hiçbir sahiplik kolonunun boş `auth.users`'ı
 göstermediğini doğruluyor — bu hatayı yapan bir sonraki tablo yazıldığı gün düşecek.
+
+## Entegrasyon Merkezi (Faz 37, migration 0086)
+
+Bir tablo (`integration_connections`), bir VIEW (`integration_health`) ve Faz 33'ün kuyruğuna
+**dört yeni iş türü**. Yeni kuyruk yok.
+
+### Kimlik bilgisi bu veritabanında DURMAZ
+
+Tablo bir bağlantının **var olduğunu** ve nasıl yapılandırıldığını kaydeder — token, parola veya
+client secret'ı asla. Onlar ortam değişkenlerinde kalır (Faz 6/25'in Telegram token'ına uyguladığı
+kuralın aynısı) ve `credential_env_var` değerin kendisini değil **adını** taşır. Bu projenin her
+migration öncesi aldığı pg_dump, aksi hâlde bir kimlik sızıntısı olurdu.
+
+Gate bunu iki yönden doğruluyor: tabloda `password/token/secret/api_key` ile biten kolon yok, ve
+konnektörler `process.env`'e hiç dokunmuyor (kimlik bilgisi `ConnectorContext` ile geliyor — kendi
+yapılandırmasını loglayan bir konnektör token sızdırır).
+
+### `provider` neden KAPALI LİSTE değil
+
+Muhasebe yazılımı seçimi (Paraşüt / Logo / Mikro / Luca) bu depodan türetilemeyen bir iş kararı ve
+**kullanıcı onayı bekliyor**. Bugün bir CHECK listesi yazmak ya onlar adına tahmin etmek ya da
+karar günü migration yazmak olurdu. Hiçbir kod bu değere göre dallanmıyor — satıra iliştirilmiş
+bir belgedir.
+
+### Durum ve geçiş koruyucusu
+
+`disabled / enabled / error / revoked`, CHECK ile **aynı migration'da** sekiz hamlelik koruyucu.
+Reddedilen ikisi:
+
+- `revoked → herhangi bir şey`: geri alınmış bir kimlik bilgisiyle veri çekmeyi sessizce
+  sürdürmek. Yeniden yapılandırma **yeni bir bağlantıdır** — zaten olan da budur.
+- `disabled → error`: hiç çalışmamış bir bağlantı başarısız olamaz.
+
+`error` durumu **sebepsiz olamaz** (CHECK): mesajsız bir hata, kimsenin başlayamayacağı bir destek
+kaydıdır.
+
+### `integration_health` — VIEW
+
+`minutes_since_success` hiç başarılı senkron yoksa **NULL**; "0 dakika önce" değil. `is_overdue`
+yalnız zamanlanmış ve açık bir bağlantı için anlamlı. Ölü mektup sayısı Faz 33'ün
+`background_jobs`'undan okunuyor — ikinci bir sayaç tutulmuyor.
+
+### Kuyruk: GENİŞLETİLDİ, kopyalanmadı
+
+`background_jobs.job_type` dört değer aldı (`bank_api_sync`, `einvoice_sync`, `fx_rate_sync`,
+`accounting_sync`). Retry, geri çekilme, ölü mektup ve geçiş koruyucusu Faz 33'te zaten var.
+
+> Sonraki fazlar için: bu kümenin **boyutunu** sabitleyen bir gate bir sonraki genişlemede kırılır
+> (Faz 31 dersi). `phase37:verify` **üst-küme** iddia ediyor, ve ayrıca TS `JOB_TYPES` listesiyle
+> DB CHECK'ini **karşılaştırıyor** — çünkü bu fazda tam olarak o sürüklenme yaşandı: DB genişledi,
+> TS enum'u genişlemedi, `enqueueJob()` veritabanının kabul edeceği bir iş türünü reddetti.
+
+### RLS
+
+`config` sınıfı: herkes hangi entegrasyonların var olduğunu ve sağlıklı olup olmadıklarını
+görebilir; yalnız **admin** yapılandırabilir. Canlı bir banka akışını açmak yönetim işidir, finans
+veri girişi değil — bu sistemde harici bir sisteme erişim vermeye en yakın şey.

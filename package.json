@@ -69,6 +69,7 @@
     "phase34:verify": "tsx scripts/db/ensure.ts && node --import tsx scripts/phase34-verify.ts",
     "phase35:verify": "tsx scripts/db/ensure.ts && node --import tsx scripts/phase35-verify.ts",
     "phase36:verify": "tsx scripts/db/ensure.ts && node --import tsx scripts/phase36-verify.ts",
+    "phase37:verify": "tsx scripts/db/ensure.ts && node --import tsx scripts/phase37-verify.ts",
     "perf:measure": "node --import tsx scripts/perf/measure.ts",
     "perf:index-audit": "node --import tsx scripts/perf/index-audit.ts",
     "seed:demo": "tsx scripts/db/ensure.ts && tsx scripts/seed-demo.ts",

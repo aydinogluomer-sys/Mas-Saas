@@ -582,6 +582,7 @@ pnpm phase33:verify   # Faz 33ten sonra: arka plan kuyrugu + ONCE/SONRA query-pl
 pnpm phase34:verify   # Faz 34ten sonra: analiz kaydi + bagimlilik grafigi + KALICI repo-geneli LLM-bagimsizligi kontrolu, DB gerektirir
 pnpm phase35:verify   # Faz 35ten sonra: dokuman merkezi + evrensel arama + GERCEK SET ROLE ile RLS-atlamama kaniti, DB gerektirir
 pnpm phase36:verify   # Faz 36dan sonra: rol-bazli navigasyonun UI yarisi + ornekleme dayali UI tutarlilik listesi, DB gerektirir
+pnpm phase37:verify   # Faz 37den sonra: dort entegrasyon BAGIMSIZ kapilanir + hicbir gercek ag cagrisi yapilmadigi kaniti, DB gerektirir
 pnpm build
 pnpm phase16:verify   # Faz 16'dan sonra: build'i gerektirir, bu yuzden build'den SONRA
 ```

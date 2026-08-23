@@ -3689,3 +3689,97 @@ env -u DATABASE_URL MAS_RADAR_APP_DB_PASSWORD=... \
 ```
 **53/53, 3 kez art arda.** 949 birim testi (+26). `db:migrate:verify` 49/49,
 `db:roles-rls:verify` 29/29.
+
+> **AÇIK KARAR — muhasebe yazılımı seçimi kullanıcı onayı bekliyor.** Paraşüt / Logo / Mikro / Luca arasındaki seçim bu depodan türetilemez; şirketin hâlihazırda kullandığı pakete ve muhasebecisine bağlıdır. Faz 37 vendor-agnostik bir konnektör arayüzü teslim etti ve sıfır vendor uygulaması yazdı.
+
+## Faz 37 — DONE (entegrasyon merkezi: dört konnektör, tek kuyruk, sıfır canlı çağrı)
+
+Migration **0086**. Bu faz kategorik olarak farklıydı: üç gerçek kısıt vardı, ikisi çözüldü,
+biri **bilerek aşılmadı**.
+
+### DÜRÜSTLÜK NOTU — hiçbir şey canlı uçta test EDİLMEDİ
+
+Bu ortamın dış ağ erişimi yok. Banka API'si, e-Fatura ve TCMB için **gerçek istek kurma mantığı**
+yazıldı, ama hiçbiri canlı bir uca gönderilmedi ve gönderilemez. Kanıtlanabilen tek şey isteğin
+**nasıl kurulduğu**, ve gate bunu `mockHttpClient` ile doğruluyor: URL, `Authorization` başlığı,
+gövde. Bu, buradan kanıtlanabilecek şeyin dürüst sınırı — "canlı test edildi" demek yanlış olurdu.
+
+Gate ayrıca **global bir fetch tuzağı** kuruyor: koşu boyunca herhangi bir kod gerçek bir istek
+denerse URL kaydedilir ve gate düşer. Üç koşuda da tuzak hiç tetiklenmedi.
+
+### AÇIK KARAR — muhasebe yazılımı seçimi kullanıcı onayı bekliyor
+
+Paraşüt / Logo / Mikro / Luca arasındaki seçim bu depodan **türetilemez**: şirketin hâlihazırda
+ödediği pakete, muhasebecisinin kullandığı yazılıma ve sahip oldukları sözleşmeye bağlı. Şemayı ne
+kadar okursam okuyayım cevap çıkmıyor, ve tahmin etmek kimsenin istemediği vendor-şeklinde bir
+entegrasyon üretirdi — defter verisini **yanlış sisteme** itme riskiyle.
+
+Teslim edilen: vendor-agnostik bir konnektör **arayüzü** (kimlik doğrulama, senkron, hata/retry
+şekli) ve **sıfır satır vendor uygulaması**. `accountingConnector()` gerçek bir konnektör ama
+temiz ve **kalıcı** olarak reddediyor — karara bağlanmamış bir iş sorusunu tekrar denemek onu
+çözmez, o yüzden iş anında ölü mektuba düşüyor, beş kez denenmiyor.
+
+`provider` kolonu bilerek **kapalı liste değil**: bugün bir CHECK yazmak ya onlar adına tahmin
+etmek ya da karar günü migration yazmak olurdu. Gate hem vendor-özel kod olmadığını hem de bu
+notun docs'ta durduğunu doğruluyor.
+
+### TCMB — Faz 27 zaten yapmıştı, yeniden yazmadım
+
+Ayrıştırıcıyı (`parseTcmbXml`), sağlayıcıyı (`tcmbProvider`) ve yazıcıyı (`importRates`) Faz 27
+gerçek bülten şeması testleriyle birlikte teslim etmiş; `fx_rate_snapshots` daha o zaman
+`forex_buying/selling`, `banknote_buying/selling` ve `source='tcmb'` taşıyordu. Faz 37'nin eklediği
+**zamanlanmış yarı**: aynı okuyucu, bir insan tıklaması yerine kuyruk tarafından aralıkla
+sürülüyor.
+
+Yol boyunca kendi varsayımım düzeldi: mock XML'imi **virgüllü** ondalıkla yazmıştım; TCMB'nin XML'i
+**nokta** kullanır (virgül HTML gösteriminde). Ayrıştırıcı doğruydu, benim şema varsayımım
+yanlıştı.
+
+### Kuyruk GENİŞLETİLDİ, ikincisi kurulmadı
+
+Dört senkron türü Faz 33'ün `background_jobs`'una eklendi. Retry, geri çekilme, ölü mektup ve
+geçiş koruyucusu zaten oradaydı. Gate ikinci bir kuyruk/çalışma tablosu **açılmadığını**
+doğruluyor.
+
+**Faz 29'un sürüklenme dersi burada yeniden yaşandı:** DB CHECK'ini genişletip TS `JOB_TYPES`
+listesini unuttum; `enqueueJob()` veritabanının kabul edeceği bir iş türünü reddetti. Typecheck
+bunu göremez (şema `raw: unknown` alır). Gate artık iki listeyi **karşılaştırıyor**.
+
+### Gate yakaladığı iki gerçek hata
+
+1. **`bank_transactions.amount` NOT NULL.** Tutarı ayrıştırılamayan bir satırı `null` olarak
+   yazmaya çalışıyordum — senkron çöküyordu. İki seçenek de yanlıştı: `0` yazmak olmayan bir
+   sıfır-liralık hareket uydurur, `null` yazmak çökertir. Doğru cevap **atlamak ve saymak** —
+   operatör bir satırın sunulup reddedildiğini görüyor ve bankayı arayabiliyor.
+2. **Faz 19'un tek-yazar kuralı.** e-Fatura konnektörüm tedarikçiyi otomatik yaratıyordu;
+   `phase19:verify` `parties`'e yazan tek dosyanın `counterparties/engine.ts` olması gerektiğini
+   söyleyerek düştü. Kural doğru ve bu konnektör tam da var olma sebebi: tedarikçi-adı
+   string'lerinden otomatik parti yaratmak, yazım hataları ve unvan varyantlarından kopyalarla
+   listeyi doldurur ve kimse ona bir daha güvenmez. Artık **arıyor, yaratmıyor**; tanınmayan
+   tedarikçinin faturası atlanıyor ve ayrıca sayılıyor (`unknownSupplier`), çünkü yeni bir
+   karşı tarafı bir insanın tanımlaması doğru iş akışı.
+
+İkinci hatayı bulduktan sonra gate'ime **uçtan uca e-fatura yazma testi** ekledim — çünkü yalnız
+eşleme testleri yazma yolunu hiç çalıştırmıyordu, ve bu fazın kendi notu tam da onu Faz 33/35'te
+kırık bir FK'nin yayınlanmasına izin veren hata olarak işaretliyor.
+
+### Kimlik bilgisi bu veritabanında durmaz
+
+Tablo bağlantının var olduğunu ve nasıl yapılandırıldığını tutar; token/parola/secret **asla**.
+`credential_env_var` değerin **adını** taşır. Bu projenin her migration öncesi aldığı pg_dump aksi
+hâlde bir kimlik sızıntısı olurdu. Gate: böyle bir kolon yok, ve konnektörler `process.env`'e hiç
+dokunmuyor.
+
+### Dört entegrasyon birbirinden bağımsız
+
+Planın şartı. Konnektörler birbirini import etmiyor ve gate dördünü **ayrı bloklarda**
+kapılıyor — birinin eksiği diğerlerinin çalışmasını ve raporlamasını durdurmuyor. Muhasebe bloğu
+bir uygulamanın **yokluğunu** iddia ediyor, ki bu da o maddenin bilinçli olarak atlandığının
+kanıtı.
+
+### Doğrulama
+
+```
+env -u DATABASE_URL MIGRATION_DATABASE_URL="postgresql://..." pnpm phase37:verify
+```
+**59/59, 3 kez art arda**, üç koşuda da "hiçbir gerçek ağ isteği denenmedi". 949 birim testi.
