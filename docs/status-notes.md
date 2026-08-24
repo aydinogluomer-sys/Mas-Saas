@@ -3948,6 +3948,19 @@ phase-verify'larıyla aynı ilke). Constraint TANIMLARI CI'da hâlâ #4 adımın
 (`db:verify` → `assertions.sql`) taze DB'de doğrulanıyor; çıkarılanların eklediği yalnız o
 tanımların **gerçek legacy veri üzerindeki davranışıydı** → yerelde, dump varken koşar.
 
+### 4) `build` (ikinci kat) — `phase16:verify` ALL PASS sonrası süreç çıkmıyordu
+
+3a+3b düzelince `build` job'ı **ilk kez** phase16 adımına ulaştı ve orada takıldı: phase16-verify
+18/18 kontrolü **geçiyor** (`PHASE16 VERIFY: ALL PASS`, 21:58:30) ama node süreci çıkmıyor; job
+30 dk timeout'a kadar asılı kalıp `cancelled` oluyor, bu da `needs: build` olan `e2e-authz` +
+`legacy-semantic-smoke`'u `skipped` bırakıyordu. Kök neden (Linux'a özgü): script
+`pnpm exec next start`'i **detached olmadan** spawn ediyordu; temizlik `process.kill(-server.pid)`
+(grup öldür) yapıyor ama detached olmadan bu ESRCH fırlatır, fallback yalnız `pnpm`'i öldürür,
+yetim kalan `next` grandchild devralınan stdout/stderr pipe'larını açık tutar → parent event loop
+boşalmaz → node asılı kalır. Windows'ta yakalanmadı çünkü orada `taskkill /T` tüm ağacı öldürüyor.
+**Düzeltme (commit 2709491):** POSIX'te `detached:true` (mevcut grup-öldürme artık gerçekten çalışır)
++ ALL PASS sonrası açık `process.exit(0)`. Windows `detached:false` + `taskkill /T` ile aynen kalır.
+
 ### Doğrulama — gerçek çıktı (exit code + sayı)
 
 | Kontrol | Komut | Sonuç |
@@ -3958,12 +3971,26 @@ tanımların **gerçek legacy veri üzerindeki davranışıydı** → yerelde, d
 | migrate-verify (checkpoint MEVCUT, yerel tam) | `pnpm db:migrate:verify` | **49/49 çalışan test geçti**, EXIT=0 |
 | migrate-verify (checkpoint YOK, CI taklidi) | dump geçici taşınıp `pnpm db:migrate:verify` | **16/16 çalışan test geçti · 3 SKIP-LOCAL**, EXIT=0 (dump geri yüklendi) |
 
-CI kanıtı (run 32780923027, d8b7650 üzerinde — ci.yml düzeltmesi ÖNCESİ):
-`static`=**success**, `runtime-role-security`=**success**, `phase-verifies`=**success**,
-`build` "Provision the build database" adımı = **success** (ensure.ts TCP probu doğrulandı, dropdb
-artık yarışmıyor), `database-migration`=failure (7. adım — **742d9e7 ile giderildi**).
-**Beklenen tam durum:** 742d9e7 push edilince 7/7 (skipped yok, çünkü build artık geçiyor →
-`e2e-authz` + `legacy-semantic-smoke` çalışır). Bu satır all-green koşu görülünce sayıyla güncellenecek.
+**CI SONUÇ — 7/7 YEŞİL (Faz 1 PASS ölçütü karşılandı).** Run **32785111779**, HEAD **2709491**,
+conclusion=**success**, failed jobs=**0**:
+
+| Job | Sonuç |
+|---|---|
+| `static` | **success** |
+| `database-migration` | **success** |
+| `phase-verifies` | **success** |
+| `build` | **success** |
+| `runtime-role-security` | **success** |
+| `e2e-authz` | **success** (bu dalın tarihinde İLK KEZ — önceden hep build'e takılıp skipped'di) |
+| `legacy-semantic-smoke` | **success** (aynı — ilk kez) |
+
+Kanıt zinciri (her kırmızı bir sonraki gizli kırmızıyı açığa çıkardı, hepsi dürüstçe düzeltildi):
+run 32772200818 (3 kırmızı) → d8b7650 → run 32780923027 (`static`/`runtime-role-security`/
+`phase-verifies` yeşil, `build` provision yeşil = ensure.ts kanıtı) → 742d9e7 → run 32782133651
+(`database-migration` yeşil; `build` phase16'da 30dk timeout) → 2709491 → run **32785111779 = 7/7**.
+Hiçbir test zayıflatılmadı, hiçbir adım atlanmadı, `continue-on-error` eklenmedi; iki "CI'dan
+çıkarma" hamlesi belgelenmiş özel-veri sınıflamasıdır ve constraint tanımları CI'da `assertions.sql`
+ile koşmaya devam eder.
 
 ---
 
