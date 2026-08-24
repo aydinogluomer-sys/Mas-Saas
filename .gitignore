@@ -68,3 +68,9 @@ data/
 /debug.log
 /cloudflared-windows-amd64.msi
 __pycache__/
+
+# Playwright storageState — REAL session cookies minted by tests/visual/global-setup.ts.
+# These are live credentials for whatever database the harness last ran against; committing them
+# would publish a working session token and would also go stale the moment that disposable
+# database is dropped. Regenerated from scratch on every run.
+/tests/visual/.auth/

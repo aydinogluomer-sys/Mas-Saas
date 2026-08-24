@@ -120,9 +120,15 @@ Yazıldığı ilk hâliyle iki kez kırmızı verdi ve **her ikisinde de haklı 
 ### Push öncesi yakalanan CI-kırıcı hata
 
 `scripts/ci/*.sh` git'te `100644` (executable değil) kayıtlıydı; workflow onları doğrudan
-çağırıyordu → Linux runner'da "Permission denied". `git update-index --chmod=+x` uygulandı ve
-çağrılar `bash …` önekine çevrildi (iki bağımsız koruma). Ayrıca `.gitattributes`'a `*.sh text
-eol=lf` eklendi: CRLF'li bir `.sh` Linux'ta "bad interpreter" ile ölür.
+çağırıyordu → Linux runner'da "Permission denied". Çağrılar `bash …` önekine çevrildi ve
+`.gitattributes`'a `*.sh text eol=lf` eklendi (CRLF'li bir `.sh` Linux'ta "bad interpreter" ile ölür).
+
+**Düzeltme (Faz 2'de fark edildi):** Bu bölüm önce "`git update-index --chmod=+x` uygulandı" diyordu.
+Doğru değil. Komut çalıştırıldı, ama sonrasındaki `git add` mod'u çalışma ağacından geri yazdı ve
+commit `100644` ile gitti — `git ls-files -s scripts/ci/` bugün hâlâ `100644` gösteriyor. Pratik
+etkisi yok, çünkü workflow ve runner script'i dosyaları her yerde `bash script.sh` ile çağırıyor
+(execute-bit gerekmiyor); ama iddia yanlıştı ve kanıt belgesinde yanlış bir satır bırakmak, yanlışın
+kendisinden daha pahalıdır.
 
 ### Gerçek DB yazımı
 
@@ -147,3 +153,84 @@ Sandbox cluster'da `mas_radar_dev` yok.
   `next.config.ts` 301'leri yüzünden kendi URL'lerinden **erişilemez** durumda (ölü kod).
 - **P2:** `scripts/db/verify.sh` de migration'ları ham `psql` döngüsüyle uyguluyor; `pnpm db:verify`
   bu yüzden production migration yolunu temsil etmiyor. Bu fazda değiştirilmedi.
+
+
+---
+
+## Faz 2 — Legacy Playwright harness'ını güvenilir hale getir
+
+| Alan | Değer |
+|---|---|
+| **Durum** | **PASS** |
+| Commit | aşağıdaki Faz 2 commit'i |
+| Timestamp (UTC) | 2026-08-24 |
+| DB sınıfı | `DISPOSABLE_SYNTHETIC` — `mas_radar_visual_verify`, **izole** sandbox cluster (`mas-radar-pg-faz2-sandbox`, port 55433) |
+| Gerçek DB yazımı | **YOK** |
+
+### Kök sorun ve çözüm
+
+QA bypass `getCurrentUser()` içinde (Node, DB'li) **çerezsiz** bir kullanıcı döndürüyor;
+`src/middleware.ts` (Edge) yalnız **çerez varlığına** bakıyor. İkisi birbirini görmüyor →
+`/overview → /login → /overview` sonsuz döngüsü. Ayrıca `getQaBypassUser()` production'da `null`
+döndüğü için bypass, hedef ortamda zaten yapısal olarak ölü.
+
+Çözüm: `tests/visual/global-setup.ts` beş rolü disposable DB'ye seed eder, her birini **gerçek
+`/login` formundan** giriş yaptırır, `storageState` kaydeder (viewer/operator/approver/manager/admin).
+Sunucunun kapalı olduğu doğrulandı: çerezsiz `/overview` → **307 → /login**.
+
+### Faz 2 PASS kriterleri
+
+| Kriter | Durum |
+|---|---|
+| legacy harness auth loop yok | **PASS** — 35 testin hiçbiri `/login`'e düşmedi |
+| hard-coded port 0 | **PASS** — `grep -R "127.0.0.1:31" tests/visual` → 0 |
+| critical semantic smoke green | **PASS** — 35/35 semantik kapıyı geçti |
+| visual failures 0 ya da açıklanmış delta | **AÇIKLANMIŞ** — 20 baseline deltası + 1 performans bulgusu |
+| ürün ↔ harness regresyonu ayrılabiliyor | **PASS** — kalan 21 kırmızının 20'si yalnız `toHaveScreenshot` |
+
+### Son koşu (35 test): **14 PASS / 21 FAIL**
+
+```text
+20  Error: expect(page).toHaveScreenshot     -> baseline deltası
+ 1  Error: 200ms içinde ne iskelet ne varış  -> gerçek performans gözlemi
+```
+
+Auth hatası **0**, semantik hata **0**, harness flake'i **0**.
+Faz 1 paketleri regresyona uğramadı: `legacy-semantic-smoke` 10/10, `phase17-38-routes` 94/94.
+
+### Bulunan ve kaydedilen kusurlar
+
+1. **`data-vr` mekanizması hiç çalışmamış.** Üç spec `addInitScript` içinde
+   `document.documentElement.setAttribute(...)` çağırıyordu; o anda `documentElement` henüz yok,
+   script her yüklemede patlıyordu. Ölçüm: `data-vr=null`, pageerror=1, `[data-volatile]` **görünür**.
+   Yani mevcut baseline'ların tamamı zaman damgası içeriyor ve takvimle kayıyor. Düzeltildikten
+   sonra: `data-vr=1`, pageerror=0, `[data-volatile]` gizli. Kimse fark etmemişti çünkü eski
+   spec'lerin hiçbiri `pageerror` dinlemiyordu.
+2. **`payment-iteration-15.spec.ts` hiç yeşil olmamış.** Dört assertion üründe hiç var olmayan
+   şeyleri iddia ediyordu (`age=91-plus`, `/arşivlenmiş ödeme/`, gizli düğüme `.first()`, iki
+   elemanlı selector) — `git log -S` ile doğrulandı. Beşincisi (`Ödeme Arşivi` başlığı görünür)
+   yazıldığında doğruydu: spec `8f068b1`'de **19:23**'te eklendi, dokuz-modül yeniden yapılandırması
+   `5deed68` `ModuleFrame` + `globals.css:417` kuralını **19:24**'te getirdi. Bilinçli IA değişikliği,
+   regresyon değil.
+3. **`workers: 1` gerekiyordu.** `fullyParallel: false` yalnız dosya içini sıralar; dosyalar
+   worker'lar arası paralel koşmaya devam eder. Zamanlama testleri bu yüzden birlikte koşunca
+   düşüyordu.
+4. **Giriş oran sınırı ve giriş sonrası yarış** globalSetup'ta ele alındı; sınır **gevşetilmedi**.
+5. **`mode: "serial"`** iki spec'te ilk hatadan sonrasını "did not run" yapıyordu; kaldırıldı.
+
+### Baseline'lar GÜNCELLENMEDİ
+
+`docs/visual-snapshot-policy.md` altı koşul sayıyor; "screenshot bir insan tarafından incelendi" ve
+"PR'da before/after görsel kanıt" koşullarını karşılayacak olan insandır, ajan değil. Kök nedenler
+yazıldı, karar insana bırakıldı. `pnpm test:visual:update` **çalıştırılmadı**.
+
+### Açık kalanlar
+
+- **P2 (performans):** gecikmeli rotada kullanıcı üç koşunun ikisinde 200 ms içinde ne iskelet ne
+  varış alıyor. Ölçüm ortamı yüklü (Postgres + Next + Chromium aynı makinede). Planın Faz 14
+  performans kapısının konusu.
+- **P2 (baseline):** 23 baseline `-chromium-win32`; Linux runner'da `-chromium-linux` aranır ve
+  bulunamaz. Legacy görsel paketin CI release gate'inde **olmamasının** teknik nedeni budur.
+- **P1 (güvenlik, Faz 1'den taşındı):** `scripts/seed-demo.ts` TRUNCATE yapıyor ama
+  `requireDisposableOwnerDatabaseUrl()` **kullanmıyor** — yalnız `ownerDatabaseUrl()`. Faz 17-38
+  denetimi bu kapıyı `phase*-verify` script'leri için kapatmıştı, bu script açıkta kaldı.
