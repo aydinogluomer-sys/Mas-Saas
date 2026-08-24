@@ -41,11 +41,12 @@ yarn-error.log*
 *.tsbuildinfo
 next-env.d.ts
 
-# local source data (private financials)
-data/
-# The application route `/data` is source code, not private workbook data.
-!src/app/(dashboard)/data/
-!src/app/(dashboard)/data/**
+# local source data (private financials) — root-anchored (/data/) so it ignores ONLY the
+# top-level data/ workbook directory. A bare `data/` matches every nested data/ dir at any
+# depth, which silently swallowed src/components/data/ (reconciliation-table.tsx never got
+# committed → CI typecheck TS2307) and would have swallowed src/app/(dashboard)/data/ too had
+# it not already been tracked. Anchor any future ignore of a data/ path explicitly.
+/data/
 
 # database backups (private financial dumps — never commit)
 /backups/

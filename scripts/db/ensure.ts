@@ -31,10 +31,20 @@ try {
     docker(["start", CONTAINER], true);
   }
 
+  // Readiness probe MUST go over TCP (-h 127.0.0.1), NOT the default unix socket. The
+  // postgres:16 image runs a TEMPORARY server during initdb that listens on the container's
+  // unix socket only (listen_addresses=''), so its own setup scripts can reach it while
+  // external clients cannot. A socket-based `pg_isready` answers TRUE against that temp server,
+  // then the image stops it to start the real one — and in that gap the socket file is deleted.
+  // A caller that raced in on that false-positive hits "connection to server on socket ...
+  // No such file or directory" and the job dies for a reason unrelated to the code under test
+  // (observed on CI: provision-verify-db.sh's dropdb, in the `build` job). The temp server
+  // never listens on TCP, so a TCP probe only returns true once the REAL server is up. 60×500ms
+  // because we now wait for the full initdb+restart on a fresh container, not just the temp one.
   let ready = false;
-  for (let attempt = 0; attempt < 40; attempt++) {
+  for (let attempt = 0; attempt < 60; attempt++) {
     try {
-      execFileSync("docker", ["exec", CONTAINER, "pg_isready", "-U", "postgres", "-q"], { stdio: "ignore" });
+      execFileSync("docker", ["exec", CONTAINER, "pg_isready", "-h", "127.0.0.1", "-U", "postgres", "-q"], { stdio: "ignore" });
       ready = true;
       break;
     } catch {
