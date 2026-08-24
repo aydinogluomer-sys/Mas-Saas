@@ -450,3 +450,70 @@ sınanabildi: 0087'deki `users_role_check` `operator` değerini kabul etmiyor.
 
 Plan kriteri "Migration evidence tek komutla yeniden üretilebilir": `pnpm release:golden-fingerprint`
 — tek komut, 14/14, manifest üretiliyor. **PASS.**
+
+
+---
+
+## Faz 6 — Backup / restore readiness
+
+| Alan | Değer |
+|---|---|
+| **Durum** | **PASS** |
+| Timestamp (UTC) | 2026-08-24 |
+| DB sınıfı | `DISPOSABLE_SYNTHETIC` — izole cluster (`mas-radar-pg-faz6-sandbox`, port 55437) |
+| Gerçek DB yazımı | **YOK** |
+| Komut | `pnpm release:restore-drill` → **9/9**, beş kapı da YES |
+
+### Faz 6 PASS kapıları
+
+```text
+BACKUP EXISTS            = YES   1.380.380 bayt · sha256 90afec4d…
+BACKUP READABLE          = YES   pg_restore --list, 1.387 TOC girdisi
+BACKUP RESTORABLE        = YES   85 tablo
+RESTORED DATA MATCHES    = YES   85 sayı + 6 parasal toplam + 85 satır hash'i birebir
+APP CAN START ON RESTORE = YES   /ready = 200 · golden-ui-smoke 36/36
+```
+
+### Faz 5'in üzerine kuruldu
+
+Ortak ölçüm `scripts/release/lib/fingerprint.ts`'e çıkarıldı; iki script de onu kullanıyor. Refactor
+sonrası Faz 5 regresyonu: `golden-fingerprint` **14/14**, değişmedi. Faz 6'nın eklediği: makbuzlar
+(§9.1/§9.2) ve **uygulama fazı** (§9.3).
+
+### Beşinci kapı gerçekten düştü ve bulduğu şey gerçekti
+
+İlk koşu: dört kapı YES, beşinci NO. Veritabanı kusursuzdu (85 tablo, bütün hash'ler birebir), ama
+uygulama `permission denied for table users` ile açılmadı. Sebep: restore `--no-acl` ile
+yapılıyordu ve GRANT'lar geri gelmemişti. Yan yana ölçüm:
+
+```text
+--no-owner            : app SELECT users = true   INSERT users = true   SELECT payments = true
+--no-owner --no-acl   : app SELECT users = false  INSERT users = false  SELECT payments = false
+```
+
+`golden-fingerprint.ts`'te ACL atmak savunulabilir (clone'a yalnız owner dokunur, eski grant'lar
+eksik bir grant'ı maskeleyebilir); bir **restore'da** grant'lar geri gelmesi gerekenin parçasıdır.
+İki script farklı bayrak kullanıyor, nedeni ikisinde de yazılı. **Satır sayısına bakan bir restore
+kontrolü bunu asla göremezdi** — beşinci kapının varlık sebebi bu.
+
+İkinci bulgu: ilk başarısızlık yalnız "sunucu hazır olmadı" diyordu, gerçek sebep `stdio:"ignore"`
+ile atılmıştı. Sunucu çıktısı artık dosyaya yazılıyor ve başarısızlıkta rapora giriyor.
+
+### Kapsanan maddeler
+
+- **§9.1** backup receipt: dokuz alanın tamamı üretiliyor (timestamp, source_db,
+  system_identifier, git_sha, schema_ledger, file_size, sha256, pg_version, pg_dump_version).
+- **§9.2** restore proof: ayrı DB'ye restore, counts/aggregates/hash karşılaştırması, owner ile
+  login gerekmeyen read test, restore receipt.
+- **§9.3** tam prova: backup → drop → create → restore → doğrula → **uygulamayı başlat** →
+  kritik smoke. Smoke `golden-ui-smoke` (36/36), yani 24 ekran + **12 parasal mutabakat** artık
+  restore edilmiş veri üzerinde doğrulanıyor.
+- **§9.4** retention: `docs/backup-restore-policy.md` — pre-cutover **immutable** + post-cutover +
+  rolling; tek kopya yasağı; en az bir kopya fiziksel olarak farklı depolama hedefinde. Gerçek
+  zamanlanmış görev/uzak hedef **kurulmadı**, gereksinim ve yaklaşım belgelendi.
+
+### Sınır
+
+Prova sentetik-ama-gerçekçi kaynak üzerinde koşuldu (`seed:demo`). Gerçek `mas_radar_dev` yedeği bu
+harness'ta alınamaz — kimlik bilgisi kasten yok. Script gerçek kaynak için hazır; çalıştırma
+kimlik bilgisine sahip operatörün işi.

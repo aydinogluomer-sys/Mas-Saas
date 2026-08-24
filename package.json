@@ -78,7 +78,8 @@
     "test:visual:update": "playwright test --update-snapshots",
     "db:export-leakage:verify": "tsx scripts/db/export-leakage-verify.ts",
     "db:security-matrix:verify": "tsx scripts/db/security-matrix-verify.ts",
-    "release:golden-fingerprint": "tsx scripts/release/golden-fingerprint.ts"
+    "release:golden-fingerprint": "tsx scripts/release/golden-fingerprint.ts",
+    "release:restore-drill": "tsx scripts/release/restore-drill.ts"
   },
   "dependencies": {
     "@node-rs/argon2": "^2.0.2",
