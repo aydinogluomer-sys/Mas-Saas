@@ -365,3 +365,88 @@ değişikliği erişilebilir değil; eksik olan **temiz ret**. Onaylanırsa düz
 ### Faz 4 PASS
 
 Plan kriteri "Security checklist'te P0/P1 açık = 0": **P0 = 0, P1 = 0** (P2 = 1). **PASS.**
+
+
+---
+
+## Faz 4 ek — reminders auth boşluğu KAPATILDI
+
+`scheduleRemindersAction` / `dispatchRemindersAction` artık `requireSession()` + `finance_manager`
+veya `admin` kapısından geçiyor (commit `17de55f`). Gerekçe iki katmanlı:
+
+1. **RLS yedeği koşulluydu.** O argüman yalnız runtime gerçekten `mas_radar_app` kimliğiyle
+   bağlanırken geçerli; gerçek kurulumda bu bilerek henüz böyle değil (cutover adımı). O zamana
+   kadar bu iki action, önemli olan tek ortamda hiç guard taşımıyordu.
+2. **RLS yan etkiye ulaşamaz.** `dispatchPending()` Telegram mesajı gönderir; satır güvenliğinin
+   giden mesaj hakkında söyleyecek sözü yok. Alt katmanlar bekleyen kümeyi okuyabildiği için bir
+   viewer, teslim satırı reddedilirken mesaj gönderilmesine yol açabilirdi.
+
+`security-matrix-verify.ts`'teki gerekçeli istisna kaldırıldı: **30/30 dosya**, tek istisna giriş
+yüzeyinin kendisi. Doğrulama: 17/17 ALL PASS, typecheck 0, lint 0 error, build exit 0.
+
+---
+
+## Faz 5 — Migration ve veri bütünlüğü release prosedürü
+
+| Alan | Değer |
+|---|---|
+| **Durum** | **PASS** |
+| Timestamp (UTC) | 2026-08-24 |
+| DB sınıfı | `DISPOSABLE_SYNTHETIC` — izole cluster (`mas-radar-pg-faz5-sandbox`, port 55436) |
+| Gerçek DB yazımı | **YOK** |
+| Komut | `pnpm release:golden-fingerprint` → **14/14 PASS** |
+
+### Ne değişti
+
+Golden exact-clone koşusu zaten yapılmıştı (orkestratör, gerçek DB). Eksik olan kanıt değil
+**tekrarlanabilirlikti**: elle yapılmış bir prosedür bir sonraki cutover'dan önce birebir
+tekrarlanamaz, devredilemez ve hangi assertion'ların kontrol edildiği sonradan anlaşılamaz.
+`scripts/release/golden-fingerprint.ts` o koşuyu tek komuda çevirir:
+
+```text
+kaynak DB → fresh pg_dump → pg_restore --list → fresh restore → ÖNCE parmak izi
+          → gerçek pnpm db:migrate → SONRA parmak izi → 14 değişmez → manifest
+```
+
+### §8.3 değişmezleri — 14/14
+
+ledger 87 · son sürüm 0087 · bayat operator 0 · finance_manager artışı = önceki operator sayısı ·
+aktif admin ≥ 1 · `users_role_check` beş katman · 170 FK hedefsiz 0 · blanket RLS 0 · assistant
+arşiv tutarlılık kısıtı · checksum drift 0 · **legacy finansal 6 tablonun veri hash'i değişmedi** ·
+dump alındı · `pg_restore --list` okunabilir · öncesi parmak izi (85 tablo).
+
+Ledger sayısı ve son sürüm **diskten türetiliyor**, koda gömülmüyor: 87'yi sabitlemek 0088 geldiği
+gün doğru bir veritabanında kırmızı verir ve "düzeltmenin" doğal yolu sayıyı büyütmektir — kapı
+böyle formaliteye dönüşür.
+
+### Hash tasarımı
+
+Whole-row `t::text` yerine **migration öncesi kolonlar** üzerinden projeksiyon. Şema eklemesi
+whitelist'te olduğu için `t::text` "bütün veri değişti" derdi — hiçbir veri değişmemişken; bunu bir
+kez gören operatör uyarıyı yok saymayı öğrenir. Hash ayrıca sıra bağımsız.
+
+### Detektörün gerçekten gördüğü kanıtlandı
+
+`payment_instances` üzerinde: bir satırın `amount` değeri değişince hash `925ced52…` → `cd14951b…`.
+**İlk denemem yanlış negatif verdi:** hedef satırın `amount` değeri `NULL`'dı, `NULL + 1 = NULL`,
+yani `UPDATE 1` raporlandı ama hiçbir şey değişmedi. Projenin kendi "null bilinmeyendir, sıfır
+değildir" kuralı testi yazana çarptı.
+
+### Güvenlik kapıları (doğrulandı)
+
+`CLONE_DB=mas_radar_dev` → `GÜVENLİK DURDURMASI`, exit 1, bağlantı açılmadan. Kaynağa yalnız
+`pg_dump` dokunur. Clone her koşuda düşürülüp yeniden yaratılır ("eski clone tekrar kullanılmaz"
+zorunluluk, tavsiye değil).
+
+### Sınır — dürüstçe
+
+Sandbox "kaynağı" zaten 0087'de olduğu için `db:migrate` adımı bu koşuda **iş yapmadı**
+(`state=LEDGER_MANAGED`). Akışın tamamı, 14 assertion ve manifest üretimi çalıştı; gerçek 0034→0087
+geçişi orkestratörün gerçek DB koşusudur ve bu script onu **kodlar**, yerine geçmez. Aynı nedenle
+"finance_manager artışı = önceki operator sayısı" değişmezi yalnız boş hâliyle (operator=0)
+sınanabildi: 0087'deki `users_role_check` `operator` değerini kabul etmiyor.
+
+### Faz 5 PASS
+
+Plan kriteri "Migration evidence tek komutla yeniden üretilebilir": `pnpm release:golden-fingerprint`
+— tek komut, 14/14, manifest üretiliyor. **PASS.**
