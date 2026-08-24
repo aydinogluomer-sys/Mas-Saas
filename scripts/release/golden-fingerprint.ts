@@ -44,6 +44,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { Pool } from "pg";
 import { fingerprint } from "./lib/fingerprint";
+import { isDisposableDatabaseName } from "../db/owner-url";
 
 const CONTAINER = process.env.MAS_PG_CONTAINER ?? "mas-radar-pg";
 const PORT = process.env.MAS_PG_PORT ?? "5432";
@@ -52,8 +53,6 @@ const CLONE_DB = process.env.CLONE_DB ?? "";
 const DUMP_PATH = "/tmp/mas_cutover.dump";
 
 /** Same marker vocabulary as scripts/db/owner-url.ts. The clone is DROPPED, so this gate is first. */
-const DISPOSABLE = /verify|test|tmp|temp|disposable|scratch|sandbox|fixture|clone|restore|snapshot|probe/;
-const PROTECTED = new Set(["mas_radar_dev", "postgres", "template0", "template1"]);
 
 /**
  * Tables whose contents a migration must NOT change.
@@ -88,7 +87,7 @@ function step(label: string): void {
 async function main(): Promise<void> {
   if (!SOURCE_URL) throw new Error("SOURCE_DATABASE_URL gerekli (yalnız OKUNUR — pg_dump dışında dokunulmaz).");
   if (!CLONE_DB) throw new Error("CLONE_DB gerekli (harcanabilir işaret taşıyan bir ad).");
-  if (!DISPOSABLE.test(CLONE_DB) || PROTECTED.has(CLONE_DB)) {
+  if (!isDisposableDatabaseName(CLONE_DB)) {
     throw new Error(
       `GÜVENLİK DURDURMASI: '${CLONE_DB}' harcanabilir bir ad değil. Bu script hedefi DROP eder; ` +
         "adının harcanabilir olduğunu söylemesi gerekir (verify/test/clone/snapshot/…).",
@@ -137,8 +136,25 @@ async function main(): Promise<void> {
 
   /* ── the REAL entrypoint, not a psql replay ──────────────────────────────────────────── */
   step("5/7 gerçek `pnpm db:migrate`");
+  // MAS_DB_CONTAINER is forwarded, and the reason is not obvious.
+  //
+  // migrate.ts takes a MANDATORY backup before applying anything pending, and it looks the database
+  // up inside a container named by MAS_DB_CONTAINER (default `mas-radar-pg`) — a DIFFERENT variable
+  // from the MAS_PG_CONTAINER this script uses. On the real machine the two coincide and nothing is
+  // noticeable. In a sandbox published under another container name the backup step hard-fails with
+  //
+  //     Backup hedefi bulunamadı: '<db>' container 'mas-radar-pg' içindeki DB listesinde yok.
+  //
+  // which is migrate.ts being RIGHT (it refuses to migrate what it cannot back up) but makes the
+  // rehearsal impossible to run against a sandbox. Found by the Faz 7 drill: every earlier run had
+  // nothing pending, so the backup step never engaged and the gap stayed invisible.
   execFileSync("pnpm", ["db:migrate"], {
-    stdio: "inherit", env: { ...process.env, MIGRATION_DATABASE_URL: cloneUrl },
+    stdio: "inherit",
+    env: {
+      ...process.env,
+      MIGRATION_DATABASE_URL: cloneUrl,
+      MAS_DB_CONTAINER: process.env.MAS_DB_CONTAINER ?? CONTAINER,
+    },
     shell: process.platform === "win32",
   });
 

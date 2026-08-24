@@ -31,6 +31,7 @@ import path from "node:path";
 import { chromium } from "@playwright/test";
 import { hash as argon2Hash } from "@node-rs/argon2";
 import { Pool } from "pg";
+import { databaseNameFromUrl, isDisposableDatabaseName } from "../../scripts/db/owner-url";
 
 /**
  * Copied from src/lib/auth.ts rather than imported.
@@ -134,11 +135,15 @@ async function globalSetup(): Promise<void> {
   }
   // Same fail-closed reflex the phase scripts use: this writes rows, so it refuses a target that
   // has not said it is disposable.
-  // Kept in step with DISPOSABLE_MARKERS in scripts/db/owner-url.ts. The first version of this list
-  // was narrower and refused `mas_radar_ui_golden_clone` — a database whose name says "clone" quite
-  // clearly — which would have taught the next person to weaken the check rather than name their
-  // database properly. A gate that misfires on correct input is a gate people route around.
-  if (!/verify|test|e2e|tmp|temp|disposable|scratch|sandbox|fixture|clone|restore|snapshot|probe/.test(dbUrl)) {
+  // The marker vocabulary is IMPORTED from scripts/db/owner-url.ts, not restated here.
+  //
+  // Five copies of this list existed and they drifted, twice. First a narrower list refused
+  // `mas_radar_ui_golden_clone` — a database whose name says "clone" outright. Then restore-drill.ts
+  // introduced the marker "drill" and `mas_radar_cutover_rollback_drill` was refused by this
+  // harness, which had never heard of it: the Faz 7 rehearsal failed at the smoke step for a reason
+  // that had nothing to do with the cutover. A gate that misfires on correct input is a gate people
+  // learn to route around, so there is now exactly one list.
+  if (!isDisposableDatabaseName(databaseNameFromUrl(dbUrl))) {
     throw new Error(
       `GÜVENLİK DURDURMASI: '${dbUrl.replace(/\/\/[^@]*@/, "//***@")}' disposable görünmüyor. ` +
         "Görsel harness gerçek kullanıcı satırı yazar; hedefin harcanabilir olduğunu adıyla söylemesi gerekir.",

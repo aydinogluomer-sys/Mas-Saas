@@ -517,3 +517,67 @@ ile atılmıştı. Sunucu çıktısı artık dosyaya yazılıyor ve başarısız
 Prova sentetik-ama-gerçekçi kaynak üzerinde koşuldu (`seed:demo`). Gerçek `mas_radar_dev` yedeği bu
 harness'ta alınamaz — kimlik bilgisi kasten yok. Script gerçek kaynak için hazır; çalıştırma
 kimlik bilgisine sahip operatörün işi.
+
+
+---
+
+## Faz 7 — Cutover provası
+
+| Alan | Değer |
+|---|---|
+| **Durum** | **PASS** |
+| Timestamp (UTC) | 2026-08-24 |
+| DB sınıfı | `DISPOSABLE_SYNTHETIC` — izole cluster (`mas-radar-pg-faz7-sandbox`, port 55438) |
+| Gerçek DB yazımı | **YOK** — gerçek cutover Faz 8'dir ve bu çalışmanın kapsamı değildir |
+
+### Prova A — normal success path
+
+| Yol | Komut | Sonuç |
+|---|---|---|
+| İleri (migration) | `pnpm release:golden-fingerprint` | **14/14**, exit 0 |
+| Geri dönüş (restore) | `pnpm release:restore-drill` | **9/9**, beş kapı YES, smoke 36/36 |
+
+Cutover'ın her iki yönü de tek komut ve provalı.
+
+### Prova B — bilinçli failure injection (dördü de gerçekten enjekte edildi)
+
+| # | Enjeksiyon | Gözlenen | Karar |
+|---|---|---|---|
+| B1 | yanlış DB parolası | `password authentication failed`, exit 1, sunucu **hiç açılmadı** | CONFIG ROLLBACK |
+| B2 | migrate kesintisi (SIGKILL) | kesinti `56/0056` → tekrar çalıştır → `87/0087`, exit 0 | **RETRY** |
+| B3 | `payments` üzerinde RLS kapatıldı | ALL PASS → **FAIL: "RLS KAPALI: payments"**, exit 1 | STOP + CONFIG ROLLBACK |
+| B4 | `alter role mas_radar_app nologin` | `/ready` **200**, `/health` **503** `db:"down"` + nedeni | CONFIG ROLLBACK |
+
+B4 üç şeyi birden kanıtladı: `/health` gerçekten kırmızıya dönüyor, `/ready` 200 kalıyor
+(canlılık/bağımlılık ayrımı çalışıyor — restart politikası `/health`'e bağlansaydı sağlıklı
+uygulama her DB hıçkırığında yeniden başlatılırdı), ve `dbError` nedeni adıyla söylüyor.
+
+### Prova sırasında çıkan iki bulgu
+
+1. **Marker listesi beş yerde kopyalanmıştı ve kaydı.** `restore-drill.ts` "drill" işaretini
+   ekledi; `mas_radar_cutover_rollback_drill` adlı veritabanı test harness'i tarafından
+   reddedildi — prova, cutover'la ilgisi olmayan bir nedenle smoke adımında düştü. Artık tek
+   kaynak: `scripts/db/owner-url.ts`'in `isDisposableDatabaseName()`'i; harness ve iki release
+   script'i onu **import ediyor**, regex kopyası kalmadı.
+2. **`migrate.ts` pending varsa zorunlu yedek alıyor** ve veritabanını `MAS_DB_CONTAINER`
+   (varsayılan `mas-radar-pg`) içinde arıyor — release script'lerimin kullandığı
+   `MAS_PG_CONTAINER`'dan farklı bir değişken. Sandbox'ta `Backup hedefi bulunamadı` ile
+   hard-fail verdi. Bu migrate.ts'in **haklı** davranışı (yedekleyemediğini migrate etmez) ama
+   provayı imkânsız kılıyordu; `golden-fingerprint.ts` artık değişkeni iletiyor. Önceki
+   koşularda hiç pending olmadığı için yedek adımı devreye girmemiş ve boşluk görünmez kalmıştı.
+
+### Faz 7 PASS
+
+Beş kararın (STOP / RETRY / CONFIG ROLLBACK / DB RESTORE / ESCALATE) beşi de somut sinyallere
+bağlandı ve her sinyal provada **gerçekten üretildi**. Karar kuralı:
+
+> Şemaya dokunulmadıysa **CONFIG ROLLBACK**. Kesinti ise önce **RETRY**.
+> Şema değişti ve doğrulanamıyorsa **DB RESTORE**. Sınıflandırılamıyorsa **ESCALATE**.
+
+### READY FOR CUTOVER durumu
+
+Planın §20 listesindeki on kalemin **dokuzu karşılandı**. Açık kalan tek kalem **gerçek GitHub
+runner CI sonucu** (`gh` authenticate değil) — atlanmış değil, kapsam dışı olduğu belgelendi.
+Ayrıntı: `docs/release-evidence/faz7-cutover-rehearsal.md` §5.
+
+**Faz 8 (gerçek DB A–L cutover) bu çalışmanın görevi değildir; burada durulmuştur.**

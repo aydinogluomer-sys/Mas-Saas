@@ -38,6 +38,7 @@ import { mkdirSync, openSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { Pool } from "pg";
 import { fingerprint, type Fingerprint } from "./lib/fingerprint";
+import { isDisposableDatabaseName } from "../db/owner-url";
 
 const CONTAINER = process.env.MAS_PG_CONTAINER ?? "mas-radar-pg";
 const PORT = process.env.MAS_PG_PORT ?? "5432";
@@ -48,8 +49,6 @@ const APP_PASSWORD = process.env.MAS_RADAR_APP_DB_PASSWORD ?? "ci-only-not-a-sec
 const SMOKE_PORT = process.env.SMOKE_PORT ?? "3250";
 const SMOKE_SPEC = process.env.SMOKE_SPEC ?? "tests/visual/golden-ui-smoke.spec.ts";
 const BACKUP_PATH = "/tmp/mas_restore_drill.dump";
-const DISPOSABLE = /verify|test|tmp|temp|disposable|scratch|sandbox|fixture|clone|restore|snapshot|probe|drill/;
-const PROTECTED = new Set(["mas_radar_dev", "postgres", "template0", "template1"]);
 
 interface Check { name: string; pass: boolean; detail: string }
 
@@ -85,7 +84,7 @@ function sh(cmd: string): string {
 async function main(): Promise<void> {
   if (!SOURCE_URL) throw new Error("SOURCE_DATABASE_URL gerekli (yalnız OKUNUR).");
   if (!RESTORE_DB) throw new Error("RESTORE_DB gerekli (harcanabilir işaret taşıyan bir ad).");
-  if (!DISPOSABLE.test(RESTORE_DB) || PROTECTED.has(RESTORE_DB)) {
+  if (!isDisposableDatabaseName(RESTORE_DB)) {
     throw new Error(
       `GÜVENLİK DURDURMASI: '${RESTORE_DB}' harcanabilir bir ad değil. Bu script hedefi DROP eder.`,
     );

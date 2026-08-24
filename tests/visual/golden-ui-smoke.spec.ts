@@ -32,6 +32,7 @@ import { expect, test, type Page } from "@playwright/test";
 import { Pool } from "pg";
 import { statePathFor, type SeededRole } from "./global-setup";
 import { assertScreenReady, enableVisualRegressionMode, watchScreen } from "./helpers/screen-ready";
+import { databaseNameFromUrl, isDisposableDatabaseName } from "../../scripts/db/owner-url";
 
 const BASE_URL = process.env.BASE_URL ?? "http://127.0.0.1:3230";
 const DB_URL = process.env.MAS_E2E_DATABASE_URL ?? process.env.DATABASE_URL ?? "";
@@ -115,10 +116,11 @@ let ownerPool: Pool;
 
 test.beforeAll(async () => {
   if (!DB_URL) throw new Error("MAS_E2E_DATABASE_URL (veya DATABASE_URL) gerekli.");
-  // Marker list kept in step with DISPOSABLE_MARKERS in scripts/db/owner-url.ts. The narrower
-  // /verify|test|e2e/ refused `mas_radar_ui_golden_clone` — a database whose name says "clone"
-  // outright — and a gate that misfires on correct input teaches people to route around it.
-  if (!/verify|test|e2e|tmp|temp|disposable|scratch|sandbox|fixture|clone|restore|snapshot|probe/.test(DB_URL)) {
+  // The marker vocabulary is IMPORTED, not restated. Five copies of this regex existed and they
+  // drifted: `restore-drill.ts` introduced the marker "drill", and a database called
+  // `mas_radar_cutover_rollback_drill` was then refused by the harness that had never heard of it —
+  // a gate misfiring on correct input, which is how people learn to route around gates.
+  if (!isDisposableDatabaseName(databaseNameFromUrl(DB_URL))) {
     throw new Error(
       `GÜVENLİK DURDURMASI: '${DB_URL.replace(/\/\/[^@]*@/, "//***@")}' disposable görünmüyor.`,
     );
