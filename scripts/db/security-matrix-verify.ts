@@ -332,28 +332,6 @@ async function main(): Promise<void> {
    */
   const AUTH_EXEMPT: Record<string, string> = {
     "src/app/login/actions.ts": "giriş yüzeyinin kendisi — kimlik doğrulamadan ÖNCE çalışır",
-
-    // KNOWN DEBT, NOT A CLEARED FINDING. scheduleRemindersAction / dispatchRemindersAction carry no
-    // requireSession() call. They are exempted here rather than left red because the gate has to
-    // stay meaningful, and hiding the reason would be worse than the gap itself.
-    //
-    // WHY IT IS P2 AND NOT P1, MEASURED RATHER THAN ARGUED. Three layers stand between an
-    // unauthorised caller and a state change, and the two that remain both hold:
-    //   1. middleware.ts refuses every non-allowlisted path without a session COOKIE, and a server
-    //      action POST goes to the page path, so it is covered.
-    //   2. the guard layer — MISSING here. This is the gap.
-    //   3. getPool() resolves the tier through getDbContext(), which returns EMPTY for any absent,
-    //      revoked, expired or inactive session. EMPTY means "no tier", and no tier can write.
-    // The engine writes public.reminder_deliveries (class `evidence`), and can(viewer,
-    // reminder_deliveries, insert|update) is false. The UPDATE/DELETE sweep above covers that table
-    // and found no tier able to move a row it should not. So no unauthorised state change is
-    // reachable; what is missing is the clean refusal, not the refusal itself.
-    //
-    // FIX WHEN APPROVED: add `await requireSession()` (and a finance_manager+ role check, since
-    // dispatch sends Telegram messages) to both actions. Deliberately NOT applied here — it is
-    // product source, and this run's mandate was to measure, not to change behaviour.
-    "src/app/(dashboard)/reminders/actions.ts":
-      "P2 TEKNİK BORÇ — guard katmanı eksik, RLS tarafından kapalı tutuluyor (yukarıdaki gerekçe)",
   };
 
   const actionFiles = walk("src").filter((f) => /"use server"/.test(readSrc(f)));
@@ -364,7 +342,7 @@ async function main(): Promise<void> {
     `MUTASYON YÜZEYİ: ${actionFiles.length} server-action dosyasının tamamı kimlik doğrulaması çağırıyor`,
     missingAuth.length === 0,
     missingAuth.length === 0
-      ? `${Object.keys(AUTH_EXEMPT).length} gerekçeli istisna`
+      ? `${actionFiles.length}/${actionFiles.length} dosya, ${Object.keys(AUTH_EXEMPT).length} gerekçeli istisna (yalnız giriş yüzeyi)`
       : `KİMLİK DOĞRULAMASI YOK: ${missingAuth.join(", ")}`,
   );
 
