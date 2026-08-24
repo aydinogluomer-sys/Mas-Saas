@@ -149,6 +149,16 @@ jobs:
           MIGRATION_DATABASE_URL: ${{ env.OWNER_URL }}
         run: pnpm db:export-leakage:verify
 
+      # Faz 4. Closes the five gaps an audit of the gates above turned up: UPDATE/DELETE were only
+      # compared to the matrix on `payments`, the three layers were never asserted to AGREE, the
+      # session lifecycle was implemented and entirely unasserted, getRawPool() was pinned in two
+      # files rather than repo-wide, and nothing proved every mutating server action authenticates.
+      - name: Security matrix, three-layer agreement and session lifecycle
+        env:
+          DATABASE_URL: ${{ env.APP_URL }}
+          MIGRATION_DATABASE_URL: ${{ env.OWNER_URL }}
+        run: pnpm db:security-matrix:verify
+
   # ── Job 4 ────────────────────────────────────────────────────────────────────────────────
   # WHICH scripts run here, and why not `phase*:verify`: see
   # docs/release-evidence/phase-verify-classification.md. The fourteen workbook-dependent

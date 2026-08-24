@@ -304,3 +304,64 @@ doğru girdide yanlış alarm veren bir kapı, insanlara kapıyı atlamayı öğ
 - **Birebir gerçek klon kapısı çalıştırılmadı** (kimlik bilgisi yok).
 - Golden spec **CI'da koşmuyor**: gerçek sunucu + veri taşıyan klon gerektiriyor. CI'daki karşılığı
   boş-veritabanı `legacy-semantic-smoke` job'udur.
+
+
+---
+
+## Faz 4 — RBAC / RLS / güvenlik
+
+| Alan | Değer |
+|---|---|
+| **Durum** | **PASS** |
+| Timestamp (UTC) | 2026-08-24 |
+| DB sınıfı | `DISPOSABLE_SYNTHETIC` — `mas_radar_security_verify`, izole cluster (port 55435) |
+| Gerçek DB yazımı | **YOK** |
+| Yeni gate | `pnpm db:security-matrix:verify` — **17/17**, CI'da `runtime-role-security` job'unda |
+
+**Toplam 90 güvenlik iddiası geçti:** roles 8/8 · roles-rls 29/29 · export-leakage 36/36 ·
+security-matrix 17/17.
+
+### Kapatılan beş boşluk
+
+| Plan | Boşluk | Kapanış |
+|---|---|---|
+| 7.1 | UPDATE/DELETE yalnız `payments`'ta kodla karşılaştırılıyordu; EXPORT/SEARCH hücresi yok | 443 deneme (5 katman × 47 dolu tablo × 2 fiil) + EXPORT/SEARCH önkoşulu |
+| 7.2 | Üç katman vardı, **anlaştıkları** doğrulanmıyordu (bağ bir yorumdu) | menü↔guard 45 kombinasyon + RLS açıklık taraması |
+| 7.3 | Oturum yaşam döngüsü tamamen doğrulanmamıştı | 7 senaryo canlı sunucuya karşı + DB predicate fixture'ları |
+| 7.4 | `getRawPool()` iki dosyada kontrol ediliyordu | depo geneli allowlist assertion'ı |
+| 7.5 | Hiçbir tarama mutasyon yüzeyini kapsamıyordu | 30 server-action dosyası taranıyor |
+
+### Testimin yanıldığı, ürünün haklı çıktığı üç yer
+
+1. **GRANT ≠ yetki.** `has_table_privilege()` ile `can()`'i karşılaştıran ilk sürüm doğru kodda
+   kırmızı verdi. Grant'lar sahiplik-kapsamlı tablolarda kasten geniş; yetki = grant **VE** politika.
+   Ölçüldü: viewer `action_items` INSERT grant'ı taşıyor, insert yine de RLS ile reddediliyor.
+2. **RLS sessizce reddeder.** İstisna bekleyen sürüm altı sağlıklı tabloyu suçladı; reddedilen
+   UPDATE hata vermez, **0 satır** ile başarıyla döner. Satır sayısıyla ölçmeye çevrildi.
+3. **`canSeeModule` ≠ `canAccessRoute`.** Farklı granülerlikte sorular. Asıl yanıltıcı durum
+   assertion'a çevrildi: bir modül ancak içinde açılabilir rota varsa menüde sunulur.
+
+### Oturum adversarial (canlı sunucu, aynı çerez)
+
+iptal → **307 /login** · süresi dolmuş → **307 /login** · pasif kullanıcı → **307 /login** ·
+rol yükseltildi → erişim **açıldı** · rol düşürüldü → **red kabuğu**. `public.sessions` rol kopyası
+taşımıyor. Atıl süre yalnız kodda pinlendi (60 dk beklenmedi) — bu maddenin HTTP kanıtı yok.
+
+### Açık P2 (kapatılmadı, gizlenmedi)
+
+`src/app/(dashboard)/reminders/actions.ts`'teki iki server action kimlik doğrulaması çağırmıyor.
+Gate'te gerekçeli istisna olarak **kayıtlı**. P1 değil çünkü ölçüldü: middleware çerezsiz reddediyor,
+`getDbContext()` geçersiz oturumu `EMPTY` yapıyor ("katman yok" hiçbir şey yazamaz) ve 443 denemelik
+tarama `reminder_deliveries` dâhil hiçbir katmanın satır oynatamadığını gösterdi. Yetkisiz durum
+değişikliği erişilebilir değil; eksik olan **temiz ret**. Onaylanırsa düzeltme: iki action'a
+`requireSession()` + `finance_manager+` rol kontrolü. Ürün kaynağı olduğu için uygulanmadı.
+
+### Yan gözlem
+
+`seed:demo` fixture'ında aktif admin sayısı **0**; migration 0031'in
+`enforce_at_least_one_active_admin()` trigger'ı bu yüzden her kullanıcı güncellemesini reddediyor.
+Ürün kusuru değil — invariant görevini yapıyor.
+
+### Faz 4 PASS
+
+Plan kriteri "Security checklist'te P0/P1 açık = 0": **P0 = 0, P1 = 0** (P2 = 1). **PASS.**
