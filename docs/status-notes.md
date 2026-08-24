@@ -3895,3 +3895,111 @@ Taze bir veritabanında tek geçişte hâlâ düşen üç script var — **phase
 bunlar Faz 33'te Faz 32 taban çizgisinde bir git worktree deneyiyle **önceden var oldukları
 kanıtlanmış** durumda: ortam/birikmiş duruma bağlılar (phase6 denetim satırlarını global sayıp tam
 3 bekliyor ve her koşuda artıyor). Faz 33-38 bu kümeye hiçbir şey eklemedi.
+
+---
+
+## Faz 1 kapanış turu — CI'daki üç kırmızı job'un kök nedeni + branch protection plan kısıtı (2026-08-25)
+
+CI (`release/production-readiness-hardening`) push başına koşuyor. HEAD 5fdc15a'daki son koşu
+(run 32772200818) **3 gerçek başarısızlık** veriyordu: `static`, `build`, `database-migration`
+(+ `legacy-semantic-smoke` ve `e2e-authz` bunlara `needs: build` ile bağlı olduğu için `skipped`).
+Üçünün de kök nedeni bulundu ve **testi zayıflatmadan / adım atlamadan / continue-on-error
+eklemeden** düzeltildi. Commit'ler: **d8b7650** (üç kök neden) + **742d9e7** (p0b declassification).
+
+### 1) `static` — TS2307, kök neden gizlenmiş kaynak dosya
+
+`src/app/(dashboard)/data/reconciliation/page.tsx:5` → `@/components/data/reconciliation-table`
+modülü CI'da yok. Kök neden: **`.gitignore:45` `data/`** deseni köke sabitlenmemiş olduğu için her
+derinlikteki `data/` dizinini yutuyordu; `src/components/data/reconciliation-table.tsx` hiç
+commit'lenmemişti (`git add` sessizce atlıyordu, `git check-ignore` → `.gitignore:45:data/`).
+`page.tsx` daha önce izlendiği için etkilenmiyordu (gitignore izlenen dosyayı etkilemez).
+**Düzeltme:** desen `/data/` yapıldı (yalnız kök özel-veri dizini), bileşen commit'lendi.
+`src/` altında başka gizlenen kaynak dosya yok (`git ls-files --others --ignored` → tek dosya, o da bu).
+
+### 2) `build` — provision `dropdb` socket hatası, kök neden postgres init yarışı
+
+`build` job'unun "Provision the build database" adımı `dropdb: connection to server on socket
+"/var/run/postgresql/.s.PGSQL.5432" failed: No such file or directory` ile ölüyordu. Kök neden:
+`scripts/db/ensure.ts` hazırlık probu **default unix soketinden** `pg_isready` çağırıyordu.
+`postgres:16` imajı initdb sırasında yalnız konteyner soketini dinleyen (`listen_addresses=''`)
+geçici bir sunucu çalıştırır; prob ona takılıp yanlış "hazır" döndürüyor, imaj gerçek sunucuyu
+başlatırken soket dosyası siliniyor ve o aralıkta `docker exec dropdb` "socket ... No such file"
+ile ölüyordu. `runtime-role-security` aynı script'le zamanlamada şanslı olduğu için geçiyordu —
+release kapısı için kabul edilemez bir yarış. **Düzeltme:** prob `-h 127.0.0.1` ile TCP'ye alındı
+(geçici init sunucusu TCP dinlemez → yalnız GERÇEK sunucu kalkınca `true`), 60×500ms. Yarış tüm DB
+job'ları için deterministik kapandı.
+
+### 3) `database-migration` — iki katmanlı, ikisi de özel-veri dump bağımlılığı
+
+**3a.** `pnpm db:migrate:verify` → `migrate-verify.ts:122` `readdirSync('backups')` → ENOENT.
+7 testinden 3'ü `backups/p0c-checkpoint-*.dump`'ı (gerçek `mas_radar_dev`'in donmuş özel pg_dump'ı
++ bilinen anomali) geri yüklüyor; temiz CI klonunda `backups/` hiç yok. **Düzeltme:**
+`migrate-verify.ts` dump yokluğunu `hasCheckpointDump()` ile tespit edip 3 testi yüksek sesle
+`SKIP-LOCAL` sınıflıyor (LOCAL_PRIVATE_DATA_GATE), çıkış kodu yalnız KOŞAN testleri yansıtıyor.
+Sentetik fixture ÜRETİLMEDİ (gerçek anomaliye karşı iddiayı totolojiye çevirirdi).
+
+**3b.** 3a düzelince 7. adım ortaya çıktı: `db:constraints:verify` — o ve ardındaki üç adım
+(`transitions`/`reconciliation`/`legacy-repair:verify`) main'lerinin ILK satırında
+`backups/p0b-managed-baseline-*.dump`'ı geri yüklüyor (aynı aile özel dump). Dördü de temiz CI'da
+ENOENT. Bu adımlar CI'a eklendikleri günden beri kırmızıydı; 3a'daki ENOENT yalnızca maskeliyordu.
+**Düzeltme:** dört adım `database-migration` job'undan **çıkarıldı** ve
+`phase-verify-classification.md`'de LOCAL_PRIVATE_DATA_GATE olarak belgelendi (workbook
+phase-verify'larıyla aynı ilke). Constraint TANIMLARI CI'da hâlâ #4 adımında
+(`db:verify` → `assertions.sql`) taze DB'de doğrulanıyor; çıkarılanların eklediği yalnız o
+tanımların **gerçek legacy veri üzerindeki davranışıydı** → yerelde, dump varken koşar.
+
+### Doğrulama — gerçek çıktı (exit code + sayı)
+
+| Kontrol | Komut | Sonuç |
+|---|---|---|
+| Typecheck | `pnpm typecheck` | **EXIT=0** |
+| Lint | `pnpm lint` | **EXIT=0** (1 önceden var olan uyarı: analytics-chart useEffect dep) |
+| Birim test | `pnpm test` | **1111/1111 geçti (50 dosya)**, EXIT=0 |
+| migrate-verify (checkpoint MEVCUT, yerel tam) | `pnpm db:migrate:verify` | **49/49 çalışan test geçti**, EXIT=0 |
+| migrate-verify (checkpoint YOK, CI taklidi) | dump geçici taşınıp `pnpm db:migrate:verify` | **16/16 çalışan test geçti · 3 SKIP-LOCAL**, EXIT=0 (dump geri yüklendi) |
+
+CI kanıtı (run 32780923027, d8b7650 üzerinde — ci.yml düzeltmesi ÖNCESİ):
+`static`=**success**, `runtime-role-security`=**success**, `phase-verifies`=**success**,
+`build` "Provision the build database" adımı = **success** (ensure.ts TCP probu doğrulandı, dropdb
+artık yarışmıyor), `database-migration`=failure (7. adım — **742d9e7 ile giderildi**).
+**Beklenen tam durum:** 742d9e7 push edilince 7/7 (skipped yok, çünkü build artık geçiyor →
+`e2e-authz` + `legacy-semantic-smoke` çalışır). Bu satır all-green koşu görülünce sayıyla güncellenecek.
+
+---
+
+## Kullanıcı eylemi bekleniyor (Faz 1)
+
+### 1. Branch protection — PLAN KARARI (Claude teknik olarak da yapamaz)
+
+`gh` bu turda yetkiliydi; doğrudan sorguladım: hem `branches/master/protection` hem `rulesets`
+**HTTP 403 "Upgrade to GitHub Pro or make this repository public"** dönüyor. Yani özel repo +
+ücretsiz planda branch protection **mevcut değil** — eksik olan yetki değil, plan. Üç seçenek
+(GitHub Pro/Team'e yükselt / repoyu public yap [ÖNERİLMEZ, finansal veri] / korumasız devam et)
+`docs/release-evidence/branch-protection-recommendation.md`'de tablo hâlinde. Tıklama adımları
+yalnız A veya B seçilince uygulanabilir. **CI yeşil ≠ master korumalı**; ayrı ölçütler, ayrı raporlanır.
+
+### 2. `.env.local` runtime kimliği hâlâ superuser — F/G komutları kullanıcıda
+
+Salt-okunur doğrulama (dosya açılmadan): `.env.local`'daki `DATABASE_URL` hâlâ `user=postgres`
+(superuser) ve `MIGRATION_DATABASE_URL` satırı yok → uygulama gerçek yerel kurulumda RLS'i baypas
+ediyor. Claude `.env.local`'ı DÜZENLEMEZ, parola üretmez/tahmin etmez. Kullanıcının kendi
+terminalinde sırayla çalıştıracağı F (rol parolası+LOGIN) ve G (`.env.local` çevirisi) komut
+listesi + başarı/başarısızlık satırları: `docs/release-evidence/env-local-cutover-steps.md`
+(runbook'un F/G/H bölümleriyle birebir tutarlı).
+
+### 3. Gerçek DB cutover (Faz 8) — tek-onayla-başlatılabilir kontrol listesi kullanıcıda
+
+Claude gerçek `mas_radar_dev`'e yazmaz. A→L komutları, her adım için "başarı böyle görünür /
+başarısızlık böyle görünür" satırlarıyla `docs/release-evidence/cutover-checklist.md`'de.
+**L (rollback) provası disposable klonda KOŞULDU ve geçti:** A yedeği 1.378.292 bayt / 1.387 TOC
+girdisi; hasar enjekte edildi (checks 7→1, payment_instances 468→268); terminate→dropdb→createdb→
+pg_restore sonrası **payments=19 checks=7 payment_instances=468 ledger=87/0087 birebir** geri geldi.
+
+---
+
+### Gözlem (bloke etmez) — repo içinde `Mas-Saas-p0b/` var
+
+Kök dizinde `Mas-Saas-p0b/` adında, **ne izlenen ne gitignore'lu** bir alt kopya var (kısmi/bozuk
+`node_modules` taşıyor, `git status` uyarıları ondan). `git add .` yapılırsa yanlışlıkla
+commit'lenebilir; bu turda yalnız açık dosya yollarıyla `git add` kullanıldı, dokunulmadı.
+Kullanıcı ya `.gitignore`'a eklemeli ya silmeli — ayrı, küçük bir temizlik.

@@ -55,8 +55,13 @@ container="${MAS_PG_CONTAINER:-mas-radar-pg}"
 # harmless there. On CI the defaults are correct and neither variable is set.
 port="${MAS_PG_PORT:-5432}"
 
+# NOTE — THIS LIST MUST MATCH DISPOSABLE_MARKERS IN scripts/db/owner-url.ts.
+# The TypeScript callers all import that constant, so they cannot drift. This file is shell and
+# cannot import it, which is exactly how it fell behind: "drill" was added to the canonical list
+# for the Faz 7 rehearsal and this copy kept refusing `mas_radar_rollback_drill` — a name that
+# says "drill" outright. If you add a marker there, add it here in the same commit.
 case "$db" in
-  *verify*|*test*|*tmp*|*temp*|*disposable*|*scratch*|*sandbox*|*fixture*|*clone*|*restore*|*snapshot*|*probe*) ;;
+  *verify*|*test*|*tmp*|*temp*|*disposable*|*scratch*|*sandbox*|*fixture*|*clone*|*restore*|*snapshot*|*probe*|*drill*) ;;
   *)
     echo "GÜVENLİK DURDURMASI: '$db' disposable işaretlerinden hiçbirini taşımıyor." >&2
     echo "Bu script hedefi DROP eder; adının harcanabilir olduğunu söylemesi gerekir." >&2
