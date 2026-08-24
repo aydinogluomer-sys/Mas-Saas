@@ -87,19 +87,28 @@ jobs:
       - name: Create the application database via the ledger runner, and assert the ledger
         run: bash scripts/ci/provision-verify-db.sh mas_radar_ci_verify
 
-      # Self-provisioning: each of these creates and drops its own disposable database and
-      # carries its own mas_radar_dev denylist. They need no connection string from here.
-      - name: Financial constraint invariants
-        run: pnpm db:constraints:verify
-
-      - name: State transition invariants
-        run: pnpm db:transitions:verify
-
-      - name: Reconciliation invariants
-        run: pnpm db:reconciliation:verify
-
-      - name: Legacy repair path
-        run: pnpm db:legacy-repair:verify
+      # ── Steps db:constraints/transitions/reconciliation/legacy-repair:verify — REMOVED to the
+      #    LOCAL_PRIVATE_DATA_GATE (2026-08-25) ───────────────────────────────────────────────
+      # Each of those four suites RESTORES backups/p0b-managed-baseline-*.dump on its first line —
+      # a frozen pg_dump of the real mas_radar_dev carrying private financial data plus the one
+      # known payment_instances anomaly (LEGACY_ANOMALY_INSTANCE_ID). By policy that dump never
+      # enters the repo (backups/ + *.dump are gitignored), so a fresh CI checkout has no backups/
+      # directory and every one of these steps died with ENOENT before running a single assertion.
+      # This job was therefore red on CI from the day the steps were added — the migrate-verify
+      # ENOENT at step 5 only masked it. The comment that used to sit here ("self-provisioning …
+      # need no connection string") was wrong: they are NOT self-provisioning; they depend on that
+      # private dump.
+      #
+      # They are NOT faked green with a synthetic baseline. The assertions turn on migrate.ts
+      # failing at 0030 on the REAL frozen anomaly; a constructed fixture would make the assertion
+      # test the fixture instead of the real data — the exact tautology this repo's gate philosophy
+      # rejects (see the phase-verifies job header). So they are a LOCAL_PRIVATE_DATA_GATE — the
+      # same classification docs/release-evidence/phase-verify-classification.md already applies to
+      # the 14 workbook-dependent phase verifies — and they run locally where the dump exists
+      # (pnpm db:constraints:verify, etc.). What CI still proves about constraints: their
+      # DEFINITIONS are asserted on a freshly migrated database by step "Full reset + migrations +
+      # seed + invariant assertions" (db:verify → assertions.sql) above. See
+      # docs/release-evidence/phase-verify-classification.md §"p0b-managed-baseline gate".
 
   # ── Job 3 ────────────────────────────────────────────────────────────────────────────────
   runtime-role-security:

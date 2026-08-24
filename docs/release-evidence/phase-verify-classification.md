@@ -145,3 +145,57 @@ Bir sonraki okuyucunun "neden 43 script var ama CI 29 tanesini çalıştırıyor
 
 `phase-verifies` job'u 28'ini çalıştırır (2 + 26); `phase16:verify` build çıktısına bağlı
 olduğu için `build` job'unda kalır.
+
+---
+
+## p0b-managed-baseline gate — `db:*-verify` script'leri (2026-08-25 eklendi)
+
+Yukarıdaki tablo `phase*:verify` ailesini sınıflar. `database-migration` job'u ayrıca bir grup
+`db:*-verify` script'i çalıştırıyordu; bunlar farklı bir kaynak-of-truth'a — **donmuş bir özel
+dump'a** — bağlı ve aynı `LOCAL_PRIVATE_DATA_GATE` mantığına giriyorlar. Bu, temiz CI klonunda
+`database-migration` job'unun neden her koşuda kırmızı olduğunun kök nedeniydi (ENOENT, hiçbir
+assertion çalışmadan).
+
+İki özel dump vardır, ikisi de `backups/` altında (gitignore'lu, `*.dump` de öyle) ve **repoya
+asla girmez**:
+
+- **`p0c-checkpoint-*.dump`** — gerçek `mas_radar_dev`'in Slice 5 legacy-repair öncesi donmuş
+  pg_dump'ı; bilinen `payment_instances` anomalisini (`LEGACY_ANOMALY_INSTANCE_ID`) taşır.
+- **`p0b-managed-baseline-*.dump`** — aynı ailenin managed-baseline (ledger-yönetimli) hâli;
+  aynı anomaliyi taşır.
+
+| Script | CI adımı (eski) | Dump | Yapı | CI'da? | Neden |
+|---|---|---|---|---|---|
+| `db:migrate:verify` | database-migration #5 | p0c-checkpoint | **KARMA** | **EVET (kısmi)** | 4 checkpoint-bağımsız test (file-set / EMPTY / ledger-empty-recovery / cluster-identity) CI'da koşar; 3 checkpoint-bağımlı test (`hasCheckpointDump()` ile) yüksek sesle SKIP-LOCAL sınıflanır |
+| `db:constraints:verify` | database-migration #7 | p0b-managed-baseline | tam bağımlı | **HAYIR** | main ilk satırda `restoreManagedFixtureInto` — tüm suite dump'a bağlı |
+| `db:transitions:verify` | database-migration #8 | p0b-managed-baseline | tam bağımlı | **HAYIR** | aynı |
+| `db:reconciliation:verify` | database-migration #9 | p0b-managed-baseline | tam bağımlı | **HAYIR** | aynı |
+| `db:legacy-repair:verify` | database-migration #10 | p0b-managed-baseline | tam bağımlı | **HAYIR** | aynı |
+
+**Yapılan (2026-08-25):** dört tam-bağımlı adım `database-migration` job'undan **çıkarıldı** (bkz.
+`.github/workflows/ci.yml`, `db:reconciliation:verify` bloğunun yerindeki yorum). `db:migrate:verify`
+CI'da **kalır** çünkü gerçek checkpoint-bağımsız ledger güvenlik testleri var; `migrate-verify.ts`
+dump yokluğunu kendi tespit eder ve yalnız o testleri koşar, cikis kodu yalnız KOŞAN testleri
+yansıtır.
+
+### Neden sentetik bir baseline üretilmiyor
+
+`phase*` sınıfı B ile birebir aynı gerekçe: bu suite'lerin assertion'ları migrate.ts'in 0030'da
+**gerçek donmuş anomaliye** takılıp durmasına dayanır. Sentetik bir baseline üretmek, önce anomaliyi
+kendim yazıp sonra "migrate.ts onda duruyor" demek olurdu — assertion, gerçek veriyi değil kendi
+fixture'ımı test eder. Bu totoloji, `phase-verifies` job başlığının ve bu belgenin açıkça
+reddettiği şeydir.
+
+### CI bu konuda NE'yi hâlâ kanıtlıyor
+
+Constraint/RLS **tanımlarının** kendisi CI'da hâlâ doğrulanıyor: `database-migration` #4 adımı
+(`db:verify` → `assertions.sql`) taze migrate edilmiş bir veritabanında tüm invariant assertion'ları
+koşar (payment_due_rule, paid⇒paid_at, çek işaret tutarlılığı, RLS+policy her tabloda, append-only
+audit, vb.). Çıkarılan dört adımın eklediği şey, bu tanımların **gerçek legacy veri üzerindeki
+davranışıdır** — o da yerelde, dump varken, `pnpm db:constraints:verify` vb. ile koşulur.
+
+### Nasıl kayıt altına alınıyor
+
+`p0b`/`p0c` dump'ları mevcut bir makinede (bugün: maintainer'ın makinesi, `backups/` dolu) operatör
+release candidate öncesi bu dördünü çalıştırır. CI'da **çalışmazlar**; ama "sessizce atlandı" da
+değiller — bu bölüm onların var olduğunu, neyi kanıtladığını ve nerede koştuğunu söyleyen kayıttır.
