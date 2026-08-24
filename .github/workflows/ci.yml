@@ -1,13 +1,34 @@
 name: CI
 
-# Faz 16 — pre-merge gate runner. NOTHING here deploys.
+# Faz 1 — the Faz 38 release gate. NOTHING here deploys.
 #
-# docs/local-production-deploy.md deliberately puts remote deploy (Vercel / hosted Supabase)
-# out of scope: this is a single-company internal panel that runs on the operator's own
-# machine. So CI has exactly one job — run the same gate a human would run before merging,
-# on a clean checkout, so "works on my machine" cannot hide a broken commit. There is no
-# deploy step, no hosting target, and no environment secret beyond what is written here in
-# plain sight.
+# WHAT CHANGED FROM THE FAZ 16 WORKFLOW, AND WHY IT WAS NOT COSMETIC.
+#
+# The previous version ran one 45-minute `gate` job. Two things inside it did not do what their
+# names claimed, both measured on this repository rather than inferred:
+#
+# 1. IT NEVER RAN THE PHASE VERIFIES. The loop pointed MIGRATION_DATABASE_URL at a database
+#    named `mas_phase`. Since the Faz 17-38 audit, every one of those scripts resolves through
+#    requireDisposableOwnerDatabaseUrl(), which refuses any name not carrying a disposable
+#    marker — and `mas_phase` carries none. Reproduced: `phase11b:verify` against that name exits
+#    1 with "GÜVENLİK DURDURMASI", before opening a connection. So the step could only ever have
+#    been red, and the six phases it advertised were not being checked at all.
+#
+# 2. IT REPLAYED MIGRATIONS IN A WAY PRODUCTION NEVER DOES. It looped `psql < file` per file.
+#    Without `-1`, psql runs each STATEMENT in its own implicit transaction: a file that fails
+#    halfway leaves everything before the failure COMMITTED. Proven with a three-statement file
+#    (create table / insert / select 1/0) — psql exited 3 and the table was still there with its
+#    row. `scripts/db/migrate.ts` instead wraps each pending file in one explicit BEGIN/COMMIT and
+#    writes the ledger row inside that same transaction. The raw loop also wrote no ledger at all,
+#    so the assertion this gate exists to make (count = files on disk, max = last file) was not
+#    even expressible against it. Everything below goes through `pnpm db:migrate`.
+#
+# ONE THING THIS GATE STILL CANNOT DO, STATED SO NOBODY OVERCLAIMS IT. Every database here is
+# EMPTY before migration. Migration 0056's "cannot ALTER TABLE because it has pending trigger
+# events" hazard needs pre-existing operator rows for its UPDATE to match; with zero rows it
+# queues no deferred trigger events (0056's own header says so). No empty-database CI run can
+# catch that class of defect — only a migration over a data-carrying clone can. That is a
+# separate, later gate and this job does not replace it.
 
 on:
   push:
@@ -27,27 +48,13 @@ env:
   PGHOST: 127.0.0.1
 
 jobs:
-  gate:
+  # ── Job 1 ────────────────────────────────────────────────────────────────────────────────
+  static:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
-
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
-
-      - uses: pnpm/action-setup@v4
-        with:
-          version: 10
-
-      - uses: actions/setup-node@v4
-        with:
-          # Known divergence from the maintainer's machine (Node 26 locally). Pinned to the
-          # current LTS because that is what the runner offers reliably; if a Node-version
-          # specific bug ever appears, this line is the first place to look.
-          node-version: 22
-          cache: pnpm
-
-      - name: Install
-        run: pnpm install --frozen-lockfile
+      - uses: ./.github/actions/setup
 
       - name: Lint
         run: pnpm lint
@@ -58,91 +65,258 @@ jobs:
       - name: Unit tests
         run: pnpm test
 
-      # ── Database ───────────────────────────────────────────────────────────────────────
-      # GitHub Actions' built-in `services:` Postgres is NOT used, on purpose. scripts/db/
-      # ensure.ts starts its own `mas-radar-pg` container bound to 127.0.0.1:5432, and a
-      # service container would already own that port — the two would collide, and whichever
-      # won, CI would then be exercising a different Postgres than every local run does.
-      # Letting ensure.ts do here exactly what it does locally keeps the two identical, which
-      # is the whole point of running the gate twice.
+  # ── Job 2 ────────────────────────────────────────────────────────────────────────────────
+  database-migration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
+        with:
+          postgres: "true"
+
       - name: Full reset + migrations + seed + invariant assertions
         run: pnpm db:verify
 
       - name: Migration ledger state machine (disposable databases)
         run: pnpm db:migrate:verify
 
-      - name: Create the application database via the ledger runner
-        run: |
-          set -euo pipefail
-          docker exec mas-radar-pg createdb -U postgres mas_ci
-          docker exec -i mas-radar-pg psql -q -v ON_ERROR_STOP=1 -U postgres -d mas_ci \
-            < scripts/db/local-bootstrap.sql
-          # The ledger runner on an empty database exercises the real EMPTY flow, so CI proves
-          # the migration path an operator would actually take — not a raw psql replay.
-          MIGRATION_DATABASE_URL=postgres://postgres:postgres@127.0.0.1:5432/mas_ci \
-            pnpm db:migrate
+      # The REAL production entrypoint, not a psql replay. provision-verify-db.sh asserts the
+      # ledger afterwards (count = migration files on disk, max = last file) and fails the job
+      # if either is wrong.
+      - name: Create the application database via the ledger runner, and assert the ledger
+        run: bash scripts/ci/provision-verify-db.sh mas_radar_ci_verify
 
-      - name: Give the low-privilege runtime role its password (Faz 15)
-        run: |
-          set -euo pipefail
-          MIGRATION_DATABASE_URL=postgres://postgres:postgres@127.0.0.1:5432/mas_ci \
-          MAS_RADAR_APP_DB_PASSWORD="$CI_APP_DB_PASSWORD" \
-            pnpm db:app-role:password
-          MIGRATION_DATABASE_URL=postgres://postgres:postgres@127.0.0.1:5432/mas_ci \
-            pnpm exec tsx scripts/db/seed-system-actor.ts
+      # Self-provisioning: each of these creates and drops its own disposable database and
+      # carries its own mas_radar_dev denylist. They need no connection string from here.
+      - name: Financial constraint invariants
+        run: pnpm db:constraints:verify
 
-      - name: Prove the app really runs as the low-privilege role (Faz 15)
+      - name: State transition invariants
+        run: pnpm db:transitions:verify
+
+      - name: Reconciliation invariants
+        run: pnpm db:reconciliation:verify
+
+      - name: Legacy repair path
+        run: pnpm db:legacy-repair:verify
+
+  # ── Job 3 ────────────────────────────────────────────────────────────────────────────────
+  runtime-role-security:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      OWNER_URL: postgres://postgres:postgres@127.0.0.1:5432/mas_radar_roles_verify
+      APP_URL: postgres://mas_radar_app:ci-only-not-a-secret-0123456789@127.0.0.1:5432/mas_radar_roles_verify
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
+        with:
+          postgres: "true"
+
+      # Provisioning also gives `mas_radar_app` its password and seeds the system actor.
+      - name: Provision the runtime-identity database
         env:
-          DATABASE_URL: postgres://mas_radar_app:ci-only-not-a-secret-0123456789@127.0.0.1:5432/mas_ci
-          MIGRATION_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/mas_ci
+          MAS_RADAR_APP_DB_PASSWORD: ${{ env.CI_APP_DB_PASSWORD }}
+        run: bash scripts/ci/provision-verify-db.sh mas_radar_roles_verify
+
+      # The three attributes the plan names, asserted as values rather than eyeballed in a log.
+      # A runtime identity that is superuser or BYPASSRLS makes every RLS assertion below
+      # meaningless, so this runs BEFORE them and stops the job.
+      - name: Assert the runtime role is low-privilege
+        run: |
+          set -euo pipefail
+          actual="$(docker exec mas-radar-pg psql -At -U postgres -d mas_radar_roles_verify \
+            -c "select rolcanlogin||' '||rolsuper||' '||rolbypassrls from pg_roles where rolname='mas_radar_app';")"
+          echo "expected='true false false' actual='$actual'"
+          test "$actual" = "true false false"
+
+      - name: App role really is the app role
+        env:
+          DATABASE_URL: ${{ env.APP_URL }}
+          MIGRATION_DATABASE_URL: ${{ env.OWNER_URL }}
         run: pnpm db:roles:verify
 
-      # ── Phase verifies ─────────────────────────────────────────────────────────────────
-      # Only the data-independent ones run here. The other fourteen (phase3..phase9d,
-      # phase12a, phase13a, phase14a and import:real) read the real workbooks under data/,
-      # which is gitignored because it is private financial data — they cannot pass on a clean
-      # checkout and are not made to "pass" with a fake fixture, because they assert exact
-      # figures from the real files (43 sheets, 9.817 cells, TİJEN −60.000). Those stay a
-      # local pre-merge gate; see docs/status-notes.md.
-      #
-      # audit_logs has been append-only since 0022, so each phase gets a freshly created
-      # database — running them back to back in one database corrupts the audit counts.
-      - name: Data-independent phase verifies (fresh database per phase)
+      - name: RLS behaviour per role
         env:
-          MIGRATION_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/mas_phase
-        run: |
-          set -uo pipefail
-          fail=0
-          for p in phase11b:verify phase13b:verify phase14b:verify phase14c:verify phase14d:verify phase14e:verify; do
-            docker exec mas-radar-pg dropdb -U postgres --if-exists mas_phase
-            docker exec mas-radar-pg createdb -U postgres mas_phase
-            docker exec -i mas-radar-pg psql -q -v ON_ERROR_STOP=1 -U postgres -d mas_phase \
-              < scripts/db/local-bootstrap.sql
-            for f in supabase/migrations/*.sql; do
-              docker exec -i mas-radar-pg psql -q -v ON_ERROR_STOP=1 -U postgres -d mas_phase < "$f"
-            done
-            docker exec -i mas-radar-pg psql -q -v ON_ERROR_STOP=1 -U postgres -d mas_phase \
-              < supabase/seed.sql
-            pnpm exec tsx scripts/db/seed-system-actor.ts >/dev/null
-            echo "::group::$p"
-            if DATABASE_URL="postgres://mas_radar_app:${CI_APP_DB_PASSWORD}@127.0.0.1:5432/mas_phase" pnpm "$p"; then
-              echo "PASS $p"
-            else
-              echo "FAIL $p"; fail=1
-            fi
-            echo "::endgroup::"
-          done
-          exit $fail
+          DATABASE_URL: ${{ env.APP_URL }}
+          MIGRATION_DATABASE_URL: ${{ env.OWNER_URL }}
+        run: pnpm db:roles-rls:verify
 
-      # ── Build and HTTP-level gate ──────────────────────────────────────────────────────
+      - name: Export/search role leakage
+        env:
+          DATABASE_URL: ${{ env.APP_URL }}
+          MIGRATION_DATABASE_URL: ${{ env.OWNER_URL }}
+        run: pnpm db:export-leakage:verify
+
+  # ── Job 4 ────────────────────────────────────────────────────────────────────────────────
+  # WHICH scripts run here, and why not `phase*:verify`: see
+  # docs/release-evidence/phase-verify-classification.md. The fourteen workbook-dependent
+  # scripts cannot pass on a clean checkout and are NOT faked green with a synthetic fixture —
+  # they assert exact figures from the real private files, so a fixture would turn a real
+  # assertion into a tautology. They stay a local gate (LOCAL_PRIVATE_DATA_GATE).
+  phase-verifies:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
+        with:
+          postgres: "true"
+
+      - name: Class A phase verifies (fresh migrated database per phase)
+        env:
+          MAS_RADAR_APP_DB_PASSWORD: ${{ env.CI_APP_DB_PASSWORD }}
+        run: bash scripts/ci/run-phase-verifies.sh
+
+  # ── Job 5 ────────────────────────────────────────────────────────────────────────────────
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
+        with:
+          postgres: "true"
+
+      - name: Provision the build database
+        env:
+          MAS_RADAR_APP_DB_PASSWORD: ${{ env.CI_APP_DB_PASSWORD }}
+        run: bash scripts/ci/provision-verify-db.sh mas_radar_build_verify
+
       - name: Build
         env:
-          DATABASE_URL: postgres://mas_radar_app:ci-only-not-a-secret-0123456789@127.0.0.1:5432/mas_ci
+          DATABASE_URL: postgres://mas_radar_app:ci-only-not-a-secret-0123456789@127.0.0.1:5432/mas_radar_build_verify
           APP_COMMIT_SHA: ${{ github.sha }}
         run: pnpm build
 
+      # phase16 is the HTTP-level gate (health/ready/version, rate limit, CSRF, error envelope).
+      # It spawns `next start` itself, so it belongs with the build output rather than in the
+      # phase-verifies job, which has no build.
       - name: Faz 16 gate (health/ready/version, rate limit, CSRF, error envelope)
         env:
-          DATABASE_URL: postgres://mas_radar_app:ci-only-not-a-secret-0123456789@127.0.0.1:5432/mas_ci
+          DATABASE_URL: postgres://mas_radar_app:ci-only-not-a-secret-0123456789@127.0.0.1:5432/mas_radar_build_verify
           APP_COMMIT_SHA: ${{ github.sha }}
         run: pnpm phase16:verify
+
+  # ── Job 6 ────────────────────────────────────────────────────────────────────────────────
+  # Builds again rather than consuming a .next artifact from `build`. That is a deliberate
+  # trade of runner minutes for one fewer untested moving part: artifact upload/download cannot
+  # be rehearsed on a developer machine, and a release gate should not depend on CI plumbing
+  # nobody has exercised. `needs: build` still short-circuits the whole thing when the build is
+  # broken, so the minutes are only spent when there is something worth testing.
+  e2e-authz:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    needs: build
+    env:
+      APP_URL: postgres://mas_radar_app:ci-only-not-a-secret-0123456789@127.0.0.1:5432/mas_radar_e2e_verify
+      PORT: "3210"
+      BASE_URL: http://127.0.0.1:3210
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
+        with:
+          postgres: "true"
+
+      - name: Provision the E2E database
+        env:
+          MAS_RADAR_APP_DB_PASSWORD: ${{ env.CI_APP_DB_PASSWORD }}
+        run: bash scripts/ci/provision-verify-db.sh mas_radar_e2e_verify
+
+      - name: Build
+        env:
+          DATABASE_URL: ${{ env.APP_URL }}
+          APP_COMMIT_SHA: ${{ github.sha }}
+        run: pnpm build
+
+      - name: Install Playwright browser
+        run: pnpm exec playwright install --with-deps chromium
+
+      # MAS_QA_BYPASS_AUTH is deliberately NOT set. This suite's whole subject is the difference
+      # between role tiers, and it mints real session rows to get it; under the bypass
+      # getCurrentUser() would return one fixed account and the suite would be asserting the
+      # harness instead of the product.
+      - name: Start production server (no QA bypass)
+        env:
+          DATABASE_URL: ${{ env.APP_URL }}
+          APP_COMMIT_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          # nohup + disown so the server outlives THIS step. A bare `pnpm start &` is tied to the
+          # step's shell, and a server that dies between steps produces a Playwright run whose
+          # every test fails on connection refused — a failure mode that looks like a product bug
+          # and is not one.
+          nohup pnpm start > /tmp/next-server.log 2>&1 &
+          for i in $(seq 1 60); do
+            if curl -fsS "http://127.0.0.1:${PORT}/ready" >/dev/null 2>&1; then
+              echo "server ready after ${i} tries"; exit 0
+            fi
+            sleep 2
+          done
+          echo "server did not become ready; son 100 satır:" >&2
+          tail -100 /tmp/next-server.log >&2
+          exit 1
+
+      - name: Phase 17-38 route authorization E2E
+        env:
+          MAS_E2E_DATABASE_URL: ${{ env.APP_URL }}
+        run: pnpm exec playwright test tests/visual/phase17-38-routes.spec.ts
+
+  # ── Job 7 ────────────────────────────────────────────────────────────────────────────────
+  # Semantic, NOT pixel. A page that redirects to /login, renders the access-denied shell, or
+  # paints NaN into every KPI can be pixel-stable for months; this asks whether the screen
+  # actually rendered. See the header of the spec for the full argument.
+  legacy-semantic-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    needs: build
+    env:
+      APP_URL: postgres://mas_radar_app:ci-only-not-a-secret-0123456789@127.0.0.1:5432/mas_radar_smoke_verify
+      PORT: "3211"
+      BASE_URL: http://127.0.0.1:3211
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
+        with:
+          postgres: "true"
+
+      - name: Provision the smoke database
+        env:
+          MAS_RADAR_APP_DB_PASSWORD: ${{ env.CI_APP_DB_PASSWORD }}
+        run: bash scripts/ci/provision-verify-db.sh mas_radar_smoke_verify
+
+      - name: Build
+        env:
+          DATABASE_URL: ${{ env.APP_URL }}
+          APP_COMMIT_SHA: ${{ github.sha }}
+        run: pnpm build
+
+      - name: Install Playwright browser
+        run: pnpm exec playwright install --with-deps chromium
+
+      - name: Start production server (no QA bypass)
+        env:
+          DATABASE_URL: ${{ env.APP_URL }}
+          APP_COMMIT_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          # nohup + disown so the server outlives THIS step. A bare `pnpm start &` is tied to the
+          # step's shell, and a server that dies between steps produces a Playwright run whose
+          # every test fails on connection refused — a failure mode that looks like a product bug
+          # and is not one.
+          nohup pnpm start > /tmp/next-server.log 2>&1 &
+          for i in $(seq 1 60); do
+            if curl -fsS "http://127.0.0.1:${PORT}/ready" >/dev/null 2>&1; then
+              echo "server ready after ${i} tries"; exit 0
+            fi
+            sleep 2
+          done
+          echo "server did not become ready; son 100 satır:" >&2
+          tail -100 /tmp/next-server.log >&2
+          exit 1
+
+      - name: Critical legacy screens semantic smoke
+        env:
+          MAS_E2E_DATABASE_URL: ${{ env.APP_URL }}
+        run: pnpm exec playwright test tests/visual/legacy-semantic-smoke.spec.ts
