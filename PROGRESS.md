@@ -231,6 +231,76 @@ yazıldı, karar insana bırakıldı. `pnpm test:visual:update` **çalıştırı
   performans kapısının konusu.
 - **P2 (baseline):** 23 baseline `-chromium-win32`; Linux runner'da `-chromium-linux` aranır ve
   bulunamaz. Legacy görsel paketin CI release gate'inde **olmamasının** teknik nedeni budur.
-- **P1 (güvenlik, Faz 1'den taşındı):** `scripts/seed-demo.ts` TRUNCATE yapıyor ama
-  `requireDisposableOwnerDatabaseUrl()` **kullanmıyor** — yalnız `ownerDatabaseUrl()`. Faz 17-38
-  denetimi bu kapıyı `phase*-verify` script'leri için kapatmıştı, bu script açıkta kaldı.
+- **P1 (güvenlik) — KAPANDI.** `scripts/seed-demo.ts` artık
+  `requireDisposableOwnerDatabaseUrl("seed:demo")` kullanıyor (commit `c287bed`). İzole sandbox'ta
+  iki yönlü doğrulandı: `mas_radar_dev` → exit 1 "GÜVENLİK DURDURMASI", disposable klon → exit 0.
+
+
+---
+
+## Faz 3 — Kritik eski ekranlar için "Golden UI Smoke"
+
+| Alan | Değer |
+|---|---|
+| **Durum** | **PASS** |
+| Timestamp (UTC) | 2026-08-24 |
+| DB sınıfı | **`DISPOSABLE_SYNTHETIC`** — `mas_radar_ui_golden_clone`, izole cluster (`mas-radar-pg-faz3-sandbox`, port 55434) |
+| Gerçek DB yazımı | **YOK** |
+| Spec | `tests/visual/golden-ui-smoke.spec.ts` — **36/36 PASS**, üç ardışık koşuda aynı |
+
+### Veri sınıfı dürüstlüğü
+
+Plan §6.1 gerçek `mas_radar_dev`'in `pg_dump → restore → migrate → 0087` klonunu istiyor. **Bu
+çalıştırılmadı** — gerçek DB kimlik bilgisi bu harness'a kasten verilmedi. Onun yerine aynı kaynak
+çalışma dosyasını işleyen `seed:demo` klonu kullanıldı; başlık sayıları örtüşüyor
+(payments=19, checks=7, loans=1, cashflow_months=35), ledger `87/0087`. Bu PASS, **birebir-klon
+kapısının geçildiği anlamına gelmez**.
+
+### Faz 3 PASS kriterleri
+
+| Kriter | Sonuç |
+|---|---|
+| critical route semantic smoke = 100% | **24/24** (planın 24 rotasının tamamı mevcut, ikame yok) |
+| critical monetary spot checks = 100% | **12/12 değer**, exact equality, float toleransı yok |
+| unexplained blank page = 0 | **0** |
+| unexplained console/page error = 0 | **0** (console.error, pageerror, 5xx, hydration ayrı ayrı) |
+| unauthorized access = 0 | **0** (`/system/controls` üç düşük katmana kapalı; rol düşürülünce aynı oturum yeni rolü kullanıyor) |
+
+Aynı clone üzerinde Faz 1/2 paketleri de yeşil: `legacy-semantic-smoke` **10/10**,
+`phase17-38-routes` **94/94**.
+
+### En önemli bulgu — spot-check'in kendisi sessizce yalan söylüyordu
+
+Beklenen değerler ilk sürümde `mas_radar_app` bağlantısıyla okunuyordu. O rol **RLS'e tabi** ve
+katman bağlamı yokken **hiçbir şey görmüyor**:
+
+```text
+owner (postgres):  checks = 7   gecikmiş payment_instances = 29
+mas_radar_app:     checks = 0   payment_instances          = 0
+```
+
+Buna rağmen üç spot-check PASS veriyordu: sıfır satır → toplam 0 → `fmtTL(0)` = `"0 TL"` → bu
+metin neredeyse her ekranda var. Mutabakat sıfırı sıfırla karşılaştırıp "uyuştu" diyordu — arkasında
+hiçbir şey olmayan bir yeşil ışık. Düzeltme: beklenen taraf artık **owner** bağlantısıyla okunuyor
+ve `beforeAll` ground-truth boşsa paketi **durduruyor**.
+
+### Ürünün haklı çıktığı üç bulgu
+
+1. **"BUGÜN" brüt değil KALAN tutarı gösteriyor.** Bugün vadesi gelen tek kalem 50.000, 20.000'i
+   ödenmiş; ekran 30.000 diyor. Doğru tanım `sum(amount - coalesce(paid_amount,0))`.
+2. **Çek sayısı 7 değil 6.** 7 satırın biri arşivli; ekran aktif portföyü gösteriyor. 7 görünmeye
+   başlarsa arşivlenmiş enstrüman canlı portföye dönmüş demektir — finansal kusur.
+3. **`.instant-navigation-skeleton` kalıcı düğüm** (`count=1, display:none`); "takılı navigasyon"
+   kontrolü varlık değil **görünürlük** üzerinden yazılmalıydı.
+
+### Yan düzeltme
+
+Üç spec'in disposable-ad kapısı `/verify|test|e2e/` idi ve adı açıkça "clone" olan bir veritabanını
+reddediyordu. Liste `scripts/db/owner-url.ts`'deki kanonik `DISPOSABLE_MARKERS` ile hizalandı —
+doğru girdide yanlış alarm veren bir kapı, insanlara kapıyı atlamayı öğretir.
+
+### Açık kalanlar
+
+- **Birebir gerçek klon kapısı çalıştırılmadı** (kimlik bilgisi yok).
+- Golden spec **CI'da koşmuyor**: gerçek sunucu + veri taşıyan klon gerektiriyor. CI'daki karşılığı
+  boş-veritabanı `legacy-semantic-smoke` job'udur.

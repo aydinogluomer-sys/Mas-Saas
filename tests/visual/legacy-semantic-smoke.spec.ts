@@ -103,7 +103,10 @@ test.beforeAll(async () => {
   // to run against a target that has not said it is disposable. The pattern is checked against
   // the whole URL rather than the parsed database name because a malformed URL must fail here,
   // not be treated as "no name and therefore fine".
-  if (!/verify|test|e2e/.test(DB_URL)) {
+  // Marker list kept in step with DISPOSABLE_MARKERS in scripts/db/owner-url.ts. The narrower
+  // /verify|test|e2e/ refused `mas_radar_ui_golden_clone` — a database whose name says "clone"
+  // outright — and a gate that misfires on correct input teaches people to route around it.
+  if (!/verify|test|e2e|tmp|temp|disposable|scratch|sandbox|fixture|clone|restore|snapshot|probe/.test(DB_URL)) {
     throw new Error(
       `GÜVENLİK DURDURMASI: '${DB_URL.replace(/\/\/[^@]*@/, "//***@")}' disposable görünmüyor.`,
     );

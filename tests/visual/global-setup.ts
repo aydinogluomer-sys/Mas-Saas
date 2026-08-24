@@ -134,7 +134,11 @@ async function globalSetup(): Promise<void> {
   }
   // Same fail-closed reflex the phase scripts use: this writes rows, so it refuses a target that
   // has not said it is disposable.
-  if (!/verify|test|e2e|sandbox|scratch|tmp/.test(dbUrl)) {
+  // Kept in step with DISPOSABLE_MARKERS in scripts/db/owner-url.ts. The first version of this list
+  // was narrower and refused `mas_radar_ui_golden_clone` — a database whose name says "clone" quite
+  // clearly — which would have taught the next person to weaken the check rather than name their
+  // database properly. A gate that misfires on correct input is a gate people route around.
+  if (!/verify|test|e2e|tmp|temp|disposable|scratch|sandbox|fixture|clone|restore|snapshot|probe/.test(dbUrl)) {
     throw new Error(
       `GÜVENLİK DURDURMASI: '${dbUrl.replace(/\/\/[^@]*@/, "//***@")}' disposable görünmüyor. ` +
         "Görsel harness gerçek kullanıcı satırı yazar; hedefin harcanabilir olduğunu adıyla söylemesi gerekir.",
