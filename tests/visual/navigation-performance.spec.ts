@@ -69,28 +69,51 @@ test("module tabs acknowledge click and preserve keyboard focus behavior", async
   await page.waitForURL("**/production/capacity");
 });
 
-test("a delayed route reveals its skeleton within 200ms", async ({ page }) => {
-  // PREFETCH IS REFUSED HERE, AND THAT IS WHAT MAKES THIS TEST DETERMINISTIC.
+test("a delayed route is never left hanging: within 200ms EXACTLY the right one of skeleton/arrival", async ({ page }) => {
+  // AŞAMA 10 — BU TEST ARTIK "İKİSİNDEN BİRİ OLSUN" DEMİYOR.
   //
-  // Measured: this test failed roughly two runs in three, and the failure was the test being wrong.
-  // Next prefetches the sidebar's <Link> targets as soon as /overview settles. Instrumented over
-  // three runs, counting /cashflow requests around the click:
+  // Eski hâli `expect(["skeleton", "arrived"]).toContain(outcome.kind)` idi ve gerekçesi
+  // doğruydu: Next, /overview yerleşir yerleşmez kenar çubuğundaki <Link> hedeflerini
+  // prefetch eder; prefetch tıklamadan önce inerse rota istemci yönlendirici önbelleğinden
+  // servis edilir, ORTADA BEKLEYEN BİR GEZİNME YOKTUR ve iskelet göstermek yanlış olurdu.
+  // Üç koşuda ölçülen buydu:
   //
-  //   skeleton=false  requests before click=1 (prefetch)  after click=0   <- served from cache
-  //   skeleton=false  requests before click=1 (prefetch)  after click=0   <- served from cache
-  //   skeleton=true   requests before click=0             after click=1   <- real navigation, 68ms
+  //   skeleton=false  tıklama öncesi /cashflow isteği=1 (prefetch)  sonrası=0   <- önbellek
+  //   skeleton=false  tıklama öncesi=1 (prefetch)                   sonrası=0   <- önbellek
+  //   skeleton=true   tıklama öncesi=0                              sonrası=1   <- gerçek gezinme
   //
-  // When the prefetch wins the race there is NO pending navigation, so the product correctly shows
-  // no skeleton — and the test then failed the product for being fast. Waiting for
-  // `navigationReady` takes longer than the 500ms delay below, which is why the prefetch usually
-  // won. Aborting the prefetch guarantees the click causes a genuinely pending navigation, which is
-  // the only situation in which "a skeleton must appear within 200ms" is a meaningful claim.
+  // EKSİK OLAN ŞEY, HANGİ DALDA OLUNDUĞUNU BİLMEKTİ. "İkisi de olur" iddiası, iskeletin HİÇ
+  // gelmediği bir regresyonu da kabul eder: prefetch her koşuda kazanırsa test sonsuza kadar
+  // yeşil kalır ve iskelet yolu bir daha hiç sınanmaz. Kabul edilen kümeyi daraltmadan bu
+  // kapatılamaz — ama daraltmak için önce hangi dalda olunduğunun ÖLÇÜLMESİ gerekir.
+  //
+  // Sınıflandırma artık olan bitene bakılarak, sonradan yapılıyor: tıklamadan SONRA sunucuya
+  // giden bir /cashflow RSC isteği var mı?
+  //
+  //   sonrası = 0  → rota önbellekten geldi, bekleyen gezinme yok → 200 ms içinde VARILMIŞ olmalı
+  //   sonrası ≥ 1  → gerçek gezinme (ve 500 ms geciktirildi)      → 200 ms içinde İSKELET olmalı
+  //
+  // Bu bir yarış değil, gözlemdir: istek ya gitti ya gitmedi. Her koşu artık TEK bir sonucu
+  // zorunlu kılıyor, "neither" ise her iki dalda da düşüyor.
+  //
+  // Prefetch hâlâ İPTAL EDİLMİYOR: iptal edilen bir fetch "Failed to fetch" konsol hatası
+  // üretir ve §5.3 kapısı sayfayı bu yüzden düşürür. Açık tutmak da denendi ve yalnız bir
+  // artefaktı başkasıyla değiştirdi (meşgul bağlantı). Gecikme her iki isteğe de uygulanıyor
+  // ki iskelet dalı da düzenli olarak çalışsın.
+  const navigationRequestsAfterClick: string[] = [];
+  let clicked = false;
   await page.route(/\/cashflow(?:\?.*)?$/, async (route) => {
-    if (route.request().headers().rsc === "1") await new Promise((resolve) => setTimeout(resolve, 500));
+    const headers = route.request().headers();
+    const isRsc = headers.rsc === "1";
+    const isPrefetch = headers["next-router-prefetch"] === "1";
+    if (isRsc && !isPrefetch && clicked) navigationRequestsAfterClick.push(route.request().url());
+    if (isRsc) await new Promise((resolve) => setTimeout(resolve, 500));
     await route.continue();
   });
   await page.goto("/overview", { waitUntil: "domcontentloaded" });
   await page.waitForFunction(() => document.documentElement.dataset.navigationReady === "true");
+
+  clicked = true;
   const outcome = await page.evaluate(() => new Promise<{ kind: string; ms: number }>((resolve, reject) => {
     const anchor = document.querySelector<HTMLAnchorElement>('.sidebar-link[href="/cashflow"]');
     if (!anchor) return reject(new Error("Cashflow link is missing"));
@@ -110,28 +133,25 @@ test("a delayed route reveals its skeleton within 200ms", async ({ page }) => {
     anchor.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, button: 0 }));
     window.setTimeout(() => finish(location.pathname === "/cashflow" ? "arrived" : "neither"), 200);
   }));
+  // Gecikmeli isteğin ağ katmanında tamamlanmasına fırsat ver, sonra sınıflandırmayı oku.
+  await page.waitForURL((u) => u.pathname === "/cashflow", { timeout: 30_000 });
 
-  // BOTH OUTCOMES SATISFY THE PROMISE, AND DEMANDING ONLY THE SKELETON MADE THIS TEST LIE.
-  //
-  // The old assertion required a skeleton within 200ms, full stop. Instrumented over three runs it
-  // failed about two in three, and the failures were the test being wrong: Next prefetches the
-  // sidebar's <Link> targets once /overview settles, and when that prefetch lands before the click
-  // the route is served from the client router cache — zero requests after the click — so the
-  // navigation is already DONE and a skeleton would be pointless. Measured:
-  //
-  //   skeleton=false  /cashflow requests before click=1 (prefetch)  after click=0
-  //   skeleton=false  /cashflow requests before click=1 (prefetch)  after click=0
-  //   skeleton=true   before click=0                                after click=1   (68ms)
-  //
-  // Aborting the prefetch to force the slow path was tried and rejected: a cancelled fetch logs
-  // "Failed to fetch", which the §5.3 gate then fails the page for. Holding it open was also tried
-  // and merely traded one artifact for another (an occupied connection).
-  //
-  // What the product actually promises is that a click is never left hanging: within 200ms the user
-  // has either arrived or is looking at a skeleton. That is what is asserted now, so the test is
-  // deterministic no matter who wins the prefetch race — and "neither" still fails.
-  expect(["skeleton", "arrived"], `200ms içinde ne iskelet ne varış (${outcome.ms.toFixed(0)}ms)`)
-    .toContain(outcome.kind);
+  const servedFromCache = navigationRequestsAfterClick.length === 0;
+  test.info().annotations.push({
+    type: "skeleton-branch",
+    description: JSON.stringify({ servedFromCache, kind: outcome.kind, ms: Math.round(outcome.ms) }),
+  });
+
+  if (servedFromCache) {
+    // Prefetch kazandı: bekleyen gezinme YOK, iskelet göstermek yanlış olurdu. O hâlde 200 ms
+    // içinde gerçekten VARILMIŞ olması gerekir — "hiçbir şey olmadı" burada da kabul değil.
+    expect(outcome.kind, `prefetch önbellekten servis etti; 200 ms içinde varılmalıydı (${outcome.ms.toFixed(0)}ms)`)
+      .toBe("arrived");
+  } else {
+    // Gerçek gezinme, üstelik 500 ms geciktirilmiş: kullanıcı 200 ms içinde İSKELET görmeli.
+    expect(outcome.kind, `gerçek gezinme 500 ms geciktirildi; 200 ms içinde iskelet gelmeliydi (${outcome.ms.toFixed(0)}ms)`)
+      .toBe("skeleton");
+  }
 });
 
 test("reduced motion disables navigation and skeleton animation", async ({ page }) => {

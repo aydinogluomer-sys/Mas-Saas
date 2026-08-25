@@ -138,6 +138,19 @@ export const env = Object.freeze({
   get qaBypassAuth(): boolean {
     return process.env.MAS_QA_BYPASS_AUTH === "1";
   },
+  /**
+   * AŞAMA 10 — per-route DB query accounting probe.
+   *
+   * Off by default and read live, exactly like the two switches above, because the route-SLO
+   * harness starts a dedicated measurement server with it set and nothing else ever should.
+   * When it is unset, `src/app/api/perf-probe/route.ts` answers 404 and
+   * `src/lib/perf/request-metrics.ts` never installs a sink — so the accounting path is not
+   * merely quiet in production, it is never armed. The probe exposes query SHAPES and counts,
+   * never parameter values.
+   */
+  get perfProbeEnabled(): boolean {
+    return process.env.MAS_PERF_PROBE === "1";
+  },
   /** One fallback string for both /version and the admin footer. They previously disagreed
    * ("unknown" vs "commit unknown") for the same missing variable. */
   appCommitSha: raw.APP_COMMIT_SHA ?? "unknown",
@@ -174,6 +187,7 @@ export function envPresence(): EnvPresence[] {
     { name: "OPENAI_MODEL", required: false, set: isSet(process.env.OPENAI_MODEL), note: `Varsayılan: ${env.openaiModel}` },
     { name: "AI_FORCE_DETERMINISTIC", required: false, set: isSet(process.env.AI_FORCE_DETERMINISTIC), note: "1 ise model hiç çağrılmaz" },
     { name: "MAS_QA_BYPASS_AUTH", required: false, set: isSet(process.env.MAS_QA_BYPASS_AUTH), note: "Yalnız TestSprite; production'da etkisiz" },
+    { name: "MAS_PERF_PROBE", required: false, set: isSet(process.env.MAS_PERF_PROBE), note: "Yalnız route SLO ölçüm sunucusu; 1 değilse /api/perf-probe 404" },
     { name: "APP_COMMIT_SHA", required: false, set: isSet(process.env.APP_COMMIT_SHA), note: "Sürüm izlenebilirliği" },
     { name: "APP_BUILD_TIME", required: false, set: isSet(process.env.APP_BUILD_TIME), note: "Sürüm izlenebilirliği" },
   ];

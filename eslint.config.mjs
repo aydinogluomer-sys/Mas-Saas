@@ -22,6 +22,7 @@ const eslintConfig = [
       // Next çıktısında 4393 hata sayıp kırmızıya düşüyor. Yukarıdaki iki .next-* satırıyla
       // aynı sınıf.
       ".next-real-clone-gate/**",
+      ".next-stage10-perf/**",
       "out/**",
       "build/**",
       "next-env.d.ts",

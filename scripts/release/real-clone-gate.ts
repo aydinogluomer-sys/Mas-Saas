@@ -49,9 +49,9 @@
 import { execFileSync, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, openSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
-import net from "node:net";
 import path from "node:path";
 import { Pool } from "pg";
+import { portInUse, readEnvLocal, swapDatabase } from "../db/app-url";
 import { isDisposableDatabaseName } from "../db/owner-url";
 
 /* ── ayarlar ─────────────────────────────────────────────────────────────────────────────── */
@@ -111,49 +111,9 @@ function docker(args: string[]): string {
   return execFileSync("docker", args, { encoding: "utf8", maxBuffer: 1 << 28 });
 }
 
-/**
- * Bağlantı dizesinde YALNIZ veritabanı adını değiştirir.
- *
- * `new URL(...)` round-trip'i yerine hedefli bir regex: URL serileştirmesi yüzde-kaçışlı bir
- * parolayı yeniden kodlayabilir ve sonuç sessizce yanlış bir kimlik olur. Hiçbir kolda dize
- * yazdırılmaz.
- */
-function swapDatabase(url: string, db: string): string {
-  const m = /^([a-zA-Z][a-zA-Z0-9+.-]*:\/\/[^/]+)\/([^?#]*)(.*)$/.exec(url);
-  if (!m) throw new Error("Bağlantı dizesi ayrıştırılamadı (dize kasıtlı olarak yazdırılmıyor).");
-  return `${m[1]}/${db}${m[3]}`;
-}
-
-/** `.env.local`'i process.env'e SIZDIRMADAN okur — dönen nesne yalnız burada yaşar. */
-function readEnvLocal(): Record<string, string> {
-  const file = path.join(process.cwd(), ".env.local");
-  if (!existsSync(file)) {
-    throw new Error(".env.local yok — klonun app bağlantısı gerçek runtime kimliğinden türetilemiyor.");
-  }
-  const out: Record<string, string> = {};
-  for (const raw of readFileSync(file, "utf8").split(/\r?\n/)) {
-    const line = raw.trim();
-    if (!line || line.startsWith("#")) continue;
-    const i = line.indexOf("=");
-    if (i < 0) continue;
-    let v = line.slice(i + 1).trim();
-    if ((v.startsWith('"') && v.endsWith('"')) || (v.startsWith("'") && v.endsWith("'"))) v = v.slice(1, -1);
-    out[line.slice(0, i).trim()] = v;
-  }
-  return out;
-}
-
-/** Bir portta zaten dinleyen var mı? Varsa kapı yarışmaz, durur. */
-function portInUse(port: string): Promise<boolean> {
-  return new Promise((resolve) => {
-    const socket = net.connect({ host: "127.0.0.1", port: Number(port) });
-    const done = (v: boolean) => { socket.destroy(); resolve(v); };
-    socket.setTimeout(1500);
-    socket.once("connect", () => done(true));
-    socket.once("timeout", () => done(false));
-    socket.once("error", () => done(false));
-  });
-}
+// swapDatabase / readEnvLocal / portInUse buradan TASINDI -> scripts/db/app-url.ts.
+// AŞAMA 10'un route-SLO kapısı da aynı üç desene ihtiyaç duyuyor; owner-url.ts'in başlığında
+// anlatılan "beş kopya, iki kez kaydı" kazası burada tekrarlanmasın diye tek yerde yaşıyorlar.
 
 /** Çocuk süreç: çıktıyı HEM akıtır HEM biriktirir (uzun koşuda kör kalmamak için). */
 function runCaptured(cmd: string, args: string[], env: NodeJS.ProcessEnv): Promise<{ code: number; output: string }> {

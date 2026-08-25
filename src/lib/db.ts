@@ -29,6 +29,7 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { Pool, type PoolClient, type QueryResult, type QueryResultRow } from "pg";
 import { env } from "@/lib/env";
+import { countingClient, recordRequestQuery } from "@/lib/perf/request-metrics";
 import { recordQuery } from "@/lib/perf/slow-query";
 
 declare global {
@@ -165,7 +166,15 @@ export function getPool(): Pool {
         const text = typeof args[0] === "string"
           ? args[0]
           : (args[0] as { text?: string } | undefined)?.text;
-        if (text) recordQuery(text, Number(process.hrtime.bigint() - startedAt) / 1e6);
+        if (text) {
+          const ms = Number(process.hrtime.bigint() - startedAt) / 1e6;
+          recordQuery(text, ms);
+          // AŞAMA 10: aynı boğaz noktası, ikinci bir tüketici. recordQuery yalnız YAVAŞ
+          // sorguları saklar (varsayılan eşik 200 ms) ve küreseldir; "bu rota kaç sorgu attı"
+          // sorusu için ikisi de yetmez. recordRequestQuery açık bir ölçüm kapsamı yokken
+          // ilk satırında çıkar — üretim yolunda tek bir getStore() maliyeti.
+          recordRequestQuery(text, ms);
+        }
       }
     };
 
@@ -177,7 +186,12 @@ export function getPool(): Pool {
         client.release();
         throw e;
       }
-      return client;
+      // AŞAMA 10: yazma yollarının tamamı buradan geçer (markInstancePaid, importBankStatement,
+      // refreshRiskFlags… her biri kendi transaction'ını sürer) ve bu sorgular yukarıdaki
+      // scopedQuery boğaz noktasını HİÇ görmez. Ölçüm kapsamı açık değilse countingClient
+      // istemciyi olduğu gibi geri verir — sarmalayıcı bile kurulmaz. prepare() sarmalamadan
+      // ÖNCE koştuğu için rol hazırlığı sorguları sayıma girmez; scopedQuery'de de girmiyor.
+      return countingClient(client);
     };
 
     // Splitting one pool into two created a shutdown hazard, found by db:transitions:verify:

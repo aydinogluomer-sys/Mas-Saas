@@ -1105,7 +1105,7 @@ Sıra rehber §4'ten alınmıştır ve **değiştirilemez**.
 | 07 | Gerçek kaynak backup/restore + off-device readiness | **PARTIAL** | bu commit | `release:stage07-backup-gate` 46/47; 5/5 klasik kapı YES, fingerprint 85/85 tablo + 6/6 agrega; makbuz 9/9 alan; retention 3 yoldan test; OFF_DEVICE FIZIKSEL HEDEF = BLOCKED (donanim yok) | 2026-08-25 |
 | 08 | Consolidated financial correctness gate | **DONE** | bu commit | `vitest run tests/financial` 86/86; 51 elle turetilmis vaka, 10 modul; QA bagimsiz yeniden hesaplama 28/28 AGREE, 6/6 mutasyon sondasi dustu | 2026-08-25 |
 | 09 | Observability operationalization | **DONE** | bu commit | `ops:telemetry:alerting:verify` 33/33 (0 atlanan); alti fail-closed sinyal 6/6 enjekte -> alarm + kalici log'a teslim, 6/6 temizlendi; teslimat 4 ayri arizada gorunur ve exit 2; 26 yeni birim testi; zamanlama what-if NOT REGISTERED | 2026-08-25 |
-| 10 | Performance gap closure | PENDING | — | — | — |
+| 10 | Performance gap closure | **PARTIAL** | bu commit | `perf:gate` 10/10 (sert, ortamdan bagimsiz); `perf:route-slo` SERT 36/44 — 7 felaket tavani + 1 N+1, hepsi bellek acligi (0.3 GB bos RAM, yuk ilgisiz projeden); pozitif render kontrolu 16/16; esik GEVSETILMEDI | 2026-08-25 |
 | 11 | Final RC cutover rehearsal | PENDING | — | — | — |
 | 12 | PR → master promotion | PENDING | — | — | — |
 | 13 | Master clean-runner CI | PENDING | — | — | — |

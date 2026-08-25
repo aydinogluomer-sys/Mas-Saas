@@ -133,6 +133,27 @@ jobs:
           bash scripts/ci/provision-verify-db.sh mas_radar_perf_verify
           MIGRATION_DATABASE_URL=postgres://postgres:postgres@127.0.0.1:5432/mas_radar_perf_verify pnpm perf:gate
 
+      # AŞAMA 10 — write/import SLO. WHAT ENTERS CI IS THE DETERMINISTIC HALF, DELIBERATELY.
+      #
+      # Hard assertions here are properties of the CODE, not of the runner: all 500 rows of an
+      # arithmetically generated statement really land (inserted == 500, duplicates == 0,
+      # skipped == 0); a single audited write issues a fixed number of round trips and that
+      # number does not move between samples. The second one is an N+1 detector for the write
+      # path — put a query inside a loop and the count changes, on any machine.
+      #
+      # Wall-clock is bounded ONLY by a very generous catastrophe ceiling (120 s for the
+      # 500-row import; 6.6 s measured locally, 18x headroom), in the same spirit as perf:gate's
+      # CATASTROPHE_MS. Throughput and latency BUDGETS are warnings inside the script and never
+      # change its exit code, so a slow runner cannot turn this red.
+      #
+      # Data-independent: the fixture is generated from arithmetic (no random(), no clock).
+      - name: Write/import SLO (AŞAMA 10 — bulk import, background job, representative write)
+        env:
+          MAS_RADAR_APP_DB_PASSWORD: ${{ env.CI_APP_DB_PASSWORD }}
+        run: |
+          bash scripts/ci/provision-verify-db.sh mas_radar_write_slo_verify
+          MIGRATION_DATABASE_URL=postgres://postgres:postgres@127.0.0.1:5432/mas_radar_write_slo_verify           MAS_APP_DATABASE_URL=postgres://mas_radar_app:${{ env.CI_APP_DB_PASSWORD }}@127.0.0.1:5432/mas_radar_write_slo_verify             pnpm perf:write-slo
+
       # ── Steps db:constraints/transitions/reconciliation/legacy-repair:verify — REMOVED to the
       #    LOCAL_PRIVATE_DATA_GATE (2026-08-25) ───────────────────────────────────────────────
       # Each of those four suites RESTORES backups/p0b-managed-baseline-*.dump on its first line —
@@ -302,10 +323,15 @@ jobs:
       # between role tiers, and it mints real session rows to get it; under the bypass
       # getCurrentUser() would return one fixed account and the suite would be asserting the
       # harness instead of the product.
+      # MAS_PERF_PROBE=1 arms the per-request query counter (AŞAMA 10) so the route N+1 step
+      # below can read it. It is a measurement flag, not a feature flag: without it
+      # /api/perf-probe answers 404 and src/lib/perf/request-metrics.ts never installs a sink.
+      # It is set HERE and nowhere else in this file.
       - name: Start production server (no QA bypass)
         env:
           DATABASE_URL: ${{ env.APP_URL }}
           APP_COMMIT_SHA: ${{ github.sha }}
+          MAS_PERF_PROBE: "1"
         run: |
           set -euo pipefail
           # nohup + disown so the server outlives THIS step. A bare `pnpm start &` is tied to the
@@ -327,6 +353,23 @@ jobs:
         env:
           MAS_E2E_DATABASE_URL: ${{ env.APP_URL }}
         run: pnpm exec playwright test tests/visual/phase17-38-routes.spec.ts
+
+      # AŞAMA 10 — per-route N+1 detector. ROUTE_SLO_BASE_URL puts route-slo in CI mode: it does
+      # NOT generate volume, build, start a server, or collect a single wall-clock number. It
+      # asserts only what is machine-independent — every critical route answers 200 on the page
+      # it is supposed to land on, issues at most MAX_QUERIES_PER_ROUTE queries, and issues the
+      # SAME number on three independent samples. A loader that starts querying inside a loop
+      # breaks this on any runner; a slow runner does not.
+      #
+      # DELIBERATELY NOT HERE: the TTFB / total-response SLO and the interactive-readiness spec.
+      # The first is wall-clock and would make CI a function of runner weather. The second has a
+      # "critical KPI visible" milestone that is DATA-dependent by construction — this database
+      # is migrated but not loaded, so there is no KPI to become visible and a green run would
+      # prove nothing. Both are measured locally and recorded as trend evidence instead:
+      # docs/release-evidence/final-production-readiness/08-performance.md
+      - name: Route query accounting / N+1 detector (AŞAMA 10)
+        run: |
+          ROUTE_SLO_BASE_URL=http://127.0.0.1:${PORT}           MIGRATION_DATABASE_URL=postgres://postgres:postgres@127.0.0.1:5432/mas_radar_e2e_verify             pnpm perf:route-slo
 
   # ── Job 7 ────────────────────────────────────────────────────────────────────────────────
   # Semantic, NOT pixel. A page that redirects to /login, renders the access-denied shell, or

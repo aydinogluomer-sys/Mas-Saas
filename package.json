@@ -33,6 +33,8 @@
     "ops:telemetry:watch": "node --import tsx scripts/ops/telemetry-watch.ts",
     "ops:telemetry:schedule": "node --import tsx scripts/ops/schedule-windows.ts --job telemetry",
     "perf:gate": "node --import tsx scripts/perf/perf-gate.ts",
+    "perf:route-slo": "node --import tsx scripts/perf/route-slo.ts",
+    "perf:write-slo": "node --import tsx scripts/perf/write-slo.ts",
     "boundary:verify": "node --import tsx scripts/boundary-verify.ts",
     "import:real": "tsx scripts/db/ensure.ts && tsx scripts/import-real.ts",
     "phase3:verify": "tsx scripts/db/ensure.ts && tsx scripts/phase3-verify.ts",
