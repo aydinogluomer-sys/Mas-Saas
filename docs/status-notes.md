@@ -4029,13 +4029,47 @@ terminalinde sırayla çalıştıracağı F (rol parolası+LOGIN) ve G (`.env.lo
 listesi + başarı/başarısızlık satırları: `docs/release-evidence/env-local-cutover-steps.md`
 (runbook'un F/G/H bölümleriyle birebir tutarlı).
 
-### 3. Gerçek DB cutover (Faz 8) — tek-onayla-başlatılabilir kontrol listesi kullanıcıda
+### 3. Gerçek DB cutover (Faz 8) — ERTELENDİ (2026-08-25, kullanıcı onayı: Seçenek 1)
 
-Claude gerçek `mas_radar_dev`'e yazmaz. A→L komutları, her adım için "başarı böyle görünür /
-başarısızlık böyle görünür" satırlarıyla `docs/release-evidence/cutover-checklist.md`'de.
-**L (rollback) provası disposable klonda KOŞULDU ve geçti:** A yedeği 1.378.292 bayt / 1.387 TOC
-girdisi; hasar enjekte edildi (checks 7→1, payment_instances 468→268); terminate→dropdb→createdb→
-pg_restore sonrası **payments=19 checks=7 payment_instances=468 ledger=87/0087 birebir** geri geldi.
+**Karar: cutover BUGÜN yapılmıyor.** Kullanıcı, çalışan production'ın uyumlu olduğu eski kodda
+(`ef00970`) kalmayı ve tam A→L kontrol listesini dinlenmiş, hazırlıklı ve koordineli ayrı bir
+oturumda birlikte yürütmeyi onayladı.
+
+**Gerekçe — bugün canlı ortamda yaşanan olay.** Kullanıcı F/G adımlarını (mas_radar_app'e LOGIN +
+`.env.local` çevirisi) **D adımı (gerçek migration) olmadan** denedi. Üç aşamalı gerçek bir arıza
+zinciri çıktı:
+
+1. `permission denied for table users` — `mas_radar_app` rolü gerçek DB'de hiç GRANT almamış,
+   çünkü GRANT'ları veren migration **0035** o veritabanına hiç uygulanmamış (ledger hâlâ 0034).
+   CONFIG ROLLBACK ile düzeltildi.
+2. **Rollback'ten sonra bile aynı hata sürdü.** Kök neden: kullanıcının PowerShell penceresinde
+   daha önce elle tanımlanmış `$env:DATABASE_URL` hâlâ aktifti ve `.env.local`'daki düzeltmeyi
+   sessizce geçersiz kılıyordu — çünkü `tsx scripts/prepare-runtime.ts` `.env.local`'ı zaten hiç
+   okumuyor. Bu, cutover'dan **bağımsız, kendi başına gerçek bir bulgudur**. Yeni PowerShell
+   penceresi + doğru `$env:DATABASE_URL` ile çözüldü.
+3. **En kritik:** `new row for relation "users" violates check constraint "users_role_check"` —
+   `release/production-readiness-hardening` dalındaki kod beş katmanlı rol modelini varsayıyor,
+   gerçek DB'nin kısıtı ise (0056 uygulanmadığı için) hâlâ yalnız `admin|operator` kabul ediyor.
+   **Bu hata bağlanılan DB kimliğinden tamamen bağımsızdır**; kod ile şema arasındaki
+   uyumsuzluğun kendisidir.
+
+Çözüm: kullanıcı `git checkout ef00970` (0034 ile uyumlu son commit) yaptı; `pnpm install` +
+`pnpm build`. Bu sırada dördüncü, önceden bilinen tuzak yüzeye çıktı:
+`Module not found: Can't resolve '@/components/data/reconciliation-table'` — `.gitignore`'un
+`data/` desenini köke sabitleyen düzeltme (`d8b7650`) **yalnız release dalında**, `ef00970`'te
+yok. Dosya `git show release/...:<yol>` ile elle geri alındı.
+
+**Sonuç:** `pnpm build && pnpm start` başarılı, `/health` → `{"status":"ok","app":"up","db":"up"}`.
+**Gerçek DB hiç zarar görmedi** — ledger=0034, payments=19, checks=7, loans=1,
+cashflow_months=35, users=12; baştan sona değişmedi, bağımsız doğrulandı.
+
+**Alınan ders (checklist'e işlendi):** cutover **bölünemez**. A→L tek koordineli oturumda
+yürütülür ve kod sürümünün hedefe geçirilmesi (**yeni C2 adımı**) D'den hemen önce yapılır.
+Dört tuzak `docs/release-evidence/cutover-checklist.md` → "Bilinen tuzaklar" bölümünde,
+"başarı/başarısızlık böyle görünür" satırlarıyla kayıtlı.
+
+A→L komutları ve L (rollback) provasının disposable klondaki sonucu aynı belgede duruyor;
+madde açık kalmaya devam ediyor — yalnız **zamanlaması** kullanıcı tarafından ertelendi.
 
 ---
 

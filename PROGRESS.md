@@ -843,3 +843,16 @@ kullanılmadı (Faz 0–7 + 11/12/14/15 boyunca) ve CI `on: push` ile her itmede
 koşuyor; eksik olan yalnız GitHub'ın "required check" zorunluluğu, sinyalin kendisi değil.
 Ayrıntı ve kalan risk: `docs/status-notes.md` → "Kullanıcı eylemi bekleniyor (Faz 1)" madde 1.
 **`CI yeşil ≠ master korumalı`** ayrımı geçerliliğini koruyor.
+
+
+---
+
+## Karar kaydı — cutover ertelendi (2026-08-25)
+
+Kullanıcı **Seçenek 1**'i onayladı: çalışan production'ın uyumlu olduğu `ef00970`'te kalınıyor,
+tam A→L cutover ayrı ve hazırlıklı bir oturuma ertelendi. Gerekçe: bugün F/G adımları D olmadan
+denendi ve üç gerçek hata çıktı (GRANT yok → `permission denied`; eski PowerShell
+`$env:DATABASE_URL` `.env.local`'ı sessizce geçersiz kılıyor; kod 0056'yı varsayarken DB 0034'te
+→ `users_role_check` ihlali). **Gerçek DB zarar görmedi** (ledger 0034, bütün sayılar değişmedi).
+Dört tuzak ve yeni **C2** adımı (kod sürümünü D'den hemen önce hedefe geçir)
+`docs/release-evidence/cutover-checklist.md`'ye işlendi.
