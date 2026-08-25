@@ -65,6 +65,13 @@ jobs:
       - name: Unit tests
         run: pnpm test
 
+      # Faz 15 — AI/integration boundary. Pure static scan (no DB, no network), so it belongs with
+      # the other source-level checks: asserts outbound network lives only in the 4 reviewed seams,
+      # the AI subtree never mutates the ledger, secrets never reach a log/console, and env is read
+      # lazily. Behavioural AI/integration coverage stays in the phase verifies (phase12a/37/38).
+      - name: AI/integration boundary gate (Faz 15)
+        run: pnpm boundary:verify
+
   # ── Job 2 ────────────────────────────────────────────────────────────────────────────────
   database-migration:
     runs-on: ubuntu-latest

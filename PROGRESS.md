@@ -756,3 +756,79 @@ Kapı seçici okuma yollarını ve indeks hijyenini gate'liyor. **Yazma yolu SLO
 gecikmesi) ve **route-seviyesi uçtan uca HTTP gecikmesi** bu kapının konusu değil; okuma planı +
 indeks hijyeni + felaket eşiği kapsanıyor. İndekssiz 115 FK bir cırcırla tutuluyor, hepsi indekslenmedi
 (çoğu küçük/soğuk tablolarda; write-maliyeti okuma faydasını aşardı ve read hot-path'ler zaten kapsanmış).
+
+
+---
+
+## Faz 15 — AI ve entegrasyon sınırı (boundary gate)
+
+| Alan | Değer |
+|---|---|
+| **Durum** | **PASS** |
+| Timestamp (UTC) | 2026-08-25 |
+| DB sınıfı | **YOK** — saf statik kaynak taraması (DB yok, ağ yok) |
+| Gerçek DB yazımı | **YOK** |
+| Komut | `pnpm boundary:verify` |
+
+### Ne teslim edildi
+
+Diğer kapılar "kod çalışınca doğru mu" diye sorar; bu kapı çalıştırmanın güvenilir cevaplayamadığı
+**yapısal** soruyu sorar: finansal veri incelenmemiş bir yoldan süreçten çıkabilir mi, bir sır bir
+log'a/audit'e/client bundle'a kaçabilir mi? Bunlar kaynağın özellikleri, o yüzden kaynağa karşı —
+statik, DB'siz, ağsız — kontrol edilir ve `static` CI job'unda yaşar. `scripts/boundary-verify.ts`.
+
+Kod tabanının yorumlarda zaten savunduğu kararların yazılı hâli: integrations/types.ts "hiçbir
+entegrasyon ağa kendi başına ulaşamaz" (ctx.http seam), ai/engine.ts "model yalnız mutationIntent +
+AI_FORCE_DETERMINISTIC arkasında ve AI yalnız kendi snapshot log'una yazar", transport/fx-provider
+"env tembel okunur, process.env'e yalnız tek seam dokunur". Bir yorum umuttur; bunlar iddiaya çevrildi.
+
+### Ampirik temel — tüm çıkış noktaları sayıldı
+
+Repo-geneli tarama: src'de yalnız **5 `fetch(`** var, hepsi 4 tasarlanmış sınır modülünde:
+ai/engine.ts (OpenAI), fx/provider.ts (TCMB), integrations/types.ts (realHttpClient seam),
+reminders/transport.ts (Telegram+email). connectors.ts ağa yalnız ctx.http ile ulaşır (doğrudan
+fetch yok). process.env yalnız env.ts (doğrulanmış kaynak) + integrations/types.ts readCredential
+(isimle-okuma seam)'de. assistant/engine.ts yalnız log tablolarına yazar (assistant_conversations,
+ai_response_snapshots) — finansal tabloya değil.
+
+### Sekiz iddia
+
+A. Ağ çıkışı yalnız izinli 4 modülde (dışarı fetch/ws/raw-http; same-origin `/api/...` serbest).
+B. Sınır modülleri process.env'e dokunmaz (yalnız env.ts + readCredential seam).
+C. ai/engine + reminders/transport env'i **tembel** okur (üst-seviye `@/lib/env` importu yok).
+D. AI/asistan/arama alt ağacı finansal tabloları **mutasyona uğratmaz**.
+E. env/process.env nesnesi hiçbir yerde `JSON.stringify` ile basılmaz (kayıtlı kural).
+F. Sınır modüllerinde `console.*` çağrısı sır (token/apiKey/credential/Bearer) taşımaz.
+G. ai/engine kill switch (aiForceDeterministic) + mutationIntent kapısı yerinde (regresyon guard'ı).
+H. Muhasebe konnektörü kalıcı reddediyor (vendor seçilmedi; ACCOUNTING_PENDING_REASON + permanent:true).
+
+### Kapının kendisinde bulunan iki şey (çalıştırarak)
+
+1. **Yorum içi false-positive:** B ilk koşuda transport.ts'in KENDİ yorumunu ("this file never
+   touches process.env") işaretledi. Naif `//` sıyırma `https://` URL'lerini bozacağı için tam
+   yorum satırları (satır-başı `//`, jsdoc `*`, `/* */` bloğu) atlanacak şekilde tarayıcı düzeltildi.
+2. **Anti-totoloji (negatif kontrol):** src/lib/ai altına geçici bir dosya kondu (dış fetch +
+   process.env + `insert into public.payments` + `JSON.stringify(process.env)` + console'da token).
+   Kapı **3/8 ile düştü**, tam beş ihlali (A,B,D,E,F) adıyla bildirdi; dosya silinince **8/8**.
+
+### CI
+
+`static` job'una "AI/integration boundary gate (Faz 15)" adımı eklendi (`pnpm boundary:verify`).
+DB/ağ gerektirmez. Davranışsal AI/entegrasyon kanıtı phase verify'larında kalır (phase12a/37/38).
+package.json: `boundary:verify`.
+
+### Doğrulama — gerçek çıktı (exit code + sayı)
+
+| Kontrol | Komut | Sonuç |
+|---|---|---|
+| Typecheck | `pnpm typecheck` | **exit 0** |
+| Temiz kaynak | `pnpm boundary:verify` | **8/8**, exit 0 |
+| Negatif kontrol (enjekte ihlal) | geçici dosyayla | **3/8, exit 1** (A,B,D,E,F) |
+
+### Sınır — dürüstçe
+
+Statik kapı **yapıyı** kanıtlar: sırların nereden çıkabileceğini ve AI'ın ne yazamayacağını.
+Konnektörlerin/transport'ların GERÇEK istek kurulumu ve davranışı (mockHttpClient/mockTransport ile)
+phase37/phase6b/phase25/phase38 verify'larında iki yönlü kapatıldı; bu kapı onların yerine geçmez,
+üstüne yapısal bir katman koyar. Canlı endpoint'e karşı test hâlâ yok (ortamda ağ yok) — bu, sınır
+modüllerinin başından beri belgelediği dürüst limit.

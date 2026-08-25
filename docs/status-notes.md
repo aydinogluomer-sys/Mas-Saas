@@ -4083,3 +4083,28 @@ Faz 33 ölçüm araçları (`measure.ts`/`index-audit.ts`/`volume.ts`) sıralıy
 - Doğrulama: typecheck 0 · sağlıklı şema **10/10 exit 0** · negatif kontrol **9/10 exit 1**.
 - Sınır: yazma-yolu SLO'su ve route-seviyesi HTTP gecikmesi kapsam dışı (okuma planı + indeks hijyeni
   + felaket eşiği kapsanıyor); 115 FK cırcırla tutuluyor, hepsi indekslenmedi (write-maliyeti).
+
+---
+
+## Faz 15 — AI ve entegrasyon sınırı (boundary gate) — DONE
+
+`scripts/boundary-verify.ts` — saf statik kaynak taraması (DB yok, ağ yok), `static` CI job'unda.
+Kod tabanının yorumlarda savunduğu sınır kararlarını iddiaya çevirdi.
+
+- **Ampirik temel:** repo-geneli src'de yalnız 5 `fetch(` var, hepsi 4 tasarlanmış sınır modülünde
+  (ai/engine, fx/provider, integrations/types [realHttpClient seam], reminders/transport). connectors
+  ağa yalnız ctx.http ile ulaşır. process.env yalnız env.ts + readCredential seam'inde. assistant
+  yalnız log tablolarına yazar.
+- **8 iddia:** (A) ağ çıkışı yalnız izinli 4 modülde (B) sınır modülleri process.env'e dokunmaz
+  (C) ai/engine + transport env'i tembel okur (D) AI/asistan/arama finansal tabloları mutasyona
+  uğratmaz (E) `JSON.stringify(env)` hiçbir yerde yok (F) console'da sır yok (G) kill switch +
+  mutationIntent yerinde (H) muhasebe konnektörü kalıcı reddediyor.
+- **Kapının kendisinde bulunan iki şey:** (1) yorum-içi false positive → naif `//` sıyırma
+  `https://`'i bozacağı için tam yorum satırları atlanacak şekilde düzeltildi; (2) **anti-totoloji:**
+  src/lib/ai altına geçici ihlal dosyası (dış fetch + process.env + `insert into payments` +
+  `JSON.stringify(process.env)` + console'da token) → kapı **3/8 / exit 1**, beş ihlali adıyla
+  bildirdi; silinince **8/8**.
+- **CI:** `static` job'una `boundary:verify` adımı (DB/ağ gerektirmez). package.json: `boundary:verify`.
+- Doğrulama: typecheck 0 · temiz kaynak **8/8 exit 0** · negatif kontrol **3/8 exit 1**.
+- Sınır: statik kapı YAPIYI kanıtlar; konnektör/transport'un gerçek istek kurulumu + davranışı
+  phase37/6b/25/38'de mock'larla iki yönlü kapalı; canlı endpoint testi yok (ortamda ağ yok).
