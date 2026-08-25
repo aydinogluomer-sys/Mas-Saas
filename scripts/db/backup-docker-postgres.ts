@@ -68,6 +68,27 @@ export interface RestoreVerificationResult {
 
 const CRITICAL_TABLES = ["payment_instances", "payments", "audit_logs", "schema_migrations"] as const;
 
+export interface PgToolVersions {
+  pgVersion: string;
+  pgDumpVersion: string;
+}
+
+/** AŞAMA 07 (rehber §12 Bölüm A). Sunucu ve `pg_dump` sürümlerini container'dan ÖLÇER.
+ * Makbuza yazılırlar çünkü kurtarma anında elde başka bir kayıt yoktur: 16.14 ile yazılmış
+ * bir arşivin daha eski bir `pg_restore` ile yüklenebileceği garanti değildir ve bunu
+ * felaket gününde keşfetmek, yedeği hiç almamış olmakla aynı kapıya çıkar. */
+export function readPgToolVersions(container: string, dbName: string): PgToolVersions {
+  const pgVersion = execFileSync(
+    "docker",
+    ["exec", container, "psql", "-U", "postgres", "-d", dbName, "-tAc", "select version()"],
+    { encoding: "utf8" },
+  ).trim();
+  const pgDumpVersion = execFileSync("docker", ["exec", container, "pg_dump", "--version"], {
+    encoding: "utf8",
+  }).trim();
+  return { pgVersion, pgDumpVersion };
+}
+
 export interface BackupTargetVerification {
   container: string;
   dbName: string;

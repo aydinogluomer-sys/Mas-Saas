@@ -29,7 +29,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { Pool } from "pg";
-import { backupDockerPostgres, verifyBackupTarget, type BackupOptions, type BackupResult, type BackupTargetVerification, type BackupTargetVerificationResult } from "./backup-docker-postgres";
+import { backupDockerPostgres, readPgToolVersions, verifyBackupTarget, type BackupOptions, type BackupResult, type BackupTargetVerification, type BackupTargetVerificationResult } from "./backup-docker-postgres";
 import {
   BackupReceiptSchema,
   CANONICALIZATION_VERSION,
@@ -110,6 +110,9 @@ export interface BackupReceiptDeps {
   queryTcpIdentity: () => Promise<{ databaseName: string; systemIdentifier: string }>;
   queryLedger: () => Promise<{ ledgerCount: number; lastMigrationVersion: string }>;
   readDbTimestamp: () => Promise<string>;
+  /** AŞAMA 07: sunucu ve pg_dump sürümleri, container'dan ÖLÇÜLEREK. Varsayılan gerçek
+   * `docker exec` okumasıdır; enjeksiyon seam'i yalnız testler içindir. */
+  readVersions?: () => { pgVersion: string; pgDumpVersion: string };
 }
 
 export interface BackupReceiptOutcome {
@@ -127,6 +130,7 @@ export async function runBackupReceipt(params: BackupReceiptParams, deps: Backup
   const gitStateProvider = deps.gitStateProvider ?? REAL_GIT_STATE_PROVIDER;
   const verifyTarget = deps.verifyTarget ?? verifyBackupTarget;
   const runBackup = deps.runBackup ?? backupDockerPostgres;
+  const readVersions = deps.readVersions ?? (() => readPgToolVersions(params.container, params.expectedDatabaseName));
 
   const preGitState = assertExpectedCleanGitState(
     { branch: params.expectedGitBranch, head: params.expectedGitHead },
@@ -142,6 +146,10 @@ export async function runBackupReceipt(params: BackupReceiptParams, deps: Backup
   }
 
   const ledger = await deps.queryLedger();
+  // Sürümler dump'tan ÖNCE okunur: makbuz, arşivi üreten araçların o andaki sürümünü
+  // anlatmalı — dump bittikten sonra okunan bir sürüm, arada değişen bir container'da
+  // yanlış şeyi anlatırdı.
+  const versions = readVersions();
 
   // Pre-dump: prove the Docker container backupDockerPostgres will pg_dump against is the
   // SAME cluster this TCP connection just queried — not a same-named database on a
@@ -214,6 +222,8 @@ export async function runBackupReceipt(params: BackupReceiptParams, deps: Backup
         dumpVerification: backupResult.dumpVerification,
         dumpDurability: backupResult.dumpDurability,
         receiptDurability,
+        pgVersion: versions.pgVersion,
+        pgDumpVersion: versions.pgDumpVersion,
       };
       const parsed = BackupReceiptSchema.safeParse(receipt);
       if (!parsed.success) {
