@@ -135,6 +135,83 @@ export const PAYMENT_DAY_FLAGS = Object.freeze({
     "P-D 90.000 ödenmiş olduğu için large'ı tetiklemez — bu vakanın asıl kanıtı budur.",
 } as const);
 
+export const PAYMENT_THRESHOLD_BOUNDARY = Object.freeze({
+  id: "FIN-PAY-04",
+  area: "payment",
+  description:
+    "Gün eşiklerinin TAM SINIRI. dayFlags karşılaştırması '>=' olduğu için eşiğin tam " +
+    "üstünde oturan gün bayrağı TETİKLER; bir kuruş altı tetiklemez. Ayrıca kritik eşiği " +
+    "tek kalemle değil, günün TOPLAMIYLA da tetiklenebilir — asıl sınav orasıdır.",
+  input: {
+    thresholds: { large: 50_000, critical: 250_000, clusterCount: 3 },
+    // 1) tek kalem tam kritik eşiğinde
+    criticalExactly: [{ id: "B-1", dueDate: "2026-09-10", amount: 250_000.0, status: "unpaid" }],
+    // 2) tek kalem kritik eşiğinin bir kuruş altında
+    criticalOneKurusBelow: [
+      { id: "B-2", dueDate: "2026-09-10", amount: 249_999.99, status: "unpaid" },
+    ],
+    // 3) tek kalem tam büyük-ödeme eşiğinde
+    largeExactly: [{ id: "B-3", dueDate: "2026-09-10", amount: 50_000.0, status: "unpaid" }],
+    // 4) tek kalem büyük-ödeme eşiğinin bir kuruş altında
+    largeOneKurusBelow: [
+      { id: "B-4", dueDate: "2026-09-10", amount: 49_999.99, status: "unpaid" },
+    ],
+    // 5) hiçbir kalem tek başına kritik değil ama GÜN TOPLAMI kuruşu kuruşuna eşikte
+    criticalBySumExactly: [
+      { id: "B-5a", dueDate: "2026-09-10", amount: 173_885.27, status: "unpaid" },
+      { id: "B-5b", dueDate: "2026-09-10", amount: 21_752.99, status: "unpaid" },
+      { id: "B-5c", dueDate: "2026-09-10", amount: 47_810.9, status: "unpaid" },
+      { id: "B-5d", dueDate: "2026-09-10", amount: 6_550.84, status: "unpaid" },
+    ],
+    // 6) aynı gün, son kalem bir kuruş eksik
+    criticalBySumOneKurusBelow: [
+      { id: "B-6a", dueDate: "2026-09-10", amount: 173_885.27, status: "unpaid" },
+      { id: "B-6b", dueDate: "2026-09-10", amount: 21_752.99, status: "unpaid" },
+      { id: "B-6c", dueDate: "2026-09-10", amount: 47_810.9, status: "unpaid" },
+      { id: "B-6d", dueDate: "2026-09-10", amount: 6_550.83, status: "unpaid" },
+    ],
+  },
+  expected: {
+    criticalExactly: {
+      count: 1, knownSum: 250_000.0, cluster: false, large: true, critical: true,
+    },
+    criticalOneKurusBelow: {
+      count: 1, knownSum: 249_999.99, cluster: false, large: true, critical: false,
+    },
+    largeExactly: {
+      count: 1, knownSum: 50_000.0, cluster: false, large: true, critical: false,
+    },
+    largeOneKurusBelow: {
+      count: 1, knownSum: 49_999.99, cluster: false, large: false, critical: false,
+    },
+    criticalBySumExactly: {
+      count: 4, knownSum: 250_000.0, cluster: true, large: true, critical: true,
+    },
+    criticalBySumOneKurusBelow: {
+      count: 4, knownSum: 249_999.99, cluster: true, large: true, critical: false,
+    },
+    /**
+     * 5. vakadaki dört tutar float `+=` ile toplanırsa ölçülen değer budur — kuruşun
+     * yüz milyarda biri kadar EKSİK, ve tam da bu yüzden `>= 250.000` karşılaştırmasını
+     * düşürüp günü kritik olmaktan çıkarır. Cevabın kendisi değişir, gösterilen hane değil.
+     */
+    criticalBySumIfFloatAccumulated: 249_999.99999999997,
+    criticalBySumWouldBeCriticalIfFloat: false,
+  },
+  derivation:
+    "dayFlags kaynağı: large = open.some(amount >= t.large), " +
+    "critical = open.some(amount >= t.critical) || knownSum >= t.critical. İki karşılaştırma " +
+    "da '>=' — yani TAM EŞİK BAYRAK ÜRETİR, '>' değil. " +
+    "1) 250.000,00 >= 250.000 → kritik VAR; aynı kalem 50.000 eşiğini de geçtiği için large da VAR. " +
+    "2) 249.999,99 >= 250.000 yanlış → kritik YOK; 249.999,99 >= 50.000 doğru → large VAR. " +
+    "3) 50.000,00 >= 50.000 → large VAR; 50.000 >= 250.000 yanlış → kritik YOK. " +
+    "4) 49.999,99 >= 50.000 yanlış → large YOK, kritik YOK. " +
+    "5) 173.885,27 + 21.752,99 = 195.638,26 ; + 47.810,90 = 243.449,16 ; + 6.550,84 = 250.000,00. " +
+    "Hiçbir kalem tek başına 250.000 değil, ama gün toplamı tam eşikte → kritik VAR. " +
+    "Kümelenme 4 >= 3 → VAR; 173.885,27 >= 50.000 → large VAR. " +
+    "6) Son kalem 6.550,83 → toplam 249.999,99 < 250.000 → kritik YOK, diğer bayraklar aynı.",
+} as const);
+
 export const PAYMENT_RISK_LADDER = Object.freeze({
   id: "FIN-PAY-03",
   area: "payment",
@@ -587,6 +664,77 @@ export const LOAN_NULL_NOT_ZERO = Object.freeze({
     "'finance_cost_mismatch' uydurulurdu. Böyle bir bayrak ÇIKMAMALI — bu vakanın kanıtı budur.",
 } as const);
 
+export const LOAN_TOLERANCE_BOUNDARY = Object.freeze({
+  id: "FIN-LOAN-05",
+  area: "loan",
+  description:
+    "Kredi mutabakat toleransının TAM SINIRI. Karşılaştırma '|fark| > 1' olduğu için tam " +
+    "1,00 TL bayraklanmaz, 1,01 TL bayraklanır. Sınırın iki yanı da hem Σtaksit hem " +
+    "finansman maliyeti kontrolü için çivilendi ki tolerans sessizce genişlemesin.",
+  input: {
+    installmentExactlyOneLira: {
+      installmentSum: 1_250_001.0,
+      totalPayment: 1_250_000.0,
+      principal: 1_000_000.0,
+      financeCost: 250_000.0,
+    },
+    installmentOneKurusOver: {
+      installmentSum: 1_250_001.01,
+      totalPayment: 1_250_000.0,
+      principal: 1_000_000.0,
+      financeCost: 250_000.0,
+    },
+    financeCostExactlyOneLira: {
+      installmentSum: 1_250_000.0,
+      totalPayment: 1_250_000.0,
+      principal: 1_000_000.0,
+      financeCost: 249_999.0,
+    },
+    financeCostOneKurusOver: {
+      installmentSum: 1_250_000.0,
+      totalPayment: 1_250_000.0,
+      principal: 1_000_000.0,
+      financeCost: 249_998.99,
+    },
+  },
+  expected: {
+    installmentExactlyOneLira: { ok: true, issueCount: 0 },
+    installmentOneKurusOver: {
+      ok: false,
+      issueCount: 1,
+      code: "installment_sum_mismatch",
+      message: "Σtaksit 1250001.01 ≠ toplam ödeme 1250000.00 (fark 1.01)",
+      diffFormatted: "1.01",
+      /**
+       * Ham fark bir float artefaktıdır: 1.250.001,01 − 1.250.000,00 IEEE-754'te tam 1,01
+       * vermez. Sapma kuruşun on milyarda biri mertebesindedir, tolerans ise 1 TL — yani
+       * karar bundan ETKİLENMEZ, ama gizlemek yerine yazıyoruz.
+       */
+      diffFloatArtifact: 1.0100000000093132,
+    },
+    financeCostExactlyOneLira: { ok: true, issueCount: 0 },
+    financeCostOneKurusOver: {
+      ok: false,
+      issueCount: 1,
+      code: "finance_cost_mismatch",
+      message: "toplam − anapara ≠ fark (sapma 1.01)",
+      diffFormatted: "1.01",
+      diffFloatArtifact: 1.0100000000093132,
+    },
+  },
+  derivation:
+    "reconcileLoan kaynağı: her iki kontrol de `if (Math.abs(diff) > tol)` — tol = 1 TL. " +
+    "'>' olduğu için TAM 1,00 sınırda BAYRAKLANMAZ. " +
+    "1) Σtaksit 1.250.001,00 − 1.250.000,00 = +1,00 ; |1| > 1 yanlış → sorun yok. " +
+    "İkinci kontrol 1.250.000 − 1.000.000 − 250.000 = 0 → temiz. Toplam 0 sorun. " +
+    "2) Σtaksit 1.250.001,01 − 1.250.000,00 = +1,01 ; |1,01| > 1 doğru → tek bayrak. " +
+    "3) toplam − anapara − fark = 1.250.000 − 1.000.000 − 249.999 = +1,00 → sınırda, bayrak yok " +
+    "(Σtaksit kontrolü de temiz: 1.250.000 = 1.250.000). " +
+    "4) 1.250.000 − 1.000.000 − 249.998,99 = +1,01 > 1 → tek bayrak, finance_cost_mismatch. " +
+    "Mesajlardaki tutarlar kaynak koddaki toFixed(2) biçimidir; fonksiyon hiçbir değeri " +
+    "DÜZELTMEZ, yalnız bildirir.",
+} as const);
+
 /* ════════════════════════════════════════════════════════════════════════════════════════
    receivable — yaşlandırma özeti, DSO, cari hesap
    ════════════════════════════════════════════════════════════════════════════════════════ */
@@ -780,8 +928,11 @@ export const FX_LONG_POSITION = Object.freeze({
   derivation:
     "Defter değeri = 250.000 × 32,15 = 8.037.500,00. " +
     "Güncel değer = 250.000 × 34,75 = 8.687.500,00. " +
-    "Gerçekleşmemiş kâr = 250.000 × (34,75 − 32,15) = 250.000 × 2,60 = 650.000,00 " +
-    "(= 8.687.500 − 8.037.500, aynı sayı). " +
+    "Gerçekleşmemiş kâr = 250.000 × (34,75 − 32,15) = 250.000 × 2,60 = 650.000,00 ; " +
+    "aynı sonuca 8.687.500 − 8.037.500 farkından da varılır. İki yol ONDALIK aritmetikte " +
+    "birbirinin aynıdır — IEEE-754'te DEĞİLDİR: çarpım yolu float ile 650000.0000000003, " +
+    "çıkarma yolu 650000 verir (ölçüldü; 34.75 − 32.15 float'ta 2.6000000000000014'tür). " +
+    "Beklenen literal 650.000,00'dır, yani ondalık yolun verdiği değerdir. " +
     "Uzun pozisyon kurun DÜŞMESİNDEN zarar eder → ters yön −%20 → " +
     "8.687.500 × (−0,20) = −1.737.500,00.",
 } as const);
@@ -1437,6 +1588,158 @@ export const CONCENTRATION_RISK = Object.freeze({
     "Sıralama tutara göre azalan.",
 } as const);
 
+export const CONCENTRATION_THRESHOLD_BOUNDARY = Object.freeze({
+  id: "FIN-CON-02",
+  area: "receivable",
+  description:
+    "Yoğunlaşma eşiğinin TAM SINIRI. Karşılaştırma 'oran > 0,40' olduğu için tam %40 " +
+    "BAYRAKLANMAZ, bir kuruş fazlası bayraklanır. Sınırdaki müşterinin tutarı üç satırdan " +
+    "birikir: aynı birikim float ile yapılsaydı oran 0,4000000000000001 çıkıp tam sınırdaki " +
+    "müşteriyi HAKSIZ YERE bayraklardı — bu vaka ondalık birikimin bekçisidir.",
+  input: {
+    // A'nın üç satırı kuruşu kuruşuna 400.000,00 eder; bilinen toplam tam 1.000.000,00.
+    exactlyForty: [
+      { key: "Müşteri A", amount: 159_785.98 },
+      { key: "Müşteri A", amount: 137_818.07 },
+      { key: "Müşteri A", amount: 102_395.95 },
+      { key: "Müşteri B", amount: 350_000.0 },
+      { key: "Müşteri C", amount: 250_000.0 },
+    ],
+    // Aynı kurgu, A'nın son satırı bir kuruş fazla; B bir kuruş eksik → toplam yine 1.000.000,00.
+    oneKurusAbove: [
+      { key: "Müşteri A", amount: 159_785.98 },
+      { key: "Müşteri A", amount: 137_818.07 },
+      { key: "Müşteri A", amount: 102_395.96 },
+      { key: "Müşteri B", amount: 349_999.99 },
+      { key: "Müşteri C", amount: 250_000.0 },
+    ],
+    flagRatio: 0.4,
+  },
+  expected: {
+    exactlyForty: {
+      knownTotal: 1_000_000.0,
+      unknownCount: 0,
+      entries: [
+        { key: "Müşteri A", sum: 400_000.0, ratio: 0.4, flagged: false },
+        { key: "Müşteri B", sum: 350_000.0, ratio: 0.35, flagged: false },
+        { key: "Müşteri C", sum: 250_000.0, ratio: 0.25, flagged: false },
+      ],
+      flaggedCount: 0,
+    },
+    oneKurusAbove: {
+      knownTotal: 1_000_000.0,
+      unknownCount: 0,
+      entries: [
+        { key: "Müşteri A", sum: 400_000.01, ratio: 0.40000001, flagged: true },
+        { key: "Müşteri B", sum: 349_999.99, ratio: 0.34999999, flagged: false },
+        { key: "Müşteri C", sum: 250_000.0, ratio: 0.25, flagged: false },
+      ],
+      flaggedCount: 1,
+    },
+    /** A'nın üç satırı float `+=` ile toplandığında ölçülen değer ve ondan doğan oran. */
+    exactlyFortyIfFloatAccumulated: { sum: 400_000.00000000006, ratio: 0.4000000000000001 },
+    /** Float yol tam sınırdaki müşteriyi bayraklardı; ondalık yol bayraklamıyor. */
+    exactlyFortyWouldFlagIfFloat: true,
+  },
+  derivation:
+    "concentration kaynağı: `.map((e) => ({ ...e, flagged: e.ratio > flagRatio }))` — '>' , " +
+    "'>=' DEĞİL. Yani tam 0,40 bayraklanmaz. " +
+    "A = 159.785,98 + 137.818,07 = 297.604,05 ; + 102.395,95 = 400.000,00. " +
+    "Bilinen toplam = 400.000,00 + 350.000,00 + 250.000,00 = 1.000.000,00. " +
+    "A oranı = 400.000/1.000.000 = 0,40 ; 0,40 > 0,40 yanlış → BAYRAK YOK. " +
+    "B = 0,35 ; C = 0,25 → hiçbiri bayraklanmaz, flaggedCount = 0. " +
+    "Bir kuruş üstü: A = 400.000,01 → 0,40000001 > 0,40 → BAYRAK; B = 349.999,99 → 0,34999999 ; " +
+    "C = 0,25 → tam olarak BİR bayrak. " +
+    "Aynı A toplamı float ile: 159785.98 + 137818.07 + 102395.95 = 400000.00000000006 (ölçüldü), " +
+    "bölüm 0,4000000000000001 > 0,40 → tam sınırdaki müşteri haksız yere bayraklanırdı. " +
+    "Sıralama tutara göre azalan: A, B, C.",
+} as const);
+
+export const EXPOSURE_THRESHOLD_BOUNDARY = Object.freeze({
+  id: "FIN-EXP-01",
+  area: "check",
+  description:
+    "Banka maruziyeti eşiğinin TAM SINIRI. exposureBy, concentration ile AYNI algoritmayı " +
+    "aynı 0,40 eşiğiyle koşturur; bu vaka iki fonksiyonun sınırda aynı cevabı verdiğini " +
+    "çiviler. Giriş ve çıkış ayrı birikir, maruziyet ikisinin toplamıdır.",
+  input: {
+    exactlyForty: [
+      { key: "HALK", amount: 159_785.98, direction: "outflow" },
+      { key: "HALK", amount: 137_818.07, direction: "outflow" },
+      { key: "HALK", amount: 102_395.95, direction: "inflow" },
+      { key: "DENİZ", amount: 350_000.0, direction: "outflow" },
+      { key: "ZİRAAT", amount: 250_000.0, direction: "outflow" },
+    ],
+    oneKurusAbove: [
+      { key: "HALK", amount: 159_785.98, direction: "outflow" },
+      { key: "HALK", amount: 137_818.07, direction: "outflow" },
+      { key: "HALK", amount: 102_395.96, direction: "inflow" },
+      { key: "DENİZ", amount: 349_999.99, direction: "outflow" },
+      { key: "ZİRAAT", amount: 250_000.0, direction: "outflow" },
+    ],
+    flagRatio: 0.4,
+  },
+  expected: {
+    exactlyForty: {
+      knownTotal: 1_000_000.0,
+      unknownCount: 0,
+      entries: [
+        {
+          key: "HALK", outflowSum: 297_604.05, inflowSum: 102_395.95,
+          total: 400_000.0, ratio: 0.4, flagged: false,
+        },
+        {
+          key: "DENİZ", outflowSum: 350_000.0, inflowSum: 0,
+          total: 350_000.0, ratio: 0.35, flagged: false,
+        },
+        {
+          key: "ZİRAAT", outflowSum: 250_000.0, inflowSum: 0,
+          total: 250_000.0, ratio: 0.25, flagged: false,
+        },
+      ],
+      flaggedCount: 0,
+    },
+    oneKurusAbove: {
+      knownTotal: 1_000_000.0,
+      unknownCount: 0,
+      entries: [
+        {
+          key: "HALK", outflowSum: 297_604.05, inflowSum: 102_395.96,
+          total: 400_000.01, ratio: 0.40000001, flagged: true,
+        },
+        {
+          key: "DENİZ", outflowSum: 349_999.99, inflowSum: 0,
+          total: 349_999.99, ratio: 0.34999999, flagged: false,
+        },
+        {
+          key: "ZİRAAT", outflowSum: 250_000.0, inflowSum: 0,
+          total: 250_000.0, ratio: 0.25, flagged: false,
+        },
+      ],
+      flaggedCount: 1,
+    },
+    /** Float `+=` ile ölçülen: çıkış toplamı da, maruziyet toplamı da sürükleniyor. */
+    exactlyFortyIfFloatAccumulated: {
+      outflowSum: 297_604.05000000005,
+      total: 400_000.00000000006,
+      ratio: 0.4000000000000001,
+    },
+    exactlyFortyWouldFlagIfFloat: true,
+  },
+  derivation:
+    "exposureBy kaynağı: `.map((e) => ({ ...e, flagged: e.ratio > flagRatio }))` — " +
+    "concentration ile birebir aynı karşılaştırma, '>' . " +
+    "HALK çıkış = 159.785,98 + 137.818,07 = 297.604,05 ; giriş = 102.395,95 ; " +
+    "maruziyet = 297.604,05 + 102.395,95 = 400.000,00. " +
+    "Bilinen toplam = 400.000,00 + 350.000,00 + 250.000,00 = 1.000.000,00 (maruziyet iki yönü " +
+    "de mutlak değeriyle sayar). " +
+    "HALK oranı = 0,40 ; 0,40 > 0,40 yanlış → BAYRAK YOK. DENİZ 0,35 ; ZİRAAT 0,25. " +
+    "Bir kuruş üstü: HALK girişi 102.395,96 → maruziyet 400.000,01 → 0,40000001 > 0,40 → BAYRAK; " +
+    "DENİZ 349.999,99 → 0,34999999 → bayrak yok. Tam olarak BİR bayrak. " +
+    "Float ölçümü: çıkış 297604.05000000005, toplam 400000.00000000006, oran 0,4000000000000001 " +
+    "→ tam sınırdaki banka haksız yere bayraklanırdı.",
+} as const);
+
 /* ════════════════════════════════════════════════════════════════════════════════════════
    precision — rehber §13 "Precision" listesi
    ════════════════════════════════════════════════════════════════════════════════════════ */
@@ -1533,6 +1836,7 @@ export const GOLDEN_CASE_INDEX: ReadonlyArray<{ id: string; area: GoldenArea }> 
   { id: PAYMENT_DUE_DAY_31.id, area: PAYMENT_DUE_DAY_31.area },
   { id: PAYMENT_DAY_FLAGS.id, area: PAYMENT_DAY_FLAGS.area },
   { id: PAYMENT_RISK_LADDER.id, area: PAYMENT_RISK_LADDER.area },
+  { id: PAYMENT_THRESHOLD_BOUNDARY.id, area: PAYMENT_THRESHOLD_BOUNDARY.area },
   { id: INVOICE_LINE_TOTALS.id, area: INVOICE_LINE_TOTALS.area },
   { id: INVOICE_PARTIAL_PAYMENT.id, area: INVOICE_PARTIAL_PAYMENT.area },
   { id: INVOICE_OVERPAYMENT.id, area: INVOICE_OVERPAYMENT.area },
@@ -1547,6 +1851,7 @@ export const GOLDEN_CASE_INDEX: ReadonlyArray<{ id: string; area: GoldenArea }> 
   { id: LOAN_RECONCILIATION_OK.id, area: LOAN_RECONCILIATION_OK.area },
   { id: LOAN_RECONCILIATION_MISMATCH.id, area: LOAN_RECONCILIATION_MISMATCH.area },
   { id: LOAN_NULL_NOT_ZERO.id, area: LOAN_NULL_NOT_ZERO.area },
+  { id: LOAN_TOLERANCE_BOUNDARY.id, area: LOAN_TOLERANCE_BOUNDARY.area },
   { id: RECEIVABLE_AGEING_SUMMARY.id, area: RECEIVABLE_AGEING_SUMMARY.area },
   { id: RECEIVABLE_DSO.id, area: RECEIVABLE_DSO.area },
   { id: RECEIVABLE_RUNNING_BALANCE.id, area: RECEIVABLE_RUNNING_BALANCE.area },
@@ -1577,6 +1882,8 @@ export const GOLDEN_CASE_INDEX: ReadonlyArray<{ id: string; area: GoldenArea }> 
   { id: COSTING_PROFITABILITY.id, area: COSTING_PROFITABILITY.area },
   { id: COSTING_CASH_CYCLE.id, area: COSTING_CASH_CYCLE.area },
   { id: CONCENTRATION_RISK.id, area: CONCENTRATION_RISK.area },
+  { id: CONCENTRATION_THRESHOLD_BOUNDARY.id, area: CONCENTRATION_THRESHOLD_BOUNDARY.area },
+  { id: EXPOSURE_THRESHOLD_BOUNDARY.id, area: EXPOSURE_THRESHOLD_BOUNDARY.area },
   { id: PRECISION_ROUNDING_DIRECTION.id, area: PRECISION_ROUNDING_DIRECTION.area },
   { id: PRECISION_LARGE_AMOUNTS.id, area: PRECISION_LARGE_AMOUNTS.area },
   { id: PRECISION_MANY_ADDITIONS.id, area: PRECISION_MANY_ADDITIONS.area },

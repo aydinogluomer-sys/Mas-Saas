@@ -11,5 +11,10 @@ export default defineConfig({
     globals: true,
     environment: "node",
     include: ["src/**/*.test.{ts,tsx}", "tests/**/*.test.{ts,tsx}"],
+    // QA-F7: jsdom'u worker çatallanmadan önce, süre sınırı olmayan aşamada bir kez yükler.
+    // Gerekçe ve ölçümler dosyanın kendi başlığında; özet: jsdom ortam kurulumu vitest'in
+    // SABİT KODLU 60 sn'lik worker açılış bütçesi içinde koşuyor ve soğuk dosya önbelleğinde
+    // (bu makinede 71 sn ölçüldü) o bütçeyi aşıp süiti rastgele kırmızıya düşürüyordu.
+    globalSetup: ["./tests/setup/warm-dom-environment.ts"],
   },
 });

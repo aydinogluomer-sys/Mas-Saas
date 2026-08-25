@@ -71,6 +71,7 @@ import {
   type RiskReason,
 } from "@/lib/radar/rules";
 import {
+  exposureBy,
   groupMaturities,
   maturityWindows,
   reconcileLoan,
@@ -104,9 +105,11 @@ import {
   CHECK_MATURITY_WINDOWS,
   CHECK_SIGNED_DIRECTION,
   CONCENTRATION_RISK,
+  CONCENTRATION_THRESHOLD_BOUNDARY,
   COSTING_ALLOCATION_REMAINDER,
   COSTING_CASH_CYCLE,
   COSTING_PROFITABILITY,
+  EXPOSURE_THRESHOLD_BOUNDARY,
   FACILITY_MATURITY_LADDER,
   FACILITY_UTILIZATION,
   FORECAST_ACCURACY,
@@ -127,11 +130,13 @@ import {
   LOAN_RECONCILIATION_MISMATCH,
   LOAN_RECONCILIATION_OK,
   LOAN_SCHEDULE,
+  LOAN_TOLERANCE_BOUNDARY,
   OVERDUE_AGEING_BOUNDARIES,
   OVERDUE_COLLECTION_BOUNDARIES,
   PAYMENT_DAY_FLAGS,
   PAYMENT_DUE_DAY_31,
   PAYMENT_RISK_LADDER,
+  PAYMENT_THRESHOLD_BOUNDARY,
   PRECISION_BOUNDARY_VALUES,
   PRECISION_LARGE_AMOUNTS,
   PRECISION_MANY_ADDITIONS,
@@ -200,6 +205,61 @@ describe("FIN-PAY — ödeme: vade günü üretimi ve gün riski", () => {
   it("FIN-PAY-03 · risk merdiveninde en ağır gerekçe kazanır", () => {
     const actual = PAYMENT_RISK_LADDER.input.map((c) => riskLevelOf([...c.reasons] as RiskReason[]));
     expect(actual).toEqual([...PAYMENT_RISK_LADDER.expected]);
+  });
+
+  // QA-F1: eşiklerin TAM sınırı hiçbir testte oturmuyordu (FIN-PAY-02 250.000 eşiğine karşı
+  // 35.000,50'de). Kaynaktaki karşılaştırma '>=' — yani tam eşik BAYRAK ÜRETİR. Aşağıdaki
+  // beklentiler bu operatör kaynaktan doğrulanarak yazıldı, varsayılarak değil.
+  describe("FIN-PAY-04 · eşiklerin tam sınırı — kritik ve büyük ödeme", () => {
+    const t = { ...PAYMENT_THRESHOLD_BOUNDARY.input.thresholds };
+    const run = (rows: ReadonlyArray<{ id: string; dueDate: string; amount: number; status: string }>) =>
+      dayFlags(rows.map((r) => ({ ...r }) as RiskInputInstance), t);
+
+    it("kritik eşiği: tam 250.000,00 TETİKLER, 249.999,99 tetiklemez", () => {
+      expect(run(PAYMENT_THRESHOLD_BOUNDARY.input.criticalExactly)).toEqual({
+        ...PAYMENT_THRESHOLD_BOUNDARY.expected.criticalExactly,
+      });
+      expect(run(PAYMENT_THRESHOLD_BOUNDARY.input.criticalOneKurusBelow)).toEqual({
+        ...PAYMENT_THRESHOLD_BOUNDARY.expected.criticalOneKurusBelow,
+      });
+    });
+
+    it("büyük ödeme eşiği: tam 50.000,00 TETİKLER, 49.999,99 tetiklemez", () => {
+      expect(run(PAYMENT_THRESHOLD_BOUNDARY.input.largeExactly)).toEqual({
+        ...PAYMENT_THRESHOLD_BOUNDARY.expected.largeExactly,
+      });
+      expect(run(PAYMENT_THRESHOLD_BOUNDARY.input.largeOneKurusBelow)).toEqual({
+        ...PAYMENT_THRESHOLD_BOUNDARY.expected.largeOneKurusBelow,
+      });
+    });
+
+    it("gün TOPLAMI tam eşikte: tek kalem kritik olmasa da gün kritiktir", () => {
+      const atThreshold = run(PAYMENT_THRESHOLD_BOUNDARY.input.criticalBySumExactly);
+      expect(atThreshold).toEqual({
+        ...PAYMENT_THRESHOLD_BOUNDARY.expected.criticalBySumExactly,
+      });
+      // hiçbir kalem TEK BAŞINA kritik değil — bayrak yalnız toplamdan geliyor
+      expect(
+        PAYMENT_THRESHOLD_BOUNDARY.input.criticalBySumExactly.every((r) => r.amount < t.critical),
+      ).toBe(true);
+
+      expect(run(PAYMENT_THRESHOLD_BOUNDARY.input.criticalBySumOneKurusBelow)).toEqual({
+        ...PAYMENT_THRESHOLD_BOUNDARY.expected.criticalBySumOneKurusBelow,
+      });
+    });
+
+    it("aynı toplam float `+=` ile birikseydi gün kritik SAYILMAZDI (regresyon bekçisi)", () => {
+      const floatSum = PAYMENT_THRESHOLD_BOUNDARY.input.criticalBySumExactly.reduce(
+        (acc, r) => acc + r.amount,
+        0,
+      );
+      expect(floatSum).toBe(PAYMENT_THRESHOLD_BOUNDARY.expected.criticalBySumIfFloatAccumulated);
+      expect(floatSum >= t.critical).toBe(
+        PAYMENT_THRESHOLD_BOUNDARY.expected.criticalBySumWouldBeCriticalIfFloat,
+      );
+      // ürün kodu ondalık biriktirdiği için aynı girdide doğru cevabı veriyor
+      expect(run(PAYMENT_THRESHOLD_BOUNDARY.input.criticalBySumExactly).critical).toBe(true);
+    });
   });
 });
 
@@ -390,6 +450,46 @@ describe("FIN-LOAN / FIN-FAC — kredi: takvim, mutabakat, limit", () => {
     );
   });
 
+  // QA-F3: 1 TL tolerans yalnız 0,00 ve 5,00'te çiviliydi; sınırın kendisi boştaydı.
+  // Kaynaktaki karşılaştırma `Math.abs(diff) > tol` — '>' olduğu için TAM 1,00 BAYRAKLANMAZ.
+  it("FIN-LOAN-05 · tolerans tam 1,00 TL — Σtaksit yolunun iki yanı da çivili", () => {
+    const okCase = reconcileLoan({
+      ...LOAN_TOLERANCE_BOUNDARY.input.installmentExactlyOneLira,
+    });
+    expect(okCase.ok).toBe(LOAN_TOLERANCE_BOUNDARY.expected.installmentExactlyOneLira.ok);
+    expect(okCase.issues).toHaveLength(
+      LOAN_TOLERANCE_BOUNDARY.expected.installmentExactlyOneLira.issueCount,
+    );
+
+    const over = LOAN_TOLERANCE_BOUNDARY.expected.installmentOneKurusOver;
+    const flagged = reconcileLoan({ ...LOAN_TOLERANCE_BOUNDARY.input.installmentOneKurusOver });
+    expect(flagged.ok).toBe(over.ok);
+    expect(flagged.issues).toHaveLength(over.issueCount);
+    expect(flagged.issues[0].code).toBe(over.code);
+    expect(flagged.issues[0].message).toBe(over.message);
+    expect(formatMoney(flagged.issues[0].diff as number)).toBe(over.diffFormatted);
+    expect(flagged.issues[0].diff).toBe(over.diffFloatArtifact);
+  });
+
+  it("FIN-LOAN-05 · aynı tolerans finansman maliyeti yolunda da tam 1,00 TL", () => {
+    const okCase = reconcileLoan({
+      ...LOAN_TOLERANCE_BOUNDARY.input.financeCostExactlyOneLira,
+    });
+    expect(okCase.ok).toBe(LOAN_TOLERANCE_BOUNDARY.expected.financeCostExactlyOneLira.ok);
+    expect(okCase.issues).toHaveLength(
+      LOAN_TOLERANCE_BOUNDARY.expected.financeCostExactlyOneLira.issueCount,
+    );
+
+    const over = LOAN_TOLERANCE_BOUNDARY.expected.financeCostOneKurusOver;
+    const flagged = reconcileLoan({ ...LOAN_TOLERANCE_BOUNDARY.input.financeCostOneKurusOver });
+    expect(flagged.ok).toBe(over.ok);
+    expect(flagged.issues).toHaveLength(over.issueCount);
+    expect(flagged.issues[0].code).toBe(over.code);
+    expect(flagged.issues[0].message).toBe(over.message);
+    expect(formatMoney(flagged.issues[0].diff as number)).toBe(over.diffFormatted);
+    expect(flagged.issues[0].diff).toBe(over.diffFloatArtifact);
+  });
+
   it("FIN-FAC-01 · limit kullanımı: aşımda kullanılabilir 0, eksi headroom sızmaz", () => {
     const signed = FACILITY_UTILIZATION.input.within.movements.map((m) =>
       signedMovement(m.type, m.amount),
@@ -465,6 +565,114 @@ describe("FIN-REC — alacak: yaşlandırma özeti, DSO, cari hesap", () => {
     expect(actual.knownTotal).toBe(CONCENTRATION_RISK.expected.knownTotal);
     expect(actual.unknownCount).toBe(CONCENTRATION_RISK.expected.unknownCount);
     expect(actual.entries).toEqual(CONCENTRATION_RISK.expected.entries.map((e) => ({ ...e })));
+  });
+
+  // QA-F2b: concentration()'ın doc yorumu "tam 0,40'ta oturan bir kayıt artık birikmiş ikili
+  // hatayla ne bayraklanır ne de kurtulur" diye bir GARANTİ veriyor ama o garantiyi hiçbir
+  // test tutmuyordu. Kaynaktaki karşılaştırma '>' (>= DEĞİL) — kaynaktan doğrulandı.
+  it("FIN-CON-02 · tam %40 bayraklanmaz, bir kuruş fazlası bayraklanır", () => {
+    const at = concentration(
+      CONCENTRATION_THRESHOLD_BOUNDARY.input.exactlyForty.map((i) => ({ ...i })),
+      CONCENTRATION_THRESHOLD_BOUNDARY.input.flagRatio,
+    );
+    expect(at.knownTotal).toBe(CONCENTRATION_THRESHOLD_BOUNDARY.expected.exactlyForty.knownTotal);
+    expect(at.unknownCount).toBe(
+      CONCENTRATION_THRESHOLD_BOUNDARY.expected.exactlyForty.unknownCount,
+    );
+    expect(at.entries).toEqual(
+      CONCENTRATION_THRESHOLD_BOUNDARY.expected.exactlyForty.entries.map((e) => ({ ...e })),
+    );
+    expect(at.entries.filter((e) => e.flagged)).toHaveLength(
+      CONCENTRATION_THRESHOLD_BOUNDARY.expected.exactlyForty.flaggedCount,
+    );
+
+    const above = concentration(
+      CONCENTRATION_THRESHOLD_BOUNDARY.input.oneKurusAbove.map((i) => ({ ...i })),
+      CONCENTRATION_THRESHOLD_BOUNDARY.input.flagRatio,
+    );
+    expect(above.knownTotal).toBe(
+      CONCENTRATION_THRESHOLD_BOUNDARY.expected.oneKurusAbove.knownTotal,
+    );
+    expect(above.entries).toEqual(
+      CONCENTRATION_THRESHOLD_BOUNDARY.expected.oneKurusAbove.entries.map((e) => ({ ...e })),
+    );
+    expect(above.entries.filter((e) => e.flagged)).toHaveLength(
+      CONCENTRATION_THRESHOLD_BOUNDARY.expected.oneKurusAbove.flaggedCount,
+    );
+  });
+
+  it("FIN-CON-02 · aynı girdi float biriktirilseydi sınırdaki müşteri haksız bayraklanırdı", () => {
+    const drift = CONCENTRATION_THRESHOLD_BOUNDARY.expected.exactlyFortyIfFloatAccumulated;
+    const floatSum = CONCENTRATION_THRESHOLD_BOUNDARY.input.exactlyForty
+      .filter((i) => i.key === "Müşteri A")
+      .reduce((acc, i) => acc + i.amount, 0);
+    expect(floatSum).toBe(drift.sum);
+    expect(floatSum / CONCENTRATION_THRESHOLD_BOUNDARY.expected.exactlyForty.knownTotal).toBe(
+      drift.ratio,
+    );
+    expect(drift.ratio > CONCENTRATION_THRESHOLD_BOUNDARY.input.flagRatio).toBe(
+      CONCENTRATION_THRESHOLD_BOUNDARY.expected.exactlyFortyWouldFlagIfFloat,
+    );
+    // ürün kodu ondalık biriktiriyor → sınırdaki müşteri bayraklanmıyor
+    const actual = concentration(
+      CONCENTRATION_THRESHOLD_BOUNDARY.input.exactlyForty.map((i) => ({ ...i })),
+      CONCENTRATION_THRESHOLD_BOUNDARY.input.flagRatio,
+    );
+    expect(actual.entries[0].ratio).toBe(0.4);
+    expect(actual.entries[0].flagged).toBe(false);
+  });
+
+  // QA-F2: exposureBy, concentration ile aynı algoritmayı aynı eşikle koşturur; sınırda
+  // aynı cevabı vermesi ARTIK test edilir (eskiden yalnız concentration ondalıktı).
+  it("FIN-EXP-01 · maruziyette de tam %40 bayraklanmaz, bir kuruş fazlası bayraklanır", () => {
+    const at = exposureBy(
+      EXPOSURE_THRESHOLD_BOUNDARY.input.exactlyForty.map((i) => ({ ...i })),
+      EXPOSURE_THRESHOLD_BOUNDARY.input.flagRatio,
+    );
+    expect(at.knownTotal).toBe(EXPOSURE_THRESHOLD_BOUNDARY.expected.exactlyForty.knownTotal);
+    expect(at.unknownCount).toBe(EXPOSURE_THRESHOLD_BOUNDARY.expected.exactlyForty.unknownCount);
+    expect(at.entries).toEqual(
+      EXPOSURE_THRESHOLD_BOUNDARY.expected.exactlyForty.entries.map((e) => ({ ...e })),
+    );
+    expect(at.entries.filter((e) => e.flagged)).toHaveLength(
+      EXPOSURE_THRESHOLD_BOUNDARY.expected.exactlyForty.flaggedCount,
+    );
+
+    const above = exposureBy(
+      EXPOSURE_THRESHOLD_BOUNDARY.input.oneKurusAbove.map((i) => ({ ...i })),
+      EXPOSURE_THRESHOLD_BOUNDARY.input.flagRatio,
+    );
+    expect(above.knownTotal).toBe(EXPOSURE_THRESHOLD_BOUNDARY.expected.oneKurusAbove.knownTotal);
+    expect(above.entries).toEqual(
+      EXPOSURE_THRESHOLD_BOUNDARY.expected.oneKurusAbove.entries.map((e) => ({ ...e })),
+    );
+    expect(above.entries.filter((e) => e.flagged)).toHaveLength(
+      EXPOSURE_THRESHOLD_BOUNDARY.expected.oneKurusAbove.flaggedCount,
+    );
+  });
+
+  it("FIN-EXP-01 · float birikim aynı bankayı sınırda haksız bayraklardı", () => {
+    const drift = EXPOSURE_THRESHOLD_BOUNDARY.expected.exactlyFortyIfFloatAccumulated;
+    const halk = EXPOSURE_THRESHOLD_BOUNDARY.input.exactlyForty.filter((i) => i.key === "HALK");
+    const floatOut = halk
+      .filter((i) => i.direction === "outflow")
+      .reduce((acc, i) => acc + i.amount, 0);
+    const floatIn = halk.filter((i) => i.direction === "inflow").reduce((acc, i) => acc + i.amount, 0);
+    expect(floatOut).toBe(drift.outflowSum);
+    expect(floatOut + floatIn).toBe(drift.total);
+    expect((floatOut + floatIn) / EXPOSURE_THRESHOLD_BOUNDARY.expected.exactlyForty.knownTotal).toBe(
+      drift.ratio,
+    );
+    expect(drift.ratio > EXPOSURE_THRESHOLD_BOUNDARY.input.flagRatio).toBe(
+      EXPOSURE_THRESHOLD_BOUNDARY.expected.exactlyFortyWouldFlagIfFloat,
+    );
+    // ürün kodu (QA-F2 sonrası) ondalık biriktiriyor → sınırdaki banka bayraklanmıyor
+    const actual = exposureBy(
+      EXPOSURE_THRESHOLD_BOUNDARY.input.exactlyForty.map((i) => ({ ...i })),
+      EXPOSURE_THRESHOLD_BOUNDARY.input.flagRatio,
+    );
+    expect(actual.entries[0].ratio).toBe(0.4);
+    expect(actual.entries[0].flagged).toBe(false);
   });
 
   it("FIN-CST-03 · nakit dönüşüm süresi: stok yoksa CCC null, gerekçesi yazılır", () => {
@@ -897,9 +1105,14 @@ describe("§13 invariant — Σdağıtım ≤ kaynak dağıtılabilir tutar", ()
       ALLOCATION_FIFO_EXACT.input.amount,
       ALLOCATION_FIFO_EXACT.input.invoices.map((i) => ({ ...i })),
     );
+    // QA-F5: burada eskiden `expect(inv).toBeDefined()` vardı — TypeScript için bir
+    // null-koruması, test olarak ise HİÇBİR ZAMAN düşemeyecek boş bir iddia. Yerine gerçek
+    // olan kondu: plan yalnız kendisine verilen faturalara satır açabilir, uydurma bir
+    // invoiceId üretemez.
+    const knownInvoiceIds = ALLOCATION_FIFO_EXACT.input.invoices.map((i) => i.invoiceId);
     for (const line of plan.lines) {
+      expect(knownInvoiceIds).toContain(line.invoiceId);
       const inv = ALLOCATION_FIFO_EXACT.input.invoices.find((i) => i.invoiceId === line.invoiceId);
-      expect(inv).toBeDefined();
       expect(line.amount).toBeLessThanOrEqual(inv!.openAmount);
     }
   });

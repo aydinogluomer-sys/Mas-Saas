@@ -17,6 +17,11 @@ const eslintConfig = [
       ".next/**",
       ".next-corrupt-*/**",
       ".next-turbopack-incomplete-*/**",
+      // Aşama 05-06 gerçek-veri clone kapısının ürettiği build çıktısı. .gitignore'da zaten
+      // var ama eslint onu okumuyordu: dizin diskte durduğu sürece `pnpm lint` derlenmiş
+      // Next çıktısında 4393 hata sayıp kırmızıya düşüyor. Yukarıdaki iki .next-* satırıyla
+      // aynı sınıf.
+      ".next-real-clone-gate/**",
       "out/**",
       "build/**",
       "next-env.d.ts",

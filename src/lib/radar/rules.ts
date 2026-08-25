@@ -123,13 +123,26 @@ export function computeRisk(
   return out;
 }
 
-/** Day-level flags for calendar/risk panels (calculation-rules thresholds). */
+/**
+ * Day-level flags for calendar/risk panels (calculation-rules thresholds).
+ *
+ * QA-F2: `knownSum` ondalık birikir. Bu toplam yalnız ekrana yazılmıyor — hemen aşağıda
+ * `knownSum >= t.critical` eşiğini besliyor, yani `concentration`/`exposureBy` ile aynı
+ * sınıfta: birikmiş ikili hata burada gösterilen bir haneyi değil, günün KRİTİK sayılıp
+ * sayılmadığını çevirir. Ölçülen örnek: 173.885,27 + 21.752,99 + 47.810,90 + 6.550,84 kuruşu
+ * kuruşuna 250.000,00 eder; aynı toplama float `+=` ile 249.999,99999999997 verir ve tam
+ * eşikteki günü sessizce kritik olmaktan çıkarır. Yayımlanan tip değişmedi: düz sayı.
+ */
 export function dayFlags(
   dayInstances: RiskInputInstance[],
   t: RiskThresholds,
 ): { cluster: boolean; large: boolean; critical: boolean; knownSum: number; count: number } {
   const open = dayInstances.filter((i) => isOpen(i.status));
-  const knownSum = open.reduce((s, i) => s + (i.amount != null && i.amount > 0 ? i.amount : 0), 0);
+  let knownSumDecimal = zero();
+  for (const i of open) {
+    if (i.amount != null && i.amount > 0) knownSumDecimal = knownSumDecimal.plus(decimal(i.amount));
+  }
+  const knownSum = money(knownSumDecimal);
   const anyCritical = open.some((i) => i.amount != null && i.amount >= t.critical);
   const anyLarge = open.some((i) => i.amount != null && i.amount >= t.large);
   return {
@@ -250,11 +263,14 @@ export function horizonCards(
     const endExclusive = addMonths(from, h);
     const win = sorted.filter((m) => m.monthStart >= from && m.monthStart < endExclusive);
     let minClosing: number | null = null, minMonth: string | null = null, firstNeg: string | null = null;
-    let knownIncome = 0, knownExpense = 0, missingCount = 0;
+    // QA-F2: bu iki toplam yalnız GÖSTERİM içindir (hiçbir eşiği tetiklemez — dayFlags'in
+    // aksine), yine de ondalık birikiyor ki ufuk kartındaki rakam Postgres sum() ile aynı olsun.
+    let incomeDecimal = zero(), expenseDecimal = zero();
+    let missingCount = 0;
     for (const m of win) {
       if (m.income == null || m.expense == null) missingCount++;
-      if (m.income != null) knownIncome += m.income;
-      if (m.expense != null) knownExpense += m.expense;
+      if (m.income != null) incomeDecimal = incomeDecimal.plus(decimal(m.income));
+      if (m.expense != null) expenseDecimal = expenseDecimal.plus(decimal(m.expense));
       if (m.closing != null) {
         if (m.closing < 0 && firstNeg == null) firstNeg = m.monthStart;
         if (minClosing == null || m.closing < minClosing) { minClosing = m.closing; minMonth = m.monthStart; }
@@ -264,7 +280,7 @@ export function horizonCards(
     return {
       horizonMonths: h, fromMonth: from, toMonth: last?.monthStart ?? from,
       endClosing: last?.closing ?? null, minClosing, minMonth,
-      knownIncome, knownExpense, missingCount,
+      knownIncome: money(incomeDecimal), knownExpense: money(expenseDecimal), missingCount,
       firstNegativeInside: firstNeg,
       truncated: win.length < h,
     };

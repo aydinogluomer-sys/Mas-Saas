@@ -2,6 +2,7 @@
 // sources: docs/calculation-rules.md §Loan/§Checks + .claude/skills/mas-loan-check-analyst.
 // Invariants: null amount stays null (never zero); validators FLAG, never fix.
 
+import { decimal, money, ratioOrNull, zero, type Decimal } from "@/lib/money";
 import { addMonths, dueDateFor, monthStartOf } from "@/lib/radar/rules";
 
 /* ── signed amount semantics (calculation-rules §Checks) ── */
@@ -65,11 +66,20 @@ export function isoWeekOf(iso: string): { key: string; from: string; to: string 
   };
 }
 
+/**
+ * QA-F2: toplamlar ondalık birikir, yayımlanan tip değişmez.
+ *
+ * Buradaki `knownOutflow`/`knownInflow` yalnız GÖSTERİLEN toplamlardır — hiçbir eşik
+ * karşılaştırması bunlara dayanmaz (kardeş `exposureBy`'ın aksine, orada `ratio > flagRatio`
+ * cevabı çevirebiliyordu). Yine de `+=` float birikimini ondalığa çevirdik: gösterilen rakam
+ * ile Postgres `sum()` arasında kuruş altı bir fark bırakmanın savunulur bir gerekçesi yok.
+ */
 export function groupMaturities(
   items: MaturityItem[],
   granularity: "week" | "month",
 ): MaturityBucket[] {
   const map = new Map<string, MaturityBucket>();
+  const sums = new Map<string, { out: Decimal; inn: Decimal }>();
   for (const it of [...items].sort((a, b) => (a.dueDate < b.dueDate ? -1 : 1))) {
     const g =
       granularity === "week"
@@ -87,13 +97,20 @@ export function groupMaturities(
         missingCount: 0, unknownDirectionCount: 0, items: [],
       };
       map.set(g.key, b);
+      sums.set(g.key, { out: zero(), inn: zero() });
     }
+    const s = sums.get(g.key)!;
     b.count++;
     b.items.push(it);
     if (it.amount == null) b.missingCount++;
-    else if (it.direction === "outflow") b.knownOutflow += it.amount;
-    else if (it.direction === "inflow") b.knownInflow += it.amount;
+    else if (it.direction === "outflow") s.out = s.out.plus(decimal(it.amount));
+    else if (it.direction === "inflow") s.inn = s.inn.plus(decimal(it.amount));
     else b.unknownDirectionCount++;
+  }
+  for (const [key, b] of map) {
+    const s = sums.get(key)!;
+    b.knownOutflow = money(s.out);
+    b.knownInflow = money(s.inn);
   }
   return [...map.values()].sort((a, b) => (a.from < b.from ? -1 : 1));
 }
@@ -108,7 +125,13 @@ export interface MaturityWindow {
   missingCount: number;
 }
 
-/** Forward-looking windows [today, today+days). Overdue items are NOT window members. */
+/**
+ * Forward-looking windows [today, today+days). Overdue items are NOT window members.
+ *
+ * QA-F2: `groupMaturities` ile aynı gerekçe — pencere toplamları GÖSTERİM içindir, hiçbir
+ * eşiği tetiklemez, ama yine de ondalık birikir ki ekrandaki rakam veritabanının toplamıyla
+ * kuruşu kuruşuna aynı olsun.
+ */
 export function maturityWindows(
   items: MaturityItem[],
   todayISO: string,
@@ -117,13 +140,16 @@ export function maturityWindows(
   return windows.map((days) => {
     const toExclusive = addDaysISO(todayISO, days);
     const win = items.filter((i) => i.dueDate >= todayISO && i.dueDate < toExclusive);
-    let knownOutflow = 0, knownInflow = 0, missingCount = 0;
+    let outflow = zero(), inflow = zero(), missingCount = 0;
     for (const i of win) {
       if (i.amount == null) missingCount++;
-      else if (i.direction === "outflow") knownOutflow += i.amount;
-      else if (i.direction === "inflow") knownInflow += i.amount;
+      else if (i.direction === "outflow") outflow = outflow.plus(decimal(i.amount));
+      else if (i.direction === "inflow") inflow = inflow.plus(decimal(i.amount));
     }
-    return { days, from: todayISO, toExclusive, count: win.length, knownOutflow, knownInflow, missingCount };
+    return {
+      days, from: todayISO, toExclusive, count: win.length,
+      knownOutflow: money(outflow), knownInflow: money(inflow), missingCount,
+    };
   });
 }
 
@@ -138,39 +164,62 @@ export interface ExposureEntry {
   flagged: boolean;
 }
 
+/**
+ * QA-F2: birikim tam, yayımlanan şekil değişmedi.
+ *
+ * Bu fonksiyon `radar/rules.ts`'teki `concentration()` ile AYNI algoritmayı aynı 0,40 eşiğiyle
+ * koşturur; ikisinden yalnız biri (concentration) Faz 17'de ondalığa çevrilmişti, bu ise
+ * float `+=` ve float bölme üzerinde kalmıştı. Tek bir eşik karşılaştırması — `e.ratio >
+ * flagRatio` — bir yuvarlama hatasının GÖSTERİLEN bir haneyi değil, CEVABIN KENDİSİNİ
+ * çevirebildiği yerdir: ölçülen örnek, kuruşu kuruşuna 400.000,00 eden üç satırın float ile
+ * 400.000,00000000006 vermesi ve 1.000.000,00 bilinen toplam karşısında oranı 0,4000000000000001
+ * yapıp tam sınırdaki bir bankayı HAKSIZ YERE bayraklamasıdır. Ondalık birikimle oran tam 0,4
+ * çıkar ve karşılaştırma `>` olduğu için sınırdaki kayıt bayraklanmaz.
+ *
+ * Çağıranlar ve testler yine düz sayı alır — sınır tipleri kımıldamadı; `concentration()`
+ * bunu nasıl yaptıysa aynen öyle.
+ */
 export function exposureBy(
   items: Array<{ key: string | null; amount: number | null; direction: CheckDirection }>,
   flagRatio = 0.4,
 ): { entries: ExposureEntry[]; knownTotal: number; unknownCount: number } {
-  const acc = new Map<string, { out: number; inn: number }>();
-  let knownTotal = 0;
+  const acc = new Map<string, { out: Decimal; inn: Decimal }>();
+  let knownTotal = zero();
   let unknownCount = 0;
   for (const it of items) {
     if (it.amount == null) {
       unknownCount++;
       continue;
     }
-    const v = Math.abs(it.amount);
-    if (v === 0) continue;
-    knownTotal += v;
+    // maruziyet iki yönü de mutlak değeriyle sayar (işaretli tutar semantiği yukarıda);
+    // açık sıfır ise hiçbir yoğunlaşmaya katkı vermez.
+    const v = decimal(it.amount).abs();
+    if (v.eq(0)) continue;
+    knownTotal = knownTotal.plus(v);
     const k = it.key ?? "(atanmadı)";
-    const e = acc.get(k) ?? { out: 0, inn: 0 };
-    if (it.direction === "outflow") e.out += v;
-    else if (it.direction === "inflow") e.inn += v;
-    acc.set(k, e);
+    const e = acc.get(k) ?? { out: zero(), inn: zero() };
+    if (it.direction === "outflow") e.out = e.out.plus(v);
+    else if (it.direction === "inflow") e.inn = e.inn.plus(v);
+    acc.set(k, e); // yönü bilinmeyen kayıt da anahtarı görünür kılar — gizlenmez
   }
   const entries = [...acc.entries()]
     .map(([key, e]) => {
-      const total = e.out + e.inn;
+      const total = e.out.plus(e.inn);
       return {
-        key, outflowSum: e.out, inflowSum: e.inn, total,
-        ratio: knownTotal > 0 ? total / knownTotal : 0,
+        key,
+        outflowSum: money(e.out),
+        inflowSum: money(e.inn),
+        total: money(total),
+        // ratioOrNull payda bilinmiyorsa null döner; "bilinen toplam yok" ile "%0 yoğunlaşma"
+        // aynı cümle değildir, ama yayımlanan şekil sayı olduğu için null burada — sözleşmeyi
+        // değiştirmemek adına — eskisi gibi 0'a çöker.
+        ratio: ratioOrNull(total, knownTotal) ?? 0,
         flagged: false,
       };
     })
     .sort((a, b) => b.total - a.total)
     .map((e) => ({ ...e, flagged: e.ratio > flagRatio }));
-  return { entries, knownTotal, unknownCount };
+  return { entries, knownTotal: money(knownTotal), unknownCount };
 }
 
 /* ── loan installment schedule (derived due dates; amounts always from source) ── */
