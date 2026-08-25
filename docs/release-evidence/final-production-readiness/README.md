@@ -35,9 +35,9 @@ final status
 | 02 | `02-real-clone-migration.md` | Aşama 05 | **VAR** — gerçek veri klonu 0034→0087, 14/14 değişmez |
 | 03 | `03-real-clone-golden-ui.md` | Aşama 06 | **VAR** — aynı klonda 36/36 spec, kapı 24/24 |
 | 04 | `04-security.md` | Aşama 04/06 türevi | YOK — final RC güvenlik kanıtı toplanmadı |
-| 05 | `05-real-backup-restore.md` | Aşama 07 | YOK — gerçek kaynak backup/restore + off-device kanıtı yok |
+| 05 | `05-real-backup-restore.md` | Aşama 07 | **VAR — PARTIAL** — gerçek kaynaktan yedek/restore/zamanlama VERIFIED; yalnız off-device FİZİKSEL hedef BLOCKED |
 | 06 | `06-financial-correctness.md` | Aşama 08 | YOK — birleşik deterministic golden fixture paketi yok |
-| 07 | `07-observability.md` | Aşama 09 | YOK — operasyonel scheduling/alert delivery kanıtı yok |
+| 07 | `07-observability.md` | Aşama 09 | **VAR** — alert delivery (kalıcı JSONL log + isteğe bağlı Telegram/e-posta), zamanlanmış gözetim işi (KAYDEDİLMEDİ), kapı 33/33 |
 | 08 | `08-performance.md` | Aşama 10 | YOK — route/write SLO kanıtı yok |
 | 09 | `09-cutover-rehearsal.md` | Aşama 11 | YOK — final RC provası koşmadı |
 | 10 | `10-pr-master.md` | Aşama 12 | YOK — PR açılmadı, master promote edilmedi |
@@ -50,7 +50,7 @@ final status
 | 17 | `17-operational-resilience.md` | Aşama 20 | YOK |
 | 18 | `18-final-scorecard.md` | Aşama 21 | YOK |
 
-**Mevcut slot sayısı: 3/19** (00 SCAFFOLD, 02 ve 03 gerçek veri klonunda üretildi).
+**Mevcut slot sayısı: 5/19** (00 SCAFFOLD; 02 ve 03 gerçek veri klonunda; 05 PARTIAL — off-device fiziksel hedef BLOCKED; 07 PASS). Slot 05'in satırı Aşama 07 turunda güncellenmemişti, bu turda dosyanın gerçek durumuna göre düzeltildi.
 
 ## İndeks dışı ek dosyalar (§32 listesinde yok, bu turda zorunlu oldular)
 

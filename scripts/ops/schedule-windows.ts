@@ -17,14 +17,75 @@
 //   pnpm exec tsx scripts/ops/schedule-windows.ts uninstall --apply
 //   pnpm exec tsx scripts/ops/schedule-windows.ts run-once           # görevi elle tetikler
 //
-// Seçenekler: --name <görev adı> --at HH:MM
+// Seçenekler: --job backup|telemetry  --name <görev adı>  --at HH:MM
+//
+// ── AŞAMA 09: İKİNCİ İŞ ─────────────────────────────────────────────────────────────────
+//
+// Rehber §14 "Schedule" telemetri anlık görüntüsünün, yedek-yaşı, bayat-veri ve kuyruk
+// kontrollerinin belirli periyotla koşmasını istiyor. Bunun için İKİNCİ bir zamanlayıcı aracı
+// yazılmadı: aynı what-if/apply disiplinini ikinci kez yazmak, ikinci kez yanlış yazma fırsatı
+// demektir. Araç `--job` ile parametrelendi; VARSAYILAN `backup` olarak KALDI, çünkü Aşama 07
+// kanıtı ve `release:stage07-backup-gate` bu aracı bayraksız çağırıyor.
 import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 
-const DEFAULT_TASK_NAME = "MAS-Nakit-Radar-Gunluk-Yedek";
-const DEFAULT_TIME = "03:00";
+/** Zamanlanabilir işler. Her biri kendi sarmalayıcı .cmd'sini ve periyodunu taşır. */
+interface JobDefinition {
+  key: string;
+  taskName: string;
+  /** scripts/ops/ altındaki sarmalayıcı dosya adı. */
+  wrapperFile: string;
+  /** Sarmalayıcının çalıştırdığı TypeScript işi — ön koşul denetimi için. */
+  jobScript: string;
+  defaultTime: string;
+  /** schtasks periyot argümanları. Yedek günlük; telemetri 6 saatte bir. */
+  scheduleArgs: string[];
+  humanSchedule: (time: string) => string;
+  /** Yalnız bu iş için anlamlı olan, engelleyici SAYILMAYAN ön koşullar. */
+  advisoryEnv: Array<{ name: string; env: string; missingNote: string }>;
+}
+
+const JOBS: Record<string, JobDefinition> = {
+  backup: {
+    key: "backup",
+    taskName: "MAS-Nakit-Radar-Gunluk-Yedek",
+    wrapperFile: "mas-daily-backup.cmd",
+    jobScript: "scripts/ops/backup-daily.ts",
+    defaultTime: "03:00",
+    scheduleArgs: ["/SC", "DAILY"],
+    humanSchedule: (t) => `her gün ${t} (yerel saat)`,
+    advisoryEnv: [{
+      name: "MAS_OFFDEVICE_BACKUP_DIR ayarlı (off-device kopya için)",
+      env: "MAS_OFFDEVICE_BACKUP_DIR",
+      missingNote: "ayarlı değil — görev exit 3 ile 'TEK KOPYA' uyarısı verecek",
+    }],
+  },
+  telemetry: {
+    key: "telemetry",
+    taskName: "MAS-Nakit-Radar-Telemetri-Gozetim",
+    wrapperFile: "mas-telemetry-watch.cmd",
+    jobScript: "scripts/ops/telemetry-watch.ts",
+    defaultTime: "07:00",
+    // Günde bir telemetri, takılı bir kuyruğu 24 saat görmeden bırakır — kuyruk süpürücüsü 30
+    // dakikada bir koşuyor. 6 saat, "alarm zamanında görülsün" ile "bildirim gürültüsü olmasın"
+    // arasındaki kasıtlı orta nokta; ilk koşu --at ile verilen saatte başlar.
+    scheduleArgs: ["/SC", "HOURLY", "/MO", "6"],
+    humanSchedule: (t) => `${t}'den itibaren 6 saatte bir (yerel saat)`,
+    advisoryEnv: [{
+      name: "MAS_ALERT_CHANNELS ayarlı (ek operatör kanalı)",
+      env: "MAS_ALERT_CHANNELS",
+      missingNote: "ayarlı değil — yalnız yerel kalıcı alert log'una yazılır (birincil kanal, her zaman çalışır)",
+    }],
+  },
+};
+
+function resolveJob(key: string | undefined): JobDefinition {
+  const job = JOBS[(key ?? "backup").toLowerCase()];
+  if (!job) throw new Error(`--job bilinmiyor: '${key}'. Beklenen: ${Object.keys(JOBS).join(" | ")}`);
+  return job;
+}
 
 function arg(flag: string): string | undefined {
   const i = process.argv.indexOf(flag);
@@ -32,6 +93,7 @@ function arg(flag: string): string | undefined {
 }
 
 export interface ScheduleSpec {
+  job: JobDefinition;
   taskName: string;
   time: string;
   wrapperPath: string;
@@ -41,23 +103,31 @@ export interface ScheduleSpec {
   createCommand: string;
 }
 
-export function buildScheduleSpec(repoRoot: string, taskName = DEFAULT_TASK_NAME, time = DEFAULT_TIME): ScheduleSpec {
-  if (!/^\d{2}:\d{2}$/.test(time)) throw new Error(`--at biçimi HH:MM olmalı: '${time}'`);
-  const wrapperPath = path.join(repoRoot, "scripts", "ops", "mas-daily-backup.cmd");
+export function buildScheduleSpec(
+  repoRoot: string,
+  taskName?: string,
+  time?: string,
+  jobKey = "backup",
+): ScheduleSpec {
+  const job = resolveJob(jobKey);
+  const at = time ?? job.defaultTime;
+  if (!/^\d{2}:\d{2}$/.test(at)) throw new Error(`--at biçimi HH:MM olmalı: '${at}'`);
+  const wrapperPath = path.join(repoRoot, "scripts", "ops", job.wrapperFile);
   const createArgs = [
     "/Create",
-    "/TN", taskName,
+    "/TN", taskName ?? job.taskName,
     "/TR", `"${wrapperPath}"`,
-    "/SC", "DAILY",
-    "/ST", time,
+    ...job.scheduleArgs,
+    "/ST", at,
     // /RL LIMITED: görev yönetici hakları İSTEMEZ. Yedek almak için gerekmiyor; gereksiz
     // yükseltme, zamanlanmış bir görevin en kolay kötüye kullanılan yanıdır.
     "/RL", "LIMITED",
     "/F",
   ];
   return {
-    taskName,
-    time,
+    job,
+    taskName: taskName ?? job.taskName,
+    time: at,
     wrapperPath,
     createArgs,
     createCommand: `schtasks ${createArgs.map((a) => (a.includes(" ") && !a.startsWith('"') ? `"${a}"` : a)).join(" ")}`,
@@ -91,7 +161,7 @@ function pnpmFound(): string | null {
   }
 }
 
-interface Precheck { name: string; ok: boolean; detail: string }
+interface Precheck { name: string; ok: boolean; detail: string; advisory?: boolean }
 
 function prechecks(spec: ScheduleSpec): Precheck[] {
   const list: Precheck[] = [];
@@ -106,9 +176,9 @@ function prechecks(spec: ScheduleSpec): Precheck[] {
     detail: spec.wrapperPath,
   });
   list.push({
-    name: "günlük yedek script'i mevcut",
-    ok: existsSync(path.join(process.cwd(), "scripts", "ops", "backup-daily.ts")),
-    detail: "scripts/ops/backup-daily.ts",
+    name: "iş script'i mevcut",
+    ok: existsSync(path.join(process.cwd(), spec.job.jobScript)),
+    detail: spec.job.jobScript,
   });
   const pnpm = pnpmFound();
   list.push({ name: "pnpm PATH'te bulunuyor", ok: pnpm !== null, detail: pnpm ?? "bulunamadı" });
@@ -118,13 +188,12 @@ function prechecks(spec: ScheduleSpec): Precheck[] {
     ok: existsSync(envLocal),
     detail: existsSync(envLocal) ? ".env.local" : "yok — görev MIGRATION_DATABASE_URL bulamaz",
   });
-  const offDevice = process.env.MAS_OFFDEVICE_BACKUP_DIR;
+  for (const advisory of spec.job.advisoryEnv) {
+    const value = process.env[advisory.env];
+    list.push({ name: advisory.name, ok: Boolean(value), detail: value ?? advisory.missingNote, advisory: true });
+  }
   list.push({
-    name: "MAS_OFFDEVICE_BACKUP_DIR ayarlı (off-device kopya için)",
-    ok: Boolean(offDevice),
-    detail: offDevice ?? "ayarlı değil — görev exit 3 ile 'TEK KOPYA' uyarısı verecek",
-  });
-  list.push({
+    advisory: true,
     name: "görev zaten kayıtlı mı",
     ok: true,
     detail: taskExists(spec.taskName) ? `EVET — '${spec.taskName}' var (install üzerine yazar)` : "hayır",
@@ -132,14 +201,35 @@ function prechecks(spec: ScheduleSpec): Precheck[] {
   return list;
 }
 
-export function main(): number {
-  const action = (process.argv[2] ?? "status").toLowerCase();
-  const apply = process.argv.includes("--apply");
-  const spec = buildScheduleSpec(process.cwd(), arg("--name") ?? DEFAULT_TASK_NAME, arg("--at") ?? DEFAULT_TIME);
+/**
+ * Eylemi argv'den POZİSYONEL olarak okur, `process.argv[2]`'den değil.
+ *
+ * Neden: `package.json`'daki `ops:telemetry:schedule` bayrağı komuta ÖNDEN ekliyor
+ * (`… schedule-windows.ts --job telemetry status`), dolayısıyla argv[2] = "--job" oluyordu ve
+ * araç "Bilinmeyen eylem: '--job'" diyerek her çağrıda düşüyordu. Değer alan bayraklar
+ * atlanır, `--apply` gibi salt bayraklar da öyle; geriye yalnız eylem kalır.
+ */
+function positionalArgs(): string[] {
+  const FLAGS_WITH_VALUE = new Set(["--name", "--at", "--job"]);
+  const out: string[] = [];
+  for (let i = 2; i < process.argv.length; i += 1) {
+    const a = process.argv[i];
+    if (FLAGS_WITH_VALUE.has(a)) { i += 1; continue; }
+    if (a.startsWith("-")) continue;
+    out.push(a);
+  }
+  return out;
+}
 
+export function main(): number {
+  const action = (positionalArgs()[0] ?? "status").toLowerCase();
+  const apply = process.argv.includes("--apply");
+  const spec = buildScheduleSpec(process.cwd(), arg("--name"), arg("--at"), arg("--job"));
+
+  console.log(`İş          : ${spec.job.key}`);
   console.log(`Görev adı   : ${spec.taskName}`);
   console.log(`Çalıştırır  : ${spec.wrapperPath}`);
-  console.log(`Zamanlama   : her gün ${spec.time} (yerel saat)`);
+  console.log(`Zamanlama   : ${spec.job.humanSchedule(spec.time)}`);
   console.log("");
 
   if (action === "status") {
@@ -161,7 +251,8 @@ export function main(): number {
     const checks = prechecks(spec);
     console.log("Ön koşullar:");
     for (const c of checks) console.log(`  ${c.ok ? "OK  " : "EKSİK"}  ${c.name} — ${c.detail}`);
-    const blocking = checks.filter((c) => !c.ok && !c.name.startsWith("MAS_OFFDEVICE"));
+    // advisory = eksikliği kaydı ENGELLEMEZ ama çıktıda görünür (off-device hedefi, ek kanal).
+    const blocking = checks.filter((c) => !c.ok && c.advisory !== true);
     console.log("");
     console.log("Kaydedilecek komut (birebir):");
     console.log(`  ${spec.createCommand}`);
@@ -170,7 +261,7 @@ export function main(): number {
       console.log("WHAT-IF — hiçbir görev KAYDEDİLMEDİ.");
       console.log("Zamanlanmış görev kalıcı ve dışa dönük bir sistem değişikliğidir; kaydı");
       console.log("operatör açıkça ister: yukarıdaki komutu çalıştırın ya da");
-      console.log("  pnpm exec tsx scripts/ops/schedule-windows.ts install --apply");
+      console.log(`  pnpm exec tsx scripts/ops/schedule-windows.ts install --job ${spec.job.key} --apply`);
       console.log(`SCHEDULED TASK = NOT REGISTERED (what-if ${blocking.length === 0 ? "ön koşullar TAM" : "ön koşullar EKSİK"})`);
       return blocking.length === 0 ? 0 : 1;
     }

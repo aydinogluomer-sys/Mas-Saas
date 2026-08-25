@@ -32,6 +32,12 @@ const ROOT = process.cwd();
 const SNAPSHOT = path.join(ROOT, "scripts", "ops", "telemetry-snapshot.ts");
 const url = requireDisposableOwnerDatabaseUrl("ops:telemetry:verify");
 
+// AŞAMA 09 — snapshot artık her koşuda kalıcı bir alert log'una yazıyor. Bu kapı onlarca kez
+// koşuyor; deponun `logs/alerts.jsonl` dosyasını doğrulama gürültüsüyle doldurmaması için
+// tek kullanımlık bir yola yönlendirilir. Teslimat davranışının KENDİSİ ayrı kapının işi:
+// scripts/ops/telemetry-alerting-verify.ts.
+const VERIFY_ALERT_LOG = path.join(os.tmpdir(), `telemetry-verify-alerts-${process.pid}.jsonl`);
+
 interface Outcome { name: string; pass: boolean; detail: string }
 const results: Outcome[] = [];
 function record(name: string, pass: boolean, detail = ""): void {
@@ -41,7 +47,9 @@ function record(name: string, pass: boolean, detail = ""): void {
 
 /** Run the real snapshot; it exits 1 on any alert, so capture output from the throw too. */
 function runTelemetry(overrides: Record<string, string>): { code: number; out: string } {
-  const env: NodeJS.ProcessEnv = { ...process.env, MIGRATION_DATABASE_URL: url, ...overrides };
+  const env: NodeJS.ProcessEnv = {
+    ...process.env, MIGRATION_DATABASE_URL: url, MAS_ALERT_LOG: VERIFY_ALERT_LOG, ...overrides,
+  };
   try {
     const out = execFileSync(process.execPath, ["--import", "tsx", SNAPSHOT], {
       cwd: ROOT, env, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: 60_000,
@@ -165,6 +173,7 @@ async function main(): Promise<void> {
   } finally {
     rmSync(freshBackupDir, { recursive: true, force: true });
     rmSync(emptyBackupDir, { recursive: true, force: true });
+    rmSync(VERIFY_ALERT_LOG, { force: true });
     await pool.end().catch(() => {});
   }
 

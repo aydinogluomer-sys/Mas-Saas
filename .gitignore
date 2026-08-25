@@ -77,3 +77,9 @@ __pycache__/
 # would publish a working session token and would also go stale the moment that disposable
 # database is dropped. Regenerated from scratch on every run.
 /tests/visual/.auth/
+
+# AŞAMA 09 — operasyonel telemetri günlükleri (alert log + koşu kayıtları + zamanlanmış görev
+# çıktısı). backups/ ile aynı gerekçe: bunlar OPERASYONEL veridir — hangi hesabın kilitlendiği,
+# hangi içe aktarımın bayatladığı, hangi veritabanının ne kadar büyüdüğü. Depoya ait değil ve
+# her koşuda değiştiği için ağacı da kirletir. Dizinin kendisi ilk koşuda oluşturulur.
+/logs/

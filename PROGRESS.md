@@ -890,7 +890,7 @@ Kullanılan `evidence_class` değerleri: `REAL_READ_ONLY` / `DISPOSABLE_CLONE` /
 | Faz 9 — Hypercare | — | **NOT STARTED** | tamamı |
 | Faz 10 — Gerçek kullanım | — | **NOT STARTED** | tamamı |
 | Faz 11 — Financial correctness | (dağınık PASS) | **PARTIAL** | distributed correctness coverage strong, unified golden fixture missing |
-| Faz 12 — Observability | PASS | **PARTIAL/STRONG** | telemetry gate exists, production operationalization pending |
+| Faz 12 — Observability | PASS | **VERIFIED PASS** | alert delivery + scheduling operational; 5 sinyal bu mimaride olculemez (belgeli) |
 | Faz 13 — Operational resilience | (örtük) | **PARTIAL** | runbook seti eksik, second-operator drill yok |
 | Faz 14 — Performance | PASS | **PARTIAL/STRONG** | query plan/index gate pass, route/write SLO pending |
 | Faz 15 — AI/entegrasyon sınırı | PASS | **VERIFIED PASS** (yalnız mevcut sınır) | canlı vendor açılırsa ayrı release gate şart |
@@ -1044,13 +1044,13 @@ remaining_gap: "Tek deterministik golden fixture paketi ve ELLE tanimlanmis expe
 ### Faz 12 — Observability
 
 ```yaml
-status: PARTIAL/STRONG — telemetry gate exists, production operationalization pending
-original_plan_reference: "Aggressive Plan §15 Faz 12 — L1472-L1516"
+status: VERIFIED PASS — alert delivery + scheduling operational
+original_plan_reference: "Aggressive Plan §15 Faz 12 — L1472-L1516; Gap Closure Rehberi §14 (AŞAMA 09) — L1311-L1402"
 evidence_class: DISPOSABLE_SYNTHETIC
 verified_on: 2026-08-25
-verified_commit: 48ef9b5
-verified_db_class: DISPOSABLE_SYNTHETIC (mas_radar_telemetry_verify)
-remaining_gap: "Fail-closed alert kapisi ve telemetry snapshot var, CI'da kosuyor. Eksik: gercek prod scheduling, alert delivery kanali, runtime/DB/app katmanlarinin operasyonel kullanimi. AŞAMA 09."
+verified_commit: "bu commit (AŞAMA 09); onceki katman 48ef9b5"
+verified_db_class: DISPOSABLE_SYNTHETIC (mas_radar_telemetry_verify yerel, mas_radar_alerting_verify CI)
+remaining_gap: "Rehber §14'un dort kabul kriteri de olculerek karsilandi (ops:telemetry:alerting:verify 33/33). Kalan P2 borc, sinyal KAPSAMI: restart_count, uygulama geneli 5xx, pageerror, rate-limit reddi ve GECMIS yavas sorgu bu mimaride toplayicisi olmadigi icin OLCULEMEZ — uydurulmadi, snapshot'in NOT_OBTAINABLE listesinde ve JSON ciktisinda adiyla/sebebiyle kayitli. Zamanlanmis gorev KAYDEDILMEDI (operator karari). Telegram/e-posta kanalinin BASARILI gonderimi ortamda kimlik bilgisi olmadigi icin dogrulanmadi. Kanit: docs/release-evidence/final-production-readiness/07-observability.md"
 ```
 
 ### Faz 13 — Operational resilience
@@ -1104,7 +1104,7 @@ Sıra rehber §4'ten alınmıştır ve **değiştirilemez**.
 | 06 | Aynı REAL clone üzerinde Golden UI + monetary smoke | **DONE** | `ec95de0` (kapı), kayıt bu commit | 36/36 spec: 24/24 kritik rota, 6/6 parasal spot-check, 6/6 yetkilendirme; iki bağımsız koşuda tekrarlandı | 2026-08-25 |
 | 07 | Gerçek kaynak backup/restore + off-device readiness | **PARTIAL** | bu commit | `release:stage07-backup-gate` 46/47; 5/5 klasik kapı YES, fingerprint 85/85 tablo + 6/6 agrega; makbuz 9/9 alan; retention 3 yoldan test; OFF_DEVICE FIZIKSEL HEDEF = BLOCKED (donanim yok) | 2026-08-25 |
 | 08 | Consolidated financial correctness gate | **DONE** | bu commit | `vitest run tests/financial` 86/86; 51 elle turetilmis vaka, 10 modul; QA bagimsiz yeniden hesaplama 28/28 AGREE, 6/6 mutasyon sondasi dustu | 2026-08-25 |
-| 09 | Observability operationalization | PENDING | — | — | — |
+| 09 | Observability operationalization | **DONE** | bu commit | `ops:telemetry:alerting:verify` 33/33 (0 atlanan); alti fail-closed sinyal 6/6 enjekte -> alarm + kalici log'a teslim, 6/6 temizlendi; teslimat 4 ayri arizada gorunur ve exit 2; 26 yeni birim testi; zamanlama what-if NOT REGISTERED | 2026-08-25 |
 | 10 | Performance gap closure | PENDING | — | — | — |
 | 11 | Final RC cutover rehearsal | PENDING | — | — | — |
 | 12 | PR → master promotion | PENDING | — | — | — |

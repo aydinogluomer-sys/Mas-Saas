@@ -103,6 +103,27 @@ jobs:
           bash scripts/ci/provision-verify-db.sh mas_radar_telemetry_verify
           MIGRATION_DATABASE_URL=postgres://postgres:postgres@127.0.0.1:5432/mas_radar_telemetry_verify pnpm ops:telemetry:verify
 
+      # AŞAMA 09 — alarm TESLİMATI. Faz 12 kapısı uyarının ateşlediğini kanıtlıyordu; bu adım
+      # uyarının bir yere ULAŞTIĞINI kanıtlıyor: altı fail-closed sinyalin her biri enjekte
+      # edilip kalıcı JSONL alert log'una TESLİM edildiği görülüyor, teslimat üç ayrı yoldan
+      # kırılıp ayrı çıkış kodu (2) verdiği doğrulanıyor ve tüm çıktı sır taramasından geçiyor.
+      #
+      # DIŞ AĞ GEREKTİRMEZ — bu yüzden CI'da koşabiliyor: birincil kanal yerel bir dosya, ağ
+      # kanalı ise ya yapılandırılmamış (dürüst başarısızlık, istek atılmaz) ya da mockTransport.
+      #
+      # AYRI BİR VERİTABANI ve app rolüne CI parolası: "sağlıklı durumda alarm yok" kriterinin
+      # ölçülebilmesi için `runtime_user` sinyalinin GERÇEKTEN mas_radar_app okuması gerekiyor.
+      # Kimlik bilgisi çalışmazsa kapı kırmızıya dönmez — ilgili kontroller ATLANIR ve atlandığı
+      # çıktıda yazar (sessizce "geçti" sayılmaz).
+      - name: Observability alert delivery + schedule (AŞAMA 09)
+        env:
+          MAS_RADAR_APP_DB_PASSWORD: ${{ env.CI_APP_DB_PASSWORD }}
+        run: |
+          bash scripts/ci/provision-verify-db.sh mas_radar_alerting_verify
+          MIGRATION_DATABASE_URL=postgres://postgres:postgres@127.0.0.1:5432/mas_radar_alerting_verify \
+          MAS_APP_DATABASE_URL=postgres://mas_radar_app:${{ env.CI_APP_DB_PASSWORD }}@127.0.0.1:5432/mas_radar_alerting_verify \
+            pnpm ops:telemetry:alerting:verify
+
       # Faz 14 — performance gate. Loads deterministic realistic volume into a fresh disposable
       # database, then asserts the hot-path selective queries reach their large tables by an index
       # (never a Seq Scan), redundant indexes = 0, and unindexed FKs stay at/below the measured
