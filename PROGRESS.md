@@ -1097,9 +1097,9 @@ Sıra rehber §4'ten alınmıştır ve **değiştirilemez**.
 |---|---|---|---|---|---|
 | 00 | Durum iddialarını düzelt | **DONE** | `d5012da` | 16 faz statüsü düzeltildi, 16/16 YAML metadata bloğu yazıldı | 2026-08-25 |
 | 01 | Feature freeze'i yeniden teyit et | **DONE** | `d5012da` | 22/22 commit denetlendi, violation=0, borderline=2 | 2026-08-25 |
-| 02 | Final release candidate'ı sabitle | **SCAFFOLD** | `d5012da` | manifest 8/9 alan ölçüldü, `rc_sha` PENDING | 2026-08-25 |
+| 02 | Final release candidate'ı sabitle | **DONE** | bu commit | RC_SHA=`b8c3244` donduruldu; 9/9 alan olculdu; RC kurali (urun/test kodu degistiren son commit) belgelendi | 2026-08-25 |
 | 03 | Governance / master sapması | **DONE** | `d5012da` | Seçenek C waiver yazıldı, 6/6 compensating control eşlendi | 2026-08-25 |
-| 04 | Hardening branch clean CI final doğrulaması | PENDING | — | — | — |
+| 04 | Hardening branch clean CI final doğrulaması | **DONE** | `b8c3244` (RC) | run 32895317098 — 7/7 job success, 0 basarisiz adim, head_sha=RC_SHA | 2026-08-25 |
 | 05 | Fresh REAL clone: migration + fingerprint | **DONE** | `ec95de0` (kapı), kayıt bu commit | `release:real-clone-gate` 24/24; golden-fingerprint 14/14; baseline 9/9; ledger 0034→0087 gerçek veride | 2026-08-25 |
 | 06 | Aynı REAL clone üzerinde Golden UI + monetary smoke | **DONE** | `ec95de0` (kapı), kayıt bu commit | 36/36 spec: 24/24 kritik rota, 6/6 parasal spot-check, 6/6 yetkilendirme; iki bağımsız koşuda tekrarlandı | 2026-08-25 |
 | 07 | Gerçek kaynak backup/restore + off-device readiness | **PARTIAL** | bu commit | `release:stage07-backup-gate` 46/47; 5/5 klasik kapı YES, fingerprint 85/85 tablo + 6/6 agrega; makbuz 9/9 alan; retention 3 yoldan test; OFF_DEVICE FIZIKSEL HEDEF = BLOCKED (donanim yok) | 2026-08-25 |
@@ -1107,9 +1107,9 @@ Sıra rehber §4'ten alınmıştır ve **değiştirilemez**.
 | 09 | Observability operationalization | **DONE** | bu commit | `ops:telemetry:alerting:verify` 33/33 (0 atlanan); alti fail-closed sinyal 6/6 enjekte -> alarm + kalici log'a teslim, 6/6 temizlendi; teslimat 4 ayri arizada gorunur ve exit 2; 26 yeni birim testi; zamanlama what-if NOT REGISTERED | 2026-08-25 |
 | 10 | Performance gap closure | **PARTIAL** | bu commit | `perf:gate` 10/10 (sert, ortamdan bagimsiz); `perf:route-slo` SERT 36/44 — 7 felaket tavani + 1 N+1, hepsi bellek acligi (0.3 GB bos RAM, yuk ilgisiz projeden); pozitif render kontrolu 16/16; esik GEVSETILMEDI | 2026-08-25 |
 | 11 | Final RC cutover rehearsal | **DONE** | `ca6e47a` | basari yolu final RC'de yeniden kosuldu (golden-fingerprint 14/14, restore-drill 9/9 + golden-ui 36); B5 env golgeleme 4 dal + B6 kod/sema esitsizligi 2 yon GERCEKTEN kosuldu; iki gercek defekt bulundu ve kapatildi | 2026-08-25 |
-| 12 | PR → master promotion | PENDING | — | — | — |
+| 12 | PR → master promotion | **BLOCKED** | — | Rehber §17 on kosulu `P0 = 0` saglanmiyor — iki acik P0 kapanmadan baslatilmadi | 2026-08-25 |
 | 13 | Master clean-runner CI | PENDING | — | — | — |
-| 14 | READY FOR CUTOVER board | PENDING | — | — | — |
+| 14 | READY FOR CUTOVER board | **DONE — NOT READY** | bu commit | 9/11 PASS; iki acik P0: off-device fiziksel hedef (donanim) + DRIFT-01 gercek DB fixture satirlari (kullanici karari) | 2026-08-25 |
 | 15 | Gerçek DB A–L (+C2) cutover | PENDING | — | — | — |
 | 16 | Immediate post-cutover verification | PENDING | — | — | — |
 | 17 | Hypercare + shadow accounting | PENDING | — | — | — |
