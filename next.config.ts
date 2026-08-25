@@ -3,6 +3,17 @@ import type { NextConfig } from "next";
 const projectRoot = process.cwd();
 
 const nextConfig: NextConfig = {
+  // Derleme çıktısı dizini — varsayılan `.next`, ortam değişkeniyle geçersiz kılınabilir.
+  //
+  // NEDEN VAR. Bu makinede canlı bir production sunucusu repo'nun `.next/` dizininden servis
+  // ediyor. Bir release kapısı (scripts/release/real-clone-gate.ts) kendi doğrulama derlemesini
+  // yaparken düz `pnpm build` çağırsa, çalışan sunucunun altındaki chunk'ları ezer: eksik/eskimiş
+  // chunk, 500'ler, Windows'ta kilitli dosya hatası. Kapı kendi çıktısını ayrı bir dizine yazar
+  // (MAS_NEXT_DIST_DIR=.next-real-clone-gate) ve canlı örneğe dokunmaz.
+  //
+  // Değişken tanımsızken davranış birebir eskisi: `.next`. Bu, "tek Next sunucusu `.next`'in
+  // sahibidir" kuralını bozmadan ikinci bir derlemeye izin vermenin tek güvenli yolu.
+  distDir: process.env.MAS_NEXT_DIST_DIR ?? ".next",
   // ESLint remains a required standalone quality gate (`npm run lint`).
   // The build worker cannot resolve pnpm's transitive plugin symlinks on this
   // Windows installation, so do not duplicate lint inside `next build`.

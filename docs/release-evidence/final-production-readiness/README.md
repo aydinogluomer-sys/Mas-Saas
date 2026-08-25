@@ -32,8 +32,8 @@ final status
 |---|---|---|---|
 | 00 | `00-final-rc-manifest.md` | Aşama 02 | **SCAFFOLD** — dosya var; `rc_sha` alanı `PENDING`, Aşama 10 kapanınca dondurulacak |
 | 01 | `01-ci-hardening.md` | Aşama 04 | YOK — Aşama 04 final RC üzerinde koşmadı |
-| 02 | `02-real-clone-migration.md` | Aşama 05 | YOK — fresh REAL clone migration/fingerprint koşmadı |
-| 03 | `03-real-clone-golden-ui.md` | Aşama 06 | YOK — Golden UI aynı REAL clone üzerinde koşmadı |
+| 02 | `02-real-clone-migration.md` | Aşama 05 | **VAR** — gerçek veri klonu 0034→0087, 14/14 değişmez |
+| 03 | `03-real-clone-golden-ui.md` | Aşama 06 | **VAR** — aynı klonda 36/36 spec, kapı 24/24 |
 | 04 | `04-security.md` | Aşama 04/06 türevi | YOK — final RC güvenlik kanıtı toplanmadı |
 | 05 | `05-real-backup-restore.md` | Aşama 07 | YOK — gerçek kaynak backup/restore + off-device kanıtı yok |
 | 06 | `06-financial-correctness.md` | Aşama 08 | YOK — birleşik deterministic golden fixture paketi yok |
@@ -50,7 +50,7 @@ final status
 | 17 | `17-operational-resilience.md` | Aşama 20 | YOK |
 | 18 | `18-final-scorecard.md` | Aşama 21 | YOK |
 
-**Mevcut slot sayısı: 1/19 (yalnız 00, SCAFFOLD).**
+**Mevcut slot sayısı: 3/19** (00 SCAFFOLD, 02 ve 03 gerçek veri klonunda üretildi).
 
 ## İndeks dışı ek dosyalar (§32 listesinde yok, bu turda zorunlu oldular)
 

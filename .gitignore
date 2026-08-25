@@ -61,6 +61,8 @@ next-env.d.ts
 # generated recovery/build artifacts
 /.next-corrupt-*/
 /.next-turbopack-incomplete-*/
+# release:real-clone-gate ayri distDir'e derler — canli sunucunun .next'ini ezmemek icin
+/.next-real-clone-gate/
 
 # local pnpm content-addressable store
 /.pnpm-store/

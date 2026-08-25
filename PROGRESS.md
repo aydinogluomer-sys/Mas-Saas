@@ -881,9 +881,9 @@ Kullanılan `evidence_class` değerleri: `REAL_READ_ONLY` / `DISPOSABLE_CLONE` /
 | Faz 0 — Kanıt dondurma | PASS | **VERIFIED PASS** | yok |
 | Faz 1 — CI release gate | PASS | **CONDITIONAL PASS** | master promote edilmedi, master CI yeşil değil, branch protection = APPROVED DEVIATION |
 | Faz 2 — Legacy harness | PASS | **VERIFIED PASS + P2 debt** | pixel baseline drift, navigation-perf |
-| Faz 3 — Golden UI Smoke | PASS | **CONDITIONAL PASS** | synthetic proof green, REAL_CLONE not verified |
+| Faz 3 — Golden UI Smoke | PASS | **VERIFIED PASS** | yok — AŞAMA 06 gerçek-veri klonunda 36/36 koştu |
 | Faz 4 — RBAC/RLS/güvenlik | PASS | **VERIFIED PASS** | cutover sonrası runtime kimliği yeniden doğrulanmalı |
-| Faz 5 — Migration prosedürü | PASS | **CONDITIONAL PASS** | final RC real-clone rerun pending |
+| Faz 5 — Migration prosedürü | PASS | **VERIFIED PASS** | yok — AŞAMA 05 gerçek veri 0034→0087 klonunda koştu |
 | Faz 6 — Backup/restore | PASS | **CONDITIONAL PASS** | restore tooling proven, real operational backup incomplete |
 | Faz 7 — Cutover provası | PASS | **VERIFIED PASS** | final RC değişirse yeniden koşulmalı |
 | Faz 8 — Gerçek DB cutover | (ertelendi) | **PARTIAL** | adım D canlı koştu; A makbuzu + F–L kapanmadı |
@@ -936,13 +936,13 @@ remaining_gap: "P2 — pixel snapshot baseline'lari bilincli olarak GUNCELLENMED
 ### Faz 3 — Golden UI Smoke
 
 ```yaml
-status: CONDITIONAL PASS — synthetic proof green, REAL_CLONE not verified
+status: VERIFIED PASS
 original_plan_reference: "Aggressive Plan §6 Faz 3 — L673-L824; test DB §6.1 L679-L697; PASS L817-L824"
-evidence_class: DISPOSABLE_SYNTHETIC
-verified_on: 2026-08-24
-verified_commit: 8d580c1
-verified_db_class: DISPOSABLE_SYNTHETIC (mas_radar_ui_golden_clone, izole cluster port 55434)
-remaining_gap: "orijinal kriter gercek mas_radar_dev'in pg_dump -> restore -> migrate klonunu (DISPOSABLE_CLONE) istiyor; bu kosulmadi. 36/36 sentetik yesil, ama birebir-klon kapisi acik. AŞAMA 05 + AŞAMA 06'da kapatilacak."
+evidence_class: DISPOSABLE_CLONE
+verified_on: 2026-08-25
+verified_commit: ec95de0 (kapi kosuldu; kayit bu commit)
+verified_db_class: DISPOSABLE_CLONE (mas_radar_final_rc_clone — gercek uretim verisinin 0034 snapshot'indan restore edilip 0087'ye migrate edilmis klonu)
+remaining_gap: "yok. AŞAMA 06 ayni migrate edilmis gercek-veri klonunda kosuldu: 36/36 spec (24/24 kritik rota, 6/6 parasal spot-check, 6/6 yetkilendirme). Parasal beklenen taraf OWNER SQL ile okundu (rehber §30.2), UI tarafi gercek oturum cerezi ile. QA bypass KAPALI. Iki bagimsiz koşuda ayni sonuc. Kanit: docs/release-evidence/final-production-readiness/03-real-clone-golden-ui.md"
 ```
 
 ### Faz 4 — RBAC / RLS / güvenlik
@@ -960,13 +960,13 @@ remaining_gap: "90 guvenlik iddiasi gecti (roles 8/8, roles-rls 29/29, export-le
 ### Faz 5 — Migration ve veri bütünlüğü prosedürü
 
 ```yaml
-status: CONDITIONAL PASS — final RC real-clone rerun pending
+status: VERIFIED PASS
 original_plan_reference: "Aggressive Plan §8 Faz 5 — L916-L975; invariant set §8.3 L958-L969; PASS L971-L975"
-evidence_class: DISPOSABLE_SYNTHETIC
-verified_on: 2026-08-24
-verified_commit: df8674e
-verified_db_class: DISPOSABLE_SYNTHETIC (izole cluster port 55436)
-remaining_gap: "release:golden-fingerprint 14/14 invariant sentetik hedefte gecti. Orijinal kriter final RC HEAD ile FRESH gercek DB dump'i uzerinde kosum istiyor; bu yapilmadi. AŞAMA 05."
+evidence_class: DISPOSABLE_CLONE
+verified_on: 2026-08-25
+verified_commit: ec95de0 (kapi kosuldu; kayit bu commit)
+verified_db_class: DISPOSABLE_CLONE (mas_radar_final_rc_clone — gercek uretim verisi, 0034 -> 0087)
+remaining_gap: "yok. release:golden-fingerprint 14/14 invariant GERCEK veri klonunda gecti; kapi ayrica 7 ledger iddiasi ekledi (surum kumesi = disk kumesi, 0035-0087 applied_by='migrate-script' yani tek entrypoint pnpm db:migrate, checksum override = 0, applied_at bu kosunun icinde). Migration 0056 senaryosu gercek satirlarda kanitlandi: operator 2 -> finance_manager 2, bayat operator 0. Legacy finansal alti tablonun satir hash'i degismedi. Kanit: docs/release-evidence/final-production-readiness/02-real-clone-migration.md"
 ```
 
 ### Faz 6 — Backup / restore readiness
@@ -1100,8 +1100,8 @@ Sıra rehber §4'ten alınmıştır ve **değiştirilemez**.
 | 02 | Final release candidate'ı sabitle | **SCAFFOLD** | `d5012da` | manifest 8/9 alan ölçüldü, `rc_sha` PENDING | 2026-08-25 |
 | 03 | Governance / master sapması | **DONE** | `d5012da` | Seçenek C waiver yazıldı, 6/6 compensating control eşlendi | 2026-08-25 |
 | 04 | Hardening branch clean CI final doğrulaması | PENDING | — | — | — |
-| 05 | Fresh REAL clone: migration + fingerprint | PENDING | — | — | — |
-| 06 | Aynı REAL clone üzerinde Golden UI + monetary smoke | PENDING | — | — | — |
+| 05 | Fresh REAL clone: migration + fingerprint | **DONE** | `ec95de0` (kapı), kayıt bu commit | `release:real-clone-gate` 24/24; golden-fingerprint 14/14; baseline 9/9; ledger 0034→0087 gerçek veride | 2026-08-25 |
+| 06 | Aynı REAL clone üzerinde Golden UI + monetary smoke | **DONE** | `ec95de0` (kapı), kayıt bu commit | 36/36 spec: 24/24 kritik rota, 6/6 parasal spot-check, 6/6 yetkilendirme; iki bağımsız koşuda tekrarlandı | 2026-08-25 |
 | 07 | Gerçek kaynak backup/restore + off-device readiness | PENDING | — | — | — |
 | 08 | Consolidated financial correctness gate | PENDING | — | — | — |
 | 09 | Observability operationalization | PENDING | — | — | — |
@@ -1132,7 +1132,53 @@ F–L adımları kapanmadığı için aşama `PENDING` kalır. Ayrıntı:
 | `docs/release-evidence/final-production-readiness/00-final-rc-manifest.md` | 02 | RC manifest scaffold, `rc_sha: PENDING` |
 | `docs/release-evidence/final-production-readiness/01-feature-freeze-reconfirmation.md` | 01 | 22 commit denetimi |
 | `docs/release-evidence/governance-waiver.md` | 03 | Seçenek C waiver |
+| `docs/release-evidence/final-production-readiness/02-real-clone-migration.md` | 05 | Gerçek veri klonunda 14/14 migration değişmezi, 0034→0087 |
+| `docs/release-evidence/final-production-readiness/03-real-clone-golden-ui.md` | 05 + 06 | Kapı raporu: baseline 9/9, ledger 7/7, Golden UI 36/36, komutlar, exit kodları |
 
 **Bu turda gerçek DB'ye yazma: YOK.** Yürütülen tek DB işlemi orkestratörün `REAL_READ_ONLY`
 sınıfındaki salt-okunur sorguları ve harcanabilir probe DB üzerindeki restore denemesidir; probe DB
 ölçümden sonra düşürülmüştür.
+
+## AŞAMA 05 + 06 — gerçek veri kapısı (`pnpm release:real-clone-gate`)
+
+Bu iki aşama, release'in en önemli boşluğuydu: bugüne kadarki her kanıt `DISPOSABLE_SYNTHETIC`
+(`seed:demo`) hedefte üretilmişti, oysa orijinal kabul kriteri gerçek üretim verisi istiyor.
+
+**Kaynak neden canlı DB değil.** Canlı `mas_radar_dev` 2026-08-25 09:43 UTC'de zaten 0087'ye
+migrate edildi; onu klonlamak 0035→0087 geçişini yeniden üretemez — klon migrate edilecek hiçbir
+şey bulamaz ve kapı boş bir "pending yok" cevabıyla yeşile döner. Bu yüzden kaynak, cutover ÖNCESİ
+alınmış gerçek snapshot'tır: `backups/cutover_A_20260825-1211.dump`, sha256 `f121cd49…` doğrulandı,
+restore sonrası baseline rehber §10'un yazdığı imzayla birebir tuttu (ledger `0034`/34, payments 19,
+checks 7, loans 1, cashflow_months 35, users 12).
+
+| Ölçüm | Sonuç |
+|---|---|
+| Kapı kontrolleri | **24/24** |
+| `release:golden-fingerprint` değişmezleri | **14/14** |
+| Golden UI spec'leri | **36/36** (24 kritik rota + 6 parasal spot-check + 6 yetkilendirme) |
+| Migration 0056, gerçek satırlarda | `operator` 2 → `finance_manager` 2, bayat `operator` = 0 |
+| Legacy finansal 6 tablonun satır hash'i | değişmedi |
+| Tekrarlanabilirlik | iki bağımsız tam koşu, aynı sonuç |
+
+**Gerçek veri bulgusu (kusur değil):** `invoices = 0` ve `bank_transactions = 0`. Şirket bu iki
+modülü henüz kullanmıyor, dolayısıyla `/finance/invoices` ve `/finance/receivables` gerçek veride
+boş-durum gösterir. Spot-check bunu gizlemiyor: sıfırı, sıfır olmasının NEDENİYLE birlikte assert
+ediyor (`açık alacak = 0` **ve** `fatura sayısı = 0`), rehberin "beklenmedik 0 yok" kuralı gereği.
+
+**Güvenlik sınırları — ölçülerek doğrulandı, iddia edilmedi:**
+
+- `mas_radar_dev`'e **yazılmadı**. Kapı ona hiç bağlanmaz. Elle koşulan salt-okunur negatif kontrol
+  iki tam koşudan sonra: `visual_*` hesabı **0**, `golden_roleflip` **0**, `sessions` **25**
+  (kapı öncesiyle aynı), ledger `87/0087`.
+- `mas_radar_app` parolası **sıfırlanmadı**. `scripts/db/set-app-role-password.ts` cluster genelinde
+  çalışır ve çağrılsaydı canlı runtime'ın kimliğini bozardı. Kapı bunun yerine klonun app bağlantısını
+  mevcut `.env.local` `DATABASE_URL`'inden **yalnız veritabanı adını değiştirerek** türetir — hem
+  güvenli hem de daha güçlü bir test, çünkü gerçek runtime kimliğiyle bağlanılır.
+- Canlı production örneği (port 3000) **bozulmadı**. Kapı `MAS_NEXT_DIST_DIR=.next-real-clone-gate`
+  ile ayrı bir çıktı dizinine derler; `.next/BUILD_ID` zaman damgası iki koşu boyunca değişmedi ve
+  `/health` kapı öncesi/sonrası `db:up` döndü. Kapı yalnız KENDİ başlattığı sunucuyu (port 3260)
+  öldürür.
+- Sunucunun gerçekten klonu kullandığı **pozitif kontrolle** kanıtlandı: `visual_*` hesaplarının
+  `sessions` satırları klonda. Kullanıcı satırını test süreci yazar, ama oturum satırını gerçek
+  `/login` akışında sunucu yazar.
+- `MAS_QA_BYPASS_AUTH` **kapalı**; kapı ayarlıysa çalışmayı reddediyor.
