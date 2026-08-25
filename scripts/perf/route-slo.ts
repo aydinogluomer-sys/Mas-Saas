@@ -637,7 +637,11 @@ async function main(): Promise<void> {
           totalDbTimeMs: r1(median(readings.map((r) => r.totalDbTimeMs))),
           slowestQueryMs: r1(worst.slowestQueryMs),
           slowestQueryShape: worst.slowestQueryShape,
-          bytes: samples[0].bytes,
+          // CI modunda zamanlama turu ATLANIR, yani `samples` boştur. Diğer bütün alanlar
+          // `has` ile korunuyordu; bu satır korunmuyordu ve CI'da
+          // "Cannot read properties of undefined (reading 'bytes')" ile düşüyordu.
+          // Isınma turu CI'da da koşar, dolayısıyla soğuk örneklem gerçek bir ölçümdür.
+          bytes: has ? samples[0].bytes : cold.get(route)!.bytes,
         };
       });
 
