@@ -1103,7 +1103,7 @@ Sıra rehber §4'ten alınmıştır ve **değiştirilemez**.
 | 05 | Fresh REAL clone: migration + fingerprint | **DONE** | `ec95de0` (kapı), kayıt bu commit | `release:real-clone-gate` 24/24; golden-fingerprint 14/14; baseline 9/9; ledger 0034→0087 gerçek veride | 2026-08-25 |
 | 06 | Aynı REAL clone üzerinde Golden UI + monetary smoke | **DONE** | `ec95de0` (kapı), kayıt bu commit | 36/36 spec: 24/24 kritik rota, 6/6 parasal spot-check, 6/6 yetkilendirme; iki bağımsız koşuda tekrarlandı | 2026-08-25 |
 | 07 | Gerçek kaynak backup/restore + off-device readiness | PENDING | — | — | — |
-| 08 | Consolidated financial correctness gate | PENDING | — | — | — |
+| 08 | Consolidated financial correctness gate | **DONE** | bu commit | `vitest run tests/financial` 86/86; 51 elle turetilmis vaka, 10 modul; QA bagimsiz yeniden hesaplama 28/28 AGREE, 6/6 mutasyon sondasi dustu | 2026-08-25 |
 | 09 | Observability operationalization | PENDING | — | — | — |
 | 10 | Performance gap closure | PENDING | — | — | — |
 | 11 | Final RC cutover rehearsal | PENDING | — | — | — |
