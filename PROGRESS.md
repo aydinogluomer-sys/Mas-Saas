@@ -581,3 +581,95 @@ runner CI sonucu** (`gh` authenticate değil) — atlanmış değil, kapsam dı�
 Ayrıntı: `docs/release-evidence/faz7-cutover-rehearsal.md` §5.
 
 **Faz 8 (gerçek DB A–L cutover) bu çalışmanın görevi değildir; burada durulmuştur.**
+
+
+---
+
+## Faz 1 — GÜNCELLEME: clean-runner CI artık DOĞRULANDI (2026-08-25)
+
+Faz 1 yukarıda "PASS (lokal), clean-runner NOT VERIFIED" olarak kapanmıştı. Bu tur gerçek GitHub
+runner'da doğrulandı **ve** clean-runner'ın açığa çıkardığı beş gizli hata (lokalde görünmüyorlardı)
+dürüstçe düzeltildi:
+
+1. `static` TS2307 — `.gitignore` `data/` deseni `src/components/data/`'yı yutmuş, bileşen commit'siz.
+2. `build` provision `dropdb` socket — `ensure.ts` probu postgres:16 init yarışına takılıyordu → TCP prob.
+3. `database-migration` `db:migrate:verify` ENOENT — p0c-checkpoint özel dump'ı CI'da yok → sınıflandı.
+4. `database-migration` 7–10. adım — p0b-managed-baseline özel dump'ı → LOCAL_PRIVATE_DATA_GATE'e taşındı.
+5. `build` `phase16:verify` süreç asılması — yetim `next` çocuğu → `detached` + `process.exit(0)`.
+
+**Sonuç:** run **32785111779**, HEAD `2709491`, conclusion=**success**, **7/7 job yeşil, failed=0**
+(`e2e-authz` + `legacy-semantic-smoke` bu dalın tarihinde ilk kez koştu). Ayrıntı ve tam kanıt
+zinciri: `docs/status-notes.md` "Faz 1 kapanış turu". Böylece Faz 1'in tek açık kalemi kapandı.
+
+
+---
+
+## Faz 12 — Observability (telemetry + fail-closed alert)
+
+| Alan | Değer |
+|---|---|
+| **Durum** | **PASS** |
+| Timestamp (UTC) | 2026-08-25 |
+| DB sınıfı | `DISPOSABLE_SYNTHETIC` — `mas_radar_telemetry_verify` (harcanabilir, kendi enjekte ettiği sentetik durum) |
+| Gerçek DB yazımı | **YOK** |
+| Komutlar | `pnpm ops:telemetry` (canlı anlık görüntü) · `pnpm ops:telemetry:verify` (kapı) |
+
+### Ne teslim edildi
+
+Tek-operatör/tek-makine dağıtımı için Prometheus kurmak izlenenden pahalıya gelirdi. Planın istediği
+daha dar ve daha yararlı: her sinyalin NEREDE yaşadığını bilmek ve tehlikeli olan altısını bir grafikte
+okunmadan durmak yerine **yüksek sesle başarısız** kılmak.
+
+- `scripts/ops/telemetry-snapshot.ts` — tek komutta runtime/DB/uygulama sinyalleri + **altı fail-closed
+  uyarı** (backup yaşı, takılı iş, bayat içe aktarım, mutabakat sapması, runtime kimliği, şema ledger'ı).
+  "belirlenemiyor" = **BAŞARISIZ**, "muhtemelen iyi" değil. Exit 0 = ALL CLEAR, exit 1 = ALERT.
+- Altı uyarının saf eşik mantığı `src/lib/ops/telemetry-alerts.ts`'e çıkarıldı; snapshot onu import
+  ediyor (araç ile kapı tek tanımı paylaşır, birbirinden kayamaz). `MAS_BACKUP_DIR` yapılandırılabilir
+  yapıldı (gerçek yedek hedefine ya da doğrulamada kontrollü temp dizinine yönlenir).
+
+### Anti-totoloji kanıtı — iki katman
+
+1. **Birim (`src/lib/ops/telemetry-alerts.test.ts`, 18 test):** her uyarı için sağlıklı değerde
+   TEMİZLENİR, eşiği aşınca ATEŞLENİR, ve **veri belirlenemediğinde ("?", Infinity, NaN, null,
+   boş) ATEŞLENİR**. Kör iki okumanın uyuşması ledger'ın sağlam olduğunun kanıtı değildir —
+   `ledgerAlert("?","?")` de ateşliyor (script'in kendi doktrinine göre kesin fail-closed).
+   `pnpm test`'in parçası → CI `static` job'unda koşar.
+2. **Entegrasyon (`scripts/ops/telemetry-verify.ts`, 14 kontrol):** GERÇEK snapshot script'ini
+   harcanabilir migrate edilmiş DB'ye karşı alt süreç olarak koşturur; enjekte edilebilen her sinyal
+   için uyarının kötü durumda **ateşlendiğini** ve düzeltilince **temizlendiğini** iki yönlü kanıtlar:
+   takılı iş, sahte ledger satırı, boş backup dizini → ateşler; temizlenince → ok. runtime_user
+   gerçek `current_user`'ı okur (owner → 'postgres' → ateşler). latest_import boşken 'İÇE AKTARIM YOK'
+   okur (aşağıdaki bulgu), taze içe aktarımda ok'a döner.
+
+### Bulunan gerçek defekt — `latest_import_age_days` her koşuda "?" veriyordu
+
+Entegrasyon doğrulaması gerçek şemaya karşı koşunca yakaladı: telemetri `max(created_at)` sorguluyordu
+ama `source_workbooks`'ta o kolon **yok** — kolon `imported_at`. Sorgu her koşu fırlıyor, sinyal "?"
+okuyor ve içe aktarım bomboş tazeyken bile uyarı ateşliyordu — fail-closed olduğu için güvenli, ama
+**işe yaramaz**. `imported_at`'e düzeltildi; doğrulama artık boş-tablo değerinin tam olarak
+'İÇE AKTARIM YOK' olduğunu (yani "?" DEĞİL) iddia ediyor, böylece bir kolon yeniden adlandırması bunu
+sessizce geri getiremez.
+
+### CI
+
+`database-migration` job'una "Observability telemetry alerts (Faz 12)" adımı eklendi: taze disposable
+DB provision edip `ops:telemetry:verify` koşar (veri-bağımsız, kendini temizler). p0b gate'lerinin
+aksine CI'da koşar çünkü özel veri değil, kendi sentetik durumunu enjekte eder.
+
+### Doğrulama — gerçek çıktı (exit code + sayı)
+
+| Kontrol | Komut | Sonuç |
+|---|---|---|
+| Birim | `pnpm exec vitest run src/lib/ops/telemetry-alerts.test.ts` | **18/18**, exit 0 |
+| Tam süit | `pnpm test` | **1129/1129** (1111 + 18), exit 0 |
+| Typecheck | `pnpm typecheck` | **exit 0** |
+| Lint | `pnpm lint` | **exit 0** (1 önceden var olan uyarı) |
+| Entegrasyon | `MIGRATION_DATABASE_URL=…mas_radar_telemetry_verify pnpm ops:telemetry:verify` | **14/14**, exit 0 |
+
+### Sınır — dürüstçe
+
+Entegrasyon iki sinyali TEK yönde kanıtlıyor: `reconciliation` (kötü yolu banka
+`bank_transactions`↔`cashflow_months` zinciri gerektirir) ve `runtime_user`'ın "temiz" yolu
+(`mas_radar_app` login gerektirir). İkisinin de mantığı birim testte iki yönlü kapatıldı; entegrasyon
+onların **wiring**'ini (sorgu gerçekten çalışıyor, gerçek değeri okuyor) kanıtlıyor. Bu ayrım açıkça
+belgelendi, gizlenmedi.

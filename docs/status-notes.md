@@ -4030,3 +4030,30 @@ Kök dizinde `Mas-Saas-p0b/` adında, **ne izlenen ne gitignore'lu** bir alt kop
 `node_modules` taşıyor, `git status` uyarıları ondan). `git add .` yapılırsa yanlışlıkla
 commit'lenebilir; bu turda yalnız açık dosya yollarıyla `git add` kullanıldı, dokunulmadı.
 Kullanıcı ya `.gitignore`'a eklemeli ya silmeli — ayrı, küçük bir temizlik.
+
+---
+
+## Faz 12 — Observability (telemetry + fail-closed alert) — DONE
+
+Mevcut `scripts/ops/telemetry-snapshot.ts` (tek komutta operasyonel sinyaller + 6 fail-closed uyarı)
+üzerine, repo disiplininin istediği **anti-totoloji kapısı** kuruldu.
+
+- **Saf eşik mantığı** `src/lib/ops/telemetry-alerts.ts`'e çıkarıldı (snapshot import ediyor → araç
+  ile kapı kaymaz). **18 birim testi** her uyarının sağlıklı değerde temizlendiğini, eşikte
+  ateşlendiğini ve **veri belirlenemediğinde ("?", Infinity, NaN, null) ateşlendiğini** kanıtlıyor;
+  `pnpm test`'in parçası (CI `static`).
+- **Entegrasyon kapısı** `scripts/ops/telemetry-verify.ts` (14 kontrol): gerçek snapshot'ı disposable
+  migrate edilmiş DB'ye karşı koşturup enjekte edilebilen her uyarının kötü durumda ateşlendiğini +
+  düzeltilince temizlendiğini iki yönlü kanıtlıyor. `MAS_BACKUP_DIR` yapılandırılabilir yapıldı.
+- **Gerçek defekt yakalandı:** `latest_import_age_days` `max(created_at)` sorguluyordu ama kolon
+  `source_workbooks.imported_at`; her koşu "?" veriyor, taze içe aktarımda bile uyarı ateşliyordu
+  (fail-closed ama işe yaramaz). `imported_at`'e düzeltildi; doğrulama boş-tabloda tam 'İÇE AKTARIM
+  YOK' iddia ediyor (kolon regresyonuna karşı kalıcı kapı).
+- **CI:** `database-migration` job'una "Observability telemetry alerts (Faz 12)" adımı eklendi
+  (disposable DB + `ops:telemetry:verify`; veri-bağımsız). package.json: `ops:telemetry`,
+  `ops:telemetry:verify`.
+- Doğrulama: vitest 1129/1129 · typecheck 0 · lint 0 (1 mevcut uyarı) · `ops:telemetry:verify` 14/14,
+  hepsi exit 0. Ayrıntı: `PROGRESS.md` "Faz 12".
+- Sınır (dürüstçe): entegrasyon `reconciliation` kötü-yolunu ve `runtime_user` temiz-yolunu tek yönde
+  kanıtlıyor (biri banka zinciri, diğeri app-role login gerektirir); ikisinin mantığı birim testte iki
+  yönlü, wiring'i entegrasyonda kanıtlı.

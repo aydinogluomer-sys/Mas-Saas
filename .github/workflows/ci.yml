@@ -87,6 +87,15 @@ jobs:
       - name: Create the application database via the ledger runner, and assert the ledger
         run: bash scripts/ci/provision-verify-db.sh mas_radar_ci_verify
 
+      # Faz 12 — observability. Proves each fail-closed telemetry alert actually fires on injected
+      # bad state and clears on good, end to end, against a fresh disposable database. Data-
+      # independent (it injects its own synthetic state), so unlike the p0b gates above it belongs
+      # in CI. The pure alert predicates are additionally unit-tested in the `static` job.
+      - name: Observability telemetry alerts (Faz 12)
+        run: |
+          bash scripts/ci/provision-verify-db.sh mas_radar_telemetry_verify
+          MIGRATION_DATABASE_URL=postgres://postgres:postgres@127.0.0.1:5432/mas_radar_telemetry_verify pnpm ops:telemetry:verify
+
       # ── Steps db:constraints/transitions/reconciliation/legacy-repair:verify — REMOVED to the
       #    LOCAL_PRIVATE_DATA_GATE (2026-08-25) ───────────────────────────────────────────────
       # Each of those four suites RESTORES backups/p0b-managed-baseline-*.dump on its first line —
