@@ -856,3 +856,283 @@ denendi ve üç gerçek hata çıktı (GRANT yok → `permission denied`; eski P
 → `users_role_check` ihlali). **Gerçek DB zarar görmedi** (ledger 0034, bütün sayılar değişmedi).
 Dört tuzak ve yeni **C2** adımı (kod sürümünü D'den hemen önce hedefe geçir)
 `docs/release-evidence/cutover-checklist.md`'ye işlendi.
+
+---
+
+# Gap Closure Rehberi — yürütme kaydı (2026-08-25)
+
+Kaynak: `MAS_SaaS_Production_Readiness_Gap_Closure_Rehberi.md`. Bu bölüm, yukarıdaki fazların
+daha önce yazılmış `PASS` etiketlerinin **üstüne geçer**. Rehber §5 (AŞAMA 00) gereği artık
+`PASS` yazabilmek için tek başına "script yeşil döndü" yetmiyor: **orijinal kabul kriterinin,
+orijinal kriterin istediği VERİ SINIFINDA** kanıtlanmış olması gerekiyor. Bir faz
+`DISPOSABLE_SYNTHETIC` üzerinde kanıtlanmış ama orijinal kriter `DISPOSABLE_CLONE` (gerçek
+`mas_radar_dev` klonu) istiyorsa, o faz `VERIFIED PASS` olamaz — `CONDITIONAL PASS` olur.
+Yukarıdaki faz bölümlerindeki teknik içerik (komutlar, assertion sayıları, bulgular) geçerliliğini
+korur; **yalnız statü etiketleri** bu bölümdeki tabloyla değiştirilmiştir. Çelişki hâlinde bu
+bölüm bağlayıcıdır.
+
+Kullanılan `evidence_class` değerleri: `REAL_READ_ONLY` / `DISPOSABLE_CLONE` /
+`DISPOSABLE_SYNTHETIC` / `CI_EPHEMERAL` / `PRODUCTION_WRITE` / `STATIC_SOURCE` / `NONE`.
+
+## Statü düzeltme tablosu — özet
+
+| Faz | Eski etiket | **Düzeltilmiş statü** | Ana eksik |
+|---|---|---|---|
+| Faz 0 — Kanıt dondurma | PASS | **VERIFIED PASS** | yok |
+| Faz 1 — CI release gate | PASS | **CONDITIONAL PASS** | master promote edilmedi, master CI yeşil değil, branch protection = APPROVED DEVIATION |
+| Faz 2 — Legacy harness | PASS | **VERIFIED PASS + P2 debt** | pixel baseline drift, navigation-perf |
+| Faz 3 — Golden UI Smoke | PASS | **CONDITIONAL PASS** | synthetic proof green, REAL_CLONE not verified |
+| Faz 4 — RBAC/RLS/güvenlik | PASS | **VERIFIED PASS** | cutover sonrası runtime kimliği yeniden doğrulanmalı |
+| Faz 5 — Migration prosedürü | PASS | **CONDITIONAL PASS** | final RC real-clone rerun pending |
+| Faz 6 — Backup/restore | PASS | **CONDITIONAL PASS** | restore tooling proven, real operational backup incomplete |
+| Faz 7 — Cutover provası | PASS | **VERIFIED PASS** | final RC değişirse yeniden koşulmalı |
+| Faz 8 — Gerçek DB cutover | (ertelendi) | **PARTIAL** | adım D canlı koştu; A makbuzu + F–L kapanmadı |
+| Faz 9 — Hypercare | — | **NOT STARTED** | tamamı |
+| Faz 10 — Gerçek kullanım | — | **NOT STARTED** | tamamı |
+| Faz 11 — Financial correctness | (dağınık PASS) | **PARTIAL** | distributed correctness coverage strong, unified golden fixture missing |
+| Faz 12 — Observability | PASS | **PARTIAL/STRONG** | telemetry gate exists, production operationalization pending |
+| Faz 13 — Operational resilience | (örtük) | **PARTIAL** | runbook seti eksik, second-operator drill yok |
+| Faz 14 — Performance | PASS | **PARTIAL/STRONG** | query plan/index gate pass, route/write SLO pending |
+| Faz 15 — AI/entegrasyon sınırı | PASS | **VERIFIED PASS** (yalnız mevcut sınır) | canlı vendor açılırsa ayrı release gate şart |
+
+## Faz bazlı YAML metadata (rehber §5 kabul kriteri)
+
+### Faz 0 — Kanıt dondurma ve release manifest
+
+```yaml
+status: VERIFIED PASS
+original_plan_reference: "Aggressive Plan §3 Faz 0 — L216-L260"
+evidence_class: STATIC_SOURCE
+verified_on: 2026-08-24
+verified_commit: 9011398 (+ 0dae59b)
+verified_db_class: NONE
+remaining_gap: "yok — 87 migration hash manifesti iki kez uretildi ve ayni cikti; ci.yml hash'i o gunden beri degisti, final RC'de yeniden olculecek"
+```
+
+### Faz 1 — CI release gate
+
+```yaml
+status: CONDITIONAL PASS
+original_plan_reference: "Aggressive Plan §4 Faz 1 — L262-L559; PASS kriteri L551-L557; branch protection §4.4 L530-L549"
+evidence_class: CI_EPHEMERAL
+verified_on: 2026-08-25
+verified_commit: 2709491 (GitHub Actions run 32785111779, conclusion=success, 7/7 job, failed=0)
+verified_db_class: CI_EPHEMERAL
+remaining_gap: "master promote edilmedi; master uzerinde yesil CI kosusu yok; branch protection = APPROVED DEVIATION (docs/release-evidence/governance-waiver.md). Yedi job'un yesil olmasi 'master hazir' anlamina gelmez."
+```
+
+### Faz 2 — Legacy Playwright harness
+
+```yaml
+status: VERIFIED PASS + P2 debt
+original_plan_reference: "Aggressive Plan §5 Faz 2 — L562-L671; PASS L663-L671"
+evidence_class: DISPOSABLE_SYNTHETIC
+verified_on: 2026-08-24
+verified_commit: a6524b8
+verified_db_class: DISPOSABLE_SYNTHETIC (mas_radar_visual_verify, izole cluster port 55433)
+remaining_gap: "P2 — pixel snapshot baseline'lari bilincli olarak GUNCELLENMEDI (21 FAIL kayitli ve kusur olarak belgelendi); navigation-perf P2"
+```
+
+### Faz 3 — Golden UI Smoke
+
+```yaml
+status: CONDITIONAL PASS — synthetic proof green, REAL_CLONE not verified
+original_plan_reference: "Aggressive Plan §6 Faz 3 — L673-L824; test DB §6.1 L679-L697; PASS L817-L824"
+evidence_class: DISPOSABLE_SYNTHETIC
+verified_on: 2026-08-24
+verified_commit: 8d580c1
+verified_db_class: DISPOSABLE_SYNTHETIC (mas_radar_ui_golden_clone, izole cluster port 55434)
+remaining_gap: "orijinal kriter gercek mas_radar_dev'in pg_dump -> restore -> migrate klonunu (DISPOSABLE_CLONE) istiyor; bu kosulmadi. 36/36 sentetik yesil, ama birebir-klon kapisi acik. AŞAMA 05 + AŞAMA 06'da kapatilacak."
+```
+
+### Faz 4 — RBAC / RLS / güvenlik
+
+```yaml
+status: VERIFIED PASS
+original_plan_reference: "Aggressive Plan §7 Faz 4 — L829-L914; PASS L910-L914"
+evidence_class: DISPOSABLE_SYNTHETIC
+verified_on: 2026-08-24
+verified_commit: 9066e29 (+ 17de55f)
+verified_db_class: DISPOSABLE_SYNTHETIC (mas_radar_security_verify, izole cluster port 55435)
+remaining_gap: "90 guvenlik iddiasi gecti (roles 8/8, roles-rls 29/29, export-leakage 36/36, security-matrix 17/17). Bir P2 acik birakildi ve gizlenmedi. Cutover sonrasi gercek runtime kimligi (mas_radar_app) uzerinde yeniden dogrulanmali."
+```
+
+### Faz 5 — Migration ve veri bütünlüğü prosedürü
+
+```yaml
+status: CONDITIONAL PASS — final RC real-clone rerun pending
+original_plan_reference: "Aggressive Plan §8 Faz 5 — L916-L975; invariant set §8.3 L958-L969; PASS L971-L975"
+evidence_class: DISPOSABLE_SYNTHETIC
+verified_on: 2026-08-24
+verified_commit: df8674e
+verified_db_class: DISPOSABLE_SYNTHETIC (izole cluster port 55436)
+remaining_gap: "release:golden-fingerprint 14/14 invariant sentetik hedefte gecti. Orijinal kriter final RC HEAD ile FRESH gercek DB dump'i uzerinde kosum istiyor; bu yapilmadi. AŞAMA 05."
+```
+
+### Faz 6 — Backup / restore readiness
+
+```yaml
+status: CONDITIONAL PASS — restore tooling proven, real operational backup incomplete
+original_plan_reference: "Aggressive Plan §9 Faz 6 — L977-L1043; PASS L1036-L1043"
+evidence_class: DISPOSABLE_SYNTHETIC
+verified_on: 2026-08-24
+verified_commit: 6ad8527
+verified_db_class: DISPOSABLE_SYNTHETIC (izole cluster port 55437)
+remaining_gap: "release:restore-drill 9/9 ve bes kapi da YES — ancak sentetik kaynakta. Eksik: gercek kaynaktan fresh backup receipt, ayri restore target, off-device/ayri fiziksel kopya, retention ve operational schedule, operational target'tan geri yukleme. AŞAMA 07."
+```
+
+### Faz 7 — Cutover provası
+
+```yaml
+status: VERIFIED PASS
+original_plan_reference: "Aggressive Plan §10 Faz 7 — L1048-L1076; PASS L1067-L1076"
+evidence_class: DISPOSABLE_SYNTHETIC
+verified_on: 2026-08-24
+verified_commit: 5fdc15a
+verified_db_class: DISPOSABLE_SYNTHETIC (izole cluster port 55438)
+remaining_gap: "Prova A basari yolu + Prova B'de dort ariza gercekten enjekte edildi ve yakalandi. Final RC degisirse yeniden kosulmasi zorunlu (AŞAMA 11). Gercek DB yazimi yok."
+```
+
+### Faz 8 — Gerçek DB cutover A–L
+
+```yaml
+status: PARTIAL
+original_plan_reference: "Aggressive Plan §11 Faz 8 — L1081-L1320"
+evidence_class: PRODUCTION_WRITE
+verified_on: 2026-08-25
+verified_commit: "685c20b (yalniz checklist kaydi) — adim D repo commit'i olmadan CANLI kosuldu"
+verified_db_class: PRODUCTION_WRITE (mas_radar_dev)
+remaining_gap: "Adim D (migration) gercek DB'de 2026-08-25 09:43:55.769957+00 - 09:43:57.982695+00 arasinda kosuldu; ledger 0034 -> 0087. Adim A dogrulanmis-yedek MAKBUZU kapatilmadi; F-L adimlari kapatilmadi. P0-DRIFT-01 (verify fixture satirlari gercek DB'de) OPEN. Ayrinti: docs/release-evidence/final-production-readiness/00-real-db-drift-manifest.md"
+```
+
+### Faz 9 — Hypercare
+
+```yaml
+status: NOT STARTED
+original_plan_reference: "Aggressive Plan §12 Faz 9 — L1324-L1367"
+evidence_class: NONE
+verified_on: null
+verified_commit: null
+verified_db_class: NONE
+remaining_gap: "tamami — hypercare penceresi, shadow accounting, gercek mutabakat"
+```
+
+### Faz 10 — Gerçek kullanım
+
+```yaml
+status: NOT STARTED
+original_plan_reference: "Aggressive Plan §13 Faz 10 — L1371-L1420"
+evidence_class: NONE
+verified_on: null
+verified_commit: null
+verified_db_class: NONE
+remaining_gap: "tamami — route usage telemetrisi, IA konsolidasyonu, gercek kullanici is dongusu"
+```
+
+### Faz 11 — Financial correctness
+
+```yaml
+status: PARTIAL — distributed correctness coverage strong, unified golden fixture missing
+original_plan_reference: "Aggressive Plan §14 Faz 11 — L1424-L1468"
+evidence_class: CI_EPHEMERAL
+verified_on: 2026-08-25
+verified_commit: 126f44f
+verified_db_class: NONE (birim invariant testleri DB'siz kosar) + CI_EPHEMERAL (DB'li phase verify'lar)
+remaining_gap: "Tek deterministik golden fixture paketi ve ELLE tanimlanmis expected output seti yok. Mevcut kanit dagitik testlerde; rehber §13 (AŞAMA 08) birlesik kapiyi ve bagimsiz aritmetikle dogrulanmis beklenen degerleri sart kosuyor."
+```
+
+### Faz 12 — Observability
+
+```yaml
+status: PARTIAL/STRONG — telemetry gate exists, production operationalization pending
+original_plan_reference: "Aggressive Plan §15 Faz 12 — L1472-L1516"
+evidence_class: DISPOSABLE_SYNTHETIC
+verified_on: 2026-08-25
+verified_commit: 48ef9b5
+verified_db_class: DISPOSABLE_SYNTHETIC (mas_radar_telemetry_verify)
+remaining_gap: "Fail-closed alert kapisi ve telemetry snapshot var, CI'da kosuyor. Eksik: gercek prod scheduling, alert delivery kanali, runtime/DB/app katmanlarinin operasyonel kullanimi. AŞAMA 09."
+```
+
+### Faz 13 — Operational resilience
+
+```yaml
+status: PARTIAL
+original_plan_reference: "Aggressive Plan §16 Faz 13 — L1520-L1562"
+evidence_class: STATIC_SOURCE
+verified_on: 2026-08-25
+verified_commit: "6ad8527 (docs/backup-restore-policy.md) + 685c20b (docs/release-evidence/cutover-checklist.md) — ayrilmis bir Faz 13 commit'i yok"
+verified_db_class: NONE
+remaining_gap: "Tam runbook seti eksik; second-operator drill hic yapilmadi; secret rotation prosedurü yok. Rehber §30.6: 'runbook exists' operasyona hazir demek degildir — runbook KOSULMUS olmali. AŞAMA 20."
+```
+
+### Faz 14 — Performance
+
+```yaml
+status: PARTIAL/STRONG — query plan/index gate pass, route/write SLO pending
+original_plan_reference: "Aggressive Plan §17 Faz 14 — L1566-L1601"
+evidence_class: DISPOSABLE_SYNTHETIC
+verified_on: 2026-08-25
+verified_commit: cb5be45
+verified_db_class: DISPOSABLE_SYNTHETIC (mas_radar_perf_verify, aritmetik uretilmis hacim)
+remaining_gap: "perf:gate plan sekli + index audit uzerinden kosuyor. Eksik: HTTP route SLO, write/import SLO, UI interactive readiness olcumu. AŞAMA 10."
+```
+
+### Faz 15 — AI ve entegrasyon sınırı
+
+```yaml
+status: VERIFIED PASS (yalniz MEVCUT sinir icin)
+original_plan_reference: "Aggressive Plan §18 Faz 15 — L1605-L1641"
+evidence_class: STATIC_SOURCE
+verified_on: 2026-08-25
+verified_commit: 5eb2d84
+verified_db_class: NONE (saf statik kaynak taramasi; DB yok, ag yok)
+remaining_gap: "Kapi bugunku sinirin yapisini kanitlar. Canli vendor/endpoint acilirsa bu PASS DUSER ve AYRI bir release gate zorunlu olur. Canli endpoint'e karsi test yok — ortamda ag yok, bu limit bastan beri belgeli."
+```
+
+## Gap-closure aşama defteri (00–22)
+
+Sıra rehber §4'ten alınmıştır ve **değiştirilemez**.
+
+| Aşama | Ad | Durum | Commit | Test | Tarih |
+|---|---|---|---|---|---|
+| 00 | Durum iddialarını düzelt | **DONE** | `PENDING-SHA` | 16 faz statüsü düzeltildi, 16/16 YAML metadata bloğu yazıldı | 2026-08-25 |
+| 01 | Feature freeze'i yeniden teyit et | **DONE** | `PENDING-SHA` | 22/22 commit denetlendi, violation=0, borderline=2 | 2026-08-25 |
+| 02 | Final release candidate'ı sabitle | **SCAFFOLD** | `PENDING-SHA` | manifest 8/9 alan ölçüldü, `rc_sha` PENDING | 2026-08-25 |
+| 03 | Governance / master sapması | **DONE** | `PENDING-SHA` | Seçenek C waiver yazıldı, 6/6 compensating control eşlendi | 2026-08-25 |
+| 04 | Hardening branch clean CI final doğrulaması | PENDING | — | — | — |
+| 05 | Fresh REAL clone: migration + fingerprint | PENDING | — | — | — |
+| 06 | Aynı REAL clone üzerinde Golden UI + monetary smoke | PENDING | — | — | — |
+| 07 | Gerçek kaynak backup/restore + off-device readiness | PENDING | — | — | — |
+| 08 | Consolidated financial correctness gate | PENDING | — | — | — |
+| 09 | Observability operationalization | PENDING | — | — | — |
+| 10 | Performance gap closure | PENDING | — | — | — |
+| 11 | Final RC cutover rehearsal | PENDING | — | — | — |
+| 12 | PR → master promotion | PENDING | — | — | — |
+| 13 | Master clean-runner CI | PENDING | — | — | — |
+| 14 | READY FOR CUTOVER board | PENDING | — | — | — |
+| 15 | Gerçek DB A–L (+C2) cutover | PENDING | — | — | — |
+| 16 | Immediate post-cutover verification | PENDING | — | — | — |
+| 17 | Hypercare + shadow accounting | PENDING | — | — | — |
+| 18 | Controlled pilot | PENDING | — | — | — |
+| 19 | Real-use telemetry + IA consolidation | PENDING | — | — | — |
+| 20 | Operational resilience / second-operator drill | PENDING | — | — | — |
+| 21 | Final production scorecard | PENDING | — | — | — |
+| 22 | Feature freeze removal | PENDING | — | — | — |
+
+**Not:** Aşama 15, Faz 8'in adım D'si canlı koştuğu için "sıfırdan" değildir; ancak A makbuzu ve
+F–L adımları kapanmadığı için aşama `PENDING` kalır. Ayrıntı:
+`docs/release-evidence/final-production-readiness/00-real-db-drift-manifest.md`.
+
+## Bu turda üretilen kanıt dosyaları
+
+| Dosya | Aşama | İçerik |
+|---|---|---|
+| `docs/release-evidence/final-production-readiness/README.md` | 00 | §32'nin 19 slotluk indeksi + gerçek doluluk durumu (1/19) |
+| `docs/release-evidence/final-production-readiness/00-real-db-drift-manifest.md` | 05 ön koşulu | Gerçek DB read-only manifest, drift açıklaması, P0-DRIFT-01 |
+| `docs/release-evidence/final-production-readiness/00-final-rc-manifest.md` | 02 | RC manifest scaffold, `rc_sha: PENDING` |
+| `docs/release-evidence/final-production-readiness/01-feature-freeze-reconfirmation.md` | 01 | 22 commit denetimi |
+| `docs/release-evidence/governance-waiver.md` | 03 | Seçenek C waiver |
+
+**Bu turda gerçek DB'ye yazma: YOK.** Yürütülen tek DB işlemi orkestratörün `REAL_READ_ONLY`
+sınıfındaki salt-okunur sorguları ve harcanabilir probe DB üzerindeki restore denemesidir; probe DB
+ölçümden sonra düşürülmüştür.
