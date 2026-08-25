@@ -39,6 +39,7 @@ import {
   APP_ROLES, CLASS_MATRIX, DB_ROLE, OWNER_SCOPED_TABLES, TABLE_CLASS,
   can, type AppRole,
 } from "../../src/lib/authz/matrix";
+import { formatTargetIdentity } from "./env-source";
 
 const ownerUrl = process.env.MIGRATION_DATABASE_URL;
 const appUrl = process.env.DATABASE_URL;
@@ -143,7 +144,34 @@ async function ensureFixtures(): Promise<void> {
   }
 }
 
+/**
+ * AŞAMA 20 / P2 — kapının ilk satırı: HANGİ veritabanı, HANGİ kimlik.
+ *
+ * Bu kapının iki bağlantısı var ve yargılar YALNIZ app bağlantısında veriliyor; satır bu
+ * yüzden app hedefini önde, owner hedefini parantezde gösterir. İkisi FARKLI veritabanlarını
+ * gösteriyorsa sonuç anlamsızdır — ve bu, çıktıya bakan biri için ancak yazılıysa görünür.
+ * Ölçülür (`current_database()`), bağlantı dizesinden türetilmez; host/port/parola yazılmaz.
+ */
+async function logTargetIdentity(): Promise<void> {
+  const read = async (p: Pool): Promise<{ db?: string; usr?: string }> => {
+    try {
+      const r = await p.query<{ db: string; usr: string }>(
+        "select current_database() as db, current_user as usr",
+      );
+      return { db: r.rows[0]?.db, usr: r.rows[0]?.usr };
+    } catch {
+      return {};
+    }
+  };
+  const [appId, ownerId] = await Promise.all([read(app), read(owner)]);
+  console.log(
+    `${formatTargetIdentity(appId.db, appId.usr)} (owner bağlantısı: ` +
+      `db=${ownerId.db ?? "(bilinmiyor)"} user=${ownerId.usr ?? "(bilinmiyor)"})\n`,
+  );
+}
+
 async function main(): Promise<void> {
+  await logTargetIdentity();
   await ensureFixtures();
 
   /* ── A. structure ───────────────────────────────────────────────────────────────────── */

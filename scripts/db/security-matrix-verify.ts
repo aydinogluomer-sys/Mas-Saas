@@ -28,6 +28,7 @@ import {
   canSeeModule, GATED_ROUTES, type AppRole,
 } from "../../src/lib/authz/matrix";
 import { canAccessRoute } from "../../src/lib/authz/route-access";
+import { formatTargetIdentity } from "./env-source";
 import { requireDisposableOwnerDatabaseUrl } from "./owner-url";
 
 const ROOT = process.cwd();
@@ -62,6 +63,13 @@ function codeOnly(src: string): string {
 }
 
 async function main(): Promise<void> {
+  // AŞAMA 20 / P2 — kapının ilk satırı ÖLÇÜLEN hedeftir (bkz. scripts/db/roles-verify.ts
+  // başlığı). Yalnız ad; host, port, parola yok.
+  const identity = (await pool.query<{ db: string; usr: string }>(
+    "select current_database() as db, current_user as usr",
+  )).rows[0];
+  console.log(`${formatTargetIdentity(identity?.db, identity?.usr)}\n`);
+
   /* ── 7.1 — the eight-action matrix, compared to the database automatically ──────────────
    *
    * The four SQL verbs are compared at the GRANT layer for EVERY tier × EVERY live table. This is

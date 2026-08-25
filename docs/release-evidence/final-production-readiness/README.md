@@ -47,10 +47,10 @@ final status
 | 14 | `14-shadow-accounting.md` | Aşama 17 | YOK |
 | 15 | `15-controlled-pilot.md` | Aşama 18 | YOK |
 | 16 | `16-usage-validation.md` | Aşama 19 | YOK |
-| 17 | `17-operational-resilience.md` | Aşama 20 | YOK |
+| 17 | `17-operational-resilience.md` | Aşama 20 | **VAR — PARTIAL** — 12/12 runbook (`docs/ops/`) 10 bölümlük formatla yazıldı, komutları doğrulandı; salt-okuma kanıt koşuları geçti; kimlik satırı P2'si kapatıldı. **Second-operator drill YAPILMADI — ikinci bir insan gerekiyor** |
 | 18 | `18-final-scorecard.md` | Aşama 21 | YOK |
 
-**Mevcut slot sayısı: 6/19** (00 SCAFFOLD; 02 ve 03 gerçek veri klonunda; 05 PARTIAL — off-device fiziksel hedef BLOCKED; 07 PASS; 09 PASS). Slot 05'in satırı Aşama 07 turunda güncellenmemişti, bu turda dosyanın gerçek durumuna göre düzeltildi.
+**Mevcut slot sayısı: 7/19** (00 SCAFFOLD; 02 ve 03 gerçek veri klonunda; 05 PARTIAL — off-device fiziksel hedef BLOCKED; 07 PASS; 09 PASS; 17 PARTIAL — second-operator drill eksik). Slot 05'in satırı Aşama 07 turunda güncellenmemişti, dosyanın gerçek durumuna göre düzeltildi.
 
 ## İndeks dışı ek dosyalar (§32 listesinde yok, bu turda zorunlu oldular)
 

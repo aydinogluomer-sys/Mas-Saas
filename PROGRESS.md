@@ -891,7 +891,7 @@ Kullanılan `evidence_class` değerleri: `REAL_READ_ONLY` / `DISPOSABLE_CLONE` /
 | Faz 10 — Gerçek kullanım | — | **NOT STARTED** | tamamı |
 | Faz 11 — Financial correctness | (dağınık PASS) | **PARTIAL** | distributed correctness coverage strong, unified golden fixture missing |
 | Faz 12 — Observability | PASS | **VERIFIED PASS** | alert delivery + scheduling operational; 5 sinyal bu mimaride olculemez (belgeli) |
-| Faz 13 — Operational resilience | (örtük) | **PARTIAL** | runbook seti eksik, second-operator drill yok |
+| Faz 13 — Operational resilience | (örtük) | **PARTIAL** | 12/12 runbook yazıldı ve komutları doğrulandı; second-operator drill yok (ikinci insan gerekiyor), yıkıcı yollar koşulmadı |
 | Faz 14 — Performance | PASS | **PARTIAL/STRONG** | query plan/index gate pass, route/write SLO pending |
 | Faz 15 — AI/entegrasyon sınırı | PASS | **VERIFIED PASS** (yalnız mevcut sınır) | canlı vendor açılırsa ayrı release gate şart |
 
@@ -1057,12 +1057,12 @@ remaining_gap: "Rehber §14'un dort kabul kriteri de olculerek karsilandi (ops:t
 
 ```yaml
 status: PARTIAL
-original_plan_reference: "Aggressive Plan §16 Faz 13 — L1520-L1562"
-evidence_class: STATIC_SOURCE
-verified_on: 2026-08-25
-verified_commit: "6ad8527 (docs/backup-restore-policy.md) + 685c20b (docs/release-evidence/cutover-checklist.md) — ayrilmis bir Faz 13 commit'i yok"
-verified_db_class: NONE
-remaining_gap: "Tam runbook seti eksik; second-operator drill hic yapilmadi; secret rotation prosedurü yok. Rehber §30.6: 'runbook exists' operasyona hazir demek degildir — runbook KOSULMUS olmali. AŞAMA 20."
+original_plan_reference: "Aggressive Plan §16 Faz 13 — L1520-L1562 · Gap Closure Rehberi §25 AŞAMA 20"
+evidence_class: REAL_READ_ONLY (kanit kosulari) + DISPOSABLE_CLONE (iki kapi)
+verified_on: 2026-08-26
+verified_commit: "bu commit (AŞAMA 20); onceki katman 0e3e595"
+verified_db_class: REAL_READ_ONLY (mas_radar_dev — tek satir yazilmadi) · DISPOSABLE_CLONE (mas_radar_e2e_verify)
+remaining_gap: "Runbook seti TAMAM: 12/12 dosya, 10 bolumluk zorunlu format, her dosyada §29 veri sinifi + WRITE EXPECTED. Secret rotation prosedürü dort sinif icin yazildi (DB owner / app DB / oturum iptali / entegrasyon anahtarlari) — bu mimaride SESSION_SECRET degiskeni YOK, oturumlar DB'de tutulur, karsiligi toplu oturum iptalidir. Atif yapilan her komut package.json ve scripts/ uzerinden dogrulandi; uydurulmus komut yok. KOSULDU: db:env:source (0), db:roles:verify 8/8 gercek DB salt-okuma, ops:telemetry 21/21, ops:backup:prune kuru kosu, db:roles-rls:verify 29/29 + db:security-matrix:verify 17/17 (harcanabilir hedef). AYRICA P2 kapatildi: uc dogrulama kapisi artik ilk satirda OLCULEN hedefi yaziyor (`Hedef: db=... user=...`) — B5-2'nin sahte yesili bu yuzden gorunmuyordu. KOSULMADI (bilincli): parola rotasyonu (roller kume genelinde — canliyi dusurur), durdurma/yeniden baslatma, backup --apply budama, gercek restore tatbikati, zamanlanmis gorev kaydi. KAPANMAYAN TEK KRITER: second-operator drill — rehber §25 ikinci bir INSAN sart kosuyor, bir ajan tarafindan karsilanamaz; bus factor hala 1. Kanit: docs/release-evidence/final-production-readiness/17-operational-resilience.md"
 ```
 
 ### Faz 14 — Performance
@@ -1115,7 +1115,7 @@ Sıra rehber §4'ten alınmıştır ve **değiştirilemez**.
 | 17 | Hypercare + shadow accounting | PENDING | — | — | — |
 | 18 | Controlled pilot | PENDING | — | — | — |
 | 19 | Real-use telemetry + IA consolidation | PENDING | — | — | — |
-| 20 | Operational resilience / second-operator drill | PENDING | — | — | — |
+| 20 | Operational resilience / second-operator drill | **PARTIAL** | bu commit | 12/12 runbook 10 bolumluk formatla yazildi; atif yapilan her komut package.json/scripts uzerinden dogrulandi; salt-okuma kanit kosulari gecti (env:source 0, roles:verify 8/8 gercek DB, ops:telemetry 21/21, backup:prune kuru kosu); harcanabilir hedefte roles-rls 29/29 + security-matrix 17/17; kimlik satiri 3 kapiya eklendi. **Second-operator drill YAPILMADI — ikinci bir insan gerekiyor** | 2026-08-26 |
 | 21 | Final production scorecard | PENDING | — | — | — |
 | 22 | Feature freeze removal | PENDING | — | — | — |
 

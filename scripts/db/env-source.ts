@@ -65,17 +65,59 @@ function present(value: string | undefined): string | undefined {
  * hiçbir kolda dönmez; ayrıştırılamayan bir dize için `undefined` döner ve çağıran onu
  * "(okunamadı)" diye gösterir — ham dizeyi ASLA.
  */
-export function connectionTargetLabel(url: string | undefined): string | undefined {
+export function connectionTargetParts(
+  url: string | undefined,
+): { user: string; database: string } | undefined {
   if (present(url) === undefined) return undefined;
   try {
     const parsed = new URL(url as string);
-    const db = decodeURIComponent(parsed.pathname.replace(/^\//, ""));
+    const database = decodeURIComponent(parsed.pathname.replace(/^\//, ""));
     const user = decodeURIComponent(parsed.username);
-    if (db === "") return undefined;
-    return user === "" ? db : `${user}@${db}`;
+    if (database === "") return undefined;
+    return { user, database };
   } catch {
     return undefined;
   }
+}
+
+export function connectionTargetLabel(url: string | undefined): string | undefined {
+  const parts = connectionTargetParts(url);
+  if (parts === undefined) return undefined;
+  return parts.user === "" ? parts.database : `${parts.user}@${parts.database}`;
+}
+
+/**
+ * AŞAMA 20 / P2 — kapıların çıktısındaki TEK kimlik satırı.
+ *
+ * NEDEN VAR. AŞAMA 11'in B5-2 provasında `db:roles:verify` yanlış bir veritabanına karşı
+ * `8/8 kontrol geçti` yazdı ve exit 0 verdi. Yanlışlığı ortaya çıkaran tek şey DIŞARIDAN
+ * alınan bir satır sayımıydı (18 ≠ 17); kapının kendi çıktısında hangi veritabanına
+ * bağlanıldığını söyleyen hiçbir şey yoktu. Bu satır o boşluğu kapatır.
+ *
+ * YALNIZ AD. Host, port, parola ve bağlantı dizesi hiçbir kolda yazdırılmaz — kanıt
+ * dosyalarına ve konsol geçmişine giren metin budur.
+ */
+export function formatTargetIdentity(
+  database: string | undefined,
+  user: string | undefined,
+): string {
+  const db = present(database) ?? "(bilinmiyor)";
+  const usr = present(user) ?? "(bilinmiyor)";
+  return `Hedef: db=${db} user=${usr}`;
+}
+
+/**
+ * Aynı satırın, bağlantı HİÇ AÇILAMADIĞINDA kullanılan hâli.
+ *
+ * Bağlanamamış bir kapı `current_database()` soramaz; o durumda operatörün görmesi gereken
+ * şey NİYET EDİLEN hedeftir — "hangi veritabanına ulaşmaya çalıştım" sorusu, "orada ne
+ * gördüm" sorusundan bağımsız olarak cevaplanmalıdır.
+ */
+export function formatIntendedTargetIdentity(url: string | undefined): string {
+  const parts = connectionTargetParts(url);
+  return parts === undefined
+    ? "Hedef (bağlanılamadı): db=(okunamadı) user=(okunamadı)"
+    : `Hedef (bağlanılamadı): db=${parts.database} user=${parts.user === "" ? "(okunamadı)" : parts.user}`;
 }
 
 /** Saf karar: değer nereden geliyor? */

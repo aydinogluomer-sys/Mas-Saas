@@ -7,7 +7,15 @@
 // (src/lib/env.ts), not an owner one. Read-only by construction: the single write it
 // attempts is the one that is supposed to be refused, and even that runs inside a
 // transaction that is always rolled back, so a broken REVOKE cannot leave a row behind.
+//
+// ── AŞAMA 20 / P2: KİMLİK SATIRI ────────────────────────────────────────────────────────
+// Bu kapı bir kez YANLIŞ veritabanına karşı `8/8 kontrol geçti` yazdı (AŞAMA 11 / B5-2) ve
+// çıktının hiçbir yerinde hangi veritabanına bağlanıldığı geçmiyordu. Artık ilk satır
+// ÖLÇÜLEN kimliktir: `current_database()` + `current_user`. Bağlantı dizesinden türetilmez —
+// ölçülür; niyet edilen hedef ile gerçekten bağlanılan hedef ayrı şeylerdir. Host, port ve
+// parola hiçbir kolda yazdırılmaz.
 import { Pool } from "pg";
+import { formatIntendedTargetIdentity, formatTargetIdentity } from "./env-source";
 
 const ROLE = "mas_radar_app";
 
@@ -39,8 +47,12 @@ async function main(): Promise<void> {
   const pool = new Pool({ connectionString: databaseUrl, max: 1, connectionTimeoutMillis: 5_000 });
   try {
     // 1 — identity
-    const who = await pool.query<{ who: string }>("select current_user as who");
+    const who = await pool.query<{ db: string; who: string }>(
+      "select current_database() as db, current_user as who",
+    );
     const currentUser = who.rows[0]?.who ?? "(bilinmiyor)";
+    console.log(formatTargetIdentity(who.rows[0]?.db, who.rows[0]?.who));
+    console.log("");
     record("current_user = " + ROLE, currentUser === ROLE, `current_user='${currentUser}'`);
 
     // 2 — the two attributes that would silently make every RLS policy decorative again
@@ -151,6 +163,9 @@ async function main(): Promise<void> {
 }
 
 main().catch((e) => {
+  // Bağlanamamış bir kapı `current_database()` soramaz; kimlik satırı yine de basılır —
+  // bu kolda NİYET EDİLEN hedefin adıyla.
+  console.error(formatIntendedTargetIdentity(process.env.DATABASE_URL));
   console.error(e instanceof Error ? e.message : e);
   process.exit(1);
 });

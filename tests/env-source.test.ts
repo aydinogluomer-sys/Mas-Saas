@@ -3,7 +3,10 @@ import {
   CONNECTION_ENV_NAMES,
   classifyEnvSource,
   connectionTargetLabel,
+  connectionTargetParts,
   describeEnvSource,
+  formatIntendedTargetIdentity,
+  formatTargetIdentity,
   inspectEnvSource,
   inspectEnvSources,
   shadowedNames,
@@ -77,6 +80,48 @@ describe("env kaynağı — hedef etiketi parolayı ASLA taşımaz", () => {
     expect(connectionTargetLabel("bu bir url degil")).toBeUndefined();
     // Veritabanı adı yoksa etiket üretilmez.
     expect(connectionTargetLabel("postgres://u:p@h:5432/")).toBeUndefined();
+  });
+});
+
+/**
+ * AŞAMA 20 / P2 — kapı çıktısındaki kimlik satırı.
+ *
+ * ÖLÇÜLEN KUSUR (AŞAMA 11 / B5-2): `db:roles:verify` YANLIŞ bir veritabanına karşı
+ * "8/8 kontrol geçti" yazdı ve exit 0 verdi. Yanlışlığı yalnız DIŞARIDAN alınan bir satır
+ * sayımı (18 ≠ 17) ortaya çıkardı; kapının çıktısında hedefin adı geçmiyordu. Bu blok,
+ * satırın hem ÜRETİLDİĞİNİ hem de parola/host taşımadığını sabitler.
+ */
+describe("kimlik satırı — hedefi söyler, sırrı söylemez", () => {
+  it("ölçülen db + user tek satırda", () => {
+    expect(formatTargetIdentity("mas_radar_dev", "mas_radar_app")).toBe(
+      "Hedef: db=mas_radar_dev user=mas_radar_app",
+    );
+  });
+
+  it("eksik değer uydurulmuyor — '(bilinmiyor)' yazılır", () => {
+    expect(formatTargetIdentity(undefined, undefined)).toBe("Hedef: db=(bilinmiyor) user=(bilinmiyor)");
+    expect(formatTargetIdentity("", "")).toBe("Hedef: db=(bilinmiyor) user=(bilinmiyor)");
+  });
+
+  it("bağlanılamayan kolda NİYET EDİLEN hedef yazılır, ham dize değil", () => {
+    const line = formatIntendedTargetIdentity(SHELL);
+    expect(line).toBe("Hedef (bağlanılamadı): db=mas_radar_kabuk_probe user=postgres");
+    expect(line).not.toContain("sifre");
+    expect(line).not.toContain("127.0.0.1");
+    expect(line).not.toContain("5432");
+  });
+
+  it("ayrıştırılamayan dizede bile ham dize sızmıyor", () => {
+    expect(formatIntendedTargetIdentity("bu bir url degil")).toBe(
+      "Hedef (bağlanılamadı): db=(okunamadı) user=(okunamadı)",
+    );
+    expect(formatIntendedTargetIdentity(undefined)).toContain("(okunamadı)");
+  });
+
+  it("parçalayıcı ile etiket AYNI ayrıştırmayı paylaşıyor (kopya mantık yok)", () => {
+    const parts = connectionTargetParts(FILE);
+    expect(parts).toEqual({ user: "mas_radar_app", database: "mas_radar_dev" });
+    expect(connectionTargetLabel(FILE)).toBe(`${parts?.user}@${parts?.database}`);
   });
 });
 
