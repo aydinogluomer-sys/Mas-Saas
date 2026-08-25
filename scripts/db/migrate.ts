@@ -18,6 +18,13 @@ import {
 } from "./migration-lib";
 import { backupDockerPostgres, verifyBackupTarget, type BackupResult } from "./backup-docker-postgres";
 import { ownerDatabaseUrl } from "./owner-url";
+import { readEnvLocal } from "./app-url";
+import {
+  CONNECTION_ENV_NAMES,
+  describeEnvSource,
+  inspectEnvSources,
+  shadowedNames,
+} from "./env-source";
 
 const CONTAINER = process.env.MAS_DB_CONTAINER ?? "mas-radar-pg";
 const BASELINE_PATH = path.join(process.cwd(), "scripts", "db", "legacy-baseline-0019.json");
@@ -417,7 +424,47 @@ function printReport(report: MigrateReport, connection: { database: string; user
   }
 }
 
+/**
+ * AŞAMA 11 / B5 — bağlantı değişkeni HANGİ KAYNAKTAN geldi?
+ *
+ * `Bağlantı: db=… user=…` satırı hangi veritabanına bağlanıldığını zaten söylüyor, ama
+ * NEDEN oraya bağlanıldığını söylemiyor. 2026-08-25 canlı denemesinde eksik olan tam olarak
+ * buydu: `.env.local` düzeltildi, hata sürdü, çünkü eski oturumdaki `$env:DATABASE_URL`
+ * kazanıyordu ve hiçbir çıktı bunu ima etmiyordu.
+ *
+ * NEDEN ÖLDÜRMÜYOR. Release kapıları (golden-fingerprint, real-clone-gate) hedefi BİLEREK
+ * çocuk ortamda değiştirir; o gölgeleme kasıtlıdır ve bir hata değildir. Bu yüzden burada
+ * uyarı, `pnpm db:env:source` CLI'ında ise exit 1. `MAS_ENV_SHADOW_STRICT=1` ile bu giriş de
+ * durdurulabilir — cutover kabuğunda önerilen ayar budur.
+ *
+ * Değer yazdırılmaz; yalnız kaynak ve `kullanıcı@veritabanı` etiketi.
+ */
+function reportConnectionEnvSource(): void {
+  let fileEnv: Record<string, string> = {};
+  try {
+    fileEnv = readEnvLocal();
+  } catch {
+    return; // .env.local yok (CI) — karşılaştırılacak bir şey de yok.
+  }
+  const findings = inspectEnvSources(CONNECTION_ENV_NAMES, process.env, fileEnv);
+  const shadowed = shadowedNames(findings);
+  if (shadowed.length === 0) return;
+  console.warn("ENV SHADOWING UYARISI — kabuk değeri .env.local'ı geçersiz kılıyor:");
+  for (const finding of findings.filter((f) => f.shadowed)) {
+    console.warn(`  ${describeEnvSource(finding)}`);
+  }
+  console.warn("  Kasıtlı değilse: yeni bir kabuk açın. Ayrıntı: pnpm db:env:source");
+  if (process.env.MAS_ENV_SHADOW_STRICT === "1") {
+    throw new HardFailError(
+      `MAS_ENV_SHADOW_STRICT=1 ve gölgelenen değişken var (${shadowed.join(", ")}). ` +
+        "Hiçbir SQL çalıştırılmadı.",
+    );
+  }
+}
+
 async function main(): Promise<void> {
+  reportConnectionEnvSource();
+
   const databaseUrl = ownerDatabaseUrl();
   if (!databaseUrl) {
     throw new HardFailError("MIGRATION_DATABASE_URL (veya DATABASE_URL) tanımlı değil.");

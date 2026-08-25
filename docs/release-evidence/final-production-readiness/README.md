@@ -39,7 +39,7 @@ final status
 | 06 | `06-financial-correctness.md` | Aşama 08 | YOK — birleşik deterministic golden fixture paketi yok |
 | 07 | `07-observability.md` | Aşama 09 | **VAR** — alert delivery (kalıcı JSONL log + isteğe bağlı Telegram/e-posta), zamanlanmış gözetim işi (KAYDEDİLMEDİ), kapı 33/33 |
 | 08 | `08-performance.md` | Aşama 10 | YOK — route/write SLO kanıtı yok |
-| 09 | `09-cutover-rehearsal.md` | Aşama 11 | YOK — final RC provası koşmadı |
+| 09 | `09-cutover-rehearsal.md` | Aşama 11 | **VAR** — final RC provası koştu: golden-fingerprint 14/14, restore-drill 9/9 (5 kapı YES, golden-ui 36 passed), B5 environment shadowing + B6 code/schema pairing gerçekten enjekte edildi, B1–B6 karar tablosu 20 satır |
 | 10 | `10-pr-master.md` | Aşama 12 | YOK — PR açılmadı, master promote edilmedi |
 | 11 | `11-master-ci.md` | Aşama 13 | YOK — master CI green kanıtı yok |
 | 12 | `12-cutover-receipt.md` | Aşama 15 | YOK — gerçek A–L cutover kapanmadı |
@@ -50,7 +50,7 @@ final status
 | 17 | `17-operational-resilience.md` | Aşama 20 | YOK |
 | 18 | `18-final-scorecard.md` | Aşama 21 | YOK |
 
-**Mevcut slot sayısı: 5/19** (00 SCAFFOLD; 02 ve 03 gerçek veri klonunda; 05 PARTIAL — off-device fiziksel hedef BLOCKED; 07 PASS). Slot 05'in satırı Aşama 07 turunda güncellenmemişti, bu turda dosyanın gerçek durumuna göre düzeltildi.
+**Mevcut slot sayısı: 6/19** (00 SCAFFOLD; 02 ve 03 gerçek veri klonunda; 05 PARTIAL — off-device fiziksel hedef BLOCKED; 07 PASS; 09 PASS). Slot 05'in satırı Aşama 07 turunda güncellenmemişti, bu turda dosyanın gerçek durumuna göre düzeltildi.
 
 ## İndeks dışı ek dosyalar (§32 listesinde yok, bu turda zorunlu oldular)
 

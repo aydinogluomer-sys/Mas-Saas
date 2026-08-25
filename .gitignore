@@ -64,6 +64,10 @@ next-env.d.ts
 # release:real-clone-gate ayri distDir'e derler — canli sunucunun .next'ini ezmemek icin
 /.next-real-clone-gate/
 /.next-stage10-perf/
+/.next-restore-drill/
+# ASAMA 11 / B6: eski bir commit'in agaci (git archive) code/schema pairing provasi icin
+# buraya cikarilir; kalici degildir ve depoya girmez.
+/.stage11-oldcode/
 
 # local pnpm content-addressable store
 /.pnpm-store/

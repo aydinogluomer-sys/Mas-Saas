@@ -27,6 +27,7 @@
     "db:roles:verify": "tsx scripts/db/roles-verify.ts",
     "db:roles-rls:verify": "tsx scripts/db/roles-rls-verify.ts",
     "db:app-role:password": "tsx scripts/db/set-app-role-password.ts",
+    "db:env:source": "tsx scripts/db/env-source-check.ts",
     "ops:telemetry": "node --import tsx scripts/ops/telemetry-snapshot.ts",
     "ops:telemetry:verify": "node --import tsx scripts/ops/telemetry-verify.ts",
     "ops:telemetry:alerting:verify": "node --import tsx scripts/ops/telemetry-alerting-verify.ts",

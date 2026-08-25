@@ -26,7 +26,29 @@
 //     pnpm release:restore-drill
 //
 // Optional: MAS_PG_CONTAINER, MAS_PG_PORT, SOURCE_HOST_DATABASE_URL, SMOKE_PORT (3250),
-//           SMOKE_SPEC, SKIP_APP_SMOKE=1, RECEIPT_OUT
+//           SMOKE_SPEC, SKIP_APP_SMOKE=1, RECEIPT_OUT, MAS_NEXT_DIST_DIR,
+//           RESTORE_DRILL_SKIP_BUILD=1
+//
+// ── AŞAMA 11 DÜZELTMESİ: bu drill CANLI ÖRNEĞİ İKİ AYRI YOLDAN DÜŞÜREBİLİYORDU ────────────
+//
+// 1. `pnpm db:app-role:password`. Adım 5 runtime kimliğini yeniden kurmak için onu çağırıyordu.
+//    O script `alter role mas_radar_app password …` çalıştırır ve PostgreSQL'de ROLLER KÜME
+//    GENELİNDEDİR — hedef veritabanı ne olursa olsun parola bütün veritabanları için değişir.
+//    Port 3000'de çalışan üretim örneğinin `.env.local` parolası o anda geçersizleşir ve
+//    uygulama düşer. Drill'in kendisi bir kesinti üretemez.
+//
+//    Doğrusu, `scripts/db/app-url.ts`'in `real-clone-gate` için yazılan deseni: canlı runtime
+//    kimliğini `.env.local`'den al, YALNIZ veritabanı adını değiştir, hiçbir dizeyi yazdırma.
+//    Bu aynı zamanda DAHA GÜÇLÜ bir test — sentetik bir parolayla değil, uygulamanın gerçekten
+//    kullandığı kimlikle bağlanılır, dolayısıyla "restore edilen kopyada GRANT'lar geri geldi mi"
+//    sorusu gerçek rol üzerinden cevaplanır.
+//
+// 2. `pnpm build`. Varsayılan `distDir` `.next`'tir ve drill onu ezerek çalışan üretim
+//    sunucusunun derlemesini bozuyordu. `next.config.ts` `MAS_NEXT_DIST_DIR`'i onurlandırıyor;
+//    drill artık kendi dizinini kullanır (varsayılan `.next-restore-drill`).
+//
+// `MAS_RADAR_APP_DB_PASSWORD` hâlâ okunur ama artık YALNIZ `.env.local` yoksa (CI) devreye giren
+// bir yedek koldur; parola sıfırlama yolu tamamen kaldırılmıştır.
 //
 // TWO VANTAGE POINTS AGAIN (same trap as golden-fingerprint.ts): SOURCE_DATABASE_URL is read by
 // pg_dump INSIDE the container; SOURCE_HOST_DATABASE_URL is read by this process on the HOST when
@@ -39,16 +61,40 @@ import path from "node:path";
 import { Pool } from "pg";
 import { fingerprint, type Fingerprint } from "./lib/fingerprint";
 import { isDisposableDatabaseName } from "../db/owner-url";
+import { portInUse, readEnvLocal, swapDatabase } from "../db/app-url";
 
 const CONTAINER = process.env.MAS_PG_CONTAINER ?? "mas-radar-pg";
 const PORT = process.env.MAS_PG_PORT ?? "5432";
 const SOURCE_URL = process.env.SOURCE_DATABASE_URL ?? "";
 const SOURCE_HOST_URL = process.env.SOURCE_HOST_DATABASE_URL ?? SOURCE_URL;
 const RESTORE_DB = process.env.RESTORE_DB ?? "";
-const APP_PASSWORD = process.env.MAS_RADAR_APP_DB_PASSWORD ?? "ci-only-not-a-secret-0123456789";
 const SMOKE_PORT = process.env.SMOKE_PORT ?? "3250";
 const SMOKE_SPEC = process.env.SMOKE_SPEC ?? "tests/visual/golden-ui-smoke.spec.ts";
 const BACKUP_PATH = "/tmp/mas_restore_drill.dump";
+/** Canlı `.next` ASLA ezilmez — next.config.ts bu değişkeni onurlandırır. */
+const DIST_DIR = process.env.MAS_NEXT_DIST_DIR ?? ".next-restore-drill";
+const SKIP_BUILD = process.env.RESTORE_DRILL_SKIP_BUILD === "1";
+
+/**
+ * Restore edilen kopyaya bağlanacak GERÇEK runtime kimliği.
+ *
+ * `.env.local`'deki canlı `DATABASE_URL` alınır ve YALNIZ veritabanı adı hedefle değiştirilir.
+ * Parola sıfırlanmaz (bkz. dosya başlığı, 1. madde) ve dize hiçbir kolda yazdırılmaz.
+ * `.env.local` yoksa (CI) eski davranışın parolası bir yedek kol olarak kullanılır.
+ */
+function appUrlForRestore(db: string): { url: string; origin: string } {
+  try {
+    const runtime = readEnvLocal()["DATABASE_URL"];
+    if (runtime) return { url: swapDatabase(runtime, db), origin: ".env.local runtime kimliği (parola SIFIRLANMADI)" };
+  } catch {
+    /* .env.local yok — aşağıdaki yedek kola düşülür. */
+  }
+  const password = process.env.MAS_RADAR_APP_DB_PASSWORD ?? "ci-only-not-a-secret-0123456789";
+  return {
+    url: `postgres://mas_radar_app:${password}@127.0.0.1:${PORT}/${db}`,
+    origin: "MAS_RADAR_APP_DB_PASSWORD yedek kolu (.env.local yok)",
+  };
+}
 
 interface Check { name: string; pass: boolean; detail: string }
 
@@ -90,8 +136,16 @@ async function main(): Promise<void> {
     );
   }
 
+  if (process.env.SKIP_APP_SMOKE !== "1" && (await portInUse(SMOKE_PORT))) {
+    throw new Error(
+      `Port ${SMOKE_PORT} zaten dinleniyor. Drill başkasının sunucusuyla yarışmaz ve onu ÖLDÜRMEZ; ` +
+        "SMOKE_PORT ile boş bir port verin.",
+    );
+  }
+
   const restoreUrl = `postgres://postgres:postgres@127.0.0.1:${PORT}/${RESTORE_DB}`;
-  const appUrl = `postgres://mas_radar_app:${APP_PASSWORD}@127.0.0.1:${PORT}/${RESTORE_DB}`;
+  const app = appUrlForRestore(RESTORE_DB);
+  const appUrl = app.url;
 
   /* ── 9.1 backup + receipt ────────────────────────────────────────────────────────────── */
 
@@ -232,21 +286,34 @@ async function main(): Promise<void> {
   } else {
 
     step("5/6 uygulamayı restore edilen veritabanına karşı başlat");
-    // The runtime identity has to be re-established: pg_restore --no-acl deliberately drops the
-    // source's grants, and a restore that leaves the app unable to log in is exactly the failure
-    // this drill exists to surface.
-    execFileSync("pnpm", ["db:app-role:password"], {
-      stdio: "inherit", shell: process.platform === "win32",
-      env: { ...process.env, MIGRATION_DATABASE_URL: restoreUrl, MAS_RADAR_APP_DB_PASSWORD: APP_PASSWORD },
-    });
+    // AŞAMA 11: runtime kimliği YENİDEN KURULMAZ, MEVCUT OLANI KULLANILIR.
+    //
+    // Eskiden burada `pnpm db:app-role:password` çağrılıyordu. Roller PostgreSQL'de küme
+    // genelinde olduğu için o çağrı canlı üretim örneğinin parolasını da değiştiriyor ve
+    // port 3000'deki uygulamayı düşürüyordu. Restore artık `--no-acl` KULLANMADIĞI için
+    // GRANT'lar arşivin parçası olarak geri geliyor; sorulacak doğru soru "yeni bir parola
+    // koyabiliyor muyum" değil, "GERÇEK runtime kimliği bu kopyada çalışıyor mu"dur.
+    console.log(`   runtime kimliği kaynağı: ${app.origin}`);
     execFileSync("pnpm", ["exec", "tsx", "scripts/db/seed-system-actor.ts"], {
       stdio: "inherit", shell: process.platform === "win32",
       env: { ...process.env, MIGRATION_DATABASE_URL: restoreUrl },
     });
-    execFileSync("pnpm", ["build"], {
-      stdio: "inherit", shell: process.platform === "win32",
-      env: { ...process.env, DATABASE_URL: appUrl, APP_COMMIT_SHA: gitSha },
-    });
+    if (SKIP_BUILD) {
+      console.log(`   derleme atlandı (RESTORE_DRILL_SKIP_BUILD=1) — mevcut '${DIST_DIR}' kullanılıyor`);
+    } else {
+      // `next build` özel bir distDir için tsconfig.json'ı yeniden yazar (real-clone-gate'te
+      // ölçüldü). Release commit'ine build aracı gürültüsü girmesin diye dosya birebir geri alınır.
+      const tsconfigPath = path.join(process.cwd(), "tsconfig.json");
+      const tsconfigBefore = readFileSync(tsconfigPath, "utf8");
+      execFileSync("pnpm", ["build"], {
+        stdio: "inherit", shell: process.platform === "win32",
+        env: { ...process.env, DATABASE_URL: appUrl, APP_COMMIT_SHA: gitSha, MAS_NEXT_DIST_DIR: DIST_DIR },
+      });
+      if (readFileSync(tsconfigPath, "utf8") !== tsconfigBefore) {
+        writeFileSync(tsconfigPath, tsconfigBefore, "utf8");
+        console.log("   (next build tsconfig.json'ı yeniden yazdı; dosya geri alındı)");
+      }
+    }
     // Server output goes to a file, not /dev/null. The first run of this drill failed with
     // "sunucu hazır olmadı" and nothing else, because stdio was discarded — the actual cause
     // ("permission denied for table users") was sitting in output nobody kept. A drill that
@@ -259,7 +326,15 @@ async function main(): Promise<void> {
 
     const server = spawn("pnpm", ["start"], {
       stdio: ["ignore", logFd, logFd], detached: false, shell: process.platform === "win32",
-      env: { ...process.env, DATABASE_URL: appUrl, APP_COMMIT_SHA: gitSha, PORT: SMOKE_PORT },
+      env: {
+        ...process.env,
+        DATABASE_URL: appUrl,
+        // Ebeveyn ortamda kalmış bir owner URL'i kazanmasın diye klonun kendi owner'ına sabitlenir.
+        MIGRATION_DATABASE_URL: restoreUrl,
+        APP_COMMIT_SHA: gitSha,
+        PORT: SMOKE_PORT,
+        MAS_NEXT_DIST_DIR: DIST_DIR,
+      },
     });
 
     const base = `http://127.0.0.1:${SMOKE_PORT}`;
@@ -356,6 +431,12 @@ async function main(): Promise<void> {
     "| Kontrol | Sonuç | Ayrıntı |",
     "|---|---|---|",
     ...checks.map((c) => `| ${c.name} | ${c.pass ? "PASS" : "**FAIL**"} | ${c.detail} |`),
+    "",
+    "## Çalışma zamanı kimliği ve derleme yalıtımı (AŞAMA 11)",
+    "",
+    `- Runtime kimliği: ${app.origin} — \`pnpm db:app-role:password\` **çağrılmadı**, küme genelindeki`,
+    "  `mas_radar_app` parolası değişmedi, canlı örnek etkilenmedi.",
+    `- Derleme dizini: \`${DIST_DIR}\`${SKIP_BUILD ? " (RESTORE_DRILL_SKIP_BUILD=1 — mevcut derleme kullanıldı)" : ""} — canlı \`.next\` ezilmedi.`,
     "",
     "---",
     "",

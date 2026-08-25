@@ -67,6 +67,14 @@ git rev-parse HEAD
 > Tek komutlu alternatif: `pnpm release:restore-drill` A adımının tamamını (yedek + makbuz +
 > okunabilirlik + ayrı DB'ye restore + karşılaştırma + uygulama açılışı) otomatik yapar.
 > Cutover'dan önce **bir kez** çalıştırılması önerilir.
+>
+> **Boş bir port ve ayrı bir derleme dizini verin:**
+> `SMOKE_PORT=3290 MAS_NEXT_DIST_DIR=.next-restore-drill`. Drill artık dolu bir portta
+> **durur** (kimsenin sunucusunu öldürmez) ve canlı `.next`'i ezmez. AŞAMA 11'de kaldırılan
+> asıl tehlike ise görünmezdi: drill eskiden `pnpm db:app-role:password` çağırıyordu ve
+> PostgreSQL'de roller **küme genelinde** olduğu için o çağrı çalışan üretim örneğinin
+> parolasını da geçersiz kılıyordu. Artık runtime kimliği `.env.local`'den alınıp yalnız
+> veritabanı adı değiştiriliyor; parola sıfırlanmıyor.
 
 ---
 
@@ -106,7 +114,41 @@ hatırlamayı gerektirir.
 
 ---
 
-## C2 — Kod sürümünü hedef commit'e geçir  ⚠ D'DEN ÖNCE, B'DEN HEMEN SONRA
+## C1 — Ortam hijyeni  ⚠ C'DEN SONRA, C2'DEN ÖNCE — GÖZLE DEĞİL, KAPIYLA
+
+Bu adım listede **yoktu**; 2026-08-25'te eksikliği "Bilinen tuzak 2" olarak patladı ve AŞAMA 11
+provası (`final-production-readiness/09-cutover-rehearsal.md` §2) bunu ölçülebilir bir kapıya
+çevirdi.
+
+```bash
+pnpm db:env:source
+```
+
+| | |
+|---|---|
+| **Başarı** | `ENV SOURCE: gölgeleme yok.` · exit **0** |
+| **Başarısızlık** | `ENV SHADOWING: <değişken>` · exit **1** → **CONFIG ROLLBACK**: yeni PowerShell penceresi açın, değişkenleri orada AÇIKÇA tanımlayın, kapıyı tekrar koşun |
+
+Çıktı **değer yazdırmaz** — yalnız değişken adı, kaynağı ve `kullanıcı@veritabanı` etiketi.
+
+> **Kapı neden gözle yapılan kontrolün yerini aldı.** Provada `.env.local` doğruyken kabukta
+> yanlış-ama-geçerli bir hedef bırakıldı ve `pnpm db:roles:verify` **8/8 PASS, exit 0** verdi —
+> yanlış veritabanı için. Yalan ölçülebilirdi: kapı "18 kullanıcı satırı" dedi, gerçek hedefte
+> **17** var. Çıktının hiçbir yerinde veritabanı adı geçmiyordu. **Yanlış ortamın sinyali yok**;
+> bu yüzden ortam bakılarak değil, sorularak doğrulanır.
+
+Ayrıca D adımı için önerilen ayar — gölgeleme varsa migration hiç başlamaz:
+
+```powershell
+$env:MAS_ENV_SHADOW_STRICT = "1"
+```
+
+Bu ayarla `pnpm db:migrate` gölgeleme gördüğünde **bağlantı bile açmadan** durur:
+`MAS_ENV_SHADOW_STRICT=1 ve gölgelenen değişken var (…). Hiçbir SQL çalıştırılmadı.`
+
+---
+
+## C2 — Kod sürümünü hedef commit'e geçir  ⚠ D'DEN ÖNCE, C1'DEN HEMEN SONRA
 
 Bugüne kadar bu adım listede **yoktu** ve eksikliği bugün pahalıya patladı.
 
@@ -137,11 +179,28 @@ Kod ile veritabanı **birbirine kilitlidir** ve kilit çift yönlüdür:
   Bu hata **hangi DB kimliğiyle bağlanıldığından tamamen bağımsızdır** — `.env.local`'ı,
   rolü, parolayı ne yaparsanız yapın ortaya çıkar. Bugün tam olarak böyle çıktı.
 
-- **Eski kod + yeni DB** de hedeflenen durum değildir (0087 şemasını 0034 kodu bilmez).
+- **Eski kod + yeni DB** de hedeflenen durum değildir (0087 şemasını 0034 kodu bilmez). AŞAMA 11
+  provasında bu yön de **gerçekten koşuldu**: `ef00970` ağacı (tam 34 migration dosyası) 0087
+  şemalı harcanabilir bir klona karşı çalıştırıldı ve `pnpm db:migrate` karşılığı şunu verdi:
 
-Dolayısıyla sıra: **B (dondur) → C (owner bağlantısı) → C2 (kodu hedefe geçir) → D
-(migration) → E …** Kod geçişi D'den sonraya bırakılırsa uygulama ayağa kalkmaz; D'den çok önce
-yapılırsa (uygulama çalışır hâldeyken) yine kalkmaz. İkisi **aynı oturumda, bu sırayla** olur.
+  ```text
+  LEDGER_MANAGED checksum doğrulaması başarısız, hiçbir yeni SQL çalıştırılmadı:
+    0035: ledger'da var, diskte dosya yok (0035_app_runtime_role.sql).
+    …
+    0087: ledger'da var, diskte dosya yok (0087_assistant_conversations.sql).
+  ```
+
+  Aynı ağacın `seed-admin.ts --role operator` çağrısı ise **aynı kısıtla**, ters yönden reddedildi:
+  `new row for relation "users" violates check constraint "users_role_check"`. Eski kod
+  `operator`'ü hâlâ geçerli sayıyor, yeni şema saymıyor.
+
+Dolayısıyla sıra: **B (dondur) → C (owner bağlantısı) → C1 (ortam hijyeni) → C2 (kodu hedefe
+geçir) → D (migration) → E …** Kod geçişi D'den sonraya bırakılırsa uygulama ayağa kalkmaz;
+D'den çok önce yapılırsa (uygulama çalışır hâldeyken) yine kalkmaz. İkisi **aynı oturumda, bu
+sırayla** olur.
+
+**İki yönün de kararı aynı: STOP.** Her iki kolda da **hiçbir SQL çalışmadı** ve hiçbir satır
+yazılmadı — **DB RESTORE gerekmez**. Çıkış tek: kod ile şemayı aynı sürüme getirmek.
 
 ---
 
@@ -157,13 +216,18 @@ yapılırsa (uygulama çalışır hâldeyken) yine kalkmaz. İkisi **aynı oturu
 >
 > Daha tehlikelisi tersidir: **eski bir oturumda elle tanımlanmış `$env:DATABASE_URL`, sonradan
 > `.env.local`'da yaptığınız düzeltmeyi SESSİZCE geçersiz kılar.** Bugün CONFIG ROLLBACK
-> uygulandıktan sonra bile hata sürdü; sebebi buydu. Şüphe varsa **yeni bir PowerShell penceresi**
-> açın ve değişkeni orada tanımlayın:
+> uygulandıktan sonra bile hata sürdü; sebebi buydu. Bu artık **C1 adımının kapısıdır**:
 >
-> ```powershell
-> echo $env:DATABASE_URL          # ne olduğunu GÖR, varsaymayın
-> echo $env:MIGRATION_DATABASE_URL
+> ```bash
+> pnpm db:env:source      # exit 0 = gölgeleme yok · exit 1 = kabuk .env.local'ı eziyor
 > ```
+>
+> Kapı değerleri yazdırmaz, yalnız kaynağı ve `kullanıcı@veritabanı` etiketini söyler. Şüphe
+> varsa **yeni bir PowerShell penceresi** açın ve değişkeni orada tanımlayın.
+>
+> Uygulama tarafında da aynı öncelik geçerlidir ve ölçüldü: Next'in kendi yükleyicisi
+> (`@next/env` `loadEnvConfig`) **zaten tanımlı** bir proses değişkenini **ezmez**. Yani
+> `.env.local`'ı düzeltip aynı kabuktan yeniden başlatmak hiçbir şeyi değiştirmez.
 
 ```bash
 pnpm db:migrate
