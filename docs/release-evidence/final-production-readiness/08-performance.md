@@ -166,3 +166,51 @@ skeleton=true   tıklama öncesi=0                              sonrası=1   <- 
 **NEXT GATE:** AŞAMA 11 — final RC cutover provası
 
 **FINAL: PARTIAL**
+
+---
+
+## EK — `/overview` sorgu sayısı incelemesi (P2 kapatıldı)
+
+**Soru:** `/overview` CI'da 5, hacimli yerel veride 41 sorgu atıyordu. N+1 mi?
+
+**Cevap: HAYIR.** Statik inceleme ve ölçüm birlikte bunu dışlıyor.
+
+### Kanıt 1 — döngüde sorgu yok
+
+`src/app/(dashboard)/overview/page.tsx` tek satır: `export { default, dynamic } from "@/app/(dashboard)/page"`.
+Gerçek sayfa `src/app/(dashboard)/page.tsx` (260 satır). İçindeki tek döngü 29. satırdaki
+`knownOutflow` ve **saf bellek-içi toplama** — içinde sorgu yok. Veri erişimi iki
+`Promise.all` bloğunda toplanmış (61. ve 94. satır, 5 + 9 = 14 üst düzey çağrı).
+
+### Kanıt 2 — sayı satır sayısıyla büyümüyor
+
+Yerel ölçüm **24.000 fatura + 60.000 banka hareketi** üzerinde yapıldı ve sorgu sayısı
+**41'de sabit** kaldı (41/41/41). Satır başına bir sorgu olsaydı 24.000+ sorgu görülürdü.
+41 sayısı **sınırlı**, hacme bağlı değil.
+
+### Gerçek açıklama
+
+14 yardımcı fonksiyonun içinde **veriye bağlı dallanma** var: tablolar boşken bazıları
+erken dönüp sorgu atmıyor (CI'daki `mas_radar_e2e_verify` → 5), veri varken çalışıyor
+(`mas_radar_perf_verify` → 41). Bu, N+1'den bambaşka ve iyi huylu bir davranıştır.
+
+### Kalan gerçek risk — cırcır çalışıyor
+
+41, sert tavan olan 45'e yakın. Yeni bir yardımcı fonksiyon eklenirse tavan aşılır ve kapı
+düşer. Bu **istenen davranıştır**: `query_count ≤ 45` cırcırı tam da bu regresyon sınıfını
+yakalamak için var.
+
+### Yan bulgu — `knownOutflow` float toplaması DÜZELTİLMEMELİ
+
+`page.tsx:33` para toplarken float `+=` kullanıyor (`total += r.amount`), yani WP5'in
+`exposureBy`/`dayFlags`'te düzelttiği desenin aynısı. **Burada düzeltme gerekmiyor** ve sebep
+yazılmalıdır ki ileride gereksiz yere değiştirilmesin:
+
+- Sonuç yalnız ekrana yazılıyor (`fmtTL(tOut.total)` — TL'ye yuvarlanıyor).
+- Tek karşılaştırması **sıfırla**: `tOut.total > 0`.
+- Pozitif tutarların float toplamı asla sıfıra düşmez; sapma ~1e-11 ve **sıfır sınırını
+  geçemez**. `dayFlags`'i bozan sınıf, birikmiş toplamın 250.000 gibi bir eşiğe *tam* oturmasıydı.
+
+**P2 DURUMU: KAPANDI** — N+1 değil. `08-performance.md` P2 listesindeki 2. madde bu ek ile
+çözülmüştür. Sessiz makinede tekrar ölçüm (P2 madde 1) hâlâ önerilir, ama artık bir N+1
+şüphesini çözmek için değil, wall-clock taban çizgisi üretmek için.
