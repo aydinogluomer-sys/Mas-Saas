@@ -1095,10 +1095,10 @@ Sıra rehber §4'ten alınmıştır ve **değiştirilemez**.
 
 | Aşama | Ad | Durum | Commit | Test | Tarih |
 |---|---|---|---|---|---|
-| 00 | Durum iddialarını düzelt | **DONE** | `PENDING-SHA` | 16 faz statüsü düzeltildi, 16/16 YAML metadata bloğu yazıldı | 2026-08-25 |
-| 01 | Feature freeze'i yeniden teyit et | **DONE** | `PENDING-SHA` | 22/22 commit denetlendi, violation=0, borderline=2 | 2026-08-25 |
-| 02 | Final release candidate'ı sabitle | **SCAFFOLD** | `PENDING-SHA` | manifest 8/9 alan ölçüldü, `rc_sha` PENDING | 2026-08-25 |
-| 03 | Governance / master sapması | **DONE** | `PENDING-SHA` | Seçenek C waiver yazıldı, 6/6 compensating control eşlendi | 2026-08-25 |
+| 00 | Durum iddialarını düzelt | **DONE** | `d5012da` | 16 faz statüsü düzeltildi, 16/16 YAML metadata bloğu yazıldı | 2026-08-25 |
+| 01 | Feature freeze'i yeniden teyit et | **DONE** | `d5012da` | 22/22 commit denetlendi, violation=0, borderline=2 | 2026-08-25 |
+| 02 | Final release candidate'ı sabitle | **SCAFFOLD** | `d5012da` | manifest 8/9 alan ölçüldü, `rc_sha` PENDING | 2026-08-25 |
+| 03 | Governance / master sapması | **DONE** | `d5012da` | Seçenek C waiver yazıldı, 6/6 compensating control eşlendi | 2026-08-25 |
 | 04 | Hardening branch clean CI final doğrulaması | PENDING | — | — | — |
 | 05 | Fresh REAL clone: migration + fingerprint | PENDING | — | — | — |
 | 06 | Aynı REAL clone üzerinde Golden UI + monetary smoke | PENDING | — | — | — |
