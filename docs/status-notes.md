@@ -3996,14 +3996,29 @@ ile koşmaya devam eder.
 
 ## Kullanıcı eylemi bekleniyor (Faz 1)
 
-### 1. Branch protection — PLAN KARARI (Claude teknik olarak da yapamaz)
+### 1. Branch protection — ÇÖZÜLDÜ (2026-08-25, Seçenek C: korumasız devam)
 
-`gh` bu turda yetkiliydi; doğrudan sorguladım: hem `branches/master/protection` hem `rulesets`
-**HTTP 403 "Upgrade to GitHub Pro or make this repository public"** dönüyor. Yani özel repo +
+**Karar: kullanıcı Seçenek C'yi seçti — GitHub Pro'ya yükseltme yok, repo public yapılmayacak,
+branch protection kurulmadan devam ediliyor.**
+
+Arka plan: `gh` yetkiliyken doğrudan sorgulandı; hem `branches/master/protection` hem `rulesets`
+**HTTP 403 "Upgrade to GitHub Pro or make this repository public"** döndü. Yani özel repo +
 ücretsiz planda branch protection **mevcut değil** — eksik olan yetki değil, plan. Üç seçenek
-(GitHub Pro/Team'e yükselt / repoyu public yap [ÖNERİLMEZ, finansal veri] / korumasız devam et)
-`docs/release-evidence/branch-protection-recommendation.md`'de tablo hâlinde. Tıklama adımları
-yalnız A veya B seçilince uygulanabilir. **CI yeşil ≠ master korumalı**; ayrı ölçütler, ayrı raporlanır.
+`docs/release-evidence/branch-protection-recommendation.md`'de tablo hâlinde duruyor; A veya B
+ileride seçilirse tıklama adımları orada hazır bekliyor.
+
+Kararın gerekçesi (kalan riskin neden kabul edilebilir olduğu):
+
+- **Force-push / history-rewrite bu repoda hiç kullanılmadı** — Faz 0–7 ve 11/12/14/15 boyunca
+  tek bir kez bile. Korumanın engelleyeceği başlıca davranış zaten uygulanmıyor.
+- **CI zaten her push'ta zorunlu çalışıyor**: `.github/workflows/ci.yml` `on: push` ile tetikleniyor,
+  yani yedi job her itmede koşuyor. Eksik olan yalnız GitHub'ın "required check" **zorunluluğu** —
+  yani kırmızı CI'ya rağmen merge etmeyi *engelleyen* kapı; sinyalin kendisi değil.
+- Kalan risk, disiplinle yönetilen bir riske indi: kırmızı CI görünür ama teknik olarak
+  yok sayılabilir. Bu bilinerek kabul edildi.
+
+**Not:** `CI yeşil ≠ master korumalı`. İkisi ayrı ölçüt olmaya devam ediyor ve ayrı raporlanıyor;
+bu madde kapandı diye "master korumalı" denmez.
 
 ### 2. `.env.local` runtime kimliği hâlâ superuser — F/G komutları kullanıcıda
 

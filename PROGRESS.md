@@ -832,3 +832,14 @@ Konnektörlerin/transport'ların GERÇEK istek kurulumu ve davranışı (mockHtt
 phase37/phase6b/phase25/phase38 verify'larında iki yönlü kapatıldı; bu kapı onların yerine geçmez,
 üstüne yapısal bir katman koyar. Canlı endpoint'e karşı test hâlâ yok (ortamda ağ yok) — bu, sınır
 modüllerinin başından beri belgelediği dürüst limit.
+
+---
+
+## Karar kaydı — branch protection (2026-08-25)
+
+Kullanıcı **Seçenek C**'yi seçti: GitHub Pro'ya yükseltme yok, repo public yapılmayacak, branch
+protection **kurulmadan** devam ediliyor. Gerekçe: force-push/history-rewrite bu repoda hiç
+kullanılmadı (Faz 0–7 + 11/12/14/15 boyunca) ve CI `on: push` ile her itmede zaten zorunlu
+koşuyor; eksik olan yalnız GitHub'ın "required check" zorunluluğu, sinyalin kendisi değil.
+Ayrıntı ve kalan risk: `docs/status-notes.md` → "Kullanıcı eylemi bekleniyor (Faz 1)" madde 1.
+**`CI yeşil ≠ master korumalı`** ayrımı geçerliliğini koruyor.
