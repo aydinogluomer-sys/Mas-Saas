@@ -4057,3 +4057,29 @@ Mevcut `scripts/ops/telemetry-snapshot.ts` (tek komutta operasyonel sinyaller + 
 - Sınır (dürüstçe): entegrasyon `reconciliation` kötü-yolunu ve `runtime_user` temiz-yolunu tek yönde
   kanıtlıyor (biri banka zinciri, diğeri app-role login gerektirir); ikisinin mantığı birim testte iki
   yönlü, wiring'i entegrasyonda kanıtlı.
+
+---
+
+## Faz 14 — Performance gate (query plan + index audit + SLO) — DONE
+
+Faz 33 ölçüm araçları (`measure.ts`/`index-audit.ts`/`volume.ts`) sıralıyor ama hiç başarısız olmaz;
+`scripts/perf/perf-gate.ts` ölçeklenebilirliği yordayan ölçümleri **pass/fail** yaptı.
+
+- **Query plan (deterministik, hard):** 4 seçici hot-path sorgusu (vadesi yaklaşan ödeme / açık
+  fatura / son 7 gün banka / yaklaşan çek) büyük tablosuna **indeks ile** erişir (Seq Scan değil).
+  Wall-clock yerine plan şekli — runner'la kaymaz. Gerçekçi hacim (bank_tx=60k, invoice=24k,
+  pi=12k, checks=6k) `volume.ts` ile aritmetik/deterministik yüklenir + VACUUM ANALYZE.
+- **Gereksiz indeks = 0** (deterministik) + **indekssiz FK cırcırı** (≤ 115 taban; yeni bir
+  indekssiz FK sayıyı 116 yapıp kapıyı kırar). 115 dürüstçe raporlandı; düşük öncelikli çünkü read
+  hot-path'ler amaca-özel kapsayıcı indekslerle besleniyor (plan iddiası bunu kanıtlıyor).
+- **Felaket eşiği** (cömert backstop, 3000 ms) — seçici sorgular ~1 ms, yalnız toplam bozulmayı yakalar.
+- **Anti-totoloji kanıtı:** `payment_instances`'ın TÜM hizmet indeksleri düşürülünce sorgu Seq Scan'e
+  döndü, kapı **9/10 / exit 1** ("Seq Scan") verdi; sonra DB temiz provision edildi. (Tek indeksi
+  düşürmek yetmedi — planner status indeksine düştü; kapı haklı olarak yeşil kaldı.)
+- Kapının kendisinde bir iddia bug'ı çalıştırarak bulundu: Bitmap Heap Scan indeks-güdümlüdür ama
+  ilk `/Index/` testi onu reddediyordu → "tabloya her erişim indeks-güdümlü" iddiasına düzeltildi.
+- **CI:** `database-migration`'a "Performance gate (Faz 14)" adımı (disposable DB + `perf:gate`).
+  package.json: `perf:gate`.
+- Doğrulama: typecheck 0 · sağlıklı şema **10/10 exit 0** · negatif kontrol **9/10 exit 1**.
+- Sınır: yazma-yolu SLO'su ve route-seviyesi HTTP gecikmesi kapsam dışı (okuma planı + indeks hijyeni
+  + felaket eşiği kapsanıyor); 115 FK cırcırla tutuluyor, hepsi indekslenmedi (write-maliyeti).

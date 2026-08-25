@@ -673,3 +673,86 @@ Entegrasyon iki sinyali TEK yönde kanıtlıyor: `reconciliation` (kötü yolu b
 (`mas_radar_app` login gerektirir). İkisinin de mantığı birim testte iki yönlü kapatıldı; entegrasyon
 onların **wiring**'ini (sorgu gerçekten çalışıyor, gerçek değeri okuyor) kanıtlıyor. Bu ayrım açıkça
 belgelendi, gizlenmedi.
+
+
+---
+
+## Faz 14 — Performance gate (kritik rota SLO + query plan + index audit)
+
+| Alan | Değer |
+|---|---|
+| **Durum** | **PASS** |
+| Timestamp (UTC) | 2026-08-25 |
+| DB sınıfı | `DISPOSABLE_SYNTHETIC` — `mas_radar_perf_verify` (aritmetik üretilmiş gerçekçi hacim) |
+| Gerçek DB yazımı | **YOK** |
+| Komut | `pnpm perf:gate` (disposable DB'ye karşı) |
+
+### Ne değişti
+
+Yanındaki Faz 33 araçları (`measure.ts`, `index-audit.ts`, `volume.ts`) **ölçüyor ve sıralıyor**;
+hiçbiri başarısız olmaz. `scripts/perf/perf-gate.ts` ölçeklenebilirliği gerçekten yordayan ölçümleri
+**pass/fail iddiaya** çevirir — gerçekçi hacim yüklenmiş harcanabilir bir DB'de, planner tek sayfaya
+sığan bir tabloyu seq-scan etmek yerine production'daki gibi davranırken.
+
+### Neden ms eşiği değil, plan şekli
+
+Wall-clock SLO runner'la kayar; plan şekli kaymaz. Kapı dört **seçici** sorgu üzerinde (bir rotanın
+gerçekten attığı şekil: "vadesi yaklaşan", "açık faturalar") ilgili büyük tablonun **indeks ile**
+okunduğunu (Seq Scan DEĞİL) iddia eder. 60.000 satırlık `bank_transactions`'ı "son 7 gün" için
+seq-scan etmek her makinede regresyondur. "Hiçbir yerde seq scan olmasın" DEĞİL — bütün tabloyu
+döndüren bir view onu taramalıdır; doğru iddia dar olanıdır: seçici-sorgu-indeks-kullanmalı.
+
+### Ampirik temel (ölçüldü, uydurulmadı)
+
+Gerçekçi hacim (bank_transactions=60k, invoices=24k, payment_instances=12k, checks=6k) altında dört
+seçici rota sorgusunun dördü de indeks kullanıyor: payment_instances→Index Scan, invoices→Bitmap
+Heap Scan (Bitmap Index Scan çocuğuyla), bank_transactions→Index Scan, checks→Bitmap Heap Scan. Not:
+`working_capital_trend_reference` 2040 ms ama **Index Only Scan** kullanıyor — eksik indeks değil,
+bilinçli "reference" (aylık korelasyonlu, optimize edilmiş varyantla karşılaştırma için yavaş) view;
+kritik kümeye alınmadı.
+
+### Kapının dört iddiası
+
+1. **Query plan (deterministik, hard):** dört seçici hot-path sorgusu büyük tablosuna indeks ile
+   erişir (Index / Index Only / Bitmap Heap Scan) — Seq Scan yok.
+2. **Gereksiz indeks = 0** (deterministik).
+3. **İndekssiz FK cırcırı:** sayı ölçülen taban çizgisini (115) aşmaz. Bugün 115 var — dürüstçe
+   raporlandı, gizlenmedi — ve düşük öncelikli, çünkü (1) read hot-path'lerin amaca-özel kapsayıcı
+   indekslerle beslendiğini kanıtlıyor (bu FK'ler source_*/created_by kolonları, kritik okumaların
+   join'lemediği). Cırcırın dar ve gerçek işi: bir migration FK ekleyip indeksini unutursa sayı 116
+   olur ve burada düşer — bu sınıf regresyonun en yaygın giriş yolu.
+4. **Felaket eşiği (cömert backstop):** seçici sorgular ~1 ms; eşik yalnız toplam bozulmayı yakalar
+   (3000 ms), yavaş CI runner'ı asla düşürmez.
+
+### Kapının kendisinde bulunan iki bulgu (çalıştırarak)
+
+1. **İlk plan iddiam yanlıştı — Bitmap Heap Scan'i reddediyordu.** invoices/checks Bitmap Heap Scan
+   kullanıyor (indeks-güdümlü; Bitmap Index Scan çocuğu indeksi "Index Name" ile taşır, "Relation
+   Name" ile değil, o yüzden tablo düğümlerinde görünmez). `/Index/` testi onu yanlışça reddetti;
+   doğru iddiaya çevrildi: "tabloya her erişim indeks-güdümlü (Index/Index Only/Bitmap Heap Scan)".
+2. **Anti-totoloji kanıtı (negatif kontrol):** `payment_instances`'ın tüm hizmet indeksleri
+   düşürülünce sorgu Seq Scan'e döndü ve kapı **9/10 ile düştü** (`Seq Scan`, exit 1) — kapı gerçek
+   bir regresyonu yakalıyor, sadece yeşil basmıyor. Sonra DB temiz yeniden provision edildi.
+   Not: tek `payment_instances_due_idx`'i düşürmek yetmedi — planner `status` indeksine düştü (Bitmap
+   Heap Scan), kapı haklı olarak yeşil kaldı; seq-scan ancak TÜM hizmet indeksleri gidince oluştu.
+
+### CI
+
+`database-migration` job'una "Performance gate (Faz 14)" adımı eklendi: taze disposable DB provision
+edip `perf:gate` koşar. Veri-bağımsız (hacim aritmetik üretiliyor), o yüzden CI'da koşar.
+package.json: `perf:gate`.
+
+### Doğrulama — gerçek çıktı (exit code + sayı)
+
+| Kontrol | Komut | Sonuç |
+|---|---|---|
+| Typecheck | `pnpm typecheck` | **exit 0** |
+| Sağlıklı şema | `…mas_radar_perf_verify pnpm perf:gate` | **10/10**, exit 0 |
+| Negatif kontrol (indeksler düşürüldü) | aynı, seq-scan zorlandı | **9/10, exit 1** ("Seq Scan") |
+
+### Sınır — dürüstçe
+
+Kapı seçici okuma yollarını ve indeks hijyenini gate'liyor. **Yazma yolu SLO'su** (bulk import/insert
+gecikmesi) ve **route-seviyesi uçtan uca HTTP gecikmesi** bu kapının konusu değil; okuma planı +
+indeks hijyeni + felaket eşiği kapsanıyor. İndekssiz 115 FK bir cırcırla tutuluyor, hepsi indekslenmedi
+(çoğu küçük/soğuk tablolarda; write-maliyeti okuma faydasını aşardı ve read hot-path'ler zaten kapsanmış).

@@ -29,6 +29,7 @@
     "db:app-role:password": "tsx scripts/db/set-app-role-password.ts",
     "ops:telemetry": "node --import tsx scripts/ops/telemetry-snapshot.ts",
     "ops:telemetry:verify": "node --import tsx scripts/ops/telemetry-verify.ts",
+    "perf:gate": "node --import tsx scripts/perf/perf-gate.ts",
     "import:real": "tsx scripts/db/ensure.ts && tsx scripts/import-real.ts",
     "phase3:verify": "tsx scripts/db/ensure.ts && tsx scripts/phase3-verify.ts",
     "phase4:verify": "tsx scripts/db/ensure.ts && tsx scripts/phase4-verify.ts",

@@ -96,6 +96,15 @@ jobs:
           bash scripts/ci/provision-verify-db.sh mas_radar_telemetry_verify
           MIGRATION_DATABASE_URL=postgres://postgres:postgres@127.0.0.1:5432/mas_radar_telemetry_verify pnpm ops:telemetry:verify
 
+      # Faz 14 — performance gate. Loads deterministic realistic volume into a fresh disposable
+      # database, then asserts the hot-path selective queries reach their large tables by an index
+      # (never a Seq Scan), redundant indexes = 0, and unindexed FKs stay at/below the measured
+      # baseline. Data-independent (generated arithmetically), so it belongs in CI.
+      - name: Performance gate (Faz 14 — query plans, index hygiene)
+        run: |
+          bash scripts/ci/provision-verify-db.sh mas_radar_perf_verify
+          MIGRATION_DATABASE_URL=postgres://postgres:postgres@127.0.0.1:5432/mas_radar_perf_verify pnpm perf:gate
+
       # ── Steps db:constraints/transitions/reconciliation/legacy-repair:verify — REMOVED to the
       #    LOCAL_PRIVATE_DATA_GATE (2026-08-25) ───────────────────────────────────────────────
       # Each of those four suites RESTORES backups/p0b-managed-baseline-*.dump on its first line —
