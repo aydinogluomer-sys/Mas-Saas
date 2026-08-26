@@ -29,7 +29,20 @@ export interface Fingerprint {
  * The hash is order-independent (`string_agg(... order by h)`) so a different physical row order
  * after a restore is not mistaken for a data change.
  */
-export async function fingerprint(pool: Pool, columnsFrom?: Record<string, string[]>): Promise<Fingerprint> {
+/**
+ * Sorgu sürebilen her şey: `Pool` da olur, `PoolClient` de.
+ *
+ * NEDEN GENİŞLETİLDİ. `fixture-cleanup.ts` gerçek DB'de satır siliyor ve izin verilen delta
+ * dışında HİÇBİR satır/hash değişmediğini COMMIT'TEN ÖNCE kanıtlamak zorunda. Bir `Pool`
+ * sorgusu açık transaction'ın içini göremez, dolayısıyla parmak izi ancak commit'ten sonra
+ * alınabilirdi — ve o noktada ihlali görmek işe yaramaz, çünkü geri dönüş yolu kapanmıştır.
+ * Bu tip, aynı fonksiyonun transaction İÇİNDE çalışmasına izin verir; davranış değişmez.
+ */
+export interface FingerprintQueryable {
+  query: Pool["query"];
+}
+
+export async function fingerprint(pool: FingerprintQueryable, columnsFrom?: Record<string, string[]>): Promise<Fingerprint> {
   const tables: string[] = (await pool.query(
     `select c.relname from pg_class c join pg_namespace n on n.oid = c.relnamespace
      where n.nspname = 'public' and c.relkind = 'r' order by c.relname`,

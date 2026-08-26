@@ -4,115 +4,136 @@
 // izin verilen dar istisnalardan biridir ve YALNIZ kullanıcının açık kararıyla koşar.
 //
 // KULLANICININ VERDİĞİ SIRA (2026-08-26) SCRIPT'İN İÇİNE GÖMÜLDÜ:
-//   off-device backup → verify → fixture cleanup → post-cleanup fingerprint → ...
-// Bu yüzden script, DOĞRULANMIŞ bir off-device yedek makbuzu görmeden çalışmayı REDDEDER.
-// Bayrakla atlanamaz; atlatmanın tek yolu makbuzu gerçekten üretmektir.
+//   off-device backup → destination SHA256 → pg_restore listability → receipt
+//   → fixture cleanup → post-cleanup fingerprint
+// Kapı, gerçek `offdevice-copy.ts` kaydını okur ve dört koşulun DÖRDÜNÜ birden arar.
+// Bayrakla atlanamaz.
 //
-// NEDEN TRANSACTION İÇİNDE VE NEDEN KENDİ KENDİNİ DOĞRULAR. Silme üç tabloya dokunur
-// (payment_instances → payments → users). Beklenen satır sayıları COMMIT'ten ÖNCE, aynı
-// transaction içinde kontrol edilir; bir tanesi bile tutmazsa ROLLBACK edilir ve hiçbir şey
-// değişmez. "Sildim, sonra baktım" değil, "tutmuyorsa hiç silmedim".
+// ÜÇ SAVUNMA KATMANI, hepsi COMMIT'ten ÖNCE:
+//   1. Off-device kapısı — doğrulanmış ayrı-aygıt yedeği yoksa hiç başlamaz.
+//   2. FK kataloğu — silinecek tablolara gelen yabancı anahtarlar ve ON DELETE davranışları
+//      pg_catalog'dan çıkarılır; beklenmeyen bir CASCADE varsa DURDURULUR.
+//   3. Tam parmak izi — izin verilen delta dışında tek bir satır/hash değişirse ROLLBACK.
 //
-// SİLİNECEK KAYITLAR — tam liste, genişletilemez:
+// SİLİNECEK KAYITLAR — sabit liste, kalıp (LIKE) DEĞİL:
 //   users:             p24b_fixture_a, p24b_fixture_b, p24b_mk_mujyy6, p24b_op_9bcmx5
 //   payments:          7b300bfe-944f-468b-91fa-2de65b7cfee5  ("P24B fixture", 1000.00 TL)
-//   payment_instances: yukarıdaki ödemenin 3 taksiti (2026-07-15 / 08-15 / 09-15, 1000.00 TL)
-//
-// `atilla` ve diğer HİÇBİR kayıt bu script tarafından görülmez: silme cümleleri sabit
-// kimlik listeleriyle yazılmıştır, kalıp (LIKE) ile değil.
+//   payment_instances: yukarıdaki ödemenin 3 taksiti
 import { Pool } from "pg";
 import { readFileSync, existsSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { requireOwnerDatabaseUrl, databaseNameFromUrl } from "./owner-url";
+import { offDeviceCleanupBlockers, type OffDeviceCopyRecord } from "../ops/backup-lib";
+import { fingerprint, type Fingerprint } from "../release/lib/fingerprint";
 
 const EXPECTED_DB = "mas_radar_dev";
 
-/** Silinecek kullanıcı adları — sabit liste, kalıp değil. */
 const FIXTURE_USERNAMES = Object.freeze([
   "p24b_fixture_a", "p24b_fixture_b", "p24b_mk_mujyy6", "p24b_op_9bcmx5",
 ]);
-/** Silinecek ödeme kimliği — tek kayıt. */
 const FIXTURE_PAYMENT_ID = "7b300bfe-944f-468b-91fa-2de65b7cfee5";
 
-/** COMMIT'ten önce tutması ZORUNLU olan sayılar. Biri tutmazsa ROLLBACK. */
-const EXPECTED_AFTER = Object.freeze({
-  payments: 19,
-  users: 13,
-  payment_instances: 485,
-  checks: 7,
-  loans: 1,
-  cashflow_months: 35,
+/** İzin verilen TEK veri deltası. Başka her değişiklik FAIL. */
+const ALLOWED_DELTA: Readonly<Record<string, number>> = Object.freeze({
+  users: -4,
+  payments: -1,
+  payment_instances: -3,
 });
-/** COMMIT'ten önce tutması ZORUNLU olan parasal toplamlar (metin karşılaştırması, float değil). */
-const EXPECTED_AGGREGATES_AFTER = Object.freeze({
-  "payments.default_amount": "540000.00",
-  "payment_instances.amount": "14550000.00",
-});
-
-type Counts = Record<string, number>;
-type Aggregates = Record<string, string>;
-
-async function counts(c: { query: (q: string) => Promise<{ rows: Array<Record<string, string>> }> }): Promise<Counts> {
-  const out: Counts = {};
-  for (const t of ["payments", "users", "payment_instances", "checks", "loans", "cashflow_months"]) {
-    const r = await c.query(`select count(*)::text as n from public.${t}`);
-    out[t] = Number(r.rows[0].n);
-  }
-  return out;
-}
-
-async function aggregates(c: { query: (q: string) => Promise<{ rows: Array<Record<string, string | null>> }> }): Promise<Aggregates> {
-  const out: Aggregates = {};
-  const specs: Array<[string, string, string]> = [
-    ["payments.default_amount", "payments", "default_amount"],
-    ["payment_instances.amount", "payment_instances", "amount"],
-    ["checks.amount", "checks", "amount"],
-    ["loans.principal", "loans", "principal"],
-    ["cashflow_months.closing_balance", "cashflow_months", "closing_balance"],
-  ];
-  for (const [label, table, col] of specs) {
-    const r = await c.query(`select coalesce(sum(${col}),0)::text as s from public.${table}`);
-    out[label] = r.rows[0].s ?? "0";
-  }
-  return out;
-}
 
 /**
- * Off-device yedek kapısı. Kullanıcının verdiği sıranın ilk halkası budur ve BURADA
- * zorlanır: doğrulanmış bir makbuz yoksa hiçbir satır silinmez.
+ * Silmenin dokunduğu tablolara GELEN yabancı anahtarlar burada beklenir. Bu listenin dışında
+ * bir FK çıkarsa (yeni migration eklemiş olabilir) script durur: silmenin ne sürükleyeceğini
+ * bilmeden gerçek veride DELETE çalıştırılmaz.
  *
- * Makbuz `MAS_FIXTURE_CLEANUP_RECEIPT` ile verilir. Kabul için makbuzun off-device
- * doğrulamasının GERÇEKTEN geçmiş olması gerekir — yerel bir klasör üreten makbuz
- * `offDeviceSatisfied: false` taşır ve reddedilir.
+ * Beklenen ON DELETE davranışı: `payment_instances.payment_id` dışında CASCADE OLMAMALI.
+ * Bir CASCADE, silinecek dört satırın ötesine sessizce yayılabilir.
  */
-function assertOffDeviceProof(): { path: string; sha256: string; target: string } {
+const CASCADE_ALLOWED = new Set(["payment_instances.payment_id"]);
+
+interface InboundFk {
+  child: string; childCol: string; parent: string; onDelete: string; constraint: string;
+}
+
+async function inboundForeignKeys(c: Queryable, parents: string[]): Promise<InboundFk[]> {
+  const r = await c.query(
+    `select con.conname as constraint,
+            cl.relname  as child,
+            att.attname as child_col,
+            pcl.relname as parent,
+            case con.confdeltype when 'a' then 'NO ACTION' when 'r' then 'RESTRICT'
+                 when 'c' then 'CASCADE' when 'n' then 'SET NULL' when 'd' then 'SET DEFAULT'
+                 else con.confdeltype::text end as on_delete
+       from pg_constraint con
+       join pg_class cl   on cl.oid  = con.conrelid
+       join pg_class pcl  on pcl.oid = con.confrelid
+       join pg_namespace n on n.oid  = cl.relnamespace
+       join unnest(con.conkey) with ordinality as k(attnum, ord) on true
+       join pg_attribute att on att.attrelid = con.conrelid and att.attnum = k.attnum
+      where con.contype = 'f' and n.nspname = 'public' and pcl.relname = any($1::text[])
+      order by cl.relname, att.attname`,
+    [parents],
+  );
+  return r.rows.map((x: Record<string, string>) => ({
+    child: x.child, childCol: x.child_col, parent: x.parent,
+    onDelete: x.on_delete, constraint: x.constraint,
+  }));
+}
+
+interface Queryable { query: (q: string, v?: unknown[]) => Promise<{ rows: Array<Record<string, string>>; rowCount: number | null }> }
+
+/**
+ * Off-device kapısı. Gerçek `offdevice-copy.ts` kaydının ALAN ADLARINI kullanır — bu tanım
+ * `scripts/ops/backup-lib.ts` içinde TEK yerde yaşar, böylece iki script'in alan adları
+ * bir daha sessizce ayrışamaz.
+ */
+function assertOffDeviceProof(): OffDeviceCopyRecord {
   const p = process.env.MAS_FIXTURE_CLEANUP_RECEIPT;
   if (!p || p.trim() === "") {
     throw new Error(
-      "DURDURULDU: off-device yedek makbuzu verilmedi.\n" +
-        "Kullanıcının belirlediği sıra: off-device backup → verify → fixture cleanup.\n" +
-        "Önce `pnpm ops:backup:offdevice` ile doğrulanmış bir kopya üretin, sonra\n" +
-        "MAS_FIXTURE_CLEANUP_RECEIPT=<makbuz.json yolu> ile bu script'i çağırın.",
+      "DURDURULDU: off-device yedek kaydı verilmedi.\n" +
+        "Sıra: off-device backup → destination SHA256 → pg_restore listability → receipt → cleanup.\n" +
+        "Önce `pnpm ops:backup:offdevice` koşun, sonra üretilen `<dump>.offdevice.json` yolunu\n" +
+        "MAS_FIXTURE_CLEANUP_RECEIPT ile verin.",
     );
   }
-  if (!existsSync(p)) throw new Error(`DURDURULDU: makbuz dosyası bulunamadı: ${p}`);
-  const r = JSON.parse(readFileSync(p, "utf8")) as Record<string, unknown>;
-  const ok = r.offDeviceSatisfied === true;
-  const verified = r.targetSha256Verified === true || r.sha256Verified === true;
-  if (!ok) {
+  if (!existsSync(p)) throw new Error(`DURDURULDU: kayıt dosyası bulunamadı: ${p}`);
+  const raw: unknown = JSON.parse(readFileSync(p, "utf8"));
+  const blockers = offDeviceCleanupBlockers(raw);
+  if (blockers.length > 0) {
     throw new Error(
-      "DURDURULDU: makbuz off-device DOĞRULANMADI (offDeviceSatisfied != true).\n" +
-        "Sabit diskteki bir klasör off-device sayılmaz (rehber §30.5). Harici disk/NAS bağlayın.",
+      "DURDURULDU: off-device kaydı yıkıcı işlem için YETMİYOR:\n" +
+        blockers.map((b) => "  - " + b).join("\n"),
     );
   }
-  if (!verified) {
-    throw new Error("DURDURULDU: makbuzda hedefte sha256 doğrulaması yok (targetSha256Verified != true).");
+  return raw as OffDeviceCopyRecord;
+}
+
+function diffFingerprints(before: Fingerprint, after: Fingerprint): string[] {
+  const problems: string[] = [];
+  const tables = new Set([...Object.keys(before.counts), ...Object.keys(after.counts)]);
+  for (const t of tables) {
+    const b = before.counts[t], a = after.counts[t];
+    if (b === undefined || a === undefined) { problems.push(`tablo kümesi değişti: ${t}`); continue; }
+    const want = ALLOWED_DELTA[t] ?? 0;
+    if (a - b !== want) problems.push(`${t}: delta ${want} bekleniyordu, ${a - b} oldu (${b} → ${a})`);
   }
-  return {
-    path: p,
-    sha256: String(r.sha256 ?? r.sourceSha256 ?? "?"),
-    target: String(r.targetDir ?? r.target ?? "?"),
-  };
+  // Satır hash'leri: delta beklenen tablolarda değişmesi NORMAL, diğer HER tabloda değişmesi FAIL.
+  for (const t of Object.keys(before.hashes)) {
+    if (t in ALLOWED_DELTA) continue;
+    if (before.hashes[t] !== after.hashes[t]) problems.push(`${t}: satır hash'i DEĞİŞTİ (izin verilen delta dışında)`);
+  }
+  // Parasal toplamlar: yalnız fixture'ın taşıdığı iki tanesi değişebilir.
+  const mayChange = new Set(["payments.default_amount", "payment_instances.amount"]);
+  for (const k of Object.keys(before.aggregates)) {
+    if (mayChange.has(k)) continue;
+    if (before.aggregates[k] !== after.aggregates[k]) {
+      problems.push(`${k}: '${before.aggregates[k]}' → '${after.aggregates[k]}' DEĞİŞTİ`);
+    }
+  }
+  if (before.ledger.latest !== after.ledger.latest || before.ledger.rows !== after.ledger.rows) {
+    problems.push(`ledger değişti: ${before.ledger.rows}/${before.ledger.latest} → ${after.ledger.rows}/${after.ledger.latest}`);
+  }
+  return problems;
 }
 
 async function main(): Promise<void> {
@@ -123,54 +144,63 @@ async function main(): Promise<void> {
   }
 
   const proof = assertOffDeviceProof();
-  console.log(`Off-device makbuz KABUL edildi: ${path.basename(proof.path)}`);
-  console.log(`  hedef=${proof.target}  sha256=${proof.sha256.slice(0, 16)}…`);
-  console.log(`Hedef: db=${dbName}\n`);
+  console.log("── 1/4 off-device kapısı ───────────────────────────────────────────");
+  console.log(`PASS  kayıt kabul edildi: ${path.basename(proof.destPath)}.offdevice.json`);
+  console.log(`      targetKind=${proof.targetKind} · sha256@dest=OK · bytes@dest=OK · pg_restore --list=OK`);
+  console.log(`      sha256=${proof.destSha256.slice(0, 16)}…  TOC=${proof.destTocEntryCount ?? "?"}`);
+  console.log(`\nHedef: db=${dbName}\n`);
 
   const pool = new Pool({ connectionString: url });
   const client = await pool.connect();
   const failures: string[] = [];
   let committed = false;
-  let before: { counts: Counts; agg: Aggregates } | null = null;
-  let after: { counts: Counts; agg: Aggregates } | null = null;
+  let before: Fingerprint | null = null;
+  let after: Fingerprint | null = null;
+  let fks: InboundFk[] = [];
 
   try {
-    before = { counts: await counts(client), agg: await aggregates(client) };
-    console.log("ÖNCE:", JSON.stringify(before.counts));
+    console.log("── 2/4 yabancı anahtar kataloğu (beklenmeyen CASCADE var mı) ───────");
+    const q = client as unknown as Queryable;
+    fks = await inboundForeignKeys(q, ["users", "payments", "payment_instances"]);
+    for (const fk of fks) {
+      const key = `${fk.child}.${fk.childCol}`;
+      const bad = fk.onDelete === "CASCADE" && !CASCADE_ALLOWED.has(key);
+      console.log(`  ${bad ? "DURDUR" : "  ok  "} ${key.padEnd(42)} → ${fk.parent.padEnd(18)} ON DELETE ${fk.onDelete}`);
+      if (bad) failures.push(`beklenmeyen CASCADE: ${key} → ${fk.parent} (${fk.constraint})`);
+    }
+    console.log(`  ${fks.length} gelen FK incelendi\n`);
+    if (failures.length > 0) {
+      console.error("DURDURULDU — beklenmeyen CASCADE. Hiçbir satır silinmedi:");
+      for (const f of failures) console.error("  - " + f);
+      process.exitCode = 1;
+      return;
+    }
 
+    console.log("── 3/4 silme (transaction içinde, doğrulanmadan COMMIT yok) ────────");
+    before = await fingerprint(q as never);
     await client.query("begin");
 
-    const delInst = await client.query(
-      "delete from public.payment_instances where payment_id = $1", [FIXTURE_PAYMENT_ID],
-    );
-    const delPay = await client.query(
-      "delete from public.payments where id = $1", [FIXTURE_PAYMENT_ID],
-    );
-    const delUsers = await client.query(
-      "delete from public.users where username = any($1::text[])", [FIXTURE_USERNAMES],
-    );
-    console.log(`silinen: payment_instances=${delInst.rowCount} payments=${delPay.rowCount} users=${delUsers.rowCount}`);
+    const delInst = await client.query("delete from public.payment_instances where payment_id = $1", [FIXTURE_PAYMENT_ID]);
+    const delPay = await client.query("delete from public.payments where id = $1", [FIXTURE_PAYMENT_ID]);
+    const delUsers = await client.query("delete from public.users where username = any($1::text[])", [FIXTURE_USERNAMES]);
+    console.log(`  silinen: payment_instances=${delInst.rowCount} payments=${delPay.rowCount} users=${delUsers.rowCount}`);
 
     if (delInst.rowCount !== 3) failures.push(`payment_instances silme 3 bekleniyordu, ${delInst.rowCount} oldu`);
     if (delPay.rowCount !== 1) failures.push(`payments silme 1 bekleniyordu, ${delPay.rowCount} oldu`);
     if (delUsers.rowCount !== 4) failures.push(`users silme 4 bekleniyordu, ${delUsers.rowCount} oldu`);
 
-    after = { counts: await counts(client), agg: await aggregates(client) };
-    for (const [t, want] of Object.entries(EXPECTED_AFTER)) {
-      if (after.counts[t] !== want) failures.push(`${t}: ${want} bekleniyordu, ${after.counts[t]} oldu`);
-    }
-    for (const [k, want] of Object.entries(EXPECTED_AGGREGATES_AFTER)) {
-      if (after.agg[k] !== want) failures.push(`${k}: '${want}' bekleniyordu, '${after.agg[k]}' oldu`);
-    }
-    // Dokunulmaması gereken parasal toplamlar ÖNCE ile birebir aynı kalmalı.
-    for (const k of ["checks.amount", "loans.principal", "cashflow_months.closing_balance"]) {
-      if (after.agg[k] !== before.agg[k]) failures.push(`${k} DEĞİŞTİ: '${before.agg[k]}' → '${after.agg[k]}'`);
-    }
-    // atilla ve diğer gerçek hesaplar duruyor mu (pozitif kontrol — "hiçbir şey yok" yeterli değil).
+    console.log("\n── 4/4 TAM parmak izi karşılaştırması (COMMIT'ten ÖNCE) ────────────");
+    after = await fingerprint(q as never, before.columns);
+    failures.push(...diffFingerprints(before, after));
+
     const atilla = await client.query("select count(*)::text as n from public.users where username = 'atilla'");
     if (atilla.rows[0].n !== "1") failures.push(`'atilla' hesabı kayboldu (count=${atilla.rows[0].n})`);
     const leftover = await client.query("select count(*)::text as n from public.users where username like 'p24b%'");
     if (leftover.rows[0].n !== "0") failures.push(`p24b kalıntısı var (count=${leftover.rows[0].n})`);
+
+    const changed = Object.keys(before.counts).filter((t) => before!.counts[t] !== after!.counts[t]);
+    console.log(`  değişen tablo: ${changed.length === 0 ? "yok" : changed.map((t) => `${t} ${before!.counts[t]}→${after!.counts[t]}`).join(" · ")}`);
+    console.log(`  hash değişen tablo: ${Object.keys(before.hashes).filter((t) => before!.hashes[t] !== after!.hashes[t]).join(" · ") || "yok"}`);
 
     if (failures.length > 0) {
       await client.query("rollback");
@@ -182,7 +212,6 @@ async function main(): Promise<void> {
 
     await client.query("commit");
     committed = true;
-    console.log("SONRA:", JSON.stringify(after.counts));
     console.log("\nFIXTURE CLEANUP: COMMIT edildi.");
   } catch (err) {
     try { await client.query("rollback"); } catch { /* bağlantı zaten kopmuş olabilir */ }
@@ -190,25 +219,34 @@ async function main(): Promise<void> {
   } finally {
     client.release();
     await pool.end();
-    if (before && after) {
+    if (before !== null && after !== null) {
+      const b: Fingerprint = before, a: Fingerprint = after;
       const out = process.env.MAS_FIXTURE_CLEANUP_OUT
         ?? "docs/release-evidence/final-production-readiness/12-fixture-cleanup.md";
-      const rows = Object.keys(EXPECTED_AFTER)
-        .map((t) => `| ${t} | ${before!.counts[t]} | ${after!.counts[t]} | ${EXPECTED_AFTER[t as keyof typeof EXPECTED_AFTER]} |`)
-        .join("\n");
-      const aggRows = Object.keys(before.agg)
-        .map((k) => `| ${k} | ${before!.agg[k]} | ${after!.agg[k]} |`)
-        .join("\n");
+      const countRows = Object.keys(b.counts)
+        .filter((t) => b.counts[t] !== a.counts[t] || t in ALLOWED_DELTA)
+        .map((t) => `| ${t} | ${b.counts[t]} | ${a.counts[t]} | ${ALLOWED_DELTA[t] ?? 0} |`).join("\n");
+      const aggRows = Object.keys(b.aggregates)
+        .map((k) => `| ${k} | ${b.aggregates[k]} | ${a.aggregates[k]} |`).join("\n");
+      const fkRows = fks.map((f) => `| ${f.child}.${f.childCol} | ${f.parent} | ${f.onDelete} |`).join("\n");
       writeFileSync(out,
         `# 12 — Fixture temizliği (P0-DRIFT-01)\n\n` +
+        "```text\n" +
         `TARGET DATABASE CLASS: PRODUCTION_WRITE\nTARGET DATABASE NAME: ${dbName}\n` +
         `REAL DB WRITE USED: YES — kullanıcının 2026-08-26 tarihli açık kararıyla\n` +
-        `OFF-DEVICE MAKBUZ: ${proof.path} (sha256 ${proof.sha256.slice(0, 16)}…, hedef ${proof.target})\n` +
-        `SONUÇ: ${committed ? "COMMIT" : "ROLLBACK"}\n\n` +
-        `## Satır sayıları\n\n| tablo | önce | sonra | beklenen |\n|---|---:|---:|---:|\n${rows}\n\n` +
+        `SONUÇ: ${committed ? "COMMIT" : "ROLLBACK — hiçbir satır silinmedi"}\n` +
+        "```\n\n" +
+        `## Off-device ön koşulu\n\n| alan | değer |\n|---|---|\n` +
+        `| targetKind | ${proof.targetKind} |\n| offDeviceSatisfied | ${proof.offDeviceSatisfied} |\n` +
+        `| sha256VerifiedAtDestination | ${proof.sha256VerifiedAtDestination} |\n` +
+        `| bytesVerifiedAtDestination | ${proof.bytesVerifiedAtDestination} |\n` +
+        `| destRestoreListable | ${proof.destRestoreListable} (TOC ${proof.destTocEntryCount ?? "?"}) |\n` +
+        `| destSha256 | ${proof.destSha256} |\n\n` +
+        `## Gelen yabancı anahtarlar (${fks.length})\n\n| çocuk | ebeveyn | ON DELETE |\n|---|---|---|\n${fkRows}\n\n` +
+        `## Satır sayıları\n\n| tablo | önce | sonra | izinli delta |\n|---|---:|---:|---:|\n${countRows}\n\n` +
         `## Parasal toplamlar\n\n| ölçüt | önce | sonra |\n|---|---:|---:|\n${aggRows}\n\n` +
-        (failures.length ? `## Başarısızlıklar\n\n${failures.map((f) => "- " + f).join("\n")}\n` : "") +
-        `\n**FINAL: ${committed ? "PASS" : "ROLLBACK — hiçbir satır silinmedi"}**\n`,
+        (failures.length ? `## Başarısızlıklar\n\n${failures.map((f) => "- " + f).join("\n")}\n\n` : "") +
+        `**FINAL: ${committed ? "PASS" : "ROLLBACK"}**\n`,
         "utf8");
       console.log(`Kanıt: ${out}`);
     }

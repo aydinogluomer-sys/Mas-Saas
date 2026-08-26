@@ -23,6 +23,8 @@ import { pathToFileURL } from "node:url";
 import {
   classifyOffDeviceTarget, copyToTargetVerified, formatBytes, newestDump, sha256OfFile,
   type CopyVerifyResult,
+  type OffDeviceCopyRecord,
+  OFFDEVICE_RECORD_KIND,
 } from "./backup-lib";
 
 const CONTAINER = process.env.MAS_PG_CONTAINER ?? "mas-radar-pg";
@@ -36,8 +38,12 @@ function arg(flag: string): string | undefined {
 /** Kopyanın kaydı: hedefteki dosyanın yanına, hedefte yazılır. */
 export function writeOffDeviceRecord(result: CopyVerifyResult): string {
   const recordPath = `${result.destPath}.offdevice.json`;
-  const record = {
-    receiptKind: "mas-offdevice-copy-record-v1" as const,
+  // TİP AÇIKÇA YAZILDI: alan adları backup-lib.ts'teki TEK tanımdan gelir. Bir alanı burada
+  // yeniden adlandırmak artık derleme hatası verir — `fixture-cleanup.ts` ile sessizce
+  // ayrışan alan adı hatası (targetSha256Verified vs sha256VerifiedAtDestination) bu yüzden
+  // tekrar edemez.
+  const record: OffDeviceCopyRecord = {
+    receiptKind: OFFDEVICE_RECORD_KIND,
     copiedAt: result.copiedAt,
     sourcePath: result.sourcePath,
     sourceSha256: result.sourceSha256,

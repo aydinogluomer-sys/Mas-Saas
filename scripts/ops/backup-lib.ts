@@ -188,6 +188,85 @@ export interface CopyVerifyResult {
   copiedAt: string;
 }
 
+/** `<dump>.offdevice.json` kaydının şema etiketi. */
+export const OFFDEVICE_RECORD_KIND = "mas-offdevice-copy-record-v1";
+
+/**
+ * Off-device kopya kaydının TEK tanımı.
+ *
+ * NEDEN BURADA. Bu tip önce `offdevice-copy.ts` içinde satır içi bir nesne literaliydi ve
+ * `fixture-cleanup.ts` onu KENDİ tahmin ettiği alan adlarıyla (`targetSha256Verified`)
+ * okuyordu. İkisi hiç karşılaşmadığı için hata sessiz kaldı: cleanup kapısı makbuzu
+ * göremediği için zaten reddediyordu, yani yanlış alan adı ancak harici disk takıldığı gün
+ * — yani en kötü anda — ortaya çıkacaktı. Alan adları artık tek yerde yaşıyor.
+ */
+export interface OffDeviceCopyRecord {
+  receiptKind: typeof OFFDEVICE_RECORD_KIND;
+  copiedAt: string;
+  sourcePath: string;
+  sourceSha256: string;
+  sourceBytes: number;
+  destPath: string;
+  destSha256: string;
+  destBytes: number;
+  sha256VerifiedAtDestination: boolean;
+  bytesVerifiedAtDestination: boolean;
+  destRestoreListable: boolean;
+  destTocEntryCount: number | null;
+  sidecarsCopied: string[];
+  targetKind: OffDeviceTargetKind;
+  offDeviceSatisfied: boolean;
+  targetEvidence: string;
+  durability: DurabilityMetadata;
+}
+
+/**
+ * Gerçek DB'de yıkıcı bir işlemi (fixture temizliği) açmaya YETEN hedef sınıfları.
+ *
+ * `OPERATOR_ATTESTED` BİLEREK DIŞARIDA. O sınıf iki ortam değişkeniyle
+ * (`MAS_OFFDEVICE_DECLARED_KIND` + `MAS_OFFDEVICE_OPERATOR_ATTESTATION`) tetiklenir ve
+ * `offDeviceSatisfied: true` üretir — yani hiçbir fiziksel doğrulama olmadan, yalnız BEYANLA.
+ * Bir yedeğin var olduğuna dair beyan, gerçek satırları silmeye yetmez.
+ *
+ * `UNC_NETWORK_SHARE` içeride: `\\sunucu\pay` ile eşlenmiş bir ağ sürücüsü aynı NAS'ın iki
+ * yazılış biçimidir; fiziksel ayrılık aynıdır. `FIXED_SEPARATE_VOLUME` ve `LOCAL_STANDIN`
+ * zaten `offDeviceSatisfied: false` üretir.
+ */
+export const CLEANUP_GRADE_TARGET_KINDS: ReadonlySet<OffDeviceTargetKind> = new Set([
+  "REMOVABLE_VOLUME", "NETWORK_DRIVE", "UNC_NETWORK_SHARE",
+]);
+
+/**
+ * Bir off-device kaydının, gerçek DB'de yıkıcı işlem açmaya yetip yetmediğini söyler.
+ * Boş dizi dönerse yeter; aksi hâlde her madde bir engel sebebidir.
+ */
+export function offDeviceCleanupBlockers(raw: unknown): string[] {
+  const out: string[] = [];
+  if (raw === null || typeof raw !== "object") return ["makbuz bir JSON nesnesi değil"];
+  const r = raw as Partial<OffDeviceCopyRecord>;
+  if (r.receiptKind !== OFFDEVICE_RECORD_KIND) {
+    out.push(`receiptKind '${OFFDEVICE_RECORD_KIND}' olmalı, '${String(r.receiptKind)}' geldi`);
+  }
+  const flags: Array<[keyof OffDeviceCopyRecord, string]> = [
+    ["offDeviceSatisfied", "hedef ayrı bir aygıt olarak kanıtlanmadı"],
+    ["sha256VerifiedAtDestination", "HEDEFTEKİ dosyanın sha256'sı doğrulanmadı"],
+    ["bytesVerifiedAtDestination", "HEDEFTEKİ dosyanın bayt sayısı doğrulanmadı"],
+    ["destRestoreListable", "hedefteki kopya pg_restore --list ile okunamadı"],
+  ];
+  for (const [key, why] of flags) {
+    if (r[key] !== true) out.push(`${String(key)} != true — ${why}`);
+  }
+  const kind = r.targetKind;
+  if (kind === undefined) out.push("targetKind yok");
+  else if (!CLEANUP_GRADE_TARGET_KINDS.has(kind)) {
+    out.push(
+      `targetKind '${kind}' yıkıcı işlem için yetmez — izinli: ${[...CLEANUP_GRADE_TARGET_KINDS].join(", ")}` +
+        (kind === "OPERATOR_ATTESTED" ? " (OPERATOR_ATTESTED yalnız beyandır, fiziksel kanıt değildir)" : ""),
+    );
+  }
+  return out;
+}
+
 function copyOneVerified(sourcePath: string, destDir: string): { destPath: string; destBytes: number; destSha256: string; sourceSha256: string; sourceBytes: number; durability: DurabilityMetadata } {
   const sourceBytes = statSync(sourcePath).size;
   const sourceSha256 = sha256OfFile(sourcePath);
