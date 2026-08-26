@@ -95,7 +95,8 @@
     "ops:backup:prune": "node --import tsx scripts/ops/backup-prune.ts",
     "ops:backup:offdevice": "node --import tsx scripts/ops/offdevice-copy.ts",
     "ops:backup:schedule": "node --import tsx scripts/ops/schedule-windows.ts",
-    "release:stage07-backup-gate": "node --import tsx scripts/release/stage07-backup-gate.ts"
+    "release:stage07-backup-gate": "node --import tsx scripts/release/stage07-backup-gate.ts",
+    "db:fixture-cleanup": "node --import tsx scripts/db/fixture-cleanup.ts"
   },
   "dependencies": {
     "@node-rs/argon2": "^2.0.2",
