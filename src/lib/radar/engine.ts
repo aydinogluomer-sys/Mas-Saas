@@ -19,6 +19,60 @@ import {
   dueDateFor,
   type RiskThresholds,
 } from "./rules";
+import { APP_ROLES, DB_ROLE, can } from "@/lib/authz/matrix";
+
+/* ── Bakım yazımları ve SALT-OKUR katmanlar ────────────────────────────────────────────────
+ *
+ * NE ÖLÇÜLDÜ. `/payments`, `/payments/calendar` ve `/payments/missing` ekranları RENDER
+ * SIRASINDA yazma yapıyordu: `ensureWindow()` eksik ayları üretir, `refreshRiskFlags()` risk
+ * bayrağı DEĞİŞMİŞ satırları UPDATE eder. Bu iki iş bakım işidir, kullanıcı aksiyonu değil —
+ * ama render yolunda oldukları için sayfayı AÇAN kişinin yetkisiyle çalışıyorlardı.
+ *
+ * `viewer` ve `finance_approver` katmanları payment_instances üzerinde yalnız SELECT'e sahip
+ * (matrix.ts: payment_instances → "operational"; policy: payment_instances_update_enter yalnız
+ * operator/manager/admin). Dolayısıyla bu iki rol için UPDATE'i RLS reddediyor ve sayfa
+ * "Server Components render" hatasıyla ÇÖKÜYORDU. Üretim sunucusunda birebir gözlendi:
+ *
+ *   viewer            /payments/calendar   → 42501 new row violates RLS policy
+ *   finance_approver  /payments/missing    → 42501 new row violates RLS policy
+ *
+ * NEDEN ARALIKLI GÖRÜNÜYORDU. UPDATE yalnız bayrak GERÇEKTEN değiştiyse satır etkiler
+ * (`where … risk_level is distinct from $2 …`). Bayraklar tazeyse sıfır satır döner ve hata
+ * çıkmaz. Yani okuma-yalnız bir kullanıcı, bayraklar bayatladığı her an (gün dönümü, herhangi
+ * bir veri değişikliği) çöken bir ekranla karşılaşıyordu — bazen de karşılaşmıyordu.
+ *
+ * SEÇİLEN ÇÖZÜM VE ELENEN İKİ ALTERNATİF.
+ *   (a) `runAsSystem()` ile yükselt — ELENDİ. Okuma yolunu yazma yetkisine yükseltmek demek;
+ *       /calendar ayı `?ym=` ile geldiği için salt-okur bir kullanıcı istediği ay için üretim
+ *       tetikleyebilirdi. Finansal bir sistemde okuma isteğinin yetki yükseltmesi kabul edilemez.
+ *   (b) 42501'i yakalayıp yutmak — ELENDİ. Güvenlik hatasını yutmak, gerçek bir yetki
+ *       regresyonunu da sessizce gizler.
+ *   (c) SEÇİLEN: bakım yazımı, çağıranın katmanı YAZABİLİYORSA yapılır; yazamıyorsa ATLANIR ve
+ *       ekran mevcut veriyi gösterir. Yazabilen herhangi bir kullanıcının (veya açılıştaki
+ *       `prepare-runtime.ts`'in) ziyareti veriyi tazeler.
+ *
+ * İZİN LİSTESİ TÜRETİLİR, ELLE YAZILMAZ. Aşağıdaki küme doğrudan authz matrisinden çıkar; RLS
+ * politikaları da aynı matristen doğrulanır (`pnpm db:security-matrix:verify`). Elle yazılmış
+ * bir rol listesi, politikalar değiştiği gün sessizce yanlışa düşerdi.
+ */
+const INSTANCE_MAINTENANCE_DB_ROLES: ReadonlySet<string> = new Set(
+  APP_ROLES.filter((role) => can(role, "payment_instances", "insert") && can(role, "payment_instances", "update")).map(
+    (role) => DB_ROLE[role],
+  ),
+);
+
+/**
+ * Bu bağlantının oturduğu katman payment_instances bakımını yapabilir mi?
+ *
+ * `current_user`, `src/lib/db.ts`'in her checkout'ta uyguladığı `set role` sonrasındaki KATMAN
+ * rolüdür — yani sorunun cevabı bağlantının o anki gerçek yetkisidir, uygulamanın tahmini değil.
+ * Katman yoksa (arka plan script'i, `runAsSystem` dışı) rol `mas_radar_app` olur ve zaten hiçbir
+ * şey yazamaz; bu durumda da doğru cevap "hayır"dır.
+ */
+export async function tierMayMaintainInstances(pool: Pool): Promise<boolean> {
+  const res = await pool.query<{ current_user: string }>("select current_user");
+  return INSTANCE_MAINTENANCE_DB_ROLES.has(res.rows[0]?.current_user ?? "");
+}
 
 /** The Slice-5 legacy-repair tooling is the ONLY thing that may pass null: it operates on a
  * frozen pre-0031 database (scripts/db/legacy-repair-verify.ts deliberately hides every
@@ -321,6 +375,11 @@ export async function generateInstancesForMonth(
   monthStartISO: string,
   actorId: string,
 ): Promise<GenerateResult> {
+  // Salt-okur katman: üretim ATLANIR (yukarıdaki uzun gerekçe). Sayfa mevcut örneklerle
+  // render edilir; "hiç örnek yok" ile "üretemedim" karışmasın diye sonuç sıfırlarla döner.
+  if (!(await tierMayMaintainInstances(pool))) {
+    return { monthStart: monthStartISO, created: 0, skippedExisting: 0, shortMonthAdjusted: 0 };
+  }
   const client = await pool.connect();
   try {
     await client.query("begin");
@@ -397,6 +456,9 @@ export async function refreshRiskFlagsWithClient(client: PoolClient, todayISO: s
 }
 
 export async function refreshRiskFlags(pool: Pool, todayISO: string): Promise<number> {
+  // Salt-okur katman: bayrak tazeleme ATLANIR. 0 döner çünkü GERÇEKTEN sıfır satır güncellendi;
+  // çağıranların hiçbiri bu sayıyı "hata yok" kanıtı olarak kullanmıyor.
+  if (!(await tierMayMaintainInstances(pool))) return 0;
   const client = await pool.connect();
   try {
     await client.query("begin");

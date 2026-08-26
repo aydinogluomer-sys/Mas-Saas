@@ -4,6 +4,7 @@
 //
 // Everything shown here is configuration and identity, never content: no secret values (only
 // set/unset), no financial rows, no connection strings, no tokens.
+import type { Pool } from "pg";
 import { getPool } from "@/lib/db";
 import { Panel } from "@/components/ui/panel";
 import { Badge } from "@/components/ui/badge";
@@ -20,25 +21,65 @@ interface RoleIdentity {
   rolbypassrls: boolean | null;
 }
 
-export default async function DiagnosticsPage() {
-  // Admin-only: an operator reaching this URL is redirected before any query runs.
-  await requireAdmin();
-  const pool = getPool();
+/**
+ * Migration defteri — okunabiliyorsa değerler, okunamıyorsa NEDEN okunamadığı.
+ *
+ * NE ÖLÇÜLDÜ. Bu sayfa `public.schema_migrations`'ı doğrudan sorguluyordu ve admin olarak
+ * açıldığında ÇÖKÜYORDU:
+ *
+ *   ⨯ error: permission denied for table schema_migrations
+ *     at … app/(dashboard)/system/diagnostics/page.js
+ *
+ * Bu bir yetki REGRESYONU değil, bilinçli bir tasarım kararı: `src/lib/authz/matrix.ts`
+ * defteri "ledger" sınıfına koyar ve yorumu açıkça şunu der — "schema_migrations — owner
+ * connection only. No tier has any access at all." `matrix.test.ts` de her rol için erişimin
+ * KAPALI olduğunu doğrular. Yani doğru olan politika değil, SAYFAYDI: uygulama katmanının hiçbir
+ * zaman okuyamayacağı bir tabloyu koşulsuz okuyordu.
+ *
+ * Mevcut `to_regclass(...) is not null` koruması yalnız "tablo YOK" hâlini düşünmüştü; "tablo VAR
+ * ama bu katmana KAPALI" hâlini değil. İkisi aynı şey değildir ve ekranda da aynı görünmemeli:
+ * defteri "defter yok" diye göstermek, 87 migration'ı uygulanmış bir veritabanı için düpedüz
+ * yanlış bilgi olurdu. Bu yüzden üçüncü bir durum vardır ve ekrana o yazılır.
+ *
+ * Yalnız 42501 (insufficient_privilege) yutulur. Başka her hata yükselir — bağlantı kopması ya
+ * da bozuk şema, sessizce "okunamadı" diye gösterilmesi gereken şeyler değildir.
+ */
+type MigrationLedger =
+  | { readable: true; version: string | null; applied_at: string | null; total: number }
+  | { readable: false; reason: string };
 
-  const [roleRes, ledgerRes, policyRes] = await Promise.all([
-    pool.query<RoleIdentity>(
-      `select current_user,
-              (select rolsuper from pg_roles where rolname = current_user) as rolsuper,
-              (select rolbypassrls from pg_roles where rolname = current_user) as rolbypassrls`,
-    ),
-    // to_regclass keeps this from throwing on a database that predates the ledger (0020).
-    pool.query<{ version: string | null; applied_at: string | null; total: number }>(
+async function readMigrationLedger(pool: Pool): Promise<MigrationLedger> {
+  try {
+    const res = await pool.query<{ version: string | null; applied_at: string | null; total: number }>(
+      // to_regclass keeps this from throwing on a database that predates the ledger (0020).
       `select max(version) as version,
               max(applied_at)::text as applied_at,
               count(*)::int as total
          from public.schema_migrations
         where to_regclass('public.schema_migrations') is not null`,
+    );
+    const row = res.rows[0];
+    return { readable: true, version: row?.version ?? null, applied_at: row?.applied_at ?? null, total: row?.total ?? 0 };
+  } catch (error) {
+    if ((error as { code?: string }).code === "42501") {
+      return { readable: false, reason: "uygulama katmanına kapalı (yalnız owner bağlantısı)" };
+    }
+    throw error;
+  }
+}
+
+export default async function DiagnosticsPage() {
+  // Admin-only: an operator reaching this URL is redirected before any query runs.
+  await requireAdmin();
+  const pool = getPool();
+
+  const [roleRes, ledger, policyRes] = await Promise.all([
+    pool.query<RoleIdentity>(
+      `select current_user,
+              (select rolsuper from pg_roles where rolname = current_user) as rolsuper,
+              (select rolbypassrls from pg_roles where rolname = current_user) as rolbypassrls`,
     ),
+    readMigrationLedger(pool),
     // The Faz 15 invariant, shown read-only: both the deny-all and the runtime policy must
     // exist on users/sessions. Same check pnpm db:roles:verify makes from the CLI.
     pool.query<{ tablename: string; policyname: string }>(
@@ -49,7 +90,6 @@ export default async function DiagnosticsPage() {
   ]);
 
   const role = roleRes.rows[0];
-  const ledger = ledgerRes.rows[0];
   const presence = envPresence();
 
   const isLeastPrivilege = role.rolsuper === false && role.rolbypassrls === false;
@@ -87,7 +127,7 @@ export default async function DiagnosticsPage() {
           value={isLeastPrivilege ? "düşük yetkili" : "YÜKSEK YETKİLİ"}
           tone={isLeastPrivilege ? "pos" : "neg"}
         />
-        <KpiCard label="Migration" value={ledger?.version ?? "defter yok"} />
+        <KpiCard label="Migration" value={ledger.readable ? (ledger.version ?? "defter yok") : "okunamıyor"} />
         <KpiCard
           label="Zorunlu env"
           value={missingRequired.length === 0 ? "tam" : `${missingRequired.length} eksik`}
@@ -120,11 +160,23 @@ export default async function DiagnosticsPage() {
       </Panel>
 
       <Panel title="Migration defteri">
-        <div className="grid gap-1 text-sm">
-          <Row label="Son sürüm" value={ledger?.version ?? "—"} />
-          <Row label="Kayıtlı migration" value={String(ledger?.total ?? 0)} />
-          <Row label="Son uygulama" value={ledger?.applied_at ?? "—"} />
-        </div>
+        {ledger.readable ? (
+          <div className="grid gap-1 text-sm">
+            <Row label="Son sürüm" value={ledger.version ?? "—"} />
+            <Row label="Kayıtlı migration" value={String(ledger.total)} />
+            <Row label="Son uygulama" value={ledger.applied_at ?? "—"} />
+          </div>
+        ) : (
+          // Sessiz başarısızlık YOK: ekran neyin olmadığını, NEDEN olmadığını ve nereden
+          // okunabileceğini söyler. "defter yok" demek 87 migration'ı olan bir veritabanı için
+          // yanlış bilgi olurdu.
+          <p className="text-sm text-tone-2">
+            Migration defteri {ledger.reason}. Bu, tasarım gereğidir: uygulama rolünün
+            <span className="font-mono"> public.schema_migrations</span> üzerinde hiçbir yetkisi
+            yoktur. Defteri görmek için owner bağlantısıyla{" "}
+            <span className="font-mono">pnpm db:migrate:verify</span> çalıştırın.
+          </p>
+        )}
       </Panel>
 
       <Panel

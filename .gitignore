@@ -88,3 +88,4 @@ __pycache__/
 # hangi içe aktarımın bayatladığı, hangi veritabanının ne kadar büyüdüğü. Depoya ait değil ve
 # her koşuda değiştiği için ağacı da kirletir. Dizinin kendisi ilk koşuda oluşturulur.
 /logs/
+/.next-interaction-gate/
