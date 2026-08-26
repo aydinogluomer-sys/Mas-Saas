@@ -100,13 +100,34 @@ function main(): void {
   const actualTotal = files.reduce((n, f) => n + Math.max(0, f.actual), 0);
   const droppedFindings = declaredTotal - actualTotal;
 
-  const allIds = files.flatMap((f) => f.ids);
-  const seen = new Set<string>();
-  const dupes = new Set<string>();
-  for (const id of allIds) {
-    if (seen.has(id)) dupes.add(id);
-    seen.add(id);
+  // TEKRAR SEMANTIGI — iki tur tekrari AYIRMAK sart, cunku anlamlari zit:
+  //
+  //   DOSYA ICI tekrar  = HATA. Ayni satiri iki kez raporlayan bir tarama, bulgu sayisini
+  //                       sisirir ve delta hesabini bozar. FAIL.
+  //   DOSYALAR ARASI    = BEKLENEN. Ayni fixture satiri metin taramasinda da, UUID
+  //                       taramasinda da, zaman envanterinde de cikar. Bu, bagimsiz
+  //                       boyutlarin ayni sonuca varmasidir — KANIT YAKINSAMASI, hata degil.
+  //                       Nitekim DELETE_TARGET siniflamasi "en az iki bagimsiz kanit"
+  //                       istiyor; bu yakinsama tam olarak o kanittir.
+  const withinFileDuplicates: Array<{ file: string; id: string; count: number }> = [];
+  for (const f of files) {
+    const counts = new Map<string, number>();
+    for (const id of f.ids) counts.set(id, (counts.get(id) ?? 0) + 1);
+    for (const [id, n] of counts) {
+      if (n > 1) withinFileDuplicates.push({ file: path.basename(f.path), id, count: n });
+    }
   }
+
+  const perFileUnique = files.map((f) => new Set(f.ids));
+  const convergence = new Map<string, string[]>();
+  for (let i = 0; i < files.length; i++) {
+    for (const id of perFileUnique[i]) {
+      convergence.set(id, (convergence.get(id) ?? []).concat(path.basename(files[i].path)));
+    }
+  }
+  const crossFileConvergent = [...convergence.entries()].filter(([, fs]) => fs.length > 1);
+
+  const allIds = files.flatMap((f) => f.ids);
   // Kimlik gorunumlu ama bicimsiz degerler: UUID olmayan ve UUID'ye benzemeye calisan.
   const malformed = allIds.filter((id) => id.length >= 32 && id.includes("-") && !UUID_RE.test(id));
 
@@ -116,7 +137,8 @@ function main(): void {
 
   const pass =
     parseErrors === 0 && shapeErrors === 0 && mismatches.length === 0 &&
-    droppedFindings === 0 && malformed.length === 0;
+    droppedFindings === 0 && malformed.length === 0 &&
+    withinFileDuplicates.length === 0;
 
   const report = {
     checkedAt: new Date().toISOString(),
@@ -127,8 +149,10 @@ function main(): void {
     declaredTotal,
     actualTotal,
     droppedFindings,
-    duplicateFindingIds: dupes.size,
-    duplicateSamples: [...dupes].slice(0, 20),
+    withinFileDuplicates: withinFileDuplicates.length,
+    withinFileDuplicateSamples: withinFileDuplicates.slice(0, 20),
+    crossFileConvergentIds: crossFileConvergent.length,
+    crossFileConvergenceSamples: crossFileConvergent.slice(0, 20).map(([id, fs]) => ({ id, files: fs })),
     malformedIds: malformed.length,
     malformedSamples: malformed.slice(0, 20),
     parseErrors,
@@ -147,7 +171,8 @@ function main(): void {
     console.log(`  ${f.match && !f.parseError && !f.shapeError ? "PASS" : "FAIL"}  ${path.basename(f.path).padEnd(28)} ${state}`);
   }
   console.log(`\nbeyan toplam=${declaredTotal} · gercek toplam=${actualTotal} · dusen=${droppedFindings}`);
-  console.log(`tekrarli kimlik=${dupes.size} · bicimsiz kimlik=${malformed.length} · ayristirma hatasi=${parseErrors} · sekil hatasi=${shapeErrors}`);
+  console.log(`DOSYA ICI tekrar=${withinFileDuplicates.length} (HATA sayilir) · DOSYALAR ARASI yakinsama=${crossFileConvergent.length} (BEKLENEN — kanit yakinsamasi)`);
+  console.log(`bicimsiz kimlik=${malformed.length} · ayristirma hatasi=${parseErrors} · sekil hatasi=${shapeErrors}`);
   console.log(`Rapor: ${outPath}`);
   console.log(pass ? "HANDOFF INTEGRITY: PASS" : "HANDOFF INTEGRITY: FAIL");
   process.exit(pass ? 0 : 1);
