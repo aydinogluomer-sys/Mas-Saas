@@ -41,14 +41,28 @@ const ALLOWED_DELTA: Readonly<Record<string, number>> = Object.freeze({
 });
 
 /**
- * Silmenin dokunduğu tablolara GELEN yabancı anahtarlar burada beklenir. Bu listenin dışında
- * bir FK çıkarsa (yeni migration eklemiş olabilir) script durur: silmenin ne sürükleyeceğini
- * bilmeden gerçek veride DELETE çalıştırılmaz.
+ * ŞEMA SÖZLEŞMESİ — canlı şemadan ÖLÇÜLDÜ, varsayılmadı.
  *
- * Beklenen ON DELETE davranışı: `payment_instances.payment_id` dışında CASCADE OLMAMALI.
- * Bir CASCADE, silinecek dört satırın ötesine sessizce yayılabilir.
+ * İlk sürüm `payment_instances.payment_id`'nin CASCADE olduğunu VARSAYMIŞTI. Canlı şemadan
+ * çıkarılan gerçek şudur:
+ *
+ *   payment_instances.payment_id → payments   ON DELETE SET NULL   (CASCADE DEĞİL)
+ *   users'a gelen 41 FK'nın hepsi              ON DELETE NO ACTION
+ *   payment_instances'a gelen FK                yok
+ *
+ * SET NULL, bu iş için CASCADE'den DAHA tehlikelidir: ödeme, taksitleri silinmeden
+ * kaldırılsaydı üç taksit `payment_id = NULL` ile HAYATTA KALIR ve sahipsiz hayalet borç
+ * olarak ödeme radarında görünmeye devam ederdi. Script bu yüzden taksitleri ÖNCE siler.
+ *
+ * Aşağıdaki harita bir izin listesi değil, bir SÖZLEŞMEDİR: canlı şema bundan saparsa
+ * (yeni migration bir FK'yı CASCADE'e çevirmiş olabilir) script durur, çünkü silmenin ne
+ * sürükleyeceği artık bilinmiyor.
  */
-const CASCADE_ALLOWED = new Set(["payment_instances.payment_id"]);
+const FK_CONTRACT: Readonly<Record<string, string>> = Object.freeze({
+  "payment_instances.payment_id": "SET NULL",
+});
+/** Sözleşmede adı geçmeyen her çocuk için beklenen davranış. */
+const FK_CONTRACT_DEFAULT = "NO ACTION";
 
 interface InboundFk {
   child: string; childCol: string; parent: string; onDelete: string; constraint: string;
@@ -164,9 +178,14 @@ async function main(): Promise<void> {
     fks = await inboundForeignKeys(q, ["users", "payments", "payment_instances"]);
     for (const fk of fks) {
       const key = `${fk.child}.${fk.childCol}`;
-      const bad = fk.onDelete === "CASCADE" && !CASCADE_ALLOWED.has(key);
+      const want = FK_CONTRACT[key] ?? FK_CONTRACT_DEFAULT;
+      const bad = fk.onDelete !== want;
       console.log(`  ${bad ? "DURDUR" : "  ok  "} ${key.padEnd(42)} → ${fk.parent.padEnd(18)} ON DELETE ${fk.onDelete}`);
-      if (bad) failures.push(`beklenmeyen CASCADE: ${key} → ${fk.parent} (${fk.constraint})`);
+      if (bad) {
+        failures.push(
+          `FK sözleşmesi ihlali: ${key} → ${fk.parent} ON DELETE ${fk.onDelete}, '${want}' bekleniyordu (${fk.constraint})`,
+        );
+      }
     }
     console.log(`  ${fks.length} gelen FK incelendi\n`);
     if (failures.length > 0) {
