@@ -30,6 +30,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { expect, test } from "@playwright/test";
 import { loadRuntimeInventory, openAs, type SeededRole } from "./harness";
+import { waitForWorkspaceReady } from "./workspace-ready";
 
 interface NavEvidence {
   route: string;
@@ -222,6 +223,10 @@ test.describe("gezinme süpürmesi", () => {
             res = await page.goto(target.sourceRoute, { waitUntil: "domcontentloaded", timeout: NAV_TIMEOUT });
           }
           if ((res?.status() ?? 0) >= 400) throw new Error(`kaynak rota ${target.sourceRoute} → HTTP ${res?.status()}`);
+
+          // Perde tam ekran ve opak; kapanmadan yapılan her tıklama "intercepts pointer events"
+          // ile düşer ve ürün suçlanır. Gözlenebilir duruma göre beklenir, sleep ile değil.
+          await waitForWorkspaceReady(page);
 
           // KAYNAK ROTA /login'e DÜŞTÜYSE bu bir ÜRÜN hatası değil, HARNESS hatasıdır ve öyle
           // söylenir. Bir kez tam olarak böyle bir koşu yaşandı: iki test önceki çıkış testi

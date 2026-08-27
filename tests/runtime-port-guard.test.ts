@@ -44,8 +44,14 @@ interface RunResult {
   stderr: string;
 }
 
-/** Script'i gerçek bir süreç olarak çalıştır ve çıkış kodunu oku. */
-function runGuard(env: NodeJS.ProcessEnv): Promise<RunResult> {
+/**
+ * Script'i gerçek bir süreç olarak çalıştır ve çıkış kodunu oku.
+ *
+ * `overrides` tipi `NodeJS.ProcessEnv` DEĞİL, düz `Record<string, string>`: bu projenin
+ * `ProcessEnv` bildirimi `NODE_ENV`'i ZORUNLU kılıyor, dolayısıyla `{ PORT: "…" }` gibi kısmi bir
+ * nesne o tipe atanamıyor. Kısmi override doğru olan şey — tam ortam aşağıda yayılarak kuruluyor.
+ */
+function runGuard(overrides: Record<string, string>): Promise<RunResult> {
   return new Promise((resolve) => {
     execFile(
       process.execPath,
@@ -54,7 +60,7 @@ function runGuard(env: NodeJS.ProcessEnv): Promise<RunResult> {
         cwd: process.cwd(),
         // Ebeveyn ortamı KOPYALANIR ama bypass bayrağı bilerek temizlenir: kabuğunda o değişken
         // duran biri, testin ölçmek istediği dalı sessizce atlatabilirdi.
-        env: { ...process.env, MAS_ALLOW_PARALLEL_RUNTIME: "", ...env },
+        env: { ...process.env, MAS_ALLOW_PARALLEL_RUNTIME: "", ...overrides },
         timeout: 30_000,
       },
       (error, _stdout, stderr) => {

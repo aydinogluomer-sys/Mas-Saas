@@ -29,6 +29,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { chromium, type Browser, type Page } from "@playwright/test";
 import globalSetup, { ROLE_STATE_FILES, statePathFor, type SeededRole } from "../../tests/visual/global-setup";
+import { waitForWorkspaceReady } from "../../tests/interaction/workspace-ready";
 
 const BASE = process.env.BASE_URL ?? "http://127.0.0.1:3310";
 
@@ -137,6 +138,10 @@ async function crawlRole(browser: Browser, role: SeededRole): Promise<{ controls
       const res = await page.goto(route, { waitUntil: "domcontentloaded", timeout: 45_000 });
       status = res?.status() ?? 0;
       await page.waitForLoadState("networkidle", { timeout: 20_000 }).catch(() => {});
+      // ÖN YÜKLEME PERDESİ KAPANMADAN SAYMA. Perde açıkken kontroller DOM'da durur ama
+      // tıklanamaz; envanteri o anda çıkarmak "var ama kullanılamaz" bir listeyi "kullanılabilir"
+      // diye kaydetmek olurdu. Gerekçe: tests/interaction/workspace-ready.ts
+      await waitForWorkspaceReady(page).catch(() => {});
     } catch (e) {
       problems.push(`${role} ${route}: gezinme hatası — ${e instanceof Error ? e.message : String(e)}`);
       continue;
