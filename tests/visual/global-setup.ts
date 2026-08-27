@@ -120,6 +120,41 @@ async function logInThroughForm(page: import("@playwright/test").Page, role: See
   }
 }
 
+/**
+ * TEK bir rolün oturumunu TAZELE — uzun koşular için.
+ *
+ * ═══ NEDEN GEREKTİ (ölçülmüş) ═══
+ *
+ * `globalSetup` beş rolü koşunun BAŞINDA giriş yaptırır. Kısa paketlerde bu yeter. Ama
+ * `8007887`'nin ön yükleme perdesi her tam sayfa yüklemesine ~20 sn eklediği için envanter
+ * taraması 75 dakikaya çıktı ve `src/lib/auth.ts`'teki 60 DAKİKALIK BOŞTA KALMA sınırı devreye
+ * girdi: sırası en sona gelen `admin`, kendi turuna başladığında oturumu çoktan iptal edilmişti.
+ *
+ * Sonuç sessiz ve tehlikeliydi — tarama hata vermedi, `admin` için 66 kontrol raporladı (yani
+ * yalnız `/login` sayfasındaki tek düğme) ve toplam 2122 yerine 2066 çıktı. Kapsamın sessizce
+ * daralmasının bu paket içindeki İKİNCİ örneği.
+ *
+ * Ürün doğru davranıyor: boşta kalma sınırı bir güvenlik özelliğidir ve testler için
+ * gevşetilmez. Doğru düzeltme, her rolün oturumunu KENDİ turundan hemen önce tazelemektir —
+ * böylece boşta kalma süresi o turun süresiyle sınırlı kalır.
+ */
+export async function refreshRoleSession(browser: import("@playwright/test").Browser, role: SeededRole): Promise<void> {
+  const baseURL = process.env.BASE_URL;
+  if (!baseURL) throw new Error("BASE_URL tanımlı değil — oturum tazelenemez.");
+  const context = await browser.newContext({ baseURL });
+  try {
+    const page = await context.newPage();
+    await logInThroughForm(page, role);
+    const session = (await context.cookies()).find((c) => c.name === "mas_session");
+    if (!session?.value) {
+      throw new Error(`${role}: tazeleme sonrası mas_session çerezi yok — oturum kurulamadı.`);
+    }
+    await context.storageState({ path: statePathFor(role) });
+  } finally {
+    await context.close();
+  }
+}
+
 async function globalSetup(): Promise<void> {
   const baseURL = process.env.BASE_URL;
   if (!baseURL) {

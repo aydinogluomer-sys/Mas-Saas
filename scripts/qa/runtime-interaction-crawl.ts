@@ -28,7 +28,7 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { chromium, type Browser, type Page } from "@playwright/test";
-import globalSetup, { ROLE_STATE_FILES, statePathFor, type SeededRole } from "../../tests/visual/global-setup";
+import globalSetup, { ROLE_STATE_FILES, refreshRoleSession, statePathFor, type SeededRole } from "../../tests/visual/global-setup";
 import { waitForWorkspaceReady } from "../../tests/interaction/workspace-ready";
 
 const BASE = process.env.BASE_URL ?? "http://127.0.0.1:3310";
@@ -191,6 +191,12 @@ async function main(): Promise<void> {
   const problems: string[] = [];
   try {
     for (const role of Object.keys(ROLE_STATE_FILES) as SeededRole[]) {
+      // OTURUMU KENDİ TURUNDAN HEMEN ÖNCE TAZELE.
+      //
+      // Ön yükleme perdesi taramayı 75 dakikaya çıkardı ve 60 dakikalık boşta kalma sınırı
+      // sıradaki son rolü (admin) düşürdü: tarama hata vermeden 66 kontrol (yalnız /login)
+      // raporladı. Ürün doğruydu; ölçüm aracı kendi süresini hesaba katmıyordu.
+      await refreshRoleSession(browser, role);
       const r = await crawlRole(browser, role);
       all.push(...r.controls);
       problems.push(...r.problems);
