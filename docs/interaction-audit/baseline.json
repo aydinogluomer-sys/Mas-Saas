@@ -18,9 +18,9 @@
     "  pnpm interaction:gate         -> ratchet (PR)",
     "  pnpm interaction:gate:strict  -> strict  (release/cutover)"
   ],
-  "untested": 561,
-  "pass": 1561,
-  "measuredAt": "2026-08-27T09:02:12+03:00",
-  "measuredAtCommit": "067eaa4",
-  "measuredNote": "2122 kesfedilen kontrol; navigation 1554 PASS, mutation 5, ui-state 2, export 0. Uretim derlemesi, harcanabilir DB (mas_radar_interaction_verify), 5 gercek oturum, QA bypass kapali."
+  "untested": 557,
+  "pass": 1578,
+  "measuredAt": "2026-08-27T14:10:00+03:00",
+  "measuredAtCommit": "df4ae6f+",
+  "measuredNote": "2135 kesfedilen kontrol; navigation 1564 PASS, mutation 12 PASS / 120 UNTESTED, ui-state 2 PASS / 414 UNTESTED, export 0 PASS / 23 UNTESTED. FAIL=0, manifestosuz=0. Uretim derlemesi, harcanabilir DB (mas_radar_interaction_verify), 5 gercek oturum (rol basina tazelenmis), QA bypass kapali."
 }

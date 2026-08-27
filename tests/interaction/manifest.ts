@@ -94,7 +94,13 @@ const CHART_AND_TABLE: CoverageRule[] = [
   { id: "chart/period", label: /^(3A|6A|12A|24A|Tümü)$/, klass: "ui-state", verifiedBy: "shell.spec.ts › dönem düğmesi grafiğin nokta sayısını değiştirir" },
   {
     id: "chart/series-toggle",
-    label: /^(Açılış|Kapanış|Gelir|Gider|Net hareket|Çek|Kredi taksiti|Kullanım|Marj)$/,
+    // Etiket DİNAMİK: `analytics-chart.tsx` boş seriye "· bu dönemde kayıt yok" ekler
+    // (`{series.label}{emptySeries… && <span>· bu dönemde kayıt yok</span>}`). Aynı düğme,
+    // aynı davranış — yalnız o dönemde verisi yok. Kapı bunu yakaladı: mutasyon testleri bütün
+    // çekleri kapattıktan sonra `/finance` üzerinde "Çek· bu dönemde kayıt yok" belirdi ve
+    // manifestoda karşılığı olmadığı için KIRMIZI verdi. Doğru düzeltme kuralı bu ekle
+    // toleranslı yapmaktır; etiketi veya boş-durum bilgisini kaldırmak değil.
+    label: /^(Açılış|Kapanış|Gelir|Gider|Net hareket|Çek|Kredi taksiti|Kullanım|Marj)(· bu dönemde kayıt yok)?$/,
     tag: /^button$/,
     klass: "ui-state",
     verifiedBy: "shell.spec.ts › seri düğmesi ilgili seriyi gizler/gösterir",

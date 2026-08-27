@@ -3,7 +3,7 @@
 **Soru:** MAS Nakit Radar arayüzünde kullanıcıya aktif olarak gösterilen bütün dahili buton ve
 aksiyonlar, vaat ettikleri işi gerçekten yapıyor mu?
 
-**Kapsam:** 66 rota, 5 rol, 2122 ayrık (rota, kontrol) çifti.
+**Kapsam:** 66 rota, 5 rol, 2135 ayrık (rota, kontrol) çifti.
 **Ortam:** production derlemesi (`pnpm build && pnpm start`), harcanabilir veritabanı
 (`mas_radar_interaction_verify`), gerçek `/login` oturumları, `MAS_QA_BYPASS_AUTH` **kapalı**.
 
@@ -26,9 +26,9 @@ Bunun yanında kalıcı bir **etkileşim kapısı** kuruldu: keşif (tarama) × 
 kanıt (gerçek tıklama + DB before/after). Kapı, test edilmemiş bir kontrol kaldığında CI'ı
 kırmızıya çevirir.
 
-**Dürüst sınır:** kapı bugün 2122 kontrolün **1561'ini** kanıtlanmış sayıyor, **0 FAIL** ile. Kalan
-**561** kontrol için doğrulama sınıfı ve hangi testin karşılayacağı manifestoda YAZILI, ama
-testleri henüz yazılmadı. Bu sayı gizlenmiyor — kapı onları `UNTESTED` olarak raporluyor ve bu
+**Dürüst sınır:** kapı bugün 2135 kontrolün **1578'ini** kanıtlanmış sayıyor, **0 FAIL** ve
+**0 manifestosuz kontrol** ile. Kalan **557** kontrol için doğrulama sınıfı ve hangi testin
+karşılayacağı manifestoda YAZILI, ama testleri henüz yazılmadı. Bu sayı gizlenmiyor — kapı onları `UNTESTED` olarak raporluyor ve bu
 yüzden kapı şu an **KIRMIZI**. Ayrıntı: [Kalan iş](#remaining-blockers).
 
 ---
@@ -410,30 +410,34 @@ gerekiyor.
 Kapı şu an **KIRMIZI** ve sebebi açıkça raporlanıyor: `UNTESTED > 0`.
 
 ```
-Interactive controls discovered: 2122
-PASS:                          1561
+Interactive controls discovered: 2135
+PASS:                          1578
 EXPECTED DISABLED:                0
 EXTERNAL NOT LIVE-VERIFIABLE:     0
 FAIL:                             0
-UNTESTED:                       561
+UNTESTED:                       557
+manifestoda karşılığı olmayan:    0
 ```
 
 Sınıf × yargı kırılımı (ölçülen):
 
 ```
-navigation   1554 PASS      0 UNTESTED
-mutation        5 PASS    126 UNTESTED
-ui-state        2 PASS    412 UNTESTED
+navigation   1564 PASS      0 UNTESTED
+mutation       12 PASS    120 UNTESTED
+ui-state        2 PASS    414 UNTESTED
 export          0 PASS     23 UNTESTED
 ```
 
-`UNTESTED` olan 561 kontrolün tamamı manifestoda **sınıflandırılmış** (hangi doğrulama sınıfına
+Ratchet kapı **YEŞİL** (kapsam gerilemedi), strict kapı **KIRMIZI** (UNTESTED=557) — ikincisi
+beklenen ve doğru sonuç.
+
+`UNTESTED` olan 557 kontrolün tamamı manifestoda **sınıflandırılmış** (hangi doğrulama sınıfına
 girdiği ve hangi testin karşılayacağı yazılı); eksik olan şey testlerin kendisi:
 
 | Sınıf | Kalan | Yazılacak test |
 |---|---|---|
-| `ui-state` | 412 | `shell.spec.ts` — komut paleti, kenar çubuğu, grafik zoom/dönem/seri, tablo sıralama, sayfalama, kolon seçici, filtreler |
-| `mutation` | 126 | `flows.spec.ts` genişletmesi — çek tahsil/karşılıksız, kredi oluştur, senaryo çalıştır, brifing/rapor üret, hatırlatıcı planla/gönder, görev yaşam döngüsü, varsayım onay/ret, onay akışı, içe aktarım, kullanıcı/rol yönetimi |
+| `ui-state` | 414 | `shell.spec.ts` — komut paleti, kenar çubuğu, grafik zoom/dönem/seri, tablo sıralama, sayfalama, kolon seçici, filtreler |
+| `mutation` | 120 | `flows.spec.ts` genişletmesi — çek tahsil/karşılıksız, kredi oluştur, senaryo çalıştır, brifing/rapor üret, hatırlatıcı planla/gönder, görev yaşam döngüsü, varsayım onay/ret, onay akışı, içe aktarım, kullanıcı/rol yönetimi |
 | `export` | 23 | `exports.spec.ts` — CSV parse, XLSX programatik açma, PNG/SVG/PDF imza doğrulaması |
 
 Ayrıca **yazılmamış** olanlar (görev tanımında istenmişti, bu turda yetişmedi):
@@ -500,7 +504,7 @@ console errors                    0
 page errors                       0
 HTTP 5xx                          0
 unmapped interactive controls     0      (2122/2122 manifestoda sınıflandırıldı)
-untested internal controls        561    ← kapı bu yüzden KIRMIZI
+untested internal controls        557    ← strict kapı bu yüzden KIRMIZI
 full interaction gate             KIRMIZI
 ```
 
@@ -511,11 +515,11 @@ full interaction gate             KIRMIZI
 
 **Henüz tam olarak kanıtlanmadı — ama artık ölçülüyor ve eksik kısım sayıyla biliniyor.**
 
-Kanıtlanan: 2122 kontrolün **1561'i**, gerçek tıklama ile ve — mutasyonlarda — veritabanı
+Kanıtlanan: 2135 kontrolün **1578'i**, gerçek tıklama ile ve — mutasyonlarda — veritabanı
 before/after farkıyla doğrulandı. **0 FAIL.** Bulunan 5 gerçek kusur düzeltildi ve düzeltmeler
 yeniden ölçüldü.
 
-Kanıtlanmayan: **561** kontrol. Hepsi keşfedilmiş, hepsi sınıflandırılmış, hiçbiri gizlenmemiş.
+Kanıtlanmayan: **557** kontrol. Hepsi keşfedilmiş, hepsi sınıflandırılmış, hiçbiri gizlenmemiş.
 Kapı bunlar için yeşil vermiyor ve vermeyecek.
 
 Bu denetimin asıl kazancı sayı değil, **sayının artık var olması**: önceki araç 16 rota tarıyor ve

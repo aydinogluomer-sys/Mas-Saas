@@ -251,8 +251,31 @@ test.describe("gezinme süpürmesi", () => {
           //
           // Bu yüzden ölçüt gevşetilmedi, DOĞRU İFADE EDİLDİ: "bu href'e giden EN AZ BİR kontrol
           // gerçekten tıklanabilir mi?" Hiçbiri tıklanamıyorsa bu gerçek bir hatadır ve FAIL olur.
-          const candidates = page.locator(`a[href="${href.replace(/"/g, '\\"')}"]`);
-          const count = Math.min(await candidates.count(), 6);
+          let candidates = page.locator(`a[href="${href.replace(/"/g, '\\"')}"]`);
+          let count = Math.min(await candidates.count(), 6);
+
+          // SOMUT href BAYATLADIYSA ŞEKLE GERİ DÜŞ.
+          //
+          // Satır linkleri şekle göre gruplanıyor (`/insights/reports/:id`) ama tıklanan href
+          // taramanın gördüğü SOMUT kimlik. Tarama ile test arasında mutasyon testleri yeni
+          // rapor/senaryo üretiyor, eski kimlik ekrandan kayboluyor ve süpürme "href kaynak
+          // rotada bulunamadı" diye ÜRÜNÜ suçluyordu — ölçüldü: /insights/reports/8010d88a-…
+          // 93 birimi birden kırmızı yaptı. Kimlik bayat, bağlantı sağlam.
+          //
+          // Aynı şekle uyan HERHANGİ bir link aynı kontroldür; ekranda o an duranı tıklamak
+          // hem doğru hem de kapsamı daraltmaz.
+          if (count === 0) {
+            const shapeMatch = shapeOf(href);
+            const live = await page.locator("a[href^='/']").evaluateAll((nodes) =>
+              nodes.map((n) => (n as HTMLAnchorElement).getAttribute("href") ?? ""),
+            );
+            const replacement = live.find((candidate) => shapeOf(candidate) === shapeMatch);
+            if (replacement) {
+              proof.push(`somut href bayat; aynı şekle uyan güncel bağlantı kullanıldı (${replacement})`);
+              candidates = page.locator(`a[href="${replacement.replace(/"/g, '\\"')}"]`);
+              count = Math.min(await candidates.count(), 6);
+            }
+          }
           if (count === 0) throw new Error(`href ${href} kaynak rotada bulunamadı`);
 
           let clickedOk = false;

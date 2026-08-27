@@ -32,7 +32,7 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { expect, test, type Page } from "@playwright/test";
-import { db, openAs, scalar, signatureFor, type Evidence, type SeededRole } from "./harness";
+import { db, openAs, scalar, signatureFor, signatureFromDom, type Evidence, type SeededRole } from "./harness";
 import { usernameFor } from "../visual/global-setup";
 import { waitForWorkspaceReady } from "./workspace-ready";
 
@@ -77,14 +77,29 @@ async function count(sql: string): Promise<number> {
 
 /* ── Fixture kurucular — hepsi TEKRAR ÇALIŞTIRILABİLİR ──────────────────────────────────── */
 
-/** Tahsil/karşılıksız için: açık (settled olmayan) bir çek garanti et. */
+/**
+ * Tahsil/karşılıksız için: 'planned' durumda, arşivlenmemiş bir çek garanti et.
+ *
+ * ÜÇ AYRI HATA BU FIXTURE'DA BİRİKTİ; üçü de "ürün bozuk" gibi göründü, üçü de testin hatasıydı:
+ *
+ *   1. Kapanmış durumlar `cleared`/`bounced`'tır, `settled` DEĞİL. İlk koruma `settled` arıyordu,
+ *      dolayısıyla `cleared` çekleri "açık" sayıp yeni çek ÜRETMİYORDU. Tekrarlanan koşular
+ *      işlenebilir çekleri tüketti (planned 5 → 1 → 0) ve düğme hiç render edilmedi.
+ *   2. `CHECK_SETTLEABLE_FROM = new Set(["planned"])` — düğmeler YALNIZ `planned` çekte çıkar.
+ *      Fixture `portfolio` yazıyordu; satır tabloda görünüyor ama aksiyonu hiç sunmuyordu.
+ *   3. Tabloda `due_date` diye bir kolon yok; vade alanı `maturity_date`. Yanlış kolon adıyla
+ *      INSERT zaten patlıyordu.
+ *
+ * Dersi kayda geçiriyorum çünkü üçü de aynı kökten: fixture'ın varsaydığı şema/durum sözlüğü ile
+ * ürünün gerçek sözlüğü ayrışmıştı. Ürün her seferinde doğruydu.
+ */
 async function ensureOpenCheck(): Promise<void> {
   await db(async (c) => {
-    const open = await c.query("select 1 from public.checks where status not in ('settled','bounced') limit 1");
+    const open = await c.query("select 1 from public.checks where status = 'planned' and archived_at is null limit 1");
     if (open.rowCount === 1) return;
     await c.query(
-      `insert into public.checks (direction, amount, currency, due_date, status, bank_name, serial_no)
-       values ('inflow', 12500.00, 'TRY', (now() + interval '30 days')::date, 'portfolio', 'IX-FIXTURE Bank', $1)`,
+      `insert into public.checks (direction, amount, signed_amount, maturity_date, status, serial_no, counterparty_label)
+       values ('inflow', 12500.00, 12500.00, (now() + interval '30 days')::date, 'planned', $1, 'IX-FIXTURE')`,
       [`IX-${Date.now()}`],
     );
   });
@@ -213,6 +228,27 @@ for (const testCase of CASES) {
 
       if (testCase.fill) await testCase.fill(page);
 
+      /**
+       * İMZA TIKLAMADAN ÖNCE ALINIR ve envanterde yoksa CANLI DOM'dan çıkarılır.
+       *
+       * İki ayrı sebep:
+       *  · Aksiyon çoğu zaman kendi düğmesini yok eder ('planned' çek tahsil edilince
+       *    `CHECK_SETTLEABLE_FROM` dışına çıkar ve düğme kaybolur) — sonradan alınamaz.
+       *  · Duruma bağlı kontroller taramada HİÇ görünmemiş olabilir. Tarama sırasında
+       *    işlenebilir çek kalmamıştı, bu yüzden "tahsil edildi" envantere girmedi ve
+       *    `signatureFor` haklı olarak "kanıt uydurulmaz" diyerek durdu.
+       *
+       * DOM'dan çıkarılan imza, o durum taramada mevcut olsaydı yazılacak imzanın AYNISIDIR
+       * (aynı formül: tag|type|label|actionId). Envanterde karşılığı yoksa kanıt satırı hiçbir
+       * birime düşmez — yani UNTESTED sayısını HAK ETMEDEN düşürmez. Dürüst olan da budur.
+       */
+      let controlSignature: string;
+      try {
+        controlSignature = signatureFor(testCase.route, testCase.label);
+      } catch {
+        controlSignature = await signatureFromDom(page, testCase.label);
+      }
+
       const before = await count(testCase.countSql);
       const auditBefore = testCase.auditTable
         ? await count(`select count(*)::int from public.audit_logs where entity_table = '${testCase.auditTable}'`)
@@ -262,7 +298,7 @@ for (const testCase of CASES) {
 
       evidence.push({
         route: testCase.route,
-        control: signatureFor(testCase.route, testCase.label),
+        control: controlSignature,
         role: testCase.role,
         verdict: "PASS",
         proof: [
