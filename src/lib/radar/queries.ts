@@ -86,6 +86,125 @@ export async function paymentOverviewInstances(
   ).rows.map(mapInstanceRow);
 }
 
+export interface PaymentDashboardBucket {
+  dueDate: string;
+  status: "overdue" | "partial" | "planned";
+  count: number;
+  knownAmount: number;
+  unknownCount: number;
+  maxAmount: number | null;
+  foreignCurrencyCount: number;
+  criticalCount: number;
+  flexibleCount: number;
+  optionalCount: number;
+  unclassifiedCount: number;
+}
+
+export interface PaymentDashboardFlexibility {
+  id: "critical" | "flexible" | "optional" | "unclassified";
+  count: number;
+  templateCount: number;
+  knownAmount: number;
+  unknownCount: number;
+}
+
+/** Bounded read model for the payments landing page; detail pages keep the full-row loaders. */
+export async function loadPaymentDashboard(
+  pool: Pool,
+  todayISO: string,
+  futureEndISO: string,
+): Promise<{
+  buckets: PaymentDashboardBucket[];
+  flexibility: PaymentDashboardFlexibility[];
+  watchList: Array<InstanceRow & { remaining: number | null; daysOverdue: number; decisionFlexibility: PaymentDashboardFlexibility["id"] }>;
+  priorities: InstanceRow[];
+}> {
+  const tomorrowISO = new Date(Date.parse(todayISO) + 86400000).toISOString().slice(0, 10);
+  const result = await pool.query(`
+    with active as materialized (
+      select i.*, p.name as payment_name, p.priority, p.flexibility_class,
+             c.name as category,
+             case when i.amount is null then null else greatest(i.amount-coalesce(i.paid_amount,0),0) end as remaining,
+             case when p.flexibility_class in ('critical','flexible','optional') then p.flexibility_class
+                  when p.priority in ('critical','high') or i.risk_level='critical' then 'critical'
+                  when p.priority='low' then 'optional' else 'unclassified' end as decision_flexibility
+      from public.payment_instances i
+      left join public.payments p on p.id=i.payment_id
+      left join public.categories c on c.id=p.category_id
+      where i.due_date <= $2::date
+        and (i.due_date >= $1::date or i.status in ('unpaid','partial','planned','late'))
+        and i.status in ('unpaid','partial','planned','late','unknown')
+    ), buckets as (
+      select to_char(due_date,'YYYY-MM-DD') as due_date,
+             case when due_date < $1::date then 'overdue' when status='partial' then 'partial' else 'planned' end as pressure_status,
+             count(*)::int as record_count,
+             coalesce(sum(remaining) filter (where remaining is not null),0) as known_amount,
+             count(*) filter (where remaining is null)::int as unknown_count,
+             max(remaining) filter (where remaining is not null) as max_amount,
+             count(*) filter (where currency <> 'TRY')::int as foreign_currency_count,
+             count(*) filter (where decision_flexibility='critical')::int as critical_count,
+             count(*) filter (where decision_flexibility='flexible')::int as flexible_count,
+             count(*) filter (where decision_flexibility='optional')::int as optional_count,
+             count(*) filter (where decision_flexibility='unclassified')::int as unclassified_count
+      from active group by due_date, pressure_status
+    ), flexibility as (
+      select decision_flexibility, count(*)::int as record_count,
+             count(distinct coalesce(payment_id,id))::int as template_count,
+             coalesce(sum(remaining) filter (where remaining is not null),0) as known_amount,
+             count(*) filter (where remaining is null)::int as unknown_count
+      from active group by decision_flexibility
+    ), watch_list as (
+      select id, payment_id, coalesce(payment_name,'(silinmiş kalem)') as name,
+             to_char(due_date,'YYYY-MM-DD') as due_date, amount, amount_status, status,
+             paid_amount, risk_level, risk_reasons, note, currency, direction, priority,
+             category, flexibility_class as flexibility, (source_row_id is not null) as source_linked,
+             remaining, greatest(0,($1::date-due_date))::int as days_overdue, decision_flexibility
+      from active order by greatest(0,($1::date-due_date)) desc,
+               (decision_flexibility='critical') desc, remaining desc nulls last limit 8
+    ), priorities as (
+      select id, payment_id, coalesce(payment_name,'(silinmiş kalem)') as name,
+             to_char(due_date,'YYYY-MM-DD') as due_date, amount, amount_status, status,
+             paid_amount, risk_level, risk_reasons, note, currency, direction, priority,
+             category, flexibility_class as flexibility, (source_row_id is not null) as source_linked
+      from active where due_date <= $3::date
+      order by (due_date < $1::date) desc, due_date, (decision_flexibility='critical') desc,
+               case risk_level when 'critical' then 4 when 'high' then 3 when 'medium' then 2 when 'low' then 1 else 0 end desc,
+               remaining desc nulls last limit 5
+    )
+    select
+      coalesce((select jsonb_agg(to_jsonb(b) order by b.due_date,b.pressure_status) from buckets b),'[]'::jsonb) buckets,
+      coalesce((select jsonb_agg(to_jsonb(f) order by f.decision_flexibility) from flexibility f),'[]'::jsonb) flexibility,
+      coalesce((select jsonb_agg(to_jsonb(w)) from watch_list w),'[]'::jsonb) watch_list,
+      coalesce((select jsonb_agg(to_jsonb(p)) from priorities p),'[]'::jsonb) priorities`,
+    [todayISO, futureEndISO, tomorrowISO]);
+  const payload = result.rows[0] as { buckets: Record<string, unknown>[]; flexibility: Record<string, unknown>[]; watch_list: Record<string, unknown>[]; priorities: Record<string, unknown>[] };
+
+  return {
+    buckets: payload.buckets.map((row) => ({
+      dueDate: row.due_date as string,
+      status: row.pressure_status as PaymentDashboardBucket["status"],
+      count: Number(row.record_count),
+      knownAmount: moneyOrNull(row.known_amount as string | number | null) ?? 0,
+      unknownCount: Number(row.unknown_count),
+      maxAmount: moneyOrNull(row.max_amount as string | number | null),
+      foreignCurrencyCount: Number(row.foreign_currency_count),
+      criticalCount: Number(row.critical_count), flexibleCount: Number(row.flexible_count),
+      optionalCount: Number(row.optional_count), unclassifiedCount: Number(row.unclassified_count),
+    })),
+    flexibility: payload.flexibility.map((row) => ({
+      id: row.decision_flexibility as PaymentDashboardFlexibility["id"],
+      count: Number(row.record_count), templateCount: Number(row.template_count),
+      knownAmount: moneyOrNull(row.known_amount as string | number | null) ?? 0, unknownCount: Number(row.unknown_count),
+    })),
+    watchList: payload.watch_list.map((row) => ({
+      ...mapInstanceRow(row), remaining: moneyOrNull(row.remaining as string | number | null),
+      daysOverdue: Number(row.days_overdue),
+      decisionFlexibility: row.decision_flexibility as PaymentDashboardFlexibility["id"],
+    })),
+    priorities: payload.priorities.map(mapInstanceRow),
+  };
+}
+
 export async function monthSummary(pool: Pool, monthStartISO: string) {
   const r = await pool.query(
     `select
