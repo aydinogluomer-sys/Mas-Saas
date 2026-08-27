@@ -356,7 +356,7 @@ kadar para çıkacak" için `remaining` ürün açısından **daha doğru** gör
 kural olarak `amount`a bağlı. İkisi ayrı soru ve şimdi ayrı alanlarla cevaplanıyor. Hangisinin
 nerede doğru olduğu **ürün kararı** — talimat gereği bu turda dokunulmadı, burada raporlanıyor.
 
-**İkinci bulgu — iptal edilmiş kayıtlar, ayrı karar gerektirir.** Eski sayfa `status !== 'paid'`
+**İkinci bulgu — iptal edilmiş kayıtlar. → KARAR VERİLDİ, bkz. §9.** Eski sayfa `status !== 'paid'`
 süzüyordu, yani **iptal edilmiş** ödemeler "Bugün / Yarın / 7 günlük çıkış" KPI'larına
 **giriyordu**. Yeni SQL `active` kümesini beş statüyle sınırlıyor ve iptalleri dışarıda
 bırakıyor. Yeni davranış daha doğru görünüyor (iptal edilmiş ödeme bir nakit çıkışı değildir),
@@ -478,3 +478,182 @@ Bu oturumda TestSprite **çalıştırılmadı**. Yapılandırılmış bir TestSp
 `api.testsprite.com` yerel çözümleyicide reddediliyor (`Query refused`), herkese açık DNS ile
 çözülüyor ve kök uç 404 dönüyor — yani host ayakta ama bu oturumdan kullanılabilir bir koşu
 yolu yok. Localhost'a karşı koşmuş gibi **gösterilmedi**.
+
+---
+
+## 9. Davranış kararı — iptal edilmiş ödemeler yük göstergelerine girmez
+
+### 9.1 Karar
+
+`status='cancelled'` **veya** `cancelled_at` dolu bir payment instance:
+
+| Yüzey | Davranış |
+|---|---|
+| Bugün toplamı | **girmez** |
+| Yarın toplamı | **girmez** |
+| 7 günlük çıkış | **girmez** |
+| Gecikmiş / açık ödeme toplamı | **girmez** |
+| Öncelikli ödemeler | **girmez** |
+| Riskli gün hesabı | **girmez** |
+| Grafiğin açık ödeme serisi | **girmez** |
+| `/payments/history` (denetim izi) | **görünmeye devam eder** |
+
+Son satır kararın yarısı: dışlamak *yok saymak* değil. Bir kaydı KPI'dan çıkarırken denetimden
+de silseydik, "neden bu tutar kayboldu" sorusunun cevabı hiçbir yerde kalmazdı.
+
+### 9.2 Kural nereden geliyor
+
+Burada icat edilmedi; üç ayrı yerde zaten yazılıydı ve üçü de aynı şeyi söylüyor:
+
+```
+src/lib/radar/rules.ts          OPEN_STATUSES = unpaid | partial | planned | late
+docs/calculation-rules.md       "Ödenmiş/iptal kayıtlar risk almaz."
+tests/visual/golden-ui-smoke    OPEN = "status <> 'paid' and cancelled_at is null
+                                        and direction = 'outflow'"
+```
+
+Bu tur onları *uyguladı* değil — zaten uygulanıyorlardı — **sorgunun içinde yazılı hâle
+getirdi**.
+
+### 9.3 Ne değişti: yan etki → beyan
+
+`loadPaymentDashboard`'ın `active` CTE'si iptalleri **zaten** dışarıda bırakıyordu, ama bunu
+söyleyen bir şey yoktu: izin listesinde `'cancelled'` **yoktu**, o kadar. Kural bir listede
+*olmayan* bir değerle ifade ediliyordu. Artık açıkça yazılı:
+
+```sql
+and i.status in ('unpaid','partial','planned','late','unknown')
+and i.status <> 'cancelled'
+and i.cancelled_at is null
+```
+
+`buckets`, `flexibility`, `watch_list` ve `priorities` CTE'lerinin **hepsi** `active`'ten
+türediği için tek yüklem sekiz yüzeyin tamamını kapsıyor.
+
+**Bu iki satır bugün tek başına iş görmüyor — ve ölçüldü** (§9.5, sabotaj *a*). Değer şurada:
+izin listesine bir gün `'cancelled'` eklenirse kural burada ayakta kalır. Sabotaj *c* tam olarak
+bunu ölçtü — liste genişletildi, testler yine yeşil kaldı.
+
+### 9.4 Statü ile `cancelled_at` tutarlılığı — DB garantisi var, yine de iki yüklem yazıldı
+
+```
+payment_instances_cancel_consistency
+  CHECK ((status = 'cancelled') = (cancelled_at IS NOT NULL) AND …)
+```
+
+Yani `status='cancelled'` ⟺ `cancelled_at IS NOT NULL` **veritabanı seviyesinde garanti**;
+bugün iki yüklem birebir aynı satırları eliyor. İkisi de yazıldı çünkü **sorgu, göremediği bir
+garantiye dayanmamalı**: tek yüklem yazıp diğerini "nasılsa kısıt tutuyor" diye atlamak, okuyanın
+fark edemeyeceği sessiz bir bağımlılık olurdu.
+
+### 9.5 Sabotaj kanıtı — hangi satırın iş gördüğü ölçüldü
+
+Tek bir sabotaj "filtre çalışıyor" demeye yetmezdi; üç varyant koşuldu:
+
+| Sabotaj | Sonuç | Ne öğretti |
+|---|---|---|
+| **(a)** Yalnız açık yüklemler kaldırıldı, izin listesi duruyor | **27 PASS · 0 FAIL** | Bugün yükü taşıyan izin listesi; yeni satırlar mekanizma değil, **beyan** |
+| **(b)** Dışlama tamamen kaldırıldı (`'cancelled'` izin listesine eklendi) | **10 KIRMIZI** | Test kuralın **yokluğunu gerçekten görüyor** |
+| **(c)** İzin listesi genişletildi **ama** açık yüklemler yerinde | **27 PASS · 0 FAIL** | Yeni satırlar **tam da bu senaryoda** kuralı ayakta tutuyor |
+
+(a) tek başına raporlansaydı "değişiklik gereksiz" görünürdü; (c) olmadan "değişiklik kuralı
+kuran şey" denirdi. İkisi de yanlış olurdu.
+
+Sabotajlar geri alındı; `git diff --stat` ve `grep` ile doğrulandı (27 eklenen satır = yorum +
+iki yüklem, izin listesi bozulmamış).
+
+### 9.6 Test matrisi — `scripts/db/cancelled-kpi-verify.ts` (27/27 PASS)
+
+**Neden fark ölçülüyor, mutlak değer değil:** "bugün toplamı 1.234.567 olmalı" biçiminde bir
+beklenen, seed her değiştiğinde kırılır ve kimse ona güvenmez. Kuralın iddiası zaten bir *fark*
+iddiası: iptal eklenince hiçbir şey değişmez, açık eşdeğeri eklenince tam tutar kadar artar.
+
+```
+A. taban ölçüm (fixture yok)
+
+B. bugün vadeli 5.000.000 TL'lik İPTAL eklendi
+   PASS  bugün · yarın · 7 gün · açık sayısı · gecikmiş · riskli gün · grafik — HEPSİ DEĞİŞMEDİ
+   PASS  iptal kaydı öncelikli ödemelerde yok
+
+C. aynı gün, aynı tutar (250.000 TL), altı statü: unpaid · partial · paid · cancelled · planned · late
+   elle aritmetik:  250.000 + 150.000 + 250.000 + 250.000 = 900.000   (paid ve cancelled hariç)
+   PASS  bugün toplamı tam 900.000 TL arttı
+   PASS  7 günlük toplam da aynı tutar kadar arttı
+   PASS  yarın toplamı değişmedi
+   PASS  açık kayıt sayısı 4 arttı (6 satırın 2'si dışarıda)
+   PASS  gecikmiş sayısı değişmedi
+   PASS  grafik toplamı da tam aynı tutar kadar arttı
+   PASS  iptal ve ödenmiş satırlar öncelikli ödemelerde yok
+   PASS  bağımsız SQL de 900.000 TL diyor (ürün koduna hiç dokunmadan)
+
+D. boş bir gün, yalnız 5.000.000 TL'lik iptal
+   PASS  o gün için hiç kova üretilmedi (gün grafikte yok)
+   PASS  o gün riskli gün sayılmadı
+   PASS  grafik toplamı değişmedi
+
+E. aynı güne aynı tutarda AÇIK eşdeğer
+   PASS  grafik toplamı tam 5.000.000 TL arttı
+   PASS  gün artık grafikte var
+   PASS  açık kayıt sayısı 1 arttı (iptal olan hâlâ sayılmıyor)
+
+F. denetim izi
+   PASS  iki iptal kaydı da /payments/history "İptal edilen" sekmesinde görünüyor
+   PASS  ödenmiş satır o sekmeye sızmıyor
+```
+
+Beklenen artışlar elle aritmetikle yazıldı ve ayrıca ürüne hiç dokunmayan bağımsız bir SQL ile
+çapraz kontrol edildi.
+
+### 9.7 Eski davranış korunmadı — ayrı bir finansal doğruluk kusuru olarak belgelenir
+
+Hızlandırma öncesindeki sayfa şunu yapıyordu:
+
+```ts
+const open = (rows) => rows.filter((row) => row.status !== "paid");
+```
+
+`'paid'` dışında **her şey** geçiyordu — yani **iptal edilmiş ödemeler** "Bugün", "Yarın" ve
+"7 günlük çıkış" KPI'larına **giriyordu**. İptal edilmiş bir ödeme nakit çıkışı değildir; o
+ekran, olmayacak bir çıkışı olacakmış gibi gösteriyordu.
+
+Bu tur o davranışı **bilerek geri getirmedi**. §8'de bu bir "karar bekleyen bulgu" olarak
+işaretlenmişti; karar verildi ve yön belli: doğru olan yeni davranış. Kusur eski koda ait, bu
+turda kapatıldı ve burada adıyla kayda geçiyor.
+
+Ölçülen etki bugün **sıfır**: harcanabilir veritabanında bugün-ve-sonrası tarihli hiç iptal
+kaydı yok, yani ekrandaki rakamlar iki davranışta da aynı çıkıyor. Fark **semantik ve gelecek
+tarihli** — ilk iptal edilen ileri vadeli ödemede görünür hâle gelirdi.
+
+### 9.8 Doğrulama
+
+```
+pnpm lint                    PASS  (0 uyarı)
+pnpm typecheck               PASS
+pnpm test                    PASS  (60 dosya, 1328 test)
+pnpm build                   PASS  (55s, derleme temiz)
+finansal golden              96/96
+payment-day-flags-verify     22/22
+receivable-totals-verify     16/16
+cancelled-kpi-verify         27/27   ← yeni
+```
+
+**Duman testi** (üretim derlemesi, harcanabilir DB, gerçek `/login`, QA bypass **KAPALI**,
+`finance_manager`) — bugün vadeli **7.777.777 TL**'lik bir iptal kaydı canlı olarak eklendi:
+
+```
+ÖNCE   bugün="Ödeme yok"  yarın="Ödeme yok"  7 günlük="25.000 TL"  riskli gün="6"
+SONRA  bugün="Ödeme yok"  yarın="Ödeme yok"  7 günlük="25.000 TL"  riskli gün="6"
+
+PASS  hiçbir KPI değişmedi
+PASS  kayıt iptal olarak veritabanında duruyordu
+PASS  duman testi fixture'ı temizlendi (0 satır kaldı)
+```
+
+### 9.9 Sınırlar
+
+- **Gerçek `mas_radar_dev` üzerinde hiçbir mutation çalıştırılmadı.** Her şey
+  `mas_radar_interaction_verify` üzerinde; `cancelled-kpi-verify` transaction ROLLBACK'i ile
+  temizleniyor, duman testinin tek satırı ise okunduktan sonra silinip 0 kalıntı doğrulandı.
+- **`.env.example`** okunmadı, diff'i alınmadı, stage edilmedi.
+- **Mevcut performans commitleri yeniden yazılmadı**, force-push yok.
+- **Push yapılmadı. P24B'ye başlanmadı.**

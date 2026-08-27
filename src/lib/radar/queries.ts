@@ -170,6 +170,33 @@ export async function loadPaymentDashboard(
       where i.due_date <= $2::date
         and (i.due_date >= $1::date or i.status in ('unpaid','partial','planned','late'))
         and i.status in ('unpaid','partial','planned','late','unknown')
+        -- ═══ IPTAL EDILMIS KAYITLAR ODEME YUKUNUN DISINDADIR ═══════════════════════════
+        --
+        -- KURAL. status='cancelled' ya da cancelled_at dolu bir odeme ornegi; bugun/yarin/
+        -- 7 gunluk cikisa, gecikmis ve acik toplamlara, oncelikli odemelere, riskli gun
+        -- hesabina ve grafigin acik odeme serisine GIRMEZ. /payments/history uzerinde
+        -- gorunmeye devam eder — orasi denetim izidir, yuk gostergesi degil.
+        --
+        -- KAYNAKLAR (bu kural burada icat edilmiyor):
+        --   src/lib/radar/rules.ts        OPEN_STATUSES = unpaid|partial|planned|late
+        --   docs/calculation-rules.md     "Odenmis/iptal kayitlar risk almaz."
+        --   tests/visual/golden-ui-smoke  OPEN = "status <> 'paid' and cancelled_at is null"
+        --
+        -- BU IKI SATIR BUGUN TEK BASINA IS GORMUYOR — ve bu bilerek boyle.
+        -- Ustteki izin listesi 'cancelled' ICERMIYOR, yani dislama zaten oluyor. Fark su:
+        -- orada dislama bir YAN ETKI, burada bir BEYAN. Izin listesine bir gun 'cancelled'
+        -- eklenirse (ornegin "iptalleri de sayalim" denip geri alinmazsa) kural burada
+        -- ayakta kalir. Ayrica sorguyu okuyan biri, kuralin uygulandigini bir listede
+        -- OLMAYAN bir degeri fark ederek degil, yazili olarak gorur.
+        --
+        -- IKI YUKLEM DE YAZILDI, CUNKU SORGU GORMEDIGI BIR GARANTIYE DAYANMAMALI.
+        -- public.payment_instances uzerindeki payment_instances_cancel_consistency
+        -- kisiti ((status = 'cancelled') = (cancelled_at IS NOT NULL)) esdegerligini
+        -- ZATEN garanti ediyor; yani bugun ikisi ayni satirlari eliyor. Kisit sorgunun
+        -- icinde gorunmedigi icin, tek yuklem yazip digerini "nasilsa kisit tutuyor"
+        -- diye atlamak, sessiz bir bagimlilik olurdu.
+        and i.status <> 'cancelled'
+        and i.cancelled_at is null
     ), buckets as (
       select to_char(due_date,'YYYY-MM-DD') as due_date,
              case when due_date < $1::date then 'overdue' when status='partial' then 'partial' else 'planned' end as pressure_status,
