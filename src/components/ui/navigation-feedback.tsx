@@ -26,19 +26,63 @@ const STUCK_NAVIGATION_TIMEOUT_MS = 3000;
 
 const NavigationContext = createContext<NavigationContextValue | null>(null);
 
-const PRELOAD_BATCH_SIZE = 3;
+/* ── Açılış hazırlığı: perde ne kadar kalır, arkasında ne ısınır ────────────────────────────
+ *
+ * NE ÖLÇÜLDÜ (düzeltmeden önce). Perde bütün workspace rotaları — 60 tanesi, üçlü gruplar
+ * hâlinde — bitene kadar kapanmıyordu ve `waitForResourceQuiet(minimumWaitMs)` her gruba bir
+ * MİNİMUM dayatıyordu (ilk grup 4000 ms, sonrakiler 700 ms). Yani süre veriye değil, sabit bir
+ * bütçeye bağlıydı:
+ *
+ *     4000 + 19 × 700 + 250 ≈ 17.5 sn teorik    →    20.0 sn ölçüldü
+ *
+ * `.workspace-preloader` tam ekran, opak ve `pointer-events` serbest bırakılmamış; dolayısıyla
+ * bu sürenin tamamı boyunca kullanıcı HİÇBİR ŞEYE tıklayamıyordu. `useState({ active: true })`
+ * olduğu için perde SSR HTML'inde de var: her tam reload ve her yer imi açılışı 20 sn bekliyordu.
+ *
+ * ═══ YENİ DAVRANIŞ ═══
+ *
+ *   BLOKLAYAN FAZ   Yalnız role göre görünen ANA SIDEBAR rotaları (en çok 9, mevcut rota hariç).
+ *                   Hepsi tek seferde prefetch edilir; ağ sessizleşince perde HEMEN kapanır.
+ *   MUTLAK TAVAN    5 sn. Ağ hiç sessizleşmese bile perde bu süreden fazla duramaz.
+ *   ARKA PLAN FAZ   Alt sekmeler perde KAPANDIKTAN sonra, boşta, TEK TEK ısıtılır.
+ *
+ * Alt sekmelerin bloklayan fazdan çıkarılması iki şeyi birden düzeltir: bekleme 60 rotaya değil
+ * ~9 rotaya bağlanır, ve asıl maliyet (ilk chunk/derleyici ısınması) zaten ilk gruba düşer.
+ *
+ * ═══ NEDEN "MİNİMUM BEKLEME" KALDIRILDI ═══
+ *
+ * Eski `minimumWaitMs`, hazırlık erken bitse bile beklemeyi ZORUNLU kılıyordu — kapanma
+ * koşulunu ölçümden koparan şey buydu. Yeni koşul yalnız iki şey: ağ `PRELOAD_QUIET_MS` kadar
+ * sessiz kaldı mı, ya da tavana ulaşıldı mı. Sessizlik penceresinin kendisi (550 ms) perdenin
+ * göz kırpmasını da engelliyor; ayrıca yapay bir taban gerekmiyor.
+ */
 const PRELOAD_QUIET_MS = 550;
-const PRELOAD_BATCH_TIMEOUT_MS = 8_000;
+/** Perdenin MUTLAK üst sınırı. Aşılamaz; ağ hiç susmasa bile kullanıcı burada serbest kalır. */
+const PRELOAD_CURTAIN_MAX_MS = 5_000;
+/** İlerleme çubuğunun tazelenme aralığı — yalnız görsel. */
+const PRELOAD_PROGRESS_TICK_MS = 100;
 
-function waitForResourceQuiet(minimumWaitMs: number, signal: AbortSignal): Promise<void> {
+/**
+ * Ağ sessizleşene YA DA tavana ulaşılana kadar bekle; hangisi önce olursa.
+ *
+ * `onProgress`, geçen sürenin tavana oranını bildirir. İlerleme çubuğu artık "kaç rota bitti"
+ * değil "ne kadar beklendi" gösterir — çünkü bloklayan fazda bütün prefetch'ler aynı anda
+ * başlatılıyor ve rota başına anlamlı bir ilerleme YOK. Sahte bir yüzde göstermektense
+ * ölçülebilir olanı göstermek doğrusu.
+ */
+function waitForWorkspaceWarm(signal: AbortSignal, onProgress: (ratio: number) => void): Promise<void> {
   return new Promise((resolve) => {
     const startedAt = performance.now();
     let lastResourceAt = startedAt;
-    const deadlineTimer = window.setTimeout(finish, PRELOAD_BATCH_TIMEOUT_MS);
+
+    const deadlineTimer = window.setTimeout(finish, PRELOAD_CURTAIN_MAX_MS);
     const pollTimer = window.setInterval(() => {
       const now = performance.now();
-      if (now - startedAt >= minimumWaitMs && now - lastResourceAt >= PRELOAD_QUIET_MS) finish();
-    }, 100);
+      onProgress(Math.min((now - startedAt) / PRELOAD_CURTAIN_MAX_MS, 1));
+      // ERKEN KAPANMA: ağ sustuysa tavanı beklemeden çık.
+      if (now - lastResourceAt >= PRELOAD_QUIET_MS) finish();
+    }, PRELOAD_PROGRESS_TICK_MS);
+
     const observer = typeof PerformanceObserver === "undefined" ? null : new PerformanceObserver(() => {
       lastResourceAt = performance.now();
     });
@@ -56,6 +100,27 @@ function waitForResourceQuiet(minimumWaitMs: number, signal: AbortSignal): Promi
   });
 }
 
+/**
+ * İşi tarayıcı BOŞTAYKEN çalıştır; iptal edilebilir bir temizleyici döndür.
+ *
+ * `requestIdleCallback` Safari'de yok — orada `setTimeout`'a düşülür. Fallback'in gecikmesi
+ * bilerek küçük ama sıfır değil: sıfır olsaydı arka plan ısıtması ana iş parçacığını arka arkaya
+ * meşgul eder ve "arka plan prefetch etkileşimi engellemesin" sözünü Safari'de bozardı.
+ */
+function scheduleWhenIdle(run: () => void): () => void {
+  const view = window as Window & {
+    requestIdleCallback?: (cb: IdleRequestCallback, opts?: { timeout: number }) => number;
+    cancelIdleCallback?: (handle: number) => void;
+  };
+  if (typeof view.requestIdleCallback === "function") {
+    // `timeout`: tarayıcı hiç boşalmazsa iş süresiz ertelenmesin.
+    const handle = view.requestIdleCallback(() => run(), { timeout: 2_000 });
+    return () => view.cancelIdleCallback?.(handle);
+  }
+  const handle = window.setTimeout(run, 200);
+  return () => window.clearTimeout(handle);
+}
+
 function localHref(anchor: HTMLAnchorElement): string | null {
   if (anchor.target && anchor.target !== "_self") return null;
   if (anchor.hasAttribute("download")) return null;
@@ -66,12 +131,29 @@ function localHref(anchor: HTMLAnchorElement): string | null {
   return `${url.pathname}${url.search}${url.hash}`;
 }
 
-export function NavigationFeedbackProvider({ children, preloadRoutes }: { children: ReactNode; preloadRoutes: readonly string[] }) {
+/**
+ * `primaryRoutes` PERDEYİ TUTAR, `secondaryRoutes` TUTMAZ — ayrım bilerek prop seviyesinde.
+ *
+ * Rol filtresi ÇAĞIRANDA uygulanır (`navigationFor` + `canSeeRoute`, bkz. dashboard layout) ve
+ * burada korunur: bu bileşen kendisine verilen listelerin dışına çıkmaz, yani bir katmanın
+ * göremediği rota ne bloklayan fazda ne arka planda ısıtılır.
+ */
+export function NavigationFeedbackProvider({
+  children,
+  primaryRoutes,
+  secondaryRoutes = [],
+}: {
+  children: ReactNode;
+  /** Role göre görünen ANA sidebar rotaları — perde bunlar için bekler. */
+  primaryRoutes: readonly string[];
+  /** Alt sekmeler — perde KAPANDIKTAN sonra, boşta, tek tek ısıtılır. */
+  secondaryRoutes?: readonly string[];
+}) {
   const pathname = usePathname();
   const searchParams = useSearchParams();
   const router = useRouter();
   const [state, setState] = useState<NavigationState>({ pendingHref: null, isNavigating: false, startedAt: null });
-  const [preload, setPreload] = useState({ active: true, completed: 0 });
+  const [preload, setPreload] = useState({ active: true, progress: 0 });
   const stuckTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const clearStuckTimer = useCallback(() => {
     if (stuckTimer.current !== null) {
@@ -147,30 +229,49 @@ export function NavigationFeedbackProvider({ children, preloadRoutes }: { childr
 
   useEffect(() => {
     const controller = new AbortController();
-    const routes = preloadRoutes.filter((href) => href !== window.location.pathname);
+    const here = window.location.pathname;
+    const primary = primaryRoutes.filter((href) => href !== here);
+    const secondary = secondaryRoutes.filter((href) => href !== here && !primary.includes(href));
+
+    // Arka plan zincirinin o anki iptal edicisi. Unmount'ta beklemedeki idle/timeout işi de
+    // iptal edilir — aksi hâlde sökülmüş bir ağaç adına prefetch tetiklenmeye devam ederdi.
+    let cancelPending: (() => void) | null = null;
 
     const warmWorkspace = async () => {
-      if (routes.length === 0) {
-        setPreload({ active: false, completed: 0 });
-        return;
+      // ── 1) BLOKLAYAN FAZ: yalnız ana sidebar rotaları ─────────────────────────────────
+      if (primary.length > 0) {
+        primary.forEach((href) => router.prefetch(href));
+        await waitForWorkspaceWarm(controller.signal, (ratio) => {
+          setPreload((current) => (current.active ? { active: true, progress: ratio } : current));
+        });
       }
-      for (let index = 0; index < routes.length; index += PRELOAD_BATCH_SIZE) {
-        if (controller.signal.aborted) return;
-        const batch = routes.slice(index, index + PRELOAD_BATCH_SIZE);
-        // The first batch also pays the one-time Next.js compiler/chunk startup cost.
-        const completed = waitForResourceQuiet(index === 0 ? 4_000 : 700, controller.signal);
-        batch.forEach((href) => router.prefetch(href));
-        await completed;
-        if (controller.signal.aborted) return;
-        setPreload({ active: true, completed: Math.min(index + PRELOAD_BATCH_SIZE, routes.length) });
-      }
-      await new Promise((resolve) => window.setTimeout(resolve, 250));
-      if (!controller.signal.aborted) setPreload({ active: false, completed: routes.length });
+      if (controller.signal.aborted) return;
+
+      // Perde burada kapanır: en geç 5 sn, ağ daha erken susarsa daha erken.
+      setPreload({ active: false, progress: 1 });
+
+      // ── 2) ARKA PLAN FAZ: alt sekmeler, boşta, TEK TEK ────────────────────────────────
+      //
+      // Tek tek olması önemli: hepsini birden atmak ağı ve ana iş parçacığını doldurup
+      // kullanıcının o an yaptığı gezinmeyi yavaşlatırdı. Perde çoktan kapalı olduğu için
+      // bu faz hiçbir tıklamayı veya klavye etkileşimini ENGELLEMEZ — yalnız boş zamanı
+      // kullanır.
+      let index = 0;
+      const warmNext = () => {
+        if (controller.signal.aborted || index >= secondary.length) return;
+        router.prefetch(secondary[index]);
+        index += 1;
+        cancelPending = scheduleWhenIdle(warmNext);
+      };
+      cancelPending = scheduleWhenIdle(warmNext);
     };
 
     void warmWorkspace();
-    return () => controller.abort();
-  }, [preloadRoutes, router]);
+    return () => {
+      controller.abort();
+      cancelPending?.();
+    };
+  }, [primaryRoutes, secondaryRoutes, router]);
 
   const value: NavigationContextValue = { ...state, beginNavigation, prefetch };
   return <NavigationContext.Provider value={value}>
@@ -182,8 +283,8 @@ export function NavigationFeedbackProvider({ children, preloadRoutes }: { childr
           <span className="workspace-preloader-mark" aria-hidden>MAS</span>
           <h1>Uygulama hazırlanıyor</h1>
           <p>Sayfalar ilk tıklamanızdan önce hızlandırılıyor.</p>
-          <div className="workspace-preloader-track" aria-hidden><i style={{ width: `${Math.round((preload.completed / Math.max(preloadRoutes.length - 1, 1)) * 100)}%` }} /></div>
-          <small>{Math.round((preload.completed / Math.max(preloadRoutes.length - 1, 1)) * 100)}%</small>
+          <div className="workspace-preloader-track" aria-hidden><i style={{ width: `${Math.round(preload.progress * 100)}%` }} /></div>
+          <small>{Math.round(preload.progress * 100)}%</small>
         </div>
       </div>}
       <div className="instant-navigation-skeleton" aria-hidden="true">

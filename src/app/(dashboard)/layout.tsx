@@ -32,8 +32,21 @@ export default async function DashboardLayout({ children }: { children: ReactNod
   // the browser at all. The pages behind it keep their own guards — this removes the dead door,
   // it does not replace the lock.
   const nav = navigationFor(session.role, NAV);
-  const preloadRoutes = WORKSPACE_PRELOAD_ROUTES.filter((href) => canSeeRoute(session.role, href));
-  return <NavigationFeedbackProvider preloadRoutes={preloadRoutes}><div className="app-shell">
+  // AÇILIŞ HAZIRLIĞI İKİYE AYRILDI — ölçülmüş bir kullanıcı engellemesi yüzünden.
+  //
+  // Önceden 60 rotanın tamamı tam ekran perde ARKASINDA ısıtılıyordu ve perde ~20 sn açık
+  // kalıyordu; her tam reload ve her yer imi açılışında kullanıcı hiçbir şeye tıklayamıyordu.
+  //
+  //   primary    ana sidebar rotaları — perde YALNIZ bunları bekler (en çok 9)
+  //   secondary  alt sekmeler — perde kapandıktan SONRA, boşta, tek tek ısıtılır
+  //
+  // Rol filtresi İKİSİNDE DE korunuyor: `navigationFor` sidebar'ı katmana göre süzer,
+  // `canSeeRoute` de alt sekmeleri. Bir katmanın göremediği rota hiçbir fazda ısıtılmaz.
+  const primaryRoutes = nav.map((item) => item.href);
+  const secondaryRoutes = WORKSPACE_PRELOAD_ROUTES.filter(
+    (href) => canSeeRoute(session.role, href) && !primaryRoutes.includes(href),
+  );
+  return <NavigationFeedbackProvider primaryRoutes={primaryRoutes} secondaryRoutes={secondaryRoutes}><div className="app-shell">
     <AppSidebar items={nav} gate={true} logoutAction={logoutAction} />
     <div className="workspace-shell">
       <header className="workspace-bar">
