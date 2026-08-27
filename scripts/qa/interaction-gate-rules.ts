@@ -15,12 +15,18 @@
  * ═══ İKİ MOD, İKİ FARKLI SÖZ ═══
  *
  *   ratchet  Günlük PR kapısı. Söz: "kapsam GERİLEMEZ." Kalan UNTESTED'ı hoş görür ama
- *            ARTMASINA izin vermez. Bir ekibin 561 test borcunu tek PR'da kapatması gerçekçi
+ *            ARTMASINA izin vermez. Bir ekibin 557 test borcunu tek PR'da kapatması gerçekçi
  *            değildir; her PR'ın borcu BÜYÜTMEMESİ gerçekçidir.
  *
- *   strict   Release/cutover kapısı. Söz: "kanıtlanmamış kontrol YOK." UNTESTED > 0 ise kırmızı.
- *            Bu mod gevşetilmez; sayı gizlemek, allowlist'e taşımak ya da testi zayıflatmak
- *            yerine testin yazılması beklenir.
+ *   strict   TAM ETKİLEŞİM GÜVENCESİ hedefi. Söz: "kanıtlanmamış kontrol YOK." UNTESTED > 0 ise
+ *            kırmızı. Bu mod gevşetilmez; sayı gizlemek, allowlist'e taşımak ya da testi
+ *            zayıflatmak yerine testin yazılması beklenir.
+ *
+ *            AMA BİR CUTOVER KABUL KRİTERİ DEĞİLDİR. Kalan UNTESTED, Gap Closure Rehberi'nde
+ *            bulunmayan, bu denetim sırasında ortaya çıkarılmış yeni ve geniş bir kalite
+ *            hedefidir: izlenen kalite borcu, bilinen ürün hatası değil. Cutover'ın önüne
+ *            koyulması rehberin kapsamını sessizce büyütmek olurdu. Strict, cutover SONRASI
+ *            sertleştirme hedefi olarak koşar ve borcun büyüklüğünü görünür tutar.
  *
  * Ratchet'in strict'i SESSİZCE İKAME ETMEMESİ önemli: ikisi ayrı komutlardır, ayrı isimleri
  * vardır ve rapor hangi modda koşulduğunu açıkça yazar. Güvenceyi düşürmenin en kolay yolu,
@@ -93,7 +99,7 @@ export function evaluateGate(
   }
 
   if (mode === "strict") {
-    // ── Release/cutover ─────────────────────────────────────────────────────────────────
+    // ── Tam güvence hedefi (cutover kabul kriteri DEĞİL) ────────────────────────────────
     if (counts.untested > 0) {
       reasons.push(
         `UNTESTED=${counts.untested} — strict modda kanıtlanmamış kontrol kabul edilmez. ` +

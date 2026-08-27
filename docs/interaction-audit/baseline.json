@@ -14,9 +14,12 @@
     "evidence-*) baseline OLAMAZ: bir insanin PR diff'inde 'bu sayi neden yukseldi?' diye",
     "bakabilecegi tek sey budur.",
     "",
-    "Strict (release/cutover) kapisi bu tavani HIC dikkate almaz: orada UNTESTED > 0 kirmizidir.",
-    "  pnpm interaction:gate         -> ratchet (PR)",
-    "  pnpm interaction:gate:strict  -> strict  (release/cutover)"
+    "Strict kapi bu tavani HIC dikkate almaz: orada UNTESTED > 0 kirmizidir.",
+    "STRICT BIR CUTOVER KABUL KRITERI DEGILDIR. Kalan UNTESTED, Gap Closure Rehberi'nde",
+    "bulunmayan, denetim sirasinda ortaya cikarilmis yeni ve genis bir kalite hedefidir:",
+    "IZLENEN KALITE BORCU. Bloklayan kapi ratchet'tir.",
+    "  pnpm interaction:gate         -> ratchet (PR kapisi, BLOKLAYICI)",
+    "  pnpm interaction:gate:strict  -> strict  (tam guvence; cutover SONRASI sertlestirme hedefi)"
   ],
   "untested": 557,
   "pass": 1578,

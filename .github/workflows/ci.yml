@@ -521,11 +521,16 @@ jobs:
           MAS_E2E_DATABASE_URL: ${{ env.APP_URL }}
         run: pnpm interaction:gate
 
-      # STRICT kapı release/cutover içindir ve UNTESTED > 0 iken KIRMIZI kalır. Bugün kırmızı
-      # olması BEKLENEN sonuçtur; yeşile çevirmenin tek yolu testleri yazmaktır. `continue-on-error`
-      # bilerek kullanıldı: PR'ları bloklamadan, release'in bugün hazır OLMADIĞINI her koşuda
-      # görünür kılar. Kapının kendisi gevşetilmedi — çıkış kodu hâlâ 1.
-      - name: Coverage gate — STRICT (release/cutover hazırlık göstergesi)
+      # STRICT kapı TAM ETKİLEŞİM GÜVENCESİ hedefidir ve UNTESTED > 0 iken KIRMIZI kalır.
+      #
+      # BİR CUTOVER KABUL KRİTERİ DEĞİLDİR — bu ayrım bilerek yazılı. Kalan UNTESTED, Gap Closure
+      # Rehberi'nde bulunmayan, denetim sırasında ortaya çıkarılmış yeni ve geniş bir kalite
+      # hedefidir: izlenen kalite borcu, bilinen ürün hatası ya da yeni bir P0 değil. Cutover'ın
+      # önüne koyulması rehberin kapsamını sessizce büyütmek olurdu.
+      #
+      # `continue-on-error` bu yüzden: PR'ları BLOKLAMADAN borcun büyüklüğünü her koşuda görünür
+      # tutar. Kapının kendisi gevşetilmedi — çıkış kodu hâlâ 1. Bloklayan şey ratchet'tir.
+      - name: Coverage gate — STRICT (tam etkileşim güvencesi; cutover SONRASI sertleştirme hedefi)
         continue-on-error: true
         env:
           MAS_E2E_DATABASE_URL: ${{ env.APP_URL }}

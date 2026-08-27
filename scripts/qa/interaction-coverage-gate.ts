@@ -22,12 +22,16 @@
  *                       olabilir (bkz. `.testsprite/button-action-audit.mjs`).
  *   Keşif + sözleşme    Sözleşme yazılır, test yazılmaz. Kağıt üstünde kapsam %100.
  *
- * ═══ KIRMIZI VERME KURALI ═══
+ * ═══ KIRMIZI VERME KURALI — İKİ MOD ═══
  *
- *   UNTESTED > 0   → FAIL. İstisnası yok. Dış servise bağlı kontroller bile açık bir
- *                    allowlist satırıyla (gerekçe + karar sahibi + kanıt + mock testi)
- *                    EXTERNAL_NOT_LIVE_VERIFIABLE'a taşınmak zorundadır; "unuttuk" bir durum değil.
- *   FAIL > 0       → FAIL.
+ * Kararın tamamı `interaction-gate-rules.ts`'te (saf fonksiyon, 13 birim testi). Özet:
+ *
+ *   HER MODDA      FAIL > 0 · manifestoda karşılığı olmayan kontrol · eksik allowlist beyanı
+ *   ratchet (PR)   UNTESTED > baseline · PASS < baseline  → BLOKLAYICI kapı
+ *   strict         UNTESTED > 0 → kırmızı; ama BLOKLAMAZ ve bir CUTOVER KABUL KRİTERİ DEĞİLDİR.
+ *                  Kalan borç, rehberde bulunmayan, denetimde ortaya çıkarılmış bir kalite
+ *                  hedefidir: cutover SONRASI sertleştirme.
+ *
  *   Ölü kural      → uyarı olarak raporlanır (manifesto gerçeğe değil geçmişe ait olmasın).
  */
 
@@ -297,7 +301,16 @@ writeFileSync(
   "utf8",
 );
 
-/* ── Karar: ratchet (günlük PR) ya da strict (release/cutover) ───────────────────────────── */
+/* ── Karar: ratchet (günlük PR kapısı) ya da strict (kapsam hedefi) ──────────────────────────
+ *
+ * STRICT BİR CUTOVER KABUL KRİTERİ DEĞİLDİR. Bu ayrım bilerek ve yazılı: kalan UNTESTED,
+ * Gap Closure Rehberi'nde bulunmayan, denetim sırasında ORTAYA ÇIKARILMIŞ yeni ve geniş bir
+ * kalite hedefidir. İzlenen bir kalite borcudur — bilinen bir ürün hatası ya da yeni bir P0
+ * değil. Cutover'ın önüne koyulması, rehberin kapsamını sessizce büyütmek olurdu.
+ *
+ * Strict yine de HER KOŞUDA çalışır ve kırmızı kalır: borcun büyüklüğü görünür kalsın diye.
+ * Bloklayan şey ratchet'tir.
+ */
 
 const mode: GateMode = process.argv.includes("--strict") || process.env.MAS_INTERACTION_GATE_MODE === "strict" ? "strict" : "ratchet";
 const baseline = readBaseline();
@@ -318,7 +331,12 @@ if (badAllowlist.length > 0) {
 }
 
 console.log("");
-console.log(`MOD: ${mode === "strict" ? "STRICT (release/cutover)" : "RATCHET (günlük PR kapısı)"}`);
+console.log(
+  `MOD: ${mode === "strict" ? "STRICT (tam etkileşim güvencesi — cutover SONRASI sertleştirme hedefi)" : "RATCHET (günlük PR kapısı — bloklayıcı)"}`,
+);
+if (mode === "strict") {
+  console.log("  NOT: strict bir cutover kabul kriteri DEĞİLDİR; kalan borç izlenen kalite hedefidir.");
+}
 if (mode === "ratchet") {
   console.log(`  baseline: UNTESTED ≤ ${baseline.untested}, PASS ≥ ${baseline.pass}  (docs/interaction-audit/baseline.json)`);
   console.log("  strict kapı için: pnpm interaction:gate:strict");

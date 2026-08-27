@@ -451,7 +451,7 @@ yeşile dönmez.
 
 ---
 
-## Kapı iki seviyeli: ratchet (PR) ve strict (release/cutover)
+## Kapı iki seviyeli: ratchet (bloklayıcı PR kapısı) ve strict (kalite hedefi)
 
 Kapı tek bir eşikle çalışıyordu ve UNTESTED > 0 olduğu için HER PR'ı kırmızıya boyuyordu. Bu,
 uygulamada iki kötü sonuçtan birine götürür: ya kapı devre dışı bırakılır, ya da sayı gizlenir.
@@ -459,7 +459,7 @@ uygulamada iki kötü sonuçtan birine götürür: ya kapı devre dışı bırak
 
 | | `pnpm interaction:gate` (ratchet) | `pnpm interaction:gate:strict` |
 |---|---|---|
-| Kullanım | Günlük PR kapısı | Release / cutover |
+| Kullanım | Günlük PR kapısı — **BLOKLAYICI** | Tam etkileşim güvencesi — **bloklamaz** |
 | `FAIL > 0` | **KIRMIZI** | **KIRMIZI** |
 | Manifestosuz kontrol | **KIRMIZI** | **KIRMIZI** |
 | `UNTESTED > baseline` | **KIRMIZI** | — |
@@ -480,10 +480,30 @@ yükseldi?" diye bakabileceği tek şey budur.
   olmasaydı kapı kendi kendini etkisizleştirirdi: kırmızı görünce tavanı bir tık yukarı çekmek
   yeterli olurdu.
 
-CI'da ikisi de koşar: ratchet PR'ı bloklar, strict `continue-on-error: true` ile **bloklamadan**
-release hazırlığını her koşuda görünür kılar. Strict'in bugün kırmızı olması beklenen sonuçtur;
-yeşile çevirmenin tek yolu testleri yazmaktır — sayı gizlemek, allowlist'e taşımak veya testi
-gevşetmek değil.
+CI'da ikisi de koşar: **ratchet PR'ı bloklar**, strict `continue-on-error: true` ile
+**bloklamadan** kalan borcun büyüklüğünü her koşuda görünür kılar.
+
+### Strict bir cutover kabul kriteri DEĞİLDİR
+
+Bu ayrım bilerek ve yazılı. Kalan `UNTESTED`, **Gap Closure Rehberi'nde bulunmayan**, bu denetim
+sırasında ortaya çıkarılmış yeni ve geniş bir kalite hedefidir. Yani:
+
+- **İzlenen kalite borcudur** — bilinen bir ürün hatası ya da yeni bir P0 değil.
+- `FAIL = 0` ve `manifestoda karşılığı olmayan kontrol = 0`; ölçülen hiçbir kontrol vaat ettiği
+  işi yapmıyor durumda değil.
+- Cutover'ın önüne konması, rehberin kapsamını sessizce büyütmek olurdu.
+
+Strict'in bugün kırmızı olması beklenen ve doğru sonuçtur. Yeşile çevirmenin tek yolu testleri
+yazmaktır — sayı gizlemek, allowlist'e taşımak veya testi gevşetmek **değil**. Hedef:
+**cutover SONRASI sertleştirme**.
+
+**Cutover'ı bugün bloklayan etkileşim koşulları yalnız şunlardır:**
+
+| Koşul | Bugünkü değer |
+|---|---|
+| `FAIL > 0` | **0** ✅ |
+| Manifestoda karşılığı olmayan kontrol | **0** ✅ |
+| Ratchet gerilemesi (`UNTESTED > 557` veya `PASS < 1578`) | gerileme yok ✅ |
 
 Karar kuralları saf bir fonksiyonda (`scripts/qa/interaction-gate-rules.ts`) ve 13 deterministik
 birim testiyle doğrulanıyor (`tests/interaction-gate-rules.test.ts`, <1 sn): FAIL mevcut,
@@ -504,7 +524,7 @@ console errors                    0
 page errors                       0
 HTTP 5xx                          0
 unmapped interactive controls     0      (2122/2122 manifestoda sınıflandırıldı)
-untested internal controls        557    ← strict kapı bu yüzden KIRMIZI
+untested internal controls        557    ← izlenen kalite borcu; strict KIRMIZI (bloklamaz)
 full interaction gate             KIRMIZI
 ```
 
