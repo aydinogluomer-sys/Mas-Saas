@@ -61,17 +61,65 @@ test.describe("gezinme süpürmesi", () => {
     // Birim = (rota, imza). Kanıt bunlara yazılacak.
     const navUnits = inv.controls.filter((c) => c.tag === "a" && c.href && c.route !== "/login");
 
-    // Ayrık href → onu barındıran bir kaynak rota + o href'i gören bir rol.
-    // Rol seçimi ÖNEMLİ: bir link yalnız admin'e görünüyorsa viewer ile tıklanamaz.
-    const targets = new Map<string, { sourceRoute: string; role: SeededRole; units: typeof navUnits }>();
+    /**
+     * SATIR LİNKLERİ TEK KONTROLDÜR — kimliğe göre değil, ŞEKLE göre gruplanır.
+     *
+     * `/payments/1d8250ac-…/edit` ile `/payments/e6cef3de-…/edit` iki ayrı kontrol DEĞİLDİR:
+     * aynı tablo hücresinin iki satırıdır. Onları ayrı hedef saymak iki şeyi birden bozuyordu:
+     *
+     *   1. MALİYET — 40 satırlık bir tablo 40 hedef üretiyordu; hepsi aynı bileşeni ölçüyordu.
+     *   2. DOĞRULUK — bu href'ler VERİYE bağlıdır. Tarama ile test arasında mutasyon testleri
+     *      satır ekleyip değiştiriyor, o kimlikler ekrandan kayboluyor ve süpürme "href kaynak
+     *      rotada bulunamadı" diye KIRMIZI veriyordu. Ölçüldü: /payments/<uuid>/edit biçimindeki
+     *      her hedef bu şekilde başarısız göründü. Ürün sağlamdı; kimlik bayatlamıştı.
+     *
+     * UUID ve saf sayı segmentleri `:id`'ye indirgenerek gruplanır; her ŞEKİL için ekranda o an
+     * GERÇEKTEN duran bir örnek tıklanır. Kanıt yine bütün birimlere yazılır, yani kapsam
+     * azalmaz — azalan tek şey, aynı bileşeni tekrar tekrar ölçmenin maliyeti.
+     */
+    const shapeOf = (href: string): string =>
+      href
+        .split("?")[0]
+        .split("/")
+        .map((seg) => (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(seg) || /^\d+$/.test(seg) ? ":id" : seg))
+        .join("/");
+
+    const targets = new Map<string, { href: string; sourceRoute: string; role: SeededRole; units: typeof navUnits }>();
     for (const u of navUnits) {
       if (!isInAppLink(u.href!)) continue;
-      const existing = targets.get(u.href!);
+      const key = shapeOf(u.href!);
+      const existing = targets.get(key);
       if (existing) {
         existing.units.push(u);
         continue;
       }
-      targets.set(u.href!, { sourceRoute: u.route, role: u.role, units: [u] });
+      targets.set(key, { href: u.href!, sourceRoute: u.route, role: u.role, units: [u] });
+    }
+
+    /**
+     * DİLİMLEME — kapsamı azaltmaz, tek koşunun ömrünü kısaltır.
+     *
+     * Bu makine 244 hedefi tek oturumda bitiremiyor: boş RAM 0.13 GB'a inince Chromium
+     * `ERR_NETWORK_IO_SUSPENDED` vermeye ve tıklamalar 8 sn'de zaman aşımına uğramaya başladı —
+     * ÜRÜN kusursuzken 2919 birim "başarısız" göründü. Ölçüm ortamının çöküşünü ürün hatası diye
+     * raporlamak, bu denetimin tam olarak engellemeye çalıştığı şey.
+     *
+     * `NAV_SLICE="1/3"` hedefleri deterministik olarak üçe böler ve her dilim KENDİ kanıt
+     * dosyasına yazar (`evidence-navigation-1-3.json`). Kapı bütün `evidence-*.json`'ları
+     * birleştirdiği için üç dilim = tam kapsam. Dilim verilmezse davranış birebir eskisi.
+     */
+    const sliceSpec = process.env.NAV_SLICE ?? "";
+    const sliceMatch = /^(\d+)\/(\d+)$/.exec(sliceSpec);
+    const sliceIndex = sliceMatch ? Number(sliceMatch[1]) : 1;
+    const sliceCount = sliceMatch ? Number(sliceMatch[2]) : 1;
+    expect(sliceIndex >= 1 && sliceIndex <= sliceCount, `NAV_SLICE geçersiz: '${sliceSpec}'`).toBe(true);
+
+    if (sliceCount > 1) {
+      const all = [...targets.keys()];
+      for (const [i, href] of all.entries()) {
+        if (i % sliceCount !== sliceIndex - 1) targets.delete(href);
+      }
+      console.log(`NAV_SLICE ${sliceIndex}/${sliceCount}: ${targets.size}/${all.length} hedef bu dilimde`);
     }
 
     const skipped = navUnits.filter((u) => !isInAppLink(u.href!));
@@ -88,20 +136,70 @@ test.describe("gezinme süpürmesi", () => {
       });
     }
 
-    // Rol başına tek bağlam aç: 413 hedef için 413 tarayıcı bağlamı açmak süreyi anlamsızca üçe katlar.
-    const sessions = new Map<SeededRole, Awaited<ReturnType<typeof openAs>>>();
-    const sessionFor = async (role: SeededRole) => {
-      const existing = sessions.get(role);
-      if (existing) return existing;
-      const s = await openAs(browser, role);
-      sessions.set(role, s);
-      return s;
+    /* ── BELLEK: AYNI ANDA TEK BAĞLAM ────────────────────────────────────────────────────
+     *
+     * İlk yazımda beş rolün bağlamı de açılıp koşu boyunca AÇIK TUTULUYORDU. Bu makinede
+     * ölçüldü: 7.9 GB RAM'in boşu 0.35 GB'a indi, 19 chrome süreci aynı anda yaşadı ve 2.5
+     * dakikada biten süpürme 30 dakikada bitmedi — takas dosyası dönüyordu. Testin kendisi
+     * doğruydu, maliyeti yanlıştı.
+     *
+     * Hedefler artık ROLE GÖRE gruplanır; her rol için tek bağlam açılır, o rolün bütün
+     * hedefleri işlenir, bağlam KAPATILIR. Tepe bellek beşte bire iner ve toplam tıklama
+     * sayısı değişmez — yani kapsamdan hiçbir şey feda edilmez.
+     */
+    const byRole = new Map<SeededRole, Array<[string, (typeof targets) extends Map<string, infer V> ? V : never]>>();
+    for (const entry of targets) {
+      const list = byRole.get(entry[1].role) ?? [];
+      list.push(entry);
+      byRole.set(entry[1].role, list);
+    }
+
+    /**
+     * BAĞLAM GERİ DÖNÜŞÜMÜ — uzun ömürlü tek sayfa belleği biriktiriyor.
+     *
+     * Rol başına tek bağlam açmak tepe belleği beşte bire indirdi ama yetmedi: TEK bir sayfa 244
+     * kez gezindiğinde JS heap'i, önbellekler ve ayrılmamış render süreçleri birikiyor. Ölçüldü —
+     * boş RAM yine 0.38 GB'a indi, 17 chrome süreci yaşadı ve süpürme 20 dakikada bitmedi.
+     *
+     * Çözüm kapsamı DEĞİL, ömrü kısaltmak: her CONTEXT_RECYCLE_EVERY hedefte bağlam kapatılıp
+     * yeniden açılır. Tıklama sayısı birebir aynı kalır; değişen tek şey, belleğin sıfırlanma
+     * sıklığı. Kanıt da artımlı yazılır, böylece yarıda kesilen bir koşu bile ne kadarının
+     * ölçüldüğünü SÖYLER — sessizce hiçbir şey söylemeyen bir dosya bırakmaz.
+     */
+    /**
+     * ZAMAN BÜTÇELERİ — makineye göre, İDDİAYA dokunmadan.
+     *
+     * Bu makinede boş RAM 0.3 GB'a inebiliyor ve tıklama 8 sn'de yetişmiyor: 4791 birim
+     * "tıklanamadı" diye kırmızı oldu, oysa aynı süpürme bellek boşken 232/232 geçmişti.
+     * Süreyi uzatmak iddiayı GEVŞETMEZ — link hâlâ tıklanabilir OLMAK ZORUNDA ve hâlâ hedefine
+     * VARMAK ZORUNDA; değişen tek şey, yavaş bir makineye tanınan süre. `MAS_IX_SLOW=1` ile
+     * bütçeler açıkça genişletilir, böylece "yavaş makine" bir varsayım değil, bir KARAR olur.
+     */
+    const SLOW = process.env.MAS_IX_SLOW === "1";
+    const CLICK_TIMEOUT = SLOW ? 30_000 : 8_000;
+    const NAV_TIMEOUT = SLOW ? 90_000 : 45_000;
+    const CONTEXT_RECYCLE_EVERY = SLOW ? 15 : 25;
+    const EVIDENCE_FILE = sliceCount > 1 ? `evidence-navigation-${sliceIndex}-${sliceCount}.json` : "evidence-navigation.json";
+    const flush = () => {
+      mkdirSync(OUT, { recursive: true });
+      writeFileSync(path.join(OUT, EVIDENCE_FILE), `${JSON.stringify({ rows: evidence }, null, 2)}\n`, "utf8");
     };
 
     let clicked = 0;
-    try {
-      for (const [href, target] of targets) {
-        const session = await sessionFor(target.role);
+    for (const [role, roleTargets] of byRole) {
+      let session = await openAs(browser, role);
+      let sinceRecycle = 0;
+      try {
+      // Anahtar (şekil) değil DEĞER kullanılır: tıklanacak olan, ekranda o an duran gerçek href.
+      for (const [, target] of roleTargets) {
+        const href = target.href;
+        if (sinceRecycle >= CONTEXT_RECYCLE_EVERY) {
+          await session.context.close();
+          session = await openAs(browser, role);
+          sinceRecycle = 0;
+          flush();
+        }
+        sinceRecycle += 1;
         const { page } = session;
         session.clientErrors.length = 0;
         session.serverErrors.length = 0;
@@ -115,15 +213,28 @@ test.describe("gezinme süpürmesi", () => {
           // uçuştayken yeni bir goto vermek Chromium'da öncekini iptal ettirir ve hata
           // KAYNAK rotaya yazılır — ölçülen şey ürün değil, sıralama olur. `/insights/briefing`
           // tam olarak böyle 26 kez "başarısız" göründü; tek başına yüklendiğinde 200/180 ms.
-          let res = await page.goto(target.sourceRoute, { waitUntil: "domcontentloaded", timeout: 45_000 }).catch((e) => {
+          let res = await page.goto(target.sourceRoute, { waitUntil: "domcontentloaded", timeout: NAV_TIMEOUT }).catch((e) => {
             if (!/ERR_ABORTED/.test(String(e))) throw e;
             return null;
           });
           if (!res) {
             await page.waitForLoadState("domcontentloaded", { timeout: 15_000 }).catch(() => {});
-            res = await page.goto(target.sourceRoute, { waitUntil: "domcontentloaded", timeout: 45_000 });
+            res = await page.goto(target.sourceRoute, { waitUntil: "domcontentloaded", timeout: NAV_TIMEOUT });
           }
           if ((res?.status() ?? 0) >= 400) throw new Error(`kaynak rota ${target.sourceRoute} → HTTP ${res?.status()}`);
+
+          // KAYNAK ROTA /login'e DÜŞTÜYSE bu bir ÜRÜN hatası değil, HARNESS hatasıdır ve öyle
+          // söylenir. Bir kez tam olarak böyle bir koşu yaşandı: iki test önceki çıkış testi
+          // paylaşılan viewer oturumunu kapatmıştı, gezinme süpürmesi kaynak rotalarda /login
+          // görüyordu ve 244 href'in 244'ü "link bulunamadı" diye kırmızı oldu. Mesaj "link
+          // bulunamadı" dediği sürece bir sonraki kişi bunu ürün hatası sanar; sebebini adıyla
+          // söylemek o yanlış teşhisi imkânsız kılar.
+          if (new URL(page.url()).pathname === "/login") {
+            throw new Error(
+              `HARNESS: kaynak rota ${target.sourceRoute} '${target.role}' oturumuyla /login'e düştü — ` +
+                "oturum kapanmış/süresi dolmuş. Bu bir gezinme hatası DEĞİL; kavanozu tazeleyin.",
+            );
+          }
 
           // GERÇEK click — ama AYNI href'i taşıyan BÜTÜN adaylar denenir, yalnız ilki değil.
           //
@@ -144,10 +255,10 @@ test.describe("gezinme süpürmesi", () => {
           for (let i = 0; i < count; i++) {
             const link = candidates.nth(i);
             try {
-              await link.scrollIntoViewIfNeeded({ timeout: 5_000 });
+              await link.scrollIntoViewIfNeeded({ timeout: SLOW ? 15_000 : 5_000 });
               await Promise.all([
-                page.waitForURL(() => true, { timeout: 45_000 }).catch(() => {}),
-                link.click({ timeout: 8_000 }),
+                page.waitForURL(() => true, { timeout: NAV_TIMEOUT }).catch(() => {}),
+                link.click({ timeout: CLICK_TIMEOUT }),
               ]);
               clickedOk = true;
               if (i > 0) proof.push(`aday #${i} tıklandı (önceki adaylar örtülüydü)`);
@@ -157,7 +268,7 @@ test.describe("gezinme süpürmesi", () => {
             }
           }
           if (!clickedOk) throw new Error(`${count} adayın hiçbiri tıklanamadı — ${lastClickError}`);
-          await page.waitForLoadState("domcontentloaded", { timeout: 30_000 }).catch(() => {});
+          await page.waitForLoadState("domcontentloaded", { timeout: NAV_TIMEOUT }).catch(() => {});
 
           const landed = new URL(page.url()).pathname;
           proof.push(`click ${target.sourceRoute} → ${landed}`);
@@ -167,7 +278,7 @@ test.describe("gezinme süpürmesi", () => {
 
           // Hedef ekran GERÇEKTEN render oldu mu? Kabuk her rotada aynıdır; ayırt edici olan <h1>.
           const heading = page.locator("main h1").first();
-          await expect(heading, `${href}: hedef ekranın kendi başlığı görünmedi`).toBeVisible({ timeout: 20_000 });
+          await expect(heading, `${href}: hedef ekranın kendi başlığı görünmedi`).toBeVisible({ timeout: SLOW ? 45_000 : 20_000 });
           proof.push(`başlık görünür: "${(await heading.innerText()).slice(0, 60)}"`);
 
           const clientErrors = [...new Set(session.clientErrors)];
@@ -179,18 +290,31 @@ test.describe("gezinme süpürmesi", () => {
         } catch (e) {
           verdict = "FAIL";
           error = e instanceof Error ? e.message : String(e);
+          // ORTAM AÇLIĞI, ÜRÜN HATASI DEĞİLDİR. Chromium bellek baskısı altında
+          // ERR_NETWORK_IO_SUSPENDED / ERR_INSUFFICIENT_RESOURCES verir ve her tıklama zaman
+          // aşımına uğrar. Bunu "link çalışmıyor" diye raporlamak yanlış teşhistir; koşu adıyla
+          // durdurulur ki kimse ürünü suçlamasın.
+          if (/ERR_NETWORK_IO_SUSPENDED|ERR_INSUFFICIENT_RESOURCES|Target (page|browser) .* closed/.test(error)) {
+            flush();
+            throw new Error(
+              `ORTAM AÇLIĞI: tarayıcı kaynak yetersizliği bildirdi (${error.slice(0, 80)}). ` +
+                "Bu bir gezinme hatası DEĞİL. Belleği boşaltın ya da NAV_SLICE ile dilimleyin; " +
+                `kısmi kanıt ${EVIDENCE_FILE} dosyasına yazıldı.`,
+            );
+          }
         }
 
         for (const u of target.units) {
           evidence.push({ route: u.route, control: u.signature, role: u.role, verdict, proof, error });
         }
       }
-    } finally {
-      for (const s of sessions.values()) await s.context.close();
+      } finally {
+        await session.context.close();
+      }
     }
 
     mkdirSync(OUT, { recursive: true });
-    writeFileSync(path.join(OUT, "evidence-navigation.json"), JSON.stringify({ rows: evidence }, null, 2) + "\n", "utf8");
+    writeFileSync(path.join(OUT, EVIDENCE_FILE), `${JSON.stringify({ rows: evidence }, null, 2)}\n`, "utf8");
 
     const failed = evidence.filter((e) => e.verdict === "FAIL");
     const distinctFailed = new Set(failed.map((f) => f.error)).size;

@@ -28,7 +28,8 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { expect, test, type Page } from "@playwright/test";
-import { assertClean, clickAndSettle, hardReload, openAs, rows, scalar, signatureFor, signatureFromDom, type Evidence, type SeededRole } from "./harness";
+import { assertClean, clickAndSettle, ensureMissingAmountInstance, expectDbEventually, hardReload, openAs, rows, scalar, signatureFor, signatureFromDom, type Evidence, type SeededRole } from "./harness";
+import { TEST_PASSWORD, usernameFor } from "../visual/global-setup";
 
 const OUT = path.join(process.cwd(), "docs", "interaction-audit");
 
@@ -80,6 +81,10 @@ async function auditCount(table: string, entityId: string): Promise<number> {
 test.describe("ödemeler", () => {
   test("ödendi → geri al: DB, audit ve reload kalıcılığı", async ({ browser }) => {
     test.setTimeout(180_000);
+    // Paket YENİDEN ÇALIŞTIRILABİLİR olmak zorunda: bu test bir örneği ödenmiş yapar, yani
+    // kendi girdisini tüketir. Fixture her koşuda garanti altına alınır (bkz. harness gerekçesi).
+    await ensureMissingAmountInstance();
+
     const s = await openAs(browser, "finance_operator");
     const { page } = s;
 
@@ -103,8 +108,10 @@ test.describe("ödemeler", () => {
 
     await clickAndSettle(page, () => paidButton.click());
 
+    // Sunucu aksiyonunun commit'i ile tarayıcının "idle" görmesi arasındaki pencere için
+    // SINIRLI bekleme (bkz. expectDbEventually gerekçesi). İddia değişmedi: paid OLMAK ZORUNDA.
+    await expectDbEventually(async () => (await instanceRow(id)).status, "paid", "DB: status paid olmalı");
     const after = await instanceRow(id);
-    expect(after.status, "DB: status paid olmalı").toBe("paid");
     expect(after.paid_at, "DB: paid_at dolmalı").not.toBeNull();
 
     const auditAfter = await auditCount("payment_instances", id);
@@ -153,8 +160,12 @@ test.describe("ödemeler", () => {
 
     await clickAndSettle(page, () => undo.click());
 
+    await expectDbEventually(
+      async () => (await instanceRow(id)).status === "paid",
+      false,
+      "DB: geri alma sonrası paid OLMAMALI",
+    );
     const undone = await instanceRow(id);
-    expect(undone.status, "DB: geri alma sonrası paid OLMAMALI").not.toBe("paid");
     expect(undone.paid_at, "DB: paid_at null'a dönmeli").toBeNull();
     const auditUndo = await auditCount("payment_instances", id);
     expect(auditUndo, "audit_logs: geri alma da iz bırakmalı").toBeGreaterThan(auditAfter);
@@ -179,6 +190,7 @@ test.describe("ödemeler", () => {
 
   test("eksik tutarı kaydet: null → değer (sıfır DEĞİL)", async ({ browser }) => {
     test.setTimeout(180_000);
+    await ensureMissingAmountInstance();
     const s = await openAs(browser, "finance_operator");
     const { page } = s;
     await page.goto("/payments/missing", { waitUntil: "networkidle" });
@@ -206,9 +218,12 @@ test.describe("ödemeler", () => {
     await form.locator('input[name="amount"]').fill("12345");
     await clickAndSettle(page, () => form.getByRole("button", { name: "kaydet", exact: true }).click());
 
+    await expectDbEventually(
+      async () => Number((await instanceRow(id)).amount ?? NaN),
+      12345,
+      "DB: yazılan tutar girilen değer olmalı",
+    );
     const after = await instanceRow(id);
-    expect(after.amount, "DB: tutar yazılmalı").not.toBeNull();
-    expect(Number(after.amount), "DB: yazılan tutar girilen değer olmalı").toBe(12345);
 
     await hardReload(page);
     expect(Number((await instanceRow(id)).amount), "reload sonrası kalıcı").toBe(12345);
@@ -253,11 +268,15 @@ test.describe("ödemeler", () => {
     await page.locator('input[name="default_amount"]').fill("7500");
     await clickAndSettle(page, () => page.getByRole("button", { name: "kaydet", exact: true }).click());
 
+    await expectDbEventually(
+      async () => Number(await scalar<string>("select count(*)::int from public.payments where name = $1", [uniqueName])),
+      1,
+      "POZİTİF: DB'de tam olarak bir satır oluşmalı",
+    );
     const created = await rows<{ id: string; name: string; due_day: number; default_amount: string | null; status: string }>(
       "select id, name, due_day, default_amount::text, status from public.payments where name = $1",
       [uniqueName],
     );
-    expect(created.length, "POZİTİF: DB'de tam olarak bir satır oluşmalı").toBe(1);
     expect(created[0].due_day, "POZİTİF: seçilen gün yazılmalı").toBe(15);
     expect(Number(created[0].default_amount), "POZİTİF: tutar yazılmalı").toBe(7500);
 
@@ -283,9 +302,77 @@ test.describe("ödemeler", () => {
 
 test.describe("kabuk", () => {
   test("çıkış yap: oturum DB'de iptal edilir ve korunan rota artık açılmaz", async ({ browser }) => {
-    test.setTimeout(120_000);
-    const s = await openAs(browser, "viewer");
-    const { page } = s;
+    // 120 sn YETMEZ ve sebebi ürün değil, ÜRÜNÜN DOĞRU DAVRANIŞIDIR: bu test gerçek giriş
+    // yapar, globalSetup ise koşu başında zaten beş giriş yapmıştır. Aynı dakikaya denk
+    // gelindiğinde `RATE_RULES.login` devreye girer ve testin tek doğru tepkisi soğuma
+    // süresini BEKLEMEKTİR (limiti gevşetmek, parola denemesini koruyan bir güvenliği testler
+    // uğruna zayıflatmak olurdu). Bir soğuma 65 sn; iki denemeye yer bırakacak bütçe verilir.
+    // Aksi hâlde testin sonu "page.fill: Test ended" gibi konusuyla ilgisiz bir mesaj olur —
+    // nitekim burada tam olarak öyle oldu ve teşhisi geciktirdi.
+    test.setTimeout(300_000);
+    /* ── BU TEST KENDİ OTURUMUNU SIFIRDAN AÇAR ────────────────────────────────────────
+     *
+     * İKİ ÖLÇÜLMÜŞ HATA BU TASARIMA GÖTÜRDÜ.
+     *
+     * (1) İlk yazımda test doğrudan PAYLAŞILAN `viewer` kavanozunun oturumunu kapatıyordu.
+     *     Playwright spec'leri alfabetik koşar (authz → flows → navigation), yani çıkış
+     *     testi gezinme süpürmesinden ÖNCE çalışıp viewer oturumunu öldürüyordu. Süpürme her
+     *     href için onu gören BİR rol seçer; seçilen rol çoğu zaman viewer olduğu için kaynak
+     *     rotalar /login'e düşüyor ve hata o href'i paylaşan BÜTÜN rollerin birimlerine
+     *     yazılıyordu. Sonuç: 244 href'in 244'ü kırmızı, 7684 birim başarısız — tek gerçek
+     *     sebep iki test önce kapatılmış bir oturumdu. Ürün kusursuzdu.
+     *
+     * (2) İkinci deneme, MEVCUT bağlamda `/login`'e gidip yeniden giriş yapmaktı. O da
+     *     çalışmadı ve sebebi öğreticidir: kullanıcı ZATEN giriş yapmışken `/login` sayfası
+     *     `getCurrentUser()` ile oturumu görüp panele geri yönlendirir — yani ortada
+     *     doldurulacak bir form kalmaz. Test 2 dakika boyunca var olmayan bir
+     *     `input[name="username"]` bekledi.
+     *
+     * DOĞRUSU: ÇEREZSİZ, TAMAMEN YENİ bir bağlam. Giriş gerçek formdan yapılır (kendi taze
+     * oturumunu yaratır), çıkış o oturumu iptal eder. Paylaşılan kavanozlara hiç dokunulmaz,
+     * ölçülen şey hâlâ gerçek çıkış akışıdır ve yan etkisi kendi içinde kalır.
+     */
+    // baseURL AÇIKÇA verilir: `browser.newContext()` config'teki `use.baseURL`'i DEVRALMAZ
+    // (o yalnız `page` fixture'ına uygulanır). Devralındığı sanılırsa `page.goto("/login")`
+    // çözülemez ve test, var olmayan bir form alanını bekleyerek zaman aşımına düşer — burada
+    // tam olarak öyle oldu.
+    const context = await browser.newContext({
+      baseURL: process.env.BASE_URL ?? "http://127.0.0.1:3310",
+      viewport: { width: 1280, height: 900 },
+      // storageState AÇIKÇA boşaltılır. Config'teki `use.storageState` admin kavanozunu
+      // gösteriyor ve bu bağlam onu devralınca `/login` zaten girişli sayılıp panele
+      // yönlendiriliyordu — yani doldurulacak form hiç render edilmiyordu. Test 300 sn boyunca
+      // var olmayan bir `input[name="username"]` bekledi ve hatayı "page.fill: Test ended"
+      // diye bildirdi; konusuyla ilgisiz bu mesaj teşhisi geciktirdi.
+      storageState: { cookies: [], origins: [] },
+    });
+    const page = await context.newPage();
+    await context.clearCookies();
+    const s = { context, page, clientErrors: [] as string[], serverErrors: [] as string[] };
+
+    // Giriş oran sınırı (RATE_RULES.login = 60 sn'de 10 deneme) BU koşuda gerçekten devreye
+    // girebilir: globalSetup zaten beş giriş yapmıştır. Sınıra takılmak ürün hatası değildir —
+    // limitin ÇALIŞTIĞININ kanıtıdır — ama sessizce zaman aşımına düşmek kabul edilemez.
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      await page.goto("/login", { waitUntil: "domcontentloaded" });
+      // ÖN KOŞUL AÇIKÇA DOĞRULANIR: form yoksa sebep "buton bozuk" değil, "bu bağlam zaten
+      // girişli" olur. Sessizce beklemek yerine adıyla söylenir.
+      await expect(
+        page.locator('input[name="username"]'),
+        `giriş formu render edilmedi (varılan: ${new URL(page.url()).pathname}) — bağlam çerezsiz olmalıydı`,
+      ).toBeVisible({ timeout: 15_000 });
+      await page.fill('input[name="username"]', usernameFor("viewer"));
+      await page.fill('input[name="password"]', TEST_PASSWORD);
+      await Promise.all([
+        page.waitForURL((u) => !u.pathname.startsWith("/login") || u.searchParams.has("error"), { timeout: 30_000 }),
+        page.click('button[type="submit"]'),
+      ]);
+      const url = new URL(page.url());
+      if (!url.pathname.startsWith("/login")) break;
+      expect(url.searchParams.get("error"), `çıkış testi girişi başarısız: ${url.search}`).toBe("rate");
+      expect(attempt, "giriş oran sınırı üç denemede açılmadı — limit çalışıyor, test gevşetilmedi").toBeLessThan(3);
+      await page.waitForTimeout(65_000);
+    }
 
     await page.goto("/overview", { waitUntil: "networkidle" });
 

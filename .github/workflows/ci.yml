@@ -428,3 +428,97 @@ jobs:
         env:
           MAS_E2E_DATABASE_URL: ${{ env.APP_URL }}
         run: pnpm exec playwright test tests/visual/legacy-semantic-smoke.spec.ts
+
+  # ── Job 8 ────────────────────────────────────────────────────────────────────────────────
+  # ETKİLEŞİM KAPISI — "UI'da gösterilen her aksiyon vaat ettiği işi gerçekten yapıyor mu?"
+  #
+  # NEDEN AYRI BİR JOB. `e2e-authz` rota YETKİSİNİ, `legacy-semantic-smoke` ekranın RENDER
+  # olduğunu ölçer. İkisi de bir DÜĞMEYE BASMAZ. Bu repoda daha önce bir aksiyon "PASS" sayılmak
+  # için yalnız "konsola hata düşmedi" koşulunu geçiyordu (.testsprite/button-action-audit.mjs) —
+  # o eşik, mutasyonu hiç çalışmayan bir butonu da geçirir. Buradaki eşik farklı: bir mutasyon
+  # ancak VERİTABANINDAKİ before/after farkı ölçüldüğünde geçer.
+  #
+  # SIRA ÖNEMLİ ve üç adım da zorunlu:
+  #   crawl  çalışan sunucuda 5 rolle KEŞFEDİLEN kontroller (sözleşmenin girdisi)
+  #   test   gerçek click + DB doğrulaması (kanıt)
+  #   gate   keşif × sözleşme × kanıt → UNTESTED > 0 ise KIRMIZI
+  #
+  # `gate` olmadan `test` tek başına yanıltıcıdır: "6 test geçti" cümlesi, 6'nın 2122'nin neresi
+  # olduğunu söylemez. Kapı tam olarak o soruyu cevaplar ve kapsam gerilediğinde kırmızı verir.
+  interaction-gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    needs: build
+    env:
+      APP_URL: postgres://mas_radar_app:ci-only-not-a-secret-0123456789@127.0.0.1:5432/mas_radar_interaction_verify
+      PORT: "3212"
+      BASE_URL: http://127.0.0.1:3212
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
+        with:
+          postgres: "true"
+
+      - name: Provision the interaction database
+        env:
+          MAS_RADAR_APP_DB_PASSWORD: ${{ env.CI_APP_DB_PASSWORD }}
+        run: bash scripts/ci/provision-verify-db.sh mas_radar_interaction_verify
+
+      # Boş bir veritabanında tıklanacak hiçbir şey yoktur ve "0 kontrol bulundu, 0 hata" diye
+      # yeşil yanan bir kapı, olmayan bir güvence üretir. Demo verisi bu yüzden ZORUNLU girdidir.
+      - name: Seed demo data (kapının tıklayacağı gerçek kayıtlar)
+        env:
+          MIGRATION_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/mas_radar_interaction_verify
+        run: pnpm exec tsx scripts/seed-demo.ts
+
+      - name: Build
+        env:
+          DATABASE_URL: ${{ env.APP_URL }}
+          APP_COMMIT_SHA: ${{ github.sha }}
+        run: pnpm build
+
+      - name: Install Playwright browser
+        run: pnpm exec playwright install --with-deps chromium
+
+      # MAS_QA_BYPASS_AUTH bilerek YOK: bu paketin konusu rol farkıdır ve bypass onu tek bir
+      # hesaba düzleştirip ölçümü anlamsız kılardı.
+      - name: Start production server (no QA bypass)
+        env:
+          DATABASE_URL: ${{ env.APP_URL }}
+          APP_COMMIT_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          nohup pnpm start > /tmp/next-interaction.log 2>&1 &
+          for i in $(seq 1 60); do
+            if curl -fsS "http://127.0.0.1:${PORT}/ready" >/dev/null 2>&1; then
+              echo "server ready after ${i} tries"; exit 0
+            fi
+            sleep 2
+          done
+          echo "server did not become ready; son 100 satır:" >&2
+          tail -100 /tmp/next-interaction.log >&2
+          exit 1
+
+      - name: Discover every interactive control (5 roles, real sessions)
+        env:
+          MAS_E2E_DATABASE_URL: ${{ env.APP_URL }}
+        run: pnpm interaction:crawl
+
+      - name: Verify controls (real click → real DB before/after)
+        env:
+          MAS_E2E_DATABASE_URL: ${{ env.APP_URL }}
+        run: pnpm interaction:test
+
+      - name: Coverage gate (UNTESTED > 0 ⇒ RED)
+        env:
+          MAS_E2E_DATABASE_URL: ${{ env.APP_URL }}
+        run: pnpm interaction:gate
+
+      # Kapı kırmızı olduğunda "hangi kontrol" sorusunun cevabı log'da kaybolmasın.
+      - name: Upload interaction evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: interaction-audit-evidence
+          path: docs/interaction-audit/
+          retention-days: 14

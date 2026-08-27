@@ -58,7 +58,7 @@ export type SeededRole = keyof typeof ROLE_STATE_FILES;
 export const AUTH_DIR = path.join(process.cwd(), "tests", "visual", ".auth");
 
 /** Never a real credential: this account only ever exists in a disposable test database. */
-const TEST_PASSWORD = "faz2-visual-harness-not-a-secret";
+export const TEST_PASSWORD = "faz2-visual-harness-not-a-secret";
 
 export function statePathFor(role: SeededRole): string {
   return path.join(AUTH_DIR, ROLE_STATE_FILES[role]);

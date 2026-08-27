@@ -7,8 +7,8 @@
       "verdict": "PASS",
       "proof": [
         "before: status=unpaid paid_at=null",
-        "click: gerçek 'ödendi' düğmesi (instance 6236e62c-b0af-409e-b1ad-fcbf63e52bec)",
-        "after DB: status=paid paid_at=2026-08-26 20:47:17.828095+00",
+        "click: gerçek 'ödendi' düğmesi (instance 92983f98-3f02-4f50-993b-349751b2038b)",
+        "after DB: status=paid paid_at=2026-08-27 03:58:12.307322+00",
         "audit_logs: 0 → 1",
         "reload sonrası kalıcı"
       ]
@@ -20,7 +20,7 @@
       "verdict": "PASS",
       "proof": [
         "before: status=paid",
-        "click: gerçek 'geri al' düğmesi (/payments/calendar?date=2026-08-06, instance 6236e62c-b0af-409e-b1ad-fcbf63e52bec)",
+        "click: gerçek 'geri al' düğmesi (/payments/calendar?date=2026-08-12, instance 92983f98-3f02-4f50-993b-349751b2038b)",
         "after DB: status=unpaid paid_at=null",
         "audit_logs: 1 → 2",
         "reload sonrası kalıcı"
@@ -33,7 +33,7 @@
       "verdict": "PASS",
       "proof": [
         "before DB: amount=NULL (bilinmeyen, sıfır değil)",
-        "click: 'kaydet' (instance 6236e62c-b0af-409e-b1ad-fcbf63e52bec, girilen 12345)",
+        "click: 'kaydet' (instance 92983f98-3f02-4f50-993b-349751b2038b, girilen 12345)",
         "after DB: amount=12345.00",
         "reload sonrası kalıcı"
       ]
@@ -44,8 +44,8 @@
       "role": "finance_operator",
       "verdict": "PASS",
       "proof": [
-        "NEGATİF: boş form → payments sayısı 21 (değişmedi), kullanıcıya hata gösterildi, 500 yok",
-        "POZİTİF: 'ETKILESIM-KAPISI-1787777275753' → payments 1 satır, due_day=15, default_amount=7500",
+        "NEGATİF: boş form → payments sayısı 45 (değişmedi), kullanıcıya hata gösterildi, 500 yok",
+        "POZİTİF: 'ETKILESIM-KAPISI-1787803162516' → payments 1 satır, due_day=15, default_amount=7500",
         "POZİTİF: payment_instances 3 örnek üretildi"
       ]
     },
@@ -55,9 +55,9 @@
       "role": "viewer",
       "verdict": "PASS",
       "proof": [
-        "before: canlı viewer oturumu 9",
+        "before: canlı viewer oturumu 29",
         "click: gerçek 'Çıkış yap' düğmesi",
-        "after DB: canlı oturum 8 (iptal edildi)",
+        "after DB: canlı oturum 28 (iptal edildi)",
         "korunan rota /overview → /login (UI gizleme değil, backend reddi)"
       ]
     }

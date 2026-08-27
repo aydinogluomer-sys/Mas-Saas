@@ -97,6 +97,65 @@ export async function rows<T extends Record<string, unknown>>(sql: string, param
   return db(async (c) => (await c.query<T>(sql, params)).rows);
 }
 
+/* ── Yeniden çalıştırılabilirlik: test KENDİ fixture'ını üretir ──────────────────────────── */
+
+/**
+ * `/payments/missing` ekranının ihtiyaç duyduğu satırı GARANTİ ALTINA al.
+ *
+ * ═══ NEDEN GEREKTİ (ölçülmüş bir kusur) ═══
+ *
+ * Testler başta `seed-demo` verisini TÜKETİYORDU: "eksik tutarı kaydet" testi tutarı dolduruyor,
+ * "ödendi" testi örneği ödenmiş yapıyordu. İkinci, üçüncü koşuda ekranda tıklanacak bir şey
+ * kalmıyor ve paket, ÜRÜN sağlamken kırmızı veriyordu. Ölçüldü:
+ *
+ *     select count(*) from payment_instances
+ *      where amount is null and status <> 'paid' and instance_month = date_trunc('month', now())
+ *     → 0
+ *
+ * Bu, CI için ölümcül bir kusurdur: ilk koşu yeşil, ikinci koşu kırmızı olan bir kapı, insanların
+ * "yine o flaky test" deyip görmezden gelmeyi öğrendiği kapıdır.
+ *
+ * ═══ NEDEN DOĞRUDAN INSERT, UYGULAMA ÜZERİNDEN DEĞİL ═══
+ *
+ * Bu bir FIXTURE'dır, test edilen davranış değil. Test edilen şey hâlâ gerçek tıklamadır. Fixture'ı
+ * uygulama üzerinden kurmak, kurulum adımını da ölçüme sokar ve bir kurulum hatasını ürün hatası
+ * gibi gösterirdi. Hedef veritabanı zaten harcanabilir olduğunu ADIYLA söylemek zorunda (verifierUrl).
+ */
+export async function ensureMissingAmountInstance(): Promise<string> {
+  return db(async (c) => {
+    const existing = await c.query<{ id: string }>(
+      `select id from public.payment_instances
+        where amount is null and status not in ('paid','cancelled')
+          and instance_month = date_trunc('month', now())::date
+        limit 1`,
+    );
+    if (existing.rowCount === 1) return existing.rows[0].id;
+
+    // Test'e ait, tanınabilir bir ödeme kalemi (yoksa yarat).
+    const payment = await c.query<{ id: string }>(
+      `insert into public.payments (name, recurrence_type, due_day, amount_confidence, direction, priority, status)
+       values ('IX-FIXTURE-eksik-tutar', 'monthly', 12, 'unknown', 'outflow', 'normal', 'active')
+       on conflict do nothing
+       returning id`,
+    );
+    const paymentId =
+      payment.rowCount === 1
+        ? payment.rows[0].id
+        : (await c.query<{ id: string }>("select id from public.payments where name = 'IX-FIXTURE-eksik-tutar' limit 1")).rows[0].id;
+
+    const inserted = await c.query<{ id: string }>(
+      `insert into public.payment_instances
+         (payment_id, instance_month, due_date, amount, amount_status, direction, status, amount_source)
+       values ($1, date_trunc('month', now())::date,
+               (date_trunc('month', now()) + interval '11 days')::date,
+               null, 'unknown', 'outflow', 'unpaid', 'legacy_unknown')
+       returning id`,
+      [paymentId],
+    );
+    return inserted.rows[0].id;
+  });
+}
+
 /* ── Kanıt kaydı ─────────────────────────────────────────────────────────────────────────── */
 
 export type Verdict = "PASS" | "FAIL" | "EXPECTED_DISABLED" | "EXTERNAL_NOT_LIVE_VERIFIABLE" | "UNTESTED";
@@ -181,6 +240,38 @@ export async function clickAndSettle(page: Page, click: () => Promise<void>): Pr
   await click();
   await post;
   await page.waitForLoadState("networkidle", { timeout: 30_000 }).catch(() => {});
+}
+
+/**
+ * "Bu DB koşulu SONUNDA sağlanmalı" — sınırlı bekleme, gevşetilmiş iddia DEĞİL.
+ *
+ * ═══ NEDEN GEREKTİ ═══
+ *
+ * `clickAndSettle` POST yanıtını ve `networkidle`'ı bekler, ama server action'ın commit'i ile
+ * tarayıcının "idle" görmesi arasında küçük bir pencere kalabilir. Yüksüz bir makinede bu
+ * pencere görünmez; bu makinede ölçüldü ki görünür: aynı test tek başına 36 sn'de geçerken,
+ * bellek baskısı altında 8.9 DAKİKA sürdü ve "status paid olmalı / Received: unpaid" ile
+ * düştü — commit henüz olmamıştı, ürün ise sağlamdı.
+ *
+ * ═══ NEDEN BU, İDDİAYI ZAYIFLATMAZ ═══
+ *
+ * İddia hâlâ aynı: "DB bu değeri göstermek ZORUNDA". Değişen tek şey, ne kadar bekleneceğinin
+ * sıfır yerine SINIRLI olması. Bozuk bir aksiyon hiçbir zaman sağlamaz ve süre dolunca yine
+ * KIRMIZI verir — mutasyon testinde birebir doğrulandı: markPaid'in UPDATE'i etkisizleştirilince
+ * bu bekleme de sonuçsuz kaldı ve test düştü.
+ *
+ * Gevşetme olurdu: koşul sağlanmazsa "geçti" saymak, ya da eşiği "belki olmuştur"a çevirmek.
+ * Burada ikisi de yok.
+ */
+export async function expectDbEventually<T>(
+  read: () => Promise<T>,
+  expected: T,
+  message: string,
+  timeoutMs = 20_000,
+): Promise<void> {
+  await expect
+    .poll(read, { message, timeout: timeoutMs, intervals: [200, 300, 500, 1000, 1000, 2000] })
+    .toEqual(expected);
 }
 
 /** Sayfayı gerçekten yeniden yükle (bellekteki iyimser durumu değil, sunucudan geleni ölç). */

@@ -20,7 +20,7 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { expect, test } from "@playwright/test";
-import { clickAndSettle, openAs, rows, scalar, signatureFor, type Evidence, type SeededRole } from "./harness";
+import { clickAndSettle, ensureMissingAmountInstance, openAs, rows, scalar, signatureFor, type Evidence, type SeededRole } from "./harness";
 
 const OUT = path.join(process.cwd(), "docs", "interaction-audit");
 const evidence: Evidence[] = [];
@@ -37,6 +37,9 @@ test.describe("yetki zorlaması — payment_instances", () => {
   for (const role of READ_ONLY_TIERS) {
     test(`${role}: 'ödendi' tıklandığında backend REDDETMELİ ve satır DEĞİŞMEMELİ`, async ({ browser }) => {
       test.setTimeout(120_000);
+      // Yetkili rolün ekranında tıklanacak bir kontrol OLMASI gerekiyor; fixture garanti edilir.
+      await ensureMissingAmountInstance();
+
       const s = await openAs(browser, role);
       const { page } = s;
 
