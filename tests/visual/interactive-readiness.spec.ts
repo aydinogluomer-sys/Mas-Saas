@@ -236,3 +236,56 @@ test("SPA geçişinde kabuk zaten etkileşimli kalır — kullanıcı tıklamay�
 
   test.info().annotations.push({ type: "spa-transitions", description: JSON.stringify(transitions) });
 });
+
+test("ilk ön yükleme bittikten sonra tüm görünür ana menü ve alt sekmeler 500 ms içinde açılır", async ({ page }) => {
+  const budgetMs = Number(process.env.NAVIGATION_CLICK_BUDGET_MS ?? 500);
+  const primary = [
+    "/overview", "/payments", "/cashflow", "/finance", "/production", "/scenarios",
+    "/insights/ask", "/data/quality", "/system",
+  ];
+  const modules: Array<{ root: string; tabs: string[] }> = [
+    { root: "/payments", tabs: ["/payments/calendar", "/payments/items", "/payments/missing", "/payments/history", "/payments/archive"] },
+    { root: "/cashflow", tabs: ["/cashflow/monthly", "/cashflow/budget", "/cashflow/concentration", "/cashflow/controls"] },
+    { root: "/finance", tabs: ["/finance/checks", "/finance/loans", "/finance/facilities", "/finance/fx", "/finance/exposure", "/finance/counterparties", "/finance/profitability", "/finance/bank", "/finance/treasury", "/finance/invoices", "/finance/receivables", "/finance/collections", "/finance/promises", "/finance/maturities", "/finance/calendar", "/finance/archive"] },
+    { root: "/production", tabs: ["/production/capacity", "/production/costs", "/production/profitability", "/production/roi"] },
+    { root: "/scenarios", tabs: ["/scenarios/compare", "/scenarios/history", "/scenarios/optimization"] },
+    { root: "/insights/ask", tabs: ["/insights/briefing", "/insights/analysis", "/insights/reports", "/insights/reminders", "/insights/tasks"] },
+    { root: "/data/quality", tabs: ["/data/imports", "/data/reviews", "/data/approvals", "/data/reconciliation", "/data/assumptions", "/data/documents", "/data/sources"] },
+    { root: "/system", tabs: ["/system/backup", "/system/audit", "/system/controls", "/system/jobs", "/system/archive", "/system/security", "/system/features"] },
+  ];
+  const rows: Array<{ href: string; clickToMainMs: number }> = [];
+
+  await page.goto("/overview", { waitUntil: "domcontentloaded" });
+  await page.waitForFunction(() => document.documentElement.dataset.navigationReady === "true");
+  await expect(page.locator("[data-initial-preload]"), "ilk açılışta gerçek ön yükleme ekranı görünmeli").toBeVisible();
+  await expect(page.locator("[data-initial-preload]"), "ön yükleme tamamlanıp çalışma alanını açmalı").toBeHidden({ timeout: 180_000 });
+
+  const visit = async (href: string, scope: ".sidebar-link" | ".module-tabs") => {
+    if (new URL(page.url()).pathname === href) return;
+    const link = page.locator(`${scope}[href="${href}"], ${scope} a[href="${href}"]`).first();
+    await expect(link, `${href}: görünür navigasyon bağlantısı`).toBeVisible();
+    // Bilerek hover/focus ön-getirmesi yapmıyoruz. Bu ölçüm, açılış ön yükleyicisinin
+    // kullanıcının ilk gerçek tıklamasından ÖNCE rotayı hazırladığını kanıtlar.
+    const started = performance.now();
+    await link.click({ noWaitAfter: true });
+    await page.waitForURL((url) => url.pathname === href, { timeout: 30_000 });
+    await page.waitForFunction(() => {
+      const main = document.querySelector("main.workspace-content");
+      return !!main?.querySelector("h1") && main.getBoundingClientRect().height > 0;
+    });
+    const clickToMainMs = Number((performance.now() - started).toFixed(1));
+    rows.push({ href, clickToMainMs });
+    console.log(`[navigation-latency] ${href} ${clickToMainMs}ms`);
+  };
+
+  for (const href of primary) await visit(href, ".sidebar-link");
+  for (const moduleRoutes of modules) {
+    await visit(moduleRoutes.root, ".sidebar-link");
+    for (const href of moduleRoutes.tabs) await visit(href, ".module-tabs");
+  }
+
+  test.info().annotations.push({ type: "all-navigation-latencies", description: JSON.stringify(rows) });
+  const slow = rows.filter((row) => row.clickToMainMs > budgetMs);
+  expect(slow, `500 ms üstü rotalar: ${slow.map((row) => `${row.href}=${row.clickToMainMs}ms`).join(", ")}`)
+    .toEqual([]);
+});

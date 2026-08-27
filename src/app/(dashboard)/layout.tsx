@@ -6,7 +6,8 @@ import { CommandPalette } from "@/components/search/command-palette";
 import { AppToaster, FlashToaster } from "@/components/ui/primitives/toast";
 import { TooltipProvider } from "@/components/ui/primitives/tooltip";
 import { requireSession } from "@/lib/auth";
-import { navigationFor } from "@/lib/authz/matrix";
+import { canSeeRoute, navigationFor } from "@/lib/authz/matrix";
+import { WORKSPACE_PRELOAD_ROUTES } from "@/lib/navigation/preload-routes";
 
 // Financial workspaces must read current PostgreSQL data at request time.
 // This also prevents production builds from opening dozens of DB-backed pages
@@ -31,7 +32,8 @@ export default async function DashboardLayout({ children }: { children: ReactNod
   // the browser at all. The pages behind it keep their own guards — this removes the dead door,
   // it does not replace the lock.
   const nav = navigationFor(session.role, NAV);
-  return <NavigationFeedbackProvider><div className="app-shell">
+  const preloadRoutes = WORKSPACE_PRELOAD_ROUTES.filter((href) => canSeeRoute(session.role, href));
+  return <NavigationFeedbackProvider preloadRoutes={preloadRoutes}><div className="app-shell">
     <AppSidebar items={nav} gate={true} logoutAction={logoutAction} />
     <div className="workspace-shell">
       <header className="workspace-bar">
