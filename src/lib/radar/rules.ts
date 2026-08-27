@@ -154,6 +154,64 @@ export function dayFlags(
   };
 }
 
+/**
+ * `dayFlags()`in ÖNCEDEN TOPLANMIŞ girdiyle çalışan hâli.
+ *
+ * ═══ NEDEN VAR ═══
+ *
+ * `/payments` panosu bir günün örneklerini artık tek tek çekmiyor; SQL onları güne göre
+ * toplayıp geliyor. Toplanmış satırlardan risk kararını yeniden TÜRETMEK, iş kuralının ikinci
+ * bir kopyasını yaratır ve iki kopya er geç ayrışır. Bu yüzden kural burada, `dayFlags()`in tam
+ * yanında, TEK bir yerde duruyor; sayfa yalnız çağırıyor.
+ *
+ * ═══ EŞDEĞERLİK — üstteki `dayFlags()` NORMATİF REFERANSTIR ═══
+ *
+ *   dayFlags                                    dayFlagsFromAggregate
+ *   ─────────────────────────────────────────   ─────────────────────────────────────
+ *   open = instances.filter(isOpen)             openCount  (SQL: status in OPEN_STATUSES)
+ *   count   = open.length                       openCount
+ *   knownSum= Σ amount, amount != null && > 0   knownSum   (SQL: sum(amount) aynı süzgeçle)
+ *   cluster = open.length >= clusterCount       openCount >= clusterCount
+ *   anyLarge= open.some(a != null && a>=large)  maxAmount >= large
+ *   anyCrit = open.some(a != null && a>=crit)   maxAmount >= crit
+ *   critical= anyCrit || knownSum >= crit       (maxAmount >= crit) || knownSum >= crit
+ *
+ * `some(i => i.amount >= E)` ile `max(amount) >= E` aynı önermedir: bir küme, ancak ve ancak
+ * en büyük elemanı eşiği geçiyorsa eşiği geçen bir eleman içerir. null'lar SQL'de `max` tarafından
+ * zaten yok sayılır, JS'te `a != null` süzgeciyle. Boş gün → `maxAmount = null` → her iki bayrak
+ * da false; `some` da boş kümede false döner.
+ *
+ * `anyCritical` referansta olduğu için burada da DURUYOR, ama ölçüldüğünde şu çıktı:
+ * **sonucu hiçbir girdide değiştiremiyor.** Kanıt tek satırlık — `anyCritical` true ise günde
+ * `amount >= critical` olan bir kalem vardır; `critical > 0` iken o kalemin tutarı da pozitiftir,
+ * yani `knownSum` toplamına GİRER ve diğer terimler negatif olamadığı için `knownSum >= critical`
+ * zaten sağlanır. `critical <= 0` iken de `knownSum >= 0 >= critical`. İki dal her durumda aynı
+ * cevabı verir (11.310 kombinasyonla tarandı, karşı örnek yok — `payment-day-flags-verify`).
+ *
+ * O hâlde neden duruyor: `knownSum`un tanımı (`amount > 0` süzgeci) değişirse eşdeğerlik biter ve
+ * dal yeniden anlam kazanır. Referansta var, burada da var — sadeleştirmek ayrı bir karardır.
+ * Buradan çıkan diğer sonuç: 44d9c5f'in `anyCritical`ı düşürmesi TEK BAŞINA bir hata değildi;
+ * o commit'teki gerçek kayma `remaining` ile `'unknown'` idi.
+ *
+ * `knownSum` DAİMA `amount` üzerinden; `remaining` üzerinden DEĞİL. Panonun grafik ve KPI'ları
+ * `remaining` ("hâlâ borçlu olunan baskı") kullanır ve bu ayrım bilinçlidir — risk eşiği ürün
+ * kuralı olarak `amount`a bağlıdır, performans gerekçesiyle değiştirilemez.
+ */
+export function dayFlagsFromAggregate(
+  day: { openCount: number; knownSum: number; maxAmount: number | null },
+  t: RiskThresholds,
+): { cluster: boolean; large: boolean; critical: boolean; knownSum: number; count: number } {
+  const anyCritical = day.maxAmount != null && day.maxAmount >= t.critical;
+  const anyLarge = day.maxAmount != null && day.maxAmount >= t.large;
+  return {
+    count: day.openCount,
+    knownSum: day.knownSum,
+    cluster: day.openCount >= t.clusterCount,
+    large: anyLarge,
+    critical: anyCritical || day.knownSum >= t.critical,
+  };
+}
+
 /* ═══════════ Phase 4 — cashflow rules (pure) ═══════════ */
 
 export interface CashMonth {

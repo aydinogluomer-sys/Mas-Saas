@@ -95,6 +95,11 @@ async function main(): Promise<void> {
     const live = await client.query<{ db: string }>("select current_database() as db");
     console.log(`Hedef veritabanı: ${live.rows[0].db}`);
     await client.query("begin");
+    // RLS altında fixture yazmak ve okumak bir KATMAN rolü ister. Bağlantı hangi kullanıcıyla
+    // açıldıysa açılsın (uygulama URL'i `mas_radar_app` verir ve o rolün `parties`/`invoices`
+    // üzerinde politikası YOKTUR — sessizce 0 satır görür), script buradan itibaren ürünün
+    // gerçekten kullandığı katmandan konuşur. `set local`: rol transaction ile geri alınır.
+    await client.query("set local role mas_radar_admin");
 
     const party = await pool.query<{ id: string }>("select id from public.parties limit 1");
     if (party.rowCount !== 1) throw new Error("parties boş — referans seed uygulanmamış.");
@@ -275,9 +280,12 @@ async function main(): Promise<void> {
 
     // Kalıntı kontrolü AYRI bir bağlantıdan: rollback'in gerçekten işe yaradığı, aynı
     // transaction'dan bakılarak "doğrulanamaz". "Temizlik no-op değildi" iddiası ölçülür.
-    const leftover = await realPool.query<{ n: string }>(
+    const auditor = await realPool.connect();
+    await auditor.query("set role mas_radar_admin");
+    const leftover = await auditor.query<{ n: string }>(
       `select count(*)::int as n from public.invoices where invoice_no like '${MARK}%'`,
     );
+    auditor.release();
     const remaining = Number(leftover.rows[0].n);
     console.log(`\nRollback sonrası kalan fixture satırı: ${remaining}`);
     if (remaining !== 0) {

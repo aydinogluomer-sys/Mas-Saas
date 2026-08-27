@@ -98,6 +98,7 @@
     "release:stage07-backup-gate": "node --import tsx scripts/release/stage07-backup-gate.ts",
     "db:fixture-cleanup": "node --import tsx scripts/db/fixture-cleanup.ts",
     "db:receivable-totals:verify": "node --import tsx scripts/db/receivable-totals-verify.ts",
+    "db:payment-day-flags:verify": "node --import tsx scripts/db/payment-day-flags-verify.ts",
     "db:p24b:integrity": "node --import tsx scripts/db/p24b-handoff-integrity.ts",
     "db:p24b:scope": "node --import tsx scripts/db/p24b-scope-integrity.ts",
     "db:p24b:readonly-proof": "bash scripts/db/p24b-readonly-negative-control.sh",

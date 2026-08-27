@@ -1,7 +1,7 @@
 import { getPool } from "@/lib/db";
 import { istanbulDateISO } from "@/lib/reports/rules";
 import { loadThresholds } from "@/lib/radar/engine";
-import { loadPaymentDashboard, type PaymentDashboardBucket } from "@/lib/radar/queries";
+import { dayFlagsForDate, loadPaymentDashboard, type PaymentDashboardBucket } from "@/lib/radar/queries";
 import { Badge } from "@/components/ui/badge";
 import { fmtTL, Panel } from "@/components/ui/panel";
 import { KpiCard, PageHeader } from "@/components/ui/shell";
@@ -34,9 +34,18 @@ async function PaymentsDashboardContent() {
   const overdueCount = bucketCount(overdueRows);
   const riskEnd = addDays(today, 30);
   const riskDates = [...new Set(buckets.filter((row) => row.dueDate >= today && row.dueDate <= riskEnd).map((row) => row.dueDate))];
+  // RİSKLİ GÜN KARARI = `dayFlags()` — kelimesi kelimesine.
+  //
+  // Toplanmış satırlardan kuralı burada yeniden yazmak, iş kuralının ikinci bir kopyasını
+  // üretirdi; eşikler `calculation_rules`tan geldiği için o kopya sessizce ayrışabilirdi.
+  // Karar `dayFlagsFromAggregate` içinde, `dayFlags`in tam yanında duruyor.
+  //
+  // Alanlar bilerek `knownAmount`/`maxAmount` DEĞİL: onlar `remaining` üzerinden hesaplanır ve
+  // grafiği/KPI'ları besler. Risk eşiği ürün kuralı olarak `amount`a bağlı, statü süzgeci de
+  // OPEN_STATUSES'a ('unknown' hariç) — bu yüzden ayrı `flag*` alanları var.
   const risky = riskDates.filter((date) => {
-    const rows = buckets.filter((row) => row.dueDate === date);
-    return bucketCount(rows) >= thresholds.clusterCount || rows.some((row) => (row.maxAmount ?? 0) >= thresholds.large) || bucketTotal(rows) >= thresholds.critical;
+    const flags = dayFlagsForDate(buckets, date, thresholds);
+    return flags.cluster || flags.critical || flags.large;
   });
   const horizonDefs = [
     ["overdue", "Gecikmiş", (date: string) => date < today],

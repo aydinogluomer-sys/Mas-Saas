@@ -7,7 +7,7 @@
 // in numbers while the runtime carried strings. `mapInstanceRow` is that boundary.
 import type { Pool } from "pg";
 import { moneyOrNull, intOrNull } from "@/lib/money";
-import { addMonths, dayFlags, type RiskThresholds } from "./rules";
+import { addMonths, dayFlags, dayFlagsFromAggregate, type RiskThresholds } from "./rules";
 
 export interface InstanceRow {
   id: string;
@@ -93,6 +93,15 @@ export interface PaymentDashboardBucket {
   knownAmount: number;
   unknownCount: number;
   maxAmount: number | null;
+  /**
+   * Risk bayrakları için `dayFlags()` ile BİREBİR alanlar. Görüntüleme alanlarından ayrı
+   * tutulmaları bilerek: `knownAmount`/`maxAmount` `remaining` üzerinden ("baskı"), bunlar ise
+   * `amount` üzerinden ve yalnız OPEN_STATUSES üzerinden hesaplanır — çünkü risk kuralı
+   * `src/lib/radar/rules.ts`'te öyle tanımlı ve performans için iş kuralı değiştirilemez.
+   */
+  openCount: number;
+  flagKnownSum: number;
+  flagMaxAmount: number | null;
   foreignCurrencyCount: number;
   criticalCount: number;
   flexibleCount: number;
@@ -106,6 +115,33 @@ export interface PaymentDashboardFlexibility {
   templateCount: number;
   knownAmount: number;
   unknownCount: number;
+}
+
+/**
+ * Bir gunun kovalarini `dayFlags()`in bekledigi tek girdiye indirger ve karari ona sorar.
+ *
+ * Bir gun, `pressure_status`e gore birden cok kovaya bolunebiliyor (overdue / partial / planned);
+ * `dayFlags` ise gunu BUTUN olarak tartar. Birlestirme burada, TEK yerde duruyor — sayfa da bu
+ * dogrulama scripti de ayni fonksiyonu cagiriyor, yani test sayfanin gercekten calistirdigi yolu
+ * olcuyor, ona benzeyen bir kopyayi degil.
+ *
+ * Alanlar bilerek `knownAmount`/`maxAmount` DEGIL: onlar `remaining` uzerinden hesaplanir ve
+ * grafigi besler. Risk esigi urun kurali olarak `amount`a bagli — bkz. `dayFlagsFromAggregate`.
+ */
+export function dayFlagsForDate(
+  buckets: PaymentDashboardBucket[],
+  date: string,
+  thresholds: RiskThresholds,
+): ReturnType<typeof dayFlagsFromAggregate> {
+  const rows = buckets.filter((row) => row.dueDate === date);
+  return dayFlagsFromAggregate({
+    openCount: rows.reduce((sum, row) => sum + row.openCount, 0),
+    knownSum: rows.reduce((sum, row) => sum + row.flagKnownSum, 0),
+    maxAmount: rows.reduce<number | null>(
+      (max, row) => (row.flagMaxAmount != null && (max == null || row.flagMaxAmount > max) ? row.flagMaxAmount : max),
+      null,
+    ),
+  }, thresholds);
 }
 
 /** Bounded read model for the payments landing page; detail pages keep the full-row loaders. */
@@ -145,7 +181,25 @@ export async function loadPaymentDashboard(
              count(*) filter (where decision_flexibility='critical')::int as critical_count,
              count(*) filter (where decision_flexibility='flexible')::int as flexible_count,
              count(*) filter (where decision_flexibility='optional')::int as optional_count,
-             count(*) filter (where decision_flexibility='unclassified')::int as unclassified_count
+             count(*) filter (where decision_flexibility='unclassified')::int as unclassified_count,
+             -- ── RISK BAYRAKLARI ICIN AYRI ALANLAR — dayFlags() ile BIREBIR ────────────
+             -- Yukaridaki known_amount/max_amount GORUNTULEME icindir ve remaining
+             -- uzerinden hesaplanir ("baski" = hala borclu olunan). Risk KARARI ise
+             -- src/lib/radar/rules.ts'teki dayFlags()'in tanimini kullanmak ZORUNDA;
+             -- performans icin is kurali degistirilemez. Bu yuzden ayri alanlar:
+             --   open_count        dayFlags'in open.lengthi — OPEN_STATUSES, 'unknown' HARIC
+             --   flag_known_sum    dayFlags'in knownSum'i — amount, remaining DEGIL,
+             --                     ve yalniz amount > 0 olanlar
+             --   flag_max_amount   dayFlags'in anyLarge/anyCritical'i — per-instance amount
+             --                     maksimumu; max >= esik ile some(i => i.amount >= esik)
+             --                     ayni onermedir
+             count(*) filter (where status in ('unpaid','partial','planned','late'))::int as open_count,
+             coalesce(sum(amount) filter (
+               where status in ('unpaid','partial','planned','late') and amount is not null and amount > 0
+             ),0) as flag_known_sum,
+             max(amount) filter (
+               where status in ('unpaid','partial','planned','late') and amount is not null
+             ) as flag_max_amount
       from active group by due_date, pressure_status
     ), flexibility as (
       select decision_flexibility, count(*)::int as record_count,
@@ -187,6 +241,9 @@ export async function loadPaymentDashboard(
       knownAmount: moneyOrNull(row.known_amount as string | number | null) ?? 0,
       unknownCount: Number(row.unknown_count),
       maxAmount: moneyOrNull(row.max_amount as string | number | null),
+      openCount: Number(row.open_count),
+      flagKnownSum: moneyOrNull(row.flag_known_sum as string | number | null) ?? 0,
+      flagMaxAmount: moneyOrNull(row.flag_max_amount as string | number | null),
       foreignCurrencyCount: Number(row.foreign_currency_count),
       criticalCount: Number(row.critical_count), flexibleCount: Number(row.flexible_count),
       optionalCount: Number(row.optional_count), unclassifiedCount: Number(row.unclassified_count),
