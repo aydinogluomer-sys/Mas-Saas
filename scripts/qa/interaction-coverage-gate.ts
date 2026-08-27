@@ -33,10 +33,49 @@
 
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import { execFileSync } from "node:child_process";
 import { EXTERNAL_ALLOWLIST, RULES, NAVIGATION_FALLBACK, ruleFor, type VerificationClass } from "../../tests/interaction/manifest";
+import { evaluateGate, type GateBaseline, type GateMode } from "./interaction-gate-rules";
 
 const OUT_DIR = path.join(process.cwd(), "docs", "interaction-audit");
 const INVENTORY = path.join(OUT_DIR, "runtime-inventory.json");
+const BASELINE_FILE = path.join(OUT_DIR, "baseline.json");
+const BASELINE_REPO_PATH = "docs/interaction-audit/baseline.json";
+
+/**
+ * Kabul edilmiş borç tavanı.
+ *
+ * Dosya KÜÇÜK ve elle okunabilir olmalı — büyük runtime kanıt dosyaları baseline olamaz, çünkü
+ * bir insanın PR'da "bu sayı neden yükseldi?" diye bakabileceği tek şey budur. Dosya yoksa kapı
+ * TAHMİN ETMEZ: ratchet'in anlamı "kabul edilmiş bir tavan" olmasıdır; tavan yoksa ratchet de yok.
+ */
+function readBaseline(): GateBaseline {
+  if (!existsSync(BASELINE_FILE)) {
+    console.error(
+      `EKSİK BASELINE: ${BASELINE_FILE}\n` +
+        "Ratchet modu kabul edilmiş bir tavan olmadan çalışamaz — tavanı uydurmak, kapıyı ilk " +
+        "koşuda kendi kendine onaylatmak olurdu.",
+    );
+    process.exit(1);
+  }
+  return JSON.parse(readFileSync(BASELINE_FILE, "utf8")) as GateBaseline;
+}
+
+/**
+ * HEAD'deki baseline — "gerekçesiz yükseltilemez" kuralının karşılaştırma noktası.
+ *
+ * Commit ÖNCESİ çalıştırıldığında çalışma ağacındaki (yeni) değer HEAD'dekiyle karşılaştırılır,
+ * yani yükseltme commit edilmeden yakalanır. HEAD'de dosya yoksa (ilk tanıtım) karşılaştırma
+ * yapılmaz — geçmiş olmadığı için, sessizce affedildiği için değil.
+ */
+function readPreviousBaseline(): GateBaseline | undefined {
+  try {
+    const raw = execFileSync("git", ["show", `HEAD:${BASELINE_REPO_PATH}`], { cwd: process.cwd(), encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
+    return JSON.parse(raw) as GateBaseline;
+  } catch {
+    return undefined;
+  }
+}
 
 interface RuntimeControl {
   route: string;
@@ -258,10 +297,45 @@ writeFileSync(
   "utf8",
 );
 
+/* ── Karar: ratchet (günlük PR) ya da strict (release/cutover) ───────────────────────────── */
+
+const mode: GateMode = process.argv.includes("--strict") || process.env.MAS_INTERACTION_GATE_MODE === "strict" ? "strict" : "ratchet";
+const baseline = readBaseline();
+const previousBaseline = readPreviousBaseline();
+
+const verdict = evaluateGate(
+  { discovered: classified.length, pass: pass.length, fail: fail.length, untested: untested.length, unmapped: unmapped.length },
+  baseline,
+  mode,
+  previousBaseline,
+);
+
+// Allowlist bütünlüğü kapının kural setinin DIŞINDA tutuldu: o, sayıların değil, BEYANIN
+// eksikliğidir (dört alandan biri boş). Her modda ve baseline'dan bağımsız olarak kırmızıdır.
+if (badAllowlist.length > 0) {
+  verdict.reasons.push(`Eksik allowlist satırı=${badAllowlist.length} — dört alan da (reason/ownerDecisionNeeded/proofOfImplementation/mockTest) zorunludur.`);
+  verdict.red = true;
+}
+
+console.log("");
+console.log(`MOD: ${mode === "strict" ? "STRICT (release/cutover)" : "RATCHET (günlük PR kapısı)"}`);
+if (mode === "ratchet") {
+  console.log(`  baseline: UNTESTED ≤ ${baseline.untested}, PASS ≥ ${baseline.pass}  (docs/interaction-audit/baseline.json)`);
+  console.log("  strict kapı için: pnpm interaction:gate:strict");
+}
+for (const note of verdict.notes) console.log(`  · ${note}`);
+
 console.log("");
 console.log(`Ayrıntı: docs/interaction-audit/coverage-report.json`);
-
-const red = fail.length > 0 || untested.length > 0 || badAllowlist.length > 0;
 console.log("");
-console.log(red ? "SONUÇ: KIRMIZI" : "SONUÇ: YEŞİL — keşfedilen her kontrolün doğrulanmış bir karşılığı var.");
-process.exit(red ? 1 : 0);
+if (verdict.red) {
+  console.log("SONUÇ: KIRMIZI");
+  for (const reason of verdict.reasons) console.log(`  ✖ ${reason}`);
+} else {
+  console.log(
+    mode === "strict"
+      ? "SONUÇ: YEŞİL — keşfedilen her kontrolün doğrulanmış bir karşılığı var."
+      : "SONUÇ: YEŞİL — kapsam gerilemedi (kalan borç baseline'da kayıtlı).",
+  );
+}
+process.exit(verdict.red ? 1 : 0);

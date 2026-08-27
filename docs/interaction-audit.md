@@ -447,6 +447,47 @@ yeşile dönmez.
 
 ---
 
+## Kapı iki seviyeli: ratchet (PR) ve strict (release/cutover)
+
+Kapı tek bir eşikle çalışıyordu ve UNTESTED > 0 olduğu için HER PR'ı kırmızıya boyuyordu. Bu,
+uygulamada iki kötü sonuçtan birine götürür: ya kapı devre dışı bırakılır, ya da sayı gizlenir.
+İkisi de güvenceyi yok eder. Bu yüzden kapı ikiye ayrıldı — **güvence düşürülmeden**.
+
+| | `pnpm interaction:gate` (ratchet) | `pnpm interaction:gate:strict` |
+|---|---|---|
+| Kullanım | Günlük PR kapısı | Release / cutover |
+| `FAIL > 0` | **KIRMIZI** | **KIRMIZI** |
+| Manifestosuz kontrol | **KIRMIZI** | **KIRMIZI** |
+| `UNTESTED > baseline` | **KIRMIZI** | — |
+| `PASS < baseline` (kapsam gerilemesi) | **KIRMIZI** | — |
+| `UNTESTED > 0` | hoş görülür (baseline'da kayıtlı) | **KIRMIZI** |
+| Eksik allowlist beyanı | **KIRMIZI** | **KIRMIZI** |
+
+**Ratchet'in verdiği söz "kapsam GERİLEMEZ"dir**, "her şey test edildi" değil. 561 birimlik test
+borcunu tek PR'da kapatmak gerçekçi değil; her PR'ın borcu **büyütmemesi** gerçekçi.
+
+**Baseline** `docs/interaction-audit/baseline.json` — küçük, elle okunabilir, git'te izlenen tek
+dosya. Büyük runtime kanıt dosyaları baseline OLAMAZ: bir insanın PR diff'inde "bu sayı neden
+yükseldi?" diye bakabileceği tek şey budur.
+
+- **Düşürmek her zaman serbest** ve teşvik edilir — borç azaldığında kapı bunu söyler
+  ("Baseline'ı bu değere ÇEKİN") ki kazanım kilitlensin.
+- **Yükseltmek `raisedBecause` olmadan mümkün değil.** Boş bırakılırsa kapı kırmızı verir. Bu kural
+  olmasaydı kapı kendi kendini etkisizleştirirdi: kırmızı görünce tavanı bir tık yukarı çekmek
+  yeterli olurdu.
+
+CI'da ikisi de koşar: ratchet PR'ı bloklar, strict `continue-on-error: true` ile **bloklamadan**
+release hazırlığını her koşuda görünür kılar. Strict'in bugün kırmızı olması beklenen sonuçtur;
+yeşile çevirmenin tek yolu testleri yazmaktır — sayı gizlemek, allowlist'e taşımak veya testi
+gevşetmek değil.
+
+Karar kuralları saf bir fonksiyonda (`scripts/qa/interaction-gate-rules.ts`) ve 13 deterministik
+birim testiyle doğrulanıyor (`tests/interaction-gate-rules.test.ts`, <1 sn): FAIL mevcut,
+manifestosuz kontrol mevcut, UNTESTED baseline üstünde/altında, strict'te UNTESTED > 0, gerekçeli
+ve gerekçesiz baseline yükseltme, boşluktan ibaret gerekçe, düşürme.
+
+---
+
 ## Final gate results
 
 ```

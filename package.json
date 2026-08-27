@@ -103,7 +103,8 @@
     "interaction:inventory": "node --import tsx scripts/qa/interaction-inventory.ts",
     "interaction:crawl": "node --import tsx scripts/qa/runtime-interaction-crawl.ts",
     "interaction:test": "playwright test --config playwright.interaction.config.ts",
-    "interaction:gate": "node --import tsx scripts/qa/interaction-coverage-gate.ts"
+    "interaction:gate": "node --import tsx scripts/qa/interaction-coverage-gate.ts",
+    "interaction:gate:strict": "node --import tsx scripts/qa/interaction-coverage-gate.ts --strict"
   },
   "dependencies": {
     "@next/env": "15.5.20",

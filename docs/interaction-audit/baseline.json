@@ -1,0 +1,26 @@
+{
+  "_readme": [
+    "ETKILESIM KAPSAM TAVANI — gunluk PR kapisinin (ratchet) olcutu.",
+    "",
+    "untested: kabul edilen UNTESTED tavani. Bu sayinin USTUNE cikan bir PR KIRMIZI olur.",
+    "pass:     kabul edilen PASS tabani. Kanitlanmis kontrol sayisi bunun ALTINA inerse KIRMIZI.",
+    "",
+    "DUSURMEK her zaman serbesttir ve TESVIK EDILIR: borc azaldiginda bu sayilari guncelleyin ki",
+    "kazanim kilitlensin. YUKSELTMEK icin `raisedBecause` alani doldurulmak ZORUNDADIR — bos",
+    "birakilirsa kapi kirmizi verir. Aksi halde kapi kendi kendini etkisizlestirir: kirmizi gorunce",
+    "tavani bir tik yukari cekmek yeterli olurdu.",
+    "",
+    "Bu dosya KUCUK ve elle okunabilir tutulur. Buyuk runtime kanit dosyalari (runtime-inventory,",
+    "evidence-*) baseline OLAMAZ: bir insanin PR diff'inde 'bu sayi neden yukseldi?' diye",
+    "bakabilecegi tek sey budur.",
+    "",
+    "Strict (release/cutover) kapisi bu tavani HIC dikkate almaz: orada UNTESTED > 0 kirmizidir.",
+    "  pnpm interaction:gate         -> ratchet (PR)",
+    "  pnpm interaction:gate:strict  -> strict  (release/cutover)"
+  ],
+  "untested": 561,
+  "pass": 1561,
+  "measuredAt": "2026-08-27T09:02:12+03:00",
+  "measuredAtCommit": "067eaa4",
+  "measuredNote": "2122 kesfedilen kontrol; navigation 1554 PASS, mutation 5, ui-state 2, export 0. Uretim derlemesi, harcanabilir DB (mas_radar_interaction_verify), 5 gercek oturum, QA bypass kapali."
+}
