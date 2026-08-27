@@ -320,7 +320,9 @@ export interface CheckRow {
   rowIndex: number | null;
 }
 
-export async function loadChecks(pool: Pool): Promise<CheckRow[]> {
+export async function loadChecks(pool: Pool, options: { limit?: number; offset?: number } = {}): Promise<CheckRow[]> {
+  const limit = Math.max(1, Math.min(options.limit ?? 100_000, 100_000));
+  const offset = Math.max(0, options.offset ?? 0);
   const r = await pool.query(`
     select c.id, to_char(c.maturity_date,'YYYY-MM-DD') as maturity_date, c.serial_no as serial,
            c.amount, c.signed_amount,
@@ -333,13 +335,21 @@ export async function loadChecks(pool: Pool): Promise<CheckRow[]> {
     left join public.parties pb on pb.id=c.bank_party_id
     left join public.import_rows ir on ir.id=c.source_row_id
     where c.archived_at is null
-    order by c.maturity_date`);
+    order by c.maturity_date
+    limit $1 offset $2`, [limit, offset]);
   return r.rows.map((x) => ({
     id: x.id, maturityDate: x.maturity_date, serial: x.serial,
     amount: moneyOrNull(x.amount), signedAmount: moneyOrNull(x.signed_amount), direction: x.direction, status: x.status,
     payee: x.payee, payer: x.payer, bank: x.bank,
     sourceWorkbookId: x.source_workbook_id, sourceSheetId: x.source_sheet_id, rowIndex: x.row_index,
   }));
+}
+
+export async function countChecks(pool: Pool): Promise<number> {
+  const result = await pool.query<{ count: number }>(
+    `select count(*)::int as count from public.checks where archived_at is null`,
+  );
+  return result.rows[0]?.count ?? 0;
 }
 
 export interface LoanRow {
@@ -438,6 +448,89 @@ export async function loadMaturityItems(pool: Pool): Promise<MaturityItem[]> {
       direction: "outflow", kind: "loan_installment", label: i.name,
     });
   return items;
+}
+
+export interface FinanceDashboardSummary {
+  remainingAmount: number;
+  due30: number;
+  openChecks: number;
+  activeLoans: number;
+}
+
+export interface FinanceDashboardMonth {
+  monthStart: string;
+  kind: "check" | "loan_installment";
+  direction: "inflow" | "outflow" | "unknown";
+  count: number;
+  knownAmount: number;
+  missingCount: number;
+}
+
+/**
+ * Bounded aggregates for the finance landing page.
+ *
+ * The previous page loaded every check, every loan and the complete maturity stream, then threw
+ * almost all row detail away. At realistic volume that moved thousands of rows through pg,
+ * JavaScript decoding and the RSC render for four KPIs and a monthly chart. Detail routes still
+ * use the full loaders; this read model returns exactly what the summary screen renders.
+ */
+export async function loadFinanceDashboard(
+  pool: Pool,
+  todayISO: string,
+): Promise<{ summary: FinanceDashboardSummary; months: FinanceDashboardMonth[] }> {
+  const stream = `
+    select c.maturity_date as due_date, c.amount, c.direction::text as direction, 'check'::text as kind
+    from public.checks c
+    where c.status in ('planned','unknown') and c.archived_at is null
+    union all
+    select li.due_date, li.amount, 'outflow'::text, 'loan_installment'::text
+    from public.loan_installments li
+    join public.loans l on l.id=li.loan_id
+    where li.status in ('planned','unpaid','partial','late') and l.archived_at is null`;
+
+  const [summaryResult, monthResult] = await Promise.all([
+    pool.query(`
+      with maturity as (${stream})
+      select
+        (select count(*)::int from public.checks
+          where status in ('planned','unknown') and archived_at is null) as open_checks,
+        (select count(*)::int from public.loans where archived_at is null) as active_loans,
+        (select coalesce(sum(li.amount),0)
+          from public.loan_installments li join public.loans l on l.id=li.loan_id
+          where li.status <> 'paid' and l.archived_at is null) as remaining_amount,
+        coalesce(sum(amount) filter (
+          where due_date >= $1::date and due_date < $1::date + 30
+            and direction = 'outflow' and amount is not null
+        ),0) as due30
+      from maturity`, [todayISO]),
+    pool.query(`
+      with maturity as (${stream})
+      select to_char(date_trunc('month',due_date),'YYYY-MM-01') as month_start,
+             kind, direction, count(*)::int as event_count,
+             coalesce(sum(amount) filter (where amount is not null),0) as known_amount,
+             count(*) filter (where amount is null)::int as missing_count
+      from maturity
+      where due_date >= $1::date and due_date < ($1::date + interval '24 months')
+      group by date_trunc('month',due_date), kind, direction
+      order by date_trunc('month',due_date), kind, direction`, [todayISO]),
+  ]);
+  const summaryRow = summaryResult.rows[0] ?? {};
+  return {
+    summary: {
+      remainingAmount: moneyOrNull(summaryRow.remaining_amount) ?? 0,
+      due30: moneyOrNull(summaryRow.due30) ?? 0,
+      openChecks: Number(summaryRow.open_checks ?? 0),
+      activeLoans: Number(summaryRow.active_loans ?? 0),
+    },
+    months: monthResult.rows.map((row) => ({
+      monthStart: row.month_start as string,
+      kind: row.kind as FinanceDashboardMonth["kind"],
+      direction: row.direction as FinanceDashboardMonth["direction"],
+      count: Number(row.event_count),
+      knownAmount: moneyOrNull(row.known_amount) ?? 0,
+      missingCount: Number(row.missing_count),
+    })),
+  };
 }
 
 /* ── 4) settlement — recording the outcome a check or installment actually reached ──

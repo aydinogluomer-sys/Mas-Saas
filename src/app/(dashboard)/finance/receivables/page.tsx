@@ -36,12 +36,12 @@ export default async function ReceivablesPage({
   const pool = getPool();
   const today = istanbulDateISO();
   const [receivables, payables, accounts, dsoDpo, unallocated, speed] = await Promise.all([
-    loadReceivables(pool, 150),
-    loadPayables(pool, 150),
-    loadCurrentAccounts(pool, 40),
+    loadReceivables(pool, 75),
+    loadPayables(pool, 75),
+    loadCurrentAccounts(pool, 20),
     loadDsoDpo(pool, 365),
-    loadUnallocatedSettlements(pool, 20),
-    loadSettlementSpeed(pool, 20),
+    loadUnallocatedSettlements(pool, 10),
+    loadSettlementSpeed(pool, 10),
   ]);
 
   const recAgeing = summarizeAgeing(

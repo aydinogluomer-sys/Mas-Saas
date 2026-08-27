@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { getPool } from "@/lib/db";
-import { loadBriefingFacts, loadCockpitWidgets } from "@/lib/briefing/engine";
+import { loadBriefingDashboard } from "@/lib/briefing/engine";
 import { renderBriefing } from "@/lib/briefing/rules";
 import { istanbulDateISO } from "@/lib/reports/rules";
 import { generateBriefingAction } from "./actions";
@@ -27,10 +27,7 @@ export default async function BriefingPage() {
 
   // Both halves of this screen come from ONE gathering step. The tiles a CFO scans and the text
   // that gets mailed cannot show different numbers, because they are the same numbers.
-  const [{ widgets, attention }, facts] = await Promise.all([
-    loadCockpitWidgets(pool, today),
-    loadBriefingFacts(pool, today),
-  ]);
+  const { widgets, attention, facts } = await loadBriefingDashboard(pool, today);
   const preview = renderBriefing(facts);
 
   return (
