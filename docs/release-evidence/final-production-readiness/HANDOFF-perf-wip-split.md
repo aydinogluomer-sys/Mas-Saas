@@ -248,17 +248,233 @@ Kayıtlı trycloudflare tüneli ölü. TestSprite yalnız herkese açık bir hed
 `.next-*` dizinleri yeniden üretilebilir build çıktısı; commit edilmemeli. `bot.py` ve
 `_probe-authz.ts` kaynağı doğrulanmadan commit edilmemeli.
 
-**Ölü kod (bu turda dokunulmadı):** `paymentOverviewInstances()` artık hiçbir yerden
-çağrılmıyor ama `queries.ts`'te export olarak duruyor.
+**~~Ölü kod~~ — düzeltildi:** `paymentOverviewInstances()` "artık hiçbir yerden çağrılmıyor"
+diye not edilmişti. Silinmedi, ve iyi ki silinmemiş: §8'deki diferansiyel doğrulamanın
+**normatif referansı** o. Eski yolun kendisi olmadan "yeni SQL eskisiyle birebir aynı" iddiası
+ölçülemezdi — yalnız yeniden anlatılabilirdi.
 
 ---
 
 ## 7. Push durumu ve sıradaki adım
 
-Push **yapılmadı**. Uzak branch'e göre **4 commit ileri** (`6dd6c68`, `68f7aca`, `44d9c5f`,
-`4b8eb19`), 0 geri. `origin/master`'a göre 58 ileri.
+Push **yapılmadı**. Uzak branch'e göre **6 commit ileri** (`6dd6c68`, `68f7aca`, `44d9c5f`,
+`4b8eb19`, `4c7f3ad`, `1a88dca`), 0 geri. `origin/master`'a göre 60 ileri.
+
+Son iki commit, önceki dördün içinde bulunan finansal semantik riskleri kapatıyor — §8.
 
 P24B keşfine **başlanmadı** (talimat gereği).
 
 Sıradaki kritik yol değişmedi: çalışma ağacını stabilize et → P24B salt-okunur → off-device
 yedek → açık onay → fixture temizliği → final RC → branch CI → PR/master → master CI → cutover.
+
+---
+
+## 8. Takip turu — hızlandırma commitlerindeki finansal semantik riskler
+
+`44d9c5f` ve `4b8eb19` performansı gerçekten düzeltti, ama ikisi de aynı şeyi yaptı: **bir
+finansal kuralı, hızlandırmak için yeniden yazdı.** Kural bir daha yazıldığı anda iki tanım olur
+ve ikisinin ayrıştığını kimse söylemez. Bu tur o iki yerde tanımı **tek**e indirir.
+
+Yeni commitler: `4c7f3ad` (alacak KPI'ları) · `1a88dca` (ödeme risk bayrakları). Önceki dört
+commit **yeniden yazılmadı**, force-push yok.
+
+### 8.1 Alacak KPI'ları listeye bağlıydı — `4c7f3ad`
+
+`/finance/receivables` ekranında açık alacak toplamı, yaşlandırma kovaları ve gecikmiş sayacı
+**listeye gelen satırlardan** hesaplanıyordu. Liste `loadReceivables(pool, 75)` ile sınırlıydı,
+yani ekrandaki "AÇIK ALACAK" aslında *en büyük 75 alacağın toplamı*ydı. 75'in üzerinde açık
+kayıt olduğunda her rakam **gerçeğin altında** kalıyordu ve bunu söyleyen hiçbir şey yoktu.
+
+> Bu 150 limitinde de böyleydi. Limitin 75'e inmesi yalnız yanılma eşiğini yarıya indirdi —
+> sorun limitin **değeri** değil, toplamların listeye **bağlı** olmasıydı.
+
+**Çözüm.** `loadOpenTotals()` aynı view üzerinden **limitsiz** aggregate döndürüyor. Filtre ve
+statü semantiği `public.receivables_open` / `payables_open` view'larının içinde yaşıyor;
+toplamları **aynı view**'dan almak, o semantiği yeniden yazmadan birebir korumanın tek yolu.
+Kendi `where` cümlemi yazsaydım iki tanım olur ve ilk şema değişikliğinde sessizce ayrışırlardı.
+
+Kova sınırları `collectionBucket()` ile birebir aynı; tek sorguda `group by rollup (bucket)`,
+yani kova satırları ve genel toplam **aynı okumadan** gelir.
+
+**UI dürüstlüğü:** liste kırpıldıysa başlık `75 / 121` gösterir ve altında "yukarıdaki toplamlar
+121 kaydın tamamını kapsıyor" yazar. Kırpılmış bir listeyi tam sanmak, üstteki toplamla
+satırların toplamı arasındaki farkı **hataya** yormaya yol açardı.
+
+Ayrıca `loadPayables` çağrısı kaldırıldı: bu ekran borç **listesi** göstermiyor, yalnız borç
+toplamını ve yaşlandırmasını gösteriyor — ikisi de artık aggregate'ten geliyor.
+
+### 8.2 Risk bayrakları `dayFlags()`ten ayrışmıştı — `1a88dca`
+
+**Normatif referans** (`src/lib/radar/rules.ts` — bu turda **değişmedi**, ölçüt odur):
+
+```ts
+const open = dayInstances.filter((i) => isOpen(i.status));   // unpaid|partial|planned|late
+knownSum   = Σ decimal(i.amount)  where amount != null && amount > 0
+anyCritical= open.some((i) => i.amount != null && i.amount >= t.critical);
+anyLarge   = open.some((i) => i.amount != null && i.amount >= t.large);
+return { count: open.length, knownSum,
+         cluster:  open.length >= t.clusterCount,
+         large:    anyLarge,
+         critical: anyCritical || knownSum >= t.critical };
+```
+
+`44d9c5f` bunu toplanmış satırlardan yeniden yazdı:
+
+```ts
+bucketCount(rows) >= clusterCount
+  || rows.some((row) => (row.maxAmount ?? 0) >= large)
+  || bucketTotal(rows) >= critical
+```
+
+**İki gerçek kayma:**
+
+| # | Kayma | Sonucu |
+|---|---|---|
+| 1 | Eşikler `remaining` (= amount − paid_amount) üzerindeydi | 120.000 TL'lik, 119.000'i ödenmiş bir kalem **1.000 TL** gibi tartılıyor, günü kritik olmaktan çıkarıyordu |
+| 2 | Sayım SQL'in `active` kümesindendi; o küme `'unknown'` **içerir**, `OPEN_STATUSES` içermez | Statüsü bilinmeyen kalemler günü kalabalık gösterip `cluster`ı erken ateşliyordu |
+
+**Üçüncü fark gerçek çıkmadı — ve bunu ölçerek öğrendim.** `anyCritical` dalı da düşmüştü;
+üçüncü hata olarak raporlamaya hazırdım. Dalı geri düşürüp testi koşturdum: **tek bir kırmızı
+yok.** Nedeni tek satır — `anyCritical` true ise günde `amount >= critical` olan bir kalem
+vardır; `critical > 0` iken o tutar pozitiftir, `knownSum`a **girer** ve diğer terimler negatif
+olamaz, yani `knownSum >= critical` zaten sağlanır. `critical <= 0` iken de
+`knownSum >= 0 >= critical`. **11.310 kombinasyon tarandı, karşı örnek yok.**
+
+Dal referansta olduğu için **korundu** (`knownSum`un tanımı değişirse yeniden anlam kazanır),
+ama hata olarak **sayılmıyor**. Üç bulgu gibi göstermek sayıyı şişirmek olurdu.
+
+**Çözüm.** Görüntüleme alanlarına dokunulmadan üç alan eklendi — `open_count`,
+`flag_known_sum` (sum(**amount**)), `flag_max_amount` (max(**amount**)); karar
+`dayFlagsFromAggregate()`e taşındı ve o, `dayFlags()`in **tam yanında** duruyor. Bir gün
+`pressure_status`e göre birden çok kovaya bölünebildiği için birleştirme `dayFlagsForDate()`
+içinde, **tek yerde**: sayfa da doğrulama scripti de aynı fonksiyonu çağırıyor, yani test
+sayfanın gerçekten koştuğu yolu ölçüyor, ona benzeyen bir kopyayı değil.
+
+**`remaining` kullanımı — ayrı karar gerektiren bulgu, bu turda DEĞİŞTİRİLMEDİ.**
+`knownAmount`/`maxAmount` hâlâ `remaining` üzerinden ve grafiği/KPI'ları besliyor. "Bugün ne
+kadar para çıkacak" için `remaining` ürün açısından **daha doğru** görünüyor; risk eşiği ise
+kural olarak `amount`a bağlı. İkisi ayrı soru ve şimdi ayrı alanlarla cevaplanıyor. Hangisinin
+nerede doğru olduğu **ürün kararı** — talimat gereği bu turda dokunulmadı, burada raporlanıyor.
+
+**İkinci bulgu — iptal edilmiş kayıtlar, ayrı karar gerektirir.** Eski sayfa `status !== 'paid'`
+süzüyordu, yani **iptal edilmiş** ödemeler "Bugün / Yarın / 7 günlük çıkış" KPI'larına
+**giriyordu**. Yeni SQL `active` kümesini beş statüyle sınırlıyor ve iptalleri dışarıda
+bırakıyor. Yeni davranış daha doğru görünüyor (iptal edilmiş ödeme bir nakit çıkışı değildir),
+ama bu bir **ürün kararı** ve hızlandırma commit'i onu sessizce aldı. Ölçülen etki:
+harcanabilir veritabanında bugün-ve-sonrası **0 iptal / 0 unknown / 0 paid** kayıt var, yani
+şu an rakamlar **hiç değişmiyor**. Fark semantik, henüz görünür değil.
+
+*(Gecikmiş sayacında böyle bir fark **yok**: `active` içindeki `or` yan tümcesi, geçmiş tarihli
+satırların yalnız `OPEN_STATUSES` olanlarını geçiriyor — eski `overdue.length` ile birebir.)*
+
+### 8.3 Doğrulama
+
+```
+pnpm lint        PASS   (0 uyarı)
+pnpm typecheck   PASS
+pnpm test        PASS   (60 dosya, 1328 test)
+pnpm build       PASS
+finansal golden  PASS   (96/96, tests/financial)
+```
+
+**`scripts/db/receivable-totals-verify.ts` — 16/16 PASS** (121 uygun fatura: 11 sınır vakası +
+110 hacim; 4 hariç tutulması gereken kayıt)
+
+```
+PASS  fixture elle aritmetikle uyuşuyor (bağımsız SQL ile çapraz kontrol)
+PASS  liste yalnız ilk 75 satırı döndürüyor
+PASS  KPI kayıt sayısı listeyi DEĞİL bütün uygun kayıtları sayıyor
+PASS  KPI toplamı 121 kaydın tamamını içeriyor
+PASS  gecikmiş sayacı bütün uygun satırları sayıyor
+PASS  kova tutar/adet toplamları genel toplamla mutabık
+PASS  altı kova sınırının her biri doğru
+PASS  liste limiti 5'e indirilince toplamlar DEĞİŞMİYOR
+PASS  paid / tam dağıtılmış / purchase / draft kayıtlar toplamın DIŞINDA
+PASS  borç toplamı da aynı limitsiz yoldan geliyor
+```
+
+Beklenen değerler ürün kodundan **değil**, view'a hiç dokunmayan ayrı bir SQL'den ve elle
+aritmetikten (121 kayıt / 7.700 TL) geliyor; ikisi birbiriyle çapraz kontrol ediliyor.
+
+**`scripts/db/payment-day-flags-verify.ts` — 22/22 PASS**
+
+Diferansiyel: aynı fixture üzerinde **eski yol** (`paymentOverviewInstances` + `dayFlags`) ile
+**yeni yol** (`loadPaymentDashboard` + `dayFlagsForDate`) koşuluyor ve beş alanın
+(`count · knownSum · cluster · large · critical`) **tamamı** karşılaştırılıyor.
+
+```
+398 gün × 4 eşik kurulumu — hepsi birebir aynı
+  large < critical (ölçülen kurulum) · large = critical · large > critical · cluster susturulmuş
+
+vaka matrisi (elle yazılmış beklenenler)
+  ödenmemiş tam tutar · kısmi ödeme · paid/cancelled hariç · tek kalem kritiği aşıyor ·
+  toplam kritiği aşıyor · yalnız büyük eşiği aşıyor · tutar NULL · aynı günde çok ödeme ·
+  'unknown' statü · sıfır ve negatif tutar · neredeyse tamamı ödenmiş (kalan 1.000 / amount 120.000)
+```
+
+### 8.4 Mutasyon kanıtı — testin gerçekten tuttuğunun ölçüsü
+
+| Sabotaj | Sonuç |
+|---|---|
+| Alacak toplamları yeniden liste limitine bağlandı | **9 / 16 KIRMIZI** |
+| Eşikler `remaining`e bağlandı | **7 KIRMIZI** (4 diferansiyel + 3 vaka) |
+| `'unknown'` sayıma dahil edildi | **6 KIRMIZI** (4 diferansiyel + 2 vaka) |
+| `anyCritical` düşürüldü | **0 kırmızı** ← §8.2'deki bulgunun kaynağı |
+
+Her sabotaj geri alındı.
+
+### 8.5 Uçtan uca duman testi
+
+Üretim derlemesi, harcanabilir DB, gerçek `/login` (QA bypass **KAPALI**), `finance_manager`:
+
+```
+/payments             http 200   önyükleme perdesi kapandıktan sonra ölçüldü
+/finance/receivables  http 200
+
+RİSKLİ GÜN kartı        6
+eski dayFlags() yolu    6      ← aynı veri, bağımsız hesap
+```
+
+Ekrandaki rakam, eski uygulamanın aynı veriye verdiği cevapla **birebir**. Alacak ekranı bu
+veritabanında 0 fatura gördüğü için "Açık alacak yok" gösteriyor — kırpma yolu duman testinde
+değil, 121 fixture'lı doğrulamada ölçüldü.
+
+### 8.6 Fixture temizliği ve gerçek veritabanı
+
+Her iki script de **transaction ROLLBACK** ile temizleniyor, `delete` ile değil. İlk yazımda
+silme deneniyordu ve ürün **haklı olarak** reddetti:
+
+```
+invoices_block_issued_delete      düzenlenmiş fatura silinemez (durum=open)
+invoices_status_transition_guard  open→draft izinli değil
+```
+
+Faz 21'in invariant'ı. Rollback yolunda hiçbir tetikleyici ateşlenmiyor, hiçbir invariant
+delinmiyor, hiçbir satır kalıcı olmuyor. Kalıntı kontrolü **ayrı bir bağlantıdan** yapılıyor
+(iki script de 0 satır doğruladı).
+
+İkisi de `set local role mas_radar_admin` alıyor: bağlantı `mas_radar_app` ile açıldığında RLS
+altında `parties` **boş** görünüyor ve `receivable-totals-verify` "referans seed uygulanmamış"
+diye duruyordu. Politikalar **delinmiyor** — script ürünün gerçekten kullandığı katmandan
+konuşuyor, rol transaction ile geri alınıyor.
+
+`payment-day-flags-verify` fixture penceresini **çalışma anında** seçiyor: sabit bir gün aralığı
+yazmak, seed verisi o günlere dokunduğunda testi sessizce "başka satırlarla karışmış" hâle
+getirirdi.
+
+**Gerçek `mas_radar_dev` üzerinde hiçbir mutation çalıştırılmadı.** Her şey
+`mas_radar_interaction_verify` üzerinde.
+
+### 8.7 Bu turda değişmeyenler
+
+- **Navigation latency testindeki 1 başarısızlık** — §4'teki ayrı bulgu, bu turda dokunulmadı.
+- **`.env.example`** — okunmadı, diff'i yazdırılmadı, stage edilmedi. Secret rotation ayrı iş.
+- **P24B** — başlanmadı.
+- **Push** — yapılmadı.
+
+### 8.8 TestSprite — BLOCKED
+
+Bu oturumda TestSprite **çalıştırılmadı**. Yapılandırılmış bir TestSprite MCP/CLI yolu yok;
+`api.testsprite.com` yerel çözümleyicide reddediliyor (`Query refused`), herkese açık DNS ile
+çözülüyor ve kök uç 404 dönüyor — yani host ayakta ama bu oturumdan kullanılabilir bir koşu
+yolu yok. Localhost'a karşı koşmuş gibi **gösterilmedi**.
