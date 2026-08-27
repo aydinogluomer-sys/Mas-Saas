@@ -7,10 +7,10 @@
 
 import { getPool } from "@/lib/db";
 import {
-  loadCurrentAccounts, loadDsoDpo, loadPayables, loadReceivables,
-  loadSettlementSpeed, loadUnallocatedSettlements,
+  loadCurrentAccounts, loadDsoDpo, loadPayableTotals, loadReceivables,
+  loadReceivableTotals, loadSettlementSpeed, loadUnallocatedSettlements,
 } from "@/lib/receivables/engine";
-import { COLLECTION_BUCKETS, summarizeAgeing } from "@/lib/receivables/rules";
+import { COLLECTION_BUCKETS } from "@/lib/receivables/rules";
 import { istanbulDateISO } from "@/lib/reports/rules";
 import { Badge, type Tone } from "@/components/ui/badge";
 import { Panel, fmtTL } from "@/components/ui/panel";
@@ -25,6 +25,14 @@ const BUCKET_TONE: Record<string, Tone> = {
   "31-60 gün": "red", "60+ gün": "red", "tarihsiz": "neutral",
 };
 
+/**
+ * Çalışma kuyruğu listesinin satır sınırı.
+ *
+ * Yalnız LİSTEYİ sınırlar; sayfanın finansal toplamları limitsiz aggregate'ten gelir. Bu sayıyı
+ * değiştirmek hiçbir KPI'ı değiştirmemeli — testin doğruladığı invariant budur.
+ */
+const LIST_LIMIT = 75;
+
 export default async function ReceivablesPage({
   searchParams,
 }: { searchParams: Promise<{ error?: string; result?: string }> }) {
@@ -35,22 +43,36 @@ export default async function ReceivablesPage({
   const sp = await searchParams;
   const pool = getPool();
   const today = istanbulDateISO();
-  const [receivables, payables, accounts, dsoDpo, unallocated, speed] = await Promise.all([
-    loadReceivables(pool, 75),
-    loadPayables(pool, 75),
+  // LİSTE SINIRLI, TOPLAMLAR DEĞİL.
+  //
+  // Bu iki şeyin ayrılması bu ekranın tek önemli kuralı. Liste bir çalışma kuyruğudur ve
+  // sınırlı olması meşrudur; ama "AÇIK ALACAK" bir KARAR SAYISIDIR ve listeye bağlı olamaz.
+  // Öncesinde her ikisi de `loadReceivables(pool, 75)`'ten geliyordu, yani ekrandaki toplam
+  // aslında "en büyük 75 alacağın toplamı"ydı ve bunu söyleyen hiçbir şey yoktu.
+  //
+  // Toplamlar artık aynı view üzerinden, LİMİTSİZ bir aggregate'ten geliyor (bkz.
+  // loadOpenTotals). Liste limiti değiştiğinde toplamlar değişmez — testin de doğruladığı şey bu.
+  // `loadPayables` ARTIK ÇAĞRILMIYOR: bu ekran borç LİSTESİ göstermiyor, yalnız borç
+  // TOPLAMINI ve yaşlandırmasını gösteriyor — ikisi de artık limitsiz aggregate'ten geliyor.
+  // Satırları çekip atmak, sonucu kullanılmayan bir sorgu demekti.
+  const [receivables, recTotals, payTotals, accounts, dsoDpo, unallocated, speed] = await Promise.all([
+    loadReceivables(pool, LIST_LIMIT),
+    loadReceivableTotals(pool, today),
+    loadPayableTotals(pool, today),
     loadCurrentAccounts(pool, 20),
     loadDsoDpo(pool, 365),
     loadUnallocatedSettlements(pool, 10),
     loadSettlementSpeed(pool, 10),
   ]);
 
-  const recAgeing = summarizeAgeing(
-    receivables.map((r) => ({ dueDate: r.dueDate, openAmount: r.openAmount })), today);
-  const payAgeing = summarizeAgeing(
-    payables.map((r) => ({ dueDate: r.dueDate, openAmount: r.openAmount })), today);
-  const recTotal = receivables.reduce((n, r) => n + r.openAmount, 0);
-  const payTotal = payables.reduce((n, r) => n + r.openAmount, 0);
-  const overdue = receivables.filter((r) => (r.daysOverdue ?? 0) > 0);
+  const recAgeing = recTotals.ageing;
+  const payAgeing = payTotals.ageing;
+  const recTotal = recTotals.totalOpenAmount;
+  const payTotal = payTotals.totalOpenAmount;
+  const overdueCount = recTotals.overdueCount;
+  // Liste kırpıldı mı? Kırpıldıysa kullanıcı bunu EKRANDA görmeli: kırpılmış bir listeyi tam
+  // sanmak, üstteki toplamla listedeki satırların toplamı arasındaki farkı hataya yormaya yol açar.
+  const recTruncated = recTotals.itemCount > receivables.length;
 
   return (
     <>
@@ -58,10 +80,10 @@ export default async function ReceivablesPage({
         title="Alacak / Borç ve Cari Hesap"
         subtitle="Yaşlandırma, dağıtım (allocation), cari hesap kartı ve DSO/DPO"
         meta={
-          <Badge tone={overdue.length > 0 ? "red" : unallocated.length > 0 ? "amber" : "green"} dot>
-            {overdue.length > 0 ? `${overdue.length} vadesi geçmiş alacak`
+          <Badge tone={overdueCount > 0 ? "red" : unallocated.length > 0 ? "amber" : "green"} dot>
+            {overdueCount > 0 ? `${overdueCount} vadesi geçmiş alacak`
               : unallocated.length > 0 ? `${unallocated.length} dağıtılmamış tahsilat`
-              : `${receivables.length} açık alacak`}
+              : `${recTotals.itemCount} açık alacak`}
           </Badge>
         }
       />
@@ -70,8 +92,8 @@ export default async function ReceivablesPage({
       {sp.result && <div className="mb-3 rounded border border-pos/40 bg-pos/10 p-2 text-sm text-pos">{sp.result}</div>}
 
       <div className="mb-4 grid grid-cols-2 gap-2 lg:grid-cols-4">
-        <Panel title="AÇIK ALACAK"><b className="font-mono text-lg text-pos">{fmtTL(recTotal)}</b></Panel>
-        <Panel title="AÇIK BORÇ"><b className="font-mono text-lg text-neg">{fmtTL(payTotal)}</b></Panel>
+        <Panel title="AÇIK ALACAK"><b className="font-mono text-lg text-pos">{fmtTL(recTotal)}</b><div className="text-xs text-tone-3">{recTotals.itemCount} kayıt</div></Panel>
+        <Panel title="AÇIK BORÇ"><b className="font-mono text-lg text-neg">{fmtTL(payTotal)}</b><div className="text-xs text-tone-3">{payTotals.itemCount} kayıt</div></Panel>
         <Panel title="DSO (365g)">
           {/* null means "no sales in the period" — reporting 0 would claim customers pay
               instantly at a company that sold nothing. */}
@@ -106,7 +128,10 @@ export default async function ReceivablesPage({
       </div>
 
       <div className="mt-4">
-        <Panel title={`AÇIK ALACAKLAR — ${receivables.length}`}>
+        <Panel title={`AÇIK ALACAKLAR — ${recTruncated ? `${receivables.length} / ${recTotals.itemCount}` : receivables.length}`}
+          subtitle={recTruncated
+            ? `En yüksek tutarlı ${LIST_LIMIT} kayıt listeleniyor; yukarıdaki toplamlar ${recTotals.itemCount} kaydın tamamını kapsıyor.`
+            : undefined}>
           {receivables.length === 0 ? (
             <p className="py-2 text-sm text-tone-3">Açık alacak yok.</p>
           ) : (
