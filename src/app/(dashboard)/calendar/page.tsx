@@ -7,6 +7,8 @@ import { dayFlags, daysInMonth } from "@/lib/radar/rules";
 import { Panel } from "@/components/ui/panel";
 import { InstanceRowView } from "@/components/radar/instance-row";
 import { requireSession } from "@/lib/auth";
+import { can } from "@/lib/authz/matrix";
+import { ActionFeedback } from "@/components/ui/action-feedback";
 
 export const dynamic = "force-dynamic";
 
@@ -15,7 +17,7 @@ const GUN = ["Pzt","Sal","Çar","Per","Cum","Cmt","Paz"];
 
 export default async function CalendarPage({
   searchParams,
-}: { searchParams: Promise<{ ym?: string; day?: string; date?: string; instance?: string; age?: string }> }) {
+}: { searchParams: Promise<{ ym?: string; day?: string; date?: string; instance?: string; age?: string; error?: string }> }) {
   const session = await requireSession();
   const sp = await searchParams;
   const today = istanbulDateISO();
@@ -43,12 +45,16 @@ export default async function CalendarPage({
   }
   const kFmt = (n: number) => (n >= 1e6 ? (n / 1e6).toFixed(1).replace(".0", "") + "M" : n >= 1e3 ? Math.round(n / 1e3) + "k" : String(n));
   const cells: Array<number | null> = [...Array(firstDow).fill(null), ...Array.from({ length: dim }, (_, i) => i + 1)];
+  // Salt-okur katmana yapamayacağı bir işlem VAAT EDİLMEZ (bkz. instance-row.tsx gerekçesi).
+  const canMutate = can(session.role, "payment_instances", "update");
   const nav = (delta: number) => `/payments/calendar?ym=${addMonths(monthStart, delta).slice(0, 7)}`;
   const isCurrent = ym === today.slice(0, 7);
   const todayD = Number(today.slice(8));
 
   return (
     <>
+      {/* Reddedilen mutasyonlar buraya `?error=` ile döner (radar/actions.ts → backTo). */}
+      <ActionFeedback error={sp.error} />
       <Panel title="ÖDEME TAKVİMİ"
         right={
           <span className="flex flex-wrap items-center justify-end gap-1">
@@ -104,18 +110,18 @@ export default async function CalendarPage({
           {(byDay.get(selDay) ?? []).length === 0
             ? <p className="text-sm text-tone-3">Bu güne ödeme yok.</p>
             : (byDay.get(selDay) ?? []).map((r) => (
-                <InstanceRowView key={r.id} r={r} backTo={`/payments/calendar?ym=${ym}&day=${selDay}`} />
+                <InstanceRowView canMutate={canMutate} key={r.id} r={r} backTo={`/payments/calendar?ym=${ym}&day=${selDay}`} />
               ))}
         </Panel>
       )}
-      {sp.age && <AgeingDetail age={sp.age} today={today} rows={await overdueOpen(pool, today)} />}
+      {sp.age && <AgeingDetail age={sp.age} today={today} rows={await overdueOpen(pool, today)} canMutate={canMutate} />}
     </>
   );
 }
 
-function AgeingDetail({age,today,rows}:{age:string;today:string;rows:Awaited<ReturnType<typeof overdueOpen>>}) {
+function AgeingDetail({age,today,rows,canMutate}:{age:string;today:string;rows:Awaited<ReturnType<typeof overdueOpen>>;canMutate:boolean}) {
   const bounds:Record<string,[number,number,string]>={"1-30":[1,30,"1–30 gün gecikmiş"],"31-90":[31,90,"31–90 gün gecikmiş"],"91+":[91,Infinity,"91+ gün gecikmiş"]};
   const selected=bounds[age]; if(!selected)return null;
   const filtered=rows.filter((row)=>{const days=Math.floor((Date.parse(today)-Date.parse(row.due_date))/86400000);return days>=selected[0]&&days<=selected[1]});
-  return <Panel title={selected[2]} right={<Link href="/payments" className="button-ghost px-2 py-1">Özete dön</Link>}>{filtered.length===0?<p className="text-sm text-tone-3">Bu gecikme aralığında ödeme bulunmuyor.</p>:filtered.map((row)=><InstanceRowView key={row.id} r={row} backTo={`/payments/calendar?age=${encodeURIComponent(age)}`}/>)}</Panel>;
+  return <Panel title={selected[2]} right={<Link href="/payments" className="button-ghost px-2 py-1">Özete dön</Link>}>{filtered.length===0?<p className="text-sm text-tone-3">Bu gecikme aralığında ödeme bulunmuyor.</p>:filtered.map((row)=><InstanceRowView canMutate={canMutate} key={row.id} r={row} backTo={`/payments/calendar?age=${encodeURIComponent(age)}`}/>)}</Panel>;
 }

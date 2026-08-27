@@ -18,19 +18,23 @@ import { Num, Panel, fmtTL } from "@/components/ui/panel";
 import { KpiCard, PageHeader } from "@/components/ui/shell";
 import { InstanceRowView } from "@/components/radar/instance-row";
 import { requireSession } from "@/lib/auth";
+import { can } from "@/lib/authz/matrix";
+import { ActionFeedback } from "@/components/ui/action-feedback";
 
 export const dynamic = "force-dynamic";
 
 const fmtDay = (iso: string) => `${iso.slice(8)}.${iso.slice(5, 7)}`;
 
-export default async function RadarPage({ searchParams }: { searchParams?: Promise<{ view?: string }> }) {
+export default async function RadarPage({ searchParams }: { searchParams?: Promise<{ view?: string; error?: string }> }) {
   const session = await requireSession();
-  const view = (await searchParams)?.view;
+  const sp = (await searchParams) ?? {};
+  const view = sp.view;
   const pool = getPool();
   const today = istanbulDateISO();
   const monthStart = today.slice(0, 7) + "-01";
   await ensureWindow(pool, today, session.id); // idempotent: generate window + refresh risk
 
+  const canMutate = can(session.role, "payment_instances", "update");
   const tomorrow = new Date(Date.parse(today) + 86400000).toISOString().slice(0, 10);
   const weekEnd = new Date(Date.parse(today) + 6 * 86400000).toISOString().slice(0, 10);
 
@@ -52,6 +56,7 @@ export default async function RadarPage({ searchParams }: { searchParams?: Promi
   const next7Open = openCount(tWeek);
   return (
     <>
+      <ActionFeedback error={sp.error} />
       <PageHeader
         title="Ödeme Radarı"
         subtitle="Bugün, yarın ve önümüzdeki 7 gün · geciken · eksik tutar · riskli günler"
@@ -70,7 +75,7 @@ export default async function RadarPage({ searchParams }: { searchParams?: Promi
           {historyRows.filter((r) => r.status === "paid").length === 0 ? (
             <p className="text-sm text-tone-3">Bu ay ödenmiş işlem yok.</p>
           ) : historyRows.filter((r) => r.status === "paid").map((r) => (
-            <InstanceRowView key={r.id} r={r} backTo="/payments?view=history" showDate />
+            <InstanceRowView canMutate={canMutate} key={r.id} r={r} backTo="/payments?view=history" showDate />
           ))}
         </Panel>
       )}
@@ -81,7 +86,7 @@ export default async function RadarPage({ searchParams }: { searchParams?: Promi
             Eksik tutarlar toplamlara girmez ve asla 0 sayılmaz. Aşağıdan bu aya özel tutar girebilirsiniz.
           </p>
           {missing.map((r) => (
-            <InstanceRowView key={r.id} r={r} backTo="/radar" showDate />
+            <InstanceRowView canMutate={canMutate} key={r.id} r={r} backTo="/radar" showDate />
           ))}
           {dayless.length > 0 && (
             <div className="mt-2 border-t border-line-faint pt-2 text-xs">
@@ -99,23 +104,23 @@ export default async function RadarPage({ searchParams }: { searchParams?: Promi
 
       {overdue.length > 0 && (
         <Panel title={`GECİKEN — ${overdue.length}`} right={<Badge tone="red">ÖDENDİ Mİ?</Badge>}>
-          {overdue.map((r) => <InstanceRowView key={r.id} r={r} backTo="/radar" showDate />)}
+          {overdue.map((r) => <InstanceRowView canMutate={canMutate} key={r.id} r={r} backTo="/radar" showDate />)}
         </Panel>
       )}
 
       <Panel title={`BUGÜN — ${fmtDay(today)}`} right={<Num>{openCount(tToday)}</Num>}>
         {tToday.length === 0 ? <p className="text-sm text-tone-3">Bugün ödeme yok.</p>
-          : tToday.map((r) => <InstanceRowView key={r.id} r={r} backTo="/radar" />)}
+          : tToday.map((r) => <InstanceRowView canMutate={canMutate} key={r.id} r={r} backTo="/radar" />)}
       </Panel>
 
       <Panel title="YARIN" right={<Num>{openCount(tTomorrow)}</Num>}>
         {tTomorrow.length === 0 ? <p className="text-sm text-tone-3">Yarın ödeme yok.</p>
-          : tTomorrow.map((r) => <InstanceRowView key={r.id} r={r} backTo="/radar" />)}
+          : tTomorrow.map((r) => <InstanceRowView canMutate={canMutate} key={r.id} r={r} backTo="/radar" />)}
       </Panel>
 
       <Panel title="ÖNÜMÜZDEKİ 7 GÜN" right={<Num>{openCount(tWeek)}</Num>}>
         {tWeek.length === 0 ? <p className="text-sm text-tone-3">Bu hafta ödeme yok.</p>
-          : tWeek.map((r) => <InstanceRowView key={r.id} r={r} backTo="/radar" showDate />)}
+          : tWeek.map((r) => <InstanceRowView canMutate={canMutate} key={r.id} r={r} backTo="/radar" showDate />)}
       </Panel>
 
       <Panel title={`AY ÖZETİ — ${monthStart.slice(0, 7)}`}

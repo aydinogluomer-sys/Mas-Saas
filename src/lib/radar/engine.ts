@@ -74,6 +74,43 @@ export async function tierMayMaintainInstances(pool: Pool): Promise<boolean> {
   return INSTANCE_MAINTENANCE_DB_ROLES.has(res.rows[0]?.current_user ?? "");
 }
 
+/**
+ * "Bulunamadı" mı, "yetkiniz yok" mu? — bir mutasyonun kilit satırı boş döndüğünde.
+ *
+ * ═══ NEDEN AYIRT ETMEK ZORUNDAYIZ ═══
+ *
+ * Her örnek mutasyonu şöyle başlar:
+ *
+ *     select … from public.payment_instances where id=$1 for update
+ *     if (rowCount !== 1) throw new DomainError("instance not found");
+ *
+ * `SELECT … FOR UPDATE`, RLS altında SELECT politikasını değil UPDATE politikasını uygular.
+ * `viewer` ve `finance_approver` katmanlarının payment_instances üzerinde UPDATE politikası YOK,
+ * dolayısıyla satır onlara kilitlenemez ve sorgu SIFIR satır döner — satır pekâlâ ORADA olmasına
+ * rağmen. Kod bunu "bulunamadı" diye okuyordu ve kullanıcıya öyle söylüyordu.
+ *
+ * Üretim sunucusunda birebir gözlendi (viewer, /payments/missing, "ödendi" düğmesi):
+ *
+ *     /payments/missing?error=instance%20not%20found
+ *
+ * Bir finans kullanıcısı için bu mesaj YANLIŞ ve tehlikelidir: kaydın silindiğini ya da verinin
+ * bozulduğunu düşündürür, oysa tek gerçek "bu işlemi yapma yetkiniz yok"tur. Yanlış teşhis,
+ * sessiz başarısızlıktan bir adım daha kötüdür — kullanıcıyı olmayan bir sorunu kovalamaya yollar.
+ *
+ * Bu yüzden kilit boş döndüğünde satırın SELECT ile görünüp görünmediğine bakılır: görünüyorsa
+ * sorun yetkidir, görünmüyorsa gerçekten yoktur.
+ */
+export async function instanceMissingReason(client: PoolClient, instanceId: string): Promise<DomainError> {
+  const visible = await client.query(`select 1 from public.payment_instances where id=$1`, [instanceId]);
+  if (visible.rowCount === 1) {
+    return new DomainError(
+      "Bu ödeme örneğini değiştirme yetkiniz yok. Kayıt duruyor; işlemi yapabilmek için " +
+        "finans operatörü veya üstü bir rol gerekir.",
+    );
+  }
+  return new DomainError("Ödeme örneği bulunamadı.");
+}
+
 /** The Slice-5 legacy-repair tooling is the ONLY thing that may pass null: it operates on a
  * frozen pre-0031 database (scripts/db/legacy-repair-verify.ts deliberately hides every
  * migration from 0030 onward, so public.users does not exist there) and null is the only
@@ -491,7 +528,7 @@ export async function markInstancePaid(
       `select id, status, amount, paid_amount, paid_at from public.payment_instances where id=$1 for update`,
       [instanceId],
     );
-    if (before.rowCount !== 1) throw new DomainError("instance not found");
+    if (before.rowCount !== 1) throw await instanceMissingReason(client, instanceId);
     const currentStatus = before.rows[0].status as string;
     if (!PAYABLE_FROM.has(currentStatus)) {
       throw new DomainError(`payment_instances ${instanceId}: '${currentStatus}' durumundan ödendi işaretlenemez`);
@@ -525,7 +562,7 @@ export async function markInstanceUnpaid(pool: Pool, instanceId: string, actorId
       `select id, status, paid_amount, paid_at from public.payment_instances where id=$1 for update`,
       [instanceId],
     );
-    if (before.rowCount !== 1) throw new DomainError("instance not found");
+    if (before.rowCount !== 1) throw await instanceMissingReason(client, instanceId);
     const currentStatus = before.rows[0].status as string;
     if (!REVERSIBLE_FROM.has(currentStatus)) {
       throw new DomainError(`payment_instances ${instanceId}: '${currentStatus}' durumundan geri alınamaz`);
@@ -557,7 +594,7 @@ export async function markInstancePartial(pool: Pool, instanceId: string, paidAm
       `select id, status, amount, paid_amount from public.payment_instances where id=$1 for update`,
       [instanceId],
     );
-    if (before.rowCount !== 1) throw new DomainError("instance not found");
+    if (before.rowCount !== 1) throw await instanceMissingReason(client, instanceId);
     const currentStatus = before.rows[0].status as string;
     // Same source-status set as markInstancePaid: 'partial' and 'paid' are both "some payment
     // was recorded" outcomes reachable from exactly the same starting statuses (including
@@ -607,7 +644,7 @@ export async function setInstanceAmount(
       `select id, amount, amount_status, amount_source from public.payment_instances where id=$1 for update`,
       [instanceId],
     );
-    if (before.rowCount !== 1) throw new DomainError("instance not found");
+    if (before.rowCount !== 1) throw await instanceMissingReason(client, instanceId);
     const b = before.rows[0];
     const currentAmount = b.amount == null ? null : Number(b.amount);
     // Re-entering the identical (amount, already-manual) state must not produce a
@@ -666,7 +703,7 @@ export async function cancelInstanceWithClient(
     `select id, status, cancelled_at, cancel_reason from public.payment_instances where id=$1 for update`,
     [instanceId],
   );
-  if (before.rowCount !== 1) throw new DomainError("instance not found");
+  if (before.rowCount !== 1) throw await instanceMissingReason(client, instanceId);
   const currentStatus = before.rows[0].status as string;
   if (!CANCELLABLE_FROM.has(currentStatus)) {
     throw new DomainError(`payment_instances ${instanceId}: '${currentStatus}' durumundan iptal edilemez`);
@@ -738,7 +775,7 @@ export async function repairCancellationMetadataWithClient(
     `select id, status, cancelled_at, cancel_reason from public.payment_instances where id=$1 for update`,
     [instanceId],
   );
-  if (before.rowCount !== 1) throw new DomainError("instance not found");
+  if (before.rowCount !== 1) throw await instanceMissingReason(client, instanceId);
   const b = before.rows[0];
   if (b.status !== "cancelled" || b.cancelled_at !== null || b.cancel_reason !== null) {
     throw new DomainError(
