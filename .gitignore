@@ -91,3 +91,23 @@ __pycache__/
 /.next-interaction-gate/
 /test-results/
 /.next-speed-verify/
+
+# ── Etkileşim denetimi: ÜRETİLMİŞ kanıt dosyaları ────────────────────────────────────────
+#
+# Bunlar her `pnpm interaction:crawl` / `interaction:test` koşusunda YENİDEN ÜRETİLİR ve
+# 7.3 MB tutuyordu (runtime-inventory 3.9 MB, evidence-navigation 2.4 MB, coverage-report
+# 831 KB, static-inventory 166 KB). Git'te tutulduklarında her koşu okunamaz bir diff üretiyor
+# ve depoyu şişiriyordu — üstelik hiçbiri elle yazılmış bilgi değil.
+#
+# Kalıcı olan iki şey git'te KALIR:
+#   docs/interaction-audit.md              insan tarafından yazılmış rapor
+#   docs/interaction-audit/baseline.json   küçük, elle okunabilir kapsam tavanı
+#
+# Tam çıktılar CI'da artifact olarak saklanır (.github/workflows/ci.yml →
+# "Upload interaction evidence", retention 14 gün). Geçmiş kanıt da kaybolmadı: 067eaa4'te
+# commit edilmiş hâlleri `git show 067eaa4:docs/interaction-audit/coverage-report.json` ile
+# hâlâ okunabiliyor (doğrulandı: discovered=2122, pass=1561, untested=561).
+/docs/interaction-audit/runtime-inventory.json
+/docs/interaction-audit/static-inventory.json
+/docs/interaction-audit/coverage-report.json
+/docs/interaction-audit/evidence-*.json
