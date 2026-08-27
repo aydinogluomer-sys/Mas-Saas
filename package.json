@@ -3,13 +3,13 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "tsx scripts/db/ensure.ts && tsx scripts/prepare-runtime.ts && next dev",
+    "dev": "tsx scripts/ops/runtime-port-guard.ts --dev && tsx scripts/db/ensure.ts && tsx scripts/prepare-runtime.ts && next dev",
     "db:ensure": "tsx scripts/db/ensure.ts",
     "db:testsprite:reset": "tsx scripts/db/create-testsprite-db.ts",
     "dev:testsprite": "tsx scripts/start-testsprite.ts",
     "start:testsprite": "tsx scripts/start-testsprite.ts --production",
     "build": "next build",
-    "start": "tsx scripts/prepare-runtime.ts && next start",
+    "start": "tsx scripts/ops/runtime-port-guard.ts --start && tsx scripts/prepare-runtime.ts && next start",
     "lint": "eslint",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
@@ -99,9 +99,14 @@
     "db:fixture-cleanup": "node --import tsx scripts/db/fixture-cleanup.ts",
     "db:p24b:integrity": "node --import tsx scripts/db/p24b-handoff-integrity.ts",
     "db:p24b:scope": "node --import tsx scripts/db/p24b-scope-integrity.ts",
-    "db:p24b:readonly-proof": "bash scripts/db/p24b-readonly-negative-control.sh"
+    "db:p24b:readonly-proof": "bash scripts/db/p24b-readonly-negative-control.sh",
+    "interaction:inventory": "node --import tsx scripts/qa/interaction-inventory.ts",
+    "interaction:crawl": "node --import tsx scripts/qa/runtime-interaction-crawl.ts",
+    "interaction:test": "playwright test --config playwright.interaction.config.ts",
+    "interaction:gate": "node --import tsx scripts/qa/interaction-coverage-gate.ts"
   },
   "dependencies": {
+    "@next/env": "15.5.20",
     "@node-rs/argon2": "^2.0.2",
     "@radix-ui/react-dialog": "^1.1.19",
     "@radix-ui/react-dropdown-menu": "^2.1.20",

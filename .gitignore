@@ -89,3 +89,5 @@ __pycache__/
 # her koşuda değiştiği için ağacı da kirletir. Dizinin kendisi ilk koşuda oluşturulur.
 /logs/
 /.next-interaction-gate/
+/test-results/
+/.next-speed-verify/

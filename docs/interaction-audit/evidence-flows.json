@@ -1,0 +1,65 @@
+{
+  "rows": [
+    {
+      "route": "/payments/missing",
+      "control": "button||ödendi|$ACTION_ID_4057141eb70fc51fee90763d73fa27d13f30e7d69f",
+      "role": "finance_operator",
+      "verdict": "PASS",
+      "proof": [
+        "before: status=unpaid paid_at=null",
+        "click: gerçek 'ödendi' düğmesi (instance 6236e62c-b0af-409e-b1ad-fcbf63e52bec)",
+        "after DB: status=paid paid_at=2026-08-26 20:47:17.828095+00",
+        "audit_logs: 0 → 1",
+        "reload sonrası kalıcı"
+      ]
+    },
+    {
+      "route": "/payments/calendar",
+      "control": "button||geri al|$ACTION_ID_403c0f947982f1db7bd50bc52e96fb0bf3e27187a5",
+      "role": "finance_operator",
+      "verdict": "PASS",
+      "proof": [
+        "before: status=paid",
+        "click: gerçek 'geri al' düğmesi (/payments/calendar?date=2026-08-06, instance 6236e62c-b0af-409e-b1ad-fcbf63e52bec)",
+        "after DB: status=unpaid paid_at=null",
+        "audit_logs: 1 → 2",
+        "reload sonrası kalıcı"
+      ]
+    },
+    {
+      "route": "/payments/missing",
+      "control": "button||kaydet|$ACTION_ID_40b23c4d3b4fa57c372537452abef5e1f4b5ef0fe3",
+      "role": "finance_operator",
+      "verdict": "PASS",
+      "proof": [
+        "before DB: amount=NULL (bilinmeyen, sıfır değil)",
+        "click: 'kaydet' (instance 6236e62c-b0af-409e-b1ad-fcbf63e52bec, girilen 12345)",
+        "after DB: amount=12345.00",
+        "reload sonrası kalıcı"
+      ]
+    },
+    {
+      "route": "/payments/new",
+      "control": "button|submit|kaydet|$ACTION_ID_40df59412243f0cd60b99eab5b6fff6f2734de5cca",
+      "role": "finance_operator",
+      "verdict": "PASS",
+      "proof": [
+        "NEGATİF: boş form → payments sayısı 21 (değişmedi), kullanıcıya hata gösterildi, 500 yok",
+        "POZİTİF: 'ETKILESIM-KAPISI-1787777275753' → payments 1 satır, due_day=15, default_amount=7500",
+        "POZİTİF: payment_instances 3 örnek üretildi"
+      ]
+    },
+    {
+      "route": "/overview",
+      "control": "button|submit|↪Çıkış yap|$ACTION_ID_00fb1909c65e92cc7ec6369e0ca56dbfd4b73754a0",
+      "role": "viewer",
+      "verdict": "PASS",
+      "proof": [
+        "before: canlı viewer oturumu 9",
+        "click: gerçek 'Çıkış yap' düğmesi",
+        "after DB: canlı oturum 8 (iptal edildi)",
+        "korunan rota /overview → /login (UI gizleme değil, backend reddi)"
+      ]
+    }
+  ]
+}

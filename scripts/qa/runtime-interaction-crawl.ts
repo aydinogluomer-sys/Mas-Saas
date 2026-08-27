@@ -28,7 +28,7 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { chromium, type Browser, type Page } from "@playwright/test";
-import { ROLE_STATE_FILES, statePathFor, type SeededRole } from "../../tests/visual/global-setup";
+import globalSetup, { ROLE_STATE_FILES, statePathFor, type SeededRole } from "../../tests/visual/global-setup";
 
 const BASE = process.env.BASE_URL ?? "http://127.0.0.1:3310";
 
@@ -170,6 +170,17 @@ async function crawlRole(browser: Browser, role: SeededRole): Promise<{ controls
 }
 
 async function main(): Promise<void> {
+  // OTURUMU KENDİ KURAR — bayat çerez kavanozuna güvenmez.
+  //
+  // NEDEN. Denetim sırasında birebir şu ölçüldü: `tests/visual/.auth/*.json` içindeki beş tokenin
+  // sha256'sı veritabanındaki CANLI oturumların hiçbiriyle eşleşmiyordu; manager ve admin 67
+  // rotanın 67'sinde /login'e düştü ve tarama yine "0 sorun" dedi — çünkü /login de geçerli bir
+  // sayfadır ve üstünde bir buton vardır. Yani bayat kavanoz kapsamı SESSİZCE sıfıra indirip
+  // yeşil görünebiliyor. Bir envanter aracının yapabileceği en kötü hata budur.
+  //
+  // globalSetup her koşuda kavanozu siler ve beş hesabı GERÇEK /login formundan geçirir.
+  await globalSetup();
+
   const browser = await chromium.launch();
   const all: RuntimeControl[] = [];
   const problems: string[] = [];
