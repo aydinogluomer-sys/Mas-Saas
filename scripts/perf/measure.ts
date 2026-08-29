@@ -5,14 +5,44 @@
 // picked the query with the most JOINs; the measurement below repeatedly disagrees with that.
 import { Pool } from "pg";
 import { generateVolume } from "./volume";
+import { ownerDatabaseUrl, requireDisposableOwnerDatabaseUrl } from "../db/owner-url";
 
-const url = process.env.MIGRATION_DATABASE_URL;
+/* ── P24B writer-surface audit — the gate this file was missing ───────────────────────────────
+ *
+ * WHAT WAS WRONG. This script read MIGRATION_DATABASE_URL raw — not even through
+ * ownerDatabaseUrl() — opened a Pool on it, and with `--seed` called generateVolume(), which
+ * INSERTs into nine tables including payments, payment_instances, invoices, bank_transactions
+ * and checks. There was no disposable check of any kind. `.env.local` in this repository points
+ * BOTH URLs at mas_radar_dev, and the operator's shell routinely exports them, so
+ * `pnpm perf:measure --seed` wrote thousands of synthetic financial rows into the real database.
+ * Same class as the roles-rls-verify defect fixed in 9844dd3, found by the same audit.
+ *
+ * WHY THE GATE IS ON `--seed` AND NOT ON THE WHOLE SCRIPT. Without `--seed` this file only runs
+ * `select count(*)` and `select * from <view>`: it reads. Measuring read models against the REAL
+ * data shape is the legitimate reason to reach for it during a perf investigation, and a
+ * disposable-only rule would delete that capability and push people into ad-hoc psql instead —
+ * strictly worse. So the gate sits exactly on the destructive capability, the same split
+ * owner-url.ts already makes for migrate.ts.
+ *
+ * The gate runs BEFORE the Pool is constructed. A gate that fires after the connection is open
+ * still lets a later edit slip a write in ahead of it; refusing before anything connects is the
+ * property worth having.
+ *
+ * The read path is now engine-enforced read-only (`default_transaction_read_only=on`), so the
+ * no-seed mode cannot write even if a future edit adds an UPDATE to the measurement loop.
+ */
+const SEEDING = process.argv.includes("--seed");
+
+const url = SEEDING ? requireDisposableOwnerDatabaseUrl("perf:measure --seed") : ownerDatabaseUrl();
 if (!url) { console.error("MIGRATION_DATABASE_URL gerekli"); process.exit(1); }
 
-const pool = new Pool({ connectionString: url });
+const pool = new Pool({
+  connectionString: url,
+  ...(SEEDING ? {} : { options: "-c default_transaction_read_only=on" }),
+});
 
 async function main() {
-  if (process.argv.includes("--seed")) {
+  if (SEEDING) {
     console.log("hacim yükleniyor…");
     await generateVolume(pool);
     console.log("yüklendi.");

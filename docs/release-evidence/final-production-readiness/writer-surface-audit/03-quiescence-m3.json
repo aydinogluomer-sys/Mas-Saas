@@ -1,0 +1,444 @@
+{
+  "label": "m3",
+  "timestampUtc": "2026-08-29T20:25:38.752Z",
+  "database": "mas_radar_dev",
+  "transactionReadOnly": "on",
+  "migrationLedger": {
+    "table": "public.schema_migrations",
+    "maxVersion": "0087",
+    "count": 87
+  },
+  "tablesMeasured": 86,
+  "tables": [
+    {
+      "table": "auth.users",
+      "rowCount": 0,
+      "contentFingerprint": "EMPTY"
+    },
+    {
+      "table": "public.action_items",
+      "rowCount": 10,
+      "contentFingerprint": "8310b7cdf121740affe5a9218f48cf49"
+    },
+    {
+      "table": "public.ai_response_snapshots",
+      "rowCount": 17,
+      "contentFingerprint": "4fc475a4f1d4a187420e21b99315e99b"
+    },
+    {
+      "table": "public.alert_escalation_rules",
+      "rowCount": 2,
+      "contentFingerprint": "3d92e4e031ae36a7472d3ba8573a8f2f"
+    },
+    {
+      "table": "public.approval_rules",
+      "rowCount": 5,
+      "contentFingerprint": "8d4edbdd98a9721f72d9fda3c94ae1e9"
+    },
+    {
+      "table": "public.approval_steps",
+      "rowCount": 0,
+      "contentFingerprint": "EMPTY"
+    },
+    {
+      "table": "public.approvals",
+      "rowCount": 72,
+      "contentFingerprint": "c0ad0f060603498c9de7b550367f6c5b"
+    },
+    {
+      "table": "public.assistant_conversations",
+      "rowCount": 0,
+      "contentFingerprint": "EMPTY"
+    },
+    {
+      "table": "public.attachments",
+      "rowCount": 0,
+      "contentFingerprint": "EMPTY"
+    },
+    {
+      "table": "public.audit_logs",
+      "rowCount": 734,
+      "contentFingerprint": "90e23ccbfcaa5d81b6ee20aef3fea3dd"
+    },
+    {
+      "table": "public.background_jobs",
+      "rowCount": 0,
+      "contentFingerprint": "EMPTY"
+    },
+    {
+      "table": "public.bank_accounts",
+      "rowCount": 0,
+      "contentFingerprint": "EMPTY"
+    },
+    {
+      "table": "public.bank_transaction_match_candidates",
+      "rowCount": 0,
+      "contentFingerprint": "EMPTY"
+    },
+    {
+      "table": "public.bank_transactions",
+      "rowCount": 0,
+      "contentFingerprint": "EMPTY"
+    },
+    {
+      "table": "public.budget_lines",
+      "rowCount": 0,
+      "contentFingerprint": "EMPTY"
+    },
+    {
+      "table": "public.budgets",
+      "rowCount": 0,
+      "contentFingerprint": "EMPTY"
+    },
+    {
+      "table": "public.capacity_models",
+      "rowCount": 1,
+      "contentFingerprint": "7ddb28d6c6798a309b12e0c5bda4ba3a"
+    },
+    {
+      "table": "public.cash_accounts",
+      "rowCount": 6,
+      "contentFingerprint": "0e5625774967a02c09ad0dbce2cdb7bb"
+    },
+    {
+      "table": "public.cashflow_lines",
+      "rowCount": 1968,
+      "contentFingerprint": "3ca16294e161cb35fd7ca20ea9741133"
+    },
+    {
+      "table": "public.cashflow_months",
+      "rowCount": 35,
+      "contentFingerprint": "e82fd41f587c08c03b9167ec30861229"
+    },
+    {
+      "table": "public.cashflow_snapshots",
+      "rowCount": 5,
+      "contentFingerprint": "68a5b225fc9ce2ccd0ffa1e98d2399e3"
+    },
+    {
+      "table": "public.categories",
+      "rowCount": 18,
+      "contentFingerprint": "17195473bd00e7ace2ebb0fa8a7e4595"
+    },
+    {
+      "table": "public.check_events",
+      "rowCount": 11,
+      "contentFingerprint": "76c9ea98390631b5e0a8542fddcd540c"
+    },
+    {
+      "table": "public.checks",
+      "rowCount": 7,
+      "contentFingerprint": "2897370d04531eacdbb95b0b47205ffd"
+    },
+    {
+      "table": "public.collateral_records",
+      "rowCount": 0,
+      "contentFingerprint": "EMPTY"
+    },
+    {
+      "table": "public.control_alerts",
+      "rowCount": 0,
+      "contentFingerprint": "EMPTY"
+    },
+    {
+      "table": "public.cost_allocation_rules",
+      "rowCount": 4,
+      "contentFingerprint": "9e7502d2667b5c38a5fe27f52fe13c6c"
+    },
+    {
+      "table": "public.cost_breakdown_lines",
+      "rowCount": 56,
+      "contentFingerprint": "b18f041cef31638b52c28446f721f238"
+    },
+    {
+      "table": "public.cost_centers",
+      "rowCount": 0,
+      "contentFingerprint": "EMPTY"
+    },
+    {
+      "table": "public.cost_models",
+      "rowCount": 2,
+      "contentFingerprint": "2f3d0eb8022232e1de8abd27a5496a4f"
+    },
+    {
+      "table": "public.counterparty_profiles",
+      "rowCount": 0,
+      "contentFingerprint": "EMPTY"
+    },
+    {
+      "table": "public.covenant_records",
+      "rowCount": 0,
+      "contentFingerprint": "EMPTY"
+    },
+    {
+      "table": "public.credit_facilities",
+      "rowCount": 0,
+      "contentFingerprint": "EMPTY"
+    },
+    {
+      "table": "public.departments",
+      "rowCount": 0,
+      "contentFingerprint": "EMPTY"
+    },
+    {
+      "table": "public.document_links",
+      "rowCount": 0,
+      "contentFingerprint": "EMPTY"
+    },
+    {
+      "table": "public.documents",
+      "rowCount": 0,
+      "contentFingerprint": "EMPTY"
+    },
+    {
+      "table": "public.external_assumptions",
+      "rowCount": 6,
+      "contentFingerprint": "60acc99b69d003f3ad9bbd51c64abe6c"
+    },
+    {
+      "table": "public.facility_drawdowns",
+      "rowCount": 0,
+      "contentFingerprint": "EMPTY"
+    },
+    {
+      "table": "public.finance_cost_allocations",
+      "rowCount": 3,
+      "contentFingerprint": "305391f856f9e3bf7135190af57d79b7"
+    },
+    {
+      "table": "public.forecast_lines",
+      "rowCount": 0,
+      "contentFingerprint": "EMPTY"
+    },
+    {
+      "table": "public.forecasts",
+      "rowCount": 0,
+      "contentFingerprint": "EMPTY"
+    },
+    {
+      "table": "public.fx_positions",
+      "rowCount": 0,
+      "contentFingerprint": "EMPTY"
+    },
+    {
+      "table": "public.fx_rate_snapshots",
+      "rowCount": 0,
+      "contentFingerprint": "EMPTY"
+    },
+    {
+      "table": "public.iban_change_events",
+      "rowCount": 0,
+      "contentFingerprint": "EMPTY"
+    },
+    {
+      "table": "public.ibans",
+      "rowCount": 0,
+      "contentFingerprint": "EMPTY"
+    },
+    {
+      "table": "public.import_rows",
+      "rowCount": 1601,
+      "contentFingerprint": "f4b2c1cae836da4e807b839255e72e75"
+    },
+    {
+      "table": "public.integration_connections",
+      "rowCount": 0,
+      "contentFingerprint": "EMPTY"
+    },
+    {
+      "table": "public.invoice_allocations",
+      "rowCount": 0,
+      "contentFingerprint": "EMPTY"
+    },
+    {
+      "table": "public.invoice_lines",
+      "rowCount": 0,
+      "contentFingerprint": "EMPTY"
+    },
+    {
+      "table": "public.invoice_reversals",
+      "rowCount": 0,
+      "contentFingerprint": "EMPTY"
+    },
+    {
+      "table": "public.invoices",
+      "rowCount": 0,
+      "contentFingerprint": "EMPTY"
+    },
+    {
+      "table": "public.loan_installments",
+      "rowCount": 48,
+      "contentFingerprint": "9d0c3b50176725491857af77a7f704d2"
+    },
+    {
+      "table": "public.loans",
+      "rowCount": 1,
+      "contentFingerprint": "d13a364fdb473d9680e6ef842d5ff79a"
+    },
+    {
+      "table": "public.machine_assets",
+      "rowCount": 4,
+      "contentFingerprint": "50285a4d6b6f17c573b2c5efb75eb659"
+    },
+    {
+      "table": "public.machine_minute_allocations",
+      "rowCount": 3,
+      "contentFingerprint": "dfdbd5c248c88d0296ba76dacfc6a795"
+    },
+    {
+      "table": "public.machine_roi_snapshots",
+      "rowCount": 0,
+      "contentFingerprint": "EMPTY"
+    },
+    {
+      "table": "public.mapping_reviews",
+      "rowCount": 62,
+      "contentFingerprint": "9d9e7bd0559a74979ab154a316625081"
+    },
+    {
+      "table": "public.metric_snapshots",
+      "rowCount": 208,
+      "contentFingerprint": "7209211f5a27938b85d6cfc789d12624"
+    },
+    {
+      "table": "public.optimization_recommendations",
+      "rowCount": 0,
+      "contentFingerprint": "EMPTY"
+    },
+    {
+      "table": "public.optimization_runs",
+      "rowCount": 0,
+      "contentFingerprint": "EMPTY"
+    },
+    {
+      "table": "public.orders",
+      "rowCount": 0,
+      "contentFingerprint": "EMPTY"
+    },
+    {
+      "table": "public.part_profitability_runs",
+      "rowCount": 68,
+      "contentFingerprint": "231a61db68de4a4e35f6792ffb6f4c09"
+    },
+    {
+      "table": "public.parties",
+      "rowCount": 16,
+      "contentFingerprint": "c0e1cb81adee6faac3ef5ccfd2314afa"
+    },
+    {
+      "table": "public.payment_instances",
+      "rowCount": 511,
+      "contentFingerprint": "093d6ead4307c43f01b8e895f1c001e7"
+    },
+    {
+      "table": "public.payments",
+      "rowCount": 20,
+      "contentFingerprint": "b1cd04b0ece36d3866e0e2f80cfe90ba"
+    },
+    {
+      "table": "public.production_parts",
+      "rowCount": 68,
+      "contentFingerprint": "807f2080c61a634e6ac80d5f8001b98b"
+    },
+    {
+      "table": "public.products",
+      "rowCount": 0,
+      "contentFingerprint": "EMPTY"
+    },
+    {
+      "table": "public.projects",
+      "rowCount": 0,
+      "contentFingerprint": "EMPTY"
+    },
+    {
+      "table": "public.promise_to_pay",
+      "rowCount": 0,
+      "contentFingerprint": "EMPTY"
+    },
+    {
+      "table": "public.reminder_deliveries",
+      "rowCount": 58,
+      "contentFingerprint": "5444a93aa24005b726c6b074b054ebd6"
+    },
+    {
+      "table": "public.reminders",
+      "rowCount": 5,
+      "contentFingerprint": "c0ab61482725af8dd54680d90ba7979b"
+    },
+    {
+      "table": "public.reports",
+      "rowCount": 6,
+      "contentFingerprint": "854b5af76a426d2c02bdd464d804a600"
+    },
+    {
+      "table": "public.saved_views",
+      "rowCount": 0,
+      "contentFingerprint": "EMPTY"
+    },
+    {
+      "table": "public.scenario_assumptions",
+      "rowCount": 20,
+      "contentFingerprint": "246147ce392c30638d150d150bee2bad"
+    },
+    {
+      "table": "public.scenario_comparisons",
+      "rowCount": 16,
+      "contentFingerprint": "63b843023eb7ffb7c33a992de9fb5fc9"
+    },
+    {
+      "table": "public.scenario_run_lines",
+      "rowCount": 140,
+      "contentFingerprint": "dbc2a33f3c839313951a5d4659ce7395"
+    },
+    {
+      "table": "public.scenario_runs",
+      "rowCount": 4,
+      "contentFingerprint": "34a96b810af3a14ac6d9c982f5e827c0"
+    },
+    {
+      "table": "public.scenarios",
+      "rowCount": 4,
+      "contentFingerprint": "2efd178cfe0cc5771c8a95be7e65b7c6"
+    },
+    {
+      "table": "public.schema_migrations",
+      "rowCount": 87,
+      "contentFingerprint": "249e6b442140f804c0f0accc0725838c"
+    },
+    {
+      "table": "public.sessions",
+      "rowCount": 39,
+      "contentFingerprint": "f76009ede1745c984450d7632968c21a"
+    },
+    {
+      "table": "public.settings",
+      "rowCount": 8,
+      "contentFingerprint": "664575c64c3bc08ab8b3602e000080bd"
+    },
+    {
+      "table": "public.source_cells",
+      "rowCount": 9817,
+      "contentFingerprint": "10b6f35651f02186536c078c5f12fdec"
+    },
+    {
+      "table": "public.source_sheets",
+      "rowCount": 43,
+      "contentFingerprint": "b2d7600c14b9716cf837fe1d45aad453"
+    },
+    {
+      "table": "public.source_workbooks",
+      "rowCount": 1,
+      "contentFingerprint": "5ec6fe2b3e9de137ea7aaf1054a9ef7b"
+    },
+    {
+      "table": "public.treasury_policies",
+      "rowCount": 2,
+      "contentFingerprint": "a2012b8275b256fc3a7800774e8e24bd"
+    },
+    {
+      "table": "public.users",
+      "rowCount": 19,
+      "contentFingerprint": "87e5c45e660b44424126a040fb29d2d2"
+    }
+  ]
+}

@@ -1,0 +1,23 @@
+{
+  "tablesMeasured": 86,
+  "database": "mas_radar_dev",
+  "transactionReadOnly": {
+    "m1": "on",
+    "m2": "on",
+    "m3": "on"
+  },
+  "windowUtc": {
+    "m1": "2026-08-29T20:11:02.336Z",
+    "m2": "2026-08-29T20:19:20.430Z",
+    "m3": "2026-08-29T20:25:38.752Z"
+  },
+  "m1EqualsM2": true,
+  "m2EqualsM3": true,
+  "driftedTables": {
+    "m1_m2": [],
+    "m2_m3": []
+  },
+  "ledger": "0087/87",
+  "liveDbQuiescent": true,
+  "note": "Runtime frozen before m1; every measurement runs inside BEGIN READ ONLY on a session opened with default_transaction_read_only=on and is closed with ROLLBACK. Between m2 and m3 the audit executed the perf:measure negative/positive tests and the full guard test suite."
+}
