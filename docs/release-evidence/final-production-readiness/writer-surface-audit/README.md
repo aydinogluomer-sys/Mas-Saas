@@ -3,8 +3,14 @@
 `P24B-DRIFT` soruşturmasının **writer surface** aşaması. Bu klasör, "hangi kod gerçek
 veritabanına yazabilir ve onu ne durduruyor?" sorusunun yeniden üretilebilir cevabıdır.
 
-RC pin: `HEAD = 2f2fe548b6d5db7657a7c9dec671ad6832526648`
-(`9844dd3` bu HEAD'in **atasıdır**, HEAD değildir.)
+**Denetim tabanı:** `2f2fe548b6d5db7657a7c9dec671ad6832526648`
+**Düzeltmeler:** `2825909` (`perf:measure --seed` kapısı + runbook sözleşmesi)
+
+`9844dd3` denetim tabanının **atasıdır**, HEAD değildir — eski v5 prompt'u onu RC_SHA
+sanıyordu. `640f853` büsbütün eskidir.
+
+> **RC_PIN henüz İLAN EDİLMEDİ.** Çalışma ağacı kirli (Telegram özelliği ve üretilmiş
+> derleme çıktıları). Writer audit tamamlanabilir ve tamamlandı; RC pin ayrı bir karardır.
 
 > **Bu klasör `p24b-discovery/` ile karıştırılmamalıdır.** O klasör v5 turunda, ikinci olay
 > sürerken üretildi; `STALE_EVIDENCE` sayılır ve buradaki hiçbir sonuç ondan türetilmemiştir.

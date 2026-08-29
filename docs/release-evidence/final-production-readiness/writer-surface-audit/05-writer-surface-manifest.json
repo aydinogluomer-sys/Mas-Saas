@@ -1,7 +1,7 @@
 {
-  "generatedAtUtc": "2026-08-29T20:19:00.738Z",
-  "filesScanned": 518,
-  "writerCandidates": 100,
+  "generatedAtUtc": "2026-08-29T20:32:16.675Z",
+  "filesScanned": 519,
+  "writerCandidates": 101,
   "scanClasses": [
     "sqlTokens",
     "pgProcess",
@@ -11,11 +11,10 @@
     "networkMutation"
   ],
   "counts": {
-    "SAFE_DISPOSABLE_ENFORCED": 70,
+    "SAFE_DISPOSABLE_ENFORCED": 72,
     "INTENTIONAL_REAL_WRITE": 27,
     "LIBRARY_REQUIRES_CALLER_GUARD": 1,
-    "SAFE_ROLLBACK_ONLY": 1,
-    "UNSAFE_ENV_TARGETED": 1
+    "SAFE_ROLLBACK_ONLY": 1
   },
   "candidates": [
     {
@@ -710,16 +709,17 @@
         "calls writer: generateVolume"
       ],
       "tablesOrObjects": [],
-      "targetSource": "env (DATABASE_URL / MIGRATION_DATABASE_URL)",
-      "guard": "NONE",
+      "targetSource": "env, validated by disposable gate",
+      "guard": "requireDisposableOwnerDatabaseUrl / isDisposableDatabaseName",
       "guardRunsBeforeFirstWrite": true,
       "transitiveWriter": true,
       "callers": [],
-      "classification": "UNSAFE_ENV_TARGETED",
+      "classification": "SAFE_DISPOSABLE_ENFORCED",
       "evidence": [
+        "disposable gate at line 8, first write-capable line 47",
         "reads DATABASE_URL / MIGRATION_DATABASE_URL",
         "transitive writer via generateVolume",
-        "FIXED in this audit — see 10-perf-measure-fix.md. Before the fix: raw process.env.MIGRATION_DATABASE_URL, no gate, --seed calls generateVolume()."
+        "FIXED in this audit (see 10-perf-measure-fix.md). Was UNSAFE_ENV_TARGETED: raw process.env.MIGRATION_DATABASE_URL, no gate, --seed calls generateVolume() into nine tables. Now requireDisposableOwnerDatabaseUrl('perf:measure --seed') runs BEFORE the Pool is constructed, and the no-seed read path opens with default_transaction_read_only=on. Positional regression coverage in tests/writer-surface.test.ts."
       ]
     },
     {
@@ -2681,6 +2681,24 @@
       "evidence": [
         "disposable gate at line 27, first write-capable line 80",
         "reads DATABASE_URL / MIGRATION_DATABASE_URL"
+      ]
+    },
+    {
+      "file": "tests/writer-surface.test.ts",
+      "entryPoint": "(module / not a package script)",
+      "writeMechanisms": [
+        "createdb/dropdb",
+        "child process"
+      ],
+      "tablesOrObjects": [],
+      "targetSource": "env, validated by disposable gate",
+      "guard": "requireDisposableOwnerDatabaseUrl / isDisposableDatabaseName",
+      "guardRunsBeforeFirstWrite": true,
+      "transitiveWriter": false,
+      "callers": [],
+      "classification": "SAFE_DISPOSABLE_ENFORCED",
+      "evidence": [
+        "disposable gate at line 34, first write-capable line -"
       ]
     }
   ]

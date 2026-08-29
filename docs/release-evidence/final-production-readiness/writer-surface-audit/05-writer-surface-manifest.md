@@ -1,20 +1,18 @@
 # Writer surface manifest
 
-Üretim: `node --import tsx scripts/qa/writer-surface-manifest.ts` · 2026-08-29T20:19:00.738Z
+Üretim: `node --import tsx scripts/qa/writer-surface-manifest.ts` · 2026-08-29T20:32:16.675Z
 
-Taranan dosya: **518** · writer aday: **100**
+Taranan dosya: **519** · writer aday: **101**
 
 | sınıf | adet |
 |---|---|
-| UNSAFE_ENV_TARGETED | 1 |
 | LIBRARY_REQUIRES_CALLER_GUARD | 1 |
 | INTENTIONAL_REAL_WRITE | 27 |
 | SAFE_ROLLBACK_ONLY | 1 |
-| SAFE_DISPOSABLE_ENFORCED | 70 |
+| SAFE_DISPOSABLE_ENFORCED | 72 |
 
 | file | entry point | mechanisms | target source | guard | guard<1st write | classification |
 |---|---|---|---|---|---|---|
-| `scripts/perf/measure.ts` | pnpm perf:measure | pg Pool/Client; calls writer: generateVolume | env (DATABASE_URL / MIGRATION_DATABASE_URL) | NONE | ✔ | **UNSAFE_ENV_TARGETED** |
 | `scripts/db/legacy-cancellation-fixture.ts` | (module / not a package script) | SQL DML/DDL; pg Pool/Client | caller-supplied Pool | NONE | ✔ | **LIBRARY_REQUIRES_CALLER_GUARD** |
 | `scripts/db/create-testsprite-db.ts` | pnpm db:testsprite:reset | psql; createdb/dropdb; pg_dump/pg_restore; child process | hard-coded disposable database name | hard-coded disposable target (no env path) | ✔ | **INTENTIONAL_REAL_WRITE** |
 | `scripts/db/dev-reset.sh` | pnpm db:dev:reset | psql; createdb/dropdb | none (no DB target of its own) | NONE | ✔ | **INTENTIONAL_REAL_WRITE** |
@@ -60,6 +58,7 @@ Taranan dosya: **518** · writer aday: **100**
 | `scripts/db/verify.sh` | pnpm db:verify | psql; createdb/dropdb | hard-coded disposable database name | hard-coded disposable target (no env path) | ✔ | **SAFE_DISPOSABLE_ENFORCED** |
 | `scripts/ops/telemetry-alerting-verify.ts` | pnpm ops:telemetry:alerting:verify | SQL DML/DDL; pg Pool/Client; child process; migration | env, validated by disposable gate | requireDisposableOwnerDatabaseUrl / isDisposableDatabaseName | ✔ | **SAFE_DISPOSABLE_ENFORCED** |
 | `scripts/ops/telemetry-verify.ts` | pnpm ops:telemetry:verify | SQL DML/DDL; pg Pool/Client; child process; migration | env, validated by disposable gate | requireDisposableOwnerDatabaseUrl / isDisposableDatabaseName | ✔ | **SAFE_DISPOSABLE_ENFORCED** |
+| `scripts/perf/measure.ts` | pnpm perf:measure | pg Pool/Client; calls writer: generateVolume | env, validated by disposable gate | requireDisposableOwnerDatabaseUrl / isDisposableDatabaseName | ✔ | **SAFE_DISPOSABLE_ENFORCED** |
 | `scripts/perf/perf-gate.ts` | pnpm perf:gate | SQL DML/DDL; pg Pool/Client; calls writer: generateVolume | env, validated by disposable gate | requireDisposableOwnerDatabaseUrl / isDisposableDatabaseName | ✔ | **SAFE_DISPOSABLE_ENFORCED** |
 | `scripts/perf/route-slo.ts` | pnpm perf:route-slo | SQL DML/DDL; pg Pool/Client; child process; calls writer: generateVolume, ensureSystemActor | env, validated by disposable gate | requireDisposableOwnerDatabaseUrl / isDisposableDatabaseName | ✔ | **SAFE_DISPOSABLE_ENFORCED** |
 | `scripts/perf/write-slo.ts` | pnpm perf:write-slo | SQL DML/DDL; pg Pool/Client; calls writer: generateVolume, ensureWindow, generateInstancesForMonth, ensureSystemActor | env, validated by disposable gate | requireDisposableOwnerDatabaseUrl / isDisposableDatabaseName | ✔ | **SAFE_DISPOSABLE_ENFORCED** |
@@ -114,3 +113,4 @@ Taranan dosya: **518** · writer aday: **100**
 | `tests/visual/golden-ui-smoke.spec.ts` | (module / not a package script) | SQL DML/DDL; pg Pool/Client | env, validated by disposable gate | requireDisposableOwnerDatabaseUrl / isDisposableDatabaseName | ✔ | **SAFE_DISPOSABLE_ENFORCED** |
 | `tests/visual/legacy-semantic-smoke.spec.ts` | (module / not a package script) | SQL DML/DDL; pg Pool/Client | env, validated by disposable gate | requireDisposableOwnerDatabaseUrl / isDisposableDatabaseName | ✔ | **SAFE_DISPOSABLE_ENFORCED** |
 | `tests/visual/phase17-38-routes.spec.ts` | (module / not a package script) | SQL DML/DDL; pg Pool/Client | env, validated by disposable gate | requireDisposableOwnerDatabaseUrl / isDisposableDatabaseName | ✔ | **SAFE_DISPOSABLE_ENFORCED** |
+| `tests/writer-surface.test.ts` | (module / not a package script) | createdb/dropdb; child process | env, validated by disposable gate | requireDisposableOwnerDatabaseUrl / isDisposableDatabaseName | ✔ | **SAFE_DISPOSABLE_ENFORCED** |

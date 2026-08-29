@@ -50,8 +50,13 @@ const ROLLBACK = /\brollback\b/i;
 /** Files whose classification was established by READING them, not by pattern. */
 const CURATED: Record<string, { classification: string; note: string }> = {
   "scripts/perf/measure.ts": {
-    classification: "UNSAFE_ENV_TARGETED",
-    note: "FIXED in this audit — see 10-perf-measure-fix.md. Before the fix: raw process.env.MIGRATION_DATABASE_URL, no gate, --seed calls generateVolume().",
+    classification: "SAFE_DISPOSABLE_ENFORCED",
+    note:
+      "FIXED in this audit (see 10-perf-measure-fix.md). Was UNSAFE_ENV_TARGETED: raw " +
+      "process.env.MIGRATION_DATABASE_URL, no gate, --seed calls generateVolume() into nine " +
+      "tables. Now requireDisposableOwnerDatabaseUrl('perf:measure --seed') runs BEFORE the Pool " +
+      "is constructed, and the no-seed read path opens with default_transaction_read_only=on. " +
+      "Positional regression coverage in tests/writer-surface.test.ts.",
   },
   "scripts/perf/volume.ts": {
     classification: "LIBRARY_REQUIRES_CALLER_GUARD",
