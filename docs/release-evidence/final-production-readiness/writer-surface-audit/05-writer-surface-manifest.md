@@ -1,14 +1,14 @@
 # Writer surface manifest
 
-Üretim: `node --import tsx scripts/qa/writer-surface-manifest.ts` · 2026-08-29T20:32:16.675Z
+Üretim: `node --import tsx scripts/qa/writer-surface-manifest.ts` · 2026-08-29T20:56:55.821Z
 
-Taranan dosya: **519** · writer aday: **101**
+Taranan dosya: **521** · writer aday: **102**
 
 | sınıf | adet |
 |---|---|
 | LIBRARY_REQUIRES_CALLER_GUARD | 1 |
 | INTENTIONAL_REAL_WRITE | 27 |
-| SAFE_ROLLBACK_ONLY | 1 |
+| SAFE_ROLLBACK_ONLY | 2 |
 | SAFE_DISPOSABLE_ENFORCED | 72 |
 
 | file | entry point | mechanisms | target source | guard | guard<1st write | classification |
@@ -42,6 +42,7 @@ Taranan dosya: **519** · writer aday: **101**
 | `src/app/(dashboard)/system/jobs/page.tsx` | (module / not a package script) | SQL DML/DDL | none (no DB target of its own) | NONE | ✔ | **INTENTIONAL_REAL_WRITE** |
 | `src/lib/auth.ts` | (module / not a package script) | SQL DML/DDL | none (no DB target of its own) | NONE | ✔ | **INTENTIONAL_REAL_WRITE** |
 | `scripts/db/roles-verify.ts` | pnpm db:roles:verify | SQL DML/DDL; pg Pool/Client | env (DATABASE_URL / MIGRATION_DATABASE_URL) | NONE | ✔ | **SAFE_ROLLBACK_ONLY** |
+| `tests/dev-reset-safety.test.ts` | (module / not a package script) | createdb/dropdb; child process | none (no DB target of its own) | NONE | ✔ | **SAFE_ROLLBACK_ONLY** |
 | `scripts/ci/provision-verify-db.sh` | (module / not a package script) | psql; createdb/dropdb; migration | env, validated by disposable gate | requireDisposableOwnerDatabaseUrl / isDisposableDatabaseName | ✘ | **SAFE_DISPOSABLE_ENFORCED** |
 | `scripts/db/cancelled-kpi-verify.ts` | pnpm db:cancelled-kpi:verify | SQL DML/DDL; pg Pool/Client | env, validated by disposable gate | requireDisposableOwnerDatabaseUrl / isDisposableDatabaseName | ✔ | **SAFE_DISPOSABLE_ENFORCED** |
 | `scripts/db/constraints-verify.ts` | pnpm db:constraints:verify | SQL DML/DDL; pg Pool/Client; createdb/dropdb; pg_dump/pg_restore; child process; calls writer: archivePayment, ensureSystemActor, prepareLegacyCheckpointForCancellationValidation | hard-coded disposable database name | hard-coded disposable target (no env path) | ✔ | **SAFE_DISPOSABLE_ENFORCED** |

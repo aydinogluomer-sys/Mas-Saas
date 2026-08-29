@@ -87,7 +87,13 @@ const CURATED: Record<string, { classification: string; note: string }> = {
   "scripts/db/create-testsprite-db.ts": { classification: "INTENTIONAL_REAL_WRITE", note: "Creates the synthetic TestSprite database. Target is a separate database by construction." },
   "scripts/db/dev-reset.sh": {
     classification: "INTENTIONAL_REAL_WRITE",
-    note: "DESTRUCTIVE AND HARD-CODED TO THE REAL DATABASE: `DB=mas_radar_dev`, then dropdb --if-exists + createdb + replay every migration. Not env-targeted, so no gate can help; its safety rests entirely on nobody running it. Developer reset tool.",
+    note:
+      "DESTRUCTIVE AND HARD-CODED TO THE REAL DATABASE (`DB=mas_radar_dev` → dropdb + createdb + " +
+      "replay every migration). Destroying mas_radar_dev IS its purpose, so a disposable-name gate " +
+      "cannot apply. HARDENED in this audit (see 12-dev-reset-safety.md): fail-closed, requires BOTH " +
+      "--i-understand-this-destroys-mas-radar-dev AND MAS_ALLOW_DEV_DB_RESET=mas_radar_dev, checked " +
+      "before ensure.sh and before any docker call (exit 9), then reports measured identity and row " +
+      "counts before dropping. Manual-only: no CI, no lifecycle hook.",
   },
   "scripts/deploy/local-start.sh": {
     classification: "INTENTIONAL_REAL_WRITE",
@@ -96,6 +102,14 @@ const CURATED: Record<string, { classification: string; note: string }> = {
   "scripts/deploy/restore-db.sh": {
     classification: "INTENTIONAL_REAL_WRITE",
     note: "dropdb + createdb + `pg_restore -d $TARGET`. Restoring into a real database is the tool's purpose; target comes from its argument.",
+  },
+  "tests/dev-reset-safety.test.ts": {
+    classification: "SAFE_ROLLBACK_ONLY",
+    note:
+      "Cannot reach any database. It prepends a FAKE `docker` to PATH that logs its arguments and " +
+      "exits, so dev-reset.sh and ensure.sh are both inert; the `dropdb`/`createdb` tokens in this " +
+      "file are assertions ABOUT that fake binary's call log, not commands. Classified with the " +
+      "'provably leaves no trace' class, the same reading used for p24b-readonly-psql.sh.",
   },
   "scripts/db/p24b-readonly-psql.sh": {
     classification: "SAFE_ROLLBACK_ONLY",
