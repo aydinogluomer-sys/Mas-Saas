@@ -1,6 +1,6 @@
 # 02 — Satır bazlı kanıt manifesti
 
-Üretim: `node --import tsx scripts/qa/p24b-row-evidence.ts` · 2026-08-30T08:00:46.790Z
+Üretim: `node --import tsx scripts/qa/p24b-row-evidence.ts` · 2026-08-30T08:23:01.656Z
 
 **Kural:** `DELETE_TARGET` için en az **2 bağımsız kanıt sınıfı**. `TIME` sayıma dahil değildir.
 

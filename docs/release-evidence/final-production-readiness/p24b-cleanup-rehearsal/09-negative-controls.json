@@ -1,0 +1,106 @@
+{
+  "note": "Hicbiri gercek DB uzerinde mutasyon denemedi. Kilit/kimlik testleri baglanti bile acmadan durdu; veri testleri sabotaj klonunda kostu.",
+  "controls": [
+    {
+      "id": "NC1",
+      "name": "yalniz CLI bayragi (env yok)",
+      "expected": "FAIL",
+      "exitCode": 9,
+      "result": "PASS",
+      "detail": "MAS_ALLOW_P24B_CLEANUP zorunlu"
+    },
+    {
+      "id": "NC2",
+      "name": "CLI + env, off-device makbuz yok",
+      "expected": "FAIL",
+      "exitCode": 9,
+      "result": "PASS",
+      "detail": "MAS_P24B_BACKUP_RECEIPT zorunlu"
+    },
+    {
+      "id": "NC3",
+      "name": "yalniz env (bayrak yok)",
+      "expected": "mutasyon YOK",
+      "exitCode": 0,
+      "result": "PASS",
+      "detail": "preflight moduna dustu, silme yapmadi"
+    },
+    {
+      "id": "NC4",
+      "name": "--rehearsal ama hedef gercek DB",
+      "expected": "FAIL",
+      "exitCode": 9,
+      "result": "PASS",
+      "detail": "disposable ad kapisi"
+    },
+    {
+      "id": "NC5",
+      "name": "--execute ama hedef disposable",
+      "expected": "FAIL",
+      "exitCode": 9,
+      "result": "PASS",
+      "detail": "gercek mod yalniz mas_radar_dev"
+    },
+    {
+      "id": "NC6",
+      "name": "hedeflerden biri eksik (41)",
+      "expected": "FAIL",
+      "exitCode": 2,
+      "result": "PASS",
+      "detail": "PRECONDITION_NOT_SATISFIED — BULUNAMADI"
+    },
+    {
+      "id": "NC7",
+      "name": "satir sekli degismis (parmak izi)",
+      "expected": "FAIL",
+      "exitCode": 2,
+      "result": "PASS",
+      "detail": "PRECONDITION_NOT_SATISFIED — parmak izi farkli"
+    },
+    {
+      "id": "NC8",
+      "name": "manifest kurcalanmis (41 satira dusurulmus)",
+      "expected": "FAIL",
+      "exitCode": 1,
+      "result": "PASS",
+      "detail": "manifest SHA256 uyusmuyor — 43 satir icin de ayni kapi"
+    },
+    {
+      "id": "NC9",
+      "name": "ikinci cleanup kosusu",
+      "expected": "FAIL (sessiz basari DEGIL)",
+      "exitCode": 2,
+      "result": "PASS",
+      "detail": "PRECONDITION_NOT_SATISFIED — 42 satir BULUNAMADI"
+    },
+    {
+      "id": "NC10",
+      "name": "beklenmedik FK sozlesmesi",
+      "expected": "FAIL",
+      "exitCode": 1,
+      "result": "PASS (kod yolu)",
+      "detail": "payment_instances.payment_id != SET NULL veya CASCADE varsa fail-closed; her kosuda pg_catalog'dan yeniden olculur"
+    },
+    {
+      "id": "NC11",
+      "name": "exact delete count sapmasi",
+      "expected": "ROLLBACK",
+      "exitCode": 3,
+      "result": "PASS (kod yolu)",
+      "detail": "rowCount != beklenen -> throw -> rollback, transaction icinde"
+    },
+    {
+      "id": "NC12",
+      "name": "parasal delta sapmasi",
+      "expected": "ROLLBACK",
+      "exitCode": 3,
+      "result": "PASS (kod yolu)",
+      "detail": "commit oncesi delta karsilastirmasi"
+    }
+  ],
+  "summary": {
+    "total": 12,
+    "passed": 12,
+    "failed": 0
+  }
+}

@@ -113,7 +113,8 @@
     "db:quiescence": "node --import tsx scripts/db/quiescence-snapshot.ts",
     "p24b:row-evidence": "node --import tsx scripts/qa/p24b-row-evidence.ts docs/release-evidence/final-production-readiness/p24b-v6/02-row-evidence-manifest.json docs/release-evidence/final-production-readiness/p24b-v6/02-row-evidence-manifest.md",
     "p24b:evidence-check": "node --import tsx scripts/qa/p24b-v6-evidence-check.ts",
-    "p24b:cleanup-dryrun": "node --import tsx scripts/qa/p24b-cleanup-dryrun.ts"
+    "p24b:cleanup-dryrun": "node --import tsx scripts/qa/p24b-cleanup-dryrun.ts",
+    "p24b:cleanup": "node --import tsx scripts/db/p24b-fixture-cleanup.ts"
   },
   "dependencies": {
     "@next/env": "15.5.20",

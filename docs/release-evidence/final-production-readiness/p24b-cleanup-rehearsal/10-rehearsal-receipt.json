@@ -1,0 +1,98 @@
+{
+  "receiptKind": "mas-p24b-cleanup-rehearsal-v1",
+  "generatedAtUtc": "2026-08-30T08:30:32.019Z",
+  "repoHeadSha": "5895f289aa2e9280a732cdc8cdf68e825461534e",
+  "cleanupScript": "scripts/db/p24b-fixture-cleanup.ts",
+  "manifestSha256": "d60de97bcc3c62aa2902b64a7c164e8132e733ba7f6958e71b1a84bac3c8bbb9",
+  "rehearsalDatabase": "mas_radar_p24b_final_drill",
+  "sourceDump": {
+    "sha256": "22d8f5d942d3f253f5aabdef13fd90fa6256094886ef03e3d3436dbf7f7f6b5f",
+    "sizeBytes": 1413949,
+    "tocEntries": 1387,
+    "pgRestoreList": "PASS",
+    "restoreSmoke": "PASS"
+  },
+  "offDeviceBackup": {
+    "status": "BLOCKED",
+    "reason": "Makinede yalniz C: (DriveType=3) var; cikarilabilir veya ag surucusu YOK. MAS_OFFDEVICE_BACKUP_DIR yapilandirilmamis.",
+    "onDeviceBackupTaken": true,
+    "onDeviceOnly": true
+  },
+  "targets": {
+    "total": 42,
+    "tables": {
+      "users": 6,
+      "action_items": 4,
+      "payments": 1,
+      "settings": 1,
+      "approvals": 4,
+      "payment_instances": 26
+    }
+  },
+  "deleteCounts": [
+    {
+      "step": 1,
+      "table": "action_items",
+      "expected": 4,
+      "actual": 4
+    },
+    {
+      "step": 2,
+      "table": "approvals",
+      "expected": 4,
+      "actual": 4
+    },
+    {
+      "step": 3,
+      "table": "payment_instances",
+      "expected": 26,
+      "actual": 26
+    },
+    {
+      "step": 4,
+      "table": "payments",
+      "expected": 1,
+      "actual": 1
+    },
+    {
+      "step": 5,
+      "table": "users",
+      "expected": 6,
+      "actual": 6
+    },
+    {
+      "step": 6,
+      "table": "settings",
+      "expected": 1,
+      "actual": 1
+    }
+  ],
+  "financialDeltas": {
+    "payments": "-1000",
+    "instances": "-26000",
+    "checks": "0",
+    "loans": "0",
+    "cashflow": "0"
+  },
+  "snapshotStrategy": {
+    "A": {
+      "semantic": 2,
+      "technical": 22,
+      "audit": 1
+    },
+    "B": {
+      "semantic": 2,
+      "technical": 0,
+      "audit": 0
+    },
+    "recommended": "A"
+  },
+  "auditResult": "audit_logs uzerinde DELETE/UPDATE yok; Strateji A bir refresh_metric_snapshots olayi EKLER",
+  "orphanCount": 0,
+  "atillaCheck": "PASS",
+  "ledgerState": "0087/87",
+  "nonTargetFingerprint": "PASS",
+  "outcome": "COMMITTED",
+  "realDbCleanupExecuted": false,
+  "p24bCleanupAuthorized": false
+}

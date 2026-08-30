@@ -1,0 +1,460 @@
+{
+  "strategyA": {
+    "name": "canonical refresh (refreshMetricSnapshots)",
+    "rowCount": 24,
+    "semanticChanges": 2,
+    "technicalFieldChanges": 22,
+    "auditEvents": 1,
+    "auditAction": "refresh_metric_snapshots",
+    "sourceCutoffSemantics": "yeniden hesaplama anına güncellenir — değerin GERÇEKTEN ne zaman türetildiğini doğru söyler",
+    "productInvariantCompatible": true,
+    "rows": [
+      {
+        "confidence": "low",
+        "metric_key": "cash_first_negative",
+        "value_text": "2026-09-01",
+        "dimension_key": "total",
+        "source_cutoff": "2026-08-30T08:28:29.873+00:00",
+        "unknown_count": 0,
+        "value_numeric": null
+      },
+      {
+        "confidence": "low",
+        "metric_key": "cash_worst_closing",
+        "value_text": null,
+        "dimension_key": "total",
+        "source_cutoff": "2026-08-30T08:28:29.873+00:00",
+        "unknown_count": 0,
+        "value_numeric": -3064607.57
+      },
+      {
+        "confidence": "low",
+        "metric_key": "data_missing_amounts",
+        "value_text": null,
+        "dimension_key": "total",
+        "source_cutoff": "2026-08-30T08:28:29.873+00:00",
+        "unknown_count": 0,
+        "value_numeric": 314
+      },
+      {
+        "confidence": "low",
+        "metric_key": "data_reviews_high",
+        "value_text": null,
+        "dimension_key": "total",
+        "source_cutoff": "2026-08-30T08:28:29.873+00:00",
+        "unknown_count": 0,
+        "value_numeric": 5
+      },
+      {
+        "confidence": "low",
+        "metric_key": "data_reviews_open",
+        "value_text": null,
+        "dimension_key": "total",
+        "source_cutoff": "2026-08-30T08:28:29.873+00:00",
+        "unknown_count": 0,
+        "value_numeric": 53
+      },
+      {
+        "confidence": "low",
+        "metric_key": "decision_confidence",
+        "value_text": null,
+        "dimension_key": "total",
+        "source_cutoff": "2026-08-30T08:28:29.873+00:00",
+        "unknown_count": 0,
+        "value_numeric": 0
+      },
+      {
+        "confidence": "low",
+        "metric_key": "external_pending",
+        "value_text": null,
+        "dimension_key": "total",
+        "source_cutoff": "2026-08-30T08:28:29.873+00:00",
+        "unknown_count": 0,
+        "value_numeric": 2
+      },
+      {
+        "confidence": "low",
+        "metric_key": "loan_remaining",
+        "value_text": null,
+        "dimension_key": "total",
+        "source_cutoff": "2026-08-30T08:28:29.873+00:00",
+        "unknown_count": 0,
+        "value_numeric": 3371973.64
+      },
+      {
+        "confidence": "low",
+        "metric_key": "maturity_outflow",
+        "value_text": null,
+        "dimension_key": "30d",
+        "source_cutoff": "2026-08-30T08:28:29.873+00:00",
+        "unknown_count": 0,
+        "value_numeric": 471744.12
+      },
+      {
+        "confidence": "low",
+        "metric_key": "maturity_outflow",
+        "value_text": null,
+        "dimension_key": "7d",
+        "source_cutoff": "2026-08-30T08:28:29.873+00:00",
+        "unknown_count": 0,
+        "value_numeric": 300000
+      },
+      {
+        "confidence": "low",
+        "metric_key": "maturity_outflow",
+        "value_text": null,
+        "dimension_key": "90d",
+        "source_cutoff": "2026-08-30T08:28:29.873+00:00",
+        "unknown_count": 0,
+        "value_numeric": 615232.36
+      },
+      {
+        "confidence": "low",
+        "metric_key": "part_margin_average",
+        "value_text": null,
+        "dimension_key": "total",
+        "source_cutoff": "2026-08-30T08:28:29.873+00:00",
+        "unknown_count": 14,
+        "value_numeric": -0.4594
+      },
+      {
+        "confidence": "low",
+        "metric_key": "part_margin_min",
+        "value_text": null,
+        "dimension_key": "total",
+        "source_cutoff": "2026-08-30T08:28:29.873+00:00",
+        "unknown_count": 14,
+        "value_numeric": -4.2395
+      },
+      {
+        "confidence": "low",
+        "metric_key": "payment_status",
+        "value_text": null,
+        "dimension_key": "cancelled",
+        "source_cutoff": "2026-08-30T08:28:29.873+00:00",
+        "unknown_count": 0,
+        "value_numeric": 770000
+      },
+      {
+        "confidence": "low",
+        "metric_key": "payment_status",
+        "value_text": null,
+        "dimension_key": "paid",
+        "source_cutoff": "2026-08-30T08:28:29.873+00:00",
+        "unknown_count": 0,
+        "value_numeric": 155000
+      },
+      {
+        "confidence": "low",
+        "metric_key": "payment_status",
+        "value_text": null,
+        "dimension_key": "partial",
+        "source_cutoff": "2026-08-30T08:28:29.873+00:00",
+        "unknown_count": 0,
+        "value_numeric": 30000
+      },
+      {
+        "confidence": "low",
+        "metric_key": "payment_status",
+        "value_text": null,
+        "dimension_key": "planned",
+        "source_cutoff": "2026-08-30T08:28:29.873+00:00",
+        "unknown_count": 2,
+        "value_numeric": 0
+      },
+      {
+        "confidence": "low",
+        "metric_key": "payment_status",
+        "value_text": null,
+        "dimension_key": "unpaid",
+        "source_cutoff": "2026-08-30T08:28:29.873+00:00",
+        "unknown_count": 295,
+        "value_numeric": 13595000
+      },
+      {
+        "confidence": "low",
+        "metric_key": "reminder_status",
+        "value_text": null,
+        "dimension_key": "failed",
+        "source_cutoff": "2026-08-30T08:28:29.873+00:00",
+        "unknown_count": 0,
+        "value_numeric": 18
+      },
+      {
+        "confidence": "low",
+        "metric_key": "reminder_status",
+        "value_text": null,
+        "dimension_key": "pending",
+        "source_cutoff": "2026-08-30T08:28:29.873+00:00",
+        "unknown_count": 0,
+        "value_numeric": 4
+      },
+      {
+        "confidence": "low",
+        "metric_key": "reminder_status",
+        "value_text": null,
+        "dimension_key": "sent",
+        "source_cutoff": "2026-08-30T08:28:29.873+00:00",
+        "unknown_count": 0,
+        "value_numeric": 36
+      },
+      {
+        "confidence": "low",
+        "metric_key": "task_status",
+        "value_text": null,
+        "dimension_key": "done",
+        "source_cutoff": "2026-08-30T08:28:29.873+00:00",
+        "unknown_count": 0,
+        "value_numeric": 1
+      },
+      {
+        "confidence": "low",
+        "metric_key": "task_status",
+        "value_text": null,
+        "dimension_key": "in_progress",
+        "source_cutoff": "2026-08-30T08:28:29.873+00:00",
+        "unknown_count": 0,
+        "value_numeric": 1
+      },
+      {
+        "confidence": "low",
+        "metric_key": "task_status",
+        "value_text": null,
+        "dimension_key": "open",
+        "source_cutoff": "2026-08-30T08:28:29.873+00:00",
+        "unknown_count": 0,
+        "value_numeric": 4
+      }
+    ]
+  },
+  "strategyB": {
+    "name": "surgical historical correction (raw UPDATE ×2)",
+    "rowCount": 24,
+    "semanticChanges": 2,
+    "technicalFieldChanges": 0,
+    "auditEvents": 0,
+    "auditAction": null,
+    "sourceCutoffSemantics": "2026-08-27 olarak KALIR — bugün düzeltilen bir değer için YANLIŞ provenance iddiası",
+    "productInvariantCompatible": false,
+    "rows": [
+      {
+        "confidence": "low",
+        "metric_key": "cash_first_negative",
+        "value_text": "2026-09-01",
+        "dimension_key": "total",
+        "source_cutoff": "2026-08-27T01:31:28.841+00:00",
+        "unknown_count": 0,
+        "value_numeric": null
+      },
+      {
+        "confidence": "low",
+        "metric_key": "cash_worst_closing",
+        "value_text": null,
+        "dimension_key": "total",
+        "source_cutoff": "2026-08-27T01:31:28.841+00:00",
+        "unknown_count": 0,
+        "value_numeric": -3064607.57
+      },
+      {
+        "confidence": "low",
+        "metric_key": "data_missing_amounts",
+        "value_text": null,
+        "dimension_key": "total",
+        "source_cutoff": "2026-08-27T01:31:28.841+00:00",
+        "unknown_count": 0,
+        "value_numeric": 314
+      },
+      {
+        "confidence": "low",
+        "metric_key": "data_reviews_high",
+        "value_text": null,
+        "dimension_key": "total",
+        "source_cutoff": "2026-08-27T01:31:28.841+00:00",
+        "unknown_count": 0,
+        "value_numeric": 5
+      },
+      {
+        "confidence": "low",
+        "metric_key": "data_reviews_open",
+        "value_text": null,
+        "dimension_key": "total",
+        "source_cutoff": "2026-08-27T01:31:28.841+00:00",
+        "unknown_count": 0,
+        "value_numeric": 53
+      },
+      {
+        "confidence": "low",
+        "metric_key": "decision_confidence",
+        "value_text": null,
+        "dimension_key": "total",
+        "source_cutoff": "2026-08-27T01:31:28.841+00:00",
+        "unknown_count": 0,
+        "value_numeric": 0
+      },
+      {
+        "confidence": "low",
+        "metric_key": "external_pending",
+        "value_text": null,
+        "dimension_key": "total",
+        "source_cutoff": "2026-08-27T01:31:28.841+00:00",
+        "unknown_count": 0,
+        "value_numeric": 2
+      },
+      {
+        "confidence": "low",
+        "metric_key": "loan_remaining",
+        "value_text": null,
+        "dimension_key": "total",
+        "source_cutoff": "2026-08-27T01:31:28.841+00:00",
+        "unknown_count": 0,
+        "value_numeric": 3371973.64
+      },
+      {
+        "confidence": "low",
+        "metric_key": "maturity_outflow",
+        "value_text": null,
+        "dimension_key": "30d",
+        "source_cutoff": "2026-08-27T01:31:28.841+00:00",
+        "unknown_count": 0,
+        "value_numeric": 471744.12
+      },
+      {
+        "confidence": "low",
+        "metric_key": "maturity_outflow",
+        "value_text": null,
+        "dimension_key": "7d",
+        "source_cutoff": "2026-08-27T01:31:28.841+00:00",
+        "unknown_count": 0,
+        "value_numeric": 300000
+      },
+      {
+        "confidence": "low",
+        "metric_key": "maturity_outflow",
+        "value_text": null,
+        "dimension_key": "90d",
+        "source_cutoff": "2026-08-27T01:31:28.841+00:00",
+        "unknown_count": 0,
+        "value_numeric": 615232.36
+      },
+      {
+        "confidence": "low",
+        "metric_key": "part_margin_average",
+        "value_text": null,
+        "dimension_key": "total",
+        "source_cutoff": "2026-08-27T01:31:28.841+00:00",
+        "unknown_count": 14,
+        "value_numeric": -0.4594
+      },
+      {
+        "confidence": "low",
+        "metric_key": "part_margin_min",
+        "value_text": null,
+        "dimension_key": "total",
+        "source_cutoff": "2026-08-27T01:31:28.841+00:00",
+        "unknown_count": 14,
+        "value_numeric": -4.2395
+      },
+      {
+        "confidence": "low",
+        "metric_key": "payment_status",
+        "value_text": null,
+        "dimension_key": "cancelled",
+        "source_cutoff": "2026-08-27T01:31:28.841+00:00",
+        "unknown_count": 0,
+        "value_numeric": 770000
+      },
+      {
+        "confidence": "low",
+        "metric_key": "payment_status",
+        "value_text": null,
+        "dimension_key": "paid",
+        "source_cutoff": "2026-08-27T01:31:28.841+00:00",
+        "unknown_count": 0,
+        "value_numeric": 155000
+      },
+      {
+        "confidence": "low",
+        "metric_key": "payment_status",
+        "value_text": null,
+        "dimension_key": "partial",
+        "source_cutoff": "2026-08-27T01:31:28.841+00:00",
+        "unknown_count": 0,
+        "value_numeric": 30000
+      },
+      {
+        "confidence": "low",
+        "metric_key": "payment_status",
+        "value_text": null,
+        "dimension_key": "planned",
+        "source_cutoff": "2026-08-27T01:31:28.841+00:00",
+        "unknown_count": 2,
+        "value_numeric": 0
+      },
+      {
+        "confidence": "low",
+        "metric_key": "payment_status",
+        "value_text": null,
+        "dimension_key": "unpaid",
+        "source_cutoff": "2026-08-27T01:31:28.841+00:00",
+        "unknown_count": 295,
+        "value_numeric": 13595000
+      },
+      {
+        "confidence": "low",
+        "metric_key": "reminder_status",
+        "value_text": null,
+        "dimension_key": "failed",
+        "source_cutoff": "2026-08-27T01:31:28.841+00:00",
+        "unknown_count": 0,
+        "value_numeric": 18
+      },
+      {
+        "confidence": "low",
+        "metric_key": "reminder_status",
+        "value_text": null,
+        "dimension_key": "pending",
+        "source_cutoff": "2026-08-27T01:31:28.841+00:00",
+        "unknown_count": 0,
+        "value_numeric": 4
+      },
+      {
+        "confidence": "low",
+        "metric_key": "reminder_status",
+        "value_text": null,
+        "dimension_key": "sent",
+        "source_cutoff": "2026-08-27T01:31:28.841+00:00",
+        "unknown_count": 0,
+        "value_numeric": 36
+      },
+      {
+        "confidence": "low",
+        "metric_key": "task_status",
+        "value_text": null,
+        "dimension_key": "done",
+        "source_cutoff": "2026-08-27T01:31:28.841+00:00",
+        "unknown_count": 0,
+        "value_numeric": 1
+      },
+      {
+        "confidence": "low",
+        "metric_key": "task_status",
+        "value_text": null,
+        "dimension_key": "in_progress",
+        "source_cutoff": "2026-08-27T01:31:28.841+00:00",
+        "unknown_count": 0,
+        "value_numeric": 1
+      },
+      {
+        "confidence": "low",
+        "metric_key": "task_status",
+        "value_text": null,
+        "dimension_key": "open",
+        "source_cutoff": "2026-08-27T01:31:28.841+00:00",
+        "unknown_count": 0,
+        "value_numeric": 4
+      }
+    ]
+  },
+  "recommended": "A",
+  "rationale": "Iki strateji de ayni 2 semantik sonucu uretir. B daha az alan degistirir ama iki satirin source_cutoff'u 2026-08-27'yi gostermeye devam eder — deger aslinda bugun duzeltilmisken. Bu YANLIS bir provenance iddiasidir. Ayrica B urunun yazma yolunu atlar ve HIC audit kaydi birakmaz (olculdu: audit_logs +0). A urunun desteklenen yolunu kullanir, bir refresh_metric_snapshots audit olayi yazar, ve 22 ek alan degisikligi hasar degil DURUST provenance guncellemesidir: o degerler de bugunku veriden yeniden turetildi, sadece ayni cikti."
+}

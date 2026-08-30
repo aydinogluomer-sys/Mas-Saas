@@ -50,6 +50,8 @@ interface Ev { class: string; detail: string }
 interface Row {
   table: string;
   id: string;
+  rowFingerprint: string;
+  criticalFields: Record<string, string | null>;
   classification: string;
   incidentId: string | null;
   xmin: string;
@@ -102,11 +104,13 @@ async function main(): Promise<void> {
     };
 
     // users — TEXT + TRANSACTION + BASELINE
-    for (const u of (await c.query<{ id: string; username: string; created_at: string; x: string }>(
-      `select r.id::text, r.username, r.created_at::text created_at, r.xmin::text x
+    for (const u of (await c.query<{ id: string; username: string; role: string; display_name: string | null; created_at: string; x: string; fp: string }>(
+      `select r.id::text, r.username, r.role::text, r.display_name, r.created_at::text created_at,
+              r.xmin::text x, md5(r::text) fp
          from public.users r where r::text ilike '%p24b%' order by r.created_at`)).rows) {
       push({
-        table: "users", id: u.id, classification: "DELETE_TARGET", incidentId: incidentOf(u.created_at),
+        table: "users", id: u.id, rowFingerprint: u.fp,
+        criticalFields: { username: u.username, role: u.role, display_name: u.display_name }, classification: "DELETE_TARGET", incidentId: incidentOf(u.created_at),
         xmin: u.x, discoveryMethods: ["TEXT", "TIME"], baselineAbsent: true, notes: [],
         evidence: [
           { class: "TEXT", detail: `username = '${u.username}' — roles-rls-verify.ts fixture adı` },
@@ -118,8 +122,9 @@ async function main(): Promise<void> {
     }
 
     // action_items — TEXT + (FK when created_by set) + TRANSACTION + BASELINE
-    for (const a of (await c.query<{ id: string; title: string; created_by: string | null; created_at: string; x: string }>(
-      `select r.id::text, r.title, r.created_by::text, r.created_at::text created_at, r.xmin::text x
+    for (const a of (await c.query<{ id: string; title: string; status: string; created_by: string | null; created_at: string; x: string; fp: string }>(
+      `select r.id::text, r.title, r.status::text, r.created_by::text, r.created_at::text created_at,
+              r.xmin::text x, md5(r::text) fp
          from public.action_items r where r::text ilike '%p24b%' order by r.created_at`)).rows) {
       const ev: Ev[] = [
         { class: "TEXT", detail: `title = '${a.title}'` },
@@ -129,7 +134,8 @@ async function main(): Promise<void> {
       ];
       if (a.created_by) ev.splice(1, 0, { class: "FK", detail: `created_by → P24B kullanıcısı ${a.created_by}` });
       push({
-        table: "action_items", id: a.id, classification: "DELETE_TARGET", incidentId: incidentOf(a.created_at),
+        table: "action_items", id: a.id, rowFingerprint: a.fp,
+        criticalFields: { title: a.title, status: a.status, created_by: a.created_by }, classification: "DELETE_TARGET", incidentId: incidentOf(a.created_at),
         xmin: a.x, discoveryMethods: a.created_by ? ["TEXT", "FK", "TIME"] : ["TEXT", "TIME"],
         baselineAbsent: true, evidence: ev,
         notes: a.created_by ? [] : ["created_by NULL — FK closure bu satırı KAÇIRIRDI, metin yakaladı"],
@@ -137,11 +143,13 @@ async function main(): Promise<void> {
     }
 
     // payments
-    for (const p of (await c.query<{ id: string; name: string; created_at: string; x: string }>(
-      `select r.id::text, r.name, r.created_at::text created_at, r.xmin::text x
+    for (const p of (await c.query<{ id: string; name: string; recurrence_type: string; due_day: string | null; default_amount: string | null; currency: string; created_at: string; x: string; fp: string }>(
+      `select r.id::text, r.name, r.recurrence_type::text, r.due_day::text, r.default_amount::text,
+              r.currency::text, r.created_at::text created_at, r.xmin::text x, md5(r::text) fp
          from public.payments r where r::text ilike '%p24b%'`)).rows) {
       push({
-        table: "payments", id: p.id, classification: "DELETE_TARGET", incidentId: incidentOf(p.created_at),
+        table: "payments", id: p.id, rowFingerprint: p.fp,
+        criticalFields: { name: p.name, recurrence_type: p.recurrence_type, due_day: p.due_day, default_amount: p.default_amount, currency: p.currency }, classification: "DELETE_TARGET", incidentId: incidentOf(p.created_at),
         xmin: p.x, discoveryMethods: ["TEXT", "TIME"], baselineAbsent: true,
         notes: ["ROOT_CONTAMINATION — amplifikasyonun kaynağı olan şablon satır"],
         evidence: [
@@ -154,11 +162,12 @@ async function main(): Promise<void> {
     }
 
     // settings
-    for (const s of (await c.query<{ key: string; updated_at: string; x: string }>(
-      `select r.key, r.updated_at::text updated_at, r.xmin::text x
+    for (const s of (await c.query<{ key: string; value: string; updated_at: string; x: string; fp: string }>(
+      `select r.key, r.value::text, r.updated_at::text updated_at, r.xmin::text x, md5(r::text) fp
          from public.settings r where r::text ilike '%p24b%'`)).rows) {
       push({
-        table: "settings", id: s.key, classification: "DELETE_TARGET", incidentId: incidentOf(s.updated_at),
+        table: "settings", id: s.key, rowFingerprint: s.fp,
+        criticalFields: { key: s.key, value: s.value }, classification: "DELETE_TARGET", incidentId: incidentOf(s.updated_at),
         xmin: s.x, discoveryMethods: ["TEXT"], baselineAbsent: true,
         notes: ["created_at kolonu yok; zaman ataması updated_at üzerinden"],
         evidence: [
@@ -170,9 +179,9 @@ async function main(): Promise<void> {
     }
 
     // approvals — the decisive ones
-    for (const a of (await c.query<{ id: string; requested_by: string | null; subject_table: string; request_kind: string; status: string; created_at: string; x: string }>(
-      `select r.id::text, r.requested_by::text, r.subject_table, r.request_kind, r.status,
-              r.created_at::text created_at, r.xmin::text x
+    for (const a of (await c.query<{ id: string; requested_by: string | null; subject_table: string; subject_id: string | null; request_kind: string; status: string; created_at: string; x: string; fp: string }>(
+      `select r.id::text, r.requested_by::text, r.subject_table, r.subject_id::text, r.request_kind, r.status,
+              r.created_at::text created_at, r.xmin::text x, md5(r::text) fp
          from public.approvals r where r.id = any($1::uuid[]) order by r.created_at, r.id`,
       [APPROVAL_IDS])).rows) {
       const isNull = NULL_APPROVALS.has(a.id);
@@ -193,7 +202,8 @@ async function main(): Promise<void> {
       ev.push({ class: "BASELINE_ABSENT", detail: "temiz taban ve release klonlarında yok" });
       ev.push({ class: "TIME", detail: `created_at ${a.created_at}` });
       push({
-        table: "approvals", id: a.id,
+        table: "approvals", id: a.id, rowFingerprint: a.fp,
+        criticalFields: { requested_by: a.requested_by, subject_table: a.subject_table, subject_id: a.subject_id, request_kind: a.request_kind, status: a.status },
         classification: coTxn ? "DELETE_TARGET" : "UNRESOLVED",
         incidentId: incidentOf(a.created_at), xmin: a.x,
         discoveryMethods: isNull ? ["TIME", "TRANSACTION_LINEAGE"] : ["UUID", "FK", "TIME"],
@@ -206,12 +216,15 @@ async function main(): Promise<void> {
     }
 
     // payment_instances — derived, FK + baseline
-    for (const i of (await c.query<{ id: string; created_at: string; x: string; amount_source: string }>(
-      `select r.id::text, r.created_at::text created_at, r.xmin::text x, r.amount_source::text
+    for (const i of (await c.query<{ id: string; created_at: string; x: string; amount_source: string; payment_id: string; amount: string | null; due_date: string | null; status: string; fp: string }>(
+      `select r.id::text, r.created_at::text created_at, r.xmin::text x, r.amount_source::text,
+              r.payment_id::text, r.amount::text, r.due_date::text, r.status::text, md5(r::text) fp
          from public.payment_instances r where r.payment_id = $1 order by r.created_at`,
       [FIXTURE_PAYMENT])).rows) {
       push({
-        table: "payment_instances", id: i.id, classification: "DELETE_TARGET",
+        table: "payment_instances", id: i.id, rowFingerprint: i.fp,
+        criticalFields: { payment_id: i.payment_id, amount: i.amount, due_date: i.due_date, amount_source: i.amount_source, status: i.status },
+        classification: "DELETE_TARGET",
         incidentId: incidentOf(i.created_at), xmin: i.x,
         discoveryMethods: ["FK", "TIME"], baselineAbsent: true,
         notes: ["AMPLIFIER ürünü — fixture şablonundan türetildi, kendisi P24B metni taşımaz"],

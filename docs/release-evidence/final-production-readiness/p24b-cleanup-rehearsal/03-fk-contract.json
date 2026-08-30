@@ -1,0 +1,272 @@
+{
+  "measuredFrom": "pg_catalog (her koşuda yeniden)",
+  "inboundFkCount": 43,
+  "criticalContract": {
+    "child": "payment_instances",
+    "column": "payment_id",
+    "parent": "payments",
+    "onDelete": "SET NULL",
+    "why": "SET NULL sessizdir: ödeme önce silinirse 26 satır payment_id=NULL ile hayatta kalır ve tek kanıt bağını kaybeder. Silme sırası bu davranışa dayanır."
+  },
+  "cascadeFks": 0,
+  "fks": [
+    {
+      "child": "action_items",
+      "col": "created_by",
+      "parent": "users",
+      "act": "NO ACTION"
+    },
+    {
+      "child": "approvals",
+      "col": "decided_by",
+      "parent": "users",
+      "act": "NO ACTION"
+    },
+    {
+      "child": "approvals",
+      "col": "requested_by",
+      "parent": "users",
+      "act": "NO ACTION"
+    },
+    {
+      "child": "approval_steps",
+      "col": "actor",
+      "parent": "users",
+      "act": "NO ACTION"
+    },
+    {
+      "child": "assistant_conversations",
+      "col": "created_by",
+      "parent": "users",
+      "act": "NO ACTION"
+    },
+    {
+      "child": "attachments",
+      "col": "uploaded_by",
+      "parent": "users",
+      "act": "NO ACTION"
+    },
+    {
+      "child": "audit_logs",
+      "col": "actor",
+      "parent": "users",
+      "act": "NO ACTION"
+    },
+    {
+      "child": "background_jobs",
+      "col": "created_by",
+      "parent": "users",
+      "act": "NO ACTION"
+    },
+    {
+      "child": "bank_transaction_match_candidates",
+      "col": "rejected_by",
+      "parent": "users",
+      "act": "NO ACTION"
+    },
+    {
+      "child": "budget_lines",
+      "col": "approved_by",
+      "parent": "users",
+      "act": "NO ACTION"
+    },
+    {
+      "child": "budget_lines",
+      "col": "created_by",
+      "parent": "users",
+      "act": "NO ACTION"
+    },
+    {
+      "child": "budgets",
+      "col": "created_by",
+      "parent": "users",
+      "act": "NO ACTION"
+    },
+    {
+      "child": "check_events",
+      "col": "created_by",
+      "parent": "users",
+      "act": "NO ACTION"
+    },
+    {
+      "child": "collateral_records",
+      "col": "created_by",
+      "parent": "users",
+      "act": "NO ACTION"
+    },
+    {
+      "child": "control_alerts",
+      "col": "acknowledged_by",
+      "parent": "users",
+      "act": "NO ACTION"
+    },
+    {
+      "child": "control_alerts",
+      "col": "action_item_id",
+      "parent": "action_items",
+      "act": "NO ACTION"
+    },
+    {
+      "child": "control_alerts",
+      "col": "resolved_by",
+      "parent": "users",
+      "act": "NO ACTION"
+    },
+    {
+      "child": "cost_allocation_rules",
+      "col": "created_by",
+      "parent": "users",
+      "act": "NO ACTION"
+    },
+    {
+      "child": "covenant_records",
+      "col": "created_by",
+      "parent": "users",
+      "act": "NO ACTION"
+    },
+    {
+      "child": "document_links",
+      "col": "created_by",
+      "parent": "users",
+      "act": "NO ACTION"
+    },
+    {
+      "child": "documents",
+      "col": "created_by",
+      "parent": "users",
+      "act": "NO ACTION"
+    },
+    {
+      "child": "external_assumptions",
+      "col": "created_by",
+      "parent": "users",
+      "act": "NO ACTION"
+    },
+    {
+      "child": "external_assumptions",
+      "col": "reviewed_by",
+      "parent": "users",
+      "act": "NO ACTION"
+    },
+    {
+      "child": "facility_drawdowns",
+      "col": "created_by",
+      "parent": "users",
+      "act": "NO ACTION"
+    },
+    {
+      "child": "forecast_lines",
+      "col": "approved_by",
+      "parent": "users",
+      "act": "NO ACTION"
+    },
+    {
+      "child": "forecast_lines",
+      "col": "created_by",
+      "parent": "users",
+      "act": "NO ACTION"
+    },
+    {
+      "child": "forecasts",
+      "col": "created_by",
+      "parent": "users",
+      "act": "NO ACTION"
+    },
+    {
+      "child": "fx_positions",
+      "col": "created_by",
+      "parent": "users",
+      "act": "NO ACTION"
+    },
+    {
+      "child": "fx_rate_snapshots",
+      "col": "created_by",
+      "parent": "users",
+      "act": "NO ACTION"
+    },
+    {
+      "child": "integration_connections",
+      "col": "created_by",
+      "parent": "users",
+      "act": "NO ACTION"
+    },
+    {
+      "child": "invoice_allocations",
+      "col": "created_by",
+      "parent": "users",
+      "act": "NO ACTION"
+    },
+    {
+      "child": "invoice_allocations",
+      "col": "reversed_by",
+      "parent": "users",
+      "act": "NO ACTION"
+    },
+    {
+      "child": "invoice_reversals",
+      "col": "created_by",
+      "parent": "users",
+      "act": "NO ACTION"
+    },
+    {
+      "child": "invoices",
+      "col": "bad_debt_by",
+      "parent": "users",
+      "act": "NO ACTION"
+    },
+    {
+      "child": "mapping_reviews",
+      "col": "reviewed_by",
+      "parent": "users",
+      "act": "NO ACTION"
+    },
+    {
+      "child": "optimization_runs",
+      "col": "created_by",
+      "parent": "users",
+      "act": "NO ACTION"
+    },
+    {
+      "child": "payment_instances",
+      "col": "payment_id",
+      "parent": "payments",
+      "act": "SET NULL"
+    },
+    {
+      "child": "promise_to_pay",
+      "col": "created_by",
+      "parent": "users",
+      "act": "NO ACTION"
+    },
+    {
+      "child": "promise_to_pay",
+      "col": "resolved_by",
+      "parent": "users",
+      "act": "NO ACTION"
+    },
+    {
+      "child": "saved_views",
+      "col": "created_by",
+      "parent": "users",
+      "act": "NO ACTION"
+    },
+    {
+      "child": "scenarios",
+      "col": "created_by",
+      "parent": "users",
+      "act": "NO ACTION"
+    },
+    {
+      "child": "sessions",
+      "col": "user_id",
+      "parent": "users",
+      "act": "NO ACTION"
+    },
+    {
+      "child": "source_workbooks",
+      "col": "imported_by",
+      "parent": "users",
+      "act": "NO ACTION"
+    }
+  ]
+}
