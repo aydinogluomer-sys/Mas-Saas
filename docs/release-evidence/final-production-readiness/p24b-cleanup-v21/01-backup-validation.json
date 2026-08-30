@@ -1,0 +1,29 @@
+{
+  "oldGate": "existsSync(path)",
+  "newGate": [
+    "JSON parse",
+    "offDeviceCleanupBlockers(raw) — kanonik politika kapisi",
+    "destPath execution-time yeniden hash (sha256OfFile)",
+    "actualDestBytes == receipt.destBytes",
+    "receipt.sourceSha256 == receipt.destSha256"
+  ],
+  "canonicalValidator": "scripts/ops/backup-lib.ts :: offDeviceCleanupBlockers + sha256OfFile",
+  "rejectedTargetKinds": [
+    "LOCAL_STANDIN",
+    "OPERATOR_ATTESTED",
+    "FIXED_SEPARATE_VOLUME",
+    "UNKNOWN"
+  ],
+  "acceptedTargetKinds": [
+    "REMOVABLE_VOLUME",
+    "NETWORK_DRIVE",
+    "UNC_NETWORK_SHARE"
+  ],
+  "executionTimeRevalidation": {
+    "path": "C:/Users/TRADEB~1/AppData/Local/Temp/claude/C--Users-Trade-Bilisim-Mas-Saas/1f129ae4-ce3a-4359-80cd-7190f6f26844/scratchpad/drill-fixture-receipt.json",
+    "destPath": "C:/Users/TRADEB~1/AppData/Local/Temp/claude/C--Users-Trade-Bilisim-Mas-Saas/1f129ae4-ce3a-4359-80cd-7190f6f26844/scratchpad/drill-dest/p24b-v21-drill.dump",
+    "destSha256": "22d8f5d942d3f253f5aabdef13fd90fa6256094886ef03e3d3436dbf7f7f6b5f",
+    "destBytes": 1413949,
+    "revalidatedAtExecution": true
+  }
+}

@@ -1,0 +1,224 @@
+{
+  "generatedAtUtc": "2026-08-30T14:55:03.569Z",
+  "database": "mas_radar_p24b_nc_drill",
+  "total": 24,
+  "passed": 24,
+  "results": [
+    {
+      "id": "NC01",
+      "name": "makbuz yolu tanımsız",
+      "expected": "FAIL",
+      "exitCode": 9,
+      "dbUnchanged": true,
+      "verdict": "PASS",
+      "detail": "DURDURULDU: MAS_P24B_BACKUP_RECEIPT tanımlı değil"
+    },
+    {
+      "id": "NC02",
+      "name": "boş makbuz dosyası",
+      "expected": "FAIL",
+      "exitCode": 9,
+      "dbUnchanged": true,
+      "verdict": "PASS",
+      "detail": "DURDURULDU: yedek makbuzu ayrıştırılamadı: Unexpected end of JSON input"
+    },
+    {
+      "id": "NC03",
+      "name": "bozuk JSON",
+      "expected": "FAIL",
+      "exitCode": 9,
+      "dbUnchanged": true,
+      "verdict": "PASS",
+      "detail": "DURDURULDU: yedek makbuzu ayrıştırılamadı: Expected property name or '}' in JSON at position 2 (line 1 column "
+    },
+    {
+      "id": "NC04",
+      "name": "yanlış receiptKind",
+      "expected": "FAIL",
+      "exitCode": 9,
+      "dbUnchanged": true,
+      "verdict": "PASS",
+      "detail": "DURDURULDU: yedek makbuzu yıkıcı işlem için yetersiz:"
+    },
+    {
+      "id": "NC05",
+      "name": "targetKind LOCAL_STANDIN",
+      "expected": "FAIL",
+      "exitCode": 9,
+      "dbUnchanged": true,
+      "verdict": "PASS",
+      "detail": "DURDURULDU: yedek makbuzu yıkıcı işlem için yetersiz:"
+    },
+    {
+      "id": "NC06",
+      "name": "targetKind OPERATOR_ATTESTED",
+      "expected": "FAIL",
+      "exitCode": 9,
+      "dbUnchanged": true,
+      "verdict": "PASS",
+      "detail": "DURDURULDU: yedek makbuzu yıkıcı işlem için yetersiz:"
+    },
+    {
+      "id": "NC07",
+      "name": "offDeviceSatisfied false",
+      "expected": "FAIL",
+      "exitCode": 9,
+      "dbUnchanged": true,
+      "verdict": "PASS",
+      "detail": "DURDURULDU: yedek makbuzu yıkıcı işlem için yetersiz:"
+    },
+    {
+      "id": "NC08",
+      "name": "hedef dosya yok",
+      "expected": "FAIL",
+      "exitCode": 9,
+      "dbUnchanged": true,
+      "verdict": "PASS",
+      "detail": "DURDURULDU: makbuzun gösterdiği yedek dosyası yok: C:\\Users\\TRADEB~1\\AppData\\Local\\Temp\\p24b-nc-Ms4K8R\\olmayan"
+    },
+    {
+      "id": "NC09",
+      "name": "hedef SHA uyuşmuyor",
+      "expected": "FAIL",
+      "exitCode": 9,
+      "dbUnchanged": true,
+      "verdict": "PASS",
+      "detail": "DURDURULDU: hedefteki yedeğin SHA256'sı makbuzla uyuşmuyor (dosya değişmiş)"
+    },
+    {
+      "id": "NC10",
+      "name": "hedef bayt sayısı uyuşmuyor",
+      "expected": "FAIL",
+      "exitCode": 9,
+      "dbUnchanged": true,
+      "verdict": "PASS",
+      "detail": "DURDURULDU: hedefteki yedeğin bayt sayısı makbuzla uyuşmuyor"
+    },
+    {
+      "id": "NC11",
+      "name": "kaynak/hedef SHA farklı",
+      "expected": "FAIL",
+      "exitCode": 9,
+      "dbUnchanged": true,
+      "verdict": "PASS",
+      "detail": "DURDURULDU: kaynak ve hedef SHA256 farklı — kopya sadık değil"
+    },
+    {
+      "id": "NC12",
+      "name": "binding yok",
+      "expected": "FAIL",
+      "exitCode": 9,
+      "dbUnchanged": true,
+      "verdict": "PASS",
+      "detail": "DURDURULDU: MAS_P24B_CLEANUP_BINDING geçerli bir binding dosyasını göstermeli"
+    },
+    {
+      "id": "NC13",
+      "name": "binding yanlış DB'ye bağlı",
+      "expected": "FAIL",
+      "exitCode": 9,
+      "dbUnchanged": true,
+      "verdict": "PASS",
+      "detail": "DURDURULDU: binding 'baska_db' için, hedef 'mas_radar_p24b_nc_drill'"
+    },
+    {
+      "id": "NC14",
+      "name": "binding yanlış manifest SHA",
+      "expected": "FAIL",
+      "exitCode": 9,
+      "dbUnchanged": true,
+      "verdict": "PASS",
+      "detail": "DURDURULDU: cleanup binding geçersiz:"
+    },
+    {
+      "id": "NC15",
+      "name": "binding targetRows != 42",
+      "expected": "FAIL",
+      "exitCode": 9,
+      "dbUnchanged": true,
+      "verdict": "PASS",
+      "detail": "DURDURULDU: cleanup binding geçersiz:"
+    },
+    {
+      "id": "NC16",
+      "name": "binding unresolved != 0",
+      "expected": "FAIL",
+      "exitCode": 9,
+      "dbUnchanged": true,
+      "verdict": "PASS",
+      "detail": "DURDURULDU: cleanup binding geçersiz:"
+    },
+    {
+      "id": "NC17",
+      "name": "binding başka yedeğe bağlı",
+      "expected": "FAIL",
+      "exitCode": 9,
+      "dbUnchanged": true,
+      "verdict": "PASS",
+      "detail": "DURDURULDU: cleanup binding geçersiz:"
+    },
+    {
+      "id": "NC18",
+      "name": "restore smoke yanlış yedekten",
+      "expected": "FAIL",
+      "exitCode": 9,
+      "dbUnchanged": true,
+      "verdict": "PASS",
+      "detail": "DURDURULDU: cleanup binding geçersiz:"
+    },
+    {
+      "id": "NC19",
+      "name": "restore smoke 42 satır görmemiş",
+      "expected": "FAIL",
+      "exitCode": 9,
+      "dbUnchanged": true,
+      "verdict": "PASS",
+      "detail": "DURDURULDU: cleanup binding geçersiz:"
+    },
+    {
+      "id": "NC20",
+      "name": "BACKUP_IS_STALE (hedef satır değişti)",
+      "expected": "FAIL",
+      "exitCode": 3,
+      "dbUnchanged": true,
+      "verdict": "PASS",
+      "detail": "GERİ ALINDI: PRECONDITION_NOT_SATISFIED — 1 sorun (ilk: users/92cee4d3-c649-432d-b507-546d87936a76 parmak izi "
+    },
+    {
+      "id": "NC21",
+      "name": "hedeflerden biri eksik (41)",
+      "expected": "FAIL",
+      "exitCode": 3,
+      "dbUnchanged": true,
+      "verdict": "PASS",
+      "detail": "GERİ ALINDI: PRECONDITION_NOT_SATISFIED — 1 sorun (ilk: payment_instances/3ab000e6-5187-468d-bf2e-2af882a2a3a2"
+    },
+    {
+      "id": "NC22",
+      "name": "beklenmedik üçüncü semantik değişim",
+      "expected": "FAIL",
+      "exitCode": 3,
+      "dbUnchanged": true,
+      "verdict": "PASS",
+      "detail": "GERİ ALINDI: snapshot semantik değişimi 3, 2 bekleniyordu (loan_remaining|total, payment_status|unpaid, task_s"
+    },
+    {
+      "id": "NC23",
+      "name": "snapshot hedef tarihi boş",
+      "expected": "FAIL",
+      "exitCode": 3,
+      "dbUnchanged": true,
+      "verdict": "PASS",
+      "detail": "GERİ ALINDI: 2026-08-27 için snapshot satırı yok — düzeltme hedefi kayıp"
+    },
+    {
+      "id": "NC24",
+      "name": "ikinci cleanup koşusu (sessiz başarı OLMAMALI)",
+      "expected": "FAIL",
+      "exitCode": 3,
+      "dbUnchanged": true,
+      "verdict": "PASS",
+      "detail": "GERİ ALINDI: PRECONDITION_NOT_SATISFIED — 42 sorun (ilk: users/92cee4d3-c649-432d-b507-546d87936a76 BULUNAMADI"
+    }
+  ]
+}

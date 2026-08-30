@@ -372,7 +372,7 @@ export interface LoanRow {
   sourceSheetId: string | null;
 }
 
-export async function loadLoans(pool: Pool): Promise<LoanRow[]> {
+export async function loadLoans(pool: Pool | PoolClient): Promise<LoanRow[]> {
   const r = await pool.query(`
     select l.id, l.name, l.principal, l.term_months, l.installment_count,
            to_char(l.first_payment_date,'YYYY-MM-DD') as first_payment_date,
@@ -423,7 +423,7 @@ export async function loadLoanInstallments(pool: Pool, loanId: string): Promise<
 }
 
 /** Union of open checks + unpaid loan installments as a single maturity stream. */
-export async function loadMaturityItems(pool: Pool): Promise<MaturityItem[]> {
+export async function loadMaturityItems(pool: Pool | PoolClient): Promise<MaturityItem[]> {
   const checks = await pool.query(`
     select c.id, to_char(c.maturity_date,'YYYY-MM-DD') as due, c.amount,
            c.direction, coalesce(pe.name, pa.name, c.counterparty_label, pb.name, 'çek') as label

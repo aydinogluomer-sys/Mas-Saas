@@ -663,7 +663,7 @@ export async function mapFinanceCostAllocations(pool: Pool, workbookId: string, 
 // declared shape, so callers could not read the flag the schema keeps precisely so a
 // 2023-derived rate is never presented as a current one. Type-only correction: the query,
 // the mapping and the returned values are unchanged.
-export async function loadCapacityModels(pool: Pool): Promise<Array<CapacityCandidate & { id: string; name: string; monthlyMinutes: number | null; isStaleRate: boolean | null; sheetId: string | null; workbookId: string | null; partCount: number; missingPartCount: number }>> {
+export async function loadCapacityModels(pool: Pool | PoolClient): Promise<Array<CapacityCandidate & { id: string; name: string; monthlyMinutes: number | null; isStaleRate: boolean | null; sheetId: string | null; workbookId: string | null; partCount: number; missingPartCount: number }>> {
   const r = await pool.query(`
     select cm.id, cm.name, cm.efficiency_rate as efficiency,
            cm.freze_rate_tl_per_min as freze, cm.torna_rate_tl_per_min as torna,
@@ -721,7 +721,7 @@ export async function loadCostBreakdown(pool: Pool, costModelId: string) {
   return r.rows.map((x) => ({ ...x, amount: moneyOrNull(x.amount) })) as Array<{ block: string; label: string; amount: number | null; row_index: number | null }>;
 }
 
-export async function loadPartProfitability(pool: Pool, limit = 100) {
+export async function loadPartProfitability(pool: Pool | PoolClient, limit = 100) {
   const r = await pool.query(
     `select pp.part_code, pp.part_name, pr.estimated_total_cost as cost,
             pr.estimated_revenue as revenue, pr.estimated_margin as margin,

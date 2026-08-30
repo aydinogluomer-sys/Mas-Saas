@@ -5,7 +5,7 @@
 // importer stores what the extractor read from source, so reconciliation is enforced
 // by construction and re-verified in scripts/phase4-verify.ts against source_cells.
 
-import type { Pool } from "pg";
+import type { Pool, PoolClient } from "pg";
 import { moneyOrNull } from "@/lib/money";
 import { extractMonthlyCashflow } from "@/lib/importers/extractors";
 import type { CellVal, RowJson } from "@/lib/importers/row-utils";
@@ -134,7 +134,7 @@ export async function mapCashflowMonths(pool: Pool, workbookId: string, actorId:
   }
 }
 
-export async function loadCashMonths(pool: Pool): Promise<Array<CashMonth & { id: string; status: string; sheetId: string | null; workbookId: string | null }>> {
+export async function loadCashMonths(pool: Pool | PoolClient): Promise<Array<CashMonth & { id: string; status: string; sheetId: string | null; workbookId: string | null }>> {
   const r = await pool.query(`
     select id, to_char(month_start,'YYYY-MM-DD') as month_start,
            opening_balance as opening, projected_income as income,
