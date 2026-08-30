@@ -100,3 +100,31 @@ export async function targetFingerprint(
     missing,
   };
 }
+
+/** A base table, as the catalog reports it. */
+export interface BaseTableRef { schema: string; name: string }
+
+/** Canonical, order-independent key for a set of base tables. */
+export function tableSetKey(tables: readonly BaseTableRef[]): string {
+  return tables.map((t) => `${t.schema}.${t.name}`).sort().join(",");
+}
+
+/**
+ * Compare two catalog readings.
+ *
+ * The whole-database lock freezes DML on the tables that EXISTED when it was taken. It cannot
+ * freeze the catalog: a concurrent migration could still add a table, and that table would be
+ * outside both the lock and the fingerprint. Comparing the set at the start of the transaction
+ * against the set immediately before COMMIT turns that blind spot into a detected failure.
+ */
+export function tableSetDiff(
+  before: readonly BaseTableRef[],
+  after: readonly BaseTableRef[],
+): { equal: boolean; added: string[]; removed: string[] } {
+  const b = new Set(before.map((t) => `${t.schema}.${t.name}`));
+  const a = new Set(after.map((t) => `${t.schema}.${t.name}`));
+  const added = [...a].filter((x) => !b.has(x)).sort();
+  const removed = [...b].filter((x) => !a.has(x)).sort();
+  return { equal: added.length === 0 && removed.length === 0, added, removed };
+}
+

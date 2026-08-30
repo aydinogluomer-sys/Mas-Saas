@@ -42,7 +42,7 @@ import { readFileSync, writeFileSync, existsSync, statSync } from "node:fs";
 import path from "node:path";
 import { Pool, type PoolClient } from "pg";
 import { ownerDatabaseUrl, isDisposableDatabaseName, databaseNameFromUrl } from "./owner-url";
-import { targetFingerprint, wholeDbFingerprintMap, digestOfMap } from "./p24b-cleanup-fingerprint";
+import { targetFingerprint, wholeDbFingerprintMap, digestOfMap, tableSetDiff, tableSetKey } from "./p24b-cleanup-fingerprint";
 import { offDeviceCleanupBlockers, sha256OfFile } from "../ops/backup-lib";
 
 const MANIFEST_PATH = path.join(
@@ -108,7 +108,7 @@ const args = process.argv.slice(2);
 const mode: Mode = args.includes("--execute-p24b-cleanup-42")
   ? "execute" : args.includes("--rehearsal") ? "rehearsal" : "preflight";
 
-const receipt: Record<string, unknown> = { mode, contractVersion: "v2.3", startedAtUtc: new Date().toISOString() };
+const receipt: Record<string, unknown> = { mode, contractVersion: "v2.3.1", startedAtUtc: new Date().toISOString() };
 function writeReceipt(): void {
   receipt.finishedAtUtc = new Date().toISOString();
   const out = process.env.MAS_P24B_CLEANUP_OUT;
@@ -283,11 +283,11 @@ async function main(): Promise<void> {
       /* DDL is not blocked by having read the catalog a moment ago. Re-reading it under the locks
        * turns "the table set looked like this" into "the table set IS this, and is now frozen". */
       const afterLockTables = await baseTables(c);
-      const beforeKey = beforeLockTables.map((t) => `${t.schema}.${t.name}`).join(",");
-      const afterKey = afterLockTables.map((t) => `${t.schema}.${t.name}`).join(",");
-      if (beforeKey !== afterKey) {
-        throw new Error("BASE_TABLE_SET_CHANGED_DURING_FREEZE — kilit alınırken tablo kümesi değişti");
+      const lockDiff = tableSetDiff(beforeLockTables, afterLockTables);
+      if (!lockDiff.equal) {
+        throw new Error(`BASE_TABLE_SET_CHANGED_DURING_FREEZE — eklenen: ${lockDiff.added.join(", ")} · kaldırılan: ${lockDiff.removed.join(", ")}`);
       }
+      receipt.baseTableSetBefore = tableSetKey(beforeLockTables);
       receipt.baseTableCount = afterLockTables.length;
       receipt.lockedTableCount = beforeLockTables.length;
       receipt.lockMode = `SHARE ROW EXCLUSIVE on ALL ${beforeLockTables.length} base tables (public, auth) · lock_timeout=10s · locks taken BEFORE preconditions`;
@@ -474,6 +474,30 @@ async function main(): Promise<void> {
       receipt.changedTables = changed;
       receipt.illegalChanges = illegal;
       if (illegal.length) throw new Error(`hedef DIŞI tablo değişti: ${illegal.join(", ")}`);
+
+      /* ── PRE-COMMIT DDL DRIFT GATES ────────────────────────────────────────────────────
+       * The locks froze DML on the 86 tables that existed when they were taken. They did not,
+       * and could not, freeze the catalog. Re-reading it here — after the deletes and the
+       * snapshot correction, immediately before COMMIT — catches a table that appeared or
+       * vanished while this transaction ran, i.e. a migration nobody was supposed to be running.
+       *
+       * The ledger is checked again for the same reason: it was 0087/87 at the start, and a
+       * migration that moved it during the cleanup would leave a repair committed against a
+       * schema that is no longer the one it was verified against.
+       */
+      const preCommitTables = await baseTables(c);
+      const commitDiff = tableSetDiff(afterLockTables, preCommitTables);
+      receipt.baseTableSetBeforeCommit = tableSetKey(preCommitTables);
+      receipt.baseTableSetEqual = commitDiff.equal;
+      if (!commitDiff.equal) {
+        throw new Error(`BASE_TABLE_SET_CHANGED_DURING_CLEANUP — eklenen: ${commitDiff.added.join(", ")} · kaldırılan: ${commitDiff.removed.join(", ")}`);
+      }
+      const ledgerPre = (await c.query<{ v: string; n: string }>(
+        "select max(version) v, count(*)::text n from public.schema_migrations")).rows[0];
+      receipt.ledgerPreCommit = `${ledgerPre.v}/${ledgerPre.n}`;
+      if (receipt.ledgerPreCommit !== receipt.ledger) {
+        throw new Error(`LEDGER_CHANGED_DURING_CLEANUP — başlangıç ${String(receipt.ledger)}, commit öncesi ${String(receipt.ledgerPreCommit)}`);
+      }
 
       await c.query("commit");
       receipt.result = "COMMITTED";

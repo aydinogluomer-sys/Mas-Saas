@@ -1,0 +1,40 @@
+{
+  "enforcedByDatabase": {
+    "id": "ALL_BASE_TABLE_DML_FREEZE",
+    "mechanism": "LOCK TABLE <tum base table'lar> IN SHARE ROW EXCLUSIVE MODE, deterministik sirada",
+    "measured": {
+      "baseTableCount": 86,
+      "lockedTableCount": 86,
+      "unlockedFingerprintTables": []
+    },
+    "evidence": "p24b-cleanup-v23/04-concurrent-wholedb-control.json — kilitliyken hedef disi yazma 55P03, kilitsizken geciyor",
+    "lockTimeout": "10s; bir tablo alinamazsa ROLLBACK — 'bazilari kilitlendi devam' YOK"
+  },
+  "notEnforcedByDatabase": {
+    "id": "CONCURRENT_NEW_TABLE_DDL",
+    "status": "OPERATIONALLY_FORBIDDEN",
+    "why": "Kilitler katalogu donduramaz. Yeni yaratilan bir tablo hem kilidin hem parmak izinin disinda kalir.",
+    "detection": [
+      "BASE_TABLE_SET_CHANGED_DURING_FREEZE (kilit sonrasi)",
+      "BASE_TABLE_SET_CHANGED_DURING_CLEANUP (COMMIT oncesi)",
+      "LEDGER_CHANGED_DURING_CLEANUP (COMMIT oncesi)"
+    ],
+    "honestStatement": "DDL engellenmis degil; TESPIT EDILIR ve temizligi iptal ettirir. 'Butun DDL veritabani kilidiyle matematiksel olarak imkansiz' demek YANLIS olurdu."
+  },
+  "requiredPreconditions": [
+    "uygulama/runtime durdurulmus",
+    "prepare-runtime calismiyor",
+    "bot/worker durdurulmus",
+    "migration sureci yok",
+    "baska DDL sureci yok",
+    "temizlik operatoru tek yetkili yazici"
+  ],
+  "measuredThisRun": {
+    "baseTableSetBefore": "auth.users,public.action_items,public.ai_response_snapshots,public.alert_escalation_rules,public.approval_rules,public.approval_steps,public.approvals,public.assistant_conversations,public.attachments,public.audit_logs,public.background_jobs,public.bank_accounts,public.bank_transaction_match_candidates,public.bank_transactions,public.budget_lines,public.budgets,public.capacity_models,public.cash_accounts,public.cashflow_lines,public.cashflow_months,public.cashflow_snapshots,public.categories,public.check_events,public.checks,public.collateral_records,public.control_alerts,public.cost_allocation_rules,public.cost_breakdown_lines,public.cost_centers,public.cost_models,public.counterparty_profiles,public.covenant_records,public.credit_facilities,public.departments,public.document_links,public.documents,public.external_assumptions,public.facility_drawdowns,public.finance_cost_allocations,public.forecast_lines,public.forecasts,public.fx_positions,public.fx_rate_snapshots,public.iban_change_events,public.ibans,public.import_rows,public.integration_connections,public.invoice_allocations,public.invoice_lines,public.invoice_reversals,public.invoices,public.loan_installments,public.loans,public.machine_assets,public.machine_minute_allocations,public.machine_roi_snapshots,public.mapping_reviews,public.metric_snapshots,public.optimization_recommendations,public.optimization_runs,public.orders,public.part_profitability_runs,public.parties,public.payment_instances,public.payments,public.production_parts,public.products,public.projects,public.promise_to_pay,public.reminder_deliveries,public.reminders,public.reports,public.saved_views,public.scenario_assumptions,public.scenario_comparisons,public.scenario_run_lines,public.scenario_runs,public.scenarios,public.schema_migrations,public.sessions,public.settings,public.source_cells,public.source_sheets,public.source_workbooks,public.treasury_policies,public.users",
+    "baseTableSetBeforeCommit": "auth.users,public.action_items,public.ai_response_snapshots,public.alert_escalation_rules,public.approval_rules,public.approval_steps,public.approvals,public.assistant_conversations,public.attachments,public.audit_logs,public.background_jobs,public.bank_accounts,public.bank_transaction_match_candidates,public.bank_transactions,public.budget_lines,public.budgets,public.capacity_models,public.cash_accounts,public.cashflow_lines,public.cashflow_months,public.cashflow_snapshots,public.categories,public.check_events,public.checks,public.collateral_records,public.control_alerts,public.cost_allocation_rules,public.cost_breakdown_lines,public.cost_centers,public.cost_models,public.counterparty_profiles,public.covenant_records,public.credit_facilities,public.departments,public.document_links,public.documents,public.external_assumptions,public.facility_drawdowns,public.finance_cost_allocations,public.forecast_lines,public.forecasts,public.fx_positions,public.fx_rate_snapshots,public.iban_change_events,public.ibans,public.import_rows,public.integration_connections,public.invoice_allocations,public.invoice_lines,public.invoice_reversals,public.invoices,public.loan_installments,public.loans,public.machine_assets,public.machine_minute_allocations,public.machine_roi_snapshots,public.mapping_reviews,public.metric_snapshots,public.optimization_recommendations,public.optimization_runs,public.orders,public.part_profitability_runs,public.parties,public.payment_instances,public.payments,public.production_parts,public.products,public.projects,public.promise_to_pay,public.reminder_deliveries,public.reminders,public.reports,public.saved_views,public.scenario_assumptions,public.scenario_comparisons,public.scenario_run_lines,public.scenario_runs,public.scenarios,public.schema_migrations,public.sessions,public.settings,public.source_cells,public.source_sheets,public.source_workbooks,public.treasury_policies,public.users",
+    "baseTableSetEqual": true,
+    "ledgerStart": "0087/87",
+    "ledgerPreCommit": "0087/87"
+  },
+  "unitTest": "tests/p24b-table-set.test.ts — tableSetDiff/tableSetKey icin 9 test; canli DDL yarisini kurmak yerine KARARI dogrudan test ediyor"
+}

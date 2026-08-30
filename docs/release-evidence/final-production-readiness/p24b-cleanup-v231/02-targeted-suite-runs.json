@@ -1,0 +1,32 @@
+{
+  "command": "vitest run tests/p24b-restore-target.test.ts tests/pg-concurrency.test.ts",
+  "runs": [
+    {
+      "run": 1,
+      "tests": 33,
+      "passed": 33,
+      "failed": 0,
+      "timeouts": 0,
+      "durationSec": 2.73
+    },
+    {
+      "run": 2,
+      "tests": 33,
+      "passed": 33,
+      "failed": 0,
+      "timeouts": 0,
+      "durationSec": 2.41
+    },
+    {
+      "run": 3,
+      "tests": 33,
+      "passed": 33,
+      "failed": 0,
+      "timeouts": 0,
+      "durationSec": 2.14
+    }
+  ],
+  "totalFailures": 0,
+  "totalTimeouts": 0,
+  "sideEffectAssertions": "CASE A (korunan hedef): dbConnections 0 (gercek TCP dinleyici ile SAYILDI), dockerCalls 0, destructiveCalls 0. Kirilgan duvar-saati esigi YOK."
+}

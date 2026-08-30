@@ -1,0 +1,27 @@
+{
+  "question": "hedeflenen testin 5 sn timeout'u guvenlik kodundan mi, harness soguk baslangicindan mi?",
+  "measurements": {
+    "pureDecision": {
+      "total": "50.000 karar / 70 ms",
+      "perDecision": "1.40 µs"
+    },
+    "coldStartMs": {
+      "nodeOnly": 1281,
+      "nodeTsx": 1132,
+      "tsxPlusSmokeTarget": 1656,
+      "tsxPlusPg": 877,
+      "tsxPlusBackupLib": 1016,
+      "bindingModuleGraph": 916
+    }
+  },
+  "conclusion": "Karar 1.40 µs. Bir subprocess'in tsx modul grafigi (owner-url, pg, backup-lib, fingerprint) ~1-2 s. v2.3'te 11 subprocess vardi: 15 µs mantik icin 11-22 s. Timeout TEST HARNESS kaynakli, guvenlik kodu degil.",
+  "remedy": "Parametrik ad vakalari saf birim testine tasindi (ayni process). Geriye CLI'nin yuklemi gercekten kullandigini kanitlayan 2 entegrasyon vakasi kaldi, acik 30 sn timeout ile.",
+  "before": {
+    "subprocessCases": 11,
+    "suiteTestTime": "21.85 s"
+  },
+  "after": {
+    "subprocessCases": 2,
+    "suiteTestTime": "3.25 s"
+  }
+}

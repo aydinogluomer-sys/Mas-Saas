@@ -523,3 +523,58 @@ Transaction geri alınır, ama **soru geri alınmaz**. Sıra:
 * **`origin/master`.** Bu çalışmanın hiçbir parçası `origin/master`'a dokunmaz;
   Faz 17-38 `phase17-38-review` dalında durur.
 * **Uygulama kodunun dağıtımı.** Bu belge yalnız veritabanı ve kimlik cutover'ıdır.
+
+---
+
+## P24B temizliği — DDL / sessizlik sözleşmesi
+
+`scripts/db/p24b-fixture-cleanup.ts` transaction'ı, `public` ve `auth` şemalarındaki **tüm base
+table'ları** (ölçülen: 86) `SHARE ROW EXCLUSIVE` ile kilitler. Bu kilidin ne verdiği ve **ne
+vermediği** konusunda net olmak gerekir; abartılmış bir güvenlik iddiası, olmayan bir korumaya
+güvenmeye yol açar.
+
+### Veritabanı tarafından zorlanan
+
+```
+ALL_BASE_TABLE_DML_FREEZE = ENFORCED_BY_DB_LOCKS
+```
+
+Kilit alındığı anda **var olan** her base table üzerinde dışarıdan `INSERT`/`UPDATE`/`DELETE`
+engellenir; okuma serbest kalır. Ölçülmüştür: kilit tutulurken hedef **dışı** bir tabloya yazma
+`55P03` ile reddedilir, kilit yokken aynı yazma geçer
+(`p24b-cleanup-v23/04-concurrent-wholedb-control.json`).
+
+Bir tablo `lock_timeout=10s` içinde alınamazsa transaction **ROLLBACK** olur. *"Bazıları
+kilitlendi, devam"* diye bir yol yoktur.
+
+### Veritabanı tarafından zorlanmayan — operasyonel invariant
+
+```
+CONCURRENT_NEW_TABLE_DDL = OPERATIONALLY_FORBIDDEN
+```
+
+Kilitler **katalogu** donduramaz. Eşzamanlı bir migration yeni bir tablo yaratırsa, o tablo hem
+kilidin hem parmak izinin dışında kalır. Bu yüzden temizlik, transaction'ın başında ve **COMMIT'ten
+hemen önce** katalogu yeniden okur:
+
+* küme değişmişse → `BASE_TABLE_SET_CHANGED_DURING_CLEANUP` → ROLLBACK
+* `schema_migrations` başlangıçtaki değerden (`0087/87`) kaymışsa → `LEDGER_CHANGED_DURING_CLEANUP` → ROLLBACK
+
+Yani DDL *engellenmiş* değil, **tespit edilir ve temizliği iptal ettirir**. Doğru ifade budur;
+"bütün DDL veritabanı kilidiyle matematiksel olarak imkânsız" demek yanlış olurdu.
+
+### Gerçek temizlik için zorunlu ön koşullar
+
+Operatör, temizliği başlatmadan önce şunları sağlamalıdır:
+
+| # | koşul |
+|---|---|
+| 1 | uygulama/runtime durdurulmuş (`next dev` / `next start` yok) |
+| 2 | `prepare-runtime` çalışmıyor |
+| 3 | Telegram botu / worker'lar durdurulmuş |
+| 4 | migration süreci yok (`db:migrate`, `db:migrate:dev`, CI job'ı) |
+| 5 | başka hiçbir DDL süreci yok |
+| 6 | temizliği yürüten operatör **tek yetkili yazıcıdır** |
+
+Bunlar temizlik makbuzunun sözleşmesinin parçasıdır; 1-3 zaten P24B soruşturmasının başında
+ölçülerek doğrulanmıştı (`writer-surface-audit/00-runtime-freeze.md`).
