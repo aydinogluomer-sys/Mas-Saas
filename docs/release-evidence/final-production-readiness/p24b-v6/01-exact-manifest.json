@@ -1,0 +1,311 @@
+{
+    "counts": {
+        "total": 42,
+        "users": 6,
+        "payments": 1,
+        "settings": 1,
+        "approvals": 4,
+        "action_items": 4,
+        "payment_instances": 26
+    },
+    "ledger": "0087/87",
+    "method": "V6 read-only: text footprint -> transitive UUID fixed point -> polymorphic refs -> incident-window sweep -> baseline absence",
+    "database": "mas_radar_dev",
+    "generatedAtUtc": "2026-08-29 21:13:34.772233+00",
+    "directContamination": {
+        "users": [
+            {
+                "id": "92cee4d3-c649-432d-b507-546d87936a76",
+                "role": "viewer",
+                "username": "p24b_fixture_a",
+                "created_at": "2026-08-25T10:09:08.427229+00:00"
+            },
+            {
+                "id": "a794163c-6ab5-4d00-a1b5-2b0c563be4e3",
+                "role": "viewer",
+                "username": "p24b_fixture_b",
+                "created_at": "2026-08-25T10:09:08.438386+00:00"
+            },
+            {
+                "id": "33796a14-c173-45c7-a784-33e44e8996a0",
+                "role": "finance_approver",
+                "username": "p24b_mk_mujyy6",
+                "created_at": "2026-08-25T10:10:38.78923+00:00"
+            },
+            {
+                "id": "19688698-2eb2-40bb-9fc5-37cebdc7e824",
+                "role": "finance_operator",
+                "username": "p24b_op_9bcmx5",
+                "created_at": "2026-08-25T10:10:38.837212+00:00"
+            },
+            {
+                "id": "cd3445b1-9c74-4703-b348-9f09a704a3d3",
+                "role": "finance_approver",
+                "username": "p24b_mk_rqn3yj",
+                "created_at": "2026-08-26T15:16:19.226684+00:00"
+            },
+            {
+                "id": "4b6d2264-a608-4b36-90aa-17fcfa13bb3f",
+                "role": "finance_operator",
+                "username": "p24b_op_ds1xmv",
+                "created_at": "2026-08-26T15:16:19.285327+00:00"
+            }
+        ],
+        "payments": [
+            {
+                "id": "7b300bfe-944f-468b-91fa-2de65b7cfee5",
+                "name": "P24B fixture",
+                "created_at": "2026-08-25T10:09:08.37789+00:00"
+            }
+        ],
+        "settings": [
+            {
+                "key": "p24b_fixture_setting",
+                "value": {
+                    "fixture": true
+                },
+                "updated_at": "2026-08-25T10:09:08.419562+00:00"
+            }
+        ],
+        "approvals": [
+            {
+                "id": "1fc76c28-9d71-4ce3-91a6-f1e9f94e5dd4",
+                "created_at": "2026-08-25T10:10:38.78923+00:00",
+                "subject_id": "7a8f5051-1f58-4817-9ec8-a1dc49ef261f",
+                "requested_by": "33796a14-c173-45c7-a784-33e44e8996a0",
+                "subject_table": "invoices"
+            },
+            {
+                "id": "62cd196c-d517-44c8-9431-3cce52d8b81a",
+                "created_at": "2026-08-25T10:10:38.78923+00:00",
+                "subject_id": "5e91aa49-a241-4720-9820-224c281417b9",
+                "requested_by": null,
+                "subject_table": "invoices"
+            },
+            {
+                "id": "8f656a4d-d2e4-40f2-b698-277f6278008b",
+                "created_at": "2026-08-26T15:16:19.226684+00:00",
+                "subject_id": "70b7f2ae-6092-4747-877a-78259fc1494f",
+                "requested_by": "cd3445b1-9c74-4703-b348-9f09a704a3d3",
+                "subject_table": "invoices"
+            },
+            {
+                "id": "f4d7db30-44ce-45c0-b4ce-536a0e2886c9",
+                "created_at": "2026-08-26T15:16:19.226684+00:00",
+                "subject_id": "48b3eceb-7b43-4346-bc91-ed0228f6fcb5",
+                "requested_by": null,
+                "subject_table": "invoices"
+            }
+        ],
+        "action_items": [
+            {
+                "id": "639daf7e-9c3e-4244-9ebf-6bef37b57971",
+                "title": "P24B mine",
+                "created_at": "2026-08-25T10:10:38.837212+00:00",
+                "created_by": "19688698-2eb2-40bb-9fc5-37cebdc7e824"
+            },
+            {
+                "id": "12d7532f-a730-44dd-9b91-43cf501a6871",
+                "title": "P24B theirs",
+                "created_at": "2026-08-25T10:10:38.837212+00:00",
+                "created_by": null
+            },
+            {
+                "id": "cdcb3e57-d0c3-46ac-afe7-997419720548",
+                "title": "P24B mine",
+                "created_at": "2026-08-26T15:16:19.285327+00:00",
+                "created_by": "4b6d2264-a608-4b36-90aa-17fcfa13bb3f"
+            },
+            {
+                "id": "cf55cbbc-feaa-4e79-9517-e41d22261e77",
+                "title": "P24B theirs",
+                "created_at": "2026-08-26T15:16:19.285327+00:00",
+                "created_by": null
+            }
+        ],
+        "payment_instances": [
+            {
+                "id": "3ab000e6-5187-468d-bf2e-2af882a2a3a2",
+                "amount": 1000.00,
+                "status": "unpaid",
+                "created_at": "2026-08-25T10:19:27.356405+00:00",
+                "instance_month": "2026-08-01"
+            },
+            {
+                "id": "79eccf48-65ff-4427-af7b-9e332488c1bd",
+                "amount": 1000.00,
+                "status": "unpaid",
+                "created_at": "2026-08-25T10:19:55.824936+00:00",
+                "instance_month": "2026-07-01"
+            },
+            {
+                "id": "dfa79dc9-bc4d-4572-96b2-de56b0baceae",
+                "amount": 1000.00,
+                "status": "unpaid",
+                "created_at": "2026-08-25T10:19:55.937739+00:00",
+                "instance_month": "2026-09-01"
+            },
+            {
+                "id": "5bcafa6a-0b14-450e-be0a-4200d3ebcfdf",
+                "amount": 1000.00,
+                "status": "unpaid",
+                "created_at": "2026-08-26T12:02:37.034397+00:00",
+                "instance_month": "2026-10-01"
+            },
+            {
+                "id": "c79c9191-091a-401c-afe2-a0f9d99581a0",
+                "amount": 1000.00,
+                "status": "unpaid",
+                "created_at": "2026-08-26T12:02:37.103914+00:00",
+                "instance_month": "2026-11-01"
+            },
+            {
+                "id": "684305b9-e02a-4d8d-a458-6872e05341eb",
+                "amount": 1000.00,
+                "status": "unpaid",
+                "created_at": "2026-08-26T12:02:37.146642+00:00",
+                "instance_month": "2026-12-01"
+            },
+            {
+                "id": "8294af06-3e5a-4c04-adbb-893242d32380",
+                "amount": 1000.00,
+                "status": "unpaid",
+                "created_at": "2026-08-26T12:02:37.195783+00:00",
+                "instance_month": "2027-01-01"
+            },
+            {
+                "id": "04a8236d-3986-4d6e-90dd-8101a6c33968",
+                "amount": 1000.00,
+                "status": "unpaid",
+                "created_at": "2026-08-26T12:02:37.238992+00:00",
+                "instance_month": "2027-02-01"
+            },
+            {
+                "id": "aec43bfd-0299-467a-aa06-9e305f2f2525",
+                "amount": 1000.00,
+                "status": "unpaid",
+                "created_at": "2026-08-26T12:02:37.283117+00:00",
+                "instance_month": "2027-03-01"
+            },
+            {
+                "id": "dfc12ad9-e11b-4810-84ee-83fcc5276f45",
+                "amount": 1000.00,
+                "status": "unpaid",
+                "created_at": "2026-08-26T12:02:37.318523+00:00",
+                "instance_month": "2027-04-01"
+            },
+            {
+                "id": "7feca5d8-4c15-4bbd-9158-0d6d9cf1373c",
+                "amount": 1000.00,
+                "status": "unpaid",
+                "created_at": "2026-08-26T12:02:37.353014+00:00",
+                "instance_month": "2027-05-01"
+            },
+            {
+                "id": "0eacaa79-ef1e-475a-92a6-131c0184808c",
+                "amount": 1000.00,
+                "status": "unpaid",
+                "created_at": "2026-08-26T12:02:37.392051+00:00",
+                "instance_month": "2027-06-01"
+            },
+            {
+                "id": "7444214a-9f32-4f70-b02d-131b7cfe8e16",
+                "amount": 1000.00,
+                "status": "unpaid",
+                "created_at": "2026-08-26T12:02:37.43337+00:00",
+                "instance_month": "2027-07-01"
+            },
+            {
+                "id": "6920c443-4786-404b-9483-2d2291711067",
+                "amount": 1000.00,
+                "status": "unpaid",
+                "created_at": "2026-08-26T12:02:37.468385+00:00",
+                "instance_month": "2027-08-01"
+            },
+            {
+                "id": "19a3cd28-9a01-4c9f-966f-39666a2c6bbd",
+                "amount": 1000.00,
+                "status": "unpaid",
+                "created_at": "2026-08-26T12:02:37.510962+00:00",
+                "instance_month": "2027-09-01"
+            },
+            {
+                "id": "c05e09bb-8342-4994-a3d3-060e78daf66a",
+                "amount": 1000.00,
+                "status": "unpaid",
+                "created_at": "2026-08-26T12:02:37.549877+00:00",
+                "instance_month": "2027-10-01"
+            },
+            {
+                "id": "492834d1-fec4-46e0-866a-d379b05874fd",
+                "amount": 1000.00,
+                "status": "unpaid",
+                "created_at": "2026-08-26T12:02:37.638624+00:00",
+                "instance_month": "2027-11-01"
+            },
+            {
+                "id": "74494b3c-a637-46db-8ce7-eb8b49d7023c",
+                "amount": 1000.00,
+                "status": "unpaid",
+                "created_at": "2026-08-26T12:02:37.699743+00:00",
+                "instance_month": "2027-12-01"
+            },
+            {
+                "id": "79c1ec15-3cea-4af6-a04c-9d97f96de051",
+                "amount": 1000.00,
+                "status": "unpaid",
+                "created_at": "2026-08-26T12:02:37.748865+00:00",
+                "instance_month": "2028-01-01"
+            },
+            {
+                "id": "b183d98d-e49c-4244-abbd-352950e1fd05",
+                "amount": 1000.00,
+                "status": "unpaid",
+                "created_at": "2026-08-26T12:02:37.78631+00:00",
+                "instance_month": "2028-02-01"
+            },
+            {
+                "id": "25ad518a-ec26-4f2f-958f-6b12b3f86bda",
+                "amount": 1000.00,
+                "status": "unpaid",
+                "created_at": "2026-08-26T12:02:37.823259+00:00",
+                "instance_month": "2028-03-01"
+            },
+            {
+                "id": "e5b90331-d7b8-4802-85a4-16b11bb3c877",
+                "amount": 1000.00,
+                "status": "unpaid",
+                "created_at": "2026-08-26T12:02:37.864664+00:00",
+                "instance_month": "2028-04-01"
+            },
+            {
+                "id": "375433d5-ae45-43f1-bfc3-9f04ceae073c",
+                "amount": 1000.00,
+                "status": "unpaid",
+                "created_at": "2026-08-26T12:02:37.903994+00:00",
+                "instance_month": "2028-05-01"
+            },
+            {
+                "id": "8aef2494-3a80-4879-99b5-841a0df04bde",
+                "amount": 1000.00,
+                "status": "unpaid",
+                "created_at": "2026-08-26T12:02:37.955163+00:00",
+                "instance_month": "2028-06-01"
+            },
+            {
+                "id": "a0acd3c0-fe0b-4da5-b8eb-86a6df8dec89",
+                "amount": 1000.00,
+                "status": "unpaid",
+                "created_at": "2026-08-26T12:02:38.013259+00:00",
+                "instance_month": "2028-07-01"
+            },
+            {
+                "id": "80ef312a-48f1-434b-9e80-b8e099c05cdb",
+                "amount": 1000.00,
+                "status": "unpaid",
+                "created_at": "2026-08-26T12:02:38.068329+00:00",
+                "instance_month": "2028-08-01"
+            }
+        ]
+    }
+}
