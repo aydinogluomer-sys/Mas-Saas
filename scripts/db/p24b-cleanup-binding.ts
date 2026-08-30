@@ -24,8 +24,10 @@ import { createHash } from "node:crypto";
 import { readFileSync, writeFileSync, existsSync, statSync } from "node:fs";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
-import { Pool, type PoolClient } from "pg";
+import { Pool } from "pg";
 import { ownerDatabaseUrl } from "./owner-url";
+import { targetFingerprint, wholeDbFingerprintDigest } from "./p24b-cleanup-fingerprint";
+import { smokeTargetBlockers, smokeDumpPath } from "./p24b-smoke-target";
 import { offDeviceCleanupBlockers, sha256OfFile } from "../ops/backup-lib";
 
 const MANIFEST_PATH = path.join(
@@ -38,30 +40,6 @@ interface ManifestRow { table: string; id: string; classification: string }
 interface Manifest { rows: ManifestRow[]; classificationTotals: Record<string, number> }
 
 function die(m: string): never { console.error(`DURDURULDU: ${m}`); process.exit(1); }
-
-async function targetFingerprint(c: PoolClient, targets: ManifestRow[]): Promise<string> {
-  const parts: string[] = [];
-  for (const r of targets) {
-    const idCol = r.table === "settings" ? "key" : "id";
-    const cast = r.table === "settings" ? "text" : "uuid";
-    const q = await c.query<{ fp: string }>(
-      `select md5(x::text) fp from public.${r.table} x where x.${idCol} = $1::${cast}`, [r.id]);
-    parts.push(`${r.table}/${r.id}/${q.rows[0]?.fp ?? "MISSING"}`);
-  }
-  return createHash("sha256").update(parts.sort().join("|")).digest("hex");
-}
-async function wholeDbFingerprint(c: PoolClient): Promise<string> {
-  const tabs = (await c.query<{ s: string; t: string }>(
-    `select table_schema s, table_name t from information_schema.tables
-      where table_type='BASE TABLE' and table_schema in ('public','auth') order by 1,2`)).rows;
-  const parts: string[] = [];
-  for (const { s, t } of tabs) {
-    const r = await c.query<{ n: string; fp: string }>(
-      `select count(*)::text n, coalesce(md5(string_agg(x::text,'|' order by x::text)),'EMPTY') fp from "${s}"."${t}" x`);
-    parts.push(`${s}.${t}:${r.rows[0].n}:${r.rows[0].fp}`);
-  }
-  return createHash("sha256").update(parts.join("|")).digest("hex");
-}
 
 async function main(): Promise<void> {
   const out = process.argv[2];
@@ -100,32 +78,59 @@ async function main(): Promise<void> {
       preCounts[t] = Number((await c.query<{ n: string }>(`select count(*)::text n from public.${t}`)).rows[0].n);
     }
     const targetFp = await targetFingerprint(c, targets);
-    const wholeFp = await wholeDbFingerprint(c);
+    const wholeFp = await wholeDbFingerprintDigest(c);
     if (targetFp.includes("MISSING")) die("hedef satırlardan bazıları kaynakta yok");
 
     /* Restore smoke: prove the backup this binding names can actually be restored and that the
      * restored copy still carries all 42 rows. A backup nobody has restored is a hope. */
     let smoke: Record<string, unknown> = { skipped: true };
-    if (smokeDb) {
-      execFileSync("docker", ["exec", CONTAINER, "dropdb", "-U", "postgres", "--if-exists", smokeDb], { stdio: "pipe" });
-      execFileSync("docker", ["exec", CONTAINER, "createdb", "-U", "postgres", smokeDb], { stdio: "pipe" });
-      execFileSync("docker", ["exec", "-i", CONTAINER, "bash", "-c", `cat > /tmp/${smokeDb}.dump`],
-        { input: readFileSync(raw.destPath), stdio: ["pipe", "pipe", "pipe"], maxBuffer: 512 * 1024 * 1024 });
-      execFileSync("docker", ["exec", CONTAINER, "pg_restore", "-U", "postgres", "-d", smokeDb, "--no-owner", `/tmp/${smokeDb}.dump`], { stdio: "pipe" });
-      const q = (sql: string): string =>
-        execFileSync("docker", ["exec", CONTAINER, "psql", "-U", "postgres", "-d", smokeDb, "-tAc", sql], { encoding: "utf8" }).trim();
-      const smokeLedger = q("select max(version)||'/'||count(*) from public.schema_migrations");
-      const smokePool = new Pool({ connectionString: url.replace(/\/[^/]+$/, `/${smokeDb}`), max: 1 });
-      const sc = await smokePool.connect();
-      let smokeTargetFp: string;
-      try { smokeTargetFp = await targetFingerprint(sc, targets); } finally { sc.release(); await smokePool.end(); }
-      const found = targets.length - (smokeTargetFp.match(/MISSING/g)?.length ?? 0);
-      smoke = {
-        restoredFromDestinationSha256: destSha, restoreDb: smokeDb, ledger: smokeLedger,
-        targetRows: found, fingerprint: smokeTargetFp,
-        fingerprintMatchesSource: smokeTargetFp === targetFp,
-      };
-      if (smokeTargetFp !== targetFp) die("restore smoke: geri yüklenen kopyanın hedef parmak izi kaynakla uyuşmuyor");
+    if (smokeDb !== undefined) {
+      /* ── THE GATE. Before the first destructive subprocess, not after. ────────────────────
+       * v2.1 fed argv[3] straight into `dropdb`, so `mas_radar_dev` would have destroyed the
+       * real database from inside the tool that exists to protect it.
+       */
+      const decision = smokeTargetBlockers(smokeDb, db);
+      if (!decision.ok) die(`restore smoke hedefi reddedildi:\n  - ${decision.blockers.join("\n  - ")}`);
+
+      /* The container-side path no longer contains the database name, and the dump is moved with
+       * `docker cp` rather than a `bash -c` string, so no argument is ever parsed by a shell. */
+      const inContainer = smokeDumpPath();
+      try {
+        execFileSync("docker", ["exec", CONTAINER, "dropdb", "-U", "postgres", "--if-exists", smokeDb], { stdio: "pipe" });
+        execFileSync("docker", ["exec", CONTAINER, "createdb", "-U", "postgres", smokeDb], { stdio: "pipe" });
+        execFileSync("docker", ["cp", raw.destPath, `${CONTAINER}:${inContainer}`], { stdio: "pipe" });
+        execFileSync("docker", ["exec", CONTAINER, "pg_restore", "-U", "postgres", "-d", smokeDb, "--no-owner", inContainer], { stdio: "pipe" });
+
+        const smokeLedger = execFileSync("docker",
+          ["exec", CONTAINER, "psql", "-U", "postgres", "-d", smokeDb, "-tAc",
+           "select max(version)||'/'||count(*) from public.schema_migrations"], { encoding: "utf8" }).trim();
+
+        const smokePool = new Pool({ connectionString: url.replace(/\/[^/]+$/, `/${smokeDb}`), max: 1 });
+        const sc = await smokePool.connect();
+        let smokeTargetFp: string; let smokeWholeFp: string;
+        try {
+          await sc.query("begin read only");
+          smokeTargetFp = await targetFingerprint(sc, targets);
+          smokeWholeFp = await wholeDbFingerprintDigest(sc);
+        } finally {
+          await sc.query("rollback").catch(() => {});
+          sc.release(); await smokePool.end();
+        }
+        const found = targets.length - (smokeTargetFp.match(/MISSING/g)?.length ?? 0);
+        const targetMatches = smokeTargetFp === targetFp;
+        const wholeMatches = smokeWholeFp === wholeFp;
+        smoke = {
+          restoredFromDestinationSha256: destSha, restoreDb: smokeDb, ledger: smokeLedger,
+          targetRows: found, targetFingerprint: smokeTargetFp, targetFingerprintMatchesSource: targetMatches,
+          wholeDbFingerprint: smokeWholeFp, wholeDbFingerprintMatchesSource: wholeMatches,
+        };
+        if (!targetMatches) die("restore smoke: geri yüklenen kopyanın HEDEF parmak izi kaynakla uyuşmuyor");
+        /* Matching the 42 targets is not enough. If any other table differs, the backup is not a
+         * faithful recovery copy of the state the cleanup is about to modify. */
+        if (!wholeMatches) die("RESTORE_SMOKE_WHOLE_DB_MISMATCH — geri yüklenen kopyanın TÜM-DB parmak izi kaynakla uyuşmuyor");
+      } finally {
+        execFileSync("docker", ["exec", CONTAINER, "rm", "-f", inContainer], { stdio: "pipe" });
+      }
     }
 
     binding = {

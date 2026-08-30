@@ -1,0 +1,18 @@
+{
+  "gate": "scripts/db/p24b-smoke-target.ts :: smokeTargetBlockers",
+  "order": "TUM kapilar ilk dropdb/createdb/docker mutasyonundan ONCE",
+  "checks": [
+    "ad verilmis mi",
+    "^[a-z][a-z0-9_]{0,62}$ (tirnak gerektiren ad reddedilir)",
+    "PROTECTED_DB_NAMES'te olmamali",
+    "mas_radar_dev icin ayrica acik hard gate",
+    "isDisposableDatabaseName === true",
+    "kaynak veritabaninin kendisi olmamali"
+  ],
+  "shellInterpolationRemoved": {
+    "was": "execFileSync('docker', ['exec','-i',C,'bash','-c', `cat > /tmp/${smokeDb}.dump`])",
+    "now": "execFileSync('docker', ['cp', destPath, `${C}:${smokeDumpPath()}`])  — DB adi hicbir shell string'ine girmiyor",
+    "tempPath": "/tmp/mas-p24b-smoke-<pid>-<ts>.dump  (DB adindan bagimsiz, finally'de silinir)"
+  },
+  "negativeControls": "tests/p24b-restore-target.test.ts — 28 test; entegrasyon vakalarinda sahte docker ile YIKICI SUBPROCESS SAYISI === 0 dogrulaniyor (yalniz exit kodu degil)"
+}

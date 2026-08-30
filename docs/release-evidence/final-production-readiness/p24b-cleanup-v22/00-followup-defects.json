@@ -1,0 +1,26 @@
+{
+  "baseCommit": "79fcb1ff739ce68bcdf2b997970a4413b50f8560",
+  "findings": [
+    {
+      "id": "F1",
+      "area": "restore smoke destructive target",
+      "oldCode": "p24b-cleanup-binding.ts: smokeDb = process.argv[3] -> dropdb --if-exists smokeDb (dogrulama YOK); ayrica bash -c `cat > /tmp/${smokeDb}.dump` (shell interpolation)",
+      "impact": "mas_radar_dev gecilseydi GERCEK veritabani, onun yedegini kanitlamakla gorevli aracin icinden DROP edilirdi. Ayrica argv shell string'ine giriyordu: 'foo;drop database mas_radar_dev' gecerli bir argv girdisi.",
+      "verdict": "RESTORE_SMOKE_DB_SAFETY = FAIL -> PASS"
+    },
+    {
+      "id": "F2",
+      "area": "whole-db binding",
+      "oldCode": "preCleanupWholeDbFingerprint yalniz artifact alaniydi; cleanup onu HIC karsilastirmiyordu. Ayrica fingerprint mantigi iki dosyada AYRI uygulanmisti.",
+      "impact": "42 hedef ayni kalirken hedef DISI bir tablo degisse bile cleanup acilirdi; oysa yedek artik tam kurtarma kopyasi degildir.",
+      "verdict": "WHOLE_DB_BACKUP_BINDING = NOT_ENFORCED -> ENFORCED"
+    },
+    {
+      "id": "F3",
+      "area": "pool performance",
+      "oldCode": "collectMetricSnapshots dis seviyesi kosulsuz sirali; gather() yalniz loadDataQualityCenter icinde kullaniliyordu.",
+      "impact": "Commit mesajindaki 'Pool paralel / PoolClient sirali' iddiasi dis seviyede gerceklesmiyordu. Olculen bedel: 2.19x.",
+      "verdict": "POOL_PERFORMANCE_PRESERVATION = FAIL -> PASS"
+    }
+  ]
+}

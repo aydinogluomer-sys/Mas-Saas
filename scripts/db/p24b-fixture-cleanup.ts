@@ -42,6 +42,7 @@ import { readFileSync, writeFileSync, existsSync, statSync } from "node:fs";
 import path from "node:path";
 import { Pool, type PoolClient } from "pg";
 import { ownerDatabaseUrl, isDisposableDatabaseName, databaseNameFromUrl } from "./owner-url";
+import { targetFingerprint, wholeDbFingerprintMap, digestOfMap } from "./p24b-cleanup-fingerprint";
 import { offDeviceCleanupBlockers, sha256OfFile } from "../ops/backup-lib";
 
 const MANIFEST_PATH = path.join(
@@ -80,7 +81,11 @@ interface Binding {
   backupDestinationSha256: string; backupDestinationPath: string; createdAtUtc: string;
   preCleanupTargetFingerprint: string; preCleanupWholeDbFingerprint: string;
   preCleanupCounts: Record<string, number>;
-  restoreSmoke: { restoredFromDestinationSha256: string; restoreDb: string; ledger: string; targetRows: number; fingerprint: string };
+  restoreSmoke: {
+    restoredFromDestinationSha256: string; restoreDb: string; ledger: string; targetRows: number;
+    targetFingerprint: string; targetFingerprintMatchesSource: boolean;
+    wholeDbFingerprint: string; wholeDbFingerprintMatchesSource: boolean;
+  };
 }
 
 type Mode = "preflight" | "rehearsal" | "execute";
@@ -88,7 +93,7 @@ const args = process.argv.slice(2);
 const mode: Mode = args.includes("--execute-p24b-cleanup-42")
   ? "execute" : args.includes("--rehearsal") ? "rehearsal" : "preflight";
 
-const receipt: Record<string, unknown> = { mode, contractVersion: "v2.1", startedAtUtc: new Date().toISOString() };
+const receipt: Record<string, unknown> = { mode, contractVersion: "v2.2", startedAtUtc: new Date().toISOString() };
 function writeReceipt(): void {
   receipt.finishedAtUtc = new Date().toISOString();
   const out = process.env.MAS_P24B_CLEANUP_OUT;
@@ -166,6 +171,12 @@ if (mode === "execute" || mode === "rehearsal") {
   if (b.backupDestinationSha256 !== actualSha) bp.push("binding başka bir yedeğe bağlı (SHA uyuşmuyor)");
   if (b.restoreSmoke?.restoredFromDestinationSha256 !== actualSha) bp.push("restore smoke başka bir yedekten yapılmış");
   if (b.restoreSmoke?.targetRows !== EXPECTED_TOTAL) bp.push("restore smoke 42 hedef satır görmemiş");
+  // The smoke test must have proven BOTH kinds of equality, not merely have run.
+  if (b.restoreSmoke?.targetFingerprintMatchesSource !== true) bp.push("restore smoke: hedef parmak izi kaynakla eşleşmemiş");
+  if (b.restoreSmoke?.wholeDbFingerprintMatchesSource !== true) bp.push("restore smoke: TÜM-DB parmak izi kaynakla eşleşmemiş");
+  if (typeof b.preCleanupWholeDbFingerprint !== "string" || b.preCleanupWholeDbFingerprint.length !== 64) {
+    bp.push("binding preCleanupWholeDbFingerprint taşımıyor");
+  }
   if (bp.length) fail(`cleanup binding geçersiz:\n  - ${bp.join("\n  - ")}`, 9);
   binding = b;
   receipt.binding = { path: bPath, createdAtUtc: b.createdAtUtc, backupDestinationSha256: b.backupDestinationSha256 };
@@ -197,30 +208,6 @@ async function moneyTotals(c: PoolClient): Promise<Record<string, string>> {
      union all select 'cashflow', coalesce(sum(closing_balance),0)::text from public.cashflow_months`);
   return Object.fromEntries(r.rows.map((x) => [x.k, x.v]));
 }
-async function wholeDbFingerprint(c: PoolClient): Promise<Record<string, string>> {
-  const tabs = (await c.query<{ s: string; t: string }>(
-    `select table_schema s, table_name t from information_schema.tables
-      where table_type='BASE TABLE' and table_schema in ('public','auth') order by 1,2`)).rows;
-  const out: Record<string, string> = {};
-  for (const { s, t } of tabs) {
-    const r = await c.query<{ n: string; fp: string }>(
-      `select count(*)::text n, coalesce(md5(string_agg(x::text,'|' order by x::text)),'EMPTY') fp from "${s}"."${t}" x`);
-    out[`${s}.${t}`] = `${r.rows[0].n}:${r.rows[0].fp}`;
-  }
-  return out;
-}
-/** Order-independent hash over exactly the 42 target rows. */
-async function targetFingerprint(c: PoolClient): Promise<string> {
-  const parts: string[] = [];
-  for (const r of targets) {
-    const idCol = r.table === "settings" ? "key" : "id";
-    const cast = r.table === "settings" ? "text" : "uuid";
-    const q = await c.query<{ fp: string }>(
-      `select md5(x::text) fp from public.${r.table} x where x.${idCol} = $1::${cast}`, [r.id]);
-    parts.push(`${r.table}/${r.id}/${q.rows[0]?.fp ?? "MISSING"}`);
-  }
-  return createHash("sha256").update(parts.sort().join("|")).digest("hex");
-}
 async function snapshotImage(c: PoolClient): Promise<Map<string, { sem: string; cutoff: string }>> {
   const r = await c.query<{ k: string; sem: string; cutoff: string }>(
     `select metric_key||'|'||dimension_key k,
@@ -247,7 +234,7 @@ async function main(): Promise<void> {
     if (mode === "preflight") {
       // Informational only — explicitly NOT the basis of any commit decision.
       const led = (await c.query<{ v: string; n: string }>("select max(version) v, count(*)::text n from public.schema_migrations")).rows[0];
-      const tf = await targetFingerprint(c);
+      const tf = await targetFingerprint(c, targets);
       const missing = targets.filter((r) => tf.includes(`${r.table}/${r.id}/MISSING`));
       receipt.preflight = { ledger: `${led.v}/${led.n}`, targetFingerprint: tf, missingTargets: missing.length, note: "PREFLIGHT ölçümleri kilit DIŞINDA alındı; yalnız bilgilendirmedir." };
       receipt.result = "PREFLIGHT_ONLY — hiçbir mutasyon yapılmadı";
@@ -298,11 +285,26 @@ async function main(): Promise<void> {
       }
       receipt.precondition = "PASS (kilit altında)";
 
-      const lockedTargetFp = await targetFingerprint(c);
+      const lockedTargetFp = await targetFingerprint(c, targets);
       if (binding && binding.preCleanupTargetFingerprint !== lockedTargetFp) {
         throw new Error("BACKUP_IS_STALE_FOR_CURRENT_STATE — yedek alındıktan sonra hedef satırlar değişmiş");
       }
       receipt.targetFingerprint = lockedTargetFp;
+
+      /* WHOLE-DATABASE BINDING — on top of the target check, not instead of it.
+       *
+       * The 42 target rows can be byte-identical while the rest of the database has moved. If any
+       * other table changed after the backup was taken, that backup is no longer a full recovery
+       * copy of the state this cleanup is about to modify: restoring it would undo whatever
+       * legitimate work happened in between. Matching only the targets would let that through.
+       */
+      const lockedWholeMap = await wholeDbFingerprintMap(c);
+      const lockedWholeFp = digestOfMap(lockedWholeMap);
+      if (binding && binding.preCleanupWholeDbFingerprint !== lockedWholeFp) {
+        throw new Error("BACKUP_IS_STALE_FOR_WHOLE_DATABASE_STATE — yedek alındıktan sonra hedef DIŞI veriler değişmiş");
+      }
+      receipt.wholeDbFingerprint = lockedWholeFp;
+      receipt.stateBinding = { target: "PASS", wholeDb: binding ? "PASS" : "n/a (binding yok)" };
 
       const atillaBefore = (await c.query<{ h: string }>(
         `select md5(u::text) h from public.users u where u.username=$1`, [ATILLA])).rows[0];
@@ -310,7 +312,7 @@ async function main(): Promise<void> {
 
       const beforeCounts = await counts(c, ORDER);
       const beforeMoney = await moneyTotals(c);
-      const beforeFp = await wholeDbFingerprint(c);
+      const beforeFpMap = await wholeDbFingerprintMap(c);
       const beforeSnap = await snapshotImage(c);
       const beforeAudit = await auditImage(c);
       receipt.before = { counts: beforeCounts, money: beforeMoney, snapshotRows: beforeSnap.size, auditRows: beforeAudit.n };
@@ -413,8 +415,8 @@ async function main(): Promise<void> {
       receipt.audit = { existingUnchanged: lost.length === 0, before: beforeAudit.n, after: afterAudit.n, inserted, expectedInserts: EXPECTED_AUDIT_INSERTS };
       if (inserted !== EXPECTED_AUDIT_INSERTS) throw new Error(`audit INSERT ${inserted}, ${EXPECTED_AUDIT_INSERTS} bekleniyordu`);
 
-      const afterFp = await wholeDbFingerprint(c);
-      const changed = Object.keys(beforeFp).filter((t) => beforeFp[t] !== afterFp[t]);
+      const afterFpMap = await wholeDbFingerprintMap(c);
+      const changed = Object.keys(beforeFpMap).filter((t) => beforeFpMap[t] !== afterFpMap[t]);
       const illegal = changed.filter((t) => !MUTABLE.has(t.replace(/^public\./, "")));
       receipt.changedTables = changed;
       receipt.illegalChanges = illegal;
