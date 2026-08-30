@@ -145,4 +145,61 @@ uygulamanın çalıştığı veritabanında olduğunu bağımsız olarak doğrul
 - **Olay penceresi süpürmesi:** `created_at` taşıyan 77 tablo tarandı → 2 ek `approvals` satırı
 - **Quiescence:** V6 öncesi/sonrası parmak izi aynı; `mas_radar_dev` yazması **0**
 
+---
+
+## V6.1 EKİ — iki approval'ın kanıtı yükseltildi
+
+Bu belgenin ilk hâli `approvals 62cd196c` ve `f4d7db30` için tek kanıt olarak **olay penceresi**
+gösteriyordu. **Zaman damgası tek başına silme gerekçesi değildir** ve bu iki satır V6.1'e
+`PAIR_PATTERN_CANDIDATE / UNRESOLVED` olarak girdi.
+
+V6.1 iki bağımsız kanıt sınıfı daha ölçtü:
+
+**1. TRANSACTION_LINEAGE (`xmin`).** Her iki NULL approval, metin-doğrulanmış bir P24B satırıyla
+**aynı commit'te** yazılmış:
+
+| xmin | aynı transaction'ın yazdığı satırlar | olay |
+|---|---|---|
+| `537425` | `users p24b_mk_mujyy6` + `approvals 1fc76c28` (maker) + **`approvals 62cd196c` (NULL)** | I1 |
+| `564610` | `users p24b_mk_rqn3yj` + `approvals 8f656a4d` (maker) + **`approvals f4d7db30` (NULL)** | I2 |
+
+Aynı desen `action_items` tarafında da doğrulandı (`537427`, `564612`: operatör kullanıcısı +
+"P24B mine" + "P24B theirs" tek transaction).
+
+**2. SOURCE_PAIR.** `scripts/db/roles-rls-verify.ts:410-423`, tek bir `asOwner()` transaction'ında
+iki approval'ı deterministik çift olarak üretir:
+
+```
+416-417  insert into approvals(...) values ('invoices', gen_random_uuid(), 'other', 'pending', $1=maker)
+419-420  insert into approvals(...) values ('invoices', gen_random_uuid(), 'other', 'pending', null)
+421      await oc.query("commit")
+```
+
+Ölçülen dört satırın şekli bu literal ile birebir uyuşuyor: `invoices` / `other` / `pending`,
+biri maker'a bağlı, biri `NULL`.
+
+> **Yan bulgu — `asOwner` rollback'i neden kurtarmadı.** `asOwner()` (satır 136-145)
+> `begin` … `finally rollback` şeklindedir, yani rollback-only bir yardımcı gibi okunur. Ama
+> callback satır **421**'de açıkça `commit` çağırır; `finally` içindeki rollback bu yüzden
+> etkisiz kalır ve satırlar KALICI olur. Gerçek DB'ye yazılmalarının mekanik sebebi budur.
+>
+> `gen_random_uuid()` ile üretilen `subject_id`'ler de bu yüzden hiçbir faturaya denk gelmez —
+> sarkan referansların açıklaması.
+
+Sonuç: iki satır artık **TRANSACTION_LINEAGE + SOURCE_PAIR + BASELINE_ABSENT** (3 bağımsız sınıf,
+`TIME` sayılmadan) taşıyor.
+
+`DIRECT_CONFIRMED = 42` · `UNRESOLVED = 0`
+
+## V6.1 artifact'leri
+
+| dosya | ne |
+|---|---|
+| `02-row-evidence-manifest.json/.md` | 42 satırın her biri için sınıflandırma + bağımsız kanıt sınıfları |
+| `03-v6-readonly-proof.json/.md` | keşif öncesi/sonrası parmak izi, salt-okunur zorlaması |
+| `04-metric-snapshot-recompute-dryrun.json/.md` | klonda silme + yeniden hesaplama; 2 semantik / 0 beklenmedik değişim |
+| `05-cleanup-dry-plan.json/.md` | ölçülmüş FK silme sırası, tablo ve para deltaları |
+
+Kapı: `node --import tsx scripts/qa/p24b-v6-evidence-check.ts` → `P24B_V6_EVIDENCE_INTEGRITY`
+
 `V6_FOOTPRINT = COMPLETE` · `P24B_CLEANUP_AUTHORIZED = NO`

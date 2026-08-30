@@ -1,0 +1,150 @@
+{
+  "generatedAtUtc": "2026-08-30T08:02:13.463Z",
+  "status": "DRY PLAN ONLY — hicbir gercek DB silme yapilmadi",
+  "verifiedOn": "mas_radar_p24b_dryrun_clone (gercek DB'nin disposable klonu)",
+  "order": [
+    {
+      "step": 1,
+      "table": "action_items",
+      "deleted": 4,
+      "before": 10,
+      "after": 6,
+      "delta": 4,
+      "targetCount": 4,
+      "blockingInboundFKs": [
+        "control_alerts.action_item_id (NO ACTION) — ölçülen referans: 0"
+      ],
+      "onDeleteAction": "NO ACTION",
+      "mustDeleteBefore": [
+        "users"
+      ],
+      "reason": "action_items.created_by -> users NO ACTION; kullanıcı silinmeden önce gitmeli"
+    },
+    {
+      "step": 2,
+      "table": "approvals",
+      "deleted": 4,
+      "before": 72,
+      "after": 68,
+      "delta": 4,
+      "targetCount": 4,
+      "blockingInboundFKs": [],
+      "onDeleteAction": "n/a (gelen FK yok)",
+      "mustDeleteBefore": [
+        "users"
+      ],
+      "reason": "approvals.requested_by -> users NO ACTION"
+    },
+    {
+      "step": 3,
+      "table": "payment_instances",
+      "deleted": 26,
+      "before": 511,
+      "after": 485,
+      "delta": 26,
+      "targetCount": 26,
+      "blockingInboundFKs": [],
+      "onDeleteAction": "n/a",
+      "mustDeleteBefore": [
+        "payments"
+      ],
+      "reason": "payment_instances.payment_id -> payments ON DELETE SET NULL; payments once silinirse 26 satir payment_id=NULL ile SESSIZCE hayatta kalir ve tek kanit bagini kaybeder"
+    },
+    {
+      "step": 4,
+      "table": "payments",
+      "deleted": 1,
+      "before": 20,
+      "after": 19,
+      "delta": 1,
+      "targetCount": 1,
+      "blockingInboundFKs": [
+        "payment_instances.payment_id (SET NULL)"
+      ],
+      "onDeleteAction": "SET NULL",
+      "mustDeleteBefore": [],
+      "reason": "-"
+    },
+    {
+      "step": 5,
+      "table": "users",
+      "deleted": 6,
+      "before": 19,
+      "after": 13,
+      "delta": 6,
+      "targetCount": 6,
+      "blockingInboundFKs": [
+        "action_items.created_by (NO ACTION) — ölçülen: 2",
+        "approvals.requested_by (NO ACTION) — ölçülen: 2",
+        "audit_logs.actor (NO ACTION) — ölçülen: 0",
+        "sessions.user_id (NO ACTION) — ölçülen: 0"
+      ],
+      "onDeleteAction": "NO ACTION",
+      "mustDeleteBefore": [],
+      "reason": "referans veren tek satirlar kendi hedeflerimiz"
+    },
+    {
+      "step": 6,
+      "table": "settings",
+      "deleted": 1,
+      "before": 8,
+      "after": 7,
+      "delta": 1,
+      "targetCount": 1,
+      "blockingInboundFKs": [],
+      "onDeleteAction": "n/a",
+      "mustDeleteBefore": [],
+      "reason": "bagimsiz"
+    }
+  ],
+  "orphanInstancesAfterDelete": 0,
+  "monetaryDeltas": [
+    {
+      "measure": "payments.default_amount",
+      "before": "541000.00",
+      "fixtureContribution": "1000.00",
+      "expectedAfter": "540000.00"
+    },
+    {
+      "measure": "payment_instances.amount",
+      "before": "14576000.00",
+      "fixtureContribution": "26000.00",
+      "expectedAfter": "14550000.00"
+    },
+    {
+      "measure": "checks.amount",
+      "before": "590000.00",
+      "fixtureContribution": "0",
+      "expectedAfter": "590000.00"
+    },
+    {
+      "measure": "loans.principal",
+      "before": "1500000.00",
+      "fixtureContribution": "0",
+      "expectedAfter": "1500000.00"
+    },
+    {
+      "measure": "cashflow_months.closing_balance",
+      "before": "-53839702.88",
+      "fixtureContribution": "0",
+      "expectedAfter": "-53839702.88"
+    }
+  ],
+  "derivedRefresh": {
+    "plan": "PASS",
+    "expectedSemanticChanges": [
+      {
+        "metric": "payment_status.unpaid",
+        "before": "13621000.0000",
+        "after": "13595000.0000"
+      },
+      {
+        "metric": "task_status.open",
+        "before": "8.0000",
+        "after": "4.0000"
+      }
+    ],
+    "unexpectedSemanticChanges": 0,
+    "technicalOnlyChanges": 22
+  }
+}

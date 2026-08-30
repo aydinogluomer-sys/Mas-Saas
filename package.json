@@ -110,7 +110,10 @@
     "interaction:gate:strict": "node --import tsx scripts/qa/interaction-coverage-gate.ts --strict",
     "audit:writer-manifest": "node --import tsx scripts/qa/writer-surface-manifest.ts docs/release-evidence/final-production-readiness/writer-surface-audit/05-writer-surface-manifest.json docs/release-evidence/final-production-readiness/writer-surface-audit/05-writer-surface-manifest.md",
     "audit:writer-evidence": "node --import tsx scripts/qa/writer-audit-evidence-check.ts",
-    "db:quiescence": "node --import tsx scripts/db/quiescence-snapshot.ts"
+    "db:quiescence": "node --import tsx scripts/db/quiescence-snapshot.ts",
+    "p24b:row-evidence": "node --import tsx scripts/qa/p24b-row-evidence.ts docs/release-evidence/final-production-readiness/p24b-v6/02-row-evidence-manifest.json docs/release-evidence/final-production-readiness/p24b-v6/02-row-evidence-manifest.md",
+    "p24b:evidence-check": "node --import tsx scripts/qa/p24b-v6-evidence-check.ts",
+    "p24b:cleanup-dryrun": "node --import tsx scripts/qa/p24b-cleanup-dryrun.ts"
   },
   "dependencies": {
     "@next/env": "15.5.20",
