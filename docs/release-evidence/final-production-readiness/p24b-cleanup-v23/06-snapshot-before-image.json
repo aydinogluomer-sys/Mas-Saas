@@ -1,0 +1,199 @@
+{
+  "snapshotDate": "2026-08-27",
+  "rowCount": 24,
+  "sha256": "9ca8fe8bb20ae5f0728991e9b51a3b2352bfb06fd64bc0d455531af4f1299ce4",
+  "rows": [
+    {
+      "metric_key": "cash_first_negative",
+      "dimension_key": "total",
+      "snapshot_date": "2026-08-27",
+      "source_cutoff": "2026-08-27T01:31:28.841+00:00",
+      "value_numeric": null,
+      "rowFingerprint": "cb431dae54af162505b8611510345620"
+    },
+    {
+      "metric_key": "cash_worst_closing",
+      "dimension_key": "total",
+      "snapshot_date": "2026-08-27",
+      "source_cutoff": "2026-08-27T01:31:28.841+00:00",
+      "value_numeric": -3064607.57,
+      "rowFingerprint": "5136741c6efdfd1b991bcd6080f875e6"
+    },
+    {
+      "metric_key": "data_missing_amounts",
+      "dimension_key": "total",
+      "snapshot_date": "2026-08-27",
+      "source_cutoff": "2026-08-27T01:31:28.841+00:00",
+      "value_numeric": 314,
+      "rowFingerprint": "922bbf0450bb490ebbef1db1ded8f3fa"
+    },
+    {
+      "metric_key": "data_reviews_high",
+      "dimension_key": "total",
+      "snapshot_date": "2026-08-27",
+      "source_cutoff": "2026-08-27T01:31:28.841+00:00",
+      "value_numeric": 5,
+      "rowFingerprint": "d60d9689ebda061d3a004d3db27cce0b"
+    },
+    {
+      "metric_key": "data_reviews_open",
+      "dimension_key": "total",
+      "snapshot_date": "2026-08-27",
+      "source_cutoff": "2026-08-27T01:31:28.841+00:00",
+      "value_numeric": 53,
+      "rowFingerprint": "f1d50faee68b8aadbdd86593c578da93"
+    },
+    {
+      "metric_key": "decision_confidence",
+      "dimension_key": "total",
+      "snapshot_date": "2026-08-27",
+      "source_cutoff": "2026-08-27T01:31:28.841+00:00",
+      "value_numeric": 0,
+      "rowFingerprint": "3c2566eb62efaa1af0ab028799805a43"
+    },
+    {
+      "metric_key": "external_pending",
+      "dimension_key": "total",
+      "snapshot_date": "2026-08-27",
+      "source_cutoff": "2026-08-27T01:31:28.841+00:00",
+      "value_numeric": 2,
+      "rowFingerprint": "652f4ac066590a7845dcf6ece2f53ec6"
+    },
+    {
+      "metric_key": "loan_remaining",
+      "dimension_key": "total",
+      "snapshot_date": "2026-08-27",
+      "source_cutoff": "2026-08-27T01:31:28.841+00:00",
+      "value_numeric": 3371973.64,
+      "rowFingerprint": "730c26749b5011612ad2700e0c7a1b47"
+    },
+    {
+      "metric_key": "maturity_outflow",
+      "dimension_key": "30d",
+      "snapshot_date": "2026-08-27",
+      "source_cutoff": "2026-08-27T01:31:28.841+00:00",
+      "value_numeric": 471744.12,
+      "rowFingerprint": "415bac91420990b2467e59ab0ebebfa1"
+    },
+    {
+      "metric_key": "maturity_outflow",
+      "dimension_key": "7d",
+      "snapshot_date": "2026-08-27",
+      "source_cutoff": "2026-08-27T01:31:28.841+00:00",
+      "value_numeric": 300000,
+      "rowFingerprint": "e96d3dd57277682ec38ea0bfc1767773"
+    },
+    {
+      "metric_key": "maturity_outflow",
+      "dimension_key": "90d",
+      "snapshot_date": "2026-08-27",
+      "source_cutoff": "2026-08-27T01:31:28.841+00:00",
+      "value_numeric": 615232.36,
+      "rowFingerprint": "a60468fcbeda8713c0c824bcdf9a72ef"
+    },
+    {
+      "metric_key": "part_margin_average",
+      "dimension_key": "total",
+      "snapshot_date": "2026-08-27",
+      "source_cutoff": "2026-08-27T01:31:28.841+00:00",
+      "value_numeric": -0.4594,
+      "rowFingerprint": "8f274f34687ea1d6a4d9d1e6e380bc5f"
+    },
+    {
+      "metric_key": "part_margin_min",
+      "dimension_key": "total",
+      "snapshot_date": "2026-08-27",
+      "source_cutoff": "2026-08-27T01:31:28.841+00:00",
+      "value_numeric": -4.2395,
+      "rowFingerprint": "9c6970366101a6b961b912d8c9ef4785"
+    },
+    {
+      "metric_key": "payment_status",
+      "dimension_key": "cancelled",
+      "snapshot_date": "2026-08-27",
+      "source_cutoff": "2026-08-27T01:31:28.841+00:00",
+      "value_numeric": 770000,
+      "rowFingerprint": "319781c738dc7f90f6c7cdcbf5450de0"
+    },
+    {
+      "metric_key": "payment_status",
+      "dimension_key": "paid",
+      "snapshot_date": "2026-08-27",
+      "source_cutoff": "2026-08-27T01:31:28.841+00:00",
+      "value_numeric": 155000,
+      "rowFingerprint": "afaca3ea626ee2e4df8e214bfcfd125b"
+    },
+    {
+      "metric_key": "payment_status",
+      "dimension_key": "partial",
+      "snapshot_date": "2026-08-27",
+      "source_cutoff": "2026-08-27T01:31:28.841+00:00",
+      "value_numeric": 30000,
+      "rowFingerprint": "6e918d366097de029ea909728e7078c7"
+    },
+    {
+      "metric_key": "payment_status",
+      "dimension_key": "planned",
+      "snapshot_date": "2026-08-27",
+      "source_cutoff": "2026-08-27T01:31:28.841+00:00",
+      "value_numeric": 0,
+      "rowFingerprint": "240ea545d7e259c10ec9d92a309f7cbd"
+    },
+    {
+      "metric_key": "payment_status",
+      "dimension_key": "unpaid",
+      "snapshot_date": "2026-08-27",
+      "source_cutoff": "2026-08-27T01:31:28.841+00:00",
+      "value_numeric": 13621000,
+      "rowFingerprint": "5fec0883fe2f64003bf2c81b62bec9e2"
+    },
+    {
+      "metric_key": "reminder_status",
+      "dimension_key": "failed",
+      "snapshot_date": "2026-08-27",
+      "source_cutoff": "2026-08-27T01:31:28.841+00:00",
+      "value_numeric": 18,
+      "rowFingerprint": "85c986dd767c89df13100efaa06b5755"
+    },
+    {
+      "metric_key": "reminder_status",
+      "dimension_key": "pending",
+      "snapshot_date": "2026-08-27",
+      "source_cutoff": "2026-08-27T01:31:28.841+00:00",
+      "value_numeric": 4,
+      "rowFingerprint": "fcdd52590ac90698ad07b12ce5cc99a8"
+    },
+    {
+      "metric_key": "reminder_status",
+      "dimension_key": "sent",
+      "snapshot_date": "2026-08-27",
+      "source_cutoff": "2026-08-27T01:31:28.841+00:00",
+      "value_numeric": 36,
+      "rowFingerprint": "16cd68261646de907cceaf83b8d1bf04"
+    },
+    {
+      "metric_key": "task_status",
+      "dimension_key": "done",
+      "snapshot_date": "2026-08-27",
+      "source_cutoff": "2026-08-27T01:31:28.841+00:00",
+      "value_numeric": 1,
+      "rowFingerprint": "ac9ca3c5d73a3984ed100b5ecb97afa4"
+    },
+    {
+      "metric_key": "task_status",
+      "dimension_key": "in_progress",
+      "snapshot_date": "2026-08-27",
+      "source_cutoff": "2026-08-27T01:31:28.841+00:00",
+      "value_numeric": 1,
+      "rowFingerprint": "c80f16a68d82eb1ebec05bba751406d5"
+    },
+    {
+      "metric_key": "task_status",
+      "dimension_key": "open",
+      "snapshot_date": "2026-08-27",
+      "source_cutoff": "2026-08-27T01:31:28.841+00:00",
+      "value_numeric": 8,
+      "rowFingerprint": "533842fe16bb3b25c778a202644a4673"
+    }
+  ]
+}

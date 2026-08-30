@@ -145,3 +145,34 @@ describe("binding generator — yıkıcı çağrı sayısı", () => {
     expect(r.destructiveCalls).toBe(0);
   });
 });
+
+describe("fail-fast — korunan ad DB'ye BAĞLANMADAN reddediliyor", () => {
+  /**
+   * v2.2'de kapı Pool açıldıktan ve 86 tablonun parmak izi hesaplandıktan SONRA çalışıyordu.
+   * Doğruydu ama geçti: korunan bir ad bile önce bir bağlantıya ve tam bir fingerprint'e mal
+   * oluyordu — testin 5 saniyede timeout olmasının sebebi buydu.
+   *
+   * Ayrım şu: URL, hiçbir şeyin dinlemediği bir porta bakıyor. Kapı fail-fast ise hata ADA dair
+   * olur; önce bağlanmaya çalışsaydı hata BAĞLANTIYA dair olurdu.
+   */
+  const DEAD_PORT_URL = "postgres://u:p@127.0.0.1:59999/mas_radar_x_verify";
+
+  it.each(["mas_radar_dev", "postgres", "foo;drop database mas_radar_dev"])(
+    "'%s' — hata ada dair, bağlantıya dair değil", (name) => {
+      let stderr = ""; let status = 0;
+      try {
+        execFileSync(process.execPath, ["--import", "tsx", "scripts/db/p24b-cleanup-binding.ts", path.join(tmpdir(), "unused.json"), name], {
+          cwd: ROOT, encoding: "utf8", stdio: ["pipe", "pipe", "pipe"],
+          env: { ...process.env, MIGRATION_DATABASE_URL: DEAD_PORT_URL, MAS_P24B_BACKUP_RECEIPT: "" },
+        });
+      } catch (e) {
+        const err = e as { status?: number; stderr?: string };
+        status = err.status ?? -1; stderr = err.stderr ?? "";
+      }
+      expect(status).not.toBe(0);
+      expect(stderr).toContain("restore smoke hedefi reddedildi");
+      // Bağlantı denenmiş olsaydı bu izlerden biri görünürdü.
+      expect(stderr).not.toMatch(/ECONNREFUSED|timeout|connect/i);
+    });
+});
+

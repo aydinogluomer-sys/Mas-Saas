@@ -40,7 +40,8 @@ async function fingerprints(url: string): Promise<{ target: string; whole: strin
     await c.query("begin read only");
     const manifest = JSON.parse(readFileSync(MANIFEST, "utf8")) as { rows: ManifestRow[] };
     const targets = manifest.rows.filter((r) => r.classification === "DELETE_TARGET");
-    return { target: await targetFingerprint(c, targets), whole: await wholeDbFingerprintDigest(c) };
+    const t = await targetFingerprint(c, targets);
+    return { target: t.digest, whole: await wholeDbFingerprintDigest(c) };
   } finally {
     await c.query("rollback").catch(() => {});
     c.release(); await pool.end();

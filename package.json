@@ -119,7 +119,8 @@
     "p24b:toctou": "node --import tsx scripts/qa/p24b-toctou-control.ts",
     "p24b:negative-controls": "node --import tsx scripts/qa/p24b-negative-controls.ts",
     "p24b:wholedb-control": "node --import tsx scripts/qa/p24b-wholedb-control.ts",
-    "p24b:snapshot-bench": "node --import tsx scripts/qa/p24b-snapshot-bench.ts"
+    "p24b:snapshot-bench": "node --import tsx scripts/qa/p24b-snapshot-bench.ts",
+    "p24b:concurrent-control": "node --import tsx scripts/qa/p24b-concurrent-wholedb-control.ts"
   },
   "dependencies": {
     "@next/env": "15.5.20",

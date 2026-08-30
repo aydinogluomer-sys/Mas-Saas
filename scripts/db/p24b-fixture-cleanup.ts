@@ -56,8 +56,23 @@ const EXPECTED_COUNTS: Record<string, number> = {
 };
 const EXPECTED_TOTAL = 42;
 const ORDER = ["action_items", "approvals", "payment_instances", "payments", "users", "settings"] as const;
-/** Locked together with the targets: the correction writes to both. */
-const LOCK_TABLES = [...ORDER, "metric_snapshots", "audit_logs"] as const;
+/**
+ * PostgreSQL identifier quoting. Table names come from the catalog rather than user input, but
+ * building SQL by interpolating them raw is the habit that produces injection the day a name is
+ * unusual — and a name with a double quote or a capital letter would break the statement anyway.
+ */
+function q(ident: string): string {
+  return `"${ident.replace(/"/g, '""')}"`;
+}
+
+/** Every base table in the fingerprinted schemas, ordered deterministically. */
+async function baseTables(c: PoolClient): Promise<Array<{ schema: string; name: string }>> {
+  return (await c.query<{ schema: string; name: string }>(
+    `select table_schema as schema, table_name as name
+       from information_schema.tables
+      where table_type = 'BASE TABLE' and table_schema = any($1::text[])
+      order by table_schema, table_name`, [["public", "auth"]])).rows;
+}
 const REAL_DB = "mas_radar_dev";
 const ATILLA = "atilla";
 const MUTABLE = new Set<string>([...ORDER, "metric_snapshots", "audit_logs"]);
@@ -93,7 +108,7 @@ const args = process.argv.slice(2);
 const mode: Mode = args.includes("--execute-p24b-cleanup-42")
   ? "execute" : args.includes("--rehearsal") ? "rehearsal" : "preflight";
 
-const receipt: Record<string, unknown> = { mode, contractVersion: "v2.2", startedAtUtc: new Date().toISOString() };
+const receipt: Record<string, unknown> = { mode, contractVersion: "v2.3", startedAtUtc: new Date().toISOString() };
 function writeReceipt(): void {
   receipt.finishedAtUtc = new Date().toISOString();
   const out = process.env.MAS_P24B_CLEANUP_OUT;
@@ -235,10 +250,13 @@ async function main(): Promise<void> {
       // Informational only — explicitly NOT the basis of any commit decision.
       const led = (await c.query<{ v: string; n: string }>("select max(version) v, count(*)::text n from public.schema_migrations")).rows[0];
       const tf = await targetFingerprint(c, targets);
-      const missing = targets.filter((r) => tf.includes(`${r.table}/${r.id}/MISSING`));
-      receipt.preflight = { ledger: `${led.v}/${led.n}`, targetFingerprint: tf, missingTargets: missing.length, note: "PREFLIGHT ölçümleri kilit DIŞINDA alındı; yalnız bilgilendirmedir." };
+      receipt.preflight = {
+        ledger: `${led.v}/${led.n}`, targetFingerprint: tf.digest,
+        targetFound: tf.found, targetExpected: tf.expected, missingTargets: tf.missing,
+        note: "PREFLIGHT ölçümleri kilit DIŞINDA alındı; yalnız bilgilendirmedir.",
+      };
       receipt.result = "PREFLIGHT_ONLY — hiçbir mutasyon yapılmadı";
-      console.log(`PREFLIGHT: ledger ${led.v}/${led.n}, eksik hedef ${missing.length}. Silme YAPILMADI.`);
+      console.log(`PREFLIGHT: ledger ${led.v}/${led.n}, hedef ${tf.found}/${tf.expected}. Silme YAPILMADI.`);
       writeReceipt();
       return;
     }
@@ -247,9 +265,33 @@ async function main(): Promise<void> {
     await c.query("begin");
     try {
       await c.query("set local lock_timeout = '10s'");
-      await c.query(`lock table ${LOCK_TABLES.map((t) => `public.${t}`).join(", ")} in share row exclusive mode`);
-      receipt.lockMode = `SHARE ROW EXCLUSIVE on ${LOCK_TABLES.join(", ")} · lock_timeout=10s · locks taken BEFORE preconditions`;
-      console.log(`  kilit alındı (${LOCK_TABLES.length} tablo) — tüm önkoşullar bundan SONRA ölçülüyor`);
+
+      /* ── LOCK EVERY BASE TABLE THE FINGERPRINT COVERS ─────────────────────────────────────
+       * v2.2 locked eight tables and then compared a fingerprint computed over all 86. The
+       * whole-database binding therefore promised something the locks did not defend: another
+       * session could have written to any of the other 78 between the fingerprint and the commit,
+       * and the "stale backup" gate would have been comparing a value that had already moved.
+       *
+       * The binding's claim is about the WHOLE database, so the freeze has to be about the whole
+       * database too. Single statement, deterministic order (schema, name) to avoid deadlocking
+       * against anything else that locks in catalog order.
+       */
+      const beforeLockTables = await baseTables(c);
+      const lockList = beforeLockTables.map((t) => `${q(t.schema)}.${q(t.name)}`).join(", ");
+      await c.query(`lock table ${lockList} in share row exclusive mode`);
+
+      /* DDL is not blocked by having read the catalog a moment ago. Re-reading it under the locks
+       * turns "the table set looked like this" into "the table set IS this, and is now frozen". */
+      const afterLockTables = await baseTables(c);
+      const beforeKey = beforeLockTables.map((t) => `${t.schema}.${t.name}`).join(",");
+      const afterKey = afterLockTables.map((t) => `${t.schema}.${t.name}`).join(",");
+      if (beforeKey !== afterKey) {
+        throw new Error("BASE_TABLE_SET_CHANGED_DURING_FREEZE — kilit alınırken tablo kümesi değişti");
+      }
+      receipt.baseTableCount = afterLockTables.length;
+      receipt.lockedTableCount = beforeLockTables.length;
+      receipt.lockMode = `SHARE ROW EXCLUSIVE on ALL ${beforeLockTables.length} base tables (public, auth) · lock_timeout=10s · locks taken BEFORE preconditions`;
+      console.log(`  kilit alındı (${beforeLockTables.length} base table, tamamı) — tüm önkoşullar bundan SONRA ölçülüyor`);
 
       const led = (await c.query<{ v: string; n: string }>("select max(version) v, count(*)::text n from public.schema_migrations")).rows[0];
       if (`${led.v}/${led.n}` !== "0087/87") throw new Error(`ledger ${led.v}/${led.n}, 0087/87 bekleniyordu`);
@@ -285,7 +327,11 @@ async function main(): Promise<void> {
       }
       receipt.precondition = "PASS (kilit altında)";
 
-      const lockedTargetFp = await targetFingerprint(c, targets);
+      const lockedTarget = await targetFingerprint(c, targets);
+      if (lockedTarget.found !== lockedTarget.expected) {
+        throw new Error(`kilit altında ${lockedTarget.found}/${lockedTarget.expected} hedef satır bulundu`);
+      }
+      const lockedTargetFp = lockedTarget.digest;
       if (binding && binding.preCleanupTargetFingerprint !== lockedTargetFp) {
         throw new Error("BACKUP_IS_STALE_FOR_CURRENT_STATE — yedek alındıktan sonra hedef satırlar değişmiş");
       }
@@ -300,6 +346,13 @@ async function main(): Promise<void> {
        */
       const lockedWholeMap = await wholeDbFingerprintMap(c);
       const lockedWholeFp = digestOfMap(lockedWholeMap);
+      // Every table the digest covers must be one the transaction holds a lock on.
+      const lockedSet = new Set(afterLockTables.map((t) => `${t.schema}.${t.name}`));
+      const unlockedFingerprintTables = Object.keys(lockedWholeMap).filter((t) => !lockedSet.has(t));
+      receipt.unlockedFingerprintTables = unlockedFingerprintTables;
+      if (unlockedFingerprintTables.length > 0) {
+        throw new Error(`parmak izi kilitli OLMAYAN tablo içeriyor: ${unlockedFingerprintTables.join(", ")}`);
+      }
       if (binding && binding.preCleanupWholeDbFingerprint !== lockedWholeFp) {
         throw new Error("BACKUP_IS_STALE_FOR_WHOLE_DATABASE_STATE — yedek alındıktan sonra hedef DIŞI veriler değişmiş");
       }

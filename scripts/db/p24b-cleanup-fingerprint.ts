@@ -53,19 +53,50 @@ export async function wholeDbFingerprintDigest(c: PoolClient): Promise<string> {
 }
 
 /**
- * One SHA256 over exactly the listed rows.
+ * The result of fingerprinting a target set.
  *
- * A row that is absent contributes the literal "MISSING", so a fingerprint computed over a
- * half-deleted target set can never collide with one computed over the intact set.
+ * WHY THIS IS A STRUCT AND NOT A STRING. v2.2 returned only the digest and callers then asked
+ * `digest.includes("MISSING")` / `digest.match(/MISSING/g)` to decide how many rows were present.
+ * A SHA256 digest is hex — it cannot contain the letters "MISSING" — so those checks were
+ * ALWAYS false and `found` was always the expected count. The binding therefore recorded
+ * `targetRows: 42` no matter how many rows the restored copy actually held, which is exactly the
+ * fact the restore smoke exists to establish.
+ *
+ * Presence is now counted where it is known, and the caller cannot re-derive it from a hash.
  */
-export async function targetFingerprint(c: PoolClient, targets: readonly TargetRef[]): Promise<string> {
+export interface TargetFingerprintResult {
+  digest: string;
+  expected: number;
+  found: number;
+  missing: Array<{ table: string; id: string }>;
+}
+
+/**
+ * One SHA256 over exactly the listed rows, plus the counts behind it.
+ *
+ * A row that is absent still contributes a canonical "MISSING" marker to the DIGEST, so a
+ * fingerprint over a half-deleted target set can never collide with one over the intact set —
+ * but `found` and `missing` come from the query results, never from the digest text.
+ */
+export async function targetFingerprint(
+  c: PoolClient,
+  targets: readonly TargetRef[],
+): Promise<TargetFingerprintResult> {
   const parts: string[] = [];
+  const missing: Array<{ table: string; id: string }> = [];
   for (const r of targets) {
     const idCol = r.table === "settings" ? "key" : "id";
     const cast = r.table === "settings" ? "text" : "uuid";
     const q = await c.query<{ fp: string }>(
       `select md5(x::text) fp from public.${r.table} x where x.${idCol} = $1::${cast}`, [r.id]);
-    parts.push(`${r.table}/${r.id}/${q.rows[0]?.fp ?? "MISSING"}`);
+    const fp = q.rows[0]?.fp;
+    if (fp === undefined) missing.push({ table: r.table, id: r.id });
+    parts.push(`${r.table}/${r.id}/${fp ?? "MISSING"}`);
   }
-  return createHash("sha256").update(parts.sort().join("|")).digest("hex");
+  return {
+    digest: createHash("sha256").update(parts.sort().join("|")).digest("hex"),
+    expected: targets.length,
+    found: targets.length - missing.length,
+    missing,
+  };
 }

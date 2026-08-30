@@ -25,8 +25,8 @@ import { readFileSync, writeFileSync, existsSync, statSync } from "node:fs";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { Pool } from "pg";
-import { ownerDatabaseUrl } from "./owner-url";
-import { targetFingerprint, wholeDbFingerprintDigest } from "./p24b-cleanup-fingerprint";
+import { ownerDatabaseUrl, databaseNameFromUrl } from "./owner-url";
+import { targetFingerprint, wholeDbFingerprintDigest, type TargetFingerprintResult } from "./p24b-cleanup-fingerprint";
 import { smokeTargetBlockers, smokeDumpPath } from "./p24b-smoke-target";
 import { offDeviceCleanupBlockers, sha256OfFile } from "../ops/backup-lib";
 
@@ -46,6 +46,25 @@ async function main(): Promise<void> {
   const smokeDb = process.argv[3];
   if (!out) die("kullanım: p24b-cleanup-binding.ts <out.json> [restore-smoke-db]");
 
+  const url = ownerDatabaseUrl();
+  if (!url) die("MIGRATION_DATABASE_URL tanımlı değil");
+
+  /* ── FAIL-FAST SMOKE GATE — the FIRST thing this program decides ────────────────────────
+   * Before the receipt is read, before any Pool, any connection, any fingerprint, any docker
+   * call. v2.2 ran this at line 92, after opening a connection and hashing all 86 tables: the
+   * gate was correct but late, so a protected name still cost a connection and a full
+   * fingerprint before being refused.
+   *
+   * The source database name is read from the URL, so nothing has to be opened to decide. Once
+   * connected, the measured `current_database()` is compared against that same name — the early
+   * reasoning is confirmed rather than trusted.
+   */
+  const sourceDbFromUrl = databaseNameFromUrl(url);
+  if (smokeDb !== undefined) {
+    const early = smokeTargetBlockers(smokeDb, sourceDbFromUrl);
+    if (!early.ok) die(`restore smoke hedefi reddedildi:\n  - ${early.blockers.join("\n  - ")}`);
+  }
+
   const recPath = process.env.MAS_P24B_BACKUP_RECEIPT;
   if (!recPath || !existsSync(recPath)) die("MAS_P24B_BACKUP_RECEIPT geçerli bir makbuzu göstermeli");
   const raw = JSON.parse(readFileSync(recPath, "utf8")) as {
@@ -63,23 +82,29 @@ async function main(): Promise<void> {
   const manifest = JSON.parse(manifestRaw.toString("utf8")) as Manifest;
   const targets = manifest.rows.filter((r) => r.classification === "DELETE_TARGET");
 
-  const url = ownerDatabaseUrl();
-  if (!url) die("MIGRATION_DATABASE_URL tanımlı değil");
   const pool = new Pool({ connectionString: url, max: 1, options: "-c default_transaction_read_only=on" });
   const c = await pool.connect();
   let binding: Record<string, unknown>;
   try {
     await c.query("begin read only");
     const db = (await c.query<{ d: string }>("select current_database() d")).rows[0].d;
+    // The URL said one thing; the server says another only if something is misconfigured. The
+    // early gate reasoned from the URL, so that reasoning has to be confirmed once connected.
+    if (sourceDbFromUrl !== undefined && db !== sourceDbFromUrl) {
+      die(`bağlantı kimliği URL ile ayrışıyor: URL '${sourceDbFromUrl}', sunucu '${db}'`);
+    }
     const led = (await c.query<{ v: string; n: string }>(
       "select max(version) v, count(*)::text n from public.schema_migrations")).rows[0];
     const preCounts: Record<string, number> = {};
     for (const t of TABLES) {
       preCounts[t] = Number((await c.query<{ n: string }>(`select count(*)::text n from public.${t}`)).rows[0].n);
     }
-    const targetFp = await targetFingerprint(c, targets);
+    const sourceTarget: TargetFingerprintResult = await targetFingerprint(c, targets);
     const wholeFp = await wholeDbFingerprintDigest(c);
-    if (targetFp.includes("MISSING")) die("hedef satırlardan bazıları kaynakta yok");
+    if (sourceTarget.found !== sourceTarget.expected || sourceTarget.missing.length > 0) {
+      die(`kaynakta ${sourceTarget.found}/${sourceTarget.expected} hedef satır var; eksik: ` +
+          sourceTarget.missing.map((m) => `${m.table}/${m.id}`).join(", "));
+    }
 
     /* Restore smoke: prove the backup this binding names can actually be restored and that the
      * restored copy still carries all 42 rows. A backup nobody has restored is a hope. */
@@ -107,23 +132,30 @@ async function main(): Promise<void> {
 
         const smokePool = new Pool({ connectionString: url.replace(/\/[^/]+$/, `/${smokeDb}`), max: 1 });
         const sc = await smokePool.connect();
-        let smokeTargetFp: string; let smokeWholeFp: string;
+        let smokeTarget: TargetFingerprintResult; let smokeWholeFp: string;
         try {
           await sc.query("begin read only");
-          smokeTargetFp = await targetFingerprint(sc, targets);
+          smokeTarget = await targetFingerprint(sc, targets);
           smokeWholeFp = await wholeDbFingerprintDigest(sc);
         } finally {
           await sc.query("rollback").catch(() => {});
           sc.release(); await smokePool.end();
         }
-        const found = targets.length - (smokeTargetFp.match(/MISSING/g)?.length ?? 0);
-        const targetMatches = smokeTargetFp === targetFp;
+        const targetMatches = smokeTarget.digest === sourceTarget.digest;
         const wholeMatches = smokeWholeFp === wholeFp;
         smoke = {
           restoredFromDestinationSha256: destSha, restoreDb: smokeDb, ledger: smokeLedger,
-          targetRows: found, targetFingerprint: smokeTargetFp, targetFingerprintMatchesSource: targetMatches,
+          // Counted from the restored rows, never inferred from a digest.
+          targetRows: smokeTarget.found,
+          expectedTargetRows: smokeTarget.expected,
+          missingTargetRows: smokeTarget.missing,
+          targetFingerprint: smokeTarget.digest, targetFingerprintMatchesSource: targetMatches,
           wholeDbFingerprint: smokeWholeFp, wholeDbFingerprintMatchesSource: wholeMatches,
         };
+        if (smokeTarget.found !== smokeTarget.expected || smokeTarget.missing.length > 0) {
+          die(`restore smoke: geri yüklenen kopyada ${smokeTarget.found}/${smokeTarget.expected} hedef satır var; ` +
+              `eksik: ${smokeTarget.missing.map((m) => `${m.table}/${m.id}`).join(", ")}`);
+        }
         if (!targetMatches) die("restore smoke: geri yüklenen kopyanın HEDEF parmak izi kaynakla uyuşmuyor");
         /* Matching the 42 targets is not enough. If any other table differs, the backup is not a
          * faithful recovery copy of the state the cleanup is about to modify. */
@@ -144,7 +176,9 @@ async function main(): Promise<void> {
       migrationCount: Number(led.n),
       backupDestinationSha256: destSha,
       backupDestinationPath: raw.destPath,
-      preCleanupTargetFingerprint: targetFp,
+      preCleanupTargetFingerprint: sourceTarget.digest,
+      preCleanupTargetFound: sourceTarget.found,
+      preCleanupTargetMissing: sourceTarget.missing,
       preCleanupWholeDbFingerprint: wholeFp,
       preCleanupCounts: preCounts,
       restoreSmoke: smoke,

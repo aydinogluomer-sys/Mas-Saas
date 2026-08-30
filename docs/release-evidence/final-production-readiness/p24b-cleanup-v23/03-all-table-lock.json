@@ -1,0 +1,10 @@
+{
+  "baseTableCount": 86,
+  "lockedTableCount": 86,
+  "unlockedFingerprintTables": [],
+  "lockMode": "SHARE ROW EXCLUSIVE on ALL 86 base tables (public, auth) · lock_timeout=10s · locks taken BEFORE preconditions",
+  "lockOrder": "ORDER BY table_schema, table_name — deadlock riskini azaltmak icin deterministik",
+  "identifierQuoting": "katalogdan gelen adlar dahi q(ident) ile \"schema\".\"table\" olarak uretiliyor",
+  "tableSetRecheck": "kilit ALINDIKTAN sonra katalog yeniden okunuyor; fark varsa BASE_TABLE_SET_CHANGED_DURING_FREEZE",
+  "lockTimeout": "10s — bir tablo alinamazsa ROLLBACK, 'bazilari kilitlendi devam' YOK"
+}
