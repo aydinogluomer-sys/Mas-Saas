@@ -14,9 +14,16 @@
 // (offdevice-copy.ts, backup-prune.ts, backup-daily.ts) yalnız ince kabuklardır.
 //
 // DÜRÜSTLÜK KURALI (rehber §30.5). Aynı makinedeki ikinci bir klasör "off-device" DEĞİLDİR.
-// classifyOffDeviceTarget() bunu tahmin etmez; Windows'ta sürücü tipini gerçekten ölçer ve
-// sabit-diskteki bir klasörü `LOCAL_STANDIN` olarak işaretler. Politikayı belge değil, kod
-// uygular: bir stand-in yol asla `offDeviceSatisfied = true` üretemez.
+// classifyOffDeviceTarget() bunu tahmin etmez; Windows'ta ÖLÇER ve sabit-diskteki bir klasörü
+// `LOCAL_STANDIN` olarak işaretler. Politikayı belge değil, kod uygular: bir stand-in yol asla
+// `offDeviceSatisfied = true` üretemez.
+//
+// Kural bir yönde de fazla dardı: Windows, USB ile bağlı gerçek bir harici SSD'yi
+// `Win32_LogicalDisk`'te DriveType=3 (sabit disk) gösterir, çünkü DriveType=2 yalnız
+// çıkarılabilir ORTAM içindir. Tipe bakan bir kapı böyle bir diski reddeder. Bu yüzden
+// DriveType=3 artık son söz değil: fiziksel disk kimliği (`Get-Disk` → numara, BusType,
+// IsBoot, IsSystem) ölçülür ve karar `offdevice-topology.ts`'deki saf yükleme bırakılır.
+// Yön aynı: gevşetme değil, doğru soruyu sorma. Farklı sürücü harfi hâlâ hiçbir şey kanıtlamaz.
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
@@ -26,6 +33,11 @@ import {
 import path from "node:path";
 import { readPgToolVersions } from "../db/backup-docker-postgres";
 import { attemptDirectoryFsync, type DurabilityMetadata } from "../db/legacy-repair-types";
+import {
+  decideUsbPhysicalVolume, parsePhysicalDiskJson, type PhysicalDiskIdentity,
+} from "./offdevice-topology";
+
+export type { PhysicalDiskIdentity } from "./offdevice-topology";
 
 /* ── temel ölçümler ──────────────────────────────────────────────────────────────────────── */
 
@@ -53,6 +65,8 @@ export type OffDeviceTargetKind =
   | "UNC_NETWORK_SHARE"
   | "REMOVABLE_VOLUME"
   | "NETWORK_DRIVE"
+  /** DriveType=3 görünen ama fiziksel disk kimliğiyle USB olduğu KANITLANAN ayrı aygıt. */
+  | "USB_PHYSICAL_VOLUME"
   | "FIXED_SEPARATE_VOLUME"
   | "LOCAL_STANDIN"
   | "OPERATOR_ATTESTED"
@@ -68,6 +82,11 @@ export interface OffDeviceClassification {
   /** Aynı volume üzerinde mi (kaynak `backups/` ile). */
   sameVolumeAsSource: boolean;
   driveType: number | null;
+  /** Ölçülen fiziksel disk kimlikleri — ölçülemediyse null (bu bir RED sebebidir). */
+  targetDisk: PhysicalDiskIdentity | null;
+  sourceDisk: PhysicalDiskIdentity | null;
+  /** İkisi de ölçülebildiyse karşılaştırma; aksi hâlde null (bilinmiyor ≠ güvenli). */
+  samePhysicalDisk: boolean | null;
   declaredKind: string | null;
   operatorAttestation: string | null;
 }
@@ -87,6 +106,36 @@ function windowsDriveType(root: string): number | null {
     ).trim();
     const n = Number(out);
     return Number.isFinite(n) && out !== "" ? n : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Bir sürücü harfinin ARDINDAKİ FİZİKSEL DİSKİ ölçer.
+ *
+ * `Win32_LogicalDisk.DriveType` mantıksal bir etikettir ve USB ile bağlı bir SSD'yi
+ * DriveType=3 (sabit disk) gösterir. Fiziksel ayrılığı yalnız bu ölçüm yanıtlar: disk
+ * numarası, veri yolu (BusType) ve diskin boot/system diski olup olmadığı.
+ *
+ * Harf, çağrılmadan önce tek karakterlik `[A-Za-z]` deseniyle sınırlanır; komuta başka
+ * hiçbir kullanıcı verisi girmez. Ölçülemeyen her durum `null` döner — RED demektir.
+ */
+function windowsPhysicalDisk(root: string): PhysicalDiskIdentity | null {
+  const letter = /^([A-Za-z]):/.exec(root)?.[1];
+  if (!letter) return null;
+  try {
+    const out = execFileSync(
+      "powershell",
+      [
+        "-NoProfile", "-NonInteractive", "-Command",
+        `$ErrorActionPreference='Stop'; try { Get-Partition -DriveLetter ${letter.toUpperCase()} | ` +
+          "Get-Disk | Select-Object Number,BusType,IsBoot,IsSystem,OperationalStatus,FriendlyName | " +
+          "ConvertTo-Json -Compress -Depth 3 } catch { '' }",
+      ],
+      { encoding: "utf8", timeout: 30000 },
+    );
+    return parsePhysicalDiskJson(out);
   } catch {
     return null;
   }
@@ -119,6 +168,11 @@ export function classifyOffDeviceTarget(targetDir: string, sourceDir: string): O
     sameVolumeAsSource,
     declaredKind,
     operatorAttestation,
+    // DriveType 2/4 ve UNC kendi başlarına ayrılığı kanıtlar; topoloji ölçümü (iki PowerShell
+    // çağrısı) yalnız DriveType=3 belirsizliğini çözmek için yapılır.
+    targetDisk: null as PhysicalDiskIdentity | null,
+    sourceDisk: null as PhysicalDiskIdentity | null,
+    samePhysicalDisk: null as boolean | null,
   };
 
   if (resolved.startsWith("\\\\") || resolved.startsWith("//")) {
@@ -141,6 +195,51 @@ export function classifyOffDeviceTarget(targetDir: string, sourceDir: string): O
       evidence: `Win32_LogicalDisk DriveType=4 (ağ sürücüsü) — kök ${targetRoot}`,
     };
   }
+
+  // DriveType=3: mantıksal etiket burada karar veremez. USB ile bağlı gerçek bir harici disk
+  // de, makinenin kendi NVMe'sindeki ikinci bölüm de aynı 3'ü döndürür. Fiziksel kimlik ölçülür.
+  if (driveType === 3) {
+    const targetDisk = windowsPhysicalDisk(targetRoot);
+    const sourceDisk = windowsPhysicalDisk(sourceRoot);
+    const samePhysicalDisk =
+      targetDisk !== null && sourceDisk !== null ? targetDisk.diskNumber === sourceDisk.diskNumber : null;
+    const measured = { ...base, driveType, targetDisk, sourceDisk, samePhysicalDisk };
+    const decision = decideUsbPhysicalVolume({
+      driveType, targetRoot, sourceRoot, sameVolumeAsSource, targetDisk, sourceDisk,
+    });
+    if (decision.cleanupGrade) {
+      return {
+        ...measured, kind: "USB_PHYSICAL_VOLUME", offDeviceSatisfied: true,
+        evidence: `USB ile bağlı ayrı fiziksel disk ÖLÇÜLDÜ — ${decision.evidence}`,
+      };
+    }
+    // Beyan, ölçümün YERİNE geçmez ama ölçümün ULAŞAMADIĞI hedefler için hâlâ vardır.
+    // Ölçüm başarılı olup REDDETTİYSE beyan onu geçersiz kılamaz.
+    if (declaredKind && operatorAttestation) {
+      return {
+        ...measured, kind: "OPERATOR_ATTESTED", offDeviceSatisfied: true,
+        evidence:
+          `Otomatik tespit ayrı aygıt kanıtlayamadı (${decision.blockers.join("; ")}); ` +
+          `operatör beyanı kabul edildi: kind='${declaredKind}'. Beyan ÖLÇÜM DEĞİLDİR.`,
+      };
+    }
+    if (!sameVolumeAsSource) {
+      return {
+        ...measured, kind: "FIXED_SEPARATE_VOLUME", offDeviceSatisfied: false,
+        evidence:
+          `Win32_LogicalDisk DriveType=3, kaynaktan farklı volume (${targetRoot} ≠ ${sourceRoot}), ` +
+          `ama ayrı USB aygıtı KANITLANAMADI: ${decision.blockers.join("; ")}. ` +
+          "Ayrı bölüm ayrı AYGIT demek değildir.",
+      };
+    }
+    return {
+      ...measured, kind: "LOCAL_STANDIN", offDeviceSatisfied: false,
+      evidence:
+        `Hedef kaynakla aynı volume üzerinde (kök ${targetRoot}); ${decision.blockers.join("; ")}. ` +
+        "Aynı makinedeki ikinci klasör off-device kopya SAYILMAZ (rehber §30.5).",
+    };
+  }
+
   if (declaredKind && operatorAttestation) {
     return {
       ...base, kind: "OPERATOR_ATTESTED", offDeviceSatisfied: true, driveType,
@@ -149,17 +248,9 @@ export function classifyOffDeviceTarget(targetDir: string, sourceDir: string): O
         `operatör beyanı kabul edildi: kind='${declaredKind}'. Beyan ÖLÇÜM DEĞİLDİR.`,
     };
   }
-  if (driveType === 3 && !sameVolumeAsSource) {
-    return {
-      ...base, kind: "FIXED_SEPARATE_VOLUME", offDeviceSatisfied: false, driveType,
-      evidence:
-        `Win32_LogicalDisk DriveType=3 (sabit disk), kaynaktan farklı volume (${targetRoot} ≠ ${sourceRoot}). ` +
-        "Ayrı bölüm ayrı AYGIT demek değildir — aynı fiziksel diskin ikinci bölümü olabilir.",
-    };
-  }
   return {
     ...base,
-    kind: driveType === 3 || driveType === null ? "LOCAL_STANDIN" : "UNKNOWN",
+    kind: driveType === null ? "LOCAL_STANDIN" : "UNKNOWN",
     offDeviceSatisfied: false,
     driveType,
     evidence:
@@ -231,9 +322,17 @@ export interface OffDeviceCopyRecord {
  * `UNC_NETWORK_SHARE` içeride: `\\sunucu\pay` ile eşlenmiş bir ağ sürücüsü aynı NAS'ın iki
  * yazılış biçimidir; fiziksel ayrılık aynıdır. `FIXED_SEPARATE_VOLUME` ve `LOCAL_STANDIN`
  * zaten `offDeviceSatisfied: false` üretir.
+ *
+ * `USB_PHYSICAL_VOLUME` içeride ÇÜNKÜ ölçümle üretilir, tipe bakarak değil: hedefin fiziksel
+ * disk numarası, BusType=USB, IsBoot=false, IsSystem=false ve kaynak diskten FARKLI olduğu
+ * `Get-Disk` ile ölçülür (bkz. `offdevice-topology.ts`). Bu, DriveType=2'nin sağladığı
+ * güvenceyle aynı türdendir — Windows'un USB bir SSD'yi DriveType=3 göstermesi bir
+ * ETİKETLEME ayrıntısıdır, fiziksel ayrılığın yokluğu değil.
+ *
+ * `FIXED_SEPARATE_VOLUME` GEVŞETİLMEDİ: farklı sürücü harfi hâlâ hiçbir şey kanıtlamaz.
  */
 export const CLEANUP_GRADE_TARGET_KINDS: ReadonlySet<OffDeviceTargetKind> = new Set([
-  "REMOVABLE_VOLUME", "NETWORK_DRIVE", "UNC_NETWORK_SHARE",
+  "REMOVABLE_VOLUME", "NETWORK_DRIVE", "UNC_NETWORK_SHARE", "USB_PHYSICAL_VOLUME",
 ]);
 
 /**

@@ -117,24 +117,34 @@ hâlâ geçerli bir arşiv olduğunu doğrular, makbuz yan dosyalarını da taş
 
 Araç ayrıca hedefi **sınıflandırır** ve yerel bir klasörü off-device saymaz:
 
-| Sınıf | Nasıl belirlenir | Off-device sayılır mı |
-|---|---|---|
-| `UNC_NETWORK_SHARE` | yol `\\` ile başlıyor | evet |
-| `REMOVABLE_VOLUME` | Win32_LogicalDisk DriveType = 2 | evet |
-| `NETWORK_DRIVE` | DriveType = 4 | evet |
-| `OPERATOR_ATTESTED` | `MAS_OFFDEVICE_DECLARED_KIND` + `MAS_OFFDEVICE_OPERATOR_ATTESTATION` | evet (beyan, ölçüm değil) |
-| `FIXED_SEPARATE_VOLUME` | DriveType = 3, kaynaktan farklı bölüm | **hayır** — ayrı bölüm ayrı aygıt değildir |
-| `LOCAL_STANDIN` | DriveType = 3, aynı disk | **hayır** (§30.5) |
+| Sınıf | Nasıl belirlenir | Off-device sayılır mı | Yıkıcı işlem açar mı |
+|---|---|---|---|
+| `UNC_NETWORK_SHARE` | yol `\\` ile başlıyor | evet | evet |
+| `REMOVABLE_VOLUME` | Win32_LogicalDisk DriveType = 2 | evet | evet |
+| `NETWORK_DRIVE` | DriveType = 4 | evet | evet |
+| `USB_PHYSICAL_VOLUME` | DriveType = 3 **ve** `Get-Disk`: BusType=USB, hedef disk ≠ kaynak disk, IsBoot=false, IsSystem=false, Online | evet (ölçüm) | evet |
+| `OPERATOR_ATTESTED` | `MAS_OFFDEVICE_DECLARED_KIND` + `MAS_OFFDEVICE_OPERATOR_ATTESTATION` | evet (beyan, ölçüm değil) | **hayır** |
+| `FIXED_SEPARATE_VOLUME` | DriveType = 3, farklı bölüm, USB kanıtlanamadı | **hayır** — ayrı bölüm ayrı aygıt değildir | hayır |
+| `LOCAL_STANDIN` | DriveType = 3, aynı disk/volume | **hayır** (§30.5) | hayır |
+
+**Neden DriveType tek başına yetmiyor.** Windows, USB ile bağlı gerçek bir harici SSD'yi
+`Win32_LogicalDisk`'te DriveType=3 (sabit disk) gösterir; DriveType=2 yalnız çıkarılabilir
+*ortam* (flash bellek, kart okuyucu) içindir. Yalnız tipe bakan bir kapı böyle bir diski
+reddeder. Bu yüzden DriveType=3 son söz değildir: `Get-Partition -DriveLetter X | Get-Disk` ile
+fiziksel disk kimliği ölçülür ve karar `scripts/ops/offdevice-topology.ts`'deki saf yükleme
+bırakılır. Ölçüm başarısızsa, BusType USB değilse, hedef ile kaynak aynı fiziksel diskteyse ya
+da hedef boot/system diskiyse sonuç **RED**'dir. Farklı sürücü harfi hâlâ hiçbir şey kanıtlamaz.
+
+Ölçüldü (2026-08-31): harici USB SSD `D:` bağlı — DriveType=3, fiziksel disk 1, BusType USB,
+IsBoot/IsSystem false, Online ("Min Yi U YZWY_TECH", 240 GB); kaynak `C:` disk 0, BusType RAID,
+boot+system. Sınıf `USB_PHYSICAL_VOLUME`, cleanup-grade **true**. Aynı prob `C:` üzerinde beş
+ayrı engelle **false** döner.
 
 ```text
-OFF_DEVICE TOOLING         = VERIFIED
-OFF_DEVICE PHYSICAL TARGET = BLOCKED — bu makinede ayrı bir aygıt yok
+pnpm exec tsx scripts/ops/offdevice-classify-probe.ts D:\MAS-Backups   # salt okunur sınıflandırma
 ```
 
-Ölçüldü (2026-08-25): makinede yalnız `C:` var (DriveType 3, sabit disk); takılı çıkarılabilir
-sürücü, bağlı ağ paylaşımı ya da eşitleme klasörü yok. **Operatör adımı:** harici disk takın, NAS
-paylaşımı bağlayın ya da şifreli nesne depolaması yapılandırın; sonra `MAS_OFFDEVICE_BACKUP_DIR`i
-ayarlayın. Bu yapılana kadar off-device kopya **kurulmuş sayılmaz** ve günlük yedek işi bunu
+Bir hedef ayarlanana kadar off-device kopya **kurulmuş sayılmaz** ve günlük yedek işi bunu
 sessizce geçmez — exit 3 ile "TEK KOPYA" der.
 
 > Gerçek finansal veri hiçbir dış servise tünellenmez. Şirket dışı kopya alınacaksa şifreleme ve

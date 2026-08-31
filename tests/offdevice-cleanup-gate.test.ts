@@ -47,6 +47,19 @@ describe("off-device kapısı — geçerli kayıt", () => {
     expect(offDeviceCleanupBlockers(realRecord({ targetKind: "NETWORK_DRIVE" }))).toEqual([]);
     expect(offDeviceCleanupBlockers(realRecord({ targetKind: "UNC_NETWORK_SHARE" }))).toEqual([]);
   });
+
+  it("ölçümle kanıtlanmış USB fiziksel diski kabul edilir", () => {
+    // DriveType=3 görünen ama Get-Disk ile ayrı USB aygıtı olduğu ÖLÇÜLEN hedef.
+    // Sınıfı üreten karar `offdevice-usb-topology.test.ts`'de ayrıca sınanıyor.
+    const rec = realRecord({
+      targetKind: "USB_PHYSICAL_VOLUME",
+      destPath: "D:/MAS-Backups/stage07_real-2026-08-26.dump",
+      targetEvidence:
+        "USB ile bağlı ayrı fiziksel disk ÖLÇÜLDÜ — DriveType=3, BusType=USB, " +
+        "targetDisk=1, sourceDisk=0, IsBoot=false, IsSystem=false",
+    });
+    expect(offDeviceCleanupBlockers(rec)).toEqual([]);
+  });
 });
 
 describe("off-device kapısı — REGRESYON: alan adı ayrışması", () => {
@@ -80,8 +93,18 @@ describe("off-device kapısı — OPERATOR_ATTESTED yıkıcı işlem açamaz", (
   it("izinli sınıf kümesi OPERATOR_ATTESTED içermez", () => {
     expect(CLEANUP_GRADE_TARGET_KINDS.has("OPERATOR_ATTESTED" as never)).toBe(false);
     expect([...CLEANUP_GRADE_TARGET_KINDS].sort()).toEqual(
-      ["NETWORK_DRIVE", "REMOVABLE_VOLUME", "UNC_NETWORK_SHARE"],
+      ["NETWORK_DRIVE", "REMOVABLE_VOLUME", "UNC_NETWORK_SHARE", "USB_PHYSICAL_VOLUME"],
     );
+  });
+
+  it("beyan, ölçülmüş bir USB kaydını taklit ederek kapıdan geçemez", () => {
+    // Aynı kanıt metni, ama sınıf beyana dayanıyor: yine reddedilir. Kapı metne değil
+    // SINIFA bakar, çünkü kanıt string'ini kopyalamak ölçüm yapmak değildir.
+    const rec = realRecord({
+      targetKind: "OPERATOR_ATTESTED",
+      targetEvidence: "DriveType=3, BusType=USB, targetDisk=1, sourceDisk=0, IsBoot=false, IsSystem=false",
+    });
+    expect(offDeviceCleanupBlockers(rec).join(" ")).toContain("OPERATOR_ATTESTED");
   });
 });
 
