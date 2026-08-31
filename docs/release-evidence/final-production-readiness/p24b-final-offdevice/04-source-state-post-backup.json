@@ -1,0 +1,26 @@
+{
+  "stateKind": "mas-p24b-source-state-v1",
+  "label": "post-backup",
+  "measuredAtUtc": "2026-08-31T10:04:33.615Z",
+  "database": "mas_radar_dev",
+  "transactionReadOnly": "on",
+  "manifestSha256": "d60de97bcc3c62aa2902b64a7c164e8132e733ba7f6958e71b1a84bac3c8bbb9",
+  "ledger": "0087/87",
+  "migrationLatest": "0087",
+  "migrationCount": 87,
+  "baseTableCount": 86,
+  "baseTableSetKey": "auth.users,public.action_items,public.ai_response_snapshots,public.alert_escalation_rules,public.approval_rules,public.approval_steps,public.approvals,public.assistant_conversations,public.attachments,public.audit_logs,public.background_jobs,public.bank_accounts,public.bank_transaction_match_candidates,public.bank_transactions,public.budget_lines,public.budgets,public.capacity_models,public.cash_accounts,public.cashflow_lines,public.cashflow_months,public.cashflow_snapshots,public.categories,public.check_events,public.checks,public.collateral_records,public.control_alerts,public.cost_allocation_rules,public.cost_breakdown_lines,public.cost_centers,public.cost_models,public.counterparty_profiles,public.covenant_records,public.credit_facilities,public.departments,public.document_links,public.documents,public.external_assumptions,public.facility_drawdowns,public.finance_cost_allocations,public.forecast_lines,public.forecasts,public.fx_positions,public.fx_rate_snapshots,public.iban_change_events,public.ibans,public.import_rows,public.integration_connections,public.invoice_allocations,public.invoice_lines,public.invoice_reversals,public.invoices,public.loan_installments,public.loans,public.machine_assets,public.machine_minute_allocations,public.machine_roi_snapshots,public.mapping_reviews,public.metric_snapshots,public.optimization_recommendations,public.optimization_runs,public.orders,public.part_profitability_runs,public.parties,public.payment_instances,public.payments,public.production_parts,public.products,public.projects,public.promise_to_pay,public.reminder_deliveries,public.reminders,public.reports,public.saved_views,public.scenario_assumptions,public.scenario_comparisons,public.scenario_run_lines,public.scenario_runs,public.scenarios,public.schema_migrations,public.sessions,public.settings,public.source_cells,public.source_sheets,public.source_workbooks,public.treasury_policies,public.users",
+  "counts": {
+    "action_items": 10,
+    "approvals": 72,
+    "payment_instances": 511,
+    "payments": 20,
+    "users": 19,
+    "settings": 8
+  },
+  "targetExpected": 42,
+  "targetFound": 42,
+  "targetMissing": [],
+  "targetFingerprint": "05e4677004f6e063390e65d203d3acdcd23eacbafd867d7a37ed69c07eaebc50",
+  "wholeDbFingerprint": "cb392821aedb1e38efea01da2645144add19086b4a5b87fb24758f74f34f3b29"
+}
