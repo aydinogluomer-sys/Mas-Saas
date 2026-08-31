@@ -1,0 +1,27 @@
+{
+  "artifactKind": "mas-p24b-remnant-scan-v1",
+  "expectedOldTargets": 42,
+  "foundRemaining": 0,
+  "missingAsExpected": 42,
+  "stillPresent": [],
+  "semanticScan": {
+    "fixture_payment_by_id": 0,
+    "instances_of_fixture_payment": 0,
+    "orphan_instances": 0,
+    "users_p24b": 0,
+    "users_rlsverify": 0,
+    "action_items_p24b": 0,
+    "approvals_p24b": 0,
+    "settings_p24b": 0,
+    "approvals_null_requested_by": 68
+  },
+  "counts": {
+    "action_items": 6,
+    "approvals": 68,
+    "payment_instances": 485,
+    "payments": 19,
+    "users": 13,
+    "settings": 7
+  },
+  "note": "Karar EXACT manifest kimlikleri üzerinden; ilike taramaları yalnız destekleyicidir."
+}

@@ -1,0 +1,19 @@
+{
+  "artifactKind": "mas-p24b-audit-atilla-v1",
+  "auditCountBefore": 734,
+  "auditCountAfter": 736,
+  "existingRowsSurvivedUnchanged": 734,
+  "existingRowsMutatedOrDeleted": 0,
+  "newRows": 2,
+  "newActions": [
+    "p24b_fixture_cleanup",
+    "refresh_metric_snapshots"
+  ],
+  "duplicateCleanupEvents": false,
+  "cleanupEventCount": 1,
+  "atilla": {
+    "presentBefore": true,
+    "presentAfter": true,
+    "rowHashUnchanged": true
+  }
+}

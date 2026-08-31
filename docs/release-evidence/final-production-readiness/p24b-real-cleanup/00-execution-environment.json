@@ -20,7 +20,7 @@
     ]
   },
   "offDeviceBackup": {
-    "targetPath": "D:MAS-Backupsp24b-final",
+    "targetPath": "D:\\MAS-Backups\\p24b-final",
     "logicalDriveType": 3,
     "targetDiskNumber": 1,
     "targetBusType": "USB",
@@ -33,7 +33,7 @@
     "targetKind": "USB_PHYSICAL_VOLUME",
     "offDeviceSatisfied": true,
     "cleanupGrade": true,
-    "backupFile": "D:MAS-Backupsp24b-finalmas_radar_dev-p24b-final-2026-08-31T10-01-14-531Z.dump",
+    "backupFile": "D:\\MAS-Backups\\p24b-final\\mas_radar_dev-p24b-final-2026-08-31T10-01-14-531Z.dump",
     "expectedSha256": "fe63481887b7937df1def58475589dac844933ea32ca081dd3beba85bfaffe2a",
     "actualSha256AtExecution": "fe63481887b7937df1def58475589dac844933ea32ca081dd3beba85bfaffe2a",
     "expectedBytes": 1413949,
@@ -58,5 +58,6 @@
     "unexpectedWriters": 0,
     "note": "pg_stat_activity: mas_radar_dev uzerinde olcum sorgusu disinda baglanti yok."
   },
-  "secretsPolicy": "Baglanti dizesi/parola hicbir artifact'a yazilmadi."
+  "secretsPolicy": "Baglanti dizesi/parola hicbir artifact'a yazilmadi.",
+  "serializationNote": "DUZELTME: bu dosyanin ilk surumunde targetPath ve backupFile alanlari ters egik cizgilerini kaybetmisti (kabuk icinde elle yazilirken kacis cokmustu). Yalnizca EVIDENCE kusuruydu: operasyonel yol kanonik makbuz/binding tarafindan uretilir ve orada dogruydu (02-lock-and-binding.json, 08-full-execution-receipt.json, 03-cleanup-binding.json). Cleanup execution aninda dosya bu yoldan gercekten acilip hash-lendi; sonucu etkilemedi."
 }

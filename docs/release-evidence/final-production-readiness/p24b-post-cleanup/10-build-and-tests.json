@@ -1,0 +1,22 @@
+{
+  "artifactKind": "mas-p24b-quality-gates-v1",
+  "typecheck": {
+    "command": "tsc --noEmit",
+    "exit": 0
+  },
+  "lint": {
+    "command": "eslint (tum depo)",
+    "exit": 0
+  },
+  "unitTests": {
+    "command": "vitest run",
+    "files": 69,
+    "tests": 1438,
+    "exit": 0
+  },
+  "build": {
+    "command": "next build",
+    "exit": 0
+  },
+  "note": "Hicbiri kaynak veritabanina yazmadi."
+}

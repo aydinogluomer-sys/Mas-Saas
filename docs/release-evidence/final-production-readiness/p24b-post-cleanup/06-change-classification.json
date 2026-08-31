@@ -1,0 +1,64 @@
+{
+  "artifactKind": "mas-p24b-change-classification-v1",
+  "comparedAgainst": {
+    "database": "mas_radar_p24b_final_usb_restore",
+    "meaning": "USB yedeğinden geri yüklenen cleanup ÖNCESİ durum"
+  },
+  "tablesCompared": 86,
+  "expectedChanged": [
+    "public.action_items",
+    "public.approvals",
+    "public.payment_instances",
+    "public.payments",
+    "public.users",
+    "public.settings",
+    "public.metric_snapshots",
+    "public.audit_logs"
+  ],
+  "actualChanged": [
+    "public.action_items",
+    "public.approvals",
+    "public.audit_logs",
+    "public.metric_snapshots",
+    "public.payment_instances",
+    "public.payments",
+    "public.settings",
+    "public.users"
+  ],
+  "unexpectedChanged": [],
+  "expectedButUnchanged": [],
+  "perTable": {
+    "public.action_items": {
+      "before": "10:8310b7cdf121740affe5a9218f48cf49",
+      "after": "6:b280852c35e399c804df3a9222c5f37a"
+    },
+    "public.approvals": {
+      "before": "72:c0ad0f060603498c9de7b550367f6c5b",
+      "after": "68:4da3d6aaaacb16e6e37c76e794d19ead"
+    },
+    "public.audit_logs": {
+      "before": "734:90e23ccbfcaa5d81b6ee20aef3fea3dd",
+      "after": "736:a9b1695bf69a5cb6e3a9b483889c0a48"
+    },
+    "public.metric_snapshots": {
+      "before": "208:7209211f5a27938b85d6cfc789d12624",
+      "after": "208:cf61c9cde256b892e9827d9fd3f95113"
+    },
+    "public.payment_instances": {
+      "before": "511:093d6ead4307c43f01b8e895f1c001e7",
+      "after": "485:35aa688efe168c490a115a2b9b02e2b6"
+    },
+    "public.payments": {
+      "before": "20:b1cd04b0ece36d3866e0e2f80cfe90ba",
+      "after": "19:04622d4f9381d2512f76cab51a710552"
+    },
+    "public.settings": {
+      "before": "8:664575c64c3bc08ab8b3602e000080bd",
+      "after": "7:519009077f1ce264846be67dc5f7d587"
+    },
+    "public.users": {
+      "before": "19:87e5c45e660b44424126a040fb29d2d2",
+      "after": "13:751acbf99a625b4676bf6ee4f4d5614b"
+    }
+  }
+}
