@@ -1,0 +1,21 @@
+{
+  "artifactKind": "mas-p24b-snapshot-correction-v1",
+  "correction": {
+    "snapshotsWritten": 24,
+    "auditAction": "p24b_fixture_cleanup"
+  },
+  "snapshot": {
+    "rows": 24,
+    "semanticChanges": 2,
+    "technicalOnlyChanges": 22,
+    "semanticList": [
+      "payment_status|unpaid",
+      "task_status|open"
+    ]
+  },
+  "atomicity": "Ayni transaction ve ayni PoolClient icinde, urunun kendi kod yolu ile.",
+  "semanticExpected": [
+    "payment_status|unpaid",
+    "task_status|open"
+  ]
+}

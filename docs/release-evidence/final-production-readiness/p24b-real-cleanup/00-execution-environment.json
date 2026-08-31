@@ -1,0 +1,62 @@
+{
+  "artifactKind": "mas-p24b-execution-environment-v1",
+  "capturedAtUtc": "2026-08-31T11:48:13.220Z",
+  "repo": {
+    "head": "83dc89a40b586710cb144fbb3d305b0d57ed8306",
+    "originHead": "83dc89a40b586710cb144fbb3d305b0d57ed8306",
+    "ahead": 0,
+    "behind": 0,
+    "cleanupFilesMatchHead": true,
+    "checkedFiles": [
+      "scripts/db/p24b-fixture-cleanup.ts",
+      "scripts/db/p24b-cleanup-binding.ts",
+      "scripts/db/p24b-cleanup-fingerprint.ts",
+      "scripts/db/p24b-smoke-target.ts",
+      "scripts/db/owner-url.ts",
+      "scripts/ops/backup-lib.ts",
+      "scripts/ops/offdevice-topology.ts",
+      "scripts/qa/p24b-source-state.ts",
+      "docs/release-evidence/final-production-readiness/p24b-v6/02-row-evidence-manifest.json"
+    ]
+  },
+  "offDeviceBackup": {
+    "targetPath": "D:MAS-Backupsp24b-final",
+    "logicalDriveType": 3,
+    "targetDiskNumber": 1,
+    "targetBusType": "USB",
+    "targetIsBoot": false,
+    "targetIsSystem": false,
+    "operationalStatus": "Online",
+    "sourceDiskNumber": 0,
+    "sourceBusType": "RAID",
+    "samePhysicalDisk": false,
+    "targetKind": "USB_PHYSICAL_VOLUME",
+    "offDeviceSatisfied": true,
+    "cleanupGrade": true,
+    "backupFile": "D:MAS-Backupsp24b-finalmas_radar_dev-p24b-final-2026-08-31T10-01-14-531Z.dump",
+    "expectedSha256": "fe63481887b7937df1def58475589dac844933ea32ca081dd3beba85bfaffe2a",
+    "actualSha256AtExecution": "fe63481887b7937df1def58475589dac844933ea32ca081dd3beba85bfaffe2a",
+    "expectedBytes": 1413949,
+    "actualBytesAtExecution": 1413949,
+    "shaMatch": true,
+    "bytesMatch": true,
+    "rehashTool": "PowerShell Get-FileHash (Node sha256OfFile ile bagimsiz olarak da dogrulandi)"
+  },
+  "quiescence": {
+    "postgresRunning": true,
+    "container": "mas-radar-pg",
+    "appRuntimeStopped": true,
+    "listeners": {
+      "3000": "yok",
+      "3110": "yok",
+      "3210": "yok"
+    },
+    "prepareRuntimeStopped": true,
+    "botWorkerStopped": true,
+    "pythonProcesses": 0,
+    "migrationDdlAbsent": true,
+    "unexpectedWriters": 0,
+    "note": "pg_stat_activity: mas_radar_dev uzerinde olcum sorgusu disinda baglanti yok."
+  },
+  "secretsPolicy": "Baglanti dizesi/parola hicbir artifact'a yazilmadi."
+}

@@ -1,0 +1,25 @@
+{
+  "artifactKind": "mas-p24b-no-unexpected-delta-v1",
+  "changedTables": [
+    "public.action_items",
+    "public.approvals",
+    "public.audit_logs",
+    "public.metric_snapshots",
+    "public.payment_instances",
+    "public.payments",
+    "public.settings",
+    "public.users"
+  ],
+  "illegalChanges": [],
+  "unexpectedDelta": 0,
+  "allowedChangeReasons": {
+    "public.action_items": "manifest hedefi (4)",
+    "public.approvals": "manifest hedefi (4)",
+    "public.payment_instances": "manifest hedefi (26)",
+    "public.payments": "manifest hedefi (1)",
+    "public.users": "manifest hedefi (6)",
+    "public.settings": "manifest hedefi (1)",
+    "public.metric_snapshots": "turev duzeltme (ayni transaction)",
+    "public.audit_logs": "beklenen 2 INSERT"
+  }
+}
