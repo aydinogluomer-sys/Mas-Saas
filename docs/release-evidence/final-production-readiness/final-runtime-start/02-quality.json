@@ -1,0 +1,33 @@
+{
+  "artifactKind": "mas-final-start-quality-v1",
+  "measuredAtUtc": "2026-09-03T19:11:39.443Z",
+  "verdict": "PASS",
+  "install": {
+    "command": "pnpm install --frozen-lockfile",
+    "exitCode": 0
+  },
+  "typecheck": "PASS",
+  "lint": "PASS",
+  "build": "PASS",
+  "unitSerial": {
+    "command": "vitest run --no-file-parallelism",
+    "files": "67/67",
+    "tests": "1432/1432",
+    "verdict": "PASS"
+  },
+  "p1Targeted": {
+    "files": 1,
+    "tests": 4,
+    "passed": 4,
+    "verdict": "PASS"
+  },
+  "buildProvenance": {
+    "freshBuild": true,
+    "oldNextRemovedBeforeBuild": true,
+    "buildId": "Cohj3w6Ho71WHFNjyzJlU",
+    "buildSourceHead": "f076431152127dc4a337e0bb55b73ade3f85821b",
+    "builtIn": "C:\\Users\\Trade Bilisim\\Mas-Saas-RC-f076431",
+    "reusedArtifactFromOtherWorktree": false
+  },
+  "p2Note": "Varsayilan paralel suite timeout bulgusu AYRI bir P2 olarak acik; bu turda yamalanmadi (prompt SECTION 5)."
+}

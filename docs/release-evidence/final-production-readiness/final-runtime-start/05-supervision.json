@@ -1,0 +1,60 @@
+{
+  "artifactKind": "mas-final-start-supervision-v1",
+  "measuredAtUtc": "2026-09-03T19:11:39.443Z",
+  "verdict": "PASS",
+  "problemBeingSolved": "Attempt-04'te runtime bir arka plan gorevinin kabuk sarmalayicisi altinda baslatilmisti; gorev sonlandirilinca Next sureci yetim kaldi ve log akisi koptu.",
+  "launchMechanism": {
+    "pattern": "Reponun kendi mas-daily-backup.cmd desenine uygun .cmd sarmalayici + cmd.exe'nin KENDI dosya yonlendirmesi",
+    "wrapper": "mas-runtime-supervisor.cmd (repo disinda, scratchpad'de tutuldu ki RC worktree temiz kalsin)",
+    "launchedBy": "Start-Process cmd.exe /c <wrapper> -WindowStyle Hidden (detached)",
+    "whyItSurvives": "Yonlendirme cmd.exe tarafindan yapiliyor; dosya taniticilari surec agacinin kendisine ait. Araya log okuyan ayri bir surec girmiyor, dolayisiyla baslatan kabuk olse bile loglar akmaya devam eder.",
+    "pnpmStartSemanticsPreserved": true,
+    "portGuardSkipped": false,
+    "prepareRuntimeSkipped": false,
+    "masAllowParallelRuntimeUsed": false
+  },
+  "mechanismProvenBeforeUse": {
+    "method": "Gercek runtime'dan ONCE zararsiz bir probe surecle dogrulandi",
+    "launcherPid": 17232,
+    "probePid": 37636,
+    "launcherAliveAfterReturn": false,
+    "probeAliveAfterLauncherDeath": true,
+    "probeLogLinesBefore": 16,
+    "probeLogLinesAfter": 20,
+    "logStreamSurvivedLauncherDeath": true,
+    "probeCleanedUp": true
+  },
+  "runtime": {
+    "supervisorPid": 24868,
+    "supervisorAlive": true,
+    "runtimePid": 4640,
+    "runtimeStartedLocal": "2026-09-03 22:08:01",
+    "runtimeParentPid": 21544,
+    "runtimeCommandLine": "next start — binary under C:\\Users\\Trade Bilisim\\Mas-Saas-RC-f076431",
+    "binaryMatchesRc": true,
+    "launcherPid": 38852,
+    "launcherAlive": false,
+    "launcherDeathDidNotAffectRuntime": true
+  },
+  "logs": {
+    "directory": "C:\\Users\\Trade Bilisim\\Mas-Saas-RC-f076431\\logs\\runtime",
+    "stdout": "C:\\Users\\Trade Bilisim\\Mas-Saas-RC-f076431\\logs\\runtime\\mas-runtime.out.log",
+    "stderr": "C:\\Users\\Trade Bilisim\\Mas-Saas-RC-f076431\\logs\\runtime\\mas-runtime.err.log",
+    "supervisorPidRecord": "C:\\Users\\Trade Bilisim\\Mas-Saas-RC-f076431\\logs\\runtime\\mas-runtime.supervisor.pid",
+    "runtimePidRecord": "C:\\Users\\Trade Bilisim\\Mas-Saas-RC-f076431\\logs\\runtime\\mas-runtime.next.pid",
+    "gitignored": true,
+    "gitignoreRule": ".gitignore:90:/logs/",
+    "secretsWritten": false,
+    "logStreamActive": true
+  },
+  "controlledStop": {
+    "procedure": [
+      "1. Kimligi dogrula: PID 4640 var mi, port 3000'i o mu tutuyor, komut satiri Mas-Saas-RC-f076431 altinda mi",
+      "2. Once graceful: taskkill /PID 24868 /T   (konsol sureclerinde reddedilmesi beklenir)",
+      "3. Gerekirse yalniz dogrulanmis agaca: taskkill /PID 4640 /F ve taskkill /PID 21544 /F ve taskkill /PID 24868 /F",
+      "4. Supervisor cikarken stdout log'una '[tarih] MAS runtime END exit=<kod>' satirini yazar — durdurmanin kaniti budur",
+      "5. Sonrasinda 3000/3001/3110/3210/3310 bos olmali ve pg_stat_activity'de MAS yazicisi kalmamali"
+    ],
+    "postgresAndDockerUntouched": true
+  }
+}

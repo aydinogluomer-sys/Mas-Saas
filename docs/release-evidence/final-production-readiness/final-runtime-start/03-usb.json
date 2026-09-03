@@ -1,0 +1,28 @@
+{
+  "artifactKind": "mas-final-start-usb-v1",
+  "measuredAtUtc": "2026-09-03T19:11:39.443Z",
+  "verdict": "PASS",
+  "resolvedFromPhysicalIdentity": true,
+  "physicalDisk": 1,
+  "busType": "USB",
+  "isBoot": false,
+  "isSystem": false,
+  "operationalStatus": "Online",
+  "friendlyName": "Min Yi U YZWY_TECH",
+  "sourceDisk": 0,
+  "sourceBusType": "RAID",
+  "samePhysicalDisk": false,
+  "path": "D:\\MAS-Backups\\p24b-final\\mas_radar_dev-p24b-final-2026-08-31T10-01-14-531Z.dump",
+  "bytes": 1413949,
+  "bytesMatch": true,
+  "sha256": "fe63481887b7937df1def58475589dac844933ea32ca081dd3beba85bfaffe2a",
+  "shaMatch": true,
+  "pgRestoreList": {
+    "exitCode": 0,
+    "tocEntries": 1387,
+    "expected": 1387,
+    "match": true
+  },
+  "retained": true,
+  "modified": false
+}

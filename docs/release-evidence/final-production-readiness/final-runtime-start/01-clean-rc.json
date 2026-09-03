@@ -1,0 +1,20 @@
+{
+  "artifactKind": "mas-final-start-clean-rc-v1",
+  "measuredAtUtc": "2026-09-03T19:11:39.443Z",
+  "verdict": "PASS",
+  "path": "C:\\Users\\Trade Bilisim\\Mas-Saas-RC-f076431",
+  "head": "f076431152127dc4a337e0bb55b73ade3f85821b",
+  "detached": true,
+  "gitStatusPorcelainLines": 0,
+  "trackedDiff": 0,
+  "untrackedApplicationCode": 0,
+  "codeCopiedFromMainWorktree": false,
+  "previousRcUsedForDeployment": false,
+  "previousRcNote": "9e23ad7 RC deployment provenance icin KULLANILMADI; bu tur icin yeni f076431 worktree acildi.",
+  "environment": {
+    "onlyFileCopied": ".env.local",
+    "gitignored": true,
+    "statusStillEmptyAfterCopy": true,
+    "secretValuesPrinted": false
+  }
+}
