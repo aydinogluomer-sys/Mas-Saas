@@ -394,11 +394,28 @@ export async function generateInstancesForMonthWithClient(
     );
     created += res.rowCount ?? 0;
   }
-  await audit(client, {
-    actor: actorId, action: "generate_instances", entityTable: "payment_instances", entityId: null,
-    before: null,
-    after: { monthStart: monthStartISO, created, total: payments.rowCount },
-  });
+  // P1 — denetim kaydı yalnız GERÇEKTEN bir şey yaratıldığında yazılır.
+  //
+  // Bu satır eskiden koşulsuzdu ve tek başına zararsız görünüyordu: ayda bir satır. Ama tek
+  // çağıran `ensureWindow(..., 24)`, yani `prepare-runtime`, bu fonksiyonu delta -1..24 için
+  // 26 KEZ çağırır. Pencere zaten doluyken 26 çağrının 26'sı da `created = 0` döner ve yine de
+  // 26 `generate_instances` satırı yazılırdı.
+  //
+  // Ölçüm (P24B Attempt-04, gerçek mas_radar_dev, 2026-09-03): tek bir `pnpm start` sonrası
+  // payment_instances 502 → 502 (INSERT 0, UPDATE 0) iken audit_logs 788 → 814. Yani sıfır iş
+  // için 26 kayıt. Bu, denetim kaydını olayların değil sunucu açılışlarının kaydına çeviriyordu
+  // ve P24B soruşturmasında audit_logs okumayı zorlaştıran şeylerden biri buydu.
+  //
+  // Değişen tek şey bu koşul. Ufuk (24 ay), üretim mantığı, risk-flag yenilemesi, tarih/ay
+  // semantiği, aktör kimliği ve `audit()` yardımcısının kendisi olduğu gibi duruyor:
+  // `created > 0` olduğunda kayıt ve payload'ı bit-bazında eskisiyle aynı.
+  if (created > 0) {
+    await audit(client, {
+      actor: actorId, action: "generate_instances", entityTable: "payment_instances", entityId: null,
+      before: null,
+      after: { monthStart: monthStartISO, created, total: payments.rowCount },
+    });
+  }
   return {
     monthStart: monthStartISO,
     created,

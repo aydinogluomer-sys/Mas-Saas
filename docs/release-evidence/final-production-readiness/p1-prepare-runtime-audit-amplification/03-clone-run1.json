@@ -1,0 +1,25 @@
+{
+  "artifactKind": "mas-p1-clone-run-v1",
+  "run": 1,
+  "measuredAtUtc": "2026-09-03T16:50:30.773Z",
+  "clone": "mas_radar_p1_audit_fix_verify",
+  "createdBy": "create database ... template mas_radar_dev (kaynak salt-okunur, aktif baglanti yoktu)",
+  "disposableGuard": "runner, korumali isimleri ve isaretsiz adlari reddeder; negatif kontrol olarak 'mas_radar_dev' hedeflendiginde exit 3 ile REDDEDILDI",
+  "before": {
+    "payment_instances": 502,
+    "audit_logs": 814,
+    "users": 13,
+    "payments": 19
+  },
+  "after": {
+    "payment_instances": 502,
+    "audit_logs": 814,
+    "users": 13,
+    "payments": 19
+  },
+  "newInstances": 0,
+  "auditDelta": 0,
+  "unexpectedDelta": 0,
+  "p24bRemaining": "0/42",
+  "verdict": "PASS — duzeltme oncesi burada +26 olurdu"
+}

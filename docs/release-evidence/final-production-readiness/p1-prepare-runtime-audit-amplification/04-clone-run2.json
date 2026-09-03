@@ -1,0 +1,27 @@
+{
+  "artifactKind": "mas-p1-clone-run-v1",
+  "run": 2,
+  "measuredAtUtc": "2026-09-03T16:50:30.773Z",
+  "clone": "mas_radar_p1_audit_fix_verify",
+  "before": {
+    "payment_instances": 502,
+    "audit_logs": 814
+  },
+  "after": {
+    "payment_instances": 502,
+    "audit_logs": 814
+  },
+  "newInstances": 0,
+  "auditDelta": 0,
+  "unexpectedDelta": 0,
+  "wholeDbClassification": {
+    "comparedAgainst": "gercek mas_radar_dev (guncel durum)",
+    "tablesCompared": 86,
+    "tablesChanged": 0,
+    "cloneDigestAfterTwoRuns": "85358cfd27767001a3cdf00e1c5979a05d471a409876afc2586567a38432a929",
+    "realDbDigest": "85358cfd27767001a3cdf00e1c5979a05d471a409876afc2586567a38432a929",
+    "identical": true
+  },
+  "verdict": "PASS",
+  "stableStateIdempotence": "PREPARE_RUNTIME_FULLY_IDEMPOTENT_FOR_STABLE_STATE = PASS — iki kosu klonu kaynak durumundan bit-bazinda ayirt edilemez birakti"
+}
