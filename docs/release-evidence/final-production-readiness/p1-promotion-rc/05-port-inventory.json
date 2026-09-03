@@ -1,0 +1,42 @@
+{
+  "artifactKind": "mas-p1-port-inventory-v1",
+  "measuredAtUtc": "2026-09-03T18:00:21.856Z",
+  "ports": [
+    {
+      "port": 3000,
+      "state": "OCCUPIED",
+      "pid": 9640,
+      "process": "node.exe",
+      "startedLocal": "2026-09-03 20:06:36",
+      "executable": "C:\\Program Files\\nodejs\\node.exe",
+      "commandLine": "node <Elementis-SOTD>/node_modules/next/dist/server/lib/start-server.js",
+      "projectPath": "C:\\Users\\Trade Bilisim\\Yasama Sanati\\Elementis-SOTD",
+      "isMasProject": false,
+      "relatedParent": {
+        "pid": 37920,
+        "commandLine": "next dev (Elementis-SOTD)"
+      }
+    },
+    {
+      "port": 3001,
+      "state": "FREE"
+    },
+    {
+      "port": 3110,
+      "state": "FREE"
+    },
+    {
+      "port": 3210,
+      "state": "FREE"
+    },
+    {
+      "port": 3310,
+      "state": "FREE"
+    }
+  ],
+  "masRuntimeProcesses": 0,
+  "masRadarDevConnections": "yalnizca olcumun kendi psql baglantisi",
+  "unexpectedWriters": 0,
+  "foreignProcessTerminated": false,
+  "foreignProcessRationale": "Bu prompt baska projeyi durdurma yetkisi degildir (SECTION 10). Elementis-SOTD sureci mas_radar_dev'e dokunmuyor; motor sayaclari ve pg_stat_activity bunu gosteriyor."
+}

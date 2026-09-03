@@ -1,0 +1,91 @@
+{
+  "artifactKind": "mas-p1-real-db-readonly-v1",
+  "measuredAtUtc": "2026-09-03T18:00:21.856Z",
+  "verdict": "PASS",
+  "database": "mas_radar_dev",
+  "transactionReadOnly": "on",
+  "expectedVsMeasured": [
+    {
+      "field": "ledger",
+      "expected": "0087/87",
+      "measured": "0087/87",
+      "match": true
+    },
+    {
+      "field": "baseTableCount",
+      "expected": 86,
+      "measured": 86,
+      "match": true
+    },
+    {
+      "field": "p24bRemaining",
+      "expected": "0/42",
+      "measured": "0/42",
+      "match": true
+    },
+    {
+      "field": "action_items",
+      "expected": 6,
+      "measured": 6,
+      "match": true
+    },
+    {
+      "field": "approvals",
+      "expected": 68,
+      "measured": 68,
+      "match": true
+    },
+    {
+      "field": "payment_instances",
+      "expected": 502,
+      "measured": 502,
+      "match": true
+    },
+    {
+      "field": "payments",
+      "expected": 19,
+      "measured": 19,
+      "match": true
+    },
+    {
+      "field": "users",
+      "expected": 13,
+      "measured": 13,
+      "match": true
+    },
+    {
+      "field": "settings",
+      "expected": 7,
+      "measured": 7,
+      "match": true
+    },
+    {
+      "field": "taskOpen",
+      "expected": 4,
+      "measured": 4,
+      "match": true
+    },
+    {
+      "field": "unpaidTry",
+      "expected": 13595000,
+      "measured": 13595000,
+      "match": true
+    },
+    {
+      "field": "audit_logs",
+      "expected": 814,
+      "measured": 814,
+      "match": true
+    },
+    {
+      "field": "wholeDbFingerprint",
+      "expected": "85358cfd27767001a3cdf00e1c5979a05d471a409876afc2586567a38432a929",
+      "measured": "85358cfd27767001a3cdf00e1c5979a05d471a409876afc2586567a38432a929",
+      "match": true
+    }
+  ],
+  "driftDimensions": 0,
+  "targetFingerprint": "5e84634660528f2076f7bbef2a7e7e8f05047c13353679c53f0097798e37882d",
+  "engineCounters": "ins=97 upd=40 del=42 (P24B Attempt-04 sonrasindan beri degismedi)",
+  "realDbWritesThisTurn": 0
+}
