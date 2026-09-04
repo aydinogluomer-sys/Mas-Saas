@@ -181,7 +181,7 @@ export const TABLE_CLASS: Record<string, AccessClass> = {
   machine_assets: "reference",
   production_parts: "reference",
   external_assumptions: "reference",
-  // operational (21)
+  // operational (38)
   payments: "operational",
   payment_instances: "operational",
   checks: "operational",
@@ -247,7 +247,10 @@ export const TABLE_CLASS: Record<string, AccessClass> = {
   control_alerts: "operational",
   source_sheets: "operational",
   import_rows: "operational",
-  // evidence (7)
+  // Standart Import V2 (0088). Kullanicinin kendi kayit kodunu domain kaydina baglayan
+  // defter — import hattinin parcasi, o yuzden hattin geri kalaniyla ayni sinif.
+  import_external_keys: "operational",
+  // evidence (9)
   audit_logs: "evidence",
   check_events: "evidence",
   iban_change_events: "evidence",
