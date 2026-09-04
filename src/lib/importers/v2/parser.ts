@@ -209,8 +209,21 @@ function parseSheet(wb: ExcelJS.Workbook, spec: SheetSpec): SheetResult {
       if (parsed.status !== "blank") anyValue = true;
 
       if (parsed.status === "invalid") {
+        // ÇÖZÜLEMEYEN DEĞER, KOLON İSTEĞE BAĞLI OLSA DA YÜKSEK ŞİDDETLİDİR.
+        //
+        // Bir süre şiddet `col.required` değerine bağlıydı ve tutarsızdı: zorunlu bir
+        // kolondaki geçersiz enum satırı reddediyor, isteğe bağlı olandaki aynı hata
+        // incelemeye düşürüyordu. İkincisi iki sebeple yanlış:
+        //
+        //   1. Sistem o değeri SAKLAYAMAZ. Satırı "incelenmeli" diye kabul etmek, sonradan
+        //      kabul edildiğinde veritabanı kısıtına çarpacak bir satırı kuyruğa koymaktır.
+        //   2. Tek alternatif o hücreyi NULL yazmaktı — yani kullanıcının yazdığı şeyi
+        //      sessizce silmek. Bu sözleşmenin tam olarak önlemek için var olduğu şey.
+        //
+        // Doğru davranış: satır reddedilir, kullanıcı TEK hücreyi düzeltip yeniden yükler.
+        // Belirsiz (ambiguous) değer farklıdır — onun çözüm kuralı var ve kayıt altına alınır.
         issues.push({
-          type: issueTypeFor(col), severity: col.required ? "high" : "medium",
+          type: issueTypeFor(col), severity: "high",
           sheet: spec.name, row: rowNumber, column: col.header,
           message: `${col.header}: ${parsed.reason ?? "değer okunamadı"}`,
         });
@@ -315,6 +328,84 @@ function applyFamilyRules(
       issues.push({
         type: "invalid_number", severity: "high", sheet: spec.name, row: rowNumber,
         column: "Vade Günü (1-31)", message: `Vade günü 1-31 arasında olmalı, ${day} bulundu.`,
+      });
+    }
+  }
+
+  // ── Veritabanı kısıtlarının satır düzeyindeki karşılıkları ────────────────────────────
+  //
+  // Buradaki dört kural, kolon eşlemesi yazılırken hedef tabloların CHECK kısıtları
+  // okunduğunda ortaya çıktı. Hepsi INSERT anında zaten patlardı; fark şu: orada patlarsa
+  // TÜM import işlemi düşer ve kullanıcı hangi satırın suçlu olduğunu göremez. Burada
+  // yakalanınca yalnız o satır reddedilir, gerekçesi yazılır, geri kalan dosya işlenir.
+
+  // Fatura: `invoices` kısıtı `gross_amount = net_amount + tax_amount` diyor ve üçü de
+  // NOT NULL. Eksik olan biri diğer ikisinden ÇIKARILIR (bu aritmetik, tahmin değil);
+  // ikiden azı varsa satır reddedilir — kalanları uydurmak gerekirdi.
+  if (spec.family === "invoices") {
+    const net = values.net_tutar, tax = values.vergi_tutari, gross = values.toplam_tutar;
+    const n = typeof net === "number", t = typeof tax === "number", g = typeof gross === "number";
+    const known = [n, t, g].filter(Boolean).length;
+
+    if (known < 2) {
+      issues.push({
+        type: "missing_required_field", severity: "high", sheet: spec.name, row: rowNumber,
+        column: "Net / Vergi / Toplam",
+        message: "Net, vergi ve toplam tutardan en az ikisi gerekli — üçüncüsü hesaplanır. " +
+          "Tek değerle kalan ikisi uydurulmuş olurdu.",
+      });
+    } else if (n && t && g && Math.abs((net as number) + (tax as number) - (gross as number)) > 0.005) {
+      issues.push({
+        type: "amount_mismatch", severity: "high", sheet: spec.name, row: rowNumber,
+        column: "Toplam Tutar",
+        message: `Net (${net}) + vergi (${tax}) = ${(net as number) + (tax as number)}, ` +
+          `ama toplam ${gross} yazılmış. Hangisinin doğru olduğu tahmin edilemez.`,
+      });
+    }
+    for (const [k, label] of [["net_tutar", "Net tutar"], ["vergi_tutari", "Vergi tutarı"], ["toplam_tutar", "Toplam tutar"]] as const) {
+      const v = values[k];
+      if (typeof v === "number" && v < 0) {
+        issues.push({
+          type: "negative_amount", severity: "high", sheet: spec.name, row: rowNumber,
+          column: label, message: `${label} eksi olamaz (${v}). Yön "fatura tipi" kolonunda taşınır.`,
+        });
+      }
+    }
+  }
+
+  // Bütçe: `budget_lines.amount >= 0`. Gider satırı da artı yazılır; yönü `yon` kolonu söyler.
+  if (spec.family === "budget") {
+    const amt = values.tutar;
+    if (typeof amt === "number" && amt < 0) {
+      issues.push({
+        type: "negative_amount", severity: "high", sheet: spec.name, row: rowNumber,
+        column: "Tutar",
+        message: `Bütçe tutarı eksi olamaz (${amt}). Gider satırında da artı yazın; ` +
+          "yönü \"income / expense\" kolonu belirler.",
+      });
+    }
+  }
+
+  // Kredi taksidi: `installment_paid_requires_paid_at` kısıtı, ödenmiş bir taksidin ödeme
+  // tarihini şart koşuyor. Tarihi uydurmak (bugün yazmak) ödemenin ne zaman yapıldığını
+  // kaybetmek olurdu.
+  if (spec.family === "loan_installments") {
+    if (values.durum === "paid" && (values.odeme_tarihi === null || values.odeme_tarihi === undefined)) {
+      issues.push({
+        type: "missing_required_field", severity: "high", sheet: spec.name, row: rowNumber,
+        column: "Ödeme Tarihi",
+        message: "Taksit 'paid' işaretlendi ama ödeme tarihi boş. Ödenmiş bir taksidin tarihi gerekir.",
+      });
+    }
+  }
+
+  // Döviz pozisyonu: `entry_rate > 0`. Sıfır ya da eksi kur bir ölçüm değil, hatadır.
+  if (spec.family === "fx") {
+    const rate = values.try_kuru;
+    if (typeof rate === "number" && rate <= 0) {
+      issues.push({
+        type: "invalid_number", severity: "high", sheet: spec.name, row: rowNumber,
+        column: "TRY Kuru", message: `Kur sıfır veya eksi olamaz (${rate}).`,
       });
     }
   }

@@ -13,6 +13,7 @@
 // katalog okur. Bulduğu her uyuşmazlığı yazar ve çıkış kodu 1 ile biter.
 import { Pool } from "pg";
 import { DATA_SHEETS } from "../../src/lib/importers/v2/contract";
+import { targetFor } from "../../src/lib/importers/v2/domain-map";
 import { requireOwnerDatabaseUrl } from "../db/owner-url";
 
 interface Mismatch {
@@ -25,10 +26,20 @@ interface Mismatch {
   extra: string[];
 }
 
-/** Bir CHECK ifadesinden `x = ANY (ARRAY['a','b'])` biçimindeki izinli değerleri okur. */
+/**
+ * Bir CHECK'in SÖZLÜK kısıtı olup olmadığına bakar; öyleyse izinli değerleri döndürür.
+ *
+ * YALNIZ sade biçim kabul edilir: `CHECK ((col = ANY (ARRAY[...])))`. Bir kolonun birden
+ * fazla CHECK'i olabiliyor ve bileşik olanlar sözlük DEĞİL. Örnek: loan_installments'ta
+ * `status = ANY(ARRAY['paid','partial']) OR paid_at IS NULL` diye bir kısıt var — bu,
+ * "ödeme tarihi yalnız ödenmiş/kısmi satırda olur" demek, "durum yalnız bu ikisi olabilir"
+ * demek değil. Bileşik kısıtı sözlük sanmak, aracın kendi ürettiği sahte uyuşmazlıktır;
+ * ilk sürümde tam olarak bu oldu.
+ */
 function allowedFromCheck(def: string): string[] | null {
-  if (!/= ANY \(ARRAY\[/.test(def)) return null;
-  return [...def.matchAll(/'([^']*)'::text/g)].map((m) => m[1]);
+  const m = /^CHECK \(\(([a-z_]+) = ANY \(ARRAY\[([^\]]*)\]\)\)\)$/.exec(def.trim());
+  if (!m) return null;
+  return [...m[2].matchAll(/'([^']*)'::text/g)].map((x) => x[1]);
 }
 
 async function main(): Promise<void> {
@@ -50,7 +61,7 @@ async function main(): Promise<void> {
     for (const { tbl, def } of checks.rows) {
       const values = allowedFromCheck(def);
       if (!values) continue;
-      const col = /\(\(?([a-z_]+) = ANY/.exec(def)?.[1];
+      const col = /^CHECK \(\(([a-z_]+) = ANY/.exec(def.trim())?.[1];
       if (!col) continue;
       allowedByColumn.set(`${tbl.replace(/^public\./, "")}.${col}`, values);
     }
@@ -58,28 +69,31 @@ async function main(): Promise<void> {
     const mismatches: Mismatch[] = [];
     let checked = 0;
     const unverified: string[] = [];
+    const skipped: string[] = [];
 
     for (const sheet of DATA_SHEETS) {
       for (const col of sheet.columns) {
         if (col.type !== "enum" || !col.enumValues) continue;
 
-        // Hedef kolonu yalnız sözleşme SÖYLEDİĞİNDE biliyoruz. `domainField` yoksa tahmin
-        // etmiyoruz — yanlış kolonu doğrulamak, hiç doğrulamamaktan daha kötüdür.
-        if (!col.domainField) {
-          unverified.push(`${sheet.name}.${col.key}`);
+        // Hedef kolon `domain-map.ts`'ten okunur. Domain'e yazılmayan kolonlar (defter,
+        // karşılıksız) doğrulanacak bir CHECK'e sahip değildir; onları "doğrulanmadı"
+        // diye saymak yanıltıcı olurdu — kararları zaten yazılı.
+        const target = targetFor(sheet.name, col.key);
+        if (!target || (target.kind !== "domain" && target.kind !== "parent")) {
+          skipped.push(`${sheet.name}.${col.key} (${target?.kind ?? "kararsız"})`);
           continue;
         }
 
-        const allowed = allowedByColumn.get(col.domainField);
+        const allowed = allowedByColumn.get(target.field);
         if (!allowed) {
-          unverified.push(`${sheet.name}.${col.key} → ${col.domainField} (CHECK yok)`);
+          unverified.push(`${sheet.name}.${col.key} → ${target.field} (CHECK yok)`);
           continue;
         }
 
         checked++;
         const extra = col.enumValues.filter((v) => !allowed.includes(v));
         if (extra.length > 0) {
-          const [table, column] = col.domainField.split(".");
+          const [table, column] = target.field.split(".");
           mismatches.push({
             table, column, sheet: sheet.name, key: col.key,
             offered: [...col.enumValues], allowed, extra,
@@ -89,7 +103,8 @@ async function main(): Promise<void> {
     }
 
     console.log(`\nDoğrulanan enum kolonu: ${checked}`);
-    console.log(`Doğrulanamayan (domainField tanımsız veya CHECK yok): ${unverified.length}`);
+    console.log(`Domain'e yazılmayan (defter/karşılıksız — CHECK'i yok): ${skipped.length}`);
+    console.log(`Domain'e yazılan ama CHECK'i olmayan kolon: ${unverified.length}`);
     for (const u of unverified) console.log(`   · ${u}`);
 
     if (mismatches.length === 0) {

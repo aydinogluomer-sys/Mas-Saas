@@ -58,6 +58,13 @@ export interface MapperResult {
   stagedOnlyFamilies: string[];
   /** "hazır" olduğu hâlde domain'e yazılmayan satır sayısı (eşleyicisi yok). */
   rowsStagedOnly: number;
+  /** Yazma sırasında yeri tanımlanmamış sayfalar — sona alındılar, atlanmadılar. */
+  unorderedSheets: string[];
+  /**
+   * ÖNİZLEMEDE: kullanıcı kodu olmadığı için yeni mi güncelleme mi olduğu belirlenemeyen
+   * satır sayısı. Gerçek yazmada her zaman 0'dır — orada cevap ölçülür, tahmin edilmez.
+   */
+  rowsUndetermined: number;
   rowsMapped: number;
   rowsNeedsReview: number;
   rowsRejected: number;
@@ -137,6 +144,17 @@ async function resolveCategory(
 }
 
 const num = (v: unknown): number | null => (typeof v === "number" ? v : null);
+
+/**
+ * `YYYY-AA` biçimindeki dönemi ayın İLK GÜNÜNE çevirir.
+ *
+ * Sözleşmenin `month` tipi "2026-05" üretiyor; hedef kolonlar (`cashflow_months.month_start`,
+ * `budget_lines.period_start`) ise `date`. Postgres "2026-05" değerini tarih olarak kabul
+ * etmez. Dönüşüm burada YAPILIR ve gün olarak 1 seçilir — dönem bir aydır, ayın herhangi bir
+ * gününü seçmek o aya ait olmayan bir kesinlik uydurmak olurdu.
+ */
+const monthStart = (v: unknown): string | null =>
+  typeof v === "string" && /^\d{4}-\d{2}$/.test(v) ? `${v}-01` : null;
 const str = (v: unknown): string | null => (typeof v === "string" && v.trim() !== "" ? v : null);
 
 /* ── Aile yazıcıları ─────────────────────────────────────────────────────────────────── */
@@ -149,140 +167,175 @@ export interface WriteContext {
 }
 
 /**
+ * Bir yazma işleminin sonucu.
+ *
+ * `created` alanı ŞART: çağıran taraf bunu kendi başına bilemez. Bir süre "defterde kod
+ * var mıydı" sorusundan tahmin ediliyordu ve yanlıştı — kullanıcı kodu olmayan satırlar
+ * doğal anahtarlarından bulunup GÜNCELLENDİĞİ hâlde rapora "yaratıldı" diye yazılıyordu.
+ * Sayı doğruydu ama açıklaması yanlıştı; kullanıcıya "2 yeni taksit eklendi" denecekti.
+ */
+export interface WriteOutcome {
+  id: string;
+  created: boolean;
+}
+
+/**
  * Bir "hazır" satırı domain tablosuna yazan fonksiyon.
  *
- * `entityId` verildiyse GÜNCELLER (aynı external_id ile ikinci import), yoksa YARATIR.
- * Dönüş: yazılan kaydın id'si.
+ * `entityId` verildiyse GÜNCELLER (aynı external_id ile ikinci import), yoksa yazıcı önce
+ * doğal anahtarla arar; o da bulunmazsa YARATIR.
  */
 export type FamilyWriter = (
   ctx: WriteContext, row: ParsedRow, entityId: string | null,
-) => Promise<string>;
+) => Promise<WriteOutcome>;
+
+/**
+ * Bir kaydı yazar ya da günceller ve id'sini döndürür.
+ *
+ * Kolon adları `domain-map.ts`'ten gelen sabit bir sözlükten üretilir, kullanıcı verisinden
+ * DEĞİL; değerler her zaman parametre olarak geçer. Bu yüzden SQL metnine kullanıcıdan bir
+ * şey karışmıyor.
+ *
+ * Neden elle yazılmış 15 INSERT yerine tek yardımcı: onbeş ayrı sorgu demek, onbeş yerde
+ * kolon sırası ile değer sırasının kayma ihtimali demek. O tür bir kayma tip denetiminden
+ * geçer, testten de geçebilir (iki `numeric` kolon yer değiştirdiğinde sayım aynı kalır) ve
+ * sessizce yanlış finansal veri üretir.
+ */
+async function upsertRow(
+  client: PoolClient, table: string, entityId: string | null,
+  cols: Record<string, unknown>, hasUpdatedAt: boolean,
+): Promise<WriteOutcome> {
+  const names = Object.keys(cols);
+  const values = names.map((n) => cols[n]);
+
+  if (entityId) {
+    const sets = names.map((n, i) => `${n} = $${i + 2}`);
+    if (hasUpdatedAt) sets.push("updated_at = now()");
+    await client.query(
+      `update public.${table} set ${sets.join(", ")} where id = $1`,
+      [entityId, ...values],
+    );
+    return { id: entityId, created: false };
+  }
+
+  const r = await client.query<{ id: string }>(
+    `insert into public.${table} (${names.join(", ")})
+     values (${names.map((_, i) => `$${i + 1}`).join(", ")})
+     returning id`,
+    values,
+  );
+  return { id: r.rows[0].id, created: true };
+}
+
+/**
+ * Kullanıcı kodu yoksa kaydı DOĞAL ANAHTARINDAN bulur.
+ *
+ * Defter (`import_external_keys`) yalnız kullanıcının kendi kodunu bilir. Kod yoksa — ya da
+ * o sayfada hiç kod kolonu yoksa, 04_KREDI_TAKSITLERI gibi — ikinci import kaydı tanıyamaz
+ * ve yeniden yazmaya çalışır. Veritabanında eşsizlik kısıtı varsa bu bir HATA olarak patlar
+ * ve tüm import düşer; kısıt yoksa daha kötüsü olur ve sessizce mükerrer üretilir.
+ *
+ * Oysa kimlik zaten tanımlı: kredinin 3. taksidi, kodu X olan ürün, aynı hesaptaki aynı
+ * parmak izli hareket. Bu fonksiyon o tanımı kullanır. TAHMİN DEĞİL: yalnız veritabanının
+ * kendi eşsizlik kısıtlarıyla birebir örtüşen alanlarla sorgulanır.
+ */
+async function findByNaturalKey(
+  client: PoolClient, table: string, where: Record<string, unknown>,
+): Promise<string | null> {
+  const names = Object.keys(where);
+  if (names.some((n) => where[n] === null || where[n] === undefined)) return null;
+  const r = await client.query<{ id: string }>(
+    `select id from public.${table} where ${names.map((n, i) => `${n} = $${i + 1}`).join(" and ")} limit 1`,
+    names.map((n) => where[n]),
+  );
+  return r.rowCount && r.rows[0] ? r.rows[0].id : null;
+}
+
+/** Kaynak izini her kayda aynı biçimde ekler (§26). */
+const lineage = (ctx: WriteContext, withRow = true): Record<string, unknown> => ({
+  source_workbook_id: ctx.workbookId,
+  source_sheet_id: ctx.sheetId,
+  ...(withRow ? { source_row_id: ctx.importRowId } : {}),
+});
+
+/* ── 01 · Ödemeler ───────────────────────────────────────────────────────────────────── */
 
 const writePayment: FamilyWriter = async (ctx, row, entityId) => {
   const v = row.values;
-  const providerId = await resolveParty(ctx.client, v.karsi_taraf, "provider");
-  const categoryId = await resolveCategory(ctx.client, v.kategori, "payment");
-
-  // `amount_confidence` NULL/ZERO sözleşmesinin domain'deki karşılığı. Tutar boşsa 'unknown':
-  // 0 YAZMIYORUZ. Sıfır yazmak "bu ödeme bedelsiz" demek olurdu — oysa bilinmiyor.
+  // Tutar boşsa `amount_confidence = 'unknown'`. 0 YAZILMAZ: sıfır "bu ödeme bedelsiz"
+  // demektir, oysa burada bilinmeyen bir tutar var.
   const amount = num(v.tutar);
-  const confidence = amount === null ? "unknown" : "known";
-
-  const cols = {
+  return upsertRow(ctx.client, "payments", entityId, {
     name: str(v.aciklama) ?? "(adsız ödeme)",
     description: str(v.notlar),
-    category_id: categoryId,
-    provider_party_id: providerId,
+    category_id: await resolveCategory(ctx.client, v.kategori, "payment"),
+    provider_party_id: await resolveParty(ctx.client, v.karsi_taraf, "provider"),
     recurrence_type: str(v.tekrar_tipi) ?? "monthly",
     due_day: num(v.vade_gunu),
     due_date: v.ilk_vade_tarihi ?? null,
     default_amount: amount,
     currency: str(v.para_birimi) ?? "TRY",
-    amount_confidence: confidence,
+    amount_confidence: amount === null ? "unknown" : "known",
     status: str(v.durum) ?? "active",
-    source_workbook_id: ctx.workbookId,
-    source_sheet_id: ctx.sheetId,
-    source_row_id: ctx.importRowId,
-  };
-
-  if (entityId) {
-    await ctx.client.query(
-      `update public.payments set
-         name=$2, description=$3, category_id=$4, provider_party_id=$5, recurrence_type=$6,
-         due_day=$7, due_date=$8, default_amount=$9, currency=$10, amount_confidence=$11,
-         status=$12, source_workbook_id=$13, source_sheet_id=$14, source_row_id=$15,
-         updated_at=now()
-       where id=$1`,
-      [entityId, cols.name, cols.description, cols.category_id, cols.provider_party_id,
-        cols.recurrence_type, cols.due_day, cols.due_date, cols.default_amount, cols.currency,
-        cols.amount_confidence, cols.status, cols.source_workbook_id, cols.source_sheet_id,
-        cols.source_row_id],
-    );
-    return entityId;
-  }
-
-  const r = await ctx.client.query<{ id: string }>(
-    `insert into public.payments
-       (name, description, category_id, provider_party_id, recurrence_type, due_day, due_date,
-        default_amount, currency, amount_confidence, status,
-        source_workbook_id, source_sheet_id, source_row_id)
-     values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) returning id`,
-    [cols.name, cols.description, cols.category_id, cols.provider_party_id, cols.recurrence_type,
-      cols.due_day, cols.due_date, cols.default_amount, cols.currency, cols.amount_confidence,
-      cols.status, cols.source_workbook_id, cols.source_sheet_id, cols.source_row_id],
-  );
-  return r.rows[0].id;
+    ...lineage(ctx),
+  }, true);
 };
+
+/* ── 02 · Çekler ─────────────────────────────────────────────────────────────────────── */
 
 const writeCheck: FamilyWriter = async (ctx, row, entityId) => {
   const v = row.values;
-  const payee = await resolveParty(ctx.client, v.kime, "company");
-  const payer = await resolveParty(ctx.client, v.kimden, "company");
-  const bank = await resolveParty(ctx.client, v.banka, "bank");
-
   const signed = num(v.signed_tutar);
 
   // İŞARET SÖZLEŞMESİ. `signed_amount` kullanıcının yazdığı gibi korunur; `amount` mutlak
-  // değerdir ve DB'nin check_amount_sign_consistency kısıtı ikisinin tutarlı olmasını şart
-  // koşar. Yön işaretten TÜRETİLİR: eksi = bizden çıkan. Sıfır ne giriş ne çıkış olduğu için
-  // 'unknown' — tahmin etmiyoruz.
-  const direction = signed === null ? "unknown" : signed < 0 ? "outflow" : signed > 0 ? "inflow" : "unknown";
+  // değerdir (DB'nin check_amount_sign_consistency kısıtı ikisini bağlıyor). Yön işaretten
+  // TÜRETİLİR: eksi = bizden çıkan. Sıfır ne giriş ne çıkış olduğu için 'unknown'.
+  const direction = signed === null ? "unknown"
+    : signed < 0 ? "outflow" : signed > 0 ? "inflow" : "unknown";
 
-  const cols = {
+  return upsertRow(ctx.client, "checks", entityId, {
     maturity_date: v.vade_tarihi ?? null,
     serial_no: str(v.seri_no),
-    payee_party_id: payee,
-    payer_party_id: payer,
-    bank_party_id: bank,
+    payee_party_id: await resolveParty(ctx.client, v.kime, "company"),
+    payer_party_id: await resolveParty(ctx.client, v.kimden, "company"),
+    bank_party_id: await resolveParty(ctx.client, v.banka, "bank"),
     amount: signed === null ? null : Math.abs(signed),
     signed_amount: signed,
     direction,
+    currency: str(v.para_birimi) ?? "TRY",
     status: str(v.durum) ?? "planned",
     notes: str(v.notlar),
-    source_workbook_id: ctx.workbookId,
-    source_sheet_id: ctx.sheetId,
-    source_row_id: ctx.importRowId,
-  };
-
-  if (entityId) {
-    await ctx.client.query(
-      `update public.checks set
-         maturity_date=$2, serial_no=$3, payee_party_id=$4, payer_party_id=$5, bank_party_id=$6,
-         amount=$7, signed_amount=$8, direction=$9, status=$10, notes=$11,
-         source_workbook_id=$12, source_sheet_id=$13, source_row_id=$14, updated_at=now()
-       where id=$1`,
-      [entityId, cols.maturity_date, cols.serial_no, cols.payee_party_id, cols.payer_party_id,
-        cols.bank_party_id, cols.amount, cols.signed_amount, cols.direction, cols.status,
-        cols.notes, cols.source_workbook_id, cols.source_sheet_id, cols.source_row_id],
-    );
-    return entityId;
-  }
-
-  const r = await ctx.client.query<{ id: string }>(
-    `insert into public.checks
-       (maturity_date, serial_no, payee_party_id, payer_party_id, bank_party_id,
-        amount, signed_amount, direction, status, notes,
-        source_workbook_id, source_sheet_id, source_row_id)
-     values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) returning id`,
-    [cols.maturity_date, cols.serial_no, cols.payee_party_id, cols.payer_party_id,
-      cols.bank_party_id, cols.amount, cols.signed_amount, cols.direction, cols.status,
-      cols.notes, cols.source_workbook_id, cols.source_sheet_id, cols.source_row_id],
-  );
-  return r.rows[0].id;
+    ...lineage(ctx),
+  }, true);
 };
+
+/* ── 03 · Krediler ───────────────────────────────────────────────────────────────────── */
 
 const writeLoan: FamilyWriter = async (ctx, row, entityId) => {
   const v = row.values;
-  const lender = await resolveParty(ctx.client, v.banka, "bank");
+  const principal = num(v.anapara);
 
-  const cols = {
+  // `loans.principal` NOT NULL ve sözleşme anaparayı zorunlu işaretliyor. Buraya null
+  // gelmesi parser'ın bir satırı yanlışlıkla "hazır" saymış olması demek. Sessizce 0
+  // yazmıyoruz — 0 anapara "bedelsiz kredi" olurdu.
+  if (principal === null) {
+    throw new Error(
+      `03_KREDILER satır ${row.rowIndex}: anapara boş, ama loans.principal NOT NULL. ` +
+      "Sıfır yazmak veriyi uydurmak olurdu.",
+    );
+  }
+
+  return upsertRow(ctx.client, "loans", entityId, {
     name: str(v.kredi_adi) ?? "(adsız kredi)",
-    lender_party_id: lender,
-    principal: num(v.anapara),
+    lender_party_id: await resolveParty(ctx.client, v.banka, "bank"),
+    principal,
+    currency: str(v.para_birimi) ?? "TRY",
     term_months: num(v.vade_ay),
     first_payment_date: v.ilk_odeme_tarihi ?? null,
     simple_interest_rate: num(v.baz_faiz_orani),
     applied_interest_rate: num(v.uygulanan_faiz_orani),
+    monthly_cost_rate: num(v.aylik_maliyet_orani),
+    annual_cost_rate: num(v.yillik_maliyet_orani),
     bsmv_rate: num(v.bsmv_orani),
     kkdf_rate: num(v.kkdf_orani),
     installment_amount: num(v.taksit_tutari),
@@ -290,67 +343,500 @@ const writeLoan: FamilyWriter = async (ctx, row, entityId) => {
     total_finance_cost: num(v.finansman_maliyeti),
     status: str(v.durum) ?? "active",
     notes: str(v.notlar),
-    source_workbook_id: ctx.workbookId,
-    source_sheet_id: ctx.sheetId,
-  };
+    ...lineage(ctx, false),   // loans tablosunda source_row_id yok
+  }, true);
+};
 
-  // `principal` NOT NULL. Sözleşme `anapara`yı zorunlu işaretliyor, yani buraya null gelmesi
-  // parser'ın bir satırı yanlışlıkla "hazır" saymış olması demektir. Sessizce 0 yazmıyoruz —
-  // 0 anapara "bedelsiz kredi" demek olurdu; hatayı görünür kılıp satırı reddediyoruz.
-  if (cols.principal === null) {
+/* ── 04 · Kredi taksitleri ───────────────────────────────────────────────────────────── */
+
+const writeLoanInstallment: FamilyWriter = async (ctx, row, entityId) => {
+  const v = row.values;
+  const loanCode = str(v.loan_external_id);
+
+  // Kredi, defter üzerinden bulunur. Parser bulunamayan kodu zaten reddediyor
+  // (missing_reference); buraya gelen bir satırın kredisi VAR demektir. Yine de sessiz
+  // geçmiyoruz: defterde yoksa bu, aynı dosyada kredinin yazılmamış olması gibi bir sıra
+  // hatasıdır ve görülmesi gerekir.
+  const loanId = loanCode ? await lookupExternalKey(ctx.client, "loans", loanCode) : null;
+  if (!loanId) {
     throw new Error(
-      `03_KREDILER satır ${row.rowIndex}: anapara boş, ama loans.principal NOT NULL. ` +
-      "Sıfır yazmak veriyi uydurmak olurdu.",
+      `04_KREDI_TAKSITLERI satır ${row.rowIndex}: '${loanCode ?? "(boş)"}' kodlu kredi ` +
+      "defterde yok. Taksit, bağlı olduğu kredi olmadan yazılamaz.",
     );
   }
 
-  if (entityId) {
-    await ctx.client.query(
-      `update public.loans set
-         name=$2, lender_party_id=$3, principal=$4, term_months=$5, first_payment_date=$6,
-         simple_interest_rate=$7, applied_interest_rate=$8, bsmv_rate=$9, kkdf_rate=$10,
-         installment_amount=$11, total_payment=$12, total_finance_cost=$13, status=$14,
-         notes=$15, source_workbook_id=$16, source_sheet_id=$17, updated_at=now()
-       where id=$1`,
-      [entityId, cols.name, cols.lender_party_id, cols.principal, cols.term_months,
-        cols.first_payment_date, cols.simple_interest_rate, cols.applied_interest_rate,
-        cols.bsmv_rate, cols.kkdf_rate, cols.installment_amount, cols.total_payment,
-        cols.total_finance_cost, cols.status, cols.notes, cols.source_workbook_id,
-        cols.source_sheet_id],
+  const amount = num(v.toplam_tutar);
+  if (amount === null) {
+    throw new Error(
+      `04_KREDI_TAKSITLERI satır ${row.rowIndex}: taksit tutarı boş, ama ` +
+      "loan_installments.amount NOT NULL.",
     );
-    return entityId;
   }
 
+  const installmentNo = num(v.taksit_no);
+  // `loan_installments` (loan_id, installment_no) üzerinde eşsiz ve bu sayfada kullanıcı
+  // kodu kolonu YOK. Kimlik oradan gelir: "şu kredinin şu numaralı taksidi".
+  const existing = entityId
+    ?? await findByNaturalKey(ctx.client, "loan_installments", { loan_id: loanId, installment_no: installmentNo });
+
+  return upsertRow(ctx.client, "loan_installments", existing, {
+    loan_id: loanId,
+    installment_no: installmentNo,
+    due_date: v.vade_tarihi ?? null,
+    amount,
+    principal_component: num(v.anapara_bileseni),
+    interest_component: num(v.faiz_bileseni),
+    tax_component: num(v.vergi_bileseni),
+    status: str(v.durum) ?? "planned",
+    paid_at: v.odeme_tarihi ?? null,
+  }, false);
+};
+
+/* ── 05 · Nakit akışı ────────────────────────────────────────────────────────────────── */
+
+/**
+ * Ayı bulur, yoksa yaratır.
+ *
+ * `cashflow_months.month_start` eşsiz. Satırlar aya bağlanır; ayın devir/kasa alanları bu
+ * import tarafından DOLDURULMAZ — onlar ayrı bir kaynaktan gelir ve buradan yazmak,
+ * hesaplanmış bir bakiyeyi satır verisiyle ezmek olurdu.
+ */
+async function resolveCashflowMonth(
+  ctx: WriteContext, monthStart_: unknown,
+): Promise<string> {
+  if (typeof monthStart_ !== "string" || monthStart_ === "") {
+    throw new Error("05_NAKIT_AKISI: dönem boş — satır bir aya bağlanamaz.");
+  }
+  const first = monthStart(monthStart_);
+  if (!first) {
+    throw new Error(`05_NAKIT_AKISI: dönem '${String(monthStart_)}' YYYY-AA biçiminde değil.`);
+  }
   const r = await ctx.client.query<{ id: string }>(
-    `insert into public.loans
-       (name, lender_party_id, principal, term_months, first_payment_date,
-        simple_interest_rate, applied_interest_rate, bsmv_rate, kkdf_rate,
-        installment_amount, total_payment, total_finance_cost, status, notes,
-        source_workbook_id, source_sheet_id)
-     values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) returning id`,
-    [cols.name, cols.lender_party_id, cols.principal, cols.term_months, cols.first_payment_date,
-      cols.simple_interest_rate, cols.applied_interest_rate, cols.bsmv_rate, cols.kkdf_rate,
-      cols.installment_amount, cols.total_payment, cols.total_finance_cost, cols.status,
-      cols.notes, cols.source_workbook_id, cols.source_sheet_id],
+    `insert into public.cashflow_months (month_start, source_workbook_id, source_sheet_id)
+     values ($1, $2, $3)
+     on conflict (month_start) do update set month_start = public.cashflow_months.month_start
+     returning id`,
+    [first, ctx.workbookId, ctx.sheetId],
   );
   return r.rows[0].id;
+}
+
+const writeCashflowLine: FamilyWriter = async (ctx, row, entityId) => {
+  const v = row.values;
+  const amount = num(v.tutar);
+
+  return upsertRow(ctx.client, "cashflow_lines", entityId, {
+    cashflow_month_id: await resolveCashflowMonth(ctx, v.donem),
+    line_type: str(v.satir_tipi) ?? "unknown",
+    direction: str(v.yon) ?? "unknown",
+    party_id: await resolveParty(ctx.client, v.karsi_taraf, "company"),
+    label: str(v.aciklama) ?? str(v.satir_tipi) ?? "(açıklamasız kalem)",
+    amount,
+    // BOŞ ≠ SIFIR'ın bu tablodaki karşılığı. Tutar yoksa 'missing'; 0 yazılmışsa 'known'.
+    amount_status: amount === null ? "missing" : "known",
+    date_value: v.tarih ?? null,
+    notes: str(v.notlar),
+    source_row_id: ctx.importRowId,
+  }, false);
+};
+
+/* ── 06 · Banka hesapları ────────────────────────────────────────────────────────────── */
+
+/**
+ * `bank_accounts` bağımsız bir tablo DEĞİL: birincil anahtarı `cash_account_id` ve
+ * `cash_accounts`'un 1:1 uzantısı. Bu yüzden önce üst kayıt yazılır.
+ *
+ * Üst kayıt hesap ADIYLA eşsiz. Aynı adı taşıyan ikinci bir hesap yeni kayıt yaratmaz,
+ * mevcut olanı günceller — iki "Ana vadesiz TL" hesabı, bakiyeyi ikiye bölmek demekti.
+ */
+const writeBankAccount: FamilyWriter = async (ctx, row, entityId) => {
+  const v = row.values;
+  const name = str(v.hesap_adi) ?? str(v.banka) ?? "(adsız hesap)";
+
+  const parent = await ctx.client.query<{ id: string }>(
+    `insert into public.cash_accounts (name, provider_party_id, account_type, currency, opening_balance, is_active, notes)
+     values ($1, $2, $3, $4, $5, $6, $7)
+     on conflict (name) do update set
+       provider_party_id = excluded.provider_party_id,
+       account_type      = excluded.account_type,
+       currency          = excluded.currency,
+       opening_balance   = excluded.opening_balance,
+       is_active         = excluded.is_active
+     returning id`,
+    [name,
+      await resolveParty(ctx.client, v.banka, "bank"),
+      str(v.hesap_tipi) ?? "bank_account",
+      str(v.para_birimi) ?? "TRY",
+      num(v.acilis_bakiyesi),
+      v.aktif === null || v.aktif === undefined ? true : Boolean(v.aktif),
+      str(v.notlar)],
+  );
+  const cashAccountId = entityId ?? parent.rows[0].id;
+  // Üst kayıt ada göre upsert edildiği için "yeni mi" sorusunun cevabı uzantı satırındadır.
+  const before = await ctx.client.query(
+    "select 1 from public.bank_accounts where cash_account_id = $1", [cashAccountId]);
+  const created = before.rowCount === 0;
+
+  // Uzantı satırı: birincil anahtar üst kaydın id'si olduğu için `upsertRow` kullanılmıyor.
+  await ctx.client.query(
+    `insert into public.bank_accounts
+       (cash_account_id, bank_name, iban, account_number, available_balance, balance_as_of, overdraft_limit, notes)
+     values ($1,$2,$3,$4,$5,$6,$7,$8)
+     on conflict (cash_account_id) do update set
+       bank_name         = excluded.bank_name,
+       iban              = excluded.iban,
+       account_number    = excluded.account_number,
+       available_balance = excluded.available_balance,
+       balance_as_of     = excluded.balance_as_of,
+       overdraft_limit   = excluded.overdraft_limit,
+       notes             = excluded.notes,
+       updated_at        = now()`,
+    [cashAccountId, str(v.banka), str(v.iban), str(v.hesap_no),
+      num(v.guncel_bakiye), v.bakiye_tarihi ?? null, num(v.kredi_limiti), str(v.notlar)],
+  );
+  return { id: cashAccountId, created };
+};
+
+/* ── 07 · Banka hareketleri ──────────────────────────────────────────────────────────── */
+
+/**
+ * Aynı hareketin iki kez yazılmasını engelleyen parmak izi.
+ *
+ * `bank_transactions` (bank_account_id, dedupe_hash) üzerinde eşsiz. Parmak izi hareketin
+ * KENDİSİNDEN üretilir — tarih, tutar, yön ve açıklama — çünkü ekstreler çoğu zaman kayıt
+ * kodu taşımaz. Kullanıcının kendi kodu varsa o kullanılır: kendi kodu daha güvenilirdir.
+ */
+function transactionFingerprint(v: Record<string, unknown>, externalId: string | null): string {
+  if (externalId) return `ext:${externalId}`;
+  return ["date:" + String(v.islem_tarihi ?? ""), "amt:" + String(v.tutar ?? ""),
+    "dir:" + String(v.yon ?? ""), "desc:" + String(v.aciklama ?? "").trim().toLocaleLowerCase("tr-TR")]
+    .join("|");
+}
+
+const writeBankTransaction: FamilyWriter = async (ctx, row, entityId) => {
+  const v = row.values;
+  const accountCode = str(v.account_external_id);
+  const accountId = accountCode
+    ? await lookupExternalKey(ctx.client, "bank_accounts", accountCode)
+    : null;
+  if (!accountId) {
+    throw new Error(
+      `07_BANKA_HAREKETLERI satır ${row.rowIndex}: '${accountCode ?? "(boş)"}' kodlu banka ` +
+      "hesabı defterde yok. Hareket, hesabı olmadan yazılamaz.",
+    );
+  }
+
+  const amount = num(v.tutar);
+  if (amount === null) {
+    throw new Error(
+      `07_BANKA_HAREKETLERI satır ${row.rowIndex}: tutar boş, ama bank_transactions.amount NOT NULL.`,
+    );
+  }
+
+  // ═══ YÖN, İŞARETLE TAŞINIR ═══
+  //
+  // `bank_transactions.direction` ÜRETİLMİŞ bir kolon: değerini `amount`'un işaretinden
+  // alıyor (amount < 0 → outflow, değilse inflow). Şablon ise işaretsiz tutar + ayrı yön
+  // kolonu kullanıyor.
+  //
+  // Bu ikisi uzlaştırılmazsa hata SESSİZ ve AĞIR olurdu: 5.000 TL'lik bir ÖDEME artı
+  // yazıldığı için veritabanınca TAHSİLAT sayılırdı. Nakit akışı, banka mutabakatı ve açık
+  // hesaplaması o hareketi ters yönde toplardı; kullanıcı dosyasına doğru yönü yazmış olurdu.
+  //
+  // Bu yüzden yön burada işarete çevrilir ve `direction` HİÇ yazılmaz — üretilmiş bir kolona
+  // değer göndermek Postgres tarafından zaten reddediliyor.
+  const signedAmount = str(v.yon) === "outflow" ? -Math.abs(amount) : Math.abs(amount);
+
+  const fingerprint = transactionFingerprint(v, row.externalId);
+  // Parmak izi tam da bunun için var: aynı hesapta aynı hareket iki kez yazılmaz.
+  const existingTxn = entityId
+    ?? await findByNaturalKey(ctx.client, "bank_transactions", { bank_account_id: accountId, dedupe_hash: fingerprint });
+
+  return upsertRow(ctx.client, "bank_transactions", existingTxn, {
+    bank_account_id: accountId,
+    txn_date: v.islem_tarihi ?? null,
+    value_date: v.valor_tarihi ?? null,
+    description: str(v.aciklama) ?? "(açıklamasız hareket)",
+    // Ham isim olarak saklanır, taraf kaydına ÇEVRİLMEZ: ekstre açıklamasındaki isim
+    // kısaltılmış ve tutarsızdır; ondan taraf üretmek yanlış eşleşme riskidir.
+    counterparty_name_raw: str(v.karsi_taraf),
+    amount: signedAmount,
+    currency: str(v.para_birimi) ?? "TRY",
+    // Kategori boşsa 'unknown'. Tahmin edilmez: açıklamadan kategori çıkarmak, kullanıcının
+    // görmediği bir sınıflandırmayı finansal rapora sokmak olurdu.
+    category: str(v.kategori) ?? "unknown",
+    reference_no: str(v.referans_no),
+    // Eşleştirme bu katmanın işi değil; her hareket eşleşmemiş başlar.
+    status: "unmatched",
+    dedupe_hash: fingerprint,
+    notes: str(v.notlar),
+    ...lineage(ctx),
+  }, true);
+};
+
+/* ── 08 · Faturalar ──────────────────────────────────────────────────────────────────── */
+
+const writeInvoice: FamilyWriter = async (ctx, row, entityId) => {
+  const v = row.values;
+
+  // Üçlü tutar. Parser eksik olanın diğer ikisinden çıkarılabildiğini garanti ediyor
+  // (en az ikisi dolu, dolu olanlar tutarlı); burada o aritmetik uygulanır.
+  const n = num(v.net_tutar), t = num(v.vergi_tutari), g = num(v.toplam_tutar);
+  const net = n ?? (g !== null && t !== null ? g - t : null);
+  const tax = t ?? (g !== null && n !== null ? g - n : null);
+  const gross = g ?? (n !== null && t !== null ? n + t : null);
+  if (net === null || tax === null || gross === null) {
+    throw new Error(
+      `08_FATURALAR satır ${row.rowIndex}: net/vergi/toplam üçlüsü tamamlanamadı. ` +
+      "invoices üçünü de NOT NULL istiyor.",
+    );
+  }
+
+  const partyId = await resolveParty(ctx.client, v.karsi_taraf, "company");
+  if (!partyId) {
+    throw new Error(`08_FATURALAR satır ${row.rowIndex}: karşı taraf boş, ama invoices.party_id NOT NULL.`);
+  }
+
+  const projectCode = str(v.project_external_id);
+  return upsertRow(ctx.client, "invoices", entityId, {
+    direction: str(v.fatura_tipi) ?? "sales",
+    // Fatura numarası boş olamaz (btrim(invoice_no) <> ''). Kullanıcı kodu varsa o, yoksa
+    // satırın kaynağından türetilmiş bir yer tutucu — uydurma bir numara değil, "bu satır
+    // numarasız geldi" diyen okunabilir bir işaret.
+    invoice_no: str(v.fatura_no) ?? row.externalId ?? `(numarasız-satır-${row.rowIndex})`,
+    party_id: partyId,
+    project_id: projectCode ? await lookupExternalKey(ctx.client, "projects", projectCode) : null,
+    issue_date: v.duzenleme_tarihi ?? null,
+    due_date: v.vade_tarihi ?? null,
+    currency: str(v.para_birimi) ?? "TRY",
+    net_amount: net,
+    tax_amount: tax,
+    gross_amount: gross,
+    // Tahsilat bu import'un konusu değil. 0 yazmak "hiç ödenmedi" demek ve şu an doğru olan
+    // tek şey bu: fatura yeni kaydediliyor, tahsilat kaydı ayrı bir olay.
+    paid_amount: 0,
+    status: str(v.durum) ?? "draft",
+    notes: str(v.notlar),
+    ...lineage(ctx),
+  }, true);
+};
+
+/* ── 09 · Siparişler ─────────────────────────────────────────────────────────────────── */
+
+/**
+ * `code` NOT NULL ve eşsiz olan tablolar için kod türetir.
+ *
+ * Sırayla: kullanıcının yazdığı kod, kendi kayıt kodu, son çare olarak addan üretilmiş
+ * okunabilir bir kod. Rastgele bir kimlik ÜRETİLMEZ — kullanıcı o kodu ekranda görecek.
+ */
+function deriveCode(explicit: unknown, externalId: string | null, name: unknown, rowIndex: number): string {
+  const e = str(explicit);
+  if (e) return e;
+  if (externalId) return externalId;
+  const n = str(name);
+  if (n) {
+    const slug = n.trim().toLocaleUpperCase("tr-TR").replace(/\s+/g, "-").slice(0, 40);
+    return slug;
+  }
+  return `SATIR-${rowIndex}`;
+}
+
+const writeOrder: FamilyWriter = async (ctx, row, entityId) => {
+  const v = row.values;
+  const projectCode = str(v.project_external_id);
+  const code = deriveCode(v.siparis_no, row.externalId, v.karsi_taraf, row.rowIndex);
+  return upsertRow(ctx.client, "orders",
+    entityId ?? await findByNaturalKey(ctx.client, "orders", { code }), {
+    code,
+    party_id: await resolveParty(ctx.client, v.karsi_taraf, "company"),
+    project_id: projectCode ? await lookupExternalKey(ctx.client, "projects", projectCode) : null,
+    order_date: v.siparis_tarihi ?? null,
+    notes: str(v.notlar),
+  }, true);
+};
+
+/* ── 10 · Ürünler ────────────────────────────────────────────────────────────────────── */
+
+const writeProduct: FamilyWriter = async (ctx, row, entityId) => {
+  const v = row.values;
+  const code = deriveCode(v.sku, row.externalId, v.urun_adi, row.rowIndex);
+  return upsertRow(ctx.client, "products",
+    entityId ?? await findByNaturalKey(ctx.client, "products", { code }), {
+    code,
+    name: str(v.urun_adi) ?? "(adsız ürün)",
+    unit: str(v.birim),
+    is_active: v.aktif === null || v.aktif === undefined ? true : Boolean(v.aktif),
+    notes: str(v.notlar),
+  }, true);
+};
+
+/* ── 11 · Projeler ───────────────────────────────────────────────────────────────────── */
+
+const writeProject: FamilyWriter = async (ctx, row, entityId) => {
+  const v = row.values;
+  const code = deriveCode(null, row.externalId, v.proje_adi, row.rowIndex);
+  return upsertRow(ctx.client, "projects",
+    entityId ?? await findByNaturalKey(ctx.client, "projects", { code }), {
+    code,
+    name: str(v.proje_adi) ?? "(adsız proje)",
+    party_id: await resolveParty(ctx.client, v.musteri, "customer"),
+    notes: str(v.notlar),
+  }, true);
+};
+
+/* ── 12 · Bütçe ──────────────────────────────────────────────────────────────────────── */
+
+/**
+ * Senaryo bir SATIR alanı değil, BÜTÇE BAŞLIĞIDIR.
+ *
+ * `budget_lines` bir `budgets` kaydına bağlı ve o kayıt (ad, mali yıl) ikilisiyle eşsiz.
+ * "2026 base_case" bir bütçedir, "2026 worst_case" başkası. Senaryoyu satıra yazmaya
+ * çalışmak, aynı bütçe içinde çelişen iki planı karıştırmak olurdu.
+ */
+async function resolveBudget(
+  ctx: WriteContext, scenario: unknown, period: unknown, currency: unknown,
+): Promise<string> {
+  const name = str(scenario) ?? "import";
+  const year = typeof period === "string" && /^\d{4}/.test(period)
+    ? Number(period.slice(0, 4))
+    : new Date().getUTCFullYear();
+
+  const r = await ctx.client.query<{ id: string }>(
+    `insert into public.budgets (name, fiscal_year, period_kind, currency)
+     values ($1, $2, 'monthly', $3)
+     on conflict (name, fiscal_year) do update set period_kind = public.budgets.period_kind
+     returning id`,
+    [name, year, str(currency) ?? "TRY"],
+  );
+  return r.rows[0].id;
+}
+
+const writeBudgetLine: FamilyWriter = async (ctx, row, entityId) => {
+  const v = row.values;
+  const amount = num(v.tutar);
+  if (amount === null) {
+    throw new Error(`12_BUTCE satır ${row.rowIndex}: tutar boş, ama budget_lines.amount NOT NULL.`);
+  }
+
+  return upsertRow(ctx.client, "budget_lines", entityId, {
+    budget_id: await resolveBudget(ctx, v.senaryo, v.donem, v.para_birimi),
+    period_start: monthStart(v.donem),
+    direction: str(v.yon) ?? "expense",
+    amount,
+    currency: str(v.para_birimi) ?? "TRY",
+    category_id: await resolveCategory(ctx.client, v.kategori, "other"),
+    // Import edilen bir bütçe taslaktır. Onay ayrı bir eylemdir ve `approved_at`/`approved_by`
+    // ister; toplu import kimin onayladığını bilemez.
+    version_no: 1,
+    version_status: "draft",
+    notes: str(v.notlar),
+  }, true);
+};
+
+/* ── 13 · Döviz pozisyonu ────────────────────────────────────────────────────────────── */
+
+const writeFxPosition: FamilyWriter = async (ctx, row, entityId) => {
+  const v = row.values;
+  const amount = num(v.doviz_tutari);
+  if (amount === null) {
+    throw new Error(`13_FX_POZISYONU satır ${row.rowIndex}: döviz tutarı boş, ama fx_positions.amount NOT NULL.`);
+  }
+  return upsertRow(ctx.client, "fx_positions", entityId, {
+    currency: str(v.para_birimi) ?? "USD",
+    amount,
+    position_kind: str(v.pozisyon_tipi) ?? "other",
+    as_of_date: v.tarih ?? null,
+    entry_rate: num(v.try_kuru),
+    counterparty_party_id: await resolveParty(ctx.client, v.karsi_taraf, "company"),
+    source_note: str(v.referans),
+  }, true);
+};
+
+/* ── 14 · Kapasite (üretim parçaları) ────────────────────────────────────────────────── */
+
+const writeProductionPart: FamilyWriter = async (ctx, row, entityId) => {
+  const v = row.values;
+  return upsertRow(ctx.client, "production_parts", entityId, {
+    part_code: str(v.parca_kodu),
+    part_name: str(v.parca_adi) ?? str(v.parca_kodu) ?? "(adsız parça)",
+    quantity: num(v.adet),
+    // BOŞ ≠ SIFIR burada da geçerli: ölçülmemiş süre null kalır, "0 dakika" yazılmaz.
+    torna_minutes: num(v.torna_dk),
+    freze_minutes: num(v.freze_dk),
+    ...lineage(ctx),
+  }, false);
+};
+
+/* ── 16 · Makine ─────────────────────────────────────────────────────────────────────── */
+
+const writeMachineAsset: FamilyWriter = async (ctx, row, entityId) => {
+  const v = row.values;
+  return upsertRow(ctx.client, "machine_assets", entityId, {
+    name: str(v.makine_adi) ?? "(adsız makine)",
+    purchase_cost: num(v.alis_bedeli),
+    notes: str(v.notlar),
+  }, false);
 };
 
 /**
  * Aile → domain yazıcısı.
  *
- * BU LİSTE BİLEREK EKSİK. Sözleşmedeki 16 ailenin yalnız üçünün kolon eşlemesi
- * (`domainField`) yazılmış durumda; kalan 13'ü için hedef kolonlar henüz belirlenmedi.
- * Eksik olanı "çalışıyor" göstermek yerine burada YOK bırakıyoruz: yazıcısı olmayan aile
- * hazırlık katmanına yazılır, domain'e yazılmaz ve sonuçta `stagedOnlyFamilies` altında
- * ADIYLA raporlanır. Sessizce atlanan bir aile, kullanıcının veri kaybını fark etmemesi
- * demekti.
+ * `cost` (15_MALIYET) BİLEREK YOK ve bu bir gecikme değil, bir karar. Şablon UZUN biçimde
+ * (her satır bir maliyet kalemi), `cost_models` ise GENİŞ biçimde (ayda tek satır, her
+ * kalem ayrı kolon). Uzunu genişe çevirmek `maliyet_kategorisi` serbest metnini kolon adına
+ * eşlemeyi gerektirir; "Yemek", "yemek gideri", "YEMEK" hepsi gelir ve yanlış tahmin
+ * maliyeti yanlış kolona yazıp başabaş fiyatını sessizce bozar. Gerekçe `domain-map.ts`
+ * içinde kolon kolon yazılı.
+ *
+ * Yazıcısı olmayan aile kaybolmaz: satırları hazırlık katmanına yazılır ve sonuçta
+ * `stagedOnlyFamilies` altında ADIYLA raporlanır.
  */
 export const FAMILY_WRITERS: Readonly<Record<string, FamilyWriter>> = Object.freeze({
   payments: writePayment,
   checks: writeCheck,
   loans: writeLoan,
+  loan_installments: writeLoanInstallment,
+  cashflow: writeCashflowLine,
+  bank_accounts: writeBankAccount,
+  bank_transactions: writeBankTransaction,
+  invoices: writeInvoice,
+  orders: writeOrder,
+  products: writeProduct,
+  projects: writeProject,
+  budget: writeBudgetLine,
+  fx: writeFxPosition,
+  capacity: writeProductionPart,
+  machine_roi: writeMachineAsset,
 });
+
+/**
+ * Sayfaların YAZILMA sırası — numara sırası değil, BAĞIMLILIK sırası.
+ *
+ * Bir satır başka bir sayfanın kaydına atıf yaparsa (fatura → proje, taksit → kredi,
+ * hareket → hesap), atıf edilen kayıt DEFTERDE olmalı; yoksa arama boş döner ve bağ
+ * kurulamaz. Numara sırası bunu garanti etmiyor: 08_FATURALAR projeye atıf yapıyor ama
+ * projeler 11. sayfada.
+ *
+ * Bu yüzden önce atıf EDİLENLER yazılır.
+ */
+export const SHEET_WRITE_ORDER: readonly string[] = Object.freeze([
+  "10_URUNLER",            // kimseye atıf yapmaz
+  "11_PROJELER",           // 08 ve 09 buna atıf yapıyor
+  "06_BANKA_HESAPLARI",    // 07 buna atıf yapıyor
+  "03_KREDILER",           // 04 buna atıf yapıyor
+  "01_ODEMELER",
+  "02_CEKLER",
+  "04_KREDI_TAKSITLERI",
+  "05_NAKIT_AKISI",
+  "07_BANKA_HAREKETLERI",
+  "08_FATURALAR",
+  "09_SIPARISLER",
+  "12_BUTCE",
+  "13_FX_POZISYONU",
+  "14_KAPASITE",
+  "15_MALIYET",
+  "16_MAKINE_ROI",
+]);
 
 /* ── Hazırlık katmanı ────────────────────────────────────────────────────────────────── */
 
@@ -433,6 +919,22 @@ async function recordExternalKey(
   );
 }
 
+/**
+ * Sayfaları YAZILMA sırasına dizer.
+ *
+ * `SHEET_WRITE_ORDER`'da olmayan bir sayfa (sözleşmeye yeni eklenmiş ve sıraya yazılmamış)
+ * sessizce atlanmaz — sona alınır ve `unorderedSheets` ile raporlanır. Sessiz atlama, o
+ * ailenin verisinin kaybolması demekti.
+ */
+function inWriteOrder(sheets: SheetResult[]): { ordered: SheetResult[]; unordered: string[] } {
+  const rank = new Map(SHEET_WRITE_ORDER.map((n, i) => [n, i]));
+  const unordered = sheets.filter((s) => !rank.has(s.sheet)).map((s) => s.sheet);
+  const ordered = [...sheets].sort(
+    (a, b) => (rank.get(a.sheet) ?? Number.MAX_SAFE_INTEGER) - (rank.get(b.sheet) ?? Number.MAX_SAFE_INTEGER),
+  );
+  return { ordered, unordered };
+}
+
 /* ── Ana akış ────────────────────────────────────────────────────────────────────────── */
 
 /**
@@ -448,7 +950,8 @@ export async function mapWorkbook(
 
   const result: MapperResult = {
     dryRun, workbookId: null, sheetsStaged: 0, rowsStaged: 0, reviewsOpened: 0,
-    perTable: {}, stagedOnlyFamilies: [], rowsStagedOnly: 0,
+    perTable: {}, stagedOnlyFamilies: [], rowsStagedOnly: 0, unorderedSheets: [],
+    rowsUndetermined: 0,
     rowsMapped: 0, rowsNeedsReview: 0, rowsRejected: 0,
   };
 
@@ -464,10 +967,13 @@ export async function mapWorkbook(
     t[kind]++;
   };
 
+  const { ordered, unordered } = inWriteOrder(parsed.sheets);
+  result.unorderedSheets = unordered;
+
   if (dryRun) {
     // Yazmadan sayım. Yazıcısı olan ailelerde "kaç kayıt yaratılır/güncellenir" sorusunun
     // cevabı defterin mevcut hâline bağlı olduğu için burada YALNIZ okuma yapılır.
-    for (const sheet of parsed.sheets) {
+    for (const sheet of ordered) {
       if (!sheet.present) continue;
       result.sheetsStaged++;
       const spec = sheetByName(sheet.sheet);
@@ -481,10 +987,22 @@ export async function mapWorkbook(
         if (row.status === "needs_review") { result.rowsNeedsReview++; continue; }
         if (!table || !writer) { result.rowsStagedOnly++; continue; }
 
-        const existing = row.externalId
-          ? await lookupExternalKey(client, table, row.externalId)
-          : null;
-        bump(table, existing ? "updated" : "inserted");
+        // ÖNİZLEME NE BİLİR, NE BİLMEZ.
+        //
+        // Kullanıcı kodu olan satır için cevap kesin: defterde varsa güncellenir, yoksa
+        // yaratılır. Kodu OLMAYAN satır için kesin değil — yazıcı onu doğal anahtarından
+        // (ürün kodu, kredinin taksit numarası, hareketin parmak izi) bulabilir. Bunu
+        // önizlemede tekrarlamak, yazma mantığını ikinci kez ve ayrı yazmak olurdu; iki
+        // kopya zamanla ayrışır ve önizleme yalan söylemeye başlar.
+        //
+        // O yüzden burada TAHMİN EDİLMİYOR: kodsuz satırlar ayrı sayılıyor ve kullanıcıya
+        // "şu kadar satırın yeni mi güncelleme mi olduğu ancak yazarken belli olur" denebiliyor.
+        if (row.externalId) {
+          const existing = await lookupExternalKey(client, table, row.externalId);
+          bump(table, existing ? "updated" : "inserted");
+        } else {
+          result.rowsUndetermined++;
+        }
         result.rowsMapped++;
       }
       result.reviewsOpened += sheet.issues.length;
@@ -498,7 +1016,7 @@ export async function mapWorkbook(
   result.workbookId = workbookId;
 
   let sheetIndex = 0;
-  for (const sheet of parsed.sheets) {
+  for (const sheet of ordered) {
     if (!sheet.present) continue;
     const sheetId = await stageSheet(client, workbookId, sheet, sheetIndex++);
     result.sheetsStaged++;
@@ -528,8 +1046,9 @@ export async function mapWorkbook(
 
       if (row.status === "ready" && table && writer) {
         const existing = row.externalId ? await lookupExternalKey(client, table, row.externalId) : null;
-        entityId = await writer({ client, workbookId, sheetId, importRowId }, row, existing);
-        bump(table, existing ? "updated" : "inserted");
+        const outcome = await writer({ client, workbookId, sheetId, importRowId }, row, existing);
+        entityId = outcome.id;
+        bump(table, outcome.created ? "inserted" : "updated");
         wroteDomain = true;
         result.rowsMapped++;
 
@@ -579,6 +1098,7 @@ export async function mapWorkbook(
       rowsRejected: result.rowsRejected,
       rowsStagedOnly: result.rowsStagedOnly,
       stagedOnlyFamilies: result.stagedOnlyFamilies,
+      unorderedSheets: result.unorderedSheets,
       reviewsOpened: result.reviewsOpened,
       perTable: result.perTable,
     },

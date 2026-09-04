@@ -44,8 +44,9 @@ export interface ColumnSpec {
   aliases?: readonly string[];
   /** Şablondaki hücre notu: alan ne demek, boş bırakılırsa ne olur. */
   note: string;
-  /** Bu kolonun karşılığı olan domain alanı (dokümantasyon ve eşleyici için). */
-  domainField?: string;
+  // NOT: Domain kolonu eşlemesi BURADA DEĞİL, `domain-map.ts` içinde. Dağınık dururken
+  // 187 kolonun yalnız 28'inde vardı ve asıl gizlediği şey hangi kolonun HİÇBİR yere
+  // gitmediğiydi. Tek yerde toplanınca eksik karar test tarafından yakalanabiliyor.
   width?: number;
 }
 
@@ -77,7 +78,14 @@ export const CHECK_STATUS = ["planned", "cleared", "bounced", "cancelled"] as co
 // Yapılandırılmış kredi ihtiyacı gerçek; karşılığı ayrı bir iş: `loans.status` CHECK'ini
 // genişletmek ve motoru/arayüzü o duruma hazırlamak gerekir. Bu sözleşmenin işi değil.
 export const LOAN_STATUS = ["active", "closed", "planned"] as const;
-export const INSTALLMENT_STATUS = ["planned", "paid", "overdue", "cancelled"] as const;
+// `public.loan_installments.status` ile birebir. Sözleşme bir süre `overdue` sunuyordu;
+// veritabanının kelimesi `late`. Aynı kavramın iki adı olması, şablondan seçilen değerin
+// INSERT'te reddedilmesi demekti.
+// `cancelled` BİLEREK YOK — sözlükte var ama IMPORT'la ulaşılamaz. Veritabanı bir taksidi
+// iptal edilmiş saymak için `cancelled_at` VE `cancel_reason` istiyor (0026'nın çift yönlü
+// tutarlılık kuralı). Şablonda iptal gerekçesi sorulmuyor; sunulsaydı seçen kişinin satırı
+// INSERT'te reddedilirdi. İptal, import'un değil ekranın işi.
+export const INSTALLMENT_STATUS = ["planned", "unpaid", "partial", "paid", "late"] as const;
 // `public.cashflow_lines.line_type` CHECK'i ile birebir (yalnız 'unknown' dışarıda: onu bir
 // şablonda seçenek olarak sunmak, kullanıcıdan "bilmiyorum" seçmesini istemek olurdu).
 //
@@ -91,15 +99,38 @@ export const CASHFLOW_LINE_TYPES = [
 ] as const;
 export const CASHFLOW_DIRECTIONS = ["inflow", "outflow", "balance"] as const;
 export const ACTUAL_OR_PLANNED = ["gerceklesen", "planlanan"] as const;
-export const ACCOUNT_TYPES = ["vadesiz", "vadeli", "kredi", "pos", "diger"] as const;
+// `public.cash_accounts.account_type` ile birebir. Banka hesabı `cash_accounts`'un bir
+// uzantısı olduğu için hesap tipi de o tablonun sözlüğünü kullanır.
+export const ACCOUNT_TYPES = [
+  "bank_account", "credit_card", "loan", "check_account", "cash", "other",
+] as const;
 export const INVOICE_TYPES = ["sales", "purchase"] as const;
-export const INVOICE_STATUS = ["draft", "issued", "paid", "partial", "cancelled"] as const;
+// `public.invoices.status` ile birebir. `issued` yerine `open`: fatura kesilmiş ve tahsilatı
+// bekliyorsa sistemin kelimesi "açık".
+// `cancelled` ve `closed` BİLEREK YOK: ikisi de zaman damgası + gerekçe istiyor
+// (invoices'ın iki çift yönlü tutarlılık kısıtı). Bir faturayı iptal etmek ya da kapatmak
+// gerekçesi kaydedilen bir KARAR; toplu import'ta sessizce yapılacak bir şey değil.
+export const INVOICE_STATUS = ["draft", "open", "partial", "paid"] as const;
 export const ORDER_TYPES = ["sales", "purchase"] as const;
 export const ORDER_STATUS = ["open", "confirmed", "delivered", "cancelled"] as const;
 export const PROJECT_STATUS = ["planned", "active", "completed", "cancelled"] as const;
 export const BUDGET_SCENARIOS = ["budget", "forecast", "best_case", "base_case", "worst_case"] as const;
-export const FX_POSITION_TYPES = ["asset", "liability", "receivable", "payable", "hedge"] as const;
+// `public.fx_positions.position_kind` ile birebir. Muhasebe soyutlaması (asset/liability)
+// yerine pozisyonun NEREDE durduğunu söyleyen kelimeler: banka bakiyesi, alacak, borç,
+// kredi, tahsis, forward.
+// Döviz pozisyonu tanım gereği YABANCI para. `public.fx_positions` bunu kısıtla söylüyor:
+// `currency <> 'TRY'`. Şablonun TRY sunması, seçen kişinin satırının INSERT'te reddedilmesi
+// demekti.
+export const FX_CURRENCIES = ["USD", "EUR", "GBP"] as const;
+
+export const FX_POSITION_TYPES = [
+  "bank_balance", "receivable", "payable", "loan", "facility", "forward", "other",
+] as const;
 export const COST_SCENARIOS = ["normal", "overtime"] as const;
+
+// `public.budget_lines.direction` gelir/gider der, giriş/çıkış demez. Bütçe bir nakit
+// hareketi değil bir plan kalemidir; ayrı bir sözlük bu yüzden var.
+export const BUDGET_DIRECTIONS = ["income", "expense"] as const;
 
 /* ── Tekrar eden kolonlar ────────────────────────────────────────────────────────────── */
 
@@ -157,29 +188,27 @@ export const SHEET_ODEMELER: SheetSpec = {
     externalId("Örn. kendi muhasebe kodunuz."),
     { key: "aciklama", header: "Açıklama", type: "text", required: true,
       aliases: ["aciklama", "ad", "isim", "name", "description"],
-      note: "Ödemenin adı. ZORUNLU. Örn. 'MAS ELEKTRİK'.", domainField: "payments.name", width: 34 },
+      note: "Ödemenin adı. ZORUNLU. Örn. 'MAS ELEKTRİK'.", width: 34 },
     { key: "karsi_taraf", header: "Karşı Taraf", type: "text", required: false,
       aliases: ["karsi_taraf", "tedarikci", "firma", "counterparty"],
-      note: "Kime ödeniyor. Boş bırakılabilir.", domainField: "payments.provider_party_id", width: 24 },
+      note: "Kime ödeniyor. Boş bırakılabilir.", width: 24 },
     { key: "kategori", header: "Kategori", type: "text", required: false,
       aliases: ["kategori", "category", "gider_turu"],
-      note: "Örn. 'enerji', 'kira'. Boşsa kategorisiz kalır.", domainField: "payments.category_id", width: 18 },
+      note: "Örn. 'enerji', 'kira'. Boşsa kategorisiz kalır.", width: 18 },
     { key: "vade_gunu", header: "Vade Günü (1-31)", type: "integer", required: false,
       aliases: ["vade_gunu", "gun", "due_day"],
-      note: "Ayın kaçında ödeniyor. 1-31. Aylık tekrar için gereklidir. Boşsa tekrar tipi 'irregular' olmalıdır.",
-      domainField: "payments.due_day", width: 16 },
+      note: "Ayın kaçında ödeniyor. 1-31. Aylık tekrar için gereklidir. Boşsa tekrar tipi 'irregular' olmalıdır.", width: 16 },
     { key: "ilk_vade_tarihi", header: "İlk Vade Tarihi", type: "date", required: false,
       aliases: ["ilk_vade_tarihi", "vade_tarihi", "first_due_date"],
-      note: "Tek seferlik ödemelerde kullanılır. YYYY-AA-GG.", domainField: "payments.due_date", width: 16 },
+      note: "Tek seferlik ödemelerde kullanılır. YYYY-AA-GG.", width: 16 },
     amount("tutar", "Tutar", "Ödemenin tutarı."),
     currency(),
     { key: "tekrar_tipi", header: "Tekrar Tipi", type: "enum", required: true,
       enumValues: RECURRENCE, aliases: ["tekrar_tipi", "tekrar", "recurrence"],
-      note: "monthly / weekly / yearly / irregular / one_off. ZORUNLU.",
-      domainField: "payments.recurrence_type", width: 14 },
+      note: "monthly / weekly / yearly / irregular / one_off. ZORUNLU.", width: 14 },
     { key: "durum", header: "Durum", type: "enum", required: false,
       enumValues: PAYMENT_STATUS, aliases: ["durum", "status"],
-      note: "active / paused / archived. Boşsa 'active'.", domainField: "payments.status", width: 12 },
+      note: "active / paused / archived. Boşsa 'active'.", width: 12 },
     { key: "baslangic_tarihi", header: "Başlangıç Tarihi", type: "date", required: false,
       aliases: ["baslangic_tarihi", "start_date"], note: "Tekrarın başladığı tarih. Boş olabilir.", width: 16 },
     { key: "bitis_tarihi", header: "Bitiş Tarihi", type: "date", required: false,
@@ -198,27 +227,25 @@ export const SHEET_CEKLER: SheetSpec = {
     externalId("Çekin sizdeki takip kodu."),
     { key: "seri_no", header: "Seri No", type: "text", required: false,
       aliases: ["seri_no", "seri", "cek_no", "serial"],
-      note: "Çek seri numarası. Varsa yazın — mükerrer tespitini kesinleştirir. Boş bırakılabilir.",
-      domainField: "checks.serial_no", width: 18 },
+      note: "Çek seri numarası. Varsa yazın — mükerrer tespitini kesinleştirir. Boş bırakılabilir.", width: 18 },
     { key: "vade_tarihi", header: "Vade Tarihi", type: "date", required: true,
       aliases: ["vade_tarihi", "vade", "maturity_date"],
-      note: "ZORUNLU. YYYY-AA-GG.", domainField: "checks.maturity_date", width: 16 },
+      note: "ZORUNLU. YYYY-AA-GG.", width: 16 },
     { key: "kime", header: "Kime", type: "text", required: false,
-      aliases: ["kime", "alacakli", "payee"], note: "Çekin ödeneceği taraf.", domainField: "checks.payee_party_id", width: 22 },
+      aliases: ["kime", "alacakli", "payee"], note: "Çekin ödeneceği taraf.", width: 22 },
     { key: "kimden", header: "Kimden", type: "text", required: false,
-      aliases: ["kimden", "borclu", "payer"], note: "Çeki veren taraf.", domainField: "checks.payer_party_id", width: 22 },
+      aliases: ["kimden", "borclu", "payer"], note: "Çeki veren taraf.", width: 22 },
     { key: "banka", header: "Banka", type: "text", required: false,
-      aliases: ["banka", "bank"], note: "Çekin bankası.", domainField: "checks.bank_party_id", width: 18 },
+      aliases: ["banka", "bank"], note: "Çekin bankası.", width: 18 },
     { key: "signed_tutar", header: "İşaretli Tutar (− ödeme / + tahsilat)", type: "money", required: true,
       aliases: ["signed_tutar", "tutar", "amount", "signed_amount"],
       note:
         "ZORUNLU. İŞARET ANLAMLIDIR: eksi (−) = sizin ödeyeceğiniz çek (outflow), " +
-        "artı (+) = tahsil edeceğiniz çek (inflow). Sistem işareti KORUR, mutlak değere çevirmez.",
-      domainField: "checks.signed_amount", width: 30 },
+        "artı (+) = tahsil edeceğiniz çek (inflow). Sistem işareti KORUR, mutlak değere çevirmez.", width: 30 },
     currency(),
     { key: "durum", header: "Durum", type: "enum", required: false,
       enumValues: CHECK_STATUS, aliases: ["durum", "status"],
-      note: "planned / cleared / bounced / cancelled. Boşsa 'planned'.", domainField: "checks.status", width: 12 },
+      note: "planned / cleared / bounced / cancelled. Boşsa 'planned'.", width: 12 },
     notes,
   ],
 };
@@ -232,36 +259,32 @@ export const SHEET_KREDILER: SheetSpec = {
   columns: [
     externalId("Kredi sözleşme numaranız olabilir. Taksit sayfası bu kodla bağlanır."),
     { key: "kredi_adi", header: "Kredi Adı", type: "text", required: true,
-      aliases: ["kredi_adi", "ad", "name"], note: "ZORUNLU.", domainField: "loans.name", width: 28 },
+      aliases: ["kredi_adi", "ad", "name"], note: "ZORUNLU.", width: 28 },
     { key: "banka", header: "Banka", type: "text", required: false,
-      aliases: ["banka", "bank", "kurum"], note: "Krediyi veren kurum.", domainField: "loans.lender_party_id", width: 20 },
+      aliases: ["banka", "bank", "kurum"], note: "Krediyi veren kurum.", width: 20 },
     amount("anapara", "Anapara", "Kredi tutarı.", true),
     currency(),
     { key: "vade_ay", header: "Vade (ay)", type: "integer", required: true,
-      aliases: ["vade_ay", "vade", "term_months"], note: "ZORUNLU. Toplam taksit sayısı.", domainField: "loans.term_months", width: 12 },
+      aliases: ["vade_ay", "vade", "term_months"], note: "ZORUNLU. Toplam taksit sayısı.", width: 12 },
     { key: "baz_faiz_orani", header: "Baz Faiz Oranı (%)", type: "percent", required: false,
-      aliases: ["baz_faiz_orani", "faiz", "faiz_orani"], note: "Aylık baz faiz. Boşsa hesaplanmaz, uydurulmaz.",
-      domainField: "loans.simple_interest_rate", width: 18 },
+      aliases: ["baz_faiz_orani", "faiz", "faiz_orani"], note: "Aylık baz faiz. Boşsa hesaplanmaz, uydurulmaz.", width: 18 },
     { key: "uygulanan_faiz_orani", header: "Uygulanan Faiz Oranı (%)", type: "percent", required: false,
-      aliases: ["uygulanan_faiz_orani", "applied_rate"], note: "Vergiler dahil edilmiş efektif faiz.",
-      domainField: "loans.applied_interest_rate", width: 22 },
+      aliases: ["uygulanan_faiz_orani", "applied_rate"], note: "Vergiler dahil edilmiş efektif faiz.", width: 22 },
     { key: "bsmv_orani", header: "BSMV (%)", type: "percent", required: false,
-      aliases: ["bsmv_orani", "bsmv"], note: "Banka ve Sigorta Muameleleri Vergisi oranı.", domainField: "loans.bsmv_rate", width: 12 },
+      aliases: ["bsmv_orani", "bsmv"], note: "Banka ve Sigorta Muameleleri Vergisi oranı.", width: 12 },
     { key: "kkdf_orani", header: "KKDF (%)", type: "percent", required: false,
-      aliases: ["kkdf_orani", "kkdf"], note: "Kaynak Kullanımını Destekleme Fonu oranı.", domainField: "loans.kkdf_rate", width: 12 },
+      aliases: ["kkdf_orani", "kkdf"], note: "Kaynak Kullanımını Destekleme Fonu oranı.", width: 12 },
     { key: "ilk_odeme_tarihi", header: "İlk Ödeme Tarihi", type: "date", required: false,
-      aliases: ["ilk_odeme_tarihi", "first_payment_date"], note: "İlk taksitin vadesi.", domainField: "loans.first_payment_date", width: 18 },
+      aliases: ["ilk_odeme_tarihi", "first_payment_date"], note: "İlk taksitin vadesi.", width: 18 },
     amount("taksit_tutari", "Taksit Tutarı", "Aylık taksit."),
     amount("toplam_odeme", "Toplam Ödeme", "Vade sonuna kadar ödenecek toplam."),
     amount("finansman_maliyeti", "Finansman Maliyeti", "Toplam ödeme − anapara."),
     { key: "aylik_maliyet_orani", header: "Aylık Maliyet Oranı (%)", type: "percent", required: false,
-      aliases: ["aylik_maliyet_orani", "monthly_cost_rate"], note: "Boş bırakılabilir.", domainField: "loans.monthly_cost_rate", width: 20 },
+      aliases: ["aylik_maliyet_orani", "monthly_cost_rate"], note: "Boş bırakılabilir.", width: 20 },
     { key: "yillik_maliyet_orani", header: "Yıllık Maliyet Oranı (%)", type: "percent", required: false,
-      aliases: ["yillik_maliyet_orani", "annual_cost_rate"], note: "Boş bırakılabilir — uydurulmaz.",
-      domainField: "loans.annual_cost_rate", width: 20 },
+      aliases: ["yillik_maliyet_orani", "annual_cost_rate"], note: "Boş bırakılabilir — uydurulmaz.", width: 20 },
     { key: "durum", header: "Durum", type: "enum", required: false,
-      enumValues: LOAN_STATUS, aliases: ["durum", "status"], note: "active / closed / planned.",
-      domainField: "loans.status", width: 14 },
+      enumValues: LOAN_STATUS, aliases: ["durum", "status"], note: "active / closed / planned.", width: 14 },
     notes,
   ],
 };
@@ -287,7 +310,7 @@ export const SHEET_KREDI_TAKSITLERI: SheetSpec = {
     amount("vergi_bileseni", "Vergi Bileşeni", "BSMV/KKDF kısmı."),
     amount("toplam_tutar", "Toplam Tutar", "Taksitin toplamı.", true),
     { key: "durum", header: "Durum", type: "enum", required: false,
-      enumValues: INSTALLMENT_STATUS, aliases: ["durum", "status"], note: "planned / paid / overdue / cancelled.", width: 12 },
+      enumValues: INSTALLMENT_STATUS, aliases: ["durum", "status"], note: "planned / unpaid / partial / paid / late (geciken) / cancelled.", width: 12 },
     { key: "odeme_tarihi", header: "Ödeme Tarihi", type: "date", required: false,
       aliases: ["odeme_tarihi", "paid_at"], note: "Ödendiyse gerçek ödeme tarihi.", width: 16 },
     notes,
@@ -314,18 +337,16 @@ export const SHEET_NAKIT_AKISI: SheetSpec = {
       note:
         "ZORUNLU. Bu satırın ne olduğu: müşteri tahsilatı, tedarikçi ödemesi, vergi, kredi ödemesi… " +
         "DEVİR BURAYA YAZILMAZ — ay başı bakiye bir satır tipi değil, ayın kendi alanıdır. " +
-        "Kasa = devir + gelir − gider olarak SİSTEM hesaplar; siz kapanış yazmazsınız.",
-      domainField: "cashflow_lines.line_type", width: 20 },
+        "Kasa = devir + gelir − gider olarak SİSTEM hesaplar; siz kapanış yazmazsınız.", width: 20 },
     { key: "karsi_taraf", header: "Karşı Taraf", type: "text", required: false,
       aliases: ["karsi_taraf", "musteri", "tedarikci"], note: "Kimden/kime.", width: 22 },
     { key: "kategori", header: "Kategori", type: "text", required: false,
       aliases: ["kategori", "category"], note: "Serbest kategori etiketi.", width: 18 },
     { key: "aciklama", header: "Açıklama", type: "text", required: false,
-      aliases: ["aciklama", "description", "label"], note: "Satırın açıklaması.", domainField: "cashflow_lines.label", width: 30 },
+      aliases: ["aciklama", "description", "label"], note: "Satırın açıklaması.", width: 30 },
     { key: "yon", header: "Yön", type: "enum", required: true,
       enumValues: CASHFLOW_DIRECTIONS, aliases: ["yon", "direction"],
-      note: "ZORUNLU. inflow = gelir, outflow = gider, balance = bakiye satırı (devir gibi).",
-      domainField: "cashflow_lines.direction", width: 12 },
+      note: "ZORUNLU. inflow = gelir, outflow = gider, balance = bakiye satırı (devir gibi).", width: 12 },
     amount("tutar", "Tutar", "Satırın tutarı (işaretsiz — yön ayrı kolonda).", false),
     currency(),
     { key: "gerceklesen_planlanan", header: "Gerçekleşen / Planlanan", type: "enum", required: false,
@@ -353,7 +374,7 @@ export const SHEET_BANKA_HESAPLARI: SheetSpec = {
       aliases: ["hesap_no", "account_no"], note: "Boş bırakılabilir.", width: 18 },
     currency(),
     { key: "hesap_tipi", header: "Hesap Tipi", type: "enum", required: false,
-      enumValues: ACCOUNT_TYPES, aliases: ["hesap_tipi", "account_type"], note: "vadesiz / vadeli / kredi / pos / diger.", width: 14 },
+      enumValues: ACCOUNT_TYPES, aliases: ["hesap_tipi", "account_type"], note: "bank_account (vadesiz/vadeli banka hesabı) / credit_card / loan / check_account / cash / other.", width: 14 },
     amount("acilis_bakiyesi", "Açılış Bakiyesi", "Takibe başladığınız andaki bakiye."),
     amount("guncel_bakiye", "Güncel Bakiye", "Son bilinen bakiye."),
     { key: "bakiye_tarihi", header: "Bakiye Tarihi", type: "date", required: false,
@@ -420,7 +441,7 @@ export const SHEET_FATURALAR: SheetSpec = {
     amount("toplam_tutar", "Toplam Tutar", "KDV dahil tutar.", true),
     currency(),
     { key: "durum", header: "Durum", type: "enum", required: false,
-      enumValues: INVOICE_STATUS, aliases: ["durum", "status"], note: "draft / issued / paid / partial / cancelled.", width: 12 },
+      enumValues: INVOICE_STATUS, aliases: ["durum", "status"], note: "draft / open (kesildi, tahsilat bekliyor) / partial / paid / closed / cancelled.", width: 12 },
     { key: "project_external_id", header: "Proje Kodu (11'den)", type: "text", required: false,
       aliases: ["project_external_id", "proje_kodu"], note: "Varsa 11_PROJELER ile eşleşmeli.", width: 22 },
     notes,
@@ -507,8 +528,8 @@ export const SHEET_BUTCE: SheetSpec = {
     { key: "donem", header: "Dönem (YYYY-AA)", type: "month", required: true, aliases: ["donem", "ay"], note: "ZORUNLU. Örn. 2026-05.", width: 16 },
     { key: "kategori", header: "Kategori", type: "text", required: true, aliases: ["kategori"], note: "ZORUNLU.", width: 22 },
     { key: "karsi_taraf", header: "Karşı Taraf", type: "text", required: false, aliases: ["karsi_taraf"], note: "Boş olabilir.", width: 22 },
-    { key: "yon", header: "Yön", type: "enum", required: true, enumValues: DIRECTIONS,
-      aliases: ["yon", "direction"], note: "ZORUNLU. inflow / outflow.", width: 12 },
+    { key: "yon", header: "Yön", type: "enum", required: true, enumValues: BUDGET_DIRECTIONS,
+      aliases: ["yon", "direction"], note: "ZORUNLU. income (gelir) / expense (gider).", width: 12 },
     amount("tutar", "Tutar", "Bütçelenen tutar.", true),
     currency(),
     { key: "senaryo", header: "Senaryo", type: "enum", required: true, enumValues: BUDGET_SCENARIOS,
@@ -526,9 +547,12 @@ export const SHEET_FX: SheetSpec = {
   columns: [
     externalId("Pozisyonun kodu."),
     { key: "tarih", header: "Tarih", type: "date", required: true, aliases: ["tarih", "date"], note: "ZORUNLU.", width: 14 },
-    currency(),
+    // TRY yok: döviz pozisyonu tanım gereği yabancı para (bkz. FX_CURRENCIES).
+    { key: "para_birimi", header: "Para Birimi", type: "enum", required: true,
+      enumValues: FX_CURRENCIES, aliases: ["para_birimi", "currency", "doviz"],
+      note: "ZORUNLU. USD, EUR veya GBP. TRY bir döviz pozisyonu değildir.", width: 12 },
     { key: "pozisyon_tipi", header: "Pozisyon Tipi", type: "enum", required: true, enumValues: FX_POSITION_TYPES,
-      aliases: ["pozisyon_tipi", "tip"], note: "ZORUNLU. asset / liability / receivable / payable / hedge.", width: 16 },
+      aliases: ["pozisyon_tipi", "tip"], note: "ZORUNLU. bank_balance / receivable (alacak) / payable (borç) / loan / facility (tahsis) / forward / other.", width: 16 },
     amount("doviz_tutari", "Döviz Tutarı", "Yabancı para cinsinden tutar.", true),
     { key: "try_kuru", header: "TRY Kuru", type: "decimal", required: false,
       aliases: ["try_kuru", "kur", "rate"], note: "1 birim dövizin TL karşılığı. Boşsa TL karşılığı hesaplanmaz.", width: 14 },

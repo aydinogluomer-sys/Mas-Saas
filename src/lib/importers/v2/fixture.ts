@@ -80,10 +80,10 @@ const FIXTURE_ROWS: Record<string, Row[]> = {
   ],
   "06_BANKA_HESAPLARI": [
     { external_id: "BANKA-VAKIF-TL", banka: "Vakıf", hesap_adi: "Ana vadesiz TL",
-      para_birimi: "TRY", hesap_tipi: "vadesiz", guncel_bakiye: 250000,
+      para_birimi: "TRY", hesap_tipi: "bank_account", guncel_bakiye: 250000,
       bakiye_tarihi: "2026-05-31", aktif: "EVET" },
     { external_id: "BANKA-DENIZ-USD", banka: "Deniz", hesap_adi: "USD hesabı",
-      para_birimi: "USD", hesap_tipi: "vadesiz", guncel_bakiye: 12000, aktif: "EVET" },
+      para_birimi: "USD", hesap_tipi: "bank_account", guncel_bakiye: 12000, aktif: "EVET" },
   ],
   "07_BANKA_HAREKETLERI": [
     { external_id: "HRK-001", account_external_id: "BANKA-VAKIF-TL", islem_tarihi: "2026-05-03",
@@ -103,9 +103,21 @@ const FIXTURE_ROWS: Record<string, Row[]> = {
     { external_id: "FTR-001", fatura_tipi: "sales", fatura_no: "A-1001",
       duzenleme_tarihi: "2026-05-02", vade_tarihi: "2026-06-01", karsi_taraf: "Müşteri A",
       net_tutar: 100000, vergi_tutari: 20000, toplam_tutar: 120000, para_birimi: "TRY",
-      durum: "issued", project_external_id: "PRJ-001" },
+      durum: "open", project_external_id: "PRJ-001" },
     { external_id: "FTR-002", fatura_tipi: "purchase", duzenleme_tarihi: "2026-05-06",
-      karsi_taraf: "Tedarikçi B", toplam_tutar: 45000, para_birimi: "TRY", durum: "paid" },
+      karsi_taraf: "Tedarikçi B", net_tutar: 37500, vergi_tutari: 7500, toplam_tutar: 45000,
+      para_birimi: "TRY", durum: "paid" },
+    // REDDEDİLMELİ: 'cancelled' şablonda sunulmuyor. Veritabanı iptal için gerekçe ve zaman
+    // damgası istiyor; toplu import ikisini de sağlayamaz, o yüzden iptal ekranın işi.
+    { external_id: "FTR-003", fatura_tipi: "sales", fatura_no: "A-1002",
+      duzenleme_tarihi: "2026-05-09", karsi_taraf: "Müşteri A",
+      net_tutar: 10000, vergi_tutari: 2000, toplam_tutar: 12000, para_birimi: "TRY",
+      durum: "cancelled" },
+    // REDDEDİLMELİ: yalnız toplam tutar var. `invoices` net + vergi = toplam kısıtını
+    // uyguluyor ve üçü de NOT NULL; tek değerden kalan ikisi UYDURULMUŞ olurdu.
+    { external_id: "FTR-004", fatura_tipi: "sales", fatura_no: "A-1003",
+      duzenleme_tarihi: "2026-05-11", karsi_taraf: "Müşteri A",
+      toplam_tutar: 60000, para_birimi: "TRY", durum: "open" },
   ],
   "09_SIPARISLER": [
     { external_id: "SIP-001", siparis_tipi: "sales", siparis_no: "S-77",
@@ -130,14 +142,14 @@ const FIXTURE_ROWS: Record<string, Row[]> = {
     { external_id: "PRJ-002", proje_adi: "Kalıp yenileme", durum: "planned", para_birimi: "TRY" },
   ],
   "12_BUTCE": [
-    { external_id: "BTC-001", donem: "2026-05", kategori: "Satış geliri", yon: "inflow",
+    { external_id: "BTC-001", donem: "2026-05", kategori: "Satış geliri", yon: "income",
       tutar: 2000000, para_birimi: "TRY", senaryo: "base_case" },
-    { external_id: "BTC-002", donem: "2026-05", kategori: "Malzeme", yon: "outflow",
+    { external_id: "BTC-002", donem: "2026-05", kategori: "Malzeme", yon: "expense",
       tutar: 900000, para_birimi: "TRY", senaryo: "base_case" },
-    { external_id: "BTC-003", donem: "2026-06", kategori: "Satış geliri", yon: "inflow",
+    { external_id: "BTC-003", donem: "2026-06", kategori: "Satış geliri", yon: "income",
       tutar: 2100000, para_birimi: "TRY", senaryo: "base_case" },
     // REDDEDİLMELİ: geçersiz senaryo.
-    { external_id: "BTC-004", donem: "2026-06", kategori: "Malzeme", yon: "outflow",
+    { external_id: "BTC-004", donem: "2026-06", kategori: "Malzeme", yon: "expense",
       tutar: 950000, para_birimi: "TRY", senaryo: "iyimser" },
   ],
   "13_FX_POZISYONU": [
@@ -146,8 +158,11 @@ const FIXTURE_ROWS: Record<string, Row[]> = {
     { external_id: "FX-002", tarih: "2026-05-31", para_birimi: "EUR", pozisyon_tipi: "payable",
       doviz_tutari: 20000, try_kuru: 45.2, try_karsiligi: 904000 },
     // Kur BİLİNMİYOR → TL karşılığı hesaplanamaz, uydurulmaz.
-    { external_id: "FX-003", tarih: "2026-05-31", para_birimi: "GBP", pozisyon_tipi: "asset",
+    { external_id: "FX-003", tarih: "2026-05-31", para_birimi: "GBP", pozisyon_tipi: "bank_balance",
       doviz_tutari: 10000, try_kuru: null, try_karsiligi: null },
+    // REDDEDİLMELİ: TRY bir döviz pozisyonu değildir (fx_positions.currency <> 'TRY').
+    { external_id: "FX-004", tarih: "2026-05-31", para_birimi: "TRY", pozisyon_tipi: "receivable",
+      doviz_tutari: 1000, try_kuru: 1, try_karsiligi: 1000 },
   ],
   "14_KAPASITE": [
     { external_id: "KAP-001", parca_kodu: "MT-100", parca_adi: "Flanş M100", adet: 500,
@@ -222,12 +237,12 @@ export const FIXTURE_ORACLE = {
     "05_NAKIT_AKISI":     { rowsRead: 6, ready: 5, needsReview: 0, rejected: 1 },
     "06_BANKA_HESAPLARI": { rowsRead: 2, ready: 2, needsReview: 0, rejected: 0 },
     "07_BANKA_HAREKETLERI": { rowsRead: 5, ready: 3, needsReview: 0, rejected: 2 },
-    "08_FATURALAR":       { rowsRead: 2, ready: 2, needsReview: 0, rejected: 0 },
+    "08_FATURALAR":       { rowsRead: 4, ready: 2, needsReview: 0, rejected: 2 },
     "09_SIPARISLER":      { rowsRead: 2, ready: 2, needsReview: 0, rejected: 0 },
     "10_URUNLER":         { rowsRead: 3, ready: 3, needsReview: 0, rejected: 0 },
     "11_PROJELER":        { rowsRead: 2, ready: 2, needsReview: 0, rejected: 0 },
     "12_BUTCE":           { rowsRead: 4, ready: 3, needsReview: 0, rejected: 1 },
-    "13_FX_POZISYONU":    { rowsRead: 3, ready: 3, needsReview: 0, rejected: 0 },
+    "13_FX_POZISYONU":    { rowsRead: 4, ready: 3, needsReview: 0, rejected: 1 },
     "14_KAPASITE":        { rowsRead: 3, ready: 2, needsReview: 1, rejected: 0 },
     "15_MALIYET":         { rowsRead: 3, ready: 3, needsReview: 0, rejected: 0 },
     "16_MAKINE_ROI":      { rowsRead: 2, ready: 1, needsReview: 0, rejected: 1 },
@@ -262,5 +277,5 @@ export const FIXTURE_ORACLE = {
   ] as const,
 
   /** Toplam — sayfa oracle'larının toplamı, ayrıca elle doğrulandı. */
-  totals: { rowsRead: 49, ready: 39, needsReview: 3, rejected: 7 },
+  totals: { rowsRead: 52, ready: 39, needsReview: 3, rejected: 10 },
 } as const;
