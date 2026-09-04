@@ -122,7 +122,8 @@
     "p24b:snapshot-bench": "node --import tsx scripts/qa/p24b-snapshot-bench.ts",
     "p24b:concurrent-control": "node --import tsx scripts/qa/p24b-concurrent-wholedb-control.ts",
     "import:template:v2": "node --import tsx scripts/import/generate-standard-template-v2.ts",
-    "import:bench:v2": "node --expose-gc --import tsx scripts/import/bench-v2-parser.ts"
+    "import:bench:v2": "node --expose-gc --import tsx scripts/import/bench-v2-parser.ts",
+    "import:enum-parity:v2": "node --import tsx scripts/import/v2-enum-parity.ts"
   },
   "dependencies": {
     "@next/env": "15.5.20",

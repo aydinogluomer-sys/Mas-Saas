@@ -59,8 +59,11 @@ const FIXTURE_ROWS: Record<string, Row[]> = {
       toplam_tutar: 1000, durum: "planned" },
   ],
   "05_NAKIT_AKISI": [
-    { external_id: "NA-2026-05-DEVIR", donem: "2026-05", satir_tipi: "opening_balance",
-      yon: "balance", tutar: 0, para_birimi: "TRY", aciklama: "Ay başı devir" },
+    // Açık sıfır kanıtı. Eskiden bu satır `opening_balance` idi; devir bir SATIR TİPİ değil
+    // (o `cashflow_months.opening_balance` kolonu), o yüzden gerçek ve geçerli bir sıfır
+    // senaryosuna taşındı: net etkisi sıfır olan bir düzeltme kalemi.
+    { external_id: "NA-2026-05-DUZELTME", donem: "2026-05", satir_tipi: "adjustment",
+      yon: "balance", tutar: 0, para_birimi: "TRY", aciklama: "Sıfır etkili düzeltme" },
     { external_id: "NA-2026-05-GELIR", donem: "2026-05", satir_tipi: "customer_income",
       yon: "inflow", tutar: 2038775.18, para_birimi: "TRY", karsi_taraf: "Müşteri A" },
     { external_id: "NA-2026-05-GIDER", donem: "2026-05", satir_tipi: "vendor_payment",
@@ -69,6 +72,11 @@ const FIXTURE_ROWS: Record<string, Row[]> = {
       yon: "inflow", tutar: 1764007, para_birimi: "TRY" },
     { external_id: "NA-2026-06-GIDER", donem: "2026-06", satir_tipi: "operational_cost",
       yon: "outflow", tutar: 1485544.12, para_birimi: "TRY" },
+    // Devri satır olarak yazma denemesi REDDEDİLMELİ. Sözleşme bir süre `opening_balance`
+    // sunuyordu ve veritabanı CHECK'i onu kabul etmiyordu; bu satır o kaymanın geri
+    // gelmediğini kanıtlar.
+    { external_id: "NA-2026-06-DEVIR", donem: "2026-06", satir_tipi: "opening_balance",
+      yon: "balance", tutar: 0, para_birimi: "TRY", aciklama: "Ay başı devir" },
   ],
   "06_BANKA_HESAPLARI": [
     { external_id: "BANKA-VAKIF-TL", banka: "Vakıf", hesap_adi: "Ana vadesiz TL",
@@ -211,7 +219,7 @@ export const FIXTURE_ORACLE = {
     "02_CEKLER":          { rowsRead: 4, ready: 2, needsReview: 2, rejected: 0 },
     "03_KREDILER":        { rowsRead: 1, ready: 1, needsReview: 0, rejected: 0 },
     "04_KREDI_TAKSITLERI":{ rowsRead: 3, ready: 2, needsReview: 0, rejected: 1 },
-    "05_NAKIT_AKISI":     { rowsRead: 5, ready: 5, needsReview: 0, rejected: 0 },
+    "05_NAKIT_AKISI":     { rowsRead: 6, ready: 5, needsReview: 0, rejected: 1 },
     "06_BANKA_HESAPLARI": { rowsRead: 2, ready: 2, needsReview: 0, rejected: 0 },
     "07_BANKA_HAREKETLERI": { rowsRead: 5, ready: 3, needsReview: 0, rejected: 2 },
     "08_FATURALAR":       { rowsRead: 2, ready: 2, needsReview: 0, rejected: 0 },
@@ -254,5 +262,5 @@ export const FIXTURE_ORACLE = {
   ] as const,
 
   /** Toplam — sayfa oracle'larının toplamı, ayrıca elle doğrulandı. */
-  totals: { rowsRead: 48, ready: 39, needsReview: 3, rejected: 6 },
+  totals: { rowsRead: 49, ready: 39, needsReview: 3, rejected: 7 },
 } as const;

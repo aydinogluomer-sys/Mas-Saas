@@ -70,11 +70,24 @@ export const DIRECTIONS = ["inflow", "outflow"] as const;
 export const RECURRENCE = ["monthly", "weekly", "yearly", "irregular", "one_off"] as const;
 export const PAYMENT_STATUS = ["active", "paused", "archived"] as const;
 export const CHECK_STATUS = ["planned", "cleared", "bounced", "cancelled"] as const;
-export const LOAN_STATUS = ["active", "closed", "restructured"] as const;
+// `restructured` BİLEREK YOK. Sözleşme bir süre onu sunuyordu; `public.loans.status` CHECK'i
+// ise yalnız active/closed/planned/unknown kabul ediyor. Şablonun kendi açılır listesinden
+// seçilen bir değerin INSERT anında reddedilmesi, kullanıcı açısından doğru doldurduğu bir
+// formun sebepsiz geri çevrilmesidir — o yüzden liste veritabanına hizalandı.
+// Yapılandırılmış kredi ihtiyacı gerçek; karşılığı ayrı bir iş: `loans.status` CHECK'ini
+// genişletmek ve motoru/arayüzü o duruma hazırlamak gerekir. Bu sözleşmenin işi değil.
+export const LOAN_STATUS = ["active", "closed", "planned"] as const;
 export const INSTALLMENT_STATUS = ["planned", "paid", "overdue", "cancelled"] as const;
+// `public.cashflow_lines.line_type` CHECK'i ile birebir (yalnız 'unknown' dışarıda: onu bir
+// şablonda seçenek olarak sunmak, kullanıcıdan "bilmiyorum" seçmesini istemek olurdu).
+//
+// `opening_balance` BİLEREK YOK. Devir bir SATIR TİPİ DEĞİL: `cashflow_months.opening_balance`
+// bir ay kolonudur. Devri satır olarak yazdırmak hem CHECK tarafından reddedilirdi hem de
+// veriyi toplanamayacağı yere koyardı. Devir/kasa alanlarının şablona alınması ayrı bir iş
+// (ay düzeyi eşleme); bu sözleşme şimdilik yalnız satırları taşır.
 export const CASHFLOW_LINE_TYPES = [
-  "opening_balance", "customer_income", "vendor_payment", "operational_cost",
-  "tax", "bank_balance", "credit_card", "adjustment", "loan_payment", "other",
+  "customer_income", "vendor_payment", "bank_balance", "credit_card", "loan_payment",
+  "check_payment", "operational_cost", "tax", "transfer", "adjustment",
 ] as const;
 export const CASHFLOW_DIRECTIONS = ["inflow", "outflow", "balance"] as const;
 export const ACTUAL_OR_PLANNED = ["gerceklesen", "planlanan"] as const;
@@ -247,7 +260,7 @@ export const SHEET_KREDILER: SheetSpec = {
       aliases: ["yillik_maliyet_orani", "annual_cost_rate"], note: "Boş bırakılabilir — uydurulmaz.",
       domainField: "loans.annual_cost_rate", width: 20 },
     { key: "durum", header: "Durum", type: "enum", required: false,
-      enumValues: LOAN_STATUS, aliases: ["durum", "status"], note: "active / closed / restructured.",
+      enumValues: LOAN_STATUS, aliases: ["durum", "status"], note: "active / closed / planned.",
       domainField: "loans.status", width: 14 },
     notes,
   ],
@@ -299,7 +312,8 @@ export const SHEET_NAKIT_AKISI: SheetSpec = {
     { key: "satir_tipi", header: "Satır Tipi", type: "enum", required: true,
       enumValues: CASHFLOW_LINE_TYPES, aliases: ["satir_tipi", "tip", "line_type"],
       note:
-        "ZORUNLU. opening_balance = ayın devri (ay başı bakiye). Diğerleri gelir/gider kalemleridir. " +
+        "ZORUNLU. Bu satırın ne olduğu: müşteri tahsilatı, tedarikçi ödemesi, vergi, kredi ödemesi… " +
+        "DEVİR BURAYA YAZILMAZ — ay başı bakiye bir satır tipi değil, ayın kendi alanıdır. " +
         "Kasa = devir + gelir − gider olarak SİSTEM hesaplar; siz kapanış yazmazsınız.",
       domainField: "cashflow_lines.line_type", width: 20 },
     { key: "karsi_taraf", header: "Karşı Taraf", type: "text", required: false,
