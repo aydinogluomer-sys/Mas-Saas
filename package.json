@@ -120,7 +120,8 @@
     "p24b:negative-controls": "node --import tsx scripts/qa/p24b-negative-controls.ts",
     "p24b:wholedb-control": "node --import tsx scripts/qa/p24b-wholedb-control.ts",
     "p24b:snapshot-bench": "node --import tsx scripts/qa/p24b-snapshot-bench.ts",
-    "p24b:concurrent-control": "node --import tsx scripts/qa/p24b-concurrent-wholedb-control.ts"
+    "p24b:concurrent-control": "node --import tsx scripts/qa/p24b-concurrent-wholedb-control.ts",
+    "import:template:v2": "node --import tsx scripts/import/generate-standard-template-v2.ts"
   },
   "dependencies": {
     "@next/env": "15.5.20",
