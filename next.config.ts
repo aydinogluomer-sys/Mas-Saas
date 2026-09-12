@@ -1,8 +1,47 @@
 import type { NextConfig } from "next";
+import { execFileSync } from "node:child_process";
 
 const projectRoot = process.cwd();
 
+/**
+ * PHASE 7.4 — runtime provenance. `/version` "commit: unknown" döndüremez.
+ *
+ * NEDEN BURADA. `APP_COMMIT_SHA` yalnız çalışma zamanı env'inden okunuyordu ve `next build`
+ * hiçbir şey enjekte etmiyordu; operatör `next start` öncesi elle ayarlamazsa "unknown"
+ * kalıyordu. Canlı örnek gerçekten "unknown" raporladı (2026-08-25). Hangi kodun çalıştığı
+ * ispatlanamayan bir sistemin cutover kabulü yapılamaz.
+ *
+ * ÖNCELİK: açık env (CI `APP_COMMIT_SHA=${{github.sha}}` verir) > git HEAD > HATA.
+ * "unknown"a düşmek YOK: derleme anında belirlenemeyen commit, plan §7.4 gereği kabul edilmez.
+ * `next build` her zaman NODE_ENV=production ile koşar, dolayısıyla bu kural her derlemeye
+ * uygulanır. Git olmayan bir ortamda derleme yapılıyorsa APP_COMMIT_SHA açıkça verilmelidir.
+ *
+ * SIR DEĞİL: commit SHA ve derleme zamanı istemci paketine de gömülür (Next `env` alanı
+ * böyle çalışır). İkisi de kamusal provenance bilgisidir.
+ */
+function resolveCommitSha(): string {
+  const fromEnv = process.env.APP_COMMIT_SHA?.trim();
+  if (fromEnv) return fromEnv;
+  try {
+    return execFileSync("git", ["rev-parse", "HEAD"], { cwd: projectRoot, encoding: "utf8" }).trim();
+  } catch {
+    throw new Error(
+      "APP_COMMIT_SHA belirlenemedi: env'de yok ve `git rev-parse HEAD` başarısız. " +
+        "/version 'unknown' döndüremez (plan §7.4). Derlemeden önce APP_COMMIT_SHA=<sha> verin.",
+    );
+  }
+}
+const commitSha = resolveCommitSha();
+const buildTime = process.env.APP_BUILD_TIME?.trim() || new Date().toISOString();
+
 const nextConfig: NextConfig = {
+  // Derleme kimliği = commit SHA. `.next/BUILD_ID` artık hangi commit'ten üretildiğini kendi
+  // adıyla söyler; /version'daki `buildId` ile `commit` aynı değeri taşımalıdır.
+  generateBuildId: () => commitSha,
+  env: {
+    APP_COMMIT_SHA: commitSha,
+    APP_BUILD_TIME: buildTime,
+  },
   // Derleme çıktısı dizini — varsayılan `.next`, ortam değişkeniyle geçersiz kılınabilir.
   //
   // NEDEN VAR. Bu makinede canlı bir production sunucusu repo'nun `.next/` dizininden servis
