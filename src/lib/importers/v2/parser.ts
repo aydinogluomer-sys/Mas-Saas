@@ -27,10 +27,20 @@ export type IssueType =
   | "negative_amount" | "amount_mismatch" | "currency_mismatch"
   | "missing_operation_time" | "personal_data_mixed"
   | "unsupported_currency_for_finance_aggregation"
-  | "unknown_header" | "unknown_sheet" | "reconciliation_mismatch";
+  | "unknown_header" | "unknown_sheet" | "reconciliation_mismatch"
+  | "blocked_by_parent";
 
 export type Severity = "low" | "medium" | "high";
-export type RowStatus = "ready" | "needs_review" | "rejected";
+/**
+ * Satırın kaderi.
+ *
+ *   ready             → domain'e yazılır
+ *   needs_review      → insan kararı bekler, yazılmaz
+ *   rejected          → satırın KENDİSİ sözleşmeye uymuyor, yazılmaz
+ *   blocked_by_parent → satır kendi başına sağlam, ama bağlı olduğu üst kayıt (kredi, hesap,
+ *                       proje) AYNI DOSYADA kabul edilmedi; üst kayıt olmadan yazılmaz
+ */
+export type RowStatus = "ready" | "needs_review" | "rejected" | "blocked_by_parent";
 
 export interface Issue {
   type: IssueType;
@@ -84,6 +94,8 @@ export interface SheetResult {
   ready: number;
   needsReview: number;
   rejected: number;
+  /** Üst kaydı bu dosyada kabul edilmediği için yazılmayacak satırlar (bkz. RowStatus). */
+  blockedByParent: number;
   rows: ParsedRow[];
   issues: Issue[];
 }
@@ -97,7 +109,10 @@ export interface WorkbookParseResult {
   rejectionReason?: string;
   sheets: SheetResult[];
   unknownSheets: string[];
-  totals: { rowsRead: number; ready: number; needsReview: number; rejected: number; issues: number };
+  totals: {
+    rowsRead: number; ready: number; needsReview: number; rejected: number;
+    blockedByParent: number; issues: number;
+  };
   issues: Issue[];
 }
 
@@ -172,7 +187,7 @@ function parseSheet(wb: ExcelJS.Workbook, spec: SheetSpec): SheetResult {
   const result: SheetResult = {
     sheet: spec.name, family: spec.family, domainTable: spec.domainTable,
     present: false, headerRow: [], unknownHeaders: [], missingColumns: [],
-    rowsRead: 0, ready: 0, needsReview: 0, rejected: 0, rows: [], issues: [],
+    rowsRead: 0, ready: 0, needsReview: 0, rejected: 0, blockedByParent: 0, rows: [], issues: [],
   };
 
   const ws = wb.getWorksheet(spec.name);
@@ -561,31 +576,70 @@ function applyFamilyRules(
 
 /* ── Çapraz sayfa kuralları ──────────────────────────────────────────────────────────── */
 
-/** Referans bütünlüğü: 04→03, 07→06, 08/09→11. */
+/** Üst/alt sayfa çiftleri — referans bütünlüğü VE üst kayıt kabulü buradan okunur. */
+export const PARENT_CHILD_REFS: ReadonlyArray<{
+  from: string; field: string; to: string; label: string; required: boolean;
+}> = Object.freeze([
+  { from: "04_KREDI_TAKSITLERI", field: "loan_external_id", to: "03_KREDILER", label: "Kredi Kodu", required: true },
+  { from: "07_BANKA_HAREKETLERI", field: "account_external_id", to: "06_BANKA_HESAPLARI", label: "Hesap Kodu", required: true },
+  { from: "08_FATURALAR", field: "project_external_id", to: "11_PROJELER", label: "Proje Kodu", required: false },
+  { from: "09_SIPARISLER", field: "project_external_id", to: "11_PROJELER", label: "Proje Kodu", required: false },
+]);
+
+const STATUS_LABEL: Record<RowStatus, string> = {
+  ready: "hazır", needs_review: "incelemeye düştü", rejected: "reddedildi",
+  blocked_by_parent: "üst kaydı yüzünden engellendi",
+};
+
+/**
+ * Referans bütünlüğü: 04→03, 07→06, 08/09→11.
+ *
+ * İki ayrı soru sorulur ve ikisi ayrı sonuç üretir:
+ *
+ *   1. Üst kayıt bu dosyada VAR MI?          yoksa → missing_reference (mevcut kural)
+ *   2. Üst kayıt bu dosyada KABUL EDİLDİ Mİ?  edilmediyse → blocked_by_parent
+ *
+ * ═══ NEDEN İKİNCİ SORU ═══
+ *
+ * Eşleyici alt kaydın üst kaydını DEFTERDEN (import_external_keys) buluyor. Defter geçmişi
+ * bilir, bu dosyayı bilmez. Kredi satırı bu dosyada reddedilmişse (ör. EUR — finans toplama
+ * kısıtı) ama aynı kod önceki bir import'tan defterde duruyorsa, taksitler ESKİ krediye
+ * bağlanıp normal yazılıyordu: vade akışına ve nakit tahminine giriyorlardı. Kullanıcı
+ * "kredim reddedildi" mesajını görüyor, taksitlerinin toplamlara girdiğini görmüyordu.
+ *
+ * Kabul edilmemiş üst kayıt = "ready" olmayan üst kayıt. Reddedilmiş olanla sınırlı değil:
+ * incelemeye düşmüş bir üst kayıt da bu turda YAZILMAZ; alt kayıt yine ya bayat bir kayda
+ * bağlanır ya da (defterde de yoksa) yazıcı "defterde yok" diye TÜM import'u düşürür. İki
+ * durumda da doğru cevap aynı: alt kayıt beklesin, sebebi yazılsın, dosyanın kalanı işlensin.
+ *
+ * Alt kaydın KENDİ kusuru varsa (rejected) o durum korunur — kullanıcı önce onu düzeltecek;
+ * üst kayıt engeli yine kayda geçer ki iki sorunu tek seferde görsün.
+ *
+ * Bu karar DOSYA-YEREL'dir ve DB'ye bakmaz: eşleyici defterde ne bulursa bulsun, üst kaydı
+ * bu dosyada kabul edilmemiş alt kayıt yazılmaz. Önizleme ile gerçek yazma aynı kararı
+ * buradan okur — iki yol ayrı sayamaz.
+ */
 function applyCrossSheetRules(sheets: SheetResult[]): Issue[] {
   const issues: Issue[] = [];
-  const idsOf = (sheetName: string): Set<string> => {
+  const rowsOf = (sheetName: string): Map<string, ParsedRow> => {
     const s = sheets.find((x) => x.sheet === sheetName);
-    const out = new Set<string>();
-    for (const r of s?.rows ?? []) if (r.externalId) out.add(r.externalId);
+    const out = new Map<string, ParsedRow>();
+    // Aynı kod iki kez geçerse İLKİ üst kayıttır — parser ikincisini zaten reddediyor
+    // (duplicate_external_id) ve eşleyici yalnız ilkini yazar.
+    for (const r of s?.rows ?? []) if (r.externalId && !out.has(r.externalId)) out.set(r.externalId, r);
     return out;
   };
 
-  const refs: Array<{ from: string; field: string; to: string; label: string; required: boolean }> = [
-    { from: "04_KREDI_TAKSITLERI", field: "loan_external_id", to: "03_KREDILER", label: "Kredi Kodu", required: true },
-    { from: "07_BANKA_HAREKETLERI", field: "account_external_id", to: "06_BANKA_HESAPLARI", label: "Hesap Kodu", required: true },
-    { from: "08_FATURALAR", field: "project_external_id", to: "11_PROJELER", label: "Proje Kodu", required: false },
-    { from: "09_SIPARISLER", field: "project_external_id", to: "11_PROJELER", label: "Proje Kodu", required: false },
-  ];
-
-  for (const ref of refs) {
+  for (const ref of PARENT_CHILD_REFS) {
     const src = sheets.find((s) => s.sheet === ref.from);
     if (!src || !src.present) continue;
-    const targets = idsOf(ref.to);
+    const targets = rowsOf(ref.to);
     for (const row of src.rows) {
       const v = row.values[ref.field];
       if (typeof v !== "string" || v === "") continue;
-      if (!targets.has(v)) {
+      const parent = targets.get(v);
+
+      if (!parent) {
         const issue: Issue = {
           type: "missing_reference", severity: ref.required ? "high" : "medium",
           sheet: ref.from, row: row.rowIndex, column: ref.label,
@@ -600,6 +654,24 @@ function applyCrossSheetRules(sheets: SheetResult[]): Issue[] {
         } else if (row.status === "ready") {
           src.ready--; row.status = "needs_review"; src.needsReview++;
         }
+        continue;
+      }
+
+      if (parent.status !== "ready") {
+        const issue: Issue = {
+          type: "blocked_by_parent", severity: "high",
+          sheet: ref.from, row: row.rowIndex, column: ref.label,
+          message:
+            `'${v}' kodlu üst kayıt ${ref.to} sayfasının ${parent.rowIndex}. satırında ` +
+            `${STATUS_LABEL[parent.status]}; bu satır üst kaydı olmadan YAZILMAZ. ` +
+            "Üst kaydı düzeltip dosyayı yeniden yükleyin — geçmiş bir import'taki aynı kodlu " +
+            "kayda bağlanmaz.",
+        };
+        row.issues.push(issue);
+        issues.push(issue);
+        if (row.status === "ready") { src.ready--; row.status = "blocked_by_parent"; src.blockedByParent++; }
+        else if (row.status === "needs_review") { src.needsReview--; row.status = "blocked_by_parent"; src.blockedByParent++; }
+        // rejected: kendi kusuru öncelikli, durum değişmez.
       }
     }
   }
@@ -657,7 +729,7 @@ export function parseWorkbook(wb: ExcelJS.Workbook): WorkbookParseResult {
       schemaDetected: false, schemaName: schema.schemaName, schemaVersion: schema.schemaVersion,
       templateVersion: schema.templateVersion, rejectionReason: schema.reason,
       sheets: [], unknownSheets: [],
-      totals: { rowsRead: 0, ready: 0, needsReview: 0, rejected: 0, issues: 0 },
+      totals: { rowsRead: 0, ready: 0, needsReview: 0, rejected: 0, blockedByParent: 0, issues: 0 },
       issues: [],
     };
   }
@@ -685,9 +757,10 @@ export function parseWorkbook(wb: ExcelJS.Workbook): WorkbookParseResult {
     (a, s) => ({
       rowsRead: a.rowsRead + s.rowsRead, ready: a.ready + s.ready,
       needsReview: a.needsReview + s.needsReview, rejected: a.rejected + s.rejected,
+      blockedByParent: a.blockedByParent + s.blockedByParent,
       issues: 0,
     }),
-    { rowsRead: 0, ready: 0, needsReview: 0, rejected: 0, issues: 0 },
+    { rowsRead: 0, ready: 0, needsReview: 0, rejected: 0, blockedByParent: 0, issues: 0 },
   );
   totals.issues = issues.length;
 

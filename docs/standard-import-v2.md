@@ -204,6 +204,14 @@ Aynı `external_id` ile ikinci import mükerrer üretmez. Bu vaat üç kuralla k
 3. **Bayat bağlama fail-closed.** Defterin işaret ettiği kayıt yoksa import DURUR
    (`STALE_EXTERNAL_KEY_BINDING`). Otomatik "iyileştirme" (yeni kayıt yaratıp bağlamak)
    bilerek yapılmaz: o, kopuk kimlik zincirini gizler.
+4. **Üst kayıt kabulü dosya-yereldir.** Alt kayıt (taksit → kredi, hareket → hesap,
+   fatura/sipariş → proje) üst kaydını defterden bulur; defter geçmişi bilir, bu dosyayı
+   bilmez. Üst kaydın satırı **bu dosyada** kabul edilmediyse (reddedildi ya da incelemeye
+   düştü) alt kayıt `blocked_by_parent` olur ve yazılmaz — defterde aynı kodla eski bir
+   kayıt dursa bile ona bağlanmaz. Sebep inceleme kuyruğuna satırına bağlı yazılır;
+   `import_rows.mapping_status = 'blocked_by_parent'` (migration 0091). Karar parser'da
+   verildiği için önizleme ile gerçek yazma aynı sayıyı verir. Kullanıcının işi bu satırı
+   değil üst kaydı düzeltip dosyayı yeniden yüklemektir.
 
 Kanıt: `pnpm import:concurrency:v2` — negatif kontrol dahil 18 ölçüm.
 

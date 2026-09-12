@@ -5,7 +5,9 @@
 import { describe, expect, it, beforeAll } from "vitest";
 import ExcelJS from "exceljs";
 import { buildFixtureWorkbook, FIXTURE_ORACLE } from "./fixture";
-import { parseWorkbook, detectSchema, UNKNOWN_COLUMNS_KEY, type WorkbookParseResult } from "./parser";
+import {
+  parseWorkbook, detectSchema, UNKNOWN_COLUMNS_KEY, PARENT_CHILD_REFS, type WorkbookParseResult,
+} from "./parser";
 import { DATA_SHEETS, META_SHEET, sheetByName } from "./contract";
 
 let result: WorkbookParseResult;
@@ -65,6 +67,15 @@ describe("Sayfa bazında satır sınıflandırması", () => {
       rowsRead: result.totals.rowsRead, ready: result.totals.ready,
       needsReview: result.totals.needsReview, rejected: result.totals.rejected,
     }).toEqual(FIXTURE_ORACLE.totals);
+  });
+
+  // Kanonik fixture'da reddedilen EUR kredinin (KREDI-EUR-01) alt kaydı YOK; engellenen
+  // satır sayısı sıfırdır ve oracle'ın dört sayısı toplamı verir.
+  it("kanonik fixture'da üst kaydı yüzünden engellenen satır yok", () => {
+    expect(result.totals.blockedByParent).toBe(0);
+    for (const s of result.sheets) expect(s.blockedByParent, s.sheet).toBe(0);
+    expect(result.totals.ready + result.totals.needsReview + result.totals.rejected + result.totals.blockedByParent)
+      .toBe(result.totals.rowsRead);
   });
 });
 
@@ -307,6 +318,132 @@ describe("Sözleşme dışı kolon: hücre değeri KAYBOLMAZ, `values`'a da GEÇ
     const unknown = row.raw[UNKNOWN_COLUMNS_KEY] as Record<string, unknown>;
     expect(Object.values(unknown).sort()).toEqual(["A", "B"]);
     expect(Object.keys(unknown)).toHaveLength(2);
+  });
+});
+
+describe("Üst kayıt kabulü: reddedilen kredinin taksitleri ENGELLENİR (blocked_by_parent)", () => {
+  // Kanonik fixture'da KREDI-EUR-01 reddediliyor (EUR — finans toplama kısıtı). Buraya o
+  // krediye bağlı üç TEMİZ taksit eklenir. Eski davranışta üçü de "ready" sayılır, eşleyici
+  // krediyi defterde bulursa (önceki import) eski kayda bağlayıp yazardı.
+  const REJECTED_LOAN = "KREDI-EUR-01";
+
+  async function parseWithOrphanedInstallments(): Promise<WorkbookParseResult> {
+    const wb = await buildFixtureWorkbook();
+    const ws = wb.getWorksheet("04_KREDI_TAKSITLERI")!;
+    const spec = sheetByName("04_KREDI_TAKSITLERI")!;
+    const taksitler: Array<Record<string, unknown>> = [1, 2, 3].map((n) => ({
+      loan_external_id: REJECTED_LOAN, taksit_no: n, vade_tarihi: `2026-0${n}-15`,
+      toplam_tutar: 230, durum: "planned",
+    }));
+    for (const t of taksitler) ws.addRow(spec.columns.map((c) => (c.key in t ? t[c.key] : null)));
+    return parseWorkbook(wb);
+  }
+
+  it("üst kayıt reddedilmişse üç taksit de blocked_by_parent olur, sayaçlar tutar", async () => {
+    const r = await parseWithOrphanedInstallments();
+    const s = r.sheets.find((x) => x.sheet === "04_KREDI_TAKSITLERI")!;
+    const engellenen = s.rows.filter((x) => x.values.loan_external_id === REJECTED_LOAN);
+    expect(engellenen).toHaveLength(3);
+    expect(engellenen.every((x) => x.status === "blocked_by_parent")).toBe(true);
+
+    // Oracle 04: 3 okunan, 2 hazır, 1 reddedilen — üstüne 3 engellenen.
+    const o = FIXTURE_ORACLE.sheets["04_KREDI_TAKSITLERI"];
+    expect({ rowsRead: s.rowsRead, ready: s.ready, needsReview: s.needsReview, rejected: s.rejected, blockedByParent: s.blockedByParent })
+      .toEqual({ rowsRead: o.rowsRead + 3, ready: o.ready, needsReview: o.needsReview, rejected: o.rejected, blockedByParent: 3 });
+    expect(r.totals.blockedByParent).toBe(3);
+    expect(r.totals.rowsRead).toBe(FIXTURE_ORACLE.totals.rowsRead + 3);
+    expect(r.totals.ready).toBe(FIXTURE_ORACLE.totals.ready);          // hazır sayısı ŞİŞMEZ
+    expect(r.totals.rejected).toBe(FIXTURE_ORACLE.totals.rejected);    // reddedilen de değil
+  });
+
+  it("sebep satıra yazılır: üst kaydın sayfası, satırı ve durumu", async () => {
+    const r = await parseWithOrphanedInstallments();
+    const s = r.sheets.find((x) => x.sheet === "04_KREDI_TAKSITLERI")!;
+    const row = s.rows.find((x) => x.values.loan_external_id === REJECTED_LOAN && x.values.taksit_no === 2)!;
+    const i = row.issues.find((x) => x.type === "blocked_by_parent")!;
+    expect(i).toBeDefined();
+    expect(i.severity).toBe("high");
+    expect(i.message).toContain(REJECTED_LOAN);
+    expect(i.message).toContain("03_KREDILER");
+    expect(i.message).toContain("reddedildi");
+    expect(i.message).toContain("geçmiş bir import");
+    // Satırın KENDİ kusuru yok: tek sorunu üst kaydı.
+    expect(row.issues).toHaveLength(1);
+  });
+
+  it("kabul edilmiş krediye bağlı taksitler etkilenmez", async () => {
+    const r = await parseWithOrphanedInstallments();
+    const s = r.sheets.find((x) => x.sheet === "04_KREDI_TAKSITLERI")!;
+    const saglam = s.rows.filter((x) => x.values.loan_external_id === "KREDI-VAKIF-01");
+    expect(saglam).toHaveLength(2);
+    expect(saglam.every((x) => x.status === "ready")).toBe(true);
+  });
+
+  it("olmayan kredi ile reddedilmiş kredi AYRI durumlardır", async () => {
+    const r = await parseWithOrphanedInstallments();
+    const s = r.sheets.find((x) => x.sheet === "04_KREDI_TAKSITLERI")!;
+    const olmayan = s.rows.find((x) => x.values.loan_external_id === "KREDI-YOK-99")!;
+    expect(olmayan.status).toBe("rejected");
+    expect(olmayan.issues.some((i) => i.type === "missing_reference")).toBe(true);
+    expect(olmayan.issues.some((i) => i.type === "blocked_by_parent")).toBe(false);
+  });
+
+  it("alt kaydın KENDİ kusuru varsa 'rejected' kalır, üst kayıt engeli yine kayda geçer", async () => {
+    const wb = await buildFixtureWorkbook();
+    const ws = wb.getWorksheet("04_KREDI_TAKSITLERI")!;
+    const spec = sheetByName("04_KREDI_TAKSITLERI")!;
+    // 'paid' ama ödeme tarihi yok → kendi kusuru (missing_required_field, high).
+    const t: Record<string, unknown> = {
+      loan_external_id: REJECTED_LOAN, taksit_no: 9, vade_tarihi: "2026-09-15", toplam_tutar: 230, durum: "paid",
+    };
+    ws.addRow(spec.columns.map((c) => (c.key in t ? t[c.key] : null)));
+    const r = parseWorkbook(wb);
+    const s = r.sheets.find((x) => x.sheet === "04_KREDI_TAKSITLERI")!;
+    const row = s.rows.find((x) => x.values.taksit_no === 9)!;
+    expect(row.status).toBe("rejected");
+    expect(row.issues.map((i) => i.type).sort()).toEqual(["blocked_by_parent", "missing_required_field"]);
+    expect(s.blockedByParent).toBe(0);
+  });
+
+  // İncelemeye düşmüş üst kayıt da bu turda YAZILMAZ; alt kayıt aynı sebeple bekler.
+  // Aksi hâlde yazıcı "defterde yok" diye TÜM import'u düşürürdü (ilk import) ya da eski
+  // kayda bağlardı (ikinci import).
+  it("üst kayıt incelemeye düşmüşse de alt kayıt engellenir", async () => {
+    const wb = await buildFixtureWorkbook();
+    // 02_CEKLER değil, 06_BANKA_HESAPLARI → 07: hesap satırını incelemeye düşürmenin en kısa
+    // yolu, tanınan ama belirsiz bir sayı ("35.000" → ambiguous, medium).
+    const hesaplar = wb.getWorksheet("06_BANKA_HESAPLARI")!;
+    const hspec = sheetByName("06_BANKA_HESAPLARI")!;
+    const h: Record<string, unknown> = {
+      external_id: "BANKA-BELIRSIZ", banka: "Ziraat", hesap_adi: "Belirsiz bakiye",
+      para_birimi: "TRY", hesap_tipi: "bank_account", guncel_bakiye: "35.000", aktif: "EVET",
+    };
+    hesaplar.addRow(hspec.columns.map((c) => (c.key in h ? h[c.key] : null)));
+    const hareketler = wb.getWorksheet("07_BANKA_HAREKETLERI")!;
+    const tspec = sheetByName("07_BANKA_HAREKETLERI")!;
+    const t: Record<string, unknown> = {
+      external_id: "HRK-BELIRSIZ", account_external_id: "BANKA-BELIRSIZ", islem_tarihi: "2026-05-20",
+      aciklama: "Test", yon: "outflow", tutar: 10, para_birimi: "TRY",
+    };
+    hareketler.addRow(tspec.columns.map((c) => (c.key in t ? t[c.key] : null)));
+
+    const r = parseWorkbook(wb);
+    const hesap = r.sheets.find((x) => x.sheet === "06_BANKA_HESAPLARI")!.rows
+      .find((x) => x.values.external_id === "BANKA-BELIRSIZ")!;
+    expect(hesap.status).toBe("needs_review");
+    const hareket = r.sheets.find((x) => x.sheet === "07_BANKA_HAREKETLERI")!.rows
+      .find((x) => x.values.external_id === "HRK-BELIRSIZ")!;
+    expect(hareket.status).toBe("blocked_by_parent");
+    expect(hareket.issues.find((i) => i.type === "blocked_by_parent")!.message).toContain("incelemeye düştü");
+  });
+
+  it("kural dört üst/alt çiftinin hepsini kapsar: 04→03, 07→06, 08→11, 09→11", () => {
+    expect(PARENT_CHILD_REFS.map((r) => `${r.from}→${r.to}`).sort()).toEqual([
+      "04_KREDI_TAKSITLERI→03_KREDILER",
+      "07_BANKA_HAREKETLERI→06_BANKA_HESAPLARI",
+      "08_FATURALAR→11_PROJELER",
+      "09_SIPARISLER→11_PROJELER",
+    ]);
   });
 });
 

@@ -7,7 +7,8 @@
 //   2. source_sheets      — her sayfa
 //   3. import_rows        — HER okunan satır, ham hâliyle (row_json NOT NULL)
 //   4. mapping_reviews    — insan bakması gereken her şey
-//   5. domain tabloları   — YALNIZ "hazır" satırlar
+//   5. domain tabloları   — YALNIZ "hazır" satırlar (incelemede, reddedilmiş ya da üst
+//                           kaydı yüzünden engellenmiş satır yazılmaz)
 //   6. import_external_keys — kullanıcının kodu ile yaratılan kaydın bağı (0088)
 //
 // 3. ADIM 5. ADIMDAN ÖNCE GELİR VE KOŞULSUZDUR. Reddedilmiş bir satır bile ham hâliyle
@@ -121,6 +122,12 @@ export interface MapperResult {
   rowsMapped: number;
   rowsNeedsReview: number;
   rowsRejected: number;
+  /**
+   * Üst kaydı (kredi, hesap, proje) AYNI DOSYADA kabul edilmediği için yazılmayan satırlar.
+   * Karar parser'da verilir (blocked_by_parent); burada yalnız sayılır ve `import_rows`'a
+   * ayrı bir durumla işlenir. Önizleme ve gerçek yazma aynı sayıyı verir.
+   */
+  rowsBlockedByParent: number;
 }
 
 /* ── Şiddet eşlemesi ─────────────────────────────────────────────────────────────────── */
@@ -130,9 +137,16 @@ export interface MapperResult {
 // düzeyinde değil — en kötü ihtimalle satır yazılmaz ve dosya düzeltilir.
 const REVIEW_SEVERITY: Record<Severity, string> = { low: "low", medium: "medium", high: "high" };
 
-/** import_rows.mapping_status — 0089 'rejected' üyesini bu ayrım için ekledi. */
+/**
+ * import_rows.mapping_status — 0089 'rejected', 0091 'blocked_by_parent' üyesini ekledi.
+ *
+ * 'blocked_by_parent' ayrı bir değer, çünkü 'rejected' YANLIŞ olurdu: satırın kendisi
+ * sözleşmeye uyuyor. Kullanıcının yapacağı iş farklı — bu satırı değil, üst kaydı düzeltmek.
+ * İkisini aynı kovaya koymak "hangi satırı düzelteyim?" sorusunu cevapsız bırakırdı.
+ */
 function mappingStatusFor(row: ParsedRow, wroteDomain: boolean): string {
   if (row.status === "rejected") return "rejected";
+  if (row.status === "blocked_by_parent") return "blocked_by_parent";
   if (row.status === "needs_review") return "needs_review";
   return wroteDomain ? "mapped" : "unmapped";
 }
@@ -424,9 +438,10 @@ const writeLoanInstallment: FamilyWriter = async (ctx, row, entityId) => {
   const loanCode = str(v.loan_external_id);
 
   // Kredi, defter üzerinden bulunur. Parser bulunamayan kodu zaten reddediyor
-  // (missing_reference); buraya gelen bir satırın kredisi VAR demektir. Yine de sessiz
-  // geçmiyoruz: defterde yoksa bu, aynı dosyada kredinin yazılmamış olması gibi bir sıra
-  // hatasıdır ve görülmesi gerekir.
+  // (missing_reference) ve aynı dosyada kabul edilmemiş krediye bağlı taksidi engelliyor
+  // (blocked_by_parent); buraya gelen bir satırın kredisi bu dosyada VAR ve KABUL EDİLMİŞ
+  // demektir. Yine de sessiz geçmiyoruz: defterde yoksa bu, aynı dosyada kredinin
+  // yazılmamış olması gibi bir sıra hatasıdır ve görülmesi gerekir.
   const loanId = loanCode ? await lookupExternalKey(ctx.client, "loans", loanCode) : null;
   if (!loanId) {
     throw new Error(
@@ -1109,7 +1124,7 @@ export async function mapWorkbook(
     dryRun, workbookId: null, sheetsStaged: 0, rowsStaged: 0, reviewsOpened: 0,
     perTable: {}, stagedOnlyFamilies: [], rowsStagedOnly: 0, unorderedSheets: [],
     rowsUndetermined: 0,
-    rowsMapped: 0, rowsNeedsReview: 0, rowsRejected: 0,
+    rowsMapped: 0, rowsNeedsReview: 0, rowsRejected: 0, rowsBlockedByParent: 0,
   };
 
   if (!parsed.schemaDetected) {
@@ -1141,6 +1156,7 @@ export async function mapWorkbook(
       for (const row of sheet.rows) {
         result.rowsStaged++;
         if (row.status === "rejected") { result.rowsRejected++; continue; }
+        if (row.status === "blocked_by_parent") { result.rowsBlockedByParent++; continue; }
         if (row.status === "needs_review") { result.rowsNeedsReview++; continue; }
         if (!table || !writer) { result.rowsStagedOnly++; continue; }
 
@@ -1264,6 +1280,9 @@ export async function mapWorkbook(
 
       if (row.status === "needs_review") result.rowsNeedsReview++;
       if (row.status === "rejected") result.rowsRejected++;
+      // Üst kaydı bu dosyada kabul edilmemiş satır: yazıcıya HİÇ gitmedi (yalnız "ready"
+      // gider), sebebi `row.issues` üzerinden inceleme kaydı olarak yukarıda açıldı.
+      if (row.status === "blocked_by_parent") result.rowsBlockedByParent++;
 
       const status = mappingStatusFor(row, wroteDomain);
       await client.query(
@@ -1298,6 +1317,7 @@ export async function mapWorkbook(
       rowsMapped: result.rowsMapped,
       rowsNeedsReview: result.rowsNeedsReview,
       rowsRejected: result.rowsRejected,
+      rowsBlockedByParent: result.rowsBlockedByParent,
       rowsStagedOnly: result.rowsStagedOnly,
       stagedOnlyFamilies: result.stagedOnlyFamilies,
       unorderedSheets: result.unorderedSheets,

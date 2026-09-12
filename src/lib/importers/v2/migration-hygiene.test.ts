@@ -58,3 +58,46 @@ describe("0090 geriye dönük uyumluluk", () => {
     expect(sql).toContain("not null default 'TRY'");
   });
 });
+
+// ── 0091: import_rows.mapping_status 'blocked_by_parent' ────────────────────────────────
+//
+// Eşleyicinin `mappingStatusFor` sözlüğü ile veritabanı CHECK'i iki ayrı yerde yazılı. Biri
+// değişip diğeri değişmezse hata GEÇ ve GÜRÜLTÜLÜ: ilk engellenen satırda `update
+// import_rows` CHECK'e çarpar ve tüm import geri alınır. Bu test o çiftleşmeyi commit
+// anında ölçer ve 0091'in 0089'un üyelerini koruduğunu doğrular (ileri yönlü migration).
+describe("0091 ileri yönlü: mapping_status CHECK'i genişletir, daraltmaz", () => {
+  const sql = readFileSync(path.join(DIR, "0091_import_rows_blocked_by_parent.sql"), "utf8");
+  const members = (): string[] => {
+    const m = /check \(mapping_status in \(([\s\S]*?)\)\)/.exec(sql);
+    if (!m) throw new Error("0091 içinde mapping_status CHECK bulunamadı");
+    return [...m[1].matchAll(/'([a-z_]+)'/g)].map((x) => x[1]);
+  };
+
+  it("0089'un tüm üyeleri duruyor, 'blocked_by_parent' eklendi", () => {
+    const uyeler = members();
+    for (const eski of ["unmapped", "mapped", "ignored", "needs_review", "rejected"]) {
+      expect(uyeler, `0089 üyesi düşmüş: ${eski}`).toContain(eski);
+    }
+    expect(uyeler).toContain("blocked_by_parent");
+    expect(uyeler).toHaveLength(6);
+  });
+
+  it("0089 DÜZENLENMEDİ — ileri yönlü kural", () => {
+    const eski = readFileSync(path.join(DIR, "0089_standard_import_v2_staging.sql"), "utf8");
+    expect(eski).not.toContain("blocked_by_parent");
+  });
+
+  it("kısıt varlık kontrolü import_rows tablosuna bağlı", () => {
+    expect(sql).toContain("conrelid = 'public.import_rows'::regclass");
+    const blocks = constraintExistenceBlocks(sql).filter((b) => /conname/i.test(b));
+    expect(blocks).toHaveLength(1);
+    expect(blocks[0]).toMatch(/conrelid/i);
+  });
+
+  it("eşleyicinin yazdığı her durum CHECK'te var", () => {
+    // mapper.ts `mappingStatusFor` — parser'ın dört satır durumu + yazıldı/yazılmadı.
+    const yazilan = ["rejected", "blocked_by_parent", "needs_review", "mapped", "unmapped"];
+    const uyeler = members();
+    for (const s of yazilan) expect(uyeler, `CHECK'te yok: ${s}`).toContain(s);
+  });
+});
