@@ -14,6 +14,7 @@ import {
   SCHEMA_NAME, SCHEMA_VERSION, TEMPLATE_VERSION, TEMPLATE_ID,
   type SheetSpec, type ColumnSpec,
 } from "../../src/lib/importers/v2/contract";
+import { canonicalizeZipTimestamps, TEMPLATE_ZIP_TIMESTAMP } from "../../src/lib/importers/v2/zip-canonical";
 
 const HEADER_FILL = "FF1F3A5F";
 const REQUIRED_FILL = "FF2E5E3E";
@@ -202,15 +203,27 @@ export async function buildTemplateWorkbook(): Promise<ExcelJS.Workbook> {
   return wb;
 }
 
+/**
+ * Şablonun dağıtılacak BAYTLARI. `wb.created/modified` sabitlemek belge içeriğini
+ * deterministik yapar; ZIP girdi başlıklarındaki üretim-anı damgasını ise ExcelJS
+ * ayarlanabilir kılmıyor → paketleme sonrası kanonikleştirilir (plan §3.7). Aynı sözleşme,
+ * aynı kod → aynı SHA256. Test ve CLI aynı yolu kullanır ki kanıt ile dağıtım ayrışmasın.
+ */
+export async function buildTemplateBuffer(): Promise<{ buffer: Buffer; workbook: ExcelJS.Workbook; zipEntries: number }> {
+  const workbook = await buildTemplateWorkbook();
+  const raw = Buffer.from(await workbook.xlsx.writeBuffer());
+  const { buffer, entries } = canonicalizeZipTimestamps(raw, TEMPLATE_ZIP_TIMESTAMP);
+  return { buffer, workbook, zipEntries: entries };
+}
+
 async function main(): Promise<void> {
   const outArg = process.argv.indexOf("--out");
   const out = outArg > -1 && process.argv[outArg + 1]
     ? process.argv[outArg + 1]
     : path.join("templates", "MAS_Nakit_Radar_Standart_Import_v2.xlsx");
 
-  const wb = await buildTemplateWorkbook();
+  const { buffer: buf, workbook: wb, zipEntries } = await buildTemplateBuffer();
   mkdirSync(path.dirname(out), { recursive: true });
-  const buf = Buffer.from(await wb.xlsx.writeBuffer());
   writeFileSync(out, buf);
 
   const sha = createHash("sha256").update(buf).digest("hex");
@@ -218,6 +231,7 @@ async function main(): Promise<void> {
   console.log(`bayt           : ${buf.length}`);
   console.log(`sha256         : ${sha}`);
   console.log(`sayfa          : ${wb.worksheets.length} (${DATA_SHEETS.length} veri + README + ÖRNEKLER + META)`);
+  console.log(`zip girdisi    : ${zipEntries} (zaman damgaları 2026-01-01T00:00:00Z'ye sabitlendi)`);
   console.log(`şema           : ${SCHEMA_NAME} v${SCHEMA_VERSION} · şablon ${TEMPLATE_VERSION}`);
 }
 

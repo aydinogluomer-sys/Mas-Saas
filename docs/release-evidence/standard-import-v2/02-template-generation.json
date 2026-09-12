@@ -18,7 +18,7 @@
     "examplesSheet": "99_ORNEKLER",
     "metaSheet": "_MAS_META",
     "metaSheetState": "veryHidden",
-    "bytes": 91169
+    "bytes": 91440
   },
   "columns": {
     "total": 187,
@@ -48,12 +48,15 @@
   },
   "determinism": {
     "contentDeterministic": true,
-    "contentEvidence": "iki ayrı üretim açıldığında (unzip) XML içeriği BİREBİR AYNI — diff -r farksız",
-    "byteDeterministic": false,
-    "byteEvidence": "zip sha'ları farklı: b3448918a22a449d… vs d1dff48932f156ad…",
-    "cause": "ExcelJS zip girdi başlıklarına üretim anının zaman damgasını yazıyor; belge içeriği etkilenmiyor",
-    "honestStatus": "SECTION 4 'deterministic generator' istiyordu. İçerik determinizmi sağlandı ve kanıtlandı; byte determinizmi İÇİN zip yeniden paketleme gerekir, bu turda YAPILMADI.",
-    "workaroundNotApplied": "sabit zaman damgalı zip repack"
+    "contentEvidence": "iki ayrı üretim açıldığında (unzip) XML içeriği BİREBİR AYNI — diff -r farksız (2026-09-04 kanıtı)",
+    "byteDeterministic": true,
+    "byteEvidence": "2026-09-13: iki ardışık `pnpm import:template:v2` → aynı sha256 f965a1ba745264497a425c180b9bf3d21445ae66cf0e418019666f16035770ee; `cmp` farksız; `unzip -t` hatasız; 84/84 zip girdisi 2026-01-01 00:00 damgalı",
+    "cause": "ExcelJS zip girdi başlıklarına (local header + central directory) üretim anının DOS zaman damgasını yazıyordu; belge içeriği etkilenmiyordu",
+    "fix": "src/lib/importers/v2/zip-canonical.ts — paketleme sonrası EOCD→central directory→local header zinciri yürünerek her girdinin mtime/mdate alanı 2026-01-01T00:00:00Z'ye yazılır; uzunluk/CRC/sıkıştırılmış veri değişmez; ek bağımlılık yok",
+    "lockedBy": "src/lib/importers/v2/zip-canonical.test.ts — iki üretim ≥2 sn arayla (DOS saat çözünürlüğü) aynı sha256; kanonik arşiv ExcelJS ile geri okunur ve V2 parser şemayı tanır (7/7)",
+    "canonicalReleaseAssetSha256": "f965a1ba745264497a425c180b9bf3d21445ae66cf0e418019666f16035770ee",
+    "honestStatus": "Plan §3.7 karşılandı: byte-level determinizm sağlandı ve testle kilitlendi. Sözleşme (contract.ts) değişirse sha değişir — bu beklenen davranıştır; sha yalnız aynı kaynak kod için sabittir.",
+    "previousStatus2026-09-04": "byteDeterministic=false, sha b3448918… vs d1dff489… — zip repack o turda yapılmamıştı"
   },
   "legacyUntouched": {
     "legacyImporterFilesChanged": 0,
