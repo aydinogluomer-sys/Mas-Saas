@@ -138,6 +138,12 @@ Yalnız **açıkça tanımlanmış** alias'lar kabul edilir (`normalizeHeader`).
 mesafe hesabı veya model tahmini kullanılmaz: yanlış eşlenmiş bir tutar sütunu, hiç
 eşlenmemiş bir sütundan tehlikelidir. Tanınmayan başlık → `unknown_header` incelemesi.
 
+Tanınmayan sütun **domain'e aktarılmaz ama ham hâli kaybolmaz**: hücre değeri
+`raw.__unknown__["<başlık metni>"]` altında saklanır ve `import_rows.row_json`'a olduğu gibi
+yazılır (`UNKNOWN_COLUMNS_KEY`). `values`'a asla geçmez — hangi alan olduğu tahmin edilmez.
+Boş hücre için anahtar açılmaz. Sözleşme dışı bir hücreden ibaret satır veri satırı sayılmaz
+ve okunmaz (boş satır kuralı yalnız sözleşme kolonlarına bakar).
+
 ## Idempotency ve mükerrer politikası
 
 ```

@@ -42,13 +42,29 @@ export interface Issue {
   message: string;
 }
 
+/**
+ * `ParsedRow.raw` içinde sözleşme DIŞI kolonların hücrelerini taşıyan anahtar.
+ *
+ * Sözleşme anahtarları snake_case tanımlayıcılardır ve hiçbiri `__` ile başlamaz; bu yüzden
+ * bu ad alanı bir sözleşme anahtarıyla çakışamaz. Değeri `{ "<başlık metni>": hamHücre }`.
+ */
+export const UNKNOWN_COLUMNS_KEY = "__unknown__";
+
 export interface ParsedRow {
   /** Excel'deki gerçek satır numarası — provenance için birebir korunur. */
   rowIndex: number;
   status: RowStatus;
   /** Kanonik anahtar → çözülmüş değer. `null` değer "bilinmiyor" demektir, 0 demek DEĞİLDİR. */
   values: Record<string, unknown>;
-  /** Ham hücreler — inceleme ekranında kullanıcıya gösterilir. */
+  /**
+   * Ham hücreler — inceleme ekranında kullanıcıya gösterilir ve `import_rows.row_json`'a
+   * olduğu gibi yazılır.
+   *
+   * Sözleşme kolonları KENDİ anahtarıyla (`raw.satis_fiyati`); sözleşmede olmayan kolonların
+   * hücreleri ise `raw[UNKNOWN_COLUMNS_KEY]` altında başlık metniyle
+   * (`raw.__unknown__["Muhasebe Fişi No"]`). İkincisi `values`'a ASLA geçmez — sözleşmenin
+   * parçası değildir — ama kaybolmaz da: her ham hücre normalizasyondan önce korunur.
+   */
   raw: Record<string, unknown>;
   externalId: string | null;
   issues: Issue[];
@@ -166,6 +182,9 @@ function parseSheet(wb: ExcelJS.Workbook, spec: SheetSpec): SheetResult {
   // ── Başlık eşlemesi ──────────────────────────────────────────────────────────────────
   const headerRow = ws.getRow(1);
   const colIndexByKey = new Map<string, number>();
+  // Sözleşme dışı kolonlar: başlık metni → kolon numarası. Aynı başlık iki kez geçerse
+  // ikincisi kolon numarasıyla ayrıştırılır — iki hücre tek anahtarda ezişmesin.
+  const unknownColIndexByHeader = new Map<string, number>();
   const headers: string[] = [];
   headerRow.eachCell({ includeEmpty: false }, (cell, colNumber) => {
     const text = cell.value === null || cell.value === undefined ? "" : String(cell.value).trim();
@@ -174,6 +193,9 @@ function parseSheet(wb: ExcelJS.Workbook, spec: SheetSpec): SheetResult {
     const key = normalizeHeader(spec, text);
     if (key === null) {
       result.unknownHeaders.push(text);
+      unknownColIndexByHeader.set(
+        unknownColIndexByHeader.has(text) ? `${text} (sütun ${colNumber})` : text, colNumber,
+      );
       result.issues.push({
         type: "unknown_header", severity: "medium", sheet: spec.name, row: 1,
         column: text,
@@ -241,6 +263,32 @@ function parseSheet(wb: ExcelJS.Workbook, spec: SheetSpec): SheetResult {
           message: `${col.header} zorunlu ama boş.`,
         });
       }
+    }
+
+    // ── Sözleşme dışı kolonların hücreleri — HAM OLARAK KORUNUR, `values`'a GEÇMEZ ────
+    //
+    // Bir süre yalnız başlık adı kaydediliyordu (`unknownHeaders`) ve hücre değerleri hiçbir
+    // yere yazılmıyordu: `raw` sözleşme kolonlarını döngüye alıyordu, tanınmayan kolon o
+    // döngüye hiç girmiyordu. "Sütun içeri aktarılmadı" uyarısı doğruydu ama eksikti —
+    // sütun aktarılmamakla kalmıyor, ham hâli de KAYBOLUYORDU. CLAUDE.md'nin kuralı ("her ham
+    // hücre normalizasyondan önce korunur") sözleşme kolonlarıyla sınırlı değil.
+    //
+    // Değer `values`'a yazılmaz: tanınmayan başlığın hangi alan olduğu TAHMİN EDİLMEZ, o
+    // yüzden bir domain kolonuna gidemez. Ama `raw[UNKNOWN_COLUMNS_KEY]` altında başlık
+    // metniyle durur; inceleme ekranı gösterir, `import_rows.row_json` saklar.
+    //
+    // Boş hücre yazılmaz: kaybolacak bir değer yok, ve her satıra her tanınmayan başlık için
+    // `null` basmak `row_json`'u gürültüyle şişirirdi. Satırın "boş satır" sayılıp sayılmaması
+    // da yalnız sözleşme kolonlarına bakar (`anyValue`): sözleşme dışı bir hücreden ibaret
+    // satır veri satırı değildir ve okunmaz — bu bilinçli bir sınır, sessiz bir kayıp değil.
+    if (unknownColIndexByHeader.size > 0) {
+      const unknown: Record<string, unknown> = {};
+      for (const [header, idx] of unknownColIndexByHeader) {
+        const cellRaw = row.getCell(idx).value;
+        if (cellRaw === null || cellRaw === undefined) continue;
+        unknown[header] = cellRaw;
+      }
+      if (Object.keys(unknown).length > 0) raw[UNKNOWN_COLUMNS_KEY] = unknown;
     }
 
     // Tamamen boş satır: sessizce atlanır, hata değildir.

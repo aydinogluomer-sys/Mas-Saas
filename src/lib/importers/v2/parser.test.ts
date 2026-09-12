@@ -5,8 +5,8 @@
 import { describe, expect, it, beforeAll } from "vitest";
 import ExcelJS from "exceljs";
 import { buildFixtureWorkbook, FIXTURE_ORACLE } from "./fixture";
-import { parseWorkbook, detectSchema, type WorkbookParseResult } from "./parser";
-import { DATA_SHEETS, META_SHEET } from "./contract";
+import { parseWorkbook, detectSchema, UNKNOWN_COLUMNS_KEY, type WorkbookParseResult } from "./parser";
+import { DATA_SHEETS, META_SHEET, sheetByName } from "./contract";
 
 let result: WorkbookParseResult;
 
@@ -230,6 +230,83 @@ describe("Provenance (§26)", () => {
         expect(Object.keys(r.raw).length, `${s.sheet}!${r.rowIndex} ham veri boş`).toBeGreaterThan(0);
       }
     }
+  });
+});
+
+describe("Sözleşme dışı kolon: hücre değeri KAYBOLMAZ, `values`'a da GEÇMEZ", () => {
+  // Fixture'ın 01_ODEMELER sayfasında bilerek eklenmiş bir başlık var: "Muhasebe Fişi No".
+  // Fixture satırları o hücreyi boş bırakıyor; burada dolu bir satır eklenir ve hücrenin
+  // ham veride durduğu, ama sözleşmeye sızmadığı ölçülür.
+  const EXTRA = "Muhasebe Fişi No";
+  const FIS = "FIS-2026-0001";
+
+  async function parseWithExtraCell(): Promise<WorkbookParseResult> {
+    const wb = await buildFixtureWorkbook();
+    const ws = wb.getWorksheet("01_ODEMELER")!;
+    const spec = sheetByName("01_ODEMELER")!;
+    const satir: Record<string, unknown> = {
+      external_id: "ODM-FISLI", aciklama: "Muhasebe fişli ödeme", vade_gunu: 15,
+      tutar: 1200, para_birimi: "TRY", tekrar_tipi: "monthly", durum: "active",
+    };
+    // Sözleşme kolonları sırayla, ardından sözleşme dışı hücre (başlık zaten son sütunda).
+    ws.addRow([...spec.columns.map((c) => (c.key in satir ? satir[c.key] : null)), FIS]);
+    return parseWorkbook(wb);
+  }
+
+  it("tanınmayan kolonun hücresi `raw.__unknown__` altında başlık metniyle saklanır", async () => {
+    const r = await parseWithExtraCell();
+    const s = r.sheets.find((x) => x.sheet === "01_ODEMELER")!;
+    const row = s.rows.find((x) => x.values.external_id === "ODM-FISLI")!;
+    expect(row, "eklenen satır okunmadı").toBeDefined();
+    expect(row.raw[UNKNOWN_COLUMNS_KEY]).toEqual({ [EXTRA]: FIS });
+  });
+
+  it("aynı hücre `values`'a GEÇMEZ — sözleşmenin parçası değildir", async () => {
+    const r = await parseWithExtraCell();
+    const s = r.sheets.find((x) => x.sheet === "01_ODEMELER")!;
+    const row = s.rows.find((x) => x.values.external_id === "ODM-FISLI")!;
+    expect(row.values).not.toHaveProperty(EXTRA);
+    expect(row.values).not.toHaveProperty(UNKNOWN_COLUMNS_KEY);
+    expect(Object.values(row.values)).not.toContain(FIS);
+    // Sözleşme kolonlarının hamı KENDİ anahtarında kalır; ad alanı onlara karışmaz.
+    expect(row.raw.tutar).toBe(1200);
+    expect(Object.keys(row.raw).filter((k) => k.startsWith("__"))).toEqual([UNKNOWN_COLUMNS_KEY]);
+  });
+
+  it("`unknown_header` incelemesi yine açılır ve satırın durumunu ETKİLEMEZ", async () => {
+    const r = await parseWithExtraCell();
+    const s = r.sheets.find((x) => x.sheet === "01_ODEMELER")!;
+    expect(s.unknownHeaders).toContain(EXTRA);
+    expect(s.issues.some((i) => i.type === "unknown_header" && i.column === EXTRA)).toBe(true);
+    const row = s.rows.find((x) => x.values.external_id === "ODM-FISLI")!;
+    expect(row.status).toBe("ready");
+    expect(row.issues.some((i) => i.type === "unknown_header")).toBe(false);
+  });
+
+  it("tanınmayan kolonun hücresi BOŞSA ad alanı hiç açılmaz — gürültü yok", () => {
+    // Kanonik fixture: başlık var, hücreler boş.
+    const s = result.sheets.find((x) => x.sheet === "01_ODEMELER")!;
+    expect(s.unknownHeaders).toContain(EXTRA);
+    for (const row of s.rows) expect(row.raw).not.toHaveProperty(UNKNOWN_COLUMNS_KEY);
+  });
+
+  it("aynı başlık iki kez geçerse iki hücre de korunur, biri diğerini ezmez", async () => {
+    const wb = await buildFixtureWorkbook();
+    const ws = wb.getWorksheet("11_PROJELER")!;
+    const spec = sheetByName("11_PROJELER")!;
+    const n = spec.columns.length;
+    ws.getRow(1).getCell(n + 1).value = "Etiket";
+    ws.getRow(1).getCell(n + 2).value = "Etiket";
+    const satir = new Array<unknown>(n).fill(null);
+    satir[spec.columns.findIndex((c) => c.key === "external_id")] = "PRJ-ETIKET";
+    satir[spec.columns.findIndex((c) => c.key === "proje_adi")] = "Etiketli proje";
+    ws.addRow([...satir, "A", "B"]);
+    const r = parseWorkbook(wb);
+    const row = r.sheets.find((x) => x.sheet === "11_PROJELER")!.rows
+      .find((x) => x.values.external_id === "PRJ-ETIKET")!;
+    const unknown = row.raw[UNKNOWN_COLUMNS_KEY] as Record<string, unknown>;
+    expect(Object.values(unknown).sort()).toEqual(["A", "B"]);
+    expect(Object.keys(unknown)).toHaveLength(2);
   });
 });
 
