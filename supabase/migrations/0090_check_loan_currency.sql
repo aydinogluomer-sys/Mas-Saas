@@ -25,15 +25,31 @@ alter table public.loans
 
 -- Sözlük, sözleşmedeki `CURRENCIES` ile birebir. Serbest metin bırakmak "TL", "tl", "₺" gibi
 -- üç ayrı para birimi üretirdi.
+--
+-- ═══ VARLIK KONTROLÜ TABLOYA BAĞLI ═══
+--
+-- İlk yazımda kontrol yalnız `conname` ile yapılıyordu. PostgreSQL'de kısıt adları veritabanı
+-- genelinde EŞSİZ DEĞİLDİR — yalnız tablo içinde eşsizdir. Başka bir tabloda aynı adı taşıyan
+-- bir kısıt bulunsaydı `if exists` doğru döner, ardından `alter table public.checks drop
+-- constraint` "böyle bir kısıt yok" diyerek migration'ı düşürürdü.
+--
+-- Bu yüzden kontrol `conrelid` ile GERÇEK TABLOYA bağlandı: aranan şey "şu adda bir kısıt"
+-- değil, "ŞU TABLODA şu adda bir kısıt".
 do $$
 begin
-  if exists (select 1 from pg_constraint where conname = 'checks_currency_check') then
+  if exists (
+    select 1 from pg_constraint
+     where conrelid = 'public.checks'::regclass and conname = 'checks_currency_check'
+  ) then
     alter table public.checks drop constraint checks_currency_check;
   end if;
   alter table public.checks
     add constraint checks_currency_check check (currency in ('TRY', 'USD', 'EUR', 'GBP'));
 
-  if exists (select 1 from pg_constraint where conname = 'loans_currency_check') then
+  if exists (
+    select 1 from pg_constraint
+     where conrelid = 'public.loans'::regclass and conname = 'loans_currency_check'
+  ) then
     alter table public.loans drop constraint loans_currency_check;
   end if;
   alter table public.loans

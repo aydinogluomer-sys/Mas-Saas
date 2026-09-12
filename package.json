@@ -124,7 +124,9 @@
     "import:template:v2": "node --import tsx scripts/import/generate-standard-template-v2.ts",
     "import:bench:v2": "node --expose-gc --import tsx scripts/import/bench-v2-parser.ts",
     "import:enum-parity:v2": "node --import tsx scripts/import/v2-enum-parity.ts",
-    "import:e2e:v2": "node --import tsx scripts/import/v2-import-e2e.ts"
+    "import:e2e:v2": "node --import tsx scripts/import/v2-import-e2e.ts",
+    "import:currency-safety:v2": "node --import tsx scripts/import/v2-currency-safety.ts",
+    "import:concurrency:v2": "node --import tsx scripts/import/v2-concurrency-proof.ts"
   },
   "dependencies": {
     "@next/env": "15.5.20",

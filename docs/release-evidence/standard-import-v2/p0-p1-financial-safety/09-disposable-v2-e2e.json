@@ -1,0 +1,475 @@
+{
+  "db": "mas_radar_import_v2_verify",
+  "firstPass": {
+    "dryRun": false,
+    "workbookId": "5e0ccd25-c549-4d4f-aeab-03c13e33cf06",
+    "sheetsStaged": 16,
+    "rowsStaged": 54,
+    "reviewsOpened": 16,
+    "perTable": {
+      "products": {
+        "inserted": 3,
+        "updated": 0
+      },
+      "projects": {
+        "inserted": 2,
+        "updated": 0
+      },
+      "bank_accounts": {
+        "inserted": 2,
+        "updated": 0
+      },
+      "loans": {
+        "inserted": 1,
+        "updated": 0
+      },
+      "payments": {
+        "inserted": 3,
+        "updated": 0
+      },
+      "checks": {
+        "inserted": 2,
+        "updated": 0
+      },
+      "loan_installments": {
+        "inserted": 2,
+        "updated": 0
+      },
+      "cashflow_lines": {
+        "inserted": 5,
+        "updated": 0
+      },
+      "bank_transactions": {
+        "inserted": 3,
+        "updated": 0
+      },
+      "invoices": {
+        "inserted": 2,
+        "updated": 0
+      },
+      "orders": {
+        "inserted": 2,
+        "updated": 0
+      },
+      "budget_lines": {
+        "inserted": 3,
+        "updated": 0
+      },
+      "fx_positions": {
+        "inserted": 3,
+        "updated": 0
+      },
+      "production_parts": {
+        "inserted": 2,
+        "updated": 0
+      },
+      "machine_assets": {
+        "inserted": 1,
+        "updated": 0
+      }
+    },
+    "stagedOnlyFamilies": [
+      "cost"
+    ],
+    "rowsStagedOnly": 3,
+    "unorderedSheets": [],
+    "rowsUndetermined": 0,
+    "rowsMapped": 36,
+    "rowsNeedsReview": 3,
+    "rowsRejected": 12
+  },
+  "secondPass": {
+    "dryRun": false,
+    "workbookId": "b2d03f39-2577-4b04-a867-ce5249297219",
+    "sheetsStaged": 16,
+    "rowsStaged": 54,
+    "reviewsOpened": 16,
+    "perTable": {
+      "products": {
+        "inserted": 0,
+        "updated": 3
+      },
+      "projects": {
+        "inserted": 0,
+        "updated": 2
+      },
+      "bank_accounts": {
+        "inserted": 0,
+        "updated": 2
+      },
+      "loans": {
+        "inserted": 0,
+        "updated": 1
+      },
+      "payments": {
+        "inserted": 0,
+        "updated": 3
+      },
+      "checks": {
+        "inserted": 0,
+        "updated": 2
+      },
+      "loan_installments": {
+        "inserted": 0,
+        "updated": 2
+      },
+      "cashflow_lines": {
+        "inserted": 0,
+        "updated": 5
+      },
+      "bank_transactions": {
+        "inserted": 0,
+        "updated": 3
+      },
+      "invoices": {
+        "inserted": 0,
+        "updated": 2
+      },
+      "orders": {
+        "inserted": 0,
+        "updated": 2
+      },
+      "budget_lines": {
+        "inserted": 0,
+        "updated": 3
+      },
+      "fx_positions": {
+        "inserted": 0,
+        "updated": 3
+      },
+      "production_parts": {
+        "inserted": 0,
+        "updated": 2
+      },
+      "machine_assets": {
+        "inserted": 0,
+        "updated": 1
+      }
+    },
+    "stagedOnlyFamilies": [
+      "cost"
+    ],
+    "rowsStagedOnly": 3,
+    "unorderedSheets": [],
+    "rowsUndetermined": 0,
+    "rowsMapped": 36,
+    "rowsNeedsReview": 3,
+    "rowsRejected": 12
+  },
+  "domainAfterFirst": {
+    "payments": 3,
+    "checks": 2,
+    "loans": 1,
+    "loan_installments": 2,
+    "cashflow_lines": 5,
+    "bank_accounts": 2,
+    "bank_transactions": 3,
+    "invoices": 2,
+    "orders": 2,
+    "products": 3,
+    "projects": 2,
+    "budget_lines": 3,
+    "fx_positions": 3,
+    "production_parts": 2,
+    "machine_assets": 1
+  },
+  "domainAfterSecond": {
+    "payments": 3,
+    "checks": 2,
+    "loans": 1,
+    "loan_installments": 2,
+    "cashflow_lines": 5,
+    "bank_accounts": 2,
+    "bank_transactions": 3,
+    "invoices": 2,
+    "orders": 2,
+    "products": 3,
+    "projects": 2,
+    "budget_lines": 3,
+    "fx_positions": 3,
+    "production_parts": 2,
+    "machine_assets": 1
+  },
+  "externalKeys": {
+    "afterFirst": 34,
+    "afterSecond": 34
+  },
+  "checks": [
+    {
+      "ad": "hazırlığa yazılan satır = oracle rowsRead",
+      "gecti": true
+    },
+    {
+      "ad": "reddedilen satır = oracle rejected",
+      "gecti": true
+    },
+    {
+      "ad": "incelemeye düşen satır = oracle needsReview",
+      "gecti": true
+    },
+    {
+      "ad": "import_rows satır sayısı = hazırlığa yazılan",
+      "gecti": true
+    },
+    {
+      "ad": "HİÇBİR satır boş ham veriyle yazılmadı",
+      "gecti": true
+    },
+    {
+      "ad": "reddedilen satırlar hazırlıkta DURUYOR",
+      "gecti": true
+    },
+    {
+      "ad": "reddedilen hiçbir satır domain'e yazılmadı",
+      "gecti": true
+    },
+    {
+      "ad": "yazıcısı olan aile sayısı",
+      "gecti": true
+    },
+    {
+      "ad": "payments = 01_ODEMELER hazır satır sayısı",
+      "gecti": true
+    },
+    {
+      "ad": "checks = 02_CEKLER hazır satır sayısı",
+      "gecti": true
+    },
+    {
+      "ad": "loans = 03_KREDILER hazır satır sayısı",
+      "gecti": true
+    },
+    {
+      "ad": "loan_installments = 04_KREDI_TAKSITLERI hazır satır sayısı",
+      "gecti": true
+    },
+    {
+      "ad": "cashflow_lines = 05_NAKIT_AKISI hazır satır sayısı",
+      "gecti": true
+    },
+    {
+      "ad": "bank_accounts = 06_BANKA_HESAPLARI hazır satır sayısı",
+      "gecti": true
+    },
+    {
+      "ad": "bank_transactions = 07_BANKA_HAREKETLERI hazır satır sayısı",
+      "gecti": true
+    },
+    {
+      "ad": "invoices = 08_FATURALAR hazır satır sayısı",
+      "gecti": true
+    },
+    {
+      "ad": "orders = 09_SIPARISLER hazır satır sayısı",
+      "gecti": true
+    },
+    {
+      "ad": "products = 10_URUNLER hazır satır sayısı",
+      "gecti": true
+    },
+    {
+      "ad": "projects = 11_PROJELER hazır satır sayısı",
+      "gecti": true
+    },
+    {
+      "ad": "budget_lines = 12_BUTCE hazır satır sayısı",
+      "gecti": true
+    },
+    {
+      "ad": "fx_positions = 13_FX_POZISYONU hazır satır sayısı",
+      "gecti": true
+    },
+    {
+      "ad": "production_parts = 14_KAPASITE hazır satır sayısı",
+      "gecti": true
+    },
+    {
+      "ad": "machine_assets = 16_MAKINE_ROI hazır satır sayısı",
+      "gecti": true
+    },
+    {
+      "ad": "payments: kaynak satırı olmayan kayıt yok (§26)",
+      "gecti": true
+    },
+    {
+      "ad": "checks: kaynak satırı olmayan kayıt yok (§26)",
+      "gecti": true
+    },
+    {
+      "ad": "loans: kaynak sayfası olmayan kayıt yok (§26)",
+      "gecti": true
+    },
+    {
+      "ad": "çıkış hareketi eksi işaretle yazıldı",
+      "gecti": true
+    },
+    {
+      "ad": "çıkış hareketinin yönü 'outflow' hesaplandı",
+      "gecti": true
+    },
+    {
+      "ad": "giriş hareketi artı işaretle yazıldı",
+      "gecti": true
+    },
+    {
+      "ad": "giriş hareketinin yönü 'inflow' hesaplandı",
+      "gecti": true
+    },
+    {
+      "ad": "çekin işareti korundu",
+      "gecti": true
+    },
+    {
+      "ad": "çekin mutlak tutarı işaretliyle tutarlı",
+      "gecti": true
+    },
+    {
+      "ad": "çekin yönü işaretten türetildi",
+      "gecti": true
+    },
+    {
+      "ad": "çekin para birimi saklandı (0090)",
+      "gecti": true
+    },
+    {
+      "ad": "tutarı bilinmeyen ödeme NULL kaldı",
+      "gecti": true
+    },
+    {
+      "ad": "tutarı bilinmeyen ödeme 'unknown' işaretlendi",
+      "gecti": true
+    },
+    {
+      "ad": "gerçekten sıfır olan ödeme NULL DEĞİL",
+      "gecti": true
+    },
+    {
+      "ad": "gerçekten sıfır olan ödeme 0 yazıldı",
+      "gecti": true
+    },
+    {
+      "ad": "gerçek sıfır 'known' işaretlendi",
+      "gecti": true
+    },
+    {
+      "ad": "nakit akışı sıfır satırı NULL DEĞİL",
+      "gecti": true
+    },
+    {
+      "ad": "nakit akışı sıfır satırı 0 olarak yazıldı",
+      "gecti": true
+    },
+    {
+      "ad": "nakit akışı sıfır satırı 'known' işaretlendi",
+      "gecti": true
+    },
+    {
+      "ad": "yazılmış 0 dakika NULL DEĞİL",
+      "gecti": true
+    },
+    {
+      "ad": "yazılmış 0 dakika 0 olarak saklandı",
+      "gecti": true
+    },
+    {
+      "ad": "ölçülmüş süre korundu",
+      "gecti": true
+    },
+    {
+      "ad": "incelemedeki parça domain'e yazılmadı",
+      "gecti": true
+    },
+    {
+      "ad": "fatura üçlüsü tutarlı",
+      "gecti": true
+    },
+    {
+      "ad": "kredinin para birimi saklandı (0090)",
+      "gecti": true
+    },
+    {
+      "ad": "kredi anaparası korundu",
+      "gecti": true
+    },
+    {
+      "ad": "senaryo bütçe başlığı oldu",
+      "gecti": true
+    },
+    {
+      "ad": "mali yıl dönemden okundu",
+      "gecti": true
+    },
+    {
+      "ad": "İKİNCİ IMPORT MÜKERRER ÜRETMEDİ (payments)",
+      "gecti": true
+    },
+    {
+      "ad": "İKİNCİ IMPORT MÜKERRER ÜRETMEDİ (checks)",
+      "gecti": true
+    },
+    {
+      "ad": "İKİNCİ IMPORT MÜKERRER ÜRETMEDİ (loans)",
+      "gecti": true
+    },
+    {
+      "ad": "İKİNCİ IMPORT MÜKERRER ÜRETMEDİ (loan_installments)",
+      "gecti": true
+    },
+    {
+      "ad": "İKİNCİ IMPORT MÜKERRER ÜRETMEDİ (cashflow_lines)",
+      "gecti": true
+    },
+    {
+      "ad": "İKİNCİ IMPORT MÜKERRER ÜRETMEDİ (bank_accounts)",
+      "gecti": true
+    },
+    {
+      "ad": "İKİNCİ IMPORT MÜKERRER ÜRETMEDİ (bank_transactions)",
+      "gecti": true
+    },
+    {
+      "ad": "İKİNCİ IMPORT MÜKERRER ÜRETMEDİ (invoices)",
+      "gecti": true
+    },
+    {
+      "ad": "İKİNCİ IMPORT MÜKERRER ÜRETMEDİ (orders)",
+      "gecti": true
+    },
+    {
+      "ad": "İKİNCİ IMPORT MÜKERRER ÜRETMEDİ (products)",
+      "gecti": true
+    },
+    {
+      "ad": "İKİNCİ IMPORT MÜKERRER ÜRETMEDİ (projects)",
+      "gecti": true
+    },
+    {
+      "ad": "İKİNCİ IMPORT MÜKERRER ÜRETMEDİ (budget_lines)",
+      "gecti": true
+    },
+    {
+      "ad": "İKİNCİ IMPORT MÜKERRER ÜRETMEDİ (fx_positions)",
+      "gecti": true
+    },
+    {
+      "ad": "İKİNCİ IMPORT MÜKERRER ÜRETMEDİ (production_parts)",
+      "gecti": true
+    },
+    {
+      "ad": "İKİNCİ IMPORT MÜKERRER ÜRETMEDİ (machine_assets)",
+      "gecti": true
+    },
+    {
+      "ad": "ikinci geçişte hiçbir kayıt YARATILMADI",
+      "gecti": true
+    },
+    {
+      "ad": "hazırlık katmanı her import'u ayrı saklar",
+      "gecti": true
+    },
+    {
+      "ad": "defter ikinci import'ta BÜYÜMEDİ",
+      "gecti": true
+    }
+  ]
+}

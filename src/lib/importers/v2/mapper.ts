@@ -22,6 +22,59 @@ import { audit } from "../../audit";
 import { sheetByName } from "./contract";
 import type { WorkbookParseResult, SheetResult, ParsedRow, Issue, Severity } from "./parser";
 
+/* ── Yapısal bütünlük hataları ───────────────────────────────────────────────────────── */
+
+/**
+ * Defterin işaret ettiği domain kaydı YOK.
+ *
+ * Bu bir kullanıcı verisi hatası değil, KİMLİK ZİNCİRİ KOPUKLUĞU. Kaydın silinmiş olması ya
+ * da defterin başka bir veritabanından taşınmış olması gibi yapısal bir sebep var. Bu yüzden
+ * satır incelemeye düşürülüp devam edilmez — import DURUR.
+ *
+ * Otomatik "iyileştirme" (yeni kayıt yaratıp deftere bağlamak) BİLEREK yapılmıyor: o, kopuk
+ * zinciri gizler ve kullanıcının güncellediğini sandığı kayıt sessizce ikinci bir kayda
+ * dönüşür. Fail closed.
+ */
+export class StaleExternalKeyBindingError extends Error {
+  readonly code = "STALE_EXTERNAL_KEY_BINDING";
+  constructor(
+    readonly entityTable: string,
+    readonly externalId: string,
+    readonly entityId: string,
+  ) {
+    super(
+      `STALE_EXTERNAL_KEY_BINDING: '${externalId}' kodu ${entityTable} tablosunda ` +
+      `${entityId} kaydına bağlı, ama o kayıt yok. Kimlik zinciri kopuk — import durduruldu.`,
+    );
+    this.name = "StaleExternalKeyBindingError";
+  }
+}
+
+/**
+ * Bir kod, bağlı olduğundan BAŞKA bir kayda bağlanmaya çalışıldı.
+ *
+ * `(entity_table, external_id) → TEK entity_id` değişmezi. Bir kodun işaret ettiği kayıt
+ * sessizce değişirse, kullanıcının "ODM-KIRA" diye bildiği kayıt geçmişini kaybeder ve eski
+ * kayıt sahipsiz kalır. Bu yüzden çakışma sessizce `last_seen_workbook_id` güncellenerek
+ * geçiştirilmez.
+ */
+export class ExternalKeyBindingConflictError extends Error {
+  readonly code = "EXTERNAL_KEY_BINDING_CONFLICT";
+  constructor(
+    readonly entityTable: string,
+    readonly externalId: string,
+    readonly boundEntityId: string,
+    readonly attemptedEntityId: string,
+  ) {
+    super(
+      `EXTERNAL_KEY_BINDING_CONFLICT: '${externalId}' kodu ${entityTable} tablosunda zaten ` +
+      `${boundEntityId} kaydına bağlı; ${attemptedEntityId} kaydına bağlanmak istendi. ` +
+      "Bir kod tek bir kayda aittir.",
+    );
+    this.name = "ExternalKeyBindingConflictError";
+  }
+}
+
 /* ── Sonuç tipleri ───────────────────────────────────────────────────────────────────── */
 
 export interface MapperOptions {
@@ -211,10 +264,27 @@ async function upsertRow(
   if (entityId) {
     const sets = names.map((n, i) => `${n} = $${i + 2}`);
     if (hasUpdatedAt) sets.push("updated_at = now()");
-    await client.query(
+    const r = await client.query(
       `update public.${table} set ${sets.join(", ")} where id = $1`,
       [entityId, ...values],
     );
+
+    // ═══ ETKİLENEN SATIR SAYISI KONTROL EDİLİR ═══
+    //
+    // Bir süre bu sonuç hiç okunmuyordu. `UPDATE ... WHERE id = $1` hiçbir satırı
+    // etkilemediğinde Postgres HATA VERMEZ — sessizce 0 satır günceller. Kod "güncelledim"
+    // diye döner, rapor "1 kayıt güncellendi" yazar ve ORTADA GÜNCELLENMİŞ BİR ŞEY YOKTUR.
+    // Kullanıcı verisinin kaybolduğunu hiçbir yerden anlayamaz.
+    //
+    // 0 satır = defterin işaret ettiği kayıt yok (bkz. StaleExternalKeyBindingError).
+    // 1'den fazla satır birincil anahtar yüzünden mümkün olmamalı; yine de değişmez olarak
+    // kontrol ediliyor, çünkü "mümkün değil" varsayımı sessizce yanlış çıkarsa bunu
+    // öğrenmenin tek yolu budur.
+    if (r.rowCount !== 1) {
+      throw new Error(
+        `UPDATE public.${table} id=${entityId} → ${r.rowCount} satır etkiledi (1 bekleniyordu).`,
+      );
+    }
     return { id: entityId, created: false };
   }
 
@@ -895,6 +965,61 @@ async function openReview(
 
 /* ── external_id defteri (0088) ──────────────────────────────────────────────────────── */
 
+/**
+ * Bir domain tablosunun kimlik kolonu.
+ *
+ * Neredeyse hepsinde `id`, ama `bank_accounts` istisna: o bağımsız bir tablo değil,
+ * `cash_accounts`'un 1:1 uzantısı ve birincil anahtarı `cash_account_id`. Varsayılanı her
+ * yere uygulamak, bayat bağlama kontrolünü tam da o tabloda "kolon yok" hatasıyla düşürürdü.
+ */
+const IDENTITY_COLUMN: Readonly<Record<string, string>> = Object.freeze({
+  bank_accounts: "cash_account_id",
+});
+const identityColumn = (table: string): string => IDENTITY_COLUMN[table] ?? "id";
+
+/**
+ * Bir `(entity_table, external_id)` anahtarını İŞLEM SÜRESİNCE kilitler.
+ *
+ * ═══ NEDEN GEREKLİ ═══
+ *
+ * Kilitsiz akış şuydu:
+ *
+ *     defterde ara → bulunamadı → domain INSERT → defter INSERT
+ *
+ * İki import aynı anda koştuğunda ikisi de "bulunamadı" görür, ikisi de kayıt yaratır ve
+ * ikisi de deftere yazmayı dener. Sonuç: aynı koda karşılık İKİ domain kaydı; biri deftere
+ * bağlı, diğeri sahipsiz. `external_id` vaadi ("aynı kodla tekrar import mükerrer üretmez")
+ * tam olarak burada kırılıyordu.
+ *
+ * ═══ NEDEN ADVISORY LOCK ═══
+ *
+ * Kilitlenecek satır HENÜZ YOK; `SELECT ... FOR UPDATE` kilitleyecek bir şey bulamaz.
+ * Advisory lock var olmayan bir şeyi — bir ANAHTARI — kilitleyebilir.
+ *
+ * `pg_advisory_xact_lock` işlem kapsamlı: COMMIT ya da ROLLBACK ile kendiliğinden bırakılır.
+ * Elle serbest bırakma yok, dolayısıyla hata yolunda unutulan kilit de yok.
+ *
+ * ═══ ANAHTAR TÜRETİMİ ═══
+ *
+ * İki argümanlı biçim (`classid`, `objid`) kullanılıyor: tablo adı ayrı bir ad alanı
+ * oluşturuyor, yani `checks/EXT-1` ile `loans/EXT-1` birbirini BEKLETMEZ.
+ *
+ * Hash Postgres'in kendi `hashtext`'i ile SQL tarafında hesaplanıyor. JavaScript tarafında
+ * 64-bit hash üretmeye çalışmak `Number`'ın 53-bit hassasiyeti yüzünden sessizce yanlış
+ * anahtar üretebilirdi. Değerler parametre olarak geçiyor; SQL metnine hiçbir kullanıcı
+ * verisi karışmıyor.
+ *
+ * Hash çakışması yalnız GEREKSİZ SERİLEŞTİRME yaratır — iki alakasız anahtar sırayla işlenir.
+ * Doğruluk bozulmaz; kilit doğruluğun kaynağı değil, kilit ALTINDA yapılan yeniden arama
+ * doğruluğun kaynağıdır.
+ */
+async function lockExternalKey(
+  client: PoolClient, entityTable: string, externalId: string,
+): Promise<void> {
+  await client.query("select pg_advisory_xact_lock(hashtext($1), hashtext($2))",
+    [entityTable, externalId]);
+}
+
 async function lookupExternalKey(
   client: PoolClient, entityTable: string, externalId: string,
 ): Promise<string | null> {
@@ -905,18 +1030,50 @@ async function lookupExternalKey(
   return r.rowCount && r.rows[0] ? r.rows[0].entity_id : null;
 }
 
+/**
+ * Bağlamayı yazar ve DEĞİŞMEZİ KORUR: bir kod tek bir kayda aittir.
+ *
+ * Çakışma durumunda eskiden yalnız `last_seen_workbook_id` güncellenip devam ediliyordu.
+ * Bu, kodun işaret ettiği kaydın SESSİZCE DEĞİŞMESİNE izin veriyordu: kullanıcının
+ * "ODM-KIRA" diye bildiği kayıt geçmişini kaybeder, eski kayıt sahipsiz kalırdı.
+ *
+ * Artık çakışmada mevcut bağlama okunur ve aynı kayda mı işaret ettiği doğrulanır. Değilse
+ * hata verilir ve işlem geri alınır — bağlama DEĞİŞMEZ.
+ */
 async function recordExternalKey(
   client: PoolClient, entityTable: string, externalId: string,
   entityId: string, workbookId: string,
 ): Promise<void> {
-  await client.query(
+  const r = await client.query<{ entity_id: string }>(
     `insert into public.import_external_keys
        (entity_table, external_id, entity_id, first_seen_workbook_id, last_seen_workbook_id)
      values ($1,$2,$3,$4,$4)
      on conflict (entity_table, external_id)
-       do update set last_seen_workbook_id = excluded.last_seen_workbook_id`,
+       do update set last_seen_workbook_id = excluded.last_seen_workbook_id
+     returning entity_id`,
     [entityTable, externalId, entityId, workbookId],
   );
+
+  // `returning` çakışmada MEVCUT satırın entity_id'sini verir; eşit değilse bağlama
+  // değiştirilmek isteniyor demektir.
+  const bound = r.rows[0]?.entity_id;
+  if (bound !== entityId) {
+    throw new ExternalKeyBindingConflictError(entityTable, externalId, bound ?? "(okunamadı)", entityId);
+  }
+}
+
+/**
+ * Bir sayfanın YALNIZ sayfa düzeyi sorunları — satır sorunları hariç.
+ *
+ * `SheetResult.issues` hem sayfa düzeyi sorunları hem de o sayfanın tüm satır sorunlarını
+ * biriktiriyor. Ayrım nesne kimliğiyle yapılır, alanlara bakarak değil: satır sorunları
+ * `row.issues` ile `sheet.issues` arasında AYNI nesnelerdir. Alan karşılaştırması
+ * (`row === undefined` gibi) yanlış olurdu — bilinmeyen başlık sayfa düzeyi bir sorun
+ * olduğu hâlde `row: 1` taşıyor.
+ */
+function sheetLevelIssues(sheet: SheetResult): Issue[] {
+  const satirSorunlari = new Set<Issue>(sheet.rows.flatMap((r) => r.issues));
+  return sheet.issues.filter((i) => !satirSorunlari.has(i));
 }
 
 /**
@@ -1005,9 +1162,12 @@ export async function mapWorkbook(
         }
         result.rowsMapped++;
       }
-      result.reviewsOpened += sheet.issues.length;
+      // Gerçek yazmayla AYNI sayım: satır sorunları satırlarıyla, sayfa düzeyi sorunlar
+      // bir kez. Önizleme farklı sayarsa kullanıcıya yanlış sayı gösterirdi.
+      result.reviewsOpened += sheet.rows.reduce((n, r) => n + r.issues.length, 0);
+      result.reviewsOpened += sheetLevelIssues(sheet).length;
     }
-    result.reviewsOpened += parsed.issues.filter((i) => i.row === undefined).length;
+    result.reviewsOpened += parsed.issues.filter((i) => i.type === "unknown_sheet").length;
     result.stagedOnlyFamilies = [...stagedOnly].sort();
     return result;
   }
@@ -1026,8 +1186,19 @@ export async function mapWorkbook(
     const writer = FAMILY_WRITERS[sheet.family];
     if (table && !writer) stagedOnly.add(sheet.family);
 
-    // Sayfa düzeyi sorunlar (bilinmeyen başlık, eksik kolon) satıra bağlı değildir.
-    for (const issue of sheet.issues) {
+    // ── SAYFA DÜZEYİ SORUNLAR — SATIR SORUNLARI HARİÇ ────────────────────────────────
+    //
+    // `SheetResult.issues` hem sayfa düzeyi sorunları (bilinmeyen başlık, eksik kolon) HEM
+    // DE o sayfanın tüm satır sorunlarını biriktiriyor. Bir süre buradan hepsi yazılıyordu
+    // ve her satır sorunu inceleme kuyruğuna İKİ KEZ giriyordu: bir kez satırına bağlı,
+    // bir kez satırsız. İkinci kopya kuyruğu iki katına çıkarıp "hangi satır?" sorusunu
+    // cevapsız bırakıyordu — inceleme kuyruğunun tek işi o soruyu cevaplamak.
+    //
+    // Ayrım nesne kimliğiyle yapılır, alanlara bakarak değil: satır sorunları `row.issues`
+    // ile `sheet.issues` arasında AYNI nesnelerdir. Alan karşılaştırması (`row === undefined`
+    // gibi) yanlış olurdu — bilinmeyen başlık sayfa düzeyi bir sorun olduğu hâlde `row: 1`
+    // taşıyor.
+    for (const issue of sheetLevelIssues(sheet)) {
       await openReview(client, workbookId, sheetId, null, issue);
       result.reviewsOpened++;
     }
@@ -1045,7 +1216,38 @@ export async function mapWorkbook(
       let wroteDomain = false;
 
       if (row.status === "ready" && table && writer) {
-        const existing = row.externalId ? await lookupExternalKey(client, table, row.externalId) : null;
+        // ═══ KANONİK SIRA — ARAMADAN ÖNCE KİLİT ═══
+        //
+        //   1. anahtarı kilitle (işlem kapsamlı)
+        //   2. defterde YENİDEN ara (kilit elde tutulurken)
+        //   3. bağlama varsa TAM O kaydı güncelle, yoksa yarat
+        //   4. bağlamayı yaz/doğrula
+        //
+        // Kilitten ÖNCE yapılan bir arama sonucu güvenilir değildir: iki import arasında
+        // pencere açık kalır ve ikisi de "yok" görüp ayrı kayıt yaratır. Bu yüzden arama
+        // kilit altında tekrarlanıyor — kilidin tek işi o aramayı anlamlı kılmak.
+        let existing: string | null = null;
+        if (row.externalId) {
+          await lockExternalKey(client, table, row.externalId);
+          existing = await lookupExternalKey(client, table, row.externalId);
+
+          // Defter bir kayda işaret ediyorsa O KAYIT GERÇEKTEN VAR MI? Bu soru yazmadan
+          // ÖNCE ve açıkça sorulur. `UPDATE`'in 0 satır etkilemesinden geriye doğru
+          // çıkarım yapmak da mümkündü, ama o zaman hata "0 satır güncellendi" gibi
+          // teşhis edilemez bir mesaj olurdu; burada hangi kod hangi kayda bağlıydı
+          // bilgisiyle birlikte söylenebiliyor.
+          //
+          // Tablo adı sözleşme sabitinden geliyor (spec.domainTable), kullanıcı verisinden
+          // değil; kimlik parametre olarak geçiyor.
+          if (existing) {
+            const alive = await client.query(
+              `select 1 from public.${table} where ${identityColumn(table)} = $1`, [existing]);
+            if (alive.rowCount !== 1) {
+              throw new StaleExternalKeyBindingError(table, row.externalId, existing);
+            }
+          }
+        }
+
         const outcome = await writer({ client, workbookId, sheetId, importRowId }, row, existing);
         entityId = outcome.id;
         bump(table, outcome.created ? "inserted" : "updated");

@@ -38,8 +38,19 @@ export interface ColumnSpec {
   header: string;
   type: CellType;
   required: boolean;
-  /** `type === "enum"` için izinli değerler; Excel açılır listesi de bundan üretilir. */
+  /** `type === "enum"` için PARSER'ın kabul ettiği değerler. */
   enumValues?: readonly string[];
+  /**
+   * Şablonun açılır listesinde SUNULAN değerler — verilmezse `enumValues` kullanılır.
+   *
+   * İkisi neden ayrı: parser'ın bir değeri OKUYABİLMESİ ile sistemin o değeri güvenle
+   * KULLANABİLMESİ aynı şey değil. V2.0'da çek ve kredi para birimi buna örnek: kolon USD'yi
+   * okuyabiliyor (ve okumalı — dışarıdan gelen dosyada olabilir, sessizce yok sayılmamalı),
+   * ama finans toplamları henüz çoklu para birimini güvenle toplayamadığı için şablon yalnız
+   * TRY sunuyor. Açılır listeyi daraltmak kullanıcıyı yönlendirir; parser'ı daraltmak ise
+   * gelen veriyi "okunamadı" diye yanlış sebeple reddetmek olurdu.
+   */
+  templateValues?: readonly string[];
   /** Kullanıcının yazabileceği alternatif başlıklar. AÇIK LİSTE — bulanık/AI tahmini YOK. */
   aliases?: readonly string[];
   /** Şablondaki hücre notu: alan ne demek, boş bırakılırsa ne olur. */
@@ -148,14 +159,30 @@ const externalId = (domainNote: string): ColumnSpec => ({
   width: 22,
 });
 
-const currency = (required = true): ColumnSpec => ({
+/**
+ * V2.0'da çek ve kredi için şablonun sunduğu tek para birimi.
+ *
+ * Sebep depolama değil, TOPLAMA. `checks` ve `loans` üzerinde çalışan finans okuma modelleri
+ * (vade akışı, due30, kalan tutar, aylık finans toplamları, anlık görüntü tüketicileri)
+ * para birimi ayrımı ya da belirlenmiş bir kur dönüşümü yapmadan `sum(amount)` kullanıyor.
+ * O yüzden 1000 USD + 1000 TRY = 2000 gibi bir sayı üretilebilir ve bu finansal olarak
+ * geçersizdir. Kolonun var olması (migration 0090) bu problemi ÇÖZMEZ.
+ */
+export const FINANCE_TRY_ONLY = ["TRY"] as const;
+
+const currency = (required = true, templateValues?: readonly string[]): ColumnSpec => ({
   key: "para_birimi",
   header: "Para Birimi",
   type: "enum",
   required,
   enumValues: CURRENCIES,
+  templateValues,
   aliases: ["para_birimi", "currency", "doviz", "kur_birimi"],
-  note: "TRY, USD, EUR veya GBP. Boş bırakılırsa TRY varsayılmaz — eksik kabul edilir ve incelemeye düşer.",
+  note: templateValues?.length === 1
+    ? `V2.0'da bu sayfa yalnız ${templateValues[0]} kayıtlarını finans tablolarına aktarır. ` +
+      "Başka para birimli satırlar kaynakta KORUNUR ve incelemeye düşer, ama çek/kredi " +
+      "toplamlarına karışmaz — çünkü bu sürüm karışık para birimlerini güvenle toplayamaz."
+    : "TRY, USD, EUR veya GBP. Boş bırakılırsa TRY varsayılmaz — eksik kabul edilir ve incelemeye düşer.",
   width: 12,
 });
 
@@ -242,7 +269,7 @@ export const SHEET_CEKLER: SheetSpec = {
       note:
         "ZORUNLU. İŞARET ANLAMLIDIR: eksi (−) = sizin ödeyeceğiniz çek (outflow), " +
         "artı (+) = tahsil edeceğiniz çek (inflow). Sistem işareti KORUR, mutlak değere çevirmez.", width: 30 },
-    currency(),
+    currency(true, FINANCE_TRY_ONLY),   // V2.0 finans toplama kısıtı — bkz. FINANCE_TRY_ONLY
     { key: "durum", header: "Durum", type: "enum", required: false,
       enumValues: CHECK_STATUS, aliases: ["durum", "status"],
       note: "planned / cleared / bounced / cancelled. Boşsa 'planned'.", width: 12 },
@@ -263,7 +290,7 @@ export const SHEET_KREDILER: SheetSpec = {
     { key: "banka", header: "Banka", type: "text", required: false,
       aliases: ["banka", "bank", "kurum"], note: "Krediyi veren kurum.", width: 20 },
     amount("anapara", "Anapara", "Kredi tutarı.", true),
-    currency(),
+    currency(true, FINANCE_TRY_ONLY),   // V2.0 finans toplama kısıtı — bkz. FINANCE_TRY_ONLY
     { key: "vade_ay", header: "Vade (ay)", type: "integer", required: true,
       aliases: ["vade_ay", "vade", "term_months"], note: "ZORUNLU. Toplam taksit sayısı.", width: 12 },
     { key: "baz_faiz_orani", header: "Baz Faiz Oranı (%)", type: "percent", required: false,

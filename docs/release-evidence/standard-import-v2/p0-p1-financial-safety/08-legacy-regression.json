@@ -1,0 +1,64 @@
+{
+  "artifactKind": "mas-v2-legacy-regression-v1",
+  "database": "mas_radar_legacy_regression_verify",
+  "workbook": "data/source/mesaili_nakit_akış_tek_vardiya_TEMİZ.xlsx (ana worktree'den salt okunarak kopyalandı; gitignore'da)",
+  "legacySourceFilesChangedThisRound": [],
+  "legacyFilesChecked": [
+    "src/lib/importers/workbook-importer.ts",
+    "src/lib/importers/workbook-parser.ts",
+    "src/lib/importers/extractors.ts",
+    "src/lib/financing/engine.ts",
+    "src/lib/radar/engine.ts"
+  ],
+  "importReal": {
+    "command": "pnpm import:real",
+    "result": "ALL PASS",
+    "sheets": 43,
+    "cellsIterated": 9817,
+    "cellsInserted": 9817,
+    "silentDiscard": 0,
+    "rowsInserted": 1601,
+    "reviewsInserted": 62,
+    "rowsNeedingReview": 61,
+    "corruptWorkbook": {
+      "ok": false,
+      "partialCells": 0,
+      "status": "failed"
+    },
+    "anomalySpotChecks": {
+      "TİJEN -60.000 negative_amount": 1,
+      "AG25 unlabeled_amount 120000": 1,
+      "PRONET missing_due_day": 1,
+      "ÇEKLER duplicate suspicion": 4
+    },
+    "cashflowIdentityMismatches": 0
+  },
+  "phaseVerifications": {
+    "phase6": "ALL PASS",
+    "phase3": {
+      "result": "FAIL",
+      "assertion": "no day-30 payment instance for Şubat 2027",
+      "attributableToThisRound": false,
+      "rootCause": "generateInstancesForMonth() ilk iş olarak tierMayMaintainInstances() kapısına bakıyor; kapı current_user'ı uygulama bakım rollerine (mas_radar_*) karşı kontrol ediyor. Script owner rolü (postgres) ile bağlandığı için üretim SESSİZCE atlanıyor ve sıfırlarla dönüyor (created=0, shortMonthAdjusted=0 — döngü hiç dönmemiş). Elle INSERT ve üreticinin kendi sorgusu (18 satır) çalışıyor.",
+      "verdict": "Script/rol uyuşmazlığı — tier kapısı Faz 15 rol ayrımıyla eklendi, bu verify script'i ondan önce yazılmış. Ürün gerilemesi DEĞİL.",
+      "payments": 19,
+      "paymentsBaselineMatched": true
+    },
+    "phase5": {
+      "result": "FAIL",
+      "assertion": "bank party never resolved",
+      "attributableToThisRound": false,
+      "observed": "checks=7 oluşturuldu (4+3, yeniden koşuda 0 — idempotent), ama parties tablosu TAMAMEN BOŞ; bank_party_id ve payee_party_id 0.",
+      "rootCauseVerified": false,
+      "note": "Kök neden bu turda doğrulanmadı. phase3 ile aynı sınıfta (owner rolüyle koşan, rol ayrımından önce yazılmış verify script'i) olması muhtemel ama KANITLANMADI."
+    }
+  },
+  "isolationTest": {
+    "method": "0090'ın eklediği checks.currency ve loans.currency kolonları düşürülüp phase3/phase5 yeniden koşuldu.",
+    "result": "Her iki düşüş de AYNEN sürdü.",
+    "conclusion": "Bu turdaki şema değişikliği (0090) bu düşüşlerin sebebi değil."
+  },
+  "notInCi": true,
+  "ciNote": "phase3:verify ve phase5:verify .github/workflows içinde yok; kayıtlı yeşil bir baseline'ları da yok.",
+  "currencyMigrationEffectOnLegacy": "0090 kolon EKLER (not null default 'TRY'), kaldırmaz; legacy kayıtlar TRY olarak kalır."
+}

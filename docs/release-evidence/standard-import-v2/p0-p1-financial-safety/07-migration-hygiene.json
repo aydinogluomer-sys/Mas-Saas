@@ -1,0 +1,49 @@
+{
+  "artifactKind": "mas-v2-migration-hygiene-v1",
+  "finding": "0090 kısıt varlık kontrolleri yalnız conname ile yapılıyordu; PostgreSQL'de kısıt adları veritabanı genelinde eşsiz değildir.",
+  "runnerContractProven": {
+    "how": "scripts/db/migrate.ts okundu",
+    "contract": "Her uygulanmış migration'ın checksum'ı public.schema_migrations içinde tutuluyor; disk ile ledger uyuşmazsa HardFailError ile durur, hiçbir yeni SQL çalıştırılmaz.",
+    "implication": "Bir migration dosyasını düzenlemek, o migration'ı ZATEN UYGULAMIŞ her veritabanını bozar."
+  },
+  "decision": "0090 DÜZENLENDİ (yeni 0091 açılmadı)",
+  "decisionRationale": [
+    "0090 pre-release: release dalı 2e07b3c'de ve 0090 orada yok.",
+    "Gerçek mas_radar_dev salt-okunur ölçüldü: en yüksek uygulanmış migration 0087. 0088/0089/0090 hiçbir kalıcı veritabanına uygulanmamış.",
+    "Tek uygulamış hedef, kendi harcanabilir doğrulama veritabanımdı; o sıfırdan yeniden kuruldu.",
+    "Yeni migration eklemek, düzeltilecek bir hatayı ledger'da kalıcı bir ize çevirirdi — sadece dosya değiştirmemek için."
+  ],
+  "realDbLedgerCheck": {
+    "database": "mas_radar_dev",
+    "maxAppliedVersion": "0087",
+    "featureMigrationsApplied": []
+  },
+  "fix": {
+    "before": "select 1 from pg_constraint where conname = 'checks_currency_check'",
+    "after": "select 1 from pg_constraint where conrelid = 'public.checks'::regclass and conname = 'checks_currency_check'",
+    "appliedTo": [
+      "checks_currency_check",
+      "loans_currency_check"
+    ],
+    "note": "0089 zaten conrelid ile kimliğe bağlıydı (0041 deseninden); 0088'de drop-if-exists yok."
+  },
+  "liveDecoyTest": {
+    "setup": "Hedef tablodan kısıt kaldırıldı, BAŞKA bir tabloda (public._decoy_hygiene) aynı adla kısıt oluşturuldu.",
+    "oldForm": {
+      "result": "ERROR",
+      "message": "constraint \"loans_currency_check\" of relation \"loans\" does not exist"
+    },
+    "fixedForm": {
+      "result": "DO",
+      "constraintInstalled": "CHECK ((currency = ANY (ARRAY['TRY','USD','EUR','GBP'])))"
+    },
+    "positiveCase": "Tuzak varken ve hedefte kısıt VARKEN düzeltilmiş blok yine doğru tabloya kurdu (2 kısıt aynı adı taşırken ölçüldü)."
+  },
+  "freshMigrationRun": {
+    "database": "mas_radar_import_v2_verify",
+    "from": "bootstrap (local-bootstrap.sql)",
+    "applied": "0001..0090",
+    "result": "PASS"
+  },
+  "automatedTest": "src/lib/importers/v2/migration-hygiene.test.ts — 4 test; negatif kontrol: conrelid geçici kaldırıldığında 2 test düştü."
+}

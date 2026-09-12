@@ -1,0 +1,9 @@
+{
+  "artifactKind": "mas-v2-binding-conflict-proof-v1",
+  "database": "mas_radar_import_v2_verify",
+  "bindingConflict": {
+    "typed": true,
+    "message": "EXTERNAL_KEY_BINDING_CONFLICT: 'CONC-001' kodu payments tablosunda zaten b5780141-e56f-4c3d-a9e5-67556a51e615 kaydına bağlı; d0220def-5697-4b79-8fdd-af739d01e9f1 kaydına bağlanmak istendi. Bir kod tek bir kayda aittir.",
+    "unchanged": true
+  }
+}

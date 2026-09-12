@@ -26,6 +26,7 @@ export type IssueType =
   | "duplicate_external_id" | "duplicate_check" | "missing_reference"
   | "negative_amount" | "amount_mismatch" | "currency_mismatch"
   | "missing_operation_time" | "personal_data_mixed"
+  | "unsupported_currency_for_finance_aggregation"
   | "unknown_header" | "unknown_sheet" | "reconciliation_mismatch";
 
 export type Severity = "low" | "medium" | "high";
@@ -328,6 +329,37 @@ function applyFamilyRules(
       issues.push({
         type: "invalid_number", severity: "high", sheet: spec.name, row: rowNumber,
         column: "Vade Günü (1-31)", message: `Vade günü 1-31 arasında olmalı, ${day} bulundu.`,
+      });
+    }
+  }
+
+  // ── V2.0 FİNANS TOPLAMA KISITI: ÇEK VE KREDİ YALNIZ TRY ──────────────────────────────
+  //
+  // Bu bir depolama sınırı DEĞİL. `checks.currency` ve `loans.currency` migration 0090 ile
+  // var ve satırın para birimini saklayabiliyor. Sorun TOPLAMADA:
+  //
+  //   Vade akışı, due30, kalan tutar, aylık finans toplamları ve anlık görüntü tüketicileri
+  //   `sum(amount)` kullanıyor; para birimine göre ayırmıyor ve belirlenmiş bir kur dönüşümü
+  //   yapmıyor. Bu okuma modellerine 1.000 USD'lik bir çek girdiğinde 1.000 TRY'lik bir çekle
+  //   TOPLANIR ve rapor "2.000" der. Böyle bir sayı finansal olarak geçersizdir; üstelik
+  //   yanlış olduğu ekranda görünmez.
+  //
+  // Bu yüzden TRY dışı satır domain'e ALINMAZ. Ama SESSİZCE DE ATILMAZ: ham hâliyle kaynak
+  // katmanında durur, yüksek şiddetli bir inceleme kaydı açılır ve kullanıcıya sebebi
+  // söylenir. Kullanıcının "dosyamı doğru doldurdum, kaydım nerede?" sorusunun cevabı var.
+  //
+  // Kalıcı çözüm çoklu para birimi analitiği (kur tarihçesi + dönüşüm politikası); o ayrı bir
+  // iş ve açık teknik borç olarak yazılı: MULTI_CURRENCY_FINANCE_ANALYTICS = NOT_IMPLEMENTED.
+  if (spec.family === "checks" || spec.family === "loans") {
+    const cur = values.para_birimi;
+    if (typeof cur === "string" && cur !== "" && cur !== "TRY") {
+      issues.push({
+        type: "unsupported_currency_for_finance_aggregation", severity: "high",
+        sheet: spec.name, row: rowNumber, column: "Para Birimi",
+        message:
+          `Bu sürüm çek ve kredi toplamlarını yalnız TRY için güvenli biçimde hesaplar. ` +
+          `${cur} kayıt kaynakta KORUNMUŞTUR, ancak finans KPI'larına aktarılmamıştır — ` +
+          "karışık para birimlerini toplamak yanlış bir toplam üretirdi.",
       });
     }
   }

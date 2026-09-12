@@ -76,7 +76,10 @@ function buildDataSheet(wb: ExcelJS.Workbook, spec: SheetSpec): void {
   spec.columns.forEach((col, i) => {
     const fmt = numFmt(col);
     if (fmt) ws.getColumn(i + 1).numFmt = fmt;
-    if (col.type === "enum" && col.enumValues) addEnumValidation(ws, i + 1, col.enumValues);
+    // Açılır liste `templateValues` varsa ondan üretilir: parser'ın OKUYABİLDİĞİ değerler
+    // ile şablonun SUNDUĞU değerler aynı olmak zorunda değil (bkz. FINANCE_TRY_ONLY).
+    const sunulan = col.templateValues ?? col.enumValues;
+    if (col.type === "enum" && sunulan) addEnumValidation(ws, i + 1, sunulan);
   });
 
   // Sayfanın ne işe yaradığı, ilk satırın hemen üstünde değil — başlık notunda değil, sayfa

@@ -51,6 +51,58 @@ kayma tespit edilir ve `unknown_header` incelemesi açılır.
 
 Toplam **187 kolon**, bunların **53'ü zorunlu**, **34'ü enum** (Excel açılır listesiyle).
 
+`16_MAKINE_ROI` yalnız `machine_assets` tablosuna yazar; ROI rakamları `machine_roi_snapshots`
+YILLIK tuttuğu, şablon ise AYLIK sorduğu için eşlenmez (gerekçe: `domain-map.ts`).
+`15_MALIYET` bilerek eşlenmez — şablon uzun, `cost_models` geniş biçimde.
+
+## V2.0 para birimi sınırı — çek ve kredi yalnız TRY
+
+**Bu geçici bir sürüm sınırıdır ve depolama sınırı DEĞİLDİR.**
+
+`checks.currency` ve `loans.currency` kolonları var (migration 0090) ve satırın para birimini
+saklayabiliyor. Sorun **toplamada**: bu iki tablo üzerinde çalışan finans okuma modelleri —
+vade akışı, `due30`, kalan tutar, aylık finans toplamları ve anlık görüntü tüketicileri —
+para birimine göre ayırmadan ve belirlenmiş bir kur dönüşümü yapmadan `sum(amount)` kullanıyor.
+
+Ölçüldü (`pnpm import:currency-safety:v2`): 10.000 TRY'lik ve 1.000 USD'lik iki çek doğrudan
+veritabanına yazıldığında `due30` **11.000** döndü. Böyle bir sayı finansal olarak geçersizdir
+ve yanlış olduğu ekranda görünmez.
+
+Bu yüzden V2.0 sözleşmesi:
+
+```
+Checks and loans are imported into the finance domain only when currency = TRY.
+Non-TRY rows are preserved in staging and require review.
+Multi-currency finance aggregation/conversion is NOT implemented in V2.0.
+```
+
+Uygulanışı:
+
+| | davranış |
+|---|---|
+| TRY satır | `checks` / `loans` tablolarına yazılır |
+| TRY dışı satır | **domain'e yazılmaz** |
+| TRY dışı satır | ham hâliyle `import_rows` içinde **korunur** (sessiz düşürme yok) |
+| TRY dışı satır | `unsupported_currency_for_finance_aggregation` türünde **yüksek şiddetli** inceleme açılır |
+| şablon | bu iki sayfada açılır listede yalnız `TRY` sunar |
+| parser | USD/EUR/GBP değerlerini yine de OKUR — dışarıdan gelen dosya sessizce "okunamadı" sayılmasın diye |
+
+Kullanıcıya gösterilen gerekçe: *"Bu sürüm çek ve kredi toplamlarını yalnız TRY için güvenli
+biçimde hesaplar. TRY dışı kayıt kaynakta korunmuştur ancak finans KPI'larına
+aktarılmamıştır."*
+
+Sınır **yalnız** `02_CEKLER` ve `03_KREDILER` için geçerlidir. Diğer sayfaların para birimi
+sözlükleri değişmedi.
+
+### Açık teknik borç
+
+```
+MULTI_CURRENCY_FINANCE_ANALYTICS = NOT_IMPLEMENTED
+```
+
+Kalıcı çözüm kur tarihçesi + belirlenmiş bir dönüşüm politikası + okuma modellerinin para
+birimi boyutuyla yeniden yazılması. Bu, import katmanının işi değil.
+
 ## NULL / ZERO sözleşmesi
 
 Bu bir sürüm kuralıdır, tercih değil.
@@ -118,8 +170,25 @@ kolonları var; olmayanlar için bağ `import_rows.mapped_entity_table` +
 `mapped_entity_id` üzerinden kurulur. Ayrıntı ve boşluk listesi:
 `docs/release-evidence/standard-import-v2/00-domain-inventory.md`.
 
+## Kimlik zinciri ve eşzamanlılık
+
+Aynı `external_id` ile ikinci import mükerrer üretmez. Bu vaat üç kuralla korunuyor:
+
+1. **İşlem kapsamlı anahtar kilidi.** `pg_advisory_xact_lock(hashtext(tablo), hashtext(kod))`
+   alınır, defter kilit ALTINDA yeniden okunur. Kilitsiz sırada iki eşzamanlı import da
+   "kayıt yok" görüp ikişer kayıt yaratabiliyordu (ölçüldü: 2 kayıt, 1 sahipsiz).
+2. **Bağlama değişmezi.** `(entity_table, external_id) → TEK entity_id`. Bir kodun işaret
+   ettiği kayıt sessizce değiştirilemez; denenirse `EXTERNAL_KEY_BINDING_CONFLICT`.
+3. **Bayat bağlama fail-closed.** Defterin işaret ettiği kayıt yoksa import DURUR
+   (`STALE_EXTERNAL_KEY_BINDING`). Otomatik "iyileştirme" (yeni kayıt yaratıp bağlamak)
+   bilerek yapılmaz: o, kopuk kimlik zincirini gizler.
+
+Kanıt: `pnpm import:concurrency:v2` — negatif kontrol dahil 18 ölçüm.
+
 ## Bu turda tamamlanmayanlar
 
-Sözleşme, şablon üreteci ve şablon hazır. Parser, doğrulama katmanı, domain eşleyici,
-önizleme akışı, UI ve testler **henüz yazılmadı** — durum raporu
-`FINAL-STANDARD-IMPORT-V2-DOSSIER.md` içinde.
+- `15_MALIYET` domain eşlemesi — `STAGED_ONLY_BY_DESIGN` (şekil uyuşmazlığı)
+- Şablon indirme ucu, önizleme ekranı ve production import akışı
+- Çoklu para birimi finans analitiği
+
+Durum raporu: `docs/release-evidence/standard-import-v2/`.

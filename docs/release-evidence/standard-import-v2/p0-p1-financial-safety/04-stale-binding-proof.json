@@ -1,0 +1,18 @@
+{
+  "artifactKind": "mas-v2-stale-binding-proof-v1",
+  "database": "mas_radar_import_v2_verify",
+  "staleBinding": {
+    "typed": true,
+    "message": "STALE_EXTERNAL_KEY_BINDING: 'CONC-001' kodu payments tablosunda 10b15b94-97bb-4a2e-ae76-398a4000618e kaydına bağlı, ama o kayıt yok. Kimlik zinciri kopuk — import durduruldu.",
+    "before": {
+      "payments": 0,
+      "ledger": 1
+    },
+    "after": {
+      "payments": 0,
+      "ledger": 1
+    }
+  },
+  "autoHealUsed": false,
+  "ledgerReassigned": false
+}

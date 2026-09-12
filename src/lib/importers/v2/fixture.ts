@@ -41,6 +41,13 @@ const FIXTURE_ROWS: Record<string, Row[]> = {
     // Temiz: tahsil edilecek çek, artı işaret.
     { external_id: "CEK-004", seri_no: "EGE-77", vade_tarihi: "2026-09-19",
       kimden: "EGE GÜNEŞ", banka: "Vakıf", signed_tutar: 120000, para_birimi: "TRY" },
+    // V2.0 FİNANS TOPLAMA KISITI: TRY dışı çek domain'e ALINMAZ ama kaynakta KORUNUR.
+    // Depolama sorunu değil — checks.currency kolonu var (0090). Sorun, finans okuma
+    // modellerinin para birimi ayırmadan sum(amount) yapması: 1.000 USD + 1.000 TRY = 2.000
+    // gibi geçersiz bir toplam üretilirdi ve yanlışlığı ekranda görünmezdi.
+    { external_id: "CEK-USD", seri_no: "USD-01", vade_tarihi: "2026-10-15",
+      kime: "Yurtdışı tedarikçi", banka: "Deniz", signed_tutar: -1000,
+      para_birimi: "USD", durum: "planned" },
   ],
   "03_KREDILER": [
     { external_id: "KREDI-VAKIF-01", kredi_adi: "Vakıf yatırım kredisi", banka: "Vakıf",
@@ -48,6 +55,9 @@ const FIXTURE_ROWS: Record<string, Row[]> = {
       uygulanan_faiz_orani: 3.63, bsmv_orani: 10, kkdf_orani: 10,
       ilk_odeme_tarihi: "2024-10-18", taksit_tutari: 71744.12,
       toplam_odeme: 3443717.58, finansman_maliyeti: 1943717.58, durum: "active" },
+    // V2.0 FİNANS TOPLAMA KISITI (çeklerle aynı gerekçe): EUR kredi domain'e alınmaz.
+    { external_id: "KREDI-EUR-01", kredi_adi: "EUR makine kredisi", banka: "Deniz",
+      anapara: 5000, para_birimi: "EUR", vade_ay: 24, durum: "active" },
   ],
   "04_KREDI_TAKSITLERI": [
     { loan_external_id: "KREDI-VAKIF-01", taksit_no: 1, vade_tarihi: "2024-10-18",
@@ -231,8 +241,8 @@ export const FIXTURE_ORACLE = {
   schema: { name: SCHEMA_NAME, version: SCHEMA_VERSION },
   sheets: {
     "01_ODEMELER":        { rowsRead: 4, ready: 3, needsReview: 0, rejected: 1 },
-    "02_CEKLER":          { rowsRead: 4, ready: 2, needsReview: 2, rejected: 0 },
-    "03_KREDILER":        { rowsRead: 1, ready: 1, needsReview: 0, rejected: 0 },
+    "02_CEKLER":          { rowsRead: 5, ready: 2, needsReview: 2, rejected: 1 },
+    "03_KREDILER":        { rowsRead: 2, ready: 1, needsReview: 0, rejected: 1 },
     "04_KREDI_TAKSITLERI":{ rowsRead: 3, ready: 2, needsReview: 0, rejected: 1 },
     "05_NAKIT_AKISI":     { rowsRead: 6, ready: 5, needsReview: 0, rejected: 1 },
     "06_BANKA_HESAPLARI": { rowsRead: 2, ready: 2, needsReview: 0, rejected: 0 },
@@ -266,6 +276,7 @@ export const FIXTURE_ORACLE = {
   ] as Array<{ sheet: string; row: number; key: string; expected: unknown }>,
 
   expectedIssueTypes: [
+    "unsupported_currency_for_finance_aggregation",  // 02 ve 03: TRY dışı satır
     "missing_required_field",   // 01 satır 5: aylık ama vade günü yok
     "duplicate_check",          // 02: Çağdaş ×2, seri no yok
     "missing_reference",        // 04 satır 4 ve 07 satır 5
@@ -277,5 +288,5 @@ export const FIXTURE_ORACLE = {
   ] as const,
 
   /** Toplam — sayfa oracle'larının toplamı, ayrıca elle doğrulandı. */
-  totals: { rowsRead: 52, ready: 39, needsReview: 3, rejected: 10 },
+  totals: { rowsRead: 54, ready: 39, needsReview: 3, rejected: 12 },
 } as const;
