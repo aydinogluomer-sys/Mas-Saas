@@ -15,6 +15,7 @@ import type { CellVal, RowJson } from "@/lib/importers/row-utils";
 import { normalizeTr } from "@/lib/importers/workbook-parser";
 import { decimal, divOrNull, money, moneyOrNull, mul, rate, rateOrNull } from "@/lib/money";
 import { breakEvenTLPerMin, partProfitability } from "./rules";
+import { sourceRevenue } from "./source-revenue";
 import { audit } from "@/lib/audit";
 
 async function sheetCellMap(client: PoolClient | Pool, sheetId: string): Promise<{ map: Record<string, CellVal>; idByRow: Map<number, string> }> {
@@ -275,10 +276,13 @@ export async function calculatePartProfitability(pool: Pool, costModelId?: strin
       torna_minutes: string | null; freze_minutes: string | null;
     }>(`select id, part_code, part_name, quantity,
                torna_minutes, freze_minutes from public.production_parts`);
-    // revenue lives on the source row (kapasite col I); read it back per part
+    // Gelir KAYNAK satırda yaşar (production_parts fiyat saklamıyor) ve o satırın iki ham
+    // biçimi var: legacy `I.v` (toplam FİYAT) ve V2 `satis_fiyati` (birim fiyat × adet).
+    // Hangisi olduğuna `sourceRevenue` karar verir — SQL'de `::numeric` cast yok, çünkü V2
+    // ham hücre metin/formül nesnesi olabilir ve cast tüm hesabı düşürürdü.
     for (const p of parts.rows) {
-      const revRow = await client.query<{ rev: string | null }>(
-        `select (row_json->'I'->>'v')::numeric as rev
+      const revRow = await client.query<{ row_json: unknown }>(
+        `select ir.row_json
          from public.import_rows ir join public.production_parts pp on pp.source_row_id = ir.id
          where pp.id=$1`, [p.id],
       );
@@ -287,7 +291,7 @@ export async function calculatePartProfitability(pool: Pool, costModelId?: strin
           code: p.part_code, name: p.part_name, quantity: p.quantity,
           tornaMinutesPerUnit: p.torna_minutes == null ? null : Number(p.torna_minutes),
           frezeMinutesPerUnit: p.freze_minutes == null ? null : Number(p.freze_minutes),
-          revenue: moneyOrNull(revRow.rows[0]?.rev ?? null),
+          revenue: sourceRevenue(revRow.rows[0]?.row_json ?? null, p.quantity),
         },
         tornaRate, frezeRate,
       );

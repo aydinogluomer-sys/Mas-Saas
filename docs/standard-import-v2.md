@@ -170,6 +170,22 @@ kolonları var; olmayanlar için bağ `import_rows.mapped_entity_table` +
 `mapped_entity_id` üzerinden kurulur. Ayrıntı ve boşluk listesi:
 `docs/release-evidence/standard-import-v2/00-domain-inventory.md`.
 
+### Ham satır biçimi ve kaynaktan geri okuma
+
+`import_rows.row_json` iki biçimde bulunur ve ikisi de geçerlidir:
+
+```
+legacy : {"A":{"v":"MT-100","t":"s"}, ..., "I":{"v":130000,"t":"n"}}   kolon harfi + {v,t}
+V2     : {"parca_kodu":"MT-100", "adet":500, "satis_fiyati":260, ...}   sözleşme anahtarı
+```
+
+Domain'e alınmayan ama kaynakta korunan bir değeri geri okuyan her tüketici İKİ biçimi de
+tanımak zorundadır. Somut örnek: `14_KAPASITE.satis_fiyati` `production_parts`'a yazılmaz;
+parça kârlılığı geliri `src/lib/production/source-revenue.ts` ile kaynak satırdan okur.
+Biçim tahmin edilmez, anahtarın varlığından bilinir: `satis_fiyati` varsa V2 (birim fiyat ×
+adet), yoksa legacy `I.v` (adet için toplam FİYAT). İkisi de yoksa gelir bilinmiyor (null).
+SQL'de `::numeric` cast kullanılmaz — V2 ham hücre metin ya da formül nesnesi olabilir.
+
 ## Kimlik zinciri ve eşzamanlılık
 
 Aynı `external_id` ile ikinci import mükerrer üretmez. Bu vaat üç kuralla korunuyor:
