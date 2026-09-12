@@ -1,0 +1,11 @@
+# PHASE 1.3 — nested worktree tasima kaydi
+tarih: 2026-09-12T22:06:55Z
+yontem: git worktree move (ayni disk, rename, geri alinabilir)
+
+OK   9e23ad7  C:/Users/Trade Bilisim/Mas Saas/Mas-Saas-RC-9e23ad7  ->  C:/Users/Trade Bilisim/Mas-Saas-RC-9e23ad7
+OK   c71366a  C:/Users/Trade Bilisim/Mas Saas/Mas-Saas-RC-c71366a  ->  C:/Users/Trade Bilisim/Mas-Saas-RC-c71366a
+OK   f076431  C:/Users/Trade Bilisim/Mas Saas/Mas-Saas-RC-f076431  ->  C:/Users/Trade Bilisim/Mas-Saas-RC-f076431
+OK   1675c92  C:/Users/Trade Bilisim/Mas Saas/Mas-Saas-RC  ->  C:/Users/Trade Bilisim/Mas-Saas-RC
+OK   9e23ad7  C:/Users/Trade Bilisim/Mas Saas/Mas-Saas-P1-Audit-Fix  ->  C:/Users/Trade Bilisim/Mas-Saas-P1-Audit-Fix
+FAIL f8eede7  C:/Users/Trade Bilisim/Mas Saas/Mas-Saas-Import-V2  ->  C:/Users/Trade Bilisim/Mas-Saas-Import-V2
+OK   f8eede7  C:/Users/Trade Bilisim/Mas Saas/Mas-Saas-Import-V2  ->  C:/Users/Trade Bilisim/Mas-Saas-Import-V2  (2. deneme)

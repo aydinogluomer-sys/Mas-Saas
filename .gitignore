@@ -59,6 +59,8 @@ next-env.d.ts
 /blob-report/
 
 # generated recovery/build artifacts
+# Her release kapisi/olcum kendi distDir'ine derler (eslint.config.mjs ile ayni kalip).
+/.next-*/
 /.next-corrupt-*/
 /.next-turbopack-incomplete-*/
 # release:real-clone-gate ayri distDir'e derler — canli sunucunun .next'ini ezmemek icin

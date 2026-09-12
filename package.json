@@ -2,6 +2,7 @@
   "name": "mas-nakit-radar",
   "version": "0.1.0",
   "private": true,
+  "packageManager": "pnpm@11.10.0",
   "scripts": {
     "dev": "tsx scripts/ops/runtime-port-guard.ts --dev && tsx scripts/db/ensure.ts && tsx scripts/prepare-runtime.ts && next dev",
     "db:ensure": "tsx scripts/db/ensure.ts",
