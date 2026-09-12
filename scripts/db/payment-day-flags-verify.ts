@@ -213,10 +213,11 @@ async function main() {
     const overviewRows = await paymentOverviewInstances(pool, today, futureEnd);
     const { buckets } = await loadPaymentDashboard(pool, today, futureEnd);
 
-    const byDateRef = new Map<string, Array<{ id: string; dueDate: string; amount: number | null; status: string }>>();
+    const byDateRef = new Map<string, Array<{ id: string; dueDate: string; amount: number | null; status: string; currency: string | null }>>();
     for (const row of overviewRows) {
       const list = byDateRef.get(row.due_date) ?? [];
-      list.push({ id: row.id, dueDate: row.due_date, amount: row.amount, status: row.status });
+      // PHASE 2.2 (T1-a): dayFlags artık para birimi ister; BASE `i.currency`'yi seçer.
+      list.push({ id: row.id, dueDate: row.due_date, amount: row.amount, status: row.status, currency: row.currency ?? null });
       byDateRef.set(row.due_date, list);
     }
     // Sayfanin cagirdigi fonksiyonun TA KENDISI — burada yeniden yazilmis bir kopyasi degil.

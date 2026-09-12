@@ -113,10 +113,10 @@ export const PAYMENT_DAY_FLAGS = Object.freeze({
   input: {
     thresholds: { large: 50_000, critical: 250_000, clusterCount: 3 },
     instances: [
-      { id: "P-A", dueDate: "2026-09-10", amount: 20_000, status: "unpaid" },
-      { id: "P-B", dueDate: "2026-09-10", amount: 15_000.5, status: "unpaid" },
-      { id: "P-C", dueDate: "2026-09-10", amount: null, status: "unpaid" },
-      { id: "P-D", dueDate: "2026-09-10", amount: 90_000, status: "paid" },
+      { id: "P-A", dueDate: "2026-09-10", amount: 20_000, status: "unpaid", currency: "TRY" },
+      { id: "P-B", dueDate: "2026-09-10", amount: 15_000.5, status: "unpaid", currency: "TRY" },
+      { id: "P-C", dueDate: "2026-09-10", amount: null, status: "unpaid", currency: "TRY" },
+      { id: "P-D", dueDate: "2026-09-10", amount: 90_000, status: "paid", currency: "TRY" },
     ],
   },
   expected: {
@@ -125,9 +125,12 @@ export const PAYMENT_DAY_FLAGS = Object.freeze({
     cluster: true,
     large: false,
     critical: false,
+    foreignCount: 0,
   },
   derivation:
     "Açık kalemler: P-A, P-B, P-C (P-D 'paid' → açık değil, güne yük yazmaz). " +
+    "Dört kalem de TRY (PHASE 2.2: eşikler *_threshold_try, yalnız TRY kalemler tartılır) → " +
+    "foreignCount = 0; TRY-dışı kalem olsaydı toplama girmez ama burada sayılırdı. " +
     "knownSum = 20.000,00 + 15.000,50 = 35.000,50 (P-C null → toplama girmez, 0 sayılmaz). " +
     "count = 3 ≥ clusterCount 3 → cluster = true. " +
     "Açık kalemlerin hiçbiri 50.000 eşiğine ulaşmıyor → large = false. " +
@@ -145,51 +148,45 @@ export const PAYMENT_THRESHOLD_BOUNDARY = Object.freeze({
   input: {
     thresholds: { large: 50_000, critical: 250_000, clusterCount: 3 },
     // 1) tek kalem tam kritik eşiğinde
-    criticalExactly: [{ id: "B-1", dueDate: "2026-09-10", amount: 250_000.0, status: "unpaid" }],
+    criticalExactly: [{ id: "B-1", dueDate: "2026-09-10", amount: 250_000.0, status: "unpaid", currency: "TRY" }],
     // 2) tek kalem kritik eşiğinin bir kuruş altında
     criticalOneKurusBelow: [
-      { id: "B-2", dueDate: "2026-09-10", amount: 249_999.99, status: "unpaid" },
+      { id: "B-2", dueDate: "2026-09-10", amount: 249_999.99, status: "unpaid", currency: "TRY" },
     ],
     // 3) tek kalem tam büyük-ödeme eşiğinde
-    largeExactly: [{ id: "B-3", dueDate: "2026-09-10", amount: 50_000.0, status: "unpaid" }],
+    largeExactly: [{ id: "B-3", dueDate: "2026-09-10", amount: 50_000.0, status: "unpaid", currency: "TRY" }],
     // 4) tek kalem büyük-ödeme eşiğinin bir kuruş altında
     largeOneKurusBelow: [
-      { id: "B-4", dueDate: "2026-09-10", amount: 49_999.99, status: "unpaid" },
+      { id: "B-4", dueDate: "2026-09-10", amount: 49_999.99, status: "unpaid", currency: "TRY" },
     ],
     // 5) hiçbir kalem tek başına kritik değil ama GÜN TOPLAMI kuruşu kuruşuna eşikte
     criticalBySumExactly: [
-      { id: "B-5a", dueDate: "2026-09-10", amount: 173_885.27, status: "unpaid" },
-      { id: "B-5b", dueDate: "2026-09-10", amount: 21_752.99, status: "unpaid" },
-      { id: "B-5c", dueDate: "2026-09-10", amount: 47_810.9, status: "unpaid" },
-      { id: "B-5d", dueDate: "2026-09-10", amount: 6_550.84, status: "unpaid" },
+      { id: "B-5a", dueDate: "2026-09-10", amount: 173_885.27, status: "unpaid", currency: "TRY" },
+      { id: "B-5b", dueDate: "2026-09-10", amount: 21_752.99, status: "unpaid", currency: "TRY" },
+      { id: "B-5c", dueDate: "2026-09-10", amount: 47_810.9, status: "unpaid", currency: "TRY" },
+      { id: "B-5d", dueDate: "2026-09-10", amount: 6_550.84, status: "unpaid", currency: "TRY" },
     ],
     // 6) aynı gün, son kalem bir kuruş eksik
     criticalBySumOneKurusBelow: [
-      { id: "B-6a", dueDate: "2026-09-10", amount: 173_885.27, status: "unpaid" },
-      { id: "B-6b", dueDate: "2026-09-10", amount: 21_752.99, status: "unpaid" },
-      { id: "B-6c", dueDate: "2026-09-10", amount: 47_810.9, status: "unpaid" },
-      { id: "B-6d", dueDate: "2026-09-10", amount: 6_550.83, status: "unpaid" },
+      { id: "B-6a", dueDate: "2026-09-10", amount: 173_885.27, status: "unpaid", currency: "TRY" },
+      { id: "B-6b", dueDate: "2026-09-10", amount: 21_752.99, status: "unpaid", currency: "TRY" },
+      { id: "B-6c", dueDate: "2026-09-10", amount: 47_810.9, status: "unpaid", currency: "TRY" },
+      { id: "B-6d", dueDate: "2026-09-10", amount: 6_550.83, status: "unpaid", currency: "TRY" },
     ],
   },
   expected: {
     criticalExactly: {
-      count: 1, knownSum: 250_000.0, cluster: false, large: true, critical: true,
-    },
+      count: 1, knownSum: 250_000.0, cluster: false, large: true, critical: true, foreignCount: 0 },
     criticalOneKurusBelow: {
-      count: 1, knownSum: 249_999.99, cluster: false, large: true, critical: false,
-    },
+      count: 1, knownSum: 249_999.99, cluster: false, large: true, critical: false, foreignCount: 0 },
     largeExactly: {
-      count: 1, knownSum: 50_000.0, cluster: false, large: true, critical: false,
-    },
+      count: 1, knownSum: 50_000.0, cluster: false, large: true, critical: false, foreignCount: 0 },
     largeOneKurusBelow: {
-      count: 1, knownSum: 49_999.99, cluster: false, large: false, critical: false,
-    },
+      count: 1, knownSum: 49_999.99, cluster: false, large: false, critical: false, foreignCount: 0 },
     criticalBySumExactly: {
-      count: 4, knownSum: 250_000.0, cluster: true, large: true, critical: true,
-    },
+      count: 4, knownSum: 250_000.0, cluster: true, large: true, critical: true, foreignCount: 0 },
     criticalBySumOneKurusBelow: {
-      count: 4, knownSum: 249_999.99, cluster: true, large: true, critical: false,
-    },
+      count: 4, knownSum: 249_999.99, cluster: true, large: true, critical: false, foreignCount: 0 },
     /**
      * 5. vakadaki dört tutar float `+=` ile toplanırsa ölçülen değer budur — kuruşun
      * yüz milyarda biri kadar EKSİK, ve tam da bu yüzden `>= 250.000` karşılaştırmasını
@@ -199,6 +196,7 @@ export const PAYMENT_THRESHOLD_BOUNDARY = Object.freeze({
     criticalBySumWouldBeCriticalIfFloat: false,
   },
   derivation:
+    "Tüm kalemler TRY → foreignCount = 0 her vakada (TRY-dışı kalem eşiğe girmez, sayılır). " +
     "dayFlags kaynağı: large = open.some(amount >= t.large), " +
     "critical = open.some(amount >= t.critical) || knownSum >= t.critical. İki karşılaştırma " +
     "da '>=' — yani TAM EŞİK BAYRAK ÜRETİR, '>' değil. " +

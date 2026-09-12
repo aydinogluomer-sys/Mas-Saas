@@ -139,6 +139,7 @@ export default async function RadarPage({ searchParams }: { searchParams?: Promi
               <span className="w-12 font-mono text-xs">{fmtDay(d.date)}</span>
               <span className="flex-1 text-tone-2">
                 <Num>{d.count}</Num> ödeme · <span className="font-mono tabular-nums">{fmtTL(d.knownSum)}</span>
+                {d.foreignCount > 0 && <span className="text-warn"> · {d.foreignCount} kalem TRY-dışı (eşik dışı)</span>}
               </span>
               <span className="flex gap-1">
                 {d.critical && <Badge tone="red">kritik</Badge>}

@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import {
-  addMonths, computeRisk, dayFlags, dueDateFor, riskLevelOf,
+  addMonths, computeRisk, dayFlags, dayFlagsFromAggregate, dueDateFor, riskLevelOf,
 } from "./rules";
 
 const T = { large: 50_000, critical: 100_000, clusterCount: 3 };
@@ -42,10 +42,10 @@ describe("computeRisk — gerçek örüntüler", () => {
   it("9'una yığılma (3 açık) + 120k kritik; ödenen risk almaz", () => {
     const r = computeRisk(
       [
-        { id: "a", dueDate: "2026-07-09", amount: null, status: "unpaid" },
-        { id: "b", dueDate: "2026-07-09", amount: null, status: "unpaid" },
-        { id: "c", dueDate: "2026-07-09", amount: 120_000, status: "unpaid" },
-        { id: "d", dueDate: "2026-07-09", amount: 999_999, status: "paid" },
+        { id: "a", dueDate: "2026-07-09", amount: null, status: "unpaid", currency: "TRY" },
+        { id: "b", dueDate: "2026-07-09", amount: null, status: "unpaid", currency: "TRY" },
+        { id: "c", dueDate: "2026-07-09", amount: 120_000, status: "unpaid", currency: "TRY" },
+        { id: "d", dueDate: "2026-07-09", amount: 999_999, status: "paid", currency: "TRY" },
       ],
       today, T,
     );
@@ -58,7 +58,7 @@ describe("computeRisk — gerçek örüntüler", () => {
   });
   it("geciken: dün vadeli açık → high; eksik tutar null kalır (0 sayılmaz)", () => {
     const r = computeRisk(
-      [{ id: "g", dueDate: "2026-07-04", amount: null, status: "unpaid" }],
+      [{ id: "g", dueDate: "2026-07-04", amount: null, status: "unpaid", currency: "TRY" }],
       today, T,
     );
     expect(r.get("g")!.reasons).toEqual(expect.arrayContaining(["overdue", "missing_amount"]));
@@ -67,8 +67,8 @@ describe("computeRisk — gerçek örüntüler", () => {
   it("büyük eşik sınırı: 50k dahil, 49.999 değil", () => {
     const r = computeRisk(
       [
-        { id: "x", dueDate: "2026-07-10", amount: 50_000, status: "unpaid" },
-        { id: "y", dueDate: "2026-07-11", amount: 49_999, status: "unpaid" },
+        { id: "x", dueDate: "2026-07-10", amount: 50_000, status: "unpaid", currency: "TRY" },
+        { id: "y", dueDate: "2026-07-11", amount: 49_999, status: "unpaid", currency: "TRY" },
       ],
       today, T,
     );
@@ -81,7 +81,7 @@ describe("computeRisk — overpaid (paid/partial, null/negatif güvenli)", () =>
   const today = "2026-07-05";
   it("paid + paidAmount>amount → overpaid, medium", () => {
     const r = computeRisk(
-      [{ id: "p", dueDate: "2026-07-09", amount: 1000, paidAmount: 1200, status: "paid" }],
+      [{ id: "p", dueDate: "2026-07-09", amount: 1000, paidAmount: 1200, status: "paid", currency: "TRY" }],
       today, T,
     );
     expect(r.get("p")!.reasons).toContain("overpaid");
@@ -89,33 +89,33 @@ describe("computeRisk — overpaid (paid/partial, null/negatif güvenli)", () =>
   });
   it("partial + paidAmount>amount → overpaid de değerlendirilir (open dallarıyla birlikte)", () => {
     const r = computeRisk(
-      [{ id: "q", dueDate: "2026-07-09", amount: 1000, paidAmount: 1500, status: "partial" }],
+      [{ id: "q", dueDate: "2026-07-09", amount: 1000, paidAmount: 1500, status: "partial", currency: "TRY" }],
       today, T,
     );
     expect(r.get("q")!.reasons).toContain("overpaid");
   });
   it("amount null veya paidAmount null iken hiç tetiklenmez (bilinmeyen ≠ sıfır)", () => {
     const r1 = computeRisk(
-      [{ id: "n1", dueDate: "2026-07-09", amount: null, paidAmount: 500, status: "paid" }],
+      [{ id: "n1", dueDate: "2026-07-09", amount: null, paidAmount: 500, status: "paid", currency: "TRY" }],
       today, T,
     );
     expect(r1.get("n1")!.reasons).not.toContain("overpaid");
     const r2 = computeRisk(
-      [{ id: "n2", dueDate: "2026-07-09", amount: 500, paidAmount: null, status: "paid" }],
+      [{ id: "n2", dueDate: "2026-07-09", amount: 500, paidAmount: null, status: "paid", currency: "TRY" }],
       today, T,
     );
     expect(r2.get("n2")!.reasons).not.toContain("overpaid");
   });
   it("negatif amount'ta asla overpaid üretilmez (negative_amount zaten ayrı sinyal)", () => {
     const r = computeRisk(
-      [{ id: "neg", dueDate: "2026-07-09", amount: -100, paidAmount: 50, status: "paid" }],
+      [{ id: "neg", dueDate: "2026-07-09", amount: -100, paidAmount: 50, status: "paid", currency: "TRY" }],
       today, T,
     );
     expect(r.get("neg")!.reasons).not.toContain("overpaid");
   });
   it("paidAmount<=amount iken overpaid üretilmez", () => {
     const r = computeRisk(
-      [{ id: "ok", dueDate: "2026-07-09", amount: 1000, paidAmount: 1000, status: "paid" }],
+      [{ id: "ok", dueDate: "2026-07-09", amount: 1000, paidAmount: 1000, status: "paid", currency: "TRY" }],
       today, T,
     );
     expect(r.get("ok")!.reasons).not.toContain("overpaid");
@@ -126,9 +126,9 @@ describe("dayFlags", () => {
   it("bilinen toplam kritik eşiği aşarsa gün kritik; null'lar toplamda yok ama sayımda var", () => {
     const f = dayFlags(
       [
-        { id: "1", dueDate: "d", amount: 60_000, status: "unpaid" },
-        { id: "2", dueDate: "d", amount: 60_000, status: "unpaid" },
-        { id: "3", dueDate: "d", amount: null, status: "unpaid" },
+        { id: "1", dueDate: "d", amount: 60_000, status: "unpaid", currency: "TRY" },
+        { id: "2", dueDate: "d", amount: 60_000, status: "unpaid", currency: "TRY" },
+        { id: "3", dueDate: "d", amount: null, status: "unpaid", currency: "TRY" },
       ],
       T,
     );
@@ -137,5 +137,83 @@ describe("dayFlags", () => {
     expect(f.knownSum).toBe(120_000);
     expect(f.critical).toBe(true);
     expect(f.large).toBe(true);
+    expect(f.foreignCount).toBe(0);
+  });
+});
+
+/**
+ * PHASE 2.2 (T1-a) — para birimi karışık günler.
+ *
+ * Eşikler `*_threshold_try`; kur çevirimi YOK (plan §2.1). Beklenenler ELLE yazıldı:
+ * TRY-dışı kalem toplama ve eşik kararına GİRMEZ, ama `foreignCount` ile SAYILIR; yığılma
+ * (`count`/`cluster`) sayım kuralı olduğu için para biriminden bağımsız her açık kalemi sayar.
+ */
+describe("dayFlags — para birimi karışık gün (TRY eşikleri yalnız TRY kalemlere uygulanır)", () => {
+  it("120k USD tek başına günü kritik yapmaz; TRY 30k toplamı 30k, 1 kalem TRY-dışı", () => {
+    const f = dayFlags(
+      [
+        { id: "u", dueDate: "d", amount: 120_000, status: "unpaid", currency: "USD" },
+        { id: "t", dueDate: "d", amount: 30_000, status: "unpaid", currency: "TRY" },
+      ],
+      T,
+    );
+    // count = 2 açık kalem (para biriminden bağımsız); cluster 2 < 3 → false.
+    // knownSum = yalnız TRY: 30.000. large: 30.000 < 50.000 → false. critical: false.
+    // foreignCount = 1 (USD kalemi eşik dışı bırakıldı ama sayıldı).
+    expect(f).toEqual({ count: 2, knownSum: 30_000, cluster: false, large: false, critical: false, foreignCount: 1 });
+  });
+
+  it("TRY toplamı tek başına eşiği aşıyorsa gün kritiktir; EUR kalem toplamı şişirmez", () => {
+    const f = dayFlags(
+      [
+        { id: "e", dueDate: "d", amount: 5_000, status: "unpaid", currency: "EUR" },
+        { id: "a", dueDate: "d", amount: 60_000, status: "unpaid", currency: "TRY" },
+        { id: "b", dueDate: "d", amount: 40_000, status: "unpaid", currency: "TRY" },
+      ],
+      T,
+    );
+    // knownSum = 60.000 + 40.000 = 100.000 (EUR 5.000 girmez) → critical (>= 100.000) true.
+    // large: 60.000 >= 50.000 → true. count = 3 → cluster true. foreignCount = 1.
+    expect(f).toEqual({ count: 3, knownSum: 100_000, cluster: true, large: true, critical: true, foreignCount: 1 });
+  });
+
+  it("para birimi null (bilinmiyor) TRY VARSAYILMAZ: eşik dışı ve sayılır", () => {
+    const f = dayFlags(
+      [{ id: "n", dueDate: "d", amount: 500_000, status: "unpaid", currency: null }],
+      T,
+    );
+    expect(f).toEqual({ count: 1, knownSum: 0, cluster: false, large: false, critical: false, foreignCount: 1 });
+  });
+
+  it("ödenmiş TRY-dışı kalem hiçbir sayıma girmez (açık değil)", () => {
+    const f = dayFlags(
+      [{ id: "p", dueDate: "d", amount: 900_000, status: "paid", currency: "USD" }],
+      T,
+    );
+    expect(f).toEqual({ count: 0, knownSum: 0, cluster: false, large: false, critical: false, foreignCount: 0 });
+  });
+
+  it("yalnız TRY-dışı kalemlerden oluşan 3'lük gün: yığılma VAR, tutar bayrağı YOK, 3 TRY-dışı", () => {
+    const f = dayFlags(
+      [
+        { id: "1", dueDate: "d", amount: 200_000, status: "unpaid", currency: "USD" },
+        { id: "2", dueDate: "d", amount: 200_000, status: "unpaid", currency: "USD" },
+        { id: "3", dueDate: "d", amount: 200_000, status: "late", currency: "GBP" },
+      ],
+      T,
+    );
+    expect(f).toEqual({ count: 3, knownSum: 0, cluster: true, large: false, critical: false, foreignCount: 3 });
+  });
+});
+
+describe("dayFlagsFromAggregate — toplanmış girdi foreignCount'u olduğu gibi taşır", () => {
+  it("SQL tarafında TRY süzülmüş toplam: 30k / max 30k / 1 TRY-dışı → dayFlags ile aynı cevap", () => {
+    const f = dayFlagsFromAggregate({ openCount: 2, knownSum: 30_000, maxAmount: 30_000, foreignCount: 1 }, T);
+    expect(f).toEqual({ count: 2, knownSum: 30_000, cluster: false, large: false, critical: false, foreignCount: 1 });
+  });
+
+  it("yalnız TRY-dışı gün: maxAmount null, knownSum 0, openCount 3 → yığılma var, tutar bayrağı yok", () => {
+    const f = dayFlagsFromAggregate({ openCount: 3, knownSum: 0, maxAmount: null, foreignCount: 3 }, T);
+    expect(f).toEqual({ count: 3, knownSum: 0, cluster: true, large: false, critical: false, foreignCount: 3 });
   });
 });

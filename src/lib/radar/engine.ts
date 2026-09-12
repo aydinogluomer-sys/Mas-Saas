@@ -478,8 +478,9 @@ export async function refreshRiskFlagsWithClient(client: PoolClient, todayISO: s
     amount: string | null;
     status: string;
     paid_amount: string | null;
+    currency: string;
   }>(
-    `select id, to_char(due_date,'YYYY-MM-DD') as due_date, amount, status, paid_amount
+    `select id, to_char(due_date,'YYYY-MM-DD') as due_date, amount, status, paid_amount, currency
      from public.payment_instances
      where instance_month >= $1 and instance_month < $2
      order by id`,
@@ -492,6 +493,8 @@ export async function refreshRiskFlagsWithClient(client: PoolClient, todayISO: s
       amount: r.amount == null ? null : Number(r.amount),
       status: r.status,
       paidAmount: r.paid_amount == null ? null : Number(r.paid_amount),
+      // PHASE 2.2: eşikler TRY; kolon `not null default 'TRY'` — yine de null gelirse bilinmiyor.
+      currency: r.currency ?? null,
     })),
     todayISO,
     t,

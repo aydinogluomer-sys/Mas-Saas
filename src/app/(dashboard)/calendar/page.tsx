@@ -2,7 +2,7 @@ import Link from "next/link";
 import { getPool } from "@/lib/db";
 import { istanbulDateISO } from "@/lib/reports/rules";
 import { generateInstancesForMonth, loadThresholds, refreshRiskFlags } from "@/lib/radar/engine";
-import { addMonths, monthInstances, overdueOpen } from "@/lib/radar/queries";
+import { addMonths, monthInstances, overdueOpen, toRiskInput } from "@/lib/radar/queries";
 import { dayFlags, daysInMonth } from "@/lib/radar/rules";
 import { Panel } from "@/components/ui/panel";
 import { InstanceRowView } from "@/components/radar/instance-row";
@@ -78,7 +78,7 @@ export default async function CalendarPage({
           {cells.map((d, i) => {
             if (d == null) return <div key={`e${i}`} />;
             const list = byDay.get(d) ?? [];
-            const f = dayFlags(list.map((x) => ({ id: x.id, dueDate: x.due_date, amount: x.amount, status: x.status })), t);
+            const f = dayFlags(list.map(toRiskInput), t);
             const allPaid = list.length > 0 && list.every((x) => x.status === "paid");
             const border = allPaid ? "border-pos" : f.critical ? "border-neg" : f.cluster || f.large ? "border-warn" : list.length ? "border-info" : "border-line-faint";
             const isToday = isCurrent && d === todayD;
@@ -90,6 +90,7 @@ export default async function CalendarPage({
                   <>
                     <div className={`font-mono text-[10px] ${allPaid ? "text-pos" : "text-tone-2"}`}>{list.length}×</div>
                     {f.knownSum > 0 && <div className="font-mono text-[9px] text-tone-3">{kFmt(f.knownSum)}</div>}
+                    {f.foreignCount > 0 && <div className="font-mono text-[9px] text-warn">{f.foreignCount} TRY-dışı</div>}
                   </>
                 )}
               </Link>

@@ -41,12 +41,38 @@ export interface RiskThresholds {
   clusterCount: number; // same_day_cluster_count
 }
 
+/**
+ * Eşiklerin para birimi. `large_payment_threshold_try` / `critical_payment_threshold_try` adları
+ * üzerinde TRY yazar; bu sabit o adı koda taşır. Bir kalem ancak bu para birimindeyse eşikle
+ * karşılaştırılabilir.
+ */
+export const THRESHOLD_CURRENCY = "TRY";
+
+/**
+ * Bu kalem TRY eşikleriyle karşılaştırılabilir mi?
+ *
+ * PHASE 2.2 / plan §2.1: `MULTI_CURRENCY_FINANCE_ANALYTICS = NOT_IMPLEMENTED` — kur çevirimi YOK ve
+ * burada yazılmıyor. Kural: "Farklı para birimleri doğrudan toplama/karşılaştırmaya giremez.
+ * Politika yoksa tutarı TRY varsayma; açıkça eksik/inceleme gerekli göster." Dolayısıyla `null`
+ * (bilinmeyen para birimi) da TRY sayılmaz: karşılaştırma dışında tutulur ve SAYILIR.
+ */
+export function isThresholdCurrency(currency: string | null | undefined): boolean {
+  return currency === THRESHOLD_CURRENCY;
+}
+
 export interface RiskInputInstance {
   id: string;
   dueDate: string; // ISO
   amount: number | null;
   status: string; // 'unpaid' | 'paid' | ...
   paidAmount?: number | null;
+  /**
+   * Kalemin para birimi (payment_instances.currency, `not null default 'TRY'`).
+   * Yalnız `THRESHOLD_CURRENCY` satırlar tutar eşikleriyle tartılır; diğerleri (ve `null` =
+   * bilinmiyor) toplamdan ve eşik kararından DIŞARIDA tutulur, ama `foreignCount` ile görünür kalır.
+   * Sayım tabanlı kurallar (aynı gün yığılma) para biriminden bağımsızdır ve her kalemi sayar.
+   */
+  currency: string | null;
 }
 
 export type RiskReason =
@@ -132,25 +158,42 @@ export function computeRisk(
  * sayılmadığını çevirir. Ölçülen örnek: 173.885,27 + 21.752,99 + 47.810,90 + 6.550,84 kuruşu
  * kuruşuna 250.000,00 eder; aynı toplama float `+=` ile 249.999,99999999997 verir ve tam
  * eşikteki günü sessizce kritik olmaktan çıkarır. Yayımlanan tip değişmedi: düz sayı.
+ *
+ * PHASE 2.2 (T1-a) — PARA BİRİMİ. Eşikler `*_threshold_try`; bu yüzden `knownSum`, `large` ve
+ * `critical` YALNIZ `currency === 'TRY'` açık kalemleri tartar. TRY-dışı (veya para birimi
+ * bilinmeyen) açık kalemler bu üçünden DIŞARIDA tutulur, sessizce düşürülmez: `foreignCount`
+ * onları sayar ve çağıran ekran "n kalem TRY-dışı" diyebilir. `count` ve `cluster` sayım
+ * kurallarıdır, para biriminden bağımsız — her açık kalemi sayar.
  */
-export function dayFlags(
-  dayInstances: RiskInputInstance[],
-  t: RiskThresholds,
-): { cluster: boolean; large: boolean; critical: boolean; knownSum: number; count: number } {
+export interface DayFlags {
+  cluster: boolean;
+  large: boolean;
+  critical: boolean;
+  /** Yalnız TRY açık kalemlerin (amount > 0) toplamı. */
+  knownSum: number;
+  /** Günün TÜM açık kalemleri (para biriminden bağımsız). */
+  count: number;
+  /** TRY eşikleriyle karşılaştırılamadığı için knownSum/large/critical dışında bırakılan açık kalem sayısı. */
+  foreignCount: number;
+}
+
+export function dayFlags(dayInstances: RiskInputInstance[], t: RiskThresholds): DayFlags {
   const open = dayInstances.filter((i) => isOpen(i.status));
+  const comparable = open.filter((i) => isThresholdCurrency(i.currency));
   let knownSumDecimal = zero();
-  for (const i of open) {
+  for (const i of comparable) {
     if (i.amount != null && i.amount > 0) knownSumDecimal = knownSumDecimal.plus(decimal(i.amount));
   }
   const knownSum = money(knownSumDecimal);
-  const anyCritical = open.some((i) => i.amount != null && i.amount >= t.critical);
-  const anyLarge = open.some((i) => i.amount != null && i.amount >= t.large);
+  const anyCritical = comparable.some((i) => i.amount != null && i.amount >= t.critical);
+  const anyLarge = comparable.some((i) => i.amount != null && i.amount >= t.large);
   return {
     count: open.length,
     knownSum,
     cluster: open.length >= t.clusterCount,
     large: anyLarge,
     critical: anyCritical || knownSum >= t.critical,
+    foreignCount: open.length - comparable.length,
   };
 }
 
@@ -169,17 +212,25 @@ export function dayFlags(
  *   dayFlags                                    dayFlagsFromAggregate
  *   ─────────────────────────────────────────   ─────────────────────────────────────
  *   open = instances.filter(isOpen)             openCount  (SQL: status in OPEN_STATUSES)
+ *   comparable = open.filter(currency='TRY')    (SQL: … and currency = 'TRY' — flag_* süzgeci)
  *   count   = open.length                       openCount
- *   knownSum= Σ amount, amount != null && > 0   knownSum   (SQL: sum(amount) aynı süzgeçle)
+ *   knownSum= Σ amount, TRY, amount != null &&>0 knownSum  (SQL: sum(amount) aynı süzgeçle)
  *   cluster = open.length >= clusterCount       openCount >= clusterCount
- *   anyLarge= open.some(a != null && a>=large)  maxAmount >= large
- *   anyCrit = open.some(a != null && a>=crit)   maxAmount >= crit
+ *   anyLarge= comparable.some(a!=null&&a>=large) maxAmount >= large   (max yalnız TRY üzerinden)
+ *   anyCrit = comparable.some(a!=null&&a>=crit)  maxAmount >= crit
  *   critical= anyCrit || knownSum >= crit       (maxAmount >= crit) || knownSum >= crit
+ *   foreignCount = open.length - comparable.len foreignCount (SQL: count(*) filter (currency<>'TRY'))
  *
  * `some(i => i.amount >= E)` ile `max(amount) >= E` aynı önermedir: bir küme, ancak ve ancak
  * en büyük elemanı eşiği geçiyorsa eşiği geçen bir eleman içerir. null'lar SQL'de `max` tarafından
  * zaten yok sayılır, JS'te `a != null` süzgeciyle. Boş gün → `maxAmount = null` → her iki bayrak
  * da false; `some` da boş kümede false döner.
+ *
+ * PHASE 2.2 (T1-a): `knownSum` ve `maxAmount` SQL'de YALNIZ `currency = 'TRY'` satırlardan
+ * gelmelidir (queries.ts `flag_known_sum` / `flag_max_amount`); `foreignCount` ise açık ve
+ * TRY-dışı satır sayısıdır. Bu fonksiyon toplanmış girdiyi yeniden süzemez — süzgecin SQL'de
+ * uygulanmış olması çağıranın sorumluluğudur ve `payment-day-flags-verify` bunu diferansiyel
+ * olarak ölçer.
  *
  * `anyCritical` referansta olduğu için burada da DURUYOR, ama ölçüldüğünde şu çıktı:
  * **sonucu hiçbir girdide değiştiremiyor.** Kanıt tek satırlık — `anyCritical` true ise günde
@@ -198,9 +249,9 @@ export function dayFlags(
  * kuralı olarak `amount`a bağlıdır, performans gerekçesiyle değiştirilemez.
  */
 export function dayFlagsFromAggregate(
-  day: { openCount: number; knownSum: number; maxAmount: number | null },
+  day: { openCount: number; knownSum: number; maxAmount: number | null; foreignCount: number },
   t: RiskThresholds,
-): { cluster: boolean; large: boolean; critical: boolean; knownSum: number; count: number } {
+): DayFlags {
   const anyCritical = day.maxAmount != null && day.maxAmount >= t.critical;
   const anyLarge = day.maxAmount != null && day.maxAmount >= t.large;
   return {
@@ -209,6 +260,7 @@ export function dayFlagsFromAggregate(
     cluster: day.openCount >= t.clusterCount,
     large: anyLarge,
     critical: anyCritical || day.knownSum >= t.critical,
+    foreignCount: day.foreignCount,
   };
 }
 

@@ -7,7 +7,9 @@
 // in numbers while the runtime carried strings. `mapInstanceRow` is that boundary.
 import type { Pool } from "pg";
 import { moneyOrNull, intOrNull } from "@/lib/money";
-import { addMonths, dayFlags, dayFlagsFromAggregate, type RiskThresholds } from "./rules";
+import {
+  addMonths, dayFlags, dayFlagsFromAggregate, type RiskInputInstance, type RiskThresholds,
+} from "./rules";
 
 export interface InstanceRow {
   id: string;
@@ -49,6 +51,16 @@ function mapInstanceRow(r: Record<string, unknown>): InstanceRow {
     amount: moneyOrNull(r.amount as string | null),
     paid_amount: moneyOrNull(r.paid_amount as string | null),
   };
+}
+
+/**
+ * `InstanceRow` → `dayFlags()` girdisi. TEK dönüşüm noktası: `currency` her çağıranda ayrı ayrı
+ * unutulmasın diye. `BASE` `i.currency`'yi daima seçer (kolon `not null default 'TRY'`); yine de
+ * alan tipte isteğe bağlı olduğu için eksikse `null` (= bilinmiyor) geçilir — TRY VARSAYILMAZ,
+ * `dayFlags` o kalemi eşik dışında tutup `foreignCount`ta sayar (CLAUDE.md, plan §2.1).
+ */
+export function toRiskInput(x: Pick<InstanceRow, "id" | "due_date" | "amount" | "status" | "currency">): RiskInputInstance {
+  return { id: x.id, dueDate: x.due_date, amount: x.amount, status: x.status, currency: x.currency ?? null };
 }
 
 export async function instancesOn(pool: Pool, dateISO: string): Promise<InstanceRow[]> {
@@ -102,6 +114,8 @@ export interface PaymentDashboardBucket {
   openCount: number;
   flagKnownSum: number;
   flagMaxAmount: number | null;
+  /** Açık (OPEN_STATUSES) ve TRY-dışı kalem sayısı — `dayFlags().foreignCount` ile birebir. */
+  flagForeignCount: number;
   foreignCurrencyCount: number;
   criticalCount: number;
   flexibleCount: number;
@@ -141,6 +155,7 @@ export function dayFlagsForDate(
       (max, row) => (row.flagMaxAmount != null && (max == null || row.flagMaxAmount > max) ? row.flagMaxAmount : max),
       null,
     ),
+    foreignCount: rows.reduce((sum, row) => sum + row.flagForeignCount, 0),
   }, thresholds);
 }
 
@@ -220,13 +235,23 @@ export async function loadPaymentDashboard(
              --   flag_max_amount   dayFlags'in anyLarge/anyCritical'i — per-instance amount
              --                     maksimumu; max >= esik ile some(i => i.amount >= esik)
              --                     ayni onermedir
+             --   flag_foreign_count dayFlags'in foreignCount'u — acik ve TRY-disi kalemler
+             --
+             -- PHASE 2.2 (T1-a): esikler *_threshold_try; flag_known_sum ve flag_max_amount
+             -- YALNIZ currency = 'TRY' satirlardan gelir (dayFlags'teki "comparable" suzgeci).
+             -- TRY-disi acik kalemler sessizce dusmez: flag_foreign_count onlari sayar.
+             -- open_count para biriminden bagimsizdir (yigilma sayim kuralidir).
              count(*) filter (where status in ('unpaid','partial','planned','late'))::int as open_count,
              coalesce(sum(amount) filter (
-               where status in ('unpaid','partial','planned','late') and amount is not null and amount > 0
+               where status in ('unpaid','partial','planned','late') and currency = 'TRY'
+                 and amount is not null and amount > 0
              ),0) as flag_known_sum,
              max(amount) filter (
-               where status in ('unpaid','partial','planned','late') and amount is not null
-             ) as flag_max_amount
+               where status in ('unpaid','partial','planned','late') and currency = 'TRY' and amount is not null
+             ) as flag_max_amount,
+             count(*) filter (
+               where status in ('unpaid','partial','planned','late') and currency <> 'TRY'
+             )::int as flag_foreign_count
       from active group by due_date, pressure_status
     ), flexibility as (
       select decision_flexibility, count(*)::int as record_count,
@@ -271,6 +296,7 @@ export async function loadPaymentDashboard(
       openCount: Number(row.open_count),
       flagKnownSum: moneyOrNull(row.flag_known_sum as string | number | null) ?? 0,
       flagMaxAmount: moneyOrNull(row.flag_max_amount as string | number | null),
+      flagForeignCount: Number(row.flag_foreign_count),
       foreignCurrencyCount: Number(row.foreign_currency_count),
       criticalCount: Number(row.critical_count), flexibleCount: Number(row.flexible_count),
       optionalCount: Number(row.optional_count), unclassifiedCount: Number(row.unclassified_count),
@@ -342,7 +368,7 @@ export async function riskyDays(pool: Pool, todayISO: string, horizonDays: numbe
   }
   const out: Array<{ date: string } & ReturnType<typeof dayFlags>> = [];
   for (const [date, list] of byDate) {
-    const f = dayFlags(list.map((x) => ({ id: x.id, dueDate: x.due_date, amount: x.amount, status: x.status })), t);
+    const f = dayFlags(list.map(toRiskInput), t);
     if (f.cluster || f.critical || f.large) out.push({ date, ...f });
   }
   return out.sort((a, b) => (a.date < b.date ? -1 : 1));
