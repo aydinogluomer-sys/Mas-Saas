@@ -136,6 +136,6 @@ registry key … getting linuxkit iso path"). Bu, yeniden başlatmayla düzelmez
 | Retention (kuru koşu) | `pnpm ops:backup:prune` |
 | Görev durumu | `schtasks /Query /TN MAS-Nakit-Radar-Gunluk-Yedek /V /FO LIST` |
 | Alarm mantığını kanıtla (harcanabilir DB) | `pnpm ops:telemetry:alerting:verify` |
-| Export/arama sızıntı kapısı | `pnpm db:export-leakage:verify` — **bu makinede koşmaz**: gate `postgres:postgres@127.0.0.1:5432` sabit, gerçek container'ın superuser parolası rotasyonlu. CI'da koşar (CI setup'ı düzeltilince). |
+| Export/arama sızıntı kapısı | `pnpm db:export-leakage:verify` — kimliği `MIGRATION_DATABASE_URL`'den (ortam ya da `.env.local`) alır, yalnız `mas_radar_export_leakage_verify` adlı harcanabilir DB'ye bağlanır; beklenen 36/36 ALL PASS |
 
 Çıktılarda **sır yoktur**: makbuzlar yalnız dosya adı, boyut, sha256, ledger ve sürüm taşır; bağlantı dizesi hiçbir yere yazılmaz.

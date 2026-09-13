@@ -98,15 +98,29 @@ Docker onarıldıktan sonra kalan zincir tek turda kapanır: 04 → 06 → 07 (t
 | RESTORED_APP_SMOKE | **PASS** — ceca39a build, gerçek runtime kimliği (yalnız DB adı değişti): /ready 200 · /health db up · /login 200 · /version.commit = ceca39a · 14 rota 307 · 0 sızıntı · 0 5xx · 0 fatal | 10 |
 | DAILY_BACKUP_JOB | **PASS** — pil politikası açık (ikinci tur); `MAS_OFFDEVICE_BACKUP_DIR` setx ile tanımlandı; gerçek tetik: exit 0, dump + sha + makbuz + off-device OK | 11 |
 | BACKUP_FRESHNESS | **PASS** — yerel 0,1 s · off-device 0,1 s (gerçek DB'ye karşı telemetri, salt-okunur); negatif kontroller Docker yoluyla **47/47** yeniden | 12 |
-| EXPORT_SEARCH_LEAKAGE | **BLOCKED_BY_TOPOLOGY** — kanonik gate `postgres:postgres@127.0.0.1:5432` sabit; gerçek container'ın superuser parolası rotasyonlu → auth hatası; CI de önceden var olan pnpm sürüm çakışmasıyla setup'ta düşüyor (tüm dallar) | 13 |
+| EXPORT_SEARCH_LEAKAGE | **PASS — 36/36** (kod turu, kullanıcı onayı "ikisi"): gate kimliği `MIGRATION_DATABASE_URL`'den alır (`ead2242`, hedef DB adı sabit, uygulama kodu dokunulmadı) → gerçek container'da harcanabilir DB'de 36/36 ALL PASS, geride DB yok, çıktıda dize yok; CI setup düzeltildi (`3e848f4`) → `runtime-role-security` job'ı CI'da da yeşil (Export/search role leakage ✓) | 13 |
 | REAL_DB_UNEXPECTED_DELTA | **0** — post FP = pre FP (86/86), tup_inserted/updated/deleted = 0, DDL 0, migration 0, V2 import 0 | 14 |
 
 ```text
-OPERATIONS_READY = FAIL   (11/12 PASS; tek açık: EXPORT_SEARCH_LEAKAGE — kural "biri yoksa FAIL")
-READY_FOR_M1_M8  = NO     (sızıntı kapısı kapanmadan el kabulüne geçilmez)
-READY_FOR_PHASE8 = NO
+OPERATIONS_READY = PASS   (12/12)
+READY_FOR_M1_M8  = YES
+READY_FOR_PHASE8 = NO     (Phase 8 ayrı, açık yetki ister: 0088–0094 gerçek DB migration + V2 import + cutover)
 REAL_DB_MIGRATIONS_0088_0094 = NOT_APPLIED · REAL_V2_IMPORT = NOT_EXECUTED · PHASE8_CUTOVER = NOT_EXECUTED
 ```
 
-Kalan tek iş (kod turu, ops değil): `scripts/db/export-leakage-verify.ts` bağlantısını diğer gate'ler gibi `MIGRATION_DATABASE_URL`'den
-almak **ya da** `.github/actions/setup`'taki pnpm sürüm çakışmasını gidermek (CI yeşile döner, gate ceca39a üzerinde CI'da koşar).
+Kod turu (üçüncü tur sonu, kullanıcı onayı "ikisi"): `ead2242` export-leakage gate kimlik kaynağı; `3e848f4` CI setup pnpm tekilleştirme.
+İkisi de `ops/phase7-operations` üzerinde; `src/app`, `src/lib`, `supabase/` dokunulmadı; release `af210fd` ve master açılmadı.
+Release'e alınması ayrı bir karardır (ops dalı: tazelik sözleşmesi + backup-daily alanları + gate kimliği + CI setup + belgeler).
+
+Bilinen, kabulü bloke etmeyen açıklar: `latest_import_age_days` 58 > 45 (gerçek son içe aktarım 2026-07-17; Phase 8'de V2 import ile
+kapanır) · `schema_ledger` 87 ≠ 94 (Phase 8'e kadar BEKLENEN) · `disk_free_gb` Docker VM çalışırken 6–10 GB bandında (pagefile; WARNING).
+
+## CI yeniden yeşil olunca görünen bulgular (kabulü bloke etmiyor; `final-closure/docker-repaired/15-ci-findings.json`)
+
+CI 13 Eylül'den beri ilk kez setup'ı geçti (`3e848f4`): 5/8 job yeşil (static, build, runtime-role-security **[export-leakage ✓]**,
+e2e-authz, legacy-semantic-smoke), 3 kırmızı — hepsi `ceca39a` ağacında önceden var, bu turun ops değişiklikleriyle ilgisiz:
+**CI-1** `db:migrate:verify` LEDGER_EMPTY_RECOVERY: 0039 view yeniden oynatması 0093 sonrası düşüyor (kurtarma yolu, P1) ·
+**CI-2** phase18: test dosyasındaki `insert into public.audit_logs` dizgesi + `docs/database-schema.md` 0088–0094 eksik ·
+**CI-3** phase19: `parties` yazımı (V2 mapper, counterparties engine) statik kuralı tetikliyor (ürün/güvenlik kararı, P2) ·
+**CI-4** phase33: EXCEPT kolon sayısı (0093/0094 view kolonları), kapı bakımı · **CI-5** interaction-gate seed özel xlsx ister (CI'da tasarım gereği geçemez).
+Öneri: Phase 8'den önce ayrı bir kod turu (CI-1, CI-3 öncelikli). Gerçek DB'yi etkileyen yok.

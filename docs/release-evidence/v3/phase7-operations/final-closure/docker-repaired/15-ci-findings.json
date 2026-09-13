@@ -1,0 +1,74 @@
+{
+  "ACCEPTED_CODE_SHA": "ceca39a3a60c00358d1aa90f00f9b2864237e4ec",
+  "ops_branch_sha": "3e848f4",
+  "ci_run": 34769306271,
+  "context": "CI setup düzeltmesi (3e848f4) sonrası CI 13 Eylül'den beri İLK KEZ setup'ı geçti ve job'lar gerçekten koştu. Sonuç: 5/8 yeşil, 3 kırmızı. Kırmızıların TAMAMI kabul edilen kod ağacında (ceca39a) önceden vardı; bu turun ops değişiklikleri (tazelik, backup-daily, gate kimliği, CI setup) bu job'lara dokunmuyor. Phase 7'nin 12 ölçütünün hiçbiri bu job'lara bağlı değil — ama RELEASE güveni için kayda geçirildi.",
+  "jobs": {
+    "static": "success",
+    "build": "success",
+    "runtime-role-security": "success (Export/search role leakage ✓ dahil)",
+    "e2e-authz": "success",
+    "legacy-semantic-smoke": "success",
+    "database-migration": "FAILURE",
+    "phase-verifies": "FAILURE",
+    "interaction-gate": "FAILURE"
+  },
+  "findings": [
+    {
+      "id": "CI-1",
+      "job": "database-migration",
+      "step": "Migration ledger state machine (db:migrate:verify)",
+      "symptom": "LEDGER_EMPTY_RECOVERY smoke: migrate.ts → 'Pending migration 0039 (0039_counterparty_exposure_views.sql) başarısız: cannot drop columns from view'",
+      "diagnosis": "Kurtarma senaryosu (şema var, ledger boş → 0001'den yeniden oynatma): 0093 (Tier 1) counterparty_exposure_* view'larının kolon kümesini değiştirdiği için 0039'un `create or replace view`'u mevcut (0093/0094 şekilli) view'a karşı düşüyor. Fresh DB ve ledger'lı gerçek DB için sorun YOK; yalnız 'ledger boş' kurtarma yolu kırık. Phase 2'nin yan etkisi.",
+      "severity": "P1 (kurtarma yolu)",
+      "fix_shape": "0039 (ve gerekiyorsa 0044/0058 gibi view yaratanlar) 'drop view if exists … cascade; create view' desenine çevrilir ya da migrate-verify'ın EMPTY_RECOVERY senaryosu son view şeklini hesaba katar; karar migration politikası gerektirir"
+    },
+    {
+      "id": "CI-2a",
+      "job": "phase-verifies",
+      "step": "phase18:verify",
+      "symptom": "src/ içinde audit.ts DIŞINDA `insert into public.audit_logs` yok — src/lib/radar/generate-instances-audit.test.ts:81",
+      "diagnosis": "9e23ad7 (P1 audit düzeltmesi) ile gelen TEST dosyası, üretim kodunu tarayan statik kuralın dizgesini içeriyor (kaynak değil, test). Kural test dosyalarını dışlamalı.",
+      "severity": "P3 (statik kural)",
+      "fix_shape": "phase18-verify tarayıcısı *.test.ts'i dışlar"
+    },
+    {
+      "id": "CI-2b",
+      "job": "phase-verifies",
+      "step": "phase18:verify",
+      "symptom": "docs/database-schema.md 0088–0094'ü anmıyor",
+      "diagnosis": "V2 (0088–0091) ve Phase 2 (0092–0094) şema belgesine işlenmedi — belge borcu.",
+      "severity": "P3 (belge)",
+      "fix_shape": "docs/database-schema.md'ye 7 migration'ın özeti"
+    },
+    {
+      "id": "CI-3",
+      "job": "phase-verifies",
+      "step": "phase19:verify",
+      "symptom": "public.parties'e yalnız açık operatör eylemi yazmalı — beklenmeyen: src/lib/counterparties/engine.ts, src/lib/importers/v2/mapper.ts",
+      "diagnosis": "V2 import mapper'ı ve counterparties engine'i parties yazıyor. V2'de yazma, operatörün ONAYLA eylemiyle tetikleniyor (Phase 4 kanıtı) — ama statik kural dosya bazlı ve bunu göremiyor. Ya kural allowlist'i güncellenir ya da tasarım incelemesi.",
+      "severity": "P2 (güvenlik kuralı — ürün kararı)",
+      "fix_shape": "phase19 allowlist + gerekçe; ya da mapper'ın parties yazımını ayrı bir 'operatör eylemi' modülüne taşımak"
+    },
+    {
+      "id": "CI-4",
+      "job": "phase-verifies",
+      "step": "phase33:verify",
+      "symptom": "hacim yüklenirken 'each EXCEPT query must have the same number of columns'",
+      "diagnosis": "phase33'ün karşılaştırma SQL'i bir view ile bir tabloyu/başka bir view'ı EXCEPT ile kıyaslıyor; 0093/0094 view'lara `*_count`/`currency` kolonları eklediği için kolon sayıları ayrıştı. Phase 2'nin yan etkisi; iş verisi değil, doğrulama sorgusu.",
+      "severity": "P2 (kapı bakımı)",
+      "fix_shape": "phase33 EXCEPT sorgusunda açık kolon listesi"
+    },
+    {
+      "id": "CI-5",
+      "job": "interaction-gate",
+      "step": "Seed demo data",
+      "symptom": "ENOENT data/source/mesaili_nakit_akış_tek_vardiya_TEMİZ.xlsx",
+      "diagnosis": "seed-demo.ts gerçek kaynak çalışma kitabını okuyor; dosya özel finansal veri olduğu için repoda YOK (doğru). Bu job CI'da tasarım gereği hiç geçemez — ya LOCAL_PRIVATE_DATA_GATE olarak işaretlenip CI'dan çıkarılmalı ya da sentetik bir seed'e bağlanmalı.",
+      "severity": "P3 (CI tasarımı)",
+      "fix_shape": "job'ı yerel kapıya taşı ya da sentetik fixture"
+    }
+  ],
+  "impact_on_phase7": "YOK — 12 ölçüt bağımsız; EXPORT_SEARCH_LEAKAGE CI'da yeşil.",
+  "impact_on_release": "Merged-release-acceptance (ceca39a) gate'leri YEREL koşulardı; CI'nın kendisi setup'ta kırık olduğu için bu 5 bulgu görünmüyordu. CI-1 kurtarma yolunu, CI-3 bir güvenlik kuralını ilgilendirir → Phase 8'den ÖNCE ayrı bir kod turunda kapatılmalı; hiçbiri gerçek DB'yi etkilemez."
+}
