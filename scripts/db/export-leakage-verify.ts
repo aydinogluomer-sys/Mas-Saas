@@ -27,14 +27,26 @@
 // target from outside (they chain state between phases) and are guarded instead by
 // requireDisposableOwnerDatabaseUrl().
 //
+// PHASE 7 — SUPERUSER KİMLİĞİ. Hedef veritabanının ADI hâlâ sabittir ve dışarıdan alınmaz
+// (yukarıdaki kural aynen geçerli). Değişen tek şey KİMLİK/ADRES: eskiden
+// `postgres:postgres@127.0.0.1:5432` sabitti — CI ve sıfırdan kurulan dev container için doğru,
+// ama superuser parolası rotasyona uğramış gerçek makinede gate `password authentication failed`
+// ile hiç koşamıyordu (docs/ops/password-rotation.md; Phase 7 kanıtı 13-export-leakage.json).
+// Artık kimlik `MIGRATION_DATABASE_URL`'den (ortam ya da .env.local) alınır ve yalnız veritabanı
+// adı sabit disposable adla DEĞİŞTİRİLİR; ikisi de yoksa eski varsayılan kullanılır. Dize hiçbir
+// yerde basılmaz. Blast radius değişmedi: bağlanılan tek veritabanı yine
+// `mas_radar_export_leakage_verify`'dır ve `assertSafeDisposableName` bunu her yolda doğrular.
+//
 // Usage:
 //   pnpm db:export-leakage:verify
+//   (gerçek makinede: MIGRATION_DATABASE_URL ortamda ya da .env.local'de — yalnız kimlik için)
 
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { Pool, type PoolClient, type QueryResult, type QueryResultRow } from "pg";
 import { APP_ROLES, DB_ROLE, type AppRole } from "../../src/lib/authz/matrix";
+import { readEnvLocal, swapDatabase } from "./app-url";
 
 const ROOT = process.cwd();
 const CONTAINER = process.env.MAS_DB_CONTAINER ?? "mas-radar-pg";
@@ -69,7 +81,22 @@ function assertSafeDisposableName(name: string, context: string): void {
 function docker(args: string[], input?: Buffer | string): string {
   return execFileSync("docker", args, { input, encoding: "utf8", maxBuffer: 128 * 1024 * 1024, stdio: ["pipe", "pipe", "pipe"] });
 }
-function dbUrl(db: string): string { return `postgres://postgres:postgres@127.0.0.1:5432/${db}`; }
+/** Superuser kimliği: ortam → .env.local → CI varsayılanı. Yol/veritabanı adı buradan ALINMAZ. */
+function superuserBaseUrl(): { url: string; origin: string } {
+  const fromEnv = process.env.MIGRATION_DATABASE_URL;
+  if (fromEnv) return { url: fromEnv, origin: "MIGRATION_DATABASE_URL (ortam)" };
+  try {
+    const local = readEnvLocal().MIGRATION_DATABASE_URL;
+    if (local) return { url: local, origin: "MIGRATION_DATABASE_URL (.env.local)" };
+  } catch { /* .env.local yok (CI) */ }
+  return { url: "postgres://postgres:postgres@127.0.0.1:5432/postgres", origin: "CI varsayılanı (postgres:postgres@127.0.0.1:5432)" };
+}
+const SUPERUSER = superuserBaseUrl();
+
+function dbUrl(db: string): string {
+  assertSafeDisposableName(db, "bağlantı");
+  return swapDatabase(SUPERUSER.url, db);
+}
 
 function assertContainerReachable(): void {
   try { docker(["exec", CONTAINER, "pg_isready", "-U", "postgres", "-q"]); }
@@ -139,6 +166,7 @@ function tierPool(base: Pool, tier: AppRole, userId: string | null): Pool {
 
 async function main(): Promise<void> {
   console.log("=== export-leakage-verify: rol bazlı sızıntı sondası (disposable DB) ===\n");
+  console.log(`superuser kimliği: ${SUPERUSER.origin} · hedef: ${DB} (ad sabit, dize yazdırılmaz)`);
   assertContainerReachable();
   buildDatabase();
 
