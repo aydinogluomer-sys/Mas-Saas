@@ -113,3 +113,6 @@ __pycache__/
 /docs/interaction-audit/static-inventory.json
 /docs/interaction-audit/coverage-report.json
 /docs/interaction-audit/evidence-*.json
+
+# PHASE 1/4: ayri distDir ile derlenen dogrulama ciktilari (MAS_NEXT_DIST_DIR)
+/.next-*/

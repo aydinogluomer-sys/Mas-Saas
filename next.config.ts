@@ -71,7 +71,15 @@ const nextConfig: NextConfig = {
   //
   // Değişken tanımsızken davranış birebir eskisi (Next kendi varsayılanını seçer). Kısıtlı
   // makinede `MAS_NEXT_CPUS=1` derlemeyi yavaşlatır ama BİTİRİR.
-  ...(process.env.MAS_NEXT_CPUS ? { experimental: { cpus: Number(process.env.MAS_NEXT_CPUS) } } : {}),
+  experimental: {
+    ...(process.env.MAS_NEXT_CPUS ? { cpus: Number(process.env.MAS_NEXT_CPUS) } : {}),
+    // PHASE 4 (plan §4.4): Standart Import V2 dosya sınırı 50 MB'dir ve bu sınır UYGULAMA
+    // katmanında açık bir mesajla uygulanır (service.ts UPLOAD_LIMITS). Next'in sunucu eylemi
+    // gövde sınırı varsayılan 1 MB; onun altında kalsaydı 1 MB'lik bir dosya bile anlaşılmaz
+    // bir çerçeve hatasıyla düşerdi. 52 MB: uygulama sınırı + multipart payı — böylece 50 MB
+    // üstü dosyayı çerçeve değil, sebebini söyleyen uygulama reddeder.
+    serverActions: { bodySizeLimit: "52mb" },
+  },
   turbopack: {
     root: projectRoot,
   },

@@ -23,6 +23,13 @@ export type SheetDetectedType =
   // actively dangerous here: the real workbook contains a sheet called "faiz hesaplama", and a
   // plausible "hesap" keyword would have stolen it from loan_calculation.
   | "bank_statement"
+  // Faz V2. Migration 0089 aynı üyeyi CHECK'e ekledi — başlıktaki "do not drift" kuralı.
+  //
+  // classifySheetName bunu ASLA döndürmez. V2 sayfasının türü tahmin edilmez: dosya gizli
+  // `_MAS_META` sayfasında hangi şema olduğunu söyler, sayfa adları da sözleşmede sabittir.
+  // Değeri V2 eşleyicisi yazar. Ailenin kendisi (payments, checks, …) bu union'a girmez;
+  // sayfa düzeyinde `sheet_name_normalized`, satır düzeyinde `detected_entity_type` taşır.
+  | "standard_import_v2"
   | "unknown";
 
 export type ParseConfidence = "high" | "medium" | "low" | "unknown";

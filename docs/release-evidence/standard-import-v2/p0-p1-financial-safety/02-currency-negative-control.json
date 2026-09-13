@@ -1,0 +1,124 @@
+{
+  "database": "mas_radar_import_v2_verify",
+  "negativeControl": {
+    "due30": 11000,
+    "openChecks": 2
+  },
+  "mixedSourceKpi": {
+    "remainingAmount": 71744.12,
+    "due30": 0,
+    "openChecks": 2,
+    "activeLoans": 1
+  },
+  "mixedImport": {
+    "perTable": {
+      "products": {
+        "inserted": 3,
+        "updated": 0
+      },
+      "projects": {
+        "inserted": 2,
+        "updated": 0
+      },
+      "bank_accounts": {
+        "inserted": 2,
+        "updated": 0
+      },
+      "loans": {
+        "inserted": 1,
+        "updated": 0
+      },
+      "payments": {
+        "inserted": 3,
+        "updated": 0
+      },
+      "checks": {
+        "inserted": 2,
+        "updated": 0
+      },
+      "loan_installments": {
+        "inserted": 2,
+        "updated": 0
+      },
+      "cashflow_lines": {
+        "inserted": 5,
+        "updated": 0
+      },
+      "bank_transactions": {
+        "inserted": 3,
+        "updated": 0
+      },
+      "invoices": {
+        "inserted": 2,
+        "updated": 0
+      },
+      "orders": {
+        "inserted": 2,
+        "updated": 0
+      },
+      "budget_lines": {
+        "inserted": 3,
+        "updated": 0
+      },
+      "fx_positions": {
+        "inserted": 3,
+        "updated": 0
+      },
+      "production_parts": {
+        "inserted": 2,
+        "updated": 0
+      },
+      "machine_assets": {
+        "inserted": 1,
+        "updated": 0
+      }
+    },
+    "rowsRejected": 12
+  },
+  "tryOnlyKpi": {
+    "remainingAmount": 71744.12,
+    "due30": 0,
+    "openChecks": 2,
+    "activeLoans": 1
+  },
+  "checks": [
+    {
+      "ad": "okuma modeli iki para birimini TEK sayıda topluyor (tehlike gerçek)",
+      "gecti": true
+    },
+    {
+      "ad": "iki çek de akışta görünüyor",
+      "gecti": true
+    },
+    {
+      "ad": "TRY dışı çek/kredi domain'e HİÇ yazılmadı",
+      "gecti": true
+    },
+    {
+      "ad": "TRY dışı satırlar kaynakta KORUNDU",
+      "gecti": true
+    },
+    {
+      "ad": "TRY dışı her satır için inceleme açıldı",
+      "gecti": true
+    },
+    {
+      "ad": "incelemeler yüksek şiddetli",
+      "gecti": true
+    },
+    {
+      "ad": "inceleme mesajı sebebi söylüyor",
+      "gecti": true
+    },
+    {
+      "ad": "finans özeti TRY dışı satırlardan etkilenmedi",
+      "gecti": true
+    },
+    {
+      "ad": "aylık kırılım da etkilenmedi",
+      "gecti": true
+    }
+  ],
+  "verdict": "PASS",
+  "multiCurrencyFinanceAnalytics": "NOT_IMPLEMENTED"
+}

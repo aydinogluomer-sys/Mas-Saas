@@ -53,12 +53,14 @@ const EXPECTED: Record<string, AppRole[]> = {
   "/insights/briefing": [...APP_ROLES],
   "/system/controls": ["finance_manager", "admin"],
   "/system/jobs": ["finance_manager", "admin"],
+  // PHASE 4: yazma yüzeyi — DB'de source_workbooks INSERT'i olmayan viewer/approver giremez.
+  "/data/imports/v2": ["finance_operator", "finance_manager", "admin"],
 };
 
-describe("requireRouteAccess — 5 katman × 15 route karar tablosu", () => {
+describe("requireRouteAccess — 5 katman × 16 route karar tablosu", () => {
   it("kapı listesi ile karar tablosu birebir aynı route kümesini kapsıyor", () => {
     expect([...PAGE_GUARDED_ROUTES].sort()).toEqual(Object.keys(EXPECTED).sort());
-    expect(PAGE_GUARDED_ROUTES).toHaveLength(15);
+    expect(PAGE_GUARDED_ROUTES).toHaveLength(16);
   });
 
   // 75 kombinasyonun tamamı — her biri ayrı bir test, çünkü tek bir toplu assertion
@@ -87,11 +89,14 @@ describe("requireRouteAccess — 5 katman × 15 route karar tablosu", () => {
     const denied = Object.keys(EXPECTED).flatMap((route) =>
       APP_ROLES.filter((role) => !canAccessRoute(role, route)).map((role) => `${role}@${route}`),
     );
-    // viewer+operator @ approvals (2) · viewer+operator+approver @ controls,jobs (6) = 8
-    expect(denied).toHaveLength(8);
+    // viewer+operator @ approvals (2) · viewer+operator+approver @ controls,jobs (6)
+    // · viewer+approver @ imports/v2 (2) = 10
+    expect(denied).toHaveLength(10);
     expect(denied).toContain("viewer@/system/jobs");
     expect(denied).toContain("finance_operator@/data/approvals");
     expect(denied).toContain("finance_approver@/system/controls");
+    expect(denied).toContain("viewer@/data/imports/v2");
+    expect(denied).toContain("finance_approver@/data/imports/v2");
   });
 
   it("izleyici finans okuma sayfalarından MEN EDİLMEDİ (veri katmanından katı olmamak)", () => {
@@ -138,7 +143,7 @@ describe("requireRouteAccess — 5 katman × 15 route karar tablosu", () => {
  * `if (denied) return denied;` yarısı da aranıyor: kapıyı çağırıp dönüşünü yok sayan bir sayfa,
  * hiç çağırmayan bir sayfayla aynı şeydir.
  */
-describe("route-access — 15 sayfanın kapıyı gerçekten çağırdığı", () => {
+describe("route-access — 16 sayfanın kapıyı gerçekten çağırdığı", () => {
   const ROOT = process.cwd();
   for (const route of PAGE_GUARDED_ROUTES) {
     it(`page.tsx kapıyı çağırıyor ve dönüşüne uyuyor: ${route}`, () => {
