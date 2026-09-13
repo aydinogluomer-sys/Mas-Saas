@@ -496,14 +496,28 @@ async function resolveCashflowMonth(
   if (!first) {
     throw new Error(`05_NAKIT_AKISI: dönem '${String(monthStart_)}' YYYY-AA biçiminde değil.`);
   }
-  const r = await ctx.client.query<{ id: string }>(
+  // Var olan ay DOKUNULMADAN bulunur. Eski hâli `on conflict do update set month_start =
+  // month_start` idi: "hiçbir şey değiştirmeyen" bir UPDATE — ama `cashflow_months`'un
+  // updated_at tetikleyicisi yine ateşlenir ve gerçek yedeğin klonundaki prova (PHASE 6.2)
+  // bunu yakaladı: 2026-05 ve 2026-06 aylarının updated_at'i "değişmiş" göründü, finansal
+  // alanlar aynıyken. Bir ayın son değişiklik zamanı, o aya dokunmayan bir import yüzünden
+  // ilerlememeli. Yarış: iki import aynı yeni ayı aynı anda yaratırsa `on conflict do nothing`
+  // birine boş döner; o zaman yeniden okunur.
+  const found = await ctx.client.query<{ id: string }>(
+    "select id from public.cashflow_months where month_start = $1", [first]);
+  if (found.rows[0]) return found.rows[0].id;
+  const ins = await ctx.client.query<{ id: string }>(
     `insert into public.cashflow_months (month_start, source_workbook_id, source_sheet_id)
      values ($1, $2, $3)
-     on conflict (month_start) do update set month_start = public.cashflow_months.month_start
+     on conflict (month_start) do nothing
      returning id`,
     [first, ctx.workbookId, ctx.sheetId],
   );
-  return r.rows[0].id;
+  if (ins.rows[0]) return ins.rows[0].id;
+  const again = await ctx.client.query<{ id: string }>(
+    "select id from public.cashflow_months where month_start = $1", [first]);
+  if (!again.rows[0]) throw new Error(`05_NAKIT_AKISI: ${first} ayı yaratılamadı ve bulunamadı.`);
+  return again.rows[0].id;
 }
 
 const writeCashflowLine: FamilyWriter = async (ctx, row, entityId) => {
@@ -856,8 +870,14 @@ const writeProductionPart: FamilyWriter = async (ctx, row, entityId) => {
 
 const writeMachineAsset: FamilyWriter = async (ctx, row, entityId) => {
   const v = row.values;
-  return upsertRow(ctx.client, "machine_assets", entityId, {
-    name: str(v.makine_adi) ?? "(adsız makine)",
+  const name = str(v.makine_adi) ?? "(adsız makine)";
+  // `machine_assets.name` eşsizdir (0010). Gerçek yedeğin klonunda prova (PHASE 6.2) bunu
+  // birebir yakaladı: "Awea" zaten vardı, INSERT 23505 ile düştü ve tüm import geri alındı.
+  // Ürün/proje/sipariş ile AYNI kural: kod bağlaması yoksa doğal anahtardan bulunur ve
+  // bağlanır — tahmin değil, veritabanının kendi eşsizlik kısıtıyla birebir alan.
+  return upsertRow(ctx.client, "machine_assets",
+    entityId ?? await findByNaturalKey(ctx.client, "machine_assets", { name }), {
+    name,
     purchase_cost: num(v.alis_bedeli),
     notes: str(v.notlar),
   }, false);
