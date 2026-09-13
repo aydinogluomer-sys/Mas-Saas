@@ -10,6 +10,7 @@ import {
   UPLOAD_LIMITS, ALLOWED_EXTENSIONS, safeFilename, validateUploadMeta, openWorkbook, countDataRows,
   previewImport, confirmImport, sha256Hex,
 } from "./service";
+import { APP_ROLES } from "../../authz/matrix";
 import { unwrapCell } from "./values";
 
 /** Hiçbir şey döndürmeyen salt-okunur client: `import_external_keys` boş → her kodlu satır "yeni". */
@@ -204,5 +205,46 @@ describe("4.1/4.5 onay — SHA eşleşmesi ve transaction sözleşmesi", () => {
     const r = await confirmImport(pool, Buffer.from("x"), "f.csv", "actor", "0".repeat(64));
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.rejection.code).toBe("BAD_EXTENSION");
+  });
+});
+
+describe("4.4 RBAC — katman × sayfa (referans sınıfı sayfalar yalnız yönetici/finans yöneticisi)", () => {
+  it("operator: ürün/proje/hesap/makine sayfaları YETKİ DIŞI listelenir; onay DB'ye gitmeden FORBIDDEN_SHEETS", async () => {
+    const buf = await fixtureBuffer();
+    const r = await previewImport(emptyClient, buf, "f.xlsx", "actor", { role: "finance_operator" });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    const forbidden = r.report.lists.forbiddenSheets.map((f) => f.table).sort();
+    // reference sınıfı (0058): products, projects, bank_accounts, machine_assets, production_parts …
+    expect(forbidden).toContain("products");
+    expect(forbidden).toContain("projects");
+    expect(forbidden).toContain("bank_accounts");
+    expect(forbidden).not.toContain("payments");
+    expect(forbidden).not.toContain("checks");
+    for (const f of r.report.lists.forbiddenSheets) {
+      expect(f.readyRows).toBeGreaterThan(0);
+      expect(f.allowedRoles).toEqual(["finans yöneticisi", "yönetici"]);
+    }
+    let connected = 0;
+    const pool = { connect: async () => { connected++; throw new Error("bağlanılmamalıydı"); } } as unknown as Pool;
+    const c = await confirmImport(pool, buf, "f.xlsx", "actor", sha256Hex(buf), { role: "finance_operator" });
+    expect(c.ok).toBe(false);
+    if (!c.ok) {
+      expect(c.rejection.code).toBe("FORBIDDEN_SHEETS");
+      expect(c.rejection.detail).toContain("10_URUNLER");
+    }
+    expect(connected).toBe(0);
+  });
+
+  it("finans yöneticisi ve yönetici: yetki dışı sayfa yok; katman verilmezse liste boş (karar çağıranın)", async () => {
+    const buf = await fixtureBuffer();
+    for (const role of ["finance_manager", "admin"] as const) {
+      const r = await previewImport(emptyClient, buf, "f.xlsx", "actor", { role });
+      expect(r.ok).toBe(true);
+      if (r.ok) expect(r.report.lists.forbiddenSheets).toEqual([]);
+    }
+    const noRole = await previewImport(emptyClient, buf, "f.xlsx", "actor");
+    expect(noRole.ok && noRole.report.lists.forbiddenSheets).toEqual([]);
+    expect(APP_ROLES).toContain("finance_operator");
   });
 });

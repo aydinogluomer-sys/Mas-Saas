@@ -8,7 +8,7 @@
 // yazma noktasıdır ve doğrudan çağrılabilir.
 import { revalidatePath } from "next/cache";
 import { requireSession } from "@/lib/auth";
-import { canPerform } from "@/lib/authz/matrix";
+import { canPerform, type AppRole } from "@/lib/authz/matrix";
 import { getPool } from "@/lib/db";
 import { refreshMetricSnapshots } from "@/lib/analytics/snapshots";
 import {
@@ -26,7 +26,7 @@ export type V2FlowState =
 
 const now = () => new Date().toISOString();
 
-async function authorize(): Promise<{ ok: true; actorId: string } | { ok: false; state: V2FlowState }> {
+async function authorize(): Promise<{ ok: true; actorId: string; role: AppRole } | { ok: false; state: V2FlowState }> {
   const session = await requireSession();
   if (!canPerform(session.role, "import_workbook_v2")) {
     return { ok: false, state: { phase: "rejected", at: now(), rejection: {
@@ -35,7 +35,7 @@ async function authorize(): Promise<{ ok: true; actorId: string } | { ok: false;
       detail: `rol=${session.role}`,
     } } };
   }
-  return { ok: true, actorId: session.id };
+  return { ok: true, actorId: session.id, role: session.role };
 }
 
 async function readFile(formData: FormData): Promise<{ ok: true; buf: Buffer; name: string } | { ok: false; state: V2FlowState }> {
@@ -57,7 +57,7 @@ export async function previewV2Action(_prev: V2FlowState, formData: FormData): P
 
   const client = await getPool().connect();
   try {
-    const r = await previewImport(client, f.buf, f.name, auth.actorId);
+    const r = await previewImport(client, f.buf, f.name, auth.actorId, { role: auth.role });
     if (!r.ok) return { phase: "rejected", rejection: r.rejection, at: now() };
     return { phase: "previewed", report: r.report, at: now() };
   } finally {
@@ -72,7 +72,7 @@ export async function confirmV2Action(_prev: V2FlowState, formData: FormData): P
   if (!f.ok) return f.state;
   const expected = String(formData.get("expectedSha256") ?? "");
 
-  const r = await confirmImport(getPool(), f.buf, f.name, auth.actorId, expected);
+  const r = await confirmImport(getPool(), f.buf, f.name, auth.actorId, expected, { role: auth.role });
   if (!r.ok) return { phase: "rejected", rejection: r.rejection, at: now() };
 
   // Anlık görüntüler: import sonrası panolar taze olsun. Başarısızlığı import'u geri almaz —

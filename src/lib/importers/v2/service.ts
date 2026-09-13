@@ -17,6 +17,7 @@ import { createHash } from "node:crypto";
 import path from "node:path";
 import ExcelJS from "exceljs";
 import type { Pool, PoolClient } from "pg";
+import { APP_ROLES, ROLE_LABEL, can, type AppRole } from "@/lib/authz/matrix";
 import { DATA_SHEETS } from "./contract";
 import {
   ExternalKeyBindingConflictError, StaleExternalKeyBindingError, mapWorkbook, type MapperResult,
@@ -39,7 +40,7 @@ export const ALLOWED_EXTENSIONS: readonly string[] = Object.freeze([".xlsx"]);
 export type RejectionCode =
   | "EMPTY_FILE" | "TOO_LARGE" | "BAD_EXTENSION" | "UNSAFE_FILENAME"
   | "CORRUPT_XLSX" | "NOT_V2_SCHEMA" | "TOO_MANY_ROWS"
-  | "SHA_MISMATCH" | "STALE_BINDING" | "BINDING_CONFLICT" | "WRITE_FAILED";
+  | "SHA_MISMATCH" | "STALE_BINDING" | "BINDING_CONFLICT" | "WRITE_FAILED" | "FORBIDDEN_SHEETS";
 
 export interface Rejection {
   code: RejectionCode;
@@ -143,6 +144,29 @@ export interface PreviewCounters {
 
 export interface IssueRef { sheet: string; row: number | null; column: string | null; message: string }
 
+/**
+ * Katman × hedef tablo: bu oturum bu sayfayı YAZABİLİR mi?
+ *
+ * Etkileşim kapısı gerçek yolda yakaladı: finans operatörü fixture'ı onayladı, `products`
+ * (reference sınıfı — operator yalnız okur, 0058) RLS'e takıldı, işlem geri alındı ve kullanıcı
+ * "WRITE_FAILED: new row violates row-level security policy" gördü. Doğru sonuç ama yanlış zaman
+ * ve yanlış dil: yetki sorunu ÖNİZLEMEDE, sayfa adıyla ve gereken katmanla söylenmeli; onay ise
+ * veritabanına hiç gitmeden durmalı. Karar aynı matristen gelir (`can()`), ikinci bir fikir yok.
+ */
+export interface ForbiddenSheet { sheet: string; table: string; readyRows: number; allowedRoles: string[] }
+
+export function forbiddenSheetsFor(parsed: WorkbookParseResult, role: AppRole | undefined): ForbiddenSheet[] {
+  if (!role) return [];
+  const out: ForbiddenSheet[] = [];
+  for (const sh of parsed.sheets) {
+    if (!sh.present || !sh.domainTable || sh.ready === 0) continue;
+    if (can(role, sh.domainTable, "insert") && can(role, sh.domainTable, "update")) continue;
+    const allowed = APP_ROLES.filter((r) => can(r, sh.domainTable!, "insert") && can(r, sh.domainTable!, "update"));
+    out.push({ sheet: sh.sheet, table: sh.domainTable, readyRows: sh.ready, allowedRoles: allowed.map((r) => ROLE_LABEL[r]) });
+  }
+  return out;
+}
+
 export interface PreviewReport {
   filename: string;
   bytes: number;
@@ -160,6 +184,8 @@ export interface PreviewReport {
     duplicateSuspects: IssueRef[];
     /** MISSING REQUIRED FIELD */
     missingRequired: IssueRef[];
+    /** Bu oturumun katmanıyla YAZILAMAYACAK sayfalar — onay bunlar varken reddedilir. */
+    forbiddenSheets: ForbiddenSheet[];
   };
   sheets: Array<{
     sheet: string; family: string; rowsRead: number; ready: number; needsReview: number;
@@ -187,6 +213,7 @@ function allIssues(parsed: WorkbookParseResult): Issue[] {
 
 export function buildPreviewReport(
   parsed: WorkbookParseResult, dry: MapperResult, file: { filename: string; bytes: number; sha256: string },
+  role?: AppRole,
 ): PreviewReport {
   const create = Object.values(dry.perTable).reduce((n, t) => n + t.inserted, 0);
   const update = Object.values(dry.perTable).reduce((n, t) => n + t.updated, 0);
@@ -222,6 +249,7 @@ export function buildPreviewReport(
         .filter((i) => i.type === "duplicate_external_id" || i.type === "duplicate_check")
         .map(issueRef),
       missingRequired: issues.filter((i) => i.type === "missing_required_field").map(issueRef),
+      forbiddenSheets: forbiddenSheetsFor(parsed, role),
     },
     sheets: parsed.sheets.filter((s) => s.present).map((s) => ({
       sheet: s.sheet, family: s.family, rowsRead: s.rowsRead, ready: s.ready, needsReview: s.needsReview,
@@ -264,13 +292,23 @@ async function prepare(
  */
 export async function previewImport(
   client: Pick<PoolClient, "query">, buf: Buffer, filename: string, actorId: string,
+  opts: { role?: AppRole } = {},
 ): Promise<{ ok: true; report: PreviewReport } | { ok: false; rejection: Rejection }> {
   const prep = await prepare(buf, filename);
   if (!prep.ok) return prep;
   const dry = await mapWorkbook(client as PoolClient, prep.parsed, {
     filename, fileSha256: prep.sha256, actorId, dryRun: true,
   });
-  return { ok: true, report: buildPreviewReport(prep.parsed, dry, { filename, bytes: buf.length, sha256: prep.sha256 }) };
+  return { ok: true, report: buildPreviewReport(prep.parsed, dry, { filename, bytes: buf.length, sha256: prep.sha256 }, opts.role) };
+}
+
+function forbiddenRejection(f: ForbiddenSheet[]): Rejection {
+  const detail = f.map((x) => `${x.sheet} → ${x.table} (${x.readyRows} hazır satır; gereken: ${x.allowedRoles.join("/")})`).join(" · ");
+  return {
+    code: "FORBIDDEN_SHEETS",
+    message: `Bu dosyadaki ${f.length} sayfa oturumunuzun katmanıyla yazılamaz (referans verisi: ürün, proje, hesap, makine vb. yalnız yönetici/finans yöneticisi tarafından değiştirilir). Bu sayfaları boşaltıp yeniden yükleyin ya da dosyayı yetkili bir kullanıcıya iletin. Hiçbir şey yazılmadı.`,
+    detail,
+  };
 }
 
 /* ── Onaylı import (tek transaction) ──────────────────────────────────────────────────── */
@@ -291,9 +329,13 @@ export interface ImportOutcome {
  */
 export async function confirmImport(
   pool: Pool, buf: Buffer, filename: string, actorId: string, expectedSha256: string,
+  opts: { role?: AppRole } = {},
 ): Promise<{ ok: true; outcome: ImportOutcome } | { ok: false; rejection: Rejection }> {
   const prep = await prepare(buf, filename);
   if (!prep.ok) return prep;
+  // Yetki, SHA'dan da önce ve veritabanına gitmeden: katmanın yazamayacağı sayfa varsa dur.
+  const forbidden = forbiddenSheetsFor(prep.parsed, opts.role);
+  if (forbidden.length > 0) return { ok: false, rejection: forbiddenRejection(forbidden) };
   if (!/^[0-9a-f]{64}$/.test(expectedSha256) || expectedSha256 !== prep.sha256) {
     return { ok: false, rejection: {
       code: "SHA_MISMATCH",

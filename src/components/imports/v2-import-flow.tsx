@@ -6,7 +6,7 @@
 // Aynı <input type="file"> iki eylemde de kullanılır; onay isteği önizlemenin sha256'sını gizli
 // alanla taşır. Kullanıcı önizlemeden sonra başka bir dosya seçerse sunucu SHA_MISMATCH ile
 // durur — istemci tarafı "değişti mi" tahmini yapılmaz, sunucu ölçer.
-import { useActionState, useRef, useState } from "react";
+import { useActionState, useState } from "react";
 import { useFormStatus } from "react-dom";
 import { confirmV2Action, previewV2Action, type V2FlowState } from "@/app/(dashboard)/data/imports/v2/actions";
 import type { PreviewReport } from "@/lib/importers/v2/service";
@@ -113,6 +113,18 @@ function Preview({ report }: { report: PreviewReport }) {
           hint="Zorunlu alanı boş satırlar yazılmaz. Boş = bilinmiyor; 0 yazmak farklı bir beyandır." />
       </div>
 
+      {report.lists.forbiddenSheets.length > 0 ? (
+        <div role="alert" data-testid="v2-forbidden-sheets" className="border px-3 py-2" style={{ borderColor: "var(--warn)", background: "color-mix(in srgb, var(--warn) 8%, transparent)", borderRadius: "var(--radius)" }}>
+          <div className="font-mono text-[10px] uppercase" style={{ color: "var(--warn)" }}>YETKİ DIŞI SAYFALAR — onay reddedilecek</div>
+          <ul className="mt-1 font-mono text-[11px]">
+            {report.lists.forbiddenSheets.map((f) => (
+              <li key={f.sheet}>{f.sheet} → {f.table} · {f.readyRows} hazır satır · gereken katman: {f.allowedRoles.join(" / ")}</li>
+            ))}
+          </ul>
+          <p className="mt-1 text-xs" style={{ color: "var(--text-2)" }}>Bu sayfaları boşaltıp yeniden yükleyin ya da dosyayı yetkili bir kullanıcıya iletin.</p>
+        </div>
+      ) : null}
+
       <details className="text-xs">
         <summary className="cursor-pointer font-mono text-[11px]" style={{ color: "var(--text-2)" }}>Sayfa bazında ({report.sheets.length} sayfa)</summary>
         <table className="mt-1 w-full text-xs">
@@ -150,8 +162,20 @@ function Preview({ report }: { report: PreviewReport }) {
 export function V2ImportFlow() {
   const [preview, previewAction] = useActionState(previewV2Action, IDLE);
   const [confirm, confirmAction] = useActionState(confirmV2Action, IDLE);
-  const fileRef = useRef<HTMLInputElement>(null);
-  const [fileKey, setFileKey] = useState<string>("");
+  // Seçili dosya React durumunda tutulur — <input type=file> bir formun İÇİNDE olsaydı React 19
+  // eylem bittiğinde formu sıfırlar ve ikinci adımda (onay) dosya kaybolurdu. (Etkileşim kapısı
+  // bunu birebir yakaladı: ONAYLA tıklanıyor, hiçbir şey olmuyordu.) Girdi formların dışında;
+  // her form gönderilirken dosya kendi gizli alanına takılır.
+  const [file, setFile] = useState<File | null>(null);
+  const [noFileMsg, setNoFileMsg] = useState<string | null>(null);
+
+  const attach = (e: React.FormEvent<HTMLFormElement>) => {
+    if (!file) { e.preventDefault(); setNoFileMsg("Önce bir .xlsx dosyası seçin."); return; }
+    setNoFileMsg(null);
+    const dt = new DataTransfer(); dt.items.add(file);
+    const hidden = e.currentTarget.elements.namedItem("file") as HTMLInputElement | null;
+    if (hidden) hidden.files = dt.files;
+  };
 
   // En son hangi eylem konuştuysa o gösterilir (zaman damgasına göre).
   const latest: V2FlowState = (() => {
@@ -160,24 +184,31 @@ export function V2ImportFlow() {
     if (p && c) return (c as { at: string }).at >= (p as { at: string }).at ? c : p;
     return p ?? c ?? IDLE;
   })();
-  const canConfirm = preview.phase === "previewed" && latest.phase === "previewed";
+  // Önizleme başka bir dosyaya aitse onay düğmesi anlamsız: sunucu zaten SHA ile durur, ama
+  // kullanıcıya da söylenir.
+  const previewedName = preview.phase === "previewed" ? preview.report.filename : null;
+  const fileChangedSincePreview = previewedName != null && file != null && file.name !== previewedName;
 
   return (
     <div className="space-y-3">
-      <form action={previewAction} className="flex flex-wrap items-center gap-2" id="v2-preview-form">
+      <div className="flex flex-wrap items-center gap-2" id="v2-file-picker">
         <input
-          ref={fileRef} type="file" name="file" required accept=".xlsx"
-          onChange={(e) => setFileKey(e.target.files?.[0] ? `${e.target.files[0].name}:${e.target.files[0].size}:${e.target.files[0].lastModified}` : "")}
+          type="file" accept=".xlsx" data-testid="v2-file"
+          onChange={(e) => setFile(e.target.files?.[0] ?? null)}
           className="border border-line bg-black/40 p-2 font-mono text-xs file:mr-3 file:border-0 file:bg-surface-3 file:px-2 file:py-1 file:font-mono file:text-xs file:text-tone-1"
         />
-        <Submit label="ÖNİZLE" pending="ÇÖZÜMLENİYOR…" className="button-ghost" />
+        <form action={previewAction} onSubmit={attach} id="v2-preview-form" className="contents">
+          <input type="file" name="file" className="hidden" tabIndex={-1} aria-hidden="true" />
+          <Submit label="ÖNİZLE" pending="ÇÖZÜMLENİYOR…" className="button-ghost" />
+        </form>
         <span className="font-mono text-[10px] text-tone-3">
-          yalnız .xlsx · en çok 50 MB · 100.000 satır · hiçbir şey yazılmaz
+          {file ? `${file.name} · ${(file.size / 1024).toFixed(0)} KB · ` : ""}yalnız .xlsx · en çok 50 MB · 100.000 satır · önizleme hiçbir şey yazmaz
         </span>
-      </form>
+      </div>
+      {noFileMsg ? <p className="font-mono text-[11px]" style={{ color: "var(--warn)" }}>{noFileMsg}</p> : null}
 
       {latest.phase === "rejected" ? (
-        <div role="alert" className="border px-3 py-2" style={{ borderColor: "var(--neg)", background: "color-mix(in srgb, var(--neg) 8%, transparent)", borderRadius: "var(--radius)" }}>
+        <div role="alert" data-testid="v2-rejection" className="border px-3 py-2" style={{ borderColor: "var(--neg)", background: "color-mix(in srgb, var(--neg) 8%, transparent)", borderRadius: "var(--radius)" }}>
           <div className="font-mono text-[10px] uppercase" style={{ color: "var(--neg)" }}>{latest.rejection.code}</div>
           <p className="text-sm">{latest.rejection.message}</p>
           {latest.rejection.detail ? <p className="mt-1 font-mono text-[10px]" style={{ color: "var(--text-3)" }}>{latest.rejection.detail}</p> : null}
@@ -187,25 +218,15 @@ export function V2ImportFlow() {
       {preview.phase === "previewed" && latest.phase !== "imported" ? (
         <div className="space-y-3 border-t pt-3" style={{ borderColor: "var(--line)" }}>
           <Preview report={preview.report} />
-          {/* 7. adım — kullanıcı onayı. Aynı dosya alanı, önizlemenin sha256'sı gizli alanda. */}
-          <form
-            action={confirmAction}
-            className="flex flex-wrap items-center gap-2"
-            onSubmit={(e) => {
-              // Dosya alanı ayrı formda; onay formuna dosyayı bağla.
-              const f = fileRef.current?.files?.[0];
-              if (!f) { e.preventDefault(); return; }
-              const dt = new DataTransfer(); dt.items.add(f);
-              const hidden = (e.currentTarget.elements.namedItem("file") as HTMLInputElement | null);
-              if (hidden) hidden.files = dt.files;
-            }}
-          >
+          {/* 7. adım — kullanıcı onayı. Aynı dosya, önizlemenin sha256'sı gizli alanda. */}
+          <form action={confirmAction} onSubmit={attach} className="flex flex-wrap items-center gap-2" id="v2-confirm-form">
             <input type="file" name="file" className="hidden" tabIndex={-1} aria-hidden="true" />
             <input type="hidden" name="expectedSha256" value={preview.report.sha256} />
-            <input type="hidden" name="fileKey" value={fileKey} />
             <Submit label="ONAYLA VE İÇE AKTAR" pending="YAZILIYOR — TEK İŞLEM…" className="button-primary" />
             <span className="font-mono text-[10px] text-tone-3">
-              {canConfirm ? "önizlenen dosya tek bir veritabanı işleminde yazılır; hata olursa hiçbir şey değişmez" : "önce önizleyin"}
+              {fileChangedSincePreview
+                ? `seçili dosya (${file?.name}) önizlenen dosyadan (${previewedName}) farklı — önce yeniden önizleyin`
+                : "önizlenen dosya tek bir veritabanı işleminde yazılır; hata olursa hiçbir şey değişmez"}
             </span>
           </form>
         </div>
@@ -216,7 +237,7 @@ export function V2ImportFlow() {
           <div className="font-mono text-[10px] uppercase" style={{ color: "var(--pos)" }}>İÇE AKTARILDI</div>
           <div className="grid grid-cols-2 gap-2 text-xs sm:grid-cols-4">
             <div><div className="font-mono text-[9px] uppercase text-tone-3">workbook</div><a data-hard-nav="true" className="font-mono underline" href={`/data/imports/${latest.outcome.workbookId}`}>{latest.outcome.workbookId.slice(0, 8)}…</a></div>
-            <div><div className="font-mono text-[9px] uppercase text-tone-3">sha256</div><div className="truncate font-mono">{latest.outcome.sha256}</div></div>
+            <div><div className="font-mono text-[9px] uppercase text-tone-3">sha256</div><div className="truncate font-mono" data-testid="v2-result-sha">{latest.outcome.sha256}</div></div>
             <div><div className="font-mono text-[9px] uppercase text-tone-3">dosya</div><div className="truncate font-mono">{latest.outcome.filename}</div></div>
             <div><div className="font-mono text-[9px] uppercase text-tone-3">zaman</div><div className="font-mono">{latest.at.replace("T", " ").slice(0, 19)} UTC</div></div>
           </div>
