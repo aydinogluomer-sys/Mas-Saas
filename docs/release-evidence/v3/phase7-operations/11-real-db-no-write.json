@@ -1,0 +1,29 @@
+{
+  "ACCEPTED_CODE_SHA": "ceca39a3a60c00358d1aa90f00f9b2864237e4ec",
+  "RELEASE_EVIDENCE_SHA": "af210fd971a126c5aa3281f5a299f60b046d1d8b",
+  "ops_branch": "ops/phase7-operations (af210fd'den; kod ağacı ceca39a + yalnız ops/telemetri değişiklikleri)",
+  "date": "2026-09-13",
+  "REAL_DB_INSERT": "0 attempted",
+  "REAL_DB_UPDATE": "0 attempted",
+  "REAL_DB_DELETE": "0 attempted",
+  "REAL_DB_DDL": "0 attempted",
+  "REAL_DB_MIGRATIONS_0088_0094": "NOT_APPLIED",
+  "REAL_V2_IMPORT": "NOT_EXECUTED",
+  "PHASE8_CUTOVER": "NOT_EXECUTED",
+  "connections_to_mas_radar_dev": "0 kuruldu (Docker DOWN; elle tetiklenen görev ECONNREFUSED)",
+  "post_ops_fingerprint": {
+    "docker_data_vhdx_last_write": "2026-09-05 14:41:36 (=pre)",
+    "size_gb": 23.83,
+    "UNEXPECTED_DELTA": 0
+  },
+  "real_backup_files": {
+    "count_before": 895,
+    "count_after": 895,
+    "daily-2026-09-05 dump mtime": "2026-09-05 03:00:28 (değişmedi)",
+    "receipt mtime": "2026-09-05 03:00:30 (değişmedi)",
+    "sha256": "ff66a352… (=makbuz)"
+  },
+  "task_log_appended_by_manual_trigger": "backups/daily-backup-task.log (+4 satır, git dışı) — yedek dosyası üretilmedi",
+  "disposable_only_targets": "127.0.0.1:54329 mas_radar_phase7_alerting_verify (kapatıldı/silindi tur sonunda)",
+  "main_worktree_user_files": "5 dirty dosya + untracked Telegram dizinleri DOKUNULMADI (stash/reset/clean yok)"
+}

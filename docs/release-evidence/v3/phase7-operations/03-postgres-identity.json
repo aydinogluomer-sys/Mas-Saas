@@ -1,0 +1,13 @@
+{
+  "ACCEPTED_CODE_SHA": "ceca39a3a60c00358d1aa90f00f9b2864237e4ec",
+  "RELEASE_EVIDENCE_SHA": "af210fd971a126c5aa3281f5a299f60b046d1d8b",
+  "ops_branch": "ops/phase7-operations (af210fd'den; kod ağacı ceca39a + yalnız ops/telemetri değişiklikleri)",
+  "date": "2026-09-13",
+  "policy": "yeni container/volume YARATILMADI; mevcut kimlik yalnız kayıtlardan okundu",
+  "container": "mas-radar-pg (docker compose; postgres:16 image)",
+  "pg_version_from_last_receipt": "PostgreSQL 16.14 (Debian 16.14-1.pgdg13+1) on x86_64-pc-linux-gnu",
+  "system_identifier_from_last_receipt": "7659286466006216743",
+  "database": "mas_radar_dev",
+  "storage": "docker_data.vhdx (WSL2) — 23.83 GB, son yazım 2026-09-05 14:41:36",
+  "live_measurement": "NOT_MEASURABLE (Docker DOWN)"
+}

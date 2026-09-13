@@ -1,0 +1,15 @@
+{
+  "ACCEPTED_CODE_SHA": "ceca39a3a60c00358d1aa90f00f9b2864237e4ec",
+  "RELEASE_EVIDENCE_SHA": "af210fd971a126c5aa3281f5a299f60b046d1d8b",
+  "ops_branch": "ops/phase7-operations (af210fd'den; kod ağacı ceca39a + yalnız ops/telemetri değişiklikleri)",
+  "date": "2026-09-13",
+  "REAL_DB_FIRST_CONTACT": "BLOCKED — Docker DOWN, mas_radar_dev'e bağlantı yok (0 deneme; ECONNREFUSED görev günlüğünde)",
+  "last_known_state": {
+    "source": "backups/daily-2026-09-05T00-00-26-552Z.dump.stage07.json + P24B kanıtları",
+    "schema_ledger": "87/0087",
+    "P24B_fixture_rows": "0/42 (2026-08-31 temizliği)",
+    "migrations_0088_0094": "NOT_APPLIED",
+    "v2_import": "NOT_EXECUTED"
+  },
+  "pre_ops_fingerprint": "VHDX 2026-09-05 14:41:36 · 23.83 GB (makine düzeyi kanıt; DB düzeyi ölçülemez)"
+}

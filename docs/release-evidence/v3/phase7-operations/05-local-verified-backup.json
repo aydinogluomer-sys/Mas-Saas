@@ -1,0 +1,39 @@
+{
+  "ACCEPTED_CODE_SHA": "ceca39a3a60c00358d1aa90f00f9b2864237e4ec",
+  "RELEASE_EVIDENCE_SHA": "af210fd971a126c5aa3281f5a299f60b046d1d8b",
+  "ops_branch": "ops/phase7-operations (af210fd'den; kod ağacı ceca39a + yalnız ops/telemetri değişiklikleri)",
+  "date": "2026-09-13",
+  "NEW_BACKUP_THIS_TURN": "NOT_TAKEN — kanonik script (backup-daily.ts) pg_dump'ı `docker exec mas-radar-pg` ile alır; Docker DOWN",
+  "manual_trigger_test": {
+    "command": "schtasks /Run /TN MAS-Nakit-Radar-Gunluk-Yedek",
+    "started": "13.09.2026 10:53:04",
+    "log": "MAS günlük yedek — kaynak 'mas_radar_dev' (REAL_READ_ONLY) → YEDEK BAŞARISIZ: connect ECONNREFUSED 127.0.0.1:5432 → END exit=1",
+    "task_last_result": 1,
+    "files_created": 0,
+    "verdict": "FAIL-CLOSED KANITLANDI — sessiz PASS yok, dosya üretilmedi"
+  },
+  "newest_VERIFIED_real_backup": {
+    "file": "backups/daily-2026-09-05T00-00-26-552Z.dump",
+    "FILE_EXISTS": true,
+    "BYTES": 1415581,
+    "BYTES_gt_0": true,
+    "SHA256": "ff66a352ea3477072cd3ee0e1dd34cccd60dbca660f5b85bbcc84f0737cf47a5",
+    "receipt_sha256_match": true,
+    "receipt": "daily-2026-09-05T00-00-26-552Z.dump.stage07.json (mas-stage07-backup-receipt-v1, source_db mas_radar_dev, ledger 87/0087, PG 16.14, data_class REAL_READ_ONLY)",
+    "pg_restore_list": "PASS — taşınabilir pg_restore 16.14 ile ŞİMDİ koşuldu",
+    "TOC_COUNT": 1391,
+    "age_hours_at_check": 199.8,
+    "FRESH_within_36h": false,
+    "file_mtime_unchanged": "2026-09-05 03:00:28 (okuma öncesi = sonrası)"
+  },
+  "backup_history_since_docker_down": {
+    "06.09": "exit=1 ECONNREFUSED",
+    "07.09": "görev koşmadı (kayıt yok)",
+    "08.09": "exit=1 ECONNREFUSED",
+    "09-10.09": "görev koşmadı",
+    "11.09": "exit=1 ECONNREFUSED",
+    "12.09": "görev koşmadı",
+    "13.09 03:38": "0x800710E0 (pil koşulu — reddedildi)"
+  },
+  "note": "Bağlantı dizesi / parola bu dosyada YOK."
+}

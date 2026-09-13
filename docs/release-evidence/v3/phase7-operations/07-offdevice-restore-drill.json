@@ -1,0 +1,12 @@
+{
+  "ACCEPTED_CODE_SHA": "ceca39a3a60c00358d1aa90f00f9b2864237e4ec",
+  "RELEASE_EVIDENCE_SHA": "af210fd971a126c5aa3281f5a299f60b046d1d8b",
+  "ops_branch": "ops/phase7-operations (af210fd'den; kod ağacı ceca39a + yalnız ops/telemetri değişiklikleri)",
+  "date": "2026-09-13",
+  "OFF_DEVICE_RESTORE_DRILL": "BLOCKED — D: yok (kaynak kopya yok) VE Docker DOWN (restore hedefi mas_radar_restore_verify_* docker'da yaratılır)",
+  "RESTORE_RECONCILIATION": "NOT_EXECUTED",
+  "RESTORED_APP_SMOKE": "NOT_EXECUTED",
+  "temporary_restore_databases_created_this_turn": [],
+  "cleanup": "gerek yok",
+  "prior_evidence_not_reused_as_pass": "docs/release-evidence/final-production-readiness/phase6-7-disposable-restore.md (önceki tur, taşınabilir küme) bu turun off-device tatbikatı SAYILMAZ"
+}

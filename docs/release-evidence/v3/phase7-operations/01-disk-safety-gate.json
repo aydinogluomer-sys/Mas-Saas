@@ -1,0 +1,119 @@
+{
+  "ACCEPTED_CODE_SHA": "ceca39a3a60c00358d1aa90f00f9b2864237e4ec",
+  "RELEASE_EVIDENCE_SHA": "af210fd971a126c5aa3281f5a299f60b046d1d8b",
+  "ops_branch": "ops/phase7-operations (af210fd'den; kod ağacı ceca39a + yalnız ops/telemetri değişiklikleri)",
+  "date": "2026-09-13",
+  "DISK_GATE": "FAIL — C_FREE_GB 2.19 < 5 (tercih ≥ 8)",
+  "decision": "Docker başlatma ZORLANMADI. Kullanıcı izni olmadan HİÇBİR ŞEY silinmedi. Aşağıdaki liste yalnız ADAYDIR.",
+  "SAFE_REGENERABLE_CLEANUP_CANDIDATES": [
+    {
+      "PATH": "C:\\Users\\Trade Bilisim\\Mas Saas\\.next",
+      "SIZE_GB": 0.64,
+      "WHY_REGENERABLE": "Next.js derleme çıktısı",
+      "DELETE_RISK": "düşük — çalışan sunucu varsa önce durdurun",
+      "REBUILD_COMMAND": "pnpm build"
+    },
+    {
+      "PATH": "C:\\Users\\Trade Bilisim\\Mas Saas\\.next-pre-speed-release-20260826",
+      "SIZE_GB": 0.39,
+      "WHY_REGENERABLE": "eski derleme kopyası (Ağustos)",
+      "DELETE_RISK": "düşük",
+      "REBUILD_COMMAND": "pnpm build (gerekirse)"
+    },
+    {
+      "PATH": "C:\\Users\\Trade Bilisim\\Mas Saas\\.next-preload-final",
+      "SIZE_GB": 0.33,
+      "WHY_REGENERABLE": "eski derleme kopyası",
+      "DELETE_RISK": "düşük",
+      "REBUILD_COMMAND": "pnpm build"
+    },
+    {
+      "PATH": "C:\\Users\\Trade Bilisim\\Mas Saas\\.next-preload-verify",
+      "SIZE_GB": 0.33,
+      "WHY_REGENERABLE": "eski derleme kopyası",
+      "DELETE_RISK": "düşük",
+      "REBUILD_COMMAND": "pnpm build"
+    },
+    {
+      "PATH": "C:\\Users\\Trade Bilisim\\Mas Saas\\.next-preload-dev",
+      "SIZE_GB": 0.06,
+      "WHY_REGENERABLE": "dev derleme önbelleği",
+      "DELETE_RISK": "düşük",
+      "REBUILD_COMMAND": "pnpm dev"
+    },
+    {
+      "PATH": "C:\\Users\\Trade Bilisim\\Mas-Saas-Merge-Acceptance\\.next-merged-acceptance",
+      "SIZE_GB": 0.4,
+      "WHY_REGENERABLE": "kabul derlemesi (BUILD_ID=ceca39a); kanıt JSON'larda kayıtlı",
+      "DELETE_RISK": "düşük — Phase 8 için yeniden derlenecek",
+      "REBUILD_COMMAND": "cd Mas-Saas-Merge-Acceptance && APP_COMMIT_SHA=ceca39a3… pnpm build"
+    },
+    {
+      "PATH": "C:\\Users\\Trade Bilisim\\Mas-Saas-Import-V2\\.next",
+      "SIZE_GB": 0.28,
+      "WHY_REGENERABLE": "V2 dalı derlemesi (dal artık release'e merge'lendi)",
+      "DELETE_RISK": "düşük",
+      "REBUILD_COMMAND": "pnpm build"
+    },
+    {
+      "PATH": "C:\\Users\\Trade Bilisim\\Mas-Saas-P1-Audit-Fix",
+      "SIZE_GB": 0.89,
+      "WHY_REGENERABLE": "git worktree (9e23ad7, release'e dahil)",
+      "DELETE_RISK": "düşük — önce `git -C \"Mas Saas\" worktree list` ile temiz olduğunu görün",
+      "REBUILD_COMMAND": "git worktree add ../Mas-Saas-P1-Audit-Fix fix/p1-prepare-runtime-audit-amplification"
+    },
+    {
+      "PATH": "C:\\Users\\Trade Bilisim\\Mas-Saas-Readiness-20260912",
+      "SIZE_GB": 0.55,
+      "WHY_REGENERABLE": "git worktree (12d322f)",
+      "DELETE_RISK": "düşük — commit'lenmemiş değişiklik yoksa",
+      "REBUILD_COMMAND": "git worktree add ../Mas-Saas-Readiness-20260912 fix/readiness-20260912"
+    },
+    {
+      "PATH": "C:\\Users\\Trade Bilisim\\Mas-Saas-RC*, (4 adet)",
+      "SIZE_GB": 0.12,
+      "WHY_REGENERABLE": "detached RC worktree'leri",
+      "DELETE_RISK": "düşük",
+      "REBUILD_COMMAND": "git worktree add --detach ../Mas-Saas-RC-<sha> <sha>"
+    },
+    {
+      "PATH": "%LOCALAPPDATA%\\ms-playwright",
+      "SIZE_GB": 3.0,
+      "WHY_REGENERABLE": "Playwright tarayıcı ikilileri (birden çok chromium sürümü)",
+      "DELETE_RISK": "düşük — e2e koşusu öncesi yeniden indirilir (internet gerekir)",
+      "REBUILD_COMMAND": "pnpm exec playwright install chromium"
+    },
+    {
+      "PATH": "%TEMP% (Claude oturum scratchpad'leri dahil)",
+      "SIZE_GB": 2.83,
+      "WHY_REGENERABLE": "geçici dosyalar; taşınabilir PostgreSQL ikilileri (~1.2 GB) yeniden indirilebilir",
+      "DELETE_RISK": "düşük — bu oturum kapandıktan sonra",
+      "REBUILD_COMMAND": "(gerekmez)"
+    },
+    {
+      "PATH": "%LOCALAPPDATA%\\pnpm (store/cache)",
+      "SIZE_GB": 0.68,
+      "WHY_REGENERABLE": "pnpm içerik deposu",
+      "DELETE_RISK": "orta — silinirse `pnpm install` yeniden indirir; node_modules hardlink'leri bozulmaz ama yeni kurulum internet ister",
+      "REBUILD_COMMAND": "pnpm install"
+    },
+    {
+      "PATH": "C:\\Users\\Trade Bilisim\\mas-verify-pg",
+      "SIZE_GB": 0.09,
+      "WHY_REGENERABLE": "harcanabilir doğrulama kümesi (bu tur kullanıldı)",
+      "DELETE_RISK": "düşük — tur bitince",
+      "REBUILD_COMMAND": "initdb (taşınabilir pg)"
+    }
+  ],
+  "NEVER_CANDIDATES": [
+    "%LOCALAPPDATA%\\Docker\\wsl\\disk\\docker_data.vhdx (23.83 GB — GERÇEK VERİTABANI)",
+    "Mas Saas\\backups\\* (dump + makbuz)",
+    "kullanıcı belgeleri",
+    "kaynak kod / .git nesneleri",
+    "USB/D: yedekleri",
+    ".env.local",
+    "pagefile.sys (sistem yönetimli)"
+  ],
+  "expected_recoverable_gb_if_all_approved": "≈ 9.7 GB (ms-playwright 3.0 + TEMP 2.8 + derlemeler 2.4 + worktree'ler 1.6)",
+  "deleted_this_turn": []
+}

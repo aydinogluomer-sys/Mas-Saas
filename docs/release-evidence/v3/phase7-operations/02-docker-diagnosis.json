@@ -1,0 +1,37 @@
+{
+  "ACCEPTED_CODE_SHA": "ceca39a3a60c00358d1aa90f00f9b2864237e4ec",
+  "RELEASE_EVIDENCE_SHA": "af210fd971a126c5aa3281f5a299f60b046d1d8b",
+  "ops_branch": "ops/phase7-operations (af210fd'den; kod ağacı ceca39a + yalnız ops/telemetri değişiklikleri)",
+  "date": "2026-09-13",
+  "DOCKER_RECOVERY": "NOT_EXECUTED — izin verilen tersinir adımlar kök nedeni çözemez; disk kapısı da FAIL",
+  "root_cause": {
+    "backend_error": "initializing engine paths: getting WSL CLI image path: cannot find registry key HKLM\\SOFTWARE\\Docker Inc.\\Docker Desktop … getting linuxkit iso path …",
+    "registry_key_HKLM": "MISSING",
+    "registry_key_HKCU": "MISSING",
+    "resources_wsl_docker-wsl-cli.iso": "MISSING",
+    "resources_linuxkit": "MISSING",
+    "resources_present": [
+      "bin",
+      "cli-plugins",
+      "model-runner",
+      "wsl"
+    ],
+    "gui_state": "Docker Desktop başlangıçta hata; sunduğu seçenekler: Quit / Reset to factory defaults"
+  },
+  "allowed_reversible_steps_evaluated": {
+    "normal_start": "Docker Desktop.exe zaten açık, backend erken çıkıyor (aynı hata)",
+    "service_restart": "com.docker.service Manual/Stopped — backend registry anahtarı olmadan motor yolunu bulamıyor; servis restart'ı bu dosyaları yaratmaz",
+    "wsl_shutdown_start": "docker-desktop dağıtımı Stopped; başlatılsa da linuxkit/ISO eksikliği aynı",
+    "context_fix": "docker context default → npipe dockerDesktopLinuxEngine; motor yokken bağlam düzeltmesi anlamsız"
+  },
+  "forbidden_not_done": [
+    "Reset to factory defaults",
+    "WSL unregister",
+    "docker system prune -a",
+    "docker volume prune/rm",
+    "container rm -f mas-radar-pg",
+    "docker_data.vhdx delete/recreate"
+  ],
+  "required_user_action": "Docker Desktop 4.86.0 (ya da üstü) ONARIM KURULUMU (Quit → Installer → Install/Repair). Reset/Clean/Uninstall seçilmeyecek. Öncesinde C: ≥ 8 GB.",
+  "vhdx_unchanged": "2026-09-05 14:41:36 (tur başı = tur sonu)"
+}

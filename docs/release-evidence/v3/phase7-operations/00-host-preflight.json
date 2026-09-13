@@ -1,0 +1,37 @@
+{
+  "ACCEPTED_CODE_SHA": "ceca39a3a60c00358d1aa90f00f9b2864237e4ec",
+  "RELEASE_EVIDENCE_SHA": "af210fd971a126c5aa3281f5a299f60b046d1d8b",
+  "ops_branch": "ops/phase7-operations (af210fd'den; kod ağacı ceca39a + yalnız ops/telemetri değişiklikleri)",
+  "date": "2026-09-13",
+  "mode": "MEASURE_ONLY (hiçbir şey değiştirilmedi)",
+  "disk": {
+    "C_TOTAL_GB": 237,
+    "C_FREE_GB_start": 2.21,
+    "C_FREE_GB_end": 2.19,
+    "D_PRESENT": "NO",
+    "pagefile": "18.76 GB ayrılmış / 3.79 GB kullanımda, sistem yönetimli (pagefile.sys)"
+  },
+  "memory": {
+    "RAM_TOTAL_GB": 7.85,
+    "RAM_FREE_GB_start": 0.5,
+    "note": "bellek kritik düşük; tur boyunca tek işlem seri koşuldu"
+  },
+  "docker": {
+    "Docker Desktop.exe": "4.86.0.236216 (süreç açık, backend 76 MB)",
+    "com.docker.service": "Stopped (Manual)",
+    "HvHost/vmcompute": "Running",
+    "WSL docker-desktop": "Stopped (v2)",
+    "docker CLI": "29.7.2 client OK; server unreachable (npipe dockerDesktopLinuxEngine)"
+  },
+  "docker_data_vhdx": {
+    "path": "%LOCALAPPDATA%\\Docker\\wsl\\disk\\docker_data.vhdx",
+    "size_gb": 23.83,
+    "last_write": "2026-09-05 14:41:36",
+    "changed_this_turn": false
+  },
+  "scheduled_tasks": {
+    "MAS-Nakit-Radar-Gunluk-Yedek": "Ready; LAST_RUN 13.09.2026 03:38:57 LAST_RESULT 0x800710E0; NEXT 14.09 03:00; action mas-daily-backup.cmd; user Trade Bilisim; InteractiveToken; DisallowStartIfOnBatteries=true StopIfGoingOnBatteries=true StartWhenAvailable=(kapalı)",
+    "MAS-Nakit-Radar-Telemetri-Gozetim": "NOT_FOUND (kayıtlı değil)"
+  },
+  "battery": "Win32_Battery mevcut (dizüstü), status=2, %100"
+}

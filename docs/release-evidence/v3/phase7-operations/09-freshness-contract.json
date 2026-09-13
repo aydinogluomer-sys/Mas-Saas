@@ -1,0 +1,76 @@
+{
+  "ACCEPTED_CODE_SHA": "ceca39a3a60c00358d1aa90f00f9b2864237e4ec",
+  "RELEASE_EVIDENCE_SHA": "af210fd971a126c5aa3281f5a299f60b046d1d8b",
+  "ops_branch": "ops/phase7-operations (af210fd'den; kod ağacı ceca39a + yalnız ops/telemetri değişiklikleri)",
+  "date": "2026-09-13",
+  "contract": "≤ 36 saat içinde DOĞRULANMIŞ yedek = dump(>0 bayt, PGDMP) + stage07 makbuzu + sha256 (şimdi yeniden hesaplanır, makbuzla eşit) + boyut + pg_restore --list kanıtı (şimdi ya da sha256-bağlı koşu/off-device kaydı). Yaş = max(makbuz zamanı, mtime) yaşı. LOCAL ve OFF_DEVICE ayrı sinyal.",
+  "files": {
+    "src/lib/ops/backup-freshness.ts": "saf karar + diskPressureLevel",
+    "src/lib/ops/backup-freshness.test.ts": "17/17",
+    "scripts/ops/backup-freshness-probe.ts": "fs + pg_restore (yerel ikili → docker → sha-bağlı kayıt) + statfs",
+    "scripts/ops/backup-fixture.ts": "gerçek pg_dump -Fc fixture (kapılar için)",
+    "scripts/ops/telemetry-snapshot.ts": "backup_age_hours yeniden tanımlandı; backup_offdevice_age_hours + disk_free_gb eklendi; JSON'a backupFreshness/disk",
+    "scripts/ops/telemetry-verify.ts": "gerçek fixture",
+    "scripts/ops/telemetry-alerting-verify.ts": "S0 disk-farkındalığı, S1b/S1c/S1d/S1e/SD negatif kontroller, 8/8 sinyal"
+  },
+  "gates_on_disposable_db": {
+    "db": "mas_radar_phase7_alerting_verify (taşınabilir PG 16.14, 127.0.0.1:54329, 0001–0094 via pnpm db:migrate, ceca39a kodu)",
+    "unit_full": "79 dosya · 1688/1688",
+    "typecheck": "PASS",
+    "lint_changed_files": "PASS",
+    "ops:telemetry:verify": "14/14 ALL PASS (fixture: gerçek pg_dump -Fc, TOC 1321 şimdi ölçüldü)",
+    "ops:telemetry:alerting:verify": "47/47 PASS · 1 SKIP (S0 'hiç uyarı yok' — makine diski 2.19 GB gerçekten kritik) · ALL PASS",
+    "negative_controls": [
+      "S1 boş dizin → ALARM",
+      "S1b geçerli-ama-bayat 72s → ALARM, yaş 72.0",
+      "S1c taze mtime + sha uyuşmaz → 'DOĞRULANMIŞ YEDEK YOK' + sebep",
+      "S1d sahte metin dump → PGDMP yok → ALARM",
+      "S1e off-device tanımsız / DRIVE_ABSENT (Z:\\) / bayat 100s (yerel ok) / taze → temiz",
+      "SD disk: eşik yükseltilerek gerçek ölçümle P1, P2 bandı, varsayılanla makine hâli tutarlı",
+      "S7–S10 teslimat arızası exit 2",
+      "S11 sır taraması 0 eşleşme"
+    ],
+    "real_backup_timestamps_modified": false
+  },
+  "real_backup_dir_run_read_only": {
+    "MAS_BACKUP_DIR": "C:\\Users\\Trade Bilisim\\Mas Saas\\backups (gerçek)",
+    "db_signals_from": "harcanabilir DB (latest_import 'İÇE AKTARIM YOK' gerçek DB'yi anlatmaz)",
+    "runId": "tel-2026-09-13T07-47-36-442Z",
+    "generatedAt": "2026-09-13T07:47:37.146Z",
+    "commitSha": "ceca39a3a60c00358d1aa90f00f9b2864237e4ec",
+    "backupFreshness": {
+      "local": {
+        "verified": {
+          "name": "daily-2026-09-05T00-00-26-552Z.dump",
+          "bytes": 1415581,
+          "sha256": "ff66a352ea3477072cd3ee0e1dd34cccd60dbca660f5b85bbcc84f0737cf47a5",
+          "receiptTimestamp": "2026-09-05T00:00:30.244Z",
+          "ageHours": 199.79,
+          "toc": {
+            "entries": 1391,
+            "source": "pg_restore_now"
+          },
+          "schemaLedger": "87/0087"
+        },
+        "ageHours": 199.79,
+        "scanned": 1,
+        "rejected": []
+      },
+      "offDevice": "DRIVE_ABSENT"
+    },
+    "disk": {
+      "freeGb": 2.19,
+      "level": "critical"
+    },
+    "verdict": "ALERT",
+    "alerts": [
+      "disk_free_gb",
+      "backup_age_hours",
+      "backup_offdevice_age_hours",
+      "latest_import_age_days"
+    ]
+  },
+  "LOCAL_FRESHNESS": "STALE (199.8 s > 36) — doğrulanmış yedek var, taze değil",
+  "OFF_DEVICE_FRESHNESS": "DRIVE_ABSENT",
+  "FRESHNESS_ALERT": "PASS — gerçek durumda ateşledi, taze fixture'da sustu, bayat/bozuk fixture'da ateşledi"
+}
