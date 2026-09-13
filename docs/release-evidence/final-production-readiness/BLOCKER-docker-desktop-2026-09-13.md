@@ -62,3 +62,17 @@ mas_radar_dev ledger      = 87/0087
 users/payments/checks     = 5 Eylül makbuzu ile tutarlı (± açıklanabilir delta)
 docker_data.vhdx kopyası  = D:'de, sha256 eşleşiyor
 ```
+
+## Geçici çözüm (2026-09-13, aynı gün) — taşınabilir PostgreSQL
+
+Docker onarımını beklemeden DB'ye bağlı kapıları kapatmak için **taşınabilir PostgreSQL 16.14** (EDB binaries zip,
+sha256 `98af1417ba6a8dc30543e560e5407833a3b9e7cc7ed20e73b2006f3aa2f04663`) oturum scratchpad'ine açıldı ve
+`127.0.0.1:54329` üzerinde ayrı bir cluster olarak başlatıldı (`--locale=C`, scram-sha-256, yalnız loopback).
+Gerçek DB'ye, `docker_data.vhdx`'e veya konteynere DOKUNMAZ. Bu cluster'da: fresh migration doğrulaması (V2 ve release
+şemaları), 0092/0093 uygulaması, V2 e2e/concurrency, TEMİZ legacy regresyonu (phase3/4/5), RLS/security verify,
+5 Eylül yedeğinin restore provası ve gerçek-klon V2 provası koşuldu (bkz. phase2-tier1-closure.md,
+phase3-import-v2-core.md, phase4-import-v2-product-flow.md, phase6-7-disposable-restore.md).
+
+Kapanmayan kısım DEĞİŞMEDİ: günlük yedek/tazelik (7.1/7.3) ve gerçek cutover (8) Docker'daki gerçek cluster'ı
+gerektirir. Oturum sonunda cluster durduruldu; gerçek veri içeren drill veritabanı silindi (Temp'te gerçek finansal
+veri bırakılmadı).

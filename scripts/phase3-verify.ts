@@ -37,6 +37,16 @@ import { requireDisposableOwnerDatabaseUrl } from "./db/owner-url";
 const pool = new Pool({
   connectionString: requireDisposableOwnerDatabaseUrl("phase3:verify"),
 });
+// Faz 24B'den beri payment_instances bakımı (ensureWindow / generateInstancesForMonth /
+// refreshRiskFlags) yalnız INSERT+UPDATE yetkili KATMAN rollerinde çalışır
+// (engine.ts tierMayMaintainInstances); sahip rol (postgres) sessizce 0 üretir. Bu betik o
+// kapıdan önce yazılmıştı ve gerçek şemada "gen created=0 → clamp yok" diye düşüyordu.
+// Üretim adımları bu yüzden yönetici katmanı olarak koşar; sahip havuz yalnız hazırlık
+// (truncate, review kararları) ve doğrulama sorguları için kalır.
+const tierPool = new Pool({
+  connectionString: requireDisposableOwnerDatabaseUrl("phase3:verify"),
+  options: "-c role=mas_radar_admin",
+});
 const fail = (m: string): never => {
   console.error("PHASE3 VERIFY FAIL:", m);
   process.exit(1);
@@ -115,9 +125,9 @@ async function main() {
 
   // 3) generation — real months + Şubat clamp months
   const today = new Date().toISOString().slice(0, 10);
-  await ensureWindow(pool, today, actorId);
-  const g1 = await generateInstancesForMonth(pool, "2027-02-01", actorId);
-  const g2 = await generateInstancesForMonth(pool, "2027-02-01", actorId); // duplicate attempt
+  await ensureWindow(tierPool, today, actorId);
+  const g1 = await generateInstancesForMonth(tierPool, "2027-02-01", actorId);
+  const g2 = await generateInstancesForMonth(tierPool, "2027-02-01", actorId); // duplicate attempt
   if (g2.created !== 0) fail("duplicate generation created rows");
   console.log(`gen Şubat27: created=${g1.created} shortMonthAdjusted=${g1.shortMonthAdjusted}; rerun created=${g2.created} ✓`);
 
@@ -156,7 +166,7 @@ async function main() {
   console.log(`missing amounts remain NULL ✓ (${instNull[0].n} instance)`);
 
   // 5) risk flags: day-9 cluster (business+paraf+tijen akbank) and 190k critical
-  await refreshRiskFlags(pool, today);
+  await refreshRiskFlags(tierPool, today);
   const cluster = await q(
     `select count(*)::int as n from public.payment_instances
      where 'same_day_cluster' = any(risk_reasons) and extract(day from due_date)=9
@@ -192,6 +202,7 @@ async function main() {
   console.log("paid/unpaid mutations audited ✓ (+2 audit rows, before/after doğru)");
 
   console.log("PHASE3 VERIFY: ALL PASS");
+  await tierPool.end();
   await pool.end();
 }
 main().catch((e) => {
