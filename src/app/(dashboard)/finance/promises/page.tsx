@@ -5,6 +5,7 @@ import {
 import { BAND_LABEL, SCORE_REASON_LABEL, type ScoreBand } from "@/lib/collections/promises";
 import { Badge, type Tone } from "@/components/ui/badge";
 import { Panel, fmtTL } from "@/components/ui/panel";
+import { sumKnownReporting } from "@/lib/currency-policy";
 import { EmptyState, KeyStat, PageHeader, TableShell } from "@/components/ui/shell";
 import { createPromiseAction, detectBrokenAction, resolvePromiseAction } from "./actions";
 
@@ -32,8 +33,11 @@ export default async function PromisesPage({
   const overdue = open.filter((p) => p.isOverdue);
   // Unknown amounts are excluded from the total rather than counted as zero, and the count of
   // them is shown separately — a total that silently swallowed them would understate exposure.
-  const knownTotal = open.reduce((sum, p) => sum + (p.promisedAmount ?? 0), 0);
-  const unknownCount = open.filter((p) => p.promisedAmount == null).length;
+  // PHASE 2.2 (#58): toplam yalnız TRY sözler; TRY-dışı söz sayısı ayrıca gösterilir.
+  const known = sumKnownReporting(open, (p) => p.promisedAmount);
+  const knownTotal = known.total;
+  const unknownCount = known.missing;
+  const foreignCount = known.foreignCount;
 
   return (
     <>
@@ -55,7 +59,8 @@ export default async function PromisesPage({
       <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
         <KeyStat label="Açık söz" value={open.length} tone={open.length > 0 ? "info" : "neutral"} />
         <KeyStat label="Vadesi geçmiş" value={overdue.length} tone={overdue.length > 0 ? "warn" : "pos"} />
-        <KeyStat label="Bilinen tutar" value={fmtTL(knownTotal)} tone="info" />
+        <KeyStat label="Bilinen tutar (TRY)" value={fmtTL(knownTotal)} tone="info"
+          sub={foreignCount > 0 ? `${foreignCount} söz TRY-dışı — toplamda yok` : undefined} />
         <KeyStat label="Tutarı belirsiz" value={unknownCount} tone={unknownCount > 0 ? "warn" : "neutral"} />
       </div>
 

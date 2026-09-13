@@ -15,6 +15,7 @@ import {
 } from "@/lib/invoices/engine";
 import { Badge, type Tone } from "@/components/ui/badge";
 import { Panel, fmtTL } from "@/components/ui/panel";
+import { sumKnownReporting } from "@/lib/currency-policy";
 import { PageHeader } from "@/components/ui/shell";
 import {
   cancelInvoiceAction, changeStatusAction, createInvoiceAction, recordPaymentAction,
@@ -50,8 +51,9 @@ export default async function InvoicesPage({
   ]);
 
   const overdue = openItems.filter((i) => (i.daysOverdue ?? 0) > 0);
-  const receivable = openItems.filter((i) => i.direction === "sales").reduce((n, i) => n + i.remaining, 0);
-  const payable = openItems.filter((i) => i.direction === "purchase").reduce((n, i) => n + i.remaining, 0);
+  // PHASE 2.2 (#53): toplamlar yalnız TRY faturalardan; TRY-dışı açık fatura sayısı ayrıca gösterilir.
+  const receivable = sumKnownReporting(openItems.filter((i) => i.direction === "sales"), (i) => i.remaining);
+  const payable = sumKnownReporting(openItems.filter((i) => i.direction === "purchase"), (i) => i.remaining);
 
   return (
     <>
@@ -71,8 +73,8 @@ export default async function InvoicesPage({
       {sp.result && <div className="mb-3 rounded border border-pos/40 bg-pos/10 p-2 text-sm text-pos">{sp.result}</div>}
 
       <div className="mb-4 grid grid-cols-2 gap-2 lg:grid-cols-4">
-        <Panel title="AÇIK ALACAK"><b className="font-mono text-lg text-pos">{fmtTL(receivable)}</b></Panel>
-        <Panel title="AÇIK BORÇ"><b className="font-mono text-lg text-neg">{fmtTL(payable)}</b></Panel>
+        <Panel title="AÇIK ALACAK (TRY)" subtitle={receivable.foreignCount > 0 ? `${receivable.foreignCount} fatura TRY-dışı — toplamda yok` : undefined}><b className="font-mono text-lg text-pos">{fmtTL(receivable.total)}</b></Panel>
+        <Panel title="AÇIK BORÇ (TRY)" subtitle={payable.foreignCount > 0 ? `${payable.foreignCount} fatura TRY-dışı — toplamda yok` : undefined}><b className="font-mono text-lg text-neg">{fmtTL(payable.total)}</b></Panel>
         <Panel title="VADESİ GEÇMİŞ"><b className="font-mono text-lg">{overdue.length}</b></Panel>
         <Panel title="AÇIK KALEM"><b className="font-mono text-lg">{openItems.length}</b></Panel>
       </div>

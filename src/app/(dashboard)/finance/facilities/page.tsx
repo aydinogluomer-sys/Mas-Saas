@@ -7,6 +7,7 @@ import { Badge, type Tone } from "@/components/ui/badge";
 import { Panel, fmtTL } from "@/components/ui/panel";
 import { EmptyState, KeyStat, PageHeader, TableShell } from "@/components/ui/shell";
 import { requireRouteAccess } from "@/lib/authz/route-guard";
+import { isReportingCurrency } from "@/lib/currency-policy";
 
 export const dynamic = "force-dynamic";
 
@@ -24,7 +25,8 @@ export default async function FacilitiesPage() {
     pool.query(
       `select facility_id, facility_name, facility_type, currency, status, lender_name,
               limit_amount, drawn_amount, available_amount, utilization_ratio, over_limit,
-              to_char(expiry_date,'YYYY-MM-DD') as expiry_date, days_to_expiry
+              to_char(expiry_date,'YYYY-MM-DD') as expiry_date, days_to_expiry,
+              foreign_drawdown_count
        from public.credit_facility_utilization
        order by status, expiry_date nulls last, facility_name`),
     pool.query(
@@ -51,9 +53,14 @@ export default async function FacilitiesPage() {
   ]);
 
   const active = facilities.rows.filter((f) => f.status === "active");
-  const totalLimit = active.reduce((s, f) => s + Number(f.limit_amount ?? 0), 0);
-  const totalDrawn = active.reduce((s, f) => s + Number(f.drawn_amount ?? 0), 0);
-  const totalAvailable = active.reduce((s, f) => s + Number(f.available_amount ?? 0), 0);
+  // PHASE 2.2 (#33): toplamlar yalnız TRY limitlerden; USD/EUR limit TRY limitle toplanmaz,
+  // sayısı ekranda söylenir. Satır bazında para birimi zaten görünür.
+  const activeTry = active.filter((f) => isReportingCurrency(f.currency));
+  const foreignActive = active.length - activeTry.length;
+  const totalLimit = activeTry.reduce((s, f) => s + Number(f.limit_amount ?? 0), 0);
+  const totalDrawn = activeTry.reduce((s, f) => s + Number(f.drawn_amount ?? 0), 0);
+  const totalAvailable = activeTry.reduce((s, f) => s + Number(f.available_amount ?? 0), 0);
+  const mismatchedDrawdowns = facilities.rows.reduce((s, f) => s + Number(f.foreign_drawdown_count ?? 0), 0);
   const breached = covenants.rows.filter((c) => c.last_test_result === "breached");
   const expiringSoon = facilities.rows.filter(
     (f) => f.days_to_expiry != null && Number(f.days_to_expiry) >= 0 && Number(f.days_to_expiry) <= 90
@@ -70,8 +77,10 @@ export default async function FacilitiesPage() {
       />
 
       <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-        <KeyStat label="Toplam limit (aktif)" value={fmtTL(totalLimit)} tone="info" />
-        <KeyStat label="Kullanılan" value={fmtTL(totalDrawn)} tone={totalDrawn > 0 ? "warn" : "neutral"} />
+        <KeyStat label="Toplam limit (aktif, TRY)" value={fmtTL(totalLimit)} tone="info"
+          sub={foreignActive > 0 ? `${foreignActive} limit TRY-dışı — toplamda yok` : undefined} />
+        <KeyStat label="Kullanılan" value={fmtTL(totalDrawn)} tone={totalDrawn > 0 ? "warn" : "neutral"}
+          sub={mismatchedDrawdowns > 0 ? `${mismatchedDrawdowns} çekiş limitin para biriminden farklı — kullanımda yok` : undefined} />
         {/* Available liquidity that exists without being borrowed — the number a facility
             register exists to surface. */}
         <KeyStat label="Kullanılabilir" value={fmtTL(totalAvailable)} tone="pos" />

@@ -5,6 +5,7 @@
 // floats is how a 12-invoice settlement ends up a kuruş short and leaves a phantom open item.
 
 import { decimal, money, sumDecimal, type Decimal } from "@/lib/money";
+import { partitionByCurrency } from "@/lib/currency-policy";
 
 /* ── ageing ───────────────────────────────────────────────────────────────────────────── */
 
@@ -43,12 +44,16 @@ export function collectionBucket(dueDate: string | null, todayISO: string): Coll
 export interface AgeingRow {
   dueDate: string | null;
   openAmount: number;
+  /** PHASE 2.2 (#50): alan varsa ve TRY değilse tutar kovaya toplanmaz, `foreignCount`ta sayılır. */
+  currency?: string | null;
 }
 
 export interface AgeingSummary {
   bucket: CollectionBucket;
   count: number;
   amount: number;
+  /** TRY-dışı satır — `amount`a girmedi. */
+  foreignCount: number;
 }
 
 /**
@@ -64,7 +69,8 @@ export function summarizeAgeing(rows: AgeingRow[], todayISO: string): AgeingSumm
   for (const r of rows) byBucket.get(collectionBucket(r.dueDate, todayISO))!.push(r);
   return COLLECTION_BUCKETS.map((bucket) => {
     const items = byBucket.get(bucket)!;
-    return { bucket, count: items.length, amount: money(sumDecimal(items.map((i) => i.openAmount)).toString()) };
+    const { comparable, foreignCount } = partitionByCurrency(items);
+    return { bucket, count: items.length, amount: money(sumDecimal(comparable.map((i) => i.openAmount)).toString()), foreignCount };
   });
 }
 

@@ -315,7 +315,7 @@ async function main(): Promise<void> {
   const mdUnknown = renderBriefing({
     todayISO: "2099-01-01", availableCash: null, minCashFloor: null,
     liquidityGap7: null, liquidityGap30: null, projectedContracted7: null,
-    todayOutflowKnown: 0, todayInflowKnown: 0, todayCount: 0, todayUnknownAmountCount: 0,
+    todayOutflowKnown: 0, todayInflowKnown: 0, todayCount: 0, todayUnknownAmountCount: 0, todayForeignCurrencyCount: 0, overdueForeignCurrencyCount: 0,
     overdueCount: 0, overdueKnownOutflow: 0, criticalControls: [], openAlertCount: 0,
     newCriticalAlerts: [], promisesDueToday: 0, overduePromises: 0,
     dsoDays: null, dpoDays: null, cycleExcludingInventory: null,
@@ -340,7 +340,7 @@ async function main(): Promise<void> {
   const base = {
     todayISO: "2099-01-01", availableCash: 1, minCashFloor: null,
     liquidityGap7: null, liquidityGap30: null, projectedContracted7: null,
-    todayOutflowKnown: 0, todayInflowKnown: 0, todayCount: 0, todayUnknownAmountCount: 0,
+    todayOutflowKnown: 0, todayInflowKnown: 0, todayCount: 0, todayUnknownAmountCount: 0, todayForeignCurrencyCount: 0, overdueForeignCurrencyCount: 0,
     overdueCount: 0, overdueKnownOutflow: 0, criticalControls: [] as string[], openAlertCount: 0,
     newCriticalAlerts: [] as string[], promisesDueToday: 0, overduePromises: 0,
     dsoDays: null, dpoDays: null, cycleExcludingInventory: null,

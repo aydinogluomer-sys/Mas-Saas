@@ -15,6 +15,9 @@ const DAY_MS = 86400000;
 const addDays = (iso: string, days: number) => new Date(Date.parse(iso) + days * DAY_MS).toISOString().slice(0, 10);
 const bucketTotal = (rows: PaymentDashboardBucket[]) => rows.reduce((sum, row) => sum + row.knownAmount, 0);
 const bucketCount = (rows: PaymentDashboardBucket[]) => rows.reduce((sum, row) => sum + row.count, 0);
+// PHASE 2.2 (#8): kova toplamlari SQL'de yalniz TRY (queries.ts); TRY-disi kalemler burada sayilir ve
+// ekranda "n kalem TRY-disi — toplamda yok" olarak gorunur (plan §2.3). Sessiz dusme yok.
+const bucketForeign = (rows: PaymentDashboardBucket[]) => rows.reduce((sum, row) => sum + row.foreignCurrencyCount, 0);
 
 async function PaymentsDashboardContent() {
   const pool = getPool();
@@ -61,7 +64,7 @@ async function PaymentsDashboardContent() {
     for (const row of rows) perDate.set(row.dueDate, (perDate.get(row.dueDate) ?? 0) + row.knownAmount);
     const peakDate = [...perDate].sort((a, b) => b[1] - a[1])[0]?.[0] ?? null;
     const knownAmount = bucketTotal(rows);
-    return { id, label, count: bucketCount(rows), knownAmount, unknownCount: rows.reduce((sum, row) => sum + row.unknownCount, 0), share: knownTotal ? knownAmount / knownTotal : 0, peakDate };
+    return { id, label, count: bucketCount(rows), knownAmount, unknownCount: rows.reduce((sum, row) => sum + row.unknownCount, 0), foreignCount: bucketForeign(rows), share: knownTotal ? knownAmount / knownTotal : 0, peakDate };
   });
   const overdueKnown = bucketTotal(overdueRows);
   const ageingDefs = [["1-30", "1–30 gün", 1, 30], ["31-90", "31–90 gün", 31, 90], ["91+", "91+ gün", 91, Infinity]] as const;
@@ -71,14 +74,17 @@ async function PaymentsDashboardContent() {
     return { id, label, count: bucketCount(rows), knownAmount, share: overdueKnown ? knownAmount / overdueKnown : 0, oldestDueDate: rows.map((row) => row.dueDate).sort()[0] ?? null };
   });
   const flexLabels = { critical: "Kritik", flexible: "Esnek", optional: "İsteğe bağlı", unclassified: "Sınıflandırılmadı" } as const;
-  const flexibility = (["critical", "flexible", "optional", "unclassified"] as const).map((id) => ({ id, label: flexLabels[id], count: 0, templateCount: 0, knownAmount: 0, unknownCount: 0, ...rawFlexibility.find((row) => row.id === id) }));
+  const flexibility = (["critical", "flexible", "optional", "unclassified"] as const).map((id) => ({ id, label: flexLabels[id], count: 0, templateCount: 0, knownAmount: 0, unknownCount: 0, foreignCurrencyCount: 0, ...rawFlexibility.find((row) => row.id === id) }));
   const pct = (value:number) => `%${new Intl.NumberFormat("tr-TR",{maximumFractionDigits:1}).format(value*100)}`;
   return <>
-    <div className="flex justify-end"><Badge tone={overdueCount ? "red" : "green"} dot>{overdueCount} geciken</Badge></div>
+    <div className="flex flex-wrap items-center justify-end gap-2">
+      {bucketForeign(buckets) > 0 && <Badge tone="amber">{bucketForeign(buckets)} kalem TRY-dışı — toplamlarda yok</Badge>}
+      <Badge tone={overdueCount ? "red" : "green"} dot>{overdueCount} geciken</Badge>
+    </div>
     <div className="grid grid-cols-2 gap-2 lg:grid-cols-4">
-      <KpiCard label="Bugün" value={bucketCount(todayRows) ? fmtTL(bucketTotal(todayRows)) : "Ödeme yok"} tone={bucketCount(todayRows) ? "warn" : "pos"} />
-      <KpiCard label="Yarın" value={bucketCount(tomorrowRows) ? fmtTL(bucketTotal(tomorrowRows)) : "Ödeme yok"} tone={bucketCount(tomorrowRows) ? "info" : "pos"} />
-      <KpiCard label="7 günlük çıkış" value={fmtTL(bucketTotal(weekRows))} />
+      <KpiCard label="Bugün" value={bucketCount(todayRows) ? fmtTL(bucketTotal(todayRows)) : "Ödeme yok"} tone={bucketCount(todayRows) ? "warn" : "pos"} note={bucketForeign(todayRows) > 0 ? `${bucketForeign(todayRows)} kalem TRY-dışı — toplamda yok` : undefined} />
+      <KpiCard label="Yarın" value={bucketCount(tomorrowRows) ? fmtTL(bucketTotal(tomorrowRows)) : "Ödeme yok"} tone={bucketCount(tomorrowRows) ? "info" : "pos"} note={bucketForeign(tomorrowRows) > 0 ? `${bucketForeign(tomorrowRows)} kalem TRY-dışı — toplamda yok` : undefined} />
+      <KpiCard label="7 günlük çıkış" value={fmtTL(bucketTotal(weekRows))} note={bucketForeign(weekRows) > 0 ? `${bucketForeign(weekRows)} kalem TRY-dışı — toplamda yok` : undefined} />
       <KpiCard label="Riskli gün" value={risky.length} tone={risky.length ? "neg" : "pos"} />
     </div>
     <Panel title="STRATEJİK ÖDEME UFKU" subtitle="Gecikmiş portföy ve bugünden ileri 24 aylık bilinen yük">
@@ -86,7 +92,7 @@ async function PaymentsDashboardContent() {
         {horizons.map((horizon) => <Link key={horizon.id} href={`/payments?chartPeriod=${horizon.id === "overdue" || horizon.id === "0-3" ? "3m" : horizon.id === "4-6" ? "6m" : horizon.id === "7-12" ? "12m" : "24m"}`} className="row-hover border border-line-faint p-3" style={{borderRadius:"var(--radius-md)"}}>
           <div className="text-[10px] uppercase tracking-wider text-tone-3">{horizon.label}</div>
           <div className="mt-2 font-mono text-lg">{fmtTL(horizon.knownAmount)}</div>
-          <div className="mt-1 flex flex-wrap gap-1 text-[10px] text-tone-3"><span>{horizon.count} kayıt</span><span>· {pct(horizon.share)}</span>{horizon.unknownCount > 0 && <Badge tone="amber">{horizon.unknownCount} tutar eksik</Badge>}</div>
+          <div className="mt-1 flex flex-wrap gap-1 text-[10px] text-tone-3"><span>{horizon.count} kayıt</span><span>· {pct(horizon.share)}</span>{horizon.unknownCount > 0 && <Badge tone="amber">{horizon.unknownCount} tutar eksik</Badge>}{horizon.foreignCount > 0 && <Badge tone="amber">{horizon.foreignCount} TRY-dışı · toplamda yok</Badge>}</div>
           <div className="mt-2 text-[10px] text-tone-3">En yoğun gün: {horizon.peakDate ?? "—"}</div>
         </Link>)}
       </div>
@@ -103,7 +109,7 @@ async function PaymentsDashboardContent() {
       <Panel title="ESNEKLİK VE KRİTİKLİK" subtitle="Yalnız açık kaynak öncelikleri kullanılır; sistem tahmin üretmez">
         <div className="space-y-2">{flexibility.filter((group) => group.count > 0).map((group) => <div key={group.id} className="grid grid-cols-[1fr_auto] items-center gap-3 border-b border-line-faint py-2">
           <div><Badge tone={group.id === "critical" ? "red" : group.id === "optional" ? "green" : group.id === "flexible" ? "blue" : "neutral"}>{group.label}</Badge><span className="ml-2 text-xs text-tone-3">{group.templateCount} ödeme kalemi</span></div>
-          <div className="text-right font-mono text-sm">{fmtTL(group.knownAmount)}{group.unknownCount > 0 && <div className="text-[10px] text-warn">{group.unknownCount} tutar eksik</div>}</div>
+          <div className="text-right font-mono text-sm">{fmtTL(group.knownAmount)}{group.unknownCount > 0 && <div className="text-[10px] text-warn">{group.unknownCount} tutar eksik</div>}{group.foreignCurrencyCount > 0 && <div className="text-[10px] text-warn">{group.foreignCurrencyCount} TRY-dışı · toplamda yok</div>}</div>
         </div>)}</div>
         {flexibility.some((group) => group.id === "unclassified" && group.count > 0) && <div className="mt-3 flex flex-wrap items-center justify-between gap-2 border border-warn p-3 text-xs"><span>Bu kalemlerin kaynak dosyasında esneklik bilgisi yok. Yanlış karar üretmemek için sistem otomatik tahmin yapmadı.</span><Link href="/payments/items" className="button-accent px-3 py-2">Kalemleri sınıflandır</Link></div>}
       </Panel>

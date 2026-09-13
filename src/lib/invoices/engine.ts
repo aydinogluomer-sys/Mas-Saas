@@ -396,7 +396,7 @@ export async function loadOpenItems(pool: Pool, limit = 200) {
     `select id::text, direction, invoice_no, party_name,
             to_char(issue_date,'YYYY-MM-DD') as issue_date,
             to_char(due_date,'YYYY-MM-DD') as due_date,
-            gross_amount, paid_amount, remaining, status, days_overdue, ageing_bucket
+            gross_amount, paid_amount, remaining, status, days_overdue, ageing_bucket, currency
      from public.invoice_open_items
      order by (due_date is null), due_date, remaining desc limit $1`, [limit]);
   return r.rows.map((x) => ({
@@ -405,6 +405,7 @@ export async function loadOpenItems(pool: Pool, limit = 200) {
     grossAmount: moneyOrNull(x.gross_amount) ?? 0, paidAmount: moneyOrNull(x.paid_amount) ?? 0,
     remaining: moneyOrNull(x.remaining) ?? 0, status: x.status as InvoiceStatus,
     daysOverdue: intOrNull(x.days_overdue), ageingBucket: x.ageing_bucket as string,
+    currency: String(x.currency ?? ""),
   }));
 }
 

@@ -129,6 +129,8 @@ export interface PaymentDashboardFlexibility {
   templateCount: number;
   knownAmount: number;
   unknownCount: number;
+  /** PHASE 2.2: TRY-dışı kalem — knownAmount'a girmez. */
+  foreignCurrencyCount: number;
 }
 
 /**
@@ -216,9 +218,11 @@ export async function loadPaymentDashboard(
       select to_char(due_date,'YYYY-MM-DD') as due_date,
              case when due_date < $1::date then 'overdue' when status='partial' then 'partial' else 'planned' end as pressure_status,
              count(*)::int as record_count,
-             coalesce(sum(remaining) filter (where remaining is not null),0) as known_amount,
+             -- PHASE 2.2 (#3): goruntuleme toplamlari da yalniz TRY; TRY-disi kalem toplama girmez,
+             -- foreign_currency_count ile ekranda sayilir (plan §2.3).
+             coalesce(sum(remaining) filter (where remaining is not null and currency = 'TRY'),0) as known_amount,
              count(*) filter (where remaining is null)::int as unknown_count,
-             max(remaining) filter (where remaining is not null) as max_amount,
+             max(remaining) filter (where remaining is not null and currency = 'TRY') as max_amount,
              count(*) filter (where currency <> 'TRY')::int as foreign_currency_count,
              count(*) filter (where decision_flexibility='critical')::int as critical_count,
              count(*) filter (where decision_flexibility='flexible')::int as flexible_count,
@@ -256,8 +260,9 @@ export async function loadPaymentDashboard(
     ), flexibility as (
       select decision_flexibility, count(*)::int as record_count,
              count(distinct coalesce(payment_id,id))::int as template_count,
-             coalesce(sum(remaining) filter (where remaining is not null),0) as known_amount,
-             count(*) filter (where remaining is null)::int as unknown_count
+             coalesce(sum(remaining) filter (where remaining is not null and currency = 'TRY'),0) as known_amount,
+             count(*) filter (where remaining is null)::int as unknown_count,
+             count(*) filter (where currency <> 'TRY')::int as foreign_currency_count
       from active group by decision_flexibility
     ), watch_list as (
       select id, payment_id, coalesce(payment_name,'(silinmiş kalem)') as name,
@@ -308,6 +313,7 @@ export async function loadPaymentDashboard(
       id: row.decision_flexibility as PaymentDashboardFlexibility["id"],
       count: Number(row.record_count), templateCount: Number(row.template_count),
       knownAmount: moneyOrNull(row.known_amount as string | number | null) ?? 0, unknownCount: Number(row.unknown_count),
+      foreignCurrencyCount: Number(row.foreign_currency_count ?? 0),
     })),
     watchList: payload.watch_list.map((row) => ({
       ...mapInstanceRow(row), remaining: moneyOrNull(row.remaining as string | number | null),
@@ -320,11 +326,13 @@ export async function loadPaymentDashboard(
 
 export async function monthSummary(pool: Pool, monthStartISO: string) {
   const r = await pool.query(
+    // PHASE 2.2 (#2): uc toplam da yalniz TRY; TRY-disi satirlar foreign_count ile doner.
     `select
-       coalesce(sum(amount) filter (where amount is not null),0) as known_total,
-       coalesce(sum(amount) filter (where amount is not null and status in ('unpaid','partial','planned','late')),0) as known_remaining,
-       coalesce(sum(coalesce(paid_amount, amount)) filter (where status='paid'),0) as paid_known,
+       coalesce(sum(amount) filter (where amount is not null and currency = 'TRY'),0) as known_total,
+       coalesce(sum(amount) filter (where amount is not null and currency = 'TRY' and status in ('unpaid','partial','planned','late')),0) as known_remaining,
+       coalesce(sum(coalesce(paid_amount, amount)) filter (where status='paid' and currency = 'TRY'),0) as paid_known,
        count(*) filter (where amount is null and status <> 'cancelled')::int as missing_count,
+       count(*) filter (where currency <> 'TRY' and status <> 'cancelled')::int as foreign_count,
        count(*)::int as total_count
      from public.payment_instances where instance_month = $1`,
     [monthStartISO],
@@ -338,6 +346,8 @@ export async function monthSummary(pool: Pool, monthStartISO: string) {
     known_remaining: moneyOrNull(row.known_remaining as string) ?? 0,
     paid_known: moneyOrNull(row.paid_known as string) ?? 0,
     missing_count: intOrNull(row.missing_count as number) ?? 0,
+    /** PHASE 2.2: TRY-dışı kalem sayısı — hiçbir toplama girmedi. */
+    foreign_count: intOrNull(row.foreign_count as number) ?? 0,
     total_count: intOrNull(row.total_count as number) ?? 0,
   };
 }

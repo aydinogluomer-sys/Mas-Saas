@@ -22,9 +22,12 @@ import {
 
 const toReportInstance = (r: {
   name: string; due_date: string; amount: number | null; status: string; risk_level: string; risk_reasons: string[];
+  currency?: string | null;
 }): ReportInstance => ({
   name: r.name, dueDate: r.due_date, amount: r.amount, status: r.status,
   riskLevel: r.risk_level, riskReasons: r.risk_reasons,
+  // PHASE 2.2 (#10): BASE sorgusu currency'yi secer; yoksa null (= bilinmiyor, TRY varsayilmaz).
+  currency: r.currency ?? null,
 });
 
 async function maturitiesBetween(pool: Pool, fromISO: string, toISO: string): Promise<ReportMaturity[]> {
@@ -144,7 +147,10 @@ export async function generateWeekly(pool: Pool, todayISO: string, actorId: stri
 
 async function distribution(pool: Pool, monthStart: string, joinCol: string, nameSelect: string) {
   const r = await pool.query(
-    `select coalesce(${nameSelect}, '(atanmadı)') as key, sum(i.amount) as amount
+    // PHASE 2.2 (#9): dagilim yalniz TRY kalemlerden; TRY-disi satirlar foreign_count ile doner.
+    `select coalesce(${nameSelect}, '(atanmadı)') as key,
+            sum(i.amount) filter (where i.currency = 'TRY') as amount,
+            count(*) filter (where i.currency <> 'TRY')::int as foreign_count
      from public.payment_instances i
      join public.payments p on p.id = i.payment_id
      ${joinCol}
@@ -154,7 +160,7 @@ async function distribution(pool: Pool, monthStart: string, joinCol: string, nam
   );
   // Postgres already summed these exactly; only the trip into JS needed fixing. Ordering is
   // still done in SQL on the numeric, so the ranking is unaffected by the decode.
-  return r.rows.map((x) => ({ key: x.key as string, amount: moneyOrNull(x.amount) ?? 0 }));
+  return r.rows.map((x) => ({ key: x.key as string, amount: moneyOrNull(x.amount) ?? 0, foreignCount: Number(x.foreign_count ?? 0) }));
 }
 
 export async function generateMonthly(pool: Pool, monthStartISO: string, actorId: string): Promise<{ id: string; bodyMd: string }> {

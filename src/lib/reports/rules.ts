@@ -12,6 +12,7 @@ import { addDaysISO } from "@/lib/financing/rules";
  * code should import istanbulDateISO from "@/lib/time/istanbul" directly. */
 
 export { istanbulDateISO } from "@/lib/time/istanbul";
+import { foreignNote, isReportingCurrency, sumKnownReporting } from "@/lib/currency-policy";
 
 /* ── shared shapes (plain data so builders stay unit-testable without a DB) ── */
 
@@ -22,6 +23,8 @@ export interface ReportInstance {
   status: string;
   riskLevel: string;
   riskReasons: string[];
+  /** PHASE 2.2 (#10): `null` = bilinmiyor; TRY-dışı/bilinmeyen kalem toplama girmez, sayılır. */
+  currency?: string | null;
 }
 
 export interface ReportMaturity {
@@ -35,13 +38,11 @@ export interface ReportMaturity {
 const OPEN = new Set(["unpaid", "partial", "planned", "late"]);
 const isOpen = (s: string) => OPEN.has(s);
 
-function sumKnown(items: Array<{ amount: number | null }>): { total: number; missing: number } {
-  let total = 0, missing = 0;
-  for (const i of items) {
-    if (i.amount == null) missing++;
-    else if (i.amount > 0) total += i.amount;
-  }
-  return { total, missing };
+// PHASE 2.2 (#10): para birimi alanı taşıyan kalemlerde yalnız TRY toplanır; alanı olmayan
+// (çek/taksit — yapısal TRY) kalemler eskisi gibi toplanır. `foreign` = toplamda olmayan kalem.
+function sumKnown(items: Array<{ amount: number | null; currency?: string | null }>): { total: number; missing: number; foreign: number } {
+  const k = sumKnownReporting(items, (i) => i.amount, { positiveOnly: true });
+  return { total: k.total, missing: k.missing, foreign: k.foreignCount };
 }
 
 const fmtTL = (n: number | null): string =>
@@ -74,17 +75,20 @@ export function buildDailyReport(input: DailyReportInput, todayISO: string): Dai
   const tomorrow = addDaysISO(todayISO, 1);
   const dueToday = input.dueSoon.filter((i) => i.dueDate === todayISO);
   const dueTomorrow = input.dueSoon.filter((i) => i.dueDate === tomorrow);
-  const { total: next7KnownTotal, missing: next7MissingCount } = sumKnown(input.dueSoon);
+  const { total: next7KnownTotal, missing: next7MissingCount, foreign: next7ForeignCount } = sumKnown(input.dueSoon);
   const overdueKnown = sumKnown(input.overdue);
   const checksNext7 = input.maturities.filter((m) => m.kind === "check");
+  // Eşik TRY (`critical_payment_threshold_try`): TRY-dışı kalem eşikle tartılmaz (Tier 1 kuralı).
   const criticalItems = input.dueSoon.filter(
-    (i) => i.amount != null && i.amount >= input.criticalThreshold && isOpen(i.status),
+    (i) => i.amount != null && (i.currency === undefined || isReportingCurrency(i.currency))
+      && i.amount >= input.criticalThreshold && isOpen(i.status),
   );
 
   const actions: string[] = [];
   if (dueToday.length) actions.push(`Bugün ${dueToday.length} ödeme — nakit hazırla`);
   if (input.overdue.length) actions.push(`${input.overdue.length} geciken kalem — acil kontrol`);
   if (next7MissingCount) actions.push(`${next7MissingCount} kalemde tutar eksik — kaynağı doğrula`);
+  if (next7ForeignCount) actions.push(`${next7ForeignCount} kalem TRY-dışı — toplamda yok, ayrıca değerlendir`);
   if (criticalItems.length) actions.push(`${criticalItems.length} kritik ödeme (≥${fmtTL(input.criticalThreshold)}) — öncelik ver`);
   if (checksNext7.length) actions.push(`${checksNext7.length} çek 7 gün içinde vadesinde`);
   if (actions.length === 0) actions.push("Kritik aksiyon yok — rutin kontrol yeterli");
@@ -99,9 +103,9 @@ export function buildDailyReport(input: DailyReportInput, todayISO: string): Dai
     `## Yarın (${dueTomorrow.length})`,
     ...(dueTomorrow.length ? dueTomorrow.map(line) : ["- yok"]),
     ``,
-    `## 7 gün bilinen toplam: ${fmtTL(next7KnownTotal)}${next7MissingCount ? ` · ${next7MissingCount} kalem tutar eksik` : ""}`,
+    `## 7 gün bilinen toplam: ${fmtTL(next7KnownTotal)}${next7MissingCount ? ` · ${next7MissingCount} kalem tutar eksik` : ""}${next7ForeignCount ? ` · ${foreignNote(next7ForeignCount)}` : ""}`,
     ``,
-    `## Geciken (${input.overdue.length}) — bilinen ${fmtTL(overdueKnown.total)}`,
+    `## Geciken (${input.overdue.length}) — bilinen ${fmtTL(overdueKnown.total)}${overdueKnown.foreign ? ` · ${foreignNote(overdueKnown.foreign)}` : ""}`,
     ...(input.overdue.length ? input.overdue.slice(0, 10).map(line) : ["- yok"]),
     ``,
     `## 7 gün içindeki çekler (${checksNext7.length})`,

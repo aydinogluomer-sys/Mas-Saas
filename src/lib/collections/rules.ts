@@ -11,7 +11,8 @@
 // separate, audited operator action (`markBadDebt`), and no score anywhere is wired to it —
 // CLAUDE.md reserves that judgement for a human, and migration 0051 says the same in SQL.
 
-import { decimal, money, rate, sumDecimal } from "@/lib/money";
+import { decimal, money, rate } from "@/lib/money";
+import { isReportingCurrency, sumKnownReporting } from "@/lib/currency-policy";
 
 /* ── expected collection date ─────────────────────────────────────────────────────────── */
 
@@ -223,6 +224,8 @@ export interface PayableItem {
   amount: number | null;
   flexibilityClass: string;
   priorityRank: number;
+  /** PHASE 2.2 (#57): `null` = bilinmiyor; TRY-dışı kalem TRY nakitle KARŞILANAMAZ — sıralanır, toplanmaz. */
+  currency?: string | null;
 }
 
 export interface ScheduledPayable extends PayableItem {
@@ -237,6 +240,8 @@ export interface PaymentSchedule {
   items: ScheduledPayable[];
   totalKnown: number;
   unknownCount: number;
+  /** TRY-dışı ya da para birimi bilinmeyen kalemler — kümülatife girmedi, "karşılandı" denmedi. */
+  foreignCount: number;
   coveredCount: number;
   shortfall: number;
   /** The first item the cash runs out on — the number a CFO actually wants. */
@@ -261,6 +266,7 @@ export function scheduleWithinCash(items: PayableItem[], availableCash: number):
 
   let cumulative = decimal(0);
   let unknownCount = 0;
+  let foreignCount = 0;
   let coveredCount = 0;
   let firstUncoveredLabel: string | null = null;
   const cash = decimal(availableCash);
@@ -273,6 +279,17 @@ export function scheduleWithinCash(items: PayableItem[], availableCash: number):
         cumulative: money(cumulative.toString()),
         // An unknown amount cannot be declared covered; claiming otherwise is how an
         // unpriced obligation quietly becomes a surprise.
+        covered: false,
+        deferrable: item.flexibilityClass !== "critical",
+      };
+    }
+    // PHASE 2.2: `availableCash` TRY'dir. TRY-dışı (ya da para birimi bilinmeyen) kalem bu nakitle
+    // ne karşılanır ne de kümülatife eklenir — aksi hâlde 1.000 USD, 1.000 TRY gibi düşerdi.
+    if ("currency" in item && item.currency !== undefined && !isReportingCurrency(item.currency)) {
+      foreignCount++;
+      return {
+        ...item,
+        cumulative: money(cumulative.toString()),
         covered: false,
         deferrable: item.flexibilityClass !== "critical",
       };
@@ -295,13 +312,14 @@ export function scheduleWithinCash(items: PayableItem[], availableCash: number):
     items: scheduled,
     totalKnown,
     unknownCount,
+    foreignCount,
     coveredCount,
     shortfall: money((shortfallDec.gt(0) ? shortfallDec : decimal(0)).toString()),
     firstUncoveredLabel,
   };
 }
 
-/** Total known exposure of a set of payables; unknowns are skipped, never zeroed. */
+/** Total known TRY exposure of a set of payables; unknowns are skipped, never zeroed; TRY-dışı toplanmaz. */
 export function knownPayableTotal(items: PayableItem[]): number {
-  return money(sumDecimal(items.map((i) => i.amount)).toString());
+  return sumKnownReporting(items, (i) => i.amount).total;
 }

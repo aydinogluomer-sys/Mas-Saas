@@ -59,11 +59,14 @@ export async function loadBriefingFacts(pool: Pool, todayISO: string): Promise<B
   const gap30 = gaps.find((g) => g.currency === "TRY" && g.horizonDays === 30)
     ?? gaps.find((g) => g.horizonDays === 30) ?? null;
 
+  // PHASE 2.2 (#11): currency BASE'den gelir; eksikse null (= bilinmiyor) → toplam dışı, sayılır.
   const today = summariseDay(todayInstances.map((i) => ({
     amount: i.amount, direction: (i as { direction?: string }).direction ?? "outflow",
+    currency: (i as { currency?: string | null }).currency ?? null,
   })));
   const late = summariseDay(overdue.map((i) => ({
     amount: i.amount, direction: (i as { direction?: string }).direction ?? "outflow",
+    currency: (i as { currency?: string | null }).currency ?? null,
   })));
 
   return {
@@ -77,6 +80,8 @@ export async function loadBriefingFacts(pool: Pool, todayISO: string): Promise<B
     todayInflowKnown: today.knownInflow,
     todayCount: todayInstances.length,
     todayUnknownAmountCount: today.unknownCount,
+    todayForeignCurrencyCount: today.foreignCount,
+    overdueForeignCurrencyCount: late.foreignCount,
     overdueCount: overdue.length,
     overdueKnownOutflow: late.knownOutflow,
     criticalControls: controls.filter((c) => c.state === "CRITICAL").map((c) => c.title),
@@ -117,8 +122,10 @@ async function gatherWidgetFacts(
     loadAlerts(pool, 200),
     pool.query(`select coalesce(sum(total_cash_exposure),0) as due30
       from public.debt_maturity_ladder where sort_order = 1`),
+    // PHASE 2.2 (#32): netDebt = drawn − availableCash(TRY); yalnız TRY facility'ler toplanır.
+    // TRY-dışı facility'ler /finance/facilities sayfasında ayrıca sayılır (0094 foreign_*).
     pool.query(`select coalesce(sum(available_amount),0) as available, coalesce(sum(drawn_amount),0) as drawn
-      from public.credit_facility_utilization where status = 'active'`),
+      from public.credit_facility_utilization where status = 'active' and currency = 'TRY'`),
     pool.query(`select sum(worst_case_20_delta) as worst from public.fx_exposure_summary`),
     pool.query(`select count(*)::int n from public.budget_vs_actual where variance_verdict = 'over_budget'`),
     pool.query(`select max(late_ratio) as top from public.counterparty_collection_profile`),

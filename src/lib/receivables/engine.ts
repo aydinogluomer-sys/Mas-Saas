@@ -285,6 +285,8 @@ export interface OpenTotals {
   itemCount: number;
   /** `days_overdue > 0` olan bütün kayıtlar. */
   overdueCount: number;
+  /** PHASE 2.2: TRY-dışı açık kalem sayısı — totalOpenAmount'a girmedi. */
+  foreignCount: number;
   /** `COLLECTION_BUCKETS` ile aynı sırada ve aynı sınırlarla. */
   ageing: AgeingSummary[];
 }
@@ -294,11 +296,14 @@ async function loadOpenTotals(
   view: "receivables_open" | "payables_open",
   todayISO: string,
 ): Promise<OpenTotals> {
+  // PHASE 2.2 (#49): toplam yalniz TRY; TRY-disi acik kalemler foreign_count ile doner (view
+  // `i.currency` tasir, 0050). Sayimlar para biriminden bagimsiz.
   const r = await pool.query(
     `select
-       coalesce(sum(open_amount), 0)                                   as total_open,
+       coalesce(sum(open_amount) filter (where currency = 'TRY'), 0)   as total_open,
        count(*)::int                                                   as item_count,
        count(*) filter (where coalesce(days_overdue, 0) > 0)::int      as overdue_count,
+       count(*) filter (where currency <> 'TRY')::int                  as foreign_count,
        case
          when due_date is null then 'tarihsiz'
          when ($1::date - due_date) <= 0  then 'vadesi gelmemiş'
@@ -316,12 +321,13 @@ async function loadOpenTotals(
   // satır TOPLAMDIR. İki ayrı sorgu atmak, aralarında bir yazma olursa tutarsız iki rakam
   // üretebilirdi; tek sorgu bunu yapısal olarak imkânsız kılar.
   const grand = r.rows.find((row) => row.bucket === null);
-  const byBucket = new Map<string, { count: number; amount: number }>();
+  const byBucket = new Map<string, { count: number; amount: number; foreignCount: number }>();
   for (const row of r.rows) {
     if (row.bucket === null) continue;
     byBucket.set(String(row.bucket), {
       count: Number(row.item_count),
       amount: moneyOrNull(row.total_open) ?? 0,
+      foreignCount: Number(row.foreign_count ?? 0),
     });
   }
 
@@ -329,12 +335,14 @@ async function loadOpenTotals(
     totalOpenAmount: moneyOrNull(grand?.total_open) ?? 0,
     itemCount: Number(grand?.item_count ?? 0),
     overdueCount: Number(grand?.overdue_count ?? 0),
+    foreignCount: Number(grand?.foreign_count ?? 0),
     // Boş kovalar da döner: eksik bir satır ile sıfır satır bir rapor okuyan için çok farklı
     // şeylerdir (rules.ts'teki summarizeAgeing de aynı sözü verir).
     ageing: COLLECTION_BUCKETS.map((bucket) => ({
       bucket,
       count: byBucket.get(bucket)?.count ?? 0,
       amount: byBucket.get(bucket)?.amount ?? 0,
+      foreignCount: byBucket.get(bucket)?.foreignCount ?? 0,
     })),
   };
 }

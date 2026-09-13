@@ -13,6 +13,8 @@ const base: BriefingFacts = {
   todayInflowKnown: 0,
   todayCount: 0,
   todayUnknownAmountCount: 0,
+  todayForeignCurrencyCount: 0,
+  overdueForeignCurrencyCount: 0,
   overdueCount: 0,
   overdueKnownOutflow: 0,
   criticalControls: [],

@@ -19,20 +19,18 @@ import type { ProofItem } from "@/components/facts/source-proof";
 import { EvidenceDrawer } from "@/components/facts/evidence-drawer";
 import { MiniTrend } from "@/components/home/mini-trends";
 import { Panel, fmtTL } from "@/components/ui/panel";
+import { foreignNote, isReportingCurrency, sumKnownReporting } from "@/lib/currency-policy";
 import { KeyStat, PageHeader } from "@/components/ui/shell";
 
 export const dynamic = "force-dynamic";
 
 const OPEN = new Set(["unpaid", "partial", "planned", "late"]);
-const knownOutflow = (rows: Array<{ amount: number | null; status: string }>) => {
-  let total = 0, count = 0, missing = 0;
-  for (const r of rows) {
-    if (!OPEN.has(r.status)) continue;
-    count++;
-    if (r.amount == null) missing++;
-    else if (r.amount > 0) total += r.amount;
-  }
-  return { total, count, missing };
+// PHASE 2.2 (#1): toplam yalnız TRY; TRY-dışı/para birimi bilinmeyen kalem toplamda YOK, sayılır
+// (currency-policy.ts). `count` bütün açık kalemleri sayar — "kaç ödeme var" para biriminden bağımsız.
+const knownOutflow = (rows: Array<{ amount: number | null; status: string; currency?: string | null }>) => {
+  const open = rows.filter((r) => OPEN.has(r.status));
+  const k = sumKnownReporting(open, (r) => r.amount, { positiveOnly: true });
+  return { total: k.total, count: open.length, missing: k.missing, foreign: k.foreignCount };
 };
 const ym = (iso: string | null) => (iso ? iso.slice(0, 7) : "—");
 const SEV_TONE: Record<string, Tone> = { critical: "red", high: "red", medium: "amber", low: "neutral" };
@@ -115,6 +113,10 @@ export default async function AnaEkranPage() {
   const tOut = knownOutflow(todayRows);
   const wOut = knownOutflow(weekRows);
   const oOut = knownOutflow(overdue);
+  // Sparkline null'ı çizemez; eksik tutar 0 DEĞİLDİR (CLAUDE.md) ve TRY-dışı tutar aynı eksene konmaz.
+  // İkisi seriden çıkarılır ve alt yazıda SAYILIR — sessizce sıfır çizilmez.
+  const weekTrendValues = weekRows.filter((row) => row.amount != null && isReportingCurrency(row.currency)).map((row) => row.amount as number);
+  const weekTrendOmitted = weekRows.length - weekTrendValues.length;
   const conc = concentration(
     incomeLines.rows.map((r) => ({ key: r.key as string | null, amount: moneyOrNull(r.amount) })),
   );
@@ -177,11 +179,11 @@ export default async function AnaEkranPage() {
 
       <div className="stagger grid grid-cols-2 gap-2 lg:grid-cols-4">
         <KeyStat label="Bugün çıkış" value={fmtTL(tOut.total)} tone={tOut.total > 0 ? "warn" : "neutral"} href="/radar"
-          sub={`${tOut.count} ödeme${tOut.missing > 0 ? ` · ${tOut.missing} eksik` : ""}`} />
+          sub={`${tOut.count} ödeme${tOut.missing > 0 ? ` · ${tOut.missing} eksik` : ""}${tOut.foreign > 0 ? ` · ${foreignNote(tOut.foreign)}` : ""}`} />
         <KeyStat label="7 günde çıkış" value={fmtTL(wOut.total)} tone={wOut.total > 0 ? "warn" : "neutral"} href="/radar"
-          sub={`${wOut.count} ödeme`} />
+          sub={`${wOut.count} ödeme${wOut.foreign > 0 ? ` · ${foreignNote(wOut.foreign)}` : ""}`} />
         <KeyStat label="Geciken" value={oOut.count} tone={oOut.count > 0 ? "neg" : "pos"} href="/radar"
-          sub={oOut.count > 0 ? `bilinen ${fmtTL(oOut.total)}` : "yok"} />
+          sub={oOut.count > 0 ? `bilinen ${fmtTL(oOut.total)}${oOut.foreign > 0 ? ` · ${foreignNote(oOut.foreign)}` : ""}` : "yok"} />
         <KeyStat label="Nakit runway" value={runwayFact?.value ?? "—"} tone={runwayFact?.severity === "critical" || runwayFact?.severity === "high" ? "neg" : runwayFact?.severity === "medium" ? "warn" : "pos"} href="/cashflow"
           sub={`${runwayFact?.explanation ?? "projeksiyon"} · ilk negatif ${ym(proj.firstNegativeMonth)}`} />
       </div>
@@ -221,7 +223,7 @@ export default async function AnaEkranPage() {
             </li>
           ))}
         </ol>
-      </Panel><aside className="space-y-3"><MiniTrend title="30 günlük ödeme baskısı" subtitle="Bilinen açık ödeme tutarları" values={weekRows.map(row=>row.amount??0)} href="/payments" tone="var(--warn)"/><MiniTrend title="12 aylık kasa eğilimi" subtitle="Aylık kapanış bakiyesi" values={months.slice(0,12).map(month=>month.closing??0)} href="/cashflow"/></aside></div>
+      </Panel><aside className="space-y-3"><MiniTrend title="30 günlük ödeme baskısı" subtitle={`Bilinen açık TRY ödeme tutarları${weekTrendOmitted > 0 ? ` · ${weekTrendOmitted} kalem seride yok (tutar eksik ya da TRY-dışı)` : ""}`} values={weekTrendValues} href="/payments" tone="var(--warn)"/><MiniTrend title="12 aylık kasa eğilimi" subtitle="Aylık kapanış bakiyesi" values={months.slice(0,12).map(month=>month.closing??0)} href="/cashflow"/></aside></div>
 
       {/* 4) Durum şeridi: rapor / hatırlatma / üretim */}
       <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">

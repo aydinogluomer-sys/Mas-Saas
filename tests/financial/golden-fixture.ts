@@ -756,13 +756,14 @@ export const RECEIVABLE_AGEING_SUMMARY = Object.freeze({
   },
   expected: {
     // Kova sırası sabittir: vadesi gelmemiş → 1-7 → 8-30 → 31-60 → 60+ → tarihsiz
+    // PHASE 2.2: foreignCount = TRY-dışı satır (toplamda yok); fixture'ın hepsi TRY → 0.
     buckets: [
-      { bucket: "vadesi gelmemiş", count: 1, amount: 10_000.0 },
-      { bucket: "1-7 gün", count: 1, amount: 2_500.55 },
-      { bucket: "8-30 gün", count: 1, amount: 1_250.45 },
-      { bucket: "31-60 gün", count: 1, amount: 900.0 },
-      { bucket: "60+ gün", count: 1, amount: 100.1 },
-      { bucket: "tarihsiz", count: 1, amount: 77.77 },
+      { bucket: "vadesi gelmemiş", count: 1, amount: 10_000.0, foreignCount: 0 },
+      { bucket: "1-7 gün", count: 1, amount: 2_500.55, foreignCount: 0 },
+      { bucket: "8-30 gün", count: 1, amount: 1_250.45, foreignCount: 0 },
+      { bucket: "31-60 gün", count: 1, amount: 900.0, foreignCount: 0 },
+      { bucket: "60+ gün", count: 1, amount: 100.1, foreignCount: 0 },
+      { bucket: "tarihsiz", count: 1, amount: 77.77, foreignCount: 0 },
     ],
     total: 14_828.87,
   },
@@ -1102,6 +1103,8 @@ export const FORECAST_ACCURACY = Object.freeze({
     absoluteErrorTotal: 17_500.0,
     mape: 0.1,
     zeroForecastLines: 1,
+    // PHASE 2.2: para birimi alanı olmayan satır yapısal TRY → dışlanan yok.
+    foreignCount: 0,
   },
   derivation:
     "Ölçülen satırlar: 1, 2, 3 (4. satırın fiilisi yok → atlanır, ölçülmez). " +

@@ -60,14 +60,14 @@ describe("summarizeAgeing", () => {
     const s = summarizeAgeing(rows, "2026-03-01");
     expect(s.map((x) => x.bucket)).toEqual([...COLLECTION_BUCKETS]);
     // an absent row and a zero row read very differently to someone scanning for problems
-    expect(s.find((x) => x.bucket === "31-60 gün")).toEqual({ bucket: "31-60 gün", count: 0, amount: 0 });
+    expect(s.find((x) => x.bucket === "31-60 gün")).toEqual({ bucket: "31-60 gün", count: 0, amount: 0, foreignCount: 0 });
   });
 
   it("sums each bucket exactly", () => {
     const s = summarizeAgeing(rows, "2026-03-01");
-    expect(s.find((x) => x.bucket === "1-7 gün")).toEqual({ bucket: "1-7 gün", count: 2, amount: 150 });
-    expect(s.find((x) => x.bucket === "60+ gün")).toEqual({ bucket: "60+ gün", count: 1, amount: 1000 });
-    expect(s.find((x) => x.bucket === "tarihsiz")).toEqual({ bucket: "tarihsiz", count: 1, amount: 7 });
+    expect(s.find((x) => x.bucket === "1-7 gün")).toEqual({ bucket: "1-7 gün", count: 2, amount: 150, foreignCount: 0 });
+    expect(s.find((x) => x.bucket === "60+ gün")).toEqual({ bucket: "60+ gün", count: 1, amount: 1000, foreignCount: 0 });
+    expect(s.find((x) => x.bucket === "tarihsiz")).toEqual({ bucket: "tarihsiz", count: 1, amount: 7, foreignCount: 0 });
   });
 
   it("does not drift over many rows", () => {
