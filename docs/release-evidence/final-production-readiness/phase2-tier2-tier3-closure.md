@@ -47,7 +47,7 @@ Her Tier 2/3 noktasının ne yapıldığı `e248f98` commit mesajında ve kaynak
 | Gerçek 5 Eylül yedeğinin klonu: 0088–0094 + V2 fixture provası (`real-clone-v2-rehearsal.ts`) | **7/7 PASS**, 6 legacy finansal tablo birebir |
 | `scripts/db/tier2-loaders-smoke.ts` gerçek klonda (13 değiştirilmiş yükleyici, salt-okur) | **13/13** — SQL çalışır, `foreign*` alanları döner |
 | `tests/financial/currency-policy-tier2.test.ts` (9 modül × karışık para birimi girdisi) | **9/9** |
-| Release: tsc 0 · eslint 0 · vitest **1486/1486** (1477 + 9) | PASS |
+| Release: tsc 0 · eslint 0 · vitest **1477/1477** (1468 + 9 yeni) | PASS |
 | Gerçek veri (5 Eylül klonu): 25 currency kolonunda non-TRY = 0 (Tier 1 belgesi) | bugünkü sayılar değişmez; kapanış gelecek importları korur |
 
 ## 2.8 Kabul tablosu
