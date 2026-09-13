@@ -69,13 +69,16 @@ export async function evaluateRules(
   input: RuleInput,
 ): Promise<ApprovalRuleConfig[]> {
   const r = await pool.query(
-    `select code, description, trigger_kind, threshold_amount, applies_to, is_active
+    `select code, description, trigger_kind, threshold_amount, currency, applies_to, is_active
      from public.approval_rules where is_active order by code`);
   const configs: ApprovalRuleConfig[] = r.rows.map((row) => ({
     code: row.code,
     description: row.description,
     triggerKind: row.trigger_kind,
     thresholdAmount: moneyOrNull(row.threshold_amount),
+    // PHASE 2.2 (T1-e): eşiğin para birimi kuralla birlikte taşınır; rules.ts girdi para
+    // birimiyle karşılaştırır ve eşleşmiyorsa kapıyı kapalı tutar.
+    currency: String(row.currency),
     appliesTo: (row.applies_to ?? []) as string[],
     isActive: Boolean(row.is_active),
   }));

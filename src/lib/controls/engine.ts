@@ -335,7 +335,8 @@ export async function loadFalsePositiveRates(pool: Pool) {
 export async function loadAnomalies(pool: Pool) {
   const [round, split, newPayee, baseline, hour] = await Promise.all([
     pool.query(`select payment_instance_id, payment_name, amount, due_date from public.anomaly_round_number_payments limit 50`),
-    pool.query(`select party_id, party_name, due_date, payment_count, total_amount, largest_single from public.anomaly_split_payments limit 50`),
+    // PHASE 2.2 (0093): sayım/toplam yalnız TRY; foreign_currency_count aynı gün TRY-dışı kalemleri sayar.
+    pool.query(`select party_id, party_name, due_date, payment_count, total_amount, largest_single, foreign_currency_count from public.anomaly_split_payments limit 50`),
     pool.query(`select party_id, party_name, first_payment_date, payment_count, total_amount from public.anomaly_new_payee limit 50`),
     pool.query(`select payment_instance_id, party_name, amount, avg_amount, sample_count, times_baseline from public.anomaly_amount_vs_baseline limit 50`),
     pool.query(`select txn_id, txn_date, amount, recorded_hour, caveat from public.anomaly_unusual_record_hour limit 50`),

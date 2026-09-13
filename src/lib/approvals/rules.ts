@@ -14,6 +14,12 @@ export interface ApprovalRuleConfig {
   description: string;
   triggerKind: "amount_threshold" | "new_iban" | "new_counterparty" | "invoice" | "payment";
   thresholdAmount: number | null;
+  /**
+   * PHASE 2.2 (T1-e). `approval_rules.currency` (0054, `not null default 'TRY'`) — eşiğin para
+   * birimi. Kolon şemada baştan beri vardı ama SELECT bile edilmiyordu; 100.000 TRY eşiği
+   * 60.000 USD'lik bir kalemle karşılaştırılıp "tetiklenmedi" diyebiliyordu.
+   */
+  currency: string;
   appliesTo: string[];
   isActive: boolean;
 }
@@ -33,6 +39,37 @@ export interface RuleInput {
    * boundary this whole comparison exists to protect.
    */
   amount?: NumericInput;
+  /**
+   * Tutarın para birimi. `undefined`/`null` = BİLİNMİYOR, TRY varsayılmaz (CLAUDE.md / plan §2.1).
+   * Kural para birimiyle eşleşmiyorsa ya da bilinmiyorsa eşik DEĞERLENDİRİLEMEZ — bkz.
+   * `thresholdVerdict`: bu durumda kural TETİKLENİR (onay kapısı kapalı kalır), atlanmaz.
+   */
+  currency?: string | null;
+}
+
+/**
+ * Eşik kuralının bir girdi karşısındaki hükmü — `ruleFires`'ın açıklanabilir hâli.
+ *
+ *   met / not_met         para birimleri eşleşti, ondalık karşılaştırma yapıldı
+ *   amount_unknown        tutar null: eşik aşılamaz, kural tetiklenmez (veri kalitesi sorunu)
+ *   currency_mismatch     tutar var ama para birimi kuralınkinden farklı: karşılaştırma YAPILAMAZ
+ *   currency_unknown      tutar var, para birimi verilmemiş: TRY varsayılmaz, karşılaştırma YAPILAMAZ
+ *   not_amount_rule       kural tutar kuralı değil
+ *
+ * NEDEN mismatch/unknown TETİKLER (fail-closed). Bu bir risk rozeti değil, maker-checker kapısıdır.
+ * Radar tarafında TRY-dışı kalem ayrı işaretlenir (`unsupported_currency`), çünkü orada yanlış
+ * yön "sahte alarm"dır. Burada yanlış yön "kontrolsüz ödeme"dir: para birimi alanını değiştirerek
+ * bir eşiğin etrafından dolaşılamamalı. Değerlendirilemeyen eşik = ikinci göz gerekli.
+ */
+export type ThresholdVerdict =
+  | "met" | "not_met" | "amount_unknown" | "currency_mismatch" | "currency_unknown" | "not_amount_rule";
+
+export function thresholdVerdict(rule: ApprovalRuleConfig, input: RuleInput): ThresholdVerdict {
+  if (rule.triggerKind !== "amount_threshold" || rule.thresholdAmount == null) return "not_amount_rule";
+  if (input.amount == null || input.amount === "") return "amount_unknown";
+  if (input.currency == null || input.currency === "") return "currency_unknown";
+  if (input.currency !== rule.currency) return "currency_mismatch";
+  return decimal(input.amount).abs().gte(decimal(rule.thresholdAmount)) ? "met" : "not_met";
 }
 
 /** Does this rule watch this subject table? An empty scope means "all of them". */
@@ -54,8 +91,15 @@ export function ruleFires(rule: ApprovalRuleConfig, input: RuleInput): boolean {
 
   if (rule.triggerKind === "amount_threshold") {
     if (rule.thresholdAmount == null) return false;
-    if (input.amount == null || input.amount === "") return false;
-    return decimal(input.amount).abs().gte(decimal(rule.thresholdAmount));
+    switch (thresholdVerdict(rule, input)) {
+      case "met": return true;
+      case "not_met": return false;
+      case "amount_unknown": return false;
+      // PHASE 2.2 (T1-e): değerlendirilemeyen eşik kapıyı AÇMAZ.
+      case "currency_mismatch": return true;
+      case "currency_unknown": return true;
+      case "not_amount_rule": return false;
+    }
   }
   return rule.triggerKind === input.triggerKind;
 }
@@ -65,10 +109,26 @@ export function firingRules(rules: ApprovalRuleConfig[], input: RuleInput): Appr
   return rules.filter((r) => ruleFires(r, input)).sort((a, b) => a.code.localeCompare(b.code));
 }
 
-/** A sentence naming why a checker is required — the rule codes, never a summary. */
-export function explain(fired: ApprovalRuleConfig[]): string {
+/**
+ * A sentence naming why a checker is required — the rule codes, never a summary.
+ *
+ * `input` verilirse, para birimi yüzünden tetiklenen eşik kuralları AÇIKÇA söylenir: onaylayıcı
+ * "100.000 TL ve üzeri" diye okuyup 60.000 USD'yi eşik altı sanmamalı.
+ */
+export function explain(fired: ApprovalRuleConfig[], input?: RuleInput): string {
   if (fired.length === 0) return "Onay kuralı tetiklenmedi.";
-  return fired.map((r) => `${r.code}: ${r.description}`).join(" · ");
+  return fired.map((r) => {
+    const base = `${r.code}: ${r.description}`;
+    if (!input) return base;
+    const v = thresholdVerdict(r, input);
+    if (v === "currency_mismatch") {
+      return `${base} (eşik ${r.currency}, kayıt ${input.currency} — karşılaştırılamadı, onay gerekli)`;
+    }
+    if (v === "currency_unknown") {
+      return `${base} (eşik ${r.currency}, kaydın para birimi bilinmiyor — karşılaştırılamadı, onay gerekli)`;
+    }
+    return base;
+  }).join(" · ");
 }
 
 /** The request_kind an approval should carry, given what fired. */

@@ -81,7 +81,16 @@ export interface CounterpartyExposureRow {
   exposureRatio: number | null;
   creditLimit: number | null;
   creditLimitUtilization: number | null;
-  overCreditLimit: boolean;
+  /**
+   * PHASE 2.2 (T1-c, migration 0093): `null` = KARŞILAŞTIRILAMADI — limit TRY değil, maruziyet
+   * TRY-only. "Aşılmadı" DEĞİL; ekran bunu ayrı söyler.
+   */
+  overCreditLimit: boolean | null;
+  /** Limit var ve TRY → oran/aşım anlamlı. */
+  creditLimitComparable: boolean;
+  creditLimitCurrency: string | null;
+  /** Açık kalemlerden TRY-dışı olanlar: hiçbir tutar toplamına girmez, sayısı görünür (plan §2.3). */
+  foreignCurrencyCount: number;
   activeIbanCount: number;
 }
 
@@ -101,8 +110,8 @@ export async function loadCounterpartyExposure(
             outflow_amount, inflow_amount, check_amount, check_count, loan_amount,
             loan_installment_count, payment_amount, payment_count,
             to_char(earliest_due_date,'YYYY-MM-DD') as earliest_due_date,
-            total_exposure, exposure_ratio, credit_limit, credit_limit_utilization,
-            over_credit_limit, active_iban_count
+            total_exposure, exposure_ratio, credit_limit, credit_limit_currency, credit_limit_utilization,
+            over_credit_limit, credit_limit_comparable, foreign_currency_count, active_iban_count
      from public.counterparty_exposure
      where ($1::boolean is not true or item_count > 0)
      order by total_exposure desc, party_name
@@ -129,7 +138,10 @@ export async function loadCounterpartyExposure(
     exposureRatio: rateOrNull(x.exposure_ratio),
     creditLimit: moneyOrNull(x.credit_limit),
     creditLimitUtilization: rateOrNull(x.credit_limit_utilization),
-    overCreditLimit: x.over_credit_limit,
+    overCreditLimit: x.over_credit_limit == null ? null : Boolean(x.over_credit_limit),
+    creditLimitComparable: Boolean(x.credit_limit_comparable),
+    creditLimitCurrency: x.credit_limit_currency ?? null,
+    foreignCurrencyCount: intOrNull(x.foreign_currency_count) ?? 0,
     activeIbanCount: intOrNull(x.active_iban_count) ?? 0,
   }));
 }

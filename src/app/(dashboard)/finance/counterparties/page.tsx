@@ -39,7 +39,10 @@ export default async function CounterpartiesPage({
   ]);
 
   const withExposure = exposure.filter((e) => e.itemCount > 0);
-  const overLimit = withExposure.filter((e) => e.overCreditLimit).length;
+  // `overCreditLimit === null` = limit TRY değil, karşılaştırılamadı — aşım sayılmaz, ayrı sayılır.
+  const overLimit = withExposure.filter((e) => e.overCreditLimit === true).length;
+  const limitNotComparable = withExposure.filter((e) => e.creditLimit != null && !e.creditLimitComparable).length;
+  const foreignItems = withExposure.reduce((n, e) => n + e.foreignCurrencyCount, 0);
 
   return (
     <>
@@ -57,6 +60,13 @@ export default async function CounterpartiesPage({
       {sp.warn && <div className="mb-3 rounded border border-warn/40 bg-warn/10 p-2 text-sm text-warn">{sp.warn}</div>}
 
       <Panel title={`RİSK YOĞUNLAŞMASI — ${withExposure.length} karşı taraf`}>
+        {/* PHASE 2.2 / plan §2.3: TRY-dışı kalem toplama girmez ve bu sessizce olmaz. */}
+        {(foreignItems > 0 || limitNotComparable > 0) && (
+          <p className="mb-2 font-mono text-[11px] text-warn">
+            {foreignItems > 0 && `${foreignItems} kalem TRY-dışı — toplamda yok. `}
+            {limitNotComparable > 0 && `${limitNotComparable} karşı tarafın limiti TRY değil — limit aşımı hesaplanmadı.`}
+          </p>
+        )}
         {withExposure.length === 0 ? (
           <p className="py-2 text-sm text-tone-3">Açık kalem taşıyan karşı taraf yok.</p>
         ) : (
@@ -78,7 +88,8 @@ export default async function CounterpartiesPage({
                 {withExposure.map((e) => {
                   const a = assessExposure({
                     totalExposure: e.totalExposure,
-                    creditLimit: e.creditLimit,
+                    // Limit TRY değilse bandlamaya girmez: TRY maruziyet ile USD limit kıyaslanamaz.
+                    creditLimit: e.creditLimitComparable ? e.creditLimit : null,
                     exposureRatio: e.exposureRatio,
                     unknownAmountCount: e.unknownAmountCount,
                   });
@@ -90,6 +101,9 @@ export default async function CounterpartiesPage({
                         {e.unknownAmountCount > 0 && (
                           <span className="ml-2 text-[10px] text-warn">{e.unknownAmountCount} TUTAR EKSİK</span>
                         )}
+                        {e.foreignCurrencyCount > 0 && (
+                          <span className="ml-2 text-[10px] text-warn">{e.foreignCurrencyCount} TRY-DIŞI · TOPLAMDA YOK</span>
+                        )}
                       </td>
                       <td className="text-tone-3">{e.partyType}</td>
                       <td className="text-right font-mono tabular-nums">{fmtTL(e.totalExposure)}</td>
@@ -100,7 +114,11 @@ export default async function CounterpartiesPage({
                       <td className="text-right tabular-nums">{e.loanInstallmentCount || "—"}</td>
                       <td className="text-right tabular-nums">{e.paymentCount || "—"}</td>
                       <td className="text-right font-mono tabular-nums">
-                        {e.creditLimit == null ? "—" : fmtTL(e.creditLimit)}
+                        {e.creditLimit == null
+                          ? "—"
+                          : e.creditLimitComparable
+                            ? fmtTL(e.creditLimit)
+                            : <span title="Limit TRY değil; TRY maruziyetle karşılaştırılamaz">{`${e.creditLimit} ${e.creditLimitCurrency ?? ""} · kıyaslanamaz`}</span>}
                       </td>
                       <td>
                         <Badge tone={BAND_TONE[a.band] ?? "neutral"}>{BAND_LABEL[a.band] ?? a.band}</Badge>
