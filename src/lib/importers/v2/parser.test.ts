@@ -6,7 +6,7 @@ import { describe, expect, it, beforeAll } from "vitest";
 import ExcelJS from "exceljs";
 import { buildFixtureWorkbook, FIXTURE_ORACLE } from "./fixture";
 import {
-  parseWorkbook, detectSchema, UNKNOWN_COLUMNS_KEY, PARENT_CHILD_REFS, type WorkbookParseResult,
+  parseWorkbook, detectSchema, UNKNOWN_COLUMNS_KEY, PARENT_CHILD_REFS, CURRENCYLESS_DOMAIN_FAMILIES, type WorkbookParseResult,
 } from "./parser";
 import { DATA_SHEETS, META_SHEET, sheetByName } from "./contract";
 
@@ -454,5 +454,35 @@ describe("Bilinmeyen sayfa", () => {
     const r = parseWorkbook(wb);
     expect(r.unknownSheets).toContain("Karalama");
     expect(r.issues.some((i) => i.type === "unknown_sheet")).toBe(true);
+  });
+});
+
+describe("controlled-use v1 — para birimi kolonu olmayan tablolara ortuk TRY YAZILMAZ", () => {
+  it("05_NAKIT_AKISI USD satiri reddedilir (kaynakta korunur, inceleme acilir); TRY satir hazir; 16_MAKINE_ROI EUR reddedilir", async () => {
+    const wb = await buildFixtureWorkbook();
+    const cf = wb.getWorksheet("05_NAKIT_AKISI")!;
+    const header = cf.getRow(1).values as Array<string | undefined>;
+    const col = (h: string) => header.findIndex((v) => typeof v === "string" && v.trim().toLowerCase() === h.toLowerCase());
+    const curCol = col("Para Birimi");
+    expect(curCol).toBeGreaterThan(0);
+    // 2. satir (fixture'da hazir bir satir) USD yapilir
+    const before = parseWorkbook(wb).sheets.find((s) => s.sheet === "05_NAKIT_AKISI")!;
+    cf.getRow(2).getCell(curCol).value = "USD";
+    const mk = wb.getWorksheet("16_MAKINE_ROI")!;
+    const mkHeader = mk.getRow(1).values as Array<string | undefined>;
+    const mkCur = mkHeader.findIndex((v) => typeof v === "string" && v.trim().toLowerCase() === "para birimi");
+    mk.getRow(2).getCell(mkCur).value = "EUR";
+
+    const r = parseWorkbook(wb);
+    const after = r.sheets.find((s) => s.sheet === "05_NAKIT_AKISI")!;
+    const row2 = after.rows.find((x) => x.rowIndex === 2)!;
+    expect(row2.status).toBe("rejected");
+    expect(row2.issues.some((i) => i.type === "unsupported_currency_for_finance_aggregation" && /örtük TRY/.test(i.message))).toBe(true);
+    expect(row2.raw.para_birimi).toBe("USD"); // ham deger korunur
+    expect(after.ready).toBe(before.ready - 1);
+    const mkRow = r.sheets.find((s) => s.sheet === "16_MAKINE_ROI")!.rows.find((x) => x.rowIndex === 2)!;
+    expect(mkRow.status).toBe("rejected");
+    expect(CURRENCYLESS_DOMAIN_FAMILIES.has("cashflow")).toBe(true);
+    expect(CURRENCYLESS_DOMAIN_FAMILIES.has("payments")).toBe(false);
   });
 });

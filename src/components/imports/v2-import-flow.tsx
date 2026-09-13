@@ -84,7 +84,7 @@ function Preview({ report }: { report: PreviewReport }) {
       <p className="font-mono text-[11px]" style={{ color: "var(--text-3)" }}>
         BELİRLENEMEDİ = kayıt kodu olmayan satır; yeni mi güncelleme mi olduğu ancak yazarken belli olur — önizleme tahmin etmez.
         {c.blockedByParent > 0 ? ` · ${c.blockedByParent} satır üst kaydı bu dosyada kabul edilmediği için yazılmayacak.` : ""}
-        {c.stagedOnly > 0 ? ` · ${c.stagedOnly} satır (${report.stagedOnlyFamilies.join(", ")}) yalnız hazırlık katmanına yazılır; eşleyicisi yok.` : ""}
+        {c.stagedOnly > 0 ? ` · ${c.stagedOnly} satır (${report.stagedOnlyFamilies.join(", ")}) kaynak/hazırlık katmanında KORUNUR ama controlled-use v1 finans hesaplarına DAHİL DEĞİLDİR (15_MALIYET → v1.1 backlog).` : ""}
         {` · açılacak inceleme kaydı: ${c.reviewsToOpen}.`}
       </p>
 

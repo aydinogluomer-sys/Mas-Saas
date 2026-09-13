@@ -42,6 +42,14 @@ export type Severity = "low" | "medium" | "high";
  */
 export type RowStatus = "ready" | "needs_review" | "rejected" | "blocked_by_parent";
 
+/**
+ * Hedef tablosu `currency` kolonu taşımayan aileler (bkz. domain-map NO_CURRENCY_COLUMN).
+ * Bu tablolara TRY-dışı satır yazılmaz — yazılsaydı tutar örtük TRY olurdu.
+ */
+export const CURRENCYLESS_DOMAIN_FAMILIES: ReadonlySet<string> = new Set([
+  "cashflow", "orders", "products", "projects", "capacity", "cost", "machine_roi",
+]);
+
 export interface Issue {
   type: IssueType;
   severity: Severity;
@@ -423,6 +431,22 @@ function applyFamilyRules(
           `Bu sürüm çek ve kredi toplamlarını yalnız TRY için güvenli biçimde hesaplar. ` +
           `${cur} kayıt kaynakta KORUNMUŞTUR, ancak finans KPI'larına aktarılmamıştır — ` +
           "karışık para birimlerini toplamak yanlış bir toplam üretirdi.",
+      });
+    }
+  } else if (CURRENCYLESS_DOMAIN_FAMILIES.has(spec.family)) {
+    // PHASE 5 / controlled-use v1 "no implicit TRY": hedef tablo para birimi kolonu TAŞIMAZ
+    // (cashflow_lines, orders, products, projects, production_parts, cost_models,
+    // machine_assets). TRY-dışı bir satırı yazmak, tutarı sessizce TRY saymak olurdu.
+    // Satır kaynakta/hazırlıkta korunur, incelemeye düşer, domain'e yazılmaz.
+    const cur = values.para_birimi;
+    if (typeof cur === "string" && cur !== "" && cur !== "TRY") {
+      issues.push({
+        type: "unsupported_currency_for_finance_aggregation", severity: "high",
+        sheet: spec.name, row: rowNumber, column: "Para Birimi",
+        message:
+          `Bu sayfanın hedef tablosu para birimi taşımaz; ${cur} satır örtük TRY olarak YAZILMAZ. ` +
+          "Kayıt kaynakta KORUNMUŞTUR ve incelemeye düşmüştür (controlled-use v1: yalnız TRY; " +
+          "çoklu para birimi v1 sonrası).",
       });
     }
   }
