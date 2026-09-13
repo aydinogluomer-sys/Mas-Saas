@@ -82,9 +82,23 @@ export type RiskReason =
   | "critical_payment"
   | "same_day_cluster"
   | "overdue"
-  | "overpaid";
+  | "overpaid"
+  /**
+   * PHASE 2.2 (T1-b): kalemin tutarı var ama para birimi TRY değil; `*_threshold_try` eşikleri
+   * bu tutara UYGULANMADI. Kur çevirimi yok, dolayısıyla büyük/kritik olup olmadığı BİLİNMİYOR —
+   * "risk yok" değil, "inceleme gerekli". Sadece açık kalemlerde ve yalnız eşik dalının yerine yazılır
+   * (tutar null → missing_amount, negatif → negative_amount öncelikli ve para biriminden bağımsız).
+   */
+  | "unsupported_currency";
 
-export type RiskLevel = "none" | "low" | "medium" | "high" | "critical";
+/**
+ * `unsupported_currency` bir şiddet değil, "eşik değerlendirilemedi" işaretidir. Merdivende
+ * KESİN olan `critical` ve `overdue`nun altında, `medium`ın üstünde durur: bilinmeyen bir eşik
+ * sonucu kritik olabilir, bu yüzden kesin-orta gerekçelerin üstüne çıkar; gecikme ise para
+ * biriminden bağımsız kesin bir olgudur ve öncelik listelerinde görünmeye devam etmelidir.
+ * DB CHECK'i migration 0092 ile genişletildi (0003'teki beş üyeye altıncı üye).
+ */
+export type RiskLevel = "none" | "low" | "medium" | "high" | "critical" | "unsupported_currency";
 
 const OPEN_STATUSES = new Set(["unpaid", "partial", "planned", "late"]);
 
@@ -94,12 +108,13 @@ export function isOpen(status: string): boolean {
 
 /**
  * Risk ladder (deterministic, documented in calculation-rules.md):
- * critical_payment → critical; overdue → high;
- * large/cluster/negative → medium; missing_amount alone → low; else none.
+ * critical_payment → critical; overdue → high; unsupported_currency → unsupported_currency;
+ * large/cluster/negative/overpaid → medium; missing_amount alone → low; else none.
  */
 export function riskLevelOf(reasons: RiskReason[]): RiskLevel {
   if (reasons.includes("critical_payment")) return "critical";
   if (reasons.includes("overdue")) return "high";
+  if (reasons.includes("unsupported_currency")) return "unsupported_currency";
   if (
     reasons.includes("large_payment") ||
     reasons.includes("same_day_cluster") ||
@@ -127,10 +142,16 @@ export function computeRisk(
     if (isOpen(i.status)) {
       if (i.amount == null) reasons.push("missing_amount");
       else if (i.amount < 0) reasons.push("negative_amount");
-      else {
+      else if (!isThresholdCurrency(i.currency)) {
+        // PHASE 2.2 (T1-b): tutar var ama TRY değil (ya da para birimi bilinmiyor) — eşik
+        // KARŞILAŞTIRILMAZ, TRY varsayılmaz, sessizce de geçilmez: ayrı gerekçe yazılır ve
+        // risk_level olarak DB'ye 'unsupported_currency' iner.
+        reasons.push("unsupported_currency");
+      } else {
         if (i.amount >= t.critical) reasons.push("critical_payment");
         else if (i.amount >= t.large) reasons.push("large_payment");
       }
+      // Yığılma ve gecikme para biriminden bağımsız olgulardır.
       if ((openByDate.get(i.dueDate) ?? 0) >= t.clusterCount) reasons.push("same_day_cluster");
       if (i.dueDate < todayISO) reasons.push("overdue");
     }

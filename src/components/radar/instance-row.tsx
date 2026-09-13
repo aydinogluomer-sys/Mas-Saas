@@ -6,10 +6,13 @@ import { cancelInstanceAction, markPaidAction, markPartialAction, markUnpaidActi
 const REASON_TONE: Record<string, Tone> = {
   missing_amount: "amber", negative_amount: "red", large_payment: "amber",
   critical_payment: "red", same_day_cluster: "violet", overdue: "red",
+  // PHASE 2.2 (T1-b): TRY eşiği bu tutara uygulanamadı — "risk yok" değil, inceleme gerekli.
+  unsupported_currency: "amber",
 };
 const REASON_TR: Record<string, string> = {
   missing_amount: "eksik", negative_amount: "negatif", large_payment: "büyük",
   critical_payment: "kritik", same_day_cluster: "yığılma", overdue: "gecikti",
+  unsupported_currency: "TRY-dışı · eşik uygulanmadı",
 };
 
 export function RiskBadges({ reasons }: { reasons: string[] }) {

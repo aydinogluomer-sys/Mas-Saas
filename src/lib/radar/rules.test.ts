@@ -35,6 +35,12 @@ describe("risk ladder", () => {
     expect(riskLevelOf(["missing_amount"])).toBe("low");
     expect(riskLevelOf([])).toBe("none");
   });
+  it("PHASE 2.2: unsupported_currency geciken'in altında, orta'nın üstünde — kesin olgu kazanır, bilinmeyen eşik ortayı geçer", () => {
+    expect(riskLevelOf(["unsupported_currency"])).toBe("unsupported_currency");
+    expect(riskLevelOf(["unsupported_currency", "same_day_cluster"])).toBe("unsupported_currency");
+    expect(riskLevelOf(["unsupported_currency", "overdue"])).toBe("high");
+    expect(riskLevelOf(["unsupported_currency", "overpaid"])).toBe("unsupported_currency");
+  });
 });
 
 describe("computeRisk — gerçek örüntüler", () => {
@@ -74,6 +80,82 @@ describe("computeRisk — gerçek örüntüler", () => {
     );
     expect(r.get("x")!.reasons).toContain("large_payment");
     expect(r.get("y")!.reasons).toEqual([]);
+  });
+});
+
+/**
+ * PHASE 2.2 (T1-b) — para birimi karışık kalemler. Beklenenler ELLE yazıldı.
+ * Eşikler TRY; TRY-dışı kalem eşikle KARŞILAŞTIRILMAZ (ne kritik ne büyük), sessizce de geçmez:
+ * 'unsupported_currency' gerekçesi ve seviyesi DB'ye iner. Yığılma/gecikme para biriminden
+ * bağımsız kalır; tutar null / negatif dalları para biriminden ÖNCE gelir.
+ */
+describe("computeRisk — TRY-dışı kalem eşikle tartılmaz, ayrı işaretlenir", () => {
+  const today = "2026-07-05";
+  it("120k USD açık kalem: critical_payment DEĞİL, unsupported_currency; TRY 120k aynı gün kritik", () => {
+    const r = computeRisk(
+      [
+        { id: "usd", dueDate: "2026-07-09", amount: 120_000, status: "unpaid", currency: "USD" },
+        { id: "try", dueDate: "2026-07-09", amount: 120_000, status: "unpaid", currency: "TRY" },
+      ],
+      today, T,
+    );
+    expect(r.get("usd")).toEqual({ reasons: ["unsupported_currency"], level: "unsupported_currency" });
+    expect(r.get("try")).toEqual({ reasons: ["critical_payment"], level: "critical" });
+  });
+  it("küçük EUR tutar da işaretlenir: eşik ALTI olduğu da bilinemez (kur yok)", () => {
+    const r = computeRisk(
+      [{ id: "eur", dueDate: "2026-07-09", amount: 10, status: "unpaid", currency: "EUR" }],
+      today, T,
+    );
+    expect(r.get("eur")).toEqual({ reasons: ["unsupported_currency"], level: "unsupported_currency" });
+  });
+  it("para birimi null (bilinmiyor): TRY varsayılmaz, unsupported_currency", () => {
+    const r = computeRisk(
+      [{ id: "n", dueDate: "2026-07-09", amount: 75_000, status: "unpaid", currency: null }],
+      today, T,
+    );
+    expect(r.get("n")).toEqual({ reasons: ["unsupported_currency"], level: "unsupported_currency" });
+  });
+  it("geciken USD: overdue kesin olgu → high; gerekçelerde ikisi de var", () => {
+    const r = computeRisk(
+      [{ id: "g", dueDate: "2026-07-04", amount: 500_000, status: "unpaid", currency: "USD" }],
+      today, T,
+    );
+    expect(r.get("g")).toEqual({ reasons: ["unsupported_currency", "overdue"], level: "high" });
+  });
+  it("yığılma para biriminden bağımsız: 2 USD + 1 TRY aynı gün → üçü de same_day_cluster", () => {
+    const r = computeRisk(
+      [
+        { id: "a", dueDate: "2026-07-09", amount: 1_000, status: "unpaid", currency: "USD" },
+        { id: "b", dueDate: "2026-07-09", amount: 1_000, status: "unpaid", currency: "USD" },
+        { id: "c", dueDate: "2026-07-09", amount: 1_000, status: "unpaid", currency: "TRY" },
+      ],
+      today, T,
+    );
+    expect(r.get("a")).toEqual({ reasons: ["unsupported_currency", "same_day_cluster"], level: "unsupported_currency" });
+    expect(r.get("c")).toEqual({ reasons: ["same_day_cluster"], level: "medium" });
+  });
+  it("tutar null veya negatif TRY-dışı kalem: eksik/negatif gerekçesi öncelikli, unsupported_currency yazılmaz", () => {
+    const r = computeRisk(
+      [
+        { id: "nul", dueDate: "2026-07-09", amount: null, status: "unpaid", currency: "USD" },
+        { id: "neg", dueDate: "2026-07-09", amount: -500, status: "unpaid", currency: "USD" },
+      ],
+      today, T,
+    );
+    expect(r.get("nul")).toEqual({ reasons: ["missing_amount"], level: "low" });
+    expect(r.get("neg")).toEqual({ reasons: ["negative_amount"], level: "medium" });
+  });
+  it("ödenmiş TRY-dışı kalem hiç gerekçe almaz (açık değil); overpaid aynı satır içi karşılaştırmadır", () => {
+    const r = computeRisk(
+      [
+        { id: "p", dueDate: "2026-07-09", amount: 900_000, status: "paid", paidAmount: 900_000, currency: "USD" },
+        { id: "o", dueDate: "2026-07-09", amount: 1_000, status: "paid", paidAmount: 1_200, currency: "USD" },
+      ],
+      today, T,
+    );
+    expect(r.get("p")).toEqual({ reasons: [], level: "none" });
+    expect(r.get("o")).toEqual({ reasons: ["overpaid"], level: "medium" });
   });
 });
 

@@ -96,7 +96,8 @@ export function prioritizePayments(rows: InstanceRow[], asOf: string, limit = 5)
       if (a.due_date !== b.due_date) return a.due_date.localeCompare(b.due_date);
       const criticalDelta = Number(flexibilityOf(b) === "critical") - Number(flexibilityOf(a) === "critical");
       if (criticalDelta) return criticalDelta;
-      const riskRank: Record<string, number> = { critical: 4, high: 3, medium: 2, low: 1, none: 0 };
+      // PHASE 2.2 (T1-b): unsupported_currency = eşik değerlendirilemedi; rules.ts merdiveniyle aynı sıra.
+      const riskRank: Record<string, number> = { critical: 5, high: 4, unsupported_currency: 3, medium: 2, low: 1, none: 0 };
       const riskDelta = (riskRank[b.risk_level] ?? 0) - (riskRank[a.risk_level] ?? 0);
       return riskDelta || (remainingPayment(b) ?? -1) - (remainingPayment(a) ?? -1);
     }).slice(0, limit);

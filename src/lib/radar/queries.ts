@@ -274,7 +274,10 @@ export async function loadPaymentDashboard(
              category, flexibility_class as flexibility, (source_row_id is not null) as source_linked
       from active where due_date <= $3::date
       order by (due_date < $1::date) desc, due_date, (decision_flexibility='critical') desc,
-               case risk_level when 'critical' then 4 when 'high' then 3 when 'medium' then 2 when 'low' then 1 else 0 end desc,
+               -- PHASE 2.2 (T1-b): 'unsupported_currency' = esik degerlendirilemedi; merdivende
+               -- high ile medium arasinda (rules.ts riskLevelOf ile ayni sira).
+               case risk_level when 'critical' then 5 when 'high' then 4 when 'unsupported_currency' then 3
+                               when 'medium' then 2 when 'low' then 1 else 0 end desc,
                remaining desc nulls last limit 5
     )
     select
