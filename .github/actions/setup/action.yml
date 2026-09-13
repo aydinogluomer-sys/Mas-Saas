@@ -15,9 +15,11 @@ inputs:
 runs:
   using: composite
   steps:
+    # PHASE 7 — `with: version` KALDIRILDI. package.json `packageManager: pnpm@11.10.0` zaten sürümü
+    # söylüyor; pnpm/action-setup@v4 iki kaynağı birden görünce 'Multiple versions of pnpm specified'
+    # ile düşüyordu ve 2026-09-13 itibarıyla HER dalda her job setup adımında kırmızıydı (Phase 7
+    # kanıtı: final-closure/docker-repaired/13-export-leakage.json). Tek kaynak: packageManager.
     - uses: pnpm/action-setup@v4
-      with:
-        version: 10
 
     - uses: actions/setup-node@v4
       with:
