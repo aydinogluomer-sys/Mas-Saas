@@ -69,7 +69,7 @@ bağlanmış). Beşinden biri eksikse telemetri o dosyayı **saymaz** ve "DOĞRU
 
 | Değer | Anlamı | Ne yapılır |
 |---|---|---|
-| `(MAS_OFFDEVICE_BACKUP_DIR yok)` | Off-device hedef hiç tanımlanmamış — **tek kopya yedek değildir** | `docs/ops/backup-schedule.md` §1: `MAS_OFFDEVICE_BACKUP_DIR` tanımlayın (örn. `D:\MAS-Backups\mas_radar_dev`) |
+| `(MAS_OFFDEVICE_BACKUP_DIR yok)` | Off-device hedef hiç tanımlanmamış — **tek kopya yedek değildir** | 2026-09-13'te kullanıcı ortamına yazıldı (`setx MAS_OFFDEVICE_BACKUP_DIR D:\MAS-Backups\mas_radar_dev`); silinmişse `docs/ops/backup-schedule.md` §1 ile yeniden tanımlayın |
 | `HEDEF YOK — DRIVE_ABSENT` | D: takılı değil | Diski takın, `schtasks /Run /TN MAS-Nakit-Radar-Gunluk-Yedek` |
 | sayı > 36 | D: takılı ama kopya bayat | Görevi elle tetikleyin; log'da `Off-device: … hedefte sha256 doğrulaması: EŞLEŞTİ` görün |
 | `DOĞRULANMIŞ YEDEK YOK` (D: takılı) | D: üzerindeki dosyaların makbuzu/sha'sı yok | Görevi elle tetikleyin; sonuç yine aynıysa `docs/ops/backup.md` ile elle kopya |
@@ -95,6 +95,9 @@ Task Scheduler'ın "operatör ya da yönetici isteği reddetti" kodu; dizüstü 
 alarm verir; `schtasks /Run` ile elle alın.
 
 ### 3.5 Docker Desktop açılmıyor
+
+**Durum 2026-09-13:** Docker Desktop **4.90.0** onarım kurulumuyla düzeldi; motor normal başlatmayla kalkıyor, `mas-radar-pg`
+kendi volume'uyla otomatik başlıyor. Aşağıdaki kök neden ve yol, aynı arıza tekrar ederse geçerlidir.
 
 Bu makinede 2026-09-13'te ölçülen kök neden: Docker Desktop 4.86.0'ın `HKLM\SOFTWARE\Docker Inc.\Docker Desktop` kayıt
 anahtarı ve `resources\wsl\docker-wsl-cli.iso` / `resources\linuxkit\` dosyaları **eksik** (backend günlüğü: "cannot find
@@ -133,5 +136,6 @@ registry key … getting linuxkit iso path"). Bu, yeniden başlatmayla düzelmez
 | Retention (kuru koşu) | `pnpm ops:backup:prune` |
 | Görev durumu | `schtasks /Query /TN MAS-Nakit-Radar-Gunluk-Yedek /V /FO LIST` |
 | Alarm mantığını kanıtla (harcanabilir DB) | `pnpm ops:telemetry:alerting:verify` |
+| Export/arama sızıntı kapısı | `pnpm db:export-leakage:verify` — **bu makinede koşmaz**: gate `postgres:postgres@127.0.0.1:5432` sabit, gerçek container'ın superuser parolası rotasyonlu. CI'da koşar (CI setup'ı düzeltilince). |
 
 Çıktılarda **sır yoktur**: makbuzlar yalnız dosya adı, boyut, sha256, ledger ve sürüm taşır; bağlantı dizesi hiçbir yere yazılmaz.

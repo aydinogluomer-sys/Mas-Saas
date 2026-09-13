@@ -1,0 +1,28 @@
+{
+  "ACCEPTED_CODE_SHA": "ceca39a3a60c00358d1aa90f00f9b2864237e4ec",
+  "RELEASE_EVIDENCE_SHA": "af210fd971a126c5aa3281f5a299f60b046d1d8b",
+  "ops_branch": "ops/phase7-operations",
+  "turn": "PHASE 7 FINAL OPERATIONS CLOSURE — Docker onarımı sonrası (2026-09-13, üçüncü tur)",
+  "CODE_SHA": "ceca39a3a60c00358d1aa90f00f9b2864237e4ec",
+  "build": ".next-merged-acceptance (BUILD_ID = ceca39a)",
+  "db": "mas_radar_restore_verify_20260913T134231Z",
+  "runtime_identity": ".env.local DATABASE_URL (mas_radar_app) — yalnız veritabanı adı değiştirildi, dize yazdırılmadı",
+  "port": 3313,
+  "READY": 200,
+  "HEALTH": "200 {status ok, app up, db up, 4 ms}",
+  "LOGIN": 200,
+  "VERSION": 200,
+  "VERSION_COMMIT": "ceca39a3a60c00358d1aa90f00f9b2864237e4ec",
+  "VERSION_BUILD_ID": "ceca39a3a60c00358d1aa90f00f9b2864237e4ec",
+  "provenance": "BUILD_EMBEDDED",
+  "protected_anonymous_routes": {
+    "tested": 14,
+    "all_307_to_login": true,
+    "LEAKED_200": 0
+  },
+  "HTTP_5XX": 0,
+  "FATAL": 0,
+  "stderr_lines": 0,
+  "server_stopped": true,
+  "transcript": "READY=200\nHEALTH=200 {\"status\":\"ok\",\"app\":\"up\",\"db\":\"up\",\"latencyMs\":4,\"time\":\"2026-09-13T13:43:48.346Z\"}\nLOGIN=200\nVERSION=200 commit=ceca39a3a60c00358d1aa90f00f9b2864237e4ec buildId=ceca39a3a60c00358d1aa90f00f9b2864237e4ec provenance=BUILD_EMBEDDED\nPROTECTED_ROUTES=14 ALL_307=YES LEAKED_200=0 HTTP_5XX=0\nSTDERR_LINES=0 ERRORS=0\n"
+}

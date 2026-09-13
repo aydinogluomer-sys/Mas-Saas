@@ -1,0 +1,15 @@
+{
+  "ACCEPTED_CODE_SHA": "ceca39a3a60c00358d1aa90f00f9b2864237e4ec",
+  "RELEASE_EVIDENCE_SHA": "af210fd971a126c5aa3281f5a299f60b046d1d8b",
+  "ops_branch": "ops/phase7-operations",
+  "turn": "PHASE 7 FINAL OPERATIONS CLOSURE — Docker onarımı sonrası (2026-09-13, üçüncü tur)",
+  "EXPORT_SEARCH_LEAKAGE": "BLOCKED_BY_TOPOLOGY",
+  "attempt": "pnpm db:export-leakage:verify (kanonik) → 'MIGRATION BAŞARISIZ: password authentication failed for user \"postgres\"' (exit 1)",
+  "why": "scripts/db/export-leakage-verify.ts bağlantı dizesini SABİT yazar: postgres://postgres:postgres@127.0.0.1:5432/<db> (CI/dev container varsayımı). Gerçek mas-radar-pg'nin superuser parolası rotasyona uğramış (docs/ops/password-rotation.md) — gate bu makinede kanonik hâliyle koşamaz. Tarihsel 36/36 sonucu (faz4-security.md) rotasyon öncesine ait.",
+  "left_behind": "mas_radar_export_leakage_verify veritabanı YOK (script kendi drop/create adımında kaldı; kontrol edildi)",
+  "CI_fallback": "CI da koşamıyor: .github/actions/setup + package.json packageManager pnpm@11.10.0 → pnpm/action-setup 'Multiple versions of pnpm specified' — TÜM dallarda setup adımında düşüyor (af210fd, f2e4609, 35592f0 koşuları). Önceden var olan CI kusuru; bu tur kod açmadı.",
+  "proposed_fix_next_code_turn": [
+    "export-leakage-verify.ts: diğer gate'ler gibi MIGRATION_DATABASE_URL'den superuser URL'i al (yalnız harcanabilir ad kabul, mevcut assertSafeDisposableName korunur)",
+    ".github/actions/setup: pnpm/action-setup'a version verme (packageManager alanı yeter) → CI yeşile döner ve gate ceca39a üzerinde CI'da koşar"
+  ]
+}

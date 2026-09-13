@@ -1,0 +1,26 @@
+{
+  "ACCEPTED_CODE_SHA": "ceca39a3a60c00358d1aa90f00f9b2864237e4ec",
+  "RELEASE_EVIDENCE_SHA": "af210fd971a126c5aa3281f5a299f60b046d1d8b",
+  "ops_branch": "ops/phase7-operations",
+  "turn": "PHASE 7 FINAL OPERATIONS CLOSURE — Docker onarımı sonrası (2026-09-13, üçüncü tur)",
+  "D_PRESENT": true,
+  "MAS_OFFDEVICE_BACKUP_DIR": "D:\\MAS-Backups\\mas_radar_dev (setx ile kullanıcı ortamına yazıldı — docs/ops/backup-schedule.md §1; görev bunu okudu)",
+  "PATH": "D:\\MAS-Backups\\mas_radar_dev\\daily-2026-09-13T13-40-29-868Z.dump",
+  "SOURCE_SHA": "0a5fb8a0b4072ce34e03fcc03286747e6ba02f82119b582d2f172fba4e5174cf",
+  "DEST_SHA": "0a5fb8a0b4072ce34e03fcc03286747e6ba02f82119b582d2f172fba4e5174cf",
+  "SHA_MATCH": "YES",
+  "SOURCE_BYTES": 1415581,
+  "DEST_BYTES": 1415581,
+  "SAME_PHYSICAL_DISK": "NO — targetDisk=1 (USB, 'Min Yi U YZWY_TECH', IsBoot=false, IsSystem=false) ≠ sourceDisk=0 (RAID); USB_PHYSICAL_VOLUME, offDeviceSatisfied=true",
+  "offdevice_record": {
+    "sha256VerifiedAtDestination": true,
+    "bytesVerifiedAtDestination": true,
+    "destRestoreListable": true,
+    "destTocEntryCount": "1387 satır (yorum dışı listeleme satırı; başlık TOC Entries 1391)",
+    "sidecarsCopied": [
+      "daily-2026-09-13T13-40-29-868Z.dump.stage07.json"
+    ]
+  },
+  "OFF_DEVICE_FRESH": "YES (0.1 s)",
+  "run_log_row": "offDeviceOk=true (ana worktree scripti; ops dalındaki offDeviceStatus alanı release'e alınınca görünecek)"
+}

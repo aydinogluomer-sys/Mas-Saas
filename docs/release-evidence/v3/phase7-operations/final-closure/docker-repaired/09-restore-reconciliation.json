@@ -1,0 +1,47 @@
+{
+  "ACCEPTED_CODE_SHA": "ceca39a3a60c00358d1aa90f00f9b2864237e4ec",
+  "RELEASE_EVIDENCE_SHA": "af210fd971a126c5aa3281f5a299f60b046d1d8b",
+  "ops_branch": "ops/phase7-operations",
+  "turn": "PHASE 7 FINAL OPERATIONS CLOSURE — Docker onarımı sonrası (2026-09-13, üçüncü tur)",
+  "baseline": "CANLI gerçek DB (salt-okunur, aynı kod: scripts/db/p24b-cleanup-fingerprint.ts, TimeZone=UTC her iki tarafta)",
+  "LEDGER_MATCH": "PASS — 87/0087 = 87/0087",
+  "COUNTS_MATCH": "PASS — 86/86 tablo satır sayısı + içerik hash'i birebir",
+  "WHOLE_DB_DIGEST": {
+    "real_pre": "dfce7f4cf4a4151b90cdf97b4162d2fda07f0ed66d1c81557e8a7bcb529b73bd",
+    "restored": "dfce7f4cf4a4151b90cdf97b4162d2fda07f0ed66d1c81557e8a7bcb529b73bd",
+    "equal": true
+  },
+  "TARGET_FINGERPRINT": {
+    "restored": "5e84634660528f2076f7bbef2a7e7e8f05047c13353679c53f0097798e37882d",
+    "real": "5e84634660528f2076f7bbef2a7e7e8f05047c13353679c53f0097798e37882d",
+    "equal": true
+  },
+  "P24B": "0/42 = 0/42",
+  "FINANCIAL_ANCHORS_MATCH": {
+    "real": {
+      "taskOpen": "4.0000",
+      "unpaidTry": "13595000.0000",
+      "checks": "590000.00",
+      "loans": "1500000.00",
+      "cashflow": "-53839702.88",
+      "payments": "540000.00",
+      "instances": "15060000.00",
+      "ledger": "87/0087",
+      "p24b_users_fixture": "0"
+    },
+    "restored": {
+      "taskOpen": "4.0000",
+      "unpaidTry": "13595000.0000",
+      "checks": "590000.00",
+      "loans": "1500000.00",
+      "cashflow": "-53839702.88",
+      "payments": "540000.00",
+      "instances": "15060000.00",
+      "ledger": "87/0087",
+      "p24b_users_fixture": "0"
+    },
+    "equal": true
+  },
+  "BUSINESS_FINGERPRINT_MATCH": "PASS",
+  "RESTORE_DATA_MATCH": "PASS"
+}

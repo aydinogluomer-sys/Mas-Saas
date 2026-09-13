@@ -1,0 +1,37 @@
+{
+  "ACCEPTED_CODE_SHA": "ceca39a3a60c00358d1aa90f00f9b2864237e4ec",
+  "RELEASE_EVIDENCE_SHA": "af210fd971a126c5aa3281f5a299f60b046d1d8b",
+  "ops_branch": "ops/phase7-operations",
+  "turn": "PHASE 7 FINAL OPERATIONS CLOSURE — Docker onarımı sonrası (2026-09-13, üçüncü tur)",
+  "settings": {
+    "DisallowStartIfOnBatteries": false,
+    "StopIfGoingOnBatteries": false,
+    "applied_in": "ikinci tur (final-closure/11-daily-job.json) — bu turda değişmedi",
+    "BATTERY_START_ALLOWED": true,
+    "BATTERY_STOP_DISABLED": true
+  },
+  "env_change": "setx MAS_OFFDEVICE_BACKUP_DIR D:\\MAS-Backups\\mas_radar_dev (kullanıcı düzeyi, geri alınabilir: setx MAS_OFFDEVICE_BACKUP_DIR \"\")",
+  "MANUAL_TRIGGER": {
+    "command": "schtasks /Run /TN MAS-Nakit-Radar-Gunluk-Yedek",
+    "at": "2026-09-13 16:40:24",
+    "duration_s": 36,
+    "EXIT_CODE": 0,
+    "task_last_result": 0,
+    "log": [
+      "MAS günlük yedek — kaynak 'mas_radar_dev' (REAL_READ_ONLY)",
+      "Yedek: backups\\daily-2026-09-13T13-40-29-868Z.dump (1.4 MB, sha256 0a5fb8a0b4072ce3…)",
+      "Makbuz: …stage07.json (sha256 234fb9dc192438f5…)",
+      "Ledger: 87/0087 · TOC 1391 girdi",
+      "Off-device: D:\\MAS-Backups\\mas_radar_dev\\daily-2026-09-13T13-40-29-868Z.dump (USB_PHYSICAL_VOLUME) — hedefte sha256 doğrulaması: EŞLEŞTİ",
+      "Budama: KURU KOŞU — 860 dump budanabilir (665.7 MB)",
+      "END exit=0"
+    ],
+    "DUMP_CREATED": true,
+    "SHA_CREATED": true,
+    "PG_RESTORE_LIST": "PASS (TOC 1391)",
+    "RECEIPT_CREATED": true,
+    "OFF_DEVICE_COPY": "OK",
+    "files_before_after": "895 → 897"
+  },
+  "DAILY_BACKUP_JOB": "PASS"
+}

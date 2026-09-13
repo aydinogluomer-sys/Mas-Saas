@@ -1,0 +1,32 @@
+{
+  "ACCEPTED_CODE_SHA": "ceca39a3a60c00358d1aa90f00f9b2864237e4ec",
+  "RELEASE_EVIDENCE_SHA": "af210fd971a126c5aa3281f5a299f60b046d1d8b",
+  "ops_branch": "ops/phase7-operations",
+  "turn": "PHASE 7 FINAL OPERATIONS CLOSURE — Docker onarımı sonrası (2026-09-13, üçüncü tur)",
+  "WHOLE_DB_FP": "dfce7f4cf4a4151b90cdf97b4162d2fda07f0ed66d1c81557e8a7bcb529b73bd",
+  "WHOLE_DB_FP_TZ_UTC_table_digest": "dfce7f4cf4a4151b90cdf97b4162d2fda07f0ed66d1c81557e8a7bcb529b73bd",
+  "TARGET_FP": "5e84634660528f2076f7bbef2a7e7e8f05047c13353679c53f0097798e37882d",
+  "ledger": "0087/87",
+  "baseTableCount": 86,
+  "P24B": "0/42",
+  "counts": {
+    "action_items": 6,
+    "approvals": 68,
+    "payment_instances": 502,
+    "payments": 19,
+    "users": 13,
+    "settings": 7
+  },
+  "financial_anchors": {
+    "taskOpen": "4.0000",
+    "unpaidTry": "13595000.0000",
+    "checks": "590000.00",
+    "loans": "1500000.00",
+    "cashflow": "-53839702.88",
+    "payments": "540000.00",
+    "instances": "15060000.00",
+    "ledger": "87/0087",
+    "p24b_users_fixture": "0"
+  },
+  "note": "Canlı gerçek DB'nin parmak izi dfce7f4c… = ikinci turda D:'den restore edilen 05.09 yedeğinin parmak izi (86/86 tablo) → 05.09'dan bu yana veri değişmemiş (Docker kapalıydı)."
+}

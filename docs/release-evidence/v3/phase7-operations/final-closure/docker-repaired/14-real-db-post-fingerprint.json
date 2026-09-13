@@ -1,0 +1,39 @@
+{
+  "ACCEPTED_CODE_SHA": "ceca39a3a60c00358d1aa90f00f9b2864237e4ec",
+  "RELEASE_EVIDENCE_SHA": "af210fd971a126c5aa3281f5a299f60b046d1d8b",
+  "ops_branch": "ops/phase7-operations",
+  "turn": "PHASE 7 FINAL OPERATIONS CLOSURE — Docker onarımı sonrası (2026-09-13, üçüncü tur)",
+  "POST_FP": "dfce7f4cf4a4151b90cdf97b4162d2fda07f0ed66d1c81557e8a7bcb529b73bd",
+  "PRE_FP": "dfce7f4cf4a4151b90cdf97b4162d2fda07f0ed66d1c81557e8a7bcb529b73bd",
+  "equal": true,
+  "table_digest_utc": {
+    "pre": "dfce7f4cf4a4151b90cdf97b4162d2fda07f0ed66d1c81557e8a7bcb529b73bd",
+    "post": "dfce7f4cf4a4151b90cdf97b4162d2fda07f0ed66d1c81557e8a7bcb529b73bd",
+    "equal": true,
+    "tables": "86/86 aynı"
+  },
+  "anchors_equal": true,
+  "engine_counters_since_postmaster_start": "xact_commit=59 xact_rollback=7 tup_inserted=0 tup_updated=0 tup_deleted=0 (commit'ler salt-okunur sorgular; rollback'ler 'begin read only … rollback' blokları)",
+  "unexpected_INSERT": 0,
+  "unexpected_UPDATE": 0,
+  "DELETE": 0,
+  "DDL": 0,
+  "migration": 0,
+  "V2_import": 0,
+  "auth_health_bookkeeping": "0 (uygulama gerçek DB'ye karşı BAŞLATILMADI; smoke restore DB'sindeydi)",
+  "UNEXPECTED_BUSINESS_DELTA": 0,
+  "ledger": "0087/87",
+  "audit_logs": 814,
+  "P24B": "0/42",
+  "cleanup": {
+    "dropped_this_turn": [
+      "mas_radar_restore_verify_20260913T134231Z",
+      "mas_radar_alerting_verify_phase7"
+    ],
+    "pre_existing_verify_dbs_left_untouched": 25,
+    "container_tmp": "bu turun geçici dump'ları silindi; önceki oturumların /tmp kalıntıları (mas-backup-verify-*, p24b-*, preflight) dokunulmadı",
+    "smoke_server_3313": "durduruldu",
+    "portable_cluster": "durdurulmuş (bu turda kullanılmadı)"
+  },
+  "main_worktree_user_files": "5 dirty dosya + untracked Telegram dizinleri dokunulmadı (backups/ ve logs/ git dışı; +2 yedek dosyası, +1 log satır bloğu)"
+}

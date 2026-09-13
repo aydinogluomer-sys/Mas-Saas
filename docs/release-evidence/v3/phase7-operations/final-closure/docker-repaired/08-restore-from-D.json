@@ -1,0 +1,23 @@
+{
+  "ACCEPTED_CODE_SHA": "ceca39a3a60c00358d1aa90f00f9b2864237e4ec",
+  "RELEASE_EVIDENCE_SHA": "af210fd971a126c5aa3281f5a299f60b046d1d8b",
+  "ops_branch": "ops/phase7-operations",
+  "turn": "PHASE 7 FINAL OPERATIONS CLOSURE — Docker onarımı sonrası (2026-09-13, üçüncü tur)",
+  "SOURCE_WAS_D_COPY": true,
+  "source": "D:\\MAS-Backups\\mas_radar_dev\\daily-2026-09-13T13-40-29-868Z.dump (sha restore öncesi yeniden doğrulandı = 0a5fb8a0b4072ce3…)",
+  "RESTORE_DB": "mas_radar_restore_verify_20260913T134231Z",
+  "engine": "mas-radar-pg container (gerçek küme, ayrı harcanabilir veritabanı; mas_radar_dev'e restore YOK)",
+  "pg_restore": {
+    "args": "--no-owner --role=postgres --exit-on-error",
+    "exit": 0,
+    "errors": 0,
+    "seconds": 3.9
+  },
+  "restored": {
+    "ledger": "87/0087",
+    "base_tables": 86,
+    "views": 81
+  },
+  "RESTORE_PASS": true,
+  "cleanup": "DROP edildi (tur sonu)"
+}

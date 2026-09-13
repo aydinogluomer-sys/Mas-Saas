@@ -1,0 +1,77 @@
+{
+  "ACCEPTED_CODE_SHA": "ceca39a3a60c00358d1aa90f00f9b2864237e4ec",
+  "RELEASE_EVIDENCE_SHA": "af210fd971a126c5aa3281f5a299f60b046d1d8b",
+  "ops_branch": "ops/phase7-operations",
+  "turn": "PHASE 7 FINAL OPERATIONS CLOSURE — Docker onarımı sonrası (2026-09-13, üçüncü tur)",
+  "real_run (gerçek DB salt-okunur + gerçek dizinler)": {
+    "runId": "tel-2026-09-13T13-44-17-551Z",
+    "generatedAt": "2026-09-13T13:44:19.700Z",
+    "backupFreshness": {
+      "local": {
+        "verified": {
+          "name": "daily-2026-09-13T13-40-29-868Z.dump",
+          "bytes": 1415581,
+          "sha256": "0a5fb8a0b4072ce34e03fcc03286747e6ba02f82119b582d2f172fba4e5174cf",
+          "receiptTimestamp": "2026-09-13T13:40:33.396Z",
+          "ageHours": 0.06,
+          "toc": {
+            "entries": 1391,
+            "source": "pg_restore_now"
+          },
+          "schemaLedger": "87/0087"
+        },
+        "ageHours": 0.06,
+        "scanned": 1,
+        "rejected": []
+      },
+      "offDevice": {
+        "verified": {
+          "name": "daily-2026-09-13T13-40-29-868Z.dump",
+          "bytes": 1415581,
+          "sha256": "0a5fb8a0b4072ce34e03fcc03286747e6ba02f82119b582d2f172fba4e5174cf",
+          "receiptTimestamp": "2026-09-13T13:40:33.396Z",
+          "ageHours": 0.06,
+          "toc": {
+            "entries": 1391,
+            "source": "pg_restore_now"
+          },
+          "schemaLedger": "87/0087"
+        },
+        "ageHours": 0.06,
+        "scanned": 1,
+        "rejected": []
+      }
+    },
+    "disk": {
+      "freeGb": 6.4,
+      "level": "warning"
+    },
+    "alerts": [
+      "disk_free_gb",
+      "latest_import_age_days",
+      "schema_ledger"
+    ],
+    "signals_ok": "20/23"
+  },
+  "LOCAL_BACKUP_FRESH": "YES (0.1 s < 36; sha ✓; TOC 1391 pg_restore --list şimdi, docker yolu)",
+  "OFF_DEVICE_BACKUP_FRESH": "YES (0.1 s; D: kopyası sha ✓; TOC 1391)",
+  "backup_age_hours_lt_36": true,
+  "remaining_alerts_explained": {
+    "disk_free_gb": "6.40 GB WARNING (P2) — pagefile büyümesi; kritik değil",
+    "latest_import_age_days": "58 > 45 (P2) — gerçek son içe aktarım 2026-07-17; Phase 8 öncesi bilinen durum",
+    "schema_ledger": "87/0087 ≠ 94/0094 — kabul edilen kod 94 bekler, gerçek DB 87: Phase 8 cutover'a kadar BEKLENEN alarm"
+  },
+  "negative_controls_rerun_docker_path": {
+    "gate": "ops:telemetry:alerting:verify — harcanabilir mas_radar_alerting_verify_phase7 (gerçek container içinde, 0001–0094), fixture docker exec pg_dump, TOC docker exec pg_restore",
+    "result": "47/47 PASS · 1 SKIP (S0: makine diski 6.39 GB gerçekten WARNING) · ALL PASS",
+    "fresh_fixture": "no alert",
+    "stale_fixture_72h": "alert (S1b)",
+    "corrupt_sha": "alert (S1c)",
+    "missing_receipt": "alert (S1, S1d)",
+    "D_absent": "alert HEDEF YOK / DRIVE_ABSENT (S1e, Z:\\)",
+    "offdevice_stale_local_fresh": "yalnız off-device alarm",
+    "disk": "P1/P2 bantları gerçek ölçümle"
+  },
+  "real_backup_timestamps_modified": false,
+  "BACKUP_FRESHNESS": "PASS"
+}

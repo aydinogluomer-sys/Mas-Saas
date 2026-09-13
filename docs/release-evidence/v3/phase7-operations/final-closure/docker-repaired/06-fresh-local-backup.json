@@ -1,0 +1,26 @@
+{
+  "ACCEPTED_CODE_SHA": "ceca39a3a60c00358d1aa90f00f9b2864237e4ec",
+  "RELEASE_EVIDENCE_SHA": "af210fd971a126c5aa3281f5a299f60b046d1d8b",
+  "ops_branch": "ops/phase7-operations",
+  "turn": "PHASE 7 FINAL OPERATIONS CLOSURE — Docker onarımı sonrası (2026-09-13, üçüncü tur)",
+  "mechanism": "kanonik scripts/ops/backup-daily.ts — zamanlanmış görev MAS-Nakit-Radar-Gunluk-Yedek elle tetiklendi (16:40:24), ana worktree af210fd (kod = ceca39a)",
+  "NEW_LOCAL_BACKUP": "backups/daily-2026-09-13T13-40-29-868Z.dump",
+  "dump_exists": true,
+  "BYTES": 1415581,
+  "SHA256": "0a5fb8a0b4072ce34e03fcc03286747e6ba02f82119b582d2f172fba4e5174cf",
+  "receipt_sha256_match": true,
+  "receipt": {
+    "receiptKind": "mas-stage07-backup-receipt-v1",
+    "timestamp": "2026-09-13T13:40:33.396Z",
+    "source_db": "mas_radar_dev",
+    "system_identifier": "7659286466006216743",
+    "git_sha": "af210fd9… (ana worktree HEAD)",
+    "schema_ledger": "87/0087",
+    "pg_dump_version": "16.14 Debian",
+    "data_class": "REAL_READ_ONLY"
+  },
+  "pg_restore_list": "PASS — docker exec mas-radar-pg pg_restore --list: 'Archive created at 2026-09-13 13:40:30 UTC, dbname mas_radar_dev, TOC Entries: 1391, CUSTOM'; 85 TABLE DATA; payment_instances/payments/audit_logs/schema_migrations mevcut",
+  "TOC": 1391,
+  "LOCAL_FRESH": "YES (0.1 s)",
+  "task_exit": 0
+}

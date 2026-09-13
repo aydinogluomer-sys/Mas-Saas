@@ -1,0 +1,36 @@
+{
+  "ACCEPTED_CODE_SHA": "ceca39a3a60c00358d1aa90f00f9b2864237e4ec",
+  "RELEASE_EVIDENCE_SHA": "af210fd971a126c5aa3281f5a299f60b046d1d8b",
+  "ops_branch": "ops/phase7-operations",
+  "turn": "PHASE 7 FINAL OPERATIONS CLOSURE — Docker onarımı sonrası (2026-09-13, üçüncü tur)",
+  "REPAIR_VERIFIED": "YES — Docker Desktop 4.90.0.238679 (kullanıcı Install/Repair ile kurdu; Docker.7z kullanılmadı)",
+  "measured_before_start": {
+    "Docker Desktop.exe": "4.90.0.238679",
+    "resources\\wsl\\docker-wsl-cli.iso": "PRESENT 764.6 MB",
+    "resources\\docker-desktop.iso": "PRESENT 742.1 MB",
+    "HKLM\\SOFTWARE\\Docker Inc.\\Docker Desktop": "yok (4.90 bu anahtarı kullanmıyor; motor bu anahtarsız kalktı)",
+    "resources\\linuxkit": "yok (4.90 docker-desktop.iso kullanıyor)",
+    "com.docker.service": "Stopped (Manual — Linux motoru için gerekmiyor)",
+    "WSL docker-desktop": "Stopped → normal başlatma sonrası Running v2"
+  },
+  "start": {
+    "method": "normal — 'Docker Desktop.exe' başlatıldı, 72 s'de motor cevap verdi",
+    "docker_version": "client 29.7.2 / server 29.7.2",
+    "docker_info": "containers=6 running=4 images=28 root=/var/lib/docker"
+  },
+  "SERVER_READY": "YES",
+  "FACTORY_RESET_USED": "NO",
+  "forbidden_not_done": [
+    "Reset to factory defaults",
+    "Clean/Purge",
+    "Uninstall with data deletion",
+    "wsl --unregister",
+    "volume prune/rm",
+    "system prune -a",
+    "vhdx delete/move/replace"
+  ],
+  "VHDX_PRESERVED": "YES — tur başı 2026-09-05 14:41:36 / 23.83 GB; motor çalışırken dosya normal olarak yazılıyor (16:47 / 23.95 GB) — veri değişmedi (parmak izi aynı, tup_inserted/updated/deleted = 0)",
+  "C_FREE_GB_before_docker_start": 11.53,
+  "C_FREE_GB_after_docker_running": 6.4,
+  "why": "sistem yönetimli pagefile 18.76 → 20.45 GB büyüdü (Docker VM belleği, 8 GB RAM); hiçbir dosya silinmedi/eklenmedi"
+}

@@ -80,3 +80,33 @@ REAL_DB_MIGRATIONS_0088_0094 = NOT_APPLIED · REAL_V2_IMPORT = NOT_EXECUTED · P
 ```
 
 Docker onarıldıktan sonra kalan zincir tek turda kapanır: 04 → 06 → 07 (taze) → 08/09 (canlı baseline ile) → 11 (exit 0) → 12 → 13.
+
+---
+
+# FINAL OPERATIONS CLOSURE — Docker onarımı sonrası (2026-09-13, üçüncü tur; kanıt: `final-closure/docker-repaired/02…14`)
+
+| Kapı | Sonuç | Kanıt |
+|---|---|---|
+| DISK_SAFE | **PASS** — kapı anında 8.04 GB (ikinci tur); Docker VM çalışırken pagefile 18.8 → 20.5 GB büyüdüğü için tur sonu **6.40 GB** (WARNING, kritik değil; hiçbir dosya silinmedi/eklenmedi) | 02 |
+| DOCKER_READY | **PASS** — Docker Desktop **4.90.0** (kullanıcı Install/Repair), iki ISO mevcut, motor 29.7.2 normal başlatmayla 72 s'de kalktı; Reset/prune/rm YOK | 02 |
+| REAL_DB_IDENTITY | **PASS** — mevcut `mas-radar-pg` (2026-07-06) kendi volume'uyla kalktı; `mas_radar_dev` · PG 16.14 · sysid 7659286466006216743 · ledger 87/0087 · 86 tablo · P24B 0/42 · yeni container/volume YOK | 03–04 |
+| PRE_FP | dfce7f4c… (= ikinci turda D:'den restore edilen 05.09 yedeği → 05.09'dan beri veri değişmemiş) | 05 |
+| LOCAL_BACKUP | **PASS** — zamanlanmış görev elle tetiklendi, **exit 0**: `daily-2026-09-13T13-40-29-868Z.dump` 1.415.581 B · sha256 0a5fb8a0… = makbuz · `pg_restore --list` TOC 1391 · 85 TABLE DATA | 06 |
+| OFF_DEVICE_BACKUP | **PASS** — `D:\MAS-Backups\mas_radar_dev\…13-40-29-868Z.dump` · SHA eşit · bayt eşit · USB fiziksel disk 1 ≠ C: disk 0 · makbuz yanında · offdevice kaydı | 07 |
+| OFF_DEVICE_RESTORE | **PASS** — D: kopyasından `mas_radar_restore_verify_20260913T134231Z` (gerçek küme, harcanabilir DB): exit 0, 0 hata, 3,9 s | 08 |
+| RESTORE_RECONCILIATION | **PASS** — CANLI gerçek DB ile: whole-DB digest eşit, 86/86 tablo birebir, ledger 87/0087, P24B 0/42, hedef parmak izi eşit, 9 finansal çapa birebir | 09 |
+| RESTORED_APP_SMOKE | **PASS** — ceca39a build, gerçek runtime kimliği (yalnız DB adı değişti): /ready 200 · /health db up · /login 200 · /version.commit = ceca39a · 14 rota 307 · 0 sızıntı · 0 5xx · 0 fatal | 10 |
+| DAILY_BACKUP_JOB | **PASS** — pil politikası açık (ikinci tur); `MAS_OFFDEVICE_BACKUP_DIR` setx ile tanımlandı; gerçek tetik: exit 0, dump + sha + makbuz + off-device OK | 11 |
+| BACKUP_FRESHNESS | **PASS** — yerel 0,1 s · off-device 0,1 s (gerçek DB'ye karşı telemetri, salt-okunur); negatif kontroller Docker yoluyla **47/47** yeniden | 12 |
+| EXPORT_SEARCH_LEAKAGE | **BLOCKED_BY_TOPOLOGY** — kanonik gate `postgres:postgres@127.0.0.1:5432` sabit; gerçek container'ın superuser parolası rotasyonlu → auth hatası; CI de önceden var olan pnpm sürüm çakışmasıyla setup'ta düşüyor (tüm dallar) | 13 |
+| REAL_DB_UNEXPECTED_DELTA | **0** — post FP = pre FP (86/86), tup_inserted/updated/deleted = 0, DDL 0, migration 0, V2 import 0 | 14 |
+
+```text
+OPERATIONS_READY = FAIL   (11/12 PASS; tek açık: EXPORT_SEARCH_LEAKAGE — kural "biri yoksa FAIL")
+READY_FOR_M1_M8  = NO     (sızıntı kapısı kapanmadan el kabulüne geçilmez)
+READY_FOR_PHASE8 = NO
+REAL_DB_MIGRATIONS_0088_0094 = NOT_APPLIED · REAL_V2_IMPORT = NOT_EXECUTED · PHASE8_CUTOVER = NOT_EXECUTED
+```
+
+Kalan tek iş (kod turu, ops değil): `scripts/db/export-leakage-verify.ts` bağlantısını diğer gate'ler gibi `MIGRATION_DATABASE_URL`'den
+almak **ya da** `.github/actions/setup`'taki pnpm sürüm çakışmasını gidermek (CI yeşile döner, gate ceca39a üzerinde CI'da koşar).

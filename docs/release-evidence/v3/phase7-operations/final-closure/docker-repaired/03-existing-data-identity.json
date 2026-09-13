@@ -1,0 +1,18 @@
+{
+  "ACCEPTED_CODE_SHA": "ceca39a3a60c00358d1aa90f00f9b2864237e4ec",
+  "RELEASE_EVIDENCE_SHA": "af210fd971a126c5aa3281f5a299f60b046d1d8b",
+  "ops_branch": "ops/phase7-operations",
+  "turn": "PHASE 7 FINAL OPERATIONS CLOSURE — Docker onarımı sonrası (2026-09-13, üçüncü tur)",
+  "docker_ps_a": [
+    "mas-radar-pg postgres:16 Up 127.0.0.1:5432->5432 (created 2026-07-06, otomatik başladı)",
+    "mas-radar-pg-adim4-sandbox postgres:16 Exited (13 gün)",
+    "y-test-postgres Exited",
+    "supabase_* meritflow-dev (başka proje) Up"
+  ],
+  "mas-radar-pg_mount": "volume 8b25b2b27ec5788c400482dd0fd9d81f67c394eccee24a0f9a254c804642fb2a -> /var/lib/postgresql/data (mevcut; mas_radar_pgdata adlı ayrı volume KULLANILMADI, dokunulmadı)",
+  "EXISTING_CONTAINER_FOUND": "YES",
+  "EXISTING_VOLUME_FOUND": "YES",
+  "new_container_or_volume_created": false,
+  "start_method": "container Docker ile birlikte kendiliğinden kalktı (restart policy) — elle start gerekmedi",
+  "pg_isready": "/var/run/postgresql:5432 - accepting connections"
+}

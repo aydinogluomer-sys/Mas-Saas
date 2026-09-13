@@ -1,0 +1,24 @@
+{
+  "ACCEPTED_CODE_SHA": "ceca39a3a60c00358d1aa90f00f9b2864237e4ec",
+  "RELEASE_EVIDENCE_SHA": "af210fd971a126c5aa3281f5a299f60b046d1d8b",
+  "ops_branch": "ops/phase7-operations",
+  "turn": "PHASE 7 FINAL OPERATIONS CLOSURE — Docker onarımı sonrası (2026-09-13, üçüncü tur)",
+  "mode": "READ ONLY (begin read only; docker exec psql + kanonik p24b-source-state.ts)",
+  "database_name": "mas_radar_dev",
+  "PostgreSQL_version": "PostgreSQL 16.14 (Debian 16.14-1.pgdg13+1)",
+  "system_identifier": "7659286466006216743 (= 05.09 ve 13.09 makbuzları)",
+  "migration_ledger": "87/0087 (beklenen eski seviye — 0088–0094 UYGULANMADI)",
+  "table_count": "86 base (public+auth), 81 view",
+  "critical_counts": {
+    "payment_instances": 502,
+    "payments": 19,
+    "audit_logs": 814,
+    "users": 13,
+    "sessions": 40,
+    "action_items": 6,
+    "approvals": 68,
+    "settings": 7
+  },
+  "P24B": "0/42",
+  "engine_counters_at_first_contact": "xact_commit=1 rollback=0 tup_inserted=0 tup_updated=0 tup_deleted=0 (postmaster 13:38:45Z)"
+}
