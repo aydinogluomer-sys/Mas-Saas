@@ -1,0 +1,24 @@
+{
+  "sha": "ceca39a3a60c00358d1aa90f00f9b2864237e4ec",
+  "FINANCIAL_CORRECTNESS": "PASS",
+  "CROSS_CURRENCY_INVALID_SUMS": 0,
+  "targeted_unit": {
+    "files": 21,
+    "tests": 502,
+    "scope": "tests/financial + radar + approvals + counterparties + analytics + briefing + reports + receivables + collections + budget + financing"
+  },
+  "sql_mixed_currency_scenarios": {
+    "db": "mas_radar_verify_merged (0001–0094 via db:migrate)",
+    "0093": "TRY Tedarikci split 120000 foreign=1; USD Limitli over=NULL comparable=false; USD Tedarikci total=0 foreign=3; unsupported_currency accepted",
+    "0094": "invoice_party_summary 1000/400 foreign=1; dso 1000/400; working_capital_trend; credit_facility_utilization USD drawn=4000 foreign_drawdown=1; ladder foreign_facility=1; promises pending=300 foreign=1; bank_cash_position TL derived=1300 foreign_txn=1"
+  },
+  "liquidity_forecast_daily": {
+    "invoice_leg_currency": "v.currency",
+    "calendar_vs_liquidity": {
+      "TRY": 600.0,
+      "USD": 5000.0,
+      "equal": true
+    }
+  },
+  "loader_smoke_real_clone": "13/13"
+}

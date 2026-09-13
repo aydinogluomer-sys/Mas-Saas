@@ -1,0 +1,163 @@
+{
+  "artifactKind": "mas-real-clone-v2-rehearsal-v1",
+  "startedAt": "2026-09-13T06:54:32.026Z",
+  "finishedAt": "2026-09-13T06:54:42.259Z",
+  "clone": "mas_radar_restore_drill_merged",
+  "ledgerBefore": "87/0087",
+  "ledgerAfter": "87/0087",
+  "ledgerNote": "migration'lar SQL dosyası olarak uygulandı; ledger ilerletilmedi (gerçek cutover pnpm db:migrate ile ilerletir)",
+  "migrationsApplied": [
+    "0088_import_external_keys.sql",
+    "0089_standard_import_v2_staging.sql",
+    "0090_check_loan_currency.sql",
+    "0091_import_rows_blocked_by_parent.sql",
+    "0092_risk_level_unsupported_currency.sql",
+    "0093_tier1_try_threshold_views.sql",
+    "0094_tier2_tier3_try_only_views.sql"
+  ],
+  "addedColumns": [
+    "loans.currency",
+    "checks.currency"
+  ],
+  "legacyCounts": {
+    "payments": {
+      "pre": 19,
+      "postMigration": 19,
+      "postImport": 22
+    },
+    "payment_instances": {
+      "pre": 502,
+      "postMigration": 502,
+      "postImport": 502
+    },
+    "checks": {
+      "pre": 7,
+      "postMigration": 7,
+      "postImport": 9
+    },
+    "loans": {
+      "pre": 1,
+      "postMigration": 1,
+      "postImport": 2
+    },
+    "loan_installments": {
+      "pre": 48,
+      "postMigration": 48,
+      "postImport": 50
+    },
+    "cashflow_months": {
+      "pre": 35,
+      "postMigration": 35,
+      "postImport": 35
+    }
+  },
+  "v2Import": {
+    "workbookId": "68e4a19c-1ee0-4a15-b21f-db80f3b4d4b5",
+    "rowsStaged": 54,
+    "rowsMapped": 36,
+    "perTable": {
+      "products": {
+        "inserted": 3,
+        "updated": 0
+      },
+      "projects": {
+        "inserted": 2,
+        "updated": 0
+      },
+      "bank_accounts": {
+        "inserted": 2,
+        "updated": 0
+      },
+      "loans": {
+        "inserted": 1,
+        "updated": 0
+      },
+      "payments": {
+        "inserted": 3,
+        "updated": 0
+      },
+      "checks": {
+        "inserted": 2,
+        "updated": 0
+      },
+      "loan_installments": {
+        "inserted": 2,
+        "updated": 0
+      },
+      "cashflow_lines": {
+        "inserted": 5,
+        "updated": 0
+      },
+      "bank_transactions": {
+        "inserted": 3,
+        "updated": 0
+      },
+      "invoices": {
+        "inserted": 2,
+        "updated": 0
+      },
+      "orders": {
+        "inserted": 2,
+        "updated": 0
+      },
+      "budget_lines": {
+        "inserted": 3,
+        "updated": 0
+      },
+      "fx_positions": {
+        "inserted": 3,
+        "updated": 0
+      },
+      "production_parts": {
+        "inserted": 2,
+        "updated": 0
+      },
+      "machine_assets": {
+        "inserted": 0,
+        "updated": 1
+      }
+    }
+  },
+  "checks": [
+    {
+      "name": "migration'lar gerçek şema+veri üzerinde uygulandı",
+      "pass": true,
+      "detail": "0088_import_external_keys.sql, 0089_standard_import_v2_staging.sql, 0090_check_loan_currency.sql, 0091_import_rows_blocked_by_parent.sql, 0092_risk_level_unsupported_currency.sql, 0093_tier1_try_threshold_views.sql, 0094_tier2_tier3_try_only_views.sql"
+    },
+    {
+      "name": "migration eski finansal satırlara dokunmadı (6 tablo, PRE kolonları)",
+      "pass": true,
+      "detail": "payments=19 payment_instances=502 checks=7 loans=1 loan_installments=48 cashflow_months=35"
+    },
+    {
+      "name": "şema eklemeleri (beyaz liste: yeni kolon/tablo/view)",
+      "pass": true,
+      "detail": "loans.currency, checks.currency"
+    },
+    {
+      "name": "V2 fixture gerçek verinin YANINA yazıldı",
+      "pass": true,
+      "detail": "rowsStaged=54 rowsMapped=36 needsReview=3 rejected=12 blocked=0 reviews=16"
+    },
+    {
+      "name": "V2 import eski (legacy) satırlara dokunmadı (kimlik-sabit hash, 6 tablo)",
+      "pass": true,
+      "detail": "6/6 aynı"
+    },
+    {
+      "name": "satır sayıları yalnız EKLENDİ",
+      "pass": true,
+      "detail": "payments: 19→22 payment_instances: 502→502 checks: 7→9 loans: 1→2 loan_installments: 48→50 cashflow_months: 35→35"
+    },
+    {
+      "name": "yazılan her V2 kaydı kaynak satırına bağlı",
+      "pass": true,
+      "detail": "orphan=0"
+    }
+  ],
+  "verdict": "PASS",
+  "sha": "ceca39a3a60c00358d1aa90f00f9b2864237e4ec",
+  "LEGACY_ROWS_PRESERVED": "YES",
+  "UNEXPECTED_DELTA": 0,
+  "clone_dropped_after": true
+}

@@ -1,0 +1,19 @@
+{
+  "sha": "ceca39a3a60c00358d1aa90f00f9b2864237e4ec",
+  "typecheck": "PASS",
+  "lint": "PASS (0 warning, 0 error)",
+  "unit_serial": {
+    "files": 78,
+    "tests": 1671,
+    "failed": 0,
+    "skipped": 0
+  },
+  "build": {
+    "result": "PASS",
+    "compiled": "111s",
+    "build_id": "ceca39a3a60c00358d1aa90f00f9b2864237e4ec",
+    "app_commit_sha": "ceca39a3a60c00358d1aa90f00f9b2864237e4ec",
+    "app_build_time": "2026-09-13T06:06:17Z",
+    "note": "İlk deneme temiz worktree'de .env.local olmadığı için 'Collecting page data' adımında DATABASE_URL zorunlu hatasıyla düştü (önceden var olan derleme-zamanı env doğrulaması, kod hatası değil); harcanabilir DB URL'i ile tekrar PASS."
+  }
+}

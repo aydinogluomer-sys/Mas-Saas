@@ -1,0 +1,10 @@
+{
+  "REAL_DB_INSERT": "0 attempted",
+  "REAL_DB_UPDATE": "0 attempted",
+  "REAL_DB_DELETE": "0 attempted",
+  "REAL_DB_DDL": "0 attempted",
+  "REAL_DB_MIGRATION": 0,
+  "REAL_DB_IMPORT": 0,
+  "REAL_DB_FINGERPRINT": "NOT_MEASURABLE — Docker DOWN, mas_radar_dev erişilemez; hiçbir DATABASE_URL/MIGRATION_DATABASE_URL gerçek DB'ye yönelmedi (tüm hedefler 127.0.0.1:54329 harcanabilir cluster, adları disposable işaretli)",
+  "docker_data_vhdx_last_write": "2026-09-05 14:41:36 (değişmedi)"
+}

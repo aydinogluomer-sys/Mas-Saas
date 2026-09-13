@@ -1,0 +1,8 @@
+{
+  "sha": "ceca39a3a60c00358d1aa90f00f9b2864237e4ec",
+  "tree": "committed (untracked Telegram dizinleri integration worktree'de YOK)",
+  "SECURITY_MATRIX": "17/17 ALL PASS",
+  "ROLES_RLS": "29/29 ALL PASS",
+  "ROUTE_ACCESS": "authz unit 123/123 (5×16 tablo, 10 ret)",
+  "EXPORT_SEARCH_LEAKAGE": "BLOCKED — scripts/db/export-leakage-verify.ts kendi DB'sini `docker exec mas-radar-pg` ile kurar; Docker DOWN. Kod değişmedi; Docker onarımı sonrası koşulacak."
+}

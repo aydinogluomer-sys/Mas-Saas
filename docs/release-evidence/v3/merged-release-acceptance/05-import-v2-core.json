@@ -1,0 +1,27 @@
+{
+  "sha": "ceca39a3a60c00358d1aa90f00f9b2864237e4ec",
+  "IMPORT_V2_CORE": "PASS",
+  "unit": {
+    "importers_v2": "180/180 (parser, normalization, NULL≠ZERO, values, domain-map, mapper, migration-contract, migration-hygiene, zip-canonical, service)"
+  },
+  "fresh_db": "mas_radar_verify_merged — pnpm db:migrate 0001–0094",
+  "e2e": {
+    "checks": "69/69",
+    "FIRST_IMPORT": "PASS",
+    "SECOND_IMPORT": "PASS",
+    "BUSINESS_DUPLICATES": 0,
+    "note": "İKİNCİ IMPORT MÜKERRER ÜRETMEDİ ×15 tablo; defter büyümedi; hazırlık her import'u ayrı saklar"
+  },
+  "concurrency": {
+    "checks": "18/18",
+    "verdict": "PASS",
+    "CONCURRENT_SAME_KEY_DOMAIN_ROWS": 1,
+    "LEDGER_ROWS": 1,
+    "ORPHAN_DUPLICATES": 0,
+    "STALE_BINDING": "hard fail, no auto-heal",
+    "BINDING_CONFLICT": "hard fail, binding unchanged",
+    "ROLLBACK": "partial update reverted, no half workbook"
+  },
+  "currency_safety": "9/9 PASS",
+  "enum_parity": "uyuşmazlık yok"
+}
