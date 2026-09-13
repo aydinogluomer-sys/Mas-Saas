@@ -1,0 +1,33 @@
+{
+  "ACCEPTED_CODE_SHA": "ceca39a3a60c00358d1aa90f00f9b2864237e4ec",
+  "RELEASE_EVIDENCE_SHA": "af210fd971a126c5aa3281f5a299f60b046d1d8b",
+  "ops_branch": "ops/phase7-operations",
+  "turn": "PHASE 7 FINAL OPERATIONS CLOSURE (2026-09-13, ikinci tur)",
+  "baseline": "KAYITLI (canlı PRE_FP Docker olmadan ölçülemedi) — bkz. 05",
+  "LEDGER_MATCH": "PASS — 0087/87 = 0087/87",
+  "COUNTS_MATCH": "PASS — action_items 6, approvals 68, payment_instances 502, payments 19, users 13, settings 7, audit_logs 814 = 2026-09-03T19:11 kaydı",
+  "P24B": "0/42 = kayıt",
+  "TARGET_FINGERPRINT_MATCH": "PASS — 5e84634660528f2076f7bbef2a7e7e8f05047c13353679c53f0097798e37882d",
+  "FINANCIAL_ANCHORS_vs_2026-08-31": {
+    "taskOpen": "4 = 4",
+    "unpaidTry": "13595000 = 13595000",
+    "checks": "590000.00 = 590000.00",
+    "loans": "1500000.00 = 1500000.00",
+    "cashflow": "-53839702.88 = -53839702.88",
+    "payments": "540000.00 = 540000.00",
+    "instances": "15060000.00 ≠ 14550000.00 (+510.000) — AÇIKLANDI: 2026-09-03 denetimli başlangıçta generate_instances 485→502 (+17 taksit) — 09-post-start-db.json engine counters ins=97"
+  },
+  "per_table_vs_2026-09-03T08:50_map (TimeZone=UTC)": {
+    "identical": "82/86",
+    "changed": {
+      "audit_logs": "736→814 (+78, 09-03 denetimli başlangıç)",
+      "payment_instances": "485→502 (+17, generate_instances)",
+      "sessions": "39→40 (+1 giriş)",
+      "users": "13→13 (son giriş alanları)"
+    },
+    "note": "Küme varsayılan TimeZone (+03) ile hash'ler 41/86 eşleşiyordu; timestamptz metin gösterimi farkı — UTC ile 82/86. Kalan 4 fark 2026-09-03 denetimli runtime başlangıcının belgelenmiş etkisi."
+  },
+  "wholeDb_vs_2026-09-03T19:11": "EŞİT DEĞİL (dfce7f4c… ≠ 85358cfd…) — 19:11 sonrası → 05.09 yedeği arası uygulama çalıştı (audit sayısı aynı: 814; fark oturum/kullanıcı bakım alanları olmalı; 19:11 tablo haritası kayıtlı olmadığı için tablo düzeyinde AYRIŞTIRILAMADI)",
+  "BUSINESS_FINGERPRINT_MATCH": "PASS (kayıtlı iş verisi çapaları)",
+  "RESTORE_DATA_MATCH": "PASS_AGAINST_RECORDED_BASELINE — canlı PRE_FP yok; sözleşmenin 'pre-backup real DB baseline' koşulu Docker olmadan sağlanamadı"
+}

@@ -1,0 +1,37 @@
+{
+  "ACCEPTED_CODE_SHA": "ceca39a3a60c00358d1aa90f00f9b2864237e4ec",
+  "RELEASE_EVIDENCE_SHA": "af210fd971a126c5aa3281f5a299f60b046d1d8b",
+  "ops_branch": "ops/phase7-operations",
+  "turn": "PHASE 7 FINAL OPERATIONS CLOSURE (2026-09-13, ikinci tur)",
+  "OFF_DEVICE_BACKUP_gate": "FAIL — taze yedek yok (Docker); ARA kopya alındı",
+  "INTERIM_COPY": {
+    "tool": "scripts/ops/phase7-interim-offdevice-copy.ts → kanonik copyToTargetVerified + writeOffDeviceRecord (backup-lib)",
+    "D_PRESENT": true,
+    "PATH": "D:\\MAS-Backups\\mas_radar_dev\\daily-2026-09-05T00-00-26-552Z.dump",
+    "SOURCE_SHA": "ff66a352ea3477072cd3ee0e1dd34cccd60dbca660f5b85bbcc84f0737cf47a5",
+    "DEST_SHA": "ff66a352ea3477072cd3ee0e1dd34cccd60dbca660f5b85bbcc84f0737cf47a5",
+    "SHA_MATCH": true,
+    "SOURCE_BYTES": 1415581,
+    "DEST_BYTES": 1415581,
+    "BYTES_MATCH": true,
+    "DEST_pg_restore_list": {
+      "tool": "local pg_restore 16.14",
+      "TOC": 1391,
+      "listable": true
+    },
+    "sidecarsCopied": [
+      "daily-2026-09-05T00-00-26-552Z.dump.stage07.json"
+    ],
+    "record": "daily-2026-09-05T00-00-26-552Z.dump.offdevice.json",
+    "SAME_PHYSICAL_DISK": false,
+    "target_kind": "USB_PHYSICAL_VOLUME",
+    "copiedAt": "2026-09-13T08:23:02.054Z",
+    "durability": {
+      "platform": "win32",
+      "durabilityMode": "full-directory-fsync",
+      "directoryFsyncAttempted": true,
+      "directoryFsyncSupported": true,
+      "directoryFsyncErrorCode": null
+    }
+  }
+}

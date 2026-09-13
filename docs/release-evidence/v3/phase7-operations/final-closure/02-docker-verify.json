@@ -1,0 +1,36 @@
+{
+  "ACCEPTED_CODE_SHA": "ceca39a3a60c00358d1aa90f00f9b2864237e4ec",
+  "RELEASE_EVIDENCE_SHA": "af210fd971a126c5aa3281f5a299f60b046d1d8b",
+  "ops_branch": "ops/phase7-operations",
+  "turn": "PHASE 7 FINAL OPERATIONS CLOSURE (2026-09-13, ikinci tur)",
+  "REPAIR_VERIFIED": "NO — Docker Desktop ONARILMAMIŞ (kullanıcı onarımı henüz yapılmamış)",
+  "measured": {
+    "Docker Desktop.exe": "4.86.0.236216 (süreçler açık: 5 pid, backend erken çıkış)",
+    "com.docker.service": "Stopped",
+    "HKLM\\SOFTWARE\\Docker Inc.\\Docker Desktop": "MISSING",
+    "HKCU": "MISSING",
+    "resources\\wsl\\docker-wsl-cli.iso": "MISSING (yalnız .sha256 yan dosyası var)",
+    "resources\\docker-desktop.iso": "MISSING (yalnız .sha256 var)",
+    "resources\\wsl\\": [
+      "docker-wsl-cli.iso.sha256",
+      "ext4.vhdx 96 MB",
+      "wsl-data.tar 4.9 MB"
+    ],
+    "WSL": "docker-desktop Stopped v2",
+    "docker version": "client OK, server: npipe dockerDesktopLinuxEngine YOK",
+    "uninstall_entry": "Docker Desktop 4.86.0 (Installer.exe 6.6 MB = uninstall/bootstrap, tam kurulum değil)"
+  },
+  "SERVER_READY": "NO",
+  "FACTORY_RESET_USED": "NO",
+  "VHDX_PRESERVED": "YES — 2026-09-05 14:41:36, 23.83 GB (tur başı = tur sonu)",
+  "forbidden_not_done": [
+    "Reset to factory defaults",
+    "Clean/Purge",
+    "Uninstall",
+    "wsl --unregister",
+    "volume prune/rm",
+    "system prune",
+    "vhdx delete/move"
+  ],
+  "required_user_action": "Docker Desktop Installer (4.86.0+) indirip Install/Repair — https://docs.docker.com/desktop/setup/install/windows-install/ ; UAC onayı gerektirir; C: şu an 8.0 GB (yeterli). Reset/Clean SEÇİLMEYECEK."
+}

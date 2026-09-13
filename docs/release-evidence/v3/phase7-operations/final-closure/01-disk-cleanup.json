@@ -1,0 +1,141 @@
+{
+  "ACCEPTED_CODE_SHA": "ceca39a3a60c00358d1aa90f00f9b2864237e4ec",
+  "RELEASE_EVIDENCE_SHA": "af210fd971a126c5aa3281f5a299f60b046d1d8b",
+  "ops_branch": "ops/phase7-operations",
+  "turn": "PHASE 7 FINAL OPERATIONS CLOSURE (2026-09-13, ikinci tur)",
+  "authorization": "kullanıcı: ms-playwright cache, eski/orphan .next*, eski rebuild-edilebilir Next.js build output'ları, bu projeye ait disposable build/temp output'ları",
+  "C_FREE_BEFORE_GB": 1.88,
+  "C_FREE_AFTER_GB": 8.04,
+  "C_FREE_END_OF_TURN_GB": 8.02,
+  "DELETED_PATHS": [
+    {
+      "path": "%LOCALAPPDATA%\\ms-playwright",
+      "gb": 2.998,
+      "why": "Playwright tarayıcı önbelleği (yetkili liste)",
+      "rebuild": "pnpm exec playwright install chromium"
+    },
+    {
+      "path": "Mas Saas\\.next-pre-speed-release-20260826",
+      "gb": 0.39,
+      "why": "eski build kopyası (Ağustos)",
+      "rebuild": "pnpm build"
+    },
+    {
+      "path": "Mas Saas\\.next-preload-dev",
+      "gb": 0.065,
+      "why": "eski dev önbelleği",
+      "rebuild": "pnpm dev"
+    },
+    {
+      "path": "Mas Saas\\.next-preload-final",
+      "gb": 0.327,
+      "why": "eski build kopyası",
+      "rebuild": "pnpm build"
+    },
+    {
+      "path": "Mas Saas\\.next-preload-verify",
+      "gb": 0.327,
+      "why": "eski build kopyası",
+      "rebuild": "pnpm build"
+    },
+    {
+      "path": "Mas Saas\\.next-real-clone-gate",
+      "gb": 0.371,
+      "why": "eski kapı derlemesi",
+      "rebuild": "MAS_NEXT_DIST_DIR=… pnpm build"
+    },
+    {
+      "path": "Mas Saas\\.next-stage10-perf",
+      "gb": 0.417,
+      "why": "eski perf derlemesi",
+      "rebuild": "pnpm build"
+    },
+    {
+      "path": "Mas Saas\\.next-interaction-gate",
+      "gb": 0.0,
+      "why": "boş orphan dizin",
+      "rebuild": "—"
+    },
+    {
+      "path": "Mas-Saas-Import-V2\\.next",
+      "gb": 0.278,
+      "why": "V2 dalı derlemesi; dal release'e merge'lendi",
+      "rebuild": "pnpm build"
+    },
+    {
+      "path": "Mas-Saas-P1-Audit-Fix\\.next",
+      "gb": 0.336,
+      "why": "eski dal derlemesi",
+      "rebuild": "pnpm build"
+    },
+    {
+      "path": "Mas Saas\\.next",
+      "gb": 0.64,
+      "why": "2026-08-31 tarihli, rastgele BUILD_ID (-bgP4XYLp1…) — kabul öncesi; kabul edilen runtime ceca39a ile yeniden derlenmek ZORUNDA",
+      "rebuild": "APP_COMMIT_SHA=ceca39a3… pnpm build"
+    }
+  ],
+  "DELETED_BYTES": 6601757807,
+  "DELETED_REGENERABLE_GB": 6.15,
+  "attempted_but_locked": [
+    {
+      "path": "%TEMP%\\DockerDesktop",
+      "gb": 0.976,
+      "classification": "Docker Desktop güncelleyici bsdiff yamaları (2026-07-31 / 2026-08-07, kurulu 4.86.0'dan eski) — yeniden üretilebilir",
+      "result": "ERİŞİM ENGELLENDİ (yükseltilmiş sahiplik) — silinmedi"
+    }
+  ],
+  "classified_but_left": [
+    {
+      "path": "MeritFlow\\.next",
+      "gb": 1.695,
+      "why_left": "başka proje — yetki dışı"
+    },
+    {
+      "path": "%TEMP%\\Diagnostics",
+      "gb": 0.286,
+      "why_left": "kaynağı belirsiz — bırakıldı"
+    },
+    {
+      "path": "%TEMP%\\vscode-stable-user-x64",
+      "gb": 0.219,
+      "why_left": "VS Code güncelleme önbelleği — proje dışı"
+    },
+    {
+      "path": "%TEMP%\\jest",
+      "gb": 0.095,
+      "why_left": "MAS vitest kullanır; başka projenin olabilir — bırakıldı"
+    },
+    {
+      "path": "%TEMP%\\claude\\…\\2a10ad87… (bu oturum)",
+      "gb": 0.8,
+      "why_left": "taşınabilir PostgreSQL ikilileri bu turun doğrulamalarında kullanıldı"
+    },
+    {
+      "path": "%LOCALAPPDATA%\\pnpm",
+      "gb": 0.68,
+      "why_left": "yetkili listede değil"
+    },
+    {
+      "path": "Mas-Saas-Merge-Acceptance\\.next-merged-acceptance",
+      "gb": 0.404,
+      "why_left": "BUILD_ID=ceca39a — restored-app smoke bununla koştu"
+    },
+    {
+      "path": "git worktree'leri (P1-Audit-Fix, Readiness, RC×4)",
+      "gb": 1.6,
+      "why_left": "active worktree — yasak listede"
+    }
+  ],
+  "never_touched": [
+    "docker_data.vhdx",
+    "Docker volumes",
+    "backups/* dump+makbuz",
+    ".git / kaynak",
+    "kullanıcı belgeleri",
+    "D: yedekleri",
+    ".env.local",
+    "node_modules"
+  ],
+  "DISK_SAFE": "PASS (8.04 ≥ 8; tercih 10 karşılanmadı)"
+}

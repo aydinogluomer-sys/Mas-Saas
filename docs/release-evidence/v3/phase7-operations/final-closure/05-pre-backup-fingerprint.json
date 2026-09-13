@@ -1,0 +1,33 @@
+{
+  "ACCEPTED_CODE_SHA": "ceca39a3a60c00358d1aa90f00f9b2864237e4ec",
+  "RELEASE_EVIDENCE_SHA": "af210fd971a126c5aa3281f5a299f60b046d1d8b",
+  "ops_branch": "ops/phase7-operations",
+  "turn": "PHASE 7 FINAL OPERATIONS CLOSURE (2026-09-13, ikinci tur)",
+  "LIVE_PRE_FP": "NOT_MEASURABLE (Docker DOWN)",
+  "recorded_baseline_used_instead": {
+    "final-runtime-start/09-post-start-db.json (2026-09-03T19:11Z)": {
+      "ledger": "0087/87",
+      "baseTableCount": 86,
+      "p24b": "0/42",
+      "action_items": 6,
+      "approvals": 68,
+      "payment_instances": 502,
+      "payments": 19,
+      "users": 13,
+      "settings": 7,
+      "audit_logs": 814,
+      "targetFingerprint": "5e846346…",
+      "wholeDbFingerprint": "85358cfd…"
+    },
+    "p24b-runtime-restart/_pre-start-table-fingerprints.json (2026-09-03T08:50Z)": "86 tablo satır-sayısı:içerik-hash haritası",
+    "p24b-post-cleanup/03-business-metrics.json (2026-08-31)": {
+      "taskOpen": "4",
+      "unpaidTry": "13595000",
+      "checks": "590000.00",
+      "loans": "1500000.00",
+      "cashflow": "-53839702.88",
+      "payments": "540000.00",
+      "instances": "14550000.00"
+    }
+  }
+}

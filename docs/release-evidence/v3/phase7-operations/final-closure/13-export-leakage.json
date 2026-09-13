@@ -1,0 +1,7 @@
+{
+  "ACCEPTED_CODE_SHA": "ceca39a3a60c00358d1aa90f00f9b2864237e4ec",
+  "RELEASE_EVIDENCE_SHA": "af210fd971a126c5aa3281f5a299f60b046d1d8b",
+  "ops_branch": "ops/phase7-operations",
+  "turn": "PHASE 7 FINAL OPERATIONS CLOSURE (2026-09-13, ikinci tur)",
+  "EXPORT_SEARCH_LEAKAGE": "BLOCKED — scripts/db/export-leakage-verify.ts `docker exec mas-radar-pg` + 127.0.0.1:5432 sabit; Docker DOWN. Kod değişmedi."
+}

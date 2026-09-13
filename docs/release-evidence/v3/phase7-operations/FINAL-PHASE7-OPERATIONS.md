@@ -48,3 +48,35 @@ REAL_DB_MIGRATIONS_0088_0094 = NOT_APPLIED · REAL_V2_IMPORT = NOT_EXECUTED · P
 3. **D: sürücüsü:** takılı olmalı; `MAS_OFFDEVICE_BACKUP_DIR=D:\MAS-Backups\mas_radar_dev`.
 4. Sonra bu turun BLOCKED adımları aynı sırayla (04 → 05 → 06 → 07 → 10) koşulur; ancak o zaman `OPERATIONS_READY = PASS` yazılabilir.
 5. Kullanıcı kararı: görev pil koşulu (`08-daily-backup-job.json` → `recommended_reversible_fix_NOT_APPLIED`).
+
+---
+
+# FINAL OPERATIONS CLOSURE — ikinci tur (2026-09-13, kanıt: `final-closure/01…14`)
+
+```text
+ACCEPTED_CODE_SHA = ceca39a3a60c00358d1aa90f00f9b2864237e4ec · RELEASE_EVIDENCE_SHA = af210fd9… (değişmedi)
+```
+
+| Kapı | Sonuç | Kanıt |
+|---|---|---|
+| DISK_SAFE | **PASS** — C: 1.88 → **8.04 GB** (6.15 GB yetkili yeniden-üretilebilir silindi: ms-playwright 3.0, 9 eski `.next*` 2.5, kabul öncesi `Mas Saas\.next` 0.64); `%TEMP%\DockerDesktop` 0.98 GB erişim engelli — silinmedi; belirsizler bırakıldı | 01 |
+| DOCKER_READY | **FAIL** — onarım **yapılmamış**: registry anahtarı, `docker-wsl-cli.iso`, `docker-desktop.iso` hâlâ eksik; Reset/prune/rm yok; VHDX 2026-09-05 14:41:36 aynı | 02 |
+| REAL_DB_IDENTITY / PRE_FP | **BLOCKED** (0 bağlantı); kayıtlı 2026-09-03 taban çizgisi kullanıldı | 03–05 |
+| LOCAL_BACKUP (taze) | **FAIL** — Docker olmadan alınamıyor; 05.09 doğrulanmış yedek (TOC 1391) yalnız kaynak olarak kullanıldı | 06 |
+| OFF_DEVICE_BACKUP | **FAIL** (taze yok) — **ARA KOPYA ALINDI**: D:\MAS-Backups\mas_radar_dev, USB fiziksel disk 1 ≠ C: disk 0, SHA ff66a352… = kaynak, TOC 1391 hedefte, makbuz + offdevice kaydı | 07 |
+| OFF_DEVICE_RESTORE | **PASS** — D: kopyasından `mas_radar_restore_verify_20260913T082349Z` (taşınabilir PG 16.14), pg_restore exit 0 / 0 hata / 7 s | 08 |
+| RESTORE_RECONCILIATION | **PASS_AGAINST_RECORDED_BASELINE** — ledger 0087/87, 86 tablo (küme aynı), P24B 0/42, sayımlar 09-03 kaydıyla birebir, hedef parmak izi 5e846346… birebir, çapalar 6/7 birebir (+1 belgelenmiş generate_instances), tablo hash'leri 82/86 = 09-03 08:50 (kalan 4 = belgelenmiş 09-03 runtime etkisi); **canlı PRE_FP yok** | 09 |
+| RESTORED_APP_SMOKE | **PASS** — ceca39a build, /ready 200 · /health db up · /login 200 · /version.commit = ceca39a · 14 rota 307 · 0 sızıntı · 0 5xx · 0 fatal | 10 |
+| DAILY_BACKUP_JOB | **FAIL (Docker)** — pil politikası uygulandı (AllowStartIfOnBatteries + DontStopIfGoingOnBatteries, yalnız bu görev; 204 diğer görev değişmedi); elle tetik: koştu, exit 1 ECONNREFUSED, 0 dosya | 11 |
+| BACKUP_FRESHNESS | **FAIL** (yerel 200.5 s, D: 200.5 s) — **ALERTING PASS**: 47/47 negatif kontrol yeniden koştu | 12 |
+| EXPORT_SEARCH_LEAKAGE | **BLOCKED** (Docker) | 13 |
+| REAL_DB_UNEXPECTED_DELTA | **0** — 0 bağlantı, VHDX aynı, 895 = 895 dosya | 14 |
+
+```text
+OPERATIONS_READY = FAIL   (tek kök neden kaldı: Docker Desktop onarım kurulumu yapılmadı)
+READY_FOR_M1_M8  = NO
+READY_FOR_PHASE8 = NO
+REAL_DB_MIGRATIONS_0088_0094 = NOT_APPLIED · REAL_V2_IMPORT = NOT_EXECUTED · PHASE8_CUTOVER = NOT_EXECUTED
+```
+
+Docker onarıldıktan sonra kalan zincir tek turda kapanır: 04 → 06 → 07 (taze) → 08/09 (canlı baseline ile) → 11 (exit 0) → 12 → 13.

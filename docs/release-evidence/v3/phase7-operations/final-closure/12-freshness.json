@@ -1,0 +1,73 @@
+{
+  "ACCEPTED_CODE_SHA": "ceca39a3a60c00358d1aa90f00f9b2864237e4ec",
+  "RELEASE_EVIDENCE_SHA": "af210fd971a126c5aa3281f5a299f60b046d1d8b",
+  "ops_branch": "ops/phase7-operations",
+  "turn": "PHASE 7 FINAL OPERATIONS CLOSURE (2026-09-13, ikinci tur)",
+  "real_dirs_run (read-only; DB sinyalleri restore DB'sinden)": {
+    "runId": "tel-2026-09-13T08-28-28-298Z",
+    "generatedAt": "2026-09-13T08:28:31.064Z",
+    "backupFreshness": {
+      "local": {
+        "verified": {
+          "name": "daily-2026-09-05T00-00-26-552Z.dump",
+          "bytes": 1415581,
+          "sha256": "ff66a352ea3477072cd3ee0e1dd34cccd60dbca660f5b85bbcc84f0737cf47a5",
+          "receiptTimestamp": "2026-09-05T00:00:30.244Z",
+          "ageHours": 200.47,
+          "toc": {
+            "entries": 1391,
+            "source": "pg_restore_now"
+          },
+          "schemaLedger": "87/0087"
+        },
+        "ageHours": 200.47,
+        "scanned": 1,
+        "rejected": []
+      },
+      "offDevice": {
+        "verified": {
+          "name": "daily-2026-09-05T00-00-26-552Z.dump",
+          "bytes": 1415581,
+          "sha256": "ff66a352ea3477072cd3ee0e1dd34cccd60dbca660f5b85bbcc84f0737cf47a5",
+          "receiptTimestamp": "2026-09-05T00:00:30.244Z",
+          "ageHours": 200.47,
+          "toc": {
+            "entries": 1391,
+            "source": "pg_restore_now"
+          },
+          "schemaLedger": "87/0087"
+        },
+        "ageHours": 200.47,
+        "scanned": 1,
+        "rejected": []
+      }
+    },
+    "disk": {
+      "freeGb": 8.01,
+      "level": "warning"
+    },
+    "alerts": [
+      "disk_free_gb",
+      "backup_age_hours",
+      "backup_offdevice_age_hours",
+      "latest_import_age_days",
+      "schema_ledger"
+    ]
+  },
+  "LOCAL": "STALE — 200.5 s > 36 (doğrulanmış 05.09 yedeği; TOC 1391 şimdi)",
+  "OFF_DEVICE": "STALE — 200.5 s (D: üzerindeki ara kopya doğrulandı; sha ✓)",
+  "backup_age_hours_lt_36": false,
+  "negative_controls_rerun": {
+    "gate": "ops:telemetry:alerting:verify (harcanabilir mas_radar_phase7_alerting_verify 0001–0094, taşınabilir PG)",
+    "result": "47/47 PASS · 1 SKIP (S0: makine diski 7.99 GB gerçekten WARNING) · ALL PASS",
+    "fresh_fixture": "no alert (S0 backup_age ok, backup_offdevice ok)",
+    "stale_fixture_72h": "alert (S1b)",
+    "corrupt_sha": "alert (S1c)",
+    "missing_receipt": "alert (S1: boş dizin; S1d: makbuzsuz sahte dump)",
+    "D_absent": "alert HEDEF YOK/DRIVE_ABSENT (S1e)",
+    "offdevice_stale_local_fresh": "yalnız off-device alarm (S1e)",
+    "disk": "P1/P2 bantları gerçek ölçümle (SD)"
+  },
+  "real_backup_timestamps_modified": false,
+  "BACKUP_FRESHNESS": "FAIL (taze yedek yok) — ALERTING PASS"
+}

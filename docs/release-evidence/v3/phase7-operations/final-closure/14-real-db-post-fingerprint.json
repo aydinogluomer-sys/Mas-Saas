@@ -1,0 +1,32 @@
+{
+  "ACCEPTED_CODE_SHA": "ceca39a3a60c00358d1aa90f00f9b2864237e4ec",
+  "RELEASE_EVIDENCE_SHA": "af210fd971a126c5aa3281f5a299f60b046d1d8b",
+  "ops_branch": "ops/phase7-operations",
+  "turn": "PHASE 7 FINAL OPERATIONS CLOSURE (2026-09-13, ikinci tur)",
+  "POST_FP": "NOT_MEASURABLE (Docker DOWN) — makine düzeyi: VHDX 2026-09-05 14:41:36 / 23.83 GB (=pre)",
+  "connections_to_mas_radar_dev": 0,
+  "unexpected_INSERT": 0,
+  "unexpected_UPDATE": 0,
+  "DELETE": 0,
+  "DDL": 0,
+  "migration": 0,
+  "V2_import": 0,
+  "UNEXPECTED_BUSINESS_DELTA": 0,
+  "real_backups_dir": {
+    "count": "895 = 895",
+    "05.09 dump mtime": "2026-09-05 03:00:28 (değişmedi)",
+    "sha256": "ff66a352… (=makbuz)"
+  },
+  "task_log_appended": "+4 satır (elle tetik)",
+  "cleanup": {
+    "dropped": [
+      "mas_radar_restore_verify_20260913T082349Z",
+      "mas_radar_phase7_alerting_verify"
+    ],
+    "remaining_mas_dbs_on_portable_cluster": 0,
+    "cluster": "durduruldu",
+    "smoke_server_3313": "durduruldu",
+    "temp_fixture_dirs": "silindi (kapı kendi temizler)"
+  },
+  "main_worktree_user_files": "5 dirty dosya + untracked Telegram dizinleri dokunulmadı"
+}

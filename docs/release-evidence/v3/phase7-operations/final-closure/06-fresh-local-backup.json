@@ -1,0 +1,17 @@
+{
+  "ACCEPTED_CODE_SHA": "ceca39a3a60c00358d1aa90f00f9b2864237e4ec",
+  "RELEASE_EVIDENCE_SHA": "af210fd971a126c5aa3281f5a299f60b046d1d8b",
+  "ops_branch": "ops/phase7-operations",
+  "turn": "PHASE 7 FINAL OPERATIONS CLOSURE (2026-09-13, ikinci tur)",
+  "NEW_LOCAL_BACKUP": "NOT_TAKEN — kanonik backup-daily.ts pg_dump'ı docker exec ile alır; Docker DOWN",
+  "newest_verified_real_backup_reused_for_offdevice_and_restore": {
+    "file": "daily-2026-09-05T00-00-26-552Z.dump",
+    "bytes": 1415581,
+    "sha256": "ff66a352ea3477072cd3ee0e1dd34cccd60dbca660f5b85bbcc84f0737cf47a5",
+    "receipt": "stage07 v1, ledger 87/0087, PG 16.14",
+    "pg_restore_list_now": "PASS, TOC 1391",
+    "age_hours": 200.5,
+    "LOCAL_FRESH": false
+  },
+  "note": "05.09 dump'ı bu turun taze yedeği olarak KABUL EDİLMEDİ; yalnız off-device kopya ve restore tatbikatının kaynağı olarak kullanıldı."
+}

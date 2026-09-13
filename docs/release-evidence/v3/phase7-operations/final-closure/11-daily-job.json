@@ -1,0 +1,40 @@
+{
+  "ACCEPTED_CODE_SHA": "ceca39a3a60c00358d1aa90f00f9b2864237e4ec",
+  "RELEASE_EVIDENCE_SHA": "af210fd971a126c5aa3281f5a299f60b046d1d8b",
+  "ops_branch": "ops/phase7-operations",
+  "turn": "PHASE 7 FINAL OPERATIONS CLOSURE (2026-09-13, ikinci tur)",
+  "battery_policy": {
+    "BEFORE": {
+      "DisallowStartIfOnBatteries": true,
+      "StopIfGoingOnBatteries": true,
+      "StartWhenAvailable": false,
+      "MultipleInstances": "IgnoreNew",
+      "ExecutionTimeLimit": "PT72H"
+    },
+    "AFTER": {
+      "DisallowStartIfOnBatteries": false,
+      "StopIfGoingOnBatteries": false,
+      "StartWhenAvailable": false,
+      "MultipleInstances": "IgnoreNew",
+      "ExecutionTimeLimit": "PT72H"
+    },
+    "command": "Set-ScheduledTask -TaskName MAS-Nakit-Radar-Gunluk-Yedek -Settings (New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -MultipleInstances IgnoreNew -ExecutionTimeLimit 72h)",
+    "trigger_action_principal_unchanged": "daily 03:00 · mas-daily-backup.cmd · Limited · Interactive",
+    "other_tasks": "204 görev — DisallowStartIfOnBatteries/StopIfGoingOnBatteries değerleri öncesi=sonrası (dokunulmadı)",
+    "BATTERY_START_ALLOWED": true,
+    "BATTERY_STOP_DISABLED": true
+  },
+  "manual_trigger": {
+    "at": "2026-09-13 11:27:55",
+    "log": "MAS günlük yedek — kaynak 'mas_radar_dev' (REAL_READ_ONLY) → YEDEK BAŞARISIZ: connect ECONNREFUSED 127.0.0.1:5432 → END exit=1",
+    "EXIT_CODE": 1,
+    "DUMP_CREATED": false,
+    "SHA_CREATED": false,
+    "PG_RESTORE_LIST": "n/a",
+    "RECEIPT_CREATED": false,
+    "OFF_DEVICE_COPY": "n/a (yedek yok)",
+    "files_before_after": "895/895",
+    "verdict": "FAIL — Docker DOWN; sessiz PASS yok (fail-closed kanıtlandı, ikinci kez)"
+  },
+  "DAILY_BACKUP_JOB": "FAIL (Docker)"
+}

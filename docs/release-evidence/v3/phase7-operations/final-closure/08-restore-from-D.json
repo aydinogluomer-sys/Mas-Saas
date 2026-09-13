@@ -1,0 +1,38 @@
+{
+  "ACCEPTED_CODE_SHA": "ceca39a3a60c00358d1aa90f00f9b2864237e4ec",
+  "RELEASE_EVIDENCE_SHA": "af210fd971a126c5aa3281f5a299f60b046d1d8b",
+  "ops_branch": "ops/phase7-operations",
+  "turn": "PHASE 7 FINAL OPERATIONS CLOSURE (2026-09-13, ikinci tur)",
+  "SOURCE_WAS_D_COPY": true,
+  "source": "D:\\MAS-Backups\\mas_radar_dev\\daily-2026-09-05T00-00-26-552Z.dump (sha256 ff66a352… restore öncesi yeniden doğrulandı)",
+  "RESTORE_DB": "mas_radar_restore_verify_20260913T082349Z",
+  "engine": "taşınabilir PostgreSQL 16.14 (127.0.0.1:54329) — Docker DOWN; gerçek mas_radar_dev'e restore YOK",
+  "pg_restore": {
+    "args": "--no-owner --role=postgres --exit-on-error",
+    "exit": 0,
+    "errors": 0,
+    "seconds": 7.3
+  },
+  "restored_state (scripts/qa/p24b-source-state.ts, read-only)": {
+    "ledger": "0087/87",
+    "baseTableCount": 86,
+    "baseTableSetKey_equals_2026-09-03": true,
+    "P24B": "0/42",
+    "counts": {
+      "action_items": 6,
+      "approvals": 68,
+      "payment_instances": 502,
+      "payments": 19,
+      "users": 13,
+      "settings": 7
+    },
+    "targetFingerprint": "5e84634660528f2076f7bbef2a7e7e8f05047c13353679c53f0097798e37882d",
+    "wholeDbFingerprint_TZ_cluster_default": "fd8c5089ba7ab3d77279067a291b319fca71c0421c0b5041a6c4470d6ff7d1bb",
+    "wholeDbFingerprint_TZ_UTC": "dfce7f4cf4a4151b90cdf97b4162d2fda07f0ed66d1c81557e8a7bcb529b73bd",
+    "views": 81,
+    "rls_tables": 85,
+    "ledger_rows_without_checksum": 0
+  },
+  "RESTORE_PASS": true,
+  "cleanup": "restore DB tur sonunda DROP edildi (REMAINING_MAS_DBS=0)"
+}

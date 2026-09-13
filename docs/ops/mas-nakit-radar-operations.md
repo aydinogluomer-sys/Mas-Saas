@@ -37,8 +37,8 @@ bağlanmış). Beşinden biri eksikse telemetri o dosyayı **saymaz** ve "DOĞRU
    Aynı çıktıda `disk_free_gb` **ok** olmalı (≥ 10 GB).
 3. **Görev günlüğüne bakın** (isteğe bağlı ama iyi alışkanlık): `backups\daily-backup-task.log` dosyasının son satırı
    `MAS daily backup END exit=0` olmalı. `exit=1` = yedek ALINAMADI; `exit=3` = yedek alındı ama **tek kopya** (off-device yok).
-4. **D: takılı mı?** Off-device hedef harici disk ise takılı olmalı; değilse gece görevi `OFF_DEVICE_COPY = DRIVE_ABSENT` yazar
-   ve **exit 3** ile biter — bu bir hata değil, "diski tak" uyarısıdır.
+4. **D: takılı mı?** Off-device hedef `D:\MAS-Backups\mas_radar_dev` (USB disk, C:'den ayrı fiziksel disk — ölçüldü 2026-09-13).
+   Takılı değilse gece görevi `OFF_DEVICE_COPY = DRIVE_ABSENT` yazar ve **exit 3** ile biter — bu bir hata değil, "diski tak" uyarısıdır.
 
 ## 2. HAFTALIK (15 dakika)
 
@@ -87,12 +87,12 @@ bağlanmış). Beşinden biri eksikse telemetri o dosyayı **saymaz** ve "DOĞRU
 
 ### 3.4 `Last Result = 0x800710E0` (görev "reddedildi")
 
-Task Scheduler'ın "operatör ya da yönetici isteği reddetti" kodu. Bu makinede görev `DisallowStartIfOnBatteries=true` ile
-kayıtlı ve makine bir dizüstü: **pil gücündeyken 03:00 tetiği reddedilir**, kaçırılan koşu da sonradan telafi edilmez
-(`StartWhenAvailable` kapalı). Karar sizin:
-- Olduğu gibi bırakın → makineyi gece fişte ve açık tutun.
-- Ya da (geri alınabilir, tek satır, yönetici PowerShell):
-  `Set-ScheduledTask -TaskName MAS-Nakit-Radar-Gunluk-Yedek -Settings (New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable)`
+Task Scheduler'ın "operatör ya da yönetici isteği reddetti" kodu; dizüstü **pil gücündeyken** tetiğin reddedilmesi.
+**2026-09-13'te kullanıcı kararıyla kapatıldı:** görev artık `DisallowStartIfOnBatteries=false` ve
+`StopIfGoingOnBatteries=false` (pilde başlar, fiş çekilince yarıda kesilmez; yalnız bu göreve uygulandı — kanıt
+`docs/release-evidence/v3/phase7-operations/final-closure/11-daily-job.json`). Kaçırılan koşu hâlâ telafi edilmez
+(`StartWhenAvailable` kapalı): makine 03:00'te kapalıysa o gece yedek yoktur → sabah §1 adım 2'de `backup_age_hours`
+alarm verir; `schtasks /Run` ile elle alın.
 
 ### 3.5 Docker Desktop açılmıyor
 

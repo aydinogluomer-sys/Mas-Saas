@@ -1,0 +1,26 @@
+{
+  "ACCEPTED_CODE_SHA": "ceca39a3a60c00358d1aa90f00f9b2864237e4ec",
+  "RELEASE_EVIDENCE_SHA": "af210fd971a126c5aa3281f5a299f60b046d1d8b",
+  "ops_branch": "ops/phase7-operations",
+  "turn": "PHASE 7 FINAL OPERATIONS CLOSURE (2026-09-13, ikinci tur)",
+  "CODE_SHA": "ceca39a3a60c00358d1aa90f00f9b2864237e4ec",
+  "build": ".next-merged-acceptance (BUILD_ID = ceca39a)",
+  "db": "mas_radar_restore_verify_20260913T082349Z (D: kopyasından restore, ledger 87/0087) — app rolü mas_radar_app",
+  "port": 3313,
+  "READY": 200,
+  "HEALTH": "200 {status ok, db up}",
+  "LOGIN": 200,
+  "VERSION": 200,
+  "VERSION_COMMIT": "ceca39a3a60c00358d1aa90f00f9b2864237e4ec",
+  "VERSION_PROVENANCE": "BUILD_EMBEDDED",
+  "anonymous_protected_routes": {
+    "tested": 14,
+    "all_307_to_login": true,
+    "LEAKED_200": 0
+  },
+  "HTTP_5XX": 0,
+  "FATAL": 0,
+  "stderr_lines": 0,
+  "note": "Kod ceca39a (94 migration bekler), DB 87 — Phase 8 öncesi gerçek kombinasyon; /ready,/health,/login,/version bu durumda 200. Sunucu durduruldu.",
+  "transcript": "READY=200\nHEALTH=200 {\"status\":\"ok\",\"app\":\"up\",\"db\":\"up\",\"latencyMs\":2,\"time\":\"2026-09-13T08:27:00.140Z\"}\nLOGIN=200\nVERSION=200 {\"name\":\"mas-nakit-radar\",\"version\":\"0.1.0\",\"commit\":\"ceca39a3a60c00358d1aa90f00f9b2864237e4ec\",\"buildTime\":\"2026-09-13T06:06:17Z\",\"buildId\":\"ceca39a3a60c00358d1aa90f00f9b2864237e4ec\",\"provenance\":\"BUILD_EMBEDDED\",\"node\":\"v26.3.0\",\"uptimeSeconds\":32,\"env\":\"pro\n--- anonymous protected routes ---\n/overview                      307 -> http://localhost:3313/login?next=%2Foverview\n/payments                      307 -> http://localhost:3313/login?next=%2Fpayments\n/cashflow                      307 -> http://localhost:3313/login?next=%2Fcashflow\n/finance                       307 -> http://localhost:3313/login?next=%2Ffinance\n/finance/facilities            307 -> http://localhost:3313/login?next=%2Ffinance%2Ffacilities\n/data/imports                  307 -> http://localhost:3313/login?next=%2Fdata%2Fimports\n/data/imports/v2               307 -> http://localhost:3313/login?next=%2Fdata%2Fimports%2Fv2\n/data/imports/v2/template      307 -> http://localhost:3313/login?next=%2Fdata%2Fimports%2Fv2%2Ftemplate\n/system                        307 -> http://localhost:3313/login?next=%2Fsystem\n/system/backup                 307 -> http://localhost:3313/login?next=%2Fsystem%2Fbackup\n/api/facts                     307 -> http://localhost:3313/login?next=%2Fapi%2Ffacts\n/api/search?q=x                307 -> http://localhost:3313/login?next=%2Fapi%2Fsearch%3Fq%3Dx\n/insights/briefing             307 -> http://localhost:3313/login?next=%2Finsights%2Fbriefing\n/                              307 -> http://localhost:3313/login\nLEAKED_200=0 HTTP_5XX=0\n--- server stderr ---\n0\n0\n"
+}

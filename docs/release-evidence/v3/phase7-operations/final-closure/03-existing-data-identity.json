@@ -1,0 +1,44 @@
+{
+  "ACCEPTED_CODE_SHA": "ceca39a3a60c00358d1aa90f00f9b2864237e4ec",
+  "RELEASE_EVIDENCE_SHA": "af210fd971a126c5aa3281f5a299f60b046d1d8b",
+  "ops_branch": "ops/phase7-operations",
+  "turn": "PHASE 7 FINAL OPERATIONS CLOSURE (2026-09-13, ikinci tur)",
+  "docker_container_lookup": "YAPILAMADI (Docker DOWN) — docker ps -a / volume ls çalıştırılamadı",
+  "identity_from_records": {
+    "container": "mas-radar-pg",
+    "db": "mas_radar_dev",
+    "pg": "16.14 Debian",
+    "system_identifier": "7659286466006216743",
+    "storage": "docker_data.vhdx 23.83 GB, 2026-09-05 14:41:36"
+  },
+  "new_container_created": false,
+  "new_volume_created": false,
+  "D_drive": {
+    "D_PRESENT": true,
+    "drive_type": 3,
+    "size_gb": 223.5,
+    "free_gb": 54.2,
+    "fs": "NTFS",
+    "physical": {
+      "target_disk": {
+        "diskNumber": 1,
+        "busType": "USB",
+        "isBoot": false,
+        "isSystem": false,
+        "operationalStatus": "Online",
+        "friendlyName": "Min Yi U YZWY_TECH"
+      },
+      "source_disk": {
+        "diskNumber": 0,
+        "busType": "RAID",
+        "isBoot": true,
+        "isSystem": true,
+        "operationalStatus": "Online",
+        "friendlyName": "NVMe WDC PC SN520 SDA"
+      },
+      "SAME_PHYSICAL_DISK": false,
+      "kind": "USB_PHYSICAL_VOLUME",
+      "evidence": "USB ile bağlı ayrı fiziksel disk ÖLÇÜLDÜ — DriveType=3, BusType=USB, targetDisk=1, sourceDisk=0, IsBoot=false, IsSystem=false, Status=Online, kök d:\\ ≠ c:\\ — 'Min Yi U YZWY_TECH'"
+    }
+  }
+}
