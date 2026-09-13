@@ -1312,6 +1312,10 @@ export async function mapWorkbook(
     before: null,
     after: {
       filename: opts.filename,
+      // PHASE 4 §4.5 "source provenance = present": dosya özeti audit satırında da durur —
+      // source_workbooks silinse/değişse bile iz kaydı hangi baytların yazıldığını söyler.
+      fileSha256: opts.fileSha256 ?? null,
+      schema: { name: parsed.schemaName, version: parsed.schemaVersion, template: parsed.templateVersion },
       sheets: result.sheetsStaged,
       rowsStaged: result.rowsStaged,
       rowsMapped: result.rowsMapped,

@@ -9,7 +9,7 @@
 import { createHash } from "node:crypto";
 import ExcelJS from "exceljs";
 import { describe, expect, it } from "vitest";
-import { buildTemplateBuffer, buildTemplateWorkbook } from "../../../../scripts/import/generate-standard-template-v2";
+import { buildTemplateBuffer, buildTemplateWorkbook } from "./template";
 import { DATA_SHEETS } from "./contract";
 import { parseWorkbook } from "./parser";
 import {

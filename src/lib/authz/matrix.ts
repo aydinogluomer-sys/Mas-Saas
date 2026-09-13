@@ -392,6 +392,11 @@ const ROUTE_MIN_TIER: Record<string, AppRole[]> = {
   // not decide them (Faz 24A), and a viewer has no part in it; offering the queue to either
   // implies an action they cannot take.
   "/data/approvals": ["finance_approver", "finance_manager", "admin"],
+  // PHASE 4 — Standart Import V2 bir YAZMA yüzeyidir: source_workbooks/import_rows/
+  // import_external_keys (operational sınıfı, 0058/0088) yalnız operator/manager/admin'e INSERT
+  // verir. Viewer ve approver'a sayfayı göstermek, her düğmesi reddedilen bir ekran sunmak olurdu.
+  // Veritabanı zaten bağımsız olarak aynı cevabı verir; bu üçüncü, aynı fikirdeki katmandır.
+  "/data/imports/v2": ["finance_operator", "finance_manager", "admin"],
 };
 
 /**
@@ -446,6 +451,9 @@ export const UI_CAPABILITIES = {
   save_view: { table: "saved_views", action: "insert" },
   decide_approval: { table: "approvals", action: "update" },
   edit_payment: { table: "payments", action: "update" },
+  // PHASE 4 — /data/imports/v2 önizleme+onay eylemleri. Sayfa kapısından bağımsız olarak
+  // sunucu eyleminin kendisi de bunu sorar (kapı UI'dır, eylem gerçek yazma noktasıdır).
+  import_workbook_v2: { table: "source_workbooks", action: "insert" },
 } as const satisfies Record<string, { table: string; action: Action }>;
 
 export type UiCapability = keyof typeof UI_CAPABILITIES;
