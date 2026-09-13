@@ -18,12 +18,19 @@
 //   1  yedek alınamadı / doğrulama düştü        → P0, geri dönülecek nokta yok demektir
 //   3  yedek tamam ama OFF-DEVICE hedef yok     → tek kopya yedek değildir (politika §3)
 //      (bilinçli kabul için: MAS_OFFDEVICE_ACKNOWLEDGED_MISSING=1)
+//
+// PHASE 7 — koşu kaydına iki alan eklendi, ikisi de tazelik sözleşmesinin girdisi:
+//   toc_entry_count   pg_restore --list'in yedek anındaki sonucu; sha256 ile bu dosyaya bağlı
+//                     (telemetri Docker kapalıyken bile "doğrulanmış" kararını buna dayandırır).
+//   offDeviceStatus   OK | NOT_CONFIGURED | DRIVE_ABSENT | NOT_OFF_DEVICE | FAILED — "D: takılı
+//                     değil" ile "kopya bozuk" aynı kelimeyle geçiştirilmez; hiçbiri sessiz PASS değil.
 import { execFileSync } from "node:child_process";
 import { appendFileSync, existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { Pool } from "pg";
 import { backupDockerPostgres, verifyBackupTarget } from "../db/backup-docker-postgres";
+import { volumeRootPresent } from "./backup-freshness-probe";
 import {
   DEFAULT_RETENTION, classifyOffDeviceTarget, copyToTargetVerified, executePrune, formatBytes,
   listDumps, planPrune, readPgVersions, sha256OfFile, writeStage07Receipt, type Stage07Receipt,
@@ -67,6 +74,8 @@ function dbNameFromUrl(url: string): string {
   return new URL(url).pathname.replace(/^\//, "");
 }
 
+export type OffDeviceStatus = "OK" | "NOT_CONFIGURED" | "DRIVE_ABSENT" | "NOT_OFF_DEVICE" | "FAILED";
+
 export async function runDailyBackup(): Promise<number> {
   const startedAt = new Date();
   const envLocal = readEnvLocal();
@@ -81,6 +90,7 @@ export async function runDailyBackup(): Promise<number> {
   const pool = new Pool({ connectionString: ownerUrl, max: 1 });
   let receipt: Stage07Receipt;
   let dumpPath: string;
+  let tocEntryCount: number;
   try {
     const meta = (await pool.query<{ db: string; sysid: string }>(
       "select current_database() db, (select system_identifier::text from pg_control_system()) sysid",
@@ -100,6 +110,7 @@ export async function runDailyBackup(): Promise<number> {
       container: CONTAINER, dbName, label: LABEL, outDir: BACKUP_DIR, requireCriticalTables: true,
     });
     dumpPath = backup.path;
+    tocEntryCount = backup.dumpVerification.tocEntryCount;
 
     const git = gitState();
     receipt = {
@@ -134,9 +145,17 @@ export async function runDailyBackup(): Promise<number> {
   /* ── off-device kopya ─────────────────────────────────────────────────────────────────── */
 
   let offDeviceOk = false;
+  let offDeviceStatus: OffDeviceStatus = "NOT_CONFIGURED";
   let offDeviceNote = "MAS_OFFDEVICE_BACKUP_DIR tanımlı değil";
   const targetDir = process.env.MAS_OFFDEVICE_BACKUP_DIR;
-  if (targetDir) {
+  const targetVolume = targetDir ? volumeRootPresent(targetDir) : null;
+  if (targetDir && targetVolume && !targetVolume.present) {
+    // PHASE 7 — harici disk takılı değil. Kopyayı denemek anlamsız; ama bu "tanımsız" da
+    // "başarısız" da değil: operatörün diski takması yeter, yapılandırma doğru.
+    offDeviceStatus = "DRIVE_ABSENT";
+    offDeviceNote = `hedef sürücü takılı değil: ${targetVolume.root} (${targetDir})`;
+    console.error(`Off-device kopya YAPILAMADI — DRIVE_ABSENT: ${targetVolume.root} yok. Diski takıp işi yeniden çalıştırın.`);
+  } else if (targetDir) {
     const classification = classifyOffDeviceTarget(targetDir, BACKUP_DIR);
     try {
       const copied = copyToTargetVerified(dumpPath, classification.targetDir, {
@@ -144,10 +163,12 @@ export async function runDailyBackup(): Promise<number> {
       });
       writeOffDeviceRecord(copied);
       offDeviceOk = copied.sha256Match && copied.bytesMatch && classification.offDeviceSatisfied;
+      offDeviceStatus = offDeviceOk ? "OK" : classification.offDeviceSatisfied ? "FAILED" : "NOT_OFF_DEVICE";
       offDeviceNote = `${classification.kind} — sha256 hedefte ${copied.sha256Match ? "eşleşti" : "EŞLEŞMEDİ"}; ${classification.evidence}`;
       console.log(`Off-device: ${copied.destPath} (${classification.kind})`);
       console.log(`            hedefte sha256 doğrulaması: ${copied.sha256Match ? "EŞLEŞTİ" : "EŞLEŞMEDİ"}`);
     } catch (err) {
+      offDeviceStatus = "FAILED";
       offDeviceNote = `kopya başarısız: ${(err as Error).message}`;
       console.error(`Off-device kopya BAŞARISIZ: ${(err as Error).message}`);
     }
@@ -182,7 +203,9 @@ export async function runDailyBackup(): Promise<number> {
     sha256: receipt.sha256,
     bytes: receipt.file_size,
     schema_ledger: receipt.schema_ledger,
+    toc_entry_count: tocEntryCount,
     offDeviceOk,
+    offDeviceStatus,
     offDeviceNote,
     pruneApplied: pruneApply,
     prunedPlanned: plan.prunedCount,
@@ -194,12 +217,13 @@ export async function runDailyBackup(): Promise<number> {
 
   if (!offDeviceOk) {
     if (process.env.MAS_OFFDEVICE_ACKNOWLEDGED_MISSING === "1") {
-      console.warn("OFF_DEVICE COPY = NO — operatör tarafından bilinçli olarak kabul edildi (exit 0).");
+      console.warn(`OFF_DEVICE_COPY = ${offDeviceStatus} — operatör tarafından bilinçli olarak kabul edildi (exit 0).`);
       return 0;
     }
-    console.error(`OFF_DEVICE COPY = NO — ${offDeviceNote}. Exit 3: yedek alındı ama TEK KOPYA.`);
+    console.error(`OFF_DEVICE_COPY = ${offDeviceStatus} — ${offDeviceNote}. Exit 3: yedek alındı ama TEK KOPYA.`);
     return 3;
   }
+  console.log("OFF_DEVICE_COPY = OK");
   return 0;
 }
 

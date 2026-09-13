@@ -22,11 +22,12 @@
 //   (provision first with: MIGRATION_DATABASE_URL=<same> pnpm db:migrate)
 
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { Pool } from "pg";
 import { requireDisposableOwnerDatabaseUrl } from "../db/owner-url";
+import { fixtureDumpToolAvailable, writeFixtureVerifiedBackup } from "./backup-fixture";
 
 const ROOT = process.cwd();
 const SNAPSHOT = path.join(ROOT, "scripts", "ops", "telemetry-snapshot.ts");
@@ -96,11 +97,21 @@ async function main(): Promise<void> {
 
   const freshBackupDir = mkdtempSync(path.join(os.tmpdir(), "telemetry-fresh-"));
   const emptyBackupDir = mkdtempSync(path.join(os.tmpdir(), "telemetry-empty-"));
-  writeFileSync(path.join(freshBackupDir, "recent.dump"), "not a real dump, just a fresh mtime");
+  // PHASE 7.3 — tazelik sözleşmesi gerçek bir yedek ister (dump+makbuz+sha256+PGDMP+TOC); sahte
+  // metin dosyası artık bilerek reddedilir. Fixture harcanabilir hedef DB'den pg_dump -Fc ile alınır.
+  if (fixtureDumpToolAvailable() === null) {
+    console.error("Fixture yedeği üretilemiyor: ne MAS_PG_DUMP_BIN ne Docker container (MAS_PG_CONTAINER) erişilebilir.");
+    await pool.end();
+    process.exit(1);
+  }
+  writeFixtureVerifiedBackup({ dir: freshBackupDir, ownerUrl: url });
+  // Off-device tazeliği bu kapının konusu değil (alerting-verify kanıtlıyor); taban çizgisinde
+  // aynı taze fixture off-device hedef olarak da gösterilir ki backup_offdevice_age_hours sessiz kalsın.
+  const baseEnv = { MAS_OFFDEVICE_BACKUP_DIR: freshBackupDir };
 
   try {
     // ── R0: baseline — fresh backup present, nothing injected, DATABASE_URL absent ──────────
-    const base = runTelemetry({ MAS_BACKUP_DIR: freshBackupDir, DATABASE_URL: "" });
+    const base = runTelemetry({ ...baseEnv, MAS_BACKUP_DIR: freshBackupDir, DATABASE_URL: "" });
     record("baseline: jobs_stuck ok (kuyruk temiz)", signalState(base.out, "jobs_stuck") === "ok",
       signalLine(base.out, "jobs_stuck") ?? "satır yok");
     record("baseline: schema_ledger ok (migrate head'de)", signalState(base.out, "schema_ledger") === "ok",
@@ -128,7 +139,7 @@ async function main(): Promise<void> {
       `insert into public.background_jobs (job_type, status, started_at, dedupe_key)
        values ('excel_import', 'running', now() - interval '90 minutes', 'telemetry-verify-stuck')`,
     );
-    const stuckRun = runTelemetry({ MAS_BACKUP_DIR: freshBackupDir, DATABASE_URL: "" });
+    const stuckRun = runTelemetry({ ...baseEnv, MAS_BACKUP_DIR: freshBackupDir, DATABASE_URL: "" });
     record("jobs_stuck: takılı iş enjekte edilince ALERT",
       signalState(stuckRun.out, "jobs_stuck") === "ALERT", signalLine(stuckRun.out, "jobs_stuck") ?? "");
     record("jobs_stuck: takılı iş varken çıkış kodu 1", stuckRun.code === 1, `code=${stuckRun.code}`);
@@ -139,33 +150,33 @@ async function main(): Promise<void> {
       `insert into public.schema_migrations (version, name, checksum, applied_by)
        values ('9999', 'telemetry-verify-fake', 'x', 'telemetry-verify')`,
     );
-    const ledgerRun = runTelemetry({ MAS_BACKUP_DIR: freshBackupDir, DATABASE_URL: "" });
+    const ledgerRun = runTelemetry({ ...baseEnv, MAS_BACKUP_DIR: freshBackupDir, DATABASE_URL: "" });
     record("schema_ledger: sahte ledger satırı enjekte edilince ALERT",
       signalState(ledgerRun.out, "schema_ledger") === "ALERT", signalLine(ledgerRun.out, "schema_ledger") ?? "");
     await pool.query(`delete from public.schema_migrations where version = '9999'`);
 
     // ── backup_age: fires when the backup dir has no dump ───────────────────────────────────
-    const noBackupRun = runTelemetry({ MAS_BACKUP_DIR: emptyBackupDir, DATABASE_URL: "" });
+    const noBackupRun = runTelemetry({ ...baseEnv, MAS_BACKUP_DIR: emptyBackupDir, DATABASE_URL: "" });
     record("backup_age: dump yoksa ALERT (YEDEK YOK)",
       signalState(noBackupRun.out, "backup_age_hours") === "ALERT",
       signalLine(noBackupRun.out, "backup_age_hours") ?? "");
 
     // ── runtime_user wiring: with an owner DATABASE_URL it reads the real user (postgres) ─────
-    const ownerRun = runTelemetry({ MAS_BACKUP_DIR: freshBackupDir, DATABASE_URL: url });
+    const ownerRun = runTelemetry({ ...baseEnv, MAS_BACKUP_DIR: freshBackupDir, DATABASE_URL: url });
     const rtLine = signalLine(ownerRun.out, "runtime_user") ?? "";
     record("runtime_user: gerçek current_user okunuyor (owner → 'postgres') ve ALERT",
       signalState(ownerRun.out, "runtime_user") === "ALERT" && /postgres/.test(rtLine), rtLine);
 
     // ── latest_import: clears when a recent workbook exists ─────────────────────────────────
     await pool.query(`insert into public.source_workbooks (original_filename) values ('telemetry-verify.xlsx')`);
-    const importRun = runTelemetry({ MAS_BACKUP_DIR: freshBackupDir, DATABASE_URL: "" });
+    const importRun = runTelemetry({ ...baseEnv, MAS_BACKUP_DIR: freshBackupDir, DATABASE_URL: "" });
     record("latest_import: taze içe aktarım varken ok",
       signalState(importRun.out, "latest_import_age_days") === "ok",
       signalLine(importRun.out, "latest_import_age_days") ?? "");
     await pool.query(`delete from public.source_workbooks where original_filename = 'telemetry-verify.xlsx'`);
 
     // ── clear-after-fix: baseline again → the injected signals are back to ok ────────────────
-    const after = runTelemetry({ MAS_BACKUP_DIR: freshBackupDir, DATABASE_URL: "" });
+    const after = runTelemetry({ ...baseEnv, MAS_BACKUP_DIR: freshBackupDir, DATABASE_URL: "" });
     record("temizlik sonrası: jobs_stuck yeniden ok", signalState(after.out, "jobs_stuck") === "ok",
       signalLine(after.out, "jobs_stuck") ?? "");
     record("temizlik sonrası: schema_ledger yeniden ok", signalState(after.out, "schema_ledger") === "ok",

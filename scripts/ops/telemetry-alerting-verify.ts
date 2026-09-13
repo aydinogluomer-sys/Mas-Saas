@@ -31,6 +31,9 @@ import os from "node:os";
 import path from "node:path";
 import { Pool } from "pg";
 import { requireDisposableOwnerDatabaseUrl, databaseNameFromUrl } from "../db/owner-url";
+import { absentDriveRoot, fixtureDumpToolAvailable, tamperFixtureDump, writeFixtureVerifiedBackup } from "./backup-fixture";
+import { freeGbOf } from "./backup-freshness-probe";
+import { diskPressureLevel } from "@/lib/ops/backup-freshness";
 import { mockTransport } from "@/lib/reminders/transport";
 import { deliverAlerts, looksLikeSecret, type AlertLogEntry, type TelemetryAlert } from "@/lib/ops/alert-delivery";
 
@@ -211,16 +214,45 @@ async function main(): Promise<void> {
   workDir = mkdtempSync(path.join(os.tmpdir(), "mas-alerting-"));
   const freshBackupDir = path.join(workDir, "backups-fresh");
   const emptyBackupDir = path.join(workDir, "backups-empty");
+  const offDeviceFreshDir = path.join(workDir, "offdevice-fresh");
   mkdirSync(freshBackupDir, { recursive: true });
   mkdirSync(emptyBackupDir, { recursive: true });
-  writeFileSync(path.join(freshBackupDir, "recent.dump"), "taze mtime — gerçek dump değil");
+  mkdirSync(offDeviceFreshDir, { recursive: true });
+
+  /* PHASE 7.3 — tazelik sözleşmesi GERÇEK bir yedek ister: harcanabilir hedef DB'den pg_dump -Fc
+   * (şema) + gerçek sha256'lı stage07 makbuzu. Sahte metin dosyası artık bilerek reddedilir ve
+   * o ret S1d'de ayrıca kanıtlanır. pg_dump aracı yoksa kapı burada DURUR (sessiz SKIP değil). */
+  const dumpTool = fixtureDumpToolAvailable();
+  if (dumpTool === null) {
+    console.error("Fixture yedeği üretilemiyor: ne MAS_PG_DUMP_BIN ne Docker container (MAS_PG_CONTAINER) erişilebilir.");
+    await pool.end();
+    process.exit(1);
+  }
+  const freshFixture = writeFixtureVerifiedBackup({ dir: freshBackupDir, ownerUrl: url });
+  writeFixtureVerifiedBackup({ dir: offDeviceFreshDir, ownerUrl: url });
+  console.log(`Fixture yedek    : ${path.basename(freshFixture.dumpPath)} (${freshFixture.bytes} B, sha256 ${freshFixture.sha256.slice(0, 12)}…, ${freshFixture.producedBy})`);
+
+  // Makinenin GERÇEK disk durumu: eşik altındaysa sağlıklı taban çizgisinde disk_free_gb dürüstçe
+  // alarm verir; bu bir kapı hatası değil, makinenin hâlidir — S0 beklentisi buna göre kurulur.
+  const hostDisk = freeGbOf(workDir);
+  const hostDiskLevel = diskPressureLevel(hostDisk?.freeGb ?? null);
+  console.log(`Makine diski     : ${hostDisk ? `${hostDisk.freeGb} GB boş` : "ölçülemedi"} → ${hostDiskLevel}
+`);
 
   const appUrl = await appRoleUrl();
   const healthyEnv = (extra: Record<string, string> = {}): Record<string, string> => ({
     MAS_BACKUP_DIR: freshBackupDir,
+    MAS_OFFDEVICE_BACKUP_DIR: offDeviceFreshDir,
     ...(appUrl ? { DATABASE_URL: appUrl } : {}),
     ...extra,
   });
+  /** Taban çizgisinde ORTAM KISITI yüzünden alarm vermesi BEKLENEN sinyaller (boşsa: ALL CLEAR beklenir). */
+  const baselineExpectedAlerts = new Set<string>([
+    ...(appUrl ? [] : ["runtime_user"]),
+    ...(hostDiskLevel === "ok" ? [] : ["disk_free_gb"]),
+  ]);
+  const onlyExpectedAlerts = (run: SnapshotRun): boolean =>
+    run.json !== null && run.json.signals.filter((x) => x.alert).every((x) => baselineExpectedAlerts.has(x.name));
 
   await cleanup();
   try {
@@ -232,28 +264,39 @@ async function main(): Promise<void> {
 
     /* ════ S0 — SAĞLIKLI: alarm YOK ═══════════════════════════════════════════════════════ */
     const healthy = runSnapshot("healthy", healthyEnv());
-    if (appUrl) {
+    if (baselineExpectedAlerts.size === 0) {
       record("S0 sağlıklı: hiç uyarı yok (exit 0, ALL CLEAR)",
         healthy.code === 0 && /TELEMETRY: ALL CLEAR/.test(healthy.out) && healthy.json?.alertCount === 0,
         `exit=${healthy.code} alertCount=${healthy.json?.alertCount ?? "?"}`);
+    } else {
+      skip("S0 sağlıklı: hiç uyarı yok",
+        `ortam kısıtı: ${[...baselineExpectedAlerts].join(", ")} bu makinede GERÇEKTEN alarm durumunda` +
+          `${appUrl ? "" : " (mas_radar_app kimlik bilgisi yok — runtime_user fail-closed)"}` +
+          `${hostDiskLevel === "ok" ? "" : ` (disk ${hostDisk?.freeGb ?? "?"} GB boş — ${hostDiskLevel})`}; 'alarm yok' ÖLÇÜLEMEZ`);
+      record(`S0 (kısıtlı): ${[...baselineExpectedAlerts].join("+")} DIŞINDA uyaran sinyal yok`,
+        onlyExpectedAlerts(healthy),
+        `uyaranlar=${healthy.json?.signals.filter((x) => x.alert).map((x) => x.name).join(",") || "yok"}`);
+    }
+    if (appUrl) {
       record("S0 sağlıklı: runtime_user gerçekten 'mas_radar_app' okundu (temiz yön kanıtlandı)",
         signalState(healthy.out, "runtime_user") === "ok",
         healthy.out.split(/\r?\n/).find((l) => l.includes("runtime_user"))?.trim() ?? "satır yok");
-    } else {
-      skip("S0 sağlıklı: hiç uyarı yok",
-        "mas_radar_app kimlik bilgisi yok (.env.local/MAS_APP_DATABASE_URL) — runtime_user fail-closed ateşler; bu ortamda 'alarm yok' ÖLÇÜLEMEZ");
-      record("S0 (kısıtlı): runtime_user DIŞINDA uyaran sinyal yok",
-        healthy.json !== null && healthy.json.signals.filter((s) => s.alert).every((s) => s.name === "runtime_user"),
-        `uyaranlar=${healthy.json?.signals.filter((s) => s.alert).map((s) => s.name).join(",") || "yok"}`);
     }
-    record(appUrl
+    record("S0 sağlıklı: backup_age_hours GERÇEK fixture yedekle temiz (dump+makbuz+sha256+PGDMP+TOC sözleşmesi geçti)",
+      signalState(healthy.out, "backup_age_hours") === "ok",
+      healthy.out.split(/\r?\n/).find((l) => l.includes("backup_age_hours"))?.trim() ?? "satır yok");
+    record("S0 sağlıklı: backup_offdevice_age_hours taze off-device fixture ile temiz (ayrı sinyal)",
+      signalState(healthy.out, "backup_offdevice_age_hours") === "ok",
+      healthy.out.split(/\r?\n/).find((l) => l.includes("backup_offdevice_age_hours"))?.trim() ?? "satır yok");
+    record(baselineExpectedAlerts.size === 0
       ? "S0 sağlıklı: alert log'a ALERT satırı YAZILMADI"
-      : "S0 (kısıtlı): alert log'da yalnız runtime_user satırı var (ortam kısıtı)",
-      alertRows(healthy).length === (appUrl ? 0 : 1),
+      : `S0 (kısıtlı): alert log'da yalnız ${[...baselineExpectedAlerts].join("+")} satırı var (ortam kısıtı)`,
+      alertRows(healthy).length === baselineExpectedAlerts.size
+        && alertRows(healthy).every((r) => typeof r.signal === "string" && baselineExpectedAlerts.has(r.signal)),
       `alert satırı=${alertRows(healthy).length}`);
     record("S0 sağlıklı: heartbeat + teslimat satırı YAZILDI (sessiz log ≠ sağlıklı)",
       healthy.log.some((r) => r.kind === "delivery" && r.channel === "log" && r.ok === true)
-        && (appUrl ? healthy.log.some((r) => r.kind === "heartbeat") : true),
+        && (baselineExpectedAlerts.size === 0 ? healthy.log.some((r) => r.kind === "heartbeat") : true),
       `satır=${healthy.log.map((r) => r.kind).join(",")}`);
     record("S0 sağlıklı: yapısal JSON çıktısı üretildi ve ölçülemeyenleri listeliyor",
       healthy.json !== null && healthy.json.notObtainable.length >= 4,
@@ -285,6 +328,79 @@ async function main(): Promise<void> {
     record("S1 backup age: taze dump geri konunca TEMİZLENDİ",
       signalState(s1clear.out, "backup_age_hours") === "ok" && alertRow(s1clear, "backup_age_hours") === undefined,
       signalState(s1clear.out, "backup_age_hours"));
+
+    /* ── PHASE 7.3 — tazelik SÖZLEŞMESİNİN negatif kontrolleri ────────────────────────────
+     * Hepsi harcanabilir geçici dizinlerde; gerçek backups/ dizinine ve zamanlarına DOKUNULMAZ. */
+
+    // S1b: GEÇERLİ ama BAYAT yedek (72 saat) → alarm, değer sayısal (dosya var, "YOK" değil)
+    const staleDir = path.join(workDir, "backups-stale");
+    writeFixtureVerifiedBackup({ dir: staleDir, ownerUrl: url, ageHours: 72 });
+    const s1b = runSnapshot("backup-stale", healthyEnv({ MAS_BACKUP_DIR: staleDir }));
+    {
+      const line = s1b.out.split(/\r?\n/).find((l) => /^(ALERT|\s+ok)\s+backup_age_hours/.test(l)) ?? "";
+      const value = Number(line.replace(/^(ALERT|\s+ok)\s+backup_age_hours\s+/, "").split(/\s/)[0]);
+      record("S1b bayat-ama-geçerli yedek (72s): ALARM ve yaş SAYISAL ≥ 72 (dosya reddedilmedi, bayat okundu)",
+        signalState(s1b.out, "backup_age_hours") === "ALERT" && Number.isFinite(value) && value >= 72 && alertRow(s1b, "backup_age_hours")?.severity === "P1",
+        line.trim() || "satır yok");
+    }
+
+    // S1c: TAZE mtime + makbuz, ama dump baytları değişmiş → sha256 uyuşmaz → "DOĞRULANMIŞ YEDEK YOK"
+    const tamperedDir = path.join(workDir, "backups-tampered");
+    const tampered = writeFixtureVerifiedBackup({ dir: tamperedDir, ownerUrl: url });
+    tamperFixtureDump(tampered.dumpPath);
+    const s1c = runSnapshot("backup-tampered", healthyEnv({ MAS_BACKUP_DIR: tamperedDir }));
+    record("S1c taze ama sha256'sı makbuzla uyuşmayan dump: ALARM, 'DOĞRULANMIŞ YEDEK YOK' + ret sebebi sha256",
+      signalState(s1c.out, "backup_age_hours") === "ALERT" && /DOĞRULANMIŞ YEDEK YOK/.test(s1c.out) && /sha256 makbuzla EŞLEŞMİYOR/.test(s1c.out),
+      s1c.out.split(/\r?\n/).find((l) => l.includes("backup_age_hours"))?.trim() ?? "satır yok");
+
+    // S1d: eski kapıların sahte metin dosyası → PGDMP yok → reddedilir (taze mtime YETMEZ)
+    const fakeDir = path.join(workDir, "backups-fake");
+    mkdirSync(fakeDir, { recursive: true });
+    writeFileSync(path.join(fakeDir, "recent.dump"), "taze mtime — gerçek dump değil");
+    const s1d = runSnapshot("backup-fake-text", healthyEnv({ MAS_BACKUP_DIR: fakeDir }));
+    record("S1d taze mtime'lı sahte metin 'dump': ALARM (PGDMP başlığı yok) — mtime tek başına tazelik DEĞİLDİR",
+      signalState(s1d.out, "backup_age_hours") === "ALERT" && /PGDMP başlığı yok/.test(s1d.out),
+      s1d.out.split(/\r?\n/).find((l) => l.includes("backup_age_hours"))?.trim() ?? "satır yok");
+
+    // S1e: OFF-DEVICE ayrı sinyal — tanımsız / sürücü yok / bayat / taze
+    const s1e1 = runSnapshot("offdevice-unconfigured", healthyEnv({ MAS_OFFDEVICE_BACKUP_DIR: "" }));
+    assertAlarmDelivered(s1e1, "backup_offdevice_age_hours", "P1", "S1e off-device tanımsız");
+    record("S1e off-device tanımsız: YEREL yedek yine temiz (iki tazelik birbirine karışmıyor)",
+      signalState(s1e1.out, "backup_age_hours") === "ok", signalState(s1e1.out, "backup_age_hours"));
+    const absentRoot = absentDriveRoot();
+    if (absentRoot) {
+      const s1e2 = runSnapshot("offdevice-drive-absent", healthyEnv({ MAS_OFFDEVICE_BACKUP_DIR: path.join(absentRoot, "MAS-Backups") }));
+      record("S1e off-device sürücü takılı değil: ALARM 'HEDEF YOK' + DRIVE_ABSENT (sessiz PASS yok)",
+        signalState(s1e2.out, "backup_offdevice_age_hours") === "ALERT" && /HEDEF YOK/.test(s1e2.out) && /DRIVE_ABSENT/.test(s1e2.out),
+        s1e2.out.split(/\r?\n/).find((l) => l.includes("backup_offdevice_age_hours"))?.trim() ?? "satır yok");
+    } else {
+      skip("S1e off-device sürücü takılı değil", "takılı olmayan bir sürücü harfi bulunamadı / Windows değil");
+    }
+    const offStaleDir = path.join(workDir, "offdevice-stale");
+    writeFixtureVerifiedBackup({ dir: offStaleDir, ownerUrl: url, ageHours: 100 });
+    const s1e3 = runSnapshot("offdevice-stale", healthyEnv({ MAS_OFFDEVICE_BACKUP_DIR: offStaleDir }));
+    record("S1e off-device bayat (100s) + yerel taze: yalnız backup_offdevice_age_hours ALARM, backup_age_hours ok",
+      signalState(s1e3.out, "backup_offdevice_age_hours") === "ALERT" && signalState(s1e3.out, "backup_age_hours") === "ok",
+      `offdevice=${signalState(s1e3.out, "backup_offdevice_age_hours")} local=${signalState(s1e3.out, "backup_age_hours")}`);
+    const s1e4 = runSnapshot("offdevice-clear", healthyEnv());
+    record("S1e off-device: taze kopya geri konunca TEMİZLENDİ",
+      signalState(s1e4.out, "backup_offdevice_age_hours") === "ok" && alertRow(s1e4, "backup_offdevice_age_hours") === undefined,
+      signalState(s1e4.out, "backup_offdevice_age_hours"));
+
+    // SD: DİSK BASKISI — gerçek ölçüm, kontrollü eşik (sahte "boş alan" enjekte edilmez)
+    const sd1 = runSnapshot("disk-critical", healthyEnv({ MAS_DISK_WARN_GB: "999999", MAS_DISK_CRIT_GB: "999998" }));
+    assertAlarmDelivered(sd1, "disk_free_gb", "P1", "SD disk kritik (eşik gerçek boş alanın üstüne çekildi)");
+    record("SD disk: değer GERÇEK ölçüm (GB, sayısal) ve not 'otomatik silme YOK' diyor",
+      /^ALERT\s+disk_free_gb\s+\d+(\.\d+)?\s/m.test(sd1.out) && /otomatik silme YOK/.test(sd1.out),
+      sd1.out.split(/\r?\n/).find((l) => l.includes("disk_free_gb"))?.trim() ?? "satır yok");
+    const sd2 = runSnapshot("disk-warning", healthyEnv({ MAS_DISK_WARN_GB: "999999", MAS_DISK_CRIT_GB: "0" }));
+    record("SD disk: uyarı bandı P2 ile ayrı raporlanır (kritik P1'den farklı)",
+      signalState(sd2.out, "disk_free_gb") === "ALERT" && alertRow(sd2, "disk_free_gb")?.severity === "P2" && /WARNING/.test(sd2.out),
+      sd2.out.split(/\r?\n/).find((l) => l.includes("disk_free_gb"))?.trim() ?? "satır yok");
+    const sd3 = runSnapshot("disk-default", healthyEnv());
+    record(`SD disk: varsayılan eşiklerde durum makinenin GERÇEK hâliyle tutarlı (${hostDiskLevel})`,
+      signalState(sd3.out, "disk_free_gb") === (hostDiskLevel === "ok" ? "ok" : "ALERT"),
+      sd3.out.split(/\r?\n/).find((l) => l.includes("disk_free_gb"))?.trim() ?? "satır yok");
 
     // ── S2 queue stuck ────────────────────────────────────────────────────────────────────
     await pool.query(
@@ -374,8 +490,9 @@ async function main(): Promise<void> {
     record("S6 ledger: sahte satır silinince TEMİZLENDİ",
       signalState(s6clear.out, "schema_ledger") === "ok", signalState(s6clear.out, "schema_ledger"));
 
-    record("Rehber §14'ün ALTI fail-closed sinyalinin TAMAMI alarm verdi VE teslim edildi",
-      deliveredSignals === 6, `${deliveredSignals}/6 — ${provenSignals.join(", ")}`);
+    // Rehber §14'ün altı sinyali + PHASE 7'nin ikisi (off-device tazeliği, disk baskısı) = 8.
+    record("Rehber §14'ün ALTI fail-closed sinyali + PHASE 7'nin İKİSİ (off-device, disk) — SEKİZİ de alarm verdi VE teslim edildi",
+      deliveredSignals === 8, `${deliveredSignals}/8 — ${provenSignals.join(", ")}`);
 
     /* ════ S7..S10 — TESLİMAT BAŞARISIZLIĞI AYRICA GÖRÜNÜR ═══════════════════════════════ */
 

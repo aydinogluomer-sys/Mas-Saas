@@ -44,10 +44,19 @@
 // really connects as `mas_radar_app`. Without it that check reports NOT DETERMINED (which counts
 // as a failure, per the paragraph above).
 
-import { mkdirSync, readdirSync, statSync, writeFileSync } from "node:fs";
+import { mkdirSync, readdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { Pool } from "pg";
 import { requireOwnerDatabaseUrl } from "../db/owner-url";
+import { evaluateBackupDir, freeGbOf, volumeRootPresent } from "./backup-freshness-probe";
+import {
+  BACKUP_MAX_AGE_HOURS,
+  DISK_CRIT_GB,
+  DISK_WARN_GB,
+  describeFreshness,
+  diskPressureLevel,
+  type FreshnessEvaluation,
+} from "@/lib/ops/backup-freshness";
 import {
   backupAgeAlert,
   importStaleAlert,
@@ -64,14 +73,29 @@ import {
 } from "@/lib/ops/alert-delivery";
 
 /** Thresholds. Deliberately conservative: an alert that never fires teaches people to ignore it. */
-const BACKUP_MAX_AGE_HOURS = 36;      // günlük yedek + kaçırılan bir gün payı
+// BACKUP_MAX_AGE_HOURS (36 — günlük yedek + kaçırılan bir gün payı) artık sözleşmeyle birlikte
+// src/lib/ops/backup-freshness.ts'te yaşıyor; burada aynı sabit kullanılır.
 const JOB_STUCK_MINUTES = 30;         // reaper 30 dakikada bir süpürüyor
 const IMPORT_STALE_DAYS = 45;         // aylık çalışma dosyası ritmi + pay
+
+// PHASE 7 — disk baskısı eşikleri (GB). Ortamdan YÜKSELTİLEBİLİR ki negatif kontrol gerçek
+// ölçümle alarm tetikleyebilsin (sahte bir "boş alan" değeri enjekte etmek yerine). Asla
+// otomatik silme yok: bu sinyal yalnız uyarır.
+const DISK_WARN = Number(process.env.MAS_DISK_WARN_GB ?? DISK_WARN_GB);
+const DISK_CRIT = Number(process.env.MAS_DISK_CRIT_GB ?? DISK_CRIT_GB);
 
 // Where backups live. Configurable via MAS_BACKUP_DIR so the alert can point at the real backup
 // target on the deployment machine — and so the verify can point it at a controlled temp directory
 // to prove the alert both fires (no dump) and clears (a fresh dump). Defaults to ./backups.
 const BACKUP_DIR = process.env.MAS_BACKUP_DIR ?? path.join(process.cwd(), "backups");
+
+// PHASE 7.3 — OFF-DEVICE tazeliği AYRI ölçülür. backup-daily.ts ile aynı değişken: tanımlı
+// değilse "tek kopya yedek değildir" (politika §3) ve bu bir ALARM'dır; tanımlı ama sürücü takılı
+// değilse (D: yok) yine ALARM — "hedef yok" hiçbir zaman "sorun yok" okunmaz.
+const OFFDEVICE_DIR = process.env.MAS_OFFDEVICE_BACKUP_DIR ?? "";
+// pg_restore --list kanıtı için: yerel ikili (MAS_PG_RESTORE_BIN) ya da container (MAS_PG_CONTAINER).
+const PG_CONTAINER = process.env.MAS_PG_CONTAINER ?? "mas-radar-pg";
+const PG_RESTORE_BIN = process.env.MAS_PG_RESTORE_BIN || undefined;
 
 // Kalıcı alert log'u. backups/daily-runs.jsonl ile aynı JSONL deseni; ayrı bir dizinde çünkü
 // backups/ yedek dosyalarının retention budamasına tabi ve bir alarm geçmişi budanmamalı.
@@ -183,6 +207,19 @@ async function probe(url: string): Promise<{ status: number | null; ms: number; 
   }
 }
 
+function freshnessSummary(e: FreshnessEvaluation): Record<string, unknown> {
+  return {
+    verified: e.verified === null ? null : {
+      name: e.verified.name, bytes: e.verified.bytes, sha256: e.verified.sha256,
+      receiptTimestamp: e.verified.receiptTimestamp, ageHours: Number(e.verified.ageHours.toFixed(2)),
+      toc: e.verified.toc, schemaLedger: e.verified.schemaLedger,
+    },
+    ageHours: Number.isFinite(e.ageHours) ? Number(e.ageHours.toFixed(2)) : null,
+    scanned: e.scanned,
+    rejected: e.rejected,
+  };
+}
+
 async function main(): Promise<void> {
   currentSection = "RUNTIME";
   console.log("── RUNTIME ────────────────────────────────────────────────────────────");
@@ -191,6 +228,18 @@ async function main(): Promise<void> {
   // would have been built with, so a snapshot taken from the shell still identifies the build.
   record("commit_sha", process.env.APP_COMMIT_SHA ?? "(APP_COMMIT_SHA yok)",
     false, "canlıda /version");
+
+  /* ── PHASE 7 — disk baskısı (yalnız uyarı; hiçbir şey silinmez) ───────────────────────
+   * Yedek dizininin birimi ölçülür: yedek oraya yazılır ve 03:00'te dolu bir disk, yedeğin
+   * "alınamadı" demesinden bir gece önce görülmelidir. <DISK_CRIT kritik (P1), <DISK_WARN uyarı
+   * (P2), ölçülemedi = P1 (fail-closed). Otomatik temizlik BİLEREK yok. */
+  const disk = freeGbOf(BACKUP_DIR);
+  const diskLevel = diskPressureLevel(disk?.freeGb ?? null, DISK_WARN, DISK_CRIT);
+  record("disk_free_gb",
+    disk ? disk.freeGb.toFixed(2) : "ÖLÇÜLEMEDİ",
+    diskLevel !== "ok",
+    `${diskLevel.toUpperCase()} · uyarı <${DISK_WARN} GB · kritik <${DISK_CRIT} GB · birim: ${disk?.measuredAt ?? BACKUP_DIR} · otomatik silme YOK`,
+    diskLevel === "warning" ? "P2" : "P1");
 
   /* ── /ready + /health — AŞAMA 09'da GERÇEK probe oldu ──────────────────────────────────
    *
@@ -252,21 +301,44 @@ async function main(): Promise<void> {
       where datname = current_database() and state = 'active' and pid <> pg_backend_pid()`, "?");
   record("db_longest_active_query_s", longest, false, "nokta-zamanlı; geçmiş için pg_stat_statements gerekir");
 
-  /* ── ALERT 1 — backup age ─────────────────────────────────────────────────────────────── */
-  let backupAgeHours = Number.POSITIVE_INFINITY;
-  let newest = "(yok)";
-  try {
-    const files = readdirSync(BACKUP_DIR).filter((f) => f.endsWith(".dump"));
-    for (const f of files) {
-      const ageH = (Date.now() - statSync(path.join(BACKUP_DIR, f)).mtimeMs) / 3_600_000;
-      if (ageH < backupAgeHours) { backupAgeHours = ageH; newest = f; }
-    }
-  } catch { /* dizin yok — sonsuz yaş, alert */ }
+  /* ── ALERT 1 — backup age (PHASE 7.3 sözleşmesi) ─────────────────────────────────────
+   * "36 saat içinde bir .dump dosyası var" DEĞİL, "36 saat içinde DOĞRULANMIŞ bir yedek var":
+   * dump + stage07 makbuzu + sha256 (şimdi yeniden hesaplanır) + boyut + pg_restore --list
+   * kanıtı (şimdi koşulur ya da sha256 ile bağlı kayıt). Bkz. src/lib/ops/backup-freshness.ts. */
+  const localFresh = evaluateBackupDir(BACKUP_DIR, { container: PG_CONTAINER, pgRestoreBin: PG_RESTORE_BIN });
   record("backup_age_hours",
-    Number.isFinite(backupAgeHours) ? backupAgeHours.toFixed(1) : "YEDEK YOK",
-    backupAgeAlert(backupAgeHours, BACKUP_MAX_AGE_HOURS),
-    `eşik ${BACKUP_MAX_AGE_HOURS}s · en yeni: ${newest}`,
+    Number.isFinite(localFresh.ageHours) ? localFresh.ageHours.toFixed(1) : "DOĞRULANMIŞ YEDEK YOK",
+    backupAgeAlert(localFresh.ageHours, BACKUP_MAX_AGE_HOURS),
+    describeFreshness(localFresh, BACKUP_MAX_AGE_HOURS),
     "P1"); // §31 P1: "backup schedule/off-device control not operational before pilot"
+
+  /* ── ALERT 1b — OFF-DEVICE backup age (ayrı sinyal, ayrı yaş) ──────────────────────────
+   * Yerel yedek taze olabilir ve off-device kopya haftalardır alınmamış olabilir — ikisi tek
+   * sayıya sıkıştırılırsa off-device eksikliği yerel tazeliğin arkasına saklanır. */
+  let offDeviceValue: string;
+  let offDeviceAlert: boolean;
+  let offDeviceNote: string;
+  let offDeviceFresh: FreshnessEvaluation | null = null;
+  if (OFFDEVICE_DIR === "") {
+    offDeviceValue = "(MAS_OFFDEVICE_BACKUP_DIR yok)";
+    offDeviceAlert = true;
+    offDeviceNote = "off-device hedef tanımsız — tek kopya yedek değildir (politika §3)";
+  } else {
+    const vol = volumeRootPresent(OFFDEVICE_DIR);
+    if (!vol.present) {
+      offDeviceValue = "HEDEF YOK";
+      offDeviceAlert = true;
+      offDeviceNote = `sürücü takılı değil: ${vol.root} — DRIVE_ABSENT`;
+    } else {
+      offDeviceFresh = evaluateBackupDir(OFFDEVICE_DIR, {
+        container: PG_CONTAINER, pgRestoreBin: PG_RESTORE_BIN, runLogPath: path.join(BACKUP_DIR, "daily-runs.jsonl"),
+      });
+      offDeviceValue = Number.isFinite(offDeviceFresh.ageHours) ? offDeviceFresh.ageHours.toFixed(1) : "DOĞRULANMIŞ YEDEK YOK";
+      offDeviceAlert = backupAgeAlert(offDeviceFresh.ageHours, BACKUP_MAX_AGE_HOURS);
+      offDeviceNote = `${describeFreshness(offDeviceFresh, BACKUP_MAX_AGE_HOURS)} · hedef ${OFFDEVICE_DIR}`;
+    }
+  }
+  record("backup_offdevice_age_hours", offDeviceValue, offDeviceAlert, offDeviceNote, "P1");
 
   currentSection = "APP";
   console.log("\n── UYGULAMA ───────────────────────────────────────────────────────────");
@@ -440,7 +512,15 @@ async function main(): Promise<void> {
           jobStuckMinutes: JOB_STUCK_MINUTES,
           importStaleDays: IMPORT_STALE_DAYS,
           probeTimeoutMs: PROBE_TIMEOUT_MS,
+          diskWarnGb: DISK_WARN,
+          diskCritGb: DISK_CRIT,
         },
+        // PHASE 7.3 — tazelik sözleşmesinin yapısal kanıtı (yol/sır yok: yalnız ad, yaş, sha, TOC).
+        backupFreshness: {
+          local: freshnessSummary(localFresh),
+          offDevice: OFFDEVICE_DIR === "" ? "NOT_CONFIGURED" : offDeviceFresh === null ? "DRIVE_ABSENT" : freshnessSummary(offDeviceFresh),
+        },
+        disk: { freeGb: disk?.freeGb ?? null, level: diskLevel },
         signalCount: signals.length,
         alertCount: alerts.length,
         signals: signals.map((s) => ({
