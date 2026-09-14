@@ -593,3 +593,17 @@ jobs:
           name: interaction-audit-evidence
           path: docs/interaction-audit/
           retention-days: 14
+
+      # CI-7: düşen bir Playwright testinin izi/ekran görüntüsü + sunucu günlüğü olmadan kök neden
+      # bulunamaz (2026-09-14: ONAYLA sonrası sonuç paneli 180 s'de gelmedi; sunucu ne yaptı, sayfa ne
+      # gösterdi — hiçbiri elde yoktu). Yalnız başarısızlıkta; boş dizin uyarı vermez.
+      - name: Upload failure diagnostics (Playwright trace/screenshot + server log)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: interaction-failure-diagnostics
+          path: |
+            test-results/
+            /tmp/next-interaction.log
+          if-no-files-found: ignore
+          retention-days: 14

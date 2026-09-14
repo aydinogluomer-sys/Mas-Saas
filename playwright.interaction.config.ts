@@ -52,6 +52,11 @@ export default defineConfig({
     storageState: path.join("tests", "visual", ".auth", "admin.json"),
     // İndirme testleri gerçek dosya ister.
     acceptDownloads: true,
+    // CI-7 (PRE-PHASE8 CI CLOSURE): bir test düştüğünde "ne gördü" sorusu log'da kaybolmasın —
+    // yalnız BAŞARISIZLIKTA iz + ekran görüntüsü tutulur (test-results/, CI artifact'ına gider).
+    // Geçen testler için hiçbir ek maliyet yok; retries hâlâ 0.
+    trace: "retain-on-failure",
+    screenshot: "only-on-failure",
   },
   projects: [{ name: "chromium", use: { ...devices["Desktop Chrome"] } }],
 });
