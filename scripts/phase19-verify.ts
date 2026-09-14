@@ -16,6 +16,7 @@ import { readFileSync } from "node:fs";
 import { Pool } from "pg";
 import { normalizeIban } from "../src/lib/counterparties/rules";
 import { requireDisposableOwnerDatabaseUrl } from "./db/owner-url";
+import { runPartiesPolicyProof } from "./import/v2-parties-policy";
 
 const pool = new Pool({ connectionString: requireDisposableOwnerDatabaseUrl("phase19:verify") });
 
@@ -301,8 +302,17 @@ async function main(): Promise<void> {
   // tried first and rejected: it depends on ledger timestamps and on which seed a given
   // database happens to carry, so it reports differently on a seeded disposable DB than on the
   // real one — a check that cries wolf is worse than no check. The invariant that actually
-  // matters is structural and exact: within src/, exactly ONE statement inserts into
-  // public.parties, and it lives in the explicit operator action.
+  // matters is structural and exact: within src/, the statements that insert into
+  // public.parties are KNOWN, and each one lives behind an explicit operator action.
+  //
+  // CI-3 (PRE-PHASE8 CI CLOSURE): the contract has TWO entry points since Standart Import V2.
+  //   · counterparties/engine.ts  createCounterparty — the explicit "Karşı taraf oluştur" action.
+  //   · importers/v2/mapper.ts    resolveParty — reachable ONLY inside confirmImport's single
+  //     ONAYLA transaction (preview runs the mapper with dryRun:true and returns before any
+  //     writer). A path on an allowlist proves nothing by itself, so the second entry point is
+  //     PROVEN against this database below (runPartiesPolicyProof): preview/review write nothing,
+  //     unauthorized confirm is rejected at the tier matrix AND at the database role, a failed
+  //     transaction leaves no orphan party, and a replay creates no duplicate.
   // Tracked PLUS untracked-but-not-ignored: on the day this engine was written it was not yet
   // committed, and a gate that cannot see a brand-new file is blind at exactly the wrong moment
   // (the same trap phase18-verify hit).
@@ -316,13 +326,29 @@ async function main(): Promise<void> {
     .filter((f) => {
       try { return /insert\s+into\s+public\.parties/i.test(readFileSync(f, "utf8")); }
       catch { return false; }
-    });
-  const onlyExplicit =
-    partyInsertFiles.length === 1 && partyInsertFiles[0] === "src/lib/counterparties/engine.ts";
-  record("src/ içinde public.parties'e SADECE açık operatör eylemi yazıyor", onlyExplicit,
+    })
+    .sort();
+  const ALLOWED_PARTY_WRITERS = ["src/lib/counterparties/engine.ts", "src/lib/importers/v2/mapper.ts"];
+  const onlyExplicit = JSON.stringify(partyInsertFiles) === JSON.stringify(ALLOWED_PARTY_WRITERS);
+  record("src/ içinde public.parties'e SADECE açık operatör eylemleri yazıyor", onlyExplicit,
     onlyExplicit
-      ? "tek giriş noktası: counterparties/engine.ts createCounterparty (içe aktarma yolu yok)"
+      ? "iki giriş noktası: counterparties/engine.ts createCounterparty · importers/v2/mapper.ts resolveParty (yalnız ONAYLA transaction'ı içinde — aşağıda DB'ye karşı kanıtlanıyor)"
       : `beklenmeyen: ${partyInsertFiles.join(", ") || "(hiç yok)"}`);
+
+  // The V2 entry point is not trusted on the strength of the allowlist — it is proven here.
+  // Static guard on the preview seam first (cheap, exact), then the behavioural proof.
+  const serviceSrc = readFileSync("src/lib/importers/v2/service.ts", "utf8");
+  const previewFn = serviceSrc.slice(serviceSrc.indexOf("export async function previewImport"), serviceSrc.indexOf("export async function confirmImport"));
+  record("previewImport mapper'ı dryRun:true ile çağırıyor (önizleme yazmaz)", /dryRun:\s*true/.test(previewFn) && !/dryRun:\s*false/.test(previewFn),
+    "src/lib/importers/v2/service.ts previewImport");
+  const mapperSrc = readFileSync("src/lib/importers/v2/mapper.ts", "utf8");
+  const dryRunReturn = mapperSrc.indexOf("if (dryRun) {");
+  const firstStage = mapperSrc.indexOf("await stageWorkbook(client, opts, parsed)");
+  record("mapWorkbook dryRun dalı, ilk yazma (stageWorkbook) öncesinde dönüyor", dryRunReturn > 0 && firstStage > dryRunReturn,
+    `dryRun dalı @${dryRunReturn} < stageWorkbook @${firstStage}`);
+  for (const c of await runPartiesPolicyProof(requireDisposableOwnerDatabaseUrl("phase19:verify"))) {
+    record(`V2→parties politikası: ${c.name}`, c.pass, c.detail);
+  }
 
   // ── 11) the org dimensions are genuinely minimal ────────────────────────────────────────
   const orderCols = await q(

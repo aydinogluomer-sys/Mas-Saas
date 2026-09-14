@@ -127,7 +127,8 @@
     "import:enum-parity:v2": "node --import tsx scripts/import/v2-enum-parity.ts",
     "import:e2e:v2": "node --import tsx scripts/import/v2-import-e2e.ts",
     "import:currency-safety:v2": "node --import tsx scripts/import/v2-currency-safety.ts",
-    "import:concurrency:v2": "node --import tsx scripts/import/v2-concurrency-proof.ts"
+    "import:concurrency:v2": "node --import tsx scripts/import/v2-concurrency-proof.ts",
+    "import:parties-policy:v2": "node --import tsx scripts/import/v2-parties-policy.ts"
   },
   "dependencies": {
     "@next/env": "15.5.20",
