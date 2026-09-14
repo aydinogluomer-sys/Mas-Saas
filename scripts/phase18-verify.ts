@@ -85,7 +85,13 @@ function sourceFiles(prefixes: string[]): string[] {
   const tracked = run(["ls-files", ...prefixes]);
   // Untracked-but-not-ignored too: a brand-new file is exactly when a gate must not blink.
   const untracked = run(["ls-files", "--others", "--exclude-standard", ...prefixes]);
-  return [...new Set([...tracked, ...untracked])].filter((f) => /\.(ts|tsx)$/.test(f));
+  // CI-2 (PRE-PHASE8 CI CLOSURE): test doubles are not write sites. A unit test that fakes the
+  // pool routes on the literal SQL text (`if (s.includes("insert into public.audit_logs"))`) to
+  // return a canned row — that is the test PROVING audit.ts is the only writer, not a second
+  // writer. Only production sources (`*.ts`/`*.tsx` that are not `*.test.*`) can insert.
+  return [...new Set([...tracked, ...untracked])]
+    .filter((f) => /\.(ts|tsx)$/.test(f))
+    .filter((f) => !/\.test\.(ts|tsx)$/.test(f));
 }
 
 function isCommentLine(line: string): boolean {

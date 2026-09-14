@@ -2422,3 +2422,79 @@ sebeple sahiplik kapsamlı: birinin asistana ne sorduğu ve hangi sırayla sordu
 İzleyici yine **yalnız okur** (Faz 36'da yerleşen karar): Faz 24B "izleyici hiçbir tabloya yazamaz"
 invariant'ını iddia ediyor. İzleyici yine de **soru sorabilir** — cevap `ai_response_snapshots`'a
 uygulama yolu tarafından yazılır, ki bu katman-kapsamlı bir yazma değildir.
+
+## Standart Import V2 kimlik defteri ve hazırlık katmanı (Faz V2, migration 0088–0091)
+
+### `import_external_keys` (0088) — kullanıcının kendi kayıt kodu için kimlik defteri
+
+V2 şablonunun her sayfasındaki isteğe bağlı "Kayıt Kodu (external_id)" sütunu bu tabloya bağlanır; aynı kodla
+tekrar import edilen kayıt GÜNCELLENİR, ikinci kopya oluşmaz. 16 hedef tabloya kolon eklemek yerine tek defter.
+
+| Kolon | Tip | Not |
+|---|---|---|
+| `id` | uuid PK | |
+| `entity_table` | text NOT NULL, CHECK | yalnız V2'nin hedeflediği 16 tablo (`payments`, `checks`, `loans`, `loan_installments`, `cashflow_lines`, `bank_accounts`, `bank_transactions`, `invoices`, `orders`, `products`, `projects`, `budget_lines`, `fx_positions`, `production_parts`, `cost_models`, `machine_assets`) |
+| `external_id` | text NOT NULL, CHECK boş değil | kullanıcının kodu |
+| `entity_id` | uuid NOT NULL | hedef tablodaki satır |
+| `first_seen_workbook_id`, `last_seen_workbook_id` | uuid → `source_workbooks` (ON DELETE SET NULL) | provenance |
+| `created_at`, `updated_at` | timestamptz | `updated_at` tetikleyici |
+
+Kısıtlar: `UNIQUE (entity_table, external_id)`; `UNIQUE INDEX (entity_table, entity_id)` — bir kayıt tek koda bağlanır.
+RLS: select tüm katmanlar; insert/update `finance_operator`+; delete yalnız `finance_manager`/`admin`.
+Bağlama kopuksa (kayıt silinmiş) eşleyici `STALE_BINDING`, kod başka kayda gitmeye çalışırsa `BINDING_CONFLICT` ile tüm
+import'u geri alır (bkz. `docs/standard-import-v2.md`).
+
+### 0089 — hazırlık katmanı CHECK'leri genişletildi
+
+`source_sheets.detected_type` CHECK'ine `'standard_import_v2'`; `import_rows.mapping_status` CHECK'ine `'rejected'`
+(sözleşmeye uymadığı için hiç yazılmamış satır — ham hâli hazırlık katmanında DURUR). `mapping_reviews` için açık
+inceleme indeksi `mapping_reviews_workbook_open_idx`. TypeScript yarısı `src/lib/importers/workbook-parser.ts` ile
+birlikte hareket eder (0041 kuralı).
+
+### 0090 — `checks.currency` ve `loans.currency`
+
+İki tabloya `currency text NOT NULL DEFAULT 'TRY'` + CHECK `('TRY','USD','EUR','GBP')`; `checks_currency_maturity_idx`.
+Mevcut satırlar TRY kabul edilir (5 Eylül klonunda TRY-dışı satır 0 — `phase2-tier2-tier3-closure.md`). Çek/kredi
+toplamları bu kolon üzerinden TRY-only kuralına girer (0093/0094).
+
+### 0091 — `import_rows.mapping_status = 'blocked_by_parent'`
+
+Kendisi sağlam ama üst kaydı (taksit→kredi, banka hareketi→hesap, fatura/sipariş→proje) aynı dosyada kabul
+edilmediği için yazılmamış satır. `rejected`'dan ayrı sayılır; kullanıcı raporunda ayrı listelenir.
+
+## Para birimi doğruluğu — TRY-only kuralı (PHASE 2, migration 0092–0094)
+
+Tek kural (`src/lib/currency-policy.ts`): raporlama para birimi TRY; TRY-dışı satırlar toplama GİRMEZ, sayılır ve
+"n kalem TRY-dışı — toplamda yok" notuyla gösterilir. SQL tarafı:
+
+### 0092 — `payment_instances.risk_level` altıncı üye
+
+CHECK'e `'unsupported_currency'` eklendi (adsız 0003 kısıtı düşürülüp `payment_instances_risk_level_check` adıyla
+yeniden kuruldu). TRY-dışı bir taksit eşiğe karşı değerlendirilmez; risk seviyesi bu üyeye düşer.
+
+### 0093 — Tier 1 view'ları: eşik/limit yalnız TRY satırlarla karşılaştırılır
+
+`anomaly_split_payments`, `counterparty_exposure_items`, `counterparty_exposure` yeniden tanımlandı: `checks.currency`
+ve `loans.currency` gerçek kolonlarından okur; USD/EUR kalemler `foreign_count` olarak sayılır, `comparable=false`
+ile limit karşılaştırmasından çıkar; `unsupported_currency` risk seviyesi kabul edilir.
+
+### 0094 — Tier 2/3: 20 view TRY-only + `*_count` kolonları
+
+`create or replace view` ile yeniden tanımlanan view'lar: `anomaly_amount_vs_baseline`, `anomaly_new_payee`,
+`bank_cash_position` (+`foreign_txn_count`), `bank_match_conflicts`, `bank_reconciliation_summary`
+(+`account_currency`, `foreign_currency_count`), `counterparty_collection_profile`, `credit_facility_utilization`
+(+`foreign_drawdown_count`), `current_account_summary`, `daily_cash_movement`, `debt_maturity_ladder`
+(+`foreign_facility_count`), `dso_dpo_components`, `forecast_accuracy`, `invoice_party_summary`,
+`liquidity_forecast_daily` (fatura ayağı `v.currency`), `party_promise_history`, `payment_calendar_extended`,
+`payment_priority_queue` (+`currency`), `receivable_collection_signals` (+`currency`),
+`treasury_cashflow_reconciliation` (`r.currency = 'TRY'`), `working_capital_trend`. Kolonlar yalnız SONA eklenir;
+mevcut kolon adı/sırası değişmez. Doğrulama: `docs/release-evidence/final-production-readiness/phase2-tier2-tier3-closure.md`
+ve `tests/financial/currency-policy-tier2.test.ts`.
+
+**Migration zinciri:** 0087 → 0088–0091 (import-v2 dalı) → 0092–0094 (Phase 2). Gerçek veritabanı 2026-09-13
+itibarıyla `0087`'de; 0088–0094 Phase 8 cutover'ında uygulanacak (`docs/real-db-cutover-runbook.md`).
+
+**Ledger kurtarma (CI-1, 2026-09-14):** `scripts/db/migrate.ts` "ledger boş ama şema var" durumunda şemanın konumunu
+artık VARSAYMAZ; geçici bir referans veritabanında migration'ları sırayla uygulayıp `public` şemasının deterministik
+şeklini (`scripts/db/schema-shape.ts`) canlı şemayla eşleştirir, eşleşen N'e kadar ledger'ı yazar, kalanı uygular.
+Eşleşme yoksa `INCONSISTENT_PARTIAL` ile durur.
