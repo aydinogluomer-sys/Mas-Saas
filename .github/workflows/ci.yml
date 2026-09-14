@@ -464,9 +464,33 @@ jobs:
           MAS_RADAR_APP_DB_PASSWORD: ${{ env.CI_APP_DB_PASSWORD }}
         run: bash scripts/ci/provision-verify-db.sh mas_radar_interaction_verify
 
+      # ── CI-5 (PRE-PHASE8 CI CLOSURE): BU KAPI İKİ PARÇADIR ─────────────────────────────────
+      #
+      # Kapsam kapısı (crawl → click → ratchet/strict) seed-demo'ya, seed-demo ise GERÇEK kaynak
+      # çalışma kitabına (data/source/…TEMİZ.xlsx) bağlıdır. O dosya özel finansal veridir ve
+      # repoya asla girmez; CI'da yoktur ve olmamalıdır. Uydurma bir çalışma kitabıyla kapıyı
+      # "yeşile boyamak" da yasak: ratchet baseline'ı gerçek demo verisinde ölçüldü, sentetik
+      # veriyle keşfedilen kontrol kümesi başka bir şey olur ve kapı anlamını yitirir.
+      #
+      # O yüzden: dosya varsa (yerel/self-hosted koşucu) kapı TAM koşar; yoksa kapsam kapısı
+      # açıkça `SKIPPED — MANUAL ARTIFACT GATE` olarak işaretlenir (PASS DEĞİL) ve job yalnız
+      # aşağıdaki OTOMATİKLEŞTİRİLEBİLİR etkileşim kontrolleriyle yeşile döner: Standart Import V2
+      # akışı (şablon indirme, 5 rol gerçek /login, RBAC redleri, dosya güvenliği, ÖNİZLE yazmaz,
+      # ONAYLA tek transaction, provenance, ikinci ONAYLA mükerrer üretmez) — hepsi kendi V2
+      # fixture'ını üretir ve DB before/after ile ölçer; özel veri gerektirmez.
+      - name: Locate demo workbook (manual artifact — private, never in the repo)
+        id: artifact
+        run: |
+          if [ -f "data/source/mesaili_nakit_akış_tek_vardiya_TEMİZ.xlsx" ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"; echo "demo workbook PRESENT — full coverage gate will run"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"; echo "demo workbook ABSENT — coverage gate = SKIPPED (MANUAL ARTIFACT GATE); automatable checks still run"
+          fi
+
       # Boş bir veritabanında tıklanacak hiçbir şey yoktur ve "0 kontrol bulundu, 0 hata" diye
       # yeşil yanan bir kapı, olmayan bir güvence üretir. Demo verisi bu yüzden ZORUNLU girdidir.
       - name: Seed demo data (kapının tıklayacağı gerçek kayıtlar)
+        if: steps.artifact.outputs.present == 'true'
         env:
           MIGRATION_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/mas_radar_interaction_verify
         run: pnpm exec tsx scripts/seed-demo.ts
@@ -499,12 +523,20 @@ jobs:
           tail -100 /tmp/next-interaction.log >&2
           exit 1
 
+      # Otomatikleştirilebilir etkileşim kontrolleri — HER koşuda (özel veri gerektirmez).
+      - name: Automatable interaction checks — Standart Import V2 flow (real click → real DB before/after)
+        env:
+          MAS_E2E_DATABASE_URL: ${{ env.APP_URL }}
+        run: pnpm exec playwright test --config playwright.interaction.config.ts import-v2
+
       - name: Discover every interactive control (5 roles, real sessions)
+        if: steps.artifact.outputs.present == 'true'
         env:
           MAS_E2E_DATABASE_URL: ${{ env.APP_URL }}
         run: pnpm interaction:crawl
 
       - name: Verify controls (real click → real DB before/after)
+        if: steps.artifact.outputs.present == 'true'
         env:
           MAS_E2E_DATABASE_URL: ${{ env.APP_URL }}
         run: pnpm interaction:test
@@ -517,9 +549,25 @@ jobs:
       # Ratchet'i varsayılan yapmak güvenceyi düşürmek DEĞİL, düşük olan güvenceyi ÖLÇÜLEBİLİR
       # kılmaktır — baseline dosyası PR diff'inde görünür ve gerekçesiz yükseltilemez.
       - name: Coverage gate — RATCHET (PR kapısı)
+        if: steps.artifact.outputs.present == 'true'
         env:
           MAS_E2E_DATABASE_URL: ${{ env.APP_URL }}
         run: pnpm interaction:gate
+
+      # Sahte PASS yok: dosya yoksa kapsam kapısının sonucu "koşmadı"dır ve bu, job özetinde
+      # ve annotation olarak açıkça yazılır. Yerelde koşma yolu belgelidir (docs/interaction-audit.md).
+      - name: Coverage gate — NOT RUN IN CI (manual artifact gate)
+        if: steps.artifact.outputs.present != 'true'
+        run: |
+          echo "::notice title=INTERACTION_COVERAGE_GATE::SKIPPED — MANUAL ARTIFACT GATE (data/source/…TEMİZ.xlsx is private and not available in CI). Run locally: pnpm interaction:crawl && pnpm interaction:test && pnpm interaction:gate"
+          {
+            echo "## Interaction coverage gate"
+            echo ""
+            echo "| Parça | Sonuç |"
+            echo "|---|---|"
+            echo "| Automatable — Standart Import V2 akışı (5 rol, gerçek tık, DB before/after) | RAN (yukarıdaki adım) |"
+            echo "| Coverage gate — crawl × contract × click (ratchet/strict) | **SKIPPED — MANUAL ARTIFACT GATE** (özel çalışma kitabı CI'da yok; yerelde koşulur) |"
+          } >> "$GITHUB_STEP_SUMMARY"
 
       # STRICT kapı TAM ETKİLEŞİM GÜVENCESİ hedefidir ve UNTESTED > 0 iken KIRMIZI kalır.
       #
@@ -531,6 +579,7 @@ jobs:
       # `continue-on-error` bu yüzden: PR'ları BLOKLAMADAN borcun büyüklüğünü her koşuda görünür
       # tutar. Kapının kendisi gevşetilmedi — çıkış kodu hâlâ 1. Bloklayan şey ratchet'tir.
       - name: Coverage gate — STRICT (tam etkileşim güvencesi; cutover SONRASI sertleştirme hedefi)
+        if: steps.artifact.outputs.present == 'true'
         continue-on-error: true
         env:
           MAS_E2E_DATABASE_URL: ${{ env.APP_URL }}
