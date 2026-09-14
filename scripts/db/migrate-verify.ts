@@ -6,8 +6,10 @@ import { execFileSync } from "node:child_process";
 import { readFileSync, readdirSync, unlinkSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { Pool } from "pg";
-import { MIGRATIONS_DIR, validateFileSet } from "./migration-lib";
+import { MIGRATIONS_DIR, checksumContent, validateFileSet } from "./migration-lib";
 import { verifyBackupTarget } from "./backup-docker-postgres";
+import { readEnvLocal, swapDatabase } from "./app-url";
+import { diffShapes, schemaShape } from "./schema-shape";
 import {
   LEGACY_ANOMALY_INSTANCE_ID,
   countCancelConsistencyViolations,
@@ -106,8 +108,22 @@ function psqlFile(db: string, file: string): void {
 function psqlSql(db: string, sql: string): string {
   return docker(["exec", CONTAINER, "psql", "-U", "postgres", "-d", db, "-tAc", sql], { quiet: true });
 }
+/** Superuser kimliği: ortam → .env.local → CI varsayılanı (export-leakage-verify ile aynı desen).
+ *  Veritabanı ADI hep bu dosyanın kendi harcanabilir adlarıdır; dize hiçbir yerde basılmaz. */
+const SUPERUSER_BASE: string = (() => {
+  if (process.env.MIGRATION_DATABASE_URL) return process.env.MIGRATION_DATABASE_URL;
+  try {
+    const local = readEnvLocal().MIGRATION_DATABASE_URL;
+    if (local) return local;
+  } catch { /* .env.local yok (CI) */ }
+  return "postgres://postgres:postgres@127.0.0.1:5432/postgres";
+})();
+const FORBIDDEN_DB_NAME = "mas_radar_dev";
 function dbUrl(db: string): string {
-  return `postgres://postgres:postgres@127.0.0.1:5432/${db}`;
+  if (db === FORBIDDEN_DB_NAME || !/(verify|test|tmp|temp|smoke|drill)/.test(db)) {
+    throw new Error(`migrate-verify yalnız harcanabilir adlara bağlanır: '${db}' reddedildi.`);
+  }
+  return swapDatabase(SUPERUSER_BASE, db);
 }
 
 interface RunResult {
@@ -582,23 +598,122 @@ async function testLedgerEmptyRecovery(): Promise<void> {
     dropDb(db);
     return;
   }
+  // CI-1: "legacy" (0021+'yı yeniden oynat) artık HEAD'de duran bir şemada mümkün değil (0093/0094
+  // view kolonları); doğru cevap şekil eşleştirmesi ile ledger'ı yeniden kurmaktır.
+  const head = migrationFiles[migrationFiles.length - 1].slice(0, 4);
   record(
-    "LEDGER_EMPTY_RECOVERY smoke: state doğru seçildi (recovery: legacy)",
-    /state=LEDGER_EMPTY_RECOVERY \(recovery: legacy\)/.test(result.stdout),
+    `LEDGER_EMPTY_RECOVERY smoke: state doğru seçildi (recovery: shape, recovered_through=${head})`,
+    new RegExp(`state=LEDGER_EMPTY_RECOVERY \\(recovery: shape\\) recovered_through=${head}`).test(result.stdout),
+    result.stdout.split(/\r?\n/).find((l) => l.startsWith("state=")) ?? "state satırı yok",
   );
+  record(
+    "LEDGER_EMPTY_RECOVERY smoke: HEAD'de hiçbir migration yeniden oynatılmadı (SQL yeniden oynatılmadı satırı)",
+    /SQL yeniden oynatılmadı/.test(result.stdout),
+  );
+  await assertRecoveredLedgerExact(db, "LEDGER_EMPTY_RECOVERY smoke");
+  await assertShapeEqualsFresh(db, "LEDGER_EMPTY_RECOVERY smoke");
+  await assertPolicyCountZero(db, "LEDGER_EMPTY_RECOVERY smoke");
+  dropDb(db);
+}
 
+/** Kurtarılan ledger: dosya sayısı kadar satır, her checksum diskteki dosyanın checksum'ı,
+ *  0001–0019 baseline-backfill, 0020..N ledger-recovery, N+1.. migrate-script. */
+async function assertRecoveredLedgerExact(db: string, label: string): Promise<void> {
+  const files = validateFileSet(MIGRATIONS_DIR).files;
   const pool = new Pool({ connectionString: dbUrl(db), max: 1 });
   try {
-    const rows = await pool.query<{ n: number }>("select count(*)::int as n from schema_migrations");
-    record(
-      `LEDGER_EMPTY_RECOVERY smoke: ledger ${migrationFiles.length} satır (canonical dosya sayısı)`,
-      rows.rows[0]?.n === migrationFiles.length,
-      `got ${rows.rows[0]?.n}`,
-    );
+    const rows = (await pool.query<{ version: string; name: string; checksum: string; applied_by: string }>(
+      "select version, name, checksum, applied_by from public.schema_migrations order by version",
+    )).rows;
+    record(`${label}: ledger ${files.length} satır (canonical dosya sayısı)`, rows.length === files.length, `got ${rows.length}`);
+    const byVersion = new Map(rows.map((r) => [r.version, r]));
+    const mismatches = files.filter((f) => byVersion.get(f.version)?.checksum !== checksumContent(f.content) || byVersion.get(f.version)?.name !== f.name);
+    record(`${label}: her ledger satırının checksum'ı ve adı diskteki dosyayla birebir`, mismatches.length === 0, mismatches.length ? `uyuşmayan: ${mismatches.map((f) => f.version).join(",")}` : undefined);
+    const by = new Map<string, number>();
+    for (const r of rows) by.set(r.applied_by, (by.get(r.applied_by) ?? 0) + 1);
+    record(`${label}: 0001–0019 applied_by='baseline-backfill' (${EXPECTED_BASELINE_BACKFILL_COUNT})`, by.get("baseline-backfill") === EXPECTED_BASELINE_BACKFILL_COUNT, `got ${by.get("baseline-backfill") ?? 0}`);
+    record(`${label}: 0020+ satırları yalnız 'ledger-recovery' ya da 'migrate-script'`, rows.filter((r) => r.version >= "0020").every((r) => r.applied_by === "ledger-recovery" || r.applied_by === "migrate-script"), [...by.keys()].join(","));
   } finally {
     await pool.end();
   }
-  await assertPolicyCountZero(db, "LEDGER_EMPTY_RECOVERY smoke");
+}
+
+/** Şema/view durumu exact: kurtarılan DB'nin `public` şekli, migrate.ts EMPTY akışıyla sıfırdan
+ *  kurulan bir DB'nin şekliyle aynı (schema-shape.ts — tablo/kolon/view/index/kısıt/tetikleyici/
+ *  fonksiyon/politika/enum). */
+async function assertShapeEqualsFresh(db: string, label: string): Promise<void> {
+  const fresh = "mas_radar_shape_reference_verify";
+  dropDb(fresh);
+  createDb(fresh);
+  psqlFile(fresh, path.join(ROOT, "scripts", "db", "local-bootstrap.sql"));
+  const r = runMigrate(fresh);
+  if (r.code !== 0) {
+    record(`${label}: referans (EMPTY) kurulumu`, false, r.stderr.slice(0, 200));
+    dropDb(fresh);
+    return;
+  }
+  const a = new Pool({ connectionString: dbUrl(db), max: 1 });
+  const b = new Pool({ connectionString: dbUrl(fresh), max: 1 });
+  try {
+    const sa = await schemaShape(a);
+    const sb = await schemaShape(b);
+    const d = diffShapes(sa, sb, 5);
+    record(
+      `${label}: kurtarılan şema/view şekli sıfırdan kurulanla BİREBİR (${sa.lines.length} katalog satırı)`,
+      sa.digest === sb.digest,
+      sa.digest === sb.digest ? sa.digest.slice(0, 16) : `yalnız kurtarılanda: ${d.onlyInA.join(" ; ").slice(0, 300)} | yalnız referansta: ${d.onlyInB.join(" ; ").slice(0, 300)}`,
+    );
+  } finally {
+    await a.end();
+    await b.end();
+    dropDb(fresh);
+  }
+}
+
+// --- Test 6b: schema HEAD'in gerisinde + ledger boş → N'de eşleş, kalanı uygula ---
+async function testLedgerEmptyRecoveryBehindHead(): Promise<void> {
+  const db = "mas_radar_reset_behind_head_test";
+  dropDb(db);
+  createDb(db);
+  psqlFile(db, path.join(ROOT, "scripts", "db", "local-bootstrap.sql"));
+  const migrationFiles = readdirSync(MIGRATIONS_DIR).filter((f) => f.endsWith(".sql")).sort();
+  const allButLast = migrationFiles.slice(0, -1);
+  const last = migrationFiles[migrationFiles.length - 1].slice(0, 4);
+  const prev = allButLast[allButLast.length - 1].slice(0, 4);
+  for (const f of allButLast) psqlFile(db, path.join(MIGRATIONS_DIR, f));
+
+  const result = runMigrate(db);
+  record(`LEDGER_EMPTY_RECOVERY (HEAD gerisi, ${prev}): migrate.ts başarıyla tamamlandı`, result.code === 0, result.code === 0 ? undefined : result.stderr.slice(0, 300));
+  if (result.code !== 0) {
+    dropDb(db);
+    return;
+  }
+  const lastAppliedBy = psqlSql(db, `select applied_by from public.schema_migrations where version='${last}';`).trim();
+  record(
+    `LEDGER_EMPTY_RECOVERY (HEAD gerisi): şekil ${prev}'de eşleşti, ${last} pending olarak GERÇEKTEN uygulandı (applied_by=migrate-script)`,
+    new RegExp(`recovered_through=${prev}`).test(result.stdout) && lastAppliedBy === "migrate-script",
+    `${result.stdout.split(/\r?\n/).find((l) => l.startsWith("state=")) ?? "state satırı yok"} · ${last}.applied_by=${lastAppliedBy}`,
+  );
+  await assertRecoveredLedgerExact(db, "LEDGER_EMPTY_RECOVERY (HEAD gerisi)");
+  await assertShapeEqualsFresh(db, "LEDGER_EMPTY_RECOVERY (HEAD gerisi)");
+  dropDb(db);
+}
+
+// --- Test 6c: kısmi hasar (son migration'ın bir view'ı düşürülmüş) + ledger boş → FAIL-CLOSED ---
+async function testLedgerEmptyRecoveryPartialDamage(): Promise<void> {
+  const db = "mas_radar_reset_partial_damage_test";
+  dropDb(db);
+  createDb(db);
+  psqlFile(db, path.join(ROOT, "scripts", "db", "local-bootstrap.sql"));
+  const migrationFiles = readdirSync(MIGRATIONS_DIR).filter((f) => f.endsWith(".sql")).sort();
+  for (const f of migrationFiles) psqlFile(db, path.join(MIGRATIONS_DIR, f));
+  // 0094'ün yeniden tanımladığı bir view düşürülür: şema artık ne 0093'e ne 0094'e eşit.
+  psqlSql(db, "drop view if exists public.credit_facility_utilization cascade;");
+
+  const result = runMigrate(db);
+  record("LEDGER_EMPTY_RECOVERY (kısmi hasar): migrate.ts hard-fail etti (INCONSISTENT_PARTIAL)", result.code !== 0 && /INCONSISTENT_PARTIAL/.test(result.stderr + result.stdout), `exit=${result.code}`);
+  record("LEDGER_EMPTY_RECOVERY (kısmi hasar): canlı ledger'a hiçbir satır yazılmadı", psqlSql(db, "select count(*) from public.schema_migrations;").trim() === "0");
+  record("LEDGER_EMPTY_RECOVERY (kısmi hasar): geçici referans veritabanı geride kalmadı", psqlSql("postgres", "select count(*) from pg_database where datname like 'mas_radar_recovery_tmp%';").trim() === "0");
   dropDb(db);
 }
 
@@ -650,6 +765,8 @@ async function main(): Promise<void> {
     classifyLocalOnly("testChecksumDrift", "backups/p0c-checkpoint-*.dump gerekiyor — LOCAL_PRIVATE_DATA_GATE");
   }
   await testLedgerEmptyRecovery();
+  await testLedgerEmptyRecoveryBehindHead();
+  await testLedgerEmptyRecoveryPartialDamage();
   await testClusterIdentity();
 
   console.log("\n=== Özet ===");

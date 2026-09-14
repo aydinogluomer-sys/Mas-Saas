@@ -18,7 +18,8 @@ import {
 } from "./migration-lib";
 import { backupDockerPostgres, verifyBackupTarget, type BackupResult } from "./backup-docker-postgres";
 import { ownerDatabaseUrl } from "./owner-url";
-import { readEnvLocal } from "./app-url";
+import { readEnvLocal, swapDatabase } from "./app-url";
+import { diffShapes, schemaShape, type SchemaShape } from "./schema-shape";
 import {
   CONNECTION_ENV_NAMES,
   describeEnvSource,
@@ -28,6 +29,7 @@ import {
 
 const CONTAINER = process.env.MAS_DB_CONTAINER ?? "mas-radar-pg";
 const BASELINE_PATH = path.join(process.cwd(), "scripts", "db", "legacy-baseline-0019.json");
+const BOOTSTRAP_SQL_PATH = path.join(process.cwd(), "scripts", "db", "local-bootstrap.sql");
 const ADVISORY_LOCK_SQL = "select pg_advisory_lock(hashtext('mas_nakit_radar:schema_migrations')::bigint)";
 const ADVISORY_UNLOCK_SQL = "select pg_advisory_unlock(hashtext('mas_nakit_radar:schema_migrations')::bigint)";
 
@@ -99,7 +101,9 @@ interface AnchorResult extends Anchor {
 
 interface MigrateReport {
   state: string;
-  recoveryFlavor?: "legacy" | "fresh";
+  recoveryFlavor?: "legacy" | "fresh" | "shape";
+  /** shape-flavored recovery: ledger'ı yeniden kurarken şemanın ölçülen konumu. */
+  recoveredThrough?: string;
   bootstrapped: string[];
   backfilled: string[];
   pendingApplied: string[];
@@ -331,11 +335,188 @@ async function runLedgerManagedFlow(
   };
 }
 
+/* ── CI-1 (PRE-PHASE8 CI CLOSURE): şekil-eşleştirmeli ledger kurtarma ─────────────────────
+ *
+ * ESKİ SÖZLEŞME. "Ledger boş, legacy anchor'lar (0001–0019) geçiyor → şema 0019'dadır; 0020'yi
+ * kur, 0001–0019'u manifestten doldur, 0021+'yı YENİDEN OYNAT." Bu, 0021+'nın HEAD'de duran bir
+ * şemaya karşı yeniden koşulabildiği varsayımına dayanıyordu. 0093/0094 view kolonlarını
+ * değiştirince varsayım çöktü: 0039, 0043, 0047, 0050, 0052, 0061, 0063, 0067, 0070, 0075, 0078,
+ * 0082 — on iki `create or replace view` "cannot drop columns from view" ile düşüyor. Migration
+ * dosyalarını bunun için yeniden yazmak yasak ve yanlış olurdu; kolon değiştiren bir view
+ * migration'ı normal bir şeydir.
+ *
+ * YENİ SÖZLEŞME. Şemanın nerede olduğu VARSAYILMAZ, ÖLÇÜLÜR: aynı kümede geçici bir referans
+ * veritabanı yaratılır, bootstrap + migration'lar 0001'den itibaren sırayla uygulanır ve HER
+ * migration'dan sonra `public` şemasının deterministik şekli (schema-shape.ts) alınır. Canlı
+ * veritabanının şekli hangi N'de eşleşiyorsa şema oradadır: 0001..N ledger'a yazılır (SQL
+ * yeniden oynatılmaz), N+1..HEAD normal pending olarak uygulanır. Hiçbir N eşleşmiyorsa durum
+ * INCONSISTENT_PARTIAL'dır ve hard-fail eder (fail-closed; yedekten dönülür). Şekli değiştirmeyen
+ * (yalnız veri yazan) bir migration'ın uygulanıp uygulanmadığı şekilden okunamaz — böyle bir
+ * belirsizlik N < HEAD iken hard-fail'dir, N = HEAD iken (ham kurulum) tanım gereği uygulanmıştır.
+ *
+ * Referans veritabanı yalnız bu akışta yaratılır (EMPTY / LEGACY_COMPLETE / LEDGER_MANAGED yolları
+ * ona dokunmaz), adı `_tmp` işaretlidir ve `finally` içinde düşürülür. Yedek alınmadan canlı
+ * veritabanına tek satır yazılmaz.
+ */
+interface ShapeMatch {
+  version: string;
+  ambiguousNext: boolean;
+  liveDigest: string;
+  scanned: number;
+}
+
+async function applyBootstrapAndReadShapes(
+  refClient: PoolClient,
+  diskFiles: MigrationFile[],
+  liveShape: SchemaShape,
+): Promise<{ matches: string[]; shapes: Map<string, string>; closest: { version: string; shape: SchemaShape } | null }> {
+  await refClient.query(readFileSync(BOOTSTRAP_SQL_PATH, "utf8"));
+  const matches: string[] = [];
+  const shapes = new Map<string, string>();
+  let closest: { version: string; shape: SchemaShape; distance: number } | null = null;
+  for (const f of diskFiles) {
+    await refClient.query("BEGIN");
+    try {
+      await refClient.query(f.content);
+      await refClient.query("COMMIT");
+    } catch (err) {
+      await refClient.query("ROLLBACK").catch(() => {});
+      throw new HardFailError(`LEDGER_EMPTY_RECOVERY: referans veritabanında ${f.version} uygulanamadı: ${(err as Error).message}`);
+    }
+    const shape = await schemaShape(refClient);
+    shapes.set(f.version, shape.digest);
+    if (shape.digest === liveShape.digest) matches.push(f.version);
+    const d = diffShapes(shape, liveShape, 1_000_000);
+    const distance = d.onlyInA.length + d.onlyInB.length;
+    if (closest === null || distance < closest.distance) closest = { version: f.version, shape, distance };
+  }
+  return { matches, shapes, closest: closest ? { version: closest.version, shape: closest.shape } : null };
+}
+
+async function matchLiveSchemaShape(
+  client: PoolClient,
+  diskFiles: MigrationFile[],
+  databaseUrl: string,
+): Promise<ShapeMatch> {
+  const liveShape = await schemaShape(client);
+  const refDb = `mas_radar_recovery_tmp_${process.pid}_${Date.now()}`;
+  const maint = new Pool({ connectionString: swapDatabase(databaseUrl, "postgres"), max: 1 });
+  try {
+    try {
+      await maint.query(`create database "${refDb}" template template0`);
+    } catch (err) {
+      throw new HardFailError(
+        `LEDGER_EMPTY_RECOVERY: referans veritabanı yaratılamadı (${(err as Error).message}). ` +
+          "Şekil eşleştirmesi için MIGRATION_DATABASE_URL rolünün CREATEDB yetkisi gerekir; canlı veritabanına dokunulmadı.",
+      );
+    }
+    const refPool = new Pool({ connectionString: swapDatabase(databaseUrl, refDb), max: 1 });
+    try {
+      const refClient = await refPool.connect();
+      let scan: Awaited<ReturnType<typeof applyBootstrapAndReadShapes>>;
+      try {
+        scan = await applyBootstrapAndReadShapes(refClient, diskFiles, liveShape);
+      } finally {
+        refClient.release();
+      }
+      if (scan.matches.length === 0) {
+        const c = scan.closest;
+        const d = c ? diffShapes(liveShape, c.shape) : { onlyInA: [], onlyInB: [] };
+        throw new HardFailError(
+          "LEDGER_EMPTY_RECOVERY: karışık/tutarsız durum (INCONSISTENT_PARTIAL) — canlı şema hiçbir migration adımının şekliyle eşleşmiyor; " +
+            "ledger yeniden kurulamaz, canlı veritabanına dokunulmadı. Yedekten geri dönün ya da şemayı elle inceleyin.\n" +
+            `  en yakın adım: ${c?.version ?? "?"}\n` +
+            (d.onlyInA.length ? `  yalnız canlıda: ${d.onlyInA.join(" ; ")}\n` : "") +
+            (d.onlyInB.length ? `  yalnız referansta: ${d.onlyInB.join(" ; ")}` : ""),
+        );
+      }
+      const version = scan.matches[scan.matches.length - 1];
+      const idx = diskFiles.findIndex((f) => f.version === version);
+      const next = diskFiles[idx + 1];
+      const ambiguousNext = next !== undefined && scan.shapes.get(next.version) === liveShape.digest;
+      return { version, ambiguousNext, liveDigest: liveShape.digest, scanned: diskFiles.length };
+    } finally {
+      await refPool.end().catch(() => {});
+      await maint.query(`drop database if exists "${refDb}"`).catch(() => {});
+    }
+  } finally {
+    await maint.end().catch(() => {});
+  }
+}
+
+async function runShapeRecoveryFlow(
+  client: PoolClient,
+  diskFiles: MigrationFile[],
+  manifest: LegacyBaselineEntry[],
+  backupTarget: { container: string; dbName: string; systemIdentifier: string },
+  databaseUrl: string,
+): Promise<MigrateReport> {
+  assertManifestClean(diskFiles, manifest);
+  const match = await matchLiveSchemaShape(client, diskFiles, databaseUrl);
+  const head = diskFiles[diskFiles.length - 1]?.version ?? "0000";
+  if (match.ambiguousNext) {
+    // N+1 şekli değiştirmiyor (yalnız veri yazıyor olabilir): uygulanıp uygulanmadığı şemadan
+    // okunamaz. Ledger'a "uygulandı" yazmak da, yeniden oynatmak da bir tahmin olurdu.
+    throw new HardFailError(
+      `LEDGER_EMPTY_RECOVERY: şema ${match.version}'de eşleşti ama bir sonraki migration şekli değiştirmiyor; ` +
+        "uygulanıp uygulanmadığı kanıtlanamaz (INCONSISTENT_PARTIAL). Canlı veritabanına dokunulmadı.",
+    );
+  }
+  console.log(`LEDGER_EMPTY_RECOVERY: canlı şema referansla ${match.version}'de eşleşti (HEAD ${head}); SQL yeniden oynatılmadı.`);
+
+  verifyBackupTarget({
+    container: backupTarget.container,
+    dbName: backupTarget.dbName,
+    expectedSystemIdentifier: backupTarget.systemIdentifier,
+  });
+  const backupResult = await backupDockerPostgres({
+    container: backupTarget.container,
+    dbName: backupTarget.dbName,
+    label: `migrate-${backupTarget.dbName}`,
+  });
+
+  const manifestByVersion = new Map(manifest.map((m) => [m.version, m]));
+  const recovered = diskFiles.filter((f) => f.version <= match.version);
+  await client.query("BEGIN");
+  try {
+    for (const f of recovered) {
+      const baseline = manifestByVersion.get(f.version);
+      if (baseline) {
+        await client.query(
+          "insert into public.schema_migrations(version,name,checksum,applied_by) values ($1,$2,$3,'baseline-backfill')",
+          [baseline.version, baseline.name, baseline.checksum],
+        );
+      } else {
+        await runSequentialInsert(client, f, "ledger-recovery");
+      }
+    }
+    await client.query("COMMIT");
+  } catch (err) {
+    await client.query("ROLLBACK").catch(() => {});
+    throw new HardFailError(`LEDGER_EMPTY_RECOVERY ledger yeniden kurma transaction'ı başarısız, hiçbir şey commit olmadı: ${(err as Error).message}`);
+  }
+
+  const pendingFiles = diskFiles.filter((f) => f.version > match.version);
+  const pendingApplied = await applyPendingSequentially(client, pendingFiles);
+
+  return {
+    state: "LEDGER_EMPTY_RECOVERY",
+    recoveryFlavor: "shape",
+    recoveredThrough: match.version,
+    bootstrapped: [],
+    backfilled: recovered.map((f) => f.version),
+    pendingApplied,
+    upToDate: pendingFiles.length === 0,
+    backup: { ...backupResult, systemIdentifier: backupTarget.systemIdentifier },
+  };
+}
+
 async function runLedgerEmptyRecoveryFlow(
   client: PoolClient,
   diskFiles: MigrationFile[],
   manifest: LegacyBaselineEntry[],
   backupTarget: { container: string; dbName: string; systemIdentifier: string },
+  databaseUrl: string,
 ): Promise<MigrateReport> {
   const anchors = await getAnchorResults(client);
   const allPass = anchors.every((a) => a.pass);
@@ -347,8 +528,8 @@ async function runLedgerEmptyRecoveryFlow(
   ]);
 
   if (allPass) {
-    const result = await runLegacyCompleteFlow(client, diskFiles, manifest, backupTarget);
-    return { ...result, state: "LEDGER_EMPTY_RECOVERY", recoveryFlavor: "legacy" };
+    // Legacy anchor'lar "en az 0019" der, "tam olarak nerede" demez — onu şekil eşleştirmesi ölçer.
+    return runShapeRecoveryFlow(client, diskFiles, manifest, backupTarget, databaseUrl);
   }
   if (allFail && otherRelCount === 0) {
     const result = await runEmptyFlow(client, diskFiles, manifest);
@@ -366,6 +547,7 @@ async function runMigration(
   client: PoolClient,
   diskFiles: MigrationFile[],
   backupTarget: { container: string; dbName: string; systemIdentifier: string },
+  databaseUrl: string,
 ): Promise<MigrateReport> {
   const manifest = loadLegacyBaseline();
   const ledgerExistsRes = await client.query<{ exists: boolean }>(
@@ -396,7 +578,7 @@ async function runMigration(
   const rows = rowsRes.rows;
 
   if (rows.length === 0) {
-    return runLedgerEmptyRecoveryFlow(client, diskFiles, manifest, backupTarget);
+    return runLedgerEmptyRecoveryFlow(client, diskFiles, manifest, backupTarget, databaseUrl);
   }
 
   const wellFormed = isLedgerWellFormed(rows, diskFiles);
@@ -410,7 +592,7 @@ async function runMigration(
 function printReport(report: MigrateReport, connection: { database: string; user: string; systemIdentifier: string }): void {
   console.log("\n=== Migration raporu ===");
   console.log(`db=${connection.database} user=${connection.user} system_identifier=${connection.systemIdentifier}`);
-  console.log(`state=${report.state}${report.recoveryFlavor ? ` (recovery: ${report.recoveryFlavor})` : ""}`);
+  console.log(`state=${report.state}${report.recoveryFlavor ? ` (recovery: ${report.recoveryFlavor})` : ""}${report.recoveredThrough ? ` recovered_through=${report.recoveredThrough}` : ""}`);
   if (report.bootstrapped.length) console.log(`bootstrap (gerçek çalıştırma): ${report.bootstrapped.join(", ")}`);
   if (report.backfilled.length) console.log(`backfill (yalnız ledger kaydı): ${report.backfilled.join(", ")}`);
   if (report.pendingApplied.length) console.log(`pending uygulandı: ${report.pendingApplied.join(", ")}`);
@@ -492,7 +674,7 @@ async function main(): Promise<void> {
         container: CONTAINER,
         dbName: ident.current_database,
         systemIdentifier: ident.system_identifier,
-      });
+      }, databaseUrl);
       printReport(report, {
         database: ident.current_database,
         user: ident.current_user,
