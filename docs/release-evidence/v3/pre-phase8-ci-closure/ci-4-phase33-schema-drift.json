@@ -1,0 +1,28 @@
+{
+  "ACCEPTED_CODE_SHA": "ceca39a3a60c00358d1aa90f00f9b2864237e4ec",
+  "RELEASE_SHA": "af210fd971a126c5aa3281f5a299f60b046d1d8b",
+  "branch": "ops/phase7-operations",
+  "start_head": "33ed042ab0d3dd213fbf3d3bd63de8d421dd7a6a",
+  "turn": "PRE-PHASE8 CI CLOSURE (2026-09-14)",
+  "ci_run": 34805123985,
+  "ci_sha": "b4d892c696950a1cb6c223ef37e06f5d8ac34268",
+  "result": "FAIL — verifier drift kapandı, KALAN 1 kontrol GERÇEK REGRESYON",
+  "commit": "7b8bdf8",
+  "verifier_fix": "0082 referans view'i 0094 ÖNCESİ tanımı donduruyor (tüm kurlar, foreign_currency_count yok) → EXCEPT kolon sayısı hatası. Naif taraf verifier'da satır içi, referansın şekliyle (4 bağıntılı alt sorgu → SubPlan) ama 0094 semantiğiyle; açık kolon listesi. Migration EKLENMEDİ (Phase 8 kapsamı büyümesin).",
+  "checks_strengthened": [
+    "USD/EUR PERF-FX faturaları enjekte (kur filtresi gerçekten sınanır) PASS",
+    "simetrik EXCEPT = 0 (optimize == naif, bugünkü TRY-only tanım) PASS",
+    "foreign_currency_count > 0 (ölü filtre değil) PASS",
+    "pozitif kontrol: 0082 tanımı TRY-only tanımdan ayrışıyor (2 ay) PASS"
+  ],
+  "local": "60/61 · PHASE33 VERIFY FAIL — 1 kontrol",
+  "ci": "phase33:verify FAIL — aynı 1 kontrol",
+  "remaining_failure": {
+    "check": "YENİ plan ÇOK DAHA AZ buffer okuyor",
+    "measured": "0094 view'ı 460.627 buffer; 0082 tanımı AYNI veride 7.188 buffer (64×)",
+    "root_cause": "0094 view'ı `v.currency` ve `count(v.id)` ile kapsayan indeksin (direction,status,issue_date) include(gross_amount,allocated_amount) DIŞINDAKİ kolonlara başvuruyor → index-only yol kayboldu; planner ay başına invoices_party_idx ile heap tarıyor (Nested Loop 37 ay × 12.298 satır). Süre yine naif sorgudan 4,5× hızlı ama 0082'nin optimizasyonu (heap'e gitmeme) fiilen geri alınmış.",
+    "classification": "REAL_REGRESSION (Phase 2 / 0094 yan etkisi; performans, doğruluk değil)",
+    "validated_fix_shape_disposable_only": "index: on invoices (issue_date) include (direction, status, currency, gross_amount, allocated_amount) + view'da count(v.id) → count(*) filter (…) ⇒ 3.010 buffer (ölçüldü, harcanabilir DB; canonical view/indeks geri alındı, hiçbir migration yazılmadı)",
+    "why_not_done": "Yeni migration (0095: indeks + view yeniden tanımı) kabul edilmiş şema kümesini (0088–0094) ve Phase 8 cutover kapsamını büyütür → kullanıcı kararı"
+  }
+}

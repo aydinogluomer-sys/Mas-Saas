@@ -1,0 +1,40 @@
+{
+  "ACCEPTED_CODE_SHA": "ceca39a3a60c00358d1aa90f00f9b2864237e4ec",
+  "RELEASE_SHA": "af210fd971a126c5aa3281f5a299f60b046d1d8b",
+  "branch": "ops/phase7-operations",
+  "start_head": "33ed042ab0d3dd213fbf3d3bd63de8d421dd7a6a",
+  "turn": "PRE-PHASE8 CI CLOSURE (2026-09-14)",
+  "ci_run": 34805123985,
+  "ci_sha": "b4d892c696950a1cb6c223ef37e06f5d8ac34268",
+  "typecheck": "PASS (exit 0)",
+  "lint": "PASS (exit 0)",
+  "unit": {
+    "run1": "1687/1688 (tests/writer-surface.test.ts alt-süreç testi 5 s zaman aşımı)",
+    "run2": "1686/1688 (+ tests/dev-reset-safety.test.ts alt-süreç testi zaman aşımı)",
+    "isolated": "iki dosya tek başına 21/21 PASS",
+    "cause": "makine bellek baskısı (RAM boş 579 MB / 8 GB, Docker VM) — alt süreç (tsx/bash) başlatan iki testin 5 s varsayılan zaman aşımı; koda bağlı değil",
+    "ci_static_job": "unit tests PASS (static job success)"
+  },
+  "build": "PASS — BUILD_ID = b4d892c…, 'Compiled successfully in 3.8min' (harcanabilir DB ile; .next-ci-closure silindi)",
+  "db_migrate_verify": "31/31 PASS · 3 SKIP-LOCAL",
+  "phase18": "13/13",
+  "phase19": "66/66",
+  "phase33": "60/61 (kalan 1 = gerçek regresyon, ci-4)",
+  "v2_parties_policy": "19/19",
+  "runtime_role_security_ci": "success (RLS 29/29, export-leakage 36/36, security matrix)",
+  "e2e_authz_ci": "success",
+  "legacy_semantic_smoke_ci": "success",
+  "build_ci": "success",
+  "static_ci": "success",
+  "ci_jobs": {
+    "static": "success",
+    "build": "success",
+    "runtime-role-security": "success",
+    "e2e-authz": "success",
+    "legacy-semantic-smoke": "success",
+    "database-migration": "failure (CI-6 perf gate; migrate-verify adımı PASS)",
+    "phase-verifies": "failure (yalnız phase33 buffer — CI-4 gerçek regresyon)",
+    "interaction-gate": "failure (V2 akışı 7/8 — CI-7)"
+  },
+  "FULL_CI": "FAIL"
+}

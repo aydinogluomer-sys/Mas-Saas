@@ -1,0 +1,26 @@
+{
+  "ACCEPTED_CODE_SHA": "ceca39a3a60c00358d1aa90f00f9b2864237e4ec",
+  "RELEASE_SHA": "af210fd971a126c5aa3281f5a299f60b046d1d8b",
+  "branch": "ops/phase7-operations",
+  "start_head": "33ed042ab0d3dd213fbf3d3bd63de8d421dd7a6a",
+  "turn": "PRE-PHASE8 CI CLOSURE (2026-09-14)",
+  "ci_run": 34805123985,
+  "ci_sha": "b4d892c696950a1cb6c223ef37e06f5d8ac34268",
+  "result": "FALSE_POSITIVE_FIXED",
+  "commit": "1877ffb",
+  "call_path_answers": {
+    "1_parse_writes_parties": "NO — parser.ts saf; DB'ye gitmez",
+    "2_preview_writes": "NO — previewImport → mapWorkbook(dryRun:true) yalnız lookupExternalKey SELECT; yazıcılara girmeden döner (statik + DB'ye karşı ölçüldü: tüm public tablo sayımları aynı, parties n_tup_ins değişmedi)",
+    "3_review_writes": "NO — review önizleme raporunun UI'da okunmasıdır; sunucu adımı yok (ölçüldü)",
+    "4_party_write_before_ONAYLA": "NO — parties'e ulaşan tek yol FAMILY_WRITERS → resolveParty; yalnız mapWorkbook(dryRun:false) çağırır, onu da yalnız confirmImport çağırır",
+    "5_confirm_write_function": "confirmImport (service.ts) → begin → mapWorkbook(dryRun:false) → FAMILY_WRITERS (06_BANKA_HESAPLARI/03_KREDILER/01_ODEMELER/…) → resolveParty (mapper.ts: select by (normalized_name, party_type), yoksa insert … on conflict do update set name=name returning id) → commit",
+    "6_rbac_points": "aksiyon: requireSession + canPerform(role,'import_workbook_v2') (viewer/approver=false); service: forbiddenSheetsFor(can()) SHA'dan ve DB'den ÖNCE (operator referans sayfalarında FORBIDDEN_SHEETS); DB: rol RLS/grant (viewer → WRITE_FAILED: 'new row violates row-level security policy for table source_workbooks' → rollback)",
+    "7_rollback_covers_party_write": "YES — STALE_BINDING ile düşen tx'te önce yaratılan banka/tedarikçi partileri geri alındı (parties 0, tüm sayımlar aynı)",
+    "8_replay_duplicates": "NO — ikinci ONAYLA: parties 9 → 9; (normalized_name, party_type) tekil"
+  },
+  "verifier_change": "phase19-verify: allowlist iki dosya (engine.ts, mapper.ts) + previewImport dryRun:true ve mapper dryRun dalı stageWorkbook öncesinde dönüyor statik kontrolleri + runPartiesPolicyProof aynı DB'de (19 kontrol)",
+  "new_test": "scripts/import/v2-parties-policy.ts (pnpm import:parties-policy:v2) — preview=no write · review=no write · confirm=allowed write · unauthorized confirm=rejected (matris + DB rolü + canPerform) · failed tx=no orphan party · replay=no duplicate",
+  "local": "V2 PARTIES POLICY 19/19 · PHASE19 VERIFY 66/66 ALL PASS",
+  "ci": "phase19:verify ALL PASS (phase-verifies job içinde)",
+  "product_code_changed": false
+}
