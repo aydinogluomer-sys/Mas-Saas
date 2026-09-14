@@ -140,21 +140,122 @@ async function main(): Promise<void> {
     `fatura=${vol[0].inv} banka=${vol[0].btx} taksit=${vol[0].pi}`);
 
   /* ── 1. THE MEASURED OPTIMISATION ───────────────────────────────────────────────────── */
-  const FAST = "select * from public.working_capital_trend";
-  const REF = "select * from public.working_capital_trend_reference";
+  //
+  // CI-4 (PRE-PHASE8 CI CLOSURE). The 0082 reference view froze the PRE-0094 business definition
+  // (every currency summed, no foreign count). 0094 changed the definition on purpose — DSO/DPO are
+  // TRY-only and the view gained `foreign_currency_count` — so `select * … except select *`
+  // stopped being a comparison of the same question ("each EXCEPT query must have the same
+  // number of columns"). The invariant this gate exists to defend is unchanged: the OPTIMISED
+  // query must return exactly what the NAIVE query returns UNDER TODAY'S DEFINITION. The naive
+  // side is therefore written here, inline, in the reference's shape (four correlated subqueries
+  // per month → SubPlan in the plan) but with 0094's semantics, and the column list is explicit.
+  // A migration was deliberately NOT added: the reference view is a verification artifact, not
+  // schema the product reads, and Phase 8's cutover scope (0088–0094) must not grow for a gate.
+  const WCT_COLUMNS = "period_start, receivables_open, payables_open, dso_days, dpo_days, dio_days, cash_cycle_excluding_inventory, foreign_currency_count";
+  const FAST = `select ${WCT_COLUMNS} from public.working_capital_trend`;
+  const REF = `
+    with months as (
+      select distinct date_trunc('month', issue_date)::date as period_start
+      from public.invoices
+      where issue_date is not null and status <> 'cancelled'
+    ),
+    per_month as (
+      select
+        m.period_start,
+        (select coalesce(sum(v.gross_amount - coalesce(v.allocated_amount, 0)), 0)
+         from public.invoices v
+         where v.direction = 'sales' and v.status in ('open', 'partial') and v.currency = 'TRY'
+           and v.issue_date is not null
+           and v.issue_date <= (m.period_start + interval '1 month' - interval '1 day')) as receivables_open,
+        (select coalesce(sum(v.gross_amount - coalesce(v.allocated_amount, 0)), 0)
+         from public.invoices v
+         where v.direction = 'purchase' and v.status in ('open', 'partial') and v.currency = 'TRY'
+           and v.issue_date is not null
+           and v.issue_date <= (m.period_start + interval '1 month' - interval '1 day')) as payables_open,
+        (select coalesce(sum(v.gross_amount), 0)
+         from public.invoices v
+         where v.direction = 'sales' and v.status <> 'cancelled' and v.currency = 'TRY'
+           and v.issue_date is not null
+           and v.issue_date > (m.period_start - interval '365 days')
+           and v.issue_date <= (m.period_start + interval '1 month' - interval '1 day')) as sales_365,
+        (select coalesce(sum(v.gross_amount), 0)
+         from public.invoices v
+         where v.direction = 'purchase' and v.status <> 'cancelled' and v.currency = 'TRY'
+           and v.issue_date is not null
+           and v.issue_date > (m.period_start - interval '365 days')
+           and v.issue_date <= (m.period_start + interval '1 month' - interval '1 day')) as purchases_365,
+        (select count(*)
+         from public.invoices v
+         where v.status <> 'cancelled' and v.currency <> 'TRY'
+           and v.issue_date is not null
+           and v.issue_date <= (m.period_start + interval '1 month' - interval '1 day')) as foreign_currency_count
+      from months m
+    )
+    select
+      period_start,
+      receivables_open,
+      payables_open,
+      case when sales_365 = 0 then null
+           else round(receivables_open / (sales_365 / 365.0), 1) end as dso_days,
+      case when purchases_365 = 0 then null
+           else round(payables_open / (purchases_365 / 365.0), 1) end as dpo_days,
+      null::numeric                                                   as dio_days,
+      case when sales_365 = 0 or purchases_365 = 0 then null
+           else round(receivables_open / (sales_365 / 365.0)
+                    - payables_open / (purchases_365 / 365.0), 1) end as cash_cycle_excluding_inventory,
+      foreign_currency_count
+    from per_month
+    order by period_start`;
+
+  // 1a-0. The TRY-only clause must actually be EXERCISED, or the comparison would pass on an
+  // all-TRY fixture no matter what the currency filter did. A small deterministic set of USD/EUR
+  // invoices (PERF-FX-…, cleaned up with the rest of the PERF-% volume) goes into the newest
+  // months first.
+  await pool.query(`
+    insert into public.invoices (id, direction, invoice_no, party_id, issue_date, due_date, currency,
+                                 net_amount, tax_amount, gross_amount, status)
+    select md5('perf-fx-' || i)::uuid,
+           case when i % 2 = 0 then 'sales' else 'purchase' end,
+           'PERF-FX-' || i,
+           (select party_id from public.invoices where invoice_no like 'PERF-%' order by invoice_no limit 1),
+           (current_date - (i * 7)::int),
+           (current_date - (i * 7)::int + 45),
+           (array['USD','EUR'])[1 + (i % 2)],
+           1000::numeric * i, 200::numeric * i, 1200::numeric * i,
+           'open'
+    from generate_series(1, 6) i
+    on conflict do nothing`);
+  await pool.query("vacuum analyze public.invoices");
+  const fx = await q(`select count(*)::int n from public.invoices where invoice_no like 'PERF-FX-%' and currency <> 'TRY'`);
+  record("TRY-dışı kontrol satırları hacimde (USD/EUR fatura enjekte edildi — kur filtresi gerçekten sınanıyor)",
+    Number(fx[0].n) === 6, `${fx[0].n} TRY-dışı fatura`);
 
   // 1a. Equivalence FIRST. A faster wrong answer is not a win.
   const diff = await q(`
     select count(*)::int n from (
-      (select * from public.working_capital_trend
-       except select * from public.working_capital_trend_reference)
+      ((${FAST}) except (${REF}))
       union all
-      (select * from public.working_capital_trend_reference
-       except select * from public.working_capital_trend)
+      ((${REF}) except (${FAST}))
     ) d`);
-  record("OPTİMİZASYON HİÇBİR RAKAMI DEĞİŞTİRMİYOR (simetrik EXCEPT = 0 satır)",
+  record("OPTİMİZASYON HİÇBİR RAKAMI DEĞİŞTİRMİYOR (bugünkü TRY-only tanım, açık kolon listesi, simetrik EXCEPT = 0 satır)",
     Number(diff[0].n) === 0,
     `fark satırı: ${diff[0].n} — DSO/DPO gerçek karar rakamları, 'herhalde aynıdır' yetmez`);
+
+  // 1a-1. The optimised view really counts the foreign rows (the definition, not a dead filter).
+  const fxSeen = await q(`select max(foreign_currency_count)::int n from public.working_capital_trend`);
+  record("optimize view TRY-dışı faturaları SAYIYOR (foreign_currency_count > 0) — kur filtresi ölü kod değil",
+    Number(fxSeen[0].n) >= 6, `max foreign_currency_count=${fxSeen[0].n}`);
+
+  // 1a-2. Positive control on the comparison itself: against the FROZEN pre-0094 definition
+  // (0082 reference view: all currencies summed) the numbers MUST differ once non-TRY rows exist.
+  // If they did not, the EXCEPT above would be comparing nothing.
+  const legacyDiff = await q(`
+    select count(*)::int n from (
+      (select period_start, receivables_open, payables_open from public.working_capital_trend
+       except select period_start, receivables_open, payables_open from public.working_capital_trend_reference)
+    ) d`);
+  record("pozitif kontrol: 0082'nin dondurulmuş (tüm kurlar toplanır) tanımı TRY-only tanımdan AYRIŞIYOR — karşılaştırma totoloji değil",
+    Number(legacyDiff[0].n) > 0, `eski tanımla farklı ay sayısı: ${legacyDiff[0].n}`);
 
   const rowCount = await q(`select count(*)::int n from public.working_capital_trend`);
   record("karşılaştırma BOŞ KÜMEDE yapılmadı (view gerçekten satır döndürüyor)",
