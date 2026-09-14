@@ -1,0 +1,9 @@
+{
+  "turn": "PRE-PHASE8 CI CLOSURE (2026-09-14)",
+  "result": "NEW FINDING — intermittent (b4d892c koşusunda geçti, ad6d4ce koşusunda düştü), P2",
+  "job": "e2e-authz → Phase 17-38 route authorization E2E: 92/93",
+  "test": "tests/visual/phase17-38-routes.spec.ts:235 'rol DB'de değişince AYNI oturum çerezi bir sonraki istekte YENİ rolü kullanıyor'",
+  "error": "strict mode violation: locator('[data-testid=route-access-denied]') resolved to 2 elements",
+  "diagnosis": "Rol düşürülünce sayfa iki ayrı 'route-access-denied' öğesi render etmiş (olasılıkla layout ve sayfa sınırlarının ikisi de reddi çizdi; ya da geçiş sırasında eski+yeni ağaç aynı anda). Yetki KONTROLÜ çalışıyor (red var), sorun ya çift render ya da testin katı locator'ı.",
+  "fix_shape": "önce ürün: reddin tek yerde render edildiğini doğrula; değilse tek sınıra indir; test .first() ile gevşetilmez (çift render gerçek bir belirtiyse)"
+}

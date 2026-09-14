@@ -15,7 +15,8 @@ CI RUN            = 34805123985 (b4d892c)
 | CI-4 PHASE33 SCHEMA | **FAIL** — verifier drift'i kapandı (EXCEPT, TRY-only naif referans, FX pozitif kontrol); kalan 1 kontrol GERÇEK REGRESYON: 0094 view'ı 0082'nin index-only optimizasyonunu geri almış (460.627 vs 7.188 buffer). Doğrulanmış düzeltme = yeni migration (indeks + view) → kullanıcı kararı | `7b8bdf8` | ci-4 |
 | CI-5 INTERACTION CI CONTRACT | **PASS** (sözleşme) — kapsam kapısı `SKIPPED — MANUAL ARTIFACT GATE`, otomatik V2 akışı her koşuda; ama o akış CI'da 7/8 → CI-7 | `b4d892c` | ci-5 |
 | CI-6 (yeni) indekssiz FK | 0088 `import_external_keys` iki FK indekssiz → perf ratchet 116 > 115 | — | ci-6 |
-| CI-7 (yeni) V2 ONAYLA askıda | CI'da sonuç paneli 180 s'de gelmedi (7/8); pre-merge'de bir kez yerelde görülmüştü → gerçek akış sorunu, kök neden açık | — | ci-7 |
+| CI-7 (yeni) V2 ONAYLA askıda | **KÖK NEDEN BULUNDU (istemci tarafı)**: CI trace'i sunucunun 0,57 s'de `phase:imported` (workbookId+sha) döndürdüğünü, istemcinin bunu hiç uygulamayıp 180 s pending kaldığını gösteriyor; tek fark confirm'in `revalidatePath` çağırması (x-action-revalidated [[],1,0]). useActionState + aynı yanıtta router yenilemesi yarışı — ürün kodu düzeltmesi gerekir (DUR/raporla) | `ad6d4ce` (tanı) | ci-7 |
+| CI-8 (yeni) e2e-authz katı locator | `route-access-denied` 2 öğe (92/93, aralıklı) — çift render ya da katı locator, P2 | — | ci-8 |
 
 ```text
 CI_1_EMPTY_LEDGER_RECOVERY = PASS
@@ -29,9 +30,10 @@ HISTORICAL_MIGRATIONS_REWRITTEN = NO
 REAL_DB_MIGRATIONS_APPLIED = 0 · REAL_DB_V2_IMPORTS = 0 · REAL_DB_DDL = 0 · REAL_DB_DELETE = 0
 PHASE7_STATUS              = PASS / CLOSED
 OPS_RELEASE_INTEGRATION_READY = NO  (CI-4, CI-6 şema kararı; CI-7 akış hatası)
-READY_FOR_M1_M8            = NO  (CI-7 V2 ONAYLA belirsizliği el kabulünü kirletir)
+READY_FOR_M1_M8            = NO  (CI-7: ONAYLA sonrası ekran sonsuza kadar 'YAZILIYOR' kalabiliyor — import başarılı olsa da)
 READY_FOR_PHASE8           = NO
 ```
 
-Sonraki kod turu için önerilen sıra: CI-7 kök neden (aksiyon: confirm sonrası `refreshMetricSnapshots` beklemesi şüpheli) →
-0095 migration kararı (CI-4 indeks+view, CI-6 iki FK indeksi) → CI yeşil → release entegrasyon kararı.
+Sonraki kod turu için önerilen sıra: CI-7 düzeltmesi (confirmV2Action'dan mevcut sayfanın `revalidatePath`'ini çıkar, istemci `router.refresh()`; 5× ardışık kanıt) →
+0095 migration kararı (`0095-CANDIDATE-not-applied.sql`: CI-4 indeks+view, CI-6 iki FK indeksi; harcanabilir DB'de phase33 buffer 3.884 vs 43.398 ve perf-gate 10/10 doğrulandı; phase33'ün indeks-adı kontrolü de yeni indeksi tanımalı) →
+CI-8 çift red render'ı → CI yeşil → release entegrasyon kararı.
