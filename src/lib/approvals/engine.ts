@@ -17,8 +17,6 @@ import { DomainError } from "@/lib/domain-error";
 import { intOrNull, moneyOrNull } from "@/lib/money";
 import { parseOrThrow } from "@/lib/validation";
 import { firingRules, type ApprovalRuleConfig, type RuleInput } from "./rules";
-import { cache } from "@/lib/cache/engine";
-import { CACHE_TAGS } from "@/lib/cache/tags";
 
 /* ── schemas ──────────────────────────────────────────────────────────────────────────── */
 
@@ -225,7 +223,6 @@ export async function decideApproval(pool: Pool, raw: unknown, actorId: string):
       },
     });
     await client.query("commit");
-    await cache.invalidateTags([CACHE_TAGS.CONTROLS, CACHE_TAGS.CFO_BRIEFING, CACHE_TAGS.PAYMENTS]);
   } catch (e) {
     await client.query("rollback");
     throw e;

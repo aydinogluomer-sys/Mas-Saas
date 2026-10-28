@@ -11,8 +11,6 @@ import { audit } from "@/lib/audit";
 import { DomainError } from "@/lib/domain-error";
 import { moneyOrNull, intOrNull } from "@/lib/money";
 import { parseOrThrow } from "@/lib/validation";
-import { cache } from "@/lib/cache/engine";
-import { CACHE_TAGS } from "@/lib/cache/tags";
 import {
   bufferDaysFloor, effectiveFloor, liquidityHorizons, reconciliationVerdict,
   type DatedFlow, type LiquidityHorizon, type ReconciliationStatus,
@@ -40,20 +38,14 @@ export interface TreasuryPolicy {
 }
 
 export async function loadPolicies(pool: Pool): Promise<TreasuryPolicy[]> {
-  return cache.withCache(
-    "treasury:policies",
-    async () => {
-      const r = await pool.query(
-        `select id, code, description, policy_kind, currency, threshold_amount, threshold_days, is_active
-         from public.treasury_policies order by policy_kind, currency, code`);
-      return r.rows.map((x) => ({
-        id: x.id, code: x.code, description: x.description, policyKind: x.policy_kind,
-        currency: x.currency, thresholdAmount: moneyOrNull(x.threshold_amount),
-        thresholdDays: intOrNull(x.threshold_days), isActive: Boolean(x.is_active),
-      }));
-    },
-    { ttlSeconds: 120, tags: [CACHE_TAGS.TREASURY] }
-  );
+  const r = await pool.query(
+    `select id, code, description, policy_kind, currency, threshold_amount, threshold_days, is_active
+     from public.treasury_policies order by policy_kind, currency, code`);
+  return r.rows.map((x) => ({
+    id: x.id, code: x.code, description: x.description, policyKind: x.policy_kind,
+    currency: x.currency, thresholdAmount: moneyOrNull(x.threshold_amount),
+    thresholdDays: intOrNull(x.threshold_days), isActive: Boolean(x.is_active),
+  }));
 }
 
 /**
@@ -120,84 +112,67 @@ export async function updatePolicy(pool: Pool, raw: unknown, actorId: string): P
 /* ── reads ────────────────────────────────────────────────────────────────────────────── */
 
 export async function loadCashPositions(pool: Pool) {
-  return cache.withCache(
-    "treasury:cashPositions",
-    async () => {
-      const r = await pool.query(
-        `select cash_account_id, account_name, currency, bank_name, iban,
-                stated_balance, blocked_balance, overdraft_limit, balance_as_of,
-                derived_balance, movement_count, last_movement_date, stated_minus_derived
-         from public.bank_cash_position
-         where is_active
-         order by currency, account_name`);
-      return r.rows.map((x) => ({
-        cashAccountId: x.cash_account_id,
-        accountName: x.account_name,
-        currency: x.currency,
-        bankName: x.bank_name,
-        iban: x.iban,
-        statedBalance: moneyOrNull(x.stated_balance),
-        blockedBalance: moneyOrNull(x.blocked_balance),
-        overdraftLimit: moneyOrNull(x.overdraft_limit),
-        derivedBalance: moneyOrNull(x.derived_balance),
-        movementCount: Number(x.movement_count),
-        lastMovementDate: x.last_movement_date ? String(x.last_movement_date).slice(0, 10) : null,
-        statedMinusDerived: moneyOrNull(x.stated_minus_derived),
-      }));
-    },
-    { ttlSeconds: 60, tags: [CACHE_TAGS.TREASURY, CACHE_TAGS.BANK_ACCOUNTS] }
-  );
+  const r = await pool.query(
+    `select cash_account_id, account_name, currency, bank_name, iban,
+            stated_balance, blocked_balance, overdraft_limit, balance_as_of,
+            derived_balance, movement_count, last_movement_date, stated_minus_derived
+     from public.bank_cash_position
+     where is_active
+     order by currency, account_name`);
+  return r.rows.map((x) => ({
+    cashAccountId: x.cash_account_id,
+    accountName: x.account_name,
+    currency: x.currency,
+    bankName: x.bank_name,
+    iban: x.iban,
+    statedBalance: moneyOrNull(x.stated_balance),
+    blockedBalance: moneyOrNull(x.blocked_balance),
+    overdraftLimit: moneyOrNull(x.overdraft_limit),
+    derivedBalance: moneyOrNull(x.derived_balance),
+    movementCount: Number(x.movement_count),
+    lastMovementDate: x.last_movement_date ? String(x.last_movement_date).slice(0, 10) : null,
+    // Kept as its own field rather than folded into one "balance": the gap is information.
+    statedMinusDerived: moneyOrNull(x.stated_minus_derived),
+  }));
 }
 
 export async function loadPositionSummary(pool: Pool) {
-  return cache.withCache(
-    "treasury:positionSummary",
-    async () => {
-      const r = await pool.query(
-        `select currency, account_count, total_derived_balance, total_stated_balance,
-                total_blocked, total_overdraft_limit, available_now, available_with_overdraft,
-                accounts_with_gap
-         from public.treasury_position_summary order by currency`);
-      return r.rows.map((x) => ({
-        currency: x.currency,
-        accountCount: Number(x.account_count),
-        totalDerived: moneyOrNull(x.total_derived_balance),
-        totalStated: moneyOrNull(x.total_stated_balance),
-        totalBlocked: moneyOrNull(x.total_blocked),
-        totalOverdraftLimit: moneyOrNull(x.total_overdraft_limit),
-        availableNow: moneyOrNull(x.available_now),
-        availableWithOverdraft: moneyOrNull(x.available_with_overdraft),
-        accountsWithGap: Number(x.accounts_with_gap),
-      }));
-    },
-    { ttlSeconds: 60, tags: [CACHE_TAGS.TREASURY, CACHE_TAGS.BANK_ACCOUNTS] }
-  );
+  const r = await pool.query(
+    `select currency, account_count, total_derived_balance, total_stated_balance,
+            total_blocked, total_overdraft_limit, available_now, available_with_overdraft,
+            accounts_with_gap
+     from public.treasury_position_summary order by currency`);
+  return r.rows.map((x) => ({
+    currency: x.currency,
+    accountCount: Number(x.account_count),
+    totalDerived: moneyOrNull(x.total_derived_balance),
+    totalStated: moneyOrNull(x.total_stated_balance),
+    totalBlocked: moneyOrNull(x.total_blocked),
+    totalOverdraftLimit: moneyOrNull(x.total_overdraft_limit),
+    availableNow: moneyOrNull(x.available_now),
+    availableWithOverdraft: moneyOrNull(x.available_with_overdraft),
+    accountsWithGap: Number(x.accounts_with_gap),
+  }));
 }
 
 export async function loadLiquidityGap(pool: Pool) {
-  return cache.withCache(
-    "treasury:liquidityGap",
-    async () => {
-      const r = await pool.query(
-        `select horizon_days, currency, available_now, contracted_net_flow, expected_net_flow,
-                projected_contracted, projected_expected, min_cash_floor, financing_need, breaches_floor
-         from public.treasury_liquidity_gap
-         order by currency, horizon_days`);
-      return r.rows.map((x) => ({
-        horizonDays: Number(x.horizon_days),
-        currency: x.currency,
-        availableNow: moneyOrNull(x.available_now),
-        contractedNetFlow: moneyOrNull(x.contracted_net_flow),
-        expectedNetFlow: moneyOrNull(x.expected_net_flow),
-        projectedContracted: moneyOrNull(x.projected_contracted),
-        projectedExpected: moneyOrNull(x.projected_expected),
-        minCashFloor: moneyOrNull(x.min_cash_floor),
-        financingNeed: moneyOrNull(x.financing_need),
-        breachesFloor: Boolean(x.breaches_floor),
-      }));
-    },
-    { ttlSeconds: 60, tags: [CACHE_TAGS.TREASURY, CACHE_TAGS.CASHFLOW] }
-  );
+  const r = await pool.query(
+    `select horizon_days, currency, available_now, contracted_net_flow, expected_net_flow,
+            projected_contracted, projected_expected, min_cash_floor, financing_need, breaches_floor
+     from public.treasury_liquidity_gap
+     order by currency, horizon_days`);
+  return r.rows.map((x) => ({
+    horizonDays: Number(x.horizon_days),
+    currency: x.currency,
+    availableNow: moneyOrNull(x.available_now),
+    contractedNetFlow: moneyOrNull(x.contracted_net_flow),
+    expectedNetFlow: moneyOrNull(x.expected_net_flow),
+    projectedContracted: moneyOrNull(x.projected_contracted),
+    projectedExpected: moneyOrNull(x.projected_expected),
+    minCashFloor: moneyOrNull(x.min_cash_floor),
+    financingNeed: moneyOrNull(x.financing_need),
+    breachesFloor: Boolean(x.breaches_floor),
+  }));
 }
 
 export interface ReconciliationRow {
@@ -217,30 +192,24 @@ export interface ReconciliationRow {
  * gate would catch it — that is the point of computing it twice from one source of numbers.
  */
 export async function loadReconciliation(pool: Pool): Promise<ReconciliationRow[]> {
-  return cache.withCache(
-    "treasury:reconciliation",
-    async () => {
-      const r = await pool.query(
-        `select to_char(month_start,'YYYY-MM-DD') as month_start, currency,
-                cashflow_closing, treasury_closing
-         from public.treasury_cashflow_reconciliation
-         order by month_start`);
-      return r.rows.map((x) => {
-        const cashflow = moneyOrNull(x.cashflow_closing);
-        const treasury = moneyOrNull(x.treasury_closing);
-        const verdict = reconciliationVerdict(cashflow, treasury);
-        return {
-          monthStart: x.month_start,
-          currency: x.currency,
-          cashflowClosing: cashflow,
-          treasuryClosing: treasury,
-          difference: verdict.difference,
-          status: verdict.status,
-        };
-      });
-    },
-    { ttlSeconds: 60, tags: [CACHE_TAGS.TREASURY, CACHE_TAGS.CASHFLOW] }
-  );
+  const r = await pool.query(
+    `select to_char(month_start,'YYYY-MM-DD') as month_start, currency,
+            cashflow_closing, treasury_closing
+     from public.treasury_cashflow_reconciliation
+     order by month_start`);
+  return r.rows.map((x) => {
+    const cashflow = moneyOrNull(x.cashflow_closing);
+    const treasury = moneyOrNull(x.treasury_closing);
+    const verdict = reconciliationVerdict(cashflow, treasury);
+    return {
+      monthStart: x.month_start,
+      currency: x.currency,
+      cashflowClosing: cashflow,
+      treasuryClosing: treasury,
+      difference: verdict.difference,
+      status: verdict.status,
+    };
+  });
 }
 
 /**

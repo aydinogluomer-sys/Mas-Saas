@@ -1,6 +1,4 @@
 import { getPool } from "@/lib/db";
-import { cache } from "@/lib/cache/engine";
-import { CACHE_TAGS } from "@/lib/cache/tags";
 import { loadExposureSummary, loadLatestRates } from "@/lib/fx/engine";
 import { STRESS_BANDS } from "@/lib/fx/rules";
 import { Badge } from "@/components/ui/badge";
@@ -20,26 +18,17 @@ export default async function FxPage({
   if (denied) return denied;
   const sp = await searchParams;
   const pool = getPool();
-  const [summary, rates, positionsRows] = await cache.withCache(
-    "finance:fx:data",
-    async () => {
-      const [sRes, rRes, pRes] = await Promise.all([
-        loadExposureSummary(pool),
-        loadLatestRates(pool),
-        pool.query(
-          `select position_id, currency, position_kind, amount_fx, entry_rate, current_rate,
-                  book_value_try, current_value_try, unrealized_gain_loss,
-                  stress_up_5, stress_down_5, stress_up_10, stress_down_10,
-                  stress_up_20, stress_down_20, worst_case_20_delta
-           from public.fx_position_revaluation
-           order by currency, position_kind`),
-      ]);
-      return [sRes, rRes, pRes.rows] as const;
-    },
-    { ttlSeconds: 60, tags: [CACHE_TAGS.FX_RATES] }
-  );
-
-  const positions = { rows: positionsRows };
+  const [summary, rates, positions] = await Promise.all([
+    loadExposureSummary(pool),
+    loadLatestRates(pool),
+    pool.query(
+      `select position_id, currency, position_kind, amount_fx, entry_rate, current_rate,
+              book_value_try, current_value_try, unrealized_gain_loss,
+              stress_up_5, stress_down_5, stress_up_10, stress_down_10,
+              stress_up_20, stress_down_20, worst_case_20_delta
+       from public.fx_position_revaluation
+       order by currency, position_kind`),
+  ]);
 
   const unpriced = summary.reduce((s, r) => s + r.positionsWithoutRate, 0);
   const netGainLoss = summary.reduce((s, r) => s + (r.netUnrealizedGainLoss ?? 0), 0);

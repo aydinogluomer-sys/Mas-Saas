@@ -1,5 +1,4 @@
 import { getPool } from "@/lib/db";
-import { cache } from "@/lib/cache/engine";
 import { Panel } from "@/components/ui/panel";
 import { Badge, type Tone } from "@/components/ui/badge";
 import { KpiCard, PageHeader, TableShell } from "@/components/ui/shell";
@@ -38,12 +37,10 @@ export default async function SecurityPage() {
   const admin = await requireAdmin();
   const pool = getPool();
   const [counts, users] = await Promise.all([
-    cache.withCache("users:counts", () =>
-      pool.query<{ active_users: number; admin_users: number }>(
-        `select count(*) filter (where is_active)::int as active_users,
-                count(*) filter (where is_active and role = 'admin')::int as admin_users
-           from public.users`,
-      ),
+    pool.query<{ active_users: number; admin_users: number }>(
+      `select count(*) filter (where is_active)::int as active_users,
+              count(*) filter (where is_active and role = 'admin')::int as admin_users
+         from public.users`,
     ),
     listUsers(pool),
   ]);

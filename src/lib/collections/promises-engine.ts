@@ -25,8 +25,6 @@ import { audit } from "@/lib/audit";
 import { DomainError } from "@/lib/domain-error";
 import { moneyOrNull } from "@/lib/money";
 import { parseOrThrow } from "@/lib/validation";
-import { cache } from "@/lib/cache/engine";
-import { CACHE_TAGS } from "@/lib/cache/tags";
 import {
   brokenPromiseSeverity, brokenPromiseTitle, canTransition, daysLate,
   PROMISE_STATUSES, type PromiseStatus,
@@ -263,80 +261,63 @@ export interface CollectionScoreRow {
 }
 
 export async function loadCollectionScores(pool: Pool, limit = 100): Promise<CollectionScoreRow[]> {
-  return cache.withCache(
-    `collections:scores:${limit}`,
-    async () => {
-      const res = await pool.query(
-        `select party_id, party_name, collection_score, score_band, score_reasons,
-                open_receivable_amount, overdue_amount,
-                promise_pending_count, promise_broken_count, promise_kept_ratio
-         from public.customer_collection_score
-         order by collection_score asc, overdue_amount desc nulls last, party_name asc
-         limit $1`, [limit]);
-      return res.rows.map((r) => ({
-        partyId: r.party_id,
-        partyName: r.party_name,
-        collectionScore: Number(r.collection_score),
-        scoreBand: r.score_band,
-        scoreReasons: (r.score_reasons ?? []) as string[],
-        openReceivableAmount: moneyOrNull(r.open_receivable_amount),
-        overdueAmount: moneyOrNull(r.overdue_amount),
-        promisePendingCount: Number(r.promise_pending_count),
-        promiseBrokenCount: Number(r.promise_broken_count),
-        promiseKeptRatio: r.promise_kept_ratio == null ? null : Number(r.promise_kept_ratio),
-      }));
-    },
-    { ttlSeconds: 60, tags: [CACHE_TAGS.COLLECTIONS] }
-  );
+  const res = await pool.query(
+    `select party_id, party_name, collection_score, score_band, score_reasons,
+            open_receivable_amount, overdue_amount,
+            promise_pending_count, promise_broken_count, promise_kept_ratio
+     from public.customer_collection_score
+     -- Worst first: this list exists to be worked from the top.
+     order by collection_score asc, overdue_amount desc nulls last, party_name asc
+     limit $1`, [limit]);
+  return res.rows.map((r) => ({
+    partyId: r.party_id,
+    partyName: r.party_name,
+    collectionScore: Number(r.collection_score),
+    scoreBand: r.score_band,
+    scoreReasons: (r.score_reasons ?? []) as string[],
+    openReceivableAmount: moneyOrNull(r.open_receivable_amount),
+    overdueAmount: moneyOrNull(r.overdue_amount),
+    promisePendingCount: Number(r.promise_pending_count),
+    promiseBrokenCount: Number(r.promise_broken_count),
+    promiseKeptRatio: r.promise_kept_ratio == null ? null : Number(r.promise_kept_ratio),
+  }));
 }
 
 export async function loadOpenPromises(pool: Pool, limit = 200) {
-  return cache.withCache(
-    `collections:openPromises:${limit}`,
-    async () => {
-      const res = await pool.query(
-        `select promise_id, party_id, party_name, invoice_id, promised_amount, currency,
-                promised_date, channel, note, days_late, is_overdue
-         from public.promise_to_pay_open
-         order by promised_date asc, party_name asc
-         limit $1`, [limit]);
-      return res.rows.map((r) => ({
-        promiseId: r.promise_id,
-        partyId: r.party_id,
-        partyName: r.party_name,
-        invoiceId: r.invoice_id,
-        promisedAmount: moneyOrNull(r.promised_amount),
-        currency: r.currency,
-        promisedDate: String(r.promised_date).slice(0, 10),
-        channel: r.channel,
-        note: r.note,
-        daysLate: Number(r.days_late),
-        isOverdue: Boolean(r.is_overdue),
-      }));
-    },
-    { ttlSeconds: 60, tags: [CACHE_TAGS.PROMISES, CACHE_TAGS.COLLECTIONS] }
-  );
+  const res = await pool.query(
+    `select promise_id, party_id, party_name, invoice_id, promised_amount, currency,
+            promised_date, channel, note, days_late, is_overdue
+     from public.promise_to_pay_open
+     order by promised_date asc, party_name asc
+     limit $1`, [limit]);
+  return res.rows.map((r) => ({
+    promiseId: r.promise_id,
+    partyId: r.party_id,
+    partyName: r.party_name,
+    invoiceId: r.invoice_id,
+    promisedAmount: moneyOrNull(r.promised_amount),
+    currency: r.currency,
+    promisedDate: String(r.promised_date).slice(0, 10),
+    channel: r.channel,
+    note: r.note,
+    daysLate: Number(r.days_late),
+    isOverdue: Boolean(r.is_overdue),
+  }));
 }
 
 /** Collection follow-up history — action_items, the existing model, filtered to this phase. */
 export async function loadCollectionActions(pool: Pool, limit = 100) {
-  return cache.withCache(
-    `collections:actions:${limit}`,
-    async () => {
-      const res = await pool.query(
-        `select a.id, a.title, a.severity, a.status, a.note, a.created_at,
-                a.related_entity_id as promise_id, p.party_id, pa.name as party_name
-         from public.action_items a
-         left join public.promise_to_pay p
-           on a.related_entity_table = 'promise_to_pay' and p.id = a.related_entity_id
-         left join public.parties pa on pa.id = p.party_id
-         where a.source_type = 'collection' and a.archived_at is null
-         order by a.created_at desc
-         limit $1`, [limit]);
-      return res.rows;
-    },
-    { ttlSeconds: 60, tags: [CACHE_TAGS.COLLECTIONS] }
-  );
+  const res = await pool.query(
+    `select a.id, a.title, a.severity, a.status, a.note, a.created_at,
+            a.related_entity_id as promise_id, p.party_id, pa.name as party_name
+     from public.action_items a
+     left join public.promise_to_pay p
+       on a.related_entity_table = 'promise_to_pay' and p.id = a.related_entity_id
+     left join public.parties pa on pa.id = p.party_id
+     where a.source_type = 'collection' and a.archived_at is null
+     order by a.created_at desc
+     limit $1`, [limit]);
+  return res.rows;
 }
 
 /** Guard for callers that build their own status filters. */

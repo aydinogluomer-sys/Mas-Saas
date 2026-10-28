@@ -16,7 +16,6 @@ import { hashPassword } from "@/lib/auth";
 import { verify as argon2Verify } from "@node-rs/argon2";
 import { audit } from "@/lib/audit";
 import { APP_ROLES, type AppRole } from "@/lib/authz/matrix";
-import { cache } from "@/lib/cache/engine";
 
 /** Mirrors the DB CHECK in 0031 — kept in sync deliberately so a bad value fails at the
  * boundary with a Turkish message instead of as a raw Postgres constraint error. */
@@ -61,39 +60,30 @@ export interface UserListRow {
  * never-loggable identity into a real credential at worst. */
 const RESERVED_USERNAMES = ["system", "testsprite-qa"];
 
-async function invalidateUserCache() {
-  await Promise.all([
-    cache.delete("users:list"),
-    cache.delete("users:counts"),
-  ]);
-}
-
 export async function listUsers(pool: Pool): Promise<UserListRow[]> {
-  return cache.withCache("users:list", async () => {
-    const res = await pool.query<{
-      id: string; username: string; display_name: string; role: AppRole;
-      is_active: boolean; locked_until: string | null; failed_login_count: number;
-      created_at: string; last_seen_at: string | null; active_sessions: number;
-      must_change_password: boolean;
-    }>(
-      `select u.id, u.username, u.display_name, u.role, u.is_active, u.locked_until,
-              u.failed_login_count, u.created_at, u.must_change_password,
-              max(s.last_seen_at) filter (where s.revoked_at is null) as last_seen_at,
-              count(s.id) filter (where s.revoked_at is null and s.expires_at > now())::int as active_sessions
-         from public.users u
-         left join public.sessions s on s.user_id = u.id
-        where u.username <> all($1::text[])
-        group by u.id
-        order by u.role, u.username`,
-      [RESERVED_USERNAMES],
-    );
-    return res.rows.map((r) => ({
-      id: r.id, username: r.username, displayName: r.display_name, role: r.role,
-      isActive: r.is_active, lockedUntil: r.locked_until, failedLoginCount: r.failed_login_count,
-      createdAt: r.created_at, lastSeenAt: r.last_seen_at, activeSessions: Number(r.active_sessions),
-      mustChangePassword: !!r.must_change_password,
-    }));
-  }, { ttlSeconds: 60 });
+  const res = await pool.query<{
+    id: string; username: string; display_name: string; role: AppRole;
+    is_active: boolean; locked_until: string | null; failed_login_count: number;
+    created_at: string; last_seen_at: string | null; active_sessions: number;
+    must_change_password: boolean;
+  }>(
+    `select u.id, u.username, u.display_name, u.role, u.is_active, u.locked_until,
+            u.failed_login_count, u.created_at, u.must_change_password,
+            max(s.last_seen_at) filter (where s.revoked_at is null) as last_seen_at,
+            count(s.id) filter (where s.revoked_at is null and s.expires_at > now())::int as active_sessions
+       from public.users u
+       left join public.sessions s on s.user_id = u.id
+      where u.username <> all($1::text[])
+      group by u.id
+      order by u.role, u.username`,
+    [RESERVED_USERNAMES],
+  );
+  return res.rows.map((r) => ({
+    id: r.id, username: r.username, displayName: r.display_name, role: r.role,
+    isActive: r.is_active, lockedUntil: r.locked_until, failedLoginCount: r.failed_login_count,
+    createdAt: r.created_at, lastSeenAt: r.last_seen_at, activeSessions: Number(r.active_sessions),
+    mustChangePassword: !!r.must_change_password,
+  }));
 }
 
 /** Non-secret projection used for audit before/after. Never includes password_hash. */
@@ -144,7 +134,6 @@ export async function createUser(pool: Pool, input: CreateUserInput, actorId: st
       after: { username, display_name: displayName, role, is_active: true, must_change_password: mustChangePassword },
     });
     await client.query("commit");
-    await invalidateUserCache();
     return id;
   } catch (e) {
     await client.query("rollback");
@@ -188,7 +177,6 @@ export async function resetUserPassword(
       after: { ...before, password_changed: true, must_change_password: forceMustChange, sessions_revoked: revoked.rowCount ?? 0 },
     });
     await client.query("commit");
-    await invalidateUserCache();
   } catch (e) {
     await client.query("rollback");
     throw e;
@@ -210,7 +198,6 @@ export async function forcePasswordChange(pool: Pool, id: string, actorId: strin
       after: { ...before, must_change_password: true },
     });
     await client.query("commit");
-    await invalidateUserCache();
   } catch (e) {
     await client.query("rollback");
     throw e;
@@ -301,7 +288,6 @@ export async function setUserActive(pool: Pool, id: string, isActive: boolean, a
       after: { ...before, is_active: isActive, sessions_revoked: sessionsRevoked },
     });
     await client.query("commit");
-    await invalidateUserCache();
   } catch (e) {
     await client.query("rollback");
     throw e;
@@ -336,7 +322,6 @@ export async function setUserRole(pool: Pool, id: string, role: AppRole, actorId
       },
     });
     await client.query("commit");
-    await invalidateUserCache();
   } catch (e) {
     await client.query("rollback");
     throw e;
@@ -358,7 +343,6 @@ export async function unlockUser(pool: Pool, id: string, actorId: string): Promi
       after: { ...before, unlocked: true },
     });
     await client.query("commit");
-    await invalidateUserCache();
   } catch (e) {
     await client.query("rollback");
     throw e;

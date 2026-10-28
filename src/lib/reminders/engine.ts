@@ -9,8 +9,6 @@
 import type { Pool } from "pg";
 import { moneyOrNull } from "@/lib/money";
 import { istanbulDateISO } from "@/lib/reports/rules";
-import { cache } from "@/lib/cache/engine";
-import { CACHE_TAGS } from "@/lib/cache/tags";
 import {
   eligibleDeliveries,
   type ReminderRule,
@@ -150,7 +148,6 @@ export async function scheduleReminders(pool: Pool, todayISO = istanbulDateISO()
   } finally {
     client.release();
   }
-  await cache.invalidateTag(CACHE_TAGS.REMINDERS);
   return { eligible: eligible.length, inserted, duplicatesSkipped: eligible.length - inserted };
 }
 
@@ -195,53 +192,40 @@ export async function dispatchPending(
       failed++;
     }
   }
-  await cache.invalidateTag(CACHE_TAGS.REMINDERS);
   return { attempted: pending.rows.length, sent, failed };
 }
 
 /* ── read-side for /reminders ── */
 
 export async function loadDeliveries(pool: Pool) {
-  return cache.withCache(
-    "reminders:deliveries",
-    async () => {
-      const r = await pool.query(
-        `select d.id, r.name as rule_name, r.offset_days, d.entity_table, d.entity_id,
-                to_char(d.scheduled_for,'YYYY-MM-DD') as scheduled_for, d.status,
-                to_char(d.sent_at at time zone 'Europe/Istanbul','YYYY-MM-DD HH24:MI') as sent_at,
-                d.error, d.payload,
-                coalesce(p.name, i.id::text) as target_name
-         from public.reminder_deliveries d
-         join public.reminders r on r.id = d.reminder_id
-         left join public.payment_instances i on i.id = d.entity_id and d.entity_table='payment_instances'
-         left join public.payments p on p.id = i.payment_id
-         order by d.scheduled_for desc, d.status`,
-      );
-      return r.rows as Array<{
-        id: string; rule_name: string; offset_days: number; entity_table: string; entity_id: string;
-        scheduled_for: string; status: string; sent_at: string | null; error: string | null;
-        payload: { message?: string } | null; target_name: string;
-      }>;
-    },
-    { ttlSeconds: 60, tags: [CACHE_TAGS.REMINDERS] }
+  const r = await pool.query(
+    `select d.id, r.name as rule_name, r.offset_days, d.entity_table, d.entity_id,
+            to_char(d.scheduled_for,'YYYY-MM-DD') as scheduled_for, d.status,
+            to_char(d.sent_at at time zone 'Europe/Istanbul','YYYY-MM-DD HH24:MI') as sent_at,
+            d.error, d.payload,
+            coalesce(p.name, i.id::text) as target_name
+     from public.reminder_deliveries d
+     join public.reminders r on r.id = d.reminder_id
+     left join public.payment_instances i on i.id = d.entity_id and d.entity_table='payment_instances'
+     left join public.payments p on p.id = i.payment_id
+     order by d.scheduled_for desc, d.status`,
   );
+  return r.rows as Array<{
+    id: string; rule_name: string; offset_days: number; entity_table: string; entity_id: string;
+    scheduled_for: string; status: string; sent_at: string | null; error: string | null;
+    payload: { message?: string } | null; target_name: string;
+  }>;
 }
 
 export async function deliveryCounts(pool: Pool) {
-  return cache.withCache(
-    "reminders:counts",
-    async () => {
-      const r = await pool.query(
-        `select status, count(*)::int as n from public.reminder_deliveries group by status`,
-      );
-      const m = new Map(r.rows.map((x) => [x.status, x.n]));
-      return {
-        pending: m.get("pending") ?? 0,
-        sent: m.get("sent") ?? 0,
-        failed: m.get("failed") ?? 0,
-        skipped: m.get("skipped") ?? 0,
-      };
-    },
-    { ttlSeconds: 60, tags: [CACHE_TAGS.REMINDERS] }
+  const r = await pool.query(
+    `select status, count(*)::int as n from public.reminder_deliveries group by status`,
   );
+  const m = new Map(r.rows.map((x) => [x.status, x.n]));
+  return {
+    pending: m.get("pending") ?? 0,
+    sent: m.get("sent") ?? 0,
+    failed: m.get("failed") ?? 0,
+    skipped: m.get("skipped") ?? 0,
+  };
 }

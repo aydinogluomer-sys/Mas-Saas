@@ -9,7 +9,12 @@
  * - 'FOR UPDATE SKIP LOCKED' ile sıfır kilitlenme / çoklu işçi desteği
  * - Otomatik ilerleme raporlama (progress tracking)
  * - Exponential backoff ile hata yakalama ve Dead-Letter-Queue yönetimi
- * - Başarılı işlerin ardından otomatik Cache Invalidation tetikleme
+ *
+ * Wave 0: the unreviewed layer also had this dispatcher drop "cache tags" after every
+ * successful job. That is gone together with the in-process read cache it fed (the module was
+ * deleted): reads go to PostgreSQL on every request again, so a finished job has nothing to
+ * invalidate. It could not have worked anyway — a worker runs in its own process
+ * (scripts/ops/process-import-jobs.ts) and can never reach the web server's in-memory Map.
  */
 
 import type { Pool } from "pg";
@@ -21,8 +26,6 @@ import {
   type JobRow,
 } from "./queue";
 import type { JobType } from "./rules";
-import { cache } from "@/lib/cache/engine";
-import { CACHE_TAGS, type CacheTag } from "@/lib/cache/tags";
 
 export interface JobContext {
   pool: Pool;
@@ -33,7 +36,6 @@ export interface JobContext {
 export type JobHandlerResult = {
   success: boolean;
   resultPayload?: Record<string, unknown>;
-  cacheTagsToInvalidate?: CacheTag[];
 };
 
 export type JobHandler = (context: JobContext) => Promise<JobHandlerResult>;
@@ -45,17 +47,6 @@ export interface DispatchResult {
   status?: "succeeded" | "failed" | "no_handler";
   error?: string;
 }
-
-/**
- * İş tiplerinin başarıyla tamamlandığında varsayılan olarak hangi cache tag'lerini
- * düşüreceğini haritalar.
- */
-const DEFAULT_JOB_CACHE_TAGS: Partial<Record<JobType, CacheTag[]>> = {
-  excel_import: [CACHE_TAGS.INVOICES, CACHE_TAGS.PAYMENTS, CACHE_TAGS.CASHFLOW, CACHE_TAGS.CFO_BRIEFING],
-  bank_statement_import: [CACHE_TAGS.BANK_TRANSACTIONS, CACHE_TAGS.BANK_ACCOUNTS, CACHE_TAGS.BANK_RECONCILIATION, CACHE_TAGS.CFO_BRIEFING],
-  fx_rate_sync: [CACHE_TAGS.FX_RATES, CACHE_TAGS.FX_EXPOSURE, CACHE_TAGS.TREASURY],
-  read_model_refresh: [CACHE_TAGS.CASHFLOW, CACHE_TAGS.INVOICES, CACHE_TAGS.REPORTS],
-};
 
 class JobDispatcher {
   private handlers = new Map<JobType, JobHandler>();
@@ -113,13 +104,6 @@ class JobDispatcher {
       const outcome = await handler(context);
       if (outcome.success) {
         await completeJob(pool, job.id, actorId);
-
-        // İlgili önbellek etiketlerini otomatik temizle
-        const tags = outcome.cacheTagsToInvalidate ?? DEFAULT_JOB_CACHE_TAGS[job.jobType] ?? [];
-        if (tags.length > 0) {
-          await cache.invalidateTags(tags);
-        }
-
         return {
           processed: true,
           jobId: job.id,

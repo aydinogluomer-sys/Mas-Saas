@@ -1,7 +1,5 @@
 import Link from "next/link";
 import { getPool } from "@/lib/db";
-import { cache } from "@/lib/cache/engine";
-import { CACHE_TAGS } from "@/lib/cache/tags";
 import { moneyOrNull } from "@/lib/money";
 import { loadThresholds } from "@/lib/radar/engine";
 import { instancesBetween, instancesOn, monthSummary, overdueOpen } from "@/lib/radar/queries";
@@ -58,17 +56,13 @@ export default async function AnaEkranPage() {
   const today = istanbulDateISO();
   const monthStart = today.slice(0, 7) + "-01";
   const weekEnd = new Date(Date.parse(today) + 6 * 86400000).toISOString().slice(0, 10);
-  const [todayRows, weekRows, overdue, summary, months] = await cache.withCache(
-    `overview:initial:${today}`,
-    () => Promise.all([
-      instancesOn(pool, today),
-      instancesBetween(pool, today, weekEnd),
-      overdueOpen(pool, today),
-      monthSummary(pool, monthStart),
-      loadCashMonths(pool),
-    ]),
-    { ttlSeconds: 60, tags: [CACHE_TAGS.PAYMENTS, CACHE_TAGS.CASHFLOW] }
-  );
+  const [todayRows, weekRows, overdue, summary, months] = await Promise.all([
+    instancesOn(pool, today),
+    instancesBetween(pool, today, weekEnd),
+    overdueOpen(pool, today),
+    monthSummary(pool, monthStart),
+    loadCashMonths(pool),
+  ]);
 
   // onboarding state: nothing imported yet
   const hasData = summary.total_count > 0 || months.length > 0;
@@ -95,23 +89,19 @@ export default async function AnaEkranPage() {
     );
   }
 
-  const [overlay, reports, reminders, caps, costs, incomeLines, decisionFacts, dataQuality, t] = await cache.withCache(
-    `overview:details:${today}`,
-    () => Promise.all([
-      loadDebtOverlay(pool),
-      listReports(pool),
-      deliveryCounts(pool),
-      loadCapacityModels(pool),
-      loadCostModels(pool),
-      pool.query(`select coalesce(p.name, cl.label) as key, cl.amount
-                  from public.cashflow_lines cl left join public.parties p on p.id=cl.party_id
-                  where cl.line_type='customer_income'`),
-      loadDecisionFacts(pool, today),
-      loadDataQualityCenter(pool),
-      loadThresholds(pool),
-    ]),
-    { ttlSeconds: 60, tags: [CACHE_TAGS.PAYMENTS, CACHE_TAGS.CASHFLOW, CACHE_TAGS.REPORTS, CACHE_TAGS.PRODUCTION] }
-  );
+  const [overlay, reports, reminders, caps, costs, incomeLines, decisionFacts, dataQuality, t] = await Promise.all([
+    loadDebtOverlay(pool),
+    listReports(pool),
+    deliveryCounts(pool),
+    loadCapacityModels(pool),
+    loadCostModels(pool),
+    pool.query(`select coalesce(p.name, cl.label) as key, cl.amount
+                from public.cashflow_lines cl left join public.parties p on p.id=cl.party_id
+                where cl.line_type='customer_income'`),
+    loadDecisionFacts(pool, today),
+    loadDataQualityCenter(pool),
+    loadThresholds(pool),
+  ]);
   void t;
 
   // production margin snapshot: any operation sold below its scenario's own break-even?
