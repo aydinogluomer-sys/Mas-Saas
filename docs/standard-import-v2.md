@@ -50,6 +50,9 @@ kayma tespit edilir ve `unknown_header` incelemesi açılır.
 | `16_MAKINE_ROI` | `machine_assets` + `machine_roi_snapshots` | makine_adi | — |
 
 Toplam **187 kolon**, bunların **53'ü zorunlu**, **34'ü enum** (Excel açılır listesiyle).
+Şablon 2.0.0 hepsini sunar. Phase 5'in `REMOVED_FROM_FUTURE_TEMPLATE` kararı uygulanmadı: onaylı
+sayım 9 kolon derken matris 10 kolonu işaretliyor ve hangisinin dışarıda kaldığı belgenin
+tarihçesinden belirlenemiyor (`docs/release-evidence/v3/phase5-product-decisions.md`, Wave 0 notu).
 
 `16_MAKINE_ROI` yalnız `machine_assets` tablosuna yazar; ROI rakamları `machine_roi_snapshots`
 YILLIK tuttuğu, şablon ise AYLIK sorduğu için eşlenmez (gerekçe: `domain-map.ts`).
@@ -108,13 +111,25 @@ birimi boyutuyla yeniden yazılması. Bu, import katmanının işi değil.
 Bu bir sürüm kuralıdır, tercih değil.
 
 ```
-boş hücre   → NULL   "bilinmiyor" · toplamlara KATILMAZ · eksik veri sayacına girer
-0 yazılmış  → 0      "gerçekten sıfır" · hesaplamaya sıfır olarak girer
-"-"         → NULL
+boş hücre       → NULL   "bilinmiyor" · toplamlara KATILMAZ · eksik veri sayacına girer
+0 yazılmış      → 0      "gerçekten sıfır" · hesaplamaya sıfır olarak girer
+"-"             → NULL
+formül hatası   → NULL   "hesaplanamadı" · formula_error incelemesi (yüksek) · satır REDDEDİLİR
+(#REF!, #DIV/0!,          0 DEĞİL, boş DEĞİL — her kolon tipinde (sayı, tarih, metin, enum…)
+ #N/A, #VALUE!…)          ham hücre ({"error":"#REF!"}) import_rows.row_json'da olduğu gibi kalır
 ```
 
 Hiçbir parser `Number(v) || 0` yazamaz — bu ifade boş hücreyi sıfıra çevirir. Her parser
 testinde `BLANK ≠ ZERO` kanıtı bulunur.
+
+Formül hatası satırı neden **reddedilir** (incelemeye düşmez): düzeltilecek şey yazılan bir değer
+değil, kaynak dosyadaki kırık formüldür; sistem o değeri saklayamaz ve tahmin etmez. İncelenmemiş
+katman (46541d8) bu hücreleri sayı kolonlarında `0`, metin ve enum kolonlarında sessiz boş
+yapıyordu — 0 aile kurallarına (vade günü, fatura aritmetiği, mükerrer gruplaması) sahte bir sayı
+olarak giriyor, boş ise isteğe bağlı `durum`'u yazıcının varsayılanına düşürüyordu. Wave 0 / S5
+bunu kaldırdı (`values.ts` `formulaErrorToken`). OOXML hata hücresini arayüz dilinden bağımsız
+İngilizce belirteçle saklar; Türkçe karşılıklar (`#BAŞV!`, `#SAYI/0!`, `#DEĞER!`, `#YOK`, `#AD?`,
+`#SAYI!`, `#BOŞ!`) yalnız metin hücrede tanınır.
 
 Somut örnek: `14_KAPASITE.torna_dk` boşsa "süre ölçülmemiş" demektir ve kapasite hesabı bu
 parçayı eksik sayar; `0` yazılırsa "bu parçada torna işlemi yok" demektir ve hesap 0 dakika
@@ -161,6 +176,48 @@ verilene kadar `BUSINESS_DEDUPLICATION_UNRESOLVED` olarak kalır.
 V2 ham veri formatıdır. Kullanıcı formül yazmışsa formülün **son hesaplanmış değeri** okunur;
 Excel çalıştırılmaz, formül finansal doğruluk kaynağı sayılmaz. Türev finansal değerler
 (kasa, başabaş, ROI) uygulamanın deterministik motoru tarafından hesaplanır.
+
+```
+sonucu olan formül            → sonuç okunur (formül metni asla değer değildir)
+sonucu OLMAYAN formül         → NULL "bilinmiyor" (paylaşılan formül kopyası dahil)
+sonucu HATA olan formül       → NULL + formula_error (yüksek), satır reddedilir — 0 değil
+```
+
+## Birleştirilmiş hücre politikası
+
+Şablon düz sayfa üretir; sözleşmede "aşağı doğru doldur" diye bir kural yoktur. Excel bir
+birleştirmede yalnız aralığın sol üst (ana) hücresinin değerini saklar, ama ExcelJS aralığın
+diğer hücrelerinde de ana hücrenin değerini döndürür. `af210fd` de incelenmemiş katman da bu
+değeri okuyordu: iki seri numaralı satıra birleştirilmiş tek bir −45.000 çek tutarı **iki kez**
+yazılıyordu. Wave 0 / S5 kuralı:
+
+```
+ana hücre               → değeri okunur
+aralığın diğer hücresi  → NULL; raw[__merged__][kolon] = ana hücre adresi (provenance)
+aralığa değen her       → merged_cell incelemesi (ORTA) → satır domain'e insan kararı
+sözleşme hücresi           olmadan girmez
+zorunlu kolonun diğer   → boş hücreyle aynı yol: missing_required_field, satır reddedilir
+hücresi
+birleştirilmiş başlık   → ikinci sütun aynı alana eşlenmez; sayfa düzeyinde merged_cell,
+                          hücreleri raw.__unknown__ altında korunur
+```
+
+Hiçbir kolon istisna değildir. `__merged__` anahtarı `__unknown__` gibi sözleşme anahtarlarıyla
+çakışamaz (`parser.ts` `MERGED_CELLS_KEY`). Önizleme ekranı formül hatalarını ve birleştirilmiş
+hücreleri onaydan ÖNCE kendi listelerinde gösterir.
+
+## Asenkron önizleme (Wave 0 / S5)
+
+`POST /api/imports/v2/async` dosyayı sahneler ve `excel_import` türünde bir **önizleme** işi
+kuyruğa alır; `scripts/ops/process-import-jobs.ts` işçisi dry-run önizlemeyi koşturur ve raporu
+(listeler en çok 50 satır, gerçek uzunluklar `listTotals`'ta) iş satırına yazar;
+`GET /api/imports/v2/async?jobId=` raporu yalnız işin sahibine (finans yöneticisi/yönetici
+herkesinkine) döndürür. **Asenkron yol hiçbir finansal kayıt yazmaz.** İçe aktarmak için dosya
+`/data/imports/v2`'de yeniden yüklenir ve senkron onay akışından geçer (önizleme SHA'sı eşleşmek
+zorunda). Kimlik iş yükünden değil işi kuyruğa alan oturumdan (`created_by`) gelir ve işlenirken
+`public.users`'tan yeniden doğrulanır; önizleme o kişinin veritabanı katmanında koşar. Sahnelenen
+dosya (gerçek veri) her terminal sonuçta silinir; sahipsiz kalanlar 24 saat sonra süpürülür.
+İşçi henüz zamanlanmış bir görevle çalıştırılmıyor (açık iş).
 
 ## Provenance
 

@@ -129,6 +129,34 @@ Sayım: 49 satır · SOURCE_ONLY_PRESERVED 40 · REMOVED_FROM_FUTURE_TEMPLATE 9 
 UNCLASSIFIED **0**. `REMOVED_FROM_FUTURE_TEMPLATE` kararı v1 şablonunu (v2.0, sha `f965a1ba…`) değiştirmez;
 şablon v2.1 ayrı bir sürümdür ve bu turda üretilmedi.
 
+### Wave 0 notu (2026-10-28) — sayım/matris tutarsızlığı; şablondan HİÇBİR kolon kaldırılmadı
+
+Yukarıdaki sayım ve onay **40 SOURCE_ONLY_PRESERVED · 9 REMOVED_FROM_FUTURE_TEMPLATE** diyor; matrisin
+kendi satırları ise **39 · 10** veriyor. REMOVED işaretli on satır: `11_PROJELER.butce_maliyeti`,
+`13_FX_POZISYONU.try_karsiligi`, `14_KAPASITE.verim_orani`, `14_KAPASITE.calisma_gunu`,
+`14_KAPASITE.vardiya_sayisi`, `15_MALIYET.personel_sayisi`, `15_MALIYET.aylik_calisma_saati`,
+`15_MALIYET.verim_orani`, `16_MAKINE_ROI.aylik_gelir`, `16_MAKINE_ROI.aylik_operasyon_maliyeti`.
+
+Hangi kolonun onaylı dokuzun dışında kaldığı belgenin tarihçesinden **belirlenemiyor**:
+
+- Bu belgenin tek commit'i var (`93cddfc`, 2026-09-13); sayımı, on satırlık matrisi ve aynı 40/9
+  tallysini taşıyan commit mesajını AYNI ANDA yazdı. Sayım yazıldıktan SONRA sınıfı değişen bir satır
+  tarihçede yok. `git log --all -S REMOVED_FROM_FUTURE_TEMPLATE` yalnız bu commit'i buluyor.
+- Öncül öneri belgesi (`final-production-readiness/phase5-product-decisions.md`, `ad8a354`) farklı bir
+  sayım taşıyor (A=3 / B=33 / C=13) ve 40/9'u açıklamıyor; öneriden karara geçerken
+  `14_KAPASITE.diger_operasyon_dk` C'den SOURCE_ONLY'ye geçti, ama bu matrisin 10'u verdiği hâli
+  değiştirmez.
+
+Muhafazakâr karar (Wave 0 kararı R9): dokuzu tahmin etmek yerine **hiçbir kolon
+kaldırılmadı**. Şablon 2.0.0 ve sha'sı (`f965a1ba…`) değişmedi; 49 kolonun tamamı parser tarafından
+tanınmaya ve ham değerleri `import_rows.row_json`'da korunmaya devam ediyor (SOURCE_ONLY_PRESERVED
+yarısı zaten uygulanmış durumda: `domain-map.ts` 49 `not_persisted`). Uygulamak için gereken tek şey
+sahibin dokuz kolonu ADIYLA teyit etmesi; o zaman: `ColumnSpec.removedFromTemplate`, şablon üretecinde
+filtre, `missingColumns` hariç tutma, `TEMPLATE_VERSION` 2.1.0, şablonun yeniden üretimi ve bu
+belgenin sayımının düzeltilmesi aynı sürümde yapılır (Wave 0 / S5 README satırları — formül hatası ve
+birleştirilmiş hücre kuralları — da o sürüme bırakıldı). "Kapasite başlığına taşı" ve "yıllık iste"
+gelecek aksiyonları o değişikliğin parçası değildir.
+
 ## 5 — 15_MALIYET v1 kapsam kararı: SOURCE/STAGING ONLY
 
 ```text

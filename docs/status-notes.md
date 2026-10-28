@@ -4336,3 +4336,81 @@ sayfayı render ettirir.** Önceki incelenmiş durum `af210fd`; karantina önces
   `af210fd` kuralı kapsayıcıyı gecikmesiz gösterir — ya bu iki kural taşınmalı ya da gecikme birlikte
   geri alınmalı. İlk tıklama gecikmesi production derlemesinde, sentetik veritabanına karşı yeniden
   ölçülmeli (yeni taban → `NAVIGATION_CLICK_BUDGET_MS`).
+
+---
+
+## Wave 0 / S5 — Import V2 (incelenmemiş 46541d8 katmanının seçici karantinası)
+
+Hedef: **içe aktarmada bilinmeyen değer bilinmeyen kalır, hiçbir hücre iki kez sayılmaz, kullanıcı
+onayı olmadan hiçbir finansal kayıt yazılmaz.** Önceki incelenmiş durum `af210fd`; karantina öncesi
+ağaç `quarantine/pre-wave0-2026-10-28` etiketinde.
+
+- **Formül hatası = BİLİNMİYOR (regresyon kapatıldı).** Katman `#REF!`/`#DIV/0!`/`#VALUE!`/`#N/A`
+  hücrelerini sayı kolonlarında `0` (ambiguous, "0 kabul edildi"), metin/enum kolonlarında sessiz boş
+  yapıyordu: 0 vade günü, fatura aritmetiği ve mükerrer gruplamasına sahte sayı olarak giriyor,
+  `source-revenue.ts` üzerinden parça gelirine 0 olarak ulaşabiliyordu; boş ise isteğe bağlı `durum`'u
+  yazıcının varsayılanına ('active'/'planned') düşürüyor, yalnız hata hücrelerinden oluşan satırı "boş
+  satır" diye atlatıyordu. Şimdi her kolon tipinde (sayı, tam sayı, yüzde, tarih, dönem, mantıksal,
+  enum, metin) `invalid` + değer null + `formulaError` belirteci; parser yüksek şiddetli
+  `formula_error` incelemesi açar, satır reddedilir, ham hücre (`{"error":"#REF!"}`) `row_json`'da
+  kalır. `{error}` nesnesi belirteci boş/bilinmeyen olsa da hatadır; paylaşılan formülün sonuçsuz
+  kopyası `[object Object]` değil bilinmiyor. `af210fd`'nin metin kolonlarında `[object Object]`
+  saklama hatası da kapandı. Katmanın regresyonu kilitleyen iki testi değiştirildi.
+- **Birleştirilmiş hücre: değer yalnız ana hücreden (yeni kural — güvenli davranış daha önce yoktu).**
+  ExcelJS aralığın diğer hücrelerinde ana hücrenin değerini döndürür; `af210fd` de katman da bunu
+  okuyordu (birleştirilmiş tek −45.000 çek tutarı iki seri numaralı satıra iki kez yazılırdı). Şimdi
+  diğer hücreler null, kaynağı `raw.__merged__` altında ana hücre adresiyle; aralığa değen her sözleşme
+  hücresi `merged_cell` (orta) açar; zorunlu kolonun diğer hücresi boş hücre gibi reddedilir.
+  Birleştirilmiş başlık ikinci sütunu aynı alana eşleyip verisini sessizce düşürüyordu; artık sayfa
+  düzeyinde `merged_cell` açılır ve hücreler `raw.__unknown__` altında korunur. Önizleme FORMÜL
+  HATALARI ve BİRLEŞTİRİLMİŞ HÜCRELER listelerini onaydan önce gösterir.
+- **Asenkron Import V2 yalnız ÖNİZLER (R8).** Katmanın koşucusu doğrudan onaylı içe aktarmayı çağırıyordu
+  (önizleme/onay yok, SHA'yı kendisi hesaplıyordu, yeniden deneme ikinci import yazabilirdi); rolü
+  yükten okuyup yoksa 'admin', aktör yoksa sıfır UUID sayıyordu; dosya yolunu yükten alıp okuyup
+  siliyordu; işin türüne/durumuna bakmıyordu; işçi uuid olmayan sabit bir aktörle denetim yazmaya
+  çalıştığı ve bağlamsız havuz kullandığı için hiçbir işi işleyemezdi. Şimdi: iş dry-run önizlemeyi
+  koşturur ve raporu (listeler en çok 50, gerçek uzunluklar `listTotals`) işi tamamlayan AYNI
+  güncellemede `background_jobs.payload.result`'a yazar; içe aktarma senkron onay akışında kalır
+  (dosya yeniden yüklenir, SHA eşleşmek zorunda). Kimlik `created_by`'dan, işlenirken `public.users`'tan
+  yeniden doğrulanır (aktif, zorunlu parola değişikliği yok, tanınan rol, `import_workbook_v2`); tutmazsa
+  kalıcı hata. Önizleme kişinin kendi katmanında koşar (yeni `runAsUser`, yalnız bu koşucu kullanabilir —
+  `write-gates` kuralı); kuyruk işlemleri `runAsSystem` + rezerve 'system' hesabı (`getSystemActorId`).
+  Yük yalnız `{filename, fileSha256, stagedFile}`: dosya kendi uuid adıyla İŞTEN ÖNCE sahnelenir, yol
+  klasör içinde kurulur, SHA doğrulanır; terminal sonuçta silinir, sahipsizler 24 saat sonra süpürülür.
+  Tekilleştirme kullanıcı başına. `GET` uuid doğrular, `import_workbook_v2` ister, yalnız sahibine
+  (finans yöneticisi/yönetici herkese) raporu döner; başkasının işi ile olmayan iş aynı 404. `POST`
+  ad/uzantı/boyut kapısını baytları okumadan uygular. Kuyruk: `completeJob(…, result)`,
+  `listJobs` sonucu taşımaz; dispatcher varsayılan aktörü null (uuid olmayan sabit metin FK'yi kırardı).
+- **UI (R4 ile uyumlu):** `/imports` sayfası, yükleme formu, `/data/imports/v2` sayfası ve önizleme akışı
+  `af210fd`'ye döndü — Phase 5'in onaylı açıklaması ("controlled-use v1 finans hesaplarına DAHİL
+  DEĞİLDİR (15_MALIYET → v1.1 backlog)"), plan §4.2 sayaç adları (`REDDEDİLECEK` seçicisi), `İÇE AKTAR`
+  manifest etiketi geri geldi; "tüm satırlar atomik işlemle güvenle aktarılacaktır" iddiası gitti.
+  Önizlemeye iki yeni liste eklendi.
+- **R9 — Phase 5 şablon kararı: hiçbir kolon kaldırılmadı.** Onaylı sayım 40/9, matris 39/10. Belgenin
+  tek commit'i (`93cddfc`) sayımı ve matrisi birlikte yazdı; tarihçede sonradan sınıfı değişen satır yok,
+  öneri belgesi (`ad8a354`) 40/9'u açıklamıyor → hangi kolonun dokuzun dışında kaldığı belirlenemedi.
+  Muhafazakâr kural: şablon 2.0.0 (sha `f965a1ba…`) değişmedi, parser 49 kolonun hepsini tanımaya ve ham
+  değerleri korumaya devam ediyor. Tutarsızlık ve gerekçe karar belgesine yazıldı. Sahip dokuzu adıyla
+  teyit edince: `removedFromTemplate` bayrağı, şablon filtresi, `missingColumns` hariç tutma, 2.1.0,
+  şablonun yeniden üretimi ve README'deki formül hatası/birleştirilmiş hücre kuralları tek sürümde.
+- **Testler (DB'siz):** `values.test.ts` (13 belirteç × sayı alanı, ExcelJS'in üç hücre biçimi, her kolon
+  tipi, sıradan '#' metni, sonuçsuz formül, boş belirteçli hata), `parser.test.ts` (gerçek OOXML
+  gidiş-dönüşüyle formül hatası satırı, yalnız hata hücrelerinden oluşan satır, dikey/yatay birleştirme,
+  çift sayım yok, ExcelJS tuzağının belgesi, birleştirilmiş başlık), `service.test.ts` (iki yeni liste,
+  önizleme yine yalnız SELECT), `source-revenue.test.ts` (hatalı fiyat → null), `async-runner.test.ts`
+  (işletim sisteminin geçici klasöründe; yalnız önizleme, kimlik reddi altı durum, eski yükteki yola
+  dokunmama, yol kaçırma, SHA uyuşmazlığı, kalıcı/geçici hata ve dosya temizliği, süpürme, yapısal: koşucu
+  onaylı içe aktarmaya ve eşleyiciye hiç başvurmaz), `route.test.ts` (uzantı kapısı, uuid, katman,
+  sahiplik, rapor), `db.test.ts` (`runAsUser`), yeni `src/lib/jobs/queue.test.ts` (sonuç aynı
+  güncellemede, denetim raporu kopyalamaz, `listJobs` sonucu taşımaz), `job-dispatcher.test.ts` (null
+  aktör), `write-gates.test.ts` (`runAsUser` çağıranı sabit). Katmanın `values.ts`/`parser.ts`
+  sürümlerine karşı koşturuldu: yeni iddiaların 29'u kırmızı (anti-totoloji).
+- **Doğrulama:** `pnpm test` 99 dosya / 2063 test yeşil (S4'e göre +1 dosya `queue.test.ts`, +66 test) ·
+  `pnpm boundary:verify` 8/8 · `pnpm typecheck` kaynakta 0 hata (yalnız eski `.next/types`) · `pnpm lint`
+  kalan sorunlar yalnız sonraki dilimlerin dosyalarında (S4 ile aynı küme). Spesifikasyon grep'leri:
+  `ambiguous(0`, "0 kabul edildi", "Fuzzy Parsing", `readCellValue`, `payload.role`, koşucuda onaylı içe
+  aktarma çağrısı yok; uuid olmayan sabit aktör metni kaynakta yok.
+- **Açık (bu dilimde koşturulmadı — DB kuralı):** sentetik veritabanında Excel'de üretilmiş bir dosyayla
+  uçtan uca (`=1/0` tutar, `#N/A` durum, birleştirilmiş çek tutarı → REDDEDİLECEK/İNCELEME, onaydan sonra
+  `mapping_reviews` `formula_error`/`merged_cell`, domain sayıları değişmemiş); asenkron yolun disposable
+  DB'de işçiyle uçtan uca koşusu; `pnpm interaction:test -- import-v2` ve etkileşim kapsam kapısı.

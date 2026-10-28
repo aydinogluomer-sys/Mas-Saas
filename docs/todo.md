@@ -240,3 +240,30 @@
 - [ ] S7 restyle geri dönüşü: `af210fd`'nin `globals.css`/`module-tabs.tsx` sürümleri perde CSS'ini ve
       `prefetchLinkHandlers` kullanımını geri getirir — bu dilimin kaldırmalarını koru; iskelet gecikmesinin
       iki CSS kuralını (`.is-active`, `.navigation-skeleton-active`) taşı ya da gecikmeyi birlikte geri al.
+
+
+## Wave 0 / S5 — DONE (Import V2; incelenmemiş 46541d8 katmanının seçici karantinası)
+
+- [x] Excel formül hatası her kolon tipinde BİLİNMİYOR: değer null, `formula_error` (yüksek), satır reddedilir,
+      ham hücre `row_json`'da; katmanın `#REF!` → 0 ve metinde sessiz boş davranışı ve onu kilitleyen testler gitti.
+- [x] Birleştirilmiş hücre: değer yalnız ana hücreden; diğerleri null + `raw.__merged__`; `merged_cell` (orta);
+      birleştirilmiş başlık sessizce veri düşürmüyor. Önizlemede FORMÜL HATALARI / BİRLEŞTİRİLMİŞ HÜCRELER listeleri.
+- [x] R8: asenkron yol yalnız önizler (rapor `background_jobs.payload.result`); kimlik `created_by` + `public.users`
+      (varsayılan rol/aktör yok), önizleme kişinin katmanında (`runAsUser`), kuyruk işlemleri `runAsSystem` + 'system'
+      hesabı; uuid sahneleme belirteci, SHA doğrulaması, terminalde silme, 24 saatlik süpürme; GET uuid/katman/sahiplik.
+- [x] `/imports`, yükleme formu, `/data/imports/v2` ve önizleme akışı `af210fd`'ye döndü (Phase 5 açıklaması,
+      §4.2 sayaç adları, `İÇE AKTAR` etiketi).
+- [x] R9: Phase 5 sayım/matris tutarsızlığı (40/9 ↔ 39/10) tarihçeden çözülemedi → hiçbir kolon kaldırılmadı;
+      gerekçe karar belgesinde. Şablon 2.0.0 / `f965a1ba…` değişmedi.
+- [x] Gate: vitest 2063/2063 ✓ · boundary:verify 8/8 ✓ · typecheck kaynakta 0 hata (yalnız eski `.next/types`) ·
+      lint: kalan sorunlar yalnız sonraki dilimlerin dosyalarında.
+- [ ] Sahip kararı: Phase 5 `REMOVED_FROM_FUTURE_TEMPLATE` dokuz kolonu ADIYLA teyit edilsin; sonra tek sürümde
+      `ColumnSpec.removedFromTemplate` + şablon filtresi + `missingColumns` hariç tutma + `TEMPLATE_VERSION` 2.1.0 +
+      README'ye formül hatası ve birleştirilmiş hücre kuralları + `pnpm import:template:v2` + belge sayımı.
+- [ ] `background_jobs.result jsonb` kolonu ve `payload`/`created_by`/`job_type` değişmezlik tetikleyicisi (Wave 0'ın
+      tek migration'ı başka dilimde; sonuç şimdilik `payload.result`'ta).
+- [ ] Önizleme işçisinin (`scripts/ops/process-import-jobs.ts`) çalıştırılma kararı: package script + zamanlanmış görev
+      (ops). Bugün kuyruğa alınan önizlemeler işçi elle koşturulana kadar bekler.
+- [ ] Sentetik DB'de uçtan uca: Excel'de üretilmiş `=1/0` / `#N/A` / birleştirilmiş çek tutarı dosyası (önizleme
+      sayaçları, onay sonrası `mapping_reviews`, domain sayıları değişmemiş); asenkron yol + işçi; `interaction:test --
+      import-v2` ve etkileşim kapsam kapısı.

@@ -2115,6 +2115,18 @@ düşer, üretimde değil.
 
 `background_job_queue_health` bir VIEW — türetilmiş sayı saklanmaz.
 
+**Wave 0 / S5 — iş sonucu `payload.result`'ta (geçici, migration'sız).** Asenkron Import V2
+önizlemesi (`excel_import`) raporunu işi kuyruğa alan kişiye geri vermek zorunda ve tabloda bunun
+için kolon yok. Doğru yer ayrı bir `result jsonb` kolonu; Wave 0'da tek yeni migration'a izin var ve
+o başka bir dilimin. Bu yüzden `completeJob(…, result)` sonucu durum değişikliğiyle AYNI `UPDATE`'te
+`payload || jsonb_build_object('result', …)` olarak yazar (iş sonuçsuz 'succeeded' olmaz); denetim
+satırı yalnız `resultStored: true` der, raporu kopyalamaz; `listJobs()` anahtarı `payload - 'result'`
+ile dışarıda bırakır. `excel_import` yükü yalnız `{filename, fileSha256, stagedFile}` taşır: rol ve
+aktör yükten OKUNMAZ (aktör `created_by`, rol `public.users`'tan işlenirken yeniden okunur), dosya
+yolu yükte yoktur (`stagedFile` bir uuid; yol sahneleme klasöründe kurulur). Açık iş: `result`
+kolonu + `payload`/`created_by`/`job_type` için değişmezlik tetikleyicisi (operatör katmanı
+`background_jobs_update_enter` ile her satırı güncelleyebiliyor).
+
 ### 0082 — ölçülmüş optimizasyon
 
 **Önce ölçüldü, sonra yazıldı.** 77 read model gerçekçi hacimde (24.000 fatura, 60.000 banka
