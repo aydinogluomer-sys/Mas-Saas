@@ -68,8 +68,15 @@ class JobDispatcher {
 
   /**
    * Kuyruktaki ilk uygun işi atomik olarak sahiplenir ('claim') ve kaydolan handler ile çalıştırır.
+   *
+   * `actorId` claim/complete/fail denetim satırlarının aktörüdür ve `audit_logs.actor` bir
+   * `public.users(id)` yabancı anahtarıdır (0032). Katmanın varsayılanı uuid olmayan sabit bir
+   * metindi: ilk claim'in denetim INSERT'i hata verir, işlem geri alınır ve hiçbir iş
+   * işlenemezdi (testler kuyruğu mock'ladığı için görünmedi). Varsayılan null — audit.ts'in
+   * sistem işi için belgelediği değer; çağıran gerçek bir aktör (ör. rezerve 'system' hesabı)
+   * verebilir.
    */
-  async processNext(pool: Pool, actorId: string | null = "worker-daemon"): Promise<DispatchResult> {
+  async processNext(pool: Pool, actorId: string | null = null): Promise<DispatchResult> {
     const registeredTypes = Array.from(this.handlers.keys());
     if (registeredTypes.length === 0) {
       return { processed: false };
@@ -137,7 +144,7 @@ class JobDispatcher {
   /**
    * Kuyrukta bekleyen işleri parti halinde (batch) tüketir.
    */
-  async processBatch(pool: Pool, maxJobs = 10, actorId: string | null = "worker-daemon"): Promise<DispatchResult[]> {
+  async processBatch(pool: Pool, maxJobs = 10, actorId: string | null = null): Promise<DispatchResult[]> {
     const results: DispatchResult[] = [];
     for (let i = 0; i < maxJobs; i++) {
       const res = await this.processNext(pool, actorId);

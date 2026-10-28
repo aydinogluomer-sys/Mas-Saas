@@ -62,6 +62,23 @@ const COLS = `id, job_type, status, priority, attempts, max_attempts, payload,
               created_at, next_run_at`;
 
 /**
+ * Where a finished job's RESULT lives: `payload.result`, written by completeJob().
+ *
+ * Wave 0: the async Import V2 preview (src/lib/importers/v2/async-runner.ts) has to hand its report
+ * back to the person who queued it, and this table has no column for that. A dedicated `result`
+ * column is the right home and needs a migration; Wave 0 allows exactly one new migration and
+ * another slice owns it. Until then the result is merged into the payload IN THE SAME UPDATE that
+ * marks the job succeeded — a job is never 'succeeded' without its result, nor the reverse.
+ *
+ * listJobs() strips the key: the queue screen needs none of it, and a stored report can run to
+ * tens of kilobytes per job.
+ */
+export const JOB_RESULT_KEY = "result";
+
+/** COLS with the stored result left out of `payload` (see JOB_RESULT_KEY). */
+const LIST_COLS = COLS.replace("payload,", `payload - '${JOB_RESULT_KEY}' as payload,`);
+
+/**
  * Enqueue one job.
  *
  * `dedupeKey` collisions are NOT an error: re-submitting the same import returns the job that is
@@ -164,20 +181,28 @@ export async function reportProgress(
 }
 
 export async function completeJob(
-  pool: Pool, jobId: string, actorId: string | null,
+  pool: Pool, jobId: string, actorId: string | null, result?: object,
 ): Promise<void> {
   const client = await pool.connect();
   try {
     await client.query("begin");
-    const res = await client.query(
-      `update public.background_jobs
-          set status = 'succeeded', finished_at = now(), last_error = null
-        where id = $1 and status = 'running' returning id`, [jobId]);
+    const res = result === undefined
+      ? await client.query(
+        `update public.background_jobs
+            set status = 'succeeded', finished_at = now(), last_error = null
+          where id = $1 and status = 'running' returning id`, [jobId])
+      : await client.query(
+        `update public.background_jobs
+            set status = 'succeeded', finished_at = now(), last_error = null,
+                payload = payload || jsonb_build_object($2::text, $3::jsonb)
+          where id = $1 and status = 'running' returning id`,
+        [jobId, JOB_RESULT_KEY, JSON.stringify(result)]);
     if (res.rowCount) {
       await audit(client, {
         actor: actorId, action: "complete_job",
         entityTable: "background_jobs", entityId: jobId,
-        after: { automated: true },
+        // The result itself is not copied into the trail — only the fact that one was stored.
+        after: result === undefined ? { automated: true } : { automated: true, resultStored: true },
       });
     }
     await client.query("commit");
@@ -305,7 +330,7 @@ export async function reapStuckJobs(pool: Pool, olderThanMinutes = 30): Promise<
 
 export async function listJobs(pool: Pool, limit = 100): Promise<JobRow[]> {
   const res = await pool.query(
-    `select ${COLS} from public.background_jobs
+    `select ${LIST_COLS} from public.background_jobs
       order by case status when 'dead_letter' then 0 when 'running' then 1
                            when 'failed' then 2 when 'queued' then 3 else 4 end,
                created_at desc

@@ -28,6 +28,7 @@
 // currently a viewer?" a question the auth path had to ask.
 import { AsyncLocalStorage } from "node:async_hooks";
 import { Pool, type PoolClient, type QueryResult, type QueryResultRow } from "pg";
+import { APP_ROLES, DB_ROLE, type AppRole } from "@/lib/authz/matrix";
 import { env } from "@/lib/env";
 import { countingClient, recordRequestQuery } from "@/lib/perf/request-metrics";
 import { recordQuery } from "@/lib/perf/slow-query";
@@ -137,6 +138,30 @@ export function runAsSystem<T>(fn: () => Promise<T>): Promise<T> {
  */
 export function runAsReadOnlySystem<T>(fn: () => Promise<T>): Promise<T> {
   return systemContext.run({ dbRole: "mas_radar_viewer", userId: null }, fn);
+}
+
+const USER_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * A named person's tier, for work done ON THEIR BEHALF outside a request.
+ *
+ * Exactly one caller today: the async Import V2 preview worker (scripts/ops/process-import-jobs.ts
+ * → src/lib/importers/v2/async-runner.ts), which previews a workbook a user queued earlier. Using
+ * runAsSystem() there would read as finance_manager on behalf of an operator; using the user's own
+ * tier means the worker can see nothing that person could not, and `app.user_id` names them for
+ * the row policies exactly as their own request would.
+ *
+ * The identity MUST be the user's row in public.users, re-read by the caller at the moment of use
+ * (active, not under a forced password change, permitted) — never an id or a role taken from a
+ * request body or a job payload. The role is therefore typed, and still refused at runtime unless
+ * it is one of the five tiers: this function hands it to SET ROLE.
+ */
+export function runAsUser<T>(user: { id: string; role: AppRole }, fn: () => Promise<T>): Promise<T> {
+  if (!(APP_ROLES as readonly string[]).includes(user.role)) {
+    throw new Error(`Bilinmeyen kullanıcı katmanı: ${String(user.role)}`);
+  }
+  if (!USER_ID.test(user.id)) throw new Error("Geçersiz kullanıcı kimliği");
+  return systemContext.run({ dbRole: DB_ROLE[user.role], userId: user.id }, fn);
 }
 
 async function contextFor(): Promise<{ dbRole: string | null; userId: string | null }> {

@@ -248,6 +248,18 @@ describe("route handler'lar", () => {
       .filter((rel) => referencesIdentifier(parse(rel), "runAsSystem"));
     expect(users).toEqual([]);
   });
+
+  // Wave 0 / S5: runAsUser switches a connection into a NAMED person's tier outside a request. Its
+  // one legitimate caller re-reads that person from public.users first (async Import V2 preview
+  // worker). Anywhere else — above all a route or server action, where the id/role would come from
+  // the request — it would be impersonation, so the set of callers is pinned.
+  it("runAsUser (başkası adına katman) yalnız asenkron önizleme koşucusunda kullanılır", () => {
+    const callers = [
+      ...walk("src", (rel) => /\.(ts|tsx)$/.test(rel) && !isTest(rel)),
+      ...walk("scripts", (rel) => rel.endsWith(".ts")),
+    ].filter((rel) => rel !== "src/lib/db.ts" && referencesIdentifier(parse(rel), "runAsUser"));
+    expect(callers).toEqual(["src/lib/importers/v2/async-runner.ts"]);
+  });
 });
 
 describe("server action'lar", () => {

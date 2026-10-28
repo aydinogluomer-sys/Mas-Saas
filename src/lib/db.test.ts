@@ -62,7 +62,7 @@ vi.mock("@/lib/perf/request-metrics", () => ({
 }));
 vi.mock("@/lib/perf/slow-query", () => ({ recordQuery: () => {} }));
 
-import { getPool, runAsReadOnlySystem, runAsSystem } from "./db";
+import { getPool, runAsReadOnlySystem, runAsSystem, runAsUser } from "./db";
 
 const USER = "11111111-1111-4111-8111-111111111111";
 const OTHER = "22222222-2222-4222-8222-222222222222";
@@ -180,5 +180,34 @@ describe("db.ts — mutlu yol", () => {
 
     await runAsSystem(() => getPool().query("select 1"));
     expect(texts(lastClient())).toContain("set role mas_radar_finance_manager");
+  });
+});
+
+describe("db.ts — runAsUser (Wave 0: asenkron önizleme işçisi, kişinin KENDİ katmanı)", () => {
+  it("kullanıcının katmanına geçer ve app.user_id onu adlandırır — iş kimliği (finance_manager) değil", async () => {
+    h.state.context = { dbRole: null, userId: null };
+
+    await runAsUser({ id: OTHER, role: "finance_operator" }, () => getPool().query("select 1"));
+    const client = lastClient();
+
+    expect(texts(client)).toEqual([
+      "select set_config('app.user_id', $1, false)",
+      "set role mas_radar_finance_operator",
+      "select 1",
+    ]);
+    expect(client.calls[0].values).toEqual([OTHER]);
+  });
+
+  it("bağlam yalnız fonksiyonun içinde geçerlidir; dışarıdaki istek kendi katmanına döner", async () => {
+    await runAsUser({ id: OTHER, role: "admin" }, () => getPool().query("select 1"));
+    await getPool().query("select 2");
+    expect(texts(lastClient())).toContain("set role mas_radar_viewer");
+  });
+
+  it("beş katmandan biri olmayan rol ve uuid olmayan kimlik SQL'e hiç ulaşmaz", () => {
+    const bad = { id: OTHER, role: "superuser" } as unknown as Parameters<typeof runAsUser>[0];
+    expect(() => runAsUser(bad, async () => 1)).toThrow(/Bilinmeyen kullanıcı katmanı/);
+    expect(() => runAsUser({ id: "admin-1", role: "admin" }, async () => 1)).toThrow(/Geçersiz kullanıcı kimliği/);
+    expect(h.state.created).toHaveLength(0);
   });
 });

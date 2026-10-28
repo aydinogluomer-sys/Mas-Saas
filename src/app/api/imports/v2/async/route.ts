@@ -1,14 +1,25 @@
+// Standart Import V2 — asenkron ÖNİZLEME uç noktası (Wave 0 / R8).
+//
+// POST dosyayı sahneler ve bir önizleme işi kuyruğa alır (202); GET işin durumunu ve işçi
+// bitirdiyse saklanan önizleme raporunu döndürür. Hiçbir yol finansal kayıt YAZMAZ: onay,
+// /data/imports/v2'deki senkron akışta (dosya yeniden yüklenir, önizleme SHA'sı eşleşmek
+// zorunda) kalır. Gerekçe: src/lib/importers/v2/async-runner.ts başlığı.
 import { NextResponse } from "next/server";
+import { z } from "zod";
 import { apiError, checkOrigin, withApiHandler } from "@/lib/api-response";
 import { requireApiSession } from "@/lib/auth";
 import { canPerform } from "@/lib/authz/matrix";
 import { CORRELATION_HEADER } from "@/lib/correlation";
 import { getPool } from "@/lib/db";
 import {
-  enqueueAsyncWorkbookImport, getAsyncImportJobStatus,
+  enqueueAsyncWorkbookPreview, getAsyncPreviewJobStatus,
 } from "@/lib/importers/v2/async-runner";
+import { validateUploadMeta } from "@/lib/importers/v2/service";
 
 export const dynamic = "force-dynamic";
+
+/** `background_jobs.id` bir uuid; başka bir şey veritabanına hiç gitmez (eskiden pg hatası → 500). */
+const jobIdSchema = z.string().regex(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i);
 
 export async function POST(request: Request) {
   return withApiHandler(request, async ({ requestId }) => {
@@ -43,16 +54,18 @@ export async function POST(request: Request) {
       return apiError(400, "Dosya seçilmedi veya dosya boş.", { code: "empty_file", requestId });
     }
 
-    const buf = Buffer.from(await file.arrayBuffer());
-    const pool = getPool();
+    // Ad/uzantı/boyut baytlar belleğe alınmadan ÖNCE — senkron akışla aynı kapı (actions.ts
+    // readFile): 50 MB üstü ya da .xlsx olmayan dosya arrayBuffer()'a hiç ulaşmaz.
+    const meta = validateUploadMeta({ name: file.name, size: file.size });
+    if (meta) {
+      return apiError(400, meta.detail ? `${meta.message} (${meta.detail})` : meta.message, {
+        code: meta.code,
+        requestId,
+      });
+    }
 
-    const enq = await enqueueAsyncWorkbookImport(
-      pool,
-      buf,
-      file.name.trim(),
-      user.id,
-      user.role,
-    );
+    const buf = Buffer.from(await file.arrayBuffer());
+    const enq = await enqueueAsyncWorkbookPreview(getPool(), buf, file.name.trim(), user.id);
 
     if (!enq.ok) {
       const msg = enq.rejection.detail
@@ -67,7 +80,9 @@ export async function POST(request: Request) {
     return NextResponse.json(
       {
         ok: true,
-        message: "Dosya arka plan işlem kuyruğuna alındı.",
+        message:
+          "Dosya önizleme kuyruğuna alındı. Önizleme hiçbir kayıt yazmaz; içe aktarmak için raporu " +
+          "inceleyip dosyayı Standart içe aktarım (V2) sayfasından onaylayın.",
         job: enq.result,
       },
       {
@@ -85,13 +100,24 @@ export async function GET(request: Request) {
       return apiError(401, "Oturum açmanız gerekiyor.", { code: "unauthorized", requestId });
     }
 
-    const url = new URL(request.url);
-    const jobId = url.searchParams.get("jobId")?.trim();
-    if (!jobId) {
-      return apiError(400, "jobId parametresi zorunlu.", { code: "bad_request", requestId });
+    // Raporu yalnız içe aktarabilen katmanlar okur — POST ile aynı kapı.
+    if (!canPerform(user.role, "import_workbook_v2")) {
+      return apiError(403, "Bu oturumun katmanı içe aktarma yapamaz.", { code: "forbidden", requestId });
     }
 
-    const job = await getAsyncImportJobStatus(getPool(), jobId);
+    const url = new URL(request.url);
+    const jobId = jobIdSchema.safeParse(url.searchParams.get("jobId")?.trim() ?? "");
+    if (!jobId.success) {
+      return apiError(400, "jobId parametresi zorunlu ve bir iş kimliği (uuid) olmalı.", {
+        code: "bad_request",
+        requestId,
+      });
+    }
+
+    // Kendi işi; finans yöneticisi ve yönetici herkesinkini görür. Başkasının işi ile var olmayan
+    // iş aynı 404'ü alır — kimlik numarasıyla başka kullanıcıların geçmişi yoklanamaz.
+    const seeAll = user.role === "finance_manager" || user.role === "admin";
+    const job = await getAsyncPreviewJobStatus(getPool(), jobId.data, { id: user.id, seeAll });
     if (!job) {
       return apiError(404, "Kuyruk işi bulunamadı.", { code: "not_found", requestId });
     }

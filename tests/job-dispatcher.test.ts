@@ -19,6 +19,17 @@ describe("Background Job Dispatcher", () => {
     dispatcher.clearHandlers();
   });
 
+  it("aktör verilmezse null kullanılır — uuid olmayan 'worker-daemon' audit_logs FK'sini kırardı", async () => {
+    dispatcher.register("fx_rate_sync", async () => ({ success: true }));
+    vi.mocked(queue.claimNextJob).mockResolvedValueOnce(null).mockResolvedValueOnce(null);
+
+    await dispatcher.processNext(dummyPool);
+    await dispatcher.processBatch(dummyPool, 3);
+
+    for (const call of vi.mocked(queue.claimNextJob).mock.calls) expect(call[2]).toBeNull();
+    expect(vi.mocked(queue.claimNextJob)).toHaveBeenCalledTimes(2);
+  });
+
   it("kayıtlı handler olduğunda ama kuyruk boşken processed: false döner", async () => {
     dispatcher.register("fx_rate_sync", async () => ({ success: true }));
     vi.mocked(queue.claimNextJob).mockResolvedValueOnce(null);
