@@ -86,6 +86,16 @@ describe("V2 ham hücre skaler olmayabilir — hata değil, parser'ın çözüc�
     expect(sourceRevenue(v2Row("260 TL"), 500)).toBe(130000);
   });
 
+  // Wave 0: kârlılık motorunun parser dışındaki tek parseNumber tüketicisi bu dosya ve
+  // 'ambiguous' değeri kabul ediyor. İncelenmemiş katmanda formül hatası 'ambiguous' + 0
+  // dönüyordu: kırık bir fiyat formülü parça gelirini 0 diye kârlılığa sokardı.
+  it("formül hatası taşıyan fiyat → bilinmiyor (null), ASLA 0", () => {
+    expect(sourceRevenue(v2Row({ error: "#REF!" }), 500)).toBeNull();
+    expect(sourceRevenue(v2Row({ formula: "=B2*2", result: { error: "#DIV/0!" } }), 500)).toBeNull();
+    expect(sourceRevenue(v2Row("#N/A"), 500)).toBeNull();
+    expect(readSourceRevenue(v2Row({ error: "#REF!" }), 500)).toEqual({ revenue: null, source: "v2" });
+  });
+
   it("sayı olmayan metin ve ISO tarih metni HATA FIRLATMAZ, bilinmiyor döner", () => {
     expect(() => sourceRevenue(v2Row("abc"), 500)).not.toThrow();
     expect(sourceRevenue(v2Row("abc"), 500)).toBeNull();

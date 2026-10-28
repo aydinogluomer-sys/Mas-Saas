@@ -22,7 +22,9 @@ import { DATA_SHEETS } from "./contract";
 import {
   ExternalKeyBindingConflictError, StaleExternalKeyBindingError, mapWorkbook, type MapperResult,
 } from "./mapper";
-import { parseWorkbook, UNKNOWN_COLUMNS_KEY, type Issue, type WorkbookParseResult } from "./parser";
+import {
+  parseWorkbook, MERGED_CELLS_KEY, UNKNOWN_COLUMNS_KEY, type Issue, type WorkbookParseResult,
+} from "./parser";
 
 /* ── Sınırlar (plan §4.4) ─────────────────────────────────────────────────────────────── */
 
@@ -184,6 +186,14 @@ export interface PreviewReport {
     duplicateSuspects: IssueRef[];
     /** MISSING REQUIRED FIELD */
     missingRequired: IssueRef[];
+    /**
+     * FORMÜL HATALARI — `#REF!`/`#DIV/0!`… taşıyan hücreler. Değer bilinmiyor; satır reddedilir.
+     * Ayrı liste çünkü düzeltilecek şey yazılan değer değil, kaynak dosyadaki kırık formül —
+     * onaydan ÖNCE görünmezse kullanıcı ancak yazdıktan sonra inceleme kuyruğunda öğrenirdi.
+     */
+    formulaErrors: IssueRef[];
+    /** BİRLEŞTİRİLMİŞ HÜCRELER — değer yalnız aralığın ilk hücresinden okunur; satır incelemeye düşer. */
+    mergedCells: IssueRef[];
     /** Bu oturumun katmanıyla YAZILAMAYACAK sayfalar — onay bunlar varken reddedilir. */
     forbiddenSheets: ForbiddenSheet[];
   };
@@ -249,6 +259,8 @@ export function buildPreviewReport(
         .filter((i) => i.type === "duplicate_external_id" || i.type === "duplicate_check")
         .map(issueRef),
       missingRequired: issues.filter((i) => i.type === "missing_required_field").map(issueRef),
+      formulaErrors: issues.filter((i) => i.type === "formula_error").map(issueRef),
+      mergedCells: issues.filter((i) => i.type === "merged_cell").map(issueRef),
       forbiddenSheets: forbiddenSheetsFor(parsed, role),
     },
     sheets: parsed.sheets.filter((s) => s.present).map((s) => ({
@@ -366,5 +378,8 @@ export async function confirmImport(
   }
 }
 
-/** Ham hücre değerinin `raw`'da nerede tutulduğunu UI'a açıklamak için (bilinmeyen kolonlar). */
-export { UNKNOWN_COLUMNS_KEY };
+/**
+ * Ham hücre değerinin `raw`'da nerede tutulduğunu UI'a açıklamak için: bilinmeyen kolonlar ve
+ * birleştirilmiş aralığın ilk olmayan hücrelerinin kaynağı.
+ */
+export { MERGED_CELLS_KEY, UNKNOWN_COLUMNS_KEY };

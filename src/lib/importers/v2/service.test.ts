@@ -6,6 +6,7 @@ import type { Pool, PoolClient } from "pg";
 import { describe, expect, it } from "vitest";
 import { buildTemplateBuffer } from "./template";
 import { buildFixtureWorkbook, FIXTURE_ORACLE } from "./fixture";
+import { sheetByName } from "./contract";
 import {
   UPLOAD_LIMITS, ALLOWED_EXTENSIONS, safeFilename, validateUploadMeta, openWorkbook, countDataRows,
   previewImport, confirmImport, sha256Hex,
@@ -147,6 +148,43 @@ describe("4.2 önizleme — sayaçlar ve listeler (DB'siz, salt-okunur client)",
     const r = await previewImport(emptyClient, buf, "legacy.xlsx", "actor");
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.rejection.code).toBe("NOT_V2_SCHEMA");
+  });
+
+  it("formül hatası ve birleştirilmiş hücre ONAYDAN ÖNCE kendi listelerinde görünür; önizleme yine yalnız okur", async () => {
+    const wb = await buildFixtureWorkbook();
+    const odeme = wb.getWorksheet("01_ODEMELER")!;
+    const ospec = sheetByName("01_ODEMELER")!;
+    const hata: Record<string, unknown> = {
+      external_id: "ODM-FORMUL", aciklama: "Formülü kırık", tekrar_tipi: "monthly", vade_gunu: 5,
+      para_birimi: "TRY", tutar: { error: "#REF!" },
+    };
+    odeme.addRow([...ospec.columns.map((c) => (c.key in hata ? hata[c.key] : null)), null]);
+    const cek = wb.getWorksheet("02_CEKLER")!;
+    const cspec = sheetByName("02_CEKLER")!;
+    const satir = (seri: string, tutar: number | null) => {
+      const v: Record<string, unknown> = { seri_no: seri, vade_tarihi: "2026-11-30", kime: "X", para_birimi: "TRY", signed_tutar: tutar };
+      return cspec.columns.map((c) => (c.key in v ? v[c.key] : null));
+    };
+    const a = cek.addRow(satir("S-1", -45000));
+    const b = cek.addRow(satir("S-2", null));
+    const col = cspec.columns.findIndex((c) => c.key === "signed_tutar") + 1;
+    cek.mergeCells(a.number, col, b.number, col);
+    const buf = Buffer.from(await wb.xlsx.writeBuffer());
+
+    const queries: string[] = [];
+    const spy = { query: async (sql: string) => { queries.push(sql); return { rows: [], rowCount: 0 }; } } as unknown as PoolClient;
+    const r = await previewImport(spy, buf, "f.xlsx", "actor");
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.report.lists.formulaErrors).toEqual([
+      expect.objectContaining({ sheet: "01_ODEMELER", column: "Tutar", message: expect.stringContaining("#REF!") }),
+    ]);
+    expect(r.report.lists.mergedCells.map((m) => m.row)).toEqual([a.number, b.number]);
+    const o = Object.values(FIXTURE_ORACLE.sheets);
+    // Formül hatalı ödeme ve tutarı birleştirmede kalan ikinci çek reddedilir; ilk çek incelemeye düşer.
+    expect(r.report.counters.reject).toBe(o.reduce((n, s) => n + s.rejected, 0) + 2);
+    expect(r.report.counters.review).toBe(o.reduce((n, s) => n + s.needsReview, 0) + 1);
+    for (const q of queries) expect(q.trim().toLowerCase().startsWith("select")).toBe(true);
   });
 
   it("bilinmeyen başlık ve bilinmeyen sayfa DESTEKLENMEYEN ALANLAR listesine düşer", async () => {

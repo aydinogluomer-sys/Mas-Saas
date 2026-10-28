@@ -6,7 +6,8 @@ import { describe, expect, it, beforeAll } from "vitest";
 import ExcelJS from "exceljs";
 import { buildFixtureWorkbook, FIXTURE_ORACLE } from "./fixture";
 import {
-  parseWorkbook, detectSchema, UNKNOWN_COLUMNS_KEY, PARENT_CHILD_REFS, CURRENCYLESS_DOMAIN_FAMILIES, type WorkbookParseResult,
+  parseWorkbook, detectSchema, UNKNOWN_COLUMNS_KEY, MERGED_CELLS_KEY, PARENT_CHILD_REFS, CURRENCYLESS_DOMAIN_FAMILIES,
+  type WorkbookParseResult,
 } from "./parser";
 import { DATA_SHEETS, META_SHEET, sheetByName } from "./contract";
 
@@ -454,6 +455,193 @@ describe("Bilinmeyen sayfa", () => {
     const r = parseWorkbook(wb);
     expect(r.unknownSheets).toContain("Karalama");
     expect(r.issues.some((i) => i.type === "unknown_sheet")).toBe(true);
+  });
+});
+
+/**
+ * Gerçek OOXML gidiş-dönüşü: hata hücresi (`t="e"`), hatalı sonuçlu formül ve birleştirme
+ * bilgisi dosyaya yazılıp ExcelJS'in KENDİ okuyucusuyla geri okunur — testteki hücre biçimleri
+ * elle uydurulmuş nesneler değil, kullanıcının yükleyeceği dosyanın verdiği biçimlerdir.
+ */
+async function roundTrip(wb: ExcelJS.Workbook): Promise<ExcelJS.Workbook> {
+  const buf = Buffer.from(await wb.xlsx.writeBuffer());
+  const back = new ExcelJS.Workbook();
+  await back.xlsx.load(buf as unknown as ArrayBuffer);
+  return back;
+}
+
+const rowFor = (sheet: string, values: Record<string, unknown>, extra: unknown[] = []): unknown[] =>
+  [...sheetByName(sheet)!.columns.map((c) => (c.key in values ? values[c.key] : null)), ...extra];
+
+describe("Formül hatası: değer BİLİNMİYOR, satır reddedilir, ham hücre korunur (Wave 0)", () => {
+  async function parseWithFormulaErrors(): Promise<WorkbookParseResult> {
+    const wb = await buildFixtureWorkbook();
+    // Sondaki null: fixture'ın sözleşme dışı "Muhasebe Fişi No" sütunu.
+    wb.getWorksheet("01_ODEMELER")!.addRow(rowFor("01_ODEMELER", {
+      external_id: "ODM-FORMUL", aciklama: "Formülü kırık ödeme", tekrar_tipi: "monthly", vade_gunu: 5,
+      para_birimi: "TRY", tutar: { error: "#REF!" }, durum: { error: "#N/A" },
+      karsi_taraf: { formula: "VLOOKUP(A1,X!A:B,2,0)", result: { error: "#N/A" } },
+    }, [null]));
+    return parseWorkbook(await roundTrip(wb));
+  }
+
+  it("tutar, durum ve karşı taraf null — 0 değil, varsayılan 'active' değil, boş metin değil", async () => {
+    const r = await parseWithFormulaErrors();
+    const row = r.sheets.find((x) => x.sheet === "01_ODEMELER")!.rows.find((x) => x.values.external_id === "ODM-FORMUL")!;
+    expect(row, "formül hatalı satır okunmadı").toBeDefined();
+    expect(row.values.tutar).toBeNull();
+    expect(row.values.tutar).not.toBe(0);
+    expect(row.values.durum).toBeNull();
+    expect(row.values.karsi_taraf).toBeNull();
+    expect(row.status).toBe("rejected");
+  });
+
+  it("her hata hücresi kendi kolonuyla yüksek şiddetli formula_error açar", async () => {
+    const r = await parseWithFormulaErrors();
+    const row = r.sheets.find((x) => x.sheet === "01_ODEMELER")!.rows.find((x) => x.values.external_id === "ODM-FORMUL")!;
+    const fe = row.issues.filter((i) => i.type === "formula_error");
+    expect(fe.map((i) => i.column).sort()).toEqual(["Durum", "Karşı Taraf", "Tutar"]);
+    for (const i of fe) {
+      expect(i.severity).toBe("high");
+      expect(i.message).toContain("BİLİNMİYOR");
+    }
+    expect(fe.find((i) => i.column === "Tutar")!.message).toContain("#REF!");
+    // Genel 'invalid_number' / 'invalid_enum' türüyle ikinci kez kaydedilmez.
+    expect(row.issues.some((i) => i.type === "invalid_number" || i.type === "invalid_enum")).toBe(false);
+  });
+
+  it("ham hücre OOXML'den geldiği biçimiyle saklanır (row_json lineage)", async () => {
+    const r = await parseWithFormulaErrors();
+    const row = r.sheets.find((x) => x.sheet === "01_ODEMELER")!.rows.find((x) => x.values.external_id === "ODM-FORMUL")!;
+    expect(row.raw.tutar).toEqual({ error: "#REF!" });
+    expect(row.raw.durum).toEqual({ error: "#N/A" });
+    expect(row.raw.karsi_taraf).toEqual({ formula: "VLOOKUP(A1,X!A:B,2,0)", result: { error: "#N/A" } });
+  });
+
+  it("sayaçlar: yalnız bir satır fazladan okunur ve reddedilir; hazır sayısı değişmez", async () => {
+    const r = await parseWithFormulaErrors();
+    const s = r.sheets.find((x) => x.sheet === "01_ODEMELER")!;
+    const o = FIXTURE_ORACLE.sheets["01_ODEMELER"];
+    expect({ rowsRead: s.rowsRead, ready: s.ready, needsReview: s.needsReview, rejected: s.rejected })
+      .toEqual({ rowsRead: o.rowsRead + 1, ready: o.ready, needsReview: o.needsReview, rejected: o.rejected + 1 });
+  });
+
+  it("yalnız metin formül hatalarından oluşan satır BOŞ SATIR sayılmaz — okunur ve reddedilir", async () => {
+    const wb = await buildFixtureWorkbook();
+    wb.getWorksheet("01_ODEMELER")!.addRow(rowFor("01_ODEMELER", {
+      aciklama: { error: "#REF!" }, notlar: { formula: "B2&C2", result: { error: "#VALUE!" } },
+    }, [null]));
+    const r = parseWorkbook(await roundTrip(wb));
+    const s = r.sheets.find((x) => x.sheet === "01_ODEMELER")!;
+    expect(s.rowsRead).toBe(FIXTURE_ORACLE.sheets["01_ODEMELER"].rowsRead + 1);
+    const row = s.rows[s.rows.length - 1];
+    expect(row.status).toBe("rejected");
+    expect(row.issues.filter((i) => i.type === "formula_error").map((i) => i.column).sort()).toEqual(["Açıklama", "Notlar"]);
+    expect(row.values.aciklama).toBeNull();
+    expect(row.values.notlar).toBeNull();
+  });
+});
+
+describe("Birleştirilmiş hücre: değer YALNIZ ilk hücrede (Wave 0)", () => {
+  // İki seri numaralı çek, tutar hücresi dikey birleştirilmiş: kullanıcının niyeti "ikisi de
+  // −45.000" de olabilir, "tek çek iki satıra yayılmış" da. Parser tahmin etmez.
+  async function mergedChecks() {
+    const wb = await buildFixtureWorkbook();
+    const ws = wb.getWorksheet("02_CEKLER")!;
+    const base = { vade_tarihi: "2026-11-30", kime: "Birleşik Tedarikçi", banka: "Deniz", para_birimi: "TRY" };
+    const a = ws.addRow(rowFor("02_CEKLER", { ...base, seri_no: "S-1", signed_tutar: -45000 }));
+    const b = ws.addRow(rowFor("02_CEKLER", { ...base, seri_no: "S-2", signed_tutar: null }));
+    const col = sheetByName("02_CEKLER")!.columns.findIndex((c) => c.key === "signed_tutar") + 1;
+    ws.mergeCells(a.number, col, b.number, col);
+    const back = await roundTrip(wb);
+    const sheet = parseWorkbook(back).sheets.find((x) => x.sheet === "02_CEKLER")!;
+    return {
+      back, col, aNum: a.number, bNum: b.number,
+      masterAddress: back.getWorksheet("02_CEKLER")!.getRow(a.number).getCell(col).address,
+      rowA: sheet.rows.find((x) => x.rowIndex === a.number)!,
+      rowB: sheet.rows.find((x) => x.rowIndex === b.number)!,
+    };
+  }
+
+  it("ilk satır değeri taşır; ikinci satır null, ham değeri de null, kaynağı __merged__ altında", async () => {
+    const { rowA, rowB, masterAddress } = await mergedChecks();
+    expect(rowA.values.signed_tutar).toBe(-45000);
+    expect(rowB.values.signed_tutar).toBeNull();
+    expect(rowB.raw.signed_tutar).toBeNull();
+    expect(rowB.raw[MERGED_CELLS_KEY]).toEqual({ signed_tutar: masterAddress });
+    expect(rowA.raw).not.toHaveProperty(MERGED_CELLS_KEY);
+  });
+
+  it("aralığa değen iki satır da merged_cell (orta) taşır ve HAZIR değildir — çift sayım yok", async () => {
+    const { rowA, rowB } = await mergedChecks();
+    for (const row of [rowA, rowB]) {
+      const m = row.issues.find((i) => i.type === "merged_cell")!;
+      expect(m).toBeDefined();
+      expect(m.severity).toBe("medium");
+      expect(m.column).toBe("İşaretli Tutar (− ödeme / + tahsilat)");
+      expect(row.status).not.toBe("ready");
+    }
+    // Zorunlu tutarın ilk olmayan hücresi boş hücreyle aynı yoldan geçer.
+    expect(rowB.status).toBe("rejected");
+    expect(rowB.issues.some((i) => i.type === "missing_required_field")).toBe(true);
+    const readySum = [rowA, rowB]
+      .filter((r) => r.status === "ready")
+      .reduce((n, r) => n + (r.values.signed_tutar as number), 0);
+    expect(readySum).toBe(0);
+  });
+
+  it("TUZAK belgesi: ExcelJS ikinci hücrede ana hücrenin değerini döndürür — parser onu kullanmaz", async () => {
+    const { back, col, bNum, rowB } = await mergedChecks();
+    expect(back.getWorksheet("02_CEKLER")!.getRow(bNum).getCell(col).value).toBe(-45000);
+    expect(rowB.values.signed_tutar).not.toBe(-45000);
+  });
+
+  it("yatay birleştirme: açıklama karşı tarafa taşmaz; isteğe bağlı kolon → inceleme", async () => {
+    const wb = await buildFixtureWorkbook();
+    const ws = wb.getWorksheet("01_ODEMELER")!;
+    const r1 = ws.addRow(rowFor("01_ODEMELER", {
+      external_id: "ODM-YATAY", aciklama: "Birleşik açıklama", vade_gunu: 7, tutar: 100,
+      para_birimi: "TRY", tekrar_tipi: "monthly",
+    }, [null]));
+    const cols = sheetByName("01_ODEMELER")!.columns;
+    const aciklama = cols.findIndex((c) => c.key === "aciklama") + 1;
+    const karsi = cols.findIndex((c) => c.key === "karsi_taraf") + 1;
+    expect(karsi).toBe(aciklama + 1);
+    ws.mergeCells(r1.number, aciklama, r1.number, karsi);
+    const back = await roundTrip(wb);
+    const row = parseWorkbook(back).sheets.find((x) => x.sheet === "01_ODEMELER")!.rows
+      .find((x) => x.values.external_id === "ODM-YATAY")!;
+    expect(row.values.aciklama).toBe("Birleşik açıklama");
+    expect(row.values.karsi_taraf).toBeNull();
+    expect(row.raw[MERGED_CELLS_KEY]).toEqual({
+      karsi_taraf: back.getWorksheet("01_ODEMELER")!.getRow(r1.number).getCell(aciklama).address,
+    });
+    expect(row.issues.filter((i) => i.type === "merged_cell").map((i) => i.column).sort()).toEqual(["Açıklama", "Karşı Taraf"]);
+    expect(row.status).toBe("needs_review");
+  });
+
+  it("birleştirilmiş BAŞLIK: ikinci sütun aynı alana eşlenmez, verisi ham veride korunur, sayfa incelemesi açılır", async () => {
+    const wb = await buildFixtureWorkbook();
+    const ws = wb.getWorksheet("11_PROJELER")!;
+    const n = sheetByName("11_PROJELER")!.columns.length;   // son sözleşme kolonu: Notlar
+    ws.addRow(rowFor("11_PROJELER", { external_id: "PRJ-BIRLESIK", proje_adi: "Birleşik başlıklı", notlar: "A" }, ["B"]));
+    ws.mergeCells(1, n, 1, n + 1);
+    const r = parseWorkbook(await roundTrip(wb));
+    const s = r.sheets.find((x) => x.sheet === "11_PROJELER")!;
+    const label = `Notlar (sütun ${n + 1}, birleştirilmiş başlık)`;
+    const issue = s.issues.find((i) => i.type === "merged_cell" && i.row === 1)!;
+    expect(issue).toBeDefined();
+    expect(issue.column).toBe(label);
+    const row = s.rows.find((x) => x.values.external_id === "PRJ-BIRLESIK")!;
+    expect(row.values.notlar).toBe("A");
+    expect(row.raw[UNKNOWN_COLUMNS_KEY]).toEqual({ [label]: "B" });
+  });
+
+  it("birleştirme yoksa hiçbir satır __merged__ taşımaz ve merged_cell açılmaz (kanonik fixture)", () => {
+    for (const s of result.sheets) {
+      for (const row of s.rows) expect(row.raw, `${s.sheet}!${row.rowIndex}`).not.toHaveProperty(MERGED_CELLS_KEY);
+    }
+    expect(result.issues.some((i) => i.type === "merged_cell" || i.type === "formula_error")).toBe(false);
   });
 });
 

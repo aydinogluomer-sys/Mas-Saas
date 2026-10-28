@@ -30,50 +30,45 @@ export default async function ImportsPage() {
 
   return (
     <>
-      <Panel
-        title="Excel Çalışma Kitabı Yükle"
-        subtitle="Veri tablolarını içe aktarın; satır doğrulaması ve mutabakat için otomatik incelemeye alın."
-      >
+      <Panel title="WORKBOOK YÜKLE">
         <UploadForm />
       </Panel>
-      <Panel
-        title="İçe Aktarılan Dosyalar"
-        right={<Badge tone="neutral">{rows.length} dosya</Badge>}
-      >
+      <Panel title={`İÇE AKTARIMLAR — ${rows.length}`}>
         {rows.length === 0 ? (
-          <EmptyState title="Henüz İçe Aktarılmış Dosya Yok">
-            Excel dosyasını yukarıdaki yükleme alanına bırakın — tüm sekmeler ve hücreler ham haliyle korunur, belirsiz satırlar eşleme incelemesine düşer.
+          <EmptyState>
+            Henüz içe aktarım yok. Excel dosyasını yukarıdan yükleyin — tüm sekmeler ve hücreler
+            ham haliyle korunur, belirsiz satırlar eşleme incelemesine düşer.
           </EmptyState>
         ) : (
           <table className="w-full text-sm">
             <thead>
-              <tr className="border-b border-line text-left font-sans text-[11px] font-semibold text-tone-3">
-                <th className="py-2 pr-3">Dosya</th>
-                <th className="py-2 pr-3">Durum</th>
-                <th className="py-2 pr-3">Sekme</th>
-                <th className="py-2 pr-3">Satır</th>
-                <th className="py-2 pr-3">Açık İnceleme</th>
-                <th className="py-2">Yükleme Tarihi</th>
+              <tr className="border-b border-line text-left font-mono text-[10px] uppercase tracking-wider text-tone-3">
+                <th className="py-1 pr-2">dosya</th>
+                <th className="py-1 pr-2">durum</th>
+                <th className="py-1 pr-2">sekme</th>
+                <th className="py-1 pr-2">satır</th>
+                <th className="py-1 pr-2">açık inceleme</th>
+                <th className="py-1">tarih</th>
               </tr>
             </thead>
             <tbody>
               {rows.map((w) => (
                 <tr key={w.id} className="border-b border-line-faint">
-                  <td className="max-w-[280px] truncate py-2.5 pr-3 font-medium text-tone-1">
-                    <a data-hard-nav="true" className="hover:text-sky-400 hover:underline transition-colors" href={`/data/imports/${w.id}`}>
+                  <td className="max-w-[280px] truncate py-2 pr-2">
+                    <a data-hard-nav="true" className="underline decoration-line-strong underline-offset-2 hover:text-tone-1" href={`/data/imports/${w.id}`}>
                       {w.original_filename}
                     </a>
                     {w.status === "failed" && w.parse_error ? (
                       <div className="mt-1 truncate font-mono text-[10px] text-neg">{w.parse_error}</div>
                     ) : null}
                   </td>
-                  <td className="py-2.5 pr-3"><Badge tone={STATUS_TONE[w.status] ?? "neutral"}>{w.status}</Badge></td>
-                  <td className="py-2.5 pr-3"><Num>{w.sheet_count}</Num></td>
-                  <td className="py-2.5 pr-3"><Num>{w.row_count}</Num></td>
-                  <td className="py-2.5 pr-3">
+                  <td className="py-2 pr-2"><Badge tone={STATUS_TONE[w.status] ?? "neutral"}>{w.status}</Badge></td>
+                  <td className="py-2 pr-2"><Num>{w.sheet_count}</Num></td>
+                  <td className="py-2 pr-2"><Num>{w.row_count}</Num></td>
+                  <td className="py-2 pr-2">
                     {w.open_reviews > 0 ? <Badge tone="amber">{w.open_reviews}</Badge> : <Num>0</Num>}
                   </td>
-                  <td className="py-2.5 font-sans text-xs text-tone-2">{w.imported_at}</td>
+                  <td className="py-2 font-mono text-xs text-tone-2">{w.imported_at}</td>
                 </tr>
               ))}
             </tbody>

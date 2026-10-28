@@ -72,6 +72,8 @@ export function readSourceRevenue(rowJson: unknown, quantity: number | null): So
     const parsed = parseNumber(rowJson[V2_REVENUE_KEY]);
     // "ambiguous" da kabul: parser aynı hücreyi aynı kuralla çözüp satırı incelemeye
     // düşürmüş, kullanıcı kabul etmişse değer budur. "invalid"/"blank" → bilinmiyor.
+    // "ambiguous" YALNIZ biçim belirsizliğidir ('35.000'); Excel formül hatası 'invalid' döner
+    // (values.ts) ve burada null olur — kırık bir fiyat formülü gelire 0 diye girmez.
     const unitPrice = parsed.status === "ok" || parsed.status === "ambiguous" ? parsed.value : null;
     if (unitPrice === null || quantity === null) return { revenue: null, source: "v2" };
     return { revenue: moneyOrNull(mul(unitPrice, quantity)), source: "v2" };

@@ -27,6 +27,12 @@ export interface ParsedValue<T> {
   reason?: string;
   /** Ham girdi — inceleme kaydında saklanır. */
   raw?: unknown;
+  /**
+   * Yalnız `status === "invalid"` iken ve yalnız hücre bir Excel formül HATASI taşıdığında dolu:
+   * hatanın belirteci (`#REF!`, `#DIV/0!`, `#N/A`…). Parser bu alanı görünce sıradan bir
+   * "okunamadı" incelemesi yerine `formula_error` incelemesi açar; değer yine null'dır.
+   */
+  formulaError?: string;
 }
 
 const ok = <T>(value: T, raw?: unknown): ParsedValue<T> => ({ status: "ok", value, raw });
@@ -52,51 +58,93 @@ export function isBlank(raw: unknown): boolean {
 }
 
 /**
- * Standart Excel formül hata belirteçleri ve Türkçe karşılıkları.
- * Faz 3 (§Fuzzy Parsing): müşteri dosyalarındaki formül hataları (#VALUE!, #REF!)
- * finansal hesaplamalarda toleransla 0 kabul edilir.
+ * Excel formül HATA belirteçleri.
+ *
+ * ═══ FORMÜL HATASI BİLİNMİYOR'DUR — 0 DEĞİL, BOŞ DEĞİL ═══
+ *
+ * `#REF!` / `#DIV/0!` / `#N/A` taşıyan bir hücre "değer yok" demek değildir, "değer
+ * HESAPLANAMADI" demektir: kaynak dosyada bir formül kırık. İncelenmemiş katman (46541d8) bu
+ * hücreleri sayı kolonlarında `0` (ambiguous), metin ve enum kolonlarında sessiz BOŞ yapıyordu.
+ * İkisi de bu modülün tek kuralını bozar: 0 nakit açığını olduğundan iyi gösterir ve ödeme günü,
+ * fatura aritmetiği ve mükerrer gruplaması gibi aile kurallarına sahte bir sayı olarak girer;
+ * sessiz boş ise isteğe bağlı bir `durum` kolonunu yazıcının varsayılanına ('active'/'planned')
+ * düşürür ve hatanın izini siler. Burada hata `invalid` + `formulaError` belirteciyle döner;
+ * parser bunu yüksek şiddetli `formula_error` incelemesine çevirir, satır reddedilir, ham hücre
+ * (`{ error: "#REF!" }`) `import_rows.row_json`'da olduğu gibi kalır. Kullanıcı formülü düzeltip
+ * dosyayı yeniden yükler — tahmin edilen bir değer yoktur.
+ *
+ * NEREDEN GELİR. OOXML hata hücresini arayüz dili ne olursa olsun İngilizce belirteçle saklar
+ * (`<c t="e"><v>#REF!</v></c>`); ExcelJS onu `{ error: "#REF!" }`, hatalı sonuçlu bir formülü
+ * `{ formula, result: { error } }` olarak verir. Türkçe karşılıklar yalnız METİN hücrede görülür
+ * (ekrandan kopyalanıp yapıştırılmış ya da metin olarak dışa aktarılmış bir hata). Listede
+ * yalnız doğrulanmış karşılıklar var: doğrulanmamış bir belirteç eklemek sıradan bir metni hata
+ * sanmaya kapı açardı.
  */
-export const EXCEL_FORMULA_ERRORS: ReadonlySet<string> = new Set([
-  "#VALUE!", "#DEĞER!",
-  "#REF!", "#BAŞV!",
-  "#DIV/0!", "#SAYI/0!",
-  "#NAME?", "#AD?",
-  "#NUM!", "#SAYI!",
-  "#NULL!", "#BOŞ!",
-  "#N/A", "#YOK",
+const EXCEL_ERROR_TOKENS_OOXML = [
+  "#NULL!", "#DIV/0!", "#VALUE!", "#REF!", "#NAME?", "#NUM!", "#N/A",
+  "#GETTING_DATA", "#SPILL!", "#CALC!", "#FIELD!", "#BLOCKED!", "#CONNECT!", "#BUSY!", "#UNKNOWN!",
+] as const;
+const EXCEL_ERROR_TOKENS_TR = ["#BOŞ!", "#SAYI/0!", "#DEĞER!", "#BAŞV!", "#AD?", "#SAYI!", "#YOK"] as const;
+
+export const EXCEL_FORMULA_ERRORS: ReadonlySet<string> = new Set<string>([
+  ...EXCEL_ERROR_TOKENS_OOXML, ...EXCEL_ERROR_TOKENS_TR,
 ]);
 
-export function isExcelFormulaError(value: unknown): boolean {
-  if (value === null || value === undefined) return false;
+/**
+ * HAM hücre bir formül hatası taşıyorsa belirtecini, taşımıyorsa null döner.
+ *
+ * `{ error }` nesnesi tanım gereği hatadır — belirteci boş ya da listede olmasa bile (ExcelJS'in
+ * bilmediği yeni bir hata türü) değer olarak okunmaz, boş da sayılmaz. Formülün hatalı sonucu
+ * (`result`) ve zengin metin içindeki belirteç aynı kuralla görülür. Metin yalnız listedeki bir
+ * belirteçle birebir eşleşirse hatadır: '#12 nolu sipariş' sıradan metindir.
+ *
+ * Her `parse*` fonksiyonu bunu HAM hücreye, boşluk denetiminden ÖNCE uygular; böylece kural tek
+ * yerde durur ve hiçbir kolon tipi onu atlayamaz.
+ */
+export function formulaErrorToken(value: unknown): string | null {
+  if (value === null || value === undefined) return null;
   if (typeof value === "string") {
-    return EXCEL_FORMULA_ERRORS.has(value.trim().toUpperCase());
+    const t = value.trim().toUpperCase();
+    return EXCEL_FORMULA_ERRORS.has(t) ? t : null;
   }
-  if (typeof value === "object" && value !== null) {
+  if (typeof value === "object" && !(value instanceof Date)) {
     const o = value as Record<string, unknown>;
-    if ("error" in o && typeof o.error === "string") {
-      return true;
-    }
+    if (typeof o.error === "string") return o.error.trim() || "(belirteçsiz hata)";
+    if ("result" in o) return formulaErrorToken(o.result);
+    // Zengin metin / metin sarmalayıcısı → düz metin. unwrapCell tanımadığı nesneyi olduğu gibi
+    // döndürür; o durumda içeride aranacak bir belirteç yoktur (sonsuz özyineleme de yoktur).
+    const inner = unwrapCell(value);
+    return inner === value ? null : formulaErrorToken(inner);
   }
-  return false;
+  return null;
 }
+
+export const isExcelFormulaError = (value: unknown): boolean => formulaErrorToken(value) !== null;
+
+const formulaErrorValue = <T>(token: string, raw?: unknown): ParsedValue<T> => ({
+  status: "invalid",
+  value: null,
+  raw,
+  formulaError: token,
+  reason:
+    `Excel formül hatası (${token}): değer BİLİNMİYOR — 0 ya da boş SAYILMADI. ` +
+    "Kaynak hücredeki formülü düzeltip dosyayı yeniden yükleyin.",
+});
 
 /** ExcelJS zengin metin / formül hücrelerini düz değere indirger. */
 export function unwrapCell(raw: unknown): unknown {
   if (raw === null || raw === undefined) return raw;
   if (typeof raw === "object") {
     const o = raw as Record<string, unknown>;
-    if ("error" in o && typeof o.error === "string") {
-      return o.error;
-    }
-    // Formül hücresi: son hesaplanmış değeri kullanılır. Excel ÇALIŞTIRILMAZ (§32).
-    if ("result" in o) {
-      if (isExcelFormulaError(o.result)) {
-        const resObj = typeof o.result === "object" && o.result !== null ? (o.result as Record<string, unknown>) : null;
-        return resObj && "error" in resObj ? resObj.error : o.result;
-      }
-      return unwrapCell(o.result);
-    }
-    if ("formula" in o && !("result" in o)) return null; // hesaplanmamış formül → bilinmiyor
+    // Hata hücresi → belirtecin kendisi; hata kuralı yukarıda. `af210fd` bu nesneyi olduğu gibi
+    // döndürüyordu ve metin kolonları hücreyi '[object Object]' diye SAKLIYORDU.
+    if (typeof o.error === "string") return o.error;
+    // Formül hücresi: son hesaplanmış değeri kullanılır. Excel ÇALIŞTIRILMAZ (§32). Hatalı bir
+    // sonuç (`result: { error }`) aynı yoldan belirtece iner.
+    if ("result" in o) return unwrapCell(o.result);
+    // Hesaplanmamış formül → bilinmiyor. Paylaşılan formülün kopyaları (`sharedFormula`) da
+    // aynı kurala tabi; yoksa nesne metne çevrilip '[object Object]' diye okunurdu.
+    if ("formula" in o || "sharedFormula" in o) return null;
     if ("richText" in o && Array.isArray(o.richText)) {
       return (o.richText as Array<{ text?: string }>).map((r) => r.text ?? "").join("");
     }
@@ -109,9 +157,13 @@ export function unwrapCell(raw: unknown): unknown {
 /* ── Metin ───────────────────────────────────────────────────────────────────────────── */
 
 export function parseText(raw: unknown): ParsedValue<string> {
+  // Metin kolonu da hata belirtecini DEĞER olarak saklamaz ve onu boş da saymaz: boş saymak
+  // isteğe bağlı kolonda izi siler, yalnız hata hücrelerinden oluşan satırı "boş satır" diye
+  // atlatırdı. Enum kolonları bu fonksiyondan geçtiği için aynı kurala tabidir.
+  const err = formulaErrorToken(raw);
+  if (err) return formulaErrorValue(err, raw);
   const v = unwrapCell(raw);
   if (isBlank(v)) return blank(raw);
-  if (isExcelFormulaError(v)) return blank(raw);
   const s = String(v).trim();
   return s === "" ? blank(raw) : ok(s, raw);
 }
@@ -206,13 +258,11 @@ export function parseNumberString(s: string): ParsedValue<number> {
  * belirsizliği diye bir şey yoktur. Yalnız metin hücrelerde ayrıştırma yapılır.
  */
 export function parseNumber(raw: unknown): ParsedValue<number> {
+  // Hata hücresi 0 DEĞİLDİR (bkz. EXCEL_FORMULA_ERRORS). Tam sayı da buradan geçer.
+  const err = formulaErrorToken(raw);
+  if (err) return formulaErrorValue(err, raw);
   const v = unwrapCell(raw);
   if (isBlank(v)) return blank(raw);
-  if (isExcelFormulaError(v)) {
-    const vObj = typeof v === "object" && v !== null ? (v as Record<string, unknown>) : null;
-    const errStr = vObj && "error" in vObj ? String(vObj.error) : String(v);
-    return ambiguous(0, `Excel formül hatası (${errStr}) 0 kabul edildi`, raw);
-  }
   if (typeof v === "number") {
     if (!Number.isFinite(v)) return invalid("sonlu olmayan sayı", raw);
     return ok(v, raw);
@@ -254,6 +304,8 @@ function isoFrom(y: number, m: number, d: number): string | null {
  * `31/07/2026` gibi gün > 12 olan ayırıcılı biçimler tek okumaya sahip olduğu için kabul edilir.
  */
 export function parseDate(raw: unknown): ParsedValue<string> {
+  const err = formulaErrorToken(raw);
+  if (err) return formulaErrorValue(err, raw);
   const v = unwrapCell(raw);
   if (isBlank(v)) return blank(raw);
 
@@ -307,6 +359,8 @@ export function parseDate(raw: unknown): ParsedValue<string> {
 
 /** Dönem hücresi → YYYY-MM. */
 export function parseMonth(raw: unknown): ParsedValue<string> {
+  const err = formulaErrorToken(raw);
+  if (err) return formulaErrorValue(err, raw);
   const v = unwrapCell(raw);
   if (isBlank(v)) return blank(raw);
 
@@ -344,6 +398,8 @@ const TRUE_TOKENS = ["evet", "e", "true", "doğru", "dogru", "x", "var", "aktif"
 const FALSE_TOKENS = ["hayır", "hayir", "h", "false", "yanlış", "yanlis", "yok", "pasif", "0"];
 
 export function parseBoolean(raw: unknown): ParsedValue<boolean> {
+  const err = formulaErrorToken(raw);
+  if (err) return formulaErrorValue(err, raw);
   const v = unwrapCell(raw);
   if (isBlank(v)) return blank(raw);
   if (typeof v === "boolean") return ok(v, raw);
@@ -360,6 +416,9 @@ export function parseBoolean(raw: unknown): ParsedValue<boolean> {
 
 /** Yüzde alanı: sözleşme gereği ham sayı olarak saklanır (%3,14 → 3.14). */
 export function parsePercent(raw: unknown): ParsedValue<number> {
+  // '%' dalı parseNumber'a uğramadan döner; kural o yüzden burada da AYRICA uygulanır.
+  const err = formulaErrorToken(raw);
+  if (err) return formulaErrorValue(err, raw);
   const v = unwrapCell(raw);
   if (isBlank(v)) return blank(raw);
   if (typeof v === "string" && v.includes("%")) {

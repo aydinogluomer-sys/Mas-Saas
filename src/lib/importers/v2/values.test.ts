@@ -242,21 +242,66 @@ describe("Metin", () => {
   });
 });
 
-describe("Formül hataları toleransı (Faz 3 — Fuzzy Parsing)", () => {
-  it("#VALUE! ve #REF! sayı alanında 0 olarak toleranslanır", () => {
-    expect(parseNumber("#VALUE!")).toMatchObject({ status: "ambiguous", value: 0 });
-    expect(parseNumber("#REF!")).toMatchObject({ status: "ambiguous", value: 0 });
-    expect(parseNumber("#DIV/0!")).toMatchObject({ status: "ambiguous", value: 0 });
-    expect(parseNumber({ error: "#VALUE!" })).toMatchObject({ status: "ambiguous", value: 0 });
-    expect(parseNumber({ formula: "A1/B1", result: { error: "#DIV/0!" } })).toMatchObject({
-      status: "ambiguous", value: 0,
-    });
+// Wave 0: incelenmemiş katman (46541d8) bu bloğun yerinde sayı alanındaki hatayı 0, metin
+// alanındaki hatayı boş kabul eden iki test taşıyordu — yani regresyonu kilitliyordu. Kural
+// tersidir: hata BİLİNMİYOR'dur, değer null, satır reddedilir.
+describe("Formül hatası BİLİNMİYOR'dur — asla 0, asla sessiz boş değil", () => {
+  const TOKENS = [
+    "#REF!", "#DIV/0!", "#VALUE!", "#N/A", "#NAME?", "#NUM!", "#NULL!", "#SPILL!", "#CALC!",
+    "#BAŞV!", "#SAYI/0!", "#DEĞER!", "#YOK",
+  ];
+
+  it.each(TOKENS)("sayı alanında '%s' → invalid, değer null, belirteç korunur (0 DEĞİL)", (t) => {
+    const r = parseNumber(t);
+    expect(r).toMatchObject({ status: "invalid", value: null, formulaError: t });
+    expect(r.value).not.toBe(0);
+    expect(r.reason).toContain("BİLİNMİYOR");
   });
 
-  it("formül hatası içeren metin alanı boş kabul edilir", () => {
-    expect(parseText("#VALUE!")).toMatchObject({ status: "blank", value: null });
-    expect(parseText("#REF!")).toMatchObject({ status: "blank", value: null });
-    expect(parseText({ error: "#REF!" })).toMatchObject({ status: "blank", value: null });
+  it("ExcelJS'in gerçek hücre biçimleri: {error}, {formula, result:{error}}, {sharedFormula, result:{error}}", () => {
+    expect(parseNumber({ error: "#REF!" })).toMatchObject({ status: "invalid", value: null, formulaError: "#REF!" });
+    expect(parseNumber({ formula: "A1/B1", result: { error: "#DIV/0!" } }))
+      .toMatchObject({ status: "invalid", value: null, formulaError: "#DIV/0!" });
+    expect(parseNumber({ sharedFormula: "C2", result: { error: "#N/A" } }))
+      .toMatchObject({ status: "invalid", value: null, formulaError: "#N/A" });
+  });
+
+  it("her kolon tipi aynı kuralı uygular — metin ve enum dahil, sessiz boş YOK", () => {
+    const e = { error: "#REF!" };
+    for (const r of [
+      parseInteger(e), parsePercent(e), parseDate(e), parseMonth(e), parseBoolean(e),
+      parseEnum(e, ["active"]), parseText(e), parseText("#REF!"),
+    ]) {
+      expect(r).toMatchObject({ status: "invalid", value: null, formulaError: "#REF!" });
+    }
+  });
+
+  it("ham hücre olduğu gibi döner — inceleme kaydı ve row_json için", () => {
+    const e = { formula: "VLOOKUP(A1,X!A:B,2,0)", result: { error: "#N/A" } };
+    expect(parseText(e).raw).toBe(e);
+  });
+
+  it("belirteç birebir eşleşmelidir: '#' ile başlayan sıradan metin hata değildir", () => {
+    expect(parseText("#12 nolu sipariş")).toMatchObject({ status: "ok", value: "#12 nolu sipariş" });
+    expect(parseText("#12 nolu sipariş").formulaError).toBeUndefined();
+  });
+
+  it("hesaplanmamış formül hâlâ 'blank' (bilinmiyor) — hata değil, değişmedi", () => {
+    expect(parseNumber({ formula: "SUM(A1:A9)" })).toMatchObject({ status: "blank", value: null });
+    // Paylaşılan formülün sonucu olmayan kopyası da aynı: '[object Object]' diye okunmaz.
+    expect(parseText({ sharedFormula: "C2" })).toMatchObject({ status: "blank", value: null });
+  });
+
+  it("belirteci boş bir {error} nesnesi de hatadır, boş hücre sayılmaz", () => {
+    const r = parseNumber({ error: "" });
+    expect(r.status).toBe("invalid");
+    expect(r.value).toBeNull();
+    expect(r.formulaError).toBeTruthy();
+  });
+
+  it("unwrapCell hata nesnesini belirtece indirir (af210fd'de metin '[object Object]' saklanıyordu)", () => {
+    expect(unwrapCell({ error: "#REF!" })).toBe("#REF!");
+    expect(unwrapCell({ formula: "1/0", result: { error: "#DIV/0!" } })).toBe("#DIV/0!");
   });
 });
 

@@ -28,7 +28,11 @@ export type IssueType =
   | "missing_operation_time" | "personal_data_mixed"
   | "unsupported_currency_for_finance_aggregation"
   | "unknown_header" | "unknown_sheet" | "reconciliation_mismatch"
-  | "blocked_by_parent";
+  | "blocked_by_parent"
+  // Wave 0: hücre bir Excel formül hatası taşıyor (değer BİLİNMİYOR; values.ts) ve hücre
+  // birleştirilmiş bir aralıkta (değer yalnız ilk hücreden okunur). `mapping_reviews.issue_type`
+  // serbest metin (0001), migration gerekmez.
+  | "formula_error" | "merged_cell";
 
 export type Severity = "low" | "medium" | "high";
 /**
@@ -68,6 +72,17 @@ export interface Issue {
  */
 export const UNKNOWN_COLUMNS_KEY = "__unknown__";
 
+/**
+ * `ParsedRow.raw` içinde birleştirilmiş aralığın İLK OLMAYAN hücrelerinin kaynağını taşıyan
+ * anahtar: `{ "<sözleşme anahtarı>": "<ana hücre adresi>" }`, örn. `{ signed_tutar: "G2" }`.
+ *
+ * O hücrenin kendi değeri yoktur (Excel birleştirmede yalnız sol üst hücrenin değerini tutar) ve
+ * parser ana hücrenin değerini ona KOPYALAMAZ; `raw[anahtar]` null kalır. Bu ad alanı null'ın
+ * "boş bırakılmış" değil "birleştirilmiş" olduğunu söyler — provenance kaybolmaz. `__` öneki
+ * sözleşme anahtarlarıyla çakışmaz (bkz. UNKNOWN_COLUMNS_KEY).
+ */
+export const MERGED_CELLS_KEY = "__merged__";
+
 export interface ParsedRow {
   /** Excel'deki gerçek satır numarası — provenance için birebir korunur. */
   rowIndex: number;
@@ -82,6 +97,8 @@ export interface ParsedRow {
    * hücreleri ise `raw[UNKNOWN_COLUMNS_KEY]` altında başlık metniyle
    * (`raw.__unknown__["Muhasebe Fişi No"]`). İkincisi `values`'a ASLA geçmez — sözleşmenin
    * parçası değildir — ama kaybolmaz da: her ham hücre normalizasyondan önce korunur.
+   * Birleştirilmiş aralığın ilk olmayan hücresi null'dır ve kaynağı `raw[MERGED_CELLS_KEY]`
+   * altında ana hücre adresiyle yazılır.
    */
   raw: Record<string, unknown>;
   externalId: string | null;
@@ -212,6 +229,24 @@ function parseSheet(wb: ExcelJS.Workbook, spec: SheetSpec): SheetResult {
   headerRow.eachCell({ includeEmpty: false }, (cell, colNumber) => {
     const text = cell.value === null || cell.value === undefined ? "" : String(cell.value).trim();
     if (text === "") return;
+    // ── Birleştirilmiş başlık ─────────────────────────────────────────────────────────
+    //
+    // ExcelJS aralığın ilk olmayan hücresinde ANA hücrenin metnini döndürür. Eskiden bu ikinci
+    // sütun aynı anahtara eşleniyor, `colIndexByKey` ilkini tuttuğu için de verisi hiçbir
+    // incelemeye düşmeden kayboluyordu. Artık o sütun eşlenmez, sayfa düzeyinde `merged_cell`
+    // incelemesi açılır ve hücreleri sözleşme dışı kolon gibi ham veride KORUNUR.
+    if (cell.master.address !== cell.address) {
+      const label = `${text} (sütun ${colNumber}, birleştirilmiş başlık)`;
+      unknownColIndexByHeader.set(label, colNumber);
+      result.issues.push({
+        type: "merged_cell", severity: "medium", sheet: spec.name, row: 1, column: label,
+        message:
+          `'${text}' başlığı birleştirilmiş bir aralıkta (${cell.master.address}); ${colNumber}. sütun ` +
+          "kendi başlığını taşımıyor ve İÇERİ AKTARILMADI — hücreleri ham veride korunur. " +
+          "Birleştirmeyi kaldırıp her sütuna şablondaki başlığını yazın.",
+      });
+      return;
+    }
     headers.push(text);
     const key = normalizeHeader(spec, text);
     if (key === null) {
@@ -242,25 +277,43 @@ function parseSheet(wb: ExcelJS.Workbook, spec: SheetSpec): SheetResult {
     const values: Record<string, unknown> = {};
     const raw: Record<string, unknown> = {};
     const issues: Issue[] = [];
-interface MergedCellCandidate {
-  isMerged?: boolean;
-  master?: { value?: unknown };
-  value?: unknown;
-}
-
-function readCellValue(cell: unknown): unknown {
-  const c = cell as MergedCellCandidate;
-  return c?.isMerged && c?.master ? c.master.value : (c?.value ?? null);
-}
-
     let anyValue = false;
 
     for (const col of spec.columns) {
       const idx = colIndexByKey.get(col.key);
       if (idx === undefined) { values[col.key] = null; continue; }
       const cell = row.getCell(idx);
-      const cellRaw = readCellValue(cell);
+
+      // ═══ BİRLEŞTİRİLMİŞ HÜCRE: DEĞER YALNIZ ANA HÜCREDEN OKUNUR ═══
+      //
+      // ExcelJS birleştirilmiş aralığın İLK OLMAYAN hücresinde de ana hücrenin değerini döndürür
+      // (`row.getCell(i).value` → ana hücre; yükleme sırasında birleştirmeler yeniden uygulanır).
+      // Hem `af210fd` hem incelenmemiş katman bu değeri okuyordu; iki seri numaralı satıra
+      // birleştirilmiş tek bir −45.000 çek tutarı İKİ KEZ yazılıyordu. Sözleşmede "aşağı doğru
+      // doldur" diye bir kural yok (şablon düz sayfa üretir), o yüzden hiçbir kolon istisna değil:
+      // ana hücre değerini tutar, diğerleri null'dır (kaynağı MERGED_CELLS_KEY altında), ve
+      // aralığa değen her sözleşme hücresi orta şiddetli `merged_cell` incelemesi açar — satır
+      // insan kararı olmadan domain'e girmez. Zorunlu bir kolonun ilk olmayan hücresi boş hücreyle
+      // aynı yoldan geçer: `missing_required_field`, satır reddedilir.
+      const master = cell.master;
+      const slave = master.address !== cell.address;
+      const cellRaw = slave ? null : (cell.value ?? null);
       raw[col.key] = cellRaw;
+      if (slave) {
+        const merged = (raw[MERGED_CELLS_KEY] as Record<string, string> | undefined) ?? {};
+        merged[col.key] = master.address;
+        raw[MERGED_CELLS_KEY] = merged;
+      }
+      if (cell.isMerged) {
+        issues.push({
+          type: "merged_cell", severity: "medium",
+          sheet: spec.name, row: rowNumber, column: col.header,
+          message:
+            `${col.header}: hücre birleştirilmiş bir aralıkta (${master.address}). Değer yalnız aralığın ` +
+            "ilk hücresinden okunur, diğer hücrelere KOPYALANMAZ. Birleştirmeyi kaldırıp her hücreye " +
+            "kendi değerini yazın.",
+        });
+      }
 
       const parsed = parseByType(col, cellRaw);
       values[col.key] = parsed.value;
@@ -280,8 +333,12 @@ function readCellValue(cell: unknown): unknown {
         //
         // Doğru davranış: satır reddedilir, kullanıcı TEK hücreyi düzeltip yeniden yükler.
         // Belirsiz (ambiguous) değer farklıdır — onun çözüm kuralı var ve kayıt altına alınır.
+        //
+        // Excel formül hatası (`#REF!`, `#DIV/0!`…) aynı kuralla reddedilir ama kendi türüyle
+        // kaydedilir: kullanıcının düzelteceği şey yazdığı değer değil, kaynak dosyadaki kırık
+        // formüldür. Ham hücre (`{ error }`) yukarıda `raw`'a olduğu gibi yazıldı.
         issues.push({
-          type: issueTypeFor(col), severity: "high",
+          type: parsed.formulaError ? "formula_error" : issueTypeFor(col), severity: "high",
           sheet: spec.name, row: rowNumber, column: col.header,
           message: `${col.header}: ${parsed.reason ?? "değer okunamadı"}`,
         });
@@ -320,7 +377,10 @@ function readCellValue(cell: unknown): unknown {
       const unknown: Record<string, unknown> = {};
       for (const [header, idx] of unknownColIndexByHeader) {
         const cell = row.getCell(idx);
-        const cellRaw = readCellValue(cell);
+        // Birleştirilmiş aralığın ilk olmayan hücresi kendi değerini taşımaz; ExcelJS'in döndürdüğü
+        // ana hücre değeri buraya KOPYALANMAZ (yukarıdaki sözleşme kolonlarıyla aynı kural).
+        if (cell.master.address !== cell.address) continue;
+        const cellRaw = cell.value;
         if (cellRaw === null || cellRaw === undefined) continue;
         unknown[header] = cellRaw;
       }
