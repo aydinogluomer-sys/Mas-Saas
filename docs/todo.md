@@ -237,9 +237,10 @@
       `.next/types`) · lint: kalan sorunlar yalnız sonraki dilimlerin dosyalarında.
 - [ ] İlk tıklama gecikmesini production derlemesinde, sentetik veritabanına karşı yeniden ölç ve yeni tabanı
       `NAVIGATION_CLICK_BUDGET_MS` olarak sabitle (Playwright bu dilimde koşturulmadı — DB kuralı).
-- [ ] S7 restyle geri dönüşü: `af210fd`'nin `globals.css`/`module-tabs.tsx` sürümleri perde CSS'ini ve
+- [x] S7 restyle geri dönüşü: `af210fd`'nin `globals.css`/`module-tabs.tsx` sürümleri perde CSS'ini ve
       `prefetchLinkHandlers` kullanımını geri getirir — bu dilimin kaldırmalarını koru; iskelet gecikmesinin
       iki CSS kuralını (`.is-active`, `.navigation-skeleton-active`) taşı ya da gecikmeyi birlikte geri al.
+      → S7: kaldırmalar yeniden uygulandı, iki kural gerekçesiyle taşındı (gecikme duruyor).
 
 
 ## Wave 0 / S5 — DONE (Import V2; incelenmemiş 46541d8 katmanının seçici karantinası)
@@ -316,3 +317,22 @@
       maskeli girişi atlatıp 12 karakter kuralında düşüyor.
 - [ ] `scripts/ops/measure-auth-routes.ts` ve `scripts/ops/run-lighthouse.ts` hâlâ admin oturumu basıyor (biri `.env.local`'ı
       doğrudan okuyor, iptal etmiyor): sil ya da disposable kapısının arkasına al (tests-lint-ci L02/L04).
+
+
+## Wave 0 / S7 — DONE (görünüş geri dönüşü ve test zaman aşımları; incelenmemiş 46541d8 katmanının seçici karantinası)
+
+- [x] R4: `globals.css`, `panel.tsx`, `shell.tsx`, `module-tabs.tsx` ve `data`/`finance`/`system` layout'ları `af210fd`'ye döndü;
+      ortak `EmptyState` yine `border-dashed` (legacy-semantic-smoke'un boş durum seçicisi), `.module-eyebrow` geri geldi
+      (`evidence-drawer.tsx` de kullanıyor), kategori hapları gitti (`/finance`'ta Çekler ve Krediler yine ilk bakışta).
+- [x] Önceki dilimler korundu: S4'ün perde CSS'i ve hover/focus prefetch kaldırması yeniden uygulandı; 110 ms iskelet gecikmesinin
+      iki seçicisi gerekçesiyle `globals.css`'te. S2/S3'ün kaldırdığı sekmeler ve açıklama `af210fd`'de zaten yoktu.
+- [x] R5: genel `testTimeout: 20000` kaldırıldı (varsayılan 5 sn). İki sınıf sınırını test başına, adıyla alır
+      (`tests/setup/test-timeouts.ts`): gerçek alt süreç başlatan 16 vaka 90 sn, bütün kaynak ağacını ayrıştıran 5 yapısal tarama
+      60 sn. Genel sınır kalkınca `no-fabricated-figures` taraması 7,8 sn ile görünür oldu — gizlenen tam olarak buydu.
+- [x] `runtime-port-guard.test.ts`: çocuk testin sınırından önce öldürülür; öldürülen/başlatılamayan çocuk artık "0 ile çıktı"
+      okunmaz (negatif kontrol: eski okumayla bypass vakası yanlışlıkla geçiyordu).
+- [x] Gate: vitest 104 dosya / 2123 test ✓ (genel zaman aşımı olmadan) · typecheck 0 hata ✓ · boundary:verify 8/8 ✓ · dilimin
+      dosyalarında `eslint --max-warnings=0` temiz; tam `pnpm lint`'in kalanı S6'dakiyle aynı (L02/L04, yukarıda açık).
+- [ ] Playwright (bu dilimde koşturulmadı — DB kuralı): disposable veritabanı + production derlemesiyle `legacy-semantic-smoke`
+      (boş durum işareti), `interactive-readiness` (her modül sekmesi görünür ve tıklanır) ve `pnpm test:visual` (23 taban; son
+      güncelleme `8f068b1`, `af210fd`'den önce; CI işi değil — fark çıkarsa sahip incelemesinden sonra yeniden taban).

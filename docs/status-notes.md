@@ -4499,3 +4499,62 @@ sayfa tarayıcı önbelleğinde kalmasın. Önceki incelenmiş durum `af210fd`; 
   iner, denetim satırı aktör = kendisi, diğer oturumlar iptal; rotasyonun disposable DB'de kuru koşusu; PWA'yı
   kullanmış her cihazda DevTools > Application: kayıt yok, Cache Storage boş. Sahibin salt-okunur kontrolleri
   (silinen Supabase betiklerinin yerel kanonik DB'de iz bırakıp bırakmadığı) `docs/todo.md`'de.
+
+---
+
+## Wave 0 / S7 — Görünüş geri dönüşü ve test zaman aşımları (incelenmemiş 46541d8 katmanının seçici karantinası)
+
+Hedef: katmanın yalnız görünüşü değiştiren yeniden tasarımı geri alınsın (yoğunluk kuralı, 23 ekran görüntüsü
+tabanı, CI'ın boş durum işareti) ve genel 20 sn'lik test zaman aşımı kalksın; gerçekten uzun süren vakalar
+sınırlarını adıyla alsın. Önceki incelenmiş durum `af210fd`; karantina öncesi ağaç `quarantine/pre-wave0-2026-10-28`
+etiketinde.
+
+- **Görünüş `af210fd`'ye döndü (R4):** `src/app/globals.css` (palet, yarıçap ölçeği, düğme/alan, kenar çubuğu, sekme
+  ve tablo yeniden tasarımı), `src/components/ui/panel.tsx`, `src/components/ui/shell.tsx`,
+  `src/components/ui/module-tabs.tsx` ve `data`/`finance`/`system` layout'ları (sekme kümesi aynı; sıra, etiketler ve
+  açıklamalar `af210fd`'ninki — `interaction/import-v2.spec.ts`'in aradığı "Standart aktarım (V2)" etiketi dahil).
+  Ortak `EmptyState` yine `border-dashed`: `tests/visual/legacy-semantic-smoke.spec.ts` dürüst boş durumu
+  `.command-surface, .border-dashed` ile tanır ve katman işareti silmişti; katmanın eklediği `title` prop'unu hiçbir
+  çağıran kullanmıyordu. Katmanın sildiği `.module-eyebrow` kuralı geri geldi (`evidence-drawer.tsx` de kullanıyor),
+  `.module-content > header:first-child` kuralının gerekçe açıklaması da.
+- **Kategori hapları kaldırıldı:** katman sekmeleri gruplara bölüp etkin grup dışındakileri GİZLİYORDU — `/finance`
+  açıldığında Çekler ve Krediler ekranda yoktu (çek ve kredi derin gezinme olmadan erişilebilir olmalı) ve
+  `interactive-readiness.spec.ts`'in "her sekme görünür" ziyareti bu yüzden kırılıyordu. Tek düz sekme satırı geri
+  geldi; nedeni `module-tabs.tsx`'te yazılı.
+- **Önceki dilimlerin işlevsel değişiklikleri korundu:** `af210fd`'nin `globals.css`'i perde (`.workspace-preloader*`)
+  kurallarını, `module-tabs.tsx`'i hover/focus `prefetchLinkHandlers` kullanımını taşıyordu — S4'ün kaldırmaları
+  yeniden uygulandı. 110 ms iskelet gecikmesinin iki seçicisi (`.instant-navigation-skeleton.is-active`,
+  `.navigation-skeleton-active`) gerekçesiyle `globals.css`'te: `af210fd` kuralı kapsayıcıyı gecikmesiz, boş bir tam
+  yükseklik panel olarak gösterirdi. İskeletin katmandaki "nabız" animasyonu görünüş değişikliğiydi; `af210fd`'nin
+  parıltısı döndü. S2/S3'ün kaldırdığı sekmeler (`/data/erp`, `/finance/cockpit`, `/finance/chains`) ve "kriptografik
+  denetim" açıklaması `af210fd`'de zaten yoktu.
+- **Genel `testTimeout: 20000` kaldırıldı (R5):** varsayılan yine vitest'in 5 sn'si. Süresi test edilen koddan değil
+  başka bir şeyden gelen iki SINIF sınırını test başına, adıyla alır — `tests/setup/test-timeouts.ts` (gerekçe ve
+  ölçümler orada; sınıfa giriş ölçütü yöntem, o günkü süre değil):
+  - `SUBPROCESS_TEST_TIMEOUT_MS` = 90 sn — gerçek bir süreç (node --import tsx, Git Bash, git) başlatan 16 vaka:
+    `p24b-restore-target` CASE A/B, `writer-surface` --seed reddi, `dev-reset-safety` 7, `runtime-port-guard` 2,
+    `package-script-references` 2, `runtime-provenance` 2. Ölçümler: p24b CASE A 33,2 sn (Wave 0 tabanı, 120–165 MB
+    boş bellek; dosyanın o zamanki 30 sn'lik sınırında düştü), writer-surface 10,9 sn ve dev-reset-safety 9,2 sn
+    (P1 promotion RC'de 5 sn'de düştü). Makine sakinken aynı vakalar 0,1–1,4 sn: fark bellek baskısı. p24b'nin
+    saf politika vakaları süreç içinde ve varsayılan sınırda kalır — dosya başlığının savunduğu tam olarak bu.
+  - `SOURCE_SCAN_TEST_TIMEOUT_MS` = 60 sn — bütün bir kaynak ağacını dosya dosya TypeScript ayrıştırıcısıyla okuyan
+    5 yapısal tarama (`no-fabricated-figures` 2, `security/write-gates` 3). Genel sınır kalkınca ilk tam koşuda
+    `no-fabricated-figures` "hiçbir kaynak ya da betik kaldırılan modüllere bağlanmaz" 7,8 sn ile 5 sn'de düştü
+    (tek başına 3,8 sn; diğer dördü 0,6–2,4 sn) — genel sınırın gizlediği tam olarak buydu. Süreyi kural değil ağacın
+    büyüklüğü (~480 dosya) belirliyor. Ham metin taramaları (regex, 150 ms altı) bu sınıfa girmez.
+- **`runtime-port-guard` çocuk süreci:** kendi `timeout`ı (30 sn) vitest'in sınırı hep önce dolduğu için hiçbir sonucu
+  belirlemiyordu. Artık testin sınırından 10 sn önce öldürür ve öldürülen (`code` null) ya da hiç başlatılamayan
+  (`code` 'ENOENT') çocuk "0 ile çıktı" OKUNMAZ (-1). Negatif kontrol, çocuk 1 ms'de öldürülerek: eski okumayla bypass
+  vakası YANLIŞLIKLA geçti, meşgul port vakası yanıltıcı bir mesajla düştü; yeni okumayla ikisi de dürüstçe düştü
+  (`expected -1 to be +0`).
+- **Sınırların yapamadığı:** her iki sınıf da senkron çalışır ve olay döngüsünü kilitler; vitest süreyi ancak iş
+  döndükten sonra aşılmış sayabilir. Sınırlar yavaşlığı ölçüp raporlar, hiç dönmeyen bir çocuğu kesemez (modülde yazılı).
+- **Doğrulama:** `pnpm typecheck` 0 hata · `pnpm test` 104 dosya / 2123 test yeşil, genel zaman aşımı OLMADAN (S6 ile
+  aynı sayılar; ilk tam koşu yukarıdaki taramada 1 zaman aşımı verdi, sınıf sabitiyle yeşil) · `pnpm boundary:verify`
+  8/8 · dilimin 16 dosyasında `eslint --max-warnings=0` temiz; tam `pnpm lint`'in kalan 4 hata + 1 uyarısı S6'dakiyle
+  aynı ve yalnız `scripts/ops/measure-auth-routes.ts` / `scripts/ops/run-lighthouse.ts`'te (tests-lint-ci L02/L04; bu
+  dilimin kapsamı dışında, `docs/todo.md`'de açık).
+- **Açık (bu dilimde koşturulmadı — DB/Playwright kuralı):** disposable bir veritabanı ve production derlemesiyle
+  `legacy-semantic-smoke` (boş durum işareti), `interactive-readiness` (her modül sekmesi görünür ve tıklanır) ve
+  `pnpm test:visual` (23 taban; son güncelleme `8f068b1`, yani `af210fd`'den önce; CI işi değil — fark çıkarsa sahip
+  incelemesinden sonra yeniden taban).
