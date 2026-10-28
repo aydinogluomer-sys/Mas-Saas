@@ -46,7 +46,6 @@ async function main() {
     "/finance/loans",
     "/finance/facilities",
     "/finance/fx",
-    "/finance/cockpit",
     "/system"
   ];
 

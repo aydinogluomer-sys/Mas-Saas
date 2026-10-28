@@ -22,7 +22,7 @@ export default async function Layout({ children }: { children: ReactNode }) {
   return (
     <ModuleFrame
       title="Sistem"
-      description="Uygulama sağlığı, yedekleme sürekliliği, erişim ve kriptografik denetim."
+      description="Uygulama durumu, veri sürekliliği, erişim ve özellik görünürlüğü."
       tabs={tabsFor(session.role, tabs)}
     >
       {children}

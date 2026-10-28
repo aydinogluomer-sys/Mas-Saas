@@ -104,6 +104,26 @@ export function headline(f: BriefingFacts): { text: string; tone: "neg" | "warn"
 }
 
 /**
+ * The status badge in the briefing page header.
+ *
+ * Same fixed order as headline(): critical controls, then the 7-day liquidity gap. The all-clear
+ * "kritik bulgu yok" is said only when the gap was actually COMPUTED and is not positive. The page
+ * used to read the gap as `liquidityGap7 ?? 0`, so "liquidity could not be computed" (no treasury
+ * position, no forecast) fell through to a green all-clear. Unknown is its own, neutral, answer
+ * (Wave 0, R10). A critical control still wins over an unknown gap: that finding is known.
+ */
+export function briefingStatus(
+  f: Pick<BriefingFacts, "criticalControls" | "liquidityGap7">,
+): { text: string; tone: "neg" | "neutral" | "pos" } {
+  if (f.criticalControls.length > 0) {
+    return { text: `${f.criticalControls.length} kritik kontrol`, tone: "neg" };
+  }
+  if (f.liquidityGap7 == null) return { text: "likidite bilinmiyor", tone: "neutral" };
+  if (f.liquidityGap7 > 0) return { text: "likidite açığı var", tone: "neg" };
+  return { text: "kritik bulgu yok", tone: "pos" };
+}
+
+/**
  * Today's actions, deterministic and capped.
  *
  * Only triggered items appear, in a fixed order. The cap exists because a morning briefing with

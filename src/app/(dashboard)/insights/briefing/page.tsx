@@ -1,14 +1,13 @@
 import Link from "next/link";
 import { getPool } from "@/lib/db";
 import { loadBriefingDashboard } from "@/lib/briefing/engine";
-import { renderBriefing } from "@/lib/briefing/rules";
+import { briefingStatus, renderBriefing } from "@/lib/briefing/rules";
 import { istanbulDateISO } from "@/lib/reports/rules";
 import { generateBriefingAction } from "./actions";
 import { Badge, type Tone } from "@/components/ui/badge";
 import { Panel } from "@/components/ui/panel";
 import { KeyStat, PageHeader } from "@/components/ui/shell";
 import { requireRouteAccess } from "@/lib/authz/route-guard";
-import { BriefingExecutiveView } from "@/components/briefing/briefing-executive-view";
 
 export const dynamic = "force-dynamic";
 
@@ -30,19 +29,16 @@ export default async function BriefingPage() {
   // that gets mailed cannot show different numbers, because they are the same numbers.
   const { widgets, attention, facts } = await loadBriefingDashboard(pool, today);
   const preview = renderBriefing(facts);
+  // Bilinmeyen 7 günlük likidite açığı artık "kritik bulgu yok" (yeşil) okunmaz — kural ve
+  // gerekçesi briefingStatus()'ta, birim testli.
+  const status = briefingStatus(facts);
 
   return (
     <>
       <PageHeader
         title="CFO Sabah Brifingi"
         subtitle="Yönetim kokpiti ve günün özeti — panolardaki rakamların aynısı"
-        meta={
-          <Badge tone={facts.criticalControls.length > 0 || (facts.liquidityGap7 ?? 0) > 0 ? "red" : "green"} dot>
-            {facts.criticalControls.length > 0
-              ? `${facts.criticalControls.length} kritik kontrol`
-              : (facts.liquidityGap7 ?? 0) > 0 ? "likidite açığı var" : "kritik bulgu yok"}
-          </Badge>
-        }
+        meta={<Badge tone={BADGE[status.tone] ?? "neutral"} dot>{status.text}</Badge>}
         action={
           <form action={generateBriefingAction}>
             <button className="button-accent px-3 py-2 font-mono text-xs uppercase tracking-wider">
@@ -93,9 +89,9 @@ export default async function BriefingPage() {
       >
         {/* Rendered from the same facts the tiles above use, so the preview cannot drift from
             the stored document that the button produces. */}
-        <div>
-          <BriefingExecutiveView preview={preview} facts={facts} />
-        </div>
+        <pre className="overflow-x-auto whitespace-pre-wrap font-mono text-[12px] leading-relaxed text-tone-1">
+          {preview}
+        </pre>
         <p className="mt-2 font-mono text-[10px] text-tone-4">
           Rakamlar hazine, işletme sermayesi, kontrol ve radar panolarından okunur; burada yeniden
           hesaplanmaz. Yapay zekâ kullanılmaz.

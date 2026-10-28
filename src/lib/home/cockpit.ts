@@ -140,6 +140,24 @@ export function pickHeadlineRisk(f: CockpitFacts): { text: string; tone: "neg" |
   return { text: "Belirgin risk yok — tablo sakin.", tone: "pos" };
 }
 
+/**
+ * The "12 aylık kasa eğilimi" sparkline on Ana Ekran: the first `limit` months' closing balances.
+ *
+ * A month whose closing balance is UNKNOWN is left out of the series and COUNTED, never drawn as
+ * 0 TL. The page used to map it with `closing ?? 0`, which put a cash crash that is really a
+ * missing number on the first screen anyone opens — a fake cliff is worse than no line, because a
+ * trend is read at a glance and not interrogated. Same rule as the 30-day payment trend beside it:
+ * the sparkline cannot draw a gap, so the gap is stated in its subtitle instead (Wave 0, R10).
+ */
+export function closingTrend(
+  months: ReadonlyArray<{ closing: number | null }>,
+  limit = 12,
+): { values: number[]; unknownCount: number } {
+  const span = months.slice(0, limit);
+  const values = span.flatMap((m) => (m.closing == null ? [] : [m.closing]));
+  return { values, unknownCount: span.length - values.length };
+}
+
 /* ═══════════ Faz 32 — management cockpit widgets ═══════════ */
 
 /**
@@ -211,12 +229,20 @@ export function buildWidgets(f: CockpitWidgetFacts): CockpitWidget[] {
   // Cash against the configured floor.
   if (f.availableCash == null) {
     w.push(unknown("cash", "Kullanılabilir nakit", "/finance/treasury", "Pozisyon hesaplanamadı"));
+  } else if (f.minCashFloor == null) {
+    // The cash figure is known; the floor it is judged against is not. "Taban korunuyor" here was
+    // a verdict on a comparison that never happened — any positive balance read as compliant. The
+    // value is shown, the verdict is withheld, and the tile stays neutral (Wave 0, R10).
+    w.push({
+      key: "cash", label: "Kullanılabilir nakit", value: tl(f.availableCash),
+      tone: "neutral", note: "Taban tanımlı değil", href: "/finance/treasury",
+    });
   } else {
-    const belowFloor = f.minCashFloor != null && f.availableCash < f.minCashFloor;
+    const belowFloor = f.availableCash < f.minCashFloor;
     w.push({
       key: "cash", label: "Kullanılabilir nakit", value: tl(f.availableCash),
       tone: belowFloor ? "neg" : "pos",
-      note: belowFloor ? `Taban ${tl(f.minCashFloor ?? 0)} altında` : "Taban korunuyor",
+      note: belowFloor ? `Taban ${tl(f.minCashFloor)} altında` : "Taban korunuyor",
       href: "/finance/treasury",
     });
   }

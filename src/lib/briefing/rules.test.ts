@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { headline, renderBriefing, summariseDay, todaysActions, type BriefingFacts } from "./rules";
+import { briefingStatus, headline, renderBriefing, summariseDay, todaysActions, type BriefingFacts } from "./rules";
 import { buildWidgets, widgetsNeedingAttention, type CockpitWidgetFacts } from "@/lib/home/cockpit";
 
 const base: BriefingFacts = {
@@ -88,6 +88,31 @@ describe("headline — fixed priority, predictable", () => {
   });
 });
 
+describe("briefingStatus — the page-header badge (Wave 0, R10)", () => {
+  it("says 'kritik bulgu yok' only when the 7-day gap was computed and is not positive", () => {
+    expect(briefingStatus(base)).toEqual({ text: "kritik bulgu yok", tone: "pos" });
+  });
+
+  it("an UNKNOWN 7-day gap is neutral 'likidite bilinmiyor', never the green all-clear", () => {
+    // The page read the gap as `liquidityGap7 ?? 0`; null then fell through to "kritik bulgu yok".
+    const s = briefingStatus({ ...base, liquidityGap7: null });
+    expect(s).toEqual({ text: "likidite bilinmiyor", tone: "neutral" });
+  });
+
+  it("reports a positive gap as a finding", () => {
+    expect(briefingStatus({ ...base, liquidityGap7: 1 })).toEqual({ text: "likidite açığı var", tone: "neg" });
+  });
+
+  it("puts critical controls first — a known finding outranks an unknown gap", () => {
+    const s = briefingStatus({ ...base, criticalControls: ["a", "b"], liquidityGap7: null });
+    expect(s).toEqual({ text: "2 kritik kontrol", tone: "neg" });
+  });
+
+  it("treats an explicit 0 gap as computed-and-clear (zero is not unknown)", () => {
+    expect(briefingStatus({ ...base, liquidityGap7: 0 }).tone).toBe("pos");
+  });
+});
+
 describe("todaysActions", () => {
   it("only lists triggered items", () => {
     expect(todaysActions(base)).toEqual([]);
@@ -168,7 +193,28 @@ describe("buildWidgets — unknown is rendered, never zeroed", () => {
 
   it("does not flag a floor breach when the floor is unknown", () => {
     const cash = buildWidgets({ ...wf, availableCash: 1, minCashFloor: null }).find((x) => x.key === "cash");
-    expect(cash?.tone).toBe("pos");
+    expect(cash?.tone).not.toBe("neg");
+  });
+
+  it("does not claim the floor is protected when the floor is unknown (Wave 0, R10)", () => {
+    // The known cash value is still shown; only the verdict is withheld. "Taban korunuyor" used to
+    // be printed for any balance when minCashFloor was NULL — a comparison that never happened.
+    const cash = buildWidgets({ ...wf, availableCash: 1, minCashFloor: null }).find((x) => x.key === "cash");
+    expect(cash?.value).toBe("1 TL");
+    expect(cash?.tone).toBe("neutral");
+    expect(cash?.note).toBe("Taban tanımlı değil");
+    expect(cash?.note).not.toContain("korunuyor");
+  });
+
+  it("says 'Taban korunuyor' only against a known floor the cash actually meets", () => {
+    const met = buildWidgets({ ...wf, availableCash: 100000, minCashFloor: 100000 }).find((x) => x.key === "cash");
+    expect(met?.tone).toBe("pos");
+    expect(met?.note).toBe("Taban korunuyor");
+    const zeroFloor = buildWidgets({ ...wf, availableCash: 0, minCashFloor: 0 }).find((x) => x.key === "cash");
+    // An explicit 0 floor is a known floor (zero is not unknown), so the verdict is given.
+    expect(zeroFloor?.note).toBe("Taban korunuyor");
+    const below = buildWidgets({ ...wf, availableCash: 50000 }).find((x) => x.key === "cash");
+    expect(below?.note).toContain("altında");
   });
 
   it("treats a liquidity gap as bad news and no gap as good", () => {

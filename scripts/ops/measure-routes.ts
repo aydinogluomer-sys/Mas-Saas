@@ -19,8 +19,6 @@ const routes = [
   "/finance/loans",
   "/finance/facilities",
   "/finance/fx",
-  "/finance/cockpit",
-  "/finance/chains",
   "/system"
 ];
 

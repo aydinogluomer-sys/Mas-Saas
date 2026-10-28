@@ -5,7 +5,6 @@ import { AppSidebar, type NavItem } from "@/components/ui/nav";
 import { CommandPalette } from "@/components/search/command-palette";
 import { AppToaster, FlashToaster } from "@/components/ui/primitives/toast";
 import { TooltipProvider } from "@/components/ui/primitives/tooltip";
-import { CfoCopilotWidget } from "@/components/ai/cfo-copilot-widget";
 import { requireSession } from "@/lib/auth";
 import { canSeeRoute, navigationFor } from "@/lib/authz/matrix";
 import { WORKSPACE_PRELOAD_ROUTES } from "@/lib/navigation/preload-routes";
@@ -60,6 +59,5 @@ export default async function DashboardLayout({ children }: { children: ReactNod
     </div>
     <AppToaster />
     <FlashToaster />
-    <CfoCopilotWidget />
   </div></NavigationFeedbackProvider>;
 }

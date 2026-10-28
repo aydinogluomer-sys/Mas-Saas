@@ -215,14 +215,30 @@ export interface BridgeStep {
  * The end value is COMPUTED from the start plus the movements rather than taken as given, and the
  * caller gets `reconciles` telling it whether that matches the reported end. Silently drawing a
  * bridge that does not add up is how a chart ends up disagreeing with the ledger beneath it.
+ *
+ * An UNKNOWN start makes the whole bridge unmeasurable. Every running total is anchored on it, so
+ * starting at 0 instead (what the engine's `start ?? 0` used to do) shifts every bar by the real
+ * opening balance and then reports a reconciliation difference the ledger does not have — a
+ * fabricated "HAYIR, X TL fark" on the analysis screen (Wave 0, R10). There is no partial answer
+ * worth drawing, so no steps are returned; the reason is.
  */
 export function cashBridge(input: {
-  startLabel: string; startValue: number;
+  startLabel: string; startValue: number | null;
   endLabel: string; reportedEndValue: number | null;
   movements: readonly { key: string; label: string; value: number | null }[];
-}): AnalysisResult<BridgeStep> & { computedEnd: number; reconciles: boolean | null; difference: number | null } {
+}): AnalysisResult<BridgeStep> & { computedEnd: number | null; reconciles: boolean | null; difference: number | null } {
   const usable = input.movements.filter((m) => m.value != null) as { key: string; label: string; value: number }[];
   const unknownCount = input.movements.length - usable.length;
+
+  if (input.startValue == null) {
+    const reason = input.movements.length === 0
+      ? "Köprü için veri yok."
+      : `${input.startLabel} bilinmiyor — köprü kurulamaz; bilinmeyen bakiye 0 sayılmaz.`;
+    return {
+      ...unmeasurable<BridgeStep>("cash_bridge", reason, unknownCount),
+      computedEnd: null, reconciles: null, difference: null,
+    };
+  }
 
   let running = input.startValue;
   const steps: BridgeStep[] = [

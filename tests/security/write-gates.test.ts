@@ -159,17 +159,11 @@ const MEASUREMENT = new Set(["src/app/api/perf-probe/route.ts"]);
 /** The authentication surface itself; requiring it to authenticate first would be circular. */
 const PRE_AUTH_ACTIONS = new Set(["src/app/login/actions.ts"]);
 
-/**
- * Layer files that a LATER Wave 0 step removes outright (CFO copilot, financial chains, cockpit).
- * They are skipped while they exist and the list may only shrink: the test below fails as soon as
- * one of them is gone, so whoever deletes the file also deletes its entry here, and a file re-added
- * at the same path is checked like any other.
- */
-const PENDING_QUARANTINE = new Set([
-  "src/app/api/ai/cfo-chat/route.ts",
-  "src/app/api/chains/route.ts",
-  "src/app/(dashboard)/finance/cockpit/actions.ts",
-]);
+// There is no "pending quarantine" exception any more. S2 skipped three layer files here until a
+// later step removed them; Wave 0 / S3 removed all three (the CFO copilot's /api/ai/cfo-chat, the
+// /api/chains route, the cockpit's session-less server actions), so every route and server action
+// in the tree is checked by the rules below with no exemption, and the three paths are asserted
+// gone under "kaldırılan yüzeyler" instead.
 
 const HTTP_METHODS = new Set(["GET", "HEAD", "OPTIONS", "POST", "PUT", "PATCH", "DELETE"]);
 const MUTATING = new Set(["POST", "PUT", "PATCH", "DELETE"]);
@@ -183,18 +177,13 @@ describe("yapısal kapı — tarama gerçekten bir şey buldu", () => {
     expect(routeFiles.length).toBeGreaterThan(5);
     expect(actionFiles.length).toBeGreaterThan(20);
   });
-
-  it("bekleyen karantina listesi yalnız hâlâ var olan dosyaları içerir (liste yalnız küçülür)", () => {
-    const gone = [...PENDING_QUARANTINE].filter((rel) => !existsSync(path.join(ROOT, rel)));
-    expect(gone, "silinen dosyayı PENDING_QUARANTINE'dan da çıkarın").toEqual([]);
-  });
 });
 
 describe("route handler'lar", () => {
   it("her MUTASYON yapan route handler checkOrigin() ve requireApiSession() çağırır", () => {
     const missing: string[] = [];
     for (const rel of routeFiles) {
-      if (MACHINE_AUTH.has(rel) || PENDING_QUARANTINE.has(rel)) continue;
+      if (MACHINE_AUTH.has(rel)) continue;
       const sf = parse(rel);
       for (const fn of functionsOf(sf).filter((f) => f.exported && MUTATING.has(f.name))) {
         if (!callsAny(fn.body, new Set(["checkOrigin"]))) missing.push(`${rel} ${fn.name}: checkOrigin yok`);
@@ -211,7 +200,7 @@ describe("route handler'lar", () => {
   it("her JSON route handler oturumu requireApiSession() ile doğrular (getCurrentUser/requireSession değil)", () => {
     const wrong: string[] = [];
     for (const rel of routeFiles) {
-      if (MACHINE_AUTH.has(rel) || PUBLIC_PROBES.has(rel) || MEASUREMENT.has(rel) || PENDING_QUARANTINE.has(rel)) continue;
+      if (MACHINE_AUTH.has(rel) || PUBLIC_PROBES.has(rel) || MEASUREMENT.has(rel)) continue;
       const sf = parse(rel);
       for (const fn of functionsOf(sf).filter((f) => f.exported && HTTP_METHODS.has(f.name))) {
         if (!callsAny(fn.body, new Set(["requireApiSession"]))) wrong.push(`${rel} ${fn.name}: requireApiSession yok`);
@@ -256,7 +245,6 @@ describe("route handler'lar", () => {
 
   it("src/app altındaki hiçbir kod runAsSystem (finance_manager iş kimliği) kullanmaz", () => {
     const users = walk("src/app", (rel) => /\.(ts|tsx)$/.test(rel) && !isTest(rel))
-      .filter((rel) => !PENDING_QUARANTINE.has(rel))
       .filter((rel) => referencesIdentifier(parse(rel), "runAsSystem"));
     expect(users).toEqual([]);
   });
@@ -267,7 +255,7 @@ describe("server action'lar", () => {
     const GLOBAL_GATES = new Set(["requireSession", "requireAdmin"]);
     const offenders: string[] = [];
     for (const rel of actionFiles) {
-      if (PRE_AUTH_ACTIONS.has(rel) || PENDING_QUARANTINE.has(rel)) continue;
+      if (PRE_AUTH_ACTIONS.has(rel)) continue;
       const fns = functionsOf(parse(rel));
       // A module-local helper counts as a gate only if it, in turn, starts with a real gate
       // (data/imports/v2's authorize(), reminders' requireReminderOperator()).
@@ -294,6 +282,12 @@ describe("kaldırılan yüzeyler kaldırılmış kalır", () => {
     "src/lib/telegram/miniapp.ts",
     "src/lib/telegram/cfo-bot.ts",
     "scripts/ops/verify-miniapp-pwa.ts",
+    // Wave 0 / S3: the three files S2 had to skip as "pending quarantine". The copilot route sent
+    // decision facts plus client-supplied history to an external model; /api/chains let a caller
+    // inject the cash figures it then "analysed"; the cockpit's server actions had no session gate.
+    "src/app/api/ai/cfo-chat",
+    "src/app/api/chains",
+    "src/app/(dashboard)/finance/cockpit",
   ];
   for (const rel of REMOVED) {
     it(`${rel} yok`, () => {
@@ -301,8 +295,11 @@ describe("kaldırılan yüzeyler kaldırılmış kalır", () => {
     });
   }
 
-  it("hiçbir dosya kaldırılan ERP / mini-app / webhook yollarına bağlanmaz", () => {
-    const needles = ["/api/erp/", "/data/erp", "/telegram/miniapp", "/api/telegram/webhook", "@/lib/erp", "@/lib/telegram/cfo-bot"];
+  it("hiçbir dosya kaldırılan ERP / mini-app / webhook / kokpit / copilot yollarına bağlanmaz", () => {
+    const needles = [
+      "/api/erp/", "/data/erp", "/telegram/miniapp", "/api/telegram/webhook", "@/lib/erp", "@/lib/telegram/cfo-bot",
+      "/api/ai/cfo-chat", "/api/chains", "/finance/cockpit",
+    ];
     const hits: string[] = [];
     for (const rel of walk("src", (r) => /\.(ts|tsx)$/.test(r))) {
       // middleware.test.ts asserts these very paths are refused; that is the point, not a link.

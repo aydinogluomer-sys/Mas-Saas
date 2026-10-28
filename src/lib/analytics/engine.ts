@@ -110,7 +110,7 @@ export async function runWorkingCapitalDecomposition(
 
 export async function runCashBridge(
   pool: Pool, fromMonth: string, toMonth: string, asOf = istanbulDateISO(),
-): Promise<StampedAnalysis<BridgeStep> & { computedEnd: number; reconciles: boolean | null; difference: number | null }> {
+): Promise<StampedAnalysis<BridgeStep> & { computedEnd: number | null; reconciles: boolean | null; difference: number | null }> {
   const rows = await pool.query(
     `select to_char(month_start,'YYYY-MM') as month, opening_balance, closing_balance,
             projected_income, projected_expense
@@ -133,7 +133,9 @@ export async function runCashBridge(
   ]);
 
   const bridged = cashBridge({
-    startLabel: `${fromMonth} açılış`, startValue: start ?? 0,
+    // NULL stays NULL: an unknown opening balance (devir) — or no month at all — makes the bridge
+    // unmeasurable inside cashBridge(). `start ?? 0` anchored it at 0 TL instead (Wave 0, R10).
+    startLabel: `${fromMonth} açılış`, startValue: start,
     endLabel: `${toMonth} kapanış`,
     reportedEndValue: last ? moneyOrNull(last.closing_balance) : null,
     movements,

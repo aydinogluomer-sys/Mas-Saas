@@ -17,7 +17,6 @@ import { DomainError } from "@/lib/domain-error";
 import { intOrNull, moneyOrNull } from "@/lib/money";
 import { parseOrThrow } from "@/lib/validation";
 import { firingRules, type ApprovalRuleConfig, type RuleInput } from "./rules";
-import { assertNoBlockingControlAlerts } from "@/lib/controls/gatekeeper";
 import { cache } from "@/lib/cache/engine";
 import { CACHE_TAGS } from "@/lib/cache/tags";
 
@@ -177,10 +176,6 @@ export async function decideApproval(pool: Pool, raw: unknown, actorId: string):
     }
     if (a.requested_by && a.requested_by === actorId) {
       throw new DomainError("Onayı talep eden kişi onaylayamaz (maker-checker).");
-    }
-
-    if (input.decision === "approved") {
-      await assertNoBlockingControlAlerts(client, a.subject_table, a.subject_id);
     }
 
     await client.query(

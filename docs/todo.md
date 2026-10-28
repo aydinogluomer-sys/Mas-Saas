@@ -191,3 +191,28 @@
 - [x] **Gate:** lint ✓ (0 hata, 1 önceden var olan uyarı) · typecheck ✓ 0 hata · vitest 200/200 ✓ ·
       db:verify ✓ · db:migrate:verify ✓ · build ✓ · phase3…14e verify **20/20 PASS** (atılabilir DB,
       `mas_radar_dev`'e dokunulmadan) · 9-modül smoke ✓.
+
+
+## Wave 0 / S3 — DONE (uydurma rakamlar; incelenmemiş 46541d8 katmanının seçici karantinası)
+
+- [x] `/finance/cockpit` ve `/finance/chains` ekranları, `/api/chains`, `src/lib/chains/*`,
+      `nervous-system-hub`, `scripts/test-live-chains.ts` ve testleri kaldırıldı (sabit TL yedekleri,
+      demo faturalar, oturum kapısız server action'lar, arka uca gitmeyen "uygulandı" butonları).
+- [x] Yalnız bu ekranlarca kullanılan motorlar testleriyle kaldırıldı: cash-runway,
+      dynamic-discounting, fx-hedging, simulations/sandbox, cash-pooling, headroom-engine,
+      budget/guardrail, audit/hash-chain, fraud-guard, auto-matcher, discipline-engine.
+- [x] İncelenmiş sayfalara takılan şelale (`/cashflow`), kum havuzu (`/scenarios`), "DSO radarı"
+      (`/finance/counterparties`) ve brifing yönetici görünümü (`/insights/briefing`) kaldırıldı;
+      sayfalar `af210fd`'ye döndü.
+- [x] R3: CFO copilot (widget, `/api/ai/cfo-chat`, copilot-engine, guardrails) ve onay gatekeeper'ı
+      karantinada (etikette korunuyor); `boundary-verify` izin listesi yine 4 modül.
+- [x] ⌘K paleti, `/system` (gerçek `select 1` yoklaması), `/payments/missing` boş durumu, Ana Ekran
+      onboarding'i `af210fd`'ye döndü; sistem açıklamasından "kriptografik denetim", finansman
+      sekmelerinden ve ölçüm betiklerinden kaldırılan rotalar çıktı.
+- [x] R10: 12 aylık kasa eğilimi (`closingTrend`), nakit köprüsü (bilinmeyen açılış → ölçülemez),
+      brifing rozeti (`briefingStatus`: "likidite bilinmiyor"), kokpit nakit kutusu ("Taban tanımlı
+      değil") — birim testli; `tests/no-fabricated-figures.test.ts` sayfa bağlantısını korur.
+- [x] Gate: vitest 2002/2002 ✓ · boundary:verify 8/8 ✓ · typecheck kaynakta 0 hata (yalnız eski
+      `.next/types`) · lint: kalan sorunlar yalnız sonraki dilimlerin dosyalarında.
+- [ ] Backlog (LABEL): belgelenmiş model sabitlerini ekranda "varsayım" olarak etiketle — radar eşik
+      varsayılanları, senaryo optimizasyon varsayımları, tahsilat olasılık katsayıları.

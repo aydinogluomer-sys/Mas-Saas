@@ -1,7 +1,7 @@
 // Ana Ekran cockpit rules — deterministic ranking + headline. No LLM, no math change.
 
 import { describe, expect, it } from "vitest";
-import { buildActions, pickHeadlineRisk, type CockpitFacts } from "./cockpit";
+import { buildActions, closingTrend, pickHeadlineRisk, type CockpitFacts } from "./cockpit";
 
 const base: CockpitFacts = {
   todayKnownOutflow: 0, todayCount: 0, todayMissing: 0,
@@ -73,5 +73,32 @@ describe("pickHeadlineRisk", () => {
   });
   it("calm state → positive", () => {
     expect(pickHeadlineRisk(base).tone).toBe("pos");
+  });
+});
+
+describe("closingTrend — 12 aylık kasa eğilimi (Wave 0, R10)", () => {
+  it("leaves an unknown closing OUT of the series and counts it — never draws it as 0", () => {
+    const t = closingTrend([{ closing: 100 }, { closing: null }, { closing: -50 }]);
+    expect(t.values).toEqual([100, -50]);
+    expect(t.values).not.toContain(0);
+    expect(t.unknownCount).toBe(1);
+  });
+
+  it("keeps an explicit 0 closing (zero is a value, not unknown)", () => {
+    const t = closingTrend([{ closing: 0 }, { closing: 10 }]);
+    expect(t.values).toEqual([0, 10]);
+    expect(t.unknownCount).toBe(0);
+  });
+
+  it("looks only at the first `limit` months and counts unknowns inside that window", () => {
+    const months = Array.from({ length: 14 }, (_, i) => ({ closing: i === 13 ? null : i }));
+    const t = closingTrend(months);
+    expect(t.values).toHaveLength(12);
+    expect(t.unknownCount).toBe(0); // the null is month 14, outside the 12-month window
+    expect(closingTrend(months, 14).unknownCount).toBe(1);
+  });
+
+  it("an all-unknown window is an empty series, not a flat zero line", () => {
+    expect(closingTrend([{ closing: null }, { closing: null }])).toEqual({ values: [], unknownCount: 2 });
   });
 });

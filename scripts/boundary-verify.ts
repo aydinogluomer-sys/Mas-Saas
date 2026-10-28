@@ -25,7 +25,6 @@ const SRC = path.join(ROOT, "src");
 // of these seams (a connector reaches the net via integrations/types.ts's HttpClient, not directly).
 const EGRESS_ALLOWLIST = new Set([
   "lib/ai/engine.ts",              // OpenAI, behind the mutation/kill-switch guards
-  "lib/ai/copilot-engine.ts",      // Interactive CFO Copilot OpenAI call with timeout & fallback
   "lib/fx/provider.ts",            // TCMB public bulletin
   "lib/integrations/types.ts",     // realHttpClient() — the single integration network seam
   "lib/reminders/transport.ts",    // Telegram + email

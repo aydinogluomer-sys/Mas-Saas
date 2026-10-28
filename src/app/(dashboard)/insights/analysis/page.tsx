@@ -105,7 +105,8 @@ export default async function AnalysisPage() {
           label="Nakit köprüsü mutabık mı"
           value={bridge.reconciles == null ? "—" : bridge.reconciles ? "evet" : "HAYIR"}
           tone={bridge.reconciles === false ? "neg" : bridge.reconciles ? "pos" : "neutral"}
-          sub={bridge.difference == null ? "kapanış bildirilmemiş" : `fark ${formatMetric(bridge.difference, "currency")}`}
+          sub={bridge.result.unmeasurableReason
+            ?? (bridge.difference == null ? "kapanış bildirilmemiş" : `fark ${formatMetric(bridge.difference, "currency")}`)}
         />
         <KeyStat
           label="Bütçe sapması olan kalem"
@@ -116,7 +117,8 @@ export default async function AnalysisPage() {
       </div>
 
       <Panel title="NAKİT KÖPRÜSÜ (ŞELALE)">
-        {bridge.result.rows.length === 0 ? <EmptyState>Nakit akış verisi yok.</EmptyState> : (
+        {/* An unknown opening balance is said, not drawn from 0 (cashBridge, Wave 0 R10). */}
+        {bridge.result.rows.length === 0 ? <EmptyState>{bridge.result.unmeasurableReason ?? "Nakit akış verisi yok."}</EmptyState> : (
           <>
             <WaterfallChart model={bridgeChart} exportKey="cash_bridge" />
             {/* A bridge that does not add up is reported, never silently drawn. */}

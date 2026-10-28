@@ -4197,3 +4197,72 @@ incelenmiş durum `af210fd`; karantina öncesi ağaç `quarantine/pre-wave0-2026
 - **Bilinen yerel durum:** `.next/types` (18 Ekim derlemesinden) silinen rotalara referans verdiği
   için yerel `pnpm typecheck` bir sonraki `next build`/`next dev` tip üretimine kadar yalnız bu
   üretilmiş dosyalarda TS2307 verir; kaynak ağaç (`.next/types` hariç) temiz. CI etkilenmez.
+
+---
+
+## Wave 0 / S3 — Uydurma rakamlar (incelenmemiş 46541d8 katmanının seçici karantinası)
+
+Hedef: **kullanıcının gördüğü hiçbir yerde kaynağı olmayan rakam yok**; bilinmeyen değer "—" ya da
+"bilinmiyor" yazılır, asla 0 ya da yeşil değildir. Önceki incelenmiş durum `af210fd`; karantina
+öncesi ağaç `quarantine/pre-wave0-2026-10-28` etiketinde. Tamiri değil kaldırmayı seçtik: bu
+ekranların arkasında onları düzeltmeye yetecek saklı veri yoktu.
+
+- **Kaldırılan ekranlar:** `/finance/cockpit` (koda gömülü iki "holding" bakiyesi; ikiden az borç
+  kaydında 3 demo fatura; uydurma iskonto oranları; `coalesce(due_date, current_date+45)`; sabit %42
+  fonlama oranı; oturum kapısı olmayan üç server action; "tahrifata karşı korumalı" ve SPK/BDDK
+  kanıtı iddiaları) ve `/finance/chains` (sekiz zincir, şemada olmayan kolonları sorgulayıp hatayı
+  yutuyor ve yerine sabit TL tutarı koyuyordu — kod okumasıyla BOŞ bir veritabanında bile sağlık
+  skoru 60, "karantinaya alınmış" 134.500 TL ödeme, 1.450.000 TL nakit; sekiz "Aksiyon Uygulandı"
+  butonu arka uca hiç gitmiyordu). Birlikte: `/api/chains` (çağıranın verdiği nakit rakamını
+  "analiz" ediyordu), `nervous-system-hub`, koşulsuz "100% SUCCESSFUL" basan
+  `scripts/test-live-chains.ts` ve var olmayan şemayı mock'layan testler.
+- **Yalnız bu ekranlarca kullanılan motorlar (testleriyle):** `finance/cash-runway`,
+  `dynamic-discounting`, `fx-hedging` (kur yoksa 35/38/45 "gerçek" gibi), `simulations/sandbox`
+  (sorgusu hep düşer → her zaman 13 sentetik hafta), `treasury/cash-pooling`,
+  `treasury/headroom-engine` (sorgusu hep düşer → "açık yok"), `budget/guardrail` (ölçülmemiş
+  gerçekleşeni 0 sayıp "Bütçe uygun" diyordu), `audit/hash-chain` (audit_logs'ta saklı hash yok;
+  az önce kurduğu zinciri doğruluyor, okuma hatasında bile `isValid: true`), `security/fraud-guard`
+  (yalnız 3 simüle ödemeyle besleniyordu), `reconciliation/auto-matcher` (erişilemez ve şemaya
+  aykırı; bağlansa kullanıcı aksiyonu olmadan faturayı ödendi yapardı), `collections/discipline-engine`
+  (skor yoksa "temiz profil" uyduruyor, sözü kendiliğinden "broken" yapıyordu). `@/lib/cache/engine`
+  import eden bu modüllerin hepsi silindi; önbellek modülünün kendisi S4'te.
+- **İncelenmiş sayfalara takılan dört bileşen kaldırıldı, sayfalar `af210fd`'ye döndü:** `/cashflow`
+  şelalesi (gideri sabit %55/28/17 bölüyordu), `/scenarios` kum havuzu (ay yoksa 2,5 M TL'den 12
+  sentetik ay, aylık %4 uydurma gecikme modeli), `/finance/counterparties` "DSO radarı" (DSO
+  hesaplamıyor; bilinmeyeni 0 sayıp "A — Güvenli" diyordu), `/insights/briefing` yönetici görünümü
+  (bilinmeyen likiditeyi "Yeterli"/"%100" gösteriyordu; sahte onay butonu, sahte HMAC iddiası, veritabanı
+  metni üzerinde `dangerouslySetInnerHTML`).
+- **R3 karantina:** CFO copilot (her sayfadaki widget, `/api/ai/cfo-chat`, `ai/copilot-engine`,
+  `ai/guardrails`): incelenmemiş yeni bir dış model çıkışıydı ve rakam doğrulaması hiç
+  çağrılmıyordu; incelenmiş `/insights/ask` (ai/engine.ts) aynen duruyor. Onay gatekeeper'ı
+  (`controls/gatekeeper` ve `approvals/engine.ts`'teki çağrısı): incelenmemiş bir iş kuralıydı,
+  maker-checker davranışı `af210fd`'ye döndü. `boundary-verify` çıkış izin listesi yine dört modül.
+- **Dayanaksız iddialar:** ⌘K paleti `af210fd`'ye döndü (yalnız rol kapsamlı `/api/search` sonucu;
+  katmanın her role gösterdiği statik listede kaldırılan ekrana ölü bağlantı, aylık ekran için
+  "13 haftalık", "SHA-256 hash zinciri", olmayan "Kara Kuğu" senaryosu vardı). `/system`
+  veritabanı kutusu yine gerçek `select 1` yoklaması (sabit "çalışıyor" idi). Sistem modülü
+  açıklamasından "kriptografik denetim" çıktı. `/payments/missing` boş durumu ("%100 güvenle") ve
+  Ana Ekran onboarding'i ("%100 ham haliyle", kokpit bağlantısı) `af210fd` metnine döndü. Finansman
+  sekmelerinden ve ölçüm betiklerinden kaldırılan rotalar çıkarıldı.
+- **R10 — katman öncesi dört "bilinmeyen = değer" noktası:** (1) Ana Ekran 12 aylık kasa eğilimi
+  `closing ?? 0` yerine `closingTrend()`: bilinmeyen ay seriden çıkar, alt yazıda sayılır (30 günlük
+  eğilimin kuralı). (2) Nakit köprüsü `start ?? 0` yerine: bilinmeyen açılış köprüyü ölçülemez yapar;
+  eskiden 0'dan başlayıp defterde olmayan bir "HAYIR, X TL fark" üretiyordu, şimdi sebebi yazılır.
+  (3) Brifing rozeti `briefingStatus()`: bilinmeyen 7 günlük açık "likidite bilinmiyor" (nötr), artık
+  "kritik bulgu yok" (yeşil) değil. (4) Yönetim kokpiti nakit kutusu: taban tanımsızken "Taban
+  korunuyor" yerine "Taban tanımlı değil" (nötr); nakit değeri yine gösterilir.
+- **Testler (DB'siz):** saf kurallar yanlarında birim testli (`home/cockpit`, `briefing/rules`,
+  `analytics/analyses`). Yeni `tests/no-fabricated-figures.test.ts` (TypeScript AST): kaldırılan
+  modüller yok ve hiçbir kaynak/betik onlara bağlanmıyor; dört R10 sayfası düzeltilmiş kuralı
+  çağırıyor ve ilgili `?? 0` yok; hiçbir ekran metninde kriptografik zincir ya da "%100 güvenle"
+  yok; `/system` gerçekten yokluyor; palet yalnız `/api/search` gösteriyor. Katman sürümlerine karşı
+  koşturuldu: sekiz yapısal kontrolün sekizi kırmızı (anti-totoloji). `tests/security/write-gates.test.ts`:
+  S2'nin "bekleyen karantina" istisnası kalmadı; üç dosya artık "kaldırılan yüzeyler" altında.
+- **Doğrulama:** `pnpm test` 99 dosya / 2002 test yeşil · `pnpm boundary:verify` 8/8 ·
+  `pnpm typecheck` kaynakta 0 hata (yalnız eski `.next/types` üretimi; artık kaldırılan
+  kokpit/zincir/copilot rotalarını da içeriyor) · `pnpm lint` kalan sorunlar yalnız sonraki
+  dilimlerin dosyalarında (`public/sw.js`, `scripts/db/fix-roles.ts`, `scripts/ops/measure-*.ts`,
+  `scripts/ops/run-lighthouse.ts`, `src/lib/cache/engine.ts`, `src/lib/users/password-rotation.test.ts`).
+- **Kapsam dışı bırakılan (backlog, LABEL):** belgelenmiş model sabitleri — radar eşik varsayılanları
+  (50.000/100.000/3), senaryo optimizasyon adaylarının varsayımları, tahsilat olasılık katsayıları.
+  Import V2'nin `#REF!` → 0 davranışı Import V2 diliminde.

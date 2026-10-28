@@ -5,8 +5,6 @@ import { ModuleFrame, type ModuleTab } from "@/components/ui/module-tabs";
 
 const tabs: ModuleTab[] = [
   // 1. Likidite & Kokpit
-  { href: "/finance/cockpit", label: "CFO Kokpiti", category: "Likidite & Kokpit" },
-  { href: "/finance/chains", label: "Finansal Sinir Sistemi", category: "Likidite & Kokpit" },
   { href: "/finance", label: "Genel Özet", category: "Likidite & Kokpit" },
   { href: "/finance/bank", label: "Banka", category: "Likidite & Kokpit" },
   { href: "/finance/treasury", label: "Hazine", category: "Likidite & Kokpit" },

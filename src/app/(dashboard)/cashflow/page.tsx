@@ -1,6 +1,5 @@
 import Link from "next/link";
 import { AnalyticsChart } from "@/components/charts/analytics-chart";
-import { CashflowWaterfall } from "@/components/charts/cashflow-waterfall";
 import { Badge } from "@/components/ui/badge";
 import { fmtTL, Panel } from "@/components/ui/panel";
 import { KpiCard, ModuleEmptyState, PageHeader } from "@/components/ui/shell";
@@ -33,7 +32,6 @@ export default async function CashflowOverview({ searchParams }: { searchParams?
       <KpiCard label="Ardışık negatif" value={projection.longestNegativeRun.length} />
     </div>
     <AnalyticsChart key={period} model={cashTrendModel(months, istanbulDateISO())} defaultPeriod={period} />
-    <CashflowWaterfall months={months} />
     <Panel title="DÖNEM UFUKLARI"><div className="grid grid-cols-2 gap-2 lg:grid-cols-5">{cards.map((card) => {
       const cardPeriod = PERIOD_BY_HORIZON[card.horizonMonths];
       const active = cardPeriod != null && cardPeriod === period;

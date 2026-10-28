@@ -162,6 +162,40 @@ describe("cashBridge", () => {
     });
     expect(out.reconciles).toBe(true);
   });
+
+  it("an UNKNOWN start makes the bridge unmeasurable — it is not anchored at 0 (Wave 0, R10)", () => {
+    // Anchored at 0, this bridge would end at 500, compare it with the reported 1500 and print a
+    // fabricated "HAYIR, 1.000 TL fark" — a difference the ledger does not have.
+    const out = cashBridge({
+      startLabel: "2026-05 açılış", startValue: null, endLabel: "B", reportedEndValue: 1500,
+      movements: [{ key: "in", label: "Gelir", value: 500 }, { key: "out", label: "Gider", value: null }],
+    });
+    expect(out.rows).toEqual([]);
+    expect(out.computedEnd).toBeNull();
+    expect(out.reconciles).toBeNull();
+    expect(out.difference).toBeNull();
+    expect(out.unmeasurableReason).toContain("2026-05 açılış bilinmiyor");
+    expect(out.unknownCount).toBe(1);
+  });
+
+  it("no start and no movements is 'no data', not a 0 → 0 bridge", () => {
+    const out = cashBridge({
+      startLabel: "A", startValue: null, endLabel: "B", reportedEndValue: null, movements: [],
+    });
+    expect(out.rows).toEqual([]);
+    expect(out.computedEnd).toBeNull();
+    expect(out.unmeasurableReason).toBe("Köprü için veri yok.");
+  });
+
+  it("an explicit 0 start is a real anchor (zero is not unknown)", () => {
+    const out = cashBridge({
+      startLabel: "A", startValue: 0, endLabel: "B", reportedEndValue: 10,
+      movements: [{ key: "m", label: "M", value: 10 }],
+    });
+    expect(out.unmeasurableReason).toBeNull();
+    expect(out.computedEnd).toBe(10);
+    expect(out.reconciles).toBe(true);
+  });
 });
 
 describe("ageingDistribution", () => {
