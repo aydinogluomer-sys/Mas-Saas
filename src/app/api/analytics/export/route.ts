@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { getPool } from "@/lib/db";
-import { getCurrentUser } from "@/lib/auth";
+import { requireApiSession } from "@/lib/auth";
 import { apiError, withApiHandler } from "@/lib/api-response";
 import { CORRELATION_HEADER } from "@/lib/correlation";
 import { istanbulDateISO } from "@/lib/reports/rules";
@@ -146,7 +146,7 @@ async function buildSheets(analysisId: string, asOf: string): Promise<{ sheets: 
 
 export async function GET(request: Request) {
   return withApiHandler(request, async ({ requestId }) => {
-    const user = await getCurrentUser();
+    const user = await requireApiSession();
     if (!user) return apiError(401, "Yetkisiz.", { code: "unauthorized", requestId });
 
     const url = new URL(request.url);

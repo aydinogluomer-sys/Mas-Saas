@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { getPool } from "@/lib/db";
-import { getCurrentUser } from "@/lib/auth";
+import { requireApiSession } from "@/lib/auth";
 import { apiError, withApiHandler } from "@/lib/api-response";
 import { CORRELATION_HEADER } from "@/lib/correlation";
 import { istanbulDateISO } from "@/lib/reports/rules";
@@ -20,7 +20,8 @@ export const dynamic = "force-dynamic";
  *
  * `src/middleware.ts` yalnız ÇEREZİN VARLIĞINA bakar; Edge runtime'da DB sorgusu yapamadığı için
  * iptal/süre dolumu göremez. Bu yüzden repodaki her JSON ucu ayrıca DB destekli
- * `getCurrentUser()` çağırır (`/api/facts`, `/api/search`, `/api/analytics/export`).
+ * `requireApiSession()` çağırır (`/api/facts`, `/api/search`, `/api/analytics/export`) — Wave 0'dan
+ * beri bu, zorunlu parola değişikliği bekleyen kullanıcıyı da reddeder (`getCurrentUser()` etmiyordu).
  *
  * Bu uç ilk hâlinde o kontrolü TAŞIMIYORDU ve davranışı ölçüldü — uydurma bir çerezle:
  *
@@ -35,7 +36,7 @@ export const dynamic = "force-dynamic";
  */
 export async function GET(request: Request) {
   return withApiHandler(request, async ({ requestId }) => {
-    const user = await getCurrentUser();
+    const user = await requireApiSession();
     if (!user) return apiError(401, "Yetkisiz.", { code: "unauthorized", requestId });
 
     const today = istanbulDateISO();

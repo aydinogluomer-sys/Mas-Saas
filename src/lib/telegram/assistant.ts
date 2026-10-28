@@ -30,12 +30,39 @@ function normalize(value: string): string {
     .trim();
 }
 
-function money(value: number): string {
-  return new Intl.NumberFormat("tr-TR", {
-    style: "currency",
-    currency: "TRY",
-    maximumFractionDigits: 2,
-  }).format(value);
+function plainNumber(value: number): string {
+  return new Intl.NumberFormat("tr-TR", { maximumFractionDigits: 2 }).format(value);
+}
+
+/**
+ * An amount in its OWN currency — the caller always says which.
+ *
+ * The first version formatted every amount as TRY, so a USD or EUR ledger movement reached the
+ * owner's phone printed as TL. TRY keeps the ₺ it always had; any other currency is printed with
+ * its ISO code ("USD 1.250,00"), never with a symbol a reader could take for TL, and never
+ * converted — there is no FX conversion anywhere in this product (0094's TRY-only policy). A code
+ * Intl rejects is printed verbatim after the number, and null (unknown) says so.
+ */
+function money(value: number, currency: string | null): string {
+  if (currency === null) return `${plainNumber(value)} (para birimi bilinmiyor)`;
+  try {
+    return new Intl.NumberFormat("tr-TR", {
+      style: "currency",
+      currency,
+      currencyDisplay: currency === "TRY" ? "symbol" : "code",
+      maximumFractionDigits: 2,
+    }).format(value);
+  } catch {
+    return `${plainNumber(value)} ${currency}`;
+  }
+}
+
+/** The views behind every total here sum TRY rows only (0094); the label says so every time. */
+const TRY_ONLY = "yalnız TRY";
+
+/** The non-TRY items a TRY-only figure left out, said out loud rather than silently dropped. */
+function excludedForeign(count: number, what: string, from: string): string[] {
+  return count > 0 ? [`TRY dışı ${count} ${what} ${from} dahil değil (kur çevrimi yapılmaz).`] : [];
 }
 
 function counterpartyTerm(message: string, ledger: boolean): string | null {
@@ -109,14 +136,23 @@ export async function answerTelegramQuestion(
       const lines = recent.map((row) => {
         const amount = row.debitAmount !== 0 ? row.debitAmount : row.creditAmount;
         const side = row.debitAmount !== 0 ? "borç" : "alacak";
-        return `• ${row.movementDate} — ${row.reference ?? row.movementType}: ${money(amount)} ${side}`;
+        // Each movement in its invoice's own currency — a USD invoice is a USD movement.
+        return `• ${row.movementDate} — ${row.reference ?? row.movementType}: ${money(amount, row.currency)} ${side}`;
       });
+      const mixed = recent.some((row) => row.currency !== "TRY");
       return {
         kind: "current_account_ledger",
-        answer: `${account.partyName} — son ${recent.length} hareket\n\n${lines.join("\n")}`,
+        answer: [
+          `${account.partyName} — son ${recent.length} hareket`,
+          "",
+          ...lines,
+          ...(mixed ? ["", "Tutarlar her hareketin kendi para birimindedir; kur çevrimi yapılmaz."] : []),
+        ].join("\n"),
       };
     }
 
+    // current_account_summary's amounts are TRY-only (0094 #46); the party's other-currency
+    // invoices are counted, not summed, and the card says how many were left out.
     const net = account.receivableOpen - account.payableOpen;
     const netLabel = net >= 0 ? "Net alacak" : "Net borç";
     return {
@@ -124,9 +160,10 @@ export async function answerTelegramQuestion(
       answer: [
         `${account.partyName} — cari özet`,
         "",
-        `Açık alacak: ${money(account.receivableOpen)}`,
-        `Açık borç: ${money(account.payableOpen)}`,
-        `${netLabel}: ${money(Math.abs(net))}`,
+        `Açık alacak (${TRY_ONLY}): ${money(account.receivableOpen, "TRY")}`,
+        `Açık borç (${TRY_ONLY}): ${money(account.payableOpen, "TRY")}`,
+        `${netLabel} (${TRY_ONLY}): ${money(Math.abs(net), "TRY")}`,
+        ...excludedForeign(account.foreignCurrencyCount, "fatura", "bu tutarlara"),
         `Vadesi geçmiş kayıt: ${account.overdueCount}`,
         `En erken vade: ${account.earliestDueDate ?? "yok"}`,
         `Son fatura: ${account.lastInvoiceDate ?? "yok"}`,
@@ -134,11 +171,17 @@ export async function answerTelegramQuestion(
     };
   }
 
+  // loadOpenTotals sums TRY rows only and returns the other-currency rows as foreignCount
+  // (receivables/engine.ts, PHASE 2.2). The first version printed the sum as "the" total.
   if (normalized.includes("toplam") && normalized.includes("alacak")) {
     const totals = await loadReceivableTotals(pool, todayISO);
     return {
       kind: "receivable_total",
-      answer: `Toplam açık alacak: ${money(totals.totalOpenAmount)}\nVadesi geçmiş kayıt: ${totals.overdueCount}`,
+      answer: [
+        `Toplam açık alacak (${TRY_ONLY}): ${money(totals.totalOpenAmount, "TRY")}`,
+        ...excludedForeign(totals.foreignCount, "açık kalem", "bu toplama"),
+        `Vadesi geçmiş kayıt: ${totals.overdueCount}`,
+      ].join("\n"),
     };
   }
 
@@ -146,7 +189,11 @@ export async function answerTelegramQuestion(
     const totals = await loadPayableTotals(pool, todayISO);
     return {
       kind: "payable_total",
-      answer: `Toplam açık borç: ${money(totals.totalOpenAmount)}\nVadesi geçmiş kayıt: ${totals.overdueCount}`,
+      answer: [
+        `Toplam açık borç (${TRY_ONLY}): ${money(totals.totalOpenAmount, "TRY")}`,
+        ...excludedForeign(totals.foreignCount, "açık kalem", "bu toplama"),
+        `Vadesi geçmiş kayıt: ${totals.overdueCount}`,
+      ].join("\n"),
     };
   }
 

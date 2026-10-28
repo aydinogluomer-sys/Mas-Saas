@@ -4157,3 +4157,43 @@ Kod tabanının yorumlarda savunduğu sınır kararlarını iddiaya çevirdi.
 - Doğrulama: typecheck 0 · temiz kaynak **8/8 exit 0** · negatif kontrol **3/8 exit 1**.
 - Sınır: statik kapı YAPIYI kanıtlar; konnektör/transport'un gerçek istek kurulumu + davranışı
   phase37/6b/25/38'de mock'larla iki yönlü kapalı; canlı endpoint testi yok (ortamda ağ yok).
+
+---
+
+## Wave 0 / S2 — Güvenlik kapıları (incelenmemiş 46541d8 katmanının seçici karantinası)
+
+Hedef: **kimliksiz yazma yolu sıfır**, oturum ve rol kapıları başarısızlıkta kapalı. Önceki
+incelenmiş durum `af210fd`; karantina öncesi ağaç `quarantine/pre-wave0-2026-10-28` etiketinde.
+
+- **Kaldırıldı (R1/R2):** ERP köprüsü (`/api/erp/sync` kimliksiz fatura/cari yazıyordu; `/api/erp/webhook`
+  koda gömülü, tarayıcıya da gönderilen varsayılan anahtarla `===` karşılaştırıyordu; `/data/erp`,
+  `src/lib/erp`, hub bileşeni, sekme ve içe aktarma sayfası bandı). Telegram mini-app (sayfa, API, lib,
+  manifest kısayolu, bot.py butonları; "yetki" herhangi bir `Telegram` User-Agent'ını kabul ediyor ve
+  ödemeleri finance_manager olarak işaretliyordu). Telegram webhook + `cfo-bot` (varsayılan HMAC sırrıyla
+  imzalı, 32-bit, süresiz onay geri çağrıları) ve `telegram-ops set-webhook`/`test-alert`. Hepsi açık
+  HTTPS gerektiriyordu; bot.py long-polling ile çalışır.
+- **Middleware:** tek muafiyet `POST /api/telegram/assistant`, tam eşleşme. Önek muafiyetleri gitti.
+- **Telegram asistanı:** sahte loopback kontrolü silindi (Next `request.url`'i kendi sunucu adından
+  kurar; her çağırana "localhost" derdi). Anahtar SHA-256 özetleri üzerinden sabit zamanlı
+  karşılaştırılır; anahtar ya da chat id tanımsızsa kapalı. **Viewer** katmanında çalışır
+  (`runAsReadOnlySystem`) — veritabanı yazmayı kendisi reddeder. Tutarlar dürüst: toplamlar
+  "yalnız TRY" der ve dışarıda kalan TRY-dışı kalem/fatura sayısını söyler; cari hareketler kendi
+  para biriminde yazılır (ledger satırına faturanın `currency`'si bağlandı). bot.py yerel olmayan
+  `MAS_APP_BASE_URL` ile başlamaz; bağımlılıklar `bot.requirements.txt`'de sabitlendi.
+- **db.ts:** `set role`/`reset role` hatası yine isteği durdurur (af210fd); hazırlığı başarısız
+  bağlantı havuza dönmez, imha edilir; `app.user_id` her checkout'ta yazılır.
+- **auth.ts:** 30 sn'lik süreç içi oturum önbelleği kaldırıldı (iptal/rol/pasifleştirme anında etkili);
+  `last_seen_at` güncellemesi yine beklenir. Yeni `requireApiSession()`: JSON rotaları zorunlu
+  parola değişikliği bekleyen kullanıcıya 401 döner. Mutasyon yapan route handler `checkOrigin()`
+  çağırır (`/api/imports/v2/async`, Origin kontrolü ilk sırada).
+- **next.config.ts:** tip hatalarını derlemede kapatan ayar ve commit SHA'yı "latest"e düşüren
+  yeniden yazım kaldırıldı (provenance kuralı: bilinmeyen commit kabul edilmez).
+- **Testler (DB'siz):** `src/middleware.test.ts` (Next'in kendi matcher değerlendirmesiyle; her
+  `route.ts` için tek muafiyet), `tests/security/write-gates.test.ts` (TypeScript AST ile: mutasyon
+  rotası = checkOrigin + requireApiSession, her server action ilk ifadede kapı, `src/app`'te
+  runAsSystem yok, varsayılan sır yok, Telegram yüzeyi salt-okunur), `src/lib/db.test.ts`,
+  `src/lib/auth.test.ts`. Rol/önbellek testleri katman sürümüne karşı da koşturuldu ve
+  kırmızı verdi (anti-totoloji).
+- **Bilinen yerel durum:** `.next/types` (18 Ekim derlemesinden) silinen rotalara referans verdiği
+  için yerel `pnpm typecheck` bir sonraki `next build`/`next dev` tip üretimine kadar yalnız bu
+  üretilmiş dosyalarda TS2307 verir; kaynak ağaç (`.next/types` hariç) temiz. CI etkilenmez.

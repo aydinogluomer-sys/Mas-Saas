@@ -58,10 +58,9 @@ export function getRawPool(): Pool {
   return global.__masRawPool;
 }
 
-/** Marks which tier role and user identity a physical connection is currently sitting in. */
+/** Marks which tier role a physical connection is currently sitting in. */
 const CURRENT_ROLE = Symbol.for("mas.currentDbRole");
-const CURRENT_USER_ID = Symbol.for("mas.currentUserId");
-type TaggedClient = PoolClient & { [CURRENT_ROLE]?: string | null; [CURRENT_USER_ID]?: string | null };
+type TaggedClient = PoolClient & { [CURRENT_ROLE]?: string | null };
 
 /**
  * Bring a checked-out connection to the tier this request needs.
@@ -74,28 +73,28 @@ type TaggedClient = PoolClient & { [CURRENT_ROLE]?: string | null; [CURRENT_USER
  * When there is no tier (a background job, a code path outside a request), the connection is
  * actively reset to `mas_radar_app`, which can read nothing. Leaving a stale tier behind would
  * be the one way this scheme could hand out privileges nobody asked for.
+ *
+ * A failed `set role` / `reset role` THROWS, and the tag is only written after both statements
+ * succeeded. Wave 0 restored this from af210fd: the unreviewed layer caught both failures "for a
+ * pooler session", logged a warning and tagged the connection as switched anyway — so a request
+ * whose switch failed ran in whatever role the connection last held (another user's tier, or the
+ * bare runtime role) and every later checkout trusted the false tag. There is no pooler between
+ * this app and its database (local PostgreSQL 16 is the only canonical one), and even if there
+ * were, the answer to "the tier could not be established" is to refuse the request, never to
+ * run it in an unknown one. getPool() additionally destroys a connection whose switch failed.
  */
 async function applyRole(client: TaggedClient, dbRole: string | null): Promise<void> {
   const current = client[CURRENT_ROLE] ?? null;
   if (current === dbRole) return;
   if (dbRole === null) {
-    try {
-      await client.query("reset role");
-      await client.query("select set_config('app.user_id', '', false)");
-      client[CURRENT_USER_ID] = null;
-    } catch {
-      // Ignored if reset role is not permitted on this pooler session
-    }
+    await client.query("reset role");
+    await client.query("select set_config('app.user_id', '', false)");
   } else {
     // dbRole never comes from user input — it is looked up from the five-entry DB_ROLE map in
     // @/lib/authz/matrix — but it is still an identifier being concatenated, so it is
     // validated against that map's shape before it reaches SQL.
     if (!/^mas_radar_[a-z_]+$/.test(dbRole)) throw new Error(`Geçersiz veritabanı rolü: ${dbRole}`);
-    try {
-      await client.query(`set role ${dbRole}`);
-    } catch (e: any) {
-      console.warn(`[db:applyRole] set role ${dbRole} warning:`, e?.message || e);
-    }
+    await client.query(`set role ${dbRole}`);
   }
   client[CURRENT_ROLE] = dbRole;
 }
@@ -121,6 +120,25 @@ export function runAsSystem<T>(fn: () => Promise<T>): Promise<T> {
   return systemContext.run({ dbRole: "mas_radar_finance_manager", userId: null }, fn);
 }
 
+/**
+ * The read-only machine identity: the viewer tier.
+ *
+ * For a caller with no person behind it that only ever READS — today exactly one, the Telegram
+ * assistant (src/app/api/telegram/assistant/route.ts), which authenticates bot.py with a shared
+ * secret rather than a session. runAsSystem() would have handed it finance_manager, i.e. write
+ * access to payments, checks and loans that a question-answering path never needs. Viewer reads
+ * the same invoice/party data every dashboard tier reads (0058 gives all five tiers SELECT on the
+ * operational and reference tables, and the receivables views are granted like any table) and
+ * writes nothing — "a viewer cannot write to ANY table" is the invariant db:roles-rls:verify
+ * asserts in as many words (see the `personal` class note in @/lib/authz/matrix). So if a bug
+ * or a crafted question ever steered this path toward a write, the database refuses it,
+ * independently of the code that is supposed to never try. A future machine caller that
+ * genuinely needs more is a decision to make explicitly, not a reason to borrow the job identity.
+ */
+export function runAsReadOnlySystem<T>(fn: () => Promise<T>): Promise<T> {
+  return systemContext.run({ dbRole: "mas_radar_viewer", userId: null }, fn);
+}
+
 async function contextFor(): Promise<{ dbRole: string | null; userId: string | null }> {
   const system = systemContext.getStore();
   if (system) return system;
@@ -141,13 +159,14 @@ async function prepare(client: TaggedClient): Promise<void> {
   // Order matters: set the user id BEFORE switching role. `app.user_id` is what the row-level
   // policies read (approvals' maker-checker rule, users_self_read), and set_config must run
   // while the connection still has the privilege to run it.
+  //
+  // Written on EVERY checkout, unlike the role. The layer skipped it when a per-connection tag
+  // said the value was already there; but this value is an identity, it can be changed on the
+  // connection without going through here (any set_config, a rolled-back transaction, a reset),
+  // and a stale one attributes one person's request to another inside the maker-checker policy.
+  // One local round trip per checkout is the price of never having to trust that tag.
   if (dbRole !== null) {
-    const currentUid = client[CURRENT_USER_ID];
-    const targetUid = userId ?? "";
-    if (currentUid !== targetUid) {
-      await client.query("select set_config('app.user_id', $1, false)", [targetUid]);
-      client[CURRENT_USER_ID] = targetUid;
-    }
+    await client.query("select set_config('app.user_id', $1, false)", [userId ?? ""]);
   }
   await applyRole(client, dbRole);
 }
@@ -170,12 +189,22 @@ export function getPool(): Pool {
       // slow-query timer lives here rather than at ~530 call sites. Only the DURATION and the
       // query SHAPE are recorded — never the parameters, which are financial values.
       const startedAt = process.hrtime.bigint();
+      // Set only when prepare() failed. Such a connection's role and identity are unknown — the
+      // statement that failed may or may not have taken effect — so it is DESTROYED (pg-pool
+      // drops a client released with a truthy argument) rather than pooled for the next
+      // request to inherit. A failure of the caller's own SQL leaves the connection reusable.
+      let unusable: Error | undefined;
       try {
-        await prepare(client);
+        try {
+          await prepare(client);
+        } catch (e) {
+          unusable = e instanceof Error ? e : new Error(String(e));
+          throw e;
+        }
         // @ts-expect-error — pg's query() overloads are wider than this passthrough can express.
         return await client.query(...args);
       } finally {
-        client.release();
+        client.release(unusable);
         // In the finally block deliberately: a query that FAILED after ten seconds is exactly the
         // one worth seeing, and recording only successes would hide the worst cases.
         const text = typeof args[0] === "string"
@@ -198,7 +227,8 @@ export function getPool(): Pool {
       try {
         await prepare(client);
       } catch (e) {
-        client.release();
+        // Destroyed, not pooled — the same reasoning as scopedQuery above.
+        client.release(e instanceof Error ? e : new Error(String(e)));
         throw e;
       }
       // AŞAMA 10: yazma yollarının tamamı buradan geçer (markInstancePaid, importBankStatement,

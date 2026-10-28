@@ -5,7 +5,6 @@ import { ModuleFrame, type ModuleTab } from "@/components/ui/module-tabs";
 
 const tabs: ModuleTab[] = [
   // 1. İçe Aktarım
-  { href: "/data/erp", label: "ERP Entegrasyonu", category: "İçe Aktarım" },
   { href: "/data/imports/v2", label: "Standart Aktarım (V2)", category: "İçe Aktarım" },
   { href: "/data/imports", label: "Dosya Geçmişi", category: "İçe Aktarım" },
   { href: "/data/sources", label: "Kaynak Gezgini", category: "İçe Aktarım" },

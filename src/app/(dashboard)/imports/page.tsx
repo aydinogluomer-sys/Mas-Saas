@@ -30,21 +30,6 @@ export default async function ImportsPage() {
 
   return (
     <>
-      <div className="mb-3 flex items-center justify-between rounded-xl border border-sky-500/20 bg-sky-500/10 p-3.5 text-xs text-sky-200">
-        <div className="flex items-center gap-2.5">
-          <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-sky-500/20 text-sky-400 font-bold">⚡</span>
-          <div>
-            <strong>Excel yükleme ihtiyacını ortadan kaldırın:</strong> Logo (Go/Tiger), Mikro, Zirve, Paraşüt ve Luca yazılımlarınızdan cari ve faturalar doğrudan MAS Nakit Radar&apos;a aksın.
-          </div>
-        </div>
-        <a
-          href="/data/erp"
-          className="ml-4 whitespace-nowrap rounded-lg bg-sky-500/20 px-3 py-1.5 font-semibold text-sky-300 hover:bg-sky-500/30 transition-colors"
-        >
-          ERP Köprüsünü Aç &rarr;
-        </a>
-      </div>
-
       <Panel
         title="Excel Çalışma Kitabı Yükle"
         subtitle="Veri tablolarını içe aktarın; satır doğrulaması ve mutabakat için otomatik incelemeye alın."

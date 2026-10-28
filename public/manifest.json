@@ -19,13 +19,6 @@
   ],
   "shortcuts": [
     {
-      "name": "Mobil Kokpit",
-      "short_name": "Kokpit",
-      "description": "Telegram Mini App ve mobil kokpite hızlı geçiş",
-      "url": "/telegram/miniapp",
-      "icons": [{ "src": "/icon.svg", "sizes": "any" }]
-    },
-    {
       "name": "Nakit Akışı",
       "short_name": "Nakit",
       "description": "Nakit akışı ve kapanış projeksiyonu",

@@ -1,15 +1,22 @@
+"""MAS Nakit Radar — read-only Telegram assistant (long polling).
+
+Runs on the same machine as the MAS app. It long-polls Telegram (no webhook, so no public HTTPS
+endpoint exists), answers only the owner's chat (TELEGRAM_CHAT_ID), and forwards questions to the
+local read-only endpoint /api/telegram/assistant with the shared TELEGRAM_INTERNAL_API_KEY. It
+never writes anything: there are no approval buttons and no mini-app (Wave 0 removed the
+Telegram Mini App — it needed a public HTTPS URL and carried write buttons).
+
+Dependencies are pinned in bot.requirements.txt.
+"""
+
 import logging
 import os
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import httpx
 from dotenv import load_dotenv
-from telegram import (
-    InlineKeyboardButton,
-    InlineKeyboardMarkup,
-    Update,
-    WebAppInfo,
-)
+from telegram import Update
 from telegram.error import InvalidToken
 from telegram.ext import (
     ApplicationBuilder,
@@ -29,6 +36,7 @@ MAS_APP_BASE_URL = os.getenv(
     "MAS_APP_BASE_URL",
     "http://127.0.0.1:3000",
 ).strip().rstrip("/")
+LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
 
 logging.basicConfig(
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
@@ -59,6 +67,16 @@ def validate_configuration() -> None:
             "Eksik ortam değişkenleri: " + ", ".join(missing)
         )
 
+    # Every request carries TELEGRAM_INTERNAL_API_KEY, and the answers carry financial figures.
+    # Both may only travel to the app on THIS machine, so a base URL pointing anywhere else is a
+    # configuration error, not a choice: refuse to start rather than send the key away.
+    host = (urlsplit(MAS_APP_BASE_URL).hostname or "").lower()
+    if host not in LOOPBACK_HOSTS:
+        raise RuntimeError(
+            "MAS_APP_BASE_URL yalnız bu makineyi gösterebilir "
+            "(127.0.0.1, localhost veya ::1); servis anahtarı başka bir adrese gönderilmez."
+        )
+
 
 def is_authorized(update: Update) -> bool:
     if not update.effective_chat:
@@ -85,63 +103,16 @@ async def start(
     if not update.message:
         return
 
-    miniapp_url = f"{MAS_APP_BASE_URL}/telegram/miniapp"
-    keyboard = InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton(
-                text="📱 Nakit Radar Mini App'i Aç",
-                web_app=WebAppInfo(url=miniapp_url),
-            )
-        ]
-    ])
-
     await update.message.reply_text(
         "Merhaba!\n\n"
-        "MAS SaaS Telegram asistanı ve mobil nakit kokpiti aktif.\n\n"
+        "MAS SaaS Telegram asistanı aktif. Yalnız okur; kayıt eklemez, değiştirmez veya onaylamaz.\n\n"
         "Komutlar:\n"
-        "• /kokpit - Telegram Mini App mobil kasa kokpiti\n"
         "• /durum - Sistem sağlık durumu\n"
         "• /cari Akon - Cari hesap özeti\n"
         "• /hareket Akon - Cari hareketler\n\n"
         "Doğrudan soru da sorabilirsiniz:\n"
         "• Toplam açık alacak ne kadar?\n"
         "• Toplam açık borç ne kadar?",
-        reply_markup=keyboard,
-    )
-
-
-async def kokpit(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-) -> None:
-    if not is_authorized(update):
-        await reject_unauthorized(update)
-        return
-
-    if not update.message:
-        return
-
-    miniapp_url = f"{MAS_APP_BASE_URL}/telegram/miniapp"
-    keyboard = InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton(
-                text="📱 Nakit Radar Mini App'i Aç",
-                web_app=WebAppInfo(url=miniapp_url),
-            )
-        ],
-        [
-            InlineKeyboardButton(
-                text="🌐 Tarayıcıda Aç",
-                url=miniapp_url,
-            )
-        ],
-    ])
-
-    await update.message.reply_text(
-        "⚡ *MAS Nakit Radar Mobil Kokpiti*\n\n"
-        "Net Kasa, 7 günlük çıkışlar, vadesi gelen çekler ve acil ödeme aksiyonları için aşağıdaki butona dokunun:",
-        reply_markup=keyboard,
-        parse_mode="Markdown",
     )
 
 
@@ -270,8 +241,6 @@ def main() -> None:
     app = ApplicationBuilder().token(TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("kokpit", kokpit))
-    app.add_handler(CommandHandler("miniapp", kokpit))
     app.add_handler(CommandHandler("durum", durum))
     app.add_handler(CommandHandler("cari", ask_mas))
     app.add_handler(CommandHandler("hareket", ask_mas))

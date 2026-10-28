@@ -6,14 +6,15 @@
 // sorusu tek bir özetle cevaplanabilsin. Kullanıcı girdisi YOK: yol/ad sabit, traversal yüzeyi yok.
 import { NextResponse } from "next/server";
 import { createHash } from "node:crypto";
-import { getCurrentUser } from "@/lib/auth";
+import { requireApiSession } from "@/lib/auth";
 import { canAccessRoute } from "@/lib/authz/route-access";
 import { buildTemplateBuffer, TEMPLATE_FILENAME } from "@/lib/importers/v2/template";
 
 export const dynamic = "force-dynamic";
 
 export async function GET() {
-  const user = await getCurrentUser();
+  // requireApiSession: a live session whose user is not under a forced password change (0095).
+  const user = await requireApiSession();
   if (!user) return NextResponse.json({ error: "Yetkisiz." }, { status: 401 });
   // Şablonu indirebilen = sayfayı açabilen (operator/manager/admin). Salt-okur katmanlar 403.
   if (!canAccessRoute(user.role, "/data/imports/v2")) {

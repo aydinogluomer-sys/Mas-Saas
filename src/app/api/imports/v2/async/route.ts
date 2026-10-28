@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
-import { apiError, withApiHandler } from "@/lib/api-response";
-import { requireSession } from "@/lib/auth";
+import { apiError, checkOrigin, withApiHandler } from "@/lib/api-response";
+import { requireApiSession } from "@/lib/auth";
 import { canPerform } from "@/lib/authz/matrix";
 import { CORRELATION_HEADER } from "@/lib/correlation";
 import { getPool } from "@/lib/db";
@@ -12,7 +12,16 @@ export const dynamic = "force-dynamic";
 
 export async function POST(request: Request) {
   return withApiHandler(request, async ({ requestId }) => {
-    const user = await requireSession().catch(() => null);
+    // Wave 0: the browser-callable mutating route handler, so the Origin gate comes FIRST — it
+    // needs no database, and a forged cross-site upload is refused before the session table is
+    // even read. SameSite=Lax on the session cookie already blocks most cross-site POSTs; this is
+    // the explicit check api-response.ts documents for every mutating route handler.
+    const forbidden = checkOrigin(request, requestId);
+    if (forbidden) return forbidden;
+
+    // requireApiSession, not requireSession().catch(() => null): the latter turned every failure
+    // (a database outage included) into a 401. A user under a forced password change gets 401.
+    const user = await requireApiSession();
     if (!user) {
       return apiError(401, "Oturum açmanız gerekiyor.", { code: "unauthorized", requestId });
     }
@@ -71,7 +80,7 @@ export async function POST(request: Request) {
 
 export async function GET(request: Request) {
   return withApiHandler(request, async ({ requestId }) => {
-    const user = await requireSession().catch(() => null);
+    const user = await requireApiSession();
     if (!user) {
       return apiError(401, "Oturum açmanız gerekiyor.", { code: "unauthorized", requestId });
     }

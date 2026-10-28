@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { getPool } from "@/lib/db";
-import { getCurrentUser } from "@/lib/auth";
+import { requireApiSession } from "@/lib/auth";
 import { apiError, withApiHandler } from "@/lib/api-response";
 import { CORRELATION_HEADER } from "@/lib/correlation";
 import { istanbulDateISO } from "@/lib/reports/rules";
@@ -17,8 +17,8 @@ export async function GET(request: Request) {
   return withApiHandler(request, async ({ requestId }) => {
     // Session first. The pool below is role-scoped per checkout (Faz 24B), so an unauthenticated
     // caller would see nothing anyway — but a search endpoint that answers strangers is a
-    // reconnaissance tool, so it is refused outright.
-    const user = await getCurrentUser();
+    // reconnaissance tool, so it is refused outright. So is a user under a forced password change.
+    const user = await requireApiSession();
     if (!user) return apiError(401, "Yetkisiz.", { code: "unauthorized", requestId });
 
     const parsed = querySchema.safeParse({ q: new URL(request.url).searchParams.get("q") ?? "" });

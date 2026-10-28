@@ -353,12 +353,17 @@ export const loadPayableTotals = (pool: Pool, todayISO: string) =>
   loadOpenTotals(pool, "payables_open", todayISO);
 
 export async function loadCurrentAccounts(pool: Pool, limit = 200) {
+  // 0094 (#46): every amount column of current_account_summary is TRY-only; its
+  // foreign_currency_count says how many of the party's non-cancelled invoices are in another
+  // currency and therefore NOT in those sums. Carried through so a reader of the amounts can say so
+  // (the Telegram assistant does) instead of presenting a TRY-only figure as the whole balance.
   const r = await pool.query(
     `select party_id::text, party_name, party_type, receivable_open, payable_open,
             receivable_count, payable_count, overdue_count,
             to_char(earliest_due_date,'YYYY-MM-DD') as earliest_due_date,
             sales_total_all_time, purchase_total_all_time,
-            to_char(last_invoice_date,'YYYY-MM-DD') as last_invoice_date
+            to_char(last_invoice_date,'YYYY-MM-DD') as last_invoice_date,
+            foreign_currency_count
      from public.current_account_summary
      where receivable_open <> 0 or payable_open <> 0 or receivable_count > 0 or payable_count > 0
      order by (receivable_open + payable_open) desc limit $1`, [limit]);
@@ -373,21 +378,31 @@ export async function loadCurrentAccounts(pool: Pool, limit = 200) {
     salesTotal: moneyOrNull(x.sales_total_all_time) ?? 0,
     purchaseTotal: moneyOrNull(x.purchase_total_all_time) ?? 0,
     lastInvoiceDate: x.last_invoice_date,
+    /** Non-TRY invoices of this party, excluded from every amount above (0094). */
+    foreignCurrencyCount: intOrNull(x.foreign_currency_count) ?? 0,
   }));
 }
 
 export async function loadCurrentAccountLedger(pool: Pool, partyId: string, limit = 200) {
+  // current_account_ledger (0050) has no currency column, but every movement — the invoice row and
+  // each allocation against it — is denominated in its invoice's currency, and every row carries
+  // invoice_id. The join gives each movement its own currency so no reader has to assume TRY.
+  // invoices.currency is NOT NULL with an ISO-4217 shape check (0044); the left join only means a
+  // missing match surfaces as null (unknown) rather than dropping the movement.
   const r = await pool.query(
-    `select to_char(movement_date,'YYYY-MM-DD') as movement_date, movement_type, reference,
-            direction, debit_amount, credit_amount, invoice_id::text
-     from public.current_account_ledger where party_id=$1
-     order by movement_date, movement_type limit $2`, [partyId, limit]);
+    `select to_char(l.movement_date,'YYYY-MM-DD') as movement_date, l.movement_type, l.reference,
+            l.direction, l.debit_amount, l.credit_amount, l.invoice_id::text, i.currency
+     from public.current_account_ledger l
+     left join public.invoices i on i.id = l.invoice_id
+     where l.party_id=$1
+     order by l.movement_date, l.movement_type limit $2`, [partyId, limit]);
   return r.rows.map((x) => ({
     movementDate: x.movement_date, movementType: x.movement_type, reference: x.reference,
     direction: x.direction as "sales" | "purchase",
     debitAmount: moneyOrNull(x.debit_amount) ?? 0,
     creditAmount: moneyOrNull(x.credit_amount) ?? 0,
     invoiceId: x.invoice_id,
+    currency: (x.currency as string | null) ?? null,
   }));
 }
 

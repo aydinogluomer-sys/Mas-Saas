@@ -1,0 +1,13 @@
+# bot.py — the read-only Telegram assistant (long polling). Exact pins for every library bot.py
+# imports, so the bot runs on the versions it was verified with instead of whatever a later
+# `pip install` resolves to.
+#
+# Install into an isolated environment, never the system Python:
+#   uv venv .venv && uv pip install -r bot.requirements.txt
+#   (or: python -m venv .venv && .venv\Scripts\python -m pip install -r bot.requirements.txt)
+#
+# Verified in this repo's .venv (CPython 3.14.6) with these transitive versions resolved by the
+# packages below: anyio 4.14.2, certifi 2026.7.22, h11 0.16.0, httpcore 1.0.9, idna 3.19.
+python-telegram-bot==22.8
+httpx==0.28.1
+python-dotenv==1.2.3

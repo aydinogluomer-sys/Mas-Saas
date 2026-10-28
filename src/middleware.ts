@@ -24,10 +24,20 @@ function isApiPath(pathname: string): boolean {
   return pathname === "/api" || pathname.startsWith("/api/");
 }
 
+/** The ONE route that is answered without a browser session cookie.
+ *
+ * bot.py, running on this machine, calls it on behalf of the owner's Telegram chat. It has no
+ * cookie, so the handler authenticates the caller itself: a constant-time shared secret
+ * (TELEGRAM_INTERNAL_API_KEY) plus the owner's chat id, failing closed when either is unset, and
+ * it only ever reads (viewer tier). See src/app/api/telegram/assistant/route.ts.
+ *
+ * The comparison is EXACT on purpose. Wave 0 removed the layer's other exemptions — the
+ * /api/telegram/webhook route and the PREFIXES /telegram/miniapp, /api/telegram/miniapp and
+ * /api/erp/ — and a prefix was the worst of them: it waived the cookie gate for every route that
+ * would ever be added beneath it, which is how an ERP sync that wrote invoices with no
+ * authentication at all came to be reachable. A trailing slash, a different case or an encoded
+ * character does not match here and therefore falls through to the cookie gate: fail closed. */
 const TELEGRAM_ASSISTANT_PATH = "/api/telegram/assistant";
-const TELEGRAM_WEBHOOK_PATH = "/api/telegram/webhook";
-const TELEGRAM_MINIAPP_PATH = "/telegram/miniapp";
-const TELEGRAM_MINIAPP_API = "/api/telegram/miniapp";
 
 export function middleware(request: NextRequest) {
   // Faz 16: one correlation id per request, resolved before anything can fail, so even the
@@ -53,15 +63,9 @@ export function middleware(request: NextRequest) {
     }
   }
 
-  // This exact machine-to-machine route has no browser session cookie. Its handler performs
-  // constant-time shared-secret and Chat ID checks before touching business data.
-  if (
-    request.nextUrl.pathname === TELEGRAM_ASSISTANT_PATH ||
-    request.nextUrl.pathname === TELEGRAM_WEBHOOK_PATH ||
-    request.nextUrl.pathname.startsWith(TELEGRAM_MINIAPP_PATH) ||
-    request.nextUrl.pathname.startsWith(TELEGRAM_MINIAPP_API) ||
-    request.nextUrl.pathname.startsWith("/api/erp/")
-  ) {
+  // The single machine-to-machine exemption (see TELEGRAM_ASSISTANT_PATH above). Everything
+  // else, every Telegram-looking header and User-Agent included, meets the cookie gate below.
+  if (request.nextUrl.pathname === TELEGRAM_ASSISTANT_PATH) {
     const response = NextResponse.next({ request: { headers: forwarded } });
     response.headers.set(CORRELATION_HEADER, requestId);
     return response;
@@ -84,6 +88,9 @@ export function middleware(request: NextRequest) {
 export const config = {
   // `ready` joins the allowlist alongside `health` (Faz 16). Without it the probe would be
   // answered by a redirect to /login and every monitor would read the app as "up" while
-  // measuring the login page.
+  // measuring the login page. robots.txt, manifest.json, sw.js and icon.svg are static public
+  // files the browser fetches before (or without) a session — the PWA install metadata and the
+  // service worker script — and carry no financial data. src/middleware.test.ts pins both
+  // directions of this list against Next's own matcher evaluation.
   matcher: ["/((?!login|health|ready|version|robots.txt|manifest.json|sw.js|icon.svg|_next/static|_next/image|favicon.ico).*)"],
 };

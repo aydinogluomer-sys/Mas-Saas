@@ -56,8 +56,6 @@ const schema = z.object({
   EMAIL_TO: z.string().optional(),
   OPENAI_API_KEY: z.string().optional(),
   OPENAI_MODEL: z.string().optional(),
-  ERP_API_KEY: z.string().optional(),
-  ERP_WEBHOOK_SECRET: z.string().optional(),
   // Left as a loose string rather than z.enum(["0","1"]) on purpose: the original reads were
   // `=== "1"` comparisons, so any other value simply meant "off". Tightening this to an enum
   // would convert a harmless typo into a boot failure — a behaviour change, not a fix.
@@ -80,8 +78,6 @@ const parsed = schema.safeParse({
   EMAIL_TO: optional(process.env.EMAIL_TO),
   OPENAI_API_KEY: optional(process.env.OPENAI_API_KEY),
   OPENAI_MODEL: optional(process.env.OPENAI_MODEL),
-  ERP_API_KEY: optional(process.env.ERP_API_KEY),
-  ERP_WEBHOOK_SECRET: optional(process.env.ERP_WEBHOOK_SECRET),
   AI_FORCE_DETERMINISTIC: optional(process.env.AI_FORCE_DETERMINISTIC),
   MAS_QA_BYPASS_AUTH: optional(process.env.MAS_QA_BYPASS_AUTH),
   APP_COMMIT_SHA: optional(process.env.APP_COMMIT_SHA),
@@ -124,8 +120,6 @@ export const env = Object.freeze({
   emailTo: raw.EMAIL_TO,
   openaiApiKey: raw.OPENAI_API_KEY,
   openaiModel: raw.OPENAI_MODEL ?? "gpt-5.5",
-  erpApiKey: raw.ERP_API_KEY ?? "erp_mas_default_live_key_2026",
-  erpWebhookSecret: raw.ERP_WEBHOOK_SECRET ?? null,
 
   // ── Live reads, deliberately not snapshotted ──────────────────────────────────────────
   // Everything above is captured once at module load, which is correct for values that are
@@ -194,8 +188,8 @@ export function envPresence(): EnvPresence[] {
     { name: "MIGRATION_DATABASE_URL", required: false, set: isSet(process.env.MIGRATION_DATABASE_URL), note: "Owner bağlantısı; yoksa DATABASE_URL'e düşer" },
     { name: "DATABASE_POOL_MAX", required: false, set: isSet(process.env.DATABASE_POOL_MAX), note: "Havuz boyutu; varsayılan 10" },
     { name: "TELEGRAM_BOT_TOKEN", required: false, set: isSet(process.env.TELEGRAM_BOT_TOKEN), note: "Hatırlatma gönderimi; yoksa dürüstçe 'failed' loglanır" },
-    { name: "TELEGRAM_CHAT_ID", required: false, set: isSet(process.env.TELEGRAM_CHAT_ID), note: "Hatırlatma hedefi" },
-    { name: "TELEGRAM_INTERNAL_API_KEY", required: false, set: isSet(process.env.TELEGRAM_INTERNAL_API_KEY), note: "Yerel Telegram asistanı servis kimliği" },
+    { name: "TELEGRAM_CHAT_ID", required: false, set: isSet(process.env.TELEGRAM_CHAT_ID), note: "Hatırlatma hedefi ve Telegram asistanının izin verdiği tek sohbet; yoksa asistan kapalı" },
+    { name: "TELEGRAM_INTERNAL_API_KEY", required: false, set: isSet(process.env.TELEGRAM_INTERNAL_API_KEY), note: "Yerel Telegram asistanı servis kimliği (en az 32 karakter); yoksa asistan kapalı" },
     { name: "MAS_APP_BASE_URL", required: false, set: isSet(process.env.MAS_APP_BASE_URL), note: "Telegram worker için yerel MAS SaaS adresi" },
     { name: "OPENAI_API_KEY", required: false, set: isSet(process.env.OPENAI_API_KEY), note: "Yoksa AI yanıtları deterministik olgulara düşer" },
     { name: "OPENAI_MODEL", required: false, set: isSet(process.env.OPENAI_MODEL), note: `Varsayılan: ${env.openaiModel}` },

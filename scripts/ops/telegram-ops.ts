@@ -1,20 +1,24 @@
 /**
- * Telegram Ops CLI (Faz 2)
+ * Telegram Ops CLI — read the bot's state, and return it to polling mode.
  *
- * Provides operators with essential management tools for the Telegram integration:
- * - inspect bot status and webhook state (info)
- * - register a webhook URL with secret token (set-webhook)
- * - remove webhook registration to restore polling mode (delete-webhook)
- * - send a live test alert to verify delivery pipeline (test-alert)
+ * Two commands, both talking only to api.telegram.org with the bot's own token:
+ * - info            bot identity and the webhook registration Telegram currently holds
+ * - delete-webhook  drop any registered webhook so bot.py's long polling can receive updates
+ *
+ * Wave 0 removed `set-webhook` and `test-alert`. A webhook needs a public HTTPS endpoint, which the
+ * closed-circuit deployment does not have (bot.py long-polls instead), and set-webhook also handed
+ * TELEGRAM_INTERNAL_API_KEY — the secret that authorises /api/telegram/assistant — to Telegram as
+ * its secret_token. While a webhook is registered, Telegram refuses getUpdates (HTTP 409), so if
+ * one was ever registered, run `delete-webhook` once. Outbound alerts go through the reminder /
+ * telemetry transports, not through this tool.
+ *
+ * Usage: pnpm exec tsx scripts/ops/telegram-ops.ts [info|delete-webhook]
  */
 import { loadEnvConfig } from "@next/env";
 loadEnvConfig(process.cwd());
 
-import { telegramTransport } from "../../src/lib/reminders/transport";
-
 const token = process.env.TELEGRAM_BOT_TOKEN?.trim();
 const chatId = process.env.TELEGRAM_CHAT_ID?.trim();
-const secret = process.env.TELEGRAM_INTERNAL_API_KEY?.trim();
 
 function requireToken(): string {
   if (!token) {
@@ -46,7 +50,7 @@ async function showInfo() {
     }
     console.log(`Bot Adı:        ${me.result.first_name} (@${me.result.username})`);
     console.log(`Bot ID:         ${me.result.id}`);
-    console.log(`Yetkili Chat ID: ${chatId ?? "Tanımlı değil"}`);
+    console.log(`Yetkili Chat ID: ${chatId ? "tanımlı" : "Tanımlı değil"}`);
 
     const webhook = await tgApi("getWebhookInfo");
     console.log("\n=== Webhook Bilgisi ===");
@@ -55,7 +59,13 @@ async function showInfo() {
       return;
     }
     const info = webhook.result;
-    console.log(`Kayıtlı URL:    ${info.url || "(Tanımlı değil - Polling modunda çalışabilir)"}`);
+    if (info.url) {
+      console.log(`Kayıtlı URL:    ${info.url}`);
+      console.log("UYARI: Bir webhook kayıtlı. bot.py (polling) bu durumda güncelleme alamaz;");
+      console.log("       'delete-webhook' ile kaldırın.");
+    } else {
+      console.log("Kayıtlı URL:    (yok — polling modu, beklenen durum)");
+    }
     console.log(`Bekleyen Güncelleme: ${info.pending_update_count}`);
     if (info.last_error_date) {
       console.log(`Son Hata Tarihi: ${new Date(info.last_error_date * 1000).toLocaleString("tr-TR")}`);
@@ -66,77 +76,29 @@ async function showInfo() {
   }
 }
 
-async function setWebhook(url: string) {
-  if (!url.startsWith("https://")) {
-    console.error("HATA: Telegram webhook URL'si mutlaka HTTPS olmalıdır (ör: https://nakit.sirketiniz.com/api/telegram/webhook).");
-    process.exit(1);
-  }
-  console.log(`Webhook kaydediliyor: ${url}`);
-  const payload: Record<string, unknown> = {
-    url,
-    allowed_updates: ["message"],
-    drop_pending_updates: true,
-  };
-  if (secret) {
-    payload.secret_token = secret;
-    console.log("Webhook gizli anahtarı (secret_token) otomatik eklendi.");
-  }
-  const res = await tgApi("setWebhook", payload);
-  if (res.ok) {
-    console.log("BAŞARILI: Webhook kaydedildi.", res.description ?? "");
-  } else {
-    console.error("BAŞARISIZ:", res);
-  }
-}
-
 async function deleteWebhook() {
   console.log("Webhook kaldırılıyor (Polling moduna geçiş)...");
   const res = await tgApi("deleteWebhook", { drop_pending_updates: true });
   if (res.ok) {
-    console.log("BAŞARILI: Webhook kaldırıldı. Artık 'python bot.py' veya polling motoru kullanılabilir.");
+    console.log("BAŞARILI: Webhook kaldırıldı. Artık 'python bot.py' polling ile çalışabilir.");
   } else {
     console.error("BAŞARISIZ:", res);
   }
 }
 
-async function testAlert(text: string) {
-  if (!chatId) {
-    console.error("HATA: TELEGRAM_CHAT_ID tanımlı değil.");
-    process.exit(1);
-  }
-  console.log(`Test uyarısı gönderiliyor (Hedef Chat ID: ${chatId})...`);
-  const transport = telegramTransport();
-  const res = await transport.send(text);
-  if (res.ok) {
-    console.log("BAŞARILI: Telegram uyarısı başarıyla iletildi!");
-  } else {
-    console.error("BAŞARISIZ: Telegram uyarısı iletilemedi:", res.error);
-  }
-}
-
 async function main() {
-  const args = process.argv.slice(2);
-  const command = args[0] ?? "info";
+  const command = process.argv[2] ?? "info";
 
   switch (command) {
     case "info":
       await showInfo();
       break;
-    case "set-webhook":
-      if (!args[1]) {
-        console.error("Kullanım: pnpm exec tsx scripts/ops/telegram-ops.ts set-webhook https://domain.com/api/telegram/webhook");
-        process.exit(1);
-      }
-      await setWebhook(args[1]);
-      break;
     case "delete-webhook":
       await deleteWebhook();
       break;
-    case "test-alert":
-      await testAlert(args[1] ?? "MAS Nakit Radar Faz 2 Test Mesajı: Telegram entegrasyonu başarıyla devrede.");
-      break;
     default:
-      console.log("Kullanılabilir komutlar: info, set-webhook <url>, delete-webhook, test-alert [mesaj]");
+      console.log("Kullanılabilir komutlar: info, delete-webhook");
+      process.exitCode = 1;
   }
 }
 

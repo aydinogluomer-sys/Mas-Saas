@@ -112,7 +112,20 @@ pnpm build
 - DB bound to `127.0.0.1` only (docker-compose); not reachable from the network.
 - Real multi-user auth (P0-A): named accounts in `public.users`, argon2id password hashes,
   admin/operator roles, DB-backed sessions (random opaque token; only its SHA-256 is stored).
-  A default-deny middleware matcher covers every route except `/login`, `/health`, `/version`.
+  A default-deny middleware matcher covers every route except `/login`, `/health`, `/ready`,
+  `/version` and the static public files (`/robots.txt`, `/manifest.json`, `/sw.js`, `/icon.svg`,
+  `/favicon.ico`, `/_next/static`, `/_next/image`). Exactly ONE route is answered without a
+  session cookie: `POST /api/telegram/assistant`, matched exactly (no prefix), which bot.py on this
+  machine authenticates with a constant-time shared secret (`TELEGRAM_INTERNAL_API_KEY`) plus the
+  owner's chat id (`TELEGRAM_CHAT_ID`), fails closed when either is unset, and only reads (viewer
+  tier). Wave 0 removed the unreviewed layer's other cookie-less surfaces — the ERP bridge
+  (`/api/erp/*`, `/data/erp`), the Telegram mini-app (`/telegram/miniapp`, `/api/telegram/miniapp`)
+  and the Telegram webhook (`/api/telegram/webhook`, plus `telegram-ops set-webhook`); bot.py
+  long-polls, so no public HTTPS endpoint exists. JSON routes use `requireApiSession()` (live
+  session, idle window, forced password change honoured); mutating route handlers also call
+  `checkOrigin()`. `src/middleware.test.ts` and `tests/security/write-gates.test.ts` pin all of this.
+  Note: `next start` binds all interfaces unless started with `-H 127.0.0.1`; whether LAN/phone
+  access is wanted is an open owner decision.
   Bootstrap the first admin with `tsx scripts/db/seed-admin.ts --username <ad> --display-name "<Ad>"`;
   after that, manage accounts in the app at `/system/security` (admin only).
 - Brute-force lockout: 5 failed logins lock the account for 15 minutes.
@@ -125,9 +138,12 @@ pnpm build
 - Reminder dispatch never writes the token/chat id into payloads, logs, or messages.
 
 **Limitations (accepted for MVP local use):**
-- The access gate is a single shared password, not per-user auth or RBAC.
-- Server actions run server-side but are not individually re-authenticated beyond the UI gate;
-  acceptable on a trusted single machine. Do not expose this deployment to a public network.
+- (Superseded by P0-A and Faz 24B: named accounts, five tiers, DB-enforced RLS. Every exported
+  server action — the login surface itself excepted — starts with `requireSession()`/
+  `requireAdmin()` or a gate built on them, asserted structurally by
+  `tests/security/write-gates.test.ts`, whose pending list names the few unreviewed-layer files
+  still awaiting removal in Wave 0.)
+- Do not expose this deployment to a public network.
 - `.env.local` protects secrets by staying off git; there is no secrets manager.
 
 ## 9. Why not Vercel / remote Supabase yet?

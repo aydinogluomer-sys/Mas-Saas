@@ -325,10 +325,10 @@ async function main(): Promise<void> {
 
   /* ── 7.5 — every mutating server action carries an auth check ─────────────────────────── */
   //
-  // There are no mutating API routes: all three route.ts files export GET only, so the entire
-  // mutating surface is server actions. Next refuses cross-origin server-action invocations by
-  // itself (proven end-to-end by phase16:verify), which covers the CSRF/origin layer; what it
-  // cannot supply is auth and role, and those have to be in the action.
+  // Almost the entire mutating surface is server actions (the few mutating API routes have their
+  // own origin check further down). Next refuses cross-origin server-action invocations by itself
+  // (proven end-to-end by phase16:verify), which covers the CSRF/origin layer; what it cannot
+  // supply is auth and role, and those have to be in the action.
   const AUTH_CALL = /requireSession\s*\(|getCurrentUser\s*\(|requireAdmin\s*\(|requireRole\s*\(/;
 
   /**
@@ -354,16 +354,31 @@ async function main(): Promise<void> {
       : `KİMLİK DOĞRULAMASI YOK: ${missingAuth.join(", ")}`,
   );
 
-  // No mutating API route may exist without the origin gate. Today there are none; the assertion
-  // exists so that the first one added cannot skip it silently.
+  // No mutating API route may exist without the origin gate. When this was written there were
+  // none; since Wave 0 there are two POST routes: /api/imports/v2/async (a browser upload — it
+  // calls checkOrigin first) and /api/telegram/assistant, exempted below with its reason.
+  //
+  // The exemption is a named file with a reason, the same shape as AUTH_EXEMPT above, rather than
+  // a weakened pattern: the Origin check defends a COOKIE-authenticated request against being
+  // forged from another site. The assistant carries no cookie and is never called by a browser —
+  // bot.py on this machine authenticates it with a constant-time shared secret plus the owner's
+  // chat id, and it only reads (viewer tier). An Origin header proves nothing about such a caller.
+  const ORIGIN_EXEMPT: Record<string, string> = {
+    "src/app/api/telegram/assistant/route.ts":
+      "makineden makineye, çerezsiz: paylaşılan sır + chat id ile doğrulanır, yalnız okur (viewer)",
+  };
   const apiRoutes = walk("src/app/api").filter((f) => f.endsWith("route.ts"));
   const mutatingRoutes = apiRoutes.filter((f) => /export\s+(async\s+function|const)\s+(POST|PUT|PATCH|DELETE)\b/.test(codeOnly(readSrc(f))));
-  const originless = mutatingRoutes.filter((f) => !/checkOrigin\s*\(/.test(codeOnly(readSrc(f))));
+  const originless = mutatingRoutes
+    .filter((f) => ORIGIN_EXEMPT[f] === undefined)
+    .filter((f) => !/checkOrigin\s*\(/.test(codeOnly(readSrc(f))));
   record("her MUTASYON yapan API rotası checkOrigin() çağırıyor",
     originless.length === 0,
     mutatingRoutes.length === 0
       ? `mutasyon yapan API rotası yok (${apiRoutes.length} rota, hepsi GET) — mutasyonlar server action`
-      : `origin kapısı yok: ${originless.join(", ")}`);
+      : originless.length === 0
+        ? `${mutatingRoutes.length} mutasyon rotası, ${Object.keys(ORIGIN_EXEMPT).length} gerekçeli istisna (çerezsiz makine rotası)`
+        : `origin kapısı yok: ${originless.join(", ")}`);
 
   const failed = checks.filter((c) => !c.pass);
   console.log(`\n${checks.length - failed.length}/${checks.length} kontrol geçti.`);

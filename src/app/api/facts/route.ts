@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { getPool } from "@/lib/db";
 import { loadDecisionFacts } from "@/lib/facts/engine";
 import { istanbulDateISO } from "@/lib/reports/rules";
-import { getCurrentUser } from "@/lib/auth";
+import { requireApiSession } from "@/lib/auth";
 import { apiError, withApiHandler } from "@/lib/api-response";
 import { CORRELATION_HEADER } from "@/lib/correlation";
 
@@ -18,7 +18,8 @@ export async function GET(request: Request) {
     // Real, DB-backed check — not just middleware's coarse cookie-presence gate, which can't
     // see revocation/expiry without a query. This route sat outside (dashboard) with zero
     // auth check at all until now; a 401 here (not a page redirect — this is a JSON API).
-    const user = await getCurrentUser();
+    // requireApiSession() also refuses a user under a forced password change (Wave 0).
+    const user = await requireApiSession();
     if (!user) return apiError(401, "Yetkisiz.", { code: "unauthorized", requestId });
 
     const today = istanbulDateISO();

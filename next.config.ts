@@ -31,7 +31,7 @@ function resolveCommitSha(): string {
     );
   }
 }
-const commitSha = resolveCommitSha().replace(/[^0-9a-fA-F]/g, "").slice(0, 40) || "latest";
+const commitSha = resolveCommitSha();
 const buildTime = process.env.APP_BUILD_TIME?.trim() || new Date().toISOString();
 
 const nextConfig: NextConfig = {
@@ -57,7 +57,9 @@ const nextConfig: NextConfig = {
   // The build worker cannot resolve pnpm's transitive plugin symlinks on this
   // Windows installation, so do not duplicate lint inside `next build`.
   eslint: { ignoreDuringBuilds: true },
-  typescript: { ignoreBuildErrors: true },
+  // Deliberately no TypeScript build-error bypass here: the unreviewed layer switched type errors
+  // off for `next build`, and Wave 0 removed that again. A build that ships type errors is a build
+  // nobody checked; `pnpm typecheck` is the same gate, run on its own.
   // No dev overlay indicator — keeps visual-regression screenshots deterministic.
   devIndicators: false,
   onDemandEntries: {
