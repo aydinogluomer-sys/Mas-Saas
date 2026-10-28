@@ -29,10 +29,15 @@
 
 import { execFileSync } from "node:child_process";
 import { describe, expect, it } from "vitest";
+import { SUBPROCESS_TEST_TIMEOUT_MS } from "./setup/test-timeouts";
 
 /** package.json komut metinlerinde geçen repo-içi script yolları. */
 const SCRIPT_PATH_PATTERN = /(?:scripts|supabase)\/[A-Za-z0-9_.\/-]+\.(?:ts|tsx|sh|sql|mjs|cjs|js|cmd)/g;
 
+/**
+ * Her çağrı gerçek bir `git` süreci açar; iki test de ikişer kez çağırır. Bu yüzden ikisi de
+ * SUBPROCESS_TEST_TIMEOUT_MS'i üçüncü argüman olarak alır (gerekçe: tests/setup/test-timeouts.ts).
+ */
 function git(args: string[]): string {
   return execFileSync("git", args, { cwd: process.cwd(), encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
 }
@@ -55,7 +60,7 @@ describe("package.json script referansları", () => {
       "package.json bir script'e bağlanmış ama dosya git'te yok. Temiz checkout'ta `pnpm <script>` " +
         "zincirin ilk halkasında patlar. Dosyayı commit edin ya da wiring'i geri alın.",
     ).toEqual([]);
-  });
+  }, SUBPROCESS_TEST_TIMEOUT_MS);
 
   it("taranan desen gerçekten bir şey buluyor (test kendi kendini kandırmıyor)", () => {
     // Boş bir eşleşme kümesi yukarıdaki iddiayı BOŞ YERE yeşil yapardı. Bu yüzden desenin
@@ -64,5 +69,5 @@ describe("package.json script referansları", () => {
     const pkg = JSON.parse(git(["show", "HEAD:package.json"])) as { scripts: Record<string, string> };
     const found = Object.values(pkg.scripts).flatMap((c) => [...String(c).matchAll(SCRIPT_PATH_PATTERN)].map((m) => m[0]));
     expect(found.length, "package.json'da hiç script yolu bulunamadı — desen bozulmuş olabilir").toBeGreaterThan(20);
-  });
+  }, SUBPROCESS_TEST_TIMEOUT_MS);
 });

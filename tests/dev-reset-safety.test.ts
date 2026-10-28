@@ -3,6 +3,7 @@ import { mkdtempSync, writeFileSync, readFileSync, existsSync, rmSync, chmodSync
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { SUBPROCESS_TEST_TIMEOUT_MS } from "./setup/test-timeouts";
 
 /**
  * scripts/db/dev-reset.sh — fail-closed yıkım kapısı.
@@ -91,6 +92,12 @@ function resolveBash(): string {
   return "bash";
 }
 
+/**
+ * Her çağrı gerçek bir Git Bash süreci başlatır (Windows'ta önce `where.exe git`). Bu yüzden onu
+ * çağıran her test SUBPROCESS_TEST_TIMEOUT_MS'i üçüncü argüman olarak alır: pozitif vaka yük altında
+ * 9,2 sn ölçüldü ve 5 sn'lik varsayılanda düştü. Süreç başlatmayan kaynak sözleşmesi testleri
+ * varsayılanda kalır. Gerekçe: tests/setup/test-timeouts.ts.
+ */
 function runReset(args: string[], env: Record<string, string | undefined>): Run {
   let status = 0;
   let stdout = "";
@@ -128,37 +135,37 @@ describe("dev-reset.sh — varsayılan olarak HİÇBİR ŞEY silmez", () => {
     expect(r.dockerCalls).not.toContain("dropdb");
     // Kapı ensure.sh'tan da ÖNCE: tek bir docker çağrısı bile olmamalı.
     expect(r.dockerCalls).toBe("");
-  });
+  }, SUBPROCESS_TEST_TIMEOUT_MS);
 
   it("YALNIZ bayrak yeterli değil", () => {
     const r = runReset([FLAG], { MAS_ALLOW_DEV_DB_RESET: undefined });
     expect(r.status).toBe(9);
     expect(r.dockerCalls).not.toContain("dropdb");
-  });
+  }, SUBPROCESS_TEST_TIMEOUT_MS);
 
   it("YALNIZ env değişkeni yeterli değil", () => {
     const r = runReset([], { MAS_ALLOW_DEV_DB_RESET: DB });
     expect(r.status).toBe(9);
     expect(r.dockerCalls).not.toContain("dropdb");
-  });
+  }, SUBPROCESS_TEST_TIMEOUT_MS);
 
   it("env değişkeni YANLIŞ değerle yeterli değil", () => {
     const r = runReset([FLAG], { MAS_ALLOW_DEV_DB_RESET: "yes" });
     expect(r.status).toBe(9);
     expect(r.dockerCalls).not.toContain("dropdb");
-  });
+  }, SUBPROCESS_TEST_TIMEOUT_MS);
 
   it("benzer ama farklı bir bayrak kabul edilmez", () => {
     const r = runReset(["--force", "--yes", "-f"], { MAS_ALLOW_DEV_DB_RESET: DB });
     expect(r.status).toBe(9);
     expect(r.dockerCalls).not.toContain("dropdb");
-  });
+  }, SUBPROCESS_TEST_TIMEOUT_MS);
 
   it("hata mesajı eksik olan onayı ADIYLA söyler", () => {
     const r = runReset([], { MAS_ALLOW_DEV_DB_RESET: undefined });
     expect(r.stderr).toContain(FLAG);
     expect(r.stderr).toContain("MAS_ALLOW_DEV_DB_RESET=" + DB);
-  });
+  }, SUBPROCESS_TEST_TIMEOUT_MS);
 });
 
 describe("dev-reset.sh — iki onay birlikte verildiğinde geçer", () => {
@@ -175,7 +182,7 @@ describe("dev-reset.sh — iki onay birlikte verildiğinde geçer", () => {
     // Ve yıkımdan önce operatöre ne sileceği gösterildi.
     expect(r.stdout).toContain("YIKIM ÖNCESİ ÖLÇÜLEN KİMLİK");
     expect(r.stdout).toContain("container");
-  });
+  }, SUBPROCESS_TEST_TIMEOUT_MS);
 });
 
 describe("dev-reset.sh — kaynak sözleşmesi", () => {

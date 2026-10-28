@@ -36,8 +36,18 @@ import { createServer, type Server } from "node:net";
 import { execFile } from "node:child_process";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { SUBPROCESS_TEST_TIMEOUT_MS } from "./setup/test-timeouts";
 
 const SCRIPT = path.join(process.cwd(), "scripts", "ops", "runtime-port-guard.ts");
+
+/**
+ * Çocuk süreç, testin sınırından (SUBPROCESS_TEST_TIMEOUT_MS) 10 sn ÖNCE öldürülür: yavaş bir
+ * açılış vitest'in çıplak "timed out"u yerine bu dosyanın kendi iddiasıyla (stderr dahil) düşer ve
+ * süreç testten uzun yaşamaz. Bu değer eskiden 30 sn'ydi ve hiçbir sonucu belirlemezdi: vitest'in
+ * sınırı (önce 5, katmanda 20 sn) hep önce doluyordu. Artık sonucu belirleyebildiği için `runGuard`
+ * öldürülen çocuğu "0 ile çıktı" diye OKUMAZ.
+ */
+const CHILD_KILL_MS = SUBPROCESS_TEST_TIMEOUT_MS - 10_000;
 
 interface RunResult {
   code: number;
@@ -61,10 +71,14 @@ function runGuard(overrides: Record<string, string>): Promise<RunResult> {
         // Ebeveyn ortamı KOPYALANIR ama bypass bayrağı bilerek temizlenir: kabuğunda o değişken
         // duran biri, testin ölçmek istediği dalı sessizce atlatabilirdi.
         env: { ...process.env, MAS_ALLOW_PARALLEL_RUNTIME: "", ...overrides },
-        timeout: 30_000,
+        timeout: CHILD_KILL_MS,
       },
       (error, _stdout, stderr) => {
-        const code = error && typeof (error as { code?: number }).code === "number" ? (error as { code: number }).code : 0;
+        // Yalnız GERÇEK bir çıkış kodu sayılır. `timeout`la öldürülen çocukta `code` null'dır (sinyal
+        // `signal`'da), hiç başlatılamayan çocukta bir dizedir ('ENOENT'). İkisini de 0 okumak, takılmış
+        // ya da hiç koşmamış bir bekçiyi geçen bir bypass vakasına çevirirdi.
+        const exit = error ? (error as { code?: unknown }).code : 0;
+        const code = typeof exit === "number" ? exit : -1;
         resolve({ code, stderr: String(stderr ?? "") });
       },
     );
@@ -106,7 +120,7 @@ describe("runtime-port-guard", () => {
     const result = await runGuard({ PORT: String(listener.port), MAS_ALLOW_PARALLEL_RUNTIME: "1" });
 
     expect(result.code, `bypass açıkken çıkış kodu 0 olmalı, stderr: ${result.stderr}`).toBe(0);
-  });
+  }, SUBPROCESS_TEST_TIMEOUT_MS);
 
   it("istenen port dinleniyorsa sıfırdan farklı kod döner ve gerekçeyi SÖYLER", async () => {
     const listener = await listenOnEphemeralPort();
@@ -119,5 +133,5 @@ describe("runtime-port-guard", () => {
     // Sessiz başarısızlık yok: kullanıcı NEYİN engellediğini ve NASIL geçeceğini okumalı.
     expect(result.stderr).toContain(String(listener.port));
     expect(result.stderr).toContain("MAS_ALLOW_PARALLEL_RUNTIME");
-  });
+  }, SUBPROCESS_TEST_TIMEOUT_MS);
 });

@@ -15,6 +15,7 @@ import { existsSync, readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import ts from "typescript";
 import { describe, expect, it } from "vitest";
+import { SOURCE_SCAN_TEST_TIMEOUT_MS } from "../setup/test-timeouts";
 
 const ROOT = process.cwd();
 
@@ -243,11 +244,15 @@ describe("route handler'lar", () => {
     }
   });
 
+  // This test, the next one and "kaldırılan yüzeyler … bağlanmaz" parse EVERY file of a whole tree
+  // (src/app; src + scripts; src): their time is the size of the tree, not the rule — 0.6 s, 2.4 s
+  // and 1.75 s alone, about twice that in the parallel suite. The class ceiling and why there is no
+  // global one: tests/setup/test-timeouts.ts.
   it("src/app altındaki hiçbir kod runAsSystem (finance_manager iş kimliği) kullanmaz", () => {
     const users = walk("src/app", (rel) => /\.(ts|tsx)$/.test(rel) && !isTest(rel))
       .filter((rel) => referencesIdentifier(parse(rel), "runAsSystem"));
     expect(users).toEqual([]);
-  });
+  }, SOURCE_SCAN_TEST_TIMEOUT_MS);
 
   // Wave 0 / S5: runAsUser switches a connection into a NAMED person's tier outside a request. Its
   // one legitimate caller re-reads that person from public.users first (async Import V2 preview
@@ -259,7 +264,7 @@ describe("route handler'lar", () => {
       ...walk("scripts", (rel) => rel.endsWith(".ts")),
     ].filter((rel) => rel !== "src/lib/db.ts" && referencesIdentifier(parse(rel), "runAsUser"));
     expect(callers).toEqual(["src/lib/importers/v2/async-runner.ts"]);
-  });
+  }, SOURCE_SCAN_TEST_TIMEOUT_MS);
 });
 
 describe("server action'lar", () => {
@@ -307,6 +312,7 @@ describe("kaldırılan yüzeyler kaldırılmış kalır", () => {
     });
   }
 
+  // Parses every file under src — the whole-tree class noted above the runAsSystem test.
   it("hiçbir dosya kaldırılan ERP / mini-app / webhook / kokpit / copilot yollarına bağlanmaz", () => {
     const needles = [
       "/api/erp/", "/data/erp", "/telegram/miniapp", "/api/telegram/webhook", "@/lib/erp", "@/lib/telegram/cfo-bot",
@@ -321,7 +327,7 @@ describe("kaldırılan yüzeyler kaldırılmış kalır", () => {
       }
     }
     expect(hits).toEqual([]);
-  });
+  }, SOURCE_SCAN_TEST_TIMEOUT_MS);
 });
 
 describe("sır ve derleme güvenliği", () => {

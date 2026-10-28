@@ -6,9 +6,14 @@
 // yapılandırmasının commit'i git'ten ÇÖZDÜĞÜNÜ ve BUILD_ID ile AYNI değeri kullandığını kilitler.
 import { execFileSync } from "node:child_process";
 import { describe, expect, it } from "vitest";
+import { SUBPROCESS_TEST_TIMEOUT_MS } from "./setup/test-timeouts";
 
 const SHA40 = /^[0-9a-f]{40}$/;
 
+// next.config.ts, env'de APP_COMMIT_SHA yoksa commit'i modül yüklenirken `git rev-parse` ile çözer:
+// onu import eden ilk test — tek başına koşturulursa ikincisi de — gerçek bir `git` süreci açar, ilki
+// ayrıca kendisi bir tane daha. Bu yüzden ikisi de SUBPROCESS_TEST_TIMEOUT_MS alır; süreç açmayan
+// üçüncü test varsayılanda kalır. Gerekçe: tests/setup/test-timeouts.ts.
 describe("PHASE 7.4 — derleme provenance'ı", () => {
   it("next.config.ts commit SHA'yı git HEAD'den çözer ve BUILD_ID'ye eşitler", async () => {
     const cfg = (await import("../next.config")).default;
@@ -21,14 +26,14 @@ describe("PHASE 7.4 — derleme provenance'ı", () => {
     expect(cfg.generateBuildId?.()).toBe(gitHead);
     // "unknown" hiçbir koşulda gömülmez.
     expect(embedded).not.toBe("unknown");
-  });
+  }, SUBPROCESS_TEST_TIMEOUT_MS);
 
   it("derleme zamanı ISO-8601 olarak gömülür", async () => {
     const cfg = (await import("../next.config")).default;
     const t = cfg.env?.APP_BUILD_TIME ?? "";
     expect(Number.isNaN(Date.parse(t))).toBe(false);
     expect(t).not.toBe("unknown");
-  });
+  }, SUBPROCESS_TEST_TIMEOUT_MS);
 
   it("açık APP_COMMIT_SHA env değeri git'ten öncelikli (CI sözleşmesi)", () => {
     // next.config.ts modül yüklenirken çözdüğü için burada aynı çözümleme mantığı

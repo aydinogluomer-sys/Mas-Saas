@@ -3,6 +3,7 @@ import { readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { DISPOSABLE_MARKERS } from "../scripts/db/owner-url";
+import { SUBPROCESS_TEST_TIMEOUT_MS } from "./setup/test-timeouts";
 
 /**
  * P24B writer-surface audit — the regressions this file exists to catch.
@@ -51,6 +52,8 @@ describe("perf:measure --seed disposable kapısı", () => {
     expect(src).toMatch(/default_transaction_read_only=on/);
   });
 
+  // Gerçek bir `node --import tsx` süreci açar: açılışı yük altında 10,9 sn ölçüldü ve vitest'in
+  // 5 sn'lik varsayılanında düştü. Geniş sınır yalnız bu vakada; gerekçe tests/setup/test-timeouts.ts'te.
   it("gerçek veritabanı hedefi --seed ile REDDEDİLİR (alt süreç, exit 1)", () => {
     // Kapı Pool'dan önce çalıştığı için bu test bir veritabanı GEREKTİRMEZ; bağlantı hiç açılmaz.
     let status = 0;
@@ -78,7 +81,7 @@ describe("perf:measure --seed disposable kapısı", () => {
     expect(status).toBe(1);
     expect(stderr).toContain("GÜVENLİK DURDURMASI");
     expect(stderr).toContain("mas_radar_dev");
-  });
+  }, SUBPROCESS_TEST_TIMEOUT_MS);
 });
 
 describe("generateVolume / dropVolume — her caller kapılı", () => {

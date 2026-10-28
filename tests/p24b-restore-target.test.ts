@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { smokeTargetBlockers, SMOKE_DB_PATTERN, smokeDumpPath } from "../scripts/db/p24b-smoke-target";
+import { SUBPROCESS_TEST_TIMEOUT_MS } from "./setup/test-timeouts";
 
 /**
  * P24B — the restore-smoke target gate.
@@ -32,8 +33,15 @@ import { smokeTargetBlockers, SMOKE_DB_PATTERN, smokeDumpPath } from "../scripts
  */
 
 const ROOT = path.resolve(__dirname, "..");
-/** Generous, and explicit: a cold tsx module graph on Windows is seconds, not milliseconds. */
-const INTEGRATION_TIMEOUT_MS = 30_000;
+/**
+ * Generous, and explicit: a cold tsx module graph on Windows is seconds, not milliseconds — and on
+ * this 8 GB machine, with the rest of the suite running in parallel and ~150 MB free, it is tens of
+ * seconds: CASE A measured 33.2 s and failed the 30 s this constant used to be. That is start-up
+ * cost, which only the two integration cases below pay; the policy cases above stay in-process
+ * under vitest's 5 s default, exactly as the header argues. The shared ceiling and its
+ * measurements: tests/setup/test-timeouts.ts.
+ */
+const INTEGRATION_TIMEOUT_MS = SUBPROCESS_TEST_TIMEOUT_MS;
 
 describe("smokeTargetBlockers — saf politika (subprocess YOK)", () => {
   const SOURCE = "mas_radar_p24b_v23_drill";

@@ -20,6 +20,7 @@ import { existsSync, readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import ts from "typescript";
 import { describe, expect, it } from "vitest";
+import { SOURCE_SCAN_TEST_TIMEOUT_MS } from "./setup/test-timeouts";
 
 const ROOT = process.cwd();
 const read = (rel: string) => readFileSync(path.join(ROOT, rel), "utf8");
@@ -117,6 +118,8 @@ describe("kaldırılan uydurma-rakam yüzeyleri kaldırılmış kalır", () => {
     });
   }
 
+  // Parses every file under src and scripts: its time is the size of the tree, not the rule
+  // (3.8 s alone, 7.8 s in the parallel suite). The class ceiling: tests/setup/test-timeouts.ts.
   it("hiçbir kaynak ya da betik kaldırılan modüllere bağlanmaz", () => {
     // Path fragments, so an import specifier, a route string and an allowlist entry
     // ("lib/ai/copilot-engine.ts" in scripts/boundary-verify.ts) are all caught.
@@ -143,7 +146,7 @@ describe("kaldırılan uydurma-rakam yüzeyleri kaldırılmış kalır", () => {
       }
     }
     expect(hits).toEqual([]);
-  });
+  }, SOURCE_SCAN_TEST_TIMEOUT_MS);
 });
 
 describe("R10 — bilinmeyen değer ekranda sayı olarak gösterilmez (sayfa bağlantısı)", () => {
@@ -172,6 +175,7 @@ describe("R10 — bilinmeyen değer ekranda sayı olarak gösterilmez (sayfa ba�
 });
 
 describe("ekranda dayanaksız iddia yok", () => {
+  // Parses every file under src (1.75 s alone); same class ceiling as above.
   it("kriptografik denetim zinciri ya da %100 güvence iddiası hiçbir ekranda yok", () => {
     // audit_logs has no stored hash column (0002); there is no chain to vouch for. The checks on
     // /payments/missing cover the current month only; "%100" was not something it measured.
@@ -186,7 +190,7 @@ describe("ekranda dayanaksız iddia yok", () => {
       }
     }
     expect(hits).toEqual([]);
-  });
+  }, SOURCE_SCAN_TEST_TIMEOUT_MS);
 
   it("/system veritabanı durumunu gerçekten yoklar (sabit 'çalışıyor' yok)", () => {
     const sf = parse("src/app/(dashboard)/system/page.tsx");
