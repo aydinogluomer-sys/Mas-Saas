@@ -1,5 +1,6 @@
-// Server-side Postgres pool. Local dev hits the validated PostgreSQL instance;
-// future Supabase deploy only swaps DATABASE_URL (schema identical, same migrations).
+// Server-side Postgres pool. The one canonical database is the local PostgreSQL 16 service on
+// this machine (docs/ops/postgres-service.md); no cloud deploy is planned, and Wave 0 removed the
+// Supabase-only scripts and the cloud-latency connect timeout the unreviewed layer had added.
 // NOTE: import only from server components / route handlers / server actions / scripts.
 //
 // Since Faz 15 the connection string is the low-privilege `mas_radar_app` role and comes
@@ -24,8 +25,11 @@
 // They are separate Pool instances rather than one pool used two ways, and that is the whole
 // safety argument: a physical connection in the scoped pool may carry a leftover tier role
 // between checkouts (deliberately — see below), and a connection in the raw pool never can,
-// because nothing ever switches it. One pool doing both jobs would make "is this connection
-// currently a viewer?" a question the auth path had to ask.
+// because nothing switches it beyond a single transaction. One pool doing both jobs would make
+// "is this connection currently a viewer?" a question the auth path had to ask. (The one raw-pool
+// caller that does switch — changeOwnPassword in @/lib/auth, which writes its audit row under the
+// user's own tier — uses SET LOCAL ROLE and a transaction-local app.user_id, both undone by
+// COMMIT/ROLLBACK, and destroys the connection on any error instead of returning it.)
 import { AsyncLocalStorage } from "node:async_hooks";
 import { Pool, type PoolClient, type QueryResult, type QueryResultRow } from "pg";
 import { APP_ROLES, DB_ROLE, type AppRole } from "@/lib/authz/matrix";
@@ -43,7 +47,9 @@ function createPool(): Pool {
     connectionString: env.databaseUrl,
     max: env.databasePoolMax,
     idleTimeoutMillis: 30_000,
-    connectionTimeoutMillis: 15_000,
+    // af210fd's value. The layer tripled it "for cloud latency"; against a database on this
+    // machine, five seconds without a connection is an outage worth reporting, not waiting out.
+    connectionTimeoutMillis: 5_000,
   });
 }
 
@@ -135,6 +141,10 @@ export function runAsSystem<T>(fn: () => Promise<T>): Promise<T> {
  * or a crafted question ever steered this path toward a write, the database refuses it,
  * independently of the code that is supposed to never try. A future machine caller that
  * genuinely needs more is a decision to make explicitly, not a reason to borrow the job identity.
+ *
+ * The one viewer write that exists (migration 0096: an audit row for the viewer's OWN password
+ * change, with actor and entity equal to current_app_user()) cannot fire here: this identity
+ * carries no user id, current_app_user() is NULL, and the policy matches nothing.
  */
 export function runAsReadOnlySystem<T>(fn: () => Promise<T>): Promise<T> {
   return systemContext.run({ dbRole: "mas_radar_viewer", userId: null }, fn);

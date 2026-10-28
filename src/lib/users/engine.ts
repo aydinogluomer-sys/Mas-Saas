@@ -3,19 +3,27 @@
 // user id — never a null or synthetic actor.
 //
 // Passwords never appear in audit_logs: before_data/after_data carry only non-secret fields
-// (username, display_name, role, is_active). A password change is recorded as the FACT that
-// it happened, never the value or the hash.
+// (username, display_name, role, is_active, must_change_password). A password change is
+// recorded as the FACT that it happened, never the value or the hash.
 //
 // There is no public signup and no email-based reset anywhere in this app (no email
 // infrastructure exists — reminders are Telegram-only), so password resets are admin-driven
 // by design, same as scripts/db/seed-admin.ts.
+//
+// Forced password change (migration 0095): an account an admin creates or resets here must
+// choose its own password at its next request, and an admin can demand that of any account
+// without resetting it. The signed-in user's OWN change is not here — it is not an admin
+// operation, and it must run on the identity connection rather than the caller's tier, so it
+// lives next to the login check in @/lib/auth (changeOwnPassword). Wave 0 moved it: the
+// unreviewed layer ran it from here through the tier pool, where only the admin tier may update
+// public.users, so every other tier was locked out at /change-password for good.
 import type { Pool, PoolClient } from "pg";
 import { z } from "zod";
 import { DomainError } from "@/lib/domain-error";
 import { hashPassword } from "@/lib/auth";
-import { verify as argon2Verify } from "@node-rs/argon2";
 import { audit } from "@/lib/audit";
 import { APP_ROLES, type AppRole } from "@/lib/authz/matrix";
+import { passwordSchema } from "./password-policy";
 
 /** Mirrors the DB CHECK in 0031 — kept in sync deliberately so a bad value fails at the
  * boundary with a Turkish message instead of as a raw Postgres constraint error. */
@@ -28,8 +36,6 @@ const displayNameSchema = z.string().trim().min(1, "Görünen ad zorunlu.").max(
 // Faz 24B: the five tiers, taken from the permission matrix rather than restated, so the form
 // can never accept a role the matrix does not know how to enforce.
 const roleSchema = z.enum(APP_ROLES);
-/** 12 is the same floor scripts/db/seed-admin.ts enforces — one rule, both entry points. */
-const passwordSchema = z.string().min(12, "Parola en az 12 karakter olmalı.");
 
 export const createUserSchema = z.object({
   username: usernameSchema,
@@ -57,8 +63,9 @@ export interface UserListRow {
 /** The reserved non-login accounts (see scripts/db/seed-system-actor.ts). They exist only to
  * own audit rows written by non-interactive tooling and must never be listed as manageable
  * people — editing or "reactivating" one would be meaningless at best and would turn a
- * never-loggable identity into a real credential at worst. */
-const RESERVED_USERNAMES = ["system", "testsprite-qa"];
+ * never-loggable identity into a real credential at worst. Exported for the one other place that
+ * hands out passwords, scripts/ops/rotate-passwords.ts, so the two lists cannot drift apart. */
+export const RESERVED_USERNAMES: readonly string[] = ["system", "testsprite-qa"];
 
 export async function listUsers(pool: Pool): Promise<UserListRow[]> {
   const res = await pool.query<{
@@ -86,11 +93,15 @@ export async function listUsers(pool: Pool): Promise<UserListRow[]> {
   }));
 }
 
-/** Non-secret projection used for audit before/after. Never includes password_hash. */
-interface UserAuditShape { username: string; display_name: string; role: string; is_active: boolean; }
+/** Non-secret projection used for audit before/after. Never includes password_hash.
+ * must_change_password joined it with 0095: without it a forced-change or reset row could only
+ * say what the flag became, never what it was. */
+interface UserAuditShape {
+  username: string; display_name: string; role: string; is_active: boolean; must_change_password: boolean;
+}
 async function loadForAudit(client: PoolClient, id: string): Promise<UserAuditShape> {
   const res = await client.query<UserAuditShape>(
-    `select username, display_name, role, is_active from public.users where id=$1 for update`,
+    `select username, display_name, role, is_active, must_change_password from public.users where id=$1 for update`,
     [id],
   );
   if (res.rowCount !== 1) throw new DomainError("Kullanıcı bulunamadı.");
@@ -185,7 +196,10 @@ export async function resetUserPassword(
   }
 }
 
-/** Forces an account to change password on their next interaction without resetting it immediately. */
+/** Forces an account to change password on their next request without resetting it. The
+ * account's open sessions stay open on purpose: getCurrentUser() reads the flag live on every
+ * request, so the very next page that user opens sends them to /change-password, and their own
+ * change then closes every other session. */
 export async function forcePasswordChange(pool: Pool, id: string, actorId: string): Promise<void> {
   const client = await pool.connect();
   try {
@@ -196,61 +210,6 @@ export async function forcePasswordChange(pool: Pool, id: string, actorId: strin
     await audit(client, {
       actor: actorId, action: "force_password_change", entityTable: "users", entityId: id, before,
       after: { ...before, must_change_password: true },
-    });
-    await client.query("commit");
-  } catch (e) {
-    await client.query("rollback");
-    throw e;
-  } finally {
-    client.release();
-  }
-}
-
-/** Self-service password change by the logged-in user. */
-export async function changeOwnPassword(
-  pool: Pool,
-  userId: string,
-  oldPassword: string,
-  newPassword: string,
-): Promise<void> {
-  const parsed = passwordSchema.safeParse(newPassword);
-  if (!parsed.success) {
-    throw new DomainError(parsed.error.issues[0]?.message ?? "Geçersiz parola. En az 12 karakter olmalıdır.");
-  }
-  const client = await pool.connect();
-  try {
-    await client.query("begin");
-    const res = await client.query<{ id: string; username: string; password_hash: string }>(
-      `select id, username, password_hash from public.users where id = $1 and is_active for update`,
-      [userId],
-    );
-    if (res.rowCount !== 1) {
-      throw new DomainError("Kullanıcı bulunamadı.");
-    }
-    const user = res.rows[0];
-    const oldValid = await argon2Verify(user.password_hash, oldPassword);
-    if (!oldValid) {
-      throw new DomainError("Mevcut parola hatalı.");
-    }
-    if (parsed.data.toLowerCase() === user.username.toLowerCase()) {
-      throw new DomainError("Yeni parola kullanıcı adıyla aynı olamaz.");
-    }
-    if (parsed.data === oldPassword) {
-      throw new DomainError("Yeni parola eski parolayla aynı olamaz.");
-    }
-    const newHash = await hashPassword(parsed.data);
-    await client.query(
-      `update public.users set password_hash = $2, must_change_password = false, failed_login_count = 0, locked_until = null where id = $1`,
-      [userId, newHash],
-    );
-    const before = await loadForAudit(client, userId);
-    await audit(client, {
-      actor: userId,
-      action: "change_own_password",
-      entityTable: "users",
-      entityId: userId,
-      before,
-      after: { ...before, password_changed: true, must_change_password: false },
     });
     await client.query("commit");
   } catch (e) {

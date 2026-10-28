@@ -35,6 +35,7 @@
 // Usage:
 //   MIGRATION_DATABASE_URL=... DATABASE_URL=<mas_radar_app> pnpm db:roles-rls:verify
 import { Pool, type PoolClient } from "pg";
+import { audit, type AuditEntry } from "../../src/lib/audit";
 import {
   APP_ROLES, CLASS_MATRIX, DB_ROLE, OWNER_SCOPED_TABLES, TABLE_CLASS,
   can, type AppRole,
@@ -525,6 +526,86 @@ async function main(): Promise<void> {
   record("her sınıf beş katmanın tamamı için tanımlı",
     Object.values(CLASS_MATRIX).every((m) => TIERS.every((r) => Array.isArray(m[r]))),
     `${Object.keys(CLASS_MATRIX).length} sınıf × ${TIERS.length} katman`);
+
+  /* ── H. Wave 0 / 0096: a user's OWN password change, for every tier ─────────────────────── */
+  // The forced password change (0095) ends with the user's own change, written by
+  // changeOwnPassword in src/lib/auth.ts. Replayed here statement for statement on the real app
+  // credential: users/sessions as the UNSWITCHED runtime role (users_app_runtime /
+  // sessions_app_runtime), then app.user_id + SET LOCAL ROLE <tier>, then the canonical audit()
+  // writer — always rolled back. Four tiers pass through 0058's evidence policy; the viewer only
+  // through 0096, and only for its own row. Before Wave 0 the change ran in the caller's tier, where
+  // the users update matched nothing for every tier but admin.
+  const fixtureIds = (await owner.query<{ id: string }>(
+    `select id from public.users where username in ('p24b_fixture_a', 'p24b_fixture_b') order by username`,
+  )).rows.map((r) => r.id);
+  const [selfId, otherId] = fixtureIds;
+
+  const ownChangeRow = (actor: string, entityId: string, action = "change_own_password", entityTable = "users"): AuditEntry => ({
+    actor, action, entityTable, entityId,
+    before: { must_change_password: true },
+    after: { password_changed: true, must_change_password: false, other_sessions_revoked: 0 },
+  });
+
+  /** "allowed" | "refused" (RLS, 42501) | anything else = a failure that is neither. */
+  async function ownChangeAs(tier: AppRole, appUserId: string | null, entry: AuditEntry): Promise<string> {
+    const client = await app.connect();
+    try {
+      await client.query("begin");
+      const updated = await client.query(
+        `update public.users set must_change_password = false, failed_login_count = 0, locked_until = null
+          where id = $1`, [selfId]);
+      if ((updated.rowCount ?? 0) !== 1) return `users güncellemesi ${updated.rowCount ?? 0} satır`;
+      await client.query(
+        `update public.sessions set revoked_at = now()
+          where user_id = $1 and token_hash <> $2 and revoked_at is null`, [selfId, "roles-rls-verify"]);
+      if (appUserId) await client.query("select set_config('app.user_id', $1, true)", [appUserId]);
+      await client.query(`set local role ${DB_ROLE[tier]}`);
+      try {
+        await audit(client, entry);
+        return "allowed";
+      } catch (e) {
+        return sqlstate(e) === "42501" ? "refused" : `hata ${sqlstate(e)}: ${messageOf(e)}`;
+      }
+    } finally {
+      await client.query("rollback").catch(() => {});
+      client.release();
+    }
+  }
+
+  record("0096 fixture'ı: kendi ve başka bir kullanıcı var",
+    fixtureIds.length === 2, `${fixtureIds.length} fixture kullanıcısı`);
+
+  const ownChangeResults: string[] = [];
+  for (const tier of TIERS) {
+    const got = await ownChangeAs(tier, selfId, ownChangeRow(selfId, selfId));
+    if (got !== "allowed") ownChangeResults.push(`${tier}: ${got}`);
+  }
+  record("POZİTİF KONTROL: beş katmanın her biri KENDİ parola değişikliğini yazıp denetleyebiliyor",
+    ownChangeResults.length === 0, ownChangeResults.length === 0 ? "5/5 izin" : ownChangeResults.join(" | "));
+
+  const viewerProbes: Array<[string, string | null, AuditEntry]> = [
+    ["başka kullanıcı adına (actor)", selfId, ownChangeRow(otherId, otherId)],
+    ["başka kullanıcının hesabı (entity_id)", selfId, ownChangeRow(selfId, otherId)],
+    ["başka eylem", selfId, ownChangeRow(selfId, selfId, "reset_user_password")],
+    ["başka tablo", selfId, ownChangeRow(selfId, selfId, "change_own_password", "payments")],
+    ["app.user_id yok (makine kimliği)", null, ownChangeRow(selfId, selfId)],
+  ];
+  const viewerLeaks: string[] = [];
+  for (const [label, appUserId, entry] of viewerProbes) {
+    const got = await ownChangeAs("viewer", appUserId, entry);
+    if (got !== "refused") viewerLeaks.push(`${label}: ${got}`);
+  }
+  record("SATIR SEVİYESİ: izleyici YALNIZ kendi change_own_password satırını yazabiliyor",
+    viewerLeaks.length === 0,
+    viewerLeaks.length === 0 ? `${viewerProbes.length}/${viewerProbes.length} sapma reddedildi` : viewerLeaks.join(" | "));
+
+  const viewerWritePolicies = (await owner.query<{ p: string }>(
+    `select tablename || '.' || policyname as p from pg_policies
+      where schemaname = 'public' and cmd <> 'SELECT' and 'mas_radar_viewer' = any (roles::text[])
+      order by 1`)).rows.map((r) => r.p);
+  record("izleyicinin veritabanındaki TEK yazma politikası 0096'nınki",
+    viewerWritePolicies.length === 1 && viewerWritePolicies[0] === "audit_logs.audit_logs_insert_own_password_change",
+    viewerWritePolicies.join(", ") || "yok");
 
   const failed = checks.filter((c) => !c.pass);
   console.log(`\n${checks.length - failed.length}/${checks.length} kontrol geçti.`);

@@ -2434,3 +2434,83 @@ sebeple sahiplik kapsamlı: birinin asistana ne sorduğu ve hangi sırayla sordu
 İzleyici yine **yalnız okur** (Faz 36'da yerleşen karar): Faz 24B "izleyici hiçbir tabloya yazamaz"
 invariant'ını iddia ediyor. İzleyici yine de **soru sorabilir** — cevap `ai_response_snapshots`'a
 uygulama yolu tarafından yazılır, ki bu katman-kapsamlı bir yazma değildir.
+
+## Zorunlu Parola Değişikliği (migration 0095-0096; Wave 0 / S6)
+
+İncelenmemiş `46541d8` katmanının getirdiği ve sahibin KEEP listesinde tuttuğu özellik: yönetici
+bir hesabı oluşturunca, parolasını sıfırlayınca ya da açıkça istediğinde kullanıcı bir sonraki
+isteğinde kendi parolasını belirlemek zorundadır. 0095 katmanla geldi ve olduğu gibi kaldı; 0096
+Wave 0'da, değişikliğin her katman için **denetlenebilmesi** için eklendi.
+
+### 0095 — `users.must_change_password`
+
+`boolean not null default false` — `add column if not exists`; sabit varsayılan olduğu için tablo
+yeniden yazılmaz. Kolon düzeyinde grant yok; 0035 tablo grant'leri ve 0031/0035/0058 satır
+politikaları aynen geçerli.
+
+- **Kim `true` yapar:** `createUser` (varsayılan; form bayrak göndermez), `resetUserPassword`
+  (varsayılan), `forcePasswordChange` (yönetici düğmesi "şifre değişimi zorla"),
+  `scripts/ops/rotate-passwords.ts`.
+- **Kim `false` yapar:** yalnız kullanıcının kendi değişikliği (`changeOwnPassword`,
+  `src/lib/auth.ts`).
+- **Nerede uygulanır:** `getCurrentUser()` bayrağı her istekte canlı okur (oturum önbelleği yok);
+  `requireSession()` sayfaları `/change-password`'a yönlendirir, `requireApiSession()` JSON
+  rotalarında 401 döner, girişte `loginAction` doğrudan `/change-password`'a gönderir.
+- Bayrak bir **kimlik** durumudur, finansal kayıt değil; denetim satırlarının `before`/`after`
+  izdüşümünde (`users/engine.ts` `loadForAudit`) Wave 0'dan beri yer alır.
+
+### 0096 — `audit_logs_insert_own_password_change` (izleyicinin tek yazma yolu)
+
+**Sorun.** Kullanıcının kendi değişikliği bir denetim satırı bırakmak zorunda ve bu satır tek
+yazıcıdan (`@/lib/audit`), kullanıcının **kendi katmanında** yazılıyor. Operatör, onaylayıcı,
+yönetici ve admin bunu 0058'in `audit_logs_insert_record` politikasıyla zaten yapabiliyordu;
+izleyicinin hiçbir tabloda INSERT politikası yoktu → izleyicinin değişikliği denetlenemez, dolayısıyla
+hiç yapılamazdı.
+
+**Eklenen, en dar hâliyle:** yalnız `mas_radar_viewer` için tek bir INSERT politikası:
+
+```sql
+with check (
+  action = 'change_own_password'
+  and entity_table = 'users'
+  and actor = public.current_app_user()
+  and entity_id = public.current_app_user()
+)
+```
+
+`current_app_user()` kimlik taşımayan bağlantıda (betikler, giriş yolu, salt-okunur Telegram
+kimliği) NULL'dır ve `=` NULL'a karşı hiçbir satırla eşleşmez. UPDATE/DELETE yolu yok; `audit_logs`
+yine ekleme-yalnız (0022 tetikleyicileri + 0058 `evidence` sınıfı). Kod matrisinde (`@/lib/authz/
+matrix`) izleyici `evidence` sınıfında hâlâ READ; bu istisna orada ve `db.ts` `runAsReadOnlySystem`
+yanında açıkça yazılı. `default values` sondası izleyici için yine reddedilir (eylem NULL).
+
+**Neden SECURITY DEFINER fonksiyon değil:** şemada örneği yok, sahibinin haklarıyla ve sabitlenmesi
+gereken bir `search_path` ile koşardı, ve denetim satırını isteği kaydedilen katman değil sahip
+yazardı. Politika mevcut modeli korur: users/sessions satırları çalışma zamanı rolüyle (0035),
+kanıt kişinin katmanıyla.
+
+**Değişikliğin SQL sırası** (`changeOwnPassword`, ham — katmansız — havuzda, tek transaction):
+kendi satırını kilitle (`for update`) → bu oturum hâlâ canlı mı (arada yönetici sıfırladıysa ya da
+pasifleştirdiyse yazma yok) → `before` GÜNCELLEMEDEN ÖNCE okunur → `users` güncellemesi
+(`users_app_runtime`) → DİĞER oturumlar iptal (`sessions_app_runtime`; mevcut oturum açık kalır) →
+`set_config('app.user_id', <kullanıcı>, true)` → `set local role <kendi katmanı>` → `audit()` →
+commit. İki ayar da transaction'a yereldir; hata yolunda bağlantı havuza dönmez, imha edilir. Eski
+parola `attemptLogin` ile doğrulanır: sabit süreli, beş yanlış deneme hesabı 15 dakika kilitler.
+`set local role` COMMIT'e kadar sürdüğü için ertelenmiş tetikleyiciler de katmanda koşar; `users`'taki tek
+ertelenmiş tetikleyici (`users_require_active_admin`, 0031) yalnız `role`/`is_active` güncellemesinde
+ateşlenir ve bu değişiklik ikisine de dokunmaz.
+
+**Migration'ın kendi kontrolü:** beş katmanın her birinin `audit_logs` üzerinde bir INSERT yolu
+olduğunu ve izleyicinin bu tablodaki tek yazma politikasının 0096'nınki olduğunu doğrular; aksi
+hâlde migration düşer. `db:roles-rls:verify` (H bölümü) aynı akışı gerçek `mas_radar_app`
+kimliğiyle beş katman için oynatır (geri alınır), izleyicinin beş sapmasının (başka aktör, başka
+hesap, başka eylem, başka tablo, kimliksiz bağlantı) reddedildiğini ve izleyicinin şemadaki TEK
+yazma politikasının bu olduğunu ölçer. Veritabanı gerektirmeyen yerel koruma
+`tests/own-password-audit-migration.test.ts`: koşucu dosya kümesini kabul ediyor, tek politika / yalnız
+INSERT / yalnız izleyici, dört koşul (gevşeği yok), önce `drop … if exists`, grant/SECURITY DEFINER yok,
+kod matrisinde izleyici `evidence` sınıfında yine yalnız okur.
+
+**Katmanın kırık hâli (kayıt için):** değişiklik `getPool()` üzerinden, yani kullanıcının katmanında
+koşuyordu; `users`'ı yalnız admin katmanı güncelleyebildiği için diğer dört katmanın `select … for
+update`'i satır bulamıyor ve kullanıcı `/change-password`'ta kalıcı olarak kilitli kalıyordu.
+`before` güncellemeden SONRA okunuyor, yeni durum eski durum diye kaydediliyordu.

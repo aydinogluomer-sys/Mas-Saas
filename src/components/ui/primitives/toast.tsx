@@ -41,6 +41,14 @@ const FLASH_MESSAGES: Record<string, { text: string; kind: "success" | "error" |
   user_unlocked: { text: "Hesap kilidi kaldırıldı.", kind: "success" },
   user_self: { text: "Kendi hesabınızın erişimini kaldıramazsınız.", kind: "error" },
   user_error: { text: "Kullanıcı işlemi tamamlanamadı. Girilen bilgileri kontrol edin.", kind: "error" },
+  // Forced password change (0095). Both keys were emitted before Wave 0 but missing here, so the
+  // success of either action showed nothing at all. tests/flash-keys.test.ts now fails on any key
+  // an action emits that this map does not know.
+  password_updated: { text: "Parolanız güncellendi; varsa diğer açık oturumlarınız kapatıldı.", kind: "success" },
+  password_force_change: {
+    text: "Parola değişikliği zorunlu kılındı; kullanıcı yeni parola belirlemeden devam edemez.",
+    kind: "success",
+  },
 };
 
 function FlashBridge() {

@@ -6,9 +6,11 @@ import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import { hash as argon2Hash, verify as argon2Verify } from "@node-rs/argon2";
 import { getRawPool } from "@/lib/db";
-import type { AppRole } from "@/lib/authz/matrix";
+import { audit } from "@/lib/audit";
+import { APP_ROLES, DB_ROLE, type AppRole } from "@/lib/authz/matrix";
 import { env } from "@/lib/env";
 import { SESSION_COOKIE } from "@/lib/auth-constants";
+import { PasswordChangeError, passwordSchema } from "@/lib/users/password-policy";
 
 export { SESSION_COOKIE };
 const SESSION_DURATION_MS = 7 * 24 * 60 * 60 * 1000; // 7 days — unchanged from the old gate's UX
@@ -295,4 +297,148 @@ export async function revokeCurrentSession(): Promise<void> {
     ]);
   }
   jar.delete(SESSION_COOKIE);
+}
+
+/**
+ * The signed-in user changes their OWN password — the self-service half of the forced password
+ * change (migration 0095), and the only way out of /change-password.
+ *
+ * WHY HERE, ON THE RAW POOL. Writing public.users is something only two identities may do: the
+ * admin tier (users_admin_write, 0058) and the unswitched runtime role (users_app_runtime, 0035),
+ * which is what attemptLogin() above already uses to keep the failed-login counter. The unreviewed
+ * layer ran this change through getPool(), i.e. in the caller's own tier, so for viewer, operator,
+ * approver and manager the `select … for update` found no row and every one of those users stayed
+ * locked in at /change-password — the accounts the forced change exists for (createUser and
+ * resetUserPassword force it by default). The change is therefore the identity layer's job, like
+ * login and logout, and it touches exactly one row: the session user's own, by id.
+ *
+ * THE AUDIT ROW, UNDER THE USER'S OWN TIER. Through the one audit writer (@/lib/audit), in the
+ * same transaction as the change, after `set local role <tier>` with `app.user_id` set to the
+ * user — so the row is judged by the same RLS the person's own requests are, not slipped in by
+ * the runtime role (which has no audit_logs policy at all). Four tiers record evidence anyway
+ * (0058); migration 0096 gives the viewer tier exactly one INSERT path, limited to this action, on
+ * its own row, with actor = current_app_user(). Both settings are transaction-local, so the
+ * connection goes back to the pool as plain mas_radar_app after COMMIT — and on ANY error it is
+ * destroyed rather than returned, so a raw-pool connection never carries a tier into the next
+ * login check.
+ *
+ * ORDER, AND WHY. The rules first (a reused or short password costs no failed attempt and locks
+ * no row); then the old password through attemptLogin() — constant-time, and five wrong answers
+ * lock the account exactly like five wrong logins, so this form is not a brute-force side door;
+ * then one transaction: lock the user row, confirm THIS session is still live (an admin reset or
+ * deactivation that landed in between revoked it, and a stale form must not overwrite that
+ * password), read the audit "before" BEFORE the update (the layer read it afterwards and recorded
+ * the new state as the old one), update, revoke every OTHER session, audit, commit.
+ *
+ * The current session survives on purpose: the user just proved the old password in it.
+ * getCurrentUser() reads must_change_password live, so the next request is no longer redirected.
+ */
+export async function changeOwnPassword(
+  user: SessionUser,
+  oldPassword: string,
+  newPassword: string,
+): Promise<{ otherSessionsRevoked: number }> {
+  if (!passwordSchema.safeParse(newPassword).success) throw new PasswordChangeError("too_short");
+  if (newPassword.toLowerCase() === user.username.toLowerCase()) throw new PasswordChangeError("same_as_username");
+  if (newPassword === oldPassword) throw new PasswordChangeError("same_as_old");
+
+  const token = (await cookies()).get(SESSION_COOKIE)?.value;
+  if (!token) throw new PasswordChangeError("session_ended");
+  const currentTokenHash = createHash("sha256").update(token).digest("hex");
+
+  const verdict = await attemptLogin(user.username, oldPassword);
+  if (verdict.ok && verdict.userId !== user.id) throw new PasswordChangeError("session_ended");
+  if (!verdict.ok) {
+    // attemptLogin answers every failure alike, so that a login form cannot tell an unknown name
+    // from a locked or deactivated account. This caller is already signed in as the account, so
+    // naming the real reason reveals nothing new and tells them what actually helps: a locked
+    // account waits, and a deactivated one (an admin acted while this form was open, which also
+    // revoked its sessions) is told its session is over. "Wrong password" is true of neither, and
+    // would only invite more attempts.
+    const state = await getRawPool().query<{ locked: boolean; is_active: boolean }>(
+      `select coalesce(locked_until > now(), false) as locked, is_active from public.users where id = $1`,
+      [user.id],
+    );
+    const account = state.rows[0];
+    if (!account || !account.is_active) throw new PasswordChangeError("session_ended");
+    throw new PasswordChangeError(account.locked ? "locked" : "invalid_old");
+  }
+
+  const newHash = await hashPassword(newPassword);
+  const client = await getRawPool().connect();
+  let failure: Error | undefined;
+  try {
+    await client.query("begin");
+    const res = await client.query<{
+      username: string;
+      display_name: string;
+      role: string;
+      is_active: boolean;
+      must_change_password: boolean;
+    }>(
+      `select username, display_name, role, is_active, must_change_password
+         from public.users where id = $1 for update`,
+      [user.id],
+    );
+    const row = res.rowCount === 1 ? res.rows[0] : null;
+    if (!row || !row.is_active) throw new PasswordChangeError("session_ended");
+    const live = await client.query(
+      `select 1 from public.sessions
+        where token_hash = $1 and user_id = $2 and revoked_at is null and expires_at > now()`,
+      [currentTokenHash, user.id],
+    );
+    if (live.rowCount !== 1) throw new PasswordChangeError("session_ended");
+    // The role decides which tier writes the audit row; a value outside the five is a broken row,
+    // not a user mistake, and is never handed to SET ROLE.
+    if (!(APP_ROLES as readonly string[]).includes(row.role)) {
+      throw new Error(`Tanınmayan kullanıcı katmanı: ${row.role}`);
+    }
+    const before = {
+      username: row.username,
+      display_name: row.display_name,
+      role: row.role,
+      is_active: row.is_active,
+      must_change_password: row.must_change_password,
+    };
+
+    await client.query(
+      `update public.users
+          set password_hash = $2, must_change_password = false, failed_login_count = 0, locked_until = null
+        where id = $1`,
+      [user.id, newHash],
+    );
+    const revoked = await client.query(
+      `update public.sessions set revoked_at = now()
+        where user_id = $1 and token_hash <> $2 and revoked_at is null`,
+      [user.id, currentTokenHash],
+    );
+    const otherSessionsRevoked = revoked.rowCount ?? 0;
+
+    // Same order as @/lib/db's prepare(): the user id first, then the role. SET LOCAL lasts until
+    // COMMIT, so anything deferred to COMMIT runs in the tier too. On public.users that is only
+    // users_require_active_admin (0031), which reads every admin row and would see none under a
+    // non-admin tier — but it fires on updates OF role or is_active, and the update above writes
+    // neither. Keep it that way, or move the deferred work before the switch.
+    await client.query("select set_config('app.user_id', $1, true)", [user.id]);
+    await client.query(`set local role ${DB_ROLE[row.role as AppRole]}`);
+    // Never the password, never the hash — only that it changed, and what that did.
+    await audit(client, {
+      actor: user.id,
+      action: "change_own_password",
+      entityTable: "users",
+      entityId: user.id,
+      before,
+      after: { ...before, password_changed: true, must_change_password: false, other_sessions_revoked: otherSessionsRevoked },
+    });
+    await client.query("commit");
+    return { otherSessionsRevoked };
+  } catch (e) {
+    failure = e instanceof Error ? e : new Error(String(e));
+    // The connection is destroyed in `finally` whatever happens here, and closing it ends the
+    // transaction server-side; a failed ROLLBACK must not replace the error that explains why.
+    await client.query("rollback").catch(() => undefined);
+    throw e;
+  } finally {
+    client.release(failure);
+  }
 }

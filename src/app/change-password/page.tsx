@@ -1,5 +1,6 @@
 import { requireSession } from "@/lib/auth";
 import { logoutAction } from "@/app/login/actions";
+import { passwordChangeMessage } from "@/lib/users/password-policy";
 import { changePasswordAction } from "./actions";
 
 export const dynamic = "force-dynamic";
@@ -11,6 +12,10 @@ export default async function ChangePasswordPage({
 }) {
   const user = await requireSession({ allowMustChangePassword: true });
   const sp = await searchParams;
+  // Only a code the action itself emits turns into text; any other `?error=` value shows nothing.
+  // The layer printed the parameter verbatim, so a crafted link could make this screen say
+  // whatever its author wanted.
+  const errorMessage = passwordChangeMessage(sp.error);
 
   return (
     <div className="flex min-h-screen items-center justify-center bg-surface-0 p-4 text-tone-1">
@@ -92,12 +97,13 @@ export default async function ChangePasswordPage({
             />
           </label>
 
-          {sp.error && (
+          {errorMessage && (
             <div
+              role="alert"
               className="border border-neg bg-neg/10 p-2 font-mono text-[11px] text-neg"
               style={{ borderRadius: "var(--radius-sm)" }}
             >
-              {sp.error}
+              {errorMessage}
             </div>
           )}
 
@@ -116,6 +122,8 @@ export default async function ChangePasswordPage({
           <li>• Parola en az 12 karakter uzunluğunda olmalıdır.</li>
           <li>• Parola kullanıcı adıyla aynı olamaz.</li>
           <li>• Yeni parola mevcut parola ile aynı olamaz.</li>
+          <li>• Parola değişince bu oturum açık kalır; diğer cihaz ve tarayıcılardaki oturumlarınız kapatılır.</li>
+          <li>• Mevcut parola 5 kez hatalı girilirse hesap 15 dakika kilitlenir (girişteki kuralın aynısı).</li>
         </ul>
       </div>
     </div>

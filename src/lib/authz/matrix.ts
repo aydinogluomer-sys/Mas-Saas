@@ -82,6 +82,14 @@ export const CLASS_MATRIX: Record<AccessClass, Record<AppRole, Action[]>> = {
     viewer: READ, finance_operator: ENTER, finance_approver: READ,
     finance_manager: ALL, admin: ALL,
   },
+  // Viewer stays READ at class level, and the generic insert probe in db:roles-rls:verify still
+  // sees viewer refused on every evidence table. The one row-level exception, stated here so no
+  // reader has to rediscover it: migration 0096 lets a viewer INSERT into audit_logs exactly the
+  // row recording its OWN password change (action 'change_own_password', entity 'users', actor
+  // and entity_id = current_app_user()). Without it the forced password change (0095) could not
+  // be audited for viewers, and an unaudited credential change is not an option this schema
+  // allows. It writes no business data and needs the viewer's own app.user_id, so a viewer-tier
+  // machine identity (runAsReadOnlySystem, no user id) still cannot write anything.
   evidence: {
     viewer: READ, finance_operator: RECORD, finance_approver: RECORD,
     finance_manager: RECORD, admin: RECORD,
@@ -110,6 +118,9 @@ export const CLASS_MATRIX: Record<AccessClass, Record<AppRole, Action[]>> = {
   // worth more than the convenience — it is a single sentence anyone can check, and the moment it
   // acquires one exception, every future reader has to re-derive whether their case is the
   // exception or the rule. A viewer can still USE saved views; they just cannot create one.
+  // (Wave 0's migration 0096 is the single row-level exception, documented at `evidence` above:
+  // the audit row of the viewer's own password change. It is not a precedent for viewer writes
+  // to business data, and db:roles-rls:verify pins it as the only viewer write policy.)
   personal: {
     viewer: READ, finance_operator: ALL, finance_approver: ALL,
     finance_manager: ALL, admin: ALL,
