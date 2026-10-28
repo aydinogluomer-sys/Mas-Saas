@@ -96,7 +96,8 @@ async function main(): Promise<void> {
 
   const freshBackupDir = mkdtempSync(path.join(os.tmpdir(), "telemetry-fresh-"));
   const emptyBackupDir = mkdtempSync(path.join(os.tmpdir(), "telemetry-empty-"));
-  writeFileSync(path.join(freshBackupDir, "recent.dump"), "not a real dump, just a fresh mtime");
+  // `daily-` prefix: the backup-age signal counts only the scheduled daily job's dumps.
+  writeFileSync(path.join(freshBackupDir, "daily-recent.dump"), "not a real dump, just a fresh mtime");
 
   try {
     // ── R0: baseline — fresh backup present, nothing injected, DATABASE_URL absent ──────────

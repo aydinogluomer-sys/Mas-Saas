@@ -46,6 +46,13 @@ env:
   # misleading. Real credentials never appear in this repository — see README.md.
   CI_APP_DB_PASSWORD: ci-only-not-a-secret-0123456789
   PGHOST: 127.0.0.1
+  # Wave 0: the PostgreSQL toolchain switch (scripts/db/pg-native.ts). The operator machine runs a
+  # native PostgreSQL 16 Windows service and the default is `native`; GitHub runners keep the
+  # throwaway `mas-radar-pg` container started by scripts/db/ensure.ts. Set at workflow level so
+  # EVERY job and the setup action inherit it — ensure.ts, migrate.ts's mandatory backup and the
+  # verify scripts would otherwise look for native pg tools and a local service that do not exist
+  # on the runner.
+  MAS_PG_RUNTIME: docker
 
 jobs:
   # ── Job 1 ────────────────────────────────────────────────────────────────────────────────

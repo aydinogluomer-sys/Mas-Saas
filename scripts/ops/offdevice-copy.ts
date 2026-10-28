@@ -20,6 +20,8 @@ import {
   closeSync, existsSync, fsyncSync, mkdirSync, openSync, renameSync, unlinkSync, writeFileSync,
 } from "node:fs";
 import { pathToFileURL } from "node:url";
+import { createListVerifier, withPgRuntimeConfig } from "../db/backup-adapter";
+import { readEnvLocal } from "../db/app-url";
 import {
   classifyOffDeviceTarget, copyToTargetVerified, formatBytes, newestDump, sha256OfFile,
   type CopyVerifyResult,
@@ -27,8 +29,18 @@ import {
   OFFDEVICE_RECORD_KIND,
 } from "./backup-lib";
 
-const CONTAINER = process.env.MAS_PG_CONTAINER ?? "mas-radar-pg";
 const SOURCE_DIR = process.env.MAS_BACKUP_DIR ?? "backups";
+
+/**
+ * Hedefteki kopyayı `pg_restore --list` ile okuyacak araç zinciri ayarları (MAS_PG_RUNTIME,
+ * MAS_PG_BIN_DIR): önce süreç ortamı, yoksa `.env.local` — backup-daily.ts ile aynı öncelik.
+ * `.env.local`'den yalnız sır-olmayan PG_RUNTIME_ENV_KEYS taşınır.
+ */
+function pgToolEnv(): Record<string, string | undefined> {
+  let fileEnv: Record<string, string> = {};
+  try { fileEnv = readEnvLocal(); } catch { /* .env.local yok — yalnız süreç ortamı */ }
+  return withPgRuntimeConfig(process.env, fileEnv);
+}
 
 function arg(flag: string): string | undefined {
   const i = process.argv.indexOf(flag);
@@ -108,7 +120,7 @@ async function main(): Promise<void> {
 
   if (!existsSync(classification.targetDir)) mkdirSync(classification.targetDir, { recursive: true });
   const result = copyToTargetVerified(dumpPath, classification.targetDir, {
-    container: CONTAINER,
+    verifyListable: createListVerifier(pgToolEnv()),
     sourceDir: SOURCE_DIR,
   });
   const recordPath = writeOffDeviceRecord(result);

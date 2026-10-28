@@ -440,19 +440,23 @@ export const BackupReceiptSchema = z
     // than the one currently checked out.
     gitBranch: z.string().min(1),
     gitHead: GitHead,
-    // The Docker container the dump was actually taken from — recorded so the cluster-
-    // binding provenance below (sourceDatabaseName/sourceSystemIdentifier) is traceable
-    // back to a concrete backup source, not just an abstract claim.
+    // The backup source label the dump was actually taken from: the docker container name
+    // (MAS_PG_RUNTIME=docker, CI) or `native:<host>:<port>` for the native PostgreSQL 16
+    // toolchain (scripts/db/backup-adapter.ts) — recorded so the cluster-binding provenance
+    // below (sourceDatabaseName/sourceSystemIdentifier) is traceable back to a concrete backup
+    // source, not just an abstract claim. The field name is kept for schema compatibility.
     containerName: z.string().min(1),
     path: z.string().min(1),
     bytes: z.number().int().positive(),
     sha256: Sha256Hex,
     databaseName: z.string().min(1),
     systemIdentifier: SystemIdentifier,
-    // Independently re-derived by querying the CONTAINER (via `docker exec ... psql`),
-    // not the TCP connection above — proves the dump's actual source is the same
-    // Postgres cluster as `databaseName`/`systemIdentifier`, not a same-named database on
-    // a different cluster. See verifyBackupTarget() in backup-docker-postgres.ts.
+    // Independently re-derived through the BACKUP TOOL PATH — `docker exec ... psql` against
+    // the container, or native `psql` with the exact libpq environment pg_dump uses — not the
+    // TCP connection above. Proves the dump's actual source is the same Postgres cluster as
+    // `databaseName`/`systemIdentifier`, not a same-named database on a different cluster.
+    // See verifyBackupTarget() in backup-docker-postgres.ts and verifyBackupTargetNative() in
+    // backup-native-postgres.ts.
     sourceDatabaseName: z.string().min(1),
     sourceSystemIdentifier: SystemIdentifier,
     // Only ever `true` — its role is structural, not informational: a receipt produced by

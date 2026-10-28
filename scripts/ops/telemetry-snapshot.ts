@@ -72,6 +72,12 @@ const IMPORT_STALE_DAYS = 45;         // aylık çalışma dosyası ritmi + pay
 // target on the deployment machine — and so the verify can point it at a controlled temp directory
 // to prove the alert both fires (no dump) and clears (a fresh dump). Defaults to ./backups.
 const BACKUP_DIR = process.env.MAS_BACKUP_DIR ?? path.join(process.cwd(), "backups");
+// Yedek yaşını YALNIZ zamanlanmış günlük işin dosyaları belirler (`daily-*.dump`; etiket
+// backup-daily.ts ile aynı değişkenden). Her `db:migrate` de backups/ altına bir ön-migrasyon
+// dump'ı yazar; onları saymak, günlük iş haftalarca düşerken alarmı susturabiliyordu — ölçüldü:
+// en yeni dosya bir `migrate-mas_radar_dev-…` dump'ıydı ve günlük görev o sırada her gece exit 1
+// veriyordu. Alarm artık "bir dump var mı" değil, "günlük yedek işi çalışıyor mu" sorusudur.
+const BACKUP_LABEL = process.env.MAS_BACKUP_LABEL ?? "daily";
 
 // Kalıcı alert log'u. backups/daily-runs.jsonl ile aynı JSONL deseni; ayrı bir dizinde çünkü
 // backups/ yedek dosyalarının retention budamasına tabi ve bir alarm geçmişi budanmamalı.
@@ -256,7 +262,7 @@ async function main(): Promise<void> {
   let backupAgeHours = Number.POSITIVE_INFINITY;
   let newest = "(yok)";
   try {
-    const files = readdirSync(BACKUP_DIR).filter((f) => f.endsWith(".dump"));
+    const files = readdirSync(BACKUP_DIR).filter((f) => f.startsWith(`${BACKUP_LABEL}-`) && f.endsWith(".dump"));
     for (const f of files) {
       const ageH = (Date.now() - statSync(path.join(BACKUP_DIR, f)).mtimeMs) / 3_600_000;
       if (ageH < backupAgeHours) { backupAgeHours = ageH; newest = f; }
@@ -265,7 +271,7 @@ async function main(): Promise<void> {
   record("backup_age_hours",
     Number.isFinite(backupAgeHours) ? backupAgeHours.toFixed(1) : "YEDEK YOK",
     backupAgeAlert(backupAgeHours, BACKUP_MAX_AGE_HOURS),
-    `eşik ${BACKUP_MAX_AGE_HOURS}s · en yeni: ${newest}`,
+    `eşik ${BACKUP_MAX_AGE_HOURS}s · yalnız ${BACKUP_LABEL}-*.dump · en yeni: ${newest}`,
     "P1"); // §31 P1: "backup schedule/off-device control not operational before pilot"
 
   currentSection = "APP";

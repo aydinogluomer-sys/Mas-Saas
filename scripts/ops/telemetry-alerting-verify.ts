@@ -213,7 +213,8 @@ async function main(): Promise<void> {
   const emptyBackupDir = path.join(workDir, "backups-empty");
   mkdirSync(freshBackupDir, { recursive: true });
   mkdirSync(emptyBackupDir, { recursive: true });
-  writeFileSync(path.join(freshBackupDir, "recent.dump"), "taze mtime — gerçek dump değil");
+  // `daily-` öneki: yedek-yaşı sinyali yalnız zamanlanmış günlük işin dump'larını sayar.
+  writeFileSync(path.join(freshBackupDir, "daily-recent.dump"), "taze mtime — gerçek dump değil");
 
   const appUrl = await appRoleUrl();
   const healthyEnv = (extra: Record<string, string> = {}): Record<string, string> => ({
@@ -492,15 +493,19 @@ async function main(): Promise<void> {
       record("S12 zamanlama: telemetri görevinin durumu sorgulanabiliyor",
         /SCHEDULED TASK = (REGISTERED|NOT REGISTERED)/.test(status.out),
         status.out.split(/\r?\n/).find((l) => l.includes("SCHEDULED TASK"))?.trim() ?? "satır yok");
+      const registeredBefore = /SCHEDULED TASK = REGISTERED/.test(status.out);
       const whatIf = runScheduler(["install", "--job", "telemetry"]);
       record("S12 zamanlama: install VARSAYILAN olarak what-if — hiçbir görev KAYDEDİLMEDİ",
         /WHAT-IF/.test(whatIf.out) && /SCHEDULED TASK = NOT REGISTERED/.test(whatIf.out)
           && /mas-telemetry-watch\.cmd/.test(whatIf.out),
         whatIf.out.split(/\r?\n/).find((l) => l.includes("SCHEDULED TASK"))?.trim() ?? "satır yok");
+      // Yan etki sorusu "kayıtlı değil mi" DEĞİL, "what-if kayıt durumunu değiştirdi mi": operatör
+      // görevi kaydettiğinde (Wave 0 sonrası beklenen durum) eski kontrol her koşuda düşerdi.
       const after = runScheduler(["status", "--job", "telemetry"]);
-      record("S12 zamanlama: what-if SONRASINDA da kayıtlı değil (yan etki yok)",
-        /SCHEDULED TASK = NOT REGISTERED/.test(after.out),
-        after.out.split(/\r?\n/).find((l) => l.includes("SCHEDULED TASK"))?.trim() ?? "satır yok");
+      const registeredAfter = /SCHEDULED TASK = REGISTERED/.test(after.out);
+      record("S12 zamanlama: what-if kayıt durumunu DEĞİŞTİRMEDİ (yan etki yok)",
+        registeredAfter === registeredBefore,
+        `${registeredBefore ? "REGISTERED" : "NOT REGISTERED"} → ${registeredAfter ? "REGISTERED" : "NOT REGISTERED"}`);
     } else {
       skip("S12 zamanlama", `schtasks yalnız Windows'ta var (platform=${process.platform})`);
     }

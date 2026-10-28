@@ -83,7 +83,51 @@ const CURATED: Record<string, { classification: string; note: string }> = {
   "scripts/db/set-app-role-password.ts": { classification: "INTENTIONAL_REAL_WRITE", note: "ALTER ROLE on the real cluster; a cutover step." },
   "scripts/import-real.ts": { classification: "INTENTIONAL_REAL_WRITE", note: "The reviewed workbook import. Writing real data is its purpose." },
   "scripts/db/legacy-repair-apply.ts": { classification: "INTENTIONAL_REAL_WRITE", note: "Repairs real legacy rows under an advisory lock with a receipt; commits deliberately." },
-  "scripts/db/ensure.ts": { classification: "INTENTIONAL_REAL_WRITE", note: "Container/database lifecycle (createdb). Provisioning, not fixture writing." },
+  "scripts/db/ensure.ts": {
+    classification: "INTENTIONAL_REAL_WRITE",
+    note:
+      "Wave 0: native (default) is a READ-ONLY probe — TCP + pg_isready + Get-Service; it never creates " +
+      "a cluster, runs no SQL and starts nothing. Only the CI-only docker branch (MAS_PG_RUNTIME=docker) " +
+      "still creates/starts the throwaway runner container. Provisioning, not fixture writing.",
+  },
+  "scripts/db/pg-native.ts": {
+    classification: "SAFE_ROLLBACK_ONLY",
+    note:
+      "Pure helpers: a pg tool NAME table (pg_dump/pg_restore/psql/createdb/dropdb/pg_isready) plus URL/env " +
+      "parsing. Executes nothing, opens no connection — the tokens are names, not calls.",
+  },
+  "scripts/db/backup-native-postgres.ts": {
+    classification: "SAFE_ROLLBACK_ONLY",
+    note:
+      "READ-ONLY native toolchain: pg_dump and psql SELECTs run with PGOPTIONS " +
+      "default_transaction_read_only=on (the engine refuses writes, same reading as p24b-readonly-psql.sh); " +
+      "pg_restore is used only as `--list` on a file (and `--version`). No createdb, no dropdb, no restore into a database.",
+  },
+  "scripts/db/backup-adapter.ts": {
+    classification: "SAFE_DISPOSABLE_ENFORCED",
+    note:
+      "Runtime-selected facade (native|docker). Writes only transitively: its DisposableRestoreOps delegate to " +
+      "pg-native-restore.ts, whose disposable gate (isDisposableDatabaseName + smokeTargetBlockers) is the first " +
+      "statement of every function — the facade cannot reach a write that bypasses it.",
+  },
+  "tests/pg-native.test.ts": {
+    classification: "SAFE_ROLLBACK_ONLY",
+    note: "Pure unit tests over pg-native.ts; the tool-name tokens are assertions about resolved paths. Reaches no database.",
+  },
+  "tests/pg-restore-listing.test.ts": {
+    classification: "SAFE_ROLLBACK_ONLY",
+    note: "Pure parser tests over fixed `pg_restore --list` text fixtures; no process is spawned and no database is reached.",
+  },
+  "tests/backup-native-durability.test.ts": {
+    classification: "SAFE_ROLLBACK_ONLY",
+    note: "Fake spawn + fake list verifier in a temp dir; no PostgreSQL binary runs and no database is reached.",
+  },
+  "tests/backup-adapter-select.test.ts": {
+    classification: "SAFE_ROLLBACK_ONLY",
+    note:
+      "Injected exec spy proves the disposable gate fires BEFORE any tool call; no real process is spawned and " +
+      "no database is reached.",
+  },
   "scripts/db/create-testsprite-db.ts": { classification: "INTENTIONAL_REAL_WRITE", note: "Creates the synthetic TestSprite database. Target is a separate database by construction." },
   "scripts/db/dev-reset.sh": {
     classification: "INTENTIONAL_REAL_WRITE",
@@ -95,14 +139,8 @@ const CURATED: Record<string, { classification: string; note: string }> = {
       "before ensure.sh and before any docker call (exit 9), then reports measured identity and row " +
       "counts before dropping. Manual-only: no CI, no lifecycle hook.",
   },
-  "scripts/deploy/local-start.sh": {
-    classification: "INTENTIONAL_REAL_WRITE",
-    note: "`DB=${MAS_DB_NAME:-mas_radar_dev}` — defaults to the REAL database, then createdb + local-bootstrap.sql + migrate.ts + seed.sql. Local deployment provisioning.",
-  },
-  "scripts/deploy/restore-db.sh": {
-    classification: "INTENTIONAL_REAL_WRITE",
-    note: "dropdb + createdb + `pg_restore -d $TARGET`. Restoring into a real database is the tool's purpose; target comes from its argument.",
-  },
+  // Wave 0: scripts/deploy/{local-start,local-stop,backup-db,restore-db}.sh were REMOVED with
+  // docker-compose.yml (Docker is uninstalled; backup-db.sh was a second, non-durable backup path).
   "tests/dev-reset-safety.test.ts": {
     classification: "SAFE_ROLLBACK_ONLY",
     note:

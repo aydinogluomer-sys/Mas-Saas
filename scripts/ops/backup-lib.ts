@@ -1,9 +1,9 @@
 // AŞAMA 07 — yedek yaşam döngüsünün ortak kütüphanesi.
 //
-// NE İŞE YARAR. `scripts/db/backup-docker-postgres.ts` bir dump'ı DAYANIKLI biçimde üretir
-// (fsync → temp doğrulama → atomik rename → final dosyada yeniden doğrulama) ve
-// `scripts/db/backup-receipt.ts` onun yanına git/cluster kimliği taşıyan bir makbuz yazar.
-// İkisi de şunu yanıtlamaz:
+// NE İŞE YARAR. `scripts/db/backup-adapter.ts` bir dump'ı DAYANIKLI biçimde üretir (fsync → temp
+// doğrulama → atomik rename → final dosyada yeniden doğrulama; native PostgreSQL 16 ya da CI'da
+// docker) ve `scripts/db/backup-receipt.ts` onun yanına git/cluster kimliği taşıyan bir makbuz
+// yazar. İkisi de şunu yanıtlamaz:
 //
 //   1. Bu dump'ın kopyası BAŞKA bir depolama hedefine gerçekten ULAŞTI mı ve orada
 //      byte-byte aynı mı? ("copy komutu 0 döndü" bunun kanıtı değildir.)
@@ -31,7 +31,6 @@ import {
   readdirSync, renameSync, statSync, unlinkSync, writeSync,
 } from "node:fs";
 import path from "node:path";
-import { readPgToolVersions } from "../db/backup-docker-postgres";
 import { attemptDirectoryFsync, type DurabilityMetadata } from "../db/legacy-repair-types";
 import {
   decideUsbPhysicalVolume, parsePhysicalDiskJson, type PhysicalDiskIdentity,
@@ -47,16 +46,14 @@ export function sha256OfFile(filePath: string): string {
   return createHash("sha256").update(readFileSync(filePath)).digest("hex");
 }
 
+/** Rehber §12 Bölüm A makbuzunun `pg_version` / `pg_dump_version` alanları. İkisi de yedeği
+ * alan araç zincirinden ÖLÇÜLÜR, sabit yazılmaz: tek okuyucu `BackupAdapter.readToolVersions`
+ * (scripts/db/backup-adapter.ts) ve katı makbuz da onu kullanıyor — iki kopya, iki cevabın
+ * sessizce ayrışmasının yoludur. Native yolda okuyucu ayrıca pg_dump/pg_restore ana sürümünün
+ * sunucununkiyle aynı olduğunu zorunlu kılar. */
 export interface PgVersions {
   pgVersion: string;
   pgDumpVersion: string;
-}
-
-/** Rehber §12 Bölüm A makbuzunun `pg_version` / `pg_dump_version` alanları. İkisi de
- * container'dan ÖLÇÜLÜR; sabit yazılmaz. Tek bir tanım var (scripts/db/backup-docker-postgres.ts)
- * ve katı makbuz da onu kullanıyor — iki kopya, iki cevabın sessizce ayrışmasının yoludur. */
-export function readPgVersions(container: string, dbName: string): PgVersions {
-  return readPgToolVersions(container, dbName);
 }
 
 /* ── off-device hedef sınıflandırması ────────────────────────────────────────────────────── */
@@ -270,7 +267,8 @@ export interface CopyVerifyResult {
   destSha256: string;
   sha256Match: boolean;
   bytesMatch: boolean;
-  /** Hedefteki KOPYA pg_restore --list ile ayrıştırılabildi mi (container'a geri okutularak). */
+  /** Hedefteki KOPYA pg_restore --list ile ayrıştırılabildi mi (enjekte edilen doğrulayıcıyla,
+   * hedef dosyanın kendisi okunarak). */
   destRestoreListable: boolean;
   destTocEntryCount: number | null;
   sidecarsCopied: string[];
@@ -396,17 +394,26 @@ function copyOneVerified(sourcePath: string, destDir: string): { destPath: strin
  * hedeften OKUNARAK yeniden hesaplanır; eşleşmezse kopya SİLİNİR ve hata yükseltilir —
  * bozuk bir dosya "yedek" adıyla ortalıkta bırakılmaz.
  *
- * `container` verilirse kopya ayrıca container'a geri okutulup `pg_restore --list` ile
- * ayrıştırılır: hedefteki dosyanın yalnız aynı baytları değil, hâlâ GEÇERLİ BİR ARŞİV
- * olduğunu da gösterir.
+ * `verifyListable` verilirse HEDEFTEKİ dosya ayrıca `pg_restore --list` ile ayrıştırılır:
+ * kopyanın yalnız aynı baytları değil, hâlâ GEÇERLİ BİR ARŞİV olduğunu da gösterir. Doğrulayıcı
+ * enjekte edilir (scripts/db/backup-adapter.ts → createListVerifier): bu kütüphane hiçbir araç
+ * zincirini kendisi seçmez, hiçbir veritabanına bağlanmaz. Doğrulayıcının fırlattığı hata
+ * YUTULMAZ — okunamayan bir kopya "kopyalandı ama doğrulanamadı" diye sessizce geçmez.
+ *
+ * `classify` yalnız test seam'idir: gerçek sınıflandırma Windows'ta PowerShell ile disk topolojisi
+ * ölçer ve birim testte o ölçümün kendisi değil, kopya/doğrulama zinciri sınanır.
  */
 export function copyToTargetVerified(
   sourcePath: string,
   destDir: string,
-  opts: { container?: string; sourceDir?: string } = {},
+  opts: {
+    verifyListable?: (destPath: string) => { tocEntryCount: number };
+    sourceDir?: string;
+    classify?: (targetDir: string, sourceDir: string) => OffDeviceClassification;
+  } = {},
 ): CopyVerifyResult {
   if (!existsSync(sourcePath)) throw new Error(`Kaynak dump yok: ${sourcePath}`);
-  const classification = classifyOffDeviceTarget(destDir, opts.sourceDir ?? path.dirname(sourcePath));
+  const classification = (opts.classify ?? classifyOffDeviceTarget)(destDir, opts.sourceDir ?? path.dirname(sourcePath));
 
   const main = copyOneVerified(sourcePath, destDir);
   const sha256Match = main.destSha256 === main.sourceSha256;
@@ -435,18 +442,11 @@ export function copyToTargetVerified(
 
   let destRestoreListable = false;
   let destTocEntryCount: number | null = null;
-  if (opts.container) {
-    const inContainer = `/tmp/mas-offdevice-verify-${process.pid}-${Date.now()}.dump`;
-    try {
-      execFileSync("docker", ["cp", main.destPath, `${opts.container}:${inContainer}`]);
-      const listing = execFileSync("docker", ["exec", opts.container, "pg_restore", "--list", inContainer], {
-        encoding: "utf8", maxBuffer: 64 * 1024 * 1024,
-      });
-      destTocEntryCount = listing.split(/\r?\n/).filter((l) => l && !l.startsWith(";")).length;
-      destRestoreListable = destTocEntryCount > 0;
-    } finally {
-      try { execFileSync("docker", ["exec", opts.container, "rm", "-f", inContainer]); } catch { /* temizlik */ }
-    }
+  if (opts.verifyListable) {
+    // Sayı arşivin kendi `TOC Entries:` başlığından gelir (eskiden yorum olmayan satır sayısıydı);
+    // ikisi de > 0 olmak zorunda, anlamı aynı: hedefteki dosya ayrıştırılabilir bir arşiv.
+    destTocEntryCount = opts.verifyListable(main.destPath).tocEntryCount;
+    destRestoreListable = destTocEntryCount > 0;
   }
 
   return {
@@ -705,6 +705,12 @@ export interface Stage07Receipt {
   strict_receipt_path: string | null;
   strict_receipt_sha256: string | null;
   data_class: "REAL_READ_ONLY";
+  /**
+   * Dump'ı üreten araç zinciri ve kaynağı: `native:127.0.0.1:5432` ya da (CI) konteyner adı.
+   * Dokuz zorunlu alanın dışında; kurtarma anında "bu arşivi hangi pg_dump, nereden aldı"
+   * sorusunu makbuzun kendisinden cevaplatır. Bağlantı dizesi ya da kullanıcı adı ASLA.
+   */
+  backup_source?: string;
   /**
    * Makbuzu YAZAN koşunun commit'i — `git_sha` ile karıştırılmamalı.
    *

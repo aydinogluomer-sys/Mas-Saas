@@ -27,29 +27,39 @@
 // Kullanım:
 //   MAS_OFFDEVICE_BACKUP_DIR=<hedef> pnpm exec tsx scripts/release/stage07-backup-gate.ts
 //
-// Ortam: STAGE07_DUMP, RESTORE_DB, OFFDEVICE_RESTORE_DB, MAS_PG_CONTAINER, MAS_PG_PORT,
-//        STAGE07_PORT (3270), STAGE07_DIST_DIR (.next-real-clone-gate), STAGE07_OUT,
-//        SKIP_APP_START=1
+// Ortam: STAGE07_DUMP, RESTORE_DB, OFFDEVICE_RESTORE_DB, MAS_PG_BIN_DIR (PostgreSQL 16 bin
+//        dizini; yoksa PATH), STAGE07_PORT (3270), STAGE07_DIST_DIR (.next-real-clone-gate),
+//        STAGE07_OUT, SKIP_APP_START=1
+//
+// WAVE 0 — NATIVE POSTGRESQL 16. Docker kaldırıldı; kapı YALNIZ native çalışma zamanında koşar
+// (MAS_PG_RUNTIME=docker reddedilir). Okunabilirlik, sürümler, makbuz probu ve off-device
+// doğrulaması scripts/db/backup-adapter.ts üzerinden; harcanabilir hedeflere düşür/yarat/yükle
+// yalnız scripts/db/pg-native-restore.ts üzerinden (harcanabilirlik kapısı her çağrının ilk
+// ifadesi). İki restore hedefinin owner bağlantısı `.env.local`'deki owner kimliğinden YALNIZ
+// veritabanı adı değiştirilerek türetilir — sabit bir parola yok.
 import { execFileSync, spawn } from "node:child_process";
 import { existsSync, mkdirSync, openSync, readFileSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
-import net from "node:net";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { Pool } from "pg";
+import { portInUse, readEnvLocal, swapDatabase } from "../db/app-url";
+import {
+  createBackupAdapter, createDisposableRestoreOps, describeAdapter, withPgRuntimeConfig,
+  type BackupAdapter, type DisposableRestoreOps,
+} from "../db/backup-adapter";
 import { runBackupReceipt } from "../db/backup-receipt";
 import { isDisposableDatabaseName } from "../db/owner-url";
+import { resolvePgRuntime } from "../db/pg-native";
 import { fingerprint, type Fingerprint } from "./lib/fingerprint";
 import {
   classifyOffDeviceTarget, copyToTargetVerified, executePrune, formatBytes, listDumps, newestDump,
-  planPrune, readPgVersions, sha256OfFile, writeStage07Receipt, STAGE07_RECEIPT_FIELDS,
+  planPrune, sha256OfFile, writeStage07Receipt, STAGE07_RECEIPT_FIELDS,
   type Stage07Receipt,
 } from "../ops/backup-lib";
 import { writeOffDeviceRecord } from "../ops/offdevice-copy";
 
 /* ── ayarlar ─────────────────────────────────────────────────────────────────────────────── */
 
-const CONTAINER = process.env.MAS_PG_CONTAINER ?? "mas-radar-pg";
-const PG_PORT = process.env.MAS_PG_PORT ?? "5432";
 const SOURCE_DB = process.env.STAGE07_SOURCE_DB ?? "mas_radar_dev";
 const BACKUP_DIR = process.env.MAS_BACKUP_DIR ?? "backups";
 const DUMP_LABEL = process.env.STAGE07_LABEL ?? "stage07_real";
@@ -97,10 +107,8 @@ function step(label: string): void {
 
 /* ── yardımcılar ─────────────────────────────────────────────────────────────────────────── */
 
-function docker(args: string[], quiet = false): string {
-  if (!quiet) commands.push(`docker ${args.join(" ")}`);
-  return execFileSync("docker", args, { encoding: "utf8", maxBuffer: 1 << 28 });
-}
+/** main() kurar; sinyal işleyicisi ve `finally` aynı (yalnız native, harcanabilir) yazıcıyı kullanır. */
+let restoreOps: DisposableRestoreOps | null = null;
 
 /* ── kesinti temizliği ───────────────────────────────────────────────────────────────────
  *
@@ -126,48 +134,18 @@ function emergencyCleanup(signal: string): void {
     } catch { /* zaten kapanmış */ }
   }
   for (const db of [RESTORE_DB, OFFDEVICE_RESTORE_DB]) {
-    if (!isDisposableDatabaseName(db)) continue;
+    if (!isDisposableDatabaseName(db) || !restoreOps) continue;
     try {
-      execFileSync("docker", ["exec", CONTAINER, "dropdb", "-U", "postgres", "--force", "--if-exists", db], { stdio: "ignore" });
+      // Senkron: async temizlik sinyal işleyicisinde tamamlanma şansı bulamaz.
+      restoreOps.dropDisposable(db);
       console.error(`  düşürüldü: ${db}`);
     } catch { /* elde ne varsa */ }
   }
   process.exit(130);
 }
 
-/** Bağlantı dizesinde YALNIZ veritabanı adını değiştirir (parolayı yeniden kodlamadan). */
-function swapDatabase(url: string, db: string): string {
-  const m = /^([a-zA-Z][a-zA-Z0-9+.-]*:\/\/[^/]+)\/([^?#]*)(.*)$/.exec(url);
-  if (!m) throw new Error("Bağlantı dizesi ayrıştırılamadı (dize kasıtlı olarak yazdırılmıyor).");
-  return `${m[1]}/${db}${m[3]}`;
-}
-
-function readEnvLocal(): Record<string, string> {
-  const file = path.join(process.cwd(), ".env.local");
-  if (!existsSync(file)) throw new Error(".env.local yok — app bağlantısı gerçek runtime kimliğinden türetilemiyor.");
-  const out: Record<string, string> = {};
-  for (const raw of readFileSync(file, "utf8").split(/\r?\n/)) {
-    const line = raw.trim();
-    if (!line || line.startsWith("#")) continue;
-    const i = line.indexOf("=");
-    if (i < 0) continue;
-    let v = line.slice(i + 1).trim();
-    if ((v.startsWith('"') && v.endsWith('"')) || (v.startsWith("'") && v.endsWith("'"))) v = v.slice(1, -1);
-    out[line.slice(0, i).trim()] = v;
-  }
-  return out;
-}
-
-function portInUse(port: string): Promise<boolean> {
-  return new Promise((resolve) => {
-    const socket = net.connect({ host: "127.0.0.1", port: Number(port) });
-    const done = (v: boolean) => { socket.destroy(); resolve(v); };
-    socket.setTimeout(1500);
-    socket.once("connect", () => done(true));
-    socket.once("timeout", () => done(false));
-    socket.once("error", () => done(false));
-  });
-}
+// swapDatabase / readEnvLocal / portInUse artık scripts/db/app-url.ts'in TEK tanımından geliyor:
+// bu dosyadaki kopyalar o dosyanın başlığında anlatılan kaymanın ta kendisiydi.
 
 async function fetchText(url: string, timeoutMs = 4000): Promise<string> {
   try {
@@ -226,36 +204,22 @@ function runCli(args: string[], key: string): { code: number; out: string } {
   }
 }
 
-/** `pg_restore --list` — arşivi container içinde GERÇEKTEN ayrıştırır. */
-function tocEntries(dumpPath: string): number {
-  const inContainer = `/tmp/mas-stage07-${process.pid}-${Date.now()}.dump`;
-  try {
-    docker(["cp", dumpPath, `${CONTAINER}:${inContainer}`]);
-    const listing = docker(["exec", CONTAINER, "pg_restore", "--list", inContainer]);
-    return listing.split(/\r?\n/).filter((l) => l && !l.startsWith(";")).length;
-  } finally {
-    try { docker(["exec", CONTAINER, "rm", "-f", inContainer], true); } catch { /* temizlik */ }
-  }
+/** `pg_restore --list` — arşivi diskte GERÇEKTEN ayrıştırır (kopya yok, bağlantı yok). Sayı
+ * arşivin kendi `TOC Entries:` başlığıdır. */
+function tocEntries(adapter: BackupAdapter, dumpPath: string): number {
+  commands.push(`pg_restore --list ${path.basename(dumpPath)} (${adapter.sourceLabel} araçlarıyla)`);
+  return adapter.verifyRestoreListable(dumpPath).tocEntryCount;
 }
 
 /** Arşivi boş bir veritabanına yükler. `--no-owner` EVET, `--no-acl` HAYIR: GRANT'lar
- * yedeğin parçasıdır, uygulamayı dışarıda bırakan bir kurtarma hiçbir şey kurtarmamıştır. */
-function restoreInto(dbName: string, dumpPath: string): boolean {
-  const inContainer = `/tmp/mas-stage07-restore-${process.pid}-${Date.now()}.dump`;
-  docker(["cp", dumpPath, `${CONTAINER}:${inContainer}`]);
-  docker(["exec", CONTAINER, "dropdb", "-U", "postgres", "--force", "--if-exists", dbName]);
-  docker(["exec", CONTAINER, "createdb", "-U", "postgres", dbName]);
-  let warned = false;
-  try {
-    docker(["exec", CONTAINER, "pg_restore", "--no-owner", "-U", "postgres", "-d", dbName, inContainer]);
-  } catch {
-    // pg_restore iyi huylu uyarılarda (olmayan rol, mevcut extension) sıfırdan farklı döner.
-    // Restore'un gerçekten olduğunu aşağıdaki fingerprint karşılaştırması söyler, çıkış kodu değil.
-    warned = true;
-  } finally {
-    try { docker(["exec", CONTAINER, "rm", "-f", inContainer], true); } catch { /* temizlik */ }
-  }
-  return warned;
+ * yedeğin parçasıdır, uygulamayı dışarıda bırakan bir kurtarma hiçbir şey kurtarmamıştır.
+ * pg_restore iyi huylu uyarılarda (olmayan rol, mevcut extension) sıfırdan farklı döner;
+ * restore'un gerçekten olduğunu aşağıdaki fingerprint karşılaştırması söyler, çıkış kodu değil. */
+function restoreInto(ops: DisposableRestoreOps, dbName: string, dumpPath: string): boolean {
+  commands.push(`dropdb --force --if-exists ${dbName} → createdb ${dbName} → pg_restore --no-owner --dbname=${dbName} ${path.basename(dumpPath)}`);
+  ops.dropDisposable(dbName);
+  ops.createDisposable(dbName);
+  return ops.restoreInto(dbName, dumpPath).warned;
 }
 
 /**
@@ -352,11 +316,17 @@ async function explainHashDrift(
  * ve koşu sonunda silinir. Sürüm alanlarının şemaya ve dosyaya gerçekten yazıldığı ise
  * taklit değil, ölçümdür.
  */
-async function proveReceiptCarriesVersions(dbName: string, ownerUrl: string): Promise<{ ok: boolean; detail: string }> {
+async function proveReceiptCarriesVersions(
+  dbName: string,
+  ownerUrl: string,
+  pgEnv: Readonly<Record<string, string | undefined>>,
+): Promise<{ ok: boolean; detail: string }> {
   const outDir = path.join("test-results", "stage07-receipt-probe");
   mkdirSync(outDir, { recursive: true });
   const branch = execFileSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], { encoding: "utf8" }).trim();
   const head = execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+  // Prob makbuzu GERÇEK araç zinciriyle üretilir — yalnız git temizlik iddiası taklittir.
+  const adapter = createBackupAdapter({ ownerUrl, env: pgEnv });
   const pool = new Pool({ connectionString: ownerUrl, max: 1 });
   try {
     const meta = (await pool.query<{ db: string; sysid: string }>(
@@ -367,11 +337,12 @@ async function proveReceiptCarriesVersions(dbName: string, ownerUrl: string): Pr
         expectedSystemIdentifier: meta.sysid,
         expectedGitBranch: branch,
         expectedGitHead: head,
-        container: CONTAINER,
+        container: adapter.sourceLabel,
         label: "stage07_receipt_probe",
         outDir,
       },
       {
+        adapter,
         gitStateProvider: { getBranch: () => branch, getHead: () => head, isClean: () => true },
         queryTcpIdentity: async () => ({ databaseName: meta.db, systemIdentifier: meta.sysid }),
         queryLedger: async () => {
@@ -556,9 +527,12 @@ interface EvidenceInput {
   droppedDbs: string[];
   pruneSummary: string;
   scheduleSummary: string;
+  scheduleRegistered: boolean;
   dailyRunSummary: string;
   grantsSource: Record<string, number>;
   grantsRestored: Record<string, number>;
+  /** `runtime=native kaynak=native:127.0.0.1:5432` — bağlantı dizesi ASLA. */
+  toolchain: string;
 }
 
 async function main(): Promise<void> {
@@ -579,22 +553,35 @@ async function main(): Promise<void> {
   if (await portInUse(APP_PORT)) {
     throw new Error(`Port ${APP_PORT} zaten dinleniyor. Kapı başkasının sunucusuyla yarışmaz ve onu ÖLDÜRMEZ.`);
   }
+
+  const envLocal = readEnvLocal();
+  // Araç zinciri ayarları: önce süreç ortamı, yoksa .env.local (yalnız sır-olmayan PG_RUNTIME_ENV_KEYS).
+  const pgEnv = withPgRuntimeConfig(process.env, envLocal);
+  if (resolvePgRuntime(pgEnv) !== "native") {
+    throw new Error("AŞAMA 07 kapısı yalnız native PostgreSQL 16 ile koşar (MAS_PG_RUNTIME=docker reddedildi).");
+  }
+  const runtimeUrl = envLocal["DATABASE_URL"];
+  const ownerRuntimeUrl = envLocal["MIGRATION_DATABASE_URL"];
+  if (!runtimeUrl || !ownerRuntimeUrl) throw new Error(".env.local içinde DATABASE_URL / MIGRATION_DATABASE_URL yok.");
+  const runtimeUser = new URL(runtimeUrl).username;
+  const sourceOwnerUrl = swapDatabase(ownerRuntimeUrl, SOURCE_DB);
+  // Harcanabilir hedeflerin owner bağlantısı GERÇEK owner kimliğinden yalnız DB adı değiştirilerek
+  // türetilir; eskiden burada sabit bir docker parolası vardı ve native kümede kimlik doğrulamazdı.
+  const restoreOwnerUrl = swapDatabase(ownerRuntimeUrl, RESTORE_DB);
+  const offdeviceOwnerUrl = swapDatabase(ownerRuntimeUrl, OFFDEVICE_RESTORE_DB);
+  const restoreAppUrl = swapDatabase(runtimeUrl, RESTORE_DB);
+  // Loopback olmayan bir owner URL'i burada, hiçbir bağlantı açılmadan reddedilir.
+  const adapter = createBackupAdapter({ ownerUrl: sourceOwnerUrl, env: pgEnv });
+  restoreOps = createDisposableRestoreOps({ ownerUrl: sourceOwnerUrl, env: pgEnv });
+  const ops = restoreOps;
+  console.log(`Araç zinciri: ${describeAdapter(adapter)}`);
+
   cleanupArmed = true;
   process.once("SIGINT", () => emergencyCleanup("SIGINT"));
   process.once("SIGTERM", () => emergencyCleanup("SIGTERM"));
 
   const liveBefore = await probeLive();
   console.log(`Canlı örnek (port ${LIVE_PORT}) kapı öncesi: ${liveBefore}`);
-
-  const envLocal = readEnvLocal();
-  const runtimeUrl = envLocal["DATABASE_URL"];
-  const ownerRuntimeUrl = envLocal["MIGRATION_DATABASE_URL"];
-  if (!runtimeUrl || !ownerRuntimeUrl) throw new Error(".env.local içinde DATABASE_URL / MIGRATION_DATABASE_URL yok.");
-  const runtimeUser = new URL(runtimeUrl).username;
-  const sourceOwnerUrl = swapDatabase(ownerRuntimeUrl, SOURCE_DB);
-  const restoreOwnerUrl = `postgres://postgres:postgres@127.0.0.1:${PG_PORT}/${RESTORE_DB}`;
-  const offdeviceOwnerUrl = `postgres://postgres:postgres@127.0.0.1:${PG_PORT}/${OFFDEVICE_RESTORE_DB}`;
-  const restoreAppUrl = swapDatabase(runtimeUrl, RESTORE_DB);
 
   record("B", "app rolü parolası SIFIRLANMADI (mevcut runtime kimliği yeniden kullanıldı)",
     true, "pnpm db:app-role:password çağrılmaz",
@@ -617,6 +604,7 @@ async function main(): Promise<void> {
   let grantsRestored: Record<string, number> = {};
   let pruneSummary = "koşulmadı";
   let scheduleSummary = "koşulmadı";
+  let scheduleRegistered = false;
   let dailyRunSummary = "koşu kaydı yok";
 
   const source = new Pool({ connectionString: sourceOwnerUrl, max: 4 });
@@ -682,7 +670,8 @@ async function main(): Promise<void> {
     record("A", "kaynak veritabanı beklenen", meta.db === SOURCE_DB, SOURCE_DB, meta.db);
     const ledgerRow = (await source.query<{ n: string; last: string | null }>(
       "select count(*)::text n, max(version) last from public.schema_migrations")).rows[0];
-    const versions = readPgVersions(CONTAINER, SOURCE_DB);
+    // pg_dump/pg_restore ana sürümü sunucununkiyle aynı değilse burada durur (native okuyucu).
+    const versions = adapter.readToolVersions(SOURCE_DB);
 
     receipt = {
       receiptKind: "mas-stage07-backup-receipt-v1",
@@ -719,7 +708,7 @@ async function main(): Promise<void> {
     /* ── B. okunabilirlik + ayrı hedefe restore ───────────────────────────────────────── */
     step("2/6 BÖLÜM B — okunabilirlik, ayrı hedefe restore, tam karşılaştırma");
 
-    tocCount = tocEntries(dumpPath);
+    tocCount = tocEntries(adapter, dumpPath);
     record("B", "pg_restore --list arşivi ayrıştırabiliyor", tocCount > 0, "> 0 TOC girdisi", `${tocCount} TOC girdisi`);
     gates["BACKUP READABLE"] = tocCount > 0 ? "YES" : "NO";
 
@@ -728,7 +717,7 @@ async function main(): Promise<void> {
     srcFp = await fingerprint(source);
     grantsSource = await appGrantSummary(source);
 
-    const warned = restoreInto(RESTORE_DB, dumpPath);
+    const warned = restoreInto(ops, RESTORE_DB, dumpPath);
     if (warned) notes.push("pg_restore uyarılarla döndü (olmayan rol/extension); karşılaştırma yine de tam yapıldı.");
     restored = new Pool({ connectionString: restoreOwnerUrl, max: 4 });
     const restoredTables = Number((await restored.query(
@@ -764,7 +753,7 @@ async function main(): Promise<void> {
 
     // Katı makbuz artık dokuz alanın ikisini (pg_version / pg_dump_version) de taşıyor mu —
     // DISPOSABLE_CLONE üzerinde uçtan uca kanıtlanır (bkz. proveReceiptCarriesVersions).
-    const versionProof = await proveReceiptCarriesVersions(RESTORE_DB, restoreOwnerUrl);
+    const versionProof = await proveReceiptCarriesVersions(RESTORE_DB, restoreOwnerUrl, pgEnv);
     record("A", "katı makbuz şeması pg_version + pg_dump_version taşıyor (DISPOSABLE_CLONE üzerinde uçtan uca)",
       versionProof.ok, "her iki alan da makbuz dosyasında", versionProof.detail);
 
@@ -790,7 +779,10 @@ async function main(): Promise<void> {
       offDeviceKind = classification.kind;
       offDeviceEvidence = classification.evidence;
       offDeviceSatisfied = classification.offDeviceSatisfied;
-      const copied = copyToTargetVerified(dumpPath, classification.targetDir, { container: CONTAINER, sourceDir: BACKUP_DIR });
+      const copied = copyToTargetVerified(dumpPath, classification.targetDir, {
+        verifyListable: (p) => adapter.verifyRestoreListable(p),
+        sourceDir: BACKUP_DIR,
+      });
       offDeviceDest = copied.destPath;
       writeOffDeviceRecord(copied);
       commands.push(`MAS_OFFDEVICE_BACKUP_DIR=<hedef> pnpm exec tsx scripts/ops/offdevice-copy.ts --dump ${path.basename(dumpPath)}`);
@@ -814,9 +806,9 @@ async function main(): Promise<void> {
     step("4/6 BÖLÜM E — saklanan kopyanın KENDİSİNDEN restore");
 
     if (offDeviceDest && existsSync(offDeviceDest)) {
-      const toc2 = tocEntries(offDeviceDest);
+      const toc2 = tocEntries(adapter, offDeviceDest);
       record("E", "saklanan kopya okunabiliyor", toc2 > 0, "> 0 TOC girdisi", `${toc2} TOC girdisi`);
-      restoreInto(OFFDEVICE_RESTORE_DB, offDeviceDest);
+      restoreInto(ops, OFFDEVICE_RESTORE_DB, offDeviceDest);
       offdevice = new Pool({ connectionString: offdeviceOwnerUrl, max: 4 });
       offdeviceFp = await fingerprint(offdevice, srcFp.columns);
       await compareAgainstSource("E", source, offdevice, srcFp, offdeviceFp);
@@ -848,8 +840,15 @@ async function main(): Promise<void> {
     const whatIfOk = /WHAT-IF — hiçbir görev KAYDEDİLMEDİ/.test(whatIf.out);
     record("D", "kurulum what-if modunda komutu üretiyor ve KAYIT YAPMIYOR", whatIfOk,
       "what-if çıktısı, kayıt yok", whatIfOk ? "kayıt yapılmadı" : "beklenen çıktı yok");
-    record("D", "what-if sonrası görev hâlâ KAYITLI DEĞİL (kullanıcı makinesine kalıcı değişiklik yok)",
-      !registered, "NOT REGISTERED", registered ? "REGISTERED" : "NOT REGISTERED");
+    // Sorulan şey "görev kayıtlı mı" DEĞİL, "what-if kayıt durumunu değiştirdi mi". Operatör görevi
+    // kaydettiğinde (doğru olan budur) eski "hâlâ kayıtlı değil" kontrolü her koşuda düşüyordu.
+    const schedAfter = runCli(["scripts/ops/schedule-windows.ts", "status"], "schedule-windows.ts status (what-if sonrası)");
+    const registeredAfter = /SCHEDULED TASK = REGISTERED/.test(schedAfter.out);
+    record("D", "what-if kayıt durumunu DEĞİŞTİRMEDİ (kullanıcı makinesine kalıcı değişiklik yok)",
+      registeredAfter === registered,
+      registered ? "REGISTERED → REGISTERED" : "NOT REGISTERED → NOT REGISTERED",
+      `${registered ? "REGISTERED" : "NOT REGISTERED"} → ${registeredAfter ? "REGISTERED" : "NOT REGISTERED"}`);
+    scheduleRegistered = registered;
     scheduleSummary = `${registered ? "REGISTERED" : "NOT REGISTERED"} · what-if ${whatIfOk ? "üretildi" : "üretilemedi"}`;
 
     const prune = runCli(["scripts/ops/backup-prune.ts"], "backup-prune.ts (kuru koşu)");
@@ -872,16 +871,26 @@ async function main(): Promise<void> {
     record("D", "budama SENTETİK fixture üzerinde gerçekten siliyor, IMMUTABLE'a dokunmuyor",
       pruneProof.ok, "immutable 4/4 hayatta, yan dosya dump ile silinir, hata 0", pruneProof.detail);
 
-    // Zamanlanmış işin KENDİSİ koştu mu — koşu kaydı dosyadan okunur, iddiadan değil.
+    // Zamanlanmış işin KENDİSİ koştu mu — koşu kaydı dosyadan okunur, iddiadan değil. Wave 0'dan
+    // beri başarısız geceler de `{ ok:false, stage, error }` satırı yazar; bu yüzden "son satır"
+    // değil, YEDEK ÜRETEN son koşu aranır ve son başarısızlık ayrıca raporlanır.
     const runLogPath = path.join(BACKUP_DIR, "daily-runs.jsonl");
     if (existsSync(runLogPath)) {
-      const lines = readFileSync(runLogPath, "utf8").split(/\r?\n/).filter(Boolean);
-      const last = JSON.parse(lines[lines.length - 1]) as Record<string, unknown>;
-      dailyRunSummary = `${lines.length} koşu · son: ${String(last.finishedAt)} · dump ${String(last.sha256).slice(0, 16)}… · ` +
-        `ledger ${String(last.schema_ledger)} · off-device ${last.offDeviceOk ? "OK" : "NO"}`;
+      const runs = readFileSync(runLogPath, "utf8").split(/\r?\n/).filter(Boolean).flatMap((line) => {
+        try { return [JSON.parse(line) as Record<string, unknown>]; } catch { return []; }
+      });
+      const lastBackup = [...runs].reverse().find((r) => typeof r.sha256 === "string");
+      const lastFailure = [...runs].reverse().find((r) => r.ok === false);
+      dailyRunSummary = `${runs.length} koşu · ` + (lastBackup
+        ? `son yedekli koşu: ${String(lastBackup.finishedAt)} · dump ${String(lastBackup.sha256).slice(0, 16)}… · ` +
+          `ledger ${String(lastBackup.schema_ledger)} · off-device ${lastBackup.offDeviceOk ? "OK" : "NO"}`
+        : "yedek üreten koşu yok") +
+        (lastFailure
+          ? ` · son başarısız koşu: ${String(lastFailure.finishedAt)} (aşama ${String(lastFailure.stage ?? "?")}, exit ${String(lastFailure.exitCode ?? "?")})`
+          : " · başarısız koşu kaydı yok");
       record("D", "günlük yedek işi (zamanlanmış görevin çalıştıracağı script) gerçekten koştu",
-        lines.length > 0 && typeof last.sha256 === "string",
-        "backups/daily-runs.jsonl içinde en az bir koşu", dailyRunSummary);
+        lastBackup !== undefined,
+        "backups/daily-runs.jsonl içinde yedek üreten en az bir koşu", dailyRunSummary);
     } else {
       record("D", "günlük yedek işi gerçekten koştu", false, "backups/daily-runs.jsonl", "koşu kaydı yok");
     }
@@ -892,7 +901,7 @@ async function main(): Promise<void> {
     if (immutable) notes.push(`backup-prune.ts kuru koşusu ${immutable[1]} IMMUTABLE dosya saydı.`);
 
     gates["OPERATIONAL SCHEDULE"] = whatIfOk && prune.code === 0
-      ? "INSTALLABLE — NOT REGISTERED (operatör adımı)"
+      ? (registered ? "REGISTERED" : "INSTALLABLE — NOT REGISTERED (operatör adımı)")
       : "NO";
 
     /* ── B (devam). uygulama restore edilen kopyaya karşı ayağa kalkıyor mu ───────────── */
@@ -919,6 +928,9 @@ async function main(): Promise<void> {
           MAS_NEXT_DIST_DIR: DIST_DIR,
           APP_COMMIT_SHA: gitSha,
           PORT: APP_PORT,
+          // Ayrı portta, kendi distDir'iyle BİLEREK ikinci bir sunucu: tek-sunucu kapısı
+          // (runtime-port-guard) canlı örneği korumak için var, bu kapıyı durdurmak için değil.
+          MAS_ALLOW_PARALLEL_RUNTIME: "1",
         },
       });
       serverPidForCleanup = server.pid;
@@ -970,7 +982,8 @@ async function main(): Promise<void> {
     for (const db of [RESTORE_DB, OFFDEVICE_RESTORE_DB]) {
       if (!isDisposableDatabaseName(db)) continue;
       try {
-        docker(["exec", CONTAINER, "dropdb", "-U", "postgres", "--force", "--if-exists", db]);
+        ops.dropDisposable(db);
+        commands.push(`dropdb --force --if-exists ${db}`);
         droppedDbs.push(db);
       } catch (err) {
         notes.push(`'${db}' düşürülemedi: ${(err as Error).message}`);
@@ -985,7 +998,8 @@ async function main(): Promise<void> {
   writeEvidence({
     gitSha, startedAt, finishedAt, receipt, receiptPath, dumpPath, tocCount, srcFp, restoredFp, offdeviceFp,
     offDeviceKind, offDeviceEvidence, offDeviceDest, offDeviceSatisfied, appStartDetail, liveBefore, liveAfter,
-    droppedDbs, pruneSummary, scheduleSummary, dailyRunSummary, grantsSource, grantsRestored,
+    droppedDbs, pruneSummary, scheduleSummary, scheduleRegistered, dailyRunSummary, grantsSource, grantsRestored,
+    toolchain: describeAdapter(adapter),
   });
 
   console.log("\n── AŞAMA 07 kapıları ──────────────────────────────────────────────");
@@ -1053,6 +1067,7 @@ function writeEvidence(i: EvidenceInput): void {
     `GATE SERVER PORT: ${APP_PORT}`,
     `GATE BUILD OUTPUT: ${DIST_DIR} (hazır derleme yeniden kullanıldı — canlı .next ezilmedi, yeni build koşulmadı)`,
     "APP ROLE PASSWORD RESET: NO — kimlik .env.local'den alındı, yalnız DB adı değiştirildi",
+    `POSTGRES TOOLCHAIN: ${i.toolchain} — parola hiçbir aracın komut satırında değildi`,
     `DISPOSABLE DBs DROPPED: ${i.droppedDbs.join(", ") || "yok"}`,
     "```",
     "",
@@ -1144,9 +1159,16 @@ function writeEvidence(i: EvidenceInput): void {
     "",
     "### Operatör adımları (bu kapının BİLEREK yapmadıkları)",
     "",
-    "Zamanlanmış görev **kaydedilmedi**: tekrarlayan bir görev kullanıcının makinesinde kalıcı,",
-    "dışa dönük bir değişikliktir ve kararı operatörün olmalıdır. Kapı yalnız kurulabilirliği",
-    "kanıtlar (ön koşullar + birebir komut + what-if).",
+    ...(i.scheduleRegistered
+      ? [
+          "Zamanlanmış görev operatör tarafından **kaydedilmiş** (`SCHEDULED TASK = REGISTERED`). Kapı",
+          "onu değiştirmez; what-if'in kayıt durumunu değiştirmediğini ölçer.",
+        ]
+      : [
+          "Zamanlanmış görev **kaydedilmedi**: tekrarlayan bir görev kullanıcının makinesinde kalıcı,",
+          "dışa dönük bir değişikliktir ve kararı operatörün olmalıdır. Kapı yalnız kurulabilirliği",
+          "kanıtlar (ön koşullar + birebir komut + what-if).",
+        ]),
     "",
     "```bash",
     "# 1) off-device hedefi tanımla (harici disk taktıktan / NAS bağladıktan SONRA)",
@@ -1199,8 +1221,12 @@ function writeEvidence(i: EvidenceInput): void {
         "(yalnız C:, DriveType 3; çıkarılabilir sürücü yok, bağlı ağ paylaşımı yok). Araç zinciri " +
         "kurulu ve doğrulandı; eksik olan DONANIM/HEDEF. Diski, makineyi ya da şifreleyen bir yazılımı " +
         "kaybeden senaryoda yedeğin tek kopyası da kaybedilir.",
-    "P1: OPERATIONAL SCHEDULE kurulabilir durumda ama KAYITLI DEĞİL — kayıt bilinçli olarak",
-    "    operatöre bırakıldı (kalıcı sistem değişikliği).",
+    ...(i.scheduleRegistered
+      ? ["P1: yok (OPERATIONAL SCHEDULE kayıtlı; günlük koşu sonuçları için DAILY JOB satırına bakın)."]
+      : [
+          "P1: OPERATIONAL SCHEDULE kurulabilir durumda ama KAYITLI DEĞİL — kayıt bilinçli olarak",
+          "    operatöre bırakıldı (kalıcı sistem değişikliği).",
+        ]),
     "P1: retention politikası koda döküldü ama gerçek `backups/` üzerinde HENÜZ UYGULANMADI —",
     `    kuru koşu: ${i.pruneSummary}. Uygulama kararı operatörün.`,
     "P2: Golden UI smoke bu restore kopyası üzerinde KOŞULMADI — kapı uygulamanın açıldığını ve",
@@ -1220,8 +1246,12 @@ function writeEvidence(i: EvidenceInput): void {
     "```text",
     "OFF_DEVICE PHYSICAL TARGET : NOT VERIFIED (BLOCKED) — yerel bir klasör off-device SAYILMAZ (§30.5).",
     "GOLDEN UI ON RESTORE       : NOT VERIFIED — bu kapıda koşulmadı.",
-    "SCHEDULED TASK RUNNING     : NOT VERIFIED — görev kaydedilmedi; kaydedildikten sonraki ilk",
-    "                             gerçek tetiklenme operatör tarafından doğrulanmalı.",
+    ...(i.scheduleRegistered
+      ? ["SCHEDULED TASK RUNNING     : görev KAYITLI — gerçek tetiklenmelerin sonucu DAILY JOB satırında."]
+      : [
+          "SCHEDULED TASK RUNNING     : NOT VERIFIED — görev kaydedilmedi; kaydedildikten sonraki ilk",
+          "                             gerçek tetiklenme operatör tarafından doğrulanmalı.",
+        ]),
     "```",
     "",
     "## NEXT GATE",
@@ -1236,10 +1266,11 @@ function writeEvidence(i: EvidenceInput): void {
     "## Yeniden üretim",
     "",
     "```bash",
-    "# 1) gerçek kaynaktan yedek + katı makbuz (temiz git ağacı gerektirir)",
+    "# 1) gerçek kaynaktan yedek + katı makbuz (temiz git ağacı gerektirir; native PostgreSQL 16,",
+    "#    araçlar MAS_PG_BIN_DIR'den — --container YALNIZ MAS_PG_RUNTIME=docker altında verilir)",
     "pnpm exec tsx scripts/db/backup-receipt.ts --expected-database-name mas_radar_dev \\",
     "  --expected-system-identifier <sysid> --expected-git-branch <branch> --expected-git-head <sha> \\",
-    "  --container mas-radar-pg --label stage07_real --out-dir backups",
+    "  --label stage07_real --out-dir backups",
     "",
     "# 2) kapı",
     "MAS_OFFDEVICE_BACKUP_DIR=<hedef> pnpm exec tsx scripts/release/stage07-backup-gate.ts",

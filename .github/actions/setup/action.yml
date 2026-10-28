@@ -31,13 +31,14 @@ runs:
       shell: bash
       run: pnpm install --frozen-lockfile
 
-    # GitHub Actions' built-in `services:` Postgres is NOT used, on purpose. scripts/db/ensure.ts
-    # starts its own `mas-radar-pg` container bound to 127.0.0.1:5432, and a service container
-    # would already own that port — the two would collide, and whichever won, CI would then be
-    # exercising a different Postgres than every local run does. Letting ensure.ts do here exactly
-    # what it does locally keeps the two identical, which is the whole point of running the gate
-    # twice.
-    - name: Start PostgreSQL (same container the local gate uses)
+    # GitHub Actions' built-in `services:` Postgres is NOT used, on purpose. Under
+    # MAS_PG_RUNTIME=docker (set in the workflow-level env of ci.yml, inherited here)
+    # scripts/db/ensure.ts starts its own throwaway `mas-radar-pg` container bound to
+    # 127.0.0.1:5432, and a service container would already own that port — the two would
+    # collide. The operator machine no longer runs Docker: there ensure.ts (MAS_PG_RUNTIME unset =
+    # native) only probes the native PostgreSQL 16 service and never creates anything. Without the
+    # workflow env this step would take that native path and fail on a runner with no Postgres.
+    - name: Start PostgreSQL (throwaway CI container, MAS_PG_RUNTIME=docker)
       if: inputs.postgres == 'true'
       shell: bash
       run: pnpm db:ensure

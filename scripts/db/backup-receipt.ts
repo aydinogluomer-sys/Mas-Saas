@@ -1,18 +1,25 @@
-// P0-B Slice 5 — wraps backupDockerPostgres() with an atomically-written sidecar
-// receipt: the dump's own SHA-256, git provenance, cluster-identity cross-checks (the TCP
-// connection this tool queries vs. the Docker container the dump actually comes from),
-// ledger state, and DB-clock (not Node-clock) timestamps bracketing the backup — so
-// legacy-repair-apply.ts's freshness check never depends on this host's own clock.
+// P0-B Slice 5 — wraps the runtime-selected backup (scripts/db/backup-adapter.ts: native
+// PostgreSQL 16 by default, the docker container only under MAS_PG_RUNTIME=docker in CI) with
+// an atomically-written sidecar receipt: the dump's own SHA-256, git provenance,
+// cluster-identity cross-checks (the TCP connection this tool queries vs. the tool path the
+// dump actually comes from), ledger state, and DB-clock (not Node-clock) timestamps
+// bracketing the backup — so legacy-repair-apply.ts's freshness check never depends on this
+// host's own clock.
 //
 // Fail-closed identity: DATABASE_URL must be set explicitly (no default connection, no
 // hardcoded connection string); the DB name it points at must match
 // --expected-database-name; the live system_identifier read over that TCP connection
-// must match --expected-system-identifier; verifyBackupTarget() then independently reads
-// the SAME database's system_identifier through `docker exec` against --container and
-// requires it to equal that same expected value — proving the TCP connection and the
-// container pg_dump will run against are the SAME Postgres cluster, not two different
+// must match --expected-system-identifier; the backup-target check then independently reads
+// the SAME database's system_identifier through the tool path pg_dump will use — `psql` with
+// the very libpq environment pg_dump gets (native), or `docker exec` against --container
+// (docker) — and requires it to equal that same expected value. That proves the TCP
+// connection and the source pg_dump reads are the SAME Postgres cluster, not two different
 // ones that merely share a database name. This runs again AFTER the dump completes (the
 // cluster must not have changed identity mid-backup) before a receipt is ever written.
+//
+// The receipt's `containerName` is the adapter's source label: the container name under
+// docker, `native:127.0.0.1:5432` under native. `--container` is required only under docker
+// and refused under native, where the source is derived from the owner URL and nothing else.
 //
 // Git provenance: --expected-git-branch/--expected-git-head are required, and the real
 // current branch/HEAD/working-tree-cleanliness are checked (via assertExpectedCleanGitState
@@ -29,7 +36,10 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { Pool } from "pg";
-import { backupDockerPostgres, readPgToolVersions, verifyBackupTarget, type BackupOptions, type BackupResult, type BackupTargetVerification, type BackupTargetVerificationResult } from "./backup-docker-postgres";
+import { backupDockerPostgres, readPgToolVersions, verifyBackupTarget as verifyDockerBackupTarget, type BackupOptions, type BackupResult, type BackupTargetVerification, type BackupTargetVerificationResult } from "./backup-docker-postgres";
+import { createBackupAdapter, withPgRuntimeConfig, type BackupAdapter } from "./backup-adapter";
+import { readEnvLocal } from "./app-url";
+import { resolvePgRuntime } from "./pg-native";
 import {
   BackupReceiptSchema,
   CANONICALIZATION_VERSION,
@@ -47,7 +57,8 @@ interface Args {
   expectedSystemIdentifier: string;
   expectedGitBranch: string;
   expectedGitHead: string;
-  container: string;
+  /** Yalnız docker çalışma zamanında; native'de yedek kaynağı owner URL'inden türetilir. */
+  container: string | undefined;
   label: string;
   outDir: string;
 }
@@ -57,13 +68,20 @@ function usage(): never {
     "Kullanım: tsx scripts/db/backup-receipt.ts " +
       "--expected-database-name <db> --expected-system-identifier <id> " +
       "--expected-git-branch <branch> --expected-git-head <40-char SHA> " +
-      "--container <container> --label <label> --out-dir <dir>\n" +
+      "[--container <container> (yalnız MAS_PG_RUNTIME=docker)] --label <label> --out-dir <dir>\n" +
       "DATABASE_URL ortam değişkeni açıkça verilmeli (varsayılan bağlantı kabul edilmez).",
   );
   process.exit(1);
 }
 
-function parseArgs(argv: string[]): Args {
+/** Araç zinciri ayarları: önce süreç ortamı, yoksa `.env.local` (yalnız sır-olmayan PG_RUNTIME_ENV_KEYS). */
+function pgToolEnv(): Record<string, string | undefined> {
+  let fileEnv: Record<string, string> = {};
+  try { fileEnv = readEnvLocal(); } catch { /* .env.local yok (CI) */ }
+  return withPgRuntimeConfig(process.env, fileEnv);
+}
+
+function parseArgs(argv: string[], env: Readonly<Record<string, string | undefined>>): Args {
   const get = (flag: string): string | undefined => {
     const i = argv.indexOf(flag);
     return i === -1 ? undefined : argv[i + 1];
@@ -75,7 +93,18 @@ function parseArgs(argv: string[]): Args {
   const container = get("--container");
   const label = get("--label");
   const outDir = get("--out-dir");
-  if (!expectedDatabaseName || !expectedSystemIdentifier || !expectedGitBranch || !expectedGitHead || !container || !label || !outDir) usage();
+  if (!expectedDatabaseName || !expectedSystemIdentifier || !expectedGitBranch || !expectedGitHead || !label || !outDir) usage();
+  // --container yalnız docker'da anlamlı. Native'de kabul etmek, makbuza GERÇEK kaynaktan farklı
+  // bir etiket yazdırmanın yolunu açardı: kaynak orada owner URL'inden türetilir, başka hiçbir şeyden.
+  const runtime = resolvePgRuntime(env);
+  if (runtime === "docker" && !container) usage();
+  if (runtime === "native" && argv.includes("--container")) {
+    fail(
+      "Native çalışma zamanında --container kabul edilmez: yedek kaynağı MIGRATION_DATABASE_URL'in " +
+        "gösterdiği yerel kümedir (makbuzda 'native:<host>:<port>' olarak yazılır). " +
+        "Docker konteyneri yalnız MAS_PG_RUNTIME=docker (CI) altında kullanılır.",
+    );
+  }
   return { expectedDatabaseName, expectedSystemIdentifier, expectedGitBranch, expectedGitHead, container, label, outDir };
 }
 
@@ -103,15 +132,22 @@ export interface BackupReceiptParams {
 export interface BackupReceiptDeps {
   /** Defaults to REAL_GIT_STATE_PROVIDER — production NEVER overrides this. */
   gitStateProvider?: GitStateProvider;
-  /** Defaults to the real verifyBackupTarget (docker exec). */
+  /**
+   * The runtime-selected REAL toolchain (scripts/db/backup-adapter.ts). main() always passes
+   * one; when it is absent the docker exports are the real implementations, which is exactly
+   * the path legacy-repair-verify.ts's in-process orchestration tests exercise.
+   */
+  adapter?: BackupAdapter;
+  /** Defaults to the real backup-target check: the adapter's when given, else docker exec. */
   verifyTarget?: (v: BackupTargetVerification) => BackupTargetVerificationResult;
-  /** Defaults to the real backupDockerPostgres (spawns real pg_dump via docker exec). */
+  /** Defaults to the real backup: the adapter's when given, else backupDockerPostgres. */
   runBackup?: (opts: BackupOptions) => Promise<BackupResult>;
   queryTcpIdentity: () => Promise<{ databaseName: string; systemIdentifier: string }>;
   queryLedger: () => Promise<{ ledgerCount: number; lastMigrationVersion: string }>;
   readDbTimestamp: () => Promise<string>;
-  /** AŞAMA 07: sunucu ve pg_dump sürümleri, container'dan ÖLÇÜLEREK. Varsayılan gerçek
-   * `docker exec` okumasıdır; enjeksiyon seam'i yalnız testler içindir. */
+  /** AŞAMA 07: sunucu ve pg_dump sürümleri, yedeği alan araç zincirinden ÖLÇÜLEREK. Varsayılan
+   * adaptörün okuması (native'de ana sürüm eşitliği dahil), adaptör yoksa gerçek `docker exec`
+   * okumasıdır; enjeksiyon seam'i yalnız testler içindir. */
   readVersions?: () => { pgVersion: string; pgDumpVersion: string };
 }
 
@@ -128,9 +164,23 @@ export interface BackupReceiptOutcome {
  * without ever touching this repository's own working tree. */
 export async function runBackupReceipt(params: BackupReceiptParams, deps: BackupReceiptDeps): Promise<BackupReceiptOutcome> {
   const gitStateProvider = deps.gitStateProvider ?? REAL_GIT_STATE_PROVIDER;
+  // The REAL implementations for this run: the adapter's runtime-selected tools when main()
+  // hands one in, the docker exports otherwise. Each injectable default below resolves to
+  // these — a test seam may replace a leaf, but nothing reachable from argv can.
+  const adapter = deps.adapter;
+  const verifyBackupTarget = adapter
+    ? (v: BackupTargetVerification) => adapter.verifyTarget(v.dbName, v.expectedSystemIdentifier)
+    : verifyDockerBackupTarget;
+  const backupRealSource = adapter
+    ? (o: BackupOptions) =>
+        adapter.backup({ dbName: o.dbName, label: o.label, outDir: o.outDir, requireCriticalTables: o.requireCriticalTables })
+    : backupDockerPostgres;
   const verifyTarget = deps.verifyTarget ?? verifyBackupTarget;
-  const runBackup = deps.runBackup ?? backupDockerPostgres;
-  const readVersions = deps.readVersions ?? (() => readPgToolVersions(params.container, params.expectedDatabaseName));
+  const runBackup = deps.runBackup ?? backupRealSource;
+  const readVersions = deps.readVersions ?? (() =>
+    adapter
+      ? adapter.readToolVersions(params.expectedDatabaseName)
+      : readPgToolVersions(params.container, params.expectedDatabaseName));
 
   const preGitState = assertExpectedCleanGitState(
     { branch: params.expectedGitBranch, head: params.expectedGitHead },
@@ -151,9 +201,9 @@ export async function runBackupReceipt(params: BackupReceiptParams, deps: Backup
   // yanlış şeyi anlatırdı.
   const versions = readVersions();
 
-  // Pre-dump: prove the Docker container backupDockerPostgres will pg_dump against is the
-  // SAME cluster this TCP connection just queried — not a same-named database on a
-  // different Postgres instance.
+  // Pre-dump: prove the source pg_dump will read (the native tool path, or the docker
+  // container) is the SAME cluster this TCP connection just queried — not a same-named
+  // database on a different Postgres instance.
   verifyTarget({
     container: params.container,
     dbName: params.expectedDatabaseName,
@@ -194,7 +244,7 @@ export async function runBackupReceipt(params: BackupReceiptParams, deps: Backup
   const recomputedSha256 = fileSha256(readFileSync(backupResult.path));
   if (recomputedSha256 !== backupResult.sha256) {
     throw new Error(
-      `Programlama hatası: backup dosyasının yeniden hesaplanan SHA-256'sı ('${recomputedSha256}') backupDockerPostgres'ün döndürdüğü hash'le ('${backupResult.sha256}') eşleşmiyor.`,
+      `Programlama hatası: backup dosyasının yeniden hesaplanan SHA-256'sı ('${recomputedSha256}') yedek aracının döndürdüğü hash'le ('${backupResult.sha256}') eşleşmiyor.`,
     );
   }
 
@@ -244,7 +294,8 @@ export async function runBackupReceipt(params: BackupReceiptParams, deps: Backup
 }
 
 async function main(): Promise<void> {
-  const args = parseArgs(process.argv.slice(2));
+  const pgEnv = pgToolEnv();
+  const args = parseArgs(process.argv.slice(2), pgEnv);
 
   const databaseUrl = ownerDatabaseUrl();
   if (!databaseUrl) fail("MIGRATION_DATABASE_URL (veya DATABASE_URL) açıkça verilmeli — varsayılan bağlantı kabul edilmez.");
@@ -252,6 +303,11 @@ async function main(): Promise<void> {
   if (parsedName !== args.expectedDatabaseName) {
     fail(`DATABASE_URL'deki DB adı ('${parsedName}') --expected-database-name ('${args.expectedDatabaseName}') ile eşleşmiyor. Çıkış.`);
   }
+
+  // Native'de hedef burada, hiçbir bağlantı açılmadan ayrıştırılır: loopback olmayan bir
+  // owner URL'i adaptör oluşurken reddedilir. Docker'da --container olduğu gibi kullanılır.
+  const adapter = createBackupAdapter({ ownerUrl: databaseUrl, env: pgEnv, container: args.container });
+  console.log(`Yedek kaynağı: runtime=${adapter.runtime} kaynak=${adapter.sourceLabel}`);
 
   const pool = new Pool({ connectionString: databaseUrl, max: 1 });
   try {
@@ -261,14 +317,15 @@ async function main(): Promise<void> {
         expectedSystemIdentifier: args.expectedSystemIdentifier,
         expectedGitBranch: args.expectedGitBranch,
         expectedGitHead: args.expectedGitHead,
-        container: args.container,
+        container: adapter.sourceLabel,
         label: args.label,
         outDir: args.outDir,
       },
       {
-        // gitStateProvider/verifyTarget/runBackup all deliberately omitted — every one
-        // defaults to the real implementation inside runBackupReceipt(). Production never
-        // overrides them.
+        // The adapter IS the real toolchain for this runtime; gitStateProvider/verifyTarget/
+        // runBackup are all deliberately omitted — every one defaults to the real
+        // implementation inside runBackupReceipt(). Production never overrides them.
+        adapter,
         queryTcpIdentity: async () => {
           const r = await pool.query<{ db: string; sysid: string }>(
             `select current_database() as db, (select system_identifier::text from pg_control_system()) as sysid`,

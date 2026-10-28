@@ -4,9 +4,14 @@
 // LEDGER_EMPTY_RECOVERY) under a single advisory lock and applies the matching atomic
 // procedure. See C:\Users\Trade Bilisim\.claude\plans\grafik-k-sm-nda-3-ay-jazzy-stardust.md
 // for the full design rationale.
-import { loadEnvConfig } from "@next/env";
-loadEnvConfig(process.cwd());
-
+//
+// Every flow that changes existing data takes a mandatory backup first, through the
+// runtime-selected adapter (scripts/db/backup-adapter.ts): native PostgreSQL 16 tools on the
+// operator machine (MAS_PG_RUNTIME unset/native, tools from MAS_PG_BIN_DIR or PATH), the docker
+// container only under MAS_PG_RUNTIME=docker (CI). The adapter is built from the SAME owner URL
+// this runner connects with; under native a non-loopback URL is refused before any connection,
+// and pg_dump is only resolved when a backup is actually needed — an up-to-date or EMPTY
+// database never needs it.
 import { Pool, type PoolClient } from "pg";
 import { readFileSync } from "node:fs";
 import path from "node:path";
@@ -19,7 +24,8 @@ import {
   type LegacyBaselineEntry,
   type LedgerRow,
 } from "./migration-lib";
-import { backupDockerPostgres, verifyBackupTarget, type BackupResult } from "./backup-docker-postgres";
+import type { BackupResult } from "./backup-docker-postgres";
+import { createBackupAdapter, describeAdapter, withPgRuntimeConfig, type BackupAdapter } from "./backup-adapter";
 import { ownerDatabaseUrl } from "./owner-url";
 import { readEnvLocal } from "./app-url";
 import {
@@ -29,7 +35,6 @@ import {
   shadowedNames,
 } from "./env-source";
 
-const CONTAINER = process.env.MAS_DB_CONTAINER ?? "mas-radar-pg";
 const BASELINE_PATH = path.join(process.cwd(), "scripts", "db", "legacy-baseline-0019.json");
 const ADVISORY_LOCK_SQL = "select pg_advisory_lock(hashtext('mas_nakit_radar:schema_migrations')::bigint)";
 const ADVISORY_UNLOCK_SQL = "select pg_advisory_unlock(hashtext('mas_nakit_radar:schema_migrations')::bigint)";
@@ -227,6 +232,27 @@ async function runEmptyFlow(client: PoolClient, diskFiles: MigrationFile[], mani
   };
 }
 
+/** Where the mandatory backup comes from: the adapter built from this runner's own owner URL,
+ * plus the identity this runner's TCP connection measured. */
+interface BackupTarget {
+  adapter: BackupAdapter;
+  dbName: string;
+  systemIdentifier: string;
+}
+
+/** The mandatory pre-migration backup: first prove the backup tool path reaches the SAME
+ * cluster this runner is connected to (system_identifier), then take the durable dump.
+ * requireCriticalTables stays false on purpose — see BackupOptions in
+ * backup-docker-postgres.ts: these databases may legitimately not have schema_migrations yet.
+ * Any failure throws, and no SQL has been executed by then. */
+async function takeMandatoryBackup(backupTarget: BackupTarget): Promise<BackupResult> {
+  backupTarget.adapter.verifyTarget(backupTarget.dbName, backupTarget.systemIdentifier);
+  return backupTarget.adapter.backup({
+    dbName: backupTarget.dbName,
+    label: `migrate-${backupTarget.dbName}`,
+  });
+}
+
 /** LEGACY_COMPLETE state (and LEDGER_EMPTY_RECOVERY's legacy-flavored reuse): manifest
  * check, mandatory backup, then one atomic transaction runs 0020 for real (no-op if the
  * table already exists) and backfills 0001-0019 ledger rows using the verified manifest
@@ -235,20 +261,11 @@ async function runLegacyCompleteFlow(
   client: PoolClient,
   diskFiles: MigrationFile[],
   manifest: LegacyBaselineEntry[],
-  backupTarget: { container: string; dbName: string; systemIdentifier: string },
+  backupTarget: BackupTarget,
 ): Promise<MigrateReport> {
   assertManifestClean(diskFiles, manifest);
 
-  verifyBackupTarget({
-    container: backupTarget.container,
-    dbName: backupTarget.dbName,
-    expectedSystemIdentifier: backupTarget.systemIdentifier,
-  });
-  const backupResult = await backupDockerPostgres({
-    container: backupTarget.container,
-    dbName: backupTarget.dbName,
-    label: `migrate-${backupTarget.dbName}`,
-  });
+  const backupResult = await takeMandatoryBackup(backupTarget);
 
   const file0020 = diskFiles.find((f) => f.version === "0020");
   if (!file0020) throw new HardFailError("0020_schema_migrations_ledger.sql diskte bulunamadı.");
@@ -286,7 +303,7 @@ async function runLedgerManagedFlow(
   client: PoolClient,
   diskFiles: MigrationFile[],
   ledgerRows: LedgerRow[],
-  backupTarget: { container: string; dbName: string; systemIdentifier: string },
+  backupTarget: BackupTarget,
 ): Promise<MigrateReport> {
   const diskByVersion = new Map(diskFiles.map((f) => [f.version, f]));
   const mismatches: string[] = [];
@@ -312,16 +329,7 @@ async function runLedgerManagedFlow(
     return { state: "LEDGER_MANAGED", bootstrapped: [], backfilled: [], pendingApplied: [], upToDate: true, backup: null };
   }
 
-  verifyBackupTarget({
-    container: backupTarget.container,
-    dbName: backupTarget.dbName,
-    expectedSystemIdentifier: backupTarget.systemIdentifier,
-  });
-  const backupResult = await backupDockerPostgres({
-    container: backupTarget.container,
-    dbName: backupTarget.dbName,
-    label: `migrate-${backupTarget.dbName}`,
-  });
+  const backupResult = await takeMandatoryBackup(backupTarget);
 
   const pendingApplied = await applyPendingSequentially(client, pendingFiles);
   return {
@@ -338,7 +346,7 @@ async function runLedgerEmptyRecoveryFlow(
   client: PoolClient,
   diskFiles: MigrationFile[],
   manifest: LegacyBaselineEntry[],
-  backupTarget: { container: string; dbName: string; systemIdentifier: string },
+  backupTarget: BackupTarget,
 ): Promise<MigrateReport> {
   const anchors = await getAnchorResults(client);
   const allPass = anchors.every((a) => a.pass);
@@ -368,7 +376,7 @@ async function runLedgerEmptyRecoveryFlow(
 async function runMigration(
   client: PoolClient,
   diskFiles: MigrationFile[],
-  backupTarget: { container: string; dbName: string; systemIdentifier: string },
+  backupTarget: BackupTarget,
 ): Promise<MigrateReport> {
   const manifest = loadLegacyBaseline();
   const ledgerExistsRes = await client.query<{ exists: boolean }>(
@@ -465,7 +473,25 @@ function reportConnectionEnvSource(): void {
   }
 }
 
-export async function runMigrationLedger(): Promise<void> {
+/**
+ * The backup toolchain settings (MAS_PG_RUNTIME, MAS_PG_BIN_DIR, MAS_BACKUP_TIMEOUT_MS): the
+ * process environment first, `.env.local` second. ONLY these non-secret keys are taken from the
+ * file (PG_RUNTIME_ENV_KEYS in backup-adapter.ts) — the connection strings are deliberately NOT
+ * loaded from it: a harness that pins DATABASE_URL to a disposable database must never have an
+ * owner URL from `.env.local` slip in behind it (see owner-url.ts). That is also why the layer's
+ * top-level loadEnvConfig() was removed from this runner again.
+ */
+function pgToolEnv(): Record<string, string | undefined> {
+  let fileEnv: Record<string, string> = {};
+  try {
+    fileEnv = readEnvLocal();
+  } catch {
+    /* .env.local yok (CI) — yalnız süreç ortamı. */
+  }
+  return withPgRuntimeConfig(process.env, fileEnv);
+}
+
+async function main(): Promise<void> {
   reportConnectionEnvSource();
 
   const databaseUrl = ownerDatabaseUrl();
@@ -478,10 +504,20 @@ export async function runMigrationLedger(): Promise<void> {
     throw new HardFailError(`Dosya-seti doğrulaması başarısız, DB'ye hiç bağlanılmadı:\n  ${fileSet.errors.join("\n  ")}`);
   }
 
+  // The backup toolchain is set up BEFORE connecting: under native, an owner URL that does not
+  // point at this machine is refused here, before a single packet is sent. pg_dump itself is
+  // only resolved once a flow actually needs the mandatory backup.
+  let backupAdapter: BackupAdapter;
+  try {
+    backupAdapter = createBackupAdapter({ ownerUrl: databaseUrl, env: pgToolEnv() });
+  } catch (err) {
+    throw new HardFailError(`Yedek araç zinciri kurulamadı, DB'ye hiç bağlanılmadı: ${(err as Error).message}`);
+  }
+  console.log(`Yedek kaynağı: ${describeAdapter(backupAdapter)}`);
+
   const pool = new Pool({ connectionString: databaseUrl, max: 1 });
   const client = await pool.connect();
   try {
-    try { await client.query("RESET ROLE;"); } catch {}
     const identRes = await client.query<{ current_database: string; current_user: string; system_identifier: string }>(
       "select current_database(), current_user, (select system_identifier from pg_control_system())::text as system_identifier",
     );
@@ -493,7 +529,7 @@ export async function runMigrationLedger(): Promise<void> {
     await client.query(ADVISORY_LOCK_SQL);
     try {
       const report = await runMigration(client, fileSet.files, {
-        container: CONTAINER,
+        adapter: backupAdapter,
         dbName: ident.current_database,
         systemIdentifier: ident.system_identifier,
       });
@@ -524,10 +560,8 @@ export async function runMigrationLedger(): Promise<void> {
   }
 }
 
-if (process.argv[1] && (process.argv[1].endsWith("migrate.ts") || process.argv[1].endsWith("migrate.js"))) {
-  runMigrationLedger().catch((err) => {
-    console.error("\nMIGRATION BAŞARISIZ:");
-    console.error(err instanceof Error ? err.message : err);
-    process.exit(1);
-  });
-}
+main().catch((err) => {
+  console.error("\nMIGRATION BAŞARISIZ:");
+  console.error(err instanceof Error ? err.message : err);
+  process.exit(1);
+});
