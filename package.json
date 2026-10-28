@@ -19,7 +19,6 @@
     "db:types": "tsx scripts/db/gen-types.ts",
     "db:dev:reset": "bash scripts/db/dev-reset.sh",
     "db:migrate": "tsx scripts/db/migrate.ts",
-    "db:migrate:supabase": "tsx scripts/db/migrate-supabase.ts",
     "db:migrate:dev": "tsx scripts/db/ensure.ts && tsx scripts/db/migrate.ts",
     "db:migrate:verify": "tsx scripts/db/ensure.ts && tsx scripts/db/migrate-verify.ts",
     "db:constraints:verify": "tsx scripts/db/constraints-verify.ts",
