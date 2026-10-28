@@ -10,7 +10,7 @@
     "dev:testsprite": "tsx scripts/start-testsprite.ts",
     "start:testsprite": "tsx scripts/start-testsprite.ts --production",
     "build": "node --max-old-space-size=4096 node_modules/next/dist/bin/next build",
-    "start": "tsx scripts/ops/runtime-port-guard.ts --start && tsx scripts/prepare-runtime.ts && node --max-old-space-size=4096 node_modules/next/dist/bin/next start",
+    "start": "tsx scripts/ops/runtime-port-guard.ts --start && tsx scripts/db/ensure.ts && tsx scripts/prepare-runtime.ts && node --max-old-space-size=4096 node_modules/next/dist/bin/next start",
     "lint": "eslint",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",

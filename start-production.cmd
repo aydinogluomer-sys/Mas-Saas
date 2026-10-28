@@ -18,5 +18,7 @@ if %ERRORLEVEL% EQU 0 (
 
 echo Sunucu baslatiliyor...
 start http://localhost:3000
-npm run start
+:: pnpm (packageManager) + "call": kontrol bu dosyaya geri doner ve "pause" calisir.
+:: PostgreSQL kapaliysa zincirdeki scripts\db\ensure.ts durumu ve sonraki adimi yazar.
+call pnpm start
 pause
