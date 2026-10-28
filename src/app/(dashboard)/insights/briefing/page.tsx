@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { getPool } from "@/lib/db";
-import { loadBriefingFacts, loadCockpitWidgets } from "@/lib/briefing/engine";
+import { loadBriefingDashboard } from "@/lib/briefing/engine";
 import { renderBriefing } from "@/lib/briefing/rules";
 import { istanbulDateISO } from "@/lib/reports/rules";
 import { generateBriefingAction } from "./actions";
@@ -8,6 +8,7 @@ import { Badge, type Tone } from "@/components/ui/badge";
 import { Panel } from "@/components/ui/panel";
 import { KeyStat, PageHeader } from "@/components/ui/shell";
 import { requireRouteAccess } from "@/lib/authz/route-guard";
+import { BriefingExecutiveView } from "@/components/briefing/briefing-executive-view";
 
 export const dynamic = "force-dynamic";
 
@@ -27,10 +28,7 @@ export default async function BriefingPage() {
 
   // Both halves of this screen come from ONE gathering step. The tiles a CFO scans and the text
   // that gets mailed cannot show different numbers, because they are the same numbers.
-  const [{ widgets, attention }, facts] = await Promise.all([
-    loadCockpitWidgets(pool, today),
-    loadBriefingFacts(pool, today),
-  ]);
+  const { widgets, attention, facts } = await loadBriefingDashboard(pool, today);
   const preview = renderBriefing(facts);
 
   return (
@@ -95,9 +93,9 @@ export default async function BriefingPage() {
       >
         {/* Rendered from the same facts the tiles above use, so the preview cannot drift from
             the stored document that the button produces. */}
-        <pre className="overflow-x-auto whitespace-pre-wrap font-mono text-[12px] leading-relaxed text-tone-1">
-          {preview}
-        </pre>
+        <div>
+          <BriefingExecutiveView preview={preview} facts={facts} />
+        </div>
         <p className="mt-2 font-mono text-[10px] text-tone-4">
           Rakamlar hazine, işletme sermayesi, kontrol ve radar panolarından okunur; burada yeniden
           hesaplanmaz. Yapay zekâ kullanılmaz.

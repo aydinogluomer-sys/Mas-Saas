@@ -1,0 +1,134 @@
+{
+  "artifactKind": "mas-p1-pre-fix-contract-v1",
+  "measuredAtUtc": "2026-09-03T16:50:30.773Z",
+  "runtimeStop": {
+    "pid": 7132,
+    "identityReconfirmedBeforeStop": true,
+    "creationLocal": "2026-09-03 13:27:13",
+    "pidRecycled": false,
+    "binaryUnderCleanRc": true,
+    "nextProductionShape": true,
+    "port3000Owner": 7132,
+    "orphanedFrom": "supervision/log owner sureci (harness tarafindan sonlandirilmisti); agacin koku PID 31320 zaten yoktu",
+    "tree": [
+      {
+        "pid": 26548,
+        "name": "sh.exe",
+        "role": "pnpm baslatici"
+      },
+      {
+        "pid": 12488,
+        "name": "node.exe",
+        "role": "pnpm.mjs start"
+      },
+      {
+        "pid": 15436,
+        "name": "cmd.exe",
+        "role": "port-guard && prepare-runtime && next start"
+      },
+      {
+        "pid": 7132,
+        "name": "node.exe",
+        "role": "next start (port 3000)"
+      }
+    ],
+    "gracefulAttempt": {
+      "command": "taskkill /PID 7132 /T",
+      "exitCode": 255,
+      "result": "REDDEDILDI — konsol sureci, /F gerekiyor"
+    },
+    "forceResult": [
+      {
+        "pid": 7132,
+        "exit": 0,
+        "message": "SUCCESS"
+      },
+      {
+        "pid": 15436,
+        "exit": 128,
+        "message": "not found — cocugu olunce kendi cikti"
+      },
+      {
+        "pid": 12488,
+        "exit": 0,
+        "message": "SUCCESS"
+      },
+      {
+        "pid": 26548,
+        "exit": 128,
+        "message": "not found"
+      }
+    ],
+    "postStop": {
+      "port3000": "none",
+      "port3001": "none",
+      "port3110": "none",
+      "port3210": "none",
+      "port3310": "none",
+      "nextRuntime": 0,
+      "prepareRuntimeStandalone": 0,
+      "unexpectedWriters": 0,
+      "postgresContainerUntouched": true,
+      "dockerUntouched": true,
+      "otherProcessesKilled": 0
+    },
+    "writesProducedByStop": 0
+  },
+  "realBaselineAfterStop": {
+    "database": "mas_radar_dev",
+    "transactionReadOnly": "on",
+    "ledger": "0087/87",
+    "baseTableCount": 86,
+    "p24bRemaining": "0/42",
+    "action_items": 6,
+    "approvals": 68,
+    "payment_instances": 502,
+    "payments": 19,
+    "users": 13,
+    "settings": 7,
+    "taskOpen": 4,
+    "unpaidTry": 13595000,
+    "audit_logs": 814,
+    "wholeDbFingerprint": "85358cfd27767001a3cdf00e1c5979a05d471a409876afc2586567a38432a929",
+    "targetFingerprint": "5e84634660528f2076f7bbef2a7e7e8f05047c13353679c53f0097798e37882d",
+    "matchesExpected": true,
+    "engineCounters": "ins=97 upd=40 del=42 (stop oncesiyle ayni)"
+  },
+  "usbRollback": {
+    "present": true,
+    "driveLetter": "D",
+    "physicalDisk": 1,
+    "busType": "USB",
+    "samePhysicalDisk": false,
+    "bytes": 1413949,
+    "sha256": "fe63481887b7937df1def58475589dac844933ea32ca081dd3beba85bfaffe2a",
+    "receiptPresent": true,
+    "deleted": false,
+    "modified": false,
+    "relationToThisFix": "YOK — bu P1 duzeltmesi yedekle hicbir mutasyon iliskisi tasimaz"
+  },
+  "rootCause": {
+    "callGraph": [
+      "pnpm start",
+      "scripts/prepare-runtime.ts:32  runAsSystem(() => ensureWindow(pool, istanbulDateISO(), actorId, 24))",
+      "src/lib/radar/engine.ts:434     ensureWindow — for (delta = -1; delta <= 24) => 26 ay",
+      "src/lib/radar/engine.ts:410     generateInstancesForMonth (begin/commit)",
+      "src/lib/radar/engine.ts:354     generateInstancesForMonthWithClient",
+      "src/lib/radar/engine.ts:397     await audit(...) — KOSULSUZ, created=0 olsa bile"
+    ],
+    "ensureWindowMonthCalls": 26,
+    "zeroCreationAuditBeforeFix": 26,
+    "measuredOnRealDb": {
+      "source": "P24B Attempt-04, mas_radar_dev, 2026-09-03",
+      "paymentInstances": "502 -> 502 (INSERT 0, UPDATE 0)",
+      "auditLogs": "788 -> 814 (+26)",
+      "businessMutation": 0,
+      "auditMutation": 26
+    },
+    "confirmed": true
+  },
+  "existingContractsChecked": {
+    "testsAssertingGenerateInstancesAuditCount": 0,
+    "note": "src/lib/audit.test.ts generate_instances SEKLINI kullaniyor ama audit() yardimcisinin kendisini test ediyor, ureteci degil. Bu degisiklik audit() dosyasina hic dokunmuyor."
+  }
+}

@@ -1,0 +1,538 @@
+diff --git a/docs/database-schema.md b/docs/database-schema.md
+index 397cf11..e23a11c 100644
+--- a/docs/database-schema.md
++++ b/docs/database-schema.md
+@@ -32,12 +32,12 @@ See `implementation.md` for complete SQL snippets.
+ - cashflow_lines
+ - cashflow_snapshots
+ 
+-## Financing radar
++## Financing radar (Phase 5 — active)
+ 
+-- checks
+-- check_events
+-- loans
+-- loan_installments
++- checks — `+counterparty_label` (0009): ham KİME/KİMDEN korunur, parti FK null olsa da isim kaybolmaz. `source_row_id` partial-unique (0008, idempotency). signed→direction + `amount=|signed_amount|` (DB check).
++- check_events — mapping'de 'created' olayı yazılır.
++- loans — `source_sheet_id` partial-unique (0008). total_payment/total_finance_cost/installment_amount kaynaktan birebir (mutabakat sapmasında bile kaynak kazanır).
++- loan_installments — vadeler kaynakta satır-tarihi olmadığından `first_payment_date`'ten TÜRETİLİR (aynı gün + kısa-ay kırpma); `unique(loan_id, installment_no)` idempotent.
+ 
+ ## Operations analytics
+ 
+@@ -65,6 +65,6 @@ See `implementation.md` for complete SQL snippets.
+ - **reminder_deliveries** — duplicate önleme anahtarı unique(reminder_id, entity_table, entity_id, scheduled_for).
+ - **reports**(report_type: daily|weekly|monthly|strategic|data_quality, period, body_md, meta).
+ 
+-Schema hardening beyond spec snippets: `payment_instances` idempotency partial-unique (payment_id, instance_month); `instance_month`/`month_start` first-of-month check'leri; `checks.amount = |signed_amount|` tutarlılığı; `loan_installments` paid⇒paid_at; updated_at trigger'ları; sorgu indexleri. Dashboard view'ları Faz 3/4'te (slicer kuralı: ihtiyaç duyan dikey dilimle birlikte).
++Schema hardening beyond spec snippets: `payment_instances` idempotency partial-unique (payment_id, instance_month); `instance_month`/`month_start` first-of-month check'leri; `checks.amount = |signed_amount|` tutarlılığı; `loan_installments` paid⇒paid_at; updated_at trigger'ları; sorgu indexleri. Faz 5 eki (0008/0009): `checks.source_row_id` + `loans.source_sheet_id` partial-unique (mapping idempotency, DB-seviyesinde kanıtlı); `checks.counterparty_label`. Dashboard view'ları ihtiyaç duyan dikey dilimle birlikte (slicer kuralı).
+ 
+ RLS modeli: tüm public tablolarında enabled + `to authenticated using(true) with check(true)` (tek-operatör modu, CLAUDE.md).
+diff --git a/docs/risk-register.md b/docs/risk-register.md
+index c2e3198..1c41751 100644
+--- a/docs/risk-register.md
++++ b/docs/risk-register.md
+@@ -21,3 +21,9 @@
+ | /radar GET'inde ensureWindow (idempotent yazma) | Low | Tek operatör MVP kabulü; çok kullanıcıda cron'a taşınır (Faz 6) |
+ | RSC streaming metni böldüğü için curl-grep smoke yanıltıcı olabilir | Low | Sayısal kanıt phaseN-verify'da; smoke payload-farkındalıklı |
+ | /cashflow GET'i continuity+snapshot yazar (idempotent) | Low | Radar'la aynı tek-operatör kabulü; Faz 6'da cron |
++| Geliştirme Windows'a taşındı; PostgreSQL artık Docker (`mas-radar-pg`) | Low | `scripts/db/*.sh` docker exec'e uyarlandı, davranış birebir; container restart-unless-stopped; verify ×reset idempotent |
++| GERÇEK TEMİZ.xlsx (43 sekme) bu makinede yok; iki TEMİZ-4 indirmesi sıfır-bayt bozuk | High | Kod ÇEKLER/faiz-özdeş orijinalle dry-run edildi (ALL PASS); import:real/phase3/phase4/phase5 gerçek gate'i TEMİZ gelince çalışır, öncesinde commit yok |
++| Çek karşı-tarafı seed'de yoksa isim kaybı riski | Low | 0009 counterparty_label ham KİME/KİMDEN saklar; parti sessiz YARATILMAZ (Phase 4 deseni), FK insan bağlayana dek null |
++| Kredi taksit vadeleri kaynakta satır-tarihi taşımıyor | Medium | first_payment_date'ten deterministik türetim (aynı gün + kısa-ay kırpma); scheduleDueDates birim-test + phase5-verify DB cross-check |
++| faiz hesaplama F1 "kredi taksit sayısı"=25 ≠ B5 vade=48 | Medium | loan_field_ambiguous review (insan kararı); çözülene dek kredi aktarılmaz — sessiz varsayım yok |
++| Banka adı Türkçe uppercase round-trip'i eşleşmeyi bozuyor (DENIZ→denız) | Low | Banka tokenları ASCII lowercase ile eşlenir (bankPartyId); phase5-verify bank-resolved sayısını doğrular |
+diff --git a/docs/status-notes.md b/docs/status-notes.md
+index b407f69..672945d 100644
+--- a/docs/status-notes.md
++++ b/docs/status-notes.md
+@@ -55,3 +55,20 @@ Smallest vertical slice: (1) Supabase client util'leri (@supabase/ssr, env şabl
+ 
+ ## Next — Phase 5 slice plan (checks + loans / financing)
+ (1) ÇEKLER accepted satırları → checks (signed→direction, |amount| tutarlılığı DB'de zaten kısıtlı; duplicate_check open=hariç), (2) faiz hesaplama → loans + loan_installments (amortisman satırları 14..105; Σtaksit≈B10 mutabakat, sapma→loan_reconciliation review), (3) vade takvimi (hafta/ay gruplu çek vadeleri + kredi taksitleri), (4) /financing UI (çek listesi yön rozetli, kredi kartı + taksit tablosu), (5) nakit akış ayına borç-servisi bindirmesi (kredi taksit toplamı aylık satır). Gate: birim (amortisman/mutabakat) + phase5:verify (gerçek 143 çek satırı + 1.5M kredi) + smoke.
++
++## Ortam değişikliği (Oturum 2 — Windows'a taşındı)
++- Geliştirme artık **Windows 11** üzerinde. Önceki Linux konteyneri yok. PostgreSQL 16 **Docker container** (`mas-radar-pg`, 127.0.0.1:5432, restart unless-stopped) olarak çalışıyor. `scripts/db/{ensure,verify,dev-reset}.sh` Debian `pg_ctlcluster`/`su postgres`'ten `docker exec`'e uyarlandı (davranış birebir korundu, assertions/migrations aynı).
++- pnpm 11 (`npm i -g pnpm`) + `pnpm-workspace.yaml` allowBuilds (esbuild/sharp/unrs-resolver). Bağımlılıklar lockfile'dan kuruldu.
++- Kaynak dosyalar `data/source/` (gitignore'lu): orijinal 42-sekme dosya + bozuk TEMİZ-4 fixture mevcut. **TEMİZ.xlsx (43 sekme, sha256 d725390a…) bu makinede YOK** — kullanıcı claude.ai eski oturumdan yeniden indirecek. import:real/phase3/phase4/phase5 verify bu dosya olmadan çalışamaz.
++
++## Phase 5 — DONE (kod tamam; gerçek-veri gate'i TEMİZ bekliyor)
++- Kural-önce: `src/lib/financing/rules.ts` (signedToDirection, groupMaturities hafta/ay, isoWeekOf, maturityWindows 7/14/30, exposureBy %40, scheduleDueDates türetimi + kısa-ay kırpma, reconcileLoan FLAG-only ±1 TL, debtServiceByMonth) → 20 birim test. Ayrıca `extractLoan` (faiz çapaları B4/B5/B9/B10/B11/B12/F4/F6/F7, boş-A satırı döngüyü durdurur, F1≠B5→loan_field_ambiguous) → 5 birim test. Toplam vitest **87/87**.
++- Migration 0008: `checks.source_row_id` + `loans.source_sheet_id` partial-unique (DB-idempotency, Phase-3 deseni) + assertions.sql'e 2 yeni PASS. Migration 0009: `checks.counterparty_label` (ham KİME/KİMDEN; Phase 4 label deseni — parti sessiz yaratılmaz, FK null kalır insan bağlayana dek).
++- Engine (`src/lib/financing/engine.ts`): `mapAcceptedChecks` (eligibility=temiz∪{accepted,resolved}; duplicate_check/unparsed açık→hariç; signed→yön, |amount|, banka **ASCII-lowercase** eşleşme — normalizeTr "DENIZ"→"denız" bug'ı düzeltildi; check_events 'created'; audit'li; ON CONFLICT source_row idempotent), `mapLoans` (sheet-seviyesi açık/ret inceleme→hariç; ambiguity resolve edilene dek kredi girmez; taksit vadeleri `scheduleDueDates` ile TÜRETİLİR — kaynakta satır-tarihi yok; Σtaksit mutabakatı sapma→loan_reconciliation review ama **kaynak değeri kazanır**, ON CONFLICT source_sheet + (loan_id,no) idempotent), loaders + `loadMaturityItems`.
++- **Gerçeklik bulgusu (dry-run):** gerçek ÇEKLER'de 7 satır, hepsi DENİZ bankası, hepsi negatif (outflow=ödeme yükümlülüğü, anomali DEĞİL). Çift-kayıt: AKR (±0 gün) + çağdaş üçlüsü → duplicate_check açık → ilk map'te hariç; insan resolve edince hepsi girer, idempotent. Kredi: 1.5M anapara, 48 taksit, ilk 2024-10-18, total 3.443.717,58 = kaynak B10 birebir, finansman maliyeti 1.943.717,58 = total−anapara. F1="kredi taksit sayısı"=25 ≠ B5 vade=48 → loan_field_ambiguous (insan kararı).
++- UI: `/financing` (5+ panel), `/financing/loans/[loanId]` (taksit planı, türetilmiş vadeler), nav ÇEK/KREDİ aktif, workbook detayında "çek/kredi aktar" (mor) butonu. Smoke: /financing 200 + ÇEK DEFTERİ/KREDİLER/BANKA EXPOSURE(Deniz)/VADE TAKVİMİ/borç-servisi render; loan detail 200 + taksit planı + vade 2024-10-18→2028-09-18.
++- Gate durumu: lint ✓ typecheck ✓ vitest 87/87 ✓ db:verify(×reset, 0008+0009+12 assertion) ✓ build ✓ **phase5:verify dry-run (PHASE5_SRC=orijinal, ÇEKLER/faiz özdeş) ALL PASS ✓**. **BEKLEYEN:** import:real / phase3:verify / phase4:verify / phase5:verify GERÇEK TEMİZ'de — dosya gelince çalışacak; hepsi yeşil olmadan commit yok.
++- Not (borç-servisi × nakit-akış bindirmesi, plan adım 5): /financing'de aylık borç servisi paneli var; cashflow ay-detayına overlay ayrı küçük dilim olarak Phase 6'ya bırakıldı (scope disiplini — tek doğrulanmış dikey dilim).
++
++## Next — Phase 6 slice plan (reminders + reports)
++implementation.md §0 sırası: risk motoru/raporlar. Reminder motoru mock transport ile (api.telegram.org erişilemez); duplicate önleme DB'de zaten kısıtlı (reminder_deliveries unique). İlk dilim: rapor üreticiler (günlük/haftalık/aylık) saf fonksiyon + test, sonra reminder eligibility. Borç-servisi×nakit-akış overlay bu fazın küçük bir parçası olarak eklenebilir.
+diff --git a/docs/todo.md b/docs/todo.md
+index e8f2644..22111c2 100644
+--- a/docs/todo.md
++++ b/docs/todo.md
+@@ -48,11 +48,25 @@
+ - [x] /radar dashboard
+ - [x] Verification: phase3:verify ALL PASS (gerçek veri, 19 kalem, Şubat kırpma DB'de, DB-unique dupe engeli, +2 audit)
+ 
+-## Phase 4+
++## Phase 4 — DONE
+ 
+-- [ ] Cash-flow dashboard.
+-- [ ] Checks/loan dashboard.
+-- [ ] Reminder engine.
++- [x] Cash-flow dashboard (/cashflow, /cashflow/[monthId]); 35 ay kaynak mutabakatı, zincir bayrağı, projeksiyon, konsantrasyon.
++
++## Phase 5 — DONE (checks + financing)
++
++- [x] financing/rules.ts saf fonksiyonlar + 20 birim test (signed→direction, hafta/ay maturity, ISO-week, exposure %40, scheduleDueDates, reconcileLoan flag-only, debtService).
++- [x] extractLoan (extractors.ts) + 5 birim test (faiz hesaplama çapaları, F4 serial, boş-A satırı döngüyü durdurur, null asla 0).
++- [x] Migration 0008: checks.source_row_id + loans.source_sheet_id partial-unique (idempotency) + 2 yeni assertion.
++- [x] Migration 0009: checks.counterparty_label (ham KİME/KİMDEN korunur — Phase 4 label deseni; parti sessiz yaratılmaz).
++- [x] Engine: mapAcceptedChecks (signed→yön, |amount|, banka ASCII-lowercase eşleşme, çift-kayıt açık=hariç), mapLoans (ambiguity açık=hariç, Σtaksit mutabakatı, sapma→loan_reconciliation, kaynak değeri kazanır), loaders + loadMaturityItems.
++- [x] extractLoan importer'a bağlandı (faiz hesaplama issue'ları review olur).
++- [x] /financing (ufuk pencereleri 7/14/30, kredi kartları, aylık borç servisi, banka+karşı-taraf exposure, vade takvimi 12 hafta, çek defteri yön rozetli) + /financing/loans/[loanId] (taksit planı, türetilmiş vadeler) + nav ÇEK/KREDİ aktif + workbook "çek/kredi aktar" butonu.
++- [x] phase5-verify.ts (PHASE5_SRC ile dry-run edilebilir): eligibility+idempotency, signed→yön, negatif-anomali-değil, maturity SQL cross-check, banka exposure SQL, kredi mutabakatı (total=B10, cost=total−principal), 48 taksit türetimi, DB uniques, borç servisi. **Dry-run (ÇEKLER/faiz-özdeş orijinal): ALL PASS.**
++- [ ] **BEKLİYOR:** import:real / phase3:verify / phase4:verify / phase5:verify GERÇEK TEMİZ.xlsx üzerinde (dosya makinede yok — kullanıcıdan bekleniyor). Bu 4 gate yeşil olmadan commit YOK.
++
++## Phase 6+
++
++- [ ] Reminder engine (Telegram).
+ - [ ] Reports.
+ - [ ] Capacity/cost analytics.
+ - [ ] Scenario engine.
+diff --git a/package.json b/package.json
+index 1f30242..4069cf5 100644
+--- a/package.json
++++ b/package.json
+@@ -16,6 +16,7 @@
+     "import:real": "bash scripts/db/ensure.sh && tsx scripts/import-real.ts",
+     "phase3:verify": "bash scripts/db/ensure.sh && tsx scripts/phase3-verify.ts",
+     "phase4:verify": "bash scripts/db/ensure.sh && tsx scripts/phase4-verify.ts",
++    "phase5:verify": "bash scripts/db/ensure.sh && tsx scripts/phase5-verify.ts",
+     "seed:demo": "bash scripts/db/ensure.sh && tsx scripts/seed-demo.ts"
+   },
+   "dependencies": {
+diff --git a/scripts/db/assertions.sql b/scripts/db/assertions.sql
+index 9d24cd6..3729cc4 100644
+--- a/scripts/db/assertions.sql
++++ b/scripts/db/assertions.sql
+@@ -91,5 +91,25 @@ begin
+     exception when check_violation then raise notice 'PASS installment_paid_requires_paid_at'; end;
+   end;
+ 
++  -- 11) financing mapping idempotency uniques (0008)
++  declare wid uuid; sid uuid; rid uuid; lid2 uuid;
++  begin
++    insert into public.source_workbooks (original_filename) values ('assert.xlsx') returning id into wid;
++    insert into public.source_sheets (workbook_id, sheet_name, sheet_index) values (wid, 'ÇEKLER', 0) returning id into sid;
++    insert into public.import_rows (workbook_id, sheet_id, row_index, row_json) values (wid, sid, 2, '{}'::jsonb) returning id into rid;
++    insert into public.checks (maturity_date, signed_amount, amount, direction, source_row_id)
++    values (current_date, -100, 100, 'outflow', rid);
++    begin
++      insert into public.checks (maturity_date, signed_amount, amount, direction, source_row_id)
++      values (current_date, -100, 100, 'outflow', rid);
++      raise exception 'FAIL checks source_row idempotency did not fire';
++    exception when unique_violation then raise notice 'PASS checks source_row idempotency'; end;
++    insert into public.loans (name, principal, source_sheet_id) values ('K1', 1, sid) returning id into lid2;
++    begin
++      insert into public.loans (name, principal, source_sheet_id) values ('K2', 2, sid);
++      raise exception 'FAIL loans source_sheet idempotency did not fire';
++    exception when unique_violation then raise notice 'PASS loans source_sheet idempotency'; end;
++  end;
++
+   raise notice 'ALL ASSERTIONS PASSED';
+ end $$;
+diff --git a/scripts/db/dev-reset.sh b/scripts/db/dev-reset.sh
+old mode 100755
+new mode 100644
+index 1ec53ae..28d880b
+--- a/scripts/db/dev-reset.sh
++++ b/scripts/db/dev-reset.sh
+@@ -1,11 +1,13 @@
+ #!/usr/bin/env bash
+ # Dev database: same bootstrap+migrations+seed as verify, but persistent for the app.
+ set -euo pipefail
+-pg_ctlcluster 16 main status >/dev/null 2>&1 || pg_ctlcluster 16 main start
++bash "$(dirname "$0")/ensure.sh"
++CONTAINER=mas-radar-pg
+ DB=mas_radar_dev
+-su postgres -c "dropdb --if-exists $DB && createdb $DB"
++docker exec "$CONTAINER" dropdb -U postgres --if-exists "$DB"
++docker exec "$CONTAINER" createdb -U postgres "$DB"
+ for f in scripts/db/local-bootstrap.sql supabase/migrations/*.sql supabase/seed.sql; do
+-  su postgres -c "psql -q -v ON_ERROR_STOP=1 -d $DB -f '$f'"
++  docker exec -i "$CONTAINER" psql -q -v ON_ERROR_STOP=1 -U postgres -d "$DB" < "$f"
+ done
+-su postgres -c "psql -d $DB -qc \"alter user postgres password 'postgres';\""
++docker exec "$CONTAINER" psql -U postgres -d "$DB" -qc "alter user postgres password 'postgres';"
+ echo "dev db ready: $DB"
+diff --git a/scripts/db/ensure.sh b/scripts/db/ensure.sh
+old mode 100755
+new mode 100644
+index cc194b0..323de40
+--- a/scripts/db/ensure.sh
++++ b/scripts/db/ensure.sh
+@@ -1,9 +1,13 @@
+ #!/usr/bin/env bash
+-# Container reaps background daemons between shell sessions; self-heal.
+-pg_lsclusters | grep -q online || pg_ctlcluster 16 main start
+-# wait for TCP
+-for i in $(seq 1 20); do
+-  (echo > /dev/tcp/127.0.0.1/5432) >/dev/null 2>&1 && exit 0
+-  sleep 0.3
++# Local PostgreSQL 16 lives in Docker (container: mas-radar-pg); self-heal if absent/stopped.
++CONTAINER=mas-radar-pg
++docker ps -a --format '{{.Names}}' | grep -qx "$CONTAINER" || \
++  docker run -d --name "$CONTAINER" --restart unless-stopped \
++    -e POSTGRES_PASSWORD=postgres -p 127.0.0.1:5432:5432 postgres:16 >/dev/null
++docker ps --format '{{.Names}}' | grep -qx "$CONTAINER" || docker start "$CONTAINER" >/dev/null
++# wait until the server accepts connections
++for i in $(seq 1 40); do
++  docker exec "$CONTAINER" pg_isready -U postgres -q 2>/dev/null && exit 0
++  sleep 0.5
+ done
+-echo "postgres TCP not reachable" >&2; exit 1
++echo "postgres not reachable in container $CONTAINER" >&2; exit 1
+diff --git a/scripts/db/verify.sh b/scripts/db/verify.sh
+old mode 100755
+new mode 100644
+index 2b301ee..205c0b7
+--- a/scripts/db/verify.sh
++++ b/scripts/db/verify.sh
+@@ -1,11 +1,13 @@
+ #!/usr/bin/env bash
+ # Phase 1 gate: full reset -> migrations in order -> seed -> assertions. Run twice to prove reset repeatability.
+ set -euo pipefail
+-pg_lsclusters | grep -q online || pg_ctlcluster 16 main start
++bash "$(dirname "$0")/ensure.sh"
++CONTAINER=mas-radar-pg
+ DB=mas_radar_verify
+-run_psql() { su postgres -c "psql -q -v ON_ERROR_STOP=1 -d $DB -f '$1'"; }
+-su postgres -c "dropdb --if-exists $DB && createdb $DB"
++run_psql() { docker exec -i "$CONTAINER" psql -q -v ON_ERROR_STOP=1 -U postgres -d "$DB" < "$1"; }
++docker exec "$CONTAINER" dropdb -U postgres --if-exists "$DB"
++docker exec "$CONTAINER" createdb -U postgres "$DB"
+ run_psql scripts/db/local-bootstrap.sql
+ for f in supabase/migrations/*.sql; do run_psql "$f"; done
+ run_psql supabase/seed.sql
+-su postgres -c "psql -q -v ON_ERROR_STOP=1 -d $DB -f scripts/db/assertions.sql" 2>&1 | grep -E "NOTICE|ERROR" | sed 's/^psql://'
++docker exec -i "$CONTAINER" psql -q -v ON_ERROR_STOP=1 -U postgres -d "$DB" < scripts/db/assertions.sql 2>&1 | grep -E "NOTICE|ERROR" | sed 's/^psql://'
+diff --git a/src/app/(dashboard)/imports/[workbookId]/page.tsx b/src/app/(dashboard)/imports/[workbookId]/page.tsx
+index e99d464..42a8ad4 100644
+--- a/src/app/(dashboard)/imports/[workbookId]/page.tsx
++++ b/src/app/(dashboard)/imports/[workbookId]/page.tsx
+@@ -5,6 +5,7 @@ import { Badge, SHEET_TYPE_TONE, STATUS_TONE } from "@/components/ui/badge";
+ import { Num, Panel } from "@/components/ui/panel";
+ import { mapCandidatesAction } from "@/app/(dashboard)/radar/actions";
+ import { mapCashflowAction } from "@/app/(dashboard)/cashflow/actions";
++import { mapFinancingAction } from "@/app/(dashboard)/financing/actions";
+ 
+ export const dynamic = "force-dynamic";
+ 
+@@ -70,6 +71,16 @@ export default async function WorkbookDetailPage({
+             <span className="ml-2 text-[11px] text-zinc-500">35 aylık sekmeler → cashflow; zincir kırıkları bayraklanır, düzeltilmez</span>
+           </form>
+         )}
++        {w.status === "parsed" && (
++          <form action={mapFinancingAction} className="mt-2">
++            <input type="hidden" name="workbookId" value={w.id} />
++            <button type="submit"
++              className="border border-violet-700 bg-violet-950/40 px-3 py-2 font-mono text-[10px] uppercase tracking-wider text-violet-300">
++              çek/kredi aktar →
++            </button>
++            <span className="ml-2 text-[11px] text-zinc-500">ÇEKLER → çek defteri (işaretli tutar=yön), faiz hesaplama → kredi+taksit; çift-kayıt/açık incelemeler hariç</span>
++          </form>
++        )}
+         {w.status === "failed" && (
+           <div className="mt-3 border border-red-900 bg-red-950/40 p-3">
+             <div className="font-mono text-[10px] uppercase tracking-wider text-red-400">parse hatası</div>
+diff --git a/src/app/(dashboard)/layout.tsx b/src/app/(dashboard)/layout.tsx
+index 6068cea..3753478 100644
+--- a/src/app/(dashboard)/layout.tsx
++++ b/src/app/(dashboard)/layout.tsx
+@@ -7,7 +7,7 @@ const NAV = [
+   { href: "/payments", label: "ÖDEMELER", active: true },
+   { href: "/imports", label: "İÇE AKTARIM", active: true },
+   { href: "/cashflow", label: "NAKİT", active: true },
+-  { href: "#", label: "ÇEK/KREDİ — Faz 5", active: false },
++  { href: "/financing", label: "ÇEK/KREDİ", active: true },
+ ];
+ 
+ export default function DashboardLayout({ children }: { children: ReactNode }) {
+diff --git a/src/lib/importers/extractors.test.ts b/src/lib/importers/extractors.test.ts
+index 88b72e3..d29300b 100644
+--- a/src/lib/importers/extractors.test.ts
++++ b/src/lib/importers/extractors.test.ts
+@@ -13,6 +13,7 @@ import {
+ } from "./row-utils";
+ import {
+   extractChecks,
++  extractLoan,
+   extractMonthlyCashflow,
+   extractPaymentMatrix,
+ } from "./extractors";
+@@ -209,3 +210,75 @@ describe("extractChecks — signed direction, header detect, duplicates", () =>
+     expect(r.issues[0].issue_type).toBe("checks_header_not_found");
+   });
+ });
++
++describe("extractLoan — faiz hesaplama anchors + amortization (import-mapping §3)", () => {
++  // Real anchor values from the workbook; 3-row amortization for the fixture.
++  const base: Record<string, CellVal> = {
++    D1: C("kredi taksit sayısı"), F1: C(25),
++    A4: C("Kredi Tutarı"), B4: C(1500000), D4: C("kredi ilk ödeme tarihi"), F4: C(45583),
++    A5: C("Kredi Vadesi"), B5: C(3), D5: C("kredi basit faiz oranı"), F5: C(3.63),
++    A6: C("Kredi Faizi"), B6: C(3.14), D6: C("uygulanan faiz oranı"), F6: C(3.63),
++    A7: C("BSMV"), B7: C(10), D7: C("aylık maliyet oranı"), F7: C(4.80116),
++    A8: C("KKDF"), B8: C(10), D8: C("yıllık maliyet oranı"),
++    A9: C("Taksit Tutarı"), B9: C(71744.11624119806),
++    A10: C("toplam ödeme"), B10: C(215232.34872359418),
++    A11: C("fark"), B11: C(-1284767.6512764059),
++    B12: C(215232.34872359418),
++    A13: C("Dönem Sayısı"), B13: C("Taksit Tutarı"), C13: C("Anapara"), D13: C("Faiz"), E13: C("KKDF"), F13: C("BSMV"),
++    A14: C(1), B14: C(71744.11624119806), C14: C(15224.12), D14: C(47100), E14: C(4710), F14: C(4710),
++    A15: C(2), B15: C(71744.11624119806), C15: C(15797.76), D15: C(46621.96), E15: C(6993.29), F15: C(2331.1),
++    A16: C(3), B16: C(71744.11624119806), C16: C(16393.02), D16: C(46125.91), E16: C(6918.89), F16: C(2306.3),
++    A17: C(""), // formula past term caches "" — must terminate the loop, not become no=0
++  };
++
++  it("maps every anchor; F4 serial → 2024-10-18; empty-string A cell stops rows", () => {
++    const { loan } = extractLoan(base);
++    expect(loan.principal).toBe(1500000);
++    expect(loan.termMonths).toBe(3);
++    expect(loan.simpleRate).toBe(3.14);
++    expect(loan.bsmvRate).toBe(10);
++    expect(loan.kkdfRate).toBe(10);
++    expect(loan.installmentAmount).toBeCloseTo(71744.12, 2);
++    expect(loan.totalPayment).toBeCloseTo(215232.35, 2);
++    expect(loan.totalFinanceCost).toBeCloseTo(-1284767.65, 2);
++    expect(loan.installmentSum).toBeCloseTo(215232.35, 2);
++    expect(loan.firstPaymentDate).toBe("2024-10-18");
++    expect(loan.appliedRate).toBe(3.63);
++    expect(loan.monthlyCostRate).toBe(4.80116);
++    expect(loan.annualCostRate).toBeNull(); // F8 empty in source — stays null
++    expect(loan.installments).toHaveLength(3);
++    expect(loan.installments[0]).toMatchObject({ no: 1, rowIndex: 14, amount: 71744.11624119806, interest: 47100 });
++    expect(loan.installments[2].kkdf).toBe(6918.89);
++  });
++
++  it("F1 ≠ B5 → loan_field_ambiguous (low), human decides", () => {
++    const { issues } = extractLoan(base);
++    const amb = issues.find((i) => i.issue_type === "loan_field_ambiguous");
++    expect(amb?.severity).toBe("low");
++    expect(amb?.message).toContain("25");
++  });
++
++  it("term/rows mismatch flagged (medium)", () => {
++    const { issues } = extractLoan({ ...base, B5: C(48) });
++    expect(issues.some((i) => i.issue_type === "loan_term_mismatch")).toBe(true);
++  });
++
++  it("missing F4 → loan_missing_first_date (high); missing B4 → critical", () => {
++    const noDate = { ...base };
++    delete noDate.F4;
++    expect(extractLoan(noDate).issues.some((i) => i.issue_type === "loan_missing_first_date")).toBe(true);
++    const noPrincipal = { ...base };
++    delete noPrincipal.B4;
++    const critical = extractLoan(noPrincipal).issues.find((i) => i.issue_type === "loan_header_missing");
++    expect(critical?.severity).toBe("critical");
++    expect(extractLoan(noPrincipal).loan.principal).toBeNull(); // null stays null
++  });
++
++  it("installment row with missing amount flagged, not zeroed", () => {
++    const holed = { ...base };
++    delete holed.B15;
++    const { loan, issues } = extractLoan(holed);
++    expect(loan.installments[1].amount).toBeNull();
++    expect(issues.some((i) => i.issue_type === "loan_installment_missing_amount")).toBe(true);
++  });
++});
+diff --git a/src/lib/importers/extractors.ts b/src/lib/importers/extractors.ts
+index 1c7dd49..689a682 100644
+--- a/src/lib/importers/extractors.ts
++++ b/src/lib/importers/extractors.ts
+@@ -385,7 +385,7 @@ export function extractChecks(rows: SheetRow[]): {
+     });
+   }
+ 
+-  // duplicate suspicion: same payer + |amount| within ±3 days (calculation-rules)
++  // duplicate suspicion: same counterparty + |amount| within ±3 days (calculation-rules)
+   for (let i = 0; i < candidates.length; i++) {
+     for (let j = i + 1; j < candidates.length; j++) {
+       const a = candidates[i];
+@@ -415,3 +415,133 @@ export function extractChecks(rows: SheetRow[]): {
+   }
+   return { candidates, issues };
+ }
++
++/* ───────────────── 4) faiz hesaplama — loan + amortization ───────────────── */
++// Anchor map: docs/import-mapping.md §3. Amortization rows start at 14; the source
++// A-column formula yields "" past the term, and asNumber("") is 0 → loop guards no<1.
++
++export interface LoanInstallmentCandidate {
++  no: number;
++  rowIndex: number;
++  amount: number | null; // B — taksit
++  principal: number | null; // C — anapara
++  interest: number | null; // D — faiz
++  kkdf: number | null; // E
++  bsmv: number | null; // F
++}
++
++export interface LoanCandidate {
++  principal: number | null; // B4
++  termMonths: number | null; // B5
++  simpleRate: number | null; // B6
++  bsmvRate: number | null; // B7
++  kkdfRate: number | null; // B8
++  installmentAmount: number | null; // B9
++  totalPayment: number | null; // B10
++  totalFinanceCost: number | null; // B11
++  installmentSum: number | null; // B12 = SUM(B14:B105) — reconciliation source
++  firstPaymentDate: string | null; // F4
++  appliedRate: number | null; // F6
++  monthlyCostRate: number | null; // F7
++  annualCostRate: number | null; // F8
++  headerInstallmentCount: number | null; // F1 "kredi taksit sayısı" — anlamı belirsiz
++  installments: LoanInstallmentCandidate[];
++}
++
++const LOAN_AMORT_FIRST_ROW = 14;
++const LOAN_AMORT_MAX_ROW = 500; // hard stop; real sheet ends ~105
++
++export function extractLoan(map: Record<string, CellVal>): {
++  loan: LoanCandidate;
++  issues: ReviewIssue[];
++} {
++  const issues: ReviewIssue[] = [];
++
++  const f4 = map["F4"];
++  let firstPaymentDate: string | null = null;
++  if (f4 && typeof f4.v === "number") firstPaymentDate = serialToISO(f4.v);
++  else if (f4 && typeof f4.v === "string" && /\d{1,2}[./]\d{1,2}[./]\d{2,4}/.test(f4.v)) {
++    const [d, m, y] = f4.v.split(/[./]/).map(Number);
++    firstPaymentDate = `${y < 100 ? 2000 + y : y}-${String(m).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
++  }
++
++  const installments: LoanInstallmentCandidate[] = [];
++  for (let r = LOAN_AMORT_FIRST_ROW; r <= LOAN_AMORT_MAX_ROW; r++) {
++    const no = asNumber(map[`A${r}`]);
++    if (no == null || no < 1) break; // "" cached formula value → 0 → stop
++    installments.push({
++      no,
++      rowIndex: r,
++      amount: asNumber(map[`B${r}`]),
++      principal: asNumber(map[`C${r}`]),
++      interest: asNumber(map[`D${r}`]),
++      kkdf: asNumber(map[`E${r}`]),
++      bsmv: asNumber(map[`F${r}`]),
++    });
++  }
++
++  const loan: LoanCandidate = {
++    principal: asNumber(map["B4"]),
++    termMonths: asNumber(map["B5"]),
++    simpleRate: asNumber(map["B6"]),
++    bsmvRate: asNumber(map["B7"]),
++    kkdfRate: asNumber(map["B8"]),
++    installmentAmount: asNumber(map["B9"]),
++    totalPayment: asNumber(map["B10"]),
++    totalFinanceCost: asNumber(map["B11"]),
++    installmentSum: asNumber(map["B12"]),
++    firstPaymentDate,
++    appliedRate: asNumber(map["F6"]),
++    monthlyCostRate: asNumber(map["F7"]),
++    annualCostRate: asNumber(map["F8"]),
++    headerInstallmentCount: asNumber(map["F1"]),
++    installments,
++  };
++
++  if (loan.principal == null) {
++    issues.push({
++      rowIndex: 4,
++      issue_type: "loan_header_missing",
++      severity: "critical",
++      message: "Kredi tutarı (B4) kaynakta yok — kredi aktarılamaz",
++    });
++  }
++  if (firstPaymentDate == null) {
++    issues.push({
++      rowIndex: 4,
++      issue_type: "loan_missing_first_date",
++      severity: "high",
++      message: "İlk ödeme tarihi (F4) çözülemedi — taksit vadeleri türetilemez",
++    });
++  }
++  if (loan.termMonths != null && installments.length !== loan.termMonths) {
++    issues.push({
++      rowIndex: 13,
++      issue_type: "loan_term_mismatch",
++      severity: "medium",
++      message: `Amortisman satırı ${installments.length} ≠ vade ${loan.termMonths}`,
++    });
++  }
++  if (
++    loan.headerInstallmentCount != null &&
++    loan.termMonths != null &&
++    loan.headerInstallmentCount !== loan.termMonths
++  ) {
++    issues.push({
++      rowIndex: 1,
++      issue_type: "loan_field_ambiguous",
++      severity: "low",
++      message: `F1 "kredi taksit sayısı"=${loan.headerInstallmentCount} ≠ B5 vade=${loan.termMonths} — anlamı belirsiz, insan kararı gerekli`,
++    });
++  }
++  const missingAmounts = installments.filter((i) => i.amount == null);
++  if (missingAmounts.length > 0) {
++    issues.push({
++      rowIndex: missingAmounts[0].rowIndex,
++      issue_type: "loan_installment_missing_amount",
++      severity: "high",
++      message: `${missingAmounts.length} taksit satırında tutar yok (ilk: satır ${missingAmounts[0].rowIndex})`,
++    });
++  }
++  return { loan, issues };
++}
+diff --git a/src/lib/importers/workbook-importer.ts b/src/lib/importers/workbook-importer.ts
+index 3dec4b5..799bd36 100644
+--- a/src/lib/importers/workbook-importer.ts
++++ b/src/lib/importers/workbook-importer.ts
+@@ -17,6 +17,7 @@ import {
+ } from "./row-utils";
+ import {
+   extractChecks,
++  extractLoan,
+   extractMonthlyCashflow,
+   extractPaymentMatrix,
+   type ReviewIssue,
+@@ -209,6 +210,8 @@ export async function importWorkbook(
+         issues = extractChecks(rows).issues;
+       } else if (s.detectedType === "monthly_cashflow") {
+         issues = extractMonthlyCashflow(s.sheetName, cellsToMap(cells)).issues;
++      } else if (s.detectedType === "loan_calculation") {
++        issues = extractLoan(cellsToMap(cells)).issues;
+       }
+       const r = await insertReviews(client, workbookId, sheetId, idByRow, issues);
+       reviewsInserted += r.reviews;
+diff --git a/src/types/database.ts b/src/types/database.ts
+index 6b32ae0..eb868bf 100644
+--- a/src/types/database.ts
++++ b/src/types/database.ts
+@@ -195,6 +195,7 @@ export interface ChecksRow {
+   notes: string | null;
+   created_at: string;
+   updated_at: string;
++  counterparty_label: string | null;
+ }
+ 
+ export interface ChecksInsert {
+@@ -215,6 +216,7 @@ export interface ChecksInsert {
+   notes?: string | null;
+   created_at?: string;
+   updated_at?: string;
++  counterparty_label?: string | null;
+ }
+ 
+ export interface ImportRowsRow {

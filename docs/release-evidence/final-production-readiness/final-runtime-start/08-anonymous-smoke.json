@@ -1,0 +1,117 @@
+{
+  "artifactKind": "mas-final-start-anonymous-smoke-v1",
+  "measuredAtUtc": "2026-09-03T19:11:39.566Z",
+  "scope": "YALNIZ kimliksiz. Kimlikli core module PASS diye RAPORLANMIYOR.",
+  "anonymousHealth": "PASS",
+  "routesTested": 16,
+  "correctlyRedirectedToLogin": 16,
+  "leaked200OnProtectedRoute": 0,
+  "http5xx": 0,
+  "redirectLoops": 0,
+  "maxHops": 2,
+  "routes": [
+    {
+      "path": "/overview",
+      "status": 307,
+      "final": "/login?next=%2Foverview",
+      "finalStatus": 200
+    },
+    {
+      "path": "/cashflow",
+      "status": 307,
+      "final": "/login?next=%2Fcashflow",
+      "finalStatus": 200
+    },
+    {
+      "path": "/payments",
+      "status": 307,
+      "final": "/login?next=%2Fpayments",
+      "finalStatus": 200
+    },
+    {
+      "path": "/payments/calendar",
+      "status": 307,
+      "final": "/login?next=%2Fpayments%2Fcalendar",
+      "finalStatus": 200
+    },
+    {
+      "path": "/finance",
+      "status": 307,
+      "final": "/login?next=%2Ffinance",
+      "finalStatus": 200
+    },
+    {
+      "path": "/data-quality",
+      "status": 308,
+      "final": "/login?next=%2Fdata%2Fquality",
+      "finalStatus": 200,
+      "hops": 2
+    },
+    {
+      "path": "/data/quality",
+      "status": 307,
+      "final": "/login?next=%2Fdata%2Fquality",
+      "finalStatus": 200
+    },
+    {
+      "path": "/search",
+      "status": 307,
+      "final": "/login?next=%2Fsearch",
+      "finalStatus": 200
+    },
+    {
+      "path": "/insights",
+      "status": 307,
+      "final": "/login?next=%2Finsights",
+      "finalStatus": 200
+    },
+    {
+      "path": "/analytics",
+      "status": 307,
+      "final": "/login?next=%2Fanalytics",
+      "finalStatus": 200
+    },
+    {
+      "path": "/radar",
+      "status": 308,
+      "final": "/login?next=%2Fpayments",
+      "finalStatus": 200,
+      "hops": 2
+    },
+    {
+      "path": "/system",
+      "status": 307,
+      "final": "/login?next=%2Fsystem",
+      "finalStatus": 200
+    },
+    {
+      "path": "/system/security",
+      "status": 307,
+      "final": "/login?next=%2Fsystem%2Fsecurity",
+      "finalStatus": 200
+    },
+    {
+      "path": "/system/audit",
+      "status": 307,
+      "final": "/login?next=%2Fsystem%2Faudit",
+      "finalStatus": 200
+    },
+    {
+      "path": "/admin",
+      "status": 308,
+      "final": "/login?next=%2Fsystem",
+      "finalStatus": 200,
+      "hops": 2
+    },
+    {
+      "path": "/api/facts",
+      "status": 307,
+      "final": "/login?next=%2Fapi%2Ffacts",
+      "finalStatus": 200
+    }
+  ],
+  "note308": "308 yanitlari hata degil; uygulamanin kanonik modul yollarina normalizasyonu (/data-quality -> /data/quality, /admin -> /system, /radar -> /payments).",
+  "middlewareDenialSide": "PASS",
+  "authenticatedSideMeasured": false,
+  "dbWritesCausedBySmoke": 0
+}

@@ -24,6 +24,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import { expect, test, type Page } from "@playwright/test";
 import { Pool } from "pg";
+import { databaseNameFromUrl, isDisposableDatabaseName } from "../../scripts/db/owner-url";
 
 const BASE_URL = process.env.BASE_URL ?? "http://127.0.0.1:3210";
 const DB_URL = process.env.MAS_E2E_DATABASE_URL ?? process.env.DATABASE_URL ?? "";
@@ -110,7 +111,11 @@ function watch(page: Page) {
 
 test.beforeAll(async () => {
   if (!DB_URL) throw new Error("MAS_E2E_DATABASE_URL (veya DATABASE_URL) gerekli — bu paket gerçek oturum satırı yazar.");
-  if (!/verify|test|e2e/.test(DB_URL)) {
+  // The marker vocabulary is IMPORTED, not restated. Five copies of this regex existed and they
+  // drifted: `restore-drill.ts` introduced the marker "drill", and a database called
+  // `mas_radar_cutover_rollback_drill` was then refused by the harness that had never heard of it —
+  // a gate misfiring on correct input, which is how people learn to route around gates.
+  if (!isDisposableDatabaseName(databaseNameFromUrl(DB_URL))) {
     // Aynı fail-closed refleks: bu paket users/sessions'a YAZIYOR.
     throw new Error(`GÜVENLİK DURDURMASI: '${DB_URL.replace(/\/\/[^@]*@/, "//***@")}' disposable görünmüyor.`);
   }

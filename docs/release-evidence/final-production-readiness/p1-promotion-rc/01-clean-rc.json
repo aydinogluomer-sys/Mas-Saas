@@ -1,0 +1,20 @@
+{
+  "artifactKind": "mas-p1-clean-rc-v1",
+  "measuredAtUtc": "2026-09-03T18:00:21.856Z",
+  "verdict": "PASS",
+  "path": "C:\\Users\\Trade Bilisim\\Mas-Saas-RC-9e23ad7",
+  "createdBy": "git worktree add --detach <RC> 9e23ad78ee65adc9beafb6cf58f6e477b26765bc",
+  "head": "9e23ad78ee65adc9beafb6cf58f6e477b26765bc",
+  "detached": true,
+  "gitStatusPorcelainLines": 0,
+  "trackedDiff": 0,
+  "untrackedApplicationCode": 0,
+  "codeCopiedFromMainWorktree": false,
+  "environment": {
+    "onlyFileCopied": ".env.local",
+    "gitignored": true,
+    "statusStillEmptyAfterCopy": true,
+    "databaseTarget": "mas_radar_dev @ 127.0.0.1:5432",
+    "secretValuesPrinted": false
+  }
+}

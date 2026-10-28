@@ -1,0 +1,273 @@
+{
+  "artifactKind": "mas-p24b-fk-orphans-v1",
+  "fkCount": 43,
+  "fkContract": [
+    {
+      "child": "action_items",
+      "col": "created_by",
+      "parent": "users",
+      "act": "a"
+    },
+    {
+      "child": "approval_steps",
+      "col": "actor",
+      "parent": "users",
+      "act": "a"
+    },
+    {
+      "child": "approvals",
+      "col": "decided_by",
+      "parent": "users",
+      "act": "a"
+    },
+    {
+      "child": "approvals",
+      "col": "requested_by",
+      "parent": "users",
+      "act": "a"
+    },
+    {
+      "child": "assistant_conversations",
+      "col": "created_by",
+      "parent": "users",
+      "act": "a"
+    },
+    {
+      "child": "attachments",
+      "col": "uploaded_by",
+      "parent": "users",
+      "act": "a"
+    },
+    {
+      "child": "audit_logs",
+      "col": "actor",
+      "parent": "users",
+      "act": "a"
+    },
+    {
+      "child": "background_jobs",
+      "col": "created_by",
+      "parent": "users",
+      "act": "a"
+    },
+    {
+      "child": "bank_transaction_match_candidates",
+      "col": "rejected_by",
+      "parent": "users",
+      "act": "a"
+    },
+    {
+      "child": "budget_lines",
+      "col": "approved_by",
+      "parent": "users",
+      "act": "a"
+    },
+    {
+      "child": "budget_lines",
+      "col": "created_by",
+      "parent": "users",
+      "act": "a"
+    },
+    {
+      "child": "budgets",
+      "col": "created_by",
+      "parent": "users",
+      "act": "a"
+    },
+    {
+      "child": "check_events",
+      "col": "created_by",
+      "parent": "users",
+      "act": "a"
+    },
+    {
+      "child": "collateral_records",
+      "col": "created_by",
+      "parent": "users",
+      "act": "a"
+    },
+    {
+      "child": "control_alerts",
+      "col": "acknowledged_by",
+      "parent": "users",
+      "act": "a"
+    },
+    {
+      "child": "control_alerts",
+      "col": "action_item_id",
+      "parent": "action_items",
+      "act": "a"
+    },
+    {
+      "child": "control_alerts",
+      "col": "resolved_by",
+      "parent": "users",
+      "act": "a"
+    },
+    {
+      "child": "cost_allocation_rules",
+      "col": "created_by",
+      "parent": "users",
+      "act": "a"
+    },
+    {
+      "child": "covenant_records",
+      "col": "created_by",
+      "parent": "users",
+      "act": "a"
+    },
+    {
+      "child": "document_links",
+      "col": "created_by",
+      "parent": "users",
+      "act": "a"
+    },
+    {
+      "child": "documents",
+      "col": "created_by",
+      "parent": "users",
+      "act": "a"
+    },
+    {
+      "child": "external_assumptions",
+      "col": "created_by",
+      "parent": "users",
+      "act": "a"
+    },
+    {
+      "child": "external_assumptions",
+      "col": "reviewed_by",
+      "parent": "users",
+      "act": "a"
+    },
+    {
+      "child": "facility_drawdowns",
+      "col": "created_by",
+      "parent": "users",
+      "act": "a"
+    },
+    {
+      "child": "forecast_lines",
+      "col": "approved_by",
+      "parent": "users",
+      "act": "a"
+    },
+    {
+      "child": "forecast_lines",
+      "col": "created_by",
+      "parent": "users",
+      "act": "a"
+    },
+    {
+      "child": "forecasts",
+      "col": "created_by",
+      "parent": "users",
+      "act": "a"
+    },
+    {
+      "child": "fx_positions",
+      "col": "created_by",
+      "parent": "users",
+      "act": "a"
+    },
+    {
+      "child": "fx_rate_snapshots",
+      "col": "created_by",
+      "parent": "users",
+      "act": "a"
+    },
+    {
+      "child": "integration_connections",
+      "col": "created_by",
+      "parent": "users",
+      "act": "a"
+    },
+    {
+      "child": "invoice_allocations",
+      "col": "created_by",
+      "parent": "users",
+      "act": "a"
+    },
+    {
+      "child": "invoice_allocations",
+      "col": "reversed_by",
+      "parent": "users",
+      "act": "a"
+    },
+    {
+      "child": "invoice_reversals",
+      "col": "created_by",
+      "parent": "users",
+      "act": "a"
+    },
+    {
+      "child": "invoices",
+      "col": "bad_debt_by",
+      "parent": "users",
+      "act": "a"
+    },
+    {
+      "child": "mapping_reviews",
+      "col": "reviewed_by",
+      "parent": "users",
+      "act": "a"
+    },
+    {
+      "child": "optimization_runs",
+      "col": "created_by",
+      "parent": "users",
+      "act": "a"
+    },
+    {
+      "child": "payment_instances",
+      "col": "payment_id",
+      "parent": "payments",
+      "act": "n"
+    },
+    {
+      "child": "promise_to_pay",
+      "col": "created_by",
+      "parent": "users",
+      "act": "a"
+    },
+    {
+      "child": "promise_to_pay",
+      "col": "resolved_by",
+      "parent": "users",
+      "act": "a"
+    },
+    {
+      "child": "saved_views",
+      "col": "created_by",
+      "parent": "users",
+      "act": "a"
+    },
+    {
+      "child": "scenarios",
+      "col": "created_by",
+      "parent": "users",
+      "act": "a"
+    },
+    {
+      "child": "sessions",
+      "col": "user_id",
+      "parent": "users",
+      "act": "a"
+    },
+    {
+      "child": "source_workbooks",
+      "col": "imported_by",
+      "parent": "users",
+      "act": "a"
+    }
+  ],
+  "orphanProbes": {
+    "instances_without_payment": 0,
+    "action_items_bad_creator": 0,
+    "approvals_bad_requester": 0,
+    "approvals_bad_decider": 0,
+    "audit_bad_actor": 0,
+    "sessions_bad_user": 0
+  },
+  "totalOrphans": 0
+}

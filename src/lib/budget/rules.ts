@@ -13,6 +13,7 @@
 // of a variance report is that two people computing it get the same figure.
 
 import { decimal, moneyOrNull, ratioOrNull, type NumericInput } from "@/lib/money";
+import { partitionByCurrency } from "@/lib/currency-policy";
 
 /* ── version lifecycle, mirroring migrations 0068/0069 ────────────────────────────────── */
 
@@ -166,6 +167,8 @@ export function addDays(fromISO: string, days: number): string {
 export interface AccuracyInput {
   forecast: NumericInput;
   actual: NumericInput;
+  /** PHASE 2.2 (#64): alan varsa ve TRY değilse satır skorlanmaz, `foreignCount`ta sayılır. */
+  currency?: string | null;
 }
 
 export interface Accuracy {
@@ -176,6 +179,8 @@ export interface Accuracy {
   /** Mean absolute percentage error over non-zero forecasts; null when none qualify. */
   mape: number | null;
   zeroForecastLines: number;
+  /** TRY-dışı satır — doğruluk hesabına girmedi. */
+  foreignCount: number;
 }
 
 /**
@@ -195,8 +200,11 @@ export function accuracy(rows: AccuracyInput[]): Accuracy {
   let measured = 0;
   let pctCount = 0;
   let zeroForecast = 0;
+  // PHASE 2.2 (#64): para birimi taşıyan satırlarda yalnız TRY skorlanır; TRY-dışı satır
+  // doğruluk hesabına girmez (kur yok) ve `foreignCount` ile raporlanır.
+  const { comparable, foreignCount } = partitionByCurrency(rows);
 
-  for (const r of rows) {
+  for (const r of comparable) {
     const f = moneyOrNull(r.forecast);
     const a = moneyOrNull(r.actual);
     if (f === null || a === null) continue; // unmeasured — skipped, not scored
@@ -214,6 +222,7 @@ export function accuracy(rows: AccuracyInput[]): Accuracy {
 
   return {
     measuredCount: measured,
+    foreignCount,
     biasTotal: Number(bias.toFixed(2)),
     absoluteErrorTotal: Number(absErr.toFixed(2)),
     mape: pctCount === 0 ? null : Number(pctSum.div(decimal(pctCount)).toFixed(4)),
@@ -229,14 +238,22 @@ export function accuracy(rows: AccuracyInput[]): Accuracy {
  * includes it at full weight and says the confidence is unknown.
  */
 export function weightedNet(
-  lines: Array<{ amount: NumericInput; direction: "inflow" | "outflow"; confidence?: number | null }>,
+  lines: Array<{ amount: NumericInput; direction: "inflow" | "outflow"; confidence?: number | null; currency?: string | null }>,
 ): number {
   let total = decimal(0);
-  for (const l of lines) {
+  // PHASE 2.2 (#64): TRY-dışı satır toplama girmez — `weightedNetDetailed` sayısını verir.
+  for (const l of partitionByCurrency(lines).comparable) {
     const amt = moneyOrNull(l.amount);
     if (amt === null) continue;
     const signed = l.direction === "inflow" ? decimal(amt) : decimal(amt).times(decimal(-1));
     total = total.plus(signed.times(decimal(l.confidence ?? 1)));
   }
   return Number(total.toFixed(2));
+}
+
+/** `weightedNet` + toplam dışı bırakılan TRY-dışı satır sayısı. */
+export function weightedNetDetailed(
+  lines: Array<{ amount: NumericInput; direction: "inflow" | "outflow"; confidence?: number | null; currency?: string | null }>,
+): { total: number; foreignCount: number } {
+  return { total: weightedNet(lines), foreignCount: partitionByCurrency(lines).foreignCount };
 }

@@ -1,0 +1,88 @@
+{
+  "route": "/data/imports/v2",
+  "rows": [
+    {
+      "check": "rbac",
+      "role": "viewer",
+      "pageDenied": true,
+      "templateStatus": 403
+    },
+    {
+      "check": "rbac",
+      "role": "finance_approver",
+      "pageDenied": true,
+      "templateStatus": 403
+    },
+    {
+      "check": "download_template",
+      "status": 200,
+      "sha256": "f965a1ba745264497a425c180b9bf3d21445ae66cf0e418019666f16035770ee",
+      "bytes": 91440
+    },
+    {
+      "check": "file_safety",
+      "case": ".csv uzantısı",
+      "code": "BAD_EXTENSION",
+      "dbUnchanged": true
+    },
+    {
+      "check": "file_safety",
+      "case": "bozuk .xlsx (ZIP değil)",
+      "code": "CORRUPT_XLSX",
+      "dbUnchanged": true
+    },
+    {
+      "check": "file_safety",
+      "case": "V2 olmayan çalışma kitabı",
+      "code": "NOT_V2_SCHEMA",
+      "dbUnchanged": true
+    },
+    {
+      "check": "rbac_sheets",
+      "role": "finance_operator",
+      "code": "FORBIDDEN_SHEETS",
+      "dbUnchanged": true
+    },
+    {
+      "check": "preview_confirm_provenance",
+      "sha256": "7524a2209939d8c51fdbfa2b4626b12d7d578dbb4e0b2692e22bf36ff035bedf",
+      "workbookId": "5a27b22b-b9c3-4b44-9bc8-10e58afe969d",
+      "before": {
+        "workbooks": 0,
+        "importRows": 0,
+        "externalKeys": 0,
+        "payments": 0,
+        "products": 0,
+        "audits": 13
+      },
+      "afterPreview": {
+        "workbooks": 0,
+        "importRows": 0,
+        "externalKeys": 0,
+        "payments": 0,
+        "products": 0,
+        "audits": 13
+      },
+      "after1": {
+        "workbooks": 1,
+        "importRows": 54,
+        "externalKeys": 34,
+        "payments": 3,
+        "products": 3,
+        "audits": 14
+      },
+      "after2": {
+        "workbooks": 2,
+        "importRows": 108,
+        "externalKeys": 34,
+        "payments": 3,
+        "products": 3,
+        "audits": 15
+      },
+      "rowsRead": 54,
+      "rejected": 12,
+      "clientErrors": [],
+      "serverErrors": []
+    }
+  ]
+}

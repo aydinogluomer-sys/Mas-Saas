@@ -1,0 +1,50 @@
+{
+  "artifactKind": "mas-p1-launch-readiness-v1",
+  "measuredAtUtc": "2026-09-03T18:00:21.856Z",
+  "realRuntimeStarted": false,
+  "blocker": "PORT_3000_OCCUPIED_BY_UNRELATED_PROJECT (Elementis-SOTD, PID 9640)",
+  "portGuardBehavior": {
+    "file": "scripts/ops/runtime-port-guard.ts",
+    "rule": "ports = [3000, 3001, requestedPort] — her durumda 3000 ve 3001 kontrol edilir",
+    "wouldBlock": true,
+    "codeModified": false,
+    "commentedOut": false,
+    "bypassWritten": false,
+    "masAllowParallelRuntimeUsed": false
+  },
+  "readyPreconditions": {
+    "cleanRc": "PASS",
+    "quality": "bkz. 02-quality.json",
+    "dbBaseline": "PASS",
+    "usbRollback": "PASS",
+    "otherMasRuntime": "YOK",
+    "port3001": "BOS",
+    "port3000": "DOLU (yabanci proje)"
+  },
+  "nextTurnLaunchPlan": {
+    "worktree": "C:\\Users\\Trade Bilisim\\Mas-Saas-RC-9e23ad7",
+    "codeSha": "9e23ad78ee65adc9beafb6cf58f6e477b26765bc",
+    "command": "pnpm start",
+    "supervision": [
+      "stdout/stderr kalici bir dosyaya sanitize edilerek yazilacak; log akisi surecin omru boyunca kaybolmayacak",
+      "baslatilan surecin PID'i, baslangic zamani ve binary yolu kaydedilecek",
+      "supervision sahibi sonlandirilsa bile runtime'in yetim kalmadigi dogrulanacak (Attempt-04'te bu oldu)",
+      "start oncesi ve sonrasi 86 tablo parmak izi alinacak"
+    ],
+    "expectedStartupDelta": {
+      "note": "P1 duzeltmesinden SONRA ilk gercek acilis. Eylul penceresi dolu oldugu icin beklenen:",
+      "paymentInstances": "502 -> 502, INSERT 0",
+      "auditLogs": "814 -> 814, DELTA 0",
+      "changedFrom": "Duzeltme oncesinde bu deger +26 olurdu. Bu, P1'in gercek runtime uzerindeki ilk dogrulamasi olacak."
+    },
+    "precondition": "Port 3000 ve 3001 bos olmali. Yabanci sureci durdurmak KULLANICININ karari."
+  },
+  "authenticatedSmokePlan": {
+    "testUserCreatedInRealDb": false,
+    "credentialRequestedThisTurn": false,
+    "optionA": "Kullanici kendi tarayicisinda manuel login yapar; salt-okunur smoke bir checklist ile kaydedilir",
+    "optionB": "Kimlik yalniz yerel gecici bir mekanizmayla saglanir; secret evidence/log/sohbete YAZILMAZ",
+    "note": "Iki secenek de gercek DB'ye test kullanicisi eklemez."
+  },
+  "visualBaseline": "PENDING MANUAL REVIEW — --update-snapshots kullanilmadi"
+}

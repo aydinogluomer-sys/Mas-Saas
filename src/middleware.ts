@@ -24,6 +24,11 @@ function isApiPath(pathname: string): boolean {
   return pathname === "/api" || pathname.startsWith("/api/");
 }
 
+const TELEGRAM_ASSISTANT_PATH = "/api/telegram/assistant";
+const TELEGRAM_WEBHOOK_PATH = "/api/telegram/webhook";
+const TELEGRAM_MINIAPP_PATH = "/telegram/miniapp";
+const TELEGRAM_MINIAPP_API = "/api/telegram/miniapp";
+
 export function middleware(request: NextRequest) {
   // Faz 16: one correlation id per request, resolved before anything can fail, so even the
   // redirect below is traceable. Set on the *forwarded* request headers (server components
@@ -48,6 +53,20 @@ export function middleware(request: NextRequest) {
     }
   }
 
+  // This exact machine-to-machine route has no browser session cookie. Its handler performs
+  // constant-time shared-secret and Chat ID checks before touching business data.
+  if (
+    request.nextUrl.pathname === TELEGRAM_ASSISTANT_PATH ||
+    request.nextUrl.pathname === TELEGRAM_WEBHOOK_PATH ||
+    request.nextUrl.pathname.startsWith(TELEGRAM_MINIAPP_PATH) ||
+    request.nextUrl.pathname.startsWith(TELEGRAM_MINIAPP_API) ||
+    request.nextUrl.pathname.startsWith("/api/erp/")
+  ) {
+    const response = NextResponse.next({ request: { headers: forwarded } });
+    response.headers.set(CORRELATION_HEADER, requestId);
+    return response;
+  }
+
   const token = request.cookies.get(SESSION_COOKIE)?.value;
   if (!token) {
     const loginUrl = new URL("/login", request.url);
@@ -66,5 +85,5 @@ export const config = {
   // `ready` joins the allowlist alongside `health` (Faz 16). Without it the probe would be
   // answered by a redirect to /login and every monitor would read the app as "up" while
   // measuring the login page.
-  matcher: ["/((?!login|health|ready|version|_next/static|_next/image|favicon.ico).*)"],
+  matcher: ["/((?!login|health|ready|version|robots.txt|manifest.json|sw.js|icon.svg|_next/static|_next/image|favicon.ico).*)"],
 };

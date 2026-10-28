@@ -1,0 +1,52 @@
+{
+  "artifactKind": "mas-p1-real-source-no-write-v1",
+  "measuredAtUtc": "2026-09-03T16:57:34.615Z",
+  "database": "mas_radar_dev",
+  "transactionReadOnly": "on",
+  "expected": {
+    "payment_instances": 502,
+    "audit_logs": 814,
+    "p24bRemaining": "0/42",
+    "taskOpen": 4,
+    "unpaidTry": 13595000,
+    "wholeDbFingerprint": "85358cfd27767001a3cdf00e1c5979a05d471a409876afc2586567a38432a929"
+  },
+  "measured": {
+    "payment_instances": 502,
+    "audit_logs": 814,
+    "p24bRemaining": "0/42",
+    "taskOpen": 4,
+    "unpaidTry": 13595000,
+    "wholeDbFingerprint": "85358cfd27767001a3cdf00e1c5979a05d471a409876afc2586567a38432a929",
+    "ledger": "0087/87",
+    "baseTableCount": 86,
+    "action_items": 6,
+    "approvals": 68,
+    "payments": 19,
+    "users": 13,
+    "settings": 7,
+    "targetFingerprint": "5e84634660528f2076f7bbef2a7e7e8f05047c13353679c53f0097798e37882d"
+  },
+  "allMatch": true,
+  "realDbWritesThisFixTurn": 0,
+  "engineCounters": {
+    "atTurnStart": "ins=97 upd=40 del=42",
+    "atTurnEnd": "ins=97 upd=40 del=42",
+    "interpretation": "Motorun kendi sayaci turun basindan sonuna hic kimildamadi. Runtime durdurma, klon olusturma, iki prepare-runtime kosusu, pozitif kontrol, guvenlik matrisi ve tum kalite kapilari gercek veritabanina TEK SATIR yazmadi."
+  },
+  "disposableTargetsUsed": [
+    "mas_radar_p1_audit_fix_verify",
+    "mas_radar_p1_positive_control_verify"
+  ],
+  "disposableGuardNegativeControl": "runner 'mas_radar_dev' hedeflendiginde exit 3 ile REDDETTI — hicbir sey calistirilmadi",
+  "masRuntimeRunning": false,
+  "port3000Note": {
+    "listening": true,
+    "owner": "Elementis-SOTD projesi (next dev) — MAS DEGIL",
+    "pid": 6816,
+    "touchesMasRadarDev": false,
+    "evidence": "mas_radar_dev motor sayaclari degismedi ve pg_stat_activity'de MAS yazicisi yok",
+    "action": "Dokunulmadi — farkli bir proje, bu yetkinin tamamen disinda"
+  },
+  "masRuntimeRestarted": false
+}

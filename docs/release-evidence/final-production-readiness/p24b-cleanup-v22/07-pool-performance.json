@@ -1,0 +1,22 @@
+{
+  "generatedAtUtc": "2026-08-30T18:43:15.511Z",
+  "database": "mas_radar_p24b_v22smoke_drill",
+  "iterations": 7,
+  "poolPath": {
+    "label": "Pool → gather → Promise.all",
+    "medianMs": 39.9,
+    "minMs": 34.5,
+    "maxMs": 180
+  },
+  "clientPath": {
+    "label": "PoolClient → gather → sequential",
+    "medianMs": 87.4,
+    "minMs": 76.8,
+    "maxMs": 98
+  },
+  "speedup": 2.19,
+  "resultsIdentical": true,
+  "metricCount": 24,
+  "note": "Sıralama kanıtı tests/pg-concurrency.test.ts'te; bu yalnız farkın gerçek iş olduğunu gösterir.",
+  "deterministicProof": "tests/pg-concurrency.test.ts — SIRALAMA iddiasi (zamanlama esigi degil): Pool'da 3 is de birincisi bitmeden basliyor; PoolClient'ta her is bir sonrakinden once bitiyor."
+}

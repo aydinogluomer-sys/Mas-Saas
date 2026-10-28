@@ -1,0 +1,20 @@
+{
+  "module": "scripts/db/p24b-cleanup-fingerprint.ts",
+  "exports": [
+    "targetFingerprint",
+    "wholeDbFingerprintMap",
+    "digestOfMap",
+    "wholeDbFingerprintDigest"
+  ],
+  "why": "v2.1 whole-db fingerprint'i iki dosyada ayri uyguluyordu; iki uygulama zamanla kayabilir ve karsilastirma sessizce anlamsizlasir.",
+  "determinism": [
+    "tablolar schema,name sirali",
+    "satirlar kendi metin formuna gore sirali (fiziksel sira/VACUUM etkisiz)",
+    "schema.table:rowCount:contentHash",
+    "birlestirilmis kanonik metin -> SHA256"
+  ],
+  "usedBy": [
+    "scripts/db/p24b-cleanup-binding.ts",
+    "scripts/db/p24b-fixture-cleanup.ts"
+  ]
+}

@@ -1,0 +1,58 @@
+{
+  "artifactKind": "mas-p1-promotion-v1",
+  "measuredAtUtc": "2026-09-03T18:00:21.856Z",
+  "verdict": "PASS",
+  "preState": {
+    "originRelease": "c71366a775be079e61d9f842a8659cbc2caa9499",
+    "originFix": "9e23ad78ee65adc9beafb6cf58f6e477b26765bc",
+    "fixWorktreeClean": true
+  },
+  "ancestryProof": {
+    "parentOfFix": "c71366a775be079e61d9f842a8659cbc2caa9499",
+    "parentCount": 1,
+    "isMergeCommit": false,
+    "cIsAncestorOfFix": true,
+    "method": "git merge-base --is-ancestor c71366a 9e23ad7"
+  },
+  "overlapCheck": {
+    "question": "Fix'in dokundugu yollar kullanicinin kirli dosyalariyla cakisiyor mu?",
+    "fixTouchedPaths": 13,
+    "userDirtyPaths": 20,
+    "overlappingPaths": 0,
+    "conclusion": "Fast-forward kullanici dosyalarina dokunamaz — kesisim bos."
+  },
+  "promotion": {
+    "method": "git merge --ff-only 9e23ad7 (ana worktree, release dali checkout)",
+    "oldSha": "c71366a775be079e61d9f842a8659cbc2caa9499",
+    "newSha": "9e23ad78ee65adc9beafb6cf58f6e477b26765bc",
+    "fastForward": true,
+    "mergeCommitCreated": false,
+    "parentCountAfter": 1,
+    "cherryPick": false,
+    "rebase": false,
+    "forcePush": false,
+    "historyRewrite": false,
+    "push": "c71366a..9e23ad7 release/production-readiness-hardening (normal, non-force)"
+  },
+  "postGate": {
+    "originRelease": "9e23ad78ee65adc9beafb6cf58f6e477b26765bc",
+    "localRelease": "9e23ad78ee65adc9beafb6cf58f6e477b26765bc",
+    "aheadBehind": "0/0",
+    "originFix": "9e23ad78ee65adc9beafb6cf58f6e477b26765bc"
+  },
+  "userWorktreeUntouched": {
+    "path": "C:\\Users\\Trade Bilisim\\Mas Saas",
+    "dirtyEntriesBefore": 20,
+    "dirtyEntriesAfter": 20,
+    "fileHashesUnchanged": [
+      ".env.example",
+      "src/components/ui/module-tabs.tsx",
+      "src/lib/env.ts",
+      "src/middleware.ts",
+      "bot.py",
+      "src/middleware.test.ts"
+    ],
+    "telegramMiddlewareEnvChangesTouched": false
+  },
+  "fixPresentInReleaseTree": true
+}

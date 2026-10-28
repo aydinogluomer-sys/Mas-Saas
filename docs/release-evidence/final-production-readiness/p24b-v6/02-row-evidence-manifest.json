@@ -1,0 +1,1800 @@
+{
+  "generatedAtUtc": "2026-08-30T08:23:01.656Z",
+  "database": "mas_radar_dev",
+  "discoveryBaseSha": "1675c92a0aea120d200b9b10c2f260e57ad9b051",
+  "evidenceRule": "DELETE_TARGET için en az 2 BAĞIMSIZ kanıt sınıfı zorunlu. TIME sayıma DAHİL DEĞİLDİR.",
+  "counts": {
+    "users": 6,
+    "action_items": 4,
+    "payments": 1,
+    "settings": 1,
+    "approvals": 4,
+    "payment_instances": 26
+  },
+  "total": 42,
+  "classificationTotals": {
+    "DELETE_TARGET": 42
+  },
+  "rows": [
+    {
+      "table": "users",
+      "id": "92cee4d3-c649-432d-b507-546d87936a76",
+      "rowFingerprint": "1baf37ed68679abf3040b36e8bfb41e1",
+      "criticalFields": {
+        "username": "p24b_fixture_a",
+        "role": "viewer",
+        "display_name": "P24B fixture a"
+      },
+      "classification": "DELETE_TARGET",
+      "incidentId": "I1",
+      "xmin": "537249",
+      "discoveryMethods": [
+        "TEXT",
+        "TIME"
+      ],
+      "baselineAbsent": true,
+      "notes": [],
+      "evidence": [
+        {
+          "class": "TEXT",
+          "detail": "username = 'p24b_fixture_a' — roles-rls-verify.ts fixture adı"
+        },
+        {
+          "class": "TRANSACTION_LINEAGE",
+          "detail": "xmin 537249"
+        },
+        {
+          "class": "BASELINE_ABSENT",
+          "detail": "verify_empty / final_rc_clone / preflight_clone → 0"
+        },
+        {
+          "class": "TIME",
+          "detail": "created_at 2026-08-25 10:09:08.427229+00"
+        }
+      ],
+      "independentEvidenceClassCount": 3,
+      "deleteOrder": 5
+    },
+    {
+      "table": "users",
+      "id": "a794163c-6ab5-4d00-a1b5-2b0c563be4e3",
+      "rowFingerprint": "c49ed0dd1a31ca7b88b173c3836ca4aa",
+      "criticalFields": {
+        "username": "p24b_fixture_b",
+        "role": "viewer",
+        "display_name": "P24B fixture b"
+      },
+      "classification": "DELETE_TARGET",
+      "incidentId": "I1",
+      "xmin": "537250",
+      "discoveryMethods": [
+        "TEXT",
+        "TIME"
+      ],
+      "baselineAbsent": true,
+      "notes": [],
+      "evidence": [
+        {
+          "class": "TEXT",
+          "detail": "username = 'p24b_fixture_b' — roles-rls-verify.ts fixture adı"
+        },
+        {
+          "class": "TRANSACTION_LINEAGE",
+          "detail": "xmin 537250"
+        },
+        {
+          "class": "BASELINE_ABSENT",
+          "detail": "verify_empty / final_rc_clone / preflight_clone → 0"
+        },
+        {
+          "class": "TIME",
+          "detail": "created_at 2026-08-25 10:09:08.438386+00"
+        }
+      ],
+      "independentEvidenceClassCount": 3,
+      "deleteOrder": 5
+    },
+    {
+      "table": "users",
+      "id": "33796a14-c173-45c7-a784-33e44e8996a0",
+      "rowFingerprint": "8efbc5fe99e1d01a1b8f63cb87ba06f6",
+      "criticalFields": {
+        "username": "p24b_mk_mujyy6",
+        "role": "finance_approver",
+        "display_name": "P24B maker"
+      },
+      "classification": "DELETE_TARGET",
+      "incidentId": "I1",
+      "xmin": "537425",
+      "discoveryMethods": [
+        "TEXT",
+        "TIME"
+      ],
+      "baselineAbsent": true,
+      "notes": [],
+      "evidence": [
+        {
+          "class": "TEXT",
+          "detail": "username = 'p24b_mk_mujyy6' — roles-rls-verify.ts fixture adı"
+        },
+        {
+          "class": "TRANSACTION_LINEAGE",
+          "detail": "xmin 537425"
+        },
+        {
+          "class": "BASELINE_ABSENT",
+          "detail": "verify_empty / final_rc_clone / preflight_clone → 0"
+        },
+        {
+          "class": "TIME",
+          "detail": "created_at 2026-08-25 10:10:38.78923+00"
+        }
+      ],
+      "independentEvidenceClassCount": 3,
+      "deleteOrder": 5
+    },
+    {
+      "table": "users",
+      "id": "19688698-2eb2-40bb-9fc5-37cebdc7e824",
+      "rowFingerprint": "adb60bea495adc9142dd64ef3705d0af",
+      "criticalFields": {
+        "username": "p24b_op_9bcmx5",
+        "role": "finance_operator",
+        "display_name": "P24B op"
+      },
+      "classification": "DELETE_TARGET",
+      "incidentId": "I1",
+      "xmin": "537427",
+      "discoveryMethods": [
+        "TEXT",
+        "TIME"
+      ],
+      "baselineAbsent": true,
+      "notes": [],
+      "evidence": [
+        {
+          "class": "TEXT",
+          "detail": "username = 'p24b_op_9bcmx5' — roles-rls-verify.ts fixture adı"
+        },
+        {
+          "class": "TRANSACTION_LINEAGE",
+          "detail": "xmin 537427"
+        },
+        {
+          "class": "BASELINE_ABSENT",
+          "detail": "verify_empty / final_rc_clone / preflight_clone → 0"
+        },
+        {
+          "class": "TIME",
+          "detail": "created_at 2026-08-25 10:10:38.837212+00"
+        }
+      ],
+      "independentEvidenceClassCount": 3,
+      "deleteOrder": 5
+    },
+    {
+      "table": "users",
+      "id": "cd3445b1-9c74-4703-b348-9f09a704a3d3",
+      "rowFingerprint": "3cff96a4f40eb06369fdcddc25a86c1f",
+      "criticalFields": {
+        "username": "p24b_mk_rqn3yj",
+        "role": "finance_approver",
+        "display_name": "P24B maker"
+      },
+      "classification": "DELETE_TARGET",
+      "incidentId": "I2",
+      "xmin": "564610",
+      "discoveryMethods": [
+        "TEXT",
+        "TIME"
+      ],
+      "baselineAbsent": true,
+      "notes": [],
+      "evidence": [
+        {
+          "class": "TEXT",
+          "detail": "username = 'p24b_mk_rqn3yj' — roles-rls-verify.ts fixture adı"
+        },
+        {
+          "class": "TRANSACTION_LINEAGE",
+          "detail": "xmin 564610"
+        },
+        {
+          "class": "BASELINE_ABSENT",
+          "detail": "verify_empty / final_rc_clone / preflight_clone → 0"
+        },
+        {
+          "class": "TIME",
+          "detail": "created_at 2026-08-26 15:16:19.226684+00"
+        }
+      ],
+      "independentEvidenceClassCount": 3,
+      "deleteOrder": 5
+    },
+    {
+      "table": "users",
+      "id": "4b6d2264-a608-4b36-90aa-17fcfa13bb3f",
+      "rowFingerprint": "5694a9cd04f3b17e87bbd3256835396d",
+      "criticalFields": {
+        "username": "p24b_op_ds1xmv",
+        "role": "finance_operator",
+        "display_name": "P24B op"
+      },
+      "classification": "DELETE_TARGET",
+      "incidentId": "I2",
+      "xmin": "564612",
+      "discoveryMethods": [
+        "TEXT",
+        "TIME"
+      ],
+      "baselineAbsent": true,
+      "notes": [],
+      "evidence": [
+        {
+          "class": "TEXT",
+          "detail": "username = 'p24b_op_ds1xmv' — roles-rls-verify.ts fixture adı"
+        },
+        {
+          "class": "TRANSACTION_LINEAGE",
+          "detail": "xmin 564612"
+        },
+        {
+          "class": "BASELINE_ABSENT",
+          "detail": "verify_empty / final_rc_clone / preflight_clone → 0"
+        },
+        {
+          "class": "TIME",
+          "detail": "created_at 2026-08-26 15:16:19.285327+00"
+        }
+      ],
+      "independentEvidenceClassCount": 3,
+      "deleteOrder": 5
+    },
+    {
+      "table": "action_items",
+      "id": "639daf7e-9c3e-4244-9ebf-6bef37b57971",
+      "rowFingerprint": "25416b44f332c300d5df67e5a90c5927",
+      "criticalFields": {
+        "title": "P24B mine",
+        "status": "open",
+        "created_by": "19688698-2eb2-40bb-9fc5-37cebdc7e824"
+      },
+      "classification": "DELETE_TARGET",
+      "incidentId": "I1",
+      "xmin": "537427",
+      "discoveryMethods": [
+        "TEXT",
+        "FK",
+        "TIME"
+      ],
+      "baselineAbsent": true,
+      "evidence": [
+        {
+          "class": "TEXT",
+          "detail": "title = 'P24B mine'"
+        },
+        {
+          "class": "FK",
+          "detail": "created_by → P24B kullanıcısı 19688698-2eb2-40bb-9fc5-37cebdc7e824"
+        },
+        {
+          "class": "TRANSACTION_LINEAGE",
+          "detail": "xmin 537427 — aynı commit bir P24B kullanıcısını da yazdı"
+        },
+        {
+          "class": "BASELINE_ABSENT",
+          "detail": "temiz taban ve release klonlarında yok"
+        },
+        {
+          "class": "TIME",
+          "detail": "created_at 2026-08-25 10:10:38.837212+00"
+        }
+      ],
+      "notes": [],
+      "independentEvidenceClassCount": 4,
+      "deleteOrder": 1
+    },
+    {
+      "table": "action_items",
+      "id": "12d7532f-a730-44dd-9b91-43cf501a6871",
+      "rowFingerprint": "bd1e08df99fe0e69a01d93532507c4b0",
+      "criticalFields": {
+        "title": "P24B theirs",
+        "status": "open",
+        "created_by": null
+      },
+      "classification": "DELETE_TARGET",
+      "incidentId": "I1",
+      "xmin": "537427",
+      "discoveryMethods": [
+        "TEXT",
+        "TIME"
+      ],
+      "baselineAbsent": true,
+      "evidence": [
+        {
+          "class": "TEXT",
+          "detail": "title = 'P24B theirs'"
+        },
+        {
+          "class": "TRANSACTION_LINEAGE",
+          "detail": "xmin 537427 — aynı commit bir P24B kullanıcısını da yazdı"
+        },
+        {
+          "class": "BASELINE_ABSENT",
+          "detail": "temiz taban ve release klonlarında yok"
+        },
+        {
+          "class": "TIME",
+          "detail": "created_at 2026-08-25 10:10:38.837212+00"
+        }
+      ],
+      "notes": [
+        "created_by NULL — FK closure bu satırı KAÇIRIRDI, metin yakaladı"
+      ],
+      "independentEvidenceClassCount": 3,
+      "deleteOrder": 1
+    },
+    {
+      "table": "action_items",
+      "id": "cdcb3e57-d0c3-46ac-afe7-997419720548",
+      "rowFingerprint": "0a6627d5816e3fb414b9e88bf10f27a8",
+      "criticalFields": {
+        "title": "P24B mine",
+        "status": "open",
+        "created_by": "4b6d2264-a608-4b36-90aa-17fcfa13bb3f"
+      },
+      "classification": "DELETE_TARGET",
+      "incidentId": "I2",
+      "xmin": "564612",
+      "discoveryMethods": [
+        "TEXT",
+        "FK",
+        "TIME"
+      ],
+      "baselineAbsent": true,
+      "evidence": [
+        {
+          "class": "TEXT",
+          "detail": "title = 'P24B mine'"
+        },
+        {
+          "class": "FK",
+          "detail": "created_by → P24B kullanıcısı 4b6d2264-a608-4b36-90aa-17fcfa13bb3f"
+        },
+        {
+          "class": "TRANSACTION_LINEAGE",
+          "detail": "xmin 564612 — aynı commit bir P24B kullanıcısını da yazdı"
+        },
+        {
+          "class": "BASELINE_ABSENT",
+          "detail": "temiz taban ve release klonlarında yok"
+        },
+        {
+          "class": "TIME",
+          "detail": "created_at 2026-08-26 15:16:19.285327+00"
+        }
+      ],
+      "notes": [],
+      "independentEvidenceClassCount": 4,
+      "deleteOrder": 1
+    },
+    {
+      "table": "action_items",
+      "id": "cf55cbbc-feaa-4e79-9517-e41d22261e77",
+      "rowFingerprint": "95c60406bff72f5a249e7b063ce25435",
+      "criticalFields": {
+        "title": "P24B theirs",
+        "status": "open",
+        "created_by": null
+      },
+      "classification": "DELETE_TARGET",
+      "incidentId": "I2",
+      "xmin": "564612",
+      "discoveryMethods": [
+        "TEXT",
+        "TIME"
+      ],
+      "baselineAbsent": true,
+      "evidence": [
+        {
+          "class": "TEXT",
+          "detail": "title = 'P24B theirs'"
+        },
+        {
+          "class": "TRANSACTION_LINEAGE",
+          "detail": "xmin 564612 — aynı commit bir P24B kullanıcısını da yazdı"
+        },
+        {
+          "class": "BASELINE_ABSENT",
+          "detail": "temiz taban ve release klonlarında yok"
+        },
+        {
+          "class": "TIME",
+          "detail": "created_at 2026-08-26 15:16:19.285327+00"
+        }
+      ],
+      "notes": [
+        "created_by NULL — FK closure bu satırı KAÇIRIRDI, metin yakaladı"
+      ],
+      "independentEvidenceClassCount": 3,
+      "deleteOrder": 1
+    },
+    {
+      "table": "payments",
+      "id": "7b300bfe-944f-468b-91fa-2de65b7cfee5",
+      "rowFingerprint": "3b5bc8282226e76d556265c4d0b352f7",
+      "criticalFields": {
+        "name": "P24B fixture",
+        "recurrence_type": "monthly",
+        "due_day": "15",
+        "default_amount": "1000.00",
+        "currency": "TRY"
+      },
+      "classification": "DELETE_TARGET",
+      "incidentId": "I1",
+      "xmin": "537247",
+      "discoveryMethods": [
+        "TEXT",
+        "TIME"
+      ],
+      "baselineAbsent": true,
+      "notes": [
+        "ROOT_CONTAMINATION — amplifikasyonun kaynağı olan şablon satır"
+      ],
+      "evidence": [
+        {
+          "class": "TEXT",
+          "detail": "name = 'P24B fixture'"
+        },
+        {
+          "class": "TRANSACTION_LINEAGE",
+          "detail": "xmin 537247"
+        },
+        {
+          "class": "BASELINE_ABSENT",
+          "detail": "temiz taban ve release klonlarında yok"
+        },
+        {
+          "class": "TIME",
+          "detail": "created_at 2026-08-25 10:09:08.37789+00"
+        }
+      ],
+      "independentEvidenceClassCount": 3,
+      "deleteOrder": 4
+    },
+    {
+      "table": "settings",
+      "id": "p24b_fixture_setting",
+      "rowFingerprint": "64552988c53ca213b229a8f60fe70324",
+      "criticalFields": {
+        "key": "p24b_fixture_setting",
+        "value": "{\"fixture\": true}"
+      },
+      "classification": "DELETE_TARGET",
+      "incidentId": "I1",
+      "xmin": "537248",
+      "discoveryMethods": [
+        "TEXT"
+      ],
+      "baselineAbsent": true,
+      "notes": [
+        "created_at kolonu yok; zaman ataması updated_at üzerinden"
+      ],
+      "evidence": [
+        {
+          "class": "TEXT",
+          "detail": "key = 'p24b_fixture_setting'"
+        },
+        {
+          "class": "BASELINE_ABSENT",
+          "detail": "settings tablosu temiz tabanda bu anahtarı taşımıyor"
+        },
+        {
+          "class": "TIME",
+          "detail": "updated_at 2026-08-25 10:09:08.419562+00"
+        }
+      ],
+      "independentEvidenceClassCount": 2,
+      "deleteOrder": 6
+    },
+    {
+      "table": "approvals",
+      "id": "1fc76c28-9d71-4ce3-91a6-f1e9f94e5dd4",
+      "rowFingerprint": "67b3dd422961400359d63234653b4fa5",
+      "criticalFields": {
+        "requested_by": "33796a14-c173-45c7-a784-33e44e8996a0",
+        "subject_table": "invoices",
+        "subject_id": "7a8f5051-1f58-4817-9ec8-a1dc49ef261f",
+        "request_kind": "other",
+        "status": "pending"
+      },
+      "classification": "DELETE_TARGET",
+      "incidentId": "I1",
+      "xmin": "537425",
+      "discoveryMethods": [
+        "UUID",
+        "FK",
+        "TIME"
+      ],
+      "baselineAbsent": true,
+      "evidence": [
+        {
+          "class": "FK",
+          "detail": "requested_by → P24B maker 33796a14-c173-45c7-a784-33e44e8996a0"
+        },
+        {
+          "class": "TRANSACTION_LINEAGE",
+          "detail": "xmin 537425 — aynı commit metin-doğrulanmış bir P24B kullanıcısını da yazdı"
+        },
+        {
+          "class": "SOURCE_PAIR",
+          "detail": "roles-rls-verify.ts:416-420 tek asOwner() transaction'ında iki approval üretir (invoices / gen_random_uuid() / other / pending; requested_by = maker | null). Ölçülen şekil: invoices / other / pending / requested_by=33796a14-c173-45c7-a784-33e44e8996a0"
+        },
+        {
+          "class": "BASELINE_ABSENT",
+          "detail": "temiz taban ve release klonlarında yok"
+        },
+        {
+          "class": "TIME",
+          "detail": "created_at 2026-08-25 10:10:38.78923+00"
+        }
+      ],
+      "notes": [],
+      "independentEvidenceClassCount": 4,
+      "deleteOrder": 2
+    },
+    {
+      "table": "approvals",
+      "id": "62cd196c-d517-44c8-9431-3cce52d8b81a",
+      "rowFingerprint": "70f8d44d28b5dab1de181fd508d8005a",
+      "criticalFields": {
+        "requested_by": null,
+        "subject_table": "invoices",
+        "subject_id": "5e91aa49-a241-4720-9820-224c281417b9",
+        "request_kind": "other",
+        "status": "pending"
+      },
+      "classification": "DELETE_TARGET",
+      "incidentId": "I1",
+      "xmin": "537425",
+      "discoveryMethods": [
+        "TIME",
+        "TRANSACTION_LINEAGE"
+      ],
+      "baselineAbsent": true,
+      "evidence": [
+        {
+          "class": "TRANSACTION_LINEAGE",
+          "detail": "xmin 537425 — aynı commit metin-doğrulanmış bir P24B kullanıcısını da yazdı"
+        },
+        {
+          "class": "SOURCE_PAIR",
+          "detail": "roles-rls-verify.ts:416-420 tek asOwner() transaction'ında iki approval üretir (invoices / gen_random_uuid() / other / pending; requested_by = maker | null). Ölçülen şekil: invoices / other / pending / requested_by=NULL"
+        },
+        {
+          "class": "BASELINE_ABSENT",
+          "detail": "temiz taban ve release klonlarında yok"
+        },
+        {
+          "class": "TIME",
+          "detail": "created_at 2026-08-25 10:10:38.78923+00"
+        }
+      ],
+      "notes": [
+        "requested_by NULL — ne metin ne FK; TEXT ve FK taramaları bu satırı KAÇIRDI",
+        "subject_id gen_random_uuid() olduğu için invoices'a sarkan referans (invoices tablosu boş)"
+      ],
+      "independentEvidenceClassCount": 3,
+      "deleteOrder": 2
+    },
+    {
+      "table": "approvals",
+      "id": "8f656a4d-d2e4-40f2-b698-277f6278008b",
+      "rowFingerprint": "02216f1a14baa8e830eec08c1e275638",
+      "criticalFields": {
+        "requested_by": "cd3445b1-9c74-4703-b348-9f09a704a3d3",
+        "subject_table": "invoices",
+        "subject_id": "70b7f2ae-6092-4747-877a-78259fc1494f",
+        "request_kind": "other",
+        "status": "pending"
+      },
+      "classification": "DELETE_TARGET",
+      "incidentId": "I2",
+      "xmin": "564610",
+      "discoveryMethods": [
+        "UUID",
+        "FK",
+        "TIME"
+      ],
+      "baselineAbsent": true,
+      "evidence": [
+        {
+          "class": "FK",
+          "detail": "requested_by → P24B maker cd3445b1-9c74-4703-b348-9f09a704a3d3"
+        },
+        {
+          "class": "TRANSACTION_LINEAGE",
+          "detail": "xmin 564610 — aynı commit metin-doğrulanmış bir P24B kullanıcısını da yazdı"
+        },
+        {
+          "class": "SOURCE_PAIR",
+          "detail": "roles-rls-verify.ts:416-420 tek asOwner() transaction'ında iki approval üretir (invoices / gen_random_uuid() / other / pending; requested_by = maker | null). Ölçülen şekil: invoices / other / pending / requested_by=cd3445b1-9c74-4703-b348-9f09a704a3d3"
+        },
+        {
+          "class": "BASELINE_ABSENT",
+          "detail": "temiz taban ve release klonlarında yok"
+        },
+        {
+          "class": "TIME",
+          "detail": "created_at 2026-08-26 15:16:19.226684+00"
+        }
+      ],
+      "notes": [],
+      "independentEvidenceClassCount": 4,
+      "deleteOrder": 2
+    },
+    {
+      "table": "approvals",
+      "id": "f4d7db30-44ce-45c0-b4ce-536a0e2886c9",
+      "rowFingerprint": "2a5efb901c8c467f8c6868d8c577b24e",
+      "criticalFields": {
+        "requested_by": null,
+        "subject_table": "invoices",
+        "subject_id": "48b3eceb-7b43-4346-bc91-ed0228f6fcb5",
+        "request_kind": "other",
+        "status": "pending"
+      },
+      "classification": "DELETE_TARGET",
+      "incidentId": "I2",
+      "xmin": "564610",
+      "discoveryMethods": [
+        "TIME",
+        "TRANSACTION_LINEAGE"
+      ],
+      "baselineAbsent": true,
+      "evidence": [
+        {
+          "class": "TRANSACTION_LINEAGE",
+          "detail": "xmin 564610 — aynı commit metin-doğrulanmış bir P24B kullanıcısını da yazdı"
+        },
+        {
+          "class": "SOURCE_PAIR",
+          "detail": "roles-rls-verify.ts:416-420 tek asOwner() transaction'ında iki approval üretir (invoices / gen_random_uuid() / other / pending; requested_by = maker | null). Ölçülen şekil: invoices / other / pending / requested_by=NULL"
+        },
+        {
+          "class": "BASELINE_ABSENT",
+          "detail": "temiz taban ve release klonlarında yok"
+        },
+        {
+          "class": "TIME",
+          "detail": "created_at 2026-08-26 15:16:19.226684+00"
+        }
+      ],
+      "notes": [
+        "requested_by NULL — ne metin ne FK; TEXT ve FK taramaları bu satırı KAÇIRDI",
+        "subject_id gen_random_uuid() olduğu için invoices'a sarkan referans (invoices tablosu boş)"
+      ],
+      "independentEvidenceClassCount": 3,
+      "deleteOrder": 2
+    },
+    {
+      "table": "payment_instances",
+      "id": "3ab000e6-5187-468d-bf2e-2af882a2a3a2",
+      "rowFingerprint": "b4d2a692f31247b048ac7d5829898094",
+      "criticalFields": {
+        "payment_id": "7b300bfe-944f-468b-91fa-2de65b7cfee5",
+        "amount": "1000.00",
+        "due_date": "2026-08-15",
+        "amount_source": "generated",
+        "status": "unpaid"
+      },
+      "classification": "DELETE_TARGET",
+      "incidentId": "A1",
+      "xmin": "537435",
+      "discoveryMethods": [
+        "FK",
+        "TIME"
+      ],
+      "baselineAbsent": true,
+      "notes": [
+        "AMPLIFIER ürünü — fixture şablonundan türetildi, kendisi P24B metni taşımaz"
+      ],
+      "evidence": [
+        {
+          "class": "FK",
+          "detail": "payment_id = 7b300bfe-944f-468b-91fa-2de65b7cfee5 ('P24B fixture')"
+        },
+        {
+          "class": "DERIVED_FROM_FIXTURE",
+          "detail": "amount_source = 'generated' — üreteç ürünü"
+        },
+        {
+          "class": "BASELINE_ABSENT",
+          "detail": "temiz taban ve release klonlarında yok"
+        },
+        {
+          "class": "TIME",
+          "detail": "created_at 2026-08-25 10:19:27.356405+00"
+        }
+      ],
+      "independentEvidenceClassCount": 3,
+      "deleteOrder": 3
+    },
+    {
+      "table": "payment_instances",
+      "id": "79eccf48-65ff-4427-af7b-9e332488c1bd",
+      "rowFingerprint": "b8418707d0aa2102248ddc7ee1be8968",
+      "criticalFields": {
+        "payment_id": "7b300bfe-944f-468b-91fa-2de65b7cfee5",
+        "amount": "1000.00",
+        "due_date": "2026-07-15",
+        "amount_source": "generated",
+        "status": "unpaid"
+      },
+      "classification": "DELETE_TARGET",
+      "incidentId": "A1",
+      "xmin": "537439",
+      "discoveryMethods": [
+        "FK",
+        "TIME"
+      ],
+      "baselineAbsent": true,
+      "notes": [
+        "AMPLIFIER ürünü — fixture şablonundan türetildi, kendisi P24B metni taşımaz"
+      ],
+      "evidence": [
+        {
+          "class": "FK",
+          "detail": "payment_id = 7b300bfe-944f-468b-91fa-2de65b7cfee5 ('P24B fixture')"
+        },
+        {
+          "class": "DERIVED_FROM_FIXTURE",
+          "detail": "amount_source = 'generated' — üreteç ürünü"
+        },
+        {
+          "class": "BASELINE_ABSENT",
+          "detail": "temiz taban ve release klonlarında yok"
+        },
+        {
+          "class": "TIME",
+          "detail": "created_at 2026-08-25 10:19:55.824936+00"
+        }
+      ],
+      "independentEvidenceClassCount": 3,
+      "deleteOrder": 3
+    },
+    {
+      "table": "payment_instances",
+      "id": "dfa79dc9-bc4d-4572-96b2-de56b0baceae",
+      "rowFingerprint": "e8b351e91d9c362eb970541785ca182c",
+      "criticalFields": {
+        "payment_id": "7b300bfe-944f-468b-91fa-2de65b7cfee5",
+        "amount": "1000.00",
+        "due_date": "2026-09-15",
+        "amount_source": "generated",
+        "status": "unpaid"
+      },
+      "classification": "DELETE_TARGET",
+      "incidentId": "A1",
+      "xmin": "537438",
+      "discoveryMethods": [
+        "FK",
+        "TIME"
+      ],
+      "baselineAbsent": true,
+      "notes": [
+        "AMPLIFIER ürünü — fixture şablonundan türetildi, kendisi P24B metni taşımaz"
+      ],
+      "evidence": [
+        {
+          "class": "FK",
+          "detail": "payment_id = 7b300bfe-944f-468b-91fa-2de65b7cfee5 ('P24B fixture')"
+        },
+        {
+          "class": "DERIVED_FROM_FIXTURE",
+          "detail": "amount_source = 'generated' — üreteç ürünü"
+        },
+        {
+          "class": "BASELINE_ABSENT",
+          "detail": "temiz taban ve release klonlarında yok"
+        },
+        {
+          "class": "TIME",
+          "detail": "created_at 2026-08-25 10:19:55.937739+00"
+        }
+      ],
+      "independentEvidenceClassCount": 3,
+      "deleteOrder": 3
+    },
+    {
+      "table": "payment_instances",
+      "id": "5bcafa6a-0b14-450e-be0a-4200d3ebcfdf",
+      "rowFingerprint": "137a811571ef34053f68d25a502f9bc0",
+      "criticalFields": {
+        "payment_id": "7b300bfe-944f-468b-91fa-2de65b7cfee5",
+        "amount": "1000.00",
+        "due_date": "2026-10-15",
+        "amount_source": "generated",
+        "status": "unpaid"
+      },
+      "classification": "DELETE_TARGET",
+      "incidentId": "A2",
+      "xmin": "564283",
+      "discoveryMethods": [
+        "FK",
+        "TIME"
+      ],
+      "baselineAbsent": true,
+      "notes": [
+        "AMPLIFIER ürünü — fixture şablonundan türetildi, kendisi P24B metni taşımaz"
+      ],
+      "evidence": [
+        {
+          "class": "FK",
+          "detail": "payment_id = 7b300bfe-944f-468b-91fa-2de65b7cfee5 ('P24B fixture')"
+        },
+        {
+          "class": "DERIVED_FROM_FIXTURE",
+          "detail": "amount_source = 'generated' — üreteç ürünü"
+        },
+        {
+          "class": "BASELINE_ABSENT",
+          "detail": "temiz taban ve release klonlarında yok"
+        },
+        {
+          "class": "TIME",
+          "detail": "created_at 2026-08-26 12:02:37.034397+00"
+        }
+      ],
+      "independentEvidenceClassCount": 3,
+      "deleteOrder": 3
+    },
+    {
+      "table": "payment_instances",
+      "id": "c79c9191-091a-401c-afe2-a0f9d99581a0",
+      "rowFingerprint": "6c14c4f26bcf2c29e1ea2830aea71f56",
+      "criticalFields": {
+        "payment_id": "7b300bfe-944f-468b-91fa-2de65b7cfee5",
+        "amount": "1000.00",
+        "due_date": "2026-11-15",
+        "amount_source": "generated",
+        "status": "unpaid"
+      },
+      "classification": "DELETE_TARGET",
+      "incidentId": "A2",
+      "xmin": "564284",
+      "discoveryMethods": [
+        "FK",
+        "TIME"
+      ],
+      "baselineAbsent": true,
+      "notes": [
+        "AMPLIFIER ürünü — fixture şablonundan türetildi, kendisi P24B metni taşımaz"
+      ],
+      "evidence": [
+        {
+          "class": "FK",
+          "detail": "payment_id = 7b300bfe-944f-468b-91fa-2de65b7cfee5 ('P24B fixture')"
+        },
+        {
+          "class": "DERIVED_FROM_FIXTURE",
+          "detail": "amount_source = 'generated' — üreteç ürünü"
+        },
+        {
+          "class": "BASELINE_ABSENT",
+          "detail": "temiz taban ve release klonlarında yok"
+        },
+        {
+          "class": "TIME",
+          "detail": "created_at 2026-08-26 12:02:37.103914+00"
+        }
+      ],
+      "independentEvidenceClassCount": 3,
+      "deleteOrder": 3
+    },
+    {
+      "table": "payment_instances",
+      "id": "684305b9-e02a-4d8d-a458-6872e05341eb",
+      "rowFingerprint": "a4f68d3bcae24464058ac00b89e67af6",
+      "criticalFields": {
+        "payment_id": "7b300bfe-944f-468b-91fa-2de65b7cfee5",
+        "amount": "1000.00",
+        "due_date": "2026-12-15",
+        "amount_source": "generated",
+        "status": "unpaid"
+      },
+      "classification": "DELETE_TARGET",
+      "incidentId": "A2",
+      "xmin": "564285",
+      "discoveryMethods": [
+        "FK",
+        "TIME"
+      ],
+      "baselineAbsent": true,
+      "notes": [
+        "AMPLIFIER ürünü — fixture şablonundan türetildi, kendisi P24B metni taşımaz"
+      ],
+      "evidence": [
+        {
+          "class": "FK",
+          "detail": "payment_id = 7b300bfe-944f-468b-91fa-2de65b7cfee5 ('P24B fixture')"
+        },
+        {
+          "class": "DERIVED_FROM_FIXTURE",
+          "detail": "amount_source = 'generated' — üreteç ürünü"
+        },
+        {
+          "class": "BASELINE_ABSENT",
+          "detail": "temiz taban ve release klonlarında yok"
+        },
+        {
+          "class": "TIME",
+          "detail": "created_at 2026-08-26 12:02:37.146642+00"
+        }
+      ],
+      "independentEvidenceClassCount": 3,
+      "deleteOrder": 3
+    },
+    {
+      "table": "payment_instances",
+      "id": "8294af06-3e5a-4c04-adbb-893242d32380",
+      "rowFingerprint": "99fc6600c04462335b527159cad0307d",
+      "criticalFields": {
+        "payment_id": "7b300bfe-944f-468b-91fa-2de65b7cfee5",
+        "amount": "1000.00",
+        "due_date": "2027-01-15",
+        "amount_source": "generated",
+        "status": "unpaid"
+      },
+      "classification": "DELETE_TARGET",
+      "incidentId": "A2",
+      "xmin": "564286",
+      "discoveryMethods": [
+        "FK",
+        "TIME"
+      ],
+      "baselineAbsent": true,
+      "notes": [
+        "AMPLIFIER ürünü — fixture şablonundan türetildi, kendisi P24B metni taşımaz"
+      ],
+      "evidence": [
+        {
+          "class": "FK",
+          "detail": "payment_id = 7b300bfe-944f-468b-91fa-2de65b7cfee5 ('P24B fixture')"
+        },
+        {
+          "class": "DERIVED_FROM_FIXTURE",
+          "detail": "amount_source = 'generated' — üreteç ürünü"
+        },
+        {
+          "class": "BASELINE_ABSENT",
+          "detail": "temiz taban ve release klonlarında yok"
+        },
+        {
+          "class": "TIME",
+          "detail": "created_at 2026-08-26 12:02:37.195783+00"
+        }
+      ],
+      "independentEvidenceClassCount": 3,
+      "deleteOrder": 3
+    },
+    {
+      "table": "payment_instances",
+      "id": "04a8236d-3986-4d6e-90dd-8101a6c33968",
+      "rowFingerprint": "684be63314a9187603e61a409bb99b99",
+      "criticalFields": {
+        "payment_id": "7b300bfe-944f-468b-91fa-2de65b7cfee5",
+        "amount": "1000.00",
+        "due_date": "2027-02-15",
+        "amount_source": "generated",
+        "status": "unpaid"
+      },
+      "classification": "DELETE_TARGET",
+      "incidentId": "A2",
+      "xmin": "564287",
+      "discoveryMethods": [
+        "FK",
+        "TIME"
+      ],
+      "baselineAbsent": true,
+      "notes": [
+        "AMPLIFIER ürünü — fixture şablonundan türetildi, kendisi P24B metni taşımaz"
+      ],
+      "evidence": [
+        {
+          "class": "FK",
+          "detail": "payment_id = 7b300bfe-944f-468b-91fa-2de65b7cfee5 ('P24B fixture')"
+        },
+        {
+          "class": "DERIVED_FROM_FIXTURE",
+          "detail": "amount_source = 'generated' — üreteç ürünü"
+        },
+        {
+          "class": "BASELINE_ABSENT",
+          "detail": "temiz taban ve release klonlarında yok"
+        },
+        {
+          "class": "TIME",
+          "detail": "created_at 2026-08-26 12:02:37.238992+00"
+        }
+      ],
+      "independentEvidenceClassCount": 3,
+      "deleteOrder": 3
+    },
+    {
+      "table": "payment_instances",
+      "id": "aec43bfd-0299-467a-aa06-9e305f2f2525",
+      "rowFingerprint": "9df2bd5a2880dbb83434b0f3a7871e23",
+      "criticalFields": {
+        "payment_id": "7b300bfe-944f-468b-91fa-2de65b7cfee5",
+        "amount": "1000.00",
+        "due_date": "2027-03-15",
+        "amount_source": "generated",
+        "status": "unpaid"
+      },
+      "classification": "DELETE_TARGET",
+      "incidentId": "A2",
+      "xmin": "564288",
+      "discoveryMethods": [
+        "FK",
+        "TIME"
+      ],
+      "baselineAbsent": true,
+      "notes": [
+        "AMPLIFIER ürünü — fixture şablonundan türetildi, kendisi P24B metni taşımaz"
+      ],
+      "evidence": [
+        {
+          "class": "FK",
+          "detail": "payment_id = 7b300bfe-944f-468b-91fa-2de65b7cfee5 ('P24B fixture')"
+        },
+        {
+          "class": "DERIVED_FROM_FIXTURE",
+          "detail": "amount_source = 'generated' — üreteç ürünü"
+        },
+        {
+          "class": "BASELINE_ABSENT",
+          "detail": "temiz taban ve release klonlarında yok"
+        },
+        {
+          "class": "TIME",
+          "detail": "created_at 2026-08-26 12:02:37.283117+00"
+        }
+      ],
+      "independentEvidenceClassCount": 3,
+      "deleteOrder": 3
+    },
+    {
+      "table": "payment_instances",
+      "id": "dfc12ad9-e11b-4810-84ee-83fcc5276f45",
+      "rowFingerprint": "6cef60597a519b529e5beb240956bc16",
+      "criticalFields": {
+        "payment_id": "7b300bfe-944f-468b-91fa-2de65b7cfee5",
+        "amount": "1000.00",
+        "due_date": "2027-04-15",
+        "amount_source": "generated",
+        "status": "unpaid"
+      },
+      "classification": "DELETE_TARGET",
+      "incidentId": "A2",
+      "xmin": "564289",
+      "discoveryMethods": [
+        "FK",
+        "TIME"
+      ],
+      "baselineAbsent": true,
+      "notes": [
+        "AMPLIFIER ürünü — fixture şablonundan türetildi, kendisi P24B metni taşımaz"
+      ],
+      "evidence": [
+        {
+          "class": "FK",
+          "detail": "payment_id = 7b300bfe-944f-468b-91fa-2de65b7cfee5 ('P24B fixture')"
+        },
+        {
+          "class": "DERIVED_FROM_FIXTURE",
+          "detail": "amount_source = 'generated' — üreteç ürünü"
+        },
+        {
+          "class": "BASELINE_ABSENT",
+          "detail": "temiz taban ve release klonlarında yok"
+        },
+        {
+          "class": "TIME",
+          "detail": "created_at 2026-08-26 12:02:37.318523+00"
+        }
+      ],
+      "independentEvidenceClassCount": 3,
+      "deleteOrder": 3
+    },
+    {
+      "table": "payment_instances",
+      "id": "7feca5d8-4c15-4bbd-9158-0d6d9cf1373c",
+      "rowFingerprint": "7d2aa0e6b99f011797102fd93802f766",
+      "criticalFields": {
+        "payment_id": "7b300bfe-944f-468b-91fa-2de65b7cfee5",
+        "amount": "1000.00",
+        "due_date": "2027-05-15",
+        "amount_source": "generated",
+        "status": "unpaid"
+      },
+      "classification": "DELETE_TARGET",
+      "incidentId": "A2",
+      "xmin": "564290",
+      "discoveryMethods": [
+        "FK",
+        "TIME"
+      ],
+      "baselineAbsent": true,
+      "notes": [
+        "AMPLIFIER ürünü — fixture şablonundan türetildi, kendisi P24B metni taşımaz"
+      ],
+      "evidence": [
+        {
+          "class": "FK",
+          "detail": "payment_id = 7b300bfe-944f-468b-91fa-2de65b7cfee5 ('P24B fixture')"
+        },
+        {
+          "class": "DERIVED_FROM_FIXTURE",
+          "detail": "amount_source = 'generated' — üreteç ürünü"
+        },
+        {
+          "class": "BASELINE_ABSENT",
+          "detail": "temiz taban ve release klonlarında yok"
+        },
+        {
+          "class": "TIME",
+          "detail": "created_at 2026-08-26 12:02:37.353014+00"
+        }
+      ],
+      "independentEvidenceClassCount": 3,
+      "deleteOrder": 3
+    },
+    {
+      "table": "payment_instances",
+      "id": "0eacaa79-ef1e-475a-92a6-131c0184808c",
+      "rowFingerprint": "9c487d0f06656808aaa22f85936c18ca",
+      "criticalFields": {
+        "payment_id": "7b300bfe-944f-468b-91fa-2de65b7cfee5",
+        "amount": "1000.00",
+        "due_date": "2027-06-15",
+        "amount_source": "generated",
+        "status": "unpaid"
+      },
+      "classification": "DELETE_TARGET",
+      "incidentId": "A2",
+      "xmin": "564291",
+      "discoveryMethods": [
+        "FK",
+        "TIME"
+      ],
+      "baselineAbsent": true,
+      "notes": [
+        "AMPLIFIER ürünü — fixture şablonundan türetildi, kendisi P24B metni taşımaz"
+      ],
+      "evidence": [
+        {
+          "class": "FK",
+          "detail": "payment_id = 7b300bfe-944f-468b-91fa-2de65b7cfee5 ('P24B fixture')"
+        },
+        {
+          "class": "DERIVED_FROM_FIXTURE",
+          "detail": "amount_source = 'generated' — üreteç ürünü"
+        },
+        {
+          "class": "BASELINE_ABSENT",
+          "detail": "temiz taban ve release klonlarında yok"
+        },
+        {
+          "class": "TIME",
+          "detail": "created_at 2026-08-26 12:02:37.392051+00"
+        }
+      ],
+      "independentEvidenceClassCount": 3,
+      "deleteOrder": 3
+    },
+    {
+      "table": "payment_instances",
+      "id": "7444214a-9f32-4f70-b02d-131b7cfe8e16",
+      "rowFingerprint": "969f2b2e1e23522987bc86579b6fffbb",
+      "criticalFields": {
+        "payment_id": "7b300bfe-944f-468b-91fa-2de65b7cfee5",
+        "amount": "1000.00",
+        "due_date": "2027-07-15",
+        "amount_source": "generated",
+        "status": "unpaid"
+      },
+      "classification": "DELETE_TARGET",
+      "incidentId": "A2",
+      "xmin": "564292",
+      "discoveryMethods": [
+        "FK",
+        "TIME"
+      ],
+      "baselineAbsent": true,
+      "notes": [
+        "AMPLIFIER ürünü — fixture şablonundan türetildi, kendisi P24B metni taşımaz"
+      ],
+      "evidence": [
+        {
+          "class": "FK",
+          "detail": "payment_id = 7b300bfe-944f-468b-91fa-2de65b7cfee5 ('P24B fixture')"
+        },
+        {
+          "class": "DERIVED_FROM_FIXTURE",
+          "detail": "amount_source = 'generated' — üreteç ürünü"
+        },
+        {
+          "class": "BASELINE_ABSENT",
+          "detail": "temiz taban ve release klonlarında yok"
+        },
+        {
+          "class": "TIME",
+          "detail": "created_at 2026-08-26 12:02:37.43337+00"
+        }
+      ],
+      "independentEvidenceClassCount": 3,
+      "deleteOrder": 3
+    },
+    {
+      "table": "payment_instances",
+      "id": "6920c443-4786-404b-9483-2d2291711067",
+      "rowFingerprint": "d1ef421350368e0302099680735ef90e",
+      "criticalFields": {
+        "payment_id": "7b300bfe-944f-468b-91fa-2de65b7cfee5",
+        "amount": "1000.00",
+        "due_date": "2027-08-15",
+        "amount_source": "generated",
+        "status": "unpaid"
+      },
+      "classification": "DELETE_TARGET",
+      "incidentId": "A2",
+      "xmin": "564293",
+      "discoveryMethods": [
+        "FK",
+        "TIME"
+      ],
+      "baselineAbsent": true,
+      "notes": [
+        "AMPLIFIER ürünü — fixture şablonundan türetildi, kendisi P24B metni taşımaz"
+      ],
+      "evidence": [
+        {
+          "class": "FK",
+          "detail": "payment_id = 7b300bfe-944f-468b-91fa-2de65b7cfee5 ('P24B fixture')"
+        },
+        {
+          "class": "DERIVED_FROM_FIXTURE",
+          "detail": "amount_source = 'generated' — üreteç ürünü"
+        },
+        {
+          "class": "BASELINE_ABSENT",
+          "detail": "temiz taban ve release klonlarında yok"
+        },
+        {
+          "class": "TIME",
+          "detail": "created_at 2026-08-26 12:02:37.468385+00"
+        }
+      ],
+      "independentEvidenceClassCount": 3,
+      "deleteOrder": 3
+    },
+    {
+      "table": "payment_instances",
+      "id": "19a3cd28-9a01-4c9f-966f-39666a2c6bbd",
+      "rowFingerprint": "fc94dc34c0bd1f67ee80d7c697b41543",
+      "criticalFields": {
+        "payment_id": "7b300bfe-944f-468b-91fa-2de65b7cfee5",
+        "amount": "1000.00",
+        "due_date": "2027-09-15",
+        "amount_source": "generated",
+        "status": "unpaid"
+      },
+      "classification": "DELETE_TARGET",
+      "incidentId": "A2",
+      "xmin": "564294",
+      "discoveryMethods": [
+        "FK",
+        "TIME"
+      ],
+      "baselineAbsent": true,
+      "notes": [
+        "AMPLIFIER ürünü — fixture şablonundan türetildi, kendisi P24B metni taşımaz"
+      ],
+      "evidence": [
+        {
+          "class": "FK",
+          "detail": "payment_id = 7b300bfe-944f-468b-91fa-2de65b7cfee5 ('P24B fixture')"
+        },
+        {
+          "class": "DERIVED_FROM_FIXTURE",
+          "detail": "amount_source = 'generated' — üreteç ürünü"
+        },
+        {
+          "class": "BASELINE_ABSENT",
+          "detail": "temiz taban ve release klonlarında yok"
+        },
+        {
+          "class": "TIME",
+          "detail": "created_at 2026-08-26 12:02:37.510962+00"
+        }
+      ],
+      "independentEvidenceClassCount": 3,
+      "deleteOrder": 3
+    },
+    {
+      "table": "payment_instances",
+      "id": "c05e09bb-8342-4994-a3d3-060e78daf66a",
+      "rowFingerprint": "c2ebf4182b7c4c6c94e1b783ec282ffe",
+      "criticalFields": {
+        "payment_id": "7b300bfe-944f-468b-91fa-2de65b7cfee5",
+        "amount": "1000.00",
+        "due_date": "2027-10-15",
+        "amount_source": "generated",
+        "status": "unpaid"
+      },
+      "classification": "DELETE_TARGET",
+      "incidentId": "A2",
+      "xmin": "564295",
+      "discoveryMethods": [
+        "FK",
+        "TIME"
+      ],
+      "baselineAbsent": true,
+      "notes": [
+        "AMPLIFIER ürünü — fixture şablonundan türetildi, kendisi P24B metni taşımaz"
+      ],
+      "evidence": [
+        {
+          "class": "FK",
+          "detail": "payment_id = 7b300bfe-944f-468b-91fa-2de65b7cfee5 ('P24B fixture')"
+        },
+        {
+          "class": "DERIVED_FROM_FIXTURE",
+          "detail": "amount_source = 'generated' — üreteç ürünü"
+        },
+        {
+          "class": "BASELINE_ABSENT",
+          "detail": "temiz taban ve release klonlarında yok"
+        },
+        {
+          "class": "TIME",
+          "detail": "created_at 2026-08-26 12:02:37.549877+00"
+        }
+      ],
+      "independentEvidenceClassCount": 3,
+      "deleteOrder": 3
+    },
+    {
+      "table": "payment_instances",
+      "id": "492834d1-fec4-46e0-866a-d379b05874fd",
+      "rowFingerprint": "b8b4fc62d507062a749552265574c005",
+      "criticalFields": {
+        "payment_id": "7b300bfe-944f-468b-91fa-2de65b7cfee5",
+        "amount": "1000.00",
+        "due_date": "2027-11-15",
+        "amount_source": "generated",
+        "status": "unpaid"
+      },
+      "classification": "DELETE_TARGET",
+      "incidentId": "A2",
+      "xmin": "564296",
+      "discoveryMethods": [
+        "FK",
+        "TIME"
+      ],
+      "baselineAbsent": true,
+      "notes": [
+        "AMPLIFIER ürünü — fixture şablonundan türetildi, kendisi P24B metni taşımaz"
+      ],
+      "evidence": [
+        {
+          "class": "FK",
+          "detail": "payment_id = 7b300bfe-944f-468b-91fa-2de65b7cfee5 ('P24B fixture')"
+        },
+        {
+          "class": "DERIVED_FROM_FIXTURE",
+          "detail": "amount_source = 'generated' — üreteç ürünü"
+        },
+        {
+          "class": "BASELINE_ABSENT",
+          "detail": "temiz taban ve release klonlarında yok"
+        },
+        {
+          "class": "TIME",
+          "detail": "created_at 2026-08-26 12:02:37.638624+00"
+        }
+      ],
+      "independentEvidenceClassCount": 3,
+      "deleteOrder": 3
+    },
+    {
+      "table": "payment_instances",
+      "id": "74494b3c-a637-46db-8ce7-eb8b49d7023c",
+      "rowFingerprint": "b38f8ac6c78c08591888a13d08730be7",
+      "criticalFields": {
+        "payment_id": "7b300bfe-944f-468b-91fa-2de65b7cfee5",
+        "amount": "1000.00",
+        "due_date": "2027-12-15",
+        "amount_source": "generated",
+        "status": "unpaid"
+      },
+      "classification": "DELETE_TARGET",
+      "incidentId": "A2",
+      "xmin": "564297",
+      "discoveryMethods": [
+        "FK",
+        "TIME"
+      ],
+      "baselineAbsent": true,
+      "notes": [
+        "AMPLIFIER ürünü — fixture şablonundan türetildi, kendisi P24B metni taşımaz"
+      ],
+      "evidence": [
+        {
+          "class": "FK",
+          "detail": "payment_id = 7b300bfe-944f-468b-91fa-2de65b7cfee5 ('P24B fixture')"
+        },
+        {
+          "class": "DERIVED_FROM_FIXTURE",
+          "detail": "amount_source = 'generated' — üreteç ürünü"
+        },
+        {
+          "class": "BASELINE_ABSENT",
+          "detail": "temiz taban ve release klonlarında yok"
+        },
+        {
+          "class": "TIME",
+          "detail": "created_at 2026-08-26 12:02:37.699743+00"
+        }
+      ],
+      "independentEvidenceClassCount": 3,
+      "deleteOrder": 3
+    },
+    {
+      "table": "payment_instances",
+      "id": "79c1ec15-3cea-4af6-a04c-9d97f96de051",
+      "rowFingerprint": "99632b2ffb6e58b2865534f129b7f9e5",
+      "criticalFields": {
+        "payment_id": "7b300bfe-944f-468b-91fa-2de65b7cfee5",
+        "amount": "1000.00",
+        "due_date": "2028-01-15",
+        "amount_source": "generated",
+        "status": "unpaid"
+      },
+      "classification": "DELETE_TARGET",
+      "incidentId": "A2",
+      "xmin": "564298",
+      "discoveryMethods": [
+        "FK",
+        "TIME"
+      ],
+      "baselineAbsent": true,
+      "notes": [
+        "AMPLIFIER ürünü — fixture şablonundan türetildi, kendisi P24B metni taşımaz"
+      ],
+      "evidence": [
+        {
+          "class": "FK",
+          "detail": "payment_id = 7b300bfe-944f-468b-91fa-2de65b7cfee5 ('P24B fixture')"
+        },
+        {
+          "class": "DERIVED_FROM_FIXTURE",
+          "detail": "amount_source = 'generated' — üreteç ürünü"
+        },
+        {
+          "class": "BASELINE_ABSENT",
+          "detail": "temiz taban ve release klonlarında yok"
+        },
+        {
+          "class": "TIME",
+          "detail": "created_at 2026-08-26 12:02:37.748865+00"
+        }
+      ],
+      "independentEvidenceClassCount": 3,
+      "deleteOrder": 3
+    },
+    {
+      "table": "payment_instances",
+      "id": "b183d98d-e49c-4244-abbd-352950e1fd05",
+      "rowFingerprint": "a8229ac82b4bee15102f9d7e5fc4402d",
+      "criticalFields": {
+        "payment_id": "7b300bfe-944f-468b-91fa-2de65b7cfee5",
+        "amount": "1000.00",
+        "due_date": "2028-02-15",
+        "amount_source": "generated",
+        "status": "unpaid"
+      },
+      "classification": "DELETE_TARGET",
+      "incidentId": "A2",
+      "xmin": "564299",
+      "discoveryMethods": [
+        "FK",
+        "TIME"
+      ],
+      "baselineAbsent": true,
+      "notes": [
+        "AMPLIFIER ürünü — fixture şablonundan türetildi, kendisi P24B metni taşımaz"
+      ],
+      "evidence": [
+        {
+          "class": "FK",
+          "detail": "payment_id = 7b300bfe-944f-468b-91fa-2de65b7cfee5 ('P24B fixture')"
+        },
+        {
+          "class": "DERIVED_FROM_FIXTURE",
+          "detail": "amount_source = 'generated' — üreteç ürünü"
+        },
+        {
+          "class": "BASELINE_ABSENT",
+          "detail": "temiz taban ve release klonlarında yok"
+        },
+        {
+          "class": "TIME",
+          "detail": "created_at 2026-08-26 12:02:37.78631+00"
+        }
+      ],
+      "independentEvidenceClassCount": 3,
+      "deleteOrder": 3
+    },
+    {
+      "table": "payment_instances",
+      "id": "25ad518a-ec26-4f2f-958f-6b12b3f86bda",
+      "rowFingerprint": "c61350a3c36a80beb4090ba6748eb950",
+      "criticalFields": {
+        "payment_id": "7b300bfe-944f-468b-91fa-2de65b7cfee5",
+        "amount": "1000.00",
+        "due_date": "2028-03-15",
+        "amount_source": "generated",
+        "status": "unpaid"
+      },
+      "classification": "DELETE_TARGET",
+      "incidentId": "A2",
+      "xmin": "564300",
+      "discoveryMethods": [
+        "FK",
+        "TIME"
+      ],
+      "baselineAbsent": true,
+      "notes": [
+        "AMPLIFIER ürünü — fixture şablonundan türetildi, kendisi P24B metni taşımaz"
+      ],
+      "evidence": [
+        {
+          "class": "FK",
+          "detail": "payment_id = 7b300bfe-944f-468b-91fa-2de65b7cfee5 ('P24B fixture')"
+        },
+        {
+          "class": "DERIVED_FROM_FIXTURE",
+          "detail": "amount_source = 'generated' — üreteç ürünü"
+        },
+        {
+          "class": "BASELINE_ABSENT",
+          "detail": "temiz taban ve release klonlarında yok"
+        },
+        {
+          "class": "TIME",
+          "detail": "created_at 2026-08-26 12:02:37.823259+00"
+        }
+      ],
+      "independentEvidenceClassCount": 3,
+      "deleteOrder": 3
+    },
+    {
+      "table": "payment_instances",
+      "id": "e5b90331-d7b8-4802-85a4-16b11bb3c877",
+      "rowFingerprint": "6cccd33a68162bf7b0f215a6c814d39e",
+      "criticalFields": {
+        "payment_id": "7b300bfe-944f-468b-91fa-2de65b7cfee5",
+        "amount": "1000.00",
+        "due_date": "2028-04-15",
+        "amount_source": "generated",
+        "status": "unpaid"
+      },
+      "classification": "DELETE_TARGET",
+      "incidentId": "A2",
+      "xmin": "564301",
+      "discoveryMethods": [
+        "FK",
+        "TIME"
+      ],
+      "baselineAbsent": true,
+      "notes": [
+        "AMPLIFIER ürünü — fixture şablonundan türetildi, kendisi P24B metni taşımaz"
+      ],
+      "evidence": [
+        {
+          "class": "FK",
+          "detail": "payment_id = 7b300bfe-944f-468b-91fa-2de65b7cfee5 ('P24B fixture')"
+        },
+        {
+          "class": "DERIVED_FROM_FIXTURE",
+          "detail": "amount_source = 'generated' — üreteç ürünü"
+        },
+        {
+          "class": "BASELINE_ABSENT",
+          "detail": "temiz taban ve release klonlarında yok"
+        },
+        {
+          "class": "TIME",
+          "detail": "created_at 2026-08-26 12:02:37.864664+00"
+        }
+      ],
+      "independentEvidenceClassCount": 3,
+      "deleteOrder": 3
+    },
+    {
+      "table": "payment_instances",
+      "id": "375433d5-ae45-43f1-bfc3-9f04ceae073c",
+      "rowFingerprint": "c4366e4b87595376b3c6d37d1870780b",
+      "criticalFields": {
+        "payment_id": "7b300bfe-944f-468b-91fa-2de65b7cfee5",
+        "amount": "1000.00",
+        "due_date": "2028-05-15",
+        "amount_source": "generated",
+        "status": "unpaid"
+      },
+      "classification": "DELETE_TARGET",
+      "incidentId": "A2",
+      "xmin": "564302",
+      "discoveryMethods": [
+        "FK",
+        "TIME"
+      ],
+      "baselineAbsent": true,
+      "notes": [
+        "AMPLIFIER ürünü — fixture şablonundan türetildi, kendisi P24B metni taşımaz"
+      ],
+      "evidence": [
+        {
+          "class": "FK",
+          "detail": "payment_id = 7b300bfe-944f-468b-91fa-2de65b7cfee5 ('P24B fixture')"
+        },
+        {
+          "class": "DERIVED_FROM_FIXTURE",
+          "detail": "amount_source = 'generated' — üreteç ürünü"
+        },
+        {
+          "class": "BASELINE_ABSENT",
+          "detail": "temiz taban ve release klonlarında yok"
+        },
+        {
+          "class": "TIME",
+          "detail": "created_at 2026-08-26 12:02:37.903994+00"
+        }
+      ],
+      "independentEvidenceClassCount": 3,
+      "deleteOrder": 3
+    },
+    {
+      "table": "payment_instances",
+      "id": "8aef2494-3a80-4879-99b5-841a0df04bde",
+      "rowFingerprint": "2a612948a28b93ad949f4ca09c50a9e7",
+      "criticalFields": {
+        "payment_id": "7b300bfe-944f-468b-91fa-2de65b7cfee5",
+        "amount": "1000.00",
+        "due_date": "2028-06-15",
+        "amount_source": "generated",
+        "status": "unpaid"
+      },
+      "classification": "DELETE_TARGET",
+      "incidentId": "A2",
+      "xmin": "564303",
+      "discoveryMethods": [
+        "FK",
+        "TIME"
+      ],
+      "baselineAbsent": true,
+      "notes": [
+        "AMPLIFIER ürünü — fixture şablonundan türetildi, kendisi P24B metni taşımaz"
+      ],
+      "evidence": [
+        {
+          "class": "FK",
+          "detail": "payment_id = 7b300bfe-944f-468b-91fa-2de65b7cfee5 ('P24B fixture')"
+        },
+        {
+          "class": "DERIVED_FROM_FIXTURE",
+          "detail": "amount_source = 'generated' — üreteç ürünü"
+        },
+        {
+          "class": "BASELINE_ABSENT",
+          "detail": "temiz taban ve release klonlarında yok"
+        },
+        {
+          "class": "TIME",
+          "detail": "created_at 2026-08-26 12:02:37.955163+00"
+        }
+      ],
+      "independentEvidenceClassCount": 3,
+      "deleteOrder": 3
+    },
+    {
+      "table": "payment_instances",
+      "id": "a0acd3c0-fe0b-4da5-b8eb-86a6df8dec89",
+      "rowFingerprint": "7be00f6faa80e2354d8ed74cf6e7801f",
+      "criticalFields": {
+        "payment_id": "7b300bfe-944f-468b-91fa-2de65b7cfee5",
+        "amount": "1000.00",
+        "due_date": "2028-07-15",
+        "amount_source": "generated",
+        "status": "unpaid"
+      },
+      "classification": "DELETE_TARGET",
+      "incidentId": "A2",
+      "xmin": "564304",
+      "discoveryMethods": [
+        "FK",
+        "TIME"
+      ],
+      "baselineAbsent": true,
+      "notes": [
+        "AMPLIFIER ürünü — fixture şablonundan türetildi, kendisi P24B metni taşımaz"
+      ],
+      "evidence": [
+        {
+          "class": "FK",
+          "detail": "payment_id = 7b300bfe-944f-468b-91fa-2de65b7cfee5 ('P24B fixture')"
+        },
+        {
+          "class": "DERIVED_FROM_FIXTURE",
+          "detail": "amount_source = 'generated' — üreteç ürünü"
+        },
+        {
+          "class": "BASELINE_ABSENT",
+          "detail": "temiz taban ve release klonlarında yok"
+        },
+        {
+          "class": "TIME",
+          "detail": "created_at 2026-08-26 12:02:38.013259+00"
+        }
+      ],
+      "independentEvidenceClassCount": 3,
+      "deleteOrder": 3
+    },
+    {
+      "table": "payment_instances",
+      "id": "80ef312a-48f1-434b-9e80-b8e099c05cdb",
+      "rowFingerprint": "4b5c08d19ba96f10421396d42302c3af",
+      "criticalFields": {
+        "payment_id": "7b300bfe-944f-468b-91fa-2de65b7cfee5",
+        "amount": "1000.00",
+        "due_date": "2028-08-15",
+        "amount_source": "generated",
+        "status": "unpaid"
+      },
+      "classification": "DELETE_TARGET",
+      "incidentId": "A2",
+      "xmin": "564305",
+      "discoveryMethods": [
+        "FK",
+        "TIME"
+      ],
+      "baselineAbsent": true,
+      "notes": [
+        "AMPLIFIER ürünü — fixture şablonundan türetildi, kendisi P24B metni taşımaz"
+      ],
+      "evidence": [
+        {
+          "class": "FK",
+          "detail": "payment_id = 7b300bfe-944f-468b-91fa-2de65b7cfee5 ('P24B fixture')"
+        },
+        {
+          "class": "DERIVED_FROM_FIXTURE",
+          "detail": "amount_source = 'generated' — üreteç ürünü"
+        },
+        {
+          "class": "BASELINE_ABSENT",
+          "detail": "temiz taban ve release klonlarında yok"
+        },
+        {
+          "class": "TIME",
+          "detail": "created_at 2026-08-26 12:02:38.068329+00"
+        }
+      ],
+      "independentEvidenceClassCount": 3,
+      "deleteOrder": 3
+    }
+  ]
+}

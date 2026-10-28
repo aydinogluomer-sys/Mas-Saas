@@ -1,0 +1,9 @@
+{
+  "sha": "ceca39a3a60c00358d1aa90f00f9b2864237e4ec",
+  "LEGACY_REGRESSION": "PASS",
+  "db": "mas_radar_verify_merged_legacy (db:migrate 0001–0094 + seed.sql)",
+  "source": "TEMİZ.xlsx sha256 d725390a17e81d63…",
+  "phase3": "ALL PASS — payments 19 baseline, idempotent, Şubat-27 clamp, day-9 cluster, audit",
+  "phase4": "ALL PASS — cashflow months 35, 35/35 reconciliation, final kasa −3.064.607,57, continuity 0",
+  "phase5": "ALL PASS — checks 7/7 structural, loan total 3.443.717,58 = source B10 exact, 48 installments (Σ rounding-only Δ0,18)"
+}

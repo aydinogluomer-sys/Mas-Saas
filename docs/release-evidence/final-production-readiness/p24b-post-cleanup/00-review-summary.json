@@ -1,0 +1,13 @@
+{
+  "artifactKind": "mas-p24b-review-summary-v1",
+  "ledger": "0087/87",
+  "baseTableCount": 86,
+  "transactionReadOnly": "on",
+  "database": "mas_radar_dev",
+  "remainingTargets": 0,
+  "unexpectedChangedTables": 0,
+  "totalOrphans": 0,
+  "auditExistingMutations": 0,
+  "atillaHashUnchanged": true,
+  "manifestSha256": "d60de97bcc3c62aa2902b64a7c164e8132e733ba7f6958e71b1a84bac3c8bbb9"
+}

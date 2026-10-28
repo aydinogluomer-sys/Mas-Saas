@@ -6,10 +6,13 @@ import { cancelInstanceAction, markPaidAction, markPartialAction, markUnpaidActi
 const REASON_TONE: Record<string, Tone> = {
   missing_amount: "amber", negative_amount: "red", large_payment: "amber",
   critical_payment: "red", same_day_cluster: "violet", overdue: "red",
+  // PHASE 2.2 (T1-b): TRY eşiği bu tutara uygulanamadı — "risk yok" değil, inceleme gerekli.
+  unsupported_currency: "amber",
 };
 const REASON_TR: Record<string, string> = {
   missing_amount: "eksik", negative_amount: "negatif", large_payment: "büyük",
   critical_payment: "kritik", same_day_cluster: "yığılma", overdue: "gecikti",
+  unsupported_currency: "TRY-dışı · eşik uygulanmadı",
 };
 
 export function RiskBadges({ reasons }: { reasons: string[] }) {
@@ -29,10 +32,28 @@ export function RiskBadges({ reasons }: { reasons: string[] }) {
 const PAYABLE_FROM = new Set(["unpaid", "planned", "late", "partial"]);
 const CANCELLABLE_FROM = new Set(["unpaid", "planned", "late"]);
 
-export function InstanceRowView({ r, backTo, showDate = false }: { r: InstanceRow; backTo: string; showDate?: boolean }) {
+/**
+ * `canMutate` ZORUNLUDUR ve varsayılanı YOKTUR — bilerek.
+ *
+ * NE ÖLÇÜLDÜ. `viewer` ve `finance_approver` katmanları bu satırdaki "ödendi", "kısmi", "iptal"
+ * ve "kaydet" düğmelerini ETKİN olarak görüyordu. Tıkladıklarında backend doğru davranıp reddediyor
+ * (RLS; DB'de hiçbir şey değişmiyor, audit satırı yazılmıyor — ölçüldü), ama kullanıcı açısından
+ * sonuç şuydu: düğmeye bas, sayfa yenilensin, hiçbir şey olmasın.
+ *
+ * Yani güvenlik sağlamdı, VAAT yanlıştı. Bir finans panelinde yapılamayacak bir işlemi etkin
+ * göstermek, kullanıcıya olmayan bir yetki söz vermektir.
+ *
+ * `canMutate?: boolean = true` yazmak kolay olurdu ama yanlış olurdu: yeni bir çağrı yeri
+ * eklendiğinde sessizce "herkes değiştirebilir" varsayımına düşerdi. Zorunlu prop, her ekranın
+ * bu kararı AÇIKÇA vermesini şart koşar — TypeScript unutmayı derleme hatasına çevirir.
+ *
+ * Gizleme, yetki DEĞİLDİR ve onun yerine geçmez: backend reddi ayrıca test edilir
+ * (tests/interaction/authz.spec.ts).
+ */
+export function InstanceRowView({ r, backTo, showDate = false, canMutate }: { r: InstanceRow; backTo: string; showDate?: boolean; canMutate: boolean }) {
   const paid = r.status === "paid";
-  const payable = PAYABLE_FROM.has(r.status);
-  const cancellable = CANCELLABLE_FROM.has(r.status);
+  const payable = canMutate && PAYABLE_FROM.has(r.status);
+  const cancellable = canMutate && CANCELLABLE_FROM.has(r.status);
   return (
     <div className="payment-instance-row row-hover grid grid-cols-1 gap-2 border-b border-line-faint px-1 py-2 sm:grid-cols-[minmax(180px,1fr)_auto] sm:items-center">
       <div className="min-w-0">
@@ -50,7 +71,7 @@ export function InstanceRowView({ r, backTo, showDate = false }: { r: InstanceRo
         </div>
       </div>
       <div className="flex flex-wrap items-center gap-2 sm:justify-end">
-      {r.amount == null && !paid && (
+      {canMutate && r.amount == null && !paid && (
         <form action={setAmountAction} className="flex min-w-0 flex-1 items-center gap-1 sm:flex-initial">
           <input type="hidden" name="id" value={r.id} />
           <input type="hidden" name="backTo" value={backTo} />
@@ -59,13 +80,13 @@ export function InstanceRowView({ r, backTo, showDate = false }: { r: InstanceRo
           <button className="button-ghost px-2 py-1">kaydet</button>
         </form>
       )}
-      {paid ? (
+      {paid ? (canMutate ? (
         <form action={markUnpaidAction}>
           <input type="hidden" name="id" value={r.id} />
           <input type="hidden" name="backTo" value={backTo} />
           <button className="button-ghost px-2 py-1">geri al</button>
         </form>
-      ) : payable ? (
+      ) : null) : payable ? (
         <>
           <form action={markPaidAction} className="flex items-center gap-1">
             <input type="hidden" name="id" value={r.id} />

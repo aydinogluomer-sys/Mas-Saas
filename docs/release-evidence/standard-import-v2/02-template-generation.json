@@ -1,0 +1,66 @@
+{
+  "artifactKind": "mas-standard-import-v2-template-generation-v1",
+  "generator": "scripts/import/generate-standard-template-v2.ts",
+  "packageScript": "pnpm import:template:v2",
+  "contractSource": "src/lib/importers/v2/contract.ts",
+  "output": "templates/MAS_Nakit_Radar_Standart_Import_v2.xlsx",
+  "library": "exceljs ^4.4.0",
+  "schema": {
+    "schema_name": "MAS_NAKIT_RADAR_STANDARD_IMPORT",
+    "schema_version": 2,
+    "template_version": "2.0.0",
+    "template_id": "mas-standard-import-v2"
+  },
+  "workbook": {
+    "sheetsTotal": 19,
+    "dataSheets": 16,
+    "readmeSheet": "00_README",
+    "examplesSheet": "99_ORNEKLER",
+    "metaSheet": "_MAS_META",
+    "metaSheetState": "veryHidden",
+    "bytes": 91440
+  },
+  "columns": {
+    "total": 187,
+    "required": 53,
+    "enumWithDropdown": 34
+  },
+  "features": {
+    "turkishHeaders": true,
+    "freezeFirstRow": true,
+    "autoFilter": true,
+    "dateFormat": "yyyy-mm-dd",
+    "moneyFormat": "#,##0.00",
+    "percentFormat": "0.0000",
+    "excelDataValidationDropdowns": true,
+    "perColumnNotes": "her başlıkta alanın anlamı + boş bırakılırsa ne olacağı",
+    "requiredColumnsVisuallyDistinct": "zorunlu başlıklar koyu yeşil, isteğe bağlı lacivert",
+    "examplesSeparatedFromDataSheets": true
+  },
+  "readbackVerification": {
+    "method": "üretilen dosya ExcelJS ile geri okundu, başlıklar contract.normalizeHeader'dan geçirildi",
+    "sheetsFound": 19,
+    "metaReadBack": "MAS_NAKIT_RADAR_STANDARD_IMPORT v2",
+    "headersRoundTripped": 187,
+    "headerMismatches": 0,
+    "freezePaneMissing": 0,
+    "autoFilterMissing": 0
+  },
+  "determinism": {
+    "contentDeterministic": true,
+    "contentEvidence": "iki ayrı üretim açıldığında (unzip) XML içeriği BİREBİR AYNI — diff -r farksız (2026-09-04 kanıtı)",
+    "byteDeterministic": true,
+    "byteEvidence": "2026-09-13: iki ardışık `pnpm import:template:v2` → aynı sha256 f965a1ba745264497a425c180b9bf3d21445ae66cf0e418019666f16035770ee; `cmp` farksız; `unzip -t` hatasız; 84/84 zip girdisi 2026-01-01 00:00 damgalı",
+    "cause": "ExcelJS zip girdi başlıklarına (local header + central directory) üretim anının DOS zaman damgasını yazıyordu; belge içeriği etkilenmiyordu",
+    "fix": "src/lib/importers/v2/zip-canonical.ts — paketleme sonrası EOCD→central directory→local header zinciri yürünerek her girdinin mtime/mdate alanı 2026-01-01T00:00:00Z'ye yazılır; uzunluk/CRC/sıkıştırılmış veri değişmez; ek bağımlılık yok",
+    "lockedBy": "src/lib/importers/v2/zip-canonical.test.ts — iki üretim ≥2 sn arayla (DOS saat çözünürlüğü) aynı sha256; kanonik arşiv ExcelJS ile geri okunur ve V2 parser şemayı tanır (7/7)",
+    "canonicalReleaseAssetSha256": "f965a1ba745264497a425c180b9bf3d21445ae66cf0e418019666f16035770ee",
+    "honestStatus": "Plan §3.7 karşılandı: byte-level determinizm sağlandı ve testle kilitlendi. Sözleşme (contract.ts) değişirse sha değişir — bu beklenen davranıştır; sha yalnız aynı kaynak kod için sabittir.",
+    "previousStatus2026-09-04": "byteDeterministic=false, sha b3448918… vs d1dff489… — zip repack o turda yapılmamıştı"
+  },
+  "legacyUntouched": {
+    "legacyImporterFilesChanged": 0,
+    "note": "Bu turda legacy parser'a hiç dokunulmadı; V2 kodu ayrı dizinde (src/lib/importers/v2/)."
+  },
+  "realDbWrites": 0
+}

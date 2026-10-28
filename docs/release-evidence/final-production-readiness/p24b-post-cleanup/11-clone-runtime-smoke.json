@@ -1,0 +1,35 @@
+{
+  "artifactKind": "mas-p24b-clone-runtime-smoke-v1",
+  "cloneDb": "mas_radar_postcleanup_smoke_verify",
+  "server": {
+    "command": "next start -p 3310",
+    "readyInSeconds": 6.1,
+    "startupLoop": false
+  },
+  "httpProbes": {
+    "/login": 200,
+    "/ready": 200,
+    "/overview": 307
+  },
+  "serverLog5xxMatches": 0,
+  "visualAndRouteSuite": {
+    "command": "playwright phase17-38-routes.spec.ts + dashboard.spec.ts",
+    "passed": 94,
+    "failed": 8,
+    "failureClass": "YALNIZ piksel ekran goruntusu karsilastirmasi (toHaveScreenshot). Sayfa yuksekligi 1068px -> 858px: cleanup 42 satir kaldirdigi icin sayfalar kisaldi. Golden goruntuler eski veri hacmine gore alinmisti.",
+    "functionalFailures": 0
+  },
+  "rbacSuite": {
+    "command": "playwright interaction/authz.spec.ts",
+    "passed": 2,
+    "failed": 0,
+    "note": "Ilk kosuda harness postgres:postgres kimligini sabit yazdigi icin baglanti hatasi verdi; harness kendi MAS_E2E_VERIFIER_URL kacis kapisiyla duzeltildi. RBAC ile ilgisi yoktu."
+  },
+  "interactionSuite": {
+    "command": "playwright interaction/navigation.spec.ts + flows.spec.ts",
+    "passed": 5,
+    "failed": 0,
+    "navigation": "78 ayrik href tiklandi, 78 basarili, 7749 birim kanitlandi"
+  },
+  "serverStoppedAfterwards": true
+}

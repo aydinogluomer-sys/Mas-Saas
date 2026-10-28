@@ -41,12 +41,38 @@ export interface RiskThresholds {
   clusterCount: number; // same_day_cluster_count
 }
 
+/**
+ * Eşiklerin para birimi. `large_payment_threshold_try` / `critical_payment_threshold_try` adları
+ * üzerinde TRY yazar; bu sabit o adı koda taşır. Bir kalem ancak bu para birimindeyse eşikle
+ * karşılaştırılabilir.
+ */
+export const THRESHOLD_CURRENCY = "TRY";
+
+/**
+ * Bu kalem TRY eşikleriyle karşılaştırılabilir mi?
+ *
+ * PHASE 2.2 / plan §2.1: `MULTI_CURRENCY_FINANCE_ANALYTICS = NOT_IMPLEMENTED` — kur çevirimi YOK ve
+ * burada yazılmıyor. Kural: "Farklı para birimleri doğrudan toplama/karşılaştırmaya giremez.
+ * Politika yoksa tutarı TRY varsayma; açıkça eksik/inceleme gerekli göster." Dolayısıyla `null`
+ * (bilinmeyen para birimi) da TRY sayılmaz: karşılaştırma dışında tutulur ve SAYILIR.
+ */
+export function isThresholdCurrency(currency: string | null | undefined): boolean {
+  return currency === THRESHOLD_CURRENCY;
+}
+
 export interface RiskInputInstance {
   id: string;
   dueDate: string; // ISO
   amount: number | null;
   status: string; // 'unpaid' | 'paid' | ...
   paidAmount?: number | null;
+  /**
+   * Kalemin para birimi (payment_instances.currency, `not null default 'TRY'`).
+   * Yalnız `THRESHOLD_CURRENCY` satırlar tutar eşikleriyle tartılır; diğerleri (ve `null` =
+   * bilinmiyor) toplamdan ve eşik kararından DIŞARIDA tutulur, ama `foreignCount` ile görünür kalır.
+   * Sayım tabanlı kurallar (aynı gün yığılma) para biriminden bağımsızdır ve her kalemi sayar.
+   */
+  currency: string | null;
 }
 
 export type RiskReason =
@@ -56,9 +82,23 @@ export type RiskReason =
   | "critical_payment"
   | "same_day_cluster"
   | "overdue"
-  | "overpaid";
+  | "overpaid"
+  /**
+   * PHASE 2.2 (T1-b): kalemin tutarı var ama para birimi TRY değil; `*_threshold_try` eşikleri
+   * bu tutara UYGULANMADI. Kur çevirimi yok, dolayısıyla büyük/kritik olup olmadığı BİLİNMİYOR —
+   * "risk yok" değil, "inceleme gerekli". Sadece açık kalemlerde ve yalnız eşik dalının yerine yazılır
+   * (tutar null → missing_amount, negatif → negative_amount öncelikli ve para biriminden bağımsız).
+   */
+  | "unsupported_currency";
 
-export type RiskLevel = "none" | "low" | "medium" | "high" | "critical";
+/**
+ * `unsupported_currency` bir şiddet değil, "eşik değerlendirilemedi" işaretidir. Merdivende
+ * KESİN olan `critical` ve `overdue`nun altında, `medium`ın üstünde durur: bilinmeyen bir eşik
+ * sonucu kritik olabilir, bu yüzden kesin-orta gerekçelerin üstüne çıkar; gecikme ise para
+ * biriminden bağımsız kesin bir olgudur ve öncelik listelerinde görünmeye devam etmelidir.
+ * DB CHECK'i migration 0092 ile genişletildi (0003'teki beş üyeye altıncı üye).
+ */
+export type RiskLevel = "none" | "low" | "medium" | "high" | "critical" | "unsupported_currency";
 
 const OPEN_STATUSES = new Set(["unpaid", "partial", "planned", "late"]);
 
@@ -68,12 +108,13 @@ export function isOpen(status: string): boolean {
 
 /**
  * Risk ladder (deterministic, documented in calculation-rules.md):
- * critical_payment → critical; overdue → high;
- * large/cluster/negative → medium; missing_amount alone → low; else none.
+ * critical_payment → critical; overdue → high; unsupported_currency → unsupported_currency;
+ * large/cluster/negative/overpaid → medium; missing_amount alone → low; else none.
  */
 export function riskLevelOf(reasons: RiskReason[]): RiskLevel {
   if (reasons.includes("critical_payment")) return "critical";
   if (reasons.includes("overdue")) return "high";
+  if (reasons.includes("unsupported_currency")) return "unsupported_currency";
   if (
     reasons.includes("large_payment") ||
     reasons.includes("same_day_cluster") ||
@@ -101,10 +142,16 @@ export function computeRisk(
     if (isOpen(i.status)) {
       if (i.amount == null) reasons.push("missing_amount");
       else if (i.amount < 0) reasons.push("negative_amount");
-      else {
+      else if (!isThresholdCurrency(i.currency)) {
+        // PHASE 2.2 (T1-b): tutar var ama TRY değil (ya da para birimi bilinmiyor) — eşik
+        // KARŞILAŞTIRILMAZ, TRY varsayılmaz, sessizce de geçilmez: ayrı gerekçe yazılır ve
+        // risk_level olarak DB'ye 'unsupported_currency' iner.
+        reasons.push("unsupported_currency");
+      } else {
         if (i.amount >= t.critical) reasons.push("critical_payment");
         else if (i.amount >= t.large) reasons.push("large_payment");
       }
+      // Yığılma ve gecikme para biriminden bağımsız olgulardır.
       if ((openByDate.get(i.dueDate) ?? 0) >= t.clusterCount) reasons.push("same_day_cluster");
       if (i.dueDate < todayISO) reasons.push("overdue");
     }
@@ -123,21 +170,118 @@ export function computeRisk(
   return out;
 }
 
-/** Day-level flags for calendar/risk panels (calculation-rules thresholds). */
-export function dayFlags(
-  dayInstances: RiskInputInstance[],
-  t: RiskThresholds,
-): { cluster: boolean; large: boolean; critical: boolean; knownSum: number; count: number } {
+/**
+ * Day-level flags for calendar/risk panels (calculation-rules thresholds).
+ *
+ * QA-F2: `knownSum` ondalık birikir. Bu toplam yalnız ekrana yazılmıyor — hemen aşağıda
+ * `knownSum >= t.critical` eşiğini besliyor, yani `concentration`/`exposureBy` ile aynı
+ * sınıfta: birikmiş ikili hata burada gösterilen bir haneyi değil, günün KRİTİK sayılıp
+ * sayılmadığını çevirir. Ölçülen örnek: 173.885,27 + 21.752,99 + 47.810,90 + 6.550,84 kuruşu
+ * kuruşuna 250.000,00 eder; aynı toplama float `+=` ile 249.999,99999999997 verir ve tam
+ * eşikteki günü sessizce kritik olmaktan çıkarır. Yayımlanan tip değişmedi: düz sayı.
+ *
+ * PHASE 2.2 (T1-a) — PARA BİRİMİ. Eşikler `*_threshold_try`; bu yüzden `knownSum`, `large` ve
+ * `critical` YALNIZ `currency === 'TRY'` açık kalemleri tartar. TRY-dışı (veya para birimi
+ * bilinmeyen) açık kalemler bu üçünden DIŞARIDA tutulur, sessizce düşürülmez: `foreignCount`
+ * onları sayar ve çağıran ekran "n kalem TRY-dışı" diyebilir. `count` ve `cluster` sayım
+ * kurallarıdır, para biriminden bağımsız — her açık kalemi sayar.
+ */
+export interface DayFlags {
+  cluster: boolean;
+  large: boolean;
+  critical: boolean;
+  /** Yalnız TRY açık kalemlerin (amount > 0) toplamı. */
+  knownSum: number;
+  /** Günün TÜM açık kalemleri (para biriminden bağımsız). */
+  count: number;
+  /** TRY eşikleriyle karşılaştırılamadığı için knownSum/large/critical dışında bırakılan açık kalem sayısı. */
+  foreignCount: number;
+}
+
+export function dayFlags(dayInstances: RiskInputInstance[], t: RiskThresholds): DayFlags {
   const open = dayInstances.filter((i) => isOpen(i.status));
-  const knownSum = open.reduce((s, i) => s + (i.amount != null && i.amount > 0 ? i.amount : 0), 0);
-  const anyCritical = open.some((i) => i.amount != null && i.amount >= t.critical);
-  const anyLarge = open.some((i) => i.amount != null && i.amount >= t.large);
+  const comparable = open.filter((i) => isThresholdCurrency(i.currency));
+  let knownSumDecimal = zero();
+  for (const i of comparable) {
+    if (i.amount != null && i.amount > 0) knownSumDecimal = knownSumDecimal.plus(decimal(i.amount));
+  }
+  const knownSum = money(knownSumDecimal);
+  const anyCritical = comparable.some((i) => i.amount != null && i.amount >= t.critical);
+  const anyLarge = comparable.some((i) => i.amount != null && i.amount >= t.large);
   return {
     count: open.length,
     knownSum,
     cluster: open.length >= t.clusterCount,
     large: anyLarge,
     critical: anyCritical || knownSum >= t.critical,
+    foreignCount: open.length - comparable.length,
+  };
+}
+
+/**
+ * `dayFlags()`in ÖNCEDEN TOPLANMIŞ girdiyle çalışan hâli.
+ *
+ * ═══ NEDEN VAR ═══
+ *
+ * `/payments` panosu bir günün örneklerini artık tek tek çekmiyor; SQL onları güne göre
+ * toplayıp geliyor. Toplanmış satırlardan risk kararını yeniden TÜRETMEK, iş kuralının ikinci
+ * bir kopyasını yaratır ve iki kopya er geç ayrışır. Bu yüzden kural burada, `dayFlags()`in tam
+ * yanında, TEK bir yerde duruyor; sayfa yalnız çağırıyor.
+ *
+ * ═══ EŞDEĞERLİK — üstteki `dayFlags()` NORMATİF REFERANSTIR ═══
+ *
+ *   dayFlags                                    dayFlagsFromAggregate
+ *   ─────────────────────────────────────────   ─────────────────────────────────────
+ *   open = instances.filter(isOpen)             openCount  (SQL: status in OPEN_STATUSES)
+ *   comparable = open.filter(currency='TRY')    (SQL: … and currency = 'TRY' — flag_* süzgeci)
+ *   count   = open.length                       openCount
+ *   knownSum= Σ amount, TRY, amount != null &&>0 knownSum  (SQL: sum(amount) aynı süzgeçle)
+ *   cluster = open.length >= clusterCount       openCount >= clusterCount
+ *   anyLarge= comparable.some(a!=null&&a>=large) maxAmount >= large   (max yalnız TRY üzerinden)
+ *   anyCrit = comparable.some(a!=null&&a>=crit)  maxAmount >= crit
+ *   critical= anyCrit || knownSum >= crit       (maxAmount >= crit) || knownSum >= crit
+ *   foreignCount = open.length - comparable.len foreignCount (SQL: count(*) filter (currency<>'TRY'))
+ *
+ * `some(i => i.amount >= E)` ile `max(amount) >= E` aynı önermedir: bir küme, ancak ve ancak
+ * en büyük elemanı eşiği geçiyorsa eşiği geçen bir eleman içerir. null'lar SQL'de `max` tarafından
+ * zaten yok sayılır, JS'te `a != null` süzgeciyle. Boş gün → `maxAmount = null` → her iki bayrak
+ * da false; `some` da boş kümede false döner.
+ *
+ * PHASE 2.2 (T1-a): `knownSum` ve `maxAmount` SQL'de YALNIZ `currency = 'TRY'` satırlardan
+ * gelmelidir (queries.ts `flag_known_sum` / `flag_max_amount`); `foreignCount` ise açık ve
+ * TRY-dışı satır sayısıdır. Bu fonksiyon toplanmış girdiyi yeniden süzemez — süzgecin SQL'de
+ * uygulanmış olması çağıranın sorumluluğudur ve `payment-day-flags-verify` bunu diferansiyel
+ * olarak ölçer.
+ *
+ * `anyCritical` referansta olduğu için burada da DURUYOR, ama ölçüldüğünde şu çıktı:
+ * **sonucu hiçbir girdide değiştiremiyor.** Kanıt tek satırlık — `anyCritical` true ise günde
+ * `amount >= critical` olan bir kalem vardır; `critical > 0` iken o kalemin tutarı da pozitiftir,
+ * yani `knownSum` toplamına GİRER ve diğer terimler negatif olamadığı için `knownSum >= critical`
+ * zaten sağlanır. `critical <= 0` iken de `knownSum >= 0 >= critical`. İki dal her durumda aynı
+ * cevabı verir (11.310 kombinasyonla tarandı, karşı örnek yok — `payment-day-flags-verify`).
+ *
+ * O hâlde neden duruyor: `knownSum`un tanımı (`amount > 0` süzgeci) değişirse eşdeğerlik biter ve
+ * dal yeniden anlam kazanır. Referansta var, burada da var — sadeleştirmek ayrı bir karardır.
+ * Buradan çıkan diğer sonuç: 44d9c5f'in `anyCritical`ı düşürmesi TEK BAŞINA bir hata değildi;
+ * o commit'teki gerçek kayma `remaining` ile `'unknown'` idi.
+ *
+ * `knownSum` DAİMA `amount` üzerinden; `remaining` üzerinden DEĞİL. Panonun grafik ve KPI'ları
+ * `remaining` ("hâlâ borçlu olunan baskı") kullanır ve bu ayrım bilinçlidir — risk eşiği ürün
+ * kuralı olarak `amount`a bağlıdır, performans gerekçesiyle değiştirilemez.
+ */
+export function dayFlagsFromAggregate(
+  day: { openCount: number; knownSum: number; maxAmount: number | null; foreignCount: number },
+  t: RiskThresholds,
+): DayFlags {
+  const anyCritical = day.maxAmount != null && day.maxAmount >= t.critical;
+  const anyLarge = day.maxAmount != null && day.maxAmount >= t.large;
+  return {
+    count: day.openCount,
+    knownSum: day.knownSum,
+    cluster: day.openCount >= t.clusterCount,
+    large: anyLarge,
+    critical: anyCritical || day.knownSum >= t.critical,
+    foreignCount: day.foreignCount,
   };
 }
 
@@ -250,11 +394,14 @@ export function horizonCards(
     const endExclusive = addMonths(from, h);
     const win = sorted.filter((m) => m.monthStart >= from && m.monthStart < endExclusive);
     let minClosing: number | null = null, minMonth: string | null = null, firstNeg: string | null = null;
-    let knownIncome = 0, knownExpense = 0, missingCount = 0;
+    // QA-F2: bu iki toplam yalnız GÖSTERİM içindir (hiçbir eşiği tetiklemez — dayFlags'in
+    // aksine), yine de ondalık birikiyor ki ufuk kartındaki rakam Postgres sum() ile aynı olsun.
+    let incomeDecimal = zero(), expenseDecimal = zero();
+    let missingCount = 0;
     for (const m of win) {
       if (m.income == null || m.expense == null) missingCount++;
-      if (m.income != null) knownIncome += m.income;
-      if (m.expense != null) knownExpense += m.expense;
+      if (m.income != null) incomeDecimal = incomeDecimal.plus(decimal(m.income));
+      if (m.expense != null) expenseDecimal = expenseDecimal.plus(decimal(m.expense));
       if (m.closing != null) {
         if (m.closing < 0 && firstNeg == null) firstNeg = m.monthStart;
         if (minClosing == null || m.closing < minClosing) { minClosing = m.closing; minMonth = m.monthStart; }
@@ -264,7 +411,7 @@ export function horizonCards(
     return {
       horizonMonths: h, fromMonth: from, toMonth: last?.monthStart ?? from,
       endClosing: last?.closing ?? null, minClosing, minMonth,
-      knownIncome, knownExpense, missingCount,
+      knownIncome: money(incomeDecimal), knownExpense: money(expenseDecimal), missingCount,
       firstNegativeInside: firstNeg,
       truncated: win.length < h,
     };

@@ -1,0 +1,1402 @@
+;
+; Archive created at 2026-08-31 10:01:14 UTC
+;     dbname: mas_radar_dev
+;     TOC Entries: 1391
+;     Compression: gzip
+;     Dump Version: 1.15-0
+;     Format: CUSTOM
+;     Integer: 4 bytes
+;     Offset: 8 bytes
+;     Dumped from database version: 16.14 (Debian 16.14-1.pgdg13+1)
+;     Dumped by pg_dump version: 16.14 (Debian 16.14-1.pgdg13+1)
+;
+;
+; Selected TOC Entries:
+;
+5; 2615 43368 SCHEMA - auth postgres
+5966; 0 0 ACL - SCHEMA public pg_database_owner
+385; 1255 43375 FUNCTION auth uid() postgres
+421; 1255 2293103 FUNCTION public allocations_enforce_invoice_ceiling() postgres
+424; 1255 2293267 FUNCTION public approval_map_legacy_status(text, text) postgres
+423; 1255 2293239 FUNCTION public approval_steps_block_mutation() postgres
+425; 1255 2293268 FUNCTION public approval_sync_from_legacy() postgres
+422; 1255 2293216 FUNCTION public approvals_status_transition_guard() postgres
+415; 1255 101835 FUNCTION public archive_metadata_immutability_guard() postgres
+432; 1255 2294706 FUNCTION public assistant_conversations_guard_transition() postgres
+389; 1255 2294571 FUNCTION public attachments_append_only() postgres
+390; 1255 101824 FUNCTION public audit_logs_block_mutation() postgres
+420; 1255 2294462 FUNCTION public background_jobs_guard_transition() postgres
+400; 1255 2292851 FUNCTION public bank_transactions_status_transition_guard() postgres
+394; 1255 2293945 FUNCTION public budget_lines_guard_transition() postgres
+387; 1255 144766 FUNCTION public checks_status_transition_guard() postgres
+398; 1255 2294301 FUNCTION public control_alerts_guard_transition() postgres
+430; 1255 2293764 FUNCTION public covenant_records_guard_transition() postgres
+429; 1255 2293649 FUNCTION public credit_facilities_guard_transition() postgres
+427; 1255 2293279 FUNCTION public current_app_role() postgres
+5967; 0 0 COMMENT public FUNCTION current_app_role() postgres
+5968; 0 0 ACL public FUNCTION current_app_role() postgres
+426; 1255 2293278 FUNCTION public current_app_user() postgres
+5969; 0 0 COMMENT public FUNCTION current_app_user() postgres
+5970; 0 0 ACL public FUNCTION current_app_user() postgres
+388; 1255 2294568 FUNCTION public documents_guard_transition() postgres
+392; 1255 458771 FUNCTION public enforce_at_least_one_active_admin() postgres
+397; 1255 2294048 FUNCTION public forecast_lines_guard_transition() postgres
+393; 1255 2293802 FUNCTION public fx_rate_snapshots_block_mutation() postgres
+391; 1255 2292637 FUNCTION public iban_change_events_block_mutation() postgres
+399; 1255 2292641 FUNCTION public ibans_record_change() postgres
+431; 1255 2294667 FUNCTION public integration_connections_guard_transition() postgres
+416; 1255 2293009 FUNCTION public invoice_lines_immutability_guard() postgres
+418; 1255 2293035 FUNCTION public invoice_reversals_block_mutation() postgres
+417; 1255 2293011 FUNCTION public invoices_block_issued_delete() postgres
+406; 1255 2292964 FUNCTION public invoices_content_immutability_guard() postgres
+419; 1255 2293039 FUNCTION public invoices_require_reversal_record() postgres
+401; 1255 2292962 FUNCTION public invoices_status_transition_guard() postgres
+396; 1255 144768 FUNCTION public loan_installments_status_transition_guard() postgres
+395; 1255 144764 FUNCTION public payment_instances_status_transition_guard() postgres
+414; 1255 101833 FUNCTION public payments_archived_immutability_guard() postgres
+428; 1255 2293539 FUNCTION public promise_to_pay_guard_transition() postgres
+386; 1255 43493 FUNCTION public set_updated_at() postgres
+218; 1259 43369 TABLE auth users postgres
+256; 1259 53136 TABLE public action_items postgres
+5971; 0 0 ACL public TABLE action_items postgres
+255; 1259 51039 TABLE public ai_response_snapshots postgres
+5972; 0 0 ACL public TABLE ai_response_snapshots postgres
+354; 1259 2294304 TABLE public alert_escalation_rules postgres
+5973; 0 0 ACL public TABLE alert_escalation_rules postgres
+224; 1259 43494 TABLE public parties postgres
+5974; 0 0 ACL public TABLE parties postgres
+230; 1259 43627 TABLE public payment_instances postgres
+5975; 0 0 ACL public TABLE payment_instances postgres
+229; 1259 43568 TABLE public payments postgres
+5976; 0 0 ACL public TABLE payments postgres
+369; 1259 2294399 VIEW public anomaly_amount_vs_baseline postgres
+5977; 0 0 ACL public TABLE anomaly_amount_vs_baseline postgres
+368; 1259 2294394 VIEW public anomaly_new_payee postgres
+5978; 0 0 ACL public TABLE anomaly_new_payee postgres
+366; 1259 2294384 VIEW public anomaly_round_number_payments postgres
+5979; 0 0 ACL public TABLE anomaly_round_number_payments postgres
+227; 1259 43545 TABLE public settings postgres
+5980; 0 0 ACL public TABLE settings postgres
+367; 1259 2294389 VIEW public anomaly_split_payments postgres
+5981; 0 0 ACL public TABLE anomaly_split_payments postgres
+275; 1259 2292804 TABLE public bank_transactions postgres
+5982; 0 0 ACL public TABLE bank_transactions postgres
+370; 1259 2294404 VIEW public anomaly_unusual_record_hour postgres
+5983; 0 0 ACL public TABLE anomaly_unusual_record_hour postgres
+303; 1259 2293219 TABLE public approval_steps postgres
+5984; 0 0 ACL public TABLE approval_steps postgres
+302; 1259 2293181 TABLE public approvals postgres
+5985; 0 0 ACL public TABLE approvals postgres
+260; 1259 458752 TABLE public users postgres
+5986; 0 0 COMMENT public COLUMN users.role postgres
+5987; 0 0 ACL public TABLE users postgres
+305; 1259 2293271 VIEW public approval_queue postgres
+5988; 0 0 ACL public TABLE approval_queue postgres
+304; 1259 2293243 TABLE public approval_rules postgres
+5989; 0 0 ACL public TABLE approval_rules postgres
+384; 1259 2294679 TABLE public assistant_conversations postgres
+5990; 0 0 ACL public TABLE assistant_conversations postgres
+378; 1259 2294510 TABLE public attachments postgres
+5991; 0 0 ACL public TABLE attachments postgres
+228; 1259 43553 TABLE public audit_logs postgres
+5992; 0 0 ACL public TABLE audit_logs postgres
+374; 1259 2294425 TABLE public background_jobs postgres
+5993; 0 0 ACL public TABLE background_jobs postgres
+375; 1259 2294469 VIEW public background_job_queue_health postgres
+5994; 0 0 ACL public TABLE background_job_queue_health postgres
+274; 1259 2292777 TABLE public bank_accounts postgres
+5995; 0 0 ACL public TABLE bank_accounts postgres
+226; 1259 43525 TABLE public cash_accounts postgres
+5996; 0 0 ACL public TABLE cash_accounts postgres
+311; 1259 2293597 VIEW public bank_cash_position postgres
+5997; 0 0 ACL public TABLE bank_cash_position postgres
+279; 1259 2292891 VIEW public bank_match_conflicts postgres
+5998; 0 0 ACL public TABLE bank_match_conflicts postgres
+278; 1259 2292886 VIEW public bank_reconciliation_summary postgres
+5999; 0 0 ACL public TABLE bank_reconciliation_summary postgres
+276; 1259 2292854 TABLE public bank_transaction_match_candidates postgres
+6000; 0 0 ACL public TABLE bank_transaction_match_candidates postgres
+277; 1259 2292881 VIEW public bank_unmatched_queue postgres
+6001; 0 0 ACL public TABLE bank_unmatched_queue postgres
+280; 1259 2292896 TABLE public invoices postgres
+6002; 0 0 ACL public TABLE invoices postgres
+332; 1259 2294063 VIEW public budget_actuals_monthly postgres
+6003; 0 0 ACL public TABLE budget_actuals_monthly postgres
+329; 1259 2293886 TABLE public budget_lines postgres
+6004; 0 0 ACL public TABLE budget_lines postgres
+328; 1259 2293864 TABLE public budgets postgres
+6005; 0 0 COMMENT public TABLE budgets postgres
+6006; 0 0 ACL public TABLE budgets postgres
+265; 1259 2292643 TABLE public cost_centers postgres
+6007; 0 0 ACL public TABLE cost_centers postgres
+266; 1259 2292658 TABLE public departments postgres
+6008; 0 0 ACL public TABLE departments postgres
+267; 1259 2292678 TABLE public projects postgres
+6009; 0 0 ACL public TABLE projects postgres
+333; 1259 2294068 VIEW public budget_vs_actual postgres
+6010; 0 0 ACL public TABLE budget_vs_actual postgres
+334; 1259 2294073 VIEW public budget_variance_summary postgres
+6011; 0 0 ACL public TABLE budget_variance_summary postgres
+243; 1259 43977 TABLE public capacity_models postgres
+6012; 0 0 ACL public TABLE capacity_models postgres
+331; 1259 2293985 TABLE public forecast_lines postgres
+6013; 0 0 ACL public TABLE forecast_lines postgres
+330; 1259 2293959 TABLE public forecasts postgres
+6014; 0 0 ACL public TABLE forecasts postgres
+335; 1259 2294078 VIEW public cash_forecast_13w postgres
+6015; 0 0 ACL public TABLE cash_forecast_13w postgres
+232; 1259 43707 TABLE public cashflow_lines postgres
+6016; 0 0 ACL public TABLE cashflow_lines postgres
+231; 1259 43679 TABLE public cashflow_months postgres
+6017; 0 0 ACL public TABLE cashflow_months postgres
+233; 1259 43743 TABLE public cashflow_snapshots postgres
+6018; 0 0 ACL public TABLE cashflow_snapshots postgres
+225; 1259 43510 TABLE public categories postgres
+6019; 0 0 ACL public TABLE categories postgres
+235; 1259 43803 TABLE public check_events postgres
+6020; 0 0 ACL public TABLE check_events postgres
+234; 1259 43751 TABLE public checks postgres
+6021; 0 0 ACL public TABLE checks postgres
+319; 1259 2293691 TABLE public collateral_records postgres
+6022; 0 0 COMMENT public COLUMN collateral_records.value_amount postgres
+6023; 0 0 ACL public TABLE collateral_records postgres
+288; 1259 2293067 TABLE public invoice_allocations postgres
+6024; 0 0 ACL public TABLE invoice_allocations postgres
+289; 1259 2293108 VIEW public collection_allocations postgres
+6025; 0 0 ACL public TABLE collection_allocations postgres
+353; 1259 2294258 TABLE public control_alerts postgres
+6026; 0 0 ACL public TABLE control_alerts postgres
+358; 1259 2294347 VIEW public control_allocation_over_invoice postgres
+6027; 0 0 ACL public TABLE control_allocation_over_invoice postgres
+364; 1259 2294375 VIEW public control_approval_bypass postgres
+6028; 0 0 ACL public TABLE control_approval_bypass postgres
+363; 1259 2294370 VIEW public control_closed_period_mutations postgres
+6029; 0 0 ACL public TABLE control_closed_period_mutations postgres
+356; 1259 2294337 VIEW public control_duplicate_invoices postgres
+6030; 0 0 ACL public TABLE control_duplicate_invoices postgres
+264; 1259 2292624 TABLE public iban_change_events postgres
+6031; 0 0 ACL public TABLE iban_change_events postgres
+361; 1259 2294361 VIEW public control_iban_changes postgres
+6032; 0 0 ACL public TABLE control_iban_changes postgres
+362; 1259 2294365 VIEW public control_large_payments postgres
+6033; 0 0 ACL public TABLE control_large_payments postgres
+365; 1259 2294380 VIEW public control_missing_source_document postgres
+6034; 0 0 ACL public TABLE control_missing_source_document postgres
+357; 1259 2294342 VIEW public control_near_duplicate_bank_txns postgres
+6035; 0 0 ACL public TABLE control_near_duplicate_bank_txns postgres
+359; 1259 2294352 VIEW public control_payment_without_invoice postgres
+6036; 0 0 ACL public TABLE control_payment_without_invoice postgres
+355; 1259 2294332 VIEW public control_registry postgres
+6037; 0 0 ACL public TABLE control_registry postgres
+360; 1259 2294357 VIEW public control_unmatched_bank_aged postgres
+6038; 0 0 ACL public TABLE control_unmatched_bank_aged postgres
+371; 1259 2294409 VIEW public control_dashboard postgres
+6039; 0 0 ACL public TABLE control_dashboard postgres
+343; 1259 2294170 TABLE public cost_allocation_rules postgres
+6040; 0 0 COMMENT public TABLE cost_allocation_rules postgres
+6041; 0 0 ACL public TABLE cost_allocation_rules postgres
+252; 1259 44163 TABLE public cost_breakdown_lines postgres
+6042; 0 0 ACL public TABLE cost_breakdown_lines postgres
+244; 1259 43999 TABLE public cost_models postgres
+6043; 0 0 ACL public TABLE cost_models postgres
+344; 1259 2294214 VIEW public costing_invoice_facts postgres
+6044; 0 0 ACL public TABLE costing_invoice_facts postgres
+297; 1259 2293148 VIEW public counterparty_settlement_speed postgres
+6045; 0 0 ACL public TABLE counterparty_settlement_speed postgres
+298; 1259 2293161 VIEW public receivable_collection_signals postgres
+6046; 0 0 ACL public TABLE receivable_collection_signals postgres
+301; 1259 2293176 VIEW public counterparty_collection_profile postgres
+6047; 0 0 ACL public TABLE counterparty_collection_profile postgres
+237; 1259 43851 TABLE public loan_installments postgres
+6048; 0 0 ACL public TABLE loan_installments postgres
+236; 1259 43823 TABLE public loans postgres
+6049; 0 0 ACL public TABLE loans postgres
+270; 1259 2292757 VIEW public counterparty_exposure_items postgres
+6050; 0 0 ACL public TABLE counterparty_exposure_items postgres
+262; 1259 2292565 TABLE public counterparty_profiles postgres
+6051; 0 0 ACL public TABLE counterparty_profiles postgres
+263; 1259 2292595 TABLE public ibans postgres
+6052; 0 0 ACL public TABLE ibans postgres
+271; 1259 2292762 VIEW public counterparty_exposure postgres
+6053; 0 0 ACL public TABLE counterparty_exposure postgres
+272; 1259 2292767 VIEW public counterparty_unresolved postgres
+6054; 0 0 ACL public TABLE counterparty_unresolved postgres
+320; 1259 2293730 TABLE public covenant_records postgres
+6055; 0 0 ACL public TABLE covenant_records postgres
+317; 1259 2293627 TABLE public credit_facilities postgres
+6056; 0 0 COMMENT public TABLE credit_facilities postgres
+6057; 0 0 ACL public TABLE credit_facilities postgres
+318; 1259 2293654 TABLE public facility_drawdowns postgres
+6058; 0 0 COMMENT public COLUMN facility_drawdowns.signed_amount postgres
+6059; 0 0 ACL public TABLE facility_drawdowns postgres
+323; 1259 2293841 VIEW public credit_facility_utilization postgres
+6060; 0 0 ACL public TABLE credit_facility_utilization postgres
+295; 1259 2293138 VIEW public current_account_ledger postgres
+6061; 0 0 ACL public TABLE current_account_ledger postgres
+294; 1259 2293133 VIEW public current_account_summary postgres
+6062; 0 0 ACL public TABLE current_account_summary postgres
+306; 1259 2293501 TABLE public promise_to_pay postgres
+6063; 0 0 COMMENT public TABLE promise_to_pay postgres
+6064; 0 0 COMMENT public COLUMN promise_to_pay.promised_amount postgres
+6065; 0 0 COMMENT public COLUMN promise_to_pay.resolved_by postgres
+6066; 0 0 ACL public TABLE promise_to_pay postgres
+308; 1259 2293557 VIEW public party_promise_history postgres
+6067; 0 0 ACL public TABLE party_promise_history postgres
+309; 1259 2293562 VIEW public customer_collection_score postgres
+6068; 0 0 ACL public TABLE customer_collection_score postgres
+312; 1259 2293602 VIEW public daily_cash_movement postgres
+6069; 0 0 ACL public TABLE daily_cash_movement postgres
+324; 1259 2293846 VIEW public debt_maturity_ladder postgres
+6070; 0 0 ACL public TABLE debt_maturity_ladder postgres
+377; 1259 2294481 TABLE public documents postgres
+6071; 0 0 ACL public TABLE documents postgres
+380; 1259 2294574 VIEW public document_current_version postgres
+6072; 0 0 ACL public TABLE document_current_version postgres
+379; 1259 2294543 TABLE public document_links postgres
+6073; 0 0 ACL public TABLE document_links postgres
+296; 1259 2293143 VIEW public dso_dpo_components postgres
+6074; 0 0 ACL public TABLE dso_dpo_components postgres
+257; 1259 53581 TABLE public external_assumptions postgres
+6075; 0 0 ACL public TABLE external_assumptions postgres
+254; 1259 49469 TABLE public finance_cost_allocations postgres
+6076; 0 0 ACL public TABLE finance_cost_allocations postgres
+372; 1259 2294415 VIEW public financial_calendar postgres
+6077; 0 0 ACL public TABLE financial_calendar postgres
+373; 1259 2294420 VIEW public financial_calendar_daily postgres
+6078; 0 0 ACL public TABLE financial_calendar_daily postgres
+336; 1259 2294083 VIEW public forecast_accuracy postgres
+6079; 0 0 ACL public TABLE forecast_accuracy postgres
+337; 1259 2294088 VIEW public forecast_coverage postgres
+6080; 0 0 ACL public TABLE forecast_coverage postgres
+321; 1259 2293776 TABLE public fx_rate_snapshots postgres
+6081; 0 0 COMMENT public TABLE fx_rate_snapshots postgres
+6082; 0 0 ACL public TABLE fx_rate_snapshots postgres
+325; 1259 2293851 VIEW public fx_latest_rates postgres
+6083; 0 0 ACL public TABLE fx_latest_rates postgres
+322; 1259 2293807 TABLE public fx_positions postgres
+6084; 0 0 COMMENT public COLUMN fx_positions.amount postgres
+6085; 0 0 ACL public TABLE fx_positions postgres
+326; 1259 2293855 VIEW public fx_position_revaluation postgres
+6086; 0 0 ACL public TABLE fx_position_revaluation postgres
+327; 1259 2293860 VIEW public fx_exposure_summary postgres
+6087; 0 0 ACL public TABLE fx_exposure_summary postgres
+273; 1259 2292772 VIEW public iban_shared_across_parties postgres
+6088; 0 0 ACL public TABLE iban_shared_across_parties postgres
+222; 1259 43434 TABLE public import_rows postgres
+6089; 0 0 ACL public TABLE import_rows postgres
+382; 1259 2294640 TABLE public integration_connections postgres
+6090; 0 0 ACL public TABLE integration_connections postgres
+383; 1259 2294674 VIEW public integration_health postgres
+6091; 0 0 ACL public TABLE integration_health postgres
+284; 1259 2293047 VIEW public invoice_duplicate_suspects postgres
+6092; 0 0 ACL public TABLE invoice_duplicate_suspects postgres
+281; 1259 2292967 TABLE public invoice_lines postgres
+6093; 0 0 ACL public TABLE invoice_lines postgres
+285; 1259 2293052 VIEW public invoice_line_mismatches postgres
+6094; 0 0 ACL public TABLE invoice_line_mismatches postgres
+283; 1259 2293042 VIEW public invoice_open_items postgres
+6095; 0 0 ACL public TABLE invoice_open_items postgres
+286; 1259 2293057 VIEW public invoice_overpaid postgres
+6096; 0 0 ACL public TABLE invoice_overpaid postgres
+287; 1259 2293062 VIEW public invoice_party_summary postgres
+6097; 0 0 ACL public TABLE invoice_party_summary postgres
+282; 1259 2293014 TABLE public invoice_reversals postgres
+6098; 0 0 ACL public TABLE invoice_reversals postgres
+314; 1259 2293612 VIEW public liquidity_forecast_daily postgres
+6099; 0 0 ACL public TABLE liquidity_forecast_daily postgres
+241; 1259 43940 TABLE public machine_assets postgres
+6100; 0 0 ACL public TABLE machine_assets postgres
+253; 1259 49441 TABLE public machine_minute_allocations postgres
+6101; 0 0 ACL public TABLE machine_minute_allocations postgres
+246; 1259 44049 TABLE public machine_roi_snapshots postgres
+6102; 0 0 ACL public TABLE machine_roi_snapshots postgres
+223; 1259 43459 TABLE public mapping_reviews postgres
+6103; 0 0 ACL public TABLE mapping_reviews postgres
+258; 1259 62270 TABLE public metric_snapshots postgres
+6104; 0 0 ACL public TABLE metric_snapshots postgres
+339; 1259 2294116 TABLE public optimization_recommendations postgres
+6105; 0 0 ACL public TABLE optimization_recommendations postgres
+338; 1259 2294093 TABLE public optimization_runs postgres
+6106; 0 0 COMMENT public TABLE optimization_runs postgres
+6107; 0 0 ACL public TABLE optimization_runs postgres
+342; 1259 2294165 VIEW public optimization_recommendation_detail postgres
+6108; 0 0 ACL public TABLE optimization_recommendation_detail postgres
+341; 1259 2294160 VIEW public optimization_run_summary postgres
+6109; 0 0 ACL public TABLE optimization_run_summary postgres
+269; 1259 2292719 TABLE public orders postgres
+6110; 0 0 ACL public TABLE orders postgres
+245; 1259 44025 TABLE public part_profitability_runs postgres
+6111; 0 0 ACL public TABLE part_profitability_runs postgres
+292; 1259 2293123 VIEW public payables_open postgres
+6112; 0 0 ACL public TABLE payables_open postgres
+290; 1259 2293113 VIEW public payment_allocations postgres
+6113; 0 0 ACL public TABLE payment_allocations postgres
+299; 1259 2293166 VIEW public payment_priority_queue postgres
+6114; 0 0 ACL public TABLE payment_priority_queue postgres
+300; 1259 2293171 VIEW public payment_calendar_extended postgres
+6115; 0 0 ACL public TABLE payment_calendar_extended postgres
+242; 1259 43952 TABLE public production_parts postgres
+6116; 0 0 ACL public TABLE production_parts postgres
+268; 1259 2292703 TABLE public products postgres
+6117; 0 0 ACL public TABLE products postgres
+345; 1259 2294219 VIEW public profitability_by_cost_center postgres
+6118; 0 0 ACL public TABLE profitability_by_cost_center postgres
+348; 1259 2294234 VIEW public profitability_by_department postgres
+6119; 0 0 ACL public TABLE profitability_by_department postgres
+349; 1259 2294238 VIEW public profitability_by_machine postgres
+6120; 0 0 ACL public TABLE profitability_by_machine postgres
+347; 1259 2294229 VIEW public profitability_by_party postgres
+6121; 0 0 ACL public TABLE profitability_by_party postgres
+346; 1259 2294224 VIEW public profitability_by_project postgres
+6122; 0 0 ACL public TABLE profitability_by_project postgres
+350; 1259 2294243 VIEW public profitability_company postgres
+6123; 0 0 ACL public TABLE profitability_company postgres
+307; 1259 2293552 VIEW public promise_to_pay_open postgres
+6124; 0 0 ACL public TABLE promise_to_pay_open postgres
+291; 1259 2293118 VIEW public receivables_open postgres
+6125; 0 0 ACL public TABLE receivables_open postgres
+239; 1259 43886 TABLE public reminder_deliveries postgres
+6126; 0 0 ACL public TABLE reminder_deliveries postgres
+238; 1259 43871 TABLE public reminders postgres
+6127; 0 0 ACL public TABLE reminders postgres
+240; 1259 43905 TABLE public reports postgres
+6128; 0 0 ACL public TABLE reports postgres
+381; 1259 2294589 TABLE public saved_views postgres
+6129; 0 0 ACL public TABLE saved_views postgres
+250; 1259 44130 TABLE public scenario_assumptions postgres
+6130; 0 0 ACL public TABLE scenario_assumptions postgres
+251; 1259 44143 TABLE public scenario_comparisons postgres
+6131; 0 0 ACL public TABLE scenario_comparisons postgres
+248; 1259 44098 TABLE public scenario_runs postgres
+6132; 0 0 ACL public TABLE scenario_runs postgres
+247; 1259 44083 TABLE public scenarios postgres
+6133; 0 0 ACL public TABLE scenarios postgres
+340; 1259 2294155 VIEW public scenario_comparison_matrix postgres
+6134; 0 0 ACL public TABLE scenario_comparison_matrix postgres
+249; 1259 44116 TABLE public scenario_run_lines postgres
+6135; 0 0 ACL public TABLE scenario_run_lines postgres
+259; 1259 76224 TABLE public schema_migrations postgres
+261; 1259 458775 TABLE public sessions postgres
+6136; 0 0 ACL public TABLE sessions postgres
+293; 1259 2293128 VIEW public settlement_unallocated postgres
+6137; 0 0 ACL public TABLE settlement_unallocated postgres
+221; 1259 43411 TABLE public source_cells postgres
+6138; 0 0 ACL public TABLE source_cells postgres
+220; 1259 43392 TABLE public source_sheets postgres
+6139; 0 0 ACL public TABLE source_sheets postgres
+219; 1259 43376 TABLE public source_workbooks postgres
+6140; 0 0 ACL public TABLE source_workbooks postgres
+316; 1259 2293622 VIEW public treasury_cashflow_reconciliation postgres
+6141; 0 0 ACL public TABLE treasury_cashflow_reconciliation postgres
+310; 1259 2293567 TABLE public treasury_policies postgres
+6142; 0 0 COMMENT public TABLE treasury_policies postgres
+6143; 0 0 COMMENT public COLUMN treasury_policies.cash_account_id postgres
+6144; 0 0 ACL public TABLE treasury_policies postgres
+313; 1259 2293607 VIEW public treasury_position_summary postgres
+6145; 0 0 ACL public TABLE treasury_position_summary postgres
+315; 1259 2293617 VIEW public treasury_liquidity_gap postgres
+6146; 0 0 ACL public TABLE treasury_liquidity_gap postgres
+351; 1259 2294248 VIEW public working_capital_metrics postgres
+6147; 0 0 ACL public TABLE working_capital_metrics postgres
+352; 1259 2294253 VIEW public working_capital_trend postgres
+6148; 0 0 ACL public TABLE working_capital_trend postgres
+376; 1259 2294476 VIEW public working_capital_trend_reference postgres
+6149; 0 0 ACL public TABLE working_capital_trend_reference postgres
+5874; 0 43369 TABLE DATA auth users postgres
+5912; 0 53136 TABLE DATA public action_items postgres
+5911; 0 51039 TABLE DATA public ai_response_snapshots postgres
+5952; 0 2294304 TABLE DATA public alert_escalation_rules postgres
+5935; 0 2293243 TABLE DATA public approval_rules postgres
+5934; 0 2293219 TABLE DATA public approval_steps postgres
+5933; 0 2293181 TABLE DATA public approvals postgres
+5959; 0 2294679 TABLE DATA public assistant_conversations postgres
+5955; 0 2294510 TABLE DATA public attachments postgres
+5884; 0 43553 TABLE DATA public audit_logs postgres
+5953; 0 2294425 TABLE DATA public background_jobs postgres
+5926; 0 2292777 TABLE DATA public bank_accounts postgres
+5928; 0 2292854 TABLE DATA public bank_transaction_match_candidates postgres
+5927; 0 2292804 TABLE DATA public bank_transactions postgres
+5945; 0 2293886 TABLE DATA public budget_lines postgres
+5944; 0 2293864 TABLE DATA public budgets postgres
+5899; 0 43977 TABLE DATA public capacity_models postgres
+5882; 0 43525 TABLE DATA public cash_accounts postgres
+5888; 0 43707 TABLE DATA public cashflow_lines postgres
+5887; 0 43679 TABLE DATA public cashflow_months postgres
+5889; 0 43743 TABLE DATA public cashflow_snapshots postgres
+5881; 0 43510 TABLE DATA public categories postgres
+5891; 0 43803 TABLE DATA public check_events postgres
+5890; 0 43751 TABLE DATA public checks postgres
+5940; 0 2293691 TABLE DATA public collateral_records postgres
+5951; 0 2294258 TABLE DATA public control_alerts postgres
+5950; 0 2294170 TABLE DATA public cost_allocation_rules postgres
+5908; 0 44163 TABLE DATA public cost_breakdown_lines postgres
+5921; 0 2292643 TABLE DATA public cost_centers postgres
+5900; 0 43999 TABLE DATA public cost_models postgres
+5918; 0 2292565 TABLE DATA public counterparty_profiles postgres
+5941; 0 2293730 TABLE DATA public covenant_records postgres
+5938; 0 2293627 TABLE DATA public credit_facilities postgres
+5922; 0 2292658 TABLE DATA public departments postgres
+5956; 0 2294543 TABLE DATA public document_links postgres
+5954; 0 2294481 TABLE DATA public documents postgres
+5913; 0 53581 TABLE DATA public external_assumptions postgres
+5939; 0 2293654 TABLE DATA public facility_drawdowns postgres
+5910; 0 49469 TABLE DATA public finance_cost_allocations postgres
+5947; 0 2293985 TABLE DATA public forecast_lines postgres
+5946; 0 2293959 TABLE DATA public forecasts postgres
+5943; 0 2293807 TABLE DATA public fx_positions postgres
+5942; 0 2293776 TABLE DATA public fx_rate_snapshots postgres
+5920; 0 2292624 TABLE DATA public iban_change_events postgres
+5919; 0 2292595 TABLE DATA public ibans postgres
+5878; 0 43434 TABLE DATA public import_rows postgres
+5958; 0 2294640 TABLE DATA public integration_connections postgres
+5932; 0 2293067 TABLE DATA public invoice_allocations postgres
+5930; 0 2292967 TABLE DATA public invoice_lines postgres
+5931; 0 2293014 TABLE DATA public invoice_reversals postgres
+5929; 0 2292896 TABLE DATA public invoices postgres
+5893; 0 43851 TABLE DATA public loan_installments postgres
+5892; 0 43823 TABLE DATA public loans postgres
+5897; 0 43940 TABLE DATA public machine_assets postgres
+5909; 0 49441 TABLE DATA public machine_minute_allocations postgres
+5902; 0 44049 TABLE DATA public machine_roi_snapshots postgres
+5879; 0 43459 TABLE DATA public mapping_reviews postgres
+5914; 0 62270 TABLE DATA public metric_snapshots postgres
+5949; 0 2294116 TABLE DATA public optimization_recommendations postgres
+5948; 0 2294093 TABLE DATA public optimization_runs postgres
+5925; 0 2292719 TABLE DATA public orders postgres
+5901; 0 44025 TABLE DATA public part_profitability_runs postgres
+5880; 0 43494 TABLE DATA public parties postgres
+5886; 0 43627 TABLE DATA public payment_instances postgres
+5885; 0 43568 TABLE DATA public payments postgres
+5898; 0 43952 TABLE DATA public production_parts postgres
+5924; 0 2292703 TABLE DATA public products postgres
+5923; 0 2292678 TABLE DATA public projects postgres
+5936; 0 2293501 TABLE DATA public promise_to_pay postgres
+5895; 0 43886 TABLE DATA public reminder_deliveries postgres
+5894; 0 43871 TABLE DATA public reminders postgres
+5896; 0 43905 TABLE DATA public reports postgres
+5957; 0 2294589 TABLE DATA public saved_views postgres
+5906; 0 44130 TABLE DATA public scenario_assumptions postgres
+5907; 0 44143 TABLE DATA public scenario_comparisons postgres
+5905; 0 44116 TABLE DATA public scenario_run_lines postgres
+5904; 0 44098 TABLE DATA public scenario_runs postgres
+5903; 0 44083 TABLE DATA public scenarios postgres
+5915; 0 76224 TABLE DATA public schema_migrations postgres
+5917; 0 458775 TABLE DATA public sessions postgres
+5883; 0 43545 TABLE DATA public settings postgres
+5877; 0 43411 TABLE DATA public source_cells postgres
+5876; 0 43392 TABLE DATA public source_sheets postgres
+5875; 0 43376 TABLE DATA public source_workbooks postgres
+5937; 0 2293567 TABLE DATA public treasury_policies postgres
+5916; 0 458752 TABLE DATA public users postgres
+4621; 2606 43374 CONSTRAINT auth users users_pkey postgres
+4398; 2606 101832 CHECK CONSTRAINT public action_items action_items_archive_triplet_consistency postgres
+4765; 2606 53151 CONSTRAINT public action_items action_items_pkey postgres
+4760; 2606 51052 CONSTRAINT public ai_response_snapshots ai_response_snapshots_pkey postgres
+4954; 2606 2294320 CONSTRAINT public alert_escalation_rules alert_escalation_rules_code_key postgres
+4956; 2606 2294318 CONSTRAINT public alert_escalation_rules alert_escalation_rules_pkey postgres
+4879; 2606 2293263 CONSTRAINT public approval_rules approval_rules_code_key postgres
+4881; 2606 2293261 CONSTRAINT public approval_rules approval_rules_pkey postgres
+4873; 2606 2293231 CONSTRAINT public approval_steps approval_steps_approval_id_step_no_key postgres
+4876; 2606 2293229 CONSTRAINT public approval_steps approval_steps_pkey postgres
+4868; 2606 2293200 CONSTRAINT public approvals approvals_pkey postgres
+4871; 2606 2293202 CONSTRAINT public approvals approvals_subject_table_subject_id_round_no_key postgres
+4992; 2606 2294692 CONSTRAINT public assistant_conversations assistant_conversations_pkey postgres
+4967; 2606 2294528 CONSTRAINT public attachments attachments_document_id_file_sha256_key postgres
+4969; 2606 2294526 CONSTRAINT public attachments attachments_document_id_version_no_key postgres
+4972; 2606 2294524 CONSTRAINT public attachments attachments_pkey postgres
+4659; 2606 43561 CONSTRAINT public audit_logs audit_logs_pkey postgres
+4960; 2606 2294453 CONSTRAINT public background_jobs background_jobs_pkey postgres
+4829; 2606 2292794 CONSTRAINT public bank_accounts bank_accounts_pkey postgres
+4838; 2606 2292866 CONSTRAINT public bank_transaction_match_candidates bank_transaction_match_candidates_pkey postgres
+4834; 2606 2292824 CONSTRAINT public bank_transactions bank_transactions_pkey postgres
+4924; 2606 2293904 CONSTRAINT public budget_lines budget_lines_pkey postgres
+4917; 2606 2293880 CONSTRAINT public budgets budgets_name_fiscal_year_key postgres
+4919; 2606 2293878 CONSTRAINT public budgets budgets_pkey postgres
+4713; 2606 43987 CONSTRAINT public capacity_models capacity_models_pkey postgres
+4652; 2606 43539 CONSTRAINT public cash_accounts cash_accounts_name_key postgres
+4654; 2606 43537 CONSTRAINT public cash_accounts cash_accounts_pkey postgres
+4675; 2606 43720 CONSTRAINT public cashflow_lines cashflow_lines_pkey postgres
+4669; 2606 43695 CONSTRAINT public cashflow_months cashflow_months_month_start_key postgres
+4671; 2606 43693 CONSTRAINT public cashflow_months cashflow_months_pkey postgres
+4677; 2606 43750 CONSTRAINT public cashflow_snapshots cashflow_snapshots_pkey postgres
+4648; 2606 43524 CONSTRAINT public categories categories_name_key postgres
+4650; 2606 43522 CONSTRAINT public categories categories_pkey postgres
+4684; 2606 43812 CONSTRAINT public check_events check_events_pkey postgres
+4370; 2606 101828 CHECK CONSTRAINT public checks checks_archive_triplet_consistency postgres
+4681; 2606 43765 CONSTRAINT public checks checks_pkey postgres
+4904; 2606 2293706 CONSTRAINT public collateral_records collateral_records_pkey postgres
+4950; 2606 2294283 CONSTRAINT public control_alerts control_alerts_pkey postgres
+4945; 2606 2294186 CONSTRAINT public cost_allocation_rules cost_allocation_rules_code_key postgres
+4947; 2606 2294184 CONSTRAINT public cost_allocation_rules cost_allocation_rules_pkey postgres
+4742; 2606 44173 CONSTRAINT public cost_breakdown_lines cost_breakdown_lines_cost_model_id_block_label_key postgres
+4745; 2606 44171 CONSTRAINT public cost_breakdown_lines cost_breakdown_lines_pkey postgres
+4804; 2606 2292657 CONSTRAINT public cost_centers cost_centers_code_key postgres
+4806; 2606 2292655 CONSTRAINT public cost_centers cost_centers_pkey postgres
+4716; 2606 44008 CONSTRAINT public cost_models cost_models_pkey postgres
+4791; 2606 2292586 CONSTRAINT public counterparty_profiles counterparty_profiles_pkey postgres
+4906; 2606 2293748 CONSTRAINT public covenant_records covenant_records_pkey postgres
+4896; 2606 2293643 CONSTRAINT public credit_facilities credit_facilities_pkey postgres
+4808; 2606 2292672 CONSTRAINT public departments departments_code_key postgres
+4811; 2606 2292670 CONSTRAINT public departments departments_pkey postgres
+4975; 2606 2294556 CONSTRAINT public document_links document_links_document_id_entity_table_entity_id_link_kind_key postgres
+4978; 2606 2294554 CONSTRAINT public document_links document_links_pkey postgres
+4963; 2606 2294499 CONSTRAINT public documents documents_pkey postgres
+4402; 2606 101831 CHECK CONSTRAINT public external_assumptions external_assumptions_archive_triplet_consistency postgres
+4769; 2606 53614 CONSTRAINT public external_assumptions external_assumptions_pkey postgres
+4900; 2606 2293666 CONSTRAINT public facility_drawdowns facility_drawdowns_pkey postgres
+4753; 2606 49482 CONSTRAINT public finance_cost_allocations finance_cost_allocations_loan_id_capacity_model_id_operatio_key postgres
+4756; 2606 49480 CONSTRAINT public finance_cost_allocations finance_cost_allocations_pkey postgres
+4933; 2606 2294007 CONSTRAINT public forecast_lines forecast_lines_pkey postgres
+4926; 2606 2293974 CONSTRAINT public forecasts forecasts_name_anchor_date_key postgres
+4928; 2606 2293972 CONSTRAINT public forecasts forecasts_pkey postgres
+4915; 2606 2293822 CONSTRAINT public fx_positions fx_positions_pkey postgres
+4910; 2606 2293794 CONSTRAINT public fx_rate_snapshots fx_rate_snapshots_pkey postgres
+4912; 2606 2293796 CONSTRAINT public fx_rate_snapshots fx_rate_snapshots_unique postgres
+4802; 2606 2292633 CONSTRAINT public iban_change_events iban_change_events_pkey postgres
+4798; 2606 2292612 CONSTRAINT public ibans ibans_pkey postgres
+4635; 2606 43444 CONSTRAINT public import_rows import_rows_pkey postgres
+4637; 2606 43446 CONSTRAINT public import_rows import_rows_sheet_id_row_index_key postgres
+4987; 2606 2294660 CONSTRAINT public integration_connections integration_connections_integration_kind_name_key postgres
+4989; 2606 2294658 CONSTRAINT public integration_connections integration_connections_pkey postgres
+4864; 2606 2293081 CONSTRAINT public invoice_allocations invoice_allocations_pkey postgres
+4852; 2606 2292985 CONSTRAINT public invoice_lines invoice_lines_invoice_id_line_no_key postgres
+4855; 2606 2292983 CONSTRAINT public invoice_lines invoice_lines_pkey postgres
+4860; 2606 2293026 CONSTRAINT public invoice_reversals invoice_reversals_pkey postgres
+4849; 2606 2292920 CONSTRAINT public invoices invoices_pkey postgres
+4691; 2606 43864 CONSTRAINT public loan_installments loan_installments_loan_id_installment_no_key postgres
+4379; 2606 101839 CHECK CONSTRAINT public loan_installments loan_installments_paid_fields_scoped postgres
+4693; 2606 43862 CONSTRAINT public loan_installments loan_installments_pkey postgres
+4375; 2606 101829 CHECK CONSTRAINT public loans loans_archive_triplet_consistency postgres
+4687; 2606 43834 CONSTRAINT public loans loans_pkey postgres
+4706; 2606 43951 CONSTRAINT public machine_assets machine_assets_name_key postgres
+4708; 2606 43949 CONSTRAINT public machine_assets machine_assets_pkey postgres
+4748; 2606 49452 CONSTRAINT public machine_minute_allocations machine_minute_allocations_capacity_model_id_operation_type_key postgres
+4750; 2606 49450 CONSTRAINT public machine_minute_allocations machine_minute_allocations_pkey postgres
+4723; 2606 44061 CONSTRAINT public machine_roi_snapshots machine_roi_snapshots_machine_asset_id_snapshot_year_key postgres
+4725; 2606 44059 CONSTRAINT public machine_roi_snapshots machine_roi_snapshots_pkey postgres
+4641; 2606 43471 CONSTRAINT public mapping_reviews mapping_reviews_pkey postgres
+4775; 2606 62285 CONSTRAINT public metric_snapshots metric_snapshots_pkey postgres
+4777; 2606 62287 CONSTRAINT public metric_snapshots metric_snapshots_snapshot_date_metric_key_dimension_key_key postgres
+4938; 2606 2294135 CONSTRAINT public optimization_recommendations optimization_recommendations_pkey postgres
+4940; 2606 2294137 CONSTRAINT public optimization_recommendations optimization_recommendations_run_id_rank_key postgres
+4936; 2606 2294105 CONSTRAINT public optimization_runs optimization_runs_pkey postgres
+4822; 2606 2292732 CONSTRAINT public orders orders_code_key postgres
+4825; 2606 2292730 CONSTRAINT public orders orders_pkey postgres
+4719; 2606 44038 CONSTRAINT public part_profitability_runs part_profitability_runs_part_id_cost_model_id_key postgres
+4721; 2606 44036 CONSTRAINT public part_profitability_runs part_profitability_runs_pkey postgres
+4644; 2606 43508 CONSTRAINT public parties parties_normalized_name_party_type_key postgres
+4646; 2606 43506 CONSTRAINT public parties parties_pkey postgres
+4360; 2606 101838 CHECK CONSTRAINT public payment_instances payment_instances_paid_fields_scoped postgres
+4666; 2606 43649 CONSTRAINT public payment_instances payment_instances_pkey postgres
+4347; 2606 101827 CHECK CONSTRAINT public payments payments_archive_consistency postgres
+4662; 2606 43590 CONSTRAINT public payments payments_pkey postgres
+4710; 2606 43960 CONSTRAINT public production_parts production_parts_pkey postgres
+4818; 2606 2292718 CONSTRAINT public products products_code_key postgres
+4820; 2606 2292716 CONSTRAINT public products products_pkey postgres
+4813; 2606 2292692 CONSTRAINT public projects projects_code_key postgres
+4816; 2606 2292690 CONSTRAINT public projects projects_pkey postgres
+4887; 2606 2293518 CONSTRAINT public promise_to_pay promise_to_pay_pkey postgres
+4699; 2606 43896 CONSTRAINT public reminder_deliveries reminder_deliveries_pkey postgres
+4701; 2606 43898 CONSTRAINT public reminder_deliveries reminder_deliveries_reminder_id_entity_table_entity_id_sche_key postgres
+4695; 2606 43883 CONSTRAINT public reminders reminders_pkey postgres
+4697; 2606 43885 CONSTRAINT public reminders reminders_target_kind_offset_days_channel_key postgres
+4704; 2606 43914 CONSTRAINT public reports reports_pkey postgres
+4980; 2606 2294605 CONSTRAINT public saved_views saved_views_created_by_module_key_name_key postgres
+4984; 2606 2294603 CONSTRAINT public saved_views saved_views_pkey postgres
+4736; 2606 44137 CONSTRAINT public scenario_assumptions scenario_assumptions_pkey postgres
+4738; 2606 44150 CONSTRAINT public scenario_comparisons scenario_comparisons_pkey postgres
+4740; 2606 44152 CONSTRAINT public scenario_comparisons scenario_comparisons_run_id_metric_key postgres
+4732; 2606 44122 CONSTRAINT public scenario_run_lines scenario_run_lines_pkey postgres
+4734; 2606 44124 CONSTRAINT public scenario_run_lines scenario_run_lines_run_id_month_start_key postgres
+4391; 2606 101830 CHECK CONSTRAINT public scenario_runs scenario_runs_archive_triplet_consistency postgres
+4729; 2606 44109 CONSTRAINT public scenario_runs scenario_runs_pkey postgres
+4727; 2606 44092 CONSTRAINT public scenarios scenarios_pkey postgres
+4780; 2606 76232 CONSTRAINT public schema_migrations schema_migrations_pkey postgres
+4786; 2606 458783 CONSTRAINT public sessions sessions_pkey postgres
+4788; 2606 458785 CONSTRAINT public sessions sessions_token_hash_key postgres
+4656; 2606 43552 CONSTRAINT public settings settings_pkey postgres
+4629; 2606 43419 CONSTRAINT public source_cells source_cells_pkey postgres
+4631; 2606 43421 CONSTRAINT public source_cells source_cells_sheet_id_row_index_column_index_key postgres
+4625; 2606 43403 CONSTRAINT public source_sheets source_sheets_pkey postgres
+4627; 2606 43405 CONSTRAINT public source_sheets source_sheets_workbook_id_sheet_index_key postgres
+4623; 2606 43386 CONSTRAINT public source_workbooks source_workbooks_pkey postgres
+4891; 2606 2293584 CONSTRAINT public treasury_policies treasury_policies_code_key postgres
+4893; 2606 2293582 CONSTRAINT public treasury_policies treasury_policies_pkey postgres
+4782; 2606 458767 CONSTRAINT public users users_pkey postgres
+4784; 2606 458769 CONSTRAINT public users users_username_key postgres
+4762; 1259 53161 INDEX public action_items_open_fact_unique postgres
+4763; 1259 53160 INDEX public action_items_open_related_unique postgres
+4766; 1259 53159 INDEX public action_items_related_idx postgres
+4767; 1259 53158 INDEX public action_items_status_idx postgres
+4757; 1259 2294705 INDEX public ai_response_snapshots_conversation_idx postgres
+4758; 1259 51058 INDEX public ai_response_snapshots_created_idx postgres
+4761; 1259 51059 INDEX public ai_response_snapshots_report_idx postgres
+4952; 1259 2294322 INDEX public alert_escalation_rules_active_unique postgres
+4877; 1259 2293264 INDEX public approval_rules_active_idx postgres
+4874; 1259 2293237 INDEX public approval_steps_approval_idx postgres
+4866; 1259 2293213 INDEX public approvals_pending_idx postgres
+4869; 1259 2293214 INDEX public approvals_subject_idx postgres
+4990; 1259 2294698 INDEX public assistant_conversations_owner_idx postgres
+4970; 1259 2294539 INDEX public attachments_document_version_idx postgres
+4973; 1259 2294540 INDEX public attachments_sha_idx postgres
+4657; 1259 43567 INDEX public audit_logs_entity_idx postgres
+4957; 1259 2294460 INDEX public background_jobs_claim_idx postgres
+4958; 1259 2294459 INDEX public background_jobs_dedupe_live postgres
+4961; 1259 2294461 INDEX public background_jobs_type_status_idx postgres
+4827; 1259 2292800 INDEX public bank_accounts_iban_uq postgres
+4830; 1259 2292846 INDEX public bank_transactions_account_date_idx postgres
+4831; 1259 2292845 INDEX public bank_transactions_dedupe_uq postgres
+4832; 1259 2292848 INDEX public bank_transactions_matched_idx postgres
+4835; 1259 2292849 INDEX public bank_transactions_source_row_idx postgres
+4836; 1259 2292847 INDEX public bank_transactions_status_idx postgres
+4839; 1259 2292878 INDEX public bank_tx_candidates_open_idx postgres
+4840; 1259 2292879 INDEX public bank_tx_candidates_target_idx postgres
+4841; 1259 2292877 INDEX public bank_tx_candidates_uq postgres
+4920; 1259 2293948 INDEX public budget_lines_budget_idx postgres
+4921; 1259 2293949 INDEX public budget_lines_dimension_idx postgres
+4922; 1259 2293950 INDEX public budget_lines_live_unique postgres
+4714; 1259 43998 INDEX public capacity_models_source_sheet_uq postgres
+4672; 1259 43741 INDEX public cashflow_lines_month_idx postgres
+4673; 1259 43742 INDEX public cashflow_lines_party_idx postgres
+4678; 1259 62462 INDEX public checks_archived_at_idx postgres
+4679; 1259 43801 INDEX public checks_maturity_idx postgres
+4682; 1259 43938 INDEX public checks_source_row_uq postgres
+4901; 1259 2293729 INDEX public collateral_records_facility_idx postgres
+4902; 1259 2293728 INDEX public collateral_records_loan_idx postgres
+4948; 1259 2294299 INDEX public control_alerts_live_unique postgres
+4951; 1259 2294300 INDEX public control_alerts_status_idx postgres
+4942; 1259 2294208 INDEX public cost_allocation_rules_active_idx postgres
+4943; 1259 2294209 INDEX public cost_allocation_rules_active_unique postgres
+4743; 1259 44194 INDEX public cost_breakdown_lines_model_idx postgres
+4717; 1259 44024 INDEX public cost_models_source_sheet_uq postgres
+4792; 1259 2292593 INDEX public counterparty_profiles_tax_number_idx postgres
+4907; 1259 2293767 INDEX public covenant_records_status_idx postgres
+4894; 1259 2293653 INDEX public credit_facilities_lender_idx postgres
+4897; 1259 2293652 INDEX public credit_facilities_status_idx postgres
+4809; 1259 2292746 INDEX public departments_parent_idx postgres
+4976; 1259 2294567 INDEX public document_links_entity_idx postgres
+4964; 1259 2294541 INDEX public documents_status_type_idx postgres
+4965; 1259 2294542 INDEX public documents_tags_idx postgres
+4770; 1259 53642 INDEX public external_assumptions_review_idx postgres
+4771; 1259 53640 INDEX public external_assumptions_type_idx postgres
+4898; 1259 2293682 INDEX public facility_drawdowns_facility_idx postgres
+4751; 1259 49504 INDEX public finance_cost_allocations_capacity_idx postgres
+4754; 1259 49503 INDEX public finance_cost_allocations_loan_idx postgres
+4929; 1259 2294052 INDEX public forecast_lines_forecast_idx postgres
+4930; 1259 2294054 INDEX public forecast_lines_live_unique postgres
+4931; 1259 2294053 INDEX public forecast_lines_measured_idx postgres
+4913; 1259 2293834 INDEX public fx_positions_currency_idx postgres
+4908; 1259 2293806 INDEX public fx_rate_snapshots_lookup_idx postgres
+4799; 1259 2292634 INDEX public iban_change_events_iban_idx postgres
+4800; 1259 2292635 INDEX public iban_change_events_party_idx postgres
+4793; 1259 2292619 INDEX public ibans_normalized_idx postgres
+4794; 1259 2292621 INDEX public ibans_one_primary_per_party postgres
+4795; 1259 2292620 INDEX public ibans_party_idx postgres
+4796; 1259 2292618 INDEX public ibans_party_normalized_uq postgres
+4638; 1259 43458 INDEX public import_rows_status_idx postgres
+4639; 1259 43457 INDEX public import_rows_workbook_idx postgres
+4985; 1259 2294666 INDEX public integration_connections_due_idx postgres
+4861; 1259 2293098 INDEX public invoice_allocations_invoice_idx postgres
+4862; 1259 2293097 INDEX public invoice_allocations_open_uq postgres
+4865; 1259 2293099 INDEX public invoice_allocations_source_idx postgres
+4853; 1259 2293006 INDEX public invoice_lines_invoice_idx postgres
+4856; 1259 2293007 INDEX public invoice_lines_product_idx postgres
+4857; 1259 2293033 INDEX public invoice_reversals_invoice_idx postgres
+4858; 1259 2293032 INDEX public invoice_reversals_one_cancellation postgres
+4842; 1259 2293159 INDEX public invoices_bad_debt_idx postgres
+4843; 1259 2292956 INDEX public invoices_dedupe_idx postgres
+4844; 1259 2294474 INDEX public invoices_direction_status_issue_cover postgres
+4845; 1259 2292959 INDEX public invoices_due_idx postgres
+4846; 1259 2292960 INDEX public invoices_no_idx postgres
+4847; 1259 2292957 INDEX public invoices_party_idx postgres
+4850; 1259 2292958 INDEX public invoices_status_idx postgres
+4689; 1259 43870 INDEX public loan_installments_due_idx postgres
+4685; 1259 62463 INDEX public loans_archived_at_idx postgres
+4688; 1259 43939 INDEX public loans_source_sheet_uq postgres
+4746; 1259 49468 INDEX public machine_minute_allocations_capacity_idx postgres
+4642; 1259 43492 INDEX public mapping_reviews_status_idx postgres
+4772; 1259 62289 INDEX public metric_snapshots_date_idx postgres
+4773; 1259 62288 INDEX public metric_snapshots_metric_date_idx postgres
+4941; 1259 2294143 INDEX public optimization_recommendations_run_idx postgres
+4934; 1259 2294144 INDEX public optimization_runs_anchor_idx postgres
+4823; 1259 2292744 INDEX public orders_party_idx postgres
+4826; 1259 2292745 INDEX public orders_project_idx postgres
+4663; 1259 43676 INDEX public payment_instances_due_idx postgres
+4664; 1259 43675 INDEX public payment_instances_idempotency postgres
+4667; 1259 43677 INDEX public payment_instances_status_idx postgres
+4660; 1259 62461 INDEX public payments_archived_at_idx postgres
+4711; 1259 43976 INDEX public production_parts_source_row_uq postgres
+4814; 1259 2292743 INDEX public projects_party_idx postgres
+4882; 1259 2293542 INDEX public promise_to_pay_due_idx postgres
+4883; 1259 2293544 INDEX public promise_to_pay_invoice_idx postgres
+4884; 1259 2293545 INDEX public promise_to_pay_open_unique postgres
+4885; 1259 2293543 INDEX public promise_to_pay_party_idx postgres
+4702; 1259 43904 INDEX public reminder_deliveries_sched_idx postgres
+4981; 1259 2294612 INDEX public saved_views_module_idx postgres
+4982; 1259 2294611 INDEX public saved_views_one_default postgres
+4730; 1259 44115 INDEX public scenario_runs_scenario_idx postgres
+4778; 1259 76233 INDEX public schema_migrations_applied_at_idx postgres
+4789; 1259 458791 INDEX public sessions_user_id_idx postgres
+4632; 1259 43432 INDEX public source_cells_sheet_idx postgres
+4633; 1259 43433 INDEX public source_cells_workbook_idx postgres
+4888; 1259 2293591 INDEX public treasury_policies_active_idx postgres
+4889; 1259 2293592 INDEX public treasury_policies_active_unique postgres
+5178; 2620 53157 TRIGGER public action_items action_items_updated_at postgres
+5235; 2620 2294321 TRIGGER public alert_escalation_rules alert_escalation_rules_updated_at postgres
+5214; 2620 2293265 TRIGGER public approval_rules approval_rules_updated_at postgres
+5211; 2620 2293241 TRIGGER public approval_steps approval_steps_no_delete postgres
+5212; 2620 2293242 TRIGGER public approval_steps approval_steps_no_truncate postgres
+5213; 2620 2293240 TRIGGER public approval_steps approval_steps_no_update postgres
+5209; 2620 2293217 TRIGGER public approvals approvals_status_transition_guard postgres
+5210; 2620 2293215 TRIGGER public approvals approvals_updated_at postgres
+5245; 2620 2294707 TRIGGER public assistant_conversations assistant_conversations_status_guard postgres
+5246; 2620 2294708 TRIGGER public assistant_conversations assistant_conversations_updated_at postgres
+5240; 2620 2294573 TRIGGER public attachments attachments_no_delete postgres
+5241; 2620 2294572 TRIGGER public attachments attachments_no_update postgres
+5165; 2620 101826 TRIGGER public audit_logs audit_logs_block_truncate postgres
+5166; 2620 101825 TRIGGER public audit_logs audit_logs_block_update_delete postgres
+5236; 2620 2294463 TRIGGER public background_jobs background_jobs_status_guard postgres
+5237; 2620 2294464 TRIGGER public background_jobs background_jobs_updated_at postgres
+5194; 2620 2292801 TRIGGER public bank_accounts bank_accounts_updated_at postgres
+5195; 2620 2292852 TRIGGER public bank_transactions bank_transactions_status_transition_guard postgres
+5196; 2620 2292850 TRIGGER public bank_transactions bank_transactions_updated_at postgres
+5227; 2620 2293947 TRIGGER public budget_lines budget_lines_updated_at postgres
+5228; 2620 2293946 TRIGGER public budget_lines budget_lines_version_guard postgres
+5171; 2620 43706 TRIGGER public cashflow_months cashflow_months_updated_at postgres
+5172; 2620 101836 TRIGGER public checks checks_archive_metadata_immutability postgres
+5173; 2620 144767 TRIGGER public checks checks_status_transition_guard postgres
+5174; 2620 43802 TRIGGER public checks checks_updated_at postgres
+5220; 2620 2293727 TRIGGER public collateral_records collateral_records_updated_at postgres
+5233; 2620 2294302 TRIGGER public control_alerts control_alerts_transition_guard postgres
+5234; 2620 2294303 TRIGGER public control_alerts control_alerts_updated_at postgres
+5232; 2620 2294207 TRIGGER public cost_allocation_rules cost_allocation_rules_updated_at postgres
+5189; 2620 2292747 TRIGGER public cost_centers cost_centers_updated_at postgres
+5183; 2620 2292592 TRIGGER public counterparty_profiles counterparty_profiles_updated_at postgres
+5221; 2620 2293765 TRIGGER public covenant_records covenant_records_transition_guard postgres
+5222; 2620 2293766 TRIGGER public covenant_records covenant_records_updated_at postgres
+5218; 2620 2293650 TRIGGER public credit_facilities credit_facilities_transition_guard postgres
+5219; 2620 2293651 TRIGGER public credit_facilities credit_facilities_updated_at postgres
+5190; 2620 2292749 TRIGGER public departments departments_updated_at postgres
+5238; 2620 2294569 TRIGGER public documents documents_status_guard postgres
+5239; 2620 2294570 TRIGGER public documents documents_updated_at postgres
+5179; 2620 2293270 TRIGGER public external_assumptions external_assumptions_approval_sync postgres
+5180; 2620 53638 TRIGGER public external_assumptions external_assumptions_updated_at postgres
+5230; 2620 2294050 TRIGGER public forecast_lines forecast_lines_updated_at postgres
+5231; 2620 2294049 TRIGGER public forecast_lines forecast_lines_version_guard postgres
+5229; 2620 2294051 TRIGGER public forecasts forecasts_updated_at postgres
+5226; 2620 2293833 TRIGGER public fx_positions fx_positions_updated_at postgres
+5223; 2620 2293804 TRIGGER public fx_rate_snapshots fx_rate_snapshots_no_delete postgres
+5224; 2620 2293805 TRIGGER public fx_rate_snapshots fx_rate_snapshots_no_truncate postgres
+5225; 2620 2293803 TRIGGER public fx_rate_snapshots fx_rate_snapshots_no_update postgres
+5186; 2620 2292639 TRIGGER public iban_change_events iban_change_events_no_delete postgres
+5187; 2620 2292640 TRIGGER public iban_change_events iban_change_events_no_truncate postgres
+5188; 2620 2292638 TRIGGER public iban_change_events iban_change_events_no_update postgres
+5184; 2620 2292642 TRIGGER public ibans ibans_record_change_trg postgres
+5185; 2620 2292622 TRIGGER public ibans ibans_updated_at postgres
+5243; 2620 2294668 TRIGGER public integration_connections integration_connections_status_guard postgres
+5244; 2620 2294669 TRIGGER public integration_connections integration_connections_updated_at postgres
+5207; 2620 2293104 TRIGGER public invoice_allocations invoice_allocations_ceiling postgres
+5208; 2620 2293100 TRIGGER public invoice_allocations invoice_allocations_updated_at postgres
+5202; 2620 2293010 TRIGGER public invoice_lines invoice_lines_immutability_guard postgres
+5203; 2620 2293008 TRIGGER public invoice_lines invoice_lines_updated_at postgres
+5204; 2620 2293037 TRIGGER public invoice_reversals invoice_reversals_no_delete postgres
+5205; 2620 2293038 TRIGGER public invoice_reversals invoice_reversals_no_truncate postgres
+5206; 2620 2293036 TRIGGER public invoice_reversals invoice_reversals_no_update postgres
+5197; 2620 2293012 TRIGGER public invoices invoices_block_issued_delete postgres
+5198; 2620 2292965 TRIGGER public invoices invoices_content_immutability_guard postgres
+5199; 2620 2293040 TRIGGER public invoices invoices_require_reversal_record postgres
+5200; 2620 2292963 TRIGGER public invoices invoices_status_transition_guard postgres
+5201; 2620 2292961 TRIGGER public invoices invoices_updated_at postgres
+5177; 2620 144769 TRIGGER public loan_installments loan_installments_status_transition_guard postgres
+5175; 2620 101837 TRIGGER public loans loans_archive_metadata_immutability postgres
+5176; 2620 43850 TRIGGER public loans loans_updated_at postgres
+5163; 2620 2293269 TRIGGER public mapping_reviews mapping_reviews_approval_sync postgres
+5193; 2620 2292755 TRIGGER public orders orders_updated_at postgres
+5164; 2620 43509 TRIGGER public parties parties_updated_at postgres
+5169; 2620 144765 TRIGGER public payment_instances payment_instances_status_transition_guard postgres
+5170; 2620 43678 TRIGGER public payment_instances payment_instances_updated_at postgres
+5167; 2620 101834 TRIGGER public payments payments_archived_immutability postgres
+5168; 2620 43626 TRIGGER public payments payments_updated_at postgres
+5192; 2620 2292753 TRIGGER public products products_updated_at postgres
+5191; 2620 2292751 TRIGGER public projects projects_updated_at postgres
+5215; 2620 2293540 TRIGGER public promise_to_pay promise_to_pay_transition_guard postgres
+5216; 2620 2293541 TRIGGER public promise_to_pay promise_to_pay_updated_at postgres
+5242; 2620 2294613 TRIGGER public saved_views saved_views_updated_at postgres
+5217; 2620 2293590 TRIGGER public treasury_policies treasury_policies_updated_at postgres
+5181; 2620 458772 TRIGGER public users users_require_active_admin postgres
+5182; 2620 458770 TRIGGER public users users_updated_at postgres
+5068; 2606 458818 FK CONSTRAINT public action_items action_items_created_by_fkey postgres
+5066; 2606 2294699 FK CONSTRAINT public ai_response_snapshots ai_response_snapshots_conversation_id_fkey postgres
+5067; 2606 51053 FK CONSTRAINT public ai_response_snapshots ai_response_snapshots_report_id_fkey postgres
+5104; 2606 2293232 FK CONSTRAINT public approval_steps approval_steps_actor_fkey postgres
+5102; 2606 2293208 FK CONSTRAINT public approvals approvals_decided_by_fkey postgres
+5103; 2606 2293203 FK CONSTRAINT public approvals approvals_requested_by_fkey postgres
+5162; 2606 2294693 FK CONSTRAINT public assistant_conversations assistant_conversations_created_by_fkey postgres
+5156; 2606 2294529 FK CONSTRAINT public attachments attachments_document_id_fkey postgres
+5157; 2606 2294629 FK CONSTRAINT public attachments attachments_uploaded_by_fkey postgres
+5004; 2606 458803 FK CONSTRAINT public audit_logs audit_logs_actor_fkey postgres
+5153; 2606 2294619 FK CONSTRAINT public background_jobs background_jobs_created_by_fkey postgres
+5079; 2606 2292795 FK CONSTRAINT public bank_accounts bank_accounts_cash_account_id_fkey postgres
+5084; 2606 2292867 FK CONSTRAINT public bank_transaction_match_candidates bank_transaction_match_candidates_bank_transaction_id_fkey postgres
+5085; 2606 2292872 FK CONSTRAINT public bank_transaction_match_candidates bank_transaction_match_candidates_rejected_by_fkey postgres
+5080; 2606 2292825 FK CONSTRAINT public bank_transactions bank_transactions_bank_account_id_fkey postgres
+5081; 2606 2292840 FK CONSTRAINT public bank_transactions bank_transactions_source_row_id_fkey postgres
+5082; 2606 2292835 FK CONSTRAINT public bank_transactions bank_transactions_source_sheet_id_fkey postgres
+5083; 2606 2292830 FK CONSTRAINT public bank_transactions bank_transactions_source_workbook_id_fkey postgres
+5125; 2606 2293930 FK CONSTRAINT public budget_lines budget_lines_approved_by_fkey postgres
+5126; 2606 2293905 FK CONSTRAINT public budget_lines budget_lines_budget_id_fkey postgres
+5127; 2606 2293925 FK CONSTRAINT public budget_lines budget_lines_category_id_fkey postgres
+5128; 2606 2293910 FK CONSTRAINT public budget_lines budget_lines_cost_center_id_fkey postgres
+5129; 2606 2293940 FK CONSTRAINT public budget_lines budget_lines_created_by_fkey postgres
+5130; 2606 2293915 FK CONSTRAINT public budget_lines budget_lines_department_id_fkey postgres
+5131; 2606 2293920 FK CONSTRAINT public budget_lines budget_lines_project_id_fkey postgres
+5132; 2606 2293935 FK CONSTRAINT public budget_lines budget_lines_superseded_by_line_id_fkey postgres
+5124; 2606 2293881 FK CONSTRAINT public budgets budgets_created_by_fkey postgres
+5040; 2606 43993 FK CONSTRAINT public capacity_models capacity_models_source_sheet_id_fkey postgres
+5041; 2606 43988 FK CONSTRAINT public capacity_models capacity_models_source_workbook_id_fkey postgres
+5003; 2606 43540 FK CONSTRAINT public cash_accounts cash_accounts_provider_party_id_fkey postgres
+5019; 2606 43736 FK CONSTRAINT public cashflow_lines cashflow_lines_account_id_fkey postgres
+5020; 2606 43721 FK CONSTRAINT public cashflow_lines cashflow_lines_cashflow_month_id_fkey postgres
+5021; 2606 43731 FK CONSTRAINT public cashflow_lines cashflow_lines_party_id_fkey postgres
+5022; 2606 43726 FK CONSTRAINT public cashflow_lines cashflow_lines_source_row_id_fkey postgres
+5017; 2606 43701 FK CONSTRAINT public cashflow_months cashflow_months_source_sheet_id_fkey postgres
+5018; 2606 43696 FK CONSTRAINT public cashflow_months cashflow_months_source_workbook_id_fkey postgres
+5030; 2606 43813 FK CONSTRAINT public check_events check_events_check_id_fkey postgres
+5031; 2606 458808 FK CONSTRAINT public check_events check_events_created_by_fkey postgres
+5023; 2606 43796 FK CONSTRAINT public checks checks_account_id_fkey postgres
+5024; 2606 43791 FK CONSTRAINT public checks checks_bank_party_id_fkey postgres
+5025; 2606 43781 FK CONSTRAINT public checks checks_payee_party_id_fkey postgres
+5026; 2606 43786 FK CONSTRAINT public checks checks_payer_party_id_fkey postgres
+5027; 2606 43776 FK CONSTRAINT public checks checks_source_row_id_fkey postgres
+5028; 2606 43771 FK CONSTRAINT public checks checks_source_sheet_id_fkey postgres
+5029; 2606 43766 FK CONSTRAINT public checks checks_source_workbook_id_fkey postgres
+5114; 2606 2293722 FK CONSTRAINT public collateral_records collateral_records_created_by_fkey postgres
+5115; 2606 2293712 FK CONSTRAINT public collateral_records collateral_records_facility_id_fkey postgres
+5116; 2606 2293707 FK CONSTRAINT public collateral_records collateral_records_loan_id_fkey postgres
+5117; 2606 2293717 FK CONSTRAINT public collateral_records collateral_records_owner_party_id_fkey postgres
+5150; 2606 2294284 FK CONSTRAINT public control_alerts control_alerts_acknowledged_by_fkey postgres
+5151; 2606 2294294 FK CONSTRAINT public control_alerts control_alerts_action_item_id_fkey postgres
+5152; 2606 2294289 FK CONSTRAINT public control_alerts control_alerts_resolved_by_fkey postgres
+5146; 2606 2294187 FK CONSTRAINT public cost_allocation_rules cost_allocation_rules_cost_center_id_fkey postgres
+5147; 2606 2294202 FK CONSTRAINT public cost_allocation_rules cost_allocation_rules_created_by_fkey postgres
+5148; 2606 2294192 FK CONSTRAINT public cost_allocation_rules cost_allocation_rules_department_id_fkey postgres
+5149; 2606 2294197 FK CONSTRAINT public cost_allocation_rules cost_allocation_rules_project_id_fkey postgres
+5055; 2606 44174 FK CONSTRAINT public cost_breakdown_lines cost_breakdown_lines_cost_model_id_fkey postgres
+5056; 2606 44189 FK CONSTRAINT public cost_breakdown_lines cost_breakdown_lines_source_row_id_fkey postgres
+5057; 2606 44184 FK CONSTRAINT public cost_breakdown_lines cost_breakdown_lines_source_sheet_id_fkey postgres
+5058; 2606 44179 FK CONSTRAINT public cost_breakdown_lines cost_breakdown_lines_source_workbook_id_fkey postgres
+5042; 2606 44009 FK CONSTRAINT public cost_models cost_models_capacity_model_id_fkey postgres
+5043; 2606 44019 FK CONSTRAINT public cost_models cost_models_source_sheet_id_fkey postgres
+5044; 2606 44014 FK CONSTRAINT public cost_models cost_models_source_workbook_id_fkey postgres
+5072; 2606 2292587 FK CONSTRAINT public counterparty_profiles counterparty_profiles_party_id_fkey postgres
+5118; 2606 2293759 FK CONSTRAINT public covenant_records covenant_records_created_by_fkey postgres
+5119; 2606 2293754 FK CONSTRAINT public covenant_records covenant_records_facility_id_fkey postgres
+5120; 2606 2293749 FK CONSTRAINT public covenant_records covenant_records_loan_id_fkey postgres
+5110; 2606 2293644 FK CONSTRAINT public credit_facilities credit_facilities_lender_party_id_fkey postgres
+5074; 2606 2292673 FK CONSTRAINT public departments departments_parent_department_id_fkey postgres
+5158; 2606 2294634 FK CONSTRAINT public document_links document_links_created_by_fkey postgres
+5159; 2606 2294557 FK CONSTRAINT public document_links document_links_document_id_fkey postgres
+5154; 2606 2294624 FK CONSTRAINT public documents documents_created_by_fkey postgres
+5155; 2606 2294500 FK CONSTRAINT public documents documents_superseded_by_document_id_fkey postgres
+5069; 2606 458828 FK CONSTRAINT public external_assumptions external_assumptions_created_by_fkey postgres
+5070; 2606 458823 FK CONSTRAINT public external_assumptions external_assumptions_reviewed_by_fkey postgres
+5111; 2606 2293677 FK CONSTRAINT public facility_drawdowns facility_drawdowns_created_by_fkey postgres
+5112; 2606 2293667 FK CONSTRAINT public facility_drawdowns facility_drawdowns_facility_id_fkey postgres
+5113; 2606 2293672 FK CONSTRAINT public facility_drawdowns facility_drawdowns_loan_id_fkey postgres
+5062; 2606 49488 FK CONSTRAINT public finance_cost_allocations finance_cost_allocations_capacity_model_id_fkey postgres
+5063; 2606 49483 FK CONSTRAINT public finance_cost_allocations finance_cost_allocations_loan_id_fkey postgres
+5064; 2606 49498 FK CONSTRAINT public finance_cost_allocations finance_cost_allocations_source_sheet_id_fkey postgres
+5065; 2606 49493 FK CONSTRAINT public finance_cost_allocations finance_cost_allocations_source_workbook_id_fkey postgres
+5135; 2606 2294033 FK CONSTRAINT public forecast_lines forecast_lines_approved_by_fkey postgres
+5136; 2606 2294028 FK CONSTRAINT public forecast_lines forecast_lines_category_id_fkey postgres
+5137; 2606 2294013 FK CONSTRAINT public forecast_lines forecast_lines_cost_center_id_fkey postgres
+5138; 2606 2294043 FK CONSTRAINT public forecast_lines forecast_lines_created_by_fkey postgres
+5139; 2606 2294018 FK CONSTRAINT public forecast_lines forecast_lines_department_id_fkey postgres
+5140; 2606 2294008 FK CONSTRAINT public forecast_lines forecast_lines_forecast_id_fkey postgres
+5141; 2606 2294023 FK CONSTRAINT public forecast_lines forecast_lines_project_id_fkey postgres
+5142; 2606 2294038 FK CONSTRAINT public forecast_lines forecast_lines_superseded_by_line_id_fkey postgres
+5133; 2606 2293980 FK CONSTRAINT public forecasts forecasts_created_by_fkey postgres
+5134; 2606 2293975 FK CONSTRAINT public forecasts forecasts_scenario_run_id_fkey postgres
+5122; 2606 2293823 FK CONSTRAINT public fx_positions fx_positions_counterparty_party_id_fkey postgres
+5123; 2606 2293828 FK CONSTRAINT public fx_positions fx_positions_created_by_fkey postgres
+5121; 2606 2293797 FK CONSTRAINT public fx_rate_snapshots fx_rate_snapshots_created_by_fkey postgres
+5073; 2606 2292613 FK CONSTRAINT public ibans ibans_party_id_fkey postgres
+4997; 2606 43452 FK CONSTRAINT public import_rows import_rows_sheet_id_fkey postgres
+4998; 2606 43447 FK CONSTRAINT public import_rows import_rows_workbook_id_fkey postgres
+5161; 2606 2294661 FK CONSTRAINT public integration_connections integration_connections_created_by_fkey postgres
+5099; 2606 2293092 FK CONSTRAINT public invoice_allocations invoice_allocations_created_by_fkey postgres
+5100; 2606 2293082 FK CONSTRAINT public invoice_allocations invoice_allocations_invoice_id_fkey postgres
+5101; 2606 2293087 FK CONSTRAINT public invoice_allocations invoice_allocations_reversed_by_fkey postgres
+5094; 2606 2292996 FK CONSTRAINT public invoice_lines invoice_lines_cost_center_id_fkey postgres
+5095; 2606 2292986 FK CONSTRAINT public invoice_lines invoice_lines_invoice_id_fkey postgres
+5096; 2606 2292991 FK CONSTRAINT public invoice_lines invoice_lines_product_id_fkey postgres
+5097; 2606 2293001 FK CONSTRAINT public invoice_lines invoice_lines_project_id_fkey postgres
+5098; 2606 2293027 FK CONSTRAINT public invoice_reversals invoice_reversals_created_by_fkey postgres
+5086; 2606 2293153 FK CONSTRAINT public invoices invoices_bad_debt_by_fkey postgres
+5087; 2606 2292926 FK CONSTRAINT public invoices invoices_cost_center_id_fkey postgres
+5088; 2606 2292936 FK CONSTRAINT public invoices invoices_order_id_fkey postgres
+5089; 2606 2292921 FK CONSTRAINT public invoices invoices_party_id_fkey postgres
+5090; 2606 2292931 FK CONSTRAINT public invoices invoices_project_id_fkey postgres
+5091; 2606 2292951 FK CONSTRAINT public invoices invoices_source_row_id_fkey postgres
+5092; 2606 2292946 FK CONSTRAINT public invoices invoices_source_sheet_id_fkey postgres
+5093; 2606 2292941 FK CONSTRAINT public invoices invoices_source_workbook_id_fkey postgres
+5035; 2606 43865 FK CONSTRAINT public loan_installments loan_installments_loan_id_fkey postgres
+5032; 2606 43835 FK CONSTRAINT public loans loans_lender_party_id_fkey postgres
+5033; 2606 43845 FK CONSTRAINT public loans loans_source_sheet_id_fkey postgres
+5034; 2606 43840 FK CONSTRAINT public loans loans_source_workbook_id_fkey postgres
+5059; 2606 49453 FK CONSTRAINT public machine_minute_allocations machine_minute_allocations_capacity_model_id_fkey postgres
+5060; 2606 49463 FK CONSTRAINT public machine_minute_allocations machine_minute_allocations_source_sheet_id_fkey postgres
+5061; 2606 49458 FK CONSTRAINT public machine_minute_allocations machine_minute_allocations_source_workbook_id_fkey postgres
+5047; 2606 44072 FK CONSTRAINT public machine_roi_snapshots machine_roi_snapshots_machine_asset_id_fkey postgres
+5048; 2606 44067 FK CONSTRAINT public machine_roi_snapshots machine_roi_snapshots_source_sheet_id_fkey postgres
+5049; 2606 44062 FK CONSTRAINT public machine_roi_snapshots machine_roi_snapshots_source_workbook_id_fkey postgres
+4999; 2606 43482 FK CONSTRAINT public mapping_reviews mapping_reviews_import_row_id_fkey postgres
+5000; 2606 458798 FK CONSTRAINT public mapping_reviews mapping_reviews_reviewed_by_fkey postgres
+5001; 2606 43477 FK CONSTRAINT public mapping_reviews mapping_reviews_sheet_id_fkey postgres
+5002; 2606 43472 FK CONSTRAINT public mapping_reviews mapping_reviews_workbook_id_fkey postgres
+5145; 2606 2294138 FK CONSTRAINT public optimization_recommendations optimization_recommendations_run_id_fkey postgres
+5143; 2606 2294111 FK CONSTRAINT public optimization_runs optimization_runs_created_by_fkey postgres
+5144; 2606 2294106 FK CONSTRAINT public optimization_runs optimization_runs_scenario_run_id_fkey postgres
+5077; 2606 2292733 FK CONSTRAINT public orders orders_party_id_fkey postgres
+5078; 2606 2292738 FK CONSTRAINT public orders orders_project_id_fkey postgres
+5045; 2606 44044 FK CONSTRAINT public part_profitability_runs part_profitability_runs_cost_model_id_fkey postgres
+5046; 2606 44039 FK CONSTRAINT public part_profitability_runs part_profitability_runs_part_id_fkey postgres
+5012; 2606 43655 FK CONSTRAINT public payment_instances payment_instances_paid_from_account_id_fkey postgres
+5013; 2606 43650 FK CONSTRAINT public payment_instances payment_instances_payment_id_fkey postgres
+5014; 2606 43670 FK CONSTRAINT public payment_instances payment_instances_source_row_id_fkey postgres
+5015; 2606 43665 FK CONSTRAINT public payment_instances payment_instances_source_sheet_id_fkey postgres
+5016; 2606 43660 FK CONSTRAINT public payment_instances payment_instances_source_workbook_id_fkey postgres
+5005; 2606 43606 FK CONSTRAINT public payments payments_cash_account_id_fkey postgres
+5006; 2606 43591 FK CONSTRAINT public payments payments_category_id_fkey postgres
+5007; 2606 43601 FK CONSTRAINT public payments payments_owner_party_id_fkey postgres
+5008; 2606 43596 FK CONSTRAINT public payments payments_provider_party_id_fkey postgres
+5009; 2606 43621 FK CONSTRAINT public payments payments_source_row_id_fkey postgres
+5010; 2606 43616 FK CONSTRAINT public payments payments_source_sheet_id_fkey postgres
+5011; 2606 43611 FK CONSTRAINT public payments payments_source_workbook_id_fkey postgres
+5037; 2606 43971 FK CONSTRAINT public production_parts production_parts_source_row_id_fkey postgres
+5038; 2606 43966 FK CONSTRAINT public production_parts production_parts_source_sheet_id_fkey postgres
+5039; 2606 43961 FK CONSTRAINT public production_parts production_parts_source_workbook_id_fkey postgres
+5075; 2606 2292698 FK CONSTRAINT public projects projects_cost_center_id_fkey postgres
+5076; 2606 2292693 FK CONSTRAINT public projects projects_party_id_fkey postgres
+5105; 2606 2293534 FK CONSTRAINT public promise_to_pay promise_to_pay_created_by_fkey postgres
+5106; 2606 2293524 FK CONSTRAINT public promise_to_pay promise_to_pay_invoice_id_fkey postgres
+5107; 2606 2293519 FK CONSTRAINT public promise_to_pay promise_to_pay_party_id_fkey postgres
+5108; 2606 2293529 FK CONSTRAINT public promise_to_pay promise_to_pay_resolved_by_fkey postgres
+5036; 2606 43899 FK CONSTRAINT public reminder_deliveries reminder_deliveries_reminder_id_fkey postgres
+5160; 2606 2294606 FK CONSTRAINT public saved_views saved_views_created_by_fkey postgres
+5053; 2606 44138 FK CONSTRAINT public scenario_assumptions scenario_assumptions_run_id_fkey postgres
+5054; 2606 44153 FK CONSTRAINT public scenario_comparisons scenario_comparisons_run_id_fkey postgres
+5052; 2606 44125 FK CONSTRAINT public scenario_run_lines scenario_run_lines_run_id_fkey postgres
+5051; 2606 44110 FK CONSTRAINT public scenario_runs scenario_runs_scenario_id_fkey postgres
+5050; 2606 458813 FK CONSTRAINT public scenarios scenarios_created_by_fkey postgres
+5071; 2606 458786 FK CONSTRAINT public sessions sessions_user_id_fkey postgres
+4995; 2606 43427 FK CONSTRAINT public source_cells source_cells_sheet_id_fkey postgres
+4996; 2606 43422 FK CONSTRAINT public source_cells source_cells_workbook_id_fkey postgres
+4994; 2606 43406 FK CONSTRAINT public source_sheets source_sheets_workbook_id_fkey postgres
+4993; 2606 458793 FK CONSTRAINT public source_workbooks source_workbooks_imported_by_fkey postgres
+5109; 2606 2293585 FK CONSTRAINT public treasury_policies treasury_policies_cash_account_id_fkey postgres
+5508; 0 53136 ROW SECURITY public action_items postgres
+5557; 3256 2293413 POLICY public action_items action_items_delete_manage postgres
+5692; 3256 2293410 POLICY public action_items action_items_insert_enter postgres
+5691; 3256 2293409 POLICY public action_items action_items_select_all_tiers postgres
+5694; 3256 2293412 POLICY public action_items action_items_update_manage postgres
+5693; 3256 2293411 POLICY public action_items action_items_update_own postgres
+5507; 0 51039 ROW SECURITY public ai_response_snapshots postgres
+5735; 3256 2293455 POLICY public ai_response_snapshots ai_response_snapshots_delete_manage postgres
+5733; 3256 2293453 POLICY public ai_response_snapshots ai_response_snapshots_insert_enter postgres
+5732; 3256 2293452 POLICY public ai_response_snapshots ai_response_snapshots_select_all_tiers postgres
+5734; 3256 2293454 POLICY public ai_response_snapshots ai_response_snapshots_update_enter postgres
+5548; 0 2294304 ROW SECURITY public alert_escalation_rules postgres
+5846; 3256 2294330 POLICY public alert_escalation_rules alert_escalation_rules_delete_admin postgres
+5844; 3256 2294328 POLICY public alert_escalation_rules alert_escalation_rules_insert_admin postgres
+5843; 3256 2294327 POLICY public alert_escalation_rules alert_escalation_rules_select_all_tiers postgres
+5845; 3256 2294329 POLICY public alert_escalation_rules alert_escalation_rules_update_admin postgres
+5531; 0 2293243 ROW SECURITY public approval_rules postgres
+5776; 3256 2293496 POLICY public approval_rules approval_rules_select_all_tiers postgres
+5777; 3256 2293497 POLICY public approval_rules approval_rules_write_admin postgres
+5530; 0 2293219 ROW SECURITY public approval_steps postgres
+5562; 3256 2293439 POLICY public approval_steps approval_steps_insert_record postgres
+5719; 3256 2293438 POLICY public approval_steps approval_steps_select_all_tiers postgres
+5529; 0 2293181 ROW SECURITY public approvals postgres
+5775; 3256 2293495 POLICY public approvals approvals_decide postgres
+5774; 3256 2293494 POLICY public approvals approvals_insert_enter postgres
+5773; 3256 2293493 POLICY public approvals approvals_select_all_tiers postgres
+5555; 0 2294679 ROW SECURITY public assistant_conversations postgres
+5873; 3256 2294712 POLICY public assistant_conversations assistant_conversations_delete_own postgres
+5871; 3256 2294710 POLICY public assistant_conversations assistant_conversations_insert_enter postgres
+5870; 3256 2294709 POLICY public assistant_conversations assistant_conversations_own_select_all_tiers postgres
+5872; 3256 2294711 POLICY public assistant_conversations assistant_conversations_update_own postgres
+5551; 0 2294510 ROW SECURITY public attachments postgres
+5856; 3256 2294584 POLICY public attachments attachments_insert_record postgres
+5855; 3256 2294583 POLICY public attachments attachments_select_all_tiers postgres
+5480; 0 43553 ROW SECURITY public audit_logs postgres
+5712; 3256 2293431 POLICY public audit_logs audit_logs_insert_record postgres
+5711; 3256 2293430 POLICY public audit_logs audit_logs_select_all_tiers postgres
+5549; 0 2294425 ROW SECURITY public background_jobs postgres
+5850; 3256 2294468 POLICY public background_jobs background_jobs_delete_manage postgres
+5848; 3256 2294466 POLICY public background_jobs background_jobs_insert_enter postgres
+5847; 3256 2294465 POLICY public background_jobs background_jobs_select_all_tiers postgres
+5849; 3256 2294467 POLICY public background_jobs background_jobs_update_enter postgres
+5522; 0 2292777 ROW SECURITY public bank_accounts postgres
+5586; 3256 2293303 POLICY public bank_accounts bank_accounts_delete_manage postgres
+5584; 3256 2293301 POLICY public bank_accounts bank_accounts_insert_manage postgres
+5583; 3256 2293300 POLICY public bank_accounts bank_accounts_select_all_tiers postgres
+5585; 3256 2293302 POLICY public bank_accounts bank_accounts_update_manage postgres
+5524; 0 2292854 ROW SECURITY public bank_transaction_match_candidates postgres
+5669; 3256 2293384 POLICY public bank_transaction_match_candidates bank_transaction_match_candidates_delete_manage postgres
+5667; 3256 2293382 POLICY public bank_transaction_match_candidates bank_transaction_match_candidates_insert_enter postgres
+5666; 3256 2293381 POLICY public bank_transaction_match_candidates bank_transaction_match_candidates_select_all_tiers postgres
+5668; 3256 2293383 POLICY public bank_transaction_match_candidates bank_transaction_match_candidates_update_enter postgres
+5523; 0 2292804 ROW SECURITY public bank_transactions postgres
+5665; 3256 2293380 POLICY public bank_transactions bank_transactions_delete_manage postgres
+5663; 3256 2293378 POLICY public bank_transactions bank_transactions_insert_enter postgres
+5662; 3256 2293377 POLICY public bank_transactions bank_transactions_select_all_tiers postgres
+5664; 3256 2293379 POLICY public bank_transactions bank_transactions_update_enter postgres
+5541; 0 2293886 ROW SECURITY public budget_lines postgres
+5818; 3256 2293958 POLICY public budget_lines budget_lines_delete_manage postgres
+5816; 3256 2293956 POLICY public budget_lines budget_lines_insert_enter postgres
+5815; 3256 2293955 POLICY public budget_lines budget_lines_select_all_tiers postgres
+5817; 3256 2293957 POLICY public budget_lines budget_lines_update_enter postgres
+5540; 0 2293864 ROW SECURITY public budgets postgres
+5814; 3256 2293954 POLICY public budgets budgets_delete_manage postgres
+5812; 3256 2293952 POLICY public budgets budgets_insert_enter postgres
+5811; 3256 2293951 POLICY public budgets budgets_select_all_tiers postgres
+5813; 3256 2293953 POLICY public budgets budgets_update_enter postgres
+5495; 0 43977 ROW SECURITY public capacity_models postgres
+5611; 3256 2293327 POLICY public capacity_models capacity_models_delete_manage postgres
+5609; 3256 2293325 POLICY public capacity_models capacity_models_insert_manage postgres
+5608; 3256 2293324 POLICY public capacity_models capacity_models_select_all_tiers postgres
+5610; 3256 2293326 POLICY public capacity_models capacity_models_update_manage postgres
+5478; 0 43525 ROW SECURITY public cash_accounts postgres
+5582; 3256 2293299 POLICY public cash_accounts cash_accounts_delete_manage postgres
+5580; 3256 2293297 POLICY public cash_accounts cash_accounts_insert_manage postgres
+5579; 3256 2293296 POLICY public cash_accounts cash_accounts_select_all_tiers postgres
+5581; 3256 2293298 POLICY public cash_accounts cash_accounts_update_manage postgres
+5484; 0 43707 ROW SECURITY public cashflow_lines postgres
+5674; 3256 2293392 POLICY public cashflow_lines cashflow_lines_delete_manage postgres
+5626; 3256 2293390 POLICY public cashflow_lines cashflow_lines_insert_enter postgres
+5601; 3256 2293389 POLICY public cashflow_lines cashflow_lines_select_all_tiers postgres
+5673; 3256 2293391 POLICY public cashflow_lines cashflow_lines_update_enter postgres
+5483; 0 43679 ROW SECURITY public cashflow_months postgres
+5556; 3256 2293388 POLICY public cashflow_months cashflow_months_delete_manage postgres
+5671; 3256 2293386 POLICY public cashflow_months cashflow_months_insert_enter postgres
+5670; 3256 2293385 POLICY public cashflow_months cashflow_months_select_all_tiers postgres
+5672; 3256 2293387 POLICY public cashflow_months cashflow_months_update_enter postgres
+5485; 0 43743 ROW SECURITY public cashflow_snapshots postgres
+5731; 3256 2293451 POLICY public cashflow_snapshots cashflow_snapshots_delete_manage postgres
+5729; 3256 2293449 POLICY public cashflow_snapshots cashflow_snapshots_insert_enter postgres
+5728; 3256 2293448 POLICY public cashflow_snapshots cashflow_snapshots_select_all_tiers postgres
+5730; 3256 2293450 POLICY public cashflow_snapshots cashflow_snapshots_update_enter postgres
+5477; 0 43510 ROW SECURITY public categories postgres
+5566; 3256 2293283 POLICY public categories categories_delete_manage postgres
+5564; 3256 2293281 POLICY public categories categories_insert_manage postgres
+5563; 3256 2293280 POLICY public categories categories_select_all_tiers postgres
+5565; 3256 2293282 POLICY public categories categories_update_manage postgres
+5487; 0 43803 ROW SECURITY public check_events postgres
+5714; 3256 2293433 POLICY public check_events check_events_insert_record postgres
+5713; 3256 2293432 POLICY public check_events check_events_select_all_tiers postgres
+5486; 0 43751 ROW SECURITY public checks postgres
+5640; 3256 2293355 POLICY public checks checks_delete_manage postgres
+5638; 3256 2293353 POLICY public checks checks_insert_enter postgres
+5637; 3256 2293352 POLICY public checks checks_select_all_tiers postgres
+5639; 3256 2293354 POLICY public checks checks_update_enter postgres
+5536; 0 2293691 ROW SECURITY public collateral_records postgres
+5800; 3256 2293771 POLICY public collateral_records collateral_records_delete_manage postgres
+5798; 3256 2293769 POLICY public collateral_records collateral_records_insert_enter postgres
+5797; 3256 2293768 POLICY public collateral_records collateral_records_select_all_tiers postgres
+5799; 3256 2293770 POLICY public collateral_records collateral_records_update_enter postgres
+5547; 0 2294258 ROW SECURITY public control_alerts postgres
+5842; 3256 2294326 POLICY public control_alerts control_alerts_delete_manage postgres
+5840; 3256 2294324 POLICY public control_alerts control_alerts_insert_enter postgres
+5839; 3256 2294323 POLICY public control_alerts control_alerts_select_all_tiers postgres
+5841; 3256 2294325 POLICY public control_alerts control_alerts_update_enter postgres
+5546; 0 2294170 ROW SECURITY public cost_allocation_rules postgres
+5838; 3256 2294213 POLICY public cost_allocation_rules cost_allocation_rules_delete_admin postgres
+5836; 3256 2294211 POLICY public cost_allocation_rules cost_allocation_rules_insert_admin postgres
+5835; 3256 2294210 POLICY public cost_allocation_rules cost_allocation_rules_select_all_tiers postgres
+5837; 3256 2294212 POLICY public cost_allocation_rules cost_allocation_rules_update_admin postgres
+5504; 0 44163 ROW SECURITY public cost_breakdown_lines postgres
+5682; 3256 2293400 POLICY public cost_breakdown_lines cost_breakdown_lines_delete_manage postgres
+5680; 3256 2293398 POLICY public cost_breakdown_lines cost_breakdown_lines_insert_enter postgres
+5679; 3256 2293397 POLICY public cost_breakdown_lines cost_breakdown_lines_select_all_tiers postgres
+5681; 3256 2293399 POLICY public cost_breakdown_lines cost_breakdown_lines_update_enter postgres
+5517; 0 2292643 ROW SECURITY public cost_centers postgres
+5590; 3256 2293307 POLICY public cost_centers cost_centers_delete_manage postgres
+5588; 3256 2293305 POLICY public cost_centers cost_centers_insert_manage postgres
+5587; 3256 2293304 POLICY public cost_centers cost_centers_select_all_tiers postgres
+5589; 3256 2293306 POLICY public cost_centers cost_centers_update_manage postgres
+5496; 0 43999 ROW SECURITY public cost_models postgres
+5615; 3256 2293331 POLICY public cost_models cost_models_delete_manage postgres
+5613; 3256 2293329 POLICY public cost_models cost_models_insert_manage postgres
+5612; 3256 2293328 POLICY public cost_models cost_models_select_all_tiers postgres
+5614; 3256 2293330 POLICY public cost_models cost_models_update_manage postgres
+5514; 0 2292565 ROW SECURITY public counterparty_profiles postgres
+5574; 3256 2293291 POLICY public counterparty_profiles counterparty_profiles_delete_manage postgres
+5572; 3256 2293289 POLICY public counterparty_profiles counterparty_profiles_insert_manage postgres
+5571; 3256 2293288 POLICY public counterparty_profiles counterparty_profiles_select_all_tiers postgres
+5573; 3256 2293290 POLICY public counterparty_profiles counterparty_profiles_update_manage postgres
+5537; 0 2293730 ROW SECURITY public covenant_records postgres
+5804; 3256 2293775 POLICY public covenant_records covenant_records_delete_manage postgres
+5802; 3256 2293773 POLICY public covenant_records covenant_records_insert_enter postgres
+5801; 3256 2293772 POLICY public covenant_records covenant_records_select_all_tiers postgres
+5803; 3256 2293774 POLICY public covenant_records covenant_records_update_enter postgres
+5534; 0 2293627 ROW SECURITY public credit_facilities postgres
+5792; 3256 2293686 POLICY public credit_facilities credit_facilities_delete_manage postgres
+5790; 3256 2293684 POLICY public credit_facilities credit_facilities_insert_enter postgres
+5789; 3256 2293683 POLICY public credit_facilities credit_facilities_select_all_tiers postgres
+5791; 3256 2293685 POLICY public credit_facilities credit_facilities_update_enter postgres
+5518; 0 2292658 ROW SECURITY public departments postgres
+5594; 3256 2293311 POLICY public departments departments_delete_manage postgres
+5592; 3256 2293309 POLICY public departments departments_insert_manage postgres
+5591; 3256 2293308 POLICY public departments departments_select_all_tiers postgres
+5593; 3256 2293310 POLICY public departments departments_update_manage postgres
+5552; 0 2294543 ROW SECURITY public document_links postgres
+5860; 3256 2294588 POLICY public document_links document_links_delete_manage postgres
+5858; 3256 2294586 POLICY public document_links document_links_insert_enter postgres
+5857; 3256 2294585 POLICY public document_links document_links_select_all_tiers postgres
+5859; 3256 2294587 POLICY public document_links document_links_update_enter postgres
+5550; 0 2294481 ROW SECURITY public documents postgres
+5854; 3256 2294582 POLICY public documents documents_delete_manage postgres
+5852; 3256 2294580 POLICY public documents documents_insert_enter postgres
+5851; 3256 2294579 POLICY public documents documents_select_all_tiers postgres
+5853; 3256 2294581 POLICY public documents documents_update_enter postgres
+5509; 0 53581 ROW SECURITY public external_assumptions postgres
+5628; 3256 2293343 POLICY public external_assumptions external_assumptions_delete_manage postgres
+5625; 3256 2293341 POLICY public external_assumptions external_assumptions_insert_manage postgres
+5624; 3256 2293340 POLICY public external_assumptions external_assumptions_select_all_tiers postgres
+5627; 3256 2293342 POLICY public external_assumptions external_assumptions_update_manage postgres
+5535; 0 2293654 ROW SECURITY public facility_drawdowns postgres
+5796; 3256 2293690 POLICY public facility_drawdowns facility_drawdowns_delete_manage postgres
+5794; 3256 2293688 POLICY public facility_drawdowns facility_drawdowns_insert_enter postgres
+5793; 3256 2293687 POLICY public facility_drawdowns facility_drawdowns_select_all_tiers postgres
+5795; 3256 2293689 POLICY public facility_drawdowns facility_drawdowns_update_enter postgres
+5506; 0 49469 ROW SECURITY public finance_cost_allocations postgres
+5678; 3256 2293396 POLICY public finance_cost_allocations finance_cost_allocations_delete_manage postgres
+5676; 3256 2293394 POLICY public finance_cost_allocations finance_cost_allocations_insert_enter postgres
+5675; 3256 2293393 POLICY public finance_cost_allocations finance_cost_allocations_select_all_tiers postgres
+5677; 3256 2293395 POLICY public finance_cost_allocations finance_cost_allocations_update_enter postgres
+5543; 0 2293985 ROW SECURITY public forecast_lines postgres
+5826; 3256 2294062 POLICY public forecast_lines forecast_lines_delete_manage postgres
+5824; 3256 2294060 POLICY public forecast_lines forecast_lines_insert_enter postgres
+5823; 3256 2294059 POLICY public forecast_lines forecast_lines_select_all_tiers postgres
+5825; 3256 2294061 POLICY public forecast_lines forecast_lines_update_enter postgres
+5542; 0 2293959 ROW SECURITY public forecasts postgres
+5822; 3256 2294058 POLICY public forecasts forecasts_delete_manage postgres
+5820; 3256 2294056 POLICY public forecasts forecasts_insert_enter postgres
+5819; 3256 2294055 POLICY public forecasts forecasts_select_all_tiers postgres
+5821; 3256 2294057 POLICY public forecasts forecasts_update_enter postgres
+5539; 0 2293807 ROW SECURITY public fx_positions postgres
+5810; 3256 2293840 POLICY public fx_positions fx_positions_delete_manage postgres
+5808; 3256 2293838 POLICY public fx_positions fx_positions_insert_enter postgres
+5807; 3256 2293837 POLICY public fx_positions fx_positions_select_all_tiers postgres
+5809; 3256 2293839 POLICY public fx_positions fx_positions_update_enter postgres
+5538; 0 2293776 ROW SECURITY public fx_rate_snapshots postgres
+5806; 3256 2293836 POLICY public fx_rate_snapshots fx_rate_snapshots_insert_record postgres
+5805; 3256 2293835 POLICY public fx_rate_snapshots fx_rate_snapshots_select_all_tiers postgres
+5516; 0 2292624 ROW SECURITY public iban_change_events postgres
+5716; 3256 2293435 POLICY public iban_change_events iban_change_events_insert_record postgres
+5715; 3256 2293434 POLICY public iban_change_events iban_change_events_select_all_tiers postgres
+5515; 0 2292595 ROW SECURITY public ibans postgres
+5578; 3256 2293295 POLICY public ibans ibans_delete_manage postgres
+5576; 3256 2293293 POLICY public ibans ibans_insert_manage postgres
+5575; 3256 2293292 POLICY public ibans ibans_select_all_tiers postgres
+5577; 3256 2293294 POLICY public ibans ibans_update_manage postgres
+5474; 0 43434 ROW SECURITY public import_rows postgres
+5710; 3256 2293429 POLICY public import_rows import_rows_delete_manage postgres
+5708; 3256 2293427 POLICY public import_rows import_rows_insert_enter postgres
+5707; 3256 2293426 POLICY public import_rows import_rows_select_all_tiers postgres
+5709; 3256 2293428 POLICY public import_rows import_rows_update_enter postgres
+5554; 0 2294640 ROW SECURITY public integration_connections postgres
+5869; 3256 2294673 POLICY public integration_connections integration_connections_delete_admin postgres
+5867; 3256 2294671 POLICY public integration_connections integration_connections_insert_admin postgres
+5866; 3256 2294670 POLICY public integration_connections integration_connections_select_all_tiers postgres
+5868; 3256 2294672 POLICY public integration_connections integration_connections_update_admin postgres
+5528; 0 2293067 ROW SECURITY public invoice_allocations postgres
+5661; 3256 2293376 POLICY public invoice_allocations invoice_allocations_delete_manage postgres
+5658; 3256 2293373 POLICY public invoice_allocations invoice_allocations_insert_enter postgres
+5657; 3256 2293372 POLICY public invoice_allocations invoice_allocations_select_all_tiers postgres
+5660; 3256 2293375 POLICY public invoice_allocations invoice_allocations_update_manage postgres
+5659; 3256 2293374 POLICY public invoice_allocations invoice_allocations_update_own postgres
+5526; 0 2292967 ROW SECURITY public invoice_lines postgres
+5656; 3256 2293371 POLICY public invoice_lines invoice_lines_delete_manage postgres
+5654; 3256 2293369 POLICY public invoice_lines invoice_lines_insert_enter postgres
+5653; 3256 2293368 POLICY public invoice_lines invoice_lines_select_all_tiers postgres
+5655; 3256 2293370 POLICY public invoice_lines invoice_lines_update_enter postgres
+5527; 0 2293014 ROW SECURITY public invoice_reversals postgres
+5718; 3256 2293437 POLICY public invoice_reversals invoice_reversals_insert_record postgres
+5717; 3256 2293436 POLICY public invoice_reversals invoice_reversals_select_all_tiers postgres
+5525; 0 2292896 ROW SECURITY public invoices postgres
+5652; 3256 2293367 POLICY public invoices invoices_delete_manage postgres
+5650; 3256 2293365 POLICY public invoices invoices_insert_enter postgres
+5649; 3256 2293364 POLICY public invoices invoices_select_all_tiers postgres
+5651; 3256 2293366 POLICY public invoices invoices_update_enter postgres
+5489; 0 43851 ROW SECURITY public loan_installments postgres
+5648; 3256 2293363 POLICY public loan_installments loan_installments_delete_manage postgres
+5646; 3256 2293361 POLICY public loan_installments loan_installments_insert_enter postgres
+5645; 3256 2293360 POLICY public loan_installments loan_installments_select_all_tiers postgres
+5647; 3256 2293362 POLICY public loan_installments loan_installments_update_enter postgres
+5488; 0 43823 ROW SECURITY public loans postgres
+5644; 3256 2293359 POLICY public loans loans_delete_manage postgres
+5642; 3256 2293357 POLICY public loans loans_insert_enter postgres
+5641; 3256 2293356 POLICY public loans loans_select_all_tiers postgres
+5643; 3256 2293358 POLICY public loans loans_update_enter postgres
+5493; 0 43940 ROW SECURITY public machine_assets postgres
+5619; 3256 2293335 POLICY public machine_assets machine_assets_delete_manage postgres
+5617; 3256 2293333 POLICY public machine_assets machine_assets_insert_manage postgres
+5616; 3256 2293332 POLICY public machine_assets machine_assets_select_all_tiers postgres
+5618; 3256 2293334 POLICY public machine_assets machine_assets_update_manage postgres
+5505; 0 49441 ROW SECURITY public machine_minute_allocations postgres
+5686; 3256 2293404 POLICY public machine_minute_allocations machine_minute_allocations_delete_manage postgres
+5684; 3256 2293402 POLICY public machine_minute_allocations machine_minute_allocations_insert_enter postgres
+5683; 3256 2293401 POLICY public machine_minute_allocations machine_minute_allocations_select_all_tiers postgres
+5685; 3256 2293403 POLICY public machine_minute_allocations machine_minute_allocations_update_enter postgres
+5498; 0 44049 ROW SECURITY public machine_roi_snapshots postgres
+5764; 3256 2293484 POLICY public machine_roi_snapshots machine_roi_snapshots_delete_manage postgres
+5762; 3256 2293482 POLICY public machine_roi_snapshots machine_roi_snapshots_insert_enter postgres
+5761; 3256 2293481 POLICY public machine_roi_snapshots machine_roi_snapshots_select_all_tiers postgres
+5763; 3256 2293483 POLICY public machine_roi_snapshots machine_roi_snapshots_update_enter postgres
+5475; 0 43459 ROW SECURITY public mapping_reviews postgres
+5698; 3256 2293417 POLICY public mapping_reviews mapping_reviews_delete_manage postgres
+5696; 3256 2293415 POLICY public mapping_reviews mapping_reviews_insert_enter postgres
+5695; 3256 2293414 POLICY public mapping_reviews mapping_reviews_select_all_tiers postgres
+5697; 3256 2293416 POLICY public mapping_reviews mapping_reviews_update_enter postgres
+5510; 0 62270 ROW SECURITY public metric_snapshots postgres
+5727; 3256 2293447 POLICY public metric_snapshots metric_snapshots_delete_manage postgres
+5725; 3256 2293445 POLICY public metric_snapshots metric_snapshots_insert_enter postgres
+5724; 3256 2293444 POLICY public metric_snapshots metric_snapshots_select_all_tiers postgres
+5726; 3256 2293446 POLICY public metric_snapshots metric_snapshots_update_enter postgres
+5545; 0 2294116 ROW SECURITY public optimization_recommendations postgres
+5834; 3256 2294152 POLICY public optimization_recommendations optimization_recommendations_delete_manage postgres
+5832; 3256 2294150 POLICY public optimization_recommendations optimization_recommendations_insert_enter postgres
+5831; 3256 2294149 POLICY public optimization_recommendations optimization_recommendations_select_all_tiers postgres
+5833; 3256 2294151 POLICY public optimization_recommendations optimization_recommendations_update_enter postgres
+5544; 0 2294093 ROW SECURITY public optimization_runs postgres
+5830; 3256 2294148 POLICY public optimization_runs optimization_runs_delete_manage postgres
+5828; 3256 2294146 POLICY public optimization_runs optimization_runs_insert_enter postgres
+5827; 3256 2294145 POLICY public optimization_runs optimization_runs_select_all_tiers postgres
+5829; 3256 2294147 POLICY public optimization_runs optimization_runs_update_enter postgres
+5521; 0 2292719 ROW SECURITY public orders postgres
+5607; 3256 2293323 POLICY public orders orders_delete_manage postgres
+5605; 3256 2293321 POLICY public orders orders_insert_manage postgres
+5604; 3256 2293320 POLICY public orders orders_select_all_tiers postgres
+5606; 3256 2293322 POLICY public orders orders_update_manage postgres
+5497; 0 44025 ROW SECURITY public part_profitability_runs postgres
+5768; 3256 2293488 POLICY public part_profitability_runs part_profitability_runs_delete_manage postgres
+5766; 3256 2293486 POLICY public part_profitability_runs part_profitability_runs_insert_enter postgres
+5765; 3256 2293485 POLICY public part_profitability_runs part_profitability_runs_select_all_tiers postgres
+5767; 3256 2293487 POLICY public part_profitability_runs part_profitability_runs_update_enter postgres
+5476; 0 43494 ROW SECURITY public parties postgres
+5570; 3256 2293287 POLICY public parties parties_delete_manage postgres
+5568; 3256 2293285 POLICY public parties parties_insert_manage postgres
+5567; 3256 2293284 POLICY public parties parties_select_all_tiers postgres
+5569; 3256 2293286 POLICY public parties parties_update_manage postgres
+5482; 0 43627 ROW SECURITY public payment_instances postgres
+5636; 3256 2293351 POLICY public payment_instances payment_instances_delete_manage postgres
+5634; 3256 2293349 POLICY public payment_instances payment_instances_insert_enter postgres
+5633; 3256 2293348 POLICY public payment_instances payment_instances_select_all_tiers postgres
+5635; 3256 2293350 POLICY public payment_instances payment_instances_update_enter postgres
+5481; 0 43568 ROW SECURITY public payments postgres
+5632; 3256 2293347 POLICY public payments payments_delete_manage postgres
+5630; 3256 2293345 POLICY public payments payments_insert_enter postgres
+5629; 3256 2293344 POLICY public payments payments_select_all_tiers postgres
+5631; 3256 2293346 POLICY public payments payments_update_enter postgres
+5494; 0 43952 ROW SECURITY public production_parts postgres
+5623; 3256 2293339 POLICY public production_parts production_parts_delete_manage postgres
+5621; 3256 2293337 POLICY public production_parts production_parts_insert_manage postgres
+5620; 3256 2293336 POLICY public production_parts production_parts_select_all_tiers postgres
+5622; 3256 2293338 POLICY public production_parts production_parts_update_manage postgres
+5520; 0 2292703 ROW SECURITY public products postgres
+5603; 3256 2293319 POLICY public products products_delete_manage postgres
+5600; 3256 2293317 POLICY public products products_insert_manage postgres
+5599; 3256 2293316 POLICY public products products_select_all_tiers postgres
+5602; 3256 2293318 POLICY public products products_update_manage postgres
+5519; 0 2292678 ROW SECURITY public projects postgres
+5598; 3256 2293315 POLICY public projects projects_delete_manage postgres
+5596; 3256 2293313 POLICY public projects projects_insert_manage postgres
+5595; 3256 2293312 POLICY public projects projects_select_all_tiers postgres
+5597; 3256 2293314 POLICY public projects projects_update_manage postgres
+5532; 0 2293501 ROW SECURITY public promise_to_pay postgres
+5784; 3256 2293549 POLICY public promise_to_pay promise_to_pay_delete_manage postgres
+5782; 3256 2293547 POLICY public promise_to_pay promise_to_pay_insert_enter postgres
+5781; 3256 2293546 POLICY public promise_to_pay promise_to_pay_select_all_tiers postgres
+5783; 3256 2293548 POLICY public promise_to_pay promise_to_pay_update_enter postgres
+5491; 0 43886 ROW SECURITY public reminder_deliveries postgres
+5723; 3256 2293443 POLICY public reminder_deliveries reminder_deliveries_insert_record postgres
+5722; 3256 2293442 POLICY public reminder_deliveries reminder_deliveries_select_all_tiers postgres
+5490; 0 43871 ROW SECURITY public reminders postgres
+5690; 3256 2293408 POLICY public reminders reminders_delete_manage postgres
+5688; 3256 2293406 POLICY public reminders reminders_insert_enter postgres
+5687; 3256 2293405 POLICY public reminders reminders_select_all_tiers postgres
+5689; 3256 2293407 POLICY public reminders reminders_update_enter postgres
+5492; 0 43905 ROW SECURITY public reports postgres
+5739; 3256 2293459 POLICY public reports reports_delete_manage postgres
+5737; 3256 2293457 POLICY public reports reports_insert_enter postgres
+5736; 3256 2293456 POLICY public reports reports_select_all_tiers postgres
+5738; 3256 2293458 POLICY public reports reports_update_enter postgres
+5553; 0 2294589 ROW SECURITY public saved_views postgres
+5865; 3256 2294618 POLICY public saved_views saved_views_delete_admin postgres
+5864; 3256 2294617 POLICY public saved_views saved_views_delete_own postgres
+5862; 3256 2294615 POLICY public saved_views saved_views_insert_own postgres
+5861; 3256 2294614 POLICY public saved_views saved_views_own_or_shared_select_all_tiers postgres
+5863; 3256 2294616 POLICY public saved_views saved_views_update_own postgres
+5502; 0 44130 ROW SECURITY public scenario_assumptions postgres
+5756; 3256 2293476 POLICY public scenario_assumptions scenario_assumptions_delete_manage postgres
+5754; 3256 2293474 POLICY public scenario_assumptions scenario_assumptions_insert_enter postgres
+5753; 3256 2293473 POLICY public scenario_assumptions scenario_assumptions_select_all_tiers postgres
+5755; 3256 2293475 POLICY public scenario_assumptions scenario_assumptions_update_enter postgres
+5503; 0 44143 ROW SECURITY public scenario_comparisons postgres
+5760; 3256 2293480 POLICY public scenario_comparisons scenario_comparisons_delete_manage postgres
+5758; 3256 2293478 POLICY public scenario_comparisons scenario_comparisons_insert_enter postgres
+5757; 3256 2293477 POLICY public scenario_comparisons scenario_comparisons_select_all_tiers postgres
+5759; 3256 2293479 POLICY public scenario_comparisons scenario_comparisons_update_enter postgres
+5501; 0 44116 ROW SECURITY public scenario_run_lines postgres
+5752; 3256 2293472 POLICY public scenario_run_lines scenario_run_lines_delete_manage postgres
+5750; 3256 2293470 POLICY public scenario_run_lines scenario_run_lines_insert_enter postgres
+5749; 3256 2293469 POLICY public scenario_run_lines scenario_run_lines_select_all_tiers postgres
+5751; 3256 2293471 POLICY public scenario_run_lines scenario_run_lines_update_enter postgres
+5500; 0 44098 ROW SECURITY public scenario_runs postgres
+5748; 3256 2293468 POLICY public scenario_runs scenario_runs_delete_manage postgres
+5746; 3256 2293466 POLICY public scenario_runs scenario_runs_insert_enter postgres
+5745; 3256 2293465 POLICY public scenario_runs scenario_runs_select_all_tiers postgres
+5747; 3256 2293467 POLICY public scenario_runs scenario_runs_update_enter postgres
+5499; 0 44083 ROW SECURITY public scenarios postgres
+5744; 3256 2293464 POLICY public scenarios scenarios_delete_manage postgres
+5741; 3256 2293461 POLICY public scenarios scenarios_insert_enter postgres
+5740; 3256 2293460 POLICY public scenarios scenarios_select_all_tiers postgres
+5743; 3256 2293463 POLICY public scenarios scenarios_update_manage postgres
+5742; 3256 2293462 POLICY public scenarios scenarios_update_own postgres
+5511; 0 76224 ROW SECURITY public schema_migrations postgres
+5513; 0 458775 ROW SECURITY public sessions postgres
+5561; 3256 2292562 POLICY public sessions sessions_app_runtime postgres
+5559; 3256 458792 POLICY public sessions sessions_deny_all postgres
+5779; 3256 2293499 POLICY public sessions sessions_self_read postgres
+5479; 0 43545 ROW SECURITY public settings postgres
+5772; 3256 2293492 POLICY public settings settings_delete_admin postgres
+5770; 3256 2293490 POLICY public settings settings_insert_admin postgres
+5769; 3256 2293489 POLICY public settings settings_select_all_tiers postgres
+5771; 3256 2293491 POLICY public settings settings_update_admin postgres
+5473; 0 43411 ROW SECURITY public source_cells postgres
+5721; 3256 2293441 POLICY public source_cells source_cells_insert_record postgres
+5720; 3256 2293440 POLICY public source_cells source_cells_select_all_tiers postgres
+5472; 0 43392 ROW SECURITY public source_sheets postgres
+5706; 3256 2293425 POLICY public source_sheets source_sheets_delete_manage postgres
+5704; 3256 2293423 POLICY public source_sheets source_sheets_insert_enter postgres
+5703; 3256 2293422 POLICY public source_sheets source_sheets_select_all_tiers postgres
+5705; 3256 2293424 POLICY public source_sheets source_sheets_update_enter postgres
+5471; 0 43376 ROW SECURITY public source_workbooks postgres
+5702; 3256 2293421 POLICY public source_workbooks source_workbooks_delete_manage postgres
+5700; 3256 2293419 POLICY public source_workbooks source_workbooks_insert_enter postgres
+5699; 3256 2293418 POLICY public source_workbooks source_workbooks_select_all_tiers postgres
+5701; 3256 2293420 POLICY public source_workbooks source_workbooks_update_enter postgres
+5533; 0 2293567 ROW SECURITY public treasury_policies postgres
+5788; 3256 2293596 POLICY public treasury_policies treasury_policies_delete_admin postgres
+5786; 3256 2293594 POLICY public treasury_policies treasury_policies_insert_admin postgres
+5785; 3256 2293593 POLICY public treasury_policies treasury_policies_select_all_tiers postgres
+5787; 3256 2293595 POLICY public treasury_policies treasury_policies_update_admin postgres
+5512; 0 458752 ROW SECURITY public users postgres
+5780; 3256 2293500 POLICY public users users_admin_write postgres
+5560; 3256 2292561 POLICY public users users_app_runtime postgres
+5558; 3256 458774 POLICY public users users_deny_all postgres
+5778; 3256 2293498 POLICY public users users_self_read postgres
+2742; 826 2292564 DEFAULT ACL public DEFAULT PRIVILEGES FOR SEQUENCES postgres
+2741; 826 2292563 DEFAULT ACL public DEFAULT PRIVILEGES FOR TABLES postgres

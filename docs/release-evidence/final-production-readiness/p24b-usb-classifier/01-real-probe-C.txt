@@ -1,0 +1,19 @@
+TARGET_PATH                 : C:\MAS-Backups
+SOURCE_PATH                 : C:\Users\Trade Bilisim\Mas Saas\backups
+LOGICAL_DRIVE_TYPE          : 3
+PHYSICAL_DISK_NUMBER        : 0
+BUS_TYPE                    : RAID
+IS_BOOT                     : true
+IS_SYSTEM                   : true
+OPERATIONAL_STATUS          : Online
+FRIENDLY_NAME               : NVMe WDC PC SN520 SDA
+SOURCE_PHYSICAL_DISK_NUMBER : 0
+SOURCE_BUS_TYPE             : RAID
+SAME_PHYSICAL_DISK          : true
+SAME_VOLUME_AS_SOURCE       : true
+TARGET_KIND                 : LOCAL_STANDIN
+OFF_DEVICE_SATISFIED        : false
+CLEANUP_GRADE               : false
+EVIDENCE                    : Hedef kaynakla aynı volume üzerinde (kök c:\); hedef BusType='RAID' — yalnız USB kabul edilir; hedef BOOT diski (IsBoot=true) — makinenin kendi diski; hedef SYSTEM diski (IsSystem=true) — makinenin kendi diski; hedef ve kaynak AYNI fiziksel diskte (disk 0) — ayrı bölüm ayrı AYGIT değildir; hedef kaynakla aynı volume üzerinde (c:\). Aynı makinedeki ikinci klasör off-device kopya SAYILMAZ (rehber §30.5).
+
+PROBE_MUTATIONS: 0 (dizin oluşturulmadı, dosya yazılmadı, DB'ye dokunulmadı)

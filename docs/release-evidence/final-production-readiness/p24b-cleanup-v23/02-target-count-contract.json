@@ -1,0 +1,36 @@
+{
+  "api": "scripts/db/p24b-cleanup-fingerprint.ts :: TargetFingerprintResult",
+  "fields": [
+    "digest",
+    "expected",
+    "found",
+    "missing[]"
+  ],
+  "hardGates": [
+    "source: found === expected && missing.length === 0",
+    "restore smoke: found === expected && missing.length === 0"
+  ],
+  "source": {
+    "found": 42,
+    "missing": 0,
+    "digest": "05e4677004f6e063390e65d203d3acdcd23eacbafd867d7a37ed69c07eaebc50"
+  },
+  "restore": {
+    "found": 42,
+    "expected": 42,
+    "missing": 0,
+    "digest": "05e4677004f6e063390e65d203d3acdcd23eacbafd867d7a37ed69c07eaebc50",
+    "matchesSource": true
+  },
+  "wholeDb": {
+    "source": "cb392821aedb1e38efea01da2645144add19086b4a5b87fb24758f74f34f3b29",
+    "restore": "cb392821aedb1e38efea01da2645144add19086b4a5b87fb24758f74f34f3b29",
+    "matchesSource": true
+  },
+  "receiptNegativeControl": {
+    "setup": "disposable restore'dan bir hedef satir (payment_instances/3ab000e6) silindi",
+    "observed": "DURDURULDU: kaynakta 41/42 hedef satir var; eksik: payment_instances/3ab000e6-5187-468d-bf2e-2af882a2a3a2",
+    "bindingProduced": false,
+    "oldBehaviour": "targetRows: 42 yazilirdi"
+  }
+}

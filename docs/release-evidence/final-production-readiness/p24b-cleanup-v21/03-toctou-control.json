@@ -1,0 +1,18 @@
+{
+  "database": "mas_radar_p24b_v21_drill",
+  "generatedAtUtc": "2026-08-30T14:39:45.160Z",
+  "lockMode": "SHARE ROW EXCLUSIVE",
+  "victimPaymentId": "0e8af5cc-ad81-4c52-9dbd-cb2f51b095e9",
+  "withLockHeld": {
+    "blocked": true,
+    "code": "55P03",
+    "message": "canceling statement due to lock timeout"
+  },
+  "withoutLock": {
+    "blocked": false,
+    "code": null,
+    "message": "UPDATE geçti"
+  },
+  "verdict": "PASS",
+  "reasoning": "Kilit tutulurken eşzamanlı UPDATE lock_timeout (55P03) ile reddedildi; kilit yokken aynı UPDATE geçti. Kilidin engellediği kanıtlandı, ortam koşulu değil."
+}

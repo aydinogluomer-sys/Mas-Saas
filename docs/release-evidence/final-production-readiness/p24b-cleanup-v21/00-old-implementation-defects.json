@@ -1,0 +1,27 @@
+{
+  "auditedCommit": "29d56aa",
+  "file": "scripts/db/p24b-fixture-cleanup.ts",
+  "findings": [
+    {
+      "id": "D1",
+      "area": "backup binding",
+      "oldCode": "satir 103-105: const rec = process.env.MAS_P24B_BACKUP_RECEIPT; if (!rec || !existsSync(rec)) fail(...)",
+      "why": "Bos bir dosya bu kapiyi gecerdi. Yedegin VAR oldugunu, off-device oldugunu veya BU veritabanina ait oldugunu kanitlamiyordu.",
+      "verdict": "OLD_IMPLEMENTATION_BACKUP_BINDING = FAIL"
+    },
+    {
+      "id": "D2",
+      "area": "TOCTOU",
+      "oldCode": "precondition gate 187-208, beforeCounts 210, beforeMoney 217, beforeFp 228 — hepsi begin(229) ve lock(237) ONCESI",
+      "why": "Commit kararinin dayandigi her olcum, baska oturumlar yazmakta serbestken alindi. Tek savunma runtime kapalidir iddiasiydi; bu bir operasyon iddiasi ve bu olayda iki kez cokmus olan iddianin ta kendisi.",
+      "verdict": "OLD_IMPLEMENTATION_TOCTOU_SAFE = FAIL"
+    },
+    {
+      "id": "D3",
+      "area": "derived correction",
+      "oldCode": "refreshMetricSnapshots cagrisi YOK; metric_snapshots yalniz LOCK listesinde (satir 236). audit INSERT kontrati YOK.",
+      "why": "42 satir silinip birakildi; onlarin bozdugu iki toplam (task_status.open=8, payment_status.unpaid=13.621.000) yanlis kaldi ve script basarili raporladi.",
+      "verdict": "OLD_IMPLEMENTATION_DERIVED_REFRESH_ATOMIC = FAIL"
+    }
+  ]
+}

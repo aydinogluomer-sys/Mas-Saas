@@ -1,0 +1,43 @@
+name: Setup
+description: Checkout-adjacent toolchain setup shared by every CI job.
+
+# GitHub Actions does not support YAML anchors, so without this composite action the same four
+# steps would be copy-pasted into seven jobs. That is not merely verbose: it is how the Node
+# version in job 5 quietly drifts away from the Node version in job 1, and a gate that runs on a
+# different toolchain than the one it is guarding proves less than it appears to.
+
+inputs:
+  postgres:
+    description: "Start the mas-radar-pg container (the DB-backed jobs need it, static does not)."
+    required: false
+    default: "false"
+
+runs:
+  using: composite
+  steps:
+    - uses: pnpm/action-setup@v4
+      with:
+        version: 10
+
+    - uses: actions/setup-node@v4
+      with:
+        # Known divergence from the maintainer's machine (Node 26 locally). Pinned to the
+        # current LTS because that is what the runner offers reliably; if a Node-version
+        # specific bug ever appears, this line is the first place to look.
+        node-version: 22
+        cache: pnpm
+
+    - name: Install
+      shell: bash
+      run: pnpm install --frozen-lockfile
+
+    # GitHub Actions' built-in `services:` Postgres is NOT used, on purpose. scripts/db/ensure.ts
+    # starts its own `mas-radar-pg` container bound to 127.0.0.1:5432, and a service container
+    # would already own that port — the two would collide, and whichever won, CI would then be
+    # exercising a different Postgres than every local run does. Letting ensure.ts do here exactly
+    # what it does locally keeps the two identical, which is the whole point of running the gate
+    # twice.
+    - name: Start PostgreSQL (same container the local gate uses)
+      if: inputs.postgres == 'true'
+      shell: bash
+      run: pnpm db:ensure

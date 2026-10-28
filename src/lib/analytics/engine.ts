@@ -64,19 +64,25 @@ export async function runParetoConcentration(
   // Open sales exposure per counterparty. Non-negative by construction, which is what the Pareto
   // function requires — a share of a total that can cancel itself out is meaningless.
   const rows = await pool.query(
+    // PHASE 2.2 (#54): Pareto payi yalniz TRY faturalardan; farkli para birimindeki acik fatura
+    // toplam icinde oran uretemez (kur yok). TRY-disi faturasi olan taraf sayisi stamp'e yazilir.
     `select p.id as party_id, p.name,
             sum(v.gross_amount - coalesce(v.allocated_amount, 0)) as exposure
        from public.invoices v
        join public.parties p on p.id = v.party_id
-      where v.direction = 'sales' and v.status in ('open', 'partial')
+      where v.direction = 'sales' and v.status in ('open', 'partial') and v.currency = 'TRY'
       group by p.id, p.name
      having sum(v.gross_amount - coalesce(v.allocated_amount, 0)) > 0
       order by p.id`);
+  const foreign = await pool.query(
+    `select count(distinct v.party_id)::int as parties
+       from public.invoices v
+      where v.direction = 'sales' and v.status in ('open', 'partial') and v.currency <> 'TRY'`);
   const pareto = paretoConcentration(rows.rows.map((r) => ({
     key: String(r.party_id), label: String(r.name), value: moneyOrNull(r.exposure),
   })), threshold);
   const stamp = buildStamp("pareto_concentration", {
-    rowCounts: { invoices_open_sales_parties: rows.rowCount ?? 0 }, asOf, sourceCutoff: null,
+    rowCounts: { invoices_open_sales_parties: rows.rowCount ?? 0, parties_with_non_try_open_sales_excluded: Number(foreign.rows[0]?.parties ?? 0) }, asOf, sourceCutoff: null,
   }, nowISO());
   return { ...pareto, result: pareto, stamp } as StampedAnalysis<ParetoRow> & { summary: ParetoSummary | null };
 }
@@ -200,17 +206,20 @@ export async function runRollingTrend(
   pool: Pool, window: RollingWindow, asOf = istanbulDateISO(),
 ): Promise<StampedAnalysis<RollingPoint>> {
   const rows = await pool.query(
+    // PHASE 2.2 (#12): gunluk toplam yalniz TRY; TRY-disi satir bilinmeyen gibi ayri sayilir.
     `select to_char(due_date,'YYYY-MM-DD') as day,
-            sum(amount) filter (where amount is not null) as known_amount,
-            count(*) filter (where amount is null)::int as unknown_rows
+            sum(amount) filter (where amount is not null and currency = 'TRY') as known_amount,
+            count(*) filter (where amount is null)::int as unknown_rows,
+            count(*) filter (where currency <> 'TRY')::int as foreign_rows
        from public.payment_instances
       where due_date >= (current_date - interval '400 days') and due_date <= current_date
         and status in ('unpaid','partial','paid','late')
       group by due_date order by due_date`);
   const series = rows.rows.map((r) => ({
     key: r.day as string,
-    // A day whose rows all had unknown amounts is UNKNOWN, not zero.
-    value: Number(r.unknown_rows) > 0 && r.known_amount == null ? null : moneyOrNull(r.known_amount) ?? 0,
+    // A day whose rows all had unknown amounts is UNKNOWN, not zero. Yalniz TRY-disi satirlari
+    // olan gun de bilinmeyendir: TRY toplami yok, 0 degil.
+    value: (Number(r.unknown_rows) > 0 || Number(r.foreign_rows) > 0) && r.known_amount == null ? null : moneyOrNull(r.known_amount) ?? 0,
   }));
   const points = rollingWindow(series, window, "sum");
   const result: AnalysisResult<RollingPoint> = {

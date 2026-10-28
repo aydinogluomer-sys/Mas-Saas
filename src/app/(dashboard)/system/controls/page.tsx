@@ -227,8 +227,14 @@ export default async function ControlsPage({
               <p className="text-xs text-neutral-600">Bulgu yok.</p>
             ) : (
               <ul className="space-y-1 text-xs">
-                {anomalies.splitPayments.slice(0, 6).map((s: { party_name: string; due_date: string; payment_count: number; total_amount: string }, i: number) => (
-                  <li key={i}>{s.party_name} · {s.payment_count} ödeme · {fmtTL(Number(s.total_amount))}</li>
+                {anomalies.splitPayments.slice(0, 6).map((s: { party_name: string; due_date: string; payment_count: number; total_amount: string; foreign_currency_count?: number | string }, i: number) => (
+                  <li key={i}>
+                    {s.party_name} · {s.payment_count} ödeme · {fmtTL(Number(s.total_amount))}
+                    {/* PHASE 2.2 (0093): TRY-dışı kalem toplama girmedi; sayısı gizlenmez. */}
+                    {Number(s.foreign_currency_count ?? 0) > 0 && (
+                      <span className="ml-1 text-warn">· {Number(s.foreign_currency_count)} TRY-dışı toplamda yok</span>
+                    )}
+                  </li>
                 ))}
               </ul>
             )}

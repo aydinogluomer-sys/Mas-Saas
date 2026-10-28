@@ -17,6 +17,9 @@ import { DomainError } from "@/lib/domain-error";
 import { intOrNull, moneyOrNull } from "@/lib/money";
 import { parseOrThrow } from "@/lib/validation";
 import { firingRules, type ApprovalRuleConfig, type RuleInput } from "./rules";
+import { assertNoBlockingControlAlerts } from "@/lib/controls/gatekeeper";
+import { cache } from "@/lib/cache/engine";
+import { CACHE_TAGS } from "@/lib/cache/tags";
 
 /* ── schemas ──────────────────────────────────────────────────────────────────────────── */
 
@@ -69,13 +72,16 @@ export async function evaluateRules(
   input: RuleInput,
 ): Promise<ApprovalRuleConfig[]> {
   const r = await pool.query(
-    `select code, description, trigger_kind, threshold_amount, applies_to, is_active
+    `select code, description, trigger_kind, threshold_amount, currency, applies_to, is_active
      from public.approval_rules where is_active order by code`);
   const configs: ApprovalRuleConfig[] = r.rows.map((row) => ({
     code: row.code,
     description: row.description,
     triggerKind: row.trigger_kind,
     thresholdAmount: moneyOrNull(row.threshold_amount),
+    // PHASE 2.2 (T1-e): eşiğin para birimi kuralla birlikte taşınır; rules.ts girdi para
+    // birimiyle karşılaştırır ve eşleşmiyorsa kapıyı kapalı tutar.
+    currency: String(row.currency),
     appliesTo: (row.applies_to ?? []) as string[],
     isActive: Boolean(row.is_active),
   }));
@@ -173,6 +179,10 @@ export async function decideApproval(pool: Pool, raw: unknown, actorId: string):
       throw new DomainError("Onayı talep eden kişi onaylayamaz (maker-checker).");
     }
 
+    if (input.decision === "approved") {
+      await assertNoBlockingControlAlerts(client, a.subject_table, a.subject_id);
+    }
+
     await client.query(
       `update public.approvals
          set status=$2,
@@ -220,6 +230,7 @@ export async function decideApproval(pool: Pool, raw: unknown, actorId: string):
       },
     });
     await client.query("commit");
+    await cache.invalidateTags([CACHE_TAGS.CONTROLS, CACHE_TAGS.CFO_BRIEFING, CACHE_TAGS.PAYMENTS]);
   } catch (e) {
     await client.query("rollback");
     throw e;

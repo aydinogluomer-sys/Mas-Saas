@@ -11,6 +11,8 @@ import { loadMaturityItems } from "@/lib/financing/engine";
 import { moneyOrNull, rateOrNull } from "@/lib/money";
 import type { CashMonth } from "@/lib/radar/rules";
 import { audit } from "@/lib/audit";
+import { cache } from "@/lib/cache/engine";
+import { CACHE_TAGS } from "@/lib/cache/tags";
 import {
   applyScenario,
   buildScenarioInsights,
@@ -145,67 +147,73 @@ export interface OptimizationCandidate {
 }
 
 export async function estimateOptimizationCandidates(pool: Pool): Promise<OptimizationCandidate[]> {
-  const baseline: CashMonth[] = await loadCashMonths(pool);
-  if (baseline.length === 0) return [];
+  return cache.withCache(
+    "scenarios:optimization:candidates",
+    async () => {
+      const baseline: CashMonth[] = await loadCashMonths(pool);
+      if (baseline.length === 0) return [];
 
-  const items = await loadMaturityItems(pool);
-  const debt = debtServiceByMonth(items).map((d) => ({ monthStart: d.monthStart, knownOutflow: d.knownOutflow }));
+      const items = await loadMaturityItems(pool);
+      const debt = debtServiceByMonth(items).map((d) => ({ monthStart: d.monthStart, knownOutflow: d.knownOutflow }));
 
-  const candidates: Array<{ key: string; label: string; assumptions: ScenarioAssumptions }> = [
-    {
-      key: "delay_cagdas_1m",
-      label: "Odeme erteleme: Cagdas 1 ay",
-      assumptions: { targetOutflowLabel: "Cagdas", targetOutflowDelayMonths: 1 },
-    },
-    {
-      key: "factor_hpt",
-      label: "Cek/faktoring: Hpt tahsilati one cek",
-      assumptions: { factoringIncomeLabel: "Hpt", factoringAdvanceMonth: baseline[0].monthStart.slice(0, 7), factoringFeePct: 0.04 },
-    },
-    {
-      key: "income_plus_10",
-      label: "Gelir artisi: +%10",
-      assumptions: { revenuePct: 0.1 },
-    },
-    {
-      key: "combo_delay_plus_factor",
-      label: "Kombinasyon: Cagdas ertele + Hpt faktoring",
-      assumptions: {
-        targetOutflowLabel: "Cagdas",
-        targetOutflowDelayMonths: 1,
-        factoringIncomeLabel: "Hpt",
-        factoringAdvanceMonth: baseline[0].monthStart.slice(0, 7),
-        factoringFeePct: 0.04,
-      },
-    },
-  ];
+      const candidates: Array<{ key: string; label: string; assumptions: ScenarioAssumptions }> = [
+        {
+          key: "delay_cagdas_1m",
+          label: "Odeme erteleme: Cagdas 1 ay",
+          assumptions: { targetOutflowLabel: "Cagdas", targetOutflowDelayMonths: 1 },
+        },
+        {
+          key: "factor_hpt",
+          label: "Cek/faktoring: Hpt tahsilati one cek",
+          assumptions: { factoringIncomeLabel: "Hpt", factoringAdvanceMonth: baseline[0].monthStart.slice(0, 7), factoringFeePct: 0.04 },
+        },
+        {
+          key: "income_plus_10",
+          label: "Gelir artisi: +%10",
+          assumptions: { revenuePct: 0.1 },
+        },
+        {
+          key: "combo_delay_plus_factor",
+          label: "Kombinasyon: Cagdas ertele + Hpt faktoring",
+          assumptions: {
+            targetOutflowLabel: "Cagdas",
+            targetOutflowDelayMonths: 1,
+            factoringIncomeLabel: "Hpt",
+            factoringAdvanceMonth: baseline[0].monthStart.slice(0, 7),
+            factoringFeePct: 0.04,
+          },
+        },
+      ];
 
-  const out: OptimizationCandidate[] = [];
-  for (const c of candidates) {
-    const adj = await buildScenarioAdjustments(pool, c.assumptions);
-    const months = applyScenario(baseline, c.assumptions, debt, adj);
-    const cmp = compareScenarioToBaseline(months);
-    out.push({
-      key: c.key,
-      label: c.label,
-      assumptions: c.assumptions,
-      finalCash: cmp.scenarioFinalCash,
-      finalDelta: cmp.finalDelta,
-      maxCashGap: cmp.maxCashGap,
-      baselineFirstNegative: cmp.baselineFirstNegative,
-      firstNegative: cmp.scenarioFirstNegative,
-      confidence: scenarioConfidence(cmp),
-    });
-  }
+      const out: OptimizationCandidate[] = [];
+      for (const c of candidates) {
+        const adj = await buildScenarioAdjustments(pool, c.assumptions);
+        const months = applyScenario(baseline, c.assumptions, debt, adj);
+        const cmp = compareScenarioToBaseline(months);
+        out.push({
+          key: c.key,
+          label: c.label,
+          assumptions: c.assumptions,
+          finalCash: cmp.scenarioFinalCash,
+          finalDelta: cmp.finalDelta,
+          maxCashGap: cmp.maxCashGap,
+          baselineFirstNegative: cmp.baselineFirstNegative,
+          firstNegative: cmp.scenarioFirstNegative,
+          confidence: scenarioConfidence(cmp),
+        });
+      }
 
-  return out.sort((a, b) => {
-    const aGap = a.maxCashGap ?? Number.POSITIVE_INFINITY;
-    const bGap = b.maxCashGap ?? Number.POSITIVE_INFINITY;
-    if (aGap !== bGap) return aGap - bGap;
-    const aFinal = a.finalCash ?? Number.NEGATIVE_INFINITY;
-    const bFinal = b.finalCash ?? Number.NEGATIVE_INFINITY;
-    return bFinal - aFinal;
-  });
+      return out.sort((a, b) => {
+        const aGap = a.maxCashGap ?? Number.POSITIVE_INFINITY;
+        const bGap = b.maxCashGap ?? Number.POSITIVE_INFINITY;
+        if (aGap !== bGap) return aGap - bGap;
+        const aFinal = a.finalCash ?? Number.NEGATIVE_INFINITY;
+        const bFinal = b.finalCash ?? Number.NEGATIVE_INFINITY;
+        return bFinal - aFinal;
+      });
+    },
+    { ttlSeconds: 60, tags: [CACHE_TAGS.SCENARIOS] }
+  );
 }
 
 function toScenarioExternalContext(a: ExternalAssumption): ScenarioExternalContext {
@@ -405,62 +413,72 @@ export async function compareScenarioToBaselineRun(pool: Pool, runId: string) {
 }
 
 export async function loadScenarioRun(pool: Pool, runId: string) {
-  const run = await pool.query(
-    `select r.id, r.scenario_id, s.name, s.scenario_type, s.baseline_label,
-            to_char(r.run_at at time zone 'Europe/Istanbul','YYYY-MM-DD HH24:MI') as run_at,
-            r.assumptions, r.baseline_final_cash as base_final, r.scenario_final_cash as scen_final,
-            r.final_delta,
-            to_char(r.baseline_first_negative,'YYYY-MM-DD') as base_first_neg,
-            to_char(r.scenario_first_negative,'YYYY-MM-DD') as scen_first_neg,
-            to_char(r.worst_month,'YYYY-MM-DD') as worst_month, r.worst_balance,
-            r.max_cash_gap as max_gap, to_char(r.recovery_month,'YYYY-MM-DD') as recovery_month,
-            r.month_count, r.null_month_count, r.confidence, r.notes
-     from public.scenario_runs r join public.scenarios s on s.id=r.scenario_id where r.id=$1`,
-    [runId],
-  );
-  if (run.rowCount === 0) return null;
-  const lines = await pool.query(
-    `select to_char(month_start,'YYYY-MM-DD') as month_start,
-            baseline_income as base_inc, scenario_income as scen_inc,
-            baseline_expense as base_exp, scenario_expense as scen_exp,
-            baseline_closing as base_close, scenario_closing as scen_close, delta
-     from public.scenario_run_lines where run_id=$1 order by month_start`,
-    [runId],
-  );
-  const assumptions = await pool.query(
-    `select key, value_numeric as value, unit, description from public.scenario_assumptions where run_id=$1`,
-    [runId],
-  );
-  // scenario_assumptions.value_numeric is numeric(14,4) and carries ratios ("oran") as often
-  // as TL, so it decodes at RATE_DP; the run/line figures are all TL.
-  return {
-    run: {
-      ...run.rows[0],
-      base_final: moneyOrNull(run.rows[0].base_final), scen_final: moneyOrNull(run.rows[0].scen_final),
-      final_delta: moneyOrNull(run.rows[0].final_delta), worst_balance: moneyOrNull(run.rows[0].worst_balance),
-      max_gap: moneyOrNull(run.rows[0].max_gap),
+  return cache.withCache(
+    `scenarios:run:${runId}`,
+    async () => {
+      const run = await pool.query(
+        `select r.id, r.scenario_id, s.name, s.scenario_type, s.baseline_label,
+                to_char(r.run_at at time zone 'Europe/Istanbul','YYYY-MM-DD HH24:MI') as run_at,
+                r.assumptions, r.baseline_final_cash as base_final, r.scenario_final_cash as scen_final,
+                r.final_delta,
+                to_char(r.baseline_first_negative,'YYYY-MM-DD') as base_first_neg,
+                to_char(r.scenario_first_negative,'YYYY-MM-DD') as scen_first_neg,
+                to_char(r.worst_month,'YYYY-MM-DD') as worst_month, r.worst_balance,
+                r.max_cash_gap as max_gap, to_char(r.recovery_month,'YYYY-MM-DD') as recovery_month,
+                r.month_count, r.null_month_count, r.confidence, r.notes
+         from public.scenario_runs r join public.scenarios s on s.id=r.scenario_id where r.id=$1`,
+        [runId],
+      );
+      if (run.rowCount === 0) return null;
+      const lines = await pool.query(
+        `select to_char(month_start,'YYYY-MM-DD') as month_start,
+                baseline_income as base_inc, scenario_income as scen_inc,
+                baseline_expense as base_exp, scenario_expense as scen_exp,
+                baseline_closing as base_close, scenario_closing as scen_close, delta
+         from public.scenario_run_lines where run_id=$1 order by month_start`,
+        [runId],
+      );
+      const assumptions = await pool.query(
+        `select key, value_numeric as value, unit, description from public.scenario_assumptions where run_id=$1`,
+        [runId],
+      );
+      return {
+        run: {
+          ...run.rows[0],
+          base_final: moneyOrNull(run.rows[0].base_final), scen_final: moneyOrNull(run.rows[0].scen_final),
+          final_delta: moneyOrNull(run.rows[0].final_delta), worst_balance: moneyOrNull(run.rows[0].worst_balance),
+          max_gap: moneyOrNull(run.rows[0].max_gap),
+        },
+        lines: lines.rows.map((x) => ({
+          ...x,
+          base_inc: moneyOrNull(x.base_inc), scen_inc: moneyOrNull(x.scen_inc),
+          base_exp: moneyOrNull(x.base_exp), scen_exp: moneyOrNull(x.scen_exp),
+          base_close: moneyOrNull(x.base_close), scen_close: moneyOrNull(x.scen_close),
+          delta: moneyOrNull(x.delta),
+        })),
+        assumptions: assumptions.rows.map((x) => ({ ...x, value: rateOrNull(x.value) })),
+      };
     },
-    lines: lines.rows.map((x) => ({
-      ...x,
-      base_inc: moneyOrNull(x.base_inc), scen_inc: moneyOrNull(x.scen_inc),
-      base_exp: moneyOrNull(x.base_exp), scen_exp: moneyOrNull(x.scen_exp),
-      base_close: moneyOrNull(x.base_close), scen_close: moneyOrNull(x.scen_close),
-      delta: moneyOrNull(x.delta),
-    })),
-    assumptions: assumptions.rows.map((x) => ({ ...x, value: rateOrNull(x.value) })),
-  };
+    { ttlSeconds: 60, tags: [CACHE_TAGS.SCENARIOS] }
+  );
 }
 
 export async function listScenarioRuns(pool: Pool) {
-  const r = await pool.query(
-    `select r.id, s.name, s.scenario_type, r.final_delta, r.confidence,
-            to_char(r.scenario_first_negative,'YYYY-MM-DD') as scen_first_neg,
-            to_char(r.run_at at time zone 'Europe/Istanbul','YYYY-MM-DD HH24:MI') as run_at
-     from public.scenario_runs r join public.scenarios s on s.id=r.scenario_id
-     where r.archived_at is null
-     order by r.run_at desc limit 50`,
+  return cache.withCache(
+    "scenarios:runs:list",
+    async () => {
+      const r = await pool.query(
+        `select r.id, s.name, s.scenario_type, r.final_delta, r.confidence,
+                to_char(r.scenario_first_negative,'YYYY-MM-DD') as scen_first_neg,
+                to_char(r.run_at at time zone 'Europe/Istanbul','YYYY-MM-DD HH24:MI') as run_at
+         from public.scenario_runs r join public.scenarios s on s.id=r.scenario_id
+         where r.archived_at is null
+         order by r.run_at desc limit 50`,
+      );
+      return r.rows.map((x) => ({ ...x, final_delta: moneyOrNull(x.final_delta) })) as Array<{ id: string; name: string; scenario_type: string; final_delta: number | null; confidence: string; scen_first_neg: string | null; run_at: string }>;
+    },
+    { ttlSeconds: 60, tags: [CACHE_TAGS.SCENARIOS] }
   );
-  return r.rows.map((x) => ({ ...x, final_delta: moneyOrNull(x.final_delta) })) as Array<{ id: string; name: string; scenario_type: string; final_delta: number | null; confidence: string; scen_first_neg: string | null; run_at: string }>;
 }
 
 /** Safe: only removes scenario_* rows (cascade). Baseline is untouched. Audited. */

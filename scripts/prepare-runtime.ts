@@ -1,9 +1,28 @@
-import { getPool, getRawPool, runAsSystem } from "../src/lib/db";
-import { ensureWindow } from "../src/lib/radar/engine";
-import { istanbulDateISO } from "../src/lib/reports/rules";
-import { ensureSystemActor } from "./db/seed-system-actor";
+import { loadEnvConfig } from "@next/env";
+
+// This script runs before `next dev` / `next start`, so Next has not loaded
+// `.env.local` yet. Load it before importing modules that validate the environment
+// at module evaluation time. Dynamic imports are intentional: static imports would
+// run before this call and make a stock `.env.local` installation fail to boot.
+loadEnvConfig(process.cwd());
 
 async function main() {
+  const [
+    { runMigrationLedger },
+    { getPool, getRawPool, runAsSystem },
+    { ensureWindow },
+    { istanbulDateISO },
+    { ensureSystemActor },
+  ] = await Promise.all([
+    import("./db/migrate"),
+    import("../src/lib/db"),
+    import("../src/lib/radar/engine"),
+    import("../src/lib/reports/rules"),
+    import("./db/seed-system-actor"),
+  ]);
+
+  await runMigrationLedger();
+
   const pool = getPool();
   try {
     // Faz 24B: this runs before any request, so there is no session to derive a tier from.

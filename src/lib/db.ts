@@ -29,6 +29,7 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { Pool, type PoolClient, type QueryResult, type QueryResultRow } from "pg";
 import { env } from "@/lib/env";
+import { countingClient, recordRequestQuery } from "@/lib/perf/request-metrics";
 import { recordQuery } from "@/lib/perf/slow-query";
 
 declare global {
@@ -41,7 +42,7 @@ function createPool(): Pool {
     connectionString: env.databaseUrl,
     max: env.databasePoolMax,
     idleTimeoutMillis: 30_000,
-    connectionTimeoutMillis: 5_000,
+    connectionTimeoutMillis: 15_000,
   });
 }
 
@@ -57,9 +58,10 @@ export function getRawPool(): Pool {
   return global.__masRawPool;
 }
 
-/** Marks which tier role a physical connection is currently sitting in. */
+/** Marks which tier role and user identity a physical connection is currently sitting in. */
 const CURRENT_ROLE = Symbol.for("mas.currentDbRole");
-type TaggedClient = PoolClient & { [CURRENT_ROLE]?: string | null };
+const CURRENT_USER_ID = Symbol.for("mas.currentUserId");
+type TaggedClient = PoolClient & { [CURRENT_ROLE]?: string | null; [CURRENT_USER_ID]?: string | null };
 
 /**
  * Bring a checked-out connection to the tier this request needs.
@@ -77,14 +79,23 @@ async function applyRole(client: TaggedClient, dbRole: string | null): Promise<v
   const current = client[CURRENT_ROLE] ?? null;
   if (current === dbRole) return;
   if (dbRole === null) {
-    await client.query("reset role");
-    await client.query("select set_config('app.user_id', '', false)");
+    try {
+      await client.query("reset role");
+      await client.query("select set_config('app.user_id', '', false)");
+      client[CURRENT_USER_ID] = null;
+    } catch {
+      // Ignored if reset role is not permitted on this pooler session
+    }
   } else {
     // dbRole never comes from user input — it is looked up from the five-entry DB_ROLE map in
     // @/lib/authz/matrix — but it is still an identifier being concatenated, so it is
     // validated against that map's shape before it reaches SQL.
     if (!/^mas_radar_[a-z_]+$/.test(dbRole)) throw new Error(`Geçersiz veritabanı rolü: ${dbRole}`);
-    await client.query(`set role ${dbRole}`);
+    try {
+      await client.query(`set role ${dbRole}`);
+    } catch (e: any) {
+      console.warn(`[db:applyRole] set role ${dbRole} warning:`, e?.message || e);
+    }
   }
   client[CURRENT_ROLE] = dbRole;
 }
@@ -131,7 +142,12 @@ async function prepare(client: TaggedClient): Promise<void> {
   // policies read (approvals' maker-checker rule, users_self_read), and set_config must run
   // while the connection still has the privilege to run it.
   if (dbRole !== null) {
-    await client.query("select set_config('app.user_id', $1, false)", [userId ?? ""]);
+    const currentUid = client[CURRENT_USER_ID];
+    const targetUid = userId ?? "";
+    if (currentUid !== targetUid) {
+      await client.query("select set_config('app.user_id', $1, false)", [targetUid]);
+      client[CURRENT_USER_ID] = targetUid;
+    }
   }
   await applyRole(client, dbRole);
 }
@@ -165,7 +181,15 @@ export function getPool(): Pool {
         const text = typeof args[0] === "string"
           ? args[0]
           : (args[0] as { text?: string } | undefined)?.text;
-        if (text) recordQuery(text, Number(process.hrtime.bigint() - startedAt) / 1e6);
+        if (text) {
+          const ms = Number(process.hrtime.bigint() - startedAt) / 1e6;
+          recordQuery(text, ms);
+          // AŞAMA 10: aynı boğaz noktası, ikinci bir tüketici. recordQuery yalnız YAVAŞ
+          // sorguları saklar (varsayılan eşik 200 ms) ve küreseldir; "bu rota kaç sorgu attı"
+          // sorusu için ikisi de yetmez. recordRequestQuery açık bir ölçüm kapsamı yokken
+          // ilk satırında çıkar — üretim yolunda tek bir getStore() maliyeti.
+          recordRequestQuery(text, ms);
+        }
       }
     };
 
@@ -177,7 +201,12 @@ export function getPool(): Pool {
         client.release();
         throw e;
       }
-      return client;
+      // AŞAMA 10: yazma yollarının tamamı buradan geçer (markInstancePaid, importBankStatement,
+      // refreshRiskFlags… her biri kendi transaction'ını sürer) ve bu sorgular yukarıdaki
+      // scopedQuery boğaz noktasını HİÇ görmez. Ölçüm kapsamı açık değilse countingClient
+      // istemciyi olduğu gibi geri verir — sarmalayıcı bile kurulmaz. prepare() sarmalamadan
+      // ÖNCE koştuğu için rol hazırlığı sorguları sayıma girmez; scopedQuery'de de girmiyor.
+      return countingClient(client);
     };
 
     // Splitting one pool into two created a shutdown hazard, found by db:transitions:verify:

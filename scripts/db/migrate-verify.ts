@@ -57,6 +57,31 @@ function record(name: string, pass: boolean, detail?: string): void {
   console.log(`${pass ? "PASS" : "FAIL"}  ${name}${detail ? `  (${detail})` : ""}`);
 }
 
+// Three of the seven tests restore backups/p0c-checkpoint-*.dump — a frozen pg_dump of the real
+// mas_radar_dev that carries private financial data AND its one known payment_instances anomaly
+// (LEGACY_ANOMALY_INSTANCE_ID). By policy that dump never enters the repo (backups/ + *.dump are
+// gitignored), so a fresh CI checkout has no backups/ directory at all. These tests are therefore
+// a LOCAL_PRIVATE_DATA_GATE — the same classification docs/release-evidence/phase-verify-
+// classification.md already applies to the workbook-dependent phase verifies. Synthesizing a fake
+// checkpoint is deliberately NOT done: it would turn "migrate.ts fails on the real frozen anomaly"
+// into "migrate.ts fails on a row I just wrote", a tautology. When the dump is absent we record the
+// three as classified-local and run only the checkpoint-free tests; the exit code reflects only the
+// tests that actually ran, so this never reports a green it did not earn.
+const classified: { name: string; reason: string }[] = [];
+function classifyLocalOnly(name: string, reason: string): void {
+  classified.push({ name, reason });
+  console.log(`SKIP-LOCAL  ${name}  (${reason})`);
+}
+function hasCheckpointDump(): boolean {
+  try {
+    return readdirSync(path.join(ROOT, "backups")).some(
+      (f) => f.startsWith("p0c-checkpoint-") && f.endsWith(".dump"),
+    );
+  } catch {
+    return false; // no backups/ directory — a fresh CI clone
+  }
+}
+
 function docker(args: string[], opts: { input?: string | Buffer; quiet?: boolean } = {}): string {
   return execFileSync("docker", args, {
     input: opts.input,
@@ -172,7 +197,7 @@ async function testFileSetValidation(): Promise<void> {
 }
 
 // --- Test 2: manifest-drift (0001-0019 dosyalarının kullanılacağı her akışta zorunlu) ---
-async function testManifestDrift(): Promise<void> {
+async function testManifestDrift(checkpointAvailable: boolean): Promise<void> {
   const targetPath = path.join(MIGRATIONS_DIR, "0005_financing.sql");
   const original = readFileSync(targetPath, "utf8");
   try {
@@ -194,21 +219,28 @@ async function testManifestDrift(): Promise<void> {
     record("Manifest-drift (EMPTY akışı): DB'de hiçbir tablo oluşmadı", relCount === 0, `got ${relCount}`);
     dropDb(dbEmpty);
 
-    const dbLegacy = "mas_radar_migrate_manifestdrift_legacy_test";
-    restoreCheckpointInto(dbLegacy);
-    const rLegacy = runMigrate(dbLegacy);
-    record(
-      "Manifest-drift (LEGACY_COMPLETE akışı): hard-fail, hiçbir SQL çalışmadı",
-      rLegacy.code !== 0 && /[Mm]anifest/.test(rLegacy.stderr),
-    );
-    const ledgerStillAbsent = psqlSql(dbLegacy, "select to_regclass('public.schema_migrations') is null;").trim();
-    record("Manifest-drift (LEGACY_COMPLETE akışı): ledger tablosu oluşmadı", ledgerStillAbsent === "t", `got ${ledgerStillAbsent}`);
-    dropDb(dbLegacy);
+    if (checkpointAvailable) {
+      const dbLegacy = "mas_radar_migrate_manifestdrift_legacy_test";
+      restoreCheckpointInto(dbLegacy);
+      const rLegacy = runMigrate(dbLegacy);
+      record(
+        "Manifest-drift (LEGACY_COMPLETE akışı): hard-fail, hiçbir SQL çalışmadı",
+        rLegacy.code !== 0 && /[Mm]anifest/.test(rLegacy.stderr),
+      );
+      const ledgerStillAbsent = psqlSql(dbLegacy, "select to_regclass('public.schema_migrations') is null;").trim();
+      record("Manifest-drift (LEGACY_COMPLETE akışı): ledger tablosu oluşmadı", ledgerStillAbsent === "t", `got ${ledgerStillAbsent}`);
+      dropDb(dbLegacy);
 
-    record(
-      "Manifest-drift: LEDGER_EMPTY_RECOVERY'nin her iki dalı da runEmptyFlow/runLegacyCompleteFlow'u aynen çağırır (kod paylaşımı) — yukarıdaki iki canlı test bu dalları da kapsar",
-      true,
-    );
+      record(
+        "Manifest-drift: LEDGER_EMPTY_RECOVERY'nin her iki dalı da runEmptyFlow/runLegacyCompleteFlow'u aynen çağırır (kod paylaşımı) — yukarıdaki iki canlı test bu dalları da kapsar",
+        true,
+      );
+    } else {
+      classifyLocalOnly(
+        "Manifest-drift (LEGACY_COMPLETE akışı)",
+        "backups/p0c-checkpoint-*.dump gerekiyor — LOCAL_PRIVATE_DATA_GATE",
+      );
+    }
   } finally {
     writeFileSync(targetPath, original);
   }
@@ -598,11 +630,25 @@ async function testClusterIdentity(): Promise<void> {
 
 async function main(): Promise<void> {
   console.log("=== migrate-verify: disposable-DB test suite (P0-C) ===\n");
+  const checkpointAvailable = hasCheckpointDump();
+  if (!checkpointAvailable) {
+    console.log(
+      "NOT: backups/p0c-checkpoint-*.dump yok (temiz CI checkout'u). Bu dump gerçek mas_radar_dev'in\n" +
+        "donmuş bir pg_dump'ıdır, özel finansal veri + bilinen anomaliyi taşır ve repoya asla girmez.\n" +
+        "Onu gerektiren 3 test LOCAL_PRIVATE_DATA_GATE olarak sınıflanır; yalnız yerelde (gerçek dump\n" +
+        "varken) koşar. Sentetik fixture ile SAHTE yeşil ÜRETİLMEZ — gerçek iddiayı totolojiye çevirirdi.\n",
+    );
+  }
   await testFileSetValidation();
-  await testManifestDrift();
+  await testManifestDrift(checkpointAvailable);
   await testEmpty();
-  await testLegacyCompleteAndIdempotency();
-  await testChecksumDrift();
+  if (checkpointAvailable) {
+    await testLegacyCompleteAndIdempotency();
+    await testChecksumDrift();
+  } else {
+    classifyLocalOnly("testLegacyCompleteAndIdempotency", "backups/p0c-checkpoint-*.dump gerekiyor — LOCAL_PRIVATE_DATA_GATE");
+    classifyLocalOnly("testChecksumDrift", "backups/p0c-checkpoint-*.dump gerekiyor — LOCAL_PRIVATE_DATA_GATE");
+  }
   await testLedgerEmptyRecovery();
   await testClusterIdentity();
 
@@ -612,7 +658,14 @@ async function main(): Promise<void> {
     console.log(`${r.pass ? "PASS" : "FAIL"}  ${r.name}`);
     if (r.pass) pass++;
   }
-  console.log(`\n${pass}/${results.length} test geçti`);
+  if (classified.length) {
+    console.log("\n--- LOCAL_PRIVATE_DATA_GATE (bu koşuda çalışmadı, yerelde gerçek checkpoint ile koşar) ---");
+    for (const c of classified) console.log(`SKIP-LOCAL  ${c.name}  (${c.reason})`);
+  }
+  console.log(
+    `\n${pass}/${results.length} çalışan test geçti` +
+      (classified.length ? ` · ${classified.length} test yerel-özel-veri kapısına sınıflandı (CI'da koşmaz)` : ""),
+  );
   process.exit(pass === results.length ? 0 : 1);
 }
 

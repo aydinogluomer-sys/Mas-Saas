@@ -1,0 +1,93 @@
+{
+  "artifactKind": "mas-p1-promotion-quality-v1",
+  "measuredAtUtc": "2026-09-03T18:17:51.258Z",
+  "worktree": "Mas-Saas-RC-9e23ad7",
+  "sha": "9e23ad78ee65adc9beafb6cf58f6e477b26765bc",
+  "install": {
+    "command": "pnpm install --frozen-lockfile",
+    "exitCode": 0
+  },
+  "typecheck": "PASS",
+  "lint": "PASS",
+  "build": "PASS (exit 0)",
+  "p1TargetedTests": {
+    "file": "src/lib/radar/generate-instances-audit.test.ts",
+    "files": 1,
+    "tests": 4,
+    "passed": 4,
+    "failed": 0,
+    "verdict": "PASS"
+  },
+  "unitTests": {
+    "verdict": "PASS (seri) / FLAKY (paralel, yuklu makinede)",
+    "serialRun": {
+      "command": "vitest run --no-file-parallelism",
+      "files": "67/67",
+      "tests": "1432/1432",
+      "exitCode": 0,
+      "verdict": "PASS"
+    },
+    "parallelRuns": [
+      {
+        "where": "Mas-Saas-RC-9e23ad7",
+        "cache": "soguk",
+        "failed": 2,
+        "passed": 1430
+      },
+      {
+        "where": "Mas-Saas-RC-9e23ad7",
+        "cache": "sicak",
+        "failed": 2,
+        "passed": 1430
+      },
+      {
+        "where": "Mas-Saas-P1-Audit-Fix (AYNI SHA)",
+        "cache": "sicak",
+        "failed": 3,
+        "passed": 1429
+      },
+      {
+        "where": "Mas-Saas-P1-Audit-Fix (AYNI SHA, ~1 saat once, makine bostayken)",
+        "failed": 0,
+        "passed": 1432
+      }
+    ],
+    "failingTests": [
+      {
+        "file": "tests/dev-reset-safety.test.ts",
+        "test": "bayrak + env: yikici komuta ULASILIR ve once olculen kimlik raporlanir",
+        "error": "Test timed out in 5000ms",
+        "observedDuration": "9218ms"
+      },
+      {
+        "file": "tests/writer-surface.test.ts",
+        "test": "gercek veritabani hedefi --seed ile REDDEDILIR (alt surec, exit 1)",
+        "error": "Test timed out in 5000ms",
+        "observedDuration": "10926ms"
+      }
+    ],
+    "diagnosis": {
+      "failureClass": "TIMEOUT — assertion hatasi DEGIL",
+      "mechanism": "Her iki dosya da execFileSync ile alt surec (bash script / node script) aciyor ve vitest'in VARSAYILAN 5000 ms test siniri altinda calisiyor. vitest.config.ts veya test dosyalarinda acik bir testTimeout tanimli degil. Paralel worker cekismesi altinda alt surec acilisi 5 saniyeyi asiyor.",
+      "evidenceChain": [
+        "1. Iki dosya da c71366a ile 9e23ad7 arasinda BIREBIR AYNI — git diff bos. P1 bu dosyalara dokunmadi.",
+        "2. Ikisi de radar/engine veya audit yolunu HIC kullanmiyor.",
+        "3. Yalniz bu iki dosya kosuldugunda: her iki worktree'de de 21/21 PASS.",
+        "4. AYNI SHA, P1 worktree'sinde, ayni anlik yuk altinda: 3 dusme (2 degil). Sayinin degismesi zamanlama imzasidir.",
+        "5. Seri kosu (--no-file-parallelism): 67/67 dosya, 1432/1432 test, exit 0."
+      ],
+      "conclusion": "P1 duzeltmesinden kaynaklanmiyor. c71366a'da da var olan bir HARNESS kirilganligi; makine yuku altinda ortaya cikiyor. Su anda makinede Elementis-SOTD next dev + Playwright/Chrome surecleri calisiyor.",
+      "regressionFromP1": false
+    },
+    "followUpCandidate": {
+      "title": "Alt surec acan testlere acik testTimeout verilmeli",
+      "files": [
+        "tests/dev-reset-safety.test.ts",
+        "tests/writer-surface.test.ts"
+      ],
+      "suggestion": "Bu iki dosyadaki alt-surec vakalarina 30000 ms gibi acik bir timeout verilmesi, ya da vitest.config.ts icinde bu dosyalar icin pool/timeout ayrimi.",
+      "patchedThisTurn": false,
+      "reason": "Bu tur promotion + RC hazirligi; kod degisikligi yetkisi yok."
+    }
+  }
+}

@@ -70,6 +70,14 @@ async function main(): Promise<void> {
       env: { ...process.env, PORT: String(PORT) },
       stdio: ["ignore", "pipe", "pipe"],
       shell: process.platform === "win32",
+      // detached on POSIX makes `pnpm` a process-GROUP leader, which is the whole reason the
+      // cleanup below can do `process.kill(-server.pid, …)`. Without it, `pnpm exec next start`
+      // leaves the real `next` server as a grandchild in the parent's own group: the negative-pid
+      // kill throws ESRCH, the fallback SIGKILL reaches only `pnpm`, and the orphaned `next`
+      // keeps the inherited stdout/stderr pipe write-ends open — so THIS process's event loop
+      // never drains and node hangs after "ALL PASS" until the CI job timeout (observed: 28 min).
+      // Windows keeps shell:true and is torn down via taskkill /T, so it stays detached:false.
+      detached: process.platform !== "win32",
     });
     let serverLog = "";
     server.stdout?.on("data", (d: Buffer) => (serverLog += d.toString()));
@@ -301,6 +309,10 @@ async function main(): Promise<void> {
     process.exit(1);
   }
   console.log("PHASE16 VERIFY: ALL PASS");
+  // Guaranteed exit: the result is decided. Even after the group-kill in the finally above, a
+  // stray inherited pipe handle or a slow-dying child must not keep the event loop alive and stall
+  // the CI job to its timeout. Explicit 0 so success exits immediately, mirroring the FAIL paths.
+  process.exit(0);
 }
 
 main().catch((e) => {

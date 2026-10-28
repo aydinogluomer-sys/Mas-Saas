@@ -1,0 +1,39 @@
+{
+  "artifactKind": "mas-final-start-health-v1",
+  "measuredAtUtc": "2026-09-03T19:11:39.566Z",
+  "verdict": "PASS",
+  "ready": 200,
+  "login": 200,
+  "version": 200,
+  "http5xx": 0,
+  "fatalErrors": 0,
+  "uncaughtExceptions": 0,
+  "dbAuthErrors": 0,
+  "migrationErrors": 0,
+  "logScan": {
+    "pattern": "uncaught|unhandled|fatal|ECONNREFUSED|password authentication|5xx",
+    "stdoutMatches": 0,
+    "stderrMatches": 0
+  },
+  "stderrContent": "yalnizca pnpm'in komut yankisi ($ tsx runtime-port-guard --start && ...) — hata degil",
+  "versionEndpoint": {
+    "status": 200,
+    "payload": {
+      "name": "mas-nakit-radar",
+      "version": "0.1.0",
+      "commit": "unknown",
+      "buildTime": "unknown",
+      "node": "v26.3.0",
+      "env": "production"
+    },
+    "releaseProvenanceSelfReported": false,
+    "gap": "SECTION 15 /version uzerinden f076431 ile iliskilendirilebilirlik istiyordu. Su an MUMKUN DEGIL: APP_COMMIT_SHA ve APP_BUILD_TIME opsiyonel env degiskenleri tanimli olmadigi icin env.ts varsayilan 'unknown' donuyor.",
+    "provenanceEstablishedInsteadBy": [
+      "calisan surecin binary yolu: Mas-Saas-RC-f076431 altinda",
+      "BUILD_ID Cohj3w6Ho71WHFNjyzJlU — bu RC icinde taze uretildi",
+      "RC worktree HEAD = f076431152127dc4a337e0bb55b73ade3f85821b"
+    ],
+    "fixedThisTurn": false,
+    "fixRationale": "Duzeltmek APP_COMMIT_SHA/APP_BUILD_TIME set edilerek YENIDEN BASLATMA gerektirirdi; prompt tek startup istiyor. Ayri bir operasyonel takip maddesi olarak birakildi."
+  }
+}

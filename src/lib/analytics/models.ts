@@ -2,6 +2,8 @@ import type { MaturityItem } from "@/lib/financing/rules";
 import type { InstanceRow } from "@/lib/radar/queries";
 import type { CashMonth } from "@/lib/radar/rules";
 import type { ChartModel, ChartPoint, PaymentPressurePointMeta } from "./chart";
+import { isComparableCurrency } from "@/lib/currency-policy";
+import { sumMoney } from "@/lib/money";
 
 const monthLabel = (iso: string) => iso.slice(0, 7);
 const point = (key: string, label: string, value: number | null, href?: string): ChartPoint => ({ key, label, value, href });
@@ -63,6 +65,8 @@ export interface PaymentPressureHorizon {
   count: number;
   knownAmount: number;
   unknownCount: number;
+  /** PHASE 2.2: TRY-dışı kalem — knownAmount'a girmez. */
+  foreignCurrencyCount: number;
   share: number;
   peakDate: string | null;
 }
@@ -73,6 +77,7 @@ export interface PaymentAgeingBucket {
   count: number;
   knownAmount: number;
   unknownCount: number;
+  foreignCurrencyCount: number;
   oldestDueDate: string | null;
   share: number;
 }
@@ -80,10 +85,12 @@ export interface PaymentAgeingBucket {
 export interface PaymentPressureAnalysis {
   knownTotal: number;
   unknownCount: number;
+  /** PHASE 2.2 (#13): aktif kalemler içinde TRY-dışı olanlar — hiçbir toplama girmedi. */
+  foreignCurrencyCount: number;
   recordCount: number;
   horizons: PaymentPressureHorizon[];
   ageing: PaymentAgeingBucket[];
-  flexibility: Array<{ id: Flexibility; label: string; count: number; templateCount: number; knownAmount: number; unknownCount: number }>;
+  flexibility: Array<{ id: Flexibility; label: string; count: number; templateCount: number; knownAmount: number; unknownCount: number; foreignCurrencyCount: number }>;
   watchList: Array<InstanceRow & { remaining: number | null; daysOverdue: number; decisionFlexibility: Flexibility }>;
 }
 
@@ -96,18 +103,26 @@ export function prioritizePayments(rows: InstanceRow[], asOf: string, limit = 5)
       if (a.due_date !== b.due_date) return a.due_date.localeCompare(b.due_date);
       const criticalDelta = Number(flexibilityOf(b) === "critical") - Number(flexibilityOf(a) === "critical");
       if (criticalDelta) return criticalDelta;
-      const riskRank: Record<string, number> = { critical: 4, high: 3, medium: 2, low: 1, none: 0 };
+      // PHASE 2.2 (T1-b): unsupported_currency = eşik değerlendirilemedi; rules.ts merdiveniyle aynı sıra.
+      const riskRank: Record<string, number> = { critical: 5, high: 4, unsupported_currency: 3, medium: 2, low: 1, none: 0 };
       const riskDelta = (riskRank[b.risk_level] ?? 0) - (riskRank[a.risk_level] ?? 0);
       return riskDelta || (remainingPayment(b) ?? -1) - (remainingPayment(a) ?? -1);
     }).slice(0, limit);
 }
 
+// PHASE 2.2 (#13): toplamlar yalniz TRY; TRY-disi (ya da para birimi bilinmeyen) kalemin kalani
+// toplama girmez, `foreignCurrencyCount` ile sayilir. Sayimlar (count) para biriminden bagimsiz.
+const tryRemaining = (row: InstanceRow): number | null =>
+  isComparableCurrency(row.currency) ? remainingPayment(row) : null;
+const sumTryRemaining = (list: InstanceRow[]): number =>
+  sumMoney(list.map(tryRemaining).filter((v): v is number => v != null));
+
 export function analyzePaymentPressure(rows: InstanceRow[], asOf: string): PaymentPressureAnalysis {
   const active = rows.filter((row) => pressureStatus(row, asOf) != null);
-  const knownTotal = active.reduce((sum, row) => sum + (remainingPayment(row) ?? 0), 0);
+  const knownTotal = sumTryRemaining(active);
   const dateTotal = (list: InstanceRow[]) => {
     const totals = new Map<string, number>();
-    for (const row of list) if (remainingPayment(row) != null) totals.set(row.due_date, (totals.get(row.due_date) ?? 0) + remainingPayment(row)!);
+    for (const row of list) if (tryRemaining(row) != null) totals.set(row.due_date, (totals.get(row.due_date) ?? 0) + tryRemaining(row)!);
     return [...totals.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? null;
   };
   const h3 = addCalendarMonths(asOf, 3), h6 = addCalendarMonths(asOf, 6), h12 = addCalendarMonths(asOf, 12), h24 = addCalendarMonths(asOf, 24);
@@ -119,22 +134,22 @@ export function analyzePaymentPressure(rows: InstanceRow[], asOf: string): Payme
     ["13-24", "13–24 ay · Uzun dönem", (row) => row.due_date >= h12 && row.due_date < h24],
   ];
   const horizons = horizonDefs.map(([id, label, match]) => {
-    const list = active.filter(match); const knownAmount = list.reduce((sum, row) => sum + (remainingPayment(row) ?? 0), 0);
-    return { id, label, count: list.length, knownAmount, unknownCount: list.filter((row) => remainingPayment(row) == null).length, share: knownTotal ? knownAmount / knownTotal : 0, peakDate: dateTotal(list) };
+    const list = active.filter(match); const knownAmount = sumTryRemaining(list);
+    return { id, label, count: list.length, knownAmount, unknownCount: list.filter((row) => remainingPayment(row) == null).length, foreignCurrencyCount: list.filter((row) => !isComparableCurrency(row.currency)).length, share: knownTotal ? knownAmount / knownTotal : 0, peakDate: dateTotal(list) };
   });
   const overdue = active.filter((row) => row.due_date < asOf);
   const ageDefs: Array<[PaymentAgeingBucket["id"], string, number, number]> = [["1-30", "1–30 gün", 1, 30], ["31-90", "31–90 gün", 31, 90], ["91+", "91+ gün", 91, Infinity]];
-  const overdueKnown = overdue.reduce((sum, row) => sum + (remainingPayment(row) ?? 0), 0);
+  const overdueKnown = sumTryRemaining(overdue);
   const ageing = ageDefs.map(([id, label, min, max]) => {
     const list = overdue.filter((row) => { const days = Math.floor((Date.parse(asOf) - Date.parse(row.due_date)) / 86400000); return days >= min && days <= max; });
-    const knownAmount = list.reduce((sum, row) => sum + (remainingPayment(row) ?? 0), 0);
-    return { id, label, count: list.length, knownAmount, unknownCount: list.filter((row) => remainingPayment(row) == null).length, oldestDueDate: list.map((row) => row.due_date).sort()[0] ?? null, share: overdueKnown ? knownAmount / overdueKnown : 0 };
+    const knownAmount = sumTryRemaining(list);
+    return { id, label, count: list.length, knownAmount, unknownCount: list.filter((row) => remainingPayment(row) == null).length, foreignCurrencyCount: list.filter((row) => !isComparableCurrency(row.currency)).length, oldestDueDate: list.map((row) => row.due_date).sort()[0] ?? null, share: overdueKnown ? knownAmount / overdueKnown : 0 };
   });
   const flexDefs: Array<[Flexibility, string]> = [["critical", "Kritik"], ["flexible", "Esnek"], ["optional", "İsteğe bağlı"], ["unclassified", "Sınıflandırılmadı"]];
-  const flexibility = flexDefs.map(([id, label]) => { const list = active.filter((row) => flexibilityOf(row) === id); return { id, label, count: list.length, templateCount: new Set(list.map((row) => row.payment_id ?? row.id)).size, knownAmount: list.reduce((sum, row) => sum + (remainingPayment(row) ?? 0), 0), unknownCount: list.filter((row) => remainingPayment(row) == null).length }; });
+  const flexibility = flexDefs.map(([id, label]) => { const list = active.filter((row) => flexibilityOf(row) === id); return { id, label, count: list.length, templateCount: new Set(list.map((row) => row.payment_id ?? row.id)).size, knownAmount: sumTryRemaining(list), unknownCount: list.filter((row) => remainingPayment(row) == null).length, foreignCurrencyCount: list.filter((row) => !isComparableCurrency(row.currency)).length }; });
   const watchList = active.map((row) => ({ ...row, remaining: remainingPayment(row), daysOverdue: Math.max(0, Math.floor((Date.parse(asOf) - Date.parse(row.due_date)) / 86400000)), decisionFlexibility: flexibilityOf(row) }))
     .sort((a, b) => b.daysOverdue - a.daysOverdue || Number(b.decisionFlexibility === "critical") - Number(a.decisionFlexibility === "critical") || (b.remaining ?? -1) - (a.remaining ?? -1)).slice(0, 8);
-  return { knownTotal, unknownCount: active.filter((row) => remainingPayment(row) == null).length, recordCount: active.length, horizons, ageing, flexibility, watchList };
+  return { knownTotal, unknownCount: active.filter((row) => remainingPayment(row) == null).length, foreignCurrencyCount: active.filter((row) => !isComparableCurrency(row.currency)).length, recordCount: active.length, horizons, ageing, flexibility, watchList };
 }
 
 export function paymentPressureModel(rows: InstanceRow[], asOf: string, options: { criticalThreshold?: number } = {}): ChartModel {
@@ -150,7 +165,7 @@ export function paymentPressureModel(rows: InstanceRow[], asOf: string, options:
     rowsByDate.set(row.due_date, bucket);
   }
   const dates = [...rowsByDate.keys()].sort();
-  const dailyTotals = new Map(dates.map((date) => [date, (rowsByDate.get(date) ?? []).reduce((sum, row) => sum + (remaining(row) ?? 0), 0)]));
+  const dailyTotals = new Map(dates.map((date) => [date, sumTryRemaining(rowsByDate.get(date) ?? [])]));
   return {
     title: "Günlük ödeme baskısı", description: "Gecikmiş borçlar ve önümüzdeki dönemin kalan ödeme yükü.",
     asOf, timeDirection: "forward", preferredView: "stacked", summaryMode: "sum", minimumVisibleSeries: [...statuses], availableGranularities: ["day", "week", "month"], defaultGranularityByPeriod: { "3m": "day", "6m": "week", "12m": "month", "24m": "month", all: "month" }, criticalThreshold: options.criticalThreshold, sourceLabel: "Ödeme kalemleri", sourceHref: "/payments/items", unknownCount: rows.filter((r) => r.amount == null && displayStatus(r) != null).length,
@@ -161,13 +176,13 @@ export function paymentPressureModel(rows: InstanceRow[], asOf: string, options:
       points: dates.flatMap((date) => {
         const matching = (rowsByDate.get(date) ?? []).filter((row) => displayStatus(row) === status);
         if (matching.length === 0) return [];
-        const known = matching.map(remaining).filter((value): value is number => value != null);
+        const known = matching.map(tryRemaining).filter((value): value is number => value != null);
         const value = known.length === 0 ? null : known.reduce((sum, amount) => sum + amount, 0);
         const meta: PaymentPressurePointMeta = {
           overdueCount: status === "overdue" ? matching.length : 0, partialCount: status === "partial" ? matching.length : 0, plannedCount: status === "planned" ? matching.length : 0,
           criticalCount: matching.filter((row) => flexibilityOf(row) === "critical").length, flexibleCount: matching.filter((row) => flexibilityOf(row) === "flexible").length,
           optionalCount: matching.filter((row) => flexibilityOf(row) === "optional").length, unclassifiedCount: matching.filter((row) => flexibilityOf(row) === "unclassified").length,
-          unknownAmountCount: matching.filter((row) => remaining(row) == null).length, foreignCurrencyCount: matching.filter((row) => row.currency && row.currency !== "TRY").length,
+          unknownAmountCount: matching.filter((row) => remaining(row) == null).length, foreignCurrencyCount: matching.filter((row) => !isComparableCurrency(row.currency)).length,
         };
         return { ...point(date, date.slice(5), value, `/payments/calendar?date=${date}`), meta, remainingValue: value, statusReason: status === "overdue" ? "Vadesi geçti ve kalan borcu var" : status === "partial" ? "Kısmi ödeme sonrası kalan" : "Bugün veya ileri vadeli açık ödeme" };
       }),

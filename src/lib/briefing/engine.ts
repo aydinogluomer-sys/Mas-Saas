@@ -32,6 +32,8 @@ import { loadWorkingCapital } from "@/lib/costing/engine";
 import { loadControlDashboard, loadAlerts } from "@/lib/controls/engine";
 import { loadOpenPromises } from "@/lib/collections/promises-engine";
 import { buildWidgets, widgetsNeedingAttention, type CockpitWidgetFacts } from "@/lib/home/cockpit";
+import { cache } from "@/lib/cache/engine";
+import { CACHE_TAGS } from "@/lib/cache/tags";
 import { renderBriefing, summariseDay, type BriefingFacts } from "./rules";
 
 /**
@@ -59,11 +61,14 @@ export async function loadBriefingFacts(pool: Pool, todayISO: string): Promise<B
   const gap30 = gaps.find((g) => g.currency === "TRY" && g.horizonDays === 30)
     ?? gaps.find((g) => g.horizonDays === 30) ?? null;
 
+  // PHASE 2.2 (#11): currency BASE'den gelir; eksikse null (= bilinmiyor) → toplam dışı, sayılır.
   const today = summariseDay(todayInstances.map((i) => ({
     amount: i.amount, direction: (i as { direction?: string }).direction ?? "outflow",
+    currency: (i as { currency?: string | null }).currency ?? null,
   })));
   const late = summariseDay(overdue.map((i) => ({
     amount: i.amount, direction: (i as { direction?: string }).direction ?? "outflow",
+    currency: (i as { currency?: string | null }).currency ?? null,
   })));
 
   return {
@@ -77,6 +82,8 @@ export async function loadBriefingFacts(pool: Pool, todayISO: string): Promise<B
     todayInflowKnown: today.knownInflow,
     todayCount: todayInstances.length,
     todayUnknownAmountCount: today.unknownCount,
+    todayForeignCurrencyCount: today.foreignCount,
+    overdueForeignCurrencyCount: late.foreignCount,
     overdueCount: overdue.length,
     overdueKnownOutflow: late.knownOutflow,
     criticalControls: controls.filter((c) => c.state === "CRITICAL").map((c) => c.title),
@@ -100,32 +107,36 @@ export async function loadBriefingFacts(pool: Pool, todayISO: string): Promise<B
  * must not be able to drift apart, and the only way to guarantee that is for both to come from one
  * gathering step.
  */
-export async function loadWidgetFacts(pool: Pool, todayISO: string): Promise<CockpitWidgetFacts> {
-  const [facts, gaps, working, controls, alerts] = await Promise.all([
-    loadBriefingFacts(pool, todayISO),
+async function gatherWidgetFacts(
+  pool: Pool,
+  todayISO: string,
+  briefingFacts?: Promise<BriefingFacts> | BriefingFacts,
+): Promise<{ briefingFacts: BriefingFacts; widgetFacts: CockpitWidgetFacts }> {
+  // All independent reads start together. The briefing page passes its in-flight facts promise
+  // here, so the shared treasury/working-capital/control loaders execute once rather than twice.
+  // The five small aggregate queries used to run serially after those loaders, adding five full
+  // round trips to every navigation.
+  const [facts, gaps, working, controls, alerts, debt, facility, fx, budget, conc] = await Promise.all([
+    briefingFacts ?? loadBriefingFacts(pool, todayISO),
     loadLiquidityGap(pool),
     loadWorkingCapital(pool),
     loadControlDashboard(pool),
     loadAlerts(pool, 200),
+    pool.query(`select coalesce(sum(total_cash_exposure),0) as due30
+      from public.debt_maturity_ladder where sort_order = 1`),
+    // PHASE 2.2 (#32): netDebt = drawn − availableCash(TRY); yalnız TRY facility'ler toplanır.
+    // TRY-dışı facility'ler /finance/facilities sayfasında ayrıca sayılır (0094 foreign_*).
+    pool.query(`select coalesce(sum(available_amount),0) as available, coalesce(sum(drawn_amount),0) as drawn
+      from public.credit_facility_utilization where status = 'active' and currency = 'TRY'`),
+    pool.query(`select sum(worst_case_20_delta) as worst from public.fx_exposure_summary`),
+    pool.query(`select count(*)::int n from public.budget_vs_actual where variance_verdict = 'over_budget'`),
+    pool.query(`select max(late_ratio) as top from public.counterparty_collection_profile`),
   ]);
-
-  const debt = await pool.query(
-    `select coalesce(sum(total_cash_exposure),0) as due30
-     from public.debt_maturity_ladder where sort_order = 1`);
-  const facility = await pool.query(
-    `select coalesce(sum(available_amount),0) as available, coalesce(sum(drawn_amount),0) as drawn
-     from public.credit_facility_utilization where status = 'active'`);
-  const fx = await pool.query(
-    `select sum(worst_case_20_delta) as worst from public.fx_exposure_summary`);
-  const budget = await pool.query(
-    `select count(*)::int n from public.budget_vs_actual where variance_verdict = 'over_budget'`);
-  const conc = await pool.query(
-    `select max(late_ratio) as top from public.counterparty_collection_profile`);
 
   const gap7 = gaps.find((g) => g.horizonDays === 7) ?? null;
   const drawn = moneyOrNull(facility.rows[0]?.drawn) ?? 0;
 
-  return {
+  return { briefingFacts: facts, widgetFacts: {
     availableCash: facts.availableCash,
     minCashFloor: gap7?.minCashFloor ?? null,
     liquidityGap7: facts.liquidityGap7,
@@ -145,7 +156,25 @@ export async function loadWidgetFacts(pool: Pool, todayISO: string): Promise<Coc
     criticalControlCount: controls.filter((c) => c.state === "CRITICAL").length,
     openAlertCount: alerts.filter((a) => a.status === "open").length,
     topConcentrationRatio: conc.rows[0]?.top == null ? null : Number(conc.rows[0].top),
-  };
+  } };
+}
+
+export async function loadWidgetFacts(pool: Pool, todayISO: string): Promise<CockpitWidgetFacts> {
+  return (await gatherWidgetFacts(pool, todayISO)).widgetFacts;
+}
+
+/** One request-level gather for the briefing screen; shared facts are never loaded twice. */
+export async function loadBriefingDashboard(pool: Pool, todayISO: string) {
+  return cache.withCache(
+    `briefing:dashboard:${todayISO}`,
+    async () => {
+      const factsPromise = loadBriefingFacts(pool, todayISO);
+      const { briefingFacts: facts, widgetFacts } = await gatherWidgetFacts(pool, todayISO, factsPromise);
+      const widgets = buildWidgets(widgetFacts);
+      return { facts, widgets, attention: widgetsNeedingAttention(widgets) };
+    },
+    { ttlSeconds: 60, tags: [CACHE_TAGS.CFO_BRIEFING, CACHE_TAGS.TREASURY] }
+  );
 }
 
 export interface BriefingResult {

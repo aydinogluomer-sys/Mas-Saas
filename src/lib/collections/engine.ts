@@ -15,6 +15,7 @@ import { z } from "zod";
 import { audit } from "@/lib/audit";
 import { DomainError } from "@/lib/domain-error";
 import { intOrNull, moneyOrNull, rateOrNull } from "@/lib/money";
+import { isReportingCurrency } from "@/lib/currency-policy";
 import { parseOrThrow } from "@/lib/validation";
 import {
   assessRisk, collectionProbability, expectedCollectionDate, scheduleWithinCash,
@@ -128,6 +129,8 @@ export interface ReceivableRisk {
   issueDate: string;
   dueDate: string | null;
   openAmount: number;
+  /** PHASE 2.2 (#57): faturanın para birimi; TRY değilse toplam ve yoğunlaşma oranı dışında. */
+  currency: string;
   daysOverdue: number | null;
   badDebtFlagged: boolean;
   badDebtReason: string | null;
@@ -177,19 +180,21 @@ export async function loadReceivableRisk(pool: Pool, todayISO: string, limit = 2
       partiallySettled: Boolean(x.partially_settled),
     } satisfies CollectionSignals,
     badDebtReason: x.bad_debt_reason as string | null,
+    currency: String(x.currency ?? ""),
   }));
 
-  const total = rows.reduce((n, r2) => n + r2.signals.openAmount, 0);
+  // Yoğunlaşma oranı yalnız TRY alacaklar içinde: USD faturanın TRY toplamda payı hesaplanamaz.
+  const total = rows.filter((r2) => isReportingCurrency(r2.currency)).reduce((n, r2) => n + r2.signals.openAmount, 0);
 
   return rows.map((row) => {
-    const ratio = total > 0 ? row.signals.openAmount / total : null;
+    const ratio = total > 0 && isReportingCurrency(row.currency) ? row.signals.openAmount / total : null;
     const expected = expectedCollectionDate(row.signals, todayISO);
     const prob = collectionProbability(row.signals);
     const risk = assessRisk(row.signals, ratio);
     return {
       invoiceId: row.invoiceId, partyId: row.partyId, partyName: row.partyName,
       invoiceNo: row.invoiceNo, issueDate: row.signals.issueDate, dueDate: row.signals.dueDate,
-      openAmount: row.signals.openAmount, daysOverdue: row.signals.daysOverdue,
+      openAmount: row.signals.openAmount, currency: row.currency, daysOverdue: row.signals.daysOverdue,
       badDebtFlagged: row.signals.badDebtFlagged, badDebtReason: row.badDebtReason,
       expectedDate: expected.expectedDate, expectedBasis: expected.basis,
       probability: prob.probability, probabilityBand: prob.band, probabilitySignals: prob.signals,
@@ -209,13 +214,14 @@ export async function loadReceivableRisk(pool: Pool, todayISO: string, limit = 2
 export async function loadPaymentSchedule(pool: Pool, availableCash: number, limit = 200) {
   const r = await pool.query(
     `select kind, entity_id::text, to_char(due_date,'YYYY-MM-DD') as due_date, label, amount,
-            party_name, flexibility_class, priority, overdue, days_overdue, priority_rank
+            party_name, flexibility_class, priority, overdue, days_overdue, priority_rank, currency
      from public.payment_priority_queue
      order by priority_rank, due_date limit $1`, [limit]);
   const items: PayableItem[] = r.rows.map((x) => ({
     kind: x.kind, entityId: x.entity_id, dueDate: x.due_date, label: x.label,
     amount: moneyOrNull(x.amount), flexibilityClass: x.flexibility_class,
     priorityRank: intOrNull(x.priority_rank) ?? 999,
+    currency: x.currency == null ? null : String(x.currency),
   }));
   return scheduleWithinCash(items, availableCash);
 }
@@ -224,7 +230,7 @@ export async function loadPaymentCalendar(pool: Pool, fromISO: string, toISO: st
   const r = await pool.query(
     `select to_char(due_date,'YYYY-MM-DD') as due_date, item_count, unknown_amount_count,
             known_total, critical_total, payment_instance_count, invoice_count,
-            loan_installment_count, check_count, has_overdue
+            loan_installment_count, check_count, has_overdue, foreign_currency_count
      from public.payment_calendar_extended
      where due_date between $1::date and $2::date order by due_date`, [fromISO, toISO]);
   return r.rows.map((x) => ({
@@ -238,6 +244,7 @@ export async function loadPaymentCalendar(pool: Pool, fromISO: string, toISO: st
     loanInstallmentCount: intOrNull(x.loan_installment_count) ?? 0,
     checkCount: intOrNull(x.check_count) ?? 0,
     hasOverdue: Boolean(x.has_overdue),
+    foreignCurrencyCount: intOrNull(x.foreign_currency_count) ?? 0,
   }));
 }
 

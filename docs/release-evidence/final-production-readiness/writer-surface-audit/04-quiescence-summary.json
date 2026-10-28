@@ -1,0 +1,39 @@
+{
+  "tablesMeasured": 86,
+  "database": "mas_radar_dev",
+  "snapshots": [
+    "01-quiescence-m1.json",
+    "02-quiescence-m2.json",
+    "03-quiescence-m3.json",
+    "03b-quiescence-m4-postcommit.json",
+    "03c-quiescence-m5-final.json"
+  ],
+  "labels": [
+    "m1",
+    "m2",
+    "m3",
+    "m4-final",
+    "m5-hardening-final"
+  ],
+  "windowUtc": {
+    "first": "2026-08-29T20:11:02.336Z",
+    "last": "2026-08-29T20:56:06.569Z"
+  },
+  "transactionReadOnly": {
+    "m1": "on",
+    "m2": "on",
+    "m3": "on",
+    "m4-final": "on",
+    "m5-hardening-final": "on"
+  },
+  "pairwiseEqual": {
+    "m1 == m2": true,
+    "m2 == m3": true,
+    "m3 == m4-final": true,
+    "m4-final == m5-hardening-final": true
+  },
+  "driftedTables": [],
+  "ledger": "0087/87",
+  "liveDbQuiescent": true,
+  "note": "Runtime m1 oncesinde donduruldu ve tur boyunca kapali kaldi. Her olcum default_transaction_read_only=on ile acilmis bir oturumda BEGIN READ ONLY icinde kosar ve ROLLBACK ile kapanir. m2-m3 arasi perf:measure negatif/pozitif testleri ve guard suite kostu; m4-m5 arasi dev-reset sertlestirmesi ve 9 dev-reset guvenlik testi kostu (sahte docker ile, gercek DB dokunulmadan)."
+}

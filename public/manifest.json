@@ -1,0 +1,37 @@
+{
+  "name": "MAS Nakit Radar",
+  "short_name": "MAS Radar",
+  "description": "Kapalı devre nakit akış, ödeme ve hazine operasyon kokpiti",
+  "start_url": "/",
+  "id": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#090d16",
+  "theme_color": "#0284c7",
+  "orientation": "portrait-primary",
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "Mobil Kokpit",
+      "short_name": "Kokpit",
+      "description": "Telegram Mini App ve mobil kokpite hızlı geçiş",
+      "url": "/telegram/miniapp",
+      "icons": [{ "src": "/icon.svg", "sizes": "any" }]
+    },
+    {
+      "name": "Nakit Akışı",
+      "short_name": "Nakit",
+      "description": "Nakit akışı ve kapanış projeksiyonu",
+      "url": "/cashflow",
+      "icons": [{ "src": "/icon.svg", "sizes": "any" }]
+    }
+  ],
+  "categories": ["finance", "business", "productivity"]
+}

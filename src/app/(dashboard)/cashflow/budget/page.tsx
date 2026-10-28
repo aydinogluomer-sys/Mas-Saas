@@ -5,6 +5,7 @@ import {
 import { SOURCE_LABEL, VERDICT_LABEL, type SourceKind } from "@/lib/budget/rules";
 import { Badge, type Tone } from "@/components/ui/badge";
 import { Panel, fmtTL } from "@/components/ui/panel";
+import { isReportingCurrency } from "@/lib/currency-policy";
 import { EmptyState, KeyStat, PageHeader, TableShell } from "@/components/ui/shell";
 import { requireRouteAccess } from "@/lib/authz/route-guard";
 
@@ -33,8 +34,12 @@ export default async function BudgetPage() {
 
   const overBudget = rows.filter((r) => r.verdict === "over_budget");
   const notMeasured = rows.filter((r) => r.verdict === "not_measured");
-  const budgetTotal = rows.reduce((s, r) => s + r.budgetAmount, 0);
-  const actualTotal = rows.reduce((s, r) => s + (r.actualAmount ?? 0), 0);
+  // PHASE 2.2 (#63): view para birimine göre gruplu; sayfa yalnız TRY satırlarını toplar ve
+  // diğer para birimlerinin satır sayısını söyler — tekrar birleştirmez.
+  const tryRows = rows.filter((r) => isReportingCurrency(r.currency));
+  const foreignRows = rows.length - tryRows.length;
+  const budgetTotal = tryRows.reduce((s, r) => s + r.budgetAmount, 0);
+  const actualTotal = tryRows.reduce((s, r) => s + (r.actualAmount ?? 0), 0);
 
   return (
     <>
@@ -47,8 +52,9 @@ export default async function BudgetPage() {
       />
 
       <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-        <KeyStat label="Bütçe (onaylı)" value={fmtTL(budgetTotal)} tone="info" />
-        <KeyStat label="Gerçekleşen" value={fmtTL(actualTotal)} tone={actualTotal > budgetTotal ? "warn" : "pos"} />
+        <KeyStat label="Bütçe (onaylı, TRY)" value={fmtTL(budgetTotal)} tone="info"
+          sub={foreignRows > 0 ? `${foreignRows} satır TRY-dışı — toplamda yok` : undefined} />
+        <KeyStat label="Gerçekleşen (TRY)" value={fmtTL(actualTotal)} tone={actualTotal > budgetTotal ? "warn" : "pos"} />
         <KeyStat label="Aşım kalemi" value={overBudget.length} tone={overBudget.length > 0 ? "neg" : "pos"} />
         {/* Never folded into the totals: an unmeasured line is not a zero-variance line. */}
         <KeyStat label="Ölçülmemiş kalem" value={notMeasured.length}

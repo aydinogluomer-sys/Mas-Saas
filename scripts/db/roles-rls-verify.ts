@@ -39,11 +39,58 @@ import {
   APP_ROLES, CLASS_MATRIX, DB_ROLE, OWNER_SCOPED_TABLES, TABLE_CLASS,
   can, type AppRole,
 } from "../../src/lib/authz/matrix";
+import { formatTargetIdentity } from "./env-source";
+import { databaseNameFromUrl, isDisposableDatabaseName, DISPOSABLE_MARKERS } from "./owner-url";
 
 const ownerUrl = process.env.MIGRATION_DATABASE_URL;
 const appUrl = process.env.DATABASE_URL;
 if (!ownerUrl) throw new Error("MIGRATION_DATABASE_URL gerekli (fixture kurulumu için).");
 if (!appUrl) throw new Error("DATABASE_URL gerekli (mas_radar_app kimliğiyle test için).");
+
+/**
+ * HARCANABİLİR HEDEF KAPISI — bu kapı iki kez GERÇEK VERİYE fixture yazdıktan sonra eklendi.
+ *
+ * NE OLDU. Bu script bir doğrulama kapısı gibi görünür ama `ensureFixtures()` içinde BEŞ
+ * tabloya gerçek satır YAZAR: payments, settings, users, action_items, approvals. Hedefi
+ * yalnızca `MIGRATION_DATABASE_URL` / `DATABASE_URL` belirliyordu ve HİÇBİR koruma yoktu —
+ * yani env ne gösteriyorsa oraya yazıyordu. Ölçülen sonuç:
+ *
+ *   2026-08-25 10:09–10:10 UTC  → mas_radar_dev'e fixture yazıldı (P0-DRIFT-01)
+ *   2026-08-26 15:16:19 UTC     → AYNI ŞEY TEKRAR OLDU
+ *
+ * İkinci koşu birincinin kanıt paketi hazırlanırken gerçekleşti. Kullanıcı adlarındaki
+ * rastgele son ek (`p24b_op_${Math.random()...}`) yüzünden her koşu YENİ satırlar birakir,
+ * yani kirlilik birikir: users 4 → 6, action_items 1 → 4.
+ *
+ * Bir doğrulama kapısının gerçek finansal veriye yazabilmesi, kapının kendisini bir risk
+ * kaynağına çevirir. Hedef artık ADIYLA harcanabilir olduğunu söylemek zorunda.
+ *
+ * CI ETKİSİ YOK: CI hedefi `mas_radar_roles_verify` zaten `verify` işaretini taşır.
+ */
+{
+  const ownerDb = databaseNameFromUrl(ownerUrl);
+  const appDb = databaseNameFromUrl(appUrl);
+  for (const [label, name] of [["MIGRATION_DATABASE_URL", ownerDb], ["DATABASE_URL", appDb]] as const) {
+    if (!isDisposableDatabaseName(name)) {
+      const shown = name ?? "(bağlantı dizesinden veritabanı adı okunamadı)";
+      throw new Error(
+        `GÜVENLİK DURDURMASI (db:roles-rls:verify): ${label} → '${shown}'.\n` +
+          "Bu script ensureFixtures() ile payments/settings/users/action_items/approvals " +
+          "tablolarına GERÇEK SATIR YAZAR; hedefin adıyla harcanabilir olduğunu söylemesi " +
+          `gerekir (${DISPOSABLE_MARKERS.join(", ")}).\n` +
+          "Bu kapı, 2026-08-25 ve 2026-08-26'da mas_radar_dev'e iki kez fixture yazıldıktan " +
+          "sonra eklendi — kapının kendisi kirlilik kaynağıydı.",
+      );
+    }
+  }
+  if (ownerDb !== appDb) {
+    throw new Error(
+      `GÜVENLİK DURDURMASI: MIGRATION_DATABASE_URL ('${ownerDb}') ve DATABASE_URL ('${appDb}') ` +
+        "FARKLI veritabanlarını gösteriyor. Fixture bir yere yazılıp doğrulama başka yerde " +
+        "koşarsa sonuç anlamsızdır — ve yazılan yer gerçek DB olabilir.",
+    );
+  }
+}
 
 const owner = new Pool({ connectionString: ownerUrl });
 const app = new Pool({ connectionString: appUrl });
@@ -143,7 +190,34 @@ async function ensureFixtures(): Promise<void> {
   }
 }
 
+/**
+ * AŞAMA 20 / P2 — kapının ilk satırı: HANGİ veritabanı, HANGİ kimlik.
+ *
+ * Bu kapının iki bağlantısı var ve yargılar YALNIZ app bağlantısında veriliyor; satır bu
+ * yüzden app hedefini önde, owner hedefini parantezde gösterir. İkisi FARKLI veritabanlarını
+ * gösteriyorsa sonuç anlamsızdır — ve bu, çıktıya bakan biri için ancak yazılıysa görünür.
+ * Ölçülür (`current_database()`), bağlantı dizesinden türetilmez; host/port/parola yazılmaz.
+ */
+async function logTargetIdentity(): Promise<void> {
+  const read = async (p: Pool): Promise<{ db?: string; usr?: string }> => {
+    try {
+      const r = await p.query<{ db: string; usr: string }>(
+        "select current_database() as db, current_user as usr",
+      );
+      return { db: r.rows[0]?.db, usr: r.rows[0]?.usr };
+    } catch {
+      return {};
+    }
+  };
+  const [appId, ownerId] = await Promise.all([read(app), read(owner)]);
+  console.log(
+    `${formatTargetIdentity(appId.db, appId.usr)} (owner bağlantısı: ` +
+      `db=${ownerId.db ?? "(bilinmiyor)"} user=${ownerId.usr ?? "(bilinmiyor)"})\n`,
+  );
+}
+
 async function main(): Promise<void> {
+  await logTargetIdentity();
   await ensureFixtures();
 
   /* ── A. structure ───────────────────────────────────────────────────────────────────── */

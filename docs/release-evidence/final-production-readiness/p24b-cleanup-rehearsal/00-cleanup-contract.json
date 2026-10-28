@@ -1,0 +1,29 @@
+{
+  "script": "scripts/db/p24b-fixture-cleanup.ts",
+  "supersedes": "scripts/db/fixture-cleanup.ts (OUTDATED — users=4, payment_instances=3, settings/approvals bilinmiyor)",
+  "scopeSource": "docs/release-evidence/final-production-readiness/p24b-v6/02-row-evidence-manifest.json",
+  "scopeRule": "Manifest TEK gerçek kaynak. Silme yalnız exact primary identity ile. LIKE/timestamp/heuristic YASAK.",
+  "modes": {
+    "preflight": "varsayılan — okur, kapıları ölçer, mutasyon YOK",
+    "rehearsal": "--rehearsal — yalnız disposable ada sahip DB; ayrı kod yolu",
+    "execute": "--execute-p24b-cleanup-42 + MAS_ALLOW_P24B_CLEANUP=42-confirmed + MAS_P24B_BACKUP_RECEIPT; yalnız mas_radar_dev"
+  },
+  "gates": [
+    "manifest SHA256 pin",
+    "UNRESOLVED=0",
+    "tablo dağılımı",
+    "DB kimliği (URL + sunucudan ölçülen)",
+    "ledger 0087/87",
+    "FK sözleşmesi pg_catalog'dan yeniden ölçülür",
+    "satır önkoşulu: 42/42 mevcut + parmak izi",
+    "exact delete count",
+    "tablo deltaları",
+    "parasal deltalar",
+    "kalıntı/orphan",
+    "atilla korunur",
+    "ledger korunur",
+    "hedef dışı parmak izi"
+  ],
+  "lock": "SHARE ROW EXCLUSIVE (yazarlar bloke, okuyucular serbest), lock_timeout=10s",
+  "secondRun": "PRECONDITION_NOT_SATISFIED ile FAIL — sessiz idempotent başarı YOK"
+}

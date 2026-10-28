@@ -1,0 +1,13 @@
+{
+  "artifactKind": "mas-p24b-business-metrics-v1",
+  "snapshotDate": "2026-08-27",
+  "metrics": {
+    "taskOpen": "4.0000",
+    "unpaidTry": "13595000.0000",
+    "checks": "590000.00",
+    "loans": "1500000.00",
+    "cashflow": "-53839702.88",
+    "payments": "540000.00",
+    "instances": "14550000.00"
+  }
+}

@@ -9,6 +9,7 @@
 // first, commentary strictly afterwards and separately.
 
 import { decimal, moneyOrNull, type NumericInput } from "@/lib/money";
+import { partitionByCurrency } from "@/lib/currency-policy";
 
 export interface BriefingFacts {
   todayISO: string;
@@ -21,6 +22,9 @@ export interface BriefingFacts {
   todayInflowKnown: number;
   todayCount: number;
   todayUnknownAmountCount: number;
+  /** PHASE 2.2 (#11): TRY-dışı/para birimi bilinmeyen kalemler — toplamda yok. */
+  todayForeignCurrencyCount: number;
+  overdueForeignCurrencyCount: number;
   overdueCount: number;
   overdueKnownOutflow: number;
   criticalControls: string[];
@@ -38,6 +42,8 @@ export interface DaySummary {
   knownInflow: number;
   /** Rows whose amount is unknown. Counted, never silently treated as 0 (CLAUDE.md). */
   unknownCount: number;
+  /** PHASE 2.2 (#11): TRY-dışı/para birimi bilinmeyen satırlar — toplamda YOK, sayılır. */
+  foreignCount: number;
 }
 
 /**
@@ -48,12 +54,14 @@ export interface DaySummary {
  * briefings, and only the second is honest when an amount is missing.
  */
 export function summariseDay(
-  rows: Array<{ amount: NumericInput; direction?: string }>,
+  rows: Array<{ amount: NumericInput; direction?: string; currency?: string | null }>,
 ): DaySummary {
   let out = decimal(0);
   let inflow = decimal(0);
   let unknown = 0;
-  for (const r of rows) {
+  // Para birimi alanı taşıyan ve TRY olmayan satır toplanmaz (alanı hiç olmayan satır yapısal TRY).
+  const { comparable, foreignCount } = partitionByCurrency(rows);
+  for (const r of comparable) {
     const amt = moneyOrNull(r.amount);
     if (amt === null) { unknown += 1; continue; }
     if (r.direction === "inflow") inflow = inflow.plus(decimal(amt));
@@ -63,6 +71,7 @@ export function summariseDay(
     knownOutflow: Number(out.toFixed(2)),
     knownInflow: Number(inflow.toFixed(2)),
     unknownCount: unknown,
+    foreignCount,
   };
 }
 
@@ -111,6 +120,9 @@ export function todaysActions(f: BriefingFacts, limit = 5): string[] {
   if (f.todayUnknownAmountCount > 0) {
     a.push(`${f.todayUnknownAmountCount} kalemin tutarı eksik — bugünkü çıkış eksik hesaplanıyor.`);
   }
+  if (f.todayForeignCurrencyCount > 0) {
+    a.push(`${f.todayForeignCurrencyCount} kalem TRY-dışı — bugünkü çıkış toplamında yok, ayrıca değerlendir.`);
+  }
   if (f.promisesDueToday > 0) a.push(`Bugün ${f.promisesDueToday} ödeme sözünün vadesi.`);
   return a.slice(0, limit);
 }
@@ -142,6 +154,9 @@ export function renderBriefing(f: BriefingFacts): string {
   if (f.todayUnknownAmountCount > 0) {
     // Stated, never folded into the total — an unknown amount is not zero.
     lines.push(`- **Tutarı bilinmeyen: ${f.todayUnknownAmountCount} kalem** (toplamlar eksik)`);
+  }
+  if (f.todayForeignCurrencyCount > 0 || f.overdueForeignCurrencyCount > 0) {
+    lines.push(`- **TRY-dışı: bugün ${f.todayForeignCurrencyCount}, gecikmiş ${f.overdueForeignCurrencyCount} kalem** (toplamlarda yok; kur çevrilmez)`);
   }
   lines.push("");
   lines.push("## Gecikmiş");

@@ -74,6 +74,8 @@ export const PAGE_GUARDED_ROUTES: readonly string[] = Object.freeze([
   "/insights/briefing",
   "/system/controls",
   "/system/jobs",
+  // PHASE 4 — Standart Import V2 (yazma yüzeyi; ROUTE_MIN_TIER: operator/manager/admin).
+  "/data/imports/v2",
 ]);
 
 /**

@@ -1,5 +1,7 @@
 import Link from "next/link";
 import { getPool } from "@/lib/db";
+import { cache } from "@/lib/cache/engine";
+import { CACHE_TAGS } from "@/lib/cache/tags";
 import { moneyOrNull } from "@/lib/money";
 import { loadThresholds } from "@/lib/radar/engine";
 import { instancesBetween, instancesOn, monthSummary, overdueOpen } from "@/lib/radar/queries";
@@ -19,20 +21,18 @@ import type { ProofItem } from "@/components/facts/source-proof";
 import { EvidenceDrawer } from "@/components/facts/evidence-drawer";
 import { MiniTrend } from "@/components/home/mini-trends";
 import { Panel, fmtTL } from "@/components/ui/panel";
+import { foreignNote, isReportingCurrency, sumKnownReporting } from "@/lib/currency-policy";
 import { KeyStat, PageHeader } from "@/components/ui/shell";
 
 export const dynamic = "force-dynamic";
 
 const OPEN = new Set(["unpaid", "partial", "planned", "late"]);
-const knownOutflow = (rows: Array<{ amount: number | null; status: string }>) => {
-  let total = 0, count = 0, missing = 0;
-  for (const r of rows) {
-    if (!OPEN.has(r.status)) continue;
-    count++;
-    if (r.amount == null) missing++;
-    else if (r.amount > 0) total += r.amount;
-  }
-  return { total, count, missing };
+// PHASE 2.2 (#1): toplam yalnız TRY; TRY-dışı/para birimi bilinmeyen kalem toplamda YOK, sayılır
+// (currency-policy.ts). `count` bütün açık kalemleri sayar — "kaç ödeme var" para biriminden bağımsız.
+const knownOutflow = (rows: Array<{ amount: number | null; status: string; currency?: string | null }>) => {
+  const open = rows.filter((r) => OPEN.has(r.status));
+  const k = sumKnownReporting(open, (r) => r.amount, { positiveOnly: true });
+  return { total: k.total, count: open.length, missing: k.missing, foreign: k.foreignCount };
 };
 const ym = (iso: string | null) => (iso ? iso.slice(0, 7) : "—");
 const SEV_TONE: Record<string, Tone> = { critical: "red", high: "red", medium: "amber", low: "neutral" };
@@ -45,12 +45,48 @@ const ACTION_FACT_KEY: Record<string, string> = {
   stale_rate: "stale_rate_flags",
 };
 const EMPTY_MODULES = [
-  { href: "/imports", title: "1. Excel yukle", desc: "Workbook, sekme ve ham hucre kaniti korunur." },
-  { href: "/data-quality", title: "2. Veri kalite", desc: "Review, mutabakat ve karar guveni izlenir." },
-  { href: "/radar", title: "3. Odeme radari", desc: "Bugun, 7 gun, geciken ve eksik tutarlar." },
-  { href: "/cashflow", title: "4. Nakit akis", desc: "Runway, ilk negatif ay ve en kotu ay." },
-  { href: "/ask", title: "5. Sor", desc: "Karar sorulari kanitli cevaplanir." },
-  { href: "/admin", title: "Tum moduller", desc: "Rapor, hatirlatma, uretim, fazlar ve kaynak." },
+  {
+    href: "/imports",
+    step: "01",
+    title: "Excel İçe Aktarımı",
+    desc: "Çalışma kitabı, sekme ve hücre kanıtları %100 ham haliyle korunarak arşivlenir.",
+    badge: "İlk Adım",
+  },
+  {
+    href: "/data-quality",
+    step: "02",
+    title: "Veri Kalitesi & Mutabakat",
+    desc: "Eşleme incelemeleri, mutabakat kontrolleri ve karar güven skoru izlenir.",
+    badge: "Doğrulama",
+  },
+  {
+    href: "/radar",
+    step: "03",
+    title: "Ödeme Radarı & Takvim",
+    desc: "Bugün, 7 gün, vadesi geçenler ve eksik tutarlı kayıtlar anlık takip edilir.",
+    badge: "Operasyon",
+  },
+  {
+    href: "/cashflow",
+    step: "04",
+    title: "Nakit Akışı & Runway",
+    desc: "Nakit yakma hızı (burn rate), kasanın sıfırlanma günü ve What-If senaryoları.",
+    badge: "Projeksiyon",
+  },
+  {
+    href: "/finance/cockpit",
+    step: "05",
+    title: "CFO Karar Konsolu",
+    desc: "Kredi limitleri, borç servisi, döviz açık pozisyonu ve arbitraj fırsatları.",
+    badge: "Strateji",
+  },
+  {
+    href: "/insights/ask",
+    step: "06",
+    title: "Yapay Zekâ Finans Asistanı",
+    desc: "Şirket nakit akışı ve kararlarıyla ilgili sorularınızı kanıtlı olarak yanıtlar.",
+    badge: "İçgörü",
+  },
 ];
 
 export default async function AnaEkranPage() {
@@ -58,52 +94,107 @@ export default async function AnaEkranPage() {
   const today = istanbulDateISO();
   const monthStart = today.slice(0, 7) + "-01";
   const weekEnd = new Date(Date.parse(today) + 6 * 86400000).toISOString().slice(0, 10);
-  const [todayRows, weekRows, overdue, summary, months] = await Promise.all([
-    instancesOn(pool, today),
-    instancesBetween(pool, today, weekEnd),
-    overdueOpen(pool, today),
-    monthSummary(pool, monthStart),
-    loadCashMonths(pool),
-  ]);
+  const [todayRows, weekRows, overdue, summary, months] = await cache.withCache(
+    `overview:initial:${today}`,
+    () => Promise.all([
+      instancesOn(pool, today),
+      instancesBetween(pool, today, weekEnd),
+      overdueOpen(pool, today),
+      monthSummary(pool, monthStart),
+      loadCashMonths(pool),
+    ]),
+    { ttlSeconds: 60, tags: [CACHE_TAGS.PAYMENTS, CACHE_TAGS.CASHFLOW] }
+  );
 
   // onboarding state: nothing imported yet
   const hasData = summary.total_count > 0 || months.length > 0;
   if (!hasData) {
     return (
       <>
-        <PageHeader title="Ana Ekran" subtitle="MAS Nakit Radar — operatör kokpiti" />
-        <Panel title="BAŞLANGIÇ" accent="info">
-          <p className="text-sm" style={{ color: "var(--text-2)" }}>
-            Henüz veri yok. <Link className="underline underline-offset-2" href="/imports">İçe aktarım</Link> sayfasından
-            çalışma dosyasını yükleyin ve modüllere aktarın; sonra bu ekran bugünkü ödemeleri, nakit riskini ve
-            yapılacakları özetler.
-          </p>
-          <div className="mt-4 grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3">
+        <PageHeader
+          title="Yönetici Kokpiti"
+          subtitle="MAS Nakit Radar — Kurumsal finans, likidite ve nakit operasyon merkezi"
+          action={
+            <Link href="/imports" className="button-primary px-4 py-2 text-xs">
+              + Excel Dosyası Yükle
+            </Link>
+          }
+        />
+        <div className="rounded-2xl border border-line bg-gradient-to-b from-surface-1 to-surface-0 p-6 shadow-xl">
+          <div className="max-w-2xl">
+            <span className="inline-flex items-center gap-1.5 rounded-full border border-sky-500/30 bg-sky-500/10 px-3 py-1 text-[11px] font-semibold text-sky-400">
+              <span className="h-1.5 w-1.5 rounded-full bg-sky-400 animate-pulse" />
+              Sistem Hazır · Veri Bekleniyor
+            </span>
+            <h2 className="mt-3 font-sans text-xl font-bold tracking-tight text-tone-1 sm:text-2xl">
+              Finansal Operasyon Kokpitine Hoş Geldiniz
+            </h2>
+            <p className="mt-2 font-sans text-xs text-tone-3 leading-relaxed">
+              Sistemi aktif hale getirmek için Excel çalışma kitabınızı içe aktarın. Veriler yüklendiğinde
+              günlük nakit çıkışları, runway süresi, risk uyarıları ve CFO kararları bu ekranda otomatik özetlenecektir.
+            </p>
+            <div className="mt-4 flex flex-wrap gap-2">
+              <Link href="/imports" className="button-primary px-4 py-2 text-xs">
+                İlk Excel Dosyasını Yükle →
+              </Link>
+              <Link href="/data/imports/v2/template" className="button-ghost px-4 py-2 text-xs">
+                Standart Şablonu İndir
+              </Link>
+            </div>
+          </div>
+
+          <div className="mt-8 grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
             {EMPTY_MODULES.map((m) => (
-              <Link key={m.href + m.title} href={m.href} className="card-hover border p-3" style={{ borderColor: "var(--line-faint)", borderRadius: "var(--radius)", background: "var(--surface-2)" }}>
-                <div className="text-sm font-medium" style={{ color: "var(--text-1)" }}>{m.title}</div>
-                <div className="mt-1 text-[11px]" style={{ color: "var(--text-4)" }}>{m.desc}</div>
+              <Link
+                key={m.href + m.title}
+                href={m.href}
+                className="group relative flex flex-col justify-between rounded-xl border border-line bg-surface-2/60 p-4 transition-all duration-200 hover:-translate-y-0.5 hover:border-line-strong hover:bg-surface-2 hover:shadow-lg"
+              >
+                <div>
+                  <div className="flex items-center justify-between gap-2 mb-2">
+                    <span className="font-mono text-xs font-bold text-sky-400/80">{m.step}</span>
+                    <span className="rounded-full bg-surface-3 px-2 py-0.5 text-[9.5px] font-medium text-tone-3 border border-line">
+                      {m.badge}
+                    </span>
+                  </div>
+                  <h3 className="font-sans text-sm font-semibold text-tone-1 group-hover:text-sky-300 transition-colors">
+                    {m.title}
+                  </h3>
+                  <p className="mt-1 font-sans text-xs text-tone-3 leading-relaxed">
+                    {m.desc}
+                  </p>
+                </div>
+                <div className="mt-3 flex items-center gap-1 font-sans text-[11px] font-medium text-tone-4 group-hover:text-tone-2 transition-colors">
+                  Modüle Git
+                  <svg className="h-3 w-3 stroke-current stroke-2 fill-none group-hover:translate-x-0.5 transition-transform" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M8.25 4.5l7.5 7.5-7.5 7.5" />
+                  </svg>
+                </div>
               </Link>
             ))}
           </div>
-        </Panel>
+        </div>
       </>
     );
   }
 
-  const [overlay, reports, reminders, caps, costs, incomeLines, decisionFacts, dataQuality, t] = await Promise.all([
-    loadDebtOverlay(pool),
-    listReports(pool),
-    deliveryCounts(pool),
-    loadCapacityModels(pool),
-    loadCostModels(pool),
-    pool.query(`select coalesce(p.name, cl.label) as key, cl.amount
-                from public.cashflow_lines cl left join public.parties p on p.id=cl.party_id
-                where cl.line_type='customer_income'`),
-    loadDecisionFacts(pool, today),
-    loadDataQualityCenter(pool),
-    loadThresholds(pool),
-  ]);
+  const [overlay, reports, reminders, caps, costs, incomeLines, decisionFacts, dataQuality, t] = await cache.withCache(
+    `overview:details:${today}`,
+    () => Promise.all([
+      loadDebtOverlay(pool),
+      listReports(pool),
+      deliveryCounts(pool),
+      loadCapacityModels(pool),
+      loadCostModels(pool),
+      pool.query(`select coalesce(p.name, cl.label) as key, cl.amount
+                  from public.cashflow_lines cl left join public.parties p on p.id=cl.party_id
+                  where cl.line_type='customer_income'`),
+      loadDecisionFacts(pool, today),
+      loadDataQualityCenter(pool),
+      loadThresholds(pool),
+    ]),
+    { ttlSeconds: 60, tags: [CACHE_TAGS.PAYMENTS, CACHE_TAGS.CASHFLOW, CACHE_TAGS.REPORTS, CACHE_TAGS.PRODUCTION] }
+  );
   void t;
 
   // production margin snapshot: any operation sold below its scenario's own break-even?
@@ -115,6 +206,10 @@ export default async function AnaEkranPage() {
   const tOut = knownOutflow(todayRows);
   const wOut = knownOutflow(weekRows);
   const oOut = knownOutflow(overdue);
+  // Sparkline null'ı çizemez; eksik tutar 0 DEĞİLDİR (CLAUDE.md) ve TRY-dışı tutar aynı eksene konmaz.
+  // İkisi seriden çıkarılır ve alt yazıda SAYILIR — sessizce sıfır çizilmez.
+  const weekTrendValues = weekRows.filter((row) => row.amount != null && isReportingCurrency(row.currency)).map((row) => row.amount as number);
+  const weekTrendOmitted = weekRows.length - weekTrendValues.length;
   const conc = concentration(
     incomeLines.rows.map((r) => ({ key: r.key as string | null, amount: moneyOrNull(r.amount) })),
   );
@@ -177,11 +272,11 @@ export default async function AnaEkranPage() {
 
       <div className="stagger grid grid-cols-2 gap-2 lg:grid-cols-4">
         <KeyStat label="Bugün çıkış" value={fmtTL(tOut.total)} tone={tOut.total > 0 ? "warn" : "neutral"} href="/radar"
-          sub={`${tOut.count} ödeme${tOut.missing > 0 ? ` · ${tOut.missing} eksik` : ""}`} />
+          sub={`${tOut.count} ödeme${tOut.missing > 0 ? ` · ${tOut.missing} eksik` : ""}${tOut.foreign > 0 ? ` · ${foreignNote(tOut.foreign)}` : ""}`} />
         <KeyStat label="7 günde çıkış" value={fmtTL(wOut.total)} tone={wOut.total > 0 ? "warn" : "neutral"} href="/radar"
-          sub={`${wOut.count} ödeme`} />
+          sub={`${wOut.count} ödeme${wOut.foreign > 0 ? ` · ${foreignNote(wOut.foreign)}` : ""}`} />
         <KeyStat label="Geciken" value={oOut.count} tone={oOut.count > 0 ? "neg" : "pos"} href="/radar"
-          sub={oOut.count > 0 ? `bilinen ${fmtTL(oOut.total)}` : "yok"} />
+          sub={oOut.count > 0 ? `bilinen ${fmtTL(oOut.total)}${oOut.foreign > 0 ? ` · ${foreignNote(oOut.foreign)}` : ""}` : "yok"} />
         <KeyStat label="Nakit runway" value={runwayFact?.value ?? "—"} tone={runwayFact?.severity === "critical" || runwayFact?.severity === "high" ? "neg" : runwayFact?.severity === "medium" ? "warn" : "pos"} href="/cashflow"
           sub={`${runwayFact?.explanation ?? "projeksiyon"} · ilk negatif ${ym(proj.firstNegativeMonth)}`} />
       </div>
@@ -221,7 +316,7 @@ export default async function AnaEkranPage() {
             </li>
           ))}
         </ol>
-      </Panel><aside className="space-y-3"><MiniTrend title="30 günlük ödeme baskısı" subtitle="Bilinen açık ödeme tutarları" values={weekRows.map(row=>row.amount??0)} href="/payments" tone="var(--warn)"/><MiniTrend title="12 aylık kasa eğilimi" subtitle="Aylık kapanış bakiyesi" values={months.slice(0,12).map(month=>month.closing??0)} href="/cashflow"/></aside></div>
+      </Panel><aside className="space-y-3"><MiniTrend title="30 günlük ödeme baskısı" subtitle={`Bilinen açık TRY ödeme tutarları${weekTrendOmitted > 0 ? ` · ${weekTrendOmitted} kalem seride yok (tutar eksik ya da TRY-dışı)` : ""}`} values={weekTrendValues} href="/payments" tone="var(--warn)"/><MiniTrend title="12 aylık kasa eğilimi" subtitle="Aylık kapanış bakiyesi" values={months.slice(0,12).map(month=>month.closing??0)} href="/cashflow"/></aside></div>
 
       {/* 4) Durum şeridi: rapor / hatırlatma / üretim */}
       <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">

@@ -18,7 +18,7 @@ import { audit } from "@/lib/audit";
 import { DomainError } from "@/lib/domain-error";
 import { intOrNull, moneyOrNull, rateOrNull } from "@/lib/money";
 import { parseOrThrow } from "@/lib/validation";
-import { computeDPO, computeDSO, openAmount, planAllocation, type AllocatableInvoice } from "./rules";
+import { COLLECTION_BUCKETS, computeDPO, computeDSO, openAmount, planAllocation, type AgeingSummary, type AllocatableInvoice } from "./rules";
 
 /* ── schemas ──────────────────────────────────────────────────────────────────────────── */
 
@@ -235,6 +235,122 @@ async function loadOpen(pool: Pool, view: "receivables_open" | "payables_open", 
 
 export const loadReceivables = (pool: Pool, limit = 200) => loadOpen(pool, "receivables_open", limit);
 export const loadPayables = (pool: Pool, limit = 200) => loadOpen(pool, "payables_open", limit);
+
+/* ── Limitten BAĞIMSIZ finansal toplamlar ─────────────────────────────────────────────────
+ *
+ * NE ÖLÇÜLDÜ. `/finance/receivables` ekranı `recTotal`, `payTotal`, yaşlandırma kovaları ve
+ * gecikmiş sayacını LİSTEYE gelen satırlardan hesaplıyordu:
+ *
+ *     const recTotal = receivables.reduce((n, r) => n + r.openAmount, 0);
+ *     const recAgeing = summarizeAgeing(receivables.map(...), today);
+ *     const overdue = receivables.filter((r) => (r.daysOverdue ?? 0) > 0);
+ *
+ * Liste `loadReceivables(pool, 75)` ile sınırlı olduğu için bu, "toplam açık alacak"ın aslında
+ * "en büyük 75 alacağın toplamı" olması demekti. 75'in üzerinde açık kayıt olduğunda ekrandaki
+ * her finansal rakam GERÇEĞİN ALTINDA kalıyordu — ve hiçbir yerde bunu söyleyen bir şey yoktu.
+ *
+ * Bu 150'de de böyleydi; limitin 75'e inmesi yalnız yanılma eşiğini yarıya indirdi. Yani sorun
+ * limitin değeri değil, TOPLAMLARIN LİSTEYE BAĞLI OLMASIYDI.
+ *
+ * ═══ NEDEN AYNI VIEW ÜZERİNDEN AGGREGATE ═══
+ *
+ * Filtre ve statü semantiği `public.receivables_open` / `public.payables_open` view'larının
+ * içinde yaşıyor — hangi faturanın "açık" sayıldığı, `open_amount`un nasıl hesaplandığı, hepsi.
+ * Toplamları aynı view üzerinden almak, o semantiği yeniden yazmadan birebir korumanın tek
+ * yoludur. Kendi `where` cümlemi yazsaydım iki tanım oluşur ve ilk şema değişikliğinde
+ * sessizce ayrışırlardı.
+ *
+ * ═══ KOVA SINIRLARI `collectionBucket()` İLE AYNI OLMAK ZORUNDA ═══
+ *
+ * `src/lib/receivables/rules.ts`:
+ *     null            → "tarihsiz"
+ *     days <= 0       → "vadesi gelmemiş"
+ *     days <= 7       → "1-7 gün"
+ *     days <= 30      → "8-30 gün"
+ *     days <= 60      → "31-60 gün"
+ *     aksi            → "60+ gün"
+ * ve `days = floor((today - dueDate) / 1 gün)`.
+ *
+ * PostgreSQL'de `date - date` zaten tam sayı gün verir, dolayısıyla `$1::date - due_date`
+ * JS'teki floor hesabının birebir karşılığıdır (ikisi de tarih-düzeyinde çalışır).
+ *
+ * `overdueCount` ise kovadan DEĞİL, view'ın kendi `days_overdue` kolonundan türetilir — çünkü
+ * ekrandaki sayaç da öyleydi (`(r.daysOverdue ?? 0) > 0`). İki farklı soru, iki farklı kaynak;
+ * birini diğerine uydurmak sessiz bir davranış değişikliği olurdu.
+ */
+export interface OpenTotals {
+  /** Uygun BÜTÜN kayıtların açık tutar toplamı — liste limitinden etkilenmez. */
+  totalOpenAmount: number;
+  /** Uygun BÜTÜN kayıtların sayısı. */
+  itemCount: number;
+  /** `days_overdue > 0` olan bütün kayıtlar. */
+  overdueCount: number;
+  /** PHASE 2.2: TRY-dışı açık kalem sayısı — totalOpenAmount'a girmedi. */
+  foreignCount: number;
+  /** `COLLECTION_BUCKETS` ile aynı sırada ve aynı sınırlarla. */
+  ageing: AgeingSummary[];
+}
+
+async function loadOpenTotals(
+  pool: Pool,
+  view: "receivables_open" | "payables_open",
+  todayISO: string,
+): Promise<OpenTotals> {
+  // PHASE 2.2 (#49): toplam yalniz TRY; TRY-disi acik kalemler foreign_count ile doner (view
+  // `i.currency` tasir, 0050). Sayimlar para biriminden bagimsiz.
+  const r = await pool.query(
+    `select
+       coalesce(sum(open_amount) filter (where currency = 'TRY'), 0)   as total_open,
+       count(*)::int                                                   as item_count,
+       count(*) filter (where coalesce(days_overdue, 0) > 0)::int      as overdue_count,
+       count(*) filter (where currency <> 'TRY')::int                  as foreign_count,
+       case
+         when due_date is null then 'tarihsiz'
+         when ($1::date - due_date) <= 0  then 'vadesi gelmemiş'
+         when ($1::date - due_date) <= 7  then '1-7 gün'
+         when ($1::date - due_date) <= 30 then '8-30 gün'
+         when ($1::date - due_date) <= 60 then '31-60 gün'
+         else '60+ gün'
+       end                                                             as bucket
+     from public.${view}
+     group by rollup (bucket)`,
+    [todayISO],
+  );
+
+  // `rollup` tek sorguda hem kova satırlarını hem genel toplamı döndürür: bucket = null olan
+  // satır TOPLAMDIR. İki ayrı sorgu atmak, aralarında bir yazma olursa tutarsız iki rakam
+  // üretebilirdi; tek sorgu bunu yapısal olarak imkânsız kılar.
+  const grand = r.rows.find((row) => row.bucket === null);
+  const byBucket = new Map<string, { count: number; amount: number; foreignCount: number }>();
+  for (const row of r.rows) {
+    if (row.bucket === null) continue;
+    byBucket.set(String(row.bucket), {
+      count: Number(row.item_count),
+      amount: moneyOrNull(row.total_open) ?? 0,
+      foreignCount: Number(row.foreign_count ?? 0),
+    });
+  }
+
+  return {
+    totalOpenAmount: moneyOrNull(grand?.total_open) ?? 0,
+    itemCount: Number(grand?.item_count ?? 0),
+    overdueCount: Number(grand?.overdue_count ?? 0),
+    foreignCount: Number(grand?.foreign_count ?? 0),
+    // Boş kovalar da döner: eksik bir satır ile sıfır satır bir rapor okuyan için çok farklı
+    // şeylerdir (rules.ts'teki summarizeAgeing de aynı sözü verir).
+    ageing: COLLECTION_BUCKETS.map((bucket) => ({
+      bucket,
+      count: byBucket.get(bucket)?.count ?? 0,
+      amount: byBucket.get(bucket)?.amount ?? 0,
+      foreignCount: byBucket.get(bucket)?.foreignCount ?? 0,
+    })),
+  };
+}
+
+export const loadReceivableTotals = (pool: Pool, todayISO: string) =>
+  loadOpenTotals(pool, "receivables_open", todayISO);
+export const loadPayableTotals = (pool: Pool, todayISO: string) =>
+  loadOpenTotals(pool, "payables_open", todayISO);
 
 export async function loadCurrentAccounts(pool: Pool, limit = 200) {
   const r = await pool.query(

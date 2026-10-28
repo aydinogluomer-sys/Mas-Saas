@@ -1,0 +1,381 @@
+{
+  "database": "mas_radar_p24b_dryrun_clone",
+  "generatedAtUtc": "2026-08-30T07:58:29.233Z",
+  "affectedSnapshotDates": [
+    {
+      "d": "2026-08-27",
+      "n": "24"
+    }
+  ],
+  "beforeCount": 24,
+  "orphanInstancesAfterDelete": 0,
+  "deleteOrder": [
+    {
+      "step": 1,
+      "table": "action_items",
+      "deleted": 4,
+      "before": 10,
+      "after": 6,
+      "delta": 4
+    },
+    {
+      "step": 2,
+      "table": "approvals",
+      "deleted": 4,
+      "before": 72,
+      "after": 68,
+      "delta": 4
+    },
+    {
+      "step": 3,
+      "table": "payment_instances",
+      "deleted": 26,
+      "before": 511,
+      "after": 485,
+      "delta": 26
+    },
+    {
+      "step": 4,
+      "table": "payments",
+      "deleted": 1,
+      "before": 20,
+      "after": 19,
+      "delta": 1
+    },
+    {
+      "step": 5,
+      "table": "users",
+      "deleted": 6,
+      "before": 19,
+      "after": 13,
+      "delta": 6
+    },
+    {
+      "step": 6,
+      "table": "settings",
+      "deleted": 1,
+      "before": 8,
+      "after": 7,
+      "delta": 1
+    }
+  ],
+  "afterCount": 24,
+  "comparison": [
+    {
+      "metric_key": "cash_first_negative",
+      "dimension_key": "total",
+      "snapshot_date": "2026-08-27",
+      "before_value": "2026-09-01",
+      "after_value": "2026-09-01",
+      "before_unknown": 0,
+      "after_unknown": 0,
+      "semanticChanged": false,
+      "technicalFieldsChanged": true,
+      "reason": "değişmedi"
+    },
+    {
+      "metric_key": "cash_worst_closing",
+      "dimension_key": "total",
+      "snapshot_date": "2026-08-27",
+      "before_value": "-3064607.5700",
+      "after_value": "-3064607.5700",
+      "before_unknown": 0,
+      "after_unknown": 0,
+      "semanticChanged": false,
+      "technicalFieldsChanged": true,
+      "reason": "değişmedi"
+    },
+    {
+      "metric_key": "data_missing_amounts",
+      "dimension_key": "total",
+      "snapshot_date": "2026-08-27",
+      "before_value": "314.0000",
+      "after_value": "314.0000",
+      "before_unknown": 0,
+      "after_unknown": 0,
+      "semanticChanged": false,
+      "technicalFieldsChanged": true,
+      "reason": "değişmedi"
+    },
+    {
+      "metric_key": "data_reviews_high",
+      "dimension_key": "total",
+      "snapshot_date": "2026-08-27",
+      "before_value": "5.0000",
+      "after_value": "5.0000",
+      "before_unknown": 0,
+      "after_unknown": 0,
+      "semanticChanged": false,
+      "technicalFieldsChanged": true,
+      "reason": "değişmedi"
+    },
+    {
+      "metric_key": "data_reviews_open",
+      "dimension_key": "total",
+      "snapshot_date": "2026-08-27",
+      "before_value": "53.0000",
+      "after_value": "53.0000",
+      "before_unknown": 0,
+      "after_unknown": 0,
+      "semanticChanged": false,
+      "technicalFieldsChanged": true,
+      "reason": "değişmedi"
+    },
+    {
+      "metric_key": "decision_confidence",
+      "dimension_key": "total",
+      "snapshot_date": "2026-08-27",
+      "before_value": "0.0000",
+      "after_value": "0.0000",
+      "before_unknown": 0,
+      "after_unknown": 0,
+      "semanticChanged": false,
+      "technicalFieldsChanged": true,
+      "reason": "değişmedi"
+    },
+    {
+      "metric_key": "external_pending",
+      "dimension_key": "total",
+      "snapshot_date": "2026-08-27",
+      "before_value": "2.0000",
+      "after_value": "2.0000",
+      "before_unknown": 0,
+      "after_unknown": 0,
+      "semanticChanged": false,
+      "technicalFieldsChanged": true,
+      "reason": "değişmedi"
+    },
+    {
+      "metric_key": "loan_remaining",
+      "dimension_key": "total",
+      "snapshot_date": "2026-08-27",
+      "before_value": "3371973.6400",
+      "after_value": "3371973.6400",
+      "before_unknown": 0,
+      "after_unknown": 0,
+      "semanticChanged": false,
+      "technicalFieldsChanged": true,
+      "reason": "değişmedi"
+    },
+    {
+      "metric_key": "maturity_outflow",
+      "dimension_key": "30d",
+      "snapshot_date": "2026-08-27",
+      "before_value": "471744.1200",
+      "after_value": "471744.1200",
+      "before_unknown": 0,
+      "after_unknown": 0,
+      "semanticChanged": false,
+      "technicalFieldsChanged": true,
+      "reason": "değişmedi"
+    },
+    {
+      "metric_key": "maturity_outflow",
+      "dimension_key": "7d",
+      "snapshot_date": "2026-08-27",
+      "before_value": "300000.0000",
+      "after_value": "300000.0000",
+      "before_unknown": 0,
+      "after_unknown": 0,
+      "semanticChanged": false,
+      "technicalFieldsChanged": true,
+      "reason": "değişmedi"
+    },
+    {
+      "metric_key": "maturity_outflow",
+      "dimension_key": "90d",
+      "snapshot_date": "2026-08-27",
+      "before_value": "615232.3600",
+      "after_value": "615232.3600",
+      "before_unknown": 0,
+      "after_unknown": 0,
+      "semanticChanged": false,
+      "technicalFieldsChanged": true,
+      "reason": "değişmedi"
+    },
+    {
+      "metric_key": "part_margin_average",
+      "dimension_key": "total",
+      "snapshot_date": "2026-08-27",
+      "before_value": "-0.4594",
+      "after_value": "-0.4594",
+      "before_unknown": 14,
+      "after_unknown": 14,
+      "semanticChanged": false,
+      "technicalFieldsChanged": true,
+      "reason": "değişmedi"
+    },
+    {
+      "metric_key": "part_margin_min",
+      "dimension_key": "total",
+      "snapshot_date": "2026-08-27",
+      "before_value": "-4.2395",
+      "after_value": "-4.2395",
+      "before_unknown": 14,
+      "after_unknown": 14,
+      "semanticChanged": false,
+      "technicalFieldsChanged": true,
+      "reason": "değişmedi"
+    },
+    {
+      "metric_key": "payment_status",
+      "dimension_key": "cancelled",
+      "snapshot_date": "2026-08-27",
+      "before_value": "770000.0000",
+      "after_value": "770000.0000",
+      "before_unknown": 0,
+      "after_unknown": 0,
+      "semanticChanged": false,
+      "technicalFieldsChanged": true,
+      "reason": "değişmedi"
+    },
+    {
+      "metric_key": "payment_status",
+      "dimension_key": "paid",
+      "snapshot_date": "2026-08-27",
+      "before_value": "155000.0000",
+      "after_value": "155000.0000",
+      "before_unknown": 0,
+      "after_unknown": 0,
+      "semanticChanged": false,
+      "technicalFieldsChanged": true,
+      "reason": "değişmedi"
+    },
+    {
+      "metric_key": "payment_status",
+      "dimension_key": "partial",
+      "snapshot_date": "2026-08-27",
+      "before_value": "30000.0000",
+      "after_value": "30000.0000",
+      "before_unknown": 0,
+      "after_unknown": 0,
+      "semanticChanged": false,
+      "technicalFieldsChanged": true,
+      "reason": "değişmedi"
+    },
+    {
+      "metric_key": "payment_status",
+      "dimension_key": "planned",
+      "snapshot_date": "2026-08-27",
+      "before_value": "0.0000",
+      "after_value": "0.0000",
+      "before_unknown": 2,
+      "after_unknown": 2,
+      "semanticChanged": false,
+      "technicalFieldsChanged": true,
+      "reason": "değişmedi"
+    },
+    {
+      "metric_key": "payment_status",
+      "dimension_key": "unpaid",
+      "snapshot_date": "2026-08-27",
+      "before_value": "13621000.0000",
+      "after_value": "13595000.0000",
+      "before_unknown": 295,
+      "after_unknown": 295,
+      "semanticChanged": true,
+      "technicalFieldsChanged": true,
+      "reason": "değer kirli veriden hesaplanmıştı; 42 satır kaldırıldıktan sonra yeniden hesaplandı"
+    },
+    {
+      "metric_key": "reminder_status",
+      "dimension_key": "failed",
+      "snapshot_date": "2026-08-27",
+      "before_value": "18.0000",
+      "after_value": "18.0000",
+      "before_unknown": 0,
+      "after_unknown": 0,
+      "semanticChanged": false,
+      "technicalFieldsChanged": true,
+      "reason": "değişmedi"
+    },
+    {
+      "metric_key": "reminder_status",
+      "dimension_key": "pending",
+      "snapshot_date": "2026-08-27",
+      "before_value": "4.0000",
+      "after_value": "4.0000",
+      "before_unknown": 0,
+      "after_unknown": 0,
+      "semanticChanged": false,
+      "technicalFieldsChanged": true,
+      "reason": "değişmedi"
+    },
+    {
+      "metric_key": "reminder_status",
+      "dimension_key": "sent",
+      "snapshot_date": "2026-08-27",
+      "before_value": "36.0000",
+      "after_value": "36.0000",
+      "before_unknown": 0,
+      "after_unknown": 0,
+      "semanticChanged": false,
+      "technicalFieldsChanged": true,
+      "reason": "değişmedi"
+    },
+    {
+      "metric_key": "task_status",
+      "dimension_key": "done",
+      "snapshot_date": "2026-08-27",
+      "before_value": "1.0000",
+      "after_value": "1.0000",
+      "before_unknown": 0,
+      "after_unknown": 0,
+      "semanticChanged": false,
+      "technicalFieldsChanged": true,
+      "reason": "değişmedi"
+    },
+    {
+      "metric_key": "task_status",
+      "dimension_key": "in_progress",
+      "snapshot_date": "2026-08-27",
+      "before_value": "1.0000",
+      "after_value": "1.0000",
+      "before_unknown": 0,
+      "after_unknown": 0,
+      "semanticChanged": false,
+      "technicalFieldsChanged": true,
+      "reason": "değişmedi"
+    },
+    {
+      "metric_key": "task_status",
+      "dimension_key": "open",
+      "snapshot_date": "2026-08-27",
+      "before_value": "8.0000",
+      "after_value": "4.0000",
+      "before_unknown": 0,
+      "after_unknown": 0,
+      "semanticChanged": true,
+      "technicalFieldsChanged": true,
+      "reason": "değer kirli veriden hesaplanmıştı; 42 satır kaldırıldıktan sonra yeniden hesaplandı"
+    }
+  ],
+  "semanticChanges": [
+    {
+      "metric_key": "payment_status",
+      "dimension_key": "unpaid",
+      "snapshot_date": "2026-08-27",
+      "before_value": "13621000.0000",
+      "after_value": "13595000.0000",
+      "before_unknown": 295,
+      "after_unknown": 295,
+      "semanticChanged": true,
+      "technicalFieldsChanged": true,
+      "reason": "değer kirli veriden hesaplanmıştı; 42 satır kaldırıldıktan sonra yeniden hesaplandı"
+    },
+    {
+      "metric_key": "task_status",
+      "dimension_key": "open",
+      "snapshot_date": "2026-08-27",
+      "before_value": "8.0000",
+      "after_value": "4.0000",
+      "before_unknown": 0,
+      "after_unknown": 0,
+      "semanticChanged": true,
+      "technicalFieldsChanged": true,
+      "reason": "değer kirli veriden hesaplanmıştı; 42 satır kaldırıldıktan sonra yeniden hesaplandı"
+    }
+  ],
+  "semanticChangeCount": 2,
+  "technicalOnlyChangeCount": 22
+}

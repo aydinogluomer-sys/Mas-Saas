@@ -1,0 +1,87 @@
+{
+  "artifactKind": "mas-final-start-zero-delta-v1",
+  "measuredAtUtc": "2026-09-03T19:11:39.566Z",
+  "verdict": "ZERO_DELTA",
+  "prepareRuntimeOutput": "Odeme penceresi 24 aylik ufukla hazir.",
+  "nextStart": "Next.js 15.5.20 — Ready in 2.4s",
+  "contract": {
+    "note": "P1 duzeltmesinden SONRA stable state'te beklenen delta TAM SIFIR. Duzeltme oncesinde ayni acilis +26 generate_instances satiri yazardi."
+  },
+  "counts": {
+    "audit_logs": {
+      "before": 814,
+      "after": 814,
+      "delta": 0
+    },
+    "payment_instances": {
+      "before": 502,
+      "after": 502,
+      "inserts": 0,
+      "updates": 0
+    },
+    "users": {
+      "before": 13,
+      "after": 13,
+      "delta": 0
+    },
+    "payments": {
+      "before": 19,
+      "after": 19,
+      "delta": 0
+    },
+    "action_items": {
+      "before": 6,
+      "after": 6,
+      "delta": 0
+    },
+    "approvals": {
+      "before": 68,
+      "after": 68,
+      "delta": 0
+    },
+    "settings": {
+      "before": 7,
+      "after": 7,
+      "delta": 0
+    },
+    "metric_snapshots": {
+      "before": 208,
+      "after": 208,
+      "delta": 0
+    }
+  },
+  "newRowsSinceStart": {
+    "audit_logs": 0,
+    "payment_instances": 0
+  },
+  "wholeDb": {
+    "tablesCompared": 86,
+    "tablesChanged": 0,
+    "fingerprintBefore": "85358cfd27767001a3cdf00e1c5979a05d471a409876afc2586567a38432a929",
+    "fingerprintAfter": "85358cfd27767001a3cdf00e1c5979a05d471a409876afc2586567a38432a929",
+    "match": true,
+    "targetFingerprint": "5e84634660528f2076f7bbef2a7e7e8f05047c13353679c53f0097798e37882d"
+  },
+  "engineCounters": {
+    "source": "pg_stat_database — motorun kendi sayaci, olcumden bagimsiz",
+    "before": {
+      "tup_inserted": 97,
+      "tup_updated": 40,
+      "tup_deleted": 42
+    },
+    "after": {
+      "tup_inserted": 97,
+      "tup_updated": 40,
+      "tup_deleted": 42
+    },
+    "moved": false,
+    "interpretation": "Startup boyunca TEK BIR tuple bile eklenmedi, guncellenmedi, silinmedi. Bu, sayim karsilastirmasindan bagimsiz ikinci bir kanittir."
+  },
+  "p24b": {
+    "remaining": "0/42",
+    "resurrected": false,
+    "fixturePaymentPresent": false
+  },
+  "zeroDelta": true,
+  "p1ValidatedOnRealRuntime": true
+}

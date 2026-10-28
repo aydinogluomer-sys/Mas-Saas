@@ -1,0 +1,23 @@
+{
+  "sha": "ceca39a3a60c00358d1aa90f00f9b2864237e4ec",
+  "IMPORT_V2_PRODUCT_FLOW": "PASS",
+  "runtime": "next start .next-merged-acceptance :3312 → mas_radar_verify_merged_legacy (app role)",
+  "checks": [
+    "TEMPLATE 200 xlsx + X-Template-SHA256 (iki indirme aynı)",
+    "viewer/approver 403 + sayfa reddi",
+    "FILE_SAFETY .csv/bozuk/META'sız → BAD_EXTENSION/CORRUPT_XLSX/NOT_V2_SCHEMA, DB değişmedi",
+    "operator: FORBIDDEN_SHEETS (referans sınıfı), DB değişmedi",
+    "manager: ÖNİZLE yazmaz; ONAYLA tek işlem; provenance (sha = DB = audit); ikinci ONAYLA mükerrer yok"
+  ],
+  "INTERACTION_RUN_1": "8/8 (57.3s)",
+  "INTERACTION_RUN_2": "8/8 (1.5m)",
+  "FLAKY": "NO — iki ardışık temiz koşu; önceki turdaki tek timeout gözlemi bu turda tekrar etmedi (o sırada sistem belleği kritik düşüktü; arka plan görevi bellek yetersizliğinden öldürüldü)",
+  "metric_snapshot_backlog": {
+    "observed": "her ONAYLA sonrası refreshMetricSnapshots → metric_snapshots_check ihlali (fixture DB'de production_parts=0 → part_margin_average/min value null & unknown 0)",
+    "import_rolled_back": false,
+    "business_data_corrupted": false,
+    "ui_result_correct": true,
+    "real_data": "5 Eylül klonunda production_parts=70 → ihlal eden metrik 0 (tekrar etmez)",
+    "severity": "P2 BACKLOG"
+  }
+}

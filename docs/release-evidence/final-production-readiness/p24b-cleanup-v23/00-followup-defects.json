@@ -1,0 +1,29 @@
+{
+  "baseCommit": "db653007b669261c0ae292537fa20c0fef2e9eb2",
+  "findings": [
+    {
+      "id": "G1",
+      "area": "smoke gate timing",
+      "was": "smokeTargetBlockers p24b-cleanup-binding.ts:92 — Pool (68), begin (72) ve 86-tablo wholeDbFingerprint (81) SONRASINDA",
+      "impact": "Kapi dogruydu ama gecti: korunan bir ad bile once bir baglantiya ve tam bir fingerprint'e mal oluyordu. Hedeflenen testin 5 sn'de timeout olmasinin sebebi buydu.",
+      "now": "main() basinda, makbuz OKUNMADAN once; kaynak DB adi URL'den turetiliyor, hicbir sey acilmiyor. Baglandiktan sonra current_database() ile URL kimligi ayrica dogrulaniyor.",
+      "verdict": "RESTORE_TARGET_FAIL_FAST = PASS"
+    },
+    {
+      "id": "G2",
+      "area": "target count derivation",
+      "was": "targetFingerprint yalniz digest donduruyordu; cagiranlar digest.includes('MISSING') / digest.match(/MISSING/g) ile sayim yapiyordu",
+      "impact": "SHA256 digest'i HEX'tir — 'MISSING' harflerini iceremez. Bu kontroller HER ZAMAN false donuyordu ve found her zaman 42 cikiyordu. Binding, geri yuklenen kopyada kac satir oldugundan BAGIMSIZ olarak targetRows: 42 yaziyordu — yani restore smoke'un kanitlamak icin var oldugu tam olarak o olgu uyduruluyordu.",
+      "now": "TargetFingerprintResult { digest, expected, found, missing[] }. found/missing sorgu sonuclarindan; digest metninden TURETILMIYOR.",
+      "verdict": "TARGET_ROWS_REAL_COUNT = PASS"
+    },
+    {
+      "id": "G3",
+      "area": "whole-db freeze scope",
+      "was": "LOCK_TABLES = 6 hedef + metric_snapshots + audit_logs = 8 tablo; wholeDbFingerprint ise 86 tabloyu kapsiyordu",
+      "impact": "Whole-DB binding 'bu veritabaninda hicbir sey kimildamadi' diyordu ama dondurma diger 78 tabloyu korumuyordu: fingerprint ile COMMIT arasinda baska bir oturum onlara yazabilirdi.",
+      "now": "Katalogdan turetilen TUM base table'lar tek LOCK statement'inda, deterministik sirada (schema, name), guvenli identifier quoting ile. Kilit sonrasi katalog yeniden okunuyor (BASE_TABLE_SET_CHANGED_DURING_FREEZE) ve fingerprint'in kapsadigi her tablonun kilitli oldugu dogrulaniyor.",
+      "verdict": "CONCURRENT_WHOLE_DB_BINDING = PASS"
+    }
+  ]
+}

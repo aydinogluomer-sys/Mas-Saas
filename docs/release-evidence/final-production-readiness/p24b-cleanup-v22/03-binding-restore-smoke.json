@@ -1,0 +1,48 @@
+{
+  "binding": {
+    "bindingKind": "mas-p24b-cleanup-binding-v1",
+    "createdAtUtc": "2026-08-30T18:41:05.630Z",
+    "database": "mas_radar_p24b_v22_drill",
+    "manifestSha256": "d60de97bcc3c62aa2902b64a7c164e8132e733ba7f6958e71b1a84bac3c8bbb9",
+    "targetRows": 42,
+    "unresolved": 0,
+    "migrationLatest": "0087",
+    "migrationCount": 87,
+    "backupDestinationSha256": "380fc102ffdc2d2c4fe83d3b1bdb497fb9c882afbd3a467b88729e59bea34daf",
+    "backupDestinationPath": "C:/Users/TRADEB~1/AppData/Local/Temp/claude/C--Users-Trade-Bilisim-Mas-Saas/1f129ae4-ce3a-4359-80cd-7190f6f26844/scratchpad/drill-dest/p24b-v22-drill.dump",
+    "preCleanupTargetFingerprint": "05e4677004f6e063390e65d203d3acdcd23eacbafd867d7a37ed69c07eaebc50",
+    "preCleanupWholeDbFingerprint": "cb392821aedb1e38efea01da2645144add19086b4a5b87fb24758f74f34f3b29",
+    "preCleanupCounts": {
+      "action_items": 10,
+      "approvals": 72,
+      "payment_instances": 511,
+      "payments": 20,
+      "users": 19,
+      "settings": 8
+    },
+    "restoreSmoke": {
+      "restoredFromDestinationSha256": "380fc102ffdc2d2c4fe83d3b1bdb497fb9c882afbd3a467b88729e59bea34daf",
+      "restoreDb": "mas_radar_p24b_v22smoke_drill",
+      "ledger": "0087/87",
+      "targetRows": 42,
+      "targetFingerprint": "05e4677004f6e063390e65d203d3acdcd23eacbafd867d7a37ed69c07eaebc50",
+      "targetFingerprintMatchesSource": true,
+      "wholeDbFingerprint": "cb392821aedb1e38efea01da2645144add19086b4a5b87fb24758f74f34f3b29",
+      "wholeDbFingerprintMatchesSource": true
+    }
+  },
+  "requiredForPass": [
+    "targetFingerprintMatchesSource === true",
+    "wholeDbFingerprintMatchesSource === true"
+  ],
+  "measured": {
+    "restoredFromDestinationSha256": "380fc102ffdc2d2c4fe83d3b1bdb497fb9c882afbd3a467b88729e59bea34daf",
+    "restoreDb": "mas_radar_p24b_v22smoke_drill",
+    "ledger": "0087/87",
+    "targetRows": 42,
+    "targetFingerprint": "05e4677004f6e063390e65d203d3acdcd23eacbafd867d7a37ed69c07eaebc50",
+    "targetFingerprintMatchesSource": true,
+    "wholeDbFingerprint": "cb392821aedb1e38efea01da2645144add19086b4a5b87fb24758f74f34f3b29",
+    "wholeDbFingerprintMatchesSource": true
+  }
+}

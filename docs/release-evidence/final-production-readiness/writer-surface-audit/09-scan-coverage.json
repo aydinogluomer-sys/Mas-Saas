@@ -1,0 +1,65 @@
+{
+  "generatedAtUtc": "2026-08-29T20:26:09.667Z",
+  "areas": [
+    "scripts/**",
+    "src/**",
+    "tests/**",
+    ".github/workflows/**",
+    "package.json"
+  ],
+  "filesScanned": 519,
+  "byArea": [
+    {
+      "area": "scripts",
+      "files": 127
+    },
+    {
+      "area": "src",
+      "files": 362
+    },
+    {
+      "area": "tests",
+      "files": 28
+    },
+    {
+      "area": ".github",
+      "files": 2
+    }
+  ],
+  "scanClasses": [
+    {
+      "scanClass": "1. SQL tokens (INSERT/UPDATE/DELETE/TRUNCATE/ALTER/CREATE/DROP/COPY/VACUUM)",
+      "filesMatched": 144
+    },
+    {
+      "scanClass": "2. Postgres/process (Pool/Client/psql/createdb/dropdb/pg_restore/pg_dump)",
+      "filesMatched": 105
+    },
+    {
+      "scanClass": "3. child process (exec/execFile/spawn/fork)",
+      "filesMatched": 34
+    },
+    {
+      "scanClass": "4. indirect writer fns (seed*/ensure*/generate*/archive*/…/dropVolume)",
+      "filesMatched": 89
+    },
+    {
+      "scanClass": "5. app pool / env graph (getPool/getRawPool/@/lib/db/@/lib/env)",
+      "filesMatched": 126
+    },
+    {
+      "scanClass": "6. network mutation (fetch POST/PUT/PATCH/DELETE)",
+      "filesMatched": 5
+    },
+    {
+      "scanClass": "7. dynamic import()",
+      "filesMatched": 25
+    }
+  ],
+  "lifecycle": {
+    "packageScripts": 105,
+    "prePostHooks": [],
+    "prePostHookCount": 0,
+    "ciWorkflows": 1
+  }
+}

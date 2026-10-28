@@ -1,0 +1,100 @@
+{
+  "artifactKind": "mas-v2-concurrency-proof-v1",
+  "database": "mas_radar_import_v2_verify",
+  "negativeControl": {
+    "payments": 2,
+    "ledger": 1,
+    "orphans": 1,
+    "outcomes": [
+      "fulfilled",
+      "fulfilled"
+    ]
+  },
+  "sameKeyConcurrent": {
+    "domainRows": 1,
+    "ledgerRows": 1,
+    "distinct": 1,
+    "orphans": 0,
+    "inserted": 1,
+    "updated": 1
+  },
+  "differentKeys": {
+    "domainRows": 2,
+    "ledgerRows": 2
+  },
+  "verdict": "PASS",
+  "checks": [
+    {
+      "ad": "kilitsiz sıra mükerrer VEYA çakışma üretiyor (tehlike gerçek)",
+      "gecti": true
+    },
+    {
+      "ad": "her iki import da BAŞARILI bitti (unique violation kabul edilebilir sonuç değil)",
+      "gecti": true
+    },
+    {
+      "ad": "DOMAIN_ROWS",
+      "gecti": true
+    },
+    {
+      "ad": "LEDGER_ROWS",
+      "gecti": true
+    },
+    {
+      "ad": "BOUND_ENTITY_IDS (distinct)",
+      "gecti": true
+    },
+    {
+      "ad": "ORPHAN_DUPLICATE_ROWS",
+      "gecti": true
+    },
+    {
+      "ad": "biri yarattı, diğeri güncelledi",
+      "gecti": true
+    },
+    {
+      "ad": "farklı anahtarların ikisi de yazıldı",
+      "gecti": true
+    },
+    {
+      "ad": "her ikisi için bağlama var",
+      "gecti": true
+    },
+    {
+      "ad": "farklı anahtarlarda hata yok",
+      "gecti": true
+    },
+    {
+      "ad": "bayat bağlama HATA veriyor (sessiz başarı yok)",
+      "gecti": true
+    },
+    {
+      "ad": "bayat bağlamada yeni domain kaydı YARATILMADI",
+      "gecti": true
+    },
+    {
+      "ad": "bayat bağlamada defter YENİDEN ATANMADI",
+      "gecti": true
+    },
+    {
+      "ad": "çakışma HATA veriyor",
+      "gecti": true
+    },
+    {
+      "ad": "mevcut bağlama DEĞİŞMEDİ",
+      "gecti": true
+    },
+    {
+      "ad": "hata işlemi düşürdü",
+      "gecti": true
+    },
+    {
+      "ad": "hatadan ÖNCEKİ kısmi domain güncellemesi geri alındı",
+      "gecti": true
+    },
+    {
+      "ad": "yarım kalan workbook kaydı yazılmadı",
+      "gecti": true
+    }
+  ]
+}

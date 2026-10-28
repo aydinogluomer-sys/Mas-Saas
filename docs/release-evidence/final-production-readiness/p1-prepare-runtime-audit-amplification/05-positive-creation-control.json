@@ -1,0 +1,26 @@
+{
+  "artifactKind": "mas-p1-positive-control-v1",
+  "measuredAtUtc": "2026-09-03T16:50:30.773Z",
+  "clone": "mas_radar_p1_positive_control_verify",
+  "setup": "HARCANABILIR klonda pencerenin son ayi (2028-09-01) silindi: 17 satir",
+  "before": {
+    "payment_instances": 485,
+    "audit_logs": 814,
+    "targetMonthRows": 0
+  },
+  "after": {
+    "payment_instances": 502,
+    "audit_logs": 815,
+    "targetMonthRows": 17
+  },
+  "created": 17,
+  "generateInstancesAudits": 1,
+  "auditPayload": {
+    "total": 17,
+    "created": 17,
+    "monthStart": "2028-09-01"
+  },
+  "auditPayloadCorrect": true,
+  "verdict": "PASS — duzeltme denetimi susturmuyor. 26 degil, 0 degil, tam olarak degisiklik olan ayin 1 kaydi.",
+  "whyThisTestIsCritical": "P1'in en buyuk riski audit'i tamamen kapatmakti. Bu kontrol, gercek uretimde kaydin AYNEN korundugunu ve payload'in dogru oldugunu kanitliyor."
+}

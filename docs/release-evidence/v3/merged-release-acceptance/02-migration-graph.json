@@ -1,0 +1,48 @@
+{
+  "ok": true,
+  "errors": [],
+  "count": 94,
+  "first": "0001_source_layer.sql",
+  "last": "0094_tier2_tier3_try_only_views.sql",
+  "v88_94": [
+    {
+      "file": "0088_import_external_keys.sql",
+      "checksum": "395dcac97d393ee0759be7c07fd5b6681a91dcae82ce2fef66f5df95c22cb826"
+    },
+    {
+      "file": "0089_standard_import_v2_staging.sql",
+      "checksum": "15000d97717c066b01a93f970ae3c4a978aa9326f1b0221b2e70818ae4af4aa9"
+    },
+    {
+      "file": "0090_check_loan_currency.sql",
+      "checksum": "b288c4f294e8f145e3cbbb53e5ff88bae8b72cce84d8b57e58cc06718a296df3"
+    },
+    {
+      "file": "0091_import_rows_blocked_by_parent.sql",
+      "checksum": "2e46d1497f0959031a21b0cd7b4d0e1eeff5ba72a54fd45696c3dee245e3bd37"
+    },
+    {
+      "file": "0092_risk_level_unsupported_currency.sql",
+      "checksum": "0fbb1617f79c916fa67d7f9c859366f2b1eeb5ad69902044bbdbfc5e5fb64f4c"
+    },
+    {
+      "file": "0093_tier1_try_threshold_views.sql",
+      "checksum": "f0bfcdc4504466ca568a33729dd3586cf913470276caad59094c4f65ac35d4b0"
+    },
+    {
+      "file": "0094_tier2_tier3_try_only_views.sql",
+      "checksum": "d767239dded5a8b9328ecc59b724475bd05d42850fa03e2abee82eb09506ac43"
+    }
+  ],
+  "MISSING_VERSION": 0,
+  "DUPLICATE_VERSION": 0,
+  "OUT_OF_ORDER": 0,
+  "contiguous_0088_0094": true,
+  "fresh_db_via_pnpm_db_migrate": {
+    "state": "EMPTY",
+    "ledger": "94/0094",
+    "views": 81,
+    "counterparty_exposure_items_uses_checks_currency": true,
+    "ledger_rows_without_checksum": 0
+  }
+}

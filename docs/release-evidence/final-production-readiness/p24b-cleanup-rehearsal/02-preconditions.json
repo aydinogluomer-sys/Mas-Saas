@@ -1,0 +1,16 @@
+{
+  "realDbPreflight": {
+    "database": "mas_radar_dev",
+    "ledger": "0087/87",
+    "precondition": "PASS",
+    "problems": [],
+    "targetRows": 42,
+    "result": "PREFLIGHT_ONLY — hiçbir mutasyon yapılmadı"
+  },
+  "rehearsalPrecondition": {
+    "database": "mas_radar_p24b_final_drill",
+    "precondition": "PASS",
+    "problems": []
+  },
+  "note": "Gerçek DB preflight yalnız OKUDU; hiçbir mutasyon yapılmadı."
+}

@@ -1,0 +1,79 @@
+{
+  "artifactKind": "mas-p1-unit-contract-v1",
+  "measuredAtUtc": "2026-09-03T16:50:30.773Z",
+  "file": "src/lib/radar/generate-instances-audit.test.ts",
+  "approach": "Gercek veritabani yok. Sahte bir pg client surulur ve audit() yardimcisinin urettigi SQL gozlenir — audit.test.ts ile ayni seviye. Sahte client bilinmeyen SQL gorurse FIRLATIR, boylece uretim yolu yeni bir sorgu eklerse test sessizce yanlis olcmez.",
+  "roleDerivation": "Bakim rolu elle yazilmadi; engine.ts izin listesini authz matrisinden turetiyor, test de ayni sekilde turetiyor.",
+  "cases": [
+    {
+      "id": "A",
+      "name": "hicbir sey uretilmediginde denetim satiri YAZILMAZ",
+      "given": "3 odeme, hepsinin ilgili ay ornegi zaten var",
+      "expect": {
+        "created": 0,
+        "skippedExisting": 3,
+        "businessInserts": 0,
+        "auditRows": 0
+      },
+      "result": "PASS"
+    },
+    {
+      "id": "B",
+      "name": "gercek uretim oldugunda denetim kaydi ve payload KORUNUR",
+      "given": "3 odeme, hicbirinin ornegi yok",
+      "expect": {
+        "created": 3,
+        "businessInserts": 3,
+        "auditRows": 1,
+        "action": "generate_instances",
+        "after": {
+          "monthStart": "2027-03-01",
+          "created": 3,
+          "total": 3
+        }
+      },
+      "result": "PASS"
+    },
+    {
+      "id": "C",
+      "name": "pencere tamamen doluyken ensureWindow 26 ayi gezer ama HIC denetim yazmaz",
+      "given": "26 ayin tamami dolu, ensureWindow(..., 24)",
+      "expect": {
+        "monthsVisited": 26,
+        "businessInserts": 0,
+        "auditRows": 0
+      },
+      "result": "PASS"
+    },
+    {
+      "id": "D",
+      "name": "yalniz bir ay eksikse SADECE o ay icin tek denetim satiri",
+      "given": "26 ayin son ayi eksik",
+      "expect": {
+        "businessInserts": 3,
+        "auditRows": 1,
+        "auditMonth": "pencerenin son ayi"
+      },
+      "result": "PASS"
+    }
+  ],
+  "negativeControl": {
+    "method": "git stash ile engine.ts degisikligi geri alindi, AYNI test dosyasi tekrar kosuldu",
+    "resultWithoutFix": {
+      "failed": 3,
+      "passed": 1,
+      "caseA": "FAIL — beklenen [] , gelen 1 audit",
+      "caseC": "FAIL — beklenen [] , gelen 26 audit  (kusurun kendisi)",
+      "caseD": "FAIL — beklenen 1 uzunluk, gelen 26",
+      "caseB": "PASS — dogru: duzeltme denetimi susturmamali, bu vaka her iki durumda da gecmeli"
+    },
+    "interpretation": "Test dislerini kanitladi: duzeltme olmadan kirmiziya donuyor ve tam olarak 26 sayisini raporluyor.",
+    "fixRestoredAfterControl": true
+  },
+  "targetedRun": {
+    "files": 1,
+    "tests": 4,
+    "passed": 4,
+    "failed": 0
+  }
+}

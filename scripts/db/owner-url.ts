@@ -88,7 +88,7 @@ export const PROTECTED_DB_NAMES: readonly string[] = Object.freeze([
  */
 export const DISPOSABLE_MARKERS: readonly string[] = Object.freeze([
   "verify", "test", "tmp", "temp", "disposable", "scratch", "sandbox",
-  "fixture", "clone", "restore", "snapshot", "probe",
+  "fixture", "clone", "restore", "snapshot", "probe", "drill",
 ]);
 
 /** The database name inside a connection string, or undefined when it cannot be read. */

@@ -1,0 +1,310 @@
+{
+  "mode": "rehearsal",
+  "contractVersion": "v2.3.1",
+  "startedAtUtc": "2026-08-31T12:25:42.044Z",
+  "manifestSha256": "d60de97bcc3c62aa2902b64a7c164e8132e733ba7f6958e71b1a84bac3c8bbb9",
+  "backupReceipt": {
+    "path": "D:\\MAS-Backups\\p24b-final\\mas_radar_dev-p24b-final-2026-08-31T10-01-14-531Z.dump.offdevice.json",
+    "destPath": "D:\\MAS-Backups\\p24b-final\\mas_radar_dev-p24b-final-2026-08-31T10-01-14-531Z.dump",
+    "destSha256": "fe63481887b7937df1def58475589dac844933ea32ca081dd3beba85bfaffe2a",
+    "destBytes": 1413949,
+    "revalidatedAtExecution": true
+  },
+  "binding": {
+    "path": "C:/Users/Trade Bilisim/Mas Saas/docs/release-evidence/final-production-readiness/p24b-final-offdevice/05-gate-drill-binding.json",
+    "createdAtUtc": "2026-08-31T10:06:54.899Z",
+    "backupDestinationSha256": "fe63481887b7937df1def58475589dac844933ea32ca081dd3beba85bfaffe2a"
+  },
+  "database": "mas_radar_p24b_final_gate_drill",
+  "baseTableSetBefore": "auth.users,public.action_items,public.ai_response_snapshots,public.alert_escalation_rules,public.approval_rules,public.approval_steps,public.approvals,public.assistant_conversations,public.attachments,public.audit_logs,public.background_jobs,public.bank_accounts,public.bank_transaction_match_candidates,public.bank_transactions,public.budget_lines,public.budgets,public.capacity_models,public.cash_accounts,public.cashflow_lines,public.cashflow_months,public.cashflow_snapshots,public.categories,public.check_events,public.checks,public.collateral_records,public.control_alerts,public.cost_allocation_rules,public.cost_breakdown_lines,public.cost_centers,public.cost_models,public.counterparty_profiles,public.covenant_records,public.credit_facilities,public.departments,public.document_links,public.documents,public.external_assumptions,public.facility_drawdowns,public.finance_cost_allocations,public.forecast_lines,public.forecasts,public.fx_positions,public.fx_rate_snapshots,public.iban_change_events,public.ibans,public.import_rows,public.integration_connections,public.invoice_allocations,public.invoice_lines,public.invoice_reversals,public.invoices,public.loan_installments,public.loans,public.machine_assets,public.machine_minute_allocations,public.machine_roi_snapshots,public.mapping_reviews,public.metric_snapshots,public.optimization_recommendations,public.optimization_runs,public.orders,public.part_profitability_runs,public.parties,public.payment_instances,public.payments,public.production_parts,public.products,public.projects,public.promise_to_pay,public.reminder_deliveries,public.reminders,public.reports,public.saved_views,public.scenario_assumptions,public.scenario_comparisons,public.scenario_run_lines,public.scenario_runs,public.scenarios,public.schema_migrations,public.sessions,public.settings,public.source_cells,public.source_sheets,public.source_workbooks,public.treasury_policies,public.users",
+  "baseTableCount": 86,
+  "lockedTableCount": 86,
+  "lockMode": "SHARE ROW EXCLUSIVE on ALL 86 base tables (public, auth) · lock_timeout=10s · locks taken BEFORE preconditions",
+  "ledger": "0087/87",
+  "fkContract": [
+    {
+      "child": "action_items",
+      "col": "created_by",
+      "parent": "users",
+      "act": "NO ACTION"
+    },
+    {
+      "child": "approvals",
+      "col": "decided_by",
+      "parent": "users",
+      "act": "NO ACTION"
+    },
+    {
+      "child": "approvals",
+      "col": "requested_by",
+      "parent": "users",
+      "act": "NO ACTION"
+    },
+    {
+      "child": "approval_steps",
+      "col": "actor",
+      "parent": "users",
+      "act": "NO ACTION"
+    },
+    {
+      "child": "assistant_conversations",
+      "col": "created_by",
+      "parent": "users",
+      "act": "NO ACTION"
+    },
+    {
+      "child": "attachments",
+      "col": "uploaded_by",
+      "parent": "users",
+      "act": "NO ACTION"
+    },
+    {
+      "child": "audit_logs",
+      "col": "actor",
+      "parent": "users",
+      "act": "NO ACTION"
+    },
+    {
+      "child": "background_jobs",
+      "col": "created_by",
+      "parent": "users",
+      "act": "NO ACTION"
+    },
+    {
+      "child": "bank_transaction_match_candidates",
+      "col": "rejected_by",
+      "parent": "users",
+      "act": "NO ACTION"
+    },
+    {
+      "child": "budget_lines",
+      "col": "approved_by",
+      "parent": "users",
+      "act": "NO ACTION"
+    },
+    {
+      "child": "budget_lines",
+      "col": "created_by",
+      "parent": "users",
+      "act": "NO ACTION"
+    },
+    {
+      "child": "budgets",
+      "col": "created_by",
+      "parent": "users",
+      "act": "NO ACTION"
+    },
+    {
+      "child": "check_events",
+      "col": "created_by",
+      "parent": "users",
+      "act": "NO ACTION"
+    },
+    {
+      "child": "collateral_records",
+      "col": "created_by",
+      "parent": "users",
+      "act": "NO ACTION"
+    },
+    {
+      "child": "control_alerts",
+      "col": "acknowledged_by",
+      "parent": "users",
+      "act": "NO ACTION"
+    },
+    {
+      "child": "control_alerts",
+      "col": "action_item_id",
+      "parent": "action_items",
+      "act": "NO ACTION"
+    },
+    {
+      "child": "control_alerts",
+      "col": "resolved_by",
+      "parent": "users",
+      "act": "NO ACTION"
+    },
+    {
+      "child": "cost_allocation_rules",
+      "col": "created_by",
+      "parent": "users",
+      "act": "NO ACTION"
+    },
+    {
+      "child": "covenant_records",
+      "col": "created_by",
+      "parent": "users",
+      "act": "NO ACTION"
+    },
+    {
+      "child": "document_links",
+      "col": "created_by",
+      "parent": "users",
+      "act": "NO ACTION"
+    },
+    {
+      "child": "documents",
+      "col": "created_by",
+      "parent": "users",
+      "act": "NO ACTION"
+    },
+    {
+      "child": "external_assumptions",
+      "col": "created_by",
+      "parent": "users",
+      "act": "NO ACTION"
+    },
+    {
+      "child": "external_assumptions",
+      "col": "reviewed_by",
+      "parent": "users",
+      "act": "NO ACTION"
+    },
+    {
+      "child": "facility_drawdowns",
+      "col": "created_by",
+      "parent": "users",
+      "act": "NO ACTION"
+    },
+    {
+      "child": "forecast_lines",
+      "col": "approved_by",
+      "parent": "users",
+      "act": "NO ACTION"
+    },
+    {
+      "child": "forecast_lines",
+      "col": "created_by",
+      "parent": "users",
+      "act": "NO ACTION"
+    },
+    {
+      "child": "forecasts",
+      "col": "created_by",
+      "parent": "users",
+      "act": "NO ACTION"
+    },
+    {
+      "child": "fx_positions",
+      "col": "created_by",
+      "parent": "users",
+      "act": "NO ACTION"
+    },
+    {
+      "child": "fx_rate_snapshots",
+      "col": "created_by",
+      "parent": "users",
+      "act": "NO ACTION"
+    },
+    {
+      "child": "integration_connections",
+      "col": "created_by",
+      "parent": "users",
+      "act": "NO ACTION"
+    },
+    {
+      "child": "invoice_allocations",
+      "col": "created_by",
+      "parent": "users",
+      "act": "NO ACTION"
+    },
+    {
+      "child": "invoice_allocations",
+      "col": "reversed_by",
+      "parent": "users",
+      "act": "NO ACTION"
+    },
+    {
+      "child": "invoice_reversals",
+      "col": "created_by",
+      "parent": "users",
+      "act": "NO ACTION"
+    },
+    {
+      "child": "invoices",
+      "col": "bad_debt_by",
+      "parent": "users",
+      "act": "NO ACTION"
+    },
+    {
+      "child": "mapping_reviews",
+      "col": "reviewed_by",
+      "parent": "users",
+      "act": "NO ACTION"
+    },
+    {
+      "child": "optimization_runs",
+      "col": "created_by",
+      "parent": "users",
+      "act": "NO ACTION"
+    },
+    {
+      "child": "payment_instances",
+      "col": "payment_id",
+      "parent": "payments",
+      "act": "SET NULL"
+    },
+    {
+      "child": "promise_to_pay",
+      "col": "created_by",
+      "parent": "users",
+      "act": "NO ACTION"
+    },
+    {
+      "child": "promise_to_pay",
+      "col": "resolved_by",
+      "parent": "users",
+      "act": "NO ACTION"
+    },
+    {
+      "child": "saved_views",
+      "col": "created_by",
+      "parent": "users",
+      "act": "NO ACTION"
+    },
+    {
+      "child": "scenarios",
+      "col": "created_by",
+      "parent": "users",
+      "act": "NO ACTION"
+    },
+    {
+      "child": "sessions",
+      "col": "user_id",
+      "parent": "users",
+      "act": "NO ACTION"
+    },
+    {
+      "child": "source_workbooks",
+      "col": "imported_by",
+      "parent": "users",
+      "act": "NO ACTION"
+    }
+  ],
+  "preconditionProblems": [
+    "users/92cee4d3-c649-432d-b507-546d87936a76 BULUNAMADI",
+    "users/a794163c-6ab5-4d00-a1b5-2b0c563be4e3 BULUNAMADI",
+    "users/33796a14-c173-45c7-a784-33e44e8996a0 BULUNAMADI",
+    "users/19688698-2eb2-40bb-9fc5-37cebdc7e824 BULUNAMADI",
+    "users/cd3445b1-9c74-4703-b348-9f09a704a3d3 BULUNAMADI",
+    "users/4b6d2264-a608-4b36-90aa-17fcfa13bb3f BULUNAMADI",
+    "action_items/639daf7e-9c3e-4244-9ebf-6bef37b57971 BULUNAMADI",
+    "action_items/12d7532f-a730-44dd-9b91-43cf501a6871 BULUNAMADI",
+    "action_items/cdcb3e57-d0c3-46ac-afe7-997419720548 BULUNAMADI",
+    "action_items/cf55cbbc-feaa-4e79-9517-e41d22261e77 BULUNAMADI",
+    "payments/7b300bfe-944f-468b-91fa-2de65b7cfee5 BULUNAMADI",
+    "settings/p24b_fixture_setting BULUNAMADI",
+    "approvals/1fc76c28-9d71-4ce3-91a6-f1e9f94e5dd4 BULUNAMADI",
+    "approvals/62cd196c-d517-44c8-9431-3cce52d8b81a BULUNAMADI",
+    "approvals/8f656a4d-d2e4-40f2-b698-277f6278008b BULUNAMADI",
+    "approvals/f4d7db30-44ce-45c0-b4ce-536a0e2886c9 BULUNAMADI",
+    "payment_instances/3ab000e6-5187-468d-bf2e-2af882a2a3a2 BULUNAMADI",
+    "payment_instances/79eccf48-65ff-4427-af7b-9e332488c1bd BULUNAMADI",
+    "payment_instances/dfa79dc9-bc4d-4572-96b2-de56b0baceae BULUNAMADI",
+    "payment_instances/5bcafa6a-0b14-450e-be0a-4200d3ebcfdf BULUNAMADI"
+  ],
+  "result": "ROLLED_BACK",
+  "p24bCleanupComplete": false,
+  "error": "PRECONDITION_NOT_SATISFIED — 42 sorun (ilk: users/92cee4d3-c649-432d-b507-546d87936a76 BULUNAMADI)",
+  "finishedAtUtc": "2026-08-31T12:25:44.035Z"
+}

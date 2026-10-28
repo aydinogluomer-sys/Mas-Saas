@@ -41,11 +41,12 @@ yarn-error.log*
 *.tsbuildinfo
 next-env.d.ts
 
-# local source data (private financials)
-data/
-# The application route `/data` is source code, not private workbook data.
-!src/app/(dashboard)/data/
-!src/app/(dashboard)/data/**
+# local source data (private financials) — root-anchored (/data/) so it ignores ONLY the
+# top-level data/ workbook directory. A bare `data/` matches every nested data/ dir at any
+# depth, which silently swallowed src/components/data/ (reconciliation-table.tsx never got
+# committed → CI typecheck TS2307) and would have swallowed src/app/(dashboard)/data/ too had
+# it not already been tracked. Anchor any future ignore of a data/ path explicitly.
+/data/
 
 # database backups (private financial dumps — never commit)
 /backups/
@@ -58,8 +59,17 @@ data/
 /blob-report/
 
 # generated recovery/build artifacts
+# Her release kapisi/olcum kendi distDir'ine derler (eslint.config.mjs ile ayni kalip).
+/.next-*/
 /.next-corrupt-*/
 /.next-turbopack-incomplete-*/
+# release:real-clone-gate ayri distDir'e derler — canli sunucunun .next'ini ezmemek icin
+/.next-real-clone-gate/
+/.next-stage10-perf/
+/.next-restore-drill/
+# ASAMA 11 / B6: eski bir commit'in agaci (git archive) code/schema pairing provasi icin
+# buraya cikarilir; kalici degildir ve depoya girmez.
+/.stage11-oldcode/
 
 # local pnpm content-addressable store
 /.pnpm-store/
@@ -68,3 +78,41 @@ data/
 /debug.log
 /cloudflared-windows-amd64.msi
 __pycache__/
+
+# Playwright storageState — REAL session cookies minted by tests/visual/global-setup.ts.
+# These are live credentials for whatever database the harness last ran against; committing them
+# would publish a working session token and would also go stale the moment that disposable
+# database is dropped. Regenerated from scratch on every run.
+/tests/visual/.auth/
+
+# AŞAMA 09 — operasyonel telemetri günlükleri (alert log + koşu kayıtları + zamanlanmış görev
+# çıktısı). backups/ ile aynı gerekçe: bunlar OPERASYONEL veridir — hangi hesabın kilitlendiği,
+# hangi içe aktarımın bayatladığı, hangi veritabanının ne kadar büyüdüğü. Depoya ait değil ve
+# her koşuda değiştiği için ağacı da kirletir. Dizinin kendisi ilk koşuda oluşturulur.
+/logs/
+/.next-interaction-gate/
+/test-results/
+/.next-speed-verify/
+
+# ── Etkileşim denetimi: ÜRETİLMİŞ kanıt dosyaları ────────────────────────────────────────
+#
+# Bunlar her `pnpm interaction:crawl` / `interaction:test` koşusunda YENİDEN ÜRETİLİR ve
+# 7.3 MB tutuyordu (runtime-inventory 3.9 MB, evidence-navigation 2.4 MB, coverage-report
+# 831 KB, static-inventory 166 KB). Git'te tutulduklarında her koşu okunamaz bir diff üretiyor
+# ve depoyu şişiriyordu — üstelik hiçbiri elle yazılmış bilgi değil.
+#
+# Kalıcı olan iki şey git'te KALIR:
+#   docs/interaction-audit.md              insan tarafından yazılmış rapor
+#   docs/interaction-audit/baseline.json   küçük, elle okunabilir kapsam tavanı
+#
+# Tam çıktılar CI'da artifact olarak saklanır (.github/workflows/ci.yml →
+# "Upload interaction evidence", retention 14 gün). Geçmiş kanıt da kaybolmadı: 067eaa4'te
+# commit edilmiş hâlleri `git show 067eaa4:docs/interaction-audit/coverage-report.json` ile
+# hâlâ okunabiliyor (doğrulandı: discovered=2122, pass=1561, untested=561).
+/docs/interaction-audit/runtime-inventory.json
+/docs/interaction-audit/static-inventory.json
+/docs/interaction-audit/coverage-report.json
+/docs/interaction-audit/evidence-*.json
+
+# PHASE 1/4: ayri distDir ile derlenen dogrulama ciktilari (MAS_NEXT_DIST_DIR)
+/.next-*/

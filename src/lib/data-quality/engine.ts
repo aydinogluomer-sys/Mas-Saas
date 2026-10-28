@@ -1,4 +1,5 @@
-import type { Pool } from "pg";
+import type { Pool, PoolClient } from "pg";
+import { gather } from "@/lib/pg-concurrency";
 import {
   classifyWorkbookChange,
   decisionConfidenceLabel,
@@ -13,6 +14,8 @@ import {
 import { loadCapacityModels } from "@/lib/production/engine";
 import { moneyOrNull } from "@/lib/money";
 import { audit } from "@/lib/audit";
+import { cache } from "@/lib/cache/engine";
+import { CACHE_TAGS } from "@/lib/cache/tags";
 
 export interface ActionItem {
   id: string;
@@ -45,18 +48,21 @@ export interface DataQualityBlocker extends ReviewSignal {
   source_href: string;
 }
 
-export async function loadDataQualityCenter(pool: Pool) {
-  const [reviewCounts, issueCounts, openReviews, actions, specialSheets, externalPending, workbookVersions, reconciliationSignals, workbookStats, changedSheets, cashflowReconciliation, missingAmounts, auditTrail, capacityModels] = await Promise.all([
-    pool.query<{ status: string; severity: DqSeverity; n: number }>(
+export async function loadDataQualityCenter(pool: Pool | PoolClient) {
+  return cache.withCache(
+    "data-quality:center",
+    async () => {
+      const [reviewCounts, issueCounts, openReviews, actions, specialSheets, externalPending, workbookVersions, reconciliationSignals, workbookStats, changedSheets, cashflowReconciliation, missingAmounts, auditTrail, capacityModels] = await gather(pool, [
+    () => pool.query<{ status: string; severity: DqSeverity; n: number }>(
       `select status, severity, count(*)::int n
        from public.mapping_reviews group by status, severity`,
     ),
-    pool.query<{ issue_type: string; n: number; open_n: number }>(
+    () => pool.query<{ issue_type: string; n: number; open_n: number }>(
       `select issue_type, count(*)::int n,
               count(*) filter (where status in ('open','rejected'))::int open_n
        from public.mapping_reviews group by issue_type order by open_n desc, n desc, issue_type limit 12`,
     ),
-    pool.query<DataQualityBlocker>(
+    () => pool.query<DataQualityBlocker>(
       `select m.id, m.workbook_id, w.original_filename as workbook_name, m.sheet_id,
               m.issue_type, m.severity, m.message, m.status, m.created_at,
               s.sheet_name, r.row_index,
@@ -71,7 +77,7 @@ export async function loadDataQualityCenter(pool: Pool) {
                 m.created_at asc
        limit 50`,
     ),
-    pool.query<ActionItem>(
+    () => pool.query<ActionItem>(
       `select id, title, severity, owner, to_char(due_date,'YYYY-MM-DD') as due_date, status,
               source_type, source_fact_key, source_href, related_entity_table, related_entity_id,
               note,
@@ -83,7 +89,7 @@ export async function loadDataQualityCenter(pool: Pool) {
                 due_date nulls last, created_at desc
        limit 50`,
     ),
-    pool.query<{ workbook_name: string; sheet_name: string; detected_type: string | null; parse_confidence: string }>(
+    () => pool.query<{ workbook_name: string; sheet_name: string; detected_type: string | null; parse_confidence: string }>(
       `select w.original_filename as workbook_name, s.sheet_name, s.detected_type, s.parse_confidence
        from public.source_sheets s join public.source_workbooks w on w.id=s.workbook_id
        where lower(s.sheet_name) in ('01_dashboard','02_aylik ozet','02_aylik özet','00_rehber')
@@ -93,10 +99,10 @@ export async function loadDataQualityCenter(pool: Pool) {
           or lower(s.sheet_name) like '%aylık%özet%'
        order by w.imported_at desc, s.sheet_index`,
     ),
-    pool.query<{ n: number }>(
+    () => pool.query<{ n: number }>(
       `select count(*)::int n from public.external_assumptions where review_status='pending_review'`,
     ),
-    pool.query<{ id: string; original_filename: string; imported_at: string; status: string }>(
+    () => pool.query<{ id: string; original_filename: string; imported_at: string; status: string }>(
       `select id::text, original_filename,
               to_char(imported_at at time zone 'Europe/Istanbul','YYYY-MM-DD HH24:MI') as imported_at,
               status
@@ -104,13 +110,13 @@ export async function loadDataQualityCenter(pool: Pool) {
        order by imported_at desc
        limit 6`,
     ),
-    pool.query<{ n: number }>(
+    () => pool.query<{ n: number }>(
       `select count(*)::int n
        from public.mapping_reviews
        where issue_type in ('cashflow_identity_mismatch','continuity_break','month_gap')
          and status in ('open','rejected')`,
     ),
-    pool.query<{
+    () => pool.query<{
       workbook_id: string;
       original_filename: string;
       imported_at: string;
@@ -136,7 +142,7 @@ export async function loadDataQualityCenter(pool: Pool) {
        from last2 l
        order by l.imported_at desc`,
     ),
-    pool.query<{ sheet_name: string; side: string }>(
+    () => pool.query<{ sheet_name: string; side: string }>(
       `with last2 as (
          select id, row_number() over(order by imported_at desc) as rn
          from public.source_workbooks
@@ -154,7 +160,7 @@ export async function loadDataQualityCenter(pool: Pool) {
        order by 1
        limit 20`,
     ),
-    pool.query<{
+    () => pool.query<{
       month_start: string;
       app_opening: number | null;
       source_opening: number | null;
@@ -192,13 +198,13 @@ export async function loadDataQualityCenter(pool: Pool) {
        order by cm.month_start desc
        limit 24`,
     ),
-    pool.query<{ n: number }>(
+    () => pool.query<{ n: number }>(
       `select (
          (select count(*)::int from public.payment_instances where amount is null and status in ('unpaid','partial','planned','late')) +
          (select count(*)::int from public.cashflow_lines where amount is null)
        )::int as n`,
     ),
-    pool.query<AuditTrailItem>(
+    () => pool.query<AuditTrailItem>(
       `select action, entity_table, entity_id::text,
               to_char(created_at at time zone 'Europe/Istanbul','YYYY-MM-DD HH24:MI') as created_at
        from public.audit_logs
@@ -206,7 +212,7 @@ export async function loadDataQualityCenter(pool: Pool) {
        order by created_at desc
        limit 8`,
     ),
-    loadCapacityModels(pool),
+    () => loadCapacityModels(pool),
   ]);
 
   const blockers = rankReviewSignals(openReviews.rows, 5);
@@ -264,6 +270,9 @@ export async function loadDataQualityCenter(pool: Pool) {
     })),
     auditTrail: auditTrail.rows,
   };
+    },
+    { ttlSeconds: 60, tags: [CACHE_TAGS.DATA_QUALITY] },
+  );
 }
 
 function dueIn(days: number): string {

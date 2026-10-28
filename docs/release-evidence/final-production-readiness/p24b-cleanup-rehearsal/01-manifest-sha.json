@@ -1,0 +1,15 @@
+{
+  "manifestPath": "docs/release-evidence/final-production-readiness/p24b-v6/02-row-evidence-manifest.json",
+  "sha256": "d60de97bcc3c62aa2902b64a7c164e8132e733ba7f6958e71b1a84bac3c8bbb9",
+  "pinnedInScript": "scripts/db/p24b-fixture-cleanup.ts EXPECTED_MANIFEST_SHA256",
+  "total": 42,
+  "unresolved": 0,
+  "counts": {
+    "users": 6,
+    "action_items": 4,
+    "payments": 1,
+    "settings": 1,
+    "approvals": 4,
+    "payment_instances": 26
+  }
+}

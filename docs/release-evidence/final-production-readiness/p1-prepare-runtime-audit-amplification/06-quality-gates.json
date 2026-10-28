@@ -1,0 +1,39 @@
+{
+  "artifactKind": "mas-p1-quality-gates-v1",
+  "measuredAtUtc": "2026-09-03T16:57:34.615Z",
+  "worktree": "Mas-Saas-P1-Audit-Fix",
+  "branch": "fix/p1-prepare-runtime-audit-amplification",
+  "baseSha": "c71366a775be079e61d9f842a8659cbc2caa9499",
+  "install": {
+    "command": "pnpm install --frozen-lockfile",
+    "exitCode": 0
+  },
+  "typecheck": "PASS",
+  "lint": "PASS",
+  "unitTests": {
+    "verdict": "PASS",
+    "files": 67,
+    "tests": 1432,
+    "baselineBeforeFix": {
+      "files": 66,
+      "tests": 1428
+    },
+    "delta": "+1 dosya / +4 test — tam olarak P1 sozlesmesi; baska hicbir test etkilenmedi",
+    "regressions": 0
+  },
+  "targetedP1Tests": {
+    "file": "src/lib/radar/generate-instances-audit.test.ts",
+    "tests": 4,
+    "passed": 4,
+    "failed": 0
+  },
+  "build": "PASS (exit 0)",
+  "securitySubset": {
+    "script": "scripts/db/security-matrix-verify.ts",
+    "ranAgainst": "mas_radar_p1_positive_control_verify (harcanabilir klon)",
+    "ranAgainstRealDb": false,
+    "checks": "17/17 PASS",
+    "coverage": "RLS 47 tabloda acik, oturum/rol semantigi, getRawPool sinirlamasi, 30/30 server action kimlik dogrulamasi, mutasyon yapan API rotalarinda checkOrigin",
+    "actorIdentityRunAsSystemRlsChanged": false
+  }
+}

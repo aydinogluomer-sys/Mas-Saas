@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   aggregateChartGranularity,
   chartDomain,
@@ -34,12 +34,12 @@ export function AnalyticsChart({ model, kind = "line", defaultPeriod = "12m" }: 
   const [tip, setTip] = useState<string | null>(null);
   const hydrated = useRef(false);
 
-  const normalizeGranularity = (nextPeriod: AnalyticsPeriod, fallback?: ChartGranularity): ChartGranularity => {
+  const normalizeGranularity = useCallback((nextPeriod: AnalyticsPeriod, fallback?: ChartGranularity): ChartGranularity => {
     const preferred = model.defaultGranularityByPeriod?.[nextPeriod];
     if (preferred && granularityOptions.includes(preferred)) return preferred;
     if (fallback && granularityOptions.includes(fallback)) return fallback;
     return granularityOptions[0] ?? "day";
-  };
+  }, [granularityOptions, model.defaultGranularityByPeriod]);
 
   useEffect(() => {
     const params = new URL(window.location.href).searchParams;
@@ -59,7 +59,7 @@ export function AnalyticsChart({ model, kind = "line", defaultPeriod = "12m" }: 
   useEffect(() => {
     const next = normalizeGranularity(period, granularity);
     if (next !== granularity) setGranularity(next);
-  }, [period, granularity, granularityOptions, model.defaultGranularityByPeriod]);
+  }, [period, granularity, normalizeGranularity]);
 
   const periodView = useMemo(() => filterChartPeriod(model, period, granularity), [model, period, granularity]);
   const granularView = useMemo(() => aggregateChartGranularity(periodView, granularity), [periodView, granularity]);

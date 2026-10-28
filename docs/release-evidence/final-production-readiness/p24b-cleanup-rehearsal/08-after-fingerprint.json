@@ -1,0 +1,30 @@
+{
+  "changedTables": [
+    "public.action_items",
+    "public.approvals",
+    "public.payment_instances",
+    "public.payments",
+    "public.settings",
+    "public.users"
+  ],
+  "allowedMutableTables": [
+    "action_items",
+    "approvals",
+    "payment_instances",
+    "payments",
+    "users",
+    "settings"
+  ],
+  "illegalChanges": [],
+  "nonTargetFingerprintGate": "PASS",
+  "residualGates": {
+    "fixture_payment": 0,
+    "orphan_instances": 0,
+    "p24b_users": 0,
+    "p24b_action_items": 0,
+    "p24b_settings": 0,
+    "atilla": 1,
+    "ledger": 87
+  },
+  "ledgerAfter": "0087/87"
+}

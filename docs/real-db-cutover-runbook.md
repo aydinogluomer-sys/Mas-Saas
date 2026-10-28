@@ -333,12 +333,45 @@ yönde birden tuttuğunu ölçer: `mas_radar_app` owner işlerini (superuser, by
 ledger yazma) yapamamalı, ama uygulamanın meşru olarak ihtiyaç duyduğu her şeyi
 yapabilmelidir.
 
+> ### ⛔ `db:roles-rls:verify` GERÇEK VERİTABANINDA ÇALIŞTIRILMAZ
+>
+> Bu adım daha önce burada, cutover hedefine karşı `pnpm db:roles-rls:verify` çağırıyordu.
+> **Bu talimat yanlıştı ve iki kez gerçek hasara yol açtı.** Adı bir doğrulama kapısı gibi
+> okunur, ama `ensureFixtures()` içinde BEŞ tabloya gerçek satır **YAZAR**:
+> `payments · settings · users · action_items · approvals`. Kullanıcı adlarındaki rastgele
+> son ek yüzünden her koşu YENİ satırlar bırakır, yani kirlilik birikir.
+>
+> Ölçülen sonuç — bu runbook satırı izlendiği için aynı kaza iki kez oldu:
+>
+> | olay | zaman (UTC) | bıraktığı |
+> |---|---|---|
+> | I1 | 2026-08-25 10:09:08 – 10:10:38 | `payments` "P24B fixture" · 4 kullanıcı · 2 action_item · 1 setting |
+> | I2 | 2026-08-26 15:16:19 | 2 kullanıcı · 2 action_item |
+>
+> Dahası `payments`'ta kalan fixture satırı **kendi kendini çoğalttı**: `prepare-runtime`
+> her `dev`/`start` koşusunda `ensureWindow(…, 24)` çalıştırdığı için o şablondan
+> **26 `payment_instances`** üretildi (2026-08-25 10:19 ve 2026-08-26 12:02).
+>
+> `9844dd3` bu script'e makine-zorlamalı bir disposable kapısı ekledi, dolayısıyla eski komut
+> artık `exit 1` verir. Komutu buradan kaldırmak, runbook ile kodun tekrar aynı sözleşmeyi
+> anlatması içindir — çalıştırılamayacak bir adım bırakmak, operatörü kapıyı aşmanın yolunu
+> aramaya iter.
+
+**Bunun yerine sorumluluk ikiye ayrılır:**
+
+* **Gerçek veritabanı** → yalnız `db:roles:verify` (yukarıdaki) **ve** aşağıdaki **J**
+  bölümünün salt-okunur RLS sondaları. İkisi de satır yazmaz: `db:roles:verify`'ın tek
+  INSERT probu `begin`/`rollback` içindedir, J'nin tamamı transaction içinde geri alınır.
+* **Disposable klon** → `db:roles-rls:verify`, tam fixture matrisiyle. Klon, **bu release
+  candidate'tan** üretilmiş olmalıdır; yoksa kanıt cutover'a ait olmaz.
+
 ```bash
-DATABASE_URL="<mas_radar_app bağlantısı>" \
-MIGRATION_DATABASE_URL="$MIGRATION_DATABASE_URL" pnpm db:roles-rls:verify
+# Disposable klon üzerinde — ADI harcanabilir olduğunu SÖYLEMELİDİR (bkz. scripts/db/owner-url.ts)
+CLONE_URL="postgres://…@127.0.0.1:5432/mas_radar_cutover_clone_verify"
+DATABASE_URL="$CLONE_URL" MIGRATION_DATABASE_URL="$CLONE_URL" pnpm db:roles-rls:verify
 ```
 
-**Beklenen:** ikisi de ALL PASS.
+**Beklenen:** `db:roles:verify` gerçek DB'de ALL PASS **ve** `db:roles-rls:verify` klonda ALL PASS.
 
 **GERİ DÖNÜŞ ÖLÇÜTÜ (I):** FAIL varsa uygulama **kullanıma açılmaz**. FAIL'in yönü
 kararı belirler:
@@ -490,3 +523,58 @@ Transaction geri alınır, ama **soru geri alınmaz**. Sıra:
 * **`origin/master`.** Bu çalışmanın hiçbir parçası `origin/master`'a dokunmaz;
   Faz 17-38 `phase17-38-review` dalında durur.
 * **Uygulama kodunun dağıtımı.** Bu belge yalnız veritabanı ve kimlik cutover'ıdır.
+
+---
+
+## P24B temizliği — DDL / sessizlik sözleşmesi
+
+`scripts/db/p24b-fixture-cleanup.ts` transaction'ı, `public` ve `auth` şemalarındaki **tüm base
+table'ları** (ölçülen: 86) `SHARE ROW EXCLUSIVE` ile kilitler. Bu kilidin ne verdiği ve **ne
+vermediği** konusunda net olmak gerekir; abartılmış bir güvenlik iddiası, olmayan bir korumaya
+güvenmeye yol açar.
+
+### Veritabanı tarafından zorlanan
+
+```
+ALL_BASE_TABLE_DML_FREEZE = ENFORCED_BY_DB_LOCKS
+```
+
+Kilit alındığı anda **var olan** her base table üzerinde dışarıdan `INSERT`/`UPDATE`/`DELETE`
+engellenir; okuma serbest kalır. Ölçülmüştür: kilit tutulurken hedef **dışı** bir tabloya yazma
+`55P03` ile reddedilir, kilit yokken aynı yazma geçer
+(`p24b-cleanup-v23/04-concurrent-wholedb-control.json`).
+
+Bir tablo `lock_timeout=10s` içinde alınamazsa transaction **ROLLBACK** olur. *"Bazıları
+kilitlendi, devam"* diye bir yol yoktur.
+
+### Veritabanı tarafından zorlanmayan — operasyonel invariant
+
+```
+CONCURRENT_NEW_TABLE_DDL = OPERATIONALLY_FORBIDDEN
+```
+
+Kilitler **katalogu** donduramaz. Eşzamanlı bir migration yeni bir tablo yaratırsa, o tablo hem
+kilidin hem parmak izinin dışında kalır. Bu yüzden temizlik, transaction'ın başında ve **COMMIT'ten
+hemen önce** katalogu yeniden okur:
+
+* küme değişmişse → `BASE_TABLE_SET_CHANGED_DURING_CLEANUP` → ROLLBACK
+* `schema_migrations` başlangıçtaki değerden (`0087/87`) kaymışsa → `LEDGER_CHANGED_DURING_CLEANUP` → ROLLBACK
+
+Yani DDL *engellenmiş* değil, **tespit edilir ve temizliği iptal ettirir**. Doğru ifade budur;
+"bütün DDL veritabanı kilidiyle matematiksel olarak imkânsız" demek yanlış olurdu.
+
+### Gerçek temizlik için zorunlu ön koşullar
+
+Operatör, temizliği başlatmadan önce şunları sağlamalıdır:
+
+| # | koşul |
+|---|---|
+| 1 | uygulama/runtime durdurulmuş (`next dev` / `next start` yok) |
+| 2 | `prepare-runtime` çalışmıyor |
+| 3 | Telegram botu / worker'lar durdurulmuş |
+| 4 | migration süreci yok (`db:migrate`, `db:migrate:dev`, CI job'ı) |
+| 5 | başka hiçbir DDL süreci yok |
+| 6 | temizliği yürüten operatör **tek yetkili yazıcıdır** |
+
+Bunlar temizlik makbuzunun sözleşmesinin parçasıdır; 1-3 zaten P24B soruşturmasının başında
+ölçülerek doğrulanmıştı (`writer-surface-audit/00-runtime-freeze.md`).

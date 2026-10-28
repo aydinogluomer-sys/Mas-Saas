@@ -14,6 +14,8 @@ import { audit } from "@/lib/audit";
 import { DomainError } from "@/lib/domain-error";
 import { moneyOrNull, rateOrNull } from "@/lib/money";
 import { parseOrThrow } from "@/lib/validation";
+import { cache } from "@/lib/cache/engine";
+import { CACHE_TAGS } from "@/lib/cache/tags";
 import { cashCycle, cycleVerdict, profitability, type CostKind } from "./rules";
 
 export const updateAllocationRuleSchema = z.object({
@@ -109,61 +111,78 @@ export async function updateAllocationRule(pool: Pool, raw: unknown, actorId: st
 /* ── reads ────────────────────────────────────────────────────────────────────────────── */
 
 export async function loadCostCenterProfitability(pool: Pool) {
-  const r = await pool.query(
-    `select cost_center_id, cost_center_code, cost_center_name, currency,
-            revenue, direct_cost, margin, margin_rate,
-            sales_invoice_count, purchase_invoice_count, confidence
-     from public.profitability_by_cost_center
-     order by margin nulls last, cost_center_name`);
-  return r.rows.map((x) => ({
-    costCenterId: x.cost_center_id,
-    code: x.cost_center_code,
-    name: x.cost_center_name,
-    currency: x.currency,
-    revenue: moneyOrNull(x.revenue),
-    directCost: moneyOrNull(x.direct_cost),
-    margin: moneyOrNull(x.margin),
-    marginRate: rateOrNull(x.margin_rate),
-    salesInvoiceCount: Number(x.sales_invoice_count),
-    purchaseInvoiceCount: Number(x.purchase_invoice_count),
-    confidence: x.confidence as string,
-  }));
+  return cache.withCache(
+    "costing:profitability:costCenter",
+    async () => {
+      const r = await pool.query(
+        `select cost_center_id, cost_center_code, cost_center_name, currency,
+                revenue, direct_cost, margin, margin_rate,
+                sales_invoice_count, purchase_invoice_count, confidence
+         from public.profitability_by_cost_center
+         order by margin nulls last, cost_center_name`);
+      return r.rows.map((x) => ({
+        costCenterId: x.cost_center_id,
+        code: x.cost_center_code,
+        name: x.cost_center_name,
+        currency: x.currency,
+        revenue: moneyOrNull(x.revenue),
+        directCost: moneyOrNull(x.direct_cost),
+        margin: moneyOrNull(x.margin),
+        marginRate: rateOrNull(x.margin_rate),
+        salesInvoiceCount: Number(x.sales_invoice_count),
+        purchaseInvoiceCount: Number(x.purchase_invoice_count),
+        confidence: x.confidence as string,
+      }));
+    },
+    { ttlSeconds: 60, tags: [CACHE_TAGS.INVOICES, CACHE_TAGS.PRODUCTION] }
+  );
 }
 
 export async function loadProjectProfitability(pool: Pool) {
-  const r = await pool.query(
-    `select project_id, project_code, project_name, currency,
-            revenue, direct_cost, margin, margin_rate, invoice_count
-     from public.profitability_by_project order by margin nulls last, project_name`);
-  return r.rows.map((x) => ({
-    projectId: x.project_id, code: x.project_code, name: x.project_name,
-    currency: x.currency,
-    revenue: moneyOrNull(x.revenue), directCost: moneyOrNull(x.direct_cost),
-    margin: moneyOrNull(x.margin), marginRate: rateOrNull(x.margin_rate),
-    invoiceCount: Number(x.invoice_count),
-  }));
+  return cache.withCache(
+    "costing:profitability:project",
+    async () => {
+      const r = await pool.query(
+        `select project_id, project_code, project_name, currency,
+                revenue, direct_cost, margin, margin_rate, invoice_count
+         from public.profitability_by_project order by margin nulls last, project_name`);
+      return r.rows.map((x) => ({
+        projectId: x.project_id, code: x.project_code, name: x.project_name,
+        currency: x.currency,
+        revenue: moneyOrNull(x.revenue), directCost: moneyOrNull(x.direct_cost),
+        margin: moneyOrNull(x.margin), marginRate: rateOrNull(x.margin_rate),
+        invoiceCount: Number(x.invoice_count),
+      }));
+    },
+    { ttlSeconds: 60, tags: [CACHE_TAGS.INVOICES, CACHE_TAGS.PRODUCTION] }
+  );
 }
 
 export async function loadPartyProfitability(pool: Pool, limit = 100) {
-  const r = await pool.query(
-    `select party_id, party_name, party_type, currency,
-            revenue_from_party, cost_to_party, net_contribution,
-            sales_invoice_count, purchase_invoice_count, observed_role
-     from public.profitability_by_party
-     where observed_role <> 'no_activity'
-     order by net_contribution nulls last, party_name
-     limit $1`, [limit]);
-  return r.rows.map((x) => ({
-    partyId: x.party_id, name: x.party_name, partyType: x.party_type,
-    currency: x.currency,
-    revenue: moneyOrNull(x.revenue_from_party),
-    cost: moneyOrNull(x.cost_to_party),
-    netContribution: moneyOrNull(x.net_contribution),
-    salesInvoiceCount: Number(x.sales_invoice_count),
-    purchaseInvoiceCount: Number(x.purchase_invoice_count),
-    // What the data shows the party actually is, which may differ from its type column.
-    observedRole: x.observed_role as string,
-  }));
+  return cache.withCache(
+    `costing:profitability:party:${limit}`,
+    async () => {
+      const r = await pool.query(
+        `select party_id, party_name, party_type, currency,
+                revenue_from_party, cost_to_party, net_contribution,
+                sales_invoice_count, purchase_invoice_count, observed_role
+         from public.profitability_by_party
+         where observed_role <> 'no_activity'
+         order by net_contribution nulls last, party_name
+         limit $1`, [limit]);
+      return r.rows.map((x) => ({
+        partyId: x.party_id, name: x.party_name, partyType: x.party_type,
+        currency: x.currency,
+        revenue: moneyOrNull(x.revenue_from_party),
+        cost: moneyOrNull(x.cost_to_party),
+        netContribution: moneyOrNull(x.net_contribution),
+        salesInvoiceCount: Number(x.sales_invoice_count),
+        purchaseInvoiceCount: Number(x.purchase_invoice_count),
+        observedRole: x.observed_role as string,
+      }));
+    },
+    { ttlSeconds: 60, tags: [CACHE_TAGS.INVOICES, CACHE_TAGS.COUNTERPARTY_RISK] }
+  );
 }
 
 /** Departments, which cannot be measured — the reason travels with the row. */
@@ -183,34 +202,45 @@ export async function loadDepartmentProfitability(pool: Pool) {
 }
 
 export async function loadMachineProfitability(pool: Pool) {
-  const r = await pool.query(
-    `select machine_id, machine_name, machine_type, purchase_cost, snapshot_year,
-            revenue, cost, margin, margin_rate, net_after_tax, roi_rate, confidence
-     from public.profitability_by_machine order by machine_name, snapshot_year`);
-  return r.rows.map((x) => ({
-    machineId: x.machine_id, name: x.machine_name, machineType: x.machine_type,
-    purchaseCost: moneyOrNull(x.purchase_cost),
-    snapshotYear: x.snapshot_year == null ? null : Number(x.snapshot_year),
-    revenue: moneyOrNull(x.revenue), cost: moneyOrNull(x.cost),
-    margin: moneyOrNull(x.margin), marginRate: rateOrNull(x.margin_rate),
-    netAfterTax: moneyOrNull(x.net_after_tax), roiRate: rateOrNull(x.roi_rate),
-    confidence: x.confidence as string,
-  }));
+  return cache.withCache(
+    "costing:profitability:machine",
+    async () => {
+      const r = await pool.query(
+        `select machine_id, machine_name, machine_type, purchase_cost, snapshot_year,
+                revenue, cost, margin, margin_rate, net_after_tax, roi_rate, confidence
+         from public.profitability_by_machine order by machine_name, snapshot_year`);
+      return r.rows.map((x) => ({
+        machineId: x.machine_id, name: x.machine_name, machineType: x.machine_type,
+        purchaseCost: moneyOrNull(x.purchase_cost),
+        snapshotYear: x.snapshot_year == null ? null : Number(x.snapshot_year),
+        revenue: moneyOrNull(x.revenue), cost: moneyOrNull(x.cost),
+        margin: moneyOrNull(x.margin), marginRate: rateOrNull(x.margin_rate),
+        netAfterTax: moneyOrNull(x.net_after_tax), roiRate: rateOrNull(x.roi_rate),
+        confidence: x.confidence as string,
+      }));
+    },
+    { ttlSeconds: 60, tags: [CACHE_TAGS.PRODUCTION] }
+  );
 }
 
 export async function loadCompanyProfitability(pool: Pool) {
-  const r = await pool.query(
-    `select currency, to_char(period_start,'YYYY-MM-DD') as period_start,
-            revenue, direct_cost, margin, invoice_count, undimensioned_invoice_count
-     from public.profitability_company order by period_start`);
-  return r.rows.map((x) => ({
-    currency: x.currency, periodStart: x.period_start,
-    revenue: moneyOrNull(x.revenue), directCost: moneyOrNull(x.direct_cost),
-    margin: moneyOrNull(x.margin),
-    invoiceCount: Number(x.invoice_count),
-    // Surfaced so a rollup resting on undimensioned invoices says so.
-    undimensionedInvoiceCount: Number(x.undimensioned_invoice_count),
-  }));
+  return cache.withCache(
+    "costing:profitability:company",
+    async () => {
+      const r = await pool.query(
+        `select currency, to_char(period_start,'YYYY-MM-DD') as period_start,
+                revenue, direct_cost, margin, invoice_count, undimensioned_invoice_count
+         from public.profitability_company order by period_start`);
+      return r.rows.map((x) => ({
+        currency: x.currency, periodStart: x.period_start,
+        revenue: moneyOrNull(x.revenue), directCost: moneyOrNull(x.direct_cost),
+        margin: moneyOrNull(x.margin),
+        invoiceCount: Number(x.invoice_count),
+        undimensionedInvoiceCount: Number(x.undimensioned_invoice_count),
+      }));
+    },
+    { ttlSeconds: 60, tags: [CACHE_TAGS.INVOICES] }
+  );
 }
 
 export interface WorkingCapital {
@@ -234,47 +264,59 @@ export interface WorkingCapital {
  * the pattern Faz 26/27/28 used, and the gate fails if they disagree.
  */
 export async function loadWorkingCapital(pool: Pool): Promise<WorkingCapital | null> {
-  const r = await pool.query(
-    `select receivables_open, payables_open, dso_days, dpo_days, dio_days,
-            dio_unmeasurable_reason, cash_conversion_cycle_days, ccc_unmeasurable_reason,
-            cash_cycle_excluding_inventory
-     from public.working_capital_metrics limit 1`);
-  if (r.rowCount === 0) return null;
-  const x = r.rows[0];
-  const dsoDays = x.dso_days == null ? null : Number(x.dso_days);
-  const dpoDays = x.dpo_days == null ? null : Number(x.dpo_days);
-  const dioDays = x.dio_days == null ? null : Number(x.dio_days);
-  const cycle = cashCycle(dsoDays, dioDays, dpoDays);
-  return {
-    receivablesOpen: moneyOrNull(x.receivables_open),
-    payablesOpen: moneyOrNull(x.payables_open),
-    dsoDays,
-    dpoDays,
-    dioDays,
-    dioUnmeasurableReason: x.dio_unmeasurable_reason as string | null,
-    cashConversionCycleDays: cycle.cashConversionCycleDays,
-    cccUnmeasurableReason: cycle.unmeasurableReason,
-    cycleExcludingInventory: cycle.cycleExcludingInventory,
-    verdict: cycleVerdict(cycle.cycleExcludingInventory),
-  };
+  return cache.withCache(
+    "costing:workingCapital",
+    async () => {
+      const r = await pool.query(
+        `select receivables_open, payables_open, dso_days, dpo_days, dio_days,
+                dio_unmeasurable_reason, cash_conversion_cycle_days, ccc_unmeasurable_reason,
+                cash_cycle_excluding_inventory
+         from public.working_capital_metrics limit 1`);
+      if (r.rowCount === 0) return null;
+      const x = r.rows[0];
+      const dsoDays = x.dso_days == null ? null : Number(x.dso_days);
+      const dpoDays = x.dpo_days == null ? null : Number(x.dpo_days);
+      const dioDays = x.dio_days == null ? null : Number(x.dio_days);
+      const cycle = cashCycle(dsoDays, dioDays, dpoDays);
+      return {
+        receivablesOpen: moneyOrNull(x.receivables_open),
+        payablesOpen: moneyOrNull(x.payables_open),
+        dsoDays,
+        dpoDays,
+        dioDays,
+        dioUnmeasurableReason: x.dio_unmeasurable_reason as string | null,
+        cashConversionCycleDays: cycle.cashConversionCycleDays,
+        cccUnmeasurableReason: cycle.unmeasurableReason,
+        cycleExcludingInventory: cycle.cycleExcludingInventory,
+        verdict: cycleVerdict(cycle.cycleExcludingInventory),
+      };
+    },
+    { ttlSeconds: 60, tags: [CACHE_TAGS.INVOICES, CACHE_TAGS.RECEIVABLES, CACHE_TAGS.PAYABLES] }
+  );
 }
 
 export async function loadWorkingCapitalTrend(pool: Pool) {
-  const r = await pool.query(
-    `select to_char(period_start,'YYYY-MM-DD') as period_start,
-            receivables_open, payables_open, dso_days, dpo_days, dio_days,
-            cash_cycle_excluding_inventory
-     from public.working_capital_trend order by period_start`);
-  return r.rows.map((x) => ({
-    periodStart: x.period_start,
-    receivablesOpen: moneyOrNull(x.receivables_open),
-    payablesOpen: moneyOrNull(x.payables_open),
-    dsoDays: x.dso_days == null ? null : Number(x.dso_days),
-    dpoDays: x.dpo_days == null ? null : Number(x.dpo_days),
-    dioDays: x.dio_days == null ? null : Number(x.dio_days),
-    cycleExcludingInventory:
-      x.cash_cycle_excluding_inventory == null ? null : Number(x.cash_cycle_excluding_inventory),
-  }));
+  return cache.withCache(
+    "costing:workingCapitalTrend",
+    async () => {
+      const r = await pool.query(
+        `select to_char(period_start,'YYYY-MM-DD') as period_start,
+                receivables_open, payables_open, dso_days, dpo_days, dio_days,
+                cash_cycle_excluding_inventory
+         from public.working_capital_trend order by period_start`);
+      return r.rows.map((x) => ({
+        periodStart: x.period_start,
+        receivablesOpen: moneyOrNull(x.receivables_open),
+        payablesOpen: moneyOrNull(x.payables_open),
+        dsoDays: x.dso_days == null ? null : Number(x.dso_days),
+        dpoDays: x.dpo_days == null ? null : Number(x.dpo_days),
+        dioDays: x.dio_days == null ? null : Number(x.dio_days),
+        cycleExcludingInventory:
+          x.cash_cycle_excluding_inventory == null ? null : Number(x.cash_cycle_excluding_inventory),
+      }));
+    },
+    { ttlSeconds: 60, tags: [CACHE_TAGS.INVOICES, CACHE_TAGS.RECEIVABLES, CACHE_TAGS.PAYABLES] }
+  );
 }
 
 /** Profitability recomputed in TypeScript from the same raw figures — the agreement check. */

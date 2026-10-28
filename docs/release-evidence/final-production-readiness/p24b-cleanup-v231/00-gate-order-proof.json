@@ -1,0 +1,12 @@
+{
+  "auditedCommit": "debecacd4f4956c38b84dbf03dea7f79371addea",
+  "claim": "smoke target validation, herhangi bir Pool / baglanti / docker / dropdb / createdb ONCESINDE",
+  "measuredLineNumbers": {
+    "smokeTargetBlockers": 64,
+    "receiptRead": 69,
+    "newPool": 85,
+    "poolConnect": 86,
+    "firstDockerCall": 124
+  },
+  "verdict": "gate order PASS — runtime kodu timeout yuzunden DEGISTIRILMEDI"
+}

@@ -1,4 +1,5 @@
 import { getPool } from "@/lib/db";
+import { cache } from "@/lib/cache/engine";
 import { Panel } from "@/components/ui/panel";
 import { Badge, type Tone } from "@/components/ui/badge";
 import { KpiCard, PageHeader, TableShell } from "@/components/ui/shell";
@@ -9,6 +10,7 @@ import {
   activateUserAction,
   createUserAction,
   deactivateUserAction,
+  forcePasswordChangeAction,
   resetPasswordAction,
   setRoleAction,
   unlockUserAction,
@@ -36,10 +38,12 @@ export default async function SecurityPage() {
   const admin = await requireAdmin();
   const pool = getPool();
   const [counts, users] = await Promise.all([
-    pool.query<{ active_users: number; admin_users: number }>(
-      `select count(*) filter (where is_active)::int as active_users,
-              count(*) filter (where is_active and role = 'admin')::int as admin_users
-         from public.users`,
+    cache.withCache("users:counts", () =>
+      pool.query<{ active_users: number; admin_users: number }>(
+        `select count(*) filter (where is_active)::int as active_users,
+                count(*) filter (where is_active and role = 'admin')::int as admin_users
+           from public.users`,
+      ),
     ),
     listUsers(pool),
   ]);
@@ -86,6 +90,7 @@ export default async function SecurityPage() {
                       <span className="flex flex-wrap gap-1">
                         <Badge tone={u.isActive ? "green" : "neutral"}>{u.isActive ? "aktif" : "pasif"}</Badge>
                         {locked && <Badge tone="red">kilitli</Badge>}
+                        {u.mustChangePassword && <Badge tone="amber">şifre değişimi zorunlu</Badge>}
                         {u.activeSessions > 0 && <Badge tone="blue">{u.activeSessions} oturum</Badge>}
                       </span>
                     </td>
@@ -105,6 +110,18 @@ export default async function SecurityPage() {
                           />
                           <button className="button-ghost px-2 py-1">sıfırla</button>
                         </form>
+
+                        {!u.mustChangePassword && (
+                          <form action={forcePasswordChangeAction}>
+                            <input type="hidden" name="id" value={u.id} />
+                            <button
+                              className="button-ghost px-2 py-1 text-warn"
+                              title="Kullanıcının bir sonraki oturumunda şifresini değiştirmesini zorunlu kılar"
+                            >
+                              şifre değişimi zorla
+                            </button>
+                          </form>
+                        )}
 
                         {/* Faz 24B: five tiers cannot be a two-way toggle any more — the
                             operator picks the tier explicitly and submits it. */}

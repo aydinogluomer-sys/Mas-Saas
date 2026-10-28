@@ -1,0 +1,27 @@
+{
+  "artifactKind": "mas-p24b-prepare-runtime-run-v1",
+  "label": "RUN1 baseline -> after-run1",
+  "database": "mas_radar_postcleanup_runtime_verify",
+  "digestBefore": "a8f90e3476ba6bc918564a4aeb631ccfa93ba7ba4e9f9ab22c3403d5d8821b51",
+  "digestAfter": "e9eda749b5c0bc5e6d78bdb836df330ac53bb530ff0037563824aca06fc951ac",
+  "changedTables": [
+    "public.audit_logs",
+    "public.payment_instances"
+  ],
+  "perTable": [
+    {
+      "table": "public.audit_logs",
+      "countBefore": 736,
+      "countAfter": 762,
+      "delta": 26
+    },
+    {
+      "table": "public.payment_instances",
+      "countBefore": 485,
+      "countAfter": 485,
+      "delta": 0
+    }
+  ],
+  "businessRowInflation": 0,
+  "fixtureRowsRecreated": 0
+}

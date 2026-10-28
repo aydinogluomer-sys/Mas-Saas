@@ -9,6 +9,7 @@ import { getRawPool } from "@/lib/db";
 import type { AppRole } from "@/lib/authz/matrix";
 import { env } from "@/lib/env";
 import { SESSION_COOKIE } from "@/lib/auth-constants";
+import { cache } from "@/lib/cache/engine";
 
 export { SESSION_COOKIE };
 const SESSION_DURATION_MS = 7 * 24 * 60 * 60 * 1000; // 7 days — unchanged from the old gate's UX
@@ -35,6 +36,7 @@ export interface SessionUser {
   username: string;
   displayName: string;
   role: UserRole;
+  mustChangePassword?: boolean;
 }
 
 export async function hashPassword(password: string): Promise<string> {
@@ -52,6 +54,7 @@ export function safeRedirectPath(input: string | null | undefined, fallback: str
 export interface AttemptLoginResult {
   ok: boolean;
   userId?: string;
+  mustChangePassword?: boolean;
 }
 
 // A real argon2id hash of a random, never-recorded value — compared against on every
@@ -92,8 +95,9 @@ export async function attemptLogin(rawUsername: string, password: string): Promi
       is_active: boolean;
       locked_until: string | null;
       failed_login_count: number;
+      must_change_password: boolean;
     }>(
-      `select id, password_hash, is_active, locked_until, failed_login_count
+      `select id, password_hash, is_active, locked_until, failed_login_count, must_change_password
        from public.users where username = $1 for update`,
       [username],
     );
@@ -123,7 +127,7 @@ export async function attemptLogin(rawUsername: string, password: string): Promi
     }
     await client.query(`update public.users set failed_login_count = 0, locked_until = null where id = $1`, [row.id]);
     await client.query("commit");
-    return { ok: true, userId: row.id };
+    return { ok: true, userId: row.id, mustChangePassword: !!row.must_change_password };
   } catch (e) {
     await client.query("rollback");
     throw e;
@@ -182,60 +186,64 @@ export async function getCurrentUser(): Promise<SessionUser | null> {
   const token = jar.get(SESSION_COOKIE)?.value;
   if (!token) return null;
   const tokenHash = createHash("sha256").update(token).digest("hex");
-  // Deliberately the RAW pool: this lookup is what DECIDES the tier, so it cannot already be
-  // running inside one. It reaches users/sessions through the mas_radar_app-targeted policies
-  // Faz 15 added, which exist for precisely this moment in the request.
-  const pool = getRawPool();
-  const res = await pool.query<{
-    id: string;
-    username: string;
-    display_name: string;
-    role: UserRole;
-    session_id: string;
-    last_seen_at: string | null;
-    created_at: string;
-  }>(
-    `select u.id, u.username, u.display_name, u.role, s.id as session_id, s.last_seen_at, s.created_at
-     from public.sessions s join public.users u on u.id = s.user_id
-     where s.token_hash = $1 and s.revoked_at is null and s.expires_at > now() and u.is_active`,
-    [tokenHash],
+  return cache.withCache(
+    `auth:session:${tokenHash}`,
+    async () => {
+      const pool = getRawPool();
+      const res = await pool.query<{
+        id: string;
+        username: string;
+        display_name: string;
+        role: UserRole;
+        must_change_password: boolean;
+        session_id: string;
+        last_seen_at: string | null;
+        created_at: string;
+      }>(
+        `select u.id, u.username, u.display_name, u.role, u.must_change_password, s.id as session_id, s.last_seen_at, s.created_at
+         from public.sessions s join public.users u on u.id = s.user_id
+         where s.token_hash = $1 and s.revoked_at is null and s.expires_at > now() and u.is_active`,
+        [tokenHash],
+      );
+      if (res.rowCount !== 1) return null;
+      const row = res.rows[0];
+
+      const referenceMs = new Date(row.last_seen_at ?? row.created_at).getTime();
+      if (Date.now() - referenceMs > IDLE_TIMEOUT_MS) {
+        await pool.query(`update public.sessions set revoked_at = now() where id = $1 and revoked_at is null`, [
+          row.session_id,
+        ]);
+        return null;
+      }
+
+      const lastSeenMs = row.last_seen_at ? new Date(row.last_seen_at).getTime() : 0;
+      if (Date.now() - lastSeenMs > 5 * 60_000) {
+        pool.query(`update public.sessions set last_seen_at = now() where id = $1`, [row.session_id]).catch(() => {});
+      }
+
+      return {
+        id: row.id,
+        username: row.username,
+        displayName: row.display_name,
+        role: row.role,
+        mustChangePassword: !!row.must_change_password,
+      };
+    },
+    { ttlSeconds: 30 }
   );
-  if (res.rowCount !== 1) return null;
-  const row = res.rows[0];
-
-  // Faz 16 — idle window, IN ADDITION TO the 7-day absolute expiry above (which stays as the
-  // hard ceiling). A laptop left open on a finance dashboard is the realistic threat here,
-  // and an absolute-only lifetime does nothing about it.
-  //
-  // `created_at` is the fallback because last_seen_at is NULL until the first bump: a
-  // brand-new session would otherwise measure its idle time from epoch and be killed on the
-  // very next request.
-  const referenceMs = new Date(row.last_seen_at ?? row.created_at).getTime();
-  if (Date.now() - referenceMs > IDLE_TIMEOUT_MS) {
-    // Revoked, not merely ignored — the token must stop working everywhere, not just here.
-    await pool.query(`update public.sessions set revoked_at = now() where id = $1 and revoked_at is null`, [
-      row.session_id,
-    ]);
-    return null;
-  }
-
-  // Throttled — only bump if stale by more than 5 minutes, not on every single request.
-  const lastSeenMs = row.last_seen_at ? new Date(row.last_seen_at).getTime() : 0;
-  if (Date.now() - lastSeenMs > 5 * 60_000) {
-    await pool.query(`update public.sessions set last_seen_at = now() where id = $1`, [row.session_id]);
-  }
-
-  return { id: row.id, username: row.username, displayName: row.display_name, role: row.role };
 }
 
-export async function requireSession(): Promise<SessionUser> {
+export async function requireSession(options?: { allowMustChangePassword?: boolean }): Promise<SessionUser> {
   const user = await getCurrentUser();
   if (!user) redirect("/login");
+  if (user.mustChangePassword && !options?.allowMustChangePassword) {
+    redirect("/change-password");
+  }
   return user;
 }
 
-export async function requireAdmin(): Promise<SessionUser> {
-  const user = await requireSession();
+export async function requireAdmin(options?: { allowMustChangePassword?: boolean }): Promise<SessionUser> {
+  const user = await requireSession(options);
   if (user.role !== "admin") redirect("/overview");
   return user;
 }
@@ -248,6 +256,7 @@ export async function revokeCurrentSession(): Promise<void> {
   const token = jar.get(SESSION_COOKIE)?.value;
   if (token) {
     const tokenHash = createHash("sha256").update(token).digest("hex");
+    await cache.delete(`auth:session:${tokenHash}`);
     await getRawPool().query(`update public.sessions set revoked_at = now() where token_hash = $1 and revoked_at is null`, [
       tokenHash,
     ]);

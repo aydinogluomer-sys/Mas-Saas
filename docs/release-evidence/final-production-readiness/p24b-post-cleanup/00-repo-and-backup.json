@@ -1,0 +1,30 @@
+{
+  "artifactKind": "mas-p24b-postcleanup-repo-backup-v1",
+  "repo": {
+    "head": "27fdbe8f7cdd68600c71a5d6053c7e25510c702d",
+    "originHead": "27fdbe8f7cdd68600c71a5d6053c7e25510c702d",
+    "ahead": 0,
+    "behind": 0,
+    "cleanupCommitScope": "yalniz docs/release-evidence/... — urun kodu degismedi",
+    "evidencePathSerialization": "DUZELTILDI — 00-execution-environment.json icindeki iki alan ters egik cizgisini kaybetmisti (yalniz evidence kusuru); kanonik makbuz/binding yollari dogruydu"
+  },
+  "rollbackBackup": {
+    "path": "D:\\MAS-Backups\\p24b-final\\mas_radar_dev-p24b-final-2026-08-31T10-01-14-531Z.dump",
+    "usbPresent": true,
+    "fileExists": true,
+    "expectedSha256": "fe63481887b7937df1def58475589dac844933ea32ca081dd3beba85bfaffe2a",
+    "actualSha256": "fe63481887b7937df1def58475589dac844933ea32ca081dd3beba85bfaffe2a",
+    "shaMatch": true,
+    "expectedBytes": 1413949,
+    "actualBytes": 1413949,
+    "bytesMatch": true,
+    "topology": {
+      "diskNumber": 1,
+      "busType": "USB",
+      "isBoot": false,
+      "isSystem": false,
+      "status": "Online"
+    },
+    "retained": true
+  }
+}

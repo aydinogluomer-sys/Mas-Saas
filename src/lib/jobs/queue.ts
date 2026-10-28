@@ -7,6 +7,8 @@
 import { z } from "zod";
 import type { Pool, PoolClient } from "pg";
 import { audit } from "@/lib/audit";
+import { cache } from "@/lib/cache/engine";
+import { CACHE_TAGS } from "@/lib/cache/tags";
 import {
   JOB_TYPES, backoffSeconds, nextAfterFailure, progressPercent,
   type JobStatus, type JobType,
@@ -304,28 +306,32 @@ export async function reapStuckJobs(pool: Pool, olderThanMinutes = 30): Promise<
 }
 
 export async function listJobs(pool: Pool, limit = 100): Promise<JobRow[]> {
-  const res = await pool.query(
-    `select ${COLS} from public.background_jobs
-      order by case status when 'dead_letter' then 0 when 'running' then 1
-                           when 'failed' then 2 when 'queued' then 3 else 4 end,
-               created_at desc
-      limit $1`, [limit]);
-  return res.rows.map(mapJob);
+  return cache.withCache(`jobs:list:${limit}`, async () => {
+    const res = await pool.query(
+      `select ${COLS} from public.background_jobs
+        order by case status when 'dead_letter' then 0 when 'running' then 1
+                             when 'failed' then 2 when 'queued' then 3 else 4 end,
+                 created_at desc
+        limit $1`, [limit]);
+    return res.rows.map(mapJob);
+  }, { ttlSeconds: 15, tags: [CACHE_TAGS.BACKGROUND_JOBS] });
 }
 
 export async function loadQueueHealth(pool: Pool) {
-  const res = await pool.query(
-    `select job_type, status, job_count, oldest_created_at, max_attempts_used, avg_seconds
-       from public.background_job_queue_health order by job_type, status`);
-  return res.rows.map((x) => ({
-    jobType: x.job_type as JobType,
-    status: x.status as JobStatus,
-    jobCount: Number(x.job_count),
-    oldestCreatedAt: x.oldest_created_at as string | null,
-    maxAttemptsUsed: x.max_attempts_used == null ? null : Number(x.max_attempts_used),
-    // NULL stays NULL: "nothing has finished yet" is not "it takes zero seconds".
-    avgSeconds: x.avg_seconds == null ? null : Number(x.avg_seconds),
-  }));
+  return cache.withCache("jobs:queue-health", async () => {
+    const res = await pool.query(
+      `select job_type, status, job_count, oldest_created_at, max_attempts_used, avg_seconds
+         from public.background_job_queue_health order by job_type, status`);
+    return res.rows.map((x) => ({
+      jobType: x.job_type as JobType,
+      status: x.status as JobStatus,
+      jobCount: Number(x.job_count),
+      oldestCreatedAt: x.oldest_created_at as string | null,
+      maxAttemptsUsed: x.max_attempts_used == null ? null : Number(x.max_attempts_used),
+      // NULL stays NULL: "nothing has finished yet" is not "it takes zero seconds".
+      avgSeconds: x.avg_seconds == null ? null : Number(x.avg_seconds),
+    }));
+  }, { ttlSeconds: 15, tags: [CACHE_TAGS.BACKGROUND_JOBS] });
 }
 
 /** Exported for the gate and for callers that need a client-scoped enqueue inside a transaction. */

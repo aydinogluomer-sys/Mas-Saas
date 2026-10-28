@@ -81,6 +81,7 @@ export function telegramTransport(): Transport {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify({ chat_id: chatId, text: message }),
+          signal: AbortSignal.timeout(10_000),
         });
         if (!res.ok) return { ok: false, error: `telegram HTTP ${res.status}` };
         return { ok: true };
@@ -120,6 +121,7 @@ export function emailTransport(): Transport {
             ...(env.emailApiKey ? { authorization: `Bearer ${env.emailApiKey}` } : {}),
           },
           body: JSON.stringify({ to, subject: "MAS Nakit Radar hatırlatma", text: message }),
+          signal: AbortSignal.timeout(10_000),
         });
         if (!res.ok) return { ok: false, error: `e-posta HTTP ${res.status}` };
         return { ok: true };

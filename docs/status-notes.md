@@ -3895,3 +3895,265 @@ Taze bir veritabanında tek geçişte hâlâ düşen üç script var — **phase
 bunlar Faz 33'te Faz 32 taban çizgisinde bir git worktree deneyiyle **önceden var oldukları
 kanıtlanmış** durumda: ortam/birikmiş duruma bağlılar (phase6 denetim satırlarını global sayıp tam
 3 bekliyor ve her koşuda artıyor). Faz 33-38 bu kümeye hiçbir şey eklemedi.
+
+---
+
+## Faz 1 kapanış turu — CI'daki üç kırmızı job'un kök nedeni + branch protection plan kısıtı (2026-08-25)
+
+CI (`release/production-readiness-hardening`) push başına koşuyor. HEAD 5fdc15a'daki son koşu
+(run 32772200818) **3 gerçek başarısızlık** veriyordu: `static`, `build`, `database-migration`
+(+ `legacy-semantic-smoke` ve `e2e-authz` bunlara `needs: build` ile bağlı olduğu için `skipped`).
+Üçünün de kök nedeni bulundu ve **testi zayıflatmadan / adım atlamadan / continue-on-error
+eklemeden** düzeltildi. Commit'ler: **d8b7650** (üç kök neden) + **742d9e7** (p0b declassification).
+
+### 1) `static` — TS2307, kök neden gizlenmiş kaynak dosya
+
+`src/app/(dashboard)/data/reconciliation/page.tsx:5` → `@/components/data/reconciliation-table`
+modülü CI'da yok. Kök neden: **`.gitignore:45` `data/`** deseni köke sabitlenmemiş olduğu için her
+derinlikteki `data/` dizinini yutuyordu; `src/components/data/reconciliation-table.tsx` hiç
+commit'lenmemişti (`git add` sessizce atlıyordu, `git check-ignore` → `.gitignore:45:data/`).
+`page.tsx` daha önce izlendiği için etkilenmiyordu (gitignore izlenen dosyayı etkilemez).
+**Düzeltme:** desen `/data/` yapıldı (yalnız kök özel-veri dizini), bileşen commit'lendi.
+`src/` altında başka gizlenen kaynak dosya yok (`git ls-files --others --ignored` → tek dosya, o da bu).
+
+### 2) `build` — provision `dropdb` socket hatası, kök neden postgres init yarışı
+
+`build` job'unun "Provision the build database" adımı `dropdb: connection to server on socket
+"/var/run/postgresql/.s.PGSQL.5432" failed: No such file or directory` ile ölüyordu. Kök neden:
+`scripts/db/ensure.ts` hazırlık probu **default unix soketinden** `pg_isready` çağırıyordu.
+`postgres:16` imajı initdb sırasında yalnız konteyner soketini dinleyen (`listen_addresses=''`)
+geçici bir sunucu çalıştırır; prob ona takılıp yanlış "hazır" döndürüyor, imaj gerçek sunucuyu
+başlatırken soket dosyası siliniyor ve o aralıkta `docker exec dropdb` "socket ... No such file"
+ile ölüyordu. `runtime-role-security` aynı script'le zamanlamada şanslı olduğu için geçiyordu —
+release kapısı için kabul edilemez bir yarış. **Düzeltme:** prob `-h 127.0.0.1` ile TCP'ye alındı
+(geçici init sunucusu TCP dinlemez → yalnız GERÇEK sunucu kalkınca `true`), 60×500ms. Yarış tüm DB
+job'ları için deterministik kapandı.
+
+### 3) `database-migration` — iki katmanlı, ikisi de özel-veri dump bağımlılığı
+
+**3a.** `pnpm db:migrate:verify` → `migrate-verify.ts:122` `readdirSync('backups')` → ENOENT.
+7 testinden 3'ü `backups/p0c-checkpoint-*.dump`'ı (gerçek `mas_radar_dev`'in donmuş özel pg_dump'ı
++ bilinen anomali) geri yüklüyor; temiz CI klonunda `backups/` hiç yok. **Düzeltme:**
+`migrate-verify.ts` dump yokluğunu `hasCheckpointDump()` ile tespit edip 3 testi yüksek sesle
+`SKIP-LOCAL` sınıflıyor (LOCAL_PRIVATE_DATA_GATE), çıkış kodu yalnız KOŞAN testleri yansıtıyor.
+Sentetik fixture ÜRETİLMEDİ (gerçek anomaliye karşı iddiayı totolojiye çevirirdi).
+
+**3b.** 3a düzelince 7. adım ortaya çıktı: `db:constraints:verify` — o ve ardındaki üç adım
+(`transitions`/`reconciliation`/`legacy-repair:verify`) main'lerinin ILK satırında
+`backups/p0b-managed-baseline-*.dump`'ı geri yüklüyor (aynı aile özel dump). Dördü de temiz CI'da
+ENOENT. Bu adımlar CI'a eklendikleri günden beri kırmızıydı; 3a'daki ENOENT yalnızca maskeliyordu.
+**Düzeltme:** dört adım `database-migration` job'undan **çıkarıldı** ve
+`phase-verify-classification.md`'de LOCAL_PRIVATE_DATA_GATE olarak belgelendi (workbook
+phase-verify'larıyla aynı ilke). Constraint TANIMLARI CI'da hâlâ #4 adımında
+(`db:verify` → `assertions.sql`) taze DB'de doğrulanıyor; çıkarılanların eklediği yalnız o
+tanımların **gerçek legacy veri üzerindeki davranışıydı** → yerelde, dump varken koşar.
+
+### 4) `build` (ikinci kat) — `phase16:verify` ALL PASS sonrası süreç çıkmıyordu
+
+3a+3b düzelince `build` job'ı **ilk kez** phase16 adımına ulaştı ve orada takıldı: phase16-verify
+18/18 kontrolü **geçiyor** (`PHASE16 VERIFY: ALL PASS`, 21:58:30) ama node süreci çıkmıyor; job
+30 dk timeout'a kadar asılı kalıp `cancelled` oluyor, bu da `needs: build` olan `e2e-authz` +
+`legacy-semantic-smoke`'u `skipped` bırakıyordu. Kök neden (Linux'a özgü): script
+`pnpm exec next start`'i **detached olmadan** spawn ediyordu; temizlik `process.kill(-server.pid)`
+(grup öldür) yapıyor ama detached olmadan bu ESRCH fırlatır, fallback yalnız `pnpm`'i öldürür,
+yetim kalan `next` grandchild devralınan stdout/stderr pipe'larını açık tutar → parent event loop
+boşalmaz → node asılı kalır. Windows'ta yakalanmadı çünkü orada `taskkill /T` tüm ağacı öldürüyor.
+**Düzeltme (commit 2709491):** POSIX'te `detached:true` (mevcut grup-öldürme artık gerçekten çalışır)
++ ALL PASS sonrası açık `process.exit(0)`. Windows `detached:false` + `taskkill /T` ile aynen kalır.
+
+### Doğrulama — gerçek çıktı (exit code + sayı)
+
+| Kontrol | Komut | Sonuç |
+|---|---|---|
+| Typecheck | `pnpm typecheck` | **EXIT=0** |
+| Lint | `pnpm lint` | **EXIT=0** (1 önceden var olan uyarı: analytics-chart useEffect dep) |
+| Birim test | `pnpm test` | **1111/1111 geçti (50 dosya)**, EXIT=0 |
+| migrate-verify (checkpoint MEVCUT, yerel tam) | `pnpm db:migrate:verify` | **49/49 çalışan test geçti**, EXIT=0 |
+| migrate-verify (checkpoint YOK, CI taklidi) | dump geçici taşınıp `pnpm db:migrate:verify` | **16/16 çalışan test geçti · 3 SKIP-LOCAL**, EXIT=0 (dump geri yüklendi) |
+
+**CI SONUÇ — 7/7 YEŞİL (Faz 1 PASS ölçütü karşılandı).** Run **32785111779**, HEAD **2709491**,
+conclusion=**success**, failed jobs=**0**:
+
+| Job | Sonuç |
+|---|---|
+| `static` | **success** |
+| `database-migration` | **success** |
+| `phase-verifies` | **success** |
+| `build` | **success** |
+| `runtime-role-security` | **success** |
+| `e2e-authz` | **success** (bu dalın tarihinde İLK KEZ — önceden hep build'e takılıp skipped'di) |
+| `legacy-semantic-smoke` | **success** (aynı — ilk kez) |
+
+Kanıt zinciri (her kırmızı bir sonraki gizli kırmızıyı açığa çıkardı, hepsi dürüstçe düzeltildi):
+run 32772200818 (3 kırmızı) → d8b7650 → run 32780923027 (`static`/`runtime-role-security`/
+`phase-verifies` yeşil, `build` provision yeşil = ensure.ts kanıtı) → 742d9e7 → run 32782133651
+(`database-migration` yeşil; `build` phase16'da 30dk timeout) → 2709491 → run **32785111779 = 7/7**.
+Hiçbir test zayıflatılmadı, hiçbir adım atlanmadı, `continue-on-error` eklenmedi; iki "CI'dan
+çıkarma" hamlesi belgelenmiş özel-veri sınıflamasıdır ve constraint tanımları CI'da `assertions.sql`
+ile koşmaya devam eder.
+
+---
+
+## Kullanıcı eylemi bekleniyor (Faz 1)
+
+### 1. Branch protection — ÇÖZÜLDÜ (2026-08-25, Seçenek C: korumasız devam)
+
+**Karar: kullanıcı Seçenek C'yi seçti — GitHub Pro'ya yükseltme yok, repo public yapılmayacak,
+branch protection kurulmadan devam ediliyor.**
+
+Arka plan: `gh` yetkiliyken doğrudan sorgulandı; hem `branches/master/protection` hem `rulesets`
+**HTTP 403 "Upgrade to GitHub Pro or make this repository public"** döndü. Yani özel repo +
+ücretsiz planda branch protection **mevcut değil** — eksik olan yetki değil, plan. Üç seçenek
+`docs/release-evidence/branch-protection-recommendation.md`'de tablo hâlinde duruyor; A veya B
+ileride seçilirse tıklama adımları orada hazır bekliyor.
+
+Kararın gerekçesi (kalan riskin neden kabul edilebilir olduğu):
+
+- **Force-push / history-rewrite bu repoda hiç kullanılmadı** — Faz 0–7 ve 11/12/14/15 boyunca
+  tek bir kez bile. Korumanın engelleyeceği başlıca davranış zaten uygulanmıyor.
+- **CI zaten her push'ta zorunlu çalışıyor**: `.github/workflows/ci.yml` `on: push` ile tetikleniyor,
+  yani yedi job her itmede koşuyor. Eksik olan yalnız GitHub'ın "required check" **zorunluluğu** —
+  yani kırmızı CI'ya rağmen merge etmeyi *engelleyen* kapı; sinyalin kendisi değil.
+- Kalan risk, disiplinle yönetilen bir riske indi: kırmızı CI görünür ama teknik olarak
+  yok sayılabilir. Bu bilinerek kabul edildi.
+
+**Not:** `CI yeşil ≠ master korumalı`. İkisi ayrı ölçüt olmaya devam ediyor ve ayrı raporlanıyor;
+bu madde kapandı diye "master korumalı" denmez.
+
+### 2. `.env.local` runtime kimliği hâlâ superuser — F/G komutları kullanıcıda
+
+Salt-okunur doğrulama (dosya açılmadan): `.env.local`'daki `DATABASE_URL` hâlâ `user=postgres`
+(superuser) ve `MIGRATION_DATABASE_URL` satırı yok → uygulama gerçek yerel kurulumda RLS'i baypas
+ediyor. Claude `.env.local`'ı DÜZENLEMEZ, parola üretmez/tahmin etmez. Kullanıcının kendi
+terminalinde sırayla çalıştıracağı F (rol parolası+LOGIN) ve G (`.env.local` çevirisi) komut
+listesi + başarı/başarısızlık satırları: `docs/release-evidence/env-local-cutover-steps.md`
+(runbook'un F/G/H bölümleriyle birebir tutarlı).
+
+### 3. Gerçek DB cutover (Faz 8) — ERTELENDİ (2026-08-25, kullanıcı onayı: Seçenek 1)
+
+**Karar: cutover BUGÜN yapılmıyor.** Kullanıcı, çalışan production'ın uyumlu olduğu eski kodda
+(`ef00970`) kalmayı ve tam A→L kontrol listesini dinlenmiş, hazırlıklı ve koordineli ayrı bir
+oturumda birlikte yürütmeyi onayladı.
+
+**Gerekçe — bugün canlı ortamda yaşanan olay.** Kullanıcı F/G adımlarını (mas_radar_app'e LOGIN +
+`.env.local` çevirisi) **D adımı (gerçek migration) olmadan** denedi. Üç aşamalı gerçek bir arıza
+zinciri çıktı:
+
+1. `permission denied for table users` — `mas_radar_app` rolü gerçek DB'de hiç GRANT almamış,
+   çünkü GRANT'ları veren migration **0035** o veritabanına hiç uygulanmamış (ledger hâlâ 0034).
+   CONFIG ROLLBACK ile düzeltildi.
+2. **Rollback'ten sonra bile aynı hata sürdü.** Kök neden: kullanıcının PowerShell penceresinde
+   daha önce elle tanımlanmış `$env:DATABASE_URL` hâlâ aktifti ve `.env.local`'daki düzeltmeyi
+   sessizce geçersiz kılıyordu — çünkü `tsx scripts/prepare-runtime.ts` `.env.local`'ı zaten hiç
+   okumuyor. Bu, cutover'dan **bağımsız, kendi başına gerçek bir bulgudur**. Yeni PowerShell
+   penceresi + doğru `$env:DATABASE_URL` ile çözüldü.
+3. **En kritik:** `new row for relation "users" violates check constraint "users_role_check"` —
+   `release/production-readiness-hardening` dalındaki kod beş katmanlı rol modelini varsayıyor,
+   gerçek DB'nin kısıtı ise (0056 uygulanmadığı için) hâlâ yalnız `admin|operator` kabul ediyor.
+   **Bu hata bağlanılan DB kimliğinden tamamen bağımsızdır**; kod ile şema arasındaki
+   uyumsuzluğun kendisidir.
+
+Çözüm: kullanıcı `git checkout ef00970` (0034 ile uyumlu son commit) yaptı; `pnpm install` +
+`pnpm build`. Bu sırada dördüncü, önceden bilinen tuzak yüzeye çıktı:
+`Module not found: Can't resolve '@/components/data/reconciliation-table'` — `.gitignore`'un
+`data/` desenini köke sabitleyen düzeltme (`d8b7650`) **yalnız release dalında**, `ef00970`'te
+yok. Dosya `git show release/...:<yol>` ile elle geri alındı.
+
+**Sonuç:** `pnpm build && pnpm start` başarılı, `/health` → `{"status":"ok","app":"up","db":"up"}`.
+**Gerçek DB hiç zarar görmedi** — ledger=0034, payments=19, checks=7, loans=1,
+cashflow_months=35, users=12; baştan sona değişmedi, bağımsız doğrulandı.
+
+**Alınan ders (checklist'e işlendi):** cutover **bölünemez**. A→L tek koordineli oturumda
+yürütülür ve kod sürümünün hedefe geçirilmesi (**yeni C2 adımı**) D'den hemen önce yapılır.
+Dört tuzak `docs/release-evidence/cutover-checklist.md` → "Bilinen tuzaklar" bölümünde,
+"başarı/başarısızlık böyle görünür" satırlarıyla kayıtlı.
+
+A→L komutları ve L (rollback) provasının disposable klondaki sonucu aynı belgede duruyor;
+madde açık kalmaya devam ediyor — yalnız **zamanlaması** kullanıcı tarafından ertelendi.
+
+---
+
+### Gözlem (bloke etmez) — repo içinde `Mas-Saas-p0b/` var
+
+Kök dizinde `Mas-Saas-p0b/` adında, **ne izlenen ne gitignore'lu** bir alt kopya var (kısmi/bozuk
+`node_modules` taşıyor, `git status` uyarıları ondan). `git add .` yapılırsa yanlışlıkla
+commit'lenebilir; bu turda yalnız açık dosya yollarıyla `git add` kullanıldı, dokunulmadı.
+Kullanıcı ya `.gitignore`'a eklemeli ya silmeli — ayrı, küçük bir temizlik.
+
+---
+
+## Faz 12 — Observability (telemetry + fail-closed alert) — DONE
+
+Mevcut `scripts/ops/telemetry-snapshot.ts` (tek komutta operasyonel sinyaller + 6 fail-closed uyarı)
+üzerine, repo disiplininin istediği **anti-totoloji kapısı** kuruldu.
+
+- **Saf eşik mantığı** `src/lib/ops/telemetry-alerts.ts`'e çıkarıldı (snapshot import ediyor → araç
+  ile kapı kaymaz). **18 birim testi** her uyarının sağlıklı değerde temizlendiğini, eşikte
+  ateşlendiğini ve **veri belirlenemediğinde ("?", Infinity, NaN, null) ateşlendiğini** kanıtlıyor;
+  `pnpm test`'in parçası (CI `static`).
+- **Entegrasyon kapısı** `scripts/ops/telemetry-verify.ts` (14 kontrol): gerçek snapshot'ı disposable
+  migrate edilmiş DB'ye karşı koşturup enjekte edilebilen her uyarının kötü durumda ateşlendiğini +
+  düzeltilince temizlendiğini iki yönlü kanıtlıyor. `MAS_BACKUP_DIR` yapılandırılabilir yapıldı.
+- **Gerçek defekt yakalandı:** `latest_import_age_days` `max(created_at)` sorguluyordu ama kolon
+  `source_workbooks.imported_at`; her koşu "?" veriyor, taze içe aktarımda bile uyarı ateşliyordu
+  (fail-closed ama işe yaramaz). `imported_at`'e düzeltildi; doğrulama boş-tabloda tam 'İÇE AKTARIM
+  YOK' iddia ediyor (kolon regresyonuna karşı kalıcı kapı).
+- **CI:** `database-migration` job'una "Observability telemetry alerts (Faz 12)" adımı eklendi
+  (disposable DB + `ops:telemetry:verify`; veri-bağımsız). package.json: `ops:telemetry`,
+  `ops:telemetry:verify`.
+- Doğrulama: vitest 1129/1129 · typecheck 0 · lint 0 (1 mevcut uyarı) · `ops:telemetry:verify` 14/14,
+  hepsi exit 0. Ayrıntı: `PROGRESS.md` "Faz 12".
+- Sınır (dürüstçe): entegrasyon `reconciliation` kötü-yolunu ve `runtime_user` temiz-yolunu tek yönde
+  kanıtlıyor (biri banka zinciri, diğeri app-role login gerektirir); ikisinin mantığı birim testte iki
+  yönlü, wiring'i entegrasyonda kanıtlı.
+
+---
+
+## Faz 14 — Performance gate (query plan + index audit + SLO) — DONE
+
+Faz 33 ölçüm araçları (`measure.ts`/`index-audit.ts`/`volume.ts`) sıralıyor ama hiç başarısız olmaz;
+`scripts/perf/perf-gate.ts` ölçeklenebilirliği yordayan ölçümleri **pass/fail** yaptı.
+
+- **Query plan (deterministik, hard):** 4 seçici hot-path sorgusu (vadesi yaklaşan ödeme / açık
+  fatura / son 7 gün banka / yaklaşan çek) büyük tablosuna **indeks ile** erişir (Seq Scan değil).
+  Wall-clock yerine plan şekli — runner'la kaymaz. Gerçekçi hacim (bank_tx=60k, invoice=24k,
+  pi=12k, checks=6k) `volume.ts` ile aritmetik/deterministik yüklenir + VACUUM ANALYZE.
+- **Gereksiz indeks = 0** (deterministik) + **indekssiz FK cırcırı** (≤ 115 taban; yeni bir
+  indekssiz FK sayıyı 116 yapıp kapıyı kırar). 115 dürüstçe raporlandı; düşük öncelikli çünkü read
+  hot-path'ler amaca-özel kapsayıcı indekslerle besleniyor (plan iddiası bunu kanıtlıyor).
+- **Felaket eşiği** (cömert backstop, 3000 ms) — seçici sorgular ~1 ms, yalnız toplam bozulmayı yakalar.
+- **Anti-totoloji kanıtı:** `payment_instances`'ın TÜM hizmet indeksleri düşürülünce sorgu Seq Scan'e
+  döndü, kapı **9/10 / exit 1** ("Seq Scan") verdi; sonra DB temiz provision edildi. (Tek indeksi
+  düşürmek yetmedi — planner status indeksine düştü; kapı haklı olarak yeşil kaldı.)
+- Kapının kendisinde bir iddia bug'ı çalıştırarak bulundu: Bitmap Heap Scan indeks-güdümlüdür ama
+  ilk `/Index/` testi onu reddediyordu → "tabloya her erişim indeks-güdümlü" iddiasına düzeltildi.
+- **CI:** `database-migration`'a "Performance gate (Faz 14)" adımı (disposable DB + `perf:gate`).
+  package.json: `perf:gate`.
+- Doğrulama: typecheck 0 · sağlıklı şema **10/10 exit 0** · negatif kontrol **9/10 exit 1**.
+- Sınır: yazma-yolu SLO'su ve route-seviyesi HTTP gecikmesi kapsam dışı (okuma planı + indeks hijyeni
+  + felaket eşiği kapsanıyor); 115 FK cırcırla tutuluyor, hepsi indekslenmedi (write-maliyeti).
+
+---
+
+## Faz 15 — AI ve entegrasyon sınırı (boundary gate) — DONE
+
+`scripts/boundary-verify.ts` — saf statik kaynak taraması (DB yok, ağ yok), `static` CI job'unda.
+Kod tabanının yorumlarda savunduğu sınır kararlarını iddiaya çevirdi.
+
+- **Ampirik temel:** repo-geneli src'de yalnız 5 `fetch(` var, hepsi 4 tasarlanmış sınır modülünde
+  (ai/engine, fx/provider, integrations/types [realHttpClient seam], reminders/transport). connectors
+  ağa yalnız ctx.http ile ulaşır. process.env yalnız env.ts + readCredential seam'inde. assistant
+  yalnız log tablolarına yazar.
+- **8 iddia:** (A) ağ çıkışı yalnız izinli 4 modülde (B) sınır modülleri process.env'e dokunmaz
+  (C) ai/engine + transport env'i tembel okur (D) AI/asistan/arama finansal tabloları mutasyona
+  uğratmaz (E) `JSON.stringify(env)` hiçbir yerde yok (F) console'da sır yok (G) kill switch +
+  mutationIntent yerinde (H) muhasebe konnektörü kalıcı reddediyor.
+- **Kapının kendisinde bulunan iki şey:** (1) yorum-içi false positive → naif `//` sıyırma
+  `https://`'i bozacağı için tam yorum satırları atlanacak şekilde düzeltildi; (2) **anti-totoloji:**
+  src/lib/ai altına geçici ihlal dosyası (dış fetch + process.env + `insert into payments` +
+  `JSON.stringify(process.env)` + console'da token) → kapı **3/8 / exit 1**, beş ihlali adıyla
+  bildirdi; silinince **8/8**.
+- **CI:** `static` job'una `boundary:verify` adımı (DB/ağ gerektirmez). package.json: `boundary:verify`.
+- Doğrulama: typecheck 0 · temiz kaynak **8/8 exit 0** · negatif kontrol **3/8 exit 1**.
+- Sınır: statik kapı YAPIYI kanıtlar; konnektör/transport'un gerçek istek kurulumu + davranışı
+  phase37/6b/25/38'de mock'larla iki yönlü kapalı; canlı endpoint testi yok (ortamda ağ yok).

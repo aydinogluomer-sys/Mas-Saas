@@ -1,0 +1,11 @@
+{
+  "order": [
+    "argv",
+    "MIGRATION_DATABASE_URL",
+    "databaseNameFromUrl (baglanti YOK)",
+    "smokeTargetBlockers",
+    "-- ancak bundan sonra: makbuz, Pool, fingerprint, docker"
+  ],
+  "postConnectionConfirmation": "current_database() === databaseNameFromUrl(url); ayrisirsa FAIL",
+  "tests": "tests/p24b-restore-target.test.ts — 31 test; olu porta bakan URL ile hata ADA dair, ECONNREFUSED/connect izi YOK"
+}

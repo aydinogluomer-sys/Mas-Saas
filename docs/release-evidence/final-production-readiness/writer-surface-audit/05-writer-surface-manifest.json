@@ -1,0 +1,2723 @@
+{
+  "generatedAtUtc": "2026-08-29T20:56:55.821Z",
+  "filesScanned": 521,
+  "writerCandidates": 102,
+  "scanClasses": [
+    "sqlTokens",
+    "pgProcess",
+    "childProcess",
+    "indirectWriterFns",
+    "poolAccess",
+    "networkMutation"
+  ],
+  "counts": {
+    "SAFE_DISPOSABLE_ENFORCED": 72,
+    "INTENTIONAL_REAL_WRITE": 27,
+    "LIBRARY_REQUIRES_CALLER_GUARD": 1,
+    "SAFE_ROLLBACK_ONLY": 2
+  },
+  "candidates": [
+    {
+      "file": "scripts/ci/provision-verify-db.sh",
+      "entryPoint": "(module / not a package script)",
+      "writeMechanisms": [
+        "psql",
+        "createdb/dropdb",
+        "migration"
+      ],
+      "tablesOrObjects": [],
+      "targetSource": "env, validated by disposable gate",
+      "guard": "requireDisposableOwnerDatabaseUrl / isDisposableDatabaseName",
+      "guardRunsBeforeFirstWrite": false,
+      "transitiveWriter": false,
+      "callers": [],
+      "classification": "SAFE_DISPOSABLE_ENFORCED",
+      "evidence": [
+        "disposable gate at line 73, first write-capable line 19"
+      ]
+    },
+    {
+      "file": "scripts/db/cancelled-kpi-verify.ts",
+      "entryPoint": "pnpm db:cancelled-kpi:verify",
+      "writeMechanisms": [
+        "SQL DML/DDL",
+        "pg Pool/Client"
+      ],
+      "tablesOrObjects": [
+        "public.payment_instances"
+      ],
+      "targetSource": "env, validated by disposable gate",
+      "guard": "requireDisposableOwnerDatabaseUrl / isDisposableDatabaseName",
+      "guardRunsBeforeFirstWrite": true,
+      "transitiveWriter": false,
+      "callers": [],
+      "classification": "SAFE_DISPOSABLE_ENFORCED",
+      "evidence": [
+        "disposable gate at line 36, first write-capable line 121"
+      ]
+    },
+    {
+      "file": "scripts/db/constraints-verify.ts",
+      "entryPoint": "pnpm db:constraints:verify",
+      "writeMechanisms": [
+        "SQL DML/DDL",
+        "pg Pool/Client",
+        "createdb/dropdb",
+        "pg_dump/pg_restore",
+        "child process",
+        "calls writer: archivePayment, ensureSystemActor, prepareLegacyCheckpointForCancellationValidation"
+      ],
+      "tablesOrObjects": [
+        "public.alert_escalation_rules",
+        "public.audit_logs",
+        "public.bank_transaction_match_candidates",
+        "public.control_alerts",
+        "public.cost_centers",
+        "public.counterparty_profiles",
+        "public.departments",
+        "public.ibans",
+        "public.invoice_allocations",
+        "public.invoices",
+        "public.loan_installments",
+        "public.orders",
+        "public.parties",
+        "public.payment_instances",
+        "public.payments",
+        "public.projects"
+      ],
+      "targetSource": "hard-coded disposable database name",
+      "guard": "hard-coded disposable target (no env path)",
+      "guardRunsBeforeFirstWrite": true,
+      "transitiveWriter": true,
+      "callers": [],
+      "classification": "SAFE_DISPOSABLE_ENFORCED",
+      "evidence": [
+        "hard-coded disposable database name present",
+        "transitive writer via archivePayment, ensureSystemActor, prepareLegacyCheckpointForCancellationValidation",
+        "Target is hard-coded (mas_radar_constraints_verify) and never read from env; subprocess env pins BOTH URLs. archivePayment import closure proven env-free and pool-free — see 06-constraints-verify-audit.md."
+      ]
+    },
+    {
+      "file": "scripts/db/create-testsprite-db.ts",
+      "entryPoint": "pnpm db:testsprite:reset",
+      "writeMechanisms": [
+        "psql",
+        "createdb/dropdb",
+        "pg_dump/pg_restore",
+        "child process"
+      ],
+      "tablesOrObjects": [],
+      "targetSource": "hard-coded disposable database name",
+      "guard": "hard-coded disposable target (no env path)",
+      "guardRunsBeforeFirstWrite": true,
+      "transitiveWriter": false,
+      "callers": [],
+      "classification": "INTENTIONAL_REAL_WRITE",
+      "evidence": [
+        "hard-coded disposable database name present",
+        "Creates the synthetic TestSprite database. Target is a separate database by construction."
+      ]
+    },
+    {
+      "file": "scripts/db/dev-reset.sh",
+      "entryPoint": "pnpm db:dev:reset",
+      "writeMechanisms": [
+        "psql",
+        "createdb/dropdb"
+      ],
+      "tablesOrObjects": [],
+      "targetSource": "none (no DB target of its own)",
+      "guard": "NONE",
+      "guardRunsBeforeFirstWrite": true,
+      "transitiveWriter": false,
+      "callers": [],
+      "classification": "INTENTIONAL_REAL_WRITE",
+      "evidence": [
+        "DESTRUCTIVE AND HARD-CODED TO THE REAL DATABASE (`DB=mas_radar_dev` → dropdb + createdb + replay every migration). Destroying mas_radar_dev IS its purpose, so a disposable-name gate cannot apply. HARDENED in this audit (see 12-dev-reset-safety.md): fail-closed, requires BOTH --i-understand-this-destroys-mas-radar-dev AND MAS_ALLOW_DEV_DB_RESET=mas_radar_dev, checked before ensure.sh and before any docker call (exit 9), then reports measured identity and row counts before dropping. Manual-only: no CI, no lifecycle hook."
+      ]
+    },
+    {
+      "file": "scripts/db/export-leakage-verify.ts",
+      "entryPoint": "pnpm db:export-leakage:verify",
+      "writeMechanisms": [
+        "SQL DML/DDL",
+        "pg Pool/Client",
+        "psql",
+        "createdb/dropdb",
+        "child process",
+        "migration"
+      ],
+      "tablesOrObjects": [
+        "public.action_items",
+        "public.assistant_conversations",
+        "public.invoices",
+        "public.parties",
+        "public.payment_instances",
+        "public.payments",
+        "public.saved_views",
+        "public.users"
+      ],
+      "targetSource": "env, validated by disposable gate",
+      "guard": "requireDisposableOwnerDatabaseUrl / isDisposableDatabaseName",
+      "guardRunsBeforeFirstWrite": true,
+      "transitiveWriter": false,
+      "callers": [],
+      "classification": "SAFE_DISPOSABLE_ENFORCED",
+      "evidence": [
+        "disposable gate at line 46, first write-capable line 162",
+        "hard-coded disposable database name present",
+        "reads DATABASE_URL / MIGRATION_DATABASE_URL"
+      ]
+    },
+    {
+      "file": "scripts/db/fixture-cleanup.ts",
+      "entryPoint": "pnpm db:fixture-cleanup",
+      "writeMechanisms": [
+        "SQL DML/DDL",
+        "pg Pool/Client",
+        "pg_dump/pg_restore"
+      ],
+      "tablesOrObjects": [
+        "public.payment_instances",
+        "public.payments",
+        "public.users"
+      ],
+      "targetSource": "env (DATABASE_URL / MIGRATION_DATABASE_URL)",
+      "guard": "NONE",
+      "guardRunsBeforeFirstWrite": true,
+      "transitiveWriter": false,
+      "callers": [],
+      "classification": "INTENTIONAL_REAL_WRITE",
+      "evidence": [
+        "reads DATABASE_URL / MIGRATION_DATABASE_URL",
+        "NOT AUTHORIZED / OUTDATED. Env-targeted deletes against the real DB by design, but its hard-coded footprint is stale (4 of 6 p24b users; no settings/action_items). Must not run."
+      ]
+    },
+    {
+      "file": "scripts/db/legacy-cancellation-fixture.ts",
+      "entryPoint": "(module / not a package script)",
+      "writeMechanisms": [
+        "SQL DML/DDL",
+        "pg Pool/Client"
+      ],
+      "tablesOrObjects": [
+        "public.payment_instances"
+      ],
+      "targetSource": "caller-supplied Pool",
+      "guard": "NONE",
+      "guardRunsBeforeFirstWrite": true,
+      "transitiveWriter": false,
+      "callers": [
+        "scripts/db/constraints-verify.ts",
+        "scripts/db/migrate-verify.ts",
+        "scripts/db/reconciliation-verify.ts",
+        "scripts/db/transitions-verify.ts"
+      ],
+      "classification": "LIBRARY_REQUIRES_CALLER_GUARD",
+      "evidence": []
+    },
+    {
+      "file": "scripts/db/legacy-repair-verify.ts",
+      "entryPoint": "pnpm db:legacy-repair:verify",
+      "writeMechanisms": [
+        "SQL DML/DDL",
+        "pg Pool/Client",
+        "createdb/dropdb",
+        "pg_dump/pg_restore",
+        "child process",
+        "migration"
+      ],
+      "tablesOrObjects": [
+        "public.payment_instances",
+        "public.payments",
+        "public.schema_migrations"
+      ],
+      "targetSource": "env, validated by disposable gate",
+      "guard": "requireDisposableOwnerDatabaseUrl / isDisposableDatabaseName",
+      "guardRunsBeforeFirstWrite": true,
+      "transitiveWriter": false,
+      "callers": [],
+      "classification": "SAFE_DISPOSABLE_ENFORCED",
+      "evidence": [
+        "disposable gate at line 68, first write-capable line 690",
+        "hard-coded disposable database name present"
+      ]
+    },
+    {
+      "file": "scripts/db/migrate-verify.ts",
+      "entryPoint": "pnpm db:migrate:verify",
+      "writeMechanisms": [
+        "SQL DML/DDL",
+        "pg Pool/Client",
+        "psql",
+        "createdb/dropdb",
+        "pg_dump/pg_restore",
+        "child process",
+        "migration",
+        "calls writer: prepareLegacyCheckpointForCancellationValidation"
+      ],
+      "tablesOrObjects": [
+        "public.schema_migrations"
+      ],
+      "targetSource": "hard-coded disposable database name",
+      "guard": "hard-coded disposable target (no env path)",
+      "guardRunsBeforeFirstWrite": true,
+      "transitiveWriter": true,
+      "callers": [],
+      "classification": "SAFE_DISPOSABLE_ENFORCED",
+      "evidence": [
+        "hard-coded disposable database name present",
+        "transitive writer via prepareLegacyCheckpointForCancellationValidation"
+      ]
+    },
+    {
+      "file": "scripts/db/migrate.ts",
+      "entryPoint": "pnpm db:migrate · pnpm db:migrate:dev",
+      "writeMechanisms": [
+        "SQL DML/DDL",
+        "pg Pool/Client",
+        "migration"
+      ],
+      "tablesOrObjects": [
+        "public.schema_migrations"
+      ],
+      "targetSource": "env (DATABASE_URL / MIGRATION_DATABASE_URL)",
+      "guard": "NONE",
+      "guardRunsBeforeFirstWrite": true,
+      "transitiveWriter": false,
+      "callers": [],
+      "classification": "INTENTIONAL_REAL_WRITE",
+      "evidence": [
+        "reads DATABASE_URL / MIGRATION_DATABASE_URL",
+        "The cutover tool. MUST be able to target the real database; owner-url.ts documents why the disposable gate is deliberately NOT applied here."
+      ]
+    },
+    {
+      "file": "scripts/db/p24b-readonly-negative-control.sh",
+      "entryPoint": "pnpm db:p24b:readonly-proof",
+      "writeMechanisms": [
+        "SQL DML/DDL",
+        "psql"
+      ],
+      "tablesOrObjects": [],
+      "targetSource": "env, validated by disposable gate",
+      "guard": "requireDisposableOwnerDatabaseUrl / isDisposableDatabaseName",
+      "guardRunsBeforeFirstWrite": true,
+      "transitiveWriter": false,
+      "callers": [],
+      "classification": "SAFE_DISPOSABLE_ENFORCED",
+      "evidence": [
+        "disposable gate at line 19, first write-capable line 29",
+        "hard-coded disposable database name present"
+      ]
+    },
+    {
+      "file": "scripts/db/payment-day-flags-verify.ts",
+      "entryPoint": "pnpm db:payment-day-flags:verify",
+      "writeMechanisms": [
+        "SQL DML/DDL",
+        "pg Pool/Client"
+      ],
+      "tablesOrObjects": [
+        "public.payment_instances"
+      ],
+      "targetSource": "env, validated by disposable gate",
+      "guard": "requireDisposableOwnerDatabaseUrl / isDisposableDatabaseName",
+      "guardRunsBeforeFirstWrite": true,
+      "transitiveWriter": false,
+      "callers": [],
+      "classification": "SAFE_DISPOSABLE_ENFORCED",
+      "evidence": [
+        "disposable gate at line 67, first write-capable line 195"
+      ]
+    },
+    {
+      "file": "scripts/db/receivable-totals-verify.ts",
+      "entryPoint": "pnpm db:receivable-totals:verify",
+      "writeMechanisms": [
+        "SQL DML/DDL",
+        "pg Pool/Client"
+      ],
+      "tablesOrObjects": [
+        "public.invoices"
+      ],
+      "targetSource": "env, validated by disposable gate",
+      "guard": "requireDisposableOwnerDatabaseUrl / isDisposableDatabaseName",
+      "guardRunsBeforeFirstWrite": true,
+      "transitiveWriter": false,
+      "callers": [],
+      "classification": "SAFE_DISPOSABLE_ENFORCED",
+      "evidence": [
+        "disposable gate at line 44, first write-capable line 112"
+      ]
+    },
+    {
+      "file": "scripts/db/reconciliation-verify.ts",
+      "entryPoint": "pnpm db:reconciliation:verify",
+      "writeMechanisms": [
+        "SQL DML/DDL",
+        "pg Pool/Client",
+        "createdb/dropdb",
+        "pg_dump/pg_restore",
+        "child process",
+        "migration",
+        "calls writer: archivePayment, ensureSystemActor, prepareLegacyCheckpointForCancellationValidation"
+      ],
+      "tablesOrObjects": [
+        "public.payment_instances",
+        "public.payments"
+      ],
+      "targetSource": "env, validated by disposable gate",
+      "guard": "requireDisposableOwnerDatabaseUrl / isDisposableDatabaseName",
+      "guardRunsBeforeFirstWrite": true,
+      "transitiveWriter": true,
+      "callers": [],
+      "classification": "SAFE_DISPOSABLE_ENFORCED",
+      "evidence": [
+        "disposable gate at line 39, first write-capable line 157",
+        "hard-coded disposable database name present",
+        "reads DATABASE_URL / MIGRATION_DATABASE_URL",
+        "transitive writer via archivePayment, ensureSystemActor, prepareLegacyCheckpointForCancellationValidation"
+      ]
+    },
+    {
+      "file": "scripts/db/roles-rls-verify.ts",
+      "entryPoint": "pnpm db:roles-rls:verify",
+      "writeMechanisms": [
+        "SQL DML/DDL",
+        "pg Pool/Client"
+      ],
+      "tablesOrObjects": [
+        "public.action_items",
+        "public.approvals",
+        "public.audit_logs",
+        "public.payments",
+        "public.settings",
+        "public.users"
+      ],
+      "targetSource": "env, validated by disposable gate",
+      "guard": "requireDisposableOwnerDatabaseUrl / isDisposableDatabaseName",
+      "guardRunsBeforeFirstWrite": true,
+      "transitiveWriter": false,
+      "callers": [],
+      "classification": "SAFE_DISPOSABLE_ENFORCED",
+      "evidence": [
+        "disposable gate at line 43, first write-capable line 151",
+        "reads DATABASE_URL / MIGRATION_DATABASE_URL"
+      ]
+    },
+    {
+      "file": "scripts/db/roles-verify.ts",
+      "entryPoint": "pnpm db:roles:verify",
+      "writeMechanisms": [
+        "SQL DML/DDL",
+        "pg Pool/Client"
+      ],
+      "tablesOrObjects": [
+        "public.schema_migrations"
+      ],
+      "targetSource": "env (DATABASE_URL / MIGRATION_DATABASE_URL)",
+      "guard": "NONE",
+      "guardRunsBeforeFirstWrite": true,
+      "transitiveWriter": false,
+      "callers": [],
+      "classification": "SAFE_ROLLBACK_ONLY",
+      "evidence": [
+        "reads DATABASE_URL / MIGRATION_DATABASE_URL",
+        "Deliberately targets the REAL runtime URL — that is the point of the gate. The single INSERT probe is wrapped in begin/rollback with rollback in a finally block."
+      ]
+    },
+    {
+      "file": "scripts/db/security-matrix-verify.ts",
+      "entryPoint": "pnpm db:security-matrix:verify",
+      "writeMechanisms": [
+        "SQL DML/DDL",
+        "pg Pool/Client"
+      ],
+      "tablesOrObjects": [
+        "public.sessions",
+        "public.users"
+      ],
+      "targetSource": "env, validated by disposable gate",
+      "guard": "requireDisposableOwnerDatabaseUrl / isDisposableDatabaseName",
+      "guardRunsBeforeFirstWrite": true,
+      "transitiveWriter": false,
+      "callers": [],
+      "classification": "SAFE_DISPOSABLE_ENFORCED",
+      "evidence": [
+        "disposable gate at line 32, first write-capable line 141"
+      ]
+    },
+    {
+      "file": "scripts/db/seed-admin.ts",
+      "entryPoint": "(module / not a package script)",
+      "writeMechanisms": [
+        "SQL DML/DDL",
+        "pg Pool/Client"
+      ],
+      "tablesOrObjects": [
+        "public.users"
+      ],
+      "targetSource": "env (DATABASE_URL / MIGRATION_DATABASE_URL)",
+      "guard": "NONE",
+      "guardRunsBeforeFirstWrite": true,
+      "transitiveWriter": false,
+      "callers": [],
+      "classification": "INTENTIONAL_REAL_WRITE",
+      "evidence": [
+        "reads DATABASE_URL / MIGRATION_DATABASE_URL",
+        "Operator-run account creation."
+      ]
+    },
+    {
+      "file": "scripts/db/seed-system-actor.ts",
+      "entryPoint": "(module / not a package script)",
+      "writeMechanisms": [
+        "SQL DML/DDL",
+        "pg Pool/Client"
+      ],
+      "tablesOrObjects": [
+        "public.users"
+      ],
+      "targetSource": "env (DATABASE_URL / MIGRATION_DATABASE_URL)",
+      "guard": "NONE",
+      "guardRunsBeforeFirstWrite": true,
+      "transitiveWriter": false,
+      "callers": [
+        "scripts/db/constraints-verify.ts",
+        "scripts/db/legacy-repair-apply.ts",
+        "scripts/db/legacy-repair-verify.ts",
+        "scripts/db/reconciliation-verify.ts",
+        "scripts/db/transitions-verify.ts",
+        "scripts/import-real.ts",
+        "scripts/perf/route-slo.ts",
+        "scripts/perf/write-slo.ts",
+        "scripts/phase11b-verify.ts",
+        "scripts/phase12a-verify.ts",
+        "scripts/phase13a-verify.ts",
+        "scripts/phase14a-verify.ts",
+        "scripts/phase14b-verify.ts",
+        "scripts/phase14c-verify.ts",
+        "scripts/phase14d-verify.ts",
+        "scripts/phase3-verify.ts",
+        "scripts/phase4-verify.ts",
+        "scripts/phase5-verify.ts",
+        "scripts/phase6-verify.ts",
+        "scripts/phase6b-verify.ts",
+        "scripts/phase7-verify.ts",
+        "scripts/phase8-verify.ts",
+        "scripts/phase9a-verify.ts",
+        "scripts/phase9b-verify.ts",
+        "scripts/phase9c-verify.ts",
+        "scripts/phase9d-verify.ts",
+        "scripts/seed-demo.ts"
+      ],
+      "classification": "INTENTIONAL_REAL_WRITE",
+      "evidence": [
+        "reads DATABASE_URL / MIGRATION_DATABASE_URL",
+        "Idempotent system actor row; called by prepare-runtime and by provisioning."
+      ]
+    },
+    {
+      "file": "scripts/db/set-app-role-password.ts",
+      "entryPoint": "pnpm db:app-role:password",
+      "writeMechanisms": [
+        "SQL DML/DDL",
+        "pg Pool/Client",
+        "migration"
+      ],
+      "tablesOrObjects": [],
+      "targetSource": "env (DATABASE_URL / MIGRATION_DATABASE_URL)",
+      "guard": "NONE",
+      "guardRunsBeforeFirstWrite": true,
+      "transitiveWriter": false,
+      "callers": [],
+      "classification": "INTENTIONAL_REAL_WRITE",
+      "evidence": [
+        "reads DATABASE_URL / MIGRATION_DATABASE_URL",
+        "ALTER ROLE on the real cluster; a cutover step."
+      ]
+    },
+    {
+      "file": "scripts/db/transitions-verify.ts",
+      "entryPoint": "pnpm db:transitions:verify",
+      "writeMechanisms": [
+        "SQL DML/DDL",
+        "pg Pool/Client",
+        "createdb/dropdb",
+        "pg_dump/pg_restore",
+        "child process",
+        "migration",
+        "calls writer: ensureSystemActor, prepareLegacyCheckpointForCancellationValidation"
+      ],
+      "tablesOrObjects": [
+        "public.checks",
+        "public.loan_installments",
+        "public.payment_instances",
+        "public.users"
+      ],
+      "targetSource": "env, validated by disposable gate",
+      "guard": "requireDisposableOwnerDatabaseUrl / isDisposableDatabaseName",
+      "guardRunsBeforeFirstWrite": true,
+      "transitiveWriter": true,
+      "callers": [],
+      "classification": "SAFE_DISPOSABLE_ENFORCED",
+      "evidence": [
+        "disposable gate at line 43, first write-capable line 171",
+        "hard-coded disposable database name present",
+        "reads DATABASE_URL / MIGRATION_DATABASE_URL",
+        "transitive writer via ensureSystemActor, prepareLegacyCheckpointForCancellationValidation"
+      ]
+    },
+    {
+      "file": "scripts/db/verify.sh",
+      "entryPoint": "pnpm db:verify",
+      "writeMechanisms": [
+        "psql",
+        "createdb/dropdb"
+      ],
+      "tablesOrObjects": [],
+      "targetSource": "hard-coded disposable database name",
+      "guard": "hard-coded disposable target (no env path)",
+      "guardRunsBeforeFirstWrite": true,
+      "transitiveWriter": false,
+      "callers": [],
+      "classification": "SAFE_DISPOSABLE_ENFORCED",
+      "evidence": [
+        "hard-coded disposable database name present"
+      ]
+    },
+    {
+      "file": "scripts/deploy/local-start.sh",
+      "entryPoint": "(module / not a package script)",
+      "writeMechanisms": [
+        "psql",
+        "createdb/dropdb",
+        "migration"
+      ],
+      "tablesOrObjects": [],
+      "targetSource": "none (no DB target of its own)",
+      "guard": "NONE",
+      "guardRunsBeforeFirstWrite": true,
+      "transitiveWriter": false,
+      "callers": [],
+      "classification": "INTENTIONAL_REAL_WRITE",
+      "evidence": [
+        "`DB=${MAS_DB_NAME:-mas_radar_dev}` — defaults to the REAL database, then createdb + local-bootstrap.sql + migrate.ts + seed.sql. Local deployment provisioning."
+      ]
+    },
+    {
+      "file": "scripts/deploy/restore-db.sh",
+      "entryPoint": "(module / not a package script)",
+      "writeMechanisms": [
+        "SQL DML/DDL",
+        "psql",
+        "createdb/dropdb",
+        "pg_dump/pg_restore"
+      ],
+      "tablesOrObjects": [],
+      "targetSource": "none (no DB target of its own)",
+      "guard": "NONE",
+      "guardRunsBeforeFirstWrite": true,
+      "transitiveWriter": false,
+      "callers": [],
+      "classification": "INTENTIONAL_REAL_WRITE",
+      "evidence": [
+        "dropdb + createdb + `pg_restore -d $TARGET`. Restoring into a real database is the tool's purpose; target comes from its argument."
+      ]
+    },
+    {
+      "file": "scripts/import-real.ts",
+      "entryPoint": "pnpm import:real",
+      "writeMechanisms": [
+        "SQL DML/DDL",
+        "pg Pool/Client",
+        "calls writer: ensureSystemActor"
+      ],
+      "tablesOrObjects": [
+        "public.source_workbooks"
+      ],
+      "targetSource": "env (DATABASE_URL / MIGRATION_DATABASE_URL)",
+      "guard": "NONE",
+      "guardRunsBeforeFirstWrite": true,
+      "transitiveWriter": true,
+      "callers": [],
+      "classification": "INTENTIONAL_REAL_WRITE",
+      "evidence": [
+        "reads DATABASE_URL / MIGRATION_DATABASE_URL",
+        "transitive writer via ensureSystemActor",
+        "The reviewed workbook import. Writing real data is its purpose."
+      ]
+    },
+    {
+      "file": "scripts/ops/telemetry-alerting-verify.ts",
+      "entryPoint": "pnpm ops:telemetry:alerting:verify",
+      "writeMechanisms": [
+        "SQL DML/DDL",
+        "pg Pool/Client",
+        "child process",
+        "migration"
+      ],
+      "tablesOrObjects": [
+        "public.background_jobs",
+        "public.bank_accounts",
+        "public.bank_transactions",
+        "public.cash_accounts",
+        "public.cashflow_months",
+        "public.schema_migrations",
+        "public.source_workbooks"
+      ],
+      "targetSource": "env, validated by disposable gate",
+      "guard": "requireDisposableOwnerDatabaseUrl / isDisposableDatabaseName",
+      "guardRunsBeforeFirstWrite": true,
+      "transitiveWriter": false,
+      "callers": [],
+      "classification": "SAFE_DISPOSABLE_ENFORCED",
+      "evidence": [
+        "disposable gate at line 33, first write-capable line 186"
+      ]
+    },
+    {
+      "file": "scripts/ops/telemetry-verify.ts",
+      "entryPoint": "pnpm ops:telemetry:verify",
+      "writeMechanisms": [
+        "SQL DML/DDL",
+        "pg Pool/Client",
+        "child process",
+        "migration"
+      ],
+      "tablesOrObjects": [
+        "public.background_jobs",
+        "public.schema_migrations",
+        "public.source_workbooks"
+      ],
+      "targetSource": "env, validated by disposable gate",
+      "guard": "requireDisposableOwnerDatabaseUrl / isDisposableDatabaseName",
+      "guardRunsBeforeFirstWrite": true,
+      "transitiveWriter": false,
+      "callers": [],
+      "classification": "SAFE_DISPOSABLE_ENFORCED",
+      "evidence": [
+        "disposable gate at line 29, first write-capable line 128"
+      ]
+    },
+    {
+      "file": "scripts/perf/measure.ts",
+      "entryPoint": "pnpm perf:measure",
+      "writeMechanisms": [
+        "pg Pool/Client",
+        "calls writer: generateVolume"
+      ],
+      "tablesOrObjects": [],
+      "targetSource": "env, validated by disposable gate",
+      "guard": "requireDisposableOwnerDatabaseUrl / isDisposableDatabaseName",
+      "guardRunsBeforeFirstWrite": true,
+      "transitiveWriter": true,
+      "callers": [],
+      "classification": "SAFE_DISPOSABLE_ENFORCED",
+      "evidence": [
+        "disposable gate at line 8, first write-capable line 47",
+        "reads DATABASE_URL / MIGRATION_DATABASE_URL",
+        "transitive writer via generateVolume",
+        "FIXED in this audit (see 10-perf-measure-fix.md). Was UNSAFE_ENV_TARGETED: raw process.env.MIGRATION_DATABASE_URL, no gate, --seed calls generateVolume() into nine tables. Now requireDisposableOwnerDatabaseUrl('perf:measure --seed') runs BEFORE the Pool is constructed, and the no-seed read path opens with default_transaction_read_only=on. Positional regression coverage in tests/writer-surface.test.ts."
+      ]
+    },
+    {
+      "file": "scripts/perf/perf-gate.ts",
+      "entryPoint": "pnpm perf:gate",
+      "writeMechanisms": [
+        "SQL DML/DDL",
+        "pg Pool/Client",
+        "calls writer: generateVolume"
+      ],
+      "tablesOrObjects": [],
+      "targetSource": "env, validated by disposable gate",
+      "guard": "requireDisposableOwnerDatabaseUrl / isDisposableDatabaseName",
+      "guardRunsBeforeFirstWrite": true,
+      "transitiveWriter": true,
+      "callers": [],
+      "classification": "SAFE_DISPOSABLE_ENFORCED",
+      "evidence": [
+        "disposable gate at line 38, first write-capable line 97",
+        "transitive writer via generateVolume"
+      ]
+    },
+    {
+      "file": "scripts/perf/route-slo.ts",
+      "entryPoint": "pnpm perf:route-slo",
+      "writeMechanisms": [
+        "SQL DML/DDL",
+        "pg Pool/Client",
+        "child process",
+        "calls writer: generateVolume, ensureSystemActor"
+      ],
+      "tablesOrObjects": [
+        "public.sessions",
+        "public.users"
+      ],
+      "targetSource": "env, validated by disposable gate",
+      "guard": "requireDisposableOwnerDatabaseUrl / isDisposableDatabaseName",
+      "guardRunsBeforeFirstWrite": true,
+      "transitiveWriter": true,
+      "callers": [],
+      "classification": "SAFE_DISPOSABLE_ENFORCED",
+      "evidence": [
+        "disposable gate at line 67, first write-capable line 441",
+        "transitive writer via generateVolume, ensureSystemActor"
+      ]
+    },
+    {
+      "file": "scripts/perf/write-slo.ts",
+      "entryPoint": "pnpm perf:write-slo",
+      "writeMechanisms": [
+        "SQL DML/DDL",
+        "pg Pool/Client",
+        "calls writer: generateVolume, ensureWindow, generateInstancesForMonth, ensureSystemActor"
+      ],
+      "tablesOrObjects": [
+        "public.bank_transactions",
+        "public.import_rows",
+        "public.payment_instances",
+        "public.source_cells",
+        "public.source_sheets",
+        "public.source_workbooks"
+      ],
+      "targetSource": "env, validated by disposable gate",
+      "guard": "requireDisposableOwnerDatabaseUrl / isDisposableDatabaseName",
+      "guardRunsBeforeFirstWrite": true,
+      "transitiveWriter": true,
+      "callers": [],
+      "classification": "SAFE_DISPOSABLE_ENFORCED",
+      "evidence": [
+        "disposable gate at line 42, first write-capable line 228",
+        "reads DATABASE_URL / MIGRATION_DATABASE_URL",
+        "transitive writer via generateVolume, ensureWindow, generateInstancesForMonth, ensureSystemActor"
+      ]
+    },
+    {
+      "file": "scripts/phase11b-verify.ts",
+      "entryPoint": "pnpm phase11b:verify",
+      "writeMechanisms": [
+        "SQL DML/DDL",
+        "pg Pool/Client",
+        "calls writer: ensureSystemActor"
+      ],
+      "tablesOrObjects": [
+        "public.cashflow_months"
+      ],
+      "targetSource": "env, validated by disposable gate",
+      "guard": "requireDisposableOwnerDatabaseUrl / isDisposableDatabaseName",
+      "guardRunsBeforeFirstWrite": true,
+      "transitiveWriter": true,
+      "callers": [],
+      "classification": "SAFE_DISPOSABLE_ENFORCED",
+      "evidence": [
+        "disposable gate at line 8, first write-capable line 52",
+        "transitive writer via ensureSystemActor"
+      ]
+    },
+    {
+      "file": "scripts/phase12a-verify.ts",
+      "entryPoint": "pnpm phase12a:verify",
+      "writeMechanisms": [
+        "SQL DML/DDL",
+        "pg Pool/Client",
+        "calls writer: ensureSystemActor"
+      ],
+      "tablesOrObjects": [
+        "public.mapping_reviews",
+        "public.source_workbooks"
+      ],
+      "targetSource": "env, validated by disposable gate",
+      "guard": "requireDisposableOwnerDatabaseUrl / isDisposableDatabaseName",
+      "guardRunsBeforeFirstWrite": true,
+      "transitiveWriter": true,
+      "callers": [],
+      "classification": "SAFE_DISPOSABLE_ENFORCED",
+      "evidence": [
+        "disposable gate at line 15, first write-capable line 48",
+        "transitive writer via ensureSystemActor"
+      ]
+    },
+    {
+      "file": "scripts/phase13a-verify.ts",
+      "entryPoint": "pnpm phase13a:verify",
+      "writeMechanisms": [
+        "SQL DML/DDL",
+        "pg Pool/Client",
+        "calls writer: ensureSystemActor"
+      ],
+      "tablesOrObjects": [
+        "public.mapping_reviews",
+        "public.source_workbooks"
+      ],
+      "targetSource": "env, validated by disposable gate",
+      "guard": "requireDisposableOwnerDatabaseUrl / isDisposableDatabaseName",
+      "guardRunsBeforeFirstWrite": true,
+      "transitiveWriter": true,
+      "callers": [],
+      "classification": "SAFE_DISPOSABLE_ENFORCED",
+      "evidence": [
+        "disposable gate at line 11, first write-capable line 41",
+        "transitive writer via ensureSystemActor"
+      ]
+    },
+    {
+      "file": "scripts/phase13b-verify.ts",
+      "entryPoint": "pnpm phase13b:verify",
+      "writeMechanisms": [
+        "SQL DML/DDL",
+        "pg Pool/Client"
+      ],
+      "tablesOrObjects": [
+        "public.cashflow_lines",
+        "public.cashflow_months"
+      ],
+      "targetSource": "env, validated by disposable gate",
+      "guard": "requireDisposableOwnerDatabaseUrl / isDisposableDatabaseName",
+      "guardRunsBeforeFirstWrite": true,
+      "transitiveWriter": false,
+      "callers": [],
+      "classification": "SAFE_DISPOSABLE_ENFORCED",
+      "evidence": [
+        "disposable gate at line 6, first write-capable line 32"
+      ]
+    },
+    {
+      "file": "scripts/phase14a-verify.ts",
+      "entryPoint": "pnpm phase14a:verify",
+      "writeMechanisms": [
+        "SQL DML/DDL",
+        "pg Pool/Client",
+        "calls writer: ensureSystemActor"
+      ],
+      "tablesOrObjects": [
+        "public.source_workbooks"
+      ],
+      "targetSource": "env, validated by disposable gate",
+      "guard": "requireDisposableOwnerDatabaseUrl / isDisposableDatabaseName",
+      "guardRunsBeforeFirstWrite": true,
+      "transitiveWriter": true,
+      "callers": [],
+      "classification": "SAFE_DISPOSABLE_ENFORCED",
+      "evidence": [
+        "disposable gate at line 16, first write-capable line 46",
+        "transitive writer via ensureSystemActor"
+      ]
+    },
+    {
+      "file": "scripts/phase14b-verify.ts",
+      "entryPoint": "pnpm phase14b:verify",
+      "writeMechanisms": [
+        "SQL DML/DDL",
+        "pg Pool/Client",
+        "calls writer: ensureSystemActor"
+      ],
+      "tablesOrObjects": [
+        "public.external_assumptions"
+      ],
+      "targetSource": "env, validated by disposable gate",
+      "guard": "requireDisposableOwnerDatabaseUrl / isDisposableDatabaseName",
+      "guardRunsBeforeFirstWrite": true,
+      "transitiveWriter": true,
+      "callers": [],
+      "classification": "SAFE_DISPOSABLE_ENFORCED",
+      "evidence": [
+        "disposable gate at line 11, first write-capable line 40",
+        "transitive writer via ensureSystemActor"
+      ]
+    },
+    {
+      "file": "scripts/phase14c-verify.ts",
+      "entryPoint": "pnpm phase14c:verify",
+      "writeMechanisms": [
+        "SQL DML/DDL",
+        "pg Pool/Client",
+        "calls writer: ensureSystemActor"
+      ],
+      "tablesOrObjects": [
+        "public.action_items",
+        "public.ai_response_snapshots",
+        "public.reports"
+      ],
+      "targetSource": "env, validated by disposable gate",
+      "guard": "requireDisposableOwnerDatabaseUrl / isDisposableDatabaseName",
+      "guardRunsBeforeFirstWrite": true,
+      "transitiveWriter": true,
+      "callers": [],
+      "classification": "SAFE_DISPOSABLE_ENFORCED",
+      "evidence": [
+        "disposable gate at line 7, first write-capable line 36",
+        "transitive writer via ensureSystemActor"
+      ]
+    },
+    {
+      "file": "scripts/phase14d-verify.ts",
+      "entryPoint": "pnpm phase14d:verify",
+      "writeMechanisms": [
+        "SQL DML/DDL",
+        "pg Pool/Client",
+        "calls writer: ensureSystemActor"
+      ],
+      "tablesOrObjects": [
+        "public.cashflow_months",
+        "public.external_assumptions"
+      ],
+      "targetSource": "env, validated by disposable gate",
+      "guard": "requireDisposableOwnerDatabaseUrl / isDisposableDatabaseName",
+      "guardRunsBeforeFirstWrite": true,
+      "transitiveWriter": true,
+      "callers": [],
+      "classification": "SAFE_DISPOSABLE_ENFORCED",
+      "evidence": [
+        "disposable gate at line 10, first write-capable line 37",
+        "transitive writer via ensureSystemActor"
+      ]
+    },
+    {
+      "file": "scripts/phase14e-verify.ts",
+      "entryPoint": "pnpm phase14e:verify",
+      "writeMechanisms": [
+        "SQL DML/DDL",
+        "pg Pool/Client"
+      ],
+      "tablesOrObjects": [
+        "public.cashflow_months",
+        "public.source_cells",
+        "public.source_sheets",
+        "public.source_workbooks"
+      ],
+      "targetSource": "env, validated by disposable gate",
+      "guard": "requireDisposableOwnerDatabaseUrl / isDisposableDatabaseName",
+      "guardRunsBeforeFirstWrite": true,
+      "transitiveWriter": false,
+      "callers": [],
+      "classification": "SAFE_DISPOSABLE_ENFORCED",
+      "evidence": [
+        "disposable gate at line 6, first write-capable line 32"
+      ]
+    },
+    {
+      "file": "scripts/phase19-verify.ts",
+      "entryPoint": "pnpm phase19:verify",
+      "writeMechanisms": [
+        "SQL DML/DDL",
+        "pg Pool/Client",
+        "child process"
+      ],
+      "tablesOrObjects": [
+        "public.checks",
+        "public.counterparty_profiles",
+        "public.iban_change_events",
+        "public.ibans",
+        "public.parties"
+      ],
+      "targetSource": "env, validated by disposable gate",
+      "guard": "requireDisposableOwnerDatabaseUrl / isDisposableDatabaseName",
+      "guardRunsBeforeFirstWrite": true,
+      "transitiveWriter": false,
+      "callers": [],
+      "classification": "SAFE_DISPOSABLE_ENFORCED",
+      "evidence": [
+        "disposable gate at line 18, first write-capable line 156"
+      ]
+    },
+    {
+      "file": "scripts/phase20-verify.ts",
+      "entryPoint": "pnpm phase20:verify",
+      "writeMechanisms": [
+        "SQL DML/DDL",
+        "pg Pool/Client"
+      ],
+      "tablesOrObjects": [
+        "public.bank_accounts",
+        "public.bank_transactions",
+        "public.cash_accounts"
+      ],
+      "targetSource": "env, validated by disposable gate",
+      "guard": "requireDisposableOwnerDatabaseUrl / isDisposableDatabaseName",
+      "guardRunsBeforeFirstWrite": true,
+      "transitiveWriter": false,
+      "callers": [],
+      "classification": "SAFE_DISPOSABLE_ENFORCED",
+      "evidence": [
+        "disposable gate at line 26, first write-capable line 192"
+      ]
+    },
+    {
+      "file": "scripts/phase21-verify.ts",
+      "entryPoint": "pnpm phase21:verify",
+      "writeMechanisms": [
+        "SQL DML/DDL",
+        "pg Pool/Client"
+      ],
+      "tablesOrObjects": [
+        "public.invoice_lines",
+        "public.invoice_reversals",
+        "public.invoices",
+        "public.parties"
+      ],
+      "targetSource": "env, validated by disposable gate",
+      "guard": "requireDisposableOwnerDatabaseUrl / isDisposableDatabaseName",
+      "guardRunsBeforeFirstWrite": true,
+      "transitiveWriter": false,
+      "callers": [],
+      "classification": "SAFE_DISPOSABLE_ENFORCED",
+      "evidence": [
+        "disposable gate at line 23, first write-capable line 83"
+      ]
+    },
+    {
+      "file": "scripts/phase22-verify.ts",
+      "entryPoint": "pnpm phase22:verify",
+      "writeMechanisms": [
+        "SQL DML/DDL",
+        "pg Pool/Client"
+      ],
+      "tablesOrObjects": [
+        "public.bank_accounts",
+        "public.bank_transactions",
+        "public.cash_accounts",
+        "public.invoice_allocations",
+        "public.invoice_reversals",
+        "public.invoices",
+        "public.parties",
+        "public.users"
+      ],
+      "targetSource": "env, validated by disposable gate",
+      "guard": "requireDisposableOwnerDatabaseUrl / isDisposableDatabaseName",
+      "guardRunsBeforeFirstWrite": true,
+      "transitiveWriter": false,
+      "callers": [],
+      "classification": "SAFE_DISPOSABLE_ENFORCED",
+      "evidence": [
+        "disposable gate at line 25, first write-capable line 62"
+      ]
+    },
+    {
+      "file": "scripts/phase23-verify.ts",
+      "entryPoint": "pnpm phase23:verify",
+      "writeMechanisms": [
+        "SQL DML/DDL",
+        "pg Pool/Client",
+        "child process"
+      ],
+      "tablesOrObjects": [
+        "public.checks",
+        "public.invoice_allocations",
+        "public.invoice_reversals",
+        "public.invoices",
+        "public.loan_installments",
+        "public.loans",
+        "public.parties",
+        "public.payment_instances",
+        "public.payments",
+        "public.users"
+      ],
+      "targetSource": "env, validated by disposable gate",
+      "guard": "requireDisposableOwnerDatabaseUrl / isDisposableDatabaseName",
+      "guardRunsBeforeFirstWrite": true,
+      "transitiveWriter": false,
+      "callers": [],
+      "classification": "SAFE_DISPOSABLE_ENFORCED",
+      "evidence": [
+        "disposable gate at line 24, first write-capable line 55"
+      ]
+    },
+    {
+      "file": "scripts/phase24a-verify.ts",
+      "entryPoint": "pnpm phase24a:verify",
+      "writeMechanisms": [
+        "SQL DML/DDL",
+        "pg Pool/Client",
+        "child process",
+        "migration"
+      ],
+      "tablesOrObjects": [
+        "public.approval_rules",
+        "public.approval_steps",
+        "public.approvals",
+        "public.external_assumptions",
+        "public.mapping_reviews",
+        "public.source_workbooks",
+        "public.users"
+      ],
+      "targetSource": "env, validated by disposable gate",
+      "guard": "requireDisposableOwnerDatabaseUrl / isDisposableDatabaseName",
+      "guardRunsBeforeFirstWrite": true,
+      "transitiveWriter": false,
+      "callers": [],
+      "classification": "SAFE_DISPOSABLE_ENFORCED",
+      "evidence": [
+        "disposable gate at line 24, first write-capable line 52"
+      ]
+    },
+    {
+      "file": "scripts/phase25-verify.ts",
+      "entryPoint": "pnpm phase25:verify",
+      "writeMechanisms": [
+        "SQL DML/DDL",
+        "pg Pool/Client"
+      ],
+      "tablesOrObjects": [
+        "public.action_items",
+        "public.audit_logs",
+        "public.parties",
+        "public.promise_to_pay",
+        "public.reminder_deliveries",
+        "public.reminders",
+        "public.users"
+      ],
+      "targetSource": "env, validated by disposable gate",
+      "guard": "requireDisposableOwnerDatabaseUrl / isDisposableDatabaseName",
+      "guardRunsBeforeFirstWrite": true,
+      "transitiveWriter": false,
+      "callers": [],
+      "classification": "SAFE_DISPOSABLE_ENFORCED",
+      "evidence": [
+        "disposable gate at line 32, first write-capable line 60"
+      ]
+    },
+    {
+      "file": "scripts/phase26-verify.ts",
+      "entryPoint": "pnpm phase26:verify",
+      "writeMechanisms": [
+        "SQL DML/DDL",
+        "pg Pool/Client",
+        "migration"
+      ],
+      "tablesOrObjects": [
+        "public.bank_accounts",
+        "public.bank_transactions",
+        "public.cash_accounts",
+        "public.cashflow_months",
+        "public.parties",
+        "public.promise_to_pay",
+        "public.treasury_policies"
+      ],
+      "targetSource": "env, validated by disposable gate",
+      "guard": "requireDisposableOwnerDatabaseUrl / isDisposableDatabaseName",
+      "guardRunsBeforeFirstWrite": true,
+      "transitiveWriter": false,
+      "callers": [],
+      "classification": "SAFE_DISPOSABLE_ENFORCED",
+      "evidence": [
+        "disposable gate at line 32, first write-capable line 63"
+      ]
+    },
+    {
+      "file": "scripts/phase27-verify.ts",
+      "entryPoint": "pnpm phase27:verify",
+      "writeMechanisms": [
+        "SQL DML/DDL",
+        "pg Pool/Client",
+        "migration"
+      ],
+      "tablesOrObjects": [
+        "public.audit_logs",
+        "public.collateral_records",
+        "public.covenant_records",
+        "public.credit_facilities",
+        "public.facility_drawdowns",
+        "public.fx_positions",
+        "public.fx_rate_snapshots",
+        "public.loans",
+        "public.users"
+      ],
+      "targetSource": "env, validated by disposable gate",
+      "guard": "requireDisposableOwnerDatabaseUrl / isDisposableDatabaseName",
+      "guardRunsBeforeFirstWrite": true,
+      "transitiveWriter": false,
+      "callers": [],
+      "classification": "SAFE_DISPOSABLE_ENFORCED",
+      "evidence": [
+        "disposable gate at line 31, first write-capable line 82"
+      ]
+    },
+    {
+      "file": "scripts/phase28-verify.ts",
+      "entryPoint": "pnpm phase28:verify",
+      "writeMechanisms": [
+        "SQL DML/DDL",
+        "pg Pool/Client",
+        "migration"
+      ],
+      "tablesOrObjects": [
+        "public.budget_lines",
+        "public.budgets",
+        "public.cost_centers",
+        "public.forecast_lines",
+        "public.forecasts",
+        "public.invoices",
+        "public.parties",
+        "public.users"
+      ],
+      "targetSource": "env, validated by disposable gate",
+      "guard": "requireDisposableOwnerDatabaseUrl / isDisposableDatabaseName",
+      "guardRunsBeforeFirstWrite": true,
+      "transitiveWriter": false,
+      "callers": [],
+      "classification": "SAFE_DISPOSABLE_ENFORCED",
+      "evidence": [
+        "disposable gate at line 32, first write-capable line 67"
+      ]
+    },
+    {
+      "file": "scripts/phase29-verify.ts",
+      "entryPoint": "pnpm phase29:verify",
+      "writeMechanisms": [
+        "SQL DML/DDL",
+        "pg Pool/Client",
+        "migration"
+      ],
+      "tablesOrObjects": [
+        "public.approvals",
+        "public.audit_logs",
+        "public.cashflow_months",
+        "public.optimization_recommendations",
+        "public.optimization_runs",
+        "public.payment_instances",
+        "public.payments",
+        "public.scenario_comparisons",
+        "public.scenario_runs",
+        "public.scenarios",
+        "public.users"
+      ],
+      "targetSource": "env, validated by disposable gate",
+      "guard": "requireDisposableOwnerDatabaseUrl / isDisposableDatabaseName",
+      "guardRunsBeforeFirstWrite": true,
+      "transitiveWriter": false,
+      "callers": [],
+      "classification": "SAFE_DISPOSABLE_ENFORCED",
+      "evidence": [
+        "disposable gate at line 32, first write-capable line 67"
+      ]
+    },
+    {
+      "file": "scripts/phase3-verify.ts",
+      "entryPoint": "pnpm phase3:verify",
+      "writeMechanisms": [
+        "SQL DML/DDL",
+        "pg Pool/Client",
+        "calls writer: ensureWindow, generateInstancesForMonth, ensureSystemActor"
+      ],
+      "tablesOrObjects": [
+        "public.mapping_reviews",
+        "public.payment_instances",
+        "public.source_workbooks"
+      ],
+      "targetSource": "env, validated by disposable gate",
+      "guard": "requireDisposableOwnerDatabaseUrl / isDisposableDatabaseName",
+      "guardRunsBeforeFirstWrite": true,
+      "transitiveWriter": true,
+      "callers": [],
+      "classification": "SAFE_DISPOSABLE_ENFORCED",
+      "evidence": [
+        "disposable gate at line 35, first write-capable line 56",
+        "transitive writer via ensureWindow, generateInstancesForMonth, ensureSystemActor"
+      ]
+    },
+    {
+      "file": "scripts/phase30-verify.ts",
+      "entryPoint": "pnpm phase30:verify",
+      "writeMechanisms": [
+        "SQL DML/DDL",
+        "pg Pool/Client",
+        "migration"
+      ],
+      "tablesOrObjects": [
+        "public.cost_allocation_rules",
+        "public.cost_centers",
+        "public.departments",
+        "public.invoices",
+        "public.parties"
+      ],
+      "targetSource": "env, validated by disposable gate",
+      "guard": "requireDisposableOwnerDatabaseUrl / isDisposableDatabaseName",
+      "guardRunsBeforeFirstWrite": true,
+      "transitiveWriter": false,
+      "callers": [],
+      "classification": "SAFE_DISPOSABLE_ENFORCED",
+      "evidence": [
+        "disposable gate at line 22, first write-capable line 58"
+      ]
+    },
+    {
+      "file": "scripts/phase31-verify.ts",
+      "entryPoint": "pnpm phase31:verify",
+      "writeMechanisms": [
+        "SQL DML/DDL",
+        "pg Pool/Client",
+        "migration"
+      ],
+      "tablesOrObjects": [
+        "public.cashflow_months",
+        "public.control_alerts",
+        "public.invoice_allocations",
+        "public.invoices",
+        "public.parties",
+        "public.payment_instances",
+        "public.payments",
+        "public.users"
+      ],
+      "targetSource": "env, validated by disposable gate",
+      "guard": "requireDisposableOwnerDatabaseUrl / isDisposableDatabaseName",
+      "guardRunsBeforeFirstWrite": true,
+      "transitiveWriter": false,
+      "callers": [],
+      "classification": "SAFE_DISPOSABLE_ENFORCED",
+      "evidence": [
+        "disposable gate at line 29, first write-capable line 64"
+      ]
+    },
+    {
+      "file": "scripts/phase32-verify.ts",
+      "entryPoint": "pnpm phase32:verify",
+      "writeMechanisms": [
+        "SQL DML/DDL",
+        "pg Pool/Client",
+        "migration"
+      ],
+      "tablesOrObjects": [
+        "public.bank_accounts",
+        "public.cash_accounts",
+        "public.credit_facilities",
+        "public.invoices",
+        "public.parties",
+        "public.payment_instances",
+        "public.payments",
+        "public.promise_to_pay"
+      ],
+      "targetSource": "env, validated by disposable gate",
+      "guard": "requireDisposableOwnerDatabaseUrl / isDisposableDatabaseName",
+      "guardRunsBeforeFirstWrite": true,
+      "transitiveWriter": false,
+      "callers": [],
+      "classification": "SAFE_DISPOSABLE_ENFORCED",
+      "evidence": [
+        "disposable gate at line 36, first write-capable line 103"
+      ]
+    },
+    {
+      "file": "scripts/phase33-verify.ts",
+      "entryPoint": "pnpm phase33:verify",
+      "writeMechanisms": [
+        "SQL DML/DDL",
+        "pg Pool/Client",
+        "migration",
+        "calls writer: generateVolume"
+      ],
+      "tablesOrObjects": [
+        "public.background_jobs"
+      ],
+      "targetSource": "env, validated by disposable gate",
+      "guard": "requireDisposableOwnerDatabaseUrl / isDisposableDatabaseName",
+      "guardRunsBeforeFirstWrite": true,
+      "transitiveWriter": true,
+      "callers": [],
+      "classification": "SAFE_DISPOSABLE_ENFORCED",
+      "evidence": [
+        "disposable gate at line 42, first write-capable line 68",
+        "transitive writer via generateVolume"
+      ]
+    },
+    {
+      "file": "scripts/phase34-verify.ts",
+      "entryPoint": "pnpm phase34:verify",
+      "writeMechanisms": [
+        "SQL DML/DDL",
+        "pg Pool/Client",
+        "migration"
+      ],
+      "tablesOrObjects": [
+        "public.invoices",
+        "public.parties"
+      ],
+      "targetSource": "env, validated by disposable gate",
+      "guard": "requireDisposableOwnerDatabaseUrl / isDisposableDatabaseName",
+      "guardRunsBeforeFirstWrite": true,
+      "transitiveWriter": false,
+      "callers": [],
+      "classification": "SAFE_DISPOSABLE_ENFORCED",
+      "evidence": [
+        "disposable gate at line 43, first write-capable line 64"
+      ]
+    },
+    {
+      "file": "scripts/phase35-verify.ts",
+      "entryPoint": "pnpm phase35:verify",
+      "writeMechanisms": [
+        "SQL DML/DDL",
+        "pg Pool/Client",
+        "migration"
+      ],
+      "tablesOrObjects": [
+        "public.attachments",
+        "public.documents"
+      ],
+      "targetSource": "env, validated by disposable gate",
+      "guard": "requireDisposableOwnerDatabaseUrl / isDisposableDatabaseName",
+      "guardRunsBeforeFirstWrite": true,
+      "transitiveWriter": false,
+      "callers": [],
+      "classification": "SAFE_DISPOSABLE_ENFORCED",
+      "evidence": [
+        "disposable gate at line 38, first write-capable line 80"
+      ]
+    },
+    {
+      "file": "scripts/phase36-verify.ts",
+      "entryPoint": "pnpm phase36:verify",
+      "writeMechanisms": [
+        "SQL DML/DDL",
+        "pg Pool/Client",
+        "migration"
+      ],
+      "tablesOrObjects": [
+        "public.documents",
+        "public.saved_views"
+      ],
+      "targetSource": "env, validated by disposable gate",
+      "guard": "requireDisposableOwnerDatabaseUrl / isDisposableDatabaseName",
+      "guardRunsBeforeFirstWrite": true,
+      "transitiveWriter": false,
+      "callers": [],
+      "classification": "SAFE_DISPOSABLE_ENFORCED",
+      "evidence": [
+        "disposable gate at line 39, first write-capable line 77"
+      ]
+    },
+    {
+      "file": "scripts/phase37-verify.ts",
+      "entryPoint": "pnpm phase37:verify",
+      "writeMechanisms": [
+        "SQL DML/DDL",
+        "pg Pool/Client",
+        "migration"
+      ],
+      "tablesOrObjects": [
+        "public.background_jobs",
+        "public.bank_accounts",
+        "public.bank_transactions",
+        "public.cash_accounts",
+        "public.integration_connections",
+        "public.invoices",
+        "public.parties"
+      ],
+      "targetSource": "env, validated by disposable gate",
+      "guard": "requireDisposableOwnerDatabaseUrl / isDisposableDatabaseName",
+      "guardRunsBeforeFirstWrite": true,
+      "transitiveWriter": false,
+      "callers": [],
+      "classification": "SAFE_DISPOSABLE_ENFORCED",
+      "evidence": [
+        "disposable gate at line 38, first write-capable line 79"
+      ]
+    },
+    {
+      "file": "scripts/phase38-verify.ts",
+      "entryPoint": "pnpm phase38:verify",
+      "writeMechanisms": [
+        "SQL DML/DDL",
+        "pg Pool/Client",
+        "migration"
+      ],
+      "tablesOrObjects": [
+        "public.ai_response_snapshots",
+        "public.assistant_conversations"
+      ],
+      "targetSource": "env, validated by disposable gate",
+      "guard": "requireDisposableOwnerDatabaseUrl / isDisposableDatabaseName",
+      "guardRunsBeforeFirstWrite": true,
+      "transitiveWriter": false,
+      "callers": [],
+      "classification": "SAFE_DISPOSABLE_ENFORCED",
+      "evidence": [
+        "disposable gate at line 38, first write-capable line 68"
+      ]
+    },
+    {
+      "file": "scripts/phase4-verify.ts",
+      "entryPoint": "pnpm phase4:verify",
+      "writeMechanisms": [
+        "SQL DML/DDL",
+        "pg Pool/Client",
+        "calls writer: ensureSystemActor"
+      ],
+      "tablesOrObjects": [
+        "public.cashflow_months",
+        "public.mapping_reviews",
+        "public.source_workbooks"
+      ],
+      "targetSource": "env, validated by disposable gate",
+      "guard": "requireDisposableOwnerDatabaseUrl / isDisposableDatabaseName",
+      "guardRunsBeforeFirstWrite": true,
+      "transitiveWriter": true,
+      "callers": [],
+      "classification": "SAFE_DISPOSABLE_ENFORCED",
+      "evidence": [
+        "disposable gate at line 22, first write-capable line 38",
+        "transitive writer via ensureSystemActor"
+      ]
+    },
+    {
+      "file": "scripts/phase5-verify.ts",
+      "entryPoint": "pnpm phase5:verify",
+      "writeMechanisms": [
+        "SQL DML/DDL",
+        "pg Pool/Client",
+        "calls writer: ensureSystemActor"
+      ],
+      "tablesOrObjects": [
+        "public.checks",
+        "public.loans",
+        "public.mapping_reviews",
+        "public.source_workbooks"
+      ],
+      "targetSource": "env, validated by disposable gate",
+      "guard": "requireDisposableOwnerDatabaseUrl / isDisposableDatabaseName",
+      "guardRunsBeforeFirstWrite": true,
+      "transitiveWriter": true,
+      "callers": [],
+      "classification": "SAFE_DISPOSABLE_ENFORCED",
+      "evidence": [
+        "disposable gate at line 20, first write-capable line 41",
+        "transitive writer via ensureSystemActor"
+      ]
+    },
+    {
+      "file": "scripts/phase6-verify.ts",
+      "entryPoint": "pnpm phase6:verify",
+      "writeMechanisms": [
+        "SQL DML/DDL",
+        "pg Pool/Client",
+        "calls writer: ensureWindow, ensureSystemActor"
+      ],
+      "tablesOrObjects": [
+        "public.mapping_reviews",
+        "public.source_workbooks"
+      ],
+      "targetSource": "env, validated by disposable gate",
+      "guard": "requireDisposableOwnerDatabaseUrl / isDisposableDatabaseName",
+      "guardRunsBeforeFirstWrite": true,
+      "transitiveWriter": true,
+      "callers": [],
+      "classification": "SAFE_DISPOSABLE_ENFORCED",
+      "evidence": [
+        "disposable gate at line 17, first write-capable line 49",
+        "transitive writer via ensureWindow, ensureSystemActor"
+      ]
+    },
+    {
+      "file": "scripts/phase6b-verify.ts",
+      "entryPoint": "pnpm phase6b:verify",
+      "writeMechanisms": [
+        "SQL DML/DDL",
+        "pg Pool/Client",
+        "calls writer: ensureWindow, ensureSystemActor"
+      ],
+      "tablesOrObjects": [
+        "public.mapping_reviews",
+        "public.reminder_deliveries",
+        "public.source_workbooks"
+      ],
+      "targetSource": "env, validated by disposable gate",
+      "guard": "requireDisposableOwnerDatabaseUrl / isDisposableDatabaseName",
+      "guardRunsBeforeFirstWrite": true,
+      "transitiveWriter": true,
+      "callers": [],
+      "classification": "SAFE_DISPOSABLE_ENFORCED",
+      "evidence": [
+        "disposable gate at line 16, first write-capable line 45",
+        "transitive writer via ensureWindow, ensureSystemActor"
+      ]
+    },
+    {
+      "file": "scripts/phase7-verify.ts",
+      "entryPoint": "pnpm phase7:verify",
+      "writeMechanisms": [
+        "SQL DML/DDL",
+        "pg Pool/Client",
+        "calls writer: ensureSystemActor"
+      ],
+      "tablesOrObjects": [
+        "public.mapping_reviews",
+        "public.source_workbooks"
+      ],
+      "targetSource": "env, validated by disposable gate",
+      "guard": "requireDisposableOwnerDatabaseUrl / isDisposableDatabaseName",
+      "guardRunsBeforeFirstWrite": true,
+      "transitiveWriter": true,
+      "callers": [],
+      "classification": "SAFE_DISPOSABLE_ENFORCED",
+      "evidence": [
+        "disposable gate at line 18, first write-capable line 50",
+        "transitive writer via ensureSystemActor"
+      ]
+    },
+    {
+      "file": "scripts/phase8-verify.ts",
+      "entryPoint": "pnpm phase8:verify",
+      "writeMechanisms": [
+        "SQL DML/DDL",
+        "pg Pool/Client",
+        "calls writer: ensureSystemActor"
+      ],
+      "tablesOrObjects": [
+        "public.mapping_reviews",
+        "public.source_workbooks"
+      ],
+      "targetSource": "env, validated by disposable gate",
+      "guard": "requireDisposableOwnerDatabaseUrl / isDisposableDatabaseName",
+      "guardRunsBeforeFirstWrite": true,
+      "transitiveWriter": true,
+      "callers": [],
+      "classification": "SAFE_DISPOSABLE_ENFORCED",
+      "evidence": [
+        "disposable gate at line 19, first write-capable line 53",
+        "transitive writer via ensureSystemActor"
+      ]
+    },
+    {
+      "file": "scripts/phase9a-verify.ts",
+      "entryPoint": "pnpm phase9a:verify",
+      "writeMechanisms": [
+        "SQL DML/DDL",
+        "pg Pool/Client",
+        "calls writer: ensureSystemActor"
+      ],
+      "tablesOrObjects": [
+        "public.mapping_reviews",
+        "public.source_workbooks"
+      ],
+      "targetSource": "env, validated by disposable gate",
+      "guard": "requireDisposableOwnerDatabaseUrl / isDisposableDatabaseName",
+      "guardRunsBeforeFirstWrite": true,
+      "transitiveWriter": true,
+      "callers": [],
+      "classification": "SAFE_DISPOSABLE_ENFORCED",
+      "evidence": [
+        "disposable gate at line 12, first write-capable line 41",
+        "transitive writer via ensureSystemActor"
+      ]
+    },
+    {
+      "file": "scripts/phase9b-verify.ts",
+      "entryPoint": "pnpm phase9b:verify",
+      "writeMechanisms": [
+        "SQL DML/DDL",
+        "pg Pool/Client",
+        "calls writer: ensureSystemActor"
+      ],
+      "tablesOrObjects": [
+        "public.source_workbooks"
+      ],
+      "targetSource": "env, validated by disposable gate",
+      "guard": "requireDisposableOwnerDatabaseUrl / isDisposableDatabaseName",
+      "guardRunsBeforeFirstWrite": true,
+      "transitiveWriter": true,
+      "callers": [],
+      "classification": "SAFE_DISPOSABLE_ENFORCED",
+      "evidence": [
+        "disposable gate at line 12, first write-capable line 30",
+        "transitive writer via ensureSystemActor"
+      ]
+    },
+    {
+      "file": "scripts/phase9c-verify.ts",
+      "entryPoint": "pnpm phase9c:verify",
+      "writeMechanisms": [
+        "SQL DML/DDL",
+        "pg Pool/Client",
+        "calls writer: ensureSystemActor"
+      ],
+      "tablesOrObjects": [
+        "public.machine_assets",
+        "public.mapping_reviews",
+        "public.source_workbooks"
+      ],
+      "targetSource": "env, validated by disposable gate",
+      "guard": "requireDisposableOwnerDatabaseUrl / isDisposableDatabaseName",
+      "guardRunsBeforeFirstWrite": true,
+      "transitiveWriter": true,
+      "callers": [],
+      "classification": "SAFE_DISPOSABLE_ENFORCED",
+      "evidence": [
+        "disposable gate at line 11, first write-capable line 40",
+        "transitive writer via ensureSystemActor"
+      ]
+    },
+    {
+      "file": "scripts/phase9d-verify.ts",
+      "entryPoint": "pnpm phase9d:verify",
+      "writeMechanisms": [
+        "SQL DML/DDL",
+        "pg Pool/Client",
+        "calls writer: ensureSystemActor"
+      ],
+      "tablesOrObjects": [
+        "public.mapping_reviews",
+        "public.source_workbooks"
+      ],
+      "targetSource": "env, validated by disposable gate",
+      "guard": "requireDisposableOwnerDatabaseUrl / isDisposableDatabaseName",
+      "guardRunsBeforeFirstWrite": true,
+      "transitiveWriter": true,
+      "callers": [],
+      "classification": "SAFE_DISPOSABLE_ENFORCED",
+      "evidence": [
+        "disposable gate at line 18, first write-capable line 55",
+        "transitive writer via ensureSystemActor"
+      ]
+    },
+    {
+      "file": "scripts/prepare-runtime.ts",
+      "entryPoint": "pnpm dev · pnpm start",
+      "writeMechanisms": [
+        "calls writer: ensureWindow, ensureSystemActor"
+      ],
+      "tablesOrObjects": [],
+      "targetSource": "none (no DB target of its own)",
+      "guard": "NONE",
+      "guardRunsBeforeFirstWrite": true,
+      "transitiveWriter": true,
+      "callers": [],
+      "classification": "INTENTIONAL_REAL_WRITE",
+      "evidence": [
+        "transitive writer via ensureWindow, ensureSystemActor",
+        "Runs on every dev/start. ensureWindow(...,24) materialises a 26-month instance window against the real DB by design. This is the AMPLIFIER in the P24B incident, not its root cause."
+      ]
+    },
+    {
+      "file": "scripts/qa/writer-surface-manifest.ts",
+      "entryPoint": "(module / not a package script)",
+      "writeMechanisms": [
+        "SQL DML/DDL",
+        "psql",
+        "createdb/dropdb",
+        "pg_dump/pg_restore",
+        "migration",
+        "calls writer: generateVolume, ensureWindow"
+      ],
+      "tablesOrObjects": [],
+      "targetSource": "env, validated by disposable gate",
+      "guard": "requireDisposableOwnerDatabaseUrl / isDisposableDatabaseName",
+      "guardRunsBeforeFirstWrite": false,
+      "transitiveWriter": true,
+      "callers": [],
+      "classification": "SAFE_DISPOSABLE_ENFORCED",
+      "evidence": [
+        "disposable gate at line 43, first write-capable line 27",
+        "hard-coded disposable database name present",
+        "reads DATABASE_URL / MIGRATION_DATABASE_URL",
+        "transitive writer via generateVolume, ensureWindow"
+      ]
+    },
+    {
+      "file": "scripts/release/golden-fingerprint.ts",
+      "entryPoint": "pnpm release:golden-fingerprint",
+      "writeMechanisms": [
+        "pg Pool/Client",
+        "createdb/dropdb",
+        "pg_dump/pg_restore",
+        "child process",
+        "migration"
+      ],
+      "tablesOrObjects": [],
+      "targetSource": "env, validated by disposable gate",
+      "guard": "requireDisposableOwnerDatabaseUrl / isDisposableDatabaseName",
+      "guardRunsBeforeFirstWrite": true,
+      "transitiveWriter": false,
+      "callers": [],
+      "classification": "SAFE_DISPOSABLE_ENFORCED",
+      "evidence": [
+        "disposable gate at line 47, first write-capable line -"
+      ]
+    },
+    {
+      "file": "scripts/release/real-clone-gate.ts",
+      "entryPoint": "pnpm release:real-clone-gate",
+      "writeMechanisms": [
+        "pg Pool/Client",
+        "psql",
+        "createdb/dropdb",
+        "pg_dump/pg_restore",
+        "child process",
+        "migration"
+      ],
+      "tablesOrObjects": [],
+      "targetSource": "env, validated by disposable gate",
+      "guard": "requireDisposableOwnerDatabaseUrl / isDisposableDatabaseName",
+      "guardRunsBeforeFirstWrite": true,
+      "transitiveWriter": false,
+      "callers": [],
+      "classification": "SAFE_DISPOSABLE_ENFORCED",
+      "evidence": [
+        "disposable gate at line 55, first write-capable line -",
+        "hard-coded disposable database name present"
+      ]
+    },
+    {
+      "file": "scripts/release/restore-drill.ts",
+      "entryPoint": "pnpm release:restore-drill",
+      "writeMechanisms": [
+        "pg Pool/Client",
+        "createdb/dropdb",
+        "pg_dump/pg_restore",
+        "child process"
+      ],
+      "tablesOrObjects": [],
+      "targetSource": "env, validated by disposable gate",
+      "guard": "requireDisposableOwnerDatabaseUrl / isDisposableDatabaseName",
+      "guardRunsBeforeFirstWrite": true,
+      "transitiveWriter": false,
+      "callers": [],
+      "classification": "SAFE_DISPOSABLE_ENFORCED",
+      "evidence": [
+        "disposable gate at line 63, first write-capable line -"
+      ]
+    },
+    {
+      "file": "scripts/release/stage07-backup-gate.ts",
+      "entryPoint": "pnpm release:stage07-backup-gate",
+      "writeMechanisms": [
+        "pg Pool/Client",
+        "createdb/dropdb",
+        "pg_dump/pg_restore",
+        "child process",
+        "migration"
+      ],
+      "tablesOrObjects": [],
+      "targetSource": "env, validated by disposable gate",
+      "guard": "requireDisposableOwnerDatabaseUrl / isDisposableDatabaseName",
+      "guardRunsBeforeFirstWrite": true,
+      "transitiveWriter": false,
+      "callers": [],
+      "classification": "SAFE_DISPOSABLE_ENFORCED",
+      "evidence": [
+        "disposable gate at line 40, first write-capable line -",
+        "hard-coded disposable database name present"
+      ]
+    },
+    {
+      "file": "scripts/seed-demo.ts",
+      "entryPoint": "pnpm seed:demo",
+      "writeMechanisms": [
+        "SQL DML/DDL",
+        "pg Pool/Client",
+        "calls writer: ensureWindow, ensureSystemActor"
+      ],
+      "tablesOrObjects": [
+        "public.check_events",
+        "public.mapping_reviews",
+        "public.source_workbooks"
+      ],
+      "targetSource": "env, validated by disposable gate",
+      "guard": "requireDisposableOwnerDatabaseUrl / isDisposableDatabaseName",
+      "guardRunsBeforeFirstWrite": true,
+      "transitiveWriter": true,
+      "callers": [],
+      "classification": "SAFE_DISPOSABLE_ENFORCED",
+      "evidence": [
+        "disposable gate at line 27, first write-capable line 56",
+        "transitive writer via ensureWindow, ensureSystemActor"
+      ]
+    },
+    {
+      "file": "src/app/(dashboard)/calendar/page.tsx",
+      "entryPoint": "(module / not a package script)",
+      "writeMechanisms": [
+        "calls writer: generateInstancesForMonth"
+      ],
+      "tablesOrObjects": [],
+      "targetSource": "none (no DB target of its own)",
+      "guard": "NONE",
+      "guardRunsBeforeFirstWrite": true,
+      "transitiveWriter": true,
+      "callers": [
+        "src/app/(dashboard)/data/assumptions/page.tsx",
+        "src/app/(dashboard)/data/imports/page.tsx",
+        "src/app/(dashboard)/financing/loans/[loanId]/page.tsx",
+        "src/app/(dashboard)/imports/[workbookId]/page.tsx",
+        "src/app/(dashboard)/imports/[workbookId]/reviews/page.tsx",
+        "src/app/(dashboard)/imports/[workbookId]/sheets/[sheetId]/page.tsx",
+        "src/app/(dashboard)/insights/reminders/page.tsx",
+        "src/app/(dashboard)/insights/reports/page.tsx",
+        "src/app/(dashboard)/overview/page.tsx",
+        "src/app/(dashboard)/payments/calendar/page.tsx",
+        "src/app/(dashboard)/reports/[reportId]/page.tsx",
+        "src/app/(dashboard)/system/features/page.tsx"
+      ],
+      "classification": "INTENTIONAL_REAL_WRITE",
+      "evidence": [
+        "transitive writer via generateInstancesForMonth"
+      ]
+    },
+    {
+      "file": "src/app/(dashboard)/data/documents/page.tsx",
+      "entryPoint": "(module / not a package script)",
+      "writeMechanisms": [
+        "SQL DML/DDL",
+        "pg_dump/pg_restore"
+      ],
+      "tablesOrObjects": [],
+      "targetSource": "none (no DB target of its own)",
+      "guard": "NONE",
+      "guardRunsBeforeFirstWrite": true,
+      "transitiveWriter": false,
+      "callers": [
+        "src/app/(dashboard)/data/assumptions/page.tsx",
+        "src/app/(dashboard)/data/imports/page.tsx",
+        "src/app/(dashboard)/financing/loans/[loanId]/page.tsx",
+        "src/app/(dashboard)/imports/[workbookId]/page.tsx",
+        "src/app/(dashboard)/imports/[workbookId]/reviews/page.tsx",
+        "src/app/(dashboard)/imports/[workbookId]/sheets/[sheetId]/page.tsx",
+        "src/app/(dashboard)/insights/reminders/page.tsx",
+        "src/app/(dashboard)/insights/reports/page.tsx",
+        "src/app/(dashboard)/overview/page.tsx",
+        "src/app/(dashboard)/payments/calendar/page.tsx",
+        "src/app/(dashboard)/reports/[reportId]/page.tsx",
+        "src/app/(dashboard)/system/features/page.tsx"
+      ],
+      "classification": "INTENTIONAL_REAL_WRITE",
+      "evidence": []
+    },
+    {
+      "file": "src/app/(dashboard)/data/imports/[workbookId]/page.tsx",
+      "entryPoint": "(module / not a package script)",
+      "writeMechanisms": [
+        "SQL DML/DDL"
+      ],
+      "tablesOrObjects": [],
+      "targetSource": "none (no DB target of its own)",
+      "guard": "NONE",
+      "guardRunsBeforeFirstWrite": true,
+      "transitiveWriter": false,
+      "callers": [
+        "src/app/(dashboard)/data/assumptions/page.tsx",
+        "src/app/(dashboard)/data/imports/page.tsx",
+        "src/app/(dashboard)/financing/loans/[loanId]/page.tsx",
+        "src/app/(dashboard)/imports/[workbookId]/page.tsx",
+        "src/app/(dashboard)/imports/[workbookId]/reviews/page.tsx",
+        "src/app/(dashboard)/imports/[workbookId]/sheets/[sheetId]/page.tsx",
+        "src/app/(dashboard)/insights/reminders/page.tsx",
+        "src/app/(dashboard)/insights/reports/page.tsx",
+        "src/app/(dashboard)/overview/page.tsx",
+        "src/app/(dashboard)/payments/calendar/page.tsx",
+        "src/app/(dashboard)/reports/[reportId]/page.tsx",
+        "src/app/(dashboard)/system/features/page.tsx"
+      ],
+      "classification": "INTENTIONAL_REAL_WRITE",
+      "evidence": []
+    },
+    {
+      "file": "src/app/(dashboard)/data/imports/[workbookId]/sheets/[sheetId]/page.tsx",
+      "entryPoint": "(module / not a package script)",
+      "writeMechanisms": [
+        "SQL DML/DDL"
+      ],
+      "tablesOrObjects": [],
+      "targetSource": "none (no DB target of its own)",
+      "guard": "NONE",
+      "guardRunsBeforeFirstWrite": true,
+      "transitiveWriter": false,
+      "callers": [
+        "src/app/(dashboard)/data/assumptions/page.tsx",
+        "src/app/(dashboard)/data/imports/page.tsx",
+        "src/app/(dashboard)/financing/loans/[loanId]/page.tsx",
+        "src/app/(dashboard)/imports/[workbookId]/page.tsx",
+        "src/app/(dashboard)/imports/[workbookId]/reviews/page.tsx",
+        "src/app/(dashboard)/imports/[workbookId]/sheets/[sheetId]/page.tsx",
+        "src/app/(dashboard)/insights/reminders/page.tsx",
+        "src/app/(dashboard)/insights/reports/page.tsx",
+        "src/app/(dashboard)/overview/page.tsx",
+        "src/app/(dashboard)/payments/calendar/page.tsx",
+        "src/app/(dashboard)/reports/[reportId]/page.tsx",
+        "src/app/(dashboard)/system/features/page.tsx"
+      ],
+      "classification": "INTENTIONAL_REAL_WRITE",
+      "evidence": []
+    },
+    {
+      "file": "src/app/(dashboard)/finance/actions.ts",
+      "entryPoint": "(module / not a package script)",
+      "writeMechanisms": [
+        "SQL DML/DDL"
+      ],
+      "tablesOrObjects": [
+        "public.checks",
+        "public.loan_installments",
+        "public.loans"
+      ],
+      "targetSource": "none (no DB target of its own)",
+      "guard": "NONE",
+      "guardRunsBeforeFirstWrite": true,
+      "transitiveWriter": false,
+      "callers": [
+        "src/app/(dashboard)/assumptions/page.tsx",
+        "src/app/(dashboard)/data/approvals/page.tsx",
+        "src/app/(dashboard)/data/imports/[workbookId]/page.tsx",
+        "src/app/(dashboard)/data/imports/[workbookId]/reviews/page.tsx",
+        "src/app/(dashboard)/data/reviews/page.tsx",
+        "src/app/(dashboard)/data-quality/page.tsx",
+        "src/app/(dashboard)/finance/bank/page.tsx",
+        "src/app/(dashboard)/finance/checks/new/page.tsx",
+        "src/app/(dashboard)/finance/collections/page.tsx",
+        "src/app/(dashboard)/finance/counterparties/page.tsx",
+        "src/app/(dashboard)/finance/fx/page.tsx",
+        "src/app/(dashboard)/finance/invoices/page.tsx",
+        "src/app/(dashboard)/finance/loans/new/page.tsx",
+        "src/app/(dashboard)/finance/loans/[loanId]/page.tsx",
+        "src/app/(dashboard)/finance/promises/page.tsx",
+        "src/app/(dashboard)/finance/receivables/page.tsx",
+        "src/app/(dashboard)/finance/treasury/page.tsx",
+        "src/app/(dashboard)/insights/ask/page.tsx",
+        "src/app/(dashboard)/insights/ask/[responseId]/page.tsx",
+        "src/app/(dashboard)/insights/briefing/page.tsx",
+        "src/app/(dashboard)/insights/reports/[reportId]/page.tsx",
+        "src/app/(dashboard)/insights/tasks/page.tsx",
+        "src/app/(dashboard)/layout.tsx",
+        "src/app/(dashboard)/page.tsx",
+        "src/app/(dashboard)/payments/new/page.tsx",
+        "src/app/(dashboard)/payments/[paymentId]/edit/page.tsx",
+        "src/app/(dashboard)/reminders/page.tsx",
+        "src/app/(dashboard)/reports/page.tsx",
+        "src/app/(dashboard)/scenarios/history/page.tsx",
+        "src/app/(dashboard)/scenarios/optimization/page.tsx",
+        "src/app/(dashboard)/scenarios/page.tsx",
+        "src/app/(dashboard)/scenarios/[runId]/page.tsx",
+        "src/app/(dashboard)/system/controls/page.tsx",
+        "src/app/(dashboard)/system/diagnostics/page.tsx",
+        "src/app/(dashboard)/system/jobs/page.tsx",
+        "src/app/(dashboard)/system/page.tsx",
+        "src/app/(dashboard)/system/security/page.tsx",
+        "src/app/login/page.tsx",
+        "src/components/archive/archive-list.tsx",
+        "src/components/finance/check-settle-forms.tsx",
+        "src/components/imports/upload-form.tsx",
+        "src/components/radar/instance-row.tsx",
+        "src/components/radar/payment-form.tsx",
+        "src/components/system/archive-form.tsx"
+      ],
+      "classification": "INTENTIONAL_REAL_WRITE",
+      "evidence": []
+    },
+    {
+      "file": "src/app/(dashboard)/finance/calendar/page.tsx",
+      "entryPoint": "(module / not a package script)",
+      "writeMechanisms": [
+        "SQL DML/DDL"
+      ],
+      "tablesOrObjects": [],
+      "targetSource": "none (no DB target of its own)",
+      "guard": "NONE",
+      "guardRunsBeforeFirstWrite": true,
+      "transitiveWriter": false,
+      "callers": [
+        "src/app/(dashboard)/data/assumptions/page.tsx",
+        "src/app/(dashboard)/data/imports/page.tsx",
+        "src/app/(dashboard)/financing/loans/[loanId]/page.tsx",
+        "src/app/(dashboard)/imports/[workbookId]/page.tsx",
+        "src/app/(dashboard)/imports/[workbookId]/reviews/page.tsx",
+        "src/app/(dashboard)/imports/[workbookId]/sheets/[sheetId]/page.tsx",
+        "src/app/(dashboard)/insights/reminders/page.tsx",
+        "src/app/(dashboard)/insights/reports/page.tsx",
+        "src/app/(dashboard)/overview/page.tsx",
+        "src/app/(dashboard)/payments/calendar/page.tsx",
+        "src/app/(dashboard)/reports/[reportId]/page.tsx",
+        "src/app/(dashboard)/system/features/page.tsx"
+      ],
+      "classification": "INTENTIONAL_REAL_WRITE",
+      "evidence": []
+    },
+    {
+      "file": "src/app/(dashboard)/finance/collections/page.tsx",
+      "entryPoint": "(module / not a package script)",
+      "writeMechanisms": [
+        "SQL DML/DDL"
+      ],
+      "tablesOrObjects": [],
+      "targetSource": "none (no DB target of its own)",
+      "guard": "NONE",
+      "guardRunsBeforeFirstWrite": true,
+      "transitiveWriter": false,
+      "callers": [
+        "src/app/(dashboard)/data/assumptions/page.tsx",
+        "src/app/(dashboard)/data/imports/page.tsx",
+        "src/app/(dashboard)/financing/loans/[loanId]/page.tsx",
+        "src/app/(dashboard)/imports/[workbookId]/page.tsx",
+        "src/app/(dashboard)/imports/[workbookId]/reviews/page.tsx",
+        "src/app/(dashboard)/imports/[workbookId]/sheets/[sheetId]/page.tsx",
+        "src/app/(dashboard)/insights/reminders/page.tsx",
+        "src/app/(dashboard)/insights/reports/page.tsx",
+        "src/app/(dashboard)/overview/page.tsx",
+        "src/app/(dashboard)/payments/calendar/page.tsx",
+        "src/app/(dashboard)/reports/[reportId]/page.tsx",
+        "src/app/(dashboard)/system/features/page.tsx"
+      ],
+      "classification": "INTENTIONAL_REAL_WRITE",
+      "evidence": []
+    },
+    {
+      "file": "src/app/(dashboard)/finance/receivables/page.tsx",
+      "entryPoint": "(module / not a package script)",
+      "writeMechanisms": [
+        "SQL DML/DDL"
+      ],
+      "tablesOrObjects": [],
+      "targetSource": "none (no DB target of its own)",
+      "guard": "NONE",
+      "guardRunsBeforeFirstWrite": true,
+      "transitiveWriter": false,
+      "callers": [
+        "src/app/(dashboard)/data/assumptions/page.tsx",
+        "src/app/(dashboard)/data/imports/page.tsx",
+        "src/app/(dashboard)/financing/loans/[loanId]/page.tsx",
+        "src/app/(dashboard)/imports/[workbookId]/page.tsx",
+        "src/app/(dashboard)/imports/[workbookId]/reviews/page.tsx",
+        "src/app/(dashboard)/imports/[workbookId]/sheets/[sheetId]/page.tsx",
+        "src/app/(dashboard)/insights/reminders/page.tsx",
+        "src/app/(dashboard)/insights/reports/page.tsx",
+        "src/app/(dashboard)/overview/page.tsx",
+        "src/app/(dashboard)/payments/calendar/page.tsx",
+        "src/app/(dashboard)/reports/[reportId]/page.tsx",
+        "src/app/(dashboard)/system/features/page.tsx"
+      ],
+      "classification": "INTENTIONAL_REAL_WRITE",
+      "evidence": []
+    },
+    {
+      "file": "src/app/(dashboard)/imports/actions.ts",
+      "entryPoint": "(module / not a package script)",
+      "writeMechanisms": [
+        "SQL DML/DDL"
+      ],
+      "tablesOrObjects": [
+        "public.mapping_reviews"
+      ],
+      "targetSource": "none (no DB target of its own)",
+      "guard": "NONE",
+      "guardRunsBeforeFirstWrite": true,
+      "transitiveWriter": false,
+      "callers": [
+        "src/app/(dashboard)/assumptions/page.tsx",
+        "src/app/(dashboard)/data/approvals/page.tsx",
+        "src/app/(dashboard)/data/imports/[workbookId]/page.tsx",
+        "src/app/(dashboard)/data/imports/[workbookId]/reviews/page.tsx",
+        "src/app/(dashboard)/data/reviews/page.tsx",
+        "src/app/(dashboard)/data-quality/page.tsx",
+        "src/app/(dashboard)/finance/bank/page.tsx",
+        "src/app/(dashboard)/finance/checks/new/page.tsx",
+        "src/app/(dashboard)/finance/collections/page.tsx",
+        "src/app/(dashboard)/finance/counterparties/page.tsx",
+        "src/app/(dashboard)/finance/fx/page.tsx",
+        "src/app/(dashboard)/finance/invoices/page.tsx",
+        "src/app/(dashboard)/finance/loans/new/page.tsx",
+        "src/app/(dashboard)/finance/loans/[loanId]/page.tsx",
+        "src/app/(dashboard)/finance/promises/page.tsx",
+        "src/app/(dashboard)/finance/receivables/page.tsx",
+        "src/app/(dashboard)/finance/treasury/page.tsx",
+        "src/app/(dashboard)/insights/ask/page.tsx",
+        "src/app/(dashboard)/insights/ask/[responseId]/page.tsx",
+        "src/app/(dashboard)/insights/briefing/page.tsx",
+        "src/app/(dashboard)/insights/reports/[reportId]/page.tsx",
+        "src/app/(dashboard)/insights/tasks/page.tsx",
+        "src/app/(dashboard)/layout.tsx",
+        "src/app/(dashboard)/page.tsx",
+        "src/app/(dashboard)/payments/new/page.tsx",
+        "src/app/(dashboard)/payments/[paymentId]/edit/page.tsx",
+        "src/app/(dashboard)/reminders/page.tsx",
+        "src/app/(dashboard)/reports/page.tsx",
+        "src/app/(dashboard)/scenarios/history/page.tsx",
+        "src/app/(dashboard)/scenarios/optimization/page.tsx",
+        "src/app/(dashboard)/scenarios/page.tsx",
+        "src/app/(dashboard)/scenarios/[runId]/page.tsx",
+        "src/app/(dashboard)/system/controls/page.tsx",
+        "src/app/(dashboard)/system/diagnostics/page.tsx",
+        "src/app/(dashboard)/system/jobs/page.tsx",
+        "src/app/(dashboard)/system/page.tsx",
+        "src/app/(dashboard)/system/security/page.tsx",
+        "src/app/login/page.tsx",
+        "src/components/archive/archive-list.tsx",
+        "src/components/finance/check-settle-forms.tsx",
+        "src/components/imports/upload-form.tsx",
+        "src/components/radar/instance-row.tsx",
+        "src/components/radar/payment-form.tsx",
+        "src/components/system/archive-form.tsx"
+      ],
+      "classification": "INTENTIONAL_REAL_WRITE",
+      "evidence": []
+    },
+    {
+      "file": "src/app/(dashboard)/imports/page.tsx",
+      "entryPoint": "(module / not a package script)",
+      "writeMechanisms": [
+        "SQL DML/DDL"
+      ],
+      "tablesOrObjects": [],
+      "targetSource": "none (no DB target of its own)",
+      "guard": "NONE",
+      "guardRunsBeforeFirstWrite": true,
+      "transitiveWriter": false,
+      "callers": [
+        "src/app/(dashboard)/data/assumptions/page.tsx",
+        "src/app/(dashboard)/data/imports/page.tsx",
+        "src/app/(dashboard)/financing/loans/[loanId]/page.tsx",
+        "src/app/(dashboard)/imports/[workbookId]/page.tsx",
+        "src/app/(dashboard)/imports/[workbookId]/reviews/page.tsx",
+        "src/app/(dashboard)/imports/[workbookId]/sheets/[sheetId]/page.tsx",
+        "src/app/(dashboard)/insights/reminders/page.tsx",
+        "src/app/(dashboard)/insights/reports/page.tsx",
+        "src/app/(dashboard)/overview/page.tsx",
+        "src/app/(dashboard)/payments/calendar/page.tsx",
+        "src/app/(dashboard)/reports/[reportId]/page.tsx",
+        "src/app/(dashboard)/system/features/page.tsx"
+      ],
+      "classification": "INTENTIONAL_REAL_WRITE",
+      "evidence": []
+    },
+    {
+      "file": "src/app/(dashboard)/payments/actions.ts",
+      "entryPoint": "(module / not a package script)",
+      "writeMechanisms": [
+        "SQL DML/DDL",
+        "calls writer: ensureWindow, archivePayment"
+      ],
+      "tablesOrObjects": [
+        "public.payments"
+      ],
+      "targetSource": "none (no DB target of its own)",
+      "guard": "NONE",
+      "guardRunsBeforeFirstWrite": true,
+      "transitiveWriter": true,
+      "callers": [
+        "src/app/(dashboard)/assumptions/page.tsx",
+        "src/app/(dashboard)/data/approvals/page.tsx",
+        "src/app/(dashboard)/data/imports/[workbookId]/page.tsx",
+        "src/app/(dashboard)/data/imports/[workbookId]/reviews/page.tsx",
+        "src/app/(dashboard)/data/reviews/page.tsx",
+        "src/app/(dashboard)/data-quality/page.tsx",
+        "src/app/(dashboard)/finance/bank/page.tsx",
+        "src/app/(dashboard)/finance/checks/new/page.tsx",
+        "src/app/(dashboard)/finance/collections/page.tsx",
+        "src/app/(dashboard)/finance/counterparties/page.tsx",
+        "src/app/(dashboard)/finance/fx/page.tsx",
+        "src/app/(dashboard)/finance/invoices/page.tsx",
+        "src/app/(dashboard)/finance/loans/new/page.tsx",
+        "src/app/(dashboard)/finance/loans/[loanId]/page.tsx",
+        "src/app/(dashboard)/finance/promises/page.tsx",
+        "src/app/(dashboard)/finance/receivables/page.tsx",
+        "src/app/(dashboard)/finance/treasury/page.tsx",
+        "src/app/(dashboard)/insights/ask/page.tsx",
+        "src/app/(dashboard)/insights/ask/[responseId]/page.tsx",
+        "src/app/(dashboard)/insights/briefing/page.tsx",
+        "src/app/(dashboard)/insights/reports/[reportId]/page.tsx",
+        "src/app/(dashboard)/insights/tasks/page.tsx",
+        "src/app/(dashboard)/layout.tsx",
+        "src/app/(dashboard)/page.tsx",
+        "src/app/(dashboard)/payments/new/page.tsx",
+        "src/app/(dashboard)/payments/[paymentId]/edit/page.tsx",
+        "src/app/(dashboard)/reminders/page.tsx",
+        "src/app/(dashboard)/reports/page.tsx",
+        "src/app/(dashboard)/scenarios/history/page.tsx",
+        "src/app/(dashboard)/scenarios/optimization/page.tsx",
+        "src/app/(dashboard)/scenarios/page.tsx",
+        "src/app/(dashboard)/scenarios/[runId]/page.tsx",
+        "src/app/(dashboard)/system/controls/page.tsx",
+        "src/app/(dashboard)/system/diagnostics/page.tsx",
+        "src/app/(dashboard)/system/jobs/page.tsx",
+        "src/app/(dashboard)/system/page.tsx",
+        "src/app/(dashboard)/system/security/page.tsx",
+        "src/app/login/page.tsx",
+        "src/components/archive/archive-list.tsx",
+        "src/components/finance/check-settle-forms.tsx",
+        "src/components/imports/upload-form.tsx",
+        "src/components/radar/instance-row.tsx",
+        "src/components/radar/payment-form.tsx",
+        "src/components/system/archive-form.tsx"
+      ],
+      "classification": "INTENTIONAL_REAL_WRITE",
+      "evidence": [
+        "transitive writer via ensureWindow, archivePayment"
+      ]
+    },
+    {
+      "file": "src/app/(dashboard)/payments/missing/page.tsx",
+      "entryPoint": "(module / not a package script)",
+      "writeMechanisms": [
+        "calls writer: ensureWindow"
+      ],
+      "tablesOrObjects": [],
+      "targetSource": "none (no DB target of its own)",
+      "guard": "NONE",
+      "guardRunsBeforeFirstWrite": true,
+      "transitiveWriter": true,
+      "callers": [
+        "src/app/(dashboard)/data/assumptions/page.tsx",
+        "src/app/(dashboard)/data/imports/page.tsx",
+        "src/app/(dashboard)/financing/loans/[loanId]/page.tsx",
+        "src/app/(dashboard)/imports/[workbookId]/page.tsx",
+        "src/app/(dashboard)/imports/[workbookId]/reviews/page.tsx",
+        "src/app/(dashboard)/imports/[workbookId]/sheets/[sheetId]/page.tsx",
+        "src/app/(dashboard)/insights/reminders/page.tsx",
+        "src/app/(dashboard)/insights/reports/page.tsx",
+        "src/app/(dashboard)/overview/page.tsx",
+        "src/app/(dashboard)/payments/calendar/page.tsx",
+        "src/app/(dashboard)/reports/[reportId]/page.tsx",
+        "src/app/(dashboard)/system/features/page.tsx"
+      ],
+      "classification": "INTENTIONAL_REAL_WRITE",
+      "evidence": [
+        "transitive writer via ensureWindow"
+      ]
+    },
+    {
+      "file": "src/app/(dashboard)/radar/actions.ts",
+      "entryPoint": "(module / not a package script)",
+      "writeMechanisms": [
+        "calls writer: ensureWindow"
+      ],
+      "tablesOrObjects": [],
+      "targetSource": "none (no DB target of its own)",
+      "guard": "NONE",
+      "guardRunsBeforeFirstWrite": true,
+      "transitiveWriter": true,
+      "callers": [
+        "src/app/(dashboard)/assumptions/page.tsx",
+        "src/app/(dashboard)/data/approvals/page.tsx",
+        "src/app/(dashboard)/data/imports/[workbookId]/page.tsx",
+        "src/app/(dashboard)/data/imports/[workbookId]/reviews/page.tsx",
+        "src/app/(dashboard)/data/reviews/page.tsx",
+        "src/app/(dashboard)/data-quality/page.tsx",
+        "src/app/(dashboard)/finance/bank/page.tsx",
+        "src/app/(dashboard)/finance/checks/new/page.tsx",
+        "src/app/(dashboard)/finance/collections/page.tsx",
+        "src/app/(dashboard)/finance/counterparties/page.tsx",
+        "src/app/(dashboard)/finance/fx/page.tsx",
+        "src/app/(dashboard)/finance/invoices/page.tsx",
+        "src/app/(dashboard)/finance/loans/new/page.tsx",
+        "src/app/(dashboard)/finance/loans/[loanId]/page.tsx",
+        "src/app/(dashboard)/finance/promises/page.tsx",
+        "src/app/(dashboard)/finance/receivables/page.tsx",
+        "src/app/(dashboard)/finance/treasury/page.tsx",
+        "src/app/(dashboard)/insights/ask/page.tsx",
+        "src/app/(dashboard)/insights/ask/[responseId]/page.tsx",
+        "src/app/(dashboard)/insights/briefing/page.tsx",
+        "src/app/(dashboard)/insights/reports/[reportId]/page.tsx",
+        "src/app/(dashboard)/insights/tasks/page.tsx",
+        "src/app/(dashboard)/layout.tsx",
+        "src/app/(dashboard)/page.tsx",
+        "src/app/(dashboard)/payments/new/page.tsx",
+        "src/app/(dashboard)/payments/[paymentId]/edit/page.tsx",
+        "src/app/(dashboard)/reminders/page.tsx",
+        "src/app/(dashboard)/reports/page.tsx",
+        "src/app/(dashboard)/scenarios/history/page.tsx",
+        "src/app/(dashboard)/scenarios/optimization/page.tsx",
+        "src/app/(dashboard)/scenarios/page.tsx",
+        "src/app/(dashboard)/scenarios/[runId]/page.tsx",
+        "src/app/(dashboard)/system/controls/page.tsx",
+        "src/app/(dashboard)/system/diagnostics/page.tsx",
+        "src/app/(dashboard)/system/jobs/page.tsx",
+        "src/app/(dashboard)/system/page.tsx",
+        "src/app/(dashboard)/system/security/page.tsx",
+        "src/app/login/page.tsx",
+        "src/components/archive/archive-list.tsx",
+        "src/components/finance/check-settle-forms.tsx",
+        "src/components/imports/upload-form.tsx",
+        "src/components/radar/instance-row.tsx",
+        "src/components/radar/payment-form.tsx",
+        "src/components/system/archive-form.tsx"
+      ],
+      "classification": "INTENTIONAL_REAL_WRITE",
+      "evidence": [
+        "transitive writer via ensureWindow"
+      ]
+    },
+    {
+      "file": "src/app/(dashboard)/radar/page.tsx",
+      "entryPoint": "(module / not a package script)",
+      "writeMechanisms": [
+        "calls writer: ensureWindow"
+      ],
+      "tablesOrObjects": [],
+      "targetSource": "none (no DB target of its own)",
+      "guard": "NONE",
+      "guardRunsBeforeFirstWrite": true,
+      "transitiveWriter": true,
+      "callers": [
+        "src/app/(dashboard)/data/assumptions/page.tsx",
+        "src/app/(dashboard)/data/imports/page.tsx",
+        "src/app/(dashboard)/financing/loans/[loanId]/page.tsx",
+        "src/app/(dashboard)/imports/[workbookId]/page.tsx",
+        "src/app/(dashboard)/imports/[workbookId]/reviews/page.tsx",
+        "src/app/(dashboard)/imports/[workbookId]/sheets/[sheetId]/page.tsx",
+        "src/app/(dashboard)/insights/reminders/page.tsx",
+        "src/app/(dashboard)/insights/reports/page.tsx",
+        "src/app/(dashboard)/overview/page.tsx",
+        "src/app/(dashboard)/payments/calendar/page.tsx",
+        "src/app/(dashboard)/reports/[reportId]/page.tsx",
+        "src/app/(dashboard)/system/features/page.tsx"
+      ],
+      "classification": "INTENTIONAL_REAL_WRITE",
+      "evidence": [
+        "transitive writer via ensureWindow"
+      ]
+    },
+    {
+      "file": "src/app/(dashboard)/system/jobs/page.tsx",
+      "entryPoint": "(module / not a package script)",
+      "writeMechanisms": [
+        "SQL DML/DDL"
+      ],
+      "tablesOrObjects": [],
+      "targetSource": "none (no DB target of its own)",
+      "guard": "NONE",
+      "guardRunsBeforeFirstWrite": true,
+      "transitiveWriter": false,
+      "callers": [
+        "src/app/(dashboard)/data/assumptions/page.tsx",
+        "src/app/(dashboard)/data/imports/page.tsx",
+        "src/app/(dashboard)/financing/loans/[loanId]/page.tsx",
+        "src/app/(dashboard)/imports/[workbookId]/page.tsx",
+        "src/app/(dashboard)/imports/[workbookId]/reviews/page.tsx",
+        "src/app/(dashboard)/imports/[workbookId]/sheets/[sheetId]/page.tsx",
+        "src/app/(dashboard)/insights/reminders/page.tsx",
+        "src/app/(dashboard)/insights/reports/page.tsx",
+        "src/app/(dashboard)/overview/page.tsx",
+        "src/app/(dashboard)/payments/calendar/page.tsx",
+        "src/app/(dashboard)/reports/[reportId]/page.tsx",
+        "src/app/(dashboard)/system/features/page.tsx"
+      ],
+      "classification": "INTENTIONAL_REAL_WRITE",
+      "evidence": []
+    },
+    {
+      "file": "src/lib/auth.ts",
+      "entryPoint": "(module / not a package script)",
+      "writeMechanisms": [
+        "SQL DML/DDL"
+      ],
+      "tablesOrObjects": [
+        "public.sessions",
+        "public.users"
+      ],
+      "targetSource": "none (no DB target of its own)",
+      "guard": "NONE",
+      "guardRunsBeforeFirstWrite": true,
+      "transitiveWriter": false,
+      "callers": [
+        "src/app/(dashboard)/ask/actions.ts",
+        "src/app/(dashboard)/assumptions/actions.ts",
+        "src/app/(dashboard)/calendar/page.tsx",
+        "src/app/(dashboard)/cashflow/actions.ts",
+        "src/app/(dashboard)/cashflow/layout.tsx",
+        "src/app/(dashboard)/data/approvals/actions.ts",
+        "src/app/(dashboard)/data/layout.tsx",
+        "src/app/(dashboard)/data-quality/actions.ts",
+        "src/app/(dashboard)/finance/actions.ts",
+        "src/app/(dashboard)/finance/bank/actions.ts",
+        "src/app/(dashboard)/finance/collections/actions.ts",
+        "src/app/(dashboard)/finance/counterparties/actions.ts",
+        "src/app/(dashboard)/finance/fx/actions.ts",
+        "src/app/(dashboard)/finance/invoices/actions.ts",
+        "src/app/(dashboard)/finance/layout.tsx",
+        "src/app/(dashboard)/finance/promises/actions.ts",
+        "src/app/(dashboard)/finance/receivables/actions.ts",
+        "src/app/(dashboard)/finance/treasury/actions.ts",
+        "src/app/(dashboard)/financing/actions.ts",
+        "src/app/(dashboard)/imports/actions.ts",
+        "src/app/(dashboard)/insights/briefing/actions.ts",
+        "src/app/(dashboard)/insights/layout.tsx",
+        "src/app/(dashboard)/layout.tsx",
+        "src/app/(dashboard)/payments/actions.ts",
+        "src/app/(dashboard)/payments/layout.tsx",
+        "src/app/(dashboard)/payments/missing/page.tsx",
+        "src/app/(dashboard)/production/actions.ts",
+        "src/app/(dashboard)/production/layout.tsx",
+        "src/app/(dashboard)/radar/actions.ts",
+        "src/app/(dashboard)/radar/page.tsx",
+        "src/app/(dashboard)/reminders/actions.ts",
+        "src/app/(dashboard)/reports/actions.ts",
+        "src/app/(dashboard)/scenarios/actions.ts",
+        "src/app/(dashboard)/scenarios/layout.tsx",
+        "src/app/(dashboard)/system/actions.ts",
+        "src/app/(dashboard)/system/archive/actions.ts",
+        "src/app/(dashboard)/system/controls/actions.ts",
+        "src/app/(dashboard)/system/diagnostics/actions.ts",
+        "src/app/(dashboard)/system/diagnostics/page.tsx",
+        "src/app/(dashboard)/system/jobs/actions.ts",
+        "src/app/(dashboard)/system/layout.tsx",
+        "src/app/(dashboard)/system/security/actions.ts",
+        "src/app/(dashboard)/system/security/page.tsx",
+        "src/app/api/analytics/export/route.ts",
+        "src/app/api/facts/route.ts",
+        "src/app/api/payments/dashboard-chart/route.ts",
+        "src/app/api/search/route.ts",
+        "src/app/login/actions.ts",
+        "src/app/login/page.tsx",
+        "src/lib/authz/context.ts",
+        "src/lib/authz/route-guard.tsx",
+        "src/lib/users/engine.ts"
+      ],
+      "classification": "INTENTIONAL_REAL_WRITE",
+      "evidence": []
+    },
+    {
+      "file": "tests/dev-reset-safety.test.ts",
+      "entryPoint": "(module / not a package script)",
+      "writeMechanisms": [
+        "createdb/dropdb",
+        "child process"
+      ],
+      "tablesOrObjects": [],
+      "targetSource": "none (no DB target of its own)",
+      "guard": "NONE",
+      "guardRunsBeforeFirstWrite": true,
+      "transitiveWriter": false,
+      "callers": [],
+      "classification": "SAFE_ROLLBACK_ONLY",
+      "evidence": [
+        "Cannot reach any database. It prepends a FAKE `docker` to PATH that logs its arguments and exits, so dev-reset.sh and ensure.sh are both inert; the `dropdb`/`createdb` tokens in this file are assertions ABOUT that fake binary's call log, not commands. Classified with the 'provably leaves no trace' class, the same reading used for p24b-readonly-psql.sh."
+      ]
+    },
+    {
+      "file": "tests/interaction/harness.ts",
+      "entryPoint": "(module / not a package script)",
+      "writeMechanisms": [
+        "SQL DML/DDL",
+        "pg Pool/Client"
+      ],
+      "tablesOrObjects": [
+        "public.payment_instances",
+        "public.payments"
+      ],
+      "targetSource": "env, validated by disposable gate",
+      "guard": "requireDisposableOwnerDatabaseUrl / isDisposableDatabaseName",
+      "guardRunsBeforeFirstWrite": true,
+      "transitiveWriter": false,
+      "callers": [
+        "tests/interaction/authz.spec.ts",
+        "tests/interaction/flows.spec.ts",
+        "tests/interaction/mutations.spec.ts",
+        "tests/interaction/navigation.spec.ts"
+      ],
+      "classification": "SAFE_DISPOSABLE_ENFORCED",
+      "evidence": [
+        "disposable gate at line 38, first write-capable line 136",
+        "reads DATABASE_URL / MIGRATION_DATABASE_URL"
+      ]
+    },
+    {
+      "file": "tests/visual/global-setup.ts",
+      "entryPoint": "(module / not a package script)",
+      "writeMechanisms": [
+        "SQL DML/DDL",
+        "pg Pool/Client"
+      ],
+      "tablesOrObjects": [
+        "public.users"
+      ],
+      "targetSource": "env, validated by disposable gate",
+      "guard": "requireDisposableOwnerDatabaseUrl / isDisposableDatabaseName",
+      "guardRunsBeforeFirstWrite": true,
+      "transitiveWriter": false,
+      "callers": [
+        "scripts/qa/runtime-interaction-crawl.ts",
+        "scripts/qa/_probe-authz.ts",
+        "tests/interaction/flows.spec.ts",
+        "tests/interaction/harness.ts",
+        "tests/interaction/mutations.spec.ts",
+        "tests/visual/golden-ui-smoke.spec.ts"
+      ],
+      "classification": "SAFE_DISPOSABLE_ENFORCED",
+      "evidence": [
+        "disposable gate at line 34, first write-capable line 208",
+        "reads DATABASE_URL / MIGRATION_DATABASE_URL"
+      ]
+    },
+    {
+      "file": "tests/visual/golden-ui-smoke.spec.ts",
+      "entryPoint": "(module / not a package script)",
+      "writeMechanisms": [
+        "SQL DML/DDL",
+        "pg Pool/Client"
+      ],
+      "tablesOrObjects": [
+        "public.sessions",
+        "public.users"
+      ],
+      "targetSource": "env, validated by disposable gate",
+      "guard": "requireDisposableOwnerDatabaseUrl / isDisposableDatabaseName",
+      "guardRunsBeforeFirstWrite": true,
+      "transitiveWriter": false,
+      "callers": [],
+      "classification": "SAFE_DISPOSABLE_ENFORCED",
+      "evidence": [
+        "disposable gate at line 35, first write-capable line 256",
+        "reads DATABASE_URL / MIGRATION_DATABASE_URL"
+      ]
+    },
+    {
+      "file": "tests/visual/legacy-semantic-smoke.spec.ts",
+      "entryPoint": "(module / not a package script)",
+      "writeMechanisms": [
+        "SQL DML/DDL",
+        "pg Pool/Client"
+      ],
+      "tablesOrObjects": [
+        "public.sessions",
+        "public.users"
+      ],
+      "targetSource": "env, validated by disposable gate",
+      "guard": "requireDisposableOwnerDatabaseUrl / isDisposableDatabaseName",
+      "guardRunsBeforeFirstWrite": true,
+      "transitiveWriter": false,
+      "callers": [],
+      "classification": "SAFE_DISPOSABLE_ENFORCED",
+      "evidence": [
+        "disposable gate at line 29, first write-capable line 119",
+        "reads DATABASE_URL / MIGRATION_DATABASE_URL"
+      ]
+    },
+    {
+      "file": "tests/visual/phase17-38-routes.spec.ts",
+      "entryPoint": "(module / not a package script)",
+      "writeMechanisms": [
+        "SQL DML/DDL",
+        "pg Pool/Client"
+      ],
+      "tablesOrObjects": [
+        "public.sessions",
+        "public.users"
+      ],
+      "targetSource": "env, validated by disposable gate",
+      "guard": "requireDisposableOwnerDatabaseUrl / isDisposableDatabaseName",
+      "guardRunsBeforeFirstWrite": true,
+      "transitiveWriter": false,
+      "callers": [],
+      "classification": "SAFE_DISPOSABLE_ENFORCED",
+      "evidence": [
+        "disposable gate at line 27, first write-capable line 80",
+        "reads DATABASE_URL / MIGRATION_DATABASE_URL"
+      ]
+    },
+    {
+      "file": "tests/writer-surface.test.ts",
+      "entryPoint": "(module / not a package script)",
+      "writeMechanisms": [
+        "createdb/dropdb",
+        "child process"
+      ],
+      "tablesOrObjects": [],
+      "targetSource": "env, validated by disposable gate",
+      "guard": "requireDisposableOwnerDatabaseUrl / isDisposableDatabaseName",
+      "guardRunsBeforeFirstWrite": true,
+      "transitiveWriter": false,
+      "callers": [],
+      "classification": "SAFE_DISPOSABLE_ENFORCED",
+      "evidence": [
+        "disposable gate at line 34, first write-capable line -"
+      ]
+    }
+  ]
+}

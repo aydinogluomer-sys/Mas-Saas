@@ -1,0 +1,112 @@
+{
+  "database": "mas_radar_p24b_final_drill",
+  "result": "COMMITTED",
+  "lockMode": "SHARE ROW EXCLUSIVE (writers blocked, readers allowed), lock_timeout=10s",
+  "deletes": [
+    {
+      "step": 1,
+      "table": "action_items",
+      "expected": 4,
+      "actual": 4
+    },
+    {
+      "step": 2,
+      "table": "approvals",
+      "expected": 4,
+      "actual": 4
+    },
+    {
+      "step": 3,
+      "table": "payment_instances",
+      "expected": 26,
+      "actual": 26
+    },
+    {
+      "step": 4,
+      "table": "payments",
+      "expected": 1,
+      "actual": 1
+    },
+    {
+      "step": 5,
+      "table": "users",
+      "expected": 6,
+      "actual": 6
+    },
+    {
+      "step": 6,
+      "table": "settings",
+      "expected": 1,
+      "actual": 1
+    }
+  ],
+  "totalDeleted": 42,
+  "before": {
+    "counts": {
+      "action_items": 10,
+      "approvals": 72,
+      "payment_instances": 511,
+      "payments": 20,
+      "users": 19,
+      "settings": 8
+    },
+    "money": {
+      "payments": "541000.00",
+      "instances": "14576000.00",
+      "checks": "590000.00",
+      "loans": "1500000.00",
+      "cashflow": "-53839702.88"
+    }
+  },
+  "after": {
+    "counts": {
+      "action_items": 6,
+      "approvals": 68,
+      "payment_instances": 485,
+      "payments": 19,
+      "users": 13,
+      "settings": 7
+    }
+  },
+  "money": {
+    "before": {
+      "payments": "541000.00",
+      "instances": "14576000.00",
+      "checks": "590000.00",
+      "loans": "1500000.00",
+      "cashflow": "-53839702.88"
+    },
+    "after": {
+      "payments": "540000.00",
+      "instances": "14550000.00",
+      "checks": "590000.00",
+      "loans": "1500000.00",
+      "cashflow": "-53839702.88"
+    },
+    "deltas": {
+      "payments": "-1000",
+      "instances": "-26000",
+      "checks": "0",
+      "loans": "0",
+      "cashflow": "0"
+    }
+  },
+  "residualGates": {
+    "fixture_payment": 0,
+    "orphan_instances": 0,
+    "p24b_users": 0,
+    "p24b_action_items": 0,
+    "p24b_settings": 0,
+    "atilla": 1,
+    "ledger": 87
+  },
+  "changedTables": [
+    "public.action_items",
+    "public.approvals",
+    "public.payment_instances",
+    "public.payments",
+    "public.settings",
+    "public.users"
+  ],
+  "illegalChanges": []
+}

@@ -1,4 +1,4 @@
-import type { Pool } from "pg";
+import type { Pool, PoolClient } from "pg";
 import { intOrNull, moneyOrNull, rateOrNull } from "@/lib/money";
 import { istanbulDateISO } from "@/lib/reports/rules";
 import { loadDataQualityCenter } from "@/lib/data-quality/engine";
@@ -8,13 +8,49 @@ import { loadLoans, loadMaturityItems } from "@/lib/financing/engine";
 import { maturityWindows } from "@/lib/financing/rules";
 import { loadPartProfitability } from "@/lib/production/engine";
 import { audit } from "@/lib/audit";
+import { gather } from "@/lib/pg-concurrency";
 
 export interface MetricSnapshotInput { metricKey:string; dimensionKey?:string; valueNumeric?:number|null; valueText?:string|null; unknownCount?:number; confidence?:"high"|"medium"|"low"|"unknown"; meta?:Record<string,unknown> }
 export interface MetricSnapshotRow { snapshot_date:string; metric_key:string; dimension_key:string; value_numeric:number|null; value_text:string|null; unknown_count:number; confidence:string; source_cutoff:string; meta:Record<string,unknown> }
 
-export async function writeMetricSnapshots(pool:Pool,date:string,items:MetricSnapshotInput[],actorId:string):Promise<number>{const client=await pool.connect();try{await client.query("begin");const cutoff=new Date().toISOString();for(const item of items){await client.query(`insert into public.metric_snapshots(snapshot_date,metric_key,dimension_key,value_numeric,value_text,unknown_count,confidence,source_cutoff,meta) values($1,$2,$3,$4,$5,$6,$7,$8,$9) on conflict(snapshot_date,metric_key,dimension_key) do update set value_numeric=excluded.value_numeric,value_text=excluded.value_text,unknown_count=excluded.unknown_count,confidence=excluded.confidence,source_cutoff=excluded.source_cutoff,meta=excluded.meta`,[date,item.metricKey,item.dimensionKey??"total",item.valueNumeric??null,item.valueText??null,item.unknownCount??0,item.confidence??"unknown",cutoff,JSON.stringify(item.meta??{})])}await audit(client,{actor:actorId,action:"refresh_metric_snapshots",entityTable:"metric_snapshots",entityId:null,after:{snapshotDate:date,count:items.length}});await client.query("commit");return items.length}catch(error){await client.query("rollback");throw error}finally{client.release()}}
+/**
+ * A connection that can run statements. `Pool` grabs a connection per call; `PoolClient` stays on
+ * one, which is what lets a caller enrol these writes in a transaction it already owns.
+ */
+export type SnapshotDb = Pool | PoolClient;
 
-export async function collectMetricSnapshots(pool:Pool,date=istanbulDateISO()):Promise<MetricSnapshotInput[]>{const [dq,months,loans,maturities,parts,payments,tasks,reminders]=await Promise.all([loadDataQualityCenter(pool),loadCashMonths(pool),loadLoans(pool),loadMaturityItems(pool),loadPartProfitability(pool,500),pool.query(`select status,count(*)::int n,coalesce(sum(amount) filter(where amount is not null),0) amount,count(*) filter(where amount is null)::int unknown from public.payment_instances group by status`),pool.query(`select status,count(*)::int n from public.action_items group by status`),pool.query(`select status,count(*)::int n from public.reminder_deliveries group by status`)]);const projection=buildProjection(months);const windows=maturityWindows(maturities,date,[7,30,90]);const knownMargins=parts.map(row=>row.margin_rate).filter((value):value is number=>value!=null);const confidence=dq.decisionConfidence>=80?"high":dq.decisionConfidence>=55?"medium":"low";const out:MetricSnapshotInput[]=[{metricKey:"decision_confidence",valueNumeric:dq.decisionConfidence,confidence},{metricKey:"data_reviews_open",valueNumeric:dq.openReviewCount,confidence},{metricKey:"data_reviews_high",valueNumeric:dq.highOpenCount,confidence},{metricKey:"data_missing_amounts",valueNumeric:dq.missingAmountCount,confidence},{metricKey:"cash_first_negative",valueText:projection.firstNegativeMonth,unknownCount:months.filter(m=>m.closing==null).length,confidence},{metricKey:"cash_worst_closing",valueNumeric:projection.worstBalance,unknownCount:months.filter(m=>m.closing==null).length,confidence},{metricKey:"loan_remaining",valueNumeric:loans.reduce((sum,row)=>sum+(row.remainingAmount??0),0),unknownCount:loans.filter(row=>row.remainingAmount==null).length,confidence},{metricKey:"part_margin_average",valueNumeric:knownMargins.length?knownMargins.reduce((a,b)=>a+b,0)/knownMargins.length:null,unknownCount:parts.length-knownMargins.length,confidence},{metricKey:"part_margin_min",valueNumeric:knownMargins.length?Math.min(...knownMargins):null,unknownCount:parts.length-knownMargins.length,confidence},{metricKey:"external_pending",valueNumeric:dq.externalPendingCount,confidence}];for(const w of windows)out.push({metricKey:"maturity_outflow",dimensionKey:`${w.days}d`,valueNumeric:w.knownOutflow,unknownCount:w.missingCount,confidence});for(const row of payments.rows)out.push({metricKey:"payment_status",dimensionKey:row.status,valueNumeric:moneyOrNull(row.amount),unknownCount:intOrNull(row.unknown)??0,confidence});for(const row of tasks.rows)out.push({metricKey:"task_status",dimensionKey:row.status,valueNumeric:Number(row.n),confidence});for(const row of reminders.rows)out.push({metricKey:"reminder_status",dimensionKey:row.status,valueNumeric:Number(row.n),confidence});return out}
+/**
+ * The upsert + audit, WITHOUT a transaction of its own — the caller owns the transaction.
+ *
+ * P24B needed this. Removing the 42 contaminated rows and correcting the two aggregate values they
+ * corrupted are one repair, and splitting them across two transactions creates a window in which
+ * the database is committed-but-wrong: rows gone, `task_status.open` still saying 8. Sharing the
+ * caller's PoolClient also means `collectMetricSnapshots` READS the caller's uncommitted deletes,
+ * so the recomputed numbers describe the post-cleanup world rather than the pre-cleanup one.
+ * A separate pool connection would have read the old rows and written back the wrong totals.
+ */
+export async function writeMetricSnapshotsWithClient(client:PoolClient,date:string,items:MetricSnapshotInput[],actorId:string):Promise<number>{const cutoff=new Date().toISOString();for(const item of items){await client.query(`insert into public.metric_snapshots(snapshot_date,metric_key,dimension_key,value_numeric,value_text,unknown_count,confidence,source_cutoff,meta) values($1,$2,$3,$4,$5,$6,$7,$8,$9) on conflict(snapshot_date,metric_key,dimension_key) do update set value_numeric=excluded.value_numeric,value_text=excluded.value_text,unknown_count=excluded.unknown_count,confidence=excluded.confidence,source_cutoff=excluded.source_cutoff,meta=excluded.meta`,[date,item.metricKey,item.dimensionKey??"total",item.valueNumeric??null,item.valueText??null,item.unknownCount??0,item.confidence??"unknown",cutoff,JSON.stringify(item.meta??{})])}await audit(client,{actor:actorId,action:"refresh_metric_snapshots",entityTable:"metric_snapshots",entityId:null,after:{snapshotDate:date,count:items.length}});return items.length}
+
+/** Same recompute, enrolled in the caller's transaction. */
+export async function refreshMetricSnapshotsWithClient(client:PoolClient,actorId:string,date=istanbulDateISO()){return writeMetricSnapshotsWithClient(client,date,await collectMetricSnapshots(client,date),actorId)}
+
+export async function writeMetricSnapshots(pool:Pool,date:string,items:MetricSnapshotInput[],actorId:string):Promise<number>{const client=await pool.connect();try{await client.query("begin");const n=await writeMetricSnapshotsWithClient(client,date,items,actorId);await client.query("commit");return n}catch(error){await client.query("rollback");throw error}finally{client.release()}}
+
+export async function collectMetricSnapshots(pool:SnapshotDb,date=istanbulDateISO()):Promise<MetricSnapshotInput[]>{/* Top level goes through gather(), which the repo already provides: Promise.all on a Pool,
+   sequential on a PoolClient. v2.1 made this unconditionally sequential to silence the pg
+   concurrent-query deprecation, which also removed the parallelism on the Pool path that the
+   product actually uses — a regression paid for by every snapshot refresh. gather() gets both. */
+const [dq,months,loans,maturities,parts,payments,tasks,reminders]=await gather(pool,[
+  () => loadDataQualityCenter(pool),
+  () => loadCashMonths(pool),
+  () => loadLoans(pool),
+  () => loadMaturityItems(pool),
+  () => loadPartProfitability(pool,500),
+  // PHASE 2.2 (#14): kalici metrik toplami yalniz TRY; TRY-disi satir `foreign` ile meta'ya yazilir.
+  () => pool.query(`select status,count(*)::int n,coalesce(sum(amount) filter(where amount is not null and currency='TRY'),0) amount,count(*) filter(where amount is null)::int unknown,count(*) filter(where currency<>'TRY')::int foreign from public.payment_instances group by status`),
+  () => pool.query(`select status,count(*)::int n from public.action_items group by status`),
+  () => pool.query(`select status,count(*)::int n from public.reminder_deliveries group by status`),
+]);const projection=buildProjection(months);const windows=maturityWindows(maturities,date,[7,30,90]);const knownMargins=parts.map(row=>row.margin_rate).filter((value):value is number=>value!=null);const confidence=dq.decisionConfidence>=80?"high":dq.decisionConfidence>=55?"medium":"low";const out:MetricSnapshotInput[]=[{metricKey:"decision_confidence",valueNumeric:dq.decisionConfidence,confidence},{metricKey:"data_reviews_open",valueNumeric:dq.openReviewCount,confidence},{metricKey:"data_reviews_high",valueNumeric:dq.highOpenCount,confidence},{metricKey:"data_missing_amounts",valueNumeric:dq.missingAmountCount,confidence},{metricKey:"cash_first_negative",valueText:projection.firstNegativeMonth,unknownCount:months.filter(m=>m.closing==null).length,confidence},{metricKey:"cash_worst_closing",valueNumeric:projection.worstBalance,unknownCount:months.filter(m=>m.closing==null).length,confidence},{metricKey:"loan_remaining",valueNumeric:loans.reduce((sum,row)=>sum+(row.remainingAmount??0),0),unknownCount:loans.filter(row=>row.remainingAmount==null).length,confidence},{metricKey:"part_margin_average",valueNumeric:knownMargins.length?knownMargins.reduce((a,b)=>a+b,0)/knownMargins.length:null,unknownCount:parts.length-knownMargins.length,confidence},{metricKey:"part_margin_min",valueNumeric:knownMargins.length?Math.min(...knownMargins):null,unknownCount:parts.length-knownMargins.length,confidence},{metricKey:"external_pending",valueNumeric:dq.externalPendingCount,confidence}];for(const w of windows)out.push({metricKey:"maturity_outflow",dimensionKey:`${w.days}d`,valueNumeric:w.knownOutflow,unknownCount:w.missingCount,confidence});for(const row of payments.rows)out.push({metricKey:"payment_status",dimensionKey:row.status,valueNumeric:moneyOrNull(row.amount),unknownCount:intOrNull(row.unknown)??0,confidence,meta:{foreignCurrencyCount:intOrNull(row.foreign)??0}});for(const row of tasks.rows)out.push({metricKey:"task_status",dimensionKey:row.status,valueNumeric:Number(row.n),confidence});for(const row of reminders.rows)out.push({metricKey:"reminder_status",dimensionKey:row.status,valueNumeric:Number(row.n),confidence});return out}
 
 export async function refreshMetricSnapshots(pool:Pool,actorId:string,date=istanbulDateISO()){return writeMetricSnapshots(pool,date,await collectMetricSnapshots(pool,date),actorId)}
 // value_numeric holds whatever metric it belongs to — a TL total, a confidence score, or a

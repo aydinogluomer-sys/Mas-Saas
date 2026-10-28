@@ -1,0 +1,19 @@
+TARGET_PATH                 : D:\MAS-Backups
+SOURCE_PATH                 : C:\Users\Trade Bilisim\Mas Saas\backups
+LOGICAL_DRIVE_TYPE          : 3
+PHYSICAL_DISK_NUMBER        : 1
+BUS_TYPE                    : USB
+IS_BOOT                     : false
+IS_SYSTEM                   : false
+OPERATIONAL_STATUS          : Online
+FRIENDLY_NAME               : Min Yi U YZWY_TECH
+SOURCE_PHYSICAL_DISK_NUMBER : 0
+SOURCE_BUS_TYPE             : RAID
+SAME_PHYSICAL_DISK          : false
+SAME_VOLUME_AS_SOURCE       : false
+TARGET_KIND                 : USB_PHYSICAL_VOLUME
+OFF_DEVICE_SATISFIED        : true
+CLEANUP_GRADE               : true
+EVIDENCE                    : USB ile bağlı ayrı fiziksel disk ÖLÇÜLDÜ — DriveType=3, BusType=USB, targetDisk=1, sourceDisk=0, IsBoot=false, IsSystem=false, Status=Online, kök d:\ ≠ c:\ — 'Min Yi U YZWY_TECH'
+
+PROBE_MUTATIONS: 0 (dizin oluşturulmadı, dosya yazılmadı, DB'ye dokunulmadı)

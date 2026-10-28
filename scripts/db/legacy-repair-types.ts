@@ -473,6 +473,14 @@ export const BackupReceiptSchema = z
     // would leave it ambiguous which file's write behavior is actually being described.
     dumpDurability: DurabilityMetadataSchema,
     receiptDurability: DurabilityMetadataSchema,
+    // AŞAMA 07 (rehber §12 Bölüm A): sunucu ve pg_dump sürümleri. Kurtarma anında makbuz
+    // operatörün elindeki TEK bilgidir; 16.14 ile yazılmış bir arşivin daha eski bir
+    // pg_restore ile yüklenebileceği garanti değildir. `optional()` bilinçli: bu alanlar
+    // eklenmeden ÖNCE üretilmiş makbuzlar (legacy-repair akışının okuduğu makbuzlar dahil)
+    // geçerliliğini korumalı — geriye dönük kırılma, yeni bir alan uğruna ödenecek bir
+    // bedel değildir. Yeni üretilen her makbuz ikisini de doldurur.
+    pgVersion: z.string().min(1).optional(),
+    pgDumpVersion: z.string().min(1).optional(),
   })
   .strict();
 export type BackupReceipt = z.infer<typeof BackupReceiptSchema>;

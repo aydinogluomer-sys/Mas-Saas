@@ -24,16 +24,24 @@ import { archiveRecord } from "../src/lib/archive/engine";
 import { refreshMetricSnapshots } from "../src/lib/analytics/snapshots";
 import { answerQuestion } from "../src/lib/ai/engine";
 import { ensureSystemActor } from "./db/seed-system-actor";
-import { ownerDatabaseUrl } from "./db/owner-url";
+import { requireDisposableOwnerDatabaseUrl } from "./db/owner-url";
 
 // Owner connection: this script TRUNCATEs before re-seeding, and TRUNCATE is not granted to
 // the application role (see scripts/import-real.ts for the reasoning).
-const connectionString = ownerDatabaseUrl();
-if (!connectionString) {
-  console.error("MIGRATION_DATABASE_URL (veya DATABASE_URL) tanımlı değil.");
-  process.exit(1);
-}
-const pool = new Pool({ connectionString });
+//
+// WHY THE GATED RESOLVER, NOT ownerDatabaseUrl().
+//
+// This file opened with `ownerDatabaseUrl()`, which resolves MIGRATION_DATABASE_URL and then falls
+// back to DATABASE_URL — and it never asked WHICH database it had been handed. That is the exact
+// hazard the Faz 17-38 audit closed for the forty-odd scripts/phase*-verify.ts files, and this one
+// was left behind: with DATABASE_URL pointing at the real `mas_radar_dev` and
+// MIGRATION_DATABASE_URL unset, `pnpm seed:demo` would TRUNCATE the production financial tables and
+// then report success. The only thing standing in the way was whoever typed the environment.
+//
+// requireDisposableOwnerDatabaseUrl() inverts that default: the target must SAY it is expendable
+// (a disposable marker in its NAME) before anything truncates it, and `mas_radar_dev` is refused
+// outright. It fails loudly and before a connection is opened.
+const pool = new Pool({ connectionString: requireDisposableOwnerDatabaseUrl("seed:demo") });
 
 async function main() {
   const actorId = await ensureSystemActor(pool);

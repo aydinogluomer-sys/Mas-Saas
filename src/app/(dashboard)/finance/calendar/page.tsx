@@ -3,6 +3,7 @@ import { loadCalendar, loadCalendarDaily } from "@/lib/briefing/engine";
 import { istanbulDateISO } from "@/lib/reports/rules";
 import { Badge, type Tone } from "@/components/ui/badge";
 import { Panel, fmtTL } from "@/components/ui/panel";
+import { isReportingCurrency } from "@/lib/currency-policy";
 import { EmptyState, KeyStat, PageHeader, TableShell } from "@/components/ui/shell";
 
 export const dynamic = "force-dynamic";
@@ -32,10 +33,13 @@ export default async function FinancialCalendarPage({
     loadCalendarDaily(pool, today, end),
   ]);
 
-  const contracted = daily.reduce((s, d) => s + d.netContracted, 0);
-  const expected = daily.reduce((s, d) => s + d.netExpected, 0);
+  // PHASE 2.2 (#72): günlük satırlar para birimine göre ayrı (0080); KPI yalnız TRY satırları toplar.
+  const dailyTry = daily.filter((d) => isReportingCurrency(d.currency));
+  const foreignDays = daily.length - dailyTry.length;
+  const contracted = dailyTry.reduce((s, d) => s + d.netContracted, 0);
+  const expected = dailyTry.reduce((s, d) => s + d.netExpected, 0);
   const renewals = daily.reduce((s, d) => s + d.renewalCount, 0);
-  const worst = [...daily].sort((a, b) => a.netContracted - b.netContracted || a.eventDate.localeCompare(b.eventDate))[0];
+  const worst = [...dailyTry].sort((a, b) => a.netContracted - b.netContracted || a.eventDate.localeCompare(b.eventDate))[0];
 
   return (
     <>
@@ -56,8 +60,8 @@ export default async function FinancialCalendarPage({
       />
 
       <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-        <KeyStat label="Sözleşmeli net akış" value={fmtTL(contracted)} tone={contracted < 0 ? "warn" : "pos"}
-          sub="İmzalı yükümlülükler" />
+        <KeyStat label="Sözleşmeli net akış (TRY)" value={fmtTL(contracted)} tone={contracted < 0 ? "warn" : "pos"}
+          sub={foreignDays > 0 ? `İmzalı yükümlülükler · ${foreignDays} gün-satırı TRY-dışı — toplamda yok` : "İmzalı yükümlülükler"} />
         {/* Reported beside the contracted figure, never blended into it: a promise is not a contract. */}
         <KeyStat label="Beklenen (ödeme sözü)" value={fmtTL(expected)} tone="neutral"
           sub="Söz verilmiş, taahhüt değil" />

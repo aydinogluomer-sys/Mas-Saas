@@ -1,0 +1,195 @@
+{
+  "stateKind": "mas-p24b-source-state-v1",
+  "label": "final-start-pre",
+  "measuredAtUtc": "2026-09-03T18:58:51.458Z",
+  "database": "mas_radar_dev",
+  "transactionReadOnly": "on",
+  "manifestSha256": "d60de97bcc3c62aa2902b64a7c164e8132e733ba7f6958e71b1a84bac3c8bbb9",
+  "ledger": "0087/87",
+  "migrationLatest": "0087",
+  "migrationCount": 87,
+  "baseTableCount": 86,
+  "baseTableSetKey": "auth.users,public.action_items,public.ai_response_snapshots,public.alert_escalation_rules,public.approval_rules,public.approval_steps,public.approvals,public.assistant_conversations,public.attachments,public.audit_logs,public.background_jobs,public.bank_accounts,public.bank_transaction_match_candidates,public.bank_transactions,public.budget_lines,public.budgets,public.capacity_models,public.cash_accounts,public.cashflow_lines,public.cashflow_months,public.cashflow_snapshots,public.categories,public.check_events,public.checks,public.collateral_records,public.control_alerts,public.cost_allocation_rules,public.cost_breakdown_lines,public.cost_centers,public.cost_models,public.counterparty_profiles,public.covenant_records,public.credit_facilities,public.departments,public.document_links,public.documents,public.external_assumptions,public.facility_drawdowns,public.finance_cost_allocations,public.forecast_lines,public.forecasts,public.fx_positions,public.fx_rate_snapshots,public.iban_change_events,public.ibans,public.import_rows,public.integration_connections,public.invoice_allocations,public.invoice_lines,public.invoice_reversals,public.invoices,public.loan_installments,public.loans,public.machine_assets,public.machine_minute_allocations,public.machine_roi_snapshots,public.mapping_reviews,public.metric_snapshots,public.optimization_recommendations,public.optimization_runs,public.orders,public.part_profitability_runs,public.parties,public.payment_instances,public.payments,public.production_parts,public.products,public.projects,public.promise_to_pay,public.reminder_deliveries,public.reminders,public.reports,public.saved_views,public.scenario_assumptions,public.scenario_comparisons,public.scenario_run_lines,public.scenario_runs,public.scenarios,public.schema_migrations,public.sessions,public.settings,public.source_cells,public.source_sheets,public.source_workbooks,public.treasury_policies,public.users",
+  "counts": {
+    "action_items": 6,
+    "approvals": 68,
+    "payment_instances": 502,
+    "payments": 19,
+    "users": 13,
+    "settings": 7
+  },
+  "targetExpected": 42,
+  "targetFound": 0,
+  "targetMissing": [
+    {
+      "table": "users",
+      "id": "92cee4d3-c649-432d-b507-546d87936a76"
+    },
+    {
+      "table": "users",
+      "id": "a794163c-6ab5-4d00-a1b5-2b0c563be4e3"
+    },
+    {
+      "table": "users",
+      "id": "33796a14-c173-45c7-a784-33e44e8996a0"
+    },
+    {
+      "table": "users",
+      "id": "19688698-2eb2-40bb-9fc5-37cebdc7e824"
+    },
+    {
+      "table": "users",
+      "id": "cd3445b1-9c74-4703-b348-9f09a704a3d3"
+    },
+    {
+      "table": "users",
+      "id": "4b6d2264-a608-4b36-90aa-17fcfa13bb3f"
+    },
+    {
+      "table": "action_items",
+      "id": "639daf7e-9c3e-4244-9ebf-6bef37b57971"
+    },
+    {
+      "table": "action_items",
+      "id": "12d7532f-a730-44dd-9b91-43cf501a6871"
+    },
+    {
+      "table": "action_items",
+      "id": "cdcb3e57-d0c3-46ac-afe7-997419720548"
+    },
+    {
+      "table": "action_items",
+      "id": "cf55cbbc-feaa-4e79-9517-e41d22261e77"
+    },
+    {
+      "table": "payments",
+      "id": "7b300bfe-944f-468b-91fa-2de65b7cfee5"
+    },
+    {
+      "table": "settings",
+      "id": "p24b_fixture_setting"
+    },
+    {
+      "table": "approvals",
+      "id": "1fc76c28-9d71-4ce3-91a6-f1e9f94e5dd4"
+    },
+    {
+      "table": "approvals",
+      "id": "62cd196c-d517-44c8-9431-3cce52d8b81a"
+    },
+    {
+      "table": "approvals",
+      "id": "8f656a4d-d2e4-40f2-b698-277f6278008b"
+    },
+    {
+      "table": "approvals",
+      "id": "f4d7db30-44ce-45c0-b4ce-536a0e2886c9"
+    },
+    {
+      "table": "payment_instances",
+      "id": "3ab000e6-5187-468d-bf2e-2af882a2a3a2"
+    },
+    {
+      "table": "payment_instances",
+      "id": "79eccf48-65ff-4427-af7b-9e332488c1bd"
+    },
+    {
+      "table": "payment_instances",
+      "id": "dfa79dc9-bc4d-4572-96b2-de56b0baceae"
+    },
+    {
+      "table": "payment_instances",
+      "id": "5bcafa6a-0b14-450e-be0a-4200d3ebcfdf"
+    },
+    {
+      "table": "payment_instances",
+      "id": "c79c9191-091a-401c-afe2-a0f9d99581a0"
+    },
+    {
+      "table": "payment_instances",
+      "id": "684305b9-e02a-4d8d-a458-6872e05341eb"
+    },
+    {
+      "table": "payment_instances",
+      "id": "8294af06-3e5a-4c04-adbb-893242d32380"
+    },
+    {
+      "table": "payment_instances",
+      "id": "04a8236d-3986-4d6e-90dd-8101a6c33968"
+    },
+    {
+      "table": "payment_instances",
+      "id": "aec43bfd-0299-467a-aa06-9e305f2f2525"
+    },
+    {
+      "table": "payment_instances",
+      "id": "dfc12ad9-e11b-4810-84ee-83fcc5276f45"
+    },
+    {
+      "table": "payment_instances",
+      "id": "7feca5d8-4c15-4bbd-9158-0d6d9cf1373c"
+    },
+    {
+      "table": "payment_instances",
+      "id": "0eacaa79-ef1e-475a-92a6-131c0184808c"
+    },
+    {
+      "table": "payment_instances",
+      "id": "7444214a-9f32-4f70-b02d-131b7cfe8e16"
+    },
+    {
+      "table": "payment_instances",
+      "id": "6920c443-4786-404b-9483-2d2291711067"
+    },
+    {
+      "table": "payment_instances",
+      "id": "19a3cd28-9a01-4c9f-966f-39666a2c6bbd"
+    },
+    {
+      "table": "payment_instances",
+      "id": "c05e09bb-8342-4994-a3d3-060e78daf66a"
+    },
+    {
+      "table": "payment_instances",
+      "id": "492834d1-fec4-46e0-866a-d379b05874fd"
+    },
+    {
+      "table": "payment_instances",
+      "id": "74494b3c-a637-46db-8ce7-eb8b49d7023c"
+    },
+    {
+      "table": "payment_instances",
+      "id": "79c1ec15-3cea-4af6-a04c-9d97f96de051"
+    },
+    {
+      "table": "payment_instances",
+      "id": "b183d98d-e49c-4244-abbd-352950e1fd05"
+    },
+    {
+      "table": "payment_instances",
+      "id": "25ad518a-ec26-4f2f-958f-6b12b3f86bda"
+    },
+    {
+      "table": "payment_instances",
+      "id": "e5b90331-d7b8-4802-85a4-16b11bb3c877"
+    },
+    {
+      "table": "payment_instances",
+      "id": "375433d5-ae45-43f1-bfc3-9f04ceae073c"
+    },
+    {
+      "table": "payment_instances",
+      "id": "8aef2494-3a80-4879-99b5-841a0df04bde"
+    },
+    {
+      "table": "payment_instances",
+      "id": "a0acd3c0-fe0b-4da5-b8eb-86a6df8dec89"
+    },
+    {
+      "table": "payment_instances",
+      "id": "80ef312a-48f1-434b-9e80-b8e099c05cdb"
+    }
+  ],
+  "targetFingerprint": "5e84634660528f2076f7bbef2a7e7e8f05047c13353679c53f0097798e37882d",
+  "wholeDbFingerprint": "85358cfd27767001a3cdf00e1c5979a05d471a409876afc2586567a38432a929"
+}

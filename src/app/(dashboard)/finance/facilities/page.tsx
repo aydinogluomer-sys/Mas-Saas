@@ -1,4 +1,6 @@
 import { getPool } from "@/lib/db";
+import { cache } from "@/lib/cache/engine";
+import { CACHE_TAGS } from "@/lib/cache/tags";
 import {
   FACILITY_STATUS_LABEL, FACILITY_TYPE_LABEL,
   type FacilityStatus, type FacilityType,
@@ -7,6 +9,7 @@ import { Badge, type Tone } from "@/components/ui/badge";
 import { Panel, fmtTL } from "@/components/ui/panel";
 import { EmptyState, KeyStat, PageHeader, TableShell } from "@/components/ui/shell";
 import { requireRouteAccess } from "@/lib/authz/route-guard";
+import { isReportingCurrency } from "@/lib/currency-policy";
 
 export const dynamic = "force-dynamic";
 
@@ -20,40 +23,58 @@ export default async function FacilitiesPage() {
   const denied = await requireRouteAccess("/finance/facilities");
   if (denied) return denied;
   const pool = getPool();
-  const [facilities, ladder, collateral, covenants] = await Promise.all([
-    pool.query(
-      `select facility_id, facility_name, facility_type, currency, status, lender_name,
-              limit_amount, drawn_amount, available_amount, utilization_ratio, over_limit,
-              to_char(expiry_date,'YYYY-MM-DD') as expiry_date, days_to_expiry
-       from public.credit_facility_utilization
-       order by status, expiry_date nulls last, facility_name`),
-    pool.query(
-      `select bucket_label, installment_due, installment_count, facility_drawn_expiring,
-              facility_limit_expiring, facility_count, total_cash_exposure
-       from public.debt_maturity_ladder order by sort_order`),
-    pool.query(
-      `select c.id, c.collateral_type, c.description, c.value_amount, c.currency,
-              to_char(c.valuation_date,'YYYY-MM-DD') as valuation_date, c.valuation_source,
-              coalesce(l.name, f.name) as subject_name, c.released_at
-       from public.collateral_records c
-       left join public.loans l on l.id = c.loan_id
-       left join public.credit_facilities f on f.id = c.facility_id
-       order by c.created_at desc limit 50`),
-    pool.query(
-      `select v.id, v.covenant_type, v.description, v.comparison, v.threshold_value, v.status,
-              to_char(v.last_test_date,'YYYY-MM-DD') as last_test_date,
-              v.last_test_value, v.last_test_result,
-              coalesce(l.name, f.name) as subject_name
-       from public.covenant_records v
-       left join public.loans l on l.id = v.loan_id
-       left join public.credit_facilities f on f.id = v.facility_id
-       order by v.status, v.covenant_type limit 50`),
-  ]);
+  const [facilitiesRows, ladderRows, collateralRows, covenantsRows] = await cache.withCache(
+    "finance:facilities:data",
+    async () => {
+      const [fRes, lRes, cRes, vRes] = await Promise.all([
+        pool.query(
+          `select facility_id, facility_name, facility_type, currency, status, lender_name,
+                  limit_amount, drawn_amount, available_amount, utilization_ratio, over_limit,
+                  to_char(expiry_date,'YYYY-MM-DD') as expiry_date, days_to_expiry,
+                  foreign_drawdown_count
+           from public.credit_facility_utilization
+           order by status, expiry_date nulls last, facility_name`),
+        pool.query(
+          `select bucket_label, installment_due, installment_count, facility_drawn_expiring,
+                  facility_limit_expiring, facility_count, total_cash_exposure
+           from public.debt_maturity_ladder order by sort_order`),
+        pool.query(
+          `select c.id, c.collateral_type, c.description, c.value_amount, c.currency,
+                  to_char(c.valuation_date,'YYYY-MM-DD') as valuation_date, c.valuation_source,
+                  coalesce(l.name, f.name) as subject_name, c.released_at
+           from public.collateral_records c
+           left join public.loans l on l.id = c.loan_id
+           left join public.credit_facilities f on f.id = c.facility_id
+           order by c.created_at desc limit 50`),
+        pool.query(
+          `select v.id, v.covenant_type, v.description, v.comparison, v.threshold_value, v.status,
+                  to_char(v.last_test_date,'YYYY-MM-DD') as last_test_date,
+                  v.last_test_value, v.last_test_result,
+                  coalesce(l.name, f.name) as subject_name
+           from public.covenant_records v
+           left join public.loans l on l.id = v.loan_id
+           left join public.credit_facilities f on f.id = v.facility_id
+           order by v.status, v.covenant_type limit 50`),
+      ]);
+      return [fRes.rows, lRes.rows, cRes.rows, vRes.rows] as const;
+    },
+    { ttlSeconds: 60, tags: [CACHE_TAGS.CREDIT_FACILITIES] }
+  );
+
+  const facilities = { rows: facilitiesRows };
+  const ladder = { rows: ladderRows };
+  const collateral = { rows: collateralRows };
+  const covenants = { rows: covenantsRows };
 
   const active = facilities.rows.filter((f) => f.status === "active");
-  const totalLimit = active.reduce((s, f) => s + Number(f.limit_amount ?? 0), 0);
-  const totalDrawn = active.reduce((s, f) => s + Number(f.drawn_amount ?? 0), 0);
-  const totalAvailable = active.reduce((s, f) => s + Number(f.available_amount ?? 0), 0);
+  // PHASE 2.2 (#33): toplamlar yalnız TRY limitlerden; USD/EUR limit TRY limitle toplanmaz,
+  // sayısı ekranda söylenir. Satır bazında para birimi zaten görünür.
+  const activeTry = active.filter((f) => isReportingCurrency(f.currency));
+  const foreignActive = active.length - activeTry.length;
+  const totalLimit = activeTry.reduce((s, f) => s + Number(f.limit_amount ?? 0), 0);
+  const totalDrawn = activeTry.reduce((s, f) => s + Number(f.drawn_amount ?? 0), 0);
+  const totalAvailable = activeTry.reduce((s, f) => s + Number(f.available_amount ?? 0), 0);
+  const mismatchedDrawdowns = facilities.rows.reduce((s, f) => s + Number(f.foreign_drawdown_count ?? 0), 0);
   const breached = covenants.rows.filter((c) => c.last_test_result === "breached");
   const expiringSoon = facilities.rows.filter(
     (f) => f.days_to_expiry != null && Number(f.days_to_expiry) >= 0 && Number(f.days_to_expiry) <= 90
@@ -70,8 +91,10 @@ export default async function FacilitiesPage() {
       />
 
       <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-        <KeyStat label="Toplam limit (aktif)" value={fmtTL(totalLimit)} tone="info" />
-        <KeyStat label="Kullanılan" value={fmtTL(totalDrawn)} tone={totalDrawn > 0 ? "warn" : "neutral"} />
+        <KeyStat label="Toplam limit (aktif, TRY)" value={fmtTL(totalLimit)} tone="info"
+          sub={foreignActive > 0 ? `${foreignActive} limit TRY-dışı — toplamda yok` : undefined} />
+        <KeyStat label="Kullanılan" value={fmtTL(totalDrawn)} tone={totalDrawn > 0 ? "warn" : "neutral"}
+          sub={mismatchedDrawdowns > 0 ? `${mismatchedDrawdowns} çekiş limitin para biriminden farklı — kullanımda yok` : undefined} />
         {/* Available liquidity that exists without being borrowed — the number a facility
             register exists to surface. */}
         <KeyStat label="Kullanılabilir" value={fmtTL(totalAvailable)} tone="pos" />

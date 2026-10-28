@@ -38,6 +38,9 @@ export async function loginAction(formData: FormData): Promise<void> {
     redirect(`/login?error=1&next=${encodeURIComponent(next)}`);
   }
   await createSessionCookie(result.userId);
+  if (result.mustChangePassword) {
+    redirect("/change-password");
+  }
   redirect(next);
 }
 

@@ -47,6 +47,8 @@ export interface FacilityUtilization {
   /** null when the limit is zero — a ratio against nothing is undefined, not 0. */
   utilizationRatio: number | null;
   overLimit: boolean;
+  /** PHASE 2.2 (#34): facility para biriminden farklı hareketler — kullanıma girmedi. */
+  foreignMovementCount: number;
 }
 
 /**
@@ -57,11 +59,25 @@ export interface FacilityUtilization {
  * liquidity by the size of someone's overdraft, which is the opposite of what an over-limit
  * facility means.
  */
-export function utilization(limit: NumericInput, movements: NumericInput[]): FacilityUtilization {
+export type FacilityMovement = NumericInput | { amount: NumericInput; currency?: string | null };
+
+/**
+ * PHASE 2.2 (#34): hareket bir para birimi taşıyorsa facility'nin para birimiyle eşleşmeli;
+ * eşleşmeyen hareket kullanıma girmez ve `foreignMovementCount` ile sayılır (0094
+ * `credit_facility_utilization.foreign_drawdown_count` ile aynı kural). Düz sayı geçen çağıran
+ * (eski imza) yapısal olarak facility para biriminde sayılır.
+ */
+export function utilization(
+  limit: NumericInput, movements: FacilityMovement[], facilityCurrency = "TRY",
+): FacilityUtilization {
   const limitAmount = moneyOrNull(limit) ?? 0;
   let drawn = decimal(0);
+  let foreignMovementCount = 0;
   for (const m of movements) {
-    const v = moneyOrNull(m);
+    const isObj = typeof m === "object" && m !== null && "amount" in m;
+    const cur = isObj ? (m as { currency?: string | null }).currency : undefined;
+    if (cur !== undefined && cur !== facilityCurrency) { foreignMovementCount++; continue; }
+    const v = moneyOrNull(isObj ? (m as { amount: NumericInput }).amount : (m as NumericInput));
     if (v !== null) drawn = drawn.plus(decimal(v));
   }
   const drawnAmount = Number(drawn.toFixed(2));
@@ -72,6 +88,7 @@ export function utilization(limit: NumericInput, movements: NumericInput[]): Fac
     availableAmount: Math.max(0, rawAvailable),
     utilizationRatio: limitAmount === 0 ? null : ratioOrNull(drawnAmount, limitAmount),
     overLimit: drawnAmount > limitAmount,
+    foreignMovementCount,
   };
 }
 

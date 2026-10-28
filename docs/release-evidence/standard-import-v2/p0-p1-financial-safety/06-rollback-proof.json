@@ -1,0 +1,17 @@
+{
+  "artifactKind": "mas-v2-rollback-proof-v1",
+  "database": "mas_radar_import_v2_verify",
+  "rollback": {
+    "rolledBack": true,
+    "before": {
+      "payments": 1,
+      "workbooks": 1,
+      "rollOneName": "ESKI AD"
+    },
+    "after": {
+      "payments": 1,
+      "workbooks": 1,
+      "rollOneName": "ESKI AD"
+    }
+  }
+}

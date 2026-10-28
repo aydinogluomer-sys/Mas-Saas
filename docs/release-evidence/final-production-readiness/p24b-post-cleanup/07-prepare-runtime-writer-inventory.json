@@ -1,0 +1,33 @@
+{
+  "artifactKind": "mas-p24b-prepare-runtime-writers-v1",
+  "entrypoint": "scripts/prepare-runtime.ts (pnpm dev ve pnpm start bunu cagirir)",
+  "writerSurfaces": [
+    {
+      "step": "ensureSystemActor(getRawPool())",
+      "file": "scripts/db/seed-system-actor.ts",
+      "table": "public.users",
+      "operation": "INSERT ... ON CONFLICT (username) DO NOTHING",
+      "reason": "Uygulamanin kendi servis hesabini saglar; RLS disinda raw pool ile calisir.",
+      "expectedDelta": "0 (system kullanicisi cleanup sonrasi hala mevcut)",
+      "measuredDelta": 0
+    },
+    {
+      "step": "ensureWindow(pool, bugun, actorId, 24)",
+      "file": "src/lib/radar/engine.ts",
+      "table": "public.payment_instances",
+      "operation": "INSERT (eksik olan pencere satirlari) + UPDATE",
+      "reason": "24 aylik odeme penceresini materyallestirir. P24B olayinda AMPLIFIER buydu: fixture odemesi icin 23 instance uretmisti.",
+      "expectedDelta": "0 yeni satir (pencere zaten dolu)",
+      "measuredDelta": 0
+    },
+    {
+      "step": "ensureWindow denetim kaydi",
+      "table": "public.audit_logs",
+      "operation": "INSERT",
+      "reason": "Her odeme icin generate_instances denetim satiri.",
+      "expectedDelta": "+26 her calistirmada (append-only, is verisi degil)",
+      "measuredDelta": 26
+    }
+  ],
+  "fixtureRegenerationRisk": "YOK — uretecin dayandigi fixture odemesi (7b300bfe) artik mevcut degil; iki kosuda da 0 fixture satiri olustu."
+}

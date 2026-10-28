@@ -1,0 +1,17 @@
+{
+  "artifactKind": "mas-final-start-provenance-v1",
+  "measuredAtUtc": "2026-09-03T19:11:39.443Z",
+  "verdict": "PASS",
+  "remoteReleaseSha": "f076431152127dc4a337e0bb55b73ade3f85821b",
+  "expectedRemoteSha": "f076431152127dc4a337e0bb55b73ade3f85821b",
+  "match": true,
+  "runtimeReleaseSha": "f076431152127dc4a337e0bb55b73ade3f85821b",
+  "applicationFixSha": "9e23ad78ee65adc9beafb6cf58f6e477b26765bc",
+  "parentOfRelease": "9e23ad78ee65adc9beafb6cf58f6e477b26765bc",
+  "contentDelta": {
+    "range": "9e23ad7..f076431",
+    "srcAndScriptsDiff": "BOS — uygulama davranisi degismedi",
+    "totalChange": "9 dosya, 756 ekleme, hepsi docs/release-evidence altinda",
+    "conclusion": "f076431 yalniz evidence ekler; calisan kod 9e23ad7 ile ayni. Deployment provenance yine de f076431 olarak tutulur."
+  }
+}

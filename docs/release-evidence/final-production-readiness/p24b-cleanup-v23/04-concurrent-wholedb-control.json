@@ -1,0 +1,21 @@
+{
+  "database": "mas_radar_p24b_v23_drill",
+  "generatedAtUtc": "2026-08-30T19:20:56.527Z",
+  "nonTargetTable": "public.sessions",
+  "victimId": "0bfec5b3-2ed4-4e04-b329-2693ffb69eaa",
+  "baseTableCount": 86,
+  "lockedTableCount": 86,
+  "withLockHeld": {
+    "blocked": true,
+    "code": "55P03",
+    "message": "canceling statement due to lock timeout"
+  },
+  "wholeDbFingerprintUnchangedUnderLock": true,
+  "withoutLock": {
+    "blocked": false,
+    "code": null,
+    "message": "UPDATE geçti"
+  },
+  "verdict": "PASS",
+  "reasoning": "Tüm 86 base table kilitliyken HEDEF DIŞI bir tabloya yazma lock_timeout (55P03) ile reddedildi ve tüm-DB parmak izi değişmedi; aynı yazma kilit yokken geçti. Dondurma, binding'in kapsadığı her tabloyu gerçekten koruyor."
+}

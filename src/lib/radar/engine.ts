@@ -13,12 +13,105 @@ import { DomainError } from "@/lib/domain-error";
 import { assertISODateString } from "@/lib/time/istanbul";
 import { audit } from "@/lib/audit";
 import { formatIssues } from "@/lib/validation";
+import { cache } from "@/lib/cache/engine";
+import { CACHE_TAGS } from "@/lib/cache/tags";
 import {
   addMonths,
   computeRisk,
   dueDateFor,
   type RiskThresholds,
 } from "./rules";
+import { APP_ROLES, DB_ROLE, can } from "@/lib/authz/matrix";
+
+/* ── Bakım yazımları ve SALT-OKUR katmanlar ────────────────────────────────────────────────
+ *
+ * NE ÖLÇÜLDÜ. `/payments`, `/payments/calendar` ve `/payments/missing` ekranları RENDER
+ * SIRASINDA yazma yapıyordu: `ensureWindow()` eksik ayları üretir, `refreshRiskFlags()` risk
+ * bayrağı DEĞİŞMİŞ satırları UPDATE eder. Bu iki iş bakım işidir, kullanıcı aksiyonu değil —
+ * ama render yolunda oldukları için sayfayı AÇAN kişinin yetkisiyle çalışıyorlardı.
+ *
+ * `viewer` ve `finance_approver` katmanları payment_instances üzerinde yalnız SELECT'e sahip
+ * (matrix.ts: payment_instances → "operational"; policy: payment_instances_update_enter yalnız
+ * operator/manager/admin). Dolayısıyla bu iki rol için UPDATE'i RLS reddediyor ve sayfa
+ * "Server Components render" hatasıyla ÇÖKÜYORDU. Üretim sunucusunda birebir gözlendi:
+ *
+ *   viewer            /payments/calendar   → 42501 new row violates RLS policy
+ *   finance_approver  /payments/missing    → 42501 new row violates RLS policy
+ *
+ * NEDEN ARALIKLI GÖRÜNÜYORDU. UPDATE yalnız bayrak GERÇEKTEN değiştiyse satır etkiler
+ * (`where … risk_level is distinct from $2 …`). Bayraklar tazeyse sıfır satır döner ve hata
+ * çıkmaz. Yani okuma-yalnız bir kullanıcı, bayraklar bayatladığı her an (gün dönümü, herhangi
+ * bir veri değişikliği) çöken bir ekranla karşılaşıyordu — bazen de karşılaşmıyordu.
+ *
+ * SEÇİLEN ÇÖZÜM VE ELENEN İKİ ALTERNATİF.
+ *   (a) `runAsSystem()` ile yükselt — ELENDİ. Okuma yolunu yazma yetkisine yükseltmek demek;
+ *       /calendar ayı `?ym=` ile geldiği için salt-okur bir kullanıcı istediği ay için üretim
+ *       tetikleyebilirdi. Finansal bir sistemde okuma isteğinin yetki yükseltmesi kabul edilemez.
+ *   (b) 42501'i yakalayıp yutmak — ELENDİ. Güvenlik hatasını yutmak, gerçek bir yetki
+ *       regresyonunu da sessizce gizler.
+ *   (c) SEÇİLEN: bakım yazımı, çağıranın katmanı YAZABİLİYORSA yapılır; yazamıyorsa ATLANIR ve
+ *       ekran mevcut veriyi gösterir. Yazabilen herhangi bir kullanıcının (veya açılıştaki
+ *       `prepare-runtime.ts`'in) ziyareti veriyi tazeler.
+ *
+ * İZİN LİSTESİ TÜRETİLİR, ELLE YAZILMAZ. Aşağıdaki küme doğrudan authz matrisinden çıkar; RLS
+ * politikaları da aynı matristen doğrulanır (`pnpm db:security-matrix:verify`). Elle yazılmış
+ * bir rol listesi, politikalar değiştiği gün sessizce yanlışa düşerdi.
+ */
+const INSTANCE_MAINTENANCE_DB_ROLES: ReadonlySet<string> = new Set(
+  APP_ROLES.filter((role) => can(role, "payment_instances", "insert") && can(role, "payment_instances", "update")).map(
+    (role) => DB_ROLE[role],
+  ),
+);
+
+/**
+ * Bu bağlantının oturduğu katman payment_instances bakımını yapabilir mi?
+ *
+ * `current_user`, `src/lib/db.ts`'in her checkout'ta uyguladığı `set role` sonrasındaki KATMAN
+ * rolüdür — yani sorunun cevabı bağlantının o anki gerçek yetkisidir, uygulamanın tahmini değil.
+ * Katman yoksa (arka plan script'i, `runAsSystem` dışı) rol `mas_radar_app` olur ve zaten hiçbir
+ * şey yazamaz; bu durumda da doğru cevap "hayır"dır.
+ */
+export async function tierMayMaintainInstances(pool: Pool): Promise<boolean> {
+  const res = await pool.query<{ current_user: string }>("select current_user");
+  return INSTANCE_MAINTENANCE_DB_ROLES.has(res.rows[0]?.current_user ?? "");
+}
+
+/**
+ * "Bulunamadı" mı, "yetkiniz yok" mu? — bir mutasyonun kilit satırı boş döndüğünde.
+ *
+ * ═══ NEDEN AYIRT ETMEK ZORUNDAYIZ ═══
+ *
+ * Her örnek mutasyonu şöyle başlar:
+ *
+ *     select … from public.payment_instances where id=$1 for update
+ *     if (rowCount !== 1) throw new DomainError("instance not found");
+ *
+ * `SELECT … FOR UPDATE`, RLS altında SELECT politikasını değil UPDATE politikasını uygular.
+ * `viewer` ve `finance_approver` katmanlarının payment_instances üzerinde UPDATE politikası YOK,
+ * dolayısıyla satır onlara kilitlenemez ve sorgu SIFIR satır döner — satır pekâlâ ORADA olmasına
+ * rağmen. Kod bunu "bulunamadı" diye okuyordu ve kullanıcıya öyle söylüyordu.
+ *
+ * Üretim sunucusunda birebir gözlendi (viewer, /payments/missing, "ödendi" düğmesi):
+ *
+ *     /payments/missing?error=instance%20not%20found
+ *
+ * Bir finans kullanıcısı için bu mesaj YANLIŞ ve tehlikelidir: kaydın silindiğini ya da verinin
+ * bozulduğunu düşündürür, oysa tek gerçek "bu işlemi yapma yetkiniz yok"tur. Yanlış teşhis,
+ * sessiz başarısızlıktan bir adım daha kötüdür — kullanıcıyı olmayan bir sorunu kovalamaya yollar.
+ *
+ * Bu yüzden kilit boş döndüğünde satırın SELECT ile görünüp görünmediğine bakılır: görünüyorsa
+ * sorun yetkidir, görünmüyorsa gerçekten yoktur.
+ */
+export async function instanceMissingReason(client: PoolClient, instanceId: string): Promise<DomainError> {
+  const visible = await client.query(`select 1 from public.payment_instances where id=$1`, [instanceId]);
+  if (visible.rowCount === 1) {
+    return new DomainError(
+      "Bu ödeme örneğini değiştirme yetkiniz yok. Kayıt duruyor; işlemi yapabilmek için " +
+        "finans operatörü veya üstü bir rol gerekir.",
+    );
+  }
+  return new DomainError("Ödeme örneği bulunamadı.");
+}
 
 /** The Slice-5 legacy-repair tooling is the ONLY thing that may pass null: it operates on a
  * frozen pre-0031 database (scripts/db/legacy-repair-verify.ts deliberately hides every
@@ -122,17 +215,23 @@ export async function writeLegacyRepairSummaryWithClient(
 }
 
 export async function loadThresholds(client: PoolClient | Pool): Promise<RiskThresholds> {
-  const r = await client.query(`select key, value from public.settings where key in
-    ('large_payment_threshold_try','critical_payment_threshold_try','same_day_cluster_count')`);
-  const v = (k: string, d: number) => {
-    const row = r.rows.find((x) => x.key === k);
-    return row ? Number(row.value) : d;
-  };
-  return {
-    large: v("large_payment_threshold_try", 50_000),
-    critical: v("critical_payment_threshold_try", 100_000),
-    clusterCount: v("same_day_cluster_count", 3),
-  };
+  return cache.withCache(
+    "radar:thresholds",
+    async () => {
+      const r = await client.query(`select key, value from public.settings where key in
+        ('large_payment_threshold_try','critical_payment_threshold_try','same_day_cluster_count')`);
+      const v = (k: string, d: number) => {
+        const row = r.rows.find((x) => x.key === k);
+        return row ? Number(row.value) : d;
+      };
+      return {
+        large: v("large_payment_threshold_try", 50_000),
+        critical: v("critical_payment_threshold_try", 100_000),
+        clusterCount: v("same_day_cluster_count", 3),
+      };
+    },
+    { ttlSeconds: 300, tags: [CACHE_TAGS.CONTROLS] },
+  );
 }
 
 /* ── 1) accepted candidates → payments ── */
@@ -303,11 +402,28 @@ export async function generateInstancesForMonthWithClient(
     );
     created += res.rowCount ?? 0;
   }
-  await audit(client, {
-    actor: actorId, action: "generate_instances", entityTable: "payment_instances", entityId: null,
-    before: null,
-    after: { monthStart: monthStartISO, created, total: payments.rowCount },
-  });
+  // P1 — denetim kaydı yalnız GERÇEKTEN bir şey yaratıldığında yazılır.
+  //
+  // Bu satır eskiden koşulsuzdu ve tek başına zararsız görünüyordu: ayda bir satır. Ama tek
+  // çağıran `ensureWindow(..., 24)`, yani `prepare-runtime`, bu fonksiyonu delta -1..24 için
+  // 26 KEZ çağırır. Pencere zaten doluyken 26 çağrının 26'sı da `created = 0` döner ve yine de
+  // 26 `generate_instances` satırı yazılırdı.
+  //
+  // Ölçüm (P24B Attempt-04, gerçek mas_radar_dev, 2026-09-03): tek bir `pnpm start` sonrası
+  // payment_instances 502 → 502 (INSERT 0, UPDATE 0) iken audit_logs 788 → 814. Yani sıfır iş
+  // için 26 kayıt. Bu, denetim kaydını olayların değil sunucu açılışlarının kaydına çeviriyordu
+  // ve P24B soruşturmasında audit_logs okumayı zorlaştıran şeylerden biri buydu.
+  //
+  // Değişen tek şey bu koşul. Ufuk (24 ay), üretim mantığı, risk-flag yenilemesi, tarih/ay
+  // semantiği, aktör kimliği ve `audit()` yardımcısının kendisi olduğu gibi duruyor:
+  // `created > 0` olduğunda kayıt ve payload'ı bit-bazında eskisiyle aynı.
+  if (created > 0) {
+    await audit(client, {
+      actor: actorId, action: "generate_instances", entityTable: "payment_instances", entityId: null,
+      before: null,
+      after: { monthStart: monthStartISO, created, total: payments.rowCount },
+    });
+  }
   return {
     monthStart: monthStartISO,
     created,
@@ -321,6 +437,11 @@ export async function generateInstancesForMonth(
   monthStartISO: string,
   actorId: string,
 ): Promise<GenerateResult> {
+  // Salt-okur katman: üretim ATLANIR (yukarıdaki uzun gerekçe). Sayfa mevcut örneklerle
+  // render edilir; "hiç örnek yok" ile "üretemedim" karışmasın diye sonuç sıfırlarla döner.
+  if (!(await tierMayMaintainInstances(pool))) {
+    return { monthStart: monthStartISO, created: 0, skippedExisting: 0, shortMonthAdjusted: 0 };
+  }
   const client = await pool.connect();
   try {
     await client.query("begin");
@@ -341,14 +462,26 @@ export async function ensureWindow(
   actorId: string,
   futureMonths = 1,
 ): Promise<GenerateResult[]> {
-  const m0 = todayISO.slice(0, 7) + "-01";
-  const out: GenerateResult[] = [];
-  for (let delta = -1; delta <= Math.max(1, futureMonths); delta++) {
-    const m = addMonths(m0, delta);
-    out.push(await generateInstancesForMonth(pool, m, actorId));
+  const run = async () => {
+    const m0 = todayISO.slice(0, 7) + "-01";
+    const out: GenerateResult[] = [];
+    for (let delta = -1; delta <= Math.max(1, futureMonths); delta++) {
+      const m = addMonths(m0, delta);
+      out.push(await generateInstancesForMonth(pool, m, actorId));
+    }
+    await refreshRiskFlags(pool, todayISO);
+    return out;
+  };
+
+  if (process.env.NODE_ENV === "test") {
+    return run();
   }
-  await refreshRiskFlags(pool, todayISO);
-  return out;
+
+  return cache.withCache(
+    `radar:ensureWindow:${todayISO}:${futureMonths}`,
+    run,
+    { ttlSeconds: 120, tags: [CACHE_TAGS.PAYMENTS] }
+  );
 }
 
 /* ── 3) risk refresh (window: prev..next month) ── */
@@ -365,8 +498,9 @@ export async function refreshRiskFlagsWithClient(client: PoolClient, todayISO: s
     amount: string | null;
     status: string;
     paid_amount: string | null;
+    currency: string;
   }>(
-    `select id, to_char(due_date,'YYYY-MM-DD') as due_date, amount, status, paid_amount
+    `select id, to_char(due_date,'YYYY-MM-DD') as due_date, amount, status, paid_amount, currency
      from public.payment_instances
      where instance_month >= $1 and instance_month < $2
      order by id`,
@@ -379,6 +513,8 @@ export async function refreshRiskFlagsWithClient(client: PoolClient, todayISO: s
       amount: r.amount == null ? null : Number(r.amount),
       status: r.status,
       paidAmount: r.paid_amount == null ? null : Number(r.paid_amount),
+      // PHASE 2.2: eşikler TRY; kolon `not null default 'TRY'` — yine de null gelirse bilinmiyor.
+      currency: r.currency ?? null,
     })),
     todayISO,
     t,
@@ -397,6 +533,9 @@ export async function refreshRiskFlagsWithClient(client: PoolClient, todayISO: s
 }
 
 export async function refreshRiskFlags(pool: Pool, todayISO: string): Promise<number> {
+  // Salt-okur katman: bayrak tazeleme ATLANIR. 0 döner çünkü GERÇEKTEN sıfır satır güncellendi;
+  // çağıranların hiçbiri bu sayıyı "hata yok" kanıtı olarak kullanmıyor.
+  if (!(await tierMayMaintainInstances(pool))) return 0;
   const client = await pool.connect();
   try {
     await client.query("begin");
@@ -429,7 +568,7 @@ export async function markInstancePaid(
       `select id, status, amount, paid_amount, paid_at from public.payment_instances where id=$1 for update`,
       [instanceId],
     );
-    if (before.rowCount !== 1) throw new DomainError("instance not found");
+    if (before.rowCount !== 1) throw await instanceMissingReason(client, instanceId);
     const currentStatus = before.rows[0].status as string;
     if (!PAYABLE_FROM.has(currentStatus)) {
       throw new DomainError(`payment_instances ${instanceId}: '${currentStatus}' durumundan ödendi işaretlenemez`);
@@ -463,7 +602,7 @@ export async function markInstanceUnpaid(pool: Pool, instanceId: string, actorId
       `select id, status, paid_amount, paid_at from public.payment_instances where id=$1 for update`,
       [instanceId],
     );
-    if (before.rowCount !== 1) throw new DomainError("instance not found");
+    if (before.rowCount !== 1) throw await instanceMissingReason(client, instanceId);
     const currentStatus = before.rows[0].status as string;
     if (!REVERSIBLE_FROM.has(currentStatus)) {
       throw new DomainError(`payment_instances ${instanceId}: '${currentStatus}' durumundan geri alınamaz`);
@@ -495,7 +634,7 @@ export async function markInstancePartial(pool: Pool, instanceId: string, paidAm
       `select id, status, amount, paid_amount from public.payment_instances where id=$1 for update`,
       [instanceId],
     );
-    if (before.rowCount !== 1) throw new DomainError("instance not found");
+    if (before.rowCount !== 1) throw await instanceMissingReason(client, instanceId);
     const currentStatus = before.rows[0].status as string;
     // Same source-status set as markInstancePaid: 'partial' and 'paid' are both "some payment
     // was recorded" outcomes reachable from exactly the same starting statuses (including
@@ -545,7 +684,7 @@ export async function setInstanceAmount(
       `select id, amount, amount_status, amount_source from public.payment_instances where id=$1 for update`,
       [instanceId],
     );
-    if (before.rowCount !== 1) throw new DomainError("instance not found");
+    if (before.rowCount !== 1) throw await instanceMissingReason(client, instanceId);
     const b = before.rows[0];
     const currentAmount = b.amount == null ? null : Number(b.amount);
     // Re-entering the identical (amount, already-manual) state must not produce a
@@ -604,7 +743,7 @@ export async function cancelInstanceWithClient(
     `select id, status, cancelled_at, cancel_reason from public.payment_instances where id=$1 for update`,
     [instanceId],
   );
-  if (before.rowCount !== 1) throw new DomainError("instance not found");
+  if (before.rowCount !== 1) throw await instanceMissingReason(client, instanceId);
   const currentStatus = before.rows[0].status as string;
   if (!CANCELLABLE_FROM.has(currentStatus)) {
     throw new DomainError(`payment_instances ${instanceId}: '${currentStatus}' durumundan iptal edilemez`);
@@ -676,7 +815,7 @@ export async function repairCancellationMetadataWithClient(
     `select id, status, cancelled_at, cancel_reason from public.payment_instances where id=$1 for update`,
     [instanceId],
   );
-  if (before.rowCount !== 1) throw new DomainError("instance not found");
+  if (before.rowCount !== 1) throw await instanceMissingReason(client, instanceId);
   const b = before.rows[0];
   if (b.status !== "cancelled" || b.cancelled_at !== null || b.cancel_reason !== null) {
     throw new DomainError(

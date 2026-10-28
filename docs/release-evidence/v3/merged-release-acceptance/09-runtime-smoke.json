@@ -1,0 +1,21 @@
+{
+  "sha": "ceca39a3a60c00358d1aa90f00f9b2864237e4ec",
+  "ready": 200,
+  "health": "ok/db up",
+  "login": 200,
+  "version": {
+    "status": 200,
+    "commit": "ceca39a3a60c00358d1aa90f00f9b2864237e4ec",
+    "buildId": "ceca39a3a60c00358d1aa90f00f9b2864237e4ec",
+    "provenance": "BUILD_EMBEDDED",
+    "buildTime": "2026-09-13T06:06:17Z"
+  },
+  "anonymous_protected_routes": {
+    "tested": 13,
+    "leaked_200": 0,
+    "http_5xx": 0,
+    "all_307_to_login": true
+  },
+  "fatal": 0,
+  "authenticated_smoke": "tests/interaction/import-v2.spec.ts (5 rol gerçek /login) 8/8 ×2"
+}
