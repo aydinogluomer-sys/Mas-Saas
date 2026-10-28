@@ -4414,3 +4414,88 @@ ağaç `quarantine/pre-wave0-2026-10-28` etiketinde.
   uçtan uca (`=1/0` tutar, `#N/A` durum, birleştirilmiş çek tutarı → REDDEDİLECEK/İNCELEME, onaydan sonra
   `mapping_reviews` `formula_error`/`merged_cell`, domain sayıları değişmemiş); asenkron yolun disposable
   DB'de işçiyle uçtan uca koşusu; `pnpm interaction:test -- import-v2` ve etkileşim kapsam kapısı.
+
+---
+
+## Wave 0 / S6 — KEEP listesi, Supabase'in sökülmesi, PWA (incelenmemiş 46541d8 katmanının seçici karantinası)
+
+Hedef: sahibin **tuttuğu** parçalar (zorunlu parola değişikliği + `/change-password` + parola rotasyonu, iş
+dağıtıcısı, PWA manifest/ikon) gerçekten çalışsın ve sertleşsin; buluta bağlı kalıntılar gitsin; hiçbir finansal
+sayfa tarayıcı önbelleğinde kalmasın. Önceki incelenmiş durum `af210fd`; karantina öncesi ağaç
+`quarantine/pre-wave0-2026-10-28` etiketinde.
+
+- **Zorunlu parola değişikliği artık her katman için çalışıyor.** Katman kullanıcının kendi değişikliğini
+  `getPool()` üzerinden, yani kendi katmanında koşturuyordu; `users`'ı yalnız admin katmanı güncelleyebildiği için
+  izleyici/operatör/onaylayıcı/yönetici `select … for update`'te satır bulamıyor ve `/change-password`'ta kalıcı
+  kilitli kalıyordu — `createUser` ve `resetUserPassword` değişimi varsayılan olarak zorladığı için arayüzden
+  açılan her hesap. Değişiklik `src/lib/auth.ts`'e (`changeOwnPassword`) taşındı ve kimlik bağlantısında (ham
+  havuz, giriş/çıkışla aynı `users_app_runtime`/`sessions_app_runtime` yolu) TEK transaction'da koşuyor: kendi
+  satırını kilitle → bu oturum hâlâ canlı mı (arada sıfırlama/pasifleştirme varsa yazma yok) → denetim "before"
+  GÜNCELLEMEDEN ÖNCE (katman sonra okuyup yeni durumu eski diye kaydediyordu) → güncelle → DİĞER oturumları
+  iptal et (mevcut oturum açık kalır) → `app.user_id` + `set local role <kendi katmanı>` → tek denetim yazıcısı
+  `audit()` → commit. Hata yolunda bağlantı havuza dönmez, imha edilir. Eski parola `attemptLogin` ile
+  doğrulanır: sabit süreli, beş yanlış deneme hesabı 15 dakika kilitler (form bir kaba kuvvet kapısı değil).
+- **Migration 0096 (Wave 0'ın tek yeni migration'ı):** izleyicinin şemadaki TEK yazma yolu —
+  `audit_logs_insert_own_password_change`, yalnız `action = 'change_own_password'`, `entity_table = 'users'`,
+  `actor = entity_id = current_app_user()`. Diğer dört katman 0058'in kanıt politikasıyla zaten yazabiliyordu.
+  Kimliksiz bağlantıda (`runAsReadOnlySystem` dahil) eşleşmez. Migration beş katmanın INSERT yolunu ve
+  izleyicinin bu tablodaki tek politikasını kendisi doğrular; `db:roles-rls:verify` H bölümü akışı gerçek
+  `mas_radar_app` kimliğiyle beş katman için oynatır, izleyicinin beş sapmasını ve şemadaki tek izleyici yazma
+  politikasını ölçer. İstisna `@/lib/authz/matrix` (`evidence`/`personal` notları) ve `db.ts`'te yazılı.
+- **Hata mesajları kodla:** `/change-password?error=<kod>` ve sayfa yalnız bilinen kodun sabit Türkçe metnini
+  gösterir (`@/lib/users/password-policy`); katman `?error=` değerini olduğu gibi basıyordu. Form açıkken
+  pasifleştirilen hesap "parola hatalı" değil "oturumunuz sona erdi" görür (`attemptLogin` pasif hesabı sayaç
+  artırmadan reddeder; "hatalı" demek hem yanlış hem yeni deneme davetiydi). Eksik iki flash
+  anahtarı (`password_updated`, `password_force_change`) eklendi; `tests/flash-keys.test.ts` bir server
+  action'ın gönderdiği her anahtarın haritada olmasını şart koşar. Admin tarafının denetim izdüşümü artık
+  `must_change_password`'ı da taşır (önceki/sonraki değer).
+- **`scripts/ops/rotate-passwords.ts` (KR-06):** owner bağlantısı; aktör rezerve 'system' hesabı
+  (`getSystemActorId`) — katman HEDEF kullanıcıyı aktör yazıyordu; denetim `audit()` ile ve 'system' hesabının
+  katmanında (katmanın satır içi INSERT'i phase18'i kırıyor, `mas_radar_app` ile native PG'de reddediliyordu);
+  rezerve ve pasif hesaplar reddedilir; hesap başına ayrı transaction/geri alma; `crypto.randomInt` (modulo
+  sapması yok), 20 karakter; çıktı terminal değilse hiçbir şey değiştirmeden durur (geçici parola dosyaya düşmez).
+- **İş dağıtıcısı:** aktör ZORUNLU ve uuid olmalı (rezerve 'system' hesabı, `getSystemActorId` — S5'in null
+  varsayılanı da kaldırıldı: bir işin izi onu koşturan hesabı adlandırır); yalnız handler hatası `failJob`'a gider,
+  `completeJob` hatası yukarı çıkar (katman başarılı işi "başarısız" kaydedip yeniden çalıştırırdı). Üretimde hâlâ
+  çağıranı yok; sözleşme dosya başında.
+- **PWA:** `public/sw.js` bir kill-switch: fetch/push dinleyicisi yok, etkinleşince bütün önbellekleri siler ve
+  kaydını kaldırır (katmanın sürümü gezilen her sayfayı Cache Storage'a yazıp çevrimdışı ve çıkıştan sonra
+  sunuyordu). `pwa-register.tsx` (kayıt + "çevrimdışı destek" bandı) yerine `ServiceWorkerCleanup` (kayıtları
+  kaldırır, önbellekleri siler, hiçbir şey çizmez). `/sw.js` middleware'de herkese açık kalır (çerezsiz güncelleme
+  şart). Manifest ve ikon duruyor; `robots.txt` her şeyi yasaklar. İkisi de bir sürüm sonra silinecek.
+- **Supabase söküldü (R11):** `seed-supabase-admin.ts` (sabit parola + sabit oturum belirteci),
+  `migrate-supabase.ts` (sağlama toplamı/kilit/yedeksiz ikinci migration koşucusu, TLS doğrulaması kapalı),
+  `sync-supabase-checksums.ts` (defterin kurcalama kontrolünü boşa çıkarıyordu), `fix-roles.ts` (katman rollerini
+  `postgres`'e migration dışında veriyordu), `fix-sessions-rls.ts` (her katmana `sessions` üzerinde
+  `using(true)`), `db:migrate:supabase` betiği; `scripts/ops/measure-routes.ts` (sabit oturum belirteci, 30 günlük
+  admin oturumu). `db.ts`: bağlantı zaman aşımı yine 5 sn, "Supabase deploy" yorumu düzeltildi. `env.ts` ve
+  `.env.example`'da Supabase dalı kalmamıştı.
+- **Testler (DB'siz):** yeni `src/lib/change-own-password.test.ts` (gerçek `changeOwnPassword` + `attemptLogin`,
+  SQL metnine göre cevap veren sahte kimlik havuzu: beş katmanın her biri için tam sıra, rol, `app.user_id`,
+  denetim kolonları, "before"ın güncellemeden önce olduğu, parola/hash'in denetime girmediği; kurallar DB'ye
+  dokunmadan; yanlış parola sayacı, beşinci denemede kilit, kilitliyken doğru parola; arada iptal edilen oturum ve
+  pasifleştirme; tanınmayan rol; RLS reddi → geri alma + bağlantı imhası), `password-policy.test.ts`,
+  `flash-keys.test.ts`, `src/app/change-password/actions.test.ts` (önce oturum kapısı; eylemden URL'e yalnız kod
+  çıkar; beklenmeyen hata — ör. RLS'in reddettiği denetim satırı — dostça metne çevrilmeden yükselir; başarı
+  `/overview?flash=password_updated`), `tests/own-password-audit-migration.test.ts` (0096'yı DB'siz sabitler:
+  koşucu dosya kümesini kabul ediyor, tek politika / yalnız INSERT / yalnız izleyici, dört koşul ve gevşeği yok,
+  önce `drop … if exists`, grant/SECURITY DEFINER yok, kod matrisi izleyiciyi `evidence`'ta yine yalnız okur
+  sayar); yeniden yazılan `password-rotation.test.ts` (ortam değişkeni ve gömülü owner URL'i yok,
+  tipli sahte istemci, 12+ karakterlik kullanıcı adı kuralı gerçekten çalışıyor), `job-dispatcher.test.ts`,
+  `pwa-assets.test.ts` (artık önbelleğe almayı YASAKLIYOR; robots kuralı).
+- **Doğrulama:** `pnpm test` 104 dosya / 2123 test yeşil (kod commit'lerinden sonra; S5: 99 / 2063) ·
+  `pnpm boundary:verify` 8/8 · `pnpm typecheck` 0 hata · dilimin 24 kod/test dosyasında `eslint --max-warnings=0`
+  temiz; tam `pnpm lint`'in kalan 4 hata + 1 uyarısı yalnız `scripts/ops/measure-auth-routes.ts` ve
+  `scripts/ops/run-lighthouse.ts`'te (katman dosyaları; S7 tests-lint-ci L02/L04 kapsamında). phase18'in kaynak
+  kontrolleri elle (DB kuralı gereği `phase*:verify` koşturulmadı): `src/`'de ve `scripts/`'te yeni doğrudan
+  `audit_logs` INSERT'i yok, yerel `audit()` kopyası yok; şema belgesi 0095 ve 0096'yı kapsıyor. Önceden var olan iki
+  phase18 bulgusu duruyor (`docs/todo.md`, Wave 0 / S6).
+- **Ertelenmiş tetikleyici kontrolü:** `set local role` COMMIT'e kadar sürdüğü için ertelenmiş işler de katmanda
+  koşar. `users`'taki tek ertelenmiş tetikleyici (`users_require_active_admin`, 0031) yalnız `role`/`is_active`
+  güncellemesinde ateşlenir; ne kendi değişikliği ne rotasyon ikisine dokunur. `auth.ts` ve `rotate-passwords.ts`'te
+  `set local role` satırının yanında yazılı.
+- **Açık (bu dilimde koşturulmadı — DB kuralı):** 0096'nın sentetik/disposable veritabanında uygulanması ve
+  `db:roles-rls:verify`; uçtan uca: yönetici izleyici açar → `/change-password` → değişiklik → `/overview`'a sıçramadan
+  iner, denetim satırı aktör = kendisi, diğer oturumlar iptal; rotasyonun disposable DB'de kuru koşusu; PWA'yı
+  kullanmış her cihazda DevTools > Application: kayıt yok, Cache Storage boş. Sahibin salt-okunur kontrolleri
+  (silinen Supabase betiklerinin yerel kanonik DB'de iz bırakıp bırakmadığı) `docs/todo.md`'de.

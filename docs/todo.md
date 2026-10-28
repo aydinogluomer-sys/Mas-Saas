@@ -267,3 +267,52 @@
 - [ ] Sentetik DB'de uçtan uca: Excel'de üretilmiş `=1/0` / `#N/A` / birleştirilmiş çek tutarı dosyası (önizleme
       sayaçları, onay sonrası `mapping_reviews`, domain sayıları değişmemiş); asenkron yol + işçi; `interaction:test --
       import-v2` ve etkileşim kapsam kapısı.
+
+
+## Wave 0 / S6 — DONE (KEEP listesi, Supabase'in sökülmesi, PWA; incelenmemiş 46541d8 katmanının seçici karantinası)
+
+- [x] Zorunlu parola değişikliği her katmanda çalışıyor: `changeOwnPassword` `src/lib/auth.ts`'te, kimlik bağlantısında tek
+      transaction (oturum canlılığı, "before" güncellemeden önce, diğer oturumlar iptal, denetim kullanıcının kendi
+      katmanında `audit()` ile, hata yolunda bağlantı imhası); eski parola `attemptLogin` ile (kilit kuralı dahil).
+- [x] Migration 0096: izleyicinin tek yazma yolu (`audit_logs_insert_own_password_change`, kendi `change_own_password`
+      satırı); migration kendi kontrolünü yapar; `db:roles-rls:verify` H bölümü; `docs/database-schema.md` 0095/0096.
+- [x] `/change-password` hata kodları + sabit metinler; `password_updated` / `password_force_change` flash anahtarları;
+      `tests/flash-keys.test.ts`.
+- [x] `rotate-passwords.ts` (KR-06): owner bağlantısı, 'system' aktörü, `audit()` 'system' katmanında, rezerve/pasif ret,
+      hesap başına geri alma, `randomInt`, yalnız etkileşimli terminal.
+- [x] İş dağıtıcısı: zorunlu uuid aktör ('system' hesabı), complete/fail ayrımı.
+- [x] PWA: kill-switch `sw.js` + `ServiceWorkerCleanup`; `pwa-register.tsx` silindi; manifest/ikon duruyor; robots her şeyi yasaklar.
+- [x] Supabase betikleri (`seed-supabase-admin`, `migrate-supabase`, `sync-supabase-checksums`, `fix-roles`,
+      `fix-sessions-rls`), `db:migrate:supabase`, `scripts/ops/measure-routes.ts` silindi; `db.ts` zaman aşımı 5 sn.
+- [x] Testler: `change-own-password.test.ts` (beş katman), `change-password/actions.test.ts`, `password-policy.test.ts`,
+      `flash-keys.test.ts`, `own-password-audit-migration.test.ts` (0096 DB'siz), `password-rotation.test.ts`,
+      `job-dispatcher.test.ts`, `pwa-assets.test.ts`; `db:roles-rls:verify` H bölümü (CI'da gerçek RLS).
+- [x] Gate: vitest 104 dosya / 2123 test ✓ · boundary:verify 8/8 ✓ · typecheck 0 hata ✓ · dilimin dosyalarında
+      `eslint --max-warnings=0` temiz; tam `pnpm lint`'in kalanı yalnız `measure-auth-routes.ts` / `run-lighthouse.ts` (S7).
+- [ ] **0096'yı uygula** (sahip, Wave 0 sonrası): önce disposable DB'de `pnpm db:migrate:verify` + `pnpm db:roles-rls:verify`,
+      sonra kanonik native DB'de yedekli `pnpm db:migrate`. 0096 uygulanana kadar izleyici katmanındaki kullanıcılar zorunlu
+      değişikliği tamamlayamaz (denetim satırı reddedilir, değişiklik geri alınır — sessiz bir şey olmaz).
+- [ ] Disposable DB'de uçtan uca: yönetici izleyici açar → giriş `/change-password` → değişiklik → `/overview` (sıçrama yok);
+      `audit_logs.actor` = kullanıcı; diğer oturumlar iptal; değişiklikten önce `/api/facts` ve `/api/search` 401.
+      Rotasyonun kuru koşusu: `tsx scripts/ops/rotate-passwords.ts --users=<test kullanıcısı>` → aktör 'system'.
+- [ ] PWA: kill-switch yayındayken PWA'yı açmış her cihazda DevTools > Application: Service Worker kaydı yok, Cache Storage
+      boş. Sonra (bir sürüm sonra) `public/sw.js`, `src/components/pwa/service-worker-cleanup.tsx` ve kök layout'taki bileşen
+      birlikte silinir; middleware matcher'dan `sw.js` ancak o zaman çıkar; `tests/pwa-assets.test.ts` buna göre güncellenir.
+- [ ] Sahibin SALT-OKUNUR kontrolleri (owner bağlantısı, kanonik DB) — silinen betikler `MIGRATION_DATABASE_URL`'e
+      düştüğü için yerel DB'ye dokunmuş olabilir:
+      `select polname from pg_policy where polrelid = 'public.sessions'::regclass order by 1` → yalnız `sessions_app_runtime`,
+      `sessions_deny_all`, `sessions_self_read` (fazlası `fix-sessions-rls` izi → temizliği migration ile);
+      `pg_auth_members`'ta `mas_radar_*` katman rollerinin üyesi yalnız `mas_radar_app` (`postgres` üyeliği `fix-roles` izi);
+      `select count(*) filter (where checksum is null), count(*) from public.schema_migrations` ve `applied_by = 'supabase-runner'`
+      satırı yok; canlı oturumlar (`revoked_at is null and expires_at > now()`) — betiklerin açtığı uzun ömürlü admin oturumları
+      iptal edilir (sabit id'li olan dahil; silinen `measure-routes.ts`'in kimliği `quarantine/pre-wave0-2026-10-28` etiketinde);
+      `seed-supabase-admin` yerelde koştuysa admin parolası döndürülür (`rotate-passwords.ts`).
+- [ ] Önceden var olan (af210fd'de de kırmızı) iki phase18 bulgusu: `src/lib/radar/generate-instances-audit.test.ts:81` test
+      sahtesi ve `docs/database-schema.md`'de 0088–0094'ün olmaması. İkisinin düzeltmesi birleşmemiş `ops/phase7-operations`
+      dalında hazır (`6dc9732`).
+- [ ] Etkileşim kapısı (KR-08): `/system/security` "şifre değişimi zorla" ve `/change-password` gönderimi için manifest kuralı +
+      tıkla-ve-DB-doğrula testi (Playwright bu dilimde koşturulmadı).
+- [ ] `.env.example`: `MAS_RADAR_APP_DB_PASSWORD` ve `SEED_ADMIN_PASSWORD` yine boş (KR-24) — `CHANGE_ME` (9 karakter) belgelenmiş
+      maskeli girişi atlatıp 12 karakter kuralında düşüyor.
+- [ ] `scripts/ops/measure-auth-routes.ts` ve `scripts/ops/run-lighthouse.ts` hâlâ admin oturumu basıyor (biri `.env.local`'ı
+      doğrudan okuyor, iptal etmiyor): sil ya da disposable kapısının arkasına al (tests-lint-ci L02/L04).
