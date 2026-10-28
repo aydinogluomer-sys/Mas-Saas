@@ -1,5 +1,12 @@
 # MAS Nakit Radar — Local Private Production Deploy (Option A)
 
+> **WAVE 0 (2026-10-28) — DOCKER REMOVED.** `docker-compose.yml` and
+> `scripts/deploy/{local-start,local-stop,backup-db,restore-db}.sh` were deleted; every `docker …`
+> command below is OBSOLETE and this document will be rewritten. The database is the native
+> PostgreSQL 16 Windows service `MAS-PostgreSQL16` (127.0.0.1/::1:5432):
+> [`ops/postgres-service.md`](ops/postgres-service.md). Daily backups: `pnpm ops:backup:daily`
+> ([`ops/backup-schedule.md`](ops/backup-schedule.md)).
+
 Single-operator, single-machine, loopback-only. **Not** a public SaaS deployment.
 Vercel / remote Supabase / multi-user auth are intentionally **out of scope** (see bottom).
 

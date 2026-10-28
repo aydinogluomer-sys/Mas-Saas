@@ -21,7 +21,7 @@ projede **kullanılmıyor**.
 | Katman | Gerçekte kullanılan |
 | --- | --- |
 | Uygulama | Next.js 15.5.20 (App Router), React 19.1.0, TypeScript strict |
-| Veritabanı | Yerel Docker PostgreSQL 16 — ham `pg` sürücüsü (8.x) |
+| Veritabanı | Yerel PostgreSQL 16 (Windows hizmeti `MAS-PostgreSQL16`, yalnız 127.0.0.1/::1) — ham `pg` sürücüsü (8.x) |
 | Doğrulama | Zod 4 (sınırlarda) |
 | Tablolar | TanStack Table 8 |
 | Arayüz | Radix primitifleri + projeye özel bileşenler, Tailwind v4, Geist, sonner |
@@ -37,12 +37,15 @@ klasörü yalnızca SQL migration'larını tutar, bulut bağlantısı kurulmaz),
 
 ```bash
 pnpm install
-cp .env.example .env.local     # sonra .env.local'i doldurun
+cp .env.example .env.local     # sonra .env.local'i doldurun (127.0.0.1 URL'leri, MAS_PG_BIN_DIR)
 
-docker compose up -d           # PostgreSQL 16, yalnız 127.0.0.1'e bağlı
-
-pnpm db:verify                 # tam reset + migration'lar + seed + invariant assertion'ları
+# PostgreSQL 16 bu makinede yerel bir Windows hizmeti olarak çalışır; Docker kullanılmaz.
+# Kurulum, başlatma/durdurma ve sorun giderme: docs/ops/postgres-service.md
+pnpm db:ensure                 # salt-okur yoklama: küme hazır mı, değilse ne yapılacağı
 ```
+
+`pnpm db:verify` ve veritabanı yaratan doğrulama paketleri CI'da atılabilir bir Docker
+konteyneriyle koşar (`MAS_PG_RUNTIME=docker`); gerçek kümeye karşı çalıştırılmaz.
 
 Veritabanı rolleri Faz 15'te ikiye ayrıldı; ilk kurulumda bir kez:
 

@@ -1,5 +1,11 @@
 # RUNBOOK — restore (yedekten geri yükle)
 
+> **WAVE 0 (2026-10-28) — DOCKER KALDIRILDI.** Bu belgedeki `docker …` ve `scripts/deploy/*.sh`
+> komutları ARTIK GEÇERSİZ; belge native PostgreSQL 16 için yeniden yazılacak. Şimdilik: restore
+> provası → `pnpm release:restore-drill` (yalnız harcanabilir hedef, native araçlar); küme →
+> [`postgres-service.md`](postgres-service.md). Gerçek veritabanına geri yüklemeden ÖNCE durun ve
+> [`incident.md`](incident.md)'yi izleyin.
+
 > **Kime:** MAS operatörüne. Yazılım geliştirici olmanız gerekmez.
 > **Çalışma dizini (her komut için):** `C:\Users\Trade Bilisim\Mas Saas`
 > **Politika:** `docs/backup-restore-policy.md` · **Yedek alma:** `docs/ops/backup.md`

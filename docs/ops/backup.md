@@ -1,5 +1,11 @@
 # RUNBOOK — backup (yedek al)
 
+> **WAVE 0 (2026-10-28) — DOCKER KALDIRILDI.** Bu belgedeki `docker …` ve `scripts/deploy/*.sh`
+> komutları ARTIK GEÇERSİZ; belge native PostgreSQL 16 için yeniden yazılacak. Şimdilik: günlük
+> yedek → `pnpm ops:backup:daily` ([`backup-schedule.md`](backup-schedule.md)); katı makbuz →
+> `scripts/db/backup-receipt.ts` (`--container` YOK, araçlar `MAS_PG_BIN_DIR`'den); küme →
+> [`postgres-service.md`](postgres-service.md).
+
 > **Kime:** MAS operatörüne. Yazılım geliştirici olmanız gerekmez.
 > **Çalışma dizini (her komut için):** `C:\Users\Trade Bilisim\Mas Saas`
 > **Politika ve saklama süreleri:** `docs/backup-restore-policy.md` ·

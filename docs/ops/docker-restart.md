@@ -1,5 +1,11 @@
 # RUNBOOK — docker restart (PostgreSQL konteynerini yeniden başlat)
 
+> **ARŞİV — BU BELGE ARTIK GEÇERLİ DEĞİL (Wave 0, 2026-10-28).** Docker Desktop bu makineden
+> kaldırıldı; `mas-radar-pg` konteyneri ve `docker-compose.yml` yok. Kanonik veritabanı yerel
+> PostgreSQL 16 kümesidir (`C:\MAS\pgdata16`, hizmet `MAS-PostgreSQL16`).
+> **Geçerli runbook: [`postgres-service.md`](postgres-service.md).** Aşağıdaki metin yalnız
+> eski kanıt dosyalarının bağlantıları kırılmasın diye duruyor; komutlarını ÇALIŞTIRMAYIN.
+
 > **Kime:** MAS operatörüne. Yazılım geliştirici olmanız gerekmez.
 > **Çalışma dizini (her komut için):** `C:\Users\Trade Bilisim\Mas Saas`
 

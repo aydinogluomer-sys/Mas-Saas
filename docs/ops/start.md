@@ -1,5 +1,10 @@
 # RUNBOOK — start (uygulamayı başlat)
 
+> **WAVE 0 (2026-10-28) — DOCKER KALDIRILDI.** Bu belgedeki `docker …` / `docker compose …`
+> komutları ARTIK GEÇERSİZ; belge yeniden yazılacak. Şimdilik: veritabanı →
+> [`postgres-service.md`](postgres-service.md) (`pnpm db:ensure` hazır olup olmadığını söyler);
+> uygulama → `pnpm start` (zincirin ilk halkası veritabanını yoklar, kapalıysa ne yapılacağını yazar).
+
 > **Kime:** MAS operatörüne. Yazılım geliştirici olmanız gerekmez.
 > **Kural:** Bu belgedeki komutlar olduğu gibi kopyalanıp yapıştırılabilir. Belgede olmayan bir
 > komutu kendiliğinizden eklemeyin.

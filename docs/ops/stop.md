@@ -1,5 +1,9 @@
 # RUNBOOK — stop (uygulamayı durdur)
 
+> **WAVE 0 (2026-10-28) — DOCKER KALDIRILDI.** Bu belgedeki `docker compose …` ve
+> `scripts/deploy/local-stop.sh` komutları ARTIK GEÇERSİZ. Veritabanını durdurmak gerekirse:
+> yönetici PowerShell'de `Stop-Service MAS-PostgreSQL16` ([`postgres-service.md`](postgres-service.md)).
+
 > **Kime:** MAS operatörüne. Yazılım geliştirici olmanız gerekmez.
 > **Çalışma dizini (her komut için):** `C:\Users\Trade Bilisim\Mas Saas`
 

@@ -1,5 +1,10 @@
 # MAS Nakit Radar — MVP Runbook
 
+> **WAVE 0 (2026-10-28) — DOCKER KALDIRILDI.** `docker-compose.yml` ve `scripts/deploy/*.sh`
+> silindi; bu belgedeki docker komutları ARTIK GEÇERSİZ. Veritabanı:
+> [`ops/postgres-service.md`](ops/postgres-service.md) · günlük yedek:
+> [`ops/backup-schedule.md`](ops/backup-schedule.md).
+
 Özel, tek-şirket / tek-operatör dahili finans-operasyon paneli. Phase 0–8 tamamlandı;
 implementation.md §0'daki 7 inşa adımının tamamı bitti.
 

@@ -1,5 +1,9 @@
 # MAS Nakit Radar — Kullanım Rehberi
 
+> **WAVE 0 (2026-10-28) — DOCKER KALDIRILDI.** Bu rehberdeki `docker …`, `docker compose …` ve
+> `scripts/deploy/*.sh` komutları ARTIK GEÇERSİZ; rehber yeniden yazılacak. Veritabanı (başlat,
+> durdur, durum, sorun giderme): [`postgres-service.md`](postgres-service.md).
+
 **Kime:** MAS'ta sistemi günlük işleten kişi. Geliştirici olmanız gerekmiyor.
 **Ne değil:** Bu belge kod açıklamaz. Her adım, kopyalayıp yapıştırabileceğiniz komutlardır.
 **Ayrıntı gerekirse:** her bölüm ilgili runbook'a bağlanır (`docs/ops/*.md`) — orada
