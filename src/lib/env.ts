@@ -46,6 +46,8 @@ const schema = z.object({
   DATABASE_POOL_MAX: z.string().optional(),
   TELEGRAM_BOT_TOKEN: z.string().optional(),
   TELEGRAM_CHAT_ID: z.string().optional(),
+  TELEGRAM_INTERNAL_API_KEY: z.string().min(32).optional(),
+  MAS_APP_BASE_URL: z.string().url().optional(),
   // Faz 25 — the email channel. Optional exactly like the Telegram pair: unset means the
   // transport reports an honest failure, never a silent success. No SMTP client is introduced;
   // this posts to a configured HTTP endpoint, the same shape the Telegram transport uses.
@@ -54,6 +56,8 @@ const schema = z.object({
   EMAIL_TO: z.string().optional(),
   OPENAI_API_KEY: z.string().optional(),
   OPENAI_MODEL: z.string().optional(),
+  ERP_API_KEY: z.string().optional(),
+  ERP_WEBHOOK_SECRET: z.string().optional(),
   // Left as a loose string rather than z.enum(["0","1"]) on purpose: the original reads were
   // `=== "1"` comparisons, so any other value simply meant "off". Tightening this to an enum
   // would convert a harmless typo into a boot failure — a behaviour change, not a fix.
@@ -69,11 +73,15 @@ const parsed = schema.safeParse({
   DATABASE_POOL_MAX: process.env.DATABASE_POOL_MAX,
   TELEGRAM_BOT_TOKEN: optional(process.env.TELEGRAM_BOT_TOKEN),
   TELEGRAM_CHAT_ID: optional(process.env.TELEGRAM_CHAT_ID),
+  TELEGRAM_INTERNAL_API_KEY: optional(process.env.TELEGRAM_INTERNAL_API_KEY),
+  MAS_APP_BASE_URL: optional(process.env.MAS_APP_BASE_URL),
   EMAIL_API_URL: optional(process.env.EMAIL_API_URL),
   EMAIL_API_KEY: optional(process.env.EMAIL_API_KEY),
   EMAIL_TO: optional(process.env.EMAIL_TO),
   OPENAI_API_KEY: optional(process.env.OPENAI_API_KEY),
   OPENAI_MODEL: optional(process.env.OPENAI_MODEL),
+  ERP_API_KEY: optional(process.env.ERP_API_KEY),
+  ERP_WEBHOOK_SECRET: optional(process.env.ERP_WEBHOOK_SECRET),
   AI_FORCE_DETERMINISTIC: optional(process.env.AI_FORCE_DETERMINISTIC),
   MAS_QA_BYPASS_AUTH: optional(process.env.MAS_QA_BYPASS_AUTH),
   APP_COMMIT_SHA: optional(process.env.APP_COMMIT_SHA),
@@ -109,11 +117,15 @@ export const env = Object.freeze({
   databasePoolMax: resolvePoolMax(raw.DATABASE_POOL_MAX),
   telegramBotToken: raw.TELEGRAM_BOT_TOKEN,
   telegramChatId: raw.TELEGRAM_CHAT_ID,
+  telegramInternalApiKey: raw.TELEGRAM_INTERNAL_API_KEY,
+  masAppBaseUrl: raw.MAS_APP_BASE_URL,
   emailApiUrl: raw.EMAIL_API_URL,
   emailApiKey: raw.EMAIL_API_KEY,
   emailTo: raw.EMAIL_TO,
   openaiApiKey: raw.OPENAI_API_KEY,
   openaiModel: raw.OPENAI_MODEL ?? "gpt-5.5",
+  erpApiKey: raw.ERP_API_KEY ?? "erp_mas_default_live_key_2026",
+  erpWebhookSecret: raw.ERP_WEBHOOK_SECRET ?? null,
 
   // ── Live reads, deliberately not snapshotted ──────────────────────────────────────────
   // Everything above is captured once at module load, which is correct for values that are
@@ -183,6 +195,8 @@ export function envPresence(): EnvPresence[] {
     { name: "DATABASE_POOL_MAX", required: false, set: isSet(process.env.DATABASE_POOL_MAX), note: "Havuz boyutu; varsayılan 10" },
     { name: "TELEGRAM_BOT_TOKEN", required: false, set: isSet(process.env.TELEGRAM_BOT_TOKEN), note: "Hatırlatma gönderimi; yoksa dürüstçe 'failed' loglanır" },
     { name: "TELEGRAM_CHAT_ID", required: false, set: isSet(process.env.TELEGRAM_CHAT_ID), note: "Hatırlatma hedefi" },
+    { name: "TELEGRAM_INTERNAL_API_KEY", required: false, set: isSet(process.env.TELEGRAM_INTERNAL_API_KEY), note: "Yerel Telegram asistanı servis kimliği" },
+    { name: "MAS_APP_BASE_URL", required: false, set: isSet(process.env.MAS_APP_BASE_URL), note: "Telegram worker için yerel MAS SaaS adresi" },
     { name: "OPENAI_API_KEY", required: false, set: isSet(process.env.OPENAI_API_KEY), note: "Yoksa AI yanıtları deterministik olgulara düşer" },
     { name: "OPENAI_MODEL", required: false, set: isSet(process.env.OPENAI_MODEL), note: `Varsayılan: ${env.openaiModel}` },
     { name: "AI_FORCE_DETERMINISTIC", required: false, set: isSet(process.env.AI_FORCE_DETERMINISTIC), note: "1 ise model hiç çağrılmaz" },

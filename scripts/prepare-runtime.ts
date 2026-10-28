@@ -7,13 +7,21 @@ import { loadEnvConfig } from "@next/env";
 loadEnvConfig(process.cwd());
 
 async function main() {
-  const [{ getPool, getRawPool, runAsSystem }, { ensureWindow }, { istanbulDateISO }, { ensureSystemActor }] =
-    await Promise.all([
-      import("../src/lib/db"),
-      import("../src/lib/radar/engine"),
-      import("../src/lib/reports/rules"),
-      import("./db/seed-system-actor"),
-    ]);
+  const [
+    { runMigrationLedger },
+    { getPool, getRawPool, runAsSystem },
+    { ensureWindow },
+    { istanbulDateISO },
+    { ensureSystemActor },
+  ] = await Promise.all([
+    import("./db/migrate"),
+    import("../src/lib/db"),
+    import("../src/lib/radar/engine"),
+    import("../src/lib/reports/rules"),
+    import("./db/seed-system-actor"),
+  ]);
+
+  await runMigrationLedger();
 
   const pool = getPool();
   try {

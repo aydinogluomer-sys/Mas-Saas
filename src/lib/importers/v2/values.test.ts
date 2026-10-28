@@ -241,3 +241,22 @@ describe("Metin", () => {
     expect(parseText("   ")).toMatchObject({ status: "blank", value: null });
   });
 });
+
+describe("Formül hataları toleransı (Faz 3 — Fuzzy Parsing)", () => {
+  it("#VALUE! ve #REF! sayı alanında 0 olarak toleranslanır", () => {
+    expect(parseNumber("#VALUE!")).toMatchObject({ status: "ambiguous", value: 0 });
+    expect(parseNumber("#REF!")).toMatchObject({ status: "ambiguous", value: 0 });
+    expect(parseNumber("#DIV/0!")).toMatchObject({ status: "ambiguous", value: 0 });
+    expect(parseNumber({ error: "#VALUE!" })).toMatchObject({ status: "ambiguous", value: 0 });
+    expect(parseNumber({ formula: "A1/B1", result: { error: "#DIV/0!" } })).toMatchObject({
+      status: "ambiguous", value: 0,
+    });
+  });
+
+  it("formül hatası içeren metin alanı boş kabul edilir", () => {
+    expect(parseText("#VALUE!")).toMatchObject({ status: "blank", value: null });
+    expect(parseText("#REF!")).toMatchObject({ status: "blank", value: null });
+    expect(parseText({ error: "#REF!" })).toMatchObject({ status: "blank", value: null });
+  });
+});
+

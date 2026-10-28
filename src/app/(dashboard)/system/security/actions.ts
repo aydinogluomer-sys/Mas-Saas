@@ -8,7 +8,7 @@ import { redirect } from "next/navigation";
 import { getPool } from "@/lib/db";
 import { requireAdmin } from "@/lib/auth";
 import { DomainError } from "@/lib/domain-error";
-import { createUser, resetUserPassword, setUserActive, setUserRole, unlockUser } from "@/lib/users/engine";
+import { createUser, resetUserPassword, forcePasswordChange, setUserActive, setUserRole, unlockUser } from "@/lib/users/engine";
 import { APP_ROLES, type AppRole } from "@/lib/authz/matrix";
 
 const PAGE = "/system/security";
@@ -66,6 +66,17 @@ export async function resetPasswordAction(formData: FormData): Promise<void> {
     fail(e);
   }
   done("password_reset");
+}
+
+export async function forcePasswordChangeAction(formData: FormData): Promise<void> {
+  const admin = await requireAdmin();
+  const id = String(formData.get("id") ?? "");
+  try {
+    await forcePasswordChange(getPool(), id, admin.id);
+  } catch (e) {
+    fail(e);
+  }
+  done("password_force_change");
 }
 
 export async function deactivateUserAction(formData: FormData): Promise<void> {

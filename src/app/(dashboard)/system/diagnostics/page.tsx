@@ -6,6 +6,7 @@
 // set/unset), no financial rows, no connection strings, no tokens.
 import type { Pool } from "pg";
 import { getPool } from "@/lib/db";
+import { cache } from "@/lib/cache/engine";
 import { Panel } from "@/components/ui/panel";
 import { Badge } from "@/components/ui/badge";
 import { KpiCard, PageHeader, TableShell } from "@/components/ui/shell";
@@ -74,18 +75,20 @@ export default async function DiagnosticsPage() {
   const pool = getPool();
 
   const [roleRes, ledger, policyRes] = await Promise.all([
-    pool.query<RoleIdentity>(
-      `select current_user,
-              (select rolsuper from pg_roles where rolname = current_user) as rolsuper,
-              (select rolbypassrls from pg_roles where rolname = current_user) as rolbypassrls`,
+    cache.withCache("system:diagnostics:role", () =>
+      pool.query<RoleIdentity>(
+        `select current_user,
+                (select rolsuper from pg_roles where rolname = current_user) as rolsuper,
+                (select rolbypassrls from pg_roles where rolname = current_user) as rolbypassrls`,
+      ),
     ),
-    readMigrationLedger(pool),
-    // The Faz 15 invariant, shown read-only: both the deny-all and the runtime policy must
-    // exist on users/sessions. Same check pnpm db:roles:verify makes from the CLI.
-    pool.query<{ tablename: string; policyname: string }>(
-      `select tablename, policyname from pg_policies
-        where schemaname = 'public' and tablename in ('users','sessions')
-        order by tablename, policyname`,
+    cache.withCache("system:diagnostics:ledger", () => readMigrationLedger(pool)),
+    cache.withCache("system:diagnostics:policies", () =>
+      pool.query<{ tablename: string; policyname: string }>(
+        `select tablename, policyname from pg_policies
+          where schemaname = 'public' and tablename in ('users','sessions')
+          order by tablename, policyname`,
+      ),
     ),
   ]);
 

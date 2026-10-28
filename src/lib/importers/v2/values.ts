@@ -51,13 +51,51 @@ export function isBlank(raw: unknown): boolean {
   return false;
 }
 
+/**
+ * Standart Excel formül hata belirteçleri ve Türkçe karşılıkları.
+ * Faz 3 (§Fuzzy Parsing): müşteri dosyalarındaki formül hataları (#VALUE!, #REF!)
+ * finansal hesaplamalarda toleransla 0 kabul edilir.
+ */
+export const EXCEL_FORMULA_ERRORS: ReadonlySet<string> = new Set([
+  "#VALUE!", "#DEĞER!",
+  "#REF!", "#BAŞV!",
+  "#DIV/0!", "#SAYI/0!",
+  "#NAME?", "#AD?",
+  "#NUM!", "#SAYI!",
+  "#NULL!", "#BOŞ!",
+  "#N/A", "#YOK",
+]);
+
+export function isExcelFormulaError(value: unknown): boolean {
+  if (value === null || value === undefined) return false;
+  if (typeof value === "string") {
+    return EXCEL_FORMULA_ERRORS.has(value.trim().toUpperCase());
+  }
+  if (typeof value === "object" && value !== null) {
+    const o = value as Record<string, unknown>;
+    if ("error" in o && typeof o.error === "string") {
+      return true;
+    }
+  }
+  return false;
+}
+
 /** ExcelJS zengin metin / formül hücrelerini düz değere indirger. */
 export function unwrapCell(raw: unknown): unknown {
   if (raw === null || raw === undefined) return raw;
   if (typeof raw === "object") {
     const o = raw as Record<string, unknown>;
+    if ("error" in o && typeof o.error === "string") {
+      return o.error;
+    }
     // Formül hücresi: son hesaplanmış değeri kullanılır. Excel ÇALIŞTIRILMAZ (§32).
-    if ("result" in o) return unwrapCell(o.result);
+    if ("result" in o) {
+      if (isExcelFormulaError(o.result)) {
+        const resObj = typeof o.result === "object" && o.result !== null ? (o.result as Record<string, unknown>) : null;
+        return resObj && "error" in resObj ? resObj.error : o.result;
+      }
+      return unwrapCell(o.result);
+    }
     if ("formula" in o && !("result" in o)) return null; // hesaplanmamış formül → bilinmiyor
     if ("richText" in o && Array.isArray(o.richText)) {
       return (o.richText as Array<{ text?: string }>).map((r) => r.text ?? "").join("");
@@ -73,6 +111,7 @@ export function unwrapCell(raw: unknown): unknown {
 export function parseText(raw: unknown): ParsedValue<string> {
   const v = unwrapCell(raw);
   if (isBlank(v)) return blank(raw);
+  if (isExcelFormulaError(v)) return blank(raw);
   const s = String(v).trim();
   return s === "" ? blank(raw) : ok(s, raw);
 }
@@ -169,6 +208,11 @@ export function parseNumberString(s: string): ParsedValue<number> {
 export function parseNumber(raw: unknown): ParsedValue<number> {
   const v = unwrapCell(raw);
   if (isBlank(v)) return blank(raw);
+  if (isExcelFormulaError(v)) {
+    const vObj = typeof v === "object" && v !== null ? (v as Record<string, unknown>) : null;
+    const errStr = vObj && "error" in vObj ? String(vObj.error) : String(v);
+    return ambiguous(0, `Excel formül hatası (${errStr}) 0 kabul edildi`, raw);
+  }
   if (typeof v === "number") {
     if (!Number.isFinite(v)) return invalid("sonlu olmayan sayı", raw);
     return ok(v, raw);

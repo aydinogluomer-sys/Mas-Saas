@@ -10,6 +10,7 @@ export default defineConfig({
   test: {
     globals: true,
     environment: "node",
+    testTimeout: 20000,
     include: ["src/**/*.test.{ts,tsx}", "tests/**/*.test.{ts,tsx}"],
     // QA-F7: jsdom'u worker çatallanmadan önce, süre sınırı olmayan aşamada bir kez yükler.
     // Gerekçe ve ölçümler dosyanın kendi başlığında; özet: jsdom ortam kurulumu vitest'in

@@ -1,5 +1,7 @@
 import type { Pool } from "pg";
 import { audit } from "@/lib/audit";
+import { cache } from "@/lib/cache/engine";
+import { CACHE_TAGS } from "@/lib/cache/tags";
 
 export type ArchiveEntity =
   | "payments"
@@ -124,24 +126,28 @@ export async function listArchive(
   entity?: ArchiveEntity,
   search = "",
 ): Promise<ArchiveRecord[]> {
-  // Module archives query only their own table. A schema issue in an unrelated
-  // module can therefore no longer break the Payments archive screen.
-  const selected = entity ? [archiveQueries[entity]] : Object.values(archiveQueries);
-  const result = await pool.query(
-    `select entity_table,id,label,to_char(archived_at,'YYYY-MM-DD HH24:MI') archived_at,
-       archive_reason,source_linked,restore_href
-     from (${selected.join(" union all ")}) archive_rows
-     where ($1='' or label ilike '%'||$1||'%')
-     order by archived_at desc`,
-    [search],
+  return cache.withCache(
+    `archive:list:${entity ?? "all"}:${search}`,
+    async () => {
+      const selected = entity ? [archiveQueries[entity]] : Object.values(archiveQueries);
+      const result = await pool.query(
+        `select entity_table,id,label,to_char(archived_at,'YYYY-MM-DD HH24:MI') archived_at,
+           archive_reason,source_linked,restore_href
+         from (${selected.join(" union all ")}) archive_rows
+         where ($1='' or label ilike '%'||$1||'%')
+         order by archived_at desc`,
+        [search],
+      );
+      return result.rows.map((row) => ({
+        entityTable: row.entity_table,
+        id: row.id,
+        label: row.label,
+        archivedAt: row.archived_at,
+        reason: row.archive_reason,
+        sourceLinked: row.source_linked,
+        restoreHref: row.restore_href,
+      }));
+    },
+    { ttlSeconds: 60, tags: [CACHE_TAGS.BACKGROUND_JOBS] }
   );
-  return result.rows.map((row) => ({
-    entityTable: row.entity_table,
-    id: row.id,
-    label: row.label,
-    archivedAt: row.archived_at,
-    reason: row.archive_reason,
-    sourceLinked: row.source_linked,
-    restoreHref: row.restore_href,
-  }));
 }

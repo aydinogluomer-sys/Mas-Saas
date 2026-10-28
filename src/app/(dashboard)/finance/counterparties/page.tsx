@@ -17,6 +17,7 @@ import { Badge, type Tone } from "@/components/ui/badge";
 import { Panel, fmtTL } from "@/components/ui/panel";
 import { PageHeader } from "@/components/ui/shell";
 import { createCounterpartyAction, linkCounterpartyAction } from "./actions";
+import { CounterpartyDsoRadar } from "@/components/finance/counterparty-dso-radar";
 
 export const dynamic = "force-dynamic";
 
@@ -58,6 +59,10 @@ export default async function CounterpartiesPage({
 
       {sp.error && <div className="mb-3 rounded border border-neg/40 bg-neg/10 p-2 text-sm text-neg">{sp.error}</div>}
       {sp.warn && <div className="mb-3 rounded border border-warn/40 bg-warn/10 p-2 text-sm text-warn">{sp.warn}</div>}
+
+      <Panel title="CARİ VADE VE TAHSİLAT RİSK RADARI">
+        <CounterpartyDsoRadar items={withExposure} />
+      </Panel>
 
       <Panel title={`RİSK YOĞUNLAŞMASI — ${withExposure.length} karşı taraf`}>
         {/* PHASE 2.2 / plan §2.3: TRY-dışı kalem toplama girmez ve bu sessizce olmaz. */}

@@ -1,5 +1,7 @@
 import Link from "next/link";
 import { getPool } from "@/lib/db";
+import { cache } from "@/lib/cache/engine";
+import { CACHE_TAGS } from "@/lib/cache/tags";
 import { istanbulDateISO } from "@/lib/reports/rules";
 import { generateInstancesForMonth, loadThresholds, refreshRiskFlags } from "@/lib/radar/engine";
 import { addMonths, monthInstances, overdueOpen, toRiskInput } from "@/lib/radar/queries";
@@ -30,9 +32,28 @@ export default async function CalendarPage({
   const monthStart = ym + "-01";
   const selDay = sp.day && /^\d{1,2}$/.test(sp.day) ? Number(sp.day) : explicitDate ? Number(explicitDate.slice(8)) : null;
 
-  await generateInstancesForMonth(pool, monthStart, session.id); // idempotent
-  await refreshRiskFlags(pool, today);
-  const [rows, t] = await Promise.all([monthInstances(pool, monthStart), loadThresholds(pool)]);
+  // Idempotent monthly generation debounced to prevent slow write transactions on every GET
+  await cache.withCache(
+    `radar:generated:${monthStart}`,
+    () => generateInstancesForMonth(pool, monthStart, session.id),
+    { ttlSeconds: 300, tags: [CACHE_TAGS.PAYMENTS] }
+  );
+
+  // Daily risk flag sync debounced
+  await cache.withCache(
+    `radar:riskRefreshed:${today}`,
+    () => refreshRiskFlags(pool, today),
+    { ttlSeconds: 120, tags: [CACHE_TAGS.PAYMENTS] }
+  );
+
+  const [rows, t] = await Promise.all([
+    cache.withCache(
+      `radar:monthInstances:${monthStart}`,
+      () => monthInstances(pool, monthStart),
+      { ttlSeconds: 60, tags: [CACHE_TAGS.PAYMENTS] }
+    ),
+    loadThresholds(pool),
+  ]);
 
   const [y, m] = ym.split("-").map(Number);
   const dim = daysInMonth(y, m);

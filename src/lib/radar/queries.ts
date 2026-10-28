@@ -7,6 +7,8 @@
 // in numbers while the runtime carried strings. `mapInstanceRow` is that boundary.
 import type { Pool } from "pg";
 import { moneyOrNull, intOrNull } from "@/lib/money";
+import { cache } from "@/lib/cache/engine";
+import { CACHE_TAGS } from "@/lib/cache/tags";
 import {
   addMonths, dayFlags, dayFlagsFromAggregate, type RiskInputInstance, type RiskThresholds,
 } from "./rules";
@@ -64,22 +66,34 @@ export function toRiskInput(x: Pick<InstanceRow, "id" | "due_date" | "amount" | 
 }
 
 export async function instancesOn(pool: Pool, dateISO: string): Promise<InstanceRow[]> {
-  return (await pool.query(BASE + `where i.due_date = $1 order by i.amount desc nulls last`, [dateISO])).rows.map(mapInstanceRow);
+  return cache.withCache(
+    `radar:instances:on:${dateISO}`,
+    async () => (await pool.query(BASE + `where i.due_date = $1 order by i.amount desc nulls last`, [dateISO])).rows.map(mapInstanceRow),
+    { ttlSeconds: 60, tags: [CACHE_TAGS.PAYMENTS] }
+  );
 }
 
 export async function instancesBetween(pool: Pool, fromISO: string, toISO: string): Promise<InstanceRow[]> {
-  return (
-    await pool.query(BASE + `where i.due_date >= $1 and i.due_date <= $2 order by i.due_date, i.amount desc nulls last`, [fromISO, toISO])
-  ).rows.map(mapInstanceRow);
+  return cache.withCache(
+    `radar:instances:between:${fromISO}:${toISO}`,
+    async () => (
+      await pool.query(BASE + `where i.due_date >= $1 and i.due_date <= $2 order by i.due_date, i.amount desc nulls last`, [fromISO, toISO])
+    ).rows.map(mapInstanceRow),
+    { ttlSeconds: 60, tags: [CACHE_TAGS.PAYMENTS] }
+  );
 }
 
 export async function overdueOpen(pool: Pool, todayISO: string): Promise<InstanceRow[]> {
-  return (
-    await pool.query(
-      BASE + `where i.due_date < $1 and i.status in ('unpaid','partial','planned','late') order by i.due_date`,
-      [todayISO],
-    )
-  ).rows.map(mapInstanceRow);
+  return cache.withCache(
+    `radar:instances:overdue:${todayISO}`,
+    async () => (
+      await pool.query(
+        BASE + `where i.due_date < $1 and i.status in ('unpaid','partial','planned','late') order by i.due_date`,
+        [todayISO],
+      )
+    ).rows.map(mapInstanceRow),
+    { ttlSeconds: 60, tags: [CACHE_TAGS.PAYMENTS] }
+  );
 }
 
 /** One bounded read for the complete Payments overview. */
@@ -88,14 +102,18 @@ export async function paymentOverviewInstances(
   todayISO: string,
   futureEndISO: string,
 ): Promise<InstanceRow[]> {
-  return (
-    await pool.query(
-      BASE + `where i.due_date <= $2
-        and (i.due_date >= $1 or i.status in ('unpaid','partial','planned','late'))
-        order by i.due_date, i.amount desc nulls last`,
-      [todayISO, futureEndISO],
-    )
-  ).rows.map(mapInstanceRow);
+  return cache.withCache(
+    `radar:instances:overview:${todayISO}:${futureEndISO}`,
+    async () => (
+      await pool.query(
+        BASE + `where i.due_date <= $2
+          and (i.due_date >= $1 or i.status in ('unpaid','partial','planned','late'))
+          order by i.due_date, i.amount desc nulls last`,
+        [todayISO, futureEndISO],
+      )
+    ).rows.map(mapInstanceRow),
+    { ttlSeconds: 60, tags: [CACHE_TAGS.PAYMENTS] }
+  );
 }
 
 export interface PaymentDashboardBucket {
@@ -172,8 +190,11 @@ export async function loadPaymentDashboard(
   watchList: Array<InstanceRow & { remaining: number | null; daysOverdue: number; decisionFlexibility: PaymentDashboardFlexibility["id"] }>;
   priorities: InstanceRow[];
 }> {
-  const tomorrowISO = new Date(Date.parse(todayISO) + 86400000).toISOString().slice(0, 10);
-  const result = await pool.query(`
+  return cache.withCache(
+    `payments:dashboard:${todayISO}:${futureEndISO}`,
+    async () => {
+      const tomorrowISO = new Date(Date.parse(todayISO) + 86400000).toISOString().slice(0, 10);
+      const result = await pool.query(`
     with active as materialized (
       select i.*, p.name as payment_name, p.priority, p.flexibility_class,
              c.name as category,
@@ -322,53 +343,66 @@ export async function loadPaymentDashboard(
     })),
     priorities: payload.priorities.map(mapInstanceRow),
   };
+    },
+    { ttlSeconds: 60, tags: [CACHE_TAGS.PAYMENTS, CACHE_TAGS.PAYMENT_CALENDAR] },
+  );
 }
 
 export async function monthSummary(pool: Pool, monthStartISO: string) {
-  const r = await pool.query(
-    // PHASE 2.2 (#2): uc toplam da yalniz TRY; TRY-disi satirlar foreign_count ile doner.
-    `select
-       coalesce(sum(amount) filter (where amount is not null and currency = 'TRY'),0) as known_total,
-       coalesce(sum(amount) filter (where amount is not null and currency = 'TRY' and status in ('unpaid','partial','planned','late')),0) as known_remaining,
-       coalesce(sum(coalesce(paid_amount, amount)) filter (where status='paid' and currency = 'TRY'),0) as paid_known,
-       count(*) filter (where amount is null and status <> 'cancelled')::int as missing_count,
-       count(*) filter (where currency <> 'TRY' and status <> 'cancelled')::int as foreign_count,
-       count(*)::int as total_count
-     from public.payment_instances where instance_month = $1`,
-    [monthStartISO],
+  return cache.withCache(
+    `radar:monthSummary:${monthStartISO}`,
+    async () => {
+      const r = await pool.query(
+        // PHASE 2.2 (#2): uc toplam da yalniz TRY; TRY-disi satirlar foreign_count ile doner.
+        `select
+           coalesce(sum(amount) filter (where amount is not null and currency = 'TRY'),0) as known_total,
+           coalesce(sum(amount) filter (where amount is not null and currency = 'TRY' and status in ('unpaid','partial','planned','late')),0) as known_remaining,
+           coalesce(sum(coalesce(paid_amount, amount)) filter (where status='paid' and currency = 'TRY'),0) as paid_known,
+           count(*) filter (where amount is null and status <> 'cancelled')::int as missing_count,
+           count(*) filter (where currency <> 'TRY' and status <> 'cancelled')::int as foreign_count,
+           count(*)::int as total_count
+         from public.payment_instances where instance_month = $1`,
+        [monthStartISO],
+      );
+      const row = r.rows[0] as Record<string, unknown>;
+      return {
+        known_total: moneyOrNull(row.known_total as string) ?? 0,
+        known_remaining: moneyOrNull(row.known_remaining as string) ?? 0,
+        paid_known: moneyOrNull(row.paid_known as string) ?? 0,
+        missing_count: intOrNull(row.missing_count as number) ?? 0,
+        foreign_count: intOrNull(row.foreign_count as number) ?? 0,
+        total_count: intOrNull(row.total_count as number) ?? 0,
+      };
+    },
+    { ttlSeconds: 60, tags: [CACHE_TAGS.PAYMENTS] }
   );
-  // The three sums are computed exactly by Postgres and only lose their exactness on the way
-  // into JS; `money()` rounds once at TL scale instead of letting float8 do it in binary.
-  // The two counts keep their `::int` casts — int4 already arrives as a JS number.
-  const row = r.rows[0] as Record<string, unknown>;
-  return {
-    known_total: moneyOrNull(row.known_total as string) ?? 0,
-    known_remaining: moneyOrNull(row.known_remaining as string) ?? 0,
-    paid_known: moneyOrNull(row.paid_known as string) ?? 0,
-    missing_count: intOrNull(row.missing_count as number) ?? 0,
-    /** PHASE 2.2: TRY-dışı kalem sayısı — hiçbir toplama girmedi. */
-    foreign_count: intOrNull(row.foreign_count as number) ?? 0,
-    total_count: intOrNull(row.total_count as number) ?? 0,
-  };
 }
 
 export async function missingAmountInstances(pool: Pool, monthStartISO: string): Promise<InstanceRow[]> {
-  return (
-    await pool.query(
-      BASE + `where i.instance_month = $1 and i.amount is null and i.status in ('unpaid','partial','planned','late') order by i.due_date nulls last`,
-      [monthStartISO],
-    )
-  ).rows.map(mapInstanceRow);
+  return cache.withCache(
+    `radar:instances:missing:${monthStartISO}`,
+    async () => (
+      await pool.query(
+        BASE + `where i.instance_month = $1 and i.amount is null and i.status in ('unpaid','partial','planned','late') order by i.due_date nulls last`,
+        [monthStartISO],
+      )
+    ).rows.map(mapInstanceRow),
+    { ttlSeconds: 60, tags: [CACHE_TAGS.PAYMENTS] }
+  );
 }
 
 export async function daylessPayments(pool: Pool) {
-  return (
-    await pool.query(
-      `select id, name from public.payments
-       where status='active' and (recurrence_type='irregular' or due_day is null)
-       order by name`,
-    )
-  ).rows as Array<{ id: string; name: string }>;
+  return cache.withCache(
+    "radar:payments:dayless",
+    async () => (
+      await pool.query(
+        `select id, name from public.payments
+         where status='active' and (recurrence_type='irregular' or due_day is null)
+         order by name`,
+      )
+    ).rows as Array<{ id: string; name: string }>,
+    { ttlSeconds: 120, tags: [CACHE_TAGS.PAYMENTS] }
+  );
 }
 
 export async function riskyDays(pool: Pool, todayISO: string, horizonDays: number, t: RiskThresholds) {
@@ -388,18 +422,26 @@ export async function riskyDays(pool: Pool, todayISO: string, horizonDays: numbe
 }
 
 export async function monthInstances(pool: Pool, monthStartISO: string): Promise<InstanceRow[]> {
-  return (
-    await pool.query(BASE + `where i.instance_month = $1 order by i.due_date`, [monthStartISO])
-  ).rows.map(mapInstanceRow);
+  return cache.withCache(
+    `radar:instances:month:${monthStartISO}`,
+    async () => (
+      await pool.query(BASE + `where i.instance_month = $1 order by i.due_date`, [monthStartISO])
+    ).rows.map(mapInstanceRow),
+    { ttlSeconds: 60, tags: [CACHE_TAGS.PAYMENTS] }
+  );
 }
 
 export async function paidInstances(pool: Pool, limit = 100): Promise<InstanceRow[]> {
-  return (
-    await pool.query(
-      BASE + `where i.status = 'paid' order by i.due_date desc limit $1`,
-      [limit],
-    )
-  ).rows.map(mapInstanceRow);
+  return cache.withCache(
+    `radar:instances:paid:${limit}`,
+    async () => (
+      await pool.query(
+        BASE + `where i.status = 'paid' order by i.due_date desc limit $1`,
+        [limit],
+      )
+    ).rows.map(mapInstanceRow),
+    { ttlSeconds: 60, tags: [CACHE_TAGS.PAYMENTS] }
+  );
 }
 
 export interface PaymentHistoryEvent {
@@ -417,27 +459,34 @@ export interface PaymentHistoryEvent {
  * as `numeric` and the whole row is decoded once in JS.
  */
 export async function paymentHistoryEvents(pool:Pool, filters:{status?:string;q?:string;from?:string;to?:string;limit?:number}={}):Promise<PaymentHistoryEvent[]> {
-  const result=await pool.query(`
-    with audit_events as (
-      select a.id,a.entity_id instance_id,coalesce(p.name,'(silinmiş kalem)') payment_name,
-        case when a.action='mark_paid' then 'paid' when a.action='mark_unpaid' then 'reopened'
-             when a.after_data->>'status'='partial' then 'partial' else 'cancelled' end event_type,
-        a.before_data->>'status' previous_status,coalesce(a.after_data->>'status','unknown') next_status,
-        i.amount amount,nullif(a.after_data->>'paid_amount','')::numeric paid_amount,
-        case when i.amount is null then null else greatest(0,i.amount-coalesce(nullif(a.after_data->>'paid_amount','')::numeric,0)) end remaining_amount,
-        to_char(a.created_at,'YYYY-MM-DD HH24:MI') occurred_at,(i.source_row_id is not null) source_linked
-      from public.audit_logs a left join public.payment_instances i on i.id=a.entity_id left join public.payments p on p.id=i.payment_id
-      where a.entity_table='payment_instances' and (a.action in ('mark_paid','mark_unpaid') or a.after_data->>'status' in ('partial','cancelled'))
-    ), current_events as (
-      select i.id,i.id,coalesce(p.name,'(silinmiş kalem)'),i.status,null,i.status,i.amount,i.paid_amount,
-        case when i.amount is null then null else greatest(0,i.amount-coalesce(i.paid_amount,0)) end,
-        to_char(coalesce(i.paid_at,i.updated_at),'YYYY-MM-DD HH24:MI'),(i.source_row_id is not null)
-      from public.payment_instances i left join public.payments p on p.id=i.payment_id
-      where i.status in ('partial','cancelled') and not exists(select 1 from audit_events a where a.instance_id=i.id and a.next_status=i.status)
-    ) select * from (select * from audit_events union all select * from current_events) h
-    where ($1='' or event_type=$1) and ($2='' or payment_name ilike '%'||$2||'%') and ($3='' or occurred_at::text >= $3) and ($4='' or occurred_at::text <= $4||' 23:59')
-    order by occurred_at desc limit $5`,[filters.status??"",filters.q??"",filters.from??"",filters.to??"",filters.limit??250]);
-  return result.rows.map(r=>({id:r.id,instanceId:r.instance_id,paymentName:r.payment_name,eventType:r.event_type,previousStatus:r.previous_status,nextStatus:r.next_status,amount:moneyOrNull(r.amount),paidAmount:moneyOrNull(r.paid_amount),remainingAmount:moneyOrNull(r.remaining_amount),occurredAt:r.occurred_at,sourceLinked:r.source_linked}));
+  const cacheKey = `radar:history:${filters.status ?? ""}:${filters.q ?? ""}:${filters.from ?? ""}:${filters.to ?? ""}:${filters.limit ?? 250}`;
+  return cache.withCache(
+    cacheKey,
+    async () => {
+      const result=await pool.query(`
+        with audit_events as (
+          select a.id,a.entity_id instance_id,coalesce(p.name,'(silinmiş kalem)') payment_name,
+            case when a.action='mark_paid' then 'paid' when a.action='mark_unpaid' then 'reopened'
+                 when a.after_data->>'status'='partial' then 'partial' else 'cancelled' end event_type,
+            a.before_data->>'status' previous_status,coalesce(a.after_data->>'status','unknown') next_status,
+            i.amount amount,nullif(a.after_data->>'paid_amount','')::numeric paid_amount,
+            case when i.amount is null then null else greatest(0,i.amount-coalesce(nullif(a.after_data->>'paid_amount','')::numeric,0)) end remaining_amount,
+            to_char(a.created_at,'YYYY-MM-DD HH24:MI') occurred_at,(i.source_row_id is not null) source_linked
+          from public.audit_logs a left join public.payment_instances i on i.id=a.entity_id left join public.payments p on p.id=i.payment_id
+          where a.entity_table='payment_instances' and (a.action in ('mark_paid','mark_unpaid') or a.after_data->>'status' in ('partial','cancelled'))
+        ), current_events as (
+          select i.id,i.id,coalesce(p.name,'(silinmiş kalem)'),i.status,null,i.status,i.amount,i.paid_amount,
+            case when i.amount is null then null else greatest(0,i.amount-coalesce(i.paid_amount,0)) end,
+            to_char(coalesce(i.paid_at,i.updated_at),'YYYY-MM-DD HH24:MI'),(i.source_row_id is not null)
+          from public.payment_instances i left join public.payments p on p.id=i.payment_id
+          where i.status in ('partial','cancelled') and not exists(select 1 from audit_events a where a.instance_id=i.id and a.next_status=i.status)
+        ) select * from (select * from audit_events union all select * from current_events) h
+        where ($1='' or event_type=$1) and ($2='' or payment_name ilike '%'||$2||'%') and ($3='' or occurred_at::text >= $3) and ($4='' or occurred_at::text <= $4||' 23:59')
+        order by occurred_at desc limit $5`,[filters.status??"",filters.q??"",filters.from??"",filters.to??"",filters.limit??250]);
+      return result.rows.map(r=>({id:r.id,instanceId:r.instance_id,paymentName:r.payment_name,eventType:r.event_type,previousStatus:r.previous_status,nextStatus:r.next_status,amount:moneyOrNull(r.amount),paidAmount:moneyOrNull(r.paid_amount),remainingAmount:moneyOrNull(r.remaining_amount),occurredAt:r.occurred_at,sourceLinked:r.source_linked}));
+    },
+    { ttlSeconds: 60, tags: [CACHE_TAGS.PAYMENTS] }
+  );
 }
 
 export { addMonths };

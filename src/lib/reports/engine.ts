@@ -14,6 +14,8 @@ import {
 } from "@/lib/radar/queries";
 import { addMonths } from "@/lib/radar/rules";
 import { audit } from "@/lib/audit";
+import { cache } from "@/lib/cache/engine";
+import { CACHE_TAGS } from "@/lib/cache/tags";
 import {
   buildCommentaryPrompt, buildDailyReport, buildMonthlyReport, buildWeeklyReport,
   overlayDebtService,
@@ -234,41 +236,59 @@ export async function generateMonthly(pool: Pool, monthStartISO: string, actorId
 /* ── debt-service × cashflow overlay (read-only; used by /cashflow + verify) ── */
 
 export async function loadDebtOverlay(pool: Pool) {
-  const [monthsRes, items] = await Promise.all([
-    pool.query(
-      `select to_char(month_start,'YYYY-MM-DD') as month_start, closing_balance as closing
-       from public.cashflow_months order by month_start`,
-    ),
-    loadMaturityItems(pool),
-  ]);
-  const debt = debtServiceByMonth(items);
-  return overlayDebtService(
-    monthsRes.rows.map((m) => ({ monthStart: m.month_start, closing: moneyOrNull(m.closing) })),
-    debt.map((d) => ({ monthStart: d.monthStart, knownOutflow: d.knownOutflow, count: d.count, missingCount: d.missingCount })),
+  return cache.withCache(
+    "reports:debtoverlay",
+    async () => {
+      const [monthsRes, items] = await Promise.all([
+        pool.query(
+          `select to_char(month_start,'YYYY-MM-DD') as month_start, closing_balance as closing
+           from public.cashflow_months order by month_start`,
+        ),
+        loadMaturityItems(pool),
+      ]);
+      const debt = debtServiceByMonth(items);
+      return overlayDebtService(
+        monthsRes.rows.map((m) => ({ monthStart: m.month_start, closing: moneyOrNull(m.closing) })),
+        debt.map((d) => ({ monthStart: d.monthStart, knownOutflow: d.knownOutflow, count: d.count, missingCount: d.missingCount })),
+      );
+    },
+    { ttlSeconds: 60, tags: [CACHE_TAGS.CASHFLOW, CACHE_TAGS.PAYMENTS] }
   );
 }
 
 /* ── read-side for /reports ── */
 
 export async function listReports(pool: Pool) {
-  const r = await pool.query(
-    `select id, report_type, to_char(period_start,'YYYY-MM-DD') as period_start,
-            to_char(period_end,'YYYY-MM-DD') as period_end,
-            to_char(created_at at time zone 'Europe/Istanbul','YYYY-MM-DD HH24:MI') as created_at
-     from public.reports order by created_at desc limit 50`,
+  return cache.withCache(
+    "reports:list:50",
+    async () => {
+      const r = await pool.query(
+        `select id, report_type, to_char(period_start,'YYYY-MM-DD') as period_start,
+                to_char(period_end,'YYYY-MM-DD') as period_end,
+                to_char(created_at at time zone 'Europe/Istanbul','YYYY-MM-DD HH24:MI') as created_at
+         from public.reports order by created_at desc limit 50`,
+      );
+      return r.rows as Array<{ id: string; report_type: string; period_start: string; period_end: string; created_at: string }>;
+    },
+    { ttlSeconds: 60, tags: [CACHE_TAGS.REPORTS] }
   );
-  return r.rows as Array<{ id: string; report_type: string; period_start: string; period_end: string; created_at: string }>;
 }
 
 export async function loadReport(pool: Pool, id: string) {
-  const r = await pool.query(
-    `select id, report_type, to_char(period_start,'YYYY-MM-DD') as period_start,
-            to_char(period_end,'YYYY-MM-DD') as period_end, body_md, meta,
-            to_char(created_at at time zone 'Europe/Istanbul','YYYY-MM-DD HH24:MI') as created_at
-     from public.reports where id = $1`,
-    [id],
+  return cache.withCache(
+    `reports:single:${id}`,
+    async () => {
+      const r = await pool.query(
+        `select id, report_type, to_char(period_start,'YYYY-MM-DD') as period_start,
+                to_char(period_end,'YYYY-MM-DD') as period_end, body_md, meta,
+                to_char(created_at at time zone 'Europe/Istanbul','YYYY-MM-DD HH24:MI') as created_at
+         from public.reports where id = $1`,
+        [id],
+      );
+      return r.rows[0] as
+        | { id: string; report_type: string; period_start: string; period_end: string; body_md: string; meta: Record<string, unknown> | null; created_at: string }
+        | undefined;
+    },
+    { ttlSeconds: 300, tags: [CACHE_TAGS.REPORTS] }
   );
-  return r.rows[0] as
-    | { id: string; report_type: string; period_start: string; period_end: string; body_md: string; meta: Record<string, unknown> | null; created_at: string }
-    | undefined;
 }

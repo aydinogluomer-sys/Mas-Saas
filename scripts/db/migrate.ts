@@ -4,6 +4,9 @@
 // LEDGER_EMPTY_RECOVERY) under a single advisory lock and applies the matching atomic
 // procedure. See C:\Users\Trade Bilisim\.claude\plans\grafik-k-sm-nda-3-ay-jazzy-stardust.md
 // for the full design rationale.
+import { loadEnvConfig } from "@next/env";
+loadEnvConfig(process.cwd());
+
 import { Pool, type PoolClient } from "pg";
 import { readFileSync } from "node:fs";
 import path from "node:path";
@@ -462,7 +465,7 @@ function reportConnectionEnvSource(): void {
   }
 }
 
-async function main(): Promise<void> {
+export async function runMigrationLedger(): Promise<void> {
   reportConnectionEnvSource();
 
   const databaseUrl = ownerDatabaseUrl();
@@ -478,6 +481,7 @@ async function main(): Promise<void> {
   const pool = new Pool({ connectionString: databaseUrl, max: 1 });
   const client = await pool.connect();
   try {
+    try { await client.query("RESET ROLE;"); } catch {}
     const identRes = await client.query<{ current_database: string; current_user: string; system_identifier: string }>(
       "select current_database(), current_user, (select system_identifier from pg_control_system())::text as system_identifier",
     );
@@ -520,8 +524,10 @@ async function main(): Promise<void> {
   }
 }
 
-main().catch((err) => {
-  console.error("\nMIGRATION BAŞARISIZ:");
-  console.error(err instanceof Error ? err.message : err);
-  process.exit(1);
-});
+if (process.argv[1] && (process.argv[1].endsWith("migrate.ts") || process.argv[1].endsWith("migrate.js"))) {
+  runMigrationLedger().catch((err) => {
+    console.error("\nMIGRATION BAŞARISIZ:");
+    console.error(err instanceof Error ? err.message : err);
+    process.exit(1);
+  });
+}

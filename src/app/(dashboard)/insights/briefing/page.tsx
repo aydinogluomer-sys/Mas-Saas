@@ -8,6 +8,7 @@ import { Badge, type Tone } from "@/components/ui/badge";
 import { Panel } from "@/components/ui/panel";
 import { KeyStat, PageHeader } from "@/components/ui/shell";
 import { requireRouteAccess } from "@/lib/authz/route-guard";
+import { BriefingExecutiveView } from "@/components/briefing/briefing-executive-view";
 
 export const dynamic = "force-dynamic";
 
@@ -92,9 +93,9 @@ export default async function BriefingPage() {
       >
         {/* Rendered from the same facts the tiles above use, so the preview cannot drift from
             the stored document that the button produces. */}
-        <pre className="overflow-x-auto whitespace-pre-wrap font-mono text-[12px] leading-relaxed text-tone-1">
-          {preview}
-        </pre>
+        <div>
+          <BriefingExecutiveView preview={preview} facts={facts} />
+        </div>
         <p className="mt-2 font-mono text-[10px] text-tone-4">
           Rakamlar hazine, işletme sermayesi, kontrol ve radar panolarından okunur; burada yeniden
           hesaplanmaz. Yapay zekâ kullanılmaz.

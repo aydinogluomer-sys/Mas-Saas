@@ -1,4 +1,7 @@
 import { execFileSync } from "node:child_process";
+import { loadEnvConfig } from "@next/env";
+
+loadEnvConfig(process.cwd());
 
 const CONTAINER = "mas-radar-pg";
 
@@ -15,6 +18,12 @@ function docker(args: string[], quiet = false): string {
 }
 
 async function main() {
+  const dbUrl = process.env.DATABASE_URL || process.env.SUPABASE_DB_URL;
+  if (process.env.MAS_SKIP_DB_ENSURE === "1" || (dbUrl && !dbUrl.includes("localhost") && !dbUrl.includes("127.0.0.1"))) {
+    console.log("Harici/Supabase veritabanı aktif, yerel Docker kontrolü atlanıyor.");
+    return;
+  }
+
 try {
   const all = docker(["ps", "-a", "--format", "{{.Names}}"], true).split(/\r?\n/);
   if (!all.includes(CONTAINER)) {

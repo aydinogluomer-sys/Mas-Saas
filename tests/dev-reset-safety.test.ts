@@ -64,12 +64,39 @@ interface Run {
   dockerCalls: string;
 }
 
+function resolveBash(): string {
+  if (process.platform === "win32") {
+    try {
+      const gitCmd = execFileSync("where.exe", ["git"], { encoding: "utf8" }).trim().split(/\r?\n/)[0];
+      if (gitCmd) {
+        const gitDir = path.dirname(path.dirname(gitCmd));
+        const binBash = path.join(gitDir, "bin", "bash.exe");
+        if (existsSync(binBash)) return binBash;
+        const usrBinBash = path.join(gitDir, "usr", "bin", "bash.exe");
+        if (existsSync(usrBinBash)) return usrBinBash;
+      }
+    } catch {
+      // ignore
+    }
+    const commonPaths = [
+      "C:\\Program Files\\Git\\bin\\bash.exe",
+      "C:\\Program Files\\Git\\usr\\bin\\bash.exe",
+      "C:\\Program Files (x86)\\Git\\bin\\bash.exe",
+      "C:\\Program Files (x86)\\Git\\usr\\bin\\bash.exe",
+    ];
+    for (const p of commonPaths) {
+      if (existsSync(p)) return p;
+    }
+  }
+  return "bash";
+}
+
 function runReset(args: string[], env: Record<string, string | undefined>): Run {
   let status = 0;
   let stdout = "";
   let stderr = "";
   try {
-    stdout = execFileSync("bash", [SCRIPT, ...args], {
+    stdout = execFileSync(resolveBash(), [SCRIPT, ...args], {
       cwd: ROOT,
       encoding: "utf8",
       stdio: ["pipe", "pipe", "pipe"], // TTY yok -> interaktif katman atlanır, flag+env taşır

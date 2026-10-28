@@ -32,6 +32,8 @@ import { loadWorkingCapital } from "@/lib/costing/engine";
 import { loadControlDashboard, loadAlerts } from "@/lib/controls/engine";
 import { loadOpenPromises } from "@/lib/collections/promises-engine";
 import { buildWidgets, widgetsNeedingAttention, type CockpitWidgetFacts } from "@/lib/home/cockpit";
+import { cache } from "@/lib/cache/engine";
+import { CACHE_TAGS } from "@/lib/cache/tags";
 import { renderBriefing, summariseDay, type BriefingFacts } from "./rules";
 
 /**
@@ -163,10 +165,16 @@ export async function loadWidgetFacts(pool: Pool, todayISO: string): Promise<Coc
 
 /** One request-level gather for the briefing screen; shared facts are never loaded twice. */
 export async function loadBriefingDashboard(pool: Pool, todayISO: string) {
-  const factsPromise = loadBriefingFacts(pool, todayISO);
-  const { briefingFacts: facts, widgetFacts } = await gatherWidgetFacts(pool, todayISO, factsPromise);
-  const widgets = buildWidgets(widgetFacts);
-  return { facts, widgets, attention: widgetsNeedingAttention(widgets) };
+  return cache.withCache(
+    `briefing:dashboard:${todayISO}`,
+    async () => {
+      const factsPromise = loadBriefingFacts(pool, todayISO);
+      const { briefingFacts: facts, widgetFacts } = await gatherWidgetFacts(pool, todayISO, factsPromise);
+      const widgets = buildWidgets(widgetFacts);
+      return { facts, widgets, attention: widgetsNeedingAttention(widgets) };
+    },
+    { ttlSeconds: 60, tags: [CACHE_TAGS.CFO_BRIEFING, CACHE_TAGS.TREASURY] }
+  );
 }
 
 export interface BriefingResult {

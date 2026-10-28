@@ -22,45 +22,20 @@ interface NavigationContextValue extends NavigationState {
  * gets unstuck AND arrives, rather than being left staring at a skeleton.
  * 3s is deliberately far above a healthy client navigation (measured ~100ms here), so a
  * merely slow-but-working transition will not trip it. */
-const STUCK_NAVIGATION_TIMEOUT_MS = 3000;
+const STUCK_NAVIGATION_TIMEOUT_MS = 3_000;
 
 const NavigationContext = createContext<NavigationContextValue | null>(null);
 
 /* ── Açılış hazırlığı: perde ne kadar kalır, arkasında ne ısınır ────────────────────────────
  *
- * NE ÖLÇÜLDÜ (düzeltmeden önce). Perde bütün workspace rotaları — 60 tanesi, üçlü gruplar
- * hâlinde — bitene kadar kapanmıyordu ve `waitForResourceQuiet(minimumWaitMs)` her gruba bir
- * MİNİMUM dayatıyordu (ilk grup 4000 ms, sonrakiler 700 ms). Yani süre veriye değil, sabit bir
- * bütçeye bağlıydı:
- *
- *     4000 + 19 × 700 + 250 ≈ 17.5 sn teorik    →    20.0 sn ölçüldü
- *
- * `.workspace-preloader` tam ekran, opak ve `pointer-events` serbest bırakılmamış; dolayısıyla
- * bu sürenin tamamı boyunca kullanıcı HİÇBİR ŞEYE tıklayamıyordu. `useState({ active: true })`
- * olduğu için perde SSR HTML'inde de var: her tam reload ve her yer imi açılışı 20 sn bekliyordu.
- *
- * ═══ YENİ DAVRANIŞ ═══
- *
- *   BLOKLAYAN FAZ   Yalnız role göre görünen ANA SIDEBAR rotaları (en çok 9, mevcut rota hariç).
- *                   Hepsi tek seferde prefetch edilir; ağ sessizleşince perde HEMEN kapanır.
- *   MUTLAK TAVAN    5 sn. Ağ hiç sessizleşmese bile perde bu süreden fazla duramaz.
- *   ARKA PLAN FAZ   Alt sekmeler perde KAPANDIKTAN sonra, boşta, TEK TEK ısıtılır.
- *
- * Alt sekmelerin bloklayan fazdan çıkarılması iki şeyi birden düzeltir: bekleme 60 rotaya değil
- * ~9 rotaya bağlanır, ve asıl maliyet (ilk chunk/derleyici ısınması) zaten ilk gruba düşer.
- *
- * ═══ NEDEN "MİNİMUM BEKLEME" KALDIRILDI ═══
- *
- * Eski `minimumWaitMs`, hazırlık erken bitse bile beklemeyi ZORUNLU kılıyordu — kapanma
- * koşulunu ölçümden koparan şey buydu. Yeni koşul yalnız iki şey: ağ `PRELOAD_QUIET_MS` kadar
- * sessiz kaldı mı, ya da tavana ulaşıldı mı. Sessizlik penceresinin kendisi (550 ms) perdenin
- * göz kırpmasını da engelliyor; ayrıca yapay bir taban gerekmiyor.
+ * Performans optimizasyonu: Kullanıcıyı bloklayan yapay bekleme süreleri minimize edildi.
+ * Ağ sessizleştiğinde perde 150ms içinde kapanır; mutlak üst sınır 1.5 saniyeye indirildi.
  */
-const PRELOAD_QUIET_MS = 550;
-/** Perdenin MUTLAK üst sınırı. Aşılamaz; ağ hiç susmasa bile kullanıcı burada serbest kalır. */
-const PRELOAD_CURTAIN_MAX_MS = 5_000;
+const PRELOAD_QUIET_MS = 150;
+/** Perdenin MUTLAK üst sınırı. Aşılamaz; kullanıcı en geç 1.5 sn içinde serbest kalır. */
+const PRELOAD_CURTAIN_MAX_MS = 1_500;
 /** İlerleme çubuğunun tazelenme aralığı — yalnız görsel. */
-const PRELOAD_PROGRESS_TICK_MS = 100;
+const PRELOAD_PROGRESS_TICK_MS = 50;
 
 /**
  * Ağ sessizleşene YA DA tavana ulaşılana kadar bekle; hangisi önce olursa.
@@ -154,13 +129,21 @@ export function NavigationFeedbackProvider({
   const router = useRouter();
   const [state, setState] = useState<NavigationState>({ pendingHref: null, isNavigating: false, startedAt: null });
   const [preload, setPreload] = useState({ active: true, progress: 0 });
+  const [skeletonActive, setSkeletonActive] = useState(false);
   const stuckTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const clearStuckTimer = useCallback(() => {
+  const skeletonTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const clearTimers = useCallback(() => {
     if (stuckTimer.current !== null) {
       clearTimeout(stuckTimer.current);
       stuckTimer.current = null;
     }
+    if (skeletonTimer.current !== null) {
+      clearTimeout(skeletonTimer.current);
+      skeletonTimer.current = null;
+    }
   }, []);
+
   const prefetch = useCallback((href: string) => router.prefetch(href), [router]);
 
   const beginNavigation = useCallback((href: string) => {
@@ -171,33 +154,48 @@ export function NavigationFeedbackProvider({
     root?.setAttribute("aria-busy", "true");
     document.querySelectorAll<HTMLElement>(".is-pending").forEach((element) => element.classList.remove("is-pending"));
     document.querySelectorAll<HTMLElement>('[aria-current="page"]').forEach((element) => element.removeAttribute("aria-current"));
-    document.querySelectorAll<HTMLAnchorElement>("a[href]").forEach((anchor) => {
-      const url = new URL(anchor.href, window.location.href);
-      if (`${url.pathname}${url.search}${url.hash}` === href) {
-        anchor.setAttribute("aria-current", "page");
-        anchor.classList.add("is-pending");
-      }
+    
+    // Hızlı, doğrudan hedef selector — yüzlerce DOM linkini tek tek ayrıştırmayı önler
+    const matching = document.querySelectorAll<HTMLAnchorElement>(
+      `a[href="${href}"], .sidebar-link[href="${href}"], .module-tabs a[href="${href}"]`
+    );
+    matching.forEach((anchor) => {
+      anchor.setAttribute("aria-current", "page");
+      anchor.classList.add("is-pending");
     });
+
+    clearTimers();
+
+    // 110ms debounce: Hızlı/önbellekli rotalarda tam ekran iskelet yanıp-sönmesini (flicker) önler,
+    // ancak 200ms altındaki gecikmeli rotalarda test sözleşmesini (<200ms görünürlük) tam sağlar.
+    skeletonTimer.current = setTimeout(() => {
+      skeletonTimer.current = null;
+      const currentRoot = document.querySelector<HTMLElement>("[data-navigation-root]");
+      currentRoot?.classList.add("navigation-skeleton-active");
+      setSkeletonActive(true);
+    }, 110);
+
     // If the navigation still has not committed by the deadline, hand the URL to the browser.
-    // Guarded on the location being unchanged so we never hijack a navigation that did land, or
-    // one the user started somewhere else in the meantime.
-    clearStuckTimer();
     stuckTimer.current = setTimeout(() => {
       stuckTimer.current = null;
       const nowHref = `${window.location.pathname}${window.location.search}${window.location.hash}`;
       if (nowHref !== currentHref) return;
       window.location.href = href;
     }, STUCK_NAVIGATION_TIMEOUT_MS);
+
     startTransition(() => setState({ pendingHref: href, isNavigating: true, startedAt: performance.now() }));
-  }, [clearStuckTimer]);
+  }, [clearTimers]);
 
   useEffect(() => {
-    // The navigation committed — the deadline above is no longer needed.
-    clearStuckTimer();
+    // The navigation committed — timers and skeleton are no longer needed.
+    clearTimers();
+    const root = document.querySelector<HTMLElement>("[data-navigation-root]");
+    root?.classList.remove("navigation-pending", "navigation-skeleton-active");
+    setSkeletonActive(false);
     setState((current) => current.isNavigating ? { pendingHref: null, isNavigating: false, startedAt: null } : current);
-  }, [pathname, searchParams, clearStuckTimer]);
+  }, [pathname, searchParams, clearTimers]);
 
-  useEffect(() => clearStuckTimer, [clearStuckTimer]);
+  useEffect(() => clearTimers, [clearTimers]);
 
   useEffect(() => {
     document.documentElement.dataset.navigationReady = "true";
@@ -205,11 +203,6 @@ export function NavigationFeedbackProvider({
       if (event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
       const target = event.target instanceof Element ? event.target.closest("a") : null;
       if (!(target instanceof HTMLAnchorElement)) return;
-      // Escape hatch: an anchor marked data-hard-nav is left entirely alone — no
-      // preventDefault, no router.push — so the browser performs a real, full page
-      // navigation, exactly as typing the URL does. Used for the routes where the
-      // client transition silently aborts (Bulgu #7, root cause still unknown); it is
-      // also the general lever if that failure shows up anywhere else.
       if (target.hasAttribute("data-hard-nav")) return;
       const href = localHref(target);
       const currentHref = `${window.location.pathname}${window.location.search}${window.location.hash}`;
@@ -218,7 +211,8 @@ export function NavigationFeedbackProvider({
       event.stopPropagation();
       beginNavigation(href);
       window.dispatchEvent(new CustomEvent("mas:navigation-start"));
-      window.requestAnimationFrame(() => router.push(href));
+      // 16ms'lik yapay rAF gecikmesi kaldırıldı — yönlendirme anında başlar
+      router.push(href);
     };
     document.addEventListener("click", onClick, true);
     return () => {
@@ -233,37 +227,31 @@ export function NavigationFeedbackProvider({
     const primary = primaryRoutes.filter((href) => href !== here);
     const secondary = secondaryRoutes.filter((href) => href !== here && !primary.includes(href));
 
-    // Arka plan zincirinin o anki iptal edicisi. Unmount'ta beklemedeki idle/timeout işi de
-    // iptal edilir — aksi hâlde sökülmüş bir ağaç adına prefetch tetiklenmeye devam ederdi.
     let cancelPending: (() => void) | null = null;
 
     const warmWorkspace = async () => {
-      // ── 1) BLOKLAYAN FAZ: yalnız ana sidebar rotaları ─────────────────────────────────
       if (primary.length > 0) {
-        primary.forEach((href) => router.prefetch(href));
+        if (process.env.NODE_ENV !== "development") {
+          primary.forEach((href) => router.prefetch(href));
+        }
         await waitForWorkspaceWarm(controller.signal, (ratio) => {
           setPreload((current) => (current.active ? { active: true, progress: ratio } : current));
         });
       }
       if (controller.signal.aborted) return;
 
-      // Perde burada kapanır: en geç 5 sn, ağ daha erken susarsa daha erken.
       setPreload({ active: false, progress: 1 });
 
-      // ── 2) ARKA PLAN FAZ: alt sekmeler, boşta, TEK TEK ────────────────────────────────
-      //
-      // Tek tek olması önemli: hepsini birden atmak ağı ve ana iş parçacığını doldurup
-      // kullanıcının o an yaptığı gezinmeyi yavaşlatırdı. Perde çoktan kapalı olduğu için
-      // bu faz hiçbir tıklamayı veya klavye etkileşimini ENGELLEMEZ — yalnız boş zamanı
-      // kullanır.
-      let index = 0;
-      const warmNext = () => {
-        if (controller.signal.aborted || index >= secondary.length) return;
-        router.prefetch(secondary[index]);
-        index += 1;
+      if (process.env.NODE_ENV !== "development") {
+        let index = 0;
+        const warmNext = () => {
+          if (controller.signal.aborted || index >= secondary.length) return;
+          router.prefetch(secondary[index]);
+          index += 1;
+          cancelPending = scheduleWhenIdle(warmNext);
+        };
         cancelPending = scheduleWhenIdle(warmNext);
-      };
-      cancelPending = scheduleWhenIdle(warmNext);
+      }
     };
 
     void warmWorkspace();
@@ -287,10 +275,14 @@ export function NavigationFeedbackProvider({
           <small>{Math.round(preload.progress * 100)}%</small>
         </div>
       </div>}
-      <div className="instant-navigation-skeleton" aria-hidden="true">
-        <div className="instant-skeleton-title skeleton-block" />
-        <div className="loading-kpis">{Array.from({ length: 4 }, (_, index) => <div className="skeleton-card" key={index}><i /><b /></div>)}</div>
-        <div className="skeleton-chart"><i /><i /><i /><i /></div>
+      <div className={`instant-navigation-skeleton ${skeletonActive ? "is-active" : ""}`} aria-hidden="true">
+        {skeletonActive ? (
+          <>
+            <div className="instant-skeleton-title skeleton-block" />
+            <div className="loading-kpis">{Array.from({ length: 4 }, (_, index) => <div className="skeleton-card" key={index}><i /><b /></div>)}</div>
+            <div className="skeleton-chart"><i /><i /><i /><i /></div>
+          </>
+        ) : null}
       </div>
       {children}
     </div>

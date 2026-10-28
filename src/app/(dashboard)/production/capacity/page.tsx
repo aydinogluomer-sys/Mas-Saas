@@ -4,13 +4,19 @@ import { Panel, fmtTL } from "@/components/ui/panel";
 import { KpiCard, PageHeader } from "@/components/ui/shell";
 import { capacityModel } from "@/lib/analytics/models";
 import { getPool } from "@/lib/db";
+import { cache } from "@/lib/cache/engine";
+import { CACHE_TAGS } from "@/lib/cache/tags";
 import { loadActualMonthlyIncome, loadCapacityDemand, loadCapacityModels, loadMachineMinuteAllocations } from "@/lib/production/engine";
 import { istanbulDateISO } from "@/lib/reports/rules";
 
 export const dynamic = "force-dynamic";
 export default async function CapacityPage() {
   const pool = getPool();
-  const [models, demand, allocations, actualIncome] = await Promise.all([loadCapacityModels(pool), loadCapacityDemand(pool), loadMachineMinuteAllocations(pool), loadActualMonthlyIncome(pool)]);
+  const [models, demand, allocations, actualIncome] = await cache.withCache(
+    "production:capacity:data",
+    () => Promise.all([loadCapacityModels(pool), loadCapacityDemand(pool), loadMachineMinuteAllocations(pool), loadActualMonthlyIncome(pool)]),
+    { ttlSeconds: 60, tags: [CACHE_TAGS.PRODUCTION] }
+  );
   const available = models.reduce((sum, model) => sum + (model.monthlyMinutes ?? 0), 0);
 
   // "null asla 0 sayılmaz": a model whose rate never resolved has no theoretical revenue,

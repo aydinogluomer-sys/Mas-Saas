@@ -14,6 +14,8 @@ import {
 import { loadCapacityModels } from "@/lib/production/engine";
 import { moneyOrNull } from "@/lib/money";
 import { audit } from "@/lib/audit";
+import { cache } from "@/lib/cache/engine";
+import { CACHE_TAGS } from "@/lib/cache/tags";
 
 export interface ActionItem {
   id: string;
@@ -47,7 +49,10 @@ export interface DataQualityBlocker extends ReviewSignal {
 }
 
 export async function loadDataQualityCenter(pool: Pool | PoolClient) {
-  const [reviewCounts, issueCounts, openReviews, actions, specialSheets, externalPending, workbookVersions, reconciliationSignals, workbookStats, changedSheets, cashflowReconciliation, missingAmounts, auditTrail, capacityModels] = await gather(pool, [
+  return cache.withCache(
+    "data-quality:center",
+    async () => {
+      const [reviewCounts, issueCounts, openReviews, actions, specialSheets, externalPending, workbookVersions, reconciliationSignals, workbookStats, changedSheets, cashflowReconciliation, missingAmounts, auditTrail, capacityModels] = await gather(pool, [
     () => pool.query<{ status: string; severity: DqSeverity; n: number }>(
       `select status, severity, count(*)::int n
        from public.mapping_reviews group by status, severity`,
@@ -265,6 +270,9 @@ export async function loadDataQualityCenter(pool: Pool | PoolClient) {
     })),
     auditTrail: auditTrail.rows,
   };
+    },
+    { ttlSeconds: 60, tags: [CACHE_TAGS.DATA_QUALITY] },
+  );
 }
 
 function dueIn(days: number): string {

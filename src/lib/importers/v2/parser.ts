@@ -242,12 +242,24 @@ function parseSheet(wb: ExcelJS.Workbook, spec: SheetSpec): SheetResult {
     const values: Record<string, unknown> = {};
     const raw: Record<string, unknown> = {};
     const issues: Issue[] = [];
+interface MergedCellCandidate {
+  isMerged?: boolean;
+  master?: { value?: unknown };
+  value?: unknown;
+}
+
+function readCellValue(cell: unknown): unknown {
+  const c = cell as MergedCellCandidate;
+  return c?.isMerged && c?.master ? c.master.value : (c?.value ?? null);
+}
+
     let anyValue = false;
 
     for (const col of spec.columns) {
       const idx = colIndexByKey.get(col.key);
       if (idx === undefined) { values[col.key] = null; continue; }
-      const cellRaw = row.getCell(idx).value;
+      const cell = row.getCell(idx);
+      const cellRaw = readCellValue(cell);
       raw[col.key] = cellRaw;
 
       const parsed = parseByType(col, cellRaw);
@@ -307,7 +319,8 @@ function parseSheet(wb: ExcelJS.Workbook, spec: SheetSpec): SheetResult {
     if (unknownColIndexByHeader.size > 0) {
       const unknown: Record<string, unknown> = {};
       for (const [header, idx] of unknownColIndexByHeader) {
-        const cellRaw = row.getCell(idx).value;
+        const cell = row.getCell(idx);
+        const cellRaw = readCellValue(cell);
         if (cellRaw === null || cellRaw === undefined) continue;
         unknown[header] = cellRaw;
       }

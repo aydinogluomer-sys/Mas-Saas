@@ -13,6 +13,8 @@ import { DomainError } from "@/lib/domain-error";
 import { assertISODateString } from "@/lib/time/istanbul";
 import { audit } from "@/lib/audit";
 import { formatIssues } from "@/lib/validation";
+import { cache } from "@/lib/cache/engine";
+import { CACHE_TAGS } from "@/lib/cache/tags";
 import {
   addMonths,
   computeRisk,
@@ -213,17 +215,23 @@ export async function writeLegacyRepairSummaryWithClient(
 }
 
 export async function loadThresholds(client: PoolClient | Pool): Promise<RiskThresholds> {
-  const r = await client.query(`select key, value from public.settings where key in
-    ('large_payment_threshold_try','critical_payment_threshold_try','same_day_cluster_count')`);
-  const v = (k: string, d: number) => {
-    const row = r.rows.find((x) => x.key === k);
-    return row ? Number(row.value) : d;
-  };
-  return {
-    large: v("large_payment_threshold_try", 50_000),
-    critical: v("critical_payment_threshold_try", 100_000),
-    clusterCount: v("same_day_cluster_count", 3),
-  };
+  return cache.withCache(
+    "radar:thresholds",
+    async () => {
+      const r = await client.query(`select key, value from public.settings where key in
+        ('large_payment_threshold_try','critical_payment_threshold_try','same_day_cluster_count')`);
+      const v = (k: string, d: number) => {
+        const row = r.rows.find((x) => x.key === k);
+        return row ? Number(row.value) : d;
+      };
+      return {
+        large: v("large_payment_threshold_try", 50_000),
+        critical: v("critical_payment_threshold_try", 100_000),
+        clusterCount: v("same_day_cluster_count", 3),
+      };
+    },
+    { ttlSeconds: 300, tags: [CACHE_TAGS.CONTROLS] },
+  );
 }
 
 /* ── 1) accepted candidates → payments ── */
@@ -454,14 +462,26 @@ export async function ensureWindow(
   actorId: string,
   futureMonths = 1,
 ): Promise<GenerateResult[]> {
-  const m0 = todayISO.slice(0, 7) + "-01";
-  const out: GenerateResult[] = [];
-  for (let delta = -1; delta <= Math.max(1, futureMonths); delta++) {
-    const m = addMonths(m0, delta);
-    out.push(await generateInstancesForMonth(pool, m, actorId));
+  const run = async () => {
+    const m0 = todayISO.slice(0, 7) + "-01";
+    const out: GenerateResult[] = [];
+    for (let delta = -1; delta <= Math.max(1, futureMonths); delta++) {
+      const m = addMonths(m0, delta);
+      out.push(await generateInstancesForMonth(pool, m, actorId));
+    }
+    await refreshRiskFlags(pool, todayISO);
+    return out;
+  };
+
+  if (process.env.NODE_ENV === "test") {
+    return run();
   }
-  await refreshRiskFlags(pool, todayISO);
-  return out;
+
+  return cache.withCache(
+    `radar:ensureWindow:${todayISO}:${futureMonths}`,
+    run,
+    { ttlSeconds: 120, tags: [CACHE_TAGS.PAYMENTS] }
+  );
 }
 
 /* ── 3) risk refresh (window: prev..next month) ── */

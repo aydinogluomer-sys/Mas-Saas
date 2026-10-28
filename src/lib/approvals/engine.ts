@@ -17,6 +17,9 @@ import { DomainError } from "@/lib/domain-error";
 import { intOrNull, moneyOrNull } from "@/lib/money";
 import { parseOrThrow } from "@/lib/validation";
 import { firingRules, type ApprovalRuleConfig, type RuleInput } from "./rules";
+import { assertNoBlockingControlAlerts } from "@/lib/controls/gatekeeper";
+import { cache } from "@/lib/cache/engine";
+import { CACHE_TAGS } from "@/lib/cache/tags";
 
 /* ── schemas ──────────────────────────────────────────────────────────────────────────── */
 
@@ -176,6 +179,10 @@ export async function decideApproval(pool: Pool, raw: unknown, actorId: string):
       throw new DomainError("Onayı talep eden kişi onaylayamaz (maker-checker).");
     }
 
+    if (input.decision === "approved") {
+      await assertNoBlockingControlAlerts(client, a.subject_table, a.subject_id);
+    }
+
     await client.query(
       `update public.approvals
          set status=$2,
@@ -223,6 +230,7 @@ export async function decideApproval(pool: Pool, raw: unknown, actorId: string):
       },
     });
     await client.query("commit");
+    await cache.invalidateTags([CACHE_TAGS.CONTROLS, CACHE_TAGS.CFO_BRIEFING, CACHE_TAGS.PAYMENTS]);
   } catch (e) {
     await client.query("rollback");
     throw e;

@@ -30,7 +30,7 @@ export default async function CashflowMonthPage({
             cm.source_workbook_id, cm.source_sheet_id, ss.sheet_name
      from public.cashflow_months cm
      left join public.source_sheets ss on ss.id = cm.source_sheet_id
-     where cm.id = $1`,
+     where cm.id::text = $1 or to_char(cm.month_start, 'YYYY-MM') = $1`,
     [monthId],
   );
   if (mRes.rowCount === 0) notFound();
@@ -50,7 +50,7 @@ export default async function CashflowMonthPage({
      left join public.import_rows ir on ir.id = cl.source_row_id
      where cl.cashflow_month_id = $1
      order by cl.line_type, ir.row_index nulls last`,
-    [monthId],
+    [m.id],
   );
   // Decoded once here: the rows are read in several places below (sign colouring, per-group
   // tables, the "others" bucket) and each of them expects a number.

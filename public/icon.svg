@@ -1,0 +1,35 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#020617"/>
+      <stop offset="100%" stop-color="#0f172a"/>
+    </linearGradient>
+    <linearGradient id="accentGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#38bdf8"/>
+      <stop offset="100%" stop-color="#2563eb"/>
+    </linearGradient>
+    <filter id="glow" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="8" result="blur" />
+      <feComposite in="SourceGraphic" in2="blur" operator="over" />
+    </filter>
+  </defs>
+  <!-- Background -->
+  <rect width="512" height="512" rx="112" fill="url(#bgGrad)"/>
+  <rect width="512" height="512" rx="112" fill="none" stroke="#1e293b" stroke-width="4"/>
+
+  <!-- Radar Circles -->
+  <circle cx="256" cy="256" r="180" fill="none" stroke="#1e293b" stroke-width="2" stroke-dasharray="6 6"/>
+  <circle cx="256" cy="256" r="130" fill="none" stroke="#334155" stroke-width="2.5"/>
+  <circle cx="256" cy="256" r="80" fill="none" stroke="#0284c7" stroke-width="2" opacity="0.4"/>
+  <circle cx="256" cy="256" r="28" fill="url(#accentGrad)" filter="url(#glow)"/>
+
+  <!-- Radar Sweep Cone -->
+  <path d="M256 256 L380 132 A180 180 0 0 0 256 76 Z" fill="url(#accentGrad)" opacity="0.25"/>
+
+  <!-- Crosshairs -->
+  <line x1="76" y1="256" x2="436" y2="256" stroke="#334155" stroke-width="2"/>
+  <line x1="256" y1="76" x2="256" y2="436" stroke="#334155" stroke-width="2"/>
+
+  <!-- Brand Symbol MAS M-Wave -->
+  <path d="M176 340 L216 230 L256 290 L296 230 L336 340" fill="none" stroke="#38bdf8" stroke-width="12" stroke-linecap="round" stroke-linejoin="round" filter="url(#glow)"/>
+</svg>

@@ -17,6 +17,8 @@ import { decimal, divOrNull, money, moneyOrNull, mul, rate, rateOrNull } from "@
 import { breakEvenTLPerMin, partProfitability } from "./rules";
 import { sourceRevenue } from "./source-revenue";
 import { audit } from "@/lib/audit";
+import { cache } from "@/lib/cache/engine";
+import { CACHE_TAGS } from "@/lib/cache/tags";
 
 async function sheetCellMap(client: PoolClient | Pool, sheetId: string): Promise<{ map: Record<string, CellVal>; idByRow: Map<number, string> }> {
   const rows = await client.query<{ id: string; row_index: number; row_json: RowJson }>(
@@ -668,26 +670,32 @@ export async function mapFinanceCostAllocations(pool: Pool, workbookId: string, 
 // 2023-derived rate is never presented as a current one. Type-only correction: the query,
 // the mapping and the returned values are unchanged.
 export async function loadCapacityModels(pool: Pool | PoolClient): Promise<Array<CapacityCandidate & { id: string; name: string; monthlyMinutes: number | null; isStaleRate: boolean | null; sheetId: string | null; workbookId: string | null; partCount: number; missingPartCount: number }>> {
-  const r = await pool.query(`
-    select cm.id, cm.name, cm.efficiency_rate as efficiency,
-           cm.freze_rate_tl_per_min as freze, cm.torna_rate_tl_per_min as torna,
-           cm.rate_year, cm.is_stale_rate, cm.monthly_minutes,
-           cm.theoretical_monthly_revenue as theo_month, cm.theoretical_total_revenue as theo_total,
-           cm.work_days_per_month as work_days,
-           cm.source_sheet_id, cm.source_workbook_id,
-           (select count(*)::int from public.production_parts p where p.source_sheet_id=cm.source_sheet_id) as part_count,
-           (select count(*)::int from public.production_parts p where p.source_sheet_id=cm.source_sheet_id and p.torna_minutes is null and p.freze_minutes is null) as missing_part_count
-    from public.capacity_models cm order by cm.created_at`);
-  return r.rows.map((x) => ({
-    // Rates, minutes and work-days keep RATE precision; the two theoretical revenues are TL.
-    id: x.id, name: x.name, efficiency: rateOrNull(x.efficiency),
-    frezeRateTLPerMin: rateOrNull(x.freze), tornaRateTLPerMin: rateOrNull(x.torna), rateYear: x.rate_year,
-    theoreticalTotalRevenue: moneyOrNull(x.theo_total), theoreticalMonthlyRevenue: moneyOrNull(x.theo_month),
-    minutesPerHour: null, workDaysPerMonth: rateOrNull(x.work_days), hoursPerDay: null, parts: [],
-    isStaleRate: x.is_stale_rate, monthlyMinutes: rateOrNull(x.monthly_minutes),
-    sheetId: x.source_sheet_id, workbookId: x.source_workbook_id,
-    partCount: x.part_count, missingPartCount: x.missing_part_count,
-  })) as never;
+  return cache.withCache(
+    "production:capacityModels:all",
+    async () => {
+      const r = await pool.query(`
+        select cm.id, cm.name, cm.efficiency_rate as efficiency,
+               cm.freze_rate_tl_per_min as freze, cm.torna_rate_tl_per_min as torna,
+               cm.rate_year, cm.is_stale_rate, cm.monthly_minutes,
+               cm.theoretical_monthly_revenue as theo_month, cm.theoretical_total_revenue as theo_total,
+               cm.work_days_per_month as work_days,
+               cm.source_sheet_id, cm.source_workbook_id,
+               (select count(*)::int from public.production_parts p where p.source_sheet_id=cm.source_sheet_id) as part_count,
+               (select count(*)::int from public.production_parts p where p.source_sheet_id=cm.source_sheet_id and p.torna_minutes is null and p.freze_minutes is null) as missing_part_count
+        from public.capacity_models cm order by cm.created_at`);
+      return r.rows.map((x) => ({
+        // Rates, minutes and work-days keep RATE precision; the two theoretical revenues are TL.
+        id: x.id, name: x.name, efficiency: rateOrNull(x.efficiency),
+        frezeRateTLPerMin: rateOrNull(x.freze), tornaRateTLPerMin: rateOrNull(x.torna), rateYear: x.rate_year,
+        theoreticalTotalRevenue: moneyOrNull(x.theo_total), theoreticalMonthlyRevenue: moneyOrNull(x.theo_month),
+        minutesPerHour: null, workDaysPerMonth: rateOrNull(x.work_days), hoursPerDay: null, parts: [],
+        isStaleRate: x.is_stale_rate, monthlyMinutes: rateOrNull(x.monthly_minutes),
+        sheetId: x.source_sheet_id, workbookId: x.source_workbook_id,
+        partCount: x.part_count, missingPartCount: x.missing_part_count,
+      })) as never;
+    },
+    { ttlSeconds: 60, tags: [CACHE_TAGS.PRODUCTION] }
+  );
 }
 
 export async function loadCostModels(pool: Pool): Promise<Array<{
@@ -695,59 +703,77 @@ export async function loadCostModels(pool: Pool): Promise<Array<{
   effectiveMinutes: number | null; akonFreze: number | null; akonTorna: number | null;
   sheetId: string | null; workbookId: string | null;
 }>> {
-  const r = await pool.query(`
-    select id, model_name as name, scenario_type as scenario,
-           total_fixed_cost as monthly_cost, break_even_tl_per_min as break_even,
-           effective_monthly_minutes as eff_min,
-           akon_freze_tl_per_min as akon_freze, akon_torna_tl_per_min as akon_torna,
-           source_sheet_id, source_workbook_id
-    from public.cost_models order by scenario_type`);
-  return r.rows.map((x) => ({
-    // breakEven / akon* are TL-per-minute, compared against each other by priceMargin() to
-    // decide whether an operation is sold below cost — a threshold, so RATE precision matters.
-    id: x.id, name: x.name, scenario: x.scenario,
-    monthlyCost: moneyOrNull(x.monthly_cost), breakEven: rateOrNull(x.break_even),
-    effectiveMinutes: rateOrNull(x.eff_min),
-    akonFreze: rateOrNull(x.akon_freze), akonTorna: rateOrNull(x.akon_torna),
-    sheetId: x.source_sheet_id, workbookId: x.source_workbook_id,
-  }));
+  return cache.withCache(
+    "production:costModels:all",
+    async () => {
+      const r = await pool.query(`
+        select id, model_name as name, scenario_type as scenario,
+               total_fixed_cost as monthly_cost, break_even_tl_per_min as break_even,
+               effective_monthly_minutes as eff_min,
+               akon_freze_tl_per_min as akon_freze, akon_torna_tl_per_min as akon_torna,
+               source_sheet_id, source_workbook_id
+        from public.cost_models order by scenario_type`);
+      return r.rows.map((x) => ({
+        // breakEven / akon* are TL-per-minute, compared against each other by priceMargin() to
+        // decide whether an operation is sold below cost — a threshold, so RATE precision matters.
+        id: x.id, name: x.name, scenario: x.scenario,
+        monthlyCost: moneyOrNull(x.monthly_cost), breakEven: rateOrNull(x.break_even),
+        effectiveMinutes: rateOrNull(x.eff_min),
+        akonFreze: rateOrNull(x.akon_freze), akonTorna: rateOrNull(x.akon_torna),
+        sheetId: x.source_sheet_id, workbookId: x.source_workbook_id,
+      }));
+    },
+    { ttlSeconds: 60, tags: [CACHE_TAGS.PRODUCTION] }
+  );
 }
 
 /** Fixed-cost + general/personnel breakdown lines for a cost model, grouped-friendly. */
 export async function loadCostBreakdown(pool: Pool, costModelId: string) {
-  const r = await pool.query(
-    `select block, label, amount, ir.row_index
-     from public.cost_breakdown_lines cbl
-     left join public.import_rows ir on ir.id = cbl.source_row_id
-     where cbl.cost_model_id = $1 order by block, ir.row_index nulls last`,
-    [costModelId],
+  return cache.withCache(
+    `production:costBreakdown:${costModelId}`,
+    async () => {
+      const r = await pool.query(
+        `select block, label, amount, ir.row_index
+         from public.cost_breakdown_lines cbl
+         left join public.import_rows ir on ir.id = cbl.source_row_id
+         where cbl.cost_model_id = $1 order by block, ir.row_index nulls last`,
+        [costModelId],
+      );
+      return r.rows.map((x) => ({ ...x, amount: moneyOrNull(x.amount) })) as Array<{ block: string; label: string; amount: number | null; row_index: number | null }>;
+    },
+    { ttlSeconds: 60, tags: [CACHE_TAGS.PRODUCTION] }
   );
-  return r.rows.map((x) => ({ ...x, amount: moneyOrNull(x.amount) })) as Array<{ block: string; label: string; amount: number | null; row_index: number | null }>;
 }
 
 export async function loadPartProfitability(pool: Pool | PoolClient, limit = 100) {
-  const r = await pool.query(
-    `select pp.part_code, pp.part_name, pr.estimated_total_cost as cost,
-            pr.estimated_revenue as revenue, pr.estimated_margin as margin,
-            pr.margin_rate, pr.confidence, pr.missing_operation_time,
-            pp.source_workbook_id, pp.source_sheet_id, ir.row_index
-     from public.part_profitability_runs pr
-     join public.production_parts pp on pp.id = pr.part_id
-     left join public.import_rows ir on ir.id = pp.source_row_id
-     order by pr.estimated_margin asc nulls last limit $1`,
-    [limit],
+  return cache.withCache(
+    `production:partProfitability:${limit}`,
+    async () => {
+      const r = await pool.query(
+        `select pp.part_code, pp.part_name, pr.estimated_total_cost as cost,
+                pr.estimated_revenue as revenue, pr.estimated_margin as margin,
+                pr.margin_rate, pr.confidence, pr.missing_operation_time,
+                pp.source_workbook_id, pp.source_sheet_id, ir.row_index
+         from public.part_profitability_runs pr
+         join public.production_parts pp on pp.id = pr.part_id
+         left join public.import_rows ir on ir.id = pp.source_row_id
+         order by pr.estimated_margin asc nulls last limit $1`,
+        [limit],
+      );
+      // margin_rate is a ratio (RATE), the other three are TL. Ordering stays in SQL on the
+      // exact numeric, so the "worst margin first" ranking is unchanged by the decode.
+      return r.rows.map((x) => ({
+        ...x,
+        cost: moneyOrNull(x.cost), revenue: moneyOrNull(x.revenue),
+        margin: moneyOrNull(x.margin), margin_rate: rateOrNull(x.margin_rate),
+      })) as Array<{
+        part_code: string | null; part_name: string; cost: number | null; revenue: number | null;
+        margin: number | null; margin_rate: number | null; confidence: string; missing_operation_time: boolean;
+        source_workbook_id: string | null; source_sheet_id: string | null; row_index: number | null;
+      }>;
+    },
+    { ttlSeconds: 60, tags: [CACHE_TAGS.PRODUCTION] }
   );
-  // margin_rate is a ratio (RATE), the other three are TL. Ordering stays in SQL on the
-  // exact numeric, so the "worst margin first" ranking is unchanged by the decode.
-  return r.rows.map((x) => ({
-    ...x,
-    cost: moneyOrNull(x.cost), revenue: moneyOrNull(x.revenue),
-    margin: moneyOrNull(x.margin), margin_rate: rateOrNull(x.margin_rate),
-  })) as Array<{
-    part_code: string | null; part_name: string; cost: number | null; revenue: number | null;
-    margin: number | null; margin_rate: number | null; confidence: string; missing_operation_time: boolean;
-    source_workbook_id: string | null; source_sheet_id: string | null; row_index: number | null;
-  }>;
 }
 
 /** Total demanded operation minutes across mapped parts (qty × (torna+freze)).
@@ -758,130 +784,166 @@ export async function loadPartProfitability(pool: Pool | PoolClient, limit = 100
  * were being subtracted and divided as if they shared a period (Bulgu #6). Naming the period
  * makes that mistake visible at the call site instead of only in the rendered number. */
 export async function loadCapacityDemand(pool: Pool): Promise<{ demandMinutesPerYear: number; partCount: number }> {
-  const r = await pool.query(
-    `select coalesce(sum(coalesce(quantity,0) * (coalesce(torna_minutes,0) + coalesce(freze_minutes,0))),0) as demand,
-            count(*)::int as n from public.production_parts`,
+  return cache.withCache(
+    "production:capacityDemand",
+    async () => {
+      const r = await pool.query(
+        `select coalesce(sum(coalesce(quantity,0) * (coalesce(torna_minutes,0) + coalesce(freze_minutes,0))),0) as demand,
+                count(*)::int as n from public.production_parts`,
+      );
+      return { demandMinutesPerYear: rateOrNull(r.rows[0].demand) ?? 0, partCount: r.rows[0].n };
+    },
+    { ttlSeconds: 60, tags: [CACHE_TAGS.PRODUCTION] }
   );
-  return { demandMinutesPerYear: rateOrNull(r.rows[0].demand) ?? 0, partCount: r.rows[0].n };
 }
 
 /** Actual planned monthly income from the cashflow radar (avg projected income). */
 export async function loadActualMonthlyIncome(pool: Pool): Promise<number | null> {
-  const r = await pool.query(
-    `select avg(projected_income) as avg_income from public.cashflow_months where projected_income is not null`,
+  return cache.withCache(
+    "production:actualMonthlyIncome",
+    async () => {
+      const r = await pool.query(
+        `select avg(projected_income) as avg_income from public.cashflow_months where projected_income is not null`,
+      );
+      // avg() over numeric returns a high-scale numeric; money scale is the right place to land
+      // because this is compared against theoretical monthly revenue in TL.
+      return moneyOrNull(r.rows[0]?.avg_income ?? null);
+    },
+    { ttlSeconds: 60, tags: [CACHE_TAGS.PRODUCTION] }
   );
-  // avg() over numeric returns a high-scale numeric; money scale is the right place to land
-  // because this is compared against theoretical monthly revenue in TL.
-  return moneyOrNull(r.rows[0]?.avg_income ?? null);
 }
 
 export async function loadMachineMinuteAllocations(pool: Pool) {
-  const r = await pool.query(
-    `select mma.operation_type, mma.machine_count::int as machine_count,
-            mma.demand_minutes,
-            mma.available_minutes,
-            mma.utilization_rate,
-            mma.idle_minutes,
-            mma.over_capacity_minutes,
-            cm.name as capacity_model_name, mma.source_workbook_id, mma.source_sheet_id
-     from public.machine_minute_allocations mma
-     join public.capacity_models cm on cm.id = mma.capacity_model_id
-     order by cm.created_at, case mma.operation_type when 'torna' then 1 when 'freze' then 2 else 3 end`,
+  return cache.withCache(
+    "production:machineMinuteAllocations:all",
+    async () => {
+      const r = await pool.query(
+        `select mma.operation_type, mma.machine_count::int as machine_count,
+                mma.demand_minutes,
+                mma.available_minutes,
+                mma.utilization_rate,
+                mma.idle_minutes,
+                mma.over_capacity_minutes,
+                cm.name as capacity_model_name, mma.source_workbook_id, mma.source_sheet_id
+         from public.machine_minute_allocations mma
+         join public.capacity_models cm on cm.id = mma.capacity_model_id
+         order by cm.created_at, case mma.operation_type when 'torna' then 1 when 'freze' then 2 else 3 end`,
+      );
+      // Minutes and utilisation are measurements, not TL — all decode at RATE precision. The UI
+      // renders utilization_rate as a percentage with one decimal, which is exactly the kind of
+      // value a money-scale rounding would have flattened.
+      return r.rows.map((x) => ({
+        ...x,
+        demand_minutes: rateOrNull(x.demand_minutes), available_minutes: rateOrNull(x.available_minutes),
+        utilization_rate: rateOrNull(x.utilization_rate), idle_minutes: rateOrNull(x.idle_minutes),
+        over_capacity_minutes: rateOrNull(x.over_capacity_minutes),
+      })) as Array<{
+        operation_type: string;
+        machine_count: number | null;
+        demand_minutes: number | null;
+        available_minutes: number | null;
+        utilization_rate: number | null;
+        idle_minutes: number | null;
+        over_capacity_minutes: number | null;
+        capacity_model_name: string;
+        source_workbook_id: string | null;
+        source_sheet_id: string | null;
+      }>;
+    },
+    { ttlSeconds: 60, tags: [CACHE_TAGS.PRODUCTION] }
   );
-  // Minutes and utilisation are measurements, not TL — all decode at RATE precision. The UI
-  // renders utilization_rate as a percentage with one decimal, which is exactly the kind of
-  // value a money-scale rounding would have flattened.
-  return r.rows.map((x) => ({
-    ...x,
-    demand_minutes: rateOrNull(x.demand_minutes), available_minutes: rateOrNull(x.available_minutes),
-    utilization_rate: rateOrNull(x.utilization_rate), idle_minutes: rateOrNull(x.idle_minutes),
-    over_capacity_minutes: rateOrNull(x.over_capacity_minutes),
-  })) as Array<{
-    operation_type: string;
-    machine_count: number | null;
-    demand_minutes: number | null;
-    available_minutes: number | null;
-    utilization_rate: number | null;
-    idle_minutes: number | null;
-    over_capacity_minutes: number | null;
-    capacity_model_name: string;
-    source_workbook_id: string | null;
-    source_sheet_id: string | null;
-  }>;
 }
 
 export async function loadFinanceCostAllocations(pool: Pool) {
-  const r = await pool.query(
-    `select fca.operation_type, fca.machine_count::int as machine_count,
-            fca.demand_minutes,
-            fca.allocation_ratio,
-            fca.total_finance_cost,
-            fca.allocated_finance_cost,
-            fca.finance_cost_per_minute,
-            fca.finance_cost_per_machine,
-            fca.allocation_basis, l.name as loan_name, cm.name as capacity_model_name,
-            fca.source_workbook_id, fca.source_sheet_id
-     from public.finance_cost_allocations fca
-     join public.loans l on l.id = fca.loan_id
-     left join public.capacity_models cm on cm.id = fca.capacity_model_id
-     order by l.created_at, case fca.operation_type when 'torna' then 1 when 'freze' then 2 else 3 end`,
+  return cache.withCache(
+    "production:financeCostAllocations",
+    async () => {
+      const r = await pool.query(
+        `select fca.operation_type, fca.machine_count::int as machine_count,
+                fca.demand_minutes,
+                fca.allocation_ratio,
+                fca.total_finance_cost,
+                fca.allocated_finance_cost,
+                fca.finance_cost_per_minute,
+                fca.finance_cost_per_machine,
+                fca.allocation_basis, l.name as loan_name, cm.name as capacity_model_name,
+                fca.source_workbook_id, fca.source_sheet_id
+         from public.finance_cost_allocations fca
+         join public.loans l on l.id = fca.loan_id
+         left join public.capacity_models cm on cm.id = fca.capacity_model_id
+         order by l.created_at, case fca.operation_type when 'torna' then 1 when 'freze' then 2 else 3 end`,
+      );
+      // finance_cost_per_minute is rendered with toFixed(2) on the ROI page; decoding it at RATE
+      // precision and letting formatMoney round half-up is what makes that digit agree with the
+      // database instead of with a binary double.
+      return r.rows.map((x) => ({
+        ...x,
+        demand_minutes: rateOrNull(x.demand_minutes), allocation_ratio: rateOrNull(x.allocation_ratio),
+        total_finance_cost: moneyOrNull(x.total_finance_cost),
+        allocated_finance_cost: moneyOrNull(x.allocated_finance_cost),
+        finance_cost_per_minute: rateOrNull(x.finance_cost_per_minute),
+        finance_cost_per_machine: moneyOrNull(x.finance_cost_per_machine),
+      })) as Array<{
+        operation_type: string;
+        machine_count: number | null;
+        demand_minutes: number | null;
+        allocation_ratio: number | null;
+        total_finance_cost: number | null;
+        allocated_finance_cost: number | null;
+        finance_cost_per_minute: number | null;
+        finance_cost_per_machine: number | null;
+        allocation_basis: string;
+        loan_name: string;
+        capacity_model_name: string | null;
+        source_workbook_id: string | null;
+        source_sheet_id: string | null;
+      }>;
+    },
+    { ttlSeconds: 60, tags: [CACHE_TAGS.PRODUCTION] }
   );
-  // finance_cost_per_minute is rendered with toFixed(2) on the ROI page; decoding it at RATE
-  // precision and letting formatMoney round half-up is what makes that digit agree with the
-  // database instead of with a binary double.
-  return r.rows.map((x) => ({
-    ...x,
-    demand_minutes: rateOrNull(x.demand_minutes), allocation_ratio: rateOrNull(x.allocation_ratio),
-    total_finance_cost: moneyOrNull(x.total_finance_cost),
-    allocated_finance_cost: moneyOrNull(x.allocated_finance_cost),
-    finance_cost_per_minute: rateOrNull(x.finance_cost_per_minute),
-    finance_cost_per_machine: moneyOrNull(x.finance_cost_per_machine),
-  })) as Array<{
-    operation_type: string;
-    machine_count: number | null;
-    demand_minutes: number | null;
-    allocation_ratio: number | null;
-    total_finance_cost: number | null;
-    allocated_finance_cost: number | null;
-    finance_cost_per_minute: number | null;
-    finance_cost_per_machine: number | null;
-    allocation_basis: string;
-    loan_name: string;
-    capacity_model_name: string | null;
-    source_workbook_id: string | null;
-    source_sheet_id: string | null;
-  }>;
 }
 
 export async function loadMachineRoi(pool: Pool) {
-  const r = await pool.query(
-    `select ma.name, ma.purchase_cost,
-            s.snapshot_year, s.revenue, s.cost,
-            s.net_after_tax as net, s.confidence
-     from public.machine_assets ma
-     left join public.machine_roi_snapshots s on s.machine_asset_id = ma.id
-     order by ma.name`,
+  return cache.withCache(
+    "production:machineRoi",
+    async () => {
+      const r = await pool.query(
+        `select ma.name, ma.purchase_cost,
+                s.snapshot_year, s.revenue, s.cost,
+                s.net_after_tax as net, s.confidence
+         from public.machine_assets ma
+         left join public.machine_roi_snapshots s on s.machine_asset_id = ma.id
+         order by ma.name`,
+      );
+      return r.rows.map((x) => ({
+        ...x,
+        purchase_cost: moneyOrNull(x.purchase_cost), revenue: moneyOrNull(x.revenue),
+        cost: moneyOrNull(x.cost), net: moneyOrNull(x.net),
+      })) as Array<{ name: string; purchase_cost: number | null; snapshot_year: number | null; revenue: number | null; cost: number | null; net: number | null; confidence: string | null }>;
+    },
+    { ttlSeconds: 60, tags: [CACHE_TAGS.PRODUCTION] }
   );
-  return r.rows.map((x) => ({
-    ...x,
-    purchase_cost: moneyOrNull(x.purchase_cost), revenue: moneyOrNull(x.revenue),
-    cost: moneyOrNull(x.cost), net: moneyOrNull(x.net),
-  })) as Array<{ name: string; purchase_cost: number | null; snapshot_year: number | null; revenue: number | null; cost: number | null; net: number | null; confidence: string | null }>;
 }
 
 /** Aggregate P&L snapshot (all machines, machine_asset_id null) if mapped from `tablo`. */
 export async function loadMachineRoiAggregate(pool: Pool) {
-  const r = await pool.query(
-    `select snapshot_year, revenue, cost,
-            remaining, tax, net_after_tax as net, confidence
-     from public.machine_roi_snapshots where machine_asset_id is null
-     order by snapshot_year desc limit 1`,
+  return cache.withCache(
+    "production:machineRoiAggregate:latest",
+    async () => {
+      const r = await pool.query(
+        `select snapshot_year, revenue, cost,
+                remaining, tax, net_after_tax as net, confidence
+         from public.machine_roi_snapshots where machine_asset_id is null
+         order by snapshot_year desc limit 1`,
+      );
+      const row = r.rows[0];
+      if (!row) return null;
+      return {
+        ...row,
+        revenue: moneyOrNull(row.revenue), cost: moneyOrNull(row.cost),
+        remaining: moneyOrNull(row.remaining), tax: moneyOrNull(row.tax), net: moneyOrNull(row.net),
+      } as { snapshot_year: number; revenue: number | null; cost: number | null; remaining: number | null; tax: number | null; net: number | null; confidence: string };
+    },
+    { ttlSeconds: 60, tags: [CACHE_TAGS.PRODUCTION] }
   );
-  const row = r.rows[0];
-  if (!row) return null;
-  return {
-    ...row,
-    revenue: moneyOrNull(row.revenue), cost: moneyOrNull(row.cost),
-    remaining: moneyOrNull(row.remaining), tax: moneyOrNull(row.tax), net: moneyOrNull(row.net),
-  } as { snapshot_year: number; revenue: number | null; cost: number | null; remaining: number | null; tax: number | null; net: number | null; confidence: string };
 }

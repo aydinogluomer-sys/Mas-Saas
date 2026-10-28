@@ -18,6 +18,8 @@ import { audit } from "@/lib/audit";
 import { DomainError } from "@/lib/domain-error";
 import { moneyOrNull, rateOrNull } from "@/lib/money";
 import { parseOrThrow } from "@/lib/validation";
+import { cache } from "@/lib/cache/engine";
+import { CACHE_TAGS } from "@/lib/cache/tags";
 import {
   ANOMALY_RULES, assessAnomaly, canTransition, controlState, falsePositiveRate, isEscalationDue,
   type AlertStatus, type AnomalyRule, type Severity,
@@ -234,81 +236,98 @@ export async function raiseActionItemForAlert(
 /* ── reads ────────────────────────────────────────────────────────────────────────────── */
 
 export async function loadControlDashboard(pool: Pool) {
-  const r = await pool.query(
-    `select check_code, title, default_severity, enforcement, rationale, finding_count, state
-     from public.control_dashboard order by
-       case state when 'CRITICAL' then 0 when 'WARNING' then 1 when 'INFO' then 2 else 3 end,
-       check_code`);
-  return r.rows.map((x) => ({
-    checkCode: x.check_code,
-    title: x.title,
-    severity: x.default_severity as Severity,
-    // Whether the database already prevents this, or this view is the only thing that notices.
-    enforcement: x.enforcement as "enforced_elsewhere" | "detection_only",
-    rationale: x.rationale as string,
-    findingCount: Number(x.finding_count),
-    state: controlState(x.default_severity as Severity, Number(x.finding_count)),
-  }));
+  return cache.withCache(
+    "controls:dashboard",
+    async () => {
+      const r = await pool.query(
+        `select check_code, title, default_severity, enforcement, rationale, finding_count, state
+         from public.control_dashboard order by
+           case state when 'CRITICAL' then 0 when 'WARNING' then 1 when 'INFO' then 2 else 3 end,
+           check_code`);
+      return r.rows.map((x) => ({
+        checkCode: x.check_code,
+        title: x.title,
+        severity: x.default_severity as Severity,
+        enforcement: x.enforcement as "enforced_elsewhere" | "detection_only",
+        rationale: x.rationale as string,
+        findingCount: Number(x.finding_count),
+        state: controlState(x.default_severity as Severity, Number(x.finding_count)),
+      }));
+    },
+    { ttlSeconds: 60, tags: [CACHE_TAGS.CONTROLS, CACHE_TAGS.ALERTS] }
+  );
 }
 
 export async function loadAlerts(pool: Pool, limit = 100) {
-  const r = await pool.query(
-    `select id, check_code, severity, subject_table, subject_id, subject_label, title, detail,
-            rule_codes, anomaly_score, amount, currency, status,
-            to_char(snooze_until,'YYYY-MM-DD') as snooze_until,
-            first_seen_at, last_seen_at, occurrence_count, action_item_id, resolution_note
-     from public.control_alerts
-     order by case status when 'open' then 0 when 'acknowledged' then 1 when 'snoozed' then 2 else 3 end,
-              case severity when 'critical' then 0 when 'warning' then 1 else 2 end,
-              last_seen_at desc
-     limit $1`, [limit]);
-  return r.rows.map((x) => ({
-    id: x.id,
-    checkCode: x.check_code,
-    severity: x.severity as Severity,
-    subjectTable: x.subject_table as string | null,
-    subjectLabel: x.subject_label as string | null,
-    title: x.title as string,
-    detail: x.detail as string | null,
-    ruleCodes: (x.rule_codes ?? []) as string[],
-    anomalyScore: rateOrNull(x.anomaly_score),
-    amount: moneyOrNull(x.amount),
-    currency: x.currency as string,
-    status: x.status as AlertStatus,
-    snoozeUntil: x.snooze_until as string | null,
-    firstSeenAt: x.first_seen_at as string,
-    occurrenceCount: Number(x.occurrence_count),
-    actionItemId: x.action_item_id as string | null,
-    resolutionNote: x.resolution_note as string | null,
-  }));
+  return cache.withCache(
+    `controls:alerts:${limit}`,
+    async () => {
+      const r = await pool.query(
+        `select id, check_code, severity, subject_table, subject_id, subject_label, title, detail,
+                rule_codes, anomaly_score, amount, currency, status,
+                to_char(snooze_until,'YYYY-MM-DD') as snooze_until,
+                first_seen_at, last_seen_at, occurrence_count, action_item_id, resolution_note
+         from public.control_alerts
+         order by case status when 'open' then 0 when 'acknowledged' then 1 when 'snoozed' then 2 else 3 end,
+                  case severity when 'critical' then 0 when 'warning' then 1 else 2 end,
+                  last_seen_at desc
+         limit $1`, [limit]);
+      return r.rows.map((x) => ({
+        id: x.id,
+        checkCode: x.check_code,
+        severity: x.severity as Severity,
+        subjectTable: x.subject_table as string | null,
+        subjectLabel: x.subject_label as string | null,
+        title: x.title as string,
+        detail: x.detail as string | null,
+        ruleCodes: (x.rule_codes ?? []) as string[],
+        anomalyScore: rateOrNull(x.anomaly_score),
+        amount: moneyOrNull(x.amount),
+        currency: x.currency as string,
+        status: x.status as AlertStatus,
+        snoozeUntil: x.snooze_until as string | null,
+        firstSeenAt: x.first_seen_at as string,
+        occurrenceCount: Number(x.occurrence_count),
+        actionItemId: x.action_item_id as string | null,
+        resolutionNote: x.resolution_note as string | null,
+      }));
+    },
+    { ttlSeconds: 60, tags: [CACHE_TAGS.CONTROLS, CACHE_TAGS.ALERTS] }
+  );
 }
 
 /** Alerts past their escalation window, computed through the pure rule. */
 export async function loadEscalationsDue(pool: Pool, nowISO = new Date().toISOString()) {
-  const r = await pool.query(
-    `select a.id, a.check_code, a.severity, a.title, a.status, a.first_seen_at,
-            e.code as rule_code, e.escalate_after_hours, e.channel
-     from public.control_alerts a
-     join public.alert_escalation_rules e
-       on e.is_active and e.severity = a.severity
-      and (e.check_code is null or e.check_code = a.check_code)
-     where a.status = 'open'`);
-  return r.rows
-    .filter((x) => isEscalationDue({
-      status: x.status as AlertStatus,
-      firstSeenAt: new Date(x.first_seen_at).toISOString(),
-      escalateAfterHours: Number(x.escalate_after_hours),
-      nowISO,
-    }))
-    .map((x) => ({
-      alertId: x.id,
-      checkCode: x.check_code as string,
-      severity: x.severity as Severity,
-      title: x.title as string,
-      escalationRule: x.rule_code as string,
-      escalateAfterHours: Number(x.escalate_after_hours),
-      channel: x.channel as string,
-    }));
+  return cache.withCache(
+    `controls:escalations-due:${nowISO.slice(0, 13)}`,
+    async () => {
+      const r = await pool.query(
+        `select a.id, a.check_code, a.severity, a.title, a.status, a.first_seen_at,
+                e.code as rule_code, e.escalate_after_hours, e.channel
+         from public.control_alerts a
+         join public.alert_escalation_rules e
+           on e.is_active and e.severity = a.severity
+          and (e.check_code is null or e.check_code = a.check_code)
+         where a.status = 'open'`);
+      return r.rows
+        .filter((x) => isEscalationDue({
+          status: x.status as AlertStatus,
+          firstSeenAt: new Date(x.first_seen_at).toISOString(),
+          escalateAfterHours: Number(x.escalate_after_hours),
+          nowISO,
+        }))
+        .map((x) => ({
+          alertId: x.id,
+          checkCode: x.check_code as string,
+          severity: x.severity as Severity,
+          title: x.title as string,
+          escalationRule: x.rule_code as string,
+          escalateAfterHours: Number(x.escalate_after_hours),
+          channel: x.channel as string,
+        }));
+    },
+    { ttlSeconds: 60, tags: [CACHE_TAGS.CONTROLS, CACHE_TAGS.ALERTS] }
+  );
 }
 
 /**
@@ -317,36 +336,48 @@ export async function loadEscalationsDue(pool: Pool, nowISO = new Date().toISOSt
  * Counts only closed alerts, so a control does not look accurate merely because nobody triaged it.
  */
 export async function loadFalsePositiveRates(pool: Pool) {
-  const r = await pool.query(
-    `select check_code,
-            count(*) filter (where status = 'resolved')::int       as resolved_count,
-            count(*) filter (where status = 'false_positive')::int as false_positive_count,
-            count(*) filter (where status in ('open','acknowledged','snoozed'))::int as open_count
-     from public.control_alerts group by check_code order by check_code`);
-  return r.rows.map((x) => ({
-    checkCode: x.check_code as string,
-    resolvedCount: Number(x.resolved_count),
-    falsePositiveCount: Number(x.false_positive_count),
-    openCount: Number(x.open_count),
-    falsePositiveRate: falsePositiveRate(Number(x.resolved_count), Number(x.false_positive_count)),
-  }));
+  return cache.withCache(
+    "controls:false-positive-rates",
+    async () => {
+      const r = await pool.query(
+        `select check_code,
+                count(*) filter (where status = 'resolved')::int       as resolved_count,
+                count(*) filter (where status = 'false_positive')::int as false_positive_count,
+                count(*) filter (where status in ('open','acknowledged','snoozed'))::int as open_count
+         from public.control_alerts group by check_code order by check_code`);
+      return r.rows.map((x) => ({
+        checkCode: x.check_code as string,
+        resolvedCount: Number(x.resolved_count),
+        falsePositiveCount: Number(x.false_positive_count),
+        openCount: Number(x.open_count),
+        falsePositiveRate: falsePositiveRate(Number(x.resolved_count), Number(x.false_positive_count)),
+      }));
+    },
+    { ttlSeconds: 60, tags: [CACHE_TAGS.CONTROLS, CACHE_TAGS.ALERTS] }
+  );
 }
 
 export async function loadAnomalies(pool: Pool) {
-  const [round, split, newPayee, baseline, hour] = await Promise.all([
-    pool.query(`select payment_instance_id, payment_name, amount, due_date from public.anomaly_round_number_payments limit 50`),
-    // PHASE 2.2 (0093): sayım/toplam yalnız TRY; foreign_currency_count aynı gün TRY-dışı kalemleri sayar.
-    pool.query(`select party_id, party_name, due_date, payment_count, total_amount, largest_single, foreign_currency_count from public.anomaly_split_payments limit 50`),
-    pool.query(`select party_id, party_name, first_payment_date, payment_count, total_amount from public.anomaly_new_payee limit 50`),
-    pool.query(`select payment_instance_id, party_name, amount, avg_amount, sample_count, times_baseline from public.anomaly_amount_vs_baseline limit 50`),
-    pool.query(`select txn_id, txn_date, amount, recorded_hour, caveat from public.anomaly_unusual_record_hour limit 50`),
-  ]);
-  return {
-    roundNumber: round.rows,
-    splitPayments: split.rows,
-    newPayees: newPayee.rows,
-    aboveBaseline: baseline.rows,
-    // The caveat travels with the rows: this is RECORD time, not transaction time.
-    unusualRecordHour: hour.rows,
-  };
+  return cache.withCache(
+    "controls:anomalies",
+    async () => {
+      const [round, split, newPayee, baseline, hour] = await Promise.all([
+        pool.query(`select payment_instance_id, payment_name, amount, due_date from public.anomaly_round_number_payments limit 50`),
+        // PHASE 2.2 (0093): sayım/toplam yalnız TRY; foreign_currency_count aynı gün TRY-dışı kalemleri sayar.
+        pool.query(`select party_id, party_name, due_date, payment_count, total_amount, largest_single, foreign_currency_count from public.anomaly_split_payments limit 50`),
+        pool.query(`select party_id, party_name, first_payment_date, payment_count, total_amount from public.anomaly_new_payee limit 50`),
+        pool.query(`select payment_instance_id, party_name, amount, avg_amount, sample_count, times_baseline from public.anomaly_amount_vs_baseline limit 50`),
+        pool.query(`select txn_id, txn_date, amount, recorded_hour, caveat from public.anomaly_unusual_record_hour limit 50`),
+      ]);
+      return {
+        roundNumber: round.rows,
+        splitPayments: split.rows,
+        newPayees: newPayee.rows,
+        aboveBaseline: baseline.rows,
+        // The caveat travels with the rows: this is RECORD time, not transaction time.
+        unusualRecordHour: hour.rows,
+      };
+    },
+    { ttlSeconds: 60, tags: [CACHE_TAGS.CONTROLS, CACHE_TAGS.ALERTS] }
+  );
 }

@@ -1,4 +1,5 @@
 import type { Pool } from "pg";
+import { cache } from "@/lib/cache/engine";
 import { loadDecisionFacts, type DecisionFact } from "@/lib/facts/engine";
 import { istanbulDateISO } from "@/lib/reports/rules";
 import { audit } from "@/lib/audit";
@@ -47,6 +48,8 @@ async function readEnv() {
   return env;
 }
 
+const OPENAI_TIMEOUT_MS = 15_000;
+
 async function callOpenAI(question: string, facts: DecisionFact[]): Promise<{ text: string; model: string } | null> {
   const env = await readEnv();
   const apiKey = env.openaiApiKey;
@@ -64,8 +67,11 @@ async function callOpenAI(question: string, facts: DecisionFact[]): Promise<{ te
       instructions: "Yaniti yalniz verilen facts'e dayandir. Finansal kayit mutasyonu onerme veya yaptigini soyleme.",
       input: prompt,
     }),
+    signal: AbortSignal.timeout(OPENAI_TIMEOUT_MS),
   });
-  if (!res.ok) return null;
+  if (!res.ok) {
+    throw new Error(`OpenAI HTTP ${res.status}: ${res.statusText}`);
+  }
   const text = extractOutputText(await res.json());
   return text ? { text, model } : null;
 }
@@ -179,15 +185,21 @@ export async function loadAiResponse(pool: Pool, id: string) {
 }
 
 export async function listAiResponses(pool: Pool, limit = 20, reportId?: string) {
-  const r = await pool.query(
-    reportId
-      ? `select id, question, response_mode, model, source_fact_keys, source_hrefs,
-                to_char(created_at at time zone 'Europe/Istanbul','YYYY-MM-DD HH24:MI') as created_at
-         from public.ai_response_snapshots where report_id=$1 order by created_at desc limit $2`
-      : `select id, question, response_mode, model, source_fact_keys, source_hrefs,
-                to_char(created_at at time zone 'Europe/Istanbul','YYYY-MM-DD HH24:MI') as created_at
-         from public.ai_response_snapshots order by created_at desc limit $1`,
-    reportId ? [reportId, limit] : [limit],
+  return cache.withCache(
+    `ai:responses:${reportId ?? "all"}:${limit}`,
+    async () => {
+      const r = await pool.query(
+        reportId
+          ? `select id, question, response_mode, model, source_fact_keys, source_hrefs,
+                    to_char(created_at at time zone 'Europe/Istanbul','YYYY-MM-DD HH24:MI') as created_at
+             from public.ai_response_snapshots where report_id=$1 order by created_at desc limit $2`
+          : `select id, question, response_mode, model, source_fact_keys, source_hrefs,
+                    to_char(created_at at time zone 'Europe/Istanbul','YYYY-MM-DD HH24:MI') as created_at
+             from public.ai_response_snapshots order by created_at desc limit $1`,
+        reportId ? [reportId, limit] : [limit],
+      );
+      return r.rows as Array<{ id: string; question: string; response_mode: AiResponseMode; model: string | null; source_fact_keys: string[]; source_hrefs: string[]; created_at: string }>;
+    },
+    { ttlSeconds: 60 }
   );
-  return r.rows as Array<{ id: string; question: string; response_mode: AiResponseMode; model: string | null; source_fact_keys: string[]; source_hrefs: string[]; created_at: string }>;
 }

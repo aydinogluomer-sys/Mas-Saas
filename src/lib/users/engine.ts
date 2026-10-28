@@ -13,8 +13,10 @@ import type { Pool, PoolClient } from "pg";
 import { z } from "zod";
 import { DomainError } from "@/lib/domain-error";
 import { hashPassword } from "@/lib/auth";
+import { verify as argon2Verify } from "@node-rs/argon2";
 import { audit } from "@/lib/audit";
 import { APP_ROLES, type AppRole } from "@/lib/authz/matrix";
+import { cache } from "@/lib/cache/engine";
 
 /** Mirrors the DB CHECK in 0031 — kept in sync deliberately so a bad value fails at the
  * boundary with a Turkish message instead of as a raw Postgres constraint error. */
@@ -35,6 +37,7 @@ export const createUserSchema = z.object({
   displayName: displayNameSchema,
   role: roleSchema,
   password: passwordSchema,
+  mustChangePassword: z.boolean().optional(),
 });
 export type CreateUserInput = z.infer<typeof createUserSchema>;
 
@@ -49,6 +52,7 @@ export interface UserListRow {
   createdAt: string;
   lastSeenAt: string | null;
   activeSessions: number;
+  mustChangePassword: boolean;
 }
 
 /** The reserved non-login accounts (see scripts/db/seed-system-actor.ts). They exist only to
@@ -57,28 +61,39 @@ export interface UserListRow {
  * never-loggable identity into a real credential at worst. */
 const RESERVED_USERNAMES = ["system", "testsprite-qa"];
 
+async function invalidateUserCache() {
+  await Promise.all([
+    cache.delete("users:list"),
+    cache.delete("users:counts"),
+  ]);
+}
+
 export async function listUsers(pool: Pool): Promise<UserListRow[]> {
-  const res = await pool.query<{
-    id: string; username: string; display_name: string; role: AppRole;
-    is_active: boolean; locked_until: string | null; failed_login_count: number;
-    created_at: string; last_seen_at: string | null; active_sessions: number;
-  }>(
-    `select u.id, u.username, u.display_name, u.role, u.is_active, u.locked_until,
-            u.failed_login_count, u.created_at,
-            max(s.last_seen_at) filter (where s.revoked_at is null) as last_seen_at,
-            count(s.id) filter (where s.revoked_at is null and s.expires_at > now())::int as active_sessions
-       from public.users u
-       left join public.sessions s on s.user_id = u.id
-      where u.username <> all($1::text[])
-      group by u.id
-      order by u.role, u.username`,
-    [RESERVED_USERNAMES],
-  );
-  return res.rows.map((r) => ({
-    id: r.id, username: r.username, displayName: r.display_name, role: r.role,
-    isActive: r.is_active, lockedUntil: r.locked_until, failedLoginCount: r.failed_login_count,
-    createdAt: r.created_at, lastSeenAt: r.last_seen_at, activeSessions: Number(r.active_sessions),
-  }));
+  return cache.withCache("users:list", async () => {
+    const res = await pool.query<{
+      id: string; username: string; display_name: string; role: AppRole;
+      is_active: boolean; locked_until: string | null; failed_login_count: number;
+      created_at: string; last_seen_at: string | null; active_sessions: number;
+      must_change_password: boolean;
+    }>(
+      `select u.id, u.username, u.display_name, u.role, u.is_active, u.locked_until,
+              u.failed_login_count, u.created_at, u.must_change_password,
+              max(s.last_seen_at) filter (where s.revoked_at is null) as last_seen_at,
+              count(s.id) filter (where s.revoked_at is null and s.expires_at > now())::int as active_sessions
+         from public.users u
+         left join public.sessions s on s.user_id = u.id
+        where u.username <> all($1::text[])
+        group by u.id
+        order by u.role, u.username`,
+      [RESERVED_USERNAMES],
+    );
+    return res.rows.map((r) => ({
+      id: r.id, username: r.username, displayName: r.display_name, role: r.role,
+      isActive: r.is_active, lockedUntil: r.locked_until, failedLoginCount: r.failed_login_count,
+      createdAt: r.created_at, lastSeenAt: r.last_seen_at, activeSessions: Number(r.active_sessions),
+      mustChangePassword: !!r.must_change_password,
+    }));
+  }, { ttlSeconds: 60 });
 }
 
 /** Non-secret projection used for audit before/after. Never includes password_hash. */
@@ -105,7 +120,7 @@ async function assertNotReserved(client: PoolClient, id: string): Promise<void> 
 export async function createUser(pool: Pool, input: CreateUserInput, actorId: string): Promise<string> {
   const parsed = createUserSchema.safeParse(input);
   if (!parsed.success) throw new DomainError(parsed.error.issues[0]?.message ?? "Geçersiz giriş.");
-  const { username, displayName, role, password } = parsed.data;
+  const { username, displayName, role, password, mustChangePassword = true } = parsed.data;
   if (password.toLowerCase() === username.toLowerCase()) {
     throw new DomainError("Parola kullanıcı adıyla aynı olamaz.");
   }
@@ -119,16 +134,17 @@ export async function createUser(pool: Pool, input: CreateUserInput, actorId: st
     const exists = await client.query(`select 1 from public.users where username=$1`, [username]);
     if (exists.rowCount) throw new DomainError("Bu kullanıcı adı zaten kullanılıyor.");
     const res = await client.query<{ id: string }>(
-      `insert into public.users (username, password_hash, display_name, role)
-       values ($1,$2,$3,$4) returning id`,
-      [username, passwordHash, displayName, role],
+      `insert into public.users (username, password_hash, display_name, role, must_change_password)
+       values ($1,$2,$3,$4,$5) returning id`,
+      [username, passwordHash, displayName, role, mustChangePassword],
     );
     const id = res.rows[0].id;
     await audit(client, {
       actor: actorId, action: "create_user", entityTable: "users", entityId: id, before: null,
-      after: { username, display_name: displayName, role, is_active: true },
+      after: { username, display_name: displayName, role, is_active: true, must_change_password: mustChangePassword },
     });
     await client.query("commit");
+    await invalidateUserCache();
     return id;
   } catch (e) {
     await client.query("rollback");
@@ -140,7 +156,13 @@ export async function createUser(pool: Pool, input: CreateUserInput, actorId: st
 
 /** Admin-driven reset. Revokes the target's live sessions in the same transaction — a reset
  * that left the old cookie working would not actually lock anyone out. */
-export async function resetUserPassword(pool: Pool, id: string, newPassword: string, actorId: string): Promise<void> {
+export async function resetUserPassword(
+  pool: Pool,
+  id: string,
+  newPassword: string,
+  actorId: string,
+  forceMustChange = true,
+): Promise<void> {
   const parsed = passwordSchema.safeParse(newPassword);
   if (!parsed.success) throw new DomainError(parsed.error.issues[0]?.message ?? "Geçersiz parola.");
   const passwordHash = await hashPassword(parsed.data);
@@ -153,8 +175,8 @@ export async function resetUserPassword(pool: Pool, id: string, newPassword: str
       throw new DomainError("Parola kullanıcı adıyla aynı olamaz.");
     }
     await client.query(
-      `update public.users set password_hash=$2, failed_login_count=0, locked_until=null where id=$1`,
-      [id, passwordHash],
+      `update public.users set password_hash=$2, must_change_password=$3, failed_login_count=0, locked_until=null where id=$1`,
+      [id, passwordHash, forceMustChange],
     );
     const revoked = await client.query(
       `update public.sessions set revoked_at=now() where user_id=$1 and revoked_at is null`,
@@ -163,7 +185,85 @@ export async function resetUserPassword(pool: Pool, id: string, newPassword: str
     // The new password itself is never recorded — only that a reset happened, and its effect.
     await audit(client, {
       actor: actorId, action: "reset_user_password", entityTable: "users", entityId: id, before,
-      after: { ...before, password_changed: true, sessions_revoked: revoked.rowCount ?? 0 },
+      after: { ...before, password_changed: true, must_change_password: forceMustChange, sessions_revoked: revoked.rowCount ?? 0 },
+    });
+    await client.query("commit");
+    await invalidateUserCache();
+  } catch (e) {
+    await client.query("rollback");
+    throw e;
+  } finally {
+    client.release();
+  }
+}
+
+/** Forces an account to change password on their next interaction without resetting it immediately. */
+export async function forcePasswordChange(pool: Pool, id: string, actorId: string): Promise<void> {
+  const client = await pool.connect();
+  try {
+    await client.query("begin");
+    await assertNotReserved(client, id);
+    const before = await loadForAudit(client, id);
+    await client.query(`update public.users set must_change_password=true where id=$1`, [id]);
+    await audit(client, {
+      actor: actorId, action: "force_password_change", entityTable: "users", entityId: id, before,
+      after: { ...before, must_change_password: true },
+    });
+    await client.query("commit");
+    await invalidateUserCache();
+  } catch (e) {
+    await client.query("rollback");
+    throw e;
+  } finally {
+    client.release();
+  }
+}
+
+/** Self-service password change by the logged-in user. */
+export async function changeOwnPassword(
+  pool: Pool,
+  userId: string,
+  oldPassword: string,
+  newPassword: string,
+): Promise<void> {
+  const parsed = passwordSchema.safeParse(newPassword);
+  if (!parsed.success) {
+    throw new DomainError(parsed.error.issues[0]?.message ?? "Geçersiz parola. En az 12 karakter olmalıdır.");
+  }
+  const client = await pool.connect();
+  try {
+    await client.query("begin");
+    const res = await client.query<{ id: string; username: string; password_hash: string }>(
+      `select id, username, password_hash from public.users where id = $1 and is_active for update`,
+      [userId],
+    );
+    if (res.rowCount !== 1) {
+      throw new DomainError("Kullanıcı bulunamadı.");
+    }
+    const user = res.rows[0];
+    const oldValid = await argon2Verify(user.password_hash, oldPassword);
+    if (!oldValid) {
+      throw new DomainError("Mevcut parola hatalı.");
+    }
+    if (parsed.data.toLowerCase() === user.username.toLowerCase()) {
+      throw new DomainError("Yeni parola kullanıcı adıyla aynı olamaz.");
+    }
+    if (parsed.data === oldPassword) {
+      throw new DomainError("Yeni parola eski parolayla aynı olamaz.");
+    }
+    const newHash = await hashPassword(parsed.data);
+    await client.query(
+      `update public.users set password_hash = $2, must_change_password = false, failed_login_count = 0, locked_until = null where id = $1`,
+      [userId, newHash],
+    );
+    const before = await loadForAudit(client, userId);
+    await audit(client, {
+      actor: userId,
+      action: "change_own_password",
+      entityTable: "users",
+      entityId: userId,
+      before,
+      after: { ...before, password_changed: true, must_change_password: false },
     });
     await client.query("commit");
   } catch (e) {
@@ -201,6 +301,7 @@ export async function setUserActive(pool: Pool, id: string, isActive: boolean, a
       after: { ...before, is_active: isActive, sessions_revoked: sessionsRevoked },
     });
     await client.query("commit");
+    await invalidateUserCache();
   } catch (e) {
     await client.query("rollback");
     throw e;
@@ -235,6 +336,7 @@ export async function setUserRole(pool: Pool, id: string, role: AppRole, actorId
       },
     });
     await client.query("commit");
+    await invalidateUserCache();
   } catch (e) {
     await client.query("rollback");
     throw e;
@@ -256,6 +358,7 @@ export async function unlockUser(pool: Pool, id: string, actorId: string): Promi
       after: { ...before, unlocked: true },
     });
     await client.query("commit");
+    await invalidateUserCache();
   } catch (e) {
     await client.query("rollback");
     throw e;

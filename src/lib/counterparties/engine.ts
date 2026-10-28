@@ -18,6 +18,8 @@ import { DomainError } from "@/lib/domain-error";
 import { intOrNull, moneyOrNull, rateOrNull } from "@/lib/money";
 import { normalizeTr } from "@/lib/importers/workbook-parser";
 import { parseOrThrow } from "@/lib/validation";
+import { cache } from "@/lib/cache/engine";
+import { CACHE_TAGS } from "@/lib/cache/tags";
 import { inspectIban, normalizeIban } from "./rules";
 
 /* ── schemas (Faz 18: one schema per action, at the boundary) ──────────────────────────── */
@@ -105,45 +107,52 @@ export async function loadCounterpartyExposure(
   pool: Pool,
   opts: { withExposureOnly?: boolean; limit?: number } = {},
 ): Promise<CounterpartyExposureRow[]> {
-  const r = await pool.query(
-    `select party_id, party_name, party_type, is_active, item_count, unknown_amount_count,
-            outflow_amount, inflow_amount, check_amount, check_count, loan_amount,
-            loan_installment_count, payment_amount, payment_count,
-            to_char(earliest_due_date,'YYYY-MM-DD') as earliest_due_date,
-            total_exposure, exposure_ratio, credit_limit, credit_limit_currency, credit_limit_utilization,
-            over_credit_limit, credit_limit_comparable, foreign_currency_count, active_iban_count
-     from public.counterparty_exposure
-     where ($1::boolean is not true or item_count > 0)
-     order by total_exposure desc, party_name
-     limit $2`,
-    [opts.withExposureOnly ?? false, opts.limit ?? 200],
+  const cacheKey = `counterparties:exposure:${opts.withExposureOnly ?? false}:${opts.limit ?? 200}`;
+  return cache.withCache(
+    cacheKey,
+    async () => {
+      const r = await pool.query(
+        `select party_id, party_name, party_type, is_active, item_count, unknown_amount_count,
+                outflow_amount, inflow_amount, check_amount, check_count, loan_amount,
+                loan_installment_count, payment_amount, payment_count,
+                to_char(earliest_due_date,'YYYY-MM-DD') as earliest_due_date,
+                total_exposure, exposure_ratio, credit_limit, credit_limit_currency, credit_limit_utilization,
+                over_credit_limit, credit_limit_comparable, foreign_currency_count, active_iban_count
+         from public.counterparty_exposure
+         where ($1::boolean is not true or item_count > 0)
+         order by total_exposure desc, party_name
+         limit $2`,
+        [opts.withExposureOnly ?? false, opts.limit ?? 200],
+      );
+      return r.rows.map((x) => ({
+        partyId: x.party_id,
+        partyName: x.party_name,
+        partyType: x.party_type,
+        isActive: x.is_active,
+        itemCount: intOrNull(x.item_count) ?? 0,
+        unknownAmountCount: intOrNull(x.unknown_amount_count) ?? 0,
+        outflowAmount: moneyOrNull(x.outflow_amount) ?? 0,
+        inflowAmount: moneyOrNull(x.inflow_amount) ?? 0,
+        checkAmount: moneyOrNull(x.check_amount) ?? 0,
+        checkCount: intOrNull(x.check_count) ?? 0,
+        loanAmount: moneyOrNull(x.loan_amount) ?? 0,
+        loanInstallmentCount: intOrNull(x.loan_installment_count) ?? 0,
+        paymentAmount: moneyOrNull(x.payment_amount) ?? 0,
+        paymentCount: intOrNull(x.payment_count) ?? 0,
+        earliestDueDate: x.earliest_due_date,
+        totalExposure: moneyOrNull(x.total_exposure) ?? 0,
+        exposureRatio: rateOrNull(x.exposure_ratio),
+        creditLimit: moneyOrNull(x.credit_limit),
+        creditLimitUtilization: rateOrNull(x.credit_limit_utilization),
+        overCreditLimit: x.over_credit_limit == null ? null : Boolean(x.over_credit_limit),
+        creditLimitComparable: Boolean(x.credit_limit_comparable),
+        creditLimitCurrency: x.credit_limit_currency ?? null,
+        foreignCurrencyCount: intOrNull(x.foreign_currency_count) ?? 0,
+        activeIbanCount: intOrNull(x.active_iban_count) ?? 0,
+      }));
+    },
+    { ttlSeconds: 60, tags: [CACHE_TAGS.COUNTERPARTY_RISK] },
   );
-  return r.rows.map((x) => ({
-    partyId: x.party_id,
-    partyName: x.party_name,
-    partyType: x.party_type,
-    isActive: x.is_active,
-    itemCount: intOrNull(x.item_count) ?? 0,
-    unknownAmountCount: intOrNull(x.unknown_amount_count) ?? 0,
-    outflowAmount: moneyOrNull(x.outflow_amount) ?? 0,
-    inflowAmount: moneyOrNull(x.inflow_amount) ?? 0,
-    checkAmount: moneyOrNull(x.check_amount) ?? 0,
-    checkCount: intOrNull(x.check_count) ?? 0,
-    loanAmount: moneyOrNull(x.loan_amount) ?? 0,
-    loanInstallmentCount: intOrNull(x.loan_installment_count) ?? 0,
-    paymentAmount: moneyOrNull(x.payment_amount) ?? 0,
-    paymentCount: intOrNull(x.payment_count) ?? 0,
-    earliestDueDate: x.earliest_due_date,
-    totalExposure: moneyOrNull(x.total_exposure) ?? 0,
-    exposureRatio: rateOrNull(x.exposure_ratio),
-    creditLimit: moneyOrNull(x.credit_limit),
-    creditLimitUtilization: rateOrNull(x.credit_limit_utilization),
-    overCreditLimit: x.over_credit_limit == null ? null : Boolean(x.over_credit_limit),
-    creditLimitComparable: Boolean(x.credit_limit_comparable),
-    creditLimitCurrency: x.credit_limit_currency ?? null,
-    foreignCurrencyCount: intOrNull(x.foreign_currency_count) ?? 0,
-    activeIbanCount: intOrNull(x.active_iban_count) ?? 0,
-  }));
 }
 
 export interface UnresolvedCounterparty {
@@ -165,22 +174,28 @@ export interface UnresolvedCounterparty {
  * a matching key.
  */
 export async function loadUnresolvedCounterparties(pool: Pool, limit = 100): Promise<UnresolvedCounterparty[]> {
-  const r = await pool.query(
-    `select source, source_id::text as source_id, raw_label,
-            to_char(due_date,'YYYY-MM-DD') as due_date, amount, status
-     from public.counterparty_unresolved
-     order by amount desc nulls last, raw_label
-     limit $1`,
-    [limit],
+  return cache.withCache(
+    `counterparties:unresolved:${limit}`,
+    async () => {
+      const r = await pool.query(
+        `select source, source_id::text as source_id, raw_label,
+                to_char(due_date,'YYYY-MM-DD') as due_date, amount, status
+         from public.counterparty_unresolved
+         order by amount desc nulls last, raw_label
+         limit $1`,
+        [limit],
+      );
+      return r.rows.map((x) => ({
+        source: x.source,
+        sourceId: x.source_id,
+        rawLabel: x.raw_label,
+        dueDate: x.due_date,
+        amount: moneyOrNull(x.amount),
+        status: x.status,
+      }));
+    },
+    { ttlSeconds: 60, tags: [CACHE_TAGS.COUNTERPARTY_RISK] },
   );
-  return r.rows.map((x) => ({
-    source: x.source,
-    sourceId: x.source_id,
-    rawLabel: x.raw_label,
-    dueDate: x.due_date,
-    amount: moneyOrNull(x.amount),
-    status: x.status,
-  }));
 }
 
 export interface IbanRow {
@@ -246,11 +261,17 @@ export async function loadCounterpartyProfile(pool: Pool, partyId: string) {
 
 /** Candidate list for the resolve UI's suggestion shortlist. Read-only. */
 export async function loadPartyCandidates(pool: Pool, limit = 500): Promise<Array<{ id: string; name: string }>> {
-  const r = await pool.query(
-    `select id::text, name from public.parties where is_active order by name limit $1`,
-    [limit],
+  return cache.withCache(
+    `counterparties:candidates:${limit}`,
+    async () => {
+      const r = await pool.query(
+        `select id::text, name from public.parties where is_active order by name limit $1`,
+        [limit],
+      );
+      return r.rows as Array<{ id: string; name: string }>;
+    },
+    { ttlSeconds: 120, tags: [CACHE_TAGS.COUNTERPARTY_RISK] }
   );
-  return r.rows as Array<{ id: string; name: string }>;
 }
 
 /* ── write side — every one of these is an EXPLICIT operator action ────────────────────── */
