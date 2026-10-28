@@ -90,7 +90,10 @@ export const config = {
   // answered by a redirect to /login and every monitor would read the app as "up" while
   // measuring the login page. robots.txt, manifest.json, sw.js and icon.svg are static public
   // files the browser fetches before (or without) a session — the PWA install metadata and the
-  // service worker script — and carry no financial data. src/middleware.test.ts pins both
-  // directions of this list against Next's own matcher evaluation.
+  // service worker script — and carry no financial data. sw.js MUST stay public while it is the
+  // Wave 0 kill-switch: a browser still running the layer's caching worker has to be able to
+  // fetch the replacement even after its user logged out (no cookie), and a redirect to /login
+  // fails the worker update and leaves the old caching worker in place. src/middleware.test.ts
+  // pins both directions of this list against Next's own matcher evaluation.
   matcher: ["/((?!login|health|ready|version|robots.txt|manifest.json|sw.js|icon.svg|_next/static|_next/image|favicon.ico).*)"],
 };

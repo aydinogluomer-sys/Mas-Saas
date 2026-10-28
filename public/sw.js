@@ -1,131 +1,35 @@
-// MAS Nakit Radar - Service Worker v1.0.0
-const CACHE_NAME = "mas-radar-v1";
-const STATIC_ASSETS = [
-  "/",
-  "/manifest.json",
-  "/icon.svg",
-  "/telegram/miniapp"
-];
+// MAS Nakit Radar — service worker KILL-SWITCH (Wave 0). It caches nothing and serves nothing.
+//
+// WHY THIS FILE STILL EXISTS. The unreviewed layer shipped a worker that precached "/" and the
+// Telegram mini-app, stored EVERY page the user opened in Cache Storage and served those copies
+// offline — financial screens readable from the browser's disk after logout, with no session
+// check. Deleting this file would not remove that worker from a browser that already installed
+// it: a missing script makes the update check fail, and the installed worker simply stays. The
+// only way to retire it is to replace it with a worker that removes itself.
+//
+// WHAT HAPPENS ON A DEVICE THAT HAS THE OLD WORKER. On its next page load the browser fetches
+// /sw.js (middleware keeps it public — a redirect to /login would fail the update the same way),
+// sees new bytes, installs this one; skipWaiting() activates it at once and clients.claim() makes
+// it the controller of the open tabs. It has NO fetch handler, so from that moment every request
+// goes to the network and nothing is answered from a cache. It then deletes every cache of this
+// origin and unregisters itself. Open tabs are not reloaded: with no fetch handler they are
+// already safe, and a forced reload would throw away whatever the user was typing.
+//
+// The page-side half is src/components/pwa/service-worker-cleanup.tsx. Both are removed together
+// after one release, once every device that used the app shows no registration and an empty Cache
+// Storage (DevTools > Application) — see docs/todo.md, Wave 0 / S6.
 
-self.addEventListener("install", (event) => {
-  event.waitUntil(
-    caches.open(CACHE_NAME).then((cache) => {
-      return cache.addAll(STATIC_ASSETS).catch((err) => {
-        console.warn("[SW] Cache preload warning:", err);
-      });
-    })
-  );
+self.addEventListener("install", () => {
   self.skipWaiting();
 });
 
 self.addEventListener("activate", (event) => {
   event.waitUntil(
-    caches.keys().then((keys) => {
-      return Promise.all(
-        keys.filter((key) => key !== CACHE_NAME).map((key) => caches.delete(key))
-      );
-    })
-  );
-  self.clients.claim();
-});
-
-self.addEventListener("fetch", (event) => {
-  const url = new URL(event.request.url);
-
-  // Skip non-GET and chrome-extension/internal requests
-  if (event.request.method !== "GET" || !url.protocol.startsWith("http")) {
-    return;
-  }
-
-  // Network-first for API and dynamic pages; cache-first for static icons & manifest
-  const isStatic = url.pathname.endsWith(".svg") ||
-                   url.pathname.endsWith(".png") ||
-                   url.pathname.endsWith(".ico") ||
-                   url.pathname === "/manifest.json";
-
-  if (isStatic) {
-    event.respondWith(
-      caches.match(event.request).then((cached) => {
-        if (cached) return cached;
-        return fetch(event.request).then((response) => {
-          if (response && response.status === 200) {
-            const clone = response.clone();
-            caches.open(CACHE_NAME).then((cache) => cache.put(event.request, clone));
-          }
-          return response;
-        });
-      })
-    );
-    return;
-  }
-
-  // Network first with cache fallback for HTML pages
-  if (event.request.mode === "navigate") {
-    event.respondWith(
-      fetch(event.request)
-        .then((response) => {
-          if (response && response.status === 200) {
-            const clone = response.clone();
-            caches.open(CACHE_NAME).then((cache) => cache.put(event.request, clone));
-          }
-          return response;
-        })
-        .catch(async () => {
-          const cached = await caches.match(event.request);
-          if (cached) return cached;
-          const fallback = await caches.match("/telegram/miniapp");
-          if (fallback) return fallback;
-          return new Response(
-            `<!DOCTYPE html><html lang="tr"><head><meta charset="utf-8"><title>Çevrimdışı - MAS Radar</title><meta name="viewport" content="width=device-width,initial-scale=1"></head><body style="background:#090d16;color:#f8fafc;font-family:sans-serif;padding:32px;text-align:center;"><h2>İnternet Bağlantısı Yok</h2><p style="color:#94a3b8">MAS Nakit Radar şu an çevrimdışı. Bağlantınızı kontrol edin.</p></body></html>`,
-            { headers: { "Content-Type": "text/html; charset=utf-8" } }
-          );
-        })
-    );
-    return;
-  }
-
-  // Normal fetch for API & data
-  event.respondWith(
-    fetch(event.request).catch(async () => {
-      return caches.match(event.request);
-    })
-  );
-});
-
-// Push notification handling
-self.addEventListener("push", (event) => {
-  let payload = { title: "MAS Nakit Radar", body: "Yeni finansal bildirim mevcut.", url: "/telegram/miniapp" };
-  try {
-    if (event.data) {
-      payload = { ...payload, ...event.data.json() };
-    }
-  } catch (e) {
-    if (event.data) payload.body = event.data.text();
-  }
-
-  event.waitUntil(
-    self.registration.showNotification(payload.title, {
-      body: payload.body,
-      icon: "/icon.svg",
-      badge: "/icon.svg",
-      data: { url: payload.url || "/telegram/miniapp" }
-    })
-  );
-});
-
-self.addEventListener("notificationclick", (event) => {
-  event.notification.close();
-  const targetUrl = event.notification.data?.url || "/";
-  event.waitUntil(
-    clients.matchAll({ type: "window", includeUncontrolled: true }).then((clientList) => {
-      for (const client of clientList) {
-        if (client.url === targetUrl && "focus" in client) {
-          return client.focus();
-        }
-      }
-      if (clients.openWindow) {
-        return clients.openWindow(targetUrl);
-      }
-    })
+    (async () => {
+      await self.clients.claim();
+      const keys = await caches.keys();
+      await Promise.all(keys.map((key) => caches.delete(key)));
+      await self.registration.unregister();
+    })(),
   );
 });
