@@ -315,8 +315,9 @@
       tıkla-ve-DB-doğrula testi (Playwright bu dilimde koşturulmadı).
 - [ ] `.env.example`: `MAS_RADAR_APP_DB_PASSWORD` ve `SEED_ADMIN_PASSWORD` yine boş (KR-24) — `CHANGE_ME` (9 karakter) belgelenmiş
       maskeli girişi atlatıp 12 karakter kuralında düşüyor.
-- [ ] `scripts/ops/measure-auth-routes.ts` ve `scripts/ops/run-lighthouse.ts` hâlâ admin oturumu basıyor (biri `.env.local`'ı
+- [x] `scripts/ops/measure-auth-routes.ts` ve `scripts/ops/run-lighthouse.ts` hâlâ admin oturumu basıyor (biri `.env.local`'ı
       doğrudan okuyor, iptal etmiyor): sil ya da disposable kapısının arkasına al (tests-lint-ci L02/L04).
+      → Kalite kapısı: ikisi de silindi (aşağıda).
 
 
 ## Wave 0 / S7 — DONE (görünüş geri dönüşü ve test zaman aşımları; incelenmemiş 46541d8 katmanının seçici karantinası)
@@ -336,3 +337,21 @@
 - [ ] Playwright (bu dilimde koşturulmadı — DB kuralı): disposable veritabanı + production derlemesiyle `legacy-semantic-smoke`
       (boş durum işareti), `interactive-readiness` (her modül sekmesi görünür ve tıklanır) ve `pnpm test:visual` (23 taban; son
       güncelleme `8f068b1`, `af210fd`'den önce; CI işi değil — fark çıkarsa sahip incelemesinden sonra yeniden taban).
+
+
+## Wave 0 / Kalite kapısı — DONE (S1–S7 sonrası; incelenmemiş 46541d8 katmanının seçici karantinası)
+
+- [x] `pnpm lint`'in son kırmızısı kapandı: katmanın iki ölçüm betiği silindi — `scripts/ops/measure-auth-routes.ts`
+      (`.env.local`'ı doğrudan okuyup owner bağlantısıyla 7 günlük admin oturumu açıyor, iptal etmiyordu) ve
+      `scripts/ops/run-lighthouse.ts` (`DATABASE_URL` hangi veritabanını gösteriyorsa orada admin oturumu açıp çerezini depo
+      köküne yazıyordu). İkisi de disposable kapısının dışındaydı; incelenmiş ölçüm aracı `scripts/perf/route-slo.ts`.
+      `tests/security/write-gates.test.ts` ikisini ve S6'nın sildiği `measure-routes.ts`'i kaldırılmış tutar.
+- [x] Çıkış taraması: `src/`'deki yasaklı sabitlerin tek eşleşmesi `src/lib/telegram/assistant.test.ts`'in sentetik cari
+      tutarıydı (silinen zincirlerin geri dönüş rakamıyla aynı; hiçbir iddia okumuyor) — başka bir sentetik değer.
+- [x] Gate: typecheck 0 hata ✓ · lint 0 hata / 0 uyarı ✓ · vitest 104 dosya / 2126 test ✓ · boundary:verify 8/8 ✓ · çıkış
+      taramaları ✓ (kaldırılan on dizin yok; `src/`'de varsayılan sır ve zincir sabiti yok; `next.config.ts`'te
+      `ignoreBuildErrors` yok; `db.ts` SET ROLE hatasını yayıyor; izlenen hiçbir dosyada `pooler.supabase.com` yok). Bir tam
+      koşu bellek tükenmesiyle düştü (iki işçi + p24b çocuğu; kod değil ortam) — dosya tek başına ve tam takım yeniden yeşil.
+- [ ] Sahip: depo kökündeki izlenmeyen `.lighthouse-result.json` silinen `run-lighthouse.ts`'in çıktısı (2026-10-18) ve bir
+      `final-screenshot` denetimi (o anki sayfanın görüntüsü) içeriyor; `.gitignore`'da değil — yerelde silinsin, asla
+      commit'lenmesin.

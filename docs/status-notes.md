@@ -4558,3 +4558,39 @@ etiketinde.
   `legacy-semantic-smoke` (boş durum işareti), `interactive-readiness` (her modül sekmesi görünür ve tıklanır) ve
   `pnpm test:visual` (23 taban; son güncelleme `8f068b1`, yani `af210fd`'den önce; CI işi değil — fark çıkarsa sahip
   incelemesinden sonra yeniden taban).
+
+---
+
+## Wave 0 / Kalite kapısı — S1–S7 sonrası (incelenmemiş 46541d8 katmanının seçici karantinası)
+
+Hedef: S1–S7'den sonra dört kapı (typecheck, lint, vitest, boundary:verify) ve Wave 0'ın çıkış taramaları birlikte yeşil;
+kırmızı ne varsa en küçük doğru değişiklikle kapansın — bir testi ya da kuralı gevşetmeden.
+
+- **İlk koşu:** typecheck 0 hata · vitest 104 dosya / 2123 test · boundary:verify 8/8 · lint KIRMIZI: 4 hata + 1 uyarı,
+  yalnız `scripts/ops/measure-auth-routes.ts` ve `scripts/ops/run-lighthouse.ts`'te (S6/S7'nin açık bıraktığı tests-lint-ci
+  L02/L04). Çıkış taramalarının tek bulgusu: `src/lib/telegram/assistant.test.ts:19`'da `1_250_000`.
+- **İki ölçüm betiği silindi (KR-29/KR-30, L02/L04):** ikisini de katman ekledi (`af210fd`'de yoklar); hiçbir package
+  betiği, kod ya da test onlara bağlanmıyordu. `measure-auth-routes.ts` `.env.local`'ı regex ile okuyup
+  `MIGRATION_DATABASE_URL` (owner) ile 7 günlük bir admin oturumu açıyor ve hiç iptal etmiyordu — S6'da silinen
+  `measure-routes.ts`'in aynı sınıfı. `run-lighthouse.ts` `DATABASE_URL` hangi veritabanını gösteriyorsa orada admin oturumu
+  açıp çerezini depo köküne (`.lighthouse-headers.json`) yazıyor, o dosyayı yalnız başarı yolunda siliyordu. İkisi de
+  disposable-hedef kapısının dışındaydı; lint hatalarını tiplemek bunu düzeltmezdi. İncelenmiş ölçüm aracı
+  `scripts/perf/route-slo.ts` (`requireDisposableOwnerDatabaseUrl`). `tests/security/write-gates.test.ts`'in "kaldırılan
+  yüzeyler" listesi bu ikisini ve `measure-routes.ts`'i kaldırılmış tutar: karantina etiketinden toptan geri yükleme kırmızı olur.
+- **Test sabiti:** `assistant.test.ts`'teki sentetik cari tutarı (`receivableOpen`) silinen zincirlerin geri dönüş
+  rakamıyla aynıydı; hiçbir iddia onu okumuyor (test yalnız "Net alacak" etiketine bakar). Başka bir sentetik değerle
+  değişti, nedeni yanında yazılı. `tests/financial/golden-fixture.ts`'teki aynı büyüklükteki rakamlar incelenmiş altın veri
+  ve `src/` dışında — dokunulmadı.
+- **Bellek baskısı:** ikinci tam koşuda iki vitest işçisi `Zone Allocation failed - process out of memory` ile öldü ve p24b
+  CASE A'nın başlattığı çocuk `VirtualAlloc failed` ile düştü (makinede boş commit ~1,7 GB; başka projelerin süreçleri açık).
+  Kod değil ortam: dosya tek başına 28/28 (2,5 sn), tam takım hemen ardından 104/2126 yeşil. Zaman aşımı değil; R5'in sınıf
+  sınırlarıyla ilgisi yok.
+- **Doğrulama (son durum):** `pnpm typecheck` 0 hata · `pnpm lint` 0 hata / 0 uyarı (Wave 0'da ilk kez tam temiz; `ceca39a`
+  tabanıyla aynı) · `pnpm test` 104 dosya / 2126 test · `pnpm boundary:verify` 8/8 · çıkış taramaları: kaldırılan on dizin
+  (`src/app/api/erp`, `src/app/telegram`, `src/app/api/telegram/miniapp`, `src/app/api/telegram/webhook`, `src/app/api/chains`,
+  `src/app/(dashboard)/finance/chains`, `src/app/(dashboard)/finance/cockpit`, `src/lib/chains`, `src/lib/cache`,
+  `src/lib/erp`) ne izleniyor ne diskte; `src/`'de `erp_mas_default`, `mas-radar-default-secret`, `1_250_000`, `1_450_000`,
+  `1_850_000` yok; `next.config.ts`'te `ignoreBuildErrors` yok; `db.ts`'te `applyRole`/`prepare` SET ROLE hatasını yutmuyor
+  (write-gates testi sabitliyor); izlenen hiçbir dosyada `pooler.supabase.com` yok.
+- **Açık:** izlenmeyen `.lighthouse-result.json` silinen betiğin çıktısı (348 KB, 2026-10-18) ve bir `final-screenshot`
+  denetimi içeriyor; `.gitignore`'da değil. Bu kapı ona dokunmadı (önceden var olan, izin verilen girdi); sahip yerelde silsin.

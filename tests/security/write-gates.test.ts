@@ -305,6 +305,13 @@ describe("kaldırılan yüzeyler kaldırılmış kalır", () => {
     "src/app/api/ai/cfo-chat",
     "src/app/api/chains",
     "src/app/(dashboard)/finance/cockpit",
+    // Wave 0 / S6 and the quality gate: layer scripts that minted admin sessions in whatever
+    // database their connection string named, outside the disposable-target gate — one with a fixed
+    // token, one reading .env.local directly and never revoking. Reviewed perf tooling is
+    // scripts/perf/route-slo.ts.
+    "scripts/ops/measure-routes.ts",
+    "scripts/ops/measure-auth-routes.ts",
+    "scripts/ops/run-lighthouse.ts",
   ];
   for (const rel of REMOVED) {
     it(`${rel} yok`, () => {

@@ -16,7 +16,9 @@ const account = {
   partyId: "party-1",
   partyName: "Akon Endüstri",
   partyType: "customer",
-  receivableOpen: 1_250_000,
+  // Any synthetic figure works (no assertion reads it). It is deliberately not one of the fallback
+  // amounts the removed financial chains hard-coded, which the Wave 0 exit check greps src/ for.
+  receivableOpen: 1_320_000,
   payableOpen: 180_000,
   receivableCount: 3,
   payableCount: 1,
