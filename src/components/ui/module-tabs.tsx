@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useState, useMemo, useEffect, type ReactNode } from "react";
-import { prefetchLinkHandlers, useNavigationFeedback } from "@/components/ui/navigation-feedback";
+import { useNavigationFeedback } from "@/components/ui/navigation-feedback";
 
 export interface ModuleTab {
   href: string;
@@ -26,7 +26,7 @@ export function ModuleFrame({
   children: ReactNode;
 }) {
   const pathname = usePathname();
-  const { pendingHref, prefetch } = useNavigationFeedback();
+  const { pendingHref } = useNavigationFeedback();
   const activePathname = pendingHref ? new URL(pendingHref, "http://local").pathname : pathname;
 
   // Extract unique categories if present
@@ -112,11 +112,12 @@ export function ModuleFrame({
             const depth = path.split("/").filter(Boolean).length;
             return depth > 1 && activePathname.startsWith(`${path}/`);
           });
+          // No hover/focus prefetch handlers (Wave 0): they called router.prefetch, a FULL
+          // server render of the tab's page. <Link>'s default prefetch is the only one left.
           return (
             <Link
               key={`${tab.href}-${tab.label}`}
               href={tab.href}
-              {...prefetchLinkHandlers(prefetch, tab.href)}
               aria-current={active ? "page" : undefined}
               className={active ? "is-active" : ""}
             >

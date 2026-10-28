@@ -216,3 +216,27 @@
       `.next/types`) · lint: kalan sorunlar yalnız sonraki dilimlerin dosyalarında.
 - [ ] Backlog (LABEL): belgelenmiş model sabitlerini ekranda "varsayım" olarak etiketle — radar eşik
       varsayılanları, senaryo optimizasyon varsayımları, tahsilat olasılık katsayıları.
+
+
+## Wave 0 / S4 — DONE (süreç içi önbellek ve açılış ön yüklemesi; incelenmemiş 46541d8 katmanının seçici karantinası)
+
+- [x] `src/lib/cache/*` ve `tests/cache-invalidation.test.ts` silindi. Farkı yalnız önbellek olan 26 dosya
+      `af210fd`'ye döndü; karışık dosyalarda (Ana Ekran, `/system/security`, `users/engine`, `ai/engine`,
+      `approvals/engine`) yalnız önbellek satırları çıktı — KEEP zorunlu parola değişikliği, S3'ün R10
+      düzeltmesi ve R6 OpenAI zaman aşımı duruyor. S2'nin kaldırdığı oturum önbelleği geri gelmedi.
+- [x] `jobs/dispatcher.ts` (KEEP) önbellekten ayrıldı: iş sonrası etiket düşürme ve `cacheTagsToInvalidate`
+      yok; `tests/job-dispatcher.test.ts` claim → çalıştır → complete/fail akışını test ediyor.
+- [x] `radar/engine.ts`'teki `NODE_ENV === "test"` kaçışı kaldırıldı; `generate-instances-audit.test.ts`
+      (CASE C/D) üretimdeki yolda yeşil.
+- [x] 60 rotalık açılış ön yüklemesi (perde, ısıtma efekti, CSS, `preload-routes.ts`, layout rota listeleri) ve
+      sidebar/sekme hover-focus `prefetchLinkHandlers` kaldırıldı; next/link varsayılan prefetch'i kalır.
+- [x] `navigation-feedback.test.tsx` yeniden yazıldı (eski koda karşı 7 iddianın 5'i kırmızı — anti-totoloji);
+      `interactive-readiness.spec.ts` perde iddialarını bıraktı, ilk-tıklama bütçesi TREND
+      (`NAVIGATION_CLICK_BUDGET_MS` verilirse SERT); `tests/interaction/workspace-ready.ts` açıklaması güncel.
+- [x] Gate: vitest 1997/1997 ✓ · boundary:verify 8/8 ✓ · typecheck kaynakta 0 hata (yalnız eski
+      `.next/types`) · lint: kalan sorunlar yalnız sonraki dilimlerin dosyalarında.
+- [ ] İlk tıklama gecikmesini production derlemesinde, sentetik veritabanına karşı yeniden ölç ve yeni tabanı
+      `NAVIGATION_CLICK_BUDGET_MS` olarak sabitle (Playwright bu dilimde koşturulmadı — DB kuralı).
+- [ ] S7 restyle geri dönüşü: `af210fd`'nin `globals.css`/`module-tabs.tsx` sürümleri perde CSS'ini ve
+      `prefetchLinkHandlers` kullanımını geri getirir — bu dilimin kaldırmalarını koru; iskelet gecikmesinin
+      iki CSS kuralını (`.is-active`, `.navigation-skeleton-active`) taşı ya da gecikmeyi birlikte geri al.

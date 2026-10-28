@@ -4266,3 +4266,73 @@ ekranların arkasında onları düzeltmeye yetecek saklı veri yoktu.
 - **Kapsam dışı bırakılan (backlog, LABEL):** belgelenmiş model sabitleri — radar eşik varsayılanları
   (50.000/100.000/3), senaryo optimizasyon adaylarının varsayımları, tahsilat olasılık katsayıları.
   Import V2'nin `#REF!` → 0 davranışı Import V2 diliminde.
+
+---
+
+## Wave 0 / S4 — Süreç içi önbellek ve açılış ön yüklemesi (incelenmemiş 46541d8 katmanının seçici karantinası)
+
+Hedef: **her istek güncel veriyi PostgreSQL'den, kendi rol katmanıyla okur; kullanıcı yalnız açtığı
+sayfayı render ettirir.** Önceki incelenmiş durum `af210fd`; karantina öncesi ağaç
+`quarantine/pre-wave0-2026-10-28` etiketinde.
+
+- **Süreç içi önbellek kaldırıldı (`src/lib/cache/engine.ts`, `tags.ts`):** süreç başına tek Map,
+  varsayılan 300 sn TTL, boyut sınırı yok. Anahtarlar kullanıcı ya da rol içermiyordu: değer ilk
+  çağıranın veritabanı katmanında (`SET ROLE` + `app.user_id`) hesaplanıp TTL boyunca herkese
+  sunuluyordu. Yazma yollarının neredeyse hiçbiri geçersiz kılmıyordu (ödendi işaretleme, tutar
+  düzeltme, içe aktarma, çek/kredi, eşleme, senaryo, hazine politikası); işçi ve betik süreçleri web
+  sunucusunun Map'ine zaten ulaşamazdı. Yazma yolları da "debounce" edilmişti: `ensureWindow` 120 sn
+  (yeni ödemenin taksit üretimi sessizce atlanabiliyordu), takvimde `generateInstancesForMonth` ve
+  `refreshRiskFlags`. `PoolClient` alan yükleyiciler transaction içi okumaları önbelleğe alıp kalıcı
+  satırları (metric_snapshots, mapping_reviews, senaryo koşuları, risk bayrakları) bayat veriden
+  kurdurabiliyordu.
+- **Geri dönüş:** farkı yalnız önbellek olan 26 dosya `af210fd` ile birebir aynı (katmanın sildiği
+  açıklamalar dahil) — sayfalar: calendar, finance/facilities, finance/fx, insights/tasks,
+  payments/items, production, production/capacity, system/audit, system/diagnostics; motorlar:
+  archive, briefing, cashflow, collections/promises, controls, costing, counterparties, data-quality,
+  financing, jobs/queue, production, radar/engine, radar/queries, reminders, reports, scenarios,
+  treasury. Karışık dosyalarda yalnız önbellek satırları çıktı: Ana Ekran (S3'ün R10 düzeltmesi
+  duruyor), `/system/security` ve `users/engine.ts` (zorunlu parola değişikliği KEEP; `users:list` /
+  `users:counts` önbelleği ve altı `invalidateUserCache` çağrısı gitti), `ai/engine.ts` (R6 zaman
+  aşımı duruyor), `approvals/engine.ts` (`af210fd`), `jobs/dispatcher.ts` (KEEP; iş sonrası etiket
+  düşürme ve `cacheTagsToInvalidate` gitti, claim → çalıştır → complete/fail akışı aynı). S2'nin
+  kaldırdığı oturum önbelleği geri gelmedi.
+- **Test kaçışı:** `radar/engine.ts`'teki `NODE_ENV === "test"` dalı gitti.
+  `generate-instances-audit.test.ts` CASE C/D aynı önbellek anahtarını paylaştığı için ona muhtaçtı;
+  artık üretimdeki yolu test ediyor ve yeşil.
+- **Açılış ön yüklemesi kaldırıldı (katmandan önce de vardı: `8007887`, `6dd6c68`):**
+  `WORKSPACE_PRELOAD_ROUTES` (60 rota), layout'taki rota listeleri, `NavigationFeedbackProvider`'ın
+  ısıtma efekti, sunucuda render edilen tam ekran perde (`[data-initial-preload]`) ve CSS'i; sidebar
+  ve modül sekmelerindeki hover/focus `prefetchLinkHandlers`. Next 15.5'te (`clientSegmentCache` yok)
+  `router.prefetch(href)` TAM prefetch'tir: her tam yüklemede GET sırasında yazan sayfalar
+  (`/payments/calendar`, `/payments/missing`, `/cashflow/controls`) dahil onlarca sayfa kullanıcı
+  adına sunucuda render ediliyor, istemci bu render'ı 5 dakikaya kadar yeniden kullanıyordu. Linkler
+  next/link'in varsayılan (AUTO) prefetch'iyle kalır. Tutulan: tıklama yakalama, 3 sn takılı-gezinme
+  tavanı, 110 ms iskelet gecikmesi, `navigationReady` bayrağı; katmanın sildiği iki açıklama
+  (data-hard-nav / Bulgu #7, takılı-zamanlayıcı koruması) geri geldi.
+- **Testler (DB'siz):** `tests/cache-invalidation.test.ts` silindi; `tests/job-dispatcher.test.ts`
+  önbelleksiz akışı doğrular. `navigation-feedback.test.tsx` yeniden yazıldı: perde hiç yok; açılışta
+  ve 10 sn sonra prefetch yok; bağlam ve modül bir prefetch yolu dağıtmıyor; gerçek bir `ModuleFrame`
+  sekmesinde hover/focus prefetch tetiklemiyor; tıklama `router.push` yapıyor; `navigationReady`
+  kurulup kalkıyor; unmount'ta zamanlayıcı kalmıyor. Eski sağlayıcı ve sekmelere karşı koşturuldu:
+  7 iddianın 5'i kırmızı, yeşil kalan ikisi (bayrak, zamanlayıcı temizliği) zaten korunan davranış
+  (anti-totoloji). Playwright (bu dilimde koşturulmadı — DB kuralı): `interactive-readiness.spec.ts`
+  ilk-tıklama testi perde iddialarını bıraktı ve perdenin geri gelmediğini doğrular; eski 500 ms SERT
+  kapı perdeyle (`8007887`) gelmişti ve ısıtma varsayımına dayanıyordu — şimdi SERT kapı felaket
+  tavanı, gecikme TREND; `NAVIGATION_CLICK_BUDGET_MS` verilirse yeniden SERT.
+  `tests/interaction/workspace-ready.ts` davranışı aynı (işaretçi yoksa anında çözülür), açıklaması
+  güncel.
+- **Doğrulama:** `pnpm test` 98 dosya / 1997 test yeşil (S3'e göre −1 dosya / −5 test: önbellek testi
+  silindi; gezinme testi 7 → 7) · `pnpm boundary:verify` 8/8 · `pnpm typecheck` kaynakta 0 hata
+  (yalnız eski `.next/types`; S2/S3'ün kaldırdığı 11 rota) · `pnpm lint` kalan sorunlar yalnız
+  sonraki dilimlerin dosyalarında (`public/sw.js`, `scripts/db/fix-roles.ts`,
+  `scripts/ops/measure-*.ts`, `scripts/ops/run-lighthouse.ts`,
+  `src/lib/users/password-rotation.test.ts`). Spesifikasyon grep'leri: önbellek sembolü kalmadı;
+  prefetch/perde sembolleri yalnız gerekçe açıklamalarında ve geri dönüşü yakalayan iddialarda;
+  `src` içinde `NODE_ENV === "test"` yok.
+- **S7'ye not (restyle geri dönüşü):** `af210fd`'nin `globals.css`'i `.workspace-preloader`
+  kurallarını, `module-tabs.tsx`'i `prefetchLinkHandlers` kullanımını içeriyor — geri dönüşte bu
+  dilimin kaldırmaları korunmalı (ikincisini tip kontrolü ve yeni test zaten yakalar). İskelet
+  gecikmesinin `.is-active` / `.navigation-skeleton-active` kuralları katmanın `globals.css`'inde;
+  `af210fd` kuralı kapsayıcıyı gecikmesiz gösterir — ya bu iki kural taşınmalı ya da gecikme birlikte
+  geri alınmalı. İlk tıklama gecikmesi production derlemesinde, sentetik veritabanına karşı yeniden
+  ölçülmeli (yeni taban → `NAVIGATION_CLICK_BUDGET_MS`).

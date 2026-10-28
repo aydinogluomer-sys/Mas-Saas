@@ -11,7 +11,6 @@ export interface NavigationState {
 
 interface NavigationContextValue extends NavigationState {
   beginNavigation: (href: string) => void;
-  prefetch: (href: string) => void;
 }
 
 /** A client navigation that never commits used to leave the pending UI up forever: the
@@ -26,76 +25,6 @@ const STUCK_NAVIGATION_TIMEOUT_MS = 3_000;
 
 const NavigationContext = createContext<NavigationContextValue | null>(null);
 
-/* ── Açılış hazırlığı: perde ne kadar kalır, arkasında ne ısınır ────────────────────────────
- *
- * Performans optimizasyonu: Kullanıcıyı bloklayan yapay bekleme süreleri minimize edildi.
- * Ağ sessizleştiğinde perde 150ms içinde kapanır; mutlak üst sınır 1.5 saniyeye indirildi.
- */
-const PRELOAD_QUIET_MS = 150;
-/** Perdenin MUTLAK üst sınırı. Aşılamaz; kullanıcı en geç 1.5 sn içinde serbest kalır. */
-const PRELOAD_CURTAIN_MAX_MS = 1_500;
-/** İlerleme çubuğunun tazelenme aralığı — yalnız görsel. */
-const PRELOAD_PROGRESS_TICK_MS = 50;
-
-/**
- * Ağ sessizleşene YA DA tavana ulaşılana kadar bekle; hangisi önce olursa.
- *
- * `onProgress`, geçen sürenin tavana oranını bildirir. İlerleme çubuğu artık "kaç rota bitti"
- * değil "ne kadar beklendi" gösterir — çünkü bloklayan fazda bütün prefetch'ler aynı anda
- * başlatılıyor ve rota başına anlamlı bir ilerleme YOK. Sahte bir yüzde göstermektense
- * ölçülebilir olanı göstermek doğrusu.
- */
-function waitForWorkspaceWarm(signal: AbortSignal, onProgress: (ratio: number) => void): Promise<void> {
-  return new Promise((resolve) => {
-    const startedAt = performance.now();
-    let lastResourceAt = startedAt;
-
-    const deadlineTimer = window.setTimeout(finish, PRELOAD_CURTAIN_MAX_MS);
-    const pollTimer = window.setInterval(() => {
-      const now = performance.now();
-      onProgress(Math.min((now - startedAt) / PRELOAD_CURTAIN_MAX_MS, 1));
-      // ERKEN KAPANMA: ağ sustuysa tavanı beklemeden çık.
-      if (now - lastResourceAt >= PRELOAD_QUIET_MS) finish();
-    }, PRELOAD_PROGRESS_TICK_MS);
-
-    const observer = typeof PerformanceObserver === "undefined" ? null : new PerformanceObserver(() => {
-      lastResourceAt = performance.now();
-    });
-
-    function finish() {
-      window.clearInterval(pollTimer);
-      window.clearTimeout(deadlineTimer);
-      observer?.disconnect();
-      signal.removeEventListener("abort", finish);
-      resolve();
-    }
-
-    observer?.observe({ type: "resource", buffered: false });
-    signal.addEventListener("abort", finish, { once: true });
-  });
-}
-
-/**
- * İşi tarayıcı BOŞTAYKEN çalıştır; iptal edilebilir bir temizleyici döndür.
- *
- * `requestIdleCallback` Safari'de yok — orada `setTimeout`'a düşülür. Fallback'in gecikmesi
- * bilerek küçük ama sıfır değil: sıfır olsaydı arka plan ısıtması ana iş parçacığını arka arkaya
- * meşgul eder ve "arka plan prefetch etkileşimi engellemesin" sözünü Safari'de bozardı.
- */
-function scheduleWhenIdle(run: () => void): () => void {
-  const view = window as Window & {
-    requestIdleCallback?: (cb: IdleRequestCallback, opts?: { timeout: number }) => number;
-    cancelIdleCallback?: (handle: number) => void;
-  };
-  if (typeof view.requestIdleCallback === "function") {
-    // `timeout`: tarayıcı hiç boşalmazsa iş süresiz ertelenmesin.
-    const handle = view.requestIdleCallback(() => run(), { timeout: 2_000 });
-    return () => view.cancelIdleCallback?.(handle);
-  }
-  const handle = window.setTimeout(run, 200);
-  return () => window.clearTimeout(handle);
-}
-
 function localHref(anchor: HTMLAnchorElement): string | null {
   if (anchor.target && anchor.target !== "_self") return null;
   if (anchor.hasAttribute("download")) return null;
@@ -107,28 +36,24 @@ function localHref(anchor: HTMLAnchorElement): string | null {
 }
 
 /**
- * `primaryRoutes` PERDEYİ TUTAR, `secondaryRoutes` TUTMAZ — ayrım bilerek prop seviyesinde.
+ * Click feedback for client navigations: pending state, the skeleton, and the stuck-navigation
+ * deadline. It deliberately does NOT warm routes.
  *
- * Rol filtresi ÇAĞIRANDA uygulanır (`navigationFor` + `canSeeRoute`, bkz. dashboard layout) ve
- * burada korunur: bu bileşen kendisine verilen listelerin dışına çıkmaz, yani bir katmanın
- * göremediği rota ne bloklayan fazda ne arka planda ısıtılır.
+ * Wave 0 removed the opening warm-up that used to live here: on every full page load it called
+ * `router.prefetch()` for the role-visible sidebar routes behind a full-screen curtain rendered
+ * on the server, then for up to ~60 sub-tabs while idle; the sidebar and the module tabs also
+ * called it on every hover and focus. Without `clientSegmentCache`, `router.prefetch(href)` in
+ * Next 15.5 is a FULL prefetch — the server renders the whole page, including the pages that
+ * write during GET (/payments/calendar, /payments/missing, /cashflow/controls), on behalf of a
+ * user who only opened the app — and the client reuses that render for up to five minutes, so a
+ * click could show figures captured minutes earlier. Links keep next/link's default (AUTO)
+ * prefetch, which stops at the nearest loading boundary instead of rendering the page itself.
  */
-export function NavigationFeedbackProvider({
-  children,
-  primaryRoutes,
-  secondaryRoutes = [],
-}: {
-  children: ReactNode;
-  /** Role göre görünen ANA sidebar rotaları — perde bunlar için bekler. */
-  primaryRoutes: readonly string[];
-  /** Alt sekmeler — perde KAPANDIKTAN sonra, boşta, tek tek ısıtılır. */
-  secondaryRoutes?: readonly string[];
-}) {
+export function NavigationFeedbackProvider({ children }: { children: ReactNode }) {
   const pathname = usePathname();
   const searchParams = useSearchParams();
   const router = useRouter();
   const [state, setState] = useState<NavigationState>({ pendingHref: null, isNavigating: false, startedAt: null });
-  const [preload, setPreload] = useState({ active: true, progress: 0 });
   const [skeletonActive, setSkeletonActive] = useState(false);
   const stuckTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const skeletonTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -143,8 +68,6 @@ export function NavigationFeedbackProvider({
       skeletonTimer.current = null;
     }
   }, []);
-
-  const prefetch = useCallback((href: string) => router.prefetch(href), [router]);
 
   const beginNavigation = useCallback((href: string) => {
     const currentHref = `${window.location.pathname}${window.location.search}${window.location.hash}`;
@@ -176,6 +99,8 @@ export function NavigationFeedbackProvider({
     }, 110);
 
     // If the navigation still has not committed by the deadline, hand the URL to the browser.
+    // Guarded on the location being unchanged so we never hijack a navigation that did land, or
+    // one the user started somewhere else in the meantime.
     stuckTimer.current = setTimeout(() => {
       stuckTimer.current = null;
       const nowHref = `${window.location.pathname}${window.location.search}${window.location.hash}`;
@@ -203,6 +128,11 @@ export function NavigationFeedbackProvider({
       if (event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
       const target = event.target instanceof Element ? event.target.closest("a") : null;
       if (!(target instanceof HTMLAnchorElement)) return;
+      // Escape hatch: an anchor marked data-hard-nav is left entirely alone — no
+      // preventDefault, no router.push — so the browser performs a real, full page
+      // navigation, exactly as typing the URL does. Used for the routes where the
+      // client transition silently aborts (Bulgu #7, root cause still unknown); it is
+      // also the general lever if that failure shows up anywhere else.
       if (target.hasAttribute("data-hard-nav")) return;
       const href = localHref(target);
       const currentHref = `${window.location.pathname}${window.location.search}${window.location.hash}`;
@@ -221,60 +151,11 @@ export function NavigationFeedbackProvider({
     };
   }, [beginNavigation, router]);
 
-  useEffect(() => {
-    const controller = new AbortController();
-    const here = window.location.pathname;
-    const primary = primaryRoutes.filter((href) => href !== here);
-    const secondary = secondaryRoutes.filter((href) => href !== here && !primary.includes(href));
-
-    let cancelPending: (() => void) | null = null;
-
-    const warmWorkspace = async () => {
-      if (primary.length > 0) {
-        if (process.env.NODE_ENV !== "development") {
-          primary.forEach((href) => router.prefetch(href));
-        }
-        await waitForWorkspaceWarm(controller.signal, (ratio) => {
-          setPreload((current) => (current.active ? { active: true, progress: ratio } : current));
-        });
-      }
-      if (controller.signal.aborted) return;
-
-      setPreload({ active: false, progress: 1 });
-
-      if (process.env.NODE_ENV !== "development") {
-        let index = 0;
-        const warmNext = () => {
-          if (controller.signal.aborted || index >= secondary.length) return;
-          router.prefetch(secondary[index]);
-          index += 1;
-          cancelPending = scheduleWhenIdle(warmNext);
-        };
-        cancelPending = scheduleWhenIdle(warmNext);
-      }
-    };
-
-    void warmWorkspace();
-    return () => {
-      controller.abort();
-      cancelPending?.();
-    };
-  }, [primaryRoutes, secondaryRoutes, router]);
-
-  const value: NavigationContextValue = { ...state, beginNavigation, prefetch };
+  const value: NavigationContextValue = { ...state, beginNavigation };
   return <NavigationContext.Provider value={value}>
     <div data-navigation-root className={state.isNavigating ? "navigation-pending" : ""} aria-busy={state.isNavigating || undefined}>
       <div className="navigation-progress" aria-hidden />
       <span className="sr-only" role="status" aria-live="polite">{state.isNavigating ? "Sayfa yükleniyor" : ""}</span>
-      {preload.active && <div className="workspace-preloader" data-initial-preload role="status" aria-live="polite" aria-label="Uygulama hazırlanıyor">
-        <div className="workspace-preloader-card">
-          <span className="workspace-preloader-mark" aria-hidden>MAS</span>
-          <h1>Uygulama hazırlanıyor</h1>
-          <p>Sayfalar ilk tıklamanızdan önce hızlandırılıyor.</p>
-          <div className="workspace-preloader-track" aria-hidden><i style={{ width: `${Math.round(preload.progress * 100)}%` }} /></div>
-          <small>{Math.round(preload.progress * 100)}%</small>
-        </div>
-      </div>}
       <div className={`instant-navigation-skeleton ${skeletonActive ? "is-active" : ""}`} aria-hidden="true">
         {skeletonActive ? (
           <>
@@ -293,11 +174,4 @@ export function useNavigationFeedback() {
   const value = useContext(NavigationContext);
   if (!value) throw new Error("useNavigationFeedback must be used inside NavigationFeedbackProvider");
   return value;
-}
-
-export function prefetchLinkHandlers(prefetch: (href: string) => void, href: string) {
-  return {
-    onMouseEnter: () => prefetch(href),
-    onFocus: () => prefetch(href),
-  };
 }

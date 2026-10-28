@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
-import { prefetchLinkHandlers, useNavigationFeedback } from "@/components/ui/navigation-feedback";
+import { useNavigationFeedback } from "@/components/ui/navigation-feedback";
 
 export interface NavItem {
   href: string;
@@ -124,7 +124,8 @@ export function AppSidebar({ items, gate, logoutAction }: { items: NavItem[]; ga
   );
 }
 
+// No hover/focus prefetch handlers (Wave 0): they called router.prefetch, a FULL server render of
+// the target page. <Link>'s own default prefetch is the only one left — see NavigationFeedbackProvider.
 function SidebarLink({ item, active, collapsed, close }: { item: NavItem; active: boolean; collapsed: boolean; close: () => void }) {
-  const { prefetch } = useNavigationFeedback();
-  return <Link href={item.href} {...prefetchLinkHandlers(prefetch, item.href)} onClick={close} aria-current={active ? "page" : undefined} className={`sidebar-link ${active ? "is-active" : ""}`} title={collapsed ? item.label : undefined}><Icon name={item.icon} />{!collapsed && <span><strong>{item.label}</strong>{item.description && <small>{item.description}</small>}</span>}{active && <i aria-hidden />}</Link>;
+  return <Link href={item.href} onClick={close} aria-current={active ? "page" : undefined} className={`sidebar-link ${active ? "is-active" : ""}`} title={collapsed ? item.label : undefined}><Icon name={item.icon} />{!collapsed && <span><strong>{item.label}</strong>{item.description && <small>{item.description}</small>}</span>}{active && <i aria-hidden />}</Link>;
 }

@@ -1,66 +1,81 @@
 // @vitest-environment jsdom
 /**
- * AÇILIŞ PERDESİ — kullanıcıyı ne kadar engellediğinin testi.
+ * GEZİNME GERİ BİLDİRİMİ — açılış perdesi ve rota ısıtması OLMADAN.
  *
- * ═══ BU TESTİ DOĞURAN ÖLÇÜM ═══
+ * ═══ BU TESTİN SÖYLEDİĞİ ═══
  *
- * `8007887` bütün workspace rotalarını (60 tane, üçlü gruplar) tam ekran bir perde ARKASINDA
- * ısıtıyordu ve her gruba bir MİNİMUM bekleme dayatıyordu (ilk grup 4000 ms, sonrakiler 700 ms).
- * Süre veriye değil sabit bir bütçeye bağlıydı; üretim derlemesinde ölçülen engelleme **20.0 sn**
- * idi ve perde `pointer-events` serbest bırakmadığı için o süre boyunca HİÇBİR ŞEY tıklanamıyordu.
+ * Sağlayıcı eskiden her tam sayfa yüklemesinde rol-görünür sidebar rotalarını, sonra boşta ~60 alt
+ * sekmeyi `router.prefetch()` ile ısıtıyor, ilk fazı sunucuda render edilen tam ekran bir perdenin
+ * (`[data-initial-preload]`) arkasında yapıyordu; sidebar ve modül sekmeleri de her hover/focus'ta
+ * aynı çağrıyı yapıyordu. Next 15.5'te (`clientSegmentCache` kapalı) `router.prefetch(href)` TAM bir
+ * prefetch'tir: sunucu sayfanın tamamını render eder — GET sırasında yazan sayfalar dahil — ve
+ * istemci bu render'ı 5 dakikaya kadar yeniden kullanır. Wave 0 bunların hepsini kaldırdı.
  *
- * Buradaki iddialar tam olarak o davranışı geri gelemez kılar.
+ * Buradaki iddialar iki şeyi kilitler:
+ *   · kaldırılan davranış geri gelemez — perde yok, açılışta ve zamanla prefetch yok, bağlam ve
+ *     modül bir prefetch yolu dağıtmaz, sekme üzerine gelmek/odaklanmak prefetch tetiklemez;
+ *   · tutulan davranış çalışır — tıklama yakalama + `router.push`, Playwright'ın beklediği
+ *     `navigationReady` bayrağı, unmount'ta zamanlayıcı bırakmama.
  *
- * ═══ NEDEN SAHTE ZAMANLAYICI (fake timers) ═══
- *
- * Perdenin sözü bir SÜRE sözüdür ("en fazla 5 sn"). Gerçek saatle test etmek ya 5 saniye
- * beklemeyi ya da eşiği gevşetmeyi gerektirirdi; ikisi de yanlış. Sahte zamanlayıcıyla süre
- * DETERMİNİSTİK olarak ileri sarılır ve iddia birebir "5000 ms'de kapanmış olmalı" kalır.
- *
- * `PerformanceObserver` jsdom'da yok; bileşen bunu zaten `typeof … === "undefined"` ile
- * karşılıyor ve gözlemcisiz çalışıyor. Yani bu testte kapanma yolu "ağ sustu" değil, tavan ve
- * sessizlik penceresidir — asıl güvence altına alınmak istenen de odur.
+ * Sahte zamanlayıcılar: "hiç prefetch yok" iddiası zamana bağlı bir iddiadır (eski kod perde
+ * kapandıktan SONRA da boşta ısıtmaya devam ediyordu); süre deterministik olarak ileri sarılır.
  */
 
-import { act, cleanup, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { NavigationFeedbackProvider } from "./navigation-feedback";
+import { NavigationFeedbackProvider, useNavigationFeedback } from "./navigation-feedback";
+import { ModuleFrame } from "./module-tabs";
 
 /* ── next/navigation sahteleri ───────────────────────────────────────────────────────────── */
 
 const prefetch = vi.fn();
 const push = vi.fn();
+// Üründe olduğu gibi KARARLI kimlikler: gerçek `useRouter`/`useSearchParams` URL değişmedikçe aynı
+// nesneyi döndürür. Her render'da yeni nesne döndürmek, [pathname, searchParams] efektini her
+// render'da yeniden koşturup tıklamanın kurduğu zamanlayıcıları siler ve test, üründe olmayan
+// bir davranışı ölçerdi.
+const router = { prefetch, push };
+const searchParams = new URLSearchParams();
 
 vi.mock("next/navigation", () => ({
   usePathname: () => "/overview",
-  useSearchParams: () => new URLSearchParams(),
-  useRouter: () => ({ prefetch, push }),
+  useSearchParams: () => searchParams,
+  useRouter: () => router,
 }));
 
-const PRIMARY = ["/overview", "/payments", "/cashflow", "/finance"] as const;
-const SECONDARY = ["/payments/items", "/cashflow/monthly", "/finance/checks"] as const;
-
-/** Perde DOM'da mı? Bileşen onu koşullu render eder, gizlemez. */
+/** Eski perdenin işaretçisi. Bileşen onu koşullu render ederdi; artık hiç render etmemeli. */
 const curtain = () => document.querySelector("[data-initial-preload]");
 
-function renderProvider(secondary: readonly string[] = SECONDARY) {
+let contextValue: ReturnType<typeof useNavigationFeedback> | null = null;
+function ContextProbe() {
+  contextValue = useNavigationFeedback();
+  return null;
+}
+
+function renderProvider() {
   return render(
-    <NavigationFeedbackProvider primaryRoutes={PRIMARY} secondaryRoutes={secondary}>
+    <NavigationFeedbackProvider>
+      <ContextProbe />
       <a href="/payments">Ödemeler</a>
     </NavigationFeedbackProvider>,
   );
 }
 
+async function clickPaymentsLink() {
+  const link = screen.getByRole("link", { name: "Ödemeler" });
+  await act(async () => {
+    link.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, button: 0 }));
+  });
+}
+
 beforeEach(() => {
-  // MEVCUT ROTAYI JSDOM'A DA KUR. Bileşen "şu an neredeyiz" sorusunu `window.location.pathname`
-  // ile cevaplar — `usePathname()` ile DEĞİL — çünkü hazırlık efektinin rota değiştikçe yeniden
-  // koşmaması gerekir (deps: [primaryRoutes, secondaryRoutes, router]). jsdom'un varsayılan
-  // yolu "/" olduğu için bu kurulmazsa `/overview` "mevcut rota" sayılmaz ve test, üründe
-  // olmayan bir davranışı ölçer.
+  // Bileşen "şu an neredeyiz" sorusunu `window.location` ile cevaplar; jsdom'un varsayılanı "/"
+  // olduğu için mevcut rota burada da kurulur.
   window.history.replaceState({}, "", "/overview");
   vi.useFakeTimers();
   prefetch.mockClear();
   push.mockClear();
+  contextValue = null;
 });
 
 afterEach(() => {
@@ -68,114 +83,87 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-describe("açılış perdesi", () => {
-  it("ilk açılışta görünür", () => {
+describe("açılış: perde ve rota ısıtması yok", () => {
+  it("ilk render'da açılış perdesi yok", () => {
     renderProvider();
-    // Perde SSR'da da var (`useState({ active: true })`), yani ilk boyamada duruyor.
-    expect(curtain(), "perde ilk render'da görünmeli").not.toBeNull();
+    expect(curtain(), "perde kaldırıldı — ilk render'da (SSR dahil) görünmemeli").toBeNull();
   });
 
-  it("en fazla 5 saniye içinde kapanır", async () => {
+  it("açılışta ve zaman geçtikçe hiçbir rota prefetch edilmez", async () => {
     renderProvider();
-    expect(curtain()).not.toBeNull();
+    expect(prefetch, "mount sırasında prefetch yapılmamalı").not.toHaveBeenCalled();
 
-    // Tavana kadar ilerlet. Mutlak sınır bu: ağ hiç susmasa bile perde daha uzun duramaz.
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(5_000);
-    });
-
-    expect(curtain(), "perde 5 sn içinde KAPANMAK ZORUNDA — 20 sn'lik engelleme geri gelemez").toBeNull();
-  });
-
-  it("hazırlık erken biterse perdeyi erken kapatır", async () => {
-    renderProvider();
-
-    // Sessizlik penceresi 550 ms. jsdom'da PerformanceObserver yok, dolayısıyla hiçbir kaynak
-    // gözlenmez ve ağ "baştan sessiz" sayılır: perde tavanı BEKLEMEDEN kapanmalı.
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(800);
-    });
-
-    expect(curtain(), "ağ sessizse perde 5 sn'yi beklemeden kapanmalı").toBeNull();
-  });
-
-  it("perde kapanınca ana menü tıklanabilir", async () => {
-    renderProvider();
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(5_000);
-    });
-
-    expect(curtain()).toBeNull();
-
-    // Perde gittiğine göre link tıklanabilir olmalı: üstünü kapatan tam ekran katman yok ve
-    // bileşenin yakalayıcı click dinleyicisi gezinmeyi devralıyor.
-    const link = screen.getByRole("link", { name: "Ödemeler" });
-    await act(async () => {
-      link.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, button: 0 }));
-      await vi.advanceTimersByTimeAsync(50);
-    });
-
-    expect(push, "perde kapandıktan sonra tıklama gezinmeyi başlatmalı").toHaveBeenCalledWith("/payments");
-  });
-
-  it("arka plan hazırlığı sürerken UI tıklanabilir kalır", async () => {
-    renderProvider();
-
-    // Perdeyi kapat, ama arka plan zincirini BİTİRME: alt sekmeler hâlâ ısınıyor olacak.
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(800);
-    });
-    expect(curtain()).toBeNull();
-
-    // Zincirin ilk adımı çalışsın, ama hepsi bitmesin.
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(200);
-    });
-
-    const link = screen.getByRole("link", { name: "Ödemeler" });
-    await act(async () => {
-      link.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, button: 0 }));
-      await vi.advanceTimersByTimeAsync(50);
-    });
-
-    // Asıl iddia: arka plan prefetch'i etkileşimi ENGELLEMİYOR.
-    expect(push, "arka plan ısıtması sürerken de tıklama çalışmalı").toHaveBeenCalledWith("/payments");
-    expect(curtain(), "arka plan fazında perde geri gelmemeli").toBeNull();
-  });
-
-  it("unmount olduğunda zamanlayıcı/gözlemci temizlenir ve prefetch devam etmez", async () => {
-    const view = renderProvider();
-
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(800);
-    });
-    const afterCurtain = prefetch.mock.calls.length;
-
-    view.unmount();
-
-    // Sökülmüş bir ağaç adına iş yapılmamalı: ne bekleyen idle/timeout zinciri, ne yeni prefetch.
+    // Eski ısıtma perde kapandıktan sonra da boşta, tek tek sürüyordu; uzun bir süre ileri sar.
     await act(async () => {
       await vi.advanceTimersByTimeAsync(10_000);
     });
 
-    expect(prefetch.mock.calls.length, "unmount sonrası yeni prefetch yapılmamalı").toBe(afterCurtain);
-    expect(vi.getTimerCount(), "unmount sonrası bekleyen zamanlayıcı kalmamalı").toBe(0);
+    expect(prefetch, "zaman geçince de arka planda prefetch yapılmamalı").not.toHaveBeenCalled();
+    expect(curtain(), "perde sonradan da belirmemeli").toBeNull();
+  });
+
+  it("bağlam ve modül bir prefetch yolu dağıtmaz", async () => {
+    renderProvider();
+    expect(contextValue, "bağlam okunamadı").not.toBeNull();
+    expect(Object.keys(contextValue ?? {}), "bağlamda TAM prefetch işlevi olmamalı").not.toContain("prefetch");
+
+    const mod = await import("./navigation-feedback");
+    expect(Object.keys(mod), "hover/focus prefetch yardımcısı geri gelmemeli").not.toContain("prefetchLinkHandlers");
+  });
+
+  it("modül sekmesinin üzerine gelmek veya odaklanmak prefetch tetiklemez", () => {
+    render(
+      <NavigationFeedbackProvider>
+        <ModuleFrame
+          title="Finansman"
+          description=""
+          tabs={[
+            { href: "/finance", label: "Özet" },
+            { href: "/finance/checks", label: "Çekler" },
+            { href: "/finance/loans", label: "Krediler" },
+          ]}
+        >
+          <p>içerik</p>
+        </ModuleFrame>
+      </NavigationFeedbackProvider>,
+    );
+
+    const tab = screen.getByRole("link", { name: "Çekler" });
+    fireEvent.mouseEnter(tab);
+    fireEvent.focus(tab);
+
+    // Eski sekme işleyicileri burada `router.prefetch("/finance/checks")` çağırırdı.
+    expect(prefetch, "hover/focus TAM prefetch yapmamalı").not.toHaveBeenCalled();
   });
 });
 
-describe("rol filtresi", () => {
-  it("yalnız kendisine verilen rotaları ısıtır — listelerin dışına çıkmaz", async () => {
-    renderProvider();
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(10_000);
-    });
+describe("tutulan gezinme davranışı", () => {
+  it("navigationReady bayrağını kurar ve unmount'ta kaldırır", () => {
+    const view = renderProvider();
+    // Playwright ve scripts/measure-navigation.ts "kabuk hydrate oldu" işareti olarak bunu bekler.
+    expect(document.documentElement.dataset.navigationReady).toBe("true");
 
-    const warmed = new Set(prefetch.mock.calls.map((call) => call[0] as string));
-    // `/overview` mevcut rota olduğu için elenmeli; kalan her şey verilen iki listeden gelmeli.
-    const allowed = new Set<string>([...PRIMARY, ...SECONDARY]);
-    for (const href of warmed) {
-      expect(allowed.has(href), `${href} verilen listelerde yok — rol filtresi delinmiş olurdu`).toBe(true);
-    }
-    expect(warmed.has("/overview"), "mevcut rota yeniden ısıtılmamalı").toBe(false);
+    view.unmount();
+    expect(document.documentElement.dataset.navigationReady).toBeUndefined();
+  });
+
+  it("yerel bir linke tıklamak gezinmeyi router.push ile başlatır", async () => {
+    renderProvider();
+    await clickPaymentsLink();
+
+    expect(push, "tıklama gezinmeyi başlatmalı").toHaveBeenCalledWith("/payments");
+    expect(prefetch, "tıklama da prefetch tetiklememeli").not.toHaveBeenCalled();
+  });
+
+  it("unmount olduğunda bekleyen zamanlayıcı kalmaz", async () => {
+    const view = renderProvider();
+    await clickPaymentsLink();
+
+    // Tıklama iki zamanlayıcı kurar: 110 ms iskelet gecikmesi ve 3 sn takılı-gezinme tavanı.
+    // Önce kurulduklarını gör; yoksa aşağıdaki "sıfır" iddiası hiçbir şey kanıtlamazdı.
+    expect(vi.getTimerCount(), "tıklama zamanlayıcı kurmalıydı").toBeGreaterThan(0);
+
+    view.unmount();
+    expect(vi.getTimerCount(), "unmount sonrası bekleyen zamanlayıcı kalmamalı").toBe(0);
   });
 });

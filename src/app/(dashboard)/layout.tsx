@@ -6,8 +6,7 @@ import { CommandPalette } from "@/components/search/command-palette";
 import { AppToaster, FlashToaster } from "@/components/ui/primitives/toast";
 import { TooltipProvider } from "@/components/ui/primitives/tooltip";
 import { requireSession } from "@/lib/auth";
-import { canSeeRoute, navigationFor } from "@/lib/authz/matrix";
-import { WORKSPACE_PRELOAD_ROUTES } from "@/lib/navigation/preload-routes";
+import { navigationFor } from "@/lib/authz/matrix";
 
 // Financial workspaces must read current PostgreSQL data at request time.
 // This also prevents production builds from opening dozens of DB-backed pages
@@ -32,21 +31,11 @@ export default async function DashboardLayout({ children }: { children: ReactNod
   // the browser at all. The pages behind it keep their own guards — this removes the dead door,
   // it does not replace the lock.
   const nav = navigationFor(session.role, NAV);
-  // AÇILIŞ HAZIRLIĞI İKİYE AYRILDI — ölçülmüş bir kullanıcı engellemesi yüzünden.
-  //
-  // Önceden 60 rotanın tamamı tam ekran perde ARKASINDA ısıtılıyordu ve perde ~20 sn açık
-  // kalıyordu; her tam reload ve her yer imi açılışında kullanıcı hiçbir şeye tıklayamıyordu.
-  //
-  //   primary    ana sidebar rotaları — perde YALNIZ bunları bekler (en çok 9)
-  //   secondary  alt sekmeler — perde kapandıktan SONRA, boşta, tek tek ısıtılır
-  //
-  // Rol filtresi İKİSİNDE DE korunuyor: `navigationFor` sidebar'ı katmana göre süzer,
-  // `canSeeRoute` de alt sekmeleri. Bir katmanın göremediği rota hiçbir fazda ısıtılmaz.
-  const primaryRoutes = nav.map((item) => item.href);
-  const secondaryRoutes = WORKSPACE_PRELOAD_ROUTES.filter(
-    (href) => canSeeRoute(session.role, href) && !primaryRoutes.includes(href),
-  );
-  return <NavigationFeedbackProvider primaryRoutes={primaryRoutes} secondaryRoutes={secondaryRoutes}><div className="app-shell">
+  // Wave 0: no opening warm-up any more. This layout used to hand the provider the sidebar
+  // routes plus ~60 sub-tabs to router.prefetch() behind a full-screen curtain on every full
+  // load; each of those is a FULL server render of the page, including pages that write during
+  // GET, done for a user who only opened the app. NavigationFeedbackProvider explains the rest.
+  return <NavigationFeedbackProvider><div className="app-shell">
     <AppSidebar items={nav} gate={true} logoutAction={logoutAction} />
     <div className="workspace-shell">
       <header className="workspace-bar">

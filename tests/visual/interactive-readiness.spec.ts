@@ -237,8 +237,21 @@ test("SPA geçişinde kabuk zaten etkileşimli kalır — kullanıcı tıklamay�
   test.info().annotations.push({ type: "spa-transitions", description: JSON.stringify(transitions) });
 });
 
-test("ilk ön yükleme bittikten sonra tüm görünür ana menü ve alt sekmeler 500 ms içinde açılır", async ({ page }) => {
-  const budgetMs = Number(process.env.NAVIGATION_CLICK_BUDGET_MS ?? 500);
+test("tüm görünür ana menü ve alt sekmeler ilk gerçek tıklamada açılır — açılış ısıtması olmadan", async ({ page }) => {
+  // Wave 0: bu testin eski 500 ms'lik SERT kapısı `8007887`'deki açılış ön yükleyicisiyle
+  // birlikte geldi ve onun varsayımına dayanıyordu: rotalar ilk tıklamadan ÖNCE, tam ekran perde
+  // arkasında TAM prefetch ile ısıtılmış olacaktı. O ısıtma kaldırıldı — her tam yüklemede GET
+  // sırasında yazan sayfalar dahil onlarca sayfayı kullanıcı adına sunucuda render ediyordu.
+  // Artık her ilk tıklama gerçek bir sunucu render'ıdır ve 500 ms'in dayanağı kalmadı.
+  //
+  // Yerine ÖLÇÜLMEMİŞ yeni bir sayı uydurulmaz; dosyanın kendi eşik politikası uygulanır:
+  //   SERT   her bağlantı görünür, tıklanabilir ve felaket tavanı (CATASTROPHE_MS) içinde açılır.
+  //   TREND  tıklama→main gecikmesi kanıta ve loga yazılır, testi kırmaz.
+  // Yeni taban production derlemesinde, sentetik bir veritabanına karşı ölçülüp
+  // NAVIGATION_CLICK_BUDGET_MS ile verildiğinde o değer yeniden SERT kapı olur.
+  const enforcedBudgetMs = process.env.NAVIGATION_CLICK_BUDGET_MS
+    ? Number(process.env.NAVIGATION_CLICK_BUDGET_MS)
+    : null;
   const primary = [
     "/overview", "/payments", "/cashflow", "/finance", "/production", "/scenarios",
     "/insights/ask", "/data/quality", "/system",
@@ -257,22 +270,23 @@ test("ilk ön yükleme bittikten sonra tüm görünür ana menü ve alt sekmeler
 
   await page.goto("/overview", { waitUntil: "domcontentloaded" });
   await page.waitForFunction(() => document.documentElement.dataset.navigationReady === "true");
-  await expect(page.locator("[data-initial-preload]"), "ilk açılışta gerçek ön yükleme ekranı görünmeli").toBeVisible();
-  await expect(page.locator("[data-initial-preload]"), "ön yükleme tamamlanıp çalışma alanını açmalı").toBeHidden({ timeout: 180_000 });
+  // Açılış perdesi kaldırıldı; geri gelirse ilk tıklamaları yeniden perdenin arkasında bekletir.
+  await expect(page.locator("[data-initial-preload]"), "açılış perdesi geri gelmemeli").toHaveCount(0);
 
   const visit = async (href: string, scope: ".sidebar-link" | ".module-tabs") => {
     if (new URL(page.url()).pathname === href) return;
     const link = page.locator(`${scope}[href="${href}"], ${scope} a[href="${href}"]`).first();
     await expect(link, `${href}: görünür navigasyon bağlantısı`).toBeVisible();
-    // Bilerek hover/focus ön-getirmesi yapmıyoruz. Bu ölçüm, açılış ön yükleyicisinin
-    // kullanıcının ilk gerçek tıklamasından ÖNCE rotayı hazırladığını kanıtlar.
+    // Uygulama düzeyinde ısıtma yok ve test kendisi de prefetch tetiklemez. Playwright'ın
+    // click()'i imleci önce bağlantının üstüne götürür; next/link'in kendi varsayılan (AUTO)
+    // prefetch'i gerçek bir kullanıcıdaki gibi devreye girer. Ölçülen, gerçek ilk tıklamadır.
     const started = performance.now();
     await link.click({ noWaitAfter: true });
     await page.waitForURL((url) => url.pathname === href, { timeout: 30_000 });
     await page.waitForFunction(() => {
       const main = document.querySelector("main.workspace-content");
       return !!main?.querySelector("h1") && main.getBoundingClientRect().height > 0;
-    });
+    }, undefined, { timeout: CATASTROPHE_MS });
     const clickToMainMs = Number((performance.now() - started).toFixed(1));
     rows.push({ href, clickToMainMs });
     console.log(`[navigation-latency] ${href} ${clickToMainMs}ms`);
@@ -285,7 +299,12 @@ test("ilk ön yükleme bittikten sonra tüm görünür ana menü ve alt sekmeler
   }
 
   test.info().annotations.push({ type: "all-navigation-latencies", description: JSON.stringify(rows) });
-  const slow = rows.filter((row) => row.clickToMainMs > budgetMs);
-  expect(slow, `500 ms üstü rotalar: ${slow.map((row) => `${row.href}=${row.clickToMainMs}ms`).join(", ")}`)
-    .toEqual([]);
+  const slowest = [...rows].sort((a, b) => b.clickToMainMs - a.clickToMainMs).slice(0, 5);
+  console.log(`[trend] ilk tıklama→main, en yavaş 5: `
+    + slowest.map((row) => `${row.href}=${row.clickToMainMs}ms`).join(", "));
+  if (enforcedBudgetMs !== null) {
+    const slow = rows.filter((row) => row.clickToMainMs > enforcedBudgetMs);
+    expect(slow, `${enforcedBudgetMs} ms üstü rotalar: ${slow.map((row) => `${row.href}=${row.clickToMainMs}ms`).join(", ")}`)
+      .toEqual([]);
+  }
 });

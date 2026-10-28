@@ -1,62 +1,46 @@
 /**
- * "Çalışma alanı GERÇEKTEN kullanılabilir mi?" — ön yükleme perdesinin kapanmasını bekle.
+ * "Çalışma alanı GERÇEKTEN kullanılabilir mi?" — tam ekran açılış perdesi varsa kapanmasını bekle.
  *
- * ═══ NE ÖLÇÜLDÜ ═══
+ * ═══ NEDEN YAZILDI ═══
  *
- * `8007887` (feat: preload workspace routes on startup) her sayfa yüklemesine tam ekran bir perde
- * ekledi:
+ * `8007887` (feat: preload workspace routes on startup) her tam sayfa yüklemesine tam ekran, opak
+ * bir perde ekledi (`.workspace-preloader`, `[data-initial-preload]`). `pointer-events: none` yoktu;
+ * perde açıkken kontroller DOM'da DURUYOR ama TIKLANAMIYORDU (Playwright "element intercepts
+ * pointer events" der). Envanter taraması ve gezinme süpürmesi `goto` + `networkidle` sonrası hemen
+ * tıkladığı için, ürün kusursuzken "tıklanamadı" raporu çıkıyordu — bu denetimin tam olarak
+ * engellemeye çalıştığı yanlış teşhis.
  *
- *     .workspace-preloader { position: fixed; inset: 0; z-index: 200; background: …var(--surface-0) }
+ * ═══ DURUM (Wave 0) ═══
  *
- * `pointer-events: none` YOK ve arka plan OPAK. Yani perde açıkken:
- *   · viewport'un tamamını kaplar
- *   · altındaki her kontrolün tıklamasını yakalar (Playwright "element intercepts pointer events" der)
- *   · kendi <h1>'ini taşır ("Uygulama hazırlanıyor")
- *
- * Perdenin ömrü kısa değil. `WORKSPACE_PRELOAD_ROUTES` 60 rota içerir, parti boyu 3, ilk parti
- * 4000 ms'ye kadar bekler, sonraki her parti 700 ms, sonda 250 ms:
- *
- *     4000 + 19 × 700 + 250 ≈ 17.5 sn   (en kötü hâl, HER tam sayfa yüklemesinde)
- *
- * Ve `useState({ active: true })` olduğu için perde İLK RENDER'da, yani SSR HTML'inde var. Tarayıcı
- * her `page.goto()`'da sağlayıcıyı yeniden mount eder, dolayısıyla perde her rotada yeniden başlar.
- *
- * ═══ BU NEDEN DENETİMİ BOZAR ═══
- *
- * Envanter taraması ve gezinme süpürmesi `goto` + `networkidle` sonrası hemen DOM okur ve tıklar.
- * Perde açıkken kontroller DOM'da DURUR (arkada render edilirler) ama TIKLANAMAZLAR. Sonuç:
- * ürün kusursuzken "tıklanamadı" raporu — bu denetimin tam olarak engellemeye çalıştığı yanlış
- * teşhis.
- *
- * ═══ NEDEN SLEEP DEĞİL ═══
- *
- * Sabit bir bekleme iki türlü de yanlış olurdu: 17.5 sn beklemek her rotayı gereksiz yavaşlatır
- * (66 rota × 5 rol), kısa beklemek ise yarış bırakır. Burada beklenen şey GÖZLENEBİLİR DURUMDUR —
- * `[data-initial-preload]` düğümünün DOM'dan ayrılması. Perde hiç açılmadıysa (zaten sıcak) bekleme
- * anında çözülür; açıldıysa tam kapandığında çözülür. İkisi de doğru, ikisi de ölçülebilir.
+ * Perde ve arkasındaki rota ısıtması KALDIRILDI (gerekçe: src/components/ui/navigation-feedback.tsx).
+ * `[data-initial-preload]` artık hiç render edilmez, dolayısıyla `waitForWorkspaceReady` ANINDA
+ * çözülür. Yardımcı yine de duruyor: çağıranlar (mutations.spec.ts, navigation.spec.ts,
+ * scripts/qa/runtime-interaction-crawl.ts) değişmeden çalışsın, ve bir perde bir gün geri gelirse
+ * denetim onu "tıklanamadı" diye yanlış teşhis etmek yerine kapanmasını beklesin. Beklenen şey yine
+ * GÖZLENEBİLİR DURUMDUR (düğümün DOM'da olmaması), sabit bir sleep değil.
  */
 
 import type { Page } from "@playwright/test";
 
-/** Perdenin işaretçisi. `navigation-feedback.tsx` bu attribute'u perdeye basar. */
+/** Eski perdenin işaretçisi. `navigation-feedback.tsx` bunu artık render ETMEZ; yalnız geri
+ * dönüşü yakalamak için burada. */
 export const PRELOAD_MARKER = "[data-initial-preload]";
 
 /**
- * Perde kapanana kadar bekle.
+ * Perde varsa kapanana kadar bekle; yoksa (Wave 0'dan beri hep böyle) anında çözülür.
  *
- * `state: "detached"` seçildi çünkü perde React tarafından KALDIRILIR (`{preload.active && …}`),
- * gizlenmez. "hidden" beklemek, düğüm hiç var olmadığında da hemen çözülürdü ve aradaki farkı
- * kaybederdik.
+ * `state: "detached"`: perde gizlenmezdi, React tarafından KALDIRILIRDI; düğüm hiç yoksa bekleme
+ * hemen biter.
  *
  * Zaman aşımı yutulmaz: perde 45 sn sonra hâlâ duruyorsa bu ölçülmesi gereken bir durumdur
- * (ön yükleme takılmış), sessizce devam edip "tıklanamadı" demek değil.
+ * (geri gelmiş ve takılmış bir ön yükleme), sessizce devam edip "tıklanamadı" demek değil.
  */
 export async function waitForWorkspaceReady(page: Page, timeoutMs = 45_000): Promise<void> {
   await page.locator(PRELOAD_MARKER).waitFor({ state: "detached", timeout: timeoutMs });
 }
 
 /**
- * Perde şu anda açık mı? (teşhis/kanıt amaçlı — beklemez)
+ * Perde şu anda açık mı? (teşhis/kanıt amaçlı — beklemez; Wave 0'dan beri beklenen cevap `false`)
  *
  * Kanıt satırlarına "perde görüldü mü, ne kadar sürdü" yazabilmek için var; bir testin kararını
  * buna dayandırması gerekmez.
