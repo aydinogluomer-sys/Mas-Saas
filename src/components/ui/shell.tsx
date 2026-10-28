@@ -14,17 +14,17 @@ export function PageHeader({
   action?: ReactNode;
 }) {
   return (
-    <header className="flex flex-wrap items-end justify-between gap-3 border-b pb-4" style={{ borderColor: "var(--line)" }}>
+    <header className="flex flex-wrap items-end justify-between gap-3 border-b pb-3" style={{ borderColor: "var(--line)" }}>
       <div className="min-w-0">
-        <h1 className="font-sans text-xl font-bold tracking-tight" style={{ color: "var(--text-1)" }}>
+        <h1 className="font-mono text-base font-semibold tracking-[0.08em]" style={{ color: "var(--text-1)" }}>
           {title}
         </h1>
         {subtitle && (
-          <p className="mt-1 font-sans text-xs leading-relaxed" style={{ color: "var(--text-3)" }}>
+          <p className="mt-1 font-mono text-[11px]" style={{ color: "var(--text-3)" }}>
             {subtitle}
           </p>
         )}
-        {meta && <div className="mt-2 flex flex-wrap items-center gap-2" data-volatile>{meta}</div>}
+        {meta && <div className="mt-1.5 flex flex-wrap items-center gap-2" data-volatile>{meta}</div>}
       </div>
       {action && <div className="shrink-0">{action}</div>}
     </header>
@@ -51,22 +51,22 @@ export function KpiCard({
     tone === "neg" ? "var(--neg)" : tone === "pos" ? "var(--pos)" : tone === "warn" ? "var(--warn)" : tone === "info" ? "var(--info)" : "var(--text-1)";
   return (
     <div
-      className="card-hover border p-3.5 bg-surface-1"
-      style={{ borderColor: "var(--line)", borderRadius: "var(--radius-lg)" }}
+      className="card-hover border p-2.5"
+      style={{ background: "var(--surface-2)", borderColor: "var(--line)", borderRadius: "var(--radius)" }}
     >
       <div className="flex items-center justify-between gap-2">
-        <span className="truncate font-sans text-[11px] font-medium tracking-normal" style={{ color: "var(--text-3)" }}>
+        <span className="truncate font-mono text-[9px] uppercase tracking-[0.12em]" style={{ color: "var(--text-3)" }}>
           {label}
         </span>
         {badge}
       </div>
       <div
-        className={`mt-1.5 font-sans font-bold tabular-nums ${emphasize ? "text-xl" : "text-base"}`}
+        className={`mt-1 font-mono tabular-nums ${emphasize ? "text-lg" : "text-sm"}`}
         style={{ color: valueColor }}
       >
         {value}
       </div>
-      {note && <div className="mt-1 font-sans text-[10px]" style={{ color: "var(--text-4)" }}>{note}</div>}
+      {note && <div className="mt-0.5 font-mono text-[9px]" style={{ color: "var(--text-4)" }}>{note}</div>}
     </div>
   );
 }
@@ -75,9 +75,9 @@ export function KpiCard({
 export function StatBox({ k, v, tone }: { k: ReactNode; v: ReactNode; tone?: "neg" | "pos" | "warn" }) {
   const color = tone === "neg" ? "var(--neg)" : tone === "pos" ? "var(--pos)" : tone === "warn" ? "var(--warn)" : "var(--text-1)";
   return (
-    <div className="border p-2.5 bg-surface-2/60" style={{ borderColor: "var(--line)", borderRadius: "var(--radius-md)" }}>
-      <div className="font-sans text-[10px] font-medium uppercase tracking-wider" style={{ color: "var(--text-3)" }}>{k}</div>
-      <div className="mt-0.5 font-sans font-semibold text-sm tabular-nums" style={{ color }}>{v}</div>
+    <div className="border p-2" style={{ background: "var(--surface-2)", borderColor: "var(--line)", borderRadius: "var(--radius)" }}>
+      <div className="font-mono text-[9px] uppercase tracking-wider" style={{ color: "var(--text-3)" }}>{k}</div>
+      <div className="mt-0.5 font-mono text-sm tabular-nums" style={{ color }}>{v}</div>
     </div>
   );
 }
@@ -100,12 +100,12 @@ export function ChartShell({
 }) {
   return (
     <figure
-      className="border p-4 bg-surface-1"
-      style={{ borderColor: "var(--line)", borderRadius: "var(--radius-lg)" }}
+      className="border p-3"
+      style={{ background: "var(--surface-1)", borderColor: "var(--line)", borderRadius: "var(--radius)" }}
     >
-      <figcaption className="mb-3 flex flex-wrap items-baseline justify-between gap-2">
-        <span className="font-sans text-xs font-semibold tracking-tight" style={{ color: "var(--text-2)" }}>{title}</span>
-        {hint && <span className="font-sans text-[11px]" style={{ color: "var(--text-4)" }}>{hint}</span>}
+      <figcaption className="mb-2 flex flex-wrap items-baseline justify-between gap-2">
+        <span className="font-mono text-[11px] uppercase tracking-[0.14em]" style={{ color: "var(--text-2)" }}>{title}</span>
+        {hint && <span className="font-mono text-[10px]" style={{ color: "var(--text-4)" }}>{hint}</span>}
       </figcaption>
       {empty ? (
         <EmptyState>Grafik için yeterli veri yok.</EmptyState>
@@ -120,31 +120,15 @@ export function ChartShell({
   );
 }
 
-/* ── EmptyState: consistent, calm modern empty message ── */
-export function EmptyState({
-  children,
-  action,
-  title,
-}: {
-  children: ReactNode;
-  action?: ReactNode;
-  title?: ReactNode;
-}) {
+/* ── EmptyState: consistent, calm empty message ── */
+export function EmptyState({ children, action }: { children: ReactNode; action?: ReactNode }) {
   return (
     <div
-      className="flex flex-col items-center justify-center rounded-xl border border-line bg-surface-2/40 px-6 py-9 text-center"
-      style={{ borderRadius: "var(--radius-lg)" }}
+      className="flex flex-col items-center gap-2 border border-dashed px-4 py-6 text-center"
+      style={{ borderColor: "var(--line)", borderRadius: "var(--radius)" }}
     >
-      <div className="flex h-10 w-10 items-center justify-center rounded-full bg-surface-3 text-tone-3 mb-2.5 border border-line">
-        <svg className="h-5 w-5 stroke-current stroke-1.5 fill-none" viewBox="0 0 24 24">
-          <path strokeLinecap="round" strokeLinejoin="round" d="M20.25 7.5l-.625 10.632a2.25 2.25 0 01-2.247 2.118H6.622a2.25 2.25 0 01-2.247-2.118L3.75 7.5m8.25 3v6.75m0 0l-3-3m3 3l3-3M3.375 7.5h17.25c.621 0 1.125-.504 1.125-1.125v-1.5c0-.621-.504-1.125-1.125-1.125H3.375c-.621 0-1.125.504-1.125 1.125v1.5c0 .621.504 1.125 1.125 1.125z" />
-        </svg>
-      </div>
-      {title && <h3 className="font-sans text-sm font-semibold text-tone-1">{title}</h3>}
-      <p className="max-w-md font-sans text-xs text-tone-3 leading-relaxed mt-0.5">
-        {children}
-      </p>
-      {action && <div className="mt-3.5 flex flex-wrap items-center justify-center gap-2">{action}</div>}
+      <p className="font-mono text-xs" style={{ color: "var(--text-3)" }}>{children}</p>
+      {action}
     </div>
   );
 }

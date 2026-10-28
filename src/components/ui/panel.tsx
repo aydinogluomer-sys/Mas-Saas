@@ -25,27 +25,27 @@ export function Panel({
       className={`card-hover command-surface overflow-hidden border ${className}`}
       style={{
         borderColor: "var(--line)",
-        borderRadius: "var(--radius-lg)",
-        borderLeft: accentColor ? `3px solid ${accentColor}` : undefined,
+        borderRadius: "var(--radius)",
+        borderLeft: accentColor ? `2px solid ${accentColor}` : undefined,
       }}
     >
       <header
-        className="flex items-center justify-between gap-3 border-b px-4 py-3 bg-surface-2/40"
-        style={{ borderColor: "var(--line)" }}
+        className="flex items-center justify-between gap-3 border-b px-3 py-2"
+        style={{ borderColor: "var(--line-faint)" }}
       >
         <div className="min-w-0">
-          <h2 className="truncate font-sans text-[13px] font-semibold tracking-tight" style={{ color: "var(--text-1)" }}>
+          <h2 className="truncate font-mono text-[11px] uppercase tracking-[0.14em]" style={{ color: "var(--text-2)" }}>
             {title}
           </h2>
           {subtitle && (
-            <p className="mt-0.5 truncate font-sans text-[11px]" style={{ color: "var(--text-3)" }}>
+            <p className="mt-0.5 truncate font-mono text-[10px]" style={{ color: "var(--text-4)" }}>
               {subtitle}
             </p>
           )}
         </div>
         {right && <div className="shrink-0">{right}</div>}
       </header>
-      <div className="p-4">{children}</div>
+      <div className="p-3">{children}</div>
     </section>
   );
 }
