@@ -14,8 +14,10 @@ yorum/cevap katmanina donusturen ozel bir finans-operasyon panelidir.
 Urun degildir:
 
 - public SaaS
-- ERP
-- muhasebe defteri / double-entry accounting sistemi
+- ERP (ön muhasebe verisinin birincil kaynağı Paraşüt API v4'tür; MAS onu okur, yerine geçmez — 2026-10-28 karar 3–5)
+- yasal muhasebe defteri / e-Defter / beyanname sistemi (yasal defter mali müşavirin programında kalır).
+  Not: 2026-10-28 karar 2 ile MAS içinde çift taraflı bir **yönetim defteri** ve yasal mizanla mutabakat fark raporu
+  kapsama alındı (önce yalnız okuma, sonra yönetim defteri — §17A Dalga 3). Bu, yasal defter değildir.
 - AI muhasebeci
 - cok kiracili platform
 - public landing / pricing / subscription urunu
@@ -1057,6 +1059,22 @@ Bu bir dokümantasyon değişikliği — kod değişikliği yok, bu yüzden doğ
 1. **Belge tutarlılığı:** `implementation.md`'ye eklenen v4 bölümü, mevcut v3'ün 14 fazlık biçimini (amaç/teslimat/gate) birebir taklit ediyor mu; `## 16. Commit ve Gate Kurali`'ndeki pnpm zinciri `phase15:verify`...`phase38:verify` ile genişletiliyor mu (yerine geçmiyor mu) — elle gözden geçirme.
 2. **Faz 15'in aciliyeti ayrıca doğrulanır:** plan onaylandıktan hemen sonra, GitHub repo görünürlüğü GERÇEKTEN kontrol edilip private yapılmalı — bu, planın geri kalanının uygulanmasını beklemeden yapılacak tek adım.
 3. **Her fazın kendi gate'i o faz fiilen uygulanmaya başladığında çalışır** — bu roadmap dokümanının kendisi hiçbir `pnpm` script'i çalıştırmaz; CLAUDE.md'nin "en küçük güvenli dilimi belirle → uygula → doğrula → dokümanı güncelle → o fazdan sonra dur" akışı Faz 15'ten başlayarak, bu belge onaylandıktan sonra, HER FAZ İÇİN AYRI AYRI ve sırayla işletilir — plan onayı, 24 fazın hepsinin tek seferde uygulanacağı anlamına gelmez, yalnız yol haritasının kabul edildiği anlamına gelir.
+
+---
+
+## 17A. CFO Yol Haritası — Dalga 0–5 (2026-10-28 yönetici kararları)
+
+Kararlar ve yorumları: `docs/release-evidence/wave0/00-yonetici-kararlari-2026-10-28.md`. Kural: her dalga commit'lenip
+kapıdan geçmeden bir sonrakine geçilmez (CI faturalama engeli kalkana kadar yerel eşdeğer kapı).
+
+| Dalga | Ad | İçerik | Çıkış ölçütü | Durum |
+|---|---|---|---|---|
+| 0 | Durdur ve sağlamlaştır | Yedek + harici kopya + alarm; yerel native PG (servis); 46541d8 katmanının seçici karantinası; girişsiz yazma ve uydurma rakamın sıfırlanması | 7 gün yeşil yedek, kapı yeşil, sahte rakam 0, girişsiz yazma 0 | Kod + altyapı DONE (`wave0/02-…`, `01-…`). Açık: harici disk, servis kurulumu, parola döndürme, CI faturalama, 7 günlük yedek gözlemi |
+| 1 | Omurga ve hız | Arka plan çalışanı / zamanlanmış işler (GET'te yazan sayfalar dahil), tek metrik/okuma modeli katmanı, 4 kokpit → 1 CFO Masası, sorgu zaman aşımları; FIN-03 ileri migration; Playwright + DB'li verify'lar tek kullanımlık DB'de | Sıcak geçişlerin %95'i ≤ 100 ms (gerçek veri), tüm zamanlı işler kayıtlı | — |
+| 2 | Döngüyü kapat | Onay kuralları ödeme/faturaya bağlı, ödeme talimatı + banka dosyası, banka eşleşmesi → ödendi, dönem kilidi, eksik giriş yolları (limit/teminat/kovenant, 13 hafta, bütçe onayı, IBAN), çek/senet portföy hareketleri | fatura → onay → talimat → hareket → eşleşme → kapanış uçtan uca tek testte | — |
+| 3 | Yönetim defteri | Hesap planı (TDHP uyumlu), fiş + otomatik fiş kuralları, mizan, bilanço, gelir tablosu, EBITDA; önce C: mali müşavir mizanının salt-okunur içe aktarımı | Mizan dengeli; yasal mizanla fark raporu | — |
+| 4 | Paraşüt entegrasyonu | Paraşüt API v4: cari, `sales_invoices`/`purchase_bills`, `accounts`/`transactions` (önce okuma); banka Excel yedek yolu; TCMB; vergi takvimi; BA/BS; cari mutabakat | Paraşüt verisi kaynak izli ve incelemeli aktarımla gelir | — |
+| 5 | FP&A ve CFO deneyimi | Bütçe döngüsü, rolling tahmin, zamanlanmış raporlar, AI kapsamı, Telegram brifingi (salt-okunur, sırla) | CFO haftalık/ay sonu işini sistemden çıkmadan yapar | — (sesli soru bu dalganın sonrasına ertelendi) |
 
 ---
 

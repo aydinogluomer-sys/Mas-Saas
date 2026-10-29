@@ -290,7 +290,9 @@
       `job-dispatcher.test.ts`, `pwa-assets.test.ts`; `db:roles-rls:verify` H bölümü (CI'da gerçek RLS).
 - [x] Gate: vitest 104 dosya / 2123 test ✓ · boundary:verify 8/8 ✓ · typecheck 0 hata ✓ · dilimin dosyalarında
       `eslint --max-warnings=0` temiz; tam `pnpm lint`'in kalanı yalnız `measure-auth-routes.ts` / `run-lighthouse.ts` (S7).
-- [ ] **0096'yı uygula** (sahip, Wave 0 sonrası): önce disposable DB'de `pnpm db:migrate:verify` + `pnpm db:roles-rls:verify`,
+- [x] **0096 uygulandı** (2026-10-29, kanonik native DB, zorunlu ön yedek `migrate-mas_radar_dev-2026-10-29T06-27-46-500Z.dump`;
+      defter 0096/96; bkz. `docs/release-evidence/wave0/01-native-postgres-restore.md` §9). Disposable doğrulama hâlâ açık:
+      önce disposable DB'de `pnpm db:migrate:verify` + `pnpm db:roles-rls:verify`,
       sonra kanonik native DB'de yedekli `pnpm db:migrate`. 0096 uygulanana kadar izleyici katmanındaki kullanıcılar zorunlu
       değişikliği tamamlayamaz (denetim satırı reddedilir, değişiklik geri alınır — sessiz bir şey olmaz).
 - [ ] Disposable DB'de uçtan uca: yönetici izleyici açar → giriş `/change-password` → değişiklik → `/overview` (sıçrama yok);
@@ -299,7 +301,9 @@
 - [ ] PWA: kill-switch yayındayken PWA'yı açmış her cihazda DevTools > Application: Service Worker kaydı yok, Cache Storage
       boş. Sonra (bir sürüm sonra) `public/sw.js`, `src/components/pwa/service-worker-cleanup.tsx` ve kök layout'taki bileşen
       birlikte silinir; middleware matcher'dan `sw.js` ancak o zaman çıkar; `tests/pwa-assets.test.ts` buna göre güncellenir.
-- [ ] Sahibin SALT-OKUNUR kontrolleri (owner bağlantısı, kanonik DB) — silinen betikler `MIGRATION_DATABASE_URL`'e
+- [x] (2026-10-29, orkestratör, salt-okunur — sonuçlar `wave0/01-…` §9: politikalar beklenen üçlü, katman üyesi yalnız
+      `mas_radar_app`, defter 0/96 boş sağlama toplamı ve `supabase-runner` yok, canlı oturum 0; şema kayma kontrolü temiz)
+      Sahibin SALT-OKUNUR kontrolleri (owner bağlantısı, kanonik DB) — silinen betikler `MIGRATION_DATABASE_URL`'e
       düştüğü için yerel DB'ye dokunmuş olabilir:
       `select polname from pg_policy where polrelid = 'public.sessions'::regclass order by 1` → yalnız `sessions_app_runtime`,
       `sessions_deny_all`, `sessions_self_read` (fazlası `fix-sessions-rls` izi → temizliği migration ile);
@@ -308,7 +312,9 @@
       satırı yok; canlı oturumlar (`revoked_at is null and expires_at > now()`) — betiklerin açtığı uzun ömürlü admin oturumları
       iptal edilir (sabit id'li olan dahil; silinen `measure-routes.ts`'in kimliği `quarantine/pre-wave0-2026-10-28` etiketinde);
       `seed-supabase-admin` yerelde koştuysa admin parolası döndürülür (`rotate-passwords.ts`).
-- [ ] Sahibin SALT-OKUNUR kontrolleri — kaldırılan YAZMA yollarının defterde iz bırakıp bırakmadığı (KR-51; `.env.local`
+- [x] (2026-10-29, orkestratör, salt-okunur: ERP faturası 0, ERP denetim satırı 0, viewer/approver aktörlü
+      mark_paid/mark_unpaid/mark_check_cleared 0, 15 Eylül'den beri yalnız `generate_instances` — iz yok)
+      Sahibin SALT-OKUNUR kontrolleri — kaldırılan YAZMA yollarının defterde iz bırakıp bırakmadığı (KR-51; `.env.local`
       native DB'ye çevrilmeden ÖNCE, owner bağlantısı, kanonik DB). Native küme katman döneminden kalan veriden geri
       yüklendi; katmanın kodu `af210fd` (2026-09-13) ile `46541d8` (2026-10-28) arasında bu veriye karşı çalıştı:
       1. ERP köprüsünün "örnek" senkronu (hub `{sample:true}` → `/api/erp/sync`, tıklayan kullanıcının katmanında; her
@@ -408,3 +414,46 @@
 - [ ] Brifing para birimi geri dönüşü: aktif TRY hesabı hiç yoksa `loadBriefingFacts` ilk para biriminin (ör. EUR) nakdini ve
       tabanını alır, metin ve kutu onu "TL" diye yazar. TRY yoksa nakit/taban null olmalı ya da para birimi etiketi taşımalı
       (phase32-verify aynı seçim kuralını yansıtıyor — birlikte değişir).
+
+
+## Wave 0 / Altyapı — DONE (orkestratör, 2026-10-28/29; kanıt: `docs/release-evidence/wave0/01-native-postgres-restore.md`)
+
+- [x] Native PostgreSQL 16.14 `C:\MAS` altında (SHA-256 eylül kaydıyla birebir). Küme ICU en-US, UTC, checksums, yalnız loopback, scram.
+- [x] Kanonik veri 16 Ekim dökümünden geri yüklendi. İş tabloları makbuzlu 15 Eylül yedeğiyle aynı. Gidiş-dönüş 87/87 tablo birebir.
+- [x] Roller ve üyelikler 0035/0057 ile birebir; `mas_radar_app` parolası `.env.local`'deki değerden atandı.
+- [x] `.env.local` yerele sabitlendi (`SUPABASE_DB_URL` yorum satırı); `MAS_PG_BIN_DIR`, `MAS_ALERT_CHANNELS=telegram`.
+- [x] Şema kayma kontrolü: 0001–0094 sıfırdan kurulumla karşılaştırıldı. Fark yok; tek biçim farkı görünümde `AS text` yazımı.
+- [x] İlk native günlük yedek (çıkış 3 = harici kopya yok, beklenen); 0095 + 0096 yedekli uygulandı.
+- [x] Günlük yedek görevi sertleştirildi; gözetim görevi kaydedildi (6 saatte bir, Telegram kanalı açık).
+- [x] Kesinti: küme 29 Ekim 04:54 UTC'de bellek tükenmesiyle düştü; WAL kurtarmasıyla temiz açıldı, veri kaybı yok.
+- [x] P24B: temizlik zaten yapılmış (`p24b-real-cleanup/FINAL-REAL-CLEANUP-DOSSIER.md`, 42/42); fixture satırı 0.
+- [ ] **Sahip:** `scripts\ops\install-postgres-service.ps1` (yönetici PowerShell, önce `-WhatIf`).
+      Kurulum sırasında pencereyi kapatmayın (aşağıda backlog 11–12).
+- [ ] **Sahip:** etkileşimli terminalde `pnpm exec tsx scripts/ops/rotate-passwords.ts`.
+      `admin` ve `atilla` için geçici parola üretir; parolalar yalnız sizin ekranınıza yazılır.
+- [ ] **Sahip:** D: harici diski takılınca ilk gece yedeği kopyalar; o zamana kadar yedek görevi bilerek "tek kopya" der.
+- [ ] **Sahip:** GitHub faturalama (CI başlamıyor); Supabase "Mas-Saas" projesini silme ya da parola sıfırlama.
+- [ ] **Sahip kararı:** OpenAI'ye karar özeti gönderimi (`OPENAI_API_KEY` tanımlı, `AI_FORCE_DETERMINISTIC=0`).
+- [ ] **Sahip kararı:** Phase 5'te şablondan çıkacak dokuz kolonun adı (matris 10 gösteriyor).
+- [ ] **Veri:** FIN-03 ön kontrolü — 6 aktif kasa/banka hesabının 6'sının açılış bakiyesi boş. "Kullanılabilir nakit" şu an
+      yalnız hareketlerden hesaplanıyor. Açılış bakiyeleri girilmeli; FIN-03 ileri migration'ı Dalga 1'in ilk işi.
+
+
+## Dalga 1 backlog — Wave 0 bağımsız incelemesinin düşük önemli notları (doğrulanmadı)
+
+1. `src/lib/authz/context.ts:39` — zorunlu parola değişimindeki oturum, DB katmanı seçilirken tam katmanını alıyor.
+2. `src/lib/auth.ts:49` — `safeRedirectPath` ters eğik çizgi/TAB varyantlarını kabul ediyor → `/login?next=` açık yönlendirme.
+3. `scripts/start-testsprite.ts:10` vb. — Docker süper kullanıcısı `postgres:postgres` sabit (yalnız tek kullanımlık hedefler).
+4. `src/lib/briefing/rules.ts:103` — 7 günlük likidite açığı bilinmiyorken başlık "kritik kalem görünmüyor" diyor.
+5. `src/lib/analytics/analyses.ts:260` — nakit köprüsü bilinmeyen gelir/gideri 0 sayıp mutabakat hükmü veriyor.
+6. `src/lib/telegram/assistant.ts:138` — `/hareket` borç/alacak etiketi fatura yönüne bakmıyor.
+7. `scripts/ops/process-import-jobs.ts:47` — geçici hata alan önizleme işi yeniden denenmiyor; aynı dosya başarısız işi döndürüyor.
+8. `src/lib/jobs/dispatcher.ts:170` — işleyicinin `resultPayload`'ı atılıyor.
+9. `next.config.ts:65` — katmanın `onDemandEntries` bloğu kaldı (R6 listesinde değil).
+10. `.env.example:23,54` — `CHANGE_ME` değerleri 12 karakter kuralını atlatıyor (KR-24).
+11. `scripts/ops/install-postgres-service.ps1:432` — Ctrl+C / pencere kapatma, oturum görevini devre dışı bırakabilir.
+12. `scripts/ops/install-postgres-service.ps1:395` — yarım kalmış kurulumdan sonra yeniden çalıştırma bazı adımları atlıyor.
+13. `scripts/ops/install-postgres-service.ps1:326` — `hba_file` yönlendirmesi denetlenmiyor.
+14. `scripts/release/restore-drill.ts:188` — tam gerçek veri dökümünü `%TEMP%`'e yazıyor; temizlik yalnız `finally`'de.
+15. `scripts/ops/backup-daily.ts:220` — `*.dump.unverified` dosyaları budamaya hiç girmiyor.
+16. `scripts/release/real-clone-v2-rehearsal.ts:73` — parolayı komut satırında geçiriyor (katman öncesi).

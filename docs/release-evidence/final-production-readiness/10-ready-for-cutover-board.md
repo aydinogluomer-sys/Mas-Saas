@@ -4,6 +4,17 @@
 **RC_SHA:** `b8c3244385b0213ba998232853f963a372fa09a3`
 **Tarih:** 2026-08-25
 
+> **GÜNCELLEME 2026-10-29 (Dalga 0) — bu pano tarihseldir, aşağıdaki P0'ları okurken bunu dikkate alın:**
+>
+> - **P0-2 KAPALI:** P24B temizliği daha önce yapılmış — `p24b-real-cleanup/FINAL-REAL-CLEANUP-DOSSIER.md` (COMMITTED, 42/42).
+>   Kanonik veritabanında fixture satırı yok.
+> - **P0-1 AÇIK:** D: harici diski şu an takılı değil. Native günlük yedek çalışıyor, ama tek kopya olduğu için bilerek
+>   "çıkış 3" veriyor.
+> - Kanonik veritabanı artık Docker değil, native PostgreSQL 16 (`C:\MAS`). 16 Ekim dökümünden geri yüklendi;
+>   defter 0096. Bkz. `docs/release-evidence/wave0/`.
+> - Master'a incelenmemiş bir katman (46541d8) CI'sız girmişti; Dalga 0 bunu seçici karantinayla kapattı
+>   (`wave0/02-wave0-kod-karantinasi.md`).
+
 > Rehber §19: *"Bir tane bile boşsa: `NOT READY FOR CUTOVER`. Weighted skor bunu override edemez."*
 
 ---
