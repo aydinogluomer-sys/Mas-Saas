@@ -308,11 +308,26 @@
       satırı yok; canlı oturumlar (`revoked_at is null and expires_at > now()`) — betiklerin açtığı uzun ömürlü admin oturumları
       iptal edilir (sabit id'li olan dahil; silinen `measure-routes.ts`'in kimliği `quarantine/pre-wave0-2026-10-28` etiketinde);
       `seed-supabase-admin` yerelde koştuysa admin parolası döndürülür (`rotate-passwords.ts`).
+- [ ] Sahibin SALT-OKUNUR kontrolleri — kaldırılan YAZMA yollarının defterde iz bırakıp bırakmadığı (KR-51; `.env.local`
+      native DB'ye çevrilmeden ÖNCE, owner bağlantısı, kanonik DB). Native küme katman döneminden kalan veriden geri
+      yüklendi; katmanın kodu `af210fd` (2026-09-13) ile `46541d8` (2026-10-28) arasında bu veriye karşı çalıştı:
+      1. ERP köprüsünün "örnek" senkronu (hub `{sample:true}` → `/api/erp/sync`, tıklayan kullanıcının katmanında; her
+         tıklama `Date.now()` anahtarlı yeni açık faturalar):
+         `select count(*), min(created_at), max(created_at) from public.invoices where dedupe_hash like 'erp:%'`;
+         `select action, count(*) from public.audit_logs where action in ('erp_sync','erp_sync_counterparties','create_counterparty_erp') group by 1`;
+         adlandırdıkları cariler: `select a.entity_id, p.name, a.created_at from public.audit_logs a left join public.parties p on p.id = a.entity_id where a.action = 'create_counterparty_erp' order by a.created_at`
+         (+ `public.counterparty_profiles` içinde aynı `party_id`'ler). Bu satırların aktörü null'dır.
+      2. Telegram mini-app'in yetki yükseltmesi (oturumu olan HER katman `runAsSystem` = finance_manager ile yazıyordu):
+         `select a.action, u.username, u.role, count(*), min(a.created_at), max(a.created_at) from public.audit_logs a join public.users u on u.id = a.actor where a.action in ('mark_paid','mark_unpaid','mark_check_cleared') and u.role in ('viewer','finance_approver') group by 1,2,3`.
+         Rol BUGÜNKÜ roldür: eşleşen kullanıcının `set_user_role` denetim satırlarıyla o tarihteki rolü teyit edilir.
+      Herhangi bir sonuç sıfır değilse: sahip kararı; düzeltme yalnız incelenmiş, denetimli yoldan — fatura için
+      `/finance/invoices` gerekçeli iptal (`cancelInvoice`), ödeme için "geri al" (`mark_unpaid`) — asla sessiz `delete`.
 - [ ] Önceden var olan (af210fd'de de kırmızı) iki phase18 bulgusu: `src/lib/radar/generate-instances-audit.test.ts:81` test
       sahtesi ve `docs/database-schema.md`'de 0088–0094'ün olmaması. İkisinin düzeltmesi birleşmemiş `ops/phase7-operations`
       dalında hazır (`6dc9732`).
-- [ ] Etkileşim kapısı (KR-08): `/system/security` "şifre değişimi zorla" ve `/change-password` gönderimi için manifest kuralı +
-      tıkla-ve-DB-doğrula testi (Playwright bu dilimde koşturulmadı).
+- [ ] Etkileşim kapısı (KR-08): `/system/security` "şifre değişimi zorla" için manifest kuralı + tıkla-ve-DB-doğrula vakası
+      denetim bulguları turunda yazıldı (aşağıda); Playwright ile CI'da / disposable DB'de koşturulması açık. `/change-password`
+      taramada yok (rota listesinde değil) — gönderimin uçtan uca testi yukarıdaki E2E maddesinde.
 - [ ] `.env.example`: `MAS_RADAR_APP_DB_PASSWORD` ve `SEED_ADMIN_PASSWORD` yine boş (KR-24) — `CHANGE_ME` (9 karakter) belgelenmiş
       maskeli girişi atlatıp 12 karakter kuralında düşüyor.
 - [x] `scripts/ops/measure-auth-routes.ts` ve `scripts/ops/run-lighthouse.ts` hâlâ admin oturumu basıyor (biri `.env.local`'ı
@@ -355,3 +370,41 @@
 - [ ] Sahip: depo kökündeki izlenmeyen `.lighthouse-result.json` silinen `run-lighthouse.ts`'in çıktısı (2026-10-18) ve bir
       `final-screenshot` denetimi (o anki sayfanın görüntüsü) içeriyor; `.gitignore`'da değil — yerelde silinsin, asla
       commit'lenmesin.
+
+
+## Wave 0 / Denetim bulguları — DONE (S1–S7 + kalite kapısı sonrası bağımsız denetimin doğrulanmış bulguları)
+
+- [x] FIN-01: Telegram asistanının `/hareket` cevabı ("son N hareket") 200'den fazla hareketi olan caride ESKİ hareketleri
+      gösteriyordu (okuyucu en eski 200'ü alıyor, asistan kuyruğunu basıyordu). Yeni okuyucu `loadLatestLedgerMovements`
+      sırayı (en yeniden eskiye) ve adedi SQL'de belirler; `assistant-ledger.test.ts` 250 hareketle, okuyucuyu mock'lamadan,
+      sorgunun kendi `order by … limit`'ini yürüten sahte havuzla kanıtlar (eski sıraya karşı 3/3 kırmızı).
+- [x] FIN-02: `/insights/briefing` nakit kutusu TRY nakdi, para birimine göre sıralı ilk 7 günlük satırın (EUR/GBP/CHF varsa
+      onun, politikasız → 0) tabanıyla kıyaslıyor ve TRY tabanı delinmişken yeşil "Taban korunuyor" diyordu. Kutu artık
+      brifing gerçeğinin tabanını kullanır (tek seçim, TRY öncelikli); taban YALNIZ aktif hesap-geneli `min_cash` politikası
+      varsa vardır (`loadConfiguredFloorCurrencies`, görünümün `floors` CTE'siyle aynı yüklem), yoksa null → R10'un
+      "Taban tanımlı değil" dalı gerçek veriyle de ulaşılabilir. `src/lib/briefing/engine.test.ts`.
+- [x] KR-08 / etkileşim kapısı: "şifre değişimi zorla" için `system/force-password-change` manifest kuralı + `mutations.spec.ts`
+      vakası (ayrılmış `ix_fixture_force_pw` kullanıcısının satırında; DB before/after + `audit_logs` + reload); görsel harness
+      `must_change_password`'ı her koşuda false'a çeker. `tests/interaction-manifest-keep.test.ts` kuralı Playwright'sız sınar.
+- [x] OPS-1: `pnpm db:migrate`'in zorunlu ön-yedeği native araçların ana sürüm kontrolünü atlıyordu. Sıra artık tek yerde
+      (`takeVerifiedBackup`: küme kimliği → `readToolVersions` → dump); sürüm reddinde dump hiç başlamaz; rapor araç sürümünü
+      yazar. `tests/backup-adapter-select.test.ts`.
+- [x] SEC-01: kaldırılan yazma yollarının (ERP örnek senkronu, mini-app yetki yükseltmesi) defter izleri için salt-okunur sahip
+      kontrolleri S6 listesine eklendi (yukarıda); `docs/risk-register.md` satır 51'e "Kalan" notu.
+- [x] Gate: typecheck 0 hata ✓ · lint 0 hata / 0 uyarı ✓ · vitest 107 dosya / 2143 test ✓ · boundary:verify 8/8 ✓.
+- [ ] Playwright (bu turda koşturulmadı — DB kuralı): `pnpm interaction:crawl` → `interaction:test` → `interaction:gate`
+      disposable DB'de; beklenen: manifestosuz=0, yeni vaka PASS, UNTESTED ≤ 557.
+- [ ] FIN-03 (Wave 0 sonrası, ileri migration — 0001–0096 dondurulmuş): bilinmeyen açılış bakiyesi 0 sayılıyor.
+      `bank_cash_position.derived_balance = coalesce(opening_balance, 0) + hareketler` (0063:41, 0094:165) →
+      `treasury_position_summary.available_now` → `treasury_liquidity_gap` (projeksiyon, finansman ihtiyacı, taban ihlali).
+      Import V2 `Açılış Bakiyesi` boşsa `opening_balance` null bırakır. Sonuç: açılışı bilinmeyen aktif hesap varken
+      "Kullanılabilir nakit" ve 7/30/90 gün hükümleri kesin bir rakam gibi görünür; R10'un "bilinmiyor" dalları yalnız hiç
+      aktif hesap yokken çalışır. Yapılacak: (a) yeni migration — açılışı null olan aktif hesap varsa `derived_balance` /
+      `available_now` null (ya da `unknown_opening_count`), null `treasury_liquidity_gap`'e yayılır; motorlar ve kutular "—" /
+      "hesaplanamadı" der; `loadLiquidityHorizons` ve `optimization/engine.ts`'in `available_now ?? 0`'ı da aynı kurala
+      bağlanır. (b) O migration'a kadar ara etiket: açılışı bilinmeyen hesap sayısı hazine sayfasında ve brifingde
+      "yalnız hareketlerden" notuyla gösterilir. Önce sahip kontrolü (salt-okunur): `select ca.currency, count(*) from
+      public.cash_accounts ca where ca.is_active and ca.opening_balance is null group by 1`.
+- [ ] Brifing para birimi geri dönüşü: aktif TRY hesabı hiç yoksa `loadBriefingFacts` ilk para biriminin (ör. EUR) nakdini ve
+      tabanını alır, metin ve kutu onu "TL" diye yazar. TRY yoksa nakit/taban null olmalı ya da para birimi etiketi taşımalı
+      (phase32-verify aynı seçim kuralını yansıtıyor — birlikte değişir).

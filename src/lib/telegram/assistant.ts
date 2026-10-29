@@ -1,8 +1,8 @@
 import type { Pool } from "pg";
 import { mutationIntent } from "@/lib/ai/rules";
 import {
-  loadCurrentAccountLedger,
   loadCurrentAccounts,
+  loadLatestLedgerMovements,
   loadPayableTotals,
   loadReceivableTotals,
 } from "@/lib/receivables/engine";
@@ -128,8 +128,9 @@ export async function answerTelegramQuestion(
     const account = candidates[0];
     if (wantsLedger) {
       const limit = requestedLedgerLimit(message);
-      const rows = await loadCurrentAccountLedger(pool, account.partyId, 200);
-      const recent = rows.slice(-limit).reverse();
+      // Newest first and exactly `limit` rows, both decided in SQL. This used to load the OLDEST 200
+      // and print their tail, so a busy party's "son 10 hareket" were rows ~191-200 of its history.
+      const recent = await loadLatestLedgerMovements(pool, account.partyId, limit);
       if (recent.length === 0) {
         return { kind: "current_account_ledger", answer: `${account.partyName} için cari hareket bulunamadı.` };
       }

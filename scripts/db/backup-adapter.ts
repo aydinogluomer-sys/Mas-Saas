@@ -126,6 +126,33 @@ export function createBackupAdapter(input: {
 }
 
 /**
+ * DDL'den önceki zorunlu yedeğin TEK sırası — dump'a güvenilebilmesi için üç adım, bu sırayla:
+ *
+ *   1. verifyTarget      araç yolu, çağıranın TCP bağlantısıyla AYNI kümeye (system_identifier) varıyor;
+ *   2. readToolVersions  pg_dump ve pg_restore ana sürümü sunucununkine eşit (native bunu ZORLAR;
+ *                        docker konteynerin kendi araçlarını ölçer);
+ *   3. backup.
+ *
+ * NEDEN AYRI BİR FONKSİYON. migrate.ts'in ön-yedeği yalnız 1 ve 3'ü yapıyordu. Diğer bütün dump
+ * çağıranları (backup-daily, backup-receipt, restore-drill, stage07) önce sürümleri okur; gerçek
+ * veritabanında DDL'den hemen önce alınan TEK dump okumuyordu. Native'de MAS_PG_BIN_DIR boşken
+ * araçlar PATH'ten gelir: PATH'te önde duran daha yeni bir istemci 16.x sunucuyu daha yeni bir arşiv
+ * biçimiyle döker ve onu KENDİ pg_restore'u ile "doğrular"; migration'dan sonra kümenin kendi 16.x
+ * pg_restore'u, migration'dan önceki tek yedeği okuyamaz. Sıra burada, tek yerde; birim testi
+ * (tests/backup-adapter-select.test.ts) sürüm reddinde dump'ın hiç başlamadığını sınar. Buradaki
+ * her hata ilk dump baytından ve migrate'in ilk SQL'inden ÖNCE fırlar.
+ */
+export async function takeVerifiedBackup(
+  adapter: Pick<BackupAdapter, "verifyTarget" | "readToolVersions" | "backup">,
+  opts: { dbName: string; systemIdentifier: string; label: string },
+): Promise<BackupResult & { toolVersions: PgToolVersions }> {
+  adapter.verifyTarget(opts.dbName, opts.systemIdentifier);
+  const toolVersions = adapter.readToolVersions(opts.dbName);
+  const result = await adapter.backup({ dbName: opts.dbName, label: opts.label });
+  return { ...result, toolVersions };
+}
+
+/**
  * Harcanabilir veritabanlarına yazan işlemler — YALNIZ native. Docker yolunun karşılığı iki
  * kapının içinde satır içi `docker exec` çağrılarıydı; o yol artık yok ve CI bu kapıları koşmaz.
  * `sourceDb` verilmezse owner URL'inin veritabanıdır: harcanabilir hedef asla o olamaz.

@@ -27,7 +27,7 @@ import { audit } from "@/lib/audit";
 import { moneyOrNull } from "@/lib/money";
 import { istanbulDateISO } from "@/lib/reports/rules";
 import { instancesOn, overdueOpen } from "@/lib/radar/queries";
-import { loadLiquidityGap, loadPositionSummary } from "@/lib/treasury/engine";
+import { loadConfiguredFloorCurrencies, loadLiquidityGap, loadPositionSummary } from "@/lib/treasury/engine";
 import { loadWorkingCapital } from "@/lib/costing/engine";
 import { loadControlDashboard, loadAlerts } from "@/lib/controls/engine";
 import { loadOpenPromises } from "@/lib/collections/promises-engine";
@@ -41,10 +41,11 @@ import { renderBriefing, summariseDay, type BriefingFacts } from "./rules";
  * the summary and the detail incapable of disagreeing.
  */
 export async function loadBriefingFacts(pool: Pool, todayISO: string): Promise<BriefingFacts> {
-  const [summary, gaps, working, controls, alerts, promises, todayInstances, overdue] =
+  const [summary, gaps, floorCurrencies, working, controls, alerts, promises, todayInstances, overdue] =
     await Promise.all([
       loadPositionSummary(pool),
       loadLiquidityGap(pool),
+      loadConfiguredFloorCurrencies(pool),
       loadWorkingCapital(pool),
       loadControlDashboard(pool),
       loadAlerts(pool, 200),
@@ -69,10 +70,16 @@ export async function loadBriefingFacts(pool: Pool, todayISO: string): Promise<B
     currency: (i as { currency?: string | null }).currency ?? null,
   })));
 
+  // The floor comes from the SAME row as the 7-day gap, so it is in the same currency as the cash
+  // it is compared with. A currency without an active min-cash policy has NO floor: the view
+  // still reports 0 for it (coalesce), which every verdict downstream would read as a configured
+  // "do not go below zero". Unknown is null here, so "Taban tanımlı değil" can actually be said.
+  const minCashFloor = gap7 != null && floorCurrencies.has(gap7.currency) ? gap7.minCashFloor : null;
+
   return {
     todayISO,
     availableCash: tryPos?.availableNow ?? null,
-    minCashFloor: gap7?.minCashFloor ?? null,
+    minCashFloor,
     liquidityGap7: gap7?.financingNeed ?? null,
     liquidityGap30: gap30?.financingNeed ?? null,
     projectedContracted7: gap7?.projectedContracted ?? null,
@@ -114,9 +121,8 @@ async function gatherWidgetFacts(
   // here, so the shared treasury/working-capital/control loaders execute once rather than twice.
   // The five small aggregate queries used to run serially after those loaders, adding five full
   // round trips to every navigation.
-  const [facts, gaps, working, controls, alerts, debt, facility, fx, budget, conc] = await Promise.all([
+  const [facts, working, controls, alerts, debt, facility, fx, budget, conc] = await Promise.all([
     briefingFacts ?? loadBriefingFacts(pool, todayISO),
-    loadLiquidityGap(pool),
     loadWorkingCapital(pool),
     loadControlDashboard(pool),
     loadAlerts(pool, 200),
@@ -131,12 +137,16 @@ async function gatherWidgetFacts(
     pool.query(`select max(late_ratio) as top from public.counterparty_collection_profile`),
   ]);
 
-  const gap7 = gaps.find((g) => g.horizonDays === 7) ?? null;
   const drawn = moneyOrNull(facility.rows[0]?.drawn) ?? 0;
 
   return { briefingFacts: facts, widgetFacts: {
     availableCash: facts.availableCash,
-    minCashFloor: gap7?.minCashFloor ?? null,
+    // From the briefing's facts, like the cash beside it. This tile used to re-read the gap rows
+    // and take the first 7-day row with NO currency filter; the rows are sorted by currency, so
+    // with any EUR/GBP/CHF account it judged TRY cash against that currency's floor (0 — no policy)
+    // and showed a green "Taban korunuyor" while the TRY floor was breached and the liquidity
+    // tile, the badge and the briefing text all said otherwise.
+    minCashFloor: facts.minCashFloor,
     liquidityGap7: facts.liquidityGap7,
     liquidityGap30: facts.liquidityGap30,
     receivablesOpen: working?.receivablesOpen ?? null,

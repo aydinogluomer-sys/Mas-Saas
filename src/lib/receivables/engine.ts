@@ -383,27 +383,55 @@ export async function loadCurrentAccounts(pool: Pool, limit = 200) {
   }));
 }
 
-export async function loadCurrentAccountLedger(pool: Pool, partyId: string, limit = 200) {
-  // current_account_ledger (0050) has no currency column, but every movement — the invoice row and
-  // each allocation against it — is denominated in its invoice's currency, and every row carries
-  // invoice_id. The join gives each movement its own currency so no reader has to assume TRY.
-  // invoices.currency is NOT NULL with an ISO-4217 shape check (0044); the left join only means a
-  // missing match surfaces as null (unknown) rather than dropping the movement.
-  const r = await pool.query(
-    `select to_char(l.movement_date,'YYYY-MM-DD') as movement_date, l.movement_type, l.reference,
-            l.direction, l.debit_amount, l.credit_amount, l.invoice_id::text, i.currency
-     from public.current_account_ledger l
-     left join public.invoices i on i.id = l.invoice_id
-     where l.party_id=$1
-     order by l.movement_date, l.movement_type limit $2`, [partyId, limit]);
-  return r.rows.map((x) => ({
-    movementDate: x.movement_date, movementType: x.movement_type, reference: x.reference,
+// current_account_ledger (0050) has no currency column, but every movement — the invoice row and
+// each allocation against it — is denominated in its invoice's currency, and every row carries
+// invoice_id. The join gives each movement its own currency so no reader has to assume TRY.
+// invoices.currency is NOT NULL with an ISO-4217 shape check (0044); the left join only means a
+// missing match surfaces as null (unknown) rather than dropping the movement.
+const LEDGER_SELECT =
+  `select to_char(l.movement_date,'YYYY-MM-DD') as movement_date, l.movement_type, l.reference,
+          l.direction, l.debit_amount, l.credit_amount, l.invoice_id::text, i.currency
+   from public.current_account_ledger l
+   left join public.invoices i on i.id = l.invoice_id
+   where l.party_id=$1`;
+
+function ledgerRow(x: Record<string, unknown>) {
+  return {
+    movementDate: x.movement_date as string, movementType: x.movement_type as string,
+    reference: x.reference as string | null,
     direction: x.direction as "sales" | "purchase",
-    debitAmount: moneyOrNull(x.debit_amount) ?? 0,
-    creditAmount: moneyOrNull(x.credit_amount) ?? 0,
-    invoiceId: x.invoice_id,
+    debitAmount: moneyOrNull(x.debit_amount as string | null) ?? 0,
+    creditAmount: moneyOrNull(x.credit_amount as string | null) ?? 0,
+    invoiceId: x.invoice_id as string,
     currency: (x.currency as string | null) ?? null,
-  }));
+  };
+}
+
+/** The ledger in statement order: oldest first, the first `limit` movements. */
+export async function loadCurrentAccountLedger(pool: Pool, partyId: string, limit = 200) {
+  const r = await pool.query(
+    `${LEDGER_SELECT}
+     order by l.movement_date, l.movement_type limit $2`, [partyId, limit]);
+  return r.rows.map(ledgerRow);
+}
+
+/**
+ * The party's LATEST `limit` movements, newest first — what "son N hareket" means.
+ *
+ * Not loadCurrentAccountLedger read backwards, deliberately. The Telegram assistant used to take
+ * that reader's first 200 rows (oldest first) and print their tail as "the latest": for a party
+ * past 200 movements it showed rows ~191-200 of its history under a "son 10 hareket" heading,
+ * and every newer invoice and collection had already been cut off by the LIMIT — the owner would
+ * read "nothing since March" about a customer who paid yesterday. A LIMIT taken from the wrong end
+ * of the ordering cannot be repaired afterwards in JavaScript, so the order and the size are both
+ * in the SQL here. Same-day ties keep the statement's own tie-break, reversed, so this is exactly
+ * the statement read from the bottom up.
+ */
+export async function loadLatestLedgerMovements(pool: Pool, partyId: string, limit: number) {
+  const r = await pool.query(
+    `${LEDGER_SELECT}
+     order by l.movement_date desc, l.movement_type desc limit $2`, [partyId, limit]);
+  return r.rows.map(ledgerRow);
 }
 
 /**

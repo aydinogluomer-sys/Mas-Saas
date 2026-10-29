@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   loadCurrentAccounts: vi.fn(),
-  loadCurrentAccountLedger: vi.fn(),
+  loadLatestLedgerMovements: vi.fn(),
   loadReceivableTotals: vi.fn(),
   loadPayableTotals: vi.fn(),
 }));
@@ -36,7 +36,7 @@ describe("Telegram salt-okunur asistanı", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.loadCurrentAccounts.mockResolvedValue([account]);
-    mocks.loadCurrentAccountLedger.mockResolvedValue([]);
+    mocks.loadLatestLedgerMovements.mockResolvedValue([]);
     mocks.loadReceivableTotals.mockResolvedValue({ totalOpenAmount: 2_500_000, overdueCount: 4, foreignCount: 0 });
     mocks.loadPayableTotals.mockResolvedValue({ totalOpenAmount: 900_000, overdueCount: 1, foreignCount: 0 });
   });
@@ -51,15 +51,19 @@ describe("Telegram salt-okunur asistanı", () => {
   });
 
   it("son hareketleri en yeniden eskiye ve istenen adetle döndürür", async () => {
-    mocks.loadCurrentAccountLedger.mockResolvedValue([
-      { movementDate: "2026-08-20", movementType: "invoice", reference: "F-1", debitAmount: 100, creditAmount: 0, currency: "TRY" },
+    // The reader already returns newest first (the order is decided in SQL — see
+    // assistant-ledger.test.ts for the unmocked proof); the assistant must keep that order.
+    mocks.loadLatestLedgerMovements.mockResolvedValue([
       { movementDate: "2026-08-28", movementType: "payment", reference: "T-1", debitAmount: 0, creditAmount: 40, currency: "TRY" },
+      { movementDate: "2026-08-20", movementType: "invoice", reference: "F-1", debitAmount: 100, creditAmount: 0, currency: "TRY" },
     ]);
 
     const result = await answerTelegramQuestion(pool, "/hareket Akon", "2026-08-29");
 
     expect(result.kind).toBe("current_account_ledger");
     expect(result.answer.indexOf("T-1")).toBeLessThan(result.answer.indexOf("F-1"));
+    // The requested count goes to the reader (default 10), not a fixed 200-row window.
+    expect(mocks.loadLatestLedgerMovements).toHaveBeenCalledWith(pool, "party-1", 10);
   });
 
   it("toplam açık alacağı limitli satır toplamı yerine totals motorundan alır", async () => {
@@ -87,7 +91,7 @@ describe("Telegram asistanı — tutarlar dürüst etiketlenir (yalnız TRY topl
   });
 
   it("TRY dışı cari hareketi kendi para birimiyle yazar, asla TL olarak değil", async () => {
-    mocks.loadCurrentAccountLedger.mockResolvedValue([
+    mocks.loadLatestLedgerMovements.mockResolvedValue([
       { movementDate: "2026-08-20", movementType: "fatura (satış)", reference: "F-USD", debitAmount: 1_250, creditAmount: 0, currency: "USD" },
       { movementDate: "2026-08-21", movementType: "fatura (satış)", reference: "F-TRY", debitAmount: 5_000, creditAmount: 0, currency: "TRY" },
     ]);
@@ -103,7 +107,7 @@ describe("Telegram asistanı — tutarlar dürüst etiketlenir (yalnız TRY topl
   });
 
   it("para birimi bilinmeyen hareketi bilinmiyor olarak yazar, TL varsaymaz", async () => {
-    mocks.loadCurrentAccountLedger.mockResolvedValue([
+    mocks.loadLatestLedgerMovements.mockResolvedValue([
       { movementDate: "2026-08-20", movementType: "tahsilat", reference: "manual", debitAmount: 0, creditAmount: 40, currency: null },
     ]);
 

@@ -133,6 +133,28 @@ async function ensureOpenTaskOwnedBy(role: SeededRole): Promise<string> {
   });
 }
 
+/**
+ * "şifre değişimi zorla" için: bayrağı KAPALI, aktif, ayrılmış bir fixture kullanıcısı.
+ *
+ * Görsel rol kullanıcılarından (visual_*) biri DEĞİL, bilerek: aksiyon oturumları iptal etmez ama
+ * `getCurrentUser()` bayrağı canlı okur, yani o rolün bu paketteki sonraki her isteği
+ * /change-password'e yönlenirdi ve kırmızı, ürünle ilgisiz bir yerden gelirdi. Parola özeti
+ * hiçbir argon2 özetine benzemez: bu hesapla giriş yapılamaz, yapılması da gerekmez.
+ * Her koşuda bayrak yeniden false yapılır — tekrar çalıştırılabilir.
+ */
+async function ensureForceChangeFixtureUser(): Promise<string> {
+  return db(async (c) => {
+    const r = await c.query<{ id: string }>(
+      `insert into public.users (username, password_hash, display_name, role, is_active, must_change_password)
+       values ('ix_fixture_force_pw', '!ix-fixture-giris-yok', 'IX-FIXTURE şifre zorla', 'viewer', true, false)
+       on conflict (username) do update
+         set is_active = true, must_change_password = false, failed_login_count = 0, locked_until = null
+       returning id`,
+    );
+    return r.rows[0].id;
+  });
+}
+
 /* ── Vakalar — finansal riski en yüksek akışlar önce ────────────────────────────────────── */
 
 const CASES: MutationCase[] = [
@@ -195,6 +217,19 @@ const CASES: MutationCase[] = [
     // Yazmanın gerçekten olduğunun kanıtı, aksiyonun kendi audit satırıdır.
     countSql: "select count(*)::int from public.audit_logs where action = 'refresh_metric_snapshots'",
     direction: "increase",
+  },
+  {
+    id: "system/force-password-change",
+    route: "/system/security",
+    label: "şifre değişimi zorla",
+    role: "admin",
+    // Düğme fixture kullanıcısının satırındaki forma daraltılır (setup kimliği döndürür).
+    setup: ensureForceChangeFixtureUser,
+    // Bayrak açılan kullanıcı sayısı; fixture her koşuda false'a çekildiği için tıklama onu artırır.
+    countSql: "select count(*)::int from public.users where must_change_password",
+    direction: "increase",
+    // audit_logs satırı: action 'force_password_change', entity_table 'users', aktör admin.
+    auditTable: "users",
   },
 ];
 

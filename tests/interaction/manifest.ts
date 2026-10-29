@@ -232,6 +232,11 @@ const SYSTEM: CoverageRule[] = [
   { id: "system/deactivate-user", route: /^\/system\/security$/, label: /^pasifleştir$/, klass: "mutation", dbEffect: "users.is_active→false; oturumları iptal", verifiedBy: "flows.spec.ts › kullanıcı pasifleştir" },
   { id: "system/create-user", route: /^\/system\/security$/, label: /^kullanıcı oluştur$/, klass: "mutation", dbEffect: "users satırı", verifiedBy: "flows.spec.ts › kullanıcı oluştur" },
   { id: "system/reset-password", route: /^\/system\/security$/, label: /^sıfırla$/, klass: "mutation", dbEffect: "users.password_hash değişir; failed_login_count sıfırlanır", verifiedBy: "flows.spec.ts › parola sıfırla" },
+  // Wave 0 KEEP özelliği (0095): her satırda, bayrağı false olan kullanıcıda render edilir — CI'ın
+  // beş görsel kullanıcısında da. Kuralı olmadan kapı onu "manifestosuz" sayıp ratchet'i her modda
+  // kırmızıya çeviriyordu. Tıklama ayrılmış bir fixture kullanıcısının satırında yapılır; görsel
+  // rol kullanıcılarından birine basılsaydı o rolün sonraki her oturumu /change-password'e düşerdi.
+  { id: "system/force-password-change", route: /^\/system\/security$/, label: /^şifre değişimi zorla$/, klass: "mutation", dbEffect: "users.must_change_password→true + audit_logs force_password_change", verifiedBy: "mutations.spec.ts › system/force-password-change: 'şifre değişimi zorla' GERÇEKTEN yazıyor" },
   { id: "system/drain-queue", route: /^\/system\/jobs$/, label: /^Kuyruğu süpür$/, klass: "mutation", dbEffect: "job_runs satırı; kuyruk boşalır", verifiedBy: "flows.spec.ts › iş kuyruğunu süpür" },
   { id: "system/archive-filter", route: /^\/system\/archive$/, label: /^Filtrele$/, klass: "ui-state", verifiedBy: "shell.spec.ts › arşiv filtresi sonuç kümesini daraltır" },
   { id: "tasks/search", route: /^\/insights\/tasks$/, label: /^Ara$/, klass: "ui-state", verifiedBy: "shell.spec.ts › görev arama sonuç kümesini daraltır" },

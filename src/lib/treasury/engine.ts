@@ -155,6 +155,23 @@ export async function loadPositionSummary(pool: Pool) {
   }));
 }
 
+/**
+ * Currencies that HAVE a floor: an active, account-wide min-cash policy. This is the `floors` CTE
+ * of treasury_liquidity_gap (0063), same predicate, read on its own.
+ *
+ * Why a reader needs it: the view reports `coalesce(threshold_amount, 0)` as min_cash_floor, so
+ * "no floor is configured for this currency" and "the floor is deliberately 0" (0062: zero is a
+ * valid floor and the seeded default) arrive as the same number. For the shortfall column that is
+ * harmless — below zero is below zero either way. A VERDICT against the floor ("Taban korunuyor")
+ * is different: it must know whether there was a floor to judge against at all.
+ */
+export async function loadConfiguredFloorCurrencies(pool: Pool): Promise<ReadonlySet<string>> {
+  const r = await pool.query(
+    `select distinct currency from public.treasury_policies
+     where policy_kind = 'min_cash' and is_active and cash_account_id is null`);
+  return new Set(r.rows.map((x) => String(x.currency)));
+}
+
 export async function loadLiquidityGap(pool: Pool) {
   const r = await pool.query(
     `select horizon_days, currency, available_now, contracted_net_flow, expected_net_flow,

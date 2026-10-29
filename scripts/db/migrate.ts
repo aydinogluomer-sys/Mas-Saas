@@ -24,8 +24,10 @@ import {
   type LegacyBaselineEntry,
   type LedgerRow,
 } from "./migration-lib";
-import type { BackupResult } from "./backup-docker-postgres";
-import { createBackupAdapter, describeAdapter, withPgRuntimeConfig, type BackupAdapter } from "./backup-adapter";
+import type { BackupResult, PgToolVersions } from "./backup-docker-postgres";
+import {
+  createBackupAdapter, describeAdapter, takeVerifiedBackup, withPgRuntimeConfig, type BackupAdapter,
+} from "./backup-adapter";
 import { ownerDatabaseUrl } from "./owner-url";
 import { readEnvLocal } from "./app-url";
 import {
@@ -112,7 +114,7 @@ interface MigrateReport {
   backfilled: string[];
   pendingApplied: string[];
   upToDate: boolean;
-  backup: (BackupResult & { systemIdentifier: string }) | null;
+  backup: (BackupResult & { systemIdentifier: string; toolVersions: PgToolVersions }) | null;
 }
 
 class HardFailError extends Error {}
@@ -241,14 +243,18 @@ interface BackupTarget {
 }
 
 /** The mandatory pre-migration backup: first prove the backup tool path reaches the SAME
- * cluster this runner is connected to (system_identifier), then take the durable dump.
+ * cluster this runner is connected to (system_identifier), then that pg_dump/pg_restore are
+ * the server's major version, then take the durable dump — takeVerifiedBackup in
+ * backup-adapter.ts owns that order (the version check used to be skipped on exactly this path).
  * requireCriticalTables stays false on purpose — see BackupOptions in
  * backup-docker-postgres.ts: these databases may legitimately not have schema_migrations yet.
  * Any failure throws, and no SQL has been executed by then. */
-async function takeMandatoryBackup(backupTarget: BackupTarget): Promise<BackupResult> {
-  backupTarget.adapter.verifyTarget(backupTarget.dbName, backupTarget.systemIdentifier);
-  return backupTarget.adapter.backup({
+async function takeMandatoryBackup(
+  backupTarget: BackupTarget,
+): Promise<BackupResult & { toolVersions: PgToolVersions }> {
+  return takeVerifiedBackup(backupTarget.adapter, {
     dbName: backupTarget.dbName,
+    systemIdentifier: backupTarget.systemIdentifier,
     label: `migrate-${backupTarget.dbName}`,
   });
 }
@@ -430,6 +436,7 @@ function printReport(report: MigrateReport, connection: { database: string; user
   }
   if (report.backup) {
     console.log(`yedek: ${report.backup.path} (${report.backup.bytes} bayt, system_identifier=${report.backup.systemIdentifier})`);
+    console.log(`yedek araçları: ${report.backup.toolVersions.pgDumpVersion} · sunucu: ${report.backup.toolVersions.pgVersion.slice(0, 60)}`);
   } else {
     console.log("yedek: alınmadı (EMPTY state veya pending yok — kaybedilecek/değişecek veri yok)");
   }

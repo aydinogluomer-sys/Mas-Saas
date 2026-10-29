@@ -13,16 +13,19 @@
  *      denetiminin istediği "kapı ilk yazmadan önce" özelliğinin davranışsal kanıtıdır.
  *   4. Off-device kopyanın hedefteki dosyası enjekte edilen doğrulayıcıyla okunur; doğrulayıcının
  *      hatası yutulmaz.
+ *   5. DDL öncesi yedek (migrate): küme kimliği → araç sürümleri → dump; sürüm reddinde dump
+ *      hiç başlamaz (bu yolda sürüm kontrolü eskiden atlanıyordu).
  */
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ExecFileSyncLike } from "../scripts/db/backup-native-postgres";
 import {
   createBackupAdapter, createDisposableRestoreOps, createListVerifier, describeAdapter, dockerContainerName,
-  withPgRuntimeConfig,
+  takeVerifiedBackup, withPgRuntimeConfig, type BackupAdapter,
 } from "../scripts/db/backup-adapter";
+import type { BackupResult } from "../scripts/db/backup-docker-postgres";
 import { copyToTargetVerified, type OffDeviceClassification } from "../scripts/ops/backup-lib";
 
 const SECRET = "Sahip-Parolasi-77";
@@ -82,6 +85,73 @@ describe("createBackupAdapter — seçim", () => {
     const adapter = createBackupAdapter({ ownerUrl: "postgres://u:p@ci-runner.internal:5432/x", env: { MAS_PG_RUNTIME: "docker" } });
     expect(adapter.runtime).toBe("docker");
     expect(adapter.sourceLabel).toBe("mas-radar-pg");
+  });
+});
+
+describe("takeVerifiedBackup — DDL öncesi yedeğin sırası: küme kimliği → araç sürümleri → dump", () => {
+  type Seq = Pick<BackupAdapter, "verifyTarget" | "readToolVersions" | "backup">;
+
+  function recordingAdapter(overrides: Partial<Seq> = {}) {
+    const calls: string[] = [];
+    const adapter: Seq = {
+      verifyTarget: (dbName, sysid) => {
+        calls.push(`verifyTarget:${dbName}:${sysid}`);
+        return { containerDatabaseName: dbName, containerSystemIdentifier: sysid };
+      },
+      readToolVersions: (dbName) => {
+        calls.push(`readToolVersions:${dbName}`);
+        return { pgVersion: "PostgreSQL 16.14 on x86_64-windows", pgDumpVersion: "pg_dump (PostgreSQL) 16.14" };
+      },
+      backup: async (opts) => {
+        calls.push(`backup:${opts.dbName}:${opts.label}`);
+        return { path: "backups\\migrate-x.dump", bytes: 10 } as BackupResult;
+      },
+      ...overrides,
+    };
+    return { adapter, calls };
+  }
+
+  it("sürümleri dump'tan ÖNCE okur ve rapora taşır", async () => {
+    const { adapter, calls } = recordingAdapter();
+    const result = await takeVerifiedBackup(adapter, { dbName: "mas_radar_dev", systemIdentifier: "7", label: "migrate-mas_radar_dev" });
+    expect(calls).toEqual([
+      "verifyTarget:mas_radar_dev:7",
+      "readToolVersions:mas_radar_dev",
+      "backup:mas_radar_dev:migrate-mas_radar_dev",
+    ]);
+    expect(result.toolVersions.pgDumpVersion).toBe("pg_dump (PostgreSQL) 16.14");
+    expect(result.path).toBe("backups\\migrate-x.dump");
+  });
+
+  it("ana sürüm reddi (PATH'te daha yeni pg_dump) dump'ı HİÇ başlatmaz", async () => {
+    const { adapter, calls } = recordingAdapter({
+      readToolVersions: () => {
+        throw new Error("pg_dump ana sürümü (17) sunucununkiyle (16) aynı değil — yedek iptal edildi.");
+      },
+    });
+    await expect(
+      takeVerifiedBackup(adapter, { dbName: "mas_radar_dev", systemIdentifier: "7", label: "migrate-mas_radar_dev" }),
+    ).rejects.toThrow(/ana sürümü/);
+    expect(calls).toEqual(["verifyTarget:mas_radar_dev:7"]);
+  });
+
+  it("küme kimliği tutmazsa sürüm bile okunmaz", async () => {
+    const { adapter, calls } = recordingAdapter({
+      verifyTarget: () => {
+        throw new Error("system_identifier uyuşmuyor");
+      },
+    });
+    await expect(
+      takeVerifiedBackup(adapter, { dbName: "mas_radar_dev", systemIdentifier: "7", label: "l" }),
+    ).rejects.toThrow(/system_identifier/);
+    expect(calls).toEqual([]);
+  });
+
+  it("migrate.ts'in zorunlu ön-yedeği bu sırayı kullanır; adaptörün backup()'ını doğrudan çağırmaz", () => {
+    // migrate.ts import edilemez (yüklenirken main() koşar); kaynak düzeyinde bağlanır.
+    const src = readFileSync(path.join(process.cwd(), "scripts", "db", "migrate.ts"), "utf8");
+    expect(src).toMatch(/return takeVerifiedBackup\(backupTarget\.adapter,/);
+    expect(src).not.toMatch(/adapter\.backup\(/);
   });
 });
 

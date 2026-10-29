@@ -204,15 +204,20 @@ async function globalSetup(): Promise<void> {
 
   try {
     for (const role of Object.keys(ROLE_STATE_FILES) as SeededRole[]) {
+      // must_change_password is reset with the password for the same reason the lock is: since
+      // 0095 /system/security can force a change on any row, and getCurrentUser() reads the flag
+      // live. One forced change left on a reused test database would send every session of that
+      // role to /change-password and redden suites that have nothing to do with passwords.
       await pool.query(
-        `insert into public.users (username, password_hash, display_name, role, is_active)
-         values ($1, $2, $3, $4, true)
+        `insert into public.users (username, password_hash, display_name, role, is_active, must_change_password)
+         values ($1, $2, $3, $4, true, false)
          on conflict (username) do update
            set role = excluded.role,
                is_active = true,
                password_hash = excluded.password_hash,
                failed_login_count = 0,
-               locked_until = null`,
+               locked_until = null,
+               must_change_password = false`,
         [usernameFor(role), passwordHash, `Görsel ${role}`, role],
       );
     }
