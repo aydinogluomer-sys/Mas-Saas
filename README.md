@@ -12,16 +12,16 @@ Takip ettiği başlıca modüller:
 - **Çift Taraflı TDHP Yönetim Defteri** (`management_ledger_*`, mizan, yönetim bilançosu, gelir tablosu, EBITDA, otomatik storno ve geçici kur değerleme) ve **SMMM Yasal Mizan Mutabakat Köprüsü**,
 - **Üretim Kapasite, Maliyet & Kârlılık Analitiği** (TDHP `7xx` fiili gider ↔ tezgâh `TL/dk` canlı başabaş köprüsü), veri kalitesi merkezi ve deterministik sabah brifingi.
 
-**Doğruluk kuralı:** İncelemeden geçmiş içe aktarımdan sonra tek doğruluk kaynağı yerel PostgreSQL 16 veritabanıdır (`mas_radar_dev`, kanonik şema **`0113`**). AI yalnızca deterministik gerçekleri (`DecisionFacts`) açıklayan yorum katmanıdır — hiçbir kaydı ödendi işaretleyemez, silemez, tutar veya vade değiştiremez (`AI_FORCE_DETERMINISTIC=1` kapalı devre varsayılanı).
+**Doğruluk kuralı:** İncelemeden geçmiş içe aktarımdan sonra tek doğruluk kaynağı yerel PostgreSQL 16 veritabanıdır (`mas_radar_dev`, kanonik şema **`0115`**). AI yalnızca deterministik gerçekleri (`DecisionFacts`) açıklayan yorum katmanıdır — hiçbir kaydı ödendi işaretleyemez, silemez, tutar veya vade değiştiremez (`AI_FORCE_DETERMINISTIC=1` kapalı devre varsayılanı).
 
-## Teknoloji yığını ve mimari özet (`Migration 0113`)
+## Teknoloji yığını ve mimari özet (`Migration 0115`)
 
-Bu bölüm `package.json` ve canlı şema (`0001..0113`) baz alınarak yazılmıştır; eski dokümanlarda geçen bazı araçlar bu projede **kullanılmamaktadır**.
+Bu bölüm `package.json` ve canlı şema (`0001..0115`) baz alınarak yazılmıştır; eski dokümanlarda geçen bazı araçlar bu projede **kullanılmamaktadır**.
 
 | Katman | Gerçekte kullanılan |
 | --- | --- |
 | Uygulama | Next.js 15.5.20 (App Router), React 19.1.0, TypeScript strict |
-| Veritabanı | Yerel Windows PostgreSQL 16 (`postgresql-x64-16` / `MAS-PostgreSQL16`, yalnız `127.0.0.1`/`::1`) — ham `pg` sürücüsü (8.x), `113` migration (`0001..0113`), `106` `public` tablo (`%100` RLS) + `87` `public` görünüm (`%100` `security_invoker = true`) |
+| Veritabanı | Yerel Windows PostgreSQL 16 (`postgresql-x64-16` / `MAS-PostgreSQL16`, yalnız `127.0.0.1`/`::1`) — ham `pg` sürücüsü (8.x), `115` migration (`0001..0115`), `106` `public` tablo (`%100` RLS) + `87` `public` görünüm (`%100` `security_invoker = true`) |
 | Kesin Para Aritmetiği | PostgreSQL `numeric(p,s)` + TypeScript `big.js` (`float8` / JS `Number` para hesabı yasak) |
 | Doğrulama | Zod 4 (`src/lib/validation/` sınır doğrulaması) |
 | Tablolar & Arayüz | TanStack Table 8, Radix primitifleri + sıcak-krem (`warm editorial paper`) CFO bileşen sistemi, Tailwind v4, Geist, `sonner` |
@@ -53,7 +53,7 @@ Veritabanı rolleri ikiye ayrılmıştır (`mas_radar_owner` şema sahibi ve `ma
 pnpm db:app-role:password
 
 # 2) Aynı parolayı .env.local içindeki DATABASE_URL'e yazın (mas_radar_app rolüyle).
-# 3) Kanonik şemayı (0001..0113) uygulayın ve rol/RLS izolasyonunu doğrulayın:
+# 3) Kanonik şemayı (0001..0115) uygulayın ve rol/RLS izolasyonunu doğrulayın:
 pnpm db:migrate
 pnpm db:roles:verify
 ```
@@ -88,8 +88,8 @@ Faz sonu kapısının tam komut zinciri `implementation.md` → *"Kalıcı Doğr
 
 ## Dokümanlar
 
-- **`implementation.md`** — Faz 1'den Faz 59'a (`0113`) kadar kanonik mühendislik yol haritası ve kabul kapıları.
-- **`docs/database-schema.md`** — `0001..0113` kanonik şema, `106` `public` tablo, `87` `security_invoker` görünüm ve RLS mimarisi.
+- **`implementation.md`** — Faz 1'den Faz 59'a (`0115`) kadar kanonik mühendislik yol haritası ve kabul kapıları.
+- **`docs/database-schema.md`** — `0001..0115` kanonik şema, `106` `public` tablo, `87` `security_invoker` görünüm ve RLS mimarisi.
 - **`docs/calculation-rules.md`** — Deterministik finansal hesaplama, 13-hafta likidite, TDHP yönetim defteri ve kovenant kuralları.
 - **`docs/local-production-deploy.md`** ve **`docs/ops/*.md`** — Yerel Windows PostgreSQL 16 dağıtım, yedekleme, geri yükleme ve operasyon runbook'ları.
 - **`docs/risk-register.md`**, **`docs/MAS_360_SYNTHESIS_REPORT.md`**, **`docs/todo.md`** — Güvenlik/operasyon risk kaydı, 360° denetim kapanış matrisi (`115/115`) ve görev sicili.

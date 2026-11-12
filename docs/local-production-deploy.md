@@ -11,7 +11,7 @@ MAS Nakit Radar çok-kiracılı genel bir bulut SaaS uygulaması **değildir**; 
 - **Veritabanı:** Yerel **PostgreSQL 16** (`C:\MAS\pgsql16\bin`, veri dizini `C:\MAS\pgdata16`, port `127.0.0.1:5432`, Windows hizmeti `MAS-PostgreSQL16` veya `postgresql-x64-16`) — kurulum için bkz. [ops/postgres-service.md](ops/postgres-service.md)
 - **Çalışma Zamanı:** Node.js `>= 22.0.0` + `pnpm@11.10.0`
 - **Excel Motoru:** Yalnız sunucu tarafı `exceljs` + RFC-4180 CSV (`xlsx` paketi güvenlik zafiyetleri nedeniyle tamamen kaldırılmıştır)
-- **Kanonik Şema Sürümü:** Migration **`0113`** (`supabase/migrations/0001..0113`, `113` migration, `106` `public` tablo `%100` RLS etkin, `87` `public` görünüm `%100` `security_invoker = true`)
+- **Kanonik Şema Sürümü:** Migration **`0115`** (`supabase/migrations/0001..0115`, `115` migration, `106` `public` tablo `%100` RLS etkin, `87` `public` görünüm `%100` `security_invoker = true`)
 
 ---
 
@@ -51,7 +51,7 @@ cd "C:\Users\Trade Bilisim\Mas Saas"
 # 1) Yerel PostgreSQL 16 hizmetinin hazır olduğunu doğrula
 pnpm db:ensure
 
-# 2) Bekleyen migration varsa uygula (ön-yedek otomatik alınır; kanonik sürüm: 0113)
+# 2) Bekleyen migration varsa uygula (ön-yedek otomatik alınır; kanonik sürüm: 0115)
 pnpm db:migrate
 
 # 3) İlk yönetici hesabını oluştur (yalnız ilk kurulumda; parola maskeli sorulur)

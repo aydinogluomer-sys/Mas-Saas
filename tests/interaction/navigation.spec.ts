@@ -29,7 +29,7 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { expect, test } from "@playwright/test";
-import { loadRuntimeInventory, openAs, type SeededRole } from "./harness";
+import { db, loadRuntimeInventory, openAs, type SeededRole } from "./harness";
 import { waitForWorkspaceReady } from "./workspace-ready";
 
 interface NavEvidence {
@@ -57,6 +57,16 @@ test.describe("gezinme süpürmesi", () => {
     // tutmak, testi "hızlı olsun" diye örneklemeye indirmekten iyidir: örneklenen bir gezinme
     // süpürmesi, tam olarak örneklenmeyen linkte kırılır.
     test.setTimeout(45 * 60_000);
+    await db(async (c) => {
+      await c.query(
+        `insert into public.action_items (title, status, severity, source_type, source_href)
+         select 'IX-NAV Radar Kaynak Görevi', 'open', 'medium', 'manual', '/radar'
+          where not exists (
+            select 1 from public.action_items
+             where source_href = '/radar' and status = 'open'
+          )`,
+      );
+    });
     const inv = loadRuntimeInventory();
 
     // Birim = (rota, imza). Kanıt bunlara yazılacak.

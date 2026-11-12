@@ -58,7 +58,7 @@ export default async function Rolling13WeekForecastPage({
   const dbtMode = sp.dbtMode === "p75" ? "p75" : "median";
 
   const session = await getRequestUser();
-  const canFreeze = session ? can(session.role, "forecast_snapshots_13w", "insert") : false;
+  const canFreeze = session ? can(session.role, "forecast_snapshot_13w_lines", "delete") : false;
   const canAddOverride = session ? can(session.role, "forecast_lines", "insert") : false;
 
   const pool = getPool();

@@ -1,11 +1,11 @@
-# MAS Nakit Radar — Veritabanı Şeması Kanonik Referansı (`Migration 0113`)
+# MAS Nakit Radar — Veritabanı Şeması Kanonik Referansı (`Migration 0115`)
 
 > **Kanonik Canlı Katalog Özeti (`mas_radar_dev` — Yerel Windows PostgreSQL 16.14):**
-> - **Uygulanan Migration Aralığı:** `0001..0113` (**`113` migration** — `supabase/migrations/*.sql`, `public.schema_migrations` `max(version) = '0113'`)
+> - **Uygulanan Migration Aralığı:** `0001..0115` (**`115` migration** — `supabase/migrations/*.sql`, `public.schema_migrations` `max(version) = '0115'`)
 > - **Tablo Sayısı:** **`106` `public` tablo** (`105` iş/operasyon tablosu + `schema_migrations`) + **`1` `auth` tablosu** (`auth.users`) = **`107` toplam tablo** (`0112` ile `facility_drawdowns`, `working_capital_trend_reference` ve `forecast_accuracy_log` zombi tabloları emekliye ayrıldı)
 > - **Satır Düzeyi Güvenlik (RLS):** **`106 / 106` (`%100`)** `public` tabloda `relrowsecurity = true`
 > - **Görünüm (View) Sayısı:** **`87` `public` görünüm**, **`87 / 87` (`%100`)** `WITH (security_invoker = true)` ve yazma yetkileri iptal edilmiş (`0` materialized view)
-> - **Mimari Tarihçe Notu:** Aşağıdaki bölümler şemanın `0001` başlangıcından `0113` kanonik durumuna evrimini kronolojik olarak belgeler; eski faz başlıklarındaki ara tablo sayıları (örn. Faz 1 `22`, Faz 24B `58`) tarihsel bağlam içindir ve güncel canlı gerçek yukarıdaki **`0113` (`106` `public` tablo / `87` görünüm)** özetidir.
+> - **Mimari Tarihçe Notu:** Aşağıdaki bölümler şemanın `0001` başlangıcından `0115` kanonik durumuna evrimini kronolojik olarak belgeler; eski faz başlıklarındaki ara tablo sayıları (örn. Faz 1 `22`, Faz 24B `58`) tarihsel bağlam içindir ve güncel canlı gerçek yukarıdaki **`0115` (`106` `public` tablo / `87` görünüm)** özetidir.
 
 Tam uygulama fazları için bkz. `implementation.md`.
 
@@ -2770,12 +2770,26 @@ Salt indeks eklemesi (`0097_hot_path_partial_indexes.sql`); hiçbir tablo kolonu
 
 ## `liquidity_forecast_daily` Çek ve Ödeme Tahsisatı (`invoice_allocations`) Tam Tekilleştirmesi (Faz 59, migration 0113)
 
-`0113_fix_liquidity_forecast_allocations_dedup.sql` `0110` görünüm yenilemesi sırasında daralan `invoice_allocations` alt sorgusunu geri kazandırarak hem ödeme sözlerini (`promised_payments`) hem de çek/ödeme tahsisatlarını (`invoice_allocations` içinde `source_type IN ('check', 'payment_instance')`) açık fatura bakiyesinden birlikte düşer:
+`0113_forecast_check_allocation_dedup_guard.sql` `0110` görünüm yenilemesi sırasında daralan `invoice_allocations` alt sorgusunu geri kazandırarak hem ödeme sözlerini (`promised_payments`) hem de çek/ödeme tahsisatlarını (`invoice_allocations` içinde `source_type IN ('check', 'payment_instance')`) açık fatura bakiyesinden birlikte düşer:
 
 - Açık fatura nakit akışı katkısı: `greatest(0, coalesce(v.payable_amount, v.gross_amount) - greatest(coalesce(v.allocated_amount, 0), coalesce(v.paid_amount, 0)) - coalesce(ca.non_cash_alloc, 0) - coalesce(pp.promised_open, 0))`.
 - Görünüm `WITH (security_invoker = true)` ve salt-okunur yetki kalkanıyla (`REVOKE INSERT, UPDATE, DELETE, TRUNCATE`) korunur; `$verify$` bloğu `reloptions` içinde `security_invoker=true` varlığını zorunlu doğrular.
 
 
+## Admin Tek-Operatör Öz-Onay RLS Hizalaması ve Banka Eşleştirmesi Geri Alma (`unmatch`) Geçiş Korumaları (Faz 59, migration 0114)
+
+`0114_approvals_admin_single_operator_rls.sql` tek-operatör onay yönetişiminin RLS katmanını (`F-46`) ve banka eşleştirmesi geri alma (`unmatchTransaction` — `F-56`) durum geçişlerini hizalar:
+
+1. **`public.approvals` üzerinde `approvals_decide_admin_single_operator` RLS Politikası:**
+   - `mas_radar_finance_approver` ve `mas_radar_finance_manager` katmanlarında sıkı `requested_by IS DISTINCT FROM current_app_user()` 4-göz kuralı korunurken, `mas_radar_admin` rolüne yalnız `public.approval_governance_settings.allow_single_operator_self_approval = true` ve `self_approved_override = true` koşuluyla karar güncelleme izni verilir.
+2. **Ödeme Paketi ve Çek Geri Alma Durum Geçişleri (`F-56`):**
+   - `payment_run_items_status_transition_guard()` içine `('settled', 'included')`, `payment_runs_status_transition_guard()` içine `('settled', 'exported')` ve `('settled', 'approved')` geçişleri eklenir (`settled -> approved` geri dönüşünde rol kısıtı korunur).
+   - `checks_status_transition_guard()` içine banka eşleştirmesiyle kapanan çeklerin geri alınabilmesi için `('cleared', 'in_portfolio')`, `('cleared', 'in_bank_collection')` ve `('cleared', 'issued_to_vendor')` geçişleri eklenir.
 
 
+## Hatırlatıcı Gönderim Kuyruğu (`public.reminder_deliveries`) Operasyonel RLS Hizalaması (Faz 59, migration 0115)
+
+`0115_reminder_deliveries_operational_rls.sql` hatırlatıcı gönderim kuyruğunun yaşam döngüsü (`pending -> sent | skipped | failed`) için RLS sınıfını düzeltir (`F-52`, `F-69`):
+
+- `0058` içinde yanlışlıkla salt-eklenir `evidence` sınıfına konulan `public.reminder_deliveries` tablosu, `dispatchPending()` fonksiyonunun durum ve zaman damgası (`status`, `sent_at`, `error`) güncelleyebilmesi için üst tablosu `public.reminders` ile uyumlu biçimde `operational` RLS sınıfına (`reminder_deliveries_insert_enter`, `reminder_deliveries_update_enter`, `reminder_deliveries_delete_manage`) geçirilir.
 

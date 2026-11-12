@@ -173,7 +173,7 @@ Day risk flags: cluster (count ≥ 3 pending same day), large (any known ≥ 50k
   - Deterministik davranışsal kademelendirme (`A` / `B` / `C` / `D` / `Belirsiz`) eşikleri ekranda açıkça `"Varsayım (Model Sabiti)"` olarak beyan edilir.
 
 
-## 360° Canlı Denetim Kapanışı — Tekil Kalan Borç, `500.99` Açılış Köprüsü, `103/102` Tek-Kaynak Yevmiye ve `0109..0113` Kuralları (Faz 59)
+## 360° Canlı Denetim Kapanışı — Tekil Kalan Borç, `500.99` Açılış Köprüsü, `103/102` Tek-Kaynak Yevmiye ve `0109..0115` Kuralları (Faz 59)
 
 - **Birleşik Fatura Kalan Tutar Formülü (`0110` & `0113` + Tüm Motorlar):**
   - KDV tevkifatlı ve parçalı tahsisatlı faturalarda kalan açık bakiye tüm SQL görünümlerinde (`liquidity_forecast_daily`, `financial_calendar`, `payment_priority_queue`, `ar_open_items`) ve TypeScript motorlarında (`collections`, `rolling-13w-engine`, `optimization`) tek kanonik formülle hesaplanır:

@@ -41,14 +41,15 @@ export async function decideApprovalAction(formData: FormData): Promise<void> {
   const decision = String(formData.get("decision") ?? "").trim();
   const note = String(formData.get("note") ?? "").trim();
   const justification = String(formData.get("justification") ?? "").trim();
+  const effectiveNote = note !== "" ? note : justification !== "" ? justification : undefined;
   try {
     await decideApproval(
       getPool(),
       {
         approvalId,
         decision,
-        note: note === "" ? undefined : note,
-        justification: justification === "" ? (note === "" ? undefined : note) : justification,
+        note: effectiveNote,
+        justification: justification !== "" ? justification : effectiveNote,
       },
       session.id,
     );
@@ -102,10 +103,12 @@ export async function updateApprovalGovernanceAction(formData: FormData): Promis
 }
 
 function parseTriggerKind(raw: string): ApprovalTriggerKind {
+  if (raw === "amount_gte") return "amount_threshold";
+  if (raw === "always") return "payment";
   if ((TRIGGER_KINDS as readonly string[]).includes(raw)) {
     return raw as ApprovalTriggerKind;
   }
-  return "amount_gte";
+  return "amount_threshold";
 }
 
 export async function upsertApprovalRuleAction(formData: FormData): Promise<void> {
@@ -113,7 +116,9 @@ export async function upsertApprovalRuleAction(formData: FormData): Promise<void
   const ruleId = String(formData.get("ruleId") ?? "").trim() || undefined;
   const code = String(formData.get("code") ?? "").trim().toLowerCase();
   const description = String(formData.get("description") ?? "").trim();
-  const triggerKind = parseTriggerKind(String(formData.get("triggerKind") ?? "amount_gte").trim());
+  const triggerKind = parseTriggerKind(
+    String(formData.get("triggerKind") ?? "amount_threshold").trim(),
+  );
   const thresholdStr = String(formData.get("thresholdAmount") ?? "").trim();
   const thresholdAmount =
     thresholdStr === "" ? null : Number.isFinite(Number(thresholdStr)) ? Number(thresholdStr) : null;

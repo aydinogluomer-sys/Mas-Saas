@@ -347,11 +347,14 @@ export default async function ApprovalsPage({
                 placeholder="Kural açıklaması"
                 className="field-control px-2 py-1.5 text-xs md:col-span-2"
               />
-              <select name="triggerKind" defaultValue="amount_gte" className="field-control px-2 py-1.5 text-xs">
-                <option value="amount_gte">Tutar eşiği (amount_gte)</option>
-                <option value="always">Her zaman (always)</option>
+              <select name="triggerKind" defaultValue="amount_threshold" className="field-control px-2 py-1.5 text-xs">
+                <option value="amount_threshold">Tutar eşiği (amount_threshold)</option>
                 <option value="new_iban">Yeni IBAN (new_iban)</option>
                 <option value="new_counterparty">Yeni cari (new_counterparty)</option>
+                <option value="invoice">Fatura (invoice)</option>
+                <option value="payment">Ödeme (payment)</option>
+                <option value="payment_run">Ödeme paketi (payment_run)</option>
+                <option value="budget">Bütçe (budget)</option>
               </select>
               <input
                 name="thresholdAmount"
@@ -415,7 +418,7 @@ export default async function ApprovalsPage({
                     {isAdmin ? (
                       <td className="py-2">
                         <div className="flex flex-wrap items-center gap-1.5">
-                          {r.triggerKind === "amount_gte" ? (
+                          {r.triggerKind === "amount_threshold" ? (
                             <form action={upsertApprovalRuleAction} className="inline-flex items-center gap-1">
                               <input type="hidden" name="ruleId" value={r.id} />
                               <input type="hidden" name="code" value={r.code} />

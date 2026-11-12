@@ -371,8 +371,7 @@ export async function loadCheckTargets(
             coalesce(c.amount, abs(c.signed_amount)) as amount,
             c.status,
             coalesce(pr.name, py.name) as owner,
-            bp.name as provider,
-            c.risk_flag
+            bp.name as provider
        from public.checks c
        left join public.parties pr on pr.id = c.payer_party_id
        left join public.parties py on py.id = c.payee_party_id
@@ -386,7 +385,6 @@ export async function loadCheckTargets(
     const dueDate = x.due_date as string;
     const reasons: string[] = [];
     if (dueDate < todayISO) reasons.push("vadesi geçmiş çek/senet");
-    if (x.risk_flag) reasons.push(String(x.risk_flag));
     return {
       entityTable: "checks",
       entityId: x.id as string,

@@ -59,15 +59,16 @@ OVERALL STATUS         : VERIFIED PASS (18/18 FAZ TAMAMLANDI)
 2. **Windows PostgreSQL Servisi ve Arka Plan İşçisi:** Yerel Windows PostgreSQL 16 servisi (`postgresql-x64-16` / `MAS-PostgreSQL16`) ve `MAS-Background-Worker` zamanlanmış görevi (`pnpm ops:worker:schedule`) aktif olarak çalışmaktadır.
 3. **Düz Metin Yedek ve Üretim Kilitleri:** Kök dizindeki eski `.env.local.bak-*` kalıntıları temizlendi (`pnpm exec tsx scripts/check-env.ts` -> `0` hata); `.env.local` içinde `MAS_LOCAL_PASSWORDLESS=0` ve `AI_FORCE_DETERMINISTIC=1` kilitleri doğrulandı.
 4. **Aktif Kasa/Banka Açılış Bakiyeleri (`FIN-03`):** `/finance/treasury` ekranında kasa/banka + IBAN CRUD ve otomatik `100/102 ↔ 500.99 Açılış Bilançosu Denkleştirme` yevmiye köprüsü (`0111`) devreye alındı.
-5. **Canlı Göç (`0096 -> 0113`):** Göç öncesi tam `.dump` yedeği alınarak `pnpm db:migrate` ile kanonik `mas_radar_dev` veritabanı **`0113`** sürümüne yükseltildi.
+5. **Canlı Göç (`0096 -> 0115`):** Göç öncesi tam `.dump` yedeği alınarak `pnpm db:migrate` ile kanonik `mas_radar_dev` veritabanı **`0115`** sürümüne yükseltildi.
 
-## 4. Faz 59 Canlı 360° Denetim Kapanışı (`Migrations 0109..0113`) Özeti
+## 4. Faz 59 Canlı 360° Denetim Kapanışı (`Migrations 0109..0115`) Özeti
 
 | Doğrulama Kalemi | Canlı / Kod Durumu (`2026-11-12`) | Sonuç |
 |---|---|---|
-| Kanonik `mas_radar_dev` şema sürümü | `113 / 0113` (`0001..0113` eksiksiz uygulandı) | **PASS** |
+| Kanonik `mas_radar_dev` şema sürümü | `115 / 0115` (`0001..0115` eksiksiz uygulandı) | **PASS** |
 | Canlı `public` tablo sayısı ve RLS kapsamı | `106` `public` tablo (`%100` RLS etkin; 3 zombi tablo `0112` ile emekli edildi) | **PASS** |
 | Canlı `public` görünüm sayısı ve `security_invoker` | `87 / 87` görünüm (`%100` `security_invoker = true`, `0` açık görünüm) | **PASS** |
+| Katı Etkileşim Kapsam Kapısı (`pnpm interaction:gate:strict`) | `2.699 / 2.699 PASS` (`UNTESTED = 0`, `FAIL = 0`, `manifestosuz = 0`) | **PASS** |
 | Yedek okunabilirlik doğrulaması (`pnpm backup:offdevice:verify`) | `pg_restore --list` OK (`1871` TOC girdisi, yaş `< 48s`, boyut `> 0`) | **PASS** |
 | Operasyon runbook'ları (`docs/ops/*.md` — `17/17` dosya) | Yerel Windows PG16 + Görev Zamanlayıcı (`rg -i "docker exec" docs/ops/` -> `0` eşleşme) | **PASS** |
 | Tekil yazıcı yüzeyi kapısı (`tests/writer-surface.test.ts`) | `12 / 12` test başarılı (`verify-offdevice-backup.ts` salt-okunur) | **PASS** |

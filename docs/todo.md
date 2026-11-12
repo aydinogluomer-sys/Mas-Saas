@@ -393,12 +393,12 @@
 - [x] SEC-01: kaldırılan yazma yollarının (ERP örnek senkronu, mini-app yetki yükseltmesi) defter izleri için salt-okunur sahip
       kontrolleri S6 listesine eklendi (yukarıda); `docs/risk-register.md` satır 51'e "Kalan" notu.
 - [x] Gate: typecheck 0 hata ✓ · lint 0 hata / 0 uyarı ✓ · vitest 107 dosya / 2143 test ✓ · boundary:verify 8/8 ✓.
-- [ ] Playwright (bu turda koşturulmadı — DB kuralı): `pnpm interaction:crawl` → `interaction:test` → `interaction:gate`
-      disposable DB'de; beklenen: manifestosuz=0, yeni vaka PASS, UNTESTED ≤ 557.
+- [x] Playwright (`F-69`): Harcanabilir klon DB üzerinde `pnpm interaction:crawl` → `interaction:test` → `interaction:gate:strict`
+      koşturuldu; sonuç: `2.699 / 2.699 PASS`, `UNTESTED = 0`, `FAIL = 0`, `manifestosuz = 0`.
 - [x] FIN-03 kod katmanı (`0099_view_math_fin03_constraints_and_indexes.sql` + ara etiket `FIN-03 (b)`):
       (a) `0099` migration'ı hazırlanıp disposable klon provasında doğrulandı; (b) `0096` canlı şemada da çalışan ara etiket
       olarak `loadUnknownOpeningAccountCount` eklendi ve `/finance` ile `/insights/briefing` ekranlarında açılış bakiyesi
-      tanımsız aktif hesap sayısı `"yalnız hareketlerden hesaplanıyor (FIN-03)"` uyarısıyla gösteriliyor. *(Faz 59 itibarıyla `0099` ve `0111` canlı `mas_radar_dev` (`0113`) üzerine uygulandı; `/finance/treasury` + `500.99` açılış köprüsü devrede.)*
+      tanımsız aktif hesap sayısı `"yalnız hareketlerden hesaplanıyor (FIN-03)"` uyarısıyla gösteriliyor. *(Faz 59 itibarıyla `0099` ve `0111` canlı `mas_radar_dev` (`0115`) üzerine uygulandı; `/finance/treasury` + `500.99` açılış köprüsü devrede.)*
 - [x] Brifing para birimi geri dönüşü (`Faz 46`): aktif TRY hesabı hiç yoksa `loadBriefingFacts` artık yabancı para satırına
       (`summary[0]`) düşmez; TRY nakit/taban `null` ("—") kalır (`src/lib/briefing/engine.ts` & `engine.test.ts`).
 
@@ -421,7 +421,7 @@
 - [ ] **Sahip:** GitHub faturalama (CI başlamıyor); Supabase "Mas-Saas" projesini silme ya da parola sıfırlama.
 - [ ] **Sahip kararı:** OpenAI'ye karar özeti gönderimi (`OPENAI_API_KEY` tanımlı, `AI_FORCE_DETERMINISTIC=0`).
 - [ ] **Sahip kararı:** Phase 5'te şablondan çıkacak dokuz kolonun adı (matris 10 gösteriyor).
-- [x] **Veri & Kod (`FIN-03`):** `0099` ve `0111` canlı `mas_radar_dev` (`0113`) üzerine uygulandı; `/finance/treasury` ekranında kasa/banka + IBAN CRUD ve otomatik `100/102 ↔ 500.99` açılış bilançosu denkleştirme fişi devreye alındı (gerçek banka açılış bakiyelerinin operatör tarafından girilmesi `/finance/treasury` üzerinden her an yapılabilir).
+- [x] **Veri & Kod (`FIN-03`):** `0099` ve `0111` canlı `mas_radar_dev` (`0115`) üzerine uygulandı; `/finance/treasury` ekranında kasa/banka + IBAN CRUD ve otomatik `100/102 ↔ 500.99` açılış bilançosu denkleştirme fişi devreye alındı (gerçek banka açılış bakiyelerinin operatör tarafından girilmesi `/finance/treasury` üzerinden her an yapılabilir).
 
 ## Dalga 1 backlog — Doğrulanmış Kapanış Durumu
 
@@ -448,10 +448,10 @@
 - [x] `changeOwnPassword` atomik denetim izi (`0096` + `0108` RLS uyumu) ve `runClosedLoopFinancialPipeline` (`sync-pipeline.ts`) kapalı çevrim orkestratörü.
 - [x] `actual-cost-bridge.ts` (TDHP `7xx` fiili gider ↔ tezgâh `TL/dk` canlı başabaş), `fx-stress.ts` (TCMB `+%10/+%20/+%30` kur şoku & kovenant kırılma stresi) ve `scorecard.ts` (karşı taraf davranışsal tahsilat karnesi).
 
-## Faz 59 (`Migrations 0109..0113`) — 360° Canlı Denetim Tam Kapanışı (`F-01..F-74`) — DONE
+## Faz 59 (`Migrations 0109..0115`) — 360° Canlı Denetim Tam Kapanışı (`F-01..F-74`) — DONE
 
-- [x] **Canlı Şema Cutover (`0096 -> 0113`):** Ön-yedek alınarak `mas_radar_dev` kanonik **`0113`** sürümüne yükseltildi (`113` migration, `106` `public` tablo `%100` RLS, `87` görünüm `%100` `security_invoker = true`).
+- [x] **Canlı Şema Cutover (`0096 -> 0115`):** Ön-yedek alınarak `mas_radar_dev` kanonik **`0115`** sürümüne yükseltildi (`115` migration, `106` `public` tablo `%100` RLS, `87` görünüm `%100` `security_invoker = true`).
 - [x] **Operasyon & Harici Yedek Doğrulama:** `MAS-Background-Worker` zamanlayıcı entegrasyonu (`pnpm ops:worker:schedule`), `MAS_LOCAL_PASSWORDLESS=0` üretim kilidi ve salt-okunur `pnpm backup:offdevice:verify` (`scripts/ops/verify-offdevice-backup.ts`) devreye alındı.
-- [x] **Yönetişim, Arşiv & Durum Makineleri (`0109`, `0110`, `0113`):** İşlem-yerel `app.allow_archive_restore` GUC ile kontrollü arşivden çıkarma, tek-operatör istasyonları için gerekçeli `self_approved_override` 4-göz yönetişimi, `approved -> cancelled` ödeme paketi / dönem kilidi geri dönüşü ve `liquidity_forecast_daily` ödeme sözü + tahsisat çift sayım koruması tamamlandı.
+- [x] **Yönetişim, Arşiv & Durum Makineleri (`0109`, `0110`, `0113`, `0114`, `0115`):** İşlem-yerel `app.allow_archive_restore` GUC ile kontrollü arşivden çıkarma, tek-operatör istasyonları için gerekçeli `self_approved_override` 4-göz yönetişimi (`0114` RLS dahil), `approved -> cancelled` ve `unmatch` geri dönüşleri, `reminder_deliveries` operasyonel RLS hizası (`0115`) ve `liquidity_forecast_daily` ödeme sözü + tahsisat çift sayım koruması tamamlandı.
 - [x] **`FIN-03` + `500.99` Açılış Köprüsü & Muhasebe Kesinliği (`0111`, `0112`):** `/finance/treasury` kasa/banka + IBAN CRUD, `500.99 Açılış Bilançosu Denkleştirme Hesabı` otomatik açılış/ters-kayıt fişi, `103/102` tek-kaynak yevmiye kuralları, `KDV_2` / `KDV_1` tevkifat ayrıştırması ve 3 zombi tablonun (`facility_drawdowns`, `working_capital_trend_reference`, `forecast_accuracy_log`) kayıpsız emekliliği tamamlandı.
 - [x] **Güvenlik, UI & Dokümantasyon Hizalaması (`F-39`, `F-55..F-72`):** `80/80` dashboard sayfasında `requireRouteAccess` yapısal RBAC testi, sıcak-krem CFO iş istasyonu arayüzü, `17/17` yerel Windows PG16 operasyon runbook'u (`0` `docker exec`) ve 6 çekirdek doküman senkronizasyonu tamamlandı.

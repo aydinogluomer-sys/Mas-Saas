@@ -461,15 +461,15 @@ Kör denetim (Adım 1) bittikten sonra mevcut `implementation.md` (`2.622` satı
 | **Küme F: CFO Zekası & Canlıya Geçiş** | **Faz 55 (`F2`)** | Gece Nakit Değişim Atfı ($\Delta\text{Cash}$ Sabah Brifingi), Kovenant & DSCR Radarı, Çift Pist ve Deterministik Başabaş (`Goal-Seek`) | `Bölüm 8.2` (Brifing, DSCR, Başabaş) |
 | **Küme F: CFO Zekası & Canlıya Geçiş** | **Faz 56 (`F3`)** | Birleşik Altın Finansal Doğruluk Paketi, Tam Etkileşim Manifestosu (`UNTESTED = 0`), Sert SLO Kapısı ve Klon Cutover Provası | `B3-07`, `PROGRESS Faz 11/14/15` |
 | **Küme G: Kuyruk Zarfı & Derin CFO (`v6`)** | **Faz 57–58 (`0108`)** | `background_jobs.result` Zarf Değişmezliği, `changeOwnPassword` Denetim Kalkanı, TDHP `7xx` ↔ `TL/dk` Fiili Başabaş, TCMB Kur Şoku & Karşı Taraf Karnesi | `Wave 0 S5/S6`, `v6 CFO Derinlik` |
-| **Küme H: 360° Canlı Denetim Tam Kapanışı** | **Faz 59 (`0109..0113`)** | Canlı `mas_radar_dev` `0096 -> 0113` Geçişi, Sıcak-Krem CFO İş İstasyonu, `FIN-03` + `500.99` Açılış Köprüsü, Kontrollü 4-Göz & Arşiv Yönetişimi, `80/80` RBAC ve `17/17` Runbook Modernizasyonu | `F-01..F-74` (`115/115` Tam Kapanış) |
+| **Küme H: 360° Canlı Denetim Tam Kapanışı** | **Faz 59 (`0109..0115`)** | Canlı `mas_radar_dev` `0096 -> 0115` Geçişi, Sıcak-Krem CFO İş İstasyonu, `FIN-03` + `500.99` Açılış Köprüsü, Kontrollü 4-Göz & Arşiv Yönetişimi, `80/80` RBAC, `2.699/2.699` Tam Playwright Etkileşim Kapsamı ve `17/17` Runbook Modernizasyonu | `F-01..F-74` (`115/115` Tam Kapanış) |
 
 ---
 
-## Bölüm 10 — Nihai Kapanış Durumu: `115 / 115` Bulgu (`%100` Çözüldü — Faz 59 / `Migration 0113`)
+## Bölüm 10 — Nihai Kapanış Durumu: `115 / 115` Bulgu (`%100` Çözüldü — Faz 59 / `Migration 0115`)
 
-Faz 39–58 geliştirme dalgalarının ardından gerçekleştirilen **Canlı 360° Denetim** (`F-01..F-74`) sonucunda hem depoda kalan son 9 açık/kısmi sentez bulgusu hem de canlı `mas_radar_dev` veritabanı ile kod arasındaki sürüm farkı (`0096 -> 0113`) **Faz 59 (`Migrations 0109..0113`)** ile eksiksiz kapatılmıştır:
+Faz 39–58 geliştirme dalgalarının ardından gerçekleştirilen **Canlı 360° Denetim** (`F-01..F-74`) sonucunda hem depoda kalan son 9 açık/kısmi sentez bulgusu hem de canlı `mas_radar_dev` veritabanı ile kod arasındaki sürüm farkı (`0096 -> 0115`) **Faz 59 (`Migrations 0109..0115`)** ile eksiksiz kapatılmıştır:
 
-| Önceki Açık / Kısmi Bulgu Kodu | Konu Özeti | Faz 59 (`0109..0113`) Kesin Kapanış Kanıtı | Durum |
+| Önceki Açık / Kısmi Bulgu Kodu | Konu Özeti | Faz 59 (`0109..0115`) Kesin Kapanış Kanıtı | Durum |
 | --- | --- | --- | --- |
 | **`B1-02`** | `xlsx` paket kalıntıları ve dokümantasyon referansları | `package.json` ve kod tabanından `xlsx` tamamen temizlendi (`exceljs` + RFC-4180 CSV tek hat); `README.md` ve şema/operasyon belgelerindeki son bayat `xlsx` referansları güncellendi. | **KAPANDI (`%100`)** |
 | **`B2-08`** | Üretim parolasız giriş (`MAS_LOCAL_PASSWORDLESS`) ve sayfa RBAC kalkanı | `.env.local` üzerinde `MAS_LOCAL_PASSWORDLESS=0` kilitlendi; `NODE_ENV === "production"` altında donanımsal ret + loopback `Host` kontrolü eklendi; `80/80` dashboard sayfasında `requireRouteAccess` yapısal testle (`tests/security/route-page-rbac.test.ts`) zorunlu kılındı. | **KAPANDI (`%100`)** |
@@ -479,6 +479,6 @@ Faz 39–58 geliştirme dalgalarının ardından gerçekleştirilen **Canlı 360
 | **`B6-03`** | Tek-operatör istasyonunda 4-göz onay kilitlenmesi ve arşivlenmiş kaydın geri açılamaması | `0109` ile kontrollü `self_approved_override` (+ en az 12 karakter gerekçe + `audit_logs`), kontrollü arşivden çıkarma (`SET LOCAL app.allow_archive_restore = 'true'` GUC + dönem kilidi kontrolü) ve `0110` durum makinesi geri dönüşleri devreye alındı. | **KAPANDI (`%100`)** |
 | **`B7-02`** | `docs/ops/*.md` kılavuzlarında kalan eski `docker exec mas-radar-pg` ve kabuk betiği komutları | `17/17` `docs/ops/*.md` kılavuzunun tamamı yerel Windows PostgreSQL 16 (`C:\MAS\pgsql16\bin`, `MAS-PostgreSQL16`), `MAS-Background-Worker` ve `pnpm backup:offdevice:verify` komutlarıyla yenilendi (`rg -i "docker exec" docs/ops/` = **`0` eşleşme**). | **KAPANDI (`%100`)** |
 | **`B8-01`** | Karanlık/soğuk UI katmanları, çiğ İngilizce rozetler ve sabit genişlikli tablolar | Sıcak krem (`#FBF9F5`) CFO iş istasyonu teması, Türkçe finansal terimler, birleşik durum çubuğu ve duyarlı (`responsive`) tablo/form bileşenleri tüm ekranlarda hizalandı. | **KAPANDI (`%100`)** |
-| **`B9-04`** | Canlı `mas_radar_dev` şemasının `0096` sürümünde kalması ve harici yedek doğrulayıcı eksikliği | Ön-yedek alınarak canlı `mas_radar_dev` veritabanı **`0113`** sürümüne yükseltildi (`113` migration, `106` `public` tablo `%100` RLS, `87` görünüm `%100` `security_invoker = true`); salt-okunur `pnpm backup:offdevice:verify` (`scripts/ops/verify-offdevice-backup.ts`) devreye alındı. | **KAPANDI (`%100`)** |
+| **`B9-04`** | Canlı `mas_radar_dev` şemasının `0096` sürümünde kalması ve harici yedek doğrulayıcı eksikliği | Ön-yedek alınarak canlı `mas_radar_dev` veritabanı **`0115`** sürümüne yükseltildi (`115` migration, `106` `public` tablo `%100` RLS, `87` görünüm `%100` `security_invoker = true`); salt-okunur `pnpm backup:offdevice:verify` (`scripts/ops/verify-offdevice-backup.ts`) devreye alındı. | **KAPANDI (`%100`)** |
 
-**Nihai Sonuç:** Rapor kapsamındaki **`115 / 115` bulgunun tamamı (`%100`)** ve canlı denetim bulguları (`F-01..F-74`) kod, veritabanı çekirdeği (`0113`), test kapıları ve operasyon kılavuzlarıyla tam mutabakat halinde kapatılmıştır.
+**Nihai Sonuç:** Rapor kapsamındaki **`115 / 115` bulgunun tamamı (`%100`)** ve canlı denetim bulguları (`F-01..F-74`) kod, veritabanı çekirdeği (`0115`), test kapıları (`pnpm interaction:gate:strict` `2.699/2.699 PASS`, `0 UNTESTED`) ve operasyon kılavuzlarıyla tam mutabakat halinde kapatılmıştır.

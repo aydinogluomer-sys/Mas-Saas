@@ -67,7 +67,7 @@ const ruleFormSchema = z.object({
   offsetDays: z.coerce.number().int("Gün farkı tam sayı olmalı").min(-365).max(365),
   channel: z.enum(["telegram", "email"]).default("telegram"),
   minAmount: z.string().trim().optional(),
-  isActive: z.string().trim().optional(),
+  isActive: z.union([z.string(), z.array(z.string())]).optional(),
 });
 
 export async function upsertReminderRuleAction(formData: FormData): Promise<void> {

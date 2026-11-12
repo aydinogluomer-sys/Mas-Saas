@@ -61,7 +61,15 @@ export const updateGovernanceSettingsSchema = z.object({
     .default(10),
 });
 
-export const TRIGGER_KINDS = ["always", "amount_gte", "new_iban", "new_counterparty"] as const;
+export const TRIGGER_KINDS = [
+  "amount_threshold",
+  "new_iban",
+  "new_counterparty",
+  "invoice",
+  "payment",
+  "payment_run",
+  "budget",
+] as const;
 export type ApprovalTriggerKind = (typeof TRIGGER_KINDS)[number];
 
 export const upsertApprovalRuleSchema = z.object({
@@ -73,7 +81,10 @@ export const upsertApprovalRuleSchema = z.object({
     .max(64)
     .regex(/^[a-z0-9_]+$/, "Kural kodu yalnız küçük harf, rakam ve alt çizgi içerebilir"),
   description: z.string().trim().min(3, "Kural açıklaması en az 3 karakter olmalıdır").max(240),
-  triggerKind: z.enum(TRIGGER_KINDS),
+  triggerKind: z.preprocess(
+    (v) => (v === "amount_gte" ? "amount_threshold" : v === "always" ? "payment" : v),
+    z.enum(TRIGGER_KINDS),
+  ),
   thresholdAmount: z.number().min(0, "Eşik tutarı negatif olamaz").nullable().optional(),
   currency: z.string().trim().toUpperCase().regex(/^[A-Z]{3}$/).default("TRY"),
   appliesTo: z.array(z.string().trim().min(1)).default([]),
@@ -343,9 +354,12 @@ export async function upsertApprovalRule(
 ): Promise<{ ruleId: string }> {
   const input = parseOrThrow(upsertApprovalRuleSchema, raw, "Onay kuralı");
   const normalizedThreshold =
-    input.triggerKind === "amount_gte" ? (input.thresholdAmount ?? null) : null;
-  if (input.triggerKind === "amount_gte" && normalizedThreshold == null) {
-    throw new DomainError("VALIDATION", "Tutar eşiği ('amount_gte') kuralı için eşik tutarı zorunludur.");
+    input.triggerKind === "amount_threshold" ? (input.thresholdAmount ?? null) : null;
+  if (input.triggerKind === "amount_threshold" && normalizedThreshold == null) {
+    throw new DomainError(
+      "VALIDATION",
+      "Tutar eşiği ('amount_threshold') kuralı için eşik tutarı zorunludur.",
+    );
   }
 
   const client = await pool.connect();
@@ -894,7 +908,28 @@ export async function decideApproval(pool: Pool, raw: unknown, actorId: string):
       selfApprovalJustification = elig.justification;
     }
 
-    const effectiveNote = input.note ?? selfApprovalJustification ?? null;
+    const effectiveNote =
+      input.note ?? (input.justification && input.justification.trim().length >= 3 ? input.justification.trim() : undefined) ?? selfApprovalJustification ?? null;
+
+    // Legacy tables (`mapping_reviews`, `external_assumptions`) carry an AFTER UPDATE trigger
+    // (`approval_sync_from_legacy`) that maps `'open'` / `'pending_review'` back to `'pending'`.
+    // When `decision === 'reworked'`, running the legacy writeback while `approvals.status` is still
+    // `'pending'` prevents the trigger from overwriting `'reworked'` back to `'pending'`.
+    const runLegacyReworkFirst =
+      input.decision === "reworked" &&
+      Object.prototype.hasOwnProperty.call(LEGACY_WRITEBACK, String(a.subject_table));
+
+    let writeback: string | null = null;
+    if (runLegacyReworkFirst) {
+      writeback = await applySubjectWriteback(
+        client,
+        { id: a.id, subject_table: a.subject_table, subject_id: a.subject_id },
+        input.decision,
+        actorId,
+        effectiveNote,
+        { selfApprovedOverride, selfApprovalJustification },
+      );
+    }
 
     const approvalUpdate = await client.query(
       `update public.approvals
@@ -927,14 +962,16 @@ export async function decideApproval(pool: Pool, raw: unknown, actorId: string):
       [input.approvalId, intOrNull(step.rows[0].n) ?? 1, input.decision, actorId,
        effectiveNote, a.status, input.decision]);
 
-    const writeback = await applySubjectWriteback(
-      client,
-      { id: a.id, subject_table: a.subject_table, subject_id: a.subject_id },
-      input.decision,
-      actorId,
-      effectiveNote,
-      { selfApprovedOverride, selfApprovalJustification },
-    );
+    if (!runLegacyReworkFirst) {
+      writeback = await applySubjectWriteback(
+        client,
+        { id: a.id, subject_table: a.subject_table, subject_id: a.subject_id },
+        input.decision,
+        actorId,
+        effectiveNote,
+        { selfApprovedOverride, selfApprovalJustification },
+      );
+    }
 
     await audit(client, {
       actor: actorId, action: "decide_approval", entityTable: "approvals", entityId: input.approvalId,

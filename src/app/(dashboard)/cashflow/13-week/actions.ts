@@ -48,7 +48,7 @@ export async function refreshAutoSeeded13WeekAction(formData: FormData): Promise
 }
 
 export async function freeze13WeekSnapshotAction(formData: FormData): Promise<void> {
-  const session = await requireActionPermission("forecast_snapshots_13w", "insert", BASE);
+  const session = await requireActionPermission("forecast_snapshot_13w_lines", "delete", BASE);
   const f = formObject(formData);
   const currency = normalizeCurrency(f.currency);
   const dbtMode = normalizeDbtMode(f.dbtMode);

@@ -112,8 +112,8 @@ export async function updatePolicy(pool: Pool, raw: unknown, actorId: string): P
 
     await client.query(
       `update public.treasury_policies
-         set threshold_amount = case when policy_kind='min_cash' then $2 else null end,
-             threshold_days   = case when policy_kind='buffer_days' then $3 else null end,
+         set threshold_amount = case when policy_kind='min_cash' then $2::numeric else null end,
+             threshold_days   = case when policy_kind='buffer_days' then $3::int else null end,
              is_active = $4,
              notes = coalesce($5, notes)
        where code = $1`,

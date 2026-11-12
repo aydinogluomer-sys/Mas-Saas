@@ -66,5 +66,6 @@ export async function setReviewStatusAction(formData: FormData): Promise<void> {
   revalidatePath(backTo);
   revalidatePath("/data/reviews");
   revalidatePath("/data/quality");
+  redirect(backTo);
 }
 

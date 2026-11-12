@@ -36,6 +36,7 @@ import { Client } from "pg";
 import { expect, test, type BrowserContext, type Page } from "@playwright/test";
 import { ROLE_STATE_FILES, statePathFor, type SeededRole } from "../visual/global-setup";
 import { databaseNameFromUrl, isDisposableDatabaseName } from "../../scripts/db/owner-url";
+import { readEnvLocal, swapDatabase } from "../../scripts/db/app-url";
 
 export { ROLE_STATE_FILES, statePathFor };
 export type { SeededRole };
@@ -68,6 +69,8 @@ function verifierUrl(): string {
   }
   const url = new URL(raw);
   if (process.env.MAS_E2E_VERIFIER_URL) return process.env.MAS_E2E_VERIFIER_URL;
+  const migrationBase = process.env.MIGRATION_DATABASE_URL ?? readEnvLocal().MIGRATION_DATABASE_URL;
+  if (migrationBase && name) return swapDatabase(migrationBase, name);
   url.username = "postgres";
   url.password = "postgres";
   return url.toString();

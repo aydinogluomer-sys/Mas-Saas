@@ -27,29 +27,53 @@ const PARTY_TYPES = [
   "company", "person", "bank", "provider", "customer", "vendor", "internal_owner", "unknown",
 ] as const;
 
+const emptyToUndefined = (v: unknown): unknown =>
+  typeof v === "string" && v.trim() === "" ? undefined : v;
+
+const optionalTrimmedString = z.preprocess(
+  emptyToUndefined,
+  z.string().trim().min(1).optional(),
+);
+
+const optionalNonNegativeNumber = z.preprocess(
+  emptyToUndefined,
+  z.coerce.number().min(0).optional(),
+);
+
+const optionalNonNegativeInt = z.preprocess(
+  emptyToUndefined,
+  z.coerce.number().int().min(0).optional(),
+);
+
 export const createCounterpartySchema = z.object({
   name: z.string().trim().min(2, "En az 2 karakter olmalı"),
   partyType: z.enum(PARTY_TYPES).default("unknown"),
-  taxNumber: z.string().trim().min(1).optional(),
-  taxOffice: z.string().trim().min(1).optional(),
-  addressLine: z.string().trim().min(1).optional(),
-  city: z.string().trim().min(1).optional(),
-  countryCode: z.string().trim().toUpperCase().regex(/^[A-Z]{2}$/).default("TR"),
-  creditLimit: z.coerce.number().min(0).optional(),
-  paymentTermsDays: z.coerce.number().int().min(0).optional(),
-  contactName: z.string().trim().min(1).optional(),
-  contactEmail: z.string().trim().min(1).optional(),
-  contactPhone: z.string().trim().min(1).optional(),
-  notes: z.string().trim().min(1).optional(),
+  taxNumber: optionalTrimmedString,
+  taxOffice: optionalTrimmedString,
+  addressLine: optionalTrimmedString,
+  city: optionalTrimmedString,
+  countryCode: z.preprocess(
+    emptyToUndefined,
+    z.string().trim().toUpperCase().regex(/^[A-Z]{2}$/).default("TR"),
+  ),
+  creditLimit: optionalNonNegativeNumber,
+  paymentTermsDays: optionalNonNegativeInt,
+  contactName: optionalTrimmedString,
+  contactEmail: optionalTrimmedString,
+  contactPhone: optionalTrimmedString,
+  notes: optionalTrimmedString,
 });
 export type CreateCounterpartyInput = z.infer<typeof createCounterpartySchema>;
 
 export const addIbanSchema = z.object({
   partyId: z.uuid(),
   iban: z.string().trim().min(5),
-  bankName: z.string().trim().min(1).optional(),
-  accountLabel: z.string().trim().min(1).optional(),
-  currency: z.string().trim().toUpperCase().regex(/^[A-Z]{3}$/).default("TRY"),
+  bankName: optionalTrimmedString,
+  accountLabel: optionalTrimmedString,
+  currency: z.preprocess(
+    emptyToUndefined,
+    z.string().trim().toUpperCase().regex(/^[A-Z]{3}$/).default("TRY"),
+  ),
   isPrimary: z.coerce.boolean().default(false),
 });
 
@@ -656,7 +680,7 @@ const DIMENSION_TABLES: readonly DimensionTable[] = ["cost_centers", "department
 export const dimensionSchema = z.object({
   code: z.string().trim().min(1),
   name: z.string().trim().min(1),
-  notes: z.string().trim().min(1).optional(),
+  notes: optionalTrimmedString,
 });
 
 export async function listDimension(pool: Pool, table: DimensionTable, limit = 200) {

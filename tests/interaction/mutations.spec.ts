@@ -95,7 +95,9 @@ async function count(sql: string): Promise<number> {
  */
 async function ensureOpenCheck(): Promise<void> {
   await db(async (c) => {
-    const open = await c.query("select 1 from public.checks where status = 'planned' and archived_at is null limit 1");
+    const open = await c.query(
+      "select 1 from public.checks where status = 'planned' and archived_at is null and serial_no like 'IX-%' limit 1",
+    );
     if (open.rowCount === 1) return;
     await c.query(
       `insert into public.checks (direction, amount, signed_amount, maturity_date, status, serial_no, counterparty_label)
@@ -120,7 +122,7 @@ async function ensureOpenTaskOwnedBy(role: SeededRole): Promise<string> {
     expect(ownerId, `${role} kullanıcısı bulunamadı — globalSetup çalışmamış olabilir`).toBeTruthy();
 
     const open = await c.query<{ id: string }>(
-      "select id from public.action_items where status = 'open' and created_by = $1 limit 1",
+      "select id from public.action_items where status = 'open' and created_by = $1 and title like 'IX-FIXTURE%' limit 1",
       [ownerId],
     );
     if (open.rowCount === 1) return open.rows[0].id;

@@ -37,6 +37,12 @@ export const PRELOAD_MARKER = "[data-initial-preload]";
  */
 export async function waitForWorkspaceReady(page: Page, timeoutMs = 45_000): Promise<void> {
   await page.locator(PRELOAD_MARKER).waitFor({ state: "detached", timeout: timeoutMs });
+  if ((await page.locator("[data-navigation-root]").count()) > 0) {
+    await page.locator('html[data-navigation-ready="true"]').waitFor({
+      state: "attached",
+      timeout: timeoutMs,
+    });
+  }
 }
 
 /**
