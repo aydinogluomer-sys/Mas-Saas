@@ -24,7 +24,19 @@ export function isPgPeriodLockedError(err: unknown): boolean {
   if (!err || typeof err !== "object") return false;
   const code = (err as { code?: unknown }).code;
   const msg = String((err as { message?: unknown }).message ?? "");
-  return code === "P0001" && /period_locked/i.test(msg);
+  if (code === "P0001" && /period_locked/i.test(msg)) return true;
+  if (code === undefined && /\bperiod_locked\s*:/i.test(msg)) return true;
+  return false;
+}
+
+export function isPeriodLockTriggerError(err: unknown): boolean {
+  if (isPgPeriodLockedError(err)) return true;
+  if (!err || typeof err !== "object") return false;
+  const code = (err as { code?: unknown }).code;
+  const msg = String((err as { message?: unknown }).message ?? "");
+  if (code === "42501" && /period_lock_requires_manager/i.test(msg)) return true;
+  if (code === "23514" && /period_reopen_(reason_required|target_invalid)/i.test(msg)) return true;
+  return false;
 }
 
 export function translatePeriodLockError(err: unknown): never {
@@ -53,6 +65,34 @@ export function translatePeriodLockError(err: unknown): never {
     );
   }
   throw err;
+}
+
+export function isHandledActionError(err: unknown): boolean {
+  return (
+    err instanceof DomainError ||
+    isPeriodLockTriggerError(err) ||
+    (err instanceof Error && err.name === "ZodError")
+  );
+}
+
+export function toUserActionErrorMessage(
+  err: unknown,
+  fallback = "İşlem tamamlanamadı.",
+): string {
+  if (isPgPeriodLockedError(err) || isPeriodLockTriggerError(err)) {
+    try {
+      translatePeriodLockError(err);
+    } catch (translated) {
+      if (translated instanceof DomainError) return translated.message;
+    }
+  }
+  if (err instanceof DomainError) {
+    return err.message;
+  }
+  if (err instanceof Error && err.name === "ZodError") {
+    return err.message.slice(0, 240);
+  }
+  return fallback;
 }
 
 export interface PeriodChecklistItem {

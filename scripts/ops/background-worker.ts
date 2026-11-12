@@ -192,15 +192,13 @@ export async function runBackgroundQueueTick(deps: {
   maxBatchJobs?: number;
   stuckAfterMinutes?: number;
 }): Promise<BackgroundQueueTickResult> {
-  const [{ reapStuckJobs, requeueDueFailures }, { dispatcher, registerBuiltInJobHandlers }] =
+  const [{ reapStuckJobs, requeueDueFailures }, { createConfiguredDispatcher }] =
     await Promise.all([
       import("../../src/lib/jobs/queue"),
       import("../../src/lib/jobs/dispatcher"),
     ]);
 
-  if (!dispatcher.hasHandler("report_generation")) {
-    registerBuiltInJobHandlers(dispatcher);
-  }
+  const dispatcher = createConfiguredDispatcher();
 
   const requeued = await requeueDueFailures(deps.pool);
   const reaped = await reapStuckJobs(deps.pool, deps.stuckAfterMinutes ?? 30);
@@ -291,6 +289,7 @@ export async function runScheduledMaintenance(deps: {
   hourSlot?: string;
   force?: boolean;
   enableTcmbSync?: boolean;
+  enableMorningBriefingDispatch?: boolean;
 }): Promise<MaintenanceSummary> {
   const { istanbulDateISO } = await import("../../src/lib/reports/rules");
   const statePath = deps.statePath ?? DEFAULT_BACKGROUND_STATE_PATH;
@@ -320,11 +319,20 @@ export async function runScheduledMaintenance(deps: {
       import("../../src/lib/home/overview-snapshot"),
     ]);
 
-    const swept = await sweepStaleStagedFiles(deps.pool);
-    const remindersScheduled = await scheduleReminders(deps.pool, todayISO);
-    const remindersDelivered = await dispatchPending(deps.pool, undefined, todayISO);
-    await validateContinuity(deps.pool);
-    await loadOverviewSnapshot(deps.pool, todayISO);
+    const swept = await sweepStaleStagedFiles(deps.pool).catch(() => ({ removed: 0 }));
+    const remindersScheduled = await scheduleReminders(deps.pool, todayISO).catch((err) => ({
+      scheduled: 0,
+      skipped: 0,
+      error: err instanceof Error ? err.message : String(err),
+    }));
+    const remindersDelivered = await dispatchPending(deps.pool, undefined, todayISO).catch((err) => ({
+      sent: 0,
+      failed: 0,
+      skipped: 0,
+      error: err instanceof Error ? err.message : String(err),
+    }));
+    await validateContinuity(deps.pool).catch(() => undefined);
+    await loadOverviewSnapshot(deps.pool, todayISO).catch(() => undefined);
     const { enqueueDueSyncs } = await import("../../src/lib/integrations/engine");
     const parasutDue = await enqueueDueSyncs(deps.pool, deps.systemActorId, todayISO).catch(() => ({ enqueued: 0, skipped: 0 }));
     const managementLedgerSync = await syncManagementLedgerSafely(deps.pool, deps.systemActorId);
@@ -345,79 +353,92 @@ export async function runScheduledMaintenance(deps: {
       { ensureWindow },
       { detectBrokenPromises },
       { generateDaily },
+      { runClosedLoopFinancialPipeline },
     ] = await Promise.all([
       import("../../src/lib/audit"),
       import("../../src/lib/radar/engine"),
       import("../../src/lib/collections/promises-engine"),
       import("../../src/lib/reports/engine"),
+      import("../../src/lib/integrations/parasut/sync-pipeline"),
     ]);
 
-    const windowRes = await ensureWindow(deps.pool, todayISO, deps.systemActorId, 24);
-    const loanRollover = await rolloverOverdueLoanInstallments(deps.pool, todayISO, deps.systemActorId);
-    const brokenPromises = await detectBrokenPromises(deps.pool, todayISO, deps.systemActorId);
-    const controls = await evaluateAutomatedControls(deps.pool, deps.systemActorId);
-
-    let fxSync: Record<string, unknown> = { enabled: false };
-    const tcmbAuto = deps.enableTcmbSync ?? process.env.MAS_TCMB_AUTO_SYNC === "1";
-    if (tcmbAuto) {
-      const [{ importRates }, { tcmbProvider }] = await Promise.all([
-        import("../../src/lib/fx/engine"),
-        import("../../src/lib/fx/provider"),
-      ]);
-      const fx = await importRates(deps.pool, tcmbProvider(), todayISO, deps.systemActorId);
-      fxSync = { enabled: true, ok: fx.ok, rateDate: fx.rateDate, inserted: fx.inserted, skipped: fx.skipped };
-    }
-
-    // Faz 52/54 kapalı çevrim: TCMB kur çekiminden hemen sonra (ve günlük rapor üretilmeden ÖNCE)
-    // TDHP yönetim defterini senkronla ve provisional_fx -> posted kur değerlemesini uygula.
-    const managementLedgerSync = await syncManagementLedgerSafely(deps.pool, deps.systemActorId);
-
-    const existingDaily = await deps.pool.query<{ id: string }>(
-      `select id from public.reports where report_type = 'daily' and period_start = $1::date limit 1`,
-      [todayISO],
+    const windowRes = await ensureWindow(deps.pool, todayISO, deps.systemActorId, 24).catch(() => []);
+    const loanRollover = await rolloverOverdueLoanInstallments(deps.pool, todayISO, deps.systemActorId).catch(
+      () => ({ scanned: 0, transitionedToLate: 0 }),
     );
-    let dailyReportId: string | null = existingDaily.rows[0]?.id ?? null;
-    let dailyReportCreated = false;
-    if (!dailyReportId) {
-      const created = await generateDaily(deps.pool, todayISO, deps.systemActorId);
-      dailyReportId = created.id;
-      dailyReportCreated = true;
-    }
+    const brokenPromises = await detectBrokenPromises(deps.pool, todayISO, deps.systemActorId).catch(
+      () => ({ scanned: 0, markedBroken: 0 }),
+    );
+    const controls = await evaluateAutomatedControls(deps.pool, deps.systemActorId).catch(
+      () => ({ controlsChecked: 0, alertsRaisedOrUpdated: 0 }),
+    );
 
-    // Faz 54 (F1): Her Pazartesi sabahı (veya o haftanın TRY baz çizgisi henüz dondurulmamışsa)
-    // 13 haftalık doğrudan nakit tahmini anlık görüntüsünü otomatik dondur.
-    let weekly13wSnapshotId: string | null = null;
-    try {
-      const { freezeWeekly13wSnapshot, mondayOfWeek } = await import(
-        "../../src/lib/cashflow/rolling-13w-engine"
-      );
-      const weekMonday = mondayOfWeek(todayISO);
-      const isMonday = todayISO === weekMonday;
-      const existingSnap = await deps.pool.query<{ id: string; as_of_date?: string }>(
-        `select id::text, to_char(as_of_date, 'YYYY-MM-DD') as as_of_date
-           from public.forecast_snapshots_13w
-          where snapshot_week_start = $1::date and currency = 'TRY'
-          limit 1`,
-        [weekMonday],
-      );
-      const hasExisting = (existingSnap.rowCount ?? existingSnap.rows.length) > 0;
-      const staleMondaySnap =
-        isMonday &&
-        hasExisting &&
-        typeof existingSnap.rows[0]?.as_of_date === "string" &&
-        existingSnap.rows[0].as_of_date !== todayISO;
-      if (!hasExisting || staleMondaySnap) {
-        const snap = await freezeWeekly13wSnapshot(deps.pool, {
-          asOfDate: todayISO,
-          currency: "TRY",
-          actor: null,
-        });
-        weekly13wSnapshotId = snap.snapshotId;
-      } else {
-        weekly13wSnapshotId = existingSnap.rows[0]?.id ?? null;
+    const tcmbAuto = deps.enableTcmbSync ?? process.env.MAS_TCMB_AUTO_SYNC === "1";
+    let dailyReportId: string | null = null;
+    let dailyReportCreated = false;
+
+    // F-31: Kapalı çevrim orkestratörü (TCMB Kur -> TDHP Yönetim Defteri & Kur Değerleme -> Günlük Rapor -> 13-Hafta Snapshot)
+    const closedLoop = await runClosedLoopFinancialPipeline(deps.pool, deps.systemActorId, {
+      todayISO,
+      triggerDueIntegrationSyncs: false,
+      syncTcmbFxRates: tcmbAuto,
+      syncManagementLedger: true,
+      freezeMonday13w: true,
+      afterLedgerBeforeFreeze: async () => {
+        const existingDaily = await deps.pool.query<{ id: string }>(
+          `select id from public.reports where report_type = 'daily' and period_start = $1::date limit 1`,
+          [todayISO],
+        );
+        dailyReportId = existingDaily.rows[0]?.id ?? null;
+        if (!dailyReportId) {
+          const created = await generateDaily(deps.pool, todayISO, deps.systemActorId);
+          dailyReportId = created.id;
+          dailyReportCreated = true;
+        }
+      },
+    });
+
+    const fxSync: Record<string, unknown> = tcmbAuto
+      ? {
+          enabled: true,
+          ok: Boolean(closedLoop.fxSync.ok),
+          rateDate: closedLoop.fxSync.rateDate,
+          inserted: closedLoop.fxSync.inserted,
+          skipped: closedLoop.fxSync.skipped,
+        }
+      : { enabled: false };
+
+    const managementLedgerSync: ManagementLedgerSyncSummary = {
+      ok: closedLoop.managementLedger.executed && closedLoop.managementLedger.error === null,
+      createdCount: closedLoop.managementLedger.createdCount,
+      skippedCount: closedLoop.managementLedger.skippedCount,
+      revaluedCount: closedLoop.managementLedger.revaluedCount,
+      error: closedLoop.managementLedger.error,
+    };
+
+    const weekly13wSnapshotId: string | null = closedLoop.forecast13w.primarySnapshotId;
+
+    // F-39: İsteğe bağlı sabah CFO brifingi gönderimi (MAS_BRIEFING_AUTO_DISPATCH=1)
+    const autoDispatchBriefing =
+      deps.enableMorningBriefingDispatch ?? process.env.MAS_BRIEFING_AUTO_DISPATCH === "1";
+    if (autoDispatchBriefing) {
+      try {
+        const [{ dispatchBriefing, generateCfoBriefing }, { transportFor }] = await Promise.all([
+          import("../../src/lib/briefing/engine"),
+          import("../../src/lib/reminders/transport"),
+        ]);
+        const briefing = await generateCfoBriefing(deps.pool, todayISO, deps.systemActorId);
+        const channel = process.env.MAS_BRIEFING_CHANNEL === "email" ? "email" : "telegram";
+        await dispatchBriefing(
+          deps.pool,
+          transportFor(channel),
+          briefing.bodyMd,
+          briefing.reportId,
+          deps.systemActorId,
+        );
+      } catch {
+        // Sabah brifingi kanal hatası günlük finansal bakım turunu bloke etmez.
       }
-    } catch {
-      weekly13wSnapshotId = null;
     }
 
     const dailyStats = {

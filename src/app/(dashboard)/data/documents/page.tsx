@@ -312,7 +312,9 @@ export default async function DocumentsPage({
                       {d.currentVersion != null ? (
                         <a
                           href={`/api/documents/${d.id}/download`}
-                          className="rounded bg-neutral-800 px-2 py-0.5 text-[11px] text-neutral-200 hover:bg-neutral-700"
+                          download
+                          data-no-nav-skeleton="true"
+                          className="button-ghost px-2 py-0.5 text-[11px]"
                         >
                           İndir
                         </a>

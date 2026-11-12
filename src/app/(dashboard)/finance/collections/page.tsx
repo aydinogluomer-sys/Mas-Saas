@@ -14,6 +14,7 @@ import { Badge, type Tone } from "@/components/ui/badge";
 import { Panel, fmtTL } from "@/components/ui/panel";
 import { PageHeader } from "@/components/ui/shell";
 import {
+  approvePaymentRunAction,
   cancelPaymentRunAction,
   clearBadDebtAction,
   createPaymentRunAction,
@@ -273,7 +274,7 @@ export default async function CollectionsPage({
               />
               <button
                 disabled={sourceBankAccounts.length === 0 || runCandidates.length === 0}
-                className="rounded border border-line-faint px-3 py-1 text-xs font-medium hover:bg-white/5 disabled:opacity-40"
+                className="button-primary px-3 py-1 text-xs font-medium disabled:opacity-40"
               >
                 Ödeme paketi oluştur
               </button>
@@ -394,6 +395,11 @@ export default async function CollectionsPage({
                           <Badge tone={RUN_STATUS_TONE[run.status] ?? "neutral"}>
                             {RUN_STATUS_TR[run.status] ?? run.status}
                           </Badge>
+                          {run.selfApprovedOverride && (
+                            <div className="mt-0.5">
+                              <Badge tone="amber">öz-onay istisnası</Badge>
+                            </div>
+                          )}
                           {run.unverifiedIbanCount > 0 && (
                             <div className="mt-0.5 text-[10px] text-warn">
                               {run.unverifiedIbanCount} IBAN BEC onayı bekliyor
@@ -405,8 +411,25 @@ export default async function CollectionsPage({
                             {run.status === "draft" && (
                               <form action={submitPaymentRunAction} className="inline">
                                 <input type="hidden" name="runId" value={run.id} />
-                                <button className="rounded border border-line-faint px-2 py-0.5 text-info hover:bg-white/5">
+                                <button className="button-ghost px-2 py-0.5 text-[11px]">
                                   Onaya gönder
+                                </button>
+                              </form>
+                            )}
+
+                            {["draft", "pending_approval"].includes(run.status) && (
+                              <form
+                                action={approvePaymentRunAction}
+                                className="inline-flex flex-wrap items-center gap-1"
+                              >
+                                <input type="hidden" name="runId" value={run.id} />
+                                <input
+                                  name="justification"
+                                  placeholder="onay / öz-onay gerekçesi (min 10 krk)"
+                                  className="field-control w-48 px-1.5 py-0.5 text-[11px]"
+                                />
+                                <button type="submit" className="button-primary px-2 py-0.5 text-[11px]">
+                                  Paketi onayla
                                 </button>
                               </form>
                             )}
@@ -415,31 +438,41 @@ export default async function CollectionsPage({
                               <>
                                 <a
                                   href={`/api/payments/runs/${run.id}/export?format=pain001`}
-                                  className="rounded border border-line-faint px-1.5 py-0.5 font-mono text-[11px] text-pos hover:bg-white/5"
+                                  download
+                                  data-no-nav-skeleton="true"
+                                  className="button-ghost px-1.5 py-0.5 font-mono text-[11px] text-pos"
                                 >
                                   pain.001 XML
                                 </a>
                                 <a
                                   href={`/api/payments/runs/${run.id}/export?format=garanti_xlsx`}
-                                  className="rounded border border-line-faint px-1.5 py-0.5 font-mono text-[11px] hover:bg-white/5"
+                                  download
+                                  data-no-nav-skeleton="true"
+                                  className="button-ghost px-1.5 py-0.5 font-mono text-[11px]"
                                 >
                                   Garanti XLSX
                                 </a>
                                 <a
                                   href={`/api/payments/runs/${run.id}/export?format=isbank_csv`}
-                                  className="rounded border border-line-faint px-1.5 py-0.5 font-mono text-[11px] hover:bg-white/5"
+                                  download
+                                  data-no-nav-skeleton="true"
+                                  className="button-ghost px-1.5 py-0.5 font-mono text-[11px]"
                                 >
                                   İşBank CSV
                                 </a>
                                 <a
                                   href={`/api/payments/runs/${run.id}/export?format=yapikredi_csv`}
-                                  className="rounded border border-line-faint px-1.5 py-0.5 font-mono text-[11px] hover:bg-white/5"
+                                  download
+                                  data-no-nav-skeleton="true"
+                                  className="button-ghost px-1.5 py-0.5 font-mono text-[11px]"
                                 >
                                   YKredi CSV
                                 </a>
                                 <a
                                   href={`/api/payments/runs/${run.id}/export?format=akbank_csv`}
-                                  className="rounded border border-line-faint px-1.5 py-0.5 font-mono text-[11px] hover:bg-white/5"
+                                  download
+                                  data-no-nav-skeleton="true"
+                                  className="button-ghost px-1.5 py-0.5 font-mono text-[11px]"
                                 >
                                   Akbank CSV
                                 </a>
@@ -454,7 +487,7 @@ export default async function CollectionsPage({
                                   required
                                   minLength={3}
                                   placeholder="iptal gerekçesi"
-                                  className="w-28 rounded border border-line-faint bg-transparent px-1 py-0.5 text-[11px]"
+                                  className="field-control w-28 px-1.5 py-0.5 text-[11px]"
                                 />
                                 <button className="text-neg hover:underline">Paketi iptal et</button>
                               </form>

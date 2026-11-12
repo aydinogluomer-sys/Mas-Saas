@@ -241,7 +241,11 @@ describe("Faz 40 — B2-07 rol-farkında AI & asistan olgu izolasyonu", () => {
     const { ask } = await import("@/lib/assistant/engine");
     const answer = await ask(
       fakePool as unknown as import("pg").Pool,
-      { question: "Sistem yönetici kontrol bulgusu ve onay kuyruğu özel tutar nedir?", conversationId: null },
+      {
+        question: "Sistem yönetici kontrol bulgusu ve onay kuyruğu özel tutar nedir?",
+        conversationId: null,
+        forceDeterministic: true,
+      },
       "00000000-0000-0000-0000-000000000001",
       "viewer",
       "2026-11-01",

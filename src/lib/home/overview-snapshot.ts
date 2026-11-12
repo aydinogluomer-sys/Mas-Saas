@@ -35,6 +35,12 @@ import {
   type CockpitFacts,
 } from "@/lib/home/cockpit";
 import { intOrNull, moneyOrNull, rate, rateOrNull, sumMoney } from "@/lib/money";
+import {
+  loadCanonicalKpis,
+  loadCanonicalOutflow7dKpi,
+  type CanonicalKpiSnapshot,
+  type CanonicalOutflow7dKpi,
+} from "@/lib/metrics/canonical-kpis";
 import { priceMargin } from "@/lib/production/rules";
 import { buildProjection, concentration, remainingOpenAmount, type CashMonth } from "@/lib/radar/rules";
 import { istanbulDateISO, overlayDebtService } from "@/lib/reports/rules";
@@ -902,4 +908,49 @@ export async function loadOverviewSnapshot(
     return { ...primary, ...secondary };
   });
 }
+
+let cachedCanonical: {
+  key: string;
+  freshUntil: number;
+  expiresAt: number;
+  value: CanonicalKpiSnapshot;
+} | null = null;
+
+/**
+ * F-36: Loads canonical verified KPIs (`treasury_position_summary`, `receivables_open`,
+ * `payables_open`, and 7-day remaining payment outflows) for the Ana Ekran cockpit,
+ * keeping `loadOverviewSnapshot`'s 2-query contract untouched.
+ */
+export async function loadOverviewCanonicalKpis(
+  pool: Pick<Pool, "query">,
+  todayISO = istanbulDateISO(),
+): Promise<CanonicalKpiSnapshot> {
+  const now = Date.now();
+  if (
+    canUseRuntimeOverviewCache(pool) &&
+    cachedCanonical &&
+    cachedCanonical.key === todayISO &&
+    cachedCanonical.expiresAt > now
+  ) {
+    return cachedCanonical.value;
+  }
+  const value = await loadCanonicalKpis(pool, todayISO);
+  if (canUseRuntimeOverviewCache(pool)) {
+    cachedCanonical = {
+      key: todayISO,
+      freshUntil: now + OVERVIEW_FRESH_TTL_MS,
+      expiresAt: now + OVERVIEW_STALE_TTL_MS,
+      value,
+    };
+  }
+  return value;
+}
+
+export async function loadOverviewCanonicalOutflow7d(
+  pool: Pick<Pool, "query">,
+  todayISO = istanbulDateISO(),
+): Promise<CanonicalOutflow7dKpi> {
+  return loadCanonicalOutflow7dKpi(pool, todayISO);
+}
+
 

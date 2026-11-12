@@ -56,17 +56,23 @@ export interface ClosedLoopPipelineDeps {
       actor?: string | null;
     },
   ) => Promise<FreezeWeekly13wSnapshotResult>;
+  processEnqueuedJobs?: (
+    pool: Pool,
+    actorId: string,
+  ) => Promise<{ processed: number }>;
 }
 
 export interface ClosedLoopPipelineOptions {
   todayISO: string;
   triggerDueIntegrationSyncs?: boolean;
+  processEnqueuedJobs?: boolean;
   syncTcmbFxRates?: boolean;
   syncManagementLedger?: boolean;
   freezeMonday13w?: boolean;
   forceRefreeze13w?: boolean;
   currenciesFor13w?: readonly string[];
   strict?: boolean;
+  afterLedgerBeforeFreeze?: () => Promise<void>;
   deps?: ClosedLoopPipelineDeps;
 }
 
@@ -222,6 +228,16 @@ export async function runClosedLoopFinancialPipeline(
         skipped: res.skipped,
         error: null,
       };
+      if (options.processEnqueuedJobs === true) {
+        const runJobsFn =
+          deps.processEnqueuedJobs ??
+          (async (p: Pool, actor: string) => {
+            const { createConfiguredDispatcher } = await import("@/lib/jobs/dispatcher");
+            const processed = await createConfiguredDispatcher().processBatch(p, actor, 10);
+            return { processed: processed.length };
+          });
+        await runJobsFn(pool, actorId);
+      }
     } catch (err) {
       if (strict) throw err;
       const msg = errorMessage(err);
@@ -294,6 +310,10 @@ export async function runClosedLoopFinancialPipeline(
       };
       errors.push({ step: "management_ledger_sync", message: msg });
     }
+  }
+
+  if (options.afterLedgerBeforeFreeze) {
+    await options.afterLedgerBeforeFreeze();
   }
 
   // Step 3: Weekly 13-Week Direct Cash Forecast Snapshot Freeze (Monday or missing baseline)

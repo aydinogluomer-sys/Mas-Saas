@@ -16,6 +16,7 @@
  * Handlers MUST be idempotent (`reapStuckJobs` returns timed-out jobs to `'queued'`).
  */
 
+import { createHash } from "node:crypto";
 import type { Pool } from "pg";
 import {
   claimNextJob,
@@ -182,16 +183,305 @@ export class JobDispatcher {
   }
 }
 
-export const dispatcher = new JobDispatcher();
+/**
+ * Creates a fresh `JobDispatcher` pre-loaded with built-in handlers for every `JOB_TYPES` entry.
+ */
+export function createConfiguredDispatcher(): JobDispatcher {
+  return registerBuiltInJobHandlers(new JobDispatcher());
+}
 
 /**
- * Faz 42 (B2): Registers deterministic, idempotent built-in handlers for `background_jobs`
- * using lazy module imports so `src/lib/jobs/dispatcher.ts` stays free of `@/lib/env` at load time.
- *
- * Note: `excel_import` is processed separately by `scripts/ops/process-import-jobs.ts` because
- * it switches into the uploading user's RLS tier via `runAsUser`.
+ * Faz 42 (B2) / F-33 / F-34: Registers deterministic, idempotent built-in handlers for all
+ * `JOB_TYPES` in `background_jobs` using lazy module imports so `src/lib/jobs/dispatcher.ts`
+ * stays free of `@/lib/env` at load time.
  */
-export function registerBuiltInJobHandlers(target: JobDispatcher = dispatcher): JobDispatcher {
+export function registerBuiltInJobHandlers(
+  target: JobDispatcher = new JobDispatcher(),
+): JobDispatcher {
+  target.register("excel_import", async ({ pool, actorId, job, reportProgress: onProgress }) => {
+    const [{ getRawPool }, { processAsyncWorkbookPreviewJob }] = await Promise.all([
+      import("@/lib/db"),
+      import("@/lib/importers/v2/async-runner"),
+    ]);
+    await onProgress(0, 3);
+    const outcome = await processAsyncWorkbookPreviewJob(
+      {
+        pool,
+        identityPool: getRawPool(),
+        systemActorId: actorId,
+      },
+      job.id,
+    );
+    if (outcome.outcome === "succeeded") {
+      // `processAsyncWorkbookPreviewJob` already persisted the compact preview report into `result`
+      // and marked the job `'succeeded'`; returning `{ success: true }` without `resultPayload`
+      // preserves that stored report (`completeJob` no-ops on non-running rows).
+      return { success: true };
+    }
+    return {
+      success: false,
+      resultPayload: {
+        task: "excel.preview",
+        outcome: outcome.outcome,
+        error: outcome.error ?? "Asenkron çalışma kitabı önizlemesi tamamlanamadı.",
+      },
+    };
+  });
+
+  target.register("bank_statement_import", async ({ pool, actorId, job, reportProgress: onProgress }) => {
+    const bankAccountId =
+      typeof job.payload.bankAccountId === "string" ? job.payload.bankAccountId.trim() : "";
+    const filename =
+      typeof job.payload.filename === "string" && job.payload.filename.trim()
+        ? job.payload.filename.trim()
+        : "statement.mt940";
+
+    let buf: Buffer | null = null;
+    if (typeof job.payload.contentBase64 === "string" && job.payload.contentBase64.trim()) {
+      buf = Buffer.from(job.payload.contentBase64.trim(), "base64");
+    } else if (typeof job.payload.rawText === "string" && job.payload.rawText.length > 0) {
+      buf = Buffer.from(job.payload.rawText, "utf8");
+    }
+
+    if (!bankAccountId || !buf || buf.length === 0) {
+      return {
+        success: false,
+        resultPayload: {
+          task: "bank.statement_import",
+          error:
+            "Banka ekstresi işi için geçerli 'bankAccountId' ve 'contentBase64' (veya 'rawText') yükü gerekli.",
+        },
+      };
+    }
+
+    await onProgress(0, 1);
+    const { importHybridBankStatement } = await import(
+      "@/lib/importers/bank-formats/mt940-camt053-parasut"
+    );
+    const outcome = await importHybridBankStatement(pool, {
+      buf,
+      filename,
+      bankAccountId,
+      actorId,
+    });
+    await onProgress(1, 1);
+
+    if (!outcome.ok) {
+      return {
+        success: false,
+        resultPayload: {
+          task: "bank.statement_import",
+          bankAccountId,
+          filename,
+          workbookId: outcome.workbookId,
+          error: outcome.error ?? "Hibrit banka ekstresi ayrıştırılamadı.",
+        },
+      };
+    }
+
+    return {
+      success: true,
+      resultPayload: {
+        task: "bank.statement_import",
+        bankAccountId,
+        filename,
+        workbookId: outcome.workbookId,
+        rowsSeen: outcome.rowsSeen,
+        inserted: outcome.inserted,
+        duplicates: outcome.duplicates,
+        ownTransfers: outcome.ownTransfers,
+      },
+    };
+  });
+
+  target.register("large_export", async ({ pool, job, reportProgress: onProgress }) => {
+    const { rowsToCsv, toXlsxBuffer } = await import("@/lib/analytics/export");
+    const dataset =
+      job.payload.dataset === "payment_instances" ||
+      job.payload.dataset === "bank_transactions" ||
+      job.payload.dataset === "working_capital"
+        ? job.payload.dataset
+        : "open_invoices";
+    const format = job.payload.format === "xlsx" ? "xlsx" : "csv";
+
+    await onProgress(0, 2);
+
+    let sheetName = "Acik Faturalar";
+    let sheetRows: (string | number | null)[][] = [];
+
+    if (dataset === "payment_instances") {
+      sheetName = "Odeme Ornekleri";
+      const res = await pool.query<{
+        period_month: string;
+        title: string;
+        status: string;
+        due_date: string | null;
+        currency: string;
+        amount_planned: string | null;
+        amount_paid: string;
+      }>(
+        `select to_char(pi.period_month, 'YYYY-MM-DD') as period_month,
+                p.title,
+                pi.status,
+                to_char(pi.due_date, 'YYYY-MM-DD') as due_date,
+                pi.currency,
+                pi.amount_planned::text as amount_planned,
+                pi.amount_paid::text as amount_paid
+           from public.payment_instances pi
+           join public.payment_items p on p.id = pi.payment_item_id
+          order by pi.due_date desc nulls last, pi.created_at desc
+          limit 5000`,
+      );
+      sheetRows = [
+        ["Dönem", "Kalem", "Durum", "Vade", "Döviz", "Planlanan", "Ödenen"],
+        ...res.rows.map((r) => [
+          r.period_month,
+          r.title,
+          r.status,
+          r.due_date,
+          r.currency,
+          r.amount_planned,
+          r.amount_paid,
+        ]),
+      ];
+    } else if (dataset === "bank_transactions") {
+      sheetName = "Banka Hareketleri";
+      const res = await pool.query<{
+        txn_date: string;
+        currency: string;
+        amount: string;
+        transaction_kind: string;
+        status: string;
+        channel: string;
+        counterparty: string;
+        reference_no: string;
+      }>(
+        `select to_char(txn_date, 'YYYY-MM-DD') as txn_date,
+                currency,
+                amount::text as amount,
+                transaction_kind,
+                status,
+                channel,
+                coalesce(counterparty_name_raw, '') as counterparty,
+                coalesce(reference_no, '') as reference_no
+           from public.bank_transactions
+          order by txn_date desc, created_at desc
+          limit 5000`,
+      );
+      sheetRows = [
+        ["Tarih", "Döviz", "Tutar", "Tür", "Durum", "Kanal", "Karşı Taraf", "Referans"],
+        ...res.rows.map((r) => [
+          r.txn_date,
+          r.currency,
+          r.amount,
+          r.transaction_kind,
+          r.status,
+          r.channel,
+          r.counterparty,
+          r.reference_no,
+        ]),
+      ];
+    } else if (dataset === "working_capital") {
+      sheetName = "Isletme Sermayesi";
+      const res = await pool.query<{
+        period_month: string;
+        receivables_open: string;
+        payables_open: string;
+        net_working_capital_ex_inventory: string;
+        dso_days: string | null;
+        dpo_days: string | null;
+        cash_cycle_excluding_inventory: string | null;
+      }>(
+        `select to_char(period_start, 'YYYY-MM') as period_month,
+                receivables_open::text,
+                payables_open::text,
+                net_working_capital_ex_inventory::text,
+                dso_days::text,
+                dpo_days::text,
+                cash_cycle_excluding_inventory::text
+           from public.working_capital_monthly_v
+          order by period_start desc
+          limit 120`,
+      );
+      sheetRows = [
+        ["Ay", "Açık Alacak (TRY)", "Açık Borç (TRY)", "NİS (Stok Hariç)", "DSO (Gün)", "DPO (Gün)", "CCC (Gün)"],
+        ...res.rows.map((r) => [
+          r.period_month,
+          r.receivables_open,
+          r.payables_open,
+          r.net_working_capital_ex_inventory,
+          r.dso_days,
+          r.dpo_days,
+          r.cash_cycle_excluding_inventory,
+        ]),
+      ];
+    } else {
+      const res = await pool.query<{
+        invoice_no: string;
+        direction: string;
+        issue_date: string;
+        due_date: string | null;
+        currency: string;
+        gross_amount: string;
+        payable_amount: string | null;
+        paid_amount: string;
+        status: string;
+      }>(
+        `select invoice_no,
+                direction,
+                to_char(issue_date, 'YYYY-MM-DD') as issue_date,
+                to_char(due_date, 'YYYY-MM-DD') as due_date,
+                currency,
+                gross_amount::text,
+                payable_amount::text,
+                paid_amount::text,
+                status
+           from public.invoices
+          where status in ('open', 'partial')
+          order by due_date nulls last, issue_date desc
+          limit 5000`,
+      );
+      sheetRows = [
+        ["Fatura No", "Yön", "Düzenleme", "Vade", "Döviz", "Brüt", "Ödenecek", "Ödenen", "Durum"],
+        ...res.rows.map((r) => [
+          r.invoice_no,
+          r.direction,
+          r.issue_date,
+          r.due_date,
+          r.currency,
+          r.gross_amount,
+          r.payable_amount,
+          r.paid_amount,
+          r.status,
+        ]),
+      ];
+    }
+
+    await onProgress(1, 2);
+
+    const rowCount = Math.max(0, sheetRows.length - 1);
+    const bytes =
+      format === "xlsx"
+        ? await toXlsxBuffer([{ name: sheetName, rows: sheetRows }])
+        : Buffer.from(rowsToCsv(sheetRows), "utf8");
+    const sha256 = createHash("sha256").update(bytes).digest("hex");
+
+    await onProgress(2, 2);
+    return {
+      success: true,
+      resultPayload: {
+        task: "export.large",
+        dataset,
+        format,
+        sheetName,
+        rowCount,
+        byteLength: bytes.byteLength,
+        sha256,
+        generatedAt: new Date().toISOString(),
+        inlineBase64: bytes.byteLength <= 65_536 ? bytes.toString("base64") : null,
+      },
+    };
+  });
   target.register("report_generation", async ({ pool, actorId, job, reportProgress: onProgress }) => {
     const [{ generateDaily, generateMonthly, generateWeekly }, { istanbulDateISO }] = await Promise.all([
       import("@/lib/reports/engine"),

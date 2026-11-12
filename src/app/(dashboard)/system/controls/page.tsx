@@ -1,3 +1,4 @@
+import Link from "@/components/ui/app-link";
 import { getPool } from "@/lib/db";
 import {
   loadAlerts, loadAnomalies, loadControlDashboard, loadEscalationsDue, loadFalsePositiveRates,
@@ -6,6 +7,8 @@ import {
   ALERT_STATUS_LABEL, ANOMALY_LABEL, SEVERITY_LABEL,
   type AlertStatus, type AnomalyRule, type Severity,
 } from "@/lib/controls/rules";
+import { intOrNull, moneyOrNull } from "@/lib/money";
+import { formatMoney } from "@/lib/money-format";
 import { Badge, type Tone } from "@/components/ui/badge";
 import { Panel, fmtTL } from "@/components/ui/panel";
 import { EmptyState, KeyStat, PageHeader, TableShell } from "@/components/ui/shell";
@@ -31,13 +34,68 @@ export default async function ControlsPage({
   if (denied) return denied;
   const sp = await searchParams;
   const pool = getPool();
-  const [dashboard, alerts, escalations, fpRates, anomalies] = await Promise.all([
+  const [dashboard, alerts, escalations, fpRates, anomalies, sharedIbansRes, overpaidRes] = await Promise.all([
     loadControlDashboard(pool),
     loadAlerts(pool, 60),
     loadEscalationsDue(pool),
     loadFalsePositiveRates(pool),
     loadAnomalies(pool),
+    pool.query<{
+      iban_normalized: string;
+      party_count: string;
+      party_names: string[] | null;
+    }>(
+      `select iban_normalized,
+              party_count::text,
+              party_names
+         from public.iban_shared_across_parties
+        order by party_count desc, iban_normalized
+        limit 50`,
+    ),
+    pool.query<{
+      id: string;
+      invoice_no: string;
+      party_id: string;
+      party_name: string;
+      gross_amount: string;
+      paid_amount: string;
+      overpaid_by: string;
+      status: string;
+      currency: string;
+    }>(
+      `select io.id::text,
+              io.invoice_no,
+              io.party_id::text,
+              io.party_name,
+              io.gross_amount::text,
+              io.paid_amount::text,
+              io.overpaid_by::text,
+              io.status,
+              coalesce(inv.currency, 'TRY') as currency
+         from public.invoice_overpaid io
+         left join public.invoices inv on inv.id = io.id
+        order by io.overpaid_by desc
+        limit 50`,
+    ),
   ]);
+
+  const sharedIbans = sharedIbansRes.rows.map((r) => ({
+    ibanNormalized: r.iban_normalized,
+    partyCount: intOrNull(r.party_count) ?? 0,
+    partyNames: r.party_names ?? [],
+  }));
+
+  const overpaidInvoices = overpaidRes.rows.map((r) => ({
+    id: r.id,
+    invoiceNo: r.invoice_no,
+    partyId: r.party_id,
+    partyName: r.party_name,
+    grossAmount: moneyOrNull(r.gross_amount) ?? 0,
+    paidAmount: moneyOrNull(r.paid_amount) ?? 0,
+    overpaidBy: moneyOrNull(r.overpaid_by) ?? 0,
+    status: r.status,
+    currency: r.currency || "TRY",
+  }));
 
   const critical = dashboard.filter((d) => d.state === "CRITICAL");
   const openAlerts = alerts.filter((a) => a.status === "open");
@@ -281,6 +339,106 @@ export default async function ControlsPage({
           </div>
         </div>
       </Panel>
+
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+        <Panel
+          title={`PAYLAŞILAN IBAN RİSKİ (BEC KONTROLÜ) — ${sharedIbans.length}`}
+          subtitle="Birden fazla aktif karşı tarafa tanımlanmış aynı IBAN kayıtları (sahte tedarikçi yönlendirmesi / BEC erken uyarısı)"
+          right={
+            <Link
+              href="/finance/counterparties"
+              className="font-mono text-xs hover:underline"
+              style={{ color: "var(--text-2)" }}
+            >
+              IBAN Kasası →
+            </Link>
+          }
+        >
+          {sharedIbans.length === 0 ? (
+            <EmptyState>Paylaşılan aktif IBAN riski bulunmuyor.</EmptyState>
+          ) : (
+            <TableShell>
+              <table className="w-full text-xs">
+                <thead>
+                  <tr className="text-left uppercase" style={{ color: "var(--text-2)" }}>
+                    <th className="py-1.5">IBAN</th>
+                    <th className="text-right">Cari Sayısı</th>
+                    <th>Paylaşan Karşı Taraflar</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {sharedIbans.map((row) => (
+                    <tr
+                      key={row.ibanNormalized}
+                      className="border-t"
+                      style={{ borderColor: "var(--line)", color: "var(--text-1)" }}
+                    >
+                      <td className="py-1.5 font-mono">{row.ibanNormalized}</td>
+                      <td className="text-right">
+                        <Badge tone="red">{row.partyCount} cari</Badge>
+                      </td>
+                      <td style={{ color: "var(--text-2)" }}>{row.partyNames.join(", ")}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </TableShell>
+          )}
+        </Panel>
+
+        <Panel
+          title={`FAZLA ÖDENMİŞ FATURALAR — ${overpaidInvoices.length}`}
+          subtitle="Ödenen tutarı brüt fatura tutarını aşan kayıtlar; iade veya cari mahsup incelemesi gerektirir"
+          right={
+            <Link
+              href="/finance/invoices"
+              className="font-mono text-xs hover:underline"
+              style={{ color: "var(--text-2)" }}
+            >
+              Faturalar →
+            </Link>
+          }
+        >
+          {overpaidInvoices.length === 0 ? (
+            <EmptyState>Fazla ödenmiş fatura bulgusu bulunmuyor.</EmptyState>
+          ) : (
+            <TableShell>
+              <table className="w-full text-xs">
+                <thead>
+                  <tr className="text-left uppercase" style={{ color: "var(--text-2)" }}>
+                    <th className="py-1.5">Fatura No</th>
+                    <th>Karşı Taraf</th>
+                    <th className="text-right">Brüt</th>
+                    <th className="text-right">Ödenen</th>
+                    <th className="text-right">Fazla Tutar</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {overpaidInvoices.map((op) => (
+                    <tr
+                      key={op.id}
+                      className="border-t"
+                      style={{ borderColor: "var(--line)", color: "var(--text-1)" }}
+                    >
+                      <td className="py-1.5 font-mono">{op.invoiceNo}</td>
+                      <td>{op.partyName}</td>
+                      <td className="text-right font-mono tabular-nums">
+                        {formatMoney(op.grossAmount, op.currency)}
+                      </td>
+                      <td className="text-right font-mono tabular-nums">
+                        {formatMoney(op.paidAmount, op.currency)}
+                      </td>
+                      <td className="text-right font-mono font-semibold tabular-nums text-neg">
+                        +{formatMoney(op.overpaidBy, op.currency)}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </TableShell>
+          )}
+        </Panel>
+      </div>
     </>
   );
 }

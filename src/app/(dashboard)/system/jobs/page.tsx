@@ -1,11 +1,13 @@
 import { getPool } from "@/lib/db";
-import { JobDispatcher, registerBuiltInJobHandlers } from "@/lib/jobs/dispatcher";
+import { createConfiguredDispatcher } from "@/lib/jobs/dispatcher";
 import { listJobs, loadQueueHealth } from "@/lib/jobs/queue";
 import { JOB_TYPES, queueVerdict, type JobStatus } from "@/lib/jobs/rules";
 import { getSlowThreshold, slowQueryReport } from "@/lib/perf/slow-query";
 import {
+  cancelJobAction,
   enqueueAndDispatchJobAction,
   processNextQueuedJobAction,
+  reapStaleJobsAction,
   replayJobAction,
   sweepQueueAction,
 } from "./actions";
@@ -50,7 +52,7 @@ export default async function JobsPage() {
     ? Math.max(...queued.map((j) => (Date.now() - Date.parse(j.createdAt)) / 1000))
     : null;
   const verdict = queueVerdict(oldestQueued, deadLetters.length);
-  const inspectorDispatcher = registerBuiltInJobHandlers(new JobDispatcher());
+  const inspectorDispatcher = createConfiguredDispatcher();
 
   return (
     <>
@@ -65,6 +67,12 @@ export default async function JobsPage() {
             <form action={processNextQueuedJobAction}>
               <button className="button-accent px-3 py-2 font-mono text-xs uppercase tracking-wider">
                 Sıradaki işi çalıştır
+              </button>
+            </form>
+            <form action={reapStaleJobsAction}>
+              <input type="hidden" name="olderThanMinutes" value="30" />
+              <button className="button-ghost px-3 py-2 font-mono text-xs uppercase tracking-wider">
+                Asılı İşleri Kurtar
               </button>
             </form>
             <form action={sweepQueueAction}>
@@ -117,6 +125,15 @@ export default async function JobsPage() {
             <input type="hidden" name="task" value="fx.tcmb_daily" />
             <button type="submit" className="button-ghost px-2.5 py-1 text-xs">
               + TCMB Günlük Kur Çek
+            </button>
+          </form>
+          <form action={enqueueAndDispatchJobAction}>
+            <input type="hidden" name="jobType" value="large_export" />
+            <input type="hidden" name="task" value="export.large" />
+            <input type="hidden" name="dataset" value="open_invoices" />
+            <input type="hidden" name="format" value="csv" />
+            <button type="submit" className="button-ghost px-2.5 py-1 text-xs">
+              + Büyük Dışa Aktarma Üret
             </button>
           </form>
         </div>
@@ -179,7 +196,7 @@ export default async function JobsPage() {
               <thead>
                 <tr className="text-left font-mono text-[10px] uppercase text-tone-4">
                   <th className="py-1">Tür</th><th>Durum</th><th>İlerleme</th>
-                  <th className="text-right">Deneme</th><th>Son hata</th>
+                  <th className="text-right">Deneme</th><th>Son hata</th><th className="text-right">İşlem</th>
                 </tr>
               </thead>
               <tbody>
@@ -194,6 +211,21 @@ export default async function JobsPage() {
                     </td>
                     <td className="text-right font-mono">{j.attempts}/{j.maxAttempts}</td>
                     <td className="max-w-[20rem] truncate text-tone-3">{j.lastError ?? "—"}</td>
+                    <td className="text-right">
+                      {j.status === "queued" ? (
+                        <form action={cancelJobAction} className="inline">
+                          <input type="hidden" name="jobId" value={j.id} />
+                          <button
+                            type="submit"
+                            className="button-ghost px-2 py-0.5 font-mono text-[10px] uppercase"
+                          >
+                            İptal Et
+                          </button>
+                        </form>
+                      ) : (
+                        <span className="font-mono text-[10px] text-tone-4">—</span>
+                      )}
+                    </td>
                   </tr>
                 ))}
               </tbody>

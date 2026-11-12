@@ -8,7 +8,7 @@
 import { z } from "zod";
 import type { Pool } from "pg";
 import { audit } from "@/lib/audit";
-import { globalFilterSchema, type GlobalFilters } from "./filters";
+import { filtersToParams, globalFilterSchema, type GlobalFilters } from "./filters";
 
 export const MODULE_KEYS = [
   "payments", "cashflow", "finance", "invoices", "documents",
@@ -123,11 +123,129 @@ export async function deleteView(pool: Pool, id: string, actorId: string): Promi
   } finally { client.release(); }
 }
 
+/** Pure helper to select the active default view (own default beats shared default). */
+export function pickDefaultSavedView(views: readonly SavedView[]): SavedView | null {
+  return views.find((v) => v.isDefault && v.isMine) ?? views.find((v) => v.isDefault) ?? null;
+}
+
 /** The view to apply when a module opens with no filters in the URL. */
 export async function defaultViewFor(
   pool: Pool, moduleKey: ModuleKey, currentUserId: string | null,
 ): Promise<SavedView | null> {
   const views = await listSavedViews(pool, moduleKey, currentUserId);
   // Own default beats a shared one: a personal preference should not be overridden by a colleague.
-  return views.find((v) => v.isDefault && v.isMine) ?? views.find((v) => v.isDefault) ?? null;
+  return pickDefaultSavedView(views);
+}
+
+/**
+ * Updates `updated_at` when an operator applies/opens one of their saved views (`F-42`).
+ * Safe under RLS: returns `false` when the caller is anonymous, a read-only viewer (`42501`),
+ * or opening a colleague's shared view (`rowCount === 0`).
+ */
+export async function touchSavedView(
+  pool: Pool,
+  id: string,
+  actorId: string | null,
+): Promise<boolean> {
+  if (!actorId || !z.string().uuid().safeParse(id).success) {
+    return false;
+  }
+  try {
+    const res = await pool.query(
+      `update public.saved_views set updated_at = now() where id = $1 returning id`,
+      [id],
+    );
+    return (res.rowCount ?? 0) > 0;
+  } catch {
+    return false;
+  }
+}
+
+export const GLOBAL_FILTER_URL_KEYS = new Set([
+  "dp", "df", "dt", "cur", "cp", "cc", "pr", "q",
+]);
+
+const EPHEMERAL_URL_KEYS = new Set([
+  "page", "sv", "no_default", "error", "result", "dispatched", "dispatchError",
+]);
+
+export type RawQueryParamMap =
+  | URLSearchParams
+  | Record<string, string | string[] | undefined>
+  | null
+  | undefined;
+
+/**
+ * Extracts active module context parameters (`tab`, `month`, `period`, `direction`, `currency`,
+ * `status`, `kind`, `ps`, etc.) while stripping global filter keys and transient flash/page keys (`F-62`).
+ */
+export function extractPreservedContextParams(rawParams: RawQueryParamMap): Record<string, string> {
+  const out: Record<string, string> = {};
+  if (!rawParams) return out;
+
+  if (rawParams instanceof URLSearchParams) {
+    for (const [key, val] of rawParams.entries()) {
+      if (GLOBAL_FILTER_URL_KEYS.has(key) || EPHEMERAL_URL_KEYS.has(key)) continue;
+      if (val !== "") out[key] = val;
+    }
+    return out;
+  }
+
+  for (const [key, rawVal] of Object.entries(rawParams)) {
+    if (GLOBAL_FILTER_URL_KEYS.has(key) || EPHEMERAL_URL_KEYS.has(key)) continue;
+    const val = Array.isArray(rawVal) ? rawVal[0] : rawVal;
+    if (typeof val === "string" && val !== "") {
+      out[key] = val;
+    }
+  }
+  return out;
+}
+
+/**
+ * Builds a module URL that applies `targetFilters` while preserving active context parameters
+ * (`tab`, `month`, `period`, `direction`, `currency`, etc.) unless overridden by the saved view (`F-62`).
+ */
+export function buildSavedViewHrefPreservingContext(
+  basePath: string,
+  contextParams: RawQueryParamMap,
+  targetFilters: GlobalFilters | null,
+  extra?: Record<string, string | undefined>,
+): string {
+  const qIdx = basePath.indexOf("?");
+  const pathname = (qIdx >= 0 ? basePath.slice(0, qIdx) : basePath) || "/";
+  const baseQuery = qIdx >= 0 ? new URLSearchParams(basePath.slice(qIdx + 1)) : null;
+
+  const preserved: Record<string, string> = {
+    ...extractPreservedContextParams(baseQuery),
+    ...extractPreservedContextParams(contextParams),
+  };
+
+  if (targetFilters?.currency && "currency" in preserved) {
+    preserved.currency = targetFilters.currency;
+  }
+
+  const merged = new URLSearchParams();
+  for (const [k, v] of Object.entries(preserved)) {
+    merged.set(k, v);
+  }
+
+  if (targetFilters) {
+    const filterParams = filtersToParams(targetFilters);
+    for (const [k, v] of filterParams.entries()) {
+      merged.set(k, v);
+    }
+  }
+
+  if (extra) {
+    for (const [k, v] of Object.entries(extra)) {
+      if (v === undefined || v === "") {
+        merged.delete(k);
+      } else {
+        merged.set(k, v);
+      }
+    }
+  }
+
+  const qs = merged.toString();
+  return qs ? `${pathname}?${qs}` : pathname;
 }

@@ -2,10 +2,11 @@ import Link from "@/components/ui/app-link";
 import { Badge } from "@/components/ui/badge";
 import { getPool } from "@/lib/db";
 import { loadFinanceDashboard } from "@/lib/financing/engine";
+import { intOrNull, moneyOrNull, rateOrNull } from "@/lib/money";
 import { loadUnknownOpeningAccountCount } from "@/lib/treasury/engine";
 import { istanbulDateISO } from "@/lib/reports/rules";
 import { fmtTL, Panel } from "@/components/ui/panel";
-import { KpiCard, PageHeader } from "@/components/ui/shell";
+import { KpiCard, PageHeader, TableShell } from "@/components/ui/shell";
 import { AnalyticsChart } from "@/components/charts/analytics-chart";
 import type { ChartModel } from "@/lib/analytics/chart";
 import { requireRouteAccess } from "@/lib/authz/route-guard";
@@ -17,10 +18,60 @@ export default async function FinanceSummaryPage() {
   if (denied) return denied;
   const pool = getPool();
   const today = istanbulDateISO();
-  const [{ summary, months }, unknownOpening] = await Promise.all([
+  const [{ summary, months }, unknownOpening, wcRes] = await Promise.all([
     loadFinanceDashboard(pool, today),
     loadUnknownOpeningAccountCount(pool),
+    pool.query<{
+      ym: string;
+      period_start: string;
+      receivables_open: string;
+      payables_open: string;
+      net_working_capital_ex_inventory: string;
+      dso_days: string | null;
+      dpo_days: string | null;
+      dio_days: string | null;
+      cash_cycle_excluding_inventory: string | null;
+      cash_inflow_try: string;
+      cash_outflow_try: string;
+      cash_net_try: string;
+      foreign_invoice_count: number;
+      foreign_cash_tx_count: number;
+    }>(
+      `select to_char(period_start, 'YYYY-MM') as ym,
+              to_char(period_start, 'YYYY-MM-DD') as period_start,
+              receivables_open::text,
+              payables_open::text,
+              net_working_capital_ex_inventory::text,
+              dso_days::text,
+              dpo_days::text,
+              dio_days::text,
+              cash_cycle_excluding_inventory::text,
+              cash_inflow_try::text,
+              cash_outflow_try::text,
+              cash_net_try::text,
+              foreign_invoice_count,
+              foreign_cash_tx_count
+         from public.working_capital_monthly_v
+        order by period_start desc
+        limit 12`,
+    ),
   ]);
+  const workingCapitalRows = wcRes.rows.map((r) => ({
+    ym: r.ym,
+    periodStart: r.period_start,
+    receivablesOpen: moneyOrNull(r.receivables_open) ?? 0,
+    payablesOpen: moneyOrNull(r.payables_open) ?? 0,
+    netWorkingCapital: moneyOrNull(r.net_working_capital_ex_inventory) ?? 0,
+    dsoDays: rateOrNull(r.dso_days),
+    dpoDays: rateOrNull(r.dpo_days),
+    dioDays: rateOrNull(r.dio_days),
+    cccExInventory: rateOrNull(r.cash_cycle_excluding_inventory),
+    cashInflowTry: moneyOrNull(r.cash_inflow_try) ?? 0,
+    cashOutflowTry: moneyOrNull(r.cash_outflow_try) ?? 0,
+    cashNetTry: moneyOrNull(r.cash_net_try) ?? 0,
+    foreignInvoiceCount: intOrNull(r.foreign_invoice_count) ?? 0,
+    foreignCashTxCount: intOrNull(r.foreign_cash_tx_count) ?? 0,
+  }));
   const monthKeys = [...new Set(months.map((row) => row.monthStart))].sort();
   const debt = monthKeys.slice(0, 6).map((monthStart) => {
     const rows = months.filter((row) => row.monthStart === monthStart);
@@ -77,6 +128,80 @@ export default async function FinanceSummaryPage() {
     <AnalyticsChart model={chart} kind="bar" defaultPeriod="12m" />
     <Panel title="Önümüzdeki altı ay borç servisi">
       <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">{debt.map((row) => <Link key={row.monthStart} href="/finance/maturities" className="border border-line p-3 hover:border-line-strong"><div className="font-mono text-xs text-tone-3">{row.monthStart.slice(0, 7)}</div><div className="mt-1 font-mono text-sm text-neg">{fmtTL(row.knownOutflow)}</div><div className="text-xs text-tone-3">{row.count} vade</div></Link>)}</div>
+    </Panel>
+
+    <Panel
+      title="Aylık İşletme Sermayesi (DSO / DPO / CCC)"
+      subtitle="Aylık açık alacak/borç, stok hariç net işletme sermayesi ve tahsilat-ödeme çevrim süresi (TRY bazında; dövizli işlem adedi ayrıca gösterilir)"
+    >
+      {workingCapitalRows.length === 0 ? (
+        <p className="py-2 text-sm" style={{ color: "var(--text-2)" }}>
+          Henüz aylık işletme sermayesi verisi oluşmadı.
+        </p>
+      ) : (
+        <TableShell>
+          <table className="w-full text-xs">
+            <thead>
+              <tr className="text-left uppercase" style={{ color: "var(--text-2)" }}>
+                <th className="py-1.5">Dönem</th>
+                <th className="text-right">Açık Alacak</th>
+                <th className="text-right">Açık Borç</th>
+                <th className="text-right">Net İşletme Sermayesi</th>
+                <th className="text-right">DSO (Gün)</th>
+                <th className="text-right">DPO (Gün)</th>
+                <th className="text-right">CCC (Stok Hariç)</th>
+                <th className="text-right">Nakit Net (TRY)</th>
+                <th className="text-right">Dövizli Kayıt</th>
+              </tr>
+            </thead>
+            <tbody>
+              {workingCapitalRows.map((wc) => (
+                <tr
+                  key={wc.periodStart}
+                  className="border-t"
+                  style={{ borderColor: "var(--line)", color: "var(--text-1)" }}
+                >
+                  <td className="py-1.5 font-mono font-medium">{wc.ym}</td>
+                  <td className="text-right font-mono tabular-nums text-pos">
+                    {fmtTL(wc.receivablesOpen)}
+                  </td>
+                  <td className="text-right font-mono tabular-nums text-neg">
+                    {fmtTL(wc.payablesOpen)}
+                  </td>
+                  <td className="text-right font-mono tabular-nums">
+                    {fmtTL(wc.netWorkingCapital)}
+                  </td>
+                  <td className="text-right font-mono tabular-nums">
+                    {wc.dsoDays == null ? "—" : `${wc.dsoDays.toFixed(1)}g`}
+                  </td>
+                  <td className="text-right font-mono tabular-nums">
+                    {wc.dpoDays == null ? "—" : `${wc.dpoDays.toFixed(1)}g`}
+                  </td>
+                  <td
+                    className={`text-right font-mono font-semibold tabular-nums ${
+                      wc.cccExInventory != null && wc.cccExInventory > 45 ? "text-warn" : ""
+                    }`}
+                  >
+                    {wc.cccExInventory == null ? "—" : `${wc.cccExInventory.toFixed(1)}g`}
+                  </td>
+                  <td
+                    className={`text-right font-mono tabular-nums ${
+                      wc.cashNetTry < 0 ? "text-neg" : wc.cashNetTry > 0 ? "text-pos" : ""
+                    }`}
+                  >
+                    {fmtTL(wc.cashNetTry)}
+                  </td>
+                  <td className="text-right font-mono text-[11px]" style={{ color: "var(--text-2)" }}>
+                    {wc.foreignInvoiceCount + wc.foreignCashTxCount > 0
+                      ? `${wc.foreignInvoiceCount}f · ${wc.foreignCashTxCount}h`
+                      : "—"}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </TableShell>
+      )}
     </Panel>
   </>;
 }

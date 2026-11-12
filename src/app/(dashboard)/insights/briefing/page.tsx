@@ -5,7 +5,7 @@ import { DELTA_CATEGORY_LABELS } from "@/lib/briefing/delta-attribution";
 import { briefingStatus, renderBriefing } from "@/lib/briefing/rules";
 import { loadUnknownOpeningAccountCount } from "@/lib/treasury/engine";
 import { istanbulDateISO } from "@/lib/reports/rules";
-import { generateBriefingAction } from "./actions";
+import { dispatchMorningBriefingAction, generateBriefingAction } from "./actions";
 import { Badge, type Tone } from "@/components/ui/badge";
 import { Panel, fmtTL } from "@/components/ui/panel";
 import { EmptyState, KeyStat, PageHeader } from "@/components/ui/shell";
@@ -19,11 +19,16 @@ const TONE: Record<string, "neutral" | "pos" | "neg" | "warn"> = {
 };
 const BADGE: Record<string, Tone> = { pos: "green", neg: "red", warn: "amber", neutral: "neutral" };
 
-export default async function BriefingPage() {
+interface BriefingPageProps {
+  searchParams?: Promise<{ dispatched?: string; dispatchError?: string }>;
+}
+
+export default async function BriefingPage({ searchParams }: BriefingPageProps) {
   // Faz 17-38 denetimi — sayfa seviyesi rol kapisi. Navigasyonun kullandigi AYNI karar
   // (canSeeRoute); ikinci bir liste, ikinci bir fikir ve kacinilmaz bir kayma demekti.
   const denied = await requireRouteAccess("/insights/briefing");
   if (denied) return denied;
+  const sp = (await searchParams) ?? {};
   const pool = getPool();
   const today = istanbulDateISO();
 
@@ -46,13 +51,74 @@ export default async function BriefingPage() {
         subtitle="Yönetim kokpiti ve günün özeti — panolardaki rakamların aynısı"
         meta={<Badge tone={BADGE[status.tone] ?? "neutral"} dot>{status.text}</Badge>}
         action={
-          <form action={generateBriefingAction}>
-            <button className="button-accent px-3 py-2 font-mono text-xs uppercase tracking-wider">
-              Brifingi üret ve kaydet
-            </button>
-          </form>
+          <div className="flex flex-wrap items-center gap-2">
+            <form action={dispatchMorningBriefingAction} className="flex items-center gap-1.5">
+              <select
+                name="channel"
+                defaultValue="telegram"
+                aria-label="Brifing gönderim kanalı"
+                style={{
+                  background: "var(--surface-1)",
+                  border: "1px solid var(--line)",
+                  color: "var(--text-1)",
+                }}
+                className="px-2 py-2 font-mono text-[10px] uppercase tracking-wider"
+              >
+                <option value="telegram">Telegram</option>
+                <option value="email">E-posta</option>
+              </select>
+              <button
+                type="submit"
+                style={{
+                  background: "var(--surface-2)",
+                  border: "1px solid var(--line)",
+                  color: "var(--text-1)",
+                }}
+                className="px-3 py-2 font-mono text-xs uppercase tracking-wider hover:opacity-85"
+              >
+                Brifingi Kanallara Gönder
+              </button>
+            </form>
+            <form action={generateBriefingAction}>
+              <button className="button-accent px-3 py-2 font-mono text-xs uppercase tracking-wider">
+                Brifingi üret ve kaydet
+              </button>
+            </form>
+          </div>
         }
       />
+
+      {sp.dispatched ? (
+        <div
+          role="status"
+          style={{
+            background: "var(--surface-2)",
+            border: "1px solid var(--line)",
+            color: "var(--text-1)",
+          }}
+          className="flex flex-wrap items-center gap-2 px-3 py-2 text-xs"
+        >
+          <Badge tone="green" dot>Gönderildi</Badge>
+          <span>
+            {`Sabah brifingi ${sp.dispatched === "email" ? "E-posta" : "Telegram"} kanalına iletildi.`}
+          </span>
+        </div>
+      ) : null}
+
+      {sp.dispatchError ? (
+        <div
+          role="alert"
+          style={{
+            background: "var(--surface-2)",
+            border: "1px solid var(--line)",
+            color: "var(--text-1)",
+          }}
+          className="flex flex-wrap items-center gap-2 px-3 py-2 text-xs"
+        >
+          <Badge tone="amber" dot>Kanal Uyarısı</Badge>
+          <span>{sp.dispatchError}</span>
+        </div>
+      ) : null}
 
       {unknownOpening.totalUnknown > 0 ? (
         <div

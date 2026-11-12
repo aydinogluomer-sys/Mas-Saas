@@ -211,6 +211,24 @@ export function buildSettingsCommand(taskName: string): string[] {
   ];
 }
 
+/**
+ * Yükseltilmemiş (non-admin) Windows oturumlarında `-LogonType S4U` erişim engeline takıldığında,
+ * görevin `StartWhenAvailable`, `ExecutionTimeLimit`, `MultipleInstances IgnoreNew` ve pil
+ * sertleştirmelerini mevcut `InteractiveToken` principal'ını koruyarak uygular (`F-32`).
+ */
+export function buildSettingsOnlyCommand(taskName: string): string[] {
+  assertTaskName(taskName);
+  const timeLimitExpr =
+    taskName === JOBS.worker.taskName ? "([TimeSpan]::Zero)" : "(New-TimeSpan -Hours 2)";
+  return [
+    "-NoProfile", "-NonInteractive", "-Command",
+    "$ErrorActionPreference='Stop'; " +
+      `$s = New-ScheduledTaskSettingsSet -StartWhenAvailable -ExecutionTimeLimit ${timeLimitExpr} ` +
+      "-MultipleInstances IgnoreNew -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries; " +
+      `Set-ScheduledTask -TaskName '${taskName}' -Settings $s | Out-Null`,
+  ];
+}
+
 /** `status` için SALT-OKUR ayrıntı: oturum türü, sertleştirilmiş ayarlar, son sonuç. */
 export function buildStatusDetailCommand(taskName: string): string[] {
   assertTaskName(taskName);
@@ -477,6 +495,13 @@ export function main(): number {
     }
     const hardened = powershell(settingsArgs);
     if (hardened.code !== 0) {
+      const fallback = powershell(buildSettingsOnlyCommand(spec.taskName));
+      if (fallback.code === 0) {
+        console.log(
+          "SETTINGS HARDENED (InteractiveToken — S4U yükseltme gerektirdiği için atlandı; StartWhenAvailable, ExecutionTimeLimit ve MultipleInstances IgnoreNew uygulandı)",
+        );
+        return 0;
+      }
       console.error(`SETTINGS NOT HARDENED — Set-ScheduledTask başarısız (exit ${hardened.code}): ${hardened.out.split(/\r?\n/)[0] ?? ""}`);
       console.error("Görev KAYITLI kaldı ama Windows varsayılanlarıyla (kaçırılan koşu telafi edilmez). 'status' ile bakın.");
       return 1;

@@ -13,11 +13,13 @@ import { getPool } from "@/lib/db";
 import { closingTrend } from "@/lib/home/cockpit";
 import {
   getWarmOverviewPair,
+  loadOverviewCanonicalKpis,
   loadOverviewPrimary,
   loadOverviewSecondary,
   type OverviewPrimarySnapshot,
   type OverviewSecondarySnapshot,
 } from "@/lib/home/overview-snapshot";
+import { formatForeignBucketNote } from "@/lib/money-format";
 import { MODULE_FRAMING } from "@/lib/navigation/module-framing";
 import { istanbulDateISO } from "@/lib/reports/rules";
 
@@ -144,6 +146,52 @@ async function OverviewSecondarySection({ primary }: { primary: OverviewPrimaryS
   return <OverviewSecondaryView primary={primary} secondary={secondary} />;
 }
 
+async function OverviewCanonicalKpiSection({ today }: { today: string }) {
+  const canonical = await loadOverviewCanonicalKpis(getPool(), today).catch(() => null);
+  if (!canonical) return null;
+  const cashTry = canonical.treasuryCash.availableNowTry;
+  const arNote = formatForeignBucketNote(canonical.openReceivables.foreignBuckets);
+  const apNote = formatForeignBucketNote(canonical.openPayables.foreignBuckets);
+  const out7Note = formatForeignBucketNote(canonical.outflow7d.foreignBuckets);
+
+  return (
+    <div className="grid grid-cols-2 gap-2 lg:grid-cols-4">
+      <KeyStat
+        label="Kanonik TRY Kasa (FIN-03)"
+        value={cashTry == null ? "Açılış belirsiz" : fmtTL(cashTry)}
+        tone={cashTry == null ? "warn" : cashTry < 0 ? "neg" : "pos"}
+        href="/finance/treasury"
+        sub={
+          cashTry == null
+            ? `${canonical.treasuryCash.unknownOpeningCountTry} TRY hesabında açılış eksik`
+            : `${canonical.treasuryCash.accountCountTry} aktif TRY hesabı`
+        }
+      />
+      <KeyStat
+        label="Kanonik 7G Kalan Çıkış"
+        value={fmtTL(canonical.outflow7d.tryRemainingTotal)}
+        tone={canonical.outflow7d.tryRemainingTotal > 0 ? "warn" : "neutral"}
+        href="/payments"
+        sub={`${canonical.outflow7d.tryOpenCount} açık TRY ödeme${out7Note ? ` · ${out7Note}` : ""}`}
+      />
+      <KeyStat
+        label="Açık Alacak (TRY)"
+        value={fmtTL(canonical.openReceivables.tryTotal)}
+        tone={canonical.openReceivables.overdueCount > 0 ? "warn" : "pos"}
+        href="/finance/invoices?direction=sales"
+        sub={`${canonical.openReceivables.tryCount} fatura · ${canonical.openReceivables.overdueCount} gecikmiş${arNote ? ` · ${arNote}` : ""}`}
+      />
+      <KeyStat
+        label="Açık Borç (TRY)"
+        value={fmtTL(canonical.openPayables.tryTotal)}
+        tone={canonical.openPayables.overdueCount > 0 ? "neg" : "neutral"}
+        href="/finance/invoices?direction=purchase"
+        sub={`${canonical.openPayables.tryCount} fatura · ${canonical.openPayables.overdueCount} gecikmiş${apNote ? ` · ${apNote}` : ""}`}
+      />
+    </div>
+  );
+}
+
 function OverviewHeroHeader({
   subtitle,
   meta,
@@ -268,6 +316,10 @@ function AnaEkranView({
         <KeyStat label="Nakit runway" value={runwayFact.value} tone={runwayFact.severity === "critical" || runwayFact.severity === "high" ? "neg" : runwayFact.severity === "medium" ? "warn" : "pos"} href="/cashflow"
           sub={`${runwayFact.explanation} · ilk negatif ${ym(proj.firstNegativeMonth)}`} />
       </div>
+
+      <Suspense fallback={null}>
+        <OverviewCanonicalKpiSection today={today} />
+      </Suspense>
 
       {secondary ? (
         <OverviewSecondaryView primary={primary} secondary={secondary} />

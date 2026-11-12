@@ -9,7 +9,7 @@ export async function refreshMetricsAction() {
   const session = await requireActionPermission("metric_snapshots", "insert", "/system");
   const count = await refreshMetricSnapshots(getPool(), session.id);
   revalidatePath("/system");
-  revalidatePath("/overview");
+  revalidatePath("/");
   revalidatePath("/data/quality");
   redirect(`/system?metrics=${count}`);
 }

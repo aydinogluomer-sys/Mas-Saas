@@ -24,8 +24,8 @@ function domainRedirect(e: unknown): never {
 
 function revalidateFacilitySurfaces(): void {
   revalidatePath(BASE);
-  revalidatePath("/cashflow/optimization");
-  revalidatePath("/cashflow/treasury");
+  revalidatePath("/scenarios/optimization");
+  revalidatePath("/finance/treasury");
   revalidatePath("/insights/briefing");
 }
 

@@ -18,6 +18,8 @@ import {
   type CounterpartyScorecard,
 } from "@/lib/counterparties/engine";
 import { assessExposure, suggestCounterparties } from "@/lib/counterparties/rules";
+import { formatMoney } from "@/lib/money-format";
+import { loadCurrentAccountLedger } from "@/lib/receivables/engine";
 import { Badge, type Tone } from "@/components/ui/badge";
 import { Panel, fmtTL } from "@/components/ui/panel";
 import { PageHeader } from "@/components/ui/shell";
@@ -102,7 +104,15 @@ function renderPromiseSummary(s: CounterpartyScorecard): string {
 
 export default async function CounterpartiesPage({
   searchParams,
-}: { searchParams: Promise<{ error?: string; warn?: string; result?: string; tab?: string }> }) {
+}: {
+  searchParams: Promise<{
+    error?: string;
+    warn?: string;
+    result?: string;
+    tab?: string;
+    ledgerParty?: string;
+  }>;
+}) {
   const denied = await requireRouteAccess("/finance/counterparties");
   if (denied) return denied;
   const session = await getRequestUser();
@@ -124,6 +134,20 @@ export default async function CounterpartiesPage({
 
   const withExposure = exposure.filter((e) => e.itemCount > 0);
   const displayedParties = tab === "active" ? withExposure : exposure;
+
+  const requestedLedgerParty =
+    sp.ledgerParty && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(sp.ledgerParty)
+      ? sp.ledgerParty
+      : null;
+  const selectedLedgerPartyId =
+    requestedLedgerParty ?? withExposure[0]?.partyId ?? candidates[0]?.id ?? null;
+  const selectedLedgerPartyName =
+    candidates.find((c) => c.id === selectedLedgerPartyId)?.name ??
+    exposure.find((e) => e.partyId === selectedLedgerPartyId)?.partyName ??
+    null;
+  const ledgerRows = selectedLedgerPartyId
+    ? await loadCurrentAccountLedger(pool, selectedLedgerPartyId, 200)
+    : [];
   // `overCreditLimit === null` = limit TRY değil, karşılaştırılamadı — aşım sayılmaz, ayrı sayılır.
   const overLimit = withExposure.filter((e) => e.overCreditLimit === true).length;
   const limitNotComparable = withExposure.filter((e) => e.creditLimit != null && !e.creditLimitComparable).length;
@@ -208,6 +232,7 @@ export default async function CounterpartiesPage({
                   <th className="text-right">Ödeme</th>
                   <th className="text-right">Limit</th>
                   <th>Durum</th>
+                  <th className="text-right">Ekstre</th>
                 </tr>
               </thead>
               <tbody>
@@ -250,6 +275,18 @@ export default async function CounterpartiesPage({
                       <td>
                         <Badge tone={BAND_TONE[a.band] ?? "neutral"}>{BAND_LABEL[a.band] ?? a.band}</Badge>
                       </td>
+                      <td className="text-right font-mono text-xs">
+                        <Link
+                          href={`/finance/counterparties?tab=${tab}&ledgerParty=${e.partyId}#cari-ekstre`}
+                          className="hover:underline"
+                          style={{
+                            color: e.partyId === selectedLedgerPartyId ? "var(--text-1)" : "var(--text-2)",
+                            fontWeight: e.partyId === selectedLedgerPartyId ? 600 : 400,
+                          }}
+                        >
+                          {e.partyId === selectedLedgerPartyId ? "Seçili" : "Ekstre →"}
+                        </Link>
+                      </td>
                     </tr>
                   );
                 })}
@@ -258,6 +295,107 @@ export default async function CounterpartiesPage({
           </div>
         )}
       </Panel>
+
+      <div id="cari-ekstre" className="mt-4">
+        <Panel
+          title={`CARİ HESAP EKSTRESİ (BORÇ / ALACAK HAREKET DÖKÜMÜ)${selectedLedgerPartyName ? ` — ${selectedLedgerPartyName}` : ""}`}
+          subtitle="Seçili karşı tarafın fatura ve tahsis hareketleri tarih sırasıyla listelenir; yürüyen bakiye her döviz için kendi para biriminde korunur"
+          right={
+            candidates.length > 0 ? (
+              <form method="get" action="/finance/counterparties" className="flex items-center gap-1.5 text-xs">
+                <input type="hidden" name="tab" value={tab} />
+                <select
+                  name="ledgerParty"
+                  defaultValue={selectedLedgerPartyId ?? ""}
+                  className="rounded border px-2 py-1"
+                  style={{
+                    background: "var(--surface-1)",
+                    borderColor: "var(--line)",
+                    color: "var(--text-1)",
+                  }}
+                >
+                  {candidates.map((c) => (
+                    <option key={c.id} value={c.id}>
+                      {c.name}
+                    </option>
+                  ))}
+                </select>
+                <button
+                  type="submit"
+                  className="rounded border px-2.5 py-1 font-medium"
+                  style={{
+                    background: "var(--surface-2)",
+                    borderColor: "var(--line)",
+                    color: "var(--text-1)",
+                  }}
+                >
+                  Ekstreyi Göster
+                </button>
+              </form>
+            ) : undefined
+          }
+        >
+          {!selectedLedgerPartyId ? (
+            <p className="py-2 text-sm" style={{ color: "var(--text-2)" }}>
+              Ekstresini görüntülemek için bir karşı taraf seçin.
+            </p>
+          ) : ledgerRows.length === 0 ? (
+            <p className="py-2 text-sm" style={{ color: "var(--text-2)" }}>
+              Seçili karşı taraf için henüz fatura veya tahsis hareketi bulunmuyor.
+            </p>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-xs">
+                <thead>
+                  <tr className="text-left" style={{ color: "var(--text-2)" }}>
+                    <th className="py-1.5 pr-2">Tarih</th>
+                    <th className="py-1.5 pr-2">Hareket Türü</th>
+                    <th className="py-1.5 pr-2">Referans</th>
+                    <th className="py-1.5 pr-2">Yön</th>
+                    <th className="py-1.5 pr-2">Döviz</th>
+                    <th className="py-1.5 pr-2 text-right">Borç (Debit)</th>
+                    <th className="py-1.5 pr-2 text-right">Alacak (Credit)</th>
+                    <th className="py-1.5 text-right">Yürüyen Bakiye</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {ledgerRows.map((m, idx) => {
+                    const cur = m.currency ?? "TRY";
+                    return (
+                      <tr
+                        key={`${m.invoiceId}-${m.movementDate}-${m.movementType}-${idx}`}
+                        className="border-t"
+                        style={{ borderColor: "var(--line)", color: "var(--text-1)" }}
+                      >
+                        <td className="py-1.5 pr-2 font-mono">{m.movementDate}</td>
+                        <td className="py-1.5 pr-2">
+                          <Badge tone={m.movementType === "invoice" ? "blue" : "green"}>
+                            {m.movementType === "invoice" ? "Fatura" : "Tahsis / Ödeme"}
+                          </Badge>
+                        </td>
+                        <td className="py-1.5 pr-2 font-mono">{m.reference ?? "—"}</td>
+                        <td className="py-1.5 pr-2" style={{ color: "var(--text-2)" }}>
+                          {m.direction === "sales" ? "Satış" : "Alış"}
+                        </td>
+                        <td className="py-1.5 pr-2 font-mono">{cur}</td>
+                        <td className="py-1.5 pr-2 text-right font-mono tabular-nums">
+                          {m.debitAmount > 0 ? formatMoney(m.debitAmount, cur) : "—"}
+                        </td>
+                        <td className="py-1.5 pr-2 text-right font-mono tabular-nums">
+                          {m.creditAmount > 0 ? formatMoney(m.creditAmount, cur) : "—"}
+                        </td>
+                        <td className="py-1.5 text-right font-mono font-semibold tabular-nums">
+                          {m.runningBalance == null ? "—" : formatMoney(m.runningBalance, cur)}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </Panel>
+      </div>
 
       <div className="mt-4">
         <Panel

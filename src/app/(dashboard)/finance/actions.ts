@@ -4,6 +4,11 @@ import { redirect } from "next/navigation";
 import { z } from "zod";
 import { getPool } from "@/lib/db";
 import { requireActionPermission, safeRedirectPath } from "@/lib/auth";
+import {
+  isHandledActionError,
+  isPgPeriodLockedError,
+  toUserActionErrorMessage,
+} from "@/lib/cashflow/period-lock";
 import { DomainError } from "@/lib/domain-error";
 import { audit } from "@/lib/audit";
 import { decimal, money } from "@/lib/money";
@@ -16,6 +21,7 @@ import {
 import {
   cancelCheck,
   cancelLoanInstallment,
+  classifyUnknownCheck,
   mapAcceptedChecks,
   mapLoans,
   markCheckBounced,
@@ -23,6 +29,7 @@ import {
   markInstallmentPaid,
 } from "@/lib/financing/engine";
 import { addMonthsPreservingAnchorDay } from "@/lib/financing/rules";
+import { revalidateFinancialViews } from "@/lib/revalidate-financial-views";
 import { cancelActionSchema } from "@/lib/validation/financial";
 
 const number = (v: FormDataEntryValue | null) => {
@@ -106,7 +113,10 @@ export async function createCheckAction(formData: FormData) {
     });
     await client.query("commit");
   } catch (error) {
-    await client.query("rollback");
+    await client.query("rollback").catch(() => {});
+    if (isPgPeriodLockedError(error) || isHandledActionError(error)) {
+      errorRedirect("/finance/checks", toUserActionErrorMessage(error, "Çek/senet kaydı oluşturulamadı."));
+    }
     throw error;
   } finally {
     client.release();
@@ -154,18 +164,17 @@ export async function executeCheckBordroAction(formData: FormData): Promise<void
       session.id,
     );
   } catch (e) {
-    if (e instanceof DomainError) errorRedirect(backTo, e.message);
+    if (isPgPeriodLockedError(e) || isHandledActionError(e)) {
+      errorRedirect(backTo, toUserActionErrorMessage(e, "Bordro işlemi tamamlanamadı."));
+    }
     throw e;
   }
 
   revalidatePath("/finance/checks");
-  revalidatePath("/finance");
-  revalidatePath("/finance/facilities");
-  revalidatePath("/finance/invoices");
-  revalidatePath("/finance/collections");
+  revalidateFinancialViews();
   const nextLabel = CHECK_STATUS_LABELS_TR[res.nextStatus] ?? res.nextStatus;
   redirect(
-    `/finance/checks?flash=${encodeURIComponent(
+    `/finance/checks?flash=saved&result=${encodeURIComponent(
       `Bordro ${res.bordroNo} uygulandı (${res.processedCount} evrak → ${nextLabel}).`,
     )}`,
   );
@@ -212,7 +221,10 @@ export async function createLoanAction(formData: FormData) {
     });
     await client.query("commit");
   } catch (error) {
-    await client.query("rollback");
+    await client.query("rollback").catch(() => {});
+    if (isPgPeriodLockedError(error) || isHandledActionError(error)) {
+      errorRedirect("/finance/loans", toUserActionErrorMessage(error, "Kredi kaydı oluşturulamadı."));
+    }
     throw error;
   } finally {
     client.release();
@@ -236,7 +248,9 @@ export async function markCheckClearedAction(formData: FormData): Promise<void> 
   try {
     await markCheckCleared(getPool(), id, session.id);
   } catch (e) {
-    if (e instanceof DomainError) errorRedirect(backTo, e.message);
+    if (isPgPeriodLockedError(e) || isHandledActionError(e)) {
+      errorRedirect(backTo, toUserActionErrorMessage(e, "Çek tahsil işlemi tamamlanamadı."));
+    }
     throw e;
   }
   revalidatePath(backTo);
@@ -251,7 +265,9 @@ export async function markCheckBouncedAction(formData: FormData): Promise<void> 
   try {
     await markCheckBounced(getPool(), id, session.id);
   } catch (e) {
-    if (e instanceof DomainError) errorRedirect(backTo, e.message);
+    if (isPgPeriodLockedError(e) || isHandledActionError(e)) {
+      errorRedirect(backTo, toUserActionErrorMessage(e, "Karşılıksız çek işlemi tamamlanamadı."));
+    }
     throw e;
   }
   revalidatePath(backTo);
@@ -267,7 +283,9 @@ export async function markInstallmentPaidAction(formData: FormData): Promise<voi
   try {
     await markInstallmentPaid(getPool(), id, raw === "" ? null : raw, session.id);
   } catch (e) {
-    if (e instanceof DomainError) errorRedirect(backTo, e.message);
+    if (isPgPeriodLockedError(e) || isHandledActionError(e)) {
+      errorRedirect(backTo, toUserActionErrorMessage(e, "Kredi taksiti ödeme işlemi tamamlanamadı."));
+    }
     throw e;
   }
   revalidatePath(backTo);
@@ -279,10 +297,44 @@ export async function mapFinancingAction(formData: FormData): Promise<void> {
   const workbookId = String(formData.get("workbookId") ?? "");
   if (!workbookId) return;
   const pool = getPool();
-  const c = await mapAcceptedChecks(pool, workbookId, session.id);
-  const l = await mapLoans(pool, workbookId, session.id);
+  let checksCreated = 0;
+  let loansCreated = 0;
+  let installmentsCreated = 0;
+  try {
+    const c = await mapAcceptedChecks(pool, workbookId, session.id);
+    const l = await mapLoans(pool, workbookId, session.id);
+    checksCreated = c.created;
+    loansCreated = l.created;
+    installmentsCreated = l.installmentsCreated;
+  } catch (e) {
+    if (isPgPeriodLockedError(e) || isHandledActionError(e)) {
+      errorRedirect("/finance", toUserActionErrorMessage(e, "Finansman kayıtları eşleştirilemedi."));
+    }
+    throw e;
+  }
   revalidatePath("/finance");
-  redirect(`/finance?checks=${c.created}&loans=${l.created}&installments=${l.installmentsCreated}`);
+  redirect(`/finance?checks=${checksCreated}&loans=${loansCreated}&installments=${installmentsCreated}`);
+}
+
+export async function classifyUnknownCheckAction(formData: FormData): Promise<void> {
+  const session = await requireActionPermission("checks", "update", "/finance/checks");
+  const id = String(formData.get("id") ?? "").trim();
+  const targetStatus = String(formData.get("targetStatus") ?? "").trim();
+  const backTo = backOf(formData, "/finance/checks");
+  if (!id || (targetStatus !== "in_portfolio" && targetStatus !== "issued_to_vendor")) {
+    errorRedirect(backTo, "Çek sınıflandırması için geçerli hedef durum seçilmelidir.");
+  }
+  try {
+    await classifyUnknownCheck(getPool(), id, targetStatus, session.id);
+  } catch (e) {
+    if (isPgPeriodLockedError(e) || isHandledActionError(e)) {
+      errorRedirect(backTo, toUserActionErrorMessage(e, "Çek sınıflandırma işlemi tamamlanamadı."));
+    }
+    throw e;
+  }
+  revalidatePath(backTo);
+  revalidatePath("/finance/checks");
+  revalidateFinancialViews();
 }
 
 export async function cancelCheckAction(formData: FormData): Promise<void> {
@@ -294,7 +346,14 @@ export async function cancelCheckAction(formData: FormData): Promise<void> {
   if (!parsed.success) {
     redirect(`/finance/checks?error=${encodeURIComponent("İptal için geçerli bir neden gerekli.")}`);
   }
-  await cancelCheck(getPool(), parsed.data.id, parsed.data.reason, session.id);
+  try {
+    await cancelCheck(getPool(), parsed.data.id, parsed.data.reason, session.id);
+  } catch (e) {
+    if (isPgPeriodLockedError(e) || isHandledActionError(e)) {
+      errorRedirect("/finance/checks", toUserActionErrorMessage(e, "Çek iptal işlemi tamamlanamadı."));
+    }
+    throw e;
+  }
   revalidatePath("/finance");
   revalidatePath("/finance/checks");
 }
@@ -308,7 +367,14 @@ export async function cancelLoanInstallmentAction(formData: FormData): Promise<v
   if (!parsed.success) {
     redirect(`/finance/loans?error=${encodeURIComponent("İptal için geçerli bir neden gerekli.")}`);
   }
-  await cancelLoanInstallment(getPool(), parsed.data.id, parsed.data.reason, session.id);
+  try {
+    await cancelLoanInstallment(getPool(), parsed.data.id, parsed.data.reason, session.id);
+  } catch (e) {
+    if (isPgPeriodLockedError(e) || isHandledActionError(e)) {
+      errorRedirect("/finance/loans", toUserActionErrorMessage(e, "Kredi taksiti iptal işlemi tamamlanamadı."));
+    }
+    throw e;
+  }
   revalidatePath("/finance");
   revalidatePath("/finance/loans");
 }

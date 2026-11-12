@@ -41,24 +41,42 @@ describe.runIf(hasDisposableDb || requireDisposableDb)(
     const client = await pool.connect();
     try {
       await client.query("begin");
-      await client.query(`delete from public.forecast_snapshot_13w_lines`);
-      await client.query(`delete from public.forecast_snapshots_13w`);
-      await client.query(`delete from public.forecast_lines`);
-      await client.query(`delete from public.forecasts`);
-      await client.query(`delete from public.promise_to_pay`);
-      await client.query(`delete from public.payment_run_items`);
-      await client.query(`delete from public.payment_runs`);
-      await client.query(`delete from public.bank_transactions`);
-      await client.query(`delete from public.invoice_allocations`);
-      await client.query(`delete from public.payment_instances`);
-      await client.query(`delete from public.payments`);
-      await client.query(`delete from public.checks`);
-      await client.query(`delete from public.loan_installments`);
-      await client.query(`delete from public.loans`);
-      await client.query(`delete from public.invoices`);
-      await client.query(`delete from public.bank_accounts`);
-      await client.query(`delete from public.cash_accounts`);
-      await client.query(`delete from public.treasury_policies`);
+      await client.query(`update public.cash_accounts set opening_journal_entry_id = null where opening_journal_entry_id is not null`);
+      await client.query(`alter table public.management_journal_entries disable trigger user`);
+      await client.query(`alter table public.management_journal_lines disable trigger user`);
+      await client.query(`delete from public.management_journal_lines`);
+      await client.query(`delete from public.management_journal_entries`);
+      await client.query(`alter table public.management_journal_lines enable trigger user`);
+      await client.query(`alter table public.management_journal_entries enable trigger user`);
+      await client.query(
+        `truncate table
+           public.forecast_snapshot_13w_lines,
+           public.forecast_snapshots_13w,
+           public.forecast_lines,
+           public.forecasts,
+           public.promise_to_pay,
+           public.payment_run_items,
+           public.payment_runs,
+           public.bank_transaction_match_candidates,
+           public.bank_transactions,
+           public.invoice_allocations,
+           public.invoice_lines,
+           public.invoices,
+           public.payment_instances,
+           public.payments,
+           public.check_events,
+           public.checks,
+           public.check_bordros,
+           public.loan_installments,
+           public.loans,
+           public.integration_account_mappings,
+           public.facility_movements,
+           public.credit_facilities,
+           public.bank_accounts,
+           public.cash_accounts,
+           public.treasury_policies
+         restart identity cascade`,
+      );
       await client.query("commit");
     } catch (e) {
       await client.query("rollback");

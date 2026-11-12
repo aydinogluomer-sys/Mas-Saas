@@ -327,6 +327,51 @@ export async function replayDeadLetter(
 }
 
 /**
+ * Cancel a queued job before any worker claims it (`queued -> cancelled`).
+ *
+ * Respects `background_jobs_guard_transition` (`0081`) which permits `'cancelled'` only from
+ * `'queued'`, and `background_jobs_terminal_finished` which requires `finished_at is not null`
+ * on terminal rows (`0108` envelope fields remain untouched).
+ */
+export async function cancelJob(
+  pool: Pool,
+  jobId: string,
+  actorId: string | null,
+  reason?: string,
+): Promise<boolean> {
+  const client = await pool.connect();
+  try {
+    await client.query("begin");
+    const cleanReason = reason?.trim() ? reason.trim().slice(0, 500) : null;
+    const res = await client.query(
+      `update public.background_jobs
+          set status = 'cancelled',
+              finished_at = now(),
+              last_error = coalesce($2, last_error)
+        where id = $1 and status = 'queued'
+        returning id`,
+      [jobId, cleanReason],
+    );
+    if (res.rowCount) {
+      await audit(client, {
+        actor: actorId,
+        action: "cancel_job",
+        entityTable: "background_jobs",
+        entityId: jobId,
+        after: { manual: true, reason: cleanReason },
+      });
+    }
+    await client.query("commit");
+    return (res.rowCount ?? 0) > 0;
+  } catch (e) {
+    await client.query("rollback");
+    throw e;
+  } finally {
+    client.release();
+  }
+}
+
+/**
  * Return jobs whose worker died mid-run.
  *
  * A 'running' row with no heartbeat is indistinguishable from a crashed worker after long enough,
@@ -341,6 +386,54 @@ export async function reapStuckJobs(pool: Pool, olderThanMinutes = 30): Promise<
         and started_at < now() - ($1 || ' minutes')::interval
       returning id`, [String(Math.max(1, Math.floor(olderThanMinutes)))]);
   return res.rowCount ?? 0;
+}
+
+/**
+ * Auditable operator/scheduler reaper for stale `'running'` jobs (`running -> queued`),
+ * recording an `audit_logs` receipt when one or more stuck jobs are recovered.
+ */
+export async function reapStaleRunningJobs(
+  pool: Pool,
+  olderThanMinutes = 30,
+  actorId: string | null = null,
+): Promise<number> {
+  const thresholdMinutes = Math.max(1, Math.floor(olderThanMinutes));
+  const client = await pool.connect();
+  try {
+    await client.query("begin");
+    const res = await client.query<{ id: string }>(
+      `update public.background_jobs
+          set status = 'queued',
+              next_run_at = now(),
+              last_error = 'İşçi yanıt vermedi, iş kuyruğa geri alındı'
+        where status = 'running'
+          and started_at < now() - ($1 || ' minutes')::interval
+        returning id::text`,
+      [String(thresholdMinutes)],
+    );
+    const reapedCount = res.rowCount ?? 0;
+    if (reapedCount > 0) {
+      await audit(client, {
+        actor: actorId,
+        action: "reap_stale_running_jobs",
+        entityTable: "background_jobs",
+        entityId: res.rows[0]?.id ?? null,
+        after: {
+          olderThanMinutes: thresholdMinutes,
+          reapedCount,
+          reapedJobIds: res.rows.map((r) => r.id),
+          manual: actorId !== null,
+        },
+      });
+    }
+    await client.query("commit");
+    return reapedCount;
+  } catch (e) {
+    await client.query("rollback");
+    throw e;
+  } finally {
+    client.release();
+  }
 }
 
 export async function listJobs(pool: Pool, limit = 100): Promise<JobRow[]> {

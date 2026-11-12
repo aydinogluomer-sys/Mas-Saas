@@ -4,6 +4,11 @@ import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { requireActionPermission } from "@/lib/auth";
 import { can } from "@/lib/authz/matrix";
+import {
+  isHandledActionError,
+  isPgPeriodLockedError,
+  toUserActionErrorMessage,
+} from "@/lib/cashflow/period-lock";
 import { getPool } from "@/lib/db";
 import { DomainError } from "@/lib/domain-error";
 import { formObject } from "@/lib/validation";
@@ -19,8 +24,8 @@ import {
 const BASE = "/finance/counterparties";
 
 function domainRedirect(e: unknown, back: string): never {
-  if (e instanceof DomainError) {
-    redirect(`${back}?error=${encodeURIComponent(e.message)}`);
+  if (isPgPeriodLockedError(e) || isHandledActionError(e)) {
+    redirect(`${back}?error=${encodeURIComponent(toUserActionErrorMessage(e, "Cari hesap işlemi tamamlanamadı."))}`);
   }
   throw e;
 }

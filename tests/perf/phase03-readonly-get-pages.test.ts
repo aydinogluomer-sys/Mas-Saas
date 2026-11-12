@@ -51,6 +51,9 @@ const h = vi.hoisted(() => {
       if (sql.includes("from public.mapping_reviews")) {
         return { rows: [] };
       }
+      if (sql.includes("from public.budget_variance_summary")) {
+        return { rows: [] };
+      }
       throw new Error(`Beklenmeyen SQL sorgusu: ${sql}`);
     },
     connect: async () => {
@@ -61,6 +64,7 @@ const h = vi.hoisted(() => {
 });
 
 vi.mock("@/lib/db", () => ({ getPool: () => h.fakePool }));
+vi.mock("@/lib/authz/route-guard", () => ({ requireRouteAccess: async () => null }));
 
 import CashflowControls from "@/app/(dashboard)/cashflow/controls/page";
 
@@ -127,7 +131,7 @@ describe("Faz 3 — GET sayfalarında veritabanına yazma işlemleri sıfırland
 
     // 1 devir kırığı + 1 ay boşluğu = "2 zincir sorunu"
     expect(serialized).toContain("2");
-    expect(h.sqlCalls).toHaveLength(2);
+    expect(h.sqlCalls).toHaveLength(3);
     expect(h.sqlCalls.every((sql) => /^\s*select\b/i.test(sql))).toBe(true);
   });
 

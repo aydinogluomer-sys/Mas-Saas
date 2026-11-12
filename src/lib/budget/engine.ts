@@ -619,6 +619,54 @@ export async function approveBudgetVersion(
   return { approvedCount, skippedOwnDrafts };
 }
 
+export interface BudgetVarianceSummaryRow {
+  budgetId: string;
+  budgetName: string;
+  fiscalYear: number;
+  direction: "income" | "expense";
+  currency: string;
+  lineCount: number;
+  budgetTotal: number;
+  actualTotal: number | null;
+  varianceTotal: number | null;
+  overBudgetLines: number;
+  notMeasuredLines: number;
+  departmentLinesUnmeasurable: number;
+}
+
+export async function loadBudgetVarianceSummary(pool: Pool): Promise<BudgetVarianceSummaryRow[]> {
+  const res = await pool.query(
+    `select budget_id::text,
+            budget_name,
+            fiscal_year,
+            direction,
+            currency,
+            line_count,
+            budget_total,
+            actual_total,
+            variance_total,
+            over_budget_lines,
+            not_measured_lines,
+            department_lines_unmeasurable
+       from public.budget_variance_summary
+      order by fiscal_year desc, budget_name, direction`,
+  );
+  return res.rows.map((r) => ({
+    budgetId: r.budget_id as string,
+    budgetName: r.budget_name as string,
+    fiscalYear: Number(r.fiscal_year),
+    direction: r.direction as "income" | "expense",
+    currency: (r.currency as string) ?? "TRY",
+    lineCount: intOrNull(r.line_count) ?? 0,
+    budgetTotal: moneyOrNull(r.budget_total) ?? 0,
+    actualTotal: moneyOrNull(r.actual_total),
+    varianceTotal: moneyOrNull(r.variance_total),
+    overBudgetLines: intOrNull(r.over_budget_lines) ?? 0,
+    notMeasuredLines: intOrNull(r.not_measured_lines) ?? 0,
+    departmentLinesUnmeasurable: intOrNull(r.department_lines_unmeasurable) ?? 0,
+  }));
+}
+
 export async function loadBudgetsCatalog(pool: Pool) {
   const [budgets, lines, forecasts, forecastLines, costCenters, departments, projects, categories] =
     await Promise.all([
@@ -669,6 +717,8 @@ export async function loadBudgetsCatalog(pool: Pool) {
                 to_char(fl.period_end, 'YYYY-MM-DD') as period_end,
                 fl.direction, fl.amount, coalesce(fl.currency, f.currency, 'TRY') as currency,
                 fl.source_kind, fl.confidence, fl.version_status, fl.created_by,
+                fl.actual_amount,
+                to_char(fl.actual_recorded_at, 'YYYY-MM-DD') as actual_recorded_at,
                 (select a.status
                    from public.approvals a
                   where a.subject_table = 'forecast_lines'
@@ -734,6 +784,8 @@ export async function loadBudgetsCatalog(pool: Pool) {
       periodEnd: fl.period_end as string,
       direction: fl.direction as "inflow" | "outflow",
       amount: moneyOrNull(fl.amount) ?? 0,
+      actualAmount: moneyOrNull(fl.actual_amount),
+      actualRecordedAt: (fl.actual_recorded_at as string | null) ?? null,
       currency: fl.currency as string,
       sourceKind: fl.source_kind as SourceKind,
       confidence: rateOrNull(fl.confidence),

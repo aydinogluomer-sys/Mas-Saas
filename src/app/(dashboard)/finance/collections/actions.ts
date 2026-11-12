@@ -9,6 +9,7 @@ import { formObject } from "@/lib/validation";
 import { clearBadDebt, markBadDebt } from "@/lib/collections/engine";
 import { formatMoney } from "@/lib/money-format";
 import {
+  approvePaymentRun,
   cancelPaymentRun,
   createPaymentRun,
   PAYMENT_RUN_TARGET_TYPES,
@@ -106,6 +107,37 @@ export async function submitPaymentRunAction(formData: FormData): Promise<void> 
   revalidatePath(BASE);
   revalidatePath("/data/approvals");
   redirect(`${BASE}?result=${encodeURIComponent("Ödeme paketi maker-checker onayına gönderildi.")}`);
+}
+
+export async function approvePaymentRunAction(formData: FormData): Promise<void> {
+  const session = await requireActionPermission("approvals", "update", BASE);
+  const runId = String(formData.get("runId") ?? "").trim();
+  const justification = String(formData.get("justification") ?? "").trim();
+  const note = String(formData.get("note") ?? "").trim();
+  let selfApproved = false;
+  try {
+    const res = await approvePaymentRun(
+      getPool(),
+      {
+        runId,
+        justification: justification || undefined,
+        note: note || undefined,
+      },
+      session.id,
+    );
+    selfApproved = res.selfApprovedOverride;
+  } catch (e) {
+    domainRedirect(e);
+  }
+  revalidatePath(BASE);
+  revalidatePath("/data/approvals");
+  redirect(
+    `${BASE}?result=${encodeURIComponent(
+      selfApproved
+        ? "Ödeme paketi tek-operatör öz-onay istisnasıyla onaylandı; pain.001 XML ihracına hazır."
+        : "Ödeme paketi onaylandı; banka talimat dosyası indirilebilir.",
+    )}`,
+  );
 }
 
 export async function cancelPaymentRunAction(formData: FormData): Promise<void> {

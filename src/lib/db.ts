@@ -268,10 +268,15 @@ export async function withReadConnection<T>(
     };
     const next = queue.then(exec, exec);
     queue = next.then(() => undefined, () => undefined);
-    inFlight.add(next);
-    void next.finally(() => {
-      inFlight.delete(next);
-    });
+    const tracked = next.then(
+      () => {
+        inFlight.delete(tracked);
+      },
+      () => {
+        inFlight.delete(tracked);
+      },
+    );
+    inFlight.add(tracked);
     return next;
   };
   const pinned = new Proxy(client as unknown as Pool, {

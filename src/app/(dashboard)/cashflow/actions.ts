@@ -3,9 +3,14 @@ import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { getPool } from "@/lib/db";
 import { mapCashflowMonths, validateContinuity, writeSnapshots } from "@/lib/cashflow/engine";
-import { lockCashflowPeriod, reopenCashflowPeriod } from "@/lib/cashflow/period-lock";
+import {
+  isHandledActionError,
+  isPgPeriodLockedError,
+  lockCashflowPeriod,
+  reopenCashflowPeriod,
+  toUserActionErrorMessage,
+} from "@/lib/cashflow/period-lock";
 import { requireActionPermission, requireSession } from "@/lib/auth";
-import { DomainError } from "@/lib/domain-error";
 import { safeRedirectPath } from "@/lib/security/redirect";
 
 export async function mapCashflowAction(formData: FormData): Promise<void> {
@@ -13,11 +18,22 @@ export async function mapCashflowAction(formData: FormData): Promise<void> {
   const workbookId = String(formData.get("workbookId") ?? "");
   if (!workbookId) return;
   const pool = getPool();
-  const r = await mapCashflowMonths(pool, workbookId, session.id);
-  await validateContinuity(pool);
-  await writeSnapshots(pool, new Date().toISOString().slice(0, 10));
+  let monthsCreated = 0;
+  let linesCreated = 0;
+  try {
+    const r = await mapCashflowMonths(pool, workbookId, session.id);
+    monthsCreated = r.monthsCreated;
+    linesCreated = r.linesCreated;
+    await validateContinuity(pool);
+    await writeSnapshots(pool, new Date().toISOString().slice(0, 10));
+  } catch (err) {
+    if (isPgPeriodLockedError(err) || isHandledActionError(err)) {
+      redirect(`/cashflow?error=${encodeURIComponent(toUserActionErrorMessage(err, "Nakit akışı eşleştirilemedi."))}`);
+    }
+    throw err;
+  }
   revalidatePath("/cashflow");
-  redirect(`/cashflow?months=${r.monthsCreated}&lines=${r.linesCreated}`);
+  redirect(`/cashflow?months=${monthsCreated}&lines=${linesCreated}`);
 }
 
 export async function lockCashflowPeriodAction(formData: FormData): Promise<void> {
@@ -27,23 +43,24 @@ export async function lockCashflowPeriodAction(formData: FormData): Promise<void
   const fallback = monthId ? `/cashflow/${encodeURIComponent(monthId)}` : "/cashflow";
   const returnTo = safeRedirectPath(formData.get("returnTo"), fallback);
 
+  let res: Awaited<ReturnType<typeof lockCashflowPeriod>>;
   try {
-    const res = await lockCashflowPeriod(
+    res = await lockCashflowPeriod(
       getPool(),
       { monthId, notes: notesRaw || undefined },
       { id: session.id, role: session.role },
     );
-    revalidatePath("/cashflow");
-    revalidatePath(`/cashflow/${res.monthId}`);
-    revalidatePath(`/cashflow/${res.ym}`);
-    const msg = `${res.ym} dönemi kilitlendi (parmak izi: ${res.lockFingerprint.slice(0, 12)}).`;
-    redirect(`${returnTo}?notice=${encodeURIComponent(msg)}`);
   } catch (err) {
-    if (err instanceof DomainError) {
-      redirect(`${returnTo}?error=${encodeURIComponent(err.message)}`);
+    if (isPgPeriodLockedError(err) || isHandledActionError(err)) {
+      redirect(`${returnTo}?error=${encodeURIComponent(toUserActionErrorMessage(err, "Dönem kilitlenemedi."))}`);
     }
     throw err;
   }
+  revalidatePath("/cashflow");
+  revalidatePath(`/cashflow/${res.monthId}`);
+  revalidatePath(`/cashflow/${res.ym}`);
+  const msg = `${res.ym} dönemi kilitlendi (parmak izi: ${res.lockFingerprint.slice(0, 12)}).`;
+  redirect(`${returnTo}?notice=${encodeURIComponent(msg)}`);
 }
 
 export async function reopenCashflowPeriodAction(formData: FormData): Promise<void> {
@@ -53,21 +70,22 @@ export async function reopenCashflowPeriodAction(formData: FormData): Promise<vo
   const fallback = monthId ? `/cashflow/${encodeURIComponent(monthId)}` : "/cashflow";
   const returnTo = safeRedirectPath(formData.get("returnTo"), fallback);
 
+  let res: Awaited<ReturnType<typeof reopenCashflowPeriod>>;
   try {
-    const res = await reopenCashflowPeriod(
+    res = await reopenCashflowPeriod(
       getPool(),
       { monthId, reason },
       { id: session.id, role: session.role },
     );
-    revalidatePath("/cashflow");
-    revalidatePath(`/cashflow/${res.monthId}`);
-    revalidatePath(`/cashflow/${res.ym}`);
-    const msg = `${res.ym} dönem kilidi gerekçeli olarak yeniden açıldı.`;
-    redirect(`${returnTo}?notice=${encodeURIComponent(msg)}`);
   } catch (err) {
-    if (err instanceof DomainError) {
-      redirect(`${returnTo}?error=${encodeURIComponent(err.message)}`);
+    if (isPgPeriodLockedError(err) || isHandledActionError(err)) {
+      redirect(`${returnTo}?error=${encodeURIComponent(toUserActionErrorMessage(err, "Dönem kilidi açılamadı."))}`);
     }
     throw err;
   }
+  revalidatePath("/cashflow");
+  revalidatePath(`/cashflow/${res.monthId}`);
+  revalidatePath(`/cashflow/${res.ym}`);
+  const msg = `${res.ym} dönem kilidi gerekçeli olarak yeniden açıldı.`;
+  redirect(`${returnTo}?notice=${encodeURIComponent(msg)}`);
 }

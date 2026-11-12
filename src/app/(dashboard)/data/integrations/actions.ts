@@ -2,6 +2,7 @@
 
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
+import { z } from "zod";
 import { audit } from "@/lib/audit";
 import { requireActionPermission } from "@/lib/auth";
 import { createCounterparty } from "@/lib/counterparties/engine";
@@ -9,8 +10,14 @@ import { getPool } from "@/lib/db";
 import { DomainError } from "@/lib/domain-error";
 import { importHybridBankStatement } from "@/lib/importers/bank-formats/mt940-camt053-parasut";
 import { createConnection, enqueueSync } from "@/lib/integrations/engine";
-import { normalizeParasutCurrency } from "@/lib/integrations/parasut/mappers";
-import { formObject } from "@/lib/validation";
+import {
+  normalizeParasutCurrency,
+  replayDeferredParasutInvoices,
+} from "@/lib/integrations/parasut/mappers";
+import { runClosedLoopFinancialPipeline } from "@/lib/integrations/parasut/sync-pipeline";
+import { istanbulDateISO } from "@/lib/reports/rules";
+import { revalidateFinancialViews } from "@/lib/revalidate-financial-views";
+import { formObject, parseOrThrow } from "@/lib/validation";
 
 const BASE = "/data/integrations";
 
@@ -264,6 +271,7 @@ export async function resolveStagedPartyAction(formData: FormData): Promise<void
           where id = $1`,
         [staged.id, nextStatus, resolvedPartyId, session.id],
       );
+      let replayedInvoices = 0;
       if (resolvedPartyId) {
         await client.query(
           `insert into public.integration_entity_links
@@ -274,6 +282,8 @@ export async function resolveStagedPartyAction(formData: FormData): Promise<void
                  last_synced_at = now()`,
           [staged.provider, staged.external_contact_id, resolvedPartyId],
         );
+        const replay = await replayDeferredParasutInvoices(client);
+        replayedInvoices = replay.replayedUpserted;
       }
       await audit(client, {
         actor: session.id,
@@ -285,6 +295,7 @@ export async function resolveStagedPartyAction(formData: FormData): Promise<void
           status: nextStatus,
           resolvedPartyId,
           externalContactId: staged.external_contact_id,
+          replayedInvoices,
         },
       });
       await client.query("commit");
@@ -299,7 +310,64 @@ export async function resolveStagedPartyAction(formData: FormData): Promise<void
   }
   revalidatePath(BASE);
   revalidatePath("/finance/counterparties");
+  revalidatePath("/finance/invoices");
+  revalidatePath("/finance/ledger");
   redirect(`${BASE}?result=cari-aday-islendi`);
+}
+
+const closedLoopFormSchema = z.object({
+  todayISO: z
+    .string()
+    .trim()
+    .regex(/^\d{4}-\d{2}-\d{2}$/, "Geçerli bir tarih (YYYY-AA-GG) giriniz")
+    .optional(),
+});
+
+export async function runClosedLoopSyncAction(formData: FormData): Promise<void> {
+  const session = await requireActionPermission("background_jobs", "insert", BASE);
+  const raw = formObject(formData);
+  const normalized = {
+    todayISO: strField(raw.todayISO) || undefined,
+  };
+
+  let resultMessage = "kapali-cevrim-tamamlandi";
+  try {
+    const parsed = parseOrThrow(closedLoopFormSchema, normalized);
+    const todayISO = parsed.todayISO ?? istanbulDateISO();
+    const pool = getPool();
+    const summary = await runClosedLoopFinancialPipeline(pool, session.id, {
+      todayISO,
+      triggerDueIntegrationSyncs: true,
+      processEnqueuedJobs: true,
+      syncTcmbFxRates: true,
+      syncManagementLedger: true,
+      freezeMonday13w: true,
+    });
+    await audit(pool, {
+      actor: session.id,
+      action: "manual_closed_loop_financial_sync",
+      entityTable: "integration_sync_runs",
+      entityId: null,
+      after: {
+        todayISO,
+        ok: summary.ok,
+        executedSteps: summary.executedSteps,
+        enqueued: summary.integrationSyncs.enqueued,
+        fxInserted: summary.fxSync.inserted,
+        ledgerCreated: summary.managementLedger.createdCount,
+        ledgerRevalued: summary.managementLedger.revaluedCount,
+        snapshotId: summary.forecast13w.primarySnapshotId,
+      },
+    });
+    resultMessage = `kapali-cevrim-tamamlandi (kur:${summary.fxSync.inserted}, defter:${summary.managementLedger.createdCount}+${summary.managementLedger.revaluedCount}, 13h:${summary.forecast13w.primarySnapshotId ? "hazir" : "yok"})`;
+  } catch (e) {
+    domainRedirect(e);
+  }
+
+  revalidatePath(BASE);
+  revalidatePath("/system/jobs");
+  revalidateFinancialViews();
+  redirect(`${BASE}?result=${encodeURIComponent(resultMessage)}`);
 }
 
 export async function importHybridBankStatementAction(formData: FormData): Promise<void> {

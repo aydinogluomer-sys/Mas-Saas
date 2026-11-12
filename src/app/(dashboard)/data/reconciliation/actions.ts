@@ -50,7 +50,8 @@ export async function createReconciliationTaskAction(formData: FormData): Promis
     domainRedirect(e, base);
   }
   revalidatePath(base);
-  revalidatePath("/overview/actions");
+  revalidatePath("/data/quality");
+  revalidatePath("/");
   redirect(`${base}?result=gorev-olusturuldu`);
 }
 

@@ -1,6 +1,11 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { dispatcher } from "@/lib/jobs/dispatcher";
+import {
+  JobDispatcher,
+  createConfiguredDispatcher,
+  registerBuiltInJobHandlers,
+} from "@/lib/jobs/dispatcher";
 import * as queue from "@/lib/jobs/queue";
+import { JOB_TYPES } from "@/lib/jobs/rules";
 
 vi.mock("@/lib/jobs/queue", () => ({
   claimNextJob: vi.fn(),
@@ -36,6 +41,7 @@ function runningJob(id: string, jobType: queue.JobRow["jobType"]): queue.JobRow 
 
 describe("Background Job Dispatcher", () => {
   const dummyPool = {} as never;
+  const dispatcher = new JobDispatcher();
 
   beforeEach(() => {
     vi.clearAllMocks();
@@ -165,5 +171,82 @@ describe("Background Job Dispatcher", () => {
     expect(results.map((r) => r.jobId)).toEqual(["job-a", "job-b"]);
     expect(queue.claimNextJob).toHaveBeenCalledTimes(3);
     for (const call of vi.mocked(queue.claimNextJob).mock.calls) expect(call[2]).toBe(SYSTEM_ACTOR);
+  });
+
+  describe("createConfiguredDispatcher & yerleşik handler tamlığı (F-33 / F-34)", () => {
+    it("JOB_TYPES listesindeki her iş türü için aktif bir yerleşik handler kaydeder", () => {
+      const configured = createConfiguredDispatcher();
+      expect(JOB_TYPES.length).toBeGreaterThanOrEqual(7);
+      for (const jt of JOB_TYPES) {
+        expect(configured.hasHandler(jt), `Eksik handler: ${jt}`).toBe(true);
+      }
+
+      const standalone = registerBuiltInJobHandlers();
+      expect(standalone).not.toBe(configured);
+      for (const jt of JOB_TYPES) {
+        expect(standalone.hasHandler(jt)).toBe(true);
+      }
+    });
+
+    it("large_export handler veri kümesini CSV'ye dönüştürüp SHA-256 özetini completeJob ile kaydeder", async () => {
+      const configured = createConfiguredDispatcher();
+      const mockPool = {
+        query: vi.fn(async () => ({
+          rows: [
+            {
+              invoice_no: "FAT-2026-001",
+              direction: "sales",
+              issue_date: "2026-11-01",
+              due_date: "2026-11-30",
+              currency: "TRY",
+              gross_amount: "12000.00",
+              payable_amount: "12000.00",
+              paid_amount: "0.00",
+              status: "open",
+            },
+          ],
+        })),
+      } as never;
+
+      vi.mocked(queue.claimNextJob).mockResolvedValueOnce({
+        ...runningJob("job-exp-1", "large_export"),
+        payload: { dataset: "open_invoices", format: "csv" },
+      });
+
+      const res = await configured.processNext(mockPool, SYSTEM_ACTOR);
+      expect(res.processed).toBe(true);
+      expect(res.status).toBe("succeeded");
+      expect(res.resultPayload).toMatchObject({
+        task: "export.large",
+        dataset: "open_invoices",
+        format: "csv",
+        rowCount: 1,
+      });
+      expect(typeof res.resultPayload?.sha256).toBe("string");
+      expect(queue.completeJob).toHaveBeenCalledWith(
+        mockPool,
+        "job-exp-1",
+        SYSTEM_ACTOR,
+        expect.objectContaining({ task: "export.large", rowCount: 1 }),
+      );
+    });
+
+    it("bank_statement_import handler eksik yük durumunda failJob çağırır", async () => {
+      const configured = createConfiguredDispatcher();
+      vi.mocked(queue.claimNextJob).mockResolvedValueOnce({
+        ...runningJob("job-bank-bad", "bank_statement_import"),
+        payload: {},
+      });
+
+      const res = await configured.processNext(dummyPool, SYSTEM_ACTOR);
+      expect(res.processed).toBe(true);
+      expect(res.status).toBe("failed");
+      expect(queue.failJob).toHaveBeenCalledWith(
+        dummyPool,
+        "job-bank-bad",
+        expect.stringContaining("bankAccountId"),
+        SYSTEM_ACTOR,
+      );
+    });
   });
 });
