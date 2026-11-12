@@ -250,23 +250,29 @@ export async function withReadConnection<T>(
 ): Promise<T> {
   const client = await pool.connect();
   const inFlight = new Set<Promise<unknown>>();
+  let queue: Promise<unknown> = Promise.resolve();
   const runQuery = (...args: unknown[]): Promise<QueryResult<QueryResultRow>> => {
-    const startedAt = process.hrtime.bigint();
-    const recordSlow = (): void => {
-      const text = typeof args[0] === "string"
-        ? args[0]
-        : (args[0] as { text?: string } | undefined)?.text;
-      if (text) {
-        recordQuery(text, Number(process.hrtime.bigint() - startedAt) / 1e6);
+    const exec = async (): Promise<QueryResult<QueryResultRow>> => {
+      const startedAt = process.hrtime.bigint();
+      try {
+        // @ts-expect-error — pg's query() overloads are wider than this passthrough can express.
+        return (await client.query(...args)) as QueryResult<QueryResultRow>;
+      } finally {
+        const text = typeof args[0] === "string"
+          ? args[0]
+          : (args[0] as { text?: string } | undefined)?.text;
+        if (text) {
+          recordQuery(text, Number(process.hrtime.bigint() - startedAt) / 1e6);
+        }
       }
     };
-    // @ts-expect-error — pg's query() overloads are wider than this passthrough can express.
-    const promise = Promise.resolve(client.query(...args)) as Promise<QueryResult<QueryResultRow>>;
-    const tracked = promise.then(recordSlow, recordSlow).finally(() => {
-      inFlight.delete(tracked);
+    const next = queue.then(exec, exec);
+    queue = next.then(() => undefined, () => undefined);
+    inFlight.add(next);
+    void next.finally(() => {
+      inFlight.delete(next);
     });
-    inFlight.add(tracked);
-    return promise;
+    return next;
   };
   const pinned = new Proxy(client as unknown as Pool, {
     get(target, prop, receiver) {

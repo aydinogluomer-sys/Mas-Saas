@@ -20,6 +20,7 @@
 
 import type { Pool, PoolClient } from "pg";
 import { decimal, money, moneyOrNull, rateOrNull } from "@/lib/money";
+import { gather } from "@/lib/pg-concurrency";
 
 type Queryable = Pick<Pool, "query"> | Pick<PoolClient, "query">;
 
@@ -75,6 +76,8 @@ export interface CovenantAndDscrRadar {
   netDebt: number | null;
   managementEbitda: number | null;
   netDebtToEbitda: number | null;
+  totalEquity: number | null;
+  debtToEquity: number | null;
   dscrWindows: {
     trailing3m: CashDscrWindow;
     forward3m: CashDscrWindow;
@@ -187,7 +190,7 @@ export function computeCashDscrWindow(input: ComputeCashDscrWindowInput): CashDs
  * Tek bir kovenant eşiğini %10 erken uyarı tamponu (`warning`) ve ihlal (`breached`) kurallarıyla değerlendirir.
  */
 export function evaluateCovenantThreshold(input: {
-  comparison: ">=" | "<=" | ">" | "<" | "=";
+  comparison: ">=" | "<=" | ">" | "<" | "=" | "gte" | "lte" | "gt" | "lt" | "eq" | string;
   thresholdValue: number;
   measuredValue: number | null;
   status?: string;
@@ -207,6 +210,15 @@ export function evaluateCovenantThreshold(input: {
     };
   }
 
+  const rawCmp = input.comparison.trim().toLowerCase();
+  const cmp =
+    rawCmp === "gte" ? ">=" :
+    rawCmp === "lte" ? "<=" :
+    rawCmp === "gt" ? ">" :
+    rawCmp === "lt" ? "<" :
+    rawCmp === "eq" ? "=" :
+    input.comparison;
+
   const thresholdDec = decimal(input.thresholdValue);
 
   // Özel durum: Net Borç / EBITDA üst sınır kovenantında EBITDA <= 0 ve Net Borç > 0 ise
@@ -214,6 +226,7 @@ export function evaluateCovenantThreshold(input: {
     input.measuredValue === null &&
     (input.covenantType === "net_debt_to_ebitda" ||
       input.covenantType === "max_net_debt_to_ebitda" ||
+      input.covenantType === "ebitda_multiple" ||
       input.covenantType === "leverage") &&
     input.netDebt != null &&
     input.netDebt > 0 &&
@@ -237,9 +250,9 @@ export function evaluateCovenantThreshold(input: {
 
   const actualDec = decimal(input.measuredValue);
 
-  if (input.comparison === ">=" || input.comparison === ">") {
+  if (cmp === ">=" || cmp === ">") {
     const isBreached =
-      input.comparison === ">=" ? actualDec.lt(thresholdDec) : actualDec.lte(thresholdDec);
+      cmp === ">=" ? actualDec.lt(thresholdDec) : actualDec.lte(thresholdDec);
     const headroomPct = thresholdDec.eq(0)
       ? null
       : Number(actualDec.minus(thresholdDec).div(thresholdDec.abs()).times(100).toFixed(2));
@@ -269,9 +282,9 @@ export function evaluateCovenantThreshold(input: {
     };
   }
 
-  if (input.comparison === "<=" || input.comparison === "<") {
+  if (cmp === "<=" || cmp === "<") {
     const isBreached =
-      input.comparison === "<=" ? actualDec.gt(thresholdDec) : actualDec.gte(thresholdDec);
+      cmp === "<=" ? actualDec.gt(thresholdDec) : actualDec.gte(thresholdDec);
     const headroomPct = thresholdDec.eq(0)
       ? null
       : Number(thresholdDec.minus(actualDec).div(thresholdDec.abs()).times(100).toFixed(2));
@@ -379,62 +392,64 @@ export async function loadCovenantAndDscrRadar(
         : moneyOrNull(posRow?.available_now) ?? 0;
 
   // 2. Kalan kredi anapara bakiyesi + kullanılan rotatif kredi limiti
-  const [loanRemRes, facDrawnRes] = await Promise.all([
-    client
-      .query<{ rem_principal: string }>(
-        `select
-           coalesce(sum(coalesce(li.principal_component, li.amount)), 0)::numeric(14,2) as rem_principal
-         from public.loan_installments li
-         join public.loans l on l.id = li.loan_id
-         where l.archived_at is null
-           and l.status = 'active'
-           and l.currency = $1
-           and li.status in ('planned', 'unpaid', 'partial', 'late')`,
-        [currency],
-      )
-      .catch((err: unknown) => {
-        const code = (err as { code?: string } | null)?.code;
-        if (code === "42703") {
-          if (currency !== "TRY") {
+  const [loanRemRes, facDrawnRes] = await gather(client, [
+    () =>
+      client
+        .query<{ rem_principal: string }>(
+          `select
+             coalesce(sum(coalesce(li.principal_component, li.amount)), 0)::numeric(14,2) as rem_principal
+           from public.loan_installments li
+           join public.loans l on l.id = li.loan_id
+           where l.archived_at is null
+             and l.status = 'active'
+             and l.currency = $1
+             and li.status in ('planned', 'unpaid', 'partial', 'late')`,
+          [currency],
+        )
+        .catch((err: unknown) => {
+          const code = (err as { code?: string } | null)?.code;
+          if (code === "42703") {
+            if (currency !== "TRY") {
+              return { rows: [{ rem_principal: "0" }], rowCount: 1 };
+            }
+            return client
+              .query<{ rem_principal: string }>(
+                `select
+                   coalesce(sum(li.amount), 0)::numeric(14,2) as rem_principal
+                 from public.loan_installments li
+                 join public.loans l on l.id = li.loan_id
+                 where l.archived_at is null
+                   and l.status = 'active'
+                   and li.status in ('planned', 'unpaid', 'partial', 'late')`,
+              )
+              .catch((e2: unknown) => {
+                if (isMissingSchemaError(e2)) {
+                  return { rows: [{ rem_principal: "0" }], rowCount: 1 };
+                }
+                throw e2;
+              });
+          }
+          if (isMissingSchemaError(err)) {
             return { rows: [{ rem_principal: "0" }], rowCount: 1 };
           }
-          return client
-            .query<{ rem_principal: string }>(
-              `select
-                 coalesce(sum(li.amount), 0)::numeric(14,2) as rem_principal
-               from public.loan_installments li
-               join public.loans l on l.id = li.loan_id
-               where l.archived_at is null
-                 and l.status = 'active'
-                 and li.status in ('planned', 'unpaid', 'partial', 'late')`,
-            )
-            .catch((e2: unknown) => {
-              if (isMissingSchemaError(e2)) {
-                return { rows: [{ rem_principal: "0" }], rowCount: 1 };
-              }
-              throw e2;
-            });
-        }
-        if (isMissingSchemaError(err)) {
-          return { rows: [{ rem_principal: "0" }], rowCount: 1 };
-        }
-        throw err;
-      }),
-    client
-      .query<{ drawn: string }>(
-        `select
-           coalesce(sum(drawn_amount), 0)::numeric(14,2) as drawn
-         from public.credit_facility_utilization
-         where status = 'active'
-           and currency = $1`,
-        [currency],
-      )
-      .catch((err: unknown) => {
-        if (isMissingSchemaError(err)) {
-          return { rows: [{ drawn: "0" }], rowCount: 1 };
-        }
-        throw err;
-      }),
+          throw err;
+        }),
+    () =>
+      client
+        .query<{ drawn: string }>(
+          `select
+             coalesce(sum(drawn_amount), 0)::numeric(14,2) as drawn
+           from public.credit_facility_utilization
+           where status = 'active'
+             and currency = $1`,
+          [currency],
+        )
+        .catch((err: unknown) => {
+          if (isMissingSchemaError(err)) {
+            return { rows: [{ drawn: "0" }], rowCount: 1 };
+          }
+          throw err;
+        }),
   ]);
 
   const totalLoanPrincipalRemaining = moneyOrNull(loanRemRes.rows[0]?.rem_principal) ?? 0;
@@ -445,78 +460,84 @@ export async function loadCovenantAndDscrRadar(
       ? null
       : money(totalGrossDebtDec.minus(decimal(availableCash)).toString());
 
-  // 3. Faz 52 Yönetim EBITDA'sı (`management_income_statement_v`)
+  // 3. Faz 52 Yönetim EBITDA'sı (`management_income_statement_v`) ve Özkaynak (`management_balance_sheet_v`)
   let managementEbitda: number | null = null;
-  let ebitdaResolvedDirectly = false;
-  const isRes = await client
-    .query<{
-      section_code: string;
-      account_code: string;
-      signed_amount: string;
-    }>(
-      `select section_code, account_code, signed_amount::text
-         from public.management_income_statement_v`,
+  let totalEquity: number | null = null;
+
+  const tbMetaRes = await client
+    .query<{ entry_total: number | string; dep_credit: string }>(
+      `select
+         coalesce(sum(entry_count), 0)::int as entry_total,
+         coalesce(
+           sum(case when account_code in ('257', '268') then credit_total_try - debit_total_try else 0 end),
+           0
+         )::numeric(14,2)::text as dep_credit
+       from public.management_trial_balance_v`,
     )
-    .catch(async (err: unknown) => {
-      const code = (err as { code?: string } | null)?.code;
-      if (code === "42703") {
-        const directRes = await client
-          .query<{ management_ebitda_try: string | null }>(
-            `select management_ebitda_try::text
-               from public.management_income_statement_v
-              limit 1`,
-          )
-          .catch((e2: unknown) => {
-            if (isMissingSchemaError(e2)) {
-              return { rows: [], rowCount: 0 };
-            }
-            throw e2;
-          });
-        if ((directRes.rowCount ?? 0) > 0 && directRes.rows[0]?.management_ebitda_try != null) {
-          managementEbitda = moneyOrNull(directRes.rows[0].management_ebitda_try);
-          ebitdaResolvedDirectly = true;
-        }
-        return { rows: [], rowCount: 0 };
-      }
+    .catch((err: unknown) => {
       if (isMissingSchemaError(err)) {
-        return { rows: [], rowCount: 0 };
+        return { rows: [] as Array<{ entry_total: number | string; dep_credit: string }>, rowCount: 0 };
       }
       throw err;
     });
 
-  if (!ebitdaResolvedDirectly && (isRes.rowCount ?? 0) > 0) {
-    let opProfitDec = decimal(0);
-    let depDec = decimal(0);
-    for (const r of isRes.rows) {
-      const signed = decimal(r.signed_amount ?? 0);
-      if (
-        r.section_code === "GROSS_SALES" ||
-        r.section_code === "SALES_DEDUCTIONS" ||
-        r.section_code === "COST_OF_SALES" ||
-        r.section_code === "OPERATING_EXPENSES"
-      ) {
-        opProfitDec = opProfitDec.plus(signed);
-      }
-      if (r.account_code === "770") {
-        // 770 signed_amount negatif giderdir; amortisman katkı büyüklüğü için 257'yi de kontrol et
-      }
-    }
-    const dep257Res = await client
-      .query<{ dep_credit: string }>(
-        `select coalesce(sum(credit_total - debit_total), 0)::numeric(14,2) as dep_credit
-           from public.management_trial_balance_v
-          where account_code = '257'`,
+  const ledgerEntryTotal = Number(tbMetaRes.rows[0]?.entry_total ?? 0);
+  if (ledgerEntryTotal > 0) {
+    const directIsRes = await client
+      .query<{
+        management_ebitda_try: string | null;
+        ebit_try: string | null;
+        da_addback_try: string | null;
+      }>(
+        `select management_ebitda_try::text, ebit_try::text, da_addback_try::text
+           from public.management_income_statement_v
+          limit 1`,
       )
       .catch((err: unknown) => {
         if (isMissingSchemaError(err)) {
-          return { rows: [{ dep_credit: "0" }], rowCount: 1 };
+          return {
+            rows: [] as Array<{
+              management_ebitda_try: string | null;
+              ebit_try: string | null;
+              da_addback_try: string | null;
+            }>,
+            rowCount: 0,
+          };
         }
         throw err;
       });
-    depDec = decimal(dep257Res.rows[0]?.dep_credit ?? 0);
-    if (depDec.lt(0)) depDec = decimal(0);
-    managementEbitda = money(opProfitDec.plus(depDec).toString());
+
+    if ((directIsRes.rowCount ?? 0) > 0 && directIsRes.rows[0]?.ebit_try != null) {
+      const ebitDec = decimal(directIsRes.rows[0].ebit_try);
+      const daAddbackDec = decimal(directIsRes.rows[0].da_addback_try ?? 0);
+      const depAccumDec = decimal(tbMetaRes.rows[0]?.dep_credit ?? 0);
+      const effectiveDaDec = depAccumDec.gt(daAddbackDec) ? depAccumDec : daAddbackDec;
+      managementEbitda = money(ebitDec.plus(effectiveDaDec).toString());
+    }
+
+    const equityRes = await client
+      .query<{ total_equity: string | null; row_cnt: number | string }>(
+        `select
+           coalesce(sum(amount_try), 0)::numeric(14,2)::text as total_equity,
+           count(*)::int as row_cnt
+         from public.management_balance_sheet_v
+         where section = 'equity'`,
+      )
+      .catch((err: unknown) => {
+        if (isMissingSchemaError(err)) {
+          return { rows: [] as Array<{ total_equity: string | null; row_cnt: number | string }>, rowCount: 0 };
+        }
+        throw err;
+      });
+    if ((equityRes.rowCount ?? 0) > 0 && Number(equityRes.rows[0]?.row_cnt ?? 0) > 0) {
+      totalEquity = moneyOrNull(equityRes.rows[0]?.total_equity);
+    }
   }
+
+  const debtToEquity: number | null =
+    totalEquity === null || totalEquity <= 0
+      ? null
+      : Number(totalGrossDebtDec.div(decimal(totalEquity)).toFixed(4));
 
   const netDebtToEbitda: number | null =
     netDebt === null || managementEbitda === null || managementEbitda <= 0
@@ -524,9 +545,10 @@ export async function loadCovenantAndDscrRadar(
       : Number(decimal(netDebt).div(decimal(managementEbitda)).toFixed(4));
 
   // 4. Son 3 ay gerçekleşen banka nakit akışı (borç servisi öncesi) ve gerçekleşen/vadesi geçen taksitler
-  const [trailBankRes, allInstallmentsRes, fwdMonthsRes] = await Promise.all([
-    client
-      .query<{
+  const [trailBankRes, allInstallmentsRes, fwdMonthsRes] = await gather(client, [
+    () =>
+      client
+        .query<{
         direction: string;
         matched_entity_table: string | null;
         total_amt: string;
@@ -575,15 +597,16 @@ export async function loadCovenantAndDscrRadar(
         if (isMissingSchemaError(err)) return { rows: [], rowCount: 0 };
         throw err;
       }),
-    client
-      .query<{
-        due_date: string;
-        amount: string;
-        principal_component: string | null;
-        interest_component: string | null;
-        tax_component: string | null;
-        status: string;
-      }>(
+    () =>
+      client
+        .query<{
+          due_date: string;
+          amount: string;
+          principal_component: string | null;
+          interest_component: string | null;
+          tax_component: string | null;
+          status: string;
+        }>(
         `select
            to_char(li.due_date, 'YYYY-MM-DD') as due_date,
            li.amount::text,
@@ -638,12 +661,13 @@ export async function loadCovenantAndDscrRadar(
         if (isMissingSchemaError(err)) return { rows: [], rowCount: 0 };
         throw err;
       }),
-    client
-      .query<{
-        month_start: string;
-        income: string | null;
-        expense: string | null;
-      }>(
+    () =>
+      client
+        .query<{
+          month_start: string;
+          income: string | null;
+          expense: string | null;
+        }>(
         `select
            to_char(month_start, 'YYYY-MM-DD') as month_start,
            projected_income::text as income,
@@ -846,6 +870,7 @@ export async function loadCovenantAndDscrRadar(
     } else if (
       ct === "net_debt_to_ebitda" ||
       ct === "max_net_debt_to_ebitda" ||
+      ct === "ebitda_multiple" ||
       ct === "leverage"
     ) {
       if (netDebtToEbitda !== null) {
@@ -860,6 +885,19 @@ export async function loadCovenantAndDscrRadar(
         measuredValue = availableCash;
         metricSource = "Canlı Hazine Kullanılabilir Nakit";
       }
+    } else if (ct === "debt_to_equity" || ct === "max_debt_to_equity") {
+      if (debtToEquity !== null) {
+        measuredValue = debtToEquity;
+        metricSource = "Canlı Brüt Borç / Yönetim Özkaynak (Faz 52)";
+      }
+    } else if (ct === "min_equity") {
+      if (totalEquity !== null) {
+        measuredValue = totalEquity;
+        metricSource = "Canlı Yönetim Özkaynak Toplamı (Faz 52)";
+      }
+    } else if (ct === "max_debt") {
+      measuredValue = money(totalGrossDebtDec.toString());
+      metricSource = "Canlı Brüt Finansal Borç (Kredi + Rotatif)";
     }
 
     const evalRes = evaluateCovenantThreshold({
@@ -900,6 +938,8 @@ export async function loadCovenantAndDscrRadar(
     netDebt,
     managementEbitda,
     netDebtToEbitda,
+    totalEquity,
+    debtToEquity,
     dscrWindows: {
       trailing3m,
       forward3m,

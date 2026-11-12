@@ -1098,8 +1098,9 @@ export interface CheckBordroTargets {
 export async function loadCheckBordroTargets(
   pool: Pick<Pool, "query">,
 ): Promise<CheckBordroTargets> {
-  const [invRes, bankRes, facRes] = await Promise.all([
-    pool.query(
+  const { gather } = await import("@/lib/pg-concurrency");
+  const [invRes, bankRes, facRes] = await gather(pool, [
+    () => pool.query(
       `select i.id::text as id,
               i.invoice_no,
               pa.name as party_name,
@@ -1133,7 +1134,7 @@ export async function loadCheckBordroTargets(
           limit 150`,
       ).catch(() => ({ rows: [] }));
     }),
-    pool.query(
+    () => pool.query(
       `select ba.cash_account_id::text as id,
               ca.name,
               ba.bank_name,
@@ -1143,7 +1144,7 @@ export async function loadCheckBordroTargets(
         where ca.is_active = true
         order by ca.name asc`,
     ).catch(() => ({ rows: [] })),
-    pool.query(
+    () => pool.query(
       `select cf.id::text as id,
               cf.name,
               pa.name as lender_name,

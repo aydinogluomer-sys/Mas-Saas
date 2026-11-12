@@ -462,8 +462,9 @@ export async function loadAndSolveBreakevenLevers(
   const horizonEnd = addDaysISO(asOfDate, horizonDaysOf(horizon));
   const arHorizonEnd = addDaysISO(horizonEnd, 180);
 
-  const [posRes, floorRes, facRes, costRes, arRes, flowsRes] = await Promise.all([
-    client.query<{ available_now: string | null; unknown_opening_count: number | string }>(
+  const { gather } = await import("@/lib/pg-concurrency");
+  const [posRes, floorRes, facRes, costRes, arRes, flowsRes] = await gather(client, [
+    () => client.query<{ available_now: string | null; unknown_opening_count: number | string }>(
       `select available_now, unknown_opening_count
          from public.treasury_position_summary
         where currency = $1`,
@@ -480,7 +481,7 @@ export async function loadAndSolveBreakevenLevers(
       }
       throw err;
     }),
-    client.query<{ threshold_amount: string | null }>(
+    () => client.query<{ threshold_amount: string | null }>(
       `select threshold_amount
          from public.treasury_policies
         where policy_kind = 'min_cash'
@@ -490,7 +491,7 @@ export async function loadAndSolveBreakevenLevers(
         limit 1`,
       [currency],
     ),
-    client.query<{ available: string }>(
+    () => client.query<{ available: string }>(
       `select coalesce(sum(available_amount), 0)::numeric(14,2) as available
          from public.credit_facility_utilization
         where status = 'active'
@@ -503,7 +504,7 @@ export async function loadAndSolveBreakevenLevers(
       }
       throw err;
     }),
-    client.query<{
+    () => client.query<{
       break_even_tl_per_min: string | null;
       effective_monthly_minutes: string | null;
     }>(
@@ -512,7 +513,7 @@ export async function loadAndSolveBreakevenLevers(
         order by created_at desc
         limit 1`,
     ),
-    client.query<{
+    () => client.query<{
       invoice_no: string;
       due_date: string;
       open_amount: string;
@@ -533,7 +534,7 @@ export async function loadAndSolveBreakevenLevers(
        order by v.due_date, v.id`,
       [currency, asOfDate, arHorizonEnd],
     ),
-    client.query<{
+    () => client.query<{
       flow_date: string;
       direction: "inflow" | "outflow";
       amount: string;

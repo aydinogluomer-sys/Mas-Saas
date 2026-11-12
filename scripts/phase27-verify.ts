@@ -101,7 +101,7 @@ async function main(): Promise<void> {
   const tables = await q(
     `select table_name from information_schema.tables
      where table_schema='public' and table_name in
-       ('credit_facilities','facility_drawdowns','collateral_records','covenant_records',
+       ('credit_facilities','facility_movements','collateral_records','covenant_records',
         'fx_rate_snapshots','fx_positions')
      order by table_name`);
   record("altı yeni tablo da mevcut", tables.length === 6, `${tables.length}/6`);
@@ -199,14 +199,16 @@ async function main(): Promise<void> {
   const drawdown = await inRollback(async (c) => {
     const f = await mkFacility(c);
     await c.query(
-      `insert into public.facility_drawdowns(facility_id, movement_type, amount, movement_date)
-       values ($1,'drawdown',500000,'2099-02-01'), ($1,'repayment',200000,'2099-03-01')`, [f]);
+      `insert into public.facility_movements(facility_id, movement_type, amount, currency, movement_date)
+       values ($1,'drawdown',500000,'TRY','2099-02-01'), ($1,'repayment',200000,'TRY','2099-03-01')`, [f]);
     const rows = (await c.query(
-      `select movement_type, signed_amount from public.facility_drawdowns
+      `select movement_type,
+              case when movement_type='drawdown' then amount else -amount end as signed_amount
+       from public.facility_movements
        where facility_id=$1 order by movement_date`, [f])).rows;
     const negAmount = await refuses(c,
-      `insert into public.facility_drawdowns(facility_id, movement_type, amount, movement_date)
-       values ($1,'drawdown',-5,'2099-04-01')`, [f]);
+      `insert into public.facility_movements(facility_id, movement_type, amount, currency, movement_date)
+       values ($1,'drawdown',-5,'TRY','2099-04-01')`, [f]);
     const util = (await c.query(
       `select limit_amount, drawn_amount, available_amount, utilization_ratio, over_limit
        from public.credit_facility_utilization where facility_id=$1`, [f])).rows[0];
@@ -230,16 +232,14 @@ async function main(): Promise<void> {
 
   const over = await inRollback(async (c) => {
     const f = await mkFacility(c, "active", 100000);
-    await c.query(
-      `insert into public.facility_drawdowns(facility_id, movement_type, amount, movement_date)
-       values ($1,'drawdown',130000,'2099-02-01')`, [f]);
-    return (await c.query(
-      `select drawn_amount, available_amount, over_limit
-       from public.credit_facility_utilization where facility_id=$1`, [f])).rows[0];
+    const overRefused = await refuses(c,
+      `insert into public.facility_movements(facility_id, movement_type, amount, currency, movement_date)
+       values ($1,'drawdown',130000,'TRY','2099-02-01')`, [f]);
+    return { overRefused };
   });
-  record("limit aşımında kullanılabilir 0'a sabitleniyor ve aşım AYRICA bildiriliyor",
-    Number(over.available_amount) === 0 && over.over_limit === true && Number(over.drawn_amount) === 130000,
-    "negatif başlık grup likiditesini sessizce azaltmıyor");
+  record("limit aşımı facility_movements tetikleyicisi tarafından doğrudan reddediliyor",
+    over.overRefused === true,
+    "0103+0112: atomik limit aşımı koruması");
 
   const subjects = await inRollback(async (c) => {
     const loan = await mkLoan(c);
@@ -374,8 +374,8 @@ async function main(): Promise<void> {
       c, "active", 1_000_000,
       new Date(Date.now() + 10 * 86400000).toISOString().slice(0, 10), null);
     await c.query(
-      `insert into public.facility_drawdowns(facility_id, movement_type, amount, movement_date)
-       values ($1,'drawdown',400000, current_date)`, [f]);
+      `insert into public.facility_movements(facility_id, movement_type, amount, currency, movement_date)
+       values ($1,'drawdown',400000,'TRY', current_date)`, [f]);
     return (await c.query(
       `select facility_drawn_expiring, facility_limit_expiring, total_cash_exposure, installment_due
        from public.debt_maturity_ladder where sort_order = 1`)).rows[0];
@@ -445,7 +445,7 @@ async function main(): Promise<void> {
     "Unit yok sayılsa JPY maruziyeti 100 kat şişerdi");
 
   /* ── 9. Faz 24B rol matrisi ─────────────────────────────────────────────────────────── */
-  const newTables = ["credit_facilities", "facility_drawdowns", "collateral_records",
+  const newTables = ["credit_facilities", "facility_movements", "collateral_records",
     "covenant_records", "fx_rate_snapshots", "fx_positions"];
   const unclassified = newTables.filter((t) => TABLE_CLASS[t] === undefined);
   record("altı yeni tablo da kod matrisinde sınıflandırılmış",

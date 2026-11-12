@@ -57,6 +57,8 @@ export interface AiResponseSnapshotsRow {
   safety_notes: string[];
   meta: Json | null;
   created_at: string;
+  conversation_id: string | null;
+  turn_index: number | null;
 }
 
 export interface AiResponseSnapshotsInsert {
@@ -71,6 +73,202 @@ export interface AiResponseSnapshotsInsert {
   safety_notes?: string[];
   meta?: Json | null;
   created_at?: string;
+  conversation_id?: string | null;
+  turn_index?: number | null;
+}
+
+export interface AlertEscalationRulesRow {
+  id: string;
+  code: string;
+  description: string;
+  check_code: string | null;
+  severity: string;
+  escalate_after_hours: number;
+  channel: string;
+  is_active: boolean;
+  notes: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface AlertEscalationRulesInsert {
+  id?: string;
+  code: string;
+  description: string;
+  check_code?: string | null;
+  severity: string;
+  escalate_after_hours: number;
+  channel?: string;
+  is_active?: boolean;
+  notes?: string | null;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface ApprovalGovernanceSettingsRow {
+  singleton_id: boolean;
+  allow_single_operator_self_approval: boolean;
+  min_justification_length: number;
+  updated_by: string | null;
+  updated_at: string;
+}
+
+export interface ApprovalGovernanceSettingsInsert {
+  singleton_id?: boolean;
+  allow_single_operator_self_approval?: boolean;
+  min_justification_length?: number;
+  updated_by?: string | null;
+  updated_at?: string;
+}
+
+export interface ApprovalRulesRow {
+  id: string;
+  code: string;
+  description: string;
+  trigger_kind: string;
+  threshold_amount: number | null;
+  currency: string;
+  applies_to: string[];
+  is_active: boolean;
+  notes: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ApprovalRulesInsert {
+  id?: string;
+  code: string;
+  description: string;
+  trigger_kind: string;
+  threshold_amount?: number | null;
+  currency?: string;
+  applies_to?: string[];
+  is_active?: boolean;
+  notes?: string | null;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface ApprovalStepsRow {
+  id: string;
+  approval_id: string;
+  step_no: number;
+  action: string;
+  actor: string | null;
+  note: string | null;
+  from_status: string | null;
+  to_status: string | null;
+  created_at: string;
+}
+
+export interface ApprovalStepsInsert {
+  id?: string;
+  approval_id: string;
+  step_no: number;
+  action: string;
+  actor?: string | null;
+  note?: string | null;
+  from_status?: string | null;
+  to_status?: string | null;
+  created_at?: string;
+}
+
+export interface ApprovalsRow {
+  id: string;
+  subject_table: string;
+  subject_id: string;
+  subject_label: string | null;
+  request_kind: string;
+  rule_code: string | null;
+  round_no: number;
+  status: string;
+  amount: number | null;
+  currency: string | null;
+  requested_by: string | null;
+  requested_at: string;
+  decided_by: string | null;
+  decided_at: string | null;
+  decision_note: string | null;
+  subject_status: string | null;
+  notes: string | null;
+  created_at: string;
+  updated_at: string;
+  self_approved_override: boolean;
+  self_approval_justification: string | null;
+}
+
+export interface ApprovalsInsert {
+  id?: string;
+  subject_table: string;
+  subject_id: string;
+  subject_label?: string | null;
+  request_kind: string;
+  rule_code?: string | null;
+  round_no?: number;
+  status?: string;
+  amount?: number | null;
+  currency?: string | null;
+  requested_by?: string | null;
+  requested_at?: string;
+  decided_by?: string | null;
+  decided_at?: string | null;
+  decision_note?: string | null;
+  subject_status?: string | null;
+  notes?: string | null;
+  created_at?: string;
+  updated_at?: string;
+  self_approved_override?: boolean;
+  self_approval_justification?: string | null;
+}
+
+export interface AssistantConversationsRow {
+  id: string;
+  title: string;
+  status: string;
+  archived_at: string | null;
+  archive_reason: string | null;
+  created_by: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface AssistantConversationsInsert {
+  id?: string;
+  title: string;
+  status?: string;
+  archived_at?: string | null;
+  archive_reason?: string | null;
+  created_by: string;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface AttachmentsRow {
+  id: string;
+  document_id: string;
+  version_no: number;
+  original_filename: string;
+  storage_path: string;
+  file_sha256: string;
+  byte_size: number;
+  mime_type: string;
+  uploaded_by: string | null;
+  uploaded_at: string;
+  notes: string | null;
+}
+
+export interface AttachmentsInsert {
+  id?: string;
+  document_id: string;
+  version_no: number;
+  original_filename: string;
+  storage_path: string;
+  file_sha256: string;
+  byte_size: number;
+  mime_type: string;
+  uploaded_by?: string | null;
+  uploaded_at?: string;
+  notes?: string | null;
 }
 
 export interface AuditLogsRow {
@@ -93,6 +291,260 @@ export interface AuditLogsInsert {
   before_data?: Json | null;
   after_data?: Json | null;
   created_at?: string;
+}
+
+export interface BackgroundJobsRow {
+  id: string;
+  job_type: string;
+  status: string;
+  priority: number;
+  payload: Json;
+  dedupe_key: string | null;
+  attempts: number;
+  max_attempts: number;
+  next_run_at: string;
+  started_at: string | null;
+  finished_at: string | null;
+  last_error: string | null;
+  progress_total: number | null;
+  progress_done: number;
+  dead_lettered_at: string | null;
+  dead_letter_reason: string | null;
+  created_by: string | null;
+  created_at: string;
+  updated_at: string;
+  result: Json | null;
+}
+
+export interface BackgroundJobsInsert {
+  id?: string;
+  job_type: string;
+  status?: string;
+  priority?: number;
+  payload?: Json;
+  dedupe_key?: string | null;
+  attempts?: number;
+  max_attempts?: number;
+  next_run_at?: string;
+  started_at?: string | null;
+  finished_at?: string | null;
+  last_error?: string | null;
+  progress_total?: number | null;
+  progress_done?: number;
+  dead_lettered_at?: string | null;
+  dead_letter_reason?: string | null;
+  created_by?: string | null;
+  created_at?: string;
+  updated_at?: string;
+  result?: Json | null;
+}
+
+export interface BankAccountsRow {
+  cash_account_id: string;
+  iban: string | null;
+  iban_normalized: string | null;
+  bank_name: string | null;
+  branch_code: string | null;
+  branch_name: string | null;
+  account_number: string | null;
+  swift_bic: string | null;
+  available_balance: number | null;
+  blocked_balance: number | null;
+  overdraft_limit: number | null;
+  balance_as_of: string | null;
+  last_statement_date: string | null;
+  notes: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface BankAccountsInsert {
+  cash_account_id: string;
+  iban?: string | null;
+  bank_name?: string | null;
+  branch_code?: string | null;
+  branch_name?: string | null;
+  account_number?: string | null;
+  swift_bic?: string | null;
+  available_balance?: number | null;
+  blocked_balance?: number | null;
+  overdraft_limit?: number | null;
+  balance_as_of?: string | null;
+  last_statement_date?: string | null;
+  notes?: string | null;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface BankTransactionMatchCandidatesRow {
+  id: string;
+  bank_transaction_id: string;
+  target_table: string;
+  target_id: string;
+  confidence: number;
+  reasons: Json;
+  rejected_at: string | null;
+  rejected_by: string | null;
+  rejected_reason: string | null;
+  created_at: string;
+}
+
+export interface BankTransactionMatchCandidatesInsert {
+  id?: string;
+  bank_transaction_id: string;
+  target_table: string;
+  target_id: string;
+  confidence: number;
+  reasons?: Json;
+  rejected_at?: string | null;
+  rejected_by?: string | null;
+  rejected_reason?: string | null;
+  created_at?: string;
+}
+
+export interface BankTransactionsRow {
+  id: string;
+  bank_account_id: string;
+  source_workbook_id: string | null;
+  source_sheet_id: string | null;
+  source_row_id: string | null;
+  txn_date: string;
+  value_date: string | null;
+  description: string;
+  counterparty_name_raw: string | null;
+  counterparty_iban_raw: string | null;
+  reference_no: string | null;
+  channel: string | null;
+  amount: number;
+  direction: string;
+  balance_after: number | null;
+  currency: string;
+  category: string;
+  category_rule: string | null;
+  status: string;
+  matched_entity_table: string | null;
+  matched_entity_id: string | null;
+  match_confidence: number | null;
+  matched_at: string | null;
+  reconciled_at: string | null;
+  ignored_reason: string | null;
+  dedupe_hash: string;
+  notes: string | null;
+  created_at: string;
+  updated_at: string;
+  settled_allocation_id: string | null;
+  settled_at: string | null;
+  settled_by: string | null;
+  transaction_kind: string;
+  cross_channel_dedupe_hash: string | null;
+}
+
+export interface BankTransactionsInsert {
+  id?: string;
+  bank_account_id: string;
+  source_workbook_id?: string | null;
+  source_sheet_id?: string | null;
+  source_row_id?: string | null;
+  txn_date: string;
+  value_date?: string | null;
+  description?: string;
+  counterparty_name_raw?: string | null;
+  counterparty_iban_raw?: string | null;
+  reference_no?: string | null;
+  channel?: string | null;
+  amount: number;
+  balance_after?: number | null;
+  currency?: string;
+  category?: string;
+  category_rule?: string | null;
+  status?: string;
+  matched_entity_table?: string | null;
+  matched_entity_id?: string | null;
+  match_confidence?: number | null;
+  matched_at?: string | null;
+  reconciled_at?: string | null;
+  ignored_reason?: string | null;
+  dedupe_hash: string;
+  notes?: string | null;
+  created_at?: string;
+  updated_at?: string;
+  settled_allocation_id?: string | null;
+  settled_at?: string | null;
+  settled_by?: string | null;
+  transaction_kind?: string;
+  cross_channel_dedupe_hash?: string | null;
+}
+
+export interface BudgetLinesRow {
+  id: string;
+  budget_id: string;
+  period_start: string;
+  direction: string;
+  amount: number;
+  currency: string;
+  cost_center_id: string | null;
+  department_id: string | null;
+  project_id: string | null;
+  category_id: string | null;
+  version_no: number;
+  version_status: string;
+  approved_at: string | null;
+  approved_by: string | null;
+  superseded_at: string | null;
+  superseded_by_line_id: string | null;
+  notes: string | null;
+  created_by: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface BudgetLinesInsert {
+  id?: string;
+  budget_id: string;
+  period_start: string;
+  direction: string;
+  amount: number;
+  currency?: string;
+  cost_center_id?: string | null;
+  department_id?: string | null;
+  project_id?: string | null;
+  category_id?: string | null;
+  version_no?: number;
+  version_status?: string;
+  approved_at?: string | null;
+  approved_by?: string | null;
+  superseded_at?: string | null;
+  superseded_by_line_id?: string | null;
+  notes?: string | null;
+  created_by?: string | null;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface BudgetsRow {
+  id: string;
+  name: string;
+  fiscal_year: number;
+  period_kind: string;
+  currency: string;
+  notes: string | null;
+  is_active: boolean;
+  created_by: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface BudgetsInsert {
+  id?: string;
+  name: string;
+  fiscal_year: number;
+  period_kind?: string;
+  currency?: string;
+  notes?: string | null;
+  is_active?: boolean;
+  created_by?: string | null;
+  created_at?: string;
+  updated_at?: string;
 }
 
 export interface CapacityModelsRow {
@@ -153,6 +605,8 @@ export interface CashAccountsRow {
   is_active: boolean;
   notes: string | null;
   created_at: string;
+  opening_balance_date: string;
+  opening_journal_entry_id: string | null;
 }
 
 export interface CashAccountsInsert {
@@ -165,6 +619,8 @@ export interface CashAccountsInsert {
   is_active?: boolean;
   notes?: string | null;
   created_at?: string;
+  opening_balance_date?: string;
+  opening_journal_entry_id?: string | null;
 }
 
 export interface CashflowLinesRow {
@@ -214,6 +670,12 @@ export interface CashflowMonthsRow {
   notes: string | null;
   created_at: string;
   updated_at: string;
+  locked_at: string | null;
+  locked_by: string | null;
+  reopened_at: string | null;
+  reopened_by: string | null;
+  reopen_reason: string | null;
+  lock_fingerprint: string | null;
 }
 
 export interface CashflowMonthsInsert {
@@ -231,6 +693,12 @@ export interface CashflowMonthsInsert {
   notes?: string | null;
   created_at?: string;
   updated_at?: string;
+  locked_at?: string | null;
+  locked_by?: string | null;
+  reopened_at?: string | null;
+  reopened_by?: string | null;
+  reopen_reason?: string | null;
+  lock_fingerprint?: string | null;
 }
 
 export interface CashflowSnapshotsRow {
@@ -277,6 +745,36 @@ export interface CategoriesInsert {
   created_at?: string;
 }
 
+export interface CheckBordrosRow {
+  id: string;
+  bordro_no: string;
+  bordro_type: string;
+  bordro_date: string;
+  target_party_id: string | null;
+  target_bank_account_id: string | null;
+  target_facility_id: string | null;
+  currency: string;
+  total_amount: number;
+  notes: string | null;
+  created_by: string | null;
+  created_at: string;
+}
+
+export interface CheckBordrosInsert {
+  id?: string;
+  bordro_no: string;
+  bordro_type: string;
+  bordro_date?: string;
+  target_party_id?: string | null;
+  target_bank_account_id?: string | null;
+  target_facility_id?: string | null;
+  currency?: string;
+  total_amount?: number;
+  notes?: string | null;
+  created_by?: string | null;
+  created_at?: string;
+}
+
 export interface CheckEventsRow {
   id: string;
   check_id: string;
@@ -284,6 +782,7 @@ export interface CheckEventsRow {
   event_at: string;
   event_note: string | null;
   created_by: string | null;
+  bordro_id: string | null;
 }
 
 export interface CheckEventsInsert {
@@ -293,6 +792,7 @@ export interface CheckEventsInsert {
   event_at?: string;
   event_note?: string | null;
   created_by?: string | null;
+  bordro_id?: string | null;
 }
 
 export interface ChecksRow {
@@ -319,6 +819,16 @@ export interface ChecksRow {
   archived_by_label: string | null;
   cancelled_at: string | null;
   cancel_reason: string | null;
+  currency: string;
+  linked_invoice_id: string | null;
+  instrument_type: string;
+  endorsed_to_party_id: string | null;
+  collection_bank_account_id: string | null;
+  collateral_facility_id: string | null;
+  collateral_record_id: string | null;
+  collateral_ltv_ratio: number | null;
+  settled_invoice_id: string | null;
+  last_bordro_id: string | null;
 }
 
 export interface ChecksInsert {
@@ -345,6 +855,144 @@ export interface ChecksInsert {
   archived_by_label?: string | null;
   cancelled_at?: string | null;
   cancel_reason?: string | null;
+  currency?: string;
+  linked_invoice_id?: string | null;
+  instrument_type?: string;
+  endorsed_to_party_id?: string | null;
+  collection_bank_account_id?: string | null;
+  collateral_facility_id?: string | null;
+  collateral_record_id?: string | null;
+  collateral_ltv_ratio?: number | null;
+  settled_invoice_id?: string | null;
+  last_bordro_id?: string | null;
+}
+
+export interface CollateralRecordsRow {
+  id: string;
+  loan_id: string | null;
+  facility_id: string | null;
+  collateral_type: string;
+  description: string | null;
+  value_amount: number | null;
+  currency: string;
+  valuation_date: string | null;
+  valuation_source: string | null;
+  owner_party_id: string | null;
+  released_at: string | null;
+  release_reason: string | null;
+  notes: string | null;
+  created_by: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CollateralRecordsInsert {
+  id?: string;
+  loan_id?: string | null;
+  facility_id?: string | null;
+  collateral_type: string;
+  description?: string | null;
+  value_amount?: number | null;
+  currency?: string;
+  valuation_date?: string | null;
+  valuation_source?: string | null;
+  owner_party_id?: string | null;
+  released_at?: string | null;
+  release_reason?: string | null;
+  notes?: string | null;
+  created_by?: string | null;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface ControlAlertsRow {
+  id: string;
+  check_code: string;
+  severity: string;
+  subject_table: string | null;
+  subject_id: string | null;
+  subject_label: string | null;
+  title: string;
+  detail: string | null;
+  rule_codes: string[];
+  anomaly_score: number | null;
+  amount: number | null;
+  currency: string;
+  status: string;
+  acknowledged_at: string | null;
+  acknowledged_by: string | null;
+  snooze_until: string | null;
+  resolved_at: string | null;
+  resolved_by: string | null;
+  resolution_note: string | null;
+  action_item_id: string | null;
+  first_seen_at: string;
+  last_seen_at: string;
+  occurrence_count: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ControlAlertsInsert {
+  id?: string;
+  check_code: string;
+  severity: string;
+  subject_table?: string | null;
+  subject_id?: string | null;
+  subject_label?: string | null;
+  title: string;
+  detail?: string | null;
+  rule_codes?: string[];
+  anomaly_score?: number | null;
+  amount?: number | null;
+  currency?: string;
+  status?: string;
+  acknowledged_at?: string | null;
+  acknowledged_by?: string | null;
+  snooze_until?: string | null;
+  resolved_at?: string | null;
+  resolved_by?: string | null;
+  resolution_note?: string | null;
+  action_item_id?: string | null;
+  first_seen_at?: string;
+  last_seen_at?: string;
+  occurrence_count?: number;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface CostAllocationRulesRow {
+  id: string;
+  code: string;
+  description: string;
+  cost_kind: string;
+  allocation_basis: string;
+  cost_center_id: string | null;
+  department_id: string | null;
+  project_id: string | null;
+  fixed_percent: number | null;
+  is_active: boolean;
+  notes: string | null;
+  created_by: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CostAllocationRulesInsert {
+  id?: string;
+  code: string;
+  description: string;
+  cost_kind: string;
+  allocation_basis: string;
+  cost_center_id?: string | null;
+  department_id?: string | null;
+  project_id?: string | null;
+  fixed_percent?: number | null;
+  is_active?: boolean;
+  notes?: string | null;
+  created_by?: string | null;
+  created_at?: string;
+  updated_at?: string;
 }
 
 export interface CostBreakdownLinesRow {
@@ -369,6 +1017,66 @@ export interface CostBreakdownLinesInsert {
   source_sheet_id?: string | null;
   source_row_id?: string | null;
   created_at?: string;
+}
+
+export interface CostCentersRow {
+  id: string;
+  code: string;
+  name: string;
+  is_active: boolean;
+  notes: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CostCentersInsert {
+  id?: string;
+  code: string;
+  name: string;
+  is_active?: boolean;
+  notes?: string | null;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface CostModelItemsRow {
+  id: string;
+  cost_model_id: string;
+  scenario_type: string;
+  cost_category: string;
+  description: string | null;
+  monthly_amount: number;
+  currency: string;
+  staff_count: number | null;
+  monthly_work_hours: number | null;
+  efficiency_rate: number | null;
+  notes: string | null;
+  source_workbook_id: string | null;
+  source_sheet_id: string | null;
+  source_row_id: string | null;
+  created_by: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CostModelItemsInsert {
+  id?: string;
+  cost_model_id: string;
+  scenario_type: string;
+  cost_category: string;
+  description?: string | null;
+  monthly_amount: number;
+  currency?: string;
+  staff_count?: number | null;
+  monthly_work_hours?: number | null;
+  efficiency_rate?: number | null;
+  notes?: string | null;
+  source_workbook_id?: string | null;
+  source_sheet_id?: string | null;
+  source_row_id?: string | null;
+  created_by?: string | null;
+  created_at?: string;
+  updated_at?: string;
 }
 
 export interface CostModelsRow {
@@ -417,6 +1125,194 @@ export interface CostModelsInsert {
   created_at?: string;
   akon_freze_tl_per_min?: number | null;
   akon_torna_tl_per_min?: number | null;
+}
+
+export interface CounterpartyProfilesRow {
+  party_id: string;
+  tax_number: string | null;
+  tax_office: string | null;
+  address_line: string | null;
+  city: string | null;
+  country_code: string;
+  credit_limit: number | null;
+  credit_limit_currency: string;
+  payment_terms_days: number | null;
+  contact_name: string | null;
+  contact_email: string | null;
+  contact_phone: string | null;
+  notes: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CounterpartyProfilesInsert {
+  party_id: string;
+  tax_number?: string | null;
+  tax_office?: string | null;
+  address_line?: string | null;
+  city?: string | null;
+  country_code?: string;
+  credit_limit?: number | null;
+  credit_limit_currency?: string;
+  payment_terms_days?: number | null;
+  contact_name?: string | null;
+  contact_email?: string | null;
+  contact_phone?: string | null;
+  notes?: string | null;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface CovenantRecordsRow {
+  id: string;
+  loan_id: string | null;
+  facility_id: string | null;
+  covenant_type: string;
+  description: string;
+  comparison: string;
+  threshold_value: number;
+  test_frequency: string;
+  status: string;
+  last_test_date: string | null;
+  last_test_value: number | null;
+  last_test_result: string | null;
+  notes: string | null;
+  created_by: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CovenantRecordsInsert {
+  id?: string;
+  loan_id?: string | null;
+  facility_id?: string | null;
+  covenant_type: string;
+  description: string;
+  comparison: string;
+  threshold_value: number;
+  test_frequency?: string;
+  status?: string;
+  last_test_date?: string | null;
+  last_test_value?: number | null;
+  last_test_result?: string | null;
+  notes?: string | null;
+  created_by?: string | null;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface CreditFacilitiesRow {
+  id: string;
+  name: string;
+  lender_party_id: string | null;
+  facility_type: string;
+  limit_amount: number;
+  currency: string;
+  interest_rate: number | null;
+  commission_rate: number | null;
+  start_date: string | null;
+  expiry_date: string | null;
+  review_date: string | null;
+  status: string;
+  notes: string | null;
+  created_at: string;
+  updated_at: string;
+  drawn_amount: number;
+}
+
+export interface CreditFacilitiesInsert {
+  id?: string;
+  name: string;
+  lender_party_id?: string | null;
+  facility_type?: string;
+  limit_amount: number;
+  currency?: string;
+  interest_rate?: number | null;
+  commission_rate?: number | null;
+  start_date?: string | null;
+  expiry_date?: string | null;
+  review_date?: string | null;
+  status?: string;
+  notes?: string | null;
+  created_at?: string;
+  updated_at?: string;
+  drawn_amount?: number;
+}
+
+export interface DepartmentsRow {
+  id: string;
+  code: string;
+  name: string;
+  parent_department_id: string | null;
+  is_active: boolean;
+  notes: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface DepartmentsInsert {
+  id?: string;
+  code: string;
+  name: string;
+  parent_department_id?: string | null;
+  is_active?: boolean;
+  notes?: string | null;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface DocumentLinksRow {
+  id: string;
+  document_id: string;
+  entity_table: string;
+  entity_id: string;
+  entity_label: string | null;
+  link_kind: string;
+  created_by: string | null;
+  created_at: string;
+}
+
+export interface DocumentLinksInsert {
+  id?: string;
+  document_id: string;
+  entity_table: string;
+  entity_id: string;
+  entity_label?: string | null;
+  link_kind?: string;
+  created_by?: string | null;
+  created_at?: string;
+}
+
+export interface DocumentsRow {
+  id: string;
+  title: string;
+  doc_type: string;
+  tags: string[];
+  description: string | null;
+  status: string;
+  superseded_by_document_id: string | null;
+  archived_at: string | null;
+  archive_reason: string | null;
+  created_by: string | null;
+  created_at: string;
+  updated_at: string;
+  original_filename: string | null;
+}
+
+export interface DocumentsInsert {
+  id?: string;
+  title: string;
+  doc_type?: string;
+  tags?: string[];
+  description?: string | null;
+  status?: string;
+  superseded_by_document_id?: string | null;
+  archived_at?: string | null;
+  archive_reason?: string | null;
+  created_by?: string | null;
+  created_at?: string;
+  updated_at?: string;
+  original_filename?: string | null;
 }
 
 export interface ExternalAssumptionsRow {
@@ -469,6 +1365,32 @@ export interface ExternalAssumptionsInsert {
   archived_by_label?: string | null;
 }
 
+export interface FacilityMovementsRow {
+  id: string;
+  facility_id: string;
+  movement_type: string;
+  movement_date: string;
+  amount: number;
+  currency: string;
+  bank_tx_id: string | null;
+  notes: string | null;
+  created_by: string | null;
+  created_at: string;
+}
+
+export interface FacilityMovementsInsert {
+  id?: string;
+  facility_id: string;
+  movement_type: string;
+  movement_date: string;
+  amount: number;
+  currency: string;
+  bank_tx_id?: string | null;
+  notes?: string | null;
+  created_by?: string | null;
+  created_at?: string;
+}
+
 export interface FinanceCostAllocationsRow {
   id: string;
   loan_id: string;
@@ -507,6 +1429,285 @@ export interface FinanceCostAllocationsInsert {
   created_at?: string;
 }
 
+export interface ForecastLinesRow {
+  id: string;
+  forecast_id: string;
+  period_start: string;
+  period_end: string;
+  direction: string;
+  amount: number;
+  currency: string;
+  source_kind: string;
+  confidence: number | null;
+  actual_amount: number | null;
+  actual_recorded_at: string | null;
+  cost_center_id: string | null;
+  department_id: string | null;
+  project_id: string | null;
+  category_id: string | null;
+  version_no: number;
+  version_status: string;
+  approved_at: string | null;
+  approved_by: string | null;
+  superseded_at: string | null;
+  superseded_by_line_id: string | null;
+  notes: string | null;
+  created_by: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ForecastLinesInsert {
+  id?: string;
+  forecast_id: string;
+  period_start: string;
+  period_end: string;
+  direction: string;
+  amount: number;
+  currency?: string;
+  source_kind?: string;
+  confidence?: number | null;
+  actual_amount?: number | null;
+  actual_recorded_at?: string | null;
+  cost_center_id?: string | null;
+  department_id?: string | null;
+  project_id?: string | null;
+  category_id?: string | null;
+  version_no?: number;
+  version_status?: string;
+  approved_at?: string | null;
+  approved_by?: string | null;
+  superseded_at?: string | null;
+  superseded_by_line_id?: string | null;
+  notes?: string | null;
+  created_by?: string | null;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface ForecastSnapshot13wLinesRow {
+  id: string;
+  snapshot_id: string;
+  week_index: number;
+  week_start: string;
+  direction: string;
+  category_bucket: string;
+  source_classification: string;
+  source_entity_table: string | null;
+  source_entity_id: string | null;
+  party_id: string | null;
+  label: string;
+  amount: number;
+}
+
+export interface ForecastSnapshot13wLinesInsert {
+  id?: string;
+  snapshot_id: string;
+  week_index: number;
+  week_start: string;
+  direction: string;
+  category_bucket: string;
+  source_classification: string;
+  source_entity_table?: string | null;
+  source_entity_id?: string | null;
+  party_id?: string | null;
+  label: string;
+  amount: number;
+}
+
+export interface ForecastSnapshots13wRow {
+  id: string;
+  snapshot_week_start: string;
+  as_of_date: string;
+  currency: string;
+  opening_cash: number | null;
+  unknown_opening_count: number;
+  frozen_by: string | null;
+  frozen_at: string;
+}
+
+export interface ForecastSnapshots13wInsert {
+  id?: string;
+  snapshot_week_start: string;
+  as_of_date: string;
+  currency: string;
+  opening_cash?: number | null;
+  unknown_opening_count?: number;
+  frozen_by?: string | null;
+  frozen_at?: string;
+}
+
+export interface ForecastsRow {
+  id: string;
+  name: string;
+  horizon_kind: string;
+  anchor_date: string;
+  currency: string;
+  scenario_run_id: string | null;
+  notes: string | null;
+  is_active: boolean;
+  created_by: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ForecastsInsert {
+  id?: string;
+  name: string;
+  horizon_kind?: string;
+  anchor_date: string;
+  currency?: string;
+  scenario_run_id?: string | null;
+  notes?: string | null;
+  is_active?: boolean;
+  created_by?: string | null;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface FxPositionsRow {
+  id: string;
+  currency: string;
+  amount: number;
+  position_kind: string;
+  as_of_date: string;
+  entry_rate: number | null;
+  counterparty_party_id: string | null;
+  source_note: string | null;
+  is_active: boolean;
+  created_by: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface FxPositionsInsert {
+  id?: string;
+  currency: string;
+  amount: number;
+  position_kind?: string;
+  as_of_date: string;
+  entry_rate?: number | null;
+  counterparty_party_id?: string | null;
+  source_note?: string | null;
+  is_active?: boolean;
+  created_by?: string | null;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface FxRateSnapshotsRow {
+  id: string;
+  base_currency: string;
+  quote_currency: string;
+  rate_date: string;
+  rate: number;
+  forex_buying: number | null;
+  forex_selling: number | null;
+  banknote_buying: number | null;
+  banknote_selling: number | null;
+  source: string;
+  source_ref: string | null;
+  fetched_at: string;
+  created_by: string | null;
+  created_at: string;
+}
+
+export interface FxRateSnapshotsInsert {
+  id?: string;
+  base_currency: string;
+  quote_currency?: string;
+  rate_date: string;
+  rate: number;
+  forex_buying?: number | null;
+  forex_selling?: number | null;
+  banknote_buying?: number | null;
+  banknote_selling?: number | null;
+  source?: string;
+  source_ref?: string | null;
+  fetched_at?: string;
+  created_by?: string | null;
+  created_at?: string;
+}
+
+export interface IbanChangeEventsRow {
+  id: string;
+  iban_id: string;
+  party_id: string;
+  change_type: string;
+  before_data: Json | null;
+  after_data: Json | null;
+  changed_at: string;
+}
+
+export interface IbanChangeEventsInsert {
+  id?: string;
+  iban_id: string;
+  party_id: string;
+  change_type: string;
+  before_data?: Json | null;
+  after_data?: Json | null;
+  changed_at?: string;
+}
+
+export interface IbansRow {
+  id: string;
+  party_id: string;
+  iban: string;
+  iban_normalized: string | null;
+  bank_name: string | null;
+  account_label: string | null;
+  currency: string;
+  is_primary: boolean;
+  is_active: boolean;
+  notes: string | null;
+  created_at: string;
+  updated_at: string;
+  approval_status: string;
+  approval_id: string | null;
+  verified_by: string | null;
+  verified_at: string | null;
+}
+
+export interface IbansInsert {
+  id?: string;
+  party_id: string;
+  iban: string;
+  bank_name?: string | null;
+  account_label?: string | null;
+  currency?: string;
+  is_primary?: boolean;
+  is_active?: boolean;
+  notes?: string | null;
+  created_at?: string;
+  updated_at?: string;
+  approval_status?: string;
+  approval_id?: string | null;
+  verified_by?: string | null;
+  verified_at?: string | null;
+}
+
+export interface ImportExternalKeysRow {
+  id: string;
+  entity_table: string;
+  external_id: string;
+  entity_id: string;
+  first_seen_workbook_id: string | null;
+  last_seen_workbook_id: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ImportExternalKeysInsert {
+  id?: string;
+  entity_table: string;
+  external_id: string;
+  entity_id: string;
+  first_seen_workbook_id?: string | null;
+  last_seen_workbook_id?: string | null;
+  created_at?: string;
+  updated_at?: string;
+}
+
 export interface ImportRowsRow {
   id: string;
   workbook_id: string;
@@ -537,6 +1738,364 @@ export interface ImportRowsInsert {
   created_at?: string;
 }
 
+export interface IntegrationAccountMappingsRow {
+  id: string;
+  provider: string;
+  external_account_id: string;
+  external_account_name: string | null;
+  external_iban: string | null;
+  external_currency: string;
+  cash_account_id: string | null;
+  bank_account_id: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface IntegrationAccountMappingsInsert {
+  id?: string;
+  provider?: string;
+  external_account_id: string;
+  external_account_name?: string | null;
+  external_iban?: string | null;
+  external_currency?: string;
+  cash_account_id?: string | null;
+  bank_account_id?: string | null;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface IntegrationConnectionsRow {
+  id: string;
+  integration_kind: string;
+  name: string;
+  provider: string | null;
+  status: string;
+  credential_env_var: string | null;
+  config: Json;
+  sync_interval_minutes: number | null;
+  last_sync_at: string | null;
+  last_success_at: string | null;
+  last_error: string | null;
+  created_by: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface IntegrationConnectionsInsert {
+  id?: string;
+  integration_kind: string;
+  name: string;
+  provider?: string | null;
+  status?: string;
+  credential_env_var?: string | null;
+  config?: Json;
+  sync_interval_minutes?: number | null;
+  last_sync_at?: string | null;
+  last_success_at?: string | null;
+  last_error?: string | null;
+  created_by?: string | null;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface IntegrationEntityLinksRow {
+  id: string;
+  provider: string;
+  resource_type: string;
+  external_id: string;
+  entity_table: string;
+  entity_id: string;
+  last_payload_id: string | null;
+  last_synced_at: string;
+}
+
+export interface IntegrationEntityLinksInsert {
+  id?: string;
+  provider?: string;
+  resource_type: string;
+  external_id: string;
+  entity_table: string;
+  entity_id: string;
+  last_payload_id?: string | null;
+  last_synced_at?: string;
+}
+
+export interface IntegrationRawPayloadsRow {
+  id: string;
+  sync_run_id: string;
+  resource_type: string;
+  external_id: string;
+  external_updated_at: string | null;
+  payload_sha256: string;
+  payload_json: Json;
+  fetched_at: string;
+}
+
+export interface IntegrationRawPayloadsInsert {
+  id?: string;
+  sync_run_id: string;
+  resource_type: string;
+  external_id: string;
+  external_updated_at?: string | null;
+  payload_sha256: string;
+  payload_json: Json;
+  fetched_at?: string;
+}
+
+export interface IntegrationStagedPartiesRow {
+  id: string;
+  provider: string;
+  external_contact_id: string;
+  raw_name: string;
+  tax_id: string | null;
+  iban: string | null;
+  account_type: string | null;
+  suggested_party_id: string | null;
+  status: string;
+  resolved_party_id: string | null;
+  reviewed_by: string | null;
+  reviewed_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface IntegrationStagedPartiesInsert {
+  id?: string;
+  provider?: string;
+  external_contact_id: string;
+  raw_name: string;
+  tax_id?: string | null;
+  iban?: string | null;
+  account_type?: string | null;
+  suggested_party_id?: string | null;
+  status?: string;
+  resolved_party_id?: string | null;
+  reviewed_by?: string | null;
+  reviewed_at?: string | null;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface IntegrationSyncRunsRow {
+  id: string;
+  integration_id: string;
+  started_at: string;
+  finished_at: string | null;
+  watermark_from: string | null;
+  watermark_to: string | null;
+  status: string;
+  fetched_count: number;
+  upserted_count: number;
+  staged_party_count: number;
+  error_summary: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface IntegrationSyncRunsInsert {
+  id?: string;
+  integration_id: string;
+  started_at?: string;
+  finished_at?: string | null;
+  watermark_from?: string | null;
+  watermark_to?: string | null;
+  status?: string;
+  fetched_count?: number;
+  upserted_count?: number;
+  staged_party_count?: number;
+  error_summary?: string | null;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface InvoiceAllocationsRow {
+  id: string;
+  invoice_id: string;
+  source_table: string;
+  source_id: string | null;
+  allocated_amount: number;
+  allocated_on: string;
+  reversed_at: string | null;
+  reversed_by: string | null;
+  reversed_reason: string | null;
+  notes: string | null;
+  created_by: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface InvoiceAllocationsInsert {
+  id?: string;
+  invoice_id: string;
+  source_table: string;
+  source_id?: string | null;
+  allocated_amount: number;
+  allocated_on?: string;
+  reversed_at?: string | null;
+  reversed_by?: string | null;
+  reversed_reason?: string | null;
+  notes?: string | null;
+  created_by?: string | null;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface InvoiceLinesRow {
+  id: string;
+  invoice_id: string;
+  line_no: number;
+  product_id: string | null;
+  description: string;
+  quantity: number;
+  unit_price: number;
+  unit: string | null;
+  tax_rate: number;
+  net_amount: number;
+  tax_amount: number;
+  gross_amount: number;
+  cost_center_id: string | null;
+  project_id: string | null;
+  notes: string | null;
+  created_at: string;
+  updated_at: string;
+  department_id: string | null;
+}
+
+export interface InvoiceLinesInsert {
+  id?: string;
+  invoice_id: string;
+  line_no: number;
+  product_id?: string | null;
+  description: string;
+  quantity?: number;
+  unit_price: number;
+  unit?: string | null;
+  tax_rate?: number;
+  net_amount: number;
+  tax_amount?: number;
+  gross_amount: number;
+  cost_center_id?: string | null;
+  project_id?: string | null;
+  notes?: string | null;
+  created_at?: string;
+  updated_at?: string;
+  department_id?: string | null;
+}
+
+export interface InvoiceReversalsRow {
+  id: string;
+  invoice_id: string;
+  reversal_type: string;
+  reason: string;
+  reversed_amount: number;
+  snapshot: Json;
+  credit_note_invoice_id: string | null;
+  created_by: string | null;
+  created_at: string;
+}
+
+export interface InvoiceReversalsInsert {
+  id?: string;
+  invoice_id: string;
+  reversal_type: string;
+  reason: string;
+  reversed_amount: number;
+  snapshot: Json;
+  credit_note_invoice_id?: string | null;
+  created_by?: string | null;
+  created_at?: string;
+}
+
+export interface InvoicesRow {
+  id: string;
+  direction: string;
+  invoice_no: string;
+  party_id: string;
+  cost_center_id: string | null;
+  project_id: string | null;
+  order_id: string | null;
+  issue_date: string;
+  due_date: string | null;
+  currency: string;
+  net_amount: number | null;
+  tax_amount: number | null;
+  gross_amount: number;
+  paid_amount: number;
+  status: string;
+  cancelled_at: string | null;
+  cancel_reason: string | null;
+  closed_at: string | null;
+  close_reason: string | null;
+  source_workbook_id: string | null;
+  source_sheet_id: string | null;
+  source_row_id: string | null;
+  dedupe_hash: string | null;
+  notes: string | null;
+  created_at: string;
+  updated_at: string;
+  allocated_amount: number;
+  bad_debt_at: string | null;
+  bad_debt_reason: string | null;
+  bad_debt_by: string | null;
+  settled_by_check_id: string | null;
+  approval_status: string;
+  approval_id: string | null;
+  approved_by: string | null;
+  approved_at: string | null;
+  department_id: string | null;
+  withholding_amount: number | null;
+  vat_withholding_amount: number | null;
+  payable_amount: number | null;
+  external_status: string | null;
+  external_key: string | null;
+  spender_employee_name: string | null;
+}
+
+export interface InvoicesInsert {
+  id?: string;
+  direction: string;
+  invoice_no: string;
+  party_id: string;
+  cost_center_id?: string | null;
+  project_id?: string | null;
+  order_id?: string | null;
+  issue_date: string;
+  due_date?: string | null;
+  currency?: string;
+  net_amount?: number | null;
+  tax_amount?: number | null;
+  gross_amount: number;
+  paid_amount?: number;
+  status?: string;
+  cancelled_at?: string | null;
+  cancel_reason?: string | null;
+  closed_at?: string | null;
+  close_reason?: string | null;
+  source_workbook_id?: string | null;
+  source_sheet_id?: string | null;
+  source_row_id?: string | null;
+  dedupe_hash?: string | null;
+  notes?: string | null;
+  created_at?: string;
+  updated_at?: string;
+  allocated_amount?: number;
+  bad_debt_at?: string | null;
+  bad_debt_reason?: string | null;
+  bad_debt_by?: string | null;
+  settled_by_check_id?: string | null;
+  approval_status?: string;
+  approval_id?: string | null;
+  approved_by?: string | null;
+  approved_at?: string | null;
+  department_id?: string | null;
+  withholding_amount?: number | null;
+  vat_withholding_amount?: number | null;
+  payable_amount?: number | null;
+  external_status?: string | null;
+  external_key?: string | null;
+  spender_employee_name?: string | null;
+}
+
 export interface LoanInstallmentsRow {
   id: string;
   loan_id: string;
@@ -551,6 +2110,7 @@ export interface LoanInstallmentsRow {
   created_at: string;
   cancelled_at: string | null;
   cancel_reason: string | null;
+  paid_amount: number | null;
 }
 
 export interface LoanInstallmentsInsert {
@@ -567,6 +2127,7 @@ export interface LoanInstallmentsInsert {
   created_at?: string;
   cancelled_at?: string | null;
   cancel_reason?: string | null;
+  paid_amount?: number | null;
 }
 
 export interface LoansRow {
@@ -595,6 +2156,7 @@ export interface LoansRow {
   archived_at: string | null;
   archive_reason: string | null;
   archived_by_label: string | null;
+  currency: string;
 }
 
 export interface LoansInsert {
@@ -623,6 +2185,7 @@ export interface LoansInsert {
   archived_at?: string | null;
   archive_reason?: string | null;
   archived_by_label?: string | null;
+  currency?: string;
 }
 
 export interface MachineAssetsRow {
@@ -632,6 +2195,15 @@ export interface MachineAssetsRow {
   purchase_cost: number | null;
   notes: string | null;
   created_at: string;
+  machine_code: string | null;
+  purchase_date: string | null;
+  currency: string;
+  monthly_revenue: number | null;
+  monthly_operating_cost: number | null;
+  annual_maintenance_cost: number | null;
+  utilization_rate: number | null;
+  useful_life_months: number | null;
+  is_active: boolean;
 }
 
 export interface MachineAssetsInsert {
@@ -641,6 +2213,15 @@ export interface MachineAssetsInsert {
   purchase_cost?: number | null;
   notes?: string | null;
   created_at?: string;
+  machine_code?: string | null;
+  purchase_date?: string | null;
+  currency?: string;
+  monthly_revenue?: number | null;
+  monthly_operating_cost?: number | null;
+  annual_maintenance_cost?: number | null;
+  utilization_rate?: number | null;
+  useful_life_months?: number | null;
+  is_active?: boolean;
 }
 
 export interface MachineMinuteAllocationsRow {
@@ -707,6 +2288,105 @@ export interface MachineRoiSnapshotsInsert {
   created_at?: string;
 }
 
+export interface ManagementAccountsRow {
+  id: string;
+  code: string;
+  name: string;
+  parent_code: string | null;
+  account_class: string;
+  normal_side: string;
+  ebitda_bucket: string;
+  tdhp_root_code: string;
+  is_active: boolean;
+  created_at: string;
+}
+
+export interface ManagementAccountsInsert {
+  id?: string;
+  code: string;
+  name: string;
+  parent_code?: string | null;
+  account_class: string;
+  normal_side: string;
+  ebitda_bucket: string;
+  tdhp_root_code: string;
+  is_active?: boolean;
+  created_at?: string;
+}
+
+export interface ManagementJournalEntriesRow {
+  id: string;
+  entry_no: number;
+  entry_date: string;
+  period_month: string | null;
+  source_type: string;
+  source_id: string | null;
+  idempotency_key: string;
+  status: string;
+  needs_tax_split_review: boolean;
+  description: string;
+  reversal_of_entry_id: string | null;
+  reversed_by_entry_id: string | null;
+  approved_by: string | null;
+  approved_at: string | null;
+  created_by: string | null;
+  created_at: string;
+}
+
+export interface ManagementJournalEntriesInsert {
+  id?: string;
+  entry_no: number;
+  entry_date: string;
+  source_type: string;
+  source_id?: string | null;
+  idempotency_key: string;
+  status?: string;
+  needs_tax_split_review?: boolean;
+  description: string;
+  reversal_of_entry_id?: string | null;
+  reversed_by_entry_id?: string | null;
+  approved_by?: string | null;
+  approved_at?: string | null;
+  created_by?: string | null;
+  created_at?: string;
+}
+
+export interface ManagementJournalLinesRow {
+  id: string;
+  entry_id: string;
+  line_no: number;
+  account_id: string;
+  party_id: string | null;
+  project_id: string | null;
+  cost_center_id: string | null;
+  department_id: string | null;
+  native_currency: string;
+  debit_native: number;
+  credit_native: number;
+  fx_rate: number | null;
+  debit_try: number | null;
+  credit_try: number | null;
+  line_memo: string | null;
+}
+
+export interface ManagementJournalLinesInsert {
+  id?: string;
+  entry_id: string;
+  line_no: number;
+  account_id: string;
+  party_id?: string | null;
+  project_id?: string | null;
+  cost_center_id?: string | null;
+  department_id?: string | null;
+  native_currency?: string;
+  debit_native?: number;
+  credit_native?: number;
+  fx_rate?: number | null;
+  debit_try?: number | null;
+  credit_try?: number | null;
+  line_memo?: string | null;
+}
+
 export interface MappingReviewsRow {
   id: string;
   workbook_id: string;
@@ -765,6 +2445,98 @@ export interface MetricSnapshotsInsert {
   created_at?: string;
 }
 
+export interface OptimizationRecommendationsRow {
+  id: string;
+  run_id: string;
+  rank: number;
+  action_kind: string;
+  subject_table: string | null;
+  subject_id: string | null;
+  subject_label: string | null;
+  current_date_value: string | null;
+  proposed_date: string | null;
+  amount: number | null;
+  currency: string;
+  expected_effect: number | null;
+  rationale_codes: string[];
+  rationale_note: string | null;
+  confidence: number | null;
+  created_at: string;
+}
+
+export interface OptimizationRecommendationsInsert {
+  id?: string;
+  run_id: string;
+  rank: number;
+  action_kind: string;
+  subject_table?: string | null;
+  subject_id?: string | null;
+  subject_label?: string | null;
+  current_date_value?: string | null;
+  proposed_date?: string | null;
+  amount?: number | null;
+  currency?: string;
+  expected_effect?: number | null;
+  rationale_codes?: string[];
+  rationale_note?: string | null;
+  confidence?: number | null;
+  created_at?: string;
+}
+
+export interface OptimizationRunsRow {
+  id: string;
+  name: string;
+  objective: string;
+  anchor_date: string;
+  horizon_days: number;
+  currency: string;
+  constraints: Json | null;
+  scenario_run_id: string | null;
+  result_digest: string | null;
+  notes: string | null;
+  created_by: string | null;
+  created_at: string;
+}
+
+export interface OptimizationRunsInsert {
+  id?: string;
+  name: string;
+  objective: string;
+  anchor_date: string;
+  horizon_days?: number;
+  currency?: string;
+  constraints?: Json | null;
+  scenario_run_id?: string | null;
+  result_digest?: string | null;
+  notes?: string | null;
+  created_by?: string | null;
+  created_at?: string;
+}
+
+export interface OrdersRow {
+  id: string;
+  code: string;
+  party_id: string | null;
+  project_id: string | null;
+  order_date: string | null;
+  is_active: boolean;
+  notes: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface OrdersInsert {
+  id?: string;
+  code: string;
+  party_id?: string | null;
+  project_id?: string | null;
+  order_date?: string | null;
+  is_active?: boolean;
+  notes?: string | null;
+  created_at?: string;
+  updated_at?: string;
+}
+
 export interface PartProfitabilityRunsRow {
   id: string;
   part_id: string;
@@ -804,6 +2576,10 @@ export interface PartiesRow {
   notes: string | null;
   created_at: string;
   updated_at: string;
+  approval_status: string;
+  approval_id: string | null;
+  approved_by: string | null;
+  approved_at: string | null;
 }
 
 export interface PartiesInsert {
@@ -815,6 +2591,10 @@ export interface PartiesInsert {
   notes?: string | null;
   created_at?: string;
   updated_at?: string;
+  approval_status?: string;
+  approval_id?: string | null;
+  approved_by?: string | null;
+  approved_at?: string | null;
 }
 
 export interface PaymentInstancesRow {
@@ -842,6 +2622,11 @@ export interface PaymentInstancesRow {
   cancelled_at: string | null;
   cancel_reason: string | null;
   amount_source: string;
+  linked_invoice_id: string | null;
+  approval_status: string;
+  approval_id: string | null;
+  approved_by: string | null;
+  approved_at: string | null;
 }
 
 export interface PaymentInstancesInsert {
@@ -868,6 +2653,113 @@ export interface PaymentInstancesInsert {
   cancelled_at?: string | null;
   cancel_reason?: string | null;
   amount_source?: string;
+  linked_invoice_id?: string | null;
+  approval_status?: string;
+  approval_id?: string | null;
+  approved_by?: string | null;
+  approved_at?: string | null;
+}
+
+export interface PaymentRunItemsRow {
+  id: string;
+  run_id: string;
+  target_type: string;
+  target_id: string;
+  party_id: string | null;
+  iban_id: string | null;
+  beneficiary_name: string;
+  beneficiary_iban: string;
+  amount: number;
+  currency: string;
+  due_date: string | null;
+  description: string;
+  iban_verified: boolean;
+  settled_bank_tx_id: string | null;
+  settled_at: string | null;
+  status: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface PaymentRunItemsInsert {
+  id?: string;
+  run_id: string;
+  target_type: string;
+  target_id: string;
+  party_id?: string | null;
+  iban_id?: string | null;
+  beneficiary_name: string;
+  beneficiary_iban: string;
+  amount: number;
+  currency: string;
+  due_date?: string | null;
+  description: string;
+  iban_verified?: boolean;
+  settled_bank_tx_id?: string | null;
+  settled_at?: string | null;
+  status?: string;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface PaymentRunsRow {
+  id: string;
+  run_code: string;
+  planned_execution_date: string;
+  source_bank_account_id: string;
+  currency: string;
+  total_amount: number;
+  item_count: number;
+  pre_run_cash: number | null;
+  projected_14d_min_cash: number | null;
+  min_cash_floor: number | null;
+  breaches_cash_floor: boolean;
+  status: string;
+  approval_id: string | null;
+  exported_format: string | null;
+  exported_hash: string | null;
+  created_by: string;
+  approved_by: string | null;
+  approved_at: string | null;
+  exported_at: string | null;
+  settled_at: string | null;
+  cancelled_at: string | null;
+  cancel_reason: string | null;
+  notes: string | null;
+  created_at: string;
+  updated_at: string;
+  self_approved_override: boolean;
+  self_approval_justification: string | null;
+}
+
+export interface PaymentRunsInsert {
+  id?: string;
+  run_code: string;
+  planned_execution_date: string;
+  source_bank_account_id: string;
+  currency: string;
+  total_amount: number;
+  item_count: number;
+  pre_run_cash?: number | null;
+  projected_14d_min_cash?: number | null;
+  min_cash_floor?: number | null;
+  breaches_cash_floor?: boolean;
+  status?: string;
+  approval_id?: string | null;
+  exported_format?: string | null;
+  exported_hash?: string | null;
+  created_by: string;
+  approved_by?: string | null;
+  approved_at?: string | null;
+  exported_at?: string | null;
+  settled_at?: string | null;
+  cancelled_at?: string | null;
+  cancel_reason?: string | null;
+  notes?: string | null;
+  created_at?: string;
+  updated_at?: string;
+  self_approved_override?: boolean;
+  self_approval_justification?: string | null;
 }
 
 export interface PaymentsRow {
@@ -897,6 +2789,9 @@ export interface PaymentsRow {
   archive_reason: string | null;
   archived_by_label: string | null;
   flexibility_class: string | null;
+  cost_center_id: string | null;
+  project_id: string | null;
+  department_id: string | null;
 }
 
 export interface PaymentsInsert {
@@ -926,6 +2821,9 @@ export interface PaymentsInsert {
   archive_reason?: string | null;
   archived_by_label?: string | null;
   flexibility_class?: string | null;
+  cost_center_id?: string | null;
+  project_id?: string | null;
+  department_id?: string | null;
 }
 
 export interface ProductionPartsRow {
@@ -939,6 +2837,13 @@ export interface ProductionPartsRow {
   source_sheet_id: string | null;
   source_row_id: string | null;
   created_at: string;
+  other_operation_minutes: number | null;
+  unit_sale_price: number | null;
+  currency: string;
+  efficiency_rate: number | null;
+  work_days_per_month: number | null;
+  shift_count: number | null;
+  notes: string | null;
 }
 
 export interface ProductionPartsInsert {
@@ -952,6 +2857,117 @@ export interface ProductionPartsInsert {
   source_sheet_id?: string | null;
   source_row_id?: string | null;
   created_at?: string;
+  other_operation_minutes?: number | null;
+  unit_sale_price?: number | null;
+  currency?: string;
+  efficiency_rate?: number | null;
+  work_days_per_month?: number | null;
+  shift_count?: number | null;
+  notes?: string | null;
+}
+
+export interface ProductsRow {
+  id: string;
+  code: string;
+  name: string;
+  unit: string | null;
+  is_active: boolean;
+  notes: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ProductsInsert {
+  id?: string;
+  code: string;
+  name: string;
+  unit?: string | null;
+  is_active?: boolean;
+  notes?: string | null;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface ProjectsRow {
+  id: string;
+  code: string;
+  name: string;
+  party_id: string | null;
+  cost_center_id: string | null;
+  is_active: boolean;
+  notes: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ProjectsInsert {
+  id?: string;
+  code: string;
+  name: string;
+  party_id?: string | null;
+  cost_center_id?: string | null;
+  is_active?: boolean;
+  notes?: string | null;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface PromiseToPayRow {
+  id: string;
+  party_id: string;
+  invoice_id: string | null;
+  promised_amount: number | null;
+  currency: string;
+  promised_date: string;
+  status: string;
+  channel: string;
+  resolved_at: string | null;
+  resolved_by: string | null;
+  resolution_source: string | null;
+  note: string | null;
+  created_by: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface PromiseToPayInsert {
+  id?: string;
+  party_id: string;
+  invoice_id?: string | null;
+  promised_amount?: number | null;
+  currency?: string;
+  promised_date: string;
+  status?: string;
+  channel?: string;
+  resolved_at?: string | null;
+  resolved_by?: string | null;
+  resolution_source?: string | null;
+  note?: string | null;
+  created_by?: string | null;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface ReconciliationSignoffsRow {
+  id: string;
+  period_month: string;
+  scope: string;
+  status: string;
+  open_exception_count: number;
+  notes: string | null;
+  signed_by: string;
+  signed_at: string;
+}
+
+export interface ReconciliationSignoffsInsert {
+  id?: string;
+  period_month: string;
+  scope: string;
+  status: string;
+  open_exception_count?: number;
+  notes?: string | null;
+  signed_by: string;
+  signed_at?: string;
 }
 
 export interface ReminderDeliveriesRow {
@@ -1020,6 +3036,30 @@ export interface ReportsInsert {
   body_md: string;
   meta?: Json | null;
   created_at?: string;
+}
+
+export interface SavedViewsRow {
+  id: string;
+  name: string;
+  module_key: string;
+  filters: Json;
+  is_shared: boolean;
+  is_default: boolean;
+  created_by: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface SavedViewsInsert {
+  id?: string;
+  name: string;
+  module_key: string;
+  filters?: Json;
+  is_shared?: boolean;
+  is_default?: boolean;
+  created_by: string;
+  created_at?: string;
+  updated_at?: string;
 }
 
 export interface ScenarioAssumptionsRow {
@@ -1288,6 +3328,155 @@ export interface SourceWorkbooksInsert {
   notes?: string | null;
 }
 
+export interface StatutoryTrialBalanceLinesRow {
+  id: string;
+  trial_balance_id: string;
+  account_code: string;
+  tdhp_root_code: string;
+  account_name: string;
+  is_leaf: boolean;
+  debit_total_try: number;
+  credit_total_try: number;
+  debit_balance_try: number;
+  credit_balance_try: number;
+}
+
+export interface StatutoryTrialBalanceLinesInsert {
+  id?: string;
+  trial_balance_id: string;
+  account_code: string;
+  tdhp_root_code: string;
+  account_name: string;
+  is_leaf?: boolean;
+  debit_total_try?: number;
+  credit_total_try?: number;
+  debit_balance_try?: number;
+  credit_balance_try?: number;
+}
+
+export interface StatutoryTrialBalancesRow {
+  id: string;
+  as_of_date: string;
+  period_label: string;
+  source_software: string | null;
+  original_filename: string;
+  file_sha256: string;
+  total_debit_try: number;
+  total_credit_try: number;
+  is_self_balanced: boolean | null;
+  imported_by: string;
+  imported_at: string;
+}
+
+export interface StatutoryTrialBalancesInsert {
+  id?: string;
+  as_of_date: string;
+  period_label: string;
+  source_software?: string | null;
+  original_filename: string;
+  file_sha256: string;
+  total_debit_try: number;
+  total_credit_try: number;
+  imported_by: string;
+  imported_at?: string;
+}
+
+export interface TreasuryPoliciesRow {
+  id: string;
+  code: string;
+  description: string;
+  policy_kind: string;
+  currency: string;
+  cash_account_id: string | null;
+  threshold_amount: number | null;
+  threshold_days: number | null;
+  is_active: boolean;
+  notes: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface TreasuryPoliciesInsert {
+  id?: string;
+  code: string;
+  description: string;
+  policy_kind: string;
+  currency?: string;
+  cash_account_id?: string | null;
+  threshold_amount?: number | null;
+  threshold_days?: number | null;
+  is_active?: boolean;
+  notes?: string | null;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface TrialBalanceReconciliationItemsRow {
+  id: string;
+  run_id: string;
+  tdhp_group_code: string;
+  tdhp_group_name: string;
+  management_net_try: number;
+  statutory_net_try: number;
+  delta_try: number;
+  root_cause_code: string;
+  severity: string;
+  explanation: string;
+  candidate_evidence_json: Json;
+  action_item_id: string | null;
+  created_at: string;
+}
+
+export interface TrialBalanceReconciliationItemsInsert {
+  id?: string;
+  run_id: string;
+  tdhp_group_code: string;
+  tdhp_group_name: string;
+  management_net_try?: number;
+  statutory_net_try?: number;
+  delta_try?: number;
+  root_cause_code: string;
+  severity: string;
+  explanation: string;
+  candidate_evidence_json?: Json;
+  action_item_id?: string | null;
+  created_at?: string;
+}
+
+export interface TrialBalanceReconciliationRunsRow {
+  id: string;
+  statutory_trial_balance_id: string;
+  as_of_date: string;
+  management_total_debit_try: number;
+  management_total_credit_try: number;
+  statutory_total_debit_try: number;
+  statutory_total_credit_try: number;
+  management_ebitda_try: number;
+  statutory_690_ebt_try: number;
+  ebitda_to_690_bridge_json: Json;
+  matched_group_count: number;
+  discrepancy_group_count: number;
+  created_by: string | null;
+  created_at: string;
+}
+
+export interface TrialBalanceReconciliationRunsInsert {
+  id?: string;
+  statutory_trial_balance_id: string;
+  as_of_date: string;
+  management_total_debit_try?: number;
+  management_total_credit_try?: number;
+  statutory_total_debit_try?: number;
+  statutory_total_credit_try?: number;
+  management_ebitda_try?: number;
+  statutory_690_ebt_try?: number;
+  ebitda_to_690_bridge_json?: Json;
+  matched_group_count?: number;
+  discrepancy_group_count?: number;
+  created_by?: string | null;
+  created_at?: string;
+}
+
 export interface UsersRow {
   id: string;
   username: string;
@@ -1299,6 +3488,7 @@ export interface UsersRow {
   locked_until: string | null;
   created_at: string;
   updated_at: string;
+  must_change_password: boolean;
 }
 
 export interface UsersInsert {
@@ -1312,6 +3502,7 @@ export interface UsersInsert {
   locked_until?: string | null;
   created_at?: string;
   updated_at?: string;
+  must_change_password?: boolean;
 }
 
 export interface Database {
@@ -1319,35 +3510,93 @@ export interface Database {
     Tables: {
       action_items: { Row: ActionItemsRow; Insert: ActionItemsInsert };
       ai_response_snapshots: { Row: AiResponseSnapshotsRow; Insert: AiResponseSnapshotsInsert };
+      alert_escalation_rules: { Row: AlertEscalationRulesRow; Insert: AlertEscalationRulesInsert };
+      approval_governance_settings: { Row: ApprovalGovernanceSettingsRow; Insert: ApprovalGovernanceSettingsInsert };
+      approval_rules: { Row: ApprovalRulesRow; Insert: ApprovalRulesInsert };
+      approval_steps: { Row: ApprovalStepsRow; Insert: ApprovalStepsInsert };
+      approvals: { Row: ApprovalsRow; Insert: ApprovalsInsert };
+      assistant_conversations: { Row: AssistantConversationsRow; Insert: AssistantConversationsInsert };
+      attachments: { Row: AttachmentsRow; Insert: AttachmentsInsert };
       audit_logs: { Row: AuditLogsRow; Insert: AuditLogsInsert };
+      background_jobs: { Row: BackgroundJobsRow; Insert: BackgroundJobsInsert };
+      bank_accounts: { Row: BankAccountsRow; Insert: BankAccountsInsert };
+      bank_transaction_match_candidates: { Row: BankTransactionMatchCandidatesRow; Insert: BankTransactionMatchCandidatesInsert };
+      bank_transactions: { Row: BankTransactionsRow; Insert: BankTransactionsInsert };
+      budget_lines: { Row: BudgetLinesRow; Insert: BudgetLinesInsert };
+      budgets: { Row: BudgetsRow; Insert: BudgetsInsert };
       capacity_models: { Row: CapacityModelsRow; Insert: CapacityModelsInsert };
       cash_accounts: { Row: CashAccountsRow; Insert: CashAccountsInsert };
       cashflow_lines: { Row: CashflowLinesRow; Insert: CashflowLinesInsert };
       cashflow_months: { Row: CashflowMonthsRow; Insert: CashflowMonthsInsert };
       cashflow_snapshots: { Row: CashflowSnapshotsRow; Insert: CashflowSnapshotsInsert };
       categories: { Row: CategoriesRow; Insert: CategoriesInsert };
+      check_bordros: { Row: CheckBordrosRow; Insert: CheckBordrosInsert };
       check_events: { Row: CheckEventsRow; Insert: CheckEventsInsert };
       checks: { Row: ChecksRow; Insert: ChecksInsert };
+      collateral_records: { Row: CollateralRecordsRow; Insert: CollateralRecordsInsert };
+      control_alerts: { Row: ControlAlertsRow; Insert: ControlAlertsInsert };
+      cost_allocation_rules: { Row: CostAllocationRulesRow; Insert: CostAllocationRulesInsert };
       cost_breakdown_lines: { Row: CostBreakdownLinesRow; Insert: CostBreakdownLinesInsert };
+      cost_centers: { Row: CostCentersRow; Insert: CostCentersInsert };
+      cost_model_items: { Row: CostModelItemsRow; Insert: CostModelItemsInsert };
       cost_models: { Row: CostModelsRow; Insert: CostModelsInsert };
+      counterparty_profiles: { Row: CounterpartyProfilesRow; Insert: CounterpartyProfilesInsert };
+      covenant_records: { Row: CovenantRecordsRow; Insert: CovenantRecordsInsert };
+      credit_facilities: { Row: CreditFacilitiesRow; Insert: CreditFacilitiesInsert };
+      departments: { Row: DepartmentsRow; Insert: DepartmentsInsert };
+      document_links: { Row: DocumentLinksRow; Insert: DocumentLinksInsert };
+      documents: { Row: DocumentsRow; Insert: DocumentsInsert };
       external_assumptions: { Row: ExternalAssumptionsRow; Insert: ExternalAssumptionsInsert };
+      facility_movements: { Row: FacilityMovementsRow; Insert: FacilityMovementsInsert };
       finance_cost_allocations: { Row: FinanceCostAllocationsRow; Insert: FinanceCostAllocationsInsert };
+      forecast_lines: { Row: ForecastLinesRow; Insert: ForecastLinesInsert };
+      forecast_snapshot_13w_lines: { Row: ForecastSnapshot13wLinesRow; Insert: ForecastSnapshot13wLinesInsert };
+      forecast_snapshots_13w: { Row: ForecastSnapshots13wRow; Insert: ForecastSnapshots13wInsert };
+      forecasts: { Row: ForecastsRow; Insert: ForecastsInsert };
+      fx_positions: { Row: FxPositionsRow; Insert: FxPositionsInsert };
+      fx_rate_snapshots: { Row: FxRateSnapshotsRow; Insert: FxRateSnapshotsInsert };
+      iban_change_events: { Row: IbanChangeEventsRow; Insert: IbanChangeEventsInsert };
+      ibans: { Row: IbansRow; Insert: IbansInsert };
+      import_external_keys: { Row: ImportExternalKeysRow; Insert: ImportExternalKeysInsert };
       import_rows: { Row: ImportRowsRow; Insert: ImportRowsInsert };
+      integration_account_mappings: { Row: IntegrationAccountMappingsRow; Insert: IntegrationAccountMappingsInsert };
+      integration_connections: { Row: IntegrationConnectionsRow; Insert: IntegrationConnectionsInsert };
+      integration_entity_links: { Row: IntegrationEntityLinksRow; Insert: IntegrationEntityLinksInsert };
+      integration_raw_payloads: { Row: IntegrationRawPayloadsRow; Insert: IntegrationRawPayloadsInsert };
+      integration_staged_parties: { Row: IntegrationStagedPartiesRow; Insert: IntegrationStagedPartiesInsert };
+      integration_sync_runs: { Row: IntegrationSyncRunsRow; Insert: IntegrationSyncRunsInsert };
+      invoice_allocations: { Row: InvoiceAllocationsRow; Insert: InvoiceAllocationsInsert };
+      invoice_lines: { Row: InvoiceLinesRow; Insert: InvoiceLinesInsert };
+      invoice_reversals: { Row: InvoiceReversalsRow; Insert: InvoiceReversalsInsert };
+      invoices: { Row: InvoicesRow; Insert: InvoicesInsert };
       loan_installments: { Row: LoanInstallmentsRow; Insert: LoanInstallmentsInsert };
       loans: { Row: LoansRow; Insert: LoansInsert };
       machine_assets: { Row: MachineAssetsRow; Insert: MachineAssetsInsert };
       machine_minute_allocations: { Row: MachineMinuteAllocationsRow; Insert: MachineMinuteAllocationsInsert };
       machine_roi_snapshots: { Row: MachineRoiSnapshotsRow; Insert: MachineRoiSnapshotsInsert };
+      management_accounts: { Row: ManagementAccountsRow; Insert: ManagementAccountsInsert };
+      management_journal_entries: { Row: ManagementJournalEntriesRow; Insert: ManagementJournalEntriesInsert };
+      management_journal_lines: { Row: ManagementJournalLinesRow; Insert: ManagementJournalLinesInsert };
       mapping_reviews: { Row: MappingReviewsRow; Insert: MappingReviewsInsert };
       metric_snapshots: { Row: MetricSnapshotsRow; Insert: MetricSnapshotsInsert };
+      optimization_recommendations: { Row: OptimizationRecommendationsRow; Insert: OptimizationRecommendationsInsert };
+      optimization_runs: { Row: OptimizationRunsRow; Insert: OptimizationRunsInsert };
+      orders: { Row: OrdersRow; Insert: OrdersInsert };
       part_profitability_runs: { Row: PartProfitabilityRunsRow; Insert: PartProfitabilityRunsInsert };
       parties: { Row: PartiesRow; Insert: PartiesInsert };
       payment_instances: { Row: PaymentInstancesRow; Insert: PaymentInstancesInsert };
+      payment_run_items: { Row: PaymentRunItemsRow; Insert: PaymentRunItemsInsert };
+      payment_runs: { Row: PaymentRunsRow; Insert: PaymentRunsInsert };
       payments: { Row: PaymentsRow; Insert: PaymentsInsert };
       production_parts: { Row: ProductionPartsRow; Insert: ProductionPartsInsert };
+      products: { Row: ProductsRow; Insert: ProductsInsert };
+      projects: { Row: ProjectsRow; Insert: ProjectsInsert };
+      promise_to_pay: { Row: PromiseToPayRow; Insert: PromiseToPayInsert };
+      reconciliation_signoffs: { Row: ReconciliationSignoffsRow; Insert: ReconciliationSignoffsInsert };
       reminder_deliveries: { Row: ReminderDeliveriesRow; Insert: ReminderDeliveriesInsert };
       reminders: { Row: RemindersRow; Insert: RemindersInsert };
       reports: { Row: ReportsRow; Insert: ReportsInsert };
+      saved_views: { Row: SavedViewsRow; Insert: SavedViewsInsert };
       scenario_assumptions: { Row: ScenarioAssumptionsRow; Insert: ScenarioAssumptionsInsert };
       scenario_comparisons: { Row: ScenarioComparisonsRow; Insert: ScenarioComparisonsInsert };
       scenario_run_lines: { Row: ScenarioRunLinesRow; Insert: ScenarioRunLinesInsert };
@@ -1359,6 +3608,11 @@ export interface Database {
       source_cells: { Row: SourceCellsRow; Insert: SourceCellsInsert };
       source_sheets: { Row: SourceSheetsRow; Insert: SourceSheetsInsert };
       source_workbooks: { Row: SourceWorkbooksRow; Insert: SourceWorkbooksInsert };
+      statutory_trial_balance_lines: { Row: StatutoryTrialBalanceLinesRow; Insert: StatutoryTrialBalanceLinesInsert };
+      statutory_trial_balances: { Row: StatutoryTrialBalancesRow; Insert: StatutoryTrialBalancesInsert };
+      treasury_policies: { Row: TreasuryPoliciesRow; Insert: TreasuryPoliciesInsert };
+      trial_balance_reconciliation_items: { Row: TrialBalanceReconciliationItemsRow; Insert: TrialBalanceReconciliationItemsInsert };
+      trial_balance_reconciliation_runs: { Row: TrialBalanceReconciliationRunsRow; Insert: TrialBalanceReconciliationRunsInsert };
       users: { Row: UsersRow; Insert: UsersInsert };
     };
   };

@@ -406,7 +406,7 @@ export async function buildAutoSeeded13WeekForecast(
        and not exists (
          select 1
          from public.checks c2
-         where c2.settled_invoice_id = v.id
+         where coalesce(c2.settled_invoice_id, c2.linked_invoice_id) = v.id
            and c2.archived_at is null
            and c2.status <> 'cancelled'
        )
@@ -675,7 +675,7 @@ export async function buildAutoSeeded13WeekForecast(
        and not exists (
          select 1
          from public.checks c2
-         where c2.settled_invoice_id = v.id
+         where coalesce(c2.settled_invoice_id, c2.linked_invoice_id) = v.id
            and c2.archived_at is null
            and c2.status <> 'cancelled'
        )
@@ -906,7 +906,7 @@ export async function buildAutoSeeded13WeekForecast(
       `select
          to_char(issue_date, 'YYYY-MM') as tax_period,
          coalesce(
-           sum(coalesce(tax_amount, 0) - coalesce(withheld_vat_amount, 0))
+           sum(coalesce(tax_amount, 0) - coalesce(vat_withholding_amount, 0))
              filter (where direction = 'sales' and status <> 'cancelled'),
            0
          )::numeric(14,2) as sales_vat,
@@ -916,7 +916,7 @@ export async function buildAutoSeeded13WeekForecast(
            0
          )::numeric(14,2) as purchase_vat,
          coalesce(
-           sum(coalesce(withheld_vat_amount, 0))
+           sum(coalesce(vat_withholding_amount, 0))
              filter (where direction = 'purchase' and status <> 'cancelled'),
            0
          )::numeric(14,2) as withheld_vat

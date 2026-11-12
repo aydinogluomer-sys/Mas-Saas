@@ -495,4 +495,61 @@ describe.runIf(hasDisposableDb || requireDisposableDb)(
     expect(wf.identityBalanced).toBe(true);
     expect(wf.identityDiff).toBe(0);
   });
+
+  it("4. KDV_1/KDV_2 tevkifatı (vat_withholding_amount) ve ciro edilmiş çek (linked_invoice_id) çift sayım engeli çalışır", async () => {
+    const client = await pool.connect();
+    try {
+      await client.query("begin");
+      // Şubat 2026 alış faturası: 100.000 net + 20.000 KDV, 10.000 KDV tevkifatı -> KDV_2 çıkışı Mart 28 (2026-03-28) haftasında 10.000 TL
+      await client.query(
+        `insert into public.invoices (
+           direction, invoice_no, party_id, issue_date, due_date, currency,
+           net_amount, tax_amount, gross_amount, vat_withholding_amount, payable_amount, status
+         )
+         values ('purchase', 'F1-TEVKIFAT-01', $1, '2026-02-15', '2026-04-10', 'TRY',
+                 100000.00, 20000.00, 120000.00, 10000.00, 110000.00, 'open')`,
+        [supplierId],
+      );
+
+      // Şubat 2026 satış faturası: 300.000 net + 60.000 KDV -> KDV_1 = 60.000 - (20.000) = 40.000 TL
+      const salesInvRes = await client.query<{ id: string }>(
+        `insert into public.invoices (
+           direction, invoice_no, party_id, issue_date, due_date, currency,
+           net_amount, tax_amount, gross_amount, status
+         )
+         values ('sales', 'F1-LINKED-CHK-01', $1, '2026-02-20', '2026-03-18', 'TRY',
+                 300000.00, 60000.00, 360000.00, 'open')
+         returning id::text`,
+        [customerAId],
+      );
+      const linkedSalesInvId = salesInvRes.rows[0].id;
+
+      // Bu satış faturası yalnızca linked_invoice_id üzerinden portföydeki çekle kapatılmışsa AR'da ikinci kez sayılmamalı
+      await client.query(
+        `insert into public.checks (
+           direction, serial_no, payer_party_id, maturity_date, amount, currency, status, linked_invoice_id
+         )
+         values ('inflow', 'CHK-F1-LINK-01', $1, '2026-03-18', 360000.00, 'TRY', 'in_portfolio', $2)`,
+        [customerAId, linkedSalesInvId],
+      );
+      await client.query("commit");
+    } catch (e) {
+      await client.query("rollback");
+      throw e;
+    } finally {
+      client.release();
+    }
+
+    const seeded = await buildAutoSeeded13WeekForecast(pool, { asOfDate: "2026-03-02" });
+    const kdv2Items = seeded.weeks
+      .flatMap((w) => w.lines)
+      .filter((i) => i.sourceClassification === "statutory_tax" && i.label.includes("KDV-2"));
+    expect(kdv2Items.reduce((s, i) => s + i.amount, 0)).toBe(10000);
+
+    // F1-LINKED-CHK-01 faturası fatura alacağı olarak tekrar sayılmamalı (yalnız çekten gelmeli)
+    const duplicateAr = seeded.weeks
+      .flatMap((w) => w.lines)
+      .filter((i) => i.sourceEntityTable === "invoices" && i.label.includes("F1-LINKED-CHK-01"));
+    expect(duplicateAr).toHaveLength(0);
+  });
 });

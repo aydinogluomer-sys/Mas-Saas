@@ -468,6 +468,8 @@ describe.runIf(hasDisposableDb || requireDisposableDb)(
       });
 
       expect(radar.managementEbitda).toBe(1_750_000);
+      expect(radar.totalEquity).toBe(1_600_000);
+      expect(radar.debtToEquity).toBe(1.5938);
       // Brüt borç = 1.550.000 (kalan kredi anaparası) + 1.000.000 (rotatif kullanım) = 2.550.000 TL
       // Net borç = 2.550.000 - 800.000 (kasa) = 1.750.000 TL => Net Borç / EBITDA = 1.00x
       expect(radar.netDebt).toBe(1_750_000);

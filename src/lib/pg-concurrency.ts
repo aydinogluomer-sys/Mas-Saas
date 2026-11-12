@@ -1,14 +1,14 @@
 import type { Pool, PoolClient } from "pg";
 
 /** Anything that can run a statement. A `Pool` hands out a connection per call; a `PoolClient` is one. */
-export type Queryable = Pool | PoolClient;
+export type Queryable = Pick<Pool, "query"> | Pick<PoolClient, "query">;
 
 /**
  * A `Pool` exposes counters a `PoolClient` does not. Checking for one is how this file tells the
  * two apart at runtime without asking callers to declare which they passed.
  */
 export function isPool(db: Queryable): db is Pool {
-  return "totalCount" in db;
+  return typeof db === "object" && db !== null && "totalCount" in db;
 }
 
 type Awaitables = readonly (() => Promise<unknown>)[];

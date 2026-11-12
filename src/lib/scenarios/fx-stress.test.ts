@@ -272,6 +272,8 @@ describe("SA-8 — TCMB Kur Şoku, Doğal Hedge ve Kovenant Kırılma Stres Moto
       netDebt: -1_000_000,
       managementEbitda: 2_000_000,
       netDebtToEbitda: -0.5,
+      totalEquity: 3_000_000,
+      debtToEquity: 0,
       dscrWindows: {
         trailing3m: {
           horizon: "trailing_3m",

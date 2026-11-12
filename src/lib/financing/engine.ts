@@ -363,7 +363,7 @@ export async function loadChecks(pool: Pool, options: { limit?: number; offset?:
       left join public.parties endp on endp.id=c.endorsed_to_party_id
       left join public.cash_accounts colca on colca.id=c.collection_bank_account_id
       left join public.credit_facilities cf on cf.id=c.collateral_facility_id
-      left join public.invoices inv on inv.id=c.settled_invoice_id
+      left join public.invoices inv on inv.id=coalesce(c.settled_invoice_id, c.linked_invoice_id)
       left join public.check_bordros cb on cb.id=c.last_bordro_id
       left join public.import_rows ir on ir.id=c.source_row_id
       where c.archived_at is null

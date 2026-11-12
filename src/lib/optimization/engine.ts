@@ -137,7 +137,7 @@ async function loadPaymentCandidates(
            and not exists (
              select 1
              from public.checks c2
-             where c2.linked_invoice_id = inv.id
+             where coalesce(c2.settled_invoice_id, c2.linked_invoice_id) = inv.id
                and c2.archived_at is null
                and c2.status <> 'cancelled'
            )

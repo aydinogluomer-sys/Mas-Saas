@@ -192,20 +192,31 @@ async function seedLI(pool: Pool, status: string, loanId: string): Promise<strin
 /* ── accept-path UPDATE builders: fix up dependent fields so ONLY the transition guard
    is under test, not an unrelated constraint (paid_at/cancelled_at requirements) ── */
 function acceptSql(table: string, to: string): { sql: string; params: (id: string) => unknown[] } {
+  const hasPaidAmount = table === "payment_instances" || table === "loan_installments";
+  const hasPaidAt = table === "payment_instances" || table === "loan_installments";
   if (to === "paid") {
     return {
-      sql: `update ${table} set status='paid', paid_at=now()${table === "payment_instances" ? ", paid_amount=100" : ""} where id=$1`,
+      sql: `update ${table} set status='paid', paid_at=now()${hasPaidAmount ? ", paid_amount=100" : ""} where id=$1`,
       params: (id) => [id],
     };
   }
-  if (to === "unpaid") {
+  if (to === "partial") {
     return {
-      sql: `update ${table} set status='unpaid', paid_at=null${table === "payment_instances" ? ", paid_amount=null" : ""} where id=$1`,
+      sql: `update ${table} set status='partial', paid_at=now()${hasPaidAmount ? ", paid_amount=50" : ""} where id=$1`,
       params: (id) => [id],
+    };
+  }
+  if (to === "unpaid" || to === "planned" || to === "late") {
+    return {
+      sql: `update ${table} set status=$2${hasPaidAt ? ", paid_at=null" : ""}${hasPaidAmount ? ", paid_amount=null" : ""} where id=$1`,
+      params: (id) => [id, to],
     };
   }
   if (to === "cancelled") {
-    return { sql: `update ${table} set status='cancelled', cancelled_at=now(), cancel_reason='ok' where id=$1`, params: (id) => [id] };
+    return {
+      sql: `update ${table} set status='cancelled', cancelled_at=now(), cancel_reason='ok'${hasPaidAt ? ", paid_at=null" : ""}${hasPaidAmount ? ", paid_amount=null" : ""} where id=$1`,
+      params: (id) => [id],
+    };
   }
   return { sql: `update ${table} set status=$2 where id=$1`, params: (id) => [id, to] };
 }
@@ -215,8 +226,8 @@ const PI_ALLOWED = new Set([
   "unpaid|paid", "planned|paid", "late|paid", "partial|paid",
   "unpaid|partial", "planned|partial", "late|partial", // 0033: markInstancePartial's matching gap
   "unpaid|late", "planned|late", // 0099: overdue sweep transitions
-  "paid|unpaid",
-  "unpaid|cancelled", "planned|cancelled", "late|cancelled",
+  "paid|unpaid", "partial|unpaid",
+  "unpaid|cancelled", "planned|cancelled", "late|cancelled", "partial|cancelled",
 ]);
 const CHECK_STATUSES = [
   "planned",
@@ -241,6 +252,9 @@ const CHECK_ALLOWED = new Set([
   "planned|bounced",
   "planned|returned",
   "planned|cancelled",
+  "unknown|in_portfolio",
+  "unknown|issued_to_vendor",
+  "unknown|cancelled",
   "in_portfolio|endorsed_to_vendor",
   "in_portfolio|in_bank_collection",
   "in_portfolio|in_bank_collateral",
@@ -273,8 +287,11 @@ const CHECK_ALLOWED = new Set([
 ]);
 const LI_STATUSES = ["planned", "unpaid", "partial", "paid", "late", "cancelled"];
 const LI_ALLOWED = new Set([
-  "planned|paid", "late|paid", "planned|late", // 0034: settlement outcomes 0027 never allowed
-  "planned|cancelled", "late|cancelled",
+  "planned|paid", "late|paid", "unpaid|paid", "partial|paid",
+  "planned|partial", "late|partial", "unpaid|partial",
+  "planned|late", "unpaid|late",
+  "unpaid|planned", "partial|planned", "paid|planned",
+  "planned|cancelled", "late|cancelled", "unpaid|cancelled", "partial|cancelled",
 ]);
 
 // Harmless self-assignment per table used to probe the same-status no-op path — proves the

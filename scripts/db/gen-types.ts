@@ -3,12 +3,18 @@
 // so generation reads information_schema of the migration-verified database).
 import { Client } from "pg";
 import { writeFileSync } from "node:fs";
+import { databaseNameFromUrl } from "./owner-url";
+import { resolveLocalOwnerUrl } from "./pg-local-admin";
 
 const TS: Record<string, string> = {
-  uuid: "string", text: "string", date: "string", timestamptz: "string",
-  "timestamp with time zone": "string", int4: "number", integer: "number",
-  numeric: "number", bool: "boolean", boolean: "boolean", jsonb: "Json",
-  ARRAY: "string[]", _text: "string[]",
+  uuid: "string", text: "string", varchar: "string", bpchar: "string",
+  date: "string", timestamptz: "string", timestamp: "string",
+  "timestamp with time zone": "string", "timestamp without time zone": "string",
+  int2: "number", smallint: "number", int4: "number", integer: "number",
+  int8: "number", bigint: "number", numeric: "number", decimal: "number",
+  bool: "boolean", boolean: "boolean", jsonb: "Json", json: "Json",
+  inet: "string", bytea: "Buffer",
+  ARRAY: "string[]", _text: "string[]", _uuid: "string[]",
 };
 
 function pascal(s: string) {
@@ -16,9 +22,11 @@ function pascal(s: string) {
 }
 
 async function main() {
-  const c = new Client({
-    host: "127.0.0.1", user: "postgres", password: "postgres", database: "mas_radar_verify",
-  });
+  const targetDb =
+    databaseNameFromUrl(process.env.MIGRATION_DATABASE_URL ?? process.env.DATABASE_URL ?? "")
+    || "mas_radar_dev";
+  const connectionString = resolveLocalOwnerUrl(targetDb);
+  const c = new Client({ connectionString });
   await c.connect();
   const tables = await c.query(
     `select tablename from pg_tables where schemaname='public' order by tablename`,

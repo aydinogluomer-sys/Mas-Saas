@@ -8,6 +8,7 @@ import type { Pool, PoolClient } from "pg";
 import { intOrNull, moneyOrNull } from "@/lib/money";
 import { istanbulDateISO } from "@/lib/reports/rules";
 import type { CurrencyAmountBucket } from "@/lib/money-format";
+import { gather } from "@/lib/pg-concurrency";
 
 type DbQueryable = Pick<Pool, "query"> | Pick<PoolClient, "query">;
 
@@ -265,11 +266,11 @@ export async function loadCanonicalKpis(
   db: DbQueryable,
   todayISO = istanbulDateISO(),
 ): Promise<CanonicalKpiSnapshot> {
-  const [treasuryCash, openReceivables, openPayables, outflow7d] = await Promise.all([
-    loadCanonicalTreasuryCashKpi(db),
-    loadCanonicalReceivablesKpi(db),
-    loadCanonicalPayablesKpi(db),
-    loadCanonicalOutflow7dKpi(db, todayISO),
+  const [treasuryCash, openReceivables, openPayables, outflow7d] = await gather(db, [
+    () => loadCanonicalTreasuryCashKpi(db),
+    () => loadCanonicalReceivablesKpi(db),
+    () => loadCanonicalPayablesKpi(db),
+    () => loadCanonicalOutflow7dKpi(db, todayISO),
   ]);
   return {
     todayISO,

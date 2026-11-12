@@ -7,7 +7,8 @@ import { readFileSync, readdirSync, unlinkSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { Pool } from "pg";
 import { MIGRATIONS_DIR, validateFileSet } from "./migration-lib";
-import { createBackupAdapter } from "./backup-adapter";
+import { createBackupAdapter, withPgRuntimeConfig } from "./backup-adapter";
+import { readEnvLocal } from "./app-url";
 import { createDisposableLocalDb, dropDisposableLocalDb, psqlLocalFile, psqlLocalSql, resolveLocalOwnerUrl, restoreIntoDisposableLocalDb } from "./pg-local-admin";
 import {
   LEGACY_ANOMALY_INSTANCE_ID,
@@ -419,7 +420,7 @@ async function testLegacyCompleteAndIdempotency(): Promise<void> {
     //                          delivered alerting that silently never escalates.
     const DECLARED_POPULATING_MIGRATIONS = new Set([
       "approval_rules", "approvals", "treasury_policies", "cost_allocation_rules",
-      "alert_escalation_rules",
+      "alert_escalation_rules", "management_accounts", "approval_governance_settings",
     ]);
     const undeclaredPopulated = newTables.filter(
       (k) => postCounts[k] !== 0 && !DECLARED_POPULATING_MIGRATIONS.has(k),
@@ -545,17 +546,17 @@ async function testChecksumDrift(): Promise<void> {
   dropDb(db);
 }
 
-// --- Test 6: LEDGER_EMPTY_RECOVERY smoke test (dev-reset.sh'ın ham sırasını manuel tekrarla) ---
+// --- Test 6: LEDGER_EMPTY_RECOVERY smoke test (dev-reset.sh'ın ham 0001..0020 + seed sırasını manuel tekrarla) ---
 async function testLedgerEmptyRecovery(): Promise<void> {
   const db = "mas_radar_reset_smoke_test";
   dropDb(db);
   createDb(db);
 
   psqlFile(db, path.join(ROOT, "scripts", "db", "local-bootstrap.sql"));
-  const migrationFiles = readdirSync(MIGRATIONS_DIR)
-    .filter((f) => f.endsWith(".sql"))
+  const legacyMigrationFiles = readdirSync(MIGRATIONS_DIR)
+    .filter((f) => f.endsWith(".sql") && f <= "0020_z")
     .sort();
-  for (const f of migrationFiles) psqlFile(db, path.join(MIGRATIONS_DIR, f));
+  for (const f of legacyMigrationFiles) psqlFile(db, path.join(MIGRATIONS_DIR, f));
   psqlFile(db, path.join(ROOT, "supabase", "seed.sql"));
 
   const countBefore = psqlSql(db, "select count(*) from public.schema_migrations;").trim();
@@ -576,8 +577,8 @@ async function testLedgerEmptyRecovery(): Promise<void> {
   try {
     const rows = await pool.query<{ n: number }>("select count(*)::int as n from schema_migrations");
     record(
-      `LEDGER_EMPTY_RECOVERY smoke: ledger ${migrationFiles.length} satır (canonical dosya sayısı)`,
-      rows.rows[0]?.n === migrationFiles.length,
+      `LEDGER_EMPTY_RECOVERY smoke: ledger ${CANONICAL_MIGRATION_COUNT} satır (canonical dosya sayısı)`,
+      rows.rows[0]?.n === CANONICAL_MIGRATION_COUNT,
       `got ${rows.rows[0]?.n}`,
     );
   } finally {
@@ -594,16 +595,17 @@ async function testClusterIdentity(): Promise<void> {
   createDb(db);
   try {
     const realIdentifier = psqlSql(db, "select system_identifier from pg_control_system();").trim();
+    const adapterEnv = withPgRuntimeConfig(process.env, readEnvLocal());
 
     try {
-      createBackupAdapter({ ownerUrl: dbUrl(db) }).verifyTarget(db, realIdentifier);
+      createBackupAdapter({ ownerUrl: dbUrl(db), env: adapterEnv }).verifyTarget(db, realIdentifier);
       record("Cluster-identity: doğru identifier ile geçer", true);
     } catch (err) {
       record("Cluster-identity: doğru identifier ile geçer", false, (err as Error).message.slice(0, 200));
     }
 
     try {
-      createBackupAdapter({ ownerUrl: dbUrl(db) }).verifyTarget(db, "0000000000000000000");
+      createBackupAdapter({ ownerUrl: dbUrl(db), env: adapterEnv }).verifyTarget(db, "0000000000000000000");
       record("Cluster-identity: yanlış identifier ile reddedilir", false, "beklenmedik şekilde geçti");
     } catch {
       record("Cluster-identity: yanlış identifier ile reddedilir", true);
