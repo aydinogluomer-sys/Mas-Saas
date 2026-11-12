@@ -8,8 +8,10 @@ import { DomainError } from "@/lib/domain-error";
 import { createManagementSubAccount } from "@/lib/ledger/accounts";
 import {
   approveDraftManagementEntry,
+  discardDraftManagementEntry,
   postManualManagementAdjustment,
   rebuildOrSyncManagementLedger,
+  revalueProvisionalFxEntries,
   reverseManagementEntry,
 } from "@/lib/ledger/posting-engine";
 import { formObject } from "@/lib/validation";
@@ -40,6 +42,35 @@ export async function syncManagementLedgerAction(): Promise<void> {
   }
   revalidatePath(BASE);
   redirect(`${BASE}?result=defter-senkronlandi`);
+}
+
+export async function revalueProvisionalFxAction(): Promise<void> {
+  const session = await requireActionPermission("management_journal_entries", "update", BASE);
+  let revaluedCount = 0;
+  try {
+    const out = await revalueProvisionalFxEntries(getPool(), session.id);
+    revaluedCount = out.revaluedCount;
+  } catch (e) {
+    domainRedirect(e);
+  }
+  revalidatePath(BASE);
+  redirect(`${BASE}?result=${encodeURIComponent(`kur-degerlendi-${revaluedCount}`)}`);
+}
+
+export async function discardDraftEntryAction(formData: FormData): Promise<void> {
+  const session = await requireActionPermission("management_journal_entries", "delete", BASE);
+  const f = formObject(formData);
+  const entryId = strField(f.entryId);
+  if (!entryId) {
+    redirect(`${BASE}?error=${encodeURIComponent("Silinecek taslak fiş kimliği gerekli.")}`);
+  }
+  try {
+    await discardDraftManagementEntry(getPool(), entryId, session.id);
+  } catch (e) {
+    domainRedirect(e);
+  }
+  revalidatePath(BASE);
+  redirect(`${BASE}?result=taslak-fis-silindi`);
 }
 
 export async function createManagementSubAccountAction(formData: FormData): Promise<void> {

@@ -16,6 +16,11 @@ import type { Pool, PoolClient } from "pg";
 import { z } from "zod";
 import { audit } from "@/lib/audit";
 import { DomainError } from "@/lib/domain-error";
+import { isMissingSchemaError } from "@/lib/ledger/accounts";
+import {
+  safeReverseJournalForSourceWithClient,
+  safeSyncDomainEventWithClient,
+} from "@/lib/ledger/posting-engine";
 import { intOrNull, moneyOrNull, rateOrNull } from "@/lib/money";
 import { parseOrThrow } from "@/lib/validation";
 import { COLLECTION_BUCKETS, computeDPO, computeDSO, openAmount, planAllocation, type AgeingSummary, type AllocatableInvoice } from "./rules";
@@ -78,9 +83,74 @@ async function loadSourceCurrency(
 /* ── write side ───────────────────────────────────────────────────────────────────────── */
 
 /**
+ * Automatically transitions open/broken `promise_to_pay` commitments to `'kept'`
+ * whenever any of `invoiceIds` reaches `'paid'` status.
+ */
+export async function resolvePromisesForPaidInvoicesWithClient(
+  client: PoolClient,
+  invoiceIds: string[],
+  actorId: string | null,
+): Promise<number> {
+  if (invoiceIds.length === 0) return 0;
+  await client.query("savepoint ptp_auto_resolve_sp");
+  try {
+    const paidRes = await client.query<{ id: string }>(
+      `select id::text
+         from public.invoices
+        where id = any($1::uuid[])
+          and status = 'paid'`,
+      [invoiceIds],
+    );
+    const paidIds = paidRes.rows.map((r) => r.id);
+    if (paidIds.length === 0) {
+      await client.query("release savepoint ptp_auto_resolve_sp");
+      return 0;
+    }
+
+    const upd = await client.query<{ id: string; status_before: string }>(
+      `with prior as (
+         select id, status as status_before
+           from public.promise_to_pay
+          where invoice_id = any($1::uuid[])
+            and status in ('pending', 'broken')
+            for update
+       )
+       update public.promise_to_pay p
+          set status = 'kept',
+              resolved_at = now(),
+              resolved_by = $2,
+              resolution_source = 'auto_detection'
+         from prior
+        where p.id = prior.id
+       returning p.id::text as id, prior.status_before`,
+      [paidIds, actorId],
+    );
+
+    for (const row of upd.rows) {
+      await audit(client, {
+        actor: actorId,
+        action: "auto_keep_promise_on_invoice_paid",
+        entityTable: "promise_to_pay",
+        entityId: row.id,
+        before: { status: row.status_before },
+        after: { status: "kept", resolution_source: "auto_detection" },
+      });
+    }
+
+    await client.query("release savepoint ptp_auto_resolve_sp");
+    return upd.rowCount ?? 0;
+  } catch (err) {
+    await client.query("rollback to savepoint ptp_auto_resolve_sp");
+    await client.query("release savepoint ptp_auto_resolve_sp");
+    if (isMissingSchemaError(err)) return 0;
+    throw err;
+  }
+}
+
+/**
  * Allocate money to one invoice.
  *
- * The ceiling is checked here for a readable message AND enforced by 0048's trigger. Both, on
+ * The ceiling is checked here for a readable message AND enforced by 0048/0110's trigger. Both, on
  * purpose: this one can be bypassed by any other code path, the trigger cannot.
  *
  * Faz 44 (0099): Cross-currency allocations without FX settlement are rejected both here (with a
@@ -92,7 +162,7 @@ export async function allocateToInvoice(pool: Pool, raw: unknown, actorId: strin
   try {
     await client.query("begin");
     const inv = await client.query(
-      `select id, status, gross_amount, allocated_amount, direction, currency
+      `select id, status, gross_amount, payable_amount, allocated_amount, paid_amount, direction, currency
        from public.invoices where id=$1 for update`,
       [input.invoiceId]);
     if (inv.rowCount === 0) throw new DomainError("Fatura bulunamadı.");
@@ -107,11 +177,15 @@ export async function allocateToInvoice(pool: Pool, raw: unknown, actorId: strin
     }
 
     const gross = moneyOrNull(row.gross_amount) ?? 0;
-    const already = moneyOrNull(row.allocated_amount) ?? 0;
-    const free = openAmount(gross, already);
+    const ceiling = moneyOrNull(row.payable_amount) ?? gross;
+    const already = Math.max(
+      moneyOrNull(row.allocated_amount) ?? 0,
+      moneyOrNull(row.paid_amount) ?? 0,
+    );
+    const free = openAmount(ceiling, already);
     if (input.amount > free) {
       throw new DomainError(
-        `Bu faturaya en fazla ${free} TL dağıtılabilir (tutar ${gross}, dağıtılmış ${already}).`,
+        `Bu faturaya en fazla ${free} TL dağıtılabilir (tutar ${ceiling}, dağıtılmış ${already}).`,
       );
     }
 
@@ -122,12 +196,21 @@ export async function allocateToInvoice(pool: Pool, raw: unknown, actorId: strin
       [input.invoiceId, input.sourceTable, input.sourceId ?? null, input.amount,
        input.allocatedOn ?? null, input.notes ?? null, actorId]);
 
+    await resolvePromisesForPaidInvoicesWithClient(client, [input.invoiceId], actorId);
+    if (input.sourceTable === "bank_transactions" && input.sourceId) {
+      await safeSyncDomainEventWithClient(
+        client,
+        { kind: "bank_transaction", bankTransactionId: input.sourceId },
+        actorId,
+      );
+    }
+
     await audit(client, {
       actor: actorId, action: "allocate_to_invoice", entityTable: "invoice_allocations",
       entityId: ins.rows[0].id, before: null,
       after: {
         invoiceId: input.invoiceId, sourceTable: input.sourceTable, sourceId: input.sourceId ?? null,
-        amount: input.amount, allocatedBefore: already, invoiceGross: gross,
+        amount: input.amount, allocatedBefore: already, invoiceGross: gross, invoiceCeiling: ceiling,
       },
     });
     await client.query("commit");
@@ -146,29 +229,98 @@ export const allocateCollection = allocateToInvoice;
  * Reverse an allocation.
  *
  * Reversal, never deletion: an allocation that was made and undone is history worth keeping,
- * and 0048's trigger recomputes the invoice total from the surviving open rows.
+ * and 0048/0110's trigger recomputes the invoice total from the surviving open rows.
  */
 export async function reverseAllocation(pool: Pool, raw: unknown, actorId: string): Promise<void> {
   const input = parseOrThrow(reverseAllocationSchema, raw, "Dağıtım iptali");
   const client = await pool.connect();
   try {
     await client.query("begin");
-    const before = await client.query(
-      `select id, invoice_id, allocated_amount, reversed_at from public.invoice_allocations where id=$1 for update`,
+    const before = await client.query<{
+      id: string;
+      invoice_id: string;
+      source_table: string;
+      source_id: string | null;
+      allocated_amount: string;
+      reversed_at: string | null;
+    }>(
+      `select id::text, invoice_id::text, source_table, source_id::text, allocated_amount::text, reversed_at::text
+         from public.invoice_allocations
+        where id=$1
+        for update`,
       [input.allocationId]);
     if (before.rowCount === 0) throw new DomainError("Dağıtım kaydı bulunamadı.");
-    if (before.rows[0].reversed_at) throw new DomainError("Bu dağıtım zaten iptal edilmiş.");
+    const alloc = before.rows[0];
+    if (alloc.reversed_at) throw new DomainError("Bu dağıtım zaten iptal edilmiş.");
 
     await client.query(
       `update public.invoice_allocations
          set reversed_at=now(), reversed_by=$2, reversed_reason=$3 where id=$1`,
       [input.allocationId, actorId, input.reason]);
 
+    let unmatchedBankTxId: string | null = null;
+    if (alloc.source_table === "bank_transactions" && alloc.source_id) {
+      const remAlloc = await client.query<{ rem: number }>(
+        `select count(*)::int as rem
+           from public.invoice_allocations
+          where source_table = 'bank_transactions'
+            and source_id = $1::uuid
+            and reversed_at is null`,
+        [alloc.source_id],
+      );
+      if ((remAlloc.rows[0]?.rem ?? 0) === 0) {
+        const btRes = await client.query<{ status: string; matched_entity_table: string | null }>(
+          `select status, matched_entity_table
+             from public.bank_transactions
+            where id = $1::uuid
+            for update`,
+          [alloc.source_id],
+        );
+        const bt = btRes.rows[0];
+        if (bt) {
+          if (bt.status === "reconciled") {
+            await client.query(
+              `update public.bank_transactions
+                  set status = 'matched', reconciled_at = null
+                where id = $1::uuid`,
+              [alloc.source_id],
+            );
+          }
+          if (
+            ["matched", "reconciled"].includes(bt.status) &&
+            (!bt.matched_entity_table || bt.matched_entity_table === "invoices")
+          ) {
+            await client.query(
+              `update public.bank_transactions
+                  set status = 'unmatched',
+                      matched_entity_table = null,
+                      matched_entity_id = null,
+                      match_confidence = null,
+                      matched_at = null,
+                      settled_allocation_id = null,
+                      settled_at = null,
+                      settled_by = null
+                where id = $1::uuid`,
+              [alloc.source_id],
+            );
+            unmatchedBankTxId = alloc.source_id;
+          }
+        }
+        await safeReverseJournalForSourceWithClient(
+          client,
+          "bank_transaction",
+          alloc.source_id,
+          `Tahsisat iptali: ${input.reason}`,
+          actorId,
+        );
+      }
+    }
+
     await audit(client, {
       actor: actorId, action: "reverse_allocation", entityTable: "invoice_allocations",
       entityId: input.allocationId,
-      before: { amount: moneyOrNull(before.rows[0].allocated_amount), invoiceId: before.rows[0].invoice_id },
-      after: { reversed: true, reason: input.reason },
+      before: { amount: moneyOrNull(alloc.allocated_amount), invoiceId: alloc.invoice_id },
+      after: { reversed: true, reason: input.reason, unmatchedBankTxId },
     });
     await client.query("commit");
   } catch (e) {
@@ -234,6 +386,17 @@ export async function allocateBankTransaction(
         [line.invoiceId, input.transactionId, line.amount, actorId]);
       allocated += line.amount;
     }
+
+    await resolvePromisesForPaidInvoicesWithClient(
+      client,
+      input.lines.map((l) => l.invoiceId),
+      actorId,
+    );
+    await safeSyncDomainEventWithClient(
+      client,
+      { kind: "bank_transaction", bankTransactionId: input.transactionId },
+      actorId,
+    );
 
     await audit(client, {
       actor: actorId, action: "allocate_bank_transaction", entityTable: "bank_transactions",

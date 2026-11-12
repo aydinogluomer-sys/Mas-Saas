@@ -408,7 +408,15 @@ export async function buildAutoSeeded13WeekForecast(
          from public.checks c2
          where coalesce(c2.settled_invoice_id, c2.linked_invoice_id) = v.id
            and c2.archived_at is null
-           and c2.status <> 'cancelled'
+           and c2.status in ('planned', 'in_portfolio', 'in_bank_collection', 'in_bank_collateral', 'issued_to_vendor')
+           and not exists (
+             select 1
+             from public.invoice_allocations ia
+             where ia.invoice_id = v.id
+               and ia.source_table = 'checks'
+               and ia.source_id = c2.id
+               and ia.reversed_at is null
+           )
        )
      order by rcs.due_date nulls last, rcs.invoice_id`,
     [asOfDate, currency],
@@ -677,7 +685,15 @@ export async function buildAutoSeeded13WeekForecast(
          from public.checks c2
          where coalesce(c2.settled_invoice_id, c2.linked_invoice_id) = v.id
            and c2.archived_at is null
-           and c2.status <> 'cancelled'
+           and c2.status in ('planned', 'in_portfolio', 'in_bank_collection', 'in_bank_collateral', 'issued_to_vendor')
+           and not exists (
+             select 1
+             from public.invoice_allocations ia
+             where ia.invoice_id = v.id
+               and ia.source_table = 'checks'
+               and ia.source_id = c2.id
+               and ia.reversed_at is null
+           )
        )
      order by v.due_date, v.id`,
     [currency, snapshotWeekStart, horizonEnd],

@@ -4,7 +4,9 @@ import type { Pool, PoolClient } from "pg";
 import { z } from "zod";
 import { audit } from "@/lib/audit";
 import { DomainError } from "@/lib/domain-error";
+import { safeSyncDomainEventWithClient } from "@/lib/ledger/posting-engine";
 import { decimal, intOrNull, moneyOrNull, rateOrNull } from "@/lib/money";
+import { resolvePromisesForPaidInvoicesWithClient } from "@/lib/receivables/engine";
 import { parseOrThrow } from "@/lib/validation";
 import { cellsToRows, decodeRange, sha256, sheetCells, hashRow, type RowJson } from "@/lib/importers/row-utils";
 import {
@@ -347,7 +349,8 @@ async function loadMatchTargets(client: PoolClient, txnDate: string, windowDays 
       where li.status in ('planned','late') and l.archived_at is null
         and li.due_date between $1::date - $2::int and $1::date + $2::int
      union all
-     select 'invoices', inv.id::text, (inv.gross_amount - coalesce(inv.allocated_amount, 0)),
+     select 'invoices', inv.id::text,
+            greatest(0, coalesce(inv.payable_amount, inv.gross_amount) - greatest(coalesce(inv.paid_amount, 0), coalesce(inv.allocated_amount, 0))),
             to_char(coalesce(inv.due_date, inv.issue_date),'YYYY-MM-DD'),
             coalesce(pa.name || ' ' || inv.invoice_no, inv.invoice_no),
             case when inv.direction = 'sales' then 'inflow' else 'outflow' end as direction,
@@ -355,7 +358,7 @@ async function loadMatchTargets(client: PoolClient, txnDate: string, windowDays 
        from public.invoices inv
        join public.parties pa on pa.id = inv.party_id
       where inv.status in ('open','partial')
-        and inv.gross_amount > coalesce(inv.allocated_amount, 0)
+        and coalesce(inv.payable_amount, inv.gross_amount) > greatest(coalesce(inv.paid_amount, 0), coalesce(inv.allocated_amount, 0))
         and coalesce(inv.due_date, inv.issue_date) between $1::date - $2::int and $1::date + $2::int`,
     [txnDate, windowDays],
   );
@@ -503,11 +506,15 @@ export async function acceptMatch(pool: Pool, raw: unknown, actorId: string): Pr
         status: string;
         currency: string;
         gross_amount: string;
+        payable_amount: string | null;
+        paid_amount: string;
         allocated_amount: string;
         approval_status: string;
       }>(
         `select id::text, direction, invoice_no, status, currency,
-                gross_amount::text, coalesce(allocated_amount, 0)::text as allocated_amount,
+                gross_amount::text, payable_amount::text,
+                coalesce(paid_amount, 0)::text as paid_amount,
+                coalesce(allocated_amount, 0)::text as allocated_amount,
                 approval_status
            from public.invoices
           where id = $1
@@ -535,7 +542,11 @@ export async function acceptMatch(pool: Pool, raw: unknown, actorId: string): Pr
         );
       }
 
-      const openDec = decimal(inv.gross_amount).minus(decimal(inv.allocated_amount));
+      const ceilingDec = decimal(inv.payable_amount ?? inv.gross_amount);
+      const settledSoFarDec = decimal(inv.paid_amount).gt(decimal(inv.allocated_amount))
+        ? decimal(inv.paid_amount)
+        : decimal(inv.allocated_amount);
+      const openDec = ceilingDec.minus(settledSoFarDec);
       if (openDec.lte(0)) {
         throw new DomainError("CONFLICT", `Faturanın (${inv.invoice_no}) açık bakiyesi kalmamış.`);
       }
@@ -563,6 +574,9 @@ export async function acceptMatch(pool: Pool, raw: unknown, actorId: string): Pr
         [input.targetId],
       );
       targetFullySettled = invAfter.rows[0]?.status === "paid";
+      if (targetFullySettled) {
+        await resolvePromisesForPaidInvoicesWithClient(client, [input.targetId], actorId);
+      }
     } else if (input.targetTable === "payment_instances") {
       const piRes = await client.query<{
         id: string;
@@ -803,6 +817,20 @@ export async function acceptMatch(pool: Pool, raw: unknown, actorId: string): Pr
       }
     }
 
+    if (input.targetTable === "loan_installments") {
+      await safeSyncDomainEventWithClient(
+        client,
+        { kind: "loan_installment", installmentId: input.targetId },
+        actorId,
+      );
+    } else {
+      await safeSyncDomainEventWithClient(
+        client,
+        { kind: "bank_transaction", bankTransactionId: input.transactionId },
+        actorId,
+      );
+    }
+
     await audit(client, {
       actor: actorId, action: "accept_bank_match", entityTable: "bank_transactions",
       entityId: input.transactionId, before: txRow,
@@ -1022,7 +1050,7 @@ async function loadTargetDetailsMap(
             inv.id::text as target_id,
             pa.name as counterparty_name,
             ('Fatura ' || inv.invoice_no) as reference_label,
-            (inv.gross_amount - coalesce(inv.allocated_amount, 0))::text as open_amount,
+            greatest(0, coalesce(inv.payable_amount, inv.gross_amount) - greatest(coalesce(inv.paid_amount, 0), coalesce(inv.allocated_amount, 0)))::text as open_amount,
             inv.currency as currency,
             to_char(coalesce(inv.due_date, inv.issue_date), 'YYYY-MM-DD') as due_date
        from public.invoices inv

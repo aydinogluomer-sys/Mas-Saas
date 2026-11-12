@@ -21,7 +21,9 @@ import type { Pool, PoolClient } from "pg";
 import { z } from "zod";
 import { audit } from "@/lib/audit";
 import { DomainError } from "@/lib/domain-error";
+import { safeSyncDomainEventWithClient } from "@/lib/ledger/posting-engine";
 import { decimal, intOrNull, money, moneyOrNull } from "@/lib/money";
+import { resolvePromisesForPaidInvoicesWithClient } from "@/lib/receivables/engine";
 import { parseOrThrow } from "@/lib/validation";
 
 export const CHECK_BORDRO_TYPES = [
@@ -457,7 +459,7 @@ export async function executeCheckBordroTransition(
                 i.party_id::text as party_id,
                 pa.name as party_name,
                 i.currency,
-                (i.gross_amount - coalesce(i.allocated_amount, 0))::text as open_amount,
+                greatest(0, coalesce(i.payable_amount, i.gross_amount) - greatest(coalesce(i.paid_amount, 0), coalesce(i.allocated_amount, 0)))::text as open_amount,
                 i.approval_status
            from public.invoices i
            join public.parties pa on pa.id = i.party_id
@@ -876,6 +878,15 @@ export async function executeCheckBordroTransition(
       });
     }
 
+    if (lockedInvoice) {
+      await resolvePromisesForPaidInvoicesWithClient(client, [lockedInvoice.id], actorId);
+    }
+    await safeSyncDomainEventWithClient(
+      client,
+      { kind: "check_bordro", bordroId },
+      actorId,
+    );
+
     await audit(client, {
       actor: actorId,
       action: "create_check_bordro",
@@ -1104,7 +1115,7 @@ export async function loadCheckBordroTargets(
       `select i.id::text as id,
               i.invoice_no,
               pa.name as party_name,
-              (i.gross_amount - coalesce(i.allocated_amount, 0)) as open_amount,
+              greatest(0, coalesce(i.payable_amount, i.gross_amount) - greatest(coalesce(i.paid_amount, 0), coalesce(i.allocated_amount, 0))) as open_amount,
               i.currency,
               to_char(coalesce(i.due_date, i.issue_date), 'YYYY-MM-DD') as due_date
          from public.invoices i
@@ -1112,7 +1123,7 @@ export async function loadCheckBordroTargets(
         where i.direction = 'purchase'
           and i.status in ('open', 'partial')
           and i.approval_status not in ('pending_approval', 'rejected')
-          and i.gross_amount > coalesce(i.allocated_amount, 0)
+          and coalesce(i.payable_amount, i.gross_amount) > greatest(coalesce(i.paid_amount, 0), coalesce(i.allocated_amount, 0))
         order by coalesce(i.due_date, i.issue_date) asc, i.invoice_no asc
         limit 150`,
     ).catch(async (err) => {

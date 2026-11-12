@@ -8,6 +8,8 @@ import type { Pool } from "pg";
 import { z } from "zod";
 import { audit } from "@/lib/audit";
 import { DomainError } from "@/lib/domain-error";
+import { isMissingSchemaError } from "@/lib/ledger/accounts";
+import { revalueProvisionalFxEntries } from "@/lib/ledger/posting-engine";
 import { moneyOrNull, rateOrNull } from "@/lib/money";
 import { parseOrThrow } from "@/lib/validation";
 import type { RateProvider } from "./provider";
@@ -29,6 +31,7 @@ export interface RateImportResult {
   queriedDate: string;
   inserted: number;
   skipped: number;
+  revaluedCount?: number;
   error?: string;
 }
 
@@ -49,6 +52,7 @@ export async function importRates(
   dateISO: string,
   actorId: string,
   onlyCurrencies?: string[],
+  options?: { skipLedgerRevaluation?: boolean },
 ): Promise<RateImportResult> {
   const fetched = await provider.fetchRates(dateISO);
   if (!fetched.ok || fetched.rateDate === null) {
@@ -106,20 +110,31 @@ export async function importRates(
       },
     });
     await client.query("commit");
-    return {
-      ok: true,
-      rateDate: fetched.rateDate,
-      bulletinDate,
-      queriedDate,
-      inserted,
-      skipped,
-    };
   } catch (e) {
     await client.query("rollback");
     throw e;
   } finally {
     client.release();
   }
+
+  let revaluedCount = 0;
+  if (inserted > 0 && !options?.skipLedgerRevaluation) {
+    const rev = await revalueProvisionalFxEntries(pool, actorId).catch((err: unknown) => {
+      if (isMissingSchemaError(err)) return { revaluedCount: 0, stillProvisionalCount: 0 };
+      throw err;
+    });
+    revaluedCount = rev.revaluedCount;
+  }
+
+  return {
+    ok: true,
+    rateDate: fetched.rateDate,
+    bulletinDate,
+    queriedDate,
+    inserted,
+    skipped,
+    revaluedCount,
+  };
 }
 
 /** Record a single rate by hand — the manual half of the integration. */
@@ -155,7 +170,14 @@ export async function recordRate(pool: Pool, raw: unknown, actorId: string): Pro
       },
     });
     await client.query("commit");
-    return res.rows[0].id;
+    const createdId = res.rows[0].id as string;
+    if (input.quoteCurrency === "TRY") {
+      await revalueProvisionalFxEntries(pool, actorId).catch((err: unknown) => {
+        if (isMissingSchemaError(err)) return { revaluedCount: 0, stillProvisionalCount: 0 };
+        throw err;
+      });
+    }
+    return createdId;
   } catch (e) {
     await client.query("rollback");
     throw e;

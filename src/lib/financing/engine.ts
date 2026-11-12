@@ -14,6 +14,7 @@ import {
 import type { RowJson, SheetRow } from "@/lib/importers/row-utils";
 import { normalizeTr } from "@/lib/importers/workbook-parser";
 import { DomainError } from "@/lib/domain-error";
+import { safeSyncDomainEventWithClient } from "@/lib/ledger/posting-engine";
 import { decimal, money, moneyOrNull, rateOrNull } from "@/lib/money";
 import { audit } from "@/lib/audit";
 import { executeCheckBordroTransition } from "./check-bordro";
@@ -643,7 +644,7 @@ export const CHECK_SETTLEABLE_FROM = new Set([
   "in_bank_collateral",
   "issued_to_vendor",
 ]);
-const LOAN_INSTALLMENT_PAYABLE_FROM = new Set(["planned", "late"]);
+const LOAN_INSTALLMENT_PAYABLE_FROM = new Set(["planned", "late", "unpaid", "partial"]);
 
 /** Shared by markCheckCleared/markCheckBounced — delegates to the Turkish Check Bordro engine
  *  so endorsed-check recourse reversal, P0 control_alerts, and collateral release always fire. */
@@ -699,6 +700,11 @@ export async function markInstallmentPaid(
       `update public.loan_installments set status='paid', paid_at=coalesce($2::timestamptz, now()) where id=$1
        returning to_char(paid_at,'YYYY-MM-DD') as paid_at`,
       [installmentId, paidAt],
+    );
+    await safeSyncDomainEventWithClient(
+      client,
+      { kind: "loan_installment", installmentId },
+      actorId,
     );
     await audit(client, {
       actor: actorId,

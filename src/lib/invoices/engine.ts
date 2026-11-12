@@ -19,7 +19,12 @@ import { z } from "zod";
 import { evaluateAndRequestIfNeededWithClient } from "@/lib/approvals/engine";
 import { audit } from "@/lib/audit";
 import { DomainError } from "@/lib/domain-error";
-import { intOrNull, moneyOrNull, rateOrNull } from "@/lib/money";
+import {
+  safeReverseJournalForSourceWithClient,
+  safeSyncDomainEventWithClient,
+} from "@/lib/ledger/posting-engine";
+import { decimal, intOrNull, moneyOrNull, rateOrNull } from "@/lib/money";
+import { resolvePromisesForPaidInvoicesWithClient } from "@/lib/receivables/engine";
 import { parseOrThrow } from "@/lib/validation";
 import {
   canTransition, computeLineTotals, invoiceDedupeKey, sumLineTotals,
@@ -272,6 +277,17 @@ export async function changeInvoiceStatus(pool: Pool, raw: unknown, actorId: str
       }
     }
 
+    if (["open", "partial", "paid"].includes(input.status)) {
+      await safeSyncDomainEventWithClient(
+        client,
+        { kind: "invoice", invoiceId: input.invoiceId },
+        actorId,
+      );
+    }
+    if (input.status === "paid") {
+      await resolvePromisesForPaidInvoicesWithClient(client, [input.invoiceId], actorId);
+    }
+
     await audit(client, {
       actor: actorId, action: "change_invoice_status", entityTable: "invoices",
       entityId: input.invoiceId,
@@ -288,11 +304,13 @@ export async function changeInvoiceStatus(pool: Pool, raw: unknown, actorId: str
 }
 
 /**
- * Record a settlement against an invoice.
+ * Record an inline settlement against an invoice (`F-23`, `F-24`, `F-25`).
  *
- * Moves `paid_amount` and lets the status follow, but does NOT touch any bank transaction or
- * payment instance. Faz 22 / Faz 48 own the linkage between a settlement and the money that produced
- * it; purchase invoices pending maker-checker approval cannot be paid out before decision.
+ * Writes a canonical `'manual'` allocation row in `public.invoice_allocations` up to
+ * `coalesce(payable_amount, gross_amount)` so `allocated_amount`, `paid_amount`, Payment Runs,
+ * Check Endorsements, and Bank Matching stay 100% unified without double-payment risk.
+ * Any intentional over-receipt beyond the invoice ceiling still advances `paid_amount` so
+ * `invoice_overpaid` surfaces it cleanly.
  */
 export async function recordInvoicePayment(pool: Pool, raw: unknown, actorId: string): Promise<void> {
   const input = parseOrThrow(recordPaymentSchema, raw, "Tahsilat kaydı");
@@ -300,7 +318,7 @@ export async function recordInvoicePayment(pool: Pool, raw: unknown, actorId: st
   try {
     await client.query("begin");
     const before = await client.query(
-      `select id, direction, status, gross_amount, paid_amount, approval_status
+      `select id, direction, status, gross_amount, payable_amount, paid_amount, allocated_amount, approval_status
          from public.invoices where id=$1 for update`,
       [input.invoiceId]);
     if (before.rowCount === 0) throw new DomainError("Fatura bulunamadı.");
@@ -316,29 +334,77 @@ export async function recordInvoicePayment(pool: Pool, raw: unknown, actorId: st
     }
 
     const gross = moneyOrNull(row.gross_amount) ?? 0;
+    const ceiling = moneyOrNull(row.payable_amount) ?? gross;
     const paidBefore = moneyOrNull(row.paid_amount) ?? 0;
+    const allocatedBefore = moneyOrNull(row.allocated_amount) ?? 0;
+    const effectivePaidBefore = Math.max(paidBefore, allocatedBefore);
 
-    const updated = await client.query<{ paid_amount: string; status: string }>(
-      `update public.invoices set paid_amount = paid_amount + $2::numeric where id=$1
-       returning paid_amount, status`,
-      [input.invoiceId, input.amount]);
-    const paidAfter = moneyOrNull(updated.rows[0].paid_amount) ?? 0;
+    const allocRoom = Math.max(0, Number(decimal(ceiling).minus(allocatedBefore).round(2).toFixed(2)));
+    const allocAmt = Math.min(Number(decimal(input.amount).round(2).toFixed(2)), allocRoom);
+    let allocationId: string | null = null;
 
-    // The suggestion is computed from the NEW total, then applied only if the lifecycle allows
-    // it — the guard remains the authority on what is legal.
-    const suggested: InvoiceStatus = paidAfter <= 0 ? "open" : paidAfter >= gross ? "paid" : "partial";
-    if (suggested !== status && canTransition(status, suggested)) {
+    if (allocAmt > 0) {
+      await client.query("savepoint inv_inline_alloc_sp");
+      try {
+        const insAlloc = await client.query<{ id: string }>(
+          `insert into public.invoice_allocations
+             (invoice_id, source_table, source_id, allocated_amount, notes, created_by)
+           values ($1, 'manual', null, $2::numeric, 'Satır-içi fatura tahsilat/ödeme kaydı', $3)
+           returning id::text as id`,
+          [input.invoiceId, allocAmt.toFixed(2), actorId],
+        );
+        allocationId = insAlloc.rows[0]?.id ?? null;
+        await client.query("release savepoint inv_inline_alloc_sp");
+      } catch (err) {
+        await client.query("rollback to savepoint inv_inline_alloc_sp");
+        await client.query("release savepoint inv_inline_alloc_sp");
+        const code = (err as { code?: string })?.code;
+        if (code !== "42P01") throw err;
+      }
+    }
+
+    const targetPaid = Number(decimal(effectivePaidBefore).plus(input.amount).round(2).toFixed(2));
+    const curAfterAlloc = await client.query<{ paid_amount: string; allocated_amount: string; status: string }>(
+      `select paid_amount::text, coalesce(allocated_amount, 0)::text as allocated_amount, status
+         from public.invoices
+        where id = $1`,
+      [input.invoiceId],
+    );
+    let paidAfter = moneyOrNull(curAfterAlloc.rows[0]?.paid_amount) ?? paidBefore;
+    const allocatedAfter = moneyOrNull(curAfterAlloc.rows[0]?.allocated_amount) ?? allocatedBefore;
+    let currentStatus = (curAfterAlloc.rows[0]?.status ?? status) as InvoiceStatus;
+
+    if (targetPaid > paidAfter) {
+      const updated = await client.query<{ paid_amount: string; status: string }>(
+        `update public.invoices set paid_amount = $2::numeric where id=$1
+         returning paid_amount::text, status`,
+        [input.invoiceId, targetPaid.toFixed(2)],
+      );
+      paidAfter = moneyOrNull(updated.rows[0].paid_amount) ?? targetPaid;
+      currentStatus = updated.rows[0].status as InvoiceStatus;
+    }
+
+    const suggested: InvoiceStatus = paidAfter <= 0 ? "open" : paidAfter >= ceiling ? "paid" : "partial";
+    if (suggested !== currentStatus && canTransition(currentStatus, suggested)) {
       await client.query(`update public.invoices set status=$2 where id=$1`, [input.invoiceId, suggested]);
+      currentStatus = suggested;
+    }
+
+    if (currentStatus === "paid") {
+      await resolvePromisesForPaidInvoicesWithClient(client, [input.invoiceId], actorId);
     }
 
     await audit(client, {
       actor: actorId, action: "record_invoice_payment", entityTable: "invoices",
       entityId: input.invoiceId,
-      before: { status, paid_amount: paidBefore },
+      before: { status, paid_amount: paidBefore, allocated_amount: allocatedBefore },
       after: {
-        status: canTransition(status, suggested) ? suggested : status,
-        paid_amount: paidAfter, applied: input.amount,
-        linked_settlement_source: null,
+        status: currentStatus,
+        paid_amount: paidAfter,
+        allocated_amount: allocatedAfter,
+        applied: input.amount,
+        allocation_id: allocationId,
+        linked_settlement_source: allocationId ? "manual_allocation" : null,
       },
     });
     await client.query("commit");
@@ -396,6 +462,14 @@ export async function cancelInvoice(pool: Pool, raw: unknown, actorId: string): 
       `update public.invoices set status='cancelled', cancelled_at=now(), cancel_reason=$2 where id=$1`,
       [input.invoiceId, input.reason]);
 
+    await safeReverseJournalForSourceWithClient(
+      client,
+      "invoice",
+      input.invoiceId,
+      input.reason,
+      actorId,
+    );
+
     await audit(client, {
       actor: actorId, action: "cancel_invoice", entityTable: "invoices", entityId: input.invoiceId,
       before: { status, gross_amount: moneyOrNull(inv.gross_amount) },
@@ -445,7 +519,8 @@ export async function listInvoices(
             to_char(i.issue_date,'YYYY-MM-DD') as issue_date,
             to_char(i.due_date,'YYYY-MM-DD') as due_date,
             i.currency, i.net_amount, i.tax_amount, i.gross_amount, i.paid_amount,
-            (i.gross_amount - i.paid_amount) as remaining, i.status, i.approval_status,
+            (coalesce(i.payable_amount, i.gross_amount) - greatest(coalesce(i.paid_amount, 0), coalesce(i.allocated_amount, 0))) as remaining,
+            i.status, i.approval_status,
             (select count(*) from public.invoice_lines l where l.invoice_id = i.id)::int as line_count
      from public.invoices i
      join public.parties pa on pa.id = i.party_id

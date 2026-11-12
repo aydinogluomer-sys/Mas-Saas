@@ -163,7 +163,9 @@ export async function runClosedLoopFinancialPipeline(
   const importTcmbFn =
     deps.importTcmbRates ??
     (async (p: Pool, asOfISO: string, actor: string) =>
-      importRates(p, providerFor("tcmb"), asOfISO, actor));
+      importRates(p, providerFor("tcmb"), asOfISO, actor, undefined, {
+        skipLedgerRevaluation: true,
+      }));
   const syncLedgerFn = deps.rebuildOrSyncManagementLedger ?? rebuildOrSyncManagementLedger;
   const mondayFn = deps.mondayOfWeek ?? mondayOfWeek;
   const freeze13wFn = deps.freezeWeekly13wSnapshot ?? freezeWeekly13wSnapshot;

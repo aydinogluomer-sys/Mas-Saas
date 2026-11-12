@@ -97,31 +97,42 @@ export async function postJournalEntryWithClient(
   spec: PostJournalEntrySpec,
   actorId: string | null,
 ): Promise<PostJournalEntryResult> {
-  const idemKey = spec.idempotencyKey.trim();
-  if (!idemKey) {
+  const baseKey = spec.idempotencyKey.trim();
+  if (!baseKey) {
     throw new DomainError("Yevmiye fişi idempotency_key boş olamaz.");
   }
 
-  const existing = await client.query<{
-    id: string;
-    entry_no: string;
-    status: JournalEntryStatus;
-    needs_tax_split_review: boolean;
-  }>(
-    `select id::text, entry_no::text, status, needs_tax_split_review
-       from public.management_journal_entries
-      where idempotency_key = $1
-      limit 1`,
-    [idemKey],
-  );
-  if (existing.rows[0]) {
-    return {
-      entryId: existing.rows[0].id,
-      entryNo: Number(existing.rows[0].entry_no),
-      status: existing.rows[0].status,
-      created: false,
-      needsTaxSplitReview: existing.rows[0].needs_tax_split_review,
-    };
+  let idemKey = baseKey;
+  for (let attempt = 1; attempt <= 25; attempt++) {
+    const candidateKey = attempt === 1 ? baseKey : `${baseKey}:r${attempt}`;
+    const existing = await client.query<{
+      id: string;
+      entry_no: string;
+      status: JournalEntryStatus;
+      needs_tax_split_review: boolean;
+    }>(
+      `select id::text, entry_no::text, status, needs_tax_split_review
+         from public.management_journal_entries
+        where idempotency_key = $1
+        limit 1`,
+      [candidateKey],
+    );
+    const row = existing.rows[0];
+    if (!row) {
+      idemKey = candidateKey;
+      break;
+    }
+    if (row.status !== "reversed") {
+      return {
+        entryId: row.id,
+        entryNo: Number(row.entry_no),
+        status: row.status,
+        created: false,
+        needsTaxSplitReview: row.needs_tax_split_review,
+      };
+    }
+    // Mevcut fiş ters kayıtla (storno) kapatılmışsa ve olay yeniden gerçekleşmişse yeni nesil anahtar kullan
+    idemKey = `${baseKey}:r${attempt + 1}`;
   }
 
   if (spec.lines.length < 2) {
@@ -507,20 +518,119 @@ export async function syncDomainEventWithClient(
       currency: string;
       description: string | null;
       transaction_kind: string;
+      status: string;
+      matched_entity_table: string | null;
+      matched_entity_id: string | null;
     }>(
       `select id::text, to_char(txn_date, 'YYYY-MM-DD') as txn_date,
-              amount::text, currency, description,
-              coalesce(transaction_kind, 'standard') as transaction_kind
+              amount::text,
+              coalesce(currency, (select ca.currency from public.cash_accounts ca where ca.id = bank_account_id), 'TRY') as currency,
+              description,
+              coalesce(transaction_kind, 'standard') as transaction_kind,
+              coalesce(status, 'unmatched') as status,
+              matched_entity_table,
+              matched_entity_id::text
          from public.bank_transactions
         where id = $1`,
       [event.bankTransactionId],
     );
     const tx = txRes.rows[0];
     if (!tx) return null;
+    if (tx.status === "ignored") return null;
+    if (tx.matched_entity_table === "check_bordros" || tx.matched_entity_table === "loan_installments") {
+      return null;
+    }
 
     const rawAmt = money(tx.amount);
     const absAmt = Math.abs(rawAmt);
     if (absAmt <= 0) return null;
+
+    if (tx.matched_entity_table === "checks" && tx.matched_entity_id) {
+      const hasSettlementBordro = await client.query(
+        `select 1
+           from public.check_events ce
+           join public.check_bordros cb on cb.id = ce.bordro_id
+          where ce.check_id = $1::uuid
+            and cb.bordro_type = 'settlement'
+          limit 1`,
+        [tx.matched_entity_id],
+      );
+      if ((hasSettlementBordro.rowCount ?? 0) > 0) {
+        return null;
+      }
+
+      const chkRes = await client.query<{
+        direction: string;
+        payer_party_id: string | null;
+        payee_party_id: string | null;
+        had_collection: boolean;
+        had_collateral: boolean;
+      }>(
+        `select c.direction,
+                c.payer_party_id::text as payer_party_id,
+                c.payee_party_id::text as payee_party_id,
+                exists (
+                  select 1 from public.check_events ce2
+                  join public.check_bordros cb2 on cb2.id = ce2.bordro_id
+                  where ce2.check_id = c.id and cb2.bordro_type = 'bank_collection'
+                ) as had_collection,
+                exists (
+                  select 1 from public.check_events ce3
+                  join public.check_bordros cb3 on cb3.id = ce3.bordro_id
+                  where ce3.check_id = c.id and cb3.bordro_type = 'bank_collateral'
+                ) as had_collateral
+           from public.checks c
+          where c.id = $1::uuid`,
+        [tx.matched_entity_id],
+      );
+      const chk = chkRes.rows[0];
+      const checkLines: JournalLineInput[] = [];
+      if (rawAmt > 0 || chk?.direction === "inflow") {
+        const checkAccount = chk?.had_collateral ? "101.03" : chk?.had_collection ? "101.02" : "101.01";
+        checkLines.push(
+          {
+            accountCode: "102",
+            debitNative: absAmt,
+            partyId: chk?.payer_party_id ?? null,
+            memo: tx.description ?? "Banka ekstresiyle çek tahsilatı",
+          },
+          {
+            accountCode: checkAccount,
+            creditNative: absAmt,
+            partyId: chk?.payer_party_id ?? null,
+            memo: "Tahsil edilen müşteri çekinin kapanışı",
+          },
+        );
+      } else {
+        checkLines.push(
+          {
+            accountCode: "103",
+            debitNative: absAmt,
+            partyId: chk?.payee_party_id ?? null,
+            memo: tx.description ?? "Verilen çekin bankadan ödenmesi",
+          },
+          {
+            accountCode: "102",
+            creditNative: absAmt,
+            memo: "Keşide çek banka çıkışı",
+          },
+        );
+      }
+
+      return postJournalEntryWithClient(
+        client,
+        {
+          entryDate: tx.txn_date,
+          sourceType: "bank_transaction",
+          sourceId: tx.id,
+          idempotencyKey: `bank_tx:settled:${tx.id}`,
+          description: `Banka Çek Kapanışı: ${tx.description ?? tx.id.slice(0, 8)}`,
+          currency: tx.currency,
+          lines: checkLines,
+        },
+        actorId,
+      );
+    }
 
     const lines: JournalLineInput[] = [];
     if (rawAmt > 0) {
@@ -635,17 +745,81 @@ export async function syncDomainEventWithClient(
         );
         break;
       case "settlement":
-        lines.push(
-          { accountCode: "102", debitNative: amt, memo: `Çek tahsilatı (${b.bordro_no})` },
-          { accountCode: "101.02", creditNative: amt, memo: `Tahsildeki çekin kapanışı (${b.bordro_no})` },
+      case "bounce_return": {
+        const chkMetaRes = await client.query<{
+          direction: string;
+          payer_party_id: string | null;
+          payee_party_id: string | null;
+          had_collateral: boolean;
+        }>(
+          `select c.direction,
+                  c.payer_party_id::text as payer_party_id,
+                  c.payee_party_id::text as payee_party_id,
+                  exists (
+                    select 1 from public.check_events ce2
+                    join public.check_bordros cb2 on cb2.id = ce2.bordro_id
+                    where ce2.check_id = c.id and cb2.bordro_type = 'bank_collateral'
+                  ) as had_collateral
+             from public.checks c
+            where exists (
+              select 1 from public.check_events ce where ce.check_id = c.id and ce.bordro_id = $1::uuid
+            )
+               or c.last_bordro_id = $1::uuid
+            limit 1`,
+          [b.id],
         );
+        const chkMeta = chkMetaRes.rows[0];
+        const isOutflow = chkMeta?.direction === "outflow";
+        const inflowCheckAccount = chkMeta?.had_collateral ? "101.03" : "101.02";
+
+        if (b.bordro_type === "settlement") {
+          if (isOutflow) {
+            lines.push(
+              {
+                accountCode: "103",
+                debitNative: amt,
+                partyId: b.target_party_id ?? chkMeta?.payee_party_id ?? null,
+                memo: `Verilen çekin bankadan ödenmesi (${b.bordro_no})`,
+              },
+              {
+                accountCode: "102",
+                creditNative: amt,
+                memo: `Keşide çek banka çıkışı (${b.bordro_no})`,
+              },
+            );
+          } else {
+            lines.push(
+              { accountCode: "102", debitNative: amt, memo: `Çek tahsilatı (${b.bordro_no})` },
+              { accountCode: inflowCheckAccount, creditNative: amt, memo: `Tahsildeki çekin kapanışı (${b.bordro_no})` },
+            );
+          }
+        } else {
+          if (isOutflow) {
+            const vendorPartyId = b.target_party_id ?? chkMeta?.payee_party_id ?? null;
+            lines.push(
+              {
+                accountCode: "103",
+                debitNative: amt,
+                partyId: vendorPartyId,
+                memo: `Karşılıksız keşide çek yükümlülük dönüşü (${b.bordro_no})`,
+              },
+              {
+                accountCode: "320",
+                creditNative: amt,
+                partyId: vendorPartyId,
+                memo: `Karşılıksız keşide çek tedarikçi borcu (${b.bordro_no})`,
+              },
+            );
+          } else {
+            const custPartyId = b.target_party_id ?? chkMeta?.payer_party_id ?? null;
+            lines.push(
+              { accountCode: "120", debitNative: amt, partyId: custPartyId, memo: `Karşılıksız çek rücu borçlandırması (${b.bordro_no})` },
+              { accountCode: inflowCheckAccount, creditNative: amt, partyId: custPartyId, memo: `Karşılıksız çek tahsilden düşümü (${b.bordro_no})` },
+            );
+          }
+        }
         break;
-      case "bounce_return":
-        lines.push(
-          { accountCode: "120", debitNative: amt, partyId: b.target_party_id, memo: `Karşılıksız çek rücu borçlandırması (${b.bordro_no})` },
-          { accountCode: "101.02", creditNative: amt, partyId: b.target_party_id, memo: `Karşılıksız çek tahsilden düşümü (${b.bordro_no})` },
-        );
-        break;
+      }
       default:
         return null;
     }
@@ -895,6 +1069,8 @@ export async function rebuildOrSyncManagementLedger(
       `select bt.id::text
          from public.bank_transactions bt
         where bt.amount <> 0
+          and bt.status <> 'ignored'
+          and coalesce(bt.matched_entity_table, '') not in ('check_bordros', 'loan_installments')
           and not exists (
             select 1 from public.cashflow_months cm
              where cm.month_start = date_trunc('month', bt.txn_date)::date
@@ -947,6 +1123,59 @@ export async function rebuildOrSyncManagementLedger(
       );
       if (out?.created) createdCount++;
       else skippedCount++;
+    }
+
+    // İptal edilen fatura, yok sayılan / çift sayım kapsamına giren banka hareketi ve geri alınan kredi taksitleri için otomatik ters fiş süpürmesi
+    const staleSources = await client.query<{
+      source_type: JournalSourceType;
+      source_id: string;
+      reason: string;
+    }>(
+      `select distinct je.source_type, je.source_id::text as source_id,
+              'İptal edilmiş fatura stornosu'::text as reason
+         from public.management_journal_entries je
+         join public.invoices i on i.id = je.source_id
+        where je.source_type = 'invoice'
+          and je.status in ('posted', 'provisional_fx')
+          and i.status = 'cancelled'
+       union all
+       select distinct je.source_type, je.source_id::text as source_id,
+              'Yok sayılan veya bordro/taksit ile birleşen banka hareketi stornosu'::text as reason
+         from public.management_journal_entries je
+         join public.bank_transactions bt on bt.id = je.source_id
+        where je.source_type = 'bank_transaction'
+          and je.status in ('posted', 'provisional_fx')
+          and (
+            bt.status = 'ignored'
+            or bt.matched_entity_table in ('check_bordros', 'loan_installments')
+            or (
+              bt.matched_entity_table = 'checks'
+              and exists (
+                select 1
+                  from public.check_events ce
+                  join public.check_bordros cb on cb.id = ce.bordro_id
+                 where ce.check_id = bt.matched_entity_id
+                   and cb.bordro_type = 'settlement'
+              )
+            )
+          )
+       union all
+       select distinct je.source_type, je.source_id::text as source_id,
+              'Ödemesi geri alınan kredi taksiti stornosu'::text as reason
+         from public.management_journal_entries je
+         join public.loan_installments li on li.id = je.source_id
+        where je.source_type = 'loan_installment'
+          and je.status in ('posted', 'provisional_fx')
+          and li.status <> 'paid'`,
+    );
+    for (const s of staleSources.rows) {
+      await reverseJournalEntriesForSourceWithClient(
+        client,
+        s.source_type,
+        s.source_id,
+        s.reason,
+        actorId,
+      );
     }
 
     await client.query("commit");
@@ -1069,6 +1298,207 @@ export async function approveDraftManagementEntry(
   }
 }
 
+export async function discardDraftManagementEntry(
+  pool: Pool,
+  entryId: string,
+  actorId: string | null,
+): Promise<void> {
+  const client = await pool.connect();
+  try {
+    await client.query("begin");
+    const cur = await client.query<{
+      id: string;
+      entry_no: string;
+      entry_date: string;
+      status: string;
+      description: string;
+    }>(
+      `select id::text, entry_no::text, to_char(entry_date, 'YYYY-MM-DD') as entry_date, status, description
+         from public.management_journal_entries
+        where id = $1
+        for update`,
+      [entryId],
+    );
+    const row = cur.rows[0];
+    if (!row) {
+      throw new DomainError("Yevmiye fişi bulunamadı.");
+    }
+    if (row.status !== "draft") {
+      throw new DomainError(
+        `Yalnız 'draft' (taslak) durumundaki fişler silinebilir; kesinleşmiş fişler için ters kayıt (storno) kullanılmalıdır (mevcut: ${row.status}).`,
+      );
+    }
+
+    await client.query(`delete from public.management_journal_entries where id = $1`, [entryId]);
+
+    await audit(client, {
+      actor: actorId,
+      action: "discard_draft_management_journal_entry",
+      entityTable: "management_journal_entries",
+      entityId: entryId,
+      before: {
+        entryNo: Number(row.entry_no),
+        entryDate: row.entry_date,
+        status: row.status,
+        description: row.description,
+      },
+      after: null,
+    });
+
+    await client.query("commit");
+  } catch (e) {
+    await client.query("rollback").catch(() => undefined);
+    throw e;
+  } finally {
+    client.release();
+  }
+}
+
+export async function reverseManagementEntryWithClient(
+  client: PoolClient,
+  entryId: string,
+  reason: string,
+  actorId: string | null,
+  reversalDate?: string,
+): Promise<{ reversalEntryId: string; reversalEntryNo: number }> {
+  const cleanReason = reason.trim();
+  if (cleanReason.length < 3) {
+    throw new DomainError("Ters kayıt (storno) gerekçesi en az 3 karakter olmalıdır.");
+  }
+
+  const origRes = await client.query<{
+    id: string;
+    entry_no: string;
+    entry_date: string;
+    status: string;
+    description: string;
+  }>(
+    `select id::text, entry_no::text, to_char(entry_date, 'YYYY-MM-DD') as entry_date,
+            status, description
+       from public.management_journal_entries
+      where id = $1
+      for update`,
+    [entryId],
+  );
+  const orig = origRes.rows[0];
+  if (!orig) {
+    throw new DomainError("Ters kayıt yapılacak yevmiye fişi bulunamadı.");
+  }
+  if (orig.status !== "posted") {
+    throw new DomainError(`Yalnız 'posted' durumundaki fişlere ters kayıt açılabilir (mevcut: ${orig.status}).`);
+  }
+
+  const origLines = await client.query<{
+    line_no: number;
+    account_id: string;
+    party_id: string | null;
+    project_id: string | null;
+    cost_center_id: string | null;
+    department_id: string | null;
+    native_currency: string;
+    debit_native: string;
+    credit_native: string;
+    fx_rate: string | null;
+    debit_try: string;
+    credit_try: string;
+    line_memo: string | null;
+  }>(
+    `select line_no, account_id::text, party_id::text, project_id::text,
+            cost_center_id::text, department_id::text,
+            native_currency, debit_native::text, credit_native::text,
+            fx_rate::text, debit_try::text, credit_try::text, line_memo
+       from public.management_journal_lines
+      where entry_id = $1
+      order by line_no asc`,
+    [entryId],
+  );
+
+  let effDate = reversalDate ?? orig.entry_date;
+  if (!reversalDate) {
+    const lockedRes = await client.query<{ locked: boolean }>(
+      `select exists (
+         select 1 from public.cashflow_months cm
+          where cm.month_start = date_trunc('month', $1::date)::date
+            and cm.status = 'locked'
+       ) as locked`,
+      [effDate],
+    );
+    if (lockedRes.rows[0]?.locked) {
+      const todayRes = await client.query<{ today: string }>(
+        `select to_char((now() at time zone 'Europe/Istanbul')::date, 'YYYY-MM-DD') as today`,
+      );
+      effDate = todayRes.rows[0]?.today ?? effDate;
+    }
+  }
+
+  const revIns = await client.query<{ id: string; entry_no: string }>(
+    `insert into public.management_journal_entries
+       (entry_date, source_type, source_id, idempotency_key, status,
+        description, reversal_of_entry_id, created_by)
+     values ($1::date, 'reversal', $2, $3, 'posted', $4, $2, $5)
+     returning id::text, entry_no::text`,
+    [
+      effDate,
+      orig.id,
+      `reversal:${orig.id}`,
+      `TERS KAYIT (#${orig.entry_no}): ${cleanReason}`,
+      actorId,
+    ],
+  );
+  const reversalEntryId = revIns.rows[0].id;
+  const reversalEntryNo = Number(revIns.rows[0].entry_no);
+
+  for (const l of origLines.rows) {
+    await client.query(
+      `insert into public.management_journal_lines
+         (entry_id, line_no, account_id, party_id, project_id, cost_center_id, department_id,
+          native_currency, debit_native, credit_native, fx_rate, debit_try, credit_try, line_memo)
+       values ($1, $2, $3, $4, $5, $6, $7,
+               $8, $9::numeric, $10::numeric, $11::numeric, $12::numeric, $13::numeric, $14)`,
+      [
+        reversalEntryId,
+        l.line_no,
+        l.account_id,
+        l.party_id,
+        l.project_id,
+        l.cost_center_id,
+        l.department_id,
+        l.native_currency,
+        l.credit_native,
+        l.debit_native,
+        l.fx_rate,
+        l.credit_try,
+        l.debit_try,
+        `Ters kayıt: ${l.line_memo ?? cleanReason}`,
+      ],
+    );
+  }
+
+  await client.query(
+    `update public.management_journal_entries
+        set status = 'reversed',
+            reversed_by_entry_id = $2
+      where id = $1`,
+    [orig.id, reversalEntryId],
+  );
+
+  await audit(client, {
+    actor: actorId,
+    action: "reverse_management_journal_entry",
+    entityTable: "management_journal_entries",
+    entityId: orig.id,
+    before: { status: "posted", reversedByEntryId: null },
+    after: {
+      status: "reversed",
+      reversedByEntryId: reversalEntryId,
+      reversalEntryNo,
+      reason: cleanReason,
+    },
+  });
+
+  return { reversalEntryId, reversalEntryNo };
+}
+
 /**
  * Reverses a `'posted'` journal entry by creating an immutable mirror entry (`source_type = 'reversal'`)
  * with debits and credits swapped, and linking `reversed_by_entry_id` on the original entry.
@@ -1080,135 +1510,130 @@ export async function reverseManagementEntry(
   actorId: string | null,
   reversalDate?: string,
 ): Promise<{ reversalEntryId: string; reversalEntryNo: number }> {
-  const cleanReason = reason.trim();
-  if (cleanReason.length < 3) {
-    throw new DomainError("Ters kayıt (storno) gerekçesi en az 3 karakter olmalıdır.");
-  }
-
   const client = await pool.connect();
   try {
     await client.query("begin");
-
-    const origRes = await client.query<{
-      id: string;
-      entry_no: string;
-      entry_date: string;
-      status: string;
-      description: string;
-    }>(
-      `select id::text, entry_no::text, to_char(entry_date, 'YYYY-MM-DD') as entry_date,
-              status, description
-         from public.management_journal_entries
-        where id = $1
-        for update`,
-      [entryId],
-    );
-    const orig = origRes.rows[0];
-    if (!orig) {
-      throw new DomainError("Ters kayıt yapılacak yevmiye fişi bulunamadı.");
-    }
-    if (orig.status !== "posted") {
-      throw new DomainError(`Yalnız 'posted' durumundaki fişlere ters kayıt açılabilir (mevcut: ${orig.status}).`);
-    }
-
-    const origLines = await client.query<{
-      line_no: number;
-      account_id: string;
-      party_id: string | null;
-      project_id: string | null;
-      cost_center_id: string | null;
-      department_id: string | null;
-      native_currency: string;
-      debit_native: string;
-      credit_native: string;
-      fx_rate: string | null;
-      debit_try: string;
-      credit_try: string;
-      line_memo: string | null;
-    }>(
-      `select line_no, account_id::text, party_id::text, project_id::text,
-              cost_center_id::text, department_id::text,
-              native_currency, debit_native::text, credit_native::text,
-              fx_rate::text, debit_try::text, credit_try::text, line_memo
-         from public.management_journal_lines
-        where entry_id = $1
-        order by line_no asc`,
-      [entryId],
-    );
-
-    const effDate = reversalDate ?? orig.entry_date;
-    const revIns = await client.query<{ id: string; entry_no: string }>(
-      `insert into public.management_journal_entries
-         (entry_date, source_type, source_id, idempotency_key, status,
-          description, reversal_of_entry_id, created_by)
-       values ($1::date, 'reversal', $2, $3, 'posted', $4, $2, $5)
-       returning id::text, entry_no::text`,
-      [
-        effDate,
-        orig.id,
-        `reversal:${orig.id}`,
-        `TERS KAYIT (#${orig.entry_no}): ${cleanReason}`,
-        actorId,
-      ],
-    );
-    const reversalEntryId = revIns.rows[0].id;
-    const reversalEntryNo = Number(revIns.rows[0].entry_no);
-
-    for (const l of origLines.rows) {
-      await client.query(
-        `insert into public.management_journal_lines
-           (entry_id, line_no, account_id, party_id, project_id, cost_center_id, department_id,
-            native_currency, debit_native, credit_native, fx_rate, debit_try, credit_try, line_memo)
-         values ($1, $2, $3, $4, $5, $6, $7,
-                 $8, $9::numeric, $10::numeric, $11::numeric, $12::numeric, $13::numeric, $14)`,
-        [
-          reversalEntryId,
-          l.line_no,
-          l.account_id,
-          l.party_id,
-          l.project_id,
-          l.cost_center_id,
-          l.department_id,
-          l.native_currency,
-          l.credit_native, // Swap debit <-> credit!
-          l.debit_native,
-          l.fx_rate,
-          l.credit_try,    // Swap debit_try <-> credit_try!
-          l.debit_try,
-          `Ters kayıt: ${l.line_memo ?? cleanReason}`,
-        ],
-      );
-    }
-
-    await client.query(
-      `update public.management_journal_entries
-          set status = 'reversed',
-              reversed_by_entry_id = $2
-        where id = $1`,
-      [orig.id, reversalEntryId],
-    );
-
-    await audit(client, {
-      actor: actorId,
-      action: "reverse_management_journal_entry",
-      entityTable: "management_journal_entries",
-      entityId: orig.id,
-      before: { status: "posted", reversedByEntryId: null },
-      after: {
-        status: "reversed",
-        reversedByEntryId: reversalEntryId,
-        reversalEntryNo,
-        reason: cleanReason,
-      },
-    });
-
+    const out = await reverseManagementEntryWithClient(client, entryId, reason, actorId, reversalDate);
     await client.query("commit");
-    return { reversalEntryId, reversalEntryNo };
+    return out;
   } catch (e) {
     await client.query("rollback").catch(() => undefined);
     throw e;
   } finally {
     client.release();
+  }
+}
+
+/**
+ * Automatically reverses any active journal entries linked to `(sourceType, sourceId)`.
+ * - `'posted'` entries receive an immutable mirror `'reversal'` entry.
+ * - `'provisional_fx'` or `'draft'` entries (never posted to TRY mizan) are cleanly discarded with audit trace.
+ */
+export async function reverseJournalEntriesForSourceWithClient(
+  client: PoolClient,
+  sourceType: JournalSourceType,
+  sourceId: string,
+  reason: string,
+  actorId: string | null,
+  reversalDate?: string,
+): Promise<{ reversedCount: number; discardedCount: number }> {
+  const entries = await client.query<{
+    id: string;
+    entry_no: string;
+    status: JournalEntryStatus;
+    description: string;
+  }>(
+    `select id::text, entry_no::text, status, description
+       from public.management_journal_entries
+      where source_type = $1
+        and source_id = $2::uuid
+        and status in ('posted', 'provisional_fx', 'draft')
+      order by entry_no asc
+      for update`,
+    [sourceType, sourceId],
+  );
+
+  let reversedCount = 0;
+  let discardedCount = 0;
+
+  for (const row of entries.rows) {
+    if (row.status === "posted") {
+      await reverseManagementEntryWithClient(client, row.id, reason, actorId, reversalDate);
+      reversedCount++;
+    } else {
+      await client.query(`delete from public.management_journal_entries where id = $1`, [row.id]);
+      await audit(client, {
+        actor: actorId,
+        action: "discard_unposted_source_journal_entry",
+        entityTable: "management_journal_entries",
+        entityId: row.id,
+        before: {
+          entryNo: Number(row.entry_no),
+          status: row.status,
+          sourceType,
+          sourceId,
+          description: row.description,
+        },
+        after: { discarded: true, reason },
+      });
+      discardedCount++;
+    }
+  }
+
+  return { reversedCount, discardedCount };
+}
+
+/**
+ * Safe SAVEPOINT-wrapped wrapper for domain write transactions so partial/legacy test schemas
+ * without `0105` tables never abort the caller's PostgreSQL transaction (`25P02`).
+ */
+export async function safeSyncDomainEventWithClient(
+  client: PoolClient,
+  event:
+    | { kind: "invoice"; invoiceId: string; expenseAccountCode?: string }
+    | { kind: "bank_transaction"; bankTransactionId: string }
+    | { kind: "check_bordro"; bordroId: string }
+    | { kind: "loan_installment"; installmentId: string },
+  actorId: string | null,
+): Promise<PostJournalEntryResult | null> {
+  await client.query("savepoint mgmt_ledger_sync_sp");
+  try {
+    const out = await syncDomainEventWithClient(client, event, actorId);
+    await client.query("release savepoint mgmt_ledger_sync_sp");
+    return out;
+  } catch (err) {
+    await client.query("rollback to savepoint mgmt_ledger_sync_sp");
+    await client.query("release savepoint mgmt_ledger_sync_sp");
+    if (isMissingSchemaError(err)) return null;
+    throw err;
+  }
+}
+
+export async function safeReverseJournalForSourceWithClient(
+  client: PoolClient,
+  sourceType: JournalSourceType,
+  sourceId: string,
+  reason: string,
+  actorId: string | null,
+  reversalDate?: string,
+): Promise<{ reversedCount: number; discardedCount: number }> {
+  await client.query("savepoint mgmt_ledger_rev_sp");
+  try {
+    const out = await reverseJournalEntriesForSourceWithClient(
+      client,
+      sourceType,
+      sourceId,
+      reason,
+      actorId,
+      reversalDate,
+    );
+    await client.query("release savepoint mgmt_ledger_rev_sp");
+    return out;
+  } catch (err) {
+    await client.query("rollback to savepoint mgmt_ledger_rev_sp");
+    await client.query("release savepoint mgmt_ledger_rev_sp");
+    if (isMissingSchemaError(err)) return { reversedCount: 0, discardedCount: 0 };
+    throw err;
   }
 }
 

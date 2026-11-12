@@ -11,7 +11,9 @@ import { loadManagementLedgerOverview } from "@/lib/ledger/posting-engine";
 import {
   approveDraftEntryAction,
   createManagementSubAccountAction,
+  discardDraftEntryAction,
   postManualAdjustmentAction,
+  revalueProvisionalFxAction,
   reverseEntryAction,
   syncManagementLedgerAction,
 } from "./actions";
@@ -133,16 +135,28 @@ export default async function ManagementLedgerPage({
         subtitle="Fatura, banka tahsilat/ödeme, çek bordrosu ve kredi taksitlerinden idempotent çift taraflı yevmiye fişi üretir; DEFERRABLE veritabanı kısıtıyla borç ≠ alacak fişleri reddedilir."
       >
         <div className="flex flex-wrap items-center justify-between gap-3">
-          {canPost ? (
-            <form action={syncManagementLedgerAction}>
-              <button
-                type="submit"
-                className="rounded bg-sky-700 px-3 py-1.5 text-xs font-medium text-white"
-              >
-                Operasyonel Kayıtlardan Yönetim Defterini Senkronla (Idempotent)
-              </button>
-            </form>
-          ) : null}
+          <div className="flex flex-wrap items-center gap-2">
+            {canPost ? (
+              <form action={syncManagementLedgerAction}>
+                <button
+                  type="submit"
+                  className="rounded bg-sky-700 px-3 py-1.5 text-xs font-medium text-white"
+                >
+                  Operasyonel Kayıtlardan Yönetim Defterini Senkronla (Idempotent)
+                </button>
+              </form>
+            ) : null}
+            {canApprove ? (
+              <form action={revalueProvisionalFxAction}>
+                <button
+                  type="submit"
+                  className="rounded border border-amber-700/60 bg-amber-50 px-3 py-1.5 text-xs font-medium text-amber-900"
+                >
+                  Geçici Kur Fişlerini Değerle (TCMB)
+                </button>
+              </form>
+            ) : null}
+          </div>
 
           {canAddAccount ? (
             <form action={createManagementSubAccountAction} className="flex flex-wrap items-center gap-2 text-xs">
@@ -518,6 +532,17 @@ export default async function ManagementLedgerPage({
                             className="rounded bg-emerald-700 px-2 py-1 text-[11px] text-white"
                           >
                             Onayla (Post)
+                          </button>
+                        </form>
+                      ) : null}
+                      {je.status === "draft" && canReverse ? (
+                        <form action={discardDraftEntryAction}>
+                          <input type="hidden" name="entryId" value={je.id} />
+                          <button
+                            type="submit"
+                            className="rounded border border-red-700/60 bg-red-50 px-2 py-1 text-[11px] font-medium text-red-800"
+                          >
+                            Taslağı Sil
                           </button>
                         </form>
                       ) : null}

@@ -1,6 +1,16 @@
 import { Pool } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { acceptMatch } from "@/lib/bank/engine";
 import { createCounterparty } from "@/lib/counterparties/engine";
+import { executeCheckBordroTransition, loadCheckBordroTargets } from "@/lib/financing/check-bordro";
+import { recordRate } from "@/lib/fx/engine";
+import {
+  cancelInvoice,
+  changeInvoiceStatus,
+  createInvoice,
+  listInvoices,
+  recordInvoicePayment,
+} from "@/lib/invoices/engine";
 import {
   createManagementSubAccount,
   inferTdhpClassification,
@@ -8,6 +18,7 @@ import {
 } from "@/lib/ledger/accounts";
 import {
   approveDraftManagementEntry,
+  discardDraftManagementEntry,
   loadManagementLedgerOverview,
   postManualManagementAdjustment,
   rebuildOrSyncManagementLedger,
@@ -15,6 +26,8 @@ import {
   revalueProvisionalFxEntries,
   syncDomainEventToManagementLedger,
 } from "@/lib/ledger/posting-engine";
+import { loadPayableRunCandidates } from "@/lib/payments/payment-runs";
+import { reverseAllocation } from "@/lib/receivables/engine";
 import { assertDisposableTargetDb } from "../../scripts/db/disposable-guard";
 import { databaseNameFromUrl, isDisposableDatabaseName } from "../../scripts/db/owner-url";
 import { ensureSystemActor } from "../../scripts/db/seed-system-actor";
@@ -505,5 +518,277 @@ describe.runIf(hasDisposableDb || requireDisposableDb)("Faz 52 (E2) — Çift Ta
     const bulk2 = await rebuildOrSyncManagementLedger(pool, actorId);
     expect(bulk1.createdCount).toBeGreaterThanOrEqual(0);
     expect(bulk2.createdCount).toBe(0);
+  });
+
+  it("Dalga 3 (F-23..F-30): satır-içi tahsisat birleşimi, tevkifat tam kapanışı, söz kapanışı, ters storno, 102 çift sayım koruması, keşide çek 103/102 ve otomatik kur değerleme", async () => {
+    // 1. F-23: Satır-içi kısmi ödeme hem paid_amount hem allocated_amount'u günceller, kalan borç 6.000 TL görünür
+    const purch = await createInvoice(
+      pool,
+      {
+        direction: "purchase",
+        invoiceNo: "W3-ALIS-001",
+        partyId: vendorPartyId,
+        issueDate: "2026-06-01",
+        dueDate: "2026-06-15",
+        currency: "TRY",
+        lines: [{ description: "Hammadde alımı", quantity: 1, unitPrice: 10000, taxRate: 0 }],
+      },
+      actorId,
+    );
+    await changeInvoiceStatus(pool, { invoiceId: purch.invoiceId, status: "open" }, actorId);
+
+    // F-29: Fatura 'open' olduğunda yönetim defterine anında fiş düşmüş olmalı
+    const autoInvJe = await pool.query<{ id: string; status: string }>(
+      `select id::text, status from public.management_journal_entries where source_type = 'invoice' and source_id = $1`,
+      [purch.invoiceId],
+    );
+    expect(autoInvJe.rowCount).toBe(1);
+    expect(autoInvJe.rows[0].status).toBe("posted");
+
+    await recordInvoicePayment(pool, { invoiceId: purch.invoiceId, amount: 4000 }, actorId);
+    const purchCheck = await pool.query<{ paid_amount: string; allocated_amount: string; status: string }>(
+      `select paid_amount::text, allocated_amount::text, status from public.invoices where id = $1`,
+      [purch.invoiceId],
+    );
+    expect(Number(purchCheck.rows[0].paid_amount)).toBe(4000);
+    expect(Number(purchCheck.rows[0].allocated_amount)).toBe(4000);
+    expect(purchCheck.rows[0].status).toBe("partial");
+
+    const listed = await listInvoices(pool, { direction: "purchase", limit: 20 });
+    expect(listed.find((i) => i.id === purch.invoiceId)?.remaining).toBe(6000);
+    const runCands = await loadPayableRunCandidates(pool, "TRY", 50);
+    expect(runCands.find((c) => c.targetId === purch.invoiceId)?.openAmount).toBe(6000);
+    const bordroTargets = await loadCheckBordroTargets(pool);
+    expect(bordroTargets.openPurchaseInvoices.find((i) => i.id === purch.invoiceId)?.openAmount).toBe(6000);
+
+    // 2. F-24 & F-25: Tevkifatlı satış faturası payable_amount kapanınca 'paid' olur ve bağlı promise_to_pay 'kept' olur
+    const withhInv = await pool.query<{ id: string }>(
+      `insert into public.invoices
+         (direction, invoice_no, party_id, issue_date, due_date, currency,
+          net_amount, tax_amount, gross_amount, vat_withholding_amount, payable_amount,
+          status, dedupe_hash)
+       values
+         ('sales', 'W3-TEVKIFAT-001', $1, '2026-06-02', '2026-06-10', 'TRY',
+          10000.00, 2000.00, 12000.00, 1000.00, 11000.00,
+          'open', 'w3-tevkifat-001')
+       returning id::text`,
+      [customerPartyId],
+    );
+    const withhInvId = withhInv.rows[0].id;
+    const ptp = await pool.query<{ id: string }>(
+      `insert into public.promise_to_pay
+         (party_id, invoice_id, promised_date, promised_amount, currency, status, created_by)
+       values ($1, $2, '2026-06-10', 11000.00, 'TRY', 'pending', $3)
+       returning id::text`,
+      [customerPartyId, withhInvId, actorId],
+    );
+
+    await recordInvoicePayment(pool, { invoiceId: withhInvId, amount: 11000 }, actorId);
+    const withhAfter = await pool.query<{ status: string; allocated_amount: string }>(
+      `select status, allocated_amount::text from public.invoices where id = $1`,
+      [withhInvId],
+    );
+    expect(withhAfter.rows[0].status).toBe("paid");
+    expect(Number(withhAfter.rows[0].allocated_amount)).toBe(11000);
+
+    const ptpAfter = await pool.query<{ status: string; resolution_source: string }>(
+      `select status, resolution_source from public.promise_to_pay where id = $1`,
+      [ptp.rows[0].id],
+    );
+    expect(ptpAfter.rows[0].status).toBe("kept");
+    expect(ptpAfter.rows[0].resolution_source).toBe("auto_detection");
+
+    // 3. F-28: Fatura iptali otomatik ters fiş (storno) üretir; F-55: draft fiş silinebilir
+    const cancellableInv = await createInvoice(
+      pool,
+      {
+        direction: "sales",
+        invoiceNo: "W3-IPTAL-001",
+        partyId: customerPartyId,
+        issueDate: "2026-06-03",
+        currency: "TRY",
+        lines: [{ description: "İptal edilecek danışmanlık", quantity: 1, unitPrice: 5000, taxRate: 20 }],
+      },
+      actorId,
+    );
+    await changeInvoiceStatus(pool, { invoiceId: cancellableInv.invoiceId, status: "open" }, actorId);
+    await cancelInvoice(pool, { invoiceId: cancellableInv.invoiceId, reason: "Müşteri siparişi iptal etti" }, actorId);
+
+    const cancelledJe = await pool.query<{ status: string; reversed_by_entry_id: string | null }>(
+      `select status, reversed_by_entry_id::text
+         from public.management_journal_entries
+        where source_type = 'invoice' and source_id = $1`,
+      [cancellableInv.invoiceId],
+    );
+    expect(cancelledJe.rows[0].status).toBe("reversed");
+    expect(cancelledJe.rows[0].reversed_by_entry_id).toBeTruthy();
+
+    const draftJe = await postManualManagementAdjustment(
+      pool,
+      {
+        entryDate: "2026-06-03",
+        description: "Silinecek taslak fiş",
+        currency: "TRY",
+        status: "draft",
+        lines: [
+          { accountCode: "770", debitNative: 1000 },
+          { accountCode: "320", creditNative: 1000 },
+        ],
+      },
+      actorId,
+    );
+    await discardDraftManagementEntry(pool, draftJe.entryId, actorId);
+    const draftCheck = await pool.query(`select 1 from public.management_journal_entries where id = $1`, [draftJe.entryId]);
+    expect(draftCheck.rowCount).toBe(0);
+
+    // 4. F-25 & F-28: Banka eşleştirmesiyle tahsilat -> reverseAllocation -> bank_transactions 'unmatched' + ters fiş
+    const bankInv = await createInvoice(
+      pool,
+      {
+        direction: "sales",
+        invoiceNo: "W3-BANKA-001",
+        partyId: customerPartyId,
+        issueDate: "2026-06-04",
+        currency: "TRY",
+        lines: [{ description: "Banka tahsilat testi", quantity: 1, unitPrice: 8000, taxRate: 0 }],
+      },
+      actorId,
+    );
+    await changeInvoiceStatus(pool, { invoiceId: bankInv.invoiceId, status: "open" }, actorId);
+    const btIn = await pool.query<{ id: string }>(
+      `insert into public.bank_transactions
+         (bank_account_id, txn_date, amount, currency, description, status, dedupe_hash)
+       values ($1, '2026-06-04', 8000.00, 'TRY', 'W3-BANKA-001 Tahsilat', 'unmatched', 'w3-bt-in-8000')
+       returning id::text`,
+      [bankAccountId],
+    );
+    await acceptMatch(
+      pool,
+      { transactionId: btIn.rows[0].id, targetTable: "invoices", targetId: bankInv.invoiceId },
+      actorId,
+    );
+    const btMatched = await pool.query<{ status: string; settled_allocation_id: string }>(
+      `select status, settled_allocation_id::text from public.bank_transactions where id = $1`,
+      [btIn.rows[0].id],
+    );
+    expect(btMatched.rows[0].status).toBe("matched");
+
+    await reverseAllocation(
+      pool,
+      { allocationId: btMatched.rows[0].settled_allocation_id, reason: "Hatalı eşleştirme geri alındı" },
+      actorId,
+    );
+    const btUnmatched = await pool.query<{ status: string }>(
+      `select status from public.bank_transactions where id = $1`,
+      [btIn.rows[0].id],
+    );
+    expect(btUnmatched.rows[0].status).toBe("unmatched");
+    const btJeAfterRev = await pool.query<{ status: string }>(
+      `select status from public.management_journal_entries where source_type = 'bank_transaction' and source_id = $1`,
+      [btIn.rows[0].id],
+    );
+    expect(btJeAfterRev.rows[0].status).toBe("reversed");
+
+    // 5. F-26: Ignored banka hareketi deftere sızmaz
+    const btIgnored = await pool.query<{ id: string }>(
+      `insert into public.bank_transactions
+         (bank_account_id, txn_date, amount, currency, description, status, ignored_reason, dedupe_hash)
+       values ($1, '2026-06-04', -999.00, 'TRY', 'Test mükerrer satır', 'ignored', 'Mükerrer satır', 'w3-bt-ignored')
+       returning id::text`,
+      [bankAccountId],
+    );
+    const ignoredSync = await syncDomainEventToManagementLedger(
+      pool,
+      { kind: "bank_transaction", bankTransactionId: btIgnored.rows[0].id },
+      actorId,
+    );
+    expect(ignoredSync).toBeNull();
+
+    // 6. F-27: Keşide çek (outflow / own_issue) ödemesi Borç 103 / Alacak 102 keser
+    const ownChk = await pool.query<{ id: string }>(
+      `insert into public.checks
+         (direction, instrument_type, status, amount, currency, maturity_date, serial_no, payee_party_id, counterparty_label)
+       values ('outflow', 'check', 'planned', 15000.00, 'TRY', '2026-06-20', 'W3-KESIDE-001', $1, 'E2 Test Satıcı')
+       returning id::text`,
+      [vendorPartyId],
+    );
+    const issueBordro = await executeCheckBordroTransition(
+      pool,
+      {
+        operation: "issue_own_check",
+        bordroDate: "2026-06-05",
+        checkIds: [ownChk.rows[0].id],
+        targetPartyId: vendorPartyId,
+      },
+      actorId,
+    );
+    expect(issueBordro.nextStatus).toBe("issued_to_vendor");
+
+    const settleOwnBordro = await executeCheckBordroTransition(
+      pool,
+      {
+        operation: "mark_cleared",
+        bordroDate: "2026-06-20",
+        checkIds: [ownChk.rows[0].id],
+      },
+      actorId,
+    );
+    expect(settleOwnBordro.nextStatus).toBe("cleared");
+
+    const settleLines = await pool.query<{ code: string; debit_try: string; credit_try: string }>(
+      `select ma.code, jl.debit_try::text, jl.credit_try::text
+         from public.management_journal_entries je
+         join public.management_journal_lines jl on jl.entry_id = je.id
+         join public.management_accounts ma on ma.id = jl.account_id
+        where je.source_type = 'check_bordro' and je.source_id = $1
+        order by jl.line_no asc`,
+      [settleOwnBordro.bordroId],
+    );
+    expect(settleLines.rows).toEqual([
+      { code: "103", debit_try: "15000.00", credit_try: "0.00" },
+      { code: "102", debit_try: "0.00", credit_try: "15000.00" },
+    ]);
+
+    // 7. F-30: recordRate çağrısı kur bekleyen provisional_fx fişleri otomatik 'posted' durumuna taşır
+    const chfInv = await createInvoice(
+      pool,
+      {
+        direction: "sales",
+        invoiceNo: "W3-CHF-001",
+        partyId: customerPartyId,
+        issueDate: "2026-06-25",
+        currency: "CHF",
+        lines: [{ description: "CHF ihracat danışmanlığı", quantity: 1, unitPrice: 1000, taxRate: 0 }],
+      },
+      actorId,
+    );
+    await changeInvoiceStatus(pool, { invoiceId: chfInv.invoiceId, status: "open" }, actorId);
+    const chfBefore = await pool.query<{ status: string }>(
+      `select status from public.management_journal_entries where source_type = 'invoice' and source_id = $1`,
+      [chfInv.invoiceId],
+    );
+    expect(chfBefore.rows[0].status).toBe("provisional_fx");
+
+    await recordRate(
+      pool,
+      {
+        baseCurrency: "CHF",
+        quoteCurrency: "TRY",
+        rateDate: "2026-06-25",
+        rate: 39.85,
+        source: "manual",
+      },
+      actorId,
+    );
+    const chfAfter = await pool.query<{ status: string }>(
+      `select status from public.management_journal_entries where source_type = 'invoice' and source_id = $1`,
+      [chfInv.invoiceId],
+    );
+    expect(chfAfter.rows[0].status).toBe("posted");
+
+    // Tüm mizan ve bilanço kuruşu kuruşuna dengede kalmalı
+    const finalOverview = await loadManagementLedgerOverview(pool);
+    expect(finalOverview.totalDebitTry).toBe(finalOverview.totalCreditTry);
+    expect(finalOverview.totalAssetsTry).toBe(finalOverview.totalLiabilitiesAndEquityTry);
   });
 });

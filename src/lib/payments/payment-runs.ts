@@ -304,7 +304,7 @@ export async function loadPayableRunCandidates(
               ('Fatura ' || inv.invoice_no) as reference_label,
               inv.party_id as party_id,
               pa.name as party_name,
-              (inv.gross_amount - coalesce(inv.allocated_amount, 0)) as open_amount,
+              greatest(0, coalesce(inv.payable_amount, inv.gross_amount) - greatest(coalesce(inv.paid_amount, 0), coalesce(inv.allocated_amount, 0))) as open_amount,
               inv.currency as currency,
               coalesce(inv.due_date, inv.issue_date) as due_date,
               inv.approval_status as approval_status
@@ -312,7 +312,7 @@ export async function loadPayableRunCandidates(
          join public.parties pa on pa.id = inv.party_id
         where inv.direction = 'purchase'
           and inv.status in ('open', 'partial')
-          and inv.gross_amount > coalesce(inv.allocated_amount, 0)
+          and coalesce(inv.payable_amount, inv.gross_amount) > greatest(coalesce(inv.paid_amount, 0), coalesce(inv.allocated_amount, 0))
           and inv.currency = $1
 
        union all
@@ -487,7 +487,8 @@ async function resolveAndValidateTarget(
       approval_status: string;
     }>(
       `select i.direction, i.status, i.invoice_no, i.party_id::text, pa.name as party_name,
-              i.currency, (i.gross_amount - coalesce(i.allocated_amount, 0))::text as open_amount,
+              i.currency,
+              greatest(0, coalesce(i.payable_amount, i.gross_amount) - greatest(coalesce(i.paid_amount, 0), coalesce(i.allocated_amount, 0)))::text as open_amount,
               to_char(coalesce(i.due_date, i.issue_date), 'YYYY-MM-DD') as due_date,
               i.approval_status
          from public.invoices i

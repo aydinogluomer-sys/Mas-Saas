@@ -323,6 +323,10 @@ function createInMemoryFinancialPool(state: InMemoryFinancialState): Pool {
       return { rows: [], rowCount: 0 };
     }
 
+    if (sql.includes("select distinct je.source_type")) {
+      return { rows: [], rowCount: 0 };
+    }
+
     // 4. Management accounts lookup
     if (sql.includes("from public.management_accounts where code = $1")) {
       const code = String(values[0] ?? "");
