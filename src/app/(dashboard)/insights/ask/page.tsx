@@ -9,7 +9,9 @@ import {
   buildFinancialContext,
   isMissingSchemaError,
   listConversations,
+  loadConversationDetail,
 } from "@/lib/assistant/engine";
+import { istanbulDateISO } from "@/lib/reports/rules";
 import { answerTelegramQuestion } from "@/lib/telegram/assistant";
 import { Badge } from "@/components/ui/badge";
 import { Panel } from "@/components/ui/panel";
@@ -32,10 +34,17 @@ const telegramSamples = [
   "/hareket ",
 ];
 
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 export default async function AskPage({
   searchParams,
 }: {
-  searchParams?: Promise<{ tg?: string }>;
+  searchParams?: Promise<{
+    tg?: string;
+    conversationId?: string;
+    responseId?: string;
+    error?: string;
+  }>;
 }) {
   const denied = await requireRouteAccess("/insights/ask");
   if (denied) return denied;
@@ -43,10 +52,14 @@ export default async function AskPage({
   const role = session?.role ?? "viewer";
   const sp = searchParams ? await searchParams : {};
   const pool = getPool();
-  const todayISO = new Date().toISOString().slice(0, 10);
+  const todayISO = istanbulDateISO();
   const tgQuery = (sp.tg ?? "Toplam açık alacak ne kadar?").trim();
+  const requestedConversationId =
+    sp.conversationId && UUID_RE.test(sp.conversationId.trim())
+      ? sp.conversationId.trim()
+      : null;
 
-  const [recent, tgResult, conversations, finContext] = await Promise.all([
+  const [recent, tgResult, conversations, finContext, selectedConversation] = await Promise.all([
     listAiResponses(pool, 20).catch((err: unknown) => {
       if (isMissingSchemaError(err)) return [];
       throw err;
@@ -55,8 +68,9 @@ export default async function AskPage({
       kind: "help" as const,
       answer: "Telegram asistanı yanıtı şu anda hesaplanamadı.",
     })),
-    listConversations(pool, 10),
+    listConversations(pool, 25),
     buildFinancialContext(pool, role, todayISO),
+    requestedConversationId ? loadConversationDetail(pool, requestedConversationId) : Promise.resolve(null),
   ]);
 
   const threadSummary = summarizeConversationWindow(conversations);
@@ -74,17 +88,120 @@ export default async function AskPage({
         }
       />
 
-      <Panel title="Karar sorusu">
+      {sp.error ? (
+        <div
+          className="mb-3 rounded border p-2 text-xs"
+          style={{
+            borderColor: "color-mix(in srgb, var(--neg) 40%, var(--line))",
+            background: "color-mix(in srgb, var(--neg) 10%, var(--surface-1))",
+            color: "var(--neg)",
+          }}
+        >
+          {sp.error}
+        </div>
+      ) : null}
+
+      <Panel
+        title={
+          selectedConversation
+            ? `Karar sorusu · Oturum: ${selectedConversation.title}`
+            : "Karar sorusu (Yeni Oturum)"
+        }
+        right={
+          selectedConversation ? (
+            <Link
+              href="/insights/ask"
+              className="rounded border px-2.5 py-1 font-mono text-xs"
+              style={{
+                borderColor: "var(--line)",
+                background: "var(--surface-2)",
+                color: "var(--text-1)",
+              }}
+            >
+              + Yeni Oturum Başlat
+            </Link>
+          ) : undefined
+        }
+      >
+        {selectedConversation && selectedConversation.turns.length > 0 ? (
+          <div
+            className="mb-4 space-y-2.5 rounded border p-3"
+            style={{
+              borderColor: "var(--line)",
+              background: "var(--surface-2)",
+            }}
+          >
+            <div className="flex flex-wrap items-center justify-between gap-2 text-xs" style={{ color: "var(--text-2)" }}>
+              <span className="font-mono font-semibold">
+                Oturum Geçmişi ({selectedConversation.turns.length} tur) · Son güncelleme: {selectedConversation.updatedAt}
+              </span>
+              <Badge tone="green">Çok-turlu bağlam aktif</Badge>
+            </div>
+            <div className="space-y-2">
+              {selectedConversation.turns.map((turn) => (
+                <div
+                  key={turn.responseId}
+                  className="rounded border p-2.5 text-xs"
+                  style={{
+                    borderColor:
+                      sp.responseId === turn.responseId ? "var(--accent, var(--line))" : "var(--line-faint)",
+                    background: "var(--surface-1)",
+                    color: "var(--text-1)",
+                  }}
+                >
+                  <div className="mb-1 flex flex-wrap items-center justify-between gap-2">
+                    <span className="font-mono font-semibold">
+                      Tur #{turn.turnIndex}: {turn.question}
+                    </span>
+                    <div className="flex items-center gap-2">
+                      <Badge
+                        tone={
+                          turn.responseMode === "openai"
+                            ? "green"
+                            : turn.responseMode === "fallback"
+                              ? "amber"
+                              : "neutral"
+                        }
+                      >
+                        {turn.responseMode}
+                      </Badge>
+                      <Link
+                        href={`/insights/ask/${turn.responseId}`}
+                        className="font-mono text-[11px] underline"
+                        style={{ color: "var(--text-2)" }}
+                      >
+                        Kanıt detayı →
+                      </Link>
+                    </div>
+                  </div>
+                  <div className="whitespace-pre-wrap leading-relaxed" style={{ color: "var(--text-2)" }}>
+                    {turn.answerMd}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        ) : null}
+
         <form action={askQuestionAction} className="space-y-3">
+          {selectedConversation ? (
+            <input type="hidden" name="conversationId" value={selectedConversation.id} />
+          ) : null}
           <textarea
             name="question"
             required
             rows={4}
             className="field-control w-full resize-y p-3"
-            placeholder="Önümüzdeki 30 günde çek ve kredi yükü ne kadar?"
+            placeholder={
+              selectedConversation
+                ? "Bu oturuma takip sorusu yazın (örn. Peki 30 günlük ufukta ne kadar?)..."
+                : "Önümüzdeki 30 günde çek ve kredi yükü ne kadar?"
+            }
           />
           <div className="flex flex-wrap gap-2">
-            <button className="button-accent px-3 py-2">Cevapla</button>
+            <button className="button-accent px-3 py-2">
+              {selectedConversation ? "Oturumda Cevapla" : "Cevapla"}
+            </button>
             <label className="button-ghost px-3 py-2">
               <input name="forceDeterministic" type="checkbox" /> Yalnız deterministik cevap
             </label>
@@ -93,6 +210,9 @@ export default async function AskPage({
         <div className="mt-3 flex flex-wrap gap-2">
           {samples.map((q) => (
             <form key={q} action={askQuestionAction}>
+              {selectedConversation ? (
+                <input type="hidden" name="conversationId" value={selectedConversation.id} />
+              ) : null}
               <input type="hidden" name="question" value={q} />
               <button className="button-ghost px-2 py-1.5">{q}</button>
             </form>
@@ -133,27 +253,51 @@ export default async function AskPage({
         </div>
 
         {conversations.length === 0 ? (
-          <div className="mt-3 border border-dashed border-line p-1">
+          <div className="mt-3 border border-dashed p-1" style={{ borderColor: "var(--line)" }}>
             <EmptyState>
-              Henüz kaydedilmiş çok-turlu asistan oturumu bulunmuyor.
+              Henüz kaydedilmiş çok-turlu asistan oturumu bulunmuyor. Yukarıdan ilk sorunuzu sorduğunuzda kalıcı oturum otomatik oluşturulur.
             </EmptyState>
           </div>
         ) : (
-          <ul className="mt-3 flex flex-col gap-1 border-t border-line pt-2">
-            {conversations.map((c) => (
-              <li
-                key={c.id}
-                className="flex flex-wrap items-center justify-between gap-2 border-b border-line-faint py-1.5 text-xs last:border-0"
-              >
-                <span className="font-medium">{c.title}</span>
-                <span className="flex items-center gap-2 font-mono text-[11px] text-tone-3">
-                  <Badge tone={c.status === "active" ? "green" : "neutral"}>
-                    {c.status}
-                  </Badge>
-                  <span>{`${c.turnCount} tur · ${c.updatedAt}`}</span>
-                </span>
-              </li>
-            ))}
+          <ul className="mt-3 flex flex-col gap-1 border-t pt-2" style={{ borderColor: "var(--line)" }}>
+            {conversations.map((c) => {
+              const isSelected = selectedConversation?.id === c.id;
+              return (
+                <li
+                  key={c.id}
+                  className="flex flex-wrap items-center justify-between gap-2 border-b py-1.5 px-2 text-xs last:border-0"
+                  style={{
+                    borderColor: "var(--line-faint)",
+                    background: isSelected ? "var(--surface-2)" : "transparent",
+                  }}
+                >
+                  <Link
+                    href={`/insights/ask?conversationId=${encodeURIComponent(c.id)}`}
+                    className="font-medium underline-offset-2 hover:underline"
+                    style={{ color: "var(--text-1)" }}
+                  >
+                    {c.title}
+                  </Link>
+                  <span className="flex items-center gap-2 font-mono text-[11px]" style={{ color: "var(--text-3)" }}>
+                    <Badge tone={c.status === "active" ? "green" : "neutral"}>
+                      {c.status}
+                    </Badge>
+                    <span>{`${c.turnCount} tur · ${c.updatedAt}`}</span>
+                    <Link
+                      href={`/insights/ask?conversationId=${encodeURIComponent(c.id)}`}
+                      className="rounded border px-2 py-0.5 font-mono text-[10px]"
+                      style={{
+                        borderColor: "var(--line)",
+                        background: "var(--surface-1)",
+                        color: "var(--text-1)",
+                      }}
+                    >
+                      {isSelected ? "Açık" : "Devam et →"}
+                    </Link>
+                  </span>
+                </li>
+              );
+            })}
           </ul>
         )}
       </Panel>
@@ -163,6 +307,9 @@ export default async function AskPage({
         subtitle="Salt-okunur Telegram bot motoru (assistant.ts): kur çevrimi yapmadan TRY toplamlarını ve cari hesap ekstresini anında yanıtlar."
       >
         <form method="get" action="/insights/ask" className="flex flex-wrap gap-2">
+          {selectedConversation ? (
+            <input type="hidden" name="conversationId" value={selectedConversation.id} />
+          ) : null}
           <input
             type="text"
             name="tg"
@@ -178,15 +325,29 @@ export default async function AskPage({
           {telegramSamples.map((cmd) => (
             <a
               key={cmd}
-              href={`/insights/ask?tg=${encodeURIComponent(cmd)}`}
-              className="border border-line bg-surface-2 px-2 py-1 font-mono text-[11px] text-tone-2 hover:border-accent hover:text-tone-1"
+              href={`/insights/ask?tg=${encodeURIComponent(cmd)}${
+                selectedConversation ? `&conversationId=${encodeURIComponent(selectedConversation.id)}` : ""
+              }`}
+              className="border px-2 py-1 font-mono text-[11px]"
+              style={{
+                borderColor: "var(--line)",
+                background: "var(--surface-2)",
+                color: "var(--text-2)",
+              }}
             >
               {cmd}
             </a>
           ))}
         </div>
-        <div className="mt-3 border border-line bg-ink p-3 font-mono text-xs text-tone-1">
-          <div className="mb-1 flex items-center justify-between text-[10px] uppercase text-tone-3">
+        <div
+          className="mt-3 border p-3 font-mono text-xs"
+          style={{
+            borderColor: "var(--line)",
+            background: "var(--surface-2)",
+            color: "var(--text-1)",
+          }}
+        >
+          <div className="mb-1 flex items-center justify-between text-[10px] uppercase" style={{ color: "var(--text-3)" }}>
             <span>Komut: {tgQuery}</span>
             <Badge tone={tgResult.kind === "refused" ? "red" : "blue"}>{tgResult.kind}</Badge>
           </div>
@@ -202,7 +363,8 @@ export default async function AskPage({
             <Link
               key={r.id}
               href={`/insights/ask/${r.id}`}
-              className="grid gap-2 border-b border-line-faint py-2 text-sm sm:grid-cols-[1fr_auto_auto]"
+              className="grid gap-2 border-b py-2 text-sm sm:grid-cols-[1fr_auto_auto]"
+              style={{ borderColor: "var(--line-faint)", color: "var(--text-1)" }}
             >
               <span>{r.question}</span>
               <Badge
@@ -216,7 +378,7 @@ export default async function AskPage({
               >
                 {r.response_mode}
               </Badge>
-              <span className="text-tone-3">{r.created_at} →</span>
+              <span style={{ color: "var(--text-3)" }}>{r.created_at} →</span>
             </Link>
           ))
         )}

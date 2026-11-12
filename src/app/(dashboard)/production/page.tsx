@@ -2,6 +2,7 @@ import Link from "@/components/ui/app-link";
 import { Badge } from "@/components/ui/badge";
 import { fmtTL, Panel } from "@/components/ui/panel";
 import { EmptyState, KeyStat, KpiCard, PageHeader, TableShell } from "@/components/ui/shell";
+import { SubmitButton } from "@/components/ui/submit-button";
 import { getRequestUser } from "@/lib/auth";
 import { can } from "@/lib/authz/matrix";
 import { requireRouteAccess } from "@/lib/authz/route-guard";
@@ -213,7 +214,7 @@ export default async function ProductionSummary({
                 type="number"
                 min="2000"
                 max="2100"
-                defaultValue={new Date().getFullYear()}
+                defaultValue={new Intl.DateTimeFormat("en-CA", { timeZone: "Europe/Istanbul", year: "numeric" }).format(new Date())}
                 placeholder="Tarife yılı"
                 className="rounded border bg-transparent px-2 py-1"
                 style={{ borderColor: "var(--line-faint)", color: "var(--text-1)" }}
@@ -277,8 +278,9 @@ export default async function ProductionSummary({
                 className="rounded border bg-transparent px-2 py-1 sm:col-span-2"
                 style={{ borderColor: "var(--line-faint)", color: "var(--text-1)" }}
               />
-              <button
-                className="rounded border px-2 py-1"
+              <SubmitButton
+                pendingLabel="Kaydediliyor…"
+                className="rounded border px-2 py-1 disabled:opacity-60"
                 style={{
                   borderColor: "var(--line)",
                   background: "var(--surface-2)",
@@ -286,7 +288,7 @@ export default async function ProductionSummary({
                 }}
               >
                 Parametreyi kaydet
-              </button>
+              </SubmitButton>
             </form>
           </details>
         </Panel>
@@ -333,30 +335,32 @@ export default async function ProductionSummary({
             </div>
             {revSummary.topParts.length > 0 ? (
               <TableShell>
-                <thead>
-                  <tr>
-                    <th>Parça Kodu</th>
-                    <th>Parça Adı</th>
-                    <th className="text-right">Adet</th>
-                    <th>Kaynak Biçimi</th>
-                    <th className="text-right">Kaynak Gelir (TRY)</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {revSummary.topParts.map((pt) => (
-                    <tr key={pt.partId}>
-                      <td className="font-mono text-xs">{pt.partCode ?? "—"}</td>
-                      <td className="text-xs">{pt.partName}</td>
-                      <td className="text-right font-mono text-xs">{pt.quantity ?? "—"}</td>
-                      <td>
-                        <Badge tone={pt.source === "v2" ? "blue" : pt.source === "legacy" ? "green" : "neutral"}>
-                          {pt.source}
-                        </Badge>
-                      </td>
-                      <td className="text-right font-mono text-xs">{fmtTL(pt.revenue)}</td>
+                <table className="w-full text-xs">
+                  <thead>
+                    <tr>
+                      <th>Parça Kodu</th>
+                      <th>Parça Adı</th>
+                      <th className="text-right">Adet</th>
+                      <th>Kaynak Biçimi</th>
+                      <th className="text-right">Kaynak Gelir (TRY)</th>
                     </tr>
-                  ))}
-                </tbody>
+                  </thead>
+                  <tbody>
+                    {revSummary.topParts.map((pt) => (
+                      <tr key={pt.partId}>
+                        <td className="font-mono text-xs">{pt.partCode ?? "—"}</td>
+                        <td className="text-xs">{pt.partName}</td>
+                        <td className="text-right font-mono text-xs">{pt.quantity ?? "—"}</td>
+                        <td>
+                          <Badge tone={pt.source === "v2" ? "blue" : pt.source === "legacy" ? "green" : "neutral"}>
+                            {pt.source}
+                          </Badge>
+                        </td>
+                        <td className="text-right font-mono text-xs">{fmtTL(pt.revenue)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
               </TableShell>
             ) : null}
           </div>

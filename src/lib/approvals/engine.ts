@@ -43,12 +43,475 @@ export const decideApprovalSchema = z.object({
   approvalId: z.uuid(),
   decision: z.enum(["approved", "rejected", "reworked"]),
   note: z.string().trim().min(3, "Karar notu en az 3 karakter olmalı").optional(),
+  justification: z.string().trim().max(1000).optional(),
 });
 
 export const resubmitApprovalSchema = z.object({
   approvalId: z.uuid(),
   note: z.string().trim().min(3).optional(),
 });
+
+export const updateGovernanceSettingsSchema = z.object({
+  allowSingleOperatorSelfApproval: z.boolean(),
+  minJustificationLength: z.coerce
+    .number()
+    .int()
+    .min(10, "Asgari gerekçe uzunluğu en az 10 karakter olmalıdır")
+    .max(500, "Asgari gerekçe uzunluğu en fazla 500 karakter olabilir")
+    .default(10),
+});
+
+export const TRIGGER_KINDS = ["always", "amount_gte", "new_iban", "new_counterparty"] as const;
+export type ApprovalTriggerKind = (typeof TRIGGER_KINDS)[number];
+
+export const upsertApprovalRuleSchema = z.object({
+  ruleId: z.uuid().optional(),
+  code: z
+    .string()
+    .trim()
+    .min(2, "Kural kodu en az 2 karakter olmalıdır")
+    .max(64)
+    .regex(/^[a-z0-9_]+$/, "Kural kodu yalnız küçük harf, rakam ve alt çizgi içerebilir"),
+  description: z.string().trim().min(3, "Kural açıklaması en az 3 karakter olmalıdır").max(240),
+  triggerKind: z.enum(TRIGGER_KINDS),
+  thresholdAmount: z.number().min(0, "Eşik tutarı negatif olamaz").nullable().optional(),
+  currency: z.string().trim().toUpperCase().regex(/^[A-Z]{3}$/).default("TRY"),
+  appliesTo: z.array(z.string().trim().min(1)).default([]),
+  isActive: z.boolean().default(true),
+});
+
+export interface ApprovalGovernanceSettings {
+  allowSingleOperatorSelfApproval: boolean;
+  minJustificationLength: number;
+  updatedBy: string | null;
+  updatedAt: string | null;
+}
+
+export interface SelfApprovalEvaluation {
+  allowed: true;
+  activeApproverCount: number;
+  minJustificationLength: number;
+  justification: string;
+}
+
+function isMissingRelationOrCol(err: unknown): boolean {
+  const code = (err as { code?: string } | null)?.code;
+  return code === "42P01" || code === "42703";
+}
+
+/**
+ * F-46 (A1): Evaluates Controlled Single-Operator 4-Eyes Policy inside an active transaction.
+ *
+ * Self-approval (`maker === checker`) is ONLY permitted when:
+ *   1) `activeApproverCount` (`admin` + `finance_manager` with `is_active = true`) <= 1, AND
+ *   2) `allow_single_operator_self_approval === true` in `approval_governance_settings`, AND
+ *   3) actor's active role is `'admin'`, AND
+ *   4) trimmed justification length >= `Math.max(10, min_justification_length)`.
+ *
+ * Whenever `activeApproverCount >= 2`, strict `maker <> checker` is enforced unconditionally.
+ */
+export async function evaluateSelfApprovalEligibility(
+  client: Pick<PoolClient, "query">,
+  actorId: string,
+  justification?: string | null,
+): Promise<SelfApprovalEvaluation> {
+  const countRes = await client.query<{ cnt: number | string }>(
+    `select count(*)::int as cnt
+       from public.users
+      where is_active = true
+        and role in ('admin', 'finance_manager')`,
+  );
+  const activeApproverCount = Number(countRes.rows[0]?.cnt ?? 0);
+
+  if (activeApproverCount >= 2) {
+    throw new DomainError(
+      "FORBIDDEN",
+      `Sistemde ${activeApproverCount} aktif onaycı (admin / finans yöneticisi) bulunduğu için 4-göz (maker-checker) kuralı zorunludur; kendi oluşturduğunuz kaydı başka bir onaycı karara bağlamalıdır.`,
+    );
+  }
+
+  const actorRes = await client.query<{ role: string }>(
+    `select role from public.users where id = $1 and is_active = true`,
+    [actorId],
+  );
+  const actorRole = actorRes.rows[0]?.role ?? null;
+
+  const govRes = await client
+    .query<{
+      allow_single_operator_self_approval: boolean;
+      min_justification_length: number | string;
+    }>(
+      `select allow_single_operator_self_approval, min_justification_length
+         from public.approval_governance_settings
+        where singleton_id = true`,
+    )
+    .catch((err: unknown) => {
+      if (isMissingRelationOrCol(err)) {
+        return {
+          rows: [{ allow_single_operator_self_approval: true, min_justification_length: 10 }],
+          rowCount: 1,
+        };
+      }
+      throw err;
+    });
+
+  const govRow = govRes.rows[0];
+  const allowSingleOperator =
+    govRow == null ? true : Boolean(govRow.allow_single_operator_self_approval);
+  const minJustificationLength = Math.max(
+    10,
+    intOrNull(govRow?.min_justification_length) ?? 10,
+  );
+
+  if (!allowSingleOperator) {
+    throw new DomainError(
+      "FORBIDDEN",
+      "Tek operatör öz-onay politikası kapalı; talep eden kişi kendi kaydını onaylayamaz (maker-checker).",
+    );
+  }
+
+  if (actorRole !== "admin" || activeApproverCount > 1) {
+    throw new DomainError(
+      "FORBIDDEN",
+      "Tek aktif onaycı öz-onay istisnası yalnızca aktif 'admin' rolü için geçerlidir (maker-checker).",
+    );
+  }
+
+  const trimmed = (justification ?? "").trim();
+  if (trimmed.length < minJustificationLength) {
+    throw new DomainError(
+      "VALIDATION",
+      `Tek operatör öz-onayı için en az ${minJustificationLength} karakterlik gerekçe notu zorunludur.`,
+    );
+  }
+
+  return {
+    allowed: true,
+    activeApproverCount,
+    minJustificationLength,
+    justification: trimmed,
+  };
+}
+
+export async function loadApprovalGovernanceSettings(
+  pool: Pick<Pool, "query">,
+): Promise<ApprovalGovernanceSettings> {
+  const r = await pool
+    .query<{
+      allow_single_operator_self_approval: boolean;
+      min_justification_length: number | string;
+      updated_by: string | null;
+      updated_at: string | null;
+    }>(
+      `select allow_single_operator_self_approval,
+              min_justification_length,
+              updated_by::text as updated_by,
+              to_char(updated_at at time zone 'Europe/Istanbul', 'YYYY-MM-DD HH24:MI') as updated_at
+         from public.approval_governance_settings
+        where singleton_id = true`,
+    )
+    .catch((err: unknown) => {
+      if (isMissingRelationOrCol(err)) return { rows: [], rowCount: 0 };
+      throw err;
+    });
+
+  const row = r.rows[0];
+  if (!row) {
+    return {
+      allowSingleOperatorSelfApproval: true,
+      minJustificationLength: 10,
+      updatedBy: null,
+      updatedAt: null,
+    };
+  }
+  return {
+    allowSingleOperatorSelfApproval: Boolean(row.allow_single_operator_self_approval),
+    minJustificationLength: Math.max(10, intOrNull(row.min_justification_length) ?? 10),
+    updatedBy: row.updated_by ?? null,
+    updatedAt: row.updated_at ?? null,
+  };
+}
+
+export async function loadActiveApproverCount(pool: Pick<Pool, "query">): Promise<number> {
+  const r = await pool
+    .query<{ cnt: number | string }>(
+      `select count(*)::int as cnt
+         from public.users
+        where is_active = true
+          and role in ('admin', 'finance_manager')`,
+    )
+    .catch(() => ({ rows: [{ cnt: 0 }], rowCount: 1 }));
+  return Number(r.rows[0]?.cnt ?? 0);
+}
+
+async function assertAdminActorWithClient(
+  client: Pick<PoolClient, "query">,
+  actorId: string,
+): Promise<void> {
+  const r = await client.query<{ role: string }>(
+    `select role from public.users where id = $1 and is_active = true`,
+    [actorId],
+  );
+  if (r.rows[0]?.role !== "admin") {
+    throw new DomainError(
+      "FORBIDDEN",
+      "Onay yönetişim politikası ve kural eşikleri yalnızca 'admin' tarafından değiştirilebilir.",
+    );
+  }
+}
+
+export async function updateApprovalGovernanceSettings(
+  pool: Pool,
+  raw: unknown,
+  actorId: string,
+): Promise<ApprovalGovernanceSettings> {
+  const input = parseOrThrow(updateGovernanceSettingsSchema, raw, "Onay yönetişim politikası");
+  const client = await pool.connect();
+  try {
+    await client.query("begin");
+    await assertAdminActorWithClient(client, actorId);
+
+    const beforeRes = await client.query<{
+      allow_single_operator_self_approval: boolean;
+      min_justification_length: number | string;
+    }>(
+      `select allow_single_operator_self_approval, min_justification_length
+         from public.approval_governance_settings
+        where singleton_id = true
+        for update`,
+    );
+    const prev = beforeRes.rows[0] ?? null;
+
+    const upRes = await client.query<{
+      allow_single_operator_self_approval: boolean;
+      min_justification_length: number | string;
+      updated_by: string | null;
+      updated_at: string | null;
+    }>(
+      `insert into public.approval_governance_settings
+         (singleton_id, allow_single_operator_self_approval, min_justification_length, updated_by)
+       values (true, $1, $2, $3)
+       on conflict (singleton_id) do update set
+         allow_single_operator_self_approval = excluded.allow_single_operator_self_approval,
+         min_justification_length = excluded.min_justification_length,
+         updated_by = excluded.updated_by,
+         updated_at = now()
+       returning allow_single_operator_self_approval,
+                 min_justification_length,
+                 updated_by::text as updated_by,
+                 to_char(updated_at at time zone 'Europe/Istanbul', 'YYYY-MM-DD HH24:MI') as updated_at`,
+      [input.allowSingleOperatorSelfApproval, input.minJustificationLength, actorId],
+    );
+    const updated = upRes.rows[0];
+
+    await audit(client, {
+      actor: actorId,
+      action: "update_approval_governance_settings",
+      entityTable: "approval_governance_settings",
+      entityId: null,
+      before: prev
+        ? {
+            allowSingleOperatorSelfApproval: Boolean(prev.allow_single_operator_self_approval),
+            minJustificationLength: intOrNull(prev.min_justification_length) ?? 10,
+          }
+        : null,
+      after: {
+        allowSingleOperatorSelfApproval: Boolean(updated.allow_single_operator_self_approval),
+        minJustificationLength: intOrNull(updated.min_justification_length) ?? 10,
+      },
+    });
+
+    await client.query("commit");
+    return {
+      allowSingleOperatorSelfApproval: Boolean(updated.allow_single_operator_self_approval),
+      minJustificationLength: intOrNull(updated.min_justification_length) ?? 10,
+      updatedBy: updated.updated_by ?? null,
+      updatedAt: updated.updated_at ?? null,
+    };
+  } catch (e) {
+    await client.query("rollback").catch(() => undefined);
+    throw e;
+  } finally {
+    client.release();
+  }
+}
+
+export async function upsertApprovalRule(
+  pool: Pool,
+  raw: unknown,
+  actorId: string,
+): Promise<{ ruleId: string }> {
+  const input = parseOrThrow(upsertApprovalRuleSchema, raw, "Onay kuralı");
+  const normalizedThreshold =
+    input.triggerKind === "amount_gte" ? (input.thresholdAmount ?? null) : null;
+  if (input.triggerKind === "amount_gte" && normalizedThreshold == null) {
+    throw new DomainError("VALIDATION", "Tutar eşiği ('amount_gte') kuralı için eşik tutarı zorunludur.");
+  }
+
+  const client = await pool.connect();
+  try {
+    await client.query("begin");
+    await assertAdminActorWithClient(client, actorId);
+
+    let ruleId: string;
+    if (input.ruleId) {
+      const prevRes = await client.query(
+        `select id::text, code, description, trigger_kind, threshold_amount, currency, applies_to, is_active
+           from public.approval_rules
+          where id = $1
+          for update`,
+        [input.ruleId],
+      );
+      if (prevRes.rowCount === 0) {
+        throw new DomainError("NOT_FOUND", "Güncellenecek onay kuralı bulunamadı.");
+      }
+      const prev = prevRes.rows[0];
+      const upd = await client.query<{ id: string }>(
+        `update public.approval_rules
+            set description = $2,
+                trigger_kind = $3,
+                threshold_amount = $4::numeric,
+                currency = $5,
+                applies_to = $6::text[],
+                is_active = $7
+          where id = $1
+          returning id::text as id`,
+        [
+          input.ruleId,
+          input.description,
+          input.triggerKind,
+          normalizedThreshold,
+          input.currency,
+          input.appliesTo,
+          input.isActive,
+        ],
+      );
+      if (upd.rowCount !== 1) {
+        throw new DomainError("CONFLICT", "Onay kuralı güncellenemedi.");
+      }
+      ruleId = upd.rows[0].id;
+      await audit(client, {
+        actor: actorId,
+        action: "update_approval_rule",
+        entityTable: "approval_rules",
+        entityId: ruleId,
+        before: {
+          code: prev.code,
+          description: prev.description,
+          triggerKind: prev.trigger_kind,
+          thresholdAmount: moneyOrNull(prev.threshold_amount),
+          currency: prev.currency,
+          appliesTo: prev.applies_to,
+          isActive: Boolean(prev.is_active),
+        },
+        after: {
+          code: prev.code,
+          description: input.description,
+          triggerKind: input.triggerKind,
+          thresholdAmount: normalizedThreshold,
+          currency: input.currency,
+          appliesTo: input.appliesTo,
+          isActive: input.isActive,
+        },
+      });
+    } else {
+      const ins = await client.query<{ id: string }>(
+        `insert into public.approval_rules
+           (code, description, trigger_kind, threshold_amount, currency, applies_to, is_active)
+         values ($1, $2, $3, $4::numeric, $5, $6::text[], $7)
+         on conflict (code) do update set
+           description = excluded.description,
+           trigger_kind = excluded.trigger_kind,
+           threshold_amount = excluded.threshold_amount,
+           currency = excluded.currency,
+           applies_to = excluded.applies_to,
+           is_active = excluded.is_active
+         returning id::text as id`,
+        [
+          input.code,
+          input.description,
+          input.triggerKind,
+          normalizedThreshold,
+          input.currency,
+          input.appliesTo,
+          input.isActive,
+        ],
+      );
+      ruleId = ins.rows[0].id;
+      await audit(client, {
+        actor: actorId,
+        action: "upsert_approval_rule",
+        entityTable: "approval_rules",
+        entityId: ruleId,
+        before: null,
+        after: {
+          code: input.code,
+          description: input.description,
+          triggerKind: input.triggerKind,
+          thresholdAmount: normalizedThreshold,
+          currency: input.currency,
+          appliesTo: input.appliesTo,
+          isActive: input.isActive,
+        },
+      });
+    }
+
+    await client.query("commit");
+    return { ruleId };
+  } catch (e) {
+    await client.query("rollback").catch(() => undefined);
+    throw e;
+  } finally {
+    client.release();
+  }
+}
+
+export async function toggleApprovalRule(
+  pool: Pool,
+  ruleId: string,
+  isActive: boolean,
+  actorId: string,
+): Promise<void> {
+  const parsedId = parseOrThrow(z.uuid(), ruleId, "Onay kuralı kimliği");
+  const client = await pool.connect();
+  try {
+    await client.query("begin");
+    await assertAdminActorWithClient(client, actorId);
+
+    const prevRes = await client.query<{ code: string; is_active: boolean }>(
+      `select code, is_active from public.approval_rules where id = $1 for update`,
+      [parsedId],
+    );
+    if (prevRes.rowCount === 0) {
+      throw new DomainError("NOT_FOUND", "Onay kuralı bulunamadı.");
+    }
+    const prev = prevRes.rows[0];
+
+    const upd = await client.query(
+      `update public.approval_rules set is_active = $2 where id = $1`,
+      [parsedId, Boolean(isActive)],
+    );
+    if (upd.rowCount !== 1) {
+      throw new DomainError("CONFLICT", "Onay kuralı durumu güncellenemedi.");
+    }
+
+    await audit(client, {
+      actor: actorId,
+      action: "toggle_approval_rule",
+      entityTable: "approval_rules",
+      entityId: parsedId,
+      before: { code: prev.code, isActive: Boolean(prev.is_active) },
+      after: { code: prev.code, isActive: Boolean(isActive) },
+    });
+
+    await client.query("commit");
+  } catch (e) {
+    await client.query("rollback").catch(() => undefined);
+    throw e;
+  } finally {
+    client.release();
+  }
+}
 
 /* ── rule evaluation (deterministic) ──────────────────────────────────────────────────── */
 
@@ -218,6 +681,10 @@ async function applySubjectWriteback(
   decision: "approved" | "rejected" | "reworked",
   actorId: string,
   note: string | null,
+  selfOverride: { selfApprovedOverride: boolean; selfApprovalJustification: string | null } = {
+    selfApprovedOverride: false,
+    selfApprovalJustification: null,
+  },
 ): Promise<string | null> {
   const { subject_table: tbl, subject_id: subjectId, id: approvalId } = approval;
 
@@ -244,14 +711,25 @@ async function applySubjectWriteback(
     return legacy;
   }
 
-  // 2) Faz 48 (D2): Payment Run maker-checker writeback
+  // 2) Faz 48 (D2) + F-46 (A1): Payment Run maker-checker writeback
   if (tbl === "payment_runs") {
     if (decision === "approved") {
       const wb = await client.query(
         `update public.payment_runs
-            set status='approved', approved_by=$2, approved_at=now(), approval_id=$3
+            set status='approved',
+                approved_by=$2,
+                approved_at=now(),
+                approval_id=$3,
+                self_approved_override=$4,
+                self_approval_justification=$5
           where id=$1`,
-        [subjectId, actorId, approvalId],
+        [
+          subjectId,
+          actorId,
+          approvalId,
+          selfOverride.selfApprovedOverride,
+          selfOverride.selfApprovalJustification,
+        ],
       );
       assertWritebackRow(wb.rowCount, tbl);
 
@@ -403,18 +881,39 @@ export async function decideApproval(pool: Pool, raw: unknown, actorId: string):
     if (input.decision === "reworked" && a.status !== "pending") {
       throw new DomainError("CONFLICT", "Yalnız bekleyen bir onay revizyona gönderilebilir.");
     }
+
+    let selfApprovedOverride = false;
+    let selfApprovalJustification: string | null = null;
     if (a.requested_by && a.requested_by === actorId) {
-      throw new DomainError("FORBIDDEN", "Onayı talep eden kişi onaylayamaz (maker-checker).");
+      const elig = await evaluateSelfApprovalEligibility(
+        client,
+        actorId,
+        input.justification ?? input.note,
+      );
+      selfApprovedOverride = true;
+      selfApprovalJustification = elig.justification;
     }
+
+    const effectiveNote = input.note ?? selfApprovalJustification ?? null;
 
     const approvalUpdate = await client.query(
       `update public.approvals
          set status=$2,
              decided_by = case when $2 in ('approved','rejected') then $3::uuid else null end,
              decided_at = case when $2 in ('approved','rejected') then now() else null end,
-             decision_note = $4
+             decision_note = $4,
+             self_approved_override = $5,
+             self_approval_justification = $6
        where id=$1`,
-      [input.approvalId, input.decision, actorId, input.note ?? null]);
+      [
+        input.approvalId,
+        input.decision,
+        actorId,
+        effectiveNote,
+        selfApprovedOverride,
+        selfApprovalJustification,
+      ],
+    );
     if (approvalUpdate.rowCount !== 1) {
       throw new DomainError("CONFLICT", "Onay kaydı güncellenemedi veya bu işlem için yetkiniz yok.");
     }
@@ -426,22 +925,27 @@ export async function decideApproval(pool: Pool, raw: unknown, actorId: string):
       `insert into public.approval_steps (approval_id, step_no, action, actor, note, from_status, to_status)
        values ($1,$2,$3,$4,$5,$6,$7)`,
       [input.approvalId, intOrNull(step.rows[0].n) ?? 1, input.decision, actorId,
-       input.note ?? null, a.status, input.decision]);
+       effectiveNote, a.status, input.decision]);
 
     const writeback = await applySubjectWriteback(
       client,
       { id: a.id, subject_table: a.subject_table, subject_id: a.subject_id },
       input.decision,
       actorId,
-      input.note ?? null,
+      effectiveNote,
+      { selfApprovedOverride, selfApprovalJustification },
     );
 
     await audit(client, {
       actor: actorId, action: "decide_approval", entityTable: "approvals", entityId: input.approvalId,
       before: { status: a.status, round_no: a.round_no },
       after: {
-        status: input.decision, note: input.note ?? null,
-        subjectTable: a.subject_table, legacyWriteback: writeback ?? null,
+        status: input.decision,
+        note: effectiveNote,
+        subjectTable: a.subject_table,
+        legacyWriteback: writeback ?? null,
+        selfApprovedOverride,
+        justification: selfApprovalJustification,
       },
     });
     await client.query("commit");
@@ -510,37 +1014,71 @@ export interface ApprovalRow {
   subjectStatus: string | null;
   amount: number | null;
   currency: string | null;
+  requestedBy: string | null;
   requestedByName: string | null;
   requestedAt: string;
   decidedByName: string | null;
   decidedAt: string | null;
   decisionNote: string | null;
+  selfApprovedOverride: boolean;
+  selfApprovalJustification: string | null;
   stepCount: number;
 }
 
 export async function loadApprovalQueue(
   pool: Pool, opts: { status?: string; limit?: number } = {},
 ): Promise<ApprovalRow[]> {
-  const r = await pool.query(
-    `select id::text, subject_table, subject_id::text, subject_label, request_kind, rule_code,
-            round_no, status, subject_status, amount, currency,
-            requested_by_name, to_char(requested_at at time zone 'Europe/Istanbul','YYYY-MM-DD HH24:MI') as requested_at,
-            decided_by_name, to_char(decided_at at time zone 'Europe/Istanbul','YYYY-MM-DD HH24:MI') as decided_at,
-            decision_note, step_count
-     from public.approval_queue
-     where ($1='' or status=$1)
-     order by case status when 'pending' then 0 when 'reworked' then 1 else 2 end,
-              requested_at desc
-     limit $2`,
-    [opts.status ?? "", opts.limit ?? 200]);
+  const r = await pool
+    .query(
+      `select q.id::text, q.subject_table, q.subject_id::text, q.subject_label, q.request_kind, q.rule_code,
+              q.round_no, q.status, q.subject_status, q.amount, q.currency,
+              q.requested_by::text as requested_by,
+              q.requested_by_name, to_char(q.requested_at at time zone 'Europe/Istanbul','YYYY-MM-DD HH24:MI') as requested_at,
+              q.decided_by_name, to_char(q.decided_at at time zone 'Europe/Istanbul','YYYY-MM-DD HH24:MI') as decided_at,
+              q.decision_note, q.step_count,
+              coalesce(ap.self_approved_override, false) as self_approved_override,
+              ap.self_approval_justification
+         from public.approval_queue q
+         left join public.approvals ap on ap.id = q.id
+        where ($1='' or q.status=$1)
+        order by case q.status when 'pending' then 0 when 'reworked' then 1 else 2 end,
+                 q.requested_at desc
+        limit $2`,
+      [opts.status ?? "", opts.limit ?? 200],
+    )
+    .catch((err: unknown) => {
+      if ((err as { code?: string } | null)?.code === "42703") {
+        return pool.query(
+          `select id::text, subject_table, subject_id::text, subject_label, request_kind, rule_code,
+                  round_no, status, subject_status, amount, currency,
+                  requested_by::text as requested_by,
+                  requested_by_name, to_char(requested_at at time zone 'Europe/Istanbul','YYYY-MM-DD HH24:MI') as requested_at,
+                  decided_by_name, to_char(decided_at at time zone 'Europe/Istanbul','YYYY-MM-DD HH24:MI') as decided_at,
+                  decision_note, step_count,
+                  false as self_approved_override,
+                  null::text as self_approval_justification
+             from public.approval_queue
+            where ($1='' or status=$1)
+            order by case status when 'pending' then 0 when 'reworked' then 1 else 2 end,
+                     requested_at desc
+            limit $2`,
+          [opts.status ?? "", opts.limit ?? 200],
+        );
+      }
+      throw err;
+    });
   return r.rows.map((x) => ({
     id: x.id, subjectTable: x.subject_table, subjectId: x.subject_id,
     subjectLabel: x.subject_label, requestKind: x.request_kind, ruleCode: x.rule_code,
     roundNo: intOrNull(x.round_no) ?? 1, status: x.status, subjectStatus: x.subject_status,
     amount: moneyOrNull(x.amount), currency: x.currency,
+    requestedBy: x.requested_by ?? null,
     requestedByName: x.requested_by_name, requestedAt: x.requested_at,
     decidedByName: x.decided_by_name, decidedAt: x.decided_at,
-    decisionNote: x.decision_note, stepCount: intOrNull(x.step_count) ?? 0,
+    decisionNote: x.decision_note,
+    selfApprovedOverride: Boolean(x.self_approved_override),
+    selfApprovalJustification: x.self_approval_justification ?? null,
+    stepCount: intOrNull(x.step_count) ?? 0,
   }));
 }
 

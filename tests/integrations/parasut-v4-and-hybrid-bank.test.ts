@@ -49,6 +49,11 @@ describe("Faz 51 (E1) — Paraşüt API v4 Salt-Okunur Konnektörü ve Hibrit Ba
     await pool.query(`delete from public.integration_entity_links where provider = 'parasut'`);
     await pool.query(`delete from public.integration_account_mappings where provider = 'parasut'`);
     await pool.query(`delete from public.integration_staged_parties where provider = 'parasut'`);
+    await pool.query(
+      `update public.bank_accounts
+          set iban = null
+        where iban_normalized in ('TR330006100519786457841326', 'TR640006400000112345678901')`,
+    );
 
     // Create 2 MAS bank accounts for inter-account transfer (S-8) and hybrid statement tests
     const caA = await pool.query<{ id: string }>(

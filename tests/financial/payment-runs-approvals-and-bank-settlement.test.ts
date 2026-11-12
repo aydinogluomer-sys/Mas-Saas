@@ -153,6 +153,7 @@ describe("Faz 48 (D2) — Saf birim korumaları (XML varlık kaçışı, CSV enj
 
 describe.runIf(hasDisposableDb || requireDisposableDb)(
   "Faz 48 (D2) — Dalga 2 Uçtan Uca Canlı PostgreSQL Doğrulaması (Fatura → Onay → Payment Run → pain.001 → Banka Eşleşme → Kapanış)",
+  { timeout: 30_000 },
   () => {
     let pool: Pool;
 

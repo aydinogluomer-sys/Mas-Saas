@@ -3,8 +3,12 @@
 import type { Pool, PoolClient } from "pg";
 import { z } from "zod";
 import { audit } from "@/lib/audit";
+import { translatePeriodLockError } from "@/lib/cashflow/period-lock";
 import { DomainError } from "@/lib/domain-error";
-import { safeSyncDomainEventWithClient } from "@/lib/ledger/posting-engine";
+import {
+  safeReverseJournalForSourceWithClient,
+  safeSyncDomainEventWithClient,
+} from "@/lib/ledger/posting-engine";
 import { decimal, intOrNull, moneyOrNull, rateOrNull } from "@/lib/money";
 import { resolvePromisesForPaidInvoicesWithClient } from "@/lib/receivables/engine";
 import { parseOrThrow } from "@/lib/validation";
@@ -14,9 +18,11 @@ import {
   dedupeKey,
   detectStatementColumns,
   parseStatementDate,
-  rankCandidates,
   resolveSignedAmount,
+  scoreMatch,
   statementColumnsUsable,
+  SUGGESTION_THRESHOLD,
+  type MatchScore,
   type MatchTarget,
   type StatementField,
 } from "./rules";
@@ -40,9 +46,37 @@ export const matchDecisionSchema = z.object({
   targetId: z.uuid(),
 });
 
+export const manualMatchBankTransactionSchema = z
+  .object({
+    transactionId: z.uuid(),
+    targetKey: z.string().trim().optional(),
+    targetTable: z.enum(["payment_instances", "checks", "loan_installments", "invoices"]).optional(),
+    targetId: z.uuid().optional(),
+  })
+  .superRefine((val, ctx) => {
+    const hasPair = Boolean(val.targetTable && val.targetId);
+    const hasKey = Boolean(val.targetKey && val.targetKey.includes(":"));
+    if (!hasPair && !hasKey) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["targetKey"],
+        message: "Eşleştirilecek açık kayıt seçilmelidir.",
+      });
+    }
+  });
+
 export const ignoreSchema = z.object({
   transactionId: z.uuid(),
   reason: z.string().trim().min(3, "Gerekçe en az 3 karakter olmalı"),
+});
+
+export const unignoreSchema = z.object({
+  transactionId: z.uuid(),
+});
+
+export const unmatchSchema = z.object({
+  transactionId: z.uuid(),
+  reason: z.string().trim().min(3, "Geri alma gerekçesi en az 3 karakter olmalı"),
 });
 
 /* ── bank account ─────────────────────────────────────────────────────────────────────── */
@@ -310,9 +344,84 @@ export async function importBankStatement(
   }
 }
 
-/* ── matching & atomic settlement (Faz 48 D2) ─────────────────────────────────────────── */
+/* ── matching & atomic settlement (Faz 48 D2 + Wave 5A F-48 ±90d & manual match) ──────── */
 
-async function loadMatchTargets(client: PoolClient, txnDate: string, windowDays = 10): Promise<MatchTarget[]> {
+export const EXTENDED_MATCH_WINDOW_DAYS = 90;
+
+export interface ExtendedScoreInput {
+  amount: number;
+  txnDate: string;
+  description: string | null;
+  counterparty: string | null;
+  currency?: string | null;
+}
+
+function daysBetweenISO(a: string, b: string): number {
+  return Math.abs(Date.parse(`${a}T00:00:00Z`) - Date.parse(`${b}T00:00:00Z`)) / 86400000;
+}
+
+/**
+ * F-48: Extends deterministic bank match scoring from ±10d to ±90d while preserving higher
+ * confidence for closer dates (`<= 7d` via `scoreMatch`, then graduated `8..10d`, `11..30d`,
+ * `31..60d`, `61..90d`) so 30-to-90-day late collections/payments still surface as candidates.
+ */
+export function scoreExtendedBankMatch(
+  txn: ExtendedScoreInput,
+  target: MatchTarget,
+): MatchScore {
+  const base = scoreMatch(txn, target);
+  if (
+    base.reasons.includes("currency_mismatch") ||
+    base.reasons.includes("direction_mismatch")
+  ) {
+    return base;
+  }
+
+  if (target.dueDate) {
+    const d = daysBetweenISO(txn.txnDate, target.dueDate);
+    if (Number.isFinite(d) && d > 7 && d <= EXTENDED_MATCH_WINDOW_DAYS) {
+      let extra = 0;
+      let reason = "";
+      if (d <= 10) {
+        extra = 0.09;
+        reason = "date_within_10d";
+      } else if (d <= 30) {
+        extra = 0.07;
+        reason = "date_within_30d";
+      } else if (d <= 60) {
+        extra = 0.06;
+        reason = "date_within_60d";
+      } else {
+        extra = 0.05;
+        reason = "date_within_90d";
+      }
+      const confidence = Math.min(1, Math.round((base.confidence + extra) * 10000) / 10000);
+      return {
+        confidence,
+        reasons: [...base.reasons, reason],
+      };
+    }
+  }
+
+  return base;
+}
+
+export function rankExtendedCandidates(
+  txn: ExtendedScoreInput,
+  targets: MatchTarget[],
+  threshold = SUGGESTION_THRESHOLD,
+): Array<MatchTarget & MatchScore> {
+  return targets
+    .map((t) => ({ ...t, ...scoreExtendedBankMatch(txn, t) }))
+    .filter((t) => t.confidence >= threshold)
+    .sort((a, b) => b.confidence - a.confidence || (a.label ?? "").localeCompare(b.label ?? "", "tr"));
+}
+
+async function loadMatchTargets(
+  client: PoolClient,
+  txnDate: string,
+  windowDays = EXTENDED_MATCH_WINDOW_DAYS,
+): Promise<MatchTarget[]> {
   const res = await client.query(
     `select 'payment_instances' as table_name, i.id::text,
             case when i.amount is null then null else (i.amount - coalesce(i.paid_amount, 0)) end as amount,
@@ -324,6 +433,7 @@ async function loadMatchTargets(client: PoolClient, txnDate: string, windowDays 
        left join public.payments p on p.id = i.payment_id
        left join public.parties pa on pa.id = p.provider_party_id
       where i.status in ('unpaid','partial','planned','late')
+        and (i.amount is null or i.amount > coalesce(i.paid_amount, 0))
         and i.due_date between $1::date - $2::int and $1::date + $2::int
      union all
      select 'checks', c.id::text, c.amount, to_char(c.maturity_date,'YYYY-MM-DD'),
@@ -338,7 +448,7 @@ async function loadMatchTargets(client: PoolClient, txnDate: string, windowDays 
         and c.maturity_date between $1::date - $2::int and $1::date + $2::int
      union all
      select 'loan_installments', li.id::text,
-            li.amount as amount,
+            case when li.amount is null then null else (li.amount - coalesce(li.paid_amount, 0)) end as amount,
             to_char(li.due_date,'YYYY-MM-DD'),
             coalesce(pa.name, l.name, ''),
             'outflow'::text as direction,
@@ -346,7 +456,9 @@ async function loadMatchTargets(client: PoolClient, txnDate: string, windowDays 
        from public.loan_installments li
        join public.loans l on l.id = li.loan_id
        left join public.parties pa on pa.id = l.lender_party_id
-      where li.status in ('planned','late') and l.archived_at is null
+      where li.status in ('planned','late','unpaid','partial')
+        and l.archived_at is null
+        and (li.amount is null or li.amount > coalesce(li.paid_amount, 0))
         and li.due_date between $1::date - $2::int and $1::date + $2::int
      union all
      select 'invoices', inv.id::text,
@@ -396,7 +508,7 @@ export async function runMatcher(pool: Pool, actorId: string, limit = 500): Prom
       const amount = moneyOrNull(t.amount);
       if (amount == null) continue;
       const targets = await loadMatchTargets(client, t.txn_date);
-      const ranked = rankCandidates(
+      const ranked = rankExtendedCandidates(
         {
           amount,
           txnDate: t.txn_date,
@@ -430,13 +542,13 @@ export async function runMatcher(pool: Pool, actorId: string, limit = 500): Prom
 
     await audit(client, {
       actor: actorId, action: "run_bank_matcher", entityTable: "bank_transactions", entityId: null,
-      after: { scanned: txns.rowCount ?? 0, suggested, candidates },
+      after: { scanned: txns.rowCount ?? 0, suggested, candidates, windowDays: EXTENDED_MATCH_WINDOW_DAYS },
     });
     await client.query("commit");
     return { scanned: txns.rowCount ?? 0, suggested, candidates };
   } catch (e) {
-    await client.query("rollback");
-    throw e;
+    await client.query("rollback").catch(() => undefined);
+    translatePeriodLockError(e);
   } finally {
     client.release();
   }
@@ -451,13 +563,19 @@ const SETTLEABLE_CHECK_STATUSES = [
   "issued_to_vendor",
 ];
 
-/**
- * Faz 48 (D2): Accepts a bank match and atomically settles the linked financial obligation
- * (`invoices`, `payment_instances`, `checks`, or `loan_installments`) — plus any active
- * `payment_run_items` / `payment_runs` entry — inside a single locked PostgreSQL transaction.
- */
-export async function acceptMatch(pool: Pool, raw: unknown, actorId: string): Promise<void> {
-  const input = parseOrThrow(matchDecisionSchema, raw, "Eşleştirme");
+const SETTLEABLE_LOAN_INSTALLMENT_STATUSES = [
+  "planned",
+  "late",
+  "unpaid",
+  "partial",
+];
+
+async function settleBankMatchInternal(
+  pool: Pool,
+  input: z.infer<typeof matchDecisionSchema>,
+  actorId: string,
+  options?: { manual?: boolean },
+): Promise<void> {
   const client = await pool.connect();
   try {
     await client.query("begin");
@@ -696,9 +814,12 @@ export async function acceptMatch(pool: Pool, raw: unknown, actorId: string): Pr
         id: string;
         status: string;
         amount: string | null;
+        paid_amount: string;
         currency: string;
       }>(
-        `select li.id::text, li.status, li.amount::text as amount, l.currency
+        `select li.id::text, li.status, li.amount::text as amount,
+                coalesce(li.paid_amount, 0)::text as paid_amount,
+                l.currency
            from public.loan_installments li
            join public.loans l on l.id = li.loan_id
           where li.id = $1 and l.archived_at is null
@@ -707,7 +828,7 @@ export async function acceptMatch(pool: Pool, raw: unknown, actorId: string): Pr
       );
       if (liRes.rowCount === 0) throw new DomainError("NOT_FOUND", "Eşleştirilecek kredi taksiti bulunamadı.");
       const li = liRes.rows[0];
-      if (!["planned", "late"].includes(li.status)) {
+      if (!SETTLEABLE_LOAN_INSTALLMENT_STATUSES.includes(li.status)) {
         throw new DomainError("CONFLICT", `'${li.status}' durumundaki kredi taksiti eşleştirmeyle kapatılamaz.`);
       }
       if (li.currency !== txCurrency) {
@@ -719,7 +840,8 @@ export async function acceptMatch(pool: Pool, raw: unknown, actorId: string): Pr
       if (li.amount == null) {
         throw new DomainError("CONFLICT", "Tutarı bilinmeyen kredi taksiti otomatik kapatılamaz.");
       }
-      const openInstallmentDec = decimal(li.amount);
+      const prevPaidLiDec = decimal(li.paid_amount ?? 0);
+      const openInstallmentDec = decimal(li.amount).minus(prevPaidLiDec);
       if (!absTxDec.eq(openInstallmentDec)) {
         throw new DomainError(
           "CONFLICT",
@@ -729,7 +851,7 @@ export async function acceptMatch(pool: Pool, raw: unknown, actorId: string): Pr
 
       const updLi = await client.query(
         `update public.loan_installments
-            set status = 'paid', paid_at = ($2::date)::timestamptz
+            set status = 'paid', paid_amount = amount, paid_at = ($2::date)::timestamptz
           where id = $1`,
         [input.targetId, txDate],
       );
@@ -754,7 +876,7 @@ export async function acceptMatch(pool: Pool, raw: unknown, actorId: string): Pr
         input.transactionId,
         input.targetTable,
         input.targetId,
-        confidence.rows[0]?.confidence ?? null,
+        confidence.rows[0]?.confidence ?? (options?.manual ? "1.0000" : null),
         settledAllocationId,
         actorId,
       ],
@@ -832,12 +954,16 @@ export async function acceptMatch(pool: Pool, raw: unknown, actorId: string): Pr
     }
 
     await audit(client, {
-      actor: actorId, action: "accept_bank_match", entityTable: "bank_transactions",
-      entityId: input.transactionId, before: txRow,
+      actor: actorId,
+      action: options?.manual ? "manual_match_bank_transaction" : "accept_bank_match",
+      entityTable: "bank_transactions",
+      entityId: input.transactionId,
+      before: txRow,
       after: {
         status: "matched",
         matched_entity_table: input.targetTable,
         matched_entity_id: input.targetId,
+        manualMatch: Boolean(options?.manual),
         financial_record_mutated: true,
         targetFullySettled,
         settledAllocationId,
@@ -846,11 +972,54 @@ export async function acceptMatch(pool: Pool, raw: unknown, actorId: string): Pr
     });
     await client.query("commit");
   } catch (e) {
-    await client.query("rollback");
-    throw e;
+    await client.query("rollback").catch(() => undefined);
+    translatePeriodLockError(e);
   } finally {
     client.release();
   }
+}
+
+/**
+ * Faz 48 (D2): Accepts a bank match and atomically settles the linked financial obligation
+ * (`invoices`, `payment_instances`, `checks`, or `loan_installments`) — plus any active
+ * `payment_run_items` / `payment_runs` entry — inside a single locked PostgreSQL transaction.
+ */
+export async function acceptMatch(pool: Pool, raw: unknown, actorId: string): Promise<void> {
+  const input = parseOrThrow(matchDecisionSchema, raw, "Eşleştirme");
+  await settleBankMatchInternal(pool, input, actorId, { manual: false });
+}
+
+/**
+ * F-48: Operator-initiated manual settlement of an unmatched/suggested bank transaction
+ * against any open financial obligation (`invoices`, `payment_instances`, `checks`,
+ * `loan_installments`). Accepts either `{ transactionId, targetTable, targetId }` or
+ * `{ transactionId, targetKey: "<table>:<uuid>" }`.
+ */
+export async function manualMatchBankTransaction(
+  pool: Pool,
+  raw: unknown,
+  actorId: string,
+): Promise<void> {
+  const parsed = parseOrThrow(manualMatchBankTransactionSchema, raw, "Manuel eşleştirme");
+  let targetTable = parsed.targetTable;
+  let targetId = parsed.targetId;
+  if ((!targetTable || !targetId) && parsed.targetKey) {
+    const idx = parsed.targetKey.indexOf(":");
+    if (idx > 0) {
+      targetTable = parsed.targetKey.slice(0, idx) as typeof targetTable;
+      targetId = parsed.targetKey.slice(idx + 1).trim();
+    }
+  }
+  const decision = parseOrThrow(
+    matchDecisionSchema,
+    {
+      transactionId: parsed.transactionId,
+      targetTable,
+      targetId,
+    },
+    "Manuel eşleştirme hedefi",
+  );
+  await settleBankMatchInternal(pool, decision, actorId, { manual: true });
 }
 
 export async function rejectCandidate(pool: Pool, raw: unknown, actorId: string, reason?: string): Promise<void> {
@@ -894,23 +1063,339 @@ export async function ignoreTransaction(pool: Pool, raw: unknown, actorId: strin
   const client = await pool.connect();
   try {
     await client.query("begin");
-    const before = await client.query(
-      `select id, status, ignored_reason from public.bank_transactions where id=$1 for update`, [input.transactionId]);
-    if (before.rowCount === 0) throw new DomainError("Banka hareketi bulunamadı.");
+    const before = await client.query<{
+      id: string;
+      status: string;
+      ignored_reason: string | null;
+    }>(
+      `select id::text, status, ignored_reason from public.bank_transactions where id=$1 for update`,
+      [input.transactionId],
+    );
+    if (before.rowCount === 0) throw new DomainError("NOT_FOUND", "Banka hareketi bulunamadı.");
+    const currentStatus = before.rows[0].status;
+    if (currentStatus === "matched" || currentStatus === "reconciled") {
+      throw new DomainError(
+        "CONFLICT",
+        "Eşleştirilmiş veya mutabakata alınmış banka hareketi doğrudan yok sayılamaz; önce eşleştirmeyi geri alın.",
+      );
+    }
+    if (currentStatus === "ignored") {
+      throw new DomainError("CONFLICT", "Bu banka hareketi zaten yok sayılmış durumda.");
+    }
     await client.query(
       `update public.bank_transactions
          set status='ignored', ignored_reason=$2, matched_entity_table=null, matched_entity_id=null,
              match_confidence=null, matched_at=null
        where id=$1`,
-      [input.transactionId, input.reason]);
+      [input.transactionId, input.reason],
+    );
     await audit(client, {
       actor: actorId, action: "ignore_bank_transaction", entityTable: "bank_transactions",
       entityId: input.transactionId, before: before.rows[0], after: { status: "ignored", reason: input.reason },
     });
     await client.query("commit");
   } catch (e) {
-    await client.query("rollback");
-    throw e;
+    await client.query("rollback").catch(() => undefined);
+    translatePeriodLockError(e);
+  } finally {
+    client.release();
+  }
+}
+
+/**
+ * F-56: Restores an `'ignored'` bank transaction back to `'unmatched'` so it re-enters
+ * the matching queue and liquidity reconciliation.
+ */
+export async function unignoreTransaction(
+  pool: Pool,
+  raw: unknown,
+  actorId: string,
+): Promise<void> {
+  const normalized = typeof raw === "string" ? { transactionId: raw } : raw;
+  const input = parseOrThrow(unignoreSchema, normalized, "Yok saymayı kaldırma");
+  const client = await pool.connect();
+  try {
+    await client.query("begin");
+    const before = await client.query<{
+      id: string;
+      status: string;
+      ignored_reason: string | null;
+    }>(
+      `select id::text, status, ignored_reason from public.bank_transactions where id = $1 for update`,
+      [input.transactionId],
+    );
+    if (before.rowCount === 0) throw new DomainError("NOT_FOUND", "Banka hareketi bulunamadı.");
+    if (before.rows[0].status !== "ignored") {
+      throw new DomainError(
+        "CONFLICT",
+        `'${before.rows[0].status}' durumundaki banka hareketi yok sayılmış değil.`,
+      );
+    }
+    await client.query(
+      `update public.bank_transactions
+          set status = 'unmatched',
+              ignored_reason = null
+        where id = $1`,
+      [input.transactionId],
+    );
+    await audit(client, {
+      actor: actorId,
+      action: "unignore_bank_transaction",
+      entityTable: "bank_transactions",
+      entityId: input.transactionId,
+      before: before.rows[0],
+      after: { status: "unmatched", ignored_reason: null },
+    });
+    await client.query("commit");
+  } catch (e) {
+    await client.query("rollback").catch(() => undefined);
+    translatePeriodLockError(e);
+  } finally {
+    client.release();
+  }
+}
+
+/**
+ * F-56: Atomically reverses a `'matched'` or `'reconciled'` bank transaction:
+ *   1) Steps `'reconciled'` -> `'matched'` first to satisfy `0042` state-machine guard.
+ *   2) Reverses any `invoice_allocations`, `payment_instances`, `checks`, or `loan_installments`
+ *      settlement caused by this bank transaction.
+ *   3) Restores any `payment_run_items` / `payment_runs` settled by this bank transaction.
+ *   4) Posts automatic management-ledger storno (`reversal`) for `bank_transaction` / `loan_installment`.
+ *   5) Resets `bank_transactions` back to `'unmatched'`.
+ */
+export async function unmatchTransaction(
+  pool: Pool,
+  raw: unknown,
+  actorId: string,
+): Promise<void> {
+  const input = parseOrThrow(unmatchSchema, raw, "Eşleştirmeyi geri alma");
+  const client = await pool.connect();
+  try {
+    await client.query("begin");
+    const before = await client.query<{
+      id: string;
+      status: string;
+      matched_entity_table: string | null;
+      matched_entity_id: string | null;
+      settled_allocation_id: string | null;
+      amount: string | null;
+      txn_date: string;
+    }>(
+      `select id::text, status, matched_entity_table, matched_entity_id::text,
+              settled_allocation_id::text, amount::text, to_char(txn_date, 'YYYY-MM-DD') as txn_date
+         from public.bank_transactions
+        where id = $1
+        for update`,
+      [input.transactionId],
+    );
+    if (before.rowCount === 0) throw new DomainError("NOT_FOUND", "Banka hareketi bulunamadı.");
+    const txRow = before.rows[0];
+    if (!["matched", "reconciled"].includes(txRow.status)) {
+      throw new DomainError(
+        "CONFLICT",
+        `'${txRow.status}' durumundaki banka hareketinin geri alınacak bir eşleşmesi yok.`,
+      );
+    }
+
+    if (txRow.status === "reconciled") {
+      await client.query(
+        `update public.bank_transactions
+            set status = 'matched', reconciled_at = null
+          where id = $1`,
+        [input.transactionId],
+      );
+    }
+
+    // Clear FK reference to invoice_allocations before reversing allocations
+    if (txRow.settled_allocation_id) {
+      await client.query(
+        `update public.bank_transactions set settled_allocation_id = null where id = $1`,
+        [input.transactionId],
+      );
+    }
+
+    const absTxDec = decimal(txRow.amount ?? 0).abs();
+
+    // 1) Reverse any active invoice_allocations sourced from this bank_transaction
+    await client.query(
+      `update public.invoice_allocations
+          set reversed_at = now(),
+              reversed_by = $2,
+              reversed_reason = $3
+        where source_table = 'bank_transactions'
+          and source_id = $1::uuid
+          and reversed_at is null`,
+      [input.transactionId, actorId, `Banka eşleştirmesi geri alındı: ${input.reason}`],
+    );
+
+    // 2) Reverse non-invoice matched target if present
+    if (txRow.matched_entity_table === "payment_instances" && txRow.matched_entity_id) {
+      const piRes = await client.query<{
+        id: string;
+        status: string;
+        paid_amount: string;
+      }>(
+        `select id::text, status, coalesce(paid_amount, 0)::text as paid_amount
+           from public.payment_instances
+          where id = $1
+          for update`,
+        [txRow.matched_entity_id],
+      );
+      const pi = piRes.rows[0];
+      if (pi && ["paid", "partial"].includes(pi.status)) {
+        const remDec = decimal(pi.paid_amount).minus(absTxDec);
+        if (remDec.lte(0)) {
+          await client.query(
+            `update public.payment_instances
+                set status = 'unpaid', paid_amount = null, paid_at = null
+              where id = $1`,
+            [pi.id],
+          );
+        } else {
+          await client.query(
+            `update public.payment_instances
+                set status = 'partial', paid_amount = $2::numeric
+              where id = $1`,
+            [pi.id, remDec.toFixed(2)],
+          );
+        }
+      }
+    } else if (txRow.matched_entity_table === "checks" && txRow.matched_entity_id) {
+      const chkRes = await client.query<{
+        id: string;
+        status: string;
+        direction: string;
+      }>(
+        `select id::text, status, direction
+           from public.checks
+          where id = $1 and archived_at is null
+          for update`,
+        [txRow.matched_entity_id],
+      );
+      const chk = chkRes.rows[0];
+      if (chk && chk.status === "cleared") {
+        const bordroCheck = await client.query(
+          `select 1
+             from public.check_events ce
+             join public.check_bordros cb on cb.id = ce.bordro_id
+            where ce.check_id = $1
+              and cb.bordro_type = 'settlement'
+            limit 1`,
+          [chk.id],
+        );
+        if ((bordroCheck.rowCount ?? 0) > 0) {
+          throw new DomainError(
+            "CONFLICT",
+            "Tahsilat bordrosuyla kapatılmış çek doğrudan banka üzerinden geri alınamaz; önce çek bordrosunu kontrol edin.",
+          );
+        }
+        const restoredStatus = chk.direction === "outflow" ? "issued_to_vendor" : "in_portfolio";
+        const restoredEventType =
+          chk.direction === "outflow" ? "issued_to_vendor" : "recalled_to_portfolio";
+        await client.query(
+          `update public.checks set status = $2 where id = $1`,
+          [chk.id, restoredStatus],
+        );
+        await client.query(
+          `insert into public.check_events (check_id, event_type, event_note, created_by)
+           values ($1, $2, $3, $4)`,
+          [chk.id, restoredEventType, `Banka eşleştirmesi geri alındı: ${input.reason}`, actorId],
+        );
+      }
+    } else if (txRow.matched_entity_table === "loan_installments" && txRow.matched_entity_id) {
+      const liRes = await client.query<{ id: string; status: string }>(
+        `select id::text, status
+           from public.loan_installments
+          where id = $1
+          for update`,
+        [txRow.matched_entity_id],
+      );
+      const li = liRes.rows[0];
+      if (li && ["paid", "partial"].includes(li.status)) {
+        await client.query(
+          `update public.loan_installments
+              set status = 'planned', paid_amount = null, paid_at = null
+            where id = $1`,
+          [li.id],
+        );
+      }
+      await safeReverseJournalForSourceWithClient(
+        client,
+        "loan_installment",
+        txRow.matched_entity_id,
+        `Banka eşleştirmesi geri alındı: ${input.reason}`,
+        actorId,
+      );
+    }
+
+    // 3) Revert any payment_run_items / payment_runs settled by this bank_transaction
+    const priRows = await client.query<{ id: string; run_id: string }>(
+      `select id::text, run_id::text
+         from public.payment_run_items
+        where settled_bank_tx_id = $1
+          and status = 'settled'
+        for update`,
+      [input.transactionId],
+    );
+    for (const pri of priRows.rows) {
+      await client.query(
+        `update public.payment_run_items
+            set status = 'included', settled_bank_tx_id = null, settled_at = null
+          where id = $1`,
+        [pri.id],
+      );
+      await client.query(
+        `update public.payment_runs
+            set status = case when exported_at is not null then 'exported' else 'approved' end,
+                settled_at = null
+          where id = $1
+            and status = 'settled'`,
+        [pri.run_id],
+      );
+    }
+
+    // 4) Reverse management ledger entry posted for this bank_transaction
+    await safeReverseJournalForSourceWithClient(
+      client,
+      "bank_transaction",
+      input.transactionId,
+      `Banka eşleştirmesi geri alındı: ${input.reason}`,
+      actorId,
+    );
+
+    // 5) Reset bank_transactions back to unmatched
+    await client.query(
+      `update public.bank_transactions
+          set status = 'unmatched',
+              matched_entity_table = null,
+              matched_entity_id = null,
+              match_confidence = null,
+              matched_at = null,
+              settled_allocation_id = null,
+              settled_at = null,
+              settled_by = null
+        where id = $1`,
+      [input.transactionId],
+    );
+
+    await audit(client, {
+      actor: actorId,
+      action: "unmatch_bank_transaction",
+      entityTable: "bank_transactions",
+      entityId: input.transactionId,
+      before: txRow,
+      after: {
+        status: "unmatched",
+        reason: input.reason,
+        revertedEntityTable: txRow.matched_entity_table,
+        revertedEntityId: txRow.matched_entity_id,
+      },
+    });
+    await client.query("commit");
+  } catch (e) {
+    await client.query("rollback").catch(() => undefined);
+    translatePeriodLockError(e);
   } finally {
     client.release();
   }
@@ -1038,7 +1523,7 @@ async function loadTargetDetailsMap(
             li.id::text as target_id,
             coalesce(pa.name, l.name) as counterparty_name,
             (l.name || ' #' || li.installment_no::text) as reference_label,
-            li.amount::text as open_amount,
+            case when li.amount is null then null else (li.amount - coalesce(li.paid_amount, 0))::text end as open_amount,
             l.currency as currency,
             to_char(li.due_date, 'YYYY-MM-DD') as due_date
        from public.loan_installments li
@@ -1073,18 +1558,142 @@ async function loadTargetDetailsMap(
 
 export async function loadUnmatchedQueue(pool: Pool, limit = 50, offset = 0) {
   const r = await pool.query(
-    `select id::text, account_name, to_char(txn_date,'YYYY-MM-DD') as txn_date, description,
-            counterparty_name_raw, amount, direction, category, category_rule, status,
-            open_candidate_count, best_confidence
-     from public.bank_unmatched_queue
-     order by txn_date desc, abs(amount) desc, id desc limit $1 offset $2`, [limit, Math.max(0, offset)]);
+    `select q.id::text, q.account_name, to_char(q.txn_date,'YYYY-MM-DD') as txn_date, q.description,
+            q.counterparty_name_raw, q.amount, q.direction, q.category, q.category_rule, q.status,
+            q.open_candidate_count, q.best_confidence,
+            coalesce(bt.currency, ca.currency, 'TRY') as currency
+     from public.bank_unmatched_queue q
+     left join public.bank_transactions bt on bt.id = q.id
+     left join public.cash_accounts ca on ca.id = q.bank_account_id
+     order by q.txn_date desc, abs(q.amount) desc, q.id desc limit $1 offset $2`,
+    [limit, Math.max(0, offset)],
+  );
   return r.rows.map((x) => ({
-    id: x.id, accountName: x.account_name, txnDate: x.txn_date, description: x.description,
-    counterparty: x.counterparty_name_raw, amount: moneyOrNull(x.amount) ?? 0,
-    direction: x.direction as "inflow" | "outflow", category: x.category, categoryRule: x.category_rule,
+    id: x.id as string,
+    accountName: x.account_name as string,
+    txnDate: x.txn_date as string,
+    description: (x.description as string | null) ?? null,
+    counterparty: (x.counterparty_name_raw as string | null) ?? null,
+    amount: moneyOrNull(x.amount) ?? 0,
+    direction: x.direction as "inflow" | "outflow",
+    currency:
+      typeof x.currency === "string" && x.currency.trim() !== ""
+        ? x.currency.trim().toUpperCase()
+        : "TRY",
+    category: x.category as string,
+    categoryRule: (x.category_rule as string | null) ?? null,
     status: x.status as string,
     openCandidateCount: intOrNull(x.open_candidate_count) ?? 0,
     bestConfidence: rateOrNull(x.best_confidence),
+  }));
+}
+
+export interface ManualMatchTargetOption {
+  targetKey: string;
+  targetTable: "payment_instances" | "checks" | "loan_installments" | "invoices";
+  targetId: string;
+  referenceLabel: string;
+  counterpartyName: string | null;
+  openAmount: number | null;
+  currency: string;
+  direction: "inflow" | "outflow";
+  dueDate: string | null;
+}
+
+export async function loadOpenManualMatchTargets(
+  pool: Pick<Pool, "query">,
+  limit = 200,
+): Promise<ManualMatchTargetOption[]> {
+  const r = await pool
+    .query<{
+      target_table: ManualMatchTargetOption["targetTable"];
+      target_id: string;
+      reference_label: string;
+      counterparty_name: string | null;
+      open_amount: string | null;
+      currency: string | null;
+      direction: string | null;
+      due_date: string | null;
+    }>(
+      `select * from (
+         select 'invoices'::text as target_table,
+                inv.id::text as target_id,
+                ('Fatura ' || inv.invoice_no) as reference_label,
+                pa.name as counterparty_name,
+                greatest(0, coalesce(inv.payable_amount, inv.gross_amount) - greatest(coalesce(inv.paid_amount, 0), coalesce(inv.allocated_amount, 0)))::text as open_amount,
+                inv.currency as currency,
+                case when inv.direction = 'sales' then 'inflow' else 'outflow' end as direction,
+                to_char(coalesce(inv.due_date, inv.issue_date), 'YYYY-MM-DD') as due_date
+           from public.invoices inv
+           join public.parties pa on pa.id = inv.party_id
+          where inv.status in ('open','partial')
+            and not (inv.direction = 'purchase' and inv.approval_status in ('pending_approval','rejected'))
+            and coalesce(inv.payable_amount, inv.gross_amount) > greatest(coalesce(inv.paid_amount, 0), coalesce(inv.allocated_amount, 0))
+         union all
+         select 'payment_instances'::text as target_table,
+                pi.id::text as target_id,
+                coalesce(p.name, 'Ödeme kalemi') as reference_label,
+                pa.name as counterparty_name,
+                case when pi.amount is null then null else (pi.amount - coalesce(pi.paid_amount, 0))::text end as open_amount,
+                pi.currency as currency,
+                coalesce(pi.direction, p.direction, 'outflow')::text as direction,
+                to_char(pi.due_date, 'YYYY-MM-DD') as due_date
+           from public.payment_instances pi
+           left join public.payments p on p.id = pi.payment_id
+           left join public.parties pa on pa.id = p.provider_party_id
+          where pi.status in ('unpaid','partial','planned','late')
+            and not (coalesce(pi.direction, p.direction, 'outflow') = 'outflow' and pi.approval_status in ('pending_approval','rejected'))
+            and (pi.amount is null or pi.amount > coalesce(pi.paid_amount, 0))
+         union all
+         select 'checks'::text as target_table,
+                c.id::text as target_id,
+                case when c.serial_no is not null then ('Çek ' || c.serial_no) else 'Çek' end as reference_label,
+                coalesce(pa_in.name, pa_out.name, c.counterparty_label) as counterparty_name,
+                c.amount::text as open_amount,
+                c.currency as currency,
+                c.direction::text as direction,
+                to_char(c.maturity_date, 'YYYY-MM-DD') as due_date
+           from public.checks c
+           left join public.parties pa_in on pa_in.id = c.payer_party_id
+           left join public.parties pa_out on pa_out.id = c.payee_party_id
+          where c.status in ('planned','bounced','in_portfolio','in_bank_collection','in_bank_collateral','issued_to_vendor')
+            and c.archived_at is null
+         union all
+         select 'loan_installments'::text as target_table,
+                li.id::text as target_id,
+                (l.name || ' #' || li.installment_no::text) as reference_label,
+                coalesce(pa.name, l.name) as counterparty_name,
+                case when li.amount is null then null else (li.amount - coalesce(li.paid_amount, 0))::text end as open_amount,
+                l.currency as currency,
+                'outflow'::text as direction,
+                to_char(li.due_date, 'YYYY-MM-DD') as due_date
+           from public.loan_installments li
+           join public.loans l on l.id = li.loan_id
+           left join public.parties pa on pa.id = l.lender_party_id
+          where li.status in ('planned','late','unpaid','partial')
+            and l.archived_at is null
+            and (li.amount is null or li.amount > coalesce(li.paid_amount, 0))
+       ) open_targets
+       order by due_date desc nulls last, target_table asc
+       limit $1`,
+      [Math.max(1, limit)],
+    )
+    .catch((err: unknown) => {
+      const code = (err as { code?: string } | null)?.code;
+      if (code === "42P01" || code === "42703") return { rows: [], rowCount: 0 };
+      throw err;
+    });
+
+  return r.rows.map((x) => ({
+    targetKey: `${x.target_table}:${x.target_id}`,
+    targetTable: x.target_table,
+    targetId: x.target_id,
+    referenceLabel: x.reference_label,
+    counterpartyName: x.counterparty_name ?? null,
+    openAmount: moneyOrNull(x.open_amount),
+    currency: (x.currency ?? "TRY").trim().toUpperCase(),
+    direction: x.direction === "inflow" ? "inflow" : "outflow",
+    dueDate: x.due_date ?? null,
   }));
 }
 
@@ -1169,8 +1778,8 @@ export async function loadCandidatesBatch(
             case mc.target_table
               when 'payment_instances' then case when pi.amount is null then null else (pi.amount - coalesce(pi.paid_amount, 0))::text end
               when 'checks' then c.amount::text
-              when 'loan_installments' then li.amount::text
-              when 'invoices' then (inv.gross_amount - coalesce(inv.allocated_amount, 0))::text
+              when 'loan_installments' then case when li.amount is null then null else (li.amount - coalesce(li.paid_amount, 0))::text end
+              when 'invoices' then greatest(0, coalesce(inv.payable_amount, inv.gross_amount) - greatest(coalesce(inv.paid_amount, 0), coalesce(inv.allocated_amount, 0)))::text
               else null
             end as open_amount,
             case mc.target_table
@@ -1273,6 +1882,82 @@ export async function loadMatchConflicts(pool: Pool) {
     targetTable: x.matched_entity_table, targetId: x.matched_entity_id,
     claimCount: intOrNull(x.claim_count) ?? 0, claimedTotal: moneyOrNull(x.claimed_total) ?? 0,
   }));
+}
+
+export interface ResolvedBankTransactionRow {
+  id: string;
+  accountName: string;
+  txnDate: string;
+  description: string | null;
+  counterparty: string | null;
+  amount: number;
+  direction: "inflow" | "outflow";
+  currency: string;
+  status: "matched" | "reconciled" | "ignored";
+  matchedEntityTable: string | null;
+  matchedEntityId: string | null;
+  ignoredReason: string | null;
+}
+
+export async function loadRecentResolvedBankTransactions(
+  pool: Pick<Pool, "query">,
+  limit = 25,
+): Promise<ResolvedBankTransactionRow[]> {
+  const r = await pool
+    .query<{
+      id: string;
+      account_name: string | null;
+      txn_date: string;
+      description: string | null;
+      counterparty_name_raw: string | null;
+      amount: string | null;
+      currency: string | null;
+      status: "matched" | "reconciled" | "ignored";
+      matched_entity_table: string | null;
+      matched_entity_id: string | null;
+      ignored_reason: string | null;
+    }>(
+      `select bt.id::text,
+              ca.name as account_name,
+              to_char(bt.txn_date, 'YYYY-MM-DD') as txn_date,
+              bt.description,
+              bt.counterparty_name_raw,
+              bt.amount::text as amount,
+              coalesce(bt.currency, ca.currency, 'TRY') as currency,
+              bt.status,
+              bt.matched_entity_table,
+              bt.matched_entity_id::text,
+              bt.ignored_reason
+         from public.bank_transactions bt
+         left join public.cash_accounts ca on ca.id = bt.bank_account_id
+        where bt.status in ('matched', 'reconciled', 'ignored')
+        order by bt.updated_at desc nulls last, bt.txn_date desc, bt.id desc
+        limit $1`,
+      [Math.max(1, limit)],
+    )
+    .catch((err: unknown) => {
+      const code = (err as { code?: string } | null)?.code;
+      if (code === "42P01" || code === "42703") return { rows: [], rowCount: 0 };
+      throw err;
+    });
+
+  return r.rows.map((x) => {
+    const amt = moneyOrNull(x.amount) ?? 0;
+    return {
+      id: x.id,
+      accountName: x.account_name ?? "Banka Hesabı",
+      txnDate: x.txn_date,
+      description: x.description ?? null,
+      counterparty: x.counterparty_name_raw ?? null,
+      amount: amt,
+      direction: amt >= 0 ? "inflow" : "outflow",
+      currency: (x.currency ?? "TRY").trim().toUpperCase(),
+      status: x.status,
+      matchedEntityTable: x.matched_entity_table ?? null,
+      matchedEntityId: x.matched_entity_id ?? null,
+      ignoredReason: x.ignored_reason ?? null,
+    };
+  });
 }
 
 export async function loadBankableAccounts(pool: Pool) {

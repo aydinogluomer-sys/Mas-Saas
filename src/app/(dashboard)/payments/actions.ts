@@ -3,20 +3,25 @@ import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { getPool } from "@/lib/db";
 import {
-  ensureWindow,
-  markInstancePaid,
-  markInstanceUnpaid,
-  markInstancePartial,
   cancelInstance,
-  setInstanceAmount,
+  createPayment,
+  ensureWindow,
   mapAcceptedCandidates,
+  markInstancePaid,
+  markInstancePartial,
+  markInstanceUnpaid,
+  setInstanceAmount,
 } from "@/lib/radar/engine";
-import { archivePayment, requestApprovalsForOpenPaymentInstances, updatePaymentAndReconcile } from "@/lib/payments/engine";
+import { archivePayment, updatePaymentAndReconcile } from "@/lib/payments/engine";
+import {
+  isPgPeriodLockedError,
+  PERIOD_LOCKED_USER_MESSAGE,
+  translatePeriodLockError,
+} from "@/lib/cashflow/period-lock";
 import { cancelActionSchema } from "@/lib/validation/financial";
 import { DomainError } from "@/lib/domain-error";
 import { istanbulDateISO } from "@/lib/time/istanbul";
 import { requireActionPermission, safeRedirectPath } from "@/lib/auth";
-import { audit } from "@/lib/audit";
 
 const num = (v: FormDataEntryValue | null): number | null => {
   const s = String(v ?? "").trim();
@@ -36,6 +41,7 @@ function readForm(formData: FormData) {
     due_day: num(formData.get("due_day")),
     due_date: opt(formData.get("due_date")),
     default_amount: num(formData.get("default_amount")), // empty stays NULL, never 0
+    currency: opt(formData.get("currency")) ?? "TRY",
     amount_confidence: String(formData.get("amount_confidence") ?? "known"),
     direction: String(formData.get("direction") ?? "outflow"),
     priority: String(formData.get("priority") ?? "normal"),
@@ -54,10 +60,32 @@ function readForm(formData: FormData) {
 
 function validate(f: ReturnType<typeof readForm>): string | null {
   if (!f.name) return "Ad zorunlu.";
-  if (f.recurrence_type === "monthly" && (f.due_day == null || f.due_day < 1 || f.due_day > 31))
+  if (f.recurrence_type === "monthly" && (f.due_day == null || f.due_day < 1 || f.due_day > 31)) {
     return "Aylık tekrar için 1-31 arası gün zorunlu.";
+  }
+  if (f.recurrence_type === "one_off" && !f.due_date && f.due_day == null) {
+    return "Tek seferlik ödeme için vade tarihi zorunlu.";
+  }
   if (f.due_day != null && (f.due_day < 1 || f.due_day > 31)) return "Gün 1-31 arası olmalı.";
   return null;
+}
+
+function errorRedirect(backTo: string, message: string): never {
+  redirect(`${backTo}${backTo.includes("?") ? "&" : "?"}error=${encodeURIComponent(message)}`);
+}
+
+function handleCaughtPaymentError(e: unknown, backTo: string): never {
+  if (isPgPeriodLockedError(e)) {
+    errorRedirect(backTo, PERIOD_LOCKED_USER_MESSAGE);
+  }
+  try {
+    translatePeriodLockError(e);
+  } catch (translated) {
+    if (translated instanceof DomainError) {
+      errorRedirect(backTo, translated.message);
+    }
+    throw translated;
+  }
 }
 
 export async function createPaymentAction(formData: FormData): Promise<void> {
@@ -65,40 +93,16 @@ export async function createPaymentAction(formData: FormData): Promise<void> {
   const f = readForm(formData);
   const err = validate(f);
   if (err) redirect(`/payments/new?error=${encodeURIComponent(err)}`);
-  const pool = getPool();
-  const client = await pool.connect();
-  let id = "";
-  try {
-    await client.query("begin");
-    const res = await client.query(
-      `insert into public.payments
-         (name, recurrence_type, due_day, due_date, default_amount, amount_confidence,
-          direction, priority, flexibility_class, status, category_id, provider_party_id, owner_party_id,
-          cash_account_id, cost_center_id, project_id, department_id, description)
-       values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18) returning id`,
-      [f.name, f.recurrence_type, f.due_day, f.due_date, f.default_amount, f.amount_confidence,
-       f.direction, f.priority, f.flexibility_class, f.status, f.category_id, f.provider_party_id, f.owner_party_id,
-       f.cash_account_id, f.cost_center_id, f.project_id, f.department_id, f.description],
-    );
-    id = res.rows[0].id;
-    await audit(client, {
-      actor: session.id, action: "create_payment", entityTable: "payments", entityId: id,
-      before: null, after: f,
-    });
-    await client.query("commit");
-  } catch (e) {
-    await client.query("rollback");
-    throw e;
-  } finally {
-    client.release();
-  }
   const todayISO = istanbulDateISO();
-  await ensureWindow(pool, todayISO, session.id);
-  if (f.direction === "outflow" && f.default_amount != null) {
-    await requestApprovalsForOpenPaymentInstances(pool, id, todayISO, session.id);
+  try {
+    await createPayment(getPool(), f, todayISO, session.id);
+  } catch (e) {
+    handleCaughtPaymentError(e, "/payments/new");
   }
   revalidatePath("/payments");
   revalidatePath("/payments/items");
+  revalidatePath("/payments/calendar");
+  revalidatePath("/cashflow");
   revalidatePath("/");
   redirect("/payments/items");
 }
@@ -112,10 +116,7 @@ export async function updatePaymentAction(formData: FormData): Promise<void> {
   try {
     await updatePaymentAndReconcile(getPool(), id, f, istanbulDateISO(), session.id);
   } catch (e) {
-    if (e instanceof DomainError) {
-      redirect(`/payments/${id}/edit?error=${encodeURIComponent(e.message)}`);
-    }
-    throw e;
+    handleCaughtPaymentError(e, `/payments/${id}/edit`);
   }
   revalidatePath("/payments");
   revalidatePath("/payments/items");
@@ -129,19 +130,27 @@ export async function archivePaymentAction(formData: FormData): Promise<void> {
   const reason = String(formData.get("archive_reason") ?? "").trim();
   if (!id) return;
   if (!reason) redirect(`/payments/${id}/edit?error=${encodeURIComponent("Arşivleme nedeni zorunlu.")}`);
-  await archivePayment(getPool(), id, { reason, archivedByLabel: session.displayName }, istanbulDateISO(), session.id);
+  try {
+    await archivePayment(
+      getPool(),
+      id,
+      { reason, archivedByLabel: session.displayName },
+      istanbulDateISO(),
+      session.id,
+    );
+  } catch (e) {
+    handleCaughtPaymentError(e, `/payments/${id}/edit`);
+  }
   revalidatePath("/payments");
   revalidatePath("/payments/items");
   revalidatePath("/");
   redirect("/payments/items");
 }
 
+import { revalidateFinancialViews } from "@/lib/revalidate-financial-views";
+
 function backOf(formData: FormData): string {
   return safeRedirectPath(formData.get("backTo"), "/payments");
-}
-
-function errorRedirect(backTo: string, message: string): never {
-  redirect(`${backTo}${backTo.includes("?") ? "&" : "?"}error=${encodeURIComponent(message)}`);
 }
 
 export async function markPaidAction(formData: FormData): Promise<void> {
@@ -154,12 +163,10 @@ export async function markPaidAction(formData: FormData): Promise<void> {
   try {
     await markInstancePaid(getPool(), id, paidAmount, session.id);
   } catch (e) {
-    if (e instanceof DomainError) errorRedirect(backTo, e.message);
-    throw e;
+    handleCaughtPaymentError(e, backTo);
   }
   revalidatePath(backTo);
-  revalidatePath("/payments");
-  revalidatePath("/");
+  revalidateFinancialViews();
 }
 
 export async function markUnpaidAction(formData: FormData): Promise<void> {
@@ -170,12 +177,10 @@ export async function markUnpaidAction(formData: FormData): Promise<void> {
   try {
     await markInstanceUnpaid(getPool(), id, session.id);
   } catch (e) {
-    if (e instanceof DomainError) errorRedirect(backTo, e.message);
-    throw e;
+    handleCaughtPaymentError(e, backTo);
   }
   revalidatePath(backTo);
-  revalidatePath("/payments");
-  revalidatePath("/");
+  revalidateFinancialViews();
 }
 
 export async function markPartialAction(formData: FormData): Promise<void> {
@@ -186,12 +191,10 @@ export async function markPartialAction(formData: FormData): Promise<void> {
   try {
     await markInstancePartial(getPool(), id, paid, session.id);
   } catch (e) {
-    if (e instanceof DomainError) errorRedirect(backTo, e.message);
-    throw e;
+    handleCaughtPaymentError(e, backTo);
   }
-  revalidatePath("/payments");
   revalidatePath("/payments/history");
-  revalidatePath("/");
+  revalidateFinancialViews();
   redirect(backTo);
 }
 
@@ -206,12 +209,10 @@ export async function cancelInstanceAction(formData: FormData): Promise<void> {
   try {
     await cancelInstance(getPool(), parsed.data.id, parsed.data.reason, session.id);
   } catch (e) {
-    if (e instanceof DomainError) errorRedirect(backTo, e.message);
-    throw e;
+    handleCaughtPaymentError(e, backTo);
   }
-  revalidatePath("/payments");
   revalidatePath("/payments/history");
-  revalidatePath("/");
+  revalidateFinancialViews();
   redirect(backTo);
 }
 
@@ -224,8 +225,7 @@ export async function setAmountAction(formData: FormData): Promise<void> {
   try {
     await setInstanceAmount(getPool(), id, amount, session.id);
   } catch (e) {
-    if (e instanceof DomainError) errorRedirect(backTo, e.message);
-    throw e;
+    handleCaughtPaymentError(e, backTo);
   }
   revalidatePath(backTo);
   revalidatePath("/payments");
@@ -237,9 +237,13 @@ export async function mapCandidatesAction(formData: FormData): Promise<void> {
   const workbookId = String(formData.get("workbookId") ?? "");
   if (!workbookId) return;
   const pool = getPool();
-  const r = await mapAcceptedCandidates(pool, workbookId, session.id);
-  await ensureWindow(pool, new Date().toISOString().slice(0, 10), session.id);
-  revalidatePath("/payments");
-  revalidatePath("/");
-  redirect(`/payments?mapped=${r.created}&skipped=${r.skippedAlreadyMapped}&excluded=${r.excluded.length}`);
+  try {
+    const r = await mapAcceptedCandidates(pool, workbookId, session.id);
+    await ensureWindow(pool, istanbulDateISO(), session.id);
+    revalidatePath("/payments");
+    revalidatePath("/");
+    redirect(`/payments?mapped=${r.created}&skipped=${r.skippedAlreadyMapped}&excluded=${r.excluded.length}`);
+  } catch (e) {
+    handleCaughtPaymentError(e, "/payments");
+  }
 }

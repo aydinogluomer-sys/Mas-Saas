@@ -1,3 +1,4 @@
+import Link from "@/components/ui/app-link";
 import { Badge } from "@/components/ui/badge";
 import { fmtTL, Panel } from "@/components/ui/panel";
 import { EmptyState, KpiCard, PageHeader, TableShell } from "@/components/ui/shell";
@@ -11,28 +12,53 @@ import {
   fmtTlPerMin,
   loadActualCostBridge,
 } from "@/lib/production/actual-cost-bridge";
-import { loadCostBreakdown, loadCostModels } from "@/lib/production/engine";
-import { upsertCostModelItemAction } from "../actions";
+import {
+  loadCapacityModels,
+  loadCatalogProducts,
+  loadCostBreakdown,
+  loadCostModels,
+  loadProductionParts,
+} from "@/lib/production/engine";
+import {
+  recalculateProfitabilityAction,
+  upsertCatalogProductAction,
+  upsertCostModelItemAction,
+  upsertOperationRatesAction,
+  upsertProductionPartAction,
+} from "../actions";
 
 export const dynamic = "force-dynamic";
 
 export default async function CostsPage({
   searchParams,
-}: { searchParams?: Promise<{ error?: string; result?: string }> }) {
+}: {
+  searchParams?: Promise<{ error?: string; result?: string; editPart?: string }>;
+}) {
   const denied = await requireRouteAccess("/production/costs");
   if (denied) return denied;
   const session = await getRequestUser();
-  const canEditCosts = can(session?.role ?? "viewer", "cost_models", "insert");
+  const role = session?.role ?? "viewer";
+  const canEditCosts = can(role, "cost_models", "insert");
+  const canEditRates = can(role, "cost_models", "update");
+  const canEditParts = can(role, "production_parts", "insert");
+  const canEditProducts = can(role, "products", "insert");
+  const canRecalculate = can(role, "part_profitability_runs", "insert");
   const sp = searchParams ? await searchParams : {};
 
   const p = getPool();
-  const [models, bridge] = await Promise.all([
+  const [models, bridge, parts, catalogProducts, capacityModels] = await Promise.all([
     loadCostModels(p),
     loadActualCostBridge(p),
+    loadProductionParts(p, 200),
+    loadCatalogProducts(p, 200),
+    loadCapacityModels(p),
   ]);
   const details = await Promise.all(
     models.map(async (m) => ({ m, lines: await loadCostBreakdown(p, m.id) })),
   );
+  const selectedPart = sp.editPart ? parts.find((pt) => pt.id === sp.editPart) ?? null : null;
+  const primaryCap = capacityModels[0] ?? null;
+  const primaryModel = models.find((m) => m.scenario === "normal") ?? models[0] ?? null;
 
   const hasErosionAlert =
     bridge.hiddenErosionRateCount > 0 || bridge.hiddenErosionPartCount > 0;
@@ -361,88 +387,498 @@ export default async function CostsPage({
         </div>
       </Panel>
 
-      {canEditCosts ? (
-        <Panel title="SABİT MALİYET KALEMİ VE BAŞABAŞ PARAMETRESİ GÜNCELLE">
-          <details className="rounded border p-2" style={{ borderColor: "var(--line-faint)" }}>
-            <summary className="cursor-pointer font-mono text-xs font-semibold" style={{ color: "var(--text-1)" }}>
-              + Sabit maliyet kalemi ekle / güncelle
-            </summary>
-            <form action={upsertCostModelItemAction} className="mt-2 grid grid-cols-1 gap-2 text-xs sm:grid-cols-4">
-              <input type="hidden" name="backTo" value="/production/costs" />
-              <select
-                name="scenarioType"
-                defaultValue="normal"
-                className="rounded border bg-transparent px-2 py-1"
-                style={{ borderColor: "var(--line-faint)", color: "var(--text-1)" }}
+      {canEditCosts || canEditRates || canEditParts || canRecalculate ? (
+        <Panel
+          title="MALİYET, DAKİKA TARİFESİ VE TEKİL PARÇA PARAMETRELERİ"
+          subtitle="Kaydedilen her maliyet, tezgâh tarifesi veya parça güncellemesi /production/profitability kârlılık tablosunu anında yeniden hesaplar"
+          right={
+            canRecalculate ? (
+              <form action={recalculateProfitabilityAction}>
+                <input type="hidden" name="backTo" value="/production/costs" />
+                <button
+                  type="submit"
+                  className="rounded border px-2.5 py-1 font-mono text-[11px] font-medium"
+                  style={{
+                    borderColor: "var(--line)",
+                    background: "var(--surface-2)",
+                    color: "var(--text-1)",
+                  }}
+                >
+                  Kârlılığı Şimdi Yeniden Hesapla
+                </button>
+              </form>
+            ) : undefined
+          }
+        >
+          <div className="space-y-3">
+            {canEditCosts ? (
+              <details className="rounded border p-2.5" style={{ borderColor: "var(--line-faint)", background: "var(--surface-1)" }}>
+                <summary className="cursor-pointer font-mono text-xs font-semibold" style={{ color: "var(--text-1)" }}>
+                  + Sabit maliyet kalemi ekle / güncelle
+                </summary>
+                <form action={upsertCostModelItemAction} className="mt-2 grid grid-cols-1 gap-2 text-xs sm:grid-cols-4">
+                  <input type="hidden" name="backTo" value="/production/costs" />
+                  <select
+                    name="scenarioType"
+                    defaultValue="normal"
+                    className="rounded border px-2 py-1"
+                    style={{ borderColor: "var(--line)", background: "var(--surface-1)", color: "var(--text-1)" }}
+                  >
+                    <option value="normal">normal</option>
+                    <option value="overtime">overtime (mesaili)</option>
+                    <option value="custom">custom</option>
+                  </select>
+                  <input
+                    name="costCategory"
+                    required
+                    placeholder="Kategori (örn. Yemek, Elektrik)"
+                    className="rounded border px-2 py-1"
+                    style={{ borderColor: "var(--line)", background: "var(--surface-1)", color: "var(--text-1)" }}
+                  />
+                  <input
+                    name="monthlyAmount"
+                    type="number"
+                    step="0.01"
+                    min="0"
+                    required
+                    placeholder="Aylık tutar (TL)"
+                    className="rounded border px-2 py-1"
+                    style={{ borderColor: "var(--line)", background: "var(--surface-1)", color: "var(--text-1)" }}
+                  />
+                  <input
+                    name="staffCount"
+                    type="number"
+                    min="0"
+                    placeholder="Personel sayısı"
+                    className="rounded border px-2 py-1"
+                    style={{ borderColor: "var(--line)", background: "var(--surface-1)", color: "var(--text-1)" }}
+                  />
+                  <input
+                    name="monthlyWorkHours"
+                    type="number"
+                    step="0.5"
+                    min="1"
+                    placeholder="Aylık çalışma saati (örn. 176)"
+                    className="rounded border px-2 py-1"
+                    style={{ borderColor: "var(--line)", background: "var(--surface-1)", color: "var(--text-1)" }}
+                  />
+                  <input
+                    name="efficiencyRate"
+                    type="number"
+                    step="0.01"
+                    min="0.05"
+                    max="2"
+                    placeholder="Verim oranı (örn. 0.85)"
+                    className="rounded border px-2 py-1"
+                    style={{ borderColor: "var(--line)", background: "var(--surface-1)", color: "var(--text-1)" }}
+                  />
+                  <input
+                    name="description"
+                    placeholder="Açıklama (opsiyonel)"
+                    className="rounded border px-2 py-1"
+                    style={{ borderColor: "var(--line)", background: "var(--surface-1)", color: "var(--text-1)" }}
+                  />
+                  <button
+                    type="submit"
+                    className="rounded border px-2 py-1 font-medium"
+                    style={{
+                      borderColor: "var(--line)",
+                      background: "var(--surface-2)",
+                      color: "var(--text-1)",
+                    }}
+                  >
+                    Maliyet kalemini kaydet
+                  </button>
+                </form>
+              </details>
+            ) : null}
+
+            {canEditRates ? (
+              <details className="rounded border p-2.5" style={{ borderColor: "var(--line-faint)", background: "var(--surface-1)" }}>
+                <summary className="cursor-pointer font-mono text-xs font-semibold" style={{ color: "var(--text-1)" }}>
+                  + Tezgâh / müşteri dakika tarifesi (TL/dk) güncelle
+                </summary>
+                <form action={upsertOperationRatesAction} className="mt-2 grid grid-cols-1 gap-2 text-xs sm:grid-cols-4">
+                  <input type="hidden" name="backTo" value="/production/costs" />
+                  <select
+                    name="scenarioType"
+                    defaultValue="normal"
+                    className="rounded border px-2 py-1"
+                    style={{ borderColor: "var(--line)", background: "var(--surface-1)", color: "var(--text-1)" }}
+                  >
+                    <option value="normal">normal</option>
+                    <option value="overtime">overtime (mesaili)</option>
+                    <option value="custom">custom</option>
+                  </select>
+                  <input
+                    name="tornaRateTLPerMin"
+                    type="number"
+                    step="0.0001"
+                    min="0"
+                    defaultValue={primaryCap?.tornaRateTLPerMin ?? ""}
+                    placeholder="Torna maliyet TL/dk"
+                    className="rounded border px-2 py-1"
+                    style={{ borderColor: "var(--line)", background: "var(--surface-1)", color: "var(--text-1)" }}
+                  />
+                  <input
+                    name="frezeRateTLPerMin"
+                    type="number"
+                    step="0.0001"
+                    min="0"
+                    defaultValue={primaryCap?.frezeRateTLPerMin ?? ""}
+                    placeholder="Freze maliyet TL/dk"
+                    className="rounded border px-2 py-1"
+                    style={{ borderColor: "var(--line)", background: "var(--surface-1)", color: "var(--text-1)" }}
+                  />
+                  <input
+                    name="effectiveMonthlyMinutes"
+                    type="number"
+                    step="1"
+                    min="1"
+                    defaultValue={primaryModel?.effectiveMinutes ?? primaryCap?.monthlyMinutes ?? ""}
+                    placeholder="Etkin aylık dakika"
+                    className="rounded border px-2 py-1"
+                    style={{ borderColor: "var(--line)", background: "var(--surface-1)", color: "var(--text-1)" }}
+                  />
+                  <input
+                    name="akonTornaTLPerMin"
+                    type="number"
+                    step="0.0001"
+                    min="0"
+                    defaultValue={primaryModel?.akonTorna ?? ""}
+                    placeholder="Müşteri (Akon) Torna TL/dk"
+                    className="rounded border px-2 py-1"
+                    style={{ borderColor: "var(--line)", background: "var(--surface-1)", color: "var(--text-1)" }}
+                  />
+                  <input
+                    name="akonFrezeTLPerMin"
+                    type="number"
+                    step="0.0001"
+                    min="0"
+                    defaultValue={primaryModel?.akonFreze ?? ""}
+                    placeholder="Müşteri (Akon) Freze TL/dk"
+                    className="rounded border px-2 py-1"
+                    style={{ borderColor: "var(--line)", background: "var(--surface-1)", color: "var(--text-1)" }}
+                  />
+                  <input
+                    name="rateYear"
+                    type="number"
+                    min="2000"
+                    max="2100"
+                    defaultValue={primaryCap?.rateYear ?? new Date().getFullYear()}
+                    placeholder="Tarife yılı (örn. 2026)"
+                    className="rounded border px-2 py-1"
+                    style={{ borderColor: "var(--line)", background: "var(--surface-1)", color: "var(--text-1)" }}
+                  />
+                  <button
+                    type="submit"
+                    className="rounded border px-2 py-1 font-medium"
+                    style={{
+                      borderColor: "var(--line)",
+                      background: "var(--surface-2)",
+                      color: "var(--text-1)",
+                    }}
+                  >
+                    Tarifeyi kaydet ve kârlılığı yenile
+                  </button>
+                </form>
+              </details>
+            ) : null}
+
+            {canEditParts ? (
+              <details
+                open={Boolean(selectedPart)}
+                className="rounded border p-2.5"
+                style={{ borderColor: "var(--line-faint)", background: "var(--surface-1)" }}
               >
-                <option value="normal">normal</option>
-                <option value="overtime">overtime (mesaili)</option>
-                <option value="custom">custom</option>
-              </select>
-              <input
-                name="costCategory"
-                required
-                placeholder="Kategori (örn. Yemek, Elektrik)"
-                className="rounded border bg-transparent px-2 py-1"
-                style={{ borderColor: "var(--line-faint)", color: "var(--text-1)" }}
-              />
-              <input
-                name="monthlyAmount"
-                type="number"
-                step="0.01"
-                min="0"
-                required
-                placeholder="Aylık tutar (TL)"
-                className="rounded border bg-transparent px-2 py-1"
-                style={{ borderColor: "var(--line-faint)", color: "var(--text-1)" }}
-              />
-              <input
-                name="staffCount"
-                type="number"
-                min="0"
-                placeholder="Personel sayısı"
-                className="rounded border bg-transparent px-2 py-1"
-                style={{ borderColor: "var(--line-faint)", color: "var(--text-1)" }}
-              />
-              <input
-                name="monthlyWorkHours"
-                type="number"
-                step="0.5"
-                min="1"
-                placeholder="Aylık çalışma saati (örn. 176)"
-                className="rounded border bg-transparent px-2 py-1"
-                style={{ borderColor: "var(--line-faint)", color: "var(--text-1)" }}
-              />
-              <input
-                name="efficiencyRate"
-                type="number"
-                step="0.01"
-                min="0.05"
-                max="2"
-                placeholder="Verim oranı (örn. 0.85)"
-                className="rounded border bg-transparent px-2 py-1"
-                style={{ borderColor: "var(--line-faint)", color: "var(--text-1)" }}
-              />
-              <input
-                name="description"
-                placeholder="Açıklama (opsiyonel)"
-                className="rounded border bg-transparent px-2 py-1"
-                style={{ borderColor: "var(--line-faint)", color: "var(--text-1)" }}
-              />
-              <button
-                className="rounded border px-2 py-1"
-                style={{
-                  borderColor: "var(--line)",
-                  background: "var(--surface-2)",
-                  color: "var(--text-1)",
-                }}
-              >
-                Maliyet kalemini kaydet
-              </button>
-            </form>
-          </details>
+                <summary className="cursor-pointer font-mono text-xs font-semibold" style={{ color: "var(--text-1)" }}>
+                  {selectedPart
+                    ? `Parça düzenle: ${selectedPart.partCode ? `${selectedPart.partCode} · ` : ""}${selectedPart.partName}`
+                    : "+ Tekil üretim parçası (süre / birim satış fiyatı) ekle veya güncelle"}
+                </summary>
+                <form
+                  key={selectedPart?.id ?? "new-part"}
+                  action={upsertProductionPartAction}
+                  className="mt-2 grid grid-cols-1 gap-2 text-xs sm:grid-cols-4"
+                >
+                  <input type="hidden" name="backTo" value="/production/costs" />
+                  <input type="hidden" name="id" value={selectedPart?.id ?? ""} />
+                  <input
+                    name="partCode"
+                    defaultValue={selectedPart?.partCode ?? ""}
+                    placeholder="Parça kodu (örn. PRT-101)"
+                    className="rounded border px-2 py-1"
+                    style={{ borderColor: "var(--line)", background: "var(--surface-1)", color: "var(--text-1)" }}
+                  />
+                  <input
+                    name="partName"
+                    required
+                    defaultValue={selectedPart?.partName ?? ""}
+                    placeholder="Parça adı"
+                    className="rounded border px-2 py-1"
+                    style={{ borderColor: "var(--line)", background: "var(--surface-1)", color: "var(--text-1)" }}
+                  />
+                  <input
+                    name="quantity"
+                    type="number"
+                    min="1"
+                    step="1"
+                    required
+                    defaultValue={selectedPart?.quantity ?? 1}
+                    placeholder="Üretim adedi"
+                    className="rounded border px-2 py-1"
+                    style={{ borderColor: "var(--line)", background: "var(--surface-1)", color: "var(--text-1)" }}
+                  />
+                  <input
+                    name="unitSalePrice"
+                    type="number"
+                    step="0.01"
+                    min="0"
+                    defaultValue={selectedPart?.unitSalePrice ?? ""}
+                    placeholder="Birim satış fiyatı (TL)"
+                    className="rounded border px-2 py-1"
+                    style={{ borderColor: "var(--line)", background: "var(--surface-1)", color: "var(--text-1)" }}
+                  />
+                  <input
+                    name="tornaMinutes"
+                    type="number"
+                    step="0.01"
+                    min="0"
+                    defaultValue={selectedPart?.tornaMinutes ?? ""}
+                    placeholder="Torna dk / adet"
+                    className="rounded border px-2 py-1"
+                    style={{ borderColor: "var(--line)", background: "var(--surface-1)", color: "var(--text-1)" }}
+                  />
+                  <input
+                    name="frezeMinutes"
+                    type="number"
+                    step="0.01"
+                    min="0"
+                    defaultValue={selectedPart?.frezeMinutes ?? ""}
+                    placeholder="Freze dk / adet"
+                    className="rounded border px-2 py-1"
+                    style={{ borderColor: "var(--line)", background: "var(--surface-1)", color: "var(--text-1)" }}
+                  />
+                  <input
+                    name="otherOperationMinutes"
+                    type="number"
+                    step="0.01"
+                    min="0"
+                    defaultValue={selectedPart?.otherOperationMinutes ?? ""}
+                    placeholder="Diğer op. dk / adet"
+                    className="rounded border px-2 py-1"
+                    style={{ borderColor: "var(--line)", background: "var(--surface-1)", color: "var(--text-1)" }}
+                  />
+                  <div className="flex items-center gap-1.5">
+                    <button
+                      type="submit"
+                      className="flex-1 rounded border px-2 py-1 font-medium"
+                      style={{
+                        borderColor: "var(--line)",
+                        background: "var(--surface-2)",
+                        color: "var(--text-1)",
+                      }}
+                    >
+                      {selectedPart ? "Parçayı güncelle" : "Parçayı kaydet"}
+                    </button>
+                    {selectedPart ? (
+                      <Link
+                        href="/production/costs"
+                        className="rounded border px-2 py-1 text-center"
+                        style={{
+                          borderColor: "var(--line)",
+                          background: "var(--surface-1)",
+                          color: "var(--text-2)",
+                        }}
+                      >
+                        İptal
+                      </Link>
+                    ) : null}
+                  </div>
+                </form>
+              </details>
+            ) : null}
+          </div>
         </Panel>
       ) : null}
+
+      <Panel
+        title="ÜRETİM PARÇALARI VE BİRİM MALİYET GİRDİLERİ"
+        subtitle="Parça başı torna/freze operasyon süreleri ve birim satış fiyatları"
+        right={<Badge tone="neutral">{parts.length} parça</Badge>}
+      >
+        {parts.length === 0 ? (
+          <EmptyState>
+            Henüz kayıtlı üretim parçası yok. Yukarıdaki formdan tekil parça ekleyebilir veya kapasite çalışma kitabını içe aktarabilirsiniz.
+          </EmptyState>
+        ) : (
+          <TableShell>
+            <table className="w-full border-collapse text-left text-xs">
+              <thead>
+                <tr
+                  className="border-b font-mono text-[10px] uppercase"
+                  style={{ borderColor: "var(--line)", color: "var(--text-3)" }}
+                >
+                  <th className="py-2 pr-2">Kod</th>
+                  <th className="py-2 px-2">Parça Adı</th>
+                  <th className="py-2 px-2 text-right">Adet</th>
+                  <th className="py-2 px-2 text-right">Torna Dk</th>
+                  <th className="py-2 px-2 text-right">Freze Dk</th>
+                  <th className="py-2 px-2 text-right">Birim Satış</th>
+                  <th className="py-2 px-2">Kaynak</th>
+                  {canEditParts ? <th className="py-2 pl-2 text-right">İşlem</th> : null}
+                </tr>
+              </thead>
+              <tbody>
+                {parts.slice(0, 50).map((pt) => (
+                  <tr
+                    key={pt.id}
+                    className="border-b"
+                    style={{ borderColor: "var(--line-faint)", color: "var(--text-1)" }}
+                  >
+                    <td className="py-1.5 pr-2 font-mono">{pt.partCode ?? "—"}</td>
+                    <td className="py-1.5 px-2">{pt.partName}</td>
+                    <td className="py-1.5 px-2 text-right font-mono tabular-nums">
+                      {pt.quantity?.toLocaleString("tr-TR") ?? "—"}
+                    </td>
+                    <td className="py-1.5 px-2 text-right font-mono tabular-nums">
+                      {pt.tornaMinutes != null ? pt.tornaMinutes.toLocaleString("tr-TR") : "—"}
+                    </td>
+                    <td className="py-1.5 px-2 text-right font-mono tabular-nums">
+                      {pt.frezeMinutes != null ? pt.frezeMinutes.toLocaleString("tr-TR") : "—"}
+                    </td>
+                    <td className="py-1.5 px-2 text-right font-mono tabular-nums">
+                      {pt.unitSalePrice != null ? fmtTL(pt.unitSalePrice) : "—"}
+                    </td>
+                    <td className="py-1.5 px-2">
+                      <Badge tone={pt.isManual ? "blue" : "neutral"}>
+                        {pt.isManual ? "Manuel" : "Çalışma Kitabı"}
+                      </Badge>
+                    </td>
+                    {canEditParts ? (
+                      <td className="py-1.5 pl-2 text-right">
+                        <Link
+                          href={`/production/costs?editPart=${encodeURIComponent(pt.id)}`}
+                          className="font-mono text-[11px] underline"
+                          style={{ color: "var(--text-2)" }}
+                        >
+                          Düzenle
+                        </Link>
+                      </td>
+                    ) : null}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </TableShell>
+        )}
+      </Panel>
+
+      <Panel
+        title="Katalog Ürünleri (Products)"
+        subtitle="Fatura kalemleri ve üretim maliyet takibinde referans alınan ürün kataloğu (public.products)"
+        right={<Badge tone="neutral">{catalogProducts.length} ürün</Badge>}
+      >
+        <div className="space-y-3">
+          {canEditProducts ? (
+            <details className="rounded border p-2.5" style={{ borderColor: "var(--line-faint)", background: "var(--surface-1)" }}>
+              <summary className="cursor-pointer font-mono text-xs font-semibold" style={{ color: "var(--text-1)" }}>
+                + Katalog ürünü ekle / güncelle
+              </summary>
+              <form action={upsertCatalogProductAction} className="mt-2 grid grid-cols-1 gap-2 text-xs sm:grid-cols-5">
+                <input type="hidden" name="backTo" value="/production/costs" />
+                <input
+                  name="code"
+                  required
+                  placeholder="Ürün kodu (örn. URN-001)"
+                  className="rounded border px-2 py-1"
+                  style={{ borderColor: "var(--line)", background: "var(--surface-1)", color: "var(--text-1)" }}
+                />
+                <input
+                  name="name"
+                  required
+                  placeholder="Ürün adı"
+                  className="rounded border px-2 py-1"
+                  style={{ borderColor: "var(--line)", background: "var(--surface-1)", color: "var(--text-1)" }}
+                />
+                <input
+                  name="unit"
+                  placeholder="Birim (örn. Adet, Kg, Saat)"
+                  className="rounded border px-2 py-1"
+                  style={{ borderColor: "var(--line)", background: "var(--surface-1)", color: "var(--text-1)" }}
+                />
+                <input
+                  name="notes"
+                  placeholder="Not (opsiyonel)"
+                  className="rounded border px-2 py-1"
+                  style={{ borderColor: "var(--line)", background: "var(--surface-1)", color: "var(--text-1)" }}
+                />
+                <button
+                  type="submit"
+                  className="rounded border px-2 py-1 font-medium"
+                  style={{
+                    borderColor: "var(--line)",
+                    background: "var(--surface-2)",
+                    color: "var(--text-1)",
+                  }}
+                >
+                  Ürünü kaydet
+                </button>
+              </form>
+            </details>
+          ) : null}
+
+          {catalogProducts.length === 0 ? (
+            <EmptyState>
+              Katalogda kayıtlı ürün bulunmuyor. Ürün kataloğuna kayıt eklendiğinde kod, birim ve durum bilgileri burada listelenir.
+            </EmptyState>
+          ) : (
+            <TableShell>
+              <table className="w-full border-collapse text-left text-xs">
+                <thead>
+                  <tr
+                    className="border-b font-mono text-[10px] uppercase"
+                    style={{ borderColor: "var(--line)", color: "var(--text-3)" }}
+                  >
+                    <th className="py-2 pr-3">Ürün Kodu</th>
+                    <th className="py-2 px-2">Ürün Adı</th>
+                    <th className="py-2 px-2">Birim</th>
+                    <th className="py-2 px-2">Durum</th>
+                    <th className="py-2 px-2">Notlar</th>
+                    <th className="py-2 pl-2 text-right">Güncelleme</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {catalogProducts.map((prod) => (
+                    <tr
+                      key={prod.id}
+                      className="border-b"
+                      style={{ borderColor: "var(--line-faint)", color: "var(--text-1)" }}
+                    >
+                      <td className="py-1.5 pr-3 font-mono font-semibold">{prod.code}</td>
+                      <td className="py-1.5 px-2">{prod.name}</td>
+                      <td className="py-1.5 px-2 font-mono" style={{ color: "var(--text-2)" }}>
+                        {prod.unit ?? "—"}
+                      </td>
+                      <td className="py-1.5 px-2">
+                        <Badge tone={prod.isActive ? "green" : "neutral"}>
+                          {prod.isActive ? "Aktif" : "Pasif"}
+                        </Badge>
+                      </td>
+                      <td className="py-1.5 px-2" style={{ color: "var(--text-2)" }}>
+                        {prod.notes ?? "—"}
+                      </td>
+                      <td className="py-1.5 pl-2 text-right font-mono" style={{ color: "var(--text-3)" }}>
+                        {prod.updatedAt ?? "—"}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </TableShell>
+          )}
+        </div>
+      </Panel>
 
       {details.length === 0 ? (
         <Panel title="MALİYET MODELLERİ">

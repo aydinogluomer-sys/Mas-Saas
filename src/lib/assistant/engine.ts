@@ -37,6 +37,7 @@ import {
 export const askSchema = z.object({
   question: z.string().trim().min(1).max(800),
   conversationId: z.string().uuid().nullable().default(null),
+  forceDeterministic: z.boolean().optional().default(false),
 });
 export type AskInput = z.infer<typeof askSchema>;
 
@@ -92,6 +93,63 @@ export async function loadHistory(pool: Pool, conversationId: string): Promise<C
     }));
   } catch (err) {
     if (isMissingSchemaError(err)) return [];
+    throw err;
+  }
+}
+
+export interface ConversationTurnDetail extends ConversationTurn {
+  responseId: string;
+  createdAt: string | null;
+}
+
+export interface ConversationThreadDetail {
+  id: string;
+  title: string;
+  status: string;
+  updatedAt: string;
+  turns: ConversationTurnDetail[];
+}
+
+export async function loadConversationDetail(
+  pool: Pool,
+  conversationId: string,
+): Promise<ConversationThreadDetail | null> {
+  try {
+    const convRes = await pool.query(
+      `select id, title, status,
+              to_char(updated_at at time zone 'Europe/Istanbul','YYYY-MM-DD HH24:MI') as updated_at
+         from public.assistant_conversations
+        where id = $1
+        limit 1`,
+      [conversationId],
+    );
+    if ((convRes.rowCount ?? 0) === 0) return null;
+    const turnRes = await pool.query(
+      `select id, turn_index, question, answer_md, response_mode, source_fact_keys,
+              to_char(created_at at time zone 'Europe/Istanbul','YYYY-MM-DD HH24:MI') as created_at
+         from public.ai_response_snapshots
+        where conversation_id = $1 and turn_index is not null
+        order by turn_index asc`,
+      [conversationId],
+    );
+    const row = convRes.rows[0];
+    return {
+      id: row.id as string,
+      title: row.title as string,
+      status: row.status as string,
+      updatedAt: row.updated_at as string,
+      turns: turnRes.rows.map((r) => ({
+        responseId: r.id as string,
+        turnIndex: Number(r.turn_index),
+        question: r.question as string,
+        answerMd: r.answer_md as string,
+        responseMode: r.response_mode as string,
+        factKeys: (r.source_fact_keys as string[] | null) ?? [],
+        createdAt: (r.created_at as string | null) ?? null,
+      })),
+    };
+  } catch (err) {
+    if (isMissingSchemaError(err)) return null;
     throw err;
   }
 }
@@ -196,11 +254,12 @@ export async function ask(
   // `forceDeterministic` is passed through to the EXISTING engine rather than reimplemented. When
   // the expanded question trips the guard, the model is not consulted at all — same outcome the
   // guard already produces for a directly-typed mutation request, reached one step earlier.
+  const forceDet = Boolean(input.forceDeterministic) || !safety.safe || mutationIntent(expansion.expanded);
   const result: AskAnswerResult = await answerQuestion(
     pool,
     {
       question: expansion.expanded,
-      forceDeterministic: !safety.safe || mutationIntent(expansion.expanded),
+      forceDeterministic: forceDet,
       preScopedFacts: scoped.visible,
       role,
     },

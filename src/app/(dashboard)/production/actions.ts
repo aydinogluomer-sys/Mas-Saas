@@ -12,10 +12,16 @@ import {
   mapFinanceCostAllocations,
   mapMachineMinuteAllocations,
   mapMachineRoi,
+  recalculateActivePartProfitability,
   upsertCapacityModelManual,
+  upsertCatalogProductManual,
   upsertCostModelManual,
   upsertMachineRoiManual,
+  upsertOperationRatesManual,
+  upsertProductionPartManual,
 } from "@/lib/production/engine";
+import { formObject, parseOrThrow } from "@/lib/validation";
+import { z } from "zod";
 
 function revalidateProduction(): void {
   revalidatePath("/production");
@@ -144,4 +150,140 @@ export async function upsertMachineRoiParameterAction(formData: FormData): Promi
   }
   revalidateProduction();
   redirect(`${back}?result=makine-kaydedildi`);
+}
+
+const partFormSchema = z.object({
+  id: z.string().trim().optional(),
+  partCode: z.string().trim().optional(),
+  partName: z.string().trim().min(1, "Parça adı gerekli").max(200),
+  quantity: z.coerce.number().int().positive("Adet en az 1 olmalı"),
+  tornaMinutes: z.string().trim().optional(),
+  frezeMinutes: z.string().trim().optional(),
+  otherOperationMinutes: z.string().trim().optional(),
+  unitSalePrice: z.string().trim().optional(),
+  currency: z.string().trim().optional(),
+  notes: z.string().trim().optional(),
+});
+
+export async function upsertProductionPartAction(formData: FormData): Promise<void> {
+  const session = await requireActionPermission(
+    "production_parts",
+    "insert",
+    safeRedirectPath(formData.get("backTo"), "/production/costs"),
+  );
+  const back = safeRedirectPath(formData.get("backTo"), "/production/costs");
+  try {
+    const parsed = parseOrThrow(partFormSchema, formObject(formData), "Üretim parçası formu");
+    await upsertProductionPartManual(
+      getPool(),
+      {
+        id: parsed.id || null,
+        partCode: parsed.partCode || null,
+        partName: parsed.partName,
+        quantity: parsed.quantity,
+        tornaMinutes: optNum(parsed.tornaMinutes ?? null),
+        frezeMinutes: optNum(parsed.frezeMinutes ?? null),
+        otherOperationMinutes: optNum(parsed.otherOperationMinutes ?? null),
+        unitSalePrice: optNum(parsed.unitSalePrice ?? null),
+        currency: parsed.currency || "TRY",
+        notes: parsed.notes || null,
+      },
+      session.id,
+    );
+  } catch (e) {
+    if (e instanceof DomainError) redirect(`${back}?error=${encodeURIComponent(e.message)}`);
+    throw e;
+  }
+  revalidateProduction();
+  redirect(`${back}?result=parca-ve-karlilik-guncellendi`);
+}
+
+const operationRatesFormSchema = z.object({
+  scenarioType: z.enum(["normal", "overtime", "custom"]).default("normal"),
+  tornaRateTLPerMin: z.string().trim().optional(),
+  frezeRateTLPerMin: z.string().trim().optional(),
+  akonTornaTLPerMin: z.string().trim().optional(),
+  akonFrezeTLPerMin: z.string().trim().optional(),
+  effectiveMonthlyMinutes: z.string().trim().optional(),
+  rateYear: z.string().trim().optional(),
+});
+
+export async function upsertOperationRatesAction(formData: FormData): Promise<void> {
+  const session = await requireActionPermission(
+    "cost_models",
+    "update",
+    safeRedirectPath(formData.get("backTo"), "/production/costs"),
+  );
+  const back = safeRedirectPath(formData.get("backTo"), "/production/costs");
+  try {
+    const parsed = parseOrThrow(operationRatesFormSchema, formObject(formData), "Dakika tarifesi formu");
+    await upsertOperationRatesManual(
+      getPool(),
+      {
+        scenarioType: parsed.scenarioType,
+        tornaRateTLPerMin: optNum(parsed.tornaRateTLPerMin ?? null),
+        frezeRateTLPerMin: optNum(parsed.frezeRateTLPerMin ?? null),
+        akonTornaTLPerMin: optNum(parsed.akonTornaTLPerMin ?? null),
+        akonFrezeTLPerMin: optNum(parsed.akonFrezeTLPerMin ?? null),
+        effectiveMonthlyMinutes: optNum(parsed.effectiveMonthlyMinutes ?? null),
+        rateYear: optNum(parsed.rateYear ?? null),
+      },
+      session.id,
+    );
+  } catch (e) {
+    if (e instanceof DomainError) redirect(`${back}?error=${encodeURIComponent(e.message)}`);
+    throw e;
+  }
+  revalidateProduction();
+  redirect(`${back}?result=tarife-ve-karlilik-guncellendi`);
+}
+
+const catalogProductFormSchema = z.object({
+  id: z.string().trim().optional(),
+  code: z.string().trim().min(1, "Ürün kodu gerekli").max(80),
+  name: z.string().trim().min(1, "Ürün adı gerekli").max(200),
+  unit: z.string().trim().optional(),
+  isActive: z.string().trim().optional(),
+  notes: z.string().trim().optional(),
+});
+
+export async function upsertCatalogProductAction(formData: FormData): Promise<void> {
+  const session = await requireActionPermission(
+    "products",
+    "insert",
+    safeRedirectPath(formData.get("backTo"), "/production/costs"),
+  );
+  const back = safeRedirectPath(formData.get("backTo"), "/production/costs");
+  try {
+    const parsed = parseOrThrow(catalogProductFormSchema, formObject(formData), "Katalog ürünü formu");
+    await upsertCatalogProductManual(
+      getPool(),
+      {
+        id: parsed.id || null,
+        code: parsed.code,
+        name: parsed.name,
+        unit: parsed.unit || null,
+        isActive: parsed.isActive !== "false",
+        notes: parsed.notes || null,
+      },
+      session.id,
+    );
+  } catch (e) {
+    if (e instanceof DomainError) redirect(`${back}?error=${encodeURIComponent(e.message)}`);
+    throw e;
+  }
+  revalidateProduction();
+  redirect(`${back}?result=katalog-urunu-kaydedildi`);
+}
+
+export async function recalculateProfitabilityAction(formData: FormData): Promise<void> {
+  await requireActionPermission(
+    "part_profitability_runs",
+    "insert",
+    safeRedirectPath(formData.get("backTo"), "/production/costs"),
+  );
+  const back = safeRedirectPath(formData.get("backTo"), "/production/costs");
+  const res = await recalculateActivePartProfitability(getPool());
+  revalidateProduction();
+  redirect(`${back}?result=${encodeURIComponent(`Kârlılık yeniden hesaplandı (${res.runsCreated} satır güncellendi)`)}`);
 }

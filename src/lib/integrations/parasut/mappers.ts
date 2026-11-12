@@ -25,12 +25,14 @@ import type {
   SyncOutcome,
 } from "../types";
 import {
+  buildIncludedIndex,
   computeWatermarkOverlapFrom,
   fetchParasutResourcePages,
   resolveIncludedRelation,
   resolveIncludedRelationList,
   type JsonApiResourceObject,
   type ParasutFetchedRecord,
+  type ParasutResourceName,
 } from "./client";
 import { acquireParasutAccessToken } from "./oauth";
 import { ParasutRateLimiter, type RateLimiterOptions } from "./rate-limiter";
@@ -542,11 +544,85 @@ export function mapParasutTransaction(
 
 /* ── Database Lineage & Idempotent Upsert Helpers ───────────────────────────────────────── */
 
+function collectReferencedIncludedObjects(record: ParasutFetchedRecord): JsonApiResourceObject[] {
+  if (record.includedIndex.size === 0 || !record.item.relationships) return [];
+  const seen = new Set<string>();
+  const collected: JsonApiResourceObject[] = [];
+  for (const relEntry of Object.values(record.item.relationships)) {
+    const data = relEntry?.data;
+    if (!data) continue;
+    const refs = Array.isArray(data) ? data : [data];
+    for (const ref of refs) {
+      if (!ref || typeof ref.type !== "string" || typeof ref.id !== "string") continue;
+      const key = `${ref.type}:${ref.id}`;
+      if (seen.has(key)) continue;
+      const obj = record.includedIndex.get(key);
+      if (obj) {
+        seen.add(key);
+        collected.push(obj);
+      }
+    }
+  }
+  return collected;
+}
+
+function reconstructFetchedRecordFromRawPayload(row: {
+  resource_type: string;
+  external_id: string;
+  external_updated_at: string | null;
+  payload_sha256: string;
+  payload_json: Record<string, unknown>;
+}): ParasutFetchedRecord | null {
+  const payload = row.payload_json;
+  if (!payload || typeof payload !== "object") return null;
+  const id = typeof payload.id === "string" && payload.id.trim() !== "" ? payload.id : row.external_id;
+  const resource = (
+    row.resource_type === "purchase_bills" ? "purchase_bills" : "sales_invoices"
+  ) as ParasutResourceName;
+  const type = typeof payload.type === "string" ? payload.type : resource;
+  const attributes =
+    payload.attributes && typeof payload.attributes === "object"
+      ? (payload.attributes as Record<string, unknown>)
+      : {};
+  const relationships =
+    payload.relationships && typeof payload.relationships === "object"
+      ? (payload.relationships as JsonApiResourceObject["relationships"])
+      : undefined;
+  const included = Array.isArray(payload.included)
+    ? (payload.included as JsonApiResourceObject[])
+    : undefined;
+
+  return {
+    resource,
+    item: {
+      id,
+      type,
+      attributes,
+      relationships,
+    },
+    includedIndex: buildIncludedIndex(included),
+    rawJson: payload,
+    payloadSha256: row.payload_sha256,
+    externalUpdatedAt: row.external_updated_at,
+  };
+}
+
 async function recordRawPayload(
   client: PoolClient,
   syncRunId: string,
   record: ParasutFetchedRecord,
 ): Promise<string> {
+  const referencedIncluded = collectReferencedIncludedObjects(record);
+  const storedPayload =
+    referencedIncluded.length > 0
+      ? { ...record.rawJson, included: referencedIncluded }
+      : record.rawJson;
+  const storedJsonStr = JSON.stringify(storedPayload);
+  const effectiveSha =
+    referencedIncluded.length > 0
+      ? createHash("sha256").update(storedJsonStr).digest("hex")
+      : record.payloadSha256;
+
   const ins = await client.query<{ id: string }>(
     `insert into public.integration_raw_payloads
        (sync_run_id, resource_type, external_id, external_updated_at, payload_sha256, payload_json)
@@ -558,8 +634,8 @@ async function recordRawPayload(
       record.resource,
       record.item.id,
       record.externalUpdatedAt,
-      record.payloadSha256,
-      JSON.stringify(record.rawJson),
+      effectiveSha,
+      storedJsonStr,
     ],
   );
   if (ins.rows[0]?.id) return ins.rows[0].id;
@@ -568,7 +644,7 @@ async function recordRawPayload(
     `select id from public.integration_raw_payloads
       where resource_type = $1 and external_id = $2 and payload_sha256 = $3
       limit 1`,
-    [record.resource, record.item.id, record.payloadSha256],
+    [record.resource, record.item.id, effectiveSha],
   );
   return existing.rows[0].id;
 }
@@ -711,6 +787,235 @@ async function resolveOrStageParty(
   );
 
   return { partyId: null, stagedNew: true };
+}
+
+async function upsertMappedParasutInvoiceRecord(
+  client: PoolClient,
+  rec: ParasutFetchedRecord,
+  payloadId: string | null,
+): Promise<{
+  outcome: "upserted" | "skipped" | "deferred_party" | "non_invoice";
+  stagedNew: boolean;
+}> {
+  const mapped = mapParasutInvoice(rec);
+  if (!mapped || mapped.isEstimate) {
+    return { outcome: "non_invoice", stagedNew: false };
+  }
+
+  const partyRes = await resolveOrStageParty(client, {
+    externalId: mapped.contactExternalId,
+    name: mapped.contactName ?? mapped.spenderEmployeeName,
+    taxId: mapped.contactTaxId,
+    accountType: mapped.direction === "sales" ? "customer" : "vendor",
+  });
+  if (!partyRes.partyId) {
+    return { outcome: "deferred_party", stagedNew: partyRes.stagedNew };
+  }
+
+  const existingInv = await client.query<{
+    id: string;
+    status: string;
+    invoice_no: string;
+    paid_amount: string;
+  }>(
+    `select id::text, status, invoice_no, paid_amount::text
+       from public.invoices
+      where external_key = $1
+      limit 1`,
+    [mapped.externalKey],
+  );
+
+  if (existingInv.rows[0]) {
+    const cur = existingInv.rows[0];
+    if (cur.status === "draft") {
+      // S-4: Draft -> formalized upgrade allowed by 0044:183 while old.status = 'draft'
+      const nextStatus =
+        mapped.status === "partial" || mapped.status === "paid" ? "open" : mapped.status;
+      const upd = await client.query<{ id: string }>(
+        `update public.invoices
+            set invoice_no = $2,
+                issue_date = $3::date,
+                due_date = $4::date,
+                currency = $5,
+                net_amount = $6,
+                tax_amount = $7,
+                gross_amount = $8,
+                withholding_amount = $9,
+                vat_withholding_amount = $10,
+                payable_amount = $11,
+                paid_amount = $12,
+                status = $13,
+                external_status = $14,
+                spender_employee_name = coalesce($15, spender_employee_name),
+                notes = coalesce($16, notes)
+          where id = $1
+          returning id::text`,
+        [
+          cur.id,
+          mapped.invoiceNo,
+          mapped.issueDate,
+          mapped.dueDate,
+          mapped.currency,
+          mapped.netAmount,
+          mapped.taxAmount,
+          mapped.grossAmount,
+          mapped.withholdingAmount,
+          mapped.vatWithholdingAmount,
+          mapped.payableAmount,
+          mapped.paidAmount,
+          nextStatus,
+          mapped.externalStatus,
+          mapped.spenderEmployeeName,
+          mapped.description,
+        ],
+      );
+      if (nextStatus === "open" && (mapped.status === "partial" || mapped.status === "paid")) {
+        await client.query(
+          `update public.invoices set status = $2, paid_amount = $3 where id = $1`,
+          [cur.id, mapped.status, mapped.paidAmount],
+        );
+      }
+      await upsertEntityLink(client, mapped.resourceType, mapped.externalId, "invoices", cur.id, payloadId);
+      return {
+        outcome: upd.rowCount ? "upserted" : "skipped",
+        stagedNew: partyRes.stagedNew,
+      };
+    }
+
+    // Already issued (old.status <> 'draft'): only settlement / status / external_status may update
+    const currentPaid = Number(cur.paid_amount);
+    const nextPaid = Math.max(currentPaid, mapped.paidAmount);
+    const canTransitionStatus =
+      cur.status !== mapped.status &&
+      mapped.status !== "draft" &&
+      mapped.status !== "cancelled";
+    let didUpdate = false;
+    if (nextPaid !== currentPaid || canTransitionStatus) {
+      await client.query(
+        `update public.invoices
+            set paid_amount = $2,
+                status = case when $3::boolean then $4 else status end,
+                external_status = $5
+          where id = $1`,
+        [cur.id, nextPaid, canTransitionStatus, mapped.status, mapped.externalStatus],
+      );
+      didUpdate = true;
+    }
+    await upsertEntityLink(client, mapped.resourceType, mapped.externalId, "invoices", cur.id, payloadId);
+    return {
+      outcome: didUpdate ? "upserted" : "skipped",
+      stagedNew: partyRes.stagedNew,
+    };
+  }
+
+  // S-1 & S-4: Insert new invoice via ON CONFLICT (external_key) WHERE external_key IS NOT NULL
+  const ins = await client.query<{ id: string }>(
+    `insert into public.invoices
+       (direction, invoice_no, party_id, issue_date, due_date, currency,
+        net_amount, tax_amount, gross_amount,
+        withholding_amount, vat_withholding_amount, payable_amount,
+        paid_amount, status, external_status, external_key,
+        spender_employee_name, dedupe_hash, notes)
+     values ($1, $2, $3, $4::date, $5::date, $6,
+             $7, $8, $9,
+             $10, $11, $12,
+             $13, $14, $15, $16,
+             $17, $18, $19)
+     on conflict (external_key) where external_key is not null do update
+       set paid_amount = greatest(public.invoices.paid_amount, excluded.paid_amount),
+           external_status = excluded.external_status
+     returning id::text`,
+    [
+      mapped.direction,
+      mapped.invoiceNo,
+      partyRes.partyId,
+      mapped.issueDate,
+      mapped.dueDate,
+      mapped.currency,
+      mapped.netAmount,
+      mapped.taxAmount,
+      mapped.grossAmount,
+      mapped.withholdingAmount,
+      mapped.vatWithholdingAmount,
+      mapped.payableAmount,
+      mapped.paidAmount,
+      mapped.status === "cancelled" ? "draft" : mapped.status,
+      mapped.externalStatus,
+      mapped.externalKey,
+      mapped.spenderEmployeeName,
+      mapped.externalKey,
+      mapped.description,
+    ],
+  );
+  const invoiceId = ins.rows[0].id;
+  await upsertEntityLink(client, mapped.resourceType, mapped.externalId, "invoices", invoiceId, payloadId);
+  return { outcome: "upserted", stagedNew: partyRes.stagedNew };
+}
+
+export interface DeferredInvoiceReplaySummary {
+  replayedUpserted: number;
+  stillDeferred: number;
+}
+
+/**
+ * F-53 (S-10 Watermark Deferred Replay):
+ * Replays invoice raw payloads (`sales_invoices`, `purchase_bills`) that were previously fetched
+ * and stored in `integration_raw_payloads` before watermark advancement, but deferred from
+ * `public.invoices` because their counterparty was awaiting S-10 operator approval.
+ *
+ * Once the staged contact is approved (`created` / `linked` or linked via `integration_entity_links`),
+ * calling this function materializes all deferred invoices for that contact idempotently.
+ */
+export async function replayDeferredParasutInvoices(
+  client: PoolClient,
+): Promise<DeferredInvoiceReplaySummary> {
+  const deferredRows = await client.query<{
+    id: string;
+    resource_type: string;
+    external_id: string;
+    external_updated_at: string | null;
+    payload_sha256: string;
+    payload_json: Record<string, unknown>;
+  }>(
+    `select distinct on (rp.resource_type, rp.external_id)
+            rp.id::text as id,
+            rp.resource_type,
+            rp.external_id,
+            rp.external_updated_at::text as external_updated_at,
+            rp.payload_sha256,
+            rp.payload_json
+       from public.integration_raw_payloads rp
+      where rp.resource_type in ('sales_invoices', 'purchase_bills')
+        and not exists (
+          select 1
+            from public.integration_entity_links el
+           where el.provider = 'parasut'
+             and el.resource_type = rp.resource_type
+             and el.external_id = rp.external_id
+        )
+        and not exists (
+          select 1
+            from public.invoices inv
+           where inv.external_key = ('parasut:' || rp.resource_type || ':' || rp.external_id)
+        )
+      order by rp.resource_type, rp.external_id, rp.fetched_at desc, rp.id desc`,
+  );
+
+  let replayedUpserted = 0;
+  let stillDeferred = 0;
+
+  for (const row of deferredRows.rows) {
+    const rec = reconstructFetchedRecordFromRawPayload(row);
+    if (!rec) continue;
+    const res = await upsertMappedParasutInvoiceRecord(client, rec, row.id);
+    if (res.outcome === "upserted") {
+      replayedUpserted += 1;
+    } else if (res.outcome === "deferred_party") {
+      stillDeferred += 1;
+    }
+  }
+
+  return { replayedUpserted, stillDeferred };
 }
 
 export interface ParasutSyncOptions {
@@ -974,166 +1279,20 @@ export function parasutConnector(options: ParasutSyncOptions = {}): IntegrationC
 
         for (const rec of invoiceRecords) {
           const payloadId = await recordRawPayload(client, syncRunId, rec);
-          const mapped = mapParasutInvoice(rec);
-          if (!mapped) {
-            skipped++;
-            continue;
-          }
-          // S-3: Skip estimates
-          if (mapped.isEstimate) {
-            skipped++;
-            continue;
-          }
-
-          const partyRes = await resolveOrStageParty(client, {
-            externalId: mapped.contactExternalId,
-            name: mapped.contactName ?? mapped.spenderEmployeeName,
-            taxId: mapped.contactTaxId,
-            accountType: mapped.direction === "sales" ? "customer" : "vendor",
-          });
-          if (partyRes.stagedNew) {
+          const invRes = await upsertMappedParasutInvoiceRecord(client, rec, payloadId);
+          if (invRes.stagedNew) {
             stagedPartyCount++;
           }
-          if (!partyRes.partyId) {
-            skipped++;
-            continue;
-          }
-
-          // Check if invoice with external_key already exists
-          const existingInv = await client.query<{
-            id: string;
-            status: string;
-            invoice_no: string;
-            paid_amount: string;
-          }>(
-            `select id::text, status, invoice_no, paid_amount::text
-               from public.invoices
-              where external_key = $1
-              limit 1`,
-            [mapped.externalKey],
-          );
-
-          if (existingInv.rows[0]) {
-            const cur = existingInv.rows[0];
-            if (cur.status === "draft") {
-              // S-4: Draft -> formalized upgrade allowed by 0044:183 while old.status = 'draft'!
-              const nextStatus =
-                mapped.status === "partial" || mapped.status === "paid" ? "open" : mapped.status;
-              const upd = await client.query<{ id: string }>(
-                `update public.invoices
-                    set invoice_no = $2,
-                        issue_date = $3::date,
-                        due_date = $4::date,
-                        currency = $5,
-                        net_amount = $6,
-                        tax_amount = $7,
-                        gross_amount = $8,
-                        withholding_amount = $9,
-                        vat_withholding_amount = $10,
-                        payable_amount = $11,
-                        paid_amount = $12,
-                        status = $13,
-                        external_status = $14,
-                        spender_employee_name = coalesce($15, spender_employee_name),
-                        notes = coalesce($16, notes)
-                  where id = $1
-                  returning id::text`,
-                [
-                  cur.id,
-                  mapped.invoiceNo,
-                  mapped.issueDate,
-                  mapped.dueDate,
-                  mapped.currency,
-                  mapped.netAmount,
-                  mapped.taxAmount,
-                  mapped.grossAmount,
-                  mapped.withholdingAmount,
-                  mapped.vatWithholdingAmount,
-                  mapped.payableAmount,
-                  mapped.paidAmount,
-                  nextStatus,
-                  mapped.externalStatus,
-                  mapped.spenderEmployeeName,
-                  mapped.description,
-                ],
-              );
-              if (nextStatus === "open" && (mapped.status === "partial" || mapped.status === "paid")) {
-                await client.query(
-                  `update public.invoices set status = $2, paid_amount = $3 where id = $1`,
-                  [cur.id, mapped.status, mapped.paidAmount],
-                );
-              }
-              if (upd.rowCount) upserted++;
-              await upsertEntityLink(client, mapped.resourceType, mapped.externalId, "invoices", cur.id, payloadId);
-            } else {
-              // Already issued (old.status <> 'draft'): only settlement / status / external_status may update
-              const currentPaid = Number(cur.paid_amount);
-              const nextPaid = Math.max(currentPaid, mapped.paidAmount);
-              const canTransitionStatus =
-                cur.status !== mapped.status &&
-                mapped.status !== "draft" &&
-                cur.status !== "cancelled";
-              if (nextPaid !== currentPaid || canTransitionStatus) {
-                await client.query(
-                  `update public.invoices
-                      set paid_amount = $2,
-                          status = case when $3::boolean then $4 else status end,
-                          external_status = $5
-                    where id = $1`,
-                  [cur.id, nextPaid, canTransitionStatus, mapped.status, mapped.externalStatus],
-                );
-                upserted++;
-              } else {
-                skipped++;
-              }
-              await upsertEntityLink(client, mapped.resourceType, mapped.externalId, "invoices", cur.id, payloadId);
-            }
-          } else {
-            // S-1 & S-4: Insert new invoice via ON CONFLICT (external_key) WHERE external_key IS NOT NULL
-            // Note: 0044 transition guard allows inserting directly as 'draft' or 'open' or 'partial' or 'paid'
-            const ins = await client.query<{ id: string }>(
-              `insert into public.invoices
-                 (direction, invoice_no, party_id, issue_date, due_date, currency,
-                  net_amount, tax_amount, gross_amount,
-                  withholding_amount, vat_withholding_amount, payable_amount,
-                  paid_amount, status, external_status, external_key,
-                  spender_employee_name, dedupe_hash, notes)
-               values ($1, $2, $3, $4::date, $5::date, $6,
-                       $7, $8, $9,
-                       $10, $11, $12,
-                       $13, $14, $15, $16,
-                       $17, $18, $19)
-               on conflict (external_key) where external_key is not null do update
-                 set paid_amount = greatest(public.invoices.paid_amount, excluded.paid_amount),
-                     external_status = excluded.external_status
-               returning id::text`,
-              [
-                mapped.direction,
-                mapped.invoiceNo,
-                partyRes.partyId,
-                mapped.issueDate,
-                mapped.dueDate,
-                mapped.currency,
-                mapped.netAmount,
-                mapped.taxAmount,
-                mapped.grossAmount,
-                mapped.withholdingAmount,
-                mapped.vatWithholdingAmount,
-                mapped.payableAmount,
-                mapped.paidAmount,
-                mapped.status === "cancelled" ? "draft" : mapped.status,
-                mapped.externalStatus,
-                mapped.externalKey,
-                mapped.spenderEmployeeName,
-                mapped.externalKey,
-                mapped.description,
-              ],
-            );
-            const invoiceId = ins.rows[0].id;
+          if (invRes.outcome === "upserted") {
             upserted++;
-            await upsertEntityLink(client, mapped.resourceType, mapped.externalId, "invoices", invoiceId, payloadId);
+          } else {
+            skipped++;
           }
         }
+
+        // F-53: Replay any previously fetched invoices whose contacts were approved after watermark advanced
+        const replayRes = await replayDeferredParasutInvoices(client);
+        upserted += replayRes.replayedUpserted;
 
         // 4) Bank Transactions, Bank Fees, Taxes, Salaries (S-8, S-9, Cross-Channel Dedupe)
         const defaultBankRes = await client.query<{ cash_account_id: string }>(

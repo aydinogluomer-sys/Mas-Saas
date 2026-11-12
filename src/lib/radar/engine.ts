@@ -21,6 +21,7 @@ import {
 } from "./rules";
 import { APP_ROLES, DB_ROLE, can } from "@/lib/authz/matrix";
 import { evaluateAndRequestIfNeededWithClient } from "@/lib/approvals/engine";
+import { PERIOD_LOCKED_USER_MESSAGE, translatePeriodLockError } from "@/lib/cashflow/period-lock";
 
 /* ── Bakım yazımları ve SALT-OKUR katmanlar ────────────────────────────────────────────────
  *
@@ -343,7 +344,268 @@ export async function mapAcceptedCandidates(pool: Pool, workbookId: string, acto
   }
 }
 
-/* ── 2) idempotent instance generation ── */
+/* ── 2) idempotent instance generation & atomic payment creation (F-47) ── */
+
+export interface CreatePaymentFields {
+  name: string;
+  recurrence_type: string;
+  due_day?: number | null;
+  due_date?: string | null;
+  default_amount?: number | null;
+  currency?: string | null;
+  amount_confidence?: string;
+  direction?: string;
+  priority?: string;
+  flexibility_class?: string | null;
+  status?: string;
+  category_id?: string | null;
+  provider_party_id?: string | null;
+  owner_party_id?: string | null;
+  cash_account_id?: string | null;
+  cost_center_id?: string | null;
+  project_id?: string | null;
+  department_id?: string | null;
+  description?: string | null;
+}
+
+export interface CreatePaymentResult {
+  paymentId: string;
+  createdInstanceIds: string[];
+}
+
+/**
+ * F-47: Atomically inserts a `public.payments` row AND generates its initial `public.payment_instances`
+ * row(s) inside the SAME database transaction — ensuring `one_off` ("Tek seferlik") payments immediately
+ * materialize `1` `payment_instances` row on the target `due_date` instead of `0`.
+ */
+export async function createPaymentWithClient(
+  client: PoolClient,
+  fields: CreatePaymentFields,
+  todayISO: string,
+  actorId: string,
+): Promise<CreatePaymentResult> {
+  assertISODateString(todayISO);
+  const trimmedName = (fields.name ?? "").trim();
+  if (!trimmedName) {
+    throw new DomainError("VALIDATION", "Ad zorunlu.");
+  }
+
+  const recurrenceType = (fields.recurrence_type ?? "monthly").trim();
+  const dueDay = fields.due_day ?? null;
+  const rawDueDate = fields.due_date ? fields.due_date.trim() : null;
+
+  if (recurrenceType === "monthly" && (dueDay == null || dueDay < 1 || dueDay > 31)) {
+    throw new DomainError("VALIDATION", "Aylık tekrar için 1-31 arası gün zorunlu.");
+  }
+  if (dueDay != null && (dueDay < 1 || dueDay > 31)) {
+    throw new DomainError("VALIDATION", "Gün 1-31 arası olmalı.");
+  }
+
+  let resolvedTargetDueDate: string | null = rawDueDate;
+  if (resolvedTargetDueDate) {
+    assertISODateString(resolvedTargetDueDate);
+  } else if (recurrenceType === "one_off") {
+    if (dueDay != null) {
+      resolvedTargetDueDate = dueDateFor(`${todayISO.slice(0, 7)}-01`, dueDay).dueDate;
+    } else {
+      throw new DomainError("VALIDATION", "Tek seferlik ödeme için vade tarihi zorunludur.");
+    }
+  }
+
+  const defaultAmount = fields.default_amount ?? null;
+  const currency = (fields.currency ?? "TRY")?.trim().toUpperCase() || "TRY";
+  const amountConfidence = fields.amount_confidence ?? "known";
+  const direction = fields.direction ?? "outflow";
+  const priority = fields.priority ?? "normal";
+  const status = fields.status ?? "active";
+
+  const insPay = await client.query<{ id: string }>(
+    `insert into public.payments
+       (name, recurrence_type, due_day, due_date, default_amount, currency, amount_confidence,
+        direction, priority, flexibility_class, status, category_id, provider_party_id, owner_party_id,
+        cash_account_id, cost_center_id, project_id, department_id, description)
+     values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
+     returning id::text as id`,
+    [
+      trimmedName,
+      recurrenceType,
+      dueDay,
+      resolvedTargetDueDate,
+      defaultAmount,
+      currency,
+      amountConfidence,
+      direction,
+      priority,
+      fields.flexibility_class ?? null,
+      status,
+      fields.category_id ?? null,
+      fields.provider_party_id ?? null,
+      fields.owner_party_id ?? null,
+      fields.cash_account_id ?? null,
+      fields.cost_center_id ?? null,
+      fields.project_id ?? null,
+      fields.department_id ?? null,
+      fields.description ?? null,
+    ],
+  );
+  const paymentId = insPay.rows[0].id;
+
+  await audit(client, {
+    actor: actorId,
+    action: "create_payment",
+    entityTable: "payments",
+    entityId: paymentId,
+    before: null,
+    after: {
+      ...fields,
+      name: trimmedName,
+      recurrence_type: recurrenceType,
+      due_day: dueDay,
+      due_date: resolvedTargetDueDate,
+      default_amount: defaultAmount,
+      currency,
+      amount_confidence: amountConfidence,
+      direction,
+      priority,
+      status,
+    },
+  });
+
+  const createdInstanceIds: string[] = [];
+
+  if (status === "active") {
+    if (
+      recurrenceType === "one_off" ||
+      (recurrenceType === "irregular" && resolvedTargetDueDate != null)
+    ) {
+      const dueDateISO = resolvedTargetDueDate!;
+      const instanceMonth = `${dueDateISO.slice(0, 7)}-01`;
+      const lockedMonth = await client.query(
+        `select 1 from public.cashflow_months where month_start = $1::date and status = 'locked'`,
+        [instanceMonth],
+      );
+      if ((lockedMonth.rowCount ?? 0) > 0) {
+        throw new DomainError("CONFLICT", PERIOD_LOCKED_USER_MESSAGE);
+      }
+
+      const amountStatus =
+        defaultAmount == null
+          ? "missing"
+          : amountConfidence === "variable"
+            ? "variable"
+            : "known";
+
+      const insInst = await client.query<{ id: string }>(
+        `insert into public.payment_instances
+           (payment_id, instance_month, due_date, amount, currency, amount_status, direction, status, note, amount_source)
+         values ($1, $2::date, $3::date, $4::numeric, $5, $6, $7, 'unpaid', null, 'generated')
+         on conflict (payment_id, instance_month) where payment_id is not null do nothing
+         returning id::text as id`,
+        [paymentId, instanceMonth, dueDateISO, defaultAmount, currency, amountStatus, direction],
+      );
+      const createdId = insInst.rows[0]?.id;
+      if (createdId) {
+        createdInstanceIds.push(createdId);
+      }
+
+      await refreshRiskFlagsWithClient(client, todayISO);
+
+      if (createdId && direction === "outflow" && defaultAmount != null) {
+        const evaluated = await evaluateAndRequestIfNeededWithClient(client, {
+          ruleInput: {
+            subjectTable: "payment_instances",
+            triggerKind: "payment",
+            amount: String(defaultAmount),
+            currency,
+          },
+          subjectId: createdId,
+          subjectLabel: `${trimmedName} (${dueDateISO})`,
+          amount: defaultAmount,
+          currency,
+          actorId,
+        });
+        if (evaluated.approvalId) {
+          await client.query(
+            `update public.payment_instances
+                set approval_status = 'pending_approval', approval_id = $2
+              where id = $1`,
+            [createdId, evaluated.approvalId],
+          );
+        }
+      }
+    } else if (recurrenceType === "monthly" && dueDay != null) {
+      const m0 = `${todayISO.slice(0, 7)}-01`;
+      for (let delta = -1; delta <= 1; delta++) {
+        await generateInstancesForMonthWithClient(client, addMonths(m0, delta), actorId);
+      }
+      await refreshRiskFlagsWithClient(client, todayISO);
+
+      const instRows = await client.query<{
+        id: string;
+        due_date: string;
+        amount: string | null;
+        currency: string;
+      }>(
+        `select id::text as id,
+                to_char(due_date, 'YYYY-MM-DD') as due_date,
+                amount::text as amount,
+                currency
+           from public.payment_instances
+          where payment_id = $1
+          order by due_date asc`,
+        [paymentId],
+      );
+      for (const r of instRows.rows) {
+        createdInstanceIds.push(r.id);
+        if (direction === "outflow" && r.amount != null && r.due_date >= todayISO) {
+          const evaluated = await evaluateAndRequestIfNeededWithClient(client, {
+            ruleInput: {
+              subjectTable: "payment_instances",
+              triggerKind: "payment",
+              amount: r.amount,
+              currency: r.currency,
+            },
+            subjectId: r.id,
+            subjectLabel: `${trimmedName} (${r.due_date})`,
+            amount: Number(r.amount),
+            currency: r.currency,
+            actorId,
+          });
+          if (evaluated.approvalId) {
+            await client.query(
+              `update public.payment_instances
+                  set approval_status = 'pending_approval', approval_id = $2
+                where id = $1`,
+              [r.id, evaluated.approvalId],
+            );
+          }
+        }
+      }
+    }
+  }
+
+  return { paymentId, createdInstanceIds };
+}
+
+export async function createPayment(
+  pool: Pool,
+  fields: CreatePaymentFields,
+  todayISO: string,
+  actorId: string,
+): Promise<CreatePaymentResult> {
+  const client = await pool.connect();
+  try {
+    await client.query("begin");
+    const result = await createPaymentWithClient(client, fields, todayISO, actorId);
+    await client.query("commit");
+    return result;
+  } catch (e) {
+    await client.query("rollback").catch(() => undefined);
+    translatePeriodLockError(e);
+  } finally {
+    client.release();
+  }
+}
 
 export interface GenerateResult {
   monthStart: string;
@@ -542,7 +804,7 @@ export async function refreshRiskFlags(pool: Pool, todayISO: string): Promise<nu
 /* ── 4) paid/unpaid + amount fill — every mutation audited ── */
 
 const PAYABLE_FROM = new Set(["unpaid", "planned", "late", "partial"]);
-const REVERSIBLE_FROM = new Set(["paid"]);
+const REVERSIBLE_FROM = new Set(["paid", "partial"]);
 
 export async function markInstancePaid(
   pool: Pool,
@@ -743,7 +1005,7 @@ export async function setInstanceAmount(
   }
 }
 
-const CANCELLABLE_FROM = new Set(["unpaid", "planned", "late"]);
+const CANCELLABLE_FROM = new Set(["unpaid", "planned", "late", "partial"]);
 
 /** Result of a cancellation mutation — carries the value actually persisted (read back
  * via RETURNING+to_char), never a JS-side approximation of "now". */
@@ -772,7 +1034,7 @@ export async function cancelInstanceWithClient(
 ): Promise<CancellationResult> {
   const trimmedReason = reason.trim();
   const before = await client.query(
-    `select id, status, cancelled_at, cancel_reason from public.payment_instances where id=$1 for update`,
+    `select id, status, cancelled_at, cancel_reason, paid_at, paid_amount from public.payment_instances where id=$1 for update`,
     [instanceId],
   );
   if (before.rowCount !== 1) throw await instanceMissingReason(client, instanceId);
@@ -782,10 +1044,10 @@ export async function cancelInstanceWithClient(
   }
   const updated = await client.query<{ cancelled_at_iso: string }>(
     ctx?.eventTimestamp
-      ? `update public.payment_instances set status='cancelled', cancelled_at=$2, cancel_reason=$3
+      ? `update public.payment_instances set status='cancelled', cancelled_at=$2, cancel_reason=$3, paid_at=null, paid_amount=null
          where id=$1
          returning to_char(cancelled_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as cancelled_at_iso`
-      : `update public.payment_instances set status='cancelled', cancelled_at=now(), cancel_reason=$2
+      : `update public.payment_instances set status='cancelled', cancelled_at=now(), cancel_reason=$2, paid_at=null, paid_amount=null
          where id=$1
          returning to_char(cancelled_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as cancelled_at_iso`,
     ctx?.eventTimestamp ? [instanceId, ctx.eventTimestamp, trimmedReason] : [instanceId, trimmedReason],

@@ -13,13 +13,15 @@ import type { CashMonth } from "@/lib/radar/rules";
 import { audit } from "@/lib/audit";
 import { DomainError } from "@/lib/domain-error";
 import {
-  applyScenario,
+  applyScenario as applyScenarioCore,
   buildScenarioInsights,
   compareScenarioToBaseline,
   scenarioConfidence,
+  type DebtMonthLite,
   type ScenarioAdjustment,
   type ScenarioAssumptions,
   type ScenarioComparison,
+  type ScenarioMonth,
 } from "./rules";
 
 export type ScenarioType =
@@ -69,7 +71,8 @@ interface CashflowLineLite {
   amount: number;
 }
 
-interface ScenarioExternalContext {
+export interface ScenarioExternalContext {
+  id: string;
   assumptionType: string;
   label: string;
   value: number;
@@ -78,6 +81,223 @@ interface ScenarioExternalContext {
   sourceName: string;
   sourceDate: string;
   sourceHref: string;
+  mappedField: keyof ScenarioAssumptions | "fxBenchmark" | null;
+  mappedValue: number | null;
+  mappingSummary: string;
+}
+
+function isRateLikeUnit(unit: string): boolean {
+  const u = norm(unit);
+  return (
+    u === "%" ||
+    u.includes("yuzde") ||
+    u.includes("oran") ||
+    u.includes("pct") ||
+    u.includes("percent") ||
+    u.includes("puan") ||
+    u.includes("ratio")
+  );
+}
+
+function normalizeRateValue(raw: number, unit: string, forceRateType = false): number {
+  const u = norm(unit);
+  const explicitPercent =
+    u === "%" || u.includes("yuzde") || u.includes("pct") || u.includes("percent") || u.includes("puan");
+  if (explicitPercent) {
+    return Number(decimal(raw).div(100).toFixed(6));
+  }
+  if ((forceRateType || u.includes("oran") || u.includes("ratio")) && Math.abs(raw) > 1) {
+    return Number(decimal(raw).div(100).toFixed(6));
+  }
+  return Number(decimal(raw).toFixed(6));
+}
+
+function describeExternalMapping(a: ExternalAssumption): {
+  mappedField: keyof ScenarioAssumptions | "fxBenchmark" | null;
+  mappedValue: number | null;
+  mappingSummary: string;
+} {
+  switch (a.assumption_type) {
+    case "inflation_rate": {
+      const r = normalizeRateValue(a.value_numeric, a.unit, true);
+      return {
+        mappedField: "expensePct",
+        mappedValue: r,
+        mappingSummary: `Baz gider artışı (expensePct): %${(r * 100).toFixed(2)}`,
+      };
+    }
+    case "personnel_cost":
+    case "energy_cost": {
+      if (isRateLikeUnit(a.unit)) {
+        const r = normalizeRateValue(a.value_numeric, a.unit, true);
+        return {
+          mappedField: "expensePct",
+          mappedValue: r,
+          mappingSummary: `Baz maliyet baskısı (expensePct): %${(r * 100).toFixed(2)}`,
+        };
+      }
+      return {
+        mappedField: null,
+        mappedValue: a.value_numeric,
+        mappingSummary: `Referans maliyet girdisi (${a.value_numeric.toLocaleString("tr-TR")} ${a.unit})`,
+      };
+    }
+    case "interest_rate":
+    case "loan_rate": {
+      const annual = normalizeRateValue(a.value_numeric, a.unit, true);
+      const monthly = Number(decimal(annual).div(12).toFixed(6));
+      return {
+        mappedField: "factoringFeePct",
+        mappedValue: monthly,
+        mappingSummary: `Baz iskonto/faktoring oranı (factoringFeePct): %${(monthly * 100).toFixed(2)}/ay (yıllık %${(annual * 100).toFixed(2)})`,
+      };
+    }
+    case "fx_rate": {
+      if (isRateLikeUnit(a.unit)) {
+        const r = normalizeRateValue(a.value_numeric, a.unit, true);
+        return {
+          mappedField: "expensePct",
+          mappedValue: r,
+          mappingSummary: `Kur değişim maliyet etkisi (expensePct): %${(r * 100).toFixed(2)}`,
+        };
+      }
+      return {
+        mappedField: "fxBenchmark",
+        mappedValue: a.value_numeric,
+        mappingSummary: `Onaylı baz döviz kuru (${a.currency}): ${a.value_numeric.toLocaleString("tr-TR")} ${a.unit}`,
+      };
+    }
+    default: {
+      const u = norm(a.unit);
+      if (
+        u === "ay" ||
+        u === "month" ||
+        u.includes("gun") ||
+        u.includes("day") ||
+        matchesNeedle("tahsilat", a.label) ||
+        matchesNeedle("gecikme", a.label) ||
+        matchesNeedle("vade", a.label)
+      ) {
+        const months =
+          u.includes("gun") || u.includes("day")
+            ? Math.max(0, Math.round(a.value_numeric / 30))
+            : Math.max(0, Math.round(a.value_numeric));
+        return {
+          mappedField: "customerDelayMonths",
+          mappedValue: months,
+          mappingSummary: `Baz tahsilat vade kayması (customerDelayMonths): ${months} ay`,
+        };
+      }
+      if (
+        isRateLikeUnit(a.unit) &&
+        (matchesNeedle("gelir", a.label) || matchesNeedle("satis", a.label) || matchesNeedle("ciro", a.label))
+      ) {
+        const r = normalizeRateValue(a.value_numeric, a.unit, true);
+        return {
+          mappedField: "revenuePct",
+          mappedValue: r,
+          mappingSummary: `Baz gelir değişimi (revenuePct): %${(r * 100).toFixed(2)}`,
+        };
+      }
+      if (isRateLikeUnit(a.unit)) {
+        const r = normalizeRateValue(a.value_numeric, a.unit, true);
+        return {
+          mappedField: "expensePct",
+          mappedValue: r,
+          mappingSummary: `Baz gider değişimi (expensePct): %${(r * 100).toFixed(2)}`,
+        };
+      }
+      return {
+        mappedField: null,
+        mappedValue: a.value_numeric,
+        mappingSummary: `Onaylı dış bağlam (${a.value_numeric.toLocaleString("tr-TR")} ${a.unit})`,
+      };
+    }
+  }
+}
+
+export function resolveAssumptionsWithExternal(
+  assumptions: ScenarioAssumptions,
+  externalAssumptions: ExternalAssumption[],
+  options?: { scenarioType?: ScenarioType; useExternalAssumptions?: boolean },
+): {
+  effectiveAssumptions: ScenarioAssumptions;
+  appliedExternal: ScenarioExternalContext[];
+} {
+  if (options?.useExternalAssumptions === false || externalAssumptions.length === 0) {
+    return { effectiveAssumptions: { ...assumptions }, appliedExternal: [] };
+  }
+
+  const scenarioType = options?.scenarioType ?? "combined_custom_scenario";
+  const allowRevenueBase =
+    scenarioType === "combined_custom_scenario" || scenarioType === "revenue_up_down_percent";
+  const allowExpenseBase =
+    scenarioType === "combined_custom_scenario" || scenarioType === "expense_up_down_percent";
+  const allowDelayBase =
+    scenarioType === "combined_custom_scenario" || scenarioType === "customer_delay_days";
+  const allowFinancingBase = scenarioType === "combined_custom_scenario";
+
+  const effective: ScenarioAssumptions = { ...assumptions };
+  const applied: ScenarioExternalContext[] = [];
+
+  // Prioritize inflation_rate over secondary cost pressure rates when resolving expensePct
+  const prioritized = [...externalAssumptions].sort((a, b) => {
+    const rank = (t: string) =>
+      t === "inflation_rate"
+        ? 0
+        : t === "interest_rate"
+          ? 1
+          : t === "loan_rate"
+            ? 2
+            : t === "personnel_cost"
+              ? 3
+              : t === "energy_cost"
+                ? 4
+                : t === "fx_rate"
+                  ? 5
+                  : 6;
+    return rank(a.assumption_type) - rank(b.assumption_type);
+  });
+
+  for (const ext of prioritized) {
+    const ctx = toScenarioExternalContext(ext);
+    if (ctx.mappedField === "expensePct" && ctx.mappedValue != null) {
+      if (allowExpenseBase && effective.expensePct == null) {
+        effective.expensePct = ctx.mappedValue;
+        applied.push(ctx);
+      }
+    } else if (ctx.mappedField === "revenuePct" && ctx.mappedValue != null) {
+      if (allowRevenueBase && effective.revenuePct == null) {
+        effective.revenuePct = ctx.mappedValue;
+        applied.push(ctx);
+      }
+    } else if (ctx.mappedField === "customerDelayMonths" && ctx.mappedValue != null) {
+      if (allowDelayBase && effective.customerDelayMonths == null) {
+        effective.customerDelayMonths = ctx.mappedValue;
+        applied.push(ctx);
+      }
+    } else if (ctx.mappedField === "factoringFeePct" && ctx.mappedValue != null) {
+      if (allowFinancingBase && effective.factoringFeePct == null) {
+        effective.factoringFeePct = ctx.mappedValue;
+        applied.push(ctx);
+      }
+    } else if (ctx.mappedField === "fxBenchmark") {
+      applied.push(ctx);
+    }
+  }
+
+  return { effectiveAssumptions: effective, appliedExternal: applied };
+}
+
+export function applyScenario(
+  baseline: CashMonth[],
+  assumptions: ScenarioAssumptions,
+  debt: DebtMonthLite[] = [],
+  adjustments: ScenarioAdjustment[] = [],
+  externalAssumptions: ExternalAssumption[] = [],
+): ScenarioMonth[] {
+  const { effectiveAssumptions } = resolveAssumptionsWithExternal(assumptions, externalAssumptions);
+  return applyScenarioCore(baseline, effectiveAssumptions, debt, adjustments);
 }
 
 async function loadCashflowLines(pool: Pool): Promise<CashflowLineLite[]> {
@@ -234,12 +454,15 @@ export async function estimateOptimizationCandidates(pool: Pool): Promise<Optimi
   const baseline: CashMonth[] = await loadCashMonths(pool);
   if (baseline.length === 0) return [];
 
-  const [items, lines] = await Promise.all([
+  const [items, lines, approvedExternal] = await Promise.all([
     loadMaturityItems(pool),
     loadCashflowLines(pool),
+    loadApprovedExternalAssumptions(pool),
   ]);
   const debt = debtServiceByMonth(items).map((d) => ({ monthStart: d.monthStart, knownOutflow: d.knownOutflow }));
   const { topOutflowLabel, topIncomeLabel } = await discoverTopCounterpartyLabels(pool, lines);
+  const resolvedFactoring = resolveAssumptionsWithExternal({}, approvedExternal);
+  const defaultFactoringFeePct = resolvedFactoring.effectiveAssumptions.factoringFeePct ?? 0.04;
 
   const candidates: Array<{ key: string; label: string; assumptions: ScenarioAssumptions }> = [];
   if (topOutflowLabel) {
@@ -256,7 +479,7 @@ export async function estimateOptimizationCandidates(pool: Pool): Promise<Optimi
       assumptions: {
         factoringIncomeLabel: topIncomeLabel,
         factoringAdvanceMonth: baseline[0].monthStart.slice(0, 7),
-        factoringFeePct: 0.04,
+        factoringFeePct: defaultFactoringFeePct,
       },
     });
   }
@@ -279,20 +502,21 @@ export async function estimateOptimizationCandidates(pool: Pool): Promise<Optimi
         targetOutflowDelayMonths: 1,
         factoringIncomeLabel: topIncomeLabel,
         factoringAdvanceMonth: baseline[0].monthStart.slice(0, 7),
-        factoringFeePct: 0.04,
+        factoringFeePct: defaultFactoringFeePct,
       },
     });
   }
 
   const out: OptimizationCandidate[] = [];
   for (const c of candidates) {
-    const adj = buildScenarioAdjustmentsFromLines(lines, c.assumptions);
-    const months = applyScenario(baseline, c.assumptions, debt, adj);
+    const { effectiveAssumptions } = resolveAssumptionsWithExternal(c.assumptions, approvedExternal);
+    const adj = buildScenarioAdjustmentsFromLines(lines, effectiveAssumptions);
+    const months = applyScenario(baseline, effectiveAssumptions, debt, adj);
     const cmp = compareScenarioToBaseline(months);
     out.push({
       key: c.key,
       label: c.label,
-      assumptions: c.assumptions,
+      assumptions: effectiveAssumptions,
       finalCash: cmp.scenarioFinalCash,
       finalDelta: cmp.finalDelta,
       maxCashGap: cmp.maxCashGap,
@@ -313,7 +537,9 @@ export async function estimateOptimizationCandidates(pool: Pool): Promise<Optimi
 }
 
 function toScenarioExternalContext(a: ExternalAssumption): ScenarioExternalContext {
+  const mapping = describeExternalMapping(a);
   return {
+    id: a.id,
     assumptionType: a.assumption_type,
     label: a.label,
     value: a.value_numeric,
@@ -321,13 +547,25 @@ function toScenarioExternalContext(a: ExternalAssumption): ScenarioExternalConte
     currency: a.currency,
     sourceName: a.source_name,
     sourceDate: a.source_date,
-    sourceHref: "/assumptions",
+    sourceHref: "/data/assumptions",
+    mappedField: mapping.mappedField,
+    mappedValue: mapping.mappedValue,
+    mappingSummary: mapping.mappingSummary,
   };
 }
 
-async function loadScenarioExternalContext(pool: Pool): Promise<ScenarioExternalContext[]> {
-  const approved = await loadApprovedExternalAssumptions(pool);
-  return approved.map(toScenarioExternalContext);
+export interface ScenarioExternalBaseline {
+  approved: ScenarioExternalContext[];
+  defaultAssumptions: ScenarioAssumptions;
+}
+
+export async function loadScenarioExternalBaseline(pool: Pool): Promise<ScenarioExternalBaseline> {
+  const approvedRaw = await loadApprovedExternalAssumptions(pool);
+  const { effectiveAssumptions } = resolveAssumptionsWithExternal({}, approvedRaw);
+  return {
+    approved: approvedRaw.map(toScenarioExternalContext),
+    defaultAssumptions: effectiveAssumptions,
+  };
 }
 
 export async function createScenario(
@@ -405,19 +643,57 @@ export async function runScenario(
   scenarioId: string,
   assumptions: ScenarioAssumptions,
   actorId: string,
+  options?: { useExternalAssumptions?: boolean; scenarioType?: ScenarioType },
 ): Promise<RunResult> {
   // baseline is READ (never written)
   const baseline: CashMonth[] = await loadCashMonths(pool);
   const items = await loadMaturityItems(pool);
   const debt = debtServiceByMonth(items).map((d) => ({ monthStart: d.monthStart, knownOutflow: d.knownOutflow }));
-  const adjustments = await buildScenarioAdjustments(pool, assumptions);
-  const externalContext = await loadScenarioExternalContext(pool);
-  const storedAssumptions = externalContext.length > 0 ? { ...assumptions, externalContext } : assumptions;
 
-  const months = applyScenario(baseline, assumptions, debt, adjustments);
+  let resolvedScenarioType: ScenarioType = options?.scenarioType ?? "combined_custom_scenario";
+  if (!options?.scenarioType) {
+    const scenMeta = await pool
+      .query<{ scenario_type: ScenarioType }>(
+        `select scenario_type from public.scenarios where id = $1 limit 1`,
+        [scenarioId],
+      )
+      .catch(() => ({ rows: [] as Array<{ scenario_type: ScenarioType }> }));
+    if (scenMeta.rows[0]?.scenario_type) {
+      resolvedScenarioType = scenMeta.rows[0].scenario_type;
+    }
+  }
+
+  const approvedExternal = await loadApprovedExternalAssumptions(pool);
+  const externalContext = approvedExternal.map(toScenarioExternalContext);
+  const { effectiveAssumptions, appliedExternal } = resolveAssumptionsWithExternal(
+    assumptions,
+    approvedExternal,
+    {
+      scenarioType: resolvedScenarioType,
+      useExternalAssumptions: options?.useExternalAssumptions ?? true,
+    },
+  );
+
+  const adjustments = await buildScenarioAdjustments(pool, effectiveAssumptions);
+  const storedAssumptions =
+    externalContext.length > 0
+      ? {
+          ...effectiveAssumptions,
+          explicitOverrides: assumptions,
+          externalContext,
+          appliedExternalKeys: appliedExternal.map((x) => x.assumptionType),
+        }
+      : effectiveAssumptions;
+
+  const months = applyScenarioCore(baseline, effectiveAssumptions, debt, adjustments);
   const comparison = compareScenarioToBaseline(months);
   const confidence = scenarioConfidence(comparison);
-  const insights = buildScenarioInsights(comparison, assumptions);
+  const insights = buildScenarioInsights(comparison, effectiveAssumptions);
+  if (appliedExternal.length > 0) {
+    insights.push(
+      `Dış varsayım baz girdileri uygulandı (/data/assumptions): ${appliedExternal.map((a) => `${a.label} → ${a.mappingSummary}`).join("; ")}.`,
+    );
+  }
 
   const client = await pool.connect();
   try {
@@ -450,7 +726,7 @@ export async function runScenario(
          m.baselineClosing, m.scenarioClosing, m.delta],
       );
     }
-    for (const ar of [...assumptionRows(assumptions), ...externalContextRows(externalContext)]) {
+    for (const ar of [...assumptionRows(effectiveAssumptions), ...externalContextRows(externalContext)]) {
       await client.query(
         `insert into public.scenario_assumptions (run_id, key, value_numeric, unit, description)
          values ($1,$2,$3,$4,$5)`,
@@ -466,7 +742,15 @@ export async function runScenario(
     }
     await audit(client, {
       actor: actorId, action: "run_scenario", entityTable: "scenario_runs", entityId: runId,
-      after: { scenarioId, assumptions: storedAssumptions, adjustmentCount: adjustments.length, externalContextCount: externalContext.length, finalDelta: comparison.finalDelta, confidence },
+      after: {
+        scenarioId,
+        assumptions: storedAssumptions,
+        adjustmentCount: adjustments.length,
+        externalContextCount: externalContext.length,
+        appliedExternalCount: appliedExternal.length,
+        finalDelta: comparison.finalDelta,
+        confidence,
+      },
     });
     await client.query("commit");
     return { runId, comparison, insights };
@@ -481,7 +765,12 @@ export async function runScenario(
 /** Convenience: create a scenario and run it in one call (UI path). */
 export async function createAndRun(
   pool: Pool,
-  input: { name: string; scenarioType: ScenarioType; assumptions: ScenarioAssumptions },
+  input: {
+    name: string;
+    scenarioType: ScenarioType;
+    assumptions: ScenarioAssumptions;
+    useExternalAssumptions?: boolean;
+  },
   actorId: string,
 ): Promise<RunResult & { scenarioId: string }> {
   const baseline = await loadCashMonths(pool);
@@ -492,7 +781,16 @@ export async function createAndRun(
     baselineLabel: baseline.length ? `nakit akış ${baseline.length} ay ${first}..${last}` : "baz veri yok",
     baselineMonthCount: baseline.length,
   }, actorId);
-  const run = await runScenario(pool, scenarioId, input.assumptions, actorId);
+  const run = await runScenario(
+    pool,
+    scenarioId,
+    input.assumptions,
+    actorId,
+    {
+      scenarioType: input.scenarioType,
+      useExternalAssumptions: input.useExternalAssumptions ?? true,
+    },
+  );
   return { scenarioId, ...run };
 }
 

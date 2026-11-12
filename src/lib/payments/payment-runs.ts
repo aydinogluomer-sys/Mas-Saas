@@ -10,7 +10,7 @@
 
 import type { Pool, PoolClient } from "pg";
 import { z } from "zod";
-import { requestApprovalWithClient } from "@/lib/approvals/engine";
+import { evaluateSelfApprovalEligibility, requestApprovalWithClient } from "@/lib/approvals/engine";
 import { audit } from "@/lib/audit";
 import { isTurkishIban, isValidIbanChecksum, normalizeIban } from "@/lib/counterparties/rules";
 import { DomainError } from "@/lib/domain-error";
@@ -48,6 +48,12 @@ export const createPaymentRunSchema = z.object({
 export const submitPaymentRunSchema = z.object({
   runId: z.uuid(),
   note: z.string().trim().min(1).max(500).optional(),
+});
+
+export const approvePaymentRunSchema = z.object({
+  runId: z.uuid(),
+  justification: z.string().trim().max(1000).optional(),
+  note: z.string().trim().max(500).optional(),
 });
 
 export const cancelPaymentRunSchema = z.object({
@@ -1021,6 +1027,144 @@ export async function submitPaymentRunForApproval(
   }
 }
 
+/**
+ * F-46 (A1): Approves a `draft` or `pending_approval` payment run, enforcing 4-eyes (`maker <> checker`)
+ * whenever 2+ active approvers exist, and allowing Controlled Single-Operator Admin Self-Approval
+ * with mandatory justification when `activeApproverCount <= 1` and governance policy permits.
+ */
+export async function approvePaymentRun(
+  pool: Pool,
+  raw: unknown,
+  actorId: string,
+): Promise<{ runId: string; status: "approved"; selfApprovedOverride: boolean }> {
+  const input = parseOrThrow(approvePaymentRunSchema, raw, "Ödeme paketi onayı");
+  const client = await pool.connect();
+  try {
+    await client.query("begin");
+    const runRes = await client.query<{
+      id: string;
+      run_code: string;
+      status: string;
+      created_by: string | null;
+      approval_id: string | null;
+    }>(
+      `select id::text, run_code, status, created_by::text as created_by, approval_id::text as approval_id
+         from public.payment_runs
+        where id = $1
+        for update`,
+      [input.runId],
+    );
+    if (runRes.rowCount === 0) {
+      throw new DomainError("NOT_FOUND", "Ödeme paketi bulunamadı.");
+    }
+    const run = runRes.rows[0];
+    if (!["draft", "pending_approval"].includes(run.status)) {
+      throw new DomainError(
+        "CONFLICT",
+        `Yalnız 'draft' veya 'pending_approval' durumundaki ödeme paketi onaylanabilir (mevcut: '${run.status}').`,
+      );
+    }
+
+    let selfApprovedOverride = false;
+    let selfApprovalJustification: string | null = null;
+    if (run.created_by && run.created_by === actorId) {
+      const elig = await evaluateSelfApprovalEligibility(
+        client,
+        actorId,
+        input.justification ?? input.note,
+      );
+      selfApprovedOverride = true;
+      selfApprovalJustification = elig.justification;
+    }
+
+    const updRun = await client.query(
+      `update public.payment_runs
+          set status = 'approved',
+              approved_by = $2,
+              approved_at = now(),
+              self_approved_override = $3,
+              self_approval_justification = $4
+        where id = $1`,
+      [input.runId, actorId, selfApprovedOverride, selfApprovalJustification],
+    );
+    if (updRun.rowCount !== 1) {
+      throw new DomainError("CONFLICT", "Ödeme paketi onay durumu güncellenemedi.");
+    }
+
+    // Refresh iban_verified on included items whose linked counterparty IBAN is active + approved + valid TR IBAN
+    const items = await client.query<{ id: string; beneficiary_iban: string }>(
+      `select pri.id::text as id, pri.beneficiary_iban
+         from public.payment_run_items pri
+         join public.ibans ib on ib.id = pri.iban_id
+        where pri.run_id = $1
+          and pri.status = 'included'
+          and pri.iban_verified = false
+          and ib.is_active = true
+          and ib.approval_status = 'approved'`,
+      [input.runId],
+    );
+    const validItemIds = items.rows
+      .filter((r) => isTurkishIban(r.beneficiary_iban) && isValidIbanChecksum(r.beneficiary_iban))
+      .map((r) => r.id);
+    if (validItemIds.length > 0) {
+      await client.query(
+        `update public.payment_run_items set iban_verified = true where id = any($1::uuid[])`,
+        [validItemIds],
+      );
+    }
+
+    const effectiveNote = input.note ?? selfApprovalJustification ?? null;
+    if (run.approval_id) {
+      const updApp = await client.query<{ status: string }>(
+        `update public.approvals
+            set status = 'approved',
+                decided_by = $2,
+                decided_at = now(),
+                decision_note = $3,
+                self_approved_override = $4,
+                self_approval_justification = $5
+          where id = $1 and status in ('pending', 'reworked')
+          returning status`,
+        [run.approval_id, actorId, effectiveNote, selfApprovedOverride, selfApprovalJustification],
+      );
+      if (updApp.rowCount === 1) {
+        const step = await client.query<{ n: string }>(
+          `select coalesce(max(step_no), 0) + 1 as n from public.approval_steps where approval_id = $1`,
+          [run.approval_id],
+        );
+        await client.query(
+          `insert into public.approval_steps (approval_id, step_no, action, actor, note, from_status, to_status)
+           values ($1, $2, 'approved', $3, $4, 'pending', 'approved')`,
+          [run.approval_id, intOrNull(step.rows[0]?.n) ?? 1, actorId, effectiveNote],
+        );
+      }
+    }
+
+    await audit(client, {
+      actor: actorId,
+      action: "approve_payment_run",
+      entityTable: "payment_runs",
+      entityId: input.runId,
+      before: { status: run.status },
+      after: {
+        status: "approved",
+        runCode: run.run_code,
+        selfApprovedOverride,
+        justification: selfApprovalJustification,
+        note: effectiveNote,
+      },
+    });
+
+    await client.query("commit");
+    return { runId: input.runId, status: "approved", selfApprovedOverride };
+  } catch (e) {
+    await client.query("rollback").catch(() => undefined);
+    throw e;
+  } finally {
+    client.release();
+  }
+}
+
 export async function cancelPaymentRun(
   pool: Pool,
   raw: unknown,
@@ -1102,8 +1246,11 @@ export interface PaymentRunSummaryRow {
   approvalId: string | null;
   exportedFormat: string | null;
   exportedHash: string | null;
+  createdBy: string | null;
   createdByName: string | null;
   approvedByName: string | null;
+  selfApprovedOverride: boolean;
+  selfApprovalJustification: string | null;
   createdAt: string;
   exportedAt: string | null;
 }
@@ -1137,8 +1284,11 @@ export async function loadPaymentRuns(
             pr.approval_id::text,
             pr.exported_format,
             pr.exported_hash,
+            pr.created_by::text as created_by,
             public.user_display_label(pr.created_by) as created_by_name,
             public.user_display_label(pr.approved_by) as approved_by_name,
+            coalesce(pr.self_approved_override, false) as self_approved_override,
+            pr.self_approval_justification,
             to_char(pr.created_at at time zone 'Europe/Istanbul', 'YYYY-MM-DD HH24:MI') as created_at,
             to_char(pr.exported_at at time zone 'Europe/Istanbul', 'YYYY-MM-DD HH24:MI') as exported_at
        from public.payment_runs pr
@@ -1148,6 +1298,51 @@ export async function loadPaymentRuns(
       limit $1`,
     [limit],
   ).catch((err: unknown) => {
+    const code = (err as { code?: string } | null)?.code;
+    if (code === "42703") {
+      return pool.query(
+        `select pr.id::text,
+                pr.run_code,
+                to_char(pr.planned_execution_date, 'YYYY-MM-DD') as planned_execution_date,
+                pr.source_bank_account_id::text,
+                ca.name as source_bank_name,
+                ba.iban_normalized as source_bank_iban,
+                pr.currency,
+                pr.total_amount,
+                pr.item_count,
+                (select count(*)::int from public.payment_run_items pri where pri.run_id = pr.id and pri.status = 'settled') as settled_item_count,
+                (select count(*)::int
+                   from public.payment_run_items pri
+                   left join public.ibans ib on ib.id = pri.iban_id
+                  where pri.run_id = pr.id
+                    and pri.status in ('included', 'settled')
+                    and (not pri.iban_verified or (pri.iban_id is not null and (ib.is_active is not true or ib.approval_status <> 'approved')))) as unverified_iban_count,
+                pr.pre_run_cash,
+                pr.projected_14d_min_cash,
+                pr.min_cash_floor,
+                pr.breaches_cash_floor,
+                pr.status,
+                pr.approval_id::text,
+                pr.exported_format,
+                pr.exported_hash,
+                pr.created_by::text as created_by,
+                public.user_display_label(pr.created_by) as created_by_name,
+                public.user_display_label(pr.approved_by) as approved_by_name,
+                false as self_approved_override,
+                null::text as self_approval_justification,
+                to_char(pr.created_at at time zone 'Europe/Istanbul', 'YYYY-MM-DD HH24:MI') as created_at,
+                to_char(pr.exported_at at time zone 'Europe/Istanbul', 'YYYY-MM-DD HH24:MI') as exported_at
+           from public.payment_runs pr
+           join public.bank_accounts ba on ba.cash_account_id = pr.source_bank_account_id
+           join public.cash_accounts ca on ca.id = ba.cash_account_id
+          order by pr.created_at desc
+          limit $1`,
+        [limit],
+      ).catch((e2: unknown) => {
+        if (isMissingSchemaError(e2)) return { rows: [], rowCount: 0 };
+        throw e2;
+      });
+    }
     if (isMissingSchemaError(err)) return { rows: [], rowCount: 0 };
     throw err;
   });
@@ -1172,8 +1367,11 @@ export async function loadPaymentRuns(
     approvalId: x.approval_id ?? null,
     exportedFormat: x.exported_format ?? null,
     exportedHash: x.exported_hash ?? null,
+    createdBy: x.created_by ?? null,
     createdByName: x.created_by_name ?? null,
     approvedByName: x.approved_by_name ?? null,
+    selfApprovedOverride: Boolean(x.self_approved_override),
+    selfApprovalJustification: x.self_approval_justification ?? null,
     createdAt: x.created_at,
     exportedAt: x.exported_at ?? null,
   }));

@@ -3,19 +3,64 @@
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { requireActionPermission } from "@/lib/auth";
+import {
+  isPgPeriodLockedError,
+  PERIOD_LOCKED_USER_MESSAGE,
+  translatePeriodLockError,
+} from "@/lib/cashflow/period-lock";
 import { getPool } from "@/lib/db";
 import { DomainError } from "@/lib/domain-error";
+import { revalidateFinancialViews } from "@/lib/revalidate-financial-views";
 import { formObject } from "@/lib/validation";
 import {
-  acceptMatch, ignoreTransaction, importBankStatement, reconcileBankAccount,
-  reconcileTransaction, rejectCandidate, runMatcher, upsertBankAccount,
+  acceptMatch,
+  ignoreTransaction,
+  importBankStatement,
+  manualMatchBankTransaction,
+  reconcileBankAccount,
+  reconcileTransaction,
+  rejectCandidate,
+  runMatcher,
+  unignoreTransaction,
+  unmatchTransaction,
+  upsertBankAccount,
 } from "@/lib/bank/engine";
+import {
+  ACCOUNT_KIND_INPUTS,
+  upsertCashOrBankAccountWithOpeningBalance,
+  type AccountKindInput,
+} from "@/lib/treasury/engine";
 
 const BASE = "/finance/bank";
 
+function numOrNull(v: FormDataEntryValue | null): number | null {
+  if (v == null || String(v).trim() === "") return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
+function parseAccountKind(raw: string): AccountKindInput | undefined {
+  const trimmed = raw.trim();
+  if ((ACCOUNT_KIND_INPUTS as readonly string[]).includes(trimmed)) {
+    return trimmed as AccountKindInput;
+  }
+  return undefined;
+}
+
 function domainRedirect(e: unknown): never {
-  if (e instanceof DomainError) redirect(`${BASE}?error=${encodeURIComponent(e.message)}`);
-  throw e;
+  if (isPgPeriodLockedError(e)) {
+    revalidatePath(BASE);
+    redirect(`${BASE}?error=${encodeURIComponent(PERIOD_LOCKED_USER_MESSAGE)}`);
+  }
+  try {
+    translatePeriodLockError(e);
+  } catch (translated) {
+    if (translated instanceof DomainError) {
+      revalidatePath(BASE);
+      redirect(`${BASE}?error=${encodeURIComponent(translated.message)}`);
+    }
+    throw translated;
+  }
 }
 
 export async function saveBankAccountAction(formData: FormData): Promise<void> {
@@ -24,7 +69,71 @@ export async function saveBankAccountAction(formData: FormData): Promise<void> {
     await upsertBankAccount(getPool(), formObject(formData), session.id);
   } catch (e) { domainRedirect(e); }
   revalidatePath(BASE);
+  revalidatePath("/finance/treasury");
   redirect(`${BASE}?result=account-saved`);
+}
+
+/**
+ * F-45 (FIN-03 + A3): Create or update a Kasa/Banka account with IBAN, opening_balance,
+ * opening_balance_date, and automatic TDHP 500.99 management ledger opening entry directly
+ * from Banka Merkezi.
+ */
+export async function upsertBankOrCashAccountAction(formData: FormData): Promise<void> {
+  const session = await requireActionPermission(
+    "cash_accounts",
+    String(formData.get("cashAccountId") ?? "").trim() ? "update" : "insert",
+    BASE,
+  );
+  const cashAccountId = String(formData.get("cashAccountId") ?? "").trim() || undefined;
+
+  const name = String(formData.get("name") ?? "").trim() || undefined;
+  const kind = parseAccountKind(String(formData.get("kind") ?? ""));
+  const currency = String(formData.get("currency") ?? "").trim().toUpperCase() || undefined;
+  const openingBalance = numOrNull(formData.get("openingBalance"));
+  const openingBalanceDate = String(formData.get("openingBalanceDate") ?? "").trim() || undefined;
+  const ibanRaw = formData.get("iban");
+  const bankNameRaw = formData.get("bankName");
+  const branchCodeRaw = formData.get("branchCode");
+  const overdraftLimit = numOrNull(formData.get("overdraftLimit"));
+  const hasActiveField = formData.has("hasIsActiveField");
+  const isActive = hasActiveField ? String(formData.get("isActive") ?? "") === "on" : undefined;
+
+  let summary = "";
+  try {
+    const res = await upsertCashOrBankAccountWithOpeningBalance(
+      getPool(),
+      {
+        cashAccountId,
+        name,
+        kind,
+        currency,
+        openingBalance,
+        openingBalanceDate,
+        isActive,
+        iban: ibanRaw != null ? String(ibanRaw) : undefined,
+        bankName: bankNameRaw != null ? String(bankNameRaw) : undefined,
+        branchCode: branchCodeRaw != null ? String(branchCodeRaw) : undefined,
+        overdraftLimit: overdraftLimit ?? undefined,
+      },
+      session.id,
+    );
+    const ledgerSuffix = res.openingJournalEntryId
+      ? " · 500.99 yönetim defteri açılış fişi işlendi"
+      : "";
+    summary = cashAccountId
+      ? `Hesap / açılış bakiyesi güncellendi${ledgerSuffix}`
+      : `Yeni kasa/banka hesabı oluşturuldu${ledgerSuffix}`;
+  } catch (e) {
+    domainRedirect(e);
+  }
+
+  revalidatePath(BASE);
+  revalidatePath("/finance/treasury");
+  revalidatePath("/finance/ledger");
+  revalidatePath("/finance/collections");
+  revalidatePath("/cashflow");
+  revalidatePath("/");
+  redirect(`${BASE}?result=${encodeURIComponent(summary)}`);
 }
 
 export async function importStatementAction(formData: FormData): Promise<void> {
@@ -53,7 +162,7 @@ export async function runMatcherAction(): Promise<void> {
   let summary = "";
   try {
     const r = await runMatcher(getPool(), session.id);
-    summary = `${r.scanned} tarandı · ${r.suggested} öneri · ${r.candidates} aday`;
+    summary = `${r.scanned} tarandı · ${r.suggested} öneri · ${r.candidates} aday (±90 gün penceresi)`;
   } catch (e) { domainRedirect(e); }
   revalidatePath(BASE);
   redirect(`${BASE}?result=${encodeURIComponent(summary)}`);
@@ -65,10 +174,47 @@ export async function acceptMatchAction(formData: FormData): Promise<void> {
     await acceptMatch(getPool(), formObject(formData), session.id);
   } catch (e) { domainRedirect(e); }
   revalidatePath(BASE);
-  revalidatePath("/finance/collections");
-  revalidatePath("/finance/invoices");
-  revalidatePath("/payments");
+  revalidateFinancialViews();
   redirect(`${BASE}?result=eslestirildi-ve-kapatildi`);
+}
+
+export async function manualMatchAction(formData: FormData): Promise<void> {
+  const session = await requireActionPermission("bank_transactions", "update", BASE);
+  try {
+    await manualMatchBankTransaction(
+      getPool(),
+      {
+        transactionId: String(formData.get("transactionId") ?? "").trim(),
+        targetKey: String(formData.get("targetKey") ?? "").trim() || undefined,
+        targetTable: String(formData.get("targetTable") ?? "").trim() || undefined,
+        targetId: String(formData.get("targetId") ?? "").trim() || undefined,
+      },
+      session.id,
+    );
+  } catch (e) { domainRedirect(e); }
+  revalidatePath(BASE);
+  revalidateFinancialViews();
+  redirect(`${BASE}?result=manuel-eslestirildi-ve-kapatildi`);
+}
+
+export async function unmatchTransactionAction(formData: FormData): Promise<void> {
+  const session = await requireActionPermission("bank_transactions", "update", BASE);
+  try {
+    await unmatchTransaction(getPool(), formObject(formData), session.id);
+  } catch (e) { domainRedirect(e); }
+  revalidatePath(BASE);
+  revalidateFinancialViews();
+  redirect(`${BASE}?result=eslestirme-ve-kapanis-geri-alindi`);
+}
+
+export async function unignoreTransactionAction(formData: FormData): Promise<void> {
+  const session = await requireActionPermission("bank_transactions", "update", BASE);
+  try {
+    await unignoreTransaction(getPool(), formObject(formData), session.id);
+  } catch (e) { domainRedirect(e); }
+  revalidatePath(BASE);
+  revalidateFinancialViews();
+  redirect(`${BASE}?result=yok-sayma-kaldirildi`);
 }
 
 export async function rejectCandidateAction(formData: FormData): Promise<void> {

@@ -1,3 +1,4 @@
+import Link from "@/components/ui/app-link";
 import { requireRouteAccess } from "@/lib/authz/route-guard";
 import { Badge } from "@/components/ui/badge";
 import { Panel, fmtTL } from "@/components/ui/panel";
@@ -9,6 +10,7 @@ import {
   loadAndSolveBreakevenLevers,
   type GoalSeekHorizon,
 } from "@/lib/scenarios/breakeven-goalseek";
+import { loadScenarioExternalBaseline } from "@/lib/scenarios/engine";
 import {
   formatNativeFx,
   formatTcmbRate,
@@ -61,7 +63,7 @@ export default async function NewScenarioPage({
   const today = istanbulDateISO();
   const pool = getPool();
 
-  const [months, goalSeek, fxStress] = await Promise.all([
+  const [months, goalSeek, fxStress, externalBaseline] = await Promise.all([
     loadCashMonths(pool),
     loadAndSolveBreakevenLevers(pool, {
       horizon,
@@ -69,6 +71,7 @@ export default async function NewScenarioPage({
       currency: "TRY",
     }),
     loadFxStressOverlay(pool, { asOfDate: today }),
+    loadScenarioExternalBaseline(pool),
   ]);
 
   const band10 = fxStress.shockBands.find((b) => b.shockPct === 10) ?? fxStress.shockBands[0];
@@ -506,6 +509,88 @@ export default async function NewScenarioPage({
         )}
       </Panel>
 
+      <Panel
+        title="AKTİF DIŞ VARSAYIM BAZ GİRDİLERİ (/DATA/ASSUMPTIONS)"
+        subtitle="Onaylı makro/piyasa varsayımları senaryo çalıştırılırken aksi belirtilmedikçe baz girdi olarak uygulanır"
+        right={
+          <div className="flex flex-wrap items-center gap-2">
+            <Badge tone={externalBaseline.approved.length > 0 ? "green" : "neutral"}>
+              {externalBaseline.approved.length} onaylı varsayım
+            </Badge>
+            <Link
+              href="/data/assumptions"
+              className="rounded border px-2.5 py-1 font-mono text-xs"
+              style={{
+                borderColor: "var(--line)",
+                background: "var(--surface-2)",
+                color: "var(--text-1)",
+              }}
+            >
+              Varsayımları Yönet →
+            </Link>
+          </div>
+        }
+      >
+        {externalBaseline.approved.length === 0 ? (
+          <EmptyState>
+            Onaylı dış varsayım kaydı bulunmuyor. <Link href="/data/assumptions" className="underline">/data/assumptions</Link> üzerinden enflasyon, faiz, döviz kuru veya maliyet varsayımı onayladığınızda senaryo motoruna otomatik baz girdi olarak akar.
+          </EmptyState>
+        ) : (
+          <div className="space-y-2">
+            <TableShell>
+              <table className="w-full border-collapse text-left text-xs">
+                <thead>
+                  <tr
+                    className="border-b font-mono text-[10px] uppercase"
+                    style={{ borderColor: "var(--line)", color: "var(--text-3)" }}
+                  >
+                    <th className="py-2 pr-2">Tür</th>
+                    <th className="py-2 px-2">Varsayım Etiketi</th>
+                    <th className="py-2 px-2 text-right">Değer</th>
+                    <th className="py-2 px-2">Senaryo Baz Etkisi</th>
+                    <th className="py-2 pl-2 text-right">Kaynak / Tarih</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {externalBaseline.approved.map((ext) => (
+                    <tr
+                      key={ext.id}
+                      className="border-b"
+                      style={{ borderColor: "var(--line-faint)", color: "var(--text-1)" }}
+                    >
+                      <td className="py-1.5 pr-2 font-mono">
+                        <Badge tone="blue">{ext.assumptionType}</Badge>
+                      </td>
+                      <td className="py-1.5 px-2 font-medium">{ext.label}</td>
+                      <td className="py-1.5 px-2 text-right font-mono tabular-nums">
+                        {ext.value.toLocaleString("tr-TR")} {ext.unit}
+                      </td>
+                      <td className="py-1.5 px-2" style={{ color: "var(--text-2)" }}>
+                        {ext.mappingSummary}
+                      </td>
+                      <td className="py-1.5 pl-2 text-right font-mono" style={{ color: "var(--text-3)" }}>
+                        {ext.sourceName} · {ext.sourceDate}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </TableShell>
+            <div
+              className="border px-3 py-2 text-xs"
+              style={{
+                background: "var(--surface-2)",
+                borderColor: "var(--line-faint)",
+                borderRadius: "var(--radius)",
+                color: "var(--text-2)",
+              }}
+            >
+              Aşağıdaki senaryo formunda ilgili alanı (örn. <b>Gider değişimi %</b> veya <b>Faktoring maliyeti %</b>) boş bıraktığınızda onaylı dış varsayım baz değer olarak kullanılır; açık bir değer girerseniz senaryo parametresi dış varsayımı ezer.
+            </div>
+          </div>
+        )}
+      </Panel>
+
       <Panel title="Hazır senaryolar">
         <div className="flex flex-wrap gap-2">
           {presets.map((p) => (
@@ -529,15 +614,45 @@ export default async function NewScenarioPage({
           </label>
           <label className="text-xs">
             Gelir değişimi %
-            <input name="revenuePct" type="number" step="0.1" className={field} />
+            <input
+              name="revenuePct"
+              type="number"
+              step="0.1"
+              placeholder={
+                externalBaseline.defaultAssumptions.revenuePct != null
+                  ? `Baz: %${(externalBaseline.defaultAssumptions.revenuePct * 100).toFixed(1)}`
+                  : undefined
+              }
+              className={field}
+            />
           </label>
           <label className="text-xs">
             Gider değişimi %
-            <input name="expensePct" type="number" step="0.1" className={field} />
+            <input
+              name="expensePct"
+              type="number"
+              step="0.1"
+              placeholder={
+                externalBaseline.defaultAssumptions.expensePct != null
+                  ? `Baz: %${(externalBaseline.defaultAssumptions.expensePct * 100).toFixed(1)}`
+                  : undefined
+              }
+              className={field}
+            />
           </label>
           <label className="text-xs">
             Genel müşteri gecikmesi (ay)
-            <input name="customerDelayMonths" type="number" min="0" className={field} />
+            <input
+              name="customerDelayMonths"
+              type="number"
+              min="0"
+              placeholder={
+                externalBaseline.defaultAssumptions.customerDelayMonths != null
+                  ? `Baz: ${externalBaseline.defaultAssumptions.customerDelayMonths} ay`
+                  : undefined
+              }
+              className={field}
+            />
           </label>
           <label className="text-xs">
             Hedef tahsilat etiketi
@@ -565,7 +680,18 @@ export default async function NewScenarioPage({
           </label>
           <label className="text-xs">
             Faktoring maliyeti %
-            <input name="factoringFeePct" type="number" min="0" step="0.1" className={field} />
+            <input
+              name="factoringFeePct"
+              type="number"
+              min="0"
+              step="0.01"
+              placeholder={
+                externalBaseline.defaultAssumptions.factoringFeePct != null
+                  ? `Baz: %${(externalBaseline.defaultAssumptions.factoringFeePct * 100).toFixed(2)}`
+                  : undefined
+              }
+              className={field}
+            />
           </label>
           <label className="text-xs">
             Kapasite kullanımı %
@@ -579,12 +705,17 @@ export default async function NewScenarioPage({
             <input name="includeDebtService" type="checkbox" />
             Borç servisini giderlere ekle
           </label>
+          <label className="flex items-center gap-2 text-xs">
+            <input type="hidden" name="useExternalAssumptions" value="false" />
+            <input name="useExternalAssumptions" type="checkbox" value="on" defaultChecked />
+            Onaylı dış varsayımları (/data/assumptions) baz girdi olarak uygula
+          </label>
           <div className="lg:col-span-3">
             <button className="button-accent px-3 py-2" disabled={!months.length}>
               Senaryoyu çalıştır
             </button>
-            <p className="mt-2 text-xs text-tone-3">
-              Bilinmeyen tutarlar sıfır sayılmaz. Onaylı dış varsayımlar bağlam olarak kaydedilir.
+            <p className="mt-2 text-xs" style={{ color: "var(--text-3)" }}>
+              Bilinmeyen tutarlar sıfır sayılmaz. Onaylı dış varsayımlar boş bırakılan senaryo alanlarına baz değer olarak uygulanır ve kayıt altına alınır.
             </p>
           </div>
         </form>

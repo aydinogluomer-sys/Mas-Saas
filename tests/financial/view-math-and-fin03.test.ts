@@ -204,7 +204,10 @@ describe("Faz 44 (C1) — Saf TypeScript ve Mock-Pool FIN-03 / Çapraz-Döviz / 
   });
 });
 
-describe.runIf(hasDisposableDb)("Faz 44 (C1) — Canlı Disposable PostgreSQL 0099 Görünüm & Kısıt Doğrulaması", () => {
+describe.runIf(hasDisposableDb)(
+  "Faz 44 (C1) — Canlı Disposable PostgreSQL 0099 Görünüm & Kısıt Doğrulaması",
+  { timeout: 30_000 },
+  () => {
   let pool: Pool;
 
   beforeAll(() => {
@@ -736,6 +739,9 @@ describe.runIf(hasDisposableDb)("Faz 44 (C1) — Canlı Disposable PostgreSQL 00
 
   it("control_large_payments & control_approval_bypass yabancı para ödemeleri TCMB kuruyla TL eşiğine çevirir ve kur yoksa needs_fx_review=true işaretler", async () => {
     await inRollback(pool, async (c) => {
+      await c.query(`alter table public.fx_rate_snapshots disable trigger user`);
+      await c.query(`delete from public.fx_rate_snapshots where base_currency = 'GBP'`);
+      await c.query(`alter table public.fx_rate_snapshots enable trigger user`);
       await c.query(
         `insert into public.fx_rate_snapshots (base_currency, quote_currency, rate_date, rate, source)
          values ('USD', 'TRY', '2098-05-01', 35.0, 'tcmb')`,

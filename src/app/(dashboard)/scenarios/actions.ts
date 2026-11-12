@@ -41,9 +41,18 @@ export async function runScenarioAction(formData: FormData): Promise<void> {
   };
   const name = String(formData.get("name") ?? "").trim() || "Adsız senaryo";
   const scenarioType = (String(formData.get("scenarioType") ?? "combined_custom_scenario")) as ScenarioType;
+  const useExternalEntries = formData.getAll("useExternalAssumptions").map((v) => String(v));
+  const useExternalAssumptions =
+    useExternalEntries.length === 0
+      ? true
+      : useExternalEntries.includes("on") || useExternalEntries.includes("true");
 
   const pool = getPool();
-  const { runId } = await createAndRun(pool, { name, scenarioType, assumptions }, session.id);
+  const { runId } = await createAndRun(
+    pool,
+    { name, scenarioType, assumptions, useExternalAssumptions },
+    session.id,
+  );
   revalidatePath("/scenarios");
   redirect(`/scenarios/${runId}`);
 }

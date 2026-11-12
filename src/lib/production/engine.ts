@@ -204,7 +204,12 @@ export async function mapCostSheets(pool: Pool, workbookId: string, actorId: str
           `insert into public.cost_breakdown_lines
              (cost_model_id, block, label, amount, source_workbook_id, source_sheet_id, source_row_id)
            values ($1,$2,$3,$4,$5,$6,$7)
-           on conflict (cost_model_id, block, label) do nothing`,
+           on conflict (cost_model_id, block, label) do update
+             set amount = excluded.amount,
+                 source_workbook_id = coalesce(excluded.source_workbook_id, public.cost_breakdown_lines.source_workbook_id),
+                 source_sheet_id = coalesce(excluded.source_sheet_id, public.cost_breakdown_lines.source_sheet_id),
+                 source_row_id = coalesce(excluded.source_row_id, public.cost_breakdown_lines.source_row_id)
+           where public.cost_breakdown_lines.amount is distinct from excluded.amount`,
           [costId, b.block, b.label, b.amount, workbookId, sheet.id, idByRow.get(b.rowIndex) ?? null],
         );
       }
@@ -256,7 +261,7 @@ export async function calculatePartProfitability(pool: Pool, costModelId?: strin
         : `select cm.id, cm.scenario_type, cm.break_even_tl_per_min as be,
                   cap.torna_rate_tl_per_min as torna, cap.freze_rate_tl_per_min as freze
            from public.cost_models cm left join public.capacity_models cap on cap.id=cm.capacity_model_id
-           where cm.scenario_type='normal' limit 1`,
+           order by case when cm.scenario_type='normal' then 0 else 1 end, cm.created_at asc limit 1`,
       costModelId ? [costModelId] : [],
     );
     const res: ProfitabilityResult = { runsCreated: 0, needsReview: 0 };
@@ -279,26 +284,25 @@ export async function calculatePartProfitability(pool: Pool, costModelId?: strin
       torna_minutes: string | null; freze_minutes: string | null; unit_sale_price: string | null; currency: string | null;
     }>(`select id, part_code, part_name, quantity,
                torna_minutes, freze_minutes, unit_sale_price, currency from public.production_parts`);
-    // Gelir KAYNAK satırda yaşar (production_parts fiyat saklamıyor) ve o satırın iki ham
-    // biçimi var: legacy `I.v` (toplam FİYAT) ve V2 `satis_fiyati` (birim fiyat × adet).
-    // Hangisi olduğuna `sourceRevenue` karar verir — SQL'de `::numeric` cast yok, çünkü V2
-    // ham hücre metin/formül nesnesi olabilir ve cast tüm hesabı düşürürdü.
+    // Gelir kaynak satırda veya operatörün girdiği birim satış fiyatında yaşar:
+    // Operatör `unit_sale_price` tanımladıysa (manuel parça veya fiyat güncellemesi) doğrudan
+    // `unit_sale_price × quantity` kullanılır; aksi halde kaynak Excel satırından `sourceRevenue` okunur.
     for (const p of parts.rows) {
       const revRow = await client.query<{ row_json: unknown }>(
         `select ir.row_json
          from public.import_rows ir join public.production_parts pp on pp.source_row_id = ir.id
          where pp.id=$1`, [p.id],
       );
+      const explicitUnitRevenue =
+        p.unit_sale_price != null && p.quantity != null && (p.currency ?? "TRY") === "TRY"
+          ? moneyOrNull(mul(p.unit_sale_price, p.quantity))
+          : null;
       const prof = partProfitability(
         {
           code: p.part_code, name: p.part_name, quantity: p.quantity,
           tornaMinutesPerUnit: p.torna_minutes == null ? null : Number(p.torna_minutes),
           frezeMinutesPerUnit: p.freze_minutes == null ? null : Number(p.freze_minutes),
-          revenue:
-            sourceRevenue(revRow.rows[0]?.row_json ?? null, p.quantity) ??
-            (p.unit_sale_price != null && p.quantity != null && (p.currency ?? "TRY") === "TRY"
-              ? moneyOrNull(mul(p.unit_sale_price, p.quantity))
-              : null),
+          revenue: explicitUnitRevenue ?? sourceRevenue(revRow.rows[0]?.row_json ?? null, p.quantity),
         },
         tornaRate, frezeRate,
       );
@@ -307,7 +311,23 @@ export async function calculatePartProfitability(pool: Pool, costModelId?: strin
            (part_id, cost_model_id, estimated_torna_cost, estimated_freze_cost, estimated_total_cost,
             estimated_revenue, estimated_margin, margin_rate, confidence, missing_operation_time)
          values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
-         on conflict (part_id, cost_model_id) do nothing`,
+         on conflict (part_id, cost_model_id) do update
+           set estimated_torna_cost = excluded.estimated_torna_cost,
+               estimated_freze_cost = excluded.estimated_freze_cost,
+               estimated_total_cost = excluded.estimated_total_cost,
+               estimated_revenue = excluded.estimated_revenue,
+               estimated_margin = excluded.estimated_margin,
+               margin_rate = excluded.margin_rate,
+               confidence = excluded.confidence,
+               missing_operation_time = excluded.missing_operation_time
+         where public.part_profitability_runs.estimated_torna_cost is distinct from excluded.estimated_torna_cost
+            or public.part_profitability_runs.estimated_freze_cost is distinct from excluded.estimated_freze_cost
+            or public.part_profitability_runs.estimated_total_cost is distinct from excluded.estimated_total_cost
+            or public.part_profitability_runs.estimated_revenue is distinct from excluded.estimated_revenue
+            or public.part_profitability_runs.estimated_margin is distinct from excluded.estimated_margin
+            or public.part_profitability_runs.margin_rate is distinct from excluded.margin_rate
+            or public.part_profitability_runs.confidence is distinct from excluded.confidence
+            or public.part_profitability_runs.missing_operation_time is distinct from excluded.missing_operation_time`,
         [
           p.id, model.id, prof.estimatedTornaCost, prof.estimatedFrezeCost, prof.estimatedTotalCost,
           prof.estimatedRevenue, prof.estimatedMargin, prof.marginRate, prof.confidence, prof.missingOperationTime,
@@ -324,6 +344,36 @@ export async function calculatePartProfitability(pool: Pool, costModelId?: strin
   } finally {
     client.release();
   }
+}
+
+export async function recalculateActivePartProfitability(
+  pool: Pool,
+  preferredCostModelId?: string | null,
+): Promise<ProfitabilityResult> {
+  const activeModels = await pool
+    .query<{ cost_model_id: string }>(
+      `select distinct cost_model_id from public.part_profitability_runs where cost_model_id is not null`,
+    )
+    .catch((err: unknown) => {
+      if (isMissingSchemaError(err)) return { rows: [] as Array<{ cost_model_id: string }>, rowCount: 0 };
+      throw err;
+    });
+
+  const modelIds = new Set<string>(activeModels.rows.map((r) => r.cost_model_id));
+  if (preferredCostModelId && modelIds.size === 0) {
+    modelIds.add(preferredCostModelId);
+  }
+  if (modelIds.size === 0) {
+    return calculatePartProfitability(pool);
+  }
+
+  const total: ProfitabilityResult = { runsCreated: 0, needsReview: 0 };
+  for (const id of modelIds) {
+    const r = await calculatePartProfitability(pool, id);
+    total.runsCreated += r.runsCreated;
+    total.needsReview += r.needsReview;
+  }
+  return total;
 }
 
 /* ── 4b) map `tablo` → machine ROI + equipment cost (Phase 9C). Personal/family data
@@ -528,7 +578,19 @@ export async function mapMachineMinuteAllocations(pool: Pool, workbookId: string
               utilization_rate, idle_minutes, over_capacity_minutes,
               source_workbook_id, source_sheet_id, notes)
            values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
-           on conflict (capacity_model_id, operation_type) do nothing`,
+           on conflict (capacity_model_id, operation_type) do update
+             set machine_count = excluded.machine_count,
+                 demand_minutes = excluded.demand_minutes,
+                 available_minutes = excluded.available_minutes,
+                 utilization_rate = excluded.utilization_rate,
+                 idle_minutes = excluded.idle_minutes,
+                 over_capacity_minutes = excluded.over_capacity_minutes
+           where public.machine_minute_allocations.machine_count is distinct from excluded.machine_count
+              or public.machine_minute_allocations.demand_minutes is distinct from excluded.demand_minutes
+              or public.machine_minute_allocations.available_minutes is distinct from excluded.available_minutes
+              or public.machine_minute_allocations.utilization_rate is distinct from excluded.utilization_rate
+              or public.machine_minute_allocations.idle_minutes is distinct from excluded.idle_minutes
+              or public.machine_minute_allocations.over_capacity_minutes is distinct from excluded.over_capacity_minutes`,
           [
             cap.id, row.op, row.machineCount, row.demand, row.available,
             m.utilization, m.idle, m.over, workbookId, cap.source_sheet_id,
@@ -640,7 +702,20 @@ export async function mapFinanceCostAllocations(pool: Pool, workbookId: string, 
                 allocated_finance_cost, finance_cost_per_minute, finance_cost_per_machine,
                 source_workbook_id, source_sheet_id, notes)
              values ($1,$2,$3,'demand_minutes',$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
-             on conflict (loan_id, capacity_model_id, operation_type, allocation_basis) do nothing`,
+             on conflict (loan_id, capacity_model_id, operation_type, allocation_basis) do update
+               set machine_count = excluded.machine_count,
+                   demand_minutes = excluded.demand_minutes,
+                   allocation_ratio = excluded.allocation_ratio,
+                   total_finance_cost = excluded.total_finance_cost,
+                   allocated_finance_cost = excluded.allocated_finance_cost,
+                   finance_cost_per_minute = excluded.finance_cost_per_minute,
+                   finance_cost_per_machine = excluded.finance_cost_per_machine
+             where public.finance_cost_allocations.demand_minutes is distinct from excluded.demand_minutes
+                or public.finance_cost_allocations.allocation_ratio is distinct from excluded.allocation_ratio
+                or public.finance_cost_allocations.total_finance_cost is distinct from excluded.total_finance_cost
+                or public.finance_cost_allocations.allocated_finance_cost is distinct from excluded.allocated_finance_cost
+                or public.finance_cost_allocations.finance_cost_per_minute is distinct from excluded.finance_cost_per_minute
+                or public.finance_cost_allocations.finance_cost_per_machine is distinct from excluded.finance_cost_per_machine`,
             [
               loan.id, cap.id, row.operation_type, row.machine_count, demand, ratio,
               financeCost, allocated, perMinute, perMachine,
@@ -1066,6 +1141,17 @@ export async function upsertCapacityModelManual(
       modelId = ins.rows[0].id;
     }
 
+    const linkedCostModels = await client.query<{ id: string }>(
+      `update public.cost_models
+          set capacity_model_id = $1
+        where capacity_model_id is null or capacity_model_id = $1
+        returning id`,
+      [modelId],
+    );
+    for (const cmRow of linkedCostModels.rows) {
+      await recomputeCostModelRollup(client, cmRow.id);
+    }
+
     await audit(client, {
       actor: actorId,
       action: "upsert_capacity_model_manual",
@@ -1079,6 +1165,7 @@ export async function upsertCapacityModelManual(
       },
     });
     await client.query("commit");
+    await recalculateActivePartProfitability(pool);
     return modelId;
   } catch (e) {
     await client.query("rollback");
@@ -1249,6 +1336,7 @@ export async function upsertCostModelManual(
       },
     });
     await client.query("commit");
+    await recalculateActivePartProfitability(pool, costModelId);
     return itemId;
   } catch (e) {
     await client.query("rollback");
@@ -1393,6 +1481,492 @@ export async function upsertMachineRoiManual(
     });
     await client.query("commit");
     return machineId;
+  } catch (e) {
+    await client.query("rollback");
+    throw e;
+  } finally {
+    client.release();
+  }
+}
+
+/* ── 6) Wave 5B (F-49 + F-41): Tekil Parça, Tezgâh/Müşteri Dakika Tarifesi ve Katalog Ürünleri (products) ── */
+
+export interface ProductionPartItem {
+  id: string;
+  partCode: string | null;
+  partName: string;
+  quantity: number | null;
+  tornaMinutes: number | null;
+  frezeMinutes: number | null;
+  otherOperationMinutes: number | null;
+  unitSalePrice: number | null;
+  currency: string;
+  notes: string | null;
+  isManual: boolean;
+}
+
+export async function loadProductionParts(
+  pool: Pool | PoolClient,
+  limit = 200,
+): Promise<ProductionPartItem[]> {
+  try {
+    const r = await pool.query<{
+      id: string;
+      part_code: string | null;
+      part_name: string;
+      quantity: number | null;
+      torna_minutes: string | null;
+      freze_minutes: string | null;
+      other_operation_minutes: string | null;
+      unit_sale_price: string | null;
+      currency: string | null;
+      notes: string | null;
+      source_row_id: string | null;
+    }>(
+      `select id, part_code, part_name, quantity,
+              torna_minutes, freze_minutes, other_operation_minutes,
+              unit_sale_price, currency, notes, source_row_id
+         from public.production_parts
+        order by (source_row_id is null) desc, coalesce(part_code, part_name) asc
+        limit $1`,
+      [limit],
+    );
+    return r.rows.map((row) => ({
+      id: row.id,
+      partCode: row.part_code,
+      partName: row.part_name,
+      quantity: row.quantity,
+      tornaMinutes: rateOrNull(row.torna_minutes),
+      frezeMinutes: rateOrNull(row.freze_minutes),
+      otherOperationMinutes: rateOrNull(row.other_operation_minutes),
+      unitSalePrice: moneyOrNull(row.unit_sale_price),
+      currency: row.currency ?? "TRY",
+      notes: row.notes,
+      isManual: row.source_row_id == null,
+    }));
+  } catch (err: unknown) {
+    if (isMissingSchemaError(err)) return [];
+    throw err;
+  }
+}
+
+export interface CatalogProductItem {
+  id: string;
+  code: string;
+  name: string;
+  unit: string | null;
+  isActive: boolean;
+  notes: string | null;
+  updatedAt: string | null;
+}
+
+export async function loadCatalogProducts(
+  pool: Pool | PoolClient,
+  limit = 200,
+): Promise<CatalogProductItem[]> {
+  try {
+    const r = await pool.query<{
+      id: string;
+      code: string;
+      name: string;
+      unit: string | null;
+      is_active: boolean;
+      notes: string | null;
+      updated_at: string | null;
+    }>(
+      `select id, code, name, unit, is_active, notes,
+              to_char(updated_at at time zone 'Europe/Istanbul', 'YYYY-MM-DD HH24:MI') as updated_at
+         from public.products
+        order by is_active desc, code asc, name asc
+        limit $1`,
+      [limit],
+    );
+    return r.rows.map((row) => ({
+      id: row.id,
+      code: row.code,
+      name: row.name,
+      unit: row.unit,
+      isActive: Boolean(row.is_active),
+      notes: row.notes,
+      updatedAt: row.updated_at,
+    }));
+  } catch (err: unknown) {
+    if (isMissingSchemaError(err)) return [];
+    throw err;
+  }
+}
+
+const manualProductionPartSchema = z.object({
+  id: z.string().uuid("Geçerli parça kimliği gerekli").nullable().optional(),
+  partCode: z.string().trim().max(120).nullable().optional(),
+  partName: z.string().trim().min(1, "Parça adı gerekli").max(200),
+  quantity: z.number().int().positive("Üretim adedi pozitif tam sayı olmalı"),
+  tornaMinutes: z.number().nonnegative("Torna dakikası negatif olamaz").nullable().optional(),
+  frezeMinutes: z.number().nonnegative("Freze dakikası negatif olamaz").nullable().optional(),
+  otherOperationMinutes: z.number().nonnegative("Diğer operasyon dakikası negatif olamaz").nullable().optional(),
+  unitSalePrice: z.number().nonnegative("Birim satış fiyatı negatif olamaz").nullable().optional(),
+  currency: z.string().trim().min(3).max(8).default("TRY"),
+  notes: z.string().trim().max(1000).nullable().optional(),
+});
+
+export async function upsertProductionPartManual(
+  pool: Pool,
+  raw: unknown,
+  actorId: string,
+): Promise<string> {
+  const input = parseOrThrow(manualProductionPartSchema, raw, "Üretim parçası");
+  const normalizedCode = input.partCode && input.partCode.trim() !== "" ? input.partCode.trim() : null;
+  const normalizedCurrency = (input.currency || "TRY").trim().toUpperCase();
+
+  const client = await pool.connect();
+  let partId: string;
+  try {
+    await client.query("begin");
+    if (input.id) {
+      const upd = await client.query<{ id: string }>(
+        `update public.production_parts
+            set part_code = $2,
+                part_name = $3,
+                quantity = $4,
+                torna_minutes = $5,
+                freze_minutes = $6,
+                other_operation_minutes = $7,
+                unit_sale_price = $8,
+                currency = $9,
+                notes = $10
+          where id = $1
+          returning id`,
+        [
+          input.id,
+          normalizedCode,
+          input.partName,
+          input.quantity,
+          input.tornaMinutes ?? null,
+          input.frezeMinutes ?? null,
+          input.otherOperationMinutes ?? null,
+          input.unitSalePrice ?? null,
+          normalizedCurrency,
+          input.notes ?? null,
+        ],
+      );
+      if ((upd.rowCount ?? 0) === 0) {
+        throw new DomainError("NOT_FOUND", "Güncellenecek üretim parçası bulunamadı.");
+      }
+      partId = upd.rows[0].id;
+    } else {
+      const matchRes = normalizedCode
+        ? await client.query<{ id: string }>(
+            `select id from public.production_parts
+              where lower(part_code) = lower($1)
+              order by (source_row_id is null) desc, created_at asc
+              limit 1`,
+            [normalizedCode],
+          )
+        : await client.query<{ id: string }>(
+            `select id from public.production_parts
+              where lower(part_name) = lower($1) and source_row_id is null
+              order by created_at asc
+              limit 1`,
+            [input.partName],
+          );
+
+      if ((matchRes.rowCount ?? 0) > 0) {
+        partId = matchRes.rows[0].id;
+        await client.query(
+          `update public.production_parts
+              set part_code = coalesce($2, part_code),
+                  part_name = $3,
+                  quantity = $4,
+                  torna_minutes = $5,
+                  freze_minutes = $6,
+                  other_operation_minutes = $7,
+                  unit_sale_price = $8,
+                  currency = $9,
+                  notes = coalesce($10, notes)
+            where id = $1`,
+          [
+            partId,
+            normalizedCode,
+            input.partName,
+            input.quantity,
+            input.tornaMinutes ?? null,
+            input.frezeMinutes ?? null,
+            input.otherOperationMinutes ?? null,
+            input.unitSalePrice ?? null,
+            normalizedCurrency,
+            input.notes ?? null,
+          ],
+        );
+      } else {
+        const ins = await client.query<{ id: string }>(
+          `insert into public.production_parts
+             (part_code, part_name, quantity, torna_minutes, freze_minutes,
+              other_operation_minutes, unit_sale_price, currency, notes)
+           values ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+           returning id`,
+          [
+            normalizedCode,
+            input.partName,
+            input.quantity,
+            input.tornaMinutes ?? null,
+            input.frezeMinutes ?? null,
+            input.otherOperationMinutes ?? null,
+            input.unitSalePrice ?? null,
+            normalizedCurrency,
+            input.notes ?? null,
+          ],
+        );
+        partId = ins.rows[0].id;
+      }
+    }
+
+    await audit(client, {
+      actor: actorId,
+      action: "upsert_production_part_manual",
+      entityTable: "production_parts",
+      entityId: partId,
+      after: {
+        part_code: normalizedCode,
+        part_name: input.partName,
+        quantity: input.quantity,
+        torna_minutes: input.tornaMinutes ?? null,
+        freze_minutes: input.frezeMinutes ?? null,
+        unit_sale_price: input.unitSalePrice ?? null,
+        currency: normalizedCurrency,
+      },
+    });
+    await client.query("commit");
+  } catch (e) {
+    await client.query("rollback");
+    throw e;
+  } finally {
+    client.release();
+  }
+
+  await recalculateActivePartProfitability(pool);
+  return partId;
+}
+
+const manualOperationRatesSchema = z.object({
+  scenarioType: z.enum(["normal", "overtime", "custom"]).default("normal"),
+  tornaRateTLPerMin: z.number().nonnegative("Torna TL/dk negatif olamaz").nullable().optional(),
+  frezeRateTLPerMin: z.number().nonnegative("Freze TL/dk negatif olamaz").nullable().optional(),
+  akonTornaTLPerMin: z.number().nonnegative("Akon Torna TL/dk negatif olamaz").nullable().optional(),
+  akonFrezeTLPerMin: z.number().nonnegative("Akon Freze TL/dk negatif olamaz").nullable().optional(),
+  effectiveMonthlyMinutes: z.number().positive("Etkin aylık dakika pozitif olmalı").nullable().optional(),
+  rateYear: z.number().int().min(2000).max(2100).nullable().optional(),
+});
+
+export async function upsertOperationRatesManual(
+  pool: Pool,
+  raw: unknown,
+  actorId: string,
+): Promise<{ costModelId: string; capacityModelId: string }> {
+  const input = parseOrThrow(manualOperationRatesSchema, raw, "Tezgâh dakika tarifesi");
+  const isStale = input.rateYear != null && input.rateYear < new Date().getFullYear();
+
+  const client = await pool.connect();
+  let costModelId: string;
+  let capacityModelId: string;
+  try {
+    await client.query("begin");
+
+    const cmRes = await client.query<{
+      id: string;
+      capacity_model_id: string | null;
+      total_fixed_cost: string | null;
+      effective_monthly_minutes: string | null;
+    }>(
+      `select id, capacity_model_id, total_fixed_cost, effective_monthly_minutes
+         from public.cost_models
+        where scenario_type = $1
+        order by (source_sheet_id is null) asc, created_at asc
+        limit 1`,
+      [input.scenarioType],
+    );
+
+    const existingCapRes = await client.query<{ id: string }>(
+      `select id from public.capacity_models
+        order by case when id = $1 then 0 else 1 end, created_at asc
+        limit 1`,
+      [cmRes.rows[0]?.capacity_model_id ?? null],
+    );
+
+    if ((existingCapRes.rowCount ?? 0) > 0) {
+      capacityModelId = existingCapRes.rows[0].id;
+      await client.query(
+        `update public.capacity_models
+            set torna_rate_tl_per_min = coalesce($2, torna_rate_tl_per_min),
+                freze_rate_tl_per_min = coalesce($3, freze_rate_tl_per_min),
+                monthly_minutes = coalesce($4, monthly_minutes),
+                rate_year = coalesce($5, rate_year),
+                is_stale_rate = case when $5::int is not null then $6 else is_stale_rate end
+          where id = $1`,
+        [
+          capacityModelId,
+          input.tornaRateTLPerMin ?? null,
+          input.frezeRateTLPerMin ?? null,
+          input.effectiveMonthlyMinutes ?? null,
+          input.rateYear ?? null,
+          isStale,
+        ],
+      );
+    } else {
+      const insCap = await client.query<{ id: string }>(
+        `insert into public.capacity_models
+           (name, scenario_type, monthly_minutes, torna_rate_tl_per_min, freze_rate_tl_per_min, rate_year, is_stale_rate)
+         values ($1, $2, $3, $4, $5, $6, $7)
+         returning id`,
+        [
+          `Kapasite Tarifesi (${input.scenarioType})`,
+          input.scenarioType,
+          input.effectiveMonthlyMinutes ?? null,
+          input.tornaRateTLPerMin ?? null,
+          input.frezeRateTLPerMin ?? null,
+          input.rateYear ?? null,
+          isStale,
+        ],
+      );
+      capacityModelId = insCap.rows[0].id;
+    }
+
+    if ((cmRes.rowCount ?? 0) > 0) {
+      costModelId = cmRes.rows[0].id;
+      const totalFixed = moneyOrNull(cmRes.rows[0].total_fixed_cost);
+      const effMin = input.effectiveMonthlyMinutes ?? rateOrNull(cmRes.rows[0].effective_monthly_minutes);
+      const newBreakEven = breakEvenTLPerMin(totalFixed, effMin);
+      await client.query(
+        `update public.cost_models
+            set capacity_model_id = coalesce(capacity_model_id, $2),
+                akon_torna_tl_per_min = coalesce($3, akon_torna_tl_per_min),
+                akon_freze_tl_per_min = coalesce($4, akon_freze_tl_per_min),
+                effective_monthly_minutes = coalesce($5, effective_monthly_minutes),
+                break_even_tl_per_min = coalesce($6, break_even_tl_per_min),
+                break_even_torna_tl_per_min = coalesce($6, break_even_torna_tl_per_min),
+                break_even_freze_tl_per_min = coalesce($6, break_even_freze_tl_per_min)
+          where id = $1`,
+        [
+          costModelId,
+          capacityModelId,
+          input.akonTornaTLPerMin ?? null,
+          input.akonFrezeTLPerMin ?? null,
+          input.effectiveMonthlyMinutes ?? null,
+          newBreakEven,
+        ],
+      );
+    } else {
+      const insCm = await client.query<{ id: string }>(
+        `insert into public.cost_models
+           (capacity_model_id, model_name, scenario_type, effective_monthly_minutes,
+            akon_torna_tl_per_min, akon_freze_tl_per_min)
+         values ($1, $2, $3, $4, $5, $6)
+         returning id`,
+        [
+          capacityModelId,
+          `Maliyet Modeli (${input.scenarioType})`,
+          input.scenarioType,
+          input.effectiveMonthlyMinutes ?? null,
+          input.akonTornaTLPerMin ?? null,
+          input.akonFrezeTLPerMin ?? null,
+        ],
+      );
+      costModelId = insCm.rows[0].id;
+    }
+
+    await audit(client, {
+      actor: actorId,
+      action: "upsert_operation_rates_manual",
+      entityTable: "cost_models",
+      entityId: costModelId,
+      after: {
+        capacity_model_id: capacityModelId,
+        scenario_type: input.scenarioType,
+        torna_rate_tl_per_min: input.tornaRateTLPerMin ?? null,
+        freze_rate_tl_per_min: input.frezeRateTLPerMin ?? null,
+        akon_torna_tl_per_min: input.akonTornaTLPerMin ?? null,
+        akon_freze_tl_per_min: input.akonFrezeTLPerMin ?? null,
+        effective_monthly_minutes: input.effectiveMonthlyMinutes ?? null,
+        rate_year: input.rateYear ?? null,
+      },
+    });
+    await client.query("commit");
+  } catch (e) {
+    await client.query("rollback");
+    throw e;
+  } finally {
+    client.release();
+  }
+
+  await recalculateActivePartProfitability(pool, costModelId);
+  return { costModelId, capacityModelId };
+}
+
+const manualCatalogProductSchema = z.object({
+  id: z.string().uuid().nullable().optional(),
+  code: z.string().trim().min(1, "Ürün kodu gerekli").max(80),
+  name: z.string().trim().min(1, "Ürün adı gerekli").max(200),
+  unit: z.string().trim().max(40).nullable().optional(),
+  isActive: z.boolean().default(true),
+  notes: z.string().trim().max(1000).nullable().optional(),
+});
+
+export async function upsertCatalogProductManual(
+  pool: Pool,
+  raw: unknown,
+  actorId: string,
+): Promise<string> {
+  const input = parseOrThrow(manualCatalogProductSchema, raw, "Katalog ürünü");
+  const client = await pool.connect();
+  try {
+    await client.query("begin");
+    let productId: string;
+    if (input.id) {
+      const upd = await client.query<{ id: string }>(
+        `update public.products
+            set code = $2,
+                name = $3,
+                unit = $4,
+                is_active = $5,
+                notes = $6,
+                updated_at = now()
+          where id = $1
+          returning id`,
+        [input.id, input.code, input.name, input.unit ?? null, input.isActive, input.notes ?? null],
+      );
+      if ((upd.rowCount ?? 0) === 0) {
+        throw new DomainError("NOT_FOUND", "Güncellenecek katalog ürünü bulunamadı.");
+      }
+      productId = upd.rows[0].id;
+    } else {
+      const ins = await client.query<{ id: string }>(
+        `insert into public.products (code, name, unit, is_active, notes)
+         values ($1, $2, $3, $4, $5)
+         on conflict (code) do update
+           set name = excluded.name,
+               unit = excluded.unit,
+               is_active = excluded.is_active,
+               notes = excluded.notes,
+               updated_at = now()
+         returning id`,
+        [input.code, input.name, input.unit ?? null, input.isActive, input.notes ?? null],
+      );
+      productId = ins.rows[0].id;
+    }
+
+    await audit(client, {
+      actor: actorId,
+      action: "upsert_catalog_product",
+      entityTable: "products",
+      entityId: productId,
+      after: {
+        code: input.code,
+        name: input.name,
+        unit: input.unit ?? null,
+        is_active: input.isActive,
+      },
+    });
+    await client.query("commit");
+    return productId;
   } catch (e) {
     await client.query("rollback");
     throw e;

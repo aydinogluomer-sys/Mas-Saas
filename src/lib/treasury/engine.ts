@@ -5,10 +5,16 @@
 // never a balance, an amount or a due date. It is still audited, because "who lowered the floor
 // the week before we ran out of cash" is exactly the question an audit trail exists to answer.
 
-import type { Pool } from "pg";
+import type { Pool, PoolClient } from "pg";
 import { z } from "zod";
 import { audit } from "@/lib/audit";
+import { translatePeriodLockError } from "@/lib/cashflow/period-lock";
+import { isTurkishIban, isValidIbanChecksum, normalizeIban } from "@/lib/counterparties/rules";
 import { DomainError } from "@/lib/domain-error";
+import {
+  postJournalEntryWithClient,
+  reverseManagementEntryWithClient,
+} from "@/lib/ledger/posting-engine";
 import { decimal, moneyOrNull, intOrNull } from "@/lib/money";
 import { parseOrThrow } from "@/lib/validation";
 import {
@@ -437,4 +443,691 @@ export async function resolveFloor(
     bufferFloor = bufferDaysFloor(avgDailyOut, days);
   }
   return effectiveFloor(minCash, bufferFloor);
+}
+
+/* ── F-45: FIN-03 Kasa/Banka + IBAN + 500.99 Yönetim Defteri Açılış CRUD ─────────────── */
+
+export const ACCOUNT_KIND_INPUTS = [
+  "cash",
+  "bank",
+  "pos",
+  "credit_line",
+  "bank_account",
+  "credit_card",
+  "loan",
+  "check_account",
+  "other",
+] as const;
+
+export type AccountKindInput = (typeof ACCOUNT_KIND_INPUTS)[number];
+
+export type CashAccountDbType =
+  | "cash"
+  | "bank_account"
+  | "credit_card"
+  | "loan"
+  | "check_account"
+  | "other"
+  | "unknown";
+
+export function mapKindToCashAccountType(kind: AccountKindInput): CashAccountDbType {
+  switch (kind) {
+    case "cash":
+      return "cash";
+    case "bank":
+    case "bank_account":
+      return "bank_account";
+    case "pos":
+    case "other":
+      return "other";
+    case "credit_line":
+    case "credit_card":
+      return "credit_card";
+    case "loan":
+      return "loan";
+    case "check_account":
+      return "check_account";
+  }
+}
+
+function cleanOptionalText(val: string | null | undefined): string | null {
+  if (val == null) return null;
+  const trimmed = val.trim();
+  return trimmed === "" ? null : trimmed;
+}
+
+export const upsertCashOrBankAccountSchema = z.object({
+  cashAccountId: z.uuid().optional(),
+  name: z.string().trim().min(1, "Hesap adı zorunludur").max(160).optional(),
+  kind: z.enum(ACCOUNT_KIND_INPUTS).optional(),
+  currency: z
+    .string()
+    .trim()
+    .toUpperCase()
+    .regex(/^[A-Z]{3}$/, "Geçerli 3 harfli döviz kodu girin (ör. TRY, USD, EUR)")
+    .optional(),
+  openingBalance: z.number().finite("Açılış bakiyesi geçerli bir sayı olmalıdır").nullable().optional(),
+  openingBalanceDate: z
+    .string()
+    .trim()
+    .regex(/^\d{4}-\d{2}-\d{2}$/, "Açılış tarihi YYYY-AA-GG biçiminde olmalıdır")
+    .optional(),
+  isActive: z.boolean().optional(),
+  iban: z.string().trim().max(42).nullable().optional(),
+  bankName: z.string().trim().max(160).nullable().optional(),
+  branchCode: z.string().trim().max(40).nullable().optional(),
+  branchName: z.string().trim().max(160).nullable().optional(),
+  accountNumber: z.string().trim().max(64).nullable().optional(),
+  swiftBic: z.string().trim().max(20).nullable().optional(),
+  overdraftLimit: z.number().min(0, "KMH limiti negatif olamaz").nullable().optional(),
+  notes: z.string().trim().max(500).nullable().optional(),
+});
+
+export type UpsertCashOrBankAccountInput = z.infer<typeof upsertCashOrBankAccountSchema>;
+
+export interface UpsertCashOrBankAccountResult {
+  cashAccountId: string;
+  accountType: CashAccountDbType;
+  currency: string;
+  openingBalance: number | null;
+  openingBalanceDate: string;
+  openingJournalEntryId: string | null;
+  ibanNormalized: string | null;
+}
+
+export async function upsertCashOrBankAccountWithClient(
+  client: PoolClient,
+  raw: unknown,
+  actorId: string,
+): Promise<UpsertCashOrBankAccountResult> {
+  const input = parseOrThrow(upsertCashOrBankAccountSchema, raw, "Kasa / banka hesabı");
+
+  let validatedIban: string | null | undefined = undefined;
+  if (input.iban !== undefined) {
+    const cleaned = cleanOptionalText(input.iban);
+    if (cleaned === null) {
+      validatedIban = null;
+    } else {
+      const normalized = normalizeIban(cleaned);
+      if (normalized.length < 10) {
+        throw new DomainError("VALIDATION", "IBAN en az 10 karakter olmalıdır.");
+      }
+      if (isTurkishIban(normalized) && !isValidIbanChecksum(normalized)) {
+        throw new DomainError(
+          "VALIDATION",
+          "Girilen TR IBAN numarası geçersiz (26 karakter ve MOD-97 kontrol basamağı doğrulanamadı).",
+        );
+      }
+      validatedIban = normalized;
+    }
+  }
+
+  const todayFallback = new Date().toISOString().slice(0, 10);
+
+  let cashAccountId: string;
+  let effectiveName: string;
+  let effectiveAccountType: CashAccountDbType;
+  let effectiveCurrency: string;
+  let effectiveOpeningBalance: number | null;
+  let effectiveOpeningBalanceDate: string;
+  let effectiveIsActive: boolean;
+  let prevRow: {
+    id: string;
+    name: string;
+    account_type: CashAccountDbType;
+    currency: string;
+    opening_balance: string | number | null;
+    opening_balance_date: string | null;
+    opening_journal_entry_id: string | null;
+    is_active: boolean;
+  } | null = null;
+
+  if (input.cashAccountId) {
+    const existingRes = await client.query<{
+      id: string;
+      name: string;
+      account_type: CashAccountDbType;
+      currency: string;
+      opening_balance: string | number | null;
+      opening_balance_date: string | null;
+      opening_journal_entry_id: string | null;
+      is_active: boolean;
+    }>(
+      `select id::text, name, account_type, currency,
+              opening_balance,
+              to_char(opening_balance_date, 'YYYY-MM-DD') as opening_balance_date,
+              opening_journal_entry_id::text as opening_journal_entry_id,
+              is_active
+         from public.cash_accounts
+        where id = $1
+        for update`,
+      [input.cashAccountId],
+    );
+    if (existingRes.rowCount === 0) {
+      throw new DomainError("NOT_FOUND", "Güncellenecek kasa/banka hesabı bulunamadı.");
+    }
+    prevRow = existingRes.rows[0];
+    cashAccountId = prevRow.id;
+    effectiveName = input.name ?? prevRow.name;
+    effectiveAccountType = input.kind ? mapKindToCashAccountType(input.kind) : prevRow.account_type;
+    effectiveCurrency = input.currency ?? prevRow.currency;
+
+    if (effectiveCurrency !== prevRow.currency) {
+      const txCnt = await client.query<{ cnt: number }>(
+        `select count(*)::int as cnt from public.bank_transactions where bank_account_id = $1`,
+        [cashAccountId],
+      );
+      if ((txCnt.rows[0]?.cnt ?? 0) > 0) {
+        throw new DomainError(
+          "CONFLICT",
+          "Banka hareketi bulunan bir hesabın para birimi değiştirilemez.",
+        );
+      }
+    }
+
+    effectiveOpeningBalance =
+      input.openingBalance !== undefined
+        ? input.openingBalance === null
+          ? null
+          : Number(decimal(input.openingBalance).round(2).toFixed(2))
+        : moneyOrNull(prevRow.opening_balance);
+    effectiveOpeningBalanceDate =
+      input.openingBalanceDate ?? prevRow.opening_balance_date ?? todayFallback;
+    effectiveIsActive = input.isActive ?? Boolean(prevRow.is_active);
+
+    try {
+      const updRes = await client.query(
+        `update public.cash_accounts
+            set name = $2,
+                account_type = $3,
+                currency = $4,
+                opening_balance = $5::numeric,
+                opening_balance_date = $6::date,
+                is_active = $7,
+                notes = coalesce($8, notes)
+          where id = $1`,
+        [
+          cashAccountId,
+          effectiveName,
+          effectiveAccountType,
+          effectiveCurrency,
+          effectiveOpeningBalance,
+          effectiveOpeningBalanceDate,
+          effectiveIsActive,
+          input.notes !== undefined ? cleanOptionalText(input.notes) : null,
+        ],
+      );
+      if (updRes.rowCount !== 1) {
+        throw new DomainError("CONFLICT", "Kasa/banka hesabı güncellenemedi.");
+      }
+    } catch (err: unknown) {
+      const code = (err as { code?: string } | null)?.code;
+      if (code === "23505") {
+        throw new DomainError("CONFLICT", "Bu isimde bir kasa/banka hesabı zaten kayıtlı.");
+      }
+      throw err;
+    }
+  } else {
+    if (!input.name) {
+      throw new DomainError("VALIDATION", "Yeni kasa/banka hesabı için hesap adı zorunludur.");
+    }
+    effectiveName = input.name;
+    effectiveAccountType = mapKindToCashAccountType(input.kind ?? "bank");
+    effectiveCurrency = input.currency ?? "TRY";
+    effectiveOpeningBalance =
+      input.openingBalance == null
+        ? null
+        : Number(decimal(input.openingBalance).round(2).toFixed(2));
+    effectiveOpeningBalanceDate = input.openingBalanceDate ?? todayFallback;
+    effectiveIsActive = input.isActive ?? true;
+
+    try {
+      const insRes = await client.query<{ id: string }>(
+        `insert into public.cash_accounts
+           (name, account_type, currency, opening_balance, opening_balance_date, is_active, notes)
+         values ($1, $2, $3, $4::numeric, $5::date, $6, $7)
+         returning id::text as id`,
+        [
+          effectiveName,
+          effectiveAccountType,
+          effectiveCurrency,
+          effectiveOpeningBalance,
+          effectiveOpeningBalanceDate,
+          effectiveIsActive,
+          cleanOptionalText(input.notes),
+        ],
+      );
+      cashAccountId = insRes.rows[0].id;
+    } catch (err: unknown) {
+      const code = (err as { code?: string } | null)?.code;
+      if (code === "23505") {
+        throw new DomainError("CONFLICT", "Bu isimde bir kasa/banka hesabı zaten kayıtlı.");
+      }
+      throw err;
+    }
+  }
+
+  // Upsert linked `public.bank_accounts` sidecar when account is bank/credit or bank fields supplied
+  const hasBankInputs =
+    effectiveAccountType === "bank_account" ||
+    validatedIban !== undefined ||
+    input.bankName !== undefined ||
+    input.branchCode !== undefined ||
+    input.branchName !== undefined ||
+    input.accountNumber !== undefined ||
+    input.swiftBic !== undefined ||
+    input.overdraftLimit !== undefined;
+
+  let finalIbanNormalized: string | null = null;
+  if (hasBankInputs) {
+    const prevBank = await client.query<{
+      cash_account_id: string;
+      iban: string | null;
+      iban_normalized: string | null;
+      bank_name: string | null;
+      branch_code: string | null;
+      branch_name: string | null;
+      account_number: string | null;
+      swift_bic: string | null;
+      overdraft_limit: string | number | null;
+    }>(
+      `select cash_account_id::text, iban, iban_normalized, bank_name,
+              branch_code, branch_name, account_number, swift_bic, overdraft_limit
+         from public.bank_accounts
+        where cash_account_id = $1
+        for update`,
+      [cashAccountId],
+    );
+    const pb = prevBank.rows[0] ?? null;
+
+    if (effectiveAccountType === "bank_account" || pb !== null || validatedIban != null || cleanOptionalText(input.bankName) != null) {
+      const nextIban = validatedIban !== undefined ? validatedIban : (pb?.iban ?? null);
+      const nextBankName =
+        input.bankName !== undefined ? cleanOptionalText(input.bankName) : (pb?.bank_name ?? null);
+      const nextBranchCode =
+        input.branchCode !== undefined ? cleanOptionalText(input.branchCode) : (pb?.branch_code ?? null);
+      const nextBranchName =
+        input.branchName !== undefined ? cleanOptionalText(input.branchName) : (pb?.branch_name ?? null);
+      const nextAcctNo =
+        input.accountNumber !== undefined ? cleanOptionalText(input.accountNumber) : (pb?.account_number ?? null);
+      const nextSwift =
+        input.swiftBic !== undefined ? cleanOptionalText(input.swiftBic) : (pb?.swift_bic ?? null);
+      const nextOverdraft =
+        input.overdraftLimit !== undefined
+          ? input.overdraftLimit
+          : moneyOrNull(pb?.overdraft_limit);
+
+      try {
+        const upBank = await client.query<{ iban_normalized: string | null }>(
+          `insert into public.bank_accounts
+             (cash_account_id, iban, bank_name, branch_code, branch_name, account_number, swift_bic, overdraft_limit)
+           values ($1, $2, $3, $4, $5, $6, $7, $8::numeric)
+           on conflict (cash_account_id) do update set
+             iban = excluded.iban,
+             bank_name = excluded.bank_name,
+             branch_code = excluded.branch_code,
+             branch_name = excluded.branch_name,
+             account_number = excluded.account_number,
+             swift_bic = excluded.swift_bic,
+             overdraft_limit = excluded.overdraft_limit
+           returning iban_normalized`,
+          [
+            cashAccountId,
+            nextIban,
+            nextBankName,
+            nextBranchCode,
+            nextBranchName,
+            nextAcctNo,
+            nextSwift,
+            nextOverdraft,
+          ],
+        );
+        finalIbanNormalized = upBank.rows[0]?.iban_normalized ?? nextIban;
+      } catch (err: unknown) {
+        const code = (err as { code?: string } | null)?.code;
+        if (code === "23505") {
+          throw new DomainError("CONFLICT", "Bu IBAN başka bir banka hesabında kayıtlı.");
+        }
+        throw err;
+      }
+    }
+  }
+
+  // Dual-Layer Management Ledger Opening Entry (A3 / TDHP 500.99)
+  const oldJournalId = prevRow?.opening_journal_entry_id ?? null;
+  const prevBalDec =
+    prevRow?.opening_balance == null ? null : decimal(prevRow.opening_balance).round(2);
+  const newBalDec =
+    effectiveOpeningBalance == null ? null : decimal(effectiveOpeningBalance).round(2);
+  const hasNonZeroOpening = newBalDec !== null && !newBalDec.eq(0);
+  const assetAccountCode = effectiveAccountType === "cash" ? "100" : "102";
+  const prevAssetCode = prevRow?.account_type === "cash" ? "100" : "102";
+
+  let finalJournalEntryId: string | null = oldJournalId;
+  let mustPostOpeningEntry = hasNonZeroOpening && oldJournalId === null;
+
+  if (oldJournalId !== null) {
+    const oldEntryRes = await client.query<{
+      id: string;
+      status: string;
+      entry_date: string;
+    }>(
+      `select id::text, status, to_char(entry_date, 'YYYY-MM-DD') as entry_date
+         from public.management_journal_entries
+        where id = $1
+        for update`,
+      [oldJournalId],
+    );
+    const oldEntry = oldEntryRes.rows[0] ?? null;
+
+    const amountChanged =
+      prevBalDec === null || newBalDec === null || !prevBalDec.eq(newBalDec);
+    const dateChanged = (prevRow?.opening_balance_date ?? null) !== effectiveOpeningBalanceDate;
+    const currencyChanged = (prevRow?.currency ?? null) !== effectiveCurrency;
+    const assetClassChanged = prevAssetCode !== assetAccountCode;
+    const oldMissingOrReversed = !oldEntry || oldEntry.status === "reversed";
+
+    const needsCleanup =
+      !hasNonZeroOpening ||
+      amountChanged ||
+      dateChanged ||
+      currencyChanged ||
+      assetClassChanged ||
+      oldMissingOrReversed;
+
+    if (needsCleanup) {
+      await client.query(
+        `update public.cash_accounts set opening_journal_entry_id = null where id = $1`,
+        [cashAccountId],
+      );
+      finalJournalEntryId = null;
+
+      if (oldEntry) {
+        if (oldEntry.status === "posted") {
+          await reverseManagementEntryWithClient(
+            client,
+            oldJournalId,
+            `Açılış bakiyesi güncellendi (${effectiveName})`,
+            actorId,
+            effectiveOpeningBalanceDate,
+          );
+        } else if (oldEntry.status === "provisional_fx" || oldEntry.status === "draft") {
+          await client.query(
+            `delete from public.management_journal_entries where id = $1`,
+            [oldJournalId],
+          );
+        }
+      }
+      mustPostOpeningEntry = hasNonZeroOpening;
+    }
+  }
+
+  if (mustPostOpeningEntry && newBalDec !== null) {
+    const absAmount = Number(newBalDec.abs().toFixed(2));
+    const lines = newBalDec.gt(0)
+      ? [
+          {
+            accountCode: assetAccountCode,
+            debitNative: absAmount,
+            memo: `Açılış bakiyesi (${effectiveName})`,
+          },
+          {
+            accountCode: "500.99",
+            creditNative: absAmount,
+            memo: `Açılış bilançosu denkleştirme (${effectiveName})`,
+          },
+        ]
+      : [
+          {
+            accountCode: "500.99",
+            debitNative: absAmount,
+            memo: `Kredili hesap açılış denkleştirme (${effectiveName})`,
+          },
+          {
+            accountCode: assetAccountCode,
+            creditNative: absAmount,
+            memo: `Açılış bakiyesi (${effectiveName})`,
+          },
+        ];
+
+    const posted = await postJournalEntryWithClient(
+      client,
+      {
+        entryDate: effectiveOpeningBalanceDate,
+        sourceType: "manual_adjustment",
+        sourceId: cashAccountId,
+        idempotencyKey: `opening_balance:${cashAccountId}`,
+        currency: effectiveCurrency,
+        description: `Açılış bakiyesi (${effectiveName})`,
+        lines,
+      },
+      actorId,
+    );
+
+    await client.query(
+      `update public.cash_accounts set opening_journal_entry_id = $2 where id = $1`,
+      [cashAccountId, posted.entryId],
+    );
+    finalJournalEntryId = posted.entryId;
+  }
+
+  await audit(client, {
+    actor: actorId,
+    action: prevRow ? "update_cash_or_bank_account" : "create_cash_or_bank_account",
+    entityTable: "cash_accounts",
+    entityId: cashAccountId,
+    before: prevRow
+      ? {
+          name: prevRow.name,
+          accountType: prevRow.account_type,
+          currency: prevRow.currency,
+          openingBalance: moneyOrNull(prevRow.opening_balance),
+          openingBalanceDate: prevRow.opening_balance_date,
+          openingJournalEntryId: prevRow.opening_journal_entry_id,
+          isActive: prevRow.is_active,
+        }
+      : null,
+    after: {
+      name: effectiveName,
+      accountType: effectiveAccountType,
+      currency: effectiveCurrency,
+      openingBalance: effectiveOpeningBalance,
+      openingBalanceDate: effectiveOpeningBalanceDate,
+      openingJournalEntryId: finalJournalEntryId,
+      ibanNormalized: finalIbanNormalized,
+      isActive: effectiveIsActive,
+    },
+  });
+
+  return {
+    cashAccountId,
+    accountType: effectiveAccountType,
+    currency: effectiveCurrency,
+    openingBalance: effectiveOpeningBalance,
+    openingBalanceDate: effectiveOpeningBalanceDate,
+    openingJournalEntryId: finalJournalEntryId,
+    ibanNormalized: finalIbanNormalized,
+  };
+}
+
+export async function upsertCashOrBankAccountWithOpeningBalance(
+  pool: Pool,
+  raw: unknown,
+  actorId: string,
+): Promise<UpsertCashOrBankAccountResult> {
+  const client = await pool.connect();
+  try {
+    await client.query("begin");
+    const result = await upsertCashOrBankAccountWithClient(client, raw, actorId);
+    await client.query("commit");
+    return result;
+  } catch (e) {
+    await client.query("rollback").catch(() => undefined);
+    translatePeriodLockError(e);
+  } finally {
+    client.release();
+  }
+}
+
+export interface EditableCashOrBankAccount {
+  id: string;
+  name: string;
+  accountType: CashAccountDbType;
+  currency: string;
+  openingBalance: number | null;
+  openingBalanceDate: string | null;
+  openingJournalEntryId: string | null;
+  isActive: boolean;
+  hasBankProfile: boolean;
+  iban: string | null;
+  ibanNormalized: string | null;
+  bankName: string | null;
+  branchCode: string | null;
+  overdraftLimit: number | null;
+}
+
+export async function loadEditableCashAndBankAccounts(
+  pool: Pick<Pool, "query">,
+): Promise<EditableCashOrBankAccount[]> {
+  const r = await pool
+    .query<{
+      id: string;
+      name: string;
+      account_type: CashAccountDbType;
+      currency: string;
+      opening_balance: string | number | null;
+      opening_balance_date: string | null;
+      opening_journal_entry_id: string | null;
+      is_active: boolean;
+      has_bank_profile: boolean;
+      iban: string | null;
+      iban_normalized: string | null;
+      bank_name: string | null;
+      branch_code: string | null;
+      overdraft_limit: string | number | null;
+    }>(
+      `select ca.id::text,
+              ca.name,
+              ca.account_type,
+              ca.currency,
+              ca.opening_balance,
+              to_char(ca.opening_balance_date, 'YYYY-MM-DD') as opening_balance_date,
+              ca.opening_journal_entry_id::text as opening_journal_entry_id,
+              ca.is_active,
+              (ba.cash_account_id is not null) as has_bank_profile,
+              ba.iban,
+              ba.iban_normalized,
+              ba.bank_name,
+              ba.branch_code,
+              ba.overdraft_limit
+         from public.cash_accounts ca
+         left join public.bank_accounts ba on ba.cash_account_id = ca.id
+        order by ca.is_active desc, ca.currency asc, ca.name asc`,
+    )
+    .catch((err: unknown) => {
+      const code = (err as { code?: string } | null)?.code;
+      if (code === "42703") {
+        return pool
+          .query(
+            `select ca.id::text,
+                    ca.name,
+                    ca.account_type,
+                    ca.currency,
+                    ca.opening_balance,
+                    null::text as opening_balance_date,
+                    null::text as opening_journal_entry_id,
+                    ca.is_active,
+                    (ba.cash_account_id is not null) as has_bank_profile,
+                    ba.iban,
+                    ba.iban_normalized,
+                    ba.bank_name,
+                    ba.branch_code,
+                    ba.overdraft_limit
+               from public.cash_accounts ca
+               left join public.bank_accounts ba on ba.cash_account_id = ca.id
+              order by ca.is_active desc, ca.currency asc, ca.name asc`,
+          )
+          .catch((e2: unknown) => {
+            if (isMissingSchemaError(e2)) return { rows: [], rowCount: 0 };
+            throw e2;
+          });
+      }
+      if (isMissingSchemaError(err)) return { rows: [], rowCount: 0 };
+      throw err;
+    });
+
+  return r.rows.map((x) => ({
+    id: x.id,
+    name: x.name,
+    accountType: x.account_type,
+    currency: x.currency,
+    openingBalance: moneyOrNull(x.opening_balance),
+    openingBalanceDate: x.opening_balance_date ?? null,
+    openingJournalEntryId: x.opening_journal_entry_id ?? null,
+    isActive: Boolean(x.is_active),
+    hasBankProfile: Boolean(x.has_bank_profile),
+    iban: x.iban ?? null,
+    ibanNormalized: x.iban_normalized ?? null,
+    bankName: x.bank_name ?? null,
+    branchCode: x.branch_code ?? null,
+    overdraftLimit: moneyOrNull(x.overdraft_limit),
+  }));
+}
+
+/* ── F-43: Günlük Nakit Hareket Özeti (public.daily_cash_movement) ───────────────────── */
+
+export interface DailyCashMovementRow {
+  txnDate: string;
+  currency: string;
+  inflow: number;
+  outflow: number;
+  netMovement: number;
+  movementCount: number;
+  runningNet: number;
+  foreignTxnCount: number;
+}
+
+export async function loadDailyCashMovements(
+  pool: Pick<Pool, "query">,
+  limit = 30,
+): Promise<DailyCashMovementRow[]> {
+  const r = await pool
+    .query<{
+      txn_date: string;
+      currency: string;
+      inflow: string | number | null;
+      outflow: string | number | null;
+      net_movement: string | number | null;
+      movement_count: string | number | null;
+      running_net: string | number | null;
+      foreign_txn_count: string | number | null;
+    }>(
+      `select to_char(txn_date, 'YYYY-MM-DD') as txn_date,
+              currency,
+              inflow,
+              outflow,
+              net_movement,
+              movement_count,
+              running_net,
+              foreign_txn_count
+         from public.daily_cash_movement
+        order by txn_date desc, currency asc
+        limit $1`,
+      [limit],
+    )
+    .catch((err: unknown) => {
+      if (isMissingSchemaError(err)) return { rows: [], rowCount: 0 };
+      throw err;
+    });
+
+  return r.rows.map((x) => ({
+    txnDate: x.txn_date,
+    currency: x.currency,
+    inflow: moneyOrNull(x.inflow) ?? 0,
+    outflow: moneyOrNull(x.outflow) ?? 0,
+    netMovement: moneyOrNull(x.net_movement) ?? 0,
+    movementCount: intOrNull(x.movement_count) ?? 0,
+    runningNet: moneyOrNull(x.running_net) ?? 0,
+    foreignTxnCount: intOrNull(x.foreign_txn_count) ?? 0,
+  }));
 }
