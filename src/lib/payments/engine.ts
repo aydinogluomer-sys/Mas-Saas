@@ -1,5 +1,7 @@
 import type { Pool } from "pg";
+import { evaluateAndRequestIfNeededWithClient } from "@/lib/approvals/engine";
 import { DomainError } from "@/lib/domain-error";
+import { moneyOrNull } from "@/lib/money";
 import { assertISODateString } from "@/lib/time/istanbul";
 import { addMonths } from "@/lib/radar/rules";
 import { audit } from "@/lib/audit";
@@ -93,7 +95,79 @@ export interface UpdatePaymentFields {
   provider_party_id: string | null;
   owner_party_id: string | null;
   cash_account_id: string | null;
+  cost_center_id?: string | null;
+  project_id?: string | null;
+  department_id?: string | null;
   description: string | null;
+}
+
+/**
+ * Faz 48 (D2): Evaluate live `approval_rules` (`amount_over_100k`, FX mismatch, `payment` triggers)
+ * across open future outflow instances of an explicitly created/edited payment template.
+ */
+export async function requestApprovalsForOpenPaymentInstances(
+  pool: Pool,
+  paymentId: string,
+  todayISO: string,
+  actorId: string,
+): Promise<number> {
+  assertISODateString(todayISO);
+  const client = await pool.connect();
+  try {
+    await client.query("begin");
+    const rows = await client.query<{
+      id: string;
+      amount: string | null;
+      currency: string;
+      direction: string;
+      due_date: string;
+      payment_name: string | null;
+      approval_status: string;
+    }>(
+      `select i.id, i.amount, i.currency, coalesce(i.direction, p.direction, 'outflow') as direction,
+              to_char(i.due_date,'YYYY-MM-DD') as due_date, p.name as payment_name, i.approval_status
+         from public.payment_instances i
+         left join public.payments p on p.id = i.payment_id
+        where i.payment_id = $1
+          and i.status in ('unpaid', 'planned', 'late')
+          and i.due_date >= $2::date
+          and i.amount is not null
+        order by i.due_date, i.id
+        for update of i`,
+      [paymentId, todayISO],
+    );
+    let opened = 0;
+    for (const r of rows.rows) {
+      if (r.direction !== "outflow" || r.approval_status === "approved") continue;
+      const evaluated = await evaluateAndRequestIfNeededWithClient(client, {
+        ruleInput: {
+          subjectTable: "payment_instances",
+          triggerKind: "payment",
+          amount: r.amount,
+          currency: r.currency,
+        },
+        subjectId: r.id,
+        subjectLabel: `${r.payment_name ?? "Ödeme"} (${r.due_date})`,
+        amount: moneyOrNull(r.amount),
+        currency: r.currency,
+        actorId,
+      });
+      if (evaluated.approvalId) {
+        await client.query(
+          `update public.payment_instances set approval_status='pending_approval', approval_id=$2 where id=$1`,
+          [r.id, evaluated.approvalId],
+        );
+        opened++;
+      }
+    }
+    await client.query("commit");
+    return opened;
+  } catch (e) {
+    await client.query("rollback");
+    throw e;
+  } finally {
+    client.release();
+  }
 }
 
 /** Single-transaction payment-template update: template UPDATE + audit + instance
@@ -119,11 +193,12 @@ export async function updatePaymentAndReconcile(
          name=$2, recurrence_type=$3, due_day=$4, due_date=$5, default_amount=$6,
          amount_confidence=$7, direction=$8, priority=$9, flexibility_class=$10, status=$11,
          category_id=$12, provider_party_id=$13, owner_party_id=$14, cash_account_id=$15,
-         description=$16
+         description=$16, cost_center_id=$17, project_id=$18, department_id=$19
        where id=$1`,
       [id, f.name, f.recurrence_type, f.due_day, f.due_date, f.default_amount,
        f.amount_confidence, f.direction, f.priority, f.flexibility_class, f.status,
-       f.category_id, f.provider_party_id, f.owner_party_id, f.cash_account_id, f.description],
+       f.category_id, f.provider_party_id, f.owner_party_id, f.cash_account_id, f.description,
+       f.cost_center_id ?? null, f.project_id ?? null, f.department_id ?? null],
     );
     await audit(client, {
       actor: actorId, action: "update_payment", entityTable: "payments", entityId: id,
@@ -149,5 +224,9 @@ export async function updatePaymentAndReconcile(
     throw e;
   } finally {
     client.release();
+  }
+
+  if (f.direction === "outflow" && f.default_amount != null) {
+    await requestApprovalsForOpenPaymentInstances(pool, id, todayISO, actorId);
   }
 }

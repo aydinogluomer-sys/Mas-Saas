@@ -1,26 +1,14 @@
 "use server";
 
-// Faz 20 — bank centre server actions.
-//
-// Every mutation goes through src/lib/bank/engine.ts, which parses input with a Zod schema and
-// records through the canonical audit() inside the same transaction (Faz 18's rules). This file
-// only translates form data into those calls and turns a DomainError into a message the page
-// can show — anything else propagates, because an unexpected fault must not be flattened into
-// a friendly sentence.
-//
-// NOTHING HERE MUTATES A FINANCIAL RECORD. Accepting a bank match reconciles the statement
-// against the plan; it does not mark a payment paid or a check cleared. Those remain separate,
-// separately audited acts (src/lib/radar/engine.ts, src/lib/financing/engine.ts).
-
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
-import { requireSession } from "@/lib/auth";
+import { requireActionPermission } from "@/lib/auth";
 import { getPool } from "@/lib/db";
 import { DomainError } from "@/lib/domain-error";
 import { formObject } from "@/lib/validation";
 import {
-  acceptMatch, ignoreTransaction, importBankStatement, reconcileTransaction,
-  rejectCandidate, runMatcher, upsertBankAccount,
+  acceptMatch, ignoreTransaction, importBankStatement, reconcileBankAccount,
+  reconcileTransaction, rejectCandidate, runMatcher, upsertBankAccount,
 } from "@/lib/bank/engine";
 
 const BASE = "/finance/bank";
@@ -31,7 +19,7 @@ function domainRedirect(e: unknown): never {
 }
 
 export async function saveBankAccountAction(formData: FormData): Promise<void> {
-  const session = await requireSession();
+  const session = await requireActionPermission("bank_accounts", "insert", BASE);
   try {
     await upsertBankAccount(getPool(), formObject(formData), session.id);
   } catch (e) { domainRedirect(e); }
@@ -40,7 +28,7 @@ export async function saveBankAccountAction(formData: FormData): Promise<void> {
 }
 
 export async function importStatementAction(formData: FormData): Promise<void> {
-  const session = await requireSession();
+  const session = await requireActionPermission("bank_transactions", "insert", BASE);
   const file = formData.get("statement");
   const accountId = String(formData.get("bankAccountId") ?? "");
   if (!(file instanceof File) || file.size === 0) {
@@ -53,8 +41,6 @@ export async function importStatementAction(formData: FormData): Promise<void> {
     const buf = Buffer.from(await file.arrayBuffer());
     const r = await importBankStatement(getPool(), buf, file.name, accountId, session.id);
     if (!r.ok) redirect(`${BASE}?error=${encodeURIComponent(r.error ?? "İçe aktarma başarısız.")}`);
-    // Duplicates and skipped rows are REPORTED, never hidden: a silent skip is how a real
-    // transaction goes missing from a reconciliation.
     summary = `${r.inserted} yeni · ${r.duplicates} yinelenen · ${r.skipped} atlanan` +
       (r.skippedReasons.length ? ` (${r.skippedReasons.join("; ")})` : "");
   } catch (e) { domainRedirect(e); }
@@ -63,7 +49,7 @@ export async function importStatementAction(formData: FormData): Promise<void> {
 }
 
 export async function runMatcherAction(): Promise<void> {
-  const session = await requireSession();
+  const session = await requireActionPermission("bank_transaction_match_candidates", "insert", BASE);
   let summary = "";
   try {
     const r = await runMatcher(getPool(), session.id);
@@ -74,16 +60,19 @@ export async function runMatcherAction(): Promise<void> {
 }
 
 export async function acceptMatchAction(formData: FormData): Promise<void> {
-  const session = await requireSession();
+  const session = await requireActionPermission("bank_transactions", "update", BASE);
   try {
     await acceptMatch(getPool(), formObject(formData), session.id);
   } catch (e) { domainRedirect(e); }
   revalidatePath(BASE);
-  redirect(`${BASE}?result=eslestirildi`);
+  revalidatePath("/finance/collections");
+  revalidatePath("/finance/invoices");
+  revalidatePath("/payments");
+  redirect(`${BASE}?result=eslestirildi-ve-kapatildi`);
 }
 
 export async function rejectCandidateAction(formData: FormData): Promise<void> {
-  const session = await requireSession();
+  const session = await requireActionPermission("bank_transaction_match_candidates", "update", BASE);
   try {
     await rejectCandidate(
       getPool(), formObject(formData), session.id,
@@ -95,7 +84,7 @@ export async function rejectCandidateAction(formData: FormData): Promise<void> {
 }
 
 export async function ignoreTransactionAction(formData: FormData): Promise<void> {
-  const session = await requireSession();
+  const session = await requireActionPermission("bank_transactions", "update", BASE);
   try {
     await ignoreTransaction(getPool(), formObject(formData), session.id);
   } catch (e) { domainRedirect(e); }
@@ -104,10 +93,25 @@ export async function ignoreTransactionAction(formData: FormData): Promise<void>
 }
 
 export async function reconcileAction(formData: FormData): Promise<void> {
-  const session = await requireSession();
+  const session = await requireActionPermission("bank_transactions", "update", BASE);
   try {
     await reconcileTransaction(getPool(), String(formData.get("transactionId") ?? ""), session.id);
   } catch (e) { domainRedirect(e); }
   revalidatePath(BASE);
   redirect(`${BASE}?result=mutabakat-alindi`);
+}
+
+export async function reconcileAccountAction(formData: FormData): Promise<void> {
+  const session = await requireActionPermission("bank_transactions", "update", BASE);
+  let count = 0;
+  try {
+    const res = await reconcileBankAccount(
+      getPool(),
+      String(formData.get("bankAccountId") ?? ""),
+      session.id,
+    );
+    count = res.reconciledCount;
+  } catch (e) { domainRedirect(e); }
+  revalidatePath(BASE);
+  redirect(`${BASE}?result=${encodeURIComponent(`${count} hareket mutabakata alındı`)}`);
 }

@@ -35,9 +35,9 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { Pool, type PoolClient, type QueryResult, type QueryResultRow } from "pg";
 import { APP_ROLES, DB_ROLE, type AppRole } from "../../src/lib/authz/matrix";
+import { assertLocalPgReachable, createDisposableLocalDb, dropDisposableLocalDb, psqlLocalFile, resolveLocalOwnerUrl } from "./pg-local-admin";
 
 const ROOT = process.cwd();
-const CONTAINER = process.env.MAS_DB_CONTAINER ?? "mas-radar-pg";
 const TSX_CLI = path.join(ROOT, "node_modules", "tsx", "dist", "cli.mjs");
 const MIGRATE_SCRIPT = path.join(ROOT, "scripts", "db", "migrate.ts");
 const BOOTSTRAP_SQL = path.join(ROOT, "scripts", "db", "local-bootstrap.sql");
@@ -66,25 +66,17 @@ function assertSafeDisposableName(name: string, context: string): void {
   }
 }
 
-function docker(args: string[], input?: Buffer | string): string {
-  return execFileSync("docker", args, { input, encoding: "utf8", maxBuffer: 128 * 1024 * 1024, stdio: ["pipe", "pipe", "pipe"] });
-}
-function dbUrl(db: string): string { return `postgres://postgres:postgres@127.0.0.1:5432/${db}`; }
+function dbUrl(db: string): string { return resolveLocalOwnerUrl(db); }
 
 function assertContainerReachable(): void {
-  try { docker(["exec", CONTAINER, "pg_isready", "-U", "postgres", "-q"]); }
-  catch {
-    console.error(`PostgreSQL konteyneri (${CONTAINER}) erişilebilir değil. Bu script onu otomatik başlatmaz.`);
-    process.exit(1);
-  }
+  assertLocalPgReachable();
 }
 
 function buildDatabase(): void {
   assertSafeDisposableName(DB, "kurulum");
-  docker(["exec", CONTAINER, "dropdb", "-U", "postgres", "--if-exists", DB]);
-  docker(["exec", CONTAINER, "createdb", "-U", "postgres", DB]);
-  docker(["exec", "-i", CONTAINER, "psql", "-q", "-v", "ON_ERROR_STOP=1", "-U", "postgres", "-d", DB],
-    readFileSync(BOOTSTRAP_SQL));
+  dropDisposableLocalDb(DB);
+  createDisposableLocalDb(DB);
+  psqlLocalFile(DB, BOOTSTRAP_SQL);
   execFileSync(process.execPath, [TSX_CLI, MIGRATE_SCRIPT], {
     cwd: ROOT,
     env: { ...process.env, DATABASE_URL: dbUrl(DB), MIGRATION_DATABASE_URL: dbUrl(DB) },
@@ -373,7 +365,7 @@ async function main(): Promise<void> {
     await base.end().catch(() => undefined);
     await owner.end().catch(() => undefined);
     assertSafeDisposableName(DB, "temizlik");
-    docker(["exec", CONTAINER, "dropdb", "-U", "postgres", "--if-exists", DB]);
+    dropDisposableLocalDb(DB);
   }
 
   const failed = checks.filter((c) => !c.pass);
@@ -390,7 +382,7 @@ main().catch((e) => {
   console.error("export-leakage-verify beklenmedik hata ile durdu:", messageOf(e));
   try {
     assertSafeDisposableName(DB, "hata temizliği");
-    docker(["exec", CONTAINER, "dropdb", "-U", "postgres", "--if-exists", DB]);
+    dropDisposableLocalDb(DB);
   } catch { /* temizlik en iyi çaba */ }
   process.exit(1);
 });

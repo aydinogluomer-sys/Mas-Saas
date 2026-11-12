@@ -6,19 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { SUBPROCESS_TEST_TIMEOUT_MS } from "./setup/test-timeouts";
 
 /**
- * scripts/db/dev-reset.sh — fail-closed yıkım kapısı.
- *
- * NEDEN BU TESTLER MOCK'LU. Kanıtlanması gereken şey "script gerçekten DROP edebiliyor mu"
- * DEĞİL — bunu doğrulamanın tek yolu gerçek mas_radar_dev'i silmek olurdu ve bu, testin
- * korumaya çalıştığı şeyin ta kendisidir. Kanıtlanması gereken KAPININ KARARI: hangi
- * girdilerde yıkıcı komuta ULAŞILIYOR, hangilerinde ulaşılmıyor.
- *
- * Bu yüzden PATH'e sahte bir `docker` konuyor. Sahte docker her çağrısını bir log dosyasına
- * yazıp 0 ile çıkıyor; böylece komut DİZİSİ ölçülebiliyor ve hiçbir gerçek veritabanı
- * etkilenmiyor. `ensure.sh` de yalnız docker çağırdığı için o da tamamen etkisizleşiyor.
- *
- * Negatif vakalarda aranan şey "exit 9" değil yalnızca — log'da `dropdb` GEÇMEMESİ. Yanlış
- * sırayla yazılmış bir kapı doğru exit kodunu döndürüp yine de silmiş olabilirdi.
+ * scripts/db/dev-reset.sh — fail-closed yıkım kapısı (native TCP araçları, 0 docker exec).
  */
 
 const ROOT = path.resolve(__dirname, "..");
@@ -27,31 +15,28 @@ const FLAG = "--i-understand-this-destroys-mas-radar-dev";
 const DB = "mas_radar_dev";
 
 let sandbox: string;
-let dockerLog: string;
+let toolLog: string;
 
 beforeEach(() => {
   sandbox = mkdtempSync(path.join(tmpdir(), "devreset-"));
-  dockerLog = path.join(sandbox, "docker-calls.log");
-  // Sahte docker: argümanlarını log'lar, hiçbir şey yapmaz, 0 döner.
-  const fake = path.join(sandbox, "docker");
-  // MOCK_ABORT_ON: sahte docker o alt-komutta 1 döner. Pozitif testte kullanılıyor — kapı
-  // geçtikten SONRA script'i hemen durdurur, böylece 87 migration dosyası sahte docker üzerinden
-  // tek tek oynatılmaz (ölçüldü: ~6 sn/koşu). Test edilen özellik zaten "yıkıcı komuta ULAŞILDI
-  // mı", komutun sonuna kadar koşup koşmadığı değil.
-  writeFileSync(
-    fake,
-    [
-      "#!/usr/bin/env bash",
-      `echo "$@" >> "${dockerLog.split(path.sep).join("/")}"`,
-      'if [ -n "${MOCK_ABORT_ON:-}" ]; then',
-      '  for a in "$@"; do [ "$a" = "$MOCK_ABORT_ON" ] && exit 1; done',
-      "fi",
-      "exit 0",
-      "",
-    ].join("\n"),
-    "utf8",
-  );
-  chmodSync(fake, 0o755);
+  toolLog = path.join(sandbox, "pg-tool-calls.log");
+  const normalizedLog = toolLog.split(path.sep).join("/");
+
+  for (const binName of ["psql", "dropdb", "createdb"]) {
+    const fake = path.join(sandbox, binName);
+    writeFileSync(
+      fake,
+      [
+        "#!/usr/bin/env bash",
+        `echo "${binName} $@" >> "${normalizedLog}"`,
+        `if [ "\${MOCK_ABORT_ON:-}" = "${binName}" ]; then exit 1; fi`,
+        "exit 0",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+    chmodSync(fake, 0o755);
+  }
 });
 
 afterEach(() => {
@@ -62,7 +47,7 @@ interface Run {
   status: number;
   stderr: string;
   stdout: string;
-  dockerCalls: string;
+  toolCalls: string;
 }
 
 function resolveBash(): string {
@@ -92,12 +77,6 @@ function resolveBash(): string {
   return "bash";
 }
 
-/**
- * Her çağrı gerçek bir Git Bash süreci başlatır (Windows'ta önce `where.exe git`). Bu yüzden onu
- * çağıran her test SUBPROCESS_TEST_TIMEOUT_MS'i üçüncü argüman olarak alır: pozitif vaka yük altında
- * 9,2 sn ölçüldü ve 5 sn'lik varsayılanda düştü. Süreç başlatmayan kaynak sözleşmesi testleri
- * varsayılanda kalır. Gerekçe: tests/setup/test-timeouts.ts.
- */
 function runReset(args: string[], env: Record<string, string | undefined>): Run {
   let status = 0;
   let stdout = "";
@@ -106,9 +85,10 @@ function runReset(args: string[], env: Record<string, string | undefined>): Run 
     stdout = execFileSync(resolveBash(), [SCRIPT, ...args], {
       cwd: ROOT,
       encoding: "utf8",
-      stdio: ["pipe", "pipe", "pipe"], // TTY yok -> interaktif katman atlanır, flag+env taşır
+      stdio: ["pipe", "pipe", "pipe"],
       env: {
         ...process.env,
+        MAS_SKIP_DB_ENSURE: "1",
         ...env,
         PATH: `${sandbox}${path.delimiter}${process.env.PATH ?? ""}`,
       },
@@ -123,7 +103,7 @@ function runReset(args: string[], env: Record<string, string | undefined>): Run 
     status,
     stdout,
     stderr,
-    dockerCalls: existsSync(dockerLog) ? readFileSync(dockerLog, "utf8") : "",
+    toolCalls: existsSync(toolLog) ? readFileSync(toolLog, "utf8") : "",
   };
 }
 
@@ -132,33 +112,32 @@ describe("dev-reset.sh — varsayılan olarak HİÇBİR ŞEY silmez", () => {
     const r = runReset([], { MAS_ALLOW_DEV_DB_RESET: undefined });
     expect(r.status).toBe(9);
     expect(r.stderr).toContain("GÜVENLİK DURDURMASI");
-    expect(r.dockerCalls).not.toContain("dropdb");
-    // Kapı ensure.sh'tan da ÖNCE: tek bir docker çağrısı bile olmamalı.
-    expect(r.dockerCalls).toBe("");
+    expect(r.toolCalls).not.toContain("dropdb");
+    expect(r.toolCalls).toBe("");
   }, SUBPROCESS_TEST_TIMEOUT_MS);
 
   it("YALNIZ bayrak yeterli değil", () => {
     const r = runReset([FLAG], { MAS_ALLOW_DEV_DB_RESET: undefined });
     expect(r.status).toBe(9);
-    expect(r.dockerCalls).not.toContain("dropdb");
+    expect(r.toolCalls).not.toContain("dropdb");
   }, SUBPROCESS_TEST_TIMEOUT_MS);
 
   it("YALNIZ env değişkeni yeterli değil", () => {
     const r = runReset([], { MAS_ALLOW_DEV_DB_RESET: DB });
     expect(r.status).toBe(9);
-    expect(r.dockerCalls).not.toContain("dropdb");
+    expect(r.toolCalls).not.toContain("dropdb");
   }, SUBPROCESS_TEST_TIMEOUT_MS);
 
   it("env değişkeni YANLIŞ değerle yeterli değil", () => {
     const r = runReset([FLAG], { MAS_ALLOW_DEV_DB_RESET: "yes" });
     expect(r.status).toBe(9);
-    expect(r.dockerCalls).not.toContain("dropdb");
+    expect(r.toolCalls).not.toContain("dropdb");
   }, SUBPROCESS_TEST_TIMEOUT_MS);
 
   it("benzer ama farklı bir bayrak kabul edilmez", () => {
     const r = runReset(["--force", "--yes", "-f"], { MAS_ALLOW_DEV_DB_RESET: DB });
     expect(r.status).toBe(9);
-    expect(r.dockerCalls).not.toContain("dropdb");
+    expect(r.toolCalls).not.toContain("dropdb");
   }, SUBPROCESS_TEST_TIMEOUT_MS);
 
   it("hata mesajı eksik olan onayı ADIYLA söyler", () => {
@@ -169,19 +148,13 @@ describe("dev-reset.sh — varsayılan olarak HİÇBİR ŞEY silmez", () => {
 });
 
 describe("dev-reset.sh — iki onay birlikte verildiğinde geçer", () => {
-  // Tek koşu, iki iddia: sahte docker `dropdb`de durduğu için hızlı, ve kapının kararını
-  // (yıkıcı komuta ULAŞILDI) tam olarak ölçüyor. Gerçek mas_radar_dev'e dokunulmuyor.
   it("bayrak + env: yıkıcı komuta ULAŞILIR ve önce ölçülen kimlik raporlanır", () => {
     const r = runReset([FLAG], { MAS_ALLOW_DEV_DB_RESET: DB, MOCK_ABORT_ON: "dropdb" });
-
-    // Kapı geçti: dropdb çağrıldı. (Çıkış kodu sahte docker'ın 1'i, kapının 9'u DEĞİL.)
-    expect(r.dockerCalls).toContain("dropdb");
-    expect(r.dockerCalls).toContain(DB);
+    expect(r.toolCalls).toContain("dropdb");
+    expect(r.toolCalls).toContain(DB);
     expect(r.status).not.toBe(9);
-
-    // Ve yıkımdan önce operatöre ne sileceği gösterildi.
     expect(r.stdout).toContain("YIKIM ÖNCESİ ÖLÇÜLEN KİMLİK");
-    expect(r.stdout).toContain("container");
+    expect(r.stdout).toContain("endpoint");
   }, SUBPROCESS_TEST_TIMEOUT_MS);
 });
 

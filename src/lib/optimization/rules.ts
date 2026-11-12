@@ -1,4 +1,4 @@
-// Faz 29 — deterministic optimisation rules. Pure, no database, no model.
+// Faz 29 + Faz 46 — deterministic optimisation rules. Pure, no database, no model.
 //
 // ═══ WHAT THIS IS AND IS NOT ═══
 //
@@ -51,6 +51,13 @@ export const RULE_LABEL: Record<RuleCode, string> = {
   limit_yetersiz: "Kullanılabilir limit yetersiz",
 };
 
+export type OptimizationSubjectTable =
+  | "payment_instances"
+  | "invoices"
+  | "checks"
+  | "loan_installments"
+  | "credit_facilities";
+
 export interface PaymentCandidate {
   id: string;
   label: string;
@@ -58,13 +65,15 @@ export interface PaymentCandidate {
   dueDate: string;
   amount: number;
   /**
-   * A hard deadline cannot be deferred at any price — a cheque maturity or a tax date. The
-   * solver must never propose moving one, which is why this is an input and not a judgement the
+   * A hard deadline cannot be deferred at any price — a cheque maturity, loan installment, or tax date.
+   * The solver must never propose moving one, which is why this is an input and not a judgement the
    * solver makes.
    */
   hardDeadline: boolean;
   /** Latest date this may be moved to, when deferral is allowed at all. */
   latestDate?: string | null;
+  /** Source table for polymorphic recommendation attribution (defaults to 'payment_instances'). */
+  subjectTable?: Exclude<OptimizationSubjectTable, "credit_facilities">;
 }
 
 export interface FacilityHeadroom {
@@ -75,11 +84,15 @@ export interface FacilityHeadroom {
   interestRate: number | null;
 }
 
+export const UNKNOWN_OPENING_CASH_HALT_REASON =
+  "Açılış bakiyesi bilinmeyen aktif hesap bulunduğu için optimizasyon simülasyonu durduruldu";
+
 export interface OptimizationInput {
   objective: Objective;
   anchorDate: string;
   horizonDays: number;
-  openingCash: number;
+  /** Null when active cash accounts have unknown opening balance (FIN-03). */
+  openingCash: number | null;
   /** The configured floor from Faz 26's treasury policy. */
   minCashFloor: number;
   /** Dated inflows already expected, signed positive. */
@@ -113,6 +126,8 @@ export interface OptimizationResult {
   /** The same projection assuming every recommendation is taken. */
   worstBalanceAfter: number;
   breachDates: string[];
+  /** Present when simulation halted due to unknown opening cash (FIN-03). */
+  haltedReason?: string | null;
 }
 
 export function addDays(fromISO: string, days: number): string {
@@ -123,6 +138,10 @@ export function addDays(fromISO: string, days: number): string {
 
 function round2(v: NumericInput): number {
   return Number(decimal(moneyOrNull(v) ?? 0).toFixed(2));
+}
+
+function tiebreakId(aId: string, bId: string): number {
+  return aId < bId ? -1 : aId > bId ? 1 : 0;
 }
 
 /**
@@ -157,24 +176,40 @@ export function projectBalances(input: {
 /**
  * The solver.
  *
- * Greedy and explicit, in a fixed order:
- *   1. project balances and find the first day the floor is breached;
- *   2. try to close that day's gap by DEFERRING soft-deadline payments due on or before it,
- *      largest first — the fewest moves that fix the problem;
- *   3. whatever gap remains, propose drawing on the cheapest facility with headroom;
- *   4. if nothing is breached and a facility is drawn while cash sits well clear of the floor,
- *      propose repaying to stop paying interest on money that is not needed.
+ * FIN-03 (Faz 46): When `input.openingCash === null`, we refuse to run a fabricated `0`-cash
+ * simulation and halt with `UNKNOWN_OPENING_CASH_HALT_REASON`.
+ *
+ * Objective-aware deterministic rule sets (Faz 46):
+ *   - `max_liquidity_buffer`: Defer soft-deadline payments largest-first (fewest moves, highest
+ *     cash cushion), then draw the cheapest facility with headroom for any remaining shortfall.
+ *   - `min_financing_cost`: Defer soft-deadline payments smallest-first (zero interest cost, only
+ *     moving the minimum supplier volume required to avoid borrowing), then draw the cheapest
+ *     credit facility if deferrals cannot close the gap.
+ *   - `min_late_payment`: Draw available credit facilities cheapest-first BEFORE deferring any
+ *     supplier payments, so zero payments are paid late when credit headroom can bridge the trough.
  *
  * Every branch cites its rule. Nothing here prices interest or estimates probability — the
  * ordering of facilities by rate is the only place a rate is consulted, and only to choose
  * between two otherwise-equivalent options.
  */
 export function optimize(input: OptimizationInput): OptimizationResult {
+  if (input.openingCash === null) {
+    return {
+      recommendations: [],
+      worstBalanceBefore: 0,
+      worstDateBefore: null,
+      worstBalanceAfter: 0,
+      breachDates: [],
+      haltedReason: UNKNOWN_OPENING_CASH_HALT_REASON,
+    };
+  }
+
+  const openingCash = round2(input.openingCash);
   const floor = round2(input.minCashFloor);
   const before = projectBalances({
     anchorDate: input.anchorDate,
     horizonDays: input.horizonDays,
-    openingCash: input.openingCash,
+    openingCash,
     inflows: input.inflows,
     payments: input.payments,
   });
@@ -186,96 +221,72 @@ export function optimize(input: OptimizationInput): OptimizationResult {
   const breachDates = before.filter((p) => p.balance < floor).map((p) => p.date);
 
   const recommendations: Recommendation[] = [];
-  // A working copy so the "after" projection reflects the proposals without touching the input.
+  // Working copies so the "after" projection reflects proposals without mutating input.
   const workingPayments = input.payments.map((p) => ({ ...p }));
+  const workingInflows = input.inflows.map((f) => ({ ...f }));
 
   if (breachDates.length > 0) {
     const firstBreach = breachDates[0];
     const balanceAtBreach = before.find((p) => p.date === firstBreach)?.balance ?? 0;
     let gap = round2(decimal(floor).minus(decimal(balanceAtBreach)));
 
-    // Deferrable candidates due on or before the breach, largest first, id as the total-order
-    // tiebreak so equal amounts never depend on input order.
-    const deferrable = workingPayments
-      .filter((p) => !p.hardDeadline && p.dueDate <= firstBreach)
-      .sort((a, b) => (b.amount - a.amount) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+    const deferSoftPayments = (order: "largest_first" | "smallest_first") => {
+      const deferrable = workingPayments
+        .filter((p) => !p.hardDeadline && p.dueDate <= firstBreach)
+        .sort((a, b) => {
+          const cmp = order === "smallest_first"
+            ? Number(decimal(a.amount).minus(decimal(b.amount)))
+            : Number(decimal(b.amount).minus(decimal(a.amount)));
+          return cmp || tiebreakId(a.id, b.id);
+        });
 
-    for (const p of deferrable) {
-      if (gap <= 0) break;
+      for (const p of deferrable) {
+        if (gap <= 0) break;
 
-      // WHERE TO MOVE IT TO. The first version moved the payment one day past the breach, and a
-      // unit test caught that this often achieves nothing: if the covering inflow is three days
-      // later, the balance is still below the floor on the new date and the "fix" changes the
-      // worst balance not at all. The target must be the first day the payment can ACTUALLY be
-      // afforded — the earliest date at which the balance, computed WITHOUT this payment, has
-      // room for it above the floor.
-      const without = projectBalances({
-        anchorDate: input.anchorDate,
-        horizonDays: input.horizonDays,
-        openingCash: input.openingCash,
-        inflows: input.inflows,
-        payments: workingPayments.filter((x) => x.id !== p.id),
-      });
-      const affordable = without.find(
-        (d) => d.date > p.dueDate
-          && decimal(d.balance).minus(decimal(p.amount)).gte(decimal(floor)));
-      // No date in the horizon can carry it: deferral cannot help, so propose nothing rather
-      // than a move that only looks like progress.
-      if (!affordable) continue;
-      const target = affordable.date;
-      if (p.latestDate && target > p.latestDate) continue;
+        const without = projectBalances({
+          anchorDate: input.anchorDate,
+          horizonDays: input.horizonDays,
+          openingCash,
+          inflows: workingInflows,
+          payments: workingPayments.filter((x) => x.id !== p.id),
+        });
+        const affordable = without.find(
+          (d) => d.date > p.dueDate
+            && decimal(d.balance).minus(decimal(p.amount)).gte(decimal(floor)),
+        );
+        if (!affordable) continue;
+        const target = affordable.date;
+        if (p.latestDate && target > p.latestDate) continue;
 
-      recommendations.push({
-        rank: recommendations.length + 1,
-        actionKind: "defer_payment",
-        subjectTable: "payment_instances",
-        subjectId: p.id,
-        subjectLabel: p.label,
-        currentDate: p.dueDate,
-        proposedDate: target,
-        amount: round2(p.amount),
-        expectedEffect: round2(p.amount),
-        rationaleCodes: ["nakit_tabani_ihlali", "ertelenebilir_odeme"],
-        rationaleNote:
-          `${firstBreach} tarihinde bakiye tabanın ${gap.toFixed(2)} altında; ` +
-          `bu ödeme ${target} tarihine ertelenirse taban korunur.`,
-        confidence: 0.8,
-      });
-      gap = round2(decimal(gap).minus(decimal(p.amount)));
-      p.dueDate = target;
-    }
+        recommendations.push({
+          rank: recommendations.length + 1,
+          actionKind: "defer_payment",
+          subjectTable: p.subjectTable ?? "payment_instances",
+          subjectId: p.id,
+          subjectLabel: p.label,
+          currentDate: p.dueDate,
+          proposedDate: target,
+          amount: round2(p.amount),
+          expectedEffect: round2(p.amount),
+          rationaleCodes: ["nakit_tabani_ihlali", "ertelenebilir_odeme"],
+          rationaleNote:
+            `${firstBreach} tarihinde bakiye tabanın ${gap.toFixed(2)} altında; ` +
+            `bu ödeme ${target} tarihine ertelenirse taban korunur.`,
+          confidence: 0.8,
+        });
+        gap = round2(decimal(gap).minus(decimal(p.amount)));
+        p.dueDate = target;
+      }
+    };
 
-    // Hard-deadline payments are named as unmovable rather than silently ignored, so a reader can
-    // see WHY the remaining gap could not be closed by timing alone.
-    const blocked = workingPayments.filter((p) => p.hardDeadline && p.dueDate <= firstBreach);
-    if (gap > 0 && blocked.length > 0) {
-      const biggest = [...blocked].sort(
-        (a, b) => (b.amount - a.amount) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))[0];
-      recommendations.push({
-        rank: recommendations.length + 1,
-        actionKind: "hold_buffer",
-        subjectTable: "payment_instances",
-        subjectId: biggest.id,
-        subjectLabel: biggest.label,
-        currentDate: biggest.dueDate,
-        proposedDate: null,
-        amount: round2(biggest.amount),
-        expectedEffect: 0,
-        rationaleCodes: ["sert_vade_ertelenemez"],
-        rationaleNote: "Sert vadeli ödeme ertelenemez; açık finansmanla kapatılmalı.",
-        confidence: 0.9,
-      });
-    }
-
-    if (gap > 0) {
-      // Cheapest headroom first; a null rate sorts last because an unknown price is not evidence
-      // of a good one. Id tiebreak keeps it total.
+    const drawCheapestFacilities = () => {
+      if (gap <= 0) return;
       const byCost = [...input.facilities]
         .filter((f) => f.available > 0)
         .sort((a, b) => {
           const ar = a.interestRate ?? Number.POSITIVE_INFINITY;
           const br = b.interestRate ?? Number.POSITIVE_INFINITY;
-          return (ar - br) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+          return (ar - br) || tiebreakId(a.id, b.id);
         });
 
       for (const f of byCost) {
@@ -296,28 +307,70 @@ export function optimize(input: OptimizationInput): OptimizationResult {
             `${firstBreach} tarihindeki ${gap.toFixed(2)} açık için en düşük maliyetli limitten çekim.`,
           confidence: 0.75,
         });
+        workingInflows.push({ date: firstBreach, amount: round2(draw) });
         gap = round2(decimal(gap).minus(decimal(draw)));
       }
+    };
 
-      if (gap > 0) {
-        // Reported, never hidden: the solver could not close the gap. A silent partial answer
-        // would read as "solved".
+    const reportBlockedHardDeadlines = () => {
+      const blocked = workingPayments.filter((p) => p.hardDeadline && p.dueDate <= firstBreach);
+      if (gap > 0 && blocked.length > 0) {
+        const biggest = [...blocked].sort(
+          (a, b) => Number(decimal(b.amount).minus(decimal(a.amount))) || tiebreakId(a.id, b.id),
+        )[0];
         recommendations.push({
           rank: recommendations.length + 1,
           actionKind: "hold_buffer",
-          subjectTable: null,
-          subjectId: null,
-          subjectLabel: null,
-          currentDate: null,
-          proposedDate: firstBreach,
-          amount: round2(gap),
+          subjectTable: biggest.subjectTable ?? "payment_instances",
+          subjectId: biggest.id,
+          subjectLabel: biggest.label,
+          currentDate: biggest.dueDate,
+          proposedDate: null,
+          amount: round2(biggest.amount),
           expectedEffect: 0,
-          rationaleCodes: ["limit_yetersiz"],
-          rationaleNote:
-            `Kalan ${gap.toFixed(2)} açık mevcut limitlerle kapatılamıyor — ek finansman gerekli.`,
+          rationaleCodes: ["sert_vade_ertelenemez"],
+          rationaleNote: "Sert vadeli ödeme ertelenemez; açık finansmanla kapatılmalı.",
           confidence: 0.9,
         });
       }
+    };
+
+    if (input.objective === "min_late_payment") {
+      // Draw available credit facilities first so supplier payments stay on time whenever headroom exists.
+      drawCheapestFacilities();
+      if (gap > 0) {
+        deferSoftPayments("largest_first");
+        reportBlockedHardDeadlines();
+      }
+    } else if (input.objective === "min_financing_cost") {
+      // Zero-interest deferrals first (smallest sufficient volume), then cheapest facility draw.
+      deferSoftPayments("smallest_first");
+      reportBlockedHardDeadlines();
+      drawCheapestFacilities();
+    } else {
+      // max_liquidity_buffer: largest soft deferrals first, then cheapest facility draw.
+      deferSoftPayments("largest_first");
+      reportBlockedHardDeadlines();
+      drawCheapestFacilities();
+    }
+
+    if (gap > 0) {
+      // Reported, never hidden: the solver could not close the gap.
+      recommendations.push({
+        rank: recommendations.length + 1,
+        actionKind: "hold_buffer",
+        subjectTable: null,
+        subjectId: null,
+        subjectLabel: null,
+        currentDate: null,
+        proposedDate: firstBreach,
+        amount: round2(gap),
+        expectedEffect: 0,
+        rationaleCodes: ["limit_yetersiz"],
+        rationaleNote:
+          `Kalan ${gap.toFixed(2)} açık mevcut limitlerle kapatılamıyor — ek finansman gerekli.`,
+        confidence: 0.9,
+      });
     }
   } else if ((input.drawnAmount ?? 0) > 0) {
     // No breach anywhere in the horizon: money is sitting idle while a facility accrues interest.
@@ -347,8 +400,8 @@ export function optimize(input: OptimizationInput): OptimizationResult {
   const after = projectBalances({
     anchorDate: input.anchorDate,
     horizonDays: input.horizonDays,
-    openingCash: input.openingCash,
-    inflows: input.inflows,
+    openingCash,
+    inflows: workingInflows,
     payments: workingPayments,
   });
   const worstAfter = after.reduce((m, p) => Math.min(m, p.balance), Number.POSITIVE_INFINITY);
@@ -371,6 +424,9 @@ export function optimize(input: OptimizationInput): OptimizationResult {
  * recommendation, and a changed recommendation cannot hide behind an identical note.
  */
 export function resultDigest(result: OptimizationResult): string {
+  if (result.haltedReason) {
+    return "halted:unknown_opening_balance";
+  }
   return result.recommendations
     .map((r) => [
       r.rank, r.actionKind, r.subjectId ?? "-", r.currentDate ?? "-",

@@ -74,7 +74,7 @@ export async function updateAllocationRule(pool: Pool, raw: unknown, actorId: st
     await client.query(
       `update public.cost_allocation_rules
          set allocation_basis = $2,
-             fixed_percent = case when $2='fixed_percent' then $3 else null end,
+             fixed_percent = case when $2::text = 'fixed_percent' then $3::numeric else null::numeric end,
              is_active = $4,
              notes = coalesce($5, notes)
        where code = $1`,

@@ -12,7 +12,7 @@ import { decimal, type NumericInput } from "@/lib/money";
 export interface ApprovalRuleConfig {
   code: string;
   description: string;
-  triggerKind: "amount_threshold" | "new_iban" | "new_counterparty" | "invoice" | "payment";
+  triggerKind: "amount_threshold" | "new_iban" | "new_counterparty" | "invoice" | "payment" | "payment_run" | "budget";
   thresholdAmount: number | null;
   /**
    * PHASE 2.2 (T1-e). `approval_rules.currency` (0054, `not null default 'TRY'`) — eşiğin para

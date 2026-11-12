@@ -34,7 +34,7 @@ for (const file of files) {
   } catch {
     /* read error handled below by safeParseWorkbook */
   }
-  const res = safeParseWorkbook(file);
+  const res = await safeParseWorkbook(file);
   lines.push(`## ${name}`, "", `- sha256(16): \`${sha}\``, `- size: ${res.fileSize} bytes`);
   if (!res.ok) {
     hadFailure = true;

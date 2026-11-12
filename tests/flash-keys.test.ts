@@ -28,7 +28,7 @@ function curatedKeys(): Set<string> {
   const end = src.indexOf("\n};", start);
   expect(start, "FLASH_MESSAGES bulunamadı").toBeGreaterThan(-1);
   const body = src.slice(start, end);
-  return new Set([...body.matchAll(/^\s*([a-z_]+):\s*\{/gm)].map((m) => m[1]));
+  return new Set([...body.matchAll(/^\s*"?([a-z_-]+)"?:\s*\{/gm)].map((m) => m[1]));
 }
 
 /** Every flash key an action can emit: literal `flash=<key>` anywhere in src, plus the
@@ -38,9 +38,9 @@ function emittedKeys(): Map<string, string> {
   for (const rel of sourceFiles("src")) {
     if (rel.endsWith(path.join("primitives", "toast.tsx"))) continue;
     const src = read(rel);
-    for (const m of src.matchAll(/flash=([a-z_]+)/g)) keys.set(m[1], rel);
+    for (const m of src.matchAll(/flash=([a-z_-]+)/g)) keys.set(m[1], rel);
     if (/function done\(flash: string\)/.test(src)) {
-      for (const m of src.matchAll(/\bdone\("([a-z_]+)"\)/g)) keys.set(m[1], rel);
+      for (const m of src.matchAll(/\bdone\("([a-z_-]+)"\)/g)) keys.set(m[1], rel);
     }
   }
   return keys;
@@ -51,6 +51,20 @@ describe("flash anahtarları — gönderilen her anahtarın bir mesajı var", ()
     const curated = curatedKeys();
     expect(curated.has("password_updated")).toBe(true);
     expect(curated.has("password_force_change")).toBe(true);
+  });
+
+  it("dış varsayım (Bulgu #10) hata anahtarlarının tamamı haritada", () => {
+    const curated = curatedKeys();
+    expect(curated.has("assumption-fields-required")).toBe(true);
+    expect(curated.has("assumption-review-invalid")).toBe(true);
+    expect(curated.has("internet-source-url-required")).toBe(true);
+
+    const assumptionsActionSrc = read("src/app/(dashboard)/data/assumptions/actions.ts");
+    const emittedErrors = [...assumptionsActionSrc.matchAll(/\?error=([a-z_-]+)/g)].map((m) => m[1]);
+    expect(emittedErrors.length).toBeGreaterThanOrEqual(3);
+    for (const errKey of emittedErrors) {
+      expect(curated.has(errKey), `eksik curated hata anahtarı: ${errKey}`).toBe(true);
+    }
   });
 
   it("bir server action'ın gönderdiği hiçbir anahtar haritada eksik değil", () => {

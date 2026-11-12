@@ -1,23 +1,19 @@
-// Faz 29 — optimisation engine: runs the deterministic solver and records its PROPOSALS.
+// Faz 29 + Faz 46 — optimisation engine: runs the deterministic solver and records its PROPOSALS.
 //
 // ═══ THE BASELINE IS READ, NEVER WRITTEN ═══
 //
 // This is the Faz 8/13 invariant, restated for a new run type. Everything this module reads —
-// payment_instances, credit_facilities, treasury_policies, cashflow_months — it reads. The only
-// tables it writes are optimization_runs, optimization_recommendations, audit_logs, and (via the
-// Faz 24A engine) approvals. There is no code path here that updates a due date, an amount or a
-// status on any financial record, and phase29:verify proves it by snapshotting a baseline
-// scenario_run and every cashflow_months row, executing this engine, and comparing.
+// payment_instances, checks, loan_installments, invoices, credit_facilities, treasury_policies,
+// cashflow_months — it reads. The only tables it writes are optimization_runs,
+// optimization_recommendations, audit_logs, and (via the Faz 24A engine) approvals.
 //
 // ═══ APPROVAL CONNECTS, IT DOES NOT FORK ═══
 //
 // `requestOptimizationApproval` calls Faz 24A's requestApproval unchanged, with
 // subject_table='optimization_runs' (migration 0072 added that value). No second review table, no
-// status column on optimization_runs, no parallel decide/reject logic. The approval entity stays
-// the single place that knows whether something is approved.
+// status column on optimization_runs, no parallel decide/reject logic.
 //
-// This module does NOT import @/lib/ai — the same one-directional rule Faz 28 established, and
-// the gate asserts it with a negative control.
+// This module does NOT import @/lib/ai — the same one-directional rule Faz 28 established.
 
 import type { Pool } from "pg";
 import { z } from "zod";
@@ -26,6 +22,7 @@ import { DomainError } from "@/lib/domain-error";
 import { moneyOrNull, rateOrNull } from "@/lib/money";
 import { parseOrThrow } from "@/lib/validation";
 import { requestApproval } from "@/lib/approvals/engine";
+import { resolveFloor } from "@/lib/treasury/engine";
 import {
   optimize, resultDigest,
   type FacilityHeadroom, type OptimizationInput, type OptimizationResult, type PaymentCandidate,
@@ -41,80 +38,211 @@ export const runOptimizationSchema = z.object({
 });
 
 /**
- * Which payments the solver may consider moving.
- *
- * `hardDeadline` is derived from the record's own priority, not from anything the solver decides:
- * a `critical` instance is treated as immovable. That mapping is deliberately conservative — the
- * cost of wrongly proposing to defer something unmovable is an operator losing trust in every
- * later suggestion, which is far worse than one missed optimisation.
+ * Faz 46: Load all dated outflow obligations in `currency` across:
+ *   1. `payment_instances` (`unpaid`/`partial`, `outflow`, `currency = $3`)
+ *   2. `checks` (`planned`/`unknown`, `outflow`, `currency = $3`, immovable legal maturity)
+ *   3. `loan_installments` (`planned`/`unpaid`/`partial`/`late`, `l.currency = $3`, immovable contractual maturity)
+ *   4. Unlinked open `purchase` `invoices` (`open`/`partial`, `gross_amount > allocated_amount`, `currency = $3`)
  */
 async function loadPaymentCandidates(
-  pool: Pool, anchorDate: string, horizonDays: number,
+  pool: Pool, anchorDate: string, horizonDays: number, currency: string,
 ): Promise<PaymentCandidate[]> {
-  const res = await pool.query(
-    `select i.id, coalesce(p.name, '(kalem)') as label,
-            to_char(i.due_date,'YYYY-MM-DD') as due_date,
-            i.amount, p.priority, i.risk_level
-     from public.payment_instances i
-     left join public.payments p on p.id = i.payment_id
-     where i.status in ('unpaid','partial')
-       and i.amount is not null
-       and i.due_date >= $1::date and i.due_date < ($1::date + $2::int)
-     order by i.due_date, i.id`,
-    [anchorDate, horizonDays]);
+  let res;
+  try {
+    res = await pool.query(
+      `select id, label, due_date, amount, hard_deadline, subject_table
+       from (
+         select i.id,
+                coalesce(p.name, '(kalem)') as label,
+                to_char(i.due_date,'YYYY-MM-DD') as due_date,
+                (i.amount - coalesce(i.paid_amount, 0)) as amount,
+                (p.priority = 'critical' or i.risk_level = 'critical') as hard_deadline,
+                'payment_instances'::text as subject_table
+         from public.payment_instances i
+         left join public.payments p on p.id = i.payment_id
+         where i.status in ('unpaid','partial')
+           and coalesce(i.direction, p.direction, 'outflow') = 'outflow'
+           and i.currency = $3
+           and i.amount is not null
+           and (i.amount - coalesce(i.paid_amount, 0)) > 0
+           and i.due_date >= $1::date and i.due_date < ($1::date + $2::int)
+
+         union all
+
+         select c.id,
+                coalesce(pe.name, c.counterparty_label, 'Çek ' || coalesce(c.serial_no, '')) as label,
+                to_char(c.maturity_date,'YYYY-MM-DD') as due_date,
+                c.amount,
+                true as hard_deadline,
+                'checks'::text as subject_table
+         from public.checks c
+         left join public.parties pe on pe.id = c.payee_party_id
+         where c.status in ('planned','unknown')
+           and c.archived_at is null
+           and c.direction = 'outflow'
+           and c.currency = $3
+           and c.amount is not null
+           and c.amount > 0
+           and c.maturity_date >= $1::date and c.maturity_date < ($1::date + $2::int)
+
+         union all
+
+         select li.id,
+                coalesce(l.name, 'Kredi taksiti') || ' #' || coalesce(li.installment_no::text, '?') as label,
+                to_char(li.due_date,'YYYY-MM-DD') as due_date,
+                li.amount,
+                true as hard_deadline,
+                'loan_installments'::text as subject_table
+         from public.loan_installments li
+         join public.loans l on l.id = li.loan_id
+         where li.status in ('planned','unpaid','partial','late')
+           and l.archived_at is null
+           and l.currency = $3
+           and li.amount is not null
+           and li.amount > 0
+           and li.due_date >= $1::date and li.due_date < ($1::date + $2::int)
+
+         union all
+
+         select inv.id,
+                coalesce(pa.name, 'Alım faturası') || coalesce(' #' || inv.invoice_no, '') as label,
+                to_char(coalesce(inv.due_date, inv.issue_date),'YYYY-MM-DD') as due_date,
+                (inv.gross_amount - coalesce(inv.allocated_amount, 0)) as amount,
+                false as hard_deadline,
+                'invoices'::text as subject_table
+         from public.invoices inv
+         left join public.parties pa on pa.id = inv.party_id
+         where inv.direction = 'purchase'
+           and inv.status in ('open','partial')
+           and inv.currency = $3
+           and inv.gross_amount is not null
+           and inv.gross_amount > coalesce(inv.allocated_amount, 0)
+           and not (
+             inv.settled_by_check_id is not null
+             and exists (
+               select 1 from public.checks c0
+               where c0.id = inv.settled_by_check_id
+                 and c0.archived_at is null
+                 and c0.status <> 'cancelled'
+             )
+           )
+           and not exists (
+             select 1
+             from public.payment_instances pi2
+             left join public.payments p2 on p2.id = pi2.payment_id
+             where pi2.linked_invoice_id = inv.id
+               and pi2.status <> 'cancelled'
+               and (p2.id is null or (p2.status = 'active' and p2.archived_at is null))
+           )
+           and not exists (
+             select 1
+             from public.checks c2
+             where c2.linked_invoice_id = inv.id
+               and c2.archived_at is null
+               and c2.status <> 'cancelled'
+           )
+           and coalesce(inv.due_date, inv.issue_date) >= $1::date
+           and coalesce(inv.due_date, inv.issue_date) < ($1::date + $2::int)
+       ) candidates
+       order by due_date, id`,
+      [anchorDate, horizonDays, currency],
+    );
+  } catch (err) {
+    if ((err as { code?: string })?.code !== "42703") throw err;
+    res = await pool.query(
+      `select i.id,
+              coalesce(p.name, '(kalem)') as label,
+              to_char(i.due_date,'YYYY-MM-DD') as due_date,
+              (i.amount - coalesce(i.paid_amount, 0)) as amount,
+              (p.priority = 'critical' or i.risk_level = 'critical') as hard_deadline,
+              'payment_instances'::text as subject_table
+       from public.payment_instances i
+       left join public.payments p on p.id = i.payment_id
+       where i.status in ('unpaid','partial')
+         and i.currency = $3
+         and i.amount is not null
+         and (i.amount - coalesce(i.paid_amount, 0)) > 0
+         and i.due_date >= $1::date and i.due_date < ($1::date + $2::int)
+       order by i.due_date, i.id`,
+      [anchorDate, horizonDays, currency],
+    );
+  }
   return res.rows.map((r) => ({
     id: r.id,
     label: r.label,
     dueDate: r.due_date,
     amount: moneyOrNull(r.amount) ?? 0,
-    // Immovable when EITHER the payment is marked critical or the instance itself carries
-    // critical risk. `priority` lives on payments and `risk_level` on the instance — checked by
-    // introspection, because an earlier version read a `priority` column off payment_instances
-    // that does not exist there. Treating either signal as hard is the conservative reading:
-    // wrongly proposing to defer something immovable costs the operator's trust in every later
-    // suggestion, which is far more expensive than one missed optimisation.
-    hardDeadline: r.priority === "critical" || r.risk_level === "critical",
+    hardDeadline: Boolean(r.hard_deadline),
     latestDate: null,
+    subjectTable: r.subject_table as PaymentCandidate["subjectTable"],
   }));
 }
 
-async function loadFacilityHeadroom(pool: Pool, currency: string): Promise<FacilityHeadroom[]> {
-  const res = await pool.query(
-    `select facility_id, facility_name, available_amount, interest_rate
-     from public.credit_facility_utilization
-     where status = 'active' and currency = $1 and available_amount > 0
-     order by facility_id`, [currency]);
-  return res.rows.map((r) => ({
-    id: r.facility_id,
-    label: r.facility_name,
-    available: moneyOrNull(r.available_amount) ?? 0,
-    interestRate: rateOrNull(r.interest_rate),
-  }));
+async function loadFacilityState(
+  pool: Pool,
+  currency: string,
+): Promise<{ facilities: FacilityHeadroom[]; drawnAmount: number }> {
+  const [headroomRes, drawnRes] = await Promise.all([
+    pool.query(
+      `select facility_id, facility_name, available_amount, interest_rate
+       from public.credit_facility_utilization
+       where status = 'active' and currency = $1 and available_amount > 0
+       order by facility_id`,
+      [currency],
+    ),
+    pool.query(
+      `select coalesce(sum(drawn_amount), 0) as total_drawn
+       from public.credit_facility_utilization
+       where status = 'active' and currency = $1`,
+      [currency],
+    ),
+  ]);
+  return {
+    facilities: headroomRes.rows.map((r) => ({
+      id: r.facility_id,
+      label: r.facility_name,
+      available: moneyOrNull(r.available_amount) ?? 0,
+      interestRate: rateOrNull(r.interest_rate),
+    })),
+    drawnAmount: Math.max(0, moneyOrNull(drawnRes.rows[0]?.total_drawn) ?? 0),
+  };
 }
 
 /**
  * Run the optimiser and persist what it proposed.
  *
- * The whole run is one transaction: a half-written recommendation set would be read as complete
- * advice, and a partial answer is worse than none when the subject is which bills to pay.
+ * FIN-03 (Faz 46): When active cash accounts exist for `currency` with unknown opening balance
+ * (`unknown_opening_count > 0` or `available_now IS NULL`), `openingCash` stays `null` and
+ * `optimize()` halts cleanly with `haltedReason` instead of fabricating a `0`-cash simulation.
  */
 export async function runOptimization(
   pool: Pool, raw: unknown, actorId: string,
-): Promise<{ runId: string; result: OptimizationResult; digest: string }> {
+): Promise<{ runId: string; result: OptimizationResult; digest: string; warning?: string | null }> {
   const input = parseOrThrow(runOptimizationSchema, raw, "Optimizasyon çalışması");
 
-  // Opening position and floor come from Faz 26's treasury views — read, never recomputed here,
-  // so the optimiser and the treasury screen cannot disagree about how much cash there is.
-  const posRes = await pool.query(
-    `select available_now from public.treasury_position_summary where currency = $1`,
-    [input.currency]);
-  const openingCash = moneyOrNull(posRes.rows[0]?.available_now) ?? 0;
+  let posRes;
+  try {
+    posRes = await pool.query(
+      `select available_now, unknown_opening_count
+       from public.treasury_position_summary where currency = $1`,
+      [input.currency],
+    );
+  } catch (err) {
+    if ((err as { code?: string })?.code !== "42703") throw err;
+    posRes = await pool.query(
+      `select available_now, 0::int as unknown_opening_count
+       from public.treasury_position_summary where currency = $1`,
+      [input.currency],
+    );
+  }
+  const posRow = posRes.rows[0];
+  const openingCash: number | null = posRes.rowCount === 0
+    ? 0
+    : Number(posRow?.unknown_opening_count ?? 0) > 0 || posRow?.available_now == null
+      ? null
+      : moneyOrNull(posRow.available_now);
 
-  const floorRes = await pool.query(
-    `select threshold_amount from public.treasury_policies
-     where policy_kind = 'min_cash' and is_active and cash_account_id is null and currency = $1`,
-    [input.currency]);
-  const minCashFloor = moneyOrNull(floorRes.rows[0]?.threshold_amount) ?? 0;
+  const minCashFloor = (await resolveFloor(pool, input.currency, input.anchorDate)) ?? 0;
 
   const inflowRes = await pool.query(
     `select to_char(flow_date,'YYYY-MM-DD') as flow_date, sum(amount_signed) as amount
@@ -122,7 +250,13 @@ export async function runOptimization(
      where currency = $1 and certainty = 'contracted' and amount_signed > 0
        and flow_date >= $2::date and flow_date < ($2::date + $3::int)
      group by flow_date order by flow_date`,
-    [input.currency, input.anchorDate, input.horizonDays]);
+    [input.currency, input.anchorDate, input.horizonDays],
+  );
+
+  const [payments, facilityState] = await Promise.all([
+    loadPaymentCandidates(pool, input.anchorDate, input.horizonDays, input.currency),
+    loadFacilityState(pool, input.currency),
+  ]);
 
   const solverInput: OptimizationInput = {
     objective: input.objective,
@@ -131,9 +265,9 @@ export async function runOptimization(
     openingCash,
     minCashFloor,
     inflows: inflowRes.rows.map((r) => ({ date: r.flow_date, amount: moneyOrNull(r.amount) ?? 0 })),
-    payments: await loadPaymentCandidates(pool, input.anchorDate, input.horizonDays),
-    facilities: await loadFacilityHeadroom(pool, input.currency),
-    drawnAmount: 0,
+    payments,
+    facilities: facilityState.facilities,
+    drawnAmount: facilityState.drawnAmount,
   };
 
   const result = optimize(solverInput);
@@ -148,10 +282,25 @@ export async function runOptimization(
           result_digest, created_by)
        values ($1,$2,$3::date,$4,$5,$6::jsonb,$7,$8,$9)
        returning id`,
-      [input.name, input.objective, input.anchorDate, input.horizonDays, input.currency,
-       JSON.stringify({ openingCash, minCashFloor, paymentCount: solverInput.payments.length,
-                        facilityCount: solverInput.facilities.length }),
-       input.scenarioRunId ?? null, digest, actorId]);
+      [
+        input.name,
+        input.objective,
+        input.anchorDate,
+        input.horizonDays,
+        input.currency,
+        JSON.stringify({
+          openingCash,
+          minCashFloor,
+          drawnAmount: facilityState.drawnAmount,
+          paymentCount: solverInput.payments.length,
+          facilityCount: solverInput.facilities.length,
+          haltedReason: result.haltedReason ?? null,
+        }),
+        input.scenarioRunId ?? null,
+        digest,
+        actorId,
+      ],
+    );
     const runId = runRes.rows[0].id;
 
     for (const rec of result.recommendations) {
@@ -161,9 +310,12 @@ export async function runOptimization(
             current_date_value, proposed_date, amount, currency, expected_effect,
             rationale_codes, rationale_note, confidence)
          values ($1,$2,$3,$4,$5,$6,$7::date,$8::date,$9,$10,$11,$12,$13,$14)`,
-        [runId, rec.rank, rec.actionKind, rec.subjectTable, rec.subjectId, rec.subjectLabel,
-         rec.currentDate, rec.proposedDate, rec.amount, input.currency, rec.expectedEffect,
-         rec.rationaleCodes, rec.rationaleNote, rec.confidence]);
+        [
+          runId, rec.rank, rec.actionKind, rec.subjectTable, rec.subjectId, rec.subjectLabel,
+          rec.currentDate, rec.proposedDate, rec.amount, input.currency, rec.expectedEffect,
+          rec.rationaleCodes, rec.rationaleNote, rec.confidence,
+        ],
+      );
     }
 
     await audit(client, {
@@ -174,13 +326,13 @@ export async function runOptimization(
         recommendationCount: result.recommendations.length,
         worstBalanceBefore: result.worstBalanceBefore,
         worstBalanceAfter: result.worstBalanceAfter,
+        haltedReason: result.haltedReason ?? null,
         digest,
-        // Recorded explicitly: this run changed no financial record, only produced proposals.
         mutatedFinancialRecords: false, automated: true, proposalsOnly: true,
       },
     });
     await client.query("commit");
-    return { runId, result, digest };
+    return { runId, result, digest, warning: result.haltedReason ?? null };
   } catch (e) {
     await client.query("rollback");
     throw e;
@@ -191,10 +343,6 @@ export async function runOptimization(
 
 /**
  * Send an optimisation run for approval, through Faz 24A's entity.
- *
- * Calls requestApproval unchanged. The run gains no status of its own — its approval state is
- * whatever `approvals` says, which is why `optimization_run_summary` joins it rather than storing
- * a copy.
  */
 export async function requestOptimizationApproval(
   pool: Pool, runId: string, actorId: string,
@@ -210,8 +358,6 @@ export async function requestOptimizationApproval(
   if (res.rowCount === 0) throw new DomainError("Optimizasyon çalışması bulunamadı.");
   const run = res.rows[0];
   if (Number(run.rec_count) === 0) {
-    // Approving an empty recommendation set would be approving nothing while looking like a
-    // decision was made.
     throw new DomainError("Bu çalışma hiç öneri üretmedi — onaya gönderilecek bir şey yok.");
   }
 
@@ -245,7 +391,6 @@ export async function loadOptimizationRuns(pool: Pool, limit = 50) {
     totalExpectedEffect: moneyOrNull(r.total_expected_effect) ?? 0,
     timingActions: Number(r.timing_actions),
     financingActions: Number(r.financing_actions),
-    // From `approvals`, never from a column on this table.
     approvalStatus: r.approval_status as string | null,
     approvalRound: r.approval_round == null ? null : Number(r.approval_round),
     resultDigest: r.result_digest as string | null,

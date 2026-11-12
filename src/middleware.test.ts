@@ -6,11 +6,6 @@ import { unstable_doesMiddlewareMatch } from "next/experimental/testing/server";
 import { SESSION_COOKIE } from "@/lib/auth-constants";
 import { config, middleware } from "./middleware";
 
-// A request is refused without a session when BOTH halves agree: Next's matcher sends the path
-// through the middleware at all (config.matcher, evaluated by Next's own helper rather than a
-// re-implementation of its regex), and the middleware then redirects a cookieless request.
-// Calling middleware() alone would skip the first half, which is exactly where a public-asset
-// exclusion could quietly grow into a hole.
 function cookieless(pathname: string, init: { method?: string; headers?: Record<string, string> } = {}) {
   return middleware(new NextRequest(`http://127.0.0.1:3000${pathname}`, init));
 }
@@ -20,30 +15,14 @@ function expectLoginRedirect(response: Response) {
   expect(new URL(response.headers.get("location") ?? "").pathname).toBe("/login");
 }
 
-describe("Telegram assistant middleware sınırı", () => {
-  it("yalnız tam Telegram assistant yolunu servis kimlik doğrulamasına bırakır", () => {
-    const response = cookieless("/api/telegram/assistant", { method: "POST" });
-
-    expect(response.status).toBe(200);
-    expect(response.headers.get("x-middleware-next")).toBe("1");
-  });
-
-  it("komşu Telegram API yollarını oturum kapısından kaçırmaz", () => {
-    expectLoginRedirect(cookieless("/api/telegram/other"));
-  });
-
-  it("assistant yolunun benzerleri (sonda eğik çizgi, alt yol, büyük harf) kapıdan geçemez", () => {
-    for (const p of ["/api/telegram/assistant/", "/api/telegram/assistant/x", "/api/telegram/assistantx", "/API/telegram/assistant"]) {
-      expectLoginRedirect(cookieless(p, { method: "POST" }));
-    }
-  });
-});
-
-describe("Wave 0 — kaldırılan yüzeyler artık oturum kapısına tabi", () => {
-  // The layer exempted these from the cookie gate: /api/telegram/webhook exactly, and the rest
-  // by PREFIX. The routes are gone; the paths must still land on the gate, so that re-adding a
-  // file at any of them cannot silently re-open it.
+describe("Wave 0 & Faz 42 (B2) — kaldırılan yüzeyler artık oturum kapısına tabi (sıfır çerezsiz API istisnası)", () => {
   const REMOVED = [
+    "/api/telegram/assistant",
+    "/api/telegram/assistant/",
+    "/api/telegram/assistant/x",
+    "/api/telegram/assistantx",
+    "/API/telegram/assistant",
+    "/api/telegram/other",
     "/api/erp/sync",
     "/api/erp/webhook",
     "/api/erp/x",
@@ -63,15 +42,19 @@ describe("Wave 0 — kaldırılan yüzeyler artık oturum kapısına tabi", () =
   }
 
   it("Telegram'ı taklit eden başlıklar ve User-Agent kapıyı açmaz", () => {
-    // The mini-app accepted any x-telegram-init-data header or a User-Agent containing
-    // "Telegram" as authentication. None of it may count for anything now.
     const spoofed = {
       "user-agent": "TelegramBot (like TwitterBot)",
       "x-telegram-init-data": "webapp",
       "x-telegram-internal-key": "a".repeat(32),
       "x-telegram-bot-api-secret-token": "a".repeat(32),
     };
-    for (const p of ["/api/telegram/miniapp", "/telegram/miniapp", "/api/erp/sync", "/api/telegram/webhook"]) {
+    for (const p of [
+      "/api/telegram/assistant",
+      "/api/telegram/miniapp",
+      "/telegram/miniapp",
+      "/api/erp/sync",
+      "/api/telegram/webhook",
+    ]) {
       expectLoginRedirect(cookieless(p, { method: "POST", headers: spoofed }));
     }
   });
@@ -97,7 +80,21 @@ describe("matcher — yalnız oturumsuz gereken statik ve sağlık yolları dı�
     });
   }
 
-  const GATED = ["/", "/overview", "/finance/receivables", "/data/imports", "/api/facts", "/api/search", "/change-password"];
+  const GATED = [
+    "/",
+    "/overview",
+    "/finance/receivables",
+    "/data/imports",
+    "/api/facts",
+    "/api/search",
+    "/change-password",
+    "/login-bypass",
+    "/healthcheck",
+    "/ready-probe",
+    "/version2",
+    "/robots.txt.bak",
+    "/sw.js.map",
+  ];
   for (const p of GATED) {
     it(`${p} middleware'den geçer ve çerezsiz istek reddedilir`, () => {
       expect(unstable_doesMiddlewareMatch({ config, url: p })).toBe(true);
@@ -130,18 +127,15 @@ function routeFiles(dir: string): string[] {
   });
 }
 
-describe("her route.ts için tek muafiyet", () => {
-  // Health/readiness/version answer probes that cannot hold a session; they are kept out by the
-  // matcher, not by an exemption in the middleware body, and expose no financial data.
+describe("her route.ts için sıfır çerezsiz API muafiyeti (Faz 42 / B2)", () => {
   const PUBLIC_BY_MATCHER = new Set(["/health", "/ready", "/version"]);
-  const MACHINE_AUTH = new Set(["/api/telegram/assistant"]);
   const files = routeFiles(path.join(process.cwd(), "src", "app"));
 
   it("route dosyaları bulundu (boş tarama geçmiş sayılmaz)", () => {
     expect(files.length).toBeGreaterThan(5);
   });
 
-  it("çerezsiz istekte yalnız /api/telegram/assistant oturum kapısını atlar", () => {
+  it("çerezsiz istekte HİÇBİR API route oturum kapısını atlamaz", () => {
     const bypassing: string[] = [];
     for (const file of files) {
       const url = urlPathOf(file);
@@ -152,6 +146,6 @@ describe("her route.ts için tek muafiyet", () => {
       const response = cookieless(url, { method: "POST" });
       if (response.status !== 307) bypassing.push(url);
     }
-    expect(bypassing).toEqual([...MACHINE_AUTH]);
+    expect(bypassing).toEqual([]);
   });
 });

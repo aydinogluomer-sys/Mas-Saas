@@ -1,13 +1,34 @@
-import Link from "next/link";
+import Link from "@/components/ui/app-link";
 import { notFound } from "next/navigation";
 import { getPool } from "@/lib/db";
 import { Badge, SEVERITY_TONE, STATUS_TONE } from "@/components/ui/badge";
 import { Panel } from "@/components/ui/panel";
-import { setReviewStatusAction } from "@/app/(dashboard)/imports/actions";
+import { setReviewStatusAction } from "@/app/(dashboard)/data/imports/actions";
 
 export const dynamic = "force-dynamic";
 
 const FILTERS = ["open", "accepted", "rejected", "resolved", "all"] as const;
+
+interface WorkbookHeaderRow {
+  id: string;
+  original_filename: string;
+}
+
+interface MappingReviewRow {
+  id: string;
+  issue_type: string;
+  severity: string;
+  message: string;
+  status: string;
+  sheet_name: string;
+  sheet_id: string;
+  row_index: number | null;
+}
+
+interface ReviewStatusCountRow {
+  status: string;
+  n: number;
+}
 
 export default async function ReviewsPage({
   params,
@@ -23,13 +44,13 @@ export default async function ReviewsPage({
     : "open";
 
   const pool = getPool();
-  const wb = await pool.query(
+  const wb = await pool.query<WorkbookHeaderRow>(
     `select id, original_filename from public.source_workbooks where id=$1`,
     [workbookId],
   );
   if (wb.rowCount === 0) notFound();
 
-  const reviews = await pool.query(
+  const reviews = await pool.query<MappingReviewRow>(
     `select m.id, m.issue_type, m.severity, m.message, m.status,
             s.sheet_name, s.id as sheet_id,
             r.row_index
@@ -42,8 +63,8 @@ export default async function ReviewsPage({
     [workbookId, filter],
   );
 
-  const backTo = `/imports/${workbookId}/reviews?status=${filter}`;
-  const counts = await pool.query(
+  const backTo = `/data/imports/${workbookId}/reviews?status=${filter}`;
+  const counts = await pool.query<ReviewStatusCountRow>(
     `select status, count(*)::int as n from public.mapping_reviews where workbook_id=$1 group by status`,
     [workbookId],
   );
@@ -54,7 +75,7 @@ export default async function ReviewsPage({
       <Panel
         title={`EŞLEME İNCELEMELERİ — ${wb.rows[0].original_filename}`}
         right={
-          <Link href={`/data/imports/${workbookId}`} className="font-mono text-[10px] uppercase text-tone-2 underline underline-offset-2">
+          <Link href={`/data/imports/${workbookId}`} className="font-mono text-xs uppercase text-tone-2 underline underline-offset-2">
             ← workbook
           </Link>
         }
@@ -79,7 +100,7 @@ export default async function ReviewsPage({
         ) : (
           <table className="w-full text-sm">
             <thead>
-              <tr className="border-b border-line text-left font-mono text-[10px] uppercase tracking-wider text-tone-3">
+              <tr className="border-b border-line text-left font-mono text-xs uppercase tracking-wider text-tone-3">
                 <th className="py-1 pr-2">önem</th>
                 <th className="py-1 pr-2">tip</th>
                 <th className="py-1 pr-2">sekme / satır</th>
@@ -100,7 +121,7 @@ export default async function ReviewsPage({
                     </Link>
                     {m.row_index != null ? <span className="font-mono text-tone-3"> · r{m.row_index}</span> : null}
                   </td>
-                  <td className="max-w-[360px] py-1.5 pr-2 text-xs">{m.message}</td>
+                  <td className="max-w-90 py-1.5 pr-2 text-xs">{m.message}</td>
                   <td className="py-1.5 pr-2"><Badge tone={STATUS_TONE[m.status] ?? "neutral"}>{m.status}</Badge></td>
                   <td className="py-1.5">
                     <div className="flex gap-1">
@@ -110,7 +131,7 @@ export default async function ReviewsPage({
                           <input type="hidden" name="status" value={s} />
                           <input type="hidden" name="backTo" value={backTo} />
                           <button type="submit"
-                            className="border border-line-strong px-1.5 py-0.5 font-mono text-[9px] uppercase text-tone-2 hover:border-line-strong">
+                            className="border border-line px-1.5 py-0.5 font-mono text-xs uppercase text-tone-2 hover:border-line-strong">
                             {s === "accepted" ? "kabul" : s === "rejected" ? "ret" : "çözüldü"}
                           </button>
                         </form>

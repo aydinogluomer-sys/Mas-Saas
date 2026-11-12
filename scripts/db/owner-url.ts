@@ -123,6 +123,13 @@ export function isDisposableDatabaseName(name: string | undefined): boolean {
  */
 export function requireDisposableOwnerDatabaseUrl(context = "bu gate"): string {
   const url = requireOwnerDatabaseUrl();
+  for (const extraKey of ["DATABASE_URL", "MAS_APP_DATABASE_URL"] as const) {
+    const extraVal = process.env[extraKey]?.trim();
+    if (extraVal && !isDisposableDatabaseName(databaseNameFromUrl(extraVal))) {
+      console.error(`GÜVENLİK DURDURMASI (${context}) [${extraKey}]: '${databaseNameFromUrl(extraVal) ?? "?"}' harcanabilir değil.`);
+      process.exit(1);
+    }
+  }
   const name = databaseNameFromUrl(url);
   if (!isDisposableDatabaseName(name)) {
     const shown = name ?? "(bağlantı dizesinden veritabanı adı okunamadı)";

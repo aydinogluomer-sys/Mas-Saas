@@ -38,8 +38,14 @@
 // satis_fiyati × adet; adet bilinmiyorsa (null) gelir de bilinmiyor. Adet 0 ise gelir 0'dır
 // (parça üretilmiyor; bu gerçek bir sıfır). Çarpım ondalık aritmetiğiyle yapılır, float ile
 // değil: 71744.12 × 3 float'ta 215232.36000000002 verir.
+import type { Pool, PoolClient } from "pg";
 import { parseNumber } from "@/lib/importers/v2/values";
-import { moneyOrNull, mul } from "@/lib/money";
+import { decimal, money, moneyOrNull, mul } from "@/lib/money";
+
+export function isMissingSchemaError(err: unknown): boolean {
+  const code = (err as { code?: string } | null)?.code;
+  return code === "42P01" || code === "42703";
+}
 
 /** V2 sözleşme anahtarı — varlığı satırın V2 olduğunu söyler. */
 export const V2_REVENUE_KEY = "satis_fiyati";
@@ -98,4 +104,177 @@ export function readSourceRevenue(rowJson: unknown, quantity: number | null): So
 /** `readSourceRevenue` — yalnız tutar. */
 export function sourceRevenue(rowJson: unknown, quantity: number | null): number | null {
   return readSourceRevenue(rowJson, quantity).revenue;
+}
+
+export interface SourceRevenuePartItem {
+  partId: string;
+  partCode: string | null;
+  partName: string;
+  quantity: number | null;
+  revenue: number | null;
+  source: RevenueSource;
+}
+
+export interface SourceRevenueSummary {
+  totalPartCount: number;
+  v2Count: number;
+  legacyCount: number;
+  noneCount: number;
+  unknownRevenueCount: number;
+  totalKnownRevenueTry: number;
+  v2RevenueTry: number;
+  legacyRevenueTry: number;
+  topParts: SourceRevenuePartItem[];
+}
+
+function emptySourceRevenueSummary(): SourceRevenueSummary {
+  return {
+    totalPartCount: 0,
+    v2Count: 0,
+    legacyCount: 0,
+    noneCount: 0,
+    unknownRevenueCount: 0,
+    totalKnownRevenueTry: 0,
+    v2RevenueTry: 0,
+    legacyRevenueTry: 0,
+    topParts: [],
+  };
+}
+
+/**
+ * Üretim parçalarının kaynak satırlarından (`import_rows.row_json`) V2 ve klasik gelir
+ * dağılımını okur. Şema henüz uygulanmadıysa (`42P01` / `42703`) boş özet döner.
+ */
+export async function loadSourceRevenueSummary(
+  pool: Pick<Pool, "query"> | Pick<PoolClient, "query">,
+  topLimit = 8,
+): Promise<SourceRevenueSummary> {
+  const rowsRes = await pool
+    .query<{
+      id: string;
+      part_code: string | null;
+      part_name: string;
+      quantity: number | string | null;
+      unit_sale_price: string | null;
+      currency: string | null;
+      row_json: unknown;
+    }>(
+      `select pp.id::text,
+              pp.part_code,
+              pp.part_name,
+              pp.quantity,
+              pp.unit_sale_price::text as unit_sale_price,
+              pp.currency,
+              ir.row_json
+         from public.production_parts pp
+         left join public.import_rows ir on ir.id = pp.source_row_id
+        order by pp.part_code nulls last, pp.part_name`,
+    )
+    .catch((err: unknown) => {
+      const code = (err as { code?: string } | null)?.code;
+      if (code === "42703") {
+        return pool
+          .query<{
+            id: string;
+            part_code: string | null;
+            part_name: string;
+            quantity: number | string | null;
+            unit_sale_price: string | null;
+            currency: string | null;
+            row_json: unknown;
+          }>(
+            `select pp.id::text,
+                    pp.part_code,
+                    pp.part_name,
+                    pp.quantity,
+                    null::text as unit_sale_price,
+                    'TRY'::text as currency,
+                    ir.row_json
+               from public.production_parts pp
+               left join public.import_rows ir on ir.id = pp.source_row_id
+              order by pp.part_code nulls last, pp.part_name`,
+          )
+          .catch((e2: unknown) => {
+            if (isMissingSchemaError(e2)) return null;
+            throw e2;
+          });
+      }
+      if (isMissingSchemaError(err)) return null;
+      throw err;
+    });
+
+  if (!rowsRes || rowsRes.rows.length === 0) {
+    return emptySourceRevenueSummary();
+  }
+
+  let v2Count = 0;
+  let legacyCount = 0;
+  let noneCount = 0;
+  let unknownRevenueCount = 0;
+  let totalKnownDec = decimal(0);
+  let v2RevDec = decimal(0);
+  let legacyRevDec = decimal(0);
+  const items: SourceRevenuePartItem[] = [];
+
+  for (const row of rowsRes.rows) {
+    const qty = row.quantity == null ? null : Number(row.quantity);
+    let parsed: SourceRevenue;
+    try {
+      parsed = readSourceRevenue(row.row_json ?? null, qty);
+    } catch {
+      parsed = { revenue: null, source: "legacy" };
+    }
+
+    let effRevenue = parsed.revenue;
+    if (
+      effRevenue == null &&
+      row.unit_sale_price != null &&
+      qty != null &&
+      (row.currency ?? "TRY") === "TRY"
+    ) {
+      effRevenue = moneyOrNull(mul(row.unit_sale_price, qty));
+    }
+
+    if (parsed.source === "v2") {
+      v2Count++;
+      if (effRevenue != null) v2RevDec = v2RevDec.plus(decimal(effRevenue));
+    } else if (parsed.source === "legacy") {
+      legacyCount++;
+      if (effRevenue != null) legacyRevDec = legacyRevDec.plus(decimal(effRevenue));
+    } else {
+      noneCount++;
+    }
+
+    if (effRevenue != null) {
+      totalKnownDec = totalKnownDec.plus(decimal(effRevenue));
+    } else {
+      unknownRevenueCount++;
+    }
+
+    items.push({
+      partId: row.id,
+      partCode: row.part_code,
+      partName: row.part_name,
+      quantity: qty,
+      revenue: effRevenue,
+      source: parsed.source,
+    });
+  }
+
+  const topParts = items
+    .filter((it) => it.revenue != null)
+    .sort((a, b) => (b.revenue ?? 0) - (a.revenue ?? 0))
+    .slice(0, Math.max(1, topLimit));
+
+  return {
+    totalPartCount: rowsRes.rows.length,
+    v2Count,
+    legacyCount,
+    noneCount,
+    unknownRevenueCount,
+    totalKnownRevenueTry: money(totalKnownDec.toString()),
+    v2RevenueTry: money(v2RevDec.toString()),
+    legacyRevenueTry: money(legacyRevDec.toString()),
+    topParts,
+  };
 }

@@ -96,13 +96,16 @@
 ## Phase 9 — DONE (Excel kapsama boşlukları — docs/excel-coverage-gaps analizi; 9A/9B/9C/9D tamam, implementation.md Faz 10)
 
 ### 9A — DONE (maliyet detayı + Akon kâr marjı)
+
 - [x] `priceMargin` saf fonksiyon + 4 test (Akon TL/dk − başabaş; zarar bayrağı; null-asla-0). vitest 149.
 - [x] Migration 0012: `cost_breakdown_lines` (blok/etiket/tutar, kaynak-izli, idempotent) + `cost_models.akon_freze/torna` + assertions (RLS+idempotency).
 - [x] extractCostModel genişletildi: 28 gider döküm satırı (sabit defter A8:B24 + genel/personel blokları E/F/G) + Akon K2/K4. Engine mapCostSheets bunları yazar (kaynak-izli).
 - [x] /production: **"KÂR MARJI — AKON FİYATI vs BAŞABAŞ"** paneli (her senaryo kendi Akon oranıyla; **normal torna ZARARINA satış** bayraklı) + "Sabit gider dökümü" DetailsDisclosure. Ana Ekran "Üretim içgörüsü" şeridi zarar durumunu gösterir.
 - [x] **Gerçeklik:** iki maliyet sekmesinin kendi Akon oranları farklı (normal 27,5/21,88 · mesaili 25/19,89); her model kendi oranını kullanır.
 - [x] phase9a-verify: Akon kaynak K2/K4 birebir, 28 döküm kaynak-izli, marj=fiyat−başabaş, normal-torna zarar bayraklı, **mali bütünlük before==after**. Gate: typecheck/lint/test 149/db:verify/import:real/phase3-8+9a/build ✓.
+
 ### 9B — DONE (aylık gider dökümü)
+
 - [x] F1 gider formülü analizi: `gider = BORÇLAR(B17)+STANDART(B26)+vendor(G3, zaten var)+PERSONEL(G17)+GENEL(G24)+banka(K3)`. 4 eksik blok (BORÇLAR/STANDART/PERSONEL/GENEL) **bileşen satırları** (alt-toplam değil → çift-sayım yok) eklendi.
 - [x] extractMonthlyCashflow genişletildi: A18:B25, A27:B31, F18:G23, F25:G31 → cashflow_lines (loan_payment/tax/operational_cost; etiket keyword ile sınıflandırma). Etiketsiz-ama-tutarlı satır (ör. ÜCRET GİDERLERİ) düşmez. Engine değişmedi (data.lines otomatik yazar).
 - [x] /cashflow/[monthId]: İŞLETME GİDERLERİ · VERGİ/SGK · KREDİ/FİNANSMAN grupları eklendi.
@@ -161,7 +164,6 @@
 - [x] Görsel sadeleme: body fontu sans (sayılar/kodlar/etiketler mono kalır), büyük hero sayılar (KeyStat), düz Türkçe etiketler, daha az panel.
 - [x] Visual spec'e `/` eklendi; guidelines'a IA bölümü. Gate: lint ✓ typecheck ✓ vitest 145 ✓ db:verify ✓ import:real ✓ phase3-8:verify ✓ build ✓ 11-route smoke ✓ visual 8/8 ✓.
 
-
 ## P0-A — DONE (gerçek çok-kullanıcılı auth, kullanıcı yönetimi, yarım kalan geçişin kapatılması)
 
 - [x] Migration 0031 `users` + `sessions`: argon2id hash, username CHECK, admin/operatör rolü,
@@ -192,7 +194,6 @@
       db:verify ✓ · db:migrate:verify ✓ · build ✓ · phase3…14e verify **20/20 PASS** (atılabilir DB,
       `mas_radar_dev`'e dokunulmadan) · 9-modül smoke ✓.
 
-
 ## Wave 0 / S3 — DONE (uydurma rakamlar; incelenmemiş 46541d8 katmanının seçici karantinası)
 
 - [x] `/finance/cockpit` ve `/finance/chains` ekranları, `/api/chains`, `src/lib/chains/*`,
@@ -214,9 +215,9 @@
       değil") — birim testli; `tests/no-fabricated-figures.test.ts` sayfa bağlantısını korur.
 - [x] Gate: vitest 2002/2002 ✓ · boundary:verify 8/8 ✓ · typecheck kaynakta 0 hata (yalnız eski
       `.next/types`) · lint: kalan sorunlar yalnız sonraki dilimlerin dosyalarında.
-- [ ] Backlog (LABEL): belgelenmiş model sabitlerini ekranda "varsayım" olarak etiketle — radar eşik
-      varsayılanları, senaryo optimizasyon varsayımları, tahsilat olasılık katsayıları.
-
+- [x] Backlog (LABEL): belgelenmiş model sabitlerini ekranda "varsayım" olarak etiketle — radar eşik
+      varsayılanları (`/payments`), senaryo optimizasyon varsayımları (`/scenarios`), tahsilat olasılık
+      katsayıları (`/finance/collections`) üzerinde `<Badge tone="amber">Varsayım (Model Sabiti)</Badge>` olarak işaretlendi.
 
 ## Wave 0 / S4 — DONE (süreç içi önbellek ve açılış ön yüklemesi; incelenmemiş 46541d8 katmanının seçici karantinası)
 
@@ -241,7 +242,6 @@
       `prefetchLinkHandlers` kullanımını geri getirir — bu dilimin kaldırmalarını koru; iskelet gecikmesinin
       iki CSS kuralını (`.is-active`, `.navigation-skeleton-active`) taşı ya da gecikmeyi birlikte geri al.
       → S7: kaldırmalar yeniden uygulandı, iki kural gerekçesiyle taşındı (gecikme duruyor).
-
 
 ## Wave 0 / S5 — DONE (Import V2; incelenmemiş 46541d8 katmanının seçici karantinası)
 
@@ -268,7 +268,6 @@
 - [ ] Sentetik DB'de uçtan uca: Excel'de üretilmiş `=1/0` / `#N/A` / birleştirilmiş çek tutarı dosyası (önizleme
       sayaçları, onay sonrası `mapping_reviews`, domain sayıları değişmemiş); asenkron yol + işçi; `interaction:test --
       import-v2` ve etkileşim kapsam kapısı.
-
 
 ## Wave 0 / S6 — DONE (KEEP listesi, Supabase'in sökülmesi, PWA; incelenmemiş 46541d8 katmanının seçici karantinası)
 
@@ -334,12 +333,11 @@
 - [ ] Etkileşim kapısı (KR-08): `/system/security` "şifre değişimi zorla" için manifest kuralı + tıkla-ve-DB-doğrula vakası
       denetim bulguları turunda yazıldı (aşağıda); Playwright ile CI'da / disposable DB'de koşturulması açık. `/change-password`
       taramada yok (rota listesinde değil) — gönderimin uçtan uca testi yukarıdaki E2E maddesinde.
-- [ ] `.env.example`: `MAS_RADAR_APP_DB_PASSWORD` ve `SEED_ADMIN_PASSWORD` yine boş (KR-24) — `CHANGE_ME` (9 karakter) belgelenmiş
-      maskeli girişi atlatıp 12 karakter kuralında düşüyor.
+- [x] `.env.example`: `MAS_RADAR_APP_DB_PASSWORD` ve `SEED_ADMIN_PASSWORD` boşaltıldı (KR-24) — maskeli TTY parola
+      isteminin devreye girmesi sağlandı (`tests/security/redirect-and-rate-limit.test.ts` yeşil).
 - [x] `scripts/ops/measure-auth-routes.ts` ve `scripts/ops/run-lighthouse.ts` hâlâ admin oturumu basıyor (biri `.env.local`'ı
       doğrudan okuyor, iptal etmiyor): sil ya da disposable kapısının arkasına al (tests-lint-ci L02/L04).
       → Kalite kapısı: ikisi de silindi (aşağıda).
-
 
 ## Wave 0 / S7 — DONE (görünüş geri dönüşü ve test zaman aşımları; incelenmemiş 46541d8 katmanının seçici karantinası)
 
@@ -359,7 +357,6 @@
       (boş durum işareti), `interactive-readiness` (her modül sekmesi görünür ve tıklanır) ve `pnpm test:visual` (23 taban; son
       güncelleme `8f068b1`, `af210fd`'den önce; CI işi değil — fark çıkarsa sahip incelemesinden sonra yeniden taban).
 
-
 ## Wave 0 / Kalite kapısı — DONE (S1–S7 sonrası; incelenmemiş 46541d8 katmanının seçici karantinası)
 
 - [x] `pnpm lint`'in son kırmızısı kapandı: katmanın iki ölçüm betiği silindi — `scripts/ops/measure-auth-routes.ts`
@@ -373,10 +370,8 @@
       taramaları ✓ (kaldırılan on dizin yok; `src/`'de varsayılan sır ve zincir sabiti yok; `next.config.ts`'te
       `ignoreBuildErrors` yok; `db.ts` SET ROLE hatasını yayıyor; izlenen hiçbir dosyada `pooler.supabase.com` yok). Bir tam
       koşu bellek tükenmesiyle düştü (iki işçi + p24b çocuğu; kod değil ortam) — dosya tek başına ve tam takım yeniden yeşil.
-- [ ] Sahip: depo kökündeki izlenmeyen `.lighthouse-result.json` silinen `run-lighthouse.ts`'in çıktısı (2026-10-18) ve bir
-      `final-screenshot` denetimi (o anki sayfanın görüntüsü) içeriyor; `.gitignore`'da değil — yerelde silinsin, asla
-      commit'lenmesin.
-
+- [x] Sahip / Git hijyeni: `.lighthouse-result.json`, `.navigation-run-clean.json`, `.testsprite-nav-run.json` ve `.runtime/`
+      `.gitignore`'a eklendi ve `git rm --cached` ile indeksten çıkarıldı (asla commit'lenemez).
 
 ## Wave 0 / Denetim bulguları — DONE (S1–S7 + kalite kapısı sonrası bağımsız denetimin doğrulanmış bulguları)
 
@@ -400,21 +395,13 @@
 - [x] Gate: typecheck 0 hata ✓ · lint 0 hata / 0 uyarı ✓ · vitest 107 dosya / 2143 test ✓ · boundary:verify 8/8 ✓.
 - [ ] Playwright (bu turda koşturulmadı — DB kuralı): `pnpm interaction:crawl` → `interaction:test` → `interaction:gate`
       disposable DB'de; beklenen: manifestosuz=0, yeni vaka PASS, UNTESTED ≤ 557.
-- [ ] FIN-03 (Wave 0 sonrası, ileri migration — 0001–0096 dondurulmuş): bilinmeyen açılış bakiyesi 0 sayılıyor.
-      `bank_cash_position.derived_balance = coalesce(opening_balance, 0) + hareketler` (0063:41, 0094:165) →
-      `treasury_position_summary.available_now` → `treasury_liquidity_gap` (projeksiyon, finansman ihtiyacı, taban ihlali).
-      Import V2 `Açılış Bakiyesi` boşsa `opening_balance` null bırakır. Sonuç: açılışı bilinmeyen aktif hesap varken
-      "Kullanılabilir nakit" ve 7/30/90 gün hükümleri kesin bir rakam gibi görünür; R10'un "bilinmiyor" dalları yalnız hiç
-      aktif hesap yokken çalışır. Yapılacak: (a) yeni migration — açılışı null olan aktif hesap varsa `derived_balance` /
-      `available_now` null (ya da `unknown_opening_count`), null `treasury_liquidity_gap`'e yayılır; motorlar ve kutular "—" /
-      "hesaplanamadı" der; `loadLiquidityHorizons` ve `optimization/engine.ts`'in `available_now ?? 0`'ı da aynı kurala
-      bağlanır. (b) O migration'a kadar ara etiket: açılışı bilinmeyen hesap sayısı hazine sayfasında ve brifingde
-      "yalnız hareketlerden" notuyla gösterilir. Önce sahip kontrolü (salt-okunur): `select ca.currency, count(*) from
-      public.cash_accounts ca where ca.is_active and ca.opening_balance is null group by 1`.
-- [ ] Brifing para birimi geri dönüşü: aktif TRY hesabı hiç yoksa `loadBriefingFacts` ilk para biriminin (ör. EUR) nakdini ve
-      tabanını alır, metin ve kutu onu "TL" diye yazar. TRY yoksa nakit/taban null olmalı ya da para birimi etiketi taşımalı
-      (phase32-verify aynı seçim kuralını yansıtıyor — birlikte değişir).
-
+- [x] FIN-03 kod katmanı (`0099_view_math_fin03_constraints_and_indexes.sql` + ara etiket `FIN-03 (b)`):
+      (a) `0099` migration'ı hazırlanıp disposable klon provasında doğrulandı; (b) `0096` canlı şemada da çalışan ara etiket
+      olarak `loadUnknownOpeningAccountCount` eklendi ve `/finance` ile `/insights/briefing` ekranlarında açılış bakiyesi
+      tanımsız aktif hesap sayısı `"yalnız hareketlerden hesaplanıyor (FIN-03)"` uyarısıyla gösteriliyor. *(Kanonik DB'ye `0099`
+      uygulaması ve gerçek açılış bakiyesi girişi sahip adımında açık.)*
+- [x] Brifing para birimi geri dönüşü (`Faz 46`): aktif TRY hesabı hiç yoksa `loadBriefingFacts` artık yabancı para satırına
+      (`summary[0]`) düşmez; TRY nakit/taban `null` ("—") kalır (`src/lib/briefing/engine.ts` & `engine.test.ts`).
 
 ## Wave 0 / Altyapı — DONE (orkestratör, 2026-10-28/29; kanıt: `docs/release-evidence/wave0/01-native-postgres-restore.md`)
 
@@ -438,22 +425,21 @@
 - [ ] **Veri:** FIN-03 ön kontrolü — 6 aktif kasa/banka hesabının 6'sının açılış bakiyesi boş. "Kullanılabilir nakit" şu an
       yalnız hareketlerden hesaplanıyor. Açılış bakiyeleri girilmeli; FIN-03 ileri migration'ı Dalga 1'in ilk işi.
 
+## Dalga 1 backlog — Doğrulanmış Kapanış Durumu
 
-## Dalga 1 backlog — Wave 0 bağımsız incelemesinin düşük önemli notları (doğrulanmadı)
-
-1. `src/lib/authz/context.ts:39` — zorunlu parola değişimindeki oturum, DB katmanı seçilirken tam katmanını alıyor.
-2. `src/lib/auth.ts:49` — `safeRedirectPath` ters eğik çizgi/TAB varyantlarını kabul ediyor → `/login?next=` açık yönlendirme.
-3. `scripts/start-testsprite.ts:10` vb. — Docker süper kullanıcısı `postgres:postgres` sabit (yalnız tek kullanımlık hedefler).
-4. `src/lib/briefing/rules.ts:103` — 7 günlük likidite açığı bilinmiyorken başlık "kritik kalem görünmüyor" diyor.
-5. `src/lib/analytics/analyses.ts:260` — nakit köprüsü bilinmeyen gelir/gideri 0 sayıp mutabakat hükmü veriyor.
-6. `src/lib/telegram/assistant.ts:138` — `/hareket` borç/alacak etiketi fatura yönüne bakmıyor.
-7. `scripts/ops/process-import-jobs.ts:47` — geçici hata alan önizleme işi yeniden denenmiyor; aynı dosya başarısız işi döndürüyor.
-8. `src/lib/jobs/dispatcher.ts:170` — işleyicinin `resultPayload`'ı atılıyor.
-9. `next.config.ts:65` — katmanın `onDemandEntries` bloğu kaldı (R6 listesinde değil).
-10. `.env.example:23,54` — `CHANGE_ME` değerleri 12 karakter kuralını atlatıyor (KR-24).
-11. `scripts/ops/install-postgres-service.ps1:432` — Ctrl+C / pencere kapatma, oturum görevini devre dışı bırakabilir.
-12. `scripts/ops/install-postgres-service.ps1:395` — yarım kalmış kurulumdan sonra yeniden çalıştırma bazı adımları atlıyor.
-13. `scripts/ops/install-postgres-service.ps1:326` — `hba_file` yönlendirmesi denetlenmiyor.
-14. `scripts/release/restore-drill.ts:188` — tam gerçek veri dökümünü `%TEMP%`'e yazıyor; temizlik yalnız `finally`'de.
-15. `scripts/ops/backup-daily.ts:220` — `*.dump.unverified` dosyaları budamaya hiç girmiyor.
-16. `scripts/release/real-clone-v2-rehearsal.ts:73` — parolayı komut satırında geçiriyor (katman öncesi).
+- [x] 1. `src/lib/authz/context.ts:39` — `user.mustChangePassword === true` iken `getDbContext()` artık `EMPTY` döndürür (`tests/security/must-change-password-db-context.test.ts`).
+- [x] 2. `src/lib/security/redirect.ts` (`safeRedirectPath`) — ters eğik çizgi ve kontrol karakteri varyantları reddediliyor (`tests/security/redirect-and-rate-limit.test.ts`).
+- [ ] 3. `scripts/start-testsprite.ts:10` vb. — Docker süper kullanıcısı `postgres:postgres` sabit (yalnız tek kullanımlık izole test hedefleri).
+- [x] 4. `src/lib/briefing/rules.ts` — 7 günlük likidite açığı bilinmiyorken başlık dürüstçe `"likidite bilinmiyor"` üretir (`Faz 46`).
+- [x] 5. `src/lib/analytics/analyses.ts` — nakit köprüsü bilinmeyen gelir/gideri `0` saymaz (`Faz 46`).
+- [x] 6. `src/lib/telegram/assistant.ts` (`ledgerMovementSide`) — `/hareket` borç/alacak etiketi fatura yönüne (`purchase` / `sale`) duyarlı (`Faz 42/44`).
+- [x] 7. `scripts/ops/process-import-jobs.ts` — `requeueDueFailures` ve `reapStuckJobs` ile geçici hata alan işler yeniden kuyruğa alınır (`Faz 42`).
+- [x] 8. `src/lib/jobs/dispatcher.ts` — `completeJob(..., outcome.resultPayload)` ile sonuç yükü kalıcı saklanır (`Faz 42`).
+- [x] 9. `next.config.ts` — `onDemandEntries` tamponu `maxInactiveAge: 5dk`, `pagesBufferLength: 8` olarak sınırlandı.
+- [x] 10. `.env.example` — `MAS_RADAR_APP_DB_PASSWORD` ve `SEED_ADMIN_PASSWORD` `CHANGE_ME` yerine boş bırakıldı (`KR-24`).
+- [ ] 11. `scripts/ops/install-postgres-service.ps1` — kurulum sırasında pencereyi kapatmayın (yönetici PowerShell çalıştırma notu).
+- [x] 12. `scripts/ops/install-postgres-service.ps1` — yarım kalmış kurulumu idempotent tamamlar (`ADIM 1/8`).
+- [x] 13. `scripts/ops/install-postgres-service.ps1` — `hba_file` ve `include` yönergeleri denetleniyor (`Stop-WithCode 13`).
+- [x] 14. `scripts/release/restore-drill.ts` — geçici döküm `.runtime/drill-tmp` altında izole + `finally` ve `SIGINT`/`SIGTERM` sinyal temizliğine bağlı.
+- [x] 15. `scripts/ops/backup-daily.ts` — `pruneUnverifiedQuarantinedDumps` ile `*.dump.unverified` dosyaları budanıyor.
+- [x] 16. `scripts/release/real-clone-v2-rehearsal.ts` — parola komut satırı yerine `buildLibpqEnv` üzerinden aktarılıyor.

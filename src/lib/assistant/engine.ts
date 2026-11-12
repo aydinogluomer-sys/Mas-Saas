@@ -68,36 +68,93 @@ export interface AssistantAnswer {
   safetyNotes: string[];
 }
 
+/** `42P01` (`undefined_table`) veya `42703` (`undefined_column`) şema geçiş koruması. */
+export function isMissingSchemaError(err: unknown): boolean {
+  if (!err || typeof err !== "object") return false;
+  const code = (err as { code?: unknown }).code;
+  return code === "42P01" || code === "42703";
+}
+
 /** Turns of one conversation, oldest first. */
 export async function loadHistory(pool: Pool, conversationId: string): Promise<ConversationTurn[]> {
-  const res = await pool.query(
-    `select turn_index, question, answer_md, response_mode, source_fact_keys
-       from public.ai_response_snapshots
-      where conversation_id = $1 and turn_index is not null
-      order by turn_index`, [conversationId]);
-  return res.rows.map((r) => ({
-    turnIndex: Number(r.turn_index),
-    question: r.question as string,
-    answerMd: r.answer_md as string,
-    responseMode: r.response_mode as string,
-    factKeys: (r.source_fact_keys as string[] | null) ?? [],
-  }));
+  try {
+    const res = await pool.query(
+      `select turn_index, question, answer_md, response_mode, source_fact_keys
+         from public.ai_response_snapshots
+        where conversation_id = $1 and turn_index is not null
+        order by turn_index`, [conversationId]);
+    return res.rows.map((r) => ({
+      turnIndex: Number(r.turn_index),
+      question: r.question as string,
+      answerMd: r.answer_md as string,
+      responseMode: r.response_mode as string,
+      factKeys: (r.source_fact_keys as string[] | null) ?? [],
+    }));
+  } catch (err) {
+    if (isMissingSchemaError(err)) return [];
+    throw err;
+  }
 }
 
 export async function listConversations(pool: Pool, limit = 50) {
   // No ownership predicate: RLS (0087) decides what this connection may see. A second filter in
   // application code would be a second, drifting opinion about visibility.
-  const res = await pool.query(
-    `select c.id, c.title, c.status,
-            to_char(c.updated_at at time zone 'Europe/Istanbul','YYYY-MM-DD HH24:MI') as updated_at,
-            (select count(*)::int from public.ai_response_snapshots s
-              where s.conversation_id = c.id) as turn_count
-       from public.assistant_conversations c
-      order by c.updated_at desc limit $1`, [limit]);
-  return res.rows.map((r) => ({
-    id: r.id as string, title: r.title as string, status: r.status as string,
-    updatedAt: r.updated_at as string, turnCount: Number(r.turn_count),
-  }));
+  try {
+    const res = await pool.query(
+      `select c.id, c.title, c.status,
+              to_char(c.updated_at at time zone 'Europe/Istanbul','YYYY-MM-DD HH24:MI') as updated_at,
+              (select count(*)::int from public.ai_response_snapshots s
+                where s.conversation_id = c.id) as turn_count
+         from public.assistant_conversations c
+        order by c.updated_at desc limit $1`, [limit]);
+    return res.rows.map((r) => ({
+      id: r.id as string, title: r.title as string, status: r.status as string,
+      updatedAt: r.updated_at as string, turnCount: Number(r.turn_count),
+    }));
+  } catch (err) {
+    if (isMissingSchemaError(err)) return [];
+    throw err;
+  }
+}
+
+export interface FinancialContextSummary {
+  asOf: string;
+  role: AppRole;
+  visibleFactCount: number;
+  withheldFactCount: number;
+  withheldNoticeText: string | null;
+  sourceRoutes: string[];
+  sampleTitles: string[];
+}
+
+/**
+ * Salt-okunur, sıfır-LLM finansal bağlam özeti.
+ * Kullanıcının rolüne göre hangi karar gerçeklerinin (DecisionFact) ve hangi kanonik ekranların
+ * asistan bağlamına dahil edildiğini deterministik olarak raporlar.
+ */
+export async function buildFinancialContext(
+  pool: Pool,
+  role: AppRole,
+  todayISO = istanbulDateISO(),
+): Promise<FinancialContextSummary> {
+  let allFacts: DecisionFact[] = [];
+  try {
+    allFacts = await loadDecisionFacts(pool, todayISO);
+  } catch (err) {
+    if (!isMissingSchemaError(err)) throw err;
+    allFacts = [];
+  }
+  const scoped = scopeFactsForRole(role, allFacts);
+  const sourceRoutes = [...new Set(scoped.visible.map(factRoute))].sort();
+  return {
+    asOf: todayISO,
+    role,
+    visibleFactCount: scoped.visible.length,
+    withheldFactCount: scoped.withheld.length,
+    withheldNoticeText: withheldNotice(scoped),
+    sourceRoutes,
+    sampleTitles: scoped.visible.slice(0, 6).map((f) => f.title),
+  };
 }
 
 /** Drill-downs come from the facts that were actually used — never invented for the answer. */
@@ -144,12 +201,13 @@ export async function ask(
     {
       question: expansion.expanded,
       forceDeterministic: !safety.safe || mutationIntent(expansion.expanded),
+      preScopedFacts: scoped.visible,
+      role,
     },
     actorId,
   );
 
-  const usedFacts = allFacts.filter((f) => result.sourceFactKeys.includes(f.key));
-  const visibleUsed = scopeFactsForRole(role, usedFacts).visible;
+  const visibleUsed = scoped.visible.filter((f) => result.sourceFactKeys.includes(f.key));
 
   const notice = withheldNotice(scoped);
   const safetyNotes = [...result.safetyNotes];

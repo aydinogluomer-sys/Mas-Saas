@@ -1,23 +1,8 @@
-// Faz 34 — chart and analysis export: SVG, CSV, XLSX (server) and PNG/PDF (browser).
-//
-// ═══ WHY PNG AND PDF ARE PRODUCED IN THE BROWSER ═══
-//
-// SVG, CSV and XLSX are generated here, server-side, from data this process already has. PNG and
-// PDF are NOT: rasterising or printing server-side needs a headless browser (puppeteer/playwright
-// as a RUNTIME dependency) or a native canvas build. Both are large, platform-specific
-// dependencies added purely to convert a picture the browser is already displaying.
-//
-// The charts are SVG in the DOM. The browser can rasterise that SVG to PNG with the canvas API it
-// already has, and produce PDF through its own print pipeline — see `svgToPngDataUrl` in
-// export-client.ts. Same picture, no new dependency, and the conversion happens on the machine
-// that asked for the file.
-//
-// Stated rather than hidden, because "PNG export" that quietly means "screenshot it yourself" is
-// the kind of half-delivery this project keeps refusing to make.
+// Faz 34 / Faz 41 (B1) — chart and analysis export: SVG, CSV, XLSX (server via lazy ExcelJS) and PNG/PDF (browser).
 //
 // Pure: no database, no LLM. Everything takes a model and returns bytes or a string.
+// IMPORTANT (Perf Faz 7 invariant): NEVER import `exceljs` at top level as a runtime value.
 
-import * as XLSX from "xlsx";
 import type { ChartFormat } from "./chart";
 import type { HeatmapModel, TreemapModel, WaterfallModel } from "./chart-types";
 import { formatMetric } from "./analyses";
@@ -144,8 +129,6 @@ export function treemapToSvg(model: TreemapModel): string {
 }
 
 function footerSvg(sourceLabel: string, asOf: string, unknownCount: number): string {
-  // The unknown count travels with the picture. An exported chart that drops it turns
-  // "we could not measure 12 rows" into silence the moment it leaves the app.
   const note = unknownCount > 0 ? ` · ${unknownCount} bilinmeyen değer hesaba katılmadı` : "";
   return `<text x="${PAD_L}" y="${SVG_H - 12}" font-family="sans-serif" font-size="10" fill="#718096">${escapeXml(`Kaynak: ${sourceLabel} · ${asOf} itibarıyla${note}`)}</text>`;
 }
@@ -162,33 +145,34 @@ export interface SheetSpec {
   rows: (string | number | null)[][];
 }
 
+function sanitizeExcelText(v: string | number | null): string | number | null {
+  if (v == null) return null;
+  if (typeof v === "string" && /^[=+\-@\t\r]/.test(v)) return `'${v}`;
+  return v;
+}
+
 /** CSV with the Turkish-Excel-friendly separator, quoting anything risky. */
 export function rowsToCsv(rows: readonly (string | number | null)[][]): string {
   const cell = (v: string | number | null) => {
     if (v == null) return "";
-    const s = String(v);
-    return /[";\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+    const s = typeof v === "string" && /^[=+\-@\t\r]/.test(v) ? `'${v}` : String(v);
+    return /[";\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
   };
   return rows.map((r) => r.map(cell).join(";")).join("\n");
 }
 
 /**
- * XLSX workbook from one or more sheets, plus a provenance sheet.
- *
- * The stamp sheet is not optional. A spreadsheet outlives the screen it came from and gets mailed
- * around; without the version fingerprint and input snapshot travelling with it, nobody can tell
- * six months later which formula produced the numbers.
+ * XLSX workbook from one or more sheets, plus a provenance sheet, produced via lazy ExcelJS.
  */
-export function toXlsxBuffer(sheets: readonly SheetSpec[], stamp?: ReproducibilityStamp): Buffer {
-  const wb = XLSX.utils.book_new();
-  // Sheet names must be UNIQUE, and SheetJS throws rather than warning when they collide. Two
-  // charts sharing a title is entirely normal (a waterfall and its table, two periods of the same
-  // analysis), so the names are deduplicated here instead of leaving a crash for the day it
-  // happens — the gate hit exactly this with three models called "t".
+export async function toXlsxBuffer(
+  sheets: readonly SheetSpec[],
+  stamp?: ReproducibilityStamp,
+): Promise<Buffer> {
+  const { default: ExcelJS } = await import("exceljs");
+  const wb = new ExcelJS.Workbook();
   const used = new Set<string>();
+
   for (const sheet of sheets) {
-    const ws = XLSX.utils.aoa_to_sheet(sheet.rows as unknown[][]);
-    // Excel sheet names cap at 31 chars and forbid []:*?/\
     const base = sheet.name.replace(/[[\]:*?/\\]/g, " ").slice(0, 31).trim() || "Sayfa";
     let name = base;
     let n = 2;
@@ -197,8 +181,13 @@ export function toXlsxBuffer(sheets: readonly SheetSpec[], stamp?: Reproducibili
       name = base.slice(0, 31 - suffix.length) + suffix;
     }
     used.add(name.toLowerCase());
-    XLSX.utils.book_append_sheet(wb, ws, name);
+
+    const ws = wb.addWorksheet(name);
+    for (const row of sheet.rows) {
+      ws.addRow(row.map(sanitizeExcelText));
+    }
   }
+
   if (stamp) {
     const rows: (string | number | null)[][] = [
       ["Alan", "Değer"],
@@ -215,9 +204,18 @@ export function toXlsxBuffer(sheets: readonly SheetSpec[], stamp?: Reproducibili
         .sort(([a], [b]) => a.localeCompare(b))
         .map(([t, n]) => [t, n] as (string | number)[]),
     ];
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(rows as unknown[][]), "Kaynak");
+    let kaynakName = "Kaynak";
+    let k = 2;
+    while (used.has(kaynakName.toLowerCase())) {
+      kaynakName = `Kaynak (${k++})`;
+    }
+    const ws = wb.addWorksheet(kaynakName);
+    for (const row of rows) {
+      ws.addRow(row.map(sanitizeExcelText));
+    }
   }
-  return XLSX.write(wb, { type: "buffer", bookType: "xlsx" }) as Buffer;
+
+  return Buffer.from(await wb.xlsx.writeBuffer());
 }
 
 /** Flatten a waterfall into sheet rows. */
@@ -238,8 +236,6 @@ export function heatmapToSheet(model: HeatmapModel): SheetSpec {
       ["", ...model.columns.map((c) => c.label)],
       ...model.rows.map((r) => [
         r.label,
-        // Unknown exports as an empty cell, NOT as 0 — a spreadsheet full of fake zeroes is worse
-        // than one with gaps, because SUM() happily adds them up.
         ...model.columns.map((c) => model.cells.find((x) => x.rowKey === r.key && x.columnKey === c.key)?.value ?? null),
       ]),
     ],

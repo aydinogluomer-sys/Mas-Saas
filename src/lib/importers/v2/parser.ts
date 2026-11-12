@@ -8,6 +8,7 @@
 // karar üretmez. TEMİZ.xlsx denetiminde bulunan AKR −45.000 ×2 ve Çağdaş −100.000 ×3
 // durumları burada `duplicate_check` olarak işaretlenir ve öyle kalır.
 import type ExcelJS from "exceljs";
+import { toDecimal } from "../../money";
 import {
   DATA_SHEETS, META_SHEET, EXAMPLES_SHEET, README_SHEET,
   SCHEMA_NAME, SCHEMA_VERSION,
@@ -546,7 +547,7 @@ function applyFamilyRules(
         message: "Net, vergi ve toplam tutardan en az ikisi gerekli — üçüncüsü hesaplanır. " +
           "Tek değerle kalan ikisi uydurulmuş olurdu.",
       });
-    } else if (n && t && g && Math.abs((net as number) + (tax as number) - (gross as number)) > 0.005) {
+    } else if (n && t && g && !toDecimal(net as number).round(2).plus(toDecimal(tax as number).round(2)).eq(toDecimal(gross as number).round(2))) {
       issues.push({
         type: "amount_mismatch", severity: "high", sheet: spec.name, row: rowNumber,
         column: "Toplam Tutar",
@@ -642,6 +643,38 @@ function applyFamilyRules(
   // Kapasite: operasyon süreleri BOŞ ise ölçülmemiş demektir; 0 ise "o işlem yok".
   // İkisi farklı başabaş noktası üretir, bu yüzden ayırt edilir.
   if (spec.family === "capacity") {
+    for (const [key, label] of [
+      ["torna_dk", "Torna (dk)"],
+      ["freze_dk", "Freze (dk)"],
+      ["diger_operasyon_dk", "Diğer Operasyon (dk)"],
+      ["satis_fiyati", "Satış Fiyatı"],
+    ] as const) {
+      const v = values[key];
+      if (typeof v === "number" && v < 0) {
+        issues.push({
+          type: "negative_amount", severity: "high", sheet: spec.name, row: rowNumber,
+          column: label, message: `${label} eksi olamaz (${v}).`,
+        });
+      }
+    }
+    if (typeof values.verim_orani === "number" && (values.verim_orani < 0 || values.verim_orani > 200)) {
+      issues.push({
+        type: "invalid_number", severity: "high", sheet: spec.name, row: rowNumber,
+        column: "Verim Oranı (%)", message: `Verim oranı 0–200 aralığında olmalı (${values.verim_orani}).`,
+      });
+    }
+    if (typeof values.calisma_gunu === "number" && (values.calisma_gunu < 0 || values.calisma_gunu > 31)) {
+      issues.push({
+        type: "invalid_number", severity: "high", sheet: spec.name, row: rowNumber,
+        column: "Çalışma Günü / Ay", message: `Çalışma günü 0–31 aralığında olmalı (${values.calisma_gunu}).`,
+      });
+    }
+    if (typeof values.vardiya_sayisi === "number" && (values.vardiya_sayisi < 1 || values.vardiya_sayisi > 4)) {
+      issues.push({
+        type: "invalid_number", severity: "high", sheet: spec.name, row: rowNumber,
+        column: "Vardiya Sayısı", message: `Vardiya sayısı 1–4 aralığında olmalı (${values.vardiya_sayisi}).`,
+      });
+    }
     const t = values.torna_dk, f = values.freze_dk, o = values.diger_operasyon_dk;
     const allBlank = t === null && f === null && o === null;
     if (allBlank) {
@@ -656,6 +689,109 @@ function applyFamilyRules(
 
   // Makine ROI: kişisel/aile gideri satırları makine ekonomisine karışmamalı.
   // Legacy `tablo` sayfasında `personal_data_mixed` incelemesi tam olarak bundan doğmuştu.
+  if (spec.family === "machine_roi") {
+    for (const [key, label] of [
+      ["alis_bedeli", "Alış Bedeli"],
+      ["aylik_gelir", "Aylık Gelir"],
+      ["aylik_operasyon_maliyeti", "Aylık Operasyon Maliyeti"],
+      ["yillik_bakim_maliyeti", "Yıllık Bakım Maliyeti"],
+    ] as const) {
+      const v = values[key];
+      if (typeof v === "number" && v < 0) {
+        issues.push({
+          type: "negative_amount", severity: "high", sheet: spec.name, row: rowNumber,
+          column: label, message: `${label} eksi olamaz (${v}).`,
+        });
+      }
+    }
+    if (typeof values.kullanim_orani === "number" && (values.kullanim_orani < 0 || values.kullanim_orani > 200)) {
+      issues.push({
+        type: "invalid_number", severity: "high", sheet: spec.name, row: rowNumber,
+        column: "Kullanım Oranı (%)", message: `Kullanım oranı 0–200 aralığında olmalı (${values.kullanim_orani}).`,
+      });
+    }
+    if (typeof values.faydali_omur_ay === "number" && values.faydali_omur_ay <= 0) {
+      issues.push({
+        type: "invalid_number", severity: "high", sheet: spec.name, row: rowNumber,
+        column: "Faydalı Ömür (ay)", message: `Faydalı ömür pozitif olmalı (${values.faydali_omur_ay}).`,
+      });
+    }
+  }
+
+  if (spec.family === "cost") {
+    if (typeof values.aylik_tutar === "number" && values.aylik_tutar < 0) {
+      issues.push({
+        type: "negative_amount", severity: "high", sheet: spec.name, row: rowNumber,
+        column: "Aylık Tutar", message: `Aylık maliyet tutarı eksi olamaz (${values.aylik_tutar}).`,
+      });
+    }
+    if (typeof values.personel_sayisi === "number" && values.personel_sayisi < 0) {
+      issues.push({
+        type: "invalid_number", severity: "high", sheet: spec.name, row: rowNumber,
+        column: "Personel Sayısı", message: `Personel sayısı eksi olamaz (${values.personel_sayisi}).`,
+      });
+    }
+    if (typeof values.aylik_calisma_saati === "number" && values.aylik_calisma_saati < 0) {
+      issues.push({
+        type: "invalid_number", severity: "high", sheet: spec.name, row: rowNumber,
+        column: "Aylık Çalışma Saati", message: `Aylık çalışma saati eksi olamaz (${values.aylik_calisma_saati}).`,
+      });
+    }
+    if (typeof values.verim_orani === "number" && (values.verim_orani < 0 || values.verim_orani > 200)) {
+      issues.push({
+        type: "invalid_number", severity: "high", sheet: spec.name, row: rowNumber,
+        column: "Verim Oranı (%)", message: `Verim oranı 0–200 aralığında olmalı (${values.verim_orani}).`,
+      });
+    }
+  }
+
+  if (spec.family === "credit_facilities") {
+    const limitAmt = values.toplam_limit;
+    const drawnAmt = values.kullanilan_tutar;
+    if (typeof limitAmt === "number" && limitAmt < 0) {
+      issues.push({
+        type: "negative_amount", severity: "high", sheet: spec.name, row: rowNumber,
+        column: "Toplam Limit", message: `Toplam kredi limiti eksi olamaz (${limitAmt}).`,
+      });
+    }
+    if (typeof drawnAmt === "number" && drawnAmt < 0) {
+      issues.push({
+        type: "negative_amount", severity: "high", sheet: spec.name, row: rowNumber,
+        column: "Kullanılan Tutar", message: `Kullanılan kredi tutarı eksi olamaz (${drawnAmt}).`,
+      });
+    }
+    if (typeof limitAmt === "number" && typeof drawnAmt === "number" && limitAmt >= 0 && drawnAmt > limitAmt) {
+      issues.push({
+        type: "amount_mismatch", severity: "high", sheet: spec.name, row: rowNumber,
+        column: "Kullanılan Tutar",
+        message: `Kullanılan tutar (${drawnAmt}) toplam kredi limitini (${limitAmt}) aşamaz.`,
+      });
+    }
+    if (typeof values.faiz_orani === "number" && (values.faiz_orani < 0 || values.faiz_orani > 500)) {
+      issues.push({
+        type: "invalid_number", severity: "high", sheet: spec.name, row: rowNumber,
+        column: "Faiz Oranı (%)", message: `Faiz oranı 0–500 aralığında olmalı (${values.faiz_orani}).`,
+      });
+    }
+    if (typeof values.komisyon_orani === "number" && (values.komisyon_orani < 0 || values.komisyon_orani > 100)) {
+      issues.push({
+        type: "invalid_number", severity: "high", sheet: spec.name, row: rowNumber,
+        column: "Komisyon Oranı (%)", message: `Komisyon oranı 0–100 aralığında olmalı (${values.komisyon_orani}).`,
+      });
+    }
+    if (
+      typeof values.baslangic_tarihi === "string" &&
+      typeof values.bitis_tarihi === "string" &&
+      values.bitis_tarihi < values.baslangic_tarihi
+    ) {
+      issues.push({
+        type: "invalid_date", severity: "high", sheet: spec.name, row: rowNumber,
+        column: "Bitiş Tarihi",
+        message: `Bitiş tarihi (${values.bitis_tarihi}) başlangıç tarihinden (${values.baslangic_tarihi}) önce olamaz.`,
+      });
+    }
+  }
+
   if (spec.family === "machine_roi") {
     const name = typeof values.makine_adi === "string" ? values.makine_adi.toLocaleLowerCase("tr-TR") : "";
     const personalTokens = ["maaş", "maas", "kira", "market", "okul", "aile", "şahsi", "sahsi", "kişisel", "kisisel"];

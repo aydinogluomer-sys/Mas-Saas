@@ -8,10 +8,10 @@ import { Pool } from "pg";
 import { importWorkbook } from "../src/lib/importers/workbook-importer";
 import { loadMachineRoi, loadMachineRoiAggregate, mapMachineRoi } from "../src/lib/production/engine";
 import { ensureSystemActor } from "./db/seed-system-actor";
-import { requireDisposableOwnerDatabaseUrl } from "./db/owner-url";
+import { assertDisposableTargetDb } from "./db/disposable-guard";
 
 const pool = new Pool({
-  connectionString: requireDisposableOwnerDatabaseUrl("phase9c:verify"),
+  connectionString: assertDisposableTargetDb(undefined, "phase9c:verify").url,
 });
 const fail = (m: string): never => { console.error("PHASE9C VERIFY FAIL:", m); process.exit(1); };
 const q = async (sql: string, p: unknown[] = []) => (await pool.query(sql, p)).rows;

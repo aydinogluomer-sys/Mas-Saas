@@ -1,4 +1,4 @@
-import Link from "next/link";
+import Link from "@/components/ui/app-link";
 import { AnalyticsChart } from "@/components/charts/analytics-chart";
 import { Badge } from "@/components/ui/badge";
 import { fmtTL, Panel } from "@/components/ui/panel";

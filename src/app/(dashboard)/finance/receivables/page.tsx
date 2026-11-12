@@ -1,13 +1,12 @@
-// Faz 22 — Alacak / Borç ve Cari Hesap.
+// Faz 22 & Faz 47 (D1) — Alacak / Borç ve Cari Hesap.
 //
-// Ageing first (that is the collection worklist), then the current-account cards, then the
-// money that has arrived but belongs to no invoice yet. That last panel matters more than its
-// size suggests: since 0048 caps allocations at the invoice total, an over-receipt no longer
-// hides inside a paid_amount — it sits there until somebody decides where it belongs.
+// Sayfalanmamış kanonik açık alacak/borç KPI toplamları + döviz rozetleri + döviz-duyarlı `formatMoney`.
 
 import { getPool } from "@/lib/db";
+import { loadCanonicalPayablesKpi, loadCanonicalReceivablesKpi } from "@/lib/metrics/canonical-kpis";
+import { formatForeignCurrencyBadges, formatMoney } from "@/lib/money-format";
 import {
-  loadCurrentAccounts, loadDsoDpo, loadPayableTotals, loadReceivables,
+  listRecentActiveAllocations, loadCurrentAccounts, loadDsoDpo, loadPayableTotals, loadReceivables,
   loadReceivableTotals, loadSettlementSpeed, loadUnallocatedSettlements,
 } from "@/lib/receivables/engine";
 import { COLLECTION_BUCKETS } from "@/lib/receivables/rules";
@@ -15,7 +14,7 @@ import { istanbulDateISO } from "@/lib/reports/rules";
 import { Badge, type Tone } from "@/components/ui/badge";
 import { Panel, fmtTL } from "@/components/ui/panel";
 import { PageHeader } from "@/components/ui/shell";
-import { allocateAction } from "./actions";
+import { allocateAction, reverseAllocationAction } from "./actions";
 import { requireRouteAccess } from "@/lib/authz/route-guard";
 
 export const dynamic = "force-dynamic";
@@ -25,60 +24,55 @@ const BUCKET_TONE: Record<string, Tone> = {
   "31-60 gün": "red", "60+ gün": "red", "tarihsiz": "neutral",
 };
 
-/**
- * Çalışma kuyruğu listesinin satır sınırı.
- *
- * Yalnız LİSTEYİ sınırlar; sayfanın finansal toplamları limitsiz aggregate'ten gelir. Bu sayıyı
- * değiştirmek hiçbir KPI'ı değiştirmemeli — testin doğruladığı invariant budur.
- */
+const PARTY_TYPE_TR: Record<string, string> = {
+  customer: "müşteri",
+  supplier: "tedarikçi",
+  vendor: "tedarikçi",
+  both: "müşteri + tedarikçi",
+  bank: "banka",
+  lender: "finansör",
+  tax: "vergi/kurum",
+  other: "diğer",
+};
+
 const LIST_LIMIT = 75;
 
 export default async function ReceivablesPage({
   searchParams,
 }: { searchParams: Promise<{ error?: string; result?: string }> }) {
-  // Faz 17-38 denetimi — sayfa seviyesi rol kapisi. Navigasyonun kullandigi AYNI karar
-  // (canSeeRoute); ikinci bir liste, ikinci bir fikir ve kacinilmaz bir kayma demekti.
   const denied = await requireRouteAccess("/finance/receivables");
   if (denied) return denied;
   const sp = await searchParams;
   const pool = getPool();
   const today = istanbulDateISO();
-  // LİSTE SINIRLI, TOPLAMLAR DEĞİL.
-  //
-  // Bu iki şeyin ayrılması bu ekranın tek önemli kuralı. Liste bir çalışma kuyruğudur ve
-  // sınırlı olması meşrudur; ama "AÇIK ALACAK" bir KARAR SAYISIDIR ve listeye bağlı olamaz.
-  // Öncesinde her ikisi de `loadReceivables(pool, 75)`'ten geliyordu, yani ekrandaki toplam
-  // aslında "en büyük 75 alacağın toplamı"ydı ve bunu söyleyen hiçbir şey yoktu.
-  //
-  // Toplamlar artık aynı view üzerinden, LİMİTSİZ bir aggregate'ten geliyor (bkz.
-  // loadOpenTotals). Liste limiti değiştiğinde toplamlar değişmez — testin de doğruladığı şey bu.
-  // `loadPayables` ARTIK ÇAĞRILMIYOR: bu ekran borç LİSTESİ göstermiyor, yalnız borç
-  // TOPLAMINI ve yaşlandırmasını gösteriyor — ikisi de artık limitsiz aggregate'ten geliyor.
-  // Satırları çekip atmak, sonucu kullanılmayan bir sorgu demekti.
-  const [receivables, recTotals, payTotals, accounts, dsoDpo, unallocated, speed] = await Promise.all([
+  const [receivables, recTotals, payTotals, canonicalRec, canonicalPay, accounts, dsoDpo, unallocated, speed, recentAllocations] = await Promise.all([
     loadReceivables(pool, LIST_LIMIT),
     loadReceivableTotals(pool, today),
     loadPayableTotals(pool, today),
+    loadCanonicalReceivablesKpi(pool),
+    loadCanonicalPayablesKpi(pool),
     loadCurrentAccounts(pool, 20),
     loadDsoDpo(pool, 365),
-    loadUnallocatedSettlements(pool, 10),
+    loadUnallocatedSettlements(pool, 25),
     loadSettlementSpeed(pool, 10),
+    listRecentActiveAllocations(pool, 20),
   ]);
+  const unallocatedInflows = unallocated.filter((u) => u.direction === "inflow");
 
   const recAgeing = recTotals.ageing;
   const payAgeing = payTotals.ageing;
   const recTotal = recTotals.totalOpenAmount;
   const payTotal = payTotals.totalOpenAmount;
   const overdueCount = recTotals.overdueCount;
-  // Liste kırpıldı mı? Kırpıldıysa kullanıcı bunu EKRANDA görmeli: kırpılmış bir listeyi tam
-  // sanmak, üstteki toplamla listedeki satırların toplamı arasındaki farkı hataya yormaya yol açar.
   const recTruncated = recTotals.itemCount > receivables.length;
+  const recForeignText = formatForeignCurrencyBadges(canonicalRec.foreignBuckets);
+  const payForeignText = formatForeignCurrencyBadges(canonicalPay.foreignBuckets);
 
   return (
     <>
       <PageHeader
         title="Alacak / Borç ve Cari Hesap"
-        subtitle="Yaşlandırma, dağıtım (allocation), cari hesap kartı ve DSO/DPO"
+        subtitle="Yaşlandırma, tahsis (dağıtım), cari hesap kartı ve DSO/DPO"
         meta={
           <Badge tone={overdueCount > 0 ? "red" : unallocated.length > 0 ? "amber" : "green"} dot>
             {overdueCount > 0 ? `${overdueCount} vadesi geçmiş alacak`
@@ -92,11 +86,15 @@ export default async function ReceivablesPage({
       {sp.result && <div className="mb-3 rounded border border-pos/40 bg-pos/10 p-2 text-sm text-pos">{sp.result}</div>}
 
       <div className="mb-4 grid grid-cols-2 gap-2 lg:grid-cols-4">
-        <Panel title="AÇIK ALACAK"><b className="font-mono text-lg text-pos">{fmtTL(recTotal)}</b><div className="text-xs text-tone-3">{recTotals.itemCount} kayıt</div></Panel>
-        <Panel title="AÇIK BORÇ"><b className="font-mono text-lg text-neg">{fmtTL(payTotal)}</b><div className="text-xs text-tone-3">{payTotals.itemCount} kayıt</div></Panel>
+        <Panel title="AÇIK ALACAK (TRY)" subtitle={recForeignText ?? undefined}>
+          <b className="font-mono text-lg text-pos">{formatMoney(recTotal, "TRY")}</b>
+          <div className="text-xs text-tone-3">{recTotals.itemCount} kayıt</div>
+        </Panel>
+        <Panel title="AÇIK BORÇ (TRY)" subtitle={payForeignText ?? undefined}>
+          <b className="font-mono text-lg text-neg">{formatMoney(payTotal, "TRY")}</b>
+          <div className="text-xs text-tone-3">{payTotals.itemCount} kayıt</div>
+        </Panel>
         <Panel title="DSO (365g)">
-          {/* null means "no sales in the period" — reporting 0 would claim customers pay
-              instantly at a company that sold nothing. */}
           <b className="font-mono text-lg">{dsoDpo.dso == null ? "—" : `${dsoDpo.dso} gün`}</b>
         </Panel>
         <Panel title="DPO (365g)">
@@ -109,8 +107,6 @@ export default async function ReceivablesPage({
           <Panel key={title} title={title}>
             <table className="w-full text-sm">
               <tbody>
-                {/* Every bucket is rendered, including empty ones: an absent row and a zero row
-                    read very differently to someone scanning for problems. */}
                 {COLLECTION_BUCKETS.map((b) => {
                   const row = buckets.find((x) => x.bucket === b)!;
                   return (
@@ -150,16 +146,25 @@ export default async function ReceivablesPage({
                       <td className="py-2 font-mono text-xs">{r.invoiceNo}</td>
                       <td>{r.partyName}</td>
                       <td className="font-mono text-xs">{r.dueDate ?? "—"}</td>
-                      <td className="text-right font-mono tabular-nums">{fmtTL(r.grossAmount)}</td>
-                      <td className="text-right font-mono tabular-nums text-tone-3">{fmtTL(r.allocatedAmount)}</td>
-                      <td className="text-right font-mono tabular-nums">{fmtTL(r.openAmount)}</td>
+                      <td className="text-right font-mono tabular-nums">{formatMoney(r.grossAmount, r.currency)}</td>
+                      <td className="text-right font-mono tabular-nums text-tone-3">{formatMoney(r.allocatedAmount, r.currency)}</td>
+                      <td className="text-right font-mono tabular-nums">{formatMoney(r.openAmount, r.currency)}</td>
                       <td><Badge tone={BUCKET_TONE[r.ageingBucket] ?? "neutral"}>{r.ageingBucket}</Badge></td>
                       <td>
-                        {/* Capped at the open amount client-side for convenience; 0048's trigger
-                            is what actually guarantees it. */}
-                        <form action={allocateAction} className="flex items-center gap-1">
+                        <form action={allocateAction} className="flex flex-wrap items-center gap-1">
                           <input type="hidden" name="invoiceId" value={r.invoiceId} />
-                          <input type="hidden" name="sourceTable" value="manual" />
+                          <select
+                            name="settlementSource"
+                            defaultValue="manual"
+                            className="max-w-44 rounded border border-line-faint bg-transparent px-1 py-0.5 text-xs"
+                          >
+                            <option value="manual">Manuel tahsilat</option>
+                            {unallocatedInflows.map((u) => (
+                              <option key={`${u.sourceTable}:${u.sourceId}`} value={`${u.sourceTable}:${u.sourceId}`}>
+                                {(u.description || u.sourceTable).slice(0, 24)} · {fmtTL(u.unallocatedAmount)}
+                              </option>
+                            ))}
+                          </select>
                           <input
                             name="amount" type="number" step="0.01" min="0.01" max={r.openAmount}
                             placeholder="tutar"
@@ -216,6 +221,52 @@ export default async function ReceivablesPage({
       </div>
 
       <div className="mt-4">
+        <Panel title={`SON TAHSİSLER VE GERİ ALMA — ${recentAllocations.length}`}>
+          <p className="mb-2 text-xs text-tone-3">
+            Tahsis silinmez; gerekçesiyle geri alınır (`reversed_at`) ve fatura bakiyesi veritabanı tetikleyicisiyle yeniden hesaplanır.
+          </p>
+          {recentAllocations.length === 0 ? (
+            <p className="py-2 text-sm text-tone-3">Aktif tahsis kaydı yok.</p>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="text-left text-xs text-tone-3">
+                    <th>Fatura</th><th>Karşı taraf</th><th>Kaynak</th><th>Tarih</th>
+                    <th className="text-right">Tutar</th><th>Geri al</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {recentAllocations.map((ia) => (
+                    <tr key={ia.id} className="border-t border-line-faint">
+                      <td className="py-1.5 font-mono text-xs">{ia.invoiceNo}</td>
+                      <td>{ia.partyName}</td>
+                      <td className="font-mono text-xs text-tone-3">{ia.sourceTable}</td>
+                      <td className="font-mono text-xs">{ia.allocatedOn}</td>
+                      <td className="text-right font-mono tabular-nums">{formatMoney(ia.allocatedAmount, ia.currency)}</td>
+                      <td>
+                        <form action={reverseAllocationAction} className="flex items-center gap-1">
+                          <input type="hidden" name="allocationId" value={ia.id} />
+                          <input
+                            name="reason"
+                            required
+                            minLength={3}
+                            placeholder="gerekçe"
+                            className="w-28 rounded border border-line-faint bg-transparent px-1 py-0.5 text-xs"
+                          />
+                          <button className="text-xs text-neg hover:underline">Geri al</button>
+                        </form>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </Panel>
+      </div>
+
+      <div className="mt-4">
         <Panel title={`CARİ HESAP KARTLARI — ${accounts.length}`}>
           <p className="mb-2 text-xs text-tone-3">
             Alacak ve borç <b>netleştirilmez</b>: mahsup iki taraf arasında hukuki bir işlemdir,
@@ -237,7 +288,7 @@ export default async function ReceivablesPage({
                   {accounts.map((a) => (
                     <tr key={a.partyId} className="border-t border-line-faint">
                       <td className="py-2">{a.partyName}</td>
-                      <td className="text-xs text-tone-3">{a.partyType}</td>
+                      <td className="text-xs text-tone-3">{PARTY_TYPE_TR[a.partyType] ?? a.partyType}</td>
                       <td className="text-right font-mono tabular-nums text-pos">{fmtTL(a.receivableOpen)}</td>
                       <td className="text-right font-mono tabular-nums text-neg">{fmtTL(a.payableOpen)}</td>
                       <td className={`text-right tabular-nums ${a.overdueCount > 0 ? "text-warn" : "text-tone-3"}`}>

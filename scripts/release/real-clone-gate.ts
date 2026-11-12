@@ -53,10 +53,10 @@ import path from "node:path";
 import { Pool } from "pg";
 import { portInUse, readEnvLocal, swapDatabase } from "../db/app-url";
 import { isDisposableDatabaseName } from "../db/owner-url";
+import { createDisposableLocalDb, dropDisposableLocalDb, listDumpLocal, resolveLocalOwnerUrl, restoreIntoDisposableLocalDb } from "../db/pg-local-admin";
 
 /* ── ayarlar ─────────────────────────────────────────────────────────────────────────────── */
 
-const CONTAINER = process.env.MAS_PG_CONTAINER ?? "mas-radar-pg";
 const PORT = process.env.MAS_PG_PORT ?? "5432";
 const SNAPSHOT_DUMP = process.env.REAL_SNAPSHOT_DUMP ?? "backups/cutover_A_20260825-1211.dump";
 const EXPECTED_SHA = (process.env.EXPECTED_DUMP_SHA256
@@ -70,7 +70,6 @@ const LIVE_PORT = process.env.LIVE_APP_PORT ?? "3000";
 const EVIDENCE_DIR = "docs/release-evidence/final-production-readiness";
 const FINGERPRINT_OUT = process.env.FINGERPRINT_OUT ?? `${EVIDENCE_DIR}/02-real-clone-migration.md`;
 const GATE_OUT = process.env.GATE_OUT ?? `${EVIDENCE_DIR}/03-real-clone-golden-ui.md`;
-const CONTAINER_DUMP = "/tmp/mas_real_clone_gate.dump";
 const PLAYWRIGHT_JSON = path.join("test-results", "real-clone-gate-playwright.json");
 const SERVER_LOG = path.join("test-results", "real-clone-gate-server.log");
 
@@ -106,10 +105,7 @@ function step(label: string): void {
  * çalışıyor ve MSYS `/tmp/x.dump` gibi argümanları Windows yoluna çevirip `pg_restore: could not
  * open input file "C:/Users/…/Temp/x.dump"` üretiyor. Kabuk devre dışıyken böyle bir dönüşüm yok.
  */
-function docker(args: string[]): string {
-  commands.push(`docker ${args.join(" ")}`);
-  return execFileSync("docker", args, { encoding: "utf8", maxBuffer: 1 << 28 });
-}
+
 
 // swapDatabase / readEnvLocal / portInUse buradan TASINDI -> scripts/db/app-url.ts.
 // AŞAMA 10'un route-SLO kapısı da aynı üç desene ihtiyaç duyuyor; owner-url.ts'in başlığında
@@ -208,8 +204,8 @@ async function main(): Promise<void> {
   if (!runtimeUrl) throw new Error(".env.local içinde DATABASE_URL yok.");
   const runtimeUser = new URL(runtimeUrl).username;
   const cloneAppUrl = swapDatabase(runtimeUrl, RC_CLONE_DB);
-  const cloneOwnerUrl = `postgres://postgres:postgres@127.0.0.1:${PORT}/${RC_CLONE_DB}`;
-  const srcOwnerUrl = `postgres://postgres:postgres@127.0.0.1:${PORT}/${REAL_SRC_DB}`;
+  const cloneOwnerUrl = resolveLocalOwnerUrl(RC_CLONE_DB);
+  const srcOwnerUrl = resolveLocalOwnerUrl(REAL_SRC_DB);
 
   record("step1", "app rolü parolası SIFIRLANMADI (mevcut runtime kimliği yeniden kullanıldı)",
     true, "pnpm db:app-role:password çağrılmaz", `${runtimeUser} kimliği .env.local'den, yalnız DB adı '${RC_CLONE_DB}' ile değiştirildi`);
@@ -228,21 +224,16 @@ async function main(): Promise<void> {
     throw new Error("Arşiv hash'i tutmuyor — hangi verinin restore edildiği belirsiz. STOP.");
   }
 
-  docker(["cp", SNAPSHOT_DUMP, `${CONTAINER}:${CONTAINER_DUMP}`]);
-  const listing = docker(["exec", CONTAINER, "pg_restore", "--list", CONTAINER_DUMP]);
+  commands.push(`pg_restore --list ${SNAPSHOT_DUMP}`);
+  const listing = listDumpLocal(SNAPSHOT_DUMP);
   const toc = listing.split(/\r?\n/).filter((l) => l && !l.startsWith(";")).length;
   record("step1", "pg_restore --list arşivi okuyabiliyor", toc > 0, "> 0 TOC girdisi", `${toc} TOC girdisi`);
 
-  docker(["exec", CONTAINER, "dropdb", "-U", "postgres", "--force", "--if-exists", REAL_SRC_DB]);
-  docker(["exec", CONTAINER, "createdb", "-U", "postgres", REAL_SRC_DB]);
-  let restoreWarned = false;
-  try {
-    docker(["exec", CONTAINER, "pg_restore", "--no-owner", "-U", "postgres", "-d", REAL_SRC_DB, CONTAINER_DUMP]);
-  } catch {
-    // pg_restore iyi huylu uyarılarda (olmayan rol, mevcut extension) sıfırdan farklı döner.
-    // Verinin gerçekten geldiğini aşağıdaki baseline karşılaştırması söyler, bu çıkış kodu değil.
-    restoreWarned = true;
-  }
+  commands.push(`dropdb/createdb/pg_restore -> ${REAL_SRC_DB}`);
+  dropDisposableLocalDb(REAL_SRC_DB);
+  createDisposableLocalDb(REAL_SRC_DB);
+  const restoreRes = restoreIntoDisposableLocalDb(REAL_SRC_DB, SNAPSHOT_DUMP);
+  const restoreWarned = restoreRes.warned;
 
   const src = new Pool({ connectionString: srcOwnerUrl, max: 4 });
   const one = async (pool: Pool, sql: string): Promise<string> =>
@@ -276,7 +267,7 @@ async function main(): Promise<void> {
     ...process.env,
     SOURCE_DATABASE_URL: srcOwnerUrl,
     CLONE_DB: RC_CLONE_DB,
-    MAS_PG_CONTAINER: CONTAINER,
+    MAS_PG_RUNTIME: process.env.MAS_PG_RUNTIME ?? "native",
     MAS_PG_PORT: PORT,
     FINGERPRINT_OUT,
   };
@@ -643,7 +634,7 @@ function writeEvidence(input: EvidenceInput): void {
     "veritabanına bağlanmasını normalleştirmek istemiyoruz. Elle, salt-okunur koşulur:",
     "",
     "```bash",
-    "docker exec mas-radar-pg psql -U postgres -d mas_radar_dev -At \\",
+    "PGOPTIONS='-c default_transaction_read_only=on' psql -h 127.0.0.1 -p 5432 -U postgres -d mas_radar_dev -At \\",
     "  -c \"select count(*) from users where username like 'visual\\_%'\" \\",
     "  -c \"select count(*) from users where username = 'golden_roleflip'\" \\",
     "  -c \"select count(*) from sessions\"",

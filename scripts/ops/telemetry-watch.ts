@@ -4,11 +4,9 @@
 //
 //     telemetry snapshot · backup-age check · stale-data check · queue check
 //
-// Dördü de `telemetry-snapshot.ts` içinde ZATEN var (backup_age_hours, latest_import_age_days,
-// jobs_stuck). Bu yüzden burada aynı sorgular İKİNCİ KEZ yazılmadı — ikinci bir tanım, iki
-// eşiğin sessizce ayrışması demektir. Bu iş: anlık görüntüyü GERÇEK entrypoint'i üzerinden
-// koşturur, yapısal çıktısını okur, dört kontrolün verdiktini bir koşu kaydına yazar ve
-// zamanlayıcının göreceği çıkış kodunu üretir.
+// Faz 43 (`B3`) ile buna harici yedek doğrulaması (`offdevice_backup_status`) ve web uygulama
+// `/ready` + `/health` yoklaması için `.env.local` ortam aktarımı (`PASSTHROUGH_FROM_ENV_LOCAL`)
+// eklendi.
 //
 // backup-daily.ts ile AYNI desen (Aşama 07): ön koşullar → iş → `*.jsonl` koşu kaydı →
 // fail-closed çıkış kodları. Ayrı bir operasyon günlüğü formatı icat edilmedi.
@@ -37,12 +35,32 @@ const LOG_DIR = process.env.MAS_TELEMETRY_LOG_DIR ?? path.join(ROOT, "logs");
 const RUN_LOG = path.join(LOG_DIR, "telemetry-runs.jsonl");
 const JSON_OUT = path.join(LOG_DIR, "telemetry-latest.json");
 
-/** Rehber §14'ün zamanlanmasını istediği dört kontrol → hangi sinyalden okunur. */
+/** Rehber §14 + Faz 43 zamanlanmış kontroller → hangi sinyalden okunur. */
 const SCHEDULED_CHECKS: ReadonlyArray<{ check: string; signal: string | null }> = Object.freeze([
-  { check: "telemetry snapshot", signal: null },              // koşunun bütünü
+  { check: "telemetry snapshot", signal: null }, // koşunun bütünü
   { check: "backup-age check", signal: "backup_age_hours" },
+  { check: "offdevice-backup check", signal: "offdevice_backup_status" },
   { check: "stale-data check", signal: "latest_import_age_days" },
   { check: "queue check", signal: "jobs_stuck" },
+]);
+
+/**
+ * Görev Zamanlayıcı oturumsuz (`S4U`) çalıştığında `.env.local` içinden `telemetry-snapshot.ts`'e
+ * iletilmesi gereken yapılandırma anahtarları (süreç ortamında açıkça verilmişse süreç kazanır).
+ */
+export const PASSTHROUGH_FROM_ENV_LOCAL: readonly string[] = Object.freeze([
+  "MAS_ALERT_CHANNELS",
+  "MAS_APP_BASE_URL",
+  "MAS_BACKUP_DIR",
+  "MAS_BACKUP_LABEL",
+  "MAS_OFFDEVICE_BACKUP_DIR",
+  "TELEGRAM_BOT_TOKEN",
+  "TELEGRAM_CHAT_ID",
+  "EMAIL_API_URL",
+  "EMAIL_API_KEY",
+  "EMAIL_FROM",
+  "EMAIL_TO",
+  "MAS_ALLOWED_EMAIL_HOSTS",
 ]);
 
 /** `.env.local`'i process.env'e SIZDIRMADAN okur (backup-daily.ts ile aynı desen). */
@@ -60,6 +78,26 @@ function readEnvLocal(): Record<string, string> {
     out[line.slice(0, i).trim()] = v;
   }
   return out;
+}
+
+export function buildWatchSubprocessEnv(
+  processEnv: Readonly<Record<string, string | undefined>>,
+  envLocal: Readonly<Record<string, string | undefined>>,
+  ownerUrl: string,
+  runtimeUrl: string,
+): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = {
+    NODE_ENV: process.env.NODE_ENV ?? "production",
+    ...processEnv,
+    MIGRATION_DATABASE_URL: ownerUrl,
+  };
+  if (runtimeUrl) env.DATABASE_URL = runtimeUrl;
+  for (const key of PASSTHROUGH_FROM_ENV_LOCAL) {
+    if (!processEnv[key] && envLocal[key]) {
+      env[key] = envLocal[key];
+    }
+  }
+  return env;
 }
 
 interface SnapshotJson {
@@ -86,19 +124,7 @@ export async function runTelemetryWatch(): Promise<number> {
 
   mkdirSync(LOG_DIR, { recursive: true });
 
-  const env: NodeJS.ProcessEnv = {
-    ...process.env,
-    MIGRATION_DATABASE_URL: ownerUrl,
-    // Runtime kimliği kontrolünün ANLAMLI olması için çalışma zamanı bağlantısı da verilir;
-    // yoksa sinyal fail-closed "belirsiz" der ve her koşuda kırmızı yanar.
-    ...(runtimeUrl ? { DATABASE_URL: runtimeUrl } : {}),
-    ...(envLocal["MAS_ALERT_CHANNELS"] && !process.env.MAS_ALERT_CHANNELS
-      ? { MAS_ALERT_CHANNELS: envLocal["MAS_ALERT_CHANNELS"] } : {}),
-    ...(envLocal["TELEGRAM_BOT_TOKEN"] && !process.env.TELEGRAM_BOT_TOKEN
-      ? { TELEGRAM_BOT_TOKEN: envLocal["TELEGRAM_BOT_TOKEN"] } : {}),
-    ...(envLocal["TELEGRAM_CHAT_ID"] && !process.env.TELEGRAM_CHAT_ID
-      ? { TELEGRAM_CHAT_ID: envLocal["TELEGRAM_CHAT_ID"] } : {}),
-  };
+  const env = buildWatchSubprocessEnv(process.env, envLocal, ownerUrl, runtimeUrl);
 
   let snapshotCode = 0;
   let stdout = "";
@@ -160,7 +186,7 @@ export async function runTelemetryWatch(): Promise<number> {
   appendFileSync(RUN_LOG, `${JSON.stringify(record)}\n`, "utf8");
 
   console.log("\n── ZAMANLANMIŞ KONTROLLER (rehber §14) ────────────────────────────────");
-  for (const c of checks) console.log(`  ${c.verdict.padEnd(20)} ${c.check.padEnd(20)} ${c.value}`);
+  for (const c of checks) console.log(`  ${c.verdict.padEnd(20)} ${c.check.padEnd(24)} ${c.value}`);
   console.log(`Koşu kaydı : ${RUN_LOG}`);
   console.log(`Anlık JSON : ${JSON_OUT}`);
   console.log(`Alert log  : ${snap.delivery.alertLogPath}`);

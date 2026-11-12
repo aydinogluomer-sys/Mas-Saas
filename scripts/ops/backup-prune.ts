@@ -11,13 +11,21 @@
 //
 // Kullanım:
 //   pnpm exec tsx scripts/ops/backup-prune.ts                 # kuru koşu (varsayılan)
-//   pnpm exec tsx scripts/ops/backup-prune.ts --apply         # gerçekten sil
+//   pnpm exec tsx scripts/ops/backup-prune.ts --apply         # gerçekten sil (doküman arşivleri + *.dump.unverified dahil)
+//   pnpm exec tsx scripts/ops/backup-prune.ts --offdevice     # MAS_OFFDEVICE_BACKUP_DIR hedefini de buda
 //   pnpm exec tsx scripts/ops/backup-prune.ts --dir E:\yedek --daily 7 --weekly 4 --monthly 3
 //   pnpm exec tsx scripts/ops/backup-prune.ts --verbose       # her dosyanın kararını yaz
+import { existsSync } from "node:fs";
 import { pathToFileURL } from "node:url";
+import { readEnvLocal } from "../db/app-url";
 import {
-  DEFAULT_RETENTION, executePrune, formatBytes, listDumps, planPrune, type RetentionPolicy,
+  DEFAULT_RETENTION, executePrune, formatBytes, listDumps, planPrune, pruneUnverifiedQuarantinedDumps,
+  type RetentionPolicy,
 } from "./backup-lib";
+
+function safeEnvLocal(): Record<string, string> {
+  try { return readEnvLocal(); } catch { return {}; }
+}
 
 function arg(flag: string): string | undefined {
   const i = process.argv.indexOf(flag);
@@ -31,17 +39,7 @@ function num(flag: string, fallback: number): number {
   return n;
 }
 
-export function main(): void {
-  const dir = arg("--dir") ?? process.env.MAS_BACKUP_DIR ?? "backups";
-  const apply = process.argv.includes("--apply");
-  const verbose = process.argv.includes("--verbose");
-  const policy: RetentionPolicy = {
-    daily: num("--daily", DEFAULT_RETENTION.daily),
-    weekly: num("--weekly", DEFAULT_RETENTION.weekly),
-    monthly: num("--monthly", DEFAULT_RETENTION.monthly),
-    minAgeHours: num("--min-age-hours", DEFAULT_RETENTION.minAgeHours),
-  };
-
+function pruneDirectory(dir: string, policy: RetentionPolicy, apply: boolean, verbose: boolean): void {
   const entries = listDumps(dir);
   const plan = planPrune(entries, policy);
   const totalBytes = entries.reduce((s, e) => s + e.bytes, 0);
@@ -78,15 +76,45 @@ export function main(): void {
   }
 
   const exec = executePrune(plan);
+  const quarantined = pruneUnverifiedQuarantinedDumps(dir, policy.minAgeHours);
   console.log(`\nSilinen dump       : ${exec.deletedDumps.length}`);
   console.log(`Silinen yan dosya  : ${exec.deletedSidecars.length}`);
-  console.log(`Boşalan alan       : ${formatBytes(exec.bytesFreed)}`);
+  if (quarantined.deleted.length > 0) {
+    console.log(`Silinen karantina  : ${quarantined.deleted.length} (*.dump.unverified)`);
+  }
+  console.log(`Boşalan alan       : ${formatBytes(exec.bytesFreed + quarantined.bytesFreed)}`);
   if (exec.failures.length > 0) {
     console.log(`Atlanan/başarısız  : ${exec.failures.length}`);
     for (const f of exec.failures.slice(0, 10)) console.log(`  ${f.path} — ${f.error}`);
   }
   const after = listDumps(dir);
   console.log(`Kalan dump         : ${after.length} (${formatBytes(after.reduce((s, e) => s + e.bytes, 0))})`);
+}
+
+export function main(): void {
+  const envLocal = safeEnvLocal();
+  const dir = arg("--dir") ?? process.env.MAS_BACKUP_DIR ?? envLocal["MAS_BACKUP_DIR"] ?? "backups";
+  const apply = process.argv.includes("--apply");
+  const verbose = process.argv.includes("--verbose");
+  const includeOffDevice = process.argv.includes("--offdevice");
+  const policy: RetentionPolicy = {
+    daily: num("--daily", DEFAULT_RETENTION.daily),
+    weekly: num("--weekly", DEFAULT_RETENTION.weekly),
+    monthly: num("--monthly", DEFAULT_RETENTION.monthly),
+    minAgeHours: num("--min-age-hours", DEFAULT_RETENTION.minAgeHours),
+  };
+
+  pruneDirectory(dir, policy, apply, verbose);
+
+  if (includeOffDevice) {
+    const offDeviceDir = process.env.MAS_OFFDEVICE_BACKUP_DIR || envLocal["MAS_OFFDEVICE_BACKUP_DIR"];
+    if (offDeviceDir && existsSync(offDeviceDir)) {
+      console.log("\n── OFF-DEVICE HEDEF BUDAMASI ──────────────────────────────────────────");
+      pruneDirectory(offDeviceDir, policy, apply, verbose);
+    } else {
+      console.warn("\n--offdevice istendi ama MAS_OFFDEVICE_BACKUP_DIR tanımlı değil veya erişilemiyor.");
+    }
+  }
 }
 
 const isDirectRun = (() => {

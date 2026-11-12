@@ -1,36 +1,5 @@
-// Faz 24B gate — proves the five-tier role matrix is enforced by PostgreSQL, not just believed
-// by the application.
-//
-// A NEW script rather than an extension of db:roles:verify, per the plan. That one asks "is the
-// runtime connected as a low-privilege role at all" (Faz 15). This one asks "given that it is,
-// can each tier do exactly what the matrix says and nothing more".
-//
-// HOW IT CONNECTS, AND WHY THAT IS THE WHOLE POINT
-//
-//   MIGRATION_DATABASE_URL  owner. Builds fixtures only. Superusers bypass RLS entirely, so
-//                           nothing is ever *judged* on this connection — using it to test a
-//                           policy would pass no matter how broken the policy was. That is the
-//                           Faz 15 lesson, and it is the reason this file has two pools.
-//   DATABASE_URL            the real `mas_radar_app` credential the Next.js runtime uses. Every
-//                           assertion below is made here, after SET ROLE into a tier — the same
-//                           mechanism @/lib/db uses in production.
-//
-// LESSONS APPLIED FROM FAZ 20/22/23 (built in from the first line, not retrofitted)
-//   1. Structural targeting: policies are matched by the roles in pg_policies.roles, never by a
-//      name pattern, and cardinality is asserted.
-//   2. No vacuous pass. This one bit hard here: a DENIED select and an EMPTY table look
-//      identical, and a denied UPDATE/DELETE is not an error at all — PostgreSQL simply reports
-//      zero rows affected. So reads are judged against an owner-visible count, and writes are
-//      judged by AFFECTED ROW COUNT on a row this script created, never by catching an
-//      exception that would never have been raised.
-//   3. Values, not positions, and ties tested positively.
-//
-// THE GENERIC INSERT PROBE
-//   `insert into <t> default values` is refused with SQLSTATE 42501 when RLS denies the command,
-//   and with an ordinary data error (23502 not-null, 23503 FK, ...) when RLS ALLOWS it and the
-//   empty row is simply invalid. Measured on this cluster before being relied on: RLS is
-//   evaluated before NOT NULL. That distinction gives a real INSERT verdict for all 61 tables
-//   without inventing valid fixture data for each, and without ever writing a row.
+// Faz 24B + Faz 39 (A1) gate — proves the five-tier role matrix AND view security_invoker shield
+// are enforced by PostgreSQL, not just believed by the application.
 //
 // Usage:
 //   MIGRATION_DATABASE_URL=... DATABASE_URL=<mas_radar_app> pnpm db:roles-rls:verify
@@ -48,26 +17,6 @@ const appUrl = process.env.DATABASE_URL;
 if (!ownerUrl) throw new Error("MIGRATION_DATABASE_URL gerekli (fixture kurulumu için).");
 if (!appUrl) throw new Error("DATABASE_URL gerekli (mas_radar_app kimliğiyle test için).");
 
-/**
- * HARCANABİLİR HEDEF KAPISI — bu kapı iki kez GERÇEK VERİYE fixture yazdıktan sonra eklendi.
- *
- * NE OLDU. Bu script bir doğrulama kapısı gibi görünür ama `ensureFixtures()` içinde BEŞ
- * tabloya gerçek satır YAZAR: payments, settings, users, action_items, approvals. Hedefi
- * yalnızca `MIGRATION_DATABASE_URL` / `DATABASE_URL` belirliyordu ve HİÇBİR koruma yoktu —
- * yani env ne gösteriyorsa oraya yazıyordu. Ölçülen sonuç:
- *
- *   2026-08-25 10:09–10:10 UTC  → mas_radar_dev'e fixture yazıldı (P0-DRIFT-01)
- *   2026-08-26 15:16:19 UTC     → AYNI ŞEY TEKRAR OLDU
- *
- * İkinci koşu birincinin kanıt paketi hazırlanırken gerçekleşti. Kullanıcı adlarındaki
- * rastgele son ek (`p24b_op_${Math.random()...}`) yüzünden her koşu YENİ satırlar birakir,
- * yani kirlilik birikir: users 4 → 6, action_items 1 → 4.
- *
- * Bir doğrulama kapısının gerçek finansal veriye yazabilmesi, kapının kendisini bir risk
- * kaynağına çevirir. Hedef artık ADIYLA harcanabilir olduğunu söylemek zorunda.
- *
- * CI ETKİSİ YOK: CI hedefi `mas_radar_roles_verify` zaten `verify` işaretini taşır.
- */
 {
   const ownerDb = databaseNameFromUrl(ownerUrl);
   const appDb = databaseNameFromUrl(appUrl);
@@ -78,17 +27,14 @@ if (!appUrl) throw new Error("DATABASE_URL gerekli (mas_radar_app kimliğiyle te
         `GÜVENLİK DURDURMASI (db:roles-rls:verify): ${label} → '${shown}'.\n` +
           "Bu script ensureFixtures() ile payments/settings/users/action_items/approvals " +
           "tablolarına GERÇEK SATIR YAZAR; hedefin adıyla harcanabilir olduğunu söylemesi " +
-          `gerekir (${DISPOSABLE_MARKERS.join(", ")}).\n` +
-          "Bu kapı, 2026-08-25 ve 2026-08-26'da mas_radar_dev'e iki kez fixture yazıldıktan " +
-          "sonra eklendi — kapının kendisi kirlilik kaynağıydı.",
+          `gerekir (${DISPOSABLE_MARKERS.join(", ")}).`,
       );
     }
   }
   if (ownerDb !== appDb) {
     throw new Error(
       `GÜVENLİK DURDURMASI: MIGRATION_DATABASE_URL ('${ownerDb}') ve DATABASE_URL ('${appDb}') ` +
-        "FARKLI veritabanlarını gösteriyor. Fixture bir yere yazılıp doğrulama başka yerde " +
-        "koşarsa sonuç anlamsızdır — ve yazılan yer gerçek DB olabilir.",
+        "FARKLI veritabanlarını gösteriyor.",
     );
   }
 }
@@ -151,54 +97,35 @@ async function insertRefused(c: PoolClient, table: string): Promise<boolean> {
   try {
     await c.query(`insert into public.${table} default values`);
     await c.query("rollback to savepoint p");
-    return false; // it went through — RLS allowed it
+    return false;
   } catch (e) {
     await c.query("rollback to savepoint p");
     return sqlstate(e) === "42501";
   }
 }
 
-
-/**
- * Fixtures this gate creates for itself, committed so the tier connections (separate sessions)
- * can see them.
- *
- * Written after the first run failed: it leaned on seeded data, `payments` happened to be empty,
- * and four checks reported "denied" when the truth was "nothing to deny". A read test whose
- * subject may not exist is not a test — it is the vacuous pass rule from Faz 20/23, and it
- * caught me in the very gate written to honour it.
- */
 async function ensureFixtures(): Promise<void> {
   await owner.query(
     `insert into public.payments(name, recurrence_type, due_day, default_amount, currency)
      select 'P24B fixture', 'monthly', 15, 1000, 'TRY'
      where not exists (select 1 from public.payments where name = 'P24B fixture')`);
-  // Faz 33: settings was NOT fixtured, and on a freshly migrated + seed:demo'd database it is
-  // EMPTY — so `update public.settings` affected 0 rows for admin too, and the check that only
-  // admin may change settings failed while enforcing nothing. Exactly the vacuous-pass rule this
-  // file's own header cites, in the one subject that had no fixture.
   await owner.query(
     `insert into public.settings(key, value, description)
      select 'p24b_fixture_setting', '{"fixture": true}'::jsonb, 'roles-rls gate fixture'
      where not exists (select 1 from public.settings where key = 'p24b_fixture_setting')`);
-  // At least two users, so "a tier sees exactly one row" is a restriction rather than a tautology.
-  for (const tag of ['a', 'b']) {
+  for (const tag of ["a", "b"]) {
     await owner.query(
       `insert into public.users(username, password_hash, display_name, role)
        select $1, 'x', $2, 'viewer'
        where not exists (select 1 from public.users where username = $1)`,
       [`p24b_fixture_${tag}`, `P24B fixture ${tag}`]);
   }
+  await owner.query(
+    `insert into public.users(username, password_hash, display_name, role, is_active, must_change_password)
+     select 'p24b_fixture_admin', 'x', 'P24B fixture admin', 'admin', true, false
+     where not exists (select 1 from public.users where username = 'p24b_fixture_admin')`);
 }
 
-/**
- * AŞAMA 20 / P2 — kapının ilk satırı: HANGİ veritabanı, HANGİ kimlik.
- *
- * Bu kapının iki bağlantısı var ve yargılar YALNIZ app bağlantısında veriliyor; satır bu
- * yüzden app hedefini önde, owner hedefini parantezde gösterir. İkisi FARKLI veritabanlarını
- * gösteriyorsa sonuç anlamsızdır — ve bu, çıktıya bakan biri için ancak yazılıysa görünür.
- * Ölçülür (`current_database()`), bağlantı dizesinden türetilmez; host/port/parola yazılmaz.
- */
 async function logTargetIdentity(): Promise<void> {
   const read = async (p: Pool): Promise<{ db?: string; usr?: string }> => {
     try {
@@ -239,7 +166,6 @@ async function main(): Promise<void> {
     `select count(*)::int n from pg_policies where schemaname='public' and policyname like '%\\_authenticated\\_all'`)).rows[0].n);
   record("hiçbir blanket 'authenticated_all' politikası kalmadı", blanket === 0, `${blanket} adet`);
 
-  // Structural, by target roles — not by policy name.
   const tierRoleSet = TIERS.map((t) => DB_ROLE[t]).sort().join(",");
   const selectPolicies = (await owner.query(
     `select tablename, policyname, roles::text[] as roles from pg_policies
@@ -259,7 +185,6 @@ async function main(): Promise<void> {
     roleAttrs.length === 5 && roleAttrs.every((r) => !r.rolcanlogin && !r.rolsuper && !r.rolbypassrls),
     roleAttrs.map((r) => r.rolname).join(", ") || "yok");
 
-  // The PG16 grant that makes the whole design safe: SET may, INHERIT may not.
   const memberships = (await owner.query(
     `select m.rolname as tier, am.set_option, am.inherit_option
      from pg_auth_members am
@@ -273,7 +198,6 @@ async function main(): Promise<void> {
       ? "set=true inherit=false (5/5)"
       : memberships.map((m) => `${m.tier}:set=${m.set_option}/inh=${m.inherit_option}`).join(" "));
 
-  // Faz 15's auth pattern must be untouched.
   const authPolicies = (await owner.query(
     `select tablename||'.'||policyname as p, roles::text[] as roles from pg_policies
      where schemaname='public' and policyname in
@@ -311,7 +235,6 @@ async function main(): Promise<void> {
       : insertMismatches.slice(0, 6).join(" | "));
 
   /* ── C. reads: denied and empty are not the same thing ──────────────────────────────── */
-  // A fixture row the owner creates, so "0 rows" can only mean refused.
   const ownerPaymentCount = Number((await owner.query(`select count(*)::int n from public.payments`)).rows[0].n);
   record("okuma testleri boşlukta değil: payments'ta owner'ın gördüğü satır var",
     ownerPaymentCount > 0, `${ownerPaymentCount} satır`);
@@ -335,7 +258,6 @@ async function main(): Promise<void> {
   record("POZİTİF KONTROL: katmana geçmemiş bağlantı users'ı OKUYABİLİYOR (giriş akışı sağlam)",
     unswitchedUsers > 0, `${unswitchedUsers} kullanıcı — login/session sorgusu çalışır`);
 
-  // schema_migrations is GRANT-denied, so this one really is an error.
   const ledgerDenied: string[] = [];
   for (const tier of TIERS) {
     const denied = await asTier(tier, async (c) => {
@@ -348,17 +270,6 @@ async function main(): Promise<void> {
     ledgerDenied.length === 0, ledgerDenied.length === 0 ? "5/5 reddedildi" : `okuyabilen: ${ledgerDenied.join(", ")}`);
 
   /* ── D. UPDATE / DELETE judged by AFFECTED ROWS, not by exceptions ──────────────────── */
-  // The trap this avoids: with no matching policy PostgreSQL does not raise on UPDATE/DELETE,
-  // it reports zero rows. A gate that awaited an exception would pass while enforcing nothing.
-  // `archived_at is null` scoping added in Faz 33, when running the full chain against a freshly
-  // migrated + seed:demo'd database reproduced a failure that has nothing to do with RLS:
-  // seed:demo archives one payment, and 0026's archived-immutability trigger rejects ANY update
-  // touching it — including this no-op, and including one made by the owner. The blanket UPDATE
-  // was therefore testing two invariants at once and reporting the wrong one.
-  //
-  // What this check exists to measure is whether a TIER may update payments, judged by affected
-  // rows. Scoping to live rows measures exactly that; the archive invariant has its own coverage
-  // in db:constraints:verify and db:transitions:verify.
   const updateResults: string[] = [];
   for (const tier of TIERS) {
     const affected = await asTier(tier, async (c) =>
@@ -375,9 +286,6 @@ async function main(): Promise<void> {
   const deleteResults: string[] = [];
   for (const tier of TIERS) {
     const affected = await asTier(tier, async (c) =>
-      // Scoped for the same reason as the UPDATE above: an archived payment is protected by a
-      // different invariant, and this check is about tier permissions. (Every statement here is
-      // rolled back by asTier, so nothing is actually deleted either way.)
       (await c.query(`delete from public.payments where archived_at is null`)).rowCount ?? 0);
     const expected = can(tier, "payments", "delete");
     const observed = affected > 0;
@@ -407,7 +315,6 @@ async function main(): Promise<void> {
     auditResults.length === 0, auditResults.length === 0 ? "5/5 sıfır satır" : auditResults.join(" "));
 
   /* ── E. row level, where the data supports it ───────────────────────────────────────── */
-  // approvals: an approver may not decide a request they made. Built from scratch here.
   const rowLevel = await asOwner(async (oc) => {
     const maker = (await oc.query(
       `insert into public.users(username,password_hash,display_name,role)
@@ -437,7 +344,6 @@ async function main(): Promise<void> {
   record("POZİTİF KONTROL: aynı onaylayıcı BAŞKASININ talebini güncelleyebiliyor",
     otherAffected === 1, `${otherAffected} satır etkilendi`);
 
-  // users_self_read — a tier sees its own row, not the table.
   const selfRead = await asTier("finance_approver", async (c) => {
     await c.query(`select set_config('app.user_id',$1,true)`, [rowLevel.maker]);
     return Number((await c.query(`select count(*)::int n from public.users`)).rows[0].n);
@@ -446,7 +352,6 @@ async function main(): Promise<void> {
   record("SATIR SEVİYESİ: katman users'tan yalnız KENDİ satırını görüyor",
     selfRead === 1 && totalUsers > 1, `katman ${selfRead} / toplam ${totalUsers}`);
 
-  // operator owner-scoping on the tables that actually carry created_by.
   const ownedProbe = await asOwner(async (oc) => {
     const u = (await oc.query(
       `insert into public.users(username,password_hash,display_name,role)
@@ -472,15 +377,7 @@ async function main(): Promise<void> {
     mineAffected === 1, `${mineAffected} satır`);
   record("SATIR SEVİYESİ: operatör BAŞKASININ action_item'ını güncelleyemiyor",
     theirsAffected === 0, `${theirsAffected} satır`);
-  // Faz 36 fix. This asserted `OWNER_SCOPED_TABLES.length === 3` — a pinned size, which is the
-  // exact brittleness class Faz 31 found in `action_items.source_type`: adding `saved_views` broke
-  // a check whose NAME claims to compare code against the migration, and which was in fact
-  // comparing code against a number somebody typed.
-  //
-  // Now it does what it says: every table the code calls owner-scoped must actually carry a policy
-  // whose predicate references current_app_user() in the live database. That auto-syncs as the
-  // list grows, and it fails if a table is declared owner-scoped in code while the database scopes
-  // it to nobody.
+
   const ownerPolicyMisses: string[] = [];
   for (const table of OWNER_SCOPED_TABLES) {
     const found = await owner.query(
@@ -527,14 +424,7 @@ async function main(): Promise<void> {
     Object.values(CLASS_MATRIX).every((m) => TIERS.every((r) => Array.isArray(m[r]))),
     `${Object.keys(CLASS_MATRIX).length} sınıf × ${TIERS.length} katman`);
 
-  /* ── H. Wave 0 / 0096: a user's OWN password change, for every tier ─────────────────────── */
-  // The forced password change (0095) ends with the user's own change, written by
-  // changeOwnPassword in src/lib/auth.ts. Replayed here statement for statement on the real app
-  // credential: users/sessions as the UNSWITCHED runtime role (users_app_runtime /
-  // sessions_app_runtime), then app.user_id + SET LOCAL ROLE <tier>, then the canonical audit()
-  // writer — always rolled back. Four tiers pass through 0058's evidence policy; the viewer only
-  // through 0096, and only for its own row. Before Wave 0 the change ran in the caller's tier, where
-  // the users update matched nothing for every tier but admin.
+  /* ── H. Wave 0 / 0096: a user's OWN password change, for every tier ─────────────────── */
   const fixtureIds = (await owner.query<{ id: string }>(
     `select id from public.users where username in ('p24b_fixture_a', 'p24b_fixture_b') order by username`,
   )).rows.map((r) => r.id);
@@ -546,7 +436,6 @@ async function main(): Promise<void> {
     after: { password_changed: true, must_change_password: false, other_sessions_revoked: 0 },
   });
 
-  /** "allowed" | "refused" (RLS, 42501) | anything else = a failure that is neither. */
   async function ownChangeAs(tier: AppRole, appUserId: string | null, entry: AuditEntry): Promise<string> {
     const client = await app.connect();
     try {
@@ -606,6 +495,253 @@ async function main(): Promise<void> {
   record("izleyicinin veritabanındaki TEK yazma politikası 0096'nınki",
     viewerWritePolicies.length === 1 && viewerWritePolicies[0] === "audit_logs.audit_logs_insert_own_password_change",
     viewerWritePolicies.join(", ") || "yok");
+
+  /* ── I. Faz 39 (0098): View security_invoker shield, admin sessions, writeback & planning ── */
+  const viewRows = (await owner.query<{ relname: string; invoker: boolean }>(
+    `select c.relname,
+            coalesce('security_invoker=true' = any(c.reloptions), false) as invoker
+       from pg_class c
+       join pg_namespace n on n.oid = c.relnamespace
+      where n.nspname = 'public' and c.relkind = 'v'
+      order by c.relname`,
+  )).rows;
+  const unprotectedViews = viewRows.filter((v) => !v.invoker).map((v) => v.relname);
+  record("0098-1: public şemasındaki TÜM görünümlerde security_invoker=true aktif (0 istisna)",
+    viewRows.length >= 81 && unprotectedViews.length === 0,
+    unprotectedViews.length === 0
+      ? `${viewRows.length}/${viewRows.length} görünüm security_invoker=true`
+      : `KORUMASIZ: ${unprotectedViews.join(", ")}`);
+
+  // Auto-updatable single-table views must reject UPDATE and DELETE with 42501; non-updatable aggregated views
+  // reject at rewrite time with 55000 AND must also carry zero INSERT/UPDATE/DELETE privileges across all 5 tiers.
+  const targetViewNames = [
+    "costing_invoice_facts",
+    "profitability_by_department",
+    "control_unmatched_bank_aged",
+    "anomaly_unusual_record_hour",
+  ] as const;
+  const viewMeta = (await owner.query<{ table_name: string; is_updatable: string }>(
+    `select table_name, is_updatable
+       from information_schema.views
+      where table_schema = 'public' and table_name = any($1::text[])`,
+    [[...targetViewNames]],
+  )).rows;
+  const updatableByView = new Map(viewMeta.map((r) => [r.table_name, r.is_updatable === "YES"]));
+  const writableViews = (await owner.query<{ view_name: string; role_name: string }>(
+    `select v.table_name as view_name, r.rolname as role_name
+       from information_schema.views v
+       cross join pg_roles r
+      where v.table_schema = 'public'
+        and r.rolname in ('mas_radar_viewer','mas_radar_finance_operator','mas_radar_finance_approver','mas_radar_finance_manager','mas_radar_admin')
+        and (
+          has_table_privilege(r.oid, format('public.%I', v.table_name), 'INSERT')
+          or has_table_privilege(r.oid, format('public.%I', v.table_name), 'UPDATE')
+          or has_table_privilege(r.oid, format('public.%I', v.table_name), 'DELETE')
+        )`,
+  )).rows;
+  const viewCols = (await owner.query<{ table_name: string; column_name: string }>(
+    `select distinct on (table_name) table_name, column_name
+       from information_schema.columns
+      where table_schema = 'public' and table_name = any($1::text[])
+      order by table_name, case when is_updatable = 'YES' then 0 else 1 end, ordinal_position`,
+    [[...targetViewNames]],
+  )).rows;
+  const colByView = new Map(viewCols.map((r) => [r.table_name, r.column_name]));
+
+  const viewWriteFailures: string[] = [];
+  for (const tier of ["viewer", "finance_operator"] as const) {
+    await asTier(tier, async (c) => {
+      for (const view of targetViewNames) {
+        const col = colByView.get(view) ?? "id";
+        for (const [verb, sql] of [
+          ["UPDATE", `update public.${view} set "${col}" = "${col}" where false`],
+          ["DELETE", `delete from public.${view} where false`],
+        ] as const) {
+          await c.query("savepoint sp_view");
+          try {
+            await c.query(sql);
+            await c.query("rollback to savepoint sp_view");
+            viewWriteFailures.push(`${tier}/${view}/${verb}: KABUL EDİLDİ`);
+          } catch (e) {
+            await c.query("rollback to savepoint sp_view");
+            const code = sqlstate(e);
+            const isUpdatable = updatableByView.get(view) !== false;
+            const okCode = isUpdatable ? code === "42501" : code === "42501" || code === "55000";
+            if (!okCode) {
+              viewWriteFailures.push(`${tier}/${view}/${verb}: beklenen ${isUpdatable ? "42501" : "42501|55000"}, gelen ${code}`);
+            }
+          }
+        }
+      }
+    });
+  }
+  for (const w of writableViews) {
+    viewWriteFailures.push(`GRANT SIZINTISI: ${w.role_name} -> ${w.view_name}`);
+  }
+  record("0098-2: görünümler üzerinden UPDATE/DELETE reddediliyor ve 5 katmanda sıfır görünüm yazma izni var",
+    viewWriteFailures.length === 0,
+    viewWriteFailures.length === 0
+      ? `2 katman × ${targetViewNames.length} görünüm × 2 fiil reddedildi; yazılabilir görünüm = 0`
+      : viewWriteFailures.join(" | "));
+
+  // approval_queue readable under security_invoker = true by viewer & finance_approver with display name populated.
+  const approvalQueueName = await asTier("viewer", async (c) => {
+    await c.query(`select set_config('app.user_id',$1,true)`, [selfId]);
+    const res = await c.query<{ requested_by_name: string | null }>(
+      `select requested_by_name from public.approval_queue where id = $1`,
+      [rowLevel.own],
+    );
+    return res.rows[0]?.requested_by_name ?? null;
+  });
+  record("0098-2b: approval_queue security_invoker=true altında görünen adı (PII sızdırmadan) döndürüyor",
+    approvalQueueName === "P24B maker",
+    `requested_by_name=${JSON.stringify(approvalQueueName)}`);
+
+  // Admin revoking another user's active session returns rowCount === 1.
+  const adminUserId = (await owner.query<{ id: string }>(
+    `select id from public.users where username = 'p24b_fixture_admin'`,
+  )).rows[0].id;
+  const sessionFixture = await asOwner(async (oc) => {
+    const tokenHash = `p39_sess_${Math.random().toString(36).slice(2, 10)}`;
+    const sid = (await oc.query<{ id: string }>(
+      `insert into public.sessions (user_id, token_hash, expires_at)
+       values ($1, $2, now() + interval '1 day') returning id`,
+      [selfId, tokenHash],
+    )).rows[0].id;
+    await oc.query("commit");
+    return { sid };
+  });
+
+  const managerRevokeCount = await asTier("finance_manager", async (c) => {
+    await c.query(`select set_config('app.user_id',$1,true)`, [rowLevel.maker]);
+    return (await c.query(
+      `update public.sessions set revoked_at = now() where id = $1 and revoked_at is null`,
+      [sessionFixture.sid],
+    )).rowCount ?? 0;
+  });
+  const adminRevokeCount = await asTier("admin", async (c) => {
+    await c.query(`select set_config('app.user_id',$1,true)`, [adminUserId]);
+    return (await c.query(
+      `update public.sessions set revoked_at = now() where id = $1 and revoked_at is null`,
+      [sessionFixture.sid],
+    )).rowCount ?? 0;
+  });
+  record("0098-3: mas_radar_admin başka kullanıcının aktif oturumunu iptal edebiliyor (rowCount=1; manager=0)",
+    adminRevokeCount === 1 && managerRevokeCount === 0,
+    `admin=${adminRevokeCount}, manager=${managerRevokeCount}`);
+
+  // finance_approver writeback on mapping_reviews & external_assumptions succeeds, while finance_operator
+  // self-approval on budget_lines.version_status = 'approved' is rejected with 42501.
+  const p39Fixtures = await asOwner(async (oc) => {
+    const wbId = (await oc.query<{ id: string }>(
+      `insert into public.source_workbooks (original_filename, status)
+       values ('p39_probe.xlsx', 'parsed') returning id`,
+    )).rows[0].id;
+    const mrId = (await oc.query<{ id: string }>(
+      `insert into public.mapping_reviews (workbook_id, issue_type, severity, status, message)
+       values ($1, 'p39_probe', 'medium', 'open', 'P39 mapping review fixture') returning id`,
+      [wbId],
+    )).rows[0].id;
+    const eaId = (await oc.query<{ id: string }>(
+      `insert into public.external_assumptions
+         (assumption_type, label, value_numeric, unit, source_kind, source_name, source_date, review_status)
+       values ('other', 'P39 assumption fixture', 100.00, 'percent', 'manual', 'P39', '2026-05-01', 'pending_review')
+       returning id`,
+    )).rows[0].id;
+    const bName = `P39 Bütçe ${Math.random().toString(36).slice(2, 8)}`;
+    const budgetId = (await oc.query<{ id: string }>(
+      `insert into public.budgets (name, fiscal_year, period_kind, currency, created_by)
+       values ($1, 2026, 'monthly', 'TRY', $2) returning id`,
+      [bName, ownedProbe.u],
+    )).rows[0].id;
+    const budgetLineId = (await oc.query<{ id: string }>(
+      `insert into public.budget_lines (budget_id, period_start, direction, amount, currency, version_status, created_by)
+       values ($1, '2026-05-01', 'expense', 25000.00, 'TRY', 'draft', $2) returning id`,
+      [budgetId, ownedProbe.u],
+    )).rows[0].id;
+    await oc.query("commit");
+    return { mrId, eaId, budgetId, budgetLineId };
+  });
+
+  const approverWritebacks = await asTier("finance_approver", async (c) => {
+    await c.query(`select set_config('app.user_id',$1,true)`, [rowLevel.maker]);
+    const mrRows = (await c.query(
+      `update public.mapping_reviews set status = 'accepted', reviewed_at = now(), reviewed_by = $2 where id = $1`,
+      [p39Fixtures.mrId, rowLevel.maker],
+    )).rowCount ?? 0;
+    const eaRows = (await c.query(
+      `update public.external_assumptions
+          set review_status = 'approved', reviewed_at = now(), reviewed_by = $2
+        where id = $1`,
+      [p39Fixtures.eaId, rowLevel.maker],
+    )).rowCount ?? 0;
+    let payloadTamperRefused = false;
+    await c.query("savepoint sp_tamper");
+    try {
+      await c.query(
+        `update public.mapping_reviews set message = 'SAHTE', status = 'rejected', reviewed_by = $2 where id = $1`,
+        [p39Fixtures.mrId, rowLevel.maker],
+      );
+      await c.query("rollback to savepoint sp_tamper");
+    } catch (e) {
+      await c.query("rollback to savepoint sp_tamper");
+      payloadTamperRefused = sqlstate(e) === "42501";
+    }
+    return { mrRows, eaRows, payloadTamperRefused };
+  });
+  record("0098-4a: mas_radar_finance_approver mapping_reviews & external_assumptions kararını geri yazabiliyor (içerik tahrifatı 42501)",
+    approverWritebacks.mrRows === 1 && approverWritebacks.eaRows === 1 && approverWritebacks.payloadTamperRefused,
+    `mr=${approverWritebacks.mrRows}, ea=${approverWritebacks.eaRows}, tamperRefused=${approverWritebacks.payloadTamperRefused}`);
+
+  const operatorSelfApproveRefused = await asTier("finance_operator", async (c) => {
+    await c.query(`select set_config('app.user_id',$1,true)`, [ownedProbe.u]);
+    await c.query("savepoint sp_budget");
+    try {
+      await c.query(
+        `update public.budget_lines
+            set version_status = 'approved', approved_at = now(), approved_by = $2
+          where id = $1`,
+        [p39Fixtures.budgetLineId, ownedProbe.u],
+      );
+      await c.query("rollback to savepoint sp_budget");
+      return false;
+    } catch (e) {
+      await c.query("rollback to savepoint sp_budget");
+      return sqlstate(e) === "42501";
+    }
+  });
+  const approverBudgetApproveRows = await asTier("finance_approver", async (c) => {
+    await c.query(`select set_config('app.user_id',$1,true)`, [rowLevel.maker]);
+    return (await c.query(
+      `update public.budget_lines
+          set version_status = 'approved', approved_at = now(), approved_by = $2
+        where id = $1`,
+      [p39Fixtures.budgetLineId, rowLevel.maker],
+    )).rowCount ?? 0;
+  });
+  record("0098-4b: mas_radar_finance_operator kendi kendine bütçe onaylayamıyor (42501); finance_approver onaylayabiliyor (rowCount=1)",
+    operatorSelfApproveRefused && approverBudgetApproveRows === 1,
+    `operatorRefused=${operatorSelfApproveRefused}, approverRows=${approverBudgetApproveRows}`);
+
+  const spoofingRefused = await asTier("finance_operator", async (c) => {
+    await c.query(`select set_config('app.user_id',$1,true)`, [ownedProbe.u]);
+    await c.query("savepoint sp_spoof");
+    try {
+      await c.query(
+        `insert into public.saved_views (name, module_key, filters, created_by)
+         values ('P39 spoof', 'payments', '{}'::jsonb, $1)`,
+        [selfId],
+      );
+      await c.query("rollback to savepoint sp_spoof");
+      return false;
+    } catch (e) {
+      await c.query("rollback to savepoint sp_spoof");
+      return sqlstate(e) === "42501";
+    }
+  });
+  record("0098-5: saved_views üzerinde başka kullanıcı adına (created_by sahteciliği) INSERT 42501 ile reddediliyor",
+    spoofingRefused,
+    `spoofingRefused=${spoofingRefused}`);
 
   const failed = checks.filter((c) => !c.pass);
   console.log(`\n${checks.length - failed.length}/${checks.length} kontrol geçti.`);

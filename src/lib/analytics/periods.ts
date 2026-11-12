@@ -1,4 +1,4 @@
-// Faz 34 — rolling windows and period-over-period comparison.
+// Faz 34 & Faz 46 (C3) — rolling windows and period-over-period comparison.
 //
 // Pure: no database, no clock, no LLM. Every function takes the data and the reference date as
 // arguments, because an analysis whose answer depends on when it happened to run cannot be
@@ -7,6 +7,8 @@
 // The rule that shapes every function here: A MISSING PERIOD IS NOT A ZERO PERIOD. If last year's
 // March has no data, the YoY change is UNKNOWN, not −100%. Returning −100% would invent a
 // collapse that never happened, and it is exactly the kind of number that ends up in a board pack.
+
+import { decimal } from "@/lib/money";
 
 export type RollingWindow = 7 | 30 | 90 | 365;
 export const ROLLING_WINDOWS: readonly RollingWindow[] = [7, 30, 90, 365] as const;
@@ -46,7 +48,7 @@ function dayDiff(from: string, to: string): number {
 }
 
 /**
- * Rolling aggregate over a trailing window of N days.
+ * Rolling aggregate over a trailing window of N calendar days (`[key - (window - 1) .. key]`).
  *
  * `mode` is explicit because the honest aggregate differs by metric: a flow (sales, payments)
  * sums, a level (cash balance, open receivables) averages. Defaulting to one of them would be
@@ -70,11 +72,18 @@ export function rollingWindow(
     const inWindow = points.filter((q) => q.key >= windowStart && q.key <= p.key);
     const known = inWindow.filter((q) => q.value != null).map((q) => q.value as number);
     const unknownCount = inWindow.length - known.length;
-    const total = known.reduce((s, v) => s + v, 0);
+    let total = decimal(0);
+    for (const v of known) total = total.plus(decimal(v));
+    const value =
+      known.length === 0
+        ? null
+        : mode === "sum"
+          ? Number(total.toString())
+          : Number(total.div(known.length).toString());
     return {
       key: p.key,
       // No known observation means UNKNOWN, not 0 — a window with nothing in it has no answer.
-      value: known.length === 0 ? null : mode === "sum" ? total : total / known.length,
+      value,
       knownCount: known.length,
       unknownCount,
       partial: dayDiff(firstKey, p.key) < window - 1,
@@ -140,13 +149,16 @@ export function periodOverPeriod(
       else if (!hasPrev || previous == null) reason = "previous_missing";
       else if (previous === 0) reason = "previous_zero";
 
+      const diffBig =
+        reason == null ? decimal(current as number).minus(decimal(previous as number)) : null;
+
       return {
         key: p.key,
         current,
         previous,
-        delta: reason == null ? (current as number) - (previous as number) : null,
-        changeRatio: reason == null
-          ? ((current as number) - (previous as number)) / Math.abs(previous as number)
+        delta: diffBig ? Number(diffBig.toString()) : null,
+        changeRatio: diffBig
+          ? Number(diffBig.div(decimal(previous as number).abs()).toString())
           : null,
         unmeasurableReason: reason,
       };

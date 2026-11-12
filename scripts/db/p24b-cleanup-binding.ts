@@ -23,17 +23,17 @@
 import { createHash } from "node:crypto";
 import { readFileSync, writeFileSync, existsSync, statSync } from "node:fs";
 import path from "node:path";
-import { execFileSync } from "node:child_process";
+// (execFileSync removed)
 import { Pool } from "pg";
 import { ownerDatabaseUrl, databaseNameFromUrl } from "./owner-url";
 import { targetFingerprint, wholeDbFingerprintDigest, type TargetFingerprintResult } from "./p24b-cleanup-fingerprint";
-import { smokeTargetBlockers, smokeDumpPath } from "./p24b-smoke-target";
+import { smokeTargetBlockers } from "./p24b-smoke-target";
+import { createDisposableLocalDb, dropDisposableLocalDb, psqlLocalSql, restoreIntoDisposableLocalDb } from "./pg-local-admin";
 import { offDeviceCleanupBlockers, sha256OfFile } from "../ops/backup-lib";
 
 const MANIFEST_PATH = path.join(
   "docs", "release-evidence", "final-production-readiness", "p24b-v6", "02-row-evidence-manifest.json",
 );
-const CONTAINER = process.env.MAS_DB_CONTAINER ?? "mas-radar-pg";
 const TABLES = ["action_items", "approvals", "payment_instances", "payments", "users", "settings"] as const;
 
 interface ManifestRow { table: string; id: string; classification: string }
@@ -119,16 +119,15 @@ async function main(): Promise<void> {
 
       /* The container-side path no longer contains the database name, and the dump is moved with
        * `docker cp` rather than a `bash -c` string, so no argument is ever parsed by a shell. */
-      const inContainer = smokeDumpPath();
       try {
-        execFileSync("docker", ["exec", CONTAINER, "dropdb", "-U", "postgres", "--if-exists", smokeDb], { stdio: "pipe" });
-        execFileSync("docker", ["exec", CONTAINER, "createdb", "-U", "postgres", smokeDb], { stdio: "pipe" });
-        execFileSync("docker", ["cp", raw.destPath, `${CONTAINER}:${inContainer}`], { stdio: "pipe" });
-        execFileSync("docker", ["exec", CONTAINER, "pg_restore", "-U", "postgres", "-d", smokeDb, "--no-owner", inContainer], { stdio: "pipe" });
+        dropDisposableLocalDb(smokeDb);
+        createDisposableLocalDb(smokeDb);
+        restoreIntoDisposableLocalDb(smokeDb, raw.destPath);
 
-        const smokeLedger = execFileSync("docker",
-          ["exec", CONTAINER, "psql", "-U", "postgres", "-d", smokeDb, "-tAc",
-           "select max(version)||'/'||count(*) from public.schema_migrations"], { encoding: "utf8" }).trim();
+        const smokeLedger = psqlLocalSql(
+          smokeDb,
+          "select max(version)||'/'||count(*) from public.schema_migrations",
+        ).trim();
 
         const smokePool = new Pool({ connectionString: url.replace(/\/[^/]+$/, `/${smokeDb}`), max: 1 });
         const sc = await smokePool.connect();
@@ -161,7 +160,7 @@ async function main(): Promise<void> {
          * faithful recovery copy of the state the cleanup is about to modify. */
         if (!wholeMatches) die("RESTORE_SMOKE_WHOLE_DB_MISMATCH — geri yüklenen kopyanın TÜM-DB parmak izi kaynakla uyuşmuyor");
       } finally {
-        execFileSync("docker", ["exec", CONTAINER, "rm", "-f", inContainer], { stdio: "pipe" });
+        dropDisposableLocalDb(smokeDb);
       }
     }
 

@@ -18,14 +18,18 @@ import { DomainError } from "@/lib/domain-error";
 
 /** 12 is the same floor scripts/db/seed-admin.ts enforces — one rule, every entry point. */
 export const PASSWORD_MIN_LENGTH = 12;
+/** Faz 40 (A2): upper bound prevents multi-megabyte Argon2id DoS payloads. */
+export const PASSWORD_MAX_LENGTH = 256;
 
 export const passwordSchema = z
   .string()
-  .min(PASSWORD_MIN_LENGTH, `Parola en az ${PASSWORD_MIN_LENGTH} karakter olmalı.`);
+  .min(PASSWORD_MIN_LENGTH, `Parola en az ${PASSWORD_MIN_LENGTH} karakter olmalı.`)
+  .max(PASSWORD_MAX_LENGTH, `Parola en fazla ${PASSWORD_MAX_LENGTH} karakter olabilir.`);
 
 export const PASSWORD_CHANGE_ERROR_CODES = [
   "mismatch",
   "too_short",
+  "too_long",
   "same_as_username",
   "same_as_old",
   "invalid_old",
@@ -38,6 +42,7 @@ export type PasswordChangeErrorCode = (typeof PASSWORD_CHANGE_ERROR_CODES)[numbe
 export const PASSWORD_CHANGE_MESSAGES: Record<PasswordChangeErrorCode, string> = {
   mismatch: "Yeni parolalar birbiriyle eşleşmiyor.",
   too_short: `Yeni parola en az ${PASSWORD_MIN_LENGTH} karakter olmalı.`,
+  too_long: `Yeni parola en fazla ${PASSWORD_MAX_LENGTH} karakter olabilir.`,
   same_as_username: "Yeni parola kullanıcı adıyla aynı olamaz.",
   same_as_old: "Yeni parola mevcut parolayla aynı olamaz.",
   invalid_old: "Mevcut parola hatalı.",

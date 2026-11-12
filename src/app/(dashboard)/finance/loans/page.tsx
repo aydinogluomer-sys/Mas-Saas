@@ -1,4 +1,4 @@
-import Link from "next/link";
+import Link from "@/components/ui/app-link";
 import { getPool } from "@/lib/db";
 import { loadLoans } from "@/lib/financing/engine";
 import { Panel } from "@/components/ui/panel";
@@ -12,6 +12,7 @@ export default async function LoansPage() {
   const data: LoanRow[] = rows.map((r) => ({
     id: r.id,
     name: r.name,
+    currency: r.currency ?? "TRY",
     principal: r.principal,
     totalPayment: r.totalPayment,
     totalFinanceCost: r.totalFinanceCost,

@@ -1,4 +1,4 @@
-// Faz 19 — counterparty (cari hesap) read/write engine.
+// Faz 19 + Faz 48 (D2) — counterparty (cari hesap) read/write engine.
 //
 // Every rule this phase inherits is applied here rather than re-litigated:
 //   Faz 17 — money crosses the SQL/JS boundary through @/lib/money, never a ::float8 cast.
@@ -13,6 +13,7 @@
 
 import type { Pool, PoolClient } from "pg";
 import { z } from "zod";
+import { evaluateAndRequestIfNeededWithClient } from "@/lib/approvals/engine";
 import { audit } from "@/lib/audit";
 import { DomainError } from "@/lib/domain-error";
 import { intOrNull, moneyOrNull, rateOrNull } from "@/lib/money";
@@ -153,6 +154,7 @@ export interface UnresolvedCounterparty {
   dueDate: string | null;
   amount: number | null;
   status: string;
+  direction?: "inflow" | "outflow" | "unknown";
 }
 
 /**
@@ -165,14 +167,30 @@ export interface UnresolvedCounterparty {
  * a matching key.
  */
 export async function loadUnresolvedCounterparties(pool: Pool, limit = 100): Promise<UnresolvedCounterparty[]> {
-  const r = await pool.query(
-    `select source, source_id::text as source_id, raw_label,
-            to_char(due_date,'YYYY-MM-DD') as due_date, amount, status
-     from public.counterparty_unresolved
-     order by amount desc nulls last, raw_label
-     limit $1`,
-    [limit],
-  );
+  let r;
+  try {
+    r = await pool.query(
+      `select source, source_id::text as source_id, raw_label,
+              to_char(due_date,'YYYY-MM-DD') as due_date, amount, status,
+              coalesce(direction, 'outflow') as direction
+       from public.counterparty_unresolved
+       order by amount desc nulls last, raw_label
+       limit $1`,
+      [limit],
+    );
+  } catch (err) {
+    const pgCode = (err as { code?: string })?.code;
+    if (pgCode !== "42703" && pgCode !== "42P01") throw err;
+    r = await pool.query(
+      `select source, source_id::text as source_id, raw_label,
+              to_char(due_date,'YYYY-MM-DD') as due_date, amount, status,
+              'outflow'::text as direction
+       from public.counterparty_unresolved
+       order by amount desc nulls last, raw_label
+       limit $1`,
+      [limit],
+    );
+  }
   return r.rows.map((x) => ({
     source: x.source,
     sourceId: x.source_id,
@@ -180,6 +198,65 @@ export async function loadUnresolvedCounterparties(pool: Pool, limit = 100): Pro
     dueDate: x.due_date,
     amount: moneyOrNull(x.amount),
     status: x.status,
+    direction: (x.direction === "inflow" || x.direction === "outflow" ? x.direction : "unknown"),
+  }));
+}
+
+export interface ActiveIbanSummaryRow {
+  id: string;
+  partyId: string;
+  partyName: string;
+  ibanNormalized: string;
+  bankName: string | null;
+  accountLabel: string | null;
+  currency: string;
+  isPrimary: boolean;
+  approvalStatus: string;
+  createdAt: string;
+}
+
+export async function loadAllActiveIbans(pool: Pool, limit = 100): Promise<ActiveIbanSummaryRow[]> {
+  let r;
+  try {
+    r = await pool.query(
+      `select i.id::text, i.party_id::text as party_id, p.name as party_name,
+              i.iban_normalized, i.bank_name, i.account_label, i.currency,
+              i.is_primary, i.approval_status,
+              to_char(i.created_at at time zone 'Europe/Istanbul','YYYY-MM-DD HH24:MI') as created_at
+         from public.ibans i
+         join public.parties p on p.id = i.party_id
+        where i.is_active = true
+        order by i.created_at desc
+        limit $1`,
+      [limit],
+    );
+  } catch (err) {
+    const pgCode = (err as { code?: string })?.code;
+    if (pgCode !== "42703") throw err;
+    r = await pool.query(
+      `select i.id::text, i.party_id::text as party_id, p.name as party_name,
+              i.iban_normalized, i.bank_name, i.account_label, i.currency,
+              i.is_primary, 'approved'::text as approval_status,
+              to_char(i.created_at at time zone 'Europe/Istanbul','YYYY-MM-DD HH24:MI') as created_at
+         from public.ibans i
+         join public.parties p on p.id = i.party_id
+        where i.is_active = true
+        order by i.created_at desc
+        limit $1`,
+      [limit],
+    );
+  }
+  return r.rows.map((x) => ({
+    id: x.id,
+    partyId: x.party_id,
+    partyName: x.party_name,
+    ibanNormalized: x.iban_normalized,
+    bankName: x.bank_name ?? null,
+    accountLabel: x.account_label ?? null,
+    currency: x.currency,
+    isPrimary: Boolean(x.is_primary),
+    approvalStatus: String(x.approval_status ?? "approved"),
+    createdAt: x.created_at,
   }));
 }
 
@@ -191,20 +268,41 @@ export interface IbanRow {
   currency: string;
   isPrimary: boolean;
   isActive: boolean;
+  approvalStatus: string;
+  verifiedAt: string | null;
   createdAt: string;
 }
 
 export async function loadIbans(pool: Pool, partyId: string): Promise<IbanRow[]> {
-  const r = await pool.query(
-    `select id::text, iban_normalized, bank_name, account_label, currency, is_primary, is_active,
-            to_char(created_at at time zone 'Europe/Istanbul','YYYY-MM-DD HH24:MI') as created_at
-     from public.ibans where party_id=$1 order by is_primary desc, created_at`,
-    [partyId],
-  );
+  let r;
+  try {
+    r = await pool.query(
+      `select id::text, iban_normalized, bank_name, account_label, currency, is_primary, is_active,
+              approval_status,
+              to_char(verified_at at time zone 'Europe/Istanbul','YYYY-MM-DD HH24:MI') as verified_at,
+              to_char(created_at at time zone 'Europe/Istanbul','YYYY-MM-DD HH24:MI') as created_at
+       from public.ibans where party_id=$1 order by is_primary desc, created_at`,
+      [partyId],
+    );
+  } catch (err) {
+    const pgCode = (err as { code?: string })?.code;
+    if (pgCode !== "42703") throw err;
+    r = await pool.query(
+      `select id::text, iban_normalized, bank_name, account_label, currency, is_primary, is_active,
+              'approved'::text as approval_status,
+              to_char(verified_at at time zone 'Europe/Istanbul','YYYY-MM-DD HH24:MI') as verified_at,
+              to_char(created_at at time zone 'Europe/Istanbul','YYYY-MM-DD HH24:MI') as created_at
+       from public.ibans where party_id=$1 order by is_primary desc, created_at`,
+      [partyId],
+    );
+  }
   return r.rows.map((x) => ({
     id: x.id, ibanNormalized: x.iban_normalized, bankName: x.bank_name,
     accountLabel: x.account_label, currency: x.currency,
-    isPrimary: x.is_primary, isActive: x.is_active, createdAt: x.created_at,
+    isPrimary: x.is_primary, isActive: x.is_active,
+    approvalStatus: String(x.approval_status ?? "approved"),
+    verifiedAt: x.verified_at ?? null,
+    createdAt: x.created_at,
   }));
 }
 
@@ -267,7 +365,7 @@ export async function createCounterparty(
   pool: Pool,
   raw: unknown,
   actorId: string,
-): Promise<{ partyId: string }> {
+): Promise<{ partyId: string; approvalId?: string | null }> {
   const input = parseOrThrow(createCounterpartySchema, raw, "Karşı taraf formu");
   const normalized = normalizeTr(input.name);
 
@@ -307,17 +405,36 @@ export async function createCounterparty(
       ],
     );
 
+    const { approvalId } = await evaluateAndRequestIfNeededWithClient(client, {
+      ruleInput: { subjectTable: "parties", triggerKind: "new_counterparty" },
+      subjectId: partyId,
+      subjectLabel: input.name,
+      actorId,
+    });
+    if (approvalId) {
+      await client.query(
+        `update public.parties set approval_status='pending_approval', approval_id=$2 where id=$1`,
+        [partyId, approvalId],
+      );
+    }
+
     await audit(client, {
       actor: actorId,
       action: "create_counterparty",
       entityTable: "parties",
       entityId: partyId,
       before: null,
-      after: { name: input.name, partyType: input.partyType, hasProfile: true },
+      after: {
+        name: input.name,
+        partyType: input.partyType,
+        hasProfile: true,
+        approvalStatus: approvalId ? "pending_approval" : "approved",
+        approvalId,
+      },
     });
 
     await client.query("commit");
-    return { partyId };
+    return { partyId, approvalId };
   } catch (e) {
     await client.query("rollback");
     throw e;
@@ -378,18 +495,32 @@ export async function upsertCounterpartyProfile(
  * implementation does not like, and refusing to record what the source says would violate the
  * preserve-the-source rule. The warning travels back to the operator and the row is written.
  * Migration 0037's trigger records the change independently of this function.
+ *
+ * Faz 48 (D2): Live BEC fraud shield — when `new_iban_requires_approval` is active in
+ * `public.approval_rules`, the newly added IBAN starts in `approval_status = 'pending_approval'`
+ * with a maker-checker `approvals` round opened in the same transaction; outbound `pain.001` /
+ * EFT export is strictly blocked until a second pair of eyes approves it.
  */
 export async function addIban(
   pool: Pool,
   raw: unknown,
   actorId: string,
-): Promise<{ ibanId: string; warnings: string[] }> {
+): Promise<{ ibanId: string; warnings: string[]; approvalId?: string | null }> {
   const input = parseOrThrow(addIbanSchema, raw, "IBAN formu");
   const inspection = inspectIban(input.iban);
 
   const client = await pool.connect();
   try {
     await client.query("begin");
+
+    const partyRes = await client.query<{ name: string }>(
+      `select name from public.parties where id=$1`,
+      [input.partyId],
+    );
+    if (partyRes.rowCount === 0) {
+      throw new DomainError("NOT_FOUND", "Karşı taraf bulunamadı.");
+    }
+    const partyName = partyRes.rows[0].name;
 
     const dup = await client.query(
       `select 1 from public.ibans where party_id=$1 and iban_normalized=$2`,
@@ -409,18 +540,35 @@ export async function addIban(
        values ($1,$2,$3,$4,$5,$6) returning id`,
       [input.partyId, input.iban, input.bankName ?? null, input.accountLabel ?? null, input.currency, input.isPrimary],
     );
+    const ibanId = ins.rows[0].id;
+
+    const { approvalId } = await evaluateAndRequestIfNeededWithClient(client, {
+      ruleInput: { subjectTable: "ibans", triggerKind: "new_iban", currency: input.currency },
+      subjectId: ibanId,
+      subjectLabel: `${partyName} · ${inspection.normalized}`,
+      currency: input.currency,
+      actorId,
+    });
+    if (approvalId) {
+      await client.query(
+        `update public.ibans set approval_status='pending_approval', approval_id=$2 where id=$1`,
+        [ibanId, approvalId],
+      );
+    }
 
     await audit(client, {
-      actor: actorId, action: "add_iban", entityTable: "ibans", entityId: ins.rows[0].id,
+      actor: actorId, action: "add_iban", entityTable: "ibans", entityId: ibanId,
       before: null,
       after: {
         partyId: input.partyId, ibanNormalized: inspection.normalized,
         checksumValid: inspection.checksumValid, isPrimary: input.isPrimary,
+        approvalStatus: approvalId ? "pending_approval" : "approved",
+        approvalId,
       },
     });
 
     await client.query("commit");
-    return { ibanId: ins.rows[0].id, warnings: inspection.warnings };
+    return { ibanId, warnings: inspection.warnings, approvalId };
   } catch (e) {
     await client.query("rollback");
     throw e;
@@ -563,3 +711,49 @@ export async function createDimension(
     client.release();
   }
 }
+
+/**
+ * Explicit operator-upload / authorized-sync party resolver inside an active transaction.
+ * Centralizes `public.parties` creation inside `counterparties/engine.ts` so every write
+ * entry point shares exact TR-locale normalization (`toLocaleLowerCase("tr-TR")`).
+ */
+export async function resolveOrCreateOperatorPartyWithClient(
+  client: PoolClient,
+  name: unknown,
+  partyType: string,
+): Promise<string | null> {
+  if (typeof name !== "string") return null;
+  const trimmed = name.trim();
+  if (trimmed === "") return null;
+
+  const normalized = trimmed.toLocaleLowerCase("tr-TR").replace(/\s+/g, " ");
+
+  const found = await client.query<{ id: string }>(
+    "select id from public.parties where normalized_name = $1 and party_type = $2",
+    [normalized, partyType],
+  );
+  if (found.rowCount && found.rows[0]) return found.rows[0].id;
+
+  const created = await client.query<{ id: string }>(
+    `insert into public.parties (name, normalized_name, party_type)
+     values ($1, $2, $3)
+     on conflict (normalized_name, party_type) do update set name = public.parties.name
+     returning id`,
+    [trimmed, normalized, partyType],
+  );
+  return created.rows[0].id;
+}
+
+export {
+  COUNTERPARTY_SCORECARD_MODEL_CONSTANTS,
+  COUNTERPARTY_TIER_LABEL,
+  computeCounterpartyScorecard,
+  loadCounterpartyScorecards,
+  type CounterpartyBehavioralTier,
+  type CounterpartyCheckBucket,
+  type CounterpartyCheckExposureItem,
+  type CounterpartyScorecard,
+  type CounterpartyScorecardInput,
+  type CounterpartyScorecardSignal,
+  type LoadCounterpartyScorecardsOptions,
+} from "./scorecard";

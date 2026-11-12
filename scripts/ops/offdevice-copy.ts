@@ -9,13 +9,13 @@
 //
 // NE KANITLAR, NE KANITLAMAZ:
 //   kanıtlar     : kopya hedefte var, boyutu ve sha256'sı kaynakla AYNI, arşiv hâlâ
-//                  pg_restore ile ayrıştırılabiliyor, makbuz yan dosyası da kopyalandı.
+//                  pg_restore ile ayrıştırılabiliyor, makbuz ve doküman kasası yan dosyaları da kopyalandı.
 //   kanıtlamaz   : hedefin fiziksel olarak ayrı bir aygıt olduğu — onu classifyOffDeviceTarget
 //                  ÖLÇER ve sabit diskteki bir klasörü LOCAL_STANDIN olarak işaretler.
 //                  Bu script o durumda `OFF_DEVICE PHYSICAL TARGET = BLOCKED` yazar, "YES" değil.
 //
 // Kullanım:
-//   MAS_OFFDEVICE_BACKUP_DIR=... pnpm exec tsx scripts/ops/offdevice-copy.ts [--dump <yol>] [--dry-run]
+//   MAS_OFFDEVICE_BACKUP_DIR=... pnpm exec tsx scripts/ops/offdevice-copy.ts [--dump <yol>] [--dry-run] [--prune]
 import {
   closeSync, existsSync, fsyncSync, mkdirSync, openSync, renameSync, unlinkSync, writeFileSync,
 } from "node:fs";
@@ -23,11 +23,16 @@ import { pathToFileURL } from "node:url";
 import { createListVerifier, withPgRuntimeConfig } from "../db/backup-adapter";
 import { readEnvLocal } from "../db/app-url";
 import {
-  classifyOffDeviceTarget, copyToTargetVerified, formatBytes, newestDump, sha256OfFile,
+  DEFAULT_RETENTION, classifyOffDeviceTarget, copyToTargetVerified, executePrune, formatBytes,
+  listDumps, newestDump, planPrune, pruneUnverifiedQuarantinedDumps, sha256OfFile,
   type CopyVerifyResult,
   type OffDeviceCopyRecord,
   OFFDEVICE_RECORD_KIND,
 } from "./backup-lib";
+
+function safeEnvLocal(): Record<string, string> {
+  try { return readEnvLocal(); } catch { return {}; }
+}
 
 const SOURCE_DIR = process.env.MAS_BACKUP_DIR ?? "backups";
 
@@ -37,9 +42,7 @@ const SOURCE_DIR = process.env.MAS_BACKUP_DIR ?? "backups";
  * `.env.local`'den yalnız sır-olmayan PG_RUNTIME_ENV_KEYS taşınır.
  */
 function pgToolEnv(): Record<string, string | undefined> {
-  let fileEnv: Record<string, string> = {};
-  try { fileEnv = readEnvLocal(); } catch { /* .env.local yok — yalnız süreç ortamı */ }
-  return withPgRuntimeConfig(process.env, fileEnv);
+  return withPgRuntimeConfig(process.env, safeEnvLocal());
 }
 
 function arg(flag: string): string | undefined {
@@ -86,7 +89,9 @@ export function writeOffDeviceRecord(result: CopyVerifyResult): string {
 }
 
 async function main(): Promise<void> {
-  const targetDir = process.env.MAS_OFFDEVICE_BACKUP_DIR;
+  const envLocal = safeEnvLocal();
+  const sourceDir = process.env.MAS_BACKUP_DIR || envLocal["MAS_BACKUP_DIR"] || SOURCE_DIR;
+  const targetDir = process.env.MAS_OFFDEVICE_BACKUP_DIR || envLocal["MAS_OFFDEVICE_BACKUP_DIR"];
   if (!targetDir) {
     console.error(
       "MAS_OFFDEVICE_BACKUP_DIR tanımlı değil.\n" +
@@ -99,13 +104,13 @@ async function main(): Promise<void> {
   }
 
   const explicit = arg("--dump");
-  const dumpPath = explicit ?? newestDump(SOURCE_DIR, "")?.fullPath;
+  const dumpPath = explicit ?? newestDump(sourceDir, "")?.fullPath;
   if (!dumpPath || !existsSync(dumpPath)) {
-    console.error(`Kopyalanacak dump bulunamadı (${explicit ?? SOURCE_DIR}).`);
+    console.error(`Kopyalanacak dump bulunamadı (${explicit ?? sourceDir}).`);
     process.exit(1);
   }
 
-  const classification = classifyOffDeviceTarget(targetDir, SOURCE_DIR);
+  const classification = classifyOffDeviceTarget(targetDir, sourceDir);
   console.log(`Kaynak dump      : ${dumpPath}`);
   console.log(`Hedef dizin      : ${classification.targetDir}`);
   console.log(`Hedef sınıfı     : ${classification.kind}`);
@@ -121,9 +126,18 @@ async function main(): Promise<void> {
   if (!existsSync(classification.targetDir)) mkdirSync(classification.targetDir, { recursive: true });
   const result = copyToTargetVerified(dumpPath, classification.targetDir, {
     verifyListable: createListVerifier(pgToolEnv()),
-    sourceDir: SOURCE_DIR,
+    sourceDir,
   });
   const recordPath = writeOffDeviceRecord(result);
+
+  if (process.argv.includes("--prune")) {
+    const plan = planPrune(listDumps(classification.targetDir), DEFAULT_RETENTION);
+    const exec = executePrune(plan);
+    const quarantined = pruneUnverifiedQuarantinedDumps(classification.targetDir, DEFAULT_RETENTION.minAgeHours);
+    console.log(
+      `hedefte budama   : ${exec.deletedDumps.length} dump + ${quarantined.deleted.length} karantina silindi (${formatBytes(exec.bytesFreed + quarantined.bytesFreed)})`,
+    );
+  }
 
   console.log(`\nKopya            : ${result.destPath} (${formatBytes(result.destBytes)})`);
   console.log(`sha256 kaynak    : ${result.sourceSha256}`);

@@ -1,7 +1,8 @@
 import { Badge, type Tone } from "@/components/ui/badge";
-import { fmtTL } from "@/components/ui/panel";
+import { formatMoney } from "@/lib/money-format";
+import { remainingOpenAmount } from "@/lib/radar/rules";
 import type { InstanceRow } from "@/lib/radar/queries";
-import { cancelInstanceAction, markPaidAction, markPartialAction, markUnpaidAction, setAmountAction } from "@/app/(dashboard)/radar/actions";
+import { cancelInstanceAction, markPaidAction, markPartialAction, markUnpaidAction, setAmountAction } from "@/app/(dashboard)/payments/actions";
 
 const REASON_TONE: Record<string, Tone> = {
   missing_amount: "amber", negative_amount: "red", large_payment: "amber",
@@ -52,8 +53,15 @@ const CANCELLABLE_FROM = new Set(["unpaid", "planned", "late"]);
  */
 export function InstanceRowView({ r, backTo, showDate = false, canMutate }: { r: InstanceRow; backTo: string; showDate?: boolean; canMutate: boolean }) {
   const paid = r.status === "paid";
+  const partial = r.status === "partial";
   const payable = canMutate && PAYABLE_FROM.has(r.status);
   const cancellable = canMutate && CANCELLABLE_FROM.has(r.status);
+  const ccy = r.currency ?? "TRY";
+  const displayAmount = paid && r.paid_amount != null
+    ? r.paid_amount
+    : partial
+      ? remainingOpenAmount(r.amount, r.paid_amount, r.status)
+      : r.amount;
   return (
     <div className="payment-instance-row row-hover grid grid-cols-1 gap-2 border-b border-line-faint px-1 py-2 sm:grid-cols-[minmax(180px,1fr)_auto] sm:items-center">
       <div className="min-w-0">
@@ -64,10 +72,16 @@ export function InstanceRowView({ r, backTo, showDate = false, canMutate }: { r:
         </div>
         <div className="mt-0.5 flex items-center gap-2">
           <span className={`font-mono text-xs tabular-nums ${r.amount != null && r.amount < 0 ? "text-neg" : paid ? "text-pos" : "text-tone-2"}`}>
-            {paid && r.paid_amount != null ? fmtTL(r.paid_amount) : fmtTL(r.amount)}
+            {formatMoney(displayAmount, ccy)}
           </span>
+          {partial && r.paid_amount != null && (
+            <span className="font-mono text-[10px] text-tone-4">
+              (toplam {formatMoney(r.amount, ccy)})
+            </span>
+          )}
           <RiskBadges reasons={r.risk_reasons} />
           {paid && <Badge tone="green">ödendi</Badge>}
+          {partial && <Badge tone="amber">kısmi</Badge>}
         </div>
       </div>
       <div className="flex flex-wrap items-center gap-2 sm:justify-end">

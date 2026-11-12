@@ -17,10 +17,10 @@ import {
   debtServiceByMonth, exposureBy, groupMaturities, isoWeekOf, scheduleDueDates,
 } from "../src/lib/financing/rules";
 import { ensureSystemActor } from "./db/seed-system-actor";
-import { requireDisposableOwnerDatabaseUrl } from "./db/owner-url";
+import { assertDisposableTargetDb } from "./db/disposable-guard";
 
 const pool = new Pool({
-  connectionString: requireDisposableOwnerDatabaseUrl("phase5:verify"),
+  connectionString: assertDisposableTargetDb(undefined, "phase5:verify").url,
 });
 const fail = (m: string): never => { console.error("PHASE5 VERIFY FAIL:", m); process.exit(1); };
 const q = async (sql: string, p: unknown[] = []) => (await pool.query(sql, p)).rows;

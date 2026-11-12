@@ -1,0 +1,13 @@
+{
+  "artifactKind": "mas-p24b-missing-artifacts-note-v1",
+  "measuredAtUtc": "2026-09-03T10:16:50.634Z",
+  "notProduced": [
+    "05-startup-log-sanitized.txt",
+    "06-post-start-db-delta.json",
+    "07-health.json",
+    "08-core-smoke.json",
+    "09-rbac-smoke.json",
+    "10-post-start-state.json"
+  ],
+  "reason": "Hepsi kontrollu runtime'in acilmis olmasini gerektiriyor. SECTION 5 DRIFT nedeniyle start yapilmadi. Bos ya da tahmini surum yazmak kanit zincirini kirletirdi."
+}

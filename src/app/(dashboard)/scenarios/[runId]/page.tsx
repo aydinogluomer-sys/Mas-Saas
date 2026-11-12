@@ -1,4 +1,4 @@
-import Link from "next/link";
+import Link from "@/components/ui/app-link";
 import { notFound } from "next/navigation";
 import { getPool } from "@/lib/db";
 import { loadScenarioRun } from "@/lib/scenarios/engine";

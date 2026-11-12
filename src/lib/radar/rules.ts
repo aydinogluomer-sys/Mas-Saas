@@ -102,6 +102,18 @@ export type RiskLevel = "none" | "low" | "medium" | "high" | "critical" | "unsup
 
 const OPEN_STATUSES = new Set(["unpaid", "partial", "planned", "late"]);
 
+export function remainingOpenAmount(
+  amount: number | null,
+  paidAmount: number | null | undefined,
+  status: string,
+): number | null {
+  if (amount == null) return null;
+  if (!OPEN_STATUSES.has(status)) return 0;
+  if (amount < 0) return amount;
+  const rem = decimal(amount).minus(decimal(paidAmount ?? 0));
+  return rem.lte(0) ? 0 : money(rem);
+}
+
 export function isOpen(status: string): boolean {
   return OPEN_STATUSES.has(status);
 }

@@ -1,16 +1,4 @@
-// Wave 0 — "zero unauthenticated write paths", asserted against the SOURCE.
-//
-// A runtime test proves a handler behaves when it is called; it cannot prove that the NEXT route or
-// server action someone adds calls the gate at all. That is a property of the file, so it is
-// asserted on the file — the reasoning of the structural block in src/lib/authz/route-access.test.ts
-// and of scripts/boundary-verify.ts. No database, no network: the TypeScript parser reads the code,
-// so a word in a comment can neither satisfy a rule nor trip one.
-//
-// The unreviewed layer this wave quarantines is the case study. Every rule below fails on 46541d8:
-// an ERP sync route that wrote invoices with no authentication, a Telegram mini-app whose "auth"
-// accepted any User-Agent containing "Telegram" and wrote payments as finance_manager, a webhook
-// that executed approvals signed with a committed default secret, JSON routes that served users
-// under a forced password change, a hardcoded default API key in the env module.
+// Wave 0 & Faz 42 (B2) — "zero unauthenticated write paths", asserted against the SOURCE.
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import ts from "typescript";
@@ -19,7 +7,7 @@ import { SOURCE_SCAN_TEST_TIMEOUT_MS } from "../setup/test-timeouts";
 
 const ROOT = process.cwd();
 
-const read =(rel: string) => readFileSync(path.join(ROOT, rel), "utf8");
+const read = (rel: string) => readFileSync(path.join(ROOT, rel), "utf8");
 
 function walk(relDir: string, accept: (rel: string) => boolean): string[] {
   const abs = path.join(ROOT, relDir);
@@ -148,23 +136,14 @@ function firstStatement(body: ts.ConciseBody | undefined): ts.Node | undefined {
 
 // ── The exceptions, each with its reason ──────────────────────────────────────────────────────
 
-/** Answered without a browser session; authenticates the caller itself (shared secret + chat id). */
-const MACHINE_AUTH = new Set(["src/app/api/telegram/assistant/route.ts"]);
+/** Faz 42 (B2): ZERO machine-auth HTTP routes remain (`src/app/api/telegram/assistant/route.ts` retired). */
+const MACHINE_AUTH = new Set<string>();
 
 /** Probes the matcher keeps public; they read no financial data and write nothing. */
 const PUBLIC_PROBES = new Set(["src/app/health/route.ts", "src/app/ready/route.ts", "src/app/version/route.ts"]);
 
-/** Measurement endpoint: 404 unless MAS_PERF_PROBE=1 (never in production), GET only, no database. */
-const MEASUREMENT = new Set(["src/app/api/perf-probe/route.ts"]);
-
 /** The authentication surface itself; requiring it to authenticate first would be circular. */
 const PRE_AUTH_ACTIONS = new Set(["src/app/login/actions.ts"]);
-
-// There is no "pending quarantine" exception any more. S2 skipped three layer files here until a
-// later step removed them; Wave 0 / S3 removed all three (the CFO copilot's /api/ai/cfo-chat, the
-// /api/chains route, the cockpit's session-less server actions), so every route and server action
-// in the tree is checked by the rules below with no exemption, and the three paths are asserted
-// gone under "kaldırılan yüzeyler" instead.
 
 const HTTP_METHODS = new Set(["GET", "HEAD", "OPTIONS", "POST", "PUT", "PATCH", "DELETE"]);
 const MUTATING = new Set(["POST", "PUT", "PATCH", "DELETE"]);
@@ -190,7 +169,6 @@ describe("route handler'lar", () => {
         if (!callsAny(fn.body, new Set(["checkOrigin"]))) missing.push(`${rel} ${fn.name}: checkOrigin yok`);
         if (!callsAny(fn.body, new Set(["requireApiSession"]))) missing.push(`${rel} ${fn.name}: requireApiSession yok`);
       }
-      // A re-export (`export { handler as POST }`) would hide the body from the check above.
       const reexported = exportedNames(sf).filter((n) => MUTATING.has(n))
         .filter((n) => !functionsOf(sf).some((f) => f.exported && f.name === n));
       if (reexported.length > 0) missing.push(`${rel}: ${reexported.join(", ")} yeniden-dışa-aktarım ile denetimden kaçıyor`);
@@ -201,13 +179,11 @@ describe("route handler'lar", () => {
   it("her JSON route handler oturumu requireApiSession() ile doğrular (getCurrentUser/requireSession değil)", () => {
     const wrong: string[] = [];
     for (const rel of routeFiles) {
-      if (MACHINE_AUTH.has(rel) || PUBLIC_PROBES.has(rel) || MEASUREMENT.has(rel)) continue;
+      if (MACHINE_AUTH.has(rel) || PUBLIC_PROBES.has(rel)) continue;
       const sf = parse(rel);
       for (const fn of functionsOf(sf).filter((f) => f.exported && HTTP_METHODS.has(f.name))) {
         if (!callsAny(fn.body, new Set(["requireApiSession"]))) wrong.push(`${rel} ${fn.name}: requireApiSession yok`);
       }
-      // getCurrentUser ignores the forced password change; requireSession redirects, which a JSON
-      // client cannot follow (and `.catch(() => null)` around it hid real failures as 401s).
       if (callsAny(sf, new Set(["getCurrentUser", "requireSession", "requireAdmin"]))) {
         wrong.push(`${rel}: getCurrentUser/requireSession/requireAdmin doğrudan çağrılıyor`);
       }
@@ -215,49 +191,25 @@ describe("route handler'lar", () => {
     expect(wrong).toEqual([]);
   });
 
-  it("makine rotası (Telegram asistanı) sabit-zamanlı sır karşılaştırır ve yalnız okuyan modülleri içe aktarır", () => {
-    for (const rel of MACHINE_AUTH) {
-      const sf = parse(rel);
-      expect(callsAny(sf, new Set(["timingSafeEqual"])), rel).toBe(true);
-      expect(callsAny(sf, new Set(["runAsReadOnlySystem"])), rel).toBe(true);
-      expect(referencesIdentifier(sf, "runAsSystem"), rel).toBe(false);
+  it("TypeScript Telegram işçisi (scripts/ops/telegram-assistant-worker.ts) yalnız runAsReadOnlySystem (mas_radar_viewer) kullanır", () => {
+    const workerRel = "scripts/ops/telegram-assistant-worker.ts";
+    expect(existsSync(path.join(ROOT, workerRel))).toBe(true);
+    const sf = parse(workerRel);
+    expect(callsAny(sf, new Set(["runAsReadOnlySystem"]))).toBe(true);
+    expect(referencesIdentifier(sf, "runAsSystem")).toBe(false);
+    expect(referencesIdentifier(sf, "runAsUser")).toBe(false);
 
-      const allowed: Record<string, readonly string[] | "*"> = {
-        "node:crypto": ["createHash", "timingSafeEqual"],
-        "next/server": "*",
-        zod: "*",
-        "@/lib/api-response": ["apiError", "withApiHandler"],
-        "@/lib/correlation": ["CORRELATION_HEADER"],
-        "@/lib/db": ["getPool", "runAsReadOnlySystem"],
-        "@/lib/env": ["env"],
-        "@/lib/logger": ["log"],
-        "@/lib/reports/rules": ["istanbulDateISO"],
-        "@/lib/telegram/assistant": ["answerTelegramQuestion"],
-      };
-      for (const imp of importsOf(sf)) {
-        const rule = allowed[imp.from];
-        expect(rule, `${rel}: izin listesinde olmayan modül ${imp.from}`).toBeDefined();
-        if (rule !== "*") {
-          for (const name of imp.names) expect(rule, `${rel}: ${imp.from} içinden ${name}`).toContain(name);
-        }
-      }
-    }
+    const mutation = /\b(insert\s+into|update\s+[\w.]+\s+set|delete\s+from)\b/i;
+    const offending = stringsOf(sf).filter((s) => mutation.test(s));
+    expect(offending).toEqual([]);
   });
 
-  // This test, the next one and "kaldırılan yüzeyler … bağlanmaz" parse EVERY file of a whole tree
-  // (src/app; src + scripts; src): their time is the size of the tree, not the rule — 0.6 s, 2.4 s
-  // and 1.75 s alone, about twice that in the parallel suite. The class ceiling and why there is no
-  // global one: tests/setup/test-timeouts.ts.
   it("src/app altındaki hiçbir kod runAsSystem (finance_manager iş kimliği) kullanmaz", () => {
     const users = walk("src/app", (rel) => /\.(ts|tsx)$/.test(rel) && !isTest(rel))
       .filter((rel) => referencesIdentifier(parse(rel), "runAsSystem"));
     expect(users).toEqual([]);
   }, SOURCE_SCAN_TEST_TIMEOUT_MS);
 
-  // Wave 0 / S5: runAsUser switches a connection into a NAMED person's tier outside a request. Its
-  // one legitimate caller re-reads that person from public.users first (async Import V2 preview
-  // worker). Anywhere else — above all a route or server action, where the id/role would come from
-  // the request — it would be impersonation, so the set of callers is pinned.
   it("runAsUser (başkası adına katman) yalnız asenkron önizleme koşucusunda kullanılır", () => {
     const callers = [
       ...walk("src", (rel) => /\.(ts|tsx)$/.test(rel) && !isTest(rel)),
@@ -269,13 +221,11 @@ describe("route handler'lar", () => {
 
 describe("server action'lar", () => {
   it("dışa aktarılan her server action İLK ifadesinde oturum/rol kapısını çağırır", () => {
-    const GLOBAL_GATES = new Set(["requireSession", "requireAdmin"]);
+    const GLOBAL_GATES = new Set(["requireSession", "requireAdmin", "requireActionPermission"]);
     const offenders: string[] = [];
     for (const rel of actionFiles) {
       if (PRE_AUTH_ACTIONS.has(rel)) continue;
       const fns = functionsOf(parse(rel));
-      // A module-local helper counts as a gate only if it, in turn, starts with a real gate
-      // (data/imports/v2's authorize(), reminders' requireReminderOperator()).
       const gates = new Set(GLOBAL_GATES);
       for (const fn of fns) if (!fn.exported && callsAny(firstStatement(fn.body), GLOBAL_GATES)) gates.add(fn.name);
 
@@ -289,6 +239,13 @@ describe("server action'lar", () => {
 
 describe("kaldırılan yüzeyler kaldırılmış kalır", () => {
   const REMOVED = [
+    // Faz 42 (B2): Python yan süreçleri ve çerezsiz Telegram HTTP köprüsü tamamen kaldırıldı.
+    "bot.py",
+    "bot.requirements.txt",
+    "scripts/qa/browser_crawl.py",
+    "src/app/api/telegram/assistant",
+    "src/app/api/telegram/assistant/route.ts",
+    // Wave 0 kaldırılan yüzeyler:
     "src/app/api/erp",
     "src/lib/erp",
     "src/components/erp",
@@ -299,16 +256,9 @@ describe("kaldırılan yüzeyler kaldırılmış kalır", () => {
     "src/lib/telegram/miniapp.ts",
     "src/lib/telegram/cfo-bot.ts",
     "scripts/ops/verify-miniapp-pwa.ts",
-    // Wave 0 / S3: the three files S2 had to skip as "pending quarantine". The copilot route sent
-    // decision facts plus client-supplied history to an external model; /api/chains let a caller
-    // inject the cash figures it then "analysed"; the cockpit's server actions had no session gate.
     "src/app/api/ai/cfo-chat",
     "src/app/api/chains",
     "src/app/(dashboard)/finance/cockpit",
-    // Wave 0 / S6 and the quality gate: layer scripts that minted admin sessions in whatever
-    // database their connection string named, outside the disposable-target gate — one with a fixed
-    // token, one reading .env.local directly and never revoking. Reviewed perf tooling is
-    // scripts/perf/route-slo.ts.
     "scripts/ops/measure-routes.ts",
     "scripts/ops/measure-auth-routes.ts",
     "scripts/ops/run-lighthouse.ts",
@@ -319,15 +269,13 @@ describe("kaldırılan yüzeyler kaldırılmış kalır", () => {
     });
   }
 
-  // Parses every file under src — the whole-tree class noted above the runAsSystem test.
-  it("hiçbir dosya kaldırılan ERP / mini-app / webhook / kokpit / copilot yollarına bağlanmaz", () => {
+  it("hiçbir dosya kaldırılan ERP / mini-app / webhook / kokpit / copilot / telegram-http yollarına bağlanmaz", () => {
     const needles = [
       "/api/erp/", "/data/erp", "/telegram/miniapp", "/api/telegram/webhook", "@/lib/erp", "@/lib/telegram/cfo-bot",
-      "/api/ai/cfo-chat", "/api/chains", "/finance/cockpit",
+      "/api/ai/cfo-chat", "/api/chains", "/finance/cockpit", "/api/telegram/assistant",
     ];
     const hits: string[] = [];
     for (const rel of walk("src", (r) => /\.(ts|tsx)$/.test(r))) {
-      // middleware.test.ts asserts these very paths are refused; that is the point, not a link.
       if (rel === "src/middleware.test.ts") continue;
       for (const s of stringsOf(parse(rel))) {
         for (const n of needles) if (s.includes(n)) hits.push(`${rel}: ${n}`);
@@ -339,14 +287,12 @@ describe("kaldırılan yüzeyler kaldırılmış kalır", () => {
 
 describe("sır ve derleme güvenliği", () => {
   it("bilinen varsayılan sırlar hiçbir izlenen kaynakta yok", () => {
-    // Built from parts so this file does not match itself.
     const needles = ["erp_mas_" + "default", "mas-radar-" + "default-secret"];
     const files = [
       ...walk("src", () => true),
       ...walk("tests", () => true),
       ...walk("scripts", () => true),
       ...walk("public", () => true),
-      "bot.py",
       ".env.example",
       "next.config.ts",
     ];

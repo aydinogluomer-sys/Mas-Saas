@@ -1,0 +1,104 @@
+{
+  "artifactKind": "mas-p24b-attempt04-pre-start-gates-v1",
+  "measuredAtUtc": "2026-09-03T10:34:10.518Z",
+  "verdict": "PASS",
+  "remoteSha": {
+    "expected": "c71366a775be079e61d9f842a8659cbc2caa9499",
+    "actual": "c71366a775be079e61d9f842a8659cbc2caa9499",
+    "match": true
+  },
+  "cleanRc": {
+    "path": "C:\\Users\\Trade Bilisim\\Mas-Saas-RC-c71366a",
+    "head": "c71366a775be079e61d9f842a8659cbc2caa9499",
+    "detached": true,
+    "gitStatusLines": 0,
+    "remoteMatch": true
+  },
+  "buildProvenance": {
+    "buildId": "tb2-ettRZ5LMTU5279w98",
+    "producedIn": "C:\\Users\\Trade Bilisim\\Mas-Saas-RC-c71366a",
+    "producedAtSha": "c71366a775be079e61d9f842a8659cbc2caa9499",
+    "movedFromAnotherWorktree": false,
+    "envSha256Prefix": "2d71fcf8148b9718",
+    "unchangedSinceBuild": true
+  },
+  "quiescence": {
+    "ports": {
+      "3000": false,
+      "3001": false,
+      "3110": false,
+      "3210": false,
+      "3310": false
+    },
+    "nextRuntime": 0,
+    "prepareRuntimeStandalone": 0,
+    "botWorkerScheduler": 0,
+    "dbWriters": "yalnizca olcumun kendi psql baglantisi",
+    "unexpectedWriters": 0
+  },
+  "ambientRiskRecorded": {
+    "finding": "VS Code Playwright uzantisinin acik iki test-server sureci",
+    "masOne": {
+      "pid": 24972,
+      "createdLocal": "2026-09-03 13:11:41",
+      "packagePath": "node_modules/.pnpm/@playwright+test@1.61.1",
+      "project": "MAS"
+    },
+    "otherOne": {
+      "pid": 11800,
+      "createdLocal": "2026-09-03 10:45:34",
+      "packagePath": "node_modules/@playwright/test (npm)",
+      "project": "MAS disi"
+    },
+    "killed": false,
+    "killRationale": "Bu turun yetkisi kontrollu start. VS Code uzanti sureclerini sonlandirma yetkisi verilmedi. Ikisi de Next runtime / prepare-runtime / bot / worker / scheduler degil ve pg_stat_activity icinde yazici olarak gorunmuyor.",
+    "mitigation": "Start oncesi 86 tablo icin parmak izi alindi, start sonrasi tablo bazinda siniflandirildi. Beklenmeyen bir yazma olsaydi olculurdu. Olmadi."
+  },
+  "usbRollback": {
+    "physicalDisk": 1,
+    "busType": "USB",
+    "isBoot": false,
+    "isSystem": false,
+    "operationalStatus": "Online",
+    "friendlyName": "Min Yi U YZWY_TECH",
+    "sourceDisk": 0,
+    "sourceBusType": "RAID",
+    "samePhysicalDisk": false,
+    "resolvedPath": "D:\\MAS-Backups\\p24b-final\\mas_radar_dev-p24b-final-2026-08-31T10-01-14-531Z.dump",
+    "resolvedFromPhysicalIdentityNotDriveLetter": true,
+    "bytes": 1413949,
+    "bytesMatch": true,
+    "sha256": "fe63481887b7937df1def58475589dac844933ea32ca081dd3beba85bfaffe2a",
+    "shaMatch": true,
+    "retained": true,
+    "modified": false
+  },
+  "authorizedBaselineVerification": {
+    "authorizedByUser": {
+      "payment_instances": 502,
+      "audit_logs": 788,
+      "wholeDbFingerprint": "283e5daaf36b1f26293a1a6d6a7cbce435b64767fcaf8afbaaee626893bc4b42"
+    },
+    "measured": {
+      "payment_instances": 502,
+      "audit_logs": 788,
+      "wholeDbFingerprint": "283e5daaf36b1f26293a1a6d6a7cbce435b64767fcaf8afbaaee626893bc4b42"
+    },
+    "allMatch": true,
+    "driftSinceAuthorization": 0,
+    "alsoVerified": {
+      "ledger": "0087/87",
+      "baseTables": 86,
+      "p24bRemaining": "0/42",
+      "action_items": 6,
+      "approvals": 68,
+      "payments": 19,
+      "users": 13,
+      "settings": 7,
+      "taskOpen": 4,
+      "unpaidTry": 13595000,
+      "atillaMd5": "3dfbb36eecd822aad1aefbf34a736b21",
+      "targetFingerprint": "5e84634660528f2076f7bbef2a7e7e8f05047c13353679c53f0097798e37882d"
+    }
+  }
+}

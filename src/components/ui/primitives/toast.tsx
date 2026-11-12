@@ -3,11 +3,17 @@
 // Toast layer (sonner) restyled to MAS dark tokens + a flash bridge.
 // Mutations stay server-side; a server action redirects to `backTo?flash=<key>` and this
 // bridge turns that param into a toast, then cleans the URL. Presentation only.
-import { Suspense, useEffect, useRef } from "react";
+import { Suspense, useEffect, useRef, useState } from "react";
 import { usePathname, useSearchParams } from "next/navigation";
 import { Toaster, toast } from "sonner";
 
 export function AppToaster() {
+  const [ready, setReady] = useState(false);
+  useEffect(() => {
+    const id = setTimeout(() => setReady(true), 1200);
+    return () => clearTimeout(id);
+  }, []);
+  if (!ready) return null;
   return (
     <Toaster
       theme="dark"
@@ -49,6 +55,19 @@ const FLASH_MESSAGES: Record<string, { text: string; kind: "success" | "error" |
     text: "Parola değişikliği zorunlu kılındı; kullanıcı yeni parola belirlemeden devam edemez.",
     kind: "success",
   },
+  // External assumptions validation (Bulgu #10) — curated error codes, never free text.
+  "internet-source-url-required": {
+    text: "İnternet kaynaklı varsayımlarda kaynak URL zorunludur.",
+    kind: "error",
+  },
+  "assumption-fields-required": {
+    text: "Zorunlu varsayım alanları (başlık, değer, birim, kaynak adı ve kaynak tarihi) eksiksiz doldurulmalıdır.",
+    kind: "error",
+  },
+  "assumption-review-invalid": {
+    text: "İnceleme durumu güncellenemedi: geçersiz kayıt kimliği veya inceleme durumu.",
+    kind: "error",
+  },
 };
 
 function FlashBridge() {
@@ -56,23 +75,29 @@ function FlashBridge() {
   const pathname = usePathname();
   const shown = useRef<string | null>(null);
   const flash = searchParams.get("flash");
+  const rawError = searchParams.get("error");
+  const curatedError = rawError && Object.prototype.hasOwnProperty.call(FLASH_MESSAGES, rawError) ? rawError : null;
+  const activeKey = flash ?? curatedError;
 
   useEffect(() => {
-    if (!flash) return;
-    const token = `${pathname}?flash=${flash}`;
+    if (!activeKey) return;
+    const paramName = flash ? "flash" : "error";
+    const token = `${pathname}?${paramName}=${activeKey}`;
     if (shown.current === token) return;
     shown.current = token;
-    const entry = FLASH_MESSAGES[flash];
+    const entry = FLASH_MESSAGES[activeKey];
     if (entry) {
       if (entry.kind === "success") toast.success(entry.text);
       else if (entry.kind === "error") toast.error(entry.text);
       else toast(entry.text);
     }
     // Strip the flash param so a refresh does not re-fire (replaceState → no route change).
-    const url = new URL(window.location.href);
-    url.searchParams.delete("flash");
-    window.history.replaceState(window.history.state, "", url);
-  }, [flash, pathname]);
+    if (flash) {
+      const url = new URL(window.location.href);
+      url.searchParams.delete("flash");
+      window.history.replaceState(window.history.state, "", url);
+    }
+  }, [activeKey, flash, pathname]);
 
   return null;
 }

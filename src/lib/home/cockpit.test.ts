@@ -35,10 +35,10 @@ describe("buildActions", () => {
     expect(a.length).toBe(5); // capped
     expect(a[0].key).toBe("overdue");
     expect(a[0].severity).toBe("critical");
-    expect(a[0].href).toBe("/radar");
+    expect(a[0].href).toBe("/payments");
     expect(a[0].reason).toContain("Geciken");
     expect(a[0].impact).toContain("90.000 TL");
-    expect(a[0].evidenceHref).toBe("/radar");
+    expect(a[0].evidenceHref).toBe("/payments");
     // high-severity items precede medium/low
     const sev = a.map((x) => x.severity);
     expect(sev.indexOf("high")).toBeLessThan(sev.lastIndexOf("medium"));
@@ -52,7 +52,7 @@ describe("buildActions", () => {
     expect(m.label).toContain("44 kalemde tutar eksik");
     expect(m.label).toContain("asla 0");
     expect(m.reason).toContain("Eksik tutar");
-    expect(m.evidenceHref).toBe("/data-quality");
+    expect(m.evidenceHref).toBe("/data/quality");
   });
 
   it("concentration only fires above 40%", () => {

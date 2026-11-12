@@ -1,0 +1,86 @@
+{
+  "artifactKind": "mas-p24b-clean-rc-v1",
+  "measuredAtUtc": "2026-09-03T08:53:34.540Z",
+  "remoteShaGate": {
+    "expected": "c71366a775be079e61d9f842a8659cbc2caa9499",
+    "originRef": "origin/release/production-readiness-hardening",
+    "originSha": "c71366a775be079e61d9f842a8659cbc2caa9499",
+    "match": true
+  },
+  "rcWorktree": {
+    "path": "C:\\Users\\Trade Bilisim\\Mas-Saas-RC-c71366a",
+    "createdBy": "git worktree add --detach <RC_PATH> c71366a775be079e61d9f842a8659cbc2caa9499",
+    "head": "c71366a775be079e61d9f842a8659cbc2caa9499",
+    "detached": true,
+    "gitStatusPorcelainLines": 0,
+    "trackedModifications": 0,
+    "untrackedApplicationCode": 0,
+    "gate": "PASS"
+  },
+  "mainWorktreeUntouched": {
+    "path": "C:\\Users\\Trade Bilisim\\Mas Saas",
+    "note": "Kullanici sahipli kirli degisiklikler (Telegram / env / middleware vb.) korundu. Stash / reset / commit / silme / tasima YAPILMADI.",
+    "dirtyEntryCountBefore": 19,
+    "dirtyEntryCountAfter": 19,
+    "appCodeCopiedIntoRc": false
+  },
+  "environment": {
+    "source": "Ana worktree .env.local — salt-okunur kaynak olarak kopyalandi (uygulama kodu KOPYALANMADI)",
+    "destination": "RC worktree .env.local",
+    "byteIdenticalCopy": true,
+    "sourceBytes": 950,
+    "destinationBytes": 950,
+    "gitignored": true,
+    "gitignoreRule": ".gitignore:34:.env*",
+    "trackedEnvFileMutation": false,
+    "rcGitStatusAfterEnvCopy": 0,
+    "verifiedWithoutPrintingValues": true,
+    "databaseIdentity": {
+      "DATABASE_URL": {
+        "protocol": "postgres",
+        "host": "127.0.0.1",
+        "port": "5432",
+        "database": "mas_radar_dev",
+        "hasUser": true,
+        "hasPassword": true
+      },
+      "MIGRATION_DATABASE_URL": {
+        "protocol": "postgres",
+        "host": "127.0.0.1",
+        "port": "5432",
+        "database": "mas_radar_dev",
+        "hasUser": true,
+        "hasPassword": true
+      },
+      "isCloneDatabase": false,
+      "isProductionDatabase": false,
+      "localhostContainerContract": "beklenen (127.0.0.1:5432 -> mas-radar-pg konteyneri)"
+    },
+    "requiredAppEnvContract": {
+      "sourceOfTruth": "RC src/lib/env.ts zod semasi",
+      "required": [
+        "DATABASE_URL"
+      ],
+      "requiredPresent": true,
+      "optionalPresent": [
+        "MIGRATION_DATABASE_URL",
+        "TELEGRAM_BOT_TOKEN",
+        "TELEGRAM_CHAT_ID",
+        "OPENAI_API_KEY",
+        "OPENAI_MODEL",
+        "AI_FORCE_DETERMINISTIC"
+      ],
+      "emptyValuedKeys": [],
+      "sessionSecretNote": "Bu uygulamanin env sozlesmesinde ayri bir auth/session secret degiskeni YOKTUR (env.ts semasinda boyle bir alan tanimli degil). Var olmayan bir degisken icin PASS uydurulmadi."
+    },
+    "secretValuesPrinted": false
+  },
+  "dependencies": {
+    "command": "pnpm install --frozen-lockfile",
+    "pnpmVersion": "11.10.0",
+    "nodeVersion": "v26.3.0",
+    "lockfile": "pnpm-lock.yaml",
+    "exitCode": 0
+  },
+  "serializationNote": "Bu dosyadaki Windows yollari programatik olarak uretildi (JSON.stringify kacisi); kabuk heredoc'u ile elle yazilmadi. P24B real-cleanup turundaki ters-egik-cizgi kaybi bu sekilde onlendi."
+}

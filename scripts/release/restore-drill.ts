@@ -67,7 +67,7 @@
 // URL verilirse birinciyle AYNI olmak zorundadır, değilse drill reddeder.
 import { execFileSync, spawn } from "node:child_process";
 import { mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import os from "node:os";
+// (os removed)
 import path from "node:path";
 import { Pool } from "pg";
 import { fingerprint, type Fingerprint } from "./lib/fingerprint";
@@ -185,7 +185,29 @@ async function main(): Promise<number> {
 
   // Dump işletim sisteminin geçici dizininde, bu koşuya özel bir klasörde üretilir ve koşu
   // sonunda klasörle birlikte silinir: gerçek finansal veri taşıyan bir arşiv diskte unutulmaz.
-  const workDir = mkdtempSync(path.join(os.tmpdir(), "mas-restore-drill-"));
+  const drillTmpRoot = path.join(process.cwd(), ".runtime", "drill-tmp");
+  mkdirSync(drillTmpRoot, { recursive: true, mode: 0o700 });
+  const workDir = mkdtempSync(path.join(drillTmpRoot, "mas-restore-drill-"));
+  // Dalga 1 #14: yarıda kesilen (Ctrl+C / SIGTERM) koşularda gerçek finansal veri taşıyan geçici
+  // dump klasörünün .runtime/drill-tmp/ altında unutulmaması için sinyal temizliği.
+  const cleanupWorkDirBestEffort = (): void => {
+    try {
+      rmSync(workDir, { recursive: true, force: true });
+    } catch {
+      // Sinyal işleyicisinden hata fırlatılmaz (best-effort).
+    }
+  };
+  const onSigInt = (): void => {
+    cleanupWorkDirBestEffort();
+    process.exit(130);
+  };
+  const onSigTerm = (): void => {
+    cleanupWorkDirBestEffort();
+    process.exit(143);
+  };
+  process.once("SIGINT", onSigInt);
+  process.once("SIGTERM", onSigTerm);
+
   const source = new Pool({ connectionString: SOURCE_HOST_URL, max: 4 });
   let restored: Pool | null = null;
   let restoreTargetCreated = false;
@@ -508,6 +530,8 @@ async function main(): Promise<number> {
     console.log(allGates && failed.length === 0 ? "RESTORE DRILL: ALL PASS" : "RESTORE DRILL: FAIL");
     return allGates && failed.length === 0 ? 0 : 1;
   } finally {
+    process.removeListener("SIGINT", onSigInt);
+    process.removeListener("SIGTERM", onSigTerm);
     await source.end().catch(() => undefined);
     if (restored) await restored.end().catch(() => undefined);
     // Gerçek veri taşıyan kopyalar bırakılmaz: harcanabilir hedef düşürülür, dump klasörüyle silinir.

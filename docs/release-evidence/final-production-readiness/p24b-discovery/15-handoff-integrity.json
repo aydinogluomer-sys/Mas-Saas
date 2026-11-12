@@ -1,0 +1,57 @@
+{
+  "checkedAt": "2026-08-26T11:44:47.902Z",
+  "files": [
+    {
+      "path": "docs\\release-evidence\\final-production-readiness\\p24b-discovery\\10-metin.json",
+      "declared": 12,
+      "actual": 12,
+      "match": true,
+      "parseError": null,
+      "shapeError": null,
+      "idCount": 24
+    },
+    {
+      "path": "docs\\release-evidence\\final-production-readiness\\p24b-discovery\\11-uuid.json",
+      "declared": 20,
+      "actual": 20,
+      "match": true,
+      "parseError": null,
+      "shapeError": null,
+      "idCount": 55
+    },
+    {
+      "path": "docs\\release-evidence\\final-production-readiness\\p24b-discovery\\12-zaman.json",
+      "declared": 50,
+      "actual": 50,
+      "match": true,
+      "parseError": null,
+      "shapeError": null,
+      "idCount": 140
+    }
+  ],
+  "declaredTotal": 82,
+  "actualTotal": 82,
+  "droppedFindings": 0,
+  "duplicateFindingIds": 14,
+  "duplicateSamples": [
+    "639daf7e-9c3e-4244-9ebf-6bef37b57971",
+    "12d7532f-a730-44dd-9b91-43cf501a6871",
+    "7b300bfe-944f-468b-91fa-2de65b7cfee5",
+    "p24b_fixture_setting",
+    "92cee4d3-c649-432d-b507-546d87936a76",
+    "a794163c-6ab5-4d00-a1b5-2b0c563be4e3",
+    "33796a14-c173-45c7-a784-33e44e8996a0",
+    "19688698-2eb2-40bb-9fc5-37cebdc7e824",
+    "1fc76c28-9d71-4ce3-91a6-f1e9f94e5dd4",
+    "3ab000e6-5187-468d-bf2e-2af882a2a3a2",
+    "79eccf48-65ff-4427-af7b-9e332488c1bd",
+    "dfa79dc9-bc4d-4572-96b2-de56b0baceae",
+    "eb9c61e7-ef57-4dae-b180-0e9d5b7fe8ae",
+    "62cd196c-d517-44c8-9431-3cce52d8b81a"
+  ],
+  "malformedIds": 0,
+  "malformedSamples": [],
+  "parseErrors": 0,
+  "shapeErrors": 0,
+  "pass": true
+}

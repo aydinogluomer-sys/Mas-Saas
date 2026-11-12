@@ -9,12 +9,42 @@ import type { Pool } from "pg";
 import { z } from "zod";
 import { audit } from "@/lib/audit";
 import { DomainError } from "@/lib/domain-error";
-import { moneyOrNull, intOrNull } from "@/lib/money";
+import { decimal, moneyOrNull, intOrNull } from "@/lib/money";
 import { parseOrThrow } from "@/lib/validation";
 import {
   bufferDaysFloor, effectiveFloor, liquidityHorizons, reconciliationVerdict,
-  type DatedFlow, type LiquidityHorizon, type ReconciliationStatus,
+  type DatedFlow, type LiquidityHorizonStatus, type NullableLiquidityHorizon, type ReconciliationStatus,
 } from "./rules";
+
+export function isMissingSchemaError(err: unknown): boolean {
+  const code = (err as { code?: string } | null)?.code;
+  return code === "42P01" || code === "42703";
+}
+
+export async function loadUnknownOpeningAccountCount(
+  pool: Pool,
+): Promise<{ totalUnknown: number; byCurrency: Array<{ currency: string; count: number }> }> {
+  try {
+    const r = await pool.query<{ currency: string; n: number | string }>(
+      `select currency, count(*)::int as n
+       from public.cash_accounts
+       where is_active and opening_balance is null
+       group by currency
+       order by currency`,
+    );
+    const byCurrency = r.rows.map((row) => ({
+      currency: String(row.currency),
+      count: Number(row.n ?? 0),
+    }));
+    const totalUnknown = byCurrency.reduce((sum, item) => sum + item.count, 0);
+    return { totalUnknown, byCurrency };
+  } catch (err: unknown) {
+    if (isMissingSchemaError(err)) {
+      return { totalUnknown: 0, byCurrency: [] };
+    }
+    throw err;
+  }
+}
 
 /* ── policy configuration ─────────────────────────────────────────────────────────────── */
 
@@ -115,10 +145,28 @@ export async function loadCashPositions(pool: Pool) {
   const r = await pool.query(
     `select cash_account_id, account_name, currency, bank_name, iban,
             stated_balance, blocked_balance, overdraft_limit, balance_as_of,
-            derived_balance, movement_count, last_movement_date, stated_minus_derived
+            derived_balance, movement_count, last_movement_date, stated_minus_derived,
+            opening_known, movement_net
      from public.bank_cash_position
      where is_active
-     order by currency, account_name`);
+     order by currency, account_name`).catch((err: unknown) => {
+    const code = (err as { code?: string })?.code;
+    if (code === "42703") {
+      return pool.query(
+        `select cash_account_id, account_name, currency, bank_name, iban,
+                stated_balance, blocked_balance, overdraft_limit, balance_as_of,
+                derived_balance, movement_count, last_movement_date, stated_minus_derived,
+                (derived_balance is not null) as opening_known, 0::numeric as movement_net
+         from public.bank_cash_position
+         where is_active
+         order by currency, account_name`).catch((e2: unknown) => {
+        if (isMissingSchemaError(e2)) return { rows: [], rowCount: 0 };
+        throw e2;
+      });
+    }
+    if (isMissingSchemaError(err)) return { rows: [], rowCount: 0 };
+    throw err;
+  });
   return r.rows.map((x) => ({
     cashAccountId: x.cash_account_id,
     accountName: x.account_name,
@@ -133,6 +181,8 @@ export async function loadCashPositions(pool: Pool) {
     lastMovementDate: x.last_movement_date ? String(x.last_movement_date).slice(0, 10) : null,
     // Kept as its own field rather than folded into one "balance": the gap is information.
     statedMinusDerived: moneyOrNull(x.stated_minus_derived),
+    openingKnown: x.opening_known == null ? x.derived_balance != null : Boolean(x.opening_known),
+    movementNet: moneyOrNull(x.movement_net) ?? 0,
   }));
 }
 
@@ -140,19 +190,40 @@ export async function loadPositionSummary(pool: Pool) {
   const r = await pool.query(
     `select currency, account_count, total_derived_balance, total_stated_balance,
             total_blocked, total_overdraft_limit, available_now, available_with_overdraft,
-            accounts_with_gap
-     from public.treasury_position_summary order by currency`);
-  return r.rows.map((x) => ({
-    currency: x.currency,
-    accountCount: Number(x.account_count),
-    totalDerived: moneyOrNull(x.total_derived_balance),
-    totalStated: moneyOrNull(x.total_stated_balance),
-    totalBlocked: moneyOrNull(x.total_blocked),
-    totalOverdraftLimit: moneyOrNull(x.total_overdraft_limit),
-    availableNow: moneyOrNull(x.available_now),
-    availableWithOverdraft: moneyOrNull(x.available_with_overdraft),
-    accountsWithGap: Number(x.accounts_with_gap),
-  }));
+            accounts_with_gap, unknown_opening_count, movements_only_total
+     from public.treasury_position_summary order by currency`).catch((err: unknown) => {
+    const code = (err as { code?: string })?.code;
+    if (code === "42703") {
+      return pool.query(
+        `select currency, account_count, total_derived_balance, total_stated_balance,
+                total_blocked, total_overdraft_limit, available_now, available_with_overdraft,
+                accounts_with_gap, 0::int as unknown_opening_count, 0::numeric as movements_only_total
+         from public.treasury_position_summary order by currency`).catch((e2: unknown) => {
+        if (isMissingSchemaError(e2)) return { rows: [], rowCount: 0 };
+        throw e2;
+      });
+    }
+    if (isMissingSchemaError(err)) return { rows: [], rowCount: 0 };
+    throw err;
+  });
+  return r.rows.map((x) => {
+    const unknownOpeningCount = Number(x.unknown_opening_count ?? 0);
+    const movementDelta = moneyOrNull(x.movements_only_total) ?? 0;
+    return {
+      currency: x.currency,
+      accountCount: Number(x.account_count),
+      totalDerived: unknownOpeningCount > 0 ? null : moneyOrNull(x.total_derived_balance),
+      totalStated: moneyOrNull(x.total_stated_balance),
+      totalBlocked: moneyOrNull(x.total_blocked),
+      totalOverdraftLimit: moneyOrNull(x.total_overdraft_limit),
+      availableNow: unknownOpeningCount > 0 ? null : moneyOrNull(x.available_now),
+      availableWithOverdraft: unknownOpeningCount > 0 ? null : moneyOrNull(x.available_with_overdraft),
+      accountsWithGap: Number(x.accounts_with_gap),
+      unknownOpeningCount,
+      movementDelta,
+      movementsOnlyTotal: movementDelta,
+    };
+  });
 }
 
 /**
@@ -175,21 +246,52 @@ export async function loadConfiguredFloorCurrencies(pool: Pool): Promise<Readonl
 export async function loadLiquidityGap(pool: Pool) {
   const r = await pool.query(
     `select horizon_days, currency, available_now, contracted_net_flow, expected_net_flow,
-            projected_contracted, projected_expected, min_cash_floor, financing_need, breaches_floor
+            projected_contracted, projected_expected, min_cash_floor, financing_need, breaches_floor,
+            status, unknown_opening_count, movements_only_total, unknown_currency_count
      from public.treasury_liquidity_gap
-     order by currency, horizon_days`);
-  return r.rows.map((x) => ({
-    horizonDays: Number(x.horizon_days),
-    currency: x.currency,
-    availableNow: moneyOrNull(x.available_now),
-    contractedNetFlow: moneyOrNull(x.contracted_net_flow),
-    expectedNetFlow: moneyOrNull(x.expected_net_flow),
-    projectedContracted: moneyOrNull(x.projected_contracted),
-    projectedExpected: moneyOrNull(x.projected_expected),
-    minCashFloor: moneyOrNull(x.min_cash_floor),
-    financingNeed: moneyOrNull(x.financing_need),
-    breachesFloor: Boolean(x.breaches_floor),
-  }));
+     order by currency, horizon_days`).catch((err: unknown) => {
+    const code = (err as { code?: string })?.code;
+    if (code === "42703") {
+      return pool.query(
+        `select horizon_days, currency, available_now, contracted_net_flow, expected_net_flow,
+                projected_contracted, projected_expected, min_cash_floor, financing_need, breaches_floor,
+                null::text as status, 0::int as unknown_opening_count,
+                0::numeric as movements_only_total, 0::int as unknown_currency_count
+         from public.treasury_liquidity_gap
+         order by currency, horizon_days`).catch((e2: unknown) => {
+        if (isMissingSchemaError(e2)) return { rows: [], rowCount: 0 };
+        throw e2;
+      });
+    }
+    if (isMissingSchemaError(err)) return { rows: [], rowCount: 0 };
+    throw err;
+  });
+  return r.rows.map((x) => {
+    const unknownOpeningCount = Number(x.unknown_opening_count ?? 0);
+    const availableNow = unknownOpeningCount > 0 ? null : moneyOrNull(x.available_now);
+    const breachesFloor = availableNow == null || x.breaches_floor == null
+      ? null
+      : Boolean(x.breaches_floor);
+    const status: LiquidityHorizonStatus =
+      (x.status as LiquidityHorizonStatus | undefined)
+      ?? (availableNow == null ? "unknown_opening_balance" : breachesFloor ? "floor_breached" : "ok");
+    return {
+      horizonDays: Number(x.horizon_days),
+      currency: x.currency,
+      availableNow,
+      contractedNetFlow: moneyOrNull(x.contracted_net_flow),
+      expectedNetFlow: moneyOrNull(x.expected_net_flow),
+      projectedContracted: availableNow == null ? null : moneyOrNull(x.projected_contracted),
+      projectedExpected: availableNow == null ? null : moneyOrNull(x.projected_expected),
+      minCashFloor: moneyOrNull(x.min_cash_floor),
+      financingNeed: availableNow == null ? null : moneyOrNull(x.financing_need),
+      breachesFloor,
+      status,
+      unknownOpeningCount,
+      movementDelta: moneyOrNull(x.movements_only_total) ?? 0,
+      unknownCurrencyCount: Number(x.unknown_currency_count ?? 0),
+    };
+  });
 }
 
 export interface ReconciliationRow {
@@ -199,6 +301,7 @@ export interface ReconciliationRow {
   treasuryClosing: number | null;
   difference: number | null;
   status: ReconciliationStatus;
+  unknownOpeningCount: number;
 }
 
 /**
@@ -211,13 +314,28 @@ export interface ReconciliationRow {
 export async function loadReconciliation(pool: Pool): Promise<ReconciliationRow[]> {
   const r = await pool.query(
     `select to_char(month_start,'YYYY-MM-DD') as month_start, currency,
-            cashflow_closing, treasury_closing
+            cashflow_closing, treasury_closing, unknown_opening_count
      from public.treasury_cashflow_reconciliation
-     order by month_start`);
+     order by month_start`).catch((err: unknown) => {
+    const code = (err as { code?: string })?.code;
+    if (code === "42703") {
+      return pool.query(
+        `select to_char(month_start,'YYYY-MM-DD') as month_start, currency,
+                cashflow_closing, treasury_closing, 0::int as unknown_opening_count
+         from public.treasury_cashflow_reconciliation
+         order by month_start`).catch((e2: unknown) => {
+        if (isMissingSchemaError(e2)) return { rows: [], rowCount: 0 };
+        throw e2;
+      });
+    }
+    if (isMissingSchemaError(err)) return { rows: [], rowCount: 0 };
+    throw err;
+  });
   return r.rows.map((x) => {
     const cashflow = moneyOrNull(x.cashflow_closing);
     const treasury = moneyOrNull(x.treasury_closing);
-    const verdict = reconciliationVerdict(cashflow, treasury);
+    const unknownOpeningCount = Number(x.unknown_opening_count ?? 0);
+    const verdict = reconciliationVerdict(cashflow, treasury, unknownOpeningCount === 0);
     return {
       monthStart: x.month_start,
       currency: x.currency,
@@ -225,6 +343,7 @@ export async function loadReconciliation(pool: Pool): Promise<ReconciliationRow[
       treasuryClosing: treasury,
       difference: verdict.difference,
       status: verdict.status,
+      unknownOpeningCount,
     };
   });
 }
@@ -235,13 +354,36 @@ export async function loadReconciliation(pool: Pool): Promise<ReconciliationRow[
  * Deliberately duplicated against `treasury_liquidity_gap`: the SQL answers the same question
  * for the dashboard's summary row, and this answers it from the raw flow rows. Two independent
  * computations over one set of facts is how the gate proves neither has drifted.
+ *
+ * FIN-03 (Faz 44): Never coerce a NULL `available_now` (`unknown_opening_count > 0`) to `0`.
+ * When no active account exists for `currency` (`posRes.rowCount === 0`), opening is `0`; when
+ * active accounts exist with unknown opening balance, `opening` stays `null` so projected
+ * positions and financing need stay `null`.
  */
 export async function loadLiquidityHorizons(
   pool: Pool, todayISO: string, currency = "TRY",
-): Promise<LiquidityHorizon[]> {
+): Promise<NullableLiquidityHorizon[]> {
   const posRes = await pool.query(
-    `select available_now from public.treasury_position_summary where currency=$1`, [currency]);
-  const opening = moneyOrNull(posRes.rows[0]?.available_now) ?? 0;
+    `select available_now, unknown_opening_count
+     from public.treasury_position_summary where currency=$1`, [currency]).catch((err: unknown) => {
+    const code = (err as { code?: string })?.code;
+    if (code === "42703") {
+      return pool.query(
+        `select available_now, 0::int as unknown_opening_count
+         from public.treasury_position_summary where currency=$1`, [currency]).catch((e2: unknown) => {
+        if (isMissingSchemaError(e2)) return { rows: [], rowCount: 0 };
+        throw e2;
+      });
+    }
+    if (isMissingSchemaError(err)) return { rows: [], rowCount: 0 };
+    throw err;
+  });
+  const posRow = posRes.rows[0];
+  const opening: number | null = posRes.rowCount === 0
+    ? 0
+    : Number(posRow?.unknown_opening_count ?? 0) > 0
+      ? null
+      : moneyOrNull(posRow?.available_now);
 
   const flowRes = await pool.query(
     `select to_char(flow_date,'YYYY-MM-DD') as flow_date, amount_signed, certainty
@@ -277,19 +419,22 @@ export async function resolveFloor(
 
   let bufferFloor: number | null = null;
   if (days != null) {
-    // Average daily outflow over the trailing 90 days of real bank movement. Trailing actuals,
-    // not the forecast — a buffer is sized on what this business actually spends.
-    const avg = await pool.query(
-      `select coalesce(avg(daily_out), 0) as avg_out from (
-         select bt.txn_date, abs(sum(bt.amount) filter (where bt.amount < 0)) as daily_out
-         from public.bank_transactions bt
-         join public.bank_accounts ba on ba.cash_account_id = bt.bank_account_id
-         join public.cash_accounts ca on ca.id = ba.cash_account_id
-         where bt.status <> 'ignored' and ca.currency = $1
-           and bt.txn_date >= ($2::date - 90) and bt.txn_date < $2::date
-         group by bt.txn_date
-       ) d where daily_out is not null`, [currency, todayISO]);
-    bufferFloor = bufferDaysFloor(avg.rows[0]?.avg_out, days);
+    // Average daily outflow over the trailing 90 CALENDAR days of real bank movement (Faz 46).
+    // Dividing by active outflow days alone overstated the burn rate whenever payments were lumpy
+    // (e.g. payroll + rent on 3 days of the quarter); dividing total 90-day outflow by fixed 90
+    // calendar days yields the true daily calendar burn rate.
+    const outRes = await pool.query(
+      `select coalesce(abs(sum(bt.amount) filter (where bt.amount < 0)), 0) as total_out_90d
+       from public.bank_transactions bt
+       join public.bank_accounts ba on ba.cash_account_id = bt.bank_account_id
+       join public.cash_accounts ca on ca.id = ba.cash_account_id
+       where bt.status <> 'ignored' and ca.currency = $1
+         and bt.txn_date >= ($2::date - 90) and bt.txn_date < $2::date`,
+      [currency, todayISO],
+    );
+    const totalOut90d = decimal(outRes.rows[0]?.total_out_90d ?? 0).abs();
+    const avgDailyOut = totalOut90d.eq(0) ? 0 : totalOut90d.div(90).toString();
+    bufferFloor = bufferDaysFloor(avgDailyOut, days);
   }
   return effectiveFloor(minCash, bufferFloor);
 }

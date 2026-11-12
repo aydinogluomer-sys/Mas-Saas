@@ -45,70 +45,70 @@ export function buildActions(f: CockpitFacts): CockpitAction[] {
   const c: CockpitAction[] = [];
 
   if (f.overdueCount > 0)
-    c.push({ key: "overdue", severity: "critical", href: "/radar",
+    c.push({ key: "overdue", severity: "critical", href: "/payments",
       label: `${f.overdueCount} geciken ödeme var — bugün kontrol et${f.overdueKnownOutflow > 0 ? ` (${tl(f.overdueKnownOutflow)})` : ""}.`,
-      reason: "Geciken odeme nakit cikisini ve tedarik iliskisini bugun etkiler.",
-      impact: f.overdueKnownOutflow > 0 ? `Bilinen yuk ${tl(f.overdueKnownOutflow)}.` : "Tutar kaniti eksik; once kaynagi ac.",
-      evidenceHref: "/radar" });
+      reason: "Geciken ödeme nakit çıkışını ve tedarik ilişkisini bugün etkiler.",
+      impact: f.overdueKnownOutflow > 0 ? `Bilinen yük ${tl(f.overdueKnownOutflow)}.` : "Tutar kanıtı eksik; önce kaynağı aç.",
+      evidenceHref: "/payments" });
 
   if (f.todayCount > 0)
-    c.push({ key: "today", severity: "high", href: "/radar",
+    c.push({ key: "today", severity: "high", href: "/payments",
       label: `Bugün ${f.todayCount} ödeme${f.todayKnownOutflow > 0 ? ` — ${tl(f.todayKnownOutflow)} nakit hazırla` : ""}.`,
-      reason: "Bugunun odemesi operasyonel aksiyondur; bekletme karari bilincli olmalidir.",
-      impact: f.todayKnownOutflow > 0 ? `Bugun bilinen cikis ${tl(f.todayKnownOutflow)}.` : "Bugun odeme var ama tutar kaniti eksik.",
-      evidenceHref: "/radar" });
+      reason: "Bugünün ödemesi operasyonel aksiyondur; bekletme kararı bilinçli olmalıdır.",
+      impact: f.todayKnownOutflow > 0 ? `Bugün bilinen çıkış ${tl(f.todayKnownOutflow)}.` : "Bugün ödeme var ama tutar kanıtı eksik.",
+      evidenceHref: "/payments" });
 
   if (f.next7KnownOutflow > 0)
-    c.push({ key: "next7", severity: "medium", href: "/radar",
+    c.push({ key: "next7", severity: "medium", href: "/payments",
       label: `Önümüzdeki 7 günde ${tl(f.next7KnownOutflow)} çıkış planla.`,
-      reason: "Yedi gunluk pencere kasa hazirligi icin en yakin planlama ufku.",
-      impact: `${f.next7Count} odeme icinde bilinen cikis ${tl(f.next7KnownOutflow)}.`,
-      evidenceHref: "/radar",
+      reason: "Yedi günlük pencere kasa hazırlığı için en yakın planlama ufku.",
+      impact: `${f.next7Count} ödeme içinde bilinen çıkış ${tl(f.next7KnownOutflow)}.`,
+      evidenceHref: "/payments",
       scenarioHref: "/scenarios?from=home-next7" });
 
   if (f.firstNegativeMonth != null)
     c.push({ key: "first_negative", severity: "high", href: "/cashflow",
       label: `Kasa ${ym(f.firstNegativeMonth)} ayında negatife geçiyor — finansman planla.`,
-      reason: "Ilk negatif ay finansman veya tahsilat/vade karari gerektirir.",
-      impact: f.worstBalance != null ? `En kotu bakiye ${tl(f.worstBalance)} (${ym(f.worstMonth)}).` : `Ilk negatif ay ${ym(f.firstNegativeMonth)}.`,
+      reason: "İlk negatif ay finansman veya tahsilat/vade kararı gerektirir.",
+      impact: f.worstBalance != null ? `En kötü bakiye ${tl(f.worstBalance)} (${ym(f.worstMonth)}).` : `İlk negatif ay ${ym(f.firstNegativeMonth)}.`,
       evidenceHref: "/cashflow",
       scenarioHref: "/scenarios?from=home-first-negative" });
 
   if (f.debtPressureMonths > 0)
-    c.push({ key: "debt_pressure", severity: "high", href: "/financing",
+    c.push({ key: "debt_pressure", severity: "high", href: "/finance",
       label: `${f.debtPressureMonths} ayda çek+kredi yükü negatif kasaya biniyor — vadeleri gözden geçir.`,
-      reason: "Borc servisi negatif kasa ile ust uste geldiginde likidite riski artar.",
-      impact: `${f.debtPressureMonths} ay borc baskisi tasiyor.`,
-      evidenceHref: "/financing",
+      reason: "Borç servisi negatif kasa ile üst üste geldiğinde likidite riski artar.",
+      impact: `${f.debtPressureMonths} ay borç baskısı taşıyor.`,
+      evidenceHref: "/finance",
       scenarioHref: "/scenarios?from=home-debt-pressure" });
 
   if (f.todayMissing + f.monthMissingCount > 0)
-    c.push({ key: "missing", severity: "medium", href: "/radar",
+    c.push({ key: "missing", severity: "medium", href: "/payments/missing",
       label: `${f.todayMissing + f.monthMissingCount} kalemde tutar eksik — kaynağı doğrula (eksik asla 0 sayılmaz).`,
-      reason: "Eksik tutar karar guvenini dusurur; sistem bunu 0 kabul etmez.",
-      impact: `${f.todayMissing + f.monthMissingCount} kalem bilinmeyen tutar tasiyor.`,
-      evidenceHref: "/data-quality" });
+      reason: "Eksik tutar karar güvenini düşürür; sistem bunu 0 kabul etmez.",
+      impact: `${f.todayMissing + f.monthMissingCount} kalem bilinmeyen tutar taşıyor.`,
+      evidenceHref: "/data/quality" });
 
   if (f.topConcentration && f.topConcentration.ratio > 0.4)
     c.push({ key: "concentration", severity: "medium", href: "/cashflow",
       label: `Gelirin %${Math.round(f.topConcentration.ratio * 100)}'i ${f.topConcentration.key}'e bağlı — yoğunlaşma riski.`,
-      reason: "Tek musteriye yuksek bagimlilik tahsilat gecikmesinde kasa riskini buyutur.",
-      impact: `${f.topConcentration.key} gelir payi %${Math.round(f.topConcentration.ratio * 100)}.`,
+      reason: "Tek müşteriye yüksek bağımlılık tahsilat gecikmesinde kasa riskini büyütür.",
+      impact: `${f.topConcentration.key} gelir payı %${Math.round(f.topConcentration.ratio * 100)}.`,
       evidenceHref: "/cashflow",
       scenarioHref: "/scenarios?from=home-concentration" });
 
   if (f.failedReminders > 0)
-    c.push({ key: "failed_reminders", severity: "medium", href: "/reminders",
+    c.push({ key: "failed_reminders", severity: "medium", href: "/insights/reminders",
       label: `${f.failedReminders} hatırlatma gönderilemedi — Telegram ayarını kontrol et.`,
-      reason: "Gonderilemeyen hatirlatma manuel takip ihtiyacini artirir.",
-      impact: `${f.failedReminders} teslimat basarisiz.`,
-      evidenceHref: "/reminders" });
+      reason: "Gönderilemeyen hatırlatma manuel takip ihtiyacını artırır.",
+      impact: `${f.failedReminders} teslimat başarısız.`,
+      evidenceHref: "/insights/reminders" });
 
   if (f.staleProductionRate)
     c.push({ key: "stale_rate", severity: "low", href: "/production",
       label: `Üretim TL/dk oranları eski tarife — güncelle (analitik tahmin).`,
-      reason: "Eski tarife uretim kar/maliyet yorumunu dusuk guvenli yapar.",
-      impact: "Uretim analitigi review gerekli sinyali tasiyor.",
+      reason: "Eski tarife üretim kâr/maliyet yorumunu düşük güvenli yapar.",
+      impact: "Üretim analitiği inceleme gerekli sinyali taşıyor.",
       evidenceHref: "/production" });
 
   const sorted = c.sort((a, b) => RANK[a.severity] - RANK[b.severity]).slice(0, 5);
@@ -116,11 +116,11 @@ export function buildActions(f: CockpitFacts): CockpitAction[] {
     return [{
       key: "routine",
       severity: "low",
-      href: "/radar",
+      href: "/payments",
       label: "Kritik aksiyon yok — rutin kontrol yeterli.",
-      reason: "Acil risk sinyali uretilmedi.",
-      impact: "Rutin odeme ve veri kalite kontrolu yeterli.",
-      evidenceHref: "/radar",
+      reason: "Acil risk sinyali üretilmedi.",
+      impact: "Rutin ödeme ve veri kalite kontrolü yeterli.",
+      evidenceHref: "/payments",
     }];
   return sorted;
 }
@@ -144,10 +144,7 @@ export function pickHeadlineRisk(f: CockpitFacts): { text: string; tone: "neg" |
  * The "12 aylık kasa eğilimi" sparkline on Ana Ekran: the first `limit` months' closing balances.
  *
  * A month whose closing balance is UNKNOWN is left out of the series and COUNTED, never drawn as
- * 0 TL. The page used to map it with `closing ?? 0`, which put a cash crash that is really a
- * missing number on the first screen anyone opens — a fake cliff is worse than no line, because a
- * trend is read at a glance and not interrogated. Same rule as the 30-day payment trend beside it:
- * the sparkline cannot draw a gap, so the gap is stated in its subtitle instead (Wave 0, R10).
+ * 0 TL.
  */
 export function closingTrend(
   months: ReadonlyArray<{ closing: number | null }>,
@@ -160,18 +157,6 @@ export function closingTrend(
 
 /* ═══════════ Faz 32 — management cockpit widgets ═══════════ */
 
-/**
- * The widget layer, added ALONGSIDE the Faz-14 action list rather than replacing it.
- *
- * Same contract as the rest of this file, restated because it is what makes the widgets safe:
- * NO new financial math, NO database, NO LLM. Every number arrives already computed by the phase
- * that owns it — treasury (26), financing/FX (27), budget/forecast (28), costing (30), controls
- * (31) — and this module only decides how to RANK and PHRASE it.
- *
- * That is also why `CockpitFacts` above is untouched: the existing overview page depends on it,
- * and widening a shared interface to add unrelated fields would make every existing caller supply
- * values it has no business knowing.
- */
 export interface CockpitWidgetFacts {
   /** Treasury (Faz 26). */
   availableCash: number | null;
@@ -216,10 +201,7 @@ export interface CockpitWidget {
 /**
  * Build the management cockpit tiles.
  *
- * UNKNOWN IS RENDERED AS "—", NEVER AS ZERO. A cash figure of 0 TL and "we could not compute the
- * cash figure" are different statements, and a cockpit that shows the second as the first is
- * exactly the screen that gets trusted while being wrong. Every tile below returns `neutral` with
- * an explicit note when its input is null.
+ * UNKNOWN IS RENDERED AS "—", NEVER AS ZERO.
  */
 export function buildWidgets(f: CockpitWidgetFacts): CockpitWidget[] {
   const w: CockpitWidget[] = [];
@@ -230,9 +212,6 @@ export function buildWidgets(f: CockpitWidgetFacts): CockpitWidget[] {
   if (f.availableCash == null) {
     w.push(unknown("cash", "Kullanılabilir nakit", "/finance/treasury", "Pozisyon hesaplanamadı"));
   } else if (f.minCashFloor == null) {
-    // The cash figure is known; the floor it is judged against is not. "Taban korunuyor" here was
-    // a verdict on a comparison that never happened — any positive balance read as compliant. The
-    // value is shown, the verdict is withheld, and the tile stays neutral (Wave 0, R10).
     w.push({
       key: "cash", label: "Kullanılabilir nakit", value: tl(f.availableCash),
       tone: "neutral", note: "Taban tanımlı değil", href: "/finance/treasury",
@@ -298,7 +277,6 @@ export function buildWidgets(f: CockpitWidgetFacts): CockpitWidget[] {
     : { key: "ccc", label: "Nakit döngüsü (env. hariç)",
         value: `${f.cycleExcludingInventory} gün`,
         tone: f.cycleExcludingInventory > 45 ? "warn" : "pos",
-        // Named for what it omits — this system has no inventory data (Faz 30).
         note: "Envanter verisi yok, DIO hariç",
         href: "/finance/profitability" });
 

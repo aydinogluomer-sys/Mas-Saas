@@ -1,10 +1,10 @@
-import Link from "next/link";
+import Link from "@/components/ui/app-link";
 import { notFound } from "next/navigation";
 import { getPool } from "@/lib/db";
 import { loadAiResponse, listAiResponses } from "@/lib/ai/engine";
 import { loadReport } from "@/lib/reports/engine";
-import { generateReportCommentaryAction } from "@/app/(dashboard)/reports/actions";
-import { createActionFromAiResponseAction, createActionFromReportAction } from "@/app/(dashboard)/data-quality/actions";
+import { generateReportCommentaryAction } from "@/app/(dashboard)/insights/reports/actions";
+import { createActionFromAiResponseAction, createActionFromReportAction } from "@/app/(dashboard)/data/quality/actions";
 import { Badge } from "@/components/ui/badge";
 import { SourceProofDisclosure, aggregateConfidence, confidenceLabel, confidenceTone, type ProofItem } from "@/components/facts/source-proof";
 import { Panel } from "@/components/ui/panel";
@@ -12,7 +12,7 @@ import { loadDecisionFacts } from "@/lib/facts/engine";
 
 export const dynamic = "force-dynamic";
 
-const TYPE_LABEL: Record<string, string> = { daily: "Gunluk", weekly: "Haftalik", monthly: "Aylik", strategic: "Stratejik", data_quality: "Veri Kalitesi" };
+const TYPE_LABEL: Record<string, string> = { daily: "Günlük", weekly: "Haftalık", monthly: "Aylık", strategic: "Stratejik", data_quality: "Veri Kalitesi" };
 
 export default async function ReportDetailPage({
   params,

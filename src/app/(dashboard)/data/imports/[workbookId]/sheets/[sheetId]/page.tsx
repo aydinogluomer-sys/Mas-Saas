@@ -1,4 +1,4 @@
-import Link from "next/link";
+import Link from "@/components/ui/app-link";
 import { notFound } from "next/navigation";
 import { getPool } from "@/lib/db";
 import { Badge, SHEET_TYPE_TONE } from "@/components/ui/badge";
@@ -66,7 +66,7 @@ export default async function SheetPage({
     (a, b) => (a.length - b.length) || (a < b ? -1 : 1),
   );
 
-  const base = `/imports/${workbookId}/sheets/${sheetId}`;
+  const base = `/data/imports/${workbookId}/sheets/${sheetId}`;
   const tab = (label: string, href: string, active: boolean, disabled = false) =>
     disabled ? (
       <span className="border border-line-faint px-2 py-1 font-mono text-[10px] uppercase text-tone-4">{label}</span>
@@ -140,7 +140,7 @@ export default async function SheetPage({
                     {cols.map((c) => {
                       const cell = r.row_json[c];
                       return (
-                        <td key={c} className="max-w-[160px] truncate py-1 pr-2 font-mono tabular-nums"
+                        <td key={c} className="max-w-40 truncate py-1 pr-2 font-mono tabular-nums"
                           title={cell?.f ? `= ${cell.f}` : undefined}>
                           {cell ? String(cell.w ?? cell.v) : ""}
                           {cell?.f ? <span className="text-info">ƒ</span> : null}

@@ -99,7 +99,8 @@ describe("the safety-critical cells", () => {
     for (const role of APP_ROLES) {
       expect(canAdministerUsers(role)).toBe(role === "admin");
       expect(can(role, "sessions", "insert"), `${role} minting a session`).toBe(false);
-      expect(can(role, "sessions", "update")).toBe(false);
+      expect(can(role, "sessions", "update")).toBe(role === "admin");
+      expect(can(role, "sessions", "delete")).toBe(false);
     }
   });
 

@@ -1,4 +1,4 @@
-// Phase 6A reports engine. Loads already-mapped domain data, calls the pure builders,
+// Phase 6A & Faz 46 (C3) reports engine. Loads already-mapped domain data, calls the pure builders,
 // and writes a snapshot row into public.reports. It NEVER mutates financial records
 // (payments/instances/checks/loans/cashflow) — only appends to reports + audit_logs.
 // AI stays commentary-only: meta.commentary_prompt is a string, no model is called.
@@ -34,6 +34,21 @@ async function maturitiesBetween(pool: Pool, fromISO: string, toISO: string): Pr
   const items = await loadMaturityItems(pool);
   return items
     .filter((m) => m.dueDate >= fromISO && m.dueDate <= toISO)
+    .map((m) => ({ label: m.label, dueDate: m.dueDate, amount: m.amount, direction: m.direction, kind: m.kind }));
+}
+
+/**
+ * Faz 46 (C3): Half-open `[fromISO, toExclusiveISO)` range for calendar months so an
+ * installment or check due on the 1st of the next month is never double-counted in two months.
+ */
+async function maturitiesBetweenHalfOpen(
+  pool: Pool,
+  fromISO: string,
+  toExclusiveISO: string,
+): Promise<ReportMaturity[]> {
+  const items = await loadMaturityItems(pool);
+  return items
+    .filter((m) => m.dueDate >= fromISO && m.dueDate < toExclusiveISO)
     .map((m) => ({ label: m.label, dueDate: m.dueDate, amount: m.amount, direction: m.direction, kind: m.kind }));
 }
 
@@ -107,11 +122,12 @@ export async function generateDaily(pool: Pool, todayISO: string, actorId: strin
 export async function generateWeekly(pool: Pool, todayISO: string, actorId: string): Promise<{ id: string; bodyMd: string }> {
   const to = addDaysISO(todayISO, 7);
   const monthStart = todayISO.slice(0, 7) + "-01";
+  const nextMonthStart = addMonths(monthStart, 1);
   const t = await loadThresholds(pool);
   const [week, matWeek, matMonth, rdays, decisionFacts] = await Promise.all([
     instancesBetween(pool, todayISO, to),
     maturitiesBetween(pool, todayISO, to),
-    maturitiesBetween(pool, monthStart, addMonths(monthStart, 1)),
+    maturitiesBetweenHalfOpen(pool, monthStart, nextMonthStart),
     riskyDays(pool, todayISO, 7, t),
     loadDecisionFacts(pool, todayISO),
   ]);
@@ -120,7 +136,7 @@ export async function generateWeekly(pool: Pool, todayISO: string, actorId: stri
     {
       weekInstances: week.filter((i) => open.has(i.status)).map(toReportInstance),
       maturitiesWeek: matWeek,
-      installmentsMonth: matMonth.filter((m) => m.kind === "loan_installment"),
+      installmentsMonth: matMonth.filter((m) => m.kind === "loan_installment" && m.direction !== "inflow"),
       riskDays: rdays.map((d) => ({ date: d.date, cluster: d.cluster, critical: d.critical, large: d.large, knownSum: d.knownSum, count: d.count })),
       largeThreshold: t.large,
     },
@@ -164,16 +180,15 @@ async function distribution(pool: Pool, monthStart: string, joinCol: string, nam
 }
 
 export async function generateMonthly(pool: Pool, monthStartISO: string, actorId: string): Promise<{ id: string; bodyMd: string }> {
-  const monthEnd = addMonths(monthStartISO, 1);
-  const [summary, insts, providerDist, categoryDist, ownerDist, checks, installments, cashRow, unassigned, decisionFacts] =
+  const nextMonthStart = addMonths(monthStartISO, 1);
+  const [summary, insts, providerDist, categoryDist, ownerDist, monthMaturities, cashRow, unassigned, decisionFacts] =
     await Promise.all([
       monthSummary(pool, monthStartISO),
       monthInstances(pool, monthStartISO),
       distribution(pool, monthStartISO, "left join public.parties pr on pr.id = p.provider_party_id", "pr.name"),
       distribution(pool, monthStartISO, "left join public.categories c on c.id = p.category_id", "c.name"),
       distribution(pool, monthStartISO, "left join public.parties o on o.id = p.owner_party_id", "o.name"),
-      maturitiesBetween(pool, monthStartISO, monthEnd),
-      maturitiesBetween(pool, monthStartISO, monthEnd),
+      maturitiesBetweenHalfOpen(pool, monthStartISO, nextMonthStart),
       pool.query(
         `select opening_balance as opening, projected_income as income,
                 projected_expense as expense, closing_balance as closing
@@ -205,8 +220,8 @@ export async function generateMonthly(pool: Pool, monthStartISO: string, actorId
     missingCount: summary.missing_count, totalCount: summary.total_count,
     topPayments,
     providerDist, categoryDist, ownerDist,
-    checksInMonth: checks.filter((m) => m.kind === "check"),
-    installmentsInMonth: installments.filter((m) => m.kind === "loan_installment"),
+    checksInMonth: monthMaturities.filter((m) => m.kind === "check" && m.direction === "outflow"),
+    installmentsInMonth: monthMaturities.filter((m) => m.kind === "loan_installment" && m.direction !== "inflow"),
     cashMonth: cashRow.rows[0]
       ? {
           opening: moneyOrNull(cashRow.rows[0].opening), income: moneyOrNull(cashRow.rows[0].income),
@@ -225,7 +240,7 @@ export async function generateMonthly(pool: Pool, monthStartISO: string, actorId
       ...decisionFacts.slice(0, 4).map((f) => `${f.title}: ${f.value}`),
     ],
   });
-  const id = await writeReport(pool, "monthly", monthStartISO, addDaysISO(monthEnd, -1), report.bodyMd, {
+  const id = await writeReport(pool, "monthly", monthStartISO, addDaysISO(nextMonthStart, -1), report.bodyMd, {
     knownTotal: summary.known_total, debtServiceKnown: report.debtServiceKnown, commentary_prompt: prompt,
   }, actorId);
   return { id, bodyMd: report.bodyMd };

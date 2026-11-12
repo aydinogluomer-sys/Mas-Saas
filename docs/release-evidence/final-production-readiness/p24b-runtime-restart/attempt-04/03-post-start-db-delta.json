@@ -1,0 +1,65 @@
+{
+  "artifactKind": "mas-p24b-attempt04-startup-delta-v1",
+  "measuredAtUtc": "2026-09-03T10:34:10.518Z",
+  "verdict": "EXPECTED",
+  "contract": {
+    "auditDelta": 26,
+    "auditAction": "generate_instances",
+    "paymentInstanceInserts": 0,
+    "paymentInstanceCount": 502,
+    "usersDelta": 0
+  },
+  "measured": {
+    "auditBefore": 788,
+    "auditAfter": 814,
+    "auditDelta": 26,
+    "newAuditActions": {
+      "generate_instances": 26
+    },
+    "otherNewAuditActions": {},
+    "paymentInstancesBefore": 502,
+    "paymentInstancesAfter": 502,
+    "paymentInstanceInserts": 0,
+    "paymentInstanceUpdates": 0,
+    "usersBefore": 13,
+    "usersAfter": 13,
+    "usersDelta": 0,
+    "paymentsDelta": 0,
+    "actionItemsDelta": 0,
+    "approvalsDelta": 0,
+    "settingsDelta": 0,
+    "metricSnapshotsDelta": 0,
+    "p24bResurrection": 0,
+    "fixturePaymentPresent": false
+  },
+  "engineCounters": {
+    "before": {
+      "ins": 71,
+      "upd": 40,
+      "del": 42
+    },
+    "after": {
+      "ins": 97,
+      "upd": 40,
+      "del": 42
+    },
+    "arithmetic": "ins +26 tam olarak audit satirlari, upd +0, del +0",
+    "note": "Sozlesme payment_instances uzerinde deterministik risk-flag UPDATE gorulmesine izin veriyordu (tercihen 0). Olculen 0. Motorun update sayaci hic kimildamadi."
+  },
+  "wholeDbClassification": {
+    "tablesCompared": 86,
+    "tablesChanged": 1,
+    "changed": [
+      {
+        "table": "public.audit_logs",
+        "before": "788:7891790aa6eb40056037f2d304b2c3e1",
+        "after": "814:2ca0bf190659b61f0747a97d1f4c4455"
+      }
+    ],
+    "unexpectedChangedTables": 0,
+    "preStartWholeDbFp": "283e5daaf36b1f26293a1a6d6a7cbce435b64767fcaf8afbaaee626893bc4b42",
+    "postStartWholeDbFp": "85358cfd27767001a3cdf00e1c5979a05d471a409876afc2586567a38432a929",
+    "targetFingerprintUnchanged": "5e84634660528f2076f7bbef2a7e7e8f05047c13353679c53f0097798e37882d"
+  },
+  "unexpectedDbDelta": 0
+}

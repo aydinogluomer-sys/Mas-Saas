@@ -11,7 +11,10 @@ import {
 import { Badge, type Tone } from "@/components/ui/badge";
 import { Panel, fmtTL } from "@/components/ui/panel";
 import { EmptyState, KeyStat, PageHeader, TableShell } from "@/components/ui/shell";
+import { getRequestUser } from "@/lib/auth";
+import { can } from "@/lib/authz/matrix";
 import { requireRouteAccess } from "@/lib/authz/route-guard";
+import { updateAllocationRuleAction } from "./actions";
 
 export const dynamic = "force-dynamic";
 
@@ -19,8 +22,23 @@ const VERDICT_TONE: Record<string, Tone> = {
   strong: "green", normal: "green", stretched: "amber", unknown: "neutral",
 };
 
+const CONFIDENCE_LABEL_TR: Record<string, string> = {
+  source: "kaynak",
+  calculated: "hesaplandı",
+  estimated: "hesaplandı",
+  needs_review: "inceleme gerekli",
+  unknown: "bilinmiyor",
+};
+
+const OBSERVED_ROLE_TR: Record<string, string> = {
+  customer: "müşteri",
+  supplier: "tedarikçi",
+  vendor: "tedarikçi",
+  both: "müşteri + tedarikçi",
+  none: "hareketsiz",
+};
+
 function marginCell(margin: number | null, rate: number | null) {
-  // Unknown stays visibly unknown — a 0 here would be indistinguishable from a real break-even.
   if (margin == null) return <span className="text-amber-400">hesaplanamıyor</span>;
   return (
     <>
@@ -30,11 +48,14 @@ function marginCell(margin: number | null, rate: number | null) {
   );
 }
 
-export default async function ProfitabilityPage() {
-  // Faz 17-38 denetimi — sayfa seviyesi rol kapisi. Navigasyonun kullandigi AYNI karar
-  // (canSeeRoute); ikinci bir liste, ikinci bir fikir ve kacinilmaz bir kayma demekti.
+export default async function ProfitabilityPage({
+  searchParams,
+}: { searchParams?: Promise<{ error?: string; result?: string }> }) {
   const denied = await requireRouteAccess("/finance/profitability");
   if (denied) return denied;
+  const session = await getRequestUser();
+  const canUpdateRules = can(session?.role ?? "viewer", "cost_allocation_rules", "update");
+  const sp = searchParams ? await searchParams : {};
   const pool = getPool();
   const [centers, projects, parties, departments, machines, wc, trend, rules] = await Promise.all([
     loadCostCenterProfitability(pool),
@@ -65,7 +86,6 @@ export default async function ProfitabilityPage() {
           tone={wc?.dsoDays == null ? "neutral" : "info"} />
         <KeyStat label="DPO" value={wc?.dpoDays == null ? "—" : `${wc.dpoDays} gün`}
           tone={wc?.dpoDays == null ? "neutral" : "info"} />
-        {/* Named for what it excludes — this is NOT the cash conversion cycle. */}
         <KeyStat label="Döngü (envanter hariç)"
           value={wc?.cycleExcludingInventory == null ? "—" : `${wc.cycleExcludingInventory} gün`}
           tone={wc == null ? "neutral" : VERDICT_TONE[wc.verdict] === "amber" ? "warn" : "pos"} />
@@ -73,7 +93,7 @@ export default async function ProfitabilityPage() {
           tone={unmeasured.length > 0 ? "warn" : "pos"} />
       </div>
 
-      <Panel title="İŞLETME SERMAYESİ" subtitle="Faz 22/23/26 read-model'lerinden türetilir — yeni kaynak veri yok">
+      <Panel title="İŞLETME SERMAYESİ" subtitle="Faz 22/23/26 okuma modellerinden türetilir — yeni kaynak veri yok">
         {wc == null ? (
           <EmptyState>İşletme sermayesi verisi yok.</EmptyState>
         ) : (
@@ -89,7 +109,6 @@ export default async function ProfitabilityPage() {
                 <span className="tabular-nums">{wc.dpoDays ?? "—"} gün</span></div>
             </div>
             <div className="space-y-1 text-sm">
-              {/* The honest gap, said out loud rather than shown as a blank or a zero. */}
               <div className="flex justify-between">
                 <span className="text-neutral-400">DIO (envanter)</span>
                 <span className="text-amber-400">ölçülemiyor</span>
@@ -144,7 +163,7 @@ export default async function ProfitabilityPage() {
         </Panel>
       ) : null}
 
-      <Panel title="MALİYET MERKEZİ KÂRLILIĞI" subtitle="ciro ve maliyet yalnız faturalardan — çift sayma yok">
+      <Panel title="MALİYET MERKEZİ KÂRLILIĞI" subtitle="faturalanan satış hacmi ve maliyet yalnız faturalardan — çift sayma yok">
         {centers.length === 0 ? (
           <EmptyState>Tanımlı maliyet merkezi yok.</EmptyState>
         ) : (
@@ -152,7 +171,7 @@ export default async function ProfitabilityPage() {
             <table className="w-full text-sm">
               <thead>
                 <tr className="text-left text-xs uppercase text-neutral-500">
-                  <th className="py-1">Merkez</th><th className="text-right">Ciro</th>
+                  <th className="py-1">Merkez</th><th className="text-right">Faturalanan Satış Hacmi</th>
                   <th className="text-right">Doğrudan maliyet</th><th className="text-right">Marj</th>
                   <th>Güven</th>
                 </tr>
@@ -166,7 +185,7 @@ export default async function ProfitabilityPage() {
                     <td className="text-right tabular-nums">{c.revenue == null ? "—" : fmtTL(c.revenue)}</td>
                     <td className="text-right tabular-nums">{c.directCost == null ? "—" : fmtTL(c.directCost)}</td>
                     <td className="text-right tabular-nums">{marginCell(c.margin, c.marginRate)}</td>
-                    <td><Badge tone={c.confidence === "estimated" ? "green" : "amber"}>{c.confidence}</Badge></td>
+                    <td><Badge tone={c.confidence === "estimated" ? "green" : "amber"}>{CONFIDENCE_LABEL_TR[c.confidence] ?? c.confidence}</Badge></td>
                   </tr>
                 ))}
               </tbody>
@@ -175,7 +194,7 @@ export default async function ProfitabilityPage() {
         )}
       </Panel>
 
-      <Panel title="CARİ KÂRLILIĞI" subtitle="rol, veri neyi gösteriyorsa o — type kolonunun iddiası değil">
+      <Panel title="CARİ KÂRLILIĞI" subtitle="rol, veri neyi gösteriyorsa o — tip kolonunun iddiası değil">
         {parties.length === 0 ? (
           <EmptyState>Hareketi olan cari yok.</EmptyState>
         ) : (
@@ -184,8 +203,8 @@ export default async function ProfitabilityPage() {
               <thead>
                 <tr className="text-left text-xs uppercase text-neutral-500">
                   <th className="py-1">Cari</th><th>Gözlemlenen rol</th>
-                  <th className="text-right">Bizden alışı (ciro)</th>
-                  <th className="text-right">Bize satışı (maliyet)</th>
+                  <th className="text-right">Faturalanan Satış Hacmi</th>
+                  <th className="text-right">Faturalanan Alış Maliyeti</th>
                   <th className="text-right">Net katkı</th>
                 </tr>
               </thead>
@@ -193,7 +212,7 @@ export default async function ProfitabilityPage() {
                 {parties.map((p) => (
                   <tr key={p.partyId} className="border-t border-neutral-800">
                     <td className="py-2">{p.name}</td>
-                    <td><Badge tone={p.observedRole === "both" ? "violet" : "neutral"}>{p.observedRole}</Badge></td>
+                    <td><Badge tone={p.observedRole === "both" ? "violet" : "neutral"}>{OBSERVED_ROLE_TR[p.observedRole] ?? p.observedRole}</Badge></td>
                     <td className="text-right tabular-nums">{p.revenue == null ? "—" : fmtTL(p.revenue)}</td>
                     <td className="text-right tabular-nums">{p.cost == null ? "—" : fmtTL(p.cost)}</td>
                     <td className="text-right tabular-nums">
@@ -215,7 +234,7 @@ export default async function ProfitabilityPage() {
             <table className="w-full text-sm">
               <thead>
                 <tr className="text-left text-xs uppercase text-neutral-500">
-                  <th className="py-1">Proje</th><th className="text-right">Ciro</th>
+                  <th className="py-1">Proje</th><th className="text-right">Faturalanan Satış Hacmi</th>
                   <th className="text-right">Maliyet</th><th className="text-right">Marj</th>
                 </tr>
               </thead>
@@ -241,7 +260,7 @@ export default async function ProfitabilityPage() {
               <thead>
                 <tr className="text-left text-xs uppercase text-neutral-500">
                   <th className="py-1">Makine</th><th className="text-right">Yıl</th>
-                  <th className="text-right">Ciro</th><th className="text-right">Maliyet</th>
+                  <th className="text-right">Faturalanan Satış Hacmi</th><th className="text-right">Maliyet</th>
                   <th className="text-right">Marj</th><th className="text-right">ROI</th>
                 </tr>
               </thead>
@@ -265,21 +284,33 @@ export default async function ProfitabilityPage() {
       ) : null}
 
       {departments.length > 0 ? (
-        <Panel title="DEPARTMAN KÂRLILIĞI" subtitle="ölçülemiyor — ve nedeni yazılı">
+        <Panel title="DEPARTMAN KÂRLILIĞI" subtitle="departman etiketli TRY faturalar veya açık ölçülemezlik gerekçesi">
           <TableShell>
             <table className="w-full text-sm">
               <thead>
                 <tr className="text-left text-xs uppercase text-neutral-500">
-                  <th className="py-1">Departman</th><th>Durum</th><th>Neden</th>
+                  <th className="py-1">Departman</th>
+                  <th className="text-right">Faturalanan Satış</th>
+                  <th className="text-right">Doğrudan Maliyet</th>
+                  <th className="text-right">Marj</th>
+                  <th>Durum / Neden</th>
                 </tr>
               </thead>
               <tbody>
                 {departments.map((d) => (
                   <tr key={d.departmentId} className="border-t border-neutral-800">
                     <td className="py-2">{d.name}<span className="block text-xs text-neutral-600">{d.code}</span></td>
-                    <td><Badge tone="neutral">ölçülemiyor</Badge></td>
-                    {/* The reason travels with the row so nobody reads the blank as "zero profit". */}
-                    <td className="text-xs text-neutral-500">{d.note}</td>
+                    <td className="text-right tabular-nums">{d.revenue == null ? "—" : fmtTL(d.revenue)}</td>
+                    <td className="text-right tabular-nums">{d.directCost == null ? "—" : fmtTL(d.directCost)}</td>
+                    <td className="text-right tabular-nums">
+                      {d.unmeasurableReason == null ? marginCell(d.margin, null) : "—"}
+                    </td>
+                    <td className="text-xs text-neutral-400">
+                      <Badge tone={d.unmeasurableReason == null ? "green" : "neutral"}>
+                        {d.unmeasurableReason == null ? "ölçüldü" : "ölçülemiyor"}
+                      </Badge>{" "}
+                      <span>{d.note}</span>
+                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -289,6 +320,41 @@ export default async function ProfitabilityPage() {
       ) : null}
 
       <Panel title="MASRAF DAĞITIM KURALLARI" subtitle="veri olarak yapılandırılır — yalnız yönetici değiştirir">
+        {sp.error ? <div className="mb-2 rounded border border-neg/40 bg-neg/10 p-2 text-xs text-neg">{sp.error}</div> : null}
+        {sp.result ? <div className="mb-2 rounded border border-pos/40 bg-pos/10 p-2 text-xs text-pos">{sp.result}</div> : null}
+        {canUpdateRules && rules.length > 0 ? (
+          <details className="mb-3 rounded border border-line-faint p-2">
+            <summary className="cursor-pointer font-mono text-xs font-semibold">Dağıtım kuralı güncelle</summary>
+            <form action={updateAllocationRuleAction} className="mt-2 grid grid-cols-1 gap-2 text-xs sm:grid-cols-5">
+              <select name="code" required className="rounded border border-line-faint bg-transparent px-2 py-1">
+                {rules.map((r) => (
+                  <option key={r.code} value={r.code}>{r.code} · {r.description}</option>
+                ))}
+              </select>
+              <select name="allocationBasis" required className="rounded border border-line-faint bg-transparent px-2 py-1">
+                {(Object.keys(BASIS_LABEL) as AllocationBasis[]).map((b) => (
+                  <option key={b} value={b}>{BASIS_LABEL[b]}</option>
+                ))}
+              </select>
+              <input
+                name="fixedPercentPct"
+                type="number"
+                step="0.1"
+                min="0"
+                max="100"
+                placeholder="Sabit pay % (0-100)"
+                className="rounded border border-line-faint bg-transparent px-2 py-1"
+              />
+              <select name="isActive" defaultValue="true" className="rounded border border-line-faint bg-transparent px-2 py-1">
+                <option value="true">aktif</option>
+                <option value="false">pasif</option>
+              </select>
+              <button className="rounded border border-line-faint px-2 py-1 hover:bg-white/5">
+                Kuralı kaydet
+              </button>
+            </form>
+          </details>
+        ) : null}
         <TableShell>
           <table className="w-full text-sm">
             <thead>

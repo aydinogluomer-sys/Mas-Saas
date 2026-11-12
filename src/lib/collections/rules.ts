@@ -1,4 +1,4 @@
-// Faz 23 — collection risk and payment prioritisation. Pure & deterministic, no DB, no IO.
+// Faz 23 & Faz 46 (C3) — collection risk and payment prioritisation. Pure & deterministic, no DB, no IO.
 //
 // EXPLICITLY NOT A MODEL. implementation.md asks for "deterministik sezgi (ML değil)", and the
 // reason is not squeamishness about statistics: a finance operator deciding whether to chase a
@@ -47,20 +47,8 @@ function daysBetween(fromISO: string, toISO: string): number {
 }
 
 /**
- * When this invoice is realistically expected to be collected.
- *
- * Rule order, first match wins:
- *   1. The counterparty has settled at least 3 invoices → issue date + their observed average.
- *      Three is a deliberate floor: an average over one invoice is an anecdote, and dressing it
- *      up as a forecast is exactly the false confidence this phase is supposed to avoid.
- *   2. There is a due date → the due date. The counterparty's own promise is the next best
- *      evidence available.
- *   3. Neither → issue date + 30 as a stated convention, labelled as a fallback so a reader
- *      knows it is not evidence.
- *
- * The result is never earlier than today for an unpaid invoice: an "expected" date in the past
- * is not an expectation, it is an overdue notice, and clamping keeps the column meaning one
- * thing. `basis` always says which rule fired.
+ * Legacy Faz 23 expected collection date (kept intact for phase23:verify backward compatibility).
+ * Production read models use `expectedCollectionDateV2` below to eliminate the "Today Cliff".
  */
 export function expectedCollectionDate(s: CollectionSignals, todayISO: string): ExpectedCollection {
   let expected: string | null = null;
@@ -79,6 +67,165 @@ export function expectedCollectionDate(s: CollectionSignals, todayISO: string): 
 
   if (expected < todayISO) expected = todayISO;
   return { expectedDate: expected, basis, daysFromToday: daysBetween(todayISO, expected) };
+}
+
+/* ── Faz 46 (C3): 5-Tier Behavioral Expected Collection Date V2 (Zero "Today Cliff") ─── */
+
+export type CollectionBucketV2 =
+  | "doubtful_excluded"
+  | "promised"
+  | "behavioral_dbt"
+  | "scheduled"
+  | "overdue_unscheduled";
+
+export const COLLECTION_BUCKET_V2_LABEL: Record<CollectionBucketV2, string> = {
+  doubtful_excluded: "Şüpheli Alacak (Tahminden Hariç)",
+  promised: "Aktif Ödeme Sözü",
+  behavioral_dbt: "Davranışsal DBT Tahmini",
+  scheduled: "Planlı Vade",
+  overdue_unscheduled: "Takvime Bağlanmamış Gecikmiş Alacak",
+};
+
+export interface CollectionSignalsV2 extends CollectionSignals {
+  /** Active unbroken promise_to_pay date (status = 'pending' AND promised_date >= todayISO). */
+  activePromiseDate?: string | null;
+  /** Observed settled-invoice DBT (days beyond terms = allocated_on - due_date) samples. */
+  partyDbtSamples?: readonly number[];
+}
+
+export interface ExpectedCollectionV2Options {
+  /** 'median' (P50) standard or 'p75' conservative mode. */
+  mode?: "median" | "p75";
+  /** Default collection lag added to unmatured scheduled invoices (default 0). */
+  defaultLagDays?: number;
+}
+
+export interface ExpectedCollectionV2 {
+  projectedDate: string | null;
+  expectedDate: string | null;
+  bucket: CollectionBucketV2;
+  basis:
+    | "bad_debt_excluded"
+    | "active_promise"
+    | "behavioral_dbt_median"
+    | "behavioral_dbt_p75"
+    | "scheduled_due_date"
+    | "scheduled_issue_fallback"
+    | "overdue_unscheduled";
+  daysFromToday: number | null;
+  appliedDbtDays: number | null;
+}
+
+/** Deterministic percentile (P50 median / P75 conservative) rounded to integer days. */
+export function computeDbtPercentileDays(
+  samples: readonly number[],
+  mode: "median" | "p75" = "median",
+): number | null {
+  const clean = samples.filter((n) => Number.isFinite(n)).slice().sort((a, b) => a - b);
+  if (clean.length < 3) return null;
+  const p = mode === "p75" ? 0.75 : 0.5;
+  const pos = p * (clean.length - 1);
+  const lo = Math.floor(pos);
+  const hi = Math.ceil(pos);
+  const interpolated = clean[lo] + (pos - lo) * (clean[hi] - clean[lo]);
+  return Math.round(interpolated);
+}
+
+/**
+ * 5-Tier Deterministic Behavioral Collection Date (`expectedCollectionDateV2`):
+ *   1. `badDebtFlagged === true` -> `projectedDate: null, bucket: "doubtful_excluded"`
+ *   2. Active unbroken `promise_to_pay` (`activePromiseDate >= todayISO`) -> `promised_date` (`bucket: "promised"`)
+ *   3. At least 3 settled invoice DBT samples -> `anchorDue + median/P75 DBT` if `>= todayISO` (`bucket: "behavioral_dbt"`)
+ *   4. Not-yet-due invoice (`dueDate >= todayISO` or fallback `issueDate + 30 >= todayISO`) -> `+ defaultLagDays` (`bucket: "scheduled"`)
+ *   5. Overdue open invoice whose expected date is strictly before `todayISO` -> NEVER clamped onto `todayISO`;
+ *      returned as `projectedDate: null, bucket: "overdue_unscheduled"` ("Takvime Bağlanmamış Gecikmiş Alacak").
+ */
+export function expectedCollectionDateV2(
+  s: CollectionSignalsV2,
+  todayISO: string,
+  options: ExpectedCollectionV2Options = {},
+): ExpectedCollectionV2 {
+  const mode = options.mode ?? "median";
+  const defaultLag = Math.max(0, Math.round(options.defaultLagDays ?? 0));
+
+  // Tier 1: Doubtful / bad-debt flagged receivable -> excluded from 7d/30d cash inflow forecast.
+  if (s.badDebtFlagged) {
+    return {
+      projectedDate: null,
+      expectedDate: null,
+      bucket: "doubtful_excluded",
+      basis: "bad_debt_excluded",
+      daysFromToday: null,
+      appliedDbtDays: null,
+    };
+  }
+
+  // Tier 2: Active unbroken promise-to-pay.
+  if (s.activePromiseDate && s.activePromiseDate >= todayISO) {
+    return {
+      projectedDate: s.activePromiseDate,
+      expectedDate: s.activePromiseDate,
+      bucket: "promised",
+      basis: "active_promise",
+      daysFromToday: daysBetween(todayISO, s.activePromiseDate),
+      appliedDbtDays: null,
+    };
+  }
+
+  // Tier 3: Counterparty behavioral DBT (Days Beyond Terms) when >= 3 settled samples exist.
+  const dbtDays = computeDbtPercentileDays(s.partyDbtSamples ?? [], mode);
+  if (dbtDays !== null) {
+    const anchorDue = s.dueDate ?? addDays(s.issueDate, 30);
+    const dbtProjected = addDays(anchorDue, dbtDays);
+    if (dbtProjected >= todayISO) {
+      return {
+        projectedDate: dbtProjected,
+        expectedDate: dbtProjected,
+        bucket: "behavioral_dbt",
+        basis: mode === "p75" ? "behavioral_dbt_p75" : "behavioral_dbt_median",
+        daysFromToday: daysBetween(todayISO, dbtProjected),
+        appliedDbtDays: dbtDays,
+      };
+    }
+  }
+
+  // Tier 4: Unmatured scheduled invoice.
+  if (s.dueDate != null) {
+    if (s.dueDate >= todayISO) {
+      const scheduled = addDays(s.dueDate, defaultLag);
+      return {
+        projectedDate: scheduled,
+        expectedDate: scheduled,
+        bucket: "scheduled",
+        basis: "scheduled_due_date",
+        daysFromToday: daysBetween(todayISO, scheduled),
+        appliedDbtDays: null,
+      };
+    }
+  } else {
+    const fallbackDue = addDays(s.issueDate, 30);
+    if (fallbackDue >= todayISO) {
+      const scheduled = addDays(fallbackDue, defaultLag);
+      return {
+        projectedDate: scheduled,
+        expectedDate: scheduled,
+        bucket: "scheduled",
+        basis: "scheduled_issue_fallback",
+        daysFromToday: daysBetween(todayISO, scheduled),
+        appliedDbtDays: null,
+      };
+    }
+  }
+
+  // Tier 5: Overdue and past behavioral horizon -> never piled onto todayISO ("Today Cliff" eliminated).
+  return {
+    projectedDate: null,
+    expectedDate: null,
+    bucket: "overdue_unscheduled",
+    basis: "overdue_unscheduled",
+    daysFromToday: null,
+    appliedDbtDays: dbtDays,
+  };
 }
 
 /* ── collection probability ───────────────────────────────────────────────────────────── */

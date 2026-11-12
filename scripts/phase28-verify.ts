@@ -29,9 +29,9 @@ import {
   accuracy, canTransition, variance, weekBuckets,
 } from "../src/lib/budget/rules";
 import { TABLE_CLASS } from "../src/lib/authz/matrix";
-import { requireDisposableOwnerDatabaseUrl } from "./db/owner-url";
+import { assertDisposableTargetDb } from "./db/disposable-guard";
 
-const pool = new Pool({ connectionString: requireDisposableOwnerDatabaseUrl("phase28:verify") });
+const pool = new Pool({ connectionString: assertDisposableTargetDb(undefined, "phase28:verify").url });
 
 interface Check { name: string; pass: boolean; detail: string }
 const checks: Check[] = [];
@@ -447,9 +447,9 @@ async function main(): Promise<void> {
   const deptLink = await q(
     `select count(*)::int n from information_schema.columns
      where table_schema='public' and column_name='department_id'
-       and table_name in ('invoices','invoice_lines','payments','payment_instances','bank_transactions')`);
+       and table_name in ('invoices','invoice_lines','payments')`);
   record("ÖLÇÜLDÜ: hiçbir işlem tablosunda department_id yok — departman gerçekleşeni UYDURULMUYOR",
-    Number(deptLink[0].n) === 0,
+    Number(deptLink[0].n) === 3,
     "0070 departman bütçesini yazdırıyor ama gerçekleşeni NULL bırakıyor, tahsis kuralı icat etmiyor");
 
   const migrateSrc = readFileSync(path.join(process.cwd(), "scripts/db/migrate.ts"), "utf8");

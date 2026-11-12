@@ -16,7 +16,9 @@ import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { Pool } from "pg";
-import { verifyBackupTarget, verifyRestoreListable, type BackupOptions, type BackupResult, type BackupTargetVerification, type BackupTargetVerificationResult } from "./backup-docker-postgres";
+import { type BackupOptions, type BackupResult, type BackupTargetVerification, type BackupTargetVerificationResult } from "./backup-docker-postgres";
+import { createBackupAdapter } from "./backup-adapter";
+import { assertLocalPgReachable, createDisposableLocalDb, dropDisposableLocalDb, dumpDatabaseToFileLocal, resolveLocalOwnerUrl, restoreIntoDisposableLocalDb } from "./pg-local-admin";
 import { runBackupReceipt, type BackupReceiptDeps, type BackupReceiptParams } from "./backup-receipt";
 import { assertApplyGitProvenance } from "./legacy-repair-apply";
 import { getSystemActorId } from "./seed-system-actor";
@@ -52,7 +54,7 @@ import {
 } from "./legacy-repair-types";
 
 const ROOT = process.cwd();
-const CONTAINER = process.env.MAS_DB_CONTAINER ?? "mas-radar-pg";
+const CONTAINER = "native:127.0.0.1:5432";
 const TSX_CLI = path.join(ROOT, "node_modules", "tsx", "dist", "cli.mjs");
 const MIGRATE_SCRIPT = path.join(ROOT, "scripts", "db", "migrate.ts");
 const INVENTORY_SCRIPT = path.join(ROOT, "scripts", "db", "legacy-repair-inventory.ts");
@@ -98,25 +100,17 @@ function assertSafeDisposableName(name: string, context: string): void {
   }
 }
 
-function docker(args: string[], opts: { input?: string | Buffer } = {}): string {
-  return execFileSync("docker", args, { input: opts.input, encoding: "utf8", maxBuffer: 128 * 1024 * 1024 });
-}
 function assertContainerReachable(): void {
-  try {
-    docker(["exec", CONTAINER, "pg_isready", "-U", "postgres", "-q"]);
-  } catch {
-    console.error(`PostgreSQL konteyneri (${CONTAINER}) erişilebilir değil. Bu script onu otomatik başlatmaz.`);
-    process.exit(1);
-  }
+  assertLocalPgReachable();
 }
 function dropDb(db: string): void {
-  docker(["exec", CONTAINER, "dropdb", "-U", "postgres", "--if-exists", db]);
+  dropDisposableLocalDb(db);
 }
 function createDb(db: string): void {
-  docker(["exec", CONTAINER, "createdb", "-U", "postgres", db]);
+  createDisposableLocalDb(db);
 }
 function dbUrl(db: string): string {
-  return `postgres://postgres:postgres@127.0.0.1:5432/${db}`;
+  return resolveLocalOwnerUrl(db);
 }
 function findLatestManagedFixtureDump(): string {
   const dir = path.join(ROOT, "backups");
@@ -127,9 +121,7 @@ function findLatestManagedFixtureDump(): string {
 function restoreManagedFixture(db: string): void {
   dropDb(db);
   createDb(db);
-  docker(["exec", "-i", CONTAINER, "pg_restore", "-U", "postgres", "-d", db, "--no-owner", "--role=postgres"], {
-    input: readFileSync(findLatestManagedFixtureDump()),
-  });
+  restoreIntoDisposableLocalDb(db, findLatestManagedFixtureDump(), { extraArgs: ["--role=postgres"], strict: true });
 }
 interface RunResult { code: number; stdout: string; stderr: string; }
 
@@ -784,14 +776,14 @@ async function runMainBody(): Promise<void> {
     // expectation, proving it correctly discriminates a cluster-identity mismatch.
     record("verifyBackupTarget: container'ın gerçek system_identifier'ı yanlış bir expectedSystemIdentifier ile karşılaştırıldığında reddeder (cluster-binding çekirdek mantığı)", (() => {
       try {
-        verifyBackupTarget({ container: CONTAINER, dbName: DB, expectedSystemIdentifier: "1".repeat(19) });
+        createBackupAdapter({ ownerUrl: dbUrl(DB) }).verifyTarget(DB, "1".repeat(19));
         return false;
       } catch (e) {
         return (e as Error).message.includes("Cluster kimliği eşleşmedi");
       }
     })());
     record("verifyBackupTarget: doğru expectedSystemIdentifier ile gerçek container+DB üzerinden başarıyla geçer", (() => {
-      const result = verifyBackupTarget({ container: CONTAINER, dbName: DB, expectedSystemIdentifier: SYSTEM_IDENTIFIER });
+      const result = createBackupAdapter({ ownerUrl: dbUrl(DB) }).verifyTarget(DB, SYSTEM_IDENTIFIER);
       return result.containerDatabaseName === DB && result.containerSystemIdentifier === SYSTEM_IDENTIFIER;
     })());
     record("backup-receipt.ts: verifyTarget() (varsayılanı gerçek verifyBackupTarget olan DI noktası) kaynak kodda pre-dump ve post-dump olarak en az iki kez çağrılıyor", (() => {
@@ -953,7 +945,7 @@ async function runMainBody(): Promise<void> {
       const garbagePath = path.join(TMP, "garbage-not-a-dump.bin");
       writeFileSync(garbagePath, Buffer.from("bu bir pg_dump dosyası değil, rastgele veri".repeat(50), "utf8"));
       try {
-        verifyRestoreListable(CONTAINER, garbagePath);
+        createBackupAdapter({ ownerUrl: dbUrl(DB) }).verifyRestoreListable(garbagePath);
         return false;
       } catch {
         return true;
@@ -961,14 +953,9 @@ async function runMainBody(): Promise<void> {
     })());
     record("verifyRestoreListable: kritik tablo eksik GERÇEK dump reddedilir (payment_instances --exclude-table ile üretildi)", (() => {
       const excludedDumpPath = path.join(TMP, "dump-missing-payment-instances.dump");
-      const dumpBuffer = execFileSync(
-        "docker",
-        ["exec", CONTAINER, "pg_dump", "-U", "postgres", "-Fc", "--exclude-table=public.payment_instances", DB],
-        { maxBuffer: 128 * 1024 * 1024 },
-      );
-      writeFileSync(excludedDumpPath, dumpBuffer);
+      dumpDatabaseToFileLocal(dbUrl(DB), excludedDumpPath, ["--exclude-table=public.payment_instances"]);
       try {
-        verifyRestoreListable(CONTAINER, excludedDumpPath, true);
+        createBackupAdapter({ ownerUrl: dbUrl(DB) }).verifyRestoreListable(excludedDumpPath, true);
         return false;
       } catch (e) {
         return (e as Error).message.includes("payment_instances");
@@ -976,13 +963,8 @@ async function runMainBody(): Promise<void> {
     })());
     record("verifyRestoreListable: requireCriticalTables=false (varsayılan) iken kritik tablo eksik dump reddedilmez, yalnız false raporlanır (migrate.ts'in ön-migrasyon backup'ları için)", (() => {
       const excludedDumpPath = path.join(TMP, "dump-missing-payment-instances-lenient.dump");
-      const dumpBuffer = execFileSync(
-        "docker",
-        ["exec", CONTAINER, "pg_dump", "-U", "postgres", "-Fc", "--exclude-table=public.payment_instances", DB],
-        { maxBuffer: 128 * 1024 * 1024 },
-      );
-      writeFileSync(excludedDumpPath, dumpBuffer);
-      const result = verifyRestoreListable(CONTAINER, excludedDumpPath);
+      dumpDatabaseToFileLocal(dbUrl(DB), excludedDumpPath, ["--exclude-table=public.payment_instances"]);
+      const result = createBackupAdapter({ ownerUrl: dbUrl(DB) }).verifyRestoreListable(excludedDumpPath);
       return result.criticalTablesPresent.paymentInstances === false
         && result.criticalTablesPresent.payments === true
         && result.criticalTablesPresent.auditLogs === true

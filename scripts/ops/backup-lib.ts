@@ -31,6 +31,7 @@ import {
   readdirSync, renameSync, statSync, unlinkSync, writeSync,
 } from "node:fs";
 import path from "node:path";
+import { gzipSync } from "node:zlib";
 import { attemptDirectoryFsync, type DurabilityMetadata } from "../db/legacy-repair-types";
 import {
   decideUsbPhysicalVolume, parsePhysicalDiskJson, type PhysicalDiskIdentity,
@@ -54,6 +55,192 @@ export function sha256OfFile(filePath: string): string {
 export interface PgVersions {
   pgVersion: string;
   pgDumpVersion: string;
+}
+
+/* ── doküman kasası deterministik tar.gz + SHA-256 manifesti (Faz 43 / B3) ──────────────── */
+
+export interface DocumentManifestEntry {
+  relativePath: string;
+  bytes: number;
+  sha256: string;
+}
+
+export interface DocumentVaultArchiveResult {
+  archivePath: string;
+  archiveBytes: number;
+  archiveSha256: string;
+  manifestPath: string;
+  manifestSha256: string;
+  fileCount: number;
+  totalSourceBytes: number;
+  entries: DocumentManifestEntry[];
+}
+
+const DOC_COMPANION_SUFFIXES = ["-documents.tar.gz", "-documents.manifest.json"] as const;
+
+export function documentCompanionPaths(dumpPath: string): string[] {
+  const stem = dumpPath.replace(/\.dump$/i, "");
+  return DOC_COMPANION_SUFFIXES.map((suffix) => `${stem}${suffix}`);
+}
+
+function collectVaultFiles(rootDir: string, currentDir: string, out: string[]): void {
+  const entries = readdirSync(currentDir, { withFileTypes: true });
+  for (const entry of entries) {
+    if (entry.name.includes(".tmp-")) continue;
+    const full = path.join(currentDir, entry.name);
+    if (entry.isDirectory()) {
+      collectVaultFiles(rootDir, full, out);
+    } else if (entry.isFile()) {
+      const rel = path.relative(rootDir, full).split(path.sep).join("/");
+      out.push(rel);
+    }
+  }
+}
+
+function writeOctalField(header: Buffer, offset: number, length: number, value: number): void {
+  const oct = Math.max(0, Math.trunc(value)).toString(8).padStart(length - 1, "0");
+  header.write(oct.slice(0, length - 1), offset, length - 1, "ascii");
+  header[offset + length - 1] = 0;
+}
+
+function buildTarHeader(name: string, size: number, typeflag: string, prefix = ""): Buffer {
+  const header = Buffer.alloc(512, 0);
+  header.write(name, 0, Math.min(100, Buffer.byteLength(name, "utf8")), "utf8");
+  writeOctalField(header, 100, 8, 0o644);
+  writeOctalField(header, 108, 8, 0);
+  writeOctalField(header, 116, 8, 0);
+  writeOctalField(header, 124, 12, size);
+  // Sabit mtime=0: aynı dosya ağacı iki ayrı okumada bit-bit aynı tar.gz SHA-256 üretir.
+  writeOctalField(header, 136, 12, 0);
+  header.fill(0x20, 148, 156); // chksum alanı önce boşlukla doldurulur
+  header.write(typeflag, 156, 1, "ascii");
+  header.write("ustar\0", 257, 6, "ascii");
+  header.write("00", 263, 2, "ascii");
+  if (prefix) {
+    header.write(prefix, 345, Math.min(155, Buffer.byteLength(prefix, "utf8")), "utf8");
+  }
+  let sum = 0;
+  for (let i = 0; i < 512; i += 1) sum += header[i]!;
+  const chk = sum.toString(8).padStart(6, "0");
+  header.write(chk, 148, 6, "ascii");
+  header[154] = 0;
+  header[155] = 0x20;
+  return header;
+}
+
+function encodeTarEntry(posixRelPath: string, content: Buffer): Buffer[] {
+  const chunks: Buffer[] = [];
+  const pathBytes = Buffer.from(posixRelPath, "utf8");
+  let headerName = posixRelPath;
+  let headerPrefix = "";
+
+  if (pathBytes.length > 100) {
+    const slashIdx = posixRelPath.lastIndexOf("/");
+    const canSplitUstar =
+      slashIdx > 0 &&
+      Buffer.byteLength(posixRelPath.slice(0, slashIdx), "utf8") <= 155 &&
+      Buffer.byteLength(posixRelPath.slice(slashIdx + 1), "utf8") <= 100;
+    if (canSplitUstar) {
+      headerPrefix = posixRelPath.slice(0, slashIdx);
+      headerName = posixRelPath.slice(slashIdx + 1);
+    } else {
+      const longLinkPayload = Buffer.concat([pathBytes, Buffer.from([0])]);
+      chunks.push(buildTarHeader("././@LongLink", longLinkPayload.length, "L"));
+      chunks.push(longLinkPayload);
+      const padLen = (512 - (longLinkPayload.length % 512)) % 512;
+      if (padLen > 0) chunks.push(Buffer.alloc(padLen, 0));
+      headerName = pathBytes.subarray(0, 100).toString("utf8");
+    }
+  }
+
+  chunks.push(buildTarHeader(headerName, content.length, "0", headerPrefix));
+  if (content.length > 0) {
+    chunks.push(content);
+    const padLen = (512 - (content.length % 512)) % 512;
+    if (padLen > 0) chunks.push(Buffer.alloc(padLen, 0));
+  }
+  return chunks;
+}
+
+function writeBufferAtomic(destPath: string, data: Buffer): void {
+  const dir = path.dirname(destPath);
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+  const tempPath = `${destPath}.tmp-${process.pid}-${Date.now()}`;
+  const fd = openSync(tempPath, "wx");
+  try {
+    let written = 0;
+    while (written < data.length) {
+      written += writeSync(fd, data, written, data.length - written);
+    }
+    fsyncSync(fd);
+  } finally {
+    closeSync(fd);
+  }
+  if (existsSync(destPath)) unlinkSync(destPath);
+  renameSync(tempPath, destPath);
+  attemptDirectoryFsync(dir);
+}
+
+/**
+ * Doküman kasasını (`MAS_DOCUMENT_STORAGE_DIR`) deterministik bir POSIX `.tar.gz` arşivine ve
+ * dosya bazlı SHA-256 manifestine paketler. Temp + fsync + atomik rename zincirini kullanır.
+ */
+export function archiveDocumentVault(storageDir: string, dumpPath: string): DocumentVaultArchiveResult {
+  const resolvedStorage = path.resolve(storageDir);
+  if (!existsSync(resolvedStorage)) {
+    throw new Error(`Doküman kasası dizini bulunamadı: ${resolvedStorage}`);
+  }
+  const [archivePath, manifestPath] = documentCompanionPaths(dumpPath);
+  const relFiles: string[] = [];
+  collectVaultFiles(resolvedStorage, resolvedStorage, relFiles);
+  relFiles.sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+
+  const tarChunks: Buffer[] = [];
+  const entries: DocumentManifestEntry[] = [];
+  let totalSourceBytes = 0;
+
+  for (const rel of relFiles) {
+    const abs = path.join(resolvedStorage, ...rel.split("/"));
+    const content = readFileSync(abs);
+    const sha256 = createHash("sha256").update(content).digest("hex");
+    entries.push({ relativePath: rel, bytes: content.length, sha256 });
+    totalSourceBytes += content.length;
+    tarChunks.push(...encodeTarEntry(rel, content));
+  }
+  tarChunks.push(Buffer.alloc(1024, 0)); // iki adet 512 bayt sıfır sonlandırma bloğu
+
+  const gz = Buffer.from(gzipSync(Buffer.concat(tarChunks), { level: 6 }));
+  if (gz.length >= 10) {
+    // Gzip başlığındaki OS baytını (offset 9) platformdan bağımsız (0xff = unknown) sabitle.
+    gz[9] = 0xff;
+  }
+  writeBufferAtomic(archivePath, gz);
+
+  const archiveBytes = statSync(archivePath).size;
+  const archiveSha256 = sha256OfFile(archivePath);
+
+  const manifestPayload = {
+    manifestKind: "mas-document-vault-manifest-v1",
+    archiveFile: path.basename(archivePath),
+    archiveBytes,
+    archiveSha256,
+    fileCount: entries.length,
+    totalSourceBytes,
+    files: entries,
+  };
+  writeBufferAtomic(manifestPath, Buffer.from(`${JSON.stringify(manifestPayload, null, 2)}\n`, "utf8"));
+  const manifestSha256 = sha256OfFile(manifestPath);
+
+  return {
+    archivePath: path.resolve(archivePath),
+    archiveBytes,
+    archiveSha256,
+    manifestPath: path.resolve(manifestPath),
+    manifestSha256,
+    fileCount: entries.length,
+    totalSourceBytes,
+    entries,
+  };
 }
 
 /* ── off-device hedef sınıflandırması ────────────────────────────────────────────────────── */
@@ -426,16 +613,20 @@ export function copyToTargetVerified(
     );
   }
 
-  // Makbuz ve yan dosyalar da gitmeli: hash'i olan ama makbuzu olmayan bir kopya, hangi
-  // kümeden/hangi commit'ten geldiğini söyleyemez.
+  // Makbuz, yan dosyalar ve doküman kasası arşiv çifti (-documents.tar.gz / -documents.manifest.json)
+  // birlikte kopyalanır ve hedefte SHA-256 doğrulamasından geçer.
   const sidecarsCopied: string[] = [];
-  for (const suffix of [".receipt.json", ".stage07.json"]) {
-    const sidecar = `${sourcePath}${suffix}`;
+  const candidateCompanions = [
+    `${sourcePath}.receipt.json`,
+    `${sourcePath}.stage07.json`,
+    ...documentCompanionPaths(sourcePath),
+  ];
+  for (const sidecar of candidateCompanions) {
     if (!existsSync(sidecar)) continue;
     const copied = copyOneVerified(sidecar, destDir);
-    if (copied.destSha256 !== copied.sourceSha256) {
+    if (copied.destSha256 !== copied.sourceSha256 || copied.destBytes !== copied.sourceBytes) {
       try { unlinkSync(copied.destPath); } catch { /* zaten yok */ }
-      throw new Error(`Yan dosya kopyası eşleşmedi (silindi): ${sidecar}`);
+      throw new Error(`Yan dosya / doküman arşivi kopyası eşleşmedi (silindi): ${sidecar}`);
     }
     sidecarsCopied.push(path.basename(copied.destPath));
   }
@@ -538,9 +729,10 @@ export function listDumps(dir: string): DumpEntry[] {
     const markerPath = `${fullPath}.immutable`;
     const byName = classifyRetention(name);
     const hasMarker = existsSync(markerPath);
-    const sidecars = SIDECAR_SUFFIXES
-      .map((s) => `${fullPath}${s}`)
-      .filter((p) => existsSync(p));
+    const sidecars = [
+      ...SIDECAR_SUFFIXES.map((s) => `${fullPath}${s}`),
+      ...documentCompanionPaths(fullPath),
+    ].filter((p) => existsSync(p));
     return {
       name,
       fullPath,
@@ -672,8 +864,10 @@ export function executePrune(plan: PrunePlan): PruneExecution {
     }
     try {
       for (const sidecar of d.entry.sidecars) {
+        const sidecarBytes = existsSync(sidecar) ? statSync(sidecar).size : 0;
         unlinkSync(sidecar);
         result.deletedSidecars.push(sidecar);
+        result.bytesFreed += sidecarBytes;
       }
       unlinkSync(d.entry.fullPath);
       result.deletedDumps.push(d.entry.fullPath);
@@ -683,6 +877,37 @@ export function executePrune(plan: PrunePlan): PruneExecution {
     }
   }
   return result;
+}
+
+/**
+ * `*.dump.unverified` karantina artıklarını minimum yaş sınırından (`minAgeHours`) sonra temizler.
+ * IMMUTABLE ad kalıbı taşıyan dosyalara hiçbir koşulda dokunmaz (`ENOSPC` önlemi).
+ */
+export function pruneUnverifiedQuarantinedDumps(
+  dir: string,
+  minAgeHours = DEFAULT_RETENTION.minAgeHours,
+  now: Date = new Date(),
+): { deleted: string[]; bytesFreed: number } {
+  if (!existsSync(dir)) return { deleted: [], bytesFreed: 0 };
+  const deleted: string[] = [];
+  let bytesFreed = 0;
+  for (const name of readdirSync(dir)) {
+    if (!name.endsWith(".dump.unverified")) continue;
+    const baseDumpName = name.replace(/\.unverified$/, "");
+    if (classifyRetention(baseDumpName).retentionClass === "immutable") continue;
+    const fullPath = path.join(dir, name);
+    try {
+      const st = statSync(fullPath);
+      const ageHours = (now.getTime() - st.mtime.getTime()) / 3_600_000;
+      if (ageHours < minAgeHours) continue;
+      unlinkSync(fullPath);
+      deleted.push(fullPath);
+      bytesFreed += st.size;
+    } catch {
+      /* geçici erişim hatası koşuyu düşürmez */
+    }
+  }
+  return { deleted, bytesFreed };
 }
 
 /* ── AŞAMA 07 makbuzu (rehber §12 Bölüm A'nın dokuz alanı) ───────────────────────────────── */
@@ -711,6 +936,11 @@ export interface Stage07Receipt {
    * sorusunu makbuzun kendisinden cevaplatır. Bağlantı dizesi ya da kullanıcı adı ASLA.
    */
   backup_source?: string;
+  /** Doküman kasası eşlikçi arşivi ve dosya bazlı SHA-256 manifesti (Faz 43 / B3). */
+  documents_archive_path?: string | null;
+  documents_archive_sha256?: string | null;
+  documents_manifest_path?: string | null;
+  documents_file_count?: number | null;
   /**
    * Makbuzu YAZAN koşunun commit'i — `git_sha` ile karıştırılmamalı.
    *

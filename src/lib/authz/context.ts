@@ -8,7 +8,7 @@
 // about who is signed in, and the two would eventually disagree.
 
 import { cache } from "react";
-import { getCurrentUser } from "@/lib/auth";
+import { getRequestUser } from "@/lib/auth";
 import { APP_ROLES, DB_ROLE, type AppRole } from "./matrix";
 
 export interface DbContext {
@@ -37,8 +37,11 @@ function isAppRole(value: string): value is AppRole {
  * hand to SET ROLE.
  */
 export const getDbContext = cache(async (): Promise<DbContext> => {
-  const user = await getCurrentUser();
+  const user = await getRequestUser();
   if (!user) return EMPTY;
+  // Wave 0 / Dalga 1 #1: sessions under forced password change (migration 0095) receive NO
+  // business DB tier. /change-password and changeOwnPassword operate exclusively on getRawPool().
+  if (user.mustChangePassword) return EMPTY;
   if (!isAppRole(user.role)) return EMPTY;
   return { dbRole: DB_ROLE[user.role], userId: user.id, role: user.role };
 });

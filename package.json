@@ -3,14 +3,17 @@
   "version": "0.1.0",
   "private": true,
   "packageManager": "pnpm@11.10.0",
+  "engines": {
+    "node": ">=22.0.0"
+  },
   "scripts": {
     "dev": "tsx scripts/ops/runtime-port-guard.ts --dev && tsx scripts/db/ensure.ts && tsx scripts/prepare-runtime.ts && next dev",
     "db:ensure": "tsx scripts/db/ensure.ts",
     "db:testsprite:reset": "tsx scripts/db/create-testsprite-db.ts",
     "dev:testsprite": "tsx scripts/start-testsprite.ts",
     "start:testsprite": "tsx scripts/start-testsprite.ts --production",
-    "build": "node --max-old-space-size=4096 node_modules/next/dist/bin/next build",
-    "start": "tsx scripts/ops/runtime-port-guard.ts --start && tsx scripts/db/ensure.ts && tsx scripts/prepare-runtime.ts && node --max-old-space-size=4096 node_modules/next/dist/bin/next start",
+    "build": "node --import tsx scripts/build-safe.ts",
+    "start": "tsx scripts/ops/runtime-port-guard.ts --start && tsx scripts/db/ensure.ts && tsx scripts/prepare-runtime.ts && node --experimental-strip-types --no-warnings scripts/ops/start-standalone.ts",
     "lint": "eslint",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
@@ -34,6 +37,7 @@
     "ops:telemetry:alerting:verify": "node --import tsx scripts/ops/telemetry-alerting-verify.ts",
     "ops:telemetry:watch": "node --import tsx scripts/ops/telemetry-watch.ts",
     "ops:telemetry:schedule": "node --import tsx scripts/ops/schedule-windows.ts --job telemetry",
+    "ops:worker:schedule": "node --import tsx scripts/ops/schedule-windows.ts --job worker",
     "perf:gate": "node --import tsx scripts/perf/perf-gate.ts",
     "perf:route-slo": "node --import tsx scripts/perf/route-slo.ts",
     "perf:write-slo": "node --import tsx scripts/perf/write-slo.ts",
@@ -127,7 +131,10 @@
     "import:enum-parity:v2": "node --import tsx scripts/import/v2-enum-parity.ts",
     "import:e2e:v2": "node --import tsx scripts/import/v2-import-e2e.ts",
     "import:currency-safety:v2": "node --import tsx scripts/import/v2-currency-safety.ts",
-    "import:concurrency:v2": "node --import tsx scripts/import/v2-concurrency-proof.ts"
+    "import:concurrency:v2": "node --import tsx scripts/import/v2-concurrency-proof.ts",
+    "ops:worker": "node --import tsx scripts/ops/background-worker.ts",
+    "ops:worker:once": "node --import tsx scripts/ops/background-worker.ts --once",
+    "ops:telegram:worker": "node --import tsx scripts/ops/telegram-assistant-worker.ts"
   },
   "dependencies": {
     "@next/env": "15.5.20",
@@ -139,22 +146,21 @@
     "big.js": "^7.0.1",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
-    "date-fns": "^4.4.0",
     "exceljs": "^4.4.0",
     "geist": "^1.7.2",
     "next": "15.5.20",
+    "pg": "^8.22.0",
     "react": "19.1.0",
     "react-dom": "19.1.0",
     "sonner": "^2.0.7",
     "tailwind-merge": "^3.6.0",
-    "xlsx": "^0.18.5",
+    "tsx": "^4.23.0",
     "zod": "^4.4.3"
   },
   "devDependencies": {
     "@eslint/eslintrc": "^3",
     "@playwright/test": "^1.61.1",
     "@tailwindcss/postcss": "^4",
-    "@testing-library/jest-dom": "^6.9.1",
     "@testing-library/react": "^16.3.2",
     "@types/big.js": "^7.0.0",
     "@types/node": "^20",
@@ -165,9 +171,7 @@
     "eslint": "^9",
     "eslint-config-next": "15.5.20",
     "jsdom": "^29.1.1",
-    "pg": "^8.22.0",
     "tailwindcss": "^4",
-    "tsx": "^4.23.0",
     "typescript": "^5",
     "vitest": "^4.1.9"
   }

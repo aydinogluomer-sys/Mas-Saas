@@ -1,0 +1,35 @@
+{
+  "artifactKind": "mas-p24b-clean-rc-build-v1",
+  "measuredAtUtc": "2026-09-03T10:16:01.698Z",
+  "gate": "SECTION 9-10",
+  "verdict": "PASS",
+  "rcWorktree": {
+    "path": "C:\\Users\\Trade Bilisim\\Mas-Saas-RC-c71366a",
+    "head": "c71366a775be079e61d9f842a8659cbc2caa9499",
+    "detached": true,
+    "gitStatusPorcelainLines": 0,
+    "trackedDiff": 0
+  },
+  "remoteAcceptedSha": "c71366a775be079e61d9f842a8659cbc2caa9499",
+  "remoteShaMatch": true,
+  "mainWorktreeUsedForRuntime": false,
+  "mainWorktreeModified": false,
+  "buildProvenance": {
+    "buildId": "tb2-ettRZ5LMTU5279w98",
+    "producedBy": "pnpm build",
+    "producedIn": "C:\\Users\\Trade Bilisim\\Mas-Saas-RC-c71366a",
+    "producedAtSourceSha": "c71366a775be079e61d9f842a8659cbc2caa9499",
+    "movedFromAnotherWorktree": false,
+    "chainOfCustody": "Attempt-01'de bu RC worktree icinde, bu SHA'da, temiz calisma agacinda uretildi. O andan bu yana RC HEAD degismedi, git status bos kaldi, tracked diff 0, .env.local sha256 ayni (2d71fcf8...). Baska worktree'den .next TASINMADI.",
+    "rebuiltThisAttempt": false,
+    "rebuildRationale": "Kaynak SHA ve calisma agaci bit-bazinda degismedigi icin yeniden derleme provenance'e bir sey eklemezdi. Runtime zaten baslatilmadi."
+  },
+  "qualityGates": {
+    "typecheck": "PASS",
+    "lint": "PASS",
+    "vitest": "PASS (66 dosya / 1428 test)",
+    "build": "PASS",
+    "measuredIn": "C:\\Users\\Trade Bilisim\\Mas-Saas-RC-c71366a",
+    "measuredAtSha": "c71366a"
+  }
+}

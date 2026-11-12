@@ -9,10 +9,10 @@ import { Pool } from "pg";
 import { importWorkbook } from "../src/lib/importers/workbook-importer";
 import { mapCashflowMonths } from "../src/lib/cashflow/engine";
 import { ensureSystemActor } from "./db/seed-system-actor";
-import { requireDisposableOwnerDatabaseUrl } from "./db/owner-url";
+import { assertDisposableTargetDb } from "./db/disposable-guard";
 
 const pool = new Pool({
-  connectionString: requireDisposableOwnerDatabaseUrl("phase9b:verify"),
+  connectionString: assertDisposableTargetDb(undefined, "phase9b:verify").url,
 });
 const fail = (m: string): never => { console.error("PHASE9B VERIFY FAIL:", m); process.exit(1); };
 const q = async (sql: string, p: unknown[] = []) => (await pool.query(sql, p)).rows;

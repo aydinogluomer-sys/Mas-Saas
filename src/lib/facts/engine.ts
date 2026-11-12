@@ -2,7 +2,7 @@ import type { Pool } from "pg";
 import { loadCashMonths } from "@/lib/cashflow/engine";
 import { loadApprovedExternalAssumptions, type ExternalAssumption } from "@/lib/external-assumptions/engine";
 import { loadMaturityItems } from "@/lib/financing/engine";
-import { moneyOrNull, sumMoney } from "@/lib/money";
+import { decimal, moneyOrNull, sumMoney } from "@/lib/money";
 import { loadCapacityModels, loadCostModels } from "@/lib/production/engine";
 import { priceMargin } from "@/lib/production/rules";
 import { monthSummary, overdueOpen } from "@/lib/radar/queries";
@@ -39,14 +39,163 @@ function monthDiff(fromMonthStart: string, toMonthStart: string): number {
   return (ty - fy) * 12 + (tm - fm);
 }
 
+/**
+ * Faz 46 (C3): Pure forward cash runway computation from `anchorMonth` (`YYYY-MM-01`) onward.
+ * Historical negative months strictly prior to `anchorMonth` never collapse forward runway to 0.
+ */
+export function computeForwardCashRunway(
+  months: ReadonlyArray<{ monthStart: string; closing: number | null }>,
+  anchorMonth: string,
+): {
+  horizonMonths: number;
+  runwayMonths: number;
+  zeroCashRunwayMonths: number;
+  firstForwardNegativeMonth: string | null;
+  severity: FactSeverity;
+  value: string;
+} {
+  const forwardMonths = months.filter((m) => m.monthStart >= anchorMonth);
+  const forwardProjection = buildProjection(
+    forwardMonths.map((m) => ({
+      monthStart: m.monthStart,
+      opening: null,
+      income: null,
+      expense: null,
+      closing: m.closing,
+    })),
+  );
+  const horizonMonths =
+    forwardMonths.length > 0
+      ? monthDiff(anchorMonth, forwardMonths[forwardMonths.length - 1].monthStart) + 1
+      : 0;
+  const runwayMonths =
+    forwardProjection.firstNegativeMonth == null
+      ? horizonMonths
+      : Math.max(0, monthDiff(anchorMonth, forwardProjection.firstNegativeMonth));
+  const severity: FactSeverity =
+    forwardProjection.firstNegativeMonth == null
+      ? "low"
+      : runwayMonths <= 1
+        ? "critical"
+        : runwayMonths <= 3
+          ? "high"
+          : "medium";
+  const value =
+    forwardProjection.firstNegativeMonth == null ? `${runwayMonths}+ ay` : `${runwayMonths} ay`;
+
+  return {
+    horizonMonths,
+    runwayMonths,
+    zeroCashRunwayMonths: runwayMonths,
+    firstForwardNegativeMonth: forwardProjection.firstNegativeMonth,
+    severity,
+    value,
+  };
+}
+
+export interface DualCashRunwayResult {
+  /** 13 haftalık (91 günlük) günlük eğride kasa alt limitinin (`minCashFloor`) delindiği ilk güne kalan gün sayısı (`null` = açılış bakiyesi bilinmiyor) */
+  floorRunwayDays: number | null;
+  floorBreached: boolean | null;
+  firstFloorBreachDate: string | null;
+  floorRunwayValue: string;
+  /** 36 aylık ileri eğride (`monthStart >= anchorMonth`) kasanın `< 0` olduğu ilk aya kalan ay sayısı */
+  zeroCashRunwayMonths: number;
+  horizonMonths: number;
+  firstForwardNegativeMonth: string | null;
+  zeroCashRunwayValue: string;
+  severity: FactSeverity;
+}
+
+/**
+ * Faz 55 (F2): Çift İleri Nakit Pisti (`Dual Runway` — `floorRunwayDays` & `zeroCashRunwayMonths`).
+ * - `floorRunwayDays`: 13 haftalık (91 günlük) günlük eğride `minCashFloor` alt limitinin delindiği ilk güne kalan gün sayısı.
+ * - `zeroCashRunwayMonths`: 36 aylık ileri eğride (`monthStart >= anchorMonth`) kasanın `< 0` olduğu ilk aya kalan ay sayısı.
+ */
+export function computeDualCashRunway(input: {
+  months: ReadonlyArray<{ monthStart: string; closing: number | null }>;
+  anchorMonth: string;
+  todayISO: string;
+  openingCash: number | null;
+  minCashFloor?: number | null;
+  datedFlows?: ReadonlyArray<{ dateISO: string; signedAmount: number }>;
+}): DualCashRunwayResult {
+  const monthly = computeForwardCashRunway(input.months, input.anchorMonth);
+
+  if (input.openingCash === null || !Number.isFinite(input.openingCash)) {
+    return {
+      floorRunwayDays: null,
+      floorBreached: null,
+      firstFloorBreachDate: null,
+      floorRunwayValue: "—",
+      zeroCashRunwayMonths: monthly.zeroCashRunwayMonths,
+      horizonMonths: monthly.horizonMonths,
+      firstForwardNegativeMonth: monthly.firstForwardNegativeMonth,
+      zeroCashRunwayValue: monthly.value,
+      severity: monthly.severity,
+    };
+  }
+
+  const floorDec = decimal(input.minCashFloor ?? 0);
+  const flowsByDate = new Map<string, ReturnType<typeof decimal>>();
+  for (const f of input.datedFlows ?? []) {
+    if (!f.dateISO || !Number.isFinite(f.signedAmount)) continue;
+    flowsByDate.set(f.dateISO, (flowsByDate.get(f.dateISO) ?? decimal(0)).plus(decimal(f.signedAmount)));
+  }
+
+  let runningDec = decimal(input.openingCash);
+  let firstFloorBreachDate: string | null = null;
+  let floorRunwayDays = 91;
+  let floorBreached = false;
+
+  for (let d = 0; d <= 90; d += 1) {
+    const dt = addDays(input.todayISO, d);
+    const delta = flowsByDate.get(dt);
+    if (delta) {
+      runningDec = runningDec.plus(delta);
+    }
+    if (runningDec.lt(floorDec)) {
+      floorBreached = true;
+      floorRunwayDays = d;
+      firstFloorBreachDate = dt;
+      break;
+    }
+  }
+
+  const floorRunwayValue = floorBreached ? `${floorRunwayDays} gün` : "91+ gün";
+  const floorSeverity: FactSeverity = !floorBreached
+    ? "low"
+    : floorRunwayDays <= 7
+      ? "critical"
+      : floorRunwayDays <= 30
+        ? "high"
+        : "medium";
+
+  const severityOrder: Record<FactSeverity, number> = { low: 0, medium: 1, high: 2, critical: 3 };
+  const combinedSeverity =
+    severityOrder[floorSeverity] > severityOrder[monthly.severity] ? floorSeverity : monthly.severity;
+
+  return {
+    floorRunwayDays,
+    floorBreached,
+    firstFloorBreachDate,
+    floorRunwayValue,
+    zeroCashRunwayMonths: monthly.zeroCashRunwayMonths,
+    horizonMonths: monthly.horizonMonths,
+    firstForwardNegativeMonth: monthly.firstForwardNegativeMonth,
+    zeroCashRunwayValue: monthly.value,
+    severity: combinedSeverity,
+  };
+}
+
 const EXTERNAL_TYPE_LABEL: Record<string, string> = {
-  interest_rate: "Faiz orani",
+  interest_rate: "Faiz oranı",
   fx_rate: "Kur",
   inflation_rate: "Enflasyon",
   personnel_cost: "Personel maliyeti",
   energy_cost: "Enerji maliyeti",
-  loan_rate: "Kredi orani",
-  other: "Diger varsayim",
+  loan_rate: "Kredi oranı",
+  other: "Diğer varsayım",
 };
 
 function externalValue(a: ExternalAssumption): string {
@@ -57,13 +206,13 @@ function externalValue(a: ExternalAssumption): string {
 
 function externalAssumptionFact(a: ExternalAssumption): DecisionFact {
   const label = EXTERNAL_TYPE_LABEL[a.assumption_type] ?? a.assumption_type;
-  const period = a.period_start ? ` Donem: ${a.period_start}${a.period_end ? `..${a.period_end}` : ""}.` : "";
+  const period = a.period_start ? ` Dönem: ${a.period_start}${a.period_end ? `..${a.period_end}` : ""}.` : "";
   return {
     key: `external_${a.assumption_type}`,
-    title: `Dis varsayim: ${label}`,
+    title: `Dış varsayım: ${label}`,
     value: externalValue(a),
     severity: "low",
-    explanation: `Onayli dis varsayim: ${a.label}. Kaynak: ${a.source_name} / ${a.source_date}.${period} Finansal kayit degistirmez.`,
+    explanation: `Onaylı dış varsayım: ${a.label}. Kaynak: ${a.source_name} / ${a.source_date}.${period} Finansal kayıt değiştirmez.`,
     confidence: "source",
     freshness: a.source_date,
     sourceHref: "/assumptions",
@@ -102,20 +251,7 @@ export async function loadDecisionFacts(pool: Pool, todayISO = istanbulDateISO()
 
   const projection = buildProjection(months);
   const anchorMonth = monthStart;
-  const horizonMonths = months.length > 0 ? monthDiff(anchorMonth, months[months.length - 1].monthStart) + 1 : 0;
-  const runwayMonths = projection.firstNegativeMonth == null
-    ? horizonMonths
-    : Math.max(0, monthDiff(anchorMonth, projection.firstNegativeMonth));
-  const runwaySeverity: FactSeverity = projection.firstNegativeMonth == null
-    ? "low"
-    : runwayMonths <= 1
-      ? "critical"
-      : runwayMonths <= 3
-        ? "high"
-        : "medium";
-  const runwayValue = projection.firstNegativeMonth == null
-    ? `${runwayMonths}+ ay`
-    : `${runwayMonths} ay`;
+  const runway = computeForwardCashRunway(months, anchorMonth);
   const debtPressureMonths = debtOverlay.filter((m) => m.pressure === "high").length;
   const next30Maturities = maturities.filter((m) => m.dueDate >= todayISO && m.dueDate <= next30 && m.direction === "outflow");
   // These two feed DecisionFacts the AI layer quotes verbatim, so an accumulated float tail
@@ -163,11 +299,11 @@ export async function loadDecisionFacts(pool: Pool, todayISO = istanbulDateISO()
     {
       key: "cash_runway",
       title: "Nakit runway",
-      value: runwayValue,
-      severity: runwaySeverity,
-      explanation: projection.firstNegativeMonth
-        ? `Mevcut projeksiyonda kasa yaklaşık ${runwayMonths} ay sonra negatif bölgeye geçiyor (${ym(projection.firstNegativeMonth)}).`
-        : `Mevcut projeksiyon ufkunda (${runwayMonths} ay) negatif kasa görünmüyor.`,
+      value: runway.value,
+      severity: runway.severity,
+      explanation: runway.firstForwardNegativeMonth
+        ? `Mevcut projeksiyonda kasa yaklaşık ${runway.runwayMonths} ay sonra negatif bölgeye geçiyor (${ym(runway.firstForwardNegativeMonth)}).`
+        : `Mevcut ileri projeksiyon ufkunda (${runway.runwayMonths} ay) negatif kasa görünmüyor.`,
       confidence: "calculated",
       freshness: todayISO,
       sourceHref: "/cashflow",

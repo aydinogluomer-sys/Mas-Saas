@@ -124,9 +124,14 @@ describe("countingClient", () => {
     };
   }
 
-  it("kapsam yokken istemciyi OLDUĞU GİBİ geri verir (sarmalayıcı kurulmaz)", () => {
+  it("B3-07: slow-query telemetrisi için kapsam dışında da tek katmanlı (idempotent) sarmalar ve probe kapalıyken request-metrics sayacını şişirmez", async () => {
     const client = fakeClient();
-    expect(countingClient(client)).toBe(client);
+    const wrapped = countingClient(client);
+    expect(countingClient(wrapped)).toBe(wrapped);
+    await wrapped.query("select 1");
+    armProbe();
+    expect(readAndResetProbe().queryCount).toBe(0);
+    disarmProbe();
   });
 
   it("kapsam içinde pool.connect() sorgularını sayar", async () => {

@@ -1,0 +1,1176 @@
+{
+  "key": "12-zaman",
+  "boyut": "ZAMAN ENVANTERI - YALNIZ KESIF, SILME KRITERI DEGIL",
+  "mod": "SALT OKUNUR. mas_radar_dev uzerinde yalniz SELECT calistirildi; hicbir DELETE/UPDATE/INSERT/TRUNCATE/ALTER/DROP/CREATE yok.",
+  "database": "mas_radar_dev",
+  "olcum_tarihi_utc": "2026-08-26",
+  "pencereler": {
+    "ADAY": {
+      "baslangic": "2026-08-25T10:08:00+00:00",
+      "bitis": "2026-08-25T10:20:00+00:00",
+      "sure_dakika": 12,
+      "sinir": "kapali aralik (>= ve <=)"
+    },
+    "BAGLAM": {
+      "baslangic": "2026-08-25T09:00:00+00:00",
+      "bitis": "2026-08-25T11:00:00+00:00",
+      "sure_dakika": 120,
+      "sinir": "kapali aralik (>= ve <=)"
+    },
+    "uyari": "ZAMAN TEK BASINA SILME KRITERI DEGILDIR. Bu dosya yalniz envanterdir."
+  },
+  "findings": [
+    {
+      "id": "COL-01",
+      "kind": "COLUMN_WINDOW_HIT",
+      "ids": [
+        "users.created_at"
+      ],
+      "tablo": "users",
+      "kolon": "created_at",
+      "aday_sayisi": 5,
+      "baglam_sayisi": 5,
+      "notnull_toplam": 17,
+      "satir_toplam": 17,
+      "aday_baglam_orani_yuzde": 100,
+      "note": "5 satir: 4 p24b fixture user + atilla (10:17:33). ADAY == BAGLAM."
+    },
+    {
+      "id": "COL-02",
+      "kind": "COLUMN_WINDOW_HIT",
+      "ids": [
+        "audit_logs.created_at"
+      ],
+      "tablo": "audit_logs",
+      "kolon": "created_at",
+      "aday_sayisi": 4,
+      "baglam_sayisi": 31,
+      "notnull_toplam": 289,
+      "satir_toplam": 289,
+      "aday_baglam_orani_yuzde": 12.9,
+      "note": "ADAY 4 satirin TAMAMI actor=atilla (eb9c61e7). BAGLAM 31 = 26 adet system-actor generate_instances (10:02:38-39) + 5 adet atilla (10:19:27-10:20:14)."
+    },
+    {
+      "id": "COL-03",
+      "kind": "COLUMN_WINDOW_HIT",
+      "ids": [
+        "users.updated_at"
+      ],
+      "tablo": "users",
+      "kolon": "updated_at",
+      "aday_sayisi": 4,
+      "baglam_sayisi": 7,
+      "notnull_toplam": 17,
+      "satir_toplam": 17,
+      "aday_baglam_orani_yuzde": 57.14,
+      "note": "ADAY 4 = 4 p24b fixture user. atilla updated_at 14:03:12 ile ADAY disinda. BAGLAM 7 = 4 fixture + system + smoke_op_450941 (09:43:56) + admin (10:03:01)."
+    },
+    {
+      "id": "COL-04",
+      "kind": "COLUMN_WINDOW_HIT",
+      "ids": [
+        "payment_instances.created_at"
+      ],
+      "tablo": "payment_instances",
+      "kolon": "created_at",
+      "aday_sayisi": 3,
+      "baglam_sayisi": 3,
+      "notnull_toplam": 488,
+      "satir_toplam": 488,
+      "aday_baglam_orani_yuzde": 100,
+      "note": "3 fixture taksit. 488 satirlik tablonun yuzde 0.61i."
+    },
+    {
+      "id": "COL-05",
+      "kind": "COLUMN_WINDOW_HIT",
+      "ids": [
+        "payment_instances.updated_at"
+      ],
+      "tablo": "payment_instances",
+      "kolon": "updated_at",
+      "aday_sayisi": 3,
+      "baglam_sayisi": 3,
+      "notnull_toplam": 488,
+      "satir_toplam": 488,
+      "aday_baglam_orani_yuzde": 100,
+      "note": "Ayni 3 satir; ikisi olusumdan 50-150 ms sonra guncellenmis."
+    },
+    {
+      "id": "COL-06",
+      "kind": "COLUMN_WINDOW_HIT",
+      "ids": [
+        "approvals.created_at"
+      ],
+      "tablo": "approvals",
+      "kolon": "created_at",
+      "aday_sayisi": 2,
+      "baglam_sayisi": 70,
+      "notnull_toplam": 70,
+      "satir_toplam": 70,
+      "aday_baglam_orani_yuzde": 2.86,
+      "note": "ADAY 2 (manifest 1 + manifest DISI 1). BAGLAM 70 = tablonun TAMAMI; 68 adedi 09:43:56.782918 tek toplu seed damgasi."
+    },
+    {
+      "id": "COL-07",
+      "kind": "COLUMN_WINDOW_HIT",
+      "ids": [
+        "approvals.requested_at"
+      ],
+      "tablo": "approvals",
+      "kolon": "requested_at",
+      "aday_sayisi": 2,
+      "baglam_sayisi": 70,
+      "notnull_toplam": 70,
+      "satir_toplam": 70,
+      "aday_baglam_orani_yuzde": 2.86,
+      "note": "created_at ile birebir ayni degerler."
+    },
+    {
+      "id": "COL-08",
+      "kind": "COLUMN_WINDOW_HIT",
+      "ids": [
+        "approvals.updated_at"
+      ],
+      "tablo": "approvals",
+      "kolon": "updated_at",
+      "aday_sayisi": 2,
+      "baglam_sayisi": 70,
+      "notnull_toplam": 70,
+      "satir_toplam": 70,
+      "aday_baglam_orani_yuzde": 2.86,
+      "note": "created_at ile birebir ayni degerler."
+    },
+    {
+      "id": "COL-09",
+      "kind": "COLUMN_WINDOW_HIT",
+      "ids": [
+        "action_items.created_at"
+      ],
+      "tablo": "action_items",
+      "kolon": "created_at",
+      "aday_sayisi": 2,
+      "baglam_sayisi": 2,
+      "notnull_toplam": 8,
+      "satir_toplam": 8,
+      "aday_baglam_orani_yuzde": 100,
+      "note": "ADAY 2 (manifest 1 + manifest DISI 1). ADAY == BAGLAM. 8 satirlik tablonun yuzde 25i."
+    },
+    {
+      "id": "COL-10",
+      "kind": "COLUMN_WINDOW_HIT",
+      "ids": [
+        "action_items.updated_at"
+      ],
+      "tablo": "action_items",
+      "kolon": "updated_at",
+      "aday_sayisi": 2,
+      "baglam_sayisi": 2,
+      "notnull_toplam": 8,
+      "satir_toplam": 8,
+      "aday_baglam_orani_yuzde": 100,
+      "note": "created_at ile ayni degerler."
+    },
+    {
+      "id": "COL-11",
+      "kind": "COLUMN_WINDOW_HIT",
+      "ids": [
+        "sessions.created_at"
+      ],
+      "tablo": "sessions",
+      "kolon": "created_at",
+      "aday_sayisi": 1,
+      "baglam_sayisi": 2,
+      "notnull_toplam": 26,
+      "satir_toplam": 26,
+      "aday_baglam_orani_yuzde": 50,
+      "note": "ADAY 1 = atilla oturumu 10:17:54 (LEGITIMATE). BAGLAM 2 = ayni + atilla 10:23:24 oturumu."
+    },
+    {
+      "id": "COL-12",
+      "kind": "COLUMN_WINDOW_HIT",
+      "ids": [
+        "sessions.last_seen_at"
+      ],
+      "tablo": "sessions",
+      "kolon": "last_seen_at",
+      "aday_sayisi": 1,
+      "baglam_sayisi": 2,
+      "notnull_toplam": 26,
+      "satir_toplam": 26,
+      "aday_baglam_orani_yuzde": 50,
+      "note": "ADAY 1 = atilla 10:17:54.680988."
+    },
+    {
+      "id": "COL-13",
+      "kind": "COLUMN_WINDOW_HIT",
+      "ids": [
+        "payments.created_at"
+      ],
+      "tablo": "payments",
+      "kolon": "created_at",
+      "aday_sayisi": 1,
+      "baglam_sayisi": 1,
+      "notnull_toplam": 20,
+      "satir_toplam": 20,
+      "aday_baglam_orani_yuzde": 100,
+      "note": "Manifest odemesi 7b300bfe. 20 satirlik tablonun yuzde 5i."
+    },
+    {
+      "id": "COL-14",
+      "kind": "COLUMN_WINDOW_HIT",
+      "ids": [
+        "payments.updated_at"
+      ],
+      "tablo": "payments",
+      "kolon": "updated_at",
+      "aday_sayisi": 1,
+      "baglam_sayisi": 1,
+      "notnull_toplam": 20,
+      "satir_toplam": 20,
+      "aday_baglam_orani_yuzde": 100,
+      "note": "created_at ile ayni."
+    },
+    {
+      "id": "COL-15",
+      "kind": "COLUMN_WINDOW_HIT",
+      "ids": [
+        "settings.updated_at"
+      ],
+      "tablo": "settings",
+      "kolon": "updated_at",
+      "aday_sayisi": 1,
+      "baglam_sayisi": 1,
+      "notnull_toplam": 8,
+      "satir_toplam": 8,
+      "aday_baglam_orani_yuzde": 100,
+      "note": "MANIFEST DISI: key=p24b_fixture_setting, 10:09:08.419562. 8 satirlik tablonun yuzde 12.5i. Diger 7 satir 2026-07-07 damgali."
+    },
+    {
+      "id": "COL-16",
+      "kind": "COLUMN_WINDOW_HIT",
+      "ids": [
+        "users.locked_until"
+      ],
+      "tablo": "users",
+      "kolon": "locked_until",
+      "aday_sayisi": 1,
+      "baglam_sayisi": 1,
+      "notnull_toplam": 1,
+      "satir_toplam": 17,
+      "aday_baglam_orani_yuzde": 100,
+      "note": "MANIFEST DISI ve FIXTURE DEGIL: admin (40672c5c) hesabinin kilit BITIS zamani 10:18:01.551. Olusturma/degisim damgasi degil, ileri tarihli sure. ZAMANIN TEK BASINA NEDEN YETERSIZ OLDUGUNUN KANITI."
+    },
+    {
+      "id": "CTX-17",
+      "kind": "COLUMN_CONTEXT_ONLY",
+      "ids": [
+        "schema_migrations.applied_at"
+      ],
+      "tablo": "schema_migrations",
+      "kolon": "applied_at",
+      "aday_sayisi": 0,
+      "baglam_sayisi": 53,
+      "notnull_toplam": 87,
+      "satir_toplam": 87,
+      "aday_baglam_orani_yuzde": 0,
+      "note": "53 migration 09:43 civarinda uygulanmis (RC kurulumu). ADAY penceresinde 0. Fixture ile ilgisiz."
+    },
+    {
+      "id": "CTX-18",
+      "kind": "COLUMN_CONTEXT_ONLY",
+      "ids": [
+        "approval_rules.created_at"
+      ],
+      "tablo": "approval_rules",
+      "kolon": "created_at",
+      "aday_sayisi": 0,
+      "baglam_sayisi": 5,
+      "notnull_toplam": 5,
+      "satir_toplam": 5,
+      "aday_baglam_orani_yuzde": 0,
+      "note": "09:43:56 seed. ADAY 0."
+    },
+    {
+      "id": "CTX-19",
+      "kind": "COLUMN_CONTEXT_ONLY",
+      "ids": [
+        "approval_rules.updated_at"
+      ],
+      "tablo": "approval_rules",
+      "kolon": "updated_at",
+      "aday_sayisi": 0,
+      "baglam_sayisi": 5,
+      "notnull_toplam": 5,
+      "satir_toplam": 5,
+      "aday_baglam_orani_yuzde": 0,
+      "note": "09:43:56 seed. ADAY 0."
+    },
+    {
+      "id": "CTX-20",
+      "kind": "COLUMN_CONTEXT_ONLY",
+      "ids": [
+        "cost_allocation_rules.created_at"
+      ],
+      "tablo": "cost_allocation_rules",
+      "kolon": "created_at",
+      "aday_sayisi": 0,
+      "baglam_sayisi": 4,
+      "notnull_toplam": 4,
+      "satir_toplam": 4,
+      "aday_baglam_orani_yuzde": 0,
+      "note": "09:43:56 seed. ADAY 0."
+    },
+    {
+      "id": "CTX-21",
+      "kind": "COLUMN_CONTEXT_ONLY",
+      "ids": [
+        "cost_allocation_rules.updated_at"
+      ],
+      "tablo": "cost_allocation_rules",
+      "kolon": "updated_at",
+      "aday_sayisi": 0,
+      "baglam_sayisi": 4,
+      "notnull_toplam": 4,
+      "satir_toplam": 4,
+      "aday_baglam_orani_yuzde": 0,
+      "note": "09:43:56 seed. ADAY 0."
+    },
+    {
+      "id": "CTX-22",
+      "kind": "COLUMN_CONTEXT_ONLY",
+      "ids": [
+        "alert_escalation_rules.created_at"
+      ],
+      "tablo": "alert_escalation_rules",
+      "kolon": "created_at",
+      "aday_sayisi": 0,
+      "baglam_sayisi": 2,
+      "notnull_toplam": 2,
+      "satir_toplam": 2,
+      "aday_baglam_orani_yuzde": 0,
+      "note": "09:43:56 seed. ADAY 0."
+    },
+    {
+      "id": "CTX-23",
+      "kind": "COLUMN_CONTEXT_ONLY",
+      "ids": [
+        "alert_escalation_rules.updated_at"
+      ],
+      "tablo": "alert_escalation_rules",
+      "kolon": "updated_at",
+      "aday_sayisi": 0,
+      "baglam_sayisi": 2,
+      "notnull_toplam": 2,
+      "satir_toplam": 2,
+      "aday_baglam_orani_yuzde": 0,
+      "note": "09:43:56 seed. ADAY 0."
+    },
+    {
+      "id": "CTX-24",
+      "kind": "COLUMN_CONTEXT_ONLY",
+      "ids": [
+        "treasury_policies.created_at"
+      ],
+      "tablo": "treasury_policies",
+      "kolon": "created_at",
+      "aday_sayisi": 0,
+      "baglam_sayisi": 2,
+      "notnull_toplam": 2,
+      "satir_toplam": 2,
+      "aday_baglam_orani_yuzde": 0,
+      "note": "09:43:56 seed. ADAY 0."
+    },
+    {
+      "id": "CTX-25",
+      "kind": "COLUMN_CONTEXT_ONLY",
+      "ids": [
+        "treasury_policies.updated_at"
+      ],
+      "tablo": "treasury_policies",
+      "kolon": "updated_at",
+      "aday_sayisi": 0,
+      "baglam_sayisi": 2,
+      "notnull_toplam": 2,
+      "satir_toplam": 2,
+      "aday_baglam_orani_yuzde": 0,
+      "note": "09:43:56 seed. ADAY 0."
+    },
+    {
+      "id": "ADAY-26",
+      "kind": "ADAY_ROW",
+      "tablo": "users",
+      "ids": [
+        "92cee4d3-c649-432d-b507-546d87936a76"
+      ],
+      "kimlik": "92cee4d3-c649-432d-b507-546d87936a76",
+      "etiket": "p24b_fixture_a",
+      "pencereye_sokan_kolonlar": [
+        "created_at",
+        "updated_at"
+      ],
+      "zamanlar": {
+        "created_at": "2026-08-25T10:09:08.427229+00:00",
+        "updated_at": "2026-08-25T10:09:08.427229+00:00",
+        "locked_until": null
+      },
+      "ek_alanlar": {
+        "role": "viewer",
+        "is_active": true
+      },
+      "manifest_durumu": "MANIFEST_ESLESTI",
+      "note": "Manifestteki 4 fixture user icinden biri."
+    },
+    {
+      "id": "ADAY-27",
+      "kind": "ADAY_ROW",
+      "tablo": "users",
+      "ids": [
+        "a794163c-6ab5-4d00-a1b5-2b0c563be4e3"
+      ],
+      "kimlik": "a794163c-6ab5-4d00-a1b5-2b0c563be4e3",
+      "etiket": "p24b_fixture_b",
+      "pencereye_sokan_kolonlar": [
+        "created_at",
+        "updated_at"
+      ],
+      "zamanlar": {
+        "created_at": "2026-08-25T10:09:08.438386+00:00",
+        "updated_at": "2026-08-25T10:09:08.438386+00:00",
+        "locked_until": null
+      },
+      "ek_alanlar": {
+        "role": "viewer",
+        "is_active": true
+      },
+      "manifest_durumu": "MANIFEST_ESLESTI",
+      "note": "Manifestteki 4 fixture user icinden biri. _a ile arasi 11 ms."
+    },
+    {
+      "id": "ADAY-28",
+      "kind": "ADAY_ROW",
+      "tablo": "users",
+      "ids": [
+        "33796a14-c173-45c7-a784-33e44e8996a0"
+      ],
+      "kimlik": "33796a14-c173-45c7-a784-33e44e8996a0",
+      "etiket": "p24b_mk_mujyy6",
+      "pencereye_sokan_kolonlar": [
+        "created_at",
+        "updated_at"
+      ],
+      "zamanlar": {
+        "created_at": "2026-08-25T10:10:38.789230+00:00",
+        "updated_at": "2026-08-25T10:10:38.789230+00:00",
+        "locked_until": null
+      },
+      "ek_alanlar": {
+        "role": "finance_approver",
+        "is_active": true
+      },
+      "manifest_durumu": "MANIFEST_ESLESTI",
+      "note": "Manifestteki 4 fixture user icinden biri. approvals.requested_by olarak 1fc76c28 tarafindan referans ediliyor (FK fan-out var)."
+    },
+    {
+      "id": "ADAY-29",
+      "kind": "ADAY_ROW",
+      "tablo": "users",
+      "ids": [
+        "19688698-2eb2-40bb-9fc5-37cebdc7e824"
+      ],
+      "kimlik": "19688698-2eb2-40bb-9fc5-37cebdc7e824",
+      "etiket": "p24b_op_9bcmx5",
+      "pencereye_sokan_kolonlar": [
+        "created_at",
+        "updated_at"
+      ],
+      "zamanlar": {
+        "created_at": "2026-08-25T10:10:38.837212+00:00",
+        "updated_at": "2026-08-25T10:10:38.837212+00:00",
+        "locked_until": null
+      },
+      "ek_alanlar": {
+        "role": "finance_operator",
+        "is_active": true
+      },
+      "manifest_durumu": "MANIFEST_ESLESTI",
+      "note": "Manifestteki 4 fixture user icinden biri. action_items.created_by olarak 639daf7e tarafindan referans ediliyor (FK fan-out var)."
+    },
+    {
+      "id": "ADAY-30",
+      "kind": "ADAY_ROW",
+      "tablo": "users",
+      "ids": [
+        "eb9c61e7-ef57-4dae-b180-0e9d5b7fe8ae"
+      ],
+      "kimlik": "eb9c61e7-ef57-4dae-b180-0e9d5b7fe8ae",
+      "etiket": "atilla",
+      "pencereye_sokan_kolonlar": [
+        "created_at"
+      ],
+      "zamanlar": {
+        "created_at": "2026-08-25T10:17:33.822435+00:00",
+        "updated_at": "2026-08-25T14:03:12.246794+00:00",
+        "locked_until": null
+      },
+      "ek_alanlar": {
+        "role": "admin",
+        "is_active": true
+      },
+      "manifest_durumu": "MANIFEST_DISI",
+      "note": "LEGITIMATE_EXCLUDED - gercek operator. ADAY penceresi ICINDE (10:17:33) ama ASLA silme hedefi olamaz. updated_at 14:03:12 pencerenin cok disinda; 4 audit_logs ve 2 sessions satiri bu hesaba baglidir."
+    },
+    {
+      "id": "ADAY-31",
+      "kind": "ADAY_ROW",
+      "tablo": "users",
+      "ids": [
+        "40672c5c-25f0-4623-ae62-55a34e8df5b1"
+      ],
+      "kimlik": "40672c5c-25f0-4623-ae62-55a34e8df5b1",
+      "etiket": "admin",
+      "pencereye_sokan_kolonlar": [
+        "locked_until"
+      ],
+      "zamanlar": {
+        "created_at": "2026-07-23T14:32:48.982742+00:00",
+        "updated_at": "2026-08-25T10:03:01.515133+00:00",
+        "locked_until": "2026-08-25T10:18:01.551000+00:00"
+      },
+      "ek_alanlar": {
+        "role": "admin",
+        "is_active": true
+      },
+      "manifest_durumu": "MANIFEST_DISI",
+      "note": "LEGITIMATE_EXCLUDED - 2026-07-23 tarihli gercek admin hesabi. Pencereye YALNIZ locked_until (ileri tarihli kilit bitisi) ile giriyor; bu bir olusturma/degisim damgasi DEGIL. Zamanin tek basina silme kriteri olamayacaginin en net kaniti."
+    },
+    {
+      "id": "ADAY-32",
+      "kind": "ADAY_ROW",
+      "tablo": "audit_logs",
+      "ids": [
+        "9174fdac-e2a0-4916-9ff3-69f86aa579a8"
+      ],
+      "kimlik": "9174fdac-e2a0-4916-9ff3-69f86aa579a8",
+      "etiket": "generate_instances / payment_instances",
+      "pencereye_sokan_kolonlar": [
+        "created_at"
+      ],
+      "zamanlar": {
+        "created_at": "2026-08-25T10:19:27.356405+00:00"
+      },
+      "ek_alanlar": {
+        "actor": "eb9c61e7-ef57-4dae-b180-0e9d5b7fe8ae (atilla)",
+        "action": "generate_instances",
+        "entity_table": "payment_instances",
+        "entity_id": null
+      },
+      "manifest_durumu": "MANIFEST_DISI",
+      "note": "LEGITIMATE_EXCLUDED - atilla islemi. Audit trail silinemez. Damgasi payment_instances 3ab000e6 olusumuyla birebir ayni (10:19:27.356405)."
+    },
+    {
+      "id": "ADAY-33",
+      "kind": "ADAY_ROW",
+      "tablo": "audit_logs",
+      "ids": [
+        "af75db65-2f88-4388-8655-b7583d282349"
+      ],
+      "kimlik": "af75db65-2f88-4388-8655-b7583d282349",
+      "etiket": "generate_instances / payment_instances",
+      "pencereye_sokan_kolonlar": [
+        "created_at"
+      ],
+      "zamanlar": {
+        "created_at": "2026-08-25T10:19:55.824936+00:00"
+      },
+      "ek_alanlar": {
+        "actor": "eb9c61e7-ef57-4dae-b180-0e9d5b7fe8ae (atilla)",
+        "action": "generate_instances",
+        "entity_table": "payment_instances",
+        "entity_id": null
+      },
+      "manifest_durumu": "MANIFEST_DISI",
+      "note": "LEGITIMATE_EXCLUDED - audit trail. payment_instances 79eccf48 ile ayni damga."
+    },
+    {
+      "id": "ADAY-34",
+      "kind": "ADAY_ROW",
+      "tablo": "audit_logs",
+      "ids": [
+        "ee070e8d-683e-45ac-bfa2-5528f65d364b"
+      ],
+      "kimlik": "ee070e8d-683e-45ac-bfa2-5528f65d364b",
+      "etiket": "generate_instances / payment_instances",
+      "pencereye_sokan_kolonlar": [
+        "created_at"
+      ],
+      "zamanlar": {
+        "created_at": "2026-08-25T10:19:55.906072+00:00"
+      },
+      "ek_alanlar": {
+        "actor": "eb9c61e7-ef57-4dae-b180-0e9d5b7fe8ae (atilla)",
+        "action": "generate_instances",
+        "entity_table": "payment_instances",
+        "entity_id": null
+      },
+      "manifest_durumu": "MANIFEST_DISI",
+      "note": "LEGITIMATE_EXCLUDED - audit trail."
+    },
+    {
+      "id": "ADAY-35",
+      "kind": "ADAY_ROW",
+      "tablo": "audit_logs",
+      "ids": [
+        "6397cf38-4874-44ae-bdb9-76ff91c01cd9"
+      ],
+      "kimlik": "6397cf38-4874-44ae-bdb9-76ff91c01cd9",
+      "etiket": "generate_instances / payment_instances",
+      "pencereye_sokan_kolonlar": [
+        "created_at"
+      ],
+      "zamanlar": {
+        "created_at": "2026-08-25T10:19:55.937739+00:00"
+      },
+      "ek_alanlar": {
+        "actor": "eb9c61e7-ef57-4dae-b180-0e9d5b7fe8ae (atilla)",
+        "action": "generate_instances",
+        "entity_table": "payment_instances",
+        "entity_id": null
+      },
+      "manifest_durumu": "MANIFEST_DISI",
+      "note": "LEGITIMATE_EXCLUDED - audit trail. payment_instances dfa79dc9 ile ayni damga."
+    },
+    {
+      "id": "ADAY-36",
+      "kind": "ADAY_ROW",
+      "tablo": "payment_instances",
+      "ids": [
+        "79eccf48-65ff-4427-af7b-9e332488c1bd"
+      ],
+      "kimlik": "79eccf48-65ff-4427-af7b-9e332488c1bd",
+      "etiket": "P24B fixture - 2026-07 taksiti (vade 2026-07-15, 1000.00 TRY)",
+      "pencereye_sokan_kolonlar": [
+        "created_at",
+        "updated_at"
+      ],
+      "zamanlar": {
+        "created_at": "2026-08-25T10:19:55.824936+00:00",
+        "updated_at": "2026-08-25T10:19:55.970503+00:00",
+        "paid_at": null,
+        "cancelled_at": null
+      },
+      "ek_alanlar": {
+        "payment_id": "7b300bfe-944f-468b-91fa-2de65b7cfee5",
+        "instance_month": "2026-07-01",
+        "due_date": "2026-07-15",
+        "amount": "1000.00",
+        "status": "unpaid"
+      },
+      "manifest_durumu": "MANIFEST_ESLESTI",
+      "note": "Manifestteki 3 taksitten biri."
+    },
+    {
+      "id": "ADAY-37",
+      "kind": "ADAY_ROW",
+      "tablo": "payment_instances",
+      "ids": [
+        "3ab000e6-5187-468d-bf2e-2af882a2a3a2"
+      ],
+      "kimlik": "3ab000e6-5187-468d-bf2e-2af882a2a3a2",
+      "etiket": "P24B fixture - 2026-08 taksiti (vade 2026-08-15, 1000.00 TRY)",
+      "pencereye_sokan_kolonlar": [
+        "created_at",
+        "updated_at"
+      ],
+      "zamanlar": {
+        "created_at": "2026-08-25T10:19:27.356405+00:00",
+        "updated_at": "2026-08-25T10:19:27.412179+00:00",
+        "paid_at": null,
+        "cancelled_at": null
+      },
+      "ek_alanlar": {
+        "payment_id": "7b300bfe-944f-468b-91fa-2de65b7cfee5",
+        "instance_month": "2026-08-01",
+        "due_date": "2026-08-15",
+        "amount": "1000.00",
+        "status": "unpaid"
+      },
+      "manifest_durumu": "MANIFEST_ESLESTI",
+      "note": "Manifestteki 3 taksitten biri. ILK olusan taksit (10:19:27), digerlerinden 28 saniye once."
+    },
+    {
+      "id": "ADAY-38",
+      "kind": "ADAY_ROW",
+      "tablo": "payment_instances",
+      "ids": [
+        "dfa79dc9-bc4d-4572-96b2-de56b0baceae"
+      ],
+      "kimlik": "dfa79dc9-bc4d-4572-96b2-de56b0baceae",
+      "etiket": "P24B fixture - 2026-09 taksiti (vade 2026-09-15, 1000.00 TRY)",
+      "pencereye_sokan_kolonlar": [
+        "created_at",
+        "updated_at"
+      ],
+      "zamanlar": {
+        "created_at": "2026-08-25T10:19:55.937739+00:00",
+        "updated_at": "2026-08-25T10:19:55.937739+00:00",
+        "paid_at": null,
+        "cancelled_at": null
+      },
+      "ek_alanlar": {
+        "payment_id": "7b300bfe-944f-468b-91fa-2de65b7cfee5",
+        "instance_month": "2026-09-01",
+        "due_date": "2026-09-15",
+        "amount": "1000.00",
+        "status": "unpaid"
+      },
+      "manifest_durumu": "MANIFEST_ESLESTI",
+      "note": "Manifestteki 3 taksitten biri."
+    },
+    {
+      "id": "ADAY-39",
+      "kind": "ADAY_ROW",
+      "tablo": "payments",
+      "ids": [
+        "7b300bfe-944f-468b-91fa-2de65b7cfee5"
+      ],
+      "kimlik": "7b300bfe-944f-468b-91fa-2de65b7cfee5",
+      "etiket": "P24B fixture",
+      "pencereye_sokan_kolonlar": [
+        "created_at",
+        "updated_at"
+      ],
+      "zamanlar": {
+        "created_at": "2026-08-25T10:09:08.377890+00:00",
+        "updated_at": "2026-08-25T10:09:08.377890+00:00",
+        "archived_at": null
+      },
+      "ek_alanlar": {
+        "status": "active",
+        "default_amount": "1000.00",
+        "currency": "TRY",
+        "recurrence_type": "monthly",
+        "direction": "outflow"
+      },
+      "manifest_durumu": "MANIFEST_ESLESTI",
+      "note": "Manifestin tek odemesi. 3 payment_instances satiri FK ile bagli; o taksitler 10 dakika SONRA (10:19) olusmus."
+    },
+    {
+      "id": "ADAY-40",
+      "kind": "ADAY_ROW",
+      "tablo": "approvals",
+      "ids": [
+        "1fc76c28-9d71-4ce3-91a6-f1e9f94e5dd4"
+      ],
+      "kimlik": "1fc76c28-9d71-4ce3-91a6-f1e9f94e5dd4",
+      "etiket": "approvals / invoices 7a8f5051 - pending (subject_label BOS)",
+      "pencereye_sokan_kolonlar": [
+        "created_at",
+        "requested_at",
+        "updated_at"
+      ],
+      "zamanlar": {
+        "created_at": "2026-08-25T10:10:38.789230+00:00",
+        "requested_at": "2026-08-25T10:10:38.789230+00:00",
+        "updated_at": "2026-08-25T10:10:38.789230+00:00",
+        "decided_at": null
+      },
+      "ek_alanlar": {
+        "subject_table": "invoices",
+        "subject_id": "7a8f5051-1f58-4817-9ec8-a1dc49ef261f",
+        "request_kind": "other",
+        "status": "pending",
+        "requested_by": "33796a14-c173-45c7-a784-33e44e8996a0 (p24b_mk_mujyy6)",
+        "approval_steps_sayisi": 0
+      },
+      "manifest_durumu": "MANIFEST_ESLESTI",
+      "note": "Manifestin tek onayi. subject_id ORFAN: invoices tablosu 0 satir, yani o fatura hic var olmamis. p24b_mk_mujyy6 kullanicisi ile ayni milisaniye damgasi (10:10:38.789230)."
+    },
+    {
+      "id": "ADAY-41",
+      "kind": "ADAY_ROW",
+      "tablo": "approvals",
+      "ids": [
+        "62cd196c-d517-44c8-9431-3cce52d8b81a"
+      ],
+      "kimlik": "62cd196c-d517-44c8-9431-3cce52d8b81a",
+      "etiket": "approvals / invoices 5e91aa49 - pending (subject_label BOS)",
+      "pencereye_sokan_kolonlar": [
+        "created_at",
+        "requested_at",
+        "updated_at"
+      ],
+      "zamanlar": {
+        "created_at": "2026-08-25T10:10:38.789230+00:00",
+        "requested_at": "2026-08-25T10:10:38.789230+00:00",
+        "updated_at": "2026-08-25T10:10:38.789230+00:00",
+        "decided_at": null
+      },
+      "ek_alanlar": {
+        "subject_table": "invoices",
+        "subject_id": "5e91aa49-a241-4720-9820-224c281417b9",
+        "request_kind": "other",
+        "status": "pending",
+        "requested_by": null,
+        "approval_steps_sayisi": 0
+      },
+      "manifest_durumu": "MANIFEST_DISI",
+      "note": "MANIFESTTE YOK. Manifest 1 approvals satiri beyan ediyor, ADAY penceresinde 2 var. 1fc76c28 ile MILISANIYESI AYNI (10:10:38.789230), yani ayni islemde olusmus kardes satir. subject_id yine orfan (invoices bos). requested_by NULL, yani 1fc76c28in \"theirs\" esdegeri gorunumunde. KARAR GEREKTIRIR; zaman tek basina yeterli degil."
+    },
+    {
+      "id": "ADAY-42",
+      "kind": "ADAY_ROW",
+      "tablo": "action_items",
+      "ids": [
+        "639daf7e-9c3e-4244-9ebf-6bef37b57971"
+      ],
+      "kimlik": "639daf7e-9c3e-4244-9ebf-6bef37b57971",
+      "etiket": "P24B mine",
+      "pencereye_sokan_kolonlar": [
+        "created_at",
+        "updated_at"
+      ],
+      "zamanlar": {
+        "created_at": "2026-08-25T10:10:38.837212+00:00",
+        "updated_at": "2026-08-25T10:10:38.837212+00:00",
+        "archived_at": null
+      },
+      "ek_alanlar": {
+        "status": "open",
+        "severity": "medium",
+        "owner": null,
+        "created_by": "19688698-2eb2-40bb-9fc5-37cebdc7e824 (p24b_op_9bcmx5)",
+        "source_type": "manual"
+      },
+      "manifest_durumu": "MANIFEST_ESLESTI",
+      "note": "Manifestin tek action_item kaydi. p24b_op_9bcmx5 kullanicisi ile ayni milisaniye damgasi (10:10:38.837212)."
+    },
+    {
+      "id": "ADAY-43",
+      "kind": "ADAY_ROW",
+      "tablo": "action_items",
+      "ids": [
+        "12d7532f-a730-44dd-9b91-43cf501a6871"
+      ],
+      "kimlik": "12d7532f-a730-44dd-9b91-43cf501a6871",
+      "etiket": "P24B theirs",
+      "pencereye_sokan_kolonlar": [
+        "created_at",
+        "updated_at"
+      ],
+      "zamanlar": {
+        "created_at": "2026-08-25T10:10:38.837212+00:00",
+        "updated_at": "2026-08-25T10:10:38.837212+00:00",
+        "archived_at": null
+      },
+      "ek_alanlar": {
+        "status": "open",
+        "severity": "medium",
+        "owner": null,
+        "created_by": null,
+        "source_type": "manual"
+      },
+      "manifest_durumu": "MANIFEST_DISI",
+      "note": "MANIFESTTE YOK. Manifest 1 action_items satiri beyan ediyor, ADAY penceresinde 2 var. Basligi acikca \"P24B theirs\" (P24B mine kaydinin cifti) ve milisaniyesi 639daf7e ile AYNI (10:10:38.837212). created_by NULL. KARAR GEREKTIRIR."
+    },
+    {
+      "id": "ADAY-44",
+      "kind": "ADAY_ROW",
+      "tablo": "sessions",
+      "ids": [
+        "938e8b17-78bc-437d-b910-5b2c48aad6fd"
+      ],
+      "kimlik": "938e8b17-78bc-437d-b910-5b2c48aad6fd",
+      "etiket": "atilla oturumu (10:17:54)",
+      "pencereye_sokan_kolonlar": [
+        "created_at",
+        "last_seen_at"
+      ],
+      "zamanlar": {
+        "created_at": "2026-08-25T10:17:54.439012+00:00",
+        "last_seen_at": "2026-08-25T10:17:54.680988+00:00",
+        "expires_at": "2026-09-01T10:17:54.434000+00:00",
+        "revoked_at": null
+      },
+      "ek_alanlar": {
+        "user_id": "eb9c61e7-ef57-4dae-b180-0e9d5b7fe8ae",
+        "username": "atilla"
+      },
+      "manifest_durumu": "MANIFEST_DISI",
+      "note": "LEGITIMATE_EXCLUDED - gercek operator atillanin oturumu, hesap olusumundan 21 saniye sonra. ASLA silme hedefi olamaz. Oturum ACIK (revoked_at NULL)."
+    },
+    {
+      "id": "ADAY-45",
+      "kind": "ADAY_ROW",
+      "tablo": "settings",
+      "ids": [
+        "p24b_fixture_setting"
+      ],
+      "kimlik": "p24b_fixture_setting",
+      "etiket": "p24b_fixture_setting (description: roles-rls gate fixture)",
+      "pencereye_sokan_kolonlar": [
+        "updated_at"
+      ],
+      "zamanlar": {
+        "updated_at": "2026-08-25T10:09:08.419562+00:00"
+      },
+      "ek_alanlar": {
+        "value": "{\"fixture\": true}",
+        "pk_tipi": "text key (UUID DEGIL)"
+      },
+      "manifest_durumu": "MANIFEST_DISI",
+      "note": "MANIFESTTE YOK. Birincil anahtari UUID degil metin oldugu icin UUID tabanli kesif boyutlari bunu KACIRIR; yalniz zaman ve metin boyutlari yakalar. Damgasi payments 7b300bfe ve users p24b_fixture_a/b ile ayni 10:09:08 kumesinde. Aciklamasi kendini \"roles-rls gate fixture\" olarak ilan ediyor."
+    },
+    {
+      "id": "SINIR-01",
+      "kind": "BOUNDARY_NEAR_MISS",
+      "tablo": "audit_logs",
+      "ids": [
+        "f1eea08e-6b41-4352-8b83-d0deb189843c"
+      ],
+      "kimlik": "f1eea08e-6b41-4352-8b83-d0deb189843c",
+      "etiket": "generate_instances / payment_instances (atilla)",
+      "zamanlar": {
+        "created_at": "2026-08-25T10:20:14.214601+00:00"
+      },
+      "ek_alanlar": {
+        "actor": "eb9c61e7-ef57-4dae-b180-0e9d5b7fe8ae (atilla)",
+        "action": "generate_instances",
+        "entity_table": "payment_instances"
+      },
+      "manifest_durumu": "MANIFEST_DISI",
+      "note": "ADAY penceresinin 14.2 SANIYE DISINDA, BAGLAM icinde. Ayni aktor, ayni eylem, ayni kumeyle sureklilik gosteriyor. Pencere sinirinin keyfi oldugunu ve ZAMANIN TEK BASINA SILME KRITERI OLAMAYACAGINI dogrudan kanitlar. LEGITIMATE_EXCLUDED (atilla audit trail)."
+    },
+    {
+      "id": "KAPSAM-01",
+      "kind": "COVERAGE",
+      "ids": [
+        "coverage-aday-vs-baglam"
+      ],
+      "olcumler": {
+        "zaman_ekseni": {
+          "aday_dakika": 12,
+          "baglam_dakika": 120,
+          "yuzde": 10,
+          "yontem": "sure orani (12/120)"
+        },
+        "ayrik_satir": {
+          "aday": 20,
+          "baglam": 184,
+          "yuzde": 10.87,
+          "yontem": "herhangi bir timestamptz kolonu pencerede olan AYRIK satirlar (13 tablo)"
+        },
+        "kolon_isabeti": {
+          "aday": 35,
+          "baglam": 350,
+          "yuzde": 10,
+          "yontem": "tum (tablo,kolon) ciftleri uzerinde toplam isabet sayisi"
+        }
+      },
+      "tablo_bazinda_ayrik": {
+        "users": {
+          "aday": 6,
+          "baglam": 8
+        },
+        "audit_logs": {
+          "aday": 4,
+          "baglam": 31
+        },
+        "payment_instances": {
+          "aday": 3,
+          "baglam": 3
+        },
+        "approvals": {
+          "aday": 2,
+          "baglam": 70
+        },
+        "action_items": {
+          "aday": 2,
+          "baglam": 2
+        },
+        "sessions": {
+          "aday": 1,
+          "baglam": 2
+        },
+        "payments": {
+          "aday": 1,
+          "baglam": 1
+        },
+        "settings": {
+          "aday": 1,
+          "baglam": 1
+        },
+        "schema_migrations": {
+          "aday": 0,
+          "baglam": 53
+        },
+        "approval_rules": {
+          "aday": 0,
+          "baglam": 5
+        },
+        "cost_allocation_rules": {
+          "aday": 0,
+          "baglam": 4
+        },
+        "alert_escalation_rules": {
+          "aday": 0,
+          "baglam": 2
+        },
+        "treasury_policies": {
+          "aday": 0,
+          "baglam": 2
+        }
+      },
+      "note": "ADAY penceresi BAGLAMin ayrik satir bazinda yuzde 10.87sini, kolon isabeti bazinda yuzde 10.00unu, zaman ekseninde yuzde 10.00unu kapsiyor. Uc olcum birbirini dogruluyor. BAGLAMin kalan yuzde 89 kismi buyuk olcude 09:43:56 civarindaki RC seed/migration kumesidir (70 approvals + 53 schema_migrations + 26 system audit_logs + 13 kural/politika satiri = 162/184) ve fixture ile ilgisizdir."
+    },
+    {
+      "id": "MANIFEST-01",
+      "kind": "OFF_MANIFEST_SUMMARY",
+      "ids": [
+        "12d7532f-a730-44dd-9b91-43cf501a6871",
+        "62cd196c-d517-44c8-9431-3cce52d8b81a",
+        "p24b_fixture_setting"
+      ],
+      "beyan": {
+        "manifest_toplam_satir": 10,
+        "aday_penceresinde_bulunan_ayrik_satir": 20
+      },
+      "ayrisma": {
+        "manifest_eslesen": {
+          "sayi": 10,
+          "ids": [
+            "92cee4d3-c649-432d-b507-546d87936a76",
+            "a794163c-6ab5-4d00-a1b5-2b0c563be4e3",
+            "33796a14-c173-45c7-a784-33e44e8996a0",
+            "19688698-2eb2-40bb-9fc5-37cebdc7e824",
+            "7b300bfe-944f-468b-91fa-2de65b7cfee5",
+            "79eccf48-65ff-4427-af7b-9e332488c1bd",
+            "3ab000e6-5187-468d-bf2e-2af882a2a3a2",
+            "dfa79dc9-bc4d-4572-96b2-de56b0baceae",
+            "639daf7e-9c3e-4244-9ebf-6bef37b57971",
+            "1fc76c28-9d71-4ce3-91a6-f1e9f94e5dd4"
+          ]
+        },
+        "manifest_disi_fixture_supheli": {
+          "sayi": 3,
+          "ids": [
+            "12d7532f-a730-44dd-9b91-43cf501a6871",
+            "62cd196c-d517-44c8-9431-3cce52d8b81a",
+            "p24b_fixture_setting"
+          ]
+        },
+        "legitimate_excluded": {
+          "sayi": 7,
+          "ids": [
+            "eb9c61e7-ef57-4dae-b180-0e9d5b7fe8ae",
+            "40672c5c-25f0-4623-ae62-55a34e8df5b1",
+            "938e8b17-78bc-437d-b910-5b2c48aad6fd",
+            "9174fdac-e2a0-4916-9ff3-69f86aa579a8",
+            "af75db65-2f88-4388-8655-b7583d282349",
+            "ee070e8d-683e-45ac-bfa2-5528f65d364b",
+            "6397cf38-4874-44ae-bdb9-76ff91c01cd9"
+          ]
+        }
+      },
+      "note": "MANIFEST EKSIK. ADAY penceresinde manifestteki 10 satirin TAMAMI dogrulandi, ancak manifestte olmayan 3 fixture-supheli satir daha var. Ikisi (\"P24B theirs\" action_item ve ikinci approvals satiri) manifest kardesleriyle MILISANIYESI AYNI damgaya sahip; ucuncusu (settings anahtari) UUID tasimadigi icin UUID boyutunda gorunmez. Bu bir KESIF bulgusudur, silme karari degildir. 10 + 3 + 7 = 20 ayrik ADAY satiri, tamami hesaplanmistir."
+    },
+    {
+      "id": "OLCULMEDI-01",
+      "kind": "NOT_MEASURED_NO_TIMESTAMPTZ",
+      "ids": [
+        "scenario_assumptions",
+        "scenario_comparisons"
+      ],
+      "note": "OLCULMEDI - bu 2 temel tabloda HIC timestamptz kolonu yok, dolayisiyla zaman boyutuyla taranamaz. Satirlari var (bos degiller) ama ADAY/BAGLAM pencereleri uygulanamaz. Fixture kirliligi bu tablolarda metin ve/veya UUID boyutlariyla degerlendirilmelidir."
+    },
+    {
+      "id": "BOS-01",
+      "kind": "EMPTY_TABLES_MEASURED_ZERO",
+      "ids": [
+        "approval_steps",
+        "assistant_conversations",
+        "attachments",
+        "background_jobs",
+        "bank_accounts",
+        "bank_transaction_match_candidates",
+        "bank_transactions",
+        "budget_lines",
+        "budgets",
+        "collateral_records",
+        "control_alerts",
+        "cost_centers",
+        "counterparty_profiles",
+        "covenant_records",
+        "credit_facilities",
+        "departments",
+        "document_links",
+        "documents",
+        "facility_drawdowns",
+        "forecast_lines",
+        "forecasts",
+        "fx_positions",
+        "fx_rate_snapshots",
+        "iban_change_events",
+        "ibans",
+        "integration_connections",
+        "invoice_allocations",
+        "invoice_lines",
+        "invoice_reversals",
+        "invoices",
+        "machine_roi_snapshots",
+        "optimization_recommendations",
+        "optimization_runs",
+        "orders",
+        "products",
+        "projects",
+        "promise_to_pay",
+        "saved_views"
+      ],
+      "sayi": 38,
+      "note": "OLCULDU, SONUC 0: bu 38 temel tabloda hic satir yok, dolayisiyla ADAY ve BAGLAM pencerelerinde de 0. Ozellikle \"invoices\" BOS oldugu halde her iki approvals satiri (1fc76c28 ve 62cd196c) subject_table=invoices ile ORFAN referans tasiyor; bu, o approvals satirlarinin sentetik oldugunun bagimsiz gostergesidir."
+    }
+  ],
+  "metadata": {
+    "findings_toplam": 50,
+    "findings_kind_dagilimi": {
+      "COLUMN_WINDOW_HIT": 16,
+      "COLUMN_CONTEXT_ONLY": 9,
+      "ADAY_ROW": 20,
+      "BOUNDARY_NEAR_MISS": 1,
+      "COVERAGE": 1,
+      "OFF_MANIFEST_SUMMARY": 1,
+      "NOT_MEASURED_NO_TIMESTAMPTZ": 1,
+      "EMPTY_TABLES_MEASURED_ZERO": 1
+    },
+    "kapsam": {
+      "temel_tablo_toplam": 85,
+      "timestamptz_kolonu_olan_temel_tablo": 83,
+      "timestamptz_kolonu_olmayan_temel_tablo": 2,
+      "taranan_timestamptz_kolonlari": "public semasindaki HER temel tablonun HER timestamptz kolonu tarandi",
+      "bos_temel_tablo": 38,
+      "satiri_ve_timestamptz_i_olan_temel_tablo": 45,
+      "not": "information_schema 195 timestamptz kolonu listeledi; bunlarin bir kismi VIEW kolonudur. Envanter YALNIZ BASE TABLE kolonlari uzerinde calistirildi."
+    },
+    "aday_ayrik_satir_toplam": 20,
+    "baglam_ayrik_satir_toplam": 184,
+    "aday_baglami_kapsama_yuzdesi": {
+      "ayrik_satir": 10.87,
+      "kolon_isabeti": 10,
+      "zaman_ekseni": 10
+    },
+    "manifest_beyani": {
+      "beklenen_satir": 10,
+      "aday_da_dogrulanan": 10,
+      "aday_da_manifest_disi_fixture_supheli": 3,
+      "aday_da_legitimate_excluded": 7
+    },
+    "atilla_durumu": "eb9c61e7-ef57-4dae-b180-0e9d5b7fe8ae - ADAY penceresi ICINDE (10:17:33.822435). LEGITIMATE_EXCLUDED - gercek operator. Bagli 4 audit_logs ve 1 ADAY sessions satiri da LEGITIMATE_EXCLUDED. ASLA silme hedefi olamaz.",
+    "olculmeyenler": [
+      "scenario_assumptions ve scenario_comparisons: timestamptz kolonu yok - zaman boyutunda OLCULMEDI.",
+      "timestamp WITHOUT time zone, date ve epoch-integer tipli kolonlar: gorev timestamptz dedigi icin taranmadi - OLCULMEDI.",
+      "JSONB icindeki gomulu zaman damgalari (ornegin audit_logs.before_data / after_data): OLCULMEDI.",
+      "Silinmis satirlarin izleri (WAL, dead tuple): salt-okunur kapsam disinda - OLCULMEDI.",
+      "Fixture-supheli 3 manifest-disi satirin nihai fixture olup olmadigi: bu dosya yalniz zaman envanteridir, karar OLCULMEDI."
+    ],
+    "sorgu_yontemi": "information_schema.columns uzerinden her BASE TABLE timestamptz kolonu icin UNION ALL sayim sorgusu uretilip tek seferde calistirildi; ardindan isabet veren her tablo icin satir-kimligi ve insan-okunur etiket sorgulari calistirildi. Tum sorgular SELECT."
+  }
+}

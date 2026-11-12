@@ -1,24 +1,22 @@
-// Faz 20 — Banka Merkezi.
+// Faz 20 & Faz 48 (D2) — Banka Merkezi.
 //
 // Three things an operator actually does, in the order they do them: check where each account
-// stands, upload a statement, then work the unmatched queue. Dense and read-first like the rest
-// of this dashboard.
-//
-// The queue deliberately shows the CATEGORY RULE that fired next to each line. A classification
-// nobody can explain is a classification nobody should trust, and this is the whole difference
-// between the deterministic rules used here and a model that merely sounds confident.
+// stands (and lock matched rows into reconciled status), upload a statement, then work the
+// unmatched queue where accepting a match atomically settles the target financial obligation.
 
-import { getPool } from "@/lib/db";
+import { getPool, withReadConnection } from "@/lib/db";
 import {
-  loadBankableAccounts, loadCandidates, loadMatchConflicts,
+  countUnmatchedQueue, loadBankableAccounts, loadCandidatesBatch, loadMatchConflicts,
   loadReconciliationSummary, loadUnmatchedQueue,
 } from "@/lib/bank/engine";
+import { formatMoney } from "@/lib/money-format";
 import { Badge, type Tone } from "@/components/ui/badge";
+import { PaginationBar, parsePageParam } from "@/components/ui/pagination-bar";
 import { Panel, fmtTL } from "@/components/ui/panel";
 import { PageHeader } from "@/components/ui/shell";
 import {
   acceptMatchAction, ignoreTransactionAction, importStatementAction,
-  rejectCandidateAction, runMatcherAction, saveBankAccountAction,
+  reconcileAccountAction, rejectCandidateAction, runMatcherAction, saveBankAccountAction,
 } from "./actions";
 import { requireRouteAccess } from "@/lib/authz/route-guard";
 
@@ -31,30 +29,39 @@ const CATEGORY_TONE: Record<string, Tone> = {
   own_transfer: "neutral", outgoing_payment: "neutral", unknown: "neutral",
 };
 
+const TARGET_TABLE_TR: Record<string, string> = {
+  invoices: "Fatura",
+  payment_instances: "Ödeme",
+  checks: "Çek",
+  loan_installments: "Taksit",
+};
+
 export default async function BankPage({
   searchParams,
-}: { searchParams: Promise<{ error?: string; result?: string }> }) {
-  // Faz 17-38 denetimi — sayfa seviyesi rol kapisi. Navigasyonun kullandigi AYNI karar
-  // (canSeeRoute); ikinci bir liste, ikinci bir fikir ve kacinilmaz bir kayma demekti.
+}: { searchParams: Promise<{ error?: string; result?: string; page?: string }> }) {
   const denied = await requireRouteAccess("/finance/bank");
   if (denied) return denied;
   const sp = await searchParams;
-  const pool = getPool();
-  const [summary, queue, accounts, conflicts] = await Promise.all([
-    loadReconciliationSummary(pool),
-    loadUnmatchedQueue(pool, 60),
-    loadBankableAccounts(pool),
-    loadMatchConflicts(pool),
-  ]);
-
-  // Candidates only for the lines that have any — one query per suggested line, bounded by the
-  // queue limit above.
-  const candidateMap = new Map(
-    await Promise.all(
-      queue.filter((q) => q.openCandidateCount > 0).map(async (q) =>
-        [q.id, await loadCandidates(pool, q.id)] as const),
-    ),
-  );
+  const { page, limit, offset } = parsePageParam(sp.page, 50);
+  const { summary, queue, queueTotal, accounts, conflicts, candidateMap } = await withReadConnection(getPool(), async (db) => {
+    const [summaryRows, queueRows, queueCount, accountRows, conflictRows] = await Promise.all([
+      loadReconciliationSummary(db),
+      loadUnmatchedQueue(db, limit, offset),
+      countUnmatchedQueue(db),
+      loadBankableAccounts(db),
+      loadMatchConflicts(db),
+    ]);
+    const suggestedIds = queueRows.filter((q) => q.openCandidateCount > 0).map((q) => q.id);
+    const candidates = await loadCandidatesBatch(db, suggestedIds);
+    return {
+      summary: summaryRows,
+      queue: queueRows,
+      queueTotal: queueCount,
+      accounts: accountRows,
+      conflicts: conflictRows,
+      candidateMap: candidates,
+    };
+  });
 
   const withProfile = accounts.filter((a) => a.has_bank_profile);
   const totalUnmatched = summary.reduce((n, s) => n + s.unmatchedCount + s.suggestedCount, 0);
@@ -63,7 +70,7 @@ export default async function BankPage({
     <>
       <PageHeader
         title="Banka Merkezi"
-        subtitle="Ekstre içe aktarma, kural-tabanlı sınıflandırma ve mutabakat eşleştirmesi"
+        subtitle="Ekstre içe aktarma, kural-tabanlı sınıflandırma ve atomik kapanışlı mutabakat eşleştirmesi"
         meta={
           <Badge tone={conflicts.length > 0 ? "red" : totalUnmatched > 0 ? "amber" : "green"} dot>
             {conflicts.length > 0 ? `${conflicts.length} çakışma` : `${totalUnmatched} bekleyen hareket`}
@@ -88,10 +95,12 @@ export default async function BankPage({
                   <th className="text-right">Hareket</th>
                   <th className="text-right">Bekleyen</th>
                   <th className="text-right">Eşleşen</th>
+                  <th className="text-right">Mutabık</th>
                   <th className="text-right">Giriş</th>
                   <th className="text-right">Çıkış</th>
                   <th className="text-right">Net</th>
                   <th>Son ekstre</th>
+                  <th className="text-right">İşlem</th>
                 </tr>
               </thead>
               <tbody>
@@ -105,11 +114,24 @@ export default async function BankPage({
                         <span className="text-warn">{s.unmatchedCount + s.suggestedCount}</span>
                       ) : "—"}
                     </td>
-                    <td className="text-right tabular-nums">{s.matchedCount + s.reconciledCount}</td>
+                    <td className="text-right tabular-nums">{s.matchedCount}</td>
+                    <td className="text-right tabular-nums text-pos">{s.reconciledCount}</td>
                     <td className="text-right font-mono tabular-nums text-pos">{fmtTL(s.inflowTotal)}</td>
                     <td className="text-right font-mono tabular-nums text-neg">{fmtTL(s.outflowTotal)}</td>
                     <td className="text-right font-mono tabular-nums">{fmtTL(s.netTotal)}</td>
                     <td className="text-tone-3">{s.lastStatementDate ?? "—"}</td>
+                    <td className="text-right">
+                      {s.matchedCount > 0 ? (
+                        <form action={reconcileAccountAction} className="inline">
+                          <input type="hidden" name="bankAccountId" value={s.bankAccountId} />
+                          <button className="rounded border border-line-faint px-2 py-0.5 text-xs hover:bg-white/5">
+                            Mutabakata al
+                          </button>
+                        </form>
+                      ) : (
+                        <span className="text-xs text-tone-3">—</span>
+                      )}
+                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -144,7 +166,7 @@ export default async function BankPage({
               <option value="">Hesap seçin…</option>
               {withProfile.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
             </select>
-            <input type="file" name="statement" accept=".csv,.txt,.tsv,.xlsx,.xls" required className="text-xs" />
+            <input type="file" name="statement" accept=".csv,.txt,.tsv,.xlsx" required className="text-xs" />
             <button className="rounded border border-line-faint px-2 py-1 hover:bg-white/5">İçe aktar</button>
           </form>
           <form action={runMatcherAction} className="mt-3 border-t border-line-faint pt-3">
@@ -178,7 +200,7 @@ export default async function BankPage({
           </form>
         </Panel>
 
-        <Panel title="SINIFLANDIRMA KURALLARI">
+        <Panel title="SINIFLANDIRMA & ATOMİK KAPANIŞ">
           <p className="text-xs text-tone-3">
             Sınıflandırma <b>deterministik kurallardır</b>, model değil: her satırın yanında hangi
             kuralın çalıştığı yazar. Bir kural yanlışsa düzeltilir — yeniden eğitilmez.
@@ -188,14 +210,14 @@ export default async function BankPage({
             tutar tutması öneri üretmez; yuvarlak rakamlarda rastlantı çok olur.
           </p>
           <p className="mt-2 text-xs text-tone-3">
-            Bir öneriyi kabul etmek ekstreyi plana bağlar; ödemeyi <b>ödendi yapmaz</b>. O ayrı
-            ve ayrıca denetlenen bir işlemdir.
+            Bir öneriyi <b>kabul etmek</b>, aynı PostgreSQL transaction içinde faturayı tahsis eder,
+            ödemeyi/taksiti/çeki kapatır ve bağlı ödeme paketini (<code>payment_runs</code>) günceller.
           </p>
         </Panel>
       </div>
 
       <div className="mt-4">
-        <Panel title={`BEKLEYEN HAREKETLER — ${queue.length}`}>
+        <Panel title={`BEKLEYEN HAREKETLER — ${queueTotal}`}>
           {queue.length === 0 ? (
             <p className="py-2 text-sm text-tone-3">Bekleyen banka hareketi yok.</p>
           ) : (
@@ -221,10 +243,18 @@ export default async function BankPage({
                   {cands.length > 0 ? (
                     <div className="mt-1 flex flex-wrap items-center gap-2">
                       {cands.map((c) => (
-                        <span key={c.id} className="flex items-center gap-1 rounded border border-line-faint px-1 py-0.5 text-xs">
-                          <span className="font-mono text-[10px] text-tone-3">{c.targetTable}</span>
+                        <span key={c.id} className="flex flex-wrap items-center gap-1.5 rounded border border-line-faint px-2 py-1 text-xs">
+                          <Badge tone="neutral">{TARGET_TABLE_TR[c.targetTable] ?? c.targetTable}</Badge>
+                          {c.referenceLabel && <b className="font-mono">{c.referenceLabel}</b>}
+                          {c.counterpartyName && <span className="text-info">{c.counterpartyName}</span>}
+                          {c.openAmount != null && (
+                            <span className="font-mono tabular-nums">
+                              {formatMoney(c.openAmount, c.currency ?? "TRY")}
+                            </span>
+                          )}
+                          {c.dueDate && <span className="font-mono text-[10px] text-tone-3">vade: {c.dueDate}</span>}
                           <b>%{Math.round(c.confidence * 100)}</b>
-                          <span className="text-[10px] text-tone-3">{c.reasons.join(",")}</span>
+                          <span className="text-[10px] text-tone-3">({c.reasons.join(",")})</span>
                           <form action={acceptMatchAction} className="inline">
                             <input type="hidden" name="transactionId" value={t.id} />
                             <input type="hidden" name="targetTable" value={c.targetTable} />
@@ -256,6 +286,12 @@ export default async function BankPage({
               );
             })
           )}
+          <PaginationBar
+            basePath="/finance/bank"
+            page={page}
+            pageSize={limit}
+            totalCount={queueTotal}
+          />
         </Panel>
       </div>
     </>

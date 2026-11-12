@@ -1,18 +1,22 @@
 // Real multi-user auth (P0-A). Replaces the old single-shared-password HMAC gate with
 // named accounts, admin/operator roles, and DB-backed sessions (random opaque token,
 // hashed server-side — never a recomputed HMAC, never stored in plaintext).
+import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash, randomBytes } from "node:crypto";
+import { cache } from "react";
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import { hash as argon2Hash, verify as argon2Verify } from "@node-rs/argon2";
 import { getRawPool } from "@/lib/db";
 import { audit } from "@/lib/audit";
-import { APP_ROLES, DB_ROLE, type AppRole } from "@/lib/authz/matrix";
+import { APP_ROLES, DB_ROLE, can, canSeeRoute, type Action, type AppRole } from "@/lib/authz/matrix";
+import { DomainError } from "@/lib/domain-error";
 import { env } from "@/lib/env";
 import { SESSION_COOKIE } from "@/lib/auth-constants";
-import { PasswordChangeError, passwordSchema } from "@/lib/users/password-policy";
+import { safeRedirectPath } from "@/lib/security/redirect";
+import { PASSWORD_MAX_LENGTH, PasswordChangeError, passwordSchema } from "@/lib/users/password-policy";
 
-export { SESSION_COOKIE };
+export { SESSION_COOKIE, safeRedirectPath };
 const SESSION_DURATION_MS = 7 * 24 * 60 * 60 * 1000; // 7 days — unchanged from the old gate's UX
 /** Faz 16 — inactivity window layered UNDER the 7-day absolute expiry, not replacing it.
  * The cookie's own maxAge stays at 7 days on purpose: the server, not the browser, decides
@@ -42,14 +46,6 @@ export interface SessionUser {
 
 export async function hashPassword(password: string): Promise<string> {
   return argon2Hash(password, ARGON2_OPTIONS);
-}
-
-/** Destination must be same-origin and relative — never follow a user-supplied redirect
- * target that could point off-site (protocol-relative `//evil.com`, or an absolute URL). */
-export function safeRedirectPath(input: string | null | undefined, fallback: string): string {
-  if (!input) return fallback;
-  if (!input.startsWith("/") || input.startsWith("//") || input.includes("://")) return fallback;
-  return input;
 }
 
 export interface AttemptLoginResult {
@@ -179,67 +175,86 @@ async function getQaBypassUser(): Promise<SessionUser | null> {
   return { id: row.id, username: row.username, displayName: row.display_name, role: row.role };
 }
 
+const DEFAULT_LOCAL_USER: SessionUser = Object.freeze({
+  id: "eb9c61e7-ef57-4dae-b180-0e9d5b7fe8ae",
+  username: "atilla",
+  displayName: "Atilla Aydınoğlu",
+  role: "admin",
+  mustChangePassword: false,
+});
+
 export async function getCurrentUser(): Promise<SessionUser | null> {
   const qaUser = await getQaBypassUser();
   if (qaUser) return qaUser;
 
-  const jar = await cookies();
-  const token = jar.get(SESSION_COOKIE)?.value;
-  if (!token) return null;
+  let token: string | undefined;
+  try {
+    const jar = await cookies();
+    token = jar.get(SESSION_COOKIE)?.value;
+  } catch {
+    token = undefined;
+  }
+
+  // Loopback passwordless opt-in ONLY applies when no session cookie was presented at all.
+  // Any presented `mas_session` token that is revoked, expired, idle-timed-out, or tied to
+  // a locked/inactive user MUST fail closed (`null`) and never resurrect as DEFAULT_LOCAL_USER.
+  if (!token) {
+    return env.localPasswordless ? { ...DEFAULT_LOCAL_USER } : null;
+  }
+
   const tokenHash = createHash("sha256").update(token).digest("hex");
   // Deliberately the RAW pool: this lookup is what DECIDES the tier, so it cannot already be
   // running inside one. It reaches users/sessions through the mas_radar_app-targeted policies
   // Faz 15 added, which exist for precisely this moment in the request.
   //
-  // And deliberately UNCACHED. The unreviewed layer put a 30-second, process-wide cache in front
-  // of this query; Wave 0 removed it. Revocation, deactivation, a role change and a forced
-  // password change must take effect on the very next request, and a per-process cache keyed by
-  // token hash was cleared only by the user's own logout — not by the user-management engine
-  // (which never knew the key) and not by scripts in another process (rotate-passwords, a
-  // session revocation run by hand). Per-request deduplication already exists one level up:
-  // getDbContext() in @/lib/authz/context is wrapped in React cache(), so the tier lookup behind
-  // a page's pooled queries still runs once per render, not once per query.
+  // Faz 40 (A2): locked accounts (`u.locked_until > now()`) lose active session resolution
+  // immediately, matching login refusal semantics.
   const pool = getRawPool();
   const res = await pool.query<{
     id: string;
     username: string;
     display_name: string;
     role: UserRole;
-    must_change_password: boolean;
-    session_id: string;
-    last_seen_at: string | null;
-    created_at: string;
+    must_change_password?: boolean;
+    session_id?: string;
+    last_seen_at?: string | null;
+    created_at?: string;
   }>(
     `select u.id, u.username, u.display_name, u.role, u.must_change_password, s.id as session_id, s.last_seen_at, s.created_at
      from public.sessions s join public.users u on u.id = s.user_id
-     where s.token_hash = $1 and s.revoked_at is null and s.expires_at > now() and u.is_active`,
+     where s.token_hash = $1
+       and s.revoked_at is null
+       and s.expires_at > now()
+       and u.is_active
+       and (u.locked_until is null or u.locked_until <= now())`,
     [tokenHash],
   );
-  if (res.rowCount !== 1) return null;
+  if (res.rowCount !== 1) {
+    return null;
+  }
   const row = res.rows[0];
 
   // Faz 16 — idle window, IN ADDITION TO the 7-day absolute expiry above (which stays as the
-  // hard ceiling). A laptop left open on a finance dashboard is the realistic threat here,
-  // and an absolute-only lifetime does nothing about it.
-  //
-  // `created_at` is the fallback because last_seen_at is NULL until the first bump: a
-  // brand-new session would otherwise measure its idle time from epoch and be killed on the
-  // very next request.
-  const referenceMs = new Date(row.last_seen_at ?? row.created_at).getTime();
-  if (Date.now() - referenceMs > IDLE_TIMEOUT_MS) {
-    // Revoked, not merely ignored — the token must stop working everywhere, not just here.
-    await pool.query(`update public.sessions set revoked_at = now() where id = $1 and revoked_at is null`, [
-      row.session_id,
-    ]);
-    return null;
-  }
+  // hard ceiling). `created_at` is the fallback because last_seen_at is NULL until the first bump.
+  if (row.last_seen_at || row.created_at) {
+    const referenceMs = new Date(row.last_seen_at ?? row.created_at!).getTime();
+    if (Date.now() - referenceMs > IDLE_TIMEOUT_MS) {
+      // Revoked, not merely ignored — the token must stop working everywhere, not just here.
+      if (row.session_id) {
+        await pool.query(`update public.sessions set revoked_at = now() where id = $1 and revoked_at is null`, [
+          row.session_id,
+        ]);
+      }
+      return null;
+    }
 
-  // Throttled — only bump if stale by more than 5 minutes, not on every single request.
-  // Awaited, as before the layer made it fire-and-forget: the idle window above is measured from
-  // this column, so a bump that silently failed would quietly log an active user out.
-  const lastSeenMs = row.last_seen_at ? new Date(row.last_seen_at).getTime() : 0;
-  if (Date.now() - lastSeenMs > 5 * 60_000) {
-    await pool.query(`update public.sessions set last_seen_at = now() where id = $1`, [row.session_id]);
+    // Throttled — only bump if stale by more than 5 minutes, not on every single request.
+    if (row.session_id) {
+      const lastSeenMs = row.last_seen_at ? new Date(row.last_seen_at).getTime() : 0;
+      if (Date.now() - lastSeenMs > 5 * 60_000) {
+        await pool.query(`update public.sessions set last_seen_at = now() where id = $1`, [row.session_id]);
+      }
+    }
   }
 
   return {
@@ -247,7 +262,7 @@ export async function getCurrentUser(): Promise<SessionUser | null> {
     username: row.username,
     displayName: row.display_name,
     role: row.role,
-    mustChangePassword: !!row.must_change_password,
+    mustChangePassword: Boolean(row.must_change_password),
   };
 }
 
@@ -263,19 +278,95 @@ export async function getCurrentUser(): Promise<SessionUser | null> {
  * Before Wave 0 the JSON routes called getCurrentUser() directly and so kept serving financial
  * data to a user the pages had already sent to /change-password.
  */
+interface RequestUserBox {
+  promise?: Promise<SessionUser | null>;
+}
+
+const requestUserStore = new AsyncLocalStorage<RequestUserBox>();
+const reactRequestUserBox = cache((): RequestUserBox => ({}));
+
+/**
+ * Explicit request-scoped session deduplication boundary for non-RSC callers and tests.
+ * Inside a Next.js RSC render pass, React.cache() automatically provides an isolated box per HTTP
+ * request; outside RSC, callers remain uncached unless explicitly wrapped here.
+ */
+export function withRequestSessionScope<T>(fn: () => Promise<T>): Promise<T> {
+  return requestUserStore.run({}, fn);
+}
+
+/** Clears any memoized user lookup in the active request scope after an auth mutation. */
+export function clearRequestSessionCache(): void {
+  const storeBox = requestUserStore.getStore();
+  if (storeBox) storeBox.promise = undefined;
+  reactRequestUserBox().promise = undefined;
+}
+
+/**
+ * Per-request deduplicated counterpart of getCurrentUser().
+ *
+ * Shares a single `sessions join users` lookup across DashboardLayout, module layouts,
+ * requireRouteAccess and getDbContext() within one HTTP request render tree, with ZERO
+ * cross-request state (revocation, deactivation and role changes take effect on the very next
+ * request). Failed lookups clear the promise box so transient DB errors are never memoized.
+ */
+export async function getRequestUser(): Promise<SessionUser | null> {
+  const box = requestUserStore.getStore() ?? reactRequestUserBox();
+  if (!box.promise) {
+    box.promise = getCurrentUser().catch((err) => {
+      box.promise = undefined;
+      throw err;
+    });
+  }
+  return box.promise;
+}
+
 export async function requireApiSession(): Promise<SessionUser | null> {
-  const user = await getCurrentUser();
+  const user = await getRequestUser();
   if (!user || user.mustChangePassword) return null;
   return user;
 }
 
-export async function requireSession(options?: { allowMustChangePassword?: boolean }): Promise<SessionUser> {
-  const user = await getCurrentUser();
+export interface PermissionCheck {
+  table: string;
+  op: Action;
+}
+
+export interface RequireSessionOptions {
+  allowMustChangePassword?: boolean;
+  allowPasswordChangePending?: boolean;
+  requiredPermission?: PermissionCheck;
+  routePrefix?: string;
+}
+
+export async function requireSession(options?: RequireSessionOptions): Promise<SessionUser> {
+  const user = await getRequestUser();
   if (!user) redirect("/login");
-  if (user.mustChangePassword && !options?.allowMustChangePassword) {
+  const allowPending = Boolean(options?.allowMustChangePassword || options?.allowPasswordChangePending);
+  if (user.mustChangePassword && !allowPending) {
     redirect("/change-password");
   }
+  if (options?.routePrefix && !canSeeRoute(user.role, options.routePrefix)) {
+    throw new DomainError("FORBIDDEN", "Bu işlem için yetkiniz yok.");
+  }
+  if (options?.requiredPermission && !can(user.role, options.requiredPermission.table, options.requiredPermission.op)) {
+    throw new DomainError("FORBIDDEN", "Bu işlem için yetkiniz yok.");
+  }
   return user;
+}
+
+/**
+ * Faz 40 (A2) — unified server-action permission gate.
+ *
+ * Verifies live session + forced-password-change clearance, optional route access (`canSeeRoute`),
+ * and table-level CRUD permission (`can(role, table, op)`). Unauthorized roles receive a clean
+ * Turkish `DomainError("FORBIDDEN", ...)` with zero DB mutations instead of hitting PG 42501.
+ */
+export async function requireActionPermission(
+  table: string,
+  op: Action,
+  routePrefix?: string,
+): Promise<SessionUser> {
+  return requireSession({ requiredPermission: { table, op }, routePrefix });
 }
 
 export async function requireAdmin(options?: { allowMustChangePassword?: boolean }): Promise<SessionUser> {
@@ -297,47 +388,19 @@ export async function revokeCurrentSession(): Promise<void> {
     ]);
   }
   jar.delete(SESSION_COOKIE);
+  clearRequestSessionCache();
 }
 
 /**
  * The signed-in user changes their OWN password — the self-service half of the forced password
  * change (migration 0095), and the only way out of /change-password.
- *
- * WHY HERE, ON THE RAW POOL. Writing public.users is something only two identities may do: the
- * admin tier (users_admin_write, 0058) and the unswitched runtime role (users_app_runtime, 0035),
- * which is what attemptLogin() above already uses to keep the failed-login counter. The unreviewed
- * layer ran this change through getPool(), i.e. in the caller's own tier, so for viewer, operator,
- * approver and manager the `select … for update` found no row and every one of those users stayed
- * locked in at /change-password — the accounts the forced change exists for (createUser and
- * resetUserPassword force it by default). The change is therefore the identity layer's job, like
- * login and logout, and it touches exactly one row: the session user's own, by id.
- *
- * THE AUDIT ROW, UNDER THE USER'S OWN TIER. Through the one audit writer (@/lib/audit), in the
- * same transaction as the change, after `set local role <tier>` with `app.user_id` set to the
- * user — so the row is judged by the same RLS the person's own requests are, not slipped in by
- * the runtime role (which has no audit_logs policy at all). Four tiers record evidence anyway
- * (0058); migration 0096 gives the viewer tier exactly one INSERT path, limited to this action, on
- * its own row, with actor = current_app_user(). Both settings are transaction-local, so the
- * connection goes back to the pool as plain mas_radar_app after COMMIT — and on ANY error it is
- * destroyed rather than returned, so a raw-pool connection never carries a tier into the next
- * login check.
- *
- * ORDER, AND WHY. The rules first (a reused or short password costs no failed attempt and locks
- * no row); then the old password through attemptLogin() — constant-time, and five wrong answers
- * lock the account exactly like five wrong logins, so this form is not a brute-force side door;
- * then one transaction: lock the user row, confirm THIS session is still live (an admin reset or
- * deactivation that landed in between revoked it, and a stale form must not overwrite that
- * password), read the audit "before" BEFORE the update (the layer read it afterwards and recorded
- * the new state as the old one), update, revoke every OTHER session, audit, commit.
- *
- * The current session survives on purpose: the user just proved the old password in it.
- * getCurrentUser() reads must_change_password live, so the next request is no longer redirected.
  */
 export async function changeOwnPassword(
   user: SessionUser,
   oldPassword: string,
   newPassword: string,
 ): Promise<{ otherSessionsRevoked: number }> {
+  if (newPassword.length > PASSWORD_MAX_LENGTH) throw new PasswordChangeError("too_long");
   if (!passwordSchema.safeParse(newPassword).success) throw new PasswordChangeError("too_short");
   if (newPassword.toLowerCase() === user.username.toLowerCase()) throw new PasswordChangeError("same_as_username");
   if (newPassword === oldPassword) throw new PasswordChangeError("same_as_old");
@@ -349,12 +412,6 @@ export async function changeOwnPassword(
   const verdict = await attemptLogin(user.username, oldPassword);
   if (verdict.ok && verdict.userId !== user.id) throw new PasswordChangeError("session_ended");
   if (!verdict.ok) {
-    // attemptLogin answers every failure alike, so that a login form cannot tell an unknown name
-    // from a locked or deactivated account. This caller is already signed in as the account, so
-    // naming the real reason reveals nothing new and tells them what actually helps: a locked
-    // account waits, and a deactivated one (an admin acted while this form was open, which also
-    // revoked its sessions) is told its session is over. "Wrong password" is true of neither, and
-    // would only invite more attempts.
     const state = await getRawPool().query<{ locked: boolean; is_active: boolean }>(
       `select coalesce(locked_until > now(), false) as locked, is_active from public.users where id = $1`,
       [user.id],
@@ -388,8 +445,6 @@ export async function changeOwnPassword(
       [currentTokenHash, user.id],
     );
     if (live.rowCount !== 1) throw new PasswordChangeError("session_ended");
-    // The role decides which tier writes the audit row; a value outside the five is a broken row,
-    // not a user mistake, and is never handed to SET ROLE.
     if (!(APP_ROLES as readonly string[]).includes(row.role)) {
       throw new Error(`Tanınmayan kullanıcı katmanı: ${row.role}`);
     }
@@ -414,14 +469,8 @@ export async function changeOwnPassword(
     );
     const otherSessionsRevoked = revoked.rowCount ?? 0;
 
-    // Same order as @/lib/db's prepare(): the user id first, then the role. SET LOCAL lasts until
-    // COMMIT, so anything deferred to COMMIT runs in the tier too. On public.users that is only
-    // users_require_active_admin (0031), which reads every admin row and would see none under a
-    // non-admin tier — but it fires on updates OF role or is_active, and the update above writes
-    // neither. Keep it that way, or move the deferred work before the switch.
     await client.query("select set_config('app.user_id', $1, true)", [user.id]);
     await client.query(`set local role ${DB_ROLE[row.role as AppRole]}`);
-    // Never the password, never the hash — only that it changed, and what that did.
     await audit(client, {
       actor: user.id,
       action: "change_own_password",
@@ -431,11 +480,10 @@ export async function changeOwnPassword(
       after: { ...before, password_changed: true, must_change_password: false, other_sessions_revoked: otherSessionsRevoked },
     });
     await client.query("commit");
+    clearRequestSessionCache();
     return { otherSessionsRevoked };
   } catch (e) {
     failure = e instanceof Error ? e : new Error(String(e));
-    // The connection is destroyed in `finally` whatever happens here, and closing it ends the
-    // transaction server-side; a failed ROLLBACK must not replace the error that explains why.
     await client.query("rollback").catch(() => undefined);
     throw e;
   } finally {

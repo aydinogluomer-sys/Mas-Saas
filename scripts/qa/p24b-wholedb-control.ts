@@ -25,6 +25,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { Pool } from "pg";
 import { ownerDatabaseUrl, isDisposableDatabaseName, databaseNameFromUrl } from "../db/owner-url";
+import { psqlLocalSql } from "../db/pg-local-admin";
 import { targetFingerprint, wholeDbFingerprintDigest } from "../db/p24b-cleanup-fingerprint";
 
 const MANIFEST = "docs/release-evidence/final-production-readiness/p24b-v6/02-row-evidence-manifest.json";
@@ -84,7 +85,7 @@ async function main(): Promise<void> {
     result.beforeMutation = before;
 
     // 2 — change something that is NOT a target
-    execFileSync("docker", ["exec", process.env.MAS_DB_CONTAINER ?? "mas-radar-pg", "psql", "-U", "postgres", "-d", db, "-qc", NON_TARGET_MUTATION], { stdio: "pipe" });
+    psqlLocalSql(db, NON_TARGET_MUTATION);
     const after = await fingerprints(url);
     result.afterMutation = after;
     result.mutation = NON_TARGET_MUTATION;

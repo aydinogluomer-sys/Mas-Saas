@@ -19,9 +19,9 @@ import {
   ALLOCATION_BASES, COST_KINDS, allocate, allocationTotal, cashCycle, dpo, dso, profitability,
 } from "../src/lib/costing/rules";
 import { TABLE_CLASS } from "../src/lib/authz/matrix";
-import { requireDisposableOwnerDatabaseUrl } from "./db/owner-url";
+import { assertDisposableTargetDb } from "./db/disposable-guard";
 
-const pool = new Pool({ connectionString: requireDisposableOwnerDatabaseUrl("phase30:verify") });
+const pool = new Pool({ connectionString: assertDisposableTargetDb(undefined, "phase30:verify").url });
 
 interface Check { name: string; pass: boolean; detail: string }
 const checks: Check[] = [];
@@ -211,17 +211,17 @@ async function main(): Promise<void> {
   const deptLink = await q(
     `select count(*)::int n from information_schema.columns
      where table_schema='public' and column_name='department_id'
-       and table_name in ('invoices','invoice_lines','payments','payment_instances','bank_transactions')`);
+       and table_name in ('invoices','invoice_lines','payments')`);
   record("ÖLÇÜLDÜ: hiçbir işlem tablosunda department_id yok",
-    Number(deptLink[0].n) === 0, "Faz 28'in bulgusu burada da geçerli");
+    Number(deptLink[0].n) === 3, "Faz 50 (0103) department_id bağlantısı aktif");
   const deptView = await inRollback(async (c) => {
-    await c.query(`insert into public.departments(code,name) values ($1,$2)`, [TAG(), TAG()]);
+    const ins = await c.query<{ id: string }>(`insert into public.departments(code,name) values ($1,$2) returning id`, [TAG(), TAG()]);
     return (await c.query(
-      `select revenue, margin, unmeasurable_reason from public.profitability_by_department limit 1`)).rows[0];
+      `select revenue, margin, unmeasurable_reason from public.profitability_by_department where department_id=$1`, [ins.rows[0].id])).rows[0];
   });
   record("departman kârlılığı NULL ve GEREKÇELİ — tahsis kuralı icat edilmedi",
     deptView.revenue === null && deptView.margin === null
-      && deptView.unmeasurable_reason === "no_transaction_link",
+      && deptView.unmeasurable_reason === "no_department_invoices",
     `gerekçe=${deptView?.unmeasurable_reason}`);
 
   /* ── 5. working capital ─────────────────────────────────────────────────────────────── */

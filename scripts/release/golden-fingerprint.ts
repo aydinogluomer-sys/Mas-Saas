@@ -40,17 +40,17 @@
 // exactly when a silent connection to the wrong database would be most expensive.
 
 import { execFileSync } from "node:child_process";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { Pool } from "pg";
 import { fingerprint } from "./lib/fingerprint";
 import { isDisposableDatabaseName } from "../db/owner-url";
+import { createDisposableLocalDb, dropDisposableLocalDb, dumpDatabaseToFileLocal, listDumpLocal, resolveLocalOwnerUrl, restoreIntoDisposableLocalDb } from "../db/pg-local-admin";
 
-const CONTAINER = process.env.MAS_PG_CONTAINER ?? "mas-radar-pg";
-const PORT = process.env.MAS_PG_PORT ?? "5432";
 const SOURCE_URL = process.env.SOURCE_DATABASE_URL ?? "";
 const CLONE_DB = process.env.CLONE_DB ?? "";
-const DUMP_PATH = "/tmp/mas_cutover.dump";
+const DUMP_DIR = path.join(process.cwd(), ".runtime", "cutover-tmp");
+const DUMP_PATH = path.join(DUMP_DIR, "mas_cutover.dump");
 
 /** Same marker vocabulary as scripts/db/owner-url.ts. The clone is DROPPED, so this gate is first. */
 
@@ -72,9 +72,7 @@ function record(name: string, pass: boolean, detail: string): void {
   console.log(`${pass ? "PASS" : "FAIL"}  ${name} — ${detail}`);
 }
 
-function docker(args: string[], input?: Buffer): string {
-  return execFileSync("docker", args, { encoding: "utf8", maxBuffer: 1 << 28, input });
-}
+
 
 function step(label: string): void {
   console.log(`\n── ${label} ${"─".repeat(Math.max(0, 70 - label.length))}`);
@@ -94,32 +92,29 @@ async function main(): Promise<void> {
     );
   }
 
-  const cloneUrl = `postgres://postgres:postgres@127.0.0.1:${PORT}/${CLONE_DB}`;
+  const cloneUrl = resolveLocalOwnerUrl(CLONE_DB);
+  mkdirSync(DUMP_DIR, { recursive: true, mode: 0o700 });
+  rmSync(DUMP_PATH, { force: true });
 
   /* ── §8.1 fresh dump ─────────────────────────────────────────────────────────────────── */
   step("1/7 fresh pg_dump (kaynak YALNIZ okunur)");
-  docker(["exec", CONTAINER, "sh", "-c", `rm -f ${DUMP_PATH}`]);
-  docker(["exec", CONTAINER, "pg_dump", "-Fc", "-f", DUMP_PATH, "-d", SOURCE_URL]);
-  const dumpBytes = Number(docker(["exec", CONTAINER, "sh", "-c", `stat -c %s ${DUMP_PATH}`]).trim());
+  dumpDatabaseToFileLocal(SOURCE_URL, DUMP_PATH);
+  const dumpBytes = statSync(DUMP_PATH).size;
   record("fresh dump alındı", dumpBytes > 0, `${dumpBytes} bayt`);
 
   /* ── pg_restore --list, before trusting the archive ──────────────────────────────────── */
   step("2/7 pg_restore --list (arşiv okunabilir mi?)");
-  const listing = docker(["exec", CONTAINER, "pg_restore", "--list", DUMP_PATH]);
+  const listing = listDumpLocal(DUMP_PATH);
   const tocEntries = listing.split(/\r?\n/).filter((l) => l && !l.startsWith(";")).length;
   record("pg_restore --list arşivi okuyabiliyor", tocEntries > 0, `${tocEntries} TOC girdisi`);
 
   /* ── fresh restore into a clone that is recreated every run ──────────────────────────── */
   step("3/7 fresh restore (eski clone KULLANILMAZ — düşürülüp yeniden yaratılır)");
-  docker(["exec", CONTAINER, "dropdb", "-U", "postgres", "--force", "--if-exists", CLONE_DB]);
-  docker(["exec", CONTAINER, "createdb", "-U", "postgres", CLONE_DB]);
-  // --no-owner/--no-acl: the clone is owned by whoever restores it; role grants are re-established
-  // by the migrations themselves, and inheriting the source's ACLs would mask a missing grant.
-  try {
-    docker(["exec", CONTAINER, "pg_restore", "--no-owner", "--no-acl", "-U", "postgres", "-d", CLONE_DB, DUMP_PATH]);
-  } catch {
-    // pg_restore exits non-zero on benign warnings (missing roles, existing extensions).
-    // What matters is whether the data arrived, which the fingerprint below measures.
+  dropDisposableLocalDb(CLONE_DB);
+  createDisposableLocalDb(CLONE_DB);
+  const restoreRes = restoreIntoDisposableLocalDb(CLONE_DB, DUMP_PATH, { extraArgs: ["--no-acl"] });
+  rmSync(DUMP_PATH, { force: true });
+  if (restoreRes.warned) {
     console.log("   (pg_restore uyarılarla döndü — veri parmak iziyle doğrulanıyor)");
   }
 
@@ -153,7 +148,7 @@ async function main(): Promise<void> {
     env: {
       ...process.env,
       MIGRATION_DATABASE_URL: cloneUrl,
-      MAS_DB_CONTAINER: process.env.MAS_DB_CONTAINER ?? CONTAINER,
+      MAS_PG_RUNTIME: process.env.MAS_PG_RUNTIME ?? "native",
     },
     shell: process.platform === "win32",
   });

@@ -1,0 +1,389 @@
+{
+  "findings": [
+    {
+      "n": 1,
+      "id": "639daf7e-9c3e-4244-9ebf-6bef37b57971",
+      "ids": ["639daf7e-9c3e-4244-9ebf-6bef37b57971"],
+      "table": "public.action_items",
+      "column": "title",
+      "columnType": "text",
+      "rowIdColumn": "id",
+      "matchedValue": "P24B mine",
+      "matchKind": "ILIKE %p24b%",
+      "createdAt": "2026-08-25T10:10:38.837212+00:00",
+      "updatedAt": "2026-08-25T10:10:38.837212+00:00",
+      "context": {
+        "status": "open",
+        "severity": "medium",
+        "owner": null,
+        "source_type": "manual",
+        "created_by": "19688698-2eb2-40bb-9fc5-37cebdc7e824",
+        "created_by_username": "p24b_op_9bcmx5",
+        "related_entity_table": null,
+        "related_entity_id": null,
+        "archived_at": null
+      },
+      "manifestStatus": "IN_MANIFEST",
+      "manifestNote": "Manifestteki action_items(1) satiri: 639daf7e-9c3e-4244-9ebf-6bef37b57971 'P24B mine' open. Birebir eslesti."
+    },
+    {
+      "n": 2,
+      "id": "12d7532f-a730-44dd-9b91-43cf501a6871",
+      "ids": ["12d7532f-a730-44dd-9b91-43cf501a6871"],
+      "table": "public.action_items",
+      "column": "title",
+      "columnType": "text",
+      "rowIdColumn": "id",
+      "matchedValue": "P24B theirs",
+      "matchKind": "ILIKE %p24b%",
+      "createdAt": "2026-08-25T10:10:38.837212+00:00",
+      "updatedAt": "2026-08-25T10:10:38.837212+00:00",
+      "context": {
+        "status": "open",
+        "severity": "medium",
+        "owner": null,
+        "source_type": "manual",
+        "created_by": null,
+        "created_by_username": null,
+        "related_entity_table": null,
+        "related_entity_id": null,
+        "archived_at": null
+      },
+      "manifestStatus": "NOT_IN_MANIFEST",
+      "manifestNote": "MANIFEST BOSLUGU. Manifest action_items icin YALNIZ 1 satir (639daf7e...) beyan ediyor; metin taramasi 2 satir buldu. 12d7532f-a730-44dd-9b91-43cf501a6871 'P24B theirs' manifestte YOK. Ayni P24B kosusunda (ayni created_at damgasi) uretilmis gorunuyor ama on kimlik listesinde beyan edilmemis. Bu ajan silme karari VERMEZ; karar kapisina tasinmalidir."
+    },
+    {
+      "n": 3,
+      "id": "7b300bfe-944f-468b-91fa-2de65b7cfee5",
+      "ids": ["7b300bfe-944f-468b-91fa-2de65b7cfee5"],
+      "table": "public.payments",
+      "column": "name",
+      "columnType": "text",
+      "rowIdColumn": "id",
+      "matchedValue": "P24B fixture",
+      "matchKind": "ILIKE %p24b%",
+      "createdAt": "2026-08-25T10:09:08.37789+00:00",
+      "updatedAt": "2026-08-25T10:09:08.37789+00:00",
+      "context": {
+        "default_amount": "1000.00",
+        "currency": "TRY",
+        "direction": "outflow",
+        "recurrence_type": "monthly",
+        "due_day": 15,
+        "status": "active",
+        "category_id": null,
+        "provider_party_id": null,
+        "cash_account_id": null,
+        "source_workbook_id": null,
+        "source_sheet_id": null,
+        "source_row_id": null,
+        "archived_at": null
+      },
+      "manifestStatus": "IN_MANIFEST",
+      "manifestNote": "Manifestteki payments(1) satiri: 7b300bfe-944f-468b-91fa-2de65b7cfee5 'P24B fixture' 1000.00. Birebir eslesti."
+    },
+    {
+      "n": 4,
+      "id": "p24b_fixture_setting",
+      "ids": ["p24b_fixture_setting"],
+      "table": "public.settings",
+      "column": "key",
+      "columnType": "text",
+      "rowIdColumn": "key",
+      "rowIdIsUuid": false,
+      "matchedValue": "p24b_fixture_setting",
+      "matchKind": "ILIKE %p24b%",
+      "createdAt": null,
+      "updatedAt": "2026-08-25T10:09:08.419562+00:00",
+      "context": {
+        "value": { "fixture": true },
+        "description": "roles-rls gate fixture",
+        "note": "settings tablosunda created_at kolonu YOK; yalniz updated_at var. Birincil anahtar 'key' (uuid degil, metin)."
+      },
+      "manifestStatus": "NOT_IN_MANIFEST",
+      "manifestNote": "MANIFEST BOSLUGU. On kimlik manifesti settings tablosundan HIC bahsetmiyor. 'p24b_fixture_setting' anahtari P24B kosusunun izi (aciklamasi 'roles-rls gate fixture') ve updated_at degeri ADAY penceresine (10:08-10:20) dusuyor, ama beyan edilmemis. Bu ajan silme karari VERMEZ."
+    },
+    {
+      "n": 5,
+      "id": "92cee4d3-c649-432d-b507-546d87936a76",
+      "ids": ["92cee4d3-c649-432d-b507-546d87936a76"],
+      "table": "public.users",
+      "column": "username",
+      "columnType": "text",
+      "rowIdColumn": "id",
+      "matchedValue": "p24b_fixture_a",
+      "matchKind": "ILIKE %p24b%",
+      "createdAt": "2026-08-25T10:09:08.427229+00:00",
+      "updatedAt": "2026-08-25T10:09:08.427229+00:00",
+      "context": { "role": "viewer", "is_active": true, "display_name": "P24B fixture a" },
+      "manifestStatus": "IN_MANIFEST",
+      "manifestNote": "Manifest users(4) listesindeki 'p24b_fixture_a'."
+    },
+    {
+      "n": 6,
+      "id": "a794163c-6ab5-4d00-a1b5-2b0c563be4e3",
+      "ids": ["a794163c-6ab5-4d00-a1b5-2b0c563be4e3"],
+      "table": "public.users",
+      "column": "username",
+      "columnType": "text",
+      "rowIdColumn": "id",
+      "matchedValue": "p24b_fixture_b",
+      "matchKind": "ILIKE %p24b%",
+      "createdAt": "2026-08-25T10:09:08.438386+00:00",
+      "updatedAt": "2026-08-25T10:09:08.438386+00:00",
+      "context": { "role": "viewer", "is_active": true, "display_name": "P24B fixture b" },
+      "manifestStatus": "IN_MANIFEST",
+      "manifestNote": "Manifest users(4) listesindeki 'p24b_fixture_b'."
+    },
+    {
+      "n": 7,
+      "id": "33796a14-c173-45c7-a784-33e44e8996a0",
+      "ids": ["33796a14-c173-45c7-a784-33e44e8996a0"],
+      "table": "public.users",
+      "column": "username",
+      "columnType": "text",
+      "rowIdColumn": "id",
+      "matchedValue": "p24b_mk_mujyy6",
+      "matchKind": "ILIKE %p24b%",
+      "createdAt": "2026-08-25T10:10:38.78923+00:00",
+      "updatedAt": "2026-08-25T10:10:38.78923+00:00",
+      "context": { "role": "finance_approver", "is_active": true, "display_name": "P24B maker" },
+      "manifestStatus": "IN_MANIFEST",
+      "manifestNote": "Manifest users(4) listesindeki 'p24b_mk_mujyy6'."
+    },
+    {
+      "n": 8,
+      "id": "19688698-2eb2-40bb-9fc5-37cebdc7e824",
+      "ids": ["19688698-2eb2-40bb-9fc5-37cebdc7e824"],
+      "table": "public.users",
+      "column": "username",
+      "columnType": "text",
+      "rowIdColumn": "id",
+      "matchedValue": "p24b_op_9bcmx5",
+      "matchKind": "ILIKE %p24b%",
+      "createdAt": "2026-08-25T10:10:38.837212+00:00",
+      "updatedAt": "2026-08-25T10:10:38.837212+00:00",
+      "context": {
+        "role": "finance_operator",
+        "is_active": true,
+        "display_name": "P24B op",
+        "referencedBy": "action_items.created_by -> 639daf7e-9c3e-4244-9ebf-6bef37b57971"
+      },
+      "manifestStatus": "IN_MANIFEST",
+      "manifestNote": "Manifest users(4) listesindeki 'p24b_op_9bcmx5'."
+    },
+    {
+      "n": 9,
+      "id": "92cee4d3-c649-432d-b507-546d87936a76",
+      "ids": ["92cee4d3-c649-432d-b507-546d87936a76"],
+      "table": "public.users",
+      "column": "display_name",
+      "columnType": "text",
+      "rowIdColumn": "id",
+      "matchedValue": "P24B fixture a",
+      "matchKind": "ILIKE %p24b%",
+      "createdAt": "2026-08-25T10:09:08.427229+00:00",
+      "updatedAt": "2026-08-25T10:09:08.427229+00:00",
+      "context": { "role": "viewer", "is_active": true, "username": "p24b_fixture_a" },
+      "manifestStatus": "IN_MANIFEST",
+      "manifestNote": "Ayni satirin IKINCI kolon isabeti (users.display_name). Yeni satir DEGIL; n=5 ile ayni id."
+    },
+    {
+      "n": 10,
+      "id": "a794163c-6ab5-4d00-a1b5-2b0c563be4e3",
+      "ids": ["a794163c-6ab5-4d00-a1b5-2b0c563be4e3"],
+      "table": "public.users",
+      "column": "display_name",
+      "columnType": "text",
+      "rowIdColumn": "id",
+      "matchedValue": "P24B fixture b",
+      "matchKind": "ILIKE %p24b%",
+      "createdAt": "2026-08-25T10:09:08.438386+00:00",
+      "updatedAt": "2026-08-25T10:09:08.438386+00:00",
+      "context": { "role": "viewer", "is_active": true, "username": "p24b_fixture_b" },
+      "manifestStatus": "IN_MANIFEST",
+      "manifestNote": "Ayni satirin IKINCI kolon isabeti (users.display_name). Yeni satir DEGIL; n=6 ile ayni id."
+    },
+    {
+      "n": 11,
+      "id": "33796a14-c173-45c7-a784-33e44e8996a0",
+      "ids": ["33796a14-c173-45c7-a784-33e44e8996a0"],
+      "table": "public.users",
+      "column": "display_name",
+      "columnType": "text",
+      "rowIdColumn": "id",
+      "matchedValue": "P24B maker",
+      "matchKind": "ILIKE %p24b%",
+      "createdAt": "2026-08-25T10:10:38.78923+00:00",
+      "updatedAt": "2026-08-25T10:10:38.78923+00:00",
+      "context": { "role": "finance_approver", "is_active": true, "username": "p24b_mk_mujyy6" },
+      "manifestStatus": "IN_MANIFEST",
+      "manifestNote": "Ayni satirin IKINCI kolon isabeti (users.display_name). Yeni satir DEGIL; n=7 ile ayni id."
+    },
+    {
+      "n": 12,
+      "id": "19688698-2eb2-40bb-9fc5-37cebdc7e824",
+      "ids": ["19688698-2eb2-40bb-9fc5-37cebdc7e824"],
+      "table": "public.users",
+      "column": "display_name",
+      "columnType": "text",
+      "rowIdColumn": "id",
+      "matchedValue": "P24B op",
+      "matchKind": "ILIKE %p24b%",
+      "createdAt": "2026-08-25T10:10:38.837212+00:00",
+      "updatedAt": "2026-08-25T10:10:38.837212+00:00",
+      "context": { "role": "finance_operator", "is_active": true, "username": "p24b_op_9bcmx5" },
+      "manifestStatus": "IN_MANIFEST",
+      "manifestNote": "Ayni satirin IKINCI kolon isabeti (users.display_name). Yeni satir DEGIL; n=8 ile ayni id."
+    }
+  ],
+  "metadata": {
+    "key": "10-metin",
+    "title": "P24B METIN FOOTPRINT - mas_radar_dev, salt okunur tarama",
+    "database": "mas_radar_dev",
+    "schema": "public",
+    "generatedAt": "2026-08-26",
+    "readOnly": true,
+    "mutationsExecuted": 0,
+    "mutationStatement": "Bu kosuda DELETE/UPDATE/INSERT/TRUNCATE/ALTER/DROP/CREATE calistirilmadi. Yalniz SELECT ve RAISE NOTICE iceren salt-okunur PL/pgSQL DO blogu kullanildi. Gecici tablo dahi yaratilmadi.",
+    "findingCount": 12,
+    "findingCountDefinition": "1 bulgu = 1 (tablo, kolon, satir_kimligi) isabet kaydi. findings dizisinin uzunlugu = findingCount = 12. Kirpma YOK.",
+    "method": {
+      "enumeration": "information_schema.columns JOIN information_schema.tables (table_type='BASE TABLE'), table_schema='public'",
+      "driver": "salt-okunur PL/pgSQL DO blogu; her kolon icin format() ile uretilen dinamik 'SELECT count(*) FROM public.<tablo> WHERE <ifade> ILIKE %p24b%' sorgusu EXECUTE ... INTO ile calistirildi",
+      "caseSensitivity": "BUYUK/KUCUK HARF DUYARSIZ (ILIKE)",
+      "pattern": "%p24b%",
+      "expressions": {
+        "text_varchar_char_citext_name": "kolon::text",
+        "json_jsonb": "kolon::text",
+        "arrays_text_varchar_char_citext": "array_to_string(kolon, ' ')"
+      },
+      "udtNamesRequested": [
+        "text", "varchar", "bpchar", "char", "citext", "json", "jsonb", "name",
+        "_text", "_varchar", "_bpchar", "_char", "_citext"
+      ],
+      "scriptPath": "C:/Users/TRADEB~1/AppData/Local/Temp/claude/c--Users-Trade-Bilisim-Mas-Saas/2a10ad87-78af-4cd6-9774-26eddc37e11b/scratchpad/scan_metin.sql",
+      "rowDetailScriptPath": "C:/Users/TRADEB~1/AppData/Local/Temp/claude/c--Users-Trade-Bilisim-Mas-Saas/2a10ad87-78af-4cd6-9774-26eddc37e11b/scratchpad/rows_metin.sql"
+    },
+    "coverage": {
+      "baseTablesInPublic": 85,
+      "tablesScanned": 83,
+      "tablesWithZeroTextLikeColumns": 2,
+      "tablesWithZeroTextLikeColumnsList": ["cashflow_snapshots", "scenario_run_lines"],
+      "columnsScanned": 396,
+      "columnsScannedDeclaredByDoBlock": 396,
+      "columnsScannedByUdtName": {
+        "text": 369,
+        "jsonb": 19,
+        "_text": 8,
+        "varchar": 0,
+        "bpchar": 0,
+        "char": 0,
+        "citext": 0,
+        "json": 0,
+        "name": 0,
+        "_varchar": 0,
+        "_bpchar": 0,
+        "_char": 0,
+        "_citext": 0
+      },
+      "typesRequestedButAbsentFromSchema": [
+        "varchar", "bpchar/char", "citext", "json (jsonb disinda)", "name",
+        "varchar[]", "char[]", "citext[]"
+      ],
+      "typeAbsenceNote": "Istenen TUM tipler sorguya dahil edildi. varchar/char/citext/json/name ve text[] disindaki dizi tipleri bu semada HIC YOK; 0 kolon taranmasi tarama basarisizligi degil, tip yoklugudur.",
+      "relkindInventoryPublic": {
+        "r_ordinary_table": 85,
+        "v_view": 81,
+        "i_index": 244,
+        "m_matview": 0,
+        "p_partitioned": 0,
+        "f_foreign": 0
+      }
+    },
+    "summaryCounts": {
+      "columnLevelHitPairs": 5,
+      "columnLevelHitPairsDetail": [
+        { "table": "public.action_items", "column": "title", "type": "text", "matchingRows": 2 },
+        { "table": "public.payments", "column": "name", "type": "text", "matchingRows": 1 },
+        { "table": "public.settings", "column": "key", "type": "text", "matchingRows": 1 },
+        { "table": "public.users", "column": "username", "type": "text", "matchingRows": 4 },
+        { "table": "public.users", "column": "display_name", "type": "text", "matchingRows": 4 }
+      ],
+      "rowHitRecords": 12,
+      "distinctMatchingRows": 8,
+      "distinctMatchingTables": 4,
+      "distinctMatchingTablesList": [
+        "public.action_items", "public.payments", "public.settings", "public.users"
+      ],
+      "jsonbColumnsWithHits": 0,
+      "arrayColumnsWithHits": 0
+    },
+    "manifestReconciliation": {
+      "manifestDeclared": {
+        "users": 4,
+        "payments": 1,
+        "payment_instances": 3,
+        "action_items": 1,
+        "approvals": 1
+      },
+      "textFootprintFound": {
+        "users": 4,
+        "payments": 1,
+        "payment_instances": 0,
+        "action_items": 2,
+        "approvals": 0,
+        "settings": 1
+      },
+      "inManifestFindings": 10,
+      "notInManifestFindings": 2,
+      "notInManifestList": [
+        {
+          "table": "public.action_items",
+          "id": "12d7532f-a730-44dd-9b91-43cf501a6871",
+          "value": "P24B theirs"
+        },
+        {
+          "table": "public.settings",
+          "id": "p24b_fixture_setting",
+          "value": "p24b_fixture_setting"
+        }
+      ],
+      "manifestRowsWithNoTextHit": [
+        {
+          "table": "public.payment_instances",
+          "declaredCount": 3,
+          "textHits": 0,
+          "explanation": "payment_instances metin-benzeri hicbir kolonunda 'p24b' TASIMIYOR. Manifestteki 3 taksit yalniz payment_id=7b300bfe-944f-468b-91fa-2de65b7cfee5 uzerinden bagli. Salt-okunur dogrulama: SELECT count(*) FROM payment_instances WHERE payment_id='7b300bfe-...' = 3. Bu metin isabeti DEGIL, iliskisel izdir; UUID taramasinin (11-uuid) kapsamina girer."
+        },
+        {
+          "table": "public.approvals",
+          "declaredCount": 1,
+          "textHits": 0,
+          "explanation": "approvals 1fc76c28-9d71-4ce3-91a6-f1e9f94e5dd4 metin-benzeri hicbir kolonunda 'p24b' TASIMIYOR. Salt-okunur dogrulama: satirin varligi teyit edildi (count=1). Metin footprint'i sifirdir; UUID/zaman taramasinin kapsamina girer."
+        }
+      ],
+      "verdict": "METIN FOOTPRINT MANIFESTTEN GENIS. Manifest 'kesin' olarak 4+1+3+1+1 beyan ediyor; metin taramasi manifestte HIC gecmeyen 2 ek satir buldu (action_items 12d7532f-a730-44dd-9b91-43cf501a6871 + settings p24b_fixture_setting). Bu ajan silme karari vermez ve manifesti tek basina genisletmez - karar kapisina bildirir."
+    },
+    "legitimateExcluded": [
+      {
+        "table": "public.users",
+        "id": "eb9c61e7-ef57-4dae-b180-0e9d5b7fe8ae",
+        "username": "atilla",
+        "role": "admin",
+        "createdAt": "2026-08-25T10:17:33.822435+00:00",
+        "status": "LEGITIMATE_EXCLUDED",
+        "measuredFact": "SELECT count(*) FROM users WHERE (username ILIKE '%atilla%' OR display_name ILIKE '%atilla%') AND (username ILIKE '%p24b%' OR display_name ILIKE '%p24b%') = 0",
+        "note": "'atilla' hesabi P24B metin footprint'inde HIC gecmiyor (0 isabet). ADAY zaman penceresine (10:08-10:20) dusuyor olmasi tek basina silme kriteri DEGIL. Bu ajan tarafindan hicbir sekilde silme hedefi olarak isaretlenmedi."
+      }
+    ],
+    "limitations": [
+      "Kapsam sozlesme geregi YALNIZ public semasidir. Diger semalar (auth, pg_catalog, information_schema vb.) TARANMADI - OLCULMEDI.",
+      "Yalniz BASE TABLE (relkind='r', 85 adet) tarandi. public'te 81 VIEW var; view depolama degil turetilmis sonuctur, footprint sayimina dahil edilmedi - view govdelerinde 'p24b' metni gecip gecmedigi OLCULMEDI.",
+      "Kolon/constraint/index adlari, fonksiyon govdeleri ve trigger tanimlari (DDL metni) bu gorevin kapsami disindaydi - OLCULMEDI.",
+      "Bu kosuda eslesen hicbir metin degeri kirpilmadi; en uzun eslesen deger 20 karakterin altindaydi, dolayisiyla veri kaybi YOK.",
+      "settings tablosunda created_at kolonu yoktur; ilgili bulgunun createdAt alani null'dur (bilinmiyor), 0 veya varsayilan DEGIL.",
+      "Bu ajan hicbir satiri silmedi, silme onerisi uretmedi ve manifesti degistirmedi; yalniz olculmus footprint'i raporladi."
+    ]
+  }
+}

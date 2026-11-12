@@ -1,4 +1,4 @@
-import Link from "next/link";
+import Link from "@/components/ui/app-link";
 import { getPool } from "@/lib/db";
 import { listArchive } from "@/lib/archive/engine";
 import { ArchiveList } from "@/components/archive/archive-list";

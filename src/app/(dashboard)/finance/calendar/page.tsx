@@ -1,5 +1,7 @@
 import { getPool } from "@/lib/db";
 import { loadCalendar, loadCalendarDaily } from "@/lib/briefing/engine";
+import { getTurkishHoliday } from "@/lib/calendar/tr-holidays";
+import { generateTrStatutoryObligations } from "@/lib/calendar/tr-tax-calendar";
 import { istanbulDateISO } from "@/lib/reports/rules";
 import { Badge, type Tone } from "@/components/ui/badge";
 import { Panel, fmtTL } from "@/components/ui/panel";
@@ -32,6 +34,7 @@ export default async function FinancialCalendarPage({
     loadCalendar(pool, today, end),
     loadCalendarDaily(pool, today, end),
   ]);
+  const statutoryObligations = generateTrStatutoryObligations(today, end);
 
   // PHASE 2.2 (#72): günlük satırlar para birimine göre ayrı (0080); KPI yalnız TRY satırları toplar.
   const dailyTry = daily.filter((d) => isReportingCurrency(d.currency));
@@ -45,7 +48,7 @@ export default async function FinancialCalendarPage({
     <>
       <PageHeader
         title="Finansal Takvim"
-        subtitle="Ödeme, kredi taksiti, çek, fatura, ödeme sözü ve limit vadesi — tek takvimde"
+        subtitle="Ödeme, kredi taksiti, çek, fatura, ödeme sözü, limit vadesi ve yasal vergi/SGK takvimi — tek görünümde"
         meta={<Badge tone={contracted < 0 ? "amber" : "green"} dot>{days} günlük görünüm</Badge>}
         action={
           <span className="flex gap-1">
@@ -85,15 +88,58 @@ export default async function FinancialCalendarPage({
                 </tr>
               </thead>
               <tbody>
-                {daily.map((d) => (
-                  <tr key={`${d.eventDate}-${d.currency}`} className="border-t border-line-faint">
-                    <td className="py-1 font-mono">{d.eventDate}</td>
-                    <td className="font-mono text-tone-3">{d.eventCount}</td>
-                    <td className="text-right font-mono text-pos">{d.inflowContracted ? fmtTL(d.inflowContracted) : "—"}</td>
-                    <td className="text-right font-mono text-neg">{d.outflowContracted ? fmtTL(d.outflowContracted) : "—"}</td>
-                    <td className={`text-right font-mono ${d.netContracted < 0 ? "text-neg" : ""}`}>{fmtTL(d.netContracted)}</td>
-                    <td className="text-right font-mono text-tone-3">{d.netExpected ? fmtTL(d.netExpected) : "—"}</td>
-                    <td className="text-right font-mono text-tone-3">{d.renewalCount || "—"}</td>
+                {daily.map((d) => {
+                  const holiday = getTurkishHoliday(d.eventDate);
+                  return (
+                    <tr key={`${d.eventDate}-${d.currency}`} className="border-t border-line-faint">
+                      <td className="py-1 font-mono">
+                        {d.eventDate}
+                        {holiday && <span className="ml-1.5 font-mono text-[9px] text-warn">({holiday.name})</span>}
+                      </td>
+                      <td className="font-mono text-tone-3">{d.eventCount}</td>
+                      <td className="text-right font-mono text-pos">{d.inflowContracted ? fmtTL(d.inflowContracted) : "—"}</td>
+                      <td className="text-right font-mono text-neg">{d.outflowContracted ? fmtTL(d.outflowContracted) : "—"}</td>
+                      <td className={`text-right font-mono ${d.netContracted < 0 ? "text-neg" : ""}`}>{fmtTL(d.netContracted)}</td>
+                      <td className="text-right font-mono text-tone-3">{d.netExpected ? fmtTL(d.netExpected) : "—"}</td>
+                      <td className="text-right font-mono text-tone-3">{d.renewalCount || "—"}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </TableShell>
+        )}
+      </Panel>
+
+      <Panel
+        title="YASAL VERGİ / SGK YÜKÜMLÜLÜK TAKVİMİ (VUK MD. 18)"
+        subtitle={`Önümüzdeki ${days} gün içindeki GİB ve SGK beyan/ödeme son günleri`}
+        right={<Badge tone="neutral">{statutoryObligations.length} yükümlülük</Badge>}
+      >
+        {statutoryObligations.length === 0 ? (
+          <EmptyState>Bu ufukta yasal vergi/SGK vadesi yok.</EmptyState>
+        ) : (
+          <TableShell>
+            <table className="w-full text-xs">
+              <thead>
+                <tr className="text-left font-mono text-[10px] uppercase text-tone-4">
+                  <th className="py-1">Son Gün (VUK Md. 18)</th>
+                  <th>Kurum</th>
+                  <th>Kod</th>
+                  <th>Yükümlülük</th>
+                  <th>Nominal Tarih</th>
+                  <th>Kaydırma</th>
+                </tr>
+              </thead>
+              <tbody>
+                {statutoryObligations.map((ob) => (
+                  <tr key={ob.id} className="border-t border-line-faint">
+                    <td className="py-1 font-mono font-semibold">{ob.effectiveDueDate}</td>
+                    <td><Badge tone={ob.authority === "GIB" ? "blue" : "amber"}>{ob.authority}</Badge></td>
+                    <td className="font-mono">{ob.code}</td>
+                    <td>{ob.label}</td>
+                    <td className="font-mono text-tone-3">{ob.statutoryNominalDate}</td>
+                    <td className="text-tone-3">{ob.shiftReason ?? "—"}</td>
                   </tr>
                 ))}
               </tbody>
@@ -119,8 +165,8 @@ export default async function FinancialCalendarPage({
                   <tr key={`${r.sourceKind}-${r.sourceId}`} className="border-t border-line-faint">
                     <td className="py-1 font-mono">{r.eventDate}</td>
                     <td className="text-tone-2">{KIND_LABEL[r.sourceKind] ?? r.sourceKind}</td>
-                    <td className="max-w-[18rem] truncate">{r.label}</td>
-                    <td className="max-w-[12rem] truncate text-tone-3">{r.counterpartyName ?? "—"}</td>
+                    <td className="max-w-72 truncate">{r.label}</td>
+                    <td className="max-w-48 truncate text-tone-3">{r.counterpartyName ?? "—"}</td>
                     {/* A facility renewal has no amount. Rendered as a dash and a reason, never 0 TL. */}
                     <td className={`text-right font-mono ${r.amountSigned != null && r.amountSigned < 0 ? "text-neg" : ""}`}>
                       {r.amountSigned == null ? "—" : fmtTL(r.amountSigned)}

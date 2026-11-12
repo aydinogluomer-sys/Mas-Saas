@@ -29,7 +29,11 @@ async function main() {
     // policy on users exists for. So it runs unswitched, on the raw pool.
     const actorId = await ensureSystemActor(getRawPool());
     // Generating the payment window is ordinary operational work, and it runs as a tier.
-    await runAsSystem(() => ensureWindow(pool, istanbulDateISO(), actorId, 24));
+    await runAsSystem(async () => {
+      await ensureWindow(pool, istanbulDateISO(), actorId, 24);
+      const { validateContinuity } = await import("../src/lib/cashflow/engine");
+      await validateContinuity(pool);
+    });
     console.log("Ödeme penceresi 24 aylık ufukla hazır.");
   } finally {
     await pool.end();

@@ -61,21 +61,36 @@ const COLS = `id, job_type, status, priority, attempts, max_attempts, payload,
               progress_done, progress_total, last_error, dead_letter_reason,
               created_at, next_run_at`;
 
+export interface JobRowWithResult extends JobRow {
+  result: Record<string, unknown> | null;
+}
+
 /**
- * Where a finished job's RESULT lives: `payload.result`, written by completeJob().
+ * Legacy fallback key for pre-0108 rows (`payload.result`).
  *
- * Wave 0: the async Import V2 preview (src/lib/importers/v2/async-runner.ts) has to hand its report
- * back to the person who queued it, and this table has no column for that. A dedicated `result`
- * column is the right home and needs a migration; Wave 0 allows exactly one new migration and
- * another slice owns it. Until then the result is merged into the payload IN THE SAME UPDATE that
- * marks the job succeeded — a job is never 'succeeded' without its result, nor the reverse.
+ * Migration 0108 added the dedicated `background_jobs.result` (`jsonb`) column, backfilled legacy
+ * `payload -> 'result'` entries, and locked the job envelope (`payload`, `created_by`, `job_type`,
+ * `dedupe_key`, `created_at`) with `enforce_background_jobs_immutable_envelope`. `completeJob()`
+ * now writes `result = $2::jsonb` directly in the same atomic `UPDATE` that marks the job
+ * `'succeeded'`, never mutating `payload`.
  *
- * listJobs() strips the key: the queue screen needs none of it, and a stored report can run to
- * tens of kilobytes per job.
+ * `listJobs()` omits the `result` column and defensively strips `JOB_RESULT_KEY` from `payload`
+ * so the queue screen stays lightweight even if a stored report runs to tens of kilobytes.
  */
 export const JOB_RESULT_KEY = "result";
 
-/** COLS with the stored result left out of `payload` (see JOB_RESULT_KEY). */
+/** Reads the primary `result` column with a defensive fallback to legacy `payload.result`. */
+export function extractJobResult<T = Record<string, unknown>>(
+  row: { result?: unknown; payload?: unknown },
+): T | null {
+  const fallback =
+    row.payload && typeof row.payload === "object"
+      ? (row.payload as Record<string, unknown>)[JOB_RESULT_KEY]
+      : undefined;
+  return (row.result ?? fallback ?? null) as T | null;
+}
+
+/** COLS omits `result`; `LIST_COLS` also strips any legacy `payload.result` key (see JOB_RESULT_KEY). */
 const LIST_COLS = COLS.replace("payload,", `payload - '${JOB_RESULT_KEY}' as payload,`);
 
 /**
@@ -194,9 +209,9 @@ export async function completeJob(
       : await client.query(
         `update public.background_jobs
             set status = 'succeeded', finished_at = now(), last_error = null,
-                payload = payload || jsonb_build_object($2::text, $3::jsonb)
+                result = $2::jsonb
           where id = $1 and status = 'running' returning id`,
-        [jobId, JOB_RESULT_KEY, JSON.stringify(result)]);
+        [jobId, JSON.stringify(result)]);
     if (res.rowCount) {
       await audit(client, {
         actor: actorId, action: "complete_job",
@@ -336,6 +351,21 @@ export async function listJobs(pool: Pool, limit = 100): Promise<JobRow[]> {
                created_at desc
       limit $1`, [limit]);
   return res.rows.map(mapJob);
+}
+
+export async function loadJobWithResult(
+  pool: Pool, jobId: string,
+): Promise<JobRowWithResult | null> {
+  const res = await pool.query(
+    `select ${COLS}, result from public.background_jobs where id = $1`,
+    [jobId],
+  );
+  if (!res.rowCount) return null;
+  const row = res.rows[0] as Record<string, unknown>;
+  return {
+    ...mapJob(row),
+    result: extractJobResult<Record<string, unknown>>(row),
+  };
 }
 
 export async function loadQueueHealth(pool: Pool) {

@@ -1,7 +1,7 @@
-import Link from "next/link";
+import Link from "@/components/ui/app-link";
 import { getPool } from "@/lib/db";
-import { setReviewStatusAction } from "@/app/(dashboard)/imports/actions";
-import { createActionFromReviewAction } from "@/app/(dashboard)/data-quality/actions";
+import { setReviewStatusAction } from "@/app/(dashboard)/data/imports/actions";
+import { createActionFromReviewAction } from "@/app/(dashboard)/data/quality/actions";
 import { Badge } from "@/components/ui/badge";
 import { Panel } from "@/components/ui/panel";
 import { PageHeader } from "@/components/ui/shell";
@@ -10,7 +10,17 @@ import { Input, Select } from "@/components/ui/primitives/input";
 
 export const dynamic = "force-dynamic";
 
-type Review = { id: string; workbook_id: string; workbook_name: string; sheet_name: string | null; row_index: number | null; issue_type: string; severity: string; message: string; status: string };
+type Review = {
+  id: string;
+  workbook_id: string;
+  workbook_name: string;
+  sheet_name: string | null;
+  row_index: number | null;
+  issue_type: string;
+  severity: string;
+  message: string;
+  status: string;
+};
 
 export default async function ReviewsPage({ searchParams }: { searchParams: Promise<{ status?: string; severity?: string; q?: string }> }) {
   const sp = await searchParams;

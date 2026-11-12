@@ -29,9 +29,9 @@ import {
   reconciliationVerdict, type DatedFlow,
 } from "../src/lib/treasury/rules";
 import { TABLE_CLASS } from "../src/lib/authz/matrix";
-import { requireDisposableOwnerDatabaseUrl } from "./db/owner-url";
+import { assertDisposableTargetDb } from "./db/disposable-guard";
 
-const pool = new Pool({ connectionString: requireDisposableOwnerDatabaseUrl("phase26:verify") });
+const pool = new Pool({ connectionString: assertDisposableTargetDb(undefined, "phase26:verify").url });
 
 interface Check { name: string; pass: boolean; detail: string }
 const checks: Check[] = [];

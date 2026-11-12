@@ -22,9 +22,9 @@ import { Pool, type PoolClient } from "pg";
 import {
   collectionBucket, computeDPO, computeDSO, planAllocation, runningBalance, summarizeAgeing,
 } from "../src/lib/receivables/rules";
-import { requireDisposableOwnerDatabaseUrl } from "./db/owner-url";
+import { assertDisposableTargetDb } from "./db/disposable-guard";
 
-const pool = new Pool({ connectionString: requireDisposableOwnerDatabaseUrl("phase22:verify") });
+const pool = new Pool({ connectionString: assertDisposableTargetDb(undefined, "phase22:verify").url });
 
 interface Check { name: string; pass: boolean; detail: string }
 const checks: Check[] = [];

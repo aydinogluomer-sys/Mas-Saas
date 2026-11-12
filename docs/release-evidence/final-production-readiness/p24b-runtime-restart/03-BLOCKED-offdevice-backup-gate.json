@@ -1,0 +1,77 @@
+{
+  "artifactKind": "mas-p24b-runtime-restart-blocker-v1",
+  "measuredAtUtc": "2026-09-03T08:54:28.411Z",
+  "gate": "SECTION 5 — STARTUP ONCESI USB ROLLBACK BACKUP",
+  "verdict": "FAIL",
+  "blocker": "OFF_DEVICE_ROLLBACK_BACKUP_UNAVAILABLE — USB birimi (D:) makineye bagli degil",
+  "runtimeStarted": false,
+  "expected": {
+    "path": "D:\\MAS-Backups\\p24b-final\\mas_radar_dev-p24b-final-2026-08-31T10-01-14-531Z.dump",
+    "sha256": "fe63481887b7937df1def58475589dac844933ea32ca081dd3beba85bfaffe2a",
+    "bytes": 1413949,
+    "classifierKind": "USB_PHYSICAL_VOLUME",
+    "cleanupGrade": true
+  },
+  "measured": {
+    "driveDPresent": false,
+    "targetDirectoryPresent": false,
+    "backupFilePresent": false,
+    "sha256": null,
+    "bytes": null
+  },
+  "physicalTopology": {
+    "method": "Get-Disk / Get-Volume / Get-CimInstance Win32_LogicalDisk",
+    "disksPresent": [
+      {
+        "number": 0,
+        "busType": "RAID",
+        "isBoot": true,
+        "isSystem": true,
+        "operationalStatus": "Online",
+        "sizeBytes": 256060514304,
+        "friendlyName": "NVMe WDC PC SN520 SDA"
+      }
+    ],
+    "usbDiskPresent": false,
+    "logicalVolumesWithLetters": [
+      "C:"
+    ],
+    "note": "Sistemde tek fiziksel disk var. 2026-08-31'de olculen disk 1 (BusType USB, 'Min Yi U YZWY_TECH', 240057409536 bayt) artik ENUMERE EDILMIYOR. Bu bir harf degisikligi degil, cihazin yoklugu."
+  },
+  "classifierProbe": {
+    "command": "tsx scripts/ops/offdevice-classify-probe.ts D:\\MAS-Backups\\p24b-final",
+    "LOGICAL_DRIVE_TYPE": "olculemedi",
+    "PHYSICAL_DISK_NUMBER": "OLCULEMEDI",
+    "BUS_TYPE": "OLCULEMEDI",
+    "IS_BOOT": "OLCULEMEDI",
+    "IS_SYSTEM": "OLCULEMEDI",
+    "OPERATIONAL_STATUS": "OLCULEMEDI",
+    "SOURCE_PHYSICAL_DISK_NUMBER": "OLCULEMEDI",
+    "SAME_PHYSICAL_DISK": "BILINMIYOR",
+    "TARGET_KIND": "LOCAL_STANDIN",
+    "OFF_DEVICE_SATISFIED": false,
+    "CLEANUP_GRADE": false,
+    "probeMutations": 0,
+    "interpretation": "Siniflandirici tasarlandigi gibi FAIL-CLOSED davrandi: olculemeyen her kosul reddir. Kod dogru calisti; reddedilen sey cihazin yoklugu."
+  },
+  "backupContentIntegrity": {
+    "question": "Yedegin ICERIGI silindi/bozuldu mu?",
+    "answer": "HAYIR — C: uzerindeki staging kopya birebir saglam.",
+    "cStagingPath": "C:\\Users\\Trade Bilisim\\Mas Saas\\backups\\mas_radar_dev-p24b-final-2026-08-31T10-01-14-531Z.dump",
+    "cStagingPresent": true,
+    "cStagingSha256": "fe63481887b7937df1def58475589dac844933ea32ca081dd3beba85bfaffe2a",
+    "cStagingBytes": 1413949,
+    "cStagingShaMatchesExpected": true,
+    "cStagingBytesMatchExpected": true,
+    "whyThisIsNotEnough": "C: kaynak veritabaninin da uzerinde bulundugu disk 0'dir (RAID, boot, system). Ayni fiziksel diskteki bir kopya rollback yedegi SAYILMAZ: diski kaybeden olay hem veritabanini hem kopyayi ayni anda goturur. Projenin kendi siniflandiricisi bunu LOCAL_STANDIN olarak isaretler ve cleanup-grade kabul etmez."
+  },
+  "actionsTaken": {
+    "backupDeleted": false,
+    "backupModified": false,
+    "realDbWrites": 0,
+    "runtimeStarted": false,
+    "newCleanup": false,
+    "manualSqlFix": false
+  },
+  "remediation": "USB SSD'yi (D:) makineye geri takin ve bu turu ayni prompt ile yeniden calistirin. Diger tum on-kosullar (remote SHA, clean RC worktree, env kimligi, bagimlilik kurulumu, typecheck, lint, pre-start DB baseline, quiescence) zaten PASS olarak olculdu ve bu dizinde kayitlidir."
+}

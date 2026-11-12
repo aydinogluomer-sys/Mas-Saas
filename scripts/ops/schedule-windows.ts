@@ -1,4 +1,5 @@
-// AŞAMA 07 Bölüm D — günlük yedeği Windows Görev Zamanlayıcı'ya KURAN araç.
+// AŞAMA 07 Bölüm D — günlük yedeği, telemetri gözetimini ve birleşik arka plan işçisini
+// Windows Görev Zamanlayıcı'ya KURAN araç.
 //
 // "Zamanlama kurulmadı" kabul edilebilir bir cevap değil (rehber §12 Bölüm D). Ama bir
 // ajanın kullanıcının makinesine, sormadan, KALICI bir tekrarlayan görev kaydetmesi de
@@ -18,26 +19,15 @@
 //   pnpm exec tsx scripts/ops/schedule-windows.ts uninstall --apply
 //   pnpm exec tsx scripts/ops/schedule-windows.ts run-once           # görevi elle tetikler
 //
-// Seçenekler: --job backup|telemetry  --name <görev adı>  --at HH:MM
+// Seçenekler: --job backup|telemetry|worker  --name <görev adı>  --at HH:MM
 //
-// ── AŞAMA 09: İKİNCİ İŞ ─────────────────────────────────────────────────────────────────
+// ── FAZ 43 (`B3`): OTURUMSUZ (`S4U`) KAYIT VE BİRLEŞİK ARKA PLAN İŞÇİSİ (`worker`) ───────
 //
-// Rehber §14 "Schedule" telemetri anlık görüntüsünün, yedek-yaşı, bayat-veri ve kuyruk
-// kontrollerinin belirli periyotla koşmasını istiyor. Bunun için İKİNCİ bir zamanlayıcı aracı
-// yazılmadı: aynı what-if/apply disiplinini ikinci kez yazmak, ikinci kez yanlış yazma fırsatı
-// demektir. Araç `--job` ile parametrelendi; VARSAYILAN `backup` olarak KALDI, çünkü Aşama 07
-// kanıtı ve `release:stage07-backup-gate` bu aracı bayraksız çağırıyor.
-//
-// ── WAVE 0: GÖREV AYARLARI SERTLEŞTİRİLDİ ───────────────────────────────────────────────
-//
-// `schtasks /Create` görevi Windows varsayılanlarıyla kaydeder ve ÖLÇÜLDÜ: StartWhenAvailable=False,
-// ExecutionTimeLimit=72 saat. Birincisi, makine 03:00'te uykudaysa ya da kapalıysa kaçırılan
-// yedeğin HİÇ telafi edilmemesi demek; ikincisi, takılan tek bir koşunun (varsayılan IgnoreNew ile)
-// sonraki üç geceyi bloke etmesi. `install --apply` artık kayıttan hemen sonra TEK bir PowerShell
-// çağrısıyla ayarları uygular: StartWhenAvailable, 2 saatlik süre sınırı, IgnoreNew, pilde de
-// başla/durma. Uygulanamazsa görev kayıtlı kalır ama çıktı 'SETTINGS NOT HARDENED' der ve exit 1.
-// Aynı sertleştirme telemetri gözetim görevine de (`--job telemetry`) uygulanır; o görev
-// yedek-yaşı alarmını taşır ve kayıtlı değilse başarısız bir yedek gecesi kimseye ulaşmaz.
+// `schtasks /Create` varsayılan olarak görevi `InteractiveToken` ile kaydediyordu: sunucu yeniden
+// başladığında veya operatör oturumu kilitli/kapalı olduğunda gece 03:00 yedeği, telemetri gözetimi
+// ve arka plan işçisi hiç başlamıyordu. `buildSettingsCommand` artık ayarlarla birlikte
+// `New-ScheduledTaskPrincipal -LogonType S4U -RunLevel Limited` uygular; görev parola saklamadan
+// masaüstü oturumu açık olmasa bile çalışır.
 import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import path from "node:path";
@@ -67,7 +57,7 @@ interface JobDefinition {
   /** Sarmalayıcının çalıştırdığı TypeScript işi — ön koşul denetimi için. */
   jobScript: string;
   defaultTime: string;
-  /** schtasks periyot argümanları. Yedek günlük; telemetri 6 saatte bir. */
+  /** schtasks periyot argümanları. Yedek günlük; telemetri 6 saatte bir; worker 5 dk gözetimli. */
   scheduleArgs: string[];
   humanSchedule: (time: string) => string;
   /** İş native PostgreSQL araçlarını (pg_dump/pg_restore/psql) çalıştırıyor mu. */
@@ -84,13 +74,13 @@ const JOBS: Record<string, JobDefinition> = {
     jobScript: "scripts/ops/backup-daily.ts",
     defaultTime: "03:00",
     scheduleArgs: ["/SC", "DAILY"],
-    humanSchedule: (t) => `her gün ${t} (yerel saat)`,
+    humanSchedule: (t) => `her gün ${t} (yerel saat, S4U oturumsuz)`,
     requiresPgTools: true,
     advisoryEnv: [{
       name: "MAS_OFFDEVICE_BACKUP_DIR ayarlı (off-device kopya için)",
       envs: ["MAS_OFFDEVICE_BACKUP_DIR"],
-      // backup-daily.ts bu değeri YALNIZ süreç ortamından okur (setx); .env.local'e bakmak yanıltırdı.
-      alsoEnvLocal: false,
+      // Faz 43: backup-daily.ts artık süreç ortamında yoksa .env.local'den de okur.
+      alsoEnvLocal: true,
       presenceOnly: false,
       missingNote: "ayarlı değil — görev exit 3 ile 'TEK KOPYA' uyarısı verecek",
     }],
@@ -101,17 +91,13 @@ const JOBS: Record<string, JobDefinition> = {
     wrapperFile: "mas-telemetry-watch.cmd",
     jobScript: "scripts/ops/telemetry-watch.ts",
     defaultTime: "07:00",
-    // Günde bir telemetri, takılı bir kuyruğu 24 saat görmeden bırakır — kuyruk süpürücüsü 30
-    // dakikada bir koşuyor. 6 saat, "alarm zamanında görülsün" ile "bildirim gürültüsü olmasın"
-    // arasındaki kasıtlı orta nokta; ilk koşu --at ile verilen saatte başlar.
     scheduleArgs: ["/SC", "HOURLY", "/MO", "6"],
-    humanSchedule: (t) => `${t}'den itibaren 6 saatte bir (yerel saat)`,
+    humanSchedule: (t) => `${t}'den itibaren 6 saatte bir (yerel saat, S4U oturumsuz)`,
     requiresPgTools: false,
     advisoryEnv: [
       {
         name: "MAS_ALERT_CHANNELS ayarlı (ek operatör kanalı; telegram = sahibin sohbeti)",
         envs: ["MAS_ALERT_CHANNELS"],
-        // telemetry-watch.ts bu değeri süreç ortamından, yoksa .env.local'den okur.
         alsoEnvLocal: true,
         presenceOnly: false,
         missingNote: "ayarlı değil — yalnız yerel kalıcı alert log'una yazılır (birincil kanal, her zaman çalışır)",
@@ -124,6 +110,17 @@ const JOBS: Record<string, JobDefinition> = {
         missingNote: "eksik — MAS_ALERT_CHANNELS=telegram olsa bile alarm Telegram'a gidemez (teslimat hatası günlüğe yazılır)",
       },
     ],
+  },
+  worker: {
+    key: "worker",
+    taskName: "MAS-Background-Worker",
+    wrapperFile: "mas-background-worker.cmd",
+    jobScript: "scripts/ops/background-worker.ts",
+    defaultTime: "00:00",
+    scheduleArgs: ["/SC", "MINUTE", "/MO", "5"],
+    humanSchedule: () => "5 dakikada bir gözetim (S4U oturumsuz + tekil süreç kilidi)",
+    requiresPgTools: false,
+    advisoryEnv: [],
   },
 };
 
@@ -194,17 +191,23 @@ function assertTaskName(taskName: string): void {
 
 /**
  * Kayıttan SONRA uygulanacak ayarlar — tek PowerShell çağrısının argümanları (bkz. dosya başlığı).
- * StartWhenAvailable: kaçırılan tetikleme makine açılınca telafi edilir. ExecutionTimeLimit 2 saat:
- * takılan bir koşu sonraki geceleri bloke etmez. IgnoreNew: aynı anda iki koşu olmaz.
+ * StartWhenAvailable: kaçırılan tetikleme makine açılınca telafi edilir. ExecutionTimeLimit 2 saat
+ * (sürekli çalışan `MAS-Background-Worker` için sınırsız `[TimeSpan]::Zero`): takılan bir koşu
+ * sonraki geceleri bloke etmez. IgnoreNew: aynı anda iki koşu olmaz. LogonType S4U: masaüstü
+ * oturumu açık olmadan da (sunucu yeniden başlatması sonrası) görev çalışır.
  */
 export function buildSettingsCommand(taskName: string): string[] {
   assertTaskName(taskName);
+  const timeLimitExpr =
+    taskName === JOBS.worker.taskName ? "([TimeSpan]::Zero)" : "(New-TimeSpan -Hours 2)";
   return [
     "-NoProfile", "-NonInteractive", "-Command",
     "$ErrorActionPreference='Stop'; " +
-      "$s = New-ScheduledTaskSettingsSet -StartWhenAvailable -ExecutionTimeLimit (New-TimeSpan -Hours 2) " +
+      `$s = New-ScheduledTaskSettingsSet -StartWhenAvailable -ExecutionTimeLimit ${timeLimitExpr} ` +
       "-MultipleInstances IgnoreNew -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries; " +
-      `Set-ScheduledTask -TaskName '${taskName}' -Settings $s | Out-Null`,
+      "$p = New-ScheduledTaskPrincipal -UserId ([System.Security.Principal.WindowsIdentity]::GetCurrent().Name) " +
+      "-LogonType S4U -RunLevel Limited; " +
+      `Set-ScheduledTask -TaskName '${taskName}' -Settings $s -Principal $p | Out-Null`,
   ];
 }
 
@@ -225,8 +228,6 @@ export function buildStatusDetailCommand(taskName: string): string[] {
 
 function schtasks(args: string[]): { code: number; out: string } {
   try {
-    // stderr YAKALANIR, ebeveyne akıtılmaz: "görev bulunamadı" normal bir cevaptır ve
-    // ham bir ERROR satırı olarak görünmesi raporu okuyanı yanıltır.
     const out = execFileSync("schtasks", args, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
     return { code: 0, out };
   } catch (err) {
@@ -264,7 +265,6 @@ function pnpmFound(): string | null {
 
 interface Precheck { name: string; ok: boolean; detail: string; advisory?: boolean }
 
-/** `.env.local` — YALNIZ varlık kontrolleri ve sır-olmayan araç ayarları (PG_RUNTIME_ENV_KEYS) için okunur. */
 function envLocalOrEmpty(): Record<string, string> {
   try {
     return readEnvLocal();
@@ -273,12 +273,6 @@ function envLocalOrEmpty(): Record<string, string> {
   }
 }
 
-/**
- * Yedek işinin native araç zinciri ön koşulları — görevin KENDİSİNİN kullanacağı öncelikle
- * (süreç ortamı, yoksa `.env.local`). Araçlar çözülemiyorsa görev her gece exit 1 verir; bunu
- * kayıt anında görmek, ilk başarısız geceden sonra görmekten iyidir: ENGELLEYİCİ.
- * Kümenin dinleyip dinlemediği ise kayıt anının değil koşu anının sorusudur: TAVSİYE.
- */
 function pgToolPrechecks(fileEnv: Record<string, string>): Precheck[] {
   const list: Precheck[] = [];
   const cfg = withPgRuntimeConfig(process.env, fileEnv);
@@ -318,7 +312,6 @@ function pgToolPrechecks(fileEnv: Record<string, string>): Precheck[] {
     detail,
   });
 
-  // Kümenin adresi görevin kullanacağı owner URL'inden; URL ve parola YAZDIRILMAZ.
   let host = "127.0.0.1";
   let port = 5432;
   const ownerUrl = process.env.MIGRATION_DATABASE_URL || fileEnv["MIGRATION_DATABASE_URL"] || "";
@@ -396,14 +389,6 @@ function prechecks(spec: ScheduleSpec): Precheck[] {
   return list;
 }
 
-/**
- * Eylemi argv'den POZİSYONEL olarak okur, `process.argv[2]`'den değil.
- *
- * Neden: `package.json`'daki `ops:telemetry:schedule` bayrağı komuta ÖNDEN ekliyor
- * (`… schedule-windows.ts --job telemetry status`), dolayısıyla argv[2] = "--job" oluyordu ve
- * araç "Bilinmeyen eylem: '--job'" diyerek her çağrıda düşüyordu. Değer alan bayraklar
- * atlanır, `--apply` gibi salt bayraklar da öyle; geriye yalnız eylem kalır.
- */
 export function positionalArgs(argv: readonly string[] = process.argv): string[] {
   const FLAGS_WITH_VALUE = new Set(["--name", "--at", "--job"]);
   const out: string[] = [];
@@ -434,7 +419,6 @@ export function main(): number {
         /TaskName|Next Run Time|Status|Last Run Time|Last Result|Schedule Type|Start Time|Task To Run|Görev|Sonraki|Durum|Son Ç/i.test(l));
       console.log("KAYITLI. İlgili satırlar:");
       for (const line of interesting) console.log(`  ${line.trim()}`);
-      // Salt-okur ayrıntı: ayarların sertleştirilip sertleştirilmediği burada GÖRÜNÜR olmalı.
       if (TASK_NAME_PATTERN.test(spec.taskName)) {
         const detail = powershell(buildStatusDetailCommand(spec.taskName));
         if (detail.code === 0) {
@@ -459,12 +443,11 @@ export function main(): number {
     const checks = prechecks(spec);
     console.log("Ön koşullar:");
     for (const c of checks) console.log(`  ${c.ok ? "OK  " : "EKSİK"}  ${c.name} — ${c.detail}`);
-    // advisory = eksikliği kaydı ENGELLEMEZ ama çıktıda görünür (off-device hedefi, ek kanal).
     const blocking = checks.filter((c) => !c.ok && c.advisory !== true);
     console.log("");
     console.log("Kaydedilecek komut (birebir):");
     console.log(`  ${spec.createCommand}`);
-    console.log("Kayıttan sonra uygulanacak ayarlar: StartWhenAvailable, ExecutionTimeLimit 2 saat, MultipleInstances IgnoreNew");
+    console.log("Kayıttan sonra uygulanacak ayarlar: LogonType S4U, StartWhenAvailable, MultipleInstances IgnoreNew");
     console.log("");
     if (!apply) {
       console.log("WHAT-IF — hiçbir görev KAYDEDİLMEDİ.");
@@ -498,7 +481,7 @@ export function main(): number {
       console.error("Görev KAYITLI kaldı ama Windows varsayılanlarıyla (kaçırılan koşu telafi edilmez). 'status' ile bakın.");
       return 1;
     }
-    console.log("SETTINGS HARDENED — StartWhenAvailable, ExecutionTimeLimit 2 saat, MultipleInstances IgnoreNew");
+    console.log("SETTINGS HARDENED — LogonType S4U, StartWhenAvailable, MultipleInstances IgnoreNew");
     return 0;
   }
 

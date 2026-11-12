@@ -1,8 +1,8 @@
 "use client";
 
-import Link from "next/link";
-import { usePathname, useRouter } from "next/navigation";
-import { useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
+import Link from "@/components/ui/app-link";
+import { usePathname } from "next/navigation";
+import { useEffect, useState, type ReactNode } from "react";
 import { useNavigationFeedback } from "@/components/ui/navigation-feedback";
 
 export interface NavItem {
@@ -26,7 +26,7 @@ const ICONS: Record<NavItem["icon"], ReactNode> = {
 };
 
 function Icon({ name }: { name: NavItem["icon"] }) {
-  return <svg viewBox="0 0 24 24" aria-hidden className="h-[18px] w-[18px] shrink-0 fill-none stroke-current stroke-[1.6]">{ICONS[name]}</svg>;
+  return <svg viewBox="0 0 24 24" aria-hidden className="h-4.5 w-4.5 shrink-0 fill-none stroke-current stroke-[1.6]">{ICONS[name]}</svg>;
 }
 
 function isActive(pathname: string, item: NavItem) {
@@ -34,58 +34,31 @@ function isActive(pathname: string, item: NavItem) {
   return paths.some((href) => pathname === href || (href !== "/" && pathname.startsWith(`${href}/`)));
 }
 
+export function openCanonicalCommandPalette(): void {
+  if (typeof window !== "undefined") {
+    window.dispatchEvent(new CustomEvent("mas:open-command-palette"));
+  }
+}
+
 export function AppSidebar({ items, gate, logoutAction }: { items: NavItem[]; gate: boolean; logoutAction: () => Promise<void> }) {
   const pathname = usePathname();
   const [collapsed, setCollapsed] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
-  const [paletteOpen, setPaletteOpen] = useState(false);
-  const [query, setQuery] = useState("");
-  const router = useRouter();
-  const { pendingHref, beginNavigation } = useNavigationFeedback();
+  const { pendingHref } = useNavigationFeedback();
   const activePathname = pendingHref ? new URL(pendingHref, "http://local").pathname : pathname;
-  const dialogRef = useRef<HTMLDivElement>(null);
-  const restoreFocusRef = useRef<HTMLElement | null>(null);
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
-      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
-        event.preventDefault();
-        setPaletteOpen((value) => !value);
-      }
-      if (event.key === "Escape") { setPaletteOpen(false); setMobileOpen(false); }
+      if (event.key === "Escape") setMobileOpen(false);
     };
+    const closeForNavigation = () => setMobileOpen(false);
     window.addEventListener("keydown", onKey);
-    const closeForNavigation = () => { setPaletteOpen(false); setMobileOpen(false); };
     window.addEventListener("mas:navigation-start", closeForNavigation);
-    return () => { window.removeEventListener("keydown", onKey); window.removeEventListener("mas:navigation-start", closeForNavigation); };
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      window.removeEventListener("mas:navigation-start", closeForNavigation);
+    };
   }, []);
-
-  // Focus management for the palette: remember the opener, restore it on close.
-  useEffect(() => {
-    if (paletteOpen) restoreFocusRef.current = document.activeElement as HTMLElement;
-    else restoreFocusRef.current?.focus?.();
-  }, [paletteOpen]);
-
-  // Keep Tab focus inside the open palette (the one a11y gap of the custom overlay).
-  const trapFocus = (event: ReactKeyboardEvent<HTMLDivElement>) => {
-    if (event.key !== "Tab" || !dialogRef.current) return;
-    const focusables = [...dialogRef.current.querySelectorAll<HTMLElement>('input, button, [href], [tabindex]:not([tabindex="-1"])')].filter((el) => !el.hasAttribute("disabled"));
-    if (!focusables.length) return;
-    const first = focusables[0];
-    const last = focusables[focusables.length - 1];
-    if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
-    else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
-  };
-
-  const commands = useMemo(() => [
-    ...items.map((item) => ({ label: item.label, hint: item.description ?? "Çalışma alanına git", href: item.href })),
-    { label: "Yeni ödeme ekle", hint: "Ödemeler", href: "/payments/new" },
-    { label: "Finansal soru sor", hint: "İçgörüler", href: "/insights/ask" },
-    { label: "Rapor oluştur", hint: "İçgörüler", href: "/insights/reports" },
-    { label: "Excel yükle", hint: "Veri Merkezi", href: "/data/imports" },
-  ].filter((item) => `${item.label} ${item.hint}`.toLocaleLowerCase("tr-TR").includes(query.toLocaleLowerCase("tr-TR"))), [items, query]);
-
-  const navigate = (href: string) => { setPaletteOpen(false); setMobileOpen(false); setQuery(""); beginNavigation(href); window.requestAnimationFrame(() => router.push(href)); };
 
   return (
     <>
@@ -103,23 +76,18 @@ export function AppSidebar({ items, gate, logoutAction }: { items: NavItem[]; ga
           {items.slice(6).map((item) => <SidebarLink key={item.href} item={item} active={isActive(activePathname, item)} collapsed={collapsed} close={() => setMobileOpen(false)} />)}
         </nav>
         <div className="sidebar-footer">
-          <button className="sidebar-command" onClick={() => setPaletteOpen(true)} title="Komut menüsü">
+          <button
+            type="button"
+            className="sidebar-command"
+            onClick={openCanonicalCommandPalette}
+            title="Komut menüsü"
+          >
             <span className="command-icon">⌕</span>{!collapsed && <><span>Hızlı erişim</span><kbd>Ctrl K</kbd></>}
           </button>
           {gate && <form action={logoutAction}><button type="submit" className="sidebar-command"><span className="command-icon">↪</span>{!collapsed && <span>Çıkış yap</span>}</button></form>}
           <button className="sidebar-collapse" onClick={() => setCollapsed((v) => !v)} aria-label={collapsed ? "Menüyü genişlet" : "Menüyü daralt"}>{collapsed ? "›" : "‹"}</button>
         </div>
       </aside>
-      {paletteOpen && (
-        <div className="command-overlay" role="presentation" onMouseDown={() => setPaletteOpen(false)}>
-          <div ref={dialogRef} className="command-dialog" role="dialog" aria-modal="true" aria-label="Hızlı erişim" onMouseDown={(e) => e.stopPropagation()} onKeyDown={trapFocus}>
-            <div className="command-input-row"><span>⌕</span><input autoFocus value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Sayfa veya işlem ara…" aria-label="Komut ara" /><kbd>ESC</kbd></div>
-            <div className="command-results">
-              {commands.length ? commands.map((command) => <button key={`${command.href}-${command.label}`} onClick={() => navigate(command.href)}><span>{command.label}<small>{command.hint}</small></span><span aria-hidden>→</span></button>) : <div className="command-empty">Sonuç bulunamadı.</div>}
-            </div>
-          </div>
-        </div>
-      )}
     </>
   );
 }

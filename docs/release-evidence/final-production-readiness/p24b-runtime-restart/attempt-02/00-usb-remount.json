@@ -1,0 +1,88 @@
+{
+  "artifactKind": "mas-p24b-usb-remount-v1",
+  "measuredAtUtc": "2026-09-03T09:38:58.045Z",
+  "gate": "SECTION 1-5",
+  "verdict": "PASS",
+  "resolutionMethod": "Fiziksel disk kimliginden cozuldu (Get-Disk / Get-Partition / Get-Volume). Drive-letter esitligine GUVENILMEDI; makbuzdaki eski mutlak yol KORU KORUNE takip edilmedi.",
+  "physicalDevice": {
+    "diskNumber": 1,
+    "busType": "USB",
+    "isBoot": false,
+    "isSystem": false,
+    "operationalStatus": "Online",
+    "sizeBytes": 240057409536,
+    "friendlyName": "Min Yi U YZWY_TECH",
+    "serialNumber": "020987654321"
+  },
+  "sourceDevice": {
+    "letter": "C",
+    "diskNumber": 0,
+    "busType": "RAID",
+    "isBoot": true,
+    "isSystem": true
+  },
+  "letterToDiskMapping": [
+    {
+      "letter": "C",
+      "diskCount": 1,
+      "diskNumber": 0,
+      "busType": "RAID"
+    },
+    {
+      "letter": "D",
+      "diskCount": 1,
+      "diskNumber": 1,
+      "busType": "USB"
+    }
+  ],
+  "qualifyingUsbCandidates": 1,
+  "resolvedCurrentUsbPath": "D:\\MAS-Backups\\p24b-final\\mas_radar_dev-p24b-final-2026-08-31T10-01-14-531Z.dump",
+  "resolvedCurrentUsbDir": "D:\\MAS-Backups\\p24b-final",
+  "relativeLocationSearched": "MAS-Backups\\p24b-final",
+  "driveLetterChangedSinceReceipt": false,
+  "driveLetterNote": "Bu remount'ta harf yine D: cikti; ancak karar harften degil fiziksel diskten turetildi. Receipt/binding YENIDEN YAZILMADI.",
+  "classifier": {
+    "TARGET_KIND": "USB_PHYSICAL_VOLUME",
+    "OFF_DEVICE_SATISFIED": true,
+    "CLEANUP_GRADE": true,
+    "SAME_PHYSICAL_DISK": false,
+    "SAME_VOLUME_AS_SOURCE": false,
+    "PROBE_MUTATIONS": 0
+  },
+  "contentIdentity": {
+    "expectedBytes": 1413949,
+    "expectedSha256": "fe63481887b7937df1def58475589dac844933ea32ca081dd3beba85bfaffe2a",
+    "actualBytes": 1413949,
+    "actualSha256": "fe63481887b7937df1def58475589dac844933ea32ca081dd3beba85bfaffe2a",
+    "bytesMatch": true,
+    "shaMatch": true,
+    "independentReads": [
+      "coreutils sha256sum (D: uzerinden)",
+      "PowerShell Get-FileHash (D: uzerinden)",
+      "konteyner ici sha256sum (kopya sonrasi yeniden okuma)"
+    ],
+    "pgRestoreList": {
+      "exitCode": 0,
+      "tocEntries": 1387,
+      "archiveCreatedAt": "2026-08-31 10:01:14 UTC",
+      "dbname": "mas_radar_dev"
+    },
+    "cStagingCopyUsedForGate": false
+  },
+  "receiptConsistency": {
+    "receiptFile": "D:\\MAS-Backups\\p24b-final\\mas_radar_dev-p24b-final-2026-08-31T10-01-14-531Z.dump.offdevice.json",
+    "receiptDestSha256Matches": true,
+    "receiptDestBytesMatches": true,
+    "receiptTocCountMatches": true,
+    "receiptTargetKind": "USB_PHYSICAL_VOLUME",
+    "bindingBackupSha256Matches": true,
+    "bindingManifestSha256": "d60de97bcc3c62aa2902b64a7c164e8132e733ba7f6958e71b1a84bac3c8bbb9",
+    "bindingMigrationLedger": "0087/87",
+    "receiptRewritten": false,
+    "bindingRewritten": false,
+    "fakeReceiptCreated": false,
+    "identityGate": "SHA256 + bytes (icerik kimligi) — physical location yeniden olculdu"
+  },
+  "backupRetained": true,
+  "backupModified": false
+}

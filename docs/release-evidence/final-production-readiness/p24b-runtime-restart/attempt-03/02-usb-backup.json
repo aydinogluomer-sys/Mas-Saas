@@ -1,0 +1,43 @@
+{
+  "artifactKind": "mas-p24b-usb-backup-v3",
+  "measuredAtUtc": "2026-09-03T10:16:01.698Z",
+  "gate": "SECTION 8",
+  "verdict": "PASS",
+  "resolutionMethod": "Drive letter varsayilmadi — aygit fiziksel kimliginden yeniden cozuldu.",
+  "physicalDevice": {
+    "diskNumber": 1,
+    "busType": "USB",
+    "isBoot": false,
+    "isSystem": false,
+    "operationalStatus": "Online",
+    "friendlyName": "Min Yi U YZWY_TECH"
+  },
+  "sourceDisk": {
+    "diskNumber": 0,
+    "busType": "RAID",
+    "isBoot": true,
+    "isSystem": true
+  },
+  "samePhysicalDisk": false,
+  "resolvedCurrentUsbPath": "D:\\MAS-Backups\\p24b-final\\mas_radar_dev-p24b-final-2026-08-31T10-01-14-531Z.dump",
+  "currentDriveLetter": "D",
+  "bytes": {
+    "expected": 1413949,
+    "actual": 1413949,
+    "match": true
+  },
+  "sha256": {
+    "expected": "fe63481887b7937df1def58475589dac844933ea32ca081dd3beba85bfaffe2a",
+    "actual": "fe63481887b7937df1def58475589dac844933ea32ca081dd3beba85bfaffe2a",
+    "match": true
+  },
+  "pgRestoreList": {
+    "exitCode": 0,
+    "tocEntries": 1387,
+    "expectedTocEntries": 1387,
+    "match": true
+  },
+  "backupRetained": true,
+  "backupModified": false,
+  "receiptRewritten": false
+}

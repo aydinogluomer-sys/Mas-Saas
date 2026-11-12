@@ -15,10 +15,10 @@ import {
   mapMachineMinuteAllocations,
 } from "../src/lib/production/engine";
 import { ensureSystemActor } from "./db/seed-system-actor";
-import { requireDisposableOwnerDatabaseUrl } from "./db/owner-url";
+import { assertDisposableTargetDb } from "./db/disposable-guard";
 
 const pool = new Pool({
-  connectionString: requireDisposableOwnerDatabaseUrl("phase9d:verify"),
+  connectionString: assertDisposableTargetDb(undefined, "phase9d:verify").url,
 });
 const fail = (m: string): never => { console.error("PHASE9D VERIFY FAIL:", m); process.exit(1); };
 const q = async (sql: string, p: unknown[] = []) => (await pool.query(sql, p)).rows;

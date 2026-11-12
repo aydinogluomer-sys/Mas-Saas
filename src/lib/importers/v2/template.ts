@@ -8,7 +8,7 @@
 // ZAMANINDA bu koddan üretir; depodaki `templates/*.xlsx` kopyası dağıtım/kanıt içindir.
 // İkisi aynı bayttır (zip-canonical.test.ts: byte-determinizm) — kullanıcı hangisini alırsa
 // alsın sha256 aynı çıkar. CLI: `pnpm import:template:v2` (scripts/import/generate-standard-template-v2.ts).
-import ExcelJS from "exceljs";
+import type ExcelJS from "exceljs";
 import {
   DATA_SHEETS, README_SHEET, EXAMPLES_SHEET, META_SHEET,
   SCHEMA_NAME, SCHEMA_VERSION, TEMPLATE_VERSION, TEMPLATE_ID,
@@ -173,6 +173,7 @@ function buildExamples(wb: ExcelJS.Workbook): void {
     ["14_KAPASITE", "torna_dk", "(boş) — süre ölçülmediyse BOŞ; 0 yazarsanız 'torna işlemi yok' demektir"],
     ["15_MALIYET", "senaryo", "normal / overtime"],
     ["16_MAKINE_ROI", "makine_adi", "Awea — kişisel/aile gideri satırları buraya YAZILMAZ"],
+    ["17_KREDI_LIMITLERI", "limit_tipi", "revolving — rotatif BCH/KMH limiti; kullanılan tutar toplam limiti aşamaz"],
   ];
   for (const r of examples) ws.addRow(r);
   ws.getColumn(3).alignment = { wrapText: true, vertical: "top" };
@@ -191,7 +192,8 @@ function buildMeta(wb: ExcelJS.Workbook): void {
 }
 
 export async function buildTemplateWorkbook(): Promise<ExcelJS.Workbook> {
-  const wb = new ExcelJS.Workbook();
+  const { default: ExcelJSRuntime } = await import("exceljs");
+  const wb = new ExcelJSRuntime.Workbook();
   wb.creator = "MAS Nakit Radar";
   wb.lastModifiedBy = "MAS Nakit Radar";
   // Deterministik çıktı: sabit zaman damgası olmadan aynı girdi farklı byte üretirdi.

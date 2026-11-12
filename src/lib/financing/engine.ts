@@ -14,12 +14,15 @@ import {
 import type { RowJson, SheetRow } from "@/lib/importers/row-utils";
 import { normalizeTr } from "@/lib/importers/workbook-parser";
 import { DomainError } from "@/lib/domain-error";
-import { moneyOrNull, rateOrNull } from "@/lib/money";
+import { decimal, money, moneyOrNull, rateOrNull } from "@/lib/money";
 import { audit } from "@/lib/audit";
+import { executeCheckBordroTransition } from "./check-bordro";
 import {
+  addMonthsPreservingAnchorDay,
   reconcileLoan,
   scheduleDueDates,
   type MaturityItem,
+  type ScheduledInstallment,
 } from "./rules";
 
 /** `before` is optional and trailing so every pre-existing call site keeps its exact
@@ -237,10 +240,19 @@ export async function mapLoans(pool: Pool, workbookId: string, actorId: string):
       const loanId: string = ins.rows[0].id;
       result.created++;
 
-      const schedule = scheduleDueDates(loan.firstPaymentDate, loan.installments.length);
+      const maxInstallmentNo = loan.installments.reduce(
+        (maxNo, inst) => Math.max(maxNo, inst.no),
+        loan.installments.length,
+      );
+      const schedule = scheduleDueDates(loan.firstPaymentDate, maxInstallmentNo);
+      const scheduleByNo = new Map<number, ScheduledInstallment>(schedule.map((s) => [s.no, s]));
       for (const inst of loan.installments) {
         if (inst.amount == null) continue; // not-null constraint; would have been blocked upstream
-        const sched = schedule[inst.no - 1];
+        const sched = scheduleByNo.get(inst.no)
+          ?? addMonthsPreservingAnchorDay(loan.firstPaymentDate, Math.max(0, inst.no - 1));
+        const taxComponent = inst.kkdf == null && inst.bsmv == null
+          ? null
+          : money(decimal(inst.kkdf ?? 0).plus(decimal(inst.bsmv ?? 0)));
         const r = await client.query(
           `insert into public.loan_installments
              (loan_id, installment_no, due_date, amount, principal_component, interest_component, tax_component, status)
@@ -248,7 +260,7 @@ export async function mapLoans(pool: Pool, workbookId: string, actorId: string):
            on conflict (loan_id, installment_no) do nothing`,
           [
             loanId, inst.no, sched.dueDate, inst.amount, inst.principal, inst.interest,
-            (inst.kkdf ?? 0) + (inst.bsmv ?? 0) || null,
+            taxComponent,
           ],
         );
         result.installmentsCreated += r.rowCount ?? 0;
@@ -308,13 +320,20 @@ export interface CheckRow {
   id: string;
   maturityDate: string;
   serial: string | null;
+  instrumentType?: "check" | "promissory_note";
   amount: number | null;
+  currency?: string;
   signedAmount: number | null;
   direction: "inflow" | "outflow" | "unknown";
   status: string;
   payee: string | null;
   payer: string | null;
   bank: string | null;
+  endorsedTo?: string | null;
+  collectionBank?: string | null;
+  collateralFacility?: string | null;
+  settledInvoiceNo?: string | null;
+  lastBordroNo?: string | null;
   sourceWorkbookId: string | null;
   sourceSheetId: string | null;
   rowIndex: number | null;
@@ -323,25 +342,78 @@ export interface CheckRow {
 export async function loadChecks(pool: Pool, options: { limit?: number; offset?: number } = {}): Promise<CheckRow[]> {
   const limit = Math.max(1, Math.min(options.limit ?? 100_000, 100_000));
   const offset = Math.max(0, options.offset ?? 0);
-  const r = await pool.query(`
-    select c.id, to_char(c.maturity_date,'YYYY-MM-DD') as maturity_date, c.serial_no as serial,
-           c.amount, c.signed_amount,
-           c.direction, c.status,
-           coalesce(pe.name, pa.name, c.counterparty_label) as payee, pa.name as payer, pb.name as bank,
-           c.source_workbook_id, c.source_sheet_id, ir.row_index
-    from public.checks c
-    left join public.parties pe on pe.id=c.payee_party_id
-    left join public.parties pa on pa.id=c.payer_party_id
-    left join public.parties pb on pb.id=c.bank_party_id
-    left join public.import_rows ir on ir.id=c.source_row_id
-    where c.archived_at is null
-    order by c.maturity_date
-    limit $1 offset $2`, [limit, offset]);
+  let r;
+  try {
+    r = await pool.query(`
+      select c.id, to_char(c.maturity_date,'YYYY-MM-DD') as maturity_date, c.serial_no as serial,
+             c.instrument_type,
+             c.amount, c.signed_amount, c.currency,
+             c.direction, c.status,
+             coalesce(pe.name, pa.name, c.counterparty_label) as payee, pa.name as payer, pb.name as bank,
+             endp.name as endorsed_to,
+             colca.name as collection_bank,
+             cf.name as collateral_facility,
+             inv.invoice_no as settled_invoice_no,
+             cb.bordro_no as last_bordro_no,
+             c.source_workbook_id, c.source_sheet_id, ir.row_index
+      from public.checks c
+      left join public.parties pe on pe.id=c.payee_party_id
+      left join public.parties pa on pa.id=c.payer_party_id
+      left join public.parties pb on pb.id=c.bank_party_id
+      left join public.parties endp on endp.id=c.endorsed_to_party_id
+      left join public.cash_accounts colca on colca.id=c.collection_bank_account_id
+      left join public.credit_facilities cf on cf.id=c.collateral_facility_id
+      left join public.invoices inv on inv.id=c.settled_invoice_id
+      left join public.check_bordros cb on cb.id=c.last_bordro_id
+      left join public.import_rows ir on ir.id=c.source_row_id
+      where c.archived_at is null
+      order by c.maturity_date
+      limit $1 offset $2`, [limit, offset]);
+  } catch (err) {
+    const pgCode = (err as { code?: string })?.code;
+    if (pgCode !== "42703" && pgCode !== "42P01") throw err;
+    r = await pool.query(`
+      select c.id, to_char(c.maturity_date,'YYYY-MM-DD') as maturity_date, c.serial_no as serial,
+             'check'::text as instrument_type,
+             c.amount, c.signed_amount, 'TRY'::text as currency,
+             c.direction, c.status,
+             coalesce(pe.name, pa.name, c.counterparty_label) as payee, pa.name as payer, pb.name as bank,
+             null::text as endorsed_to,
+             null::text as collection_bank,
+             null::text as collateral_facility,
+             null::text as settled_invoice_no,
+             null::text as last_bordro_no,
+             c.source_workbook_id, c.source_sheet_id, ir.row_index
+      from public.checks c
+      left join public.parties pe on pe.id=c.payee_party_id
+      left join public.parties pa on pa.id=c.payer_party_id
+      left join public.parties pb on pb.id=c.bank_party_id
+      left join public.import_rows ir on ir.id=c.source_row_id
+      where c.archived_at is null
+      order by c.maturity_date
+      limit $1 offset $2`, [limit, offset]);
+  }
   return r.rows.map((x) => ({
-    id: x.id, maturityDate: x.maturity_date, serial: x.serial,
-    amount: moneyOrNull(x.amount), signedAmount: moneyOrNull(x.signed_amount), direction: x.direction, status: x.status,
-    payee: x.payee, payer: x.payer, bank: x.bank,
-    sourceWorkbookId: x.source_workbook_id, sourceSheetId: x.source_sheet_id, rowIndex: x.row_index,
+    id: x.id,
+    maturityDate: x.maturity_date,
+    serial: x.serial,
+    instrumentType: x.instrument_type === "promissory_note" ? "promissory_note" : "check",
+    amount: moneyOrNull(x.amount),
+    currency: String(x.currency ?? "TRY"),
+    signedAmount: moneyOrNull(x.signed_amount),
+    direction: x.direction,
+    status: x.status,
+    payee: x.payee,
+    payer: x.payer,
+    bank: x.bank,
+    endorsedTo: x.endorsed_to ?? null,
+    collectionBank: x.collection_bank ?? null,
+    collateralFacility: x.collateral_facility ?? null,
+    settledInvoiceNo: x.settled_invoice_no ?? null,
+    lastBordroNo: x.last_bordro_no ?? null,
+    sourceWorkbookId: x.source_workbook_id,
+    sourceSheetId: x.source_sheet_id,
+    rowIndex: x.row_index,
   }));
 }
 
@@ -356,6 +428,7 @@ export interface LoanRow {
   id: string;
   name: string;
   principal: number | null;
+  currency?: string;
   termMonths: number | null;
   installmentCount: number | null;
   firstPaymentDate: string | null;
@@ -373,27 +446,49 @@ export interface LoanRow {
 }
 
 export async function loadLoans(pool: Pool | PoolClient): Promise<LoanRow[]> {
-  const r = await pool.query(`
-    select l.id, l.name, l.principal, l.term_months, l.installment_count,
-           to_char(l.first_payment_date,'YYYY-MM-DD') as first_payment_date,
-           l.installment_amount,
-           l.total_payment, l.total_finance_cost,
-           l.applied_interest_rate as applied_rate, l.monthly_cost_rate,
-           l.source_workbook_id, l.source_sheet_id,
-           count(li.id)::int as installments_loaded,
-           count(li.id) filter (where li.status='paid')::int as paid_count,
-           count(li.id) filter (where li.status <> 'paid')::int as remaining_count,
-           coalesce(sum(li.amount) filter (where li.status <> 'paid'),0) as remaining_amount
-    from public.loans l
-    left join public.loan_installments li on li.loan_id=l.id
-    where l.archived_at is null
-    group by l.id
-    order by l.first_payment_date nulls last`);
+  let r;
+  try {
+    r = await pool.query(`
+      select l.id, l.name, l.principal, l.currency, l.term_months, l.installment_count,
+             to_char(l.first_payment_date,'YYYY-MM-DD') as first_payment_date,
+             l.installment_amount,
+             l.total_payment, l.total_finance_cost,
+             l.applied_interest_rate as applied_rate, l.monthly_cost_rate,
+             l.source_workbook_id, l.source_sheet_id,
+             count(li.id)::int as installments_loaded,
+             count(li.id) filter (where li.status='paid')::int as paid_count,
+             count(li.id) filter (where li.status <> 'paid')::int as remaining_count,
+             coalesce(sum(li.amount) filter (where li.status <> 'paid'),0) as remaining_amount
+      from public.loans l
+      left join public.loan_installments li on li.loan_id=l.id
+      where l.archived_at is null
+      group by l.id
+      order by l.first_payment_date nulls last`);
+  } catch (err) {
+    const pgCode = (err as { code?: string })?.code;
+    if (pgCode !== "42703") throw err;
+    r = await pool.query(`
+      select l.id, l.name, l.principal, 'TRY'::text as currency, l.term_months, l.installment_count,
+             to_char(l.first_payment_date,'YYYY-MM-DD') as first_payment_date,
+             l.installment_amount,
+             l.total_payment, l.total_finance_cost,
+             l.applied_interest_rate as applied_rate, l.monthly_cost_rate,
+             l.source_workbook_id, l.source_sheet_id,
+             count(li.id)::int as installments_loaded,
+             count(li.id) filter (where li.status='paid')::int as paid_count,
+             count(li.id) filter (where li.status <> 'paid')::int as remaining_count,
+             coalesce(sum(li.amount) filter (where li.status <> 'paid'),0) as remaining_amount
+      from public.loans l
+      left join public.loan_installments li on li.loan_id=l.id
+      where l.archived_at is null
+      group by l.id
+      order by l.first_payment_date nulls last`);
+  }
   return r.rows.map((x) => ({
     // The four TL figures decode at money scale; the two interest rates are numeric(8,4)
     // and decode at RATE_DP so their fourth decimal survives (reconcileLoan compares
     // total_payment − principal − finance_cost against a ±1 TL tolerance).
-    id: x.id, name: x.name, principal: moneyOrNull(x.principal), termMonths: x.term_months,
+    id: x.id, name: x.name, principal: moneyOrNull(x.principal), currency: String(x.currency ?? "TRY"), termMonths: x.term_months,
     installmentCount: x.installment_count, firstPaymentDate: x.first_payment_date,
     installmentAmount: moneyOrNull(x.installment_amount), totalPayment: moneyOrNull(x.total_payment),
     totalFinanceCost: moneyOrNull(x.total_finance_cost),
@@ -431,7 +526,7 @@ export async function loadMaturityItems(pool: Pool | PoolClient): Promise<Maturi
     left join public.parties pe on pe.id=c.payee_party_id
     left join public.parties pa on pa.id=c.payer_party_id
     left join public.parties pb on pb.id=c.bank_party_id
-    where c.status in ('planned','unknown') and c.archived_at is null`);
+    where c.status in ('planned','unknown','in_portfolio','in_bank_collection','in_bank_collateral','issued_to_vendor') and c.archived_at is null`);
   const inst = await pool.query(`
     select li.id, to_char(li.due_date,'YYYY-MM-DD') as due, li.amount, l.name
     from public.loan_installments li join public.loans l on l.id=li.loan_id
@@ -481,7 +576,7 @@ export async function loadFinanceDashboard(
   const stream = `
     select c.maturity_date as due_date, c.amount, c.direction::text as direction, 'check'::text as kind
     from public.checks c
-    where c.status in ('planned','unknown') and c.archived_at is null
+    where c.status in ('planned','unknown','in_portfolio','in_bank_collection','in_bank_collateral','issued_to_vendor') and c.archived_at is null
     union all
     select li.due_date, li.amount, 'outflow'::text, 'loan_installment'::text
     from public.loan_installments li
@@ -493,7 +588,7 @@ export async function loadFinanceDashboard(
       with maturity as (${stream})
       select
         (select count(*)::int from public.checks
-          where status in ('planned','unknown') and archived_at is null) as open_checks,
+          where status in ('planned','unknown','in_portfolio','in_bank_collection','in_bank_collateral','issued_to_vendor') and archived_at is null) as open_checks,
         (select count(*)::int from public.loans where archived_at is null) as active_loans,
         (select coalesce(sum(li.amount),0)
           from public.loan_installments li join public.loans l on l.id=li.loan_id
@@ -540,56 +635,32 @@ export async function loadFinanceDashboard(
    guards exist so a wrong source status fails as a clean domain error the UI can show
    instead of a raw Postgres trigger message. */
 
-const CHECK_SETTLEABLE_FROM = new Set(["planned"]);
+export const CHECK_SETTLEABLE_FROM = new Set([
+  "planned",
+  "in_portfolio",
+  "endorsed_to_vendor",
+  "in_bank_collection",
+  "in_bank_collateral",
+  "issued_to_vendor",
+]);
 const LOAN_INSTALLMENT_PAYABLE_FROM = new Set(["planned", "late"]);
 
-/** Shared by markCheckCleared/markCheckBounced — the two differ only in the status they
- *  write and the check_events row they append, never in their guard or audit shape. */
+/** Shared by markCheckCleared/markCheckBounced — delegates to the Turkish Check Bordro engine
+ *  so endorsed-check recourse reversal, P0 control_alerts, and collateral release always fire. */
 async function settleCheck(
   pool: Pool,
   checkId: string,
   outcome: "cleared" | "bounced",
   actorId: string,
 ): Promise<void> {
-  const client = await pool.connect();
-  try {
-    await client.query("begin");
-    const before = await client.query(`select id, status from public.checks where id=$1 for update`, [checkId]);
-    if (before.rowCount !== 1) throw new DomainError("check not found");
-    const currentStatus = before.rows[0].status as string;
-    if (!CHECK_SETTLEABLE_FROM.has(currentStatus)) {
-      throw new DomainError(
-        `checks ${checkId}: '${currentStatus}' durumundan ${outcome === "cleared" ? "tahsil edildi" : "karşılıksız"} işaretlenemez`,
-      );
-    }
-    await client.query(`update public.checks set status=$2 where id=$1`, [checkId, outcome]);
-    // check_events is the per-check history the schema has carried since 0005 (event_type
-    // already allows 'cleared'/'bounced', implementation.md:1320) but which only ever held
-    // 'created' rows until now. event_note stays null: there is no note to record here, and
-    // an invented one would be fabricated provenance.
-    await client.query(
-      `insert into public.check_events (check_id, event_type, event_note, created_by)
-       values ($1,$2,null,$3)`,
-      [checkId, outcome, actorId],
-    );
-    await audit(client, {
-      actor: actorId,
-      action: outcome === "cleared" ? "mark_check_cleared" : "mark_check_bounced",
-      entityTable: "checks",
-      entityId: checkId,
-      // The old local helper took (…, after, before?) — the OPPOSITE order of every other
-      // copy in the repo. Preserved field-for-field here: `currentStatus` is the status read
-      // before the update, `outcome` is the new one.
-      before: { status: currentStatus },
-      after: { status: outcome },
-    });
-    await client.query("commit");
-  } catch (e) {
-    await client.query("rollback");
-    throw e;
-  } finally {
-    client.release();
-  }
+  await executeCheckBordroTransition(
+    pool,
+    {
+      operation: outcome === "cleared" ? "mark_cleared" : "mark_bounced",
+      checkIds: [checkId],
+    },
+    actorId,
+  );
 }
 
 /** Check honoured by the bank. */
@@ -649,7 +720,13 @@ export async function markInstallmentPaid(
 
 /* ── 4) cancellation — checks/loan_installments only, loans has no 'cancelled' enum value ── */
 
-const CHECK_CANCELLABLE_FROM = new Set(["planned"]);
+const CHECK_CANCELLABLE_FROM = new Set([
+  "planned",
+  "in_portfolio",
+  "issued_to_vendor",
+  "bounced",
+  "returned",
+]);
 const LOAN_INSTALLMENT_CANCELLABLE_FROM = new Set(["planned"]);
 
 export async function cancelCheck(pool: Pool, checkId: string, reason: string, actorId: string): Promise<void> {

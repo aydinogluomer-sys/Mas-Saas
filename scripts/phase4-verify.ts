@@ -3,7 +3,7 @@
 //
 // Target database supplied from outside, same deliberate choice as phase3-verify.ts (see its
 // header for why chaining beats self-provisioning here), and same Faz 17-38 gate in front of it:
-// requireDisposableOwnerDatabaseUrl() refuses mas_radar_dev and refuses any name that does not
+// assertDisposableTargetDb().url refuses mas_radar_dev and refuses any name that does not
 // declare itself disposable — this file truncates three tables before it asserts anything.
 //
 // Phase 4 verification on REAL data.
@@ -19,10 +19,10 @@ import {
 } from "../src/lib/cashflow/engine";
 import { buildProjection, concentration, horizonCards } from "../src/lib/radar/rules";
 import { ensureSystemActor } from "./db/seed-system-actor";
-import { requireDisposableOwnerDatabaseUrl } from "./db/owner-url";
+import { assertDisposableTargetDb } from "./db/disposable-guard";
 
 const pool = new Pool({
-  connectionString: requireDisposableOwnerDatabaseUrl("phase4:verify"),
+  connectionString: assertDisposableTargetDb(undefined, "phase4:verify").url,
 });
 const fail = (m: string): never => { console.error("PHASE4 VERIFY FAIL:", m); process.exit(1); };
 const q = async (sql: string, p: unknown[] = []) => (await pool.query(sql, p)).rows;

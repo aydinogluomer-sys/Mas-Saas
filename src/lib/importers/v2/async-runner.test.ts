@@ -362,22 +362,35 @@ describe("durum ve rapor", () => {
     created_at: "2026-10-28 10:00:00", finished_at: null, result: { counters: { create: 1 } },
   });
 
-  it("yalnız excel_import ve yalnız sahibine (seeAll değilse) sorulur", async () => {
+  it("yalnız excel_import ve yalnız sahibine (seeAll değilse) sorulur; sonuç coalesce(result, payload->'result') ile okunur", async () => {
     const query = vi.fn(async () => ({ rowCount: 1, rows: [row("running")] }));
     await getAsyncPreviewJobStatus({ query } as never, JOB, { id: USER, seeAll: false });
     const [sql, params] = query.mock.calls[0] as unknown as [string, unknown[]];
+    expect(sql).toMatch(/coalesce\(result,\s*payload\s*->\s*'result'\)\s+as\s+result/);
     expect(sql).toMatch(/job_type = \$2/);
     expect(sql).toMatch(/\$4::boolean or created_by = \$3::uuid/);
     expect(params).toEqual([JOB, "excel_import", USER, false]);
   });
 
-  it("rapor yalnız 'succeeded' iken döner; ilerleme bilinmiyorsa null", async () => {
+  it("rapor yalnız 'succeeded' iken döner (hem birincil result kolonu hem eski payload.result yedeği); ilerleme bilinmiyorsa null", async () => {
     const running = await getAsyncPreviewJobStatus({ query: vi.fn(async () => ({ rowCount: 1, rows: [row("running")] })) } as never, JOB, { id: USER, seeAll: false });
     expect(running?.previewReport).toBeNull();
     expect(running?.progressPercent).toBe(66.7);
 
     const done = await getAsyncPreviewJobStatus({ query: vi.fn(async () => ({ rowCount: 1, rows: [row("succeeded")] })) } as never, JOB, { id: USER, seeAll: false });
     expect(done?.previewReport).toEqual({ counters: { create: 1 } });
+
+    const legacyDone = await getAsyncPreviewJobStatus(
+      {
+        query: vi.fn(async () => ({
+          rowCount: 1,
+          rows: [{ ...row("succeeded"), result: null, payload: { result: { counters: { create: 4 } } } }],
+        })),
+      } as never,
+      JOB,
+      { id: USER, seeAll: false },
+    );
+    expect(legacyDone?.previewReport).toEqual({ counters: { create: 4 } });
 
     const unknownTotal = await getAsyncPreviewJobStatus(
       { query: vi.fn(async () => ({ rowCount: 1, rows: [{ ...row("queued"), progress_done: 0, progress_total: null }] })) } as never,

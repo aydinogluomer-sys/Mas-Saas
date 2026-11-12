@@ -39,9 +39,9 @@ import {
 import { fingerprint, recordQuery, resetSlowQueryStats, slowQueryReport, setSlowThreshold } from "../src/lib/perf/slow-query";
 import { redundantIndexes, unindexedForeignKeys, unusedIndexes } from "./perf/index-audit";
 import { DEFAULT_SCALE, generateVolume } from "./perf/volume";
-import { requireDisposableOwnerDatabaseUrl } from "./db/owner-url";
+import { assertDisposableTargetDb } from "./db/disposable-guard";
 
-const pool = new Pool({ connectionString: requireDisposableOwnerDatabaseUrl("phase33:verify") });
+const pool = new Pool({ connectionString: assertDisposableTargetDb(undefined, "phase33:verify").url });
 
 interface Check { name: string; pass: boolean; detail: string }
 const checks: Check[] = [];
@@ -141,15 +141,15 @@ async function main(): Promise<void> {
 
   /* ── 1. THE MEASURED OPTIMISATION ───────────────────────────────────────────────────── */
   const FAST = "select * from public.working_capital_trend";
-  const REF = "select * from public.working_capital_trend_reference";
+  const REF = "with months as (select distinct date_trunc('month', issue_date)::date as period_start from public.invoices where issue_date is not null and status <> 'cancelled'), per_month as (select m.period_start, (select coalesce(sum(v.gross_amount - coalesce(v.allocated_amount, 0)), 0) from public.invoices v where v.direction = 'sales' and v.status in ('open', 'partial') and v.currency = 'TRY' and v.issue_date <= (m.period_start + interval '1 month' - interval '1 day')) as receivables_open, (select coalesce(sum(v.gross_amount - coalesce(v.allocated_amount, 0)), 0) from public.invoices v where v.direction = 'purchase' and v.status in ('open', 'partial') and v.currency = 'TRY' and v.issue_date <= (m.period_start + interval '1 month' - interval '1 day')) as payables_open, (select coalesce(sum(v.gross_amount), 0) from public.invoices v where v.direction = 'sales' and v.status <> 'cancelled' and v.currency = 'TRY' and v.issue_date > (m.period_start - interval '365 days') and v.issue_date <= (m.period_start + interval '1 month' - interval '1 day')) as sales_365, (select coalesce(sum(v.gross_amount), 0) from public.invoices v where v.direction = 'purchase' and v.status <> 'cancelled' and v.currency = 'TRY' and v.issue_date > (m.period_start - interval '365 days') and v.issue_date <= (m.period_start + interval '1 month' - interval '1 day')) as purchases_365, (select count(*) from public.invoices v where v.status <> 'cancelled' and v.currency <> 'TRY' and v.issue_date <= (m.period_start + interval '1 month' - interval '1 day')) as foreign_currency_count from months m) select period_start, receivables_open, payables_open, case when sales_365 = 0 then null else round(receivables_open / (sales_365 / 365.0), 1) end as dso_days, case when purchases_365 = 0 then null else round(payables_open / (purchases_365 / 365.0), 1) end as dpo_days, null::numeric as dio_days, case when sales_365 = 0 or purchases_365 = 0 then null else round(receivables_open / (sales_365 / 365.0) - payables_open / (purchases_365 / 365.0), 1) end as cash_cycle_excluding_inventory, foreign_currency_count from per_month order by period_start";
 
   // 1a. Equivalence FIRST. A faster wrong answer is not a win.
   const diff = await q(`
     select count(*)::int n from (
       (select * from public.working_capital_trend
-       except select * from public.working_capital_trend_reference)
+       except (${REF}))
       union all
-      (select * from public.working_capital_trend_reference
+      ((${REF})
        except select * from public.working_capital_trend)
     ) d`);
   record("OPTİMİZASYON HİÇBİR RAKAMI DEĞİŞTİRMİYOR (simetrik EXCEPT = 0 satır)",

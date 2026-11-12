@@ -31,6 +31,8 @@ export interface DatedFlow {
   certainty: "contracted" | "expected";
 }
 
+export type LiquidityHorizonStatus = "unknown_opening_balance" | "floor_breached" | "ok";
+
 export interface LiquidityHorizon {
   horizonDays: TreasuryHorizon;
   fromDate: string;
@@ -38,15 +40,43 @@ export interface LiquidityHorizon {
   openingPosition: number;
   contractedNet: number;
   expectedNet: number;
-  /** Position counting only obligations — the conservative answer. */
+  /** Position counting only obligations at horizon close — the conservative end-of-window figure. */
   projectedContracted: number;
+  /** Lowest cumulative daily contracted balance anywhere inside [fromDate, toDate). */
+  minIntraHorizonBalance?: number;
+  /** Earliest ISO date within [fromDate, toDate) where minIntraHorizonBalance occurs. */
+  worstDayISO?: string | null;
   /** Position also believing the promises — the optimistic answer. */
   projectedExpected: number;
   minCashFloor: number;
-  /** Positive when the floor is breached; zero otherwise. Never negative. */
+  /** Positive when the floor is breached at any day inside the horizon; zero otherwise. Never negative. */
   financingNeed: number;
   breachesFloor: boolean;
   flowCount: number;
+  status?: Exclude<LiquidityHorizonStatus, "unknown_opening_balance">;
+}
+
+export interface NullableLiquidityHorizon {
+  horizonDays: TreasuryHorizon;
+  fromDate: string;
+  toDate: string;
+  openingPosition: number | null;
+  contractedNet: number;
+  expectedNet: number;
+  /** Position counting only obligations — null when opening balance is unknown (FIN-03). */
+  projectedContracted: number | null;
+  /** Lowest cumulative daily contracted balance inside [fromDate, toDate) — null when opening is unknown. */
+  minIntraHorizonBalance?: number | null;
+  /** Earliest ISO date inside [fromDate, toDate) where minIntraHorizonBalance occurs. */
+  worstDayISO?: string | null;
+  /** Position also believing the promises — null when opening balance is unknown (FIN-03). */
+  projectedExpected: number | null;
+  minCashFloor: number;
+  /** Positive when the floor is breached; null when opening balance is unknown (FIN-03). */
+  financingNeed: number | null;
+  breachesFloor: boolean | null;
+  flowCount: number;
+  status: LiquidityHorizonStatus;
 }
 
 /** Days between two ISO dates. */
@@ -73,15 +103,37 @@ export function addDays(fromISO: string, days: number): string {
  * Two projections are always returned rather than one blended figure. A treasurer deciding
  * whether to draw on an overdraft needs to know whether the comfortable number depends on
  * customers keeping their promises, and a single number cannot say that.
+ *
+ * FIN-03 (Faz 44): When `openingPosition` is null/empty ("unknown opening balance"), we preserve
+ * `null` for `openingPosition`, `projectedContracted`, `projectedExpected`, `financingNeed`, and
+ * `breachesFloor` (`status: "unknown_opening_balance"`) while still returning exact `contractedNet`
+ * and `expectedNet` movement deltas.
  */
+export function liquidityHorizons(input: {
+  openingPosition: number | string;
+  flows: DatedFlow[];
+  todayISO: string;
+  minCashFloor?: NumericInput;
+  horizons?: readonly TreasuryHorizon[];
+}): LiquidityHorizon[];
 export function liquidityHorizons(input: {
   openingPosition: NumericInput;
   flows: DatedFlow[];
   todayISO: string;
   minCashFloor?: NumericInput;
   horizons?: readonly TreasuryHorizon[];
-}): LiquidityHorizon[] {
-  const opening = Number(decimal(input.openingPosition ?? 0).toFixed(2));
+}): NullableLiquidityHorizon[];
+export function liquidityHorizons(input: {
+  openingPosition: NumericInput;
+  flows: DatedFlow[];
+  todayISO: string;
+  minCashFloor?: NumericInput;
+  horizons?: readonly TreasuryHorizon[];
+}): Array<LiquidityHorizon | NullableLiquidityHorizon> {
+  const openingKnown = input.openingPosition !== null
+    && input.openingPosition !== undefined
+    && input.openingPosition !== "";
+  const opening = openingKnown ? Number(decimal(input.openingPosition).toFixed(2)) : null;
   const floor = Number(decimal(input.minCashFloor ?? 0).toFixed(2));
   const horizons = input.horizons ?? TREASURY_HORIZON_DAYS;
 
@@ -92,8 +144,54 @@ export function liquidityHorizons(input: {
     );
     const contractedNet = sum(inWindow.filter((f) => f.certainty === "contracted"));
     const expectedNet = sum(inWindow);
-    const projectedContracted = round2(opening + contractedNet);
-    const projectedExpected = round2(opening + expectedNet);
+
+    if (opening === null) {
+      return {
+        horizonDays: h,
+        fromDate: input.todayISO,
+        toDate,
+        openingPosition: null,
+        contractedNet,
+        expectedNet,
+        projectedContracted: null,
+        minIntraHorizonBalance: null,
+        worstDayISO: null,
+        projectedExpected: null,
+        minCashFloor: floor,
+        financingNeed: null,
+        breachesFloor: null,
+        flowCount: inWindow.length,
+        status: "unknown_opening_balance",
+      };
+    }
+
+    const contractedInWindow = inWindow.filter((f) => f.certainty === "contracted");
+    const dailyContractedDelta = new Map<string, ReturnType<typeof decimal>>();
+    for (const f of contractedInWindow) {
+      const prev = dailyContractedDelta.get(f.flowDate) ?? decimal(0);
+      dailyContractedDelta.set(f.flowDate, prev.plus(decimal(f.amountSigned)));
+    }
+
+    let running = decimal(opening);
+    let minRunning: ReturnType<typeof decimal> | null = null;
+    let worstDayISO: string | null = null;
+    for (let dayOffset = 0; dayOffset < h; dayOffset += 1) {
+      const dayISO = addDays(input.todayISO, dayOffset);
+      const delta = dailyContractedDelta.get(dayISO);
+      if (delta) running = running.plus(delta);
+      if (minRunning === null || running.lt(minRunning)) {
+        minRunning = running;
+        worstDayISO = dayISO;
+      }
+    }
+
+    const projectedContracted = Number(decimal(opening).plus(decimal(contractedNet)).toFixed(2));
+    const projectedExpected = Number(decimal(opening).plus(decimal(expectedNet)).toFixed(2));
+    const minIntraHorizonBalance = minRunning !== null
+      ? Number(minRunning.toFixed(2))
+      : projectedContracted;
+    const breachesFloor = minIntraHorizonBalance < floor;
+    const shortfall = Number(decimal(floor).minus(decimal(minIntraHorizonBalance)).toFixed(2));
     return {
       horizonDays: h,
       fromDate: input.todayISO,
@@ -102,11 +200,14 @@ export function liquidityHorizons(input: {
       contractedNet,
       expectedNet,
       projectedContracted,
+      minIntraHorizonBalance,
+      worstDayISO,
       projectedExpected,
       minCashFloor: floor,
-      financingNeed: Math.max(0, round2(floor - projectedContracted)),
-      breachesFloor: projectedContracted < floor,
+      financingNeed: Math.max(0, shortfall),
+      breachesFloor,
       flowCount: inWindow.length,
+      status: breachesFloor ? "floor_breached" : "ok",
     };
   });
 }
@@ -153,14 +254,23 @@ export function effectiveFloor(minCash: number | null, bufferFloor: number | nul
   return Math.max(minCash, bufferFloor);
 }
 
-export type ReconciliationStatus = "aligned" | "divergent" | "cashflow_missing" | "no_bank_movement";
+export type ReconciliationStatus =
+  | "aligned"
+  | "divergent"
+  | "cashflow_missing"
+  | "no_bank_movement"
+  | "incomplete_opening_balance";
 
 /**
  * Compare the treasury-derived month close against cashflow_months' reviewed closing balance.
  *
- * MIRRORS THE SQL IN 0063 — the same four labels and the same 1,00 TL tolerance. Duplicated on
+ * MIRRORS THE SQL IN 0063 / 0099 — the same labels and the same 1,00 TL tolerance. Duplicated on
  * purpose so the application can explain a divergence without re-querying, and
  * `phase26:verify` executes both against the same fixtures to prove they still agree.
+ *
+ * FIN-03 (0099): When any active TRY bank account has `opening_balance IS NULL` (`openingKnown === false`),
+ * comparing running movements without an opening anchor against `cashflow_months.closing_balance`
+ * produces a false P0 `'divergent'` alarm; we return `'incomplete_opening_balance'` with `null` difference.
  *
  * It reports; it never reconciles. The two figures come from different sources (a reviewed
  * workbook projection versus imported bank movements) and a difference is frequently legitimate —
@@ -174,8 +284,10 @@ export type ReconciliationStatus = "aligned" | "divergent" | "cashflow_missing" 
 export function reconciliationVerdict(
   cashflowClosing: number | null,
   treasuryClosing: number | null,
+  openingKnown = true,
 ): { status: ReconciliationStatus; difference: number | null } {
   if (cashflowClosing == null) return { status: "cashflow_missing", difference: null };
+  if (!openingKnown) return { status: "incomplete_opening_balance", difference: null };
   if (treasuryClosing == null) return { status: "no_bank_movement", difference: null };
   const difference = round2(treasuryClosing - cashflowClosing);
   return {
@@ -205,4 +317,5 @@ export const RECONCILIATION_LABEL: Record<ReconciliationStatus, string> = {
   divergent: "SAPMA VAR",
   cashflow_missing: "nakit akış verisi yok",
   no_bank_movement: "banka hareketi yok",
+  incomplete_opening_balance: "açılış bakiyesi eksik",
 };

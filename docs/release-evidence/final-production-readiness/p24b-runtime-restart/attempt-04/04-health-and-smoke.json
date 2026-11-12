@@ -1,0 +1,122 @@
+{
+  "artifactKind": "mas-p24b-attempt04-health-smoke-v1",
+  "measuredAtUtc": "2026-09-03T10:34:10.518Z",
+  "health": {
+    "verdict": "PASS",
+    "ready": 200,
+    "login": 200,
+    "version": 200,
+    "serverLog": {
+      "readyIn": "34.8s",
+      "fatalErrors": 0,
+      "uncaughtExceptions": 0,
+      "dbAuthErrors": 0,
+      "migrationErrors": 0,
+      "http5xx": 0
+    }
+  },
+  "coreReadSmoke": {
+    "verdict": "PARTIAL",
+    "http5xx": 0,
+    "brokenRoutes": 0,
+    "redirectLoops": 0,
+    "routes": [
+      {
+        "path": "/overview",
+        "status": 307,
+        "finalUrl": "/login?next=%2Foverview",
+        "finalStatus": 200,
+        "hops": 1
+      },
+      {
+        "path": "/cashflow",
+        "status": 307
+      },
+      {
+        "path": "/payments",
+        "status": 307
+      },
+      {
+        "path": "/finance",
+        "status": 307
+      },
+      {
+        "path": "/search",
+        "status": 307
+      },
+      {
+        "path": "/insights",
+        "status": 307
+      },
+      {
+        "path": "/analytics",
+        "status": 307
+      },
+      {
+        "path": "/system/features",
+        "status": 307
+      },
+      {
+        "path": "/calendar",
+        "status": 308,
+        "finalUrl": "/login?next=%2Fpayments%2Fcalendar",
+        "finalStatus": 200,
+        "hops": 2
+      },
+      {
+        "path": "/data-quality",
+        "status": 308,
+        "finalUrl": "/login?next=%2Fdata%2Fquality",
+        "finalStatus": 200,
+        "hops": 2
+      },
+      {
+        "path": "/radar",
+        "status": 308
+      }
+    ],
+    "whatWasProven": "Her rota yanit veriyor, hicbiri 5xx dondurmuyor, korumali rotalar 1-2 hop icinde dogru sekilde login sayfasina iniyor ve orada 200 aliniyor. Yonlendirme dongusu yok. 308 yanitlari uygulamanin kanonik modul yollarina normalizasyondur.",
+    "whatWasNotProven": "Sayfalarin kimlikli halde render edilmesi, yani gercek dashboard icerigi, olculmedi.",
+    "whyNot": "Bu production build icinde MAS_QA_BYPASS_AUTH etkisizdir cunku NODE_ENV=production. Kanonik gorsel harness kimlikli oturum uretmek icin users tablosuna bes hesap yazar ve zaten mas_radar_dev adini disposable saymadigi icin reddeder. Gercek bir hesap kimligi elimde yok. Kimlikli smoke icin tek yol gercek DB uzerine yazmakti; yapilmadi.",
+    "fabricatedPass": false
+  },
+  "rbacSmoke": {
+    "verdict": "PARTIAL",
+    "unauthenticatedDenial": {
+      "routesTested": 15,
+      "deniedCorrectly": 15,
+      "leakedTwoHundred": 0,
+      "sample": [
+        {
+          "path": "/admin",
+          "status": 308,
+          "finalUrl": "/login?next=%2Fsystem",
+          "finalStatus": 200
+        },
+        {
+          "path": "/system/security",
+          "status": 307
+        },
+        {
+          "path": "/system/audit",
+          "status": 307
+        },
+        {
+          "path": "/api/facts",
+          "status": 307
+        }
+      ]
+    },
+    "perTierAccessVerifiedAtRuntime": false,
+    "perTierCoverageElsewhere": "src/lib/authz/matrix.test.ts ve src/lib/authz/route-access.test.ts pinlenmis RC uzerinde PASS verdi (vitest 66 dosya 1428 test). Bu birim kapsamidir, runtime kaniti degildir; ikisi birbirine karistirilmadi.",
+    "businessDataCreatedOrModified": false
+  },
+  "smokeDbImpact": {
+    "writesCausedBySmoke": 0,
+    "engineCountersBefore": "97/40/42",
+    "engineCountersAfter": "97/40/42",
+    "auditUnchanged": 814,
+    "paymentInstancesUnchanged": 502,
+    "note": "Kimliksiz istekler middleware katmaninda yonlendirildigi icin ensureWindow cagiran sayfa govdelerine hic ulasmadi. Smoke tek satir yazmadi."
+  }
+}

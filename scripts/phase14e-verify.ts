@@ -3,10 +3,10 @@
 // reconciliation without mutating finance/cashflow source tables.
 import { Pool } from "pg";
 import { loadDataQualityCenter } from "../src/lib/data-quality/engine";
-import { requireDisposableOwnerDatabaseUrl } from "./db/owner-url";
+import { assertDisposableTargetDb } from "./db/disposable-guard";
 
 const pool = new Pool({
-  connectionString: requireDisposableOwnerDatabaseUrl("phase14e:verify"),
+  connectionString: assertDisposableTargetDb(undefined, "phase14e:verify").url,
 });
 const fail = (m: string): never => { console.error("PHASE14E VERIFY FAIL:", m); process.exit(1); };
 const q = async (sql: string, p: unknown[] = []) => (await pool.query(sql, p)).rows;

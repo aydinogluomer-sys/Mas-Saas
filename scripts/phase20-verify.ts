@@ -23,9 +23,9 @@ import {
   parseStatementDate, rankCandidates, resolveSignedAmount, SUGGESTION_THRESHOLD,
 } from "../src/lib/bank/rules";
 import { safeParseStatementBuffer } from "../src/lib/importers/statement-parser";
-import { requireDisposableOwnerDatabaseUrl } from "./db/owner-url";
+import { assertDisposableTargetDb } from "./db/disposable-guard";
 
-const pool = new Pool({ connectionString: requireDisposableOwnerDatabaseUrl("phase20:verify") });
+const pool = new Pool({ connectionString: assertDisposableTargetDb(undefined, "phase20:verify").url });
 
 interface Check { name: string; pass: boolean; detail: string }
 const checks: Check[] = [];
@@ -342,23 +342,23 @@ async function main(): Promise<void> {
   // ── 6) statement parsing: CSV supported, corrupt still refused ───────────────────────────
   const csv = Buffer.from(
     "İşlem Tarihi;Açıklama;Borç;Alacak;Bakiye\n01.03.2026;EFT ÜCRETİ;15,00;;1.000,00\n", "utf8");
-  const csvParsed = safeParseStatementBuffer(csv, "ekstre.csv");
+  const csvParsed = await safeParseStatementBuffer(csv, "ekstre.csv");
   record("CSV ekstre ayrıştırılıyor", csvParsed.ok, csvParsed.ok ? "format=csv" : csvParsed.error);
 
   const zeros = Buffer.alloc(64);
-  const zerosCsv = safeParseStatementBuffer(zeros, "ekstre.csv");
+  const zerosCsv = await safeParseStatementBuffer(zeros, "ekstre.csv");
   record("all-zero dosya CSV adı taşısa bile REDDEDİLİR (§1.1 korunuyor)", !zerosCsv.ok,
     zerosCsv.ok ? "KABUL EDİLDİ — regresyon" : "NUL bayt tespiti");
 
-  const zerosXlsx = safeParseStatementBuffer(zeros, "ekstre.xlsx");
+  const zerosXlsx = await safeParseStatementBuffer(zeros, "ekstre.xlsx");
   record("all-zero dosya xlsx adıyla da reddedilir", !zerosXlsx.ok, zerosXlsx.ok ? "KABUL EDİLDİ" : "imza kontrolü");
 
-  const noDelim = safeParseStatementBuffer(Buffer.from("tekbirsutun\nveri\n", "utf8"), "x.csv");
+  const noDelim = await safeParseStatementBuffer(Buffer.from("tekbirsutun\nveri\n", "utf8"), "x.csv");
   record("ayırıcısız CSV reddedilir", !noDelim.ok, noDelim.ok ? "KABUL EDİLDİ" : "ayırıcı bulunamadı");
 
   // BOM must not corrupt the first header cell
   const bom = Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), csv]);
-  const bomParsed = safeParseStatementBuffer(bom, "ekstre.csv");
+  const bomParsed = await safeParseStatementBuffer(bom, "ekstre.csv");
   let bomHeaderOk = false;
   if (bomParsed.ok) {
     const ws = bomParsed.workbook.Sheets[bomParsed.workbook.SheetNames[0]];

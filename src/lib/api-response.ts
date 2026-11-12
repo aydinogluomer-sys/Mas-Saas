@@ -1,13 +1,10 @@
-// Faz 16 — one shared error/response envelope for route handlers.
+// Faz 16 / Faz 40 — one shared error/response envelope for route handlers.
 //
 // Two rules it exists to enforce, in one place instead of per-route:
 //   1. A DomainError is an expected, user-facing failure and its message is safe to return.
 //   2. Anything else is a bug or an infrastructure fault. The client gets a generic message
 //      and nothing else — no stack, no driver text, no connection string, no table name —
 //      while the server log gets the whole thing, tied to the request's correlation id.
-//
-// This does NOT change src/lib/domain-error.ts, and it does NOT retrofit the existing route
-// handlers wholesale; migrating the remaining engines onto DomainError is Faz 18's job.
 import { NextResponse } from "next/server";
 import { DomainError } from "@/lib/domain-error";
 import { CORRELATION_HEADER, readOrCreateCorrelationId } from "@/lib/correlation";
@@ -31,10 +28,21 @@ export function apiError(
   return NextResponse.json(body, { status, headers });
 }
 
-/** A DomainError means the caller asked for something the domain refuses (wrong source
- * status, missing record) — a 400, not a 500: the server is fine, the request was not. */
-export function domainErrorStatus(): number {
-  return 400;
+/** Maps a DomainError code to the appropriate HTTP status while keeping 400 as default. */
+export function domainErrorStatus(error?: DomainError): number {
+  switch (error?.code) {
+    case "UNAUTHORIZED":
+      return 401;
+    case "FORBIDDEN":
+    case "PASSWORD_CHANGE_REQUIRED":
+      return 403;
+    case "NOT_FOUND":
+      return 404;
+    case "CONFLICT":
+      return 409;
+    default:
+      return 400;
+  }
 }
 
 /**
@@ -55,8 +63,8 @@ export async function withApiHandler(
   } catch (e) {
     if (e instanceof DomainError) {
       // Expected: logged at warn, message passed through, no stack noise.
-      log.warn("domain_error", { requestId, route, message: e.message });
-      return apiError(domainErrorStatus(), e.message, { requestId });
+      log.warn("domain_error", { requestId, route, code: e.code, message: e.message });
+      return apiError(domainErrorStatus(e), e.message, { code: e.code, requestId });
     }
     log.error("unhandled_route_error", { requestId, route, error: e });
     return apiError(500, GENERIC_ERROR, { requestId });

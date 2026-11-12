@@ -8,9 +8,12 @@
 // yazma noktasıdır ve doğrudan çağrılabilir.
 import { revalidatePath } from "next/cache";
 import { requireSession } from "@/lib/auth";
-import { canPerform, type AppRole } from "@/lib/authz/matrix";
+import { canPerform, canSeeRoute, type AppRole } from "@/lib/authz/matrix";
 import { getPool } from "@/lib/db";
 import { refreshMetricSnapshots } from "@/lib/analytics/snapshots";
+import { validateContinuity } from "@/lib/cashflow/engine";
+import { ensureWindow } from "@/lib/radar/engine";
+import { istanbulDateISO } from "@/lib/reports/rules";
 import {
   confirmImport, previewImport, validateUploadMeta,
   type ImportOutcome, type PreviewReport, type Rejection,
@@ -28,7 +31,7 @@ const now = () => new Date().toISOString();
 
 async function authorize(): Promise<{ ok: true; actorId: string; role: AppRole } | { ok: false; state: V2FlowState }> {
   const session = await requireSession();
-  if (!canPerform(session.role, "import_workbook_v2")) {
+  if (!canSeeRoute(session.role, "/data/imports/v2") || !canPerform(session.role, "import_workbook_v2")) {
     return { ok: false, state: { phase: "rejected", at: now(), rejection: {
       code: "FORBIDDEN",
       message: "Bu oturumun katmanı içe aktarma yapamaz (izleyici / onaylayıcı yalnız okur). Gerekiyorsa bir yöneticiden operatör yetkisi isteyin.",
@@ -77,7 +80,18 @@ export async function confirmV2Action(_prev: V2FlowState, formData: FormData): P
 
   // Anlık görüntüler: import sonrası panolar taze olsun. Başarısızlığı import'u geri almaz —
   // import zaten COMMIT edildi; snapshot yenilemesi ayrı, yeniden çalıştırılabilir bir iştir.
-  await refreshMetricSnapshots(getPool(), auth.actorId).catch(() => undefined);
+  const pool = getPool();
+  const pt = r.outcome.result.perTable;
+  if ((pt.payments?.inserted ?? 0) + (pt.payments?.updated ?? 0) > 0) {
+    await ensureWindow(pool, istanbulDateISO(), auth.actorId, 24).catch(() => undefined);
+  }
+  if (
+    (pt.cashflow_months?.inserted ?? 0) + (pt.cashflow_months?.updated ?? 0) +
+    (pt.cashflow_lines?.inserted ?? 0) + (pt.cashflow_lines?.updated ?? 0) > 0
+  ) {
+    await validateContinuity(pool).catch(() => undefined);
+  }
+  await refreshMetricSnapshots(pool, auth.actorId).catch(() => undefined);
   revalidatePath("/data/imports");
   revalidatePath("/data/imports/v2");
   revalidatePath("/data/reviews");

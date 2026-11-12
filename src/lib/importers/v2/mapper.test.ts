@@ -10,13 +10,6 @@ import { parseWorkbook, type WorkbookParseResult } from "./parser";
 import { mapWorkbook, FAMILY_WRITERS, type MapperResult } from "./mapper";
 import { DATA_SHEETS, sheetByName } from "./contract";
 
-/**
- * Her sorguyu kaydeden, yazma denemesinde PATLAYAN sahte istemci.
- *
- * Önizlemenin yazmadığını "yazma sayısı 0" diye ölçmek yetmez — o ölçüm, yazma kodunun
- * çalışıp sessizce başarısız olduğu durumu da yeşil gösterirdi. Burada yazma denemesi
- * doğrudan hata fırlatır.
- */
 class ReadOnlyFakeClient {
   readonly queries: string[] = [];
 
@@ -30,15 +23,6 @@ class ReadOnlyFakeClient {
   }
 }
 
-/**
- * Yazmayı KABUL EDEN ama hiçbir yere yazmayan sahte istemci — eşleyicinin gerçek yazma
- * yolunu uçtan uca koşturur ve neyi yazmaya kalktığını kaydeder.
- *
- * Defter (`import_external_keys`) bellekte tutulur; böylece kredi yazıldıktan sonra
- * taksidin defter araması onu bulur. Defter ÖNCEDEN DOLDURULABİLİR: "aynı kod önceki bir
- * import'tan defterde duruyor" senaryosu tam olarak bu. Diğer her sorgu en basit makul
- * cevabı alır (bulunamadı / 1 satır etkilendi / yeni id).
- */
 class RecordingFakeClient {
   readonly queries: Array<{ text: string; values: unknown[] }> = [];
   readonly ledger = new Map<string, string>();
@@ -128,7 +112,7 @@ describe("Önizleme kipi (§30) — hesaplar, yazmaz", () => {
 });
 
 describe("Eşleyicisi olmayan aileler sessizce kaybolmaz", () => {
-  it("yazıcısı olmayan her aile ADIYLA raporlanır", async () => {
+  it("kanonik 17 sayfanın tamamı yazıcıya sahiptir; yazıcısı olmayan sentetik aile ise ADIYLA raporlanır", async () => {
     const fake = new ReadOnlyFakeClient();
     const r = await mapWorkbook(asClient(fake), parsed, {
       filename: "f.xlsx", actorId: "00000000-0000-0000-0000-000000000001", dryRun: true,
@@ -140,20 +124,53 @@ describe("Eşleyicisi olmayan aileler sessizce kaybolmaz", () => {
       .map((s) => s.family)
       .sort();
 
-    expect(r.stagedOnlyFamilies).toEqual(yaziciOlmayan);
-    expect(r.stagedOnlyFamilies.length).toBeGreaterThan(0); // bugünkü gerçek: 13 aile bekliyor
-  });
-
-  it("yalnız hazırlıkta kalan satır sayısı sıfır değildir ve sayılır", async () => {
-    const fake = new ReadOnlyFakeClient();
-    const r = await mapWorkbook(asClient(fake), parsed, {
-      filename: "f.xlsx", actorId: "00000000-0000-0000-0000-000000000001", dryRun: true,
-    });
-    expect(r.rowsStagedOnly).toBeGreaterThan(0);
-
-    // Hiçbir satır kaybolmaz: okunan = yazılan + incelemede + reddedilen + engellenen + hazırlıkta kalan.
+    expect(yaziciOlmayan).toEqual([]);
+    expect(r.stagedOnlyFamilies).toEqual([]);
+    expect(r.rowsStagedOnly).toBe(0);
     expect(r.rowsMapped + r.rowsNeedsReview + r.rowsRejected + r.rowsBlockedByParent + r.rowsStagedOnly)
       .toBe(r.rowsStaged);
+
+    // Gelecekte yazıcısı henüz eklenmemiş bir sayfa gelirse sessizce kaybolmamalı:
+    const sentetik: WorkbookParseResult = {
+      ...parsed,
+      sheets: [
+        ...parsed.sheets,
+        {
+          sheet: "98_SENTETIK",
+          family: "synthetic_unmapped",
+          domainTable: null,
+          present: true,
+          headerRow: ["Kayıt Kodu (external_id)"],
+          missingColumns: [],
+          unknownHeaders: [],
+          rowsRead: 2,
+          ready: 2,
+          needsReview: 0,
+          rejected: 0,
+          blockedByParent: 0,
+          rows: [
+            { rowIndex: 2, status: "ready", externalId: "SYN-1", values: { external_id: "SYN-1" }, raw: { external_id: "SYN-1" }, issues: [] },
+            { rowIndex: 3, status: "ready", externalId: "SYN-2", values: { external_id: "SYN-2" }, raw: { external_id: "SYN-2" }, issues: [] },
+          ],
+          issues: [],
+        },
+      ],
+    };
+    const rSentetik = await mapWorkbook(asClient(new ReadOnlyFakeClient()), sentetik, {
+      filename: "f.xlsx", actorId: "00000000-0000-0000-0000-000000000001", dryRun: true,
+    });
+    expect(rSentetik.unorderedSheets).toEqual(["98_SENTETIK"]);
+    const unmappedContractSheet: WorkbookParseResult = { ...parsed, sheets: parsed.sheets.map((s) => (s.sheet === "15_MALIYET" ? { ...s, family: "synthetic_unmapped" } : s)) };
+    const rUnmapped = await mapWorkbook(asClient(new ReadOnlyFakeClient()), unmappedContractSheet, { filename: "f.xlsx", actorId: "00000000-0000-0000-0000-000000000001", dryRun: true });
+    expect(rUnmapped.stagedOnlyFamilies).toEqual(["synthetic_unmapped"]);
+    expect(rSentetik.rowsStagedOnly).toBe(2);
+    expect(
+      rSentetik.rowsMapped +
+      rSentetik.rowsNeedsReview +
+      rSentetik.rowsRejected +
+      rSentetik.rowsBlockedByParent +
+      rSentetik.rowsStagedOnly,
+    ).toBe(rSentetik.rowsStaged);
   });
 
   it("yazıcı listesi yalnız sözleşmede tanımlı aileleri içerir", () => {
@@ -163,9 +180,6 @@ describe("Eşleyicisi olmayan aileler sessizce kaybolmaz", () => {
 });
 
 describe("Reddedilen kredinin taksitleri: yazılmaz, blocked_by_parent, önizleme = yazma", () => {
-  // Kusurun aslı: KREDI-EUR-01 bu dosyada reddediliyor (EUR), ama aynı kod ÖNCEKİ bir
-  // import'tan defterde duruyor. Eski akışta üç taksit defterdeki eski krediye bağlanıp
-  // yazılıyor ve vade/tahmin toplamlarına giriyordu. Defter burada o hâle getiriliyor.
   const REJECTED_LOAN = "KREDI-EUR-01";
   const OLD_LOAN_ID = "loan-old-eur-from-previous-import";
   const ACTOR = "00000000-0000-0000-0000-000000000001";
@@ -197,25 +211,21 @@ describe("Reddedilen kredinin taksitleri: yazılmaz, blocked_by_parent, önizlem
 
     expect(r.rowsBlockedByParent).toBe(3);
 
-    // Defterdeki ESKİ krediye hiçbir taksit bağlanmadı.
     const taksitYazimlari = fake.inserts("loan_installments");
     expect(taksitYazimlari.filter((v) => v[0] === OLD_LOAN_ID)).toEqual([]);
-    // Kabul edilen kredinin (KREDI-VAKIF-01) iki taksidi ise yazıldı — kural seçici.
     const vakifId = fake.ledger.get("loans/KREDI-VAKIF-01");
     expect(vakifId).toBeDefined();
     expect(taksitYazimlari.filter((v) => v[0] === vakifId)).toHaveLength(2);
     expect(taksitYazimlari).toHaveLength(2);
 
-    // import_rows'ta tam üç satır 'blocked_by_parent'; reddedilen sayısı oracle ile aynı.
     const statuses = [...fake.mappingStatuses.values()];
     expect(statuses.filter((x) => x === "blocked_by_parent")).toHaveLength(3);
     expect(statuses.filter((x) => x === "rejected")).toHaveLength(FIXTURE_ORACLE.totals.rejected);
     expect(statuses).toHaveLength(r.rowsStaged);
 
-    // Sebep inceleme kuyruğuna yazıldı — üç kez, satırına bağlı.
     const sebepler = fake.inserts("mapping_reviews").filter((v) => v[3] === "blocked_by_parent");
     expect(sebepler).toHaveLength(3);
-    expect(sebepler.every((v) => typeof v[2] === "string")).toBe(true);   // import_row_id dolu
+    expect(sebepler.every((v) => typeof v[2] === "string")).toBe(true);
   });
 
   it("önizleme ile gerçek yazma AYNI sayıları verir (bulgu 7 gerilemez)", async () => {

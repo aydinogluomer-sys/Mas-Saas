@@ -3,10 +3,10 @@
 // rows, and does not mutate finance/cashflow source tables.
 import { Pool } from "pg";
 import { estimateOptimizationCandidates } from "../src/lib/scenarios/engine";
-import { requireDisposableOwnerDatabaseUrl } from "./db/owner-url";
+import { assertDisposableTargetDb } from "./db/disposable-guard";
 
 const pool = new Pool({
-  connectionString: requireDisposableOwnerDatabaseUrl("phase13b:verify"),
+  connectionString: assertDisposableTargetDb(undefined, "phase13b:verify").url,
 });
 const fail = (m: string): never => { console.error("PHASE13B VERIFY FAIL:", m); process.exit(1); };
 const q = async (sql: string, p: unknown[] = []) => (await pool.query(sql, p)).rows;

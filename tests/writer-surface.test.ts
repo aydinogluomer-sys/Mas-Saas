@@ -32,7 +32,7 @@ function lineOf(src: string, re: RegExp): number {
   return Number.POSITIVE_INFINITY;
 }
 
-const GATE = /requireDisposableOwnerDatabaseUrl|isDisposableDatabaseName/;
+const GATE = /assertDisposableTargetDb|requireDisposableOwnerDatabaseUrl|isDisposableDatabaseName/;
 
 describe("perf:measure --seed disposable kapısı", () => {
   const src = read("scripts/perf/measure.ts");

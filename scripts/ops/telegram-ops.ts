@@ -1,16 +1,9 @@
 /**
- * Telegram Ops CLI — read the bot's state, and return it to polling mode.
+ * Telegram Ops CLI — read the bot's state, and return it to polling mode (Faz 42 / B2).
  *
  * Two commands, both talking only to api.telegram.org with the bot's own token:
  * - info            bot identity and the webhook registration Telegram currently holds
- * - delete-webhook  drop any registered webhook so bot.py's long polling can receive updates
- *
- * Wave 0 removed `set-webhook` and `test-alert`. A webhook needs a public HTTPS endpoint, which the
- * closed-circuit deployment does not have (bot.py long-polls instead), and set-webhook also handed
- * TELEGRAM_INTERNAL_API_KEY — the secret that authorises /api/telegram/assistant — to Telegram as
- * its secret_token. While a webhook is registered, Telegram refuses getUpdates (HTTP 409), so if
- * one was ever registered, run `delete-webhook` once. Outbound alerts go through the reminder /
- * telemetry transports, not through this tool.
+ * - delete-webhook  drop any registered webhook so `scripts/ops/telegram-assistant-worker.ts` can receive updates
  *
  * Usage: pnpm exec tsx scripts/ops/telegram-ops.ts [info|delete-webhook]
  */
@@ -61,7 +54,7 @@ async function showInfo() {
     const info = webhook.result;
     if (info.url) {
       console.log(`Kayıtlı URL:    ${info.url}`);
-      console.log("UYARI: Bir webhook kayıtlı. bot.py (polling) bu durumda güncelleme alamaz;");
+      console.log("UYARI: Bir webhook kayıtlı. TypeScript Telegram işçisi (polling) bu durumda güncelleme alamaz;");
       console.log("       'delete-webhook' ile kaldırın.");
     } else {
       console.log("Kayıtlı URL:    (yok — polling modu, beklenen durum)");
@@ -77,10 +70,10 @@ async function showInfo() {
 }
 
 async function deleteWebhook() {
-  console.log("Webhook kaldırılıyor (Polling moduna geçiş)...");
-  const res = await tgApi("deleteWebhook", { drop_pending_updates: true });
+  console.log("Webhook kaldırılıyor (Polling moduna geçiş — bekleyen mesajlar korunur)...");
+  const res = await tgApi("deleteWebhook", { drop_pending_updates: false });
   if (res.ok) {
-    console.log("BAŞARILI: Webhook kaldırıldı. Artık 'python bot.py' polling ile çalışabilir.");
+    console.log("BAŞARILI: Webhook kaldırıldı. Artık 'pnpm ops:telegram:worker' polling ile çalışabilir.");
   } else {
     console.error("BAŞARISIZ:", res);
   }

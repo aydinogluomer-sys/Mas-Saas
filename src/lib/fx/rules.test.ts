@@ -1,6 +1,13 @@
 import { describe, expect, it } from "vitest";
 import {
-  STRESS_BANDS, netExposure, parseTcmbXml, revalue, stressTable, stressValue, worstCaseDelta,
+  STRESS_BANDS,
+  netExposure,
+  parseTcmbBulletinDate,
+  parseTcmbXml,
+  revalue,
+  stressTable,
+  stressValue,
+  worstCaseDelta,
 } from "./rules";
 
 describe("revalue — unknown is never zero", () => {
@@ -113,22 +120,26 @@ describe("worstCaseDelta — direction matters, and this is the trap", () => {
   });
 });
 
-describe("parseTcmbXml", () => {
-  const xml = `<?xml version="1.0" encoding="ISO-8859-9"?>
-    <Tarih_Date Date="21.08.2026">
-      <Currency CurrencyCode="USD">
+describe("parseTcmbXml & parseTcmbBulletinDate (Real TCMB Header)", () => {
+  // Real TCMB today.xml header format carries BOTH Tarih="DD.MM.YYYY" and Date="MM/DD/YYYY"
+  const xml = `<?xml version="1.0" encoding="UTF-8"?>
+    <?xml-stylesheet type="text/xsl" href="isokur.xsl"?>
+    <Tarih_Date Tarih="21.08.2026" Date="08/21/2026" Bulten_No="2026/160">
+      <Currency CrossOrder="0" Kod="USD" CurrencyCode="USD">
         <Unit>1</Unit>
+        <Isim>ABD DOLARI</Isim>
+        <CurrencyName>US DOLLAR</CurrencyName>
         <ForexBuying>34.1000</ForexBuying>
         <ForexSelling>34.2000</ForexSelling>
         <BanknoteBuying>34.0800</BanknoteBuying>
         <BanknoteSelling>34.2500</BanknoteSelling>
       </Currency>
-      <Currency CurrencyCode="JPY">
+      <Currency CrossOrder="1" Kod="JPY" CurrencyCode="JPY">
         <Unit>100</Unit>
         <ForexBuying>23.0000</ForexBuying>
         <ForexSelling>23.2000</ForexSelling>
       </Currency>
-      <Currency CurrencyCode="XDR">
+      <Currency CrossOrder="2" Kod="XDR" CurrencyCode="XDR">
         <Unit>1</Unit>
         <ForexBuying/>
         <ForexSelling/>
@@ -136,6 +147,11 @@ describe("parseTcmbXml", () => {
         <BanknoteSelling/>
       </Currency>
     </Tarih_Date>`;
+
+  it("extracts bulletin date from real TCMB Tarih='DD.MM.YYYY' and fallback Date='MM/DD/YYYY'", () => {
+    expect(parseTcmbBulletinDate(xml)).toBe("2026-08-21");
+    expect(parseTcmbBulletinDate(`<Tarih_Date Date="08/21/2026"></Tarih_Date>`)).toBe("2026-08-21");
+  });
 
   it("uses forex selling as the revaluation rate", () => {
     const usd = parseTcmbXml(xml).find((r) => r.baseCurrency === "USD");

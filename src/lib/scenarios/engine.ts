@@ -1,4 +1,4 @@
-// Phase 8 scenario engine. READ-ONLY over the baseline: reads cashflow_months (+ Phase-5
+// Phase 8 + Faz 46 scenario engine. READ-ONLY over the baseline: reads cashflow_months (+ Phase-5
 // debt service), applies the pure scenario overlay, and writes ONLY to scenario_* tables
 // (+ audit_logs). It never mutates payments/instances/cashflow/checks/loans/reminders/
 // reports/production. Every run stores its explicit assumptions and the baseline it used.
@@ -8,9 +8,10 @@ import { loadCashMonths } from "@/lib/cashflow/engine";
 import { loadApprovedExternalAssumptions, type ExternalAssumption } from "@/lib/external-assumptions/engine";
 import { debtServiceByMonth } from "@/lib/financing/rules";
 import { loadMaturityItems } from "@/lib/financing/engine";
-import { moneyOrNull, rateOrNull } from "@/lib/money";
+import { decimal, money, moneyOrNull, rateOrNull } from "@/lib/money";
 import type { CashMonth } from "@/lib/radar/rules";
 import { audit } from "@/lib/audit";
+import { DomainError } from "@/lib/domain-error";
 import {
   applyScenario,
   buildScenarioInsights,
@@ -34,6 +35,10 @@ function norm(s: string): string {
     .replace(/\u0130/g, "i")
     .toLowerCase()
     .trim();
+}
+
+function slugKey(s: string): string {
+  return norm(s).replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "").slice(0, 24) || "counterparty";
 }
 
 function addMonthsISO(monthStart: string, months: number): string {
@@ -86,19 +91,93 @@ async function loadCashflowLines(pool: Pool): Promise<CashflowLineLite[]> {
      where cl.amount is not null
      order by cm.month_start, cl.label`,
   );
-  return r.rows.map((x) => ({ ...x, amount: moneyOrNull(x.amount) })) as CashflowLineLite[];
+  return r.rows.map((x) => ({ ...x, amount: moneyOrNull(x.amount) ?? 0 })) as CashflowLineLite[];
 }
 
-async function buildScenarioAdjustments(pool: Pool, a: ScenarioAssumptions): Promise<ScenarioAdjustment[]> {
+/**
+ * Faz 46: Dynamically discover the largest supplier outflow label and largest customer inflow
+ * label from actual cashflow lines (falling back to open TRY purchase/sales invoices) rather than
+ * hardcoding tenant-specific company names.
+ */
+async function discoverTopCounterpartyLabels(
+  pool: Pool,
+  lines: CashflowLineLite[],
+): Promise<{ topOutflowLabel: string | null; topIncomeLabel: string | null }> {
+  const outflowTotals = new Map<string, ReturnType<typeof decimal>>();
+  const incomeTotals = new Map<string, ReturnType<typeof decimal>>();
+
+  for (const l of lines) {
+    const label = (l.partyName ?? l.label ?? "").trim();
+    if (!label) continue;
+    const mag = decimal(l.amount).abs();
+    if (mag.lte(0)) continue;
+    if (l.direction === "outflow" || l.direction === "out") {
+      outflowTotals.set(label, (outflowTotals.get(label) ?? decimal(0)).plus(mag));
+    }
+    if (l.lineType === "customer_income") {
+      incomeTotals.set(label, (incomeTotals.get(label) ?? decimal(0)).plus(mag));
+    }
+  }
+
+  const pickLargest = (totals: Map<string, ReturnType<typeof decimal>>): string | null => {
+    let bestLabel: string | null = null;
+    let bestAmount = decimal(0);
+    for (const [label, total] of totals) {
+      if (total.gt(bestAmount) || (total.eq(bestAmount) && bestLabel !== null && label < bestLabel)) {
+        bestAmount = total;
+        bestLabel = label;
+      }
+    }
+    return bestLabel;
+  };
+
+  let topOutflowLabel = pickLargest(outflowTotals);
+  let topIncomeLabel = pickLargest(incomeTotals);
+
+  if (!topOutflowLabel) {
+    const res = await pool.query<{ label: string }>(
+      `select p.name as label
+       from public.invoices inv
+       join public.parties p on p.id = inv.party_id
+       where inv.direction = 'purchase'
+         and inv.status in ('open','partial')
+         and inv.currency = 'TRY'
+         and inv.gross_amount > inv.allocated_amount
+       group by p.name
+       order by sum(inv.gross_amount - inv.allocated_amount) desc, p.name asc
+       limit 1`,
+    );
+    topOutflowLabel = res.rows[0]?.label?.trim() || null;
+  }
+
+  if (!topIncomeLabel) {
+    const res = await pool.query<{ label: string }>(
+      `select p.name as label
+       from public.invoices inv
+       join public.parties p on p.id = inv.party_id
+       where inv.direction = 'sales'
+         and inv.status in ('open','partial')
+         and inv.currency = 'TRY'
+         and inv.gross_amount > inv.allocated_amount
+       group by p.name
+       order by sum(inv.gross_amount - inv.allocated_amount) desc, p.name asc
+       limit 1`,
+    );
+    topIncomeLabel = res.rows[0]?.label?.trim() || null;
+  }
+
+  return { topOutflowLabel, topIncomeLabel };
+}
+
+function buildScenarioAdjustmentsFromLines(lines: CashflowLineLite[], a: ScenarioAssumptions): ScenarioAdjustment[] {
   const adjustments: ScenarioAdjustment[] = [];
-  const lines = await loadCashflowLines(pool);
 
   const incomeDelay = Math.max(0, Math.round(a.targetIncomeDelayMonths ?? 0));
   if (incomeDelay > 0 && a.targetIncomeLabel) {
     for (const l of lines) {
       if (l.lineType !== "customer_income") continue;
       if (!matchesNeedle(a.targetIncomeLabel, l.label, l.partyName)) continue;
-      const amount = Math.abs(l.amount);
+      const amount = money(decimal(l.amount).abs());
       adjustments.push({ monthStart: l.monthStart, incomeDelta: -amount, note: `delay income ${a.targetIncomeLabel}` });
       adjustments.push({ monthStart: addMonthsISO(l.monthStart, incomeDelay), incomeDelta: amount, note: `receive delayed income ${a.targetIncomeLabel}` });
     }
@@ -109,7 +188,7 @@ async function buildScenarioAdjustments(pool: Pool, a: ScenarioAssumptions): Pro
     for (const l of lines) {
       if (l.direction !== "outflow" && l.direction !== "out") continue;
       if (!matchesNeedle(a.targetOutflowLabel, l.label, l.partyName)) continue;
-      const amount = Math.abs(l.amount);
+      const amount = money(decimal(l.amount).abs());
       adjustments.push({ monthStart: l.monthStart, expenseDelta: -amount, note: `delay outflow ${a.targetOutflowLabel}` });
       adjustments.push({ monthStart: addMonthsISO(l.monthStart, outflowDelay), expenseDelta: amount, note: `pay delayed outflow ${a.targetOutflowLabel}` });
     }
@@ -122,14 +201,21 @@ async function buildScenarioAdjustments(pool: Pool, a: ScenarioAssumptions): Pro
       if (l.lineType !== "customer_income") continue;
       if (l.monthStart <= advanceMonth) continue;
       if (!matchesNeedle(a.factoringIncomeLabel, l.label, l.partyName)) continue;
-      const amount = Math.abs(l.amount);
-      const fee = amount * feePct;
+      const absAmt = decimal(l.amount).abs();
+      const amount = money(absAmt);
+      const fee = money(absAmt.times(decimal(feePct)));
+      const netProceeds = money(absAmt.minus(decimal(fee)));
       adjustments.push({ monthStart: l.monthStart, incomeDelta: -amount, note: `factor income ${a.factoringIncomeLabel}` });
-      adjustments.push({ monthStart: advanceMonth, incomeDelta: amount - fee, expenseDelta: fee, note: `factoring advance ${a.factoringIncomeLabel}` });
+      adjustments.push({ monthStart: advanceMonth, incomeDelta: netProceeds, expenseDelta: fee, note: `factoring advance ${a.factoringIncomeLabel}` });
     }
   }
 
   return adjustments;
+}
+
+async function buildScenarioAdjustments(pool: Pool, a: ScenarioAssumptions): Promise<ScenarioAdjustment[]> {
+  const lines = await loadCashflowLines(pool);
+  return buildScenarioAdjustmentsFromLines(lines, a);
 }
 
 export interface OptimizationCandidate {
@@ -148,41 +234,59 @@ export async function estimateOptimizationCandidates(pool: Pool): Promise<Optimi
   const baseline: CashMonth[] = await loadCashMonths(pool);
   if (baseline.length === 0) return [];
 
-  const items = await loadMaturityItems(pool);
+  const [items, lines] = await Promise.all([
+    loadMaturityItems(pool),
+    loadCashflowLines(pool),
+  ]);
   const debt = debtServiceByMonth(items).map((d) => ({ monthStart: d.monthStart, knownOutflow: d.knownOutflow }));
+  const { topOutflowLabel, topIncomeLabel } = await discoverTopCounterpartyLabels(pool, lines);
 
-  const candidates: Array<{ key: string; label: string; assumptions: ScenarioAssumptions }> = [
-    {
-      key: "delay_cagdas_1m",
-      label: "Odeme erteleme: Cagdas 1 ay",
-      assumptions: { targetOutflowLabel: "Cagdas", targetOutflowDelayMonths: 1 },
-    },
-    {
-      key: "factor_hpt",
-      label: "Cek/faktoring: Hpt tahsilati one cek",
-      assumptions: { factoringIncomeLabel: "Hpt", factoringAdvanceMonth: baseline[0].monthStart.slice(0, 7), factoringFeePct: 0.04 },
-    },
-    {
-      key: "income_plus_10",
-      label: "Gelir artisi: +%10",
-      assumptions: { revenuePct: 0.1 },
-    },
-    {
-      key: "combo_delay_plus_factor",
-      label: "Kombinasyon: Cagdas ertele + Hpt faktoring",
+  const candidates: Array<{ key: string; label: string; assumptions: ScenarioAssumptions }> = [];
+  if (topOutflowLabel) {
+    candidates.push({
+      key: `delay_${slugKey(topOutflowLabel)}_1m`,
+      label: `Ödeme erteleme: ${topOutflowLabel} (1 ay)`,
+      assumptions: { targetOutflowLabel: topOutflowLabel, targetOutflowDelayMonths: 1 },
+    });
+  }
+  if (topIncomeLabel) {
+    candidates.push({
+      key: `factor_${slugKey(topIncomeLabel)}`,
+      label: `Çek/faktoring: ${topIncomeLabel} tahsilatı öne çek`,
       assumptions: {
-        targetOutflowLabel: "Cagdas",
-        targetOutflowDelayMonths: 1,
-        factoringIncomeLabel: "Hpt",
+        factoringIncomeLabel: topIncomeLabel,
         factoringAdvanceMonth: baseline[0].monthStart.slice(0, 7),
         factoringFeePct: 0.04,
       },
-    },
-  ];
+    });
+  }
+  candidates.push({
+    key: "income_plus_10",
+    label: "Gelir artışı: +%10",
+    assumptions: { revenuePct: 0.1 },
+  });
+  candidates.push({
+    key: "expense_efficiency_5",
+    label: "Gider disiplini: -%5 işletme gideri",
+    assumptions: { efficiencyPct: 0.05 },
+  });
+  if (topOutflowLabel && topIncomeLabel) {
+    candidates.push({
+      key: `combo_${slugKey(topOutflowLabel)}_${slugKey(topIncomeLabel)}`,
+      label: `Kombinasyon: ${topOutflowLabel} ertele + ${topIncomeLabel} faktoring`,
+      assumptions: {
+        targetOutflowLabel: topOutflowLabel,
+        targetOutflowDelayMonths: 1,
+        factoringIncomeLabel: topIncomeLabel,
+        factoringAdvanceMonth: baseline[0].monthStart.slice(0, 7),
+        factoringFeePct: 0.04,
+      },
+    });
+  }
 
   const out: OptimizationCandidate[] = [];
   for (const c of candidates) {
-    const adj = await buildScenarioAdjustments(pool, c.assumptions);
+    const adj = buildScenarioAdjustmentsFromLines(lines, c.assumptions);
     const months = applyScenario(baseline, c.assumptions, debt, adj);
     const cmp = compareScenarioToBaseline(months);
     out.push({
@@ -279,7 +383,7 @@ function externalContextRows(ctx: ScenarioExternalContext[]): Array<{ key: strin
     key: `external:${a.assumptionType}`,
     value: a.value,
     unit: a.unit,
-    description: `Dis varsayim: ${a.label} (${a.sourceName} / ${a.sourceDate})`,
+    description: `Dış varsayım: ${a.label} (${a.sourceName} / ${a.sourceDate})`,
   }));
 }
 
@@ -394,8 +498,6 @@ export async function createAndRun(
 
 export async function compareScenarioToBaselineRun(pool: Pool, runId: string) {
   return (await pool.query(
-    // A scenario comparison is exactly `scen − base`; decoding all three the same way keeps
-    // the published delta consistent with the two values it is derived from.
     `select metric, baseline_value as base, scenario_value as scen, delta
      from public.scenario_comparisons where run_id=$1 order by metric`,
     [runId],
@@ -431,8 +533,6 @@ export async function loadScenarioRun(pool: Pool, runId: string) {
     `select key, value_numeric as value, unit, description from public.scenario_assumptions where run_id=$1`,
     [runId],
   );
-  // scenario_assumptions.value_numeric is numeric(14,4) and carries ratios ("oran") as often
-  // as TL, so it decodes at RATE_DP; the run/line figures are all TL.
   return {
     run: {
       ...run.rows[0],
@@ -468,7 +568,8 @@ export async function deleteScenarioRun(pool: Pool, runId: string, actorId: stri
   const client = await pool.connect();
   try {
     await client.query("begin");
-    await client.query(`delete from public.scenario_runs where id=$1`, [runId]);
+    const del = await client.query(`delete from public.scenario_runs where id=$1 returning id`, [runId]);
+    if (del.rowCount !== 1) throw new DomainError("FORBIDDEN", "Bu senaryo silinemedi veya yetkiniz yok.");
     await audit(client, {
       actor: actorId, action: "delete_scenario_run", entityTable: "scenario_runs", entityId: runId,
       after: { deleted: true },

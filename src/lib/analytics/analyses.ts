@@ -1,11 +1,9 @@
-// Faz 34 — the seven named analyses. Pure TypeScript, no database, no LLM, no Python.
+// Faz 34 & Faz 46 (C3) — the seven named analyses. Pure TypeScript, no database, no LLM, no Python.
 //
 // ═══ NO PYTHON, AND NO STATISTICS LIBRARY EITHER ═══
 //
 // Resolved decision #2 in implementation.md forbids Python. Nothing here needs it: the whole set
-// is sums, sorts, ratios and cumulative totals. Reaching for a statistics package would add a
-// dependency whose numeric behaviour nobody in this project could explain to an auditor, in
-// exchange for arithmetic that fits on one screen.
+// is sums, sorts, ratios and cumulative totals computed deterministically with Big.js (`@/lib/money`).
 //
 // ═══ NO MONTE CARLO — see docs/status-notes.md for the full argument ═══
 //
@@ -15,6 +13,7 @@
 // a mean with a variance. Simulating would mean inventing the distributions, and a P95 that is
 // downstream of a σ somebody made up is a confident-looking number with nothing behind it.
 
+import { decimal, money } from "@/lib/money";
 import { METRICS, type MetricFormat } from "./registry";
 
 /* ── shared shapes ──────────────────────────────────────────────────────────────────────── */
@@ -71,16 +70,29 @@ export function varianceDecomposition(input: readonly VarianceInput[]): Analysis
     return unmeasurable("variance_decomposition", "Bütçe/gerçekleşen çifti olan satır yok", unknownCount);
   }
   const rows = usable.map((r) => {
-    const budget = r.budget as number, actual = r.actual as number;
-    const value = actual - budget;
+    const budget = r.budget as number;
+    const actual = r.actual as number;
+    const diff = decimal(actual).minus(decimal(budget));
+    const value = Number(diff.toString());
     return {
-      key: r.key, label: r.label, value, budget, actual, share: 0,
-      direction: value > 0 ? "over_budget" as const
-        : value < 0 ? "under_budget" as const : "on_budget" as const,
+      key: r.key,
+      label: r.label,
+      value,
+      budget,
+      actual,
+      share: 0,
+      direction: diff.gt(0)
+        ? ("over_budget" as const)
+        : diff.lt(0)
+          ? ("under_budget" as const)
+          : ("on_budget" as const),
     };
   });
-  const magnitude = rows.reduce((s, r) => s + Math.abs(r.value), 0);
-  for (const r of rows) r.share = magnitude === 0 ? 0 : Math.abs(r.value) / magnitude;
+  let magnitude = decimal(0);
+  for (const r of rows) magnitude = magnitude.plus(decimal(r.value).abs());
+  for (const r of rows) {
+    r.share = magnitude.eq(0) ? 0 : Number(decimal(r.value).abs().div(magnitude).toString());
+  }
   // Total order: magnitude desc, then key — so equal magnitudes never depend on input order.
   rows.sort((a, b) => Math.abs(b.value) - Math.abs(a.value) || a.key.localeCompare(b.key));
   return ok("variance_decomposition", rows, unknownCount);
@@ -117,31 +129,45 @@ export function paretoConcentration(
   const unknownCount = input.length - usable.length;
   if (usable.some((r) => r.value < 0)) {
     return {
-      ...unmeasurable<ParetoRow>("pareto_concentration",
-        "Negatif değer var — pay hesabı anlamsız olurdu", unknownCount),
+      ...unmeasurable<ParetoRow>(
+        "pareto_concentration",
+        "Negatif değer var — pay hesabı anlamsız olurdu",
+        unknownCount,
+      ),
       summary: null,
     };
   }
-  const total = usable.reduce((s, r) => s + r.value, 0);
-  if (usable.length === 0 || total <= 0) {
+  let totalBig = decimal(0);
+  for (const r of usable) totalBig = totalBig.plus(decimal(r.value));
+  if (usable.length === 0 || totalBig.lte(0)) {
     return {
       ...unmeasurable<ParetoRow>("pareto_concentration", "Toplam sıfır veya veri yok", unknownCount),
       summary: null,
     };
   }
+  const total = Number(totalBig.toString());
+  const thresholdBig = decimal(threshold);
   const sorted = usable.slice().sort((a, b) => b.value - a.value || a.key.localeCompare(b.key));
-  let cumulative = 0;
+  let cumulativeBig = decimal(0);
   let vitalFewCount = 0;
   let reached = false;
   const rows: ParetoRow[] = sorted.map((r) => {
-    cumulative += r.value;
-    const cumulativeShare = cumulative / total;
+    cumulativeBig = cumulativeBig.plus(decimal(r.value));
+    const cumulativeShareBig = cumulativeBig.div(totalBig);
+    const cumulativeShare = Number(cumulativeShareBig.toString());
     const inVitalFew = !reached;
     if (!reached) {
       vitalFewCount += 1;
-      if (cumulativeShare >= threshold) reached = true;
+      if (cumulativeShareBig.gte(thresholdBig)) reached = true;
     }
-    return { key: r.key, label: r.label, value: r.value, share: r.value / total, cumulativeShare, inVitalFew };
+    return {
+      key: r.key,
+      label: r.label,
+      value: r.value,
+      share: Number(decimal(r.value).div(totalBig).toString()),
+      cumulativeShare,
+      inVitalFew,
+    };
   });
   return {
     ...ok("pareto_concentration", rows, unknownCount),
@@ -187,7 +213,7 @@ export function workingCapitalDecomposition(input: {
   ];
   const cycleDays = input.dsoDays == null || input.dpoDays == null
     ? null
-    : Math.round((input.dsoDays - input.dpoDays) * 10) / 10;
+    : Number(decimal(input.dsoDays).minus(decimal(input.dpoDays)).toFixed(1));
   return {
     ...ok("working_capital_decomposition", components,
       components.filter((c) => c.days == null).length),
@@ -209,6 +235,13 @@ export interface BridgeStep {
   runningTotal: number;
 }
 
+export type CashBridgeReconciliationStatus =
+  | "reconciled"
+  | "divergent"
+  | "incomplete_unknown_lines"
+  | "unreported_end"
+  | "unmeasurable";
+
 /**
  * Build a start → movements → end bridge.
  *
@@ -216,55 +249,108 @@ export interface BridgeStep {
  * caller gets `reconciles` telling it whether that matches the reported end. Silently drawing a
  * bridge that does not add up is how a chart ends up disagreeing with the ledger beneath it.
  *
- * An UNKNOWN start makes the whole bridge unmeasurable. Every running total is anchored on it, so
- * starting at 0 instead (what the engine's `start ?? 0` used to do) shifts every bar by the real
- * opening balance and then reports a reconciliation difference the ledger does not have — a
- * fabricated "HAYIR, X TL fark" on the analysis screen (Wave 0, R10). There is no partial answer
- * worth drawing, so no steps are returned; the reason is.
+ * An UNKNOWN start makes the whole bridge unmeasurable (Wave 0, R10).
+ * Faz 46 (C3): When one or more movement lines have unknown (`null`) values (`unknownCount > 0`),
+ * comparing the partial sum against `reportedEndValue` would fabricate a reconciliation failure;
+ * we return `reconciles: null`, `difference: null`, and `reconciliationStatus: "incomplete_unknown_lines"`.
  */
 export function cashBridge(input: {
   startLabel: string; startValue: number | null;
   endLabel: string; reportedEndValue: number | null;
   movements: readonly { key: string; label: string; value: number | null }[];
-}): AnalysisResult<BridgeStep> & { computedEnd: number | null; reconciles: boolean | null; difference: number | null } {
-  const usable = input.movements.filter((m) => m.value != null) as { key: string; label: string; value: number }[];
+}): AnalysisResult<BridgeStep> & {
+  computedEnd: number | null;
+  reconciles: boolean | null;
+  difference: number | null;
+  reconciliationStatus: CashBridgeReconciliationStatus;
+} {
+  const usable = input.movements.filter(
+    (m): m is { key: string; label: string; value: number } =>
+      m.value != null && Number.isFinite(m.value),
+  );
   const unknownCount = input.movements.length - usable.length;
 
-  if (input.startValue == null) {
+  if (input.startValue == null || !Number.isFinite(input.startValue)) {
     const reason = input.movements.length === 0
       ? "Köprü için veri yok."
       : `${input.startLabel} bilinmiyor — köprü kurulamaz; bilinmeyen bakiye 0 sayılmaz.`;
     return {
       ...unmeasurable<BridgeStep>("cash_bridge", reason, unknownCount),
-      computedEnd: null, reconciles: null, difference: null,
+      computedEnd: null,
+      reconciles: null,
+      difference: null,
+      reconciliationStatus: "unmeasurable",
     };
   }
 
-  let running = input.startValue;
+  if (input.movements.length > 0 && usable.length === 0) {
+    return {
+      ...unmeasurable<BridgeStep>(
+        "cash_bridge",
+        `${unknownCount} hareket satırının tamamı bilinmiyor — gelir/gider 0 sayılmaz, nakit köprüsü ölçülemez.`,
+        unknownCount,
+      ),
+      computedEnd: null,
+      reconciles: null,
+      difference: null,
+      reconciliationStatus: "incomplete_unknown_lines",
+    };
+  }
+
+  let runningBig = decimal(input.startValue);
+  const startVal = Number(runningBig.toString());
   const steps: BridgeStep[] = [
-    { key: "__start", label: input.startLabel, value: input.startValue, kind: "start", runningTotal: running },
+    { key: "__start", label: input.startLabel, value: startVal, kind: "start", runningTotal: startVal },
   ];
   for (const m of usable) {
-    running += m.value;
+    runningBig = runningBig.plus(decimal(m.value));
+    const running = Number(runningBig.toString());
     steps.push({
-      key: m.key, label: m.label, value: m.value,
+      key: m.key,
+      label: m.label,
+      value: m.value,
       kind: m.value >= 0 ? "increase" : "decrease",
       runningTotal: running,
     });
   }
-  const computedEnd = running;
+  const computedEnd = Number(runningBig.toString());
   steps.push({ key: "__end", label: input.endLabel, value: computedEnd, kind: "end", runningTotal: computedEnd });
 
-  // Rounded to the kuruş before comparing: a float tail is not a reconciliation failure.
-  const round2 = (n: number) => Math.round(n * 100) / 100;
-  const reconciles = input.reportedEndValue == null
-    ? null
-    : round2(input.reportedEndValue) === round2(computedEnd);
-  const difference = input.reportedEndValue == null
-    ? null
-    : round2(input.reportedEndValue - computedEnd);
+  if (unknownCount > 0) {
+    return {
+      analysisId: "cash_bridge",
+      rows: steps,
+      unknownCount,
+      unmeasurableReason: `${unknownCount} hareket satırının tutarı bilinmiyor — mutabakat ölçülemez (eksik gelir/gider 0 sayılmaz).`,
+      computedEnd,
+      reconciles: null,
+      difference: null,
+      reconciliationStatus: "incomplete_unknown_lines",
+    };
+  }
 
-  return { ...ok("cash_bridge", steps, unknownCount), computedEnd, reconciles, difference };
+  if (input.reportedEndValue == null) {
+    return {
+      ...ok("cash_bridge", steps, unknownCount),
+      computedEnd,
+      reconciles: null,
+      difference: null,
+      reconciliationStatus: "unreported_end",
+    };
+  }
+
+  // Rounded to the kuruş via Big.js before comparing: a float tail is not a reconciliation failure.
+  const difference = money(decimal(input.reportedEndValue).minus(runningBig));
+  const reconciles = difference === 0;
+  const reconciliationStatus: CashBridgeReconciliationStatus = reconciles ? "reconciled" : "divergent";
+
+  return {
+    ...ok("cash_bridge", steps, unknownCount),
+    computedEnd,
+    reconciles,
+    difference,
+    reconciliationStatus,
+  };
 }
 
 /* ── 5. ageing distribution ─────────────────────────────────────────────────────────────── */
@@ -302,23 +388,27 @@ export function ageingDistribution(
     return unmeasurable("ageing_distribution", "Vadesi ve tutarı bilinen açık kalem yok", unknownCount);
   }
   const asOf = Date.parse(`${asOfISO}T00:00:00Z`);
-  const totals = new Map<string, { amount: number; count: number }>();
-  for (const b of AGEING_BUCKETS) totals.set(b.key, { amount: 0, count: 0 });
+  const totals = new Map<string, { amount: ReturnType<typeof decimal>; count: number }>();
+  for (const b of AGEING_BUCKETS) totals.set(b.key, { amount: decimal(0), count: 0 });
 
   for (const item of usable) {
     const overdueDays = Math.round((asOf - Date.parse(`${item.dueDate as string}T00:00:00Z`)) / 86400000);
     const bucket = AGEING_BUCKETS.find((b) => overdueDays >= b.minDays && overdueDays <= b.maxDays)
       ?? AGEING_BUCKETS[AGEING_BUCKETS.length - 1];
-    const acc = totals.get(bucket.key) as { amount: number; count: number };
-    acc.amount += item.amount as number;
+    const acc = totals.get(bucket.key)!;
+    acc.amount = acc.amount.plus(decimal(item.amount as number));
     acc.count += 1;
   }
-  const grand = [...totals.values()].reduce((s, t) => s + t.amount, 0);
+  let grand = decimal(0);
+  for (const t of totals.values()) grand = grand.plus(t.amount);
   const rows: AgeingRow[] = AGEING_BUCKETS.map((b) => {
-    const t = totals.get(b.key) as { amount: number; count: number };
+    const t = totals.get(b.key)!;
     return {
-      bucketKey: b.key, bucketLabel: b.label, amount: t.amount, count: t.count,
-      share: grand === 0 ? 0 : t.amount / grand,
+      bucketKey: b.key,
+      bucketLabel: b.label,
+      amount: Number(t.amount.toString()),
+      count: t.count,
+      share: grand.eq(0) ? 0 : Number(t.amount.div(grand).toString()),
     };
   });
   return ok("ageing_distribution", rows, unknownCount);

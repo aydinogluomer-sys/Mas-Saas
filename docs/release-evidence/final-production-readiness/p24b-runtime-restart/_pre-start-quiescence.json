@@ -1,0 +1,54 @@
+{
+  "artifactKind": "mas-p24b-pre-start-quiescence-v1",
+  "measuredAtUtc": "2026-09-03T08:58:58.894Z",
+  "ports": [
+    {
+      "port": 3000,
+      "listening": false
+    },
+    {
+      "port": 3001,
+      "listening": false
+    },
+    {
+      "port": 3110,
+      "listening": false
+    },
+    {
+      "port": 3210,
+      "listening": false
+    },
+    {
+      "port": 3310,
+      "listening": false
+    }
+  ],
+  "nextRuntimeRunning": false,
+  "prepareRuntimeProcess": false,
+  "botWorkerScheduler": false,
+  "liveConnectionsToRealDb": [
+    {
+      "applicationName": "psql",
+      "state": "active",
+      "note": "olcumun kendi baglantisi"
+    }
+  ],
+  "unexpectedWriters": 0,
+  "postgresContainer": {
+    "name": "mas-radar-pg",
+    "status": "Up",
+    "startedAtUtc": "2026-08-31T09:58:30.514553157Z",
+    "bind": "127.0.0.1:5432"
+  },
+  "engineWriteCounters": {
+    "source": "pg_stat_database (motorun kendi sayaci, olcumden bagimsiz)",
+    "database": "mas_radar_dev",
+    "statsReset": "never",
+    "windowStartUtc": "2026-08-31T09:58:30Z (konteyner acilisi)",
+    "tupInserted": 2,
+    "tupUpdated": 24,
+    "tupDeleted": 42,
+    "xactCommit": 5765,
+    "interpretation": "Uc gunluk pencerenin tamaminda gercek DB'ye yapilan tek DML, P24B cleanup transaction'idir: 42 satir silme, 24 metric_snapshots guncelleme, 2 audit_logs ekleme. Sayilar cleanup makbuzuyla BIREBIR ortusuyor ve o andan bu yana baska yazma yok — bu tur boyunca kosulan typecheck / lint / vitest / next build dahil."
+  }
+}

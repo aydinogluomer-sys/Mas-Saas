@@ -40,7 +40,7 @@ const ENV_TARGET = /process\.env\.(DATABASE_URL|MIGRATION_DATABASE_URL)|ownerDat
 // the disposable-marker list and the protected-name list — before its dropdb. Detecting only the
 // TS identifiers would file the one CI provisioning script in the repository as UNKNOWN.
 const DISPOSABLE_GATE =
-  /requireDisposableOwnerDatabaseUrl|isDisposableDatabaseName|PROTECTED_DB_NAMES|FORBIDDEN_DB_NAME|DISPOSABLE_PREFIX|mas_radar_dev\|postgres\|template0\|template1/;
+  /assertDisposableTargetDb|requireDisposableOwnerDatabaseUrl|isDisposableDatabaseName|PROTECTED_DB_NAMES|FORBIDDEN_DB_NAME|DISPOSABLE_PREFIX|mas_radar_dev\|postgres\|template0\|template1/;
 // Deliberately NOT anchored on quotes: shell assigns targets bare (`DB=mas_radar_verify` in
 // scripts/db/verify.sh), and an earlier draft that required quote delimiters classified that
 // file as UNKNOWN purely because it is written in sh rather than TypeScript.
@@ -79,6 +79,18 @@ const CURATED: Record<string, { classification: string; note: string }> = {
     note: "Runs on every dev/start. ensureWindow(...,24) materialises a 26-month instance window against the real DB by design. This is the AMPLIFIER in the P24B incident, not its root cause.",
   },
   "scripts/db/seed-admin.ts": { classification: "INTENTIONAL_REAL_WRITE", note: "Operator-run account creation." },
+  "scripts/ops/rotate-passwords.ts": {
+    classification: "INTENTIONAL_REAL_WRITE",
+    note: "Interactive TTY-only operator account password rotation (refuses non-TTY stdout before opening any DB connection).",
+  },
+  "scripts/ops/background-worker.ts": {
+    classification: "INTENTIONAL_REAL_WRITE",
+    note: "Unified TypeScript background worker (job queue, reminders, overview snapshot, daily status rollover, Telegram polling).",
+  },
+  "src/lib/radar/generate-instances-audit.test.ts": {
+    classification: "SAFE_ROLLBACK_ONLY",
+    note: "Pure unit test using an in-memory vi.fn() fake DB client; opens no database connection.",
+  },
   "scripts/db/seed-system-actor.ts": { classification: "INTENTIONAL_REAL_WRITE", note: "Idempotent system actor row; called by prepare-runtime and by provisioning." },
   "scripts/db/set-app-role-password.ts": { classification: "INTENTIONAL_REAL_WRITE", note: "ALTER ROLE on the real cluster; a cutover step." },
   "scripts/import-real.ts": { classification: "INTENTIONAL_REAL_WRITE", note: "The reviewed workbook import. Writing real data is its purpose." },

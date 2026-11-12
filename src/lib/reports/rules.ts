@@ -1,10 +1,11 @@
-// Report domain rules (Phase 6A). Pure & deterministic — sources:
+// Report domain rules (Phase 6A & Faz 46 C3). Pure & deterministic — sources:
 // docs/calculation-rules.md + .claude/skills/mas-report-writer. Reports are
 // decision-oriented summaries over ALREADY-MAPPED data. They NEVER mutate financial
 // records and AI is commentary-only (buildCommentaryPrompt returns a prompt string,
 // no API call, no mutation). Null amount stays "TUTAR EKSİK", never 0.
 
 import { addDaysISO } from "@/lib/financing/rules";
+import { decimal, money } from "@/lib/money";
 
 /* ── timezone: "today" for reports is Europe/Istanbul (calculation-rules §status) ──
  * Re-exported from the shared time module (src/lib/time/istanbul.ts) — kept here so
@@ -77,7 +78,7 @@ export function buildDailyReport(input: DailyReportInput, todayISO: string): Dai
   const dueTomorrow = input.dueSoon.filter((i) => i.dueDate === tomorrow);
   const { total: next7KnownTotal, missing: next7MissingCount, foreign: next7ForeignCount } = sumKnown(input.dueSoon);
   const overdueKnown = sumKnown(input.overdue);
-  const checksNext7 = input.maturities.filter((m) => m.kind === "check");
+  const checksNext7 = input.maturities.filter((m) => m.kind === "check" && m.direction === "outflow");
   // Eşik TRY (`critical_payment_threshold_try`): TRY-dışı kalem eşikle tartılmaz (Tier 1 kuralı).
   const criticalItems = input.dueSoon.filter(
     (i) => i.amount != null && (i.currency === undefined || isReportingCurrency(i.currency))
@@ -153,9 +154,16 @@ export function buildWeeklyReport(input: WeeklyReportInput, todayISO: string): W
     .filter((i) => i.amount != null && i.amount >= input.largeThreshold)
     .sort((a, b) => (b.amount ?? 0) - (a.amount ?? 0))
     .slice(0, 5);
-  const checkLoad = sumKnown(input.maturitiesWeek.filter((m) => m.kind === "check")).total;
-  const installmentLoadWeek = sumKnown(input.maturitiesWeek.filter((m) => m.kind === "loan_installment")).total;
-  const installmentLoadMonth = sumKnown(input.installmentsMonth).total;
+  // Faz 46 (C3): Only outflow checks belong in weekly check debt load (never customer inflow checks).
+  const checkLoad = sumKnown(
+    input.maturitiesWeek.filter((m) => m.kind === "check" && m.direction === "outflow"),
+  ).total;
+  const installmentLoadWeek = sumKnown(
+    input.maturitiesWeek.filter((m) => m.kind === "loan_installment" && m.direction !== "inflow"),
+  ).total;
+  const installmentLoadMonth = sumKnown(
+    input.installmentsMonth.filter((m) => m.direction !== "inflow"),
+  ).total;
 
   const actions: string[] = [];
   if (input.riskDays.length) actions.push(`${input.riskDays.length} riskli gün — yığılma/kritik kontrol`);
@@ -218,8 +226,14 @@ export interface MonthlyReport {
 }
 
 export function buildMonthlyReport(input: MonthlyReportInput): MonthlyReport {
-  const debtServiceKnown =
-    sumKnown(input.checksInMonth).total + sumKnown(input.installmentsInMonth).total;
+  // Faz 46 (C3): Exclude customer inflow checks from debt service and sum via Big.js (`money`).
+  const checksOutflow = sumKnown(
+    input.checksInMonth.filter((m) => m.direction === "outflow"),
+  ).total;
+  const installmentsOutflow = sumKnown(
+    input.installmentsInMonth.filter((m) => m.direction !== "inflow"),
+  ).total;
+  const debtServiceKnown = money(decimal(checksOutflow).plus(decimal(installmentsOutflow)));
   const cm = input.cashMonth;
   const distBlock = (title: string, rows: ConcentrationRow[]) =>
     [`### ${title}`, ...(rows.length ? rows.slice(0, 5).map((r) => `- ${r.key}: ${fmtTL(r.amount)}`) : ["- yok"])];
@@ -278,32 +292,57 @@ export interface OverlayRow {
 
 /**
  * Overlays Phase-5 debt service (checks + installments due in a month) onto the
- * Phase-4 projected closing balance. Pressure: high = negatif kasa AND borç yükü var;
- * watch = pozitif ama borç ay kasasının >%25'i. Unknown amounts disclosed, never zeroed.
+ * Phase-4 projected closing balance.
+ *
+ * Faz 46 (C3) fixed threshold ladder:
+ * - `high`: `closing < 0` with debt present, OR positive `closing` where `debtOutflow > closing * criticalRatio`.
+ * - `watch`: `closing == null` or `closing == 0` with debt present, OR `missingCount > 0` (`BLANK ≠ ZERO`),
+ *   OR `debtOutflow > closing * watchRatio`.
+ * - `none`: healthy (`closing > 0`, `missingCount === 0`, and `debtOutflow <= closing * watchRatio`) or no debt.
  */
 export function overlayDebtService(
   months: CashMonthLite[],
   debt: DebtMonthLite[],
   watchRatio = 0.25,
+  criticalRatio = 0.75,
 ): OverlayRow[] {
   const debtBy = new Map(debt.map((d) => [d.monthStart, d]));
+  const watchBig = decimal(watchRatio);
+  const criticalBig = decimal(criticalRatio);
+
   return [...months]
     .sort((a, b) => (a.monthStart < b.monthStart ? -1 : 1))
     .map((m) => {
       const d = debtBy.get(m.monthStart);
       const debtOutflow = d?.knownOutflow ?? 0;
+      const debtMissingCount = d?.missingCount ?? 0;
       let pressure: OverlayRow["pressure"] = "none";
-      if (debtOutflow > 0) {
-        if (m.closing != null && m.closing < 0) pressure = "high";
-        else if (m.closing != null && m.closing > 0 && debtOutflow > m.closing * watchRatio) pressure = "watch";
-        else pressure = "watch";
+
+      if (debtOutflow > 0 || debtMissingCount > 0) {
+        if (
+          m.closing != null &&
+          (m.closing < 0 ||
+            (m.closing > 0 && decimal(debtOutflow).gt(decimal(m.closing).times(criticalBig))))
+        ) {
+          pressure = "high";
+        } else if (
+          m.closing == null ||
+          m.closing === 0 ||
+          debtMissingCount > 0 ||
+          decimal(debtOutflow).gt(decimal(m.closing).times(watchBig))
+        ) {
+          pressure = "watch";
+        } else {
+          pressure = "none";
+        }
       }
+
       return {
         monthStart: m.monthStart,
         closing: m.closing,
         debtOutflow,
         debtCount: d?.count ?? 0,
-        debtMissingCount: d?.missingCount ?? 0,
+        debtMissingCount,
         pressure,
       };
     });

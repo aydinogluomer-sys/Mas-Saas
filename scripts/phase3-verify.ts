@@ -16,7 +16,7 @@
 // re-apply 87 migrations per gate.
 //
 // What that costs is that the caller chooses the target — and the caller can choose wrong. So
-// the connection now resolves through requireDisposableOwnerDatabaseUrl(), which refuses
+// the connection now resolves through assertDisposableTargetDb().url, which refuses
 // mas_radar_dev outright and refuses any name that does not DECLARE itself disposable, before a
 // connection is opened. That gate exists because this file's very first act is a TRUNCATE; see
 // scripts/db/owner-url.ts for the reproduction that motivated it.
@@ -32,10 +32,10 @@ import {
   refreshRiskFlags,
 } from "../src/lib/radar/engine";
 import { ensureSystemActor } from "./db/seed-system-actor";
-import { requireDisposableOwnerDatabaseUrl } from "./db/owner-url";
+import { assertDisposableTargetDb } from "./db/disposable-guard";
 
 const pool = new Pool({
-  connectionString: requireDisposableOwnerDatabaseUrl("phase3:verify"),
+  connectionString: assertDisposableTargetDb(undefined, "phase3:verify").url,
 });
 // Faz 24B'den beri payment_instances bakımı (ensureWindow / generateInstancesForMonth /
 // refreshRiskFlags) yalnız INSERT+UPDATE yetkili KATMAN rollerinde çalışır
@@ -44,7 +44,7 @@ const pool = new Pool({
 // Üretim adımları bu yüzden yönetici katmanı olarak koşar; sahip havuz yalnız hazırlık
 // (truncate, review kararları) ve doğrulama sorguları için kalır.
 const tierPool = new Pool({
-  connectionString: requireDisposableOwnerDatabaseUrl("phase3:verify"),
+  connectionString: assertDisposableTargetDb(undefined, "phase3:verify").url,
   options: "-c role=mas_radar_admin",
 });
 const fail = (m: string): never => {

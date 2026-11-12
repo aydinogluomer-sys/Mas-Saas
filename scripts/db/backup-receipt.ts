@@ -11,7 +11,7 @@
 // --expected-database-name; the live system_identifier read over that TCP connection
 // must match --expected-system-identifier; the backup-target check then independently reads
 // the SAME database's system_identifier through the tool path pg_dump will use — `psql` with
-// the very libpq environment pg_dump gets (native), or `docker exec` against --container
+// the very libpq environment pg_dump gets (native), or container adapter against --container
 // (docker) — and requires it to equal that same expected value. That proves the TCP
 // connection and the source pg_dump reads are the SAME Postgres cluster, not two different
 // ones that merely share a database name. This runs again AFTER the dump completes (the
@@ -138,7 +138,7 @@ export interface BackupReceiptDeps {
    * the path legacy-repair-verify.ts's in-process orchestration tests exercise.
    */
   adapter?: BackupAdapter;
-  /** Defaults to the real backup-target check: the adapter's when given, else docker exec. */
+  /** Defaults to the real backup-target check: the adapter's when given, else backupDockerPostgres adapter. */
   verifyTarget?: (v: BackupTargetVerification) => BackupTargetVerificationResult;
   /** Defaults to the real backup: the adapter's when given, else backupDockerPostgres. */
   runBackup?: (opts: BackupOptions) => Promise<BackupResult>;
@@ -146,7 +146,7 @@ export interface BackupReceiptDeps {
   queryLedger: () => Promise<{ ledgerCount: number; lastMigrationVersion: string }>;
   readDbTimestamp: () => Promise<string>;
   /** AŞAMA 07: sunucu ve pg_dump sürümleri, yedeği alan araç zincirinden ÖLÇÜLEREK. Varsayılan
-   * adaptörün okuması (native'de ana sürüm eşitliği dahil), adaptör yoksa gerçek `docker exec`
+   * adaptörün okuması (native'de ana sürüm eşitliği dahil), adaptör yoksa yedek bağdaştırıcısı
    * okumasıdır; enjeksiyon seam'i yalnız testler içindir. */
   readVersions?: () => { pgVersion: string; pgDumpVersion: string };
 }

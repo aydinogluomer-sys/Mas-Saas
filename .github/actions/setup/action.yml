@@ -15,16 +15,16 @@ inputs:
 runs:
   using: composite
   steps:
+    # Faz 43 (B3): sabit pnpm ana sürüm alanı kaldırıldı; pnpm/action-setup@v4 sürümü doğrudan
+    # package.json#packageManager ("pnpm@11.10.0") alanından okur ve sürüm çatışmasını önler.
     - uses: pnpm/action-setup@v4
-      with:
-        version: 10
 
     - uses: actions/setup-node@v4
       with:
         # Known divergence from the maintainer's machine (Node 26 locally). Pinned to the
         # current LTS because that is what the runner offers reliably; if a Node-version
         # specific bug ever appears, this line is the first place to look.
-        node-version: 22
+        node-version: "22"
         cache: pnpm
 
     - name: Install
@@ -39,6 +39,6 @@ runs:
     # native) only probes the native PostgreSQL 16 service and never creates anything. Without the
     # workflow env this step would take that native path and fail on a runner with no Postgres.
     - name: Start PostgreSQL (throwaway CI container, MAS_PG_RUNTIME=docker)
-      if: inputs.postgres == 'true'
+      if: ${{ inputs.postgres == 'true' }}
       shell: bash
       run: pnpm db:ensure

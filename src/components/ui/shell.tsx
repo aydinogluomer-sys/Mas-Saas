@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import Link from "next/link";
+import Link from "@/components/ui/app-link";
 
 /* ── PageHeader: title + subtitle + meta + primary action, consistent per route ── */
 export function PageHeader({
@@ -51,22 +51,27 @@ export function KpiCard({
     tone === "neg" ? "var(--neg)" : tone === "pos" ? "var(--pos)" : tone === "warn" ? "var(--warn)" : tone === "info" ? "var(--info)" : "var(--text-1)";
   return (
     <div
-      className="card-hover border p-2.5"
-      style={{ background: "var(--surface-2)", borderColor: "var(--line)", borderRadius: "var(--radius)" }}
+      className="card-hover border p-3"
+      style={{
+        background: "var(--surface-1)",
+        borderColor: "var(--line)",
+        borderRadius: "var(--radius)",
+        boxShadow: "0 1px 2px rgba(24, 22, 20, 0.035)",
+      }}
     >
       <div className="flex items-center justify-between gap-2">
-        <span className="truncate font-mono text-[9px] uppercase tracking-[0.12em]" style={{ color: "var(--text-3)" }}>
+        <span className="truncate font-mono text-[9px] font-semibold uppercase tracking-[0.12em]" style={{ color: "var(--text-3)" }}>
           {label}
         </span>
         {badge}
       </div>
       <div
-        className={`mt-1 font-mono tabular-nums ${emphasize ? "text-lg" : "text-sm"}`}
+        className={`mt-1.5 font-mono font-semibold tabular-nums ${emphasize ? "text-lg" : "text-sm"}`}
         style={{ color: valueColor }}
       >
         {value}
       </div>
-      {note && <div className="mt-0.5 font-mono text-[9px]" style={{ color: "var(--text-4)" }}>{note}</div>}
+      {note && <div className="mt-1 font-mono text-[9px]" style={{ color: "var(--text-4)" }}>{note}</div>}
     </div>
   );
 }
@@ -75,9 +80,16 @@ export function KpiCard({
 export function StatBox({ k, v, tone }: { k: ReactNode; v: ReactNode; tone?: "neg" | "pos" | "warn" }) {
   const color = tone === "neg" ? "var(--neg)" : tone === "pos" ? "var(--pos)" : tone === "warn" ? "var(--warn)" : "var(--text-1)";
   return (
-    <div className="border p-2" style={{ background: "var(--surface-2)", borderColor: "var(--line)", borderRadius: "var(--radius)" }}>
-      <div className="font-mono text-[9px] uppercase tracking-wider" style={{ color: "var(--text-3)" }}>{k}</div>
-      <div className="mt-0.5 font-mono text-sm tabular-nums" style={{ color }}>{v}</div>
+    <div
+      className="border p-2.5"
+      style={{
+        background: "var(--surface-1)",
+        borderColor: "var(--line)",
+        borderRadius: "var(--radius)",
+      }}
+    >
+      <div className="font-mono text-[9px] font-semibold uppercase tracking-wider" style={{ color: "var(--text-3)" }}>{k}</div>
+      <div className="mt-0.5 font-mono text-sm font-semibold tabular-nums" style={{ color }}>{v}</div>
     </div>
   );
 }
@@ -125,7 +137,11 @@ export function EmptyState({ children, action }: { children: ReactNode; action?:
   return (
     <div
       className="flex flex-col items-center gap-2 border border-dashed px-4 py-6 text-center"
-      style={{ borderColor: "var(--line)", borderRadius: "var(--radius)" }}
+      style={{
+        borderColor: "var(--line-strong)",
+        borderRadius: "var(--radius)",
+        background: "color-mix(in srgb, var(--surface-2) 62%, var(--surface-1))",
+      }}
     >
       <p className="font-mono text-xs" style={{ color: "var(--text-3)" }}>{children}</p>
       {action}
@@ -239,11 +255,16 @@ export function KeyStat({
     tone === "neg" ? "var(--neg)" : tone === "pos" ? "var(--pos)" : tone === "warn" ? "var(--warn)" : tone === "info" ? "var(--info)" : "var(--text-1)";
   const inner = (
     <div
-      className="card-hover flex h-full flex-col justify-between border p-3"
-      style={{ background: "var(--surface-2)", borderColor: "var(--line)", borderRadius: "var(--radius)" }}
+      className="card-hover flex h-full flex-col justify-between border p-3.5"
+      style={{
+        background: "var(--surface-1)",
+        borderColor: "var(--line)",
+        borderRadius: "var(--radius)",
+        boxShadow: "0 1px 2px rgba(24, 22, 20, 0.035)",
+      }}
     >
-      <div className="text-[11px]" style={{ color: "var(--text-3)" }}>{label}</div>
-      <div className="mt-2 font-mono text-2xl leading-none tabular-nums" style={{ color }}>{value}</div>
+      <div className="font-mono text-[10px] font-semibold uppercase tracking-[0.1em]" style={{ color: "var(--text-3)" }}>{label}</div>
+      <div className="mt-2 font-mono text-2xl font-semibold leading-none tabular-nums" style={{ color }}>{value}</div>
       {sub && <div className="mt-1.5 text-[11px]" style={{ color: "var(--text-4)" }}>{sub}</div>}
     </div>
   );
@@ -280,10 +301,14 @@ export function Disclaimer({ tone = "warn", children }: { tone?: "warn" | "accen
   return (
     <div
       className="border px-3 py-2"
-      style={{ borderColor: color, background: `color-mix(in srgb, ${color} 8%, transparent)`, borderRadius: "var(--radius)" }}
+      style={{
+        borderColor: `color-mix(in srgb, ${color} 42%, var(--line))`,
+        background: `color-mix(in srgb, ${color} 7%, var(--surface-1))`,
+        borderRadius: "var(--radius)",
+      }}
       role="note"
     >
-      <span className="font-mono text-[11px] uppercase tracking-wider" style={{ color }}>{children}</span>
+      <span className="font-mono text-[11px] font-medium uppercase tracking-wider" style={{ color }}>{children}</span>
     </div>
   );
 }

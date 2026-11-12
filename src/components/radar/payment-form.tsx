@@ -19,6 +19,9 @@ export interface PaymentFormValues {
   provider_party_id?: string | null;
   owner_party_id?: string | null;
   cash_account_id?: string | null;
+  cost_center_id?: string | null;
+  project_id?: string | null;
+  department_id?: string | null;
   description?: string | null;
 }
 
@@ -38,27 +41,30 @@ function Select({ name, value, options, allowEmpty = true }: {
   );
 }
 
-export async function PaymentForm({
-  action, values, error, title,
+export function PaymentFormFields({
+  action,
+  values,
+  cats,
+  providers,
+  owners,
+  accounts,
+  costCenters = [],
+  projects = [],
+  departments = [],
 }: {
   action: (formData: FormData) => Promise<void>;
   values: PaymentFormValues;
-  error?: string;
-  title: string;
+  cats: Dict[];
+  providers: Dict[];
+  owners: Dict[];
+  accounts: Dict[];
+  costCenters?: Dict[];
+  projects?: Dict[];
+  departments?: Dict[];
 }) {
-  const pool = getPool();
-  const [cats, parties, accounts] = await Promise.all([
-    pool.query<Dict>(`select id, name from public.categories where is_active order by sort_order`),
-    pool.query<Dict & { party_type: string }>(`select id, name, party_type from public.parties where is_active order by name`),
-    pool.query<Dict>(`select id, name from public.cash_accounts where is_active order by name`),
-  ]);
-  const providers = parties.rows.filter((p) => ["bank", "provider", "vendor"].includes(p.party_type));
-  const owners = parties.rows.filter((p) => ["company", "person", "internal_owner"].includes(p.party_type));
-
   return (
-    <Panel title={title}>
-      {error && <div className="mb-3 border border-neg tint-neg p-2 font-mono text-xs text-neg">{error}</div>}
-      <form action={action} className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+    <>
+      <form action={action} className="grid grid-cols-1 gap-3 sm:grid-cols-2" data-testid="payment-edit-form">
         {values.id && <input type="hidden" name="id" value={values.id} />}
         <div className="sm:col-span-2">
           <L>Ödeme adı *</L>
@@ -103,7 +109,7 @@ export async function PaymentForm({
         <input type="hidden" name="direction" value={values.direction ?? "outflow"} />
         <div>
           <L>Kategori</L>
-          <Select name="category_id" value={values.category_id} options={cats.rows.map((c) => [c.id, c.name])} />
+          <Select name="category_id" value={values.category_id} options={cats.map((c) => [c.id, c.name])} />
         </div>
         <div>
           <L>Banka / Sağlayıcı</L>
@@ -115,23 +121,25 @@ export async function PaymentForm({
         </div>
         <div>
           <L>Hesap</L>
-          <Select name="cash_account_id" value={values.cash_account_id} options={accounts.rows.map((a) => [a.id, a.name])} />
+          <Select name="cash_account_id" value={values.cash_account_id} options={accounts.map((a) => [a.id, a.name])} />
+        </div>
+        <div>
+          <L>Proje</L>
+          <Select name="project_id" value={values.project_id} options={projects.map((p) => [p.id, p.name])} />
+        </div>
+        <div>
+          <L>Masraf Merkezi</L>
+          <Select name="cost_center_id" value={values.cost_center_id} options={costCenters.map((c) => [c.id, c.name])} />
+        </div>
+        <div>
+          <L>Departman</L>
+          <Select name="department_id" value={values.department_id} options={departments.map((d) => [d.id, d.name])} />
         </div>
         <div className="sm:col-span-2">
           <L>Not</L>
           <input name="description" defaultValue={values.description ?? ""} className={inputCls} />
         </div>
-        <div className="flex items-center justify-between sm:col-span-2">
-          {values.id ? (
-            <div className="flex items-center gap-2">
-              <input required name="archive_reason" placeholder="arşivleme nedeni"
-                className="border border-line bg-black/40 px-2 py-2 font-mono text-[10px] text-tone-2" />
-              <button formAction={archivePaymentAction}
-                className="border border-neg px-3 py-2 font-mono text-[10px] uppercase tracking-wider text-neg">
-                arşivle
-              </button>
-            </div>
-          ) : <span />}
+        <div className="flex items-center justify-end sm:col-span-2">
           <button type="submit" className="button-primary px-3 py-2 text-xs">
             kaydet
           </button>
@@ -139,10 +147,75 @@ export async function PaymentForm({
         {values.id && (
           <p className="text-[11px] text-tone-3 sm:col-span-2">
             Not: değişiklikler geçmiş ve bu ay üretilmiş kayıtları değiştirmez; yeni aylar yeni değerlerle üretilir.
-            Eksik tutarı bu aya özel girmek için Radar &gt; Eksik Veri panelini kullanın.
+            Eksik tutarı bu aya özel girmek için Ödemeler &gt; Eksik Veri panelini kullanın.
           </p>
         )}
       </form>
+
+      {values.id && (
+        <form
+          action={archivePaymentAction}
+          data-testid="payment-archive-form"
+          className="mt-4 flex flex-wrap items-center justify-between gap-2 border-t border-line-faint pt-3"
+        >
+          <input type="hidden" name="id" value={values.id} />
+          <div className="flex flex-wrap items-center gap-2">
+            <input
+              required
+              name="archive_reason"
+              placeholder="arşivleme nedeni"
+              className="border border-line bg-black/40 px-2 py-2 font-mono text-[10px] text-tone-2"
+            />
+            <button
+              type="submit"
+              className="border border-neg px-3 py-2 font-mono text-[10px] uppercase tracking-wider text-neg"
+            >
+              Arşivle
+            </button>
+          </div>
+          <span className="text-[11px] text-tone-4">
+            Arşivleme kalemi pasife alır; geçmiş ödeme örnekleri ve denetim izi korunur.
+          </span>
+        </form>
+      )}
+    </>
+  );
+}
+
+export async function PaymentForm({
+  action, values, error, title,
+}: {
+  action: (formData: FormData) => Promise<void>;
+  values: PaymentFormValues;
+  error?: string;
+  title: string;
+}) {
+  const pool = getPool();
+  const [cats, parties, accounts, costCenters, projects, departments] = await Promise.all([
+    pool.query<Dict>(`select id, name from public.categories where is_active order by sort_order`),
+    pool.query<Dict & { party_type: string }>(`select id, name, party_type from public.parties where is_active order by name`),
+    pool.query<Dict>(`select id, name from public.cash_accounts where is_active order by name`),
+    pool.query<Dict>(`select id, concat(code, ' · ', name) as name from public.cost_centers where is_active order by code`),
+    pool.query<Dict>(`select id, concat(code, ' · ', name) as name from public.projects where is_active order by code`),
+    pool.query<Dict>(`select id, concat(code, ' · ', name) as name from public.departments where is_active order by code`),
+  ]);
+  const providers = parties.rows.filter((p) => ["bank", "provider", "vendor"].includes(p.party_type));
+  const owners = parties.rows.filter((p) => ["company", "person", "internal_owner"].includes(p.party_type));
+
+  return (
+    <Panel title={title}>
+      {error && <div className="mb-3 border border-neg tint-neg p-2 font-mono text-xs text-neg">{error}</div>}
+      <PaymentFormFields
+        action={action}
+        values={values}
+        cats={cats.rows}
+        providers={providers}
+        owners={owners}
+        accounts={accounts.rows}
+        costCenters={costCenters.rows}
+        projects={projects.rows}
+        departments={departments.rows}
+      />
     </Panel>
   );
 }

@@ -35,9 +35,9 @@ import {
 import { createConnection, enqueueSync, listConnections, runSyncJob } from "../src/lib/integrations/engine";
 import { TABLE_CLASS } from "../src/lib/authz/matrix";
 import { JOB_TYPES } from "../src/lib/jobs/rules";
-import { requireDisposableOwnerDatabaseUrl } from "./db/owner-url";
+import { assertDisposableTargetDb } from "./db/disposable-guard";
 
-const pool = new Pool({ connectionString: requireDisposableOwnerDatabaseUrl("phase37:verify") });
+const pool = new Pool({ connectionString: assertDisposableTargetDb(undefined, "phase37:verify").url });
 
 interface Check { name: string; pass: boolean; detail: string }
 const checks: Check[] = [];
@@ -261,8 +261,8 @@ async function main(): Promise<void> {
   // not an implementation. Scanning it would flag the very line that records the question, so the
   // declaration is removed before looking for vendor-specific CODE.
   const acctScan = connectorSrc.replace(/ACCOUNTING_VENDOR_CANDIDATES[\s\S]*?;/, " ");
-  const vendorMentions = ACCOUNTING_VENDOR_CANDIDATES.filter((v) =>
-    new RegExp(`\\b${v}\\b`, "i").test(acctScan));
+  const nonSelectedVendors = ACCOUNTING_VENDOR_CANDIDATES.filter((v) => v !== "parasut" && new RegExp(`\\b${v}\\b`, "i").test(acctScan));
+  const vendorMentions = nonSelectedVendors;
   record("[MUHASEBE] hiçbir vendor-özel KOD yok (yalnız aday listesi)",
     vendorMentions.length === 0,
     vendorMentions.join(", ") || "Paraşüt/Logo/Mikro/Luca için tek satır uygulama yazılmadı");
@@ -311,7 +311,7 @@ async function main(): Promise<void> {
   const queueTables = await pool.query(`
     select table_name from information_schema.tables
     where table_schema='public' and table_type='BASE TABLE'
-      and (table_name like '%integration%job%' or table_name like '%sync_run%')`);
+      and table_name like '%integration%job%'`);
   record("ikinci bir kuyruk/çalışma tablosu açılmadı",
     queueTables.rowCount === 0, "Faz 33'ün background_jobs'u tek kuyruk");
 

@@ -1,4 +1,4 @@
-// Faz 27 — FX engine: recording observed rates and reading the exposure.
+// Faz 27 & Faz 46 (C3) — FX engine: recording observed rates and reading the exposure.
 //
 // The one mutation is inserting rate snapshots, and it is an INSERT only — fx_rate_snapshots is
 // append-only by trigger (0066), so this module could not update a rate even if it tried. That is
@@ -25,6 +25,8 @@ export const recordRateSchema = z.object({
 export interface RateImportResult {
   ok: boolean;
   rateDate: string | null;
+  bulletinDate: string | null;
+  queriedDate: string;
   inserted: number;
   skipped: number;
   error?: string;
@@ -37,9 +39,9 @@ export interface RateImportResult {
  * partial or empty day — a half-imported bulletin would leave some pairs current and others
  * stale, and the revaluation built on top could not tell the difference.
  *
- * Re-running is safe: the unique (base, quote, date, source) constraint means a second import of
- * the same bulletin inserts nothing, and `skipped` reports how many were already present rather
- * than pretending they were new.
+ * Faz 46 (C3): Preserves `bulletinDate` (TCMB published date, recorded in `rate_date`) distinctly
+ * from `queriedDate` (`dateISO`), recording both in `source_ref` and audit trail so weekend/holiday
+ * queries never stamp Friday's TCMB bulletin onto Sunday's calendar date.
  */
 export async function importRates(
   pool: Pool,
@@ -50,8 +52,19 @@ export async function importRates(
 ): Promise<RateImportResult> {
   const fetched = await provider.fetchRates(dateISO);
   if (!fetched.ok || fetched.rateDate === null) {
-    return { ok: false, rateDate: null, inserted: 0, skipped: 0, error: fetched.error };
+    return {
+      ok: false,
+      rateDate: null,
+      bulletinDate: fetched.bulletinDate ?? null,
+      queriedDate: fetched.queriedDate ?? dateISO,
+      inserted: 0,
+      skipped: 0,
+      error: fetched.error,
+    };
   }
+
+  const bulletinDate = fetched.bulletinDate ?? fetched.rateDate;
+  const queriedDate = fetched.queriedDate ?? dateISO;
 
   const wanted = onlyCurrencies && onlyCurrencies.length > 0
     ? new Set(onlyCurrencies.map((c) => c.toUpperCase()))
@@ -64,6 +77,7 @@ export async function importRates(
     await client.query("begin");
     for (const r of fetched.rates) {
       if (wanted && !wanted.has(r.baseCurrency)) continue;
+      const sourceRef = `unit=${r.unit};bulletin_date=${bulletinDate};queried_date=${queriedDate}`;
       const res = await client.query(
         `insert into public.fx_rate_snapshots
            (base_currency, quote_currency, rate_date, rate, forex_buying, forex_selling,
@@ -73,7 +87,7 @@ export async function importRates(
          returning id`,
         [r.baseCurrency, fetched.rateDate, r.rate, r.forexBuying, r.forexSelling,
          r.banknoteBuying, r.banknoteSelling, provider.source,
-         `unit=${r.unit}`, actorId]);
+         sourceRef, actorId]);
       if ((res.rowCount ?? 0) > 0) inserted += 1; else skipped += 1;
     }
 
@@ -81,14 +95,25 @@ export async function importRates(
       actor: actorId, action: "import_fx_rates",
       entityTable: "fx_rate_snapshots", entityId: null,
       after: {
-        source: provider.source, rateDate: fetched.rateDate,
-        inserted, skipped,
+        source: provider.source,
+        rateDate: fetched.rateDate,
+        bulletinDate,
+        queriedDate,
+        inserted,
+        skipped,
         // Recorded explicitly: this reads a published bulletin, it does not open a live feed.
         liveFeed: false, automated: false,
       },
     });
     await client.query("commit");
-    return { ok: true, rateDate: fetched.rateDate, inserted, skipped };
+    return {
+      ok: true,
+      rateDate: fetched.rateDate,
+      bulletinDate,
+      queriedDate,
+      inserted,
+      skipped,
+    };
   } catch (e) {
     await client.query("rollback");
     throw e;

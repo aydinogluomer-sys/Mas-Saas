@@ -1,4 +1,4 @@
-import Link from "next/link";
+import Link from "@/components/ui/app-link";
 import { Badge, type Tone } from "@/components/ui/badge";
 import { DetailsDisclosure } from "@/components/ui/shell";
 

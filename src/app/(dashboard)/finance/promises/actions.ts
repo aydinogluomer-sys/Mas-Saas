@@ -3,7 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { getPool } from "@/lib/db";
-import { requireSession } from "@/lib/auth";
+import { requireActionPermission } from "@/lib/auth";
 import { createPromise, detectBrokenPromises, resolvePromise } from "@/lib/collections/promises-engine";
 import { istanbulDateISO } from "@/lib/reports/rules";
 import { DomainError } from "@/lib/domain-error";
@@ -17,7 +17,6 @@ function revalidateAll(): void {
   revalidatePath("/insights");
 }
 
-/** A refused write is an ANSWER the operator must read, not a stack trace. */
 function fail(e: unknown): never {
   if (e instanceof DomainError) {
     revalidateAll();
@@ -27,15 +26,13 @@ function fail(e: unknown): never {
 }
 
 function numOrNull(v: FormDataEntryValue | null): number | null {
-  // An empty amount box means the customer did not name a figure. It must stay unknown —
-  // writing 0 here would tell every downstream view they promised nothing (CLAUDE.md).
   if (v == null || String(v).trim() === "") return null;
   const n = Number(v);
   return Number.isFinite(n) ? n : null;
 }
 
 export async function createPromiseAction(formData: FormData): Promise<void> {
-  const session = await requireSession();
+  const session = await requireActionPermission("promise_to_pay", "insert", PAGE);
   try {
     await createPromise(getPool(), {
       partyId: String(formData.get("partyId") ?? ""),
@@ -52,7 +49,7 @@ export async function createPromiseAction(formData: FormData): Promise<void> {
 }
 
 export async function resolvePromiseAction(formData: FormData): Promise<void> {
-  const session = await requireSession();
+  const session = await requireActionPermission("promise_to_pay", "update", PAGE);
   try {
     await resolvePromise(getPool(), {
       promiseId: String(formData.get("promiseId") ?? ""),
@@ -64,15 +61,8 @@ export async function resolvePromiseAction(formData: FormData): Promise<void> {
   redirect(`${PAGE}?result=resolved`);
 }
 
-/**
- * Run the broken-promise detection now.
- *
- * Exposed as a button rather than left to a scheduler because this repository has no job runner,
- * and an operator pressing it is honest about that. The run is idempotent, so pressing it twice
- * changes nothing the second time.
- */
 export async function detectBrokenAction(): Promise<void> {
-  const session = await requireSession();
+  const session = await requireActionPermission("promise_to_pay", "update", PAGE);
   const result = await detectBrokenPromises(getPool(), istanbulDateISO(), session.id);
   revalidateAll();
   redirect(`${PAGE}?result=detected&n=${result.markedBroken}`);

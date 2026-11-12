@@ -35,12 +35,12 @@ import { factRoute, scopeFactsForRole, withheldNotice } from "../src/lib/assista
 import { ask, loadHistory, listConversations } from "../src/lib/assistant/engine";
 import { loadDecisionFacts } from "../src/lib/facts/engine";
 import { APP_ROLES, TABLE_CLASS, canSeeRoute } from "../src/lib/authz/matrix";
-import { requireDisposableOwnerDatabaseUrl } from "./db/owner-url";
+import { assertDisposableTargetDb } from "./db/disposable-guard";
 
 // Set BEFORE anything imports env: the whole run is deterministic-only.
 process.env.AI_FORCE_DETERMINISTIC = "1";
 
-const pool = new Pool({ connectionString: requireDisposableOwnerDatabaseUrl("phase38:verify") });
+const pool = new Pool({ connectionString: assertDisposableTargetDb(undefined, "phase38:verify").url });
 
 interface Check { name: string; pass: boolean; detail: string }
 const checks: Check[] = [];

@@ -1,45 +1,119 @@
-// Faz 35 — local-disk document storage.
+// Faz 35 + Faz 50 (D4) — local-disk content-addressed document vault.
 //
-// ═══ OPEN QUESTION #7: LOCAL DISK, MIRRORING FAZ 2 ═══
-//
-// The precedent already exists in this repo: `source_workbooks` (migration 0001) stores
-// `storage_path` + `file_sha256` and keeps the bytes on disk. `attachments` uses the same two
-// columns for the same reason, rather than inventing a second storage convention.
-//
-// Object storage was rejected: it adds an external cloud dependency to a system CLAUDE.md defines
-// as single-company, private and internal, and it puts financial documents somewhere the owner
-// cannot open with a file manager.
-//
-// Bytes-in-Postgres was rejected on measured grounds: Faz 33 found that at 24.000 invoices the
-// pg_dump was already big enough to break backup verification outright. Every scanned contract
-// added to the dump makes the mandatory pre-migration backup harder to take, and that backup is
-// the one thing that must stay practical.
-//
-// ═══ WHAT LOCAL DISK COSTS, SAID OUT LOUD ═══
-//
-// The database alone is no longer a complete restore: a dump plus a lost documents directory is a
-// dump full of dead links. Two things follow, and both are implemented rather than hoped for:
-//   * `file_sha256` is NOT NULL in 0083, so a restore can PROVE which files are missing or
-//     corrupt instead of silently serving wrong bytes.
-//   * `verifyStored()` re-hashes on read, so corruption surfaces as an error and not as a
-//     document that quietly changed.
+// Files live on local disk (`MAS_DOCUMENT_STORAGE_DIR` / `MAS_DOCUMENT_ROOT`), never as Postgres
+// bytea, and never addressed by the user-supplied filename. Every read re-verifies SHA-256 and
+// enforces strict root-containment against path traversal.
 
 import { createHash } from "node:crypto";
-import { mkdirSync, readFileSync, writeFileSync, existsSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import { DomainError } from "@/lib/domain-error";
 
-/**
- * Where documents live.
- *
- * Overridable so a deployment can point at a mounted volume, defaulting to a directory beside the
- * project rather than inside it — documents are data, not source, and must never end up in git.
- */
+export const ALLOWED_DOCUMENT_MIMES = {
+  "application/pdf": "pdf",
+  "image/png": "png",
+  "image/jpeg": "jpg",
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": "xlsx",
+} as const;
+
+export type AllowedDocumentMime = keyof typeof ALLOWED_DOCUMENT_MIMES;
+export type SafeDocumentExt = (typeof ALLOWED_DOCUMENT_MIMES)[AllowedDocumentMime];
+
+export const MAX_DOCUMENT_BYTES = 25 * 1024 * 1024; // 25 MB
+
 export function documentRoot(): string {
-  return process.env.MAS_DOCUMENT_ROOT ?? path.join(process.cwd(), "data", "documents");
+  return (
+    process.env.MAS_DOCUMENT_STORAGE_DIR ??
+    process.env.MAS_DOCUMENT_ROOT ??
+    path.join(process.cwd(), "data", "documents")
+  );
 }
 
 export function sha256(bytes: Buffer): string {
   return createHash("sha256").update(bytes).digest("hex");
+}
+
+export interface ValidatedUploadMeta {
+  mimeType: AllowedDocumentMime;
+  safeExt: SafeDocumentExt;
+  sanitizedOriginalFilename: string;
+}
+
+function matchesMagicSignature(bytes: Buffer, safeExt: SafeDocumentExt): boolean {
+  if (safeExt === "pdf") {
+    return bytes.byteLength >= 5 && bytes.subarray(0, 5).toString("ascii") === "%PDF-";
+  }
+  if (safeExt === "png") {
+    return (
+      bytes.byteLength >= 8 &&
+      bytes[0] === 0x89 &&
+      bytes[1] === 0x50 &&
+      bytes[2] === 0x4e &&
+      bytes[3] === 0x47 &&
+      bytes[4] === 0x0d &&
+      bytes[5] === 0x0a &&
+      bytes[6] === 0x1a &&
+      bytes[7] === 0x0a
+    );
+  }
+  if (safeExt === "jpg") {
+    return bytes.byteLength >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff;
+  }
+  // .xlsx is a ZIP container starting with PK\x03\x04
+  return (
+    bytes.byteLength >= 4 &&
+    bytes[0] === 0x50 &&
+    bytes[1] === 0x4b &&
+    bytes[2] === 0x03 &&
+    bytes[3] === 0x04
+  );
+}
+
+/**
+ * Validates file size, MIME whitelist, magic-byte signature, and strips any directory components
+ * from `originalFilename` before storing it as metadata only.
+ */
+export function validateDocumentUpload(
+  bytes: Buffer,
+  rawMimeType: string,
+  originalFilename: string,
+): ValidatedUploadMeta {
+  if (bytes.byteLength === 0) {
+    throw new DomainError("VALIDATION", "Boş dosya yüklenemez.");
+  }
+  if (bytes.byteLength > MAX_DOCUMENT_BYTES) {
+    throw new DomainError("VALIDATION", "Doküman boyutu 25 MB sınırını aşamaz.");
+  }
+
+  let normalizedMime = rawMimeType.trim().toLowerCase();
+  if (
+    (!normalizedMime || normalizedMime === "application/octet-stream") &&
+    originalFilename.toLowerCase().endsWith(".xlsx")
+  ) {
+    normalizedMime = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+  } else if (normalizedMime === "image/jpg") {
+    normalizedMime = "image/jpeg";
+  }
+
+  if (!(normalizedMime in ALLOWED_DOCUMENT_MIMES)) {
+    throw new DomainError(
+      "VALIDATION",
+      "Desteklenmeyen dosya türü. Yalnız PDF, PNG, JPEG ve XLSX kabul edilir.",
+    );
+  }
+
+  const mimeType = normalizedMime as AllowedDocumentMime;
+  const safeExt = ALLOWED_DOCUMENT_MIMES[mimeType];
+  if (!matchesMagicSignature(bytes, safeExt)) {
+    throw new DomainError(
+      "VALIDATION",
+      `Dosya içeriği bildirilen türle (${safeExt.toUpperCase()}) uyuşmuyor.`,
+    );
+  }
+
+  const base = path.basename(originalFilename.replace(/\\/g, "/")).replace(/[\r\n\0]/g, "").trim();
+  const sanitizedOriginalFilename = (base || `document.${safeExt}`).slice(0, 240);
+  return { mimeType, safeExt, sanitizedOriginalFilename };
 }
 
 export interface StoredFile {
@@ -49,28 +123,39 @@ export interface StoredFile {
 }
 
 /**
- * Content-addressed layout: <root>/<aa>/<bb>/<full-sha256>.
- *
- * Addressing by hash rather than by original filename does three things at once: identical bytes
- * are stored once, a malicious or careless filename can never escape the root (there is no user
- * text in the path at all), and the file's own name is its integrity check. The two-level fan-out
- * keeps directory sizes sane on a filesystem that dislikes 100.000 entries in one folder.
+ * Content-addressed layout: `<aa>/<bb>/<full-sha256>` (or `<aa>/<bb>/<full-sha256>.<safeExt>`).
+ * Zero user-controlled characters ever enter the filesystem path.
  */
-export function storagePathFor(hash: string): string {
+export function storagePathFor(hash: string, safeExt?: SafeDocumentExt): string {
   if (!/^[0-9a-f]{64}$/.test(hash)) {
     throw new Error("storagePathFor: geçersiz sha256");
   }
-  return path.join(hash.slice(0, 2), hash.slice(2, 4), hash);
+  if (safeExt !== undefined && !["pdf", "png", "jpg", "xlsx"].includes(safeExt)) {
+    throw new Error("storagePathFor: geçersiz uzantı");
+  }
+  const leaf = safeExt ? `${hash}.${safeExt}` : hash;
+  return path.join(hash.slice(0, 2), hash.slice(2, 4), leaf);
+}
+
+function resolveContainedPath(storagePath: string): string {
+  if (!storagePath || storagePath.includes("\0")) {
+    throw new DocumentIntegrityError("Geçersiz depolama yolu.");
+  }
+  const rootResolved = path.resolve(documentRoot());
+  const candidate = path.resolve(rootResolved, storagePath);
+  const prefix = rootResolved.endsWith(path.sep) ? rootResolved : `${rootResolved}${path.sep}`;
+  if (!candidate.startsWith(prefix)) {
+    throw new DocumentIntegrityError(`Dizin dışına çıkış engellendi: ${storagePath}`);
+  }
+  return candidate;
 }
 
 /** Write bytes and return what the database row should record. Idempotent by construction. */
-export function storeFile(bytes: Buffer): StoredFile {
+export function storeFile(bytes: Buffer, safeExt?: SafeDocumentExt): StoredFile {
   const hash = sha256(bytes);
-  const relative = storagePathFor(hash);
-  const absolute = path.join(documentRoot(), relative);
+  const relative = storagePathFor(hash, safeExt);
+  const absolute = resolveContainedPath(relative);
   mkdirSync(path.dirname(absolute), { recursive: true });
-  // Identical bytes already on disk: nothing to do. Re-writing would be a no-op at best and a
-  // window where the file is truncated at worst.
   if (!existsSync(absolute)) {
     writeFileSync(absolute, bytes);
   }
@@ -79,14 +164,8 @@ export function storeFile(bytes: Buffer): StoredFile {
 
 export class DocumentIntegrityError extends Error {}
 
-/**
- * Read a stored file and verify it against the recorded hash.
- *
- * Refuses to return bytes that do not match. A document centre that serves silently-corrupted
- * files is worse than one that is down: the corruption gets filed, mailed and relied upon.
- */
 export function readStored(storagePath: string, expectedSha256: string): Buffer {
-  const absolute = path.join(documentRoot(), storagePath);
+  const absolute = resolveContainedPath(storagePath);
   if (!existsSync(absolute)) {
     throw new DocumentIntegrityError(`Dosya diskte yok: ${storagePath}`);
   }
@@ -94,7 +173,8 @@ export function readStored(storagePath: string, expectedSha256: string): Buffer 
   const actual = sha256(bytes);
   if (actual !== expectedSha256) {
     throw new DocumentIntegrityError(
-      `Sağlama uyuşmuyor (${storagePath}): beklenen ${expectedSha256.slice(0, 12)}…, bulunan ${actual.slice(0, 12)}…`);
+      `Sağlama uyuşmuyor (${storagePath}): beklenen ${expectedSha256.slice(0, 12)}…, bulunan ${actual.slice(0, 12)}…`,
+    );
   }
   return bytes;
 }
@@ -106,22 +186,16 @@ export interface IntegrityReport {
   hashMatches: boolean | null;
 }
 
-/**
- * Check one attachment without loading it into a response.
- *
- * Separate from readStored so an integrity sweep over the whole archive does not have to serve
- * anything — the report is the point.
- */
 export function verifyStored(
-  storagePath: string, expectedSha256: string, expectedSize: number,
+  storagePath: string,
+  expectedSha256: string,
+  expectedSize: number,
 ): IntegrityReport {
-  const absolute = path.join(documentRoot(), storagePath);
+  const absolute = resolveContainedPath(storagePath);
   if (!existsSync(absolute)) {
     return { storagePath, present: false, sizeMatches: null, hashMatches: null };
   }
   const size = statSync(absolute).size;
-  // Size is checked first because it is nearly free; a mismatch means the hash cannot match
-  // either, and there is no reason to read a large file to learn that.
   if (size !== expectedSize) {
     return { storagePath, present: true, sizeMatches: false, hashMatches: null };
   }

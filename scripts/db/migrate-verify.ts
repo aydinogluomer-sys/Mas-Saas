@@ -7,7 +7,8 @@ import { readFileSync, readdirSync, unlinkSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { Pool } from "pg";
 import { MIGRATIONS_DIR, validateFileSet } from "./migration-lib";
-import { verifyBackupTarget } from "./backup-docker-postgres";
+import { createBackupAdapter } from "./backup-adapter";
+import { createDisposableLocalDb, dropDisposableLocalDb, psqlLocalFile, psqlLocalSql, resolveLocalOwnerUrl, restoreIntoDisposableLocalDb } from "./pg-local-admin";
 import {
   LEGACY_ANOMALY_INSTANCE_ID,
   countCancelConsistencyViolations,
@@ -19,7 +20,6 @@ import {
 } from "./legacy-cancellation-fixture";
 
 const ROOT = process.cwd();
-const CONTAINER = process.env.MAS_DB_CONTAINER ?? "mas-radar-pg";
 const TSX_CLI = path.join(ROOT, "node_modules", "tsx", "dist", "cli.mjs");
 const MIGRATE_SCRIPT = path.join(ROOT, "scripts", "db", "migrate.ts");
 
@@ -82,32 +82,20 @@ function hasCheckpointDump(): boolean {
   }
 }
 
-function docker(args: string[], opts: { input?: string | Buffer; quiet?: boolean } = {}): string {
-  return execFileSync("docker", args, {
-    input: opts.input,
-    encoding: "utf8",
-    maxBuffer: 128 * 1024 * 1024,
-    stdio: opts.quiet ? ["pipe", "pipe", "pipe"] : ["pipe", "inherit", "inherit"],
-  });
-}
-
 function dropDb(db: string): void {
-  docker(["exec", CONTAINER, "dropdb", "-U", "postgres", "--if-exists", db], { quiet: true });
+  dropDisposableLocalDb(db);
 }
 function createDb(db: string): void {
-  docker(["exec", CONTAINER, "createdb", "-U", "postgres", db], { quiet: true });
+  createDisposableLocalDb(db);
 }
 function psqlFile(db: string, file: string): void {
-  docker(["exec", "-i", CONTAINER, "psql", "-q", "-v", "ON_ERROR_STOP=1", "-U", "postgres", "-d", db], {
-    input: readFileSync(file, "utf8"),
-    quiet: true,
-  });
+  psqlLocalFile(db, file);
 }
 function psqlSql(db: string, sql: string): string {
-  return docker(["exec", CONTAINER, "psql", "-U", "postgres", "-d", db, "-tAc", sql], { quiet: true });
+  return psqlLocalSql(db, sql);
 }
 function dbUrl(db: string): string {
-  return `postgres://postgres:postgres@127.0.0.1:5432/${db}`;
+  return resolveLocalOwnerUrl(db);
 }
 
 interface RunResult {
@@ -157,10 +145,7 @@ function restoreCheckpointInto(db: string): void {
   const dump = findLatestCheckpointDump();
   dropDb(db);
   createDb(db);
-  docker(["exec", "-i", CONTAINER, "pg_restore", "-U", "postgres", "-d", db, "--no-owner", "--role=postgres"], {
-    input: readFileSync(dump),
-    quiet: true,
-  });
+  restoreIntoDisposableLocalDb(db, dump, { extraArgs: ["--role=postgres"], strict: true });
 }
 
 async function assertPolicyCountZero(db: string, label: string): Promise<void> {
@@ -471,7 +456,7 @@ async function testLegacyCompleteAndIdempotency(): Promise<void> {
       "action_items_archive_triplet_consistency",
     ] as const) {
       const state = await getConstraintCatalogState(pool, conname);
-      record(`LEGACY_COMPLETE: kapsam dışı ${conname} hâlâ convalidated=false (dokunulmadı)`, state.found && state.convalidated === false, JSON.stringify(state));
+      record(`LEGACY_COMPLETE: 0099 ile ${conname} convalidated=true`, state.found && state.convalidated === true, JSON.stringify(state));
     }
   } finally {
     await pool.end();
@@ -611,14 +596,14 @@ async function testClusterIdentity(): Promise<void> {
     const realIdentifier = psqlSql(db, "select system_identifier from pg_control_system();").trim();
 
     try {
-      verifyBackupTarget({ container: CONTAINER, dbName: db, expectedSystemIdentifier: realIdentifier });
+      createBackupAdapter({ ownerUrl: dbUrl(db) }).verifyTarget(db, realIdentifier);
       record("Cluster-identity: doğru identifier ile geçer", true);
     } catch (err) {
       record("Cluster-identity: doğru identifier ile geçer", false, (err as Error).message.slice(0, 200));
     }
 
     try {
-      verifyBackupTarget({ container: CONTAINER, dbName: db, expectedSystemIdentifier: "0000000000000000000" });
+      createBackupAdapter({ ownerUrl: dbUrl(db) }).verifyTarget(db, "0000000000000000000");
       record("Cluster-identity: yanlış identifier ile reddedilir", false, "beklenmedik şekilde geçti");
     } catch {
       record("Cluster-identity: yanlış identifier ile reddedilir", true);

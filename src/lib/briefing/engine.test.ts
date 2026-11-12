@@ -38,7 +38,7 @@ vi.mock("@/lib/collections/promises-engine", () => ({ loadOpenPromises: loaders.
 vi.mock("@/lib/radar/queries", () => ({ instancesOn: loaders.instancesOn, overdueOpen: loaders.overdueOpen }));
 
 import { loadBriefingDashboard, loadWidgetFacts } from "./engine";
-import { renderBriefing } from "./rules";
+import { briefingStatus, headline, renderBriefing, todaysActions } from "./rules";
 
 const TODAY = "2099-03-01";
 
@@ -152,5 +152,80 @@ describe("brifing nakit kutusu — tanımlı taban yoksa hüküm de yok (Wave 0,
     const { facts } = await loadBriefingDashboard(pool, TODAY);
 
     expect(facts.minCashFloor).toBeNull();
+  });
+});
+
+describe("brifing — bilinmeyen 7 günlük likidite / açılış bakiyesi (Dalga 1 #4, FIN-03)", () => {
+  it("FIN-03 (açılış bakiyesi null → liquidityGap7 null) iken ASLA 'kritik bir kalem görünmüyor' demez; bilinmiyor/ölçülemez der", async () => {
+    loaders.loadPositionSummary.mockResolvedValue([
+      {
+        currency: "TRY",
+        accountCount: 2,
+        totalDerived: null,
+        totalStated: null,
+        totalBlocked: 0,
+        totalOverdraftLimit: 0,
+        availableNow: null,
+        availableWithOverdraft: null,
+        accountsWithGap: 0,
+      },
+    ]);
+    loaders.loadLiquidityGap.mockResolvedValue(
+      [7, 30, 90].map((horizonDays) => ({
+        horizonDays,
+        currency: "TRY",
+        availableNow: null,
+        contractedNetFlow: -150_000,
+        expectedNetFlow: -150_000,
+        projectedContracted: null,
+        projectedExpected: null,
+        minCashFloor: 500_000,
+        financingNeed: null,
+        breachesFloor: null,
+      })),
+    );
+    loaders.loadConfiguredFloorCurrencies.mockResolvedValue(new Set(["TRY"]));
+
+    const { facts, widgets } = await loadBriefingDashboard(pool, TODAY);
+    const h = headline(facts);
+    const status = briefingStatus(facts);
+    const md = renderBriefing(facts);
+    const actions = todaysActions(facts);
+
+    expect(facts.availableCash).toBeNull();
+    expect(facts.liquidityGap7).toBeNull();
+
+    expect(h.tone).toBe("warn");
+    expect(h.text).toContain("bilinmiyor");
+    expect(h.text).toContain("ölçülemez");
+    expect(h.text).not.toContain("kritik bir kalem görünmüyor");
+    expect(h.text).not.toContain("kritik kalem görünmüyor");
+
+    expect(status).toEqual({ text: "likidite bilinmiyor", tone: "neutral" });
+    expect(status.text).not.toBe("kritik bulgu yok");
+
+    expect(md).toContain("— (bilinmiyor / ölçülemez)");
+    expect(md).not.toContain("kritik bir kalem görünmüyor");
+    expect(md).not.toContain("Bekleyen kritik aksiyon yok");
+    expect(actions.some((a) => a.includes("bilinmiyor") && a.includes("ölçülemez"))).toBe(true);
+
+    expect(widgets.find((w) => w.key === "liquidity")?.value).toBe("—");
+    expect(widgets.find((w) => w.key === "liquidity")?.tone).toBe("neutral");
+  });
+
+  it("TRY hesabı hiç yokken yabancı para satırına düşmez ve sahte güvenlik hükmü üretmez", async () => {
+    loaders.loadPositionSummary.mockResolvedValue([position("EUR", 25_000)]);
+    loaders.loadLiquidityGap.mockResolvedValue(gapRows("EUR", 25_000, 5_000));
+    loaders.loadConfiguredFloorCurrencies.mockResolvedValue(new Set(["EUR"]));
+
+    const { facts } = await loadBriefingDashboard(pool, TODAY);
+    const h = headline(facts);
+    const status = briefingStatus(facts);
+
+    expect(facts.availableCash).toBeNull();
+    expect(facts.liquidityGap7).toBeNull();
+    expect(h.tone).toBe("warn");
+    expect(h.text).not.toContain("kritik bir kalem görünmüyor");
+    expect(status).toEqual({ text: "likidite bilinmiyor", tone: "neutral" });
   });
 });

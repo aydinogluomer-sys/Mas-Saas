@@ -1,0 +1,517 @@
+{
+  "findings": [
+    {
+      "id": "UUID-01",
+      "kind": "fixture_uuid_hit",
+      "schema": "public",
+      "table": "action_items",
+      "column": "created_by",
+      "column_type": "uuid",
+      "row_id": "639daf7e-9c3e-4244-9ebf-6bef37b57971",
+      "ids": [
+        "639daf7e-9c3e-4244-9ebf-6bef37b57971"
+      ],
+      "matched_fixture_uuid": "19688698-2eb2-40bb-9fc5-37cebdc7e824",
+      "points_to": "user:p24b_op_9bcmx5",
+      "reference_class": "INBOUND_REFERENCE",
+      "holder_is_fixture_row": true,
+      "interpretation": "Fixture satirindan fixture kimligine yapilan atif; atif sahibi de manifest icindedir."
+    },
+    {
+      "id": "UUID-02",
+      "kind": "fixture_uuid_hit",
+      "schema": "public",
+      "table": "action_items",
+      "column": "id",
+      "column_type": "uuid",
+      "row_id": "639daf7e-9c3e-4244-9ebf-6bef37b57971",
+      "ids": [
+        "639daf7e-9c3e-4244-9ebf-6bef37b57971"
+      ],
+      "matched_fixture_uuid": "639daf7e-9c3e-4244-9ebf-6bef37b57971",
+      "points_to": "action_item:P24B mine",
+      "reference_class": "SELF_ID",
+      "holder_is_fixture_row": true,
+      "interpretation": "Manifest kimliginin kendi birincil anahtari."
+    },
+    {
+      "id": "UUID-03",
+      "kind": "fixture_uuid_hit",
+      "schema": "public",
+      "table": "approvals",
+      "column": "id",
+      "column_type": "uuid",
+      "row_id": "1fc76c28-9d71-4ce3-91a6-f1e9f94e5dd4",
+      "ids": [
+        "1fc76c28-9d71-4ce3-91a6-f1e9f94e5dd4"
+      ],
+      "matched_fixture_uuid": "1fc76c28-9d71-4ce3-91a6-f1e9f94e5dd4",
+      "points_to": "approval:pending",
+      "reference_class": "SELF_ID",
+      "holder_is_fixture_row": true,
+      "interpretation": "Manifest kimliginin kendi birincil anahtari."
+    },
+    {
+      "id": "UUID-04",
+      "kind": "fixture_uuid_hit",
+      "schema": "public",
+      "table": "approvals",
+      "column": "requested_by",
+      "column_type": "uuid",
+      "row_id": "1fc76c28-9d71-4ce3-91a6-f1e9f94e5dd4",
+      "ids": [
+        "1fc76c28-9d71-4ce3-91a6-f1e9f94e5dd4"
+      ],
+      "matched_fixture_uuid": "33796a14-c173-45c7-a784-33e44e8996a0",
+      "points_to": "user:p24b_mk_mujyy6",
+      "reference_class": "INBOUND_REFERENCE",
+      "holder_is_fixture_row": true,
+      "interpretation": "Fixture satirindan fixture kimligine yapilan atif; atif sahibi de manifest icindedir."
+    },
+    {
+      "id": "UUID-05",
+      "kind": "fixture_uuid_hit",
+      "schema": "public",
+      "table": "payment_instances",
+      "column": "id",
+      "column_type": "uuid",
+      "row_id": "3ab000e6-5187-468d-bf2e-2af882a2a3a2",
+      "ids": [
+        "3ab000e6-5187-468d-bf2e-2af882a2a3a2"
+      ],
+      "matched_fixture_uuid": "3ab000e6-5187-468d-bf2e-2af882a2a3a2",
+      "points_to": "payment_instance:2026-08-15",
+      "reference_class": "SELF_ID",
+      "holder_is_fixture_row": true,
+      "interpretation": "Manifest kimliginin kendi birincil anahtari."
+    },
+    {
+      "id": "UUID-06",
+      "kind": "fixture_uuid_hit",
+      "schema": "public",
+      "table": "payment_instances",
+      "column": "id",
+      "column_type": "uuid",
+      "row_id": "79eccf48-65ff-4427-af7b-9e332488c1bd",
+      "ids": [
+        "79eccf48-65ff-4427-af7b-9e332488c1bd"
+      ],
+      "matched_fixture_uuid": "79eccf48-65ff-4427-af7b-9e332488c1bd",
+      "points_to": "payment_instance:2026-07-15",
+      "reference_class": "SELF_ID",
+      "holder_is_fixture_row": true,
+      "interpretation": "Manifest kimliginin kendi birincil anahtari."
+    },
+    {
+      "id": "UUID-07",
+      "kind": "fixture_uuid_hit",
+      "schema": "public",
+      "table": "payment_instances",
+      "column": "id",
+      "column_type": "uuid",
+      "row_id": "dfa79dc9-bc4d-4572-96b2-de56b0baceae",
+      "ids": [
+        "dfa79dc9-bc4d-4572-96b2-de56b0baceae"
+      ],
+      "matched_fixture_uuid": "dfa79dc9-bc4d-4572-96b2-de56b0baceae",
+      "points_to": "payment_instance:2026-09-15",
+      "reference_class": "SELF_ID",
+      "holder_is_fixture_row": true,
+      "interpretation": "Manifest kimliginin kendi birincil anahtari."
+    },
+    {
+      "id": "UUID-08",
+      "kind": "fixture_uuid_hit",
+      "schema": "public",
+      "table": "payment_instances",
+      "column": "payment_id",
+      "column_type": "uuid",
+      "row_id": "3ab000e6-5187-468d-bf2e-2af882a2a3a2",
+      "ids": [
+        "3ab000e6-5187-468d-bf2e-2af882a2a3a2"
+      ],
+      "matched_fixture_uuid": "7b300bfe-944f-468b-91fa-2de65b7cfee5",
+      "points_to": "payment:P24B fixture",
+      "reference_class": "INBOUND_REFERENCE",
+      "holder_is_fixture_row": true,
+      "interpretation": "Fixture satirindan fixture kimligine yapilan atif; atif sahibi de manifest icindedir."
+    },
+    {
+      "id": "UUID-09",
+      "kind": "fixture_uuid_hit",
+      "schema": "public",
+      "table": "payment_instances",
+      "column": "payment_id",
+      "column_type": "uuid",
+      "row_id": "79eccf48-65ff-4427-af7b-9e332488c1bd",
+      "ids": [
+        "79eccf48-65ff-4427-af7b-9e332488c1bd"
+      ],
+      "matched_fixture_uuid": "7b300bfe-944f-468b-91fa-2de65b7cfee5",
+      "points_to": "payment:P24B fixture",
+      "reference_class": "INBOUND_REFERENCE",
+      "holder_is_fixture_row": true,
+      "interpretation": "Fixture satirindan fixture kimligine yapilan atif; atif sahibi de manifest icindedir."
+    },
+    {
+      "id": "UUID-10",
+      "kind": "fixture_uuid_hit",
+      "schema": "public",
+      "table": "payment_instances",
+      "column": "payment_id",
+      "column_type": "uuid",
+      "row_id": "dfa79dc9-bc4d-4572-96b2-de56b0baceae",
+      "ids": [
+        "dfa79dc9-bc4d-4572-96b2-de56b0baceae"
+      ],
+      "matched_fixture_uuid": "7b300bfe-944f-468b-91fa-2de65b7cfee5",
+      "points_to": "payment:P24B fixture",
+      "reference_class": "INBOUND_REFERENCE",
+      "holder_is_fixture_row": true,
+      "interpretation": "Fixture satirindan fixture kimligine yapilan atif; atif sahibi de manifest icindedir."
+    },
+    {
+      "id": "UUID-11",
+      "kind": "fixture_uuid_hit",
+      "schema": "public",
+      "table": "payments",
+      "column": "id",
+      "column_type": "uuid",
+      "row_id": "7b300bfe-944f-468b-91fa-2de65b7cfee5",
+      "ids": [
+        "7b300bfe-944f-468b-91fa-2de65b7cfee5"
+      ],
+      "matched_fixture_uuid": "7b300bfe-944f-468b-91fa-2de65b7cfee5",
+      "points_to": "payment:P24B fixture",
+      "reference_class": "SELF_ID",
+      "holder_is_fixture_row": true,
+      "interpretation": "Manifest kimliginin kendi birincil anahtari."
+    },
+    {
+      "id": "UUID-12",
+      "kind": "fixture_uuid_hit",
+      "schema": "public",
+      "table": "users",
+      "column": "id",
+      "column_type": "uuid",
+      "row_id": "19688698-2eb2-40bb-9fc5-37cebdc7e824",
+      "ids": [
+        "19688698-2eb2-40bb-9fc5-37cebdc7e824"
+      ],
+      "matched_fixture_uuid": "19688698-2eb2-40bb-9fc5-37cebdc7e824",
+      "points_to": "user:p24b_op_9bcmx5",
+      "reference_class": "SELF_ID",
+      "holder_is_fixture_row": true,
+      "interpretation": "Manifest kimliginin kendi birincil anahtari."
+    },
+    {
+      "id": "UUID-13",
+      "kind": "fixture_uuid_hit",
+      "schema": "public",
+      "table": "users",
+      "column": "id",
+      "column_type": "uuid",
+      "row_id": "33796a14-c173-45c7-a784-33e44e8996a0",
+      "ids": [
+        "33796a14-c173-45c7-a784-33e44e8996a0"
+      ],
+      "matched_fixture_uuid": "33796a14-c173-45c7-a784-33e44e8996a0",
+      "points_to": "user:p24b_mk_mujyy6",
+      "reference_class": "SELF_ID",
+      "holder_is_fixture_row": true,
+      "interpretation": "Manifest kimliginin kendi birincil anahtari."
+    },
+    {
+      "id": "UUID-14",
+      "kind": "fixture_uuid_hit",
+      "schema": "public",
+      "table": "users",
+      "column": "id",
+      "column_type": "uuid",
+      "row_id": "92cee4d3-c649-432d-b507-546d87936a76",
+      "ids": [
+        "92cee4d3-c649-432d-b507-546d87936a76"
+      ],
+      "matched_fixture_uuid": "92cee4d3-c649-432d-b507-546d87936a76",
+      "points_to": "user:p24b_fixture_a",
+      "reference_class": "SELF_ID",
+      "holder_is_fixture_row": true,
+      "interpretation": "Manifest kimliginin kendi birincil anahtari."
+    },
+    {
+      "id": "UUID-15",
+      "kind": "fixture_uuid_hit",
+      "schema": "public",
+      "table": "users",
+      "column": "id",
+      "column_type": "uuid",
+      "row_id": "a794163c-6ab5-4d00-a1b5-2b0c563be4e3",
+      "ids": [
+        "a794163c-6ab5-4d00-a1b5-2b0c563be4e3"
+      ],
+      "matched_fixture_uuid": "a794163c-6ab5-4d00-a1b5-2b0c563be4e3",
+      "points_to": "user:p24b_fixture_b",
+      "reference_class": "SELF_ID",
+      "holder_is_fixture_row": true,
+      "interpretation": "Manifest kimliginin kendi birincil anahtari."
+    },
+    {
+      "id": "UUID-16",
+      "kind": "polymorphic_dangling_reference",
+      "summary": "approvals.subject_id, var olmayan bir invoices satirina isaret ediyor (kirik polimorfik referans).",
+      "schema": "public",
+      "table": "approvals",
+      "column": "subject_id",
+      "column_type": "uuid",
+      "id_holder": "1fc76c28-9d71-4ce3-91a6-f1e9f94e5dd4",
+      "ids": [
+        "1fc76c28-9d71-4ce3-91a6-f1e9f94e5dd4",
+        "7a8f5051-1f58-4817-9ec8-a1dc49ef261f"
+      ],
+      "subject_table": "invoices",
+      "subject_id": "7a8f5051-1f58-4817-9ec8-a1dc49ef261f",
+      "target_row_exists": false,
+      "measured": "SELECT id FROM invoices WHERE id='7a8f5051-1f58-4817-9ec8-a1dc49ef261f' -> 0 satir",
+      "why_it_matters": "subject_id FK TASIMIYOR; bu yuzden hedefi mevcut olmamasina ragmen satir ayakta kalmis. FK tasimayan kimlik kolonlarinin taranmasinin degeri tam olarak budur.",
+      "deletion_impact": "YOK — hedef zaten mevcut degil, silme ek yetim uretmez."
+    },
+    {
+      "id": "UUID-17",
+      "kind": "fk_orphan_hazard_on_delete_set_null",
+      "summary": "payments once silinirse payment_instances.payment_id CASCADE degil SET NULL davranir; uc taksit sessizce yetim kalir.",
+      "schema": "public",
+      "table": "payment_instances",
+      "column": "payment_id",
+      "parent_table": "payments",
+      "on_delete_rule": "SET NULL",
+      "ids": [
+        "79eccf48-65ff-4427-af7b-9e332488c1bd",
+        "3ab000e6-5187-468d-bf2e-2af882a2a3a2",
+        "dfa79dc9-bc4d-4572-96b2-de56b0baceae"
+      ],
+      "parent_id": "7b300bfe-944f-468b-91fa-2de65b7cfee5",
+      "hazard": "Once payments silinirse uc payment_instances satiri SILINMEZ; payment_id NULL olur ve o andan itibaren UUID boyutuyla fixture olarak TESPIT EDILEMEZ hale gelir.",
+      "required_mitigation": "payment_instances (3 satir) MUTLAKA payments satirindan ONCE silinmelidir."
+    },
+    {
+      "id": "UUID-18",
+      "kind": "fk_delete_order_blocker",
+      "summary": "users satirlarina NO ACTION FK ile atif var; cocuk satirlar once silinmezse users DELETE hata verir.",
+      "schema": "public",
+      "blocking_edges": [
+        {
+          "child": "action_items.created_by",
+          "child_row": "639daf7e-9c3e-4244-9ebf-6bef37b57971",
+          "parent_user": "19688698-2eb2-40bb-9fc5-37cebdc7e824",
+          "on_delete": "NO ACTION"
+        },
+        {
+          "child": "approvals.requested_by",
+          "child_row": "1fc76c28-9d71-4ce3-91a6-f1e9f94e5dd4",
+          "parent_user": "33796a14-c173-45c7-a784-33e44e8996a0",
+          "on_delete": "NO ACTION"
+        }
+      ],
+      "ids": [
+        "19688698-2eb2-40bb-9fc5-37cebdc7e824",
+        "33796a14-c173-45c7-a784-33e44e8996a0",
+        "639daf7e-9c3e-4244-9ebf-6bef37b57971",
+        "1fc76c28-9d71-4ce3-91a6-f1e9f94e5dd4"
+      ],
+      "measured": "users tablosuna gelen 43 FK kisitinin TAMAMI NO ACTION; hicbiri CASCADE degil.",
+      "note": "p24b_fixture_a ve p24b_fixture_b hicbir cocuk satira sahip degildir; onlar engelsiz silinebilir.",
+      "required_mitigation": "action_items ve approvals, users satirlarindan ONCE silinmelidir."
+    },
+    {
+      "id": "UUID-19",
+      "kind": "audit_trail_uuid_coverage_zero",
+      "summary": "audit_logs, on kimligin HICBIRINE UUID ile atif yapmiyor — fixture olusumu UUID ile izlenebilir degil.",
+      "schema": "public",
+      "table": "audit_logs",
+      "columns_checked": [
+        "actor (uuid)",
+        "entity_id (uuid)",
+        "before_data (jsonb)",
+        "after_data (jsonb)",
+        "action (text)",
+        "entity_table (text)"
+      ],
+      "ids": [
+        "92cee4d3-c649-432d-b507-546d87936a76",
+        "a794163c-6ab5-4d00-a1b5-2b0c563be4e3",
+        "33796a14-c173-45c7-a784-33e44e8996a0",
+        "19688698-2eb2-40bb-9fc5-37cebdc7e824",
+        "7b300bfe-944f-468b-91fa-2de65b7cfee5",
+        "79eccf48-65ff-4427-af7b-9e332488c1bd",
+        "3ab000e6-5187-468d-bf2e-2af882a2a3a2",
+        "dfa79dc9-bc4d-4572-96b2-de56b0baceae",
+        "639daf7e-9c3e-4244-9ebf-6bef37b57971",
+        "1fc76c28-9d71-4ce3-91a6-f1e9f94e5dd4"
+      ],
+      "audit_rows_total": 289,
+      "audit_rows_in_context_window": 31,
+      "matches_against_ten_uuids": 0,
+      "measured": "audit_logs x 10 UUID capraz kontrolu (actor/entity_id esitlik + before_data/after_data ILIKE) -> 0 satir.",
+      "observation": "Baglam penceresindeki 31 audit satirinin entity_id alani TAMAMEN NULL ve actor alanlari fixture disi iki hesaba aittir (system, atilla).",
+      "why_it_matters": "Fixture satirlarinin silinmesi audit_logs tarafinda hicbir yetim referans BIRAKMAZ; ayni sebeple audit_logs fixture temizligi icin dogrulama kaynagi OLARAK KULLANILAMAZ."
+    },
+    {
+      "id": "UUID-20",
+      "kind": "legitimate_excluded_confirmed_by_uuid_dimension",
+      "summary": "atilla, on UUID kapanisinin tamamen disindadir; yalniz zaman boyutu onu yanlislikla kapsardi.",
+      "username": "atilla",
+      "user_id": "eb9c61e7-ef57-4dae-b180-0e9d5b7fe8ae",
+      "ids": [
+        "eb9c61e7-ef57-4dae-b180-0e9d5b7fe8ae"
+      ],
+      "created_at": "2026-08-25 10:17:33.822435+00",
+      "role": "admin",
+      "audit_rows_owned": 5,
+      "audit_rows_inside_candidate_window": 4,
+      "reachable_from_ten_uuids": false,
+      "measured": "664 kolonluk taramada atilla UUID'si on kimligin hicbir atfinda GORULMEDI; buna karsilik created_at ve 4 audit satiri ADAY penceresi (10:08-10:20) icindedir.",
+      "conclusion": "LEGITIMATE_EXCLUDED dogrulandi. UUID boyutu atilla'yi dogru sekilde DISARIDA birakir; yalniz zamana dayali bir silme onu ve 4 audit satirini YANLISLIKLA SILERDI. 'Zaman tek basina silme kriteri degildir' kurali bu bulguyla kanitlanmistir."
+    }
+  ],
+  "metadata": {
+    "dimension": "11-uuid",
+    "title": "P24B fixture on kimliginin tam UUID referans taramasi",
+    "database": "mas_radar_dev",
+    "mode": "READ_ONLY",
+    "read_only_enforcement": "Yalnizca SELECT calistirildi. DELETE/UPDATE/INSERT/TRUNCATE/ALTER/DROP/CREATE kullanilmadi; kalici veya gecici nesne olusturulmadi.",
+    "generated_at_utc": "2026-08-26T11:43:06.019Z",
+    "findingCount": 20,
+    "finding_kind_counts": {
+      "fixture_uuid_hit": 15,
+      "polymorphic_dangling_reference": 1,
+      "fk_orphan_hazard_on_delete_set_null": 1,
+      "fk_delete_order_blocker": 1,
+      "audit_trail_uuid_coverage_zero": 1,
+      "legitimate_excluded_confirmed_by_uuid_dimension": 1
+    },
+    "identity_resolution": {
+      "resolved_by_select": true,
+      "ten_uuids": [
+        {
+          "uuid": "92cee4d3-c649-432d-b507-546d87936a76",
+          "label": "user:p24b_fixture_a"
+        },
+        {
+          "uuid": "a794163c-6ab5-4d00-a1b5-2b0c563be4e3",
+          "label": "user:p24b_fixture_b"
+        },
+        {
+          "uuid": "33796a14-c173-45c7-a784-33e44e8996a0",
+          "label": "user:p24b_mk_mujyy6"
+        },
+        {
+          "uuid": "19688698-2eb2-40bb-9fc5-37cebdc7e824",
+          "label": "user:p24b_op_9bcmx5"
+        },
+        {
+          "uuid": "7b300bfe-944f-468b-91fa-2de65b7cfee5",
+          "label": "payment:P24B fixture"
+        },
+        {
+          "uuid": "79eccf48-65ff-4427-af7b-9e332488c1bd",
+          "label": "payment_instance:2026-07-15"
+        },
+        {
+          "uuid": "3ab000e6-5187-468d-bf2e-2af882a2a3a2",
+          "label": "payment_instance:2026-08-15"
+        },
+        {
+          "uuid": "dfa79dc9-bc4d-4572-96b2-de56b0baceae",
+          "label": "payment_instance:2026-09-15"
+        },
+        {
+          "uuid": "639daf7e-9c3e-4244-9ebf-6bef37b57971",
+          "label": "action_item:P24B mine"
+        },
+        {
+          "uuid": "1fc76c28-9d71-4ce3-91a6-f1e9f94e5dd4",
+          "label": "approval:pending"
+        }
+      ],
+      "users_resolved_from": "SELECT id FROM users WHERE username IN (4 fixture adi)",
+      "instances_resolved_from": "SELECT id FROM payment_instances WHERE payment_id='7b300bfe-944f-468b-91fa-2de65b7cfee5'"
+    },
+    "scan_method": {
+      "approach": "pg_catalog uzerinden her aday kolon icin alt sorgu uretildi (664 adet) ve tek UNION ALL sorgusu olarak bir kerede calistirildi.",
+      "uuid_columns": "esitlik (col = uuid)",
+      "text_columns": "ILIKE %uuid% — buyuk/kucuk harf duyarsiz, gomulu gecisleri de yakalar",
+      "jsonb_columns": "col::text ILIKE %uuid% — tum derinlikler",
+      "text_array_columns": "array_to_string(col, ',') ILIKE %uuid%",
+      "primary_key_capture": "Her isabet, satirin gercek birincil anahtariyla (pg_index ile cozuldu) raporlandi; PK yoksa ctid."
+    },
+    "columns_scanned": {
+      "total": 664,
+      "by_type": {
+        "uuid": 268,
+        "text": 369,
+        "jsonb": 19,
+        "text_array": 8
+      },
+      "tables_covered": 86,
+      "schemas_covered": [
+        "public (85 tablo)",
+        "auth (1 tablo)"
+      ],
+      "tables_with_zero_candidate_columns": 0,
+      "absent_types_verified_zero": {
+        "varchar": 0,
+        "character": 0,
+        "json": 0,
+        "uuid_array": 0,
+        "domain_types": 0
+      },
+      "note": "public semasinda information_schema 1916 kolon listeler; bunun 1104'u BASE TABLE kolonu, kalani view kolonudur. Base tablo kolonlarindan 663'u kimlik tasiyabilecek tipte olup TAMAMI tarandi; kalan 441 kolon numeric/date/timestamp/integer/boolean tipinde olup bir UUID'yi fiziksel olarak barindiramaz.",
+      "array_columns_enumerated": [
+        "ai_response_snapshots.safety_notes",
+        "ai_response_snapshots.source_fact_keys",
+        "ai_response_snapshots.source_hrefs",
+        "approval_rules.applies_to",
+        "control_alerts.rule_codes",
+        "documents.tags",
+        "optimization_recommendations.rationale_codes",
+        "payment_instances.risk_reasons"
+      ]
+    },
+    "closure_conclusion": {
+      "fixture_set_is_closed": true,
+      "external_rows_referencing_fixture": 0,
+      "self_ids": 10,
+      "inbound_references_within_fixture": 5,
+      "statement": "15 UUID isabetinin TAMAMI manifest icindeki satirlarda bulunmustur. Manifest disindaki HICBIR satir on kimlige atif yapmamaktadir. Fixture kumesi referans acisindan KAPALIDIR; silinmesi fixture disi hicbir satiri yetim birakmaz."
+    },
+    "safe_delete_order": [
+      "1) approvals (1 satir: 1fc76c28-9d71-4ce3-91a6-f1e9f94e5dd4)",
+      "2) action_items (1 satir: 639daf7e-9c3e-4244-9ebf-6bef37b57971)",
+      "3) payment_instances (3 satir) — payments'tan ONCE, aksi halde SET NULL ile yetim kalirlar",
+      "4) payments (1 satir: 7b300bfe-944f-468b-91fa-2de65b7cfee5)",
+      "5) users (4 satir) — en son, cunku gelen FK'lerin tamami NO ACTION"
+    ],
+    "legitimate_excluded": {
+      "username": "atilla",
+      "user_id": "eb9c61e7-ef57-4dae-b180-0e9d5b7fe8ae",
+      "verdict": "ASLA SILME HEDEFI DEGIL",
+      "uuid_dimension_result": "on kimlikle hicbir baglantisi yok"
+    },
+    "negative_results_measured": [
+      "audit_logs: on UUID icin 0 isabet (289 satirin tamami tarandi).",
+      "approval_steps: fixture approval icin 0 satir (approval_id kolonu tarandi).",
+      "control_alerts.action_item_id: fixture action_item icin 0 isabet.",
+      "8 text[] dizi kolonunun hicbirinde isabet yok.",
+      "19 jsonb kolonunun hicbirinde isabet yok.",
+      "auth.users: 0 satir, 0 isabet.",
+      "sessions.user_id: fixture kullanicilari icin 0 isabet."
+    ],
+    "limitations": [
+      "Tarama BASE TABLE kolonlariyla sinirlidir; view kolonlari turetilmis oldugu icin ayrica taranmamistir (fiziksel kalinti barindiramazlar).",
+      "UUID parcali/kisaltilmis (orn. ilk 8 karakter) veya tire-siz normalize edilmis bicimde saklanmis olsaydi ILIKE %tam-uuid% deseni bunu YAKALAMAZDI — bu bicimler OLCULMEDI.",
+      "bytea kolonlarda ikili gomulu UUID aramasi YAPILMADI — OLCULMEDI.",
+      "Silinmis satirlarin WAL/yedek dosyalarindaki izleri bu boyutun kapsami disindadir — OLCULMEDI.",
+      "Bu boyut yalnizca UUID kimligini olcer; kullanici adi/baslik gibi METIN izleri 10-metin.json, zaman izleri 12-zaman.json kapsamindadir."
+    ]
+  }
+}

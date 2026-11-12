@@ -1,0 +1,8 @@
+$ tsx scripts/ops/runtime-port-guard.ts --start && tsx scripts/prepare-runtime.ts && next start
+Ödeme penceresi 24 aylık ufukla hazır.
+   ▲ Next.js 15.5.20
+   - Local:        http://localhost:3000
+   - Network:      http://172.26.224.1:3000
+
+ ✓ Starting...
+ ✓ Ready in 34.8s

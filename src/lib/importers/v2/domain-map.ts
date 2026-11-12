@@ -14,7 +14,7 @@
 //
 //   domain          → doğrudan bir domain kolonuna yazılır
 //   parent          → üst kayda yazılır (cash_accounts, budgets, cashflow_months)
-//   ledger          → external_id; domain satırına değil, import_external_keys'e (0088)
+//   ledger          → external_id; domain satırına değil, import_external_keys'e (0088/0103)
 //   not_persisted   → veritabanında karşılığı YOK; ham hâliyle import_rows'ta kalır
 //
 // `not_persisted` bir eksiklik itirafıdır ve öyle olması gerekiyor. Alternatifi, kullanıcının
@@ -248,68 +248,62 @@ export const COLUMN_TARGETS: Readonly<Record<string, ColumnTarget>> = Object.fre
   "13_FX_POZISYONU.referans": d("fx_positions.source_note"),
   "13_FX_POZISYONU.notlar": no(NO_NOTES_COLUMN("fx_positions")),
 
-  /* ── 14_KAPASITE → production_parts ──────────────────────────────────────────────── */
-  // Parçaya ait olan parçada, atölyeye ait olan kapasite modelinde durur. Verim, çalışma
-  // günü ve vardiya bir PARÇANIN özelliği değil; `capacity_models` alanlarıdır ve o tabloyu
-  // bu sayfadan doldurmak, her parça satırının atölye modelini yeniden yazması olurdu.
+  /* ── 14_KAPASITE → production_parts (0103 ile tam alan kalıcılığı) ───────────────── */
   "14_KAPASITE.external_id": LEDGER,
   "14_KAPASITE.parca_kodu": d("production_parts.part_code"),
   "14_KAPASITE.parca_adi": d("production_parts.part_name"),
   "14_KAPASITE.adet": d("production_parts.quantity"),
   "14_KAPASITE.torna_dk": d("production_parts.torna_minutes"),
   "14_KAPASITE.freze_dk": d("production_parts.freze_minutes"),
-  "14_KAPASITE.diger_operasyon_dk": no(
-    "production_parts yalnız torna ve freze süresi taşıyor; diğer operasyonlar için kolon yok.",
-  ),
-  "14_KAPASITE.satis_fiyati": no("production_parts fiyat saklamıyor."),
-  "14_KAPASITE.para_birimi": no(NO_CURRENCY_COLUMN("production_parts")),
-  "14_KAPASITE.verim_orani": no("Verim atölyenin özelliği (capacity_models.efficiency_rate), parçanın değil."),
-  "14_KAPASITE.calisma_gunu": no("Çalışma günü atölyenin özelliği (capacity_models.work_days_per_month)."),
-  "14_KAPASITE.vardiya_sayisi": no("Vardiya atölyenin özelliği; production_parts'ta karşılığı yok."),
-  "14_KAPASITE.notlar": no(NO_NOTES_COLUMN("production_parts")),
+  "14_KAPASITE.diger_operasyon_dk": d("production_parts.other_operation_minutes"),
+  "14_KAPASITE.satis_fiyati": d("production_parts.unit_sale_price"),
+  "14_KAPASITE.para_birimi": d("production_parts.currency"),
+  "14_KAPASITE.verim_orani": d("production_parts.efficiency_rate"),
+  "14_KAPASITE.calisma_gunu": d("production_parts.work_days_per_month"),
+  "14_KAPASITE.vardiya_sayisi": d("production_parts.shift_count"),
+  "14_KAPASITE.notlar": d("production_parts.notes"),
 
-  /* ── 15_MALIYET → cost_models ────────────────────────────────────────────────────── */
-  // ═══ BU AİLE BİLEREK YAZILMIYOR: ŞEKİL UYUŞMAZLIĞI ═══
-  //
-  // Şablon UZUN biçimde: her satır bir maliyet kalemi ("yemek", "servis", "sigorta"…).
-  // `cost_models` ise GENİŞ biçimde: ayda TEK satır, her maliyet kalemi ayrı bir kolon
-  // (food_daily_cost, transport_staff_daily_cost, health_insurance_cost…).
-  //
-  // Uzunu genişe çevirmek, `maliyet_kategorisi` metnini kolon adına eşlemeyi gerektirir.
-  // O metin serbest: "Yemek", "yemek gideri", "YEMEK" hepsi gelir. Eşleme tahmini olurdu ve
-  // yanlış tahmin, maliyeti yanlış kolona yazıp başabaş fiyatını bozardı — sessizce.
-  //
-  // Doğru çözüm sabit kategori sözlüğü olan ayrı bir sayfa ya da uzun biçimi kabul eden bir
-  // maliyet tablosu. İkisi de tasarım işi; buraya sıkıştırılmaz.
+  /* ── 15_MALIYET → cost_model_items (0103 uzun biçim maliyet kalemleri + cost_models toplamı) ── */
   "15_MALIYET.external_id": LEDGER,
-  "15_MALIYET.senaryo": no("cost_models geniş biçimde; şablonun uzun biçimi eşlenemiyor (bkz. dosya notu)."),
-  "15_MALIYET.maliyet_kategorisi": no("Serbest metin kategori, cost_models'in sabit kolonlarına tahminle eşlenemez."),
-  "15_MALIYET.aciklama": no("cost_models satır açıklaması taşımıyor."),
-  "15_MALIYET.aylik_tutar": no("Tutarın hangi cost_models kolonuna gideceği kategoriye bağlı; eşleme tahmini olurdu."),
-  "15_MALIYET.para_birimi": no(NO_CURRENCY_COLUMN("cost_models")),
-  "15_MALIYET.personel_sayisi": no("Personel sayısı capacity_models.staff_count alanında."),
-  "15_MALIYET.aylik_calisma_saati": no("Aylık çalışma saati capacity_models.monthly_hours alanında."),
-  "15_MALIYET.verim_orani": no("Verim capacity_models.efficiency_rate alanında."),
-  "15_MALIYET.notlar": no(NO_NOTES_COLUMN("cost_models")),
+  "15_MALIYET.senaryo": d("cost_model_items.scenario_type"),
+  "15_MALIYET.maliyet_kategorisi": d("cost_model_items.cost_category"),
+  "15_MALIYET.aciklama": d("cost_model_items.description"),
+  "15_MALIYET.aylik_tutar": d("cost_model_items.monthly_amount"),
+  "15_MALIYET.para_birimi": d("cost_model_items.currency"),
+  "15_MALIYET.personel_sayisi": d("cost_model_items.staff_count"),
+  "15_MALIYET.aylik_calisma_saati": d("cost_model_items.monthly_work_hours"),
+  "15_MALIYET.verim_orani": d("cost_model_items.efficiency_rate"),
+  "15_MALIYET.notlar": d("cost_model_items.notes"),
 
-  /* ── 16_MAKINE_ROI → machine_assets ──────────────────────────────────────────────── */
-  // Makinenin KİMLİĞİ yazılır; getirisi yazılmaz. `machine_roi_snapshots` YILLIK anlık
-  // görüntü tutuyor (snapshot_year, revenue, cost, tax, net_after_tax); şablon ise AYLIK
-  // değerler soruyor. Aylığı yıllığa çevirmek 12 ile çarpmak demekti — bu, ölçülmemiş bir
-  // sayı uydurmaktır.
+  /* ── 16_MAKINE_ROI → machine_assets (0103 ile tam alan kalıcılığı) ───────────────── */
   "16_MAKINE_ROI.external_id": LEDGER,
   "16_MAKINE_ROI.makine_adi": d("machine_assets.name"),
-  "16_MAKINE_ROI.makine_kodu": no("machine_assets tablosunda kod kolonu yok."),
-  "16_MAKINE_ROI.alis_tarihi": no("machine_assets alış tarihi saklamıyor."),
+  "16_MAKINE_ROI.makine_kodu": d("machine_assets.machine_code"),
+  "16_MAKINE_ROI.alis_tarihi": d("machine_assets.purchase_date"),
   "16_MAKINE_ROI.alis_bedeli": d("machine_assets.purchase_cost"),
-  "16_MAKINE_ROI.para_birimi": no(NO_CURRENCY_COLUMN("machine_assets")),
-  "16_MAKINE_ROI.aylik_gelir": no("machine_roi_snapshots YILLIK tutuyor; aylıktan yıllığa çevirmek sayı uydurmak olur."),
-  "16_MAKINE_ROI.aylik_operasyon_maliyeti": no("machine_roi_snapshots YILLIK tutuyor; aylık karşılığı yok."),
-  "16_MAKINE_ROI.yillik_bakim_maliyeti": no("machine_roi_snapshots ayrı bakım kalemi taşımıyor."),
-  "16_MAKINE_ROI.kullanim_orani": no("machine_assets kullanım oranı saklamıyor."),
-  "16_MAKINE_ROI.faydali_omur_ay": no("machine_assets faydalı ömür saklamıyor; amortisman modeli henüz yok."),
-  "16_MAKINE_ROI.aktif": no("machine_assets aktiflik kolonu taşımıyor."),
+  "16_MAKINE_ROI.para_birimi": d("machine_assets.currency"),
+  "16_MAKINE_ROI.aylik_gelir": d("machine_assets.monthly_revenue"),
+  "16_MAKINE_ROI.aylik_operasyon_maliyeti": d("machine_assets.monthly_operating_cost"),
+  "16_MAKINE_ROI.yillik_bakim_maliyeti": d("machine_assets.annual_maintenance_cost"),
+  "16_MAKINE_ROI.kullanim_orani": d("machine_assets.utilization_rate"),
+  "16_MAKINE_ROI.faydali_omur_ay": d("machine_assets.useful_life_months"),
+  "16_MAKINE_ROI.aktif": d("machine_assets.is_active"),
   "16_MAKINE_ROI.notlar": d("machine_assets.notes"),
+
+  /* ── 17_KREDI_LIMITLERI → credit_facilities (0103 rotatif limit ve kullanım) ─────── */
+  "17_KREDI_LIMITLERI.external_id": LEDGER,
+  "17_KREDI_LIMITLERI.limit_adi": d("credit_facilities.name"),
+  "17_KREDI_LIMITLERI.banka": d("credit_facilities.lender_party_id"),
+  "17_KREDI_LIMITLERI.limit_tipi": d("credit_facilities.facility_type"),
+  "17_KREDI_LIMITLERI.toplam_limit": d("credit_facilities.limit_amount"),
+  "17_KREDI_LIMITLERI.kullanilan_tutar": d("credit_facilities.drawn_amount"),
+  "17_KREDI_LIMITLERI.para_birimi": d("credit_facilities.currency"),
+  "17_KREDI_LIMITLERI.faiz_orani": d("credit_facilities.interest_rate"),
+  "17_KREDI_LIMITLERI.komisyon_orani": d("credit_facilities.commission_rate"),
+  "17_KREDI_LIMITLERI.baslangic_tarihi": d("credit_facilities.start_date"),
+  "17_KREDI_LIMITLERI.bitis_tarihi": d("credit_facilities.expiry_date"),
+  "17_KREDI_LIMITLERI.durum": d("credit_facilities.status"),
+  "17_KREDI_LIMITLERI.notlar": d("credit_facilities.notes"),
 });
 
 /* ── Erişim ve bütünlük ──────────────────────────────────────────────────────────────── */

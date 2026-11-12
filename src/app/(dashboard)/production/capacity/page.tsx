@@ -3,14 +3,22 @@ import { Badge } from "@/components/ui/badge";
 import { Panel, fmtTL } from "@/components/ui/panel";
 import { KpiCard, PageHeader } from "@/components/ui/shell";
 import { capacityModel } from "@/lib/analytics/models";
+import { requireRouteAccess } from "@/lib/authz/route-guard";
 import { getPool } from "@/lib/db";
 import { loadActualMonthlyIncome, loadCapacityDemand, loadCapacityModels, loadMachineMinuteAllocations } from "@/lib/production/engine";
 import { istanbulDateISO } from "@/lib/reports/rules";
 
 export const dynamic = "force-dynamic";
 export default async function CapacityPage() {
+  const denied = await requireRouteAccess("/production/capacity");
+  if (denied) return denied;
   const pool = getPool();
-  const [models, demand, allocations, actualIncome] = await Promise.all([loadCapacityModels(pool), loadCapacityDemand(pool), loadMachineMinuteAllocations(pool), loadActualMonthlyIncome(pool)]);
+  const [models, demand, allocations, actualIncome] = await Promise.all([
+    loadCapacityModels(pool),
+    loadCapacityDemand(pool),
+    loadMachineMinuteAllocations(pool),
+    loadActualMonthlyIncome(pool),
+  ]);
   const available = models.reduce((sum, model) => sum + (model.monthlyMinutes ?? 0), 0);
 
   // "null asla 0 sayılmaz": a model whose rate never resolved has no theoretical revenue,

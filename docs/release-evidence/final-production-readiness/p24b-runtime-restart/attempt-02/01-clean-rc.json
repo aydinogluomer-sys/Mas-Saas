@@ -1,0 +1,31 @@
+{
+  "artifactKind": "mas-p24b-clean-rc-v2",
+  "measuredAtUtc": "2026-09-03T09:38:58.045Z",
+  "gate": "SECTION 6-7",
+  "verdict": "PASS",
+  "rcWorktree": {
+    "path": "C:\\Users\\Trade Bilisim\\Mas-Saas-RC-c71366a",
+    "head": "c71366a775be079e61d9f842a8659cbc2caa9499",
+    "detached": true,
+    "gitStatusPorcelainLines": 0,
+    "trackedDiffVsHead": 0
+  },
+  "remoteAcceptedSha": "c71366a775be079e61d9f842a8659cbc2caa9499",
+  "remoteShaMatch": true,
+  "mainWorktreeTouched": false,
+  "qualityResultReuse": {
+    "rule": "SECTION 7 — RC ayni SHA'da ve temizse yeniden calistirmak zorunlu degil",
+    "headUnchanged": true,
+    "statusStillEmpty": true,
+    "envFileSha256Prefix": "2d71fcf8148b9718",
+    "envUnchangedSinceAttempt01": true,
+    "reusedResults": {
+      "typecheck": "PASS",
+      "lint": "PASS",
+      "vitest": "PASS (66 dosya / 1428 test)",
+      "build": "PASS"
+    },
+    "buildId": "tb2-ettRZ5LMTU5279w98",
+    "note": "Attempt-01'de ayni worktree, ayni SHA, ayni env dosyasi uzerinde olculdu. Hicbir env/code/worktree degisimi yok."
+  }
+}

@@ -1,4 +1,4 @@
-// Faz 34 — the analysis engine: reads existing read-models, runs the pure analyses, stamps them.
+// Faz 34 & Faz 46 (C3) — the analysis engine: reads existing read-models, runs the pure analyses, stamps them.
 //
 // ═══ THIS MODULE RECOMPUTES NOTHING ═══
 //
@@ -19,10 +19,13 @@ import { istanbulDateISO } from "@/lib/reports/rules";
 import {
   ageingDistribution, cashBridge, paretoConcentration, varianceDecomposition,
   workingCapitalDecomposition,
-  type AgeingRow, type AnalysisResult, type BridgeStep, type ParetoRow, type ParetoSummary,
-  type VarianceRow, type WorkingCapitalComponent,
+  type AgeingRow, type AnalysisResult, type BridgeStep, type CashBridgeReconciliationStatus,
+  type ParetoRow, type ParetoSummary, type VarianceRow, type WorkingCapitalComponent,
 } from "./analyses";
-import { periodOverPeriod, rollingWindow, type PeriodChange, type PeriodComparison, type RollingPoint, type RollingWindow } from "./periods";
+import {
+  periodOverPeriod, rollingWindow,
+  type DatedValue, type PeriodChange, type PeriodComparison, type RollingPoint, type RollingWindow,
+} from "./periods";
 import { buildStamp, type ReproducibilityStamp } from "./reproducibility";
 
 /** Every analysis returns its result together with the stamp that makes it reproducible. */
@@ -110,7 +113,12 @@ export async function runWorkingCapitalDecomposition(
 
 export async function runCashBridge(
   pool: Pool, fromMonth: string, toMonth: string, asOf = istanbulDateISO(),
-): Promise<StampedAnalysis<BridgeStep> & { computedEnd: number | null; reconciles: boolean | null; difference: number | null }> {
+): Promise<StampedAnalysis<BridgeStep> & {
+  computedEnd: number | null;
+  reconciles: boolean | null;
+  difference: number | null;
+  reconciliationStatus: CashBridgeReconciliationStatus;
+}> {
   const rows = await pool.query(
     `select to_char(month_start,'YYYY-MM') as month, opening_balance, closing_balance,
             projected_income, projected_expense
@@ -149,13 +157,20 @@ export async function runCashBridge(
 /* ── 5. ageing distribution ─────────────────────────────────────────────────────────────── */
 
 export async function runAgeingDistribution(
-  pool: Pool, direction: "sales" | "purchase" = "sales", asOf = istanbulDateISO(),
+  pool: Pool,
+  direction: "sales" | "purchase" = "sales",
+  asOf = istanbulDateISO(),
+  currency = "TRY",
 ): Promise<StampedAnalysis<AgeingRow>> {
+  // Faz 46 (C3): Filter strictly by currency (default 'TRY') so USD/EUR invoices are never
+  // summed 1:1 with TRY receivables/payables.
   const rows = await pool.query(
     `select to_char(due_date,'YYYY-MM-DD') as due_date,
             (gross_amount - coalesce(allocated_amount, 0)) as remaining
        from public.invoices
-      where direction = $1 and status in ('open', 'partial')`, [direction]);
+      where direction = $1 and status in ('open', 'partial') and currency = $2`,
+    [direction, currency],
+  );
   const result = ageingDistribution(rows.rows.map((r) => ({
     dueDate: (r.due_date as string | null) ?? null,
     amount: moneyOrNull(r.remaining),
@@ -199,39 +214,63 @@ export async function runPeriodOverPeriod(
 }
 
 /**
- * Rolling window over a DAILY series.
+ * Rolling window over a DAILY calendar series anchored on `asOf`.
  *
- * Payment instances rather than cashflow_months, because a 7-day rolling window over monthly rows
- * would be arithmetic with no meaning — the window has to be finer than the grain.
+ * Faz 46 (C3):
+ * - Applies `$1::date` (`asOf`) instead of `current_date` so historical reproducibility holds.
+ * - Any day containing at least one `amount IS NULL` row (or only non-TRY rows) stays `null`
+ *   (unknown, NEVER treated as 0).
+ * - Calendar days between the earliest scheduled day and `asOf` that have zero scheduled rows
+ *   carry explicit `0`, so a 7-day rolling window always covers 7 true calendar days up to `asOf`.
  */
 export async function runRollingTrend(
   pool: Pool, window: RollingWindow, asOf = istanbulDateISO(),
 ): Promise<StampedAnalysis<RollingPoint>> {
   const rows = await pool.query(
-    // PHASE 2.2 (#12): gunluk toplam yalniz TRY; TRY-disi satir bilinmeyen gibi ayri sayilir.
     `select to_char(due_date,'YYYY-MM-DD') as day,
             sum(amount) filter (where amount is not null and currency = 'TRY') as known_amount,
             count(*) filter (where amount is null)::int as unknown_rows,
-            count(*) filter (where currency <> 'TRY')::int as foreign_rows
+            count(*) filter (where currency is distinct from 'TRY')::int as foreign_rows
        from public.payment_instances
-      where due_date >= (current_date - interval '400 days') and due_date <= current_date
+      where due_date >= ($1::date - interval '400 days') and due_date <= $1::date
         and status in ('unpaid','partial','paid','late')
-      group by due_date order by due_date`);
-  const series = rows.rows.map((r) => ({
-    key: r.day as string,
-    // A day whose rows all had unknown amounts is UNKNOWN, not zero. Yalniz TRY-disi satirlari
-    // olan gun de bilinmeyendir: TRY toplami yok, 0 degil.
-    value: (Number(r.unknown_rows) > 0 || Number(r.foreign_rows) > 0) && r.known_amount == null ? null : moneyOrNull(r.known_amount) ?? 0,
-  }));
+      group by due_date order by due_date`,
+    [asOf],
+  );
+
+  const byDay = new Map<string, number | null>();
+  for (const r of rows.rows) {
+    const unknownRows = Number(r.unknown_rows);
+    const foreignRows = Number(r.foreign_rows);
+    const value =
+      unknownRows > 0 || (foreignRows > 0 && r.known_amount == null)
+        ? null
+        : (moneyOrNull(r.known_amount) ?? 0);
+    byDay.set(r.day as string, value);
+  }
+
+  const series: DatedValue[] = [];
+  if (rows.rows.length > 0) {
+    const startMs = Date.parse(`${rows.rows[0].day as string}T00:00:00Z`);
+    const endMs = Date.parse(`${asOf}T00:00:00Z`);
+    for (let ms = startMs; ms <= endMs; ms += 86400000) {
+      const dayKey = new Date(ms).toISOString().slice(0, 10);
+      series.push({
+        key: dayKey,
+        value: byDay.has(dayKey) ? (byDay.get(dayKey) ?? null) : 0,
+      });
+    }
+  }
+
   const points = rollingWindow(series, window, "sum");
   const result: AnalysisResult<RollingPoint> = {
     analysisId: "rolling_trend",
     rows: points,
-    unknownCount: points.reduce((s, p) => s + p.unknownCount, 0),
+    unknownCount: series.filter((s) => s.value === null).length,
     unmeasurableReason: points.length === 0 ? "Günlük seri boş" : null,
   };
   const stamp = buildStamp("rolling_trend", {
-    rowCounts: { payment_instances_days: series.length }, asOf, sourceCutoff: null,
+    rowCounts: { payment_instances_days: rows.rowCount ?? 0 }, asOf, sourceCutoff: null,
   }, nowISO());
   return { result, stamp };
 }

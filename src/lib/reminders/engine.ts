@@ -1,10 +1,4 @@
-// Phase 6B reminder engine. Two deterministic steps, both financial-record read-only:
-//   scheduleReminders — compute eligible (rule × instance) pairs for today and insert
-//     reminder_deliveries as 'pending'. Duplicate prevention is DB-enforced
-//     (unique(reminder_id, entity_table, entity_id, scheduled_for)) → re-run is idempotent.
-//   dispatchPending — send each pending delivery via the injected Transport, then LOG
-//     the outcome on the delivery row (status sent/failed, sent_at, error, payload).
-// Reminders never mutate payments/instances/checks/loans. Telegram token stays server-side.
+// Phase 6B, Faz 25 & Faz 40 (A2) reminder engine.
 
 import type { Pool } from "pg";
 import { moneyOrNull } from "@/lib/money";
@@ -14,23 +8,25 @@ import {
   type ReminderRule,
   type ReminderTarget,
 } from "./rules";
-import type { Transport } from "./transport";
+import {
+  emailTransport,
+  redactBotToken,
+  transportFor,
+  type DeliveryResult,
+  type Transport,
+} from "./transport";
 
 export async function loadActiveRules(pool: Pool): Promise<ReminderRule[]> {
   const r = await pool.query(
     `select id, name, target_kind, offset_days, channel, min_amount, is_active
      from public.reminders where is_active = true`,
   );
-  // minAmount is an eligibility THRESHOLD compared against a target's amount in
-  // eligibleDeliveries — both sides now decode through the same helper, so a reminder can no
-  // longer fire or stay silent because the two values were rounded by different rules.
   return r.rows.map((x) => ({
     id: x.id, name: x.name, targetKind: x.target_kind, offsetDays: x.offset_days,
     channel: x.channel, minAmount: moneyOrNull(x.min_amount), isActive: x.is_active,
   }));
 }
 
-/** payment_instance targets in a window around today (covers offsets 7..-1). */
 export async function loadPaymentTargets(pool: Pool, todayISO: string): Promise<ReminderTarget[]> {
   const r = await pool.query(
     `select i.id, coalesce(p.name,'(silinmiş kalem)') as name,
@@ -51,15 +47,6 @@ export async function loadPaymentTargets(pool: Pool, todayISO: string): Promise<
   }));
 }
 
-
-/**
- * invoice targets — Faz 25. Open sales receivables in the same window.
- *
- * Sales only: a purchase invoice is our own obligation and is already reminded about through its
- * payment_instance, so including it would produce two reminders for one payment. Draft invoices
- * are excluded by the status filter — chasing a customer for an unissued document is chasing
- * them for nothing.
- */
 export async function loadInvoiceTargets(pool: Pool, todayISO: string): Promise<ReminderTarget[]> {
   const r = await pool.query(
     `select v.id, coalesce(pa.name, v.invoice_no, '(cari yok)') as name,
@@ -80,13 +67,6 @@ export async function loadInvoiceTargets(pool: Pool, todayISO: string): Promise<
   }));
 }
 
-/**
- * promise_to_pay targets — Faz 25.
- *
- * The point of reminding on a promise is that a PERSON notices it before the detection job turns
- * it into a statistic. The window therefore reaches one day past the promised date, which is the
- * first day `detectBrokenPromises` would act on it.
- */
 export async function loadPromiseTargets(pool: Pool, todayISO: string): Promise<ReminderTarget[]> {
   const r = await pool.query(
     `select p.id, pa.name as name,
@@ -112,13 +92,6 @@ export interface ScheduleResult {
 }
 
 export async function scheduleReminders(pool: Pool, todayISO = istanbulDateISO()): Promise<ScheduleResult> {
-  // Faz 25 widened this from one loader to three.
-  //
-  // NOTE ON A PRE-EXISTING GAP, left as it was found rather than quietly half-fixed: the
-  // `check` and `loan_installment` rule kinds have been allowed by the CHECK since 0006 but have
-  // never had a target loader, so rules of those kinds have always produced zero deliveries.
-  // Faz 25 is the collections phase and adds the two kinds collections needs; wiring checks and
-  // loan installments is a financing concern and belongs with that work, not smuggled in here.
   const [rules, paymentTargets, invoiceTargets, promiseTargets] = await Promise.all([
     loadActiveRules(pool),
     loadPaymentTargets(pool, todayISO),
@@ -155,27 +128,51 @@ export interface DispatchResult {
   attempted: number;
   sent: number;
   failed: number;
+  skipped: number;
 }
 
-/** Sends pending deliveries scheduled on/before today. Logs every attempt on the row. */
+export type TransportOrResolver = Transport | ((channel: Transport["channel"]) => Transport);
+
+/**
+ * Sends pending deliveries scheduled on/before today.
+ *
+ * Faz 40 (A2): Joins `public.reminders` to inspect each rule's `channel`. Email deliveries NEVER
+ * leak onto a Telegram transport; if `channel === "email"` and the email endpoint is unconfigured,
+ * the delivery row is recorded as `status='skipped'`, `error='skipped_unconfigured'`.
+ */
 export async function dispatchPending(
   pool: Pool,
-  transport: Transport,
+  transportOrResolver: TransportOrResolver = transportFor,
   todayISO = istanbulDateISO(),
 ): Promise<DispatchResult> {
-  const pending = await pool.query(
-    `select id, payload from public.reminder_deliveries
-     where status='pending' and scheduled_for <= $1 order by scheduled_for`,
+  const pending = await pool.query<{
+    id: string;
+    payload: { message?: string } | null;
+    channel: Transport["channel"];
+  }>(
+    `select d.id, d.payload, r.channel
+     from public.reminder_deliveries d
+     join public.reminders r on r.id = d.reminder_id
+     where d.status='pending' and d.scheduled_for <= $1
+     order by d.scheduled_for`,
     [todayISO],
   );
-  let sent = 0, failed = 0;
+  let sent = 0, failed = 0, skipped = 0;
   for (const row of pending.rows) {
+    const channel: Transport["channel"] = row.channel === "email" ? "email" : "telegram";
+    const activeTransport: Transport =
+      typeof transportOrResolver === "function"
+        ? transportOrResolver(channel)
+        : channel === "email" && transportOrResolver.channel !== "email"
+          ? emailTransport()
+          : transportOrResolver;
+
     const message: string = row.payload?.message ?? "";
-    let result;
+    let result: DeliveryResult;
     try {
-      result = await transport.send(message);
+      result = await activeTransport.send(message);
     } catch (e) {
-      result = { ok: false, error: `transport threw: ${(e as Error).message}` };
+      result = { ok: false, error: `transport threw: ${redactBotToken((e as Error).message)}` };
     }
     if (result.ok) {
       await pool.query(
@@ -183,16 +180,21 @@ export async function dispatchPending(
         [row.id],
       );
       sent++;
+    } else if (result.skippedUnconfigured) {
+      await pool.query(
+        `update public.reminder_deliveries set status='skipped', error='skipped_unconfigured' where id=$1`,
+        [row.id],
+      );
+      skipped++;
     } else {
-      // failed delivery is LOGGED, never thrown — stays retryable-visible
       await pool.query(
         `update public.reminder_deliveries set status='failed', error=$2 where id=$1`,
-        [row.id, result.error ?? "bilinmeyen hata"],
+        [row.id, redactBotToken(result.error ?? "bilinmeyen hata")],
       );
       failed++;
     }
   }
-  return { attempted: pending.rows.length, sent, failed };
+  return { attempted: pending.rows.length, sent, failed, skipped };
 }
 
 /* ── read-side for /reminders ── */

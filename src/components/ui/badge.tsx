@@ -54,6 +54,14 @@ export const STATUS_TONE: Record<string, Tone> = {
   open: "amber", accepted: "green", rejected: "neutral", resolved: "blue",
   // Financing lifecycle (checks + loan_installments). Without these every settlement
   // status rendered "neutral", so a bounced check looked exactly like a planned one.
-  planned: "neutral", cleared: "green", bounced: "red",
+  planned: "neutral",
+  in_portfolio: "blue",
+  endorsed_to_vendor: "violet",
+  in_bank_collection: "blue",
+  in_bank_collateral: "amber",
+  issued_to_vendor: "amber",
+  cleared: "green",
+  bounced: "red",
+  returned: "neutral",
   paid: "green", late: "amber", cancelled: "neutral", unknown: "amber",
 };

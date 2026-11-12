@@ -1,5 +1,7 @@
 import type { Pool } from "pg";
 import { loadDecisionFacts, type DecisionFact } from "@/lib/facts/engine";
+import { scopeFactsForRole } from "@/lib/assistant/visibility";
+import type { AppRole } from "@/lib/authz/matrix";
 import { istanbulDateISO } from "@/lib/reports/rules";
 import { audit } from "@/lib/audit";
 import {
@@ -86,13 +88,29 @@ export interface AskAnswerResult {
   safetyNotes: string[];
 }
 
+export interface AnswerQuestionInput {
+  question: string;
+  reportId?: string | null;
+  forceDeterministic?: boolean;
+  /** Faz 40 (A2 / B2-07): pre-scoped visible facts so withheld facts never enter deterministic text or LLM prompts. */
+  preScopedFacts?: readonly DecisionFact[];
+  /** Faz 40 (A2 / B2-07): optional caller role used to filter `loadDecisionFacts` when `preScopedFacts` is omitted. */
+  role?: AppRole;
+}
+
 export async function answerQuestion(
   pool: Pool,
-  input: { question: string; reportId?: string | null; forceDeterministic?: boolean },
+  input: AnswerQuestionInput,
   actorId: string,
 ): Promise<AskAnswerResult> {
   const question = sanitizeQuestion(input.question);
-  const facts = await loadDecisionFacts(pool, istanbulDateISO());
+  let facts: DecisionFact[];
+  if (input.preScopedFacts) {
+    facts = [...input.preScopedFacts];
+  } else {
+    const loaded = await loadDecisionFacts(pool, istanbulDateISO());
+    facts = input.role ? scopeFactsForRole(input.role, loaded).visible : loaded;
+  }
   const selectedFacts = selectFactsForQuestion(question, facts);
   const draft = buildDeterministicAnswer(question, facts);
   const safetyNotes = [...draft.safetyNotes];
@@ -150,7 +168,12 @@ export async function answerQuestion(
   }
 }
 
-export async function answerReportQuestion(pool: Pool, reportId: string, actorId: string): Promise<AskAnswerResult> {
+export async function answerReportQuestion(
+  pool: Pool,
+  reportId: string,
+  actorId: string,
+  role?: AppRole,
+): Promise<AskAnswerResult> {
   const report = await pool.query<{ report_type: string; body_md: string; meta: Record<string, unknown> | null }>(
     `select report_type, body_md, meta from public.reports where id=$1`,
     [reportId],
@@ -163,6 +186,7 @@ export async function answerReportQuestion(pool: Pool, reportId: string, actorId
   return answerQuestion(pool, {
     question: `Rapor yorumu (${r?.report_type ?? "rapor"}): ${prompt}`,
     reportId,
+    role,
   }, actorId);
 }
 

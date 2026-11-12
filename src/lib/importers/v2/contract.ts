@@ -137,7 +137,11 @@ export const FX_CURRENCIES = ["USD", "EUR", "GBP"] as const;
 export const FX_POSITION_TYPES = [
   "bank_balance", "receivable", "payable", "loan", "facility", "forward", "other",
 ] as const;
-export const COST_SCENARIOS = ["normal", "overtime"] as const;
+export const COST_SCENARIOS = ["normal", "overtime", "custom"] as const;
+export const FACILITY_TYPES = [
+  "revolving", "overdraft", "spot", "guarantee_letter", "letter_of_credit", "other",
+] as const;
+export const FACILITY_STATUS = ["active", "suspended", "expired", "closed"] as const;
 
 // `public.budget_lines.direction` gelir/gider der, giriş/çıkış demez. Bütçe bir nakit
 // hareketi değil bir plan kalemidir; ayrı bir sözlük bu yüzden var.
@@ -623,7 +627,7 @@ export const SHEET_KAPASITE: SheetSpec = {
 export const SHEET_MALIYET: SheetSpec = {
   name: "15_MALIYET",
   family: "cost",
-  domainTable: "cost_models",
+  domainTable: "cost_model_items",
   title: "Sabit maliyet kalemleri",
   purpose: "Başabaş TL/dakika ve normal/mesaili senaryo karşılaştırması buradan hesaplanır.",
   columns: [
@@ -670,6 +674,39 @@ export const SHEET_MAKINE_ROI: SheetSpec = {
   ],
 };
 
+export const SHEET_KREDI_LIMITLERI: SheetSpec = {
+  name: "17_KREDI_LIMITLERI",
+  family: "credit_facilities",
+  domainTable: "credit_facilities",
+  title: "Rotatif kredi limitleri",
+  purpose: "Rotatif kredi (BCH/KMH/spot) tavanları, kullanılan bakiye ve kullanılabilir likidite tamponu buradan izlenir.",
+  columns: [
+    externalId("Kredi limitinin sizdeki kodu."),
+    { key: "limit_adi", header: "Limit Adı", type: "text", required: true,
+      aliases: ["limit_adi", "ad", "name"], note: "ZORUNLU. Örn. 'Vakıfbank Rotatif BCH'.", width: 26 },
+    { key: "banka", header: "Banka", type: "text", required: false,
+      aliases: ["banka", "bank", "kurum"], note: "Limiti tanımlayan banka/kurum.", width: 20 },
+    { key: "limit_tipi", header: "Limit Tipi", type: "enum", required: true,
+      enumValues: FACILITY_TYPES, aliases: ["limit_tipi", "tip", "facility_type"],
+      note: "ZORUNLU. revolving / overdraft / spot / guarantee_letter / letter_of_credit / other.", width: 18 },
+    amount("toplam_limit", "Toplam Limit", "Bankanın tanımladığı toplam kredi tavanı.", true),
+    amount("kullanilan_tutar", "Kullanılan Tutar", "Halihazırda kullanılmış bakiye. Boş bırakılırsa bakiye değiştirilmez (yeni limitte 0 başlar)."),
+    currency(),
+    { key: "faiz_orani", header: "Faiz Oranı (%)", type: "percent", required: false,
+      aliases: ["faiz_orani", "faiz", "interest_rate"], note: "Yıllık faiz oranı (%). Boş olabilir.", width: 16 },
+    { key: "komisyon_orani", header: "Komisyon Oranı (%)", type: "percent", required: false,
+      aliases: ["komisyon_orani", "komisyon", "commission_rate"], note: "Tahsis/kullanım komisyonu (%). Boş olabilir.", width: 18 },
+    { key: "baslangic_tarihi", header: "Başlangıç Tarihi", type: "date", required: false,
+      aliases: ["baslangic_tarihi", "start_date"], note: "YYYY-AA-GG. Boş olabilir.", width: 16 },
+    { key: "bitis_tarihi", header: "Bitiş Tarihi", type: "date", required: false,
+      aliases: ["bitis_tarihi", "vade_tarihi", "expiry_date"], note: "YYYY-AA-GG. Başlangıç tarihinden önce olamaz.", width: 16 },
+    { key: "durum", header: "Durum", type: "enum", required: false,
+      enumValues: FACILITY_STATUS, aliases: ["durum", "status"],
+      note: "active / suspended / expired / closed. Boşsa 'active'.", width: 14 },
+    notes,
+  ],
+};
+
 /** Şablondaki veri sayfaları — sıra şablonda görünen sıradır. */
 export const DATA_SHEETS: readonly SheetSpec[] = [
   SHEET_ODEMELER,
@@ -688,6 +725,7 @@ export const DATA_SHEETS: readonly SheetSpec[] = [
   SHEET_KAPASITE,
   SHEET_MALIYET,
   SHEET_MAKINE_ROI,
+  SHEET_KREDI_LIMITLERI,
 ] as const;
 
 export const README_SHEET = "00_README";

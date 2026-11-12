@@ -14,6 +14,35 @@ import {
 import { loadCapacityModels } from "@/lib/production/engine";
 import { moneyOrNull } from "@/lib/money";
 import { audit } from "@/lib/audit";
+import { DomainError } from "@/lib/domain-error";
+import { safeRedirectPath } from "@/lib/security/redirect";
+
+/**
+ * Faz 41 (B3-04): Exact mirror of the SQL `source_cells.normalized_value` parser used in
+ * `cashflowReconciliation`. Prevents the legacy `100x` decimal-stripping bug (`"123456.78" -> 12345678`)
+ * while still supporting Turkish thousands-dot + comma-decimal strings (`"123.456,78" -> "123456.78"`)
+ * and returning `null` for formula errors or non-numeric cells.
+ */
+export function parseNormalizedSourceCellNumeric(
+  normalizedValue: string | null | undefined,
+  inferredType?: string | null,
+): string | null {
+  if (normalizedValue === null || normalizedValue === undefined || inferredType === "error") {
+    return null;
+  }
+  const s = normalizedValue.trim();
+  if (s === "") return null;
+  if (/^-?[0-9]+(\.[0-9]+)?$/.test(s)) {
+    return s;
+  }
+  if (/^-?[0-9]{1,3}(\.[0-9]{3})*(,[0-9]+)?$/.test(s)) {
+    return s.replaceAll(".", "").replace(",", ".");
+  }
+  if (/^-?[0-9]+,[0-9]+$/.test(s)) {
+    return s.replace(",", ".");
+  }
+  return null;
+}
 
 export interface ActionItem {
   id: string;
@@ -164,33 +193,53 @@ export async function loadDataQualityCenter(pool: Pool | PoolClient) {
       opening_diff: number | null;
       closing_diff: number | null;
     }>(
-      // Faz 17: the Turkish-formatted source cell is parsed to `numeric`, not `float8`, and the
-      // app-vs-source difference is therefore computed exactly by Postgres. This query decides
-      // whether an imported month MATCHES its source workbook cell, so a drift of a few ulps
-      // used to be indistinguishable from a genuine 0.01 TL mapping error.
-      `select to_char(cm.month_start,'YYYY-MM-DD') as month_start,
-              cm.opening_balance as app_opening,
+      // Faz 17 / Faz 41 (B3-04): Parse `source_cells.normalized_value` without 100x decimal stripping!
+      // Standard JS decimal (`"123456.78"`) casts directly to `numeric`; Turkish formatted strings
+      // (`"123.456,78"` or `"123.456"`) strip thousands dots and convert comma to dot; non-numeric
+      // or formula-error strings yield NULL cleanly without 22P02 crashes.
+      `with parsed_cells as (
+         select cm.month_start,
+                cm.opening_balance as app_opening,
+                cm.closing_balance as app_closing,
+                case
+                  when b1.normalized_value is null or b1.inferred_type = 'error' then null
+                  when btrim(b1.normalized_value) ~ '^-?[0-9]+(\\.[0-9]+)?$'
+                    then btrim(b1.normalized_value)::numeric
+                  when btrim(b1.normalized_value) ~ '^-?[0-9]{1,3}(\\.[0-9]{3})*(,[0-9]+)?$'
+                    then replace(replace(btrim(b1.normalized_value), '.', ''), ',', '.')::numeric
+                  when btrim(b1.normalized_value) ~ '^-?[0-9]+,[0-9]+$'
+                    then replace(btrim(b1.normalized_value), ',', '.')::numeric
+                  else null
+                end as source_opening,
+                case
+                  when j1.normalized_value is null or j1.inferred_type = 'error' then null
+                  when btrim(j1.normalized_value) ~ '^-?[0-9]+(\\.[0-9]+)?$'
+                    then btrim(j1.normalized_value)::numeric
+                  when btrim(j1.normalized_value) ~ '^-?[0-9]{1,3}(\\.[0-9]{3})*(,[0-9]+)?$'
+                    then replace(replace(btrim(j1.normalized_value), '.', ''), ',', '.')::numeric
+                  when btrim(j1.normalized_value) ~ '^-?[0-9]+,[0-9]+$'
+                    then replace(btrim(j1.normalized_value), ',', '.')::numeric
+                  else null
+                end as source_closing
+         from public.cashflow_months cm
+         left join public.source_cells b1 on b1.sheet_id = cm.source_sheet_id and upper(b1.address) = 'B1'
+         left join public.source_cells j1 on j1.sheet_id = cm.source_sheet_id and upper(j1.address) = 'J1'
+       )
+       select to_char(month_start, 'YYYY-MM-DD') as month_start,
+              app_opening,
+              source_opening,
+              app_closing,
+              source_closing,
               case
-                when b1.normalized_value is null then null
-                else nullif(regexp_replace(replace(replace(b1.normalized_value,'.',''),',','.'),'[^0-9\\.-]','','g'),'')::numeric
-              end as source_opening,
-              cm.closing_balance as app_closing,
-              case
-                when j1.normalized_value is null then null
-                else nullif(regexp_replace(replace(replace(j1.normalized_value,'.',''),',','.'),'[^0-9\\.-]','','g'),'')::numeric
-              end as source_closing,
-              case
-                when b1.normalized_value is null or cm.opening_balance is null then null
-                else cm.opening_balance - nullif(regexp_replace(replace(replace(b1.normalized_value,'.',''),',','.'),'[^0-9\\.-]','','g'),'')::numeric
+                when source_opening is null or app_opening is null then null
+                else app_opening - source_opening
               end as opening_diff,
               case
-                when j1.normalized_value is null or cm.closing_balance is null then null
-                else cm.closing_balance - nullif(regexp_replace(replace(replace(j1.normalized_value,'.',''),',','.'),'[^0-9\\.-]','','g'),'')::numeric
+                when source_closing is null or app_closing is null then null
+                else app_closing - source_closing
               end as closing_diff
-       from public.cashflow_months cm
-       left join public.source_cells b1 on b1.sheet_id=cm.source_sheet_id and upper(b1.address)='B1'
-       left join public.source_cells j1 on j1.sheet_id=cm.source_sheet_id and upper(j1.address)='J1'
-       order by cm.month_start desc
+       from parsed_cells
+       order by month_start desc
        limit 24`,
     ),
     () => pool.query<{ n: number }>(
@@ -245,7 +294,10 @@ export async function loadDataQualityCenter(pool: Pool | PoolClient) {
     reviewCounts: reviewCounts.rows,
     issueCounts: issueCounts.rows,
     blockers,
-    actions: actions.rows,
+    actions: actions.rows.map((a) => ({
+      ...a,
+      source_href: a.source_href ? safeRedirectPath(a.source_href, "/data/quality") : null,
+    })),
     specialSheets: specialSheets.rows,
     workbookVersions: workbookVersions.rows,
     reconciliationSignalCount,
@@ -308,13 +360,14 @@ export async function createActionFromReview(pool: Pool, reviewId: string, actor
       await client.query("commit");
       return null;
     }
+    const safeHref = safeRedirectPath(r.source_href, "/data/reviews");
     const ins = await client.query<{ id: string }>(
       `insert into public.action_items
          (title, severity, due_date, status, source_type, source_href,
           related_entity_table, related_entity_id, note, created_by)
        values ($1,$2,$3,'open','mapping_review',$4,'mapping_reviews',$5,$6,$7)
        returning id`,
-      [reviewActionTitle(r), r.severity, dueIn(r.severity === "critical" || r.severity === "high" ? 1 : 3), r.source_href, r.id, r.message, actorId],
+      [reviewActionTitle(r), r.severity, dueIn(r.severity === "critical" || r.severity === "high" ? 1 : 3), safeHref, r.id, r.message, actorId],
     );
     const id = ins.rows[0].id;
     await audit(client, {
@@ -349,16 +402,17 @@ export async function createActionFromHomeSignal(
       await client.query("commit");
       return existing.rows[0].id;
     }
+    const safeHref = safeRedirectPath(input.sourceHref, "/overview");
     const ins = await client.query<{ id: string }>(
       `insert into public.action_items
          (title, severity, due_date, status, source_type, source_fact_key, source_href, note, created_by)
        values ($1,$2,$3,'open','home_action',$4,$5,$6,$7) returning id`,
-      [input.title, input.severity, dueIn(input.severity === "critical" || input.severity === "high" ? 1 : 7), input.sourceFactKey, input.sourceHref, input.note ?? null, actorId],
+      [input.title, input.severity, dueIn(input.severity === "critical" || input.severity === "high" ? 1 : 7), input.sourceFactKey, safeHref, input.note ?? null, actorId],
     );
     const id = ins.rows[0].id;
     await audit(client, {
       actor: actorId, action: "create_action_from_home", entityTable: "action_items", entityId: id,
-      before: null, after: input,
+      before: null, after: { ...input, sourceHref: safeHref },
     });
     await client.query("commit");
     return id;
@@ -534,26 +588,30 @@ export async function setActionStatus(pool: Pool, id: string, status: ActionStat
   try {
     await client.query("begin");
     const before = await client.query(`select id, status, note from public.action_items where id=$1 for update`, [id]);
-    if (before.rowCount === 1) {
-      const note = completionNote?.trim()
-        ? `Kapanis notu (${new Date().toISOString().slice(0, 10)}): ${completionNote.trim().slice(0, 500)}`
-        : null;
-      await client.query(
-        `update public.action_items
-         set status=$2,
-             note=case
-               when $3::text is null then note
-               when note is null or note='' then $3
-               else note || E'\n\n' || $3
-             end
-         where id=$1`,
-        [id, status, note],
-      );
-      await audit(client, {
-        actor: actorId, action: "set_action_status", entityTable: "action_items", entityId: id,
-        before: before.rows[0], after: { id, status, completionNote: note },
-      });
+    if (before.rowCount !== 1) {
+      throw new DomainError("NOT_FOUND", "Görev kaydı bulunamadı veya yetkiniz yok.");
     }
+    const note = completionNote?.trim()
+      ? `Kapanis notu (${new Date().toISOString().slice(0, 10)}): ${completionNote.trim().slice(0, 500)}`
+      : null;
+    const upd = await client.query(
+      `update public.action_items
+       set status=$2,
+           note=case
+             when $3::text is null then note
+             when note is null or note='' then $3
+             else note || E'\n\n' || $3
+           end
+       where id=$1`,
+      [id, status, note],
+    );
+    if (upd.rowCount !== 1) {
+      throw new DomainError("FORBIDDEN", "Görev kaydı güncellenemedi veya yetkiniz yok.");
+    }
+    await audit(client, {
+      actor: actorId, action: "set_action_status", entityTable: "action_items", entityId: id,
+      before: before.rows[0], after: { id, status, completionNote: note },
+    });
     await client.query("commit");
   } catch (e) {
     await client.query("rollback");

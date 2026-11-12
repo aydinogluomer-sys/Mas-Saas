@@ -21,9 +21,9 @@ import {
   assessRisk, collectionProbability, expectedCollectionDate, scheduleWithinCash,
   type CollectionSignals,
 } from "../src/lib/collections/rules";
-import { requireDisposableOwnerDatabaseUrl } from "./db/owner-url";
+import { assertDisposableTargetDb } from "./db/disposable-guard";
 
-const pool = new Pool({ connectionString: requireDisposableOwnerDatabaseUrl("phase23:verify") });
+const pool = new Pool({ connectionString: assertDisposableTargetDb(undefined, "phase23:verify").url });
 
 interface Check { name: string; pass: boolean; detail: string }
 const checks: Check[] = [];

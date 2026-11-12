@@ -1,33 +1,51 @@
+// Sentetik TestSprite veritabanı hazırlayıcı — gerçek `mas_radar_dev` veritabanına ASLA dokunmaz.
+// Sıfırdan harcanabilir `mas_radar_testsprite` veritabanı kurar, migration + seed + sanitize uygular.
 import { execFileSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import path from "node:path";
+import {
+  assertLocalPgReachable,
+  createDisposableLocalDb,
+  dropDisposableLocalDb,
+  psqlLocalFile,
+  psqlLocalSql,
+  resolveLocalOwnerUrl,
+} from "./pg-local-admin";
 
-const container = "mas-radar-pg";
-const sourceDb = "mas_radar_dev";
 const targetDb = "mas_radar_testsprite";
+const root = process.cwd();
+const tsxCli = path.join(root, "node_modules", "tsx", "dist", "cli.mjs");
 
-function docker(args: string[], options: { input?: string; quiet?: boolean } = {}) {
-  return execFileSync("docker", args, {
-    input: options.input,
-    encoding: "utf8",
-    maxBuffer: 128 * 1024 * 1024,
-    stdio: options.quiet ? ["pipe", "pipe", "pipe"] : ["pipe", "inherit", "inherit"],
-  });
-}
+assertLocalPgReachable();
+console.log("Creating isolated synthetic TestSprite database (zero real data copied)…");
+dropDisposableLocalDb(targetDb);
+createDisposableLocalDb(targetDb);
+psqlLocalFile(targetDb, "scripts/db/local-bootstrap.sql");
 
-console.log("Creating isolated synthetic TestSprite database…");
-docker(["exec", container, "dropdb", "-U", "postgres", "--if-exists", targetDb]);
-docker(["exec", container, "createdb", "-U", "postgres", targetDb]);
-docker([
-  "exec", container, "sh", "-c",
-  `pg_dump -U postgres -d ${sourceDb} --no-owner --no-acl | psql -q -v ON_ERROR_STOP=1 -U postgres -d ${targetDb}`,
-]);
-docker(
-  ["exec", "-i", container, "psql", "-q", "-v", "ON_ERROR_STOP=1", "-U", "postgres", "-d", targetDb],
-  { input: readFileSync("scripts/db/sanitize-testsprite.sql", "utf8") },
-);
+const targetOwnerUrl = resolveLocalOwnerUrl(targetDb);
+execFileSync(process.execPath, [tsxCli, path.join(root, "scripts", "db", "migrate.ts")], {
+  cwd: root,
+  env: {
+    ...process.env,
+    MIGRATION_DATABASE_URL: targetOwnerUrl,
+    DATABASE_URL: targetOwnerUrl,
+  },
+  stdio: "inherit",
+});
 
-const proof = docker([
-  "exec", container, "psql", "-U", "postgres", "-d", targetDb, "-At", "-c",
+psqlLocalFile(targetDb, "supabase/seed.sql");
+execFileSync(process.execPath, [tsxCli, path.join(root, "scripts", "seed-demo.ts")], {
+  cwd: root,
+  env: {
+    ...process.env,
+    MIGRATION_DATABASE_URL: targetOwnerUrl,
+    DATABASE_URL: targetOwnerUrl,
+  },
+  stdio: "inherit",
+});
+psqlLocalFile(targetDb, "scripts/db/sanitize-testsprite.sql");
+
+const proof = psqlLocalSql(
+  targetDb,
   `select 'payments='||count(*) from payments
    union all select 'cash_months='||count(*) from cashflow_months
    union all select 'checks='||count(*) from checks
@@ -37,7 +55,6 @@ const proof = docker([
      (select count(*) from source_cells where coalesce(raw_value,'') !~ '^(SYNTHETIC|100)$') +
      (select count(*) from audit_logs where before_data::text !~ 'synthetic' or after_data::text !~ 'synthetic')
    );`,
-], { quiet: true });
+);
 console.log(proof.trim());
 console.log("Synthetic TestSprite database ready.");
-

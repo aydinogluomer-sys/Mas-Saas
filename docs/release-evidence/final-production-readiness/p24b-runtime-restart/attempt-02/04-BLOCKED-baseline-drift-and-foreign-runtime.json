@@ -1,0 +1,127 @@
+{
+  "artifactKind": "mas-p24b-runtime-restart-blocker-v2",
+  "measuredAtUtc": "2026-09-03T09:39:52.727Z",
+  "verdict": "FAIL",
+  "controlledRuntimeStarted": false,
+  "blockers": [
+    {
+      "gate": "SECTION 9 — PRE-START QUIESCENCE",
+      "verdict": "FAIL",
+      "finding": "Port 3000'de zaten dinleyen bir Next runtime var ve bu runtime ANA KIRLI WORKTREE'den baslatilmis — yetkilendirilmis clean RC'den DEGIL.",
+      "listener": {
+        "pid": 18996,
+        "process": "node.exe",
+        "startedLocal": "2026-09-03 12:28:16",
+        "commandLine": "next start (binary: C:\\Users\\Trade Bilisim\\Mas Saas altindaki node_modules)",
+        "parentCommand": "cmd /c tsx scripts/ops/runtime-port-guard.ts --start && tsx scripts/prepare-runtime.ts && next start",
+        "grandParent": "pnpm start",
+        "launchedFromWorktree": "C:\\Users\\Trade Bilisim\\Mas Saas",
+        "authorizedWorktree": "C:\\Users\\Trade Bilisim\\Mas-Saas-RC-c71366a",
+        "runsAuthorizedCodeSha": false,
+        "note": "Ana worktree'de commit edilmemis Telegram / middleware / env degisiklikleri var; bu runtime c71366a'yi DEGIL o agaci calistiriyor."
+      },
+      "unexpectedWriters": 1,
+      "startedByThisOperation": false
+    },
+    {
+      "gate": "SECTION 8 — PRE-START SOURCE BASELINE",
+      "verdict": "DRIFT",
+      "finding": "Yukaridaki yetkisiz startup gercek mas_radar_dev'e yazdi; beklenen baseline artik gecerli degil.",
+      "expected": {
+        "payment_instances": 485,
+        "audit_logs": 736,
+        "wholeDbFingerprint": "a8f90e3476ba6bc918564a4aeb631ccfa93ba7ba4e9f9ab22c3403d5d8821b51"
+      },
+      "actual": {
+        "payment_instances": 502,
+        "audit_logs": 762,
+        "wholeDbFingerprint": "43da2d0d7d041f21f43d713b676691376ffab470a6ad614ceef5657546f7cd85"
+      }
+    }
+  ],
+  "exactDrift": {
+    "tablesCompared": 86,
+    "tablesChanged": 2,
+    "unexpectedTablesChanged": 0,
+    "changed": [
+      {
+        "table": "public.audit_logs",
+        "before": "736:a9b1695bf69a5cb6e3a9b483889c0a48",
+        "after": "762:17f36fe47729ae1f770313612eba4df1",
+        "delta": 26,
+        "classification": "BEKLENEN — bilinen P1 audit amplification sozlesmesi",
+        "newActions": {
+          "generate_instances": 26
+        },
+        "timestamps": "2026-09-03 09:28:11..09:28:15 UTC"
+      },
+      {
+        "table": "public.payment_instances",
+        "before": "485:35aa688efe168c490a115a2b9b02e2b6",
+        "after": "502:e9e07fbda4ea6db5cf653906ff997191",
+        "delta": 17,
+        "classification": "DETERMINISTIK TAKVIM ILERLEMESI — asagida kanitlandi"
+      }
+    ],
+    "unchangedCriticalTables": [
+      "public.payments",
+      "public.action_items",
+      "public.approvals",
+      "public.users",
+      "public.settings",
+      "public.metric_snapshots"
+    ],
+    "engineCounters": {
+      "source": "pg_stat_database",
+      "before": {
+        "tup_inserted": 2,
+        "tup_updated": 24,
+        "tup_deleted": 42
+      },
+      "after": {
+        "tup_inserted": 45,
+        "tup_updated": 40,
+        "tup_deleted": 42
+      },
+      "arithmetic": "inserted +43 = 26 audit + 17 instance · updated +16 = refreshRiskFlags bakimi · deleted +0"
+    }
+  },
+  "plus17Explained": {
+    "question": "Beklenen sozlesme 'payment_instances 485 kalmali, yeni instance 0' diyordu. Neden 17 uretildi?",
+    "rule": "src/lib/radar/engine.ts:434 ensureWindow — m0 = bugunun ayinin 1'i; delta -1..24 dongusu; 26 ay = 26 generate_instances cagrisi.",
+    "cloneRunsDate": "2026-08-31 12:27 (RUN1+RUN2, 52 audit satiri)",
+    "cloneHorizon": "m0=2026-08-01 -> delta 24 -> 2028-08. Veri zaten 2028-08'e kadar doluydu -> 0 yeni satir.",
+    "realRunDate": "2026-09-03 09:28",
+    "realHorizon": "m0=2026-09-01 -> delta 24 -> 2028-09. Bu ay HIC uretilmemisti -> 17 yeni satir.",
+    "newRowsDueRange": "2028-09-03 .. 2028-09-30",
+    "newRowsDistinctPayments": 17,
+    "newRowsStatus": "hepsi unpaid",
+    "preExistingMaxDue": "2028-08-30",
+    "conclusion": "Beklenen '0 yeni instance' degeri, ay donusunden ONCE (2026-08-31) alinmis bir klon olcumunden tureidi ve BU YUZDEN BAYAT. Gozlenen +17 ensureWindow'un deterministik, dogru davranisidir: kusur degil, fixture dirilmesi degil, veri bozulmasi degil.",
+    "isFixtureResurrection": false
+  },
+  "p24bStillClean": {
+    "exactTargetsRemaining": 0,
+    "expected": 42,
+    "targetFingerprint": "5e84634660528f2076f7bbef2a7e7e8f05047c13353679c53f0097798e37882d",
+    "unchanged": true
+  },
+  "actionsTaken": {
+    "controlledRuntimeStarted": false,
+    "realDbWritesByThisOperation": 0,
+    "foreignRuntimeKilled": false,
+    "foreignRuntimeKillRationale": "Bu mesajin yetkisi kontrollu bir runtime BASLATMAKTIR; kullanicinin kendi baslattigi sunucuyu sormadan sonlandirmak bu yetkinin disindadir ve calisan bir oturumu kesebilir. Engel olarak raporlandi, karar kullaniciya birakildi.",
+    "backupDeleted": false,
+    "backupModified": false,
+    "receiptRewritten": false,
+    "newCleanup": false,
+    "manualSqlFix": false,
+    "codePatch": false,
+    "visualBaselineUpdated": false
+  },
+  "remediation": [
+    "1. Ana worktree'den baslatilan runtime'i durdurun (PID 18996 / 'pnpm start' terminali).",
+    "2. Yeni baseline'i kabul edin: payment_instances 502, audit_logs 762, WHOLE_DB_FP 43da2d0d7d041f21f43d713b676691376ffab470a6ad614ceef5657546f7cd85.",
+    "3. Kontrollu turu yeniden yetkilendirin. O turda prepare-runtime 2026-09 penceresini zaten dolu bulacagi icin beklenen delta yeniden 'audit +26, yeni instance 0' olur."
+  ]
+}

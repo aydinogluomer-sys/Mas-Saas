@@ -285,7 +285,7 @@ export function parseInteger(raw: unknown): ParsedValue<number> {
 /** Excel seri numarası → ISO tarih. Epoch 1899-12-30 (1900 artık yıl hatası dahil). */
 export function excelSerialToISO(serial: number): string | null {
   if (!Number.isFinite(serial) || serial < 1 || serial > 2958465) return null;
-  const ms = Date.UTC(1899, 11, 30) + Math.round(serial) * 86400000;
+  const wholeDays = Math.floor(serial); const fracSec = Math.round((serial - wholeDays) * 86400); const ms = Date.UTC(1899, 11, 30) + (wholeDays + Math.floor(fracSec / 86400)) * 86400000;
   const d = new Date(ms);
   return d.toISOString().slice(0, 10);
 }
@@ -377,6 +377,7 @@ export function parseMonth(raw: unknown): ParsedValue<string> {
     if (mm < 1 || mm > 12) return invalid(`geçersiz ay: ${s}`, raw);
     return ok(`${m[1]}-${String(mm).padStart(2, "0")}`, raw);
   }
+  const dmyFirst = /^0?1[./-](\d{1,2})[./-](\d{4})$/.exec(s); if (dmyFirst && +dmyFirst[1] >= 1 && +dmyFirst[1] <= 12) return ok(`${dmyFirst[2]}-${String(+dmyFirst[1]).padStart(2, "0")}`, raw);
   const full = parseDate(raw);
   if (full.status === "ok" && full.value) return ok(full.value.slice(0, 7), raw);
   return invalid(`dönem okunamadı: '${s}'. Lütfen YYYY-AA yazın (örn. 2026-05).`, raw);

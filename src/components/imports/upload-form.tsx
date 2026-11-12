@@ -1,6 +1,6 @@
 "use client";
 import { useFormStatus } from "react-dom";
-import { uploadWorkbookAction } from "@/app/(dashboard)/imports/actions";
+import { uploadWorkbookAction } from "@/app/(dashboard)/data/imports/actions";
 
 function SubmitButton() {
   const { pending } = useFormStatus();
@@ -15,7 +15,7 @@ function SubmitButton() {
 export function UploadForm() {
   return (
     <form action={uploadWorkbookAction} className="flex flex-wrap items-center gap-2">
-      <input type="file" name="file" required accept=".xlsx,.xls"
+      <input type="file" name="file" required accept=".xlsx,.csv"
         className="border border-line bg-black/40 p-2 font-mono text-xs file:mr-3 file:border-0 file:bg-surface-3 file:px-2 file:py-1 file:font-mono file:text-xs file:text-tone-1" />
       <SubmitButton />
       <span className="font-mono text-[10px] text-tone-3">

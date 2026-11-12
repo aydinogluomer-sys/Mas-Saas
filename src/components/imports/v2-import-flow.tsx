@@ -109,7 +109,7 @@ function Preview({ report }: { report: PreviewReport }) {
           hint="Bu sürüm çek/kredi toplamlarını yalnız TRY için hesaplar. Kayıt kaynakta korunur, finans KPI'larına girmez; kur çevrilmez." />
         <IssueList title="MÜKERRER ŞÜPHELİLER" rows={report.lists.duplicateSuspects}
           hint="Benzer kayıtlar otomatik birleştirilmez veya silinmez; incelemeye düşer." />
-        <IssueList title="MISSING REQUIRED FIELD" rows={report.lists.missingRequired}
+        <IssueList title="ZORUNLU ALAN EKSİK" rows={report.lists.missingRequired}
           hint="Zorunlu alanı boş satırlar yazılmaz. Boş = bilinmiyor; 0 yazmak farklı bir beyandır." />
         {/* Wave 0: iki yeni veri kalitesi sorunu onaydan ÖNCE görünür (yazdıktan sonra yalnız
             inceleme kuyruğunda değil). Formül hatası satırı reddeder; birleştirilmiş hücre

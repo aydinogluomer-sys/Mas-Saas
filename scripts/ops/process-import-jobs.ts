@@ -1,76 +1,142 @@
 /**
- * Standart Import V2 — asenkron ÖNİZLEME işçisi (Wave 0 / R8).
+ * Standart Import V2 — asenkron ÖNİZLEME işçisi (Wave 0 / R8 & Faz 42 B2).
  *
  * `POST /api/imports/v2/async` ile kuyruğa alınmış `excel_import` işlerini alır, her biri için
- * önizlemeyi (dry-run) koşturur ve raporu iş satırına yazar. HİÇBİR finansal kaydı yazmaz: onay,
- * dosyanın yeniden yüklendiği ve önizleme SHA'sının eşleşmek zorunda olduğu senkron akışta kalır
- * (bkz. src/lib/importers/v2/async-runner.ts başlığı).
+ * önizlemeyi (dry-run) koşturur ve raporu iş satırına yazar. HİÇBİR finansal kaydı yazmaz.
  *
- * İki kimlik, iki ayrı iş:
- *   · Kuyruk işlemleri (claim / complete / fail) işçinin kendisidir: runAsSystem katmanı, denetim
- *     aktörü rezerve 'system' hesabı (scripts/db/seed-system-actor.ts getSystemActorId — hesap
- *     yoksa işçi hiçbir şeye dokunmadan durur). İncelenmemiş katman burada uuid olmayan sabit
- *     bir aktör metni yazıyordu; `audit_logs.actor` bir users(id) yabancı anahtarı olduğu için
- *     ilk claim'in işlemi geri alınıyor ve hiçbir iş işlenemiyordu. Bağlamsız getPool() da
- *     katmansız (mas_radar_app) kalıyor, `background_jobs`'a hiç erişemiyordu.
- *   · Önizlemenin kendisi işi kuyruğa alan kullanıcının katmanında koşar (runAsUser; kimlik
- *     public.users'tan yeniden okunur, yükten değil).
- *
- * Bir koşu en çok MAX_JOBS_PER_RUN iş işler, sonra sahipsiz sahneleme dosyalarını süpürür.
- * Zamanlanmış bir görev bu betiği henüz çalıştırmıyor (açık iş; docs/todo.md Wave 0 / S5).
+ * Faz 42 (B2 — backlog #7): Her döngü başında `requeueDueFailures` ve `reapStuckJobs` çağrılarak
+ * geçici G/Ç veya veritabanı hatası almış `failed` önizleme işleri ve yarım kalmış `running` işleri
+ * bekleme süresi dolduğunda yeniden `'queued'` durumuna döndürülür; ayrıca `background-worker.ts`
+ * içinden çağrılabilir `processPendingImportJobs` fonksiyonu dışa aktarılır.
  */
-import { loadEnvConfig } from "@next/env";
-loadEnvConfig(process.cwd());
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import type { Pool } from "pg";
+import type { AsyncPreviewOutcome, AsyncPreviewWorkerDeps } from "../../src/lib/importers/v2/async-runner";
 
-const MAX_JOBS_PER_RUN = 25;
+export const MAX_JOBS_PER_RUN = 25;
 
-async function main(): Promise<void> {
-  // Dinamik import: env doğrulayan modüller .env.local yüklendikten SONRA değerlendirilsin
-  // (scripts/prepare-runtime.ts ile aynı gerekçe).
-  const [db, { claimNextJob }, runner, { getSystemActorId }] = await Promise.all([
-    import("../../src/lib/db"),
+export interface ImportJobsCycleSummary {
+  requeued: number;
+  reaped: number;
+  processed: number;
+  outcomes: AsyncPreviewOutcome[];
+  sweptRemoved: number;
+  sweptKept: number;
+}
+
+export interface ImportJobsCycleOptions {
+  maxJobs?: number;
+  stuckAfterMinutes?: number;
+  sweepStaging?: boolean;
+  quiet?: boolean;
+}
+
+/**
+ * Runs one bounded cycle of Import V2 async preview jobs inside the caller's `runAsSystem` context.
+ */
+export async function processPendingImportJobs(
+  deps: AsyncPreviewWorkerDeps & { pool: Pool },
+  opts: ImportJobsCycleOptions = {},
+): Promise<ImportJobsCycleSummary> {
+  const [{ claimNextJob, reapStuckJobs, requeueDueFailures }, runner] = await Promise.all([
     import("../../src/lib/jobs/queue"),
     import("../../src/lib/importers/v2/async-runner"),
+  ]);
+
+  const maxJobs = Math.max(1, opts.maxJobs ?? MAX_JOBS_PER_RUN);
+  const stuckAfterMinutes = Math.max(1, opts.stuckAfterMinutes ?? 30);
+  const quiet = opts.quiet ?? false;
+  const shouldSweep = opts.sweepStaging ?? true;
+
+  // Faz 42 (B2 — backlog #7): Return backoff-elapsed transient failures & dead-worker jobs to 'queued'.
+  const requeued = await requeueDueFailures(deps.pool);
+  const reaped = await reapStuckJobs(deps.pool, stuckAfterMinutes);
+
+  if (!quiet) {
+    console.log("=== Standart Import V2 — asenkron önizleme işçisi ===");
+    if (requeued > 0 || reaped > 0) {
+      console.log(`Kurtarılan işler: yeniden_kuyruk=${requeued} takılı_kurtarılan=${reaped}`);
+    }
+  }
+
+  let processed = 0;
+  const outcomes: AsyncPreviewOutcome[] = [];
+  while (processed < maxJobs) {
+    const job = await claimNextJob(deps.pool, [runner.ASYNC_PREVIEW_JOB_TYPE], deps.systemActorId);
+    if (!job) break;
+    processed++;
+    const r = await runner.processAsyncWorkbookPreviewJob(deps, job.id);
+    outcomes.push(r);
+    if (!quiet) {
+      // Yalnız sayaçlar ve durum yazılır; tutar, karşı taraf ya da dosya içeriği konsola düşmez.
+      if (r.outcome === "succeeded" && r.counters) {
+        const c = r.counters;
+        console.log(
+          `ÖNİZLENDİ  ${job.id}  yaratılacak=${c.create} güncellenecek=${c.update} ` +
+            `inceleme=${c.review} red=${c.reject} belirlenemedi=${c.undetermined}`,
+        );
+      } else {
+        console.log(`${r.outcome.toUpperCase()}  ${job.id}  ${r.error ?? ""}`);
+      }
+    }
+  }
+
+  if (!quiet) {
+    if (processed === 0) console.log("Kuyrukta bekleyen önizleme işi yok.");
+    if (processed === maxJobs) console.log(`Koşu sınırı (${maxJobs}) doldu; kalanlar sonraki koşuda.`);
+  }
+
+  let sweptRemoved = 0;
+  let sweptKept = 0;
+  if (shouldSweep) {
+    const swept = await runner.sweepStaleStagedFiles(deps.pool, { stagingDir: deps.stagingDir });
+    sweptRemoved = swept.removed;
+    sweptKept = swept.kept;
+    if (!quiet) {
+      console.log(`Sahneleme süpürmesi: ${swept.removed} sahipsiz dosya silindi, ${swept.kept} dosya korundu.`);
+    }
+  }
+
+  return {
+    requeued,
+    reaped,
+    processed,
+    outcomes,
+    sweptRemoved,
+    sweptKept,
+  };
+}
+
+async function main(): Promise<void> {
+  const { loadEnvConfig } = await import("@next/env");
+  loadEnvConfig(process.cwd());
+
+  const [db, { getSystemActorId }] = await Promise.all([
+    import("../../src/lib/db"),
     import("../db/seed-system-actor"),
   ]);
 
   const pool = db.getPool();
   try {
-    // users tablosu katmana geçmiş bağlantıdan okunamaz (0058); oturum aramasıyla aynı yol.
     const systemActorId = await getSystemActorId(db.getRawPool());
     const deps = { pool, identityPool: db.getRawPool(), systemActorId };
 
     await db.runAsSystem(async () => {
-      console.log("=== Standart Import V2 — asenkron önizleme işçisi ===");
-      let processed = 0;
-      while (processed < MAX_JOBS_PER_RUN) {
-        const job = await claimNextJob(pool, [runner.ASYNC_PREVIEW_JOB_TYPE], systemActorId);
-        if (!job) break;
-        processed++;
-        const r = await runner.processAsyncWorkbookPreviewJob(deps, job.id);
-        // Yalnız sayaçlar ve durum yazılır; tutar, karşı taraf ya da dosya içeriği konsola düşmez.
-        if (r.outcome === "succeeded" && r.counters) {
-          const c = r.counters;
-          console.log(
-            `ÖNİZLENDİ  ${job.id}  yaratılacak=${c.create} güncellenecek=${c.update} ` +
-              `inceleme=${c.review} red=${c.reject} belirlenemedi=${c.undetermined}`,
-          );
-        } else {
-          console.log(`${r.outcome.toUpperCase()}  ${job.id}  ${r.error ?? ""}`);
-        }
-      }
-      if (processed === 0) console.log("Kuyrukta bekleyen önizleme işi yok.");
-      if (processed === MAX_JOBS_PER_RUN) console.log(`Koşu sınırı (${MAX_JOBS_PER_RUN}) doldu; kalanlar sonraki koşuda.`);
-
-      const swept = await runner.sweepStaleStagedFiles(pool);
-      console.log(`Sahneleme süpürmesi: ${swept.removed} sahipsiz dosya silindi, ${swept.kept} dosya korundu.`);
+      await processPendingImportJobs(deps, { quiet: false, sweepStaging: true });
     });
   } finally {
     await pool.end();
   }
 }
 
-main().catch((err) => {
-  console.error("Önizleme işçisi hatası:", err instanceof Error ? err.message : err);
-  process.exit(1);
-});
+const isDirectCli =
+  process.argv[1] !== undefined &&
+  path.resolve(process.argv[1]) === path.resolve(fileURLToPath(import.meta.url));
+
+if (isDirectCli) {
+  main().catch((err) => {
+    console.error("Önizleme işçisi hatası:", err instanceof Error ? err.message : err);
+    process.exit(1);
+  });
+}

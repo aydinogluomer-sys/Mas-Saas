@@ -16,10 +16,10 @@ import { createAndRun, loadScenarioRun, deleteScenarioRun } from "../src/lib/sce
 import { applyScenario, compareScenarioToBaseline, buildScenarioInsights } from "../src/lib/scenarios/rules";
 import { loadCashMonths } from "../src/lib/cashflow/engine";
 import { ensureSystemActor } from "./db/seed-system-actor";
-import { requireDisposableOwnerDatabaseUrl } from "./db/owner-url";
+import { assertDisposableTargetDb } from "./db/disposable-guard";
 
 const pool = new Pool({
-  connectionString: requireDisposableOwnerDatabaseUrl("phase8:verify"),
+  connectionString: assertDisposableTargetDb(undefined, "phase8:verify").url,
 });
 const fail = (m: string): never => { console.error("PHASE8 VERIFY FAIL:", m); process.exit(1); };
 const q = async (sql: string, p: unknown[] = []) => (await pool.query(sql, p)).rows;

@@ -15,8 +15,11 @@ import type { CellVal, RowJson } from "@/lib/importers/row-utils";
 import { normalizeTr } from "@/lib/importers/workbook-parser";
 import { decimal, divOrNull, money, moneyOrNull, mul, rate, rateOrNull } from "@/lib/money";
 import { breakEvenTLPerMin, partProfitability } from "./rules";
-import { sourceRevenue } from "./source-revenue";
+import { isMissingSchemaError, sourceRevenue } from "./source-revenue";
 import { audit } from "@/lib/audit";
+import { DomainError } from "@/lib/domain-error";
+import { parseOrThrow } from "@/lib/validation";
+import { z } from "zod";
 
 async function sheetCellMap(client: PoolClient | Pool, sheetId: string): Promise<{ map: Record<string, CellVal>; idByRow: Map<number, string> }> {
   const rows = await client.query<{ id: string; row_index: number; row_json: RowJson }>(
@@ -273,9 +276,9 @@ export async function calculatePartProfitability(pool: Pool, costModelId?: strin
 
     const parts = await client.query<{
       id: string; part_code: string | null; part_name: string; quantity: number | null;
-      torna_minutes: string | null; freze_minutes: string | null;
+      torna_minutes: string | null; freze_minutes: string | null; unit_sale_price: string | null; currency: string | null;
     }>(`select id, part_code, part_name, quantity,
-               torna_minutes, freze_minutes from public.production_parts`);
+               torna_minutes, freze_minutes, unit_sale_price, currency from public.production_parts`);
     // Gelir KAYNAK satırda yaşar (production_parts fiyat saklamıyor) ve o satırın iki ham
     // biçimi var: legacy `I.v` (toplam FİYAT) ve V2 `satis_fiyati` (birim fiyat × adet).
     // Hangisi olduğuna `sourceRevenue` karar verir — SQL'de `::numeric` cast yok, çünkü V2
@@ -291,7 +294,11 @@ export async function calculatePartProfitability(pool: Pool, costModelId?: strin
           code: p.part_code, name: p.part_name, quantity: p.quantity,
           tornaMinutesPerUnit: p.torna_minutes == null ? null : Number(p.torna_minutes),
           frezeMinutesPerUnit: p.freze_minutes == null ? null : Number(p.freze_minutes),
-          revenue: sourceRevenue(revRow.rows[0]?.row_json ?? null, p.quantity),
+          revenue:
+            sourceRevenue(revRow.rows[0]?.row_json ?? null, p.quantity) ??
+            (p.unit_sale_price != null && p.quantity != null && (p.currency ?? "TRY") === "TRY"
+              ? moneyOrNull(mul(p.unit_sale_price, p.quantity))
+              : null),
         },
         tornaRate, frezeRate,
       );
@@ -677,7 +684,10 @@ export async function loadCapacityModels(pool: Pool | PoolClient): Promise<Array
            cm.source_sheet_id, cm.source_workbook_id,
            (select count(*)::int from public.production_parts p where p.source_sheet_id=cm.source_sheet_id) as part_count,
            (select count(*)::int from public.production_parts p where p.source_sheet_id=cm.source_sheet_id and p.torna_minutes is null and p.freze_minutes is null) as missing_part_count
-    from public.capacity_models cm order by cm.created_at`);
+    from public.capacity_models cm order by cm.created_at`).catch((err: unknown) => {
+    if (isMissingSchemaError(err)) return { rows: [], rowCount: 0 };
+    throw err;
+  });
   return r.rows.map((x) => ({
     // Rates, minutes and work-days keep RATE precision; the two theoretical revenues are TL.
     id: x.id, name: x.name, efficiency: rateOrNull(x.efficiency),
@@ -701,7 +711,10 @@ export async function loadCostModels(pool: Pool): Promise<Array<{
            effective_monthly_minutes as eff_min,
            akon_freze_tl_per_min as akon_freze, akon_torna_tl_per_min as akon_torna,
            source_sheet_id, source_workbook_id
-    from public.cost_models order by scenario_type`);
+    from public.cost_models order by scenario_type`).catch((err: unknown) => {
+    if (isMissingSchemaError(err)) return { rows: [], rowCount: 0 };
+    throw err;
+  });
   return r.rows.map((x) => ({
     // breakEven / akon* are TL-per-minute, compared against each other by priceMargin() to
     // decide whether an operation is sold below cost — a threshold, so RATE precision matters.
@@ -715,17 +728,41 @@ export async function loadCostModels(pool: Pool): Promise<Array<{
 
 /** Fixed-cost + general/personnel breakdown lines for a cost model, grouped-friendly. */
 export async function loadCostBreakdown(pool: Pool, costModelId: string) {
+  try {
   const r = await pool.query(
     `select block, label, amount, ir.row_index
      from public.cost_breakdown_lines cbl
      left join public.import_rows ir on ir.id = cbl.source_row_id
-     where cbl.cost_model_id = $1 order by block, ir.row_index nulls last`,
+     where cbl.cost_model_id = $1
+     union all
+     select 'kalem'::text as block,
+            case when cmi.description is not null and btrim(cmi.description) <> ''
+                 then cmi.cost_category || ' — ' || cmi.description
+                 else cmi.cost_category end as label,
+            cmi.monthly_amount as amount,
+            ir2.row_index
+     from public.cost_model_items cmi
+     left join public.import_rows ir2 on ir2.id = cmi.source_row_id
+     where cmi.cost_model_id = $1
+     order by 1, 4 nulls last`,
     [costModelId],
   );
-  return r.rows.map((x) => ({ ...x, amount: moneyOrNull(x.amount) })) as Array<{ block: string; label: string; amount: number | null; row_index: number | null }>;
+    return r.rows.map((x) => ({ ...x, amount: moneyOrNull(x.amount) })) as Array<{ block: string; label: string; amount: number | null; row_index: number | null }>;
+  } catch (err: unknown) {
+    if (!isMissingSchemaError(err)) throw err;
+    const fb = await pool.query(
+      `select block, label, amount, ir.row_index from public.cost_breakdown_lines cbl left join public.import_rows ir on ir.id = cbl.source_row_id where cbl.cost_model_id = $1 order by 1, 4 nulls last`,
+      [costModelId],
+    ).catch((e2: unknown) => {
+      if (isMissingSchemaError(e2)) return { rows: [], rowCount: 0 };
+      throw e2;
+    });
+    return fb.rows.map((x) => ({ ...x, amount: moneyOrNull(x.amount) })) as Array<{ block: string; label: string; amount: number | null; row_index: number | null }>;
+  }
 }
 
 export async function loadPartProfitability(pool: Pool | PoolClient, limit = 100) {
+  try {
   const r = await pool.query(
     `select pp.part_code, pp.part_name, pr.estimated_total_cost as cost,
             pr.estimated_revenue as revenue, pr.estimated_margin as margin,
@@ -748,6 +785,10 @@ export async function loadPartProfitability(pool: Pool | PoolClient, limit = 100
     margin: number | null; margin_rate: number | null; confidence: string; missing_operation_time: boolean;
     source_workbook_id: string | null; source_sheet_id: string | null; row_index: number | null;
   }>;
+  } catch (err: unknown) {
+    if (isMissingSchemaError(err)) return [];
+    throw err;
+  }
 }
 
 /** Total demanded operation minutes across mapped parts (qty × (torna+freze)).
@@ -758,21 +799,31 @@ export async function loadPartProfitability(pool: Pool | PoolClient, limit = 100
  * were being subtracted and divided as if they shared a period (Bulgu #6). Naming the period
  * makes that mistake visible at the call site instead of only in the rendered number. */
 export async function loadCapacityDemand(pool: Pool): Promise<{ demandMinutesPerYear: number; partCount: number }> {
+  try {
   const r = await pool.query(
     `select coalesce(sum(coalesce(quantity,0) * (coalesce(torna_minutes,0) + coalesce(freze_minutes,0))),0) as demand,
             count(*)::int as n from public.production_parts`,
   );
-  return { demandMinutesPerYear: rateOrNull(r.rows[0].demand) ?? 0, partCount: r.rows[0].n };
+    return { demandMinutesPerYear: rateOrNull(r.rows[0].demand) ?? 0, partCount: r.rows[0].n };
+  } catch (err: unknown) {
+    if (isMissingSchemaError(err)) return { demandMinutesPerYear: 0, partCount: 0 };
+    throw err;
+  }
 }
 
 /** Actual planned monthly income from the cashflow radar (avg projected income). */
 export async function loadActualMonthlyIncome(pool: Pool): Promise<number | null> {
+  try {
   const r = await pool.query(
     `select avg(projected_income) as avg_income from public.cashflow_months where projected_income is not null`,
   );
   // avg() over numeric returns a high-scale numeric; money scale is the right place to land
   // because this is compared against theoretical monthly revenue in TL.
-  return moneyOrNull(r.rows[0]?.avg_income ?? null);
+    return moneyOrNull(r.rows[0]?.avg_income ?? null);
+  } catch (err: unknown) {
+    if (isMissingSchemaError(err)) return null;
+    throw err;
+  }
 }
 
 export async function loadMachineMinuteAllocations(pool: Pool) {
@@ -787,7 +838,10 @@ export async function loadMachineMinuteAllocations(pool: Pool) {
      from public.machine_minute_allocations mma
      join public.capacity_models cm on cm.id = mma.capacity_model_id
      order by cm.created_at, case mma.operation_type when 'torna' then 1 when 'freze' then 2 else 3 end`,
-  );
+  ).catch((err: unknown) => {
+    if (isMissingSchemaError(err)) return { rows: [], rowCount: 0 };
+    throw err;
+  });
   // Minutes and utilisation are measurements, not TL — all decode at RATE precision. The UI
   // renders utilization_rate as a percentage with one decimal, which is exactly the kind of
   // value a money-scale rounding would have flattened.
@@ -825,7 +879,10 @@ export async function loadFinanceCostAllocations(pool: Pool) {
      join public.loans l on l.id = fca.loan_id
      left join public.capacity_models cm on cm.id = fca.capacity_model_id
      order by l.created_at, case fca.operation_type when 'torna' then 1 when 'freze' then 2 else 3 end`,
-  );
+  ).catch((err: unknown) => {
+    if (isMissingSchemaError(err)) return { rows: [], rowCount: 0 };
+    throw err;
+  });
   // finance_cost_per_minute is rendered with toFixed(2) on the ROI page; decoding it at RATE
   // precision and letting formatMoney round half-up is what makes that digit agree with the
   // database instead of with a binary double.
@@ -854,6 +911,7 @@ export async function loadFinanceCostAllocations(pool: Pool) {
 }
 
 export async function loadMachineRoi(pool: Pool) {
+  try {
   const r = await pool.query(
     `select ma.name, ma.purchase_cost,
             s.snapshot_year, s.revenue, s.cost,
@@ -862,15 +920,20 @@ export async function loadMachineRoi(pool: Pool) {
      left join public.machine_roi_snapshots s on s.machine_asset_id = ma.id
      order by ma.name`,
   );
-  return r.rows.map((x) => ({
-    ...x,
-    purchase_cost: moneyOrNull(x.purchase_cost), revenue: moneyOrNull(x.revenue),
-    cost: moneyOrNull(x.cost), net: moneyOrNull(x.net),
-  })) as Array<{ name: string; purchase_cost: number | null; snapshot_year: number | null; revenue: number | null; cost: number | null; net: number | null; confidence: string | null }>;
+    return r.rows.map((x) => ({
+      ...x,
+      purchase_cost: moneyOrNull(x.purchase_cost), revenue: moneyOrNull(x.revenue),
+      cost: moneyOrNull(x.cost), net: moneyOrNull(x.net),
+    })) as Array<{ name: string; purchase_cost: number | null; snapshot_year: number | null; revenue: number | null; cost: number | null; net: number | null; confidence: string | null }>;
+  } catch (err: unknown) {
+    if (isMissingSchemaError(err)) return [];
+    throw err;
+  }
 }
 
 /** Aggregate P&L snapshot (all machines, machine_asset_id null) if mapped from `tablo`. */
 export async function loadMachineRoiAggregate(pool: Pool) {
+  try {
   const r = await pool.query(
     `select snapshot_year, revenue, cost,
             remaining, tax, net_after_tax as net, confidence
@@ -884,4 +947,456 @@ export async function loadMachineRoiAggregate(pool: Pool) {
     revenue: moneyOrNull(row.revenue), cost: moneyOrNull(row.cost),
     remaining: moneyOrNull(row.remaining), tax: moneyOrNull(row.tax), net: moneyOrNull(row.net),
   } as { snapshot_year: number; revenue: number | null; cost: number | null; remaining: number | null; tax: number | null; net: number | null; confidence: string };
+  } catch (err: unknown) {
+    if (isMissingSchemaError(err)) return null;
+    throw err;
+  }
+}
+
+
+/* ── 5) Faz 50 (D4): Manuel Kapasite, Sabit Maliyet Kalemi ve Makine ROI Yazma Yolu ── */
+
+const manualCapacitySchema = z.object({
+  name: z.string().trim().min(2, "Model adı en az 2 karakter olmalı").max(160),
+  scenarioType: z.enum(["normal", "overtime", "custom"]).default("normal"),
+  workDaysPerMonth: z.number().min(1).max(31),
+  hoursPerDay: z.number().min(1).max(24),
+  efficiencyRate: z.number().min(0.05).max(2),
+  tornaRateTLPerMin: z.number().nonnegative().nullable().optional(),
+  frezeRateTLPerMin: z.number().nonnegative().nullable().optional(),
+  rateYear: z.number().int().min(2000).max(2100).nullable().optional(),
+  notes: z.string().trim().max(1000).optional(),
+});
+
+export async function upsertCapacityModelManual(
+  pool: Pool,
+  raw: unknown,
+  actorId: string,
+): Promise<string> {
+  const input = parseOrThrow(manualCapacitySchema, raw, "Kapasite modeli");
+  const effNorm = input.efficiencyRate > 2 ? input.efficiencyRate / 100 : input.efficiencyRate;
+  const monthlyHoursDec = mul(input.workDaysPerMonth, input.hoursPerDay);
+  const rawMinutesDec = mul(monthlyHoursDec, 60);
+  const effMinutesDec = mul(rawMinutesDec, effNorm);
+  const monthlyHours = rate(monthlyHoursDec.toString());
+  const effectiveMinutes = rate(effMinutesDec.toString());
+  const isStale = input.rateYear != null && input.rateYear < new Date().getFullYear();
+
+  const torna = input.tornaRateTLPerMin ?? null;
+  const freze = input.frezeRateTLPerMin ?? null;
+  let theoreticalMonthlyRevenue: number | null = null;
+  if (torna != null && freze != null) {
+    const avgRate = divOrNull(decimal(torna).plus(freze), 2);
+    theoreticalMonthlyRevenue = avgRate != null ? money(mul(effMinutesDec, avgRate).toString()) : null;
+  } else if (torna != null) {
+    theoreticalMonthlyRevenue = money(mul(effMinutesDec, torna).toString());
+  } else if (freze != null) {
+    theoreticalMonthlyRevenue = money(mul(effMinutesDec, freze).toString());
+  }
+  const theoreticalTotalRevenue =
+    theoreticalMonthlyRevenue != null ? money(mul(theoreticalMonthlyRevenue, 12).toString()) : null;
+
+  const client = await pool.connect();
+  try {
+    await client.query("begin");
+    const existing = await client.query<{ id: string }>(
+      `select id from public.capacity_models
+        where lower(name) = lower($1) and source_sheet_id is null
+        limit 1`,
+      [input.name],
+    );
+    let modelId: string;
+    if ((existing.rowCount ?? 0) > 0) {
+      modelId = existing.rows[0].id;
+      await client.query(
+        `update public.capacity_models
+            set scenario_type = $2,
+                monthly_hours = $3,
+                monthly_minutes = $4,
+                work_days_per_month = $5,
+                efficiency_rate = $6,
+                torna_rate_tl_per_min = $7,
+                freze_rate_tl_per_min = $8,
+                rate_year = $9,
+                is_stale_rate = $10,
+                theoretical_monthly_revenue = $11,
+                theoretical_total_revenue = $12,
+                notes = $13
+          where id = $1`,
+        [
+          modelId,
+          input.scenarioType,
+          monthlyHours,
+          effectiveMinutes,
+          input.workDaysPerMonth,
+          effNorm,
+          torna,
+          freze,
+          input.rateYear ?? null,
+          isStale,
+          theoreticalMonthlyRevenue,
+          theoreticalTotalRevenue,
+          input.notes ?? null,
+        ],
+      );
+    } else {
+      const ins = await client.query<{ id: string }>(
+        `insert into public.capacity_models
+           (name, scenario_type, monthly_hours, monthly_minutes,
+            work_days_per_month, efficiency_rate, torna_rate_tl_per_min, freze_rate_tl_per_min,
+            rate_year, is_stale_rate, theoretical_monthly_revenue, theoretical_total_revenue, notes)
+         values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+         returning id`,
+        [
+          input.name,
+          input.scenarioType,
+          monthlyHours,
+          effectiveMinutes,
+          input.workDaysPerMonth,
+          effNorm,
+          torna,
+          freze,
+          input.rateYear ?? null,
+          isStale,
+          theoreticalMonthlyRevenue,
+          theoreticalTotalRevenue,
+          input.notes ?? null,
+        ],
+      );
+      modelId = ins.rows[0].id;
+    }
+
+    await audit(client, {
+      actor: actorId,
+      action: "upsert_capacity_model_manual",
+      entityTable: "capacity_models",
+      entityId: modelId,
+      after: {
+        name: input.name,
+        scenario_type: input.scenarioType,
+        monthly_minutes: effectiveMinutes,
+        theoretical_monthly_revenue: theoreticalMonthlyRevenue,
+      },
+    });
+    await client.query("commit");
+    return modelId;
+  } catch (e) {
+    await client.query("rollback");
+    throw e;
+  } finally {
+    client.release();
+  }
+}
+
+const manualCostItemSchema = z.object({
+  scenarioType: z.enum(["normal", "overtime", "custom"]).default("normal"),
+  costCategory: z.string().trim().min(1, "Maliyet kategorisi gerekli").max(160),
+  description: z.string().trim().max(500).optional(),
+  monthlyAmount: z.number().nonnegative("Aylık maliyet negatif olamaz"),
+  staffCount: z.number().int().nonnegative().nullable().optional(),
+  monthlyWorkHours: z.number().positive().nullable().optional(),
+  efficiencyRate: z.number().min(0.05).max(2).nullable().optional(),
+  notes: z.string().trim().max(1000).optional(),
+});
+
+export async function recomputeCostModelRollup(client: PoolClient, costModelId: string): Promise<void> {
+  const sumRes = await client.query<{
+    items_total: string | null;
+    lines_total: string | null;
+    max_hours: string | null;
+    avg_eff: string | null;
+    cap_minutes: string | null;
+  }>(
+    `select
+       (select sum(monthly_amount) from public.cost_model_items where cost_model_id = $1) as items_total,
+       (select sum(amount) from public.cost_breakdown_lines where cost_model_id = $1) as lines_total,
+       (select max(monthly_work_hours) from public.cost_model_items where cost_model_id = $1) as max_hours,
+       (select avg(efficiency_rate) from public.cost_model_items where cost_model_id = $1 and efficiency_rate is not null) as avg_eff,
+       (select cap.monthly_minutes
+          from public.cost_models cm
+          left join public.capacity_models cap on cap.id = cm.capacity_model_id
+         where cm.id = $1) as cap_minutes`,
+    [costModelId],
+  );
+  const row = sumRes.rows[0];
+  const itemsTotal = moneyOrNull(row?.items_total ?? null);
+  const linesTotal = moneyOrNull(row?.lines_total ?? null);
+  const totalFixed =
+    itemsTotal == null && linesTotal == null
+      ? null
+      : money(decimal(itemsTotal ?? 0).plus(linesTotal ?? 0).toString());
+
+  const maxHours = rateOrNull(row?.max_hours ?? null);
+  const avgEff = rateOrNull(row?.avg_eff ?? null);
+  const capMinutes = rateOrNull(row?.cap_minutes ?? null);
+  const derivedMinutes =
+    maxHours != null
+      ? rate(mul(mul(maxHours, 60), avgEff ?? 1).toString())
+      : capMinutes;
+  const breakEven = breakEvenTLPerMin(totalFixed, derivedMinutes);
+
+  await client.query(
+    `update public.cost_models
+        set total_fixed_cost = $2,
+            monthly_allocated_cost = $2,
+            effective_monthly_minutes = coalesce($3, effective_monthly_minutes),
+            break_even_tl_per_min = coalesce($4, break_even_tl_per_min),
+            break_even_torna_tl_per_min = coalesce($4, break_even_torna_tl_per_min),
+            break_even_freze_tl_per_min = coalesce($4, break_even_freze_tl_per_min)
+      where id = $1`,
+    [costModelId, totalFixed, derivedMinutes, breakEven],
+  );
+}
+
+export async function upsertCostModelManual(
+  pool: Pool,
+  raw: unknown,
+  actorId: string,
+): Promise<string> {
+  const input = parseOrThrow(manualCostItemSchema, raw, "Maliyet kalemi");
+  const client = await pool.connect();
+  try {
+    await client.query("begin");
+    const capRes = await client.query<{ id: string }>(
+      `select id from public.capacity_models order by created_at desc limit 1`,
+    );
+    const capacityId = capRes.rows[0]?.id ?? null;
+
+    const modelRes = await client.query<{ id: string }>(
+      `select id from public.cost_models
+        where scenario_type = $1 and source_sheet_id is null
+        order by created_at asc limit 1`,
+      [input.scenarioType],
+    );
+    let costModelId: string;
+    if ((modelRes.rowCount ?? 0) > 0) {
+      costModelId = modelRes.rows[0].id;
+    } else {
+      const insModel = await client.query<{ id: string }>(
+        `insert into public.cost_models
+           (capacity_model_id, model_name, scenario_type)
+         values ($1, $2, $3)
+         returning id`,
+        [capacityId, `Maliyet Modeli (${input.scenarioType})`, input.scenarioType],
+      );
+      costModelId = insModel.rows[0].id;
+    }
+
+    const existingItem = await client.query<{ id: string }>(
+      `select id from public.cost_model_items
+        where cost_model_id = $1
+          and lower(cost_category) = lower($2)
+          and source_row_id is null
+        limit 1`,
+      [costModelId, input.costCategory],
+    );
+    let itemId: string;
+    if ((existingItem.rowCount ?? 0) > 0) {
+      itemId = existingItem.rows[0].id;
+      await client.query(
+        `update public.cost_model_items
+            set description = $2,
+                monthly_amount = $3,
+                staff_count = $4,
+                monthly_work_hours = $5,
+                efficiency_rate = $6,
+                notes = $7
+          where id = $1`,
+        [
+          itemId,
+          input.description ?? null,
+          input.monthlyAmount,
+          input.staffCount ?? null,
+          input.monthlyWorkHours ?? null,
+          input.efficiencyRate ?? null,
+          input.notes ?? null,
+        ],
+      );
+    } else {
+      const insItem = await client.query<{ id: string }>(
+        `insert into public.cost_model_items
+           (cost_model_id, scenario_type, cost_category, description, monthly_amount,
+            currency, staff_count, monthly_work_hours, efficiency_rate, notes, created_by)
+         values ($1,$2,$3,$4,$5,'TRY',$6,$7,$8,$9,$10)
+         returning id`,
+        [
+          costModelId,
+          input.scenarioType,
+          input.costCategory,
+          input.description ?? null,
+          input.monthlyAmount,
+          input.staffCount ?? null,
+          input.monthlyWorkHours ?? null,
+          input.efficiencyRate ?? null,
+          input.notes ?? null,
+          actorId,
+        ],
+      );
+      itemId = insItem.rows[0].id;
+    }
+
+    await recomputeCostModelRollup(client, costModelId);
+    await audit(client, {
+      actor: actorId,
+      action: "upsert_cost_model_item_manual",
+      entityTable: "cost_model_items",
+      entityId: itemId,
+      after: {
+        cost_model_id: costModelId,
+        scenario_type: input.scenarioType,
+        cost_category: input.costCategory,
+        monthly_amount: input.monthlyAmount,
+      },
+    });
+    await client.query("commit");
+    return itemId;
+  } catch (e) {
+    await client.query("rollback");
+    throw e;
+  } finally {
+    client.release();
+  }
+}
+
+const manualMachineRoiSchema = z.object({
+  name: z.string().trim().min(1, "Makine adı gerekli").max(160),
+  machineCode: z.string().trim().max(80).optional(),
+  purchaseDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable().optional(),
+  purchaseCost: z.number().nonnegative().nullable().optional(),
+  monthlyRevenue: z.number().nonnegative().nullable().optional(),
+  monthlyOperatingCost: z.number().nonnegative().nullable().optional(),
+  annualMaintenanceCost: z.number().nonnegative().nullable().optional(),
+  utilizationRate: z.number().min(0).max(200).nullable().optional(),
+  usefulLifeMonths: z.number().int().positive().nullable().optional(),
+  snapshotYear: z.number().int().min(2000).max(2100).nullable().optional(),
+  annualRevenue: z.number().nonnegative().nullable().optional(),
+  annualCost: z.number().nonnegative().nullable().optional(),
+  notes: z.string().trim().max(1000).optional(),
+});
+
+export async function upsertMachineRoiManual(
+  pool: Pool,
+  raw: unknown,
+  actorId: string,
+): Promise<string> {
+  const input = parseOrThrow(manualMachineRoiSchema, raw, "Makine ROI");
+  const personalTokens = ["maaş", "maas", "kira", "market", "okul", "aile", "şahsi", "sahsi", "kişisel", "kisisel"];
+  const lowerName = input.name.toLocaleLowerCase("tr-TR");
+  if (personalTokens.some((tok) => lowerName.includes(tok))) {
+    throw new DomainError("VALIDATION", `'${input.name}' makine ekonomisi dışında kişisel/aile gideri içeriyor.`);
+  }
+  const utilNorm =
+    input.utilizationRate == null
+      ? null
+      : input.utilizationRate > 2
+        ? Number(decimal(input.utilizationRate).div(100).toFixed(4))
+        : input.utilizationRate;
+
+  const client = await pool.connect();
+  try {
+    await client.query("begin");
+    const existing = await client.query<{ id: string }>(
+      `select id from public.machine_assets where lower(name) = lower($1) limit 1`,
+      [input.name],
+    );
+    let machineId: string;
+    if ((existing.rowCount ?? 0) > 0) {
+      machineId = existing.rows[0].id;
+      await client.query(
+        `update public.machine_assets
+            set machine_code = coalesce($2, machine_code),
+                purchase_date = coalesce($3::date, purchase_date),
+                purchase_cost = coalesce($4, purchase_cost),
+                monthly_revenue = coalesce($5, monthly_revenue),
+                monthly_operating_cost = coalesce($6, monthly_operating_cost),
+                annual_maintenance_cost = coalesce($7, annual_maintenance_cost),
+                utilization_rate = coalesce($8, utilization_rate),
+                useful_life_months = coalesce($9, useful_life_months),
+                notes = coalesce($10, notes)
+          where id = $1`,
+        [
+          machineId,
+          input.machineCode ?? null,
+          input.purchaseDate ?? null,
+          input.purchaseCost ?? null,
+          input.monthlyRevenue ?? null,
+          input.monthlyOperatingCost ?? null,
+          input.annualMaintenanceCost ?? null,
+          utilNorm,
+          input.usefulLifeMonths ?? null,
+          input.notes ?? null,
+        ],
+      );
+    } else {
+      const ins = await client.query<{ id: string }>(
+        `insert into public.machine_assets
+           (name, machine_code, purchase_date, purchase_cost, currency,
+            monthly_revenue, monthly_operating_cost, annual_maintenance_cost,
+            utilization_rate, useful_life_months, is_active, notes)
+         values ($1,$2,$3::date,$4,'TRY',$5,$6,$7,$8,$9,true,$10)
+         returning id`,
+        [
+          input.name,
+          input.machineCode ?? null,
+          input.purchaseDate ?? null,
+          input.purchaseCost ?? null,
+          input.monthlyRevenue ?? null,
+          input.monthlyOperatingCost ?? null,
+          input.annualMaintenanceCost ?? null,
+          utilNorm,
+          input.usefulLifeMonths ?? null,
+          input.notes ?? null,
+        ],
+      );
+      machineId = ins.rows[0].id;
+    }
+
+    if (input.snapshotYear != null && (input.annualRevenue != null || input.annualCost != null)) {
+      const remaining =
+        input.annualRevenue != null && input.annualCost != null
+          ? money(decimal(input.annualRevenue).minus(input.annualCost).toString())
+          : null;
+      await client.query(
+        `insert into public.machine_roi_snapshots
+           (machine_asset_id, snapshot_year, revenue, cost, remaining, net_after_tax, confidence, notes)
+         values ($1, $2, $3, $4, $5, $5, 'reviewed', $6)
+         on conflict (machine_asset_id, snapshot_year) do update
+           set revenue = excluded.revenue,
+               cost = excluded.cost,
+               remaining = excluded.remaining,
+               net_after_tax = excluded.net_after_tax,
+               confidence = 'reviewed',
+               notes = coalesce(excluded.notes, public.machine_roi_snapshots.notes)`,
+        [
+          machineId,
+          input.snapshotYear,
+          input.annualRevenue ?? null,
+          input.annualCost ?? null,
+          remaining,
+          input.notes ?? null,
+        ],
+      );
+    }
+
+    await audit(client, {
+      actor: actorId,
+      action: "upsert_machine_roi_manual",
+      entityTable: "machine_assets",
+      entityId: machineId,
+      after: {
+        name: input.name,
+        purchase_cost: input.purchaseCost ?? null,
+        snapshot_year: input.snapshotYear ?? null,
+        annual_revenue: input.annualRevenue ?? null,
+        annual_cost: input.annualCost ?? null,
+      },
+    });
+    await client.query("commit");
+    return machineId;
+  } catch (e) {
+    await client.query("rollback");
+    throw e;
+  } finally {
+    client.release();
+  }
 }

@@ -1,5 +1,6 @@
 import type { Pool } from "pg";
 import { audit } from "@/lib/audit";
+import { DomainError } from "@/lib/domain-error";
 
 export type ArchiveEntity =
   | "payments"
@@ -29,15 +30,10 @@ export interface ArchiveRecord {
 }
 
 const assertEntity = (entity: string): ArchiveEntity => {
-  if (!ALLOWED.has(entity as ArchiveEntity)) throw new Error("Desteklenmeyen arşiv türü");
+  if (!ALLOWED.has(entity as ArchiveEntity)) throw new DomainError("VALIDATION_ERROR", "Desteklenmeyen arşiv türü.");
   return entity as ArchiveEntity;
 };
 
-// actorDisplayName is a free-text label for the entity's own archived_by_label column —
-// distinct from actorId (the real audit_logs.actor uuid FK). No default value: this used
-// to silently fall back to a hardcoded "Yerel kullanıcı" string, exactly the kind of
-// unattributable placeholder P0-A exists to eliminate — every caller must now supply the
-// real logged-in user's display name.
 export async function archiveRecord(
   pool: Pool,
   entityRaw: string,
@@ -51,13 +47,14 @@ export async function archiveRecord(
   try {
     await client.query("begin");
     const before = await client.query(`select * from public.${entity} where id=$1 for update`, [id]);
-    if (before.rowCount !== 1) throw new Error("Kayıt bulunamadı");
-    await client.query(
+    if (before.rowCount !== 1) throw new DomainError("NOT_FOUND", "Kayıt bulunamadı.");
+    const upd = await client.query(
       `update public.${entity}
        set archived_at=now(),archive_reason=$2,archived_by_label=$3${entity === "payments" ? ",status='archived'" : ""}
        where id=$1`,
       [id, reason || null, actorDisplayName],
     );
+    if (upd.rowCount !== 1) throw new DomainError("FORBIDDEN", "Kayıt arşivlenemedi veya yetkiniz yok.");
     await audit(client, {
       actor: actorId, action: "archive_record", entityTable: entity, entityId: id,
       before: before.rows[0], after: { archived: true, reason, actor: actorDisplayName },
@@ -77,13 +74,14 @@ export async function restoreRecord(pool: Pool, entityRaw: string, id: string, a
   try {
     await client.query("begin");
     const before = await client.query(`select * from public.${entity} where id=$1 for update`, [id]);
-    if (before.rowCount !== 1) throw new Error("Kayıt bulunamadı");
-    await client.query(
+    if (before.rowCount !== 1) throw new DomainError("NOT_FOUND", "Kayıt bulunamadı.");
+    const upd = await client.query(
       `update public.${entity}
        set archived_at=null,archive_reason=null,archived_by_label=null${entity === "payments" ? ",status='active'" : ""}
        where id=$1`,
       [id],
     );
+    if (upd.rowCount !== 1) throw new DomainError("FORBIDDEN", "Kayıt geri yüklenemedi veya yetkiniz yok.");
     await audit(client, {
       actor: actorId, action: "restore_record", entityTable: entity, entityId: id,
       before: before.rows[0], after: { archived: false },
@@ -124,8 +122,6 @@ export async function listArchive(
   entity?: ArchiveEntity,
   search = "",
 ): Promise<ArchiveRecord[]> {
-  // Module archives query only their own table. A schema issue in an unrelated
-  // module can therefore no longer break the Payments archive screen.
   const selected = entity ? [archiveQueries[entity]] : Object.values(archiveQueries);
   const result = await pool.query(
     `select entity_table,id,label,to_char(archived_at,'YYYY-MM-DD HH24:MI') archived_at,

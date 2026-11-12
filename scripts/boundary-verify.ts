@@ -1,19 +1,10 @@
-// Faz 15 — the AI / integration BOUNDARY gate.
+// Faz 15 & Faz 51 (E1) — the AI / integration BOUNDARY gate.
 //
 // Every other gate in this repo asks "does the code do the right thing when run". This one asks a
 // structural question that running cannot answer as reliably: can financial data leave this process
 // through a path nobody reviewed, and can a secret escape into a log, an audit row, or the client
 // bundle? Those are properties of the SOURCE, so they are checked against the source — statically,
 // with no database and no network, which is also why it can live in the `static` CI job.
-//
-// It is the written-down form of decisions the codebase already made and defends in comments:
-//   - integrations/types.ts: "no integration can reach the network on its own" (the ctx.http seam).
-//   - ai/engine.ts: the model is called only behind mutationIntent() + the AI_FORCE_DETERMINISTIC
-//     kill switch, and the AI writes only to its own snapshot log, never to a financial table.
-//   - reminders/transport.ts & fx/provider.ts: env is read LAZILY, and process.env is never touched
-//     outside @/lib/env and the one credential seam.
-// A comment is a hope; this turns each into an assertion that fails the build when a future change
-// breaks it.
 
 import { readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
@@ -36,9 +27,7 @@ const PROCESS_ENV_ALLOWLIST = new Set([
   "lib/integrations/types.ts",     // readCredential(envVarName) — reads by NAME, returns null, never logs
 ]);
 
-// Modules that must read env LAZILY (await import), never at module top level, because a top-level
-// import of @/lib/env drags a DATABASE_URL requirement into anything that imports them — the bug
-// that made phase6b/phase25/phase38 verifies unrunnable under their own documented commands.
+// Modules that must read env LAZILY (await import), never at module top level.
 const LAZY_ENV_FILES = ["lib/ai/engine.ts", "lib/reminders/transport.ts"];
 
 // The AI/commentary subtree may never mutate the ledger. It writes only to its own logs
@@ -72,14 +61,7 @@ function read(rel: string): string {
 function underAny(rel: string, dirs: string[]): boolean {
   return dirs.some((d) => rel === d || rel.startsWith(`${d}/`));
 }
-/**
- * Match a regex per line, returning violations — but SKIPPING comment lines. A naive comment
- * stripper cannot be used because `//` also appears inside every `https://` URL; instead whole
- * comment lines are skipped (full-line `//`, jsdoc `*` continuations, and `/* … *​/` blocks tracked
- * across lines). Real fetch/process.env/mutation code lives on non-comment lines, which is what a
- * boundary this strict is about. Caught the hard way: check B first flagged transport.ts's own
- * comment that says "this file never touches process.env".
- */
+
 function scan(rel: string, content: string, re: RegExp, keep: (line: string) => boolean = () => true): Violation[] {
   const out: Violation[] = [];
   let inBlock = false;
@@ -98,18 +80,15 @@ function scan(rel: string, content: string, re: RegExp, keep: (line: string) => 
 const files = sourceFiles();
 
 // ── A. Egress containment ────────────────────────────────────────────────────────────────
-// Any fetch() outside the allowlist must be a same-origin RELATIVE call ("/api/…"); an absolute
-// URL or a variable target is an unreviewed egress path and fails.
 {
   const v: Violation[] = [];
   for (const rel of files) {
     if (EGRESS_ALLOWLIST.has(rel)) continue;
     for (const hit of scan(rel, read(rel), /\bfetch\s*\(/)) {
       const after = hit.text.slice(hit.text.search(/\bfetch\s*\(/)).replace(/\bfetch\s*\(\s*/, "");
-      const sameOrigin = /^[`"']\//.test(after); // fetch("/api/...") — not egress
+      const sameOrigin = /^[`"']\//.test(after);
       if (!sameOrigin) v.push(hit);
     }
-    // websockets / raw node http clients are egress too
     for (const hit of scan(rel, read(rel), /\bnew WebSocket\b|from ["']node:(https?|net|dns|tls)["']|require\(["']node:(https?|net)["']\)/)) v.push(hit);
   }
   record("A. ağ çıkışı yalnız izinli 4 sınır modülünde (fetch/ws/raw-http)", v);
@@ -120,7 +99,6 @@ const files = sourceFiles();
   const v: Violation[] = [];
   for (const rel of files) {
     if (PROCESS_ENV_ALLOWLIST.has(rel)) continue;
-    // Only enforce over the boundary-relevant subtrees; app routes may read non-secret vars.
     if (!underAny(rel, ["lib/ai", "lib/assistant", "lib/reminders", "lib/fx", "lib/integrations", "lib/search"])) continue;
     v.push(...scan(rel, read(rel), /\bprocess\.env\b/));
   }
@@ -131,7 +109,6 @@ const files = sourceFiles();
 {
   const v: Violation[] = [];
   for (const rel of LAZY_ENV_FILES) {
-    // A TOP-LEVEL import line that pulls @/lib/env. The lazy form (await import("@/lib/env")) is fine.
     v.push(...scan(rel, read(rel), /^\s*import\b[^\n]*["']@\/lib\/env["']/));
   }
   record("C. ai/engine + reminders/transport env'i tembel okur (üst-seviye import yok)", v);
@@ -180,14 +157,32 @@ const files = sourceFiles();
   record("G. ai/engine kill switch (aiForceDeterministic) + mutationIntent kapısı yerinde", v);
 }
 
-// ── H. accounting connector refuses permanently (no vendor chosen) ─────────────────────────
+// ── H. Paraşüt v4 connector is strictly read-only GET on https://api.parasut.com/v4/ ─────────
 {
   const conn = read("lib/integrations/connectors.ts");
+  const clientSrc = read("lib/integrations/parasut/client.ts");
   const v: Violation[] = [];
   if (!/ACCOUNTING_PENDING_REASON/.test(conn)) v.push({ file: "lib/integrations/connectors.ts", line: 0, text: "ACCOUNTING_PENDING_REASON kayıp" });
   if (!/accountingConnector/.test(conn)) v.push({ file: "lib/integrations/connectors.ts", line: 0, text: "accountingConnector kayıp" });
   if (!/permanent:\s*true/.test(conn)) v.push({ file: "lib/integrations/connectors.ts", line: 0, text: "kalıcı ret (permanent:true) kayıp" });
-  record("H. muhasebe konnektörü kalıcı reddediyor (vendor seçilmedi)", v);
+  if (!/assertParasutV4GetOnly/.test(clientSrc)) {
+    v.push({ file: "lib/integrations/parasut/client.ts", line: 0, text: "assertParasutV4GetOnly salt-okunur GET muhafızı kayıp" });
+  }
+  const parasutFiles = files.filter((rel) => rel.startsWith("lib/integrations/parasut/"));
+  for (const rel of parasutFiles) {
+    const content = read(rel);
+    // Reject any non-api.parasut.com external https:// URL
+    for (const hit of scan(rel, content, /https:\/\/(?!api\.parasut\.com\b)[a-z0-9.-]+/i)) {
+      v.push(hit);
+    }
+    // Reject any POST/PUT/PATCH/DELETE method outside oauth.ts's /oauth/token request
+    if (rel !== "lib/integrations/parasut/oauth.ts") {
+      for (const hit of scan(rel, content, /method:\s*["'](POST|PUT|PATCH|DELETE)["']/i)) {
+        v.push(hit);
+      }
+    }
+  }
+  record("H. Paraşüt v4 konnektörü yalnız https://api.parasut.com adresine bağlanır ve /v4/ altında sıfır POST/PUT/PATCH/DELETE içerir", v);
 }
 
 const failed = results.filter((r) => !r.pass);

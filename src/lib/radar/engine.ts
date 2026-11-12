@@ -20,6 +20,7 @@ import {
   type RiskThresholds,
 } from "./rules";
 import { APP_ROLES, DB_ROLE, can } from "@/lib/authz/matrix";
+import { evaluateAndRequestIfNeededWithClient } from "@/lib/approvals/engine";
 
 /* ── Bakım yazımları ve SALT-OKUR katmanlar ────────────────────────────────────────────────
  *
@@ -357,6 +358,13 @@ export async function generateInstancesForMonthWithClient(
   actorId: string,
 ): Promise<GenerateResult> {
   assertISODateString(monthStartISO);
+  const lockedMonth = await client.query(
+    `select 1 from public.cashflow_months where month_start = $1::date and status = 'locked'`,
+    [monthStartISO],
+  );
+  if ((lockedMonth.rowCount ?? 0) > 0) {
+    return { monthStart: monthStartISO, created: 0, skippedExisting: 0, shortMonthAdjusted: 0 };
+  }
   const payments = await client.query<{
     id: string;
     due_day: number;
@@ -483,6 +491,7 @@ export async function refreshRiskFlagsWithClient(client: PoolClient, todayISO: s
     `select id, to_char(due_date,'YYYY-MM-DD') as due_date, amount, status, paid_amount, currency
      from public.payment_instances
      where instance_month >= $1 and instance_month < $2
+       and not exists (select 1 from public.cashflow_months cm where cm.status = 'locked' and cm.month_start in (instance_month, date_trunc('month', due_date)::date, case when paid_at is not null then date_trunc('month', (paid_at at time zone 'Europe/Istanbul')::date)::date else null end))
      order by id`,
     [from, to],
   );
@@ -545,13 +554,22 @@ export async function markInstancePaid(
   try {
     await client.query("begin");
     const before = await client.query(
-      `select id, status, amount, paid_amount, paid_at from public.payment_instances where id=$1 for update`,
+      `select id, status, amount, paid_amount, paid_at, direction, approval_status from public.payment_instances where id=$1 for update`,
       [instanceId],
     );
     if (before.rowCount !== 1) throw await instanceMissingReason(client, instanceId);
     const currentStatus = before.rows[0].status as string;
     if (!PAYABLE_FROM.has(currentStatus)) {
       throw new DomainError(`payment_instances ${instanceId}: '${currentStatus}' durumundan ödendi işaretlenemez`);
+    }
+    if (
+      before.rows[0].direction === "outflow" &&
+      ["pending_approval", "rejected"].includes(String(before.rows[0].approval_status ?? "not_required"))
+    ) {
+      throw new DomainError(
+        "FORBIDDEN",
+        "Bu ödeme kalemi ikinci onay (maker-checker) bekliyor veya reddedildi; onaylanmadan ödendi işaretlenemez.",
+      );
     }
     const amount = before.rows[0].amount == null ? null : Number(before.rows[0].amount);
     const finalPaid = paidAmount ?? amount; // may stay null: unknown paid amount is honest
@@ -611,7 +629,7 @@ export async function markInstancePartial(pool: Pool, instanceId: string, paidAm
   try {
     await client.query("begin");
     const before = await client.query(
-      `select id, status, amount, paid_amount from public.payment_instances where id=$1 for update`,
+      `select id, status, amount, paid_amount, direction, approval_status from public.payment_instances where id=$1 for update`,
       [instanceId],
     );
     if (before.rowCount !== 1) throw await instanceMissingReason(client, instanceId);
@@ -624,6 +642,15 @@ export async function markInstancePartial(pool: Pool, instanceId: string, paidAm
     // freshly migrated DB; migration 0033 closes the matching gap in the trigger's allow-list).
     if (!PAYABLE_FROM.has(currentStatus)) {
       throw new DomainError(`payment_instances ${instanceId}: '${currentStatus}' durumundan kısmi ödendi işaretlenemez`);
+    }
+    if (
+      before.rows[0].direction === "outflow" &&
+      ["pending_approval", "rejected"].includes(String(before.rows[0].approval_status ?? "not_required"))
+    ) {
+      throw new DomainError(
+        "FORBIDDEN",
+        "Bu ödeme kalemi ikinci onay (maker-checker) bekliyor veya reddedildi; onaylanmadan kısmi ödeme işlenemez.",
+      );
     }
     const total = before.rows[0].amount == null ? null : Number(before.rows[0].amount);
     if (!Number.isFinite(paidAmount) || paidAmount <= 0 || (total != null && paidAmount >= total)) {
@@ -660,8 +687,12 @@ export async function setInstanceAmount(
       amount: string | null;
       amount_status: string;
       amount_source: string;
+      direction: string;
+      currency: string;
+      approval_status: string;
+      due_date: string;
     }>(
-      `select id, amount, amount_status, amount_source from public.payment_instances where id=$1 for update`,
+      `select id, amount, amount_status, amount_source, direction, currency, approval_status, to_char(due_date,'YYYY-MM-DD') as due_date from public.payment_instances where id=$1 for update`,
       [instanceId],
     );
     if (before.rowCount !== 1) throw await instanceMissingReason(client, instanceId);
@@ -681,6 +712,27 @@ export async function setInstanceAmount(
         entityId: instanceId, before: b,
         after: { amount, amount_status: "known", amount_source: "manual" },
       });
+      if (b.direction === "outflow") {
+        const evaluated = await evaluateAndRequestIfNeededWithClient(client, {
+          ruleInput: {
+            subjectTable: "payment_instances",
+            triggerKind: "payment",
+            amount,
+            currency: b.currency,
+          },
+          subjectId: instanceId,
+          subjectLabel: `Ödeme kalemi (${b.due_date})`,
+          amount,
+          currency: b.currency,
+          actorId,
+        });
+        if (evaluated.approvalId) {
+          await client.query(
+            `update public.payment_instances set approval_status='pending_approval', approval_id=$2 where id=$1`,
+            [instanceId, evaluated.approvalId],
+          );
+        }
+      }
     }
     await client.query("commit");
   } catch (e) {
@@ -862,7 +914,7 @@ export async function reconcileInstancesWithClient(
             to_char(due_date,'YYYY-MM-DD') as due_date,
             amount, amount_status, amount_source
      from public.payment_instances
-     where payment_id=$1 and status = any($2) and due_date >= $3
+     where payment_id=$1 and status = any($2) and due_date >= $3 and not exists (select 1 from public.cashflow_months cm where cm.status = 'locked' and cm.month_start in (instance_month, date_trunc('month', due_date)::date))
      order by due_date, id
      for update`,
     [paymentId, Array.from(RECONCILIABLE_FROM), todayISO],

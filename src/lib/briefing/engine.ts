@@ -1,30 +1,18 @@
-// Faz 32 — CFO morning briefing.
+// Faz 32 + Faz 46 — CFO morning briefing.
 //
 // ═══ THE CONSISTENCY REQUIREMENT IS STRUCTURAL, NOT ASPIRATIONAL ═══
 //
-// The plan forbids the briefing from deviating from the dashboards beneath it. The way that is
-// guaranteed here is not "we tested that the numbers matched once": this module issues NO SQL of
-// its own for any headline figure. It calls the SAME loader functions the pages call —
-// loadPositionSummary/loadLiquidityGap (treasury), loadWorkingCapital (costing),
-// loadControlDashboard (controls), loadOpenPromises (collections), instancesOn/overdueOpen
-// (radar). A divergence would require the same function returning two different answers in one
-// request.
-//
-// That is the difference from Faz 26's treasury reconciliation, deliberately: there, two figures
-// came from genuinely different sources and the honest thing was to REPORT the gap. Here there is
-// one source, so a gap would be a bug rather than a finding — and phase32:verify asserts equality
-// rather than reporting a difference.
+// This module issues NO SQL of its own for any headline figure. It calls the SAME loader functions
+// the pages call — loadPositionSummary/loadLiquidityGap (treasury), loadWorkingCapital (costing),
+// loadControlDashboard (controls), loadOpenPromises (collections), instancesOn/overdueOpen (radar).
 //
 // ═══ NO LLM IN THE BRIEFING ═══
 //
-// This module does not import @/lib/ai. reports/engine.ts (Faz 6/12) established the boundary:
-// the numbers are computed deterministically and a model may only comment on them afterwards. A
-// briefing whose figures had passed through a language model could not be reproduced by the
-// person reading it against the dashboard.
+// This module does not import @/lib/ai.
 
 import type { Pool } from "pg";
 import { audit } from "@/lib/audit";
-import { moneyOrNull } from "@/lib/money";
+import { decimal, money, moneyOrNull } from "@/lib/money";
 import { istanbulDateISO } from "@/lib/reports/rules";
 import { instancesOn, overdueOpen } from "@/lib/radar/queries";
 import { loadConfiguredFloorCurrencies, loadLiquidityGap, loadPositionSummary } from "@/lib/treasury/engine";
@@ -33,12 +21,14 @@ import { loadControlDashboard, loadAlerts } from "@/lib/controls/engine";
 import { loadOpenPromises } from "@/lib/collections/promises-engine";
 import { buildWidgets, widgetsNeedingAttention, type CockpitWidgetFacts } from "@/lib/home/cockpit";
 import { renderBriefing, summariseDay, type BriefingFacts } from "./rules";
+import { loadOvernightDeltaAttribution } from "./delta-attribution";
 
 /**
  * Gather the briefing's facts from the systems that own them.
  *
- * Every value below is READ from an existing loader. Nothing is recomputed, which is what makes
- * the summary and the detail incapable of disagreeing.
+ * Faz 46: Never fall back to a non-TRY currency row (`summary[0]` or `gaps.find(horizonDays === 7)`)
+ * because `renderBriefing` formats figures with `" TL"`. When no TRY account/row exists, the TRY
+ * headline figures stay `null` ("—") rather than mislabelling USD/EUR cash as Turkish Lira.
  */
 export async function loadBriefingFacts(pool: Pool, todayISO: string): Promise<BriefingFacts> {
   const [summary, gaps, floorCurrencies, working, controls, alerts, promises, todayInstances, overdue] =
@@ -54,13 +44,10 @@ export async function loadBriefingFacts(pool: Pool, todayISO: string): Promise<B
       overdueOpen(pool, todayISO),
     ]);
 
-  const tryPos = summary.find((s) => s.currency === "TRY") ?? summary[0] ?? null;
-  const gap7 = gaps.find((g) => g.currency === "TRY" && g.horizonDays === 7)
-    ?? gaps.find((g) => g.horizonDays === 7) ?? null;
-  const gap30 = gaps.find((g) => g.currency === "TRY" && g.horizonDays === 30)
-    ?? gaps.find((g) => g.horizonDays === 30) ?? null;
+  const tryPos = summary.find((s) => s.currency === "TRY") ?? null;
+  const gap7 = gaps.find((g) => g.currency === "TRY" && g.horizonDays === 7) ?? null;
+  const gap30 = gaps.find((g) => g.currency === "TRY" && g.horizonDays === 30) ?? null;
 
-  // PHASE 2.2 (#11): currency BASE'den gelir; eksikse null (= bilinmiyor) → toplam dışı, sayılır.
   const today = summariseDay(todayInstances.map((i) => ({
     amount: i.amount, direction: (i as { direction?: string }).direction ?? "outflow",
     currency: (i as { currency?: string | null }).currency ?? null,
@@ -70,11 +57,14 @@ export async function loadBriefingFacts(pool: Pool, todayISO: string): Promise<B
     currency: (i as { currency?: string | null }).currency ?? null,
   })));
 
-  // The floor comes from the SAME row as the 7-day gap, so it is in the same currency as the cash
-  // it is compared with. A currency without an active min-cash policy has NO floor: the view
-  // still reports 0 for it (coalesce), which every verdict downstream would read as a configured
-  // "do not go below zero". Unknown is null here, so "Taban tanımlı değil" can actually be said.
   const minCashFloor = gap7 != null && floorCurrencies.has(gap7.currency) ? gap7.minCashFloor : null;
+  const availableCash = tryPos?.availableNow ?? null;
+  const liquidityGap7 = gap7?.financingNeed ?? null;
+  const overnightDelta = await loadOvernightDeltaAttribution(pool, todayISO, {
+    currency: "TRY",
+    currentAvailableCash: availableCash,
+    currentLiquidityGap7: liquidityGap7,
+  });
 
   return {
     todayISO,
@@ -102,25 +92,18 @@ export async function loadBriefingFacts(pool: Pool, todayISO: string): Promise<B
     dsoDays: working?.dsoDays ?? null,
     dpoDays: working?.dpoDays ?? null,
     cycleExcludingInventory: working?.cycleExcludingInventory ?? null,
+    overnightDelta,
   };
 }
 
 /**
  * Cockpit widget facts, from the SAME loaders as the briefing.
- *
- * Shared deliberately: the tiles a CFO sees on the overview and the numbers in the morning mail
- * must not be able to drift apart, and the only way to guarantee that is for both to come from one
- * gathering step.
  */
 async function gatherWidgetFacts(
   pool: Pool,
   todayISO: string,
   briefingFacts?: Promise<BriefingFacts> | BriefingFacts,
 ): Promise<{ briefingFacts: BriefingFacts; widgetFacts: CockpitWidgetFacts }> {
-  // All independent reads start together. The briefing page passes its in-flight facts promise
-  // here, so the shared treasury/working-capital/control loaders execute once rather than twice.
-  // The five small aggregate queries used to run serially after those loaders, adding five full
-  // round trips to every navigation.
   const [facts, working, controls, alerts, debt, facility, fx, budget, conc] = await Promise.all([
     briefingFacts ?? loadBriefingFacts(pool, todayISO),
     loadWorkingCapital(pool),
@@ -128,8 +111,6 @@ async function gatherWidgetFacts(
     loadAlerts(pool, 200),
     pool.query(`select coalesce(sum(total_cash_exposure),0) as due30
       from public.debt_maturity_ladder where sort_order = 1`),
-    // PHASE 2.2 (#32): netDebt = drawn − availableCash(TRY); yalnız TRY facility'ler toplanır.
-    // TRY-dışı facility'ler /finance/facilities sayfasında ayrıca sayılır (0094 foreign_*).
     pool.query(`select coalesce(sum(available_amount),0) as available, coalesce(sum(drawn_amount),0) as drawn
       from public.credit_facility_utilization where status = 'active' and currency = 'TRY'`),
     pool.query(`select sum(worst_case_20_delta) as worst from public.fx_exposure_summary`),
@@ -141,11 +122,6 @@ async function gatherWidgetFacts(
 
   return { briefingFacts: facts, widgetFacts: {
     availableCash: facts.availableCash,
-    // From the briefing's facts, like the cash beside it. This tile used to re-read the gap rows
-    // and take the first 7-day row with NO currency filter; the rows are sorted by currency, so
-    // with any EUR/GBP/CHF account it judged TRY cash against that currency's floor (0 — no policy)
-    // and showed a green "Taban korunuyor" while the TRY floor was breached and the liquidity
-    // tile, the badge and the briefing text all said otherwise.
     minCashFloor: facts.minCashFloor,
     liquidityGap7: facts.liquidityGap7,
     liquidityGap30: facts.liquidityGap30,
@@ -153,9 +129,9 @@ async function gatherWidgetFacts(
     payablesOpen: working?.payablesOpen ?? null,
     dsoDays: working?.dsoDays ?? null,
     dpoDays: working?.dpoDays ?? null,
-    // Net debt = drawn facilities less available cash. NULL cash yields NULL rather than
-    // pretending the position is simply the drawn balance.
-    netDebt: facts.availableCash == null ? null : Number((drawn - facts.availableCash).toFixed(2)),
+    netDebt: facts.availableCash == null
+      ? null
+      : money(decimal(drawn).minus(decimal(facts.availableCash))),
     facilityAvailable: moneyOrNull(facility.rows[0]?.available),
     debtDue30: moneyOrNull(debt.rows[0]?.due30),
     fxWorstCase20: moneyOrNull(fx.rows[0]?.worst),
@@ -185,13 +161,6 @@ export interface BriefingResult {
   facts: BriefingFacts;
 }
 
-/**
- * Generate and store the CFO morning briefing.
- *
- * Stored as a `reports` row (report_type='cfo_briefing', widened in 0079) so it reuses the
- * existing report table, its body_md column, its history and its audit trail — rather than a
- * parallel briefings table with its own lifecycle and RLS.
- */
 export async function generateCfoBriefing(
   pool: Pool, todayISO: string, actorId: string,
 ): Promise<BriefingResult> {
@@ -219,7 +188,6 @@ export async function generateCfoBriefing(
       after: {
         todayISO, overdueCount: facts.overdueCount,
         criticalControls: facts.criticalControls.length,
-        // Recorded explicitly: a briefing reads and summarises; it changes no financial record.
         mutatedFinancialRecords: false, automated: true, llmUsed: false,
       },
     });
@@ -233,13 +201,6 @@ export async function generateCfoBriefing(
   }
 }
 
-/**
- * Send a generated briefing through an existing transport.
- *
- * `transport` is injected rather than constructed here so the caller decides Telegram or the
- * Faz 25 email channel, and so tests drive it with mockTransport. No new distribution mechanism is
- * invented — a failure is a reported result, never a throw, exactly as reminder delivery assumes.
- */
 export async function dispatchBriefing(
   pool: Pool,
   transport: { channel: string; send(message: string): Promise<{ ok: boolean; error?: string }> },
@@ -278,7 +239,6 @@ export async function loadCalendar(pool: Pool, fromISO: string, toISO: string) {
     label: x.label as string,
     categoryName: x.category_name as string | null,
     counterpartyName: x.counterparty_name as string | null,
-    // NULL for a facility renewal: a date that matters but moves no cash.
     amountSigned: moneyOrNull(x.amount_signed),
     currency: x.currency as string,
     status: x.status as string,

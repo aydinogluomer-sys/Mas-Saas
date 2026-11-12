@@ -1,9 +1,23 @@
-// Phase 0 spike — workbook safe-parse and sheet classification.
+// Phase 0 / Faz 41 (B1) — workbook safe-parse and sheet classification via lazy ExcelJS + zip-guard.
 // Types mirror the `source_sheets.detected_type` / `parse_confidence` DB enums
 // defined in implementation.md §8 exactly. Do not drift.
+//
+// IMPORTANT (Perf Faz 7 invariant): NEVER add a top-level value `import ExcelJS from "exceljs"`.
+// Only `import type ExcelJS from "exceljs"` is permitted at module top level; runtime loading MUST
+// stay inside `safeParseWorkbookBuffer` via `await import("exceljs")`.
 
 import { readFileSync } from "node:fs";
-import * as XLSX from "xlsx";
+import type ExcelJS from "exceljs";
+import {
+  decodeRange,
+  encodeCol,
+  excelJsValueToCellVal,
+  type ParsedWorkbook,
+  type ParsedWorksheet,
+} from "./row-utils";
+import { inspectZipSafety } from "./zip-guard";
+
+export const MAX_WORKBOOK_CELLS = 200_000;
 
 export type SheetDetectedType =
   | "loan_calculation"
@@ -14,21 +28,7 @@ export type SheetDetectedType =
   | "cost_model_normal"
   | "cost_model_overtime"
   | "monthly_cashflow"
-  // Faz 20. Present so this union stays identical to source_sheets.detected_type (migration
-  // 0041 added the same member to that CHECK) — the header rule above is "do not drift".
-  //
-  // classifySheetName NEVER returns it, on purpose. A statement import is an explicit act in
-  // which the operator chooses which bank account they are importing for, so the type is set
-  // by the statement importer rather than guessed from a sheet name. Guessing would also be
-  // actively dangerous here: the real workbook contains a sheet called "faiz hesaplama", and a
-  // plausible "hesap" keyword would have stolen it from loan_calculation.
   | "bank_statement"
-  // Faz V2. Migration 0089 aynı üyeyi CHECK'e ekledi — başlıktaki "do not drift" kuralı.
-  //
-  // classifySheetName bunu ASLA döndürmez. V2 sayfasının türü tahmin edilmez: dosya gizli
-  // `_MAS_META` sayfasında hangi şema olduğunu söyler, sayfa adları da sözleşmede sabittir.
-  // Değeri V2 eşleyicisi yazar. Ailenin kendisi (payments, checks, …) bu union'a girmez;
-  // sayfa düzeyinde `sheet_name_normalized`, satır düzeyinde `detected_entity_type` taşır.
   | "standard_import_v2"
   | "unknown";
 
@@ -46,7 +46,7 @@ export interface SheetInfo {
 }
 
 export type SafeParseResult =
-  | { ok: true; workbook: XLSX.WorkBook; fileSize: number }
+  | { ok: true; workbook: ParsedWorkbook; fileSize: number }
   | { ok: false; error: string; fileSize: number };
 
 /**
@@ -97,16 +97,67 @@ export function classifySheetName(rawName: string): {
   return { detectedType: "unknown", parseConfidence: "unknown" };
 }
 
-const ZIP_MAGIC = Buffer.from([0x50, 0x4b, 0x03, 0x04]); // PK\x03\x04 (xlsx)
-const CFB_MAGIC = Buffer.from([0xd0, 0xcf, 0x11, 0xe0]); // legacy .xls
+function convertExcelJsWorkbook(
+  wb: ExcelJS.Workbook,
+  maxCells: number = MAX_WORKBOOK_CELLS,
+): ParsedWorkbook {
+  const SheetNames: string[] = [];
+  const Sheets: Record<string, ParsedWorksheet> = {};
+  let totalCells = 0;
+
+  for (const ws of wb.worksheets) {
+    SheetNames.push(ws.name);
+    const parsedSheet: ParsedWorksheet = {};
+    let minR = Number.POSITIVE_INFINITY;
+    let minC = Number.POSITIVE_INFINITY;
+    let maxR = -1;
+    let maxC = -1;
+
+    ws.eachRow({ includeEmpty: false }, (row, rowNumber) => {
+      row.eachCell({ includeEmpty: false }, (cell, colNumber) => {
+        if (cell.isMerged && cell.master.address !== cell.address) return;
+
+        let cellText: string | null = null;
+        try {
+          cellText = cell.text ?? null;
+        } catch {
+          cellText = null;
+        }
+        const converted = excelJsValueToCellVal(cell.value, cell.formula ?? null, cellText);
+        if (!converted) return;
+
+        totalCells += 1;
+        if (totalCells > maxCells) {
+          throw new Error(
+            `Çalışma kitabı hücre tavanını aşıyor (${totalCells} > ${maxCells} hücre).`,
+          );
+        }
+
+        const r0 = rowNumber - 1;
+        const c0 = colNumber - 1;
+        const addr = cell.address || `${encodeCol(c0)}${rowNumber}`;
+        parsedSheet[addr] = converted;
+
+        if (r0 < minR) minR = r0;
+        if (c0 < minC) minC = c0;
+        if (r0 > maxR) maxR = r0;
+        if (c0 > maxC) maxC = c0;
+      });
+    });
+
+    if (maxR >= 0 && maxC >= 0) {
+      parsedSheet["!ref"] = `${encodeCol(minC)}${minR + 1}:${encodeCol(maxC)}${maxR + 1}`;
+    }
+    Sheets[ws.name] = parsedSheet;
+  }
+
+  return { SheetNames, Sheets };
+}
 
 /**
- * Opens a workbook defensively. The corrupt upload we must support
- * (all-zero bytes) would otherwise be "parsed" by the promiscuous xlsx
- * fallbacks, so the file signature is checked explicitly first —
- * implementation.md §1.1: "does not expose a valid XLSX/ZIP signature".
+ * Opens a workbook defensively using `inspectZipSafety` + lazy `ExcelJS`.
  */
-export function safeParseWorkbook(filePath: string): SafeParseResult {
+export async function safeParseWorkbook(filePath: string): Promise<SafeParseResult> {
   let buf: Buffer;
   try {
     buf = readFileSync(filePath);
@@ -116,21 +167,27 @@ export function safeParseWorkbook(filePath: string): SafeParseResult {
   return safeParseWorkbookBuffer(buf);
 }
 
-export function safeParseWorkbookBuffer(buf: Buffer): SafeParseResult {
-  if (buf.length === 0) {
-    return { ok: false, error: "empty file (0 bytes)", fileSize: 0 };
-  }
-  const head = buf.subarray(0, 4);
-  if (!head.equals(ZIP_MAGIC) && !head.equals(CFB_MAGIC)) {
-    const hex = head.toString("hex").padEnd(8, "0");
+export async function safeParseWorkbookBuffer(
+  buf: Buffer,
+  options?: { maxCells?: number; maxUncompressedBytes?: number; maxEntries?: number },
+): Promise<SafeParseResult> {
+  const safety = inspectZipSafety(buf, {
+    maxUncompressedBytes: options?.maxUncompressedBytes,
+    maxEntries: options?.maxEntries,
+  });
+  if (!safety.ok) {
     return {
       ok: false,
-      error: `no valid XLSX/ZIP signature (first bytes: 0x${hex}); file is not a parseable workbook`,
+      error: safety.error,
       fileSize: buf.length,
     };
   }
+
   try {
-    const workbook = XLSX.read(buf, { type: "buffer", cellFormula: true, cellStyles: false });
+    const { default: ExcelJSRuntime } = await import("exceljs");
+    const wb = new ExcelJSRuntime.Workbook();
+    await wb.xlsx.load(buf as unknown as ArrayBuffer);
+    const workbook = convertExcelJsWorkbook(wb, options?.maxCells ?? MAX_WORKBOOK_CELLS);
     return { ok: true, workbook, fileSize: buf.length };
   } catch (e) {
     return { ok: false, error: `xlsx parse failed: ${(e as Error).message}`, fileSize: buf.length };
@@ -138,7 +195,7 @@ export function safeParseWorkbookBuffer(buf: Buffer): SafeParseResult {
 }
 
 /** Lists every sheet with classification. Guarantees no silent discard. */
-export function listSheets(workbook: XLSX.WorkBook): SheetInfo[] {
+export function listSheets(workbook: ParsedWorkbook): SheetInfo[] {
   const out: SheetInfo[] = [];
   workbook.SheetNames.forEach((sheetName, sheetIndex) => {
     const ws = workbook.Sheets[sheetName];
@@ -146,11 +203,11 @@ export function listSheets(workbook: XLSX.WorkBook): SheetInfo[] {
     let rowCount = 0;
     let columnCount = 0;
     if (ref) {
-      const r = XLSX.utils.decode_range(ref);
+      const r = decodeRange(ref);
       rowCount = r.e.r - r.s.r + 1;
       columnCount = r.e.c - r.s.c + 1;
     }
-    const cls = classifySheetName(sheetName);
+    const { detectedType, parseConfidence } = classifySheetName(sheetName);
     out.push({
       sheetIndex,
       sheetName,
@@ -158,14 +215,9 @@ export function listSheets(workbook: XLSX.WorkBook): SheetInfo[] {
       usedRange: ref,
       rowCount,
       columnCount,
-      detectedType: cls.detectedType,
-      parseConfidence: cls.parseConfidence,
+      detectedType,
+      parseConfidence,
     });
   });
-  if (out.length !== workbook.SheetNames.length) {
-    throw new Error(
-      `silent discard detected: listed ${out.length} of ${workbook.SheetNames.length} sheets`,
-    );
-  }
   return out;
 }

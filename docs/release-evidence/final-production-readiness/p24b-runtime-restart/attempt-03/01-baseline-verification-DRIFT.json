@@ -1,0 +1,133 @@
+{
+  "artifactKind": "mas-p24b-baseline-verification-v1",
+  "measuredAtUtc": "2026-09-03T10:16:50.634Z",
+  "gate": "SECTION 5 — YENI BASELINE'I KABUL ETMEDEN ONCE READ-ONLY DOGRULA",
+  "verdict": "DRIFT",
+  "baselineAccepted": false,
+  "runtimeStarted": false,
+  "filenameNote": "SECTION 24 bu dosyayi '01-accepted-new-baseline.json' olarak istemisti. Baseline KABUL EDILMEDIGI icin o ad yaniltici olurdu; icerik ayni, ad durustlestirildi.",
+  "readOnlyEnforcement": {
+    "connectionOption": "-c default_transaction_read_only=on",
+    "explicitBegin": "begin read only",
+    "serverAnswer": "on",
+    "alwaysRollback": true
+  },
+  "comparison": [
+    {
+      "field": "DATABASE",
+      "expected": "mas_radar_dev",
+      "actual": "mas_radar_dev",
+      "match": true
+    },
+    {
+      "field": "LEDGER",
+      "expected": "0087/87",
+      "actual": "0087/87",
+      "match": true
+    },
+    {
+      "field": "BASE_TABLE_COUNT",
+      "expected": 86,
+      "actual": 86,
+      "match": true
+    },
+    {
+      "field": "P24B_REMAINING",
+      "expected": "0/42",
+      "actual": "0/42",
+      "match": true
+    },
+    {
+      "field": "action_items",
+      "expected": 6,
+      "actual": 6,
+      "match": true
+    },
+    {
+      "field": "approvals",
+      "expected": 68,
+      "actual": 68,
+      "match": true
+    },
+    {
+      "field": "payment_instances",
+      "expected": 502,
+      "actual": 502,
+      "match": true
+    },
+    {
+      "field": "payments",
+      "expected": 19,
+      "actual": 19,
+      "match": true
+    },
+    {
+      "field": "users",
+      "expected": 13,
+      "actual": 13,
+      "match": true
+    },
+    {
+      "field": "settings",
+      "expected": 7,
+      "actual": 7,
+      "match": true
+    },
+    {
+      "field": "task_status.open",
+      "expected": 4,
+      "actual": 4,
+      "match": true
+    },
+    {
+      "field": "payment_status.unpaid TRY",
+      "expected": 13595000,
+      "actual": 13595000,
+      "match": true
+    },
+    {
+      "field": "audit_logs",
+      "expected": 762,
+      "actual": 788,
+      "match": false,
+      "delta": 26
+    },
+    {
+      "field": "WHOLE_DB_FINGERPRINT",
+      "expected": "43da2d0d7d041f21f43d713b676691376ffab470a6ad614ceef5657546f7cd85",
+      "actual": "283e5daaf36b1f26293a1a6d6a7cbce435b64767fcaf8afbaaee626893bc4b42",
+      "match": false,
+      "cause": "yalnizca audit_logs +26 — baska hicbir tablo degismedi"
+    }
+  ],
+  "driftDimensions": 1,
+  "autoAcceptedNewBaseline": false,
+  "autoAcceptRefusalRationale": "SECTION 5: 'Herhangi biri farkliysa: yeni baseline'i otomatik guncelleme. Exact drift raporla ve DUR.'",
+  "driftSource": {
+    "event": "Ek bir generate_instances partisi",
+    "timestampUtc": "2026-09-03 10:07:07 .. 10:07:10",
+    "timestampLocal": "2026-09-03 13:07:07 .. 13:07:10",
+    "rows": 26,
+    "action": "generate_instances",
+    "actor": "system",
+    "paymentInstancesEffect": 0,
+    "signature": "26 satir = ensureWindow(..., 24) dongusu (delta -1..24). Repoda bu imzayi ureten YALNIZ iki cagri var: scripts/prepare-runtime.ts:32 ve scripts/seed-demo.ts:90.",
+    "seedDemoRuledOut": "seed-demo baska tablolara da yazardi; 86 tablodan yalnizca audit_logs degisti.",
+    "pageViewRuledOut": "Uygulama sayfalari ensureWindow'u varsayilan futureMonths=1 ile cagirir (3 satir) ve audit actor olarak session.id gecer. Bu parti 26 satir ve actor=system.",
+    "conclusion": "Bir prepare-runtime calistirmasi.",
+    "originDetermined": false,
+    "originNote": "Cagriyi kimin baslattigi mevcut kanitla KESINLESTIRILEMEDI ve uydurulmadi. O anda port 3000 PID 18996 tarafindan tutuluyordu ve runtime-port-guard bu durumda zinciri keser; dolayisiyla cagri ya guard'i atlayarak (MAS_ALLOW_PARALLEL_RUNTIME=1) ya da dogrudan `tsx scripts/prepare-runtime.ts` ile yapilmis olmali.",
+    "notCausedByThisOperation": "Bu turda calistirilan her sey ya salt-okunur olcumdur ya da yetkilendirilmis taskkill'dir; prepare-runtime CALISTIRILMADI.",
+    "coincidentObservation": "Ayni dakikada (13:07:00) VS Code Playwright uzantisinin MAS icin actigi bir test-server sureci basladi (PID 12788, @playwright/test@1.61.1 — MAS'in surumu). Sonradan kendiliginden kapandi. Nedensellik KANITLANMADI; yalnizca zaman ortusmesi olarak kaydedildi."
+  },
+  "relatedHazardFound": {
+    "file": "tests/visual/global-setup.ts:167",
+    "code": "process.env.MAS_E2E_DATABASE_URL ?? process.env.DATABASE_URL",
+    "originalAssessment": "P1 adayi — fallback gercek mas_radar_dev'e duser ve users tablosuna yazar.",
+    "correctedAtUtc": "2026-09-03T10:31:00.545Z",
+    "correction": "BU DEGERLENDIRME FAZLA AGIRDI VE DUZELTILDI. Fallback gercekten var, ancak 14 satir sonra (global-setup.ts:181) ikinci bir kapi calisiyor: isDisposableDatabaseName(databaseNameFromUrl(dbUrl)) false ise 'GUVENLIK DURDURMASI' firlatiliyor. 'mas_radar_dev' scripts/db/owner-url.ts icindeki PROTECTED_DB_NAMES listesinde oldugu icin isDisposableDatabaseName false doner. Hata, Pool acilmadan ONCE firlar; tek bir satir yazilamaz.",
+    "actualSeverity": "DUSUK — fail-closed korunuyor. Kod degisikligi GEREKMIYOR.",
+    "residualNote": "Geriye kalan tek kozmetik nokta: fallback zinciri okuyana 'gercek DB'ye yazabilir' izlenimi veriyor; asil koruma 14 satir asagida. Bu bir davranis kusuru degil, okunabilirlik notudur.",
+    "verifiedBy": "attempt-04 sirasinda global-setup.ts:178-186 ve scripts/db/owner-url.ts:111-115 okunarak"
+  }
+}

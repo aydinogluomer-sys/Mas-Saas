@@ -9,12 +9,36 @@ import { audit } from "@/lib/audit";
 import { DomainError } from "@/lib/domain-error";
 import { intOrNull, moneyOrNull, rateOrNull } from "@/lib/money";
 import { parseOrThrow } from "@/lib/validation";
+import { decideApproval, requestApprovalWithClient } from "@/lib/approvals/engine";
 import {
   SOURCE_CONFIDENCE, accuracy, canTransition, variance,
   type SourceKind, type VersionStatus,
 } from "./rules";
 
 /* ── schemas ──────────────────────────────────────────────────────────────────────────── */
+
+export const createBudgetSchema = z.object({
+  name: z.string().trim().min(2, "Bütçe adı en az 2 karakter olmalı").max(160),
+  fiscalYear: z.coerce.number().int().min(2000).max(2100),
+  periodKind: z.enum(["monthly", "annual"]).default("monthly"),
+  currency: z.string().trim().toUpperCase().regex(/^[A-Z]{3}$/).default("TRY"),
+  notes: z.string().trim().max(1000).optional(),
+});
+
+export const createForecastSchema = z.object({
+  name: z.string().trim().min(2, "Tahmin adı en az 2 karakter olmalı").max(160),
+  horizonKind: z.enum(["weekly_13", "monthly_12", "custom"]).default("weekly_13"),
+  anchorDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Başlangıç tarihi YYYY-AA-GG olmalı"),
+  currency: z.string().trim().toUpperCase().regex(/^[A-Z]{3}$/).default("TRY"),
+  notes: z.string().trim().max(1000).optional(),
+});
+
+export const approveBudgetVersionSchema = z.object({
+  table: z.enum(["budget_lines", "forecast_lines"]).default("budget_lines"),
+  lineId: z.uuid().optional(),
+  budgetId: z.uuid().optional(),
+  note: z.string().trim().max(500).optional(),
+});
 
 export const createBudgetLineSchema = z.object({
   budgetId: z.uuid(),
@@ -52,6 +76,79 @@ export const recordActualSchema = z.object({
 });
 
 /* ── budget writes ────────────────────────────────────────────────────────────────────── */
+
+export async function createBudget(pool: Pool, raw: unknown, actorId: string): Promise<string> {
+  const input = parseOrThrow(createBudgetSchema, raw, "Bütçe");
+  const client = await pool.connect();
+  try {
+    await client.query("begin");
+    const res = await client.query<{ id: string }>(
+      `insert into public.budgets (name, fiscal_year, period_kind, currency, notes, created_by)
+       values ($1, $2, $3, $4, $5, $6)
+       returning id`,
+      [input.name, input.fiscalYear, input.periodKind, input.currency, input.notes ?? null, actorId],
+    );
+    const id = res.rows[0].id;
+    await audit(client, {
+      actor: actorId,
+      action: "create_budget",
+      entityTable: "budgets",
+      entityId: id,
+      after: {
+        name: input.name,
+        fiscalYear: input.fiscalYear,
+        periodKind: input.periodKind,
+        currency: input.currency,
+        automated: false,
+      },
+    });
+    await client.query("commit");
+    return id;
+  } catch (e) {
+    await client.query("rollback");
+    if ((e as { code?: string })?.code === "23505") {
+      throw new DomainError("CONFLICT", "Bu mali yıl için aynı adda bir bütçe zaten mevcut.");
+    }
+    throw e;
+  } finally {
+    client.release();
+  }
+}
+
+export async function createForecast(pool: Pool, raw: unknown, actorId: string): Promise<string> {
+  const input = parseOrThrow(createForecastSchema, raw, "Nakit tahmini");
+  const client = await pool.connect();
+  try {
+    await client.query("begin");
+    const res = await client.query<{ id: string }>(
+      `insert into public.forecasts (name, horizon_kind, anchor_date, currency, notes, created_by)
+       values ($1, $2, $3::date, $4, $5, $6)
+       returning id`,
+      [input.name, input.horizonKind, input.anchorDate, input.currency, input.notes ?? null, actorId],
+    );
+    const id = res.rows[0].id;
+    await audit(client, {
+      actor: actorId,
+      action: "create_forecast",
+      entityTable: "forecasts",
+      entityId: id,
+      after: {
+        name: input.name,
+        horizonKind: input.horizonKind,
+        anchorDate: input.anchorDate,
+        currency: input.currency,
+        automated: false,
+      },
+    });
+    await client.query("commit");
+    return id;
+  } catch (e) {
+    await client.query("rollback");
+    throw e;
+  } finally {
+    client.release();
+  }
+}
 
 export async function createBudgetLine(pool: Pool, raw: unknown, actorId: string): Promise<string> {
   const input = parseOrThrow(createBudgetLineSchema, raw, "Bütçe satırı");
@@ -347,4 +444,306 @@ export async function loadForecastCoverage(pool: Pool) {
     contractedCount: Number(r.contracted_count),
     estimatedCount: Number(r.estimated_count),
   }));
+}
+
+
+/**
+ * Faz 48 / 50: Submit a draft budget or forecast line into the maker-checker approval queue.
+ */
+export async function requestPlanningLineApproval(
+  pool: Pool,
+  table: "budget_lines" | "forecast_lines",
+  lineId: string,
+  actorId: string,
+  note?: string,
+): Promise<{ approvalId: string }> {
+  const target = table === "budget_lines" ? "budget_lines" : "forecast_lines";
+  const client = await pool.connect();
+  try {
+    await client.query("begin");
+    const row =
+      target === "budget_lines"
+        ? await client.query<{
+            id: string;
+            version_status: string;
+            amount: string;
+            currency: string;
+            period_start: string;
+            direction: string;
+          }>(
+            `select id, version_status, amount, currency,
+                    to_char(period_start,'YYYY-MM-DD') as period_start, direction
+               from public.budget_lines where id=$1 for update`,
+            [lineId],
+          )
+        : await client.query<{
+            id: string;
+            version_status: string;
+            amount: string;
+            currency: string;
+            period_start: string;
+            direction: string;
+          }>(
+            `select fl.id, fl.version_status, fl.amount, coalesce(f.currency, 'TRY') as currency,
+                    to_char(fl.period_start,'YYYY-MM-DD') as period_start, fl.direction
+               from public.forecast_lines fl
+               left join public.forecasts f on f.id = fl.forecast_id
+              where fl.id=$1 for update of fl`,
+            [lineId],
+          );
+    if (row.rowCount === 0) throw new DomainError("NOT_FOUND", "Planlama satırı bulunamadı.");
+    const r = row.rows[0];
+    if (r.version_status !== "draft") {
+      throw new DomainError("CONFLICT", `Yalnız 'draft' durumundaki satır onaya gönderilebilir (mevcut: '${r.version_status}').`);
+    }
+    const { approvalId } = await requestApprovalWithClient(
+      client,
+      {
+        subjectTable: target,
+        subjectId: lineId,
+        subjectLabel: `${target === "budget_lines" ? "Bütçe" : "Tahmin"} satırı (${r.period_start} · ${r.direction})`,
+        requestKind: "budget",
+        ruleCode: "planning_line_maker_checker",
+        amount: moneyOrNull(r.amount) ?? undefined,
+        currency: r.currency,
+        note,
+      },
+      actorId,
+      { reuseOpen: true },
+    );
+    await client.query("commit");
+    return { approvalId };
+  } catch (e) {
+    await client.query("rollback");
+    throw e;
+  } finally {
+    client.release();
+  }
+}
+
+
+/**
+ * Faz 50 (D4): Maker-checker aware approval of a single planning line (budget_lines / forecast_lines)
+ * or all eligible draft lines of a budget container (`budgetId`).
+ *
+ * When an open approval round already exists in `public.approvals`, this closes that round via
+ * `decideApproval` so `/data/approvals` and `/cashflow/budget` never drift apart.
+ */
+export async function approveBudgetVersion(
+  pool: Pool,
+  raw: unknown,
+  actorId: string,
+): Promise<{ approvedCount: number; skippedOwnDrafts: number }> {
+  const input = parseOrThrow(approveBudgetVersionSchema, raw, "Bütçe versiyon onayı");
+  const target = input.table === "forecast_lines" ? "forecast_lines" : "budget_lines";
+
+  if (!input.lineId && !input.budgetId) {
+    throw new DomainError("VALIDATION", "Onaylanacak satır (lineId) veya bütçe (budgetId) seçilmelidir.");
+  }
+
+  const approveSingleLine = async (lineId: string): Promise<"approved" | "skipped_own"> => {
+    const checkRes = await pool.query<{
+      id: string;
+      version_status: string;
+      created_by: string | null;
+      open_approval_id: string | null;
+    }>(
+      `select l.id, l.version_status, l.created_by,
+              (select a.id
+                 from public.approvals a
+                where a.subject_table = $2
+                  and a.subject_id = l.id
+                  and a.status in ('pending', 'reworked')
+                order by a.round_no desc
+                limit 1) as open_approval_id
+         from public.${target} l
+        where l.id = $1`,
+      [lineId, target],
+    );
+    if (checkRes.rowCount === 0) {
+      throw new DomainError("NOT_FOUND", "Planlama satırı bulunamadı.");
+    }
+    const row = checkRes.rows[0];
+    if (row.version_status !== "draft") {
+      throw new DomainError("CONFLICT", `Yalnız 'draft' durumundaki satır onaylanabilir (mevcut: '${row.version_status}').`);
+    }
+    if (row.created_by && row.created_by === actorId) {
+      return "skipped_own";
+    }
+    if (row.open_approval_id) {
+      await decideApproval(
+        pool,
+        { approvalId: row.open_approval_id, decision: "approved", note: input.note },
+        actorId,
+      );
+    } else {
+      await setLineVersion(pool, target, { lineId, status: "approved" }, actorId);
+    }
+    return "approved";
+  };
+
+  if (input.lineId) {
+    const outcome = await approveSingleLine(input.lineId);
+    if (outcome === "skipped_own") {
+      throw new DomainError(
+        "FORBIDDEN",
+        "Kendi oluşturduğunuz bütçe/tahmin satırını onaylayamazsınız (maker ≠ checker).",
+      );
+    }
+    return { approvedCount: 1, skippedOwnDrafts: 0 };
+  }
+
+  const drafts = await pool.query<{ id: string }>(
+    `select id from public.budget_lines
+      where budget_id = $1 and version_status = 'draft'
+      order by period_start, created_at`,
+    [input.budgetId!],
+  );
+  if (drafts.rowCount === 0) {
+    throw new DomainError("CONFLICT", "Bu bütçede onay bekleyen taslak satır bulunmuyor.");
+  }
+
+  let approvedCount = 0;
+  let skippedOwnDrafts = 0;
+  for (const d of drafts.rows) {
+    const outcome = await approveSingleLine(d.id);
+    if (outcome === "approved") approvedCount += 1;
+    else skippedOwnDrafts += 1;
+  }
+  if (approvedCount === 0 && skippedOwnDrafts > 0) {
+    throw new DomainError(
+      "FORBIDDEN",
+      "Taslak satırların tamamı sizin tarafınızdan oluşturulmuş; maker ≠ checker kuralı gereği ikinci bir onaylayıcı gerekir.",
+    );
+  }
+  return { approvedCount, skippedOwnDrafts };
+}
+
+export async function loadBudgetsCatalog(pool: Pool) {
+  const [budgets, lines, forecasts, forecastLines, costCenters, departments, projects, categories] =
+    await Promise.all([
+      pool.query(
+        `select b.id, b.name, b.fiscal_year, b.period_kind, b.currency, b.is_active,
+                count(l.id)::int as total_lines,
+                count(l.id) filter (where l.version_status = 'draft')::int as draft_lines,
+                count(l.id) filter (where l.version_status = 'approved')::int as approved_lines
+           from public.budgets b
+           left join public.budget_lines l on l.budget_id = b.id
+          group by b.id
+          order by b.fiscal_year desc, b.name`,
+      ),
+      pool.query(
+        `select l.id, l.budget_id, b.name as budget_name, b.fiscal_year,
+                to_char(l.period_start, 'YYYY-MM-DD') as period_start,
+                l.direction, l.amount, l.currency, l.version_no, l.version_status,
+                l.created_by, l.notes,
+                cc.name as cost_center_name,
+                d.name as department_name,
+                p.name as project_name,
+                cat.name as category_name,
+                (select a.status
+                   from public.approvals a
+                  where a.subject_table = 'budget_lines'
+                    and a.subject_id = l.id
+                  order by a.round_no desc
+                  limit 1) as approval_queue_status
+           from public.budget_lines l
+           join public.budgets b on b.id = l.budget_id
+           left join public.cost_centers cc on cc.id = l.cost_center_id
+           left join public.departments d on d.id = l.department_id
+           left join public.projects p on p.id = l.project_id
+           left join public.categories cat on cat.id = l.category_id
+          order by l.version_status = 'draft' desc, l.period_start desc, l.created_at desc
+          limit 200`,
+      ),
+      pool.query(
+        `select id, name, horizon_kind, to_char(anchor_date, 'YYYY-MM-DD') as anchor_date,
+                currency, is_active
+           from public.forecasts
+          where is_active
+          order by anchor_date desc, name`,
+      ),
+      pool.query(
+        `select fl.id, fl.forecast_id, f.name as forecast_name,
+                to_char(fl.period_start, 'YYYY-MM-DD') as period_start,
+                to_char(fl.period_end, 'YYYY-MM-DD') as period_end,
+                fl.direction, fl.amount, coalesce(fl.currency, f.currency, 'TRY') as currency,
+                fl.source_kind, fl.confidence, fl.version_status, fl.created_by,
+                (select a.status
+                   from public.approvals a
+                  where a.subject_table = 'forecast_lines'
+                    and a.subject_id = fl.id
+                  order by a.round_no desc
+                  limit 1) as approval_queue_status
+           from public.forecast_lines fl
+           join public.forecasts f on f.id = fl.forecast_id
+          order by fl.version_status = 'draft' desc, fl.period_start asc
+          limit 120`,
+      ),
+      pool.query(`select id, code, name from public.cost_centers where is_active order by code`),
+      pool.query(`select id, code, name from public.departments where is_active order by code`),
+      pool.query(`select id, code, name from public.projects where is_active order by code`),
+      pool.query(`select id, name from public.categories order by name`),
+    ]);
+
+  return {
+    budgets: budgets.rows.map((b) => ({
+      id: b.id as string,
+      name: b.name as string,
+      fiscalYear: Number(b.fiscal_year),
+      periodKind: b.period_kind as "monthly" | "annual",
+      currency: b.currency as string,
+      isActive: Boolean(b.is_active),
+      totalLines: Number(b.total_lines),
+      draftLines: Number(b.draft_lines),
+      approvedLines: Number(b.approved_lines),
+    })),
+    lines: lines.rows.map((l) => ({
+      id: l.id as string,
+      budgetId: l.budget_id as string,
+      budgetName: l.budget_name as string,
+      fiscalYear: Number(l.fiscal_year),
+      periodStart: l.period_start as string,
+      direction: l.direction as "income" | "expense",
+      amount: moneyOrNull(l.amount) ?? 0,
+      currency: l.currency as string,
+      versionNo: Number(l.version_no),
+      versionStatus: l.version_status as VersionStatus,
+      createdBy: (l.created_by as string | null) ?? null,
+      notes: (l.notes as string | null) ?? null,
+      dimensionLabel:
+        (l.department_name as string | null) ??
+        (l.project_name as string | null) ??
+        (l.cost_center_name as string | null) ??
+        (l.category_name as string | null) ??
+        "Şirket geneli",
+      approvalQueueStatus: (l.approval_queue_status as string | null) ?? null,
+    })),
+    forecasts: forecasts.rows.map((f) => ({
+      id: f.id as string,
+      name: f.name as string,
+      horizonKind: f.horizon_kind as string,
+      anchorDate: f.anchor_date as string,
+      currency: f.currency as string,
+    })),
+    forecastLines: forecastLines.rows.map((fl) => ({
+      id: fl.id as string,
+      forecastId: fl.forecast_id as string,
+      forecastName: fl.forecast_name as string,
+      periodStart: fl.period_start as string,
+      periodEnd: fl.period_end as string,
+      direction: fl.direction as "inflow" | "outflow",
+      amount: moneyOrNull(fl.amount) ?? 0,
+      currency: fl.currency as string,
+      sourceKind: fl.source_kind as SourceKind,
+      confidence: rateOrNull(fl.confidence),
+      versionStatus: fl.version_status as VersionStatus,
+      createdBy: (fl.created_by as string | null) ?? null,
+      approvalQueueStatus: (fl.approval_queue_status as string | null) ?? null,
+    })),
+    costCenters: costCenters.rows as Array<{ id: string; code: string; name: string }>,
+    departments: departments.rows as Array<{ id: string; code: string; name: string }>,
+    projects: projects.rows as Array<{ id: string; code: string; name: string }>,
+    categories: categories.rows as Array<{ id: string; name: string }>,
+  };
 }

@@ -29,8 +29,6 @@ import { Button } from "@/components/ui/primitives/button";
 import { Input } from "@/components/ui/primitives/input";
 import { cn } from "@/lib/utils";
 
-// Column meta shared by every DataTable column: a human label (used by the
-// column-visibility menu and CSV export) and cell/header alignment.
 declare module "@tanstack/react-table" {
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   interface ColumnMeta<TData extends RowData, TValue> {
@@ -46,6 +44,14 @@ function columnLabel<TData>(column: { id: string; columnDef: ColumnDef<TData> })
   return typeof header === "string" ? header : column.id;
 }
 
+function toExportScalar(val: unknown): string | number | null {
+  if (val === null || val === undefined) return null;
+  if (typeof val === "number") return Number.isFinite(val) ? val : null;
+  if (typeof val === "boolean") return val ? "Evet" : "Hayır";
+  const s = String(val);
+  return s.length > 4000 ? s.slice(0, 4000) : s;
+}
+
 export interface DataTableProps<TData> {
   columns: ColumnDef<TData>[];
   data: TData[];
@@ -58,7 +64,7 @@ export interface DataTableProps<TData> {
   /** Right-aligned toolbar slot (e.g. a "New record" link). */
   toolbarRight?: React.ReactNode;
   emptyLabel?: string;
-  /** Enables the CSV export button when set. */
+  /** Enables the CSV/Excel export buttons when set. */
   exportFileName?: string;
   minWidth?: number;
 }
@@ -79,8 +85,8 @@ export function DataTable<TData>({
   const [sorting, setSorting] = useState<SortingState>(initialSorting);
   const [globalFilter, setGlobalFilter] = useState("");
   const [columnVisibility, setColumnVisibility] = useState<VisibilityState>({});
-  const [zoom, setZoom] = useState(0); // table density / font zoom (like the chart toolbar)
-  const [focus, setFocus] = useState(false); // full-screen focus mode
+  const [zoom, setZoom] = useState(0);
+  const [focus, setFocus] = useState(false);
   const hydrated = useRef(false);
   const fontPx = Math.min(20, Math.max(10, 14 + zoom));
 
@@ -91,7 +97,6 @@ export function DataTable<TData>({
     return () => window.removeEventListener("keydown", onEsc);
   }, [focus]);
 
-  // Read persisted state from the URL once (safe: read-only, no navigation).
   useEffect(() => {
     if (!stateKey) {
       hydrated.current = true;
@@ -106,8 +111,6 @@ export function DataTable<TData>({
     hydrated.current = true;
   }, [prefix, stateKey]);
 
-  // Mirror state back to the URL via replaceState — does NOT trigger a route change,
-  // so it cannot interfere with the instant-navigation contract.
   useEffect(() => {
     if (!stateKey || !hydrated.current) return;
     const url = new URL(window.location.href);
@@ -146,12 +149,16 @@ export function DataTable<TData>({
 
   const exportCsv = () => {
     const cols = table.getVisibleLeafColumns().filter((c) => c.accessorFn != null);
-    const escape = (value: unknown) => `"${String(value ?? "").replaceAll('"', '""')}"`;
-    const header = cols.map((c) => escape(columnLabel(c))).join(",");
+    const safeCell = (value: unknown) => {
+      const str = String(value ?? "");
+      const guarded = /^[=+\-@\t\r]/.test(str) ? `'${str}` : str;
+      return `"${guarded.replaceAll('"', '""')}"`;
+    };
+    const header = cols.map((c) => safeCell(columnLabel(c))).join(";");
     const body = table.getFilteredRowModel().rows
-      .map((row) => cols.map((c) => escape(row.getValue(c.id))).join(","))
+      .map((row) => cols.map((c) => safeCell(row.getValue(c.id))).join(";"))
       .join("\n");
-    const blob = new Blob([`${header}\n${body}`], { type: "text/csv;charset=utf-8" });
+    const blob = new Blob([`\ufeff${header}\n${body}`], { type: "text/csv;charset=utf-8" });
     const url = URL.createObjectURL(blob);
     const anchor = document.createElement("a");
     anchor.href = url;
@@ -161,17 +168,25 @@ export function DataTable<TData>({
   };
 
   const exportExcel = async () => {
-    const XLSX = await import("xlsx");
+    if (!exportFileName) return;
     const cols = table.getVisibleLeafColumns().filter((c) => c.accessorFn != null);
-    const rows = [
+    const sheetRows: (string | number | null)[][] = [
       cols.map((c) => columnLabel(c)),
-      ...table.getFilteredRowModel().rows.map((row) => cols.map((c) => row.getValue(c.id) ?? null)),
+      ...table.getFilteredRowModel().rows.map((row) => cols.map((c) => toExportScalar(row.getValue(c.id)))),
     ];
-    const sheet = XLSX.utils.aoa_to_sheet(rows);
-    sheet["!cols"] = cols.map(() => ({ wch: 18 }));
-    const workbook = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(workbook, sheet, "Veri");
-    XLSX.writeFile(workbook, `${exportFileName}.xlsx`);
+    const response = await fetch("/api/analytics/export", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ filename: exportFileName, sheets: [{ name: "Veri", rows: sheetRows }] }),
+    });
+    if (!response.ok) return;
+    const blob = await response.blob();
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = `${exportFileName}.xlsx`;
+    anchor.click();
+    URL.revokeObjectURL(url);
   };
 
   const showToolbar = searchPlaceholder != null || toolbarRight != null || hideableColumns.length > 0 || exportFileName != null;

@@ -1,6 +1,7 @@
 import type { Pool } from "pg";
 import { rate } from "@/lib/money";
 import { audit } from "@/lib/audit";
+import { DomainError } from "@/lib/domain-error";
 import {
   defaultReviewStatus,
   normalizeAssumptionType,
@@ -192,18 +193,22 @@ export async function setExternalAssumptionReviewStatus(
   try {
     await client.query("begin");
     const before = await client.query(`select id, review_status, source_kind from public.external_assumptions where id=$1 for update`, [id]);
-    if (before.rowCount === 1) {
-      await client.query(
-        `update public.external_assumptions
-           set review_status=$2, reviewed_at=case when $2='approved' then now() else reviewed_at end, reviewed_by=$3
-         where id=$1`,
-        [id, status, actorId],
-      );
-      await audit(client, {
-        actor: actorId, action: "set_external_assumption_review_status", entityTable: "external_assumptions",
-        entityId: id, before: before.rows[0], after: { id, reviewStatus: status },
-      });
+    if (before.rowCount !== 1) {
+      throw new DomainError("NOT_FOUND", "Dış varsayım kaydı bulunamadı veya yetkiniz yok.");
     }
+    const upd = await client.query(
+      `update public.external_assumptions
+         set review_status=$2, reviewed_at=case when $2='approved' then now() else reviewed_at end, reviewed_by=$3
+       where id=$1`,
+      [id, status, actorId],
+    );
+    if (upd.rowCount !== 1) {
+      throw new DomainError("FORBIDDEN", "Dış varsayım kaydı güncellenemedi veya yetkiniz yok.");
+    }
+    await audit(client, {
+      actor: actorId, action: "set_external_assumption_review_status", entityTable: "external_assumptions",
+      entityId: id, before: before.rows[0], after: { id, reviewStatus: status },
+    });
     await client.query("commit");
   } catch (e) {
     await client.query("rollback");

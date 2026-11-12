@@ -73,10 +73,11 @@ const LEGACY_STAGED_NAME = /^[0-9a-f]{64}\.xlsx$/;
 const SHA256_HEX = /^[0-9a-f]{64}$/;
 
 /**
- * İş yükü — sınırda Zod ile doğrulanır. Yük `background_jobs.payload`'dır ve operatör katmanı o
- * satırı güncelleyebilir (0081 `background_jobs_update_enter`); bu yüzden içindeki hiçbir şey
- * kimlik ya da yol olarak kullanılmaz. Rol ve aktör anahtarları BİLEREK yok; katmanın eski
- * biçimli işleri (`filePath`, `role`, `actorId`) burada reddedilir.
+ * İş yükü — sınırda Zod ile doğrulanır. 0108 ile `background_jobs` zarfı (`payload`, `created_by`,
+ * `job_type`, `dedupe_key`, `created_at`) veritabanında değişmezlik bekçisiyle kilitlenmiştir;
+ * savunma derinliği olarak yine de içindeki hiçbir şey kimlik ya da yol olarak kullanılmaz. Rol ve
+ * aktör anahtarları BİLEREK yok; katmanın eski biçimli işleri (`filePath`, `role`, `actorId`)
+ * burada reddedilir.
  */
 const payloadSchema = z.object({
   filename: z.string().trim().min(1).max(UPLOAD_LIMITS.maxFilenameLength),
@@ -334,7 +335,7 @@ export async function processAsyncWorkbookPreviewJob(
     }
     await reportProgress(pool, jobId, 2, 3);
 
-    // Rapor, işi 'succeeded' yapan AYNI güncellemede yazılır (queue.ts JOB_RESULT_KEY).
+    // Rapor, işi 'succeeded' yapan AYNI güncellemede ayrı `result` kolonuna yazılır (0108 / queue.ts).
     await completeJob(pool, jobId, systemActorId, compactPreviewReport(preview.report));
     await removeStaged(stagedFilePath);
     return { jobId, outcome: "succeeded", counters: preview.report.counters };
@@ -422,12 +423,13 @@ export async function getAsyncPreviewJobStatus(
   const res = await pool.query<{
     id: string; job_type: string; status: string; progress_done: number | string;
     progress_total: number | string | null; last_error: string | null;
-    created_at: string; finished_at: string | null; result: StoredPreviewReport | null;
+    created_at: string; finished_at: string | null;
+    result: StoredPreviewReport | null; payload?: Record<string, unknown> | null;
   }>(
     `select id, job_type, status, progress_done, progress_total, last_error,
             to_char(created_at at time zone 'Europe/Istanbul', 'YYYY-MM-DD HH24:MI:SS') as created_at,
             to_char(finished_at at time zone 'Europe/Istanbul', 'YYYY-MM-DD HH24:MI:SS') as finished_at,
-            payload -> 'result' as result
+            coalesce(result, payload -> 'result') as result
        from public.background_jobs
       where id = $1 and job_type = $2 and ($4::boolean or created_by = $3::uuid)`,
     [jobId, ASYNC_PREVIEW_JOB_TYPE, viewer.id, viewer.seeAll],
@@ -437,6 +439,10 @@ export async function getAsyncPreviewJobStatus(
 
   const done = Number(row.progress_done);
   const total = row.progress_total == null ? null : Number(row.progress_total);
+  const resolvedResult =
+    row.result ??
+    ((row.payload as Record<string, unknown> | null | undefined)?.result as StoredPreviewReport | undefined) ??
+    null;
   return {
     id: row.id,
     jobType: row.job_type,
@@ -447,6 +453,6 @@ export async function getAsyncPreviewJobStatus(
     lastError: row.last_error ?? null,
     createdAt: row.created_at,
     finishedAt: row.finished_at ?? null,
-    previewReport: row.status === "succeeded" ? (row.result ?? null) : null,
+    previewReport: row.status === "succeeded" ? resolvedResult : null,
   };
 }

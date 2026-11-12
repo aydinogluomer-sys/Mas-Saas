@@ -110,3 +110,27 @@ export function titleFor(firstQuestion: string): string {
   const clean = sanitizeQuestion(firstQuestion);
   return clean.length <= 80 ? clean || "Adsız konuşma" : `${clean.slice(0, 77)}…`;
 }
+
+export interface ConversationWindowSummary {
+  activeThreads: number;
+  totalTurns: number;
+  followUpWindowTurns: number;
+}
+
+/** Pure summary of stored assistant conversation threads for read-only dashboard panels. */
+export function summarizeConversationWindow(
+  conversations: ReadonlyArray<{ turnCount: number; status?: string }>,
+  followUpWindowTurns = 5,
+): ConversationWindowSummary {
+  let activeThreads = 0;
+  let totalTurns = 0;
+  for (const c of conversations) {
+    if (!c.status || c.status === "active") activeThreads += 1;
+    totalTurns += Math.max(0, Number(c.turnCount) || 0);
+  }
+  return {
+    activeThreads,
+    totalTurns,
+    followUpWindowTurns,
+  };
+}

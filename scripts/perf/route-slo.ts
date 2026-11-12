@@ -148,6 +148,7 @@ const CATASTROPHE_MS = Number(process.env.ROUTE_SLO_CATASTROPHE_MS ?? 8000);
 /** TREND bütçeleri — aşılırsa UYARI, exit kodu değişmez. */
 const TTFB_BUDGET_MS = Number(process.env.ROUTE_SLO_TTFB_BUDGET_MS ?? 1500);
 const TOTAL_BUDGET_MS = Number(process.env.ROUTE_SLO_TOTAL_BUDGET_MS ?? 2000);
+const WARM_SQL_QUERY_BUDGET_MS = Number(process.env.ROUTE_SLO_WARM_SQL_BUDGET_MS ?? 250);
 
 /**
  * SERT N+1 cırcırı: bir rota render'ının atabileceği en fazla sorgu.
@@ -487,6 +488,7 @@ async function main(): Promise<void> {
       MIGRATION_DATABASE_URL: ownerUrl,
       MAS_NEXT_DIST_DIR: DIST_DIR,
       MAS_PERF_PROBE: "1",
+      MAS_ALLOW_PROD_PERF_PROBE: "1",
     };
     delete appEnv.MAS_QA_BYPASS_AUTH;
 
@@ -680,14 +682,18 @@ async function main(): Promise<void> {
             r.totalMax! < CATASTROPHE_MS, `< ${CATASTROPHE_MS} ms`, `${r.totalMax} ms (en kötü örneklem)`);
         }
 
-        step("TREND — wall-clock bütçeleri (uyarı; exit kodunu DEĞİŞTİRMEZ)");
+        step("SERT KAPI — sıcak wall-clock & SQL bütçeleri (Faz 56 F3 hard: true)");
         for (const r of results) {
-          trend(`${r.route}: TTFB medyanı`, r.ttfbMedian! <= TTFB_BUDGET_MS,
+          record(`${r.route}: TTFB medyanı`, r.ttfbMedian! <= TTFB_BUDGET_MS,
             `≤ ${TTFB_BUDGET_MS} ms`, `${r.ttfbMedian} ms (p95 ${r.ttfbP95}, max ${r.ttfbMax})`);
         }
         for (const r of results) {
-          trend(`${r.route}: toplam yanıt medyanı`, r.totalMedian! <= TOTAL_BUDGET_MS,
+          record(`${r.route}: toplam yanıt medyanı`, r.totalMedian! <= TOTAL_BUDGET_MS,
             `≤ ${TOTAL_BUDGET_MS} ms`, `${r.totalMedian} ms (p95 ${r.totalP95}, max ${r.totalMax})`);
+          record(`${r.route}: en yavaş SQL sorgusu ≤ ${WARM_SQL_QUERY_BUDGET_MS} ms`, r.slowestQueryMs <= WARM_SQL_QUERY_BUDGET_MS,
+            `≤ ${WARM_SQL_QUERY_BUDGET_MS} ms`, `${r.slowestQueryMs} ms`);
+          trend(`${r.route}: TTFB p95 gözlemi`, r.ttfbP95! <= TTFB_BUDGET_MS,
+            `≤ ${TTFB_BUDGET_MS} ms`, `${r.ttfbP95} ms`);
         }
       } else {
         console.log("CI modu: duvar saati eşiği ve trend bütçesi DEĞERLENDİRİLMEDİ (ölçülmedi).");

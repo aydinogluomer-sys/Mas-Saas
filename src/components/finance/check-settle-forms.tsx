@@ -7,7 +7,14 @@
 // markCheckCleared/markCheckBounced actually accept, which in turn mirrors 0034's trigger
 // allow-list. Rendering these buttons outside that set (a check already cleared, bounced,
 // cancelled or unknown) would offer an action whose click always fails with a domain error.
-const CHECK_SETTLEABLE_FROM = new Set(["planned"]);
+const CHECK_SETTLEABLE_FROM = new Set([
+  "planned",
+  "in_portfolio",
+  "endorsed_to_vendor",
+  "in_bank_collection",
+  "in_bank_collateral",
+  "issued_to_vendor",
+]);
 
 import { markCheckBouncedAction, markCheckClearedAction } from "@/app/(dashboard)/finance/actions";
 

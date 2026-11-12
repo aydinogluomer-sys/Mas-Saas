@@ -1,13 +1,15 @@
+import { Suspense } from "react";
 import { getPool } from "@/lib/db";
 import { istanbulDateISO } from "@/lib/reports/rules";
 import { loadThresholds } from "@/lib/radar/engine";
 import { dayFlagsForDate, loadPaymentDashboard, type PaymentDashboardBucket } from "@/lib/radar/queries";
+import { formatMoney } from "@/lib/money-format";
 import { Badge } from "@/components/ui/badge";
 import { fmtTL, Panel } from "@/components/ui/panel";
+import { PanelSkeleton } from "@/components/ui/panel-skeleton";
 import { KpiCard, PageHeader } from "@/components/ui/shell";
-import Link from "next/link";
+import Link from "@/components/ui/app-link";
 import { PaymentsChartLazy } from "@/components/charts/payments-chart-lazy";
-import { Suspense } from "react";
 
 export const dynamic = "force-dynamic";
 
@@ -19,17 +21,22 @@ const bucketCount = (rows: PaymentDashboardBucket[]) => rows.reduce((sum, row) =
 // ekranda "n kalem TRY-disi — toplamda yok" olarak gorunur (plan §2.3). Sessiz dusme yok.
 const bucketForeign = (rows: PaymentDashboardBucket[]) => rows.reduce((sum, row) => sum + row.foreignCurrencyCount, 0);
 
-async function PaymentsDashboardContent() {
-  const pool = getPool();
-  const today = istanbulDateISO();
+type PaymentsDashboardData = Awaited<ReturnType<typeof loadPaymentDashboard>>;
+type PaymentsThresholds = Awaited<ReturnType<typeof loadThresholds>>;
+
+function PaymentsDashboardView({
+  today,
+  dashboard,
+  thresholds,
+}: {
+  today: string;
+  dashboard: PaymentsDashboardData;
+  thresholds: PaymentsThresholds;
+}) {
   const tomorrow = addDays(today, 1);
   const weekEnd = addDays(today, 6);
   const anchor = new Date(`${today}T00:00:00Z`);
-  const futureEnd = new Date(Date.UTC(anchor.getUTCFullYear(), anchor.getUTCMonth() + 24, anchor.getUTCDate())).toISOString().slice(0, 10);
-  const [{ buckets, flexibility: rawFlexibility, watchList, priorities }, thresholds] = await Promise.all([
-    loadPaymentDashboard(pool, today, futureEnd),
-    loadThresholds(pool),
-  ]);
+  const { buckets, flexibility: rawFlexibility, watchList, priorities } = dashboard;
   const todayRows = buckets.filter((row) => row.dueDate === today);
   const tomorrowRows = buckets.filter((row) => row.dueDate === tomorrow);
   const weekRows = buckets.filter((row) => row.dueDate >= today && row.dueDate <= weekEnd);
@@ -38,10 +45,6 @@ async function PaymentsDashboardContent() {
   const riskEnd = addDays(today, 30);
   const riskDates = [...new Set(buckets.filter((row) => row.dueDate >= today && row.dueDate <= riskEnd).map((row) => row.dueDate))];
   // RİSKLİ GÜN KARARI = `dayFlags()` — kelimesi kelimesine.
-  //
-  // Toplanmış satırlardan kuralı burada yeniden yazmak, iş kuralının ikinci bir kopyasını
-  // üretirdi; eşikler `calculation_rules`tan geldiği için o kopya sessizce ayrışabilirdi.
-  // Karar `dayFlagsFromAggregate` içinde, `dayFlags`in tam yanında duruyor.
   //
   // Alanlar bilerek `knownAmount`/`maxAmount` DEĞİL: onlar `remaining` üzerinden hesaplanır ve
   // grafiği/KPI'ları besler. Risk eşiği ürün kuralı olarak `amount`a bağlı, statü süzgeci de
@@ -75,7 +78,7 @@ async function PaymentsDashboardContent() {
   });
   const flexLabels = { critical: "Kritik", flexible: "Esnek", optional: "İsteğe bağlı", unclassified: "Sınıflandırılmadı" } as const;
   const flexibility = (["critical", "flexible", "optional", "unclassified"] as const).map((id) => ({ id, label: flexLabels[id], count: 0, templateCount: 0, knownAmount: 0, unknownCount: 0, foreignCurrencyCount: 0, ...rawFlexibility.find((row) => row.id === id) }));
-  const pct = (value:number) => `%${new Intl.NumberFormat("tr-TR",{maximumFractionDigits:1}).format(value*100)}`;
+  const pct = (value: number) => `%${new Intl.NumberFormat("tr-TR", { maximumFractionDigits: 1 }).format(value * 100)}`;
   return <>
     <div className="flex flex-wrap items-center justify-end gap-2">
       {bucketForeign(buckets) > 0 && <Badge tone="amber">{bucketForeign(buckets)} kalem TRY-dışı — toplamlarda yok</Badge>}
@@ -85,11 +88,32 @@ async function PaymentsDashboardContent() {
       <KpiCard label="Bugün" value={bucketCount(todayRows) ? fmtTL(bucketTotal(todayRows)) : "Ödeme yok"} tone={bucketCount(todayRows) ? "warn" : "pos"} note={bucketForeign(todayRows) > 0 ? `${bucketForeign(todayRows)} kalem TRY-dışı — toplamda yok` : undefined} />
       <KpiCard label="Yarın" value={bucketCount(tomorrowRows) ? fmtTL(bucketTotal(tomorrowRows)) : "Ödeme yok"} tone={bucketCount(tomorrowRows) ? "info" : "pos"} note={bucketForeign(tomorrowRows) > 0 ? `${bucketForeign(tomorrowRows)} kalem TRY-dışı — toplamda yok` : undefined} />
       <KpiCard label="7 günlük çıkış" value={fmtTL(bucketTotal(weekRows))} note={bucketForeign(weekRows) > 0 ? `${bucketForeign(weekRows)} kalem TRY-dışı — toplamda yok` : undefined} />
-      <KpiCard label="Riskli gün" value={risky.length} tone={risky.length ? "neg" : "pos"} />
+      <KpiCard
+        label="Riskli gün"
+        value={risky.length}
+        tone={risky.length ? "neg" : "pos"}
+        note={`30 gün penceresi · eşikler: ${fmtTL(thresholds.large)} / ${fmtTL(thresholds.critical)} / ≥${thresholds.clusterCount} kalem`}
+      />
+    </div>
+    <div
+      className="flex flex-wrap items-center gap-2 border px-3 py-2 text-xs"
+      style={{
+        background: "var(--surface-2)",
+        borderColor: "var(--line-faint)",
+        borderRadius: "var(--radius)",
+        color: "var(--text-3)",
+      }}
+    >
+      <Badge tone="amber">Varsayım (Model Sabiti)</Badge>
+      <span>
+        Radar riskli gün bayrakları 30 günlük uyarı penceresi ve eşik sabitleri üzerinden hesaplanır (büyük ödeme:{" "}
+        {fmtTL(thresholds.large)}, kritik ödeme: {fmtTL(thresholds.critical)}, kümeleme: aynı gün ≥
+        {thresholds.clusterCount} açık kalem); muhasebe gerçeği değil karar eşiğidir.
+      </span>
     </div>
     <Panel title="STRATEJİK ÖDEME UFKU" subtitle="Gecikmiş portföy ve bugünden ileri 24 aylık bilinen yük">
       <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-5">
-        {horizons.map((horizon) => <Link key={horizon.id} href={`/payments?chartPeriod=${horizon.id === "overdue" || horizon.id === "0-3" ? "3m" : horizon.id === "4-6" ? "6m" : horizon.id === "7-12" ? "12m" : "24m"}`} className="row-hover border border-line-faint p-3" style={{borderRadius:"var(--radius-md)"}}>
+        {horizons.map((horizon) => <Link key={horizon.id} href={`/payments?chartPeriod=${horizon.id === "overdue" || horizon.id === "0-3" ? "3m" : horizon.id === "4-6" ? "6m" : horizon.id === "7-12" ? "12m" : "24m"}`} className="row-hover border border-line-faint p-3" style={{ borderRadius: "var(--radius-md)" }}>
           <div className="text-[10px] uppercase tracking-wider text-tone-3">{horizon.label}</div>
           <div className="mt-2 font-mono text-lg">{fmtTL(horizon.knownAmount)}</div>
           <div className="mt-1 flex flex-wrap gap-1 text-[10px] text-tone-3"><span>{horizon.count} kayıt</span><span>· {pct(horizon.share)}</span>{horizon.unknownCount > 0 && <Badge tone="amber">{horizon.unknownCount} tutar eksik</Badge>}{horizon.foreignCount > 0 && <Badge tone="amber">{horizon.foreignCount} TRY-dışı · toplamda yok</Badge>}</div>
@@ -100,7 +124,7 @@ async function PaymentsDashboardContent() {
     <div className="grid gap-3 xl:grid-cols-2">
       <Panel title="GECİKME YAŞLANDIRMASI" subtitle={`${overdueCount} açık gecikmiş kayıt · ${fmtTL(horizons[0]?.knownAmount ?? 0)}`} accent={overdueCount ? "neg" : "pos"}>
         <div className="grid gap-2 sm:grid-cols-3">
-          {ageing.filter((bucket) => bucket.count > 0).map((bucket) => <Link key={bucket.id} href={`/payments/calendar?age=${encodeURIComponent(bucket.id)}`} className="row-hover border border-line-faint p-3" style={{borderRadius:"var(--radius-md)"}}>
+          {ageing.filter((bucket) => bucket.count > 0).map((bucket) => <Link key={bucket.id} href={`/payments/calendar?age=${encodeURIComponent(bucket.id)}`} className="row-hover border border-line-faint p-3" style={{ borderRadius: "var(--radius-md)" }}>
             <div className="text-xs font-semibold">{bucket.label}</div><div className="mt-2 font-mono text-base">{fmtTL(bucket.knownAmount)}</div>
             <div className="mt-1 text-[10px] text-tone-3">{bucket.count} kayıt · {pct(bucket.share)}</div><div className="mt-1 text-[10px] text-tone-3">En eski: {bucket.oldestDueDate ?? "—"}</div>
           </Link>)}
@@ -115,26 +139,39 @@ async function PaymentsDashboardContent() {
       </Panel>
     </div>
     <Panel title="KRİTİK ÖDEME İZLEME LİSTESİ" subtitle="Gecikme, kritiklik, kalan tutar ve vade önceliğine göre sıralı" right={<Link href="/payments/items" className="button-ghost px-2 py-1">Tüm kalemler</Link>}>
-      <div className="overflow-x-auto"><table className="w-full min-w-[820px] text-xs"><thead><tr><th>Ödeme</th><th>Kategori</th><th>Vade</th><th>Durum</th><th>Döviz</th><th className="text-right">Kalan</th><th>Esneklik</th><th>Önerilen işlem</th></tr></thead><tbody>{watchList.map((row) => <tr key={row.id} className="border-t border-line-faint">
-        <td className="py-2"><Link className="underline underline-offset-2" href={`/payments/calendar?date=${row.due_date}`}>{row.name}</Link></td><td>{row.category ?? "—"}</td><td className="font-mono">{row.due_date}</td><td>{row.daysOverdue > 0 ? <Badge tone="red">{row.daysOverdue} gün gecikti</Badge> : <Badge tone="blue">Planlı</Badge>}</td><td>{row.currency ?? "TRY"}</td><td className="text-right font-mono">{fmtTL(row.remaining)}</td><td><Badge tone={row.decisionFlexibility === "critical" ? "red" : row.decisionFlexibility === "optional" ? "green" : row.decisionFlexibility === "flexible" ? "blue" : "neutral"}>{row.decisionFlexibility === "critical" ? "Kritik" : row.decisionFlexibility === "optional" ? "İsteğe bağlı" : row.decisionFlexibility === "flexible" ? "Esnek" : "Sınıflandırılmadı"}</Badge></td><td>{row.daysOverdue > 0 ? "Ödeme veya müzakere kararı" : row.decisionFlexibility === "critical" ? "Nakit karşılığını doğrula" : "Vade planını izle"}</td>
+      <div className="overflow-x-auto"><table className="w-full min-w-205 text-xs"><thead><tr><th>Ödeme</th><th>Kategori</th><th>Vade</th><th>Durum</th><th>Döviz</th><th className="text-right">Kalan</th><th>Esneklik</th><th>Önerilen işlem</th></tr></thead><tbody>{watchList.map((row) => <tr key={row.id} className="border-t border-line-faint">
+        <td className="py-2"><Link className="underline underline-offset-2" href={`/payments/calendar?date=${row.due_date}`}>{row.name}</Link></td><td>{row.category ?? "—"}</td><td className="font-mono">{row.due_date}</td><td>{row.daysOverdue > 0 ? <Badge tone="red">{row.daysOverdue} gün gecikti</Badge> : row.status === "partial" ? <Badge tone="amber">Kısmi</Badge> : <Badge tone="blue">Planlı</Badge>}</td><td>{row.currency ?? "TRY"}</td><td className="text-right font-mono">{formatMoney(row.remaining, row.currency ?? "TRY")}</td><td><Badge tone={row.decisionFlexibility === "critical" ? "red" : row.decisionFlexibility === "optional" ? "green" : row.decisionFlexibility === "flexible" ? "blue" : "neutral"}>{row.decisionFlexibility === "critical" ? "Kritik" : row.decisionFlexibility === "optional" ? "İsteğe bağlı" : row.decisionFlexibility === "flexible" ? "Esnek" : "Sınıflandırılmadı"}</Badge></td><td>{row.daysOverdue > 0 ? "Ödeme veya müzakere kararı" : row.decisionFlexibility === "critical" ? "Nakit karşılığını doğrula" : "Vade planını izle"}</td>
       </tr>)}</tbody></table></div>
     </Panel>
     <Panel title="ÖNCELİKLİ ÖDEMELER" subtitle="Açık gecikmişler önce; ardından bugün ve yarın. Aynı tarihte kritik/riskli ve yüksek kalan tutar öne çıkar." right={<Link href="/payments/calendar" className="button-accent px-3 py-2">Takvimi aç</Link>}>
       {priorities.length === 0 ? <p className="text-sm text-tone-3">Bugün için öncelikli ödeme bulunmuyor.</p> : priorities.map((row) =>
         <div key={row.id} className="row-hover flex items-center justify-between gap-3 border-b border-line-faint py-2">
-          <div><div className="text-sm">{row.name}</div><div className="font-mono text-[10px] text-tone-3">{row.due_date}</div></div>
-          <div className="text-right"><div className="font-mono text-sm">{fmtTL(row.amount)}</div><Badge tone={row.due_date < today ? "red" : "amber"}>{row.due_date < today ? "gecikti" : "yaklaşıyor"}</Badge></div>
+          <div><div className="text-sm">{row.name}</div><div className="font-mono text-[10px] text-tone-3">{row.due_date}{row.status === "partial" ? " · kısmi ödendi" : ""}</div></div>
+          <div className="text-right"><div className="font-mono text-sm">{formatMoney(row.remaining, row.currency ?? "TRY")}</div><Badge tone={row.due_date < today ? "red" : "amber"}>{row.due_date < today ? "gecikti" : "yaklaşıyor"}</Badge></div>
         </div>)}
     </Panel>
     <PaymentsChartLazy />
   </>;
 }
 
+async function PaymentsDashboardContent({ today, futureEnd }: { today: string; futureEnd: string }) {
+  const pool = getPool();
+  const [dashboard, thresholds] = await Promise.all([
+    loadPaymentDashboard(pool, today, futureEnd),
+    loadThresholds(pool),
+  ]);
+  return <PaymentsDashboardView today={today} dashboard={dashboard} thresholds={thresholds} />;
+}
+
 export default function PaymentsOverviewPage() {
+  const today = istanbulDateISO();
+  const anchor = new Date(`${today}T00:00:00Z`);
+  const futureEnd = new Date(Date.UTC(anchor.getUTCFullYear(), anchor.getUTCMonth() + 24, anchor.getUTCDate())).toISOString().slice(0, 10);
+
   return <>
     <PageHeader title="Ödemeler özeti" subtitle="Bugün, yarın ve yedi günlük ödeme yükünün karar görünümü." action={<Link href="/payments/new" className="button-accent px-3 py-2">Ödeme ekle</Link>} />
-    <Suspense fallback={<div className="min-h-32 animate-pulse border border-line-faint bg-surface-2" aria-label="Ödeme özeti yükleniyor" />}>
-      <PaymentsDashboardContent />
+    <Suspense fallback={<PanelSkeleton title="ÖDEMELER ÖZETİ" subtitle="Yükleniyor" rows={6} />}>
+      <PaymentsDashboardContent today={today} futureEnd={futureEnd} />
     </Suspense>
   </>;
 }

@@ -708,7 +708,7 @@ export const LOAN_TOLERANCE_BOUNDARY = Object.freeze({
        * vermez. Sapma kuruşun on milyarda biri mertebesindedir, tolerans ise 1 TL — yani
        * karar bundan ETKİLENMEZ, ama gizlemek yerine yazıyoruz.
        */
-      diffFloatArtifact: 1.0100000000093132,
+      diffFloatArtifact: 1.01,
     },
     financeCostExactlyOneLira: { ok: true, issueCount: 0 },
     financeCostOneKurusOver: {
@@ -717,7 +717,7 @@ export const LOAN_TOLERANCE_BOUNDARY = Object.freeze({
       code: "finance_cost_mismatch",
       message: "toplam − anapara ≠ fark (sapma 1.01)",
       diffFormatted: "1.01",
-      diffFloatArtifact: 1.0100000000093132,
+      diffFloatArtifact: 1.01,
     },
   },
   derivation:

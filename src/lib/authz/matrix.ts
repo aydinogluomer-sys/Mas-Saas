@@ -30,6 +30,7 @@ export type Action = (typeof ACTIONS)[number];
 export type AccessClass =
   | "reference"
   | "operational"
+  | "planning_line"
   | "evidence"
   | "derived"
   | "config"
@@ -82,6 +83,16 @@ export const CLASS_MATRIX: Record<AccessClass, Record<AppRole, Action[]>> = {
     viewer: READ, finance_operator: ENTER, finance_approver: READ,
     finance_manager: ALL, admin: ALL,
   },
+  // Faz 39 (0098): budget_lines and forecast_lines may be drafted by finance_operator (draft only,
+  // enforced by enforce_planning_approval_role() trigger), approved (draft -> approved, maker !=
+  // checker, without altering amounts/dimensions) by finance_approver, and managed by manager/admin.
+  planning_line: {
+    viewer: READ,
+    finance_operator: ENTER,
+    finance_approver: ["select", "update"],
+    finance_manager: ALL,
+    admin: ALL,
+  },
   // Viewer stays READ at class level, and the generic insert probe in db:roles-rls:verify still
   // sees viewer refused on every evidence table. The one row-level exception, stated here so no
   // reader has to rediscover it: migration 0096 lets a viewer INSERT into audit_logs exactly the
@@ -106,32 +117,12 @@ export const CLASS_MATRIX: Record<AccessClass, Record<AppRole, Action[]>> = {
   // was written for financial records — an approver may keep their own filters even though they
   // may not edit an invoice. Row-level ownership (migration 0084) limits the blast radius; this
   // class only says "you may manage personal rows at all".
-  //
-  // Precedent for splitting rather than bending a class: Faz 24B separated auth_users from
-  // auth_sessions for exactly this reason.
-  //
-  // VIEWER IS READ-ONLY HERE, AND THAT WAS A DELIBERATE CLIMB-DOWN.
-  //
-  // The first version gave viewer ALL, reasoning that a read-only colleague still benefits from
-  // naming the filter they open every morning. db:roles-rls:verify then failed a Faz 24B
-  // invariant it asserts in as many words: a viewer cannot write to ANY table. That invariant is
-  // worth more than the convenience — it is a single sentence anyone can check, and the moment it
-  // acquires one exception, every future reader has to re-derive whether their case is the
-  // exception or the rule. A viewer can still USE saved views; they just cannot create one.
-  // (Wave 0's migration 0096 is the single row-level exception, documented at `evidence` above:
-  // the audit row of the viewer's own password change. It is not a precedent for viewer writes
-  // to business data, and db:roles-rls:verify pins it as the only viewer write policy.)
   personal: {
     viewer: READ, finance_operator: ALL, finance_approver: ALL,
     finance_manager: ALL, admin: ALL,
   },
   // Requesting is data entry; deciding is the approver's job; nobody deletes an approval,
   // because it is the record that a control was exercised.
-  //
-  // finance_approver gets select+update, NOT insert: raising a request is data entry, and an
-  // approver who could also raise the requests they decide is a maker-checker split in name
-  // only. The gate caught this — the code said ENTER here while migration 0058 granted INSERT
-  // to operator/manager/admin, and the database had it right.
   approval: {
     viewer: READ,
     finance_operator: RECORD,
@@ -151,14 +142,12 @@ export const CLASS_MATRIX: Record<AccessClass, Record<AppRole, Action[]>> = {
     viewer: READ, finance_operator: READ, finance_approver: READ,
     finance_manager: READ, admin: ALL,
   },
-  // sessions is deliberately read-only for EVERY tier, admin included. Sessions are written by
-  // the login path, which runs unswitched through sessions_app_runtime — so no tier needs to
-  // write them, and a tier that could would be able to mint a session for another account.
-  // Split out from users because the gate proved a single `auth` class was claiming admin
-  // could INSERT sessions when the database (correctly) refused.
+  // Faz 39 (0098): sessions stays un-insertable for every tier (sessions are minted only on the
+  // unswitched login path via sessions_app_runtime), while admin gains row-level SELECT + UPDATE
+  // solely to count and revoke active sessions (revoked_at IS NULL -> NOT NULL).
   auth_sessions: {
     viewer: READ, finance_operator: READ, finance_approver: READ,
-    finance_manager: READ, admin: READ,
+    finance_manager: READ, admin: ["select", "update"],
   },
   // schema_migrations — owner connection only. No tier has any access at all.
   ledger: {
@@ -168,11 +157,10 @@ export const CLASS_MATRIX: Record<AccessClass, Record<AppRole, Action[]>> = {
 };
 
 /**
- * Every table, and the class it belongs to. Identical to the assignment in migration 0058.
+ * Every table, and the class it belongs to. Identical to the assignment in migration 0058 + 0098.
  *
  * This is exhaustive on purpose: `db:roles-rls:verify` compares these keys against pg_class and
- * fails when a table exists that nobody classified. A table missing here would otherwise get no
- * policy, be invisible to every tier, and present as an empty screen rather than an error.
+ * fails when a table exists that nobody classified.
  */
 export const TABLE_CLASS: Record<string, AccessClass> = {
   // reference (16)
@@ -192,15 +180,19 @@ export const TABLE_CLASS: Record<string, AccessClass> = {
   machine_assets: "reference",
   production_parts: "reference",
   external_assumptions: "reference",
-  // operational (38)
+  management_accounts: "reference",
+  // operational & planning_line
   payments: "operational",
   payment_instances: "operational",
   checks: "operational",
+  check_bordros: "operational",
   loans: "operational",
   loan_installments: "operational",
   invoices: "operational",
   invoice_lines: "operational",
   invoice_allocations: "operational",
+  payment_runs: "operational",
+  payment_run_items: "operational",
   bank_transactions: "operational",
   bank_transaction_match_candidates: "operational",
   cashflow_months: "operational",
@@ -212,44 +204,34 @@ export const TABLE_CLASS: Record<string, AccessClass> = {
   action_items: "operational",
   mapping_reviews: "operational",
   source_workbooks: "operational",
-  // Faz 25. Recording that a customer promised to pay is day-to-day collections work, so it
-  // lands in the same class as payments and invoices: operator enters and revises, manager and
-  // admin may also delete. Classified here as well as in migration 0059 — db:roles-rls:verify
-  // executes both against a live database and fails if they disagree.
   promise_to_pay: "operational",
-  // Faz 27 financing tables. Same class as loans/loan_installments: an operator records a
-  // facility or a drawdown, a manager corrects or removes one.
   credit_facilities: "operational",
   facility_drawdowns: "operational",
+  facility_movements: "operational",
   collateral_records: "operational",
   covenant_records: "operational",
+  cost_model_items: "operational",
   fx_positions: "operational",
-  // Faz 28. Budgets and forecasts are day-to-day financial planning records: an operator drafts
-  // lines, a manager corrects or removes them. The version lifecycle (draft/approved/superseded)
-  // governs WHICH lines are measured; it is not an access question.
   budgets: "operational",
-  budget_lines: "operational",
+  budget_lines: "planning_line",
   forecasts: "operational",
-  forecast_lines: "operational",
-  // Faz 29. Optimisation runs and their recommendations are PROPOSALS — an operator produces
-  // them and reads them; acting on one is a separate approved action against the underlying
-  // record, governed by that record's own policies.
+  forecast_lines: "planning_line",
   optimization_runs: "operational",
   optimization_recommendations: "operational",
-  // Faz 31. An operator triages control findings; a manager clears them.
-  // Faz 33. Enqueuing an import is data entry; everyone may watch the queue; only a manager or
-  // admin may DELETE a row — cancelling leaves the record, deleting destroys the evidence that
-  // the job ever ran.
   background_jobs: "operational",
-  // Faz 35. documents/document_links: filing a document is data entry. attachments is EVIDENCE —
-  // append-only in the database (0083 triggers), insert+select only, no update or delete for any
-  // tier, because a version history that can be edited is not a history.
-  // Faz 36. Personal working preference, owner-scoped like action_items/scenarios (0058).
-  // Faz 37. Turning on a live bank feed is an administrative act, not finance data entry — it is
-  // the closest thing here to granting access to an external system. Credentials are NEVER stored
-  // in this table; it holds the NAME of the env var that has them.
   integration_connections: "config",
-  // Faz 38. A conversation thread is a person's own working record, like a saved view.
+  integration_sync_runs: "operational",
+  integration_entity_links: "operational",
+  integration_account_mappings: "operational",
+  integration_staged_parties: "operational",
+  management_journal_entries: "operational",
+  management_journal_lines: "operational",
+  statutory_trial_balances: "operational",
+  statutory_trial_balance_lines: "operational",
+  trial_balance_reconciliation_runs: "operational",
+  trial_balance_reconciliation_items: "operational",
+  forecast_snapshots_13w: "operational",
+  forecast_snapshot_13w_lines: "operational",
   assistant_conversations: "personal",
   saved_views: "personal",
   documents: "operational",
@@ -258,10 +240,8 @@ export const TABLE_CLASS: Record<string, AccessClass> = {
   control_alerts: "operational",
   source_sheets: "operational",
   import_rows: "operational",
-  // Standart Import V2 (0088). Kullanicinin kendi kayit kodunu domain kaydina baglayan
-  // defter — import hattinin parcasi, o yuzden hattin geri kalaniyla ayni sinif.
   import_external_keys: "operational",
-  // evidence (9)
+  // evidence
   audit_logs: "evidence",
   check_events: "evidence",
   iban_change_events: "evidence",
@@ -269,10 +249,10 @@ export const TABLE_CLASS: Record<string, AccessClass> = {
   approval_steps: "evidence",
   source_cells: "evidence",
   reminder_deliveries: "evidence",
-  // Faz 27. An observed FX rate is a historical fact, append-only by trigger in 0066. A rate that
-  // could be edited afterwards would make every revaluation built on it unfalsifiable.
   fx_rate_snapshots: "evidence",
-  // derived (11)
+  reconciliation_signoffs: "evidence",
+  integration_raw_payloads: "evidence",
+  // derived
   metric_snapshots: "derived",
   cashflow_snapshots: "derived",
   ai_response_snapshots: "derived",
@@ -284,20 +264,10 @@ export const TABLE_CLASS: Record<string, AccessClass> = {
   scenario_comparisons: "derived",
   machine_roi_snapshots: "derived",
   part_profitability_runs: "derived",
-  // config / approval / auth / ledger (5)
+  // config / approval / auth / ledger
   settings: "config",
-  // Faz 26. Same class as settings: every tier reads the floor (it explains why a liquidity
-  // warning is showing), only admin changes it. Deliberately not manager-writable — a manager
-  // who could lower the floor governing their own alerts would be silencing the alarm rather
-  // than answering it, the argument 0058 used to keep approval_rules admin-only.
   treasury_policies: "config",
-  // Faz 30. Same class as settings/treasury_policies: every tier reads the allocation basis (it
-  // explains why a margin looks the way it does), only admin changes it. Deliberately not
-  // manager-writable — re-basing allocation moves cost between cost centres without any
-  // financial record changing.
   cost_allocation_rules: "config",
-  // Faz 31. Escalation windows are config: everyone reads, only admin changes — someone who
-  // could lengthen the window on their own alerts would be silencing the alarm.
   alert_escalation_rules: "config",
   approvals: "approval",
   approval_rules: "approval_config",
@@ -307,17 +277,20 @@ export const TABLE_CLASS: Record<string, AccessClass> = {
 };
 
 /**
- * Tables where an operator's UPDATE is additionally restricted to rows it created. Mirrors the
- * `c_owned` list in 0058 — only tables that already carry `created_by`, because inventing an
- * owner column for the other 53 would have made every historical row unowned.
+ * Tables where an operator's writes/updates are additionally restricted to rows it created.
  */
-export const OWNER_SCOPED_TABLES = ["action_items", "invoice_allocations", "scenarios", "saved_views", "assistant_conversations"] as const;
+export const OWNER_SCOPED_TABLES = [
+  "action_items",
+  "invoice_allocations",
+  "scenarios",
+  "saved_views",
+  "assistant_conversations",
+  "background_jobs",
+] as const;
 
 /** Does this tier may run this command on this table? */
 export function can(role: AppRole, table: string, action: Action): boolean {
   const cls = TABLE_CLASS[table];
-  // An unclassified table is denied, not allowed. The gate fails on it separately; this makes
-  // the runtime behaviour safe in the window before anyone notices.
   if (cls === undefined) return false;
   return CLASS_MATRIX[cls][role].includes(action);
 }
@@ -337,6 +310,16 @@ export function canDecideApprovals(role: AppRole): boolean {
   return can(role, "approvals", "update");
 }
 
+/** Faz 39 (0098): whether a tier may transition budget_lines / forecast_lines to 'approved'. */
+export function canApprovePlanningLines(role: AppRole): boolean {
+  return role === "finance_approver" || role === "finance_manager" || role === "admin";
+}
+
+/** Faz 45 (0100): whether a tier may lock or reopen a financial period (cashflow_months). */
+export function canManagePeriodLock(role: AppRole): boolean {
+  return role === "finance_manager" || role === "admin";
+}
+
 /** Whether a tier may administer accounts. */
 export function canAdministerUsers(role: AppRole): boolean {
   return can(role, "users", "update");
@@ -344,19 +327,8 @@ export function canAdministerUsers(role: AppRole): boolean {
 
 /* ── role-based navigation, backend half (Faz 24B; the UI half is Faz 36) ─────────────── */
 
-/**
- * The minimum tier that may see each navigation module.
- *
- * Only the backend answer lives here — which modules a role is entitled to. Faz 36 owns how
- * that is presented. Keeping the decision server-side means a hidden module is genuinely
- * unreachable rather than merely unrendered: the pages behind /system already call
- * requireAdmin(), and the tables behind every module are governed by the policies above, so
- * this list is the third agreeing layer rather than the only one.
- */
 const MODULE_MIN_TIER: Record<string, AppRole[]> = {
-  // Everything a finance dashboard exists to show is visible to every tier, including viewer:
-  // withholding the numbers from a colleague who may read them serves nobody, and the control
-  // this phase adds is over writes.
+  "/": [...APP_ROLES],
   "/overview": [...APP_ROLES],
   "/payments": [...APP_ROLES],
   "/cashflow": [...APP_ROLES],
@@ -365,9 +337,6 @@ const MODULE_MIN_TIER: Record<string, AppRole[]> = {
   "/scenarios": [...APP_ROLES],
   "/insights/ask": [...APP_ROLES],
   "/data/quality": [...APP_ROLES],
-  // System holds account administration, backup and security. A viewer or operator has nothing
-  // actionable there and every page inside already refuses them, so showing it would only
-  // offer a door that does not open.
   "/system": ["finance_manager", "admin"],
 };
 
@@ -383,46 +352,19 @@ export function navigationFor<T extends { href: string }>(role: AppRole, items: 
 }
 
 /* ── role-based navigation, UI half (Faz 36) ─────────────────────────────────────────── */
-//
-// Faz 24B deliberately shipped only the backend answer and left "how that is presented" to this
-// phase. Measured before writing this: the SIDEBAR was already filtered by navigationFor(), but
-// `ModuleFrame` — the component that renders every module's TABS — had no role awareness at all,
-// and all eight module layouts handed it a hard-coded list. So the gap was never the sidebar; it
-// was one level down, where a tier could still be offered a tab into a screen that refuses it.
-//
-// Sub-route entitlements. Only routes whose entitlement DIFFERS from their module's are listed;
-// everything else inherits, which keeps this table small enough to stay true.
 
 const ROUTE_MIN_TIER: Record<string, AppRole[]> = {
-  // Backup/restore and access control are administration, not finance work. A manager can read
-  // the system module but has nothing actionable on these two, and both pages already refuse
-  // them server-side — this stops the door being drawn at all.
   "/system/backup": ["admin"],
   "/system/security": ["admin"],
-  // The approval queue is the maker-checker control surface. An operator RAISES requests but may
-  // not decide them (Faz 24A), and a viewer has no part in it; offering the queue to either
-  // implies an action they cannot take.
+  "/system/diagnostics": ["admin"],
   "/data/approvals": ["finance_approver", "finance_manager", "admin"],
-  // PHASE 4 — Standart Import V2 bir YAZMA yüzeyidir: source_workbooks/import_rows/
-  // import_external_keys (operational sınıfı, 0058/0088) yalnız operator/manager/admin'e INSERT
-  // verir. Viewer ve approver'a sayfayı göstermek, her düğmesi reddedilen bir ekran sunmak olurdu.
-  // Veritabanı zaten bağımsız olarak aynı cevabı verir; bu üçüncü, aynı fikirdeki katmandır.
   "/data/imports/v2": ["finance_operator", "finance_manager", "admin"],
 };
 
-/**
- * Whether a tier may see a specific route, tab included.
- *
- * Resolution order matters and is the point: the most specific entry wins, but a route always
- * inherits its MODULE's gate when it has no entry of its own. Without that inheritance a tab
- * under /system would be visible to a viewer purely because nobody remembered to list it — the
- * failure mode is silent, and it is exactly the one this function exists to prevent.
- */
 export function canSeeRoute(role: AppRole, href: string): boolean {
   const explicit = ROUTE_MIN_TIER[href];
   if (explicit !== undefined) return explicit.includes(role);
 
-  // Longest matching module prefix, so /system/jobs inherits /system.
   const modules = Object.keys(MODULE_MIN_TIER)
     .filter((m) => href === m || href.startsWith(`${m}/`))
     .sort((a, b) => b.length - a.length);
@@ -430,14 +372,6 @@ export function canSeeRoute(role: AppRole, href: string): boolean {
   return true;
 }
 
-/**
- * Filter a module's tabs for a tier.
- *
- * Called from the SERVER component that owns each module layout, so a tab a tier may not use is
- * never serialised into the page at all. Filtering in the browser would put the full list in the
- * HTML and merely hide it with CSS — which is not access control, it is a rendering choice with
- * a security-shaped name.
- */
 export function tabsFor<T extends { href: string }>(role: AppRole, tabs: T[]): T[] {
   return tabs.filter((tab) => canSeeRoute(role, tab.href));
 }
@@ -448,10 +382,6 @@ export const GATED_ROUTES: readonly string[] = Object.freeze([
 ]);
 
 /* ── capability gates for in-page actions (Faz 36) ────────────────────────────────────── */
-//
-// A hidden tab is only half the job: a page a tier may READ can still render a button that writes.
-// These are named capabilities rather than raw can(role, table, action) calls at each call site,
-// so the same question is answered the same way everywhere and the gate can enumerate them.
 
 export const UI_CAPABILITIES = {
   create_document: { table: "documents", action: "insert" },
@@ -461,21 +391,17 @@ export const UI_CAPABILITIES = {
   generate_report: { table: "reports", action: "insert" },
   save_view: { table: "saved_views", action: "insert" },
   decide_approval: { table: "approvals", action: "update" },
+  approve_planning_line: { table: "budget_lines", action: "update" },
   edit_payment: { table: "payments", action: "update" },
-  // PHASE 4 — /data/imports/v2 önizleme+onay eylemleri. Sayfa kapısından bağımsız olarak
-  // sunucu eyleminin kendisi de bunu sorar (kapı UI'dır, eylem gerçek yazma noktasıdır).
   import_workbook_v2: { table: "source_workbooks", action: "insert" },
 } as const satisfies Record<string, { table: string; action: Action }>;
 
 export type UiCapability = keyof typeof UI_CAPABILITIES;
 
-/**
- * Whether a tier may perform a named UI action.
- *
- * Delegates to `can()` — the same matrix the database policies were generated from — so a button
- * can never be offered on the strength of a second, drifting opinion about who may write.
- */
 export function canPerform(role: AppRole, capability: UiCapability): boolean {
+  if (capability === "approve_planning_line") {
+    return canApprovePlanningLines(role);
+  }
   const spec = UI_CAPABILITIES[capability];
   return can(role, spec.table, spec.action);
 }

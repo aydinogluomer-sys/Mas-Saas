@@ -33,6 +33,7 @@ yarn-error.log*
 # env files (secrets stay local); the template is committed
 .env*
 !.env.example
+.env*.bak*
 
 # vercel
 .vercel
@@ -116,3 +117,14 @@ __pycache__/
 
 # PHASE 1/4: ayri distDir ile derlenen dogrulama ciktilari (MAS_NEXT_DIST_DIR)
 /.next-*/
+
+# Faz 42 (B2): Python artiklari, calisma zamani kilit/ofset dosyalari ve TestSprite gecici kosu loglari
+.venv/
+.ruff_cache/
+/.runtime/
+/.testsprite/runs/
+/.testsprite/*.log
+/.lighthouse-result.json
+/.testsprite-nav-run.json
+/.navigation-run-clean.json
+

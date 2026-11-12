@@ -40,17 +40,40 @@ import { recordQuery } from "@/lib/perf/slow-query";
 declare global {
   var __masPool: Pool | undefined;
   var __masRawPool: Pool | undefined;
+  var __masPoolVersion: number | undefined;
+}
+
+const POOL_CONFIG_VERSION = 2;
+if (global.__masPoolVersion !== POOL_CONFIG_VERSION) {
+  global.__masPool = undefined;
+  global.__masRawPool = undefined;
+  global.__masPoolVersion = POOL_CONFIG_VERSION;
 }
 
 function createPool(): Pool {
   return new Pool({
     connectionString: env.databaseUrl,
     max: env.databasePoolMax,
-    idleTimeoutMillis: 30_000,
-    // af210fd's value. The layer tripled it "for cloud latency"; against a database on this
-    // machine, five seconds without a connection is an outage worth reporting, not waiting out.
-    connectionTimeoutMillis: 5_000,
+    idleTimeoutMillis: 300_000,
+    // Windows PostgreSQL spawns a child `postgres.exe` process via CreateProcess() per new
+    // physical connection; when combined with Next.js Webpack compilation blocking the Node.js
+    // event loop for 6–20s, a 5s timer expires in the Timers phase before the socket poll phase.
+    connectionTimeoutMillis: 30_000,
+    statement_timeout: env.databaseStatementTimeoutMs ?? 30_000,
+    keepAlive: true,
   });
+}
+
+async function connectWithRetry(base: Pool): Promise<TaggedClient> {
+  try {
+    return (await base.connect()) as TaggedClient;
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (/connection timeout|terminated unexpectedly|ECONNRESET/i.test(msg)) {
+      return (await base.connect()) as TaggedClient;
+    }
+    throw err;
+  }
 }
 
 /**
@@ -65,9 +88,13 @@ export function getRawPool(): Pool {
   return global.__masRawPool;
 }
 
-/** Marks which tier role a physical connection is currently sitting in. */
+/** Marks which tier role and user id a physical connection is currently sitting in. */
 const CURRENT_ROLE = Symbol.for("mas.currentDbRole");
-type TaggedClient = PoolClient & { [CURRENT_ROLE]?: string | null };
+const CURRENT_USER = Symbol.for("mas.currentUserId");
+type TaggedClient = PoolClient & {
+  [CURRENT_ROLE]?: string | null;
+  [CURRENT_USER]?: string | null;
+};
 
 /**
  * Bring a checked-out connection to the tier this request needs.
@@ -96,6 +123,7 @@ async function applyRole(client: TaggedClient, dbRole: string | null): Promise<v
   if (dbRole === null) {
     await client.query("reset role");
     await client.query("select set_config('app.user_id', '', false)");
+    client[CURRENT_USER] = "";
   } else {
     // dbRole never comes from user input — it is looked up from the five-entry DB_ROLE map in
     // @/lib/authz/matrix — but it is still an identifier being concatenated, so it is
@@ -189,19 +217,17 @@ async function contextFor(): Promise<{ dbRole: string | null; userId: string | n
   }
 }
 
-async function prepare(client: TaggedClient): Promise<void> {
+async function prepare(client: TaggedClient, forceUserConfig = true): Promise<void> {
   const { dbRole, userId } = await contextFor();
   // Order matters: set the user id BEFORE switching role. `app.user_id` is what the row-level
   // policies read (approvals' maker-checker rule, users_self_read), and set_config must run
   // while the connection still has the privilege to run it.
-  //
-  // Written on EVERY checkout, unlike the role. The layer skipped it when a per-connection tag
-  // said the value was already there; but this value is an identity, it can be changed on the
-  // connection without going through here (any set_config, a rolled-back transaction, a reset),
-  // and a stale one attributes one person's request to another inside the maker-checker policy.
-  // One local round trip per checkout is the price of never having to trust that tag.
   if (dbRole !== null) {
-    await client.query("select set_config('app.user_id', $1, false)", [userId ?? ""]);
+    const targetUser = userId ?? "";
+    if (forceUserConfig || client[CURRENT_USER] !== targetUser) {
+      await client.query("select set_config('app.user_id', $1, false)", [targetUser]);
+      client[CURRENT_USER] = targetUser;
+    }
   }
   await applyRole(client, dbRole);
 }
@@ -214,12 +240,60 @@ async function prepare(client: TaggedClient): Promise<void> {
  * the deciding factor in putting the switch here rather than at the call sites: a phase that
  * had to edit 530 places to stay correct would be a phase that silently missed some.
  */
+/**
+ * Runs a batch of read queries on a SINGLE checked-out connection so `prepare()` (`set_config` +
+ * `SET ROLE`) and pool checkout/release happen once instead of N times per page render.
+ */
+export async function withReadConnection<T>(
+  pool: Pick<Pool, "connect">,
+  fn: (db: Pool) => Promise<T>,
+): Promise<T> {
+  const client = await pool.connect();
+  const inFlight = new Set<Promise<unknown>>();
+  const runQuery = (...args: unknown[]): Promise<QueryResult<QueryResultRow>> => {
+    const startedAt = process.hrtime.bigint();
+    const recordSlow = (): void => {
+      const text = typeof args[0] === "string"
+        ? args[0]
+        : (args[0] as { text?: string } | undefined)?.text;
+      if (text) {
+        recordQuery(text, Number(process.hrtime.bigint() - startedAt) / 1e6);
+      }
+    };
+    // @ts-expect-error — pg's query() overloads are wider than this passthrough can express.
+    const promise = Promise.resolve(client.query(...args)) as Promise<QueryResult<QueryResultRow>>;
+    const tracked = promise.then(recordSlow, recordSlow).finally(() => {
+      inFlight.delete(tracked);
+    });
+    inFlight.add(tracked);
+    return promise;
+  };
+  const pinned = new Proxy(client as unknown as Pool, {
+    get(target, prop, receiver) {
+      if (prop === "query") return runQuery;
+      if (prop === "connect") {
+        throw new Error("withReadConnection yalnızca salt-okunur query() çağrıları içindir; iç içe connect() açılamaz.");
+      }
+      const value = Reflect.get(target, prop, receiver);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+  try {
+    return await fn(pinned);
+  } finally {
+    if (inFlight.size > 0) {
+      await Promise.allSettled([...inFlight]);
+    }
+    client.release();
+  }
+}
+
 export function getPool(): Pool {
   if (!global.__masPool) {
     const base = createPool();
 
     const scopedQuery = async (...args: unknown[]): Promise<QueryResult<QueryResultRow>> => {
-      const client = (await base.connect()) as TaggedClient;
+      const client = await connectWithRetry(base);
       // Faz 33: the one choke point every pooled query already passes through, which is why the
       // slow-query timer lives here rather than at ~530 call sites. Only the DURATION and the
       // query SHAPE are recorded — never the parameters, which are financial values.
@@ -258,7 +332,7 @@ export function getPool(): Pool {
     };
 
     const scopedConnect = async (): Promise<PoolClient> => {
-      const client = (await base.connect()) as TaggedClient;
+      const client = await connectWithRetry(base);
       try {
         await prepare(client);
       } catch (e) {

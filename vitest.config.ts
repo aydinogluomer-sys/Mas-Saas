@@ -10,6 +10,8 @@ export default defineConfig({
   test: {
     globals: true,
     environment: "node",
+    // Faz 43 (B3): 8 GB RAM Windows makinede paralel worker OOM'unu önlemek için tavan.
+    maxWorkers: process.env.CI ? 4 : 2,
     // Genel bir testTimeout BİLEREK yok (vitest varsayılanı 5 sn). Katmanın eklediği 20 sn'lik genel
     // sınır, bir avuç yavaş vaka yüzünden iki binden fazla testin takılma sinyalini körleştiriyordu.
     // Süresi başka bir şeyden gelen iki sınıf — gerçek bir alt süreç başlatanlar ve bütün bir kaynak

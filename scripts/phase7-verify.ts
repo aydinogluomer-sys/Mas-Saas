@@ -15,10 +15,10 @@ import {
   mapCapacitySheet, mapCostSheets,
 } from "../src/lib/production/engine";
 import { ensureSystemActor } from "./db/seed-system-actor";
-import { requireDisposableOwnerDatabaseUrl } from "./db/owner-url";
+import { assertDisposableTargetDb } from "./db/disposable-guard";
 
 const pool = new Pool({
-  connectionString: requireDisposableOwnerDatabaseUrl("phase7:verify"),
+  connectionString: assertDisposableTargetDb(undefined, "phase7:verify").url,
 });
 const fail = (m: string): never => { console.error("PHASE7 VERIFY FAIL:", m); process.exit(1); };
 const q = async (sql: string, p: unknown[] = []) => (await pool.query(sql, p)).rows;

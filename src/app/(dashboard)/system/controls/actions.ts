@@ -3,7 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { getPool } from "@/lib/db";
-import { requireSession } from "@/lib/auth";
+import { requireActionPermission } from "@/lib/auth";
 import { raiseActionItemForAlert, setAlertStatus } from "@/lib/controls/engine";
 import { DomainError } from "@/lib/domain-error";
 
@@ -20,7 +20,7 @@ function fail(e: unknown): never {
 }
 
 export async function setAlertStatusAction(formData: FormData): Promise<void> {
-  const session = await requireSession();
+  const session = await requireActionPermission("control_alerts", "update", PAGE);
   const snooze = String(formData.get("snoozeUntil") ?? "").trim();
   const note = String(formData.get("note") ?? "").trim();
   try {
@@ -37,7 +37,7 @@ export async function setAlertStatusAction(formData: FormData): Promise<void> {
 
 /** Turn a finding into a task — reusing action_items, not a second task model. */
 export async function raiseActionItemAction(formData: FormData): Promise<void> {
-  const session = await requireSession();
+  const session = await requireActionPermission("action_items", "insert", PAGE);
   try {
     await raiseActionItemForAlert(getPool(), String(formData.get("alertId") ?? ""), session.id);
   } catch (e) { fail(e); }

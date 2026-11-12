@@ -1,9 +1,10 @@
-// Scenario domain rules (Phase 8). Pure & deterministic — sources: implementation.md
+// Scenario domain rules (Phase 8 + Faz 46). Pure & deterministic — sources: implementation.md
 // §20 Phase 8 + mas-cashflow-forecaster. Scenarios are READ-ONLY planning overlays:
 // they clone the baseline, apply DISCLOSED assumptions, re-chain the closing balances,
 // and compare — never mutating the baseline. null stays null (unknown ≠ 0); unknown
 // income/expense cannot be scaled or silently zeroed; assumptions are explicit.
 
+import { decimal, money } from "@/lib/money";
 import type { CashMonth } from "@/lib/radar/rules";
 
 export interface ScenarioAssumptions {
@@ -41,14 +42,14 @@ export interface ScenarioMonth {
   delta: number | null; // scenario − baseline closing
 }
 
-/** Scale a known amount by a factor; null stays null (unknown is never scaled to 0). */
-function scale(amount: number | null, factor: number): number | null {
-  return amount == null ? null : amount * factor;
+/** Scale a known amount by a factor in exact decimal arithmetic; null stays null (unknown is never scaled to 0). */
+function scale(amount: number | null, factor: ReturnType<typeof decimal>): number | null {
+  return amount == null ? null : money(decimal(amount).times(factor));
 }
 
 function addKnownDelta(amount: number | null, delta: number | undefined): number | null {
   if (!delta) return amount;
-  return amount == null ? null : amount + delta;
+  return amount == null ? null : money(decimal(amount).plus(decimal(delta)));
 }
 
 /**
@@ -71,13 +72,16 @@ export function applyScenario(
   for (const a of adjustments) {
     const key = a.monthStart.slice(0, 10);
     const existing = adjBy.get(key) ?? { incomeDelta: 0, expenseDelta: 0 };
-    existing.incomeDelta += a.incomeDelta ?? 0;
-    existing.expenseDelta += a.expenseDelta ?? 0;
+    existing.incomeDelta = money(decimal(existing.incomeDelta).plus(decimal(a.incomeDelta ?? 0)));
+    existing.expenseDelta = money(decimal(existing.expenseDelta).plus(decimal(a.expenseDelta ?? 0)));
     adjBy.set(key, existing);
   }
-  const revFactor = 1 + (assumptions.revenuePct ?? 0) + (assumptions.capacityUtilizationPct ?? 0);
-  const expFactor = 1 + (assumptions.expensePct ?? 0);
-  const effFactor = 1 - (assumptions.efficiencyPct ?? 0);
+  const revFactor = decimal(1)
+    .plus(decimal(assumptions.revenuePct ?? 0))
+    .plus(decimal(assumptions.capacityUtilizationPct ?? 0));
+  const expFactor = decimal(1).plus(decimal(assumptions.expensePct ?? 0));
+  const effFactor = decimal(1).minus(decimal(assumptions.efficiencyPct ?? 0));
+  const combinedExpFactor = expFactor.times(effFactor);
   const delay = Math.max(0, Math.round(assumptions.customerDelayMonths ?? 0));
 
   // 1) adjusted income with delay shift (amount preserved, timing shifted forward)
@@ -90,11 +94,11 @@ export function applyScenario(
       const v = scaledIncome[i];
       const target = i + delay;
       if (v == null) continue;
-      if (target < sorted.length) shiftedIncome[target] = (shiftedIncome[target] ?? 0) + v;
+      if (target < sorted.length) {
+        shiftedIncome[target] = money(decimal(shiftedIncome[target] ?? 0).plus(decimal(v)));
+      }
       // income shifted past the horizon falls off (disclosed via null_month_count/notes)
     }
-    // months that received no shifted income AND had a known baseline stay 0-known? No:
-    // if nothing lands, income is unknown for that month only when baseline was unknown.
     for (let i = 0; i < sorted.length; i++) {
       if (shiftedIncome[i] === 0 && baseIncome[i] == null) shiftedIncome[i] = null;
     }
@@ -103,16 +107,13 @@ export function applyScenario(
   }
 
   // 2) adjusted expense (scale + efficiency + optional debt-service overlay)
-  const scenarioExpense = sorted.map((m, i) => {
-    let e = scale(m.expense, expFactor * effFactor);
+  const scenarioExpense = sorted.map((m) => {
+    let e = scale(m.expense, combinedExpFactor);
     if (assumptions.includeDebtService) {
       const d = debtBy.get(m.monthStart) ?? 0;
-      e = e == null ? (d > 0 ? d : null) : e + d; // debt adds to known expense; null+debt stays null unless debt>0
-      // NOTE: adding debt to an unknown expense keeps it unknown (can't sum with null),
-      // except when there is a positive debt we surface it as the known floor.
+      e = e == null ? (d > 0 ? d : null) : money(decimal(e).plus(decimal(d)));
       if (m.expense == null && d > 0) e = d;
     }
-    void i;
     return e;
   });
 
@@ -133,8 +134,11 @@ export function applyScenario(
     const inc = shiftedIncome[i];
     const exp = scenarioExpense[i];
     let closing: number | null;
-    if (opening != null && inc != null && exp != null) closing = opening + inc - exp;
-    else closing = null;
+    if (opening != null && inc != null && exp != null) {
+      closing = money(decimal(opening).plus(decimal(inc)).minus(decimal(exp)));
+    } else {
+      closing = null;
+    }
     out.push({
       monthStart: m.monthStart,
       baselineIncome: m.income,
@@ -143,11 +147,11 @@ export function applyScenario(
       scenarioExpense: exp,
       baselineClosing: m.closing,
       scenarioClosing: closing,
-      delta: closing != null && m.closing != null ? closing - m.closing : null,
+      delta: closing != null && m.closing != null
+        ? money(decimal(closing).minus(decimal(m.closing)))
+        : null,
     });
-    // next opening: prefer the scenario closing; if unknown, carry last known forward
     if (closing != null) opening = closing;
-    // else: opening unchanged (last known), so the chain resumes once inc/exp are known again
   }
   return out;
 }
@@ -188,12 +192,11 @@ export function compareScenarioToBaseline(months: ScenarioMonth[]): ScenarioComp
         worstBalance = m.scenarioClosing;
         worstMonth = m.monthStart;
       }
-      const gap = m.scenarioClosing < 0 ? -m.scenarioClosing : 0;
+      const gap = m.scenarioClosing < 0 ? money(decimal(m.scenarioClosing).abs()) : 0;
       if (maxCashGap == null || gap > maxCashGap) maxCashGap = gap;
     }
   }
 
-  // recovery: first month with scenario closing ≥ 0 that occurs after the first negative
   let recoveryMonth: string | null = null;
   if (scenFirstNeg != null) {
     let seenNeg = false;
@@ -209,7 +212,9 @@ export function compareScenarioToBaseline(months: ScenarioMonth[]): ScenarioComp
   return {
     baselineFinalCash: baseFinal,
     scenarioFinalCash: scenFinal,
-    finalDelta: scenFinal != null && baseFinal != null ? scenFinal - baseFinal : null,
+    finalDelta: scenFinal != null && baseFinal != null
+      ? money(decimal(scenFinal).minus(decimal(baseFinal)))
+      : null,
     baselineFirstNegative: baseFirstNeg,
     scenarioFirstNegative: scenFirstNeg,
     worstMonth, worstBalance, maxCashGap, recoveryMonth,

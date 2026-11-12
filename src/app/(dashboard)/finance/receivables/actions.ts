@@ -1,15 +1,8 @@
 "use server";
 
-// Faz 22 — allocation server actions.
-//
-// Every mutation goes through src/lib/receivables/engine.ts (Zod at the boundary, canonical
-// audit() in the same transaction). The allocation ceiling is enforced by migration 0048's
-// trigger; the engine's check exists only to turn a refusal into a readable sentence, and
-// implementation.md §18 is explicit that an application check is never sufficient on its own.
-
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
-import { requireSession } from "@/lib/auth";
+import { requireActionPermission } from "@/lib/auth";
 import { getPool } from "@/lib/db";
 import { DomainError } from "@/lib/domain-error";
 import { formObject } from "@/lib/validation";
@@ -23,19 +16,34 @@ function domainRedirect(e: unknown): never {
 }
 
 export async function allocateAction(formData: FormData): Promise<void> {
-  const session = await requireSession();
+  const session = await requireActionPermission("invoice_allocations", "insert", BASE);
+  const f = formObject(formData);
+  const settlementSource = typeof f.settlementSource === "string" ? f.settlementSource.trim() : "";
+  if (settlementSource) {
+    if (settlementSource === "manual") {
+      f.sourceTable = "manual";
+      delete f.sourceId;
+    } else if (settlementSource.includes(":")) {
+      const [sourceTable, sourceId] = settlementSource.split(":", 2);
+      f.sourceTable = sourceTable;
+      f.sourceId = sourceId;
+    }
+    delete f.settlementSource;
+  }
   try {
-    await allocateToInvoice(getPool(), formObject(formData), session.id);
+    await allocateToInvoice(getPool(), f, session.id);
   } catch (e) { domainRedirect(e); }
   revalidatePath(BASE);
+  revalidatePath("/finance/invoices");
   redirect(`${BASE}?result=dagitim-yapildi`);
 }
 
 export async function reverseAllocationAction(formData: FormData): Promise<void> {
-  const session = await requireSession();
+  const session = await requireActionPermission("invoice_allocations", "update", BASE);
   try {
     await reverseAllocation(getPool(), formObject(formData), session.id);
   } catch (e) { domainRedirect(e); }
   revalidatePath(BASE);
+  revalidatePath("/finance/invoices");
   redirect(`${BASE}?result=dagitim-iptal`);
 }

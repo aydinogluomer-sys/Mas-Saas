@@ -1,4 +1,4 @@
-import Link from "next/link";
+import Link from "@/components/ui/app-link";
 import { notFound } from "next/navigation";
 import { getPool } from "@/lib/db";
 import { loadLoanInstallments, loadLoans } from "@/lib/financing/engine";
@@ -42,7 +42,7 @@ export default async function LoanDetailPage({
       <Panel
         title={loan.name}
         right={
-          <Link href="/financing" className="font-mono text-[10px] uppercase text-tone-2 underline underline-offset-2">
+          <Link href="/finance" className="font-mono text-[10px] uppercase text-tone-2 underline underline-offset-2">
             ← çek/kredi
           </Link>
         }
@@ -107,7 +107,7 @@ export default async function LoanDetailPage({
                       {PAYABLE_FROM.has(i.status) && (
                         <form action={markInstallmentPaidAction} className="flex items-center gap-1">
                           <input type="hidden" name="id" value={i.id} />
-                          <input type="hidden" name="backTo" value={`/financing/loans/${loanId}`} />
+                          <input type="hidden" name="backTo" value={`/finance/loans/${loanId}`} />
                           {/* Empty = "paid today"; a past installment can be back-dated to its
                               real payment date rather than silently stamped with now(). */}
                           <input

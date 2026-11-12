@@ -78,7 +78,7 @@ class FakeDb {
       this.insertedKeys.push(key);
       return { rows: [], rowCount: 1 };
     }
-    if (s.includes("insert into public.audit_logs")) {
+    if (s.includes("into public.audit_logs")) {
       this.audits.push({
         action: String(params![1]),
         after: JSON.parse(String(params![5])) as AuditCall["after"],
@@ -86,6 +86,7 @@ class FakeDb {
       return { rows: [{ id: `audit-${this.audits.length}` }], rowCount: 1 };
     }
     if (s.includes("from public.settings")) return { rows: [], rowCount: 0 };
+    if (s.includes("from public.cashflow_months")) return { rows: [], rowCount: 0 };
     // Risk tazeleme penceresi: bu testlerde boş, çünkü ölçülen şey risk mantığı değil.
     if (s.includes("from public.payment_instances")) return { rows: [], rowCount: 0 };
     if (s.includes("update public.payment_instances")) return { rows: [], rowCount: 0 };

@@ -1,8 +1,4 @@
-// Faz 37 — integration engine: schedule, run, record.
-//
-// Scheduling is Faz 33's `background_jobs` queue, used as-is. This module enqueues and completes
-// jobs through that engine's own functions — it does not write job rows itself, does not
-// implement retry, and does not own a dead-letter concept. All three already exist and work.
+// Faz 37 & Faz 40 (A2) — integration engine: schedule, run, record.
 
 import type { Pool } from "pg";
 import { audit } from "@/lib/audit";
@@ -44,7 +40,6 @@ const mapRow = (x: Record<string, unknown>): ConnectionRow => ({
   lastSuccessAt: (x.last_success_at as string | null) ?? null,
   lastError: (x.last_error as string | null) ?? null,
   isOverdue: Boolean(x.is_overdue),
-  // Null, not 0: "never synced successfully" is not "synced 0 minutes ago".
   minutesSinceSuccess: x.minutes_since_success == null ? null : Number(x.minutes_since_success),
   deadLetterCount: Number(x.dead_letter_count ?? 0),
 });
@@ -80,7 +75,6 @@ export async function createConnection(
       after: {
         integrationKind: input.integrationKind, name: input.name,
         provider: input.provider ?? null,
-        // Recorded explicitly so an audit reader can see the credential itself was never stored.
         credentialEnvVar: input.credentialEnvVar ?? null, credentialStored: false,
       },
     });
@@ -91,13 +85,6 @@ export async function createConnection(
   } finally { client.release(); }
 }
 
-/**
- * Enqueue a sync for one connection.
- *
- * The dedupe key is the connection id plus the business date, so a scheduler that fires twice —
- * or an operator clicking "sync now" while one is already queued — produces ONE job. Faz 33's
- * partial unique index on live jobs does the work; nothing here re-implements it.
- */
 export async function enqueueSync(
   pool: Pool, connectionId: string, actorId: string | null, asOfISO = istanbulDateISO(),
 ): Promise<{ jobId: string; created: boolean } | null> {
@@ -106,8 +93,6 @@ export async function enqueueSync(
     [connectionId]);
   const row = res.rows[0];
   if (!row) return null;
-  // Only an enabled connection may be scheduled. A disabled or revoked one silently queuing work
-  // is how a withdrawn credential keeps getting used.
   if (row.status !== "enabled") return null;
 
   const kind = row.integration_kind as IntegrationKind;
@@ -120,7 +105,6 @@ export async function enqueueSync(
   return { jobId: job.id, created };
 }
 
-/** Every enabled connection whose schedule has elapsed. */
 export async function enqueueDueSyncs(
   pool: Pool, actorId: string | null, asOfISO = istanbulDateISO(),
 ): Promise<{ enqueued: number; skipped: number }> {
@@ -135,12 +119,6 @@ export async function enqueueDueSyncs(
   return { enqueued, skipped };
 }
 
-/**
- * Run one claimed sync job.
- *
- * `http` is injected. This function has no way to reach the network on its own, which is what
- * lets the gate run the whole path with a mock and be certain nothing left the machine.
- */
 export async function runSyncJob(
   pool: Pool,
   job: { id: string; payload: Record<string, unknown> },
@@ -169,14 +147,12 @@ export async function runSyncJob(
   }
 
   const ctx = {
-    config: connection.config,
+    connectionId: connection.id, config: connection.config,
     credential: readCredential(connection.credentialEnvVar),
     http,
     asOfISO,
   };
 
-  // Authenticate first. A bad credential is permanent, and separating it stops the queue retrying
-  // a wrong password five times behind every other job.
   const auth = await connector.authenticate(ctx);
   if (!auth.ok) {
     await markFailure(pool, connectionId, auth.error ?? "Kimlik doğrulama başarısız", actorId);
@@ -184,7 +160,41 @@ export async function runSyncJob(
     return { ok: false, imported: null, skipped: null, error: auth.error, permanent: auth.permanent };
   }
 
-  const outcome = await connector.sync(ctx, pool, actorId);
+  // Faz 40 (A2): protect outer transactional callers with `SAVEPOINT connector_exec` so an
+  // aborted SQL statement inside a connector never leaves the connection in 25P02 when recording
+  // failure state and audit evidence.
+  let savepointArmed = false;
+  try {
+    const txProbe = await pool.query<{ xid: string | null }>(
+      `select pg_current_xact_id_if_assigned()::text as xid`,
+    );
+    if (txProbe.rows[0]?.xid != null) {
+      await pool.query("SAVEPOINT connector_exec");
+      savepointArmed = true;
+    }
+  } catch {
+    savepointArmed = false;
+  }
+
+  let outcome: SyncOutcome;
+  try {
+    outcome = await connector.sync(ctx, pool, actorId);
+    if (savepointArmed) {
+      await pool.query("RELEASE SAVEPOINT connector_exec").catch(() => undefined);
+    }
+  } catch (e) {
+    if (savepointArmed) {
+      await pool.query("ROLLBACK TO SAVEPOINT connector_exec").catch(() => undefined);
+      await pool.query("RELEASE SAVEPOINT connector_exec").catch(() => undefined);
+    }
+    outcome = {
+      ok: false,
+      imported: null,
+      skipped: null,
+      error: (e as Error).message || "Konnektör çalışma hatası",
+    };
+  }
+
   if (outcome.ok) {
     await markSuccess(pool, connectionId);
     await completeJob(pool, job.id, actorId);
@@ -203,11 +213,13 @@ export async function runSyncJob(
         integrationKind: connection.integrationKind, provider: connector.provider,
         ok: outcome.ok, imported: outcome.imported, skipped: outcome.skipped,
         error: outcome.error ?? null, asOfISO,
-        // The honest label: nothing in this phase has been exercised against a live endpoint.
         liveEndpointTested: false,
       },
     });
     await client.query("commit");
+  } catch (e) {
+    await client.query("rollback").catch(() => undefined);
+    throw e;
   } finally { client.release(); }
 
   return outcome;
@@ -220,13 +232,6 @@ async function markSuccess(pool: Pool, connectionId: string): Promise<void> {
       where id = $1`, [connectionId]);
 }
 
-/**
- * Record a failure, and move the connection to 'error' only from a state the guard allows.
- *
- * `status = 'enabled'` in the WHERE is not defensive noise: 0086's transition guard refuses
- * `disabled -> error`, and an unconditional update would raise inside a sync and turn a reported
- * failure into an unhandled one.
- */
 async function markFailure(
   pool: Pool, connectionId: string, message: string, actorId: string | null,
 ): Promise<void> {

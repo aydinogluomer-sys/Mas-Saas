@@ -2,8 +2,9 @@ import { getPool } from "@/lib/db";
 import {
   loadApprovalCounts, loadApprovalQueue, loadApprovalRules, type ApprovalRow,
 } from "@/lib/approvals/engine";
+import { formatMoney } from "@/lib/money-format";
 import { Badge, type Tone } from "@/components/ui/badge";
-import { Panel, fmtTL } from "@/components/ui/panel";
+import { Panel } from "@/components/ui/panel";
 import { EmptyState, KeyStat, PageHeader, TableShell } from "@/components/ui/shell";
 import { decideApprovalAction, resubmitApprovalAction } from "./actions";
 import { requireRouteAccess } from "@/lib/authz/route-guard";
@@ -14,23 +15,22 @@ const STATUS_TONE: Record<string, Tone> = {
   pending: "amber", reworked: "amber", approved: "green", rejected: "neutral",
 };
 const STATUS_LABEL: Record<string, string> = {
-  pending: "bekliyor", reworked: "revizyonda", approved: "onaylandi", rejected: "reddedildi",
+  pending: "bekliyor", reworked: "revizyonda", approved: "onaylandı", rejected: "reddedildi",
 };
 const KIND_LABEL: Record<string, string> = {
-  data_review: "veri incelemesi", amount_threshold: "tutar esigi", new_iban: "yeni IBAN",
-  new_counterparty: "yeni cari", invoice: "fatura", payment: "odeme", other: "diger",
+  data_review: "veri incelemesi", amount_threshold: "tutar eşiği", new_iban: "yeni IBAN",
+  new_counterparty: "yeni cari", invoice: "fatura", payment: "ödeme", payment_run: "ödeme paketi", budget: "bütçe", other: "diğer",
 };
 const SUBJECT_LABEL: Record<string, string> = {
-  mapping_reviews: "esleme incelemesi", external_assumptions: "dis varsayim",
-  invoices: "fatura", payment_instances: "odeme", ibans: "IBAN",
+  mapping_reviews: "eşleme incelemesi", external_assumptions: "dış varsayım",
+  invoices: "fatura", payment_instances: "ödeme", ibans: "IBAN",
   parties: "cari", bank_transactions: "banka hareketi",
+  payment_runs: "ödeme paketi", budgets: "bütçe", budget_lines: "bütçe satırı", forecast_lines: "tahmin satırı", payments: "ödeme şablonu",
 };
 
 export default async function ApprovalsPage({
   searchParams,
 }: { searchParams: Promise<{ error?: string; result?: string }> }) {
-  // Faz 17-38 denetimi — sayfa seviyesi rol kapisi. Navigasyonun kullandigi AYNI karar
-  // (canSeeRoute); ikinci bir liste, ikinci bir fikir ve kacinilmaz bir kayma demekti.
   const denied = await requireRouteAccess("/data/approvals");
   if (denied) return denied;
   const sp = await searchParams;
@@ -44,8 +44,8 @@ export default async function ApprovalsPage({
   return (
     <>
       <PageHeader
-        title="Onay Kuyrugu"
-        subtitle="Maker-checker: talep eden ile onaylayan ayni kisi olamaz"
+        title="Onay Kuyruğu"
+        subtitle="Maker-checker: talep eden ile onaylayan aynı kişi olamaz"
         meta={<Badge tone={counts.pending > 0 ? "amber" : "green"} dot>{counts.pending} bekleyen</Badge>}
       />
 
@@ -62,7 +62,7 @@ export default async function ApprovalsPage({
         <KeyStat label="Reddedilen" value={counts.rejected} tone="neutral" />
       </div>
 
-      <Panel title="ACIK ONAYLAR">
+      <Panel title="AÇIK ONAYLAR">
         {open.length === 0 ? (
           <EmptyState>Bekleyen onay yok.</EmptyState>
         ) : (
@@ -70,7 +70,7 @@ export default async function ApprovalsPage({
             <table className="w-full text-sm">
               <thead>
                 <tr className="text-left text-xs uppercase text-neutral-500">
-                  <th className="py-1">Konu</th><th>Tur</th><th>Kural</th>
+                  <th className="py-1">Konu</th><th>Tür</th><th>Kural</th>
                   <th className="text-right">Tutar</th><th>Talep</th><th>Durum</th><th>Karar</th>
                 </tr>
               </thead>
@@ -83,7 +83,7 @@ export default async function ApprovalsPage({
                         <form action={resubmitApprovalAction} className="flex gap-1">
                           <input type="hidden" name="approvalId" value={r.id} />
                           <input name="note" placeholder="not" className="w-24 rounded border border-neutral-700 bg-neutral-900 px-1 text-xs" />
-                          <button className="rounded bg-neutral-700 px-2 py-1 text-xs">Yeniden gonder</button>
+                          <button className="rounded bg-neutral-700 px-2 py-1 text-xs">Yeniden gönder</button>
                         </form>
                       ) : (
                         <form action={decideApprovalAction} className="flex flex-wrap items-center gap-1">
@@ -103,15 +103,15 @@ export default async function ApprovalsPage({
         )}
       </Panel>
 
-      <Panel title="KARARA BAGLANANLAR" subtitle="son 40 kayit">
+      <Panel title="KARARA BAĞLANANLAR" subtitle="son 40 kayıt">
         {decided.length === 0 ? (
-          <EmptyState>Henuz karara baglanmis onay yok.</EmptyState>
+          <EmptyState>Henüz karara bağlanmış onay yok.</EmptyState>
         ) : (
           <TableShell>
             <table className="w-full text-sm">
               <thead>
                 <tr className="text-left text-xs uppercase text-neutral-500">
-                  <th className="py-1">Konu</th><th>Tur</th><th>Kural</th>
+                  <th className="py-1">Konu</th><th>Tür</th><th>Kural</th>
                   <th className="text-right">Tutar</th><th>Talep</th><th>Durum</th><th>Karar veren</th>
                 </tr>
               </thead>
@@ -120,8 +120,7 @@ export default async function ApprovalsPage({
                   <tr key={r.id} className="border-t border-neutral-800">
                     <Cells row={r} />
                     <td className="py-2 text-xs text-neutral-400">
-                      {/* A null decider is legacy history, not a gap to be filled in with a guess. */}
-                      {r.decidedByName ?? "— (legacy kayit)"}
+                      {r.decidedByName ?? "— (eski kayıt)"}
                       {r.decidedAt ? <span className="block text-neutral-600">{r.decidedAt}</span> : null}
                     </td>
                   </tr>
@@ -132,13 +131,13 @@ export default async function ApprovalsPage({
         )}
       </Panel>
 
-      <Panel title="ONAY KURALLARI" subtitle="hangi durumlar ikinci goz ister">
+      <Panel title="ONAY KURALLARI" subtitle="hangi durumlar ikinci göz ister">
         <TableShell>
           <table className="w-full text-sm">
             <thead>
               <tr className="text-left text-xs uppercase text-neutral-500">
                 <th className="py-1">Kural</th><th>Tetikleyici</th>
-                <th className="text-right">Esik</th><th>Kapsam</th><th>Durum</th>
+                <th className="text-right">Eşik</th><th>Kapsam</th><th>Durum</th>
               </tr>
             </thead>
             <tbody>
@@ -146,9 +145,9 @@ export default async function ApprovalsPage({
                 <tr key={r.id} className="border-t border-neutral-800">
                   <td className="py-2">{r.description}<span className="block text-xs text-neutral-600">{r.code}</span></td>
                   <td className="text-xs">{KIND_LABEL[r.triggerKind] ?? r.triggerKind}</td>
-                  <td className="text-right tabular-nums">{r.thresholdAmount == null ? "—" : fmtTL(r.thresholdAmount)}</td>
+                  <td className="text-right font-mono tabular-nums">{r.thresholdAmount == null ? "—" : formatMoney(r.thresholdAmount, r.currency ?? "TRY")}</td>
                   <td className="text-xs text-neutral-400">
-                    {r.appliesTo.length === 0 ? "tumu" : r.appliesTo.map((t) => SUBJECT_LABEL[t] ?? t).join(", ")}
+                    {r.appliesTo.length === 0 ? "tümü" : r.appliesTo.map((t) => SUBJECT_LABEL[t] ?? t).join(", ")}
                   </td>
                   <td><Badge tone={r.isActive ? "green" : "neutral"}>{r.isActive ? "aktif" : "pasif"}</Badge></td>
                 </tr>
@@ -174,7 +173,7 @@ function Cells({ row }: { row: ApprovalRow }) {
       </td>
       <td className="text-xs">{KIND_LABEL[row.requestKind] ?? row.requestKind}</td>
       <td className="text-xs text-neutral-500">{row.ruleCode ?? "—"}</td>
-      <td className="text-right tabular-nums">{row.amount == null ? "—" : fmtTL(row.amount)}</td>
+      <td className="text-right font-mono tabular-nums">{row.amount == null ? "—" : formatMoney(row.amount, row.currency ?? "TRY")}</td>
       <td className="text-xs text-neutral-400">
         {row.requestedByName ?? "—"}<span className="block text-neutral-600">{row.requestedAt}</span>
       </td>

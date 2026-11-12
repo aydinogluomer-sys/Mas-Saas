@@ -8,10 +8,10 @@ import {
 } from "../src/lib/external-assumptions/engine";
 import { loadDataQualityCenter } from "../src/lib/data-quality/engine";
 import { ensureSystemActor } from "./db/seed-system-actor";
-import { requireDisposableOwnerDatabaseUrl } from "./db/owner-url";
+import { assertDisposableTargetDb } from "./db/disposable-guard";
 
 const pool = new Pool({
-  connectionString: requireDisposableOwnerDatabaseUrl("phase14b:verify"),
+  connectionString: assertDisposableTargetDb(undefined, "phase14b:verify").url,
 });
 const fail = (m: string): never => { console.error("PHASE14B VERIFY FAIL:", m); process.exit(1); };
 const q = async (sql: string, p: unknown[] = []) => (await pool.query(sql, p)).rows;

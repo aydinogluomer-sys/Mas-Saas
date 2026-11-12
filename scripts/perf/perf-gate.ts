@@ -46,6 +46,7 @@ const pool = new Pool({ connectionString: url });
 const BASELINE_UNINDEXED_FK_COUNT = 115;
 // Backstop only. Selective queries below run in ~1-2 ms; this catches total breakage, not drift.
 const CATASTROPHE_MS = 3000;
+const WARM_SQL_P95_MS = Number(process.env.PERF_GATE_WARM_SQL_P95_MS ?? 50);
 
 interface Selective { label: string; table: string; sql: string }
 
@@ -129,7 +130,20 @@ async function main(): Promise<void> {
     record(
       `SLO: ${q.label} felaket eşiği altında`,
       execMs < CATASTROPHE_MS,
-      `${execMs.toFixed(1)} ms (eşik ${CATASTROPHE_MS} ms)`,
+      `${execMs.toFixed(1)} ms (eşik ${CATASTROPHE_MS} ms)`);
+    const warmSamples: number[] = [];
+    for (let i = 0; i < 3; i += 1) {
+      const wr = await pool.query(`explain (analyze, format json) ${q.sql}`);
+      const wp = typeof wr.rows[0]["QUERY PLAN"] === "string" ? JSON.parse(wr.rows[0]["QUERY PLAN"]) : wr.rows[0]["QUERY PLAN"];
+      warmSamples.push(Number(wp[0]["Execution Time"]));
+    }
+    const warmMax = Math.max(...warmSamples);
+    record(
+      `sıcak SQL p95: ${q.label} ≤ ${WARM_SQL_P95_MS} ms`,
+      warmMax <= WARM_SQL_P95_MS,
+      `${warmMax.toFixed(1)} ms (sıcak 3 koşu max, eşik ${WARM_SQL_P95_MS} ms)`,
+    );
+    void (0
     );
   }
 

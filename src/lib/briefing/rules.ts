@@ -1,15 +1,10 @@
-// Faz 32 — CFO briefing rules. Pure, deterministic, no database, no model.
+// Faz 32 + Faz 46 — CFO briefing rules. Pure, deterministic, no database, no model.
 //
-// The briefing's TEXT is assembled here from facts gathered elsewhere. Keeping the rendering pure
-// is what lets the gate compare the rendered summary against the same facts the dashboards use:
-// if this file could reach the database it could reach a different row, and the "no deviation"
-// requirement would become a hope rather than a property.
-//
-// Does not import @/lib/ai. reports/engine.ts (Faz 6/12) set the boundary — deterministic numbers
-// first, commentary strictly afterwards and separately.
+// Does not import @/lib/ai.
 
 import { decimal, moneyOrNull, type NumericInput } from "@/lib/money";
 import { partitionByCurrency } from "@/lib/currency-policy";
+import { formatOvernightDeltaBridgeMd, type OvernightDeltaAttribution } from "./delta-attribution";
 
 export interface BriefingFacts {
   todayISO: string;
@@ -35,6 +30,7 @@ export interface BriefingFacts {
   dsoDays: number | null;
   dpoDays: number | null;
   cycleExcludingInventory: number | null;
+  overnightDelta?: OvernightDeltaAttribution | null;
 }
 
 export interface DaySummary {
@@ -46,20 +42,12 @@ export interface DaySummary {
   foreignCount: number;
 }
 
-/**
- * Total a day's movements, keeping unknown amounts VISIBLE.
- *
- * A null amount is counted separately rather than added as zero. "Three payments today totalling
- * 40.000 TL" and "three payments today totalling 40.000 TL plus one of unknown size" are different
- * briefings, and only the second is honest when an amount is missing.
- */
 export function summariseDay(
   rows: Array<{ amount: NumericInput; direction?: string; currency?: string | null }>,
 ): DaySummary {
   let out = decimal(0);
   let inflow = decimal(0);
   let unknown = 0;
-  // Para birimi alanı taşıyan ve TRY olmayan satır toplanmaz (alanı hiç olmayan satır yapısal TRY).
   const { comparable, foreignCount } = partitionByCurrency(rows);
   for (const r of comparable) {
     const amt = moneyOrNull(r.amount);
@@ -81,8 +69,9 @@ const tl = (n: number | null): string =>
 /**
  * The single most important sentence, chosen deterministically.
  *
- * Fixed priority, worst first: a liquidity breach outranks a control failure, which outranks
- * overdue items. No scoring — an operator must be able to predict which line they will see.
+ * Faz 46 (Dalga 1 #4): Never emit a green all-clear ("Bugün için kritik bir kalem görünmüyor.")
+ * or imply liquidity safety when `liquidityGap7 == null` or `availableCash == null` (e.g. FIN-03
+ * unknown opening balance or missing TRY position).
  */
 export function headline(f: BriefingFacts): { text: string; tone: "neg" | "warn" | "pos" } {
   if (f.liquidityGap7 != null && f.liquidityGap7 > 0) {
@@ -100,39 +89,34 @@ export function headline(f: BriefingFacts): { text: string; tone: "neg" | "warn"
   if (f.todayCount > 0) {
     return { text: `Bugün ${f.todayCount} kalem, ${tl(f.todayOutflowKnown)} çıkış.`, tone: "warn" };
   }
+  if (f.liquidityGap7 == null || f.availableCash == null) {
+    return {
+      text: "7 günlük likidite açığı hesaplanamadı — likidite pozisyonu bilinmiyor / ölçülemez (açılış bakiyesi eksik).",
+      tone: "warn",
+    };
+  }
   return { text: "Bugün için kritik bir kalem görünmüyor.", tone: "pos" };
 }
 
-/**
- * The status badge in the briefing page header.
- *
- * Same fixed order as headline(): critical controls, then the 7-day liquidity gap. The all-clear
- * "kritik bulgu yok" is said only when the gap was actually COMPUTED and is not positive. The page
- * used to read the gap as `liquidityGap7 ?? 0`, so "liquidity could not be computed" (no treasury
- * position, no forecast) fell through to a green all-clear. Unknown is its own, neutral, answer
- * (Wave 0, R10). A critical control still wins over an unknown gap: that finding is known.
- */
 export function briefingStatus(
-  f: Pick<BriefingFacts, "criticalControls" | "liquidityGap7">,
+  f: Pick<BriefingFacts, "criticalControls" | "liquidityGap7"> & { availableCash?: number | null },
 ): { text: string; tone: "neg" | "neutral" | "pos" } {
   if (f.criticalControls.length > 0) {
     return { text: `${f.criticalControls.length} kritik kontrol`, tone: "neg" };
   }
-  if (f.liquidityGap7 == null) return { text: "likidite bilinmiyor", tone: "neutral" };
+  if (f.liquidityGap7 == null || f.availableCash === null) {
+    return { text: "likidite bilinmiyor", tone: "neutral" };
+  }
   if (f.liquidityGap7 > 0) return { text: "likidite açığı var", tone: "neg" };
   return { text: "kritik bulgu yok", tone: "pos" };
 }
 
-/**
- * Today's actions, deterministic and capped.
- *
- * Only triggered items appear, in a fixed order. The cap exists because a morning briefing with
- * fifteen "urgent" lines is one nobody acts on.
- */
 export function todaysActions(f: BriefingFacts, limit = 5): string[] {
   const a: string[] = [];
   if (f.liquidityGap7 != null && f.liquidityGap7 > 0) {
     a.push(`Likidite açığını kapat: ${tl(f.liquidityGap7)} (7 gün).`);
+  } else if (f.liquidityGap7 == null || f.availableCash == null) {
+    a.push("7 günlük likidite pozisyonu bilinmiyor (ölçülemez) — kasa/banka açılış bakiyelerini tamamla.");
   }
   for (const c of f.newCriticalAlerts) a.push(`Kritik uyarıyı incele: ${c}`);
   if (f.overdueCount > 0) a.push(`${f.overdueCount} gecikmiş kalemi gözden geçir.`);
@@ -147,14 +131,7 @@ export function todaysActions(f: BriefingFacts, limit = 5): string[] {
   return a.slice(0, limit);
 }
 
-/**
- * Render the briefing as Markdown.
- *
- * Every figure comes from `facts`; nothing is recomputed here. That is what allows
- * `phase32:verify` to assert the rendered text and the dashboards agree — they are the same
- * numbers, formatted twice.
- */
-export function renderBriefing(f: BriefingFacts): string {
+export function renderBriefing(f: BriefingFacts, options: { masked?: boolean } = {}): string {
   const h = headline(f);
   const lines: string[] = [];
   lines.push(`# CFO Sabah Brifingi — ${f.todayISO}`);
@@ -164,15 +141,25 @@ export function renderBriefing(f: BriefingFacts): string {
   lines.push("## Nakit");
   lines.push(`- Kullanılabilir nakit: ${tl(f.availableCash)}`);
   lines.push(`- Asgari kasa tabanı: ${tl(f.minCashFloor)}`);
-  lines.push(`- 7 gün likidite açığı: ${f.liquidityGap7 == null ? "—" : tl(f.liquidityGap7)}`);
-  lines.push(`- 30 gün likidite açığı: ${f.liquidityGap30 == null ? "—" : tl(f.liquidityGap30)}`);
+  lines.push(
+    `- 7 gün likidite açığı: ${f.liquidityGap7 == null ? "— (bilinmiyor / ölçülemez)" : tl(f.liquidityGap7)}`,
+  );
+  lines.push(
+    `- 30 gün likidite açığı: ${f.liquidityGap30 == null ? "— (bilinmiyor / ölçülemez)" : tl(f.liquidityGap30)}`,
+  );
+  if (f.availableCash == null || f.liquidityGap7 == null) {
+    lines.push("- **Likidite uyarısı: 7 günlük likidite açığı / nakit pozisyonu bilinmiyor (ölçülemez).**");
+  }
   lines.push("");
+  if (f.overnightDelta) {
+    lines.push(formatOvernightDeltaBridgeMd(f.overnightDelta, options));
+    lines.push("");
+  }
   lines.push("## Bugün");
   lines.push(`- Kalem sayısı: ${f.todayCount}`);
   lines.push(`- Bilinen çıkış: ${tl(f.todayOutflowKnown)}`);
   lines.push(`- Bilinen giriş: ${tl(f.todayInflowKnown)}`);
   if (f.todayUnknownAmountCount > 0) {
-    // Stated, never folded into the total — an unknown amount is not zero.
     lines.push(`- **Tutarı bilinmeyen: ${f.todayUnknownAmountCount} kalem** (toplamlar eksik)`);
   }
   if (f.todayForeignCurrencyCount > 0 || f.overdueForeignCurrencyCount > 0) {

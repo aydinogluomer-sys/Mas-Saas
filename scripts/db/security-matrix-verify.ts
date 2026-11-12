@@ -329,7 +329,7 @@ async function main(): Promise<void> {
   // own origin check further down). Next refuses cross-origin server-action invocations by itself
   // (proven end-to-end by phase16:verify), which covers the CSRF/origin layer; what it cannot
   // supply is auth and role, and those have to be in the action.
-  const AUTH_CALL = /requireSession\s*\(|getCurrentUser\s*\(|requireAdmin\s*\(|requireRole\s*\(/;
+  const AUTH_CALL = /requireSession\s*\(|getCurrentUser\s*\(|requireAdmin\s*\(|requireRole\s*\(|requireActionPermission\s*\(/;
 
   /**
    * The one file exempted, with its reason — the same shape phase18:verify uses for its audit
@@ -364,8 +364,8 @@ async function main(): Promise<void> {
   // bot.py on this machine authenticates it with a constant-time shared secret plus the owner's
   // chat id, and it only reads (viewer tier). An Origin header proves nothing about such a caller.
   const ORIGIN_EXEMPT: Record<string, string> = {
-    "src/app/api/telegram/assistant/route.ts":
-      "makineden makineye, çerezsiz: paylaşılan sır + chat id ile doğrulanır, yalnız okur (viewer)",
+    // Faz 42 (B2): src/app/api/telegram/assistant/route.ts retired; zero ORIGIN_EXEMPT routes remain.
+
   };
   const apiRoutes = walk("src/app/api").filter((f) => f.endsWith("route.ts"));
   const mutatingRoutes = apiRoutes.filter((f) => /export\s+(async\s+function|const)\s+(POST|PUT|PATCH|DELETE)\b/.test(codeOnly(readSrc(f))));

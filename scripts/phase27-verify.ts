@@ -28,9 +28,9 @@ import { revalue, parseTcmbXml } from "../src/lib/fx/rules";
 import { mockRateProvider, tcmbProvider, TCMB_TODAY_URL } from "../src/lib/fx/provider";
 import { importRates } from "../src/lib/fx/engine";
 import { TABLE_CLASS } from "../src/lib/authz/matrix";
-import { requireDisposableOwnerDatabaseUrl } from "./db/owner-url";
+import { assertDisposableTargetDb } from "./db/disposable-guard";
 
-const pool = new Pool({ connectionString: requireDisposableOwnerDatabaseUrl("phase27:verify") });
+const pool = new Pool({ connectionString: assertDisposableTargetDb(undefined, "phase27:verify").url });
 
 interface Check { name: string; pass: boolean; detail: string }
 const checks: Check[] = [];

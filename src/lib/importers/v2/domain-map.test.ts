@@ -68,7 +68,7 @@ describe("Kararların anlamı", () => {
 });
 
 describe("Yazıcılar ile eşleme birbirini tutuyor", () => {
-  it("domain hedefi olan her ailenin yazıcısı var — ya da yokluğu gerekçeli", () => {
+  it("domain hedefi olan her ailenin yazıcısı var", () => {
     for (const sheet of DATA_SHEETS) {
       const domainHedefi = Object.keys(domainColumnsFor(sheet.name)).length > 0;
       if (!domainHedefi) continue;
@@ -79,29 +79,40 @@ describe("Yazıcılar ile eşleme birbirini tutuyor", () => {
     }
   });
 
-  // 15_MALIYET'in yazıcısı BİLEREK yok: şablon uzun biçimde, `cost_models` geniş biçimde.
-  // Bu testin işi, o kararın gerekçesiz sessiz bir boşluğa dönüşmemesini sağlamak.
-  it("yazıcısı olmayan tek aile `cost` ve tüm kolonları gerekçeli", () => {
+  // Faz 50 (0103) ile 15_MALIYET (`cost_model_items`) ve 17_KREDI_LIMITLERI (`credit_facilities`)
+  // dâhil tüm sözleşme sayfalarının domain yazıcısı tamamlandı.
+  it("tüm 17 sözleşme sayfasının domain yazıcısı var ve 14/15/16/17 kolonları eksiksiz kalıcı", () => {
     const yazicisiz = DATA_SHEETS
       .filter((s) => s.domainTable !== null && !(s.family in FAMILY_WRITERS))
       .map((s) => s.family);
-    expect(yazicisiz).toEqual(["cost"]);
+    expect(yazicisiz).toEqual([]);
 
-    const maliyet = DATA_SHEETS.find((s) => s.family === "cost")!;
-    for (const col of maliyet.columns) {
-      const t = targetFor(maliyet.name, col.key)!;
-      expect(["not_persisted", "ledger"], `${maliyet.name}.${col.key}`).toContain(t.kind);
+    for (const family of ["capacity", "cost", "machine_roi", "credit_facilities"]) {
+      const sheet = DATA_SHEETS.find((s) => s.family === family)!;
+      for (const col of sheet.columns) {
+        const t = targetFor(sheet.name, col.key)!;
+        const expectedKind = col.key === "external_id" ? "ledger" : "domain";
+        expect(t.kind, `${sheet.name}.${col.key}`).toBe(expectedKind);
+      }
     }
   });
 });
 
-describe("Migration 0088 ile aynı tablolardan bahsediyoruz", () => {
+describe("Migration 0103 (0088 uzantısı) ile aynı tablolardan bahsediyoruz", () => {
   it("eşlemedeki her domain tablosu deftere de kayıt yazabilir", () => {
     const sql = readFileSync(
-      path.resolve(__dirname, "../../../../supabase/migrations/0088_import_external_keys.sql"), "utf8");
-    const izinli = new Set([...sql.matchAll(/'([a-z_]+)'/g)].map((m) => m[1]));
+      path.resolve(
+        __dirname,
+        "../../../../supabase/migrations/0103_close_operational_loops_and_reconciliation_signoffs.sql",
+      ),
+      "utf8",
+    );
+    const block = /constraint import_external_keys_entity_table_check[\s\S]*?check \(entity_table in \(([\s\S]*?)\)\)/.exec(sql);
+    expect(block).not.toBeNull();
+    const izinli = new Set([...block![1].matchAll(/'([a-z_]+)'/g)].map((m) => m[1]));
     const hedefTablolar = new Set(
-      DATA_SHEETS.map((s) => s.domainTable).filter((t): t is string => t !== null));
-    for (const t of hedefTablolar) expect(izinli.has(t), `0088 CHECK listesinde yok: ${t}`).toBe(true);
+      DATA_SHEETS.map((s) => s.domainTable).filter((t): t is string => t !== null),
+    );
+    for (const t of hedefTablolar) expect(izinli.has(t), `0103 CHECK listesinde yok: ${t}`).toBe(true);
   });
 });

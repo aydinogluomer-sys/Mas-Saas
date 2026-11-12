@@ -15,6 +15,7 @@ import path from "node:path";
 import { Pool, type PoolClient } from "pg";
 import { MIGRATIONS_DIR, validateFileSet } from "./migration-lib";
 import { ensureSystemActor } from "./seed-system-actor";
+import { assertLocalPgReachable, createDisposableLocalDb, dropDisposableLocalDb, resolveLocalOwnerUrl, restoreIntoDisposableLocalDb } from "./pg-local-admin";
 import {
   LEGACY_ANOMALY_INSTANCE_ID,
   countCancelConsistencyViolations,
@@ -26,7 +27,6 @@ import {
 } from "./legacy-cancellation-fixture";
 
 const ROOT = process.cwd();
-const CONTAINER = process.env.MAS_DB_CONTAINER ?? "mas-radar-pg";
 const TSX_CLI = path.join(ROOT, "node_modules", "tsx", "dist", "cli.mjs");
 const MIGRATE_SCRIPT = path.join(ROOT, "scripts", "db", "migrate.ts");
 // Derived from files on disk, not hardcoded — a fixed "30 satır, last migration 0030"
@@ -53,30 +53,17 @@ function record(name: string, pass: boolean, detail?: string): void {
   console.log(`${pass ? "PASS" : "FAIL"}  ${name}${detail ? `  (${detail})` : ""}`);
 }
 
-function docker(args: string[], opts: { input?: string | Buffer; quiet?: boolean } = {}): string {
-  return execFileSync("docker", args, {
-    input: opts.input,
-    encoding: "utf8",
-    maxBuffer: 128 * 1024 * 1024,
-    stdio: opts.quiet ? ["pipe", "pipe", "pipe"] : ["pipe", "inherit", "inherit"],
-  });
-}
 function assertContainerReachable(): void {
-  try {
-    docker(["exec", CONTAINER, "pg_isready", "-U", "postgres", "-q"], { quiet: true });
-  } catch {
-    console.error(`PostgreSQL konteyneri (${CONTAINER}) erişilebilir değil. Bu script onu otomatik başlatmaz.`);
-    process.exit(1);
-  }
+  assertLocalPgReachable();
 }
 function dropDb(db: string): void {
-  docker(["exec", CONTAINER, "dropdb", "-U", "postgres", "--if-exists", db], { quiet: true });
+  dropDisposableLocalDb(db);
 }
 function createDb(db: string): void {
-  docker(["exec", CONTAINER, "createdb", "-U", "postgres", db], { quiet: true });
+  createDisposableLocalDb(db);
 }
 function dbUrl(db: string): string {
-  return `postgres://postgres:postgres@127.0.0.1:5432/${db}`;
+  return resolveLocalOwnerUrl(db);
 }
 function dbNameFromUrl(url: string): string {
   return new URL(url).pathname.replace(/^\//, "");
@@ -125,10 +112,7 @@ function restoreManagedFixtureInto(db: string): void {
   const dump = findLatestManagedFixtureDump();
   dropDb(db);
   createDb(db);
-  docker(["exec", "-i", CONTAINER, "pg_restore", "-U", "postgres", "-d", db, "--no-owner", "--role=postgres"], {
-    input: readFileSync(dump),
-    quiet: true,
-  });
+  restoreIntoDisposableLocalDb(db, dump, { extraArgs: ["--role=postgres"], strict: true });
 }
 /** Reads a single migration file's raw SQL by version prefix, straight off disk — used only
  * to prove the 0028→0029 sequence is safe in true isolation (migrate.ts itself has no CLI
@@ -522,7 +506,7 @@ async function main(): Promise<void> {
           "action_items_archive_triplet_consistency",
         ] as const) {
           const state = await getConstraintCatalogState(pool, conname);
-          record(`kapsam dışı ${conname} hâlâ convalidated=false (dokunulmadı)`, state.found && state.convalidated === false, JSON.stringify(state));
+          record(`0099: ${conname} VALIDATE edildi (convalidated=true)`, state.found && state.convalidated === true, JSON.stringify(state));
         }
 
         const thirdRun = runMigrateAgainstUrl(disposableUrl);

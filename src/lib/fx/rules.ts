@@ -1,4 +1,4 @@
-// Faz 27 — FX rules. Pure, deterministic, decimal throughout.
+// Faz 27 & Faz 46 (C3) — FX rules. Pure, deterministic, decimal throughout.
 //
 // EVERY figure here goes through @/lib/money. That is not a style preference in this module: an
 // unrealised gain is the difference between two nearly-equal large numbers (amount × rate_now
@@ -143,6 +143,53 @@ export interface TcmbRate {
   banknoteBuying: number | null;
   banknoteSelling: number | null;
   unit: number;
+}
+
+/**
+ * Faz 46 (C3): Extract the published bulletin date (`YYYY-MM-DD`) from real TCMB `today.xml`.
+ *
+ * Real TCMB root tags carry BOTH `Tarih="DD.MM.YYYY"` (Turkish) and `Date="MM/DD/YYYY"` (US):
+ *   `<Tarih_Date Tarih="21.08.2026" Date="08/21/2026" Bulten_No="2026/160">`
+ *
+ * Priority:
+ *   1. `Tarih="DD.MM.YYYY"` -> `YYYY-MM-DD`
+ *   2. `Date="MM/DD/YYYY"`  -> `YYYY-MM-DD`
+ *   3. `Date="DD.MM.YYYY"`  -> `YYYY-MM-DD` (legacy mock fallback)
+ */
+export function parseTcmbBulletinDate(xml: string): string | null {
+  const rootTag = xml.match(/<Tarih_Date[^>]*>/)?.[0] ?? xml;
+
+  const tarihMatch = rootTag.match(/\bTarih="(\d{2})\.(\d{2})\.(\d{4})"/);
+  if (tarihMatch) {
+    const [, dd, mm, yyyy] = tarihMatch;
+    if (isValidCalendarDate(Number(yyyy), Number(mm), Number(dd))) {
+      return `${yyyy}-${mm}-${dd}`;
+    }
+  }
+
+  const usDateMatch = rootTag.match(/\bDate="(\d{2})\/(\d{2})\/(\d{4})"/);
+  if (usDateMatch) {
+    const [, mm, dd, yyyy] = usDateMatch;
+    if (isValidCalendarDate(Number(yyyy), Number(mm), Number(dd))) {
+      return `${yyyy}-${mm}-${dd}`;
+    }
+  }
+
+  const dotDateMatch = rootTag.match(/\bDate="(\d{2})\.(\d{2})\.(\d{4})"/);
+  if (dotDateMatch) {
+    const [, dd, mm, yyyy] = dotDateMatch;
+    if (isValidCalendarDate(Number(yyyy), Number(mm), Number(dd))) {
+      return `${yyyy}-${mm}-${dd}`;
+    }
+  }
+
+  return null;
+}
+
+function isValidCalendarDate(year: number, month: number, day: number): boolean {
+  if (month < 1 || month > 12 || day < 1 || day > 31) return false;
+  const maxDay = new Date(Date.UTC(year, month, 0)).getUTCDate();
+  return day <= maxDay;
 }
 
 /**

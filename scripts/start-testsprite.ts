@@ -1,21 +1,32 @@
 import { spawn } from "node:child_process";
+import { readEnvLocal, swapDatabase } from "./db/app-url";
+import { validateDisposableTargetDb } from "./db/disposable-guard";
+import { resolveLocalOwnerUrl } from "./db/pg-local-admin";
 
-const mode = process.argv.includes("--production") ? "start" : "dev";
+const TARGET_DB = "mas_radar_testsprite";
+const envLocal = readEnvLocal();
+const baseAppUrl = process.env.MAS_TESTSPRITE_DATABASE_URL ?? envLocal.DATABASE_URL ?? resolveLocalOwnerUrl(TARGET_DB);
+const targetAppUrl = swapDatabase(baseAppUrl, TARGET_DB);
+const targetOwnerUrl = resolveLocalOwnerUrl(TARGET_DB);
 
-const child = spawn(process.execPath, ["node_modules/next/dist/bin/next", mode, "--port", "3103"], {
+validateDisposableTargetDb(
+  { DATABASE_URL: targetAppUrl, MIGRATION_DATABASE_URL: targetOwnerUrl },
+  ["DATABASE_URL", "MIGRATION_DATABASE_URL"],
+  "start-testsprite",
+);
+
+const isProduction = process.argv.includes("--production");
+const childArgs = isProduction
+  ? ["--import", "tsx", "scripts/ops/start-standalone.ts", "--port", "3103"]
+  : ["node_modules/next/dist/bin/next", "dev", "--port", "3103"];
+
+const child = spawn(process.execPath, childArgs, {
   cwd: process.cwd(),
   stdio: "inherit",
   env: {
     ...process.env,
-    DATABASE_URL: "postgres://postgres:postgres@127.0.0.1:5432/mas_radar_testsprite",
-    // Real login is now always required (P0-A) — no env toggle disables auth entirely
-    // anymore, that class of footgun is exactly what P0-A closes. TestSprite instead gets
-    // a narrowly-scoped bypass: both NODE_ENV!=="production" AND this flag must hold, and
-    // it only works at all against a disposable DB that has seeded the one reserved,
-    // is_active=false "testsprite-qa" row (scripts/db/sanitize-testsprite.sql, run by
-    // scripts/db/create-testsprite-db.ts) — a real
-    // dev/prod database never has that row, so leaving this flag on by accident anywhere
-    // else fails closed, not open.
+    DATABASE_URL: targetAppUrl,
+    MIGRATION_DATABASE_URL: targetOwnerUrl,
     MAS_QA_BYPASS_AUTH: "1",
   },
 });

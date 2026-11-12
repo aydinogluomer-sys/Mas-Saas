@@ -1,0 +1,60 @@
+{
+  "artifactKind": "mas-p24b-startup-writer-contract-v1",
+  "measuredAtUtc": "2026-09-03T08:53:34.540Z",
+  "startupCommand": "pnpm start",
+  "startupChain": [
+    "tsx scripts/ops/runtime-port-guard.ts --start",
+    "tsx scripts/prepare-runtime.ts",
+    "next start"
+  ],
+  "contractSource": "RC c71366a — package.json scripts.start + scripts/prepare-runtime.ts",
+  "writerSurfaces": [
+    {
+      "id": "A",
+      "call": "ensureSystemActor(getRawPool())",
+      "table": "public.users",
+      "statement": "INSERT ... ON CONFLICT (username) DO NOTHING",
+      "expectation": "system aktoru zaten mevcut oldugundan is-verisi deltasi 0",
+      "preStartUsersCount": 13,
+      "expectedUsersDelta": 0,
+      "measuredOnCloneRun1": 0,
+      "measuredOnCloneRun2": 0
+    },
+    {
+      "id": "B",
+      "call": "runAsSystem(() => ensureWindow(pool, istanbulDateISO(), actorId, 24))",
+      "table": "public.payment_instances",
+      "statement": "eksik pencere satirlarini uretir",
+      "expectation": "temizlenmis mevcut durumda YENI instance 0; sayim 485 -> 485",
+      "expectedInserts": 0,
+      "cloneRun1": "485 -> 485, 1 satir UPDATE (gecmis tarihli kayit, deterministik bakim)",
+      "cloneRun2": "485 -> 485, hic degisiklik yok",
+      "note": "Gercek startup'ta UPDATE gorulurse exact row id / degisen sutunlar / before / after / kanonik kural olculecek. 'Beklenen' diye VARSAYILMAYACAK."
+    },
+    {
+      "id": "C",
+      "call": "ensureWindow denetim kaydi",
+      "table": "public.audit_logs",
+      "statement": "INSERT — action='generate_instances'",
+      "expectation": "her acilista tam +26 satir",
+      "preStartAuditCount": 736,
+      "expectedAuditCountAfter": 762,
+      "expectedDelta": 26,
+      "classification": "P1 OPERATIONAL DEBT — bilinen, olculmus, bu turda DUZELTILMEYECEK"
+    }
+  ],
+  "forbiddenDeltas": {
+    "p24bFixtureResurrection": 0,
+    "paymentsDelta": 0,
+    "actionItemsDelta": 0,
+    "approvalsDelta": 0,
+    "settingsFixtureDelta": 0,
+    "fixtureUsersDelta": 0
+  },
+  "allowedChangedTables": [
+    "public.audit_logs",
+    "public.payment_instances (yalnizca kanitlanmis deterministik bakim UPDATE'i)"
+  ],
+  "anyOtherTableMutation": "UNEXPECTED_RUNTIME_DELTA -> runtime STOP",
+  "status": "OLCULMEDI — runtime baslatilmadi (bkz. 03-BLOCKED-offdevice-backup-gate.json)"
+}

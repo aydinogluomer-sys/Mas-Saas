@@ -231,14 +231,26 @@ export interface ScheduledInstallment {
 }
 
 /**
+ * Faz 46: Compute `firstPaymentDateISO + monthOffset` while preserving the original anchor day
+ * across short months (e.g. `2026-01-31` -> `+1m` = `2026-02-28`, `+2m` = `2026-03-31`,
+ * `+3m` = `2026-04-30`, `+25m` = `2028-02-29`), never permanently locking subsequent months to 28.
+ */
+export function addMonthsPreservingAnchorDay(
+  firstPaymentDateISO: string,
+  monthOffset: number,
+): { dueDate: string; shortMonthAdjusted: boolean } {
+  const anchorDay = Number(firstPaymentDateISO.slice(8, 10));
+  const m0 = monthStartOf(firstPaymentDateISO);
+  return dueDateFor(addMonths(m0, monthOffset), anchorDay);
+}
+
+/**
  * Source sheet has NO per-row dates; due dates derive deterministically from
- * first_payment_date + (no−1) months on the same day (short months clamp — dueDateFor).
+ * first_payment_date + (no−1) months on the same anchor day (short months clamp — dueDateFor).
  */
 export function scheduleDueDates(firstPaymentISO: string, count: number): ScheduledInstallment[] {
-  const day = Number(firstPaymentISO.slice(8, 10));
-  const m0 = monthStartOf(firstPaymentISO);
   return Array.from({ length: count }, (_, i) => {
-    const d = dueDateFor(addMonths(m0, i), day);
+    const d = addMonthsPreservingAnchorDay(firstPaymentISO, i);
     return { no: i + 1, dueDate: d.dueDate, shortMonthAdjusted: d.shortMonthAdjusted };
   });
 }
@@ -279,7 +291,7 @@ export function reconcileLoan(input: {
     });
   }
   if (input.installmentSum != null && input.totalPayment != null) {
-    const diff = input.installmentSum - input.totalPayment;
+    const diff = money(decimal(input.installmentSum).minus(decimal(input.totalPayment)));
     if (Math.abs(diff) > tol) {
       issues.push({
         code: "installment_sum_mismatch",
@@ -289,7 +301,9 @@ export function reconcileLoan(input: {
     }
   }
   if (input.totalPayment != null && input.principal != null && input.financeCost != null) {
-    const diff = input.totalPayment - input.principal - input.financeCost;
+    const diff = money(
+      decimal(input.totalPayment).minus(decimal(input.principal)).minus(decimal(input.financeCost)),
+    );
     if (Math.abs(diff) > tol) {
       issues.push({
         code: "finance_cost_mismatch",

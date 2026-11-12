@@ -8,10 +8,10 @@ import { mapCashflowMonths } from "../src/lib/cashflow/engine";
 import { mapAcceptedChecks, mapLoans } from "../src/lib/financing/engine";
 import { createAndRun } from "../src/lib/scenarios/engine";
 import { ensureSystemActor } from "./db/seed-system-actor";
-import { requireDisposableOwnerDatabaseUrl } from "./db/owner-url";
+import { assertDisposableTargetDb } from "./db/disposable-guard";
 
 const pool = new Pool({
-  connectionString: requireDisposableOwnerDatabaseUrl("phase13a:verify"),
+  connectionString: assertDisposableTargetDb(undefined, "phase13a:verify").url,
 });
 const fail = (m: string): never => { console.error("PHASE13A VERIFY FAIL:", m); process.exit(1); };
 const q = async (sql: string, p: unknown[] = []) => (await pool.query(sql, p)).rows;

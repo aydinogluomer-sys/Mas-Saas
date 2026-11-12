@@ -18,6 +18,7 @@ import path from "node:path";
 import { Pool } from "pg";
 import { fingerprint } from "./lib/fingerprint";
 import { databaseNameFromUrl, isDisposableDatabaseName, PROTECTED_DB_NAMES } from "../db/owner-url";
+import { asChildProcessEnv, buildLibpqEnv, parseNativeTarget, resolvePgBinaries } from "../db/pg-native";
 import { buildFixtureWorkbook, FIXTURE_ORACLE } from "../../src/lib/importers/v2/fixture";
 import { parseWorkbook } from "../../src/lib/importers/v2/parser";
 import { mapWorkbook } from "../../src/lib/importers/v2/mapper";
@@ -48,7 +49,9 @@ async function main(): Promise<void> {
   if (!url || !isDisposableDatabaseName(name)) {
     throw new Error(`CLONE_DATABASE_URL harcanabilir bir ad taşımıyor: '${name ?? "?"}' (korunanlar: ${PROTECTED_DB_NAMES.join(", ")})`);
   }
-  const psql = process.env.MAS_PSQL ?? "psql";
+  const target = parseNativeTarget(url);
+  const psql = process.env.MAS_PSQL ?? resolvePgBinaries(process.env).psql;
+  const psqlEnv = asChildProcessEnv(buildLibpqEnv(target, process.env, { database: target.database, appName: "mas-v2-rehearsal" }));
   // Noktalı virgül veya satır sonu ile ayrılır — Windows yolları boşluk içerebilir ("Trade Bilisim").
   const migrations = (process.env.MIGRATIONS ?? "").split(/[;\r\n]+/).map((x) => x.trim()).filter(Boolean);
   const pool = new Pool({ connectionString: url });
@@ -70,7 +73,7 @@ async function main(): Promise<void> {
   const applied: string[] = [];
   for (const file of migrations) {
     try {
-      execFileSync(psql, ["-v", "ON_ERROR_STOP=1", "-q", "-d", url, "-f", file], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+      execFileSync(psql, ["-v", "ON_ERROR_STOP=1", "-q", "--no-password", "-d", target.database, "-f", file], { env: psqlEnv, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
     } catch (e) {
       const err = e as { status?: number; stderr?: string };
       const lines = String(err.stderr ?? "").split(/\r?\n/).filter((l) => l && !l.includes("NOTICE:"));

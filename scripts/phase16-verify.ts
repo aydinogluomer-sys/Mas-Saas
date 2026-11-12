@@ -12,6 +12,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
+import { assertDisposableTargetDb } from "./db/disposable-guard";
 
 const ROOT = process.cwd();
 const PORT = Number(process.env.PHASE16_PORT ?? 3117);
@@ -58,6 +59,7 @@ async function main(): Promise<void> {
     console.error("Üretim derlemesi yok — önce `pnpm build` çalıştırın.");
     process.exit(1);
   }
+  assertDisposableTargetDb(["DATABASE_URL", "MIGRATION_DATABASE_URL"], "phase16:verify");
   if (!process.env.DATABASE_URL) {
     console.error("DATABASE_URL tanımlı değil — /health bu olmadan anlamlı sonuç vermez.");
     process.exit(1);
@@ -65,7 +67,7 @@ async function main(): Promise<void> {
 
   let server: ChildProcess | null = null;
   try {
-    server = spawn("pnpm", ["exec", "next", "start", "-p", String(PORT)], {
+    server = spawn(process.execPath, ["--import", "tsx", "scripts/ops/start-standalone.ts", "--port", String(PORT)], {
       cwd: ROOT,
       env: { ...process.env, PORT: String(PORT) },
       stdio: ["ignore", "pipe", "pipe"],

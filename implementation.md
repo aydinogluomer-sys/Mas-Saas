@@ -1,2622 +1,1075 @@
-﻿# MAS Nakit Radar — Implementation Plan v3
+# MAS Nakit Radar — Nihai Kanonik Uygulama Yol Haritası (v5)
 
-> 14 fazli uygulama yol haritasi. Bu bolum guncel kaynak-of-truth planidir.
-> Eski v2 plan asagida tarihsel detay ve domain referansi olarak korunur.
+> **Tek Gerçek Kaynak (`Single Source of Truth`):** Bu belge; `v2`, `v3`, `v4 (Faz 15–38)` ve `§17A (Dalga 0–5)` planlarının tüm çelişkilerini ortadan kaldıran, 2026-10-28 yönetici kararlarını, Wave 0 sağlamlaştırmasını, Performans Faz 1–10 kazanımlarını ve `docs/MAS_360_SYNTHESIS_REPORT.md` içindeki 115 kanıtlı denetim bulgusunu tek bir atomik, bağımlılık-sıralı mühendislik yol haritasında birleştiren **bağlayıcı uygulama rehberidir**.  
+> **Derin Kanıt Referansı:** Tüm bulguların `dosya:satır` kanıtları, Paraşüt API v4 şema eşleştirmesi, Çift Taraflı Yönetim Defteri + Tekdüzen Hesap Planı (TDHP) mutabakat tasarımı ve 27 rakip incelemesi için bkz. `docs/MAS_360_SYNTHESIS_REPORT.md`.
 
 ---
 
-## 0. Product Boundary
+## 0. Ürün Sınırı (`Product Boundary`), Yönetici Kararları ve Değişmez Yasalar
 
-MAS Nakit Radar, MAS'in gercek Excel calisma seklini kaybetmeden; odeme,
-nakit akis, cek/kredi, uretim maliyeti, senaryo, rapor ve AI destekli
-yorum/cevap katmanina donusturen ozel bir finans-operasyon panelidir.
+### 0.1 Ürün Tanımı
 
-Urun degildir:
+**MAS Nakit Radar**; MAS'ın gerçek operasyonel çalışma düzenini ve Excel/ön-muhasebe veri soykütüğünü kaybetmeden; günlük ödeme radarı, 13 haftalık ve 36 aylık nakit akış projeksiyonu, çek/senet bordrosu, kredi/limit/kovenant takibi, Paraşüt API v4 salt-okunur veri entegrasyonu, çift taraflı yönetim defteri (mizan, yönetim bilançosu, gelir tablosu, EBITDA), mali müşavir yasal mizan mutabakat köprüsü, üretim maliyet/kapasite analitiği ve deterministik CFO karar desteğine dönüştüren **kapalı devre, tek şirketli özel finans-operasyon kontrol panelidir**.
 
-- public SaaS
-- ERP (ön muhasebe verisinin birincil kaynağı Paraşüt API v4'tür; MAS onu okur, yerine geçmez — 2026-10-28 karar 3–5)
-- yasal muhasebe defteri / e-Defter / beyanname sistemi (yasal defter mali müşavirin programında kalır).
-  Not: 2026-10-28 karar 2 ile MAS içinde çift taraflı bir **yönetim defteri** ve yasal mizanla mutabakat fark raporu
-  kapsama alındı (önce yalnız okuma, sonra yönetim defteri — §17A Dalga 3). Bu, yasal defter değildir.
-- AI muhasebeci
-- cok kiracili platform
-- public landing / pricing / subscription urunu
+### 0.2 Ürün Kesinlikle Ne Değildir?
 
-Degismez kurallar:
+1. **Çok kiracılı (`multi-tenant`) genel SaaS ürünü değildir:** Abonelik, fiyatlandırma sayfası, Stripe/iyzico ödeme duvarı, dış müşteri self-servis kayıt akışı, pazarlama açılış sayfası veya pazaryeri inşa edilmez.
+2. **Genel amaçlı tam ERP veya stok/MRP/bordro yazılımı değildir:** Ön-muhasebe ve e-Fatura/e-Arşiv verisinin birincil operasyonel giriş kaynağı **Paraşüt**'tür; MAS Paraşüt API v4 (ve yedek Excel/MT940/`camt.053` hattı) üzerinden veriyi **salt-okunur çeker**, Paraşüt'ün yerine fatura kesmez.
+3. **Yasal defter / e-Defter / GİB beyanname yazılımı değildir:** Resmi yevmiye, kebir, e-Defter beratı ve vergi beyannameleri mali müşavirin sisteminde kalır. MAS içinde kurulan **Çift Taraflı Yönetim Defteri (Faz 52)** yönetim raporlaması (EBITDA, yönetim bilançosu, nakit-tahakkuk köprüsü) ve mali müşavirin yasal mizanıyla **otomatik fark tespiti (Faz 53)** içindir.
+4. **AI muhasebeci veya kara-kutu ML tahmincisi değildir:** Yapay zekâ hiçbir zaman parasal tutar hesaplamaz, vade/tahsilat tarihi uydurmaz ve hiçbir finansal tabloya yazmaz. Tüm hesaplar deterministik TypeScript (`big.js`) ve PostgreSQL (`numeric`) üzerinde çalışır; AI yalnızca hesaplanmış deterministik gerçekleri (`DecisionFacts`) açıklar ve kapalı devre varsayılanında (`AI_FORCE_DETERMINISTIC=1`) tamamen yerel şablonla çalışır.
+5. **Çok dilli yan süreç yığını değildir:** Uygulama ve tüm arka plan işçileri **yalnızca TypeScript + PostgreSQL 16 SQL** üzerinde çalışır (`bot.py` Python yan süreci ve `xlsx@0.18.5` paketi tamamen emekli edilir).
 
-- Ham Excel verisi once korunur; sonra staging/review; sonra domain tablolarina aktarilir.
-- Null tutar asla 0 sayilmaz.
-- Negatif tutar baglama gore yorumlanir; ceklerde yon, odeme tablosunda anomali olabilir.
-- Sessiz duzeltme yoktur; validator bayrak koyar, degeri degistirmez.
-- Her domain kaydi mumkun oldugunca source workbook/sheet/row izine doner.
-- AI kaynak-of-truth degildir; sadece deterministik hesaplari aciklar, soru cevaplar ve aksiyon onerir.
-- Senaryo/analitik ciktilari muhasebe gercegi degil, planlama katmanidir.
+### 0.3 Değişmez Finansal, Güvenlik ve Mühendislik Yasaları
 
----
-
-## 1. Faz Durumu
-
-| Faz | Baslik | Durum |
-|---:|---|---|
-| 1 | Kaynak veri haritasi ve parser foundation | DONE |
-| 2 | Veritabani foundation | DONE |
-| 3 | Import, raw viewer ve mapping review UI | DONE |
-| 4 | Odeme radari MVP | DONE |
-| 5 | Nakit akis radari | DONE |
-| 6 | Cek/kredi finansman radari | DONE |
-| 7 | Raporlar ve hatirlatmalar | DONE |
-| 8 | Uretim kapasite/maliyet analitigi | DONE |
-| 9 | Salt-okunur senaryo motoru MVP | DONE |
-| 10 | Excel coverage close-out: 9A/9B/9C/9D | DONE |
-| 11 | Decision facts / metrics katmani | DONE |
-| 12 | AI soru-cevap ve rapor yorum katmani | DONE (12A; phase12a:verify PASS) |
-| 13 | Senaryo v2 ve finansman optimizasyonu | DONE (13A+13B; phase13a/13b:verify PASS) |
-| 14 | Veri kalite merkezi, disgoru ve aksiyon workflow | DONE (14A-14E; phase14a-14e:verify PASS) |
-| P0-A | Gercek cok-kullanicili auth + kullanici yonetimi | DONE |
-
-Mevcut git gercegi:
-
-- Faz 10A / 9A commitli: `feat(production): surface cost breakdown and Akon price margin (Phase 9A)`.
-- Faz 10B / 9B commitli: `feat(cashflow): surface monthly expense breakdown (Phase 9B)`.
-- Faz 10C / 9C commitli: `feat(production): add machine ROI mapping (Phase 9C)`.
-- Faz 10D / 9D commitli: `feat(production): allocate machine minutes and finance cost (Phase 9D)`.
-
----
-
-## 2. Faz 1 — Kaynak Veri Haritasi ve Parser Foundation
-
-Amac: Excel dosyasinin gercek yapisini kanitli bicimde okumak, bozuk dosyayi
-ayirt etmek ve hicbir sekmeyi sessizce atmamak.
-
-Teslimatlar:
-
-- Safe workbook parser.
-- Sheet classifier: loan, capacity, machine ROI, payment matrix, checks, cost models, monthly cashflow, unknown.
-- `docs/data-map.md`, `docs/import-mapping.md`, `docs/calculation-rules.md`.
-- Bozuk XLSX/ZIP signature failure yolu.
-
-Gate:
-
-- Tum sekmeler listelenir.
-- Typecheck, lint, unit tests.
-- Parse report guncellenir.
-
----
-
-## 3. Faz 2 — Veritabani Foundation
-
-Amac: ham kaynak, staging ve normalize domain katmanlarini kurmak.
-
-Teslimatlar:
-
-- `source_workbooks`, `source_sheets`, `source_cells`, `import_rows`, `mapping_reviews`.
-- `parties`, `categories`, `cash_accounts`, `settings`, `audit_logs`.
-- Payments, cashflow, checks, loans, reminders, reports tablolari.
-- RLS ve seed verileri.
-
-Gate:
-
-- `pnpm db:verify`.
-- Constraints: null tutar korunur, paid status `paid_at` ister, idempotency unique'leri calisir.
-- Generated DB types guncel tutulur.
-
-Not: `src/types/database.ts` yeni production/scenario/cost tablolarini da kapsayacak sekilde guncellenmelidir.
-
----
-
-## 4. Faz 3 — Import, Raw Viewer ve Mapping Review UI
-
-Amac: Excel'i domain tablolara dogrudan yazmadan once ham veriyi korumak ve
-insan onayi gereken satirlari review'a dusurmek.
-
-Teslimatlar:
-
-- Workbook upload.
-- Sheet listesi ve detected type rozetleri.
-- Raw row/cell viewer.
-- Payment/cashflow/check/loan/capacity/cost preview'lari.
-- Mapping review filtreleri ve kabul/ret/cozuldu aksiyonlari.
-
-Gate:
-
-- `pnpm import:real`.
-- Hucre ve satir sayisi source ile mutabik.
-- Anomaliler review'a duser.
-- Failed workbook partial row yazmaz.
-
----
-
-## 5. Faz 4 — Odeme Radari MVP
-
-Amac: gunluk operasyon icin odemeleri gorunur ve aksiyonlanabilir yapmak.
-
-Teslimatlar:
-
-- Payment CRUD.
-- Idempotent monthly instance generation.
-- Bugun / yarin / 7 gun gorunumu.
-- Aylik takvim, riskli gunler, gecikenler, eksik tutar raporu.
-- Paid/unpaid ve tutar girisi.
-- Audit log.
-
-Gate:
-
-- `pnpm phase3:verify`.
-- Due-day 29/30/31 kisa-ay kurali.
-- Eksik tutar 0 olmaz.
-- Duplicate instance DB seviyesinde engellenir.
-
----
-
-## 6. Faz 5 — Nakit Akis Radari
-
-Amac: 35 aylik Excel nakit akis sekmelerini projeksiyon ve karar ekranina cevirmek.
-
-Teslimatlar:
-
-- `cashflow_months`, `cashflow_lines`, `cashflow_snapshots`.
-- Devir/gelir/gider/fark/kasa kartlari.
-- Ilk negatif ay, en kotu ay, negatif seri.
-- Gelir/gider yogunlasma analizi.
-- Borc servisi overlay icin hazir temel.
-
-Gate:
-
-- `pnpm phase4:verify`.
-- Header hucreleri source ile +-0,5 TL mutabik.
-- Continuity break bayraklanir, deger degistirilmez.
-
----
-
-## 7. Faz 6 — Cek/Kredi Finansman Radari
-
-Amac: cek vadeleri, kredi taksitleri, banka/karsi taraf exposure ve borc
-servisi yukunu nakit akisla birlikte gorunur yapmak.
-
-Teslimatlar:
-
-- Checks ledger.
-- Check events.
-- Loans ve loan installments.
-- Vade pencereleri 7/14/30 gun.
-- Banka/karsi taraf exposure.
-- Aylik borc servisi.
-
-Gate:
-
-- `pnpm phase5:verify`.
-- Negatif cek tutari anomali degil, outflow yonudur.
-- Cift kayit adaylari otomatik merge edilmez.
-- Loan total/payment/cost source ile mutabik.
-
----
-
-## 8. Faz 7 — Raporlar ve Hatirlatmalar
-
-Amac: gunluk/haftalik/aylik ozetleri ve hatirlatma akisini karar destegine cevirmek.
-
-Teslimatlar:
-
-- Daily/weekly/monthly report builders.
-- Report snapshots.
-- AI commentary prompt template; model cagrisi yok.
-- Reminder rules: 7/3/1/0/-1 offset.
-- Mock ve Telegram transport.
-- Delivery log.
-
-Gate:
-
-- `pnpm phase6:verify`.
-- `pnpm phase6b:verify`.
-- Report/reminder finansal kayitlari mutasyona ugratmaz.
-- Istanbul timezone kullanilir.
-
----
-
-## 9. Faz 8 — Uretim Kapasite/Maliyet Analitigi
-
-Amac: kapasite, maliyet, basabas TL/dk, parca karliligi ve normal/mesaili
-karsilastirmasini analitik katmana almak.
-
-Teslimatlar:
-
-- `machine_assets`, `production_parts`, `capacity_models`, `cost_models`,
-  `part_profitability_runs`, `machine_roi_snapshots`.
-- Normal vs mesaili.
-- Basabas TL/dk.
-- Parca karliligi.
-- Stale-rate ve missing operation time bayraklari.
-
-Gate:
-
-- `pnpm phase7:verify`.
-- Uretim analitigi finans cekirdegini degistirmez.
-- 2023 stale rate gorunur kalir.
-
----
-
-## 10. Faz 9 — Salt-Okunur Senaryo Motoru MVP
-
-Amac: baseline nakit akis uzerinde varsayimlari uygulamak, source-of-truth'u
-degistirmeden baz vs senaryo karsilastirmasi uretmek.
-
-Teslimatlar:
-
-- `scenarios`, `scenario_runs`, `scenario_run_lines`,
-  `scenario_assumptions`, `scenario_comparisons`.
-- Gelir %, gider %, tum tahsilat gecikmesi, kapasite/verim proxy, borc servisi.
-- Baseline vs scenario chart/table.
-- Acik varsayim paneli.
-
-Gate:
-
-- `pnpm phase8:verify`.
-- Baseline row-hash ve finance/production fingerprint degismez.
-- Scenario sadece `scenario_*` tablolarina yazar.
-
----
-
-## 11. Faz 10 — Excel Coverage Close-Out
-
-Amac: Excel'de MVP'nin yuzeysel kaldigi alanlari domain'e daha derin ve
-guvenli bicimde tasimak.
-
-### 10A / 9A — Maliyet Detayi ve Akon Kar Marji
-
-Durum: DONE, commitli.
-
-Teslimatlar:
-
-- `priceMargin` saf fonksiyon ve test.
-- `cost_breakdown_lines`.
-- `cost_models.akon_freze_tl_per_min`, `akon_torna_tl_per_min`.
-- `extractCostModel` gider dokumu + Akon oranlari.
-- `/production` kar marji paneli.
-- Ana Ekran uretim seridi.
-
-Gate:
-
-- `pnpm phase9a:verify`.
-- Tam gate ve commit.
-
-### 10B / 9B — Aylik Gider Dokumu
-
-Durum: DONE, commitli.
-
-Teslimatlar:
-
-- Aylik nakit akis sekmelerinde borclar, standart giderler, personel ve genel gider leaf satirlari.
-- `cashflow_lines` gider kompozisyonu.
-- `/cashflow/[monthId]` isletme gideri / vergi-SGK / kredi-finansman gruplari.
-
-Gate:
-
-- `pnpm phase9b:verify`.
-- Ay toplamlarini degistirmeden kompozisyonu acma.
-- Tam gate ve commit.
-
-### 10C / 9C — Makine ROI + Ekipman
-
-Durum: DONE, commitli.
-
-Teslimatlar:
-
-- `tablo` sekmesinden yalniz makine ROI ve ekipman maliyeti cikarilir.
-- Kisisel/aile giderleri domain tablolara yazilmaz.
-- `personal_data_mixed` review cozulmeden ROI map edilmez.
-- `machine_assets.purchase_cost` guncellenir.
-- Per-machine ve aggregate ROI snapshot yazilir.
-- ROI confidence `needs_review` kalir.
-- `/production` ROI paneli bu veriyi gosterir.
-- `phase9c-verify.ts`.
-
-Gate:
-
-- `pnpm phase9c:verify`.
-- Privacy leak testi.
-- Idempotency testi.
-- Financial integrity before/after testi.
-- Tam gate ve commit.
-
-### 10D / 9D — Kapasite Makine-Dakika + Faiz Makine-Tahsis
-
-Durum: DONE, commitli.
-
-Amac:
-
-- Kapasite sekmesindeki parca/dakika bilgisini makine tipi ve mumkunse makine varligi seviyesine indirmek.
-- Kredi/faiz maliyetini kapasite veya makine bazli tahsis edilebilir analitik yuke cevirmek.
-
-Teslimatlar:
-
-- Yeni tablolar veya kolonlar:
-  - machine-minute allocation
-  - machine utilization snapshots
-  - finance cost allocation snapshots
-- Extractor:
-  - kapasite parca satirlarindan torna/freze dakika toplamlarini makine tipi seviyesine ayirir.
-  - faiz hesaplama kredi maliyetini tahsis edilebilir toplam finansman maliyeti olarak alir.
-- Engine:
-  - makine tipi basina dakika, kapasite, kullanim, atil/asiri yuk.
-  - finansman maliyeti / dakika veya finansman maliyeti / makine tahmini.
-- UI:
-  - `/production` icinde makine-dakika paneli.
-  - finansman tahsis paneli: "bu makine/kaynak maliyeti uretim fiyatina ne kadar bindiriyor?"
-
-Gate:
-
-- `pnpm phase9d:verify`.
-- Tahsis analitik olarak etiketlenir; muhasebe gercegi gibi sunulmaz.
-- Finance/cashflow source tablolarini degistirmez.
-- Tam gate ve commit.
-
----
-
-## 12. Faz 11 — Decision Facts / Metrics Katmani
-
-Durum: DONE. 11A ile `src/lib/facts` registry, `/api/facts` ve Ana Ekran karar sinyalleri eklendi.
-11B ile `cash_runway` fact'i tamamlandi ve rapor promptlari decision facts katmanini kullanmaya basladi.
-
-Amac: Dashboard, AI ve raporlar icin guvenli, deterministik, tekil bir facts API'si
-olusturmak. AI ham SQL'e veya ham Excel'e gitmez; sadece bu facts katmanindan
-cevap uretir.
-
-Teslimatlar:
-
-- `src/lib/facts/` modulu.
-- Fact registry:
-  - first negative month
-  - worst cash month
-  - cash runway
-  - debt pressure months
-  - top customer concentration
-  - missing amount count
-  - overdue payment load
-  - check maturity load
-  - loan debt service
-  - production margin loss
-  - stale-rate flags
-  - unresolved review count
-- Her fact icin:
-  - value
-  - severity
-  - explanation
-  - source links
-  - freshness timestamp
-  - confidence
-- `/api/facts` veya server-only loader.
-- Ana Ekran ve raporlar bu facts katmanini kullanmaya baslar.
-
-Gate:
-
-- Unit tests: fact hesaplari mevcut engine'lerle mutabik.
-- No mutation.
-- Source trace zorunlu.
-
----
-
-## 13. Faz 12 — AI Soru-Cevap ve Rapor Yorum Katmani
-
-Durum: DONE (12A). `phase12a:verify` PASS. 12A ile `/ask`, `ai_response_snapshots`, optional OpenAI Responses API provider,
-deterministik fallback, rapor AI yorumu ve mutation guard eklendi.
-
-Amac: Kullanici sorularini dogrudan cevaplamak ve cevabi tablo/grafik/kaynak linkiyle gostermek.
-
-Ornek sorular:
-
-- "Eylul 2026 neden eksiye dusuyor?"
-- "Onumuzdeki 3 ay en riskli odeme hangisi?"
-- "Hangi musterinin gecikmesi kasayi bozuyor?"
-- "Bu ay hangi cek/kredi yukleri ust uste biniyor?"
-- "Akon fiyatlari basabasi karsiliyor mu?"
-
-Teslimatlar:
-
-- `/ask` veya Ana Ekran icinde soru-cevap paneli.
-- AI tool contract:
-  - facts oku
-  - scenario calistir
-  - rapor oku
-  - source row linki getir
-  - finansal kayit mutasyonu yasak
-- Cevap formatlari:
-  - kisa cevap
-  - nedenler
-  - kaynak satir/sekme linkleri
-  - onerilen aksiyon
-  - ilgili grafik/table view
-- Raporlarda "AI yorum uret" butonu.
-- AI response snapshot ve audit.
-
-Gate:
-
-- AI hicbir payment/check/loan/cashflow kaydini degistiremez.
-- Prompt injection ve source-content safety.
-- Model cevaplari deterministik facts ile sinirlandirilir.
-- Unit/integration tests: tool whitelist ve mutation guard.
-
----
-
-## 14. Faz 13 — Senaryo v2 ve Finansman Optimizasyonu
-
-Durum: DONE (13A+13B). `phase13a:verify` ve `phase13b:verify` PASS. 13A ile hedefli gelir gecikmesi, hedefli gider/odeme ertelemesi,
-faktoring/iskonto overlay'i ve minimum finansman ihtiyaci metrigi scenario motoruna eklendi.
-13B ile desteklenen mudahale adaylarini salt-okunur siralayan finansman optimizasyon paneli eklendi.
-
-Amac: "what-if" motorunu karar motoruna yaklastirmak.
-
-Teslimatlar:
-
-- Musteri bazli gecikme:
-  - "Hpt 30 gun gecikirse"
-  - "Akon tahsilati 2 ay kayarsa"
-- Tek odeme/cek/kredi taksit erteleme:
-  - "Garanti kredi 2 ay otelenirse"
-  - "Cagdas cekleri 30 gun kayarsa"
-- Cek iskonto/faktoring senaryosu:
-  - nakit girisi bugune cekilir
-  - iskonto maliyeti gider olarak eklenir
-- Minimum finansman ihtiyaci:
-  - "Kasayi hic eksiye dusurmemek icin hangi ay ne kadar lazim?"
-- Finansman optimizasyonu:
-  - en az maliyetli mudahale kombinasyonu
-  - odeme erteleme vs kredi vs cek iskonto karsilastirmasi
-- Production -> cash link:
-  - kapasite/verim degisiminin gelir/gider proxy'si acik varsayimla nakit akisa baglanir
-
-Gate:
-
-- Scenario output read-only kalir.
-- Her varsayim `scenario_assumptions` satiri olarak acik beyan edilir.
-- Baseline degismez.
-- SQL cross-check ve before/after fingerprint.
-
----
-
-## 15. Faz 14 — Veri Kalite Merkezi, Disgoru ve Aksiyon Workflow
-
-Durum: DONE (14A-14E). `phase14a:verify` … `phase14e:verify` PASS. 14A ile `/data-quality`, `action_items`, review/home-action gorevlestirme,
-gorev status akisi, ozel Excel sekme tanima paneli ve read-only action gate eklendi.
-14B ile `/assumptions`, `external_assumptions`, kaynak/tarih/review status akisi ve
-internet kaynaklari icin user-reviewed gate eklendi.
-14C ile rapor ve AI cevaplarindan auditli action_items gorevi olusturma eklendi.
-14D ile onayli dis varsayimlar facts/AI/senaryo baglamina salt-okunur ve kaynakli olarak baglandi.
-14E ile Excel A/B surum farki, ozel dashboard/rehber sekme sinyali ve cashflow baslik mutabakati
-veri kalite merkezinde gorunur hale getirildi.
-
-Amac: Sistemin sadece gostermesini degil, karar almayi engelleyen sorunlari
-yonetmesini ve dis varsayimlarla projeksiyonu zenginlestirmesini saglamak.
-
-Teslimatlar:
-
-### Veri kalite merkezi
-
-- `/data-quality` veya Yonetim altinda yeni merkez.
-- "Karar almayi engelleyen 5 veri sorunu".
-- Eksik tutar tamamlama akisi.
-- Negatif/anomali onay-ret.
-- Excel versiyon farki:
-  - workbook A vs workbook B
-  - degisen aylar
-  - degisen odeme kalemleri
-  - degisen formuller
-- `01_DASHBOARD`, `02_AYLIK OZET`, `00_REHBER` sekmelerinin ozel taninmasi.
-- Excel dashboard degerleri ile uygulama hesaplari arasinda mutabakat paneli.
-
-### Disgoru katmani
-
-- Varsayim tablolari:
-  - faiz oranlari
-  - kur
-  - enflasyon
-  - personel/asgari ucret
-  - enerji maliyeti
-  - kredi oranlari
-- Dis veri her zaman source ve tarih ile kaydedilir.
-- Otomatik internet verisi varsa user-reviewed status ister.
-- Disgoru, kaynak-of-truth'u degistirmez; sadece scenario/report/AI yorum katmanini besler.
-
-### Aksiyon workflow
-
-- Ana Ekran "Ne yapmaliyim?" listesi gorevlesir.
-- Gorev alanlari:
-  - title
-  - severity
-  - owner
-  - due date
-  - status
-  - source fact
-  - related entity
-  - note
-- Rapor ve AI cevaplari gorev olusturabilir; finansal kayit degistiremez.
-
-Gate:
-
-- Data-quality actionlari audit log yazar.
-- Dis veri finansal source tablolarini degistirmez.
-- Gorev workflow'u payment/check/loan mutasyonu yapmaz.
-- AI task creation varsa onayli ve auditli olur.
-
----
-
-## 16. Commit ve Gate Kurali
-
-Her faz veya alt-faz ayri commitlenir.
-
-Minimum gate:
-
-```bash
-pnpm lint
-pnpm typecheck
-pnpm test
-pnpm db:verify
-pnpm db:roles:verify   # Faz 15'ten sonra: uygulama gercekten dusuk-yetkili rolle mi bagli
-pnpm import:real
-pnpm phase3:verify
-pnpm phase4:verify
-pnpm phase5:verify
-pnpm phase6:verify
-pnpm phase6b:verify
-pnpm phase7:verify
-pnpm phase8:verify
-pnpm phase9a:verify
-pnpm phase9b:verify
-pnpm phase9c:verify   # Faz 10C tamamlaninca
-pnpm phase9d:verify   # Faz 10D tamamlaninca
-pnpm phase17:verify   # Faz 17'den sonra: kaynak taramasi, DB gerektirmez
-pnpm phase18:verify   # Faz 18'den sonra: kaynak taramasi, DB gerektirmez
-pnpm phase19:verify   # Faz 19'dan sonra: yeni tablo/view/trigger davranisi, DB gerektirir
-pnpm phase20:verify   # Faz 20'den sonra: banka merkezi + TAM durum-gecisi matrisi, DB gerektirir
-pnpm phase21:verify   # Faz 21'den sonra: fatura merkezi + 36 ciftlik durum matrisi, DB gerektirir
-pnpm phase22:verify   # Faz 22'den sonra: dagitim tavani + alacak/borc read-model, DB gerektirir
-pnpm phase23:verify   # Faz 23'ten sonra: tahsilat riski + elle bad-debt bayragi, DB gerektirir
-pnpm phase24a:verify  # Faz 24A'dan sonra: onay varligi + 12 ciftlik gecis matrisi + legacy kopru regresyonu, DB gerektirir
-pnpm db:roles-rls:verify # Faz 24B'den sonra: bes katmanli rol matrisi, GERCEK mas_radar_app baglantisiyla + SET ROLE, DB gerektirir
-pnpm phase25:verify   # Faz 25'ten sonra: odeme sozu + kirilan soz tespiti + tahsilat puani, DB gerektirir
-pnpm phase26:verify   # Faz 26'dan sonra: hazine pozisyonu + 7/30/90 gun likidite + cashflow tutarlilik testi, DB gerektirir
-pnpm phase27:verify   # Faz 27'den sonra: kredi limitleri + vade merdiveni + FX degerleme/stres, DB gerektirir
-pnpm phase28:verify   # Faz 28'den sonra: butce-gerceklesen varyansi + 13 haftalik ufuk + tahmin dogrulugu, DB gerektirir
-pnpm phase29:verify   # Faz 29'dan sonra: deterministik optimizasyon + baseline-korunur invariant'i, DB gerektirir
-pnpm phase30:verify   # Faz 30'dan sonra: karlilik view'lari + masraf dagitimi + isletme sermayesi, DB gerektirir
-pnpm phase31:verify   # Faz 31'den sonra: finansal kontroller + anomali tespiti + uyari yasam dongusu, DB gerektirir
-pnpm phase32:verify   # Faz 32'den sonra: CFO brifingi + yonetim kokpiti + birlesik takvim, brifing=pano SAPMA YOK testi, DB gerektirir
-pnpm phase33:verify   # Faz 33ten sonra: arka plan kuyrugu + ONCE/SONRA query-plan karsilastirmasi + indeks denetimi, DB gerektirir
-pnpm phase34:verify   # Faz 34ten sonra: analiz kaydi + bagimlilik grafigi + KALICI repo-geneli LLM-bagimsizligi kontrolu, DB gerektirir
-pnpm phase35:verify   # Faz 35ten sonra: dokuman merkezi + evrensel arama + GERCEK SET ROLE ile RLS-atlamama kaniti, DB gerektirir
-pnpm phase36:verify   # Faz 36dan sonra: rol-bazli navigasyonun UI yarisi + ornekleme dayali UI tutarlilik listesi, DB gerektirir
-pnpm phase37:verify   # Faz 37den sonra: dort entegrasyon BAGIMSIZ kapilanir + hicbir gercek ag cagrisi yapilmadigi kaniti, DB gerektirir
-pnpm phase38:verify   # Faz 38den sonra: konusma asistani + GERCEK prompt-injection paketi + rol-bazli fact gorunurlugu (DATABASE_URL da gerektirir)
-pnpm build
-pnpm phase16:verify   # Faz 16'dan sonra: build'i gerektirir, bu yuzden build'den SONRA
-```
-
-Gerekirse phase-specific verify script'i once eklenir, sonra implementasyon yapilir.
-
----
-
-## 17. Implementation Plan v4 — Faz 15-38 Kurumsal Genisleme Yol Haritasi
-
-> Kaynak: kullanici-saglanan `MAS_Nakit_Radar_Revize_Mimari_Listesi.md` (34 bolum, ~700 madde),
-> kod tabaninin gercek durumuna gore mutabakatlandirilmis. v3'un Faz 1-14 + P0-A/B/C bolumleri
-> (yukarida) degismedi; bu bolum onlarin uzerine gelen genisleme yol haritasidir. Plan icindeki
-> alt basliklar bir seviye indirilmistir (bu bolumun altinda yer alsinlar diye); metin aynidir.
-
-### 1. Mutabakat (Reconciliation) — listeyi kör kopyalamamak için
-
-#### 1a. Zaten büyük ölçüde yapılmış — yeniden inşa etme
-
-| Liste maddesi | Gerçek karşılığı |
-|---|---|
-| "LLM finansal çekirdekten ayrık, sıfır DB yazma, sıfır SQL" (§1/§28, 40+ kez tekrarlanıyor) | `src/lib/ai/engine.ts` (179 satır) — tek LLM çağrı noktası, ham `fetch`, SDK yok. DB'ye hiç dokunmuyor. Yalnız önceden hesaplanmış `DecisionFact[]` görüyor. `mutationIntent()` regex koruması mutasyon niyetinde modeli hiç çağırmıyor. Deterministik cevap her zaman önce hesaplanıyor, model isteğe bağlı iyileştirme; hata `try/catch` ile deterministik cevaba dönüyor. Her yanıt `response_mode` (`deterministic\|openai\|fallback`) + `source_fact_keys`/`source_hrefs` ile izlenebilir. `AI_FORCE_DETERMINISTIC=1` sert kapatma anahtarı var. |
-| "Deterministik sorgu + allowlist" (§24/§28) | `src/lib/facts/engine.ts` (262 satır) — `loadDecisionFacts()`, tamamen SQL/TS, 12 sabit fact + onaylı her dış varsayım için bir tane, `/api/facts` ile dışa açık. Çalışan bir prototip. |
-| "Finansal invariant test gate'leri" (CI altyapısı, §1) | 26 faz/DB doğrulama script'i (`scripts/phase{3..14e}-verify.ts` + `scripts/db/{constraints,legacy-repair,migrate,reconciliation,transitions}-verify.ts`) + 17 saf `rules.ts` birim test dosyası + implementation.md §16'da belgeli pnpm gate zinciri. Bu zaten istenen desen — CI onu sarmalamalı, paralel bir tane icat etmemeli. |
-| "Audit log kapsamı" (temel) | `audit_logs`, BEFORE-trigger'larla (migration 0022) append-only — superuser dahil UPDATE/DELETE/TRUNCATE engelleniyor. Gerçek boşluk yokluk değil, tekrar (13 bağımsız `audit()` kopyası — bkz. 1b). |
-| "Immutable finansal kayıt", "correction/reversal modeli" (kısmi, §2) | `archived_immutability_trigger` (0024), `cancellation_fields` (0026), `payment_instance_amount_source` (0028/0029) zaten iptal-et-ve-koru desenini kuruyor. |
-| Loan schedule (§2) | `loan_installments`, gerçek. |
-| Check lifecycle (§2) | `checks`+`check_events` — settlement (cleared/bounced/paid) DB'de yalnız migration 0034'ten SONRA fiilen çalışır hâle geldi. Bu "yapıldı, unut" değil, "yapıldı, ve bu sınıf hatanın bu repoda bir kez gerçekten yaşandığının kanıtı" (bkz. §2 madde 3). |
-| Machine (§2) | `machine_assets`, gerçek, üretim kârlılığına zaten bağlı. |
-| Data lineage / Source evidence (§2/§23) | `source_workbooks/source_sheets/source_cells/import_rows` — şemanın en olgun parçası. **Her yeni entity'nin lineage ihtiyacı bu deseni tekrar kullanmalı, ikinci bir mekanizma icat edilmemeli.** |
-| Financial period (yumuşak, §2/§21) | `cashflow_months.status` (`draft/review_needed/reviewed/locked`) — Dönem Kapatma'nın gerçek alt yapısı. |
-| Management Cockpit (§26) | `src/lib/home/cockpit.ts` — `overview/` sayfasını zaten besliyor (doğrulandı: `page.tsx` içe aktarıyor). Genişlet, sıfırdan kurma. |
-| Forecast/Scenario (kısmi, §11/§12) | `scenarios/scenario_runs/scenario_run_lines/scenario_assumptions/scenario_comparisons` (Faz 9/13, DONE) — "what-if overlay"e "rolling forecast"tan daha yakın ama sağlam bir temel. |
-| CFO Morning Brief (kısmi, §25) | `reports/engine.ts` + Telegram hatırlatmaları (Faz 6) zaten günlük/haftalık özet + AI yorumu üretiyor. |
-| Notification & Action (kısmi, §30) | `action_items` (Faz 14) + `reminders`/`reminder_deliveries` — owner/severity/due-date/status alanları var, dar kapsamlı. |
-| Financial Control / Anomaly (kısmi, §18/§19) | `mapping_reviews` + `metric_snapshots` + `action_items` bugünkü veri kalite merkezinde (Faz 14) ince yayılmış hâlde var. |
-| "RLS enabled" (§1) | Zaten her tabloda blanket `0007_rls.sql` deseniyle (`for all to authenticated using(true) with check(true)`, 11 dosyada 25 kez) + 3 kasıtlı istisna (schema_migrations, users/sessions, audit_logs). **Bu, CLAUDE.md'nin "tek şirket iç paneli" ilkesine göre bilinçli bir tasarım — ama kullanıcı tam rol matrisi + satır-seviyesi RLS istedi (bkz. Çözülen Kararlar #3), yani Faz 24B'de GERÇEKTEN yeniden işlenecek.** |
-| Chart/analitik altyapısı (§1) | `analytics/chart.ts` (202 satır, ChartModel sözleşmesi) + `analytics/models.ts` (~8 model builder) + `analytics-chart.tsx` (241 satır, el yazımı SVG, line/bar/stacked-bar). Üzerine inşa edilecek gerçek bir temel, yıkılacak bir duvar değil. |
-
-#### 1b. Kısmen var, gerçekten genişletilecek
-
-| Liste entity'si | Mevcut tablo/dosya | Gerçekte eksik olan |
-|---|---|---|
-| Counterparty/Customer/Supplier/Contact | `parties` (0002) | Tek polimorfik tablo, adres/vergi-no/IBAN kolonu yok. Çekler/krediler bilinçli olarak ham `counterparty_label` metni tutuyor çünkü **uygulama mapping sırasında sessizce parties satırı YARATMIYOR** — bu kural korunmalı. |
-| Bank account | `cash_accounts` | Genel defter hesabı, IBAN/şube-farkında değil. |
-| Credit facility | `loans` | Sabit-planlı tek kredi modeli, revolving limit/draw değil. |
-| Approval / Approval step | İki bağımsız tekrar: `mapping_reviews` + `external_assumptions.review_status` | Gerçek bir Approval entity yok — üçüncü bir özel varyant eklemek yerine ikisi birleştirilmeli. |
-| Notification/alert | `reminders`+`reminder_deliveries` | Yalnız 3 hedef türü, 2 kanal — genişletilecek. |
-| Anomaly/Control result | `mapping_reviews`+`metric_snapshots`+`action_items`'a ince yayılmış | Skorlama/durumlu ayrık tablo yok. |
-| Forecast/Forecast line | `scenario_runs`/`scenario_run_lines` | What-if'e yakın; kaynak sınıflandırması (contracted/scheduled/historical/manual/estimated), güven skoru, forecast-vs-actual eksik. |
-| Financial period | `cashflow_months.status` | Kavram var, kapanış checklist/blocker akışı yok. |
-| Chart registry | `analytics/chart.ts`+`analytics-chart.tsx` | Yalnız line/bar/stacked-bar; liste ~40 tip istiyor — gerçek yeni iş. |
-
-#### 1c. Gerçekten yeni (greenfield)
-
-Bank transaction, Invoice/Invoice line, Collection/Payable/Receivable (ayrık entity olarak), Payment/Collection allocation, Cost center/Department/Project, Order, Product (production_parts yalnız işleme-odaklı dar bir analog), genel Document/Attachment, Budget/Budget line, FX position/FX rate snapshot tablosu, kalıcı Reconciliation entity'si (bugün yalnız uygulama içi kod), Promise-to-pay, Integration connection/sync job, Universal Search, CSRF koruması, rate limiting, çerez-varlığı ötesi oturum sertleştirmesi, migration-vs-runtime DB kullanıcı ayrımı, `.github/workflows` (hiç yok), secret rotation aracı, GitHub repo görünürlüğü aksiyonu.
-
-#### 1d. Kod tabanına uymayan tek madde, düzeltilmiş hâliyle
-
-**Liste diyor ki:** "float8'i kaldır → NUMERIC/decimal'e geç" (paranın float8 olarak saklandığını varsayıyor).
-**Gerçek:** 41 tablonun, 34 migrasyonun TAMAMINDA her para kolonu `numeric(p,s)`. Sıfır float8/double precision/real kolonu var — **bizzat doğrulandı** (`grep -rc "::float8"` ve tablo taraması). Bu haliyle iddia yanlış.
-**Gerçek, farklı risk:** **141 adet `::float8` SQL cast'i, 25 dosyada** (bizzat doğrulandı — en yoğun: `production/engine.ts` 45, `scenarios/engine.ts` 11, `financing/engine.ts` 10, `radar/queries.ts` 9). node-postgres `numeric`'i varsayılan olarak string döndürüyor, kod bunu SQL içinde JS'e vermeden önce `double precision`'a cast ediyor. Paylaşılan "money" yardımcı modülü yok, `decimal.js`/`big.js` bağımlılığı yok. `radar/queries.ts:152-153` aynı ifadede hem `::numeric` hem `::float8` kullanıyor. **Risk depoda değil, SQL/JS sınırında.**
-
----
-
-### 2. Her fazda geçerli, tek seferlik değil, standart kurallar
-
-1. **Migration ledger disiplini.** `scripts/db/migrate.ts`'in checksum/anchor kontrollü 4-durumlu mekanizması her yeni migration için aynen işler — asla elle şema değişikliği yok.
-2. **Yeni her tabloya kendi migration'ında blanket RLS politikası** (`for all to authenticated using(true) with check(true)`) — Faz 24B'den SONRA bu, gerçek rol-bazlı politikalarla değiştirilecek; o ana kadar mevcut desen aynen sürer.
-3. **Status-transition-guard doğruluğu gün-1'den.** Yaşam döngüsü olan HER yeni entity (Invoice, Approval, Reconciliation, Period, Bank transaction eşleşme durumu, Budget/Forecast versiyon durumu) allow-list'ini CHECK constraint'le AYNI migration'da, doğru kurmalı. **Bu genel bir temkin değil — migration 0027, checks/loan_installments'ı yalnız `planned→cancelled` ile açtı, halbuki `cleared/bounced/paid` 0005'ten beri CHECK constraint'te geçerliydi; gerçek dev DB'de 7/7 çek ve 48/48 taksit `planned`de SIKIŞIP KALDI, 0034'e kadar (8 migration sonra) düzelmedi.** Aşağıdaki her fazın gate'i bunu kendi maddesi olarak tekrar eder.
-4. **Tek paylaşılan `audit()`, tek `DomainError` kuralı, tek Zod sınırı** — Faz 18'de kurulur, Faz 19'dan itibaren ZORUNLU (opsiyonel değil).
-5. **`docs/database-schema.md` şema değişen HER fazda güncellenir** — bugün ~migration 0021'den sonrası eksik; Faz 18 yakalar, sonraki her faz kendi definition-of-done'ında tutar.
-6. **Para matematiği Faz 17'nin decimal-safe katmanından geçer** — Faz 17'den sonra yeni `::float8` cast'i YASAK, standing `phase17:verify` grep kontrolüyle.
-7. **Gate zinciri genişler, yerini almaz.** implementation.md §16'daki mevcut pnpm zincirine (`lint && typecheck && test && db:verify && import:real && phase3:verify ... phase14e:verify && build`) `phase15:verify`...`phase38:verify` sırayla eklenir, `scripts/phaseN-verify.ts` adlandırma deseni aynen sürer.
-
----
-
-### 3. Çözülen kararlar (kullanıcı onayladı — artık açık soru değil)
-
-1. **Kapsam: tam 24 faz, hepsi bu belgede detaylı.** Hiçbir faz "sonra detaylandırılır" özetine indirgenmedi.
-2. **Python runtime: YOK.** Faz 29 (Senaryo/Optimizasyon) ve Faz 34 (Agresif Analiz) dahil tüm deterministik hesaplama TypeScript/SQL'de kalır — mevcut mimariyle birebir tutarlı, yeni bir servis/süreç eklenmez.
-3. **Tam 5 katmanlı rol matrisi (Viewer/Finance-Operator/Finance-Approver/Finance-Manager/Admin) + satır-seviyesi RLS uygulanacak.** Bu, Faz 24'ü ikiye ayırmayı gerektirdi: **24A** (Approval entity + basit workflow, küçük kapsam) ve **24B** (tam rol matrisi + RLS'in bugünkü blanket-allow politikasından gerçek rol-bazlı politikalara geçirilmesi — TÜM tabloları etkileyen büyük, kendi başına bir faz).
-4. **Entegrasyon Merkezi (Faz 37) kapsamı onaylandı:** Banka API'si (canlı hesap hareketi), e-Fatura/e-Arşiv, bir muhasebe yazılımı (Paraşüt/Logo/Mikro/Luca — **hangisi olduğu Faz 37 başlarken netleştirilecek**, kullanıcı henüz tek bir vendor seçmedi), TCMB kur entegrasyonu (Faz 27'nin FX çalışmasıyla kesişiyor — Faz 27 manuel/anlık-kayıt sürümünü yapar, canlı bağlantı Faz 37/38'de).
-
-#### Hâlâ açık, faz başlarken sorulacak (kullanıcı şimdi karar vermek istemedi/gerek yok)
-
-1. Tam self-servis parola sıfırlama + MFA + oturum rotasyonu derinliği (Faz 15/16).
-2. Monte Carlo simülasyon altyapısı gerçekten gerekli mi (Faz 34).
-3. ~40 chart tipi / ~40 analiz tipinin tam listesi mi, ilk dilim mi (Faz 34 — ilk dilim olarak 5-8 analiz tipi + birkaç yeni chart tipiyle scoped, onaylanırsa genişler).
-4. WhatsApp entegrasyon iskeleti (Faz 25).
-5. Sesli soru sorma modalitesi (Faz 38).
-6. n8n bağlantısı — kullanıcı zaten n8n kullanıyor mu, yoksa aspirasyonel mi (Faz 37/38).
-7. Doküman Merkezi depolama arka ucu — yerel disk/Postgres large object/harici obje depolama (Faz 35).
-8. CI/CD'nin amacı — yalnız pre-merge gate runner mı (öneri), yoksa sürekli-açık bir hosting hedefi de ima ediyor mu (Faz 16; `docs/local-production-deploy.md` remote deploy'u zaten "bilinçli kapsam dışı" diyor).
-9. Order/Product'ın tam sipariş-yönetimi derinliği mi, yalnız referans veri mi (Faz 19 — öneri: minimal referans, CLAUDE.md'nin "muhasebe programını yeniden yazma" sınırına saygıyla).
-
----
-
-### 4. Faz yol haritası — Faz 15 ile Faz 38 arası (24 faz numarası, Faz 24 iki alt-faza bölündü)
-
-#### Faz 15 — Acil Güvenlik ve Repo Hijyeni
-
-**Aciliyet notu:** Bu repo bu oturumda İLK KEZ GitHub'a push edildi (`aydinogluomer-sys/Mas-Saas`). Bu fazın ilk maddesi, planın geri kalanından bağımsız olarak, plan onaylanır onaylanmaz HEMEN yapılmalı.
-
-**Amaç:** Bu oturumdaki ilk push'un yarattığı açığı, başka hiçbir çalışma başlamadan kapatmak.
-
-**Teslimatlar:**
-- GitHub repo görünürlüğünü private yap/doğrula — **planın en ucuz, en acil maddesi.**
-- Secret rotation: DB parolası, `SEED_ADMIN_PASSWORD`, `TELEGRAM_BOT_TOKEN`, `OPENAI_API_KEY` yenilenir; git geçmişinde secret taraması yapılır.
-- Dağınık `process.env.X` okumaları yerine tek, Zod-doğrulamalı `src/lib/env.ts`.
-- Migration/runtime rolünden ayrı, gerçek düşük-yetkili bir runtime DB rolü (örn. `mas_radar_app`) — migrasyonlar hâlâ owner rolüyle çalışır, Next.js sunucusu artık `BYPASSRLS`'siz, superuser olmayan bu rolle bağlanır. RLS bundan sonra fiilen bir şey engellemeye başlar.
-- `README.md`'yi (bugün varsayılan create-next-app şablonu) gerçek proje tanıtımıyla değiştir.
-- `.env.example` eksiksizlik denetimi.
-
-**Gate:** `pnpm typecheck/lint/test/db:verify` yeni runtime rolüne karşı geçer; yeni `db:roles:verify` runtime rolünün BYPASSRLS/superuser taşımadığını ve RLS'in tek başına erişimi kapadığını doğrular; repo-private + secret-rotation elle onayı `docs/status-notes.md`'ye kaydedilir.
-
----
-
-#### Faz 16 — CI/CD, Gözlemlenebilirlik, API/Oturum Güvenliği Temeli
-
-**16A — CI/CD + Observability:**
-- `.github/workflows/ci.yml`: mevcut pnpm gate zincirini (lint/typecheck/test/db:verify/phase3-14e:verify/build) geçici Postgres konteynerine karşı sarmalar + sıfırdan migration testi.
-- `/health`, `/ready`, `/version` route handler'ları (`.env.example`'da zaten var olan `APP_COMMIT_SHA`/`APP_BUILD_TIME`'ı devreye sokar).
-- Structured logging + correlation ID; `DomainError`'ın etrafına paylaşılan bir global hata-yanıt biçimi.
-- `system/` altında admin diagnostics ekranı (mevcut `system/{actions,archive,audit,backup,features,security}` desenine uygun).
-
-**16B — API sözleşmesi + oturum sertleştirme:**
-- Route handler'lar için API yanıt/hata zarfı standardı.
-- Auth ve mutasyon endpoint'lerinde rate limiting.
-- CSRF doğrulaması (bugün doğrulanmış şekilde YOK).
-- Oturum sertleştirme (yetki değişiminde rotasyon, boşta-kalma zaman aşımı).
-
-**Gate:** yeni `phase16:verify` — `/health`/`/ready`/`/version` doğru yanıt veriyor, sahte bir CSRF/rate-limit isteği reddediliyor mu kontrol eder; CI yeşili artık sonraki her fazın gate'inin parçası.
-
----
-
-#### Faz 17 — Para Hassasiyeti: Uçtan Uca Numeric Katmanı
-
-**Amaç:** ~20 yeni para-taşıyan entity kendi float8 cast'ini eklemeden önce, doğrulanmış 141 cast'i ortadan kaldırmak.
-
-**Teslimatlar:**
-- Paylaşılan `src/lib/money.ts`: tipli decimal yardımcıları (`decimal.js` veya `big.js` bağımlılığı eklenir — bugün yok), Postgres `numeric` string'lerinin güvenli ayrıştırılması.
-- İsteğe bağlı: `numeric` OID için özel `pg` type parser'ı — sorgu-başına `::float8` yerine standart string-giriş/decimal-çıkış davranışı.
-- 141 mevcut çağrı noktasını öncelik sırasına göre taşı: `production/engine.ts` (45), `scenarios/engine.ts` (11), `financing/engine.ts` (10), `radar/queries.ts` (9, `152-153`'teki karışık `::numeric`/`::float8` dahil), `data-quality/engine.ts` (6), kalan 20 dosya.
-- Büyük TL tutarları ve yüzde-üstü-yüzde hesaplamalarında hassasiyet kaybı olmadığını kanıtlayan birim testleri.
-
-**Gate:** yeni `phase17:verify`, izin-listesi dışında hiç `::float8` kalmadığını doğrular (küçük, gerekçeli bir istisna dosyası kabul edilir, her satır yorumlu); mevcut phase3-14e zinciri değişmeden geçmeli (çıktı değerleri yalnız yuvarlama toleransı içinde kalabilir, bu ayrıca test edilir).
-
----
-
-#### Faz 18 — Paylaşılan `audit()`/`DomainError`/Zod Sınırı + Şema Dokümanı Yenilemesi
-
-**Amaç:** 13 bağımsız `audit()` kopyasını (bizzat doğrulandı) ~20 yeni entity 14'üncü bir varyant eklemeden konsolide etmek; `docs/database-schema.md`'yi ~migration 0021'den yakalamak.
-
-**Teslimatlar:**
-- `src/lib/audit.ts`: tek kanonik `audit(client, {actor, action, entityTable, entityId, before, after, ...})` — `radar/engine.ts`'in en eksiksiz imzası (opsiyonel legacy-repair zaman damgası override'ı dahil) temel alınır. 13 çağrı noktası (ai, analytics/snapshots, archive, cashflow, data-quality, external-assumptions, financing, payments, production, radar, reports, scenarios, users) taşınır.
-- `DomainError` kuralı (bugün 14 engine.ts'in yalnız birkaçında) bu fazdan itibaren tüm yeni kod için ZORUNLU olarak belgelenir (mevcut kodun toptan retrofit'i kapsam dışı — istenirse ayrı bir temizlik fazı önerilir).
-- `src/lib/validation/` gerçek Zod sınırına dönüşür: `parseOrThrow` tarzı yardımcı + server-action-başına-şema kuralı, bu fazdan itibaren tüm yeni kod için.
-- `docs/database-schema.md`, migration 0022-0034'ü (audit append-only, archived immutability, payment-instance amount-source, cancellation fields, status-transition guard'lar, users/sessions, actor-FK repoint, check/loan settlement) + "yeni tablo eklerken checklist" (RLS politikası, yaşam-döngüsü varsa transition guard, `audit()` çağrısı, migration-ledger anchor) ile güncellenir.
-
-**Gate:** yeni `phase18:verify` — `audit.ts` dışında hiçbir yerde `insert into public.audit_logs` olmadığını grep ile doğrular; mevcut zincir geçer; `docs/database-schema.md` gözden geçirmesi elle işaretlenir.
-
----
-
-#### Faz 19 — Karşı Taraf (Cari Hesap) ve Organizasyonel Boyutlar Çekirdek Veri Modeli
-
-**Bağımlılık:** Faz 17, 18.
-**Amaç:** Bu yol haritasındaki en büyük paylaşılan bağımlılık — Banka Merkezi, Cari Hesap, Fatura Merkezi, Alacak/Borç, Tahsilat hepsi bundan önce başlayamaz.
-
-**Teslimatlar:**
-- `parties`'e 1:1 `counterparty_profiles` tablosu (adres, vergi no, kredi limiti) — `parties`'i değiştirmek/yeniden adlandırmak yerine, mevcut FK grafiğini (checks/loans/payments'taki payee/payer/bank_party_id) bozmadan.
-- `ibans` tablosu, per-counterparty append-only değişiklik-audit trigger'ıyla (0024'ün immutability deseni).
-- "Mapping sırasında sessizce parties yaratma" kuralı yeni counterparty-oluşturma UI/action'ında açıkça korunur.
-- Counterparty exposure/risk skoru bir SQL view olarak (ikinci, sessizce bayatlayabilecek bir kaynak yaratmamak için stored mutable kolon değil).
-- **Minimal** referans tabloları: `cost_centers`, `departments`, `projects`, `products`, `orders` — yalnız ad/kod/opsiyonel counterparty bağlantısı, henüz tahsis mantığı veya sipariş-yaşam-döngüsü yok (§3'teki açık soru #9 uyarınca minimal tutuldu).
-
-**Gate:** `phase19:verify`; `db:constraints:verify` yeni FK'lar için genişletilir; ham `counterparty_label` taşıyan eski çek/kredi satırları zorla geri-doldurulmaz. Yaşam-döngüsü kolonu yok, transition-guard maddesi bilinçli olarak N/A.
-
----
-
-#### Faz 20 — Banka Merkezi (çekirdek)
-
-**Bağımlılık:** Faz 19, 17, 18.
-**Amaç:** Bugün zaten var olan entity'lere (payments/checks/loan_installments) karşı eşleşen gerçek banka hesabı/hareketi. Fatura/tahsilat eşleşmesi Faz 22'ye ertelendi.
-
-**Teslimatlar:**
-- Gerçek banka hesabı modeli: `cash_accounts`'a IBAN/şube/kullanılabilir/bloke/KMH kolonları eklemek veya ayrık `bank_accounts` tablosu — **faz başlarken netleştirilecek açık bir mimari karar.**
-- `bank_transactions` (ham içe aktarılan satırlar), Faz 2'nin source-lineage desenini tekrar kullanarak.
-- CSV/XLSX ekstre import pipeline'ı, mevcut workbook-import desenlerini tekrar kullanarak.
-- Deterministik kural-tabanlı otomatik sınıflandırma.
-- Mevcut `payments`/`checks`/`loan_installments`'a karşı mutabakat eşleştirme (fatura/tahsilat eşleştirmesi Faz 22'de eklenir), eşleşme-güven skoru, önerilen-eşleşme, eşleşmemiş-işlem kuyruğu, duplicate tespiti.
-- Banka API entegrasyon iskeleti **açıkça Faz 37'ye ertelendi** — bu faz yalnız ekstre-importu.
-
-**Gate:** `phase20:verify`; **transition-guard zorunluluğu:** `bank_transactions.status` (`unmatched→suggested→matched→reconciled` + red yolu) allow-list'i, sütunla AYNI migration'da, CHECK constraint'in izin verdiği her değerle eşleşerek kurulmalı — 0027→0034 emsali bu fazın kendi gate maddesi olarak tekrarlanır.
-
----
-
-#### Faz 21 — Fatura Merkezi
-
-**Bağımlılık:** Faz 19.
-**Teslimatlar:**
-- `invoices`+`invoice_lines`, `parties` (müşteri/tedarikçi) ve nullable `cost_centers`/`projects` FK'ları.
-- Fatura durum yaşam döngüsü (`draft/open/partial/paid/closed/cancelled`).
-- Duplicate-fatura tespiti (counterparty+numara+tutar+tarih sezgisi).
-- İptal/reversal, sessiz durum değişimi değil bağlı bir reversal kaydı (Faz 18 audit kuralı + 0024/0026 immutable-kayıt emsaliyle uyumlu).
-
-**Gate:** `phase21:verify`; **transition-guard zorunluluğu** (§2 madde 3): fatura durum allow-list unit testi merge öncesi zorunlu gate maddesi.
-
----
-
-#### Faz 22 — Tahsilat/Ödeme Eşleme ve Cari Hesap Hareketleri
-
-**Bağımlılık:** Faz 19, 20, 21.
-**Teslimatlar:**
-- `payment_allocations`/`collection_allocations` (çok-faturaya-çok-ödeme bağlantısı — bugünkü `payment_instances` yalnız tek-örnek kısmi ödemeyi kapsıyor).
-- Receivables/Payables önce fatura+allocation üzerinde SQL view olarak; bağımsız bir yaşam döngüsü gerekirse gerçek tabloya terfi ettirilir — **faz başlarken netleştirilecek açık tasarım kararı.**
-- Cari Hesap müşteri/tedarikçi kartı: bakiye, hareket geçmişi, açık alacak/borç, ortalama ödeme/tahsilat süresi — Faz 19-21 üzerine read-model sorguları, yeni kaynak veri değil.
-- Faz 20'nin banka-işlemi mutabakatı artık fatura/tahsilata karşı da eşleşir.
-- Yaşlandırma kovaları (1-7/8-30/31-60/60+), DSO/DPO temel hesapları.
-
-**Gate:** `phase22:verify`; §18'in "ödenen>fatura", "tahsilat>alacak" invariant'larının ilk gerçek testi — allocation toplamı fatura tutarını asla aşamaz, PostgreSQL CHECK/trigger olarak burada uygulanır ve `db:constraints:verify`'e eklenir.
-
----
-
-#### Faz 23 — Alacak/Borç Yönetimi Genişletme
-
-**Bağımlılık:** Faz 22.
-**Teslimatlar:**
-- Gecikme/risk bayrağı hesaplama, expected-collection-date, collection-probability deterministik sezgiyle (ML değil).
-- Ödeme önceliklendirme/cash-aware scheduling view'ı, mevcut payments modülünü besler.
-- Ödeme takvimi genişletmesi.
-- Bad-debt işaretleme yalnız elle, denetlenen bir bayrak — asla otomatik silme.
-
-**Gate:** `phase23:verify`; mevcut `phase4:verify`/`phase5:verify`'ın (ödeme/nakit akış radarı) değişmeden geçtiği regresyon zorunluluğu — bu faz mevcut vade/gecikme mantığını genişletir, bozmaz.
-
----
-
-#### Faz 24A — Onay/Maker-Checker Entity ve Basit Workflow
-
-**Bağımlılık:** Faz 21, 22, 23.
-**Amaç:** Bugün var olan iki bağımsız tekrarı (mapping_reviews + external_assumptions.review_status) tek gerçek entity'de birleştirmek.
-
-**Teslimatlar:**
-- `approvals`+`approval_steps`, iki mevcut çağrı noktası buraya taşınır (üçüncü özel bir varyant BIRAKILMAZ).
-- Onay-kuralı yapılandırması: tutar-eşiği, yeni-IBAN, yeni-tedarikçi, fatura/ödeme tetikleyicileri (bütçe/forecast/senaryo tetikleyicileri Faz 28/29'da eklenir).
-
-**Gate:** `phase24a:verify`; **transition-guard zorunluluğu:** `approvals.status` (`pending→approved/rejected/reworked`) allow-list'i gün-1'den doğru.
-
----
-
-#### Faz 24B — Tam Rol Matrisi + Satır-Seviyesi RLS Uygulaması
-
-**Bağımlılık:** Faz 24A, Faz 15 (BYPASSRLS/superuser kaldırılmış olmalı — yoksa RLS politikaları hiçbir şeyi engellemez).
-**Amaç:** Kullanıcının onayladığı büyük genişleme — bugünkü blanket-allow RLS politikasını (`using(true)`, 11 dosyada 25 kez) gerçek 5-katmanlı rol-bazlı politikalarla değiştirmek. **Bu, planın en geniş kapsamlı tek fazı — neredeyse her tabloya dokunur.**
-
-**Teslimatlar:**
-- `users.role` enum'unu (bugün yalnız `admin|operator`) `viewer|finance_operator|finance_approver|finance_manager|admin` olarak genişlet — mevcut `admin`/`operator` değerlerinin yeni enum'a güvenli migration'ı (veri kaybı yok, açık bir eşleme tablosuyla).
-- Permission matrix: her rolün hangi tablo/aksiyon üzerinde ne yapabileceğinin merkezi tanımı (kod içi sabit + doğrulanabilir).
-- 41 mevcut tablo + Faz 19-24A'da eklenen yenilerin HER BİRİ için, bugünkü tek blanket politika yerine role-farkında RLS politikaları — örn. `viewer` yalnız SELECT, `finance_operator` kendi girdiği kayıtları INSERT/UPDATE edebilir ama onaylayamaz, `finance_approver`/`finance_manager` Faz 24A'nın approval adımlarını yürütebilir, yalnız `admin` şema-seviyesi işlemler.
-- Role-based navigation'ın backend tarafı (UI tarafı Faz 36'da).
-- Mevcut `authenticated`-all politikalarının HİÇBİRİ sessizce bırakılmaz — her biri ya rol-bazlı bir politikayla değiştirilir ya da (view/reference tablolar gibi düşük riskli olanlar için) neden blanket kaldığı açıkça yorumla belgelenir.
-
-**Gate:** yeni `db:roles-rls:verify` — her rol için "şunu yapabilmeli/yapamamalı" matrisini gerçek DB bağlantılarıyla test eder (ör. `viewer` rolüyle bağlanan bir oturumun bir ödeme INSERT etmeye çalışması reddedilmeli); mevcut phase3-23 zincirinin YENİ rol modeliyle de değişmeden geçtiği ayrıca doğrulanır (regresyon riski yüksek, bu fazın en kritik testi budur); `db:constraints:verify`/`db:transitions:verify` yeniden çalıştırılır.
-
----
-
-#### Faz 25 — Tahsilat Merkezi
-
-**Bağımlılık:** Faz 22, 23.
-**Teslimatlar:**
-- `promise_to_pay` tablosu, tarih takibi + broken-promise tespit işi.
-- Tahsilat notları/aksiyon geçmişi — mevcut `action_items` deseni tekrar kullanılır, ikinci bir görev modeli icat edilmez.
-- Tahsilat KPI'ları (customer collection score) hesaplanan view olarak.
-- `reminders`/`reminder_deliveries` hedef-türü genişletilir (bugün 3 tür/Telegram+1 kanal); e-posta kanalı eklenir.
-- **WhatsApp iskeleti §3 açık soru #4 — varsayılan olarak ertelenir.**
-
-**Gate:** `phase25:verify`; mevcut hatırlatma duplicate-önleme testi yeni hedef türlerini kapsayacak şekilde genişletilir.
-
----
-
-#### Faz 26 — Hazine/Likidite Merkezi (Treasury)
-
-**Bağımlılık:** Faz 20, 17.
-**Teslimatlar:**
-- Günlük/banka-bazlı/para-birimi-bazlı cash position view'ı, `bank_accounts`+`bank_transactions`+mevcut `cashflow_months` üzerine.
-- 7/30/90 günlük likidite tahmini — mevcut cashflow-forecast motorunu (Faz 5) genişletir, paralel bir tahmin motoru değil.
-- Minimum-cash/likidite-açığı/finansman-ihtiyacı tespiti, yapılandırılabilir cash-buffer politika eşiği.
-- `finance/` altında yeni treasury dashboard'u (mevcut rota ağacına göre doğal ev).
-
-**Gate:** `phase26:verify`; yeni treasury cash position'ın `cashflow_months`'un mevcut closing-balance rakamından hiç sessizce sapmadığını doğrulayan tutarlılık testi.
-
----
-
-#### Faz 27 — Finansman Merkezi Genişletme + FX/Kur Riski
-
-**Bağımlılık:** Faz 19, 20.
-**Teslimatlar:**
-- `credit_facilities` (limit/kullanılan/kullanılabilir/çekim) — bugünkü sabit-planlı `loans`'tan ayrık, gerçek yeni bir kavram.
-- `collateral_records`, `covenant_records`.
-- Debt-maturity ladder (30/90/180/365 gün), `loan_installments`+`credit_facilities` üzerine hesaplanan view.
-- `fx_positions`+`fx_rate_snapshots` (gerçek yeni tablolar).
-- TCMB kur entegrasyonu bu fazda MANUEL/programlı-çekim+kayıt olarak (canlı akış değil) — canlı/otomatik bağlantı Faz 37/38'e ertelenir.
-- FX revaluation, gain/loss, stres testleri (±%5/10/20) — deterministik SQL/TS.
-
-**Gate:** `phase27:verify`; tüm yeni FX/finansman matematiği gün-1'den Faz 17'nin para yardımcısından geçer (yeni `::float8` cast'i yasak, standing kontrol).
-
----
-
-#### Faz 28 — Bütçe ve Rolling Forecast
-
-**Bağımlılık:** Faz 21-27.
-**Teslimatlar:**
-- `budgets`+`budget_lines` (yıllık/aylık/departman/cost-center/proje — Faz 19'un boyut tablolarını kullanarak).
-- Bütçe-vs-gerçekleşen, varyans analizi (deterministik SQL; açıklamalar mevcut AI-yorum desenini [Faz 12] tekrar kullanır — yeni LLM matematiği yok, sınır zaten doğru).
-- `scenario_runs`/`scenario_run_lines`'ı (veya paralel `forecasts`/`forecast_lines`'ı) kaynak sınıflandırması (contracted/scheduled/historical/manual/estimated), güven skoru, forecast-vs-actual, doğruluk KPI'larıyla gerçek bir rolling forecast'e genişletir — mevcut senaryo motorunun ciddi bir genişlemesi, basit bir yeniden kullanım değil.
-- 13 haftalık cash forecast, adlandırılmış bir ufuk view'ı olarak.
-- **Pekiştirme, yeni iş değil:** forecast matematiği TS/SQL'de kalır (Çözülen Karar #2); LLM forecast zincirinin dışında kalır — `ai/engine.ts`'in mevcut mimarisi zaten bunu sağlıyor, bu faz onu bozmamalı.
-
-**Gate:** `phase28:verify`; **transition-guard zorunluluğu:** `budget_lines`/`forecast_lines` versiyon-durum kolonu (`draft/approved/superseded`) allow-list'i gün-1'den doğru.
-
----
-
-#### Faz 29 — Senaryo/Optimizasyon Genişletme
-
-**Bağımlılık:** Faz 28, 22, 27.
-**Teslimatlar:**
-- Optimal ödeme zamanlaması/finansman karması/cash-buffer önerisi, **deterministik TypeScript/SQL çözücü mantığıyla (Çözülen Karar #2 — Python YOK)**.
-- Çok-değişkenli senaryo karşılaştırma/versiyonlama, Faz 24A'nın Approval entity'sine senaryo-onayı için bağlanır (ters yönde değil).
-
-**Gate:** `phase29:verify`; Faz 8/13'te kurulan baseline-korunur/salt-okunur-overlay invariant'ı her yeni senaryo tipine karşı yeniden test edilir — bu asla bozulmamalı.
-
----
-
-#### Faz 30 — Maliyet Merkezi + Kârlılık Motoru + İşletme Sermayesi
-
-**Bağımlılık:** Faz 19, 21, mevcut `production/engine.ts` (kârlılık emsali zaten orada var).
-**Teslimatlar:**
-- Masraf-dağıtım kuralları (ortak/makine/personel/enerji/proje) `cost_centers`/`departments`/`projects` üzerine.
-- Kârlılık view'ları: şirket/departman/cost-center/müşteri/tedarikçi/proje/ürün/sipariş/makine — `production/engine.ts`'in mevcut kârlılık-hesaplama desenini şablon olarak tekrar kullanır, yeniden icat etmez.
-- Working-capital dashboard: AR/AP analizi, cash-conversion cycle, DSO/DPO/DIO trendi — Faz 22/23/26 read-model'lerinden çekilir, yeni kaynak veri yok.
-
-**Gate:** `phase30:verify`; tüm para matematiği Faz 17'nin yardımcısından geçer (standing kontrol).
-
----
-
-#### Faz 31 — Finansal Kontrol Merkezi + Anomali/Fraud Tespiti + Bildirim/Eskalasyon
-
-**Bağımlılık:** Faz 19-30 (neredeyse tamamı) — bu, tüm entity'ler arası bir sentez katmanı.
-**Teslimatlar:**
-- Finansal invariant motoru: duplicate fatura/ödeme/banka-işlemi, ödenen>fatura, tahsilat>alacak, faturasız-ödeme, eşleşmemiş-banka-işlemi, bilinmeyen-counterparty/IBAN, yeni/değişmiş-IBAN, büyük/olağandışı-ödeme, kapalı-dönem-mutasyonu (Faz 24B'nin dönem-kilidini gerektirir), eksik-doküman kontrolleri — PostgreSQL CHECK + SQL view + TS kural fonksiyonu olarak, mevcut `db/constraints-verify.ts`+`phaseN-verify` altyapısı üzerinden.
-- PASS/WARNING/CRITICAL kontrol dashboard'u (`data/` veya `system/` altında doğal ev).
-- Anomali tespiti (tutar/frekans/counterparty/IBAN, duplicate/split-payment, round-number, olağandışı-saat, yeni-alıcı, tarihsel-baseline karşılaştırması, approval-bypass [Faz 24A'nın Approval entity'sini gerektirir]) — yalnız TS/SQL'de deterministik istatistiksel kurallar. **Pekiştirme:** LLM kontrol/anomali sonucu üretiminin dışında kalır — `ai/engine.ts`'in mevcut sınırı zaten bunu sağlıyor.
-- Anomali skorlama + inceleme workflow'u + false-positive geri bildirimi, yine `action_items` deseniyle.
-- §30 bildirim genişletmesi: alert acknowledge/resolve/snooze, eskalasyon kuralları — bu fazın ürettiği uyarılar buradan yönlenir.
-
-**Gate:** `phase31:verify`; her yeni CHECK constraint kendi `db:constraints:verify` girdisini alır (mevcut script'i genişletir, değiştirmez).
-
----
-
-#### Faz 32 — CFO Sabah Brifingi + Yönetim Kokpiti + Finansal Takvim
-
-**Bağımlılık:** Faz 26, 30, 31.
-**Teslimatlar:**
-- `cockpit.ts`'i (zaten `overview/`'u besliyor) net-borç, AR/AP, EBITDA, işletme sermayesi, DSO/DPO, kapasite kullanımı, bütçe/forecast varyansı, borç vadesi, FX exposure, konsantrasyon widget'larıyla genişlet.
-- CFO Sabah Brifingi: deterministik SQL/TS özet (güncel nakit, bugünkü ödeme/tahsilat, gecikmiş, kritik kalemler, Faz 31'in yeni anomalileri, 7/30 günlük min. nakit, likidite açığı, bugünün aksiyonları) — `reports/engine.ts` + mevcut Telegram + Faz 25'in yeni e-posta kanalını tekrar kullanır.
-- Birleşik finansal-takvim read-model view'ı, mevcut vade/taksit/promise-to-pay tarihlerini toplar — var olan için yeni kaynak-of-truth tablosu yok; maaş/SGK/vergi/kira/sigorta/CapEx tarihlerinin yeni hafif tekrar-eden-yükümlülük kaydı mı gerektirdiği, yoksa mevcut payments modülüne mi oturduğu faz başlarken netleştirilir.
-
-**Gate:** `phase32:verify`; brifing rakamlarının alttaki dashboard rakamlarıyla tutarlılık çaprazlaması — özet ile detay arasında sapma yasak.
-
----
-
-#### Faz 33 — Performans, Ölçeklenebilirlik ve Arka Plan İşleri
-
-**Bağımlılık:** Faz 20 (import hacmi), Faz 34/35 (export hacmi).
-**Teslimatlar:**
-- Büyük Excel/CSV importları (özellikle Faz 20'nin banka ekstreleri) için job queue + retry policy + dead-letter queue.
-- Faz 22-32'de eklenen en ağır read-model sorguları için materialized view/aggregate table.
-- Query optimizasyonu/index audit/N+1 audit/slow-query logging.
-- Rapor-üretim kuyruğu, büyük-export kuyruğu, import-progress takibi.
-
-**Gate:** `phase33:verify`; en yavaş N sorgu için önce/sonra query-plan karşılaştırması.
-
----
-
-#### Faz 34 — Agresif Analiz + Görselleştirme Motoru (ilk dilim)
-
-**Bağımlılık:** Faz 30, 31, 32.
-**Amaç:** Wishlist'in ~150 satırlık kapsamlı listesinden, "en küçük güvenli dilim" ilkesiyle bilinçli olarak daraltılmış gerçek, genişletilebilir bir kayıt (registry) altyapısı.
-
-**Teslimatlar:**
-- Metric/dimension/calculation registry — mevcut `facts/engine.ts`+`analytics/models.ts` desenini bağımlılık grafiği + reproducibility metadata'sıyla (input snapshot/hesap versiyonu/zaman damgası/kaynak lineage — Faz 2'nin olgun lineage desenini tekrar kullanarak) gerçek bir registry'ye dönüştürür.
-- Rolling 7/30/90/365 gün + MoM/QoQ/YoY analiz fonksiyonları (mevcut `analytics/chart.ts`'teki dönem-filtrelemeyi genişletir).
-- İlk 5-8 adlandırılmış analiz tipi (§3 açık soru #3 uyarınca, tam ~40 değil) — varyans decomposition, konsantrasyon/Pareto, DSO/DPO/DIO decomposition en güçlü ilk adaylar (mevcut veriye göre).
-- Chart registry: `ChartModel`/`analytics-chart.tsx`'i birkaç yeni tiple genişlet — waterfall, heatmap, treemap (wishlist'in en çok vurguladığı tipler) — tam ~40 tip listesi değil. PNG/SVG/PDF/XLSX export.
-- **Python YOK (Çözülen Karar #2)** — tüm istatistiksel hesaplama TS'de.
-
-**Gate:** `phase34:verify`; bu fazdan itibaren standing bir "LLM-bağımsızlığı" kontrolü (analytics/chart hesaplama modülü `src/lib/ai`'yi import etmiyor) tek seferlik değil kalıcı bir repo-geneli kontrole dönüşür.
-
----
-
-#### Faz 35 — Evrensel Arama + Doküman Merkezi
-
-**Bağımlılık:** Faz 20-31.
-**Teslimatlar:**
-- `documents`+`attachments` (checksum, versiyonlama, etiketleme) — **depolama arka ucu §3 açık soru #7, faz başlarken çözülecek; bugünkü yerel-Docker-Postgres-yalnız yığında obje depolama yok.**
-- Doküman-işlem bağlantısı, Faz 2'nin source-lineage FK desenini tekrar kullanarak.
-- Müşteri/tedarikçi/fatura/ödeme/tahsilat/banka-işlemi/çek/kredi/doküman/audit-log genel arama; ⌘K komut paleti.
-- Doğal-dil arama, `ai/engine.ts`'in mevcut sınırıyla birebir aynı şekilde scoped: LLM yalnız niyet/entity/tarih/filtre çıkarımı yapar, deterministik bir query builder çalıştırır, LLM'den sıfır doğrudan SQL — Faz 18'in Zod sınırı + mevcut `mutationIntent()`-tarzı korumayı tekrar kullanır, yeni bir LLM mimarisi gerekmez.
-
-**Gate:** `phase35:verify`; arama sonuçlarının Faz 24B'nin RLS/rol kapsamını asla atlamadığını doğrulayan kontrol.
-
----
-
-#### Faz 36 — UX Standardizasyon Süpürmesi
-
-**Bağımlılık:** Faz 19-35 (çoğu, gezinecek modül olarak).
-**Teslimatlar:**
-- Sidebar bilgi mimarisi yeniden düzenlemesi, rol-bazlı navigasyon (Faz 24B'nin backend'ini UI'ye bağlar), global filtre sistemi (tarih aralığı/para birimi/entity/cost-center/proje/müşteri-tedarikçi), saved views.
-- Tablo pagination/filtre/sort standardı, toplu işlemler, CSV/XLSX/PDF export standardı, klavye kısayolları.
-- Loading/error/empty-state standardizasyonu, erişilebilirlik denetimi, performans denetimi.
-
-**Gate:** `phase36:verify`; örneklenen bir çapraz-modül UI tutarlılık kontrol listesi (her sayfa değil, örneklem).
-
----
-
-#### Faz 37 — Entegrasyon Merkezi (Integration Hub)
-
-**Bağımlılık:** Faz 20-36'nın büyük çoğunluğu (senkronize edilecek gerçek iç veri gerekiyor).
-**Amaç (Çözülen Karar #4 ile netleşti):** Banka API'si, e-Fatura/e-Arşiv, bir muhasebe yazılımı, TCMB kur entegrasyonu — dördü de gerçek kapsam.
-
-**Teslimatlar:**
-- **Banka API'si:** Faz 20'nin ekstre-import akışının canlı/otomatik uzantısı.
-- **e-Fatura/e-Arşiv:** Faz 21'in Invoice entity'sine bağlı, resmi e-fatura sistemine entegrasyon.
-- **TCMB kur entegrasyonu:** Faz 27'nin manuel/anlık-kayıt sürümünün canlı/otomatik uzantısı.
-- **Muhasebe yazılımı** (Paraşüt/Logo/Mikro/Luca — **hangisi olduğu faz başlarken netleştirilecek**, tek bir vendor'a odaklanılacak, dördü birden değil).
-- Excel/CSV import-export (bugün zaten büyük ölçüde kapsanıyor — genişletilir, yeniden kurulmaz).
-- Programlı senkronizasyon + durum + retry + dead-letter kuyruğu (Faz 33'ün job-queue altyapısını tekrar kullanır).
-- Entegrasyon audit trail'i (Faz 18'in `audit()`'ini tekrar kullanır).
-
-**Gate:** `phase37:verify`; dört entegrasyon ayrı ayrı, birbirinden bağımsız teslim edilebilir olacak şekilde gate'lenir — biri diğerini bloklamaz.
-
----
-
-#### Faz 38 — Konuşma Tabanlı Finans Asistanı Genişletme (son faz, her şeyin ince arayüzü)
-
-**Bağımlılık:** Faz 35 (query builder); Faz 37'den faydalanır ama zorunlu bağımlı değil.
-**Amaç:** Zaten büyük ölçüde kurulmuş `ai/engine.ts`/`facts/engine.ts` sınırını (bkz. 1a), zaten çalışan mimariyi yeniden kurmadan tam konuşmalı asistana genişletmek.
-
-**Teslimatlar:**
-- Faz 34'ün artık çok daha büyük fact/metric registry'si üzerinde Türkçe doğal-dil soru-cevap.
-- Takip-sorusu bağlamı, konuşma geçmişi, rol-bazlı veri görünürlüğü (Faz 24B'ye bağlı derinlik).
-- Drill-down bağlantıları, chat→dashboard/rapor görünümü çağırma.
-- Her yanıt için tam kaynak/sorgu izlenebilirliği (Faz 2'nin lineage deseni + Faz 34'ün reproducibility metadata'sını tekrar kullanır).
-- LLM hatasında deterministik-yalnız-fact fallback — zaten mevcut mimari, bozulmamalı.
-- **Sesli soru sorma §3 açık soru #5 — flag'lenir, sessizce kurulmaz.**
-
-**Gate:** `phase38:verify`; prompt-injection/tool-abuse test paketi; genişlemiş fact yüzeyine karşı mevcut `mutationIntent()` koruması ve `AI_FORCE_DETERMINISTIC` kapatma anahtarının hâlâ çalıştığının yeniden teyidi.
-
----
-
-### 5. Kapsam kontrolü (34 bölümün hiçbiri sessizce düşürülmedi)
-
-§1→Faz15/16/17/18 · §2→Faz19/20/21/22/24A/24B/27/28/31/35 · §3→Faz20/22 · §4→Faz19/22/23 · §5→Faz21 · §6/§7→Faz23 · §8→Faz25 · §9→Faz26 · §10/§11→Faz28 · §12→Faz29 · §13/§14→Faz27 · §15/§16/§17→Faz30 · §18/§19→Faz31 · §20/§21→Faz24A/24B · §22→Faz35 · §23→zaten-yapılmış grubu, Faz31/35/38'de genişler · §24→Faz35 · §25/§26/§27→Faz32 · §28→Faz38 · §29→Faz37 (tam kapsam, Çözülen Karar #4) · §30→Faz25/31 · §31→Faz36 · §32→Faz33 · §33→Faz16 · §34/35 (analiz+görsel)→Faz34.
-
----
-
-### Doğrulama (uçtan uca nasıl test edilir)
-
-Bu bir dokümantasyon değişikliği — kod değişikliği yok, bu yüzden doğrulama iki katmanlı:
-
-1. **Belge tutarlılığı:** `implementation.md`'ye eklenen v4 bölümü, mevcut v3'ün 14 fazlık biçimini (amaç/teslimat/gate) birebir taklit ediyor mu; `## 16. Commit ve Gate Kurali`'ndeki pnpm zinciri `phase15:verify`...`phase38:verify` ile genişletiliyor mu (yerine geçmiyor mu) — elle gözden geçirme.
-2. **Faz 15'in aciliyeti ayrıca doğrulanır:** plan onaylandıktan hemen sonra, GitHub repo görünürlüğü GERÇEKTEN kontrol edilip private yapılmalı — bu, planın geri kalanının uygulanmasını beklemeden yapılacak tek adım.
-3. **Her fazın kendi gate'i o faz fiilen uygulanmaya başladığında çalışır** — bu roadmap dokümanının kendisi hiçbir `pnpm` script'i çalıştırmaz; CLAUDE.md'nin "en küçük güvenli dilimi belirle → uygula → doğrula → dokümanı güncelle → o fazdan sonra dur" akışı Faz 15'ten başlayarak, bu belge onaylandıktan sonra, HER FAZ İÇİN AYRI AYRI ve sırayla işletilir — plan onayı, 24 fazın hepsinin tek seferde uygulanacağı anlamına gelmez, yalnız yol haritasının kabul edildiği anlamına gelir.
-
----
-
-## 17A. CFO Yol Haritası — Dalga 0–5 (2026-10-28 yönetici kararları)
-
-Kararlar ve yorumları: `docs/release-evidence/wave0/00-yonetici-kararlari-2026-10-28.md`. Kural: her dalga commit'lenip
-kapıdan geçmeden bir sonrakine geçilmez (CI faturalama engeli kalkana kadar yerel eşdeğer kapı).
-
-| Dalga | Ad | İçerik | Çıkış ölçütü | Durum |
-|---|---|---|---|---|
-| 0 | Durdur ve sağlamlaştır | Yedek + harici kopya + alarm; yerel native PG (servis); 46541d8 katmanının seçici karantinası; girişsiz yazma ve uydurma rakamın sıfırlanması | 7 gün yeşil yedek, kapı yeşil, sahte rakam 0, girişsiz yazma 0 | Kod + altyapı DONE (`wave0/02-…`, `01-…`). Açık: harici disk, servis kurulumu, parola döndürme, CI faturalama, 7 günlük yedek gözlemi |
-| 1 | Omurga ve hız | Arka plan çalışanı / zamanlanmış işler (GET'te yazan sayfalar dahil), tek metrik/okuma modeli katmanı, 4 kokpit → 1 CFO Masası, sorgu zaman aşımları; FIN-03 ileri migration; Playwright + DB'li verify'lar tek kullanımlık DB'de | Sıcak geçişlerin %95'i ≤ 100 ms (gerçek veri), tüm zamanlı işler kayıtlı | — |
-| 2 | Döngüyü kapat | Onay kuralları ödeme/faturaya bağlı, ödeme talimatı + banka dosyası, banka eşleşmesi → ödendi, dönem kilidi, eksik giriş yolları (limit/teminat/kovenant, 13 hafta, bütçe onayı, IBAN), çek/senet portföy hareketleri | fatura → onay → talimat → hareket → eşleşme → kapanış uçtan uca tek testte | — |
-| 3 | Yönetim defteri | Hesap planı (TDHP uyumlu), fiş + otomatik fiş kuralları, mizan, bilanço, gelir tablosu, EBITDA; önce C: mali müşavir mizanının salt-okunur içe aktarımı | Mizan dengeli; yasal mizanla fark raporu | — |
-| 4 | Paraşüt entegrasyonu | Paraşüt API v4: cari, `sales_invoices`/`purchase_bills`, `accounts`/`transactions` (önce okuma); banka Excel yedek yolu; TCMB; vergi takvimi; BA/BS; cari mutabakat | Paraşüt verisi kaynak izli ve incelemeli aktarımla gelir | — |
-| 5 | FP&A ve CFO deneyimi | Bütçe döngüsü, rolling tahmin, zamanlanmış raporlar, AI kapsamı, Telegram brifingi (salt-okunur, sırla) | CFO haftalık/ay sonu işini sistemden çıkmadan yapar | — (sesli soru bu dalganın sonrasına ertelendi) |
-
----
-
-## 18. Legacy v2 Plan
-
-Asagidaki v2 plan, domain kararlarini ve tarihsel baglami korumak icin saklanmistir.
-
-# MAS Nakit Radar — Implementation Plan v2
-
-> Product type: private, single-company, single-operator internal finance/operations SaaS.  
-> Product name: **MAS Nakit Radar**.  
-> Updated scope: payment radar + cash-flow forecast + check maturity tracking + loan/interest tracking + production capacity/cost analytics.  
-> Non-goal: public SaaS, multi-tenant accounting system, subscription product, ERP clone, bank/e-invoice automation-first project, public landing page, pricing page, onboarding flow, marketplace, or AI accountant.
-
----
-
-## 0. Executive Decision — What Changed After the New Data
-
-The first implementation plan treated the product mainly as a **payment calendar / payment radar**. The new workbook inspection data expands the real domain. The app should now be designed as a **private MAS finance and operations control panel** with four major analytical pillars:
-
-1. **Payment radar** — recurring due-day payments, overdue items, missing amounts, critical days, reminders.
-2. **Cash-flow radar** — monthly projected income, expenses, devir/kasa, cumulative deficit/surplus, bank/card balances from May 2026 to March 2029.
-3. **Financing radar** — loans, interest, BSMV/KKDF, installments, checks, maturity concentration, bank/provider exposure.
-4. **Production economics radar** — capacity, machine time, normal vs overtime/mesaili cost model, TL/minute break-even, part-level profitability, machine ROI.
-
-The product should **not** become a generic ERP. It should remain a private MAS tool. But the data model must now be broader than `payments` and `payment_instances`.
-
-### Scope impact
-
-| Area | Original plan | v2 change |
-|---|---|---|
-| Payment tracking | Core | Still core, first vertical slice |
-| Cash-flow months | Light monthly summary | Now first-class model: `cashflow_months`, `cashflow_lines`, `cashflow_snapshots` |
-| Checks | Generic payment instance | Now first-class model: `checks`, `check_events`, maturity calendar |
-| Loans | Generic recurring payment | Now first-class model: `loans`, `loan_installments`, finance-cost analytics |
-| Capacity/cost | Out of scope | Add as analytics module, not v1 blocking workflow |
-| Machine ROI/tax | Out of scope | Add as strategic analytics module after payment/cash-flow is stable |
-| AI | Report commentary | Still commentary only; never source of truth |
-
-### Build priority remains strict
-
-Do **not** start with the shiny analytics. Start with source preservation and the payment/cash-flow backbone.
-
-Correct order:
-
-1. Raw workbook preservation and mapping.
-2. Payment calendar/radar.
-3. Monthly cash-flow projection.
-4. Checks and loan modules.
-5. Risk engine and reports.
-6. Capacity/cost analytics.
-7. Scenario engine.
-
----
-
-## 1. Source File Reality and Data Evidence
-
-### 1.1 Current uploaded binary workbook status
-
-The currently mounted workbook path is:
-
-```txt
-/mnt/data/mesaili_nakit_akış_tek_vardiya_TEMİZ-4.xlsx
-```
-
-Technical check in the active environment still shows this file cannot be parsed as a valid Excel workbook because it does not expose a valid XLSX/ZIP signature. Therefore the app must still be designed to support a real workbook upload/import later.
-
-### 1.2 New user-provided inspection outputs
-
-The new text files contain pandas inspection outputs from a workbook named:
-
-```txt
-mesaili_nakit akış_tek vardiya.xlsx
-```
-
-These outputs should be treated as **data-map evidence** for implementation planning. They show the workbook contains:
-
-- financing and loan worksheets
-- capacity and production worksheets
-- machine/ROI/tax worksheet
-- payment-day matrix worksheet
-- checks worksheet
-- normal and overtime cost models
-- monthly cash-flow sheets from **May 2026 through March 2029**
-
-### 1.3 Sheet families discovered
-
-The workbook contains these major sheet groups:
-
-#### A. Finance / loan / payment tracking
-
-- `faiz hesaplama`
-- `ödeme tablosu`
-- `ÇEKLER`
-
-#### B. Operations / capacity / cost
-
-- `kapasite`
-- `tablo`
-- `maliyet-mastechnicmesaili`
-- `maliyet-mastechnic`
-
-#### C. Monthly forecast sheets
-
-- `mayıs 2026` through `mart 2029`
-- mixed casing is present, for example `ARALIK 2026`, `OCAK 2027`, `ŞUBAT 2028`, `EKİM 2028`, `KASIM 2028`, `ARALIK 2028`
-
-### 1.4 Crucial import rule
-
-Sheet names, row positions, headers, casing, merged-table style, and sign conventions are inconsistent. The importer must never assume clean rectangular tables. The app must preserve raw cells first, then map detected regions into typed domain tables.
-
----
-
-## 2. Product Definition v2
-
-Build:
-
-> **MAS Nakit Radar** — MAS’a özel ödeme, nakit akış, finansman, çek, maliyet ve kapasite kontrol paneli.
-
-The app must answer these operational questions:
-
-### Payment questions
-
-- Bugün hangi ödemeler var?
-- Yarın hangi ödemeler var?
-- Önümüzdeki 7 gün hangi ödemeler var?
-- Hangi ödemelerin tutarı eksik?
-- Hangi ödemeler gecikti?
-- Aynı güne sıkışan ödeme kümeleri nerede?
-- 50.000 TL / 100.000 TL üstü kritik ödemeler hangileri?
-
-### Cash-flow questions
-
-- Bu ay gelir, gider, fark aylık ve kasa/devir durumu nedir?
-- Önümüzdeki 3, 6, 12, 24, 36 ayda kasa ne yöne gidiyor?
-- İlk eksi kasa hangi ay başlıyor?
-- Kümülatif nakit açığı hangi hızla büyüyor?
-- Hangi aylar finansman müdahalesi gerektiriyor?
-- Cari müşteri gelirlerinin hangi firmalara bağımlılığı var?
-
-### Financing/check questions
-
-- Hangi çekler hangi tarihte vadesine geliyor?
-- Çekler hangi bankalarda yoğunlaşıyor?
-- Aynı ay/hafta çek ve ödeme yükü çakışıyor mu?
-- Kredi toplam geri ödeme, finansman maliyeti ve taksit yükü nedir?
-- Banka/kredi kartı/çek exposure dağılımı nedir?
-
-### Production/cost questions
-
-- Normal tek vardiya ve mesaili modelde başabaş TL/dk nedir?
-- Mesai kapasiteyi artırıyor mu, yoksa verim düşüşü maliyeti yiyor mu?
-- Parça bazında torna/freze süreleri ve maliyetler ne gösteriyor?
-- Hangi parçalar kârlı/kârsız görünüyor?
-- Hangi tezgah daha yüksek ROI üretiyor?
-
----
-
-## 3. Hard Scope Boundaries
-
-### Never build in v1/v2 unless explicitly approved
-
-- Multi-tenant organization model
-- External customer accounts
-- Pricing, subscription, billing, trial, Stripe, iyzico
-- Public marketing landing page
-- Public SaaS onboarding
-- Marketplace
-- Full ERP
-- Full double-entry accounting ledger
-- Payroll module
-- Stock/inventory module
-- E-invoice integration
-- Live bank integration
-- OCR-first automation
-- AI chatbot as the primary interface
-- AI-powered mutation of financial records
-- Mobile native app
-- Complex RBAC beyond one admin/operator role
-
-### Must build
-
-- Secure login
-- Single-company settings
-- Raw workbook import/audit layer
-- Payment template and payment instance model
-- Monthly cash-flow model
-- Check ledger
-- Loan/financing model
-- Data-quality and mapping review screens
-- Risk engine
-- Dashboard and reporting
-- Telegram reminder engine
-- Audit log
-- Deterministic calculations with tests
-
----
-
-## 4. Recommended Stack
-
-### Application
-
-- Next.js App Router
-- TypeScript strict mode
-- Tailwind CSS
-- shadcn/ui
-- TanStack Table
-- TanStack Query where server-state handling is needed
-- React Hook Form
-- Zod validation
-- Recharts
-- date-fns
-- Lucide icons
-
-### Backend / database
-
-- Supabase
-- PostgreSQL
-- Supabase Auth
-- Supabase Storage for source workbooks and receipts/dekont/fatura attachments
-- Supabase migrations
-- SQL views for dashboard summaries
-- SQL functions for instance generation, risk flags, and monthly rollups
-- RLS enabled even for single-company mode
-
-### Automation
-
-- Supabase Edge Functions, Vercel Route Handlers, or server-only scheduled scripts
-- Supabase scheduled functions / pg_cron / Vercel Cron
-- Telegram Bot API for reminders
-- Optional Resend/SMTP for email reports
-
-### AI layer
-
-AI is a commentary layer only.
-
-AI may:
-
-- explain weekly/monthly risk
-- write executive summaries
-- highlight data anomalies already detected deterministically
-- generate “what to check next” action lists
-
-AI must not:
-
-- calculate source-of-truth amounts
-- mark anything paid
-- alter due dates
-- delete or merge records
-- infer final truth from ambiguous Excel rows without user review
-
----
-
-## 5. Repository / Package Map
-
-Use these as references/dependencies. Do not blindly clone generic SaaS starters because most include billing, organizations, onboarding, or public marketing baggage.
-
-| Area | Repo / Package | Use |
-|---|---|---|
-| Framework | https://github.com/vercel/next.js | App Router, server components, route handlers |
-| Backend | https://github.com/supabase/supabase | Auth, Postgres, storage, edge functions |
-| Supabase examples | https://github.com/supabase-community/supabase-by-example | Reference patterns only |
-| UI | https://github.com/shadcn-ui/ui | Dashboard components, forms, dialogs, tables |
-| Charts | https://github.com/recharts/recharts | Cash-flow, payment load, capacity charts |
-| Tables | https://github.com/TanStack/table | Payment ledger, check ledger, import review, cost tables |
-| Server state | https://github.com/TanStack/query | Optional client caching/mutations |
-| Forms | https://github.com/react-hook-form/react-hook-form | Create/edit forms |
-| Validation | https://github.com/colinhacks/zod | Runtime validation and DTO schemas |
-| Excel parsing | https://github.com/SheetJS/sheetjs | Workbook parsing and raw sheet extraction |
-| Alternative Excel parsing | https://github.com/exceljs/exceljs | Styles/formulas/worksheet metadata when needed |
-| ORM optional | https://github.com/drizzle-team/drizzle-orm | Optional typed SQL layer; avoid if it slows MVP |
-| Email | https://github.com/resend/resend-node | Optional email summaries |
-| Email templates | https://github.com/resend/react-email | Optional structured email reports |
-| Telegram | https://github.com/yagop/node-telegram-bot-api | Telegram reminders |
-| Starter reference | https://github.com/t3-oss/create-t3-app | TypeScript discipline only; do not import SaaS baggage |
-| React architecture | https://github.com/alan2207/bulletproof-react | Folder structure inspiration only |
-
-### Install command set
+1. **`BLANK ≠ ZERO` (Bilinmeyen Asla Sıfır Sayılmaz):** `NULL` tutar, `NULL` açılış bakiyesi (`FIN-03`), `NULL` KDV kırılımı ve `NULL` döviz kuru **"bilinmiyor"** demektir; hiçbir SQL görünümünde veya TS motorunda `COALESCE(x, 0)` ya da `moneyOrNull(x) ?? 0` ile sessizce `0` veya kur `1.0` kabul edilemez. Bilinmeyen kalemler açıkça sayılır (`unknown_count`) ve toplamlarda eksik veri uyarısıyla görünür tutulur.
+2. **`TRY-only` Ana Raporlama + Açık Döviz Kovaları (`USD`, `EUR`, `GBP`):** Farklı para birimleri kur çevrimi olmadan hiçbir tabloda, görünümde veya grafikte `SUM(amount)` ile toplanamaz. Birincil raporlama `TRY` bazındadır; yabancı para kalemler kendi döviz kovalarında (`native_currency`) ve varsa resmi TCMB kuru üzerinden açık kur tarihiyle (`rate_date`, `provisional_fx`) ayrı `TRY` karşılığıyla gösterilir.
+3. **Sıfır Kayıplı Kuruş Aritmetiği (`numeric` + `big.js`):** Veritabanında tüm parasal kolonlar `numeric(p,s)` tipindedir (`float8`, `double precision`, `real` yasaktır). Uygulama kodunda SQL `::float8` dönüşümü ve parasal JS `Number` kayan nokta toplaması yasaktır (`pnpm phase17:verify` kalıcı kapısı).
+4. **Bayrakla, Asla Sessiz Düzeltme (`Flag, Never Mutate`):** Süreklilik kopukluğu (`continuity_break`), vade/tutar uyuşmazlığı veya yönetim defteri ↔ mali müşavir mizan farkı tespit edildiğinde sistem rakamı sessizce ezmez; deterministik kök-neden koduyla bayraklar ve inceleme/aksiyon kuyruğuna düşürür.
+5. **Tam Kaynak Soykütüğü (`End-to-End Source Lineage`):** Excel'den gelen her kayıt `source_workbooks → source_sheets → source_cells / import_rows` izine; Paraşüt API v4'ten gelen her kayıt `integration_sync_runs → integration_raw_payloads (SHA-256) → integration_entity_links` izine; yönetim defterindeki her fiş kaynak domain kaydına geri izlenebilir olmalıdır.
+6. **5 Katmanlı Veritabanı RLS + `security_invoker` Görünüm Kalkanı:** Uygulama veritabanına yalnız düşük yetkili `mas_radar_app` rolüyle (`NOBYPASSRLS`, `NOSUPERUSER`) bağlanır ve her işlemde `SET LOCAL ROLE` ile 5 katmandan birine (`mas_radar_viewer`, `mas_radar_finance_operator`, `mas_radar_finance_approver`, `mas_radar_finance_manager`, `mas_radar_admin`) geçer. **Her SQL görünümü (`view`) istisnasız `WITH (security_invoker = true)` taşımak ve görünüm üzerinde `INSERT, UPDATE, DELETE` yetkisi kapalı olmak zorundadır.**
+7. **Tek Denetim Yazıcısı (`src/lib/audit.ts`) ve Tek Doğrulama Sınırı (`src/lib/validation/index.ts`):** `public.audit_logs` (`0022` append-only) tablosuna `src/` içinde yalnız `audit()` fonksiyonu yazar; ancak her `UPDATE`/`DELETE` sonrasında `audit()` çağrılmadan önce **etkilenen satır sayısının (`rowCount === 1`) doğrulanması zorunludur** (RLS'in `0` satır etkilediği işlem için sahte denetim kaydı yazılamaz).
+8. **Canlı Kanonik Veritabanı (`mas_radar_dev`) Dokunulmazlığı:** `127.0.0.1:5432 / mas_radar_dev` (`C:\MAS\pgdata16`) gerçek şirket verisidir. Hiçbir doğrulama betiği (`phase*-verify.ts`, `db:*:verify`, Playwright, `perf:*`) `mas_radar_dev` üzerinde çalıştırılamaz; tüm kapılar `isDisposableDatabaseName()` kontrolüyle yalnız tek kullanımlık (`*_verify`, `*_test`, `*_clone`) veritabanlarında koşar.
 
-```bash
-pnpm create next-app mas-nakit-radar --ts --tailwind --eslint --app --src-dir
-cd mas-nakit-radar
-pnpm dlx shadcn@latest init
-pnpm dlx shadcn@latest add button card table badge calendar dialog dropdown-menu form input label select textarea tabs sheet separator alert switch skeleton toast command popover
-pnpm add @supabase/supabase-js @supabase/ssr zod react-hook-form @hookform/resolvers @tanstack/react-table @tanstack/react-query recharts date-fns lucide-react
-pnpm add xlsx exceljs node-telegram-bot-api resend @react-email/components
-pnpm add -D vitest @testing-library/react @testing-library/jest-dom playwright eslint-config-prettier prettier tsx
-```
-
----
-
-## 6. Claude Code Setup
-
-Create and maintain:
-
-```txt
-CLAUDE.md
-implementation.md
-docs/
-  data-map.md
-  database-schema.md
-  todo.md
-  risk-register.md
-  repo-map.md
-  import-mapping.md
-  calculation-rules.md
-.claude/
-  skills/
-    mas-excel-data-auditor/
-      SKILL.md
-    mas-db-architect/
-      SKILL.md
-    mas-payment-risk-engine/
-      SKILL.md
-    mas-dashboard-ux/
-      SKILL.md
-    mas-reminder-engine/
-      SKILL.md
-    mas-report-writer/
-      SKILL.md
-    mas-qa-gate/
-      SKILL.md
-    mas-implementation-slicer/
-      SKILL.md
-    mas-cashflow-forecaster/
-      SKILL.md
-    mas-loan-check-analyst/
-      SKILL.md
-    mas-cost-capacity-analyst/
-      SKILL.md
-```
-
-### Claude operating rule
-
-Claude must never jump straight into broad coding.
-
-Every phase must follow:
-
-1. inspect current files and docs
-2. update data map and assumptions
-3. write migration/types/tests first where applicable
-4. implement the smallest vertical slice
-5. run typecheck/lint/tests
-6. document changes
-7. stop for review after phase completion
-
----
-
-## 7. Domain Model Overview
-
-The app must have three data layers:
-
-1. **Raw source layer** — every workbook/sheet/cell/row preserved.
-2. **Mapped staging layer** — candidate entities extracted from messy Excel regions, awaiting review.
-3. **Normalized domain layer** — clean entities used by dashboard, reminders, reports, and analytics.
-
-### Why three layers?
-
-The workbook is not a clean accounting export. It is an operational planning workbook with multiple embedded mini-tables. Some headers are in rows, some in columns, some are numeric values, and some sheets mix operational and financial data. A direct import into final tables would create silent errors.
-
----
-
-## 8. Raw Source and Import Tables
-
-### `source_workbooks`
-
-```sql
-create table public.source_workbooks (
-  id uuid primary key default gen_random_uuid(),
-  original_filename text not null,
-  storage_path text,
-  file_sha256 text,
-  imported_by uuid references auth.users(id),
-  imported_at timestamptz not null default now(),
-  status text not null default 'pending' check (status in ('pending','parsed','mapped','failed')),
-  parse_error text,
-  notes text
-);
-```
-
-### `source_sheets`
-
-```sql
-create table public.source_sheets (
-  id uuid primary key default gen_random_uuid(),
-  workbook_id uuid not null references public.source_workbooks(id) on delete cascade,
-  sheet_name text not null,
-  sheet_name_normalized text,
-  sheet_index int not null,
-  used_range text,
-  row_count int,
-  column_count int,
-  detected_type text check (detected_type in (
-    'loan_calculation','capacity','machine_roi','payment_day_matrix','checks',
-    'cost_model_normal','cost_model_overtime','monthly_cashflow','unknown'
-  )),
-  parse_confidence text not null default 'unknown' check (parse_confidence in ('high','medium','low','unknown')),
-  created_at timestamptz not null default now(),
-  unique(workbook_id, sheet_index)
-);
-```
-
-### `source_cells`
-
-```sql
-create table public.source_cells (
-  id uuid primary key default gen_random_uuid(),
-  workbook_id uuid not null references public.source_workbooks(id) on delete cascade,
-  sheet_id uuid not null references public.source_sheets(id) on delete cascade,
-  row_index int not null,
-  column_index int not null,
-  address text not null,
-  raw_value text,
-  normalized_value text,
-  inferred_type text,
-  formula text,
-  style_json jsonb,
-  created_at timestamptz not null default now(),
-  unique(sheet_id, row_index, column_index)
-);
-```
-
-### `import_rows`
-
-```sql
-create table public.import_rows (
-  id uuid primary key default gen_random_uuid(),
-  workbook_id uuid not null references public.source_workbooks(id) on delete cascade,
-  sheet_id uuid not null references public.source_sheets(id) on delete cascade,
-  row_index int not null,
-  row_json jsonb not null,
-  row_hash text,
-  detected_entity_type text,
-  mapping_status text not null default 'unmapped' check (mapping_status in ('unmapped','mapped','ignored','needs_review')),
-  mapped_entity_table text,
-  mapped_entity_id uuid,
-  notes text,
-  created_at timestamptz not null default now(),
-  unique(sheet_id, row_index)
-);
-```
-
-### `mapping_reviews`
-
-```sql
-create table public.mapping_reviews (
-  id uuid primary key default gen_random_uuid(),
-  workbook_id uuid not null references public.source_workbooks(id) on delete cascade,
-  sheet_id uuid references public.source_sheets(id) on delete cascade,
-  import_row_id uuid references public.import_rows(id) on delete cascade,
-  issue_type text not null,
-  severity text not null default 'medium' check (severity in ('low','medium','high','critical')),
-  message text not null,
-  suggested_mapping jsonb,
-  status text not null default 'open' check (status in ('open','accepted','rejected','resolved')),
-  reviewed_by uuid references auth.users(id),
-  reviewed_at timestamptz,
-  created_at timestamptz not null default now()
-);
-```
-
----
-
-## 9. Shared Reference Tables
-
-### `parties`
-
-Use `parties` for customers, vendors, persons, banks, providers, and internal owners. Avoid splitting too early.
-
-```sql
-create table public.parties (
-  id uuid primary key default gen_random_uuid(),
-  name text not null,
-  normalized_name text not null,
-  party_type text not null default 'unknown' check (party_type in (
-    'company','person','bank','provider','customer','vendor','internal_owner','unknown'
-  )),
-  is_active boolean not null default true,
-  notes text,
-  created_at timestamptz not null default now(),
-  updated_at timestamptz not null default now(),
-  unique(normalized_name, party_type)
-);
-```
-
-Seed examples from the workbook evidence:
-
-- Internal/company: `MAS`
-- Customers/cari gelir: `Akon`, `Metsan`, `Hpt`, `Egemet`
-- Vendors/cari ödemeler: `Elit`, `Çağdaş`, `Akbaş`
-- Banks/providers: `Halk`, `Deniz`, `Vinov`, `Telekom`, `Süperbox`, `Pronet`
-- Persons/owners: `Armağan`, `Esma`, plus manually reviewed names
-
-### `categories`
-
-```sql
-create table public.categories (
-  id uuid primary key default gen_random_uuid(),
-  name text not null unique,
-  domain text not null default 'payment' check (domain in ('payment','cashflow','check','loan','cost','capacity','tax','other')),
-  sort_order int not null default 100,
-  is_active boolean not null default true,
-  created_at timestamptz not null default now()
-);
-```
-
-Seed examples:
-
-- `Kredi`
-- `Kredi Kartı`
-- `Çek`
-- `Kira`
-- `Telefon`
-- `İnternet`
-- `Elektrik/Su`
-- `Alarm/Güvenlik`
-- `Cari Ödeme`
-- `Cari Gelir`
-- `Banka/Hesap`
-- `Yemek`
-- `Yol`
-- `Personel`
-- `Sigorta`
-- `Vergi`
-- `Diğer`
-- `Bilinmiyor`
-
-### `cash_accounts`
-
-```sql
-create table public.cash_accounts (
-  id uuid primary key default gen_random_uuid(),
-  name text not null unique,
-  provider_party_id uuid references public.parties(id),
-  account_type text not null default 'unknown' check (account_type in ('cash','bank_account','credit_card','loan','check_account','other','unknown')),
-  currency text not null default 'TRY',
-  opening_balance numeric(14,2),
-  is_active boolean not null default true,
-  notes text,
-  created_at timestamptz not null default now()
-);
-```
-
-Seed examples:
-
-- `Kasa`
-- `HESAP Halk`
-- `Halk Business`
-- `Halk KK - Paraf`
-- `Deniz`
-- `Vinov`
-
----
-
-## 10. Payment Radar Model
-
-### `payments`
-
-```sql
-create table public.payments (
-  id uuid primary key default gen_random_uuid(),
-  name text not null,
-  description text,
-  category_id uuid references public.categories(id),
-  provider_party_id uuid references public.parties(id),
-  owner_party_id uuid references public.parties(id),
-  cash_account_id uuid references public.cash_accounts(id),
-
-  recurrence_type text not null default 'monthly' check (recurrence_type in ('one_off','monthly','weekly','yearly','irregular')),
-  due_day int check (due_day between 1 and 31),
-  due_date date,
-
-  default_amount numeric(14,2),
-  currency text not null default 'TRY',
-  amount_confidence text not null default 'known' check (amount_confidence in ('known','unknown','estimated','variable')),
-
-  direction text not null default 'outflow' check (direction in ('inflow','outflow','transfer','unknown')),
-  priority text not null default 'normal' check (priority in ('low','normal','high','critical')),
-  status text not null default 'active' check (status in ('active','paused','archived')),
-
-  source_workbook_id uuid references public.source_workbooks(id),
-  source_sheet_id uuid references public.source_sheets(id),
-  source_row_id uuid references public.import_rows(id),
-  source_notes text,
-
-  created_at timestamptz not null default now(),
-  updated_at timestamptz not null default now(),
-
-  constraint payment_due_rule check (
-    (recurrence_type = 'monthly' and due_day is not null)
-    or (recurrence_type <> 'monthly')
-  )
-);
-```
-
-### `payment_instances`
-
-```sql
-create table public.payment_instances (
-  id uuid primary key default gen_random_uuid(),
-  payment_id uuid references public.payments(id) on delete set null,
-  instance_month date not null,
-  due_date date not null,
-  due_day int generated always as (extract(day from due_date)::int) stored,
-
-  amount numeric(14,2),
-  currency text not null default 'TRY',
-  amount_status text not null default 'known' check (amount_status in ('known','missing','estimated','variable')),
-  direction text not null default 'outflow' check (direction in ('inflow','outflow','transfer','unknown')),
-
-  status text not null default 'unpaid' check (status in ('planned','unpaid','partial','paid','late','cancelled','unknown')),
-  paid_amount numeric(14,2),
-  paid_at timestamptz,
-  paid_from_account_id uuid references public.cash_accounts(id),
-
-  risk_level text not null default 'none' check (risk_level in ('none','low','medium','high','critical')),
-  risk_reasons text[] not null default '{}',
-
-  note text,
-  source_workbook_id uuid references public.source_workbooks(id),
-  source_sheet_id uuid references public.source_sheets(id),
-  source_row_id uuid references public.import_rows(id),
-
-  created_at timestamptz not null default now(),
-  updated_at timestamptz not null default now(),
-
-  constraint paid_requires_paid_at check (
-    status <> 'paid' or paid_at is not null
-  )
-);
-```
-
----
-
-## 11. Monthly Cash-Flow Model
-
-The monthly sheets are first-class. They should not be forced into payment instances only.
-
-### `cashflow_months`
-
-```sql
-create table public.cashflow_months (
-  id uuid primary key default gen_random_uuid(),
-  month_start date not null unique,
-  source_workbook_id uuid references public.source_workbooks(id),
-  source_sheet_id uuid references public.source_sheets(id),
-
-  opening_balance numeric(14,2), -- devir
-  projected_income numeric(14,2), -- gelir
-  projected_expense numeric(14,2), -- gider
-  monthly_delta numeric(14,2), -- fark aylık
-  closing_balance numeric(14,2), -- kasa
-  confidence text not null default 'source_imported' check (confidence in ('source_imported','calculated','reviewed','estimated')),
-
-  status text not null default 'draft' check (status in ('draft','review_needed','reviewed','locked')),
-  notes text,
-  created_at timestamptz not null default now(),
-  updated_at timestamptz not null default now()
-);
-```
-
-### `cashflow_lines`
-
-```sql
-create table public.cashflow_lines (
-  id uuid primary key default gen_random_uuid(),
-  cashflow_month_id uuid not null references public.cashflow_months(id) on delete cascade,
-  source_row_id uuid references public.import_rows(id),
-
-  line_type text not null check (line_type in (
-    'customer_income','vendor_payment','bank_balance','credit_card','loan_payment','check_payment',
-    'operational_cost','tax','transfer','adjustment','unknown'
-  )),
-  direction text not null default 'unknown' check (direction in ('inflow','outflow','balance','transfer','unknown')),
-  party_id uuid references public.parties(id),
-  account_id uuid references public.cash_accounts(id),
-  label text not null,
-  amount numeric(14,2),
-  amount_status text not null default 'known' check (amount_status in ('known','missing','estimated','variable')),
-  date_value date,
-  notes text,
-  created_at timestamptz not null default now()
-);
-```
-
-### `cashflow_snapshots`
-
-```sql
-create table public.cashflow_snapshots (
-  id uuid primary key default gen_random_uuid(),
-  snapshot_date date not null default current_date,
-  horizon_months int not null,
-  total_projected_income numeric(14,2),
-  total_projected_expense numeric(14,2),
-  final_projected_balance numeric(14,2),
-  first_negative_month date,
-  worst_month date,
-  worst_balance numeric(14,2),
-  created_at timestamptz not null default now()
-);
-```
-
-### Required cash-flow analytics
-
-- month-by-month opening/devir → income → expense → delta → closing/kasa
-- cumulative cash burn
-- first negative month
-- worst projected month
-- 3/6/12/24/36-month forecast cards
-- income concentration by customer
-- expense concentration by vendor/category
-- bank/card exposure trend
-- cash rescue threshold alerts
-
----
-
-## 12. Checks / Çekler Model
-
-The `ÇEKLER` sheet uses dated rows, parties, banks, and negative signed amounts. Do not treat all negative numbers as anomalies here. In the checks module, sign must be interpreted as direction.
-
-### `checks`
-
-```sql
-create table public.checks (
-  id uuid primary key default gen_random_uuid(),
-  source_workbook_id uuid references public.source_workbooks(id),
-  source_sheet_id uuid references public.source_sheets(id),
-  source_row_id uuid references public.import_rows(id),
-
-  maturity_date date not null,
-  serial_no text,
-  payee_party_id uuid references public.parties(id), -- kime
-  payer_party_id uuid references public.parties(id), -- kimden
-  bank_party_id uuid references public.parties(id),
-  account_id uuid references public.cash_accounts(id),
-
-  amount numeric(14,2),
-  signed_amount numeric(14,2),
-  direction text not null default 'outflow' check (direction in ('inflow','outflow','unknown')),
-  status text not null default 'planned' check (status in ('planned','cleared','bounced','cancelled','unknown')),
-
-  notes text,
-  created_at timestamptz not null default now(),
-  updated_at timestamptz not null default now()
-);
-```
-
-### `check_events`
-
-```sql
-create table public.check_events (
-  id uuid primary key default gen_random_uuid(),
-  check_id uuid not null references public.checks(id) on delete cascade,
-  event_type text not null check (event_type in ('created','reminded','cleared','bounced','cancelled','note')),
-  event_at timestamptz not null default now(),
-  event_note text,
-  created_by uuid references auth.users(id)
-);
-```
-
-### Required check analytics
-
-- maturity calendar
-- bank-by-bank check exposure
-- payee/payer concentration
-- weekly/monthly check load
-- overlap with payment instances
-- check-heavy month warning
-- duplicate-looking checks review
-
----
-
-## 13. Loan / Financing Model
-
-The `faiz hesaplama` sheet includes credit principal, maturity, interest, taxes, installment, total payment, and difference/finance cost. These need dedicated tables.
-
-### `loans`
-
-```sql
-create table public.loans (
-  id uuid primary key default gen_random_uuid(),
-  name text not null,
-  lender_party_id uuid references public.parties(id),
-  source_workbook_id uuid references public.source_workbooks(id),
-  source_sheet_id uuid references public.source_sheets(id),
-
-  principal numeric(14,2) not null,
-  term_months int,
-  installment_count int,
-  first_payment_date date,
-  simple_interest_rate numeric(8,4),
-  applied_interest_rate numeric(8,4),
-  monthly_cost_rate numeric(8,4),
-  annual_cost_rate numeric(8,4),
-  bsmv_rate numeric(8,4),
-  kkdf_rate numeric(8,4),
-  installment_amount numeric(14,2),
-  total_payment numeric(14,2),
-  total_finance_cost numeric(14,2),
-
-  status text not null default 'active' check (status in ('active','closed','planned','unknown')),
-  notes text,
-  created_at timestamptz not null default now(),
-  updated_at timestamptz not null default now()
-);
-```
-
-### `loan_installments`
-
-```sql
-create table public.loan_installments (
-  id uuid primary key default gen_random_uuid(),
-  loan_id uuid not null references public.loans(id) on delete cascade,
-  installment_no int,
-  due_date date not null,
-  amount numeric(14,2) not null,
-  principal_component numeric(14,2),
-  interest_component numeric(14,2),
-  tax_component numeric(14,2),
-  status text not null default 'planned' check (status in ('planned','unpaid','partial','paid','late','cancelled')),
-  paid_at timestamptz,
-  created_at timestamptz not null default now(),
-  unique(loan_id, installment_no)
-);
-```
-
-### Required loan analytics
-
-- total principal
-- total repayment
-- total finance cost
-- monthly installment load
-- remaining installments
-- paid/unpaid schedule
-- debt service pressure by month
-- overlap with cash-flow deficit months
-
----
-
-## 14. Production Capacity and Cost Model
-
-This module is important but should not block the payment radar MVP. It should be implemented after the finance backbone.
-
-### `machine_assets`
-
-```sql
-create table public.machine_assets (
-  id uuid primary key default gen_random_uuid(),
-  name text not null unique,
-  machine_type text check (machine_type in ('torna','freze','other','unknown')),
-  purchase_cost numeric(14,2),
-  notes text,
-  created_at timestamptz not null default now()
-);
-```
-
-Seed candidates: `Awea`, `Arion`, `Sister`, `Doosan`.
-
-### `production_parts`
-
-```sql
-create table public.production_parts (
-  id uuid primary key default gen_random_uuid(),
-  part_code text,
-  part_name text not null,
-  quantity int,
-  torna_minutes numeric(14,4),
-  freze_minutes numeric(14,4),
-  source_workbook_id uuid references public.source_workbooks(id),
-  source_sheet_id uuid references public.source_sheets(id),
-  source_row_id uuid references public.import_rows(id),
-  created_at timestamptz not null default now()
-);
-```
-
-### `capacity_models`
-
-```sql
-create table public.capacity_models (
-  id uuid primary key default gen_random_uuid(),
-  name text not null,
-  scenario_type text not null check (scenario_type in ('normal','overtime','custom')),
-  monthly_hours numeric(10,2),
-  monthly_minutes numeric(14,2),
-  work_days_per_month numeric(10,2),
-  efficiency_rate numeric(8,4),
-  staff_count numeric(10,2),
-  apprentice_count numeric(10,2),
-  notes text,
-  source_workbook_id uuid references public.source_workbooks(id),
-  source_sheet_id uuid references public.source_sheets(id),
-  created_at timestamptz not null default now()
-);
-```
-
-### `cost_models`
-
-```sql
-create table public.cost_models (
-  id uuid primary key default gen_random_uuid(),
-  capacity_model_id uuid references public.capacity_models(id),
-  model_name text not null,
-  model_month date,
-  food_daily_cost numeric(14,2),
-  transport_staff_daily_cost numeric(14,2),
-  transport_apprentice_daily_cost numeric(14,2),
-  health_insurance_cost numeric(14,2),
-  machine_insurance_cost numeric(14,2),
-  total_fixed_cost numeric(14,2),
-  monthly_allocated_cost numeric(14,2),
-  break_even_torna_tl_per_min numeric(14,4),
-  break_even_freze_tl_per_min numeric(14,4),
-  source_workbook_id uuid references public.source_workbooks(id),
-  source_sheet_id uuid references public.source_sheets(id),
-  created_at timestamptz not null default now()
-);
-```
-
-### `part_profitability_runs`
-
-```sql
-create table public.part_profitability_runs (
-  id uuid primary key default gen_random_uuid(),
-  part_id uuid not null references public.production_parts(id) on delete cascade,
-  cost_model_id uuid not null references public.cost_models(id) on delete cascade,
-  estimated_torna_cost numeric(14,2),
-  estimated_freze_cost numeric(14,2),
-  estimated_total_cost numeric(14,2),
-  estimated_revenue numeric(14,2),
-  estimated_margin numeric(14,2),
-  margin_rate numeric(8,4),
-  created_at timestamptz not null default now()
-);
-```
-
-### Required production analytics
-
-- normal vs overtime TL/minute comparison
-- efficiency sensitivity
-- part-level cost/profit estimate
-- machine utilization
-- capacity equivalent of monthly revenue
-- break-even price floor
-- low-margin / negative-margin part flags
-
----
-
-## 15. Machine ROI / Strategic Table Model
-
-The `tablo` sheet appears to compare machine economics, net remaining amounts, costs, taxes, and possibly personal/company allocations. This must be treated as review-needed strategic data, not blindly normalized in MVP.
-
-### `machine_roi_snapshots`
-
-```sql
-create table public.machine_roi_snapshots (
-  id uuid primary key default gen_random_uuid(),
-  source_workbook_id uuid references public.source_workbooks(id),
-  source_sheet_id uuid references public.source_sheets(id),
-  machine_asset_id uuid references public.machine_assets(id),
-  snapshot_year int,
-  revenue numeric(14,2),
-  cost numeric(14,2),
-  remaining numeric(14,2),
-  tax numeric(14,2),
-  net_after_tax numeric(14,2),
-  confidence text not null default 'needs_review' check (confidence in ('needs_review','reviewed','calculated')),
-  notes text,
-  created_at timestamptz not null default now()
-);
-```
-
-### Required ROI analytics
-
-- machine-level gross/net outcome
-- tax burden
-- payback period approximation
-- risk: low confidence until reviewed
-
----
-
-## 16. Risk Engine v2
-
-Risk must be deterministic. AI only explains already-computed risks.
-
-### Payment risks
-
-- Missing amount
-- Missing due date/due day
-- Overdue unpaid
-- Partial paid after due date
-- Large payment above `large_payment_threshold_try`, default 50,000 TRY
-- Critical payment above `critical_payment_threshold_try`, default 100,000 TRY
-- Same-day cluster, default 3+ payments
-- Due day 29/30/31 short-month edge case
-
-### Cash-flow risks
-
-- Closing balance below zero
-- First negative month
-- Three consecutive negative months
-- Monthly delta below threshold
-- Expense spike month
-- Income concentration above threshold
-- Vendor/payment concentration above threshold
-- Forecast confidence low because source row is ambiguous
-
-### Check risks
-
-- Check maturity in next 7/14/30 days
-- Check maturity overlaps with high payment week
-- Bank exposure concentration
-- Duplicate-looking checks
-- Negative signed amount without direction mapping
-
-### Loan risks
-
-- Loan installment overlaps with deficit month
-- Financing cost ratio high
-- Remaining debt-service load high
-- Missing lender/payment schedule
-
-### Production/cost risks
-
-- Break-even TL/minute above quoted or assumed price
-- Overtime scenario increases capacity but worsens margin
-- Efficiency sensitivity causes margin collapse
-- Part with missing operation time
-- Machine ROI confidence low
-
----
-
-## 17. Dashboard v2
-
-### Global dashboard top cards
-
-1. Today due
-2. Tomorrow due
-3. Next 7 days known outflow
-4. Missing amount count
-5. Overdue count
-6. Current month projected closing balance
-7. First negative forecast month
-8. Checks due in next 30 days
-9. Loan installments this month
-10. Highest-risk day/month
-
-### Main dashboard sections
-
-#### A. Payment Radar
-
-- Today/tomorrow/7-day list
-- Monthly calendar day grid
-- Risk-day heatmap
-- Missing-data panel
-
-#### B. Cash-Flow Radar
-
-- Month-by-month devir/gelir/gider/fark/kasa table
-- Cash balance line chart
-- Monthly income/expense bar chart
-- Worst months list
-- First negative month banner
-
-#### C. Checks and Financing
-
-- Check maturity table
-- Bank exposure chart
-- Loan summary cards
-- Installment schedule
-
-#### D. Production Economics
-
-- Normal vs overtime model cards
-- Break-even TL/min chart
-- Part-level profitability table
-- Capacity utilization estimate
-
-#### E. Reports
-
-- Daily checklist
-- Weekly finance action summary
-- Monthly executive summary
-- Data-quality report
-
----
-
-## 18. UX Rules
-
-- Dense but readable.
-- Serious internal finance tone.
-- No landing-page aesthetic.
-- No animated marketing sections.
-- Mobile responsive enough for quick checks.
-- Unknown amount is always visible, never treated as zero.
-- Negative amount is not always an error; context decides whether it is signed direction or anomaly.
-- High-risk months and days must be visually dominant.
-- Cash deficit must be impossible to miss.
-- Every imported row must be traceable back to source sheet/row.
-
----
-
-## 19. Reports v2
-
-### Daily report
-
-- Due today
-- Due tomorrow
-- Next 7 days known outflow
-- Missing amount list
-- Check maturities in next 7 days
-- Overdue payments
-- Action checklist
-
-### Weekly report
-
-- Payment load this week
-- Check load this week
-- Loan installments this week/month
-- Risk-day clusters
-- Missing data
-- Bank/provider concentration
-- Cash readiness checklist
-
-### Monthly report
-
-- Opening/devir
-- Income
-- Expense
-- Monthly delta
-- Closing/kasa
-- Top 10 outflows
-- Customer concentration
-- Vendor concentration
-- Checks maturing
-- Loan burden
-- First/worst forecast risk
-- Data quality issues
-
-### Strategic report
-
-- 3/6/12/24/36-month cash runway
-- First negative month and deficit growth
-- Normal vs mesaili cost comparison
-- Part-level margin warnings
-- Machine ROI snapshot
-
----
-
-## 20. Implementation Phases
-
-### Phase 0 — Data-map and project setup
-
-Goal: confirm workbook structure and update docs before coding business logic.
-
-Deliverables:
-
-- `docs/data-map.md`
-- `docs/import-mapping.md`
-- `docs/calculation-rules.md`
-- `docs/risk-register.md`
-- confirmed source sheet categories
-- source file parser spike using `xlsx` and/or `exceljs`
-
-Verification:
-
-- list all sheets
-- classify each sheet as loan/capacity/roi/payment/checks/cost/monthly_cashflow/unknown
-- no silent discard
-- invalid workbook failure documented
-
-### Phase 1 — Database foundation
-
-Goal: create raw source layer and normalized finance skeleton.
-
-Deliverables:
-
-- Supabase migrations for:
-  - source tables
-  - parties/categories/accounts
-  - payments/payment_instances
-  - cashflow_months/cashflow_lines
-  - checks
-  - loans/loan_installments
-  - reminders/reports/audit_logs/settings
-- seed data
-- RLS policies
-- generated database types
-
-Verification:
-
-- migration reset works
-- constraints pass
-- null amount remains null
-- paid requires paid_at
-- RLS enabled
-
-### Phase 2 — Import review and mapping UI
-
-Goal: preserve workbook data and map candidates safely.
-
-Deliverables:
-
-- workbook upload screen
-- sheet list screen
-- raw row/cell viewer
-- detected sheet type badges
-- mapping review table
-- payment-day matrix extraction preview
-- monthly cash-flow extraction preview
-- check extraction preview
-
-Verification:
-
-- every source row can be traced
-- ambiguous rows go to review
-- no direct write into final tables without mapped status
-
-### Phase 3 — Payment radar MVP
-
-Goal: operational payment tool usable daily.
-
-Deliverables:
-
-- payment CRUD
-- monthly instance generation
-- today/tomorrow/next 7 days
-- monthly payment calendar
-- paid/unpaid marking
-- missing data report
-- overdue report
-- payment risk flags
-
-Verification:
-
-- due-day 31 edge cases tested
-- duplicate instance generation prevented
-- missing amount visible
-- overdue visible
-
-### Phase 4 — Cash-flow radar
-
-Goal: turn monthly sheets into forecast dashboard.
-
-Deliverables:
-
-- monthly cash-flow table
-- devir/gelir/gider/fark/kasa cards
-- cash balance trend
-- first negative month detection
-- worst month detection
-- customer/vendor concentration
-
-Verification:
-
-- monthly rollups match imported values
-- closing balance continuity checked
-- negative cash months flagged
-
-### Phase 5 — Checks and financing
-
-Goal: track check maturities and loan pressure.
-
-Deliverables:
-
-- checks ledger
-- check maturity calendar
-- bank exposure chart
-- loan summary
-- installment schedule
-- debt-service monthly load
-
-Verification:
-
-- signed amounts mapped with direction
-- negative checks not blindly flagged as errors
-- duplicate-looking check rows reviewed
-- loan totals reconcile with source values
-
-### Phase 6 — Reminders and reports
-
-Goal: operational alerting and decision summaries.
-
-Deliverables:
-
-- Telegram reminders
-- reminder delivery log
-- daily/weekly/monthly reports
-- AI commentary prompt templates
-
-Verification:
-
-- duplicate reminder prevention
-- Istanbul timezone handling
-- AI cannot mutate records
-
-### Phase 7 — Production cost/capacity analytics
-
-Goal: add management insight without breaking finance core.
-
-Deliverables:
-
-- capacity model import
-- normal vs overtime comparison
-- cost model cards
-- part-level profitability table
-- break-even TL/minute charts
-
-Verification:
-
-- low-confidence data remains marked
-- calculations have tests
-- outputs are labeled as analytics, not accounting truth
-
-### Phase 8 — Scenario engine
-
-Goal: safe what-if analysis.
-
-Deliverables:
-
-- scenario runs
-- adjustable income/expense/capacity assumptions
-- no mutation of source-of-truth data
-- compare baseline vs scenario
-
-Verification:
-
-- scenarios are read-only overlays
-- baseline preserved
-- changes auditable
-
----
-
-## 21. Routes
-
-```txt
-/app
-  /(auth)
-    /login
-  /(dashboard)
-    /dashboard
-    /payments
-    /payments/calendar
-    /payments/missing-data
-    /cashflow
-    /cashflow/months
-    /cashflow/forecast
-    /checks
-    /loans
-    /capacity
-    /reports
-    /imports
-    /imports/[workbookId]
-    /imports/[workbookId]/sheets/[sheetId]
-    /settings
-```
-
----
-
-## 22. File Structure
-
-```txt
-src/
-  app/
-  components/
-    dashboard/
-    payments/
-    cashflow/
-    checks/
-    loans/
-    capacity/
-    imports/
-    reports/
-    shared/
-  lib/
-    supabase/
-    validation/
-    calculations/
-    risk/
-    importers/
-    reminders/
-    reports/
-    ai/
-  server/
-    actions/
-    queries/
-    jobs/
-  types/
-supabase/
-  migrations/
-  seed.sql
-docs/
-  data-map.md
-  database-schema.md
-  import-mapping.md
-  calculation-rules.md
-  risk-register.md
-  todo.md
-```
-
 ---
 
-## 23. Calculation Rules
+## 1. Tamamlanan Tarihsel Faz Sicili (Salt-Okunur Özet)
 
-### Amount semantics
+Aşağıdaki fazlar ve dalgalar bu yol haritasından önce tamamlanmış olup kod tabanının mevcut temelini oluşturur:
 
-- `null` amount means unknown.
-- `0` amount means explicitly zero.
-- Negative amount means signed source value; context determines inflow/outflow/anomaly.
-- Checks may use negative signed amount for outgoing obligations.
-- Cash-flow sheets may use negative values for bank/card balances.
+| Dönem / Grup | Kapsam | Kanıt / Durum |
+| --- | --- | --- |
+| **Faz 1 – Faz 14 + P0-A** | Ham Excel koruma katmanı (`0001..0021`), Ödeme Radarı, 35 Aylık Nakit Akışı, Çek/Kredi Radarı, Raporlar/Telegram Hatırlatmaları, Üretim Kapasite/Maliyet/Tezgâh ROI (`9A–9D`), Salt-Okunur Senaryo v1/v2, `DecisionFacts`, AI Yorum Sınırı (`12A`), Veri Kalitesi Merkezi (`14A–14E`) ve Çok Kullanıcılı Kimlik Doğrulama (`P0-A`). | `DONE` (`phase3:verify` .. `phase14e:verify`) |
+| **Faz 15 – Faz 38** | `mas_radar_app` düşük yetkili çalışma zamanı rolü (`0035`), Migration defteri (`0020`), `big.js` para motoru (`Faz 17`), Tekil `audit.ts` + Zod sınırı (`Faz 18`), Karşı Taraf/IBAN/Boyutlar (`Faz 19`), Banka Ekstresi (`Faz 20`), Faturalar (`Faz 21`), Tahsis/Cari (`Faz 22–23`), Onay Tabloları (`Faz 24A`), 5 Katmanlı Tablo RLS (`Faz 24B`, `0056–0058`), Tahsilat Sözleri (`Faz 25`), Hazine Görünümleri (`Faz 26`), Kredi Limit/FX Şeması (`Faz 27`), Bütçe/13-Hafta Şeması (`Faz 28`), Optimizasyon/Maliyet/Kontrol/Brifing/Arka Plan Kuyruk/Analitik/Arama/UX/Entegrasyon İskeleti/Asistan (`Faz 29–38`, `0068–0094`). | Şema kuruldu (`0001..0094`), ancak kör denetimde saptanan görünüm/iş-döngüsü/matematik açıkları **Faz 39–56** ile kapatılacaktır. |
+| **Wave 0 (`2026-10-28/29`)** | Native PostgreSQL 16.14 (`C:\MAS`) kurulumu ve 87/87 tablo kanonik geri yüklemesi (`0001..0096`); incelenmemiş `46541d8` katmanının seçici karantinası; girişsiz yazma kapılarının, sahte kokpit rakamlarının ve rol-kör önbelleğin kaldırılması; zorunlu parola değişimi (`0095–0096`). | `DONE` (`docs/release-evidence/wave0/00..02`) |
+| **Performans Faz 1–10 (`2026-11-01`)** | `/` ana ekranında `GET` yazmalarının kaldırılması (`overview-snapshot.ts` + `0097_hot_path_partial_indexes.sql`), 60 rota önyüklemesinin iptali, `recharts` ve çekmecelerin tembel yüklenmesi, `/payments` + `/finance/checks` + `/finance/bank` sunucu sayfalaması, Windows symlink uyumlu `minimal-next-server.mjs` (`~205 MB` RAM, `/` First Load JS `108 kB`). | `DONE` (`tests/perf/phase01..phase10` 17/17 paket, 111/111 test `PASS`) |
 
-### Monthly continuity
-
-For monthly cash-flow:
-
-```txt
-closing_balance = opening_balance + projected_income - projected_expense + adjustments
-next_month.opening_balance should equal previous_month.closing_balance unless there is a manual correction.
-```
-
-Mismatch must be flagged as `continuity_break`.
-
-### Due-day normalization
-
-- due_day 1-28: direct mapping
-- due_day 29-31: if month has fewer days, map to last day of month and flag `short_month_adjustment`
-
-### Risk thresholds defaults
-
-```txt
-large_payment_threshold_try = 50_000
-critical_payment_threshold_try = 100_000
-same_day_cluster_count = 3
-negative_cash_threshold_try = 0
-high_customer_concentration_ratio = 0.40
-high_bank_exposure_ratio = 0.40
-```
-
 ---
 
-## 24. Tests Required
+## 2. Kalıcı Doğrulama Kapıları (`Standing Gates`) ve Migrasyon Yazım Kuralları
 
-### Unit tests
+**Faz 39'dan Faz 56'ya kadar HER FAZ**, kendi özel kabul testlerine ek olarak aşağıdaki kalıcı kapıları kırmadan geçmek zorundadır:
 
-- due-date generation
-- due-day 31 February mapping
-- null vs zero amount
-- negative amount semantics
-- risk-level assignment
-- cash-flow continuity
-- first negative month detection
-- loan finance cost calculation
-- check maturity grouping
-- capacity/cost calculation
+1. **`pnpm typecheck` ve `pnpm lint`:** Sıfır TypeScript hatası, sıfır ESLint hatası ve sıfır uyarı.
+2. **`pnpm phase17:verify` (`scripts/phase17-verify.ts`):** `src/` altında sıfır `::float8` SQL dönüşümü; `supabase/migrations/*.sql` altında sıfır `float8` / `double precision` / `float4` / `real` kolon; `scripts/` altında yeni `::float8` eklenmesi yasak.
+3. **`pnpm phase18:verify` (`scripts/phase18-verify.ts`):** `src/` altında `src/lib/audit.ts` dışında sıfır `INSERT INTO public.audit_logs`; yerel `audit()` kopyası tanımlamak yasak; ham `ZodError.message` sızıntısı yasak; **eklenen her yeni SQL migration numarası (`0098`..`0107`) aynı faz içinde `docs/database-schema.md` dosyasına işlenmek zorundadır** (aksi halde `phase18:verify:258-271` anında kırmızı verir!).
+4. **`pnpm boundary:verify` (`scripts/boundary-verify.ts`):** `src/` altında dış ağ `fetch()` çağrısı yalnız 4 izinli sınır dosyasında (`lib/ai/engine.ts`, `lib/fx/provider.ts`, `lib/integrations/types.ts`, `lib/reminders/transport.ts`); `process.env` erişimi sınır modüllerinde yalnız `lib/env.ts` ve `lib/integrations/types.ts` içinde; `lib/ai/engine.ts` ve `lib/reminders/transport.ts` içinde `@/lib/env` yalnız tembel `await import("@/lib/env")` ile okunur; AI/asistan/arama alt ağacında finansal tablo mutasyonu yasak.
+5. **Migration Dosya Kuralları (`scripts/db/migration-lib.ts:96-149` — `validateFileSet`):**
+   - Dosya adı deseni: `^\d{4}_[a-z0-9_]+\.sql$` ve kesintisiz ardışık numara (`0098`, `0099`, `0100`, ...).
+   - SQL gövdesinde satır başında `BEGIN`, `COMMIT`, `ROLLBACK`, `START TRANSACTION` **kesinlikle yasaktır** (migrasyon koşucusu kendi işlemini yönetir).
+   - SQL gövdesinde `CREATE INDEX CONCURRENTLY` **kesinlikle yasaktır**.
+6. **`tests/package-script-references.test.ts`:** `package.json` `"scripts"` alanına eklenen her `scripts/...` veya `supabase/...` dosya yolu git indeksinde izleniyor (`git add`) olmak zorundadır.
+7. **`tests/interaction/manifest.ts`:** Arayüze eklenen veya etiketi değiştirilen her etkileşimli kontrol (`button`, `a`, `summary`, form gönderimi) aynı fazda `tests/interaction/manifest.ts` içinde uygun sınıfla (`mutation`, `navigation`, `ui-state`, `export`, `expected-disabled`, `external-not-live`) eşleştirilmelidir.
 
-### Integration tests
-
-- import workbook → source tables
-- source rows → mapping review
-- payment matrix → payment templates
-- monthly cashflow sheet → cashflow_months and lines
-- checks sheet → checks ledger
-- loan sheet → loan and installments
-- reminder job → delivery log
-
-### E2E tests
-
-- login
-- view dashboard
-- mark payment paid
-- view missing data
-- upload workbook
-- review mapped rows
-- view cash-flow forecast
-- view checks calendar
-
 ---
-
-## 25. Risk Register
-
-| Risk | Severity | Mitigation |
-|---|---:|---|
-| Workbook format is inconsistent | Critical | Preserve raw cells, map through review layer |
-| Binary workbook upload is invalid | High | Import UI must show technical parse failure and allow re-upload |
-| Negative values misread as errors | High | Add direction/signed amount semantics |
-| Monthly cash-flow row labels shift | High | Detect by sheet type + candidate labels + review screen |
-| AI gives misleading financial interpretation | High | AI commentary only, deterministic calculations are source of truth |
-| Scope creep into ERP | High | Keep module gates; no inventory/payroll/accounting ledger |
-| User builds analytics before payment workflow | Medium | Phase-gate: payment/cashflow first, capacity later |
-| Multi-year forecast gives false confidence | Medium | Show source/import confidence and last review date |
-| Check duplicate rows | Medium | Duplicate detection + manual review |
-| Cash continuity mismatch | Medium | Continuity validation rules |
-
----
-
-## 26. Claude Initial Prompt v2
 
-Use this after uploading the updated package:
+## 3. Nihai Atomik Uygulama Fazları ve Bağımlılık Sırası (`Faz 39` – `Faz 56`)
 
 ```text
-You are Claude Code acting as a senior full-stack product architect, database architect, QA lead, and implementation engineer.
-
-I uploaded the MAS Nakit Radar package. Read implementation.md first.
-
-Important update:
-This is no longer only a payment calendar. The workbook evidence shows four pillars:
-1. payment radar
-2. monthly cash-flow forecast
-3. checks + loans + financing radar
-4. production capacity/cost analytics
-
-Still, this is NOT a public SaaS and NOT an ERP.
-Do not build multi-tenant features, subscriptions, pricing pages, public landing pages, Stripe/iyzico, onboarding, marketplace logic, or generic SaaS features.
-
-Start by inspecting all docs and the .claude skills.
-Then provide:
-1. what the app is now
-2. what changed from the previous payment-only scope
-3. the safest Phase 0 and Phase 1 plan
-4. exact files you will create/modify
-5. what you will not build yet
-
-Do not start Phase 2 or broad UI polish.
-Implement Phase 0 and Phase 1 only after confirming the plan.
+[KÜME A: Güvenlik & RLS]
+  Faz 39 (A1: 81 View security_invoker + sessions RLS + Migration 0098)
+    └──► Faz 40 (A2: 32 actions.ts / 11 route.ts Kapıları + Open Redirect + Rol-Farkında AI + Kapalı Devre)
+           │
+[KÜME B: Tek Dil TS+SQL, Tek ExcelJS & Dayanıklı Ops]
+           ├──► Faz 41 (B1: xlsx@0.18.5 Emekliliği [21 Dosya] + ExcelJS/CSV + V1/V2/#REF!/100x Onarımı)
+           ├──► Faz 42 (B2: bot.py Silinmesi + TS Telegram İşçisi + Birleşik Arka Plan İşçisi mas-worker)
+           └──► Faz 43 (B3: Yedek + Doküman Kasası + Dürüst Alarm + 8GB Servis + CI & Harcanabilir-DB Kapıları)
+                  │
+[KÜME C: Çekirdek Finans Matematiği, 0094 Görünümleri & Dönem Kilidi]
+                  ├──► Faz 44 (C1: 0094 Kredi/Döviz Görünüm Onarımı + FIN-03 Açılış Bakiyesi + Kısıt/İndeks [0099])
+                  ├──► Faz 45 (C2: DB Seviyesinde Dönem Kilidi Tetikleyicisi + Kapanış Kontrol Kapısı [0100])
+                  └──► Faz 46 (C3: Davranışsal Tahsilat V2 + Çözücü + Canlı TCMB + Hazine + Banka + TR Vergi Takvimi)
+                         │
+[KÜME D: Bilgi Mimarisi & Kapanmayan İş Döngülerinin Kapatılması]
+                         ├──► Faz 47 (D1: IA Konsolidasyonu + 11 Eski Klasör Silimi + Tekil Metrik + Ctrl+K/Form Onarımı)
+                         ├──► Faz 48 (D2: Canlı Maker-Checker + Ödeme Paketi payment_runs/pain.001 + Banka→Kapanış [0101])
+                         ├──► Faz 49 (D3: Türkiye Çek/Senet Bordrosu: Ciro, Tahsil, Teminat, Rücu Riski [0102])
+                         └──► Faz 50 (D4: Bütçe Onayı, Kredi Limit/Kovenant, IBAN, Kârlılık, Söz, Doküman, Üretim [0103])
+                                │
+[KÜME E: Paraşüt API v4 & Çift Taraflı Yönetim Defteri + Mizan Köprüsü]
+                                ├──► Faz 51 (E1: Entegrasyon Soykütüğü + Paraşüt API v4 + Hibrid Banka Hattı [0104])
+                                └──► Faz 52 (E2: Çift Taraflı Yönetim Defteri: TDHP, Fiş Motoru, Mizan, Bilanço, EBITDA [0105])
+                                       └──► Faz 53 (E3: Mali Müşavir Yasal Mizan Aktarımı + 12 Kök Nedenli Fark Köprüsü [0106])
+                                              │
+[KÜME F: Küresel CFO Zekası & Canlıya Geçiş Kabul Kapısı]
+                                              ├──► Faz 54 (F1: Otomatik 13-Hafta Tahmin + Zamanlama vs Kalıcı Varyans Şelalesi [0107])
+                                              └──► Faz 55 (F2: Gece Nakit Deltası Sabah Brifingi + DSCR/Kovenant + Çift Pist + Başabaş)
+                                                     └──► Faz 56 (F3: Birleşik Altın Finans Testi + Tam Manifesto + Sert SLO + Klon Cutover)
 ```
 
 ---
 
-## 27. Final Product Boundary
+## 4. KÜME A — GÜVENLİK, YETKİLENDİRME (RLS / GÖRÜNÜM) VE KAPALI DEVRE SINIRLARI
 
-The correct final product is not:
+---
 
-- a public SaaS
-- an ERP
-- a bookkeeping/accounting replacement
-- an AI accountant
-- a generic dashboard template
+### Faz 39 (`A1`) — PostgreSQL Görünüm (`security_invoker`) Kalkanı, Oturum (`sessions`) Admin RLS Onarımı ve Sahiplik / Maker-Checker Politikaları (`Migration 0098`)
 
-The correct final product is:
+#### `A1`) — PostgreSQL Görünüm (`security_invoker`) Kalkanı, Oturum (`sessions`) Admin RLS Onarımı ve Sahiplik / Maker-Checker Politikaları (`Migration 0098`.. Fazın Amacı & Çözdüğü Rapor Bulguları / Rakip Mekanikleri
 
-> MAS’ın gerçek Excel çalışma şeklini güvenli, izlenebilir, hatırlatmalı, raporlu ve analiz edilebilir bir iç operasyon paneline dönüştüren özel finans-operasyon sistemi.
+- **Amaç:** PostgreSQL katmanında 81 SQL görünümünün süper kullanıcı (`BYPASSRLS`) yetkisiyle çalışıp otomatik güncellenebilir görünümler üzerinden RLS'i delmesini engellemek, `public.sessions` tablosunda kırık olan yönetici oturum iptalini (`sessions_revoked = 0`) onarmak ve `saved_views`, `assistant_conversations`, `background_jobs`, `budget_lines`, `forecast_lines`, `mapping_reviews`, `external_assumptions` üzerindeki RLS yetki açıklarını kapatmak.
+- **Kapatılan Rapor Bulguları:** `B2-01` (`0/81` view `security_invoker`, `0035:30,72` varsayılan yazma yetkileri, 4 auto-updatable view RLS baypası, `approval_queue` PII sızıntısı), `B2-02` (`public.sessions` admin `SELECT`/`UPDATE` eksikliği), `B2-05` (`finance_approver` maker-checker geri yazım RLS engeli), `B2-06` (`saved_views` / `assistant_conversations` `created_by` sahteciliği, `background_jobs` çapraz kullanıcı müdahalesi, `budget_lines` / `forecast_lines` kendi kendine onaylama).
 
-MVP mantra:
+#### `A1`) — PostgreSQL Görünüm (`security_invoker`) Kalkanı, Oturum (`sessions`) Admin RLS Onarımı ve Sahiplik / Maker-Checker Politikaları (`Migration 0098`.. Değişecek Mevcut Dosyalar & Oluşturulacak Yeni Dosyalar
 
-> Önce veriyi kaybetme. Sonra ödeme ve nakit riskini görünür yap. En son stratejik kapasite/maliyet zekasını ekle.
+- **Oluşturulacak Yeni Dosyalar:**
+  1. `supabase/migrations/0098_view_security_invoker_and_rls_hardening.sql` — Tüm görünümleri `security_invoker = true` yapan, görünüm yazma yetkilerini iptal eden ve eksik/hatalı RLS politikalarını düzelten ileri migration.
+  2. `tests/security/view-security-invoker.test.ts` — `supabase/migrations/*.sql` içindeki her `CREATE [OR REPLACE] VIEW` tanımının `0098` sonrası `security_invoker = true` güvencesi altında olduğunu statik olarak denetleyen birim testi.
+- **Değişecek Mevcut Dosyalar:**
+  1. `src/lib/authz/matrix.ts` (`TABLE_CLASS`, `CLASS_MATRIX`, `OWNER_SCOPED_TABLES` — satır `45-190`): `budget_lines` ve `forecast_lines` üzerinde onay durumu (`version_status = 'approved'`) geçiş yetkisini `approver+` katmanına bağlayan matris kurallarını güncelle.
+  2. `src/lib/approvals/engine.ts` (`decideApproval` — satır `198-230`): `LEGACY_WRITEBACK` sorgularında dönen `rowCount` değerini zorunlu olarak kontrol et (`if (wb.rowCount !== 1) throw new DomainError("CONFLICT", "Hedef kayıt onay durumu güncellenemedi.")`).
+  3. `src/lib/users/engine.ts` (`listUsersWithActivity`, `resetPassword`, `setUserRole`, `deactivateUser` — satır `75-90`, `180-188`, `236-245`, `270-278`): Admin oturum iptali ve aktif oturum sayımı sorgularının `mas_radar_admin` rolü altında gerçek satır döndürdüğünü doğrula.
+  4. `scripts/db/roles-rls-verify.ts` (satır `480-625`): Kapıya 4 yeni zorunlu kontrol ekle:
+     - `public` şemasındaki **tüm görünümlerde (`pg_views`)** `reloptions` içinde `security_invoker=true` bulunduğunun doğrulanması (`0` istisna).
+     - `mas_radar_viewer` ve `mas_radar_finance_operator` rollerinin tek tablolu görünümler (`costing_invoice_facts`, `profitability_by_department`, `control_unmatched_bank_aged`, `anomaly_unusual_record_hour`) üzerinden `UPDATE` / `DELETE` denemesinin `42501 insufficient_privilege` ile reddedilmesi.
+     - `mas_radar_admin` rolünün başka bir kullanıcının aktif `public.sessions` kaydını iptal ettiğinde `rowCount === 1` dönmesi.
+     - `mas_radar_finance_approver` rolünün `decideApproval` akışında `mapping_reviews` ve `external_assumptions` durumunu güncelleyebilmesi, buna karşılık `mas_radar_finance_operator` rolünün `budget_lines.version_status = 'approved'` yazmasının reddedilmesi.
+  5. `docs/database-schema.md`: `0098_view_security_invoker_and_rls_hardening.sql` kaydını ve görünüm güvenlik modelini ekle (`pnpm phase18:verify` zorunluluğu).
+
+#### `A1`) — PostgreSQL Görünüm (`security_invoker`) Kalkanı, Oturum (`sessions`) Admin RLS Onarımı ve Sahiplik / Maker-Checker Politikaları (`Migration 0098`.. Veritabanı / SQL Migration (`0098`) Spesifikasyonu
+
+- **Dosya:** `supabase/migrations/0098_view_security_invoker_and_rls_hardening.sql` (`BEGIN`/`COMMIT` ve `CONCURRENTLY` içermez):
+  1. **Varsayılan Yetki ve `authenticated` Miras Temizliği:**
+
+     ```sql
+     alter default privileges in schema public revoke insert, update, delete on tables from authenticated;
+     alter role mas_radar_app noinherit;
+     ```
+
+     *Not:* `src/lib/db.ts` içinde kimlik doğrulama önyüklemesi (`getRawPool` / `runAsAuthBootstrap`) yalnızca `sessions_app_runtime` ve `users_app_runtime` (`TO mas_radar_app`) politikalarını kullandığından `mas_radar_app` rolünün `NOINHERIT` yapılması `SET LOCAL ROLE mas_radar_viewer..admin` geçişlerini korurken `SET ROLE` unutulan ham bağlantının `authenticated` yetkisi kazanmasını kesin olarak kapatır.
+  2. **Tüm `public` Görünümlerinde `security_invoker = true` ve Yazma Yetkisi İptali:**
+     - PL/pgSQL `DO $do$ ... $do$` bloğu içinde `pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'public' AND c.relkind = 'v'` üzerinden tüm 81 görünüm için dinamik olarak:
+       - `EXECUTE format('ALTER VIEW public.%I SET (security_invoker = true)', r.relname);`
+       - `EXECUTE format('REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON TABLE public.%I FROM PUBLIC, authenticated, anon, mas_radar_app, mas_radar_viewer, mas_radar_finance_operator, mas_radar_finance_approver, mas_radar_finance_manager, mas_radar_admin', r.relname);`
+     - `public.approval_queue` görünümünün (`0055:209-221`) `public.users` tablosuna yaptığı join nedeniyle `viewer` katmanında `42501` veya `0` satır hatası vermemesi için `users` üzerinde yalnız `(id, username, display_name, role, is_active)` okumasına değil, `approval_queue` içinde `users` yerine `approvals.requested_by_label` veya güvenli `public.user_display_label(uuid)` (`SECURITY DEFINER`, `SET search_path = public`, yalnız `display_name` döndüren, parola özeti/kilit alanı asla okumayan dar fonksiyon) kullanımına geçilmesi.
+  3. **`public.sessions` Admin RLS Politikaları:**
+
+     ```sql
+     create policy sessions_admin_read on public.sessions
+       for select to mas_radar_admin
+       using (public.session_password_ready());
+
+     create policy sessions_admin_revoke on public.sessions
+       for update to mas_radar_admin
+       using (public.session_password_ready())
+       with check (public.session_password_ready() and revoked_at is not null);
+     ```
+
+  4. **Sahiplik Sahteciliği (`Ownership Spoofing`) ve Kuyruk Koruması:**
+     - `saved_views_insert_enter` (`0084:107`) ve `assistant_conversations_insert_enter` (`0087:117`) politikalarını `DROP` + `CREATE` ederek `WITH CHECK (created_by = nullif(current_setting('app.user_id', true), '')::uuid)` zorunluluğu getir.
+     - `background_jobs_update_enter` (`0081:196`) politikasını yalnız `mas_radar_finance_manager, mas_radar_admin` ve kendi kuyruğa aldığı `queued` işi iptal eden `created_by = current_setting('app.user_id', true)::uuid` ile sınırla.
+  5. **Maker-Checker ve Bütçe/Tahmin Versiyon Koruması:**
+     - `mapping_reviews` ve `external_assumptions` tablolarında `mas_radar_finance_approver` için yalnız inceleme durumu (`status` / `review_status`, `reviewed_by`, `reviewed_at`) güncellemesine izin veren `UPDATE` politikası + kolon-koruma `BEFORE UPDATE` tetikleyicisi ekle.
+     - `budget_lines` ve `forecast_lines` tablolarında `BEFORE INSERT OR UPDATE` tetikleyicisi `enforce_planning_approval_role()` ile `NEW.version_status = 'approved'` yazımını ve zaten `'approved'` olan satırın tutar değişimini yalnız `current_user IN ('mas_radar_finance_approver', 'mas_radar_finance_manager', 'mas_radar_admin', 'postgres')` rollerine aç (`mas_radar_finance_operator` yalnızca `'draft'` ekleyip düzenleyebilir).
+
+#### `A1`) — PostgreSQL Görünüm (`security_invoker`) Kalkanı, Oturum (`sessions`) Admin RLS Onarımı ve Sahiplik / Maker-Checker Politikaları (`Migration 0098`.. Adım Adım Uygulama Talimatları
+
+1. `0098_view_security_invoker_and_rls_hardening.sql` dosyasını oluşturmadan önce `src/lib/db.ts` içindeki `runAsAuthBootstrap` sorgularının (`public.sessions`, `public.users`, `public.audit_logs`) `mas_radar_app` adına doğrudan `GRANT` ve RLS politikasına (`0058:248-278`, `0096`) sahip olduğunu doğrula; eksik tablo yetkisi varsa `0098` içinde açık `GRANT` ver.
+2. `src/lib/approvals/engine.ts:198-230` içinde `decideApproval` geri yazımında `rowCount !== 1` durumunda işlemi `ROLLBACK` ettirecek `DomainError("CONFLICT", ...)` fırlat; böylece sahte `audit()` satırı yazılması imkânsız hale gelsin.
+3. Yeni oluşturulan her gelecek görünümün (`0099+`) de `WITH (security_invoker = true)` ile başlamasını `tests/security/view-security-invoker.test.ts` içinde zorunlu kural yap.
+4. `docs/database-schema.md` sonuna `0098` bölümünü ekle.
+
+#### `A1`) — PostgreSQL Görünüm (`security_invoker`) Kalkanı, Oturum (`sessions`) Admin RLS Onarımı ve Sahiplik / Maker-Checker Politikaları (`Migration 0098`.. Zorunlu Doğrulama & Kabul Kapısı (Yalnız Tek Kullanımlık DB!)
+
+- `pnpm exec vitest run tests/security/view-security-invoker.test.ts tests/security/write-gates.test.ts` → **PASS**
+- Tek kullanımlık `mas_radar_roles_verify` veritabanında:
+  - `MIGRATION_DATABASE_URL="postgresql://postgres:<pw>@127.0.0.1:5432/mas_radar_roles_verify" pnpm db:migrate` → `0098` temiz uygulanır.
+  - `MIGRATION_DATABASE_URL="postgresql://postgres:<pw>@127.0.0.1:5432/mas_radar_roles_verify" DATABASE_URL="postgresql://mas_radar_app:<pw>@127.0.0.1:5432/mas_radar_roles_verify" pnpm db:roles-rls:verify` → **81/81 görünüm `security_invoker=true` PASS**, görünüm üzerinden `UPDATE/DELETE` reddi **PASS**, admin oturum iptali (`rowCount = 1`) **PASS**, `finance_operator` kendi kendine bütçe onayı reddi **PASS**.
+- Kalıcı kapılar: `pnpm typecheck && pnpm lint && pnpm phase17:verify && pnpm phase18:verify && pnpm boundary:verify` → **ALL PASS**.
+
+---
+
+### Faz 40 (`A2`) — Server Action & API Yazma Kapıları, Açık Yönlendirme Kalkanı, Rol-Farkında AI/Asistan ve Kapalı Devre Sınır Sertleştirmesi
+
+#### `A2`.. Fazın Amacı & Çözdüğü Rapor Bulguları / Rakip Mekanikleri
+
+- **Amaç:** Uygulama katmanındaki tüm 32 `actions.ts` ve 11 `route.ts` dosyasını tam rol/rota/parola-değişimi/satır-sayısı kontrolüne kavuşturmak; tüm açık yönlendirme (`open redirect`), sahte `X-Forwarded-For` hız-sınırı baypası, CSV formül enjeksiyonu, asistan rol filtresi sızıntısı ve kapalı devre ağ sızıntısı açıklarını kapatmak.
+- **Kapatılan Rapor Bulguları:** `B2-03`, `B2-04`, `B2-07`, `B2-08`, `B2-09` (rate-limit), `B2-10`..`B2-18`, `docs/todo.md` Dalga 1 backlog `#1`, `#2`, `#10`.
+
+#### `A2`.. Değişecek Mevcut Dosyalar & Oluşturulacak Yeni Dosyalar
+
+- **Oluşturulacak Yeni Dosyalar:**
+  1. `src/lib/security/redirect.ts` — Tek kanonik `safeRedirectPath(raw: unknown, fallback?: string): string` yardımcısı (`https://`, `//`, `/\`, kontrol karakterleri `\x00-\x1f`, `/login` ve `/change-password` döngülerini reddeden saf modül).
+  2. `tests/security/redirect-and-rate-limit.test.ts` — Açık yönlendirme vektörleri (`//evil.com`, `/\evil.com`, `https://evil.com`, `\t//evil.com`, `/login?next=/login`), CSV formül enjeksiyonu (`=CMD|...`, `+1`, `-1`, `@SUM`) ve `rate-limit.ts` LRU + `MAS_TRUST_PROXY` testleri.
+  3. `tests/security/action-role-gates.test.ts` — Tüm `src/app/**/actions.ts` dosyalarındaki her dışa aktarılan Server Action fonksiyonunun `requireSession` / `requireRole` / `requirePermission` kapısından geçtiğini doğrulayan statik + davranışsal test paketi.
+- **Değişecek Mevcut Dosyalar:**
+  1. `src/lib/auth.ts` (`loadSessionByToken`, `requireSession`, `requireApiSession`, `safeRedirectPath` — satır `48-60`, `210-285`):
+     - `loadSessionByToken` SQL sorgusuna `AND (u.locked_until IS NULL OR u.locked_until <= now())` şartını ekle (kilitlenen hesabın mevcut oturumu anında düşsün).
+     - `requireSession(options?: { allowPasswordChangePending?: boolean; requiredPermission?: PermissionCheck; routePrefix?: string })` ve `requireApiSession` içinde `session.user.mustChangePassword === true` ise (`allowPasswordChangePending` yalnız `change-password/actions.ts` için `true`) `/change-password` yönlendirmesi veya `403 PASSWORD_CHANGE_REQUIRED` döndür.
+     - Yeni yardımcı `requireActionPermission(table: TableName, op: CrudOp, routePrefix?: string): Promise<AuthSession>` dışa aktar: hem `canAccessRoute(session.user.role, routePrefix)` hem `can(session.user.role, table, op)` kontrolünü tek satırda çalıştırıp yetkisiz katmanda PG `42501` 500 çökmesi yerine temiz Türkçe `DomainError("FORBIDDEN", "Bu işlem için yetkiniz yok.")` döndürsün.
+  2. **25 `actions.ts` Dosyasının Tamamı (Rol & Rota Kapısı Eklenecek):**
+     - `src/app/(dashboard)/system/controls/actions.ts:22,39` (`routePrefix: "/system/controls"`, `finance_manager+`)
+     - `src/app/(dashboard)/system/jobs/actions.ts:14,23` (`routePrefix: "/system/jobs"`, `admin`)
+     - `src/app/(dashboard)/system/archive/actions.ts:8,9,16` (`routePrefix: "/system/archive"`, `finance_manager+` + `safeRedirectPath`)
+     - `src/app/(dashboard)/system/actions.ts:3` (`routePrefix: "/system"`, `finance_manager+`)
+     - `src/app/(dashboard)/radar/actions.ts:13-19` (`can(..., "payment_instances", "update")` + `safeRedirectPath(backTo, "/payments")`)
+     - `src/app/(dashboard)/data-quality/actions.ts:24-27,49` (`can(..., "action_items", "update")` + `safeRedirectPath` hem `backTo` hem DB `source_href` üzerinde!)
+     - `src/app/(dashboard)/imports/actions.ts:11,40` (`can(..., "source_workbooks", "insert")` / `can(..., "mapping_reviews", "update")`)
+     - `src/app/(dashboard)/assumptions/actions.ts:16` (`can(..., "external_assumptions", "insert")`)
+     - `src/app/(dashboard)/ask/actions.ts:8` (`can(..., "ai_response_snapshots", "insert")`)
+     - `src/app/(dashboard)/reports/actions.ts:11,26` (`can(..., "reports", "insert")`), `insights/briefing/actions.ts:16` (`can(..., "reports", "insert")`), `reminders/actions.ts` (`can(..., "reminders", "insert")` / `can(..., "reminder_deliveries", "insert")`), `production/actions.ts:15` (`can(..., "part_profitability_runs", "insert")`)
+     - `src/app/(dashboard)/scenarios/actions.ts`, `cashflow/actions.ts`, `cashflow/13-week/actions.ts`, `cashflow/scenarios/actions.ts`, `cashflow/optimization/actions.ts`
+     - `src/app/(dashboard)/finance/actions.ts:5,10-13` (`installmentCount` için Zod `.int().min(1).max(360)` sınırı + `safeRedirectPath`), `finance/bank/actions.ts`, `finance/invoices/actions.ts`, `finance/receivables/actions.ts`, `finance/promises/actions.ts`, `finance/counterparties/actions.ts`, `finance/fx/actions.ts`.
+  3. **Sıfır-Satır (`rowCount === 0`) Sahte Denetim Kaydı Düzeltmeleri:**
+     - `src/lib/scenarios/engine.ts:467-476` (`deleteScenarioRun`): `DELETE ... RETURNING id` `rowCount === 0` ise `throw new DomainError("FORBIDDEN", "Bu senaryo silinemedi veya yetkiniz yok.")` — `audit()` çağrılmaz!
+     - `src/lib/external-assumptions/engine.ts:194-207`, `src/lib/data-quality/engine.ts:536-556`, `src/app/(dashboard)/imports/actions.ts:40-56`: `rowCount === 0` durumunda `DomainError("NOT_FOUND" | "FORBIDDEN", ...)` fırlat.
+  4. `src/lib/assistant/engine.ts` (satır `134-156`, `205`) ve `src/lib/ai/engine.ts` (satır `52-115`):
+     - `answerQuestion(client, { question, actor, preScopedFacts: scoped.visible }, intent)` imzasını destekle; `scoped.withheld` listesindeki kısıtlı metriklerin ne `answerMd` metnine ne de LLM JSON yüküne girmemesini sağla.
+  5. `src/lib/rate-limit.ts` (satır `50-105`):
+     - Yalnız `env.MAS_TRUST_PROXY === true` olduğunda `x-forwarded-for` oku; kapalı devre yerel modda (`MAS_TRUST_PROXY=false` varsayılan) sahte IP başlığını yok say.
+     - `buckets` `Map` boyutunu `MAX_BUCKETS = 4096` ile sınırla; dolduğunda süresi geçmiş girdileri süpür ve en eski anahtarı düşür (8 GB RAM OOM koruması).
+  6. `src/lib/env.ts`, `.env.example`, `scripts/check-env.ts`:
+     - `AI_FORCE_DETERMINISTIC` varsayılanını kapalı devre kararına uygun olarak `"1"` (`true`) yap; `.env.example:23,54` içindeki `CHANGE_ME` örneklerini doğrulayıcının reddedeceği açık yer tutucu kurallarıyla belgele; `check-env.ts` içinde `DATABASE_URL` kullanıcı adının `"mas_radar_app"` olduğunu zorunlu kıl ve kök dizinde `.env.local.bak*` düz metin yedek dosyası varsa güvenlik uyarısı verip başlamayı reddet (operatör yedeği şifreli kasaya taşıyana veya silene kadar).
+     - `EMAIL_API_URL` için HTTPS ve izinli domain (`MAS_ALLOWED_EMAIL_HOSTS`) doğrulaması ekle.
+  7. `src/lib/integrations/types.ts:160-195` & `src/lib/integrations/engine.ts:196-215` & `src/lib/fx/provider.ts:77`:
+     - `realHttpClient` ve TCMB `fetch` çağrılarına `AbortSignal.timeout(15_000)` ekle; `endpointUrl` için yalnızca `https://` ve izinli entegrasyon host beyaz listesi (`api.parasut.com`, `www.tcmb.gov.tr` ve `MAS_ALLOWED_INTEGRATION_HOSTS` ortam değişkeninde açıkça tanımlanan harici HTTPS alan adları — RFC1918/loopback/`169.254.169.254` SSRF engeli!) kabul et; `readCredential` için yalnız `MAS_INTEGRATION_*` veya `PARASUT_*` önekli ortam değişkeni adlarına izin ver.
+     - `integrations/engine.ts:196-211` içinde konnektör çağrısını `SAVEPOINT connector_exec` içine al; konnektör SQL hatası fırlattığında `ROLLBACK TO SAVEPOINT connector_exec` çalıştır ki `25P02` yüzünden başarısızlık kaydı ve `audit()` düşmesin.
+  8. `src/app/api/perf-probe/route.ts:35-52`, `src/app/health/route.ts:24`, `src/lib/users/password-policy.ts:22-24`, `src/lib/analytics/export.ts:173-180`, `src/lib/reminders/transport.ts:89`, `src/lib/reminders/engine.ts:166`, `src/middleware.ts:98`:
+     - `/api/perf-probe`: `NODE_ENV === "production"` iken `404` döndür + `requireApiSession()` zorla.
+     - `/health`: Ham PG hata metnini istemciye sızdırma (`db: "down"` döndür).
+     - `password-policy.ts`: Parola uzunluğuna `.max(256)` ekle.
+     - `analytics/export.ts:173-180`: CSV hücrelerinde `^[=+\-@\t\r]` ile başlayan metinlerin başına `'` koyarak Excel formül enjeksiyonunu engelle.
+     - `reminders/transport.ts:89`: Hata mesajlarında `bot<TOKEN>` dizgesini `bot[REDACTED]` ile maskele; `reminders/engine.ts:166` `channel === "email"` iken e-posta transportunu çağır (yapılandırılmamışsa `skipped_unconfigured` kaydet, Telegram'a sızdırma!).
+     - `middleware.ts:98`: Rota önek eşleşmesini `pathname === prefix || pathname.startsWith(prefix + "/")` segment sınırına çek.
+
+#### `A2`.. Veritabanı / SQL Migration / Arka Plan İşçisi Spesifikasyonu
+
+- Bu faz yeni SQL tablosu gerektirmez (Faz 39 `0098` politikaları üzerine oturur); tüm güvenlik sınırları uygulama, HTTP, doğrulama ve sınır katmanında uygulanır.
+
+#### `A2`.. Adım Adım Uygulama Talimatları
+
+1. Önce `src/lib/security/redirect.ts` modülünü yaz ve `src/lib/auth.ts` içindeki eski `safeRedirectPath` fonksiyonunu buradan yeniden dışa aktar; tüm `redirect(backTo)` çağrılarını bu fonksiyona geçir.
+2. `src/lib/auth.ts` içinde `requireActionPermission` yardımcısını oluştur ve 25 `actions.ts` dosyasının tamamına uygula.
+3. `src/lib/assistant/engine.ts` içinde `viewer` rolüyle sorulan maaş/kredi/yönetici-özel soruların `scoped.visible` dışında kaldığını ve yanıt metninde sızmadığını birim testiyle kanıtla.
+4. Kök dizindeki izlenmeyen `.env.local.bak-20261029-092503` dosyasının varlığını `check-env.ts` ile yakalayıp güvenli temizlik uyarısını doğrula (`.gitignore` içinde `.env*.bak*` deseninin bulunduğundan emin ol).
+
+#### `A2`.. Zorunlu Doğrulama & Kabul Kapısı
+
+- `pnpm exec vitest run tests/security/redirect-and-rate-limit.test.ts tests/security/action-role-gates.test.ts tests/security/write-gates.test.ts src/lib/assistant` → **PASS**
+- Negatif güvenlik kontrolleri:
+  - `viewer` ve `finance_operator` oturumuyla `system/controls/actions.ts`, `system/jobs/actions.ts`, `system/archive/actions.ts` çağrıldığında `FORBIDDEN` döner (`0` DB mutasyonu).
+  - `backTo="https://evil.com"`, `backTo="//evil.com"`, `backTo="/\\evil.com"` girdilerinin tamamı güvenli varsayılan rotaya (`/payments` veya `/`) düşer.
+  - `NODE_ENV=production` altında `/api/perf-probe` `404` döner.
+- Kalıcı kapılar: `pnpm typecheck && pnpm lint && pnpm phase17:verify && pnpm phase18:verify && pnpm boundary:verify` → **ALL PASS**.
+
+---
+
+## 5. KÜME B — TEK DİL (`TS+SQL`), TEK EXCEL (`ExcelJS`), DAYANIKLI OPERASYON, ARKA PLAN İŞÇİSİ VE CI/QA KAPILARI
+
+---
+
+### Faz 41 (`B1`) — `xlsx@0.18.5` Emekliliği (21 Dosya), Tek `ExcelJS` + Deterministik CSV Hattı ve V1/V2/Veri-Kalitesi (`100x`) Aktarım Doğruluğu
+
+#### `B1`) — `xlsx@0.18.5` Emekliliği (21 Dosya), Tek `ExcelJS` + Deterministik CSV Hattı ve V1/V2/Veri-Kalitesi (`100x`.. Fazın Amacı & Çözdüğü Rapor Bulguları / Rakip Mekanikleri
+
+- **Amaç:** Yamasız `xlsx@0.18.5` (CVE-2023-30533 Prototype Pollution & CVE-2024-22363 ReDoS) paketini hem sunucudan hem tarayıcı istemci paketinden tamamen kaldırmak; tüm Excel okuma/yazma akışlarını tembel yüklenen tek `exceljs@4.4.0` + deterministik Türkçe CSV ayrıştırıcısına indirmek; ZIP bombası korumasını, V1 `#REF!` (`23,00 TL` / `1900-01-22`) formül hatası ayrımını, Veri Kalitesi `100x` ondalık nokta hatasını ve V2 yeniden aktarımda `paid_amount = 0` ezilme hatalarını düzeltmek.
+- **Kapatılan Rapor Bulguları:** `B1-02` (`xlsx@0.18.5` sunucu + istemci sızıntısı), `B2-09` (`.xlsx` ZIP bombası açılmış boyut tavanı ve `bank/engine.ts:208` hücre başına tekil `INSERT` döngüsü), `B3-04` (V1 `#REF!`, `data-quality/engine.ts:183` `100x` nokta hatası, V2 `paid_amount` ezilmesi, aynı gün banka masrafı çakışması, 3 ondalıklı KDV `invoices_gross_check`, `"01.05.2026"` ay ayrıştırması, `Math.round` tarih kayması).
+
+#### `B1`) — `xlsx@0.18.5` Emekliliği (21 Dosya), Tek `ExcelJS` + Deterministik CSV Hattı ve V1/V2/Veri-Kalitesi (`100x`.. Değişecek Mevcut Dosyalar & Oluşturulacak Yeni Dosyalar
+
+- **Oluşturulacak Yeni Dosyalar:**
+  1. `src/lib/importers/zip-guard.ts` — `.xlsx` (OOXML ZIP) merkezi güvenlik bekçisi: ZIP yerel dosya başlıklarından sıkıştırılmamış toplam boyutu (`MAX_UNCOMPRESSED_BYTES = 100 * 1024 * 1024` — 100 MB) ve giriş sayısını (`MAX_ZIP_ENTRIES = 512`) `ExcelJS` belleğe açmadan önce denetler; eski ikili `.xls` (`CFB_MAGIC = 0xd0cf11e0`) dosyasını `"Eski .xls biçimi güvenlik nedeniyle desteklenmiyor; lütfen dosyayı Excel'de .xlsx olarak kaydedip yükleyin."` mesajıyla reddeder.
+  2. `src/lib/importers/csv-parser.ts` — Deterministik RFC-4180 uyumlu, UTF-8 BOM ve Türkçe `windows-1254` kodlama destekli, tırnak içi kuruş virgülünü (`"1.234,56"`) bozmayan `;` / `,` / `\t` banka ekstresi CSV ayrıştırıcısı.
+  3. `tests/importers/exceljs-unification-and-formulas.test.ts` — `#REF!`, `#DIV/0!`, `#VALUE!`, `#N/A`, ZIP bombası, `.xls` reddi, `data-quality` ondalık mutabakatı (`123456.78`), V2 yeniden aktarımda `paid_amount` korunumu ve Türkçe CSV birim testleri.
+- **Değişecek Mevcut Dosyalar (21 Dosyalık Tam `xlsx` Emeklilik + 4 Aktarım Motoru Envanteri):**
+  1. `package.json:150` — `"xlsx": "^0.18.5"` satırını sil (`pnpm remove xlsx`).
+  2. `next.config.ts:65` — `serverExternalPackages` dizisini `["pg", "exceljs"]` olarak güncelle.
+  3. `src/lib/importers/workbook-parser.ts` (satır `5`, `10-14`, `19`, `28-33`, `73`, `83`, `95`, `108`, `117-146`) — `safeParseWorkbook` ve `safeParseWorkbookBuffer` fonksiyonlarını `async` yap; `inspectZipSafety(buffer)` çağır; fonksiyon gövdesinde tembel `const ExcelJS = (await import("exceljs")).default` kullan (**DİKKAT:** `tests/perf/phase07-lazy-modules.test.tsx:66-123` gereği modül üst seviyesinde statik `import ExcelJS from "exceljs"` yasaktır; yalnız `import type ExcelJS from "exceljs"` kullanılabilir!). Toplam hücre sayısını `MAX_WORKBOOK_CELLS = 200_000` ile sınırla.
+  4. `src/lib/importers/row-utils.ts` (satır `5`, `55-70`, `126-128`) — `sheetCells(ws: ExcelJS.Worksheet)` olarak yeniden yaz; formül hatası nesnelerinde (`{ error: "#REF!" }` veya `FormulaValue.result` hata nesnesi) `inferredType: "error"`, `normalizedValue: null` üret ve `asNumber()` içinde `inferredType === "error"` için kesin `null` döndür (asla `23` veya `1900-01-22` üretme!).
+  5. `src/lib/importers/extractors.ts` (satır `63-67`, `374`, `497`) — Tarih ve para çıkarıcılarında `inferredType === "error"` hücreleri `mapping_reviews` incelemesine (`issue_type: "formula_error"`) düşür.
+  6. `src/lib/importers/statement-parser.ts` (satır `15-26`, `72-124`) — `parseStatementBuffer` fonksiyonunu `async` yap; `.xlsx` için `zip-guard` + tembel `exceljs`, `.csv` için `csv-parser.ts` kullan; açık `0,00` tutarlı satırları `null` yapma (`bank/rules.ts:366-384` ile uyumlu).
+  7. `src/lib/analytics/export.ts` (satır `20-27`, `189-229`) — `export async function toXlsxBuffer(...)` içinde `require("xlsx")` yerine tembel `await import("exceljs")` ve `Buffer.from(await workbook.xlsx.writeBuffer())` kullan.
+  8. `src/components/charts/analytics-chart.tsx` (satır `120-133`) — Tarayıcıda `await import("xlsx")` çağrısını sil; mevcut `/api/analytics/export` ucuna `POST` / `GET` isteği atarak sunucuda üretilen `.xlsx` dosyasını indir (**DİKKAT:** `scripts/phase36-verify.ts:407-415` gereği `/api/export` adında ikinci bir uç oluşturulmaz!).
+  9. `src/components/ui/primitives/data-table.tsx` (satır `163-175`) — Tarayıcıda `await import("xlsx")` çağrısını sil; `/api/analytics/export` üzerinden `.xlsx` indir.
+  10. `src/app/api/analytics/export/route.ts:183` — `await toXlsxBuffer(...)` olarak güncelle.
+  11. `src/lib/importers/workbook-importer.ts:154,174,201-202` — `await safeParseWorkbookBuffer(...)` olarak güncelle.
+  12. `src/lib/bank/engine.ts:18,24,153,188-216` — `await parseStatementBuffer(...)` yap ve `:208-216` satırlarındaki hücre başına tekil `INSERT INTO public.source_cells` döngüsünü `500` satırlık parametrik çoklu-satır (`UNNEST`) toplu eklemeye çevir.
+  13. `src/components/imports/upload-form.tsx:18` ve `src/app/(dashboard)/finance/bank/page.tsx:152` — `accept` özniteliklerini `.xlsx,.csv` olarak güncelle.
+  14. `src/lib/data-quality/engine.ts` (satır `173-189`) — `source_cells.normalized_value` sayısal ayrıştırmasını düzelt: değer standart JS ondalık biçimindeyse (`^-?\d+(\.\d+)?$`) noktayı silmeden doğrudan `::numeric` çevir; yalnızca Türkçe biçimdeyse (`^-?\d{1,3}(\.\d{3})*(,\d+)?$`) binlik noktaları silip virgülü noktaya çevir; aksi halde `NULL` döndür (`22P02` çökmesi ve `100x` hatası sıfırlanır).
+  15. `src/lib/importers/v2/mapper.ts` (satır `608-613`, `669`, `683-686`, `716`) ve `src/lib/importers/v2/values.ts` (satır `288`, `380-382`) —
+      - `ON CONFLICT DO UPDATE` içinde mevcut satırda `paid_amount > 0` veya `status IN ('paid','partial','matched','reconciled')` ise kullanıcının ödeme/eşleştirme durumunu koru (`paid_amount` ve `status` alanlarını sıfırlama!).
+      - Banka ekstresi `dedupe_hash` hesabına aynı ekstre içindeki özdeş satır sıra numarasını (`occurrenceOrdinal`) dahil et ki aynı gün aynı tutarlı iki EFT masrafı yutulmasın.
+      - Fatura `gross_amount` kontrolünde `Big(net).plus(tax).round(2)` kuruş yuvarlamasını `invoices_gross_check` ile birebir hizala.
+      - `values.ts:288` Excel tarih seri numarasında `Math.round` yerine `Math.floor(serial) + Math.round((serial % 1) * 86400) / 86400` gün tabanı kullan; `values.ts:380-382` `parseMonth` içinde `"01.05.2026"` (`GG.AA.YYYY`, gün `01`) biçimini `"2026-05-01"` olarak kabul et.
+  16. **Betik ve Test Güncellemeleri (8 Dosya):** `scripts/parse-spike.ts:37`, `scripts/phase20-verify.ts:345-361`, `scripts/phase34-verify.ts:406,416`, `scripts/phase36-verify.ts:414` (`/export (?:async )?function toXlsxBuffer/`), `src/lib/importers/extractors.test.ts:2,26-30`, `src/lib/importers/workbook-parser.test.ts:5,63-108`, `tests/perf/phase07-lazy-modules.test.tsx:5,32-60`, `tests/perf/phase10-standalone-runtime.test.ts:28`.
+
+#### `B1`) — `xlsx@0.18.5` Emekliliği (21 Dosya), Tek `ExcelJS` + Deterministik CSV Hattı ve V1/V2/Veri-Kalitesi (`100x`.. Veritabanı / SQL Migration / Arka Plan İşçisi Spesifikasyonu
+
+- Bu faz şema değişikliği gerektirmez; `zip-guard.ts` aynı kuralları hem senkron yüklemelerde hem `scripts/ops/process-import-jobs.ts` V2 asenkron önizleme işçisinde zorunlu kılar.
+
+#### `B1`) — `xlsx@0.18.5` Emekliliği (21 Dosya), Tek `ExcelJS` + Deterministik CSV Hattı ve V1/V2/Veri-Kalitesi (`100x`.. Adım Adım Uygulama Talimatları
+
+1. `zip-guard.ts` ve `csv-parser.ts` modüllerini sıfır dış bağımlılıkla (Node `Buffer` / `zlib` başlık okuma ve `TextDecoder`) yaz.
+2. `workbook-parser.ts`, `row-utils.ts`, `statement-parser.ts` ve `analytics/export.ts` dosyalarını `ExcelJS` üzerine geçir; hiçbir dosyada üst-seviye `import ExcelJS from "exceljs"` kullanma.
+3. İstemci bileşenlerindeki (`analytics-chart.tsx`, `data-table.tsx`) `xlsx` çağrılarını `/api/analytics/export` indirme yardımcı fonksiyonuna bağla ve `pnpm remove xlsx` çalıştır.
+4. `data-quality/engine.ts` ve `importers/v2/{mapper,values}.ts` düzeltmelerini uygula.
+
+#### `B1`) — `xlsx@0.18.5` Emekliliği (21 Dosya), Tek `ExcelJS` + Deterministik CSV Hattı ve V1/V2/Veri-Kalitesi (`100x`.. Zorunlu Doğrulama & Kabul Kapısı
+
+- `pnpm exec vitest run tests/importers/exceljs-unification-and-formulas.test.ts src/lib/importers tests/perf/phase07-lazy-modules.test.tsx tests/perf/phase10-standalone-runtime.test.ts` → **PASS**
+- `git grep -n "from \"xlsx\"" src/ scripts/ tests/` ve `git grep -n "import(\"xlsx\")" src/ scripts/ tests/` → **0 eşleşme**.
+- Kalıcı kapılar: `pnpm typecheck && pnpm lint && pnpm phase17:verify && pnpm phase18:verify && pnpm boundary:verify` → **ALL PASS**.
+
+---
+
+### Faz 42 (`B2`) — `bot.py` & Python Yan Süreçlerinin Kaldırılması, TypeScript Telegram İşçisi ve Birleşik Arka Plan İşçisi (`mas-worker`)
+
+#### `B2`) — `bot.py` & Python Yan Süreçlerinin Kaldırılması, TypeScript Telegram İşçisi ve Birleşik Arka Plan İşçisi (`mas-worker`.. Fazın Amacı & Çözdüğü Rapor Bulguları / Rakip Mekanikleri
+
+- **Amaç:** `bot.py` ve `scripts/qa/browser_crawl.py` Python yan parçalarını tamamen silerek projeyi **%100 tek dil (`TypeScript + PostgreSQL SQL`)** standardına oturtmak; yetkisiz mesajlara yanıt vermeyen, mesaj kaybetmeyen (`update_id` kalıcı ofsetli) salt-okunur TypeScript Telegram işçisini ve `import_jobs` + `background_jobs` + günlük finansal bakım işlerini yürüten birleşik TypeScript arka plan işçisini (`scripts/ops/background-worker.ts`) devreye almak.
+- **Kapatılan Rapor Bulguları:** `B1-03` (`import_jobs` ve `background_jobs` için çalışan işçi olmaması, `dispatcher.ts:170` `resultPayload` kaybı, `requeueDueFailures`/`reapStuckJobs` çağrılmaması), `Bölüm 2.3` (`bot.py` yabancıya yanıt/429 DoS, `drop_pending_updates=True` mesaj kaybı, 4096 karakter sınırı, `/api/telegram/assistant` çerezsiz middleware istisnası, `browser_crawl.py`), `docs/todo.md` Dalga 1 backlog `#6` (`/hareket` fatura yönü), `#7` (geçici hata alan önizleme işi), `#8` (`resultPayload`).
+
+#### `B2`) — `bot.py` & Python Yan Süreçlerinin Kaldırılması, TypeScript Telegram İşçisi ve Birleşik Arka Plan İşçisi (`mas-worker`.. Değişecek Mevcut Dosyalar & Oluşturulacak Yeni Dosyalar
+
+- **Silinecek Dosyalar (3 Python Dosyası):**
+  1. `bot.py`
+  2. `bot.requirements.txt`
+  3. `scripts/qa/browser_crawl.py`
+  *(Ayrıca HTTP köprüsü artık gerekmediği için `src/app/api/telegram/assistant/route.ts` silinir ve `src/middleware.ts:40,68` içindeki son çerezsiz API istisnası kaldırılır!)*
+- **Oluşturulacak Yeni Dosyalar:**
+  1. `scripts/ops/telegram-assistant-worker.ts` — Tek-örnek kilitli (`.runtime/telegram-worker.lock`), atomik ofset kalıcılıklı (`.runtime/telegram-offset.json`), yetkisiz `chat_id` mesajlarını **sıfır dış HTTP yanıtıyla** düşürüp hız-sınırlı denetim kaydı yazan, doğrudan `runAsReadOnlySystem` (`SET LOCAL ROLE mas_radar_viewer`) üzerinden `src/lib/telegram/assistant.ts` çağıran TypeScript uzun-yoklama işçisi.
+  2. `scripts/ops/background-worker.ts` — Tek süreçte (~55 MB RAM) periyodik döngüyle çalışan birleşik arka plan işçisi (`--once` tek tur modu CI/test için, sürekli daemon modu üretim için):
+     - Her `5 sn`: bekleyen `import_jobs` (`processPendingImportJobs`) + `background_jobs` (`dispatchNextBatch`) + `requeueDueFailures` + `reapStuckJobs`.
+     - Günlük / saatlik idempotent bakım görevleri (`settings` / `background_jobs` son çalışma zamanıyla kilitli): aylık `generateInstances`, vadesi geçen `payment_instances` ve `loan_installments` için `unpaid/planned → late` geçişi, kırılan `promise_to_pay` (`open → broken`) taraması, finansal kontrol/anomali taraması, yapılandırılmışsa TCMB günlük kur çekimi ve günlük rapor/sabah brifingi anlık görüntüsü üretimi.
+  3. `scripts/ops/mas-background-worker.cmd` — Windows Görev Zamanlayıcı / servis sarmalayıcısı.
+  4. `tests/ops/telegram-and-background-worker.test.ts` — Yetkisiz `chat_id` sessiz düşürme, 4096-karakter güvenli bölme, ofset kaldığı yerden devam etme, `dispatcher.ts` `resultPayload` yazımı ve takılı iş kurtarma birim/entegrasyon testleri.
+- **Değişecek Mevcut Dosyalar:**
+  1. `src/lib/reminders/transport.ts` (satır `40-115`) — `scripts/boundary-verify.ts:26-31` izin listesinde zaten bulunan bu dosyaya `pollTelegramUpdates(offset: number, timeoutSec: number, signal?: AbortSignal)` ve `splitTelegramMessage(text: string, maxLen = 4000): string[]` fonksiyonlarını ekle (`@/lib/env` erişimi zorunlu olarak tembel `await import("@/lib/env")` kalır!).
+  2. `src/lib/telegram/assistant.ts` (satır `130-155`) — `/hareket` çıktısında fatura yönüne (`direction === 'sale'` → alacak/tahsilat, `'purchase'` → borç/ödeme) göre doğru Türkçe etiket üret (`docs/todo.md` backlog `#6`). **DİKKAT:** `tests/security/write-gates.test.ts:406-433` gereği bu dosyanın import listesine yeni modül eklenmez!
+  3. `src/lib/jobs/queue.ts` (satır `190-265`) ve `src/lib/jobs/dispatcher.ts` (satır `19-45`, `165-180`) — `completeJob(client, job.id, outcome.resultPayload)` ile `result_payload` JSONB kolonunu kaydet; yerleşik deterministik işleyicileri (`report.generate`, `reminders.dispatch`, `controls.evaluate`, `fx.tcmb_daily`, `maintenance.daily_rollover`) kaydet.
+  4. `scripts/ops/process-import-jobs.ts` (satır `20-90`) — Geçici veritabanı/G-Ç hatası alan `failed` önizleme işlerinin yeniden denenebilmesini sağla (`docs/todo.md` backlog `#7`) ve `reapStuckJobs` entegrasyonunu ekle; `background-worker.ts` içinden çağrılabilir fonksiyon olarak dışa aktar.
+  5. `src/middleware.ts` (satır `38-44`, `65-72`) — `/api/telegram/assistant` çerezsiz istisnasını sil; artık `/health` ve `/ready` dışında **sıfır çerezsiz uç** kalır.
+  6. `tests/security/write-gates.test.ts` (satır `345-395`) — `read("bot.py")` referansını `read("scripts/ops/telegram-assistant-worker.ts")` olarak güncelle; `bot.py` dosyasının repoda var olmadığını ve TS işçisinin yalnız `mas_radar_viewer` salt-okunur bağlantı kullandığını doğrula.
+  7. `package.json` ve `.gitignore` — `"ops:worker": "tsx scripts/ops/background-worker.ts"`, `"ops:worker:once": "tsx scripts/ops/background-worker.ts --once"`, `"ops:telegram:worker": "tsx scripts/ops/telegram-assistant-worker.ts"` komutlarını ekle (**eklenen tüm script dosyalarını `git add` ile izlemeye al** ki `tests/package-script-references.test.ts` yeşil geçsin!); `.gitignore` içine `.venv/`, `.ruff_cache/`, `.runtime/` ekle.
+
+#### `B2`) — `bot.py` & Python Yan Süreçlerinin Kaldırılması, TypeScript Telegram İşçisi ve Birleşik Arka Plan İşçisi (`mas-worker`.. Veritabanı / SQL Migration / Arka Plan İşçisi Spesifikasyonu
+
+- Arka plan işçisi (`background-worker.ts`) `PGAPPNAME=mas_background_worker` ile bağlanır; sistem bakım görevlerini `runAsSystem` altında `src/lib/audit.ts` (`actor: "system:background-worker"`) kaydıyla yürütür; Telegram işçisi ise **yalnızca** `runAsReadOnlySystem` (`SET LOCAL ROLE mas_radar_viewer`, `SET LOCAL transaction_read_only = on`) kullanır ve hiçbir tabloya (`audit_logs` yetkisiz deneme sayacı hariç dar yardımcı dışında) yazamaz.
+
+#### `B2`) — `bot.py` & Python Yan Süreçlerinin Kaldırılması, TypeScript Telegram İşçisi ve Birleşik Arka Plan İşçisi (`mas-worker`.. Adım Adım Uygulama Talimatları
+
+1. `src/lib/reminders/transport.ts` içine `pollTelegramUpdates` ve `splitTelegramMessage` fonksiyonlarını ekle; hemen `pnpm boundary:verify` çalıştırarak tembel `env` ve sınır kurallarının `8/8` geçtiğini doğrula.
+2. `scripts/ops/telegram-assistant-worker.ts` ve `scripts/ops/background-worker.ts` dosyalarını oluştur; `SIGINT`/`SIGTERM` sinyallerinde `AbortController` ile temiz kapanış ve `.runtime/*.lock` temizliği uygula.
+3. `bot.py`, `bot.requirements.txt`, `scripts/qa/browser_crawl.py` ve `src/app/api/telegram/assistant/route.ts` dosyalarını sil; `middleware.ts` ve `tests/security/write-gates.test.ts` dosyalarını güncelle.
+
+#### `B2`) — `bot.py` & Python Yan Süreçlerinin Kaldırılması, TypeScript Telegram İşçisi ve Birleşik Arka Plan İşçisi (`mas-worker`.. Zorunlu Doğrulama & Kabul Kapısı
+
+- `pnpm exec vitest run tests/ops/telegram-and-background-worker.test.ts tests/security/write-gates.test.ts tests/package-script-references.test.ts` → **PASS**
+- Repo taraması: `git ls-files "*.py"` → **0 dosya**.
+- Kalıcı kapılar: `pnpm typecheck && pnpm lint && pnpm phase17:verify && pnpm phase18:verify && pnpm boundary:verify` → **ALL PASS**.
+
+---
+
+### Faz 43 (`B3`) — Yedekleme + Doküman Kasası Arşivi, Dürüst Telemetri Alarm Borusu, 8 GB RAM Windows Servis Gözetimi ve CI / Harcanabilir-DB Kapıları
+
+#### `B3`.. Fazın Amacı & Çözdüğü Rapor Bulguları / Rakip Mekanikleri
+
+- **Amaç:** Gece yedeklemesinin `.env.local` değişkenlerini düşürmesini, doküman kasasını yedeksiz bırakmasını ve harici disk kopyası başarısız olduğunda telemetrinin sahte `ALL CLEAR` vermesini düzeltmek; Windows zamanlanmış görevlerini oturum açmadan (`S4U` / Servis) çalışır hale getirmek; 8 GB RAM kısıtlı makinede `start-production.cmd` / `stop-production.cmd` / `runtime-port-guard.ts` süreç yönetimini sağlamlaştırmak; kırık GitHub Actions CI kurulumunu (`pnpm` sürüm çatışması), 18 betikteki ölü `docker exec` çağrılarını ve 35 `phase*-verify.ts` betiğindeki harcanabilir-DB korumasız `TRUNCATE` tehlikesini tamamen ortadan kaldırmak.
+- **Kapatılan Rapor Bulguları:** `B1-01` (CI `pnpm` çatışması + 4x mükerrer build + `continue-on-error`), `B1-04` (`pg`/`tsx` `dependencies` taşıması + ölü `date-fns`/`jest-dom` silimi), `B1-05` (`start/stop-production.cmd`, `MAS_NEXT_CPUS=1`, `vitest maxWorkers`, `runtime-port-guard.ts`), `B1-06` (18 `docker exec` betiği + 35 korumasız `phase*-verify.ts` + `import-real.ts` + `phase16-verify.ts`), `B1-07` (`tsconfig.json`, `engines`), `B4-06` (5 yedekleme/telemetri/servis kırılma noktası), `docs/todo.md` backlog `#3, #11..#16`.
+
+#### `B3`.. Değişecek Mevcut Dosyalar & Oluşturulacak Yeni Dosyalar
+
+- **Oluşturulacak Yeni Dosyalar:**
+  1. `scripts/db/disposable-guard.ts` — Tek satırlık `assertDisposableTargetDb(envVarNames?: string[]): { dbName: string; url: string }` koruyucusu (`mas_radar_dev` veya `DISPOSABLE_MARKERS` taşımayan herhangi bir hedef görüldüğünde sıfır bağlantı açmadan anında `GÜVENLİK DURDURMASI` hatasıyla çıkar).
+  2. `tests/ops/backup-telemetry-and-guards.test.ts` — `.env.local` `MAS_OFFDEVICE_BACKUP_DIR` okuma, doküman kasası SHA-256 arşivleme, `exit 3` harici yedek hatasında telemetrinin `WARN`/`FAIL` üretmesi ve 40 `phase*-verify.ts` betiğinin tamamında `assertDisposableTargetDb` bulunduğunu denetleyen statik + davranışsal test.
+- **Değişecek Mevcut Dosyalar:**
+  1. **Yedekleme ve Telemetri Zinciri (6 Dosya):**
+     - `scripts/ops/backup-daily.ts` (satır `60-95`, `180-245`): `.env.local` içinden `MAS_OFFDEVICE_BACKUP_DIR`, `MAS_BACKUP_DIR`, `MAS_BACKUP_PRUNE_APPLY`, `MAS_DOCUMENT_STORAGE_DIR` değişkenlerini oku; `pg_dump` doğrulandıktan sonra `MAS_DOCUMENT_STORAGE_DIR` (doküman kasası) mevcutsa `daily-<ts>-documents.tar.gz` + dosya bazlı SHA-256 manifesti üretip makbuza (`receipt.json`) bağla ve harici diske birlikte kopyala; `*.dump.unverified` artıklarını ve harici diskteki eski yedekleri saklama politikasına göre buda (`ENOSPC` önlemi).
+     - `scripts/ops/backup-prune.ts` ve `scripts/ops/offdevice-copy.ts`: Doküman arşiv çiftini ve harici hedef budamasını destekle.
+     - `scripts/ops/telemetry-snapshot.ts` (satır `255-295`): `readBackupFreshness` içinde yalnız yerel `.dump` yaşına değil, `daily-runs.jsonl` son kaydının `exitCode` (`exit 3` → `offdevice_backup_missing` `WARN/CRITICAL`) ve son makbuzun `offDeviceSatisfied` durumuna bak; asla sahte `ALL CLEAR` verme.
+     - `scripts/ops/telemetry-watch.ts` (satır `85-115`): `PASSTHROUGH_FROM_ENV_LOCAL` listesine `MAS_APP_BASE_URL`, `MAS_BACKUP_DIR`, `MAS_OFFDEVICE_BACKUP_DIR`, `EMAIL_API_URL`, `EMAIL_API_KEY`, `EMAIL_FROM`, `EMAIL_TO` ekle ki web uygulaması çöktüğünde `/ready` yoklaması gerçekten alarm üretsin.
+     - `scripts/ops/schedule-windows.ts` (satır `79-185`): Görevleri `InteractiveToken` yerine masaüstü oturumu gerektirmeyen `S4U` (veya yönetici modunda `SYSTEM`/`ServiceAccount`) ile kaydet ve `MAS-Background-Worker` görevini ekle.
+     - `scripts/ops/install-postgres-service.ps1` (satır `320-340`, `390-445`, `485-495`): `sc.exe failure` dizisini üçüncü hatadan sonra da `restart/60000` olarak kalıcı kıl (`reset= 86400 actions= restart/5000/restart/15000/restart/60000`); yarım kalan kurulumu idempotent tamamla; `try/finally` ile Ctrl+C durumunda mevcut oturum görevini koru ve `pg_hba.conf` loopback kuralını doğrula.
+  2. **8 GB RAM Çalışma Zamanı, Paketler ve Derleyici (8 Dosya):**
+     - `package.json`: `pg` ve `tsx` paketlerini `dependencies` altına taşı; kullanılmayan `date-fns` ve `@testing-library/jest-dom` paketlerini kaldır; `"engines": { "node": ">=22.0.0 <25.0.0" }` ekle; `"build"` komutunda `MAS_NEXT_CPUS=1` varsayılanını (`scripts/build-safe.ts` veya çapraz-platform env ile) uygula.
+     - `tsconfig.json:26-34`: `"include"` içine `"tests/**/*.tsx"` ve `"compilerOptions"` içine `"forceConsistentCasingInFileNames": true` ekle.
+     - `vitest.config.ts`: 8 GB RAM makinede OOM önlemek için `maxWorkers: process.env.CI ? 4 : 2` sınırı koy.
+     - `scripts/ops/runtime-port-guard.ts:1-34`: `@next/env` (`loadEnvConfig`) yükle ve sabit `[3000, 3001]` yerine **yalnızca istenen `PORT` (`requestedPort`)** değerini denetle (böylece `3000` üzerinde üretim açıkken `3210` üzerinde izole test sunucusu çalışabilsin).
+     - `scripts/ops/start-standalone.ts:130-165`: Ön kontroller bittikten sonra Windows dışı ortamlarda veya doğrudan `node minimal-next-server.mjs` devrinde gereksiz üst `tsx` sürecini bellekte tutmayacak hafif başlatıcı düzenine geç.
+     - `start-production.cmd` ve `stop-production.cmd`: `findstr /R /C:":3000 "` (sonunda boşlukla tam port eşleşmesi!) kullan; tarayıcıyı açmadan önce `http://127.0.0.1:3000/ready` `200` dönene kadar bekle ve `http://127.0.0.1:3000` aç; katılımsız kabuklar için `--no-pause` bayrağı destekle.
+  3. **CI İş Akışı (2 Dosya):**
+     - `.github/actions/setup/action.yml:18-20`: `with: version: 10` satırını kaldır (`pnpm/action-setup@v4` sürümü doğrudan `package.json#packageManager` içinden okusun).
+     - `.github/workflows/ci.yml`: Tek `build` işi çıktısını (`artifact`) downstream E2E/görsel/etkileşim işlerinde yeniden kullanarak 4x mükerrer derlemeyi kaldır; `:541` satırındaki `continue-on-error: true` baypasını kaldır; `static` işine `pnpm audit --prod --audit-level=high` ekle.
+  4. **18 `docker exec` Betiğinin Native `pg-native.ts` / `pg` İstemcisine Göçü ve 35+1 Betiğe Harcanabilir-DB Kilidi:**
+     - Native `pg-native.ts` / `pg` istemcisine geçirilecek 18 betik (veya eski `.sh` sarmalayıcılarının `tsx` karşılıklarına yönlendirilmesi): `scripts/db/ensure.sh`, `scripts/db/verify.sh`, `scripts/db/dev-reset.sh`, `scripts/db/constraints-verify.ts`, `scripts/db/migrate-verify.ts`, `scripts/db/reconciliation-verify.ts`, `scripts/db/transitions-verify.ts`, `scripts/db/legacy-repair-verify.ts`, `scripts/db/p24b-cleanup-binding.ts`, `scripts/db/create-testsprite-db.ts`, `scripts/start-testsprite.ts`, `scripts/qa/p24b-readonly-1-2.sh`, `scripts/qa/p24b-readonly-3-4-5.sh`, `scripts/qa/p24b-negative-controls.ts`, `scripts/qa/p24b-wholedb-control.ts`, `scripts/release/golden-fingerprint.ts`, `scripts/release/real-clone-gate.ts`, `scripts/release/real-clone-v2-rehearsal.ts` (CLI parola argümanı yerine `PGPASSWORD` süreç ortamı kullan, `restore-drill.ts:188` içinde `%TEMP%` yerine izinleri kısıtlı `.runtime/drill-tmp` kullan).
+     - `assertDisposableTargetDb()` eklenecek 36 betik: `scripts/import-real.ts` ve şu an korumasız olan 35 `scripts/phase*-verify.ts` betiğinin tamamı (`phase3`, `phase4`, `phase5`, `phase6`, `phase6b`, `phase7`, `phase8`, `phase9a`, `phase9b`, `phase9c`, `phase9d`, `phase11`, `phase12a`, `phase13a`, `phase13b`, `phase14a`, `phase14b`, `phase14c`, `phase14d`, `phase14e`, `phase15`, `phase16` [+ `next start` yerine `start-standalone.ts`], `phase19`, `phase20`, `phase21`, `phase22`, `phase23`, `phase24a`, `phase25`, `phase26`, `phase27`, `phase28`, `phase29`, `phase30`, `phase32`, `phase34`, `phase38`).
+
+#### `B3`.. Veritabanı / SQL Migration / Arka Plan İşçisi Spesifikasyonu
+
+- Bu faz şema migration'ı gerektirmez; operasyonel yedekleme, telemetri, servis ve doğrulama altyapısını sertleştirir. `mas_radar_dev` veritabanına bağlanmayı deneyen herhangi bir yıkıcı doğrulama betiği `assertDisposableTargetDb()` tarafından ilk satırda durdurulur.
+
+#### `B3`.. Adım Adım Uygulama Talimatları
+
+1. Önce `scripts/db/disposable-guard.ts` modülünü yaz ve tüm `phase*-verify.ts` + `db:*:verify` + `import-real.ts` betiklerinin en başına bağla; `DATABASE_URL="postgresql://mas_radar_app:x@127.0.0.1:5432/mas_radar_dev"` sahte dizesiyle hiçbir soket açılmadan reddedildiğini birim testiyle kanıtla.
+2. 18 Docker-bağımlı betiği `scripts/db/pg-native.ts` (`resolvePgTool("psql" | "pg_dump" | "pg_restore")`) ve `pg.Pool` üzerine taşı.
+3. Yedekleme (`backup-daily.ts`), telemetri (`telemetry-snapshot.ts`, `telemetry-watch.ts`), görev zamanlayıcı (`schedule-windows.ts`) ve `start-production.cmd` / CI düzeltmelerini uygula.
+
+#### `B3`.. Zorunlu Doğrulama & Kabul Kapısı
+
+- `pnpm exec vitest run tests/ops/backup-telemetry-and-guards.test.ts tests/package-script-references.test.ts` → **PASS**
+- `git grep -n "docker exec" scripts/` → **0 aktif çağrı** (yalnız CI Linux kapsayıcı ortam değişkeni bağdaştırıcısı hariç sabit `mas-radar-pg` referansı `0`).
+- `pnpm ops:telemetry:alerting:verify` (tek kullanımlık DB üzerinde) → `exit 3` harici kopya eksikliği enjekte edildiğinde `ALL CLEAR` değil `WARN/FAIL` alarmı üretildiği kanıtlanır.
+- Kalıcı kapılar: `pnpm typecheck && pnpm lint && pnpm phase17:verify && pnpm phase18:verify && pnpm boundary:verify` → **ALL PASS**.
+
+---
+
+## 6. KÜME C — FİNANSAL MATEMATİK, GÖRÜNÜM (`0094`) DOĞRULUĞU, VERGİ TAKVİMİ VE DÖNEM KİLİDİ
+
+---
+
+### Faz 44 (`C1`) — Veritabanı Görünüm (`0094`/`0070`/`0078`/`0050`) Onarımı, `FIN-03` Bilinmeyen Açılış Bakiyesi, Kısıt Doğrulama ve FK İndeksleri (`Migration 0099`)
+
+#### `C1`) — Veritabanı Görünüm (`0094`/`0070`/`0078`/`0050`) Onarımı, `FIN-03` Bilinmeyen Açılış Bakiyesi, Kısıt Doğrulama ve FK İndeksleri (`Migration 0099`.. Fazın Amacı & Çözdüğü Rapor Bulguları / Rakip Mekanikleri
+
+- **Amaç:** Gerçek kredi taksitlerinin %100'ünü gizleyen (`'planned'` / `'late'` statü düşürme) ve dövizli çek/kredilere sahte `'TRY'` damgası vuran `0094` / `0080` görünüm hatalarını düzeltmek; `FIN-03` bilinmeyen açılış bakiyesi (`opening_balance IS NULL`) kuralını ve `treasury_cashflow_reconciliation` sahte P0 mutabakat alarmını kapatmak; `current_account_ledger`, `invoice_allocations`, `control_large_payments`, `control_approval_bypass`, `cash_forecast_13w`, `optimization_run_summary`, `budget_vs_actual`, `payment_priority_queue` hatalarını onarmak; `0083` doküman silme tetikleyici çatışmasını, `0034` durum makinesi çıkmazlarını, 8 doğrulanmamış (`NOT VALID`) kısıtı, 16 serbest `currency` kolonunu, eksik sıcak FK indekslerini ve $O(N^2)$ `control_dashboard` görünümünü temizlemek.
+- **Kapatılan Rapor Bulguları:** `B4-01`, `B4-02` (`FIN-03` + `treasury_cashflow_reconciliation`), `B4-03`, `B4-05`.
+
+#### `C1`) — Veritabanı Görünüm (`0094`/`0070`/`0078`/`0050`) Onarımı, `FIN-03` Bilinmeyen Açılış Bakiyesi, Kısıt Doğrulama ve FK İndeksleri (`Migration 0099`.. Değişecek Mevcut Dosyalar & Oluşturulacak Yeni Dosyalar
+
+- **Oluşturulacak Yeni Dosyalar:**
+  1. `supabase/migrations/0099_view_math_fin03_constraints_and_indexes.sql` — Görünüm matematiği, `FIN-03`, çapraz-döviz tahsis kilidi, durum makinesi düzeltmeleri, kısıt doğrulamaları ve FK indeksleri migration'ı (**her `CREATE OR REPLACE VIEW` tanımında `WITH (security_invoker = true)` zorunlu!**).
+  2. `tests/financial/view-math-and-fin03.test.ts` — `'planned'`/`'late'` kredi taksitleri, `USD` çek/kredi ayrımı, `opening_balance IS NULL` (`FIN-03`) `NULL` yayılımı, yıllık bütçe 12-ay dağılımı ve çapraz-döviz fatura tahsisi reddi testleri.
+- **Değişecek Mevcut Dosyalar:**
+  1. `src/lib/treasury/engine.ts` (`loadPositionSummary`, `loadLiquidityHorizons` — satır `85-185`) ve `src/app/(dashboard)/finance/treasury/page.tsx`: `unknown_opening_count > 0` olduğunda `available_now` ve `gap` alanlarını uydurma kesin sayı yerine `null` (`"— (açılış bakiyesi eksik: N hesap)"`) olarak işle ve hareket bazlı net değişimi (`movement_delta`) ayrı yardımcı satırda göster.
+  2. `src/lib/receivables/engine.ts` (`allocateCollection` — satır `218-245`): Uygulama katmanında da kaynak banka hareketi / makbuz döviz cinsi ile hedef fatura döviz cinsi eşleşmiyorsa `DomainError("VALIDATION", "Farklı para birimleri arasında kur çevrimsiz doğrudan tahsis yapılamaz.")` fırlat.
+  3. `scripts/db/constraints-verify.ts` ve `scripts/db/transitions-verify.ts`: Yeni çapraz-döviz tahsis tetikleyicisini, `VALIDATE` edilen 8 kısıtı ve `payment_instances` (`unpaid → late`) / `checks` (`bounced → cleared`) geçişlerini doğrula.
+  4. `docs/database-schema.md` ve `docs/calculation-rules.md`: `0099` şema ve hesaplama kurallarını belgele (`pnpm phase18:verify` zorunluluğu).
+
+#### `C1`) — Veritabanı Görünüm (`0094`/`0070`/`0078`/`0050`) Onarımı, `FIN-03` Bilinmeyen Açılış Bakiyesi, Kısıt Doğrulama ve FK İndeksleri (`Migration 0099`.. Veritabanı / SQL Migration (`0099`) Spesifikasyonu
+
+- **Dosya:** `supabase/migrations/0099_view_math_fin03_constraints_and_indexes.sql` (`BEGIN`/`COMMIT` ve `CONCURRENTLY` içermez; sıfır `float8`):
+  1. **Kredi Taksiti, Ödeme ve Çek Statü / Döviz / Kalan Tutar Onarımı (`WITH (security_invoker = true)`):**
+     - `public.debt_maturity_ladder`: `li.status IN ('planned', 'unpaid', 'partial', 'late')` filtresi kullan; sabit `'TRY'` yerine `l.currency` kolonuna göre grupla; kısmi ödenmiş varsa kalan anapara/taksit tutarını baz al.
+     - `public.liquidity_forecast_daily` ve `public.financial_calendar`:
+       - `loan_installments`: `li.status IN ('planned', 'unpaid', 'partial', 'late')`, para birimi `l.currency`.
+       - `payment_instances`: `pi.status IN ('planned', 'unpaid', 'partial', 'late')`, `pi.currency IS NOT NULL` (`coalesce(pi.currency, 'TRY')` kaldırılır; `currency IS NULL` olanlar `unknown_currency_count` olarak ayrı sayılır!), tutar `CASE WHEN pi.status = 'partial' THEN pi.amount - coalesce(pi.paid_amount, 0) ELSE pi.amount END`.
+       - `checks`: `c.status IN ('planned', 'in_portfolio', 'in_bank_collection', 'issued_to_vendor')`, para birimi `c.currency` (sabit `'TRY'` kaldırılır!).
+       - **Çift Sayım Engeli:** Bir fatura (`invoices`) halihazırda bir `payment_instances` veya `checks` kaydına bağlıysa (`settled_by_check_id` / `linked_invoice_id`) aynı nakit çıkışını hem fatura hem çek/ödeme dalında iki kez toplama.
+  2. **`FIN-03` Bilinmeyen Açılış Bakiyesi ve Hazine Mutabakatı:**
+     - `public.bank_cash_position`: `ca.opening_balance IS NULL` ise `opening_known = false`, `movement_net = sum(...)`, `derived_balance = NULL` (`ca.opening_balance + movement_net` doğal SQL `NULL` yayılımı!).
+     - `public.treasury_position_summary`: Para birimi bazında `unknown_opening_count = count(*) FILTER (WHERE ca.is_active AND ca.opening_balance IS NULL)`; `unknown_opening_count > 0` ise `available_now = NULL`, `movements_only_total = sum(movement_net)`.
+     - `public.treasury_liquidity_gap`: `available_now IS NULL` olduğunda `projected_closing = NULL`, `liquidity_gap = NULL`, `floor_breached = NULL` (`status = 'unknown_opening_balance'`).
+     - `public.treasury_cashflow_reconciliation`: Aktif `TRY` hesaplarının hepsinin `opening_balance` değeri biliniyorsa `sum(ca.opening_balance) + net_movements` ile `cashflow_months.closing_balance` karşılaştırılır; `unknown_opening_count > 0` ise sahte `'divergent'` yerine `'incomplete_opening_balance'` döndürür.
+  3. **Diğer 7 Görünüm ve Çapraz-Döviz Kısıtı:**
+     - `public.current_account_ledger`: `(party_id, currency)` bazında grupla; satış faturası (`sale`) `+borç (alacak artışı)`, tahsilat `-alacak`; alış faturası (`purchase`) `-alacak (borç artışı)`, ödeme `+borç` olarak muhasebe işaretini düzelt.
+     - `enforce_invoice_allocation_currency()` (`BEFORE INSERT OR UPDATE ON public.invoice_allocations`): Fatura `currency` değeri ile kaynak `bank_transactions` / `unallocated_receipts` `currency` değeri eşit değilse `RAISE EXCEPTION 'cross_currency_allocation_forbidden' USING ERRCODE = '23514'`.
+     - `public.control_large_payments` ve `public.control_approval_bypass`: Yabancı para ödemelerde `fx_rate_snapshots` üzerinden en güncel `<= due_date` TCMB kuruyla `try_equivalent` hesaplayarak `100000` TL eşiğiyle kıyasla (kur yoksa `needs_fx_review = true` olarak ayrıca bayrakla).
+     - `public.cash_forecast_13w` ve `public.optimization_run_summary`: `currency` kolonunu `GROUP BY` anahtarına ekle.
+     - `public.budget_vs_actual`: Yıllık (`period_granularity = 'annual'`) bütçe satırlarını ilgili bütçe yılının 12 ayına eşit/dönemsel dağıt veya yıllık toplam gerçeklerle kıyasla; kategori birleştirmesini `actuals` alt sorgusunda önceden toplayarak $N$-kat çarpılma (`fan-out`) hatasını sıfırla.
+     - `public.payment_priority_queue`: `WHERE p.status = 'active' AND pi.direction = 'outflow'` filtrelerini zorla.
+     - `public.control_dashboard`: Korelasyonlu alt sorguları tek taramalı CTE `UNION ALL` toplamına dönüştür.
+  4. **Şema Tutarlılığı, Durum Makinesi ve Sıcak FK İndeksleri:**
+     - `0083` çatışması: `public.attachments` üzerindeki `document_id` FK kuralını `ON DELETE RESTRICT` yap (ek silinmezlik tetikleyicisiyle %100 uyumlu).
+     - `0034` geçiş bekçisi güncellemesi: `payment_instances` için `unpaid → late` ve `planned → late`; `checks` için `bounced → cleared` ve `bounced → cancelled` geçişlerine izin ver.
+     - `0023` ve `0025` içindeki 8 `NOT VALID` kısıt için `ALTER TABLE ... VALIDATE CONSTRAINT ...` çalıştır; serbest `currency` kolonu taşıyan tablolarda `CHECK (currency IS NULL OR currency ~ '^[A-Z]{3}$')` kuralını uygula; sıcak FK kolonlarına (`invoices(party_id)`, `payment_instances(payment_id, status, due_date)`, `bank_transactions(bank_account_id, status, tx_date)`, `invoice_allocations(invoice_id)`, `loan_installments(loan_id, status, due_date)`, `checks(status, maturity_date)`, `approvals(entity_table, entity_id, status)`) eksik B-tree indekslerini ekle.
+
+#### `C1`) — Veritabanı Görünüm (`0094`/`0070`/`0078`/`0050`) Onarımı, `FIN-03` Bilinmeyen Açılış Bakiyesi, Kısıt Doğrulama ve FK İndeksleri (`Migration 0099`.. Adım Adım Uygulama Talimatları
+
+1. `0099` içinde yeniden tanımlanan her görünümün `CREATE OR REPLACE VIEW public.<name> WITH (security_invoker = true) AS ...` ile başladığını ve `REVOKE INSERT, UPDATE, DELETE` kuralını koruduğunu doğrula.
+2. Görünüm kolon imzası değişen yerlerde (`DROP VIEW` gerekiyorsa bağımlılık sırasıyla yeniden oluşturup `0057` `SELECT` yetkilerini geri ver) tüm bağımlı görünümlerin eksiksiz ayağa kalktığını `db:migrate` üzerinde test et.
+3. `src/lib/treasury/engine.ts` ve `receivables/engine.ts` güncellemelerini yap; `docs/database-schema.md` içine `0099` kaydını ekle.
+
+#### `C1`) — Veritabanı Görünüm (`0094`/`0070`/`0078`/`0050`) Onarımı, `FIN-03` Bilinmeyen Açılış Bakiyesi, Kısıt Doğrulama ve FK İndeksleri (`Migration 0099`.. Zorunlu Doğrulama & Kabul Kapısı (Yalnız Tek Kullanımlık DB!)
+
+- Tek kullanımlık `mas_radar_c1_verify` veritabanında:
+  - `pnpm db:migrate` → `0099` sıfır hatayla uygulanır.
+  - `pnpm exec vitest run tests/financial/view-math-and-fin03.test.ts tests/security/view-security-invoker.test.ts` → **PASS** (48 `'planned'` kredi taksiti görünür, `100.000 USD` çek `TRY` likidite açığına karışmaz, `opening_balance IS NULL` iken `available_now` `NULL` döner, `USD → TRY` tahsis `23514` ile reddedilir).
+  - `pnpm db:constraints:verify && pnpm db:transitions:verify && pnpm db:roles-rls:verify` → **ALL PASS**.
+- Kalıcı kapılar: `pnpm typecheck && pnpm lint && pnpm phase17:verify && pnpm phase18:verify && pnpm boundary:verify` → **ALL PASS**.
+
+---
+
+### Faz 45 (`C2`) — Veritabanı Seviyesinde Dönem Kilidi (`Hard Period Lock`) ve Kapanış Kontrol Kapısı (`Migration 0100`)
+
+#### `C2`) — Veritabanı Seviyesinde Dönem Kilidi (`Hard Period Lock`) ve Kapanış Kontrol Kapısı (`Migration 0100`.. Fazın Amacı & Çözdüğü Rapor Bulguları / Rakip Mekanikleri
+
+- **Amaç:** Kapanmış (`status = 'locked'`) bir finansal aya geçmişe dönük fatura, ödeme, nakit satırı, çek, kredi taksiti veya banka hareketi eklenmesini/değiştirilmesini/silinmesini uygulama koduna güvenmeden **doğrudan PostgreSQL `BEFORE` tetikleyicisiyle** engellemek; dönem kilitleme ve yeniden açma (`reopen`) yetkisini zorunlu gerekçe ve denetim iziyle yalnız `finance_manager` / `admin` katmanına bağlamak.
+- **Kapatılan Rapor Bulguları:** `B4-04` (sıfır DB dönem kilidi, `finance_operator` kilit açma açığı, `cm.updated_at` ile silinen kapalı dönem mutasyon kanıtı).
+
+#### `C2`) — Veritabanı Seviyesinde Dönem Kilidi (`Hard Period Lock`) ve Kapanış Kontrol Kapısı (`Migration 0100`.. Değişecek Mevcut Dosyalar & Oluşturulacak Yeni Dosyalar
+
+- **Oluşturulacak Yeni Dosyalar:**
+  1. `supabase/migrations/0100_hard_period_lock_enforcement.sql` — `cashflow_months` kilit metadata kolonları, rol-korumalı durum geçişi ve 7 finansal tabloda `enforce_closed_period_lock()` tetikleyicisi.
+  2. `src/lib/cashflow/period-lock.ts` — Kapanış öncesi ön-kontrol (`evaluatePeriodCloseReadiness`: eşleşmemiş banka hareketi sayısı, taslak/onaysız fatura sayısı, eksik tutarlı ödeme sayısı, süreklilik kopukluğu), dönem kilitleme (`lockCashflowPeriod`) ve gerekçeli yeniden açma (`reopenCashflowPeriod`) servis fonksiyonları.
+  3. `tests/financial/period-lock.test.ts` — Kilitli aya `INSERT`/`UPDATE`/`DELETE` denemelerinin tüm 7 tabloda `P0001` / `period_locked` ile reddedildiğini, `finance_operator` kilit açma denemesinin reddedildiğini ve yönetici `reopen` akışının `audit_logs` kaydı ürettiğini doğrulayan test.
+- **Değişecek Mevcut Dosyalar:**
+  1. `src/app/(dashboard)/cashflow/[monthId]/page.tsx` ve `src/app/(dashboard)/cashflow/actions.ts`: Ay detay ekranına **"Dönem Kapanış Kontrol Listesi"** kartı, **"Dönemi Kilitle"** (`finance_manager+`) ve zorunlu gerekçeli **"Kilidi Yeniden Aç"** çekmecesi ekle.
+  2. `tests/interaction/manifest.ts`: `/cashflow/[monthId]` dönem kilitleme ve yeniden açma kontrollerini `mutation` sınıfıyla kaydet.
+  3. `docs/database-schema.md`: `0100_hard_period_lock_enforcement.sql` kaydını ekle (`pnpm phase18:verify` zorunluluğu).
+
+#### `C2`) — Veritabanı Seviyesinde Dönem Kilidi (`Hard Period Lock`) ve Kapanış Kontrol Kapısı (`Migration 0100`.. Veritabanı / SQL Migration (`0100`) Spesifikasyonu
+
+- **Dosya:** `supabase/migrations/0100_hard_period_lock_enforcement.sql`:
+  1. `public.cashflow_months` tablosuna `locked_at timestamptz`, `locked_by uuid REFERENCES public.users(id)`, `reopened_at timestamptz`, `reopened_by uuid REFERENCES public.users(id)`, `reopen_reason text`, `lock_fingerprint text` kolonlarını ekle.
+  2. `enforce_cashflow_month_lock_transition()` (`BEFORE UPDATE ON public.cashflow_months`):
+     - `NEW.status = 'locked'` veya `OLD.status = 'locked'` geçişlerinde `current_user NOT IN ('mas_radar_finance_manager', 'mas_radar_admin', 'postgres')` ise `RAISE EXCEPTION 'period_lock_requires_manager' USING ERRCODE = '42501'`.
+     - `OLD.status = 'locked' AND NEW.status <> 'locked'` (yeniden açma) ise `NEW.status` yalnız `'reviewed'` olabilir ve `coalesce(length(trim(NEW.reopen_reason)), 0) < 10` ise `RAISE EXCEPTION 'period_reopen_reason_required' USING ERRCODE = '23514'`.
+     - Kilitli durumdayken (`OLD.status = 'locked' AND NEW.status = 'locked'`) `opening_balance`, `projected_income`, `projected_expense`, `monthly_delta`, `closing_balance` kolonlarının değiştirilmesini engelle.
+  3. `enforce_closed_period_lock()` (`BEFORE INSERT OR UPDATE OR DELETE`):
+     - İşlemin etkilediği tarih(ler) (`OLD` ve `NEW` üzerindeki ilgili tarih kolonu: `payment_instances.due_date` ve `paid_at::date`, `cashflow_lines` bağlı `cashflow_month_id`, `invoices.issue_date` ve `due_date`, `invoice_allocations.allocated_at::date`, `checks.maturity_date`, `loan_installments.due_date` ve `paid_at::date`, `bank_transactions.tx_date`) için `date_trunc('month', target_date)::date` ayı `public.cashflow_months` tablosunda `status = 'locked'` ise `RAISE EXCEPTION 'period_locked: % ayı kilitlidir, kayıt değiştirilemez.', to_char(target_month, 'YYYY-MM') USING ERRCODE = 'P0001'`.
+  4. `public.control_closed_period_mutations` (`WITH (security_invoker = true)`): `cm.updated_at` yerine değiştirilemez `cm.locked_at` zaman damgasını baz alacak şekilde güncelle.
+
+#### `C2`) — Veritabanı Seviyesinde Dönem Kilidi (`Hard Period Lock`) ve Kapanış Kontrol Kapısı (`Migration 0100`.. Adım Adım Uygulama Talimatları
+
+1. `0100` migration'ını yazarken hem eski tarihten açık aya kayıt taşınmasını (`OLD.due_date` kilitli ayda!) hem de açık aydan kilitli aya tarih kaydırılmasını (`NEW.due_date` kilitli ayda!) ikili olarak kontrol et.
+2. `src/lib/cashflow/period-lock.ts` içinde PostgreSQL `period_locked` hatasını yakalayıp kullanıcıya anlaşılır Türkçe `DomainError("CONFLICT", "Seçili dönem kilitli olduğu için işlem yapılamaz. Düzeltme için Finans Yöneticisi dönem kilidini gerekçeli olarak açmalıdır.")` mesajına çevir.
+
+#### `C2`) — Veritabanı Seviyesinde Dönem Kilidi (`Hard Period Lock`) ve Kapanış Kontrol Kapısı (`Migration 0100`.. Zorunlu Doğrulama & Kabul Kapısı (Yalnız Tek Kullanımlık DB!)
+
+- Tek kullanımlık `mas_radar_c2_verify` veritabanında `pnpm db:migrate` ve `pnpm exec vitest run tests/financial/period-lock.test.ts` → **PASS** (7 tablonun tamamında kilitli aya yazma/silme reddedilir; açık aya yazma normal çalışır; yönetici gerekçeli kilit açma + yeniden kilitleme tam `audit_logs` izi bırakır).
+- Kalıcı kapılar: `pnpm typecheck && pnpm lint && pnpm phase17:verify && pnpm phase18:verify && pnpm boundary:verify` → **ALL PASS**.
+
+---
+
+### Faz 46 (`C3`) — Çekirdek Finans Motorları Onarımı (Davranışsal Tahsilat V2, Likidite Çözücü, Canlı TCMB Kur, Hazine Tabanı, Banka Eşleştirici, Kredi Vadesi ve TR Resmi Vergi/SGK Takvimi)
+
+#### `C3`) — Çekirdek Finans Motorları Onarımı (Davranışsal Tahsilat V2, Likidite Çözücü, Canlı TCMB Kur, Hazine Tabanı, Banka Eşleştirici, Kredi Vadesi ve TR Resmi Vergi/SGK Takvimi.. Fazın Amacı & Çözdüğü Rapor Bulguları / Rakip Mekanikleri
+
+- **Amaç:** `src/lib/*` altındaki tüm finansal hesaplama hatalarını tek fazda sıfırlamak: Tesorio/HighRadius tarzı **5 Katmanlı Deterministik Davranışsal Tahsilat Tarihi (`expectedCollectionDateV2`)** ile "Today Cliff" hatasını kaldırmak ve `null` kalan alacak yoğunlaşmasını onarmak; likidite optimizasyon çözücüsünü çek/kredi/açık fatura/döviz/amaç fonksiyonuna kavuşturup sabit `"Cagdas"/"Hpt"` kodunu temizlemek; canlı TCMB XML ayrıştırıcısını gerçek TCMB formatıyla çalıştırmak; hazine ufuk-içi temerrüt tespitini ve 90 takvim günü taban bölenini düzeltmek; banka eşleştiricisinde işaret/döviz kontrolünü sağlamak; kredi taksitlerinde Şubat-28 vade kaymasını düzeltmek ve Türkiye resmi tatil/hafta sonu kaydırmalı (**VUK Md. 18**) **Türkiye Resmi Vergi/SGK Takvim Motorunu** kurmak (2024'te kalkan BA/BS olmadan, 7566 Sayılı Kanun 4. Dönem Geçici Vergi dahil!).
+- **Kapatılan Rapor Bulguları:** `B3-01`, `B3-02`, `B3-03`, `B3-05`, `B3-06`, `docs/todo.md` backlog `#4`, `#5`, `Çapraz Hakemlik §9.2` (BA/BS çürütmesi + Geçici Vergi).
+
+#### `C3`) — Çekirdek Finans Motorları Onarımı (Davranışsal Tahsilat V2, Likidite Çözücü, Canlı TCMB Kur, Hazine Tabanı, Banka Eşleştirici, Kredi Vadesi ve TR Resmi Vergi/SGK Takvimi.. Değişecek Mevcut Dosyalar & Oluşturulacak Yeni Dosyalar
+
+- **Oluşturulacak Yeni Dosyalar:**
+  1. `src/lib/calendar/tr-holidays.ts` — Türkiye resmi tatilleri (1 Ocak, 23 Nisan, 1 Mayıs, 19 Mayıs, 15 Temmuz, 30 Ağustos, 29 Ekim + 2026–2030 Ramazan ve Kurban Bayramı arife/bayram günleri tablosu) ve `nextTurkishBusinessDay(isoDate: string): { effectiveDate: string; shiftedFrom: string | null; reason: string | null }` (**VUK Md. 18** hafta sonu + resmi tatil kaydırma fonksiyonu).
+  2. `src/lib/calendar/tr-tax-calendar.ts` — Deterministik Türkiye vergi/SGK yükümlülük takvim üreteci:
+     - **KDV-2 (Sorumlu Sıfatıyla Tevkifat KDV):** Takip eden ayın **25'i** (beyan ve ödeme)
+     - **Muhtasar ve Prim Hizmet Beyannamesi (MPHB — Stopaj/Damga):** Takip eden ayın **26'sı**
+     - **KDV-1 (Katma Değer Vergisi):** Takip eden ayın **28'i**
+     - **SGK 4/a İşveren ve İşçi Sigorta Primleri:** Takip eden ayın **son günü**
+     - **Kurumlar Geçici Vergi (4 Dönem — 7566 Sayılı Kanun uyumlu):** Q1 **17 Mayıs**, Q2 **17 Ağustos**, Q3 **17 Kasım**, Q4 **17 Şubat**
+     - **Kurumlar Vergisi Yıllık Beyan ve Ödeme:** **30 Nisan**
+     - **Motorlu Taşıtlar Vergisi (MTV 1. ve 2. Taksit):** **31 Ocak** ve **31 Temmuz**
+     *(Yürürlükten kaldırılan BA/BS formları kesinlikle üretilmez; tüm tarihler `nextTurkishBusinessDay` ile ilk iş gününe kaydırılır.)*
+  3. `tests/financial/core-engines-c3.test.ts` — Davranışsal tahsilat V2, canlı TCMB gerçek XML örneği, Ocak-31 başlangıçlı 36 ay kredi vade koruma, ufuk-içi Gün-3 temerrüt tespiti, VUK Md. 18 tatil kaydırması ve 4 dönem Geçici Vergi dahil kapsamlı birim test paketi.
+- **Değişecek Mevcut Dosyalar:**
+  1. `src/lib/collections/rules.ts` (satır `60-115`) ve `src/lib/collections/engine.ts` (satır `150-210`):
+     - `expectedCollectionDateV2`:
+       1. `badDebtFlagged === true` → `projectedDate: null, bucket: "doubtful_excluded"` (asla 7 günlük likidite girişine eklenmez!).
+       2. Aktif ve kırılmamış (`status = 'open' AND promised_date >= todayISO`) `promise_to_pay` varsa → `promised_date` (`bucket: "promised"`).
+       3. Müşterinin geçmiş kapanmış faturalarından (`invoice_allocations`) en az 3 örneklem varsa medyan `DBT` (`days_beyond_terms`, `P75` ihtiyatlı mod seçeneğiyle): `dueDate + medianDbt >= todayISO` ise o tarih (`bucket: "behavioral_dbt"`).
+       4. Henüz vadesi gelmemiş fatura (`dueDate >= todayISO`) → `dueDate + defaultLag` (`bucket: "scheduled"`).
+       5. Vadesi geçmiş ve beklenen tarihi `todayISO` öncesinde kalan açık fatura → **asla `todayISO` üzerine yığılmaz**, `projectedDate: null, bucket: "overdue_unscheduled"` olarak ayrı **"Takvime Bağlanmamış Gecikmiş Alacak"** kovasında gösterilir!
+     - `loadReceivableRisk`: `SELECT` listesine `currency` kolonunu ekle; `TRY` alacaklar için `concentrationRatio` hesabını canlandır ve dövizli alacak yoğunlaşmasını para birimi bazında ayrı döndür.
+  2. `src/lib/optimization/engine.ts` (satır `50-175`) ve `src/lib/optimization/rules.ts` (satır `170-365`):
+     - Günlük yüklemelere `checks` (`outflow`/`inflow`), `loan_installments` (`planned`/`unpaid`/`partial`/`late`) ve şablonsuz açık `payables_open` faturalarını dahil et; tüm sorgularda `currency = $1` filtresi uygula.
+     - `FIN-03` uyarınca `openingCash === null` ise çözücüyü uydurma `0` kasa ile koşturma; `"Açılış bakiyesi bilinmeyen aktif hesap bulunduğu için optimizasyon simülasyonu durduruldu"` uyarısı döndür.
+     - `credit_facilities` tablosundan gerçek `drawn_amount` değerini oku ve `input.objective` (`"min_cost" | "max_buffer" | "min_deferrals"`) sıralama/amaç fonksiyonunu gerçekten uygula.
+  3. `src/lib/scenarios/engine.ts` (satır `150-190`) ve `src/lib/scenarios/rules.ts` (satır `75-120`):
+     - Sabit `"Cagdas"` ve `"Hpt"` dizgelerini kaldır; gerçek en büyük açık tedarikçi/müşteri satırlarından dinamik aday türet.
+  4. `src/lib/fx/provider.ts` (satır `70-125`) ve `src/lib/fx/rules.test.ts` (satır `110-140`):
+     - `parseTcmbXml` içinde gerçek TCMB kök etiketi `<Tarih_Date[^>]*\bTarih="(\d{2})\.(\d{2})\.(\d{4})"` üzerinden bülten tarihini ayrıştır (yedek olarak `Date="(\d{2})\/(\d{2})\/(\d{4})"` Amerikan formatını `YYYY-MM-DD` çevir); kaydedilen kur satırında `bulletin_date` (TCMB bülten tarihi) ile `queried_date` ayrımını koru. `rules.test.ts` içine gerçek TCMB XML başlığı koy.
+  5. `src/lib/treasury/rules.ts` (satır `80-120`) ve `src/lib/treasury/engine.ts` (satır `240-295`):
+     - Likidite açığı ve taban ihlali hesabında yalnızca ufuk sonu (`day N`) kapanışına değil, `[todayISO .. todayISO + N]` aralığındaki **en düşük kümülatif günlük bakiyeye (`minIntraHorizonBalance`, `worstDayISO`)** bak!
+     - Dinamik nakit tabanı (`resolveFloor`) hesabında son 90 gündeki toplam çıkışı aktif çıkış gün sayısına değil, sabit **`90` takvim gününe** (`Big(total90dOutflow).div(90)`) böl.
+  6. `src/lib/bank/rules.ts` (satır `95-115`, `365-390`) ve `src/lib/bank/engine.ts` (satır `340-390`):
+     - Eşleştirme adaylarında işaret yönü (`tx.amount > 0` ↔ `inflow/sale`, `tx.amount < 0` ↔ `outflow/purchase`) ve `tx.currency === candidate.currency` eşitliğini zorunlu kıl (`Math.abs` ile ters yönlü eşleştirmeyi kaldır); açık `0,00` tutarları `0` olarak koru.
+  7. `src/lib/briefing/engine.ts` (satır `55-75`, `125-165`), `src/lib/briefing/rules.ts` (satır `98-115`), `src/lib/analytics/engine.ts` (satır `150-230`), `src/lib/analytics/analyses.ts` (satır `255-340`), `src/lib/reports/rules.ts` (satır `150-305`), `src/lib/reports/engine.ts` (satır `35-195`), `src/lib/facts/engine.ts` (satır `100-125`):
+     - `briefing`: `TRY` satırı yoksa yabancı döviz satırına `" TL"` damgası vurma; `gap7 === null` iken `"kritik kalem görünmüyor"` yerine `"7 günlük likidite açığı hesaplanamadı (açılış bakiyesi eksik)"` yaz.
+     - `analytics`: `runAgeingDistribution` içine `currency` parametresi (`varsayılan 'TRY'`) ekle; `runRollingTrend` içinde `asOf` tarihini uygula, `NULL` tutarlı günleri `0` saymadan işaretle, 7 takvim günü penceresi ve `Big` aritmetiği kullan; `analyses.ts:260` nakit köprüsünde bilinmeyen gelir/gider varken mutabakat hükmünü `"incomplete_unknown_lines"` yap.
+     - `reports` & `facts`: `watchRatio` eşik dalını düzelt (`criticalRatio` vs `watchRatio` vs `"healthy"`), ayın 1'i çift sayımını (`< nextMonthStart` yarı-açık aralık) ve `inflow` çeklerin borç servisine eklenmesini düzelt; `facts` nakit pistini (`runway`) geçmiş aylardan değil `todayMonthStart` ve sonrasındaki ileri projeksiyon aylarından hesapla.
+  8. `src/lib/financing/rules.ts` (satır `230-260`) ve `src/lib/financing/engine.ts` (satır `238-255`, `380-395`):
+     - `addMonthsPreservingAnchorDay(firstPaymentDateISO: string, monthOffset: number)` kullanarak `2026-01-31` başlangıçlı kredide Şubat taksitinin `2026-02-28`, Mart taksitinin ise tekrar **`2026-03-31`**, Nisan'ın **`2026-04-30`** olmasını sağla (28'e kalıcı kilitlenme biter!).
+     - `schedule[inst.no - 1]` dizin erişimini `Map<number, Installment>` ile değiştir; `(kkdf ?? 0) + (bsmv ?? 0) || null` ifadesini `kkdf === null && bsmv === null ? null : Big(kkdf ?? 0).plus(bsmv ?? 0).toNumber()` olarak düzelt.
+
+#### `C3`) — Çekirdek Finans Motorları Onarımı (Davranışsal Tahsilat V2, Likidite Çözücü, Canlı TCMB Kur, Hazine Tabanı, Banka Eşleştirici, Kredi Vadesi ve TR Resmi Vergi/SGK Takvimi.. Veritabanı / SQL Migration / Arka Plan İşçisi Spesifikasyonu
+
+- Bu faz Faz 44 (`0099`) görünümleri üzerine oturur; `tr-tax-calendar.ts` çıktısı birleşik finansal takvim servisinde (`/cashflow/calendar`) ve Faz 54'teki 13 haftalık doğrudan nakit tahmininde deterministik yasal yükümlülük katmanı olarak kullanılır.
+
+#### `C3`) — Çekirdek Finans Motorları Onarımı (Davranışsal Tahsilat V2, Likidite Çözücü, Canlı TCMB Kur, Hazine Tabanı, Banka Eşleştirici, Kredi Vadesi ve TR Resmi Vergi/SGK Takvimi.. Adım Adım Uygulama Talimatları
+
+1. Tüm parasal hesaplamalarda `src/lib/money.ts` (`Big`) yardımcılarını kullan; hiçbir dosyada `::float8` veya JS kayan noktalı para toplaması yazma.
+2. `expectedCollectionDateV2` geçişinde mevcut `phase23` ve `phase25` testlerinin beklentilerini kontrol et: vadesi geçmiş tahsilatların artık sahte `todayISO` girişi yerine `overdue_unscheduled` kovasında raporlandığını hem pozitif hem negatif vakalarla doğrula.
+3. `docs/calculation-rules.md` dosyasını yeni `expectedCollectionDateV2`, `minIntraHorizonBalance`, `90-gün` taban böleni, çapası korunan kredi vadeleri ve Türkiye vergi takvimi kurallarıyla güncelle.
+
+#### `C3`) — Çekirdek Finans Motorları Onarımı (Davranışsal Tahsilat V2, Likidite Çözücü, Canlı TCMB Kur, Hazine Tabanı, Banka Eşleştirici, Kredi Vadesi ve TR Resmi Vergi/SGK Takvimi.. Zorunlu Doğrulama & Kabul Kapısı
+
+- `pnpm exec vitest run tests/financial/core-engines-c3.test.ts tests/financial src/lib/collections src/lib/optimization src/lib/fx src/lib/treasury src/lib/bank src/lib/financing src/lib/analytics src/lib/reports src/lib/briefing` → **ALL PASS**
+- Kalıcı kapılar: `pnpm typecheck && pnpm lint && pnpm phase17:verify && pnpm phase18:verify && pnpm boundary:verify` → **ALL PASS**.
+
+---
+
+## 7. KÜME D — BİLGİ MİMARİSİ SADELEŞTİRMESİ, KAPANMAYAN İŞ DÖNGÜLERİNİN KAPATILMASI VE CFO İŞ AKIŞLARI
+
+---
+
+### Faz 47 (`D1`) — Bilgi Mimarisi Konsolidasyonu, 11 Eski Yönlendirme Klasörünün Temizliği, Tekil Metrik Sözleşmesi ve Çift `Ctrl+K` / Ödeme Düzenleme Formu Onarımı
+
+#### `D1`.. Fazın Amacı & Çözdüğü Rapor Bulguları / Rakip Mekanikleri
+
+- **Amaç:** `next.config.ts` `308` yönlendirmeleri arkasında kalan 11 eski gölge rota klasörünü (`1.028` satır ölü sayfa kodu + tersine dönmüş `actions.ts` bağımlılıkları) ve kopya `/overview` ekranını temizlemek; `/finance` altındaki 17 taşan düz sekmeyi 1366px/1440px ekranlarda hiç kaybolmayacak gruplu alt-navigasyona dönüştürmek (`/system/diagnostics` sekmesini eklemek); aynı anda iki pencere açan Çift `Ctrl+K` / `⌘K` çakışmasını ve `/payments/[paymentId]/edit` formundaki zorunlu `archive_reason` kilidini düzeltmek; ekranlar arası 4 metrik çelişkisini (`partial` kalan tutar, 4 farklı `"Açık alacak"`, 2028 `"Mevcut nakit"`, döviz satırlarında sabit `" TL"`) ve ASCII Türkçe/İngilizce enum sızıntılarını sıfırlamak.
+- **Kapatılan Rapor Bulguları:** `Bölüm 6.1 #5` (`payment-form.tsx:128` `archive_reason` kilidi), `Bölüm 6.2` (4 metrik çelişkisi, çift `Ctrl+K`, 17 taşan `/finance` sekmesi, eksik `/system/diagnostics` sekmesi, 11 eski klasör + `/overview`, ASCII Türkçe).
+
+#### `D1`.. Değişecek Mevcut Dosyalar & Oluşturulacak Yeni Dosyalar
+
+- **Silinecek Eski Gölge Sayfa Klasörleri (12 Klasör — `next.config.ts` `308` kalıcı yönlendirmeleri korunur!):**
+  1. `src/app/(dashboard)/overview/` (`/` kanonik CFO Masasıdır; `next.config.ts` içinde `/overview → /` `308` yönlendirmesi eklenir)
+  2. `src/app/(dashboard)/admin/`
+  3. `src/app/(dashboard)/ask/`
+  4. `src/app/(dashboard)/assumptions/`
+  5. `src/app/(dashboard)/calendar/`
+  6. `src/app/(dashboard)/data-quality/`
+  7. `src/app/(dashboard)/financing/`
+  8. `src/app/(dashboard)/imports/`
+  9. `src/app/(dashboard)/phases/`
+  10. `src/app/(dashboard)/radar/`
+  11. `src/app/(dashboard)/reminders/`
+  12. `src/app/(dashboard)/reports/`
+  *(Silmeden önce kanonik rotaların eski klasörlerden yeniden dışa aktardığı tüm Server Action fonksiyonları doğrudan kanonik `src/app/(dashboard)/{payments,cashflow,finance,data,insights,system}/**/actions.ts` dosyalarına taşınır!)*
+- **Oluşturulacak Yeni Dosyalar:**
+  1. `src/lib/money-format.ts` — Döviz-duyarlı tekil para biçimlendirici: `formatMoney(amount: number | string | null, currency?: string | null): string` (`null` → `"—"`, `'TRY'` → `"12.345,67 TL"`, `'USD'` → `"12.345,67 USD"`, `'EUR'` → `"12.345,67 EUR"`, `currency == null` → `"12.345,67 (PB?)"` — asla yabancı paraya `" TL"` basmaz!).
+  2. `src/lib/metrics/canonical-kpis.ts` — Tüm kokpit ve modül başlıklarının tek kaynaktan okuduğu kanonik metrik yükleyicisi (7 günlük kalan çıkış, `TRY` açık alacak + döviz kovaları, hazine `available_now` + `unknown_opening_count`).
+  3. `tests/ui/ia-and-metric-consistency.test.tsx` — Tekil `Ctrl+K` dinleyicisi, `payment-form.tsx` düzenleme vs. arşivleme formu ayrımı, `formatMoney` döviz etiketleri ve eski 12 klasörün kaldırıldığının doğrulama testi.
+- **Değişecek Mevcut Dosyalar:**
+  1. `src/components/radar/payment-form.tsx` (satır `60-145`): Ana düzenleme `<form action={updatePaymentAction}>` içinden arşivleme alt kutusunu çıkarıp **ayrı kardeş `<form action={archivePaymentAction}>`** olarak aşağıya yerleştir; böylece `required name="archive_reason"` yalnızca **"Arşivle"** düğmesine basıldığında sorulsun ve **"Kaydet"** düğmesi engelsiz çalışsın!
+  2. `src/components/ui/nav.tsx` (satır `48-65`), `src/components/search/command-palette.tsx` (satır `33-55`) ve `src/components/search/command-palette-trigger.tsx`: `AppSidebar` içindeki ikinci `Ctrl+K` / `⌘K` modalını kaldır; klavye kısayolunu ve kenar çubuğundaki `"Hızlı erişim ⌘K"` düğmesini tek kanonik `CommandPalette` bileşenine bağla (`CommandPalette` içinde hem tam metin varlık araması `/api/search` hem de sayfa/komut geçişi birleşik çalışsın).
+  3. `src/app/(dashboard)/finance/layout.tsx`, `src/app/(dashboard)/system/layout.tsx` ve `src/components/ui/module-tabs.tsx`:
+     - `/finance` sekmelerini taşmayan 4 mantıksal grup başlığı altında (`Hazine & Banka`, `Alacak & Tahsilat`, `Borç, Çek & Kredi`, `Defter & Kârlılık`) sarılabilir (`flex-wrap`) veya grup seçicili yapıda düzenle; 1366px genişlikte **sıfır gizli sekme** garantisi ver.
+     - `/system/layout.tsx` sekmelerine eksik olan `/system/diagnostics` (`Tanılama`) sekmesini ekle.
+  4. `src/lib/radar/rules.ts` (satır `135-162`), `src/app/(dashboard)/payments/page.tsx`, `src/app/(dashboard)/finance/invoices/page.tsx`, `src/app/(dashboard)/finance/collections/page.tsx` (satır `48-65`), `src/app/(dashboard)/finance/receivables/page.tsx`, `src/app/(dashboard)/finance/profitability/page.tsx`, `src/app/(dashboard)/finance/checks/page.tsx`, `src/app/(dashboard)/finance/loans/page.tsx`, `src/app/(dashboard)/finance/facilities/page.tsx`, `src/app/(dashboard)/finance/promises/page.tsx`:
+     - `partial` ödemelerde kalan tutarı (`amount - paid_amount`) standartlaştır.
+     - `"Açık alacak"` kartlarını `canonical-kpis.ts` üzerinden sayfalanmamış tam DB toplamına (`TRY` ana kart + varsa `+ USD / EUR` rozetleri) bağla; `/finance/profitability` üzerindeki brüt ciro kartının adını dürüstçe `"Faturalanan Satış Hacmi"` yap.
+     - `/finance/collections/page.tsx:50` üzerindeki `overview.series[last].closing` (2028 kasası!) hatasını gerçek `treasury_position_summary` (`TRY` `available_now`) değerine bağla.
+     - Dövizli tablolardaki tüm `fmtTL(row.amount)` çağrılarını `formatMoney(row.amount, row.currency)` ile değiştir.
+  5. `src/lib/home/overview-snapshot.ts` ve Türkçe etiket taraması: `Dis varsayim` → `Dış varsayım`, `Donem` → `Dönem` başta olmak üzere tüm ASCII Türkçe kaçaklarını ve ham İngilizce enum değerlerini (`MISSING REQUIRED FIELD`, `FORMULA ERROR`, `MERGED CELL`, `UNMAPPED`, `NEEDS REVIEW`, `DIVERGENT`) temiz Türkçe etiketlere çevir.
+  6. `next.config.ts` ve `tests/interaction/manifest.ts`: `/overview → /` `308` yönlendirmesini ekle; manifestodaki rota ve kontrol kurallarını yeni birleşik yapıya göre güncelle.
+
+#### `D1`.. Veritabanı / SQL Migration / Arka Plan İşçisi Spesifikasyonu
+
+- Bu faz şema migration'ı gerektirmez; okuma katmanını, rota ağacını ve UI kabuğunu temizler.
+
+#### `D1`.. Adım Adım Uygulama Talimatları
+
+1. Her eski klasörü silmeden önce `git grep` ile o klasördeki `actions.ts` veya yardımcı bileşenlere dışarıdan yapılan tüm importları kanonik hedef klasöre taşı; hiçbir kırık import bırakma.
+2. `payment-form.tsx` içinde iç içe `<form>` (HTML standardında geçersizdir!) kesinlikle kurma; iki ayrı kardeş `<form>` elemanı kullan.
+3. 1366×768 ve 1440×900 görünüm genişliklerinde `/finance` altındaki tüm sekmelerin yatay kırpılma olmadan erişilebilir olduğunu doğrula.
+
+#### `D1`.. Zorunlu Doğrulama & Kabul Kapısı
+
+- `pnpm exec vitest run tests/ui/ia-and-metric-consistency.test.tsx tests/perf` → **PASS**
+- Kalıcı kapılar: `pnpm typecheck && pnpm lint && pnpm phase17:verify && pnpm phase18:verify && pnpm boundary:verify` → **ALL PASS**.
+
+---
+
+### Faz 48 (`D2`) — Canlı Maker-Checker Onay Döngüsü, Ödeme Çalıştırma Paketi (`payment_runs` + ISO 20022 `pain.001` / 4 Büyük Türk Bankası EFT İhracı) ve Banka Eşleştirme → Otomatik Kapanış (`Migration 0101`)
+
+#### `D2`) — Canlı Maker-Checker Onay Döngüsü, Ödeme Çalıştırma Paketi (`payment_runs` + ISO 20022 `pain.001` / 4 Büyük Türk Bankası EFT İhracı) ve Banka Eşleştirme → Otomatik Kapanış (`Migration 0101`.. Fazın Amacı & Çözdüğü Rapor Bulguları / Rakip Mekanikleri
+
+- **Amaç:** MAS Nakit Radar'ın en kritik operasyonel uçtan uca nakit çıkış/giriş döngüsünü (**Fatura / Ödeme → Maker-Checker Onayı + IBAN BEC Kalkanı → 14 Günlük Kasa Tabanı Simülasyonlu Ödeme Çalıştırma Paketi (`payment_runs`) → Banka EFT / `pain.001` Talimat Dosyası → Banka Hareketi Eşleştirme → Otomatik Ödeme/Fatura/Çek/Taksit Kapanışı**) kesintisiz kapatmak.
+- **Kapatılan Rapor Bulguları & Rakip Mekanikleri:** `Bölüm 6.1 #3` (`approvals` 0 canlı çağrıcı), `Bölüm 6.1 #4` (`/finance/bank` eşleşmenin kaydı kapatmaması, aday detayının gizli olması, yetim `reconcileAction`), `Bölüm 6.1 #6` (`/finance/collections` ödeme paketi ve EFT ihracı olmaması) + **Tipalti / Kyriba / Finekra** Payment Run & Liquidity Guardrail mekaniği.
+
+#### `D2`) — Canlı Maker-Checker Onay Döngüsü, Ödeme Çalıştırma Paketi (`payment_runs` + ISO 20022 `pain.001` / 4 Büyük Türk Bankası EFT İhracı) ve Banka Eşleştirme → Otomatik Kapanış (`Migration 0101`.. Değişecek Mevcut Dosyalar & Oluşturulacak Yeni Dosyalar
+
+- **Oluşturulacak Yeni Dosyalar:**
+  1. `supabase/migrations/0101_payment_runs_and_bank_settlement_links.sql` — `payment_runs`, `payment_run_items` tabloları, `bank_transactions` kapanış bağlantı kolonları, 5-katmanlı RLS ve geçiş bekçileri.
+  2. `src/lib/payments/payment-runs.ts` — Ödeme paketi oluşturma, **14 günlük kasa alt limiti (`minimum cash buffer`) delinme simülasyonu**, onaya gönderme (`requestApproval`), onay sonrası talimat kilitleme ve iptal servisleri.
+  3. `src/lib/payments/bank-export.ts` — Onaylanmış (`status = 'approved'`) ödeme paketinden deterministik banka ödeme talimatı üreticisi:
+     - **ISO 20022 `pain.001.001.03` XML** (kurumsal internet bankacılığı evrensel standardı, XML varlık kaçışı ve TR IBAN `MOD-97` doğrulamalı)
+     - **Garanti BBVA, Türkiye İş Bankası, Yapı Kredi ve Akbank Toplu EFT/Havale CSV & `.xlsx` (`ExcelJS`) Şablonları** (CSV formül enjeksiyonu korumalı).
+  4. `src/app/api/payments/runs/[runId]/export/route.ts` — `requireApiSession` + `can(role, "payment_runs", "select")` korumalı, yalnız `status IN ('approved', 'exported', 'settled')` paketler için banka talimat dosyası indirme ucu (`audit()` izli).
+  5. `tests/financial/payment-runs-approvals-and-bank-settlement.test.ts` — Fatura → onay → ödeme paketi → `pain.001` XML ihracı → banka hareketi eşleşmesi → fatura/ödeme kapanışı uçtan uca entegrasyon testi.
+- **Değişecek Mevcut Dosyalar:**
+  1. `src/lib/approvals/engine.ts` ve canlı mutasyon noktaları (`src/lib/invoices/engine.ts`, `src/lib/payments/engine.ts`, `src/lib/counterparties/engine.ts`, `src/lib/budget/engine.ts`):
+     - Eşik üstü ödeme/fatura (`>= approval_rules.threshold_amount`), **yeni veya değişmiş tedarikçi IBAN'ı (`iban_change_events` BEC dolandırıcılık kilidi!)** ve ödeme paketi (`payment_runs`) işlemlerinde `evaluateRules` pozitif döndüğünde doğrudan yürütme/onaylı yazma yerine otomatik `requestApproval` oluştur (`approval_status = 'pending_approval'`).
+     - `finance_approver` / `finance_manager` `/data/approvals` üzerinden onayladığında (`decideApproval`) hedef kaydın `approval_status = 'approved'` durumuna geçtiğini atomik olarak işle.
+  2. `src/lib/bank/engine.ts` (`acceptMatch`, `reconcileBankAccount` — satır `260-395`) ve `src/app/(dashboard)/finance/bank/page.tsx` + `actions.ts`:
+     - Eşleşme adayı kartlarında karşı taraf adını, fatura/ödeme/çek numarasını, açık kalan tutarı, para birimini ve vade tarihini açıkça göster.
+     - `acceptMatch` içinde kullanıcı eşleşmeyi onayladığında **aynı PostgreSQL transaction içinde**:
+       - Hedef `payment_instances` ise: `paid_amount` değerini artır, tam kapandıysa `status = 'paid'`, kısmi ise `status = 'partial'`, `paid_at = tx.tx_date` güncelle.
+       - Hedef `invoices` ise: `public.invoice_allocations` satırı ekle (mevcut `0048` tetikleyicisi faturanın `paid_amount` ve `status` alanlarını otomatik günceller!).
+       - Hedef `checks` ise: `checks.status = 'cleared'` güncelle ve `check_events` tablosuna `'cleared'` olayı düş.
+       - Hedef `loan_installments` ise: `loan_installments.status = 'paid'`, `paid_at = tx.tx_date` güncelle.
+       - Hedef bir `payment_run_items` kalemiyle ilişkiliyse kalemi `'settled'` yap; paketteki tüm kalemler kapandıysa `payment_runs.status = 'settled'` yap.
+     - Yetim duran `reconcileAction` mutabakat düğmesini `/finance/bank` hesap özeti başlığına bağla.
+  3. `src/app/(dashboard)/finance/collections/page.tsx` ve `actions.ts`: Seçili borç/ödeme kalemlerinden **"Ödeme Paketi Oluştur & 14 Gün Kasa Etkisini Simüle Et"** çalışma masasını ve onaylı paketler için **"Banka Talimat Dosyası İndir (`pain.001` / Banka Excel)"** akışını ekle.
+  4. `src/lib/authz/matrix.ts`, `tests/interaction/manifest.ts` ve `docs/database-schema.md`: `payment_runs` ve `payment_run_items` tablolarını RLS matrisine, etkileşim manifestosuna ve şema belgesine (`0101`) işle.
+
+#### `D2`) — Canlı Maker-Checker Onay Döngüsü, Ödeme Çalıştırma Paketi (`payment_runs` + ISO 20022 `pain.001` / 4 Büyük Türk Bankası EFT İhracı) ve Banka Eşleştirme → Otomatik Kapanış (`Migration 0101`.. Veritabanı / SQL Migration (`0101`) Spesifikasyonu
+
+- **Dosya:** `supabase/migrations/0101_payment_runs_and_bank_settlement_links.sql`:
+  - `public.payment_runs`: `id uuid PK`, `run_code text UNIQUE NOT NULL`, `planned_execution_date date NOT NULL`, `source_bank_account_id uuid NOT NULL REFERENCES public.bank_accounts(id)`, `currency text NOT NULL CHECK (currency ~ '^[A-Z]{3}$')`, `total_amount numeric(14,2) NOT NULL CHECK (total_amount > 0)`, `item_count int NOT NULL CHECK (item_count > 0)`, `pre_run_cash numeric(14,2)`, `projected_14d_min_cash numeric(14,2)`, `breaches_cash_floor boolean NOT NULL DEFAULT false`, `status text NOT NULL DEFAULT 'draft' CHECK (status IN ('draft','pending_approval','approved','exported','settled','cancelled'))`, `approval_id uuid REFERENCES public.approvals(id)`, `created_by uuid NOT NULL REFERENCES public.users(id)`, `approved_by uuid REFERENCES public.users(id)`, `approved_at timestamptz`, `exported_at timestamptz`, `notes text`, `created_at timestamptz`, `updated_at timestamptz`.
+  - `public.payment_run_items`: `id uuid PK`, `run_id uuid NOT NULL REFERENCES public.payment_runs(id) ON DELETE CASCADE`, `target_type text NOT NULL CHECK (target_type IN ('invoice','payment_instance','check','loan_installment'))`, `target_id uuid NOT NULL`, `party_id uuid REFERENCES public.parties(id)`, `beneficiary_name text NOT NULL`, `beneficiary_iban text NOT NULL`, `amount numeric(14,2) NOT NULL CHECK (amount > 0)`, `currency text NOT NULL`, `description text NOT NULL`, `iban_verified boolean NOT NULL DEFAULT false`, `settled_bank_tx_id uuid REFERENCES public.bank_transactions(id)`, `status text NOT NULL DEFAULT 'included' CHECK (status IN ('included','settled','excluded'))`.
+  - Açık bir hedef kalemin aynı anda iki aktif (`draft`/`pending_approval`/`approved`/`exported`) ödeme paketine eklenmesini önleyen kısmi benzersiz indeks (`CREATE UNIQUE INDEX payment_run_items_active_target_uq ON public.payment_run_items (target_type, target_id) WHERE status = 'included'`).
+  - 5-katmanlı RLS: `viewer` yalnız `SELECT`; `finance_operator` `draft` oluşturup onaya sunabilir (`pending_approval`); yalnız `finance_approver`, `finance_manager`, `admin` `status = 'approved'` yapabilir (yapıcı = onaylayıcı olamaz: `approved_by <> created_by` maker-checker kısıtı — tek yönetici acil durum bayrağı `audit_logs` gerekçeli istisnası hariç).
+
+#### `D2`) — Canlı Maker-Checker Onay Döngüsü, Ödeme Çalıştırma Paketi (`payment_runs` + ISO 20022 `pain.001` / 4 Büyük Türk Bankası EFT İhracı) ve Banka Eşleştirme → Otomatik Kapanış (`Migration 0101`.. Adım Adım Uygulama Talimatları
+
+1. TR IBAN doğrulamasını (`TR` + 24 rakam, ISO 7064 `MOD-97 == 1`) `bank-export.ts` içinde zorunlu kıl; geçersiz veya Faz 19'da onaylanmamış yeni IBAN içeren paketin `pain.001` ihracını blokla.
+2. `acceptMatch` kapama işleminde `SELECT ... FOR UPDATE` satır kilidi kullanarak aynı banka hareketinin eşzamanlı iki tıklamayla faturayı iki kez kapatmasını (yarış durumunu) önle.
+
+#### `D2`) — Canlı Maker-Checker Onay Döngüsü, Ödeme Çalıştırma Paketi (`payment_runs` + ISO 20022 `pain.001` / 4 Büyük Türk Bankası EFT İhracı) ve Banka Eşleştirme → Otomatik Kapanış (`Migration 0101`.. Zorunlu Doğrulama & Kabul Kapısı (Yalnız Tek Kullanımlık DB!)
+
+- Tek kullanımlık `mas_radar_d2_verify` veritabanında `pnpm db:migrate` ve `pnpm exec vitest run tests/financial/payment-runs-approvals-and-bank-settlement.test.ts` → **PASS** (**Dalga 2 ana kabul ölçütü:** *fatura → onay → ödeme paketi → `pain.001` talimatı → banka hareketi → eşleşme → otomatik kapanış* zincirinin tamamı tek uçtan uca testte kanıtlanır!).
+- `pnpm db:roles-rls:verify && pnpm db:constraints:verify && pnpm db:transitions:verify` → **ALL PASS**.
+- Kalıcı kapılar: `pnpm typecheck && pnpm lint && pnpm phase17:verify && pnpm phase18:verify && pnpm boundary:verify` → **ALL PASS**.
+
+---
+
+### Faz 49 (`D3`) — Türkiye Çek/Senet Bordrosu Yaşam Döngüsü (Portföy, Ciro, Banka Tahsil, Banka Teminat ve Karşılıksız Rücu Riski) (`Migration 0102`)
+
+#### `D3`) — Türkiye Çek/Senet Bordrosu Yaşam Döngüsü (Portföy, Ciro, Banka Tahsil, Banka Teminat ve Karşılıksız Rücu Riski) (`Migration 0102`.. Fazın Amacı & Çözdüğü Rapor Bulguları / Rakip Mekanikleri
+
+- **Amaç:** Türkiye ticari finansmanının belkemiği olan müşteri çeki/senedi cirosu, bankaya tahsile verme, kredi karşılığı bankaya teminata verme ve vadesinde karşılıksız (`bounced`) çıkma durumunda rücu riskini (`contingent recourse liability`) Logo / Mikro / Dia hassasiyetiyle modellemek. (Paraşüt API v4 içinde `/checks` ucu bulunmadığından MAS Çek/Senet Bordrosu birincil gerçek kaynağıdır!)
+- **Kapatılan Rapor Bulguları & Rakip Mekanikleri:** `Bölüm 7.2` (Paraşüt `/checks` boşluğu), `Bölüm 8.1` (Logo/Mikro Çek Bordrosu + ciro edilen çekin hem banka nakdine eklenmemesi hem de vadesi geçene kadar rücu riski olarak izlenmesi).
+
+#### `D3`) — Türkiye Çek/Senet Bordrosu Yaşam Döngüsü (Portföy, Ciro, Banka Tahsil, Banka Teminat ve Karşılıksız Rücu Riski) (`Migration 0102`.. Değişecek Mevcut Dosyalar & Oluşturulacak Yeni Dosyalar
+
+- **Oluşturulacak Yeni Dosyalar:**
+  1. `supabase/migrations/0102_turkish_check_bordro_lifecycle.sql` — `check_bordros` tablosu, `checks` genişletilmiş bordro durumları/ilişkileri, `check_events` bordro geçmişi ve rücu risk görünümü (`check_portfolio_and_recourse_summary`, `WITH (security_invoker = true)`).
+  2. `src/lib/financing/check-bordro.ts` — Bordro işlem motoru (`executeCheckBordroTransition`):
+     - **Müşteri Çeki (`direction = 'inflow'`):** `in_portfolio` → `endorsed_to_vendor` (seçilen tedarikçi faturasını `invoice_allocations` üzerinden kapatır, ancak çekin vadesi gelip `cleared` olana kadar şirket bilançosu dışında **`endorsedCheckRiskAmount` şarta bağlı rücu riski** olarak izler!) | `in_bank_collection` (bankada tahsilde) | `in_bank_collateral` (seçilen `credit_facilities` kredi limitine LTV teminatı olarak bağlanır!) → `cleared` | `bounced` (karşılıksız çıkarsa tedarikçiye ciro edilmişse rücu borcu uyarısı ve `control_alerts` P0 kaydı üretir) | `returned`.
+     - **Kendi Keşide Çekimiz (`direction = 'outflow'`):** `issued_to_vendor` → `cleared` | `bounced` | `cancelled`.
+  3. `tests/financial/turkish-check-bordro.test.ts` — Portföyden tedarikçiye ciro, ciro edilen çekin banka nakit tahminini şişirmeden tedarikçi borcunu kapatması, rücu riski hesabı, teminat LTV bağlantısı ve karşılıksız (`bounced`) rücu dönüşü testleri.
+- **Değişecek Mevcut Dosyalar:**
+  1. `src/app/(dashboard)/finance/checks/page.tsx` ve `src/app/(dashboard)/finance/actions.ts`: Çek ekranına **Bordro Özeti Kartları** (`Portföydeki Çekler`, `Tahsildeki Çekler`, `Teminattaki Çekler`, `Ciro Edilen Çek & Rücu Riski`, `Keşide Borç Çeklerimiz`) ve tekli/çoklu çek seçimiyle çalışan **"Bordro İşlemi (Ciro / Tahsile Ver / Teminata Ver / Tahsil-Ödeme Kapat / Karşılıksız)"** çekmecesi ekle.
+  2. `src/lib/authz/matrix.ts`, `scripts/db/transitions-verify.ts`, `tests/interaction/manifest.ts` ve `docs/database-schema.md`: `check_bordros` tablosunu, genişletilmiş `checks.status` geçiş matrisini, bordro UI kontrollerini ve `0102` şema kaydını işle.
+
+#### `D3`) — Türkiye Çek/Senet Bordrosu Yaşam Döngüsü (Portföy, Ciro, Banka Tahsil, Banka Teminat ve Karşılıksız Rücu Riski) (`Migration 0102`.. Veritabanı / SQL Migration (`0102`) Spesifikasyonu
+
+- **Dosya:** `supabase/migrations/0102_turkish_check_bordro_lifecycle.sql`:
+  - `public.check_bordros`: `id uuid PK`, `bordro_no text UNIQUE NOT NULL`, `bordro_type text NOT NULL CHECK (bordro_type IN ('customer_receipt','vendor_endorsement','bank_collection','bank_collateral','own_issue','settlement','bounce_return'))`, `bordro_date date NOT NULL`, `target_party_id uuid REFERENCES public.parties(id)`, `target_bank_account_id uuid REFERENCES public.bank_accounts(id)`, `target_facility_id uuid REFERENCES public.credit_facilities(id)`, `currency text NOT NULL`, `total_amount numeric(14,2) NOT NULL`, `notes text`, `created_by uuid REFERENCES public.users(id)`, `created_at timestamptz`.
+  - `public.checks` ek kolonları: `instrument_type text NOT NULL DEFAULT 'check' CHECK (instrument_type IN ('check','promissory_note'))`, `endorsed_to_party_id uuid REFERENCES public.parties(id)`, `collection_bank_account_id uuid REFERENCES public.bank_accounts(id)`, `collateral_facility_id uuid REFERENCES public.credit_facilities(id)`, `settled_invoice_id uuid REFERENCES public.invoices(id)`, `last_bordro_id uuid REFERENCES public.check_bordros(id)`; mevcut `'planned'` müşteri çekleri `direction = 'inflow'` için `'in_portfolio'`, `direction = 'outflow'` için `'issued_to_vendor'` ile geriye uyumlu eşlenir.
+  - **Likidite Çift Sayım Kalkanı:** `endorsed_to_vendor` durumundaki müşteri çeki **nakit giriş tahmininden (`liquidity_forecast_daily`) düşer** (çünkü nakit kasaya girmeyecek, tedarikçiye gitmiştir) ve aynı anda kapattığı tedarikçi faturası da açık borçtan düştüğü için likidite denklemi kuruşu kuruşuna tutar; buna karşılık `check_portfolio_and_recourse_summary` görünümü çek `cleared` olana dek `contingent_recourse_amount` alanında riski raporlar.
+
+#### `D3`) — Türkiye Çek/Senet Bordrosu Yaşam Döngüsü (Portföy, Ciro, Banka Tahsil, Banka Teminat ve Karşılıksız Rücu Riski) (`Migration 0102`.. Adım Adım Uygulama Talimatları
+
+1. Mevcut `phase5-verify.ts` regresyonunu kırmamak için eski `'planned'` durumunun okuma/geçiş uyumluluğunu koru veya yeni durumlarla deterministik eşle.
+2. Ciro bordrosunda çek para birimi ile kapatılan tedarikçi faturası para biriminin aynı olmasını (`c.currency = inv.currency`) zorunlu kıl.
+
+#### `D3`) — Türkiye Çek/Senet Bordrosu Yaşam Döngüsü (Portföy, Ciro, Banka Tahsil, Banka Teminat ve Karşılıksız Rücu Riski) (`Migration 0102`.. Zorunlu Doğrulama & Kabul Kapısı (Yalnız Tek Kullanımlık DB!)
+
+- Tek kullanımlık `mas_radar_d3_verify` veritabanında `pnpm db:migrate`, `pnpm exec vitest run tests/financial/turkish-check-bordro.test.ts` ve `pnpm db:transitions:verify && pnpm db:roles-rls:verify` → **ALL PASS**.
+- Kalıcı kapılar: `pnpm typecheck && pnpm lint && pnpm phase17:verify && pnpm phase18:verify && pnpm boundary:verify` → **ALL PASS**.
+
+---
+
+### Faz 50 (`D4`) — Kalan Tüm "Ekran Var Veri Yolu Yok" Modüllerinin Kapatılması (Bütçe Onayı, Kredi Limit/Teminat/Kovenant, Karşı Taraf IBAN/Boyut, Kârlılık Dağıtımı, Tahsilat Sözü, Doküman Kasası, Mutabakat İmzalama ve Üretim Formları) (`Migration 0103`)
+
+#### `D4`) — Kalan Tüm "Ekran Var Veri Yolu Yok" Modüllerinin Kapatılması (Bütçe Onayı, Kredi Limit/Teminat/Kovenant, Karşı Taraf IBAN/Boyut, Kârlılık Dağıtımı, Tahsilat Sözü, Doküman Kasası, Mutabakat İmzalama ve Üretim Formları) (`Migration 0103`.. Fazın Amacı & Çözdüğü Rapor Bulguları / Rakip Mekanikleri
+
+- **Amaç:** Rapor Bölüm 6.1'de tespit edilen ve arayüzü çizilmiş olduğu halde kullanıcıya hiçbir yazma/onay/aktarım yolu sunmayan kalan tüm ekranları (`/cashflow/budget`, `/finance/facilities`, `/finance/counterparties`, `/finance/profitability`, `/finance/promises`, `/finance/receivables`, `/data/documents`, `/data/reconciliation`, `/cashflow/controls`, `/production/*`) eksiksiz veri girişine, maker-checker onayına ve V2 Excel şablonu desteğine kavuşturmak; zombi tabloları ya canlı akışa bağlamak ya da temizlemek.
+- **Kapatılan Rapor Bulguları:** `Bölüm 6.1 #1, #2, #7, #8, #9, #10, #11, #12, #13`, `B4-05` (zombi şema yapıları).
+
+#### `D4`) — Kalan Tüm "Ekran Var Veri Yolu Yok" Modüllerinin Kapatılması (Bütçe Onayı, Kredi Limit/Teminat/Kovenant, Karşı Taraf IBAN/Boyut, Kârlılık Dağıtımı, Tahsilat Sözü, Doküman Kasası, Mutabakat İmzalama ve Üretim Formları) (`Migration 0103`.. Değişecek Mevcut Dosyalar & Oluşturulacak Yeni Dosyalar
+
+- **Oluşturulacak Yeni Dosyalar:**
+  1. `supabase/migrations/0103_close_operational_loops_and_reconciliation_signoffs.sql` — `facility_movements` (rotatif kredi kullanım/geri ödeme), `reconciliation_signoffs` (dönem mutabakat imzalama) tabloları, `promise_to_pay` fatura/döviz genişletmesi, `cost_models` / `machine_roi_snapshots` V2 tam alan kalıcılığı ve zombi `working_capital_trend_reference` temizliği/görünüme dönüşümü.
+  2. `src/app/(dashboard)/cashflow/budget/actions.ts` — `createBudgetAction`, `addBudgetLineAction`, `submitBudgetForApprovalAction`, `approveBudgetVersionAction` (`approver+`), `createForecastLineAction` Server Action'ları.
+  3. `src/app/(dashboard)/finance/facilities/actions.ts` — `createFacilityAction`, `recordFacilityMovementAction` (`drawdown` / `repayment` — `drawn_amount` değerini atomik günceller!), `addCollateralAction`, `upsertCovenantAction` Server Action'ları.
+  4. `src/app/(dashboard)/data/documents/actions.ts` ve `src/app/api/documents/[documentId]/download/route.ts` — Yerel `MAS_DOCUMENT_STORAGE_DIR` kasasına SHA-256 sağlama toplamlı, MIME beyaz listeli (`application/pdf`, `image/png`, `image/jpeg`, `.xlsx`), yol-geçişi (`path traversal`) korumalı dosya yükleme, fatura/ödeme/çek/bordro kaydına ekleme (`attachToEntity`) ve yetkili indirme ucu.
+  5. `src/app/(dashboard)/data/reconciliation/actions.ts` — Mutabakat farkından tek tıkla `action_items` görev üretme ve dönem mutabakat imzalama (`signOffReconciliationAction`) aksiyonları.
+  6. `tests/financial/closed-loops-d4.test.ts` — Bütçe satırı ekleme → onaylama → `budget_vs_actual` görünümünde varyansın belirmesi; kredi limiti + kullanım → `optimization` çözücüsünde gerçek `drawnAmount` okunması; doküman yükleme + SHA-256 doğrulama; IBAN eklemede `iban_change_events` üretimi testleri.
+- **Değişecek Mevcut Dosyalar:**
+  1. **Bütçe (`/cashflow/budget/page.tsx` + `src/lib/budget/engine.ts`):** Bütçe oluşturma, satır ekleme ve **"Onaya Gönder / Versiyonu Onayla (`draft → approved`)"** kontrollerini bağla; onaylandığı anda `/cashflow/budget`, `/insights/analysis` varyans şelalesi ve `/insights/briefing` bütçe kutusu gerçek veriyle canlansın!
+  2. **Kredi Limitleri, Teminat ve Kovenant (`/finance/facilities/page.tsx` + `src/lib/financing/facilities.ts` + `src/lib/importers/v2/{domain-map,template,mapper}.ts`):** CRUD çekmecelerini ekle ve V2 standart Excel şablonuna `17_KREDI_LIMITLERI` sekmesini ekle.
+  3. **Karşı Taraflar, IBAN ve Boyutlar (`/finance/counterparties/page.tsx`):** Yetim `addIbanAction`, `deactivateIbanAction` ve `createDimensionAction` (`project`, `cost_center`, `department`) aksiyonlarını arayüz çekmecelerine bağla (`departments` tablosu zombi olmaktan çıkar!); yeni oluşturulan sıfır hareketli carileri gizleyen `itemCount > 0` filtresini kaldır (`Tümü / Aktif Hareketliler` sekmesi yap); müşteri çeklerinde `payer` / `payee` rolünü `direction` yönüne göre doğru ata.
+  4. **Kârlılık ve Boyut Seçicileri (`/finance/profitability/page.tsx`, `/finance/invoices/page.tsx`, `/payments/new/page.tsx`):** Yetim `updateAllocationRule` (`costing/engine.ts:59`) formunu `/finance/profitability` ekranına bağla; fatura ve ödeme formlarına `Proje / Masraf Merkezi / Departman` seçicilerini ekle.
+  5. **Tahsilat Sözleri ve Alacak Tahsisi (`/finance/promises/page.tsx`, `/finance/receivables/page.tsx`, `/finance/invoices/page.tsx`):** `promises` formuna açık fatura seçicisi (`invoice_id`), para birimi (`currency`) ve `'company'` tipindeki carileri ekle; `receivables` tahsis formunda `unallocated_receipts` tablosundan gerçek banka tahsilatı seçilmesini ve yetim `reverseAllocationAction` geri alma düğmesini aktif et; alış faturalarındaki yanlış `"tahsil"` etiketini `"ödeme"` yap.
+  6. **Üretim Ekonomisi (`/production/page.tsx`, `/production/costs/page.tsx`, `/production/roi/page.tsx` + `src/lib/importers/v2/{domain-map,mapper}.ts`):** V2 aktarıcıda `not_persisted` bırakılan `14_KAPASITE`, `15_MALIYET` ve `16_MAKINE_ROI` kolonlarını veritabanına kalıcı olarak yaz ve 3 ekrana da manuel parametre güncelleme çekmecesi ekle.
+  7. `src/lib/authz/matrix.ts`, `tests/interaction/manifest.ts` ve `docs/database-schema.md`: Yeni tabloları (`facility_movements`, `reconciliation_signoffs`), tüm yeni form/çekmece düğmelerini ve `0103` şema kaydını işle.
+
+#### `D4`) — Kalan Tüm "Ekran Var Veri Yolu Yok" Modüllerinin Kapatılması (Bütçe Onayı, Kredi Limit/Teminat/Kovenant, Karşı Taraf IBAN/Boyut, Kârlılık Dağıtımı, Tahsilat Sözü, Doküman Kasası, Mutabakat İmzalama ve Üretim Formları) (`Migration 0103`.. Veritabanı / SQL Migration (`0103`) Spesifikasyonu
+
+- **Dosya:** `supabase/migrations/0103_close_operational_loops_and_reconciliation_signoffs.sql`:
+  - `public.facility_movements`: `id uuid PK`, `facility_id uuid NOT NULL REFERENCES public.credit_facilities(id) ON DELETE CASCADE`, `movement_type text NOT NULL CHECK (movement_type IN ('drawdown','repayment','limit_revision'))`, `movement_date date NOT NULL`, `amount numeric(14,2) NOT NULL CHECK (amount > 0)`, `currency text NOT NULL`, `bank_tx_id uuid REFERENCES public.bank_transactions(id)`, `notes text`, `created_by uuid REFERENCES public.users(id)`, `created_at timestamptz`; `AFTER INSERT` tetikleyicisi `credit_facilities.drawn_amount` değerini negatif ve limit aşımı korumalı günceller.
+  - `public.reconciliation_signoffs`: `id uuid PK`, `period_month date NOT NULL`, `scope text NOT NULL CHECK (scope IN ('bank_cash','ar_ap','workbook_source','trial_balance'))`, `status text NOT NULL CHECK (status IN ('signed_clean','signed_with_exceptions'))`, `open_exception_count int NOT NULL DEFAULT 0`, `notes text`, `signed_by uuid NOT NULL REFERENCES public.users(id)`, `signed_at timestamptz NOT NULL DEFAULT now()`.
+  - `public.promise_to_pay`: `invoice_id uuid REFERENCES public.invoices(id)` ve `currency text NOT NULL DEFAULT 'TRY' CHECK (currency ~ '^[A-Z]{3}$')` kolonlarını (mevcutsa kısıt doğrulamasıyla) kesinleştir.
+  - Hiçbir yerde yazılmayan boş `working_capital_trend_reference` tablosunu gerçek aylık AR/AP/nakit görünümünden beslenen `working_capital_monthly_v` (`WITH (security_invoker = true)`) okuma modeliyle değiştir.
+
+#### `D4`) — Kalan Tüm "Ekran Var Veri Yolu Yok" Modüllerinin Kapatılması (Bütçe Onayı, Kredi Limit/Teminat/Kovenant, Karşı Taraf IBAN/Boyut, Kârlılık Dağıtımı, Tahsilat Sözü, Doküman Kasası, Mutabakat İmzalama ve Üretim Formları) (`Migration 0103`.. Adım Adım Uygulama Talimatları
+
+1. Doküman yüklemede dosya adını asla kullanıcının gönderdiği ham `file.name` ile diske yazma; `<sha256.slice(0,2)>/<sha256>.<safeExt>` adreslemesiyle içerik-adresli (`content-addressed`) sakla ve orijinal dosya adını yalnız `public.documents.original_filename` kolonunda tut.
+2. Tüm yeni formlarda `src/lib/validation/index.ts` (`parseOrThrow`) ve `src/lib/audit.ts` (`audit`) kullan.
+
+#### `D4`) — Kalan Tüm "Ekran Var Veri Yolu Yok" Modüllerinin Kapatılması (Bütçe Onayı, Kredi Limit/Teminat/Kovenant, Karşı Taraf IBAN/Boyut, Kârlılık Dağıtımı, Tahsilat Sözü, Doküman Kasası, Mutabakat İmzalama ve Üretim Formları) (`Migration 0103`.. Zorunlu Doğrulama & Kabul Kapısı (Yalnız Tek Kullanımlık DB!)
+
+- Tek kullanımlık `mas_radar_d4_verify` veritabanında `pnpm db:migrate`, `pnpm exec vitest run tests/financial/closed-loops-d4.test.ts` ve `pnpm db:roles-rls:verify && pnpm db:constraints:verify` → **ALL PASS**.
+- Kalıcı kapılar: `pnpm typecheck && pnpm lint && pnpm phase17:verify && pnpm phase18:verify && pnpm boundary:verify` → **ALL PASS**.
+
+---
+
+## 8. KÜME E — PARAŞÜT API v4 ENTEGRASYONU VE ÇİFT TARAFLI YÖNETİM DEFTERİ + TEKDÜZEN HESAP PLANI (TDHP) YASAL MİZAN MUTABAKATI
+
+---
+
+### Faz 51 (`E1`) — Entegrasyon Omurgası, Kaynak Soykütüğü, Paraşüt API v4 Salt-Okunur Konnektörü (10 Saplama Onarımı) ve Hibrid Banka Hattı (`Migration 0104`)
+
+#### `E1`) — Entegrasyon Omurgası, Kaynak Soykütüğü, Paraşüt API v4 Salt-Okunur Konnektörü (10 Saplama Onarımı) ve Hibrid Banka Hattı (`Migration 0104`.. Fazın Amacı & Çözdüğü Rapor Bulguları / Rakip Mekanikleri
+
+- **Amaç:** 2026-10-28 Yönetici Kararları #3, #4 ve #5 doğrultusunda **Paraşüt API v4** (`https://api.parasut.com/v4/{company_id}/...`) üzerinden carileri, kasa/banka hesaplarını, banka hareketlerini, satış/e-Fatura (`sales_invoices`), alış/gider (`purchase_bills`), banka masrafı, vergi ve yönetici-korumalı bordro toplamlarını **%100 salt-okunur (`GET`), idempotent, kuruş-hassas (`BLANK ≠ ZERO`) ve ham JSON SHA-256 soykütüğüyle** çekmek; mevcut saplamadaki 10 kusuru (`S-1..S-10`) kapatmak ve Paraşüt'te henüz eşleştirilmemiş banka hareketlerinin API'ye düşmeme sürprizini **Paraşüt Banka Excel + Doğrudan Banka MT940 / ISO 20022 `camt.053` Hibrid Tekilleştirme Hattı** ile çözmek.
+- **Kapatılan Rapor Bulguları:** `Bölüm 7.1 (S-1..S-10)`, `Bölüm 7.2` (Hibrid Banka sürprizi), `Bölüm 6.1 #14` (`/data/integrations` ekran eksikliği).
+
+#### `E1`) — Entegrasyon Omurgası, Kaynak Soykütüğü, Paraşüt API v4 Salt-Okunur Konnektörü (10 Saplama Onarımı) ve Hibrid Banka Hattı (`Migration 0104`.. Değişecek Mevcut Dosyalar & Oluşturulacak Yeni Dosyalar
+
+- **Oluşturulacak Yeni Dosyalar:**
+  1. `supabase/migrations/0104_parasut_v4_lineage_and_hybrid_bank.sql` — API soykütüğü tabloları, hesap eşleme, cari inceleme kuyruğu, fatura tevkifat/stopaj kolonları, benzersiz `invoices_external_key_uq` indeksi ve banka `own_transfer` çapraz-kanal tekilleştirme alanları.
+  2. `src/lib/integrations/parasut/oauth.ts` — Paraşüt OAuth 2.0 (`https://api.parasut.com/oauth/token`) `password` / `refresh_token` jeton yöneticisi (`7200 sn` TTL, bellek-içi yenileme kilidi, sıfır konsol/log sır sızıntısı; ağ çağrısı yalnız `ctx.http` seam üzerinden geçer!).
+  3. `src/lib/integrations/parasut/rate-limiter.ts` — Paraşüt'ün `10 saniyede 10 istek` kuralına karşı güvenli `8 istek / 10 sn` jeton kovası + HTTP `429 Retry-After` üstel geri çekilme (`exponential backoff`) katmanı.
+  4. `src/lib/integrations/parasut/client.ts` — JSON:API v4 sayfalayıcı (`page[size]=25`, `sort=-updated_at`, `include` bileşik belge birleştirici, `high_water_mark - 24 saat` örtüşme penceresi; `/v4/` altında **yalnızca `GET` metoduna** izin veren derleme ve çalışma zamanı muhafızı).
+  5. `src/lib/integrations/parasut/mappers.ts` — `"TRL" → "TRY"` dönüşümü, `estimate` teklif filtreleme, henüz GİB serisi almamış e-Faturaları `'draft'` → resmileşince `'issued'` yükseltme (`0044:180` değişmezlik uyumu), tevkifat/stopaj (`withholding_amount`, `vat_withholding_amount`, `payable_amount`), satırsız basit gider fişlerinde `tax_amount = null` (`BLANK ≠ ZERO`), çalışan harcaması (`spender` → `335`) ve kendi hesapları arası virman (`own_transfer`) eşleyicileri.
+  6. `src/lib/importers/bank-formats/mt940-camt053-parasut.ts` — SWIFT **MT940** (`:60F:`, `:61:`, `:86:`), **ISO 20022 `camt.053` XML** ve **Paraşüt Banka/Fatura Excel (`.xlsx`)** ayrıştırıcısı + çapraz-kanal `cross_channel_dedupe_hash` (`bank_account_id + tx_date + signed_amount_kurus + normalized_ref`) birleştiricisi.
+  7. `src/app/(dashboard)/data/integrations/page.tsx` ve `src/app/(dashboard)/data/integrations/actions.ts` — Paraşüt bağlantı durumu, son senkronizasyon makbuzları, `integration_account_mappings` (Paraşüt hesabı ↔ MAS kasa/banka hesabı IBAN eşleme), `integration_staged_parties` (yeni cari tek tık onay/mevcut cariyle birleştirme) ve manuel/zamanlanmış çekim tetikleme ekranı.
+  8. `tests/integrations/parasut-v4-and-hybrid-bank.test.ts` — Gerçekçi Paraşüt JSON:API v4 fixture'ları (`TRL`, `estimate`, GİB taslak→resmi e-Fatura, tevkifatlı satış, detaysız fiş, kendi hesapları arası virman, HTTP `429` geri çekilme ve önce Excel/MT940 sonra Paraşüt API geldiğinde çift kayıt oluşmaması) entegrasyon testi.
+- **Değişecek Mevcut Dosyalar:**
+  1. `src/lib/integrations/types.ts` (satır `140-195`): `HttpResponse` içine `headers: Record<string, string>` ekle; dış ağ hedefini Paraşüt konnektöründe yalnız `https://api.parasut.com` ile sınırla.
+  2. `src/lib/integrations/connectors.ts` (satır `120-360`): Eski kırık `LIMIT 1` banka ve `ON CONFLICT` saplamasını yeni `src/lib/integrations/parasut/*` modüler hattıyla değiştir.
+  3. `scripts/boundary-verify.ts` (satır `180-198` — Kontrol H): Eski `"muhasebe vendor seçilmedi (ACCOUNTING_PENDING_REASON)"` kontrolünü **"Paraşüt v4 konnektörü yalnız `https://api.parasut.com` adresine bağlanır ve `/v4/` altında sıfır `POST/PUT/PATCH/DELETE` yazma çağrısı içerir (salt-okunur çekme garantisi)"** yapısal kontrolüne yükselt!
+  4. `scripts/ops/background-worker.ts`: Yapılandırılmış aktif Paraşüt entegrasyonu varsa periyodik artımlı senkronizasyon (`integrations.parasut_incremental`) işleyicisini çalıştır.
+  5. `src/app/(dashboard)/data/layout.tsx`, `src/lib/authz/matrix.ts`, `tests/interaction/manifest.ts` ve `docs/database-schema.md`: `/data/integrations` sekmesini, yeni tabloların 5-katmanlı RLS sınıflarını, UI kontrollerini ve `0104` şema kaydını ekle.
+
+#### `E1`) — Entegrasyon Omurgası, Kaynak Soykütüğü, Paraşüt API v4 Salt-Okunur Konnektörü (10 Saplama Onarımı) ve Hibrid Banka Hattı (`Migration 0104`.. Veritabanı / SQL Migration (`0104`) Spesifikasyonu
+
+- **Dosya:** `supabase/migrations/0104_parasut_v4_lineage_and_hybrid_bank.sql`:
+  - `public.integration_sync_runs`: `id uuid PK`, `integration_id uuid NOT NULL REFERENCES public.integrations(id)`, `started_at timestamptz`, `finished_at timestamptz`, `watermark_from timestamptz`, `watermark_to timestamptz`, `status text CHECK (status IN ('running','succeeded','partial','failed'))`, `fetched_count int`, `upserted_count int`, `staged_party_count int`, `error_summary text`.
+  - `public.integration_raw_payloads`: `id uuid PK`, `sync_run_id uuid NOT NULL REFERENCES public.integration_sync_runs(id) ON DELETE CASCADE`, `resource_type text NOT NULL`, `external_id text NOT NULL`, `external_updated_at timestamptz`, `payload_sha256 text NOT NULL`, `payload_json jsonb NOT NULL`, `fetched_at timestamptz NOT NULL DEFAULT now()`, `UNIQUE (resource_type, external_id, payload_sha256)`.
+  - `public.integration_entity_links`: `id uuid PK`, `provider text NOT NULL DEFAULT 'parasut'`, `resource_type text NOT NULL`, `external_id text NOT NULL`, `entity_table text NOT NULL`, `entity_id uuid NOT NULL`, `last_payload_id uuid REFERENCES public.integration_raw_payloads(id)`, `last_synced_at timestamptz NOT NULL DEFAULT now()`, `UNIQUE (provider, resource_type, external_id)`.
+  - `public.integration_account_mappings`: `id uuid PK`, `provider text NOT NULL DEFAULT 'parasut'`, `external_account_id text NOT NULL`, `external_iban text`, `external_currency text NOT NULL`, `cash_account_id uuid REFERENCES public.cash_accounts(id)`, `bank_account_id uuid REFERENCES public.bank_accounts(id)`, `UNIQUE (provider, external_account_id)`.
+  - `public.integration_staged_parties`: `id uuid PK`, `provider text NOT NULL DEFAULT 'parasut'`, `external_contact_id text NOT NULL`, `raw_name text NOT NULL`, `tax_id text`, `iban text`, `account_type text`, `suggested_party_id uuid REFERENCES public.parties(id)`, `status text NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','linked','created','ignored'))`, `resolved_party_id uuid REFERENCES public.parties(id)`, `reviewed_by uuid REFERENCES public.users(id)`, `reviewed_at timestamptz`, `UNIQUE (provider, external_contact_id)`.
+  - `public.invoices` genişletmesi: `withholding_amount numeric(14,2)`, `vat_withholding_amount numeric(14,2)`, `payable_amount numeric(14,2)`, `external_status text` kolonları ve **`CREATE UNIQUE INDEX invoices_external_key_uq ON public.invoices (external_key) WHERE external_key IS NOT NULL`** (`S-1` hatasını kesin kapatır!).
+  - `public.bank_transactions` genişletmesi: `transaction_kind text NOT NULL DEFAULT 'standard' CHECK (transaction_kind IN ('standard','own_transfer','bank_fee','tax_payment','payroll'))` ve `cross_channel_dedupe_hash text`; `own_transfer` satırları hesap bazlı bakiyeyi günceller ama konsolide şirket nakit akış gelir/gider toplamlarından düşülür!
+
+#### `E1`) — Entegrasyon Omurgası, Kaynak Soykütüğü, Paraşüt API v4 Salt-Okunur Konnektörü (10 Saplama Onarımı) ve Hibrid Banka Hattı (`Migration 0104`.. Adım Adım Uygulama Talimatları
+
+1. Paraşüt API kimlik bilgileri (`PARASUT_COMPANY_ID`, `PARASUT_CLIENT_ID`, `PARASUT_CLIENT_SECRET`, `PARASUT_USERNAME`, `PARASUT_PASSWORD`) yalnız `src/lib/integrations/types.ts` `readCredential` kapısından okunur; hiçbir zaman veritabanına, `audit_logs` içine veya konsola yazılmaz.
+2. Fatura tahsil edilecek kalan tutar hesaplarında `coalesce(inv.payable_amount, inv.gross_amount) - inv.paid_amount` kuralını kullanarak tevkifatlı faturaların nakit projeksiyonunu kuruşu kuruşuna doğru tut.
+3. Önce MT940/`camt.053`/Paraşüt Excel ile içeri alınmış bir banka hareketi sonradan Paraşüt API `/transactions` ucundan geldiğinde `cross_channel_dedupe_hash` eşleşmesiyle mevcut satırı bul ve ikinci satır eklemek yerine yalnız `integration_entity_links` bağını ekle.
+
+#### `E1`) — Entegrasyon Omurgası, Kaynak Soykütüğü, Paraşüt API v4 Salt-Okunur Konnektörü (10 Saplama Onarımı) ve Hibrid Banka Hattı (`Migration 0104`.. Zorunlu Doğrulama & Kabul Kapısı (Yalnız Tek Kullanımlık DB!)
+
+- Tek kullanımlık `mas_radar_e1_verify` veritabanında `pnpm db:migrate` ve `pnpm exec vitest run tests/integrations/parasut-v4-and-hybrid-bank.test.ts` → **PASS** (iki kez üst üste aynı veri çekildiğinde `upserted` idempotent kalır, `0` mükerrer fatura/hareket oluşur, `TRL → TRY` dönüşür, `own_transfer` şişkinlik yapmaz, çapraz-kanal tekilleştirme çalışır).
+- `pnpm db:roles-rls:verify && pnpm boundary:verify` (`8/8` yeni salt-okunur Paraşüt kontrolüyle!) → **ALL PASS**.
+- Kalıcı kapılar: `pnpm typecheck && pnpm lint && pnpm phase17:verify && pnpm phase18:verify` → **ALL PASS**.
+
+---
+
+### Faz 52 (`E2`) — Çift Taraflı Yönetim Defteri (TDHP Uyumlu Hesap Planı, Otomatik Fiş Kural Motoru, Yönetim Mizanı, Bilanço, Gelir Tablosu ve EBITDA) (`Migration 0105`)
+
+#### `E2`) — Çift Taraflı Yönetim Defteri (TDHP Uyumlu Hesap Planı, Otomatik Fiş Kural Motoru, Yönetim Mizanı, Bilanço, Gelir Tablosu ve EBITDA) (`Migration 0105`.. Fazın Amacı & Çözdüğü Rapor Bulguları / Rakip Mekanikleri
+
+- **Amaç:** 2026-10-28 Yönetici Kararı #2 (*"B — Hibrit Yönetim Defteri"*) uyarınca MAS Nakit Radar içinde **Tekdüzen Hesap Planı (TDHP)** uyumlu, veritabanı seviyesinde borç = alacak (`sum(debit_try) = sum(credit_try)`) dengesi zorunlu, değişmez (`immutable` + ters kayıtlı) bir **Çift Taraflı Yönetim Defteri** kurmak; operasyonel fatura, banka tahsilat/ödeme, çek bordrosu, kredi anapara/faiz/BSMV-KKDF ve vergi/SGK işlemlerinden idempotent otomatik yönetim fişleri üretmek; **Yönetim Mizanı, Yönetim Bilançosu, Gelir Tablosu ve Yönetim EBITDA** raporlarını canlı olarak sunmak.
+- **Kapatılan Rapor Bulguları:** `Bölüm 1 §3` (en büyük ERP/CFO boşluğu: çift taraflı yönetim defteri, mizan, bilanço, gelir tablosu, EBITDA olmaması), `Bölüm 6.1 #15`, `Bölüm 7.3`.
+
+#### `E2`) — Çift Taraflı Yönetim Defteri (TDHP Uyumlu Hesap Planı, Otomatik Fiş Kural Motoru, Yönetim Mizanı, Bilanço, Gelir Tablosu ve EBITDA) (`Migration 0105`.. Değişecek Mevcut Dosyalar & Oluşturulacak Yeni Dosyalar
+
+- **Oluşturulacak Yeni Dosyalar:**
+  1. `supabase/migrations/0105_double_entry_management_ledger.sql` — `management_accounts` (TDHP çekirdek hesap tohumlarıyla), `management_journal_entries`, `management_journal_lines`, ertelenebilir (`DEFERRABLE INITIALLY DEFERRED`) denge tetikleyicisi `assert_management_journal_balanced()`, değişmezlik tetikleyicisi ve `management_trial_balance_v`, `management_income_statement_v`, `management_balance_sheet_v` görünümleri (`WITH (security_invoker = true)`).
+  2. `src/lib/ledger/accounts.ts` — TDHP hesap planı sorgulama, alt hesap açma (`120.01`, `102.01`, `300.01`) ve `ebitda_bucket` sınıflandırma modülü.
+  3. `src/lib/ledger/posting-engine.ts` — Deterministik otomatik fiş üretici (`syncDomainEventToManagementLedger`) ve manuel dönem sonu yönetim tahakkuk fişi (`postManualManagementAdjustment` — amortisman, bordro tahakkuku, karşılık; ters kayıt `reverseManagementEntry`):
+     - **Satış Faturası (`issued`):** Borç `120 Alıcılar` (`payable_amount`), varsa Borç `193/295 Peşin Ödenen Vergi/Tevkifat`, Alacak `600/601 Satışlar` (`net_amount`), Alacak `391 Hesaplanan KDV` (`tax_amount`). *(Basit detaysız kayıtta `tax_amount IS NULL` ise uydurma `0` KDV yazılmaz; `needs_tax_split_review = true` bayrağıyla ayrıştırılır!)*
+     - **Alış / Gider Faturası:** Borç ilgili `620/632/730/770/253` gider/maliyet/varlık hesabı, Borç `191 İndirilecek KDV`, Alacak `320 Satıcılar` (veya çalışan harcamasında `335 Personele Borçlar`).
+     - **Banka Tahsilat / Ödeme / Virman / Masraf:** `102 Bankalar` ↔ `120` / `320` / `102 (own_transfer)` / `780 Banka Komisyon Giderleri` / `360 Vergi` / `361 SGK`.
+     - **Çek Bordrosu:** Müşteri çeki alımı `101.01 Portföy` (Borç) / `120` (Alacak); Tedarikçiye ciro `320` (Borç) / `101.01` (Alacak) + nazım rücu izleme; Tahsile verme `101.02` / `101.01`; Tahsil `102` / `101.02`; Keşide çek `320` / `103 Verilen Çekler`; Keşide ödeme `103` / `102`.
+     - **Kredi Kullanımı ve Taksit Ödemesi:** Kullanım `102` (Borç) / `300-400 Banka Kredileri` (Alacak); Taksit ödemesi Borç `300` (`principal_component`), Borç `780 Finansman Giderleri` (`interest_component + tax_component` BSMV/KKDF!), Alacak `102 Bankalar` (`amount`).
+     - **Döviz Kuru Kuralı (`BLANK ≠ ZERO`):** İşlem dövizli (`USD`/`EUR`/`GBP`) ve işlem tarihine ait TCMB kuru mevcutsa `fx_rate` uygulanır; kur henüz yoksa **asla `1.0` yazılmaz**, fiş `status = 'provisional_fx'` olarak kaydedilir ve kur geldiğinde otomatik değerlenip `'posted'` yapılır!
+  4. `src/app/(dashboard)/finance/ledger/page.tsx` ve `src/app/(dashboard)/finance/ledger/actions.ts` — 4 sekmeli Yönetim Defteri ekranı: **① Yönetim Mizanı**, **② Gelir Tablosu & Yönetim EBITDA Şelalesi** (`Net Satışlar → Brüt Kâr → Faaliyet Giderleri → Faaliyet Kârı (EBIT) + Amortisman = Yönetim EBITDA → Finansman Giderleri (780) → Vergi Öncesi Yönetim Kârı`), **③ Yönetim Bilançosu**, **④ Yevmiye Fişleri & Manuel Tahakkuk / Ters Kayıt Çekmecesi**.
+  5. `tests/financial/management-ledger-tdhp.test.ts` — Dengesiz (`borç ≠ alacak`) fişin PostgreSQL `DEFERRABLE` tetikleyicisiyle `COMMIT` anında reddedilmesi, `'posted'` fişin `UPDATE/DELETE` reddi ve ters kayıtla düzeltilmesi, kredi anapara/faiz (`300`/`780`) ayrımı, eksik kurda `'provisional_fx'` davranışı ve EBITDA hesabı birim/entegrasyon testleri.
+- **Değişecek Mevcut Dosyalar:**
+  1. `src/app/(dashboard)/finance/layout.tsx`, `src/lib/authz/matrix.ts`, `tests/interaction/manifest.ts` ve `docs/database-schema.md`: `/finance/ledger` sekmesini, yeni tabloların 5-katmanlı RLS politikalarını (`viewer` okur, `finance_operator` taslak/otomatik senkron tetikler, `finance_approver+` manuel tahakkuk onaylar, `finance_manager+` ters kayıt açar) ve `0105` şema kaydını ekle.
+
+#### `E2`) — Çift Taraflı Yönetim Defteri (TDHP Uyumlu Hesap Planı, Otomatik Fiş Kural Motoru, Yönetim Mizanı, Bilanço, Gelir Tablosu ve EBITDA) (`Migration 0105`.. Veritabanı / SQL Migration (`0105`) Spesifikasyonu
+
+- **Dosya:** `supabase/migrations/0105_double_entry_management_ledger.sql`:
+  - `public.management_accounts`: `id uuid PK`, `code text UNIQUE NOT NULL`, `name text NOT NULL`, `parent_code text`, `account_class text NOT NULL CHECK (account_class IN ('asset','liability','equity','revenue','contra_revenue','cogs','opex','finance_expense','other_income_expense','off_balance'))`, `normal_side text NOT NULL CHECK (normal_side IN ('debit','credit'))`, `ebitda_bucket text NOT NULL CHECK (ebitda_bucket IN ('revenue','cogs','opex','da_addback','financing','tax','non_operating','balance_sheet'))`, `tdhp_root_code text NOT NULL`, `is_active boolean NOT NULL DEFAULT true`.
+  - `public.management_journal_entries`: `id uuid PK`, `entry_no bigint GENERATED ALWAYS AS IDENTITY UNIQUE`, `entry_date date NOT NULL`, `period_month date GENERATED ALWAYS AS ((date_trunc('month', entry_date at time zone 'UTC'))::date) STORED`, `source_type text NOT NULL CHECK (source_type IN ('invoice','bank_transaction','check_bordro','loan_installment','payment_instance','manual_adjustment','fx_revaluation','reversal'))`, `source_id uuid`, `idempotency_key text UNIQUE NOT NULL`, `status text NOT NULL DEFAULT 'posted' CHECK (status IN ('draft','provisional_fx','posted','reversed'))`, `description text NOT NULL`, `reversal_of_entry_id uuid REFERENCES public.management_journal_entries(id)`, `reversed_by_entry_id uuid REFERENCES public.management_journal_entries(id)`, `created_by uuid REFERENCES public.users(id)`, `created_at timestamptz NOT NULL DEFAULT now()`.
+  - `public.management_journal_lines`: `id uuid PK`, `entry_id uuid NOT NULL REFERENCES public.management_journal_entries(id) ON DELETE CASCADE`, `line_no int NOT NULL`, `account_id uuid NOT NULL REFERENCES public.management_accounts(id)`, `party_id uuid REFERENCES public.parties(id)`, `project_id uuid REFERENCES public.projects(id)`, `cost_center_id uuid REFERENCES public.cost_centers(id)`, `native_currency text NOT NULL CHECK (native_currency ~ '^[A-Z]{3}$')`, `debit_native numeric(14,2) NOT NULL DEFAULT 0 CHECK (debit_native >= 0)`, `credit_native numeric(14,2) NOT NULL DEFAULT 0 CHECK (credit_native >= 0)`, `fx_rate numeric(14,6)`, `debit_try numeric(14,2) CHECK (debit_try IS NULL OR debit_try >= 0)`, `credit_try numeric(14,2) CHECK (credit_try IS NULL OR credit_try >= 0)`, `line_memo text`, `CHECK ((debit_native > 0 AND credit_native = 0) OR (credit_native > 0 AND debit_native = 0))`, `UNIQUE (entry_id, line_no)`.
+  - **`CREATE CONSTRAINT TRIGGER management_journal_balance_guard AFTER INSERT OR UPDATE OR DELETE ON public.management_journal_lines DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION public.assert_management_journal_balanced()`:** `status = 'posted'` olan her `entry_id` için satır sayısı `< 2`, herhangi bir satırda `debit_try IS NULL OR credit_try IS NULL` veya `sum(debit_try) <> sum(credit_try)` ise `RAISE EXCEPTION 'unbalanced_management_journal_entry' USING ERRCODE = '23514'`.
+  - Ayrıca Faz 45'teki `enforce_closed_period_lock()` tetikleyicisi `management_journal_entries.entry_date` üzerine de bağlanır!
+
+#### `E2`) — Çift Taraflı Yönetim Defteri (TDHP Uyumlu Hesap Planı, Otomatik Fiş Kural Motoru, Yönetim Mizanı, Bilanço, Gelir Tablosu ve EBITDA) (`Migration 0105`.. Adım Adım Uygulama Talimatları
+
+1. Fiş motorunu (`posting-engine.ts`) `idempotency_key` (`"invoice:issued:<uuid>"`, `"bank_tx:settled:<uuid>"`, `"check_bordro:<uuid>"`) üzerinden tamamen idempotent tasarla; toplu senkronizasyon (`rebuildOrSyncManagementLedger`) birden fazla kez çalıştırıldığında hiçbir mükerrer fiş oluşmasın.
+2. Yönetim bilançosu görünümünde (`management_balance_sheet_v`) dönem net kâr/zararını özkaynaklar (`590/591`) satırına dinamik yansıtarak `Aktif Toplamı = Pasif (Yabancı Kaynak + Özkaynak) Toplamı` eşitliğini her tarihte kuruşu kuruşuna koru.
+
+#### `E2`) — Çift Taraflı Yönetim Defteri (TDHP Uyumlu Hesap Planı, Otomatik Fiş Kural Motoru, Yönetim Mizanı, Bilanço, Gelir Tablosu ve EBITDA) (`Migration 0105`.. Zorunlu Doğrulama & Kabul Kapısı (Yalnız Tek Kullanımlık DB!)
+
+- Tek kullanımlık `mas_radar_e2_verify` veritabanında `pnpm db:migrate` ve `pnpm exec vitest run tests/financial/management-ledger-tdhp.test.ts` → **PASS** (`management_trial_balance_v` borç toplamı = alacak toplamı kuruş farkı `0.00`, bilanço aktif = pasif farkı `0.00`, dengesiz fiş `23514` ile reddedilir).
+- `pnpm db:roles-rls:verify && pnpm db:constraints:verify` → **ALL PASS**.
+- Kalıcı kapılar: `pnpm typecheck && pnpm lint && pnpm phase17:verify && pnpm phase18:verify && pnpm boundary:verify` → **ALL PASS**.
+
+---
+
+### Faz 53 (`E3`) — Mali Müşavir Yasal Mizan (Excel/CSV/XML) İçe Aktarımı ve 12 Kök Nedenli Otomatik Yönetim ↔ Yasal Mizan Mutabakat Köprüsü (`Migration 0106`)
+
+#### `E3`) — Mali Müşavir Yasal Mizan (Excel/CSV/XML) İçe Aktarımı ve 12 Kök Nedenli Otomatik Yönetim ↔ Yasal Mizan Mutabakat Köprüsü (`Migration 0106`.. Fazın Amacı & Çözdüğü Rapor Bulguları / Rakip Mekanikleri
+
+- **Amaç:** Mali müşavirin muhasebe programından (Luca, Logo, Mikro, Zirve, Eta, Paraşüt) gönderdiği aylık/geçici vergi dönemi **Yasal Mizan** dosyasını (`.xlsx`, `.csv`, e-Defter/mizan `.xml`) salt-okunur içeri aktarmak; Faz 52'deki MAS Yönetim Defteri Mizanı ile hesap bazında (`100`–`799`) kuruşu kuruşuna karşılaştırıp farkları **Türkiye muhasebe pratiğine özgü 12 deterministik kök nedene** ayırmak, **Yönetim EBITDA ↔ Yasal `690` Vergi Öncesi Kâr Köprüsünü** kurmak ve müşavire gönderilecek tek tık **"Mali Müşavir Mutabakat Paketi (.xlsx)"** dosyasını üretmek.
+- **Kapatılan Rapor Bulguları:** `Bölüm 6.1 #16`, `Bölüm 7.3` (12 kök nedenli yönetim ↔ yasal mizan köprüsü).
+
+#### `E3`) — Mali Müşavir Yasal Mizan (Excel/CSV/XML) İçe Aktarımı ve 12 Kök Nedenli Otomatik Yönetim ↔ Yasal Mizan Mutabakat Köprüsü (`Migration 0106`.. Değişecek Mevcut Dosyalar & Oluşturulacak Yeni Dosyalar
+
+- **Oluşturulacak Yeni Dosyalar:**
+  1. `supabase/migrations/0106_statutory_trial_balance_reconciliation.sql` — `statutory_trial_balances`, `statutory_trial_balance_lines`, `trial_balance_reconciliation_runs`, `trial_balance_reconciliation_items` tabloları ve 5-katmanlı RLS politikaları.
+  2. `src/lib/ledger/statutory-mizan-importer.ts` — Luca/Logo/Mikro/Zirve mizan `.xlsx` (`ExcelJS`), `.csv` (`csv-parser.ts`) ve `.xml` ayrıştırıcısı: Türkçe başlık tanıma (`Hesap Kodu`, `Hesap Adı`, `Borç Toplamı`, `Alacak Toplamı`, `Borç Bakiyesi`, `Alacak Bakiyesi`), ana hesap (`120`) + kırılımlı alt hesap (`120.01.005`) çift sayım önleyici yaprak-hesap (`is_leaf`) tespiti ve mizan içi öz-denge doğrulaması ($\sum \text{Borç} = \sum \text{Alacak}$).
+  3. `src/lib/ledger/trial-balance-bridge.ts` — `reconcileTrialBalance(client, statutoryBalanceId)`:
+     - Her TDHP kök grubunda (`100, 101, 102, 103, 120, 131/331, 190/191/391, 300/400, 320, 335, 360, 361, 600–780`) MAS Yönetim Mizanı bakiyesi ile Yasal Mizan bakiyesini karşılaştırır.
+     - Farkları Rapor Bölüm 7.3'te tanımlanan **12 deterministik kök-neden koduna** (`CASH_100_INFLATION`, `CHECK_ENDORSEMENT_OR_CLEARING_LAG`, `UNBOOKED_BANK_TXN_OR_FX`, `ISSUED_CHECK_NOT_DELIVERED_TO_CPA`, `CUTOFF_UNBILLED_OR_UNALLOCATED_CASH`, `PARTNER_ACCOUNT_PLUG`, `VAT_TAHAKKUK_UNCLOSED`, `LOAN_PRINCIPAL_VS_GROSS_INSTALLMENT`, `MISSING_PURCHASE_INVOICE`, `PAYROLL_ADVANCE_OR_EXPENSE_GAP`, `UNPAID_OR_RESTRUCTURED_TAX_DEBT`, `MANAGEMENT_EBITDA_TO_STATUTORY_690_BRIDGE`) sınıflandırır ve farkı açıklayan aday MAS kayıtlarını (ör. müşavir mizanında eksik görünen son 5 günün e-Faturası veya ciro bordrosu!) kanıt satırı olarak listeler.
+     - **Değişmez Kural:** Hiçbir yönetim fişini veya yasal mizan satırını otomatik değiştirmez (*bayrakla, asla sessiz düzeltme*).
+  4. `src/app/(dashboard)/data/trial-balance-bridge/page.tsx`, `actions.ts` ve `src/app/api/ledger/reconciliation/[runId]/export/route.ts` — Mizan yükleme, 12 kök nedenli fark tablosu, EBITDA ↔ `690` şelale köprüsü, farktan tek tıkla `action_items` görev açma ve `ExcelJS` tabanlı 3 sekmeli **"Mali Müşavir Mutabakat Paketi (.xlsx)"** (`1_Ozet_Fark_Tablosu`, `2_Eksik_Belge_Kanit_Listesi`, `3_EBITDA_690_Koprusu`) indirme ucu.
+  5. `tests/financial/statutory-mizan-bridge.test.ts` — Luca/Logo formatlı hiyerarşik mizan (`120` + `120.01` çift saymama), 12 kök nedenin her birinin pozitif sınıflandırması ve EBITDA ↔ `690` köprüsü aritmetik doğrulama testi.
+- **Değişecek Mevcut Dosyalar:**
+  1. `src/app/(dashboard)/data/layout.tsx`, `src/lib/authz/matrix.ts`, `tests/interaction/manifest.ts` ve `docs/database-schema.md`: `/data/trial-balance-bridge` sekmesini, 4 yeni tablonun RLS politikalarını, UI kontrollerini ve `0106` şema kaydını ekle.
+
+#### `E3`) — Mali Müşavir Yasal Mizan (Excel/CSV/XML) İçe Aktarımı ve 12 Kök Nedenli Otomatik Yönetim ↔ Yasal Mizan Mutabakat Köprüsü (`Migration 0106`.. Veritabanı / SQL Migration (`0106`) Spesifikasyonu
+
+- **Dosya:** `supabase/migrations/0106_statutory_trial_balance_reconciliation.sql`:
+  - `public.statutory_trial_balances`: `id uuid PK`, `as_of_date date NOT NULL`, `period_label text NOT NULL`, `source_software text`, `original_filename text NOT NULL`, `file_sha256 text NOT NULL`, `total_debit_try numeric(16,2) NOT NULL`, `total_credit_try numeric(16,2) NOT NULL`, `is_self_balanced boolean GENERATED ALWAYS AS (total_debit_try = total_credit_try) STORED`, `imported_by uuid NOT NULL REFERENCES public.users(id)`, `imported_at timestamptz NOT NULL DEFAULT now()`.
+  - `public.statutory_trial_balance_lines`: `id uuid PK`, `trial_balance_id uuid NOT NULL REFERENCES public.statutory_trial_balances(id) ON DELETE CASCADE`, `account_code text NOT NULL`, `tdhp_root_code text NOT NULL`, `account_name text NOT NULL`, `is_leaf boolean NOT NULL DEFAULT true`, `debit_total_try numeric(16,2) NOT NULL DEFAULT 0`, `credit_total_try numeric(16,2) NOT NULL DEFAULT 0`, `debit_balance_try numeric(16,2) NOT NULL DEFAULT 0`, `credit_balance_try numeric(16,2) NOT NULL DEFAULT 0`, `UNIQUE (trial_balance_id, account_code)`.
+  - `public.trial_balance_reconciliation_runs` ve `public.trial_balance_reconciliation_items`: Her kök hesap için `management_net_try`, `statutory_net_try`, `delta_try`, `root_cause_code text`, `severity text CHECK (severity IN ('match','info','warning','critical'))`, `candidate_evidence_json jsonb`, `action_item_id uuid REFERENCES public.action_items(id)`.
+
+#### `E3`) — Mali Müşavir Yasal Mizan (Excel/CSV/XML) İçe Aktarımı ve 12 Kök Nedenli Otomatik Yönetim ↔ Yasal Mizan Mutabakat Köprüsü (`Migration 0106`.. Adım Adım Uygulama Talimatları
+
+1. Hiyerarşik mizanlarda (`120`, `120.01`, `120.01.001`) bir hesabın kodu kendisinden sonra gelen başka bir satırın önekini oluşturuyorsa `is_leaf = false` işaretle; toplamları **yalnız `is_leaf = true` satırlardan** hesapla ve ana hesap satırının toplamıyla sağlama (`assertion`) yap!
+2. Mizan kendi içinde dengeli değilse (`total_debit_try <> total_credit_try`) dosyayı reddetme, `is_self_balanced = false` kritik uyarısıyla kaydet ki eksik/bozuk mizan sayfası operatöre açıkça gösterilsin.
+
+#### `E3`) — Mali Müşavir Yasal Mizan (Excel/CSV/XML) İçe Aktarımı ve 12 Kök Nedenli Otomatik Yönetim ↔ Yasal Mizan Mutabakat Köprüsü (`Migration 0106`.. Zorunlu Doğrulama & Kabul Kapısı (Yalnız Tek Kullanımlık DB!)
+
+- Tek kullanımlık `mas_radar_e3_verify` veritabanında `pnpm db:migrate` ve `pnpm exec vitest run tests/financial/statutory-mizan-bridge.test.ts` → **PASS**.
+- `pnpm db:roles-rls:verify && pnpm db:constraints:verify` → **ALL PASS**.
+- Kalıcı kapılar: `pnpm typecheck && pnpm lint && pnpm phase17:verify && pnpm phase18:verify && pnpm boundary:verify` → **ALL PASS**.
+
+---
+
+## 9. KÜME F — KÜRESEL CFO ZEKASI (13-HAFTA VARYANS ŞELALESİ, GECE NAKİT DELTASI, KOVENANT/DSCR/BAŞABAŞ) VE NİHAİ ÜRETİM KABUL KAPISI
+
+---
+
+### Faz 54 (`F1`) — Otomatik Tohumlanan 13 Haftalık Doğrudan Nakit Tahmini ve Tahmin Anlık Görüntüsü vs. Gerçekleşen Varyans Şelalesi (`Timing Slip vs. Permanent Variance`) (`Migration 0107`)
+
+#### `F1`) — Otomatik Tohumlanan 13 Haftalık Doğrudan Nakit Tahmini ve Tahmin Anlık Görüntüsü vs. Gerçekleşen Varyans Şelalesi (`Timing Slip vs. Permanent Variance`) (`Migration 0107`.. Fazın Amacı & Çözdüğü Rapor Bulguları / Rakip Mekanikleri
+
+- **Amaç:** Şu an yalnız tek tek manuel satır girilerek kullanılan `/cashflow/13-week` ekranını **Agicap / Float / CashAnalytics** seviyesinde yaşayan bir **13 Haftalık Doğrudan Nakit Tahmini (`13-Week Direct Rolling Cash Forecast`)** motoruna dönüştürmek: açık alacaklardan (`expectedCollectionDateV2` davranışsal tahsilat tarihiyle), planlı ödemelerden, tedarikçi faturalarından, çek bordrosu vadelerinden, kredi taksitlerinden ve Faz 46 Türkiye resmi vergi/SGK takviminden otomatik haftalık nakit akışı tohumlamak; her Pazartesi dondurulan tahmin anlık görüntüsünü (`forecast_snapshots_13w`) gerçekleşen banka hareketleriyle karşılaştırıp sapmayı **Zamanlama Kayması (`Timing Slip` — fatura henüz açık veya sonraki haftada tahsil edildi)** ile **Kalıcı Sapma (`Permanent Variance` — bütçe dışı çıkış veya tutar farkı)** olarak ikiye ayıran şelale raporunu sunmak.
+- **Kapatılan Rapor Bulguları & Rakip Mekanikleri:** `Bölüm 8.2` (Agicap / Float / CashAnalytics 13-Hafta Otomatik Tohumlama + Timing vs. Permanent Variance Waterfall).
+
+#### `F1`) — Otomatik Tohumlanan 13 Haftalık Doğrudan Nakit Tahmini ve Tahmin Anlık Görüntüsü vs. Gerçekleşen Varyans Şelalesi (`Timing Slip vs. Permanent Variance`) (`Migration 0107`.. Değişecek Mevcut Dosyalar & Oluşturulacak Yeni Dosyalar
+
+- **Oluşturulacak Yeni Dosyalar:**
+  1. `supabase/migrations/0107_forecast_13w_snapshots_and_variance.sql` — `forecast_snapshots_13w`, `forecast_snapshot_13w_lines` tabloları, 5-katmanlı RLS ve `forecast_13w_variance_v` (`WITH (security_invoker = true)`) görünümü.
+  2. `src/lib/cashflow/rolling-13w-engine.ts` —
+     - `buildAutoSeeded13WeekForecast(client, { asOfDate, currency })`: Pazartesi başlangıçlı 13 ISO haftası için açılış hazine bakiyesi (`FIN-03` uyumlu) + otomatik kaynak satırları (`contracted_ar`, `behavioral_ar`, `scheduled_payment`, `open_ap`, `check_maturity`, `loan_installment`, `statutory_tax_sgk`) + kullanıcının manuel düzeltme/ek satırları (`manual_override`) üzerinden haftalık açılış → giriş → çıkış → net → kapanış → minimum nakit tamponu farkını hesaplar (`overdue_unscheduled` gecikmiş alacakları 1. haftaya sahte giriş olarak yığmaz, ayrı bilgi şeridinde gösterir!).
+     - `freezeWeekly13wSnapshot(client, { asOfDate, currency, actor })`: Haftalık tahmini belge bazlı kaynak kimlikleriyle (`source_entity_table`, `source_entity_id`) dondurur.
+     - `compute13wVarianceWaterfall(client, { snapshotId, weekStart })`: Dondurulmuş hafta kapandığında gerçekleşen `bank_transactions` (`own_transfer` hariç!) ile tahmin satırlarını kaynak kimliği üzerinden eşleştirerek sapmayı `timing_slip_amount` (kayıt hâlâ açık veya başka haftada kapandı) ve `permanent_variance_amount` (plansız yeni hareket veya kapanış tutar farkı) bileşenlerine ayırır.
+  3. `tests/financial/rolling-13w-and-variance-waterfall.test.ts` — Otomatik tohumlama, çift sayım engeli, `FIN-03` `null` açılış yayılımı ve Zamanlama Kayması vs. Kalıcı Sapma şelale matematiği testleri.
+- **Değişecek Mevcut Dosyalar:**
+  1. `src/app/(dashboard)/cashflow/13-week/page.tsx` ve `src/app/(dashboard)/cashflow/13-week/actions.ts`: **"Açık Kayıtlardan Otomatik Yenile"**, **"Haftalık Tahmin Anlık Görüntüsünü Dondur"** kontrollerini, para birimi seçicisini (`TRY` / `USD` / `EUR`) ve **"Tahmin vs. Gerçekleşen Varyans Şelalesi (Zamanlama Kayması vs. Kalıcı Sapma)"** panelini ekle.
+  2. `scripts/ops/background-worker.ts`: Her Pazartesi sabahı otomatik `freezeWeekly13wSnapshot` görevini çalıştır.
+  3. `src/lib/authz/matrix.ts`, `tests/interaction/manifest.ts` ve `docs/database-schema.md`: Yeni tabloları, UI düğmelerini ve `0107` şema kaydını işle.
+
+#### `F1`) — Otomatik Tohumlanan 13 Haftalık Doğrudan Nakit Tahmini ve Tahmin Anlık Görüntüsü vs. Gerçekleşen Varyans Şelalesi (`Timing Slip vs. Permanent Variance`) (`Migration 0107`.. Veritabanı / SQL Migration (`0107`) Spesifikasyonu
+
+- **Dosya:** `supabase/migrations/0107_forecast_13w_snapshots_and_variance.sql`:
+  - `public.forecast_snapshots_13w`: `id uuid PK`, `snapshot_week_start date NOT NULL`, `as_of_date date NOT NULL`, `currency text NOT NULL CHECK (currency ~ '^[A-Z]{3}$')`, `opening_cash numeric(14,2)`, `unknown_opening_count int NOT NULL DEFAULT 0`, `frozen_by uuid REFERENCES public.users(id)`, `frozen_at timestamptz NOT NULL DEFAULT now()`, `UNIQUE (snapshot_week_start, currency)`.
+  - `public.forecast_snapshot_13w_lines`: `id uuid PK`, `snapshot_id uuid NOT NULL REFERENCES public.forecast_snapshots_13w(id) ON DELETE CASCADE`, `week_index int NOT NULL CHECK (week_index BETWEEN 1 AND 13)`, `week_start date NOT NULL`, `direction text NOT NULL CHECK (direction IN ('inflow','outflow'))`, `category_bucket text NOT NULL`, `source_classification text NOT NULL CHECK (source_classification IN ('promised','behavioral_dbt','scheduled','statutory_tax','manual_override'))`, `source_entity_table text`, `source_entity_id uuid`, `party_id uuid REFERENCES public.parties(id)`, `label text NOT NULL`, `amount numeric(14,2) NOT NULL CHECK (amount >= 0)`.
+
+#### `F1`) — Otomatik Tohumlanan 13 Haftalık Doğrudan Nakit Tahmini ve Tahmin Anlık Görüntüsü vs. Gerçekleşen Varyans Şelalesi (`Timing Slip vs. Permanent Variance`) (`Migration 0107`.. Adım Adım Uygulama Talimatları
+
+1. Otomatik tohumlamada Faz 44'teki çift sayım kalkanını birebir uygula: bir fatura zaten bir çek (`settled_invoice_id`) veya ödeme örneğiyle temsil ediliyorsa 13 haftalık tabloda yalnız bir kez yer alsın.
+2. Tüm şelale toplamlarında `Big` (`src/lib/money.ts`) aritmetiği kullan: `Tahmin Net + Zamanlama Kayması + Kalıcı Giriş Sapması + Kalıcı Çıkış Sapması === Gerçekleşen Banka Net Hareketi` özdeşliğini her koşuda doğrula.
+
+#### `F1`) — Otomatik Tohumlanan 13 Haftalık Doğrudan Nakit Tahmini ve Tahmin Anlık Görüntüsü vs. Gerçekleşen Varyans Şelalesi (`Timing Slip vs. Permanent Variance`) (`Migration 0107`.. Zorunlu Doğrulama & Kabul Kapısı (Yalnız Tek Kullanımlık DB!)
+
+- Tek kullanımlık `mas_radar_f1_verify` veritabanında `pnpm db:migrate` ve `pnpm exec vitest run tests/financial/rolling-13w-and-variance-waterfall.test.ts` → **PASS**.
+- `pnpm db:roles-rls:verify && pnpm db:constraints:verify` → **ALL PASS**.
+- Kalıcı kapılar: `pnpm typecheck && pnpm lint && pnpm phase17:verify && pnpm phase18:verify && pnpm boundary:verify` → **ALL PASS**.
+
+---
+
+### Faz 55 (`F2`) — Gece Nakit Değişim Atfı ($\Delta\text{Cash}$ & $\Delta\text{Gap7}$ Sabah Brifingi), Kovenant & DSCR Erken Uyarı Radarı, Çift Pist (`Dual Runway`) ve Deterministik Başabaş (`Goal-Seek`) Motoru
+
+#### `F2`) — Gece Nakit Değişim Atfı ($\Delta\text{Cash}$ & $\Delta\text{Gap7}$ Sabah Brifingi), Kovenant & DSCR Erken Uyarı Radarı, Çift Pist (`Dual Runway`) ve Deterministik Başabaş (`Goal-Seek`.. Fazın Amacı & Çözdüğü Rapor Bulguları / Rakip Mekanikleri
+
+- **Amaç:** CFO'nun her sabah ilk sorduğu *"Dünden bugüne kasam ve 7 günlük likidite açığım neden değişti?"* sorusunu kuruşu kuruşuna yanıtlayan **Gece Nakit Değişim Atfı (`Overnight Cash & Gap7 Delta Attribution`)** motorunu kurmak; banka kredileri üzerinde **Kovenant Erken Uyarı + Nakit Borç Servisi Karşılama Oranı (`Cash DSCR`) & CFADS Köprüsünü** devreye almak; yanıltıcı tekil geçmiş pist hesabı yerine **Çift İleri Nakit Pisti (`Floor Runway Days` & `Zero-Cash Runway Months`)** ve ilk nakit açığını kapatmak için gereken tam kaldıracı hesaplayan **Deterministik Başabaş (`solveBreakevenLevers`)** çözücüsünü sunmak.
+- **Kapatılan Rapor Bulguları & Rakip Mekanikleri:** `B3-05` (hafızasız sabah brifingi + hatalı `"0 ay"` geçmiş pist hesabı), `Bölüm 8.2` (**Mosaic / Runway / Fathom / Causal** Cash Delta Attribution, Cash DSCR, Dual Runway & Breakeven Goal-Seek).
+
+#### `F2`) — Gece Nakit Değişim Atfı ($\Delta\text{Cash}$ & $\Delta\text{Gap7}$ Sabah Brifingi), Kovenant & DSCR Erken Uyarı Radarı, Çift Pist (`Dual Runway`) ve Deterministik Başabaş (`Goal-Seek`.. Değişecek Mevcut Dosyalar & Oluşturulacak Yeni Dosyalar
+
+- **Oluşturulacak Yeni Dosyalar:**
+  1. `src/lib/briefing/delta-attribution.ts` — Son iki brifing/rapor anlık görüntüsü arasındaki $\Delta\text{Cash}$ ve $\Delta\text{Gap7}$ değişimini 5 deterministik bileşene ayıran motor: ① Gerçekleşen banka tahsilatları (`+`), ② Gerçekleşen banka ödemeleri/masrafları (`-`), ③ Yeni eklenen veya vadesi 7 gün içine giren ödemeler/çekler/faturalar, ④ Vadesi kayan veya kırılan tahsilat sözleri (`slipped PTP / overdue AR`), ⑤ Kur değerleme etkisi (`FX`).
+  2. `src/lib/financing/covenants-and-dscr.ts` —
+     - **Nakit DSCR (`Cash Debt Service Coverage Ratio`):** $\text{DSCR} = \frac{\text{CFADS (Borç Servisi Öncesi Serbest Operasyonel Nakit Akışı)}}{\text{Anapara Taksitleri} + \text{Faiz} + \text{BSMV} + \text{KKDF}}$ (son 3 ay gerçekleşen ve gelecek 3/12 ay projeksiyonu; payda `0` ise `null`, CFADS bilinmeyen kalem içeriyorsa `partial_confidence` bayraklı).
+     - **Kovenant Erken Uyarı:** `covenant_records` üzerindeki eşiklere (`min_dscr`, `max_net_debt_to_ebitda` [Faz 52 Yönetim EBITDA'sı üzerinden!], `min_cash_balance`) `%10` yaklaşma (`warning`) ve ihlal (`breached`) tespiti.
+  3. `src/lib/scenarios/breakeven-goalseek.ts` — Deterministik ikili-arama / kapalı-form başabaş çözücüsü (`solveBreakevenLevers`):
+     - Seçilen ufukta (14 gün / 13 hafta / 12 ay) ilk eksi kasa veya kasa tabanı ihlalini sıfırlamak için tek başına yeterli olan 4 somut kaldıracı hesaplar: ① Tahsilatlarda gereken gün hızlandırması (`-X gün DSO`), ② İhtiyari (`low/normal` öncelikli) giderlerde gereken kesinti yüzdesi/tutarı (`-%Y`), ③ Kullanılabilir rotatif kredi limitinden gereken minimum çekim tutarı (`Z TL`) ve ④ Üretim parça başabaş taban fiyatı (`TL/dk`).
+  4. `tests/financial/cfo-intelligence-f2.test.ts` — Gece nakit deltası kuruş toplam özdeşliği, DSCR ve Net Borç / Yönetim EBITDA kovenant uyarıları, Çift Pist (`floorRunwayDays` vs `zeroCashRunwayMonths`) ve `solveBreakevenLevers` doğrulama testleri.
+- **Değişecek Mevcut Dosyalar:**
+  1. `src/lib/briefing/engine.ts`, `src/lib/briefing/rules.ts` ve `src/app/(dashboard)/insights/briefing/page.tsx`: Sabah brifingine **"Dünden Bugüne Nakit ve 7 Günlük Açık Değişim Köprüsü ($\Delta$)"** kartını ekle (salt-okunur Telegram/e-posta özetinde de kapalı devre kuralına uygun yapılandırılabilir maskeli mod destekle).
+  2. `src/lib/facts/engine.ts` (satır `100-130`) ve `src/lib/home/overview-snapshot.ts`: Tekil geçmişe bakan `runway` yerine `floorRunwayDays` (13 haftalık günlük eğride kasa alt limitinin delindiği ilk güne kalan gün sayısı) ve `zeroCashRunwayMonths` (36 aylık eğride bugünden itibaren kasanın `< 0` olduğu ilk aya kalan ay sayısı) çift pist metriklerini üret.
+  3. `src/app/(dashboard)/finance/facilities/page.tsx`, `src/app/(dashboard)/finance/treasury/page.tsx` ve `src/app/(dashboard)/cashflow/scenarios/page.tsx`: Kovenant & DSCR erken uyarı kartlarını ve **"Başabaş Kaldıraç Çözücü (`Goal-Seek`)"** panelini bağla; `tests/interaction/manifest.ts` içine yeni UI kontrollerini işle.
+
+#### `F2`) — Gece Nakit Değişim Atfı ($\Delta\text{Cash}$ & $\Delta\text{Gap7}$ Sabah Brifingi), Kovenant & DSCR Erken Uyarı Radarı, Çift Pist (`Dual Runway`) ve Deterministik Başabaş (`Goal-Seek`.. Veritabanı / SQL Migration / Arka Plan İşçisi Spesifikasyonu
+
+- Yeni tablo gerekmez; mevcut `reports` (`payload_json` anlık görüntü geçmişi), `covenant_records`, `credit_facilities`, `management_income_statement_v` (Yönetim EBITDA) ve `forecast_snapshots_13w` yapılarını okur.
+
+#### `F2`) — Gece Nakit Değişim Atfı ($\Delta\text{Cash}$ & $\Delta\text{Gap7}$ Sabah Brifingi), Kovenant & DSCR Erken Uyarı Radarı, Çift Pist (`Dual Runway`) ve Deterministik Başabaş (`Goal-Seek`.. Adım Adım Uygulama Talimatları
+
+1. `solveBreakevenLevers` içinde mevcut rotatif kredi kullanılabilir limiti (`limit_amount - drawn_amount`) nakit açığından küçükse `"Mevcut kredi limiti açığı tek başına kapatmaya yetmiyor; ek X TL finansman veya gider ertelemesi gerekli"` dürüst çıktısını üret.
+2. Tüm oran ve bölme işlemlerinde `0`'a bölünmeyi `null` ile koru; hiçbir yerde `NaN` veya `Infinity` üretme.
+
+#### `F2`) — Gece Nakit Değişim Atfı ($\Delta\text{Cash}$ & $\Delta\text{Gap7}$ Sabah Brifingi), Kovenant & DSCR Erken Uyarı Radarı, Çift Pist (`Dual Runway`) ve Deterministik Başabaş (`Goal-Seek`.. Zorunlu Doğrulama & Kabul Kapısı
+
+- `pnpm exec vitest run tests/financial/cfo-intelligence-f2.test.ts src/lib/briefing src/lib/facts src/lib/scenarios` → **ALL PASS**
+- Kalıcı kapılar: `pnpm typecheck && pnpm lint && pnpm phase17:verify && pnpm phase18:verify && pnpm boundary:verify` → **ALL PASS**.
+
+---
+
+### Faz 56 (`F3`) — Birleşik Altın Finansal Doğruluk Paketi, Tam Etkileşim Manifestosu (`UNTESTED = 0`), 8 GB RAM Sert SLO Kapısı ve Canlıya Geçiş (`mas_radar_dev` Klonu) Provası
+
+#### `F3`) — Birleşik Altın Finansal Doğruluk Paketi, Tam Etkileşim Manifestosu (`UNTESTED = 0`), 8 GB RAM Sert SLO Kapısı ve Canlıya Geçiş (`mas_radar_dev` Klonu.. Fazın Amacı & Çözdüğü Rapor Bulguları / Rakip Mekanikleri
+
+- **Amaç:** Faz 39–55 arasında tamamlanan tüm güvenlik, şema, Paraşüt v4, yönetim defteri, yasal mizan köprüsü ve CFO iş döngülerini **elle bağımsız hesaplanmış Birleşik Altın Finansal Fixture Paketi**, **`UNTESTED = 0` Tam Etkileşim Manifestosu**, **Sert (`hard: true`) Sıcak $\le 100\text{ ms}$ Rota/Sorgu Performans Kapısı** ve **`backups/*.dump` gerçek veri yedeğinden tek kullanımlık klona (`mas_radar_v5_rc_clone`) tam `0096 → 0107` göç + Golden UI duman provası** ile mühürlemek.
+- **Kapatılan Rapor Bulguları:** `B3-07` (`volume.ts` ayın 28–31'i körlüğü, `slow-query.ts` `pool.connect()` körlüğü, gevşek `hard: false` SLO eşikleri), `PROGRESS.md` `Faz 11` (birleşik altın finansal doğruluk paketi eksikliği), `Faz 14` (sert rota/yazma SLO kapısı) ve `Aşama 11` (final RC klon cutover provası).
+
+#### `F3`) — Birleşik Altın Finansal Doğruluk Paketi, Tam Etkileşim Manifestosu (`UNTESTED = 0`), 8 GB RAM Sert SLO Kapısı ve Canlıya Geçiş (`mas_radar_dev` Klonu.. Değişecek Mevcut Dosyalar & Oluşturulacak Yeni Dosyalar
+
+- **Oluşturulacak Yeni Dosyalar:**
+  1. `tests/financial/golden-end-to-end-cfo-suite.test.ts` — Elle bağımsız aritmetikle türetilmiş **Birleşik Altın Şirket Senaryosu**: `TRY` + `USD` + `EUR` kasa/banka hesapları (`FIN-03` hem `NULL` hem dolu açılış vakası), Paraşüt v4 satış/tevkifatlı fatura/alış fişi/virman çekimi, MT940 çapraz-kanal banka ekstresi, müşteri çeki cirosu + rücu riski, kredi taksiti (`300`/`780` ayrımı), ödeme paketi (`payment_runs` + `pain.001`), banka eşleştirmesiyle kapanış, dönem kilidi (`0100`), dengeli TDHP Yönetim Defteri Mizan/Bilanço/EBITDA (`0105`), 12 kök nedenli Mali Müşavir Yasal Mizan Mutabakatı (`0106`), 13-Hafta Zamanlama vs. Kalıcı Varyans Şelalesi (`0107`) ve Gece Nakit Deltası + DSCR hesaplarının tamamını tek deterministik veri setinde kuruş farkı `0.00` ile doğrulayan ana kapı.
+  2. `scripts/release/v5-clone-rehearsal.ts` — **Canlı `mas_radar_dev`'e hiç bağlanmadan**, en güncel yerel `.dump` yedeğini tek kullanımlık `mas_radar_v5_rc_clone` veritabanına geri yükleyip `0098..0107` migration zincirini uygulayan, 6 temel iş tablosunun satır özeti korunumunu, 81+ görünümün `security_invoker = true` durumunu, `db:roles-rls:verify` kapısını ve Golden UI + parasal spot-check testlerini koşturup işi bitince klon veritabanını temizleyen nihai prova betiği (`assertDisposableTargetDb` korumalı!).
+- **Değişecek Mevcut Dosyalar:**
+  1. `src/lib/perf/slow-query.ts` ve `src/lib/db.ts`: Yalnız `pool.query` değil, `pool.connect()` ile alınan her `PoolClient.query` çağrısını da yavaş sorgu sayacına ve telemetri halkasına bağla (`slow-query` yazma körlüğü kapanır).
+  2. `scripts/perf/volume.ts` (satır `130-150`): Sentetik hacim tarihlerini `date_trunc('month', current_date)` yerine doğrudan `current_date` (`[-45 gün .. +90 gün]`) merkezli üret ki ayın 28–31'inde de 7 günlük sorgular gerçekçi tam yük altında ölçülsün!
+  3. `scripts/perf/harness.ts` (satır `120-165`): İzole tek kullanımlık üretim sunucusunda (`minimal-next-server.mjs`) sıcak geçiş (`warm route p95`) hedefini kritik CFO ekranlarında sertleştir (`hard: true`, SQL/veri yükleyici sıcak p95 $\le 50\text{ ms}$, tam HTTP SSR sıcak yanıt p95 $\le 100\text{ ms}$ — 8 GB RAM makinede tek işçiyle deterministik ölçüm).
+  4. `tests/interaction/manifest.ts`: Faz 39–55 boyunca eklenen/konsolide edilen tüm ekranların ve kontrollerin kapsama kurallarını tamamla; ölü kural = `0`, `UNTESTED = 0` şartını zorunlu kıl.
+  5. `docs/database-schema.md`, `docs/calculation-rules.md`, `docs/risk-register.md` ve `docs/ops/*` (`backup.md`, `restore.md`, `start.md`, `stop.md`, `cutover.md`, `telemetry-alerting.md`): `0098..0107` şema son durumunu, tek dil TS arka plan işçilerini (`background-worker.ts`, `telegram-assistant-worker.ts`) ve doküman kasası yedekleme/geri yükleme adımlarını eksiksiz güncelle.
+
+#### `F3`) — Birleşik Altın Finansal Doğruluk Paketi, Tam Etkileşim Manifestosu (`UNTESTED = 0`), 8 GB RAM Sert SLO Kapısı ve Canlıya Geçiş (`mas_radar_dev` Klonu.. Veritabanı / SQL Migration / Arka Plan İşçisi Spesifikasyonu
+
+- Yeni migration eklenmez; `0001..0107` tam zincirinin hem sıfırdan (`DISPOSABLE_SYNTHETIC`) hem gerçek yedek klonundan (`DISPOSABLE_CLONE`) hatasız ve kayıpsız geçtiği kanıtlanır.
+
+#### `F3`) — Birleşik Altın Finansal Doğruluk Paketi, Tam Etkileşim Manifestosu (`UNTESTED = 0`), 8 GB RAM Sert SLO Kapısı ve Canlıya Geçiş (`mas_radar_dev` Klonu.. Adım Adım Uygulama Talimatları
+
+1. `v5-clone-rehearsal.ts` çalıştırılırken `mas_radar_app` küme parolası **kesinlikle sıfırlanmaz** (`PROGRESS.md:1173` dersi); klon bağlantı dizesi mevcut yerel kimlikten yalnız veritabanı adı `mas_radar_v5_rc_clone` yapılarak türetilir ve derleme çıktısı `MAS_NEXT_DIST_DIR=.next-v5-rehearsal` ile canlı `.next` dizininden izole edilir.
+2. Tüm kapılar geçtikten sonra `docs/release-evidence/v5-readiness-board.md` kanıt özeti üretilir; gerçek `mas_radar_dev` üzerine geçiş (`pnpm db:migrate`) **yalnızca sahibin harici USB/NAS diski (`MAS_OFFDEVICE_BACKUP_DIR`) takılıp doğrulanmış makbuz alındıktan ve açık sahip onayı verildikten sonra** ayrı bir adımda çalıştırılır.
+
+#### `F3`) — Birleşik Altın Finansal Doğruluk Paketi, Tam Etkileşim Manifestosu (`UNTESTED = 0`), 8 GB RAM Sert SLO Kapısı ve Canlıya Geçiş (`mas_radar_dev` Klonu.. Zorunlu Doğrulama & Kabul Kapısı (Nihai Tam Sistem Kapısı — Yalnız Tek Kullanımlık DB & Klon!)
+
+1. **Statik ve Sınır Kapıları:**
+   - `pnpm typecheck` → **0 hata**
+   - `pnpm lint` → **0 hata, 0 uyarı**
+   - `pnpm phase17:verify` → **ALL PASS** (sıfır `float8`)
+   - `pnpm phase18:verify` → **ALL PASS** (tek `audit.ts`, tek Zod sınırı, `docs/database-schema.md` `0107` güncel)
+   - `pnpm boundary:verify` → **8/8 PASS** (kapalı devre + Paraşüt v4 salt-okunur sınırı)
+   - `git ls-files "*.py"` → **0 dosya** ve `git grep "xlsx" package.json` → **0 eşleşme**
+2. **Birim ve Altın Finansal Doğruluk Paketi:**
+   - `pnpm test` (`vitest run` + `golden-end-to-end-cfo-suite.test.ts` + `package-script-references.test.ts`) → **%100 PASS**
+3. **Veritabanı RLS, Görünüm Güvenliği, Kısıt ve Geçiş Kapıları (Tek Kullanımlık DB):**
+   - `pnpm db:roles-rls:verify` (tüm tablolar + tüm `security_invoker` görünümler + `sessions` iptali) → **%100 PASS**
+   - `pnpm db:constraints:verify && pnpm db:transitions:verify && pnpm ops:telemetry:alerting:verify` → **%100 PASS**
+4. **Etkileşim Manifestosu, Performans SLO ve Gerçek Yedek Klonu Cutover Provası:**
+   - `pnpm interaction:crawl && pnpm interaction:test && pnpm interaction:gate:strict` → **`UNTESTED = 0`, ölü kural = `0`, PASS**
+   - `pnpm perf:gate && pnpm perf:route-slo` → **Sert (`hard: true`) sıcak geçiş SLO PASS**
+   - `pnpm exec tsx scripts/release/v5-clone-rehearsal.ts` → **Gerçek yedek klonunda `0096 → 0107` göç + 36/36 Golden UI + parasal spot-check %100 PASS (`mas_radar_dev`'e sıfır dokunuş!)**.
+
+---
+
+## 10. Yürütme Disiplini ve Sahibin Bekleyen Operasyonel Eylemleri
+
+### 10.1 Faz Uygulama Kuralı (Değiştirilemez)
+
+1. Fazlar **Faz 39'dan Faz 56'ya kadar kesin bağımlılık sırasıyla** uygulanır; bir fazın `5. Zorunlu Doğrulama & Kabul Kapısı` tamamen yeşil olmadan bir sonraki faza geçilmez.
+2. Hiçbir faz sırasında yerel kanonik veritabanına (`mas_radar_dev` — `127.0.0.1:5432`) test verisi yazılmaz, migration uygulanmaz veya doğrulama betiği koşturulmaz; tüm DB testleri yalnız tek kullanımlık `mas_radar_*_verify` veritabanlarında çalışır.
+3. 8 GB RAM makine disiplini gereği aynı anda birden fazla ağır derleme/Playwright kümesi açılmaz (`MAS_NEXT_CPUS=1`, `vitest maxWorkers: 2`).
+
+### 10.2 Kod Dışı Sahip Eylemleri (Canlı Cutover Öncesi Hatırlatma)
+
+1. **Harici Yedek Diski (`P0-1`):** Harici USB diski veya yerel NAS paylaşımını takıp `.env.local` içine `MAS_OFFDEVICE_BACKUP_DIR` yolunu tanımlayın (Faz 43 sonrası gece yedeği hem PostgreSQL `.dump` hem doküman kasasını otomatik kopyalayıp doğrulayacaktır).
+2. **Windows PostgreSQL Servisi:** Yönetici PowerShell üzerinden `scripts\ops\install-postgres-service.ps1` betiğini (Faz 43 sertleştirmesi sonrasında) bir kez çalıştırarak `MAS-PostgreSQL16` servisini kalıcı otomatik kurtarmaya alın.
+3. **Eski Düz Metin Yedek ve Bulut Temizliği:** Kök dizindeki `.env.local.bak-20261029-092503` dosyasını güvenli biçimde silin ve duraklatılmış eski Supabase `"Mas-Saas"` bulut projesini silin veya parolasını sıfırlayın; kapalı devre kararı uyarınca `.env.local` içinde `AI_FORCE_DETERMINISTIC=1` ayarını netleştirin.
+4. **Aktif Kasa/Banka Açılış Bakiyeleri (`FIN-03`):** Gerçek veritabanındaki 6 aktif kasa/banka hesabının başlangıç açılış bakiyelerini (veya Faz 51 Paraşüt `/accounts` başlangıç mutabakatını) girin.

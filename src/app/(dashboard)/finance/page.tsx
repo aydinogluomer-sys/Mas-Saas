@@ -1,6 +1,8 @@
-import Link from "next/link";
+import Link from "@/components/ui/app-link";
+import { Badge } from "@/components/ui/badge";
 import { getPool } from "@/lib/db";
 import { loadFinanceDashboard } from "@/lib/financing/engine";
+import { loadUnknownOpeningAccountCount } from "@/lib/treasury/engine";
 import { istanbulDateISO } from "@/lib/reports/rules";
 import { fmtTL, Panel } from "@/components/ui/panel";
 import { KpiCard, PageHeader } from "@/components/ui/shell";
@@ -12,7 +14,10 @@ export const dynamic = "force-dynamic";
 export default async function FinanceSummaryPage() {
   const pool = getPool();
   const today = istanbulDateISO();
-  const { summary, months } = await loadFinanceDashboard(pool, today);
+  const [{ summary, months }, unknownOpening] = await Promise.all([
+    loadFinanceDashboard(pool, today),
+    loadUnknownOpeningAccountCount(pool),
+  ]);
   const monthKeys = [...new Set(months.map((row) => row.monthStart))].sort();
   const debt = monthKeys.slice(0, 6).map((monthStart) => {
     const rows = months.filter((row) => row.monthStart === monthStart);
@@ -39,6 +44,27 @@ export default async function FinanceSummaryPage() {
   };
   return <>
     <PageHeader title="Finansman Özeti" subtitle="Borç servisi, yaklaşan vadeler ve toplam finansman yükü" action={<Link className="button-accent px-3 py-2" href="/scenarios?from=finance">Senaryoda dene</Link>} />
+    {unknownOpening.totalUnknown > 0 ? (
+      <div
+        role="status"
+        style={{
+          background: "var(--surface-2)",
+          border: "1px solid var(--line)",
+          color: "var(--text-2)",
+        }}
+        className="flex flex-wrap items-center justify-between gap-2 px-3 py-2 text-xs"
+      >
+        <div className="flex flex-wrap items-center gap-2">
+          <Badge tone="amber" dot>FIN-03</Badge>
+          <span>{`Açılış bakiyesi tanımsız ${unknownOpening.totalUnknown} aktif hesap var — kullanılabilir nakit yalnız hareketlerden hesaplanıyor (FIN-03).`}</span>
+        </div>
+        {unknownOpening.byCurrency.length > 0 ? (
+          <span className="font-mono text-[11px]">
+            {unknownOpening.byCurrency.map((c) => `${c.currency}: ${c.count}`).join(" · ")}
+          </span>
+        ) : null}
+      </div>
+    ) : null}
     <div className="grid grid-cols-2 gap-2 lg:grid-cols-4">
       <KpiCard label="Kalan kredi borcu" value={fmtTL(summary.remainingAmount)} tone="neg" emphasize />
       <KpiCard label="30 günlük ödeme" value={fmtTL(summary.due30)} tone="warn" emphasize />

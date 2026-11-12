@@ -170,7 +170,7 @@ export async function loadPaymentDashboard(
   buckets: PaymentDashboardBucket[];
   flexibility: PaymentDashboardFlexibility[];
   watchList: Array<InstanceRow & { remaining: number | null; daysOverdue: number; decisionFlexibility: PaymentDashboardFlexibility["id"] }>;
-  priorities: InstanceRow[];
+  priorities: Array<InstanceRow & { remaining: number | null }>;
 }> {
   const tomorrowISO = new Date(Date.parse(todayISO) + 86400000).toISOString().slice(0, 10);
   const result = await pool.query(`
@@ -276,7 +276,7 @@ export async function loadPaymentDashboard(
       select id, payment_id, coalesce(payment_name,'(silinmiş kalem)') as name,
              to_char(due_date,'YYYY-MM-DD') as due_date, amount, amount_status, status,
              paid_amount, risk_level, risk_reasons, note, currency, direction, priority,
-             category, flexibility_class as flexibility, (source_row_id is not null) as source_linked
+             category, flexibility_class as flexibility, (source_row_id is not null) as source_linked, remaining
       from active where due_date <= $3::date
       order by (due_date < $1::date) desc, due_date, (decision_flexibility='critical') desc,
                -- PHASE 2.2 (T1-b): 'unsupported_currency' = esik degerlendirilemedi; merdivende
@@ -320,7 +320,7 @@ export async function loadPaymentDashboard(
       daysOverdue: Number(row.days_overdue),
       decisionFlexibility: row.decision_flexibility as PaymentDashboardFlexibility["id"],
     })),
-    priorities: payload.priorities.map(mapInstanceRow),
+    priorities: payload.priorities.map((row) => ({ ...mapInstanceRow(row), remaining: moneyOrNull(row.remaining as string | number | null) })),
   };
 }
 
@@ -329,8 +329,8 @@ export async function monthSummary(pool: Pool, monthStartISO: string) {
     // PHASE 2.2 (#2): uc toplam da yalniz TRY; TRY-disi satirlar foreign_count ile doner.
     `select
        coalesce(sum(amount) filter (where amount is not null and currency = 'TRY'),0) as known_total,
-       coalesce(sum(amount) filter (where amount is not null and currency = 'TRY' and status in ('unpaid','partial','planned','late')),0) as known_remaining,
-       coalesce(sum(coalesce(paid_amount, amount)) filter (where status='paid' and currency = 'TRY'),0) as paid_known,
+       coalesce(sum(greatest(amount - coalesce(paid_amount, 0), 0)) filter (where amount is not null and currency = 'TRY' and status in ('unpaid','partial','planned','late')),0) as known_remaining,
+       coalesce(sum(case when status = 'paid' then coalesce(paid_amount, amount) when status = 'partial' then coalesce(paid_amount, 0) else 0 end) filter (where currency = 'TRY'),0) as paid_known,
        count(*) filter (where amount is null and status <> 'cancelled')::int as missing_count,
        count(*) filter (where currency <> 'TRY' and status <> 'cancelled')::int as foreign_count,
        count(*)::int as total_count
@@ -416,7 +416,12 @@ export interface PaymentHistoryEvent {
  * `amount − paid_amount` did not always equal the reported `remaining_amount`. Both now parse
  * as `numeric` and the whole row is decoded once in JS.
  */
-export async function paymentHistoryEvents(pool:Pool, filters:{status?:string;q?:string;from?:string;to?:string;limit?:number}={}):Promise<PaymentHistoryEvent[]> {
+export async function paymentHistoryEvents(
+  pool: Pick<Pool, "query">,
+  filters: { status?: string; q?: string; from?: string; to?: string; limit?: number; offset?: number } = {},
+): Promise<PaymentHistoryEvent[]> {
+  const limit = Math.max(1, Math.min(250, filters.limit ?? 50));
+  const offset = Math.max(0, filters.offset ?? 0);
   const result=await pool.query(`
     with audit_events as (
       select a.id,a.entity_id instance_id,coalesce(p.name,'(silinmiş kalem)') payment_name,
@@ -436,8 +441,60 @@ export async function paymentHistoryEvents(pool:Pool, filters:{status?:string;q?
       where i.status in ('partial','cancelled') and not exists(select 1 from audit_events a where a.instance_id=i.id and a.next_status=i.status)
     ) select * from (select * from audit_events union all select * from current_events) h
     where ($1='' or event_type=$1) and ($2='' or payment_name ilike '%'||$2||'%') and ($3='' or occurred_at::text >= $3) and ($4='' or occurred_at::text <= $4||' 23:59')
-    order by occurred_at desc limit $5`,[filters.status??"",filters.q??"",filters.from??"",filters.to??"",filters.limit??250]);
+    order by occurred_at desc, id desc limit $5 offset $6`,[filters.status??"",filters.q??"",filters.from??"",filters.to??"",limit,offset]);
   return result.rows.map(r=>({id:r.id,instanceId:r.instance_id,paymentName:r.payment_name,eventType:r.event_type,previousStatus:r.previous_status,nextStatus:r.next_status,amount:moneyOrNull(r.amount),paidAmount:moneyOrNull(r.paid_amount),remainingAmount:moneyOrNull(r.remaining_amount),occurredAt:r.occurred_at,sourceLinked:r.source_linked}));
+}
+
+export async function paymentHistoryCounts(
+  pool: Pick<Pool, "query">,
+  filters: { q?: string; from?: string; to?: string } = {},
+): Promise<{ total: number; paid: number; partial: number; reopened: number; cancelled: number }> {
+  const result = await pool.query<{ event_type: string; n: number }>(
+    `with audit_events as (
+       select a.id, a.entity_id as instance_id, coalesce(p.name, '(silinmiş kalem)') as payment_name,
+              case
+                when a.action = 'mark_paid' then 'paid'
+                when a.action = 'mark_unpaid' then 'reopened'
+                when a.after_data->>'status' = 'partial' then 'partial'
+                else 'cancelled'
+              end as event_type,
+              coalesce(a.after_data->>'status', 'unknown') as next_status,
+              to_char(a.created_at, 'YYYY-MM-DD HH24:MI') as occurred_at
+       from public.audit_logs a
+       left join public.payment_instances i on i.id = a.entity_id
+       left join public.payments p on p.id = i.payment_id
+       where a.entity_table = 'payment_instances'
+         and (a.action in ('mark_paid', 'mark_unpaid') or a.after_data->>'status' in ('partial', 'cancelled'))
+     ),
+     current_events as (
+       select i.id, i.id as instance_id, coalesce(p.name, '(silinmiş kalem)') as payment_name,
+              i.status as event_type, i.status as next_status,
+              to_char(coalesce(i.paid_at, i.updated_at), 'YYYY-MM-DD HH24:MI') as occurred_at
+       from public.payment_instances i
+       left join public.payments p on p.id = i.payment_id
+       where i.status in ('partial', 'cancelled')
+         and not exists (select 1 from audit_events a where a.instance_id = i.id and a.next_status = i.status)
+     )
+     select event_type, count(*)::int as n
+     from (select * from audit_events union all select * from current_events) h
+     where ($1 = '' or payment_name ilike '%' || $1 || '%')
+       and ($2 = '' or occurred_at::text >= $2)
+       and ($3 = '' or occurred_at::text <= $3 || ' 23:59')
+     group by event_type`,
+    [filters.q ?? "", filters.from ?? "", filters.to ?? ""],
+  );
+  const byType = new Map(result.rows.map((r) => [r.event_type, intOrNull(r.n) ?? 0]));
+  const paid = byType.get("paid") ?? 0;
+  const partial = byType.get("partial") ?? 0;
+  const reopened = byType.get("reopened") ?? 0;
+  const cancelled = byType.get("cancelled") ?? 0;
+  return {
+    total: paid + partial + reopened + cancelled,
+    paid,
+    partial,
+    reopened,
+    cancelled,
+  };
 }
 
 export { addMonths };

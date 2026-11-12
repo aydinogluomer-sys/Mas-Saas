@@ -26,7 +26,7 @@
 //     pnpm ops:telemetry:alerting:verify
 
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { Pool } from "pg";
@@ -91,10 +91,6 @@ async function appRoleUrl(): Promise<string | null> {
   } catch {
     return null;
   }
-  // Kimlik bilgisi VAR demek, çalışıyor demek DEĞİL: rolün parolası bu kümede hiç ayarlanmamış
-  // olabilir (CI'daki durum) ya da hedefte CONNECT yetkisi olmayabilir. Önce GERÇEKTEN bağlanıp
-  // `current_user`'ın mas_radar_app olduğunu görüyoruz; olmuyorsa kapı kırmızıya dönmez, ilgili
-  // kontroller ATLANIR ve atlandıkları raporlanır.
   const probePool = new Pool({ connectionString: candidateUrl, max: 1, connectionTimeoutMillis: 5000 });
   try {
     const who = await probePool.query<{ u: string }>("select current_user u");
@@ -141,6 +137,7 @@ function runSnapshot(scenario: string, overrides: Record<string, string>): Snaps
     DATABASE_URL: "",
     MAS_ALERT_CHANNELS: "",
     MAS_APP_BASE_URL: "",
+    MAS_OFFDEVICE_BACKUP_DIR: "",
     TELEGRAM_BOT_TOKEN: "",
     TELEGRAM_CHAT_ID: "",
     ...overrides,
@@ -194,7 +191,7 @@ async function cleanup(): Promise<void> {
 }
 
 async function main(): Promise<void> {
-  console.log("=== telemetry-alerting-verify: alarm teslimatı + zamanlama kapısı (AŞAMA 09) ===");
+  console.log("=== telemetry-alerting-verify: alarm teslimatı + zamanlama kapısı (AŞAMA 09 / Faz 43) ===");
   console.log(`Hedef veritabanı : ${DB_NAME} (DISPOSABLE_SYNTHETIC)\n`);
 
   const present = await pool.query<{ jobs: string | null; wb: string | null; mig: string | null }>(
@@ -211,10 +208,13 @@ async function main(): Promise<void> {
   workDir = mkdtempSync(path.join(os.tmpdir(), "mas-alerting-"));
   const freshBackupDir = path.join(workDir, "backups-fresh");
   const emptyBackupDir = path.join(workDir, "backups-empty");
+  const offdeviceBackupDir = path.join(workDir, "backups-offdevice");
   mkdirSync(freshBackupDir, { recursive: true });
   mkdirSync(emptyBackupDir, { recursive: true });
+  mkdirSync(offdeviceBackupDir, { recursive: true });
   // `daily-` öneki: yedek-yaşı sinyali yalnız zamanlanmış günlük işin dump'larını sayar.
   writeFileSync(path.join(freshBackupDir, "daily-recent.dump"), "taze mtime — gerçek dump değil");
+  writeFileSync(path.join(offdeviceBackupDir, "daily-recent.dump"), "taze mtime — tek kopya enjeksiyonu");
 
   const appUrl = await appRoleUrl();
   const healthyEnv = (extra: Record<string, string> = {}): Record<string, string> => ({
@@ -260,7 +260,7 @@ async function main(): Promise<void> {
       healthy.json !== null && healthy.json.notObtainable.length >= 4,
       `notObtainable=${healthy.json?.notObtainable.map((n) => n.signal).join(" · ") ?? "yok"}`);
 
-    /* ════ S1..S6 — altı fail-closed sinyal: ENJEKTE → ALARM + TESLİMAT → TEMİZLE ═══════ */
+    /* ════ S1..S6 (+ S1b Faz 43 off-device) — YÜKSEK RİSKLİ SİNYALLER: ENJEKTE → ALARM + TESLİMAT → TEMİZLE ═ */
 
     let deliveredSignals = 0;
     const provenSignals: string[] = [];
@@ -286,6 +286,51 @@ async function main(): Promise<void> {
     record("S1 backup age: taze dump geri konunca TEMİZLENDİ",
       signalState(s1clear.out, "backup_age_hours") === "ok" && alertRow(s1clear, "backup_age_hours") === undefined,
       signalState(s1clear.out, "backup_age_hours"));
+
+    // ── S1b off-device exit 3 (taze yerel dump VAR ama harici kopya YOK → sahte ALL CLEAR YASAK) ──
+    const offdeviceRunsLog = path.join(offdeviceBackupDir, "daily-runs.jsonl");
+    writeFileSync(
+      offdeviceRunsLog,
+      `${JSON.stringify({
+        startedAt: new Date().toISOString(),
+        finishedAt: new Date().toISOString(),
+        ok: false,
+        exitCode: 3,
+        stage: "offdevice",
+        source_db: "mas_radar_dev",
+        offDeviceOk: false,
+        offDeviceNote: "MAS_OFFDEVICE_BACKUP_DIR tanımlı değil",
+      })}\n`,
+      "utf8",
+    );
+    const s1b = runSnapshot("offdevice-exit3", healthyEnv({ MAS_BACKUP_DIR: offdeviceBackupDir }));
+    assertAlarmDelivered(s1b, "offdevice_backup_status", "P1", "S1b off-device exit 3 (tek kopya)");
+    record(
+      "S1b off-device exit 3: yerel dump taze olsa bile ALL CLEAR verilmedi (verdict=ALERT)",
+      !/TELEMETRY: ALL CLEAR/.test(s1b.out) && s1b.json?.verdict === "ALERT",
+      `verdict=${s1b.json?.verdict ?? "?"}`,
+    );
+    appendFileSync(
+      offdeviceRunsLog,
+      `${JSON.stringify({
+        startedAt: new Date().toISOString(),
+        finishedAt: new Date().toISOString(),
+        ok: true,
+        exitCode: 0,
+        stage: null,
+        source_db: "mas_radar_dev",
+        offDeviceOk: true,
+        offDeviceNote: "USB_PHYSICAL_VOLUME — sha256 hedefte eşleşti",
+      })}\n`,
+      "utf8",
+    );
+    const s1bClear = runSnapshot("offdevice-clear", healthyEnv({ MAS_BACKUP_DIR: offdeviceBackupDir }));
+    record(
+      "S1b off-device: harici kopya doğrulanan koşu eklendiğinde TEMİZLENDİ",
+      signalState(s1bClear.out, "offdevice_backup_status") === "ok" &&
+        alertRow(s1bClear, "offdevice_backup_status") === undefined,
+      signalState(s1bClear.out, "offdevice_backup_status"),
+    );
 
     // ── S2 queue stuck ────────────────────────────────────────────────────────────────────
     await pool.query(
@@ -316,11 +361,6 @@ async function main(): Promise<void> {
       signalState(s3clear.out, "latest_import_age_days"));
 
     // ── S4 reconciliation != 0 ────────────────────────────────────────────────────────────
-    //
-    // treasury_cashflow_reconciliation bir GÖRÜNÜM: sapma uydurulamaz, zincirin tamamı
-    // (cash_accounts → bank_accounts → bank_transactions ↔ cashflow_months) kurulmak zorunda.
-    // Enjekte edilen değerler bilinçli olarak çelişkili: banka hareketi 12.345,67 ↔ nakit akış
-    // kapanışı 1,00 → difference = 12.344,67 ≠ 0.
     await pool.query(`
       with acc as (
         insert into public.cash_accounts (name, account_type, currency)
@@ -375,8 +415,8 @@ async function main(): Promise<void> {
     record("S6 ledger: sahte satır silinince TEMİZLENDİ",
       signalState(s6clear.out, "schema_ledger") === "ok", signalState(s6clear.out, "schema_ledger"));
 
-    record("Rehber §14'ün ALTI fail-closed sinyalinin TAMAMI alarm verdi VE teslim edildi",
-      deliveredSignals === 6, `${deliveredSignals}/6 — ${provenSignals.join(", ")}`);
+    record("YEDİ fail-closed sinyalin TAMAMI (rehber §14 + Faz 43 off-device) alarm verdi VE teslim edildi",
+      deliveredSignals === 7, `${deliveredSignals}/7 — ${provenSignals.join(", ")}`);
 
     /* ════ S7..S10 — TESLİMAT BAŞARISIZLIĞI AYRICA GÖRÜNÜR ═══════════════════════════════ */
 
@@ -384,7 +424,7 @@ async function main(): Promise<void> {
     const blocker = path.join(workDir, "blocker-file");
     writeFileSync(blocker, "bu bir dosya, dizin değil");
     const s7 = runSnapshot("delivery-log-broken", healthyEnv({
-      MAS_BACKUP_DIR: emptyBackupDir,                       // en az bir uyarı olsun
+      MAS_BACKUP_DIR: emptyBackupDir,
       MAS_ALERT_LOG: path.join(blocker, "alt", "alerts.jsonl"),
     }));
     record("S7 teslimat: yerel log yazılamazsa exit 2 ve 'TELEMETRY DELIVERY: FAILED'",
@@ -404,7 +444,7 @@ async function main(): Promise<void> {
     const s9 = runSnapshot("delivery-telegram-unconfigured", healthyEnv({
       MAS_BACKUP_DIR: emptyBackupDir,
       MAS_ALERT_CHANNELS: "log,telegram",
-      DATABASE_URL: appUrl ?? url,   // @/lib/env yüklenebilsin diye
+      DATABASE_URL: appUrl ?? url,
     }));
     const s9row = s9.log.find((r) => r.kind === "delivery" && r.channel === "telegram");
     record("S9 teslimat: yapılandırılmamış Telegram kanalı DÜŞÜYOR ve log'a ok:false yazılıyor",
@@ -415,10 +455,6 @@ async function main(): Promise<void> {
       `alert satırı=${alertRows(s9).length}`);
 
     // ── S10: kasten düşen kanal (mockTransport) — teslimat katmanı doğrudan sürülür ────────
-    //
-    // Ortamda erişilebilir bir Telegram/e-posta ucu YOK ve gerçek bir uca istek atmak bu kapının
-    // işi değil. Bu yüzden "kanal cevap verdi ama REDDETTİ" hâli mockTransport ile sürülüyor:
-    // S9 yapılandırma eksikliğini, S10 gönderim reddini kanıtlıyor — ikisi farklı arızalar.
     const mockLog = path.join(workDir, "mock-delivery.jsonl");
     const failing = mockTransport({ channel: "telegram", failOn: () => true });
     const sample: TelemetryAlert = {
@@ -440,22 +476,6 @@ async function main(): Promise<void> {
       `alert satırı=${mockRows.filter((r) => r.kind === "alert").length}`);
 
     /* ════ S11 — ALERT ÇIKTISINDA SIR YOK ════════════════════════════════════════════════ */
-    //
-    // Taranan şey senaryoların TAMAMININ stdout'u + yazılan HER alert log dosyası. Bağlantı
-    // dizesi (parolalı) her koşuda ortamda vardı; hiçbirinde çıktıya sızmamalı.
-    //
-    // ÜÇ AYRI TARAMA, ÇÜNKÜ TEK TARAMA YETMİYOR — ve biri BİLEREK literal değil:
-    //   a. DSN düzeyi — tam bağlantı dizesi hiçbir yerde geçmemeli. En kesin kontrol, parolanın
-    //      ne olduğuna bağlı DEĞİL.
-    //   b. Şekil düzeyi — parolalı DSN / Bearer / token=… kalıpları; bilinmeyen sırları da yakalar.
-    //   c. Literal düzey — app rolünün parolası (bu makinede 18 karakterlik rastgele bir dizge)
-    //      metinde hiç geçmemeli.
-    //
-    // OWNER PAROLASI LİTERAL OLARAK TARANMAZ ve bu bir boşluk değil, ÖLÇÜLMÜŞ bir karar: yerel
-    // kümede owner parolası düpedüz 'postgres' — rol adının, veritabanı adının ve
-    // `runtime_user postgres` satırının kendisiyle AYNI dizge. Literal taransaydı kapı her koşuda
-    // kırmızı yanardı ve yakaladığı şey bir sızıntı değil, bir kelime olurdu (ilk koşuda tam
-    // olarak bu oldu). Onun yerine (a) ve (b) devrede: parolayı TAŞIYAN her biçim yakalanıyor.
     const everything = transcript.join("\n");
     const ownerPassword = new URL(url).password;
     const appPassword = appUrl ? new URL(appUrl).password : "";
@@ -499,8 +519,6 @@ async function main(): Promise<void> {
         /WHAT-IF/.test(whatIf.out) && /SCHEDULED TASK = NOT REGISTERED/.test(whatIf.out)
           && /mas-telemetry-watch\.cmd/.test(whatIf.out),
         whatIf.out.split(/\r?\n/).find((l) => l.includes("SCHEDULED TASK"))?.trim() ?? "satır yok");
-      // Yan etki sorusu "kayıtlı değil mi" DEĞİL, "what-if kayıt durumunu değiştirdi mi": operatör
-      // görevi kaydettiğinde (Wave 0 sonrası beklenen durum) eski kontrol her koşuda düşerdi.
       const after = runScheduler(["status", "--job", "telemetry"]);
       const registeredAfter = /SCHEDULED TASK = REGISTERED/.test(after.out);
       record("S12 zamanlama: what-if kayıt durumunu DEĞİŞTİRMEDİ (yan etki yok)",

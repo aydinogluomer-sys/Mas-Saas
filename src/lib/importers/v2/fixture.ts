@@ -200,6 +200,18 @@ const FIXTURE_ROWS: Record<string, Row[]> = {
     { external_id: "MKN-002", makine_adi: "Aile market gideri", alis_bedeli: 15000,
       para_birimi: "TRY", aktif: "EVET" },
   ],
+  "17_KREDI_LIMITLERI": [
+    { external_id: "KLM-001", limit_adi: "Vakıfbank Rotatif BCH", banka: "Vakıfbank",
+      limit_tipi: "revolving", toplam_limit: 2000000, kullanilan_tutar: 450000,
+      para_birimi: "TRY", faiz_orani: 48.5, komisyon_orani: 1.25,
+      baslangic_tarihi: "2026-01-01", bitis_tarihi: "2026-12-31", durum: "active" },
+    { external_id: "KLM-002", limit_adi: "Garanti İhracat Spot EUR", banka: "Garanti BBVA",
+      limit_tipi: "spot", toplam_limit: 250000, kullanilan_tutar: 0,
+      para_birimi: "EUR", faiz_orani: 6.5, durum: "active" },
+    // REDDEDİLMELİ: kullanılan tutar toplam limiti aşıyor.
+    { external_id: "KLM-003", limit_adi: "Aşımlı Limit Testi", limit_tipi: "overdraft",
+      toplam_limit: 100000, kullanilan_tutar: 150000, para_birimi: "TRY", durum: "active" },
+  ],
 };
 
 /** Bilerek eklenen, sözleşmede olmayan başlık — `unknown_header` üretmeli. */
@@ -256,6 +268,7 @@ export const FIXTURE_ORACLE = {
     "14_KAPASITE":        { rowsRead: 3, ready: 2, needsReview: 1, rejected: 0 },
     "15_MALIYET":         { rowsRead: 3, ready: 3, needsReview: 0, rejected: 0 },
     "16_MAKINE_ROI":      { rowsRead: 2, ready: 1, needsReview: 0, rejected: 1 },
+    "17_KREDI_LIMITLERI": { rowsRead: 3, ready: 2, needsReview: 0, rejected: 1 },
   } as Record<string, { rowsRead: number; ready: number; needsReview: number; rejected: number }>,
 
   /** Kaynak hücreden beklenen çözülmüş değerler — SOURCE → PARSED zinciri kanıtı (§42). */
@@ -273,6 +286,7 @@ export const FIXTURE_ORACLE = {
     { sheet: "13_FX_POZISYONU", row: 4, key: "try_kuru", expected: null },
     { sheet: "14_KAPASITE", row: 3, key: "freze_dk", expected: 0 },   // 0 = freze işlemi yok
     { sheet: "14_KAPASITE", row: 4, key: "torna_dk", expected: null },// boş = ölçülmemiş
+    { sheet: "17_KREDI_LIMITLERI", row: 2, key: "kullanilan_tutar", expected: 450000 },
   ] as Array<{ sheet: string; row: number; key: string; expected: unknown }>,
 
   expectedIssueTypes: [
@@ -288,5 +302,5 @@ export const FIXTURE_ORACLE = {
   ] as const,
 
   /** Toplam — sayfa oracle'larının toplamı, ayrıca elle doğrulandı. */
-  totals: { rowsRead: 54, ready: 39, needsReview: 3, rejected: 12 },
+  totals: { rowsRead: 57, ready: 41, needsReview: 3, rejected: 13 },
 } as const;

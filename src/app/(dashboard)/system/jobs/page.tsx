@@ -1,8 +1,14 @@
 import { getPool } from "@/lib/db";
+import { JobDispatcher, registerBuiltInJobHandlers } from "@/lib/jobs/dispatcher";
 import { listJobs, loadQueueHealth } from "@/lib/jobs/queue";
-import { queueVerdict, type JobStatus } from "@/lib/jobs/rules";
+import { JOB_TYPES, queueVerdict, type JobStatus } from "@/lib/jobs/rules";
 import { getSlowThreshold, slowQueryReport } from "@/lib/perf/slow-query";
-import { replayJobAction, sweepQueueAction } from "./actions";
+import {
+  enqueueAndDispatchJobAction,
+  processNextQueuedJobAction,
+  replayJobAction,
+  sweepQueueAction,
+} from "./actions";
 import { Badge, type Tone } from "@/components/ui/badge";
 import { Panel } from "@/components/ui/panel";
 import { EmptyState, KeyStat, PageHeader, TableShell } from "@/components/ui/shell";
@@ -24,16 +30,17 @@ const TYPE_LABEL: Record<string, string> = {
   report_generation: "Rapor üretimi",
   large_export: "Büyük dışa aktarma",
   read_model_refresh: "Read-model tazeleme",
+  fx_rate_sync: "TCMB günlük kur senkronizasyonu",
+  accounting_sync: "Muhasebe / ERP senkronizasyonu",
+  bank_api_sync: "Banka API senkronizasyonu",
+  einvoice_sync: "e-Fatura / GİB senkronizasyonu",
 };
 
 export default async function JobsPage() {
-  // Faz 17-38 denetimi — sayfa seviyesi rol kapisi. Navigasyonun kullandigi AYNI karar
-  // (canSeeRoute); ikinci bir liste, ikinci bir fikir ve kacinilmaz bir kayma demekti.
   const denied = await requireRouteAccess("/system/jobs");
   if (denied) return denied;
   const pool = getPool();
   const [jobs, health] = await Promise.all([listJobs(pool, 100), loadQueueHealth(pool)]);
-  // Read from this process's own ring buffer — see slow-query.ts for why it is not a table.
   const slow = slowQueryReport(15);
 
   const deadLetters = jobs.filter((j) => j.status === "dead_letter");
@@ -43,6 +50,7 @@ export default async function JobsPage() {
     ? Math.max(...queued.map((j) => (Date.now() - Date.parse(j.createdAt)) / 1000))
     : null;
   const verdict = queueVerdict(oldestQueued, deadLetters.length);
+  const inspectorDispatcher = registerBuiltInJobHandlers(new JobDispatcher());
 
   return (
     <>
@@ -53,13 +61,66 @@ export default async function JobsPage() {
           {verdict.label}
         </Badge>}
         action={
-          <form action={sweepQueueAction}>
-            <button className="button-ghost px-3 py-2 font-mono text-xs uppercase tracking-wider">
-              Kuyruğu süpür
-            </button>
-          </form>
+          <div className="flex flex-wrap gap-2">
+            <form action={processNextQueuedJobAction}>
+              <button className="button-accent px-3 py-2 font-mono text-xs uppercase tracking-wider">
+                Sıradaki işi çalıştır
+              </button>
+            </form>
+            <form action={sweepQueueAction}>
+              <button className="button-ghost px-3 py-2 font-mono text-xs uppercase tracking-wider">
+                Kuyruğu süpür
+              </button>
+            </form>
+          </div>
         }
       />
+
+      <Panel
+        title="MERKEZİ İŞ DAĞITICISI (DISPATCHER) & KAYITLI İŞÇİLER"
+        subtitle="FOR UPDATE SKIP LOCKED ile atomik iş sahiplenme ve idempotent görev çalıştırıcıları"
+      >
+        <div className="mb-3 flex flex-wrap gap-1.5">
+          {JOB_TYPES.map((jt) => {
+            const registered = inspectorDispatcher.hasHandler(jt);
+            return (
+              <Badge key={jt} tone={registered ? "green" : "neutral"} dot>
+                {TYPE_LABEL[jt] ?? jt}: {registered ? "aktif handler" : "harici işçi"}
+              </Badge>
+            );
+          })}
+        </div>
+        <div className="flex flex-wrap gap-2 border-t border-line-faint pt-2.5">
+          <form action={enqueueAndDispatchJobAction}>
+            <input type="hidden" name="jobType" value="read_model_refresh" />
+            <input type="hidden" name="task" value="overview.refresh" />
+            <button type="submit" className="button-ghost px-2.5 py-1 text-xs">
+              + Ana Ekran & Süreklilik Tazele
+            </button>
+          </form>
+          <form action={enqueueAndDispatchJobAction}>
+            <input type="hidden" name="jobType" value="read_model_refresh" />
+            <input type="hidden" name="task" value="controls.evaluate" />
+            <button type="submit" className="button-ghost px-2.5 py-1 text-xs">
+              + İç Kontrol Denetimi Çalıştır
+            </button>
+          </form>
+          <form action={enqueueAndDispatchJobAction}>
+            <input type="hidden" name="jobType" value="report_generation" />
+            <input type="hidden" name="task" value="report.generate" />
+            <button type="submit" className="button-ghost px-2.5 py-1 text-xs">
+              + Günlük CFO Özeti Üret
+            </button>
+          </form>
+          <form action={enqueueAndDispatchJobAction}>
+            <input type="hidden" name="jobType" value="fx_rate_sync" />
+            <input type="hidden" name="task" value="fx.tcmb_daily" />
+            <button type="submit" className="button-ghost px-2.5 py-1 text-xs">
+              + TCMB Günlük Kur Çek
+            </button>
+          </form>
+        </div>
+      </Panel>
 
       <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
         <KeyStat label="Kuyrukta" value={String(queued.length)} tone={queued.length > 0 ? "info" : "neutral"} sub="Sırasını bekliyor" />
@@ -126,8 +187,6 @@ export default async function JobsPage() {
                   <tr key={j.id} className="border-t border-line-faint">
                     <td className="py-1">{TYPE_LABEL[j.jobType] ?? j.jobType}</td>
                     <td><Badge tone={STATUS_TONE[j.status]}>{STATUS_LABEL[j.status]}</Badge></td>
-                    {/* Unknown total renders as a dash, never as 0% — a bar stuck at 0% gets
-                        reported as broken when the truth is "not counted yet". */}
                     <td className="font-mono text-tone-2">
                       {j.progressPercent == null
                         ? <span title="toplam henüz bilinmiyor">— {j.progressDone > 0 ? `(${j.progressDone})` : ""}</span>
@@ -159,7 +218,6 @@ export default async function JobsPage() {
                     <td className="py-1">{TYPE_LABEL[h.jobType] ?? h.jobType}</td>
                     <td>{STATUS_LABEL[h.status] ?? h.status}</td>
                     <td className="text-right font-mono">{h.jobCount}</td>
-                    {/* NULL stays "—": nothing has finished, which is not "zero seconds". */}
                     <td className="text-right font-mono text-tone-2">
                       {h.avgSeconds == null ? "—" : `${h.avgSeconds.toFixed(1)} sn`}
                     </td>

@@ -2,10 +2,12 @@
 // Rules source: docs/import-mapping.md. These NEVER write domain tables —
 // they produce previews and mapping_review issues only.
 
-import * as XLSX from "xlsx";
 import {
   asNumber,
   asText,
+  decodeCell,
+  encodeCol,
+  isFormulaErrorCell,
   monthSheetNameToISO,
   serialToISO,
   type CellVal,
@@ -18,6 +20,54 @@ export interface ReviewIssue {
   issue_type: string;
   severity: "low" | "medium" | "high" | "critical";
   message: string;
+}
+
+function collectRowFormulaErrors(row: SheetRow, issues: ReviewIssue[]): string[] {
+  const errCols: string[] = [];
+  for (const [col, cell] of Object.entries(row.cells)) {
+    if (isFormulaErrorCell(cell)) {
+      errCols.push(col);
+      issues.push({
+        rowIndex: row.rowIndex,
+        issue_type: "formula_error",
+        severity: "high",
+        message: `Satır ${row.rowIndex} (${col}${row.rowIndex}): Excel formül hatası (${String(cell.v)}) — değer bilinmiyor olarak korundu`,
+      });
+    }
+  }
+  return errCols;
+}
+
+function collectMapFormulaErrors(map: Record<string, CellVal>, issues: ReviewIssue[]): void {
+  for (const [address, cell] of Object.entries(map)) {
+    if (!isFormulaErrorCell(cell)) continue;
+    let rowIndex: number | null = null;
+    try {
+      rowIndex = decodeCell(address).r + 1;
+    } catch {
+      rowIndex = null;
+    }
+    issues.push({
+      rowIndex,
+      issue_type: "formula_error",
+      severity: "high",
+      message: `Hücre ${address}: Excel formül hatası (${String(cell.v)}) — değer bilinmiyor olarak korundu`,
+    });
+  }
+}
+
+function extractCellDateISO(cell: CellVal | undefined): string | null {
+  if (!cell || isFormulaErrorCell(cell)) return null;
+  if (typeof cell.v === "number") return serialToISO(cell.v);
+  if (typeof cell.v === "string") {
+    const trimmed = cell.v.trim();
+    if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) return trimmed;
+    if (/^\d{1,2}[./-]\d{1,2}[./-]\d{2,4}$/.test(trimmed)) {
+      const [d, m, y] = trimmed.split(/[./-]/).map(Number);
+      return `${y < 100 ? 2000 + y : y}-${String(m).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
+    }
+  }
+  return null;
 }
 
 /* ───────────────── 1) ödeme tablosu — payment day matrix ───────────────── */
@@ -45,6 +95,7 @@ export function extractPaymentMatrix(rows: SheetRow[]): {
 
   for (const row of rows) {
     if (row.rowIndex < 2) continue; // header band
+    const formulaErrCols = collectRowFormulaErrors(row, issues);
     const name = asText(row.cells["A"]);
     const amountCell = row.cells[AMOUNT_COL];
     const amountCandidate = asNumber(amountCell);
@@ -53,9 +104,9 @@ export function extractPaymentMatrix(rows: SheetRow[]): {
     let dayCellAmount: number | null = null;
     let markerCount = 0;
     for (let day = DAY_COL_FIRST; day <= DAY_COL_LAST; day++) {
-      const col = XLSX.utils.encode_col(day); // B..AF
+      const col = encodeCol(day); // B..AF
       const c = row.cells[col];
-      if (!c) continue;
+      if (!c || isFormulaErrorCell(c)) continue;
       const txt = typeof c.v === "string" ? c.v.trim().toLowerCase() : null;
       if (txt === "x") {
         markerCount++;
@@ -85,13 +136,13 @@ export function extractPaymentMatrix(rows: SheetRow[]): {
         dueDay,
         amountCandidate: finalAmount,
         amountSource,
-        flags: ["unlabeled_amount"],
+        flags: ["unlabeled_amount", ...(formulaErrCols.length > 0 ? ["formula_error"] : [])],
       });
       continue;
     }
     if (!isNameRow) continue; // truly empty row
 
-    const flags: string[] = [];
+    const flags: string[] = formulaErrCols.length > 0 ? ["formula_error"] : [];
     if (dueDay == null) {
       flags.push("missing_due_day");
       issues.push({
@@ -189,6 +240,7 @@ export function extractMonthlyCashflow(
   const closing = asNumber(map["J1"]);
 
   const issues: ReviewIssue[] = [];
+  collectMapFormulaErrors(map, issues);
   let identityHolds: boolean | null = null;
   if (opening != null && income != null && expense != null && closing != null) {
     identityHolds = Math.abs(opening + income - expense - closing) <= 1;
@@ -368,15 +420,9 @@ export function extractChecks(rows: SheetRow[]): {
   const candidates: CheckCandidate[] = [];
   for (const r of rows) {
     if (r.rowIndex <= headerRow.rowIndex) continue;
+    const formulaErrCols = collectRowFormulaErrors(r, issues);
     const dateCell = colOf.tarih ? r.cells[colOf.tarih] : undefined;
-    let maturityDate: string | null = null;
-    if (dateCell) {
-      if (typeof dateCell.v === "number") maturityDate = serialToISO(dateCell.v);
-      else if (typeof dateCell.v === "string" && /\d{1,2}[./]\d{1,2}[./]\d{2,4}/.test(dateCell.v)) {
-        const [d, m, y] = dateCell.v.split(/[./]/).map(Number);
-        maturityDate = `${y < 100 ? 2000 + y : y}-${String(m).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
-      }
-    }
+    const maturityDate: string | null = extractCellDateISO(dateCell);
 
     let bank: string | null = null;
     let signedAmount: number | null = null;
@@ -394,10 +440,10 @@ export function extractChecks(rows: SheetRow[]): {
     const payer = colOf.kimden ? asText(r.cells[colOf.kimden]) : null;
     const serial = colOf.seri ? asText(r.cells[colOf.seri]) : null;
 
-    const hasAny = maturityDate || payee || payer || signedAmount != null;
+    const hasAny = maturityDate || payee || payer || signedAmount != null || formulaErrCols.length > 0;
     if (!hasAny) continue;
 
-    const flags: string[] = [];
+    const flags: string[] = formulaErrCols.length > 0 ? ["formula_error"] : [];
     if (!maturityDate && signedAmount != null) {
       flags.push("unparsed_row");
       issues.push({
@@ -491,14 +537,9 @@ export function extractLoan(map: Record<string, CellVal>): {
   issues: ReviewIssue[];
 } {
   const issues: ReviewIssue[] = [];
+  collectMapFormulaErrors(map, issues);
 
-  const f4 = map["F4"];
-  let firstPaymentDate: string | null = null;
-  if (f4 && typeof f4.v === "number") firstPaymentDate = serialToISO(f4.v);
-  else if (f4 && typeof f4.v === "string" && /\d{1,2}[./]\d{1,2}[./]\d{2,4}/.test(f4.v)) {
-    const [d, m, y] = f4.v.split(/[./]/).map(Number);
-    firstPaymentDate = `${y < 100 ? 2000 + y : y}-${String(m).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
-  }
+  const firstPaymentDate: string | null = extractCellDateISO(map["F4"]);
 
   const installments: LoanInstallmentCandidate[] = [];
   for (let r = LOAN_AMORT_FIRST_ROW; r <= LOAN_AMORT_MAX_ROW; r++) {
@@ -617,6 +658,7 @@ export function extractMachineRoi(map: Record<string, CellVal>): {
   issues: ReviewIssue[];
 } {
   const issues: ReviewIssue[] = [];
+  collectMapFormulaErrors(map, issues);
   // equipment acquisition costs A10:B27, keyed by normalized name
   const equip = new Map<string, number>();
   for (let r = 10; r <= 40; r++) {
@@ -703,6 +745,7 @@ export function extractCapacity(map: Record<string, CellVal>): {
   issues: ReviewIssue[];
 } {
   const issues: ReviewIssue[] = [];
+  collectMapFormulaErrors(map, issues);
   const label = asText(map["B1"]) ?? "";
   const yearMatch = label.match(/\b(20\d{2})\b/);
   const rateYear = yearMatch ? Number(yearMatch[1]) : null;
@@ -832,6 +875,7 @@ export function extractCostModel(
   scenario: "normal" | "overtime",
 ): { cost: CostModelCandidate; issues: ReviewIssue[] } {
   const issues: ReviewIssue[] = [];
+  collectMapFormulaErrors(map, issues);
   const cost: CostModelCandidate = {
     scenario,
     monthlyMinutesPerMachine: asNumber(map["A2"]),

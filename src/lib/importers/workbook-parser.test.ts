@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import * as XLSX from "xlsx";
+import ExcelJS from "exceljs";
 import {
   classifySheetName,
   isMonthlyCashflowName,
@@ -63,10 +63,10 @@ describe("classifySheetName — every real sheet family from the workbook", () =
 describe("safeParseWorkbook", () => {
   const dir = mkdtempSync(join(tmpdir(), "spike-"));
 
-  it("rejects an all-zero-bytes file with a documented signature error", () => {
+  it("rejects an all-zero-bytes file with a documented signature error", async () => {
     const p = join(dir, "corrupt.xlsx");
     writeFileSync(p, Buffer.alloc(512, 0));
-    const r = safeParseWorkbook(p);
+    const r = await safeParseWorkbook(p);
     expect(r.ok).toBe(false);
     if (!r.ok) {
       expect(r.error).toMatch(/no valid XLSX\/ZIP signature/);
@@ -74,31 +74,23 @@ describe("safeParseWorkbook", () => {
     }
   });
 
-  it("rejects an empty file", () => {
+  it("rejects an empty file", async () => {
     const p = join(dir, "empty.xlsx");
     writeFileSync(p, Buffer.alloc(0));
-    const r = safeParseWorkbook(p);
+    const r = await safeParseWorkbook(p);
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.error).toMatch(/empty file/);
   });
 
-  it("parses a real workbook and lists every sheet (no silent discard)", () => {
-    const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(
-      wb,
-      XLSX.utils.aoa_to_sheet([["Kredi Tutarı", 1500000]]),
-      "faiz hesaplama",
-    );
-    XLSX.utils.book_append_sheet(
-      wb,
-      XLSX.utils.aoa_to_sheet([["devir", 0, "gelir"]]),
-      "mayıs 2026",
-    );
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([["?"]]), "NOT DEFTERİ");
+  it("parses a real workbook and lists every sheet (no silent discard)", async () => {
+    const wb = new ExcelJS.Workbook();
+    wb.addWorksheet("faiz hesaplama").addRow(["Kredi Tutarı", 1500000]);
+    wb.addWorksheet("mayıs 2026").addRow(["devir", 0, "gelir"]);
+    wb.addWorksheet("NOT DEFTERİ").addRow(["?"]);
     const p = join(dir, "valid.xlsx");
-    XLSX.writeFile(wb, p);
+    await wb.xlsx.writeFile(p);
 
-    const r = safeParseWorkbook(p);
+    const r = await safeParseWorkbook(p);
     expect(r.ok).toBe(true);
     if (r.ok) {
       const sheets = listSheets(r.workbook);

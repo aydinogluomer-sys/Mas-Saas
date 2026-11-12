@@ -2435,6 +2435,18 @@ sebeple sahiplik kapsamlı: birinin asistana ne sorduğu ve hangi sırayla sordu
 invariant'ını iddia ediyor. İzleyici yine de **soru sorabilir** — cevap `ai_response_snapshots`'a
 uygulama yolu tarafından yazılır, ki bu katman-kapsamlı bir yazma değildir.
 
+## Standart İçe Aktarım v2 ve Çoklu Döviz Güvenliği (migration 0088–0094)
+
+Standart 17 sekmeli şablon (`Standard Import v2`) ve sessiz çapraz döviz toplamlarını engelleyen TRY-yalnız görünüm düzeltmeleri:
+
+- **0088 (`0088_import_external_keys.sql`):** Tekrarlı içe aktarımda idempotent upsert için iş tablolarına (`counterparties`, `bank_accounts`, `invoices`, `payments`, `payment_instances`, `bank_transactions`, `checks_notes`, `loans`, `loan_installments`, `tax_obligations`, `fx_rates`, `budget_lines`, `external_assumptions`) deterministik `external_key` tekil indeksleri ekler.
+- **0089 (`0089_standard_import_v2_staging.sql`):** İki aşamalı önizleme/onay hattı için `import_jobs`, `import_job_sheets` ve `import_job_rows` hazırlık (staging) tablolarını, yaşam döngüsü kısıtlarını ve 5 katmanlı RLS politikalarını kurar.
+- **0090 (`0090_check_loan_currency.sql`):** `checks_notes` ve `loans` / `loan_installments` tablolarına açık para birimi (`currency`) doğrulaması ekler.
+- **0091 (`0091_import_rows_blocked_by_parent.sql`):** Üst kayıt hatası nedeniyle engellenen alt satırları (`blocked_by_parent`) `import_job_rows` durum kümesine ekler.
+- **0092 (`0092_risk_level_unsupported_currency.sql`):** Desteklenmeyen döviz satırlarının risk sınıflandırmasında sessizce TRY sayılmasını önleyen `unsupported_currency` işaretini ekler.
+- **0093 (`0093_tier1_try_threshold_views.sql`):** Kademe-1 eşik ve anomali görünümlerinde döviz karıştırmasını önleyerek TRY filtrelemesi uygular.
+- **0094 (`0094_tier2_tier3_try_only_views.sql`):** Kademe-2 ve Kademe-3 analitik/kontrol görünümlerini TRY-yalnız toplamlara sınırlar.
+
 ## Zorunlu Parola Değişikliği (migration 0095-0096; Wave 0 / S6)
 
 İncelenmemiş `46541d8` katmanının getirdiği ve sahibin KEEP listesinde tuttuğu özellik: yönetici
@@ -2514,3 +2526,196 @@ kod matrisinde izleyici `evidence` sınıfında yine yalnız okur.
 koşuyordu; `users`'ı yalnız admin katmanı güncelleyebildiği için diğer dört katmanın `select … for
 update`'i satır bulamıyor ve kullanıcı `/change-password`'ta kalıcı olarak kilitli kalıyordu.
 `before` güncellemeden SONRA okunuyor, yeni durum eski durum diye kaydediliyordu.
+
+## Sıcak Okuma Yolları Kısmi ve Bileşik İndeksleri (migration 0097)
+
+Salt indeks eklemesi (`0097_hot_path_partial_indexes.sql`); hiçbir tablo kolonu, kısıt, görünüm, fonksiyon, GRANT ya da RLS politikası değiştirilmez:
+
+- `idx_sessions_active_token_hash`: `public.sessions (token_hash) include (user_id, id, expires_at, last_seen_at, created_at) where revoked_at is null` — oturum doğrulama sıcak yolu (`src/lib/auth.ts`).
+- `idx_payment_instances_open_due_date`: `public.payment_instances (due_date, amount desc nulls last) include (id, status, currency) where status in ('unpaid', 'partial', 'planned', 'late')` — açık ödeme örnekleri ve gecikmiş vadeler (`src/lib/home/overview-snapshot.ts`, `src/lib/radar/queries.ts`).
+- `idx_invoices_open_direction_due_date`: `public.invoices (direction, due_date) include (id, invoice_no, party_id, issue_date, currency, gross_amount, paid_amount, status) where status in ('open', 'partial')` — açık faturalar ve yaşlandırma sorguları.
+- `idx_bank_transactions_queue_date`: `public.bank_transactions (txn_date desc, (abs(amount)) desc, id desc) where status in ('unmatched', 'suggested')` — `bank_unmatched_queue` `LIMIT 50` ön-sıralı sayfalama yolu (`src/lib/bank/engine.ts`).
+- `idx_audit_logs_created_id_desc`: `public.audit_logs (created_at desc, id desc)` — `/system/audit` zaman sıralı sunucu sayfalaması.
+- `idx_mapping_reviews_active_sev_created`: `public.mapping_reviews (severity, created_at) include (status, issue_type) where status in ('open', 'rejected')` — Ana Ekran veri kalitesi sayımı ve `/data/reviews` kuyruğu.
+
+
+## PostgreSQL Görünüm (`security_invoker`) Kalkanı ve RLS Sertleştirmesi (Faz 39, migration 0098)
+
+`0098_view_security_invoker_and_rls_hardening.sql` PostgreSQL katmanındaki beş yetki sınırını sertleştirir:
+
+1. **81/81 Görünümde `security_invoker = true` ve Yazma Yetkisi İptali:** `public` şemasındaki tüm görünümlerde (`pg_class.relkind = 'v'`) `ALTER VIEW ... SET (security_invoker = true)` uygulanır ve `INSERT, UPDATE, DELETE, TRUNCATE` yetkileri `PUBLIC`, `anon`, `authenticated`, `mas_radar_app` ve beş katman rolünden tamamen geri alınır; böylece tek tablolu otomatik güncellenebilir görünümler (`costing_invoice_facts`, `profitability_by_department`, `control_unmatched_bank_aged`, `anomaly_unusual_record_hour`) üzerinden RLS baypası kapatılır. `public.approval_queue` görünümü, `public.users` tablosuna doğrudan join yapmak yerine yalnız `display_name` döndüren dar `public.user_display_label(uuid)` yardımcısını kullanarak `security_invoker = true` altında tüm katmanlarda çalışır.
+2. **Varsayılan Yazma Yetkisi Temizliği ve `mas_radar_app` `NOINHERIT`:** `ALTER DEFAULT PRIVILEGES IN SCHEMA public REVOKE INSERT, UPDATE, DELETE ON TABLES FROM authenticated` ve `ALTER ROLE mas_radar_app NOINHERIT` ile katman değiştirmemiş bağlantının iş tablolarında yazma yetkisi miras alması kapatılır.
+3. **`public.sessions` Yönetici Okuma ve İptal Politikaları (`sessions_admin_read`, `sessions_admin_revoke`):** `public.session_password_ready()` kontrolü altında `mas_radar_admin` rolünün aktif oturumları sayması ve `revoked_at IS NULL -> NOT NULL` geçişiyle iptal etmesi sağlanır (`sessions_revoked >= 1`).
+4. **Sahiplik Sahteciliği ve Kuyruk Koruması:** `saved_views` ve `assistant_conversations` `INSERT` politikaları `created_by is not distinct from public.current_app_user()` koşuluyla başka kullanıcı adına kayıt açılmasını reddeder; `background_jobs` güncellemesi `finance_manager`/`admin` ve yalnız kendi `queued` işini `cancelled` yapan `finance_operator` ile sınırlandırılır.
+5. **Maker-Checker Geri Yazımı ve Bütçe/Tahmin Onay Rolü Kapısı:** `mapping_reviews` ve `external_assumptions` üzerinde `mas_radar_finance_approver` yalnız inceleme durumu kolonlarını (`enforce_approver_legacy_writeback_columns()`) güncelleyebilir; `budget_lines` ve `forecast_lines` üzerinde `enforce_planning_approval_role()` tetikleyicisi `version_status = 'approved'` geçişini yalnız `approver+` rollerine açar.
+
+
+## Görünüm Matematiği Onarımı, `FIN-03` Bilinmeyen Açılış Bakiyesi, Kısıt Doğrulama ve Sıcak FK İndeksleri (Faz 44, migration 0099)
+
+`0099_view_math_fin03_constraints_and_indexes.sql` tüm yeniden tanımlanan 20 görünümde `WITH (security_invoker = true)` ve yazma yetkisi iptalini (`REVOKE INSERT, UPDATE, DELETE, TRUNCATE`) koruyarak finansal görünüm matematiğini, `FIN-03` kuralını ve şema kısıtlarını tamamlar:
+
+1. **Kredi Taksiti, Ödeme ve Çek Statü / Döviz / Kısmi Kalan Tutar / Çift Sayım Onarımı:**
+   - `loan_installments.paid_amount`, `payment_instances.linked_invoice_id`, `checks.linked_invoice_id` ve `invoices.settled_by_check_id` kolonları (ve kısmi B-tree indeksleri) eklenir.
+   - `counterparty_exposure_items`, `debt_maturity_ladder` (ve para birimi kırılımlı `debt_maturity_ladder_by_currency`), `liquidity_forecast_daily`, `financial_calendar` ve `financial_calendar_daily` görünümlerinde `'planned'` / `'late'` kredi taksitleri kapsama alınır; çek ve kredi taksitleri sabit `'TRY'` yerine gerçek `c.currency` / `l.currency` değerleriyle ayrıştırılır; `payment_instances` için `coalesce(pi.currency, 'TRY')` kaldırılarak `currency IS NULL` satırlar `unknown_currency_count` altında ayrıca raporlanır; `settled_by_check_id` / `linked_invoice_id` ile bağlanmış faturalar nakit tahmininde ikinci kez sayılmaz.
+2. **`FIN-03` Bilinmeyen Açılış Bakiyesi ve Hazine Mutabakatı:**
+   - `bank_cash_position`: `ca.opening_balance IS NULL` olduğunda `coalesce(ca.opening_balance, 0)` kullanılmaz; doğal SQL `NULL` yayılımıyla `derived_balance = NULL`, `opening_known = false` ve `movement_net` ayrı kolon olarak döner.
+   - `treasury_position_summary` ve `treasury_liquidity_gap`: Bir para biriminde `unknown_opening_count > 0` ise `available_now`, `projected_contracted`, `projected_expected`, `financing_need` ve `breaches_floor` alanları `NULL` (`status = 'unknown_opening_balance'`) döner; `movements_only_total` ayrı taşınır.
+   - `treasury_cashflow_reconciliation`: Aktif `TRY` banka hesaplarının `opening_balance` toplamını içerir; herhangi birinde `opening_balance IS NULL` ise sahte `'divergent'` P0 alarmı yerine `'incomplete_opening_balance'` döndürür.
+3. **Cari Defter, Çapraz-Döviz Kısıtı, FX Eşik Kontrolleri ve Yıllık Bütçe Dağılımı:**
+   - `current_account_ledger`: Satış faturası (`sales`) `+debit` / tahsilat `+credit`, alış faturası (`purchase`) `+credit` / tedarikçi ödemesi `+debit` muhasebe işaretiyle ve `(party_id, currency)` bazında `running_balance` ile üretilir.
+   - `enforce_invoice_allocation_currency()` (`BEFORE INSERT OR UPDATE ON public.invoice_allocations`): Kaynak banka hareketi / ödeme / çek para birimi ile hedef fatura para birimi farklıysa `ERRCODE = '23514'` (`cross_currency_allocation_forbidden`) fırlatır.
+   - `control_large_payments` ve `control_approval_bypass`: Yabancı para ödemelerde `fx_rate_snapshots` (`rate_date <= due_date`) üzerinden `try_equivalent` hesaplar; kur yoksa `needs_fx_review = true` olarak işaretler.
+   - `cash_forecast_13w` ve `optimization_run_summary`: Para birimi bazında (`currency`) gruplanarak döviz karışımı önlenir.
+   - `budget_vs_actual` ve `budget_variance_summary`: Yıllık (`period_kind = 'annual'`) onaylı bütçe satırları ilgili mali yılın 12 ayına kuruş-tam dağıtılır (12. ay yuvarlama farkını taşır); gerçekleşen tutarlar `LATERAL` içinde önceden toplanarak çarpılma (`fan-out`) sıfırlanır.
+   - `payment_priority_queue` (`p.status = 'active'` ve `outflow` zorunlu) ve `control_dashboard` (tek taramalı CTE `UNION ALL` sayımı) güncellenir.
+4. **Şema Tutarlılığı, Durum Makinesi, 8 Kısıt Doğrulama ve Sıcak İndeksler:**
+   - `0083` çatışması: `public.attachments.document_id` yabancı anahtarı `ON DELETE RESTRICT` yapılır.
+   - `0034` geçiş bekçileri: `payment_instances` için `unpaid → late` ve `planned → late`; `checks` için `bounced → cleared` ve `bounced → cancelled` geçişleri açılır.
+   - `0023` ve `0025` içindeki 8 `NOT VALID` kısıt (`payments_archive_consistency`, `checks_archive_triplet_consistency`, `loans_archive_triplet_consistency`, `scenario_runs_archive_triplet_consistency`, `external_assumptions_archive_triplet_consistency`, `action_items_archive_triplet_consistency`, `payment_instances_paid_fields_scoped`, `loan_installments_paid_fields_scoped`) `VALIDATE CONSTRAINT` ile doğrulanır; serbest `currency` kolonlarına ISO-4217 (`^[A-Z]{3}$`) CHECK kısıtı ve 7 sıcak FK/bileşik B-tree indeksi eklenir.
+
+
+## Veritabanı Seviyesinde Sert Dönem Kilidi ve Kapanış Kontrol Kapısı (Faz 45, migration 0100)
+
+`0100_hard_period_lock_enforcement.sql` kapanmış (`status = 'locked'`) bir finansal aya geçmişe dönük kayıt eklenmesini, değiştirilmesini, silinmesini veya dönemler arası tarih kaydırmasını doğrudan PostgreSQL `BEFORE` tetikleyicisiyle engeller:
+
+1. **`public.cashflow_months` Kilit ve Yeniden Açma Kolonları:** `locked_at`, `locked_by`, `reopened_at`, `reopened_by`, `reopen_reason` ve `lock_fingerprint` kolonları eklenir; mevcut `'locked'` satırlarda `locked_at` geri doldurulur.
+2. **Rol-Korumalı Dönem Geçiş Bekçisi (`enforce_cashflow_month_lock_transition`):**
+   - `status = 'locked'` içine veya içinden yapılan geçişlerde `current_user NOT IN ('mas_radar_finance_manager', 'mas_radar_admin', 'postgres')` ise `ERRCODE = '42501'` (`period_lock_requires_manager`) fırlatılır; böylece `mas_radar_finance_operator` rolünün kilit açma açığı veritabanında kapatılır.
+   - Kilitli dönemden çıkış (`reopen`) yalnız `'reviewed'` statüsüne ve en az 10 karakterlik `reopen_reason` ile yapılabilir (`ERRCODE = '23514'`, `period_reopen_reason_required` / `period_reopen_target_invalid`).
+   - Kilitli dönemde başlık rakamlarının (`opening_balance`, `projected_income`, `projected_expense`, `monthly_delta`, `closing_balance`, `locked_at`, `month_start`) değiştirilmesi veya dönem satırının silinmesi `ERRCODE = 'P0001'` (`period_locked`) ile reddedilir.
+3. **8 Finansal Tabloda `enforce_closed_period_lock()` (`BEFORE INSERT OR UPDATE OR DELETE`):**
+   - `payment_instances` (`due_date`, `instance_month`, `paid_at`), `payments` (`due_date`), `cashflow_lines` (`cashflow_month_id`, `date_value`), `invoices` (`issue_date`, `due_date`), `invoice_allocations` (`allocated_on`), `checks` (`maturity_date`), `loan_installments` (`due_date`, `paid_at`) ve `bank_transactions` (`txn_date`) üzerinde hem `OLD` hem `NEW` tarihleri denetlenir; etkilenen ay `cashflow_months` tablosunda `'locked'` ise `ERRCODE = 'P0001'` (`period_locked`) fırlatılır.
+   - Açık bir dönemde yapılan tahsilat/ödeme dağıtımı (`invoice_allocations` → `0048` `allocations_enforce_invoice_ceiling()`, `pg_trigger_depth() > 1`) geçmiş dönemde düzenlenmiş açık bir faturanın yalnız `allocated_amount` önbelleğini güncellediğinde izin verilir; doğrudan yapılan her türlü fatura güncellemesi veya geçmiş döneme tarihli dağıtım reddedilir.
+4. **Sarsılmaz `control_closed_period_mutations` (`WITH (security_invoker = true)`):** `cm.updated_at` yerine değiştirilemez `coalesce(cm.locked_at, cm.updated_at)` zaman damgasını çıpa alır ve `control_registry` kaydı `'enforced_elsewhere'` olarak güncellenir.
+
+
+## Canlı Maker-Checker Onay Döngüsü, Ödeme Çalıştırma Paketi (`payment_runs`) ve Banka Otomatik Kapanış Bağlantıları (Faz 48, migration 0101)
+
+`0101_payment_runs_and_bank_settlement_links.sql` uçtan uca **Fatura / Ödeme / IBAN → Maker-Checker Onayı + BEC Kalkanı → 14 Günlük Kasa Tabanı Simülasyonlu Ödeme Paketi (`payment_runs`) → `pain.001` / 4 Büyük Türk Bankası EFT İhracı → Banka Hareketi Eşleştirme → Otomatik Kapanış** zincirini veritabanında güvence altına alır:
+
+1. **`approvals` ve `approval_rules` Kapsam Genişletmesi:** `approvals_subject_table_check` (`payments`, `payment_runs`, `budgets`, `budget_lines`, `forecast_lines`) ve `approvals_request_kind_check` / `approval_rules_trigger_kind_check` (`payment_run`, `budget`) yapısal `conkey` hedeflemesiyle genişletilir; `0054` içindeki 5 varsayılan kural satırı değiştirilmeden korunur.
+2. **Canlı Onay, IBAN BEC Doğrulama ve Banka Kapanış Kolonları:**
+   - `invoices` ve `payment_instances`: `approval_status` (`not_required | pending_approval | approved | rejected`), `approval_id`, `approved_by`, `approved_at`.
+   - `ibans` ve `parties`: `approval_status` (`pending_approval | approved | rejected`; mevcut kayıtlar varsayılan `'approved'`), `approval_id` ve `ibans.verified_by` / `ibans.verified_at` (BEC dolandırıcılık kalkanı: `new_iban_requires_approval` tetiklendiğinde yeni IBAN ikinci göz onayına kadar `'pending_approval'` kalır ve EFT / `pain.001` ihracında bloklanır).
+   - `bank_transactions`: `settled_allocation_id`, `settled_at`, `settled_by` ve kısmi B-tree indeksi (`idx_bank_transactions_settled_allocation`).
+3. **`0048` Fatura Dağıtım Tavanı + Otomatik `paid_amount` / `status` Kapanışı ve `0100` Açık Dönem Tahsilatı Uyumu:**
+   - `allocations_enforce_invoice_ceiling()` artık `allocated_amount` önbelleğinin yanı sıra `paid_amount` ve `status` (`open <-> partial <-> paid`) alanlarını da aynı atomik tetikleyicide günceller (varsa `paid_amount > allocated_amount` fazla ödeme farkını korur).
+   - `enforce_closed_period_lock()` içindeki `pg_trigger_depth() > 1` dalı, geçmişte kilitlenmiş bir ayda düzenlenmiş açık faturanın açık bir dönemde yapılan banka/tahsilat dağıtımıyla `paid_amount` ve `status` kapanışına geçmesine izin verirken faturanın ticari başlık alanlarını ve doğrudan (`pg_trigger_depth() = 1`) güncellemeleri kilitlemeye devam eder.
+4. **`public.payment_runs` ve `public.payment_run_items` Tabloları:**
+   - `payment_runs`: `run_code`, `planned_execution_date`, `source_bank_account_id` (`REFERENCES public.bank_accounts(cash_account_id) ON DELETE RESTRICT`), `currency`, `total_amount`, `item_count`, 14 günlük kasa alt limiti simülasyon alanları (`pre_run_cash`, `projected_14d_min_cash`, `min_cash_floor`, `breaches_cash_floor`), durum makinesi (`draft -> pending_approval -> approved -> exported -> settled`, artı `cancelled`; `payment_runs_status_transition_guard()`), veritabanı seviyesinde `approved_by <> created_by` maker-checker kısıtı ve yalnız `approver+` rollerine açık `'approved'` geçiş kapısı.
+   - `payment_run_items`: hedef kalem (`invoice | payment_instance | check | loan_installment`), alıcı cari/IBAN anlık görüntüsü, `iban_verified`, `settled_bank_tx_id` ve aynı açık yükümlülüğün aynı anda iki aktif pakete girmesini engelleyen kısmi benzersiz indeks (`payment_run_items_active_target_uq WHERE status = 'included'`).
+   - 5-katmanlı `operational` RLS politikaları ve `mas_radar_finance_approver` için yalnız onay durumu kolonlarıyla sınırlı (`enforce_approver_subject_writeback_columns()`) dar Maker-Checker geri yazım politikaları tanımlanır.
+
+
+## Türkiye Çek/Senet Bordrosu Yaşam Döngüsü ve Karşılıksız Rücu Riski (Faz 49, migration 0102)
+
+`0102_turkish_check_bordro_lifecycle.sql` Türkiye ticari finansmanındaki müşteri çeki/senedi portföyü, tedarikçiye ciro, bankaya tahsile verme, kredi karşılığı bankaya teminata verme, keşide çek ve karşılıksız (`bounced`) rücu riskini veritabanında modeller:
+
+1. **`public.check_bordros` Tablosu:**
+   - `bordro_no` (`UNIQUE`), `bordro_type` (`customer_receipt | vendor_endorsement | bank_collection | bank_collateral | own_issue | settlement | bounce_return`), `bordro_date`, `target_party_id`, `target_bank_account_id` (`REFERENCES public.bank_accounts(cash_account_id)`), `target_facility_id` (`REFERENCES public.credit_facilities(id)`), `currency`, `total_amount` ve hedef alan tutarlılık kısıtları (`check_bordros_endorsement_party_required`, `check_bordros_collection_bank_required`, `check_bordros_collateral_facility_required`).
+   - 5-katmanlı `operational` RLS politikaları ve `0100` dönem kilidine bağlı `check_bordros_closed_period_lock` tetikleyicisi.
+2. **`public.checks` ve `public.check_events` Bordro Genişletmeleri:**
+   - `checks`: `instrument_type` (`check | promissory_note`), `endorsed_to_party_id`, `collection_bank_account_id`, `collateral_facility_id`, `collateral_record_id`, `collateral_ltv_ratio`, `settled_invoice_id`, `last_bordro_id`.
+   - `checks.status` CHECK kısıtı (`conkey` üzerinden) ve `checks_status_transition_guard()` eski `'planned'` durumuyla geriye uyumlu olarak `'in_portfolio'`, `'endorsed_to_vendor'`, `'in_bank_collection'`, `'in_bank_collateral'`, `'issued_to_vendor'`, `'cleared'`, `'bounced'`, `'returned'`, `'cancelled'`, `'unknown'` geçiş matrisini eksiksiz kapsar; `check_events` tablosuna `bordro_id` yabancı anahtarı ve bordro olay tipleri eklenir.
+3. **Likidite Çift Sayım Kalkanı ve `check_portfolio_and_recourse_summary` (`WITH (security_invoker = true)`):**
+   - `endorsed_to_vendor` durumundaki müşteri çeki tedarikçi faturasını `invoice_allocations` üzerinden kapattığı ve nakit kasaya girmeyeceği için `liquidity_forecast_daily` ile `financial_calendar` görünümlerinden otomatik düşer; `in_bank_collateral` durumundaki teminat çekleri kapsama dahil edilir.
+   - `check_portfolio_and_recourse_summary` para birimi kırılımında portföy, tahsil, teminat (ve LTV borçlanma değeri), keşide borç çekleri, karşılıksız çekler ve çek vadesinde `cleared` olana dek taşınan şarta bağlı ciro rücu riskini (`contingent_recourse_amount`) raporlar.
+
+
+## Operasyonel Döngülerin Kapatılması, Kredi Hareketleri, Mutabakat İmzalama ve Üretim V2 Tam Alan Kalıcılığı (Faz 50, migration 0103)
+
+`0103_close_operational_loops_and_reconciliation_signoffs.sql` arayüzü mevcut olup veri girişi, maker-checker onayı veya V2 şablon bağlantısı eksik kalan tüm modülleri uçtan uca kapatır ve zombi şema yapılarını temizler:
+
+1. **Rotatif Kredi Kullanım / Geri Ödeme / Limit Revizyonu (`public.facility_movements` & `credit_facilities.drawn_amount`):**
+   - `credit_facilities` tablosuna negatif bakiye korumalı `drawn_amount` kolonu eklenir ve mevcut `facility_drawdowns` verisinden geri doldurulur.
+   - `facility_movements` (`operational` sınıfı; `drawdown | repayment | limit_revision`) `0100` sert dönem kilidiyle (`facility_movements_closed_period_lock`) ve `AFTER INSERT` atomik senkronizasyon tetikleyicisiyle (`facility_movements_sync_facility`) donatılır: limit aşımı, negatif kullanım ve para birimi uyumsuzluğu veritabanında reddedilir; `credit_facility_utilization` görünümü hem eski `facility_drawdowns` hem yeni `facility_movements` hareketlerini tek doğruluk kaynağında birleştirir.
+2. **Dönem Mutabakat İmzalama Kanıt Defteri (`public.reconciliation_signoffs`):**
+   - `evidence` sınıfında salt-ekleme (`append-only` tetikleyicili) dönem mutabakat imza tablosu (`period_month`, `scope` ∈ `bank_cash | ar_ap | workbook_source | trial_balance`, `status` ∈ `signed_clean | signed_with_exceptions`, `open_exception_count`, `notes`, `signed_by`, `signed_at`); `signed_clean` için `open_exception_count = 0` ve `signed_with_exceptions` için boş olmayan `notes` kısıtı zorunludur.
+3. **Organizasyonel Boyutlar (`department_id`), Tahsilat Sözü, Doküman Kasası ve Zombi Görünüm Temizliği:**
+   - `invoices`, `invoice_lines` ve `payments` tablolarına `department_id` (ve `payments` üzerine `cost_center_id`, `project_id`) yabancı anahtarları ile kısmi B-tree indeksleri eklenir; `budget_actuals_monthly`, `budget_vs_actual` (`0099` yıllık 12-ay kuruş-tam dağılımı korunarak) ve `profitability_by_department` görünümleri departman etiketli faturaları ölçer, veri yoksa `BLANK ≠ ZERO` disipliniyle `NULL` döndürür.
+   - `promise_to_pay` üzerinde `invoice_id` indeksi ve `currency` ISO-4217 CHECK kısıtı kesinleştirilir; `documents.original_filename` eklenir ve `document_links.entity_table` CHECK listesi `check_bordros`, `credit_facilities`, `reconciliation_signoffs` ile genişletilir; `counterparty_unresolved` görünümüne çek yönü (`direction`) eklenir.
+   - Zombi `working_capital_trend_reference` görünümü kaldırılarak aylık AR/AP, DSO/DPO ve TRY banka nakit akışını birleştiren `working_capital_monthly_v` (`WITH (security_invoker = true)`) okuma modeliyle değiştirilir.
+4. **Üretim Ekonomisi V2 Tam Alan Kalıcılığı (`public.cost_model_items`, `production_parts`, `machine_assets`):**
+   - `production_parts` ve `machine_assets` tablolarına V2 şablonundaki ek operasyon, fiyat, verimlilik ve aylık gelir/gider kolonları eklenir; senaryo bazlı maliyet kalemleri için `public.cost_model_items` (`operational` sınıfı) oluşturulur ve `import_external_keys.entity_table` CHECK kısıtı `cost_model_items` ile `credit_facilities` (`17_KREDI_LIMITLERI`) tablolarını kapsayacak şekilde genişletilir.
+
+
+## Paraşüt API v4 Kaynak Soykütüğü, 10 Saplama Onarımı ve Hibrit Banka Tekilleştirmesi (Faz 51, migration 0104)
+
+`0104_parasut_v4_lineage_and_hybrid_bank.sql` Paraşüt API v4 (`https://api.parasut.com/v4/{company_id}/...`) üzerinden çekilen verilerin SHA-256 ham JSON kanıtlarıyla izlenmesini, `S-1..S-10` saplama kusurlarının kapatılmasını ve MT940 / ISO 20022 `camt.053` / Excel banka hareketleriyle API hareketlerinin çapraz-kanal tekilleştirilmesini sağlar:
+
+1. **API Soykütüğü, Hesap Eşleme ve Cari İnceleme Tabloları:**
+   - `public.integration_sync_runs` (`operational`): Senkron koşu makbuzları (`integration_id`, `started_at`, `finished_at`, `watermark_from`, `watermark_to`, `status`, `fetched_count`, `upserted_count`, `staged_party_count`, `error_summary`).
+   - `public.integration_raw_payloads` (`evidence` — `append-only` tetikleyicili): Her çekilen API kaydının `payload_sha256` ve `payload_json` kanıt kasası (`UNIQUE (resource_type, external_id, payload_sha256)`).
+   - `public.integration_entity_links` (`operational`): Harici `(provider, resource_type, external_id)` anahtarını kanonik `(entity_table, entity_id)` satırına ve son `last_payload_id` kanıtına bağlar.
+   - `public.integration_account_mappings` (`operational`): Harici kasa/banka hesaplarını (`external_account_id`, `external_iban`, `external_currency`) MAS `cash_accounts` ve `bank_accounts` kayıtlarıyla eşler.
+   - `public.integration_staged_parties` (`operational`): Kanonik `public.parties` tablosunda bulunmayan yeni Paraşüt carilerini (`S-10` kalkanı) `status = 'pending'` ile bekletir; operatör onayıyla yalnız `createCounterparty` kapısından cari açılır veya mevcut cariye bağlanır.
+2. **`public.invoices` Genişletmeleri (`S-1`, `S-4`, `S-5`, `S-6`, `S-7`):**
+   - Satırsız basit gider fişlerinde (`BLANK ≠ ZERO`) `net_amount` ve `tax_amount` kolonlarının birlikte `NULL` kalabilmesi için `invoices_gross_is_net_plus_tax` kısıtı `((net_amount IS NULL AND tax_amount IS NULL) OR (net_amount IS NOT NULL AND tax_amount IS NOT NULL AND gross_amount = net_amount + tax_amount))` olarak güncellenir.
+   - `withholding_amount`, `vat_withholding_amount`, `payable_amount`, `external_status`, `external_key`, `spender_employee_name` kolonları ve `invoices_external_key_uq` (`WHERE external_key IS NOT NULL`) benzersiz indeksi eklenir; `invoices_content_immutability_guard()` düzenlenmiş faturalarda (`old.status <> 'draft'`) yeni ticari tutar kolonlarını da dondurur.
+   - `liquidity_forecast_daily` ve `financial_calendar` görünümleri (`WITH (security_invoker = true)`) açık fatura nakit projeksiyonunda `coalesce(v.payable_amount, v.gross_amount) - greatest(coalesce(v.allocated_amount, 0), coalesce(v.paid_amount, 0))` formülünü kullanır.
+3. **`public.bank_transactions` Genişletmeleri (`S-8`, `S-9`, Çapraz-Kanal Tekilleştirme):**
+   - `transaction_kind` (`standard | own_transfer | bank_fee | tax_payment | payroll`) ve `cross_channel_dedupe_hash` (`idx_bank_transactions_cross_channel`) eklenir.
+   - `daily_cash_movement` ve `working_capital_monthly_v` görünümleri (`WITH (security_invoker = true)`) kendi hesaplarımız arası virmanları (`transaction_kind = 'own_transfer'`) konsolide şirket nakit giriş/çıkış toplamlarından düşerken hesap bazlı `bank_cash_position` bakiyelerini tam korur.
+
+
+## Çift Taraflı Yönetim Defteri, TDHP Hesap Planı, `DEFERRABLE` Denge Bekçisi ve Yönetim EBITDA (Faz 52, migration 0105)
+
+`0105_double_entry_management_ledger.sql` MAS Nakit Radar içinde **Tekdüzen Hesap Planı (TDHP)** uyumlu, veritabanı seviyesinde borç = alacak (`sum(debit_try) = sum(credit_try)`) dengesi zorunlu ve kesinleşmiş (`posted`) fişleri değişmez (`immutable` + ters kayıtlı) çift taraflı yönetim defterini kurar:
+
+1. **TDHP Yönetim Hesap Planı (`public.management_accounts` — `reference` sınıfı):**
+   - `code` (`UNIQUE`), `name`, `parent_code`, `account_class` (`asset | liability | equity | revenue | contra_revenue | cogs | opex | finance_expense | other_income_expense | off_balance`), `normal_side` (`debit | credit`), `ebitda_bucket` (`revenue | cogs | opex | da_addback | financing | tax | non_operating | balance_sheet`), `tdhp_root_code`, `is_active`.
+   - `100 Kasa`, `101 Alınan Çekler` (`101.01 Portföy`, `101.02 Tahsil`, `101.03 Teminat`), `102 Bankalar`, `103 Verilen Çekler (-)` , `120 Alıcılar`, `191 İndirilecek KDV`, `193 Peşin Ödenen Vergiler`, `253 Tesis/Makine`, `257 Birikmiş Amortismanlar (-)`, `300 Banka Kredileri`, `320 Satıcılar`, `335 Personele Borçlar`, `360 Ödenecek Vergi`, `361 Ödenecek SGK`, `391 Hesaplanan KDV`, `400 Uzun Vadeli Krediler`, `500 Sermaye`, `590/591 Dönem Net Kârı/Zararı`, `600–691` gelir tablosu hesapları, `730/770/770.99 (Amortisman D&A)/780 (Finansman)` ve `900/901` ciro rücu riski nazım hesaplarıyla tohumlanır.
+2. **Yevmiye Fişleri ve Satırları (`public.management_journal_entries`, `public.management_journal_lines` — `operational` sınıfı):**
+   - `management_journal_entries`: `entry_no` (`IDENTITY`), `entry_date`, `period_month` (`STORED`), `source_type` (`invoice | bank_transaction | check_bordro | loan_installment | payment_instance | manual_adjustment | fx_revaluation | reversal`), `source_id`, `idempotency_key` (`UNIQUE`), `status` (`draft | provisional_fx | posted | reversed`), `needs_tax_split_review`, `reversal_of_entry_id`, `reversed_by_entry_id`, `approved_by`, `approved_at`, `created_by`.
+   - `management_journal_lines`: `entry_id`, `line_no`, `account_id`, boyut yabancı anahtarları (`party_id`, `project_id`, `cost_center_id`, `department_id`), `native_currency`, `debit_native`, `credit_native`, `fx_rate`, `debit_try`, `credit_try` ve tek yönlü bakiye (`management_journal_lines_single_sided`) kısıtları.
+3. **Veritabanı Garantileri (`DEFERRABLE` Denge Bekçisi, Değişmezlik ve `0100` Dönem Kilidi):**
+   - `assert_management_journal_balanced()` (`DEFERRABLE INITIALLY DEFERRED` constraint trigger): `'posted'` ve `'reversed'` fişlerde satır sayısı `< 2`, `debit_try IS NULL OR credit_try IS NULL` veya `sum(debit_try) <> sum(credit_try)` olduğunda `COMMIT` anında `ERRCODE = '23514'` (`unbalanced_management_journal_entry`) fırlatır.
+   - `enforce_management_journal_entry_immutability()` ve `enforce_management_journal_line_immutability()`: Kesinleşmiş (`posted`) fişlerin ve satırlarının silinmesini veya doğrudan değiştirilmesini reddeder; yalnız ters kayıt (`reverseManagementEntry` → `status = 'reversed'` ve `reversed_by_entry_id`) geçişine izin verir.
+   - `enforce_closed_period_lock()` (`0100`): Kilitli (`status = 'locked'`) finansal aylara `entry_date` ile yönetim fişi eklenmesini veya değiştirilmesini `period_locked` (`P0001`) ile engeller.
+4. **Canlı Yönetim Mizanı, Gelir Tablosu / EBITDA ve Dinamik Bilanço Görünümleri (`WITH (security_invoker = true)`):**
+   - `public.management_trial_balance_v`: Her aktif TDHP hesabı için `debit_total_try`, `credit_total_try`, `debit_balance_try`, `credit_balance_try` ve `net_balance_try`.
+   - `public.management_income_statement_v`: `Net Satışlar → Brüt Kâr → Faaliyet Giderleri → Faaliyet Kârı (EBIT) + Amortisman (770.99 D&A) = Yönetim EBITDA → Finansman Giderleri (780) → Vergi Öncesi Yönetim Kârı (690) → Dönem Net Kârı` şelalesi.
+   - `public.management_balance_sheet_v`: Cari dönem net kâr/zararını dinamik olarak `590.DYN` / `591.DYN` özkaynak satırına yansıtarak her tarihte `Aktif Toplamı = Pasif (Yabancı Kaynak + Özkaynak) Toplamı` kuruş eşitliğini korur.
+
+
+## Mali Müşavir Yasal Mizan İçe Aktarımı ve 12 Kök Nedenli Yönetim ↔ Yasal Mizan Mutabakat Köprüsü (Faz 53, migration 0106)
+
+`0106_statutory_trial_balance_reconciliation.sql` Luca, Logo, Mikro, Zirve, Eta ve Paraşüt standart yasal mizanlarının (`.xlsx`, `.csv`, `.xml`) çift sayım korumalı (`is_leaf`) olarak içeri aktarılmasını ve Faz 52 MAS Yönetim Defteri Mizanı ile 12 deterministik kök nedene göre kuruşu kuruşuna karşılaştırılmasını sağlar:
+
+1. **Yasal Mizan Başlık ve Satır Tabloları (`public.statutory_trial_balances`, `public.statutory_trial_balance_lines` — `operational` sınıfı):**
+   - `statutory_trial_balances`: `as_of_date`, `period_label`, `source_software`, `original_filename`, `file_sha256`, `total_debit_try`, `total_credit_try`, `is_self_balanced` (`GENERATED ALWAYS AS (total_debit_try = total_credit_try) STORED`), `imported_by`, `imported_at`.
+   - `statutory_trial_balance_lines`: `trial_balance_id` (`ON DELETE CASCADE`), `account_code`, `tdhp_root_code` (`100`..`999`), `account_name`, `is_leaf` (`boolean`), `debit_total_try`, `credit_total_try`, `debit_balance_try`, `credit_balance_try` ve `UNIQUE (trial_balance_id, account_code)`.
+   - Hiyerarşik mizanlarda (`120` + `120.01` + `120.01.005`) alt hesabı bulunan üst satırlar `is_leaf = false` işaretlenir; mizan toplamları ve mutabakat karşılaştırmaları **yalnız `is_leaf = true` yaprak satırlardan** hesaplanır.
+2. **Mutabakat Koşuları ve 12 Kök Nedenli Fark Kalemleri (`public.trial_balance_reconciliation_runs`, `public.trial_balance_reconciliation_items` — `operational` sınıfı):**
+   - `trial_balance_reconciliation_runs`: Yönetim ve yasal mizan borç/alacak toplamları, `management_ebitda_try`, `statutory_690_ebt_try`, `ebitda_to_690_bridge_json` (Yönetim EBITDA → Amortisman `770.99` → EBIT → Finansman `780` → Yönetim `690` → Gelir/Gider dönemsellik farkları → Yasal `690`), `matched_group_count`, `discrepancy_group_count`.
+   - `trial_balance_reconciliation_items`: Her TDHP kök grubu (`100`, `101`, `102`, `103`, `120`, `131/331`, `190/191/391`, `300/400`, `320`, `335`, `360/361`, `EBITDA_690`) için `management_net_try`, `statutory_net_try`, `delta_try`, 12 kök neden kodu (`CASH_100_INFLATION`, `CHECK_ENDORSEMENT_OR_CLEARING_LAG`, `UNBOOKED_BANK_TXN_OR_FX`, `ISSUED_CHECK_NOT_DELIVERED_TO_CPA`, `CUTOFF_UNBILLED_OR_UNALLOCATED_CASH`, `PARTNER_ACCOUNT_PLUG`, `VAT_TAHAKKUK_UNCLOSED`, `LOAN_PRINCIPAL_VS_GROSS_INSTALLMENT`, `MISSING_PURCHASE_INVOICE`, `PAYROLL_ADVANCE_OR_EXPENSE_GAP`, `UNPAID_OR_RESTRUCTURED_TAX_DEBT`, `MANAGEMENT_EBITDA_TO_STATUTORY_690_BRIDGE`), `severity` (`match | info | warning | critical`), `candidate_evidence_json` ve `action_item_id`.
+   - **Değişmez Kural:** Hiçbir yönetim fişini veya yasal mizan satırını otomatik değiştirmez (*bayrakla, asla sessiz düzeltme*).
+
+
+## Otomatik Beslenen 13 Haftalık Doğrudan Nakit Tahmini ve Dondurulmuş Varyans Şelalesi (Faz 54, migration 0107)
+
+`0107_forecast_13w_snapshots_and_variance.sql` her Pazartesi dondurulan 13 haftalık doğrudan nakit tahmini baz çizgisini (`forecast_snapshots_13w`) ve belge bazlı kaynak satırlarını (`forecast_snapshot_13w_lines`) saklayarak gerçekleşen banka hareketleriyle **Zamanlama Kayması (`Timing Slip`)** vs. **Kalıcı Sapma (`Permanent Variance`)** şelale analizini mümkün kılar:
+
+1. **Haftalık Tahmin Anlık Görüntüleri (`public.forecast_snapshots_13w`, `public.forecast_snapshot_13w_lines` — `operational` sınıfı):**
+   - `forecast_snapshots_13w`: `snapshot_week_start`, `as_of_date`, `currency` (`ISO-4217`), `opening_cash` (`FIN-03` uyumlu `NULL` veya sayı), `unknown_opening_count`, `frozen_by`, `frozen_at`, `UNIQUE (snapshot_week_start, currency)`.
+   - `forecast_snapshot_13w_lines`: `snapshot_id` (`ON DELETE CASCADE`), `week_index` (`1..13`), `week_start`, `direction` (`inflow | outflow`), `category_bucket` (`contracted_ar | behavioral_ar | scheduled_payment | open_ap | check_maturity | loan_installment | statutory_tax_sgk | manual_override`), `source_classification` (`promised | behavioral_dbt | scheduled | statutory_tax | manual_override`), `source_entity_table`, `source_entity_id`, `party_id`, `label`, `amount`.
+2. **Tahmin vs. Gerçekleşen Varyans Özeti Görünümü (`public.forecast_13w_variance_v` — `WITH (security_invoker = true)`):**
+   - Her dondurulmuş hafta için `forecast_inflow`, `forecast_outflow`, `forecast_net` toplamlarını, kendi hesaplarımız arası virmanlar (`transaction_kind = 'own_transfer'`) ve yoksayılan hareketler (`status = 'ignored'`) hariç gerçekleşen `bank_transactions` (`actual_inflow`, `actual_outflow`, `actual_net`) ile karşılaştırır.
+3. **Yabancı Anahtar (FK) İndeks Hijyeni (`Faz 56 / F3`):**
+   - `checks`, `check_bordros`, `check_events`, `payment_runs`, `payment_run_items`, `import_external_keys`, `payments`, `loans`, `covenant_records` ve `facility_drawdowns` üzerindeki 20 yabancı anahtar kolonu kısmi/öncül B-tree indeksleriyle örtülerek `perf-gate` indekssiz FK cırcırı (`113 <= 115`) ve `redundantIndexes = 0` garantisi korunur.
+
+
+## Arka Plan İş Sonucu Ayrımı ve Zarf Değişmezlik Bekçisi (Faz 57, migration 0108)
+
+`0108_background_jobs_result_and_immutability.sql` Wave 0 / S5 sırasında geçici olarak `payload->'result'` altında tutulan iş çıktısını ayrı `result jsonb` kolonuna taşır ve iş zarfını veritabanı seviyesinde kilitler:
+
+1. **Ayrı `public.background_jobs.result` (`jsonb`) Kolonu ve İdempotent Taşıma:**
+   - `background_jobs` tablosuna `result jsonb` eklenir; mevcut satırlarda `payload ? 'result'` olan çıktılar tetikleyici kurulmadan önce `result` kolonuna taşınır ve `payload` içinden `'result'` anahtarı temizlenir (`payload - 'result'`).
+   - `completeJob` artık `payload` kolonuna dokunmadan doğrudan `result = $2::jsonb` yazar; `listJobs` hafif kalmak için `result` kolonunu okuma listesinden dışlar.
+2. **Zarf Değişmezlik Bekçisi (`public.enforce_background_jobs_immutable_envelope` — `BEFORE UPDATE`):**
+   - Çağıranın kendi RLS katmanında (`prosecdef = false`) çalışan tetikleyici, `INSERT` sonrasında `id`, `job_type`, `created_by`, `payload`, `dedupe_key` veya `created_at` kolonlarından herhangi birinin değiştirilmesini `ERRCODE = '23514'` (`background_jobs_envelope_immutable`) ile reddeder.
+   - `background_job_queue_health` (`0081`) ve `integration_health` (`0086`) görünümlerinin `WITH (security_invoker = true)` kalkanı migration sonundaki `$verify$` bloğuyla doğrulanır.
+
+
+
+

@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
-import * as XLSX from "xlsx";
 import {
   asNumber,
+  buildWorksheetFromAoa,
   cellsToMap,
   cellsToRows,
   hashRow,
@@ -23,7 +23,7 @@ const row = (rowIndex: number, cells: Record<string, CellVal>): SheetRow => ({ r
 
 describe("row-utils", () => {
   it("sheetCells + cellsToRows preserve every populated cell (no silent discard)", () => {
-    const ws = XLSX.utils.aoa_to_sheet([
+    const ws = buildWorksheetFromAoa([
       ["ad", null, 3],
       [null, "x"],
     ]);

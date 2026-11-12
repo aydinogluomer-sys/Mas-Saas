@@ -14,11 +14,12 @@
 // result, two harmless SELECT ... FOR UPDATE lookups were sent to the real mas_radar_dev — no
 // rows matched, nothing was written, but that gap is exactly what this gate closes for good.)
 import { execFileSync } from "node:child_process";
-import { readFileSync, readdirSync } from "node:fs";
+import { readdirSync } from "node:fs";
 import path from "node:path";
 import { Pool } from "pg";
 import { MIGRATIONS_DIR, validateFileSet } from "./migration-lib";
 import { ensureSystemActor } from "./seed-system-actor";
+import { assertLocalPgReachable, createDisposableLocalDb, dropDisposableLocalDb, resolveLocalOwnerUrl, restoreIntoDisposableLocalDb } from "./pg-local-admin";
 import {
   LEGACY_ANOMALY_INSTANCE_ID,
   countCancelConsistencyViolations,
@@ -30,7 +31,6 @@ import {
 } from "./legacy-cancellation-fixture";
 
 const ROOT = process.cwd();
-const CONTAINER = process.env.MAS_DB_CONTAINER ?? "mas-radar-pg";
 const TSX_CLI = path.join(ROOT, "node_modules", "tsx", "dist", "cli.mjs");
 const MIGRATE_SCRIPT = path.join(ROOT, "scripts", "db", "migrate.ts");
 const DB = "mas_radar_transitions_verify";
@@ -50,30 +50,17 @@ function record(name: string, pass: boolean, detail?: string): void {
   console.log(`${pass ? "PASS" : "FAIL"}  ${name}${detail ? `  (${detail})` : ""}`);
 }
 
-function docker(args: string[], opts: { input?: string | Buffer; quiet?: boolean } = {}): string {
-  return execFileSync("docker", args, {
-    input: opts.input,
-    encoding: "utf8",
-    maxBuffer: 128 * 1024 * 1024,
-    stdio: opts.quiet ? ["pipe", "pipe", "pipe"] : ["pipe", "inherit", "inherit"],
-  });
-}
 function assertContainerReachable(): void {
-  try {
-    docker(["exec", CONTAINER, "pg_isready", "-U", "postgres", "-q"], { quiet: true });
-  } catch {
-    console.error(`PostgreSQL konteyneri (${CONTAINER}) erişilebilir değil. Bu script onu otomatik başlatmaz.`);
-    process.exit(1);
-  }
+  assertLocalPgReachable();
 }
 function dropDb(db: string): void {
-  docker(["exec", CONTAINER, "dropdb", "-U", "postgres", "--if-exists", db], { quiet: true });
+  dropDisposableLocalDb(db);
 }
 function createDb(db: string): void {
-  docker(["exec", CONTAINER, "createdb", "-U", "postgres", db], { quiet: true });
+  createDisposableLocalDb(db);
 }
 function dbUrl(db: string): string {
-  return `postgres://postgres:postgres@127.0.0.1:5432/${db}`;
+  return resolveLocalOwnerUrl(db);
 }
 function dbNameFromUrl(url: string): string {
   return new URL(url).pathname.replace(/^\//, "");
@@ -122,10 +109,7 @@ function restoreManagedFixtureInto(db: string): void {
   const dump = findLatestManagedFixtureDump();
   dropDb(db);
   createDb(db);
-  docker(["exec", "-i", CONTAINER, "pg_restore", "-U", "postgres", "-d", db, "--no-owner", "--role=postgres"], {
-    input: readFileSync(dump),
-    quiet: true,
-  });
+  restoreIntoDisposableLocalDb(db, dump, { extraArgs: ["--role=postgres"], strict: true });
 }
 
 async function expectReject(pool: Pool, sql: string, params: unknown[], nameSubstr: RegExp, label: string): Promise<void> {
@@ -230,13 +214,62 @@ const PI_STATUSES = ["planned", "unpaid", "partial", "paid", "late", "cancelled"
 const PI_ALLOWED = new Set([
   "unpaid|paid", "planned|paid", "late|paid", "partial|paid",
   "unpaid|partial", "planned|partial", "late|partial", // 0033: markInstancePartial's matching gap
+  "unpaid|late", "planned|late", // 0099: overdue sweep transitions
   "paid|unpaid",
   "unpaid|cancelled", "planned|cancelled", "late|cancelled",
 ]);
-const CHECK_STATUSES = ["planned", "cleared", "bounced", "cancelled", "unknown"];
+const CHECK_STATUSES = [
+  "planned",
+  "in_portfolio",
+  "endorsed_to_vendor",
+  "in_bank_collection",
+  "in_bank_collateral",
+  "issued_to_vendor",
+  "cleared",
+  "bounced",
+  "returned",
+  "cancelled",
+  "unknown",
+];
 const CHECK_ALLOWED = new Set([
-  "planned|cleared", "planned|bounced", // 0034: settlement outcomes 0027 never allowed
+  "planned|in_portfolio",
+  "planned|issued_to_vendor",
+  "planned|endorsed_to_vendor",
+  "planned|in_bank_collection",
+  "planned|in_bank_collateral",
+  "planned|cleared",
+  "planned|bounced",
+  "planned|returned",
   "planned|cancelled",
+  "in_portfolio|endorsed_to_vendor",
+  "in_portfolio|in_bank_collection",
+  "in_portfolio|in_bank_collateral",
+  "in_portfolio|cleared",
+  "in_portfolio|bounced",
+  "in_portfolio|returned",
+  "in_portfolio|cancelled",
+  "endorsed_to_vendor|cleared",
+  "endorsed_to_vendor|bounced",
+  "endorsed_to_vendor|returned",
+  "endorsed_to_vendor|in_portfolio",
+  "in_bank_collection|cleared",
+  "in_bank_collection|bounced",
+  "in_bank_collection|returned",
+  "in_bank_collection|in_portfolio",
+  "in_bank_collateral|cleared",
+  "in_bank_collateral|bounced",
+  "in_bank_collateral|returned",
+  "in_bank_collateral|in_portfolio",
+  "in_bank_collateral|in_bank_collection",
+  "issued_to_vendor|cleared",
+  "issued_to_vendor|bounced",
+  "issued_to_vendor|returned",
+  "issued_to_vendor|cancelled",
+  "bounced|cleared",
+  "bounced|returned",
+  "bounced|in_portfolio",
+  "bounced|cancelled",
+  "returned|cancelled",
 ]);
 const LI_STATUSES = ["planned", "unpaid", "partial", "paid", "late", "cancelled"];
 const LI_ALLOWED = new Set([
@@ -311,7 +344,7 @@ async function main(): Promise<void> {
   const { cancelCheck, cancelLoanInstallment } = await import("../../src/lib/financing/engine");
   const { cancelActionSchema } = await import("../../src/lib/validation/financial");
   const { DomainError } = await import("../../src/lib/domain-error");
-  const { markPaidAction, markUnpaidAction } = await import("../../src/app/(dashboard)/radar/actions");
+  const { markPaidAction, markUnpaidAction } = await import("../../src/app/(dashboard)/payments/actions");
   const { getPool } = await import("../../src/lib/db");
 
   // Everything after the migration/fixture-prep chain below — unchanged in substance from
@@ -574,7 +607,7 @@ async function main(): Promise<void> {
     await expectFnAccept(async () => cancelInstance(appPool, freshUnpaidForCancel, "test iptal", actorId), "cancelInstance: unpaid→cancelled başarılı");
     await expectFnReject(
       async () => cancelInstance(appPool, "00000000-0000-0000-0000-000000000000", "x", actorId),
-      /instance not found/,
+      /instance not found|Ödeme örneği bulunamadı/,
       "cancelInstance: kayıt yok hatası",
     );
     const freshPaidForCancel = await seedPI(pool, "paid");
@@ -722,7 +755,7 @@ async function main(): Promise<void> {
           "action_items_archive_triplet_consistency",
         ] as const) {
           const state = await getConstraintCatalogState(pool, conname);
-          record(`kapsam dışı ${conname} hâlâ convalidated=false (dokunulmadı)`, state.found && state.convalidated === false, JSON.stringify(state));
+          record(`0099: ${conname} VALIDATE edildi (convalidated=true)`, state.found && state.convalidated === true, JSON.stringify(state));
         }
 
         const thirdRun = runMigrateAgainstUrl(disposableUrl);

@@ -3,11 +3,13 @@
 // against mas_radar_dev itself. Unlike migrate-verify.ts, this script does NOT wrap ensure.ts:
 // it checks the container is already reachable and fails clearly rather than auto-provisioning.
 import { execFileSync } from "node:child_process";
-import { readFileSync, readdirSync } from "node:fs";
+import { readdirSync } from "node:fs";
 import path from "node:path";
 import { Pool } from "pg";
 import { archivePayment } from "../../src/lib/payments/engine";
+import { completeJob } from "../../src/lib/jobs/queue";
 import { ensureSystemActor } from "./seed-system-actor";
+import { assertLocalPgReachable, createDisposableLocalDb, dropDisposableLocalDb, resolveLocalOwnerUrl, restoreIntoDisposableLocalDb } from "./pg-local-admin";
 import {
   LEGACY_ANOMALY_INSTANCE_ID,
   countCancelConsistencyViolations,
@@ -19,7 +21,6 @@ import {
 } from "./legacy-cancellation-fixture";
 
 const ROOT = process.cwd();
-const CONTAINER = process.env.MAS_DB_CONTAINER ?? "mas-radar-pg";
 const TSX_CLI = path.join(ROOT, "node_modules", "tsx", "dist", "cli.mjs");
 const MIGRATE_SCRIPT = path.join(ROOT, "scripts", "db", "migrate.ts");
 const DB = "mas_radar_constraints_verify";
@@ -35,34 +36,17 @@ function record(name: string, pass: boolean, detail?: string): void {
   console.log(`${pass ? "PASS" : "FAIL"}  ${name}${detail ? `  (${detail})` : ""}`);
 }
 
-function docker(args: string[], opts: { input?: string | Buffer; quiet?: boolean } = {}): string {
-  return execFileSync("docker", args, {
-    input: opts.input,
-    encoding: "utf8",
-    maxBuffer: 128 * 1024 * 1024,
-    stdio: opts.quiet ? ["pipe", "pipe", "pipe"] : ["pipe", "inherit", "inherit"],
-  });
-}
 function assertContainerReachable(): void {
-  try {
-    docker(["exec", CONTAINER, "pg_isready", "-U", "postgres", "-q"], { quiet: true });
-  } catch {
-    console.error(
-      `PostgreSQL konteyneri (${CONTAINER}) erişilebilir değil. Bu script onu otomatik başlatmaz ` +
-        `(yalnız disposable DB kullanır, mas_radar_dev üzerinde ensure/create/migrate yapmaz) — ` +
-        `önce container'ı manuel hazırlayın.`,
-    );
-    process.exit(1);
-  }
+  assertLocalPgReachable();
 }
 function dropDb(db: string): void {
-  docker(["exec", CONTAINER, "dropdb", "-U", "postgres", "--if-exists", db], { quiet: true });
+  dropDisposableLocalDb(db);
 }
 function createDb(db: string): void {
-  docker(["exec", CONTAINER, "createdb", "-U", "postgres", db], { quiet: true });
+  createDisposableLocalDb(db);
 }
 function dbUrl(db: string): string {
-  return `postgres://postgres:postgres@127.0.0.1:5432/${db}`;
+  return resolveLocalOwnerUrl(db);
 }
 
 interface RunResult {
@@ -108,10 +92,7 @@ function restoreManagedFixtureInto(db: string): void {
   const dump = findLatestManagedFixtureDump();
   dropDb(db);
   createDb(db);
-  docker(["exec", "-i", CONTAINER, "pg_restore", "-U", "postgres", "-d", db, "--no-owner", "--role=postgres"], {
-    input: readFileSync(dump),
-    quiet: true,
-  });
+  restoreIntoDisposableLocalDb(db, dump, { extraArgs: ["--role=postgres"], strict: true });
 }
 
 async function expectReject(pool: Pool, sql: string, params: unknown[], nameSubstr: RegExp, label: string): Promise<void> {
@@ -132,9 +113,31 @@ async function expectAccept(pool: Pool, sql: string, params: unknown[], label: s
   }
 }
 
-/** The suite's own original Slice 2 constraint assertions (0022-0025 + archivePayment()) —
- * extracted out of main() so they only run once the disposable DB has genuinely reached a
- * fully-migrated, 0030-validated state; unchanged in substance from before this fix. */
+/**
+ * Legacy-anomaly immutability + metadata-completion assertions (0024).
+ *
+ * Run right after `bootstrapRun` (which commits 0022-0029, including 0023 NOT VALID and 0024's
+ * immutability trigger) and BEFORE `secondRun` (0030..0099), because 0099 now runs
+ * `VALIDATE CONSTRAINT payments_archive_consistency`, which requires every historical archived
+ * payment row to have complete archive metadata before 0099 executes.
+ */
+async function runLegacyAnomalyAssertions(pool: Pool, anomalyId: string): Promise<void> {
+  // Legacy anomali satırı — arbitrary update / silent unarchive reddedilmeli
+  await expectReject(pool, "update public.payments set description='anomaly-test-change-1' where id=$1", [anomalyId], /immutable/, "legacy anomali: keyfi alan değişikliği reddedilir");
+  await expectReject(pool, "update public.payments set status='active' where id=$1", [anomalyId], /immutable/, "legacy anomali: status='active'ye sessiz geçiş reddedilir");
+  await expectReject(pool, "update public.payments set status='paused' where id=$1", [anomalyId], /immutable/, "legacy anomali: status='paused'a sessiz geçiş reddedilir");
+  // yalnız metadata completion kabul edilir
+  await expectAccept(
+    pool,
+    "update public.payments set archived_at=now(), archive_reason='legacy completion', archived_by_label='mas-dashboard' where id=$1",
+    [anomalyId],
+    "legacy anomali: yalnız metadata completion kabul edilir",
+  );
+  // completion sonrası tam immutable
+  await expectReject(pool, "update public.payments set description='anomaly-test-change-2' where id=$1", [anomalyId], /immutable/, "legacy anomali: completion sonrası tekrar değişiklik reddedilir (tam kilit)");
+  await expectReject(pool, "update public.payments set archive_reason='changed' where id=$1", [anomalyId], /immutable/, "legacy anomali: completion sonrası metadata'yı tekrar değiştirme reddedilir");
+}
+
 /**
  * Faz 19 additions (migrations 0036-0039).
  *
@@ -310,21 +313,6 @@ async function runConstraintAssertions(pool: Pool, anomalyId: string, actorId: s
     "audit_logs: normal INSERT başarılı olur",
   );
 
-  // Legacy anomali satırı — arbitrary update / silent unarchive reddedilmeli
-  await expectReject(pool, "update public.payments set description='anomaly-test-change-1' where id=$1", [anomalyId], /immutable/, "legacy anomali: keyfi alan değişikliği reddedilir");
-  await expectReject(pool, "update public.payments set status='active' where id=$1", [anomalyId], /immutable/, "legacy anomali: status='active'ye sessiz geçiş reddedilir");
-  await expectReject(pool, "update public.payments set status='paused' where id=$1", [anomalyId], /immutable/, "legacy anomali: status='paused'a sessiz geçiş reddedilir");
-  // yalnız metadata completion kabul edilir
-  await expectAccept(
-    pool,
-    "update public.payments set archived_at=now(), archive_reason='legacy completion', archived_by_label='mas-dashboard' where id=$1",
-    [anomalyId],
-    "legacy anomali: yalnız metadata completion kabul edilir",
-  );
-  // completion sonrası tam immutable
-  await expectReject(pool, "update public.payments set description='anomaly-test-change-2' where id=$1", [anomalyId], /immutable/, "legacy anomali: completion sonrası tekrar değişiklik reddedilir (tam kilit)");
-  await expectReject(pool, "update public.payments set archive_reason='changed' where id=$1", [anomalyId], /immutable/, "legacy anomali: completion sonrası metadata'yı tekrar değiştirme reddedilir");
-
   // archivePayment() — gerçek uygulama kodu, ham SQL değil
   const freshForEngine = await pool.query<{ id: string }>(
     "select id from payments where id<>$1 and status<>'archived' order by id limit 1",
@@ -451,7 +439,6 @@ async function runConstraintAssertions(pool: Pool, anomalyId: string, actorId: s
   );
 }
 
-
 /**
  * Faz 31 — control alerts. Every new CHECK gets its own entry here, per the phase's own gate
  * requirement: this EXTENDS the script rather than altering any existing assertion.
@@ -530,8 +517,194 @@ async function runFaz31ConstraintAssertions(pool: Pool, actorId: string): Promis
   );
 }
 
+/**
+ * Faz 44 (C1 — Migration 0099):
+ *   1. Cross-currency allocation trigger `enforce_invoice_allocation_currency()` (`ERRCODE 23514`)
+ *   2. `0083` fix: `public.attachments.document_id` FK `ON DELETE RESTRICT`
+ *   3. Free-text `currency` ISO-4217 3-letter uppercase CHECK (`*_iso4217_chk`)
+ */
+async function runFaz44ConstraintAssertions(pool: Pool, actorId: string): Promise<void> {
+  const party = (await pool.query<{ id: string }>(
+    `insert into public.parties(name, normalized_name, party_type)
+     values ('CV Faz44', 'cv faz44', 'customer') returning id`)).rows[0].id;
+
+  const usdAcc = (await pool.query<{ id: string }>(
+    `insert into public.cash_accounts(name, account_type, currency, opening_balance)
+     values ('CV Faz44 USD Bank', 'bank_account', 'USD', 0) returning id`)).rows[0].id;
+  await pool.query(
+    `insert into public.bank_accounts(cash_account_id, bank_name) values ($1, 'Faz44 Bank')`,
+    [usdAcc],
+  );
+  const usdTxn = (await pool.query<{ id: string }>(
+    `insert into public.bank_transactions(bank_account_id, txn_date, amount, currency, status, dedupe_hash)
+     values ($1, '2026-06-01', 250.00, 'USD', 'unmatched', 'cv-faz44-usd-txn') returning id`,
+    [usdAcc],
+  )).rows[0].id;
+
+  const tryInv = (await pool.query<{ id: string }>(
+    `insert into public.invoices(direction, invoice_no, party_id, issue_date, currency, net_amount, tax_amount, gross_amount)
+     values ('sales', 'F44-TRY-1', $1, '2026-06-01', 'TRY', 500, 0, 500) returning id`,
+    [party],
+  )).rows[0].id;
+  await pool.query(`update public.invoices set status='open' where id=$1`, [tryInv]);
+
+  const usdInv = (await pool.query<{ id: string }>(
+    `insert into public.invoices(direction, invoice_no, party_id, issue_date, currency, net_amount, tax_amount, gross_amount)
+     values ('sales', 'F44-USD-1', $1, '2026-06-01', 'USD', 250, 0, 250) returning id`,
+    [party],
+  )).rows[0].id;
+  await pool.query(`update public.invoices set status='open' where id=$1`, [usdInv]);
+
+  await expectReject(
+    pool,
+    `insert into public.invoice_allocations(invoice_id, source_table, source_id, allocated_amount, created_by)
+     values ($1, 'bank_transactions', $2, 100.00, $3)`,
+    [tryInv, usdTxn, actorId],
+    /cross_currency_allocation_forbidden/,
+    "0099: USD banka hareketi TRY faturaya tahsis edilemez (cross_currency_allocation_forbidden)",
+  );
+  await expectAccept(
+    pool,
+    `insert into public.invoice_allocations(invoice_id, source_table, source_id, allocated_amount, created_by)
+     values ($1, 'bank_transactions', $2, 100.00, $3)`,
+    [usdInv, usdTxn, actorId],
+    "0099 POZİTİF KONTROL: USD banka hareketi USD faturaya tahsis edilir",
+  );
+
+  // 0083 fix: attachments.document_id FK is ON DELETE RESTRICT
+  const docId = (await pool.query<{ id: string }>(
+    `insert into public.documents(doc_type, title, created_by)
+     values ('other', 'Faz44 Belge', $1) returning id`,
+    [actorId],
+  )).rows[0].id;
+  await pool.query(
+    `insert into public.attachments(document_id, version_no, original_filename, storage_path, file_sha256, byte_size, mime_type)
+     values ($1, 1, 'faz44.pdf', $2, $3, 128, 'application/pdf')`,
+    [docId, `ab/${"a".repeat(64)}`, "a".repeat(64)],
+  );
+  await expectReject(
+    pool,
+    `delete from public.documents where id=$1`,
+    [docId],
+    /attachments_document_id_fkey|violates foreign key|restrict/i,
+    "0099: eki olan dokümanın silinmesi ON DELETE RESTRICT ile reddedilir",
+  );
+
+  // Free-text currency ISO-4217 CHECK
+  await expectReject(
+    pool,
+    `insert into public.cash_accounts(name, account_type, currency) values ('CV Faz44 BadCur', 'cash', 'tl')`,
+    [],
+    /iso4217_chk/i,
+    "0099: ISO-4217 olmayan serbest currency ('tl') reddedilir",
+  );
+  await expectAccept(
+    pool,
+    `insert into public.cash_accounts(name, account_type, currency) values ('CV Faz44 GoodCur', 'cash', 'EUR')`,
+    [],
+    "0099 POZİTİF KONTROL: geçerli ISO-4217 currency ('EUR') kabul edilir",
+  );
+}
+
+/**
+ * Faz 57 (SA-4 — Migration 0108):
+ *   1. `public.background_jobs.result` (`jsonb`) kolonu ve `enforce_background_jobs_immutable_envelope` tetikleyicisi (`prosecdef = false`)
+ *   2. `payload`, `created_by`, `job_type`, `dedupe_key`, `created_at` mutasyonlarının `ERRCODE 23514` (`background_jobs_envelope_immutable`) ile reddi
+ *   3. Pozitif kontrol: `queued -> running -> completeJob(..., result)` ayrı `result` kolonuna yazar ve `payload`'a dokunmaz
+ */
+async function runFaz57QueueImmutabilityAssertions(pool: Pool, actorId: string): Promise<void> {
+  const expectReject23514 = async (p: Pool, sql: string, params: unknown[], label: string): Promise<void> => {
+    try {
+      await p.query(sql, params);
+      record(label, false, "beklenmedik şekilde başarılı oldu");
+    } catch (err) {
+      const e = err as Error & { code?: string };
+      const ok = e.code === "23514" && /background_jobs_envelope_immutable/.test(e.message);
+      record(label, ok, `code=${e.code ?? "?"} msg=${e.message.slice(0, 120)}`);
+    }
+  };
+
+  const trig = await pool.query<{ tgname: string; tgenabled: string; prosecdef: boolean }>(
+    `select t.tgname, t.tgenabled::text as tgenabled, p.prosecdef
+       from pg_trigger t
+       join pg_proc p on p.oid = t.tgfoid
+      where t.tgrelid = 'public.background_jobs'::regclass
+        and not t.tgisinternal
+        and t.tgname = 'enforce_background_jobs_immutable_envelope'`,
+  );
+  record(
+    "0108: enforce_background_jobs_immutable_envelope tetikleyicisi public.background_jobs üzerinde aktif ve invoker (prosecdef=false)",
+    trig.rowCount === 1 && trig.rows[0].tgenabled === "O" && trig.rows[0].prosecdef === false,
+    JSON.stringify(trig.rows[0] ?? null),
+  );
+
+  const jobId = (await pool.query<{ id: string }>(
+    `insert into public.background_jobs (job_type, payload, dedupe_key, created_by)
+     values ('excel_import', '{"filename":"cv0108.xlsx"}'::jsonb, 'cv_0108_dedupe', $1)
+     returning id`,
+    [actorId],
+  )).rows[0].id;
+
+  await expectReject23514(
+    pool,
+    `update public.background_jobs set payload = '{"tampered":true}'::jsonb where id = $1`,
+    [jobId],
+    "0108: background_jobs.payload mutasyonu ERRCODE 23514 ile reddedilir",
+  );
+  await expectReject23514(
+    pool,
+    `update public.background_jobs set created_by = null where id = $1`,
+    [jobId],
+    "0108: background_jobs.created_by mutasyonu ERRCODE 23514 ile reddedilir",
+  );
+  await expectReject23514(
+    pool,
+    `update public.background_jobs set job_type = 'report_generation' where id = $1`,
+    [jobId],
+    "0108: background_jobs.job_type mutasyonu ERRCODE 23514 ile reddedilir",
+  );
+  await expectReject23514(
+    pool,
+    `update public.background_jobs set dedupe_key = 'cv_0108_tampered' where id = $1`,
+    [jobId],
+    "0108: background_jobs.dedupe_key mutasyonu ERRCODE 23514 ile reddedilir",
+  );
+  await expectReject23514(
+    pool,
+    `update public.background_jobs set created_at = created_at - interval '1 hour' where id = $1`,
+    [jobId],
+    "0108: background_jobs.created_at mutasyonu ERRCODE 23514 ile reddedilir",
+  );
+
+  await expectAccept(
+    pool,
+    `update public.background_jobs
+        set status = 'running', started_at = now(), attempts = 1, progress_done = 1, progress_total = 2
+      where id = $1`,
+    [jobId],
+    "0108 POZİTİF KONTROL: zarf dışı operasyonel alanların (status/started_at/attempts/progress) güncellenmesi kabul edilir",
+  );
+
+  await completeJob(pool, jobId, actorId, { previewRows: 42 });
+  const completed = (await pool.query<{
+    status: string;
+    payload: Record<string, unknown>;
+    result: Record<string, unknown> | null;
+  }>(
+    `select status, payload, result from public.background_jobs where id = $1`,
+    [jobId],
+  )).rows[0];
+  record(
+    "0108 POZİTİF KONTROL: completeJob sonucu result kolonuna yazar ve payload zarfına dokunmaz",
+    completed.status === "succeeded"
+      && JSON.stringify(completed.payload) === JSON.stringify({ filename: "cv0108.xlsx" })
+      && JSON.stringify(completed.result) === JSON.stringify({ previewRows: 42 }),
+    JSON.stringify(completed),
+  );
+}
+
 async function main(): Promise<void> {
-  console.log("=== constraints-verify: P0-B Slice 2 disposable-DB test suite ===\n");
+  console.log("=== constraints-verify: P0-B Slice 2 + Faz 44 disposable-DB test suite ===\n");
   assertContainerReachable();
 
   restoreManagedFixtureInto(DB);
@@ -598,9 +771,13 @@ async function main(): Promise<void> {
       );
       record("preparation sonrası ihlal sayısı 0", violationsAfterPrep === 0, `got ${violationsAfterPrep}`);
 
+      // Test 0024's legacy metadata completion path right here (while 0023 is still NOT VALID)
+      // so the seeded anomaly row is completed before 0099 runs VALIDATE CONSTRAINT.
+      await runLegacyAnomalyAssertions(pool, anomalyId);
+
       const secondRun = runMigrateAgainstUrl(dbUrl(DB));
       record(
-        "0022-0030 migrate.ts ile başarıyla uygulandı (fixture düzeltmesinden sonra)",
+        "0030-0099+ migrate.ts ile başarıyla uygulandı (fixture düzeltmesinden sonra)",
         secondRun.code === 0,
         secondRun.code === 0 ? undefined : secondRun.stderr.slice(0, 300),
       );
@@ -629,7 +806,7 @@ async function main(): Promise<void> {
           "action_items_archive_triplet_consistency",
         ] as const) {
           const state = await getConstraintCatalogState(pool, conname);
-          record(`kapsam dışı ${conname} hâlâ convalidated=false (dokunulmadı)`, state.found && state.convalidated === false, JSON.stringify(state));
+          record(`0099: ${conname} VALIDATE edildi (convalidated=true)`, state.found && state.convalidated === true, JSON.stringify(state));
         }
       }
     }
@@ -640,6 +817,8 @@ async function main(): Promise<void> {
       await runFaz19ConstraintAssertions(pool);
       await runFaz22ConstraintAssertions(pool, actorId);
       await runFaz31ConstraintAssertions(pool, actorId);
+      await runFaz44ConstraintAssertions(pool, actorId);
+      await runFaz57QueueImmutabilityAssertions(pool, actorId);
     }
   } finally {
     await pool.end();

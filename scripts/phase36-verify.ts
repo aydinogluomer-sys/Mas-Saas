@@ -36,9 +36,9 @@ import {
   DEFAULT_TABLE_STATE, MAX_ROWS_PER_REQUEST, buildPage, describeSelection,
   orderByClause, pageBounds, parseTableState, selectionSize,
 } from "../src/lib/ui/table";
-import { requireDisposableOwnerDatabaseUrl } from "./db/owner-url";
+import { assertDisposableTargetDb } from "./db/disposable-guard";
 
-const ownerUrl = requireDisposableOwnerDatabaseUrl("phase36:verify");
+const ownerUrl = assertDisposableTargetDb(undefined, "phase36:verify").url;
 const pool = new Pool({ connectionString: ownerUrl });
 
 function appUrl(): string | null {
@@ -271,22 +271,34 @@ async function main(): Promise<void> {
 
         const viewerWrote = await asRole("viewer", async (c) => {
           try {
+            await c.query("begin");
+            await c.query(`select set_config('app.user_id', $1, true)`, [userA]);
             await c.query(
               `insert into public.saved_views (name, module_key, filters, created_by)
                values ($1,'payments','{}'::jsonb,$2)`, [`${TAG} izleyici`, userA]);
+            await c.query("commit");
             return true;
-          } catch { return false; }
+          } catch {
+            await c.query("rollback").catch(() => undefined);
+            return false;
+          }
         });
         record("İZLEYİCİ kayıtlı görünüm YAZAMIYOR (Faz 24B invariant'ı korunuyor)",
           !viewerWrote, "bir kolaylık için güvenlik invariant'ı bozulmadı");
 
         const operatorWrote = await asRole("finance_operator", async (c) => {
           try {
+            await c.query("begin");
+            await c.query(`select set_config('app.user_id', $1, true)`, [userA]);
             await c.query(
               `insert into public.saved_views (name, module_key, filters, created_by)
                values ($1,'payments','{}'::jsonb,$2)`, [`${TAG} operatör`, userA]);
+            await c.query("commit");
             return true;
-          } catch { return false; }
+          } catch {
+            await c.query("rollback").catch(() => undefined);
+            return false;
+          }
         });
         record("POZİTİF KONTROL: operatör kayıtlı görünüm YAZABİLİYOR",
           operatorWrote, "reddedilen izleyici, 'kimse yazamıyor' yüzünden değil");
@@ -411,7 +423,7 @@ async function main(): Promise<void> {
       && !exportRoutes.includes("export"),
     "Faz 34'ün analytics/export rotası tek export yolu");
   record("Faz 34'ün export modülü hâlâ tek kaynak",
-    /export function toXlsxBuffer/.test(readSrc("src/lib/analytics/export.ts")),
+    /export (?:async )?function toXlsxBuffer/.test(readSrc("src/lib/analytics/export.ts")),
     "XLSX/CSV/SVG üretimi tek yerde");
 
   /* ── 9. house rules ─────────────────────────────────────────────────────────────────── */

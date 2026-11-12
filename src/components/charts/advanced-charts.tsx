@@ -128,7 +128,7 @@ export function WaterfallChart({ model, exportKey }: { model: WaterfallModel; ex
         <ExportBar name={exportKey} onSvg={() => downloadSvg(exportKey)} onPng={() => downloadPng(exportKey)} />
       </div>
       <div className="overflow-x-auto">
-        <svg ref={ref} viewBox={`0 0 ${W} ${H}`} className="w-full min-w-[560px]" role="img"
+        <svg ref={ref} viewBox={`0 0 ${W} ${H}`} className="w-full min-w-140" role="img"
              aria-label={`${model.title} şelale grafiği`}>
           <line x1={PL} y1={yOf(0)} x2={W - PR} y2={yOf(0)} stroke="var(--line)" strokeWidth={1} data-token="--line" />
           {model.bars.map((bar, i) => {
@@ -170,7 +170,7 @@ export function HeatmapChart({ model, exportKey }: { model: HeatmapModel; export
         <ExportBar name={exportKey} onSvg={() => downloadSvg(exportKey)} onPng={() => downloadPng(exportKey)} />
       </div>
       <div className="overflow-x-auto">
-        <svg ref={ref} viewBox={`0 0 ${W} ${H}`} className="w-full min-w-[560px]" role="img"
+        <svg ref={ref} viewBox={`0 0 ${W} ${H}`} className="w-full min-w-140" role="img"
              aria-label={`${model.title} ısı haritası`}>
           {model.columns.map((c, ci) => (
             <text key={c.key} x={PL + ci * cw + cw / 2} y={PT - 10} textAnchor="middle"
@@ -229,7 +229,7 @@ export function TreemapChart({ model, exportKey }: { model: TreemapModel; export
         <ExportBar name={exportKey} onSvg={() => downloadSvg(exportKey)} onPng={() => downloadPng(exportKey)} />
       </div>
       <div className="overflow-x-auto">
-        <svg ref={ref} viewBox={`0 0 ${W} ${H}`} className="w-full min-w-[560px]" role="img"
+        <svg ref={ref} viewBox={`0 0 ${W} ${H}`} className="w-full min-w-140" role="img"
              aria-label={`${model.title} ağaç haritası`}>
           {model.tiles.map((t) => {
             const x = t.x * W, y = t.y * H, w = t.width * W, h = t.height * H;

@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { getPool } from "@/lib/db";
 import { requireApiSession } from "@/lib/auth";
-import { apiError, withApiHandler } from "@/lib/api-response";
+import { apiError, checkOrigin, withApiHandler } from "@/lib/api-response";
 import { CORRELATION_HEADER } from "@/lib/correlation";
 import { istanbulDateISO } from "@/lib/reports/rules";
 import { ANALYSES } from "@/lib/analytics/registry";
@@ -22,7 +22,34 @@ const querySchema = z.object({
   format: z.enum(["xlsx", "csv"]),
 });
 
+const cellScalarSchema = z.union([
+  z.string().max(4000),
+  z.number().finite(),
+  z.null(),
+]);
+
+const adHocExportSchema = z.object({
+  filename: z.string().trim().min(1).max(120),
+  sheets: z
+    .array(
+      z.object({
+        name: z.string().trim().min(1).max(64),
+        rows: z.array(z.array(cellScalarSchema).max(200)).max(25_000),
+      }),
+    )
+    .min(1)
+    .max(12),
+});
+
 type Row = (string | number | null)[];
+
+function safeDownloadSlug(raw: string): string {
+  const cleaned = raw
+    .toLocaleLowerCase("tr-TR")
+    .replaceAll(/[^a-z0-9çğıöşü_-]+/gi, "-")
+    .replace(/^-+|-+$/g, "");
+  return (cleaned || "rapor").slice(0, 80);
+}
 
 /**
  * Turn one analysis into sheet rows plus its stamp.
@@ -163,15 +190,12 @@ export async function GET(request: Request) {
     const base = `${parsed.data.analysis}-${asOf}`;
 
     if (parsed.data.format === "csv") {
-      // The provenance line rides along as a comment row: a CSV that loses its stamp becomes an
-      // anonymous column of numbers the moment it is mailed on.
       const csv = rowsToCsv([
         ...sheets[0].rows,
         [],
         [`# ${stamp.analysisId} · sürüm ${stamp.versionFingerprint} · ${stamp.input.asOf} · özet ${stamp.digest}`],
       ]);
-      // BOM so Excel on a Turkish locale opens UTF-8 correctly.
-      return new NextResponse("﻿" + csv, {
+      return new NextResponse("\ufeff" + csv, {
         headers: {
           "content-type": "text/csv; charset=utf-8",
           "content-disposition": `attachment; filename="${base}.csv"`,
@@ -180,11 +204,48 @@ export async function GET(request: Request) {
       });
     }
 
-    const buffer = toXlsxBuffer(sheets, stamp);
+    const buffer = await toXlsxBuffer(sheets, stamp);
     return new NextResponse(new Uint8Array(buffer), {
       headers: {
         "content-type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         "content-disposition": `attachment; filename="${base}.xlsx"`,
+        [CORRELATION_HEADER]: requestId,
+      },
+    });
+  });
+}
+
+/**
+ * Faz 41 (B1): Server-side XLSX rendering for client tables (`DataTable`) and charts (`AnalyticsChart`)
+ * so NO Excel library (`xlsx` or `exceljs`) ever ships into the browser bundle, while preserving
+ * Faz 36's single-export-endpoint invariant (`/api/analytics/export`).
+ */
+export async function POST(request: Request) {
+  return withApiHandler(request, async ({ requestId }) => {
+    const forbidden = checkOrigin(request, requestId);
+    if (forbidden) return forbidden;
+
+    const user = await requireApiSession();
+    if (!user) return apiError(401, "Yetkisiz.", { code: "unauthorized", requestId });
+
+    let json: unknown;
+    try {
+      json = await request.json();
+    } catch {
+      return apiError(400, "Geçersiz JSON gövdesi.", { code: "bad_request", requestId });
+    }
+
+    const parsed = adHocExportSchema.safeParse(json);
+    if (!parsed.success) {
+      return apiError(400, "Geçersiz dışa aktarma verisi.", { code: "bad_request", requestId });
+    }
+
+    const slug = safeDownloadSlug(parsed.data.filename);
+    const buffer = await toXlsxBuffer(parsed.data.sheets);
+    return new NextResponse(new Uint8Array(buffer), {
+      headers: {
+        "content-type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "content-disposition": `attachment; filename="${slug}.xlsx"`,
         [CORRELATION_HEADER]: requestId,
       },
     });

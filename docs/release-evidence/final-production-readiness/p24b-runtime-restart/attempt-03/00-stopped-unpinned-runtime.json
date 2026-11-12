@@ -1,0 +1,92 @@
+{
+  "artifactKind": "mas-p24b-unpinned-runtime-stop-v1",
+  "measuredAtUtc": "2026-09-03T10:16:01.698Z",
+  "gate": "SECTION 2-4",
+  "verdict": "PASS",
+  "identityReconfirmedBeforeStop": {
+    "pid": 18996,
+    "existed": true,
+    "name": "node.exe",
+    "creationLocal": "2026-09-03 12:28:16",
+    "creationMatchesEarlierObservation": true,
+    "pidRecycled": false,
+    "port3000OwningProcess": 18996,
+    "portOwnershipMatch": true,
+    "commandLine": "next start — binary under C:\\Users\\Trade Bilisim\\Mas Saas node_modules",
+    "proofRepeatedImmediatelyBeforeForce": true
+  },
+  "processTree": [
+    {
+      "pid": 14924,
+      "name": "node.exe",
+      "role": "pnpm start (root)"
+    },
+    {
+      "pid": 29856,
+      "name": "cmd.exe",
+      "role": "runtime-port-guard && prepare-runtime && next start"
+    },
+    {
+      "pid": 18996,
+      "name": "node.exe",
+      "role": "next start (port 3000 listener)"
+    }
+  ],
+  "treeBoundary": {
+    "parentOfRoot": {
+      "pid": 12680,
+      "name": "powershell.exe",
+      "role": "VS Code entegre terminali — DOKUNULMADI"
+    }
+  },
+  "gracefulAttempt": {
+    "command": "taskkill /PID 14924 /T (no /F)",
+    "exitCode": 128,
+    "result": "REDDEDILDI — 'This process can only be terminated forcefully'. Konsol surecinde beklenen davranis (WM_CLOSE alacak pencere yok).",
+    "processesStillAliveAfter": [
+      18996,
+      29856,
+      14924
+    ]
+  },
+  "forceTermination": {
+    "rule": "SECTION 3 — yalniz ayni dogrulanmis process tree",
+    "byExplicitPidOnly": true,
+    "byProcessNameOrWildcard": false,
+    "results": [
+      {
+        "pid": 18996,
+        "exitCode": 0,
+        "message": "SUCCESS: terminated"
+      },
+      {
+        "pid": 29856,
+        "exitCode": 128,
+        "message": "not found — cocugu olunce kendiliginden cikmisti"
+      },
+      {
+        "pid": 14924,
+        "exitCode": 0,
+        "message": "SUCCESS: terminated"
+      }
+    ]
+  },
+  "postStopVerification": {
+    "pid18996Alive": false,
+    "pid29856Alive": false,
+    "pid14924Alive": false,
+    "userTerminal12680Alive": true,
+    "port3000": "none",
+    "port3001": "none",
+    "port3110": "none",
+    "port3210": "none",
+    "port3310": "none",
+    "nextRuntimeProcesses": 0,
+    "prepareRuntimeStandalone": 0,
+    "botWorkerScheduler": 0,
+    "survivingNodeProcesses": 18,
+    "postgresContainer": "mas-radar-pg UP (bilerek acik birakildi)",
+    "otherProcessesKilled": 0
+  },
+  "collateralDamage": "YOK — baska Node/Python/Postgres/Docker sureci sonlandirilmadi."
+}

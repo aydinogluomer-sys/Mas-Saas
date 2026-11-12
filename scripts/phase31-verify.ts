@@ -26,9 +26,9 @@ import {
   falsePositiveRate, isEscalationDue, isRoundNumber, isSplitPayment,
 } from "../src/lib/controls/rules";
 import { TABLE_CLASS } from "../src/lib/authz/matrix";
-import { requireDisposableOwnerDatabaseUrl } from "./db/owner-url";
+import { assertDisposableTargetDb } from "./db/disposable-guard";
 
-const pool = new Pool({ connectionString: requireDisposableOwnerDatabaseUrl("phase31:verify") });
+const pool = new Pool({ connectionString: assertDisposableTargetDb(undefined, "phase31:verify").url });
 
 interface Check { name: string; pass: boolean; detail: string }
 const checks: Check[] = [];
@@ -266,11 +266,18 @@ async function main(): Promise<void> {
       `insert into public.cashflow_months
          (month_start, opening_balance, projected_income, projected_expense, monthly_delta,
           closing_balance, status, updated_at)
-       values ('2099-06-01',0,0,0,0,0,'locked', now() - interval '2 days')`);
+       values ('2099-06-01',0,0,0,0,0,'reviewed', now() - interval '2 days')`);
     await c.query(
       `insert into public.invoices
          (party_id, direction, issue_date, due_date, net_amount, gross_amount, currency, status, invoice_no, updated_at)
        values ($1,'purchase','2099-06-10','2099-07-10',900,900,'TRY','open',$2, now())`, [party, TAG()]);
+    await c.query(
+      `update public.cashflow_months set status='locked', locked_at = now() - interval '2 days', updated_at = now() where month_start='2099-06-01'`);
+    out.closed_period_enforced = (await refuses(
+      c,
+      `insert into public.invoices (party_id, direction, issue_date, due_date, net_amount, gross_amount, currency, status, invoice_no) values ($1,'purchase','2099-06-15','2099-07-15',500,500,'TRY','open',$2)`,
+      [party, TAG()],
+    )) ? 1 : 0;
     out.closed_period = Number((await c.query(
       `select count(*)::int n from public.control_closed_period_mutations`)).rows[0].n);
 
@@ -295,7 +302,10 @@ async function main(): Promise<void> {
       : `tetiklenmeyen: ${silent.join(", ")}`);
 
   record("kapalı dönem mutasyonu 'locked' çıpasıyla yakalanıyor",
-    fires.closed_period >= 1, `${fires.closed_period} bulgu — cashflow_months.status='locked'`);
+    fires.closed_period >= 1, `${fires.closed_period} bulgu — cashflow_months.locked_at çıpası`);
+  record("KANIT: Faz 45 (0100) sert dönem kilidi kilitli aya yazmayı REDDEDİYOR",
+    fires.closed_period_enforced === 1, "closed_period_mutation 'enforced_elsewhere' — BEFORE trigger P0001");
+
   record("onay atlama tespiti Faz 24A'nın approvals'ını KULLANIYOR",
     fires.approval_bypass >= 1, "eşik üstü ödemenin approvals kaydı yok");
 

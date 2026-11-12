@@ -49,7 +49,6 @@ export function AnalyticsChart({ model, kind = "line", defaultPeriod = "12m" }: 
     if (requestedGranularity && granularityOptions.includes(requestedGranularity)) setGranularity(requestedGranularity);
     const requestedHidden = params.get("chartHidden")?.split(",").filter(Boolean) ?? [];
     if (requestedHidden.length < model.series.length) setHidden(requestedHidden);
-    hydrated.current = true;
   }, [granularityOptions, model.series.length, periodOptions]);
 
   useEffect(() => {
@@ -80,7 +79,10 @@ export function AnalyticsChart({ model, kind = "line", defaultPeriod = "12m" }: 
   const zero = y(0);
 
   useEffect(() => {
-    if (!hydrated.current) return;
+    if (!hydrated.current) {
+      hydrated.current = true;
+      return;
+    }
     const url = new URL(window.location.href);
     url.searchParams.set("chartPeriod", period);
     url.searchParams.set("chartGranularity", granularity);
@@ -118,23 +120,32 @@ export function AnalyticsChart({ model, kind = "line", defaultPeriod = "12m" }: 
     URL.revokeObjectURL(url);
   };
   const downloadExcel = async () => {
-    const XLSX = await import("xlsx");
     const exportKeys = [...new Set(shown.flatMap((series) => series.points.map((point) => point.key)))].sort();
-    const rows = [["Tarih", "Dönem", ...shown.map((series) => series.label)], ...exportKeys.map((key) => [
-      key,
-      shown.flatMap((series) => series.points).find((point) => point.key === key)?.label ?? key,
-      ...shown.map((series) => series.points.find((point) => point.key === key)?.value ?? null),
-    ])];
-    const sheet = XLSX.utils.aoa_to_sheet(rows);
-    sheet["!cols"] = [{ wch: 14 }, { wch: 20 }, ...shown.map(() => ({ wch: 18 }))];
-    const workbook = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(workbook, sheet, "Ödeme Baskısı");
-    XLSX.writeFile(workbook, `${model.title.toLocaleLowerCase("tr-TR").replaceAll(/[^a-z0-9çğıöşü]+/gi, "-")}.xlsx`);
+    const rows: (string | number | null)[][] = [
+      ["Tarih", "Dönem", ...shown.map((series) => series.label)],
+      ...exportKeys.map((key) => [
+        key,
+        shown.flatMap((series) => series.points).find((point) => point.key === key)?.label ?? key,
+        ...shown.map((series) => series.points.find((point) => point.key === key)?.value ?? null),
+      ]),
+    ];
+    const filename = model.title.toLocaleLowerCase("tr-TR").replaceAll(/[^a-z0-9çğıöşü]+/gi, "-") || "grafik";
+    const response = await fetch("/api/analytics/export", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ filename, sheets: [{ name: "Ödeme Baskısı", rows }] }),
+    });
+    if (!response.ok) return;
+    const blob = await response.blob();
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = `${filename}.xlsx`;
+    anchor.click();
+    URL.revokeObjectURL(url);
   };
   const emptySeries = view.series.filter((series) => series.points.every((point) => point.value == null || point.value === 0));
 
-  // Selected-period readout: totals for flow series, endpoint for balance series.
-  // Computed over the full selected window (period + granularity), independent of zoom pan.
   const periodSummary = useMemo(() => {
     if (!model.summaryMode) return null;
     const visible = granularView.series.filter((series) => !hidden.includes(series.id));
@@ -184,7 +195,7 @@ export function AnalyticsChart({ model, kind = "line", defaultPeriod = "12m" }: 
     {shown.length === 0 || keys.length === 0
       ? <div className="mt-3 border border-dashed border-line p-6 text-center text-sm text-tone-3">Seçilen dönemde gösterilecek kayıt yok.</div>
       : <div className="relative mt-2 overflow-x-auto">
-        <svg viewBox={`0 0 ${W} ${H}`} className="w-full min-w-[720px]" role="img" aria-label={chartSummary(view)}>
+        <svg viewBox={`0 0 ${W} ${H}`} className="w-full min-w-180" role="img" aria-label={chartSummary(view)}>
           <defs><pattern id="unknown-hatch" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><line x1="0" y1="0" x2="0" y2="6" stroke="var(--text-3)" strokeWidth="2" /></pattern></defs>
           {[0, .25, .5, .75, 1].map((tick) => { const value = domain.max - (domain.max - domain.min) * tick; const yy = top + (H - top - bottom) * tick; return <g key={tick}><line x1={left} x2={W - right} y1={yy} y2={yy} stroke="var(--line-faint)" /><text x={left - 8} y={yy + 3} textAnchor="end" fontSize="10" fill="var(--text-4)">{new Intl.NumberFormat("tr-TR", { notation: "compact", maximumFractionDigits: 1 }).format(value)}</text></g>; })}
           {kind === "bar" && model.preferredView === "stacked"

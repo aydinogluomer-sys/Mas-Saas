@@ -752,10 +752,12 @@ bu bilinçli bir sınır, ama "PASS = özellik çalışıyor" diye okunmamalı.
 
 ---
 
-## Bulgu #10 — dış varsayım formu girdiyi sessizce yutuyor, üstelik "oluşturuldu" diye yönlendiriyor
+## Bulgu #10 — dış varsayım formu girdiyi sessizce yutuyor, üstelik "oluşturuldu" diye yönlendiriyor — **DÜZELTİLDİ**
 
 **Önem: Orta-Yüksek** — mali veri giriş yolunda sessiz veri kaybı. Bulgu #9 düzeltilirken bulundu.
-**Düzeltilmedi** — karar kullanıcıya.
+**Durum: DÜZELTİLDİ (Seçenek 1 + 2 uygulandı, `tests/external-assumptions-action.test.ts` + `tests/flash-keys.test.ts` ile doğrulandı).**
+- `src/app/(dashboard)/data/assumptions/actions.ts`: `valueNumeric == null` (boşluk dizgileri dahil `BLANK ≠ ZERO`) veya `createExternalAssumption(...) === null` durumunda `?result=created` yerine `/data/assumptions?error=assumption-fields-required` yönlendirmesi yapılır; geçersiz inceleme geçişleri `?error=assumption-review-invalid` döndürür.
+- `src/components/ui/primitives/toast.tsx` & `src/app/(dashboard)/data/assumptions/page.tsx`: Küratörlü flash hata anahtarları tanımlandı, zorunlu alanlara `required` + `aria-required="true"` eklendi ve sunucu taraflı `role="alert"` / `role="status"` geri bildirim şeridi bağlandı.
 
 ### Sorun
 `src/lib/external-assumptions/engine.ts:132`:

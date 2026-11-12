@@ -3,6 +3,7 @@ import { Panel } from "@/components/ui/panel";
 import { PageHeader } from "@/components/ui/shell";
 import { ProfitabilityTable, type ProfitabilityRow } from "@/components/production/profitability-table";
 import { profitabilityModel } from "@/lib/analytics/models";
+import { requireRouteAccess } from "@/lib/authz/route-guard";
 import { getPool } from "@/lib/db";
 import { loadPartProfitability } from "@/lib/production/engine";
 import { istanbulDateISO } from "@/lib/reports/rules";
@@ -10,6 +11,8 @@ import { istanbulDateISO } from "@/lib/reports/rules";
 export const dynamic = "force-dynamic";
 
 export default async function ProfitabilityPage() {
+  const denied = await requireRouteAccess("/production/profitability");
+  if (denied) return denied;
   const rows = await loadPartProfitability(getPool(), 250);
   const data: ProfitabilityRow[] = rows.map((row) => ({
     part_code: row.part_code,

@@ -133,8 +133,8 @@ export async function generateVolume(pool: Pool, scale: VolumeScale = DEFAULT_SC
             amount_status, amount_source, paid_at)
          select ${UUID_EXPR("(p * 1000 + m)", "pi")},
                 ${UUID_EXPR("p", "pay")},
-                (date_trunc('month', current_date)::date - ((m) || ' months')::interval)::date,
-                (date_trunc('month', current_date)::date - ((m) || ' months')::interval)::date
+                (date_trunc('month', current_date)::date + (((2 - m)) || ' months')::interval)::date,
+                (date_trunc('month', current_date)::date + (((2 - m)) || ' months')::interval)::date
                   + ((p % 27))::int,
                 -- Every 17th row has an UNKNOWN amount, deliberately: the read models are full
                 -- of "null is not zero" branches and a generator with no nulls would measure the

@@ -63,8 +63,8 @@ async function insertCells(
         part.map((x) => x.columnIndex),
         part.map((x) => x.address),
         part.map((x) => x.cell.w ?? String(x.cell.v)),
-        part.map((x) => String(x.cell.v)),
-        part.map((x) => x.cell.t),
+        part.map((x) => (x.cell.t === "e" ? null : String(x.cell.v))),
+        part.map((x) => (x.cell.t === "e" ? "error" : x.cell.t)),
         part.map((x) => x.cell.f ?? null),
       ],
     );
@@ -151,7 +151,7 @@ export async function importWorkbook(
     );
     const workbookId: string = wbRes.rows[0].id;
 
-    const parsed = safeParseWorkbookBuffer(buf);
+    const parsed = await safeParseWorkbookBuffer(buf);
     if (!parsed.ok) {
       await client.query(
         `update public.source_workbooks set status='failed', parse_error=$2 where id=$1`,

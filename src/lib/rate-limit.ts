@@ -1,18 +1,7 @@
-// Faz 16 — in-memory rate limiting.
+// Faz 16 / Faz 40 — in-memory rate limiting with bounded LRU-style eviction & proxy trust gate.
 //
-// No Redis, no DB table, no external store: this app is a single-operator internal panel
-// running as one Next.js process (docs/local-production-deploy.md), so a shared store would
-// be infrastructure with no reader. If the deployment ever becomes multi-instance this
-// module is the one place to swap — the call sites do not care how the counter is kept.
-//
-// Fixed window rather than a token bucket, chosen for a specific reason: the behaviour is
-// exactly predictable ("the Nth+1 request inside the window is refused"), which is what
-// scripts/phase16-verify.ts asserts. A leaky bucket would make that assertion timing
-// dependent and therefore flaky.
-//
-// Counters live on globalThis for the same reason the pg Pool does (src/lib/db.ts): Next
-// re-evaluates modules on hot reload, and a per-module Map would silently reset the limiter
-// on every edit in dev.
+// `globalThis`, not `global`: src/middleware.ts imports this module and runs in the Edge
+// runtime, where Node-only APIs and @/lib/env (which requires DATABASE_URL) cannot be loaded.
 
 export interface RateLimitRule {
   /** Requests allowed per window. */
@@ -36,17 +25,14 @@ declare global {
   var __masRateLimit: Map<string, Window> | undefined;
 }
 
-/** `globalThis`, not `global`: src/middleware.ts imports this module and runs in the Edge
- * runtime, where the Node-only `global` alias is not guaranteed to exist. Nothing else in
- * this file touches a node: API, which is what keeps it importable from middleware at all. */
+/** Hard cap on active rate-limit buckets to protect the 8 GB RAM host against IP-spray OOM. */
+export const MAX_BUCKETS = 4096;
+
 function store(): Map<string, Window> {
   if (!globalThis.__masRateLimit) globalThis.__masRateLimit = new Map();
   return globalThis.__masRateLimit;
 }
 
-/** Bounded-memory guarantee: expired windows are swept every SWEEP_EVERY calls. Without
- * this, a flood from many distinct IPs would grow the map forever — a rate limiter that
- * becomes the outage is not a rate limiter. */
 const SWEEP_EVERY = 500;
 let sinceSweep = 0;
 
@@ -66,11 +52,24 @@ export function rateLimit(key: string, rule: RateLimitRule, now: number = Date.n
   const existing = map.get(key);
 
   if (!existing || existing.resetAt <= now) {
+    if (existing) map.delete(key);
+    if (map.size >= MAX_BUCKETS) {
+      sweep(now);
+      while (map.size >= MAX_BUCKETS) {
+        const oldest = map.keys().next().value;
+        if (oldest === undefined) break;
+        map.delete(oldest);
+      }
+    }
     map.set(key, { count: 1, resetAt: now + rule.windowMs });
     return { ok: true, remaining: rule.limit - 1, retryAfterSec: 0 };
   }
 
+  // Refresh insertion order on hit so hot keys survive eviction over stale spray keys.
+  map.delete(key);
   existing.count += 1;
+  map.set(key, existing);
+
   const retryAfterSec = Math.max(1, Math.ceil((existing.resetAt - now) / 1000));
   if (existing.count > rule.limit) {
     return { ok: false, remaining: 0, retryAfterSec };
@@ -84,13 +83,30 @@ export function resetRateLimits(): void {
   sinceSweep = 0;
 }
 
+/** Test/inspection helper returning current bucket count. */
+export function rateLimitBucketCount(): number {
+  return store().size;
+}
+
+function isProxyTrusted(override?: boolean): boolean {
+  if (typeof override === "boolean") return override;
+  if (typeof process === "undefined" || !process.env) return false;
+  const raw = process.env.MAS_TRUST_PROXY;
+  return raw === "1" || raw === "true";
+}
+
 /**
- * Best-effort client identity. Behind no proxy (the normal local deployment) neither header
- * is present and every caller collapses to "unknown" — which is correct for a single-user
- * panel: the limit then applies to the whole front door, which is still the protection we
- * want against a password-guessing loop. It is NOT an authorization input, only a bucket key.
+ * Client bucket identity.
+ *
+ * Faz 40 (A2): `x-forwarded-for` and `x-real-ip` are ONLY trusted when `MAS_TRUST_PROXY` is
+ * explicitly enabled (`1` or `true`). In the default closed-circuit local deployment
+ * (`MAS_TRUST_PROXY=false`), spoofed forwarding headers are ignored so an attacker cannot bypass
+ * login or API rate limits by rotating fake `X-Forwarded-For` values.
  */
-export function clientKey(headers: Headers): string {
+export function clientKey(headers: Headers, trustProxy?: boolean): string {
+  if (!isProxyTrusted(trustProxy)) {
+    return "unknown";
+  }
   const forwarded = headers.get("x-forwarded-for");
   if (forwarded) {
     const first = forwarded.split(",")[0]?.trim();

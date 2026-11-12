@@ -3,10 +3,12 @@ import {
   loadCollectionActions, loadCollectionScores, loadOpenPromises,
 } from "@/lib/collections/promises-engine";
 import { BAND_LABEL, SCORE_REASON_LABEL, type ScoreBand } from "@/lib/collections/promises";
+import { formatMoney } from "@/lib/money-format";
 import { Badge, type Tone } from "@/components/ui/badge";
 import { Panel, fmtTL } from "@/components/ui/panel";
 import { sumKnownReporting } from "@/lib/currency-policy";
 import { EmptyState, KeyStat, PageHeader, TableShell } from "@/components/ui/shell";
+import { requireRouteAccess } from "@/lib/authz/route-guard";
 import { createPromiseAction, detectBrokenAction, resolvePromiseAction } from "./actions";
 
 export const dynamic = "force-dynamic";
@@ -17,23 +19,51 @@ const BAND_TONE: Record<ScoreBand, Tone> = {
 const CHANNEL_LABEL: Record<string, string> = {
   phone: "telefon", email: "e-posta", meeting: "görüşme", message: "mesaj", other: "diğer",
 };
+const ACTION_SEVERITY_TR: Record<string, string> = {
+  critical: "kritik",
+  high: "yüksek",
+  medium: "orta",
+  low: "düşük",
+};
+const ACTION_STATUS_TR: Record<string, string> = {
+  open: "açık",
+  in_progress: "devam ediyor",
+  blocked: "engelli",
+  done: "tamamlandı",
+  cancelled: "iptal",
+};
 
 export default async function PromisesPage({
   searchParams,
 }: { searchParams: Promise<{ error?: string; result?: string; n?: string }> }) {
+  const denied = await requireRouteAccess("/finance/promises");
+  if (denied) return denied;
   const sp = await searchParams;
   const pool = getPool();
-  const [open, scores, actions, parties] = await Promise.all([
+  const [open, scores, actions, parties, openSalesInvoices] = await Promise.all([
     loadOpenPromises(pool),
     loadCollectionScores(pool, 50),
     loadCollectionActions(pool, 50),
-    pool.query(`select id, name from public.parties where party_type in ('customer','both') order by name limit 500`),
+    pool.query<{ id: string; name: string }>(
+      `select id::text, name
+         from public.parties
+        where is_active and party_type in ('customer', 'both', 'company')
+        order by name limit 500`,
+    ),
+    pool.query<{ id: string; invoice_no: string; party_name: string; open_amount: string; currency: string }>(
+      `select i.id::text, i.invoice_no, p.name as party_name,
+              (i.gross_amount - i.allocated_amount)::text as open_amount, i.currency
+         from public.invoices i
+         join public.parties p on p.id = i.party_id
+        where i.direction = 'sales'
+          and i.status in ('open', 'partial')
+          and i.gross_amount > i.allocated_amount
+        order by i.due_date nulls last, i.issue_date desc
+        limit 200`,
+    ),
   ]);
 
   const overdue = open.filter((p) => p.isOverdue);
-  // Unknown amounts are excluded from the total rather than counted as zero, and the count of
-  // them is shown separately — a total that silently swallowed them would understate exposure.
-  // PHASE 2.2 (#58): toplam yalnız TRY sözler; TRY-dışı söz sayısı ayrıca gösterilir.
   const known = sumKnownReporting(open, (p) => p.promisedAmount);
   const knownTotal = known.total;
   const unknownCount = known.missing;
@@ -92,11 +122,10 @@ export default async function PromisesPage({
                       {p.note ? <span className="block text-xs text-neutral-600">{p.note}</span> : null}
                     </td>
                     <td className="tabular-nums">{p.promisedDate}</td>
-                    <td className="text-right tabular-nums">
-                      {/* Never rendered as 0,00 TL: an unstated figure is a different fact. */}
+                    <td className="text-right font-mono tabular-nums">
                       {p.promisedAmount == null
                         ? <span className="text-amber-400">tutar belirtilmedi</span>
-                        : fmtTL(p.promisedAmount)}
+                        : formatMoney(p.promisedAmount, p.currency)}
                     </td>
                     <td className="text-xs">{CHANNEL_LABEL[p.channel] ?? p.channel}</td>
                     <td>
@@ -131,6 +160,17 @@ export default async function PromisesPage({
             </select>
           </label>
           <label className="flex flex-col gap-1">
+            <span className="font-mono text-[10px] uppercase tracking-wider text-tone-3">Açık satış faturası (opsiyonel)</span>
+            <select name="invoiceId" defaultValue="" className="field-control px-2 py-1.5 text-xs">
+              <option value="">Faturaya bağlama (cari geneli)</option>
+              {openSalesInvoices.rows.map((inv) => (
+                <option key={inv.id} value={inv.id}>
+                  {inv.invoice_no} · {inv.party_name} ({formatMoney(Number(inv.open_amount), inv.currency)})
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="flex flex-col gap-1">
             <span className="font-mono text-[10px] uppercase tracking-wider text-tone-3">Söz verilen tarih</span>
             <input required type="date" name="promisedDate" className="field-control px-2 py-1.5 text-xs" />
           </label>
@@ -140,12 +180,18 @@ export default async function PromisesPage({
               className="field-control px-2 py-1.5 text-xs" />
           </label>
           <label className="flex flex-col gap-1">
+            <span className="font-mono text-[10px] uppercase tracking-wider text-tone-3">Para birimi</span>
+            <select name="currency" defaultValue="TRY" className="field-control px-2 py-1.5 text-xs">
+              {["TRY", "USD", "EUR", "GBP"].map((cur) => <option key={cur} value={cur}>{cur}</option>)}
+            </select>
+          </label>
+          <label className="flex flex-col gap-1">
             <span className="font-mono text-[10px] uppercase tracking-wider text-tone-3">Kanal</span>
             <select name="channel" defaultValue="phone" className="field-control px-2 py-1.5 text-xs">
               {Object.entries(CHANNEL_LABEL).map(([v, l]) => <option key={v} value={v}>{l}</option>)}
             </select>
           </label>
-          <label className="flex flex-col gap-1 sm:col-span-2">
+          <label className="flex flex-col gap-1 sm:col-span-3">
             <span className="font-mono text-[10px] uppercase tracking-wider text-tone-3">Not</span>
             <input name="note" placeholder="ör. muhasebe müdürü 15'inde havale sözü verdi"
               className="field-control px-2 py-1.5 text-xs" />
@@ -165,7 +211,7 @@ export default async function PromisesPage({
               <thead>
                 <tr className="text-left text-xs uppercase text-neutral-500">
                   <th className="py-1">Cari</th><th className="text-right">Puan</th><th>Bant</th>
-                  <th className="text-right">Gecikmiş</th><th>Söz (açık/kırık)</th><th>Gerekçe</th>
+                  <th className="text-right">Gecikmiş (TRY)</th><th>Söz (açık/kırık)</th><th>Gerekçe</th>
                 </tr>
               </thead>
               <tbody>
@@ -181,7 +227,6 @@ export default async function PromisesPage({
                     <td className="text-right tabular-nums">{s.overdueAmount == null ? "—" : fmtTL(s.overdueAmount)}</td>
                     <td className="tabular-nums text-xs">{s.promisePendingCount} / {s.promiseBrokenCount}</td>
                     <td className="text-xs text-neutral-400">
-                      {/* The score always travels with the named rules that produced it. */}
                       {s.scoreReasons.length === 0
                         ? "—"
                         : s.scoreReasons.map((r) => SCORE_REASON_LABEL[r] ?? r).join(" · ")}
@@ -209,8 +254,8 @@ export default async function PromisesPage({
                 {actions.map((a: { id: string; title: string; severity: string; status: string; note: string | null }) => (
                   <tr key={a.id} className="border-t border-neutral-800">
                     <td className="py-2">{a.title}</td>
-                    <td><Badge tone={a.severity === "critical" ? "red" : a.severity === "high" ? "amber" : "neutral"}>{a.severity}</Badge></td>
-                    <td className="text-xs">{a.status}</td>
+                    <td><Badge tone={a.severity === "critical" ? "red" : a.severity === "high" ? "amber" : "neutral"}>{ACTION_SEVERITY_TR[a.severity] ?? a.severity}</Badge></td>
+                    <td className="text-xs">{ACTION_STATUS_TR[a.status] ?? a.status}</td>
                     <td className="text-xs text-neutral-400">{a.note}</td>
                   </tr>
                 ))}

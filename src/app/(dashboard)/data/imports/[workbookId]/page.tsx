@@ -1,11 +1,11 @@
-import Link from "next/link";
+import Link from "@/components/ui/app-link";
 import { notFound } from "next/navigation";
 import { getPool } from "@/lib/db";
 import { Badge, SHEET_TYPE_TONE, STATUS_TONE } from "@/components/ui/badge";
 import { Num, Panel } from "@/components/ui/panel";
-import { mapCandidatesAction } from "@/app/(dashboard)/radar/actions";
+import { mapCandidatesAction } from "@/app/(dashboard)/payments/actions";
 import { mapCashflowAction } from "@/app/(dashboard)/cashflow/actions";
-import { mapFinancingAction } from "@/app/(dashboard)/financing/actions";
+import { mapFinancingAction } from "@/app/(dashboard)/finance/actions";
 import { mapProductionAction } from "@/app/(dashboard)/production/actions";
 
 export const dynamic = "force-dynamic";

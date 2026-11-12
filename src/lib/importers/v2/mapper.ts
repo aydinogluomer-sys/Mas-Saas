@@ -20,6 +20,9 @@
 // bilememesi demektir. Çağıran taraf BEGIN/COMMIT'i kendi yönetir; bu modül yalnız client alır.
 import type { PoolClient } from "pg";
 import { audit } from "../../audit";
+import { resolveOrCreateOperatorPartyWithClient } from "../../counterparties/engine";
+import { recomputeCostModelRollup } from "../../production/engine";
+import { toDecimal } from "../../money";
 import { sheetByName } from "./contract";
 import type { WorkbookParseResult, SheetResult, ParsedRow, Issue, Severity } from "./parser";
 
@@ -166,26 +169,7 @@ function mappingStatusFor(row: ParsedRow, wroteDomain: boolean): string {
 async function resolveParty(
   client: PoolClient, name: unknown, partyType: string,
 ): Promise<string | null> {
-  if (typeof name !== "string") return null;
-  const trimmed = name.trim();
-  if (trimmed === "") return null;
-
-  const normalized = trimmed.toLocaleLowerCase("tr-TR").replace(/\s+/g, " ");
-
-  const found = await client.query<{ id: string }>(
-    "select id from public.parties where normalized_name = $1 and party_type = $2",
-    [normalized, partyType],
-  );
-  if (found.rowCount && found.rows[0]) return found.rows[0].id;
-
-  const created = await client.query<{ id: string }>(
-    `insert into public.parties (name, normalized_name, party_type)
-     values ($1, $2, $3)
-     on conflict (normalized_name, party_type) do update set name = public.parties.name
-     returning id`,
-    [trimmed, normalized, partyType],
-  );
-  return created.rows[0].id;
+  return resolveOrCreateOperatorPartyWithClient(client, name, partyType);
 }
 
 /** Kategori adını `categories`'e çözer; yoksa yaratır. */
@@ -231,6 +215,8 @@ export interface WriteContext {
   workbookId: string;
   sheetId: string;
   importRowId: string;
+  actorId: string;
+  seenBankFingerprints?: Map<string, number>;
 }
 
 /**
@@ -377,6 +363,18 @@ const writeCheck: FamilyWriter = async (ctx, row, entityId) => {
   const direction = signed === null ? "unknown"
     : signed < 0 ? "outflow" : signed > 0 ? "inflow" : "unknown";
 
+  let preservedStatus = str(v.durum) ?? "planned";
+  if (entityId && (!str(v.durum) || str(v.durum) === "planned")) {
+    const prevCheck = await ctx.client.query<{ status: string }>(
+      "select status from public.checks where id = $1",
+      [entityId],
+    );
+    const prevStatus = prevCheck.rows[0]?.status;
+    if (prevStatus && ["paid", "collected", "cleared", "endorsed", "discounted"].includes(prevStatus)) {
+      preservedStatus = prevStatus;
+    }
+  }
+
   return upsertRow(ctx.client, "checks", entityId, {
     maturity_date: v.vade_tarihi ?? null,
     serial_no: str(v.seri_no),
@@ -387,7 +385,7 @@ const writeCheck: FamilyWriter = async (ctx, row, entityId) => {
     signed_amount: signed,
     direction,
     currency: str(v.para_birimi) ?? "TRY",
-    status: str(v.durum) ?? "planned",
+    status: preservedStatus,
     notes: str(v.notlar),
     ...lineage(ctx),
   }, true);
@@ -464,6 +462,20 @@ const writeLoanInstallment: FamilyWriter = async (ctx, row, entityId) => {
   const existing = entityId
     ?? await findByNaturalKey(ctx.client, "loan_installments", { loan_id: loanId, installment_no: installmentNo });
 
+  let preservedStatus = str(v.durum) ?? "planned";
+  let preservedPaidAt: unknown = v.odeme_tarihi ?? null;
+  if (existing && (!str(v.durum) || str(v.durum) === "planned")) {
+    const prevInst = await ctx.client.query<{ status: string; paid_at: string | null }>(
+      "select status, paid_at from public.loan_installments where id = $1",
+      [existing],
+    );
+    const prev = prevInst.rows[0];
+    if (prev && (prev.status === "paid" || prev.status === "partial")) {
+      preservedStatus = prev.status;
+      preservedPaidAt = v.odeme_tarihi ?? prev.paid_at ?? null;
+    }
+  }
+
   return upsertRow(ctx.client, "loan_installments", existing, {
     loan_id: loanId,
     installment_no: installmentNo,
@@ -472,8 +484,8 @@ const writeLoanInstallment: FamilyWriter = async (ctx, row, entityId) => {
     principal_component: num(v.anapara_bileseni),
     interest_component: num(v.faiz_bileseni),
     tax_component: num(v.vergi_bileseni),
-    status: str(v.durum) ?? "planned",
-    paid_at: v.odeme_tarihi ?? null,
+    status: preservedStatus,
+    paid_at: preservedPaidAt,
   }, false);
 };
 
@@ -605,11 +617,11 @@ const writeBankAccount: FamilyWriter = async (ctx, row, entityId) => {
  * KENDİSİNDEN üretilir — tarih, tutar, yön ve açıklama — çünkü ekstreler çoğu zaman kayıt
  * kodu taşımaz. Kullanıcının kendi kodu varsa o kullanılır: kendi kodu daha güvenilirdir.
  */
-function transactionFingerprint(v: Record<string, unknown>, externalId: string | null): string {
+export function transactionFingerprint(v: Record<string, unknown>, externalId: string | null, occurrenceOrdinal = 1): string {
   if (externalId) return `ext:${externalId}`;
   return ["date:" + String(v.islem_tarihi ?? ""), "amt:" + String(v.tutar ?? ""),
     "dir:" + String(v.yon ?? ""), "desc:" + String(v.aciklama ?? "").trim().toLocaleLowerCase("tr-TR")]
-    .join("|");
+    .join("|") + (occurrenceOrdinal > 1 ? `|ord:${occurrenceOrdinal}` : "");
 }
 
 const writeBankTransaction: FamilyWriter = async (ctx, row, entityId) => {
@@ -646,10 +658,29 @@ const writeBankTransaction: FamilyWriter = async (ctx, row, entityId) => {
   // değer göndermek Postgres tarafından zaten reddediliyor.
   const signedAmount = str(v.yon) === "outflow" ? -Math.abs(amount) : Math.abs(amount);
 
-  const fingerprint = transactionFingerprint(v, row.externalId);
+  const baseFingerprint = transactionFingerprint(v, row.externalId, 1);
+  let ordinal = 1;
+  if (!row.externalId && ctx.seenBankFingerprints) {
+    const slotKey = `${accountId}|${baseFingerprint}`;
+    ordinal = (ctx.seenBankFingerprints.get(slotKey) ?? 0) + 1;
+    ctx.seenBankFingerprints.set(slotKey, ordinal);
+  }
+  const fingerprint = transactionFingerprint(v, row.externalId, ordinal);
   // Parmak izi tam da bunun için var: aynı hesapta aynı hareket iki kez yazılmaz.
   const existingTxn = entityId
     ?? await findByNaturalKey(ctx.client, "bank_transactions", { bank_account_id: accountId, dedupe_hash: fingerprint });
+
+  let preservedBankStatus = "unmatched";
+  if (existingTxn) {
+    const prevTxn = await ctx.client.query<{ status: string }>(
+      "select status from public.bank_transactions where id = $1",
+      [existingTxn],
+    );
+    const prevStatus = prevTxn.rows[0]?.status;
+    if (prevStatus && ["matched", "reconciled", "ignored"].includes(prevStatus)) {
+      preservedBankStatus = prevStatus;
+    }
+  }
 
   return upsertRow(ctx.client, "bank_transactions", existingTxn, {
     bank_account_id: accountId,
@@ -666,7 +697,7 @@ const writeBankTransaction: FamilyWriter = async (ctx, row, entityId) => {
     category: str(v.kategori) ?? "unknown",
     reference_no: str(v.referans_no),
     // Eşleştirme bu katmanın işi değil; her hareket eşleşmemiş başlar.
-    status: "unmatched",
+    status: preservedBankStatus,
     dedupe_hash: fingerprint,
     notes: str(v.notlar),
     ...lineage(ctx),
@@ -681,9 +712,15 @@ const writeInvoice: FamilyWriter = async (ctx, row, entityId) => {
   // Üçlü tutar. Parser eksik olanın diğer ikisinden çıkarılabildiğini garanti ediyor
   // (en az ikisi dolu, dolu olanlar tutarlı); burada o aritmetik uygulanır.
   const n = num(v.net_tutar), t = num(v.vergi_tutari), g = num(v.toplam_tutar);
-  const net = n ?? (g !== null && t !== null ? g - t : null);
-  const tax = t ?? (g !== null && n !== null ? g - n : null);
-  const gross = g ?? (n !== null && t !== null ? n + t : null);
+  const nDec = n !== null ? toDecimal(n).round(2) : null;
+  const tDec = t !== null ? toDecimal(t).round(2) : null;
+  const gDec = g !== null ? toDecimal(g).round(2) : null;
+  const netDec = nDec ?? (gDec !== null && tDec !== null ? gDec.minus(tDec).round(2) : null);
+  const taxDec = tDec ?? (gDec !== null && nDec !== null ? gDec.minus(nDec).round(2) : null);
+  const grossDec = gDec ?? (netDec !== null && taxDec !== null ? netDec.plus(taxDec).round(2) : null);
+  const net = netDec ? Number(netDec.toFixed(2)) : null;
+  const tax = taxDec ? Number(taxDec.toFixed(2)) : null;
+  const gross = grossDec ? Number(grossDec.toFixed(2)) : null;
   if (net === null || tax === null || gross === null) {
     throw new Error(
       `08_FATURALAR satır ${row.rowIndex}: net/vergi/toplam üçlüsü tamamlanamadı. ` +
@@ -697,6 +734,29 @@ const writeInvoice: FamilyWriter = async (ctx, row, entityId) => {
   }
 
   const projectCode = str(v.project_external_id);
+  let preservedPaidAmount = 0;
+  let preservedInvoiceStatus = str(v.durum) ?? "draft";
+  if (entityId && grossDec) {
+    const prevInv = await ctx.client.query<{ paid_amount: string | number; status: string }>(
+      "select paid_amount, status from public.invoices where id = $1",
+      [entityId],
+    );
+    const prev = prevInv.rows[0];
+    if (prev) {
+      const prevPaid = toDecimal(prev.paid_amount).round(2);
+      if (prevPaid.gt(0) || prev.status === "paid" || prev.status === "partial") {
+        const cappedPaid = prevPaid.gt(grossDec) ? grossDec : prevPaid;
+        preservedPaidAmount = Number(cappedPaid.toFixed(2));
+        if (cappedPaid.gte(grossDec)) {
+          preservedInvoiceStatus = "paid";
+        } else if (cappedPaid.gt(0)) {
+          preservedInvoiceStatus = "partial";
+        } else {
+          preservedInvoiceStatus = prev.status;
+        }
+      }
+    }
+  }
   return upsertRow(ctx.client, "invoices", entityId, {
     direction: str(v.fatura_tipi) ?? "sales",
     // Fatura numarası boş olamaz (btrim(invoice_no) <> ''). Kullanıcı kodu varsa o, yoksa
@@ -713,8 +773,8 @@ const writeInvoice: FamilyWriter = async (ctx, row, entityId) => {
     gross_amount: gross,
     // Tahsilat bu import'un konusu değil. 0 yazmak "hiç ödenmedi" demek ve şu an doğru olan
     // tek şey bu: fatura yeni kaydediliyor, tahsilat kaydı ayrı bir olay.
-    paid_amount: 0,
-    status: str(v.durum) ?? "draft",
+    paid_amount: preservedPaidAmount,
+    status: preservedInvoiceStatus,
     notes: str(v.notlar),
     ...lineage(ctx),
   }, true);
@@ -853,6 +913,12 @@ const writeFxPosition: FamilyWriter = async (ctx, row, entityId) => {
 
 /* ── 14 · Kapasite (üretim parçaları) ────────────────────────────────────────────────── */
 
+function normRatio(raw: unknown): number | null {
+  const n = num(raw);
+  if (n === null) return null;
+  return n > 2 ? Number(toDecimal(n).div(100).round(4).toFixed(4)) : n;
+}
+
 const writeProductionPart: FamilyWriter = async (ctx, row, entityId) => {
   const v = row.values;
   return upsertRow(ctx.client, "production_parts", entityId, {
@@ -862,6 +928,13 @@ const writeProductionPart: FamilyWriter = async (ctx, row, entityId) => {
     // BOŞ ≠ SIFIR burada da geçerli: ölçülmemiş süre null kalır, "0 dakika" yazılmaz.
     torna_minutes: num(v.torna_dk),
     freze_minutes: num(v.freze_dk),
+    other_operation_minutes: num(v.diger_operasyon_dk),
+    unit_sale_price: num(v.satis_fiyati),
+    currency: str(v.para_birimi) ?? "TRY",
+    efficiency_rate: normRatio(v.verim_orani),
+    work_days_per_month: num(v.calisma_gunu),
+    shift_count: num(v.vardiya_sayisi),
+    notes: str(v.notlar),
     ...lineage(ctx),
   }, false);
 };
@@ -879,6 +952,15 @@ const writeMachineAsset: FamilyWriter = async (ctx, row, entityId) => {
     entityId ?? await findByNaturalKey(ctx.client, "machine_assets", { name }), {
     name,
     purchase_cost: num(v.alis_bedeli),
+    machine_code: str(v.makine_kodu),
+    purchase_date: v.alis_tarihi ?? null,
+    currency: str(v.para_birimi) ?? "TRY",
+    monthly_revenue: num(v.aylik_gelir),
+    monthly_operating_cost: num(v.aylik_operasyon_maliyeti),
+    annual_maintenance_cost: num(v.yillik_bakim_maliyeti),
+    utilization_rate: normRatio(v.kullanim_orani),
+    useful_life_months: num(v.faydali_omur_ay),
+    is_active: v.aktif === null || v.aktif === undefined ? true : Boolean(v.aktif),
     notes: str(v.notlar),
   }, false);
 };
@@ -896,6 +978,150 @@ const writeMachineAsset: FamilyWriter = async (ctx, row, entityId) => {
  * Yazıcısı olmayan aile kaybolmaz: satırları hazırlık katmanına yazılır ve sonuçta
  * `stagedOnlyFamilies` altında ADIYLA raporlanır.
  */
+/* ── 15 · Sabit maliyet kalemleri (0103 cost_model_items + cost_models toplamı) ──────── */
+
+const writeCostModelItem: FamilyWriter = async (ctx, row, entityId) => {
+  const v = row.values;
+  const scenario = str(v.senaryo) ?? "normal";
+  const category = str(v.maliyet_kategorisi);
+  if (!category) {
+    throw new Error(`15_MALIYET satır ${row.rowIndex}: maliyet kategorisi boş.`);
+  }
+  const monthlyAmount = num(v.aylik_tutar);
+  if (monthlyAmount === null) {
+    throw new Error(`15_MALIYET satır ${row.rowIndex}: aylık tutar boş, ama cost_model_items.monthly_amount NOT NULL.`);
+  }
+
+  const existingModel = await ctx.client.query<{ id: string }>(
+    `select id from public.cost_models
+      where scenario_type = $1 and source_sheet_id is null
+      order by created_at asc limit 1`,
+    [scenario],
+  );
+  let costModelId: string;
+  if ((existingModel.rowCount ?? 0) > 0) {
+    costModelId = existingModel.rows[0].id;
+  } else {
+    const capRes = await ctx.client.query<{ id: string }>(
+      `select id from public.capacity_models order by created_at desc limit 1`,
+    );
+    const insModel = await ctx.client.query<{ id: string }>(
+      `insert into public.cost_models
+         (capacity_model_id, model_name, scenario_type, source_workbook_id)
+       values ($1, $2, $3, $4)
+       returning id`,
+      [capRes.rows[0]?.id ?? null, `Maliyet Modeli (${scenario})`, scenario, ctx.workbookId],
+    );
+    costModelId = insModel.rows[0].id;
+  }
+
+  const res = await upsertRow(ctx.client, "cost_model_items", entityId, {
+    cost_model_id: costModelId,
+    scenario_type: scenario,
+    cost_category: category,
+    description: str(v.aciklama),
+    monthly_amount: monthlyAmount,
+    currency: str(v.para_birimi) ?? "TRY",
+    staff_count: num(v.personel_sayisi),
+    monthly_work_hours: num(v.aylik_calisma_saati),
+    efficiency_rate: normRatio(v.verim_orani),
+    notes: str(v.notlar),
+    created_by: ctx.actorId,
+    ...lineage(ctx),
+  }, true);
+
+  await recomputeCostModelRollup(ctx.client, costModelId);
+  return res;
+};
+
+/* ── 17 · Rotatif kredi limitleri (0103 credit_facilities + facility_movements senkronu) ─ */
+
+const writeCreditFacility: FamilyWriter = async (ctx, row, entityId) => {
+  const v = row.values;
+  const name = str(v.limit_adi);
+  if (!name) {
+    throw new Error(`17_KREDI_LIMITLERI satır ${row.rowIndex}: limit adı boş, ama credit_facilities.name NOT NULL.`);
+  }
+  const limitAmount = num(v.toplam_limit);
+  if (limitAmount === null) {
+    throw new Error(`17_KREDI_LIMITLERI satır ${row.rowIndex}: toplam limit boş, ama credit_facilities.limit_amount NOT NULL.`);
+  }
+  const currency = str(v.para_birimi) ?? "TRY";
+  const targetStatus = str(v.durum) ?? "active";
+  const drawnTarget = num(v.kullanilan_tutar);
+  const lenderPartyId = await resolveParty(ctx.client, v.banka, "bank");
+
+  // Yeni limitte başlangıç kullanımı > 0 ve hedef durum aktif değilse (örn. dondurulmuş limit),
+  // önce aktif açıp hareketi işledikten sonra hedef duruma geçiriyoruz ki trigger kalkanı korunsun.
+  const needsDeferredStatus = !entityId && drawnTarget !== null && drawnTarget > 0 && targetStatus !== "active";
+
+  const upserted = await upsertRow(ctx.client, "credit_facilities", entityId, {
+    name,
+    lender_party_id: lenderPartyId,
+    facility_type: str(v.limit_tipi) ?? "revolving",
+    limit_amount: limitAmount,
+    currency,
+    interest_rate: num(v.faiz_orani),
+    commission_rate: num(v.komisyon_orani),
+    start_date: v.baslangic_tarihi ?? null,
+    expiry_date: v.bitis_tarihi ?? null,
+    status: needsDeferredStatus ? "active" : targetStatus,
+    notes: str(v.notlar),
+  }, true);
+
+  if (drawnTarget !== null) {
+    const prevDrawnRes = await ctx.client.query<{ drawn_amount: string | number; status: string }>(
+      `select drawn_amount, status from public.credit_facilities where id = $1`,
+      [upserted.id],
+    );
+    const currentDrawn = Number(prevDrawnRes.rows[0]?.drawn_amount ?? 0);
+    const currentStatus = prevDrawnRes.rows[0]?.status ?? "active";
+    const delta = toDecimal(drawnTarget).minus(toDecimal(currentDrawn)).round(2);
+    const movementDate = (typeof v.baslangic_tarihi === "string" && v.baslangic_tarihi)
+      ? v.baslangic_tarihi
+      : new Date().toISOString().slice(0, 10);
+
+    if (delta.gt(0) && currentStatus === "active") {
+      await ctx.client.query(
+        `insert into public.facility_movements
+           (facility_id, movement_type, movement_date, amount, currency, notes, created_by)
+         values ($1, 'drawdown', $2::date, $3, $4, $5, $6)`,
+        [
+          upserted.id,
+          movementDate,
+          Number(delta.toFixed(2)),
+          currency,
+          "Standart Import V2 bakiye senkronizasyonu (kullanım)",
+          ctx.actorId,
+        ],
+      );
+    } else if (delta.lt(0)) {
+      await ctx.client.query(
+        `insert into public.facility_movements
+           (facility_id, movement_type, movement_date, amount, currency, notes, created_by)
+         values ($1, 'repayment', $2::date, $3, $4, $5, $6)`,
+        [
+          upserted.id,
+          movementDate,
+          Number(delta.abs().toFixed(2)),
+          currency,
+          "Standart Import V2 bakiye senkronizasyonu (geri ödeme)",
+          ctx.actorId,
+        ],
+      );
+    }
+  }
+
+  if (needsDeferredStatus) {
+    await ctx.client.query(
+      `update public.credit_facilities set status = $2 where id = $1`,
+      [upserted.id, targetStatus],
+    );
+  }
+
+  return upserted;
+};
+
 export const FAMILY_WRITERS: Readonly<Record<string, FamilyWriter>> = Object.freeze({
   payments: writePayment,
   checks: writeCheck,
@@ -911,7 +1137,9 @@ export const FAMILY_WRITERS: Readonly<Record<string, FamilyWriter>> = Object.fre
   budget: writeBudgetLine,
   fx: writeFxPosition,
   capacity: writeProductionPart,
+  cost: writeCostModelItem,
   machine_roi: writeMachineAsset,
+  credit_facilities: writeCreditFacility,
 });
 
 /**
@@ -941,6 +1169,7 @@ export const SHEET_WRITE_ORDER: readonly string[] = Object.freeze([
   "14_KAPASITE",
   "15_MALIYET",
   "16_MAKINE_ROI",
+  "17_KREDI_LIMITLERI",
 ]);
 
 /* ── Hazırlık katmanı ────────────────────────────────────────────────────────────────── */
@@ -1221,6 +1450,7 @@ export async function mapWorkbook(
     const table = spec?.domainTable ?? null;
     const writer = FAMILY_WRITERS[sheet.family];
     if (table && !writer) stagedOnly.add(sheet.family);
+    const seenBankFingerprints = new Map<string, number>();
 
     // ── SAYFA DÜZEYİ SORUNLAR — SATIR SORUNLARI HARİÇ ────────────────────────────────
     //
@@ -1284,7 +1514,7 @@ export async function mapWorkbook(
           }
         }
 
-        const outcome = await writer({ client, workbookId, sheetId, importRowId }, row, existing);
+        const outcome = await writer({ client, workbookId, sheetId, importRowId, actorId: opts.actorId, seenBankFingerprints }, row, existing);
         entityId = outcome.id;
         bump(table, outcome.created ? "inserted" : "updated");
         wroteDomain = true;

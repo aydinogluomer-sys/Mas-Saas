@@ -44,12 +44,13 @@
 // really connects as `mas_radar_app`. Without it that check reports NOT DETERMINED (which counts
 // as a failure, per the paragraph above).
 
-import { mkdirSync, readdirSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { Pool } from "pg";
 import { requireOwnerDatabaseUrl } from "../db/owner-url";
 import {
   backupAgeAlert,
+  evaluateOffDeviceRunLog,
   importStaleAlert,
   jobsStuckAlert,
   ledgerAlert,
@@ -78,6 +79,7 @@ const BACKUP_DIR = process.env.MAS_BACKUP_DIR ?? path.join(process.cwd(), "backu
 // en yeni dosya bir `migrate-mas_radar_dev-…` dump'ıydı ve günlük görev o sırada her gece exit 1
 // veriyordu. Alarm artık "bir dump var mı" değil, "günlük yedek işi çalışıyor mu" sorusudur.
 const BACKUP_LABEL = process.env.MAS_BACKUP_LABEL ?? "daily";
+const OFFDEVICE_BACKUP_DIR = (process.env.MAS_OFFDEVICE_BACKUP_DIR ?? "").trim();
 
 // Kalıcı alert log'u. backups/daily-runs.jsonl ile aynı JSONL deseni; ayrı bir dizinde çünkü
 // backups/ yedek dosyalarının retention budamasına tabi ve bir alarm geçmişi budanmamalı.
@@ -258,7 +260,7 @@ async function main(): Promise<void> {
       where datname = current_database() and state = 'active' and pid <> pg_backend_pid()`, "?");
   record("db_longest_active_query_s", longest, false, "nokta-zamanlı; geçmiş için pg_stat_statements gerekir");
 
-  /* ── ALERT 1 — backup age ─────────────────────────────────────────────────────────────── */
+  /* ── ALERT 1 — backup age & off-device status (Faz 43 / B3) ──────────────────────────── */
   let backupAgeHours = Number.POSITIVE_INFINITY;
   let newest = "(yok)";
   try {
@@ -273,6 +275,44 @@ async function main(): Promise<void> {
     backupAgeAlert(backupAgeHours, BACKUP_MAX_AGE_HOURS),
     `eşik ${BACKUP_MAX_AGE_HOURS}s · yalnız ${BACKUP_LABEL}-*.dump · en yeni: ${newest}`,
     "P1"); // §31 P1: "backup schedule/off-device control not operational before pilot"
+
+  const runLogPath = path.join(BACKUP_DIR, "daily-runs.jsonl");
+  const rawRunLog = existsSync(runLogPath) ? readFileSync(runLogPath, "utf8") : null;
+  let offDeviceReceiptInfo:
+    | { exists: boolean; offDeviceSatisfied?: boolean; sha256VerifiedAtDestination?: boolean }
+    | null = null;
+  if (OFFDEVICE_BACKUP_DIR !== "" && newest !== "(yok)") {
+    const receiptPath = path.join(OFFDEVICE_BACKUP_DIR, `${newest}.offdevice.json`);
+    if (!existsSync(receiptPath)) {
+      offDeviceReceiptInfo = { exists: false };
+    } else {
+      try {
+        const parsedReceipt = JSON.parse(readFileSync(receiptPath, "utf8")) as {
+          offDeviceSatisfied?: boolean;
+          sha256VerifiedAtDestination?: boolean;
+        };
+        offDeviceReceiptInfo = {
+          exists: true,
+          offDeviceSatisfied: parsedReceipt.offDeviceSatisfied === true,
+          sha256VerifiedAtDestination: parsedReceipt.sha256VerifiedAtDestination === true,
+        };
+      } catch {
+        offDeviceReceiptInfo = {
+          exists: true,
+          offDeviceSatisfied: false,
+          sha256VerifiedAtDestination: false,
+        };
+      }
+    }
+  }
+  const offDeviceStatus = evaluateOffDeviceRunLog(rawRunLog, offDeviceReceiptInfo);
+  record(
+    "offdevice_backup_status",
+    offDeviceStatus.value,
+    offDeviceStatus.alert,
+    offDeviceStatus.note,
+    "P1",
+  );
 
   currentSection = "APP";
   console.log("\n── UYGULAMA ───────────────────────────────────────────────────────────");

@@ -65,6 +65,64 @@ function excludedForeign(count: number, what: string, from: string): string[] {
   return count > 0 ? [`TRY dışı ${count} ${what} ${from} dahil değil (kur çevrimi yapılmaz).`] : [];
 }
 
+/**
+ * Faz 42 (B2 — backlog #6) & Faz 44 (C1 — Migration 0099):
+ * In 0099 `current_account_ledger` records `sales` invoices as `+debit` (collections `-credit`)
+ * and `purchase` invoices as `+credit` (supplier payments `+debit`). Legacy unit fixtures from
+ * pre-0099 may still pass `debitAmount` for invoices, and callers may supply English (`sale`,
+ * `sales`, `purchase`) or Turkish (`satış`, `alış`) direction tokens or rely on debit/credit sign.
+ * Classify invoice vs. settlement from `movementType` first (falling back to direction-aware
+ * debit/credit) and resolve direction without ever hardcoding one side for all invoices.
+ */
+export function ledgerMovementSide(row: {
+  direction?: string | null;
+  movementType?: string | null;
+  debitAmount: number;
+  creditAmount: number;
+}): { amount: number; label: string } {
+  const dirNorm = normalize(row.direction ?? "");
+  const mtNorm = normalize(row.movementType ?? "");
+
+  const explicitPurchaseDir = dirNorm === "purchase" || dirNorm === "alis";
+  const explicitSalesDir = dirNorm === "sale" || dirNorm === "sales" || dirNorm === "satis";
+
+  const isInvoice = /\b(?:fatura|invoice)\b/.test(mtNorm)
+    ? true
+    : /\b(?:tahsilat|odeme|payment|collection)\b/.test(mtNorm)
+      ? false
+      : explicitPurchaseDir
+        ? row.creditAmount !== 0
+        : explicitSalesDir
+          ? row.debitAmount !== 0
+          : row.debitAmount !== 0 || row.creditAmount !== 0;
+
+  const isPurchase = explicitPurchaseDir
+    ? true
+    : explicitSalesDir
+      ? false
+      : /\b(?:alis|purchase|odeme)\b/.test(mtNorm)
+        ? true
+        : /\b(?:satis|sale|sales|tahsilat|collection)\b/.test(mtNorm)
+          ? false
+          : isInvoice
+            ? row.creditAmount > 0 && row.debitAmount === 0
+            : row.debitAmount > 0 && row.creditAmount === 0;
+
+  const rawAmount = row.debitAmount !== 0 ? row.debitAmount : row.creditAmount;
+  const amount = Math.abs(rawAmount);
+
+  if (isInvoice) {
+    return {
+      amount,
+      label: isPurchase ? "alış faturası (borç)" : "satış faturası (alacak)",
+    };
+  }
+  return {
+    amount,
+    label: isPurchase ? "ödeme (borç kapama)" : "tahsilat (alacak kapama)",
+  };
+}
+
 function counterpartyTerm(message: string, ledger: boolean): string | null {
   const slash = message.match(ledger ? /^\/hareket\s+(.+)$/iu : /^\/cari\s+(.+)$/iu);
   if (slash?.[1]) return slash[1].trim();
@@ -135,10 +193,9 @@ export async function answerTelegramQuestion(
         return { kind: "current_account_ledger", answer: `${account.partyName} için cari hareket bulunamadı.` };
       }
       const lines = recent.map((row) => {
-        const amount = row.debitAmount !== 0 ? row.debitAmount : row.creditAmount;
-        const side = row.debitAmount !== 0 ? "borç" : "alacak";
+        const { amount, label } = ledgerMovementSide(row);
         // Each movement in its invoice's own currency — a USD invoice is a USD movement.
-        return `• ${row.movementDate} — ${row.reference ?? row.movementType}: ${money(amount, row.currency)} ${side}`;
+        return `• ${row.movementDate} — ${row.reference ?? row.movementType}: ${money(amount, row.currency)} ${label}`;
       });
       const mixed = recent.some((row) => row.currency !== "TRY");
       return {

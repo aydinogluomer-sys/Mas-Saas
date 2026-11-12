@@ -12,13 +12,16 @@
 // implementation.md §18 is explicit that an application-level check is NOT sufficient, so
 // nothing below may ever become the only thing standing between a user and an over-allocation.
 
-import type { Pool } from "pg";
+import type { Pool, PoolClient } from "pg";
 import { z } from "zod";
 import { audit } from "@/lib/audit";
 import { DomainError } from "@/lib/domain-error";
 import { intOrNull, moneyOrNull, rateOrNull } from "@/lib/money";
 import { parseOrThrow } from "@/lib/validation";
 import { COLLECTION_BUCKETS, computeDPO, computeDSO, openAmount, planAllocation, type AgeingSummary, type AllocatableInvoice } from "./rules";
+
+const CROSS_CURRENCY_ALLOCATION_MESSAGE =
+  "Farklı para birimleri arasında kur çevrimsiz doğrudan tahsis yapılamaz.";
 
 /* ── schemas ──────────────────────────────────────────────────────────────────────────── */
 
@@ -48,6 +51,30 @@ export const allocateBankTransactionSchema = z.object({
   })).min(1, "En az bir fatura seçilmeli"),
 });
 
+async function loadSourceCurrency(
+  client: PoolClient,
+  sourceTable: (typeof SOURCE_TABLES)[number],
+  sourceId: string | undefined,
+): Promise<string | null> {
+  if (sourceTable === "manual" || !sourceId) return null;
+  if (sourceTable === "bank_transactions") {
+    const r = await client.query<{ currency: string | null }>(
+      `select currency from public.bank_transactions where id=$1`, [sourceId]);
+    return r.rows[0]?.currency ?? null;
+  }
+  if (sourceTable === "payment_instances") {
+    const r = await client.query<{ currency: string | null }>(
+      `select currency from public.payment_instances where id=$1`, [sourceId]);
+    return r.rows[0]?.currency ?? null;
+  }
+  if (sourceTable === "checks") {
+    const r = await client.query<{ currency: string | null }>(
+      `select currency from public.checks where id=$1`, [sourceId]);
+    return r.rows[0]?.currency ?? null;
+  }
+  return null;
+}
+
 /* ── write side ───────────────────────────────────────────────────────────────────────── */
 
 /**
@@ -55,6 +82,9 @@ export const allocateBankTransactionSchema = z.object({
  *
  * The ceiling is checked here for a readable message AND enforced by 0048's trigger. Both, on
  * purpose: this one can be bypassed by any other code path, the trigger cannot.
+ *
+ * Faz 44 (0099): Cross-currency allocations without FX settlement are rejected both here (with a
+ * readable Turkish DomainError) and in PostgreSQL (`enforce_invoice_allocation_currency`, 23514).
  */
 export async function allocateToInvoice(pool: Pool, raw: unknown, actorId: string): Promise<{ allocationId: string }> {
   const input = parseOrThrow(allocateSchema, raw, "Dağıtım");
@@ -62,13 +92,20 @@ export async function allocateToInvoice(pool: Pool, raw: unknown, actorId: strin
   try {
     await client.query("begin");
     const inv = await client.query(
-      `select id, status, gross_amount, allocated_amount, direction from public.invoices where id=$1 for update`,
+      `select id, status, gross_amount, allocated_amount, direction, currency
+       from public.invoices where id=$1 for update`,
       [input.invoiceId]);
     if (inv.rowCount === 0) throw new DomainError("Fatura bulunamadı.");
     const row = inv.rows[0];
     if (!["open", "partial", "paid"].includes(row.status)) {
       throw new DomainError(`'${row.status}' durumundaki faturaya dağıtım yapılamaz.`);
     }
+
+    const sourceCurrency = await loadSourceCurrency(client, input.sourceTable, input.sourceId);
+    if (sourceCurrency && row.currency && sourceCurrency !== row.currency) {
+      throw new DomainError("VALIDATION", CROSS_CURRENCY_ALLOCATION_MESSAGE);
+    }
+
     const gross = moneyOrNull(row.gross_amount) ?? 0;
     const already = moneyOrNull(row.allocated_amount) ?? 0;
     const free = openAmount(gross, already);
@@ -102,6 +139,8 @@ export async function allocateToInvoice(pool: Pool, raw: unknown, actorId: strin
     client.release();
   }
 }
+
+export const allocateCollection = allocateToInvoice;
 
 /**
  * Reverse an allocation.
@@ -154,8 +193,21 @@ export async function allocateBankTransaction(
   try {
     await client.query("begin");
     const txn = await client.query(
-      `select id, amount, status from public.bank_transactions where id=$1 for update`, [input.transactionId]);
+      `select id, amount, status, currency from public.bank_transactions where id=$1 for update`,
+      [input.transactionId]);
     if (txn.rowCount === 0) throw new DomainError("Banka hareketi bulunamadı.");
+    const txnCurrency = txn.rows[0].currency as string | null;
+
+    if (txnCurrency) {
+      const invRes = await client.query<{ id: string; currency: string | null }>(
+        `select id::text, currency from public.invoices where id = any($1::uuid[])`,
+        [input.lines.map((l) => l.invoiceId)]);
+      for (const invRow of invRes.rows) {
+        if (invRow.currency && invRow.currency !== txnCurrency) {
+          throw new DomainError("VALIDATION", CROSS_CURRENCY_ALLOCATION_MESSAGE);
+        }
+      }
+    }
 
     const txnAmount = Math.abs(moneyOrNull(txn.rows[0].amount) ?? 0);
     const already = moneyOrNull((await client.query(
@@ -213,6 +265,7 @@ export interface OpenItem {
   status: string;
   daysOverdue: number | null;
   ageingBucket: string;
+  currency: string;
 }
 
 async function loadOpen(pool: Pool, view: "receivables_open" | "payables_open", limit: number): Promise<OpenItem[]> {
@@ -220,7 +273,7 @@ async function loadOpen(pool: Pool, view: "receivables_open" | "payables_open", 
     `select invoice_id::text, party_id::text, party_name, invoice_no,
             to_char(issue_date,'YYYY-MM-DD') as issue_date,
             to_char(due_date,'YYYY-MM-DD') as due_date,
-            gross_amount, allocated_amount, open_amount, status, days_overdue, ageing_bucket
+            gross_amount, allocated_amount, open_amount, status, days_overdue, ageing_bucket, currency
      from public.${view}
      order by (due_date is null), due_date, open_amount desc limit $1`, [limit]);
   return r.rows.map((x) => ({
@@ -230,6 +283,7 @@ async function loadOpen(pool: Pool, view: "receivables_open" | "payables_open", 
     allocatedAmount: moneyOrNull(x.allocated_amount) ?? 0,
     openAmount: moneyOrNull(x.open_amount) ?? 0,
     status: x.status, daysOverdue: intOrNull(x.days_overdue), ageingBucket: x.ageing_bucket,
+    currency: String(x.currency ?? "TRY"),
   }));
 }
 
@@ -383,14 +437,13 @@ export async function loadCurrentAccounts(pool: Pool, limit = 200) {
   }));
 }
 
-// current_account_ledger (0050) has no currency column, but every movement — the invoice row and
-// each allocation against it — is denominated in its invoice's currency, and every row carries
-// invoice_id. The join gives each movement its own currency so no reader has to assume TRY.
-// invoices.currency is NOT NULL with an ISO-4217 shape check (0044); the left join only means a
-// missing match surfaces as null (unknown) rather than dropping the movement.
+// current_account_ledger (0050 / 0099): every movement — the invoice row and each allocation
+// against it — carries its own currency and (party_id, currency) running_balance since 0099.
+// The left join fallback preserves currency even if queried against an older fixture.
 const LEDGER_SELECT =
   `select to_char(l.movement_date,'YYYY-MM-DD') as movement_date, l.movement_type, l.reference,
-          l.direction, l.debit_amount, l.credit_amount, l.invoice_id::text, i.currency
+          l.direction, l.debit_amount, l.credit_amount, l.invoice_id::text,
+          coalesce(l.currency, i.currency) as currency, l.running_balance
    from public.current_account_ledger l
    left join public.invoices i on i.id = l.invoice_id
    where l.party_id=$1`;
@@ -404,6 +457,7 @@ function ledgerRow(x: Record<string, unknown>) {
     creditAmount: moneyOrNull(x.credit_amount as string | null) ?? 0,
     invoiceId: x.invoice_id as string,
     currency: (x.currency as string | null) ?? null,
+    runningBalance: moneyOrNull(x.running_balance as string | null),
   };
 }
 
@@ -499,6 +553,47 @@ export async function loadInvoiceAllocations(pool: Pool, invoiceId: string) {
     id: x.id, sourceTable: x.source_table, sourceId: x.source_id,
     allocatedAmount: moneyOrNull(x.allocated_amount) ?? 0, allocatedOn: x.allocated_on,
     reversed: x.reversed as boolean, reversedReason: x.reversed_reason,
+  }));
+}
+
+export interface RecentActiveAllocationRow {
+  id: string;
+  invoiceId: string;
+  invoiceNo: string;
+  partyName: string;
+  currency: string;
+  sourceTable: string;
+  sourceId: string | null;
+  allocatedAmount: number;
+  allocatedOn: string;
+}
+
+export async function listRecentActiveAllocations(
+  pool: Pool,
+  limit = 25,
+): Promise<RecentActiveAllocationRow[]> {
+  const r = await pool.query(
+    `select ia.id::text, ia.invoice_id::text as invoice_id, i.invoice_no, p.name as party_name,
+            i.currency, ia.source_table, ia.source_id::text as source_id, ia.allocated_amount,
+            to_char(ia.allocated_on, 'YYYY-MM-DD') as allocated_on
+       from public.invoice_allocations ia
+       join public.invoices i on i.id = ia.invoice_id
+       join public.parties p on p.id = i.party_id
+      where ia.reversed_at is null
+      order by ia.created_at desc
+      limit $1`,
+    [limit],
+  );
+  return r.rows.map((x) => ({
+    id: x.id,
+    invoiceId: x.invoice_id,
+    invoiceNo: x.invoice_no,
+    partyName: x.party_name,
+    currency: x.currency,
+    sourceTable: x.source_table,
+    sourceId: x.source_id ?? null,
+    allocatedAmount: moneyOrNull(x.allocated_amount) ?? 0,
+    allocatedOn: x.allocated_on,
   }));
 }
 

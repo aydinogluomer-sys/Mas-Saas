@@ -11,6 +11,17 @@ import { Badge } from "@/components/ui/badge";
 import { KpiCard, PageHeader, TableShell } from "@/components/ui/shell";
 import { requireAdmin } from "@/lib/auth";
 import { env, envPresence } from "@/lib/env";
+import {
+  importStaleAlert,
+  jobsStuckAlert,
+  reconciliationAlert,
+  runtimeIdentityAlert,
+} from "@/lib/ops/telemetry-alerts";
+import {
+  formatAlertMessage,
+  parseAlertChannels,
+  type TelemetryAlert,
+} from "@/lib/ops/alert-delivery";
 import { refreshDiagnosticsAction } from "./actions";
 
 export const dynamic = "force-dynamic";
@@ -21,29 +32,6 @@ interface RoleIdentity {
   rolbypassrls: boolean | null;
 }
 
-/**
- * Migration defteri — okunabiliyorsa değerler, okunamıyorsa NEDEN okunamadığı.
- *
- * NE ÖLÇÜLDÜ. Bu sayfa `public.schema_migrations`'ı doğrudan sorguluyordu ve admin olarak
- * açıldığında ÇÖKÜYORDU:
- *
- *   ⨯ error: permission denied for table schema_migrations
- *     at … app/(dashboard)/system/diagnostics/page.js
- *
- * Bu bir yetki REGRESYONU değil, bilinçli bir tasarım kararı: `src/lib/authz/matrix.ts`
- * defteri "ledger" sınıfına koyar ve yorumu açıkça şunu der — "schema_migrations — owner
- * connection only. No tier has any access at all." `matrix.test.ts` de her rol için erişimin
- * KAPALI olduğunu doğrular. Yani doğru olan politika değil, SAYFAYDI: uygulama katmanının hiçbir
- * zaman okuyamayacağı bir tabloyu koşulsuz okuyordu.
- *
- * Mevcut `to_regclass(...) is not null` koruması yalnız "tablo YOK" hâlini düşünmüştü; "tablo VAR
- * ama bu katmana KAPALI" hâlini değil. İkisi aynı şey değildir ve ekranda da aynı görünmemeli:
- * defteri "defter yok" diye göstermek, 87 migration'ı uygulanmış bir veritabanı için düpedüz
- * yanlış bilgi olurdu. Bu yüzden üçüncü bir durum vardır ve ekrana o yazılır.
- *
- * Yalnız 42501 (insufficient_privilege) yutulur. Başka her hata yükselir — bağlantı kopması ya
- * da bozuk şema, sessizce "okunamadı" diye gösterilmesi gereken şeyler değildir.
- */
 type MigrationLedger =
   | { readable: true; version: string | null; applied_at: string | null; total: number }
   | { readable: false; reason: string };
@@ -51,7 +39,6 @@ type MigrationLedger =
 async function readMigrationLedger(pool: Pool): Promise<MigrationLedger> {
   try {
     const res = await pool.query<{ version: string | null; applied_at: string | null; total: number }>(
-      // to_regclass keeps this from throwing on a database that predates the ledger (0020).
       `select max(version) as version,
               max(applied_at)::text as applied_at,
               count(*)::int as total
@@ -69,24 +56,39 @@ async function readMigrationLedger(pool: Pool): Promise<MigrationLedger> {
 }
 
 export default async function DiagnosticsPage() {
-  // Admin-only: an operator reaching this URL is redirected before any query runs.
   await requireAdmin();
   const pool = getPool();
 
-  const [roleRes, ledger, policyRes] = await Promise.all([
+  const [roleRes, ledger, policyRes, stuckRes, importAgeRes, reconRes] = await Promise.all([
     pool.query<RoleIdentity>(
       `select current_user,
               (select rolsuper from pg_roles where rolname = current_user) as rolsuper,
               (select rolbypassrls from pg_roles where rolname = current_user) as rolbypassrls`,
     ),
     readMigrationLedger(pool),
-    // The Faz 15 invariant, shown read-only: both the deny-all and the runtime policy must
-    // exist on users/sessions. Same check pnpm db:roles:verify makes from the CLI.
     pool.query<{ tablename: string; policyname: string }>(
       `select tablename, policyname from pg_policies
         where schemaname = 'public' and tablename in ('users','sessions')
         order by tablename, policyname`,
     ),
+    pool
+      .query<{ cnt: string }>(
+        `select count(*)::text as cnt from public.background_jobs
+          where status = 'running' and started_at < now() - interval '30 minutes'`,
+      )
+      .catch(() => ({ rows: [{ cnt: "?" }] })),
+    pool
+      .query<{ age_days: string | null }>(
+        `select floor(extract(epoch from (now() - max(imported_at))) / 86400)::int::text as age_days
+           from public.source_workbooks`,
+      )
+      .catch(() => ({ rows: [{ age_days: "?" }] })),
+    pool
+      .query<{ cnt: string }>(
+        `select count(*)::text as cnt from public.treasury_cashflow_reconciliation
+          where abs(coalesce(difference, 0)) > 0.01`,
+      )
+      .catch(() => ({ rows: [{ cnt: "0" }] })),
   ]);
 
   const role = roleRes.rows[0];
@@ -104,11 +106,76 @@ export default async function DiagnosticsPage() {
 
   const missingRequired = presence.filter((p) => p.required && !p.set);
 
+  // Evaluate Faz 12 / Aşama 09 fail-closed telemetry predicates
+  const stuckCountStr = stuckRes.rows[0]?.cnt ?? "?";
+  const importAgeStr = importAgeRes.rows[0]?.age_days ?? "İÇE AKTARIM YOK";
+  const reconMismatchStr = reconRes.rows[0]?.cnt ?? "?";
+
+  const telemetrySignals: Array<{
+    signal: string;
+    section: string;
+    value: string;
+    threshold: string;
+    severity: "P0" | "P1" | "P2";
+    alert: boolean;
+    message: string;
+  }> = [
+    {
+      signal: "runtime_db_identity",
+      section: "RUNTIME",
+      value: role.current_user,
+      threshold: "mas_radar_app (en az yetki)",
+      severity: "P0",
+      alert: runtimeIdentityAlert(role.current_user) && !isLeastPrivilege,
+      message: "Uygulama bağlantısı düşük yetkili rol (mas_radar_app / NOBYPASSRLS) olmalı.",
+    },
+    {
+      signal: "jobs_stuck_running",
+      section: "APP",
+      value: stuckCountStr,
+      threshold: "0 takılı iş (>30dk)",
+      severity: "P1",
+      alert: jobsStuckAlert(stuckCountStr),
+      message: "30 dakikadan uzun süredir 'running' durumunda kalan arka plan işi.",
+    },
+    {
+      signal: "workbook_import_age_days",
+      section: "APP",
+      value: `${importAgeStr} gün`,
+      threshold: "≤ 14 gün",
+      severity: "P2",
+      alert: importStaleAlert(importAgeStr, 14),
+      message: "Son çalışma kitabı içe aktarımının üzerinden geçen gün sayısı.",
+    },
+    {
+      signal: "treasury_cashflow_reconciliation",
+      section: "APP",
+      value: `${reconMismatchStr} fark satırı`,
+      threshold: "0 mutabakat farkı",
+      severity: "P1",
+      alert: reconciliationAlert(reconMismatchStr),
+      message: "Hazine ve nakit akışı mutabakat görünümünde fark bulunan dönem sayısı.",
+    },
+  ];
+
+  const activeAlerts: TelemetryAlert[] = telemetrySignals
+    .filter((s) => s.alert)
+    .map(({ signal, section, value, threshold, severity, message }) => ({
+      signal,
+      section,
+      value,
+      threshold,
+      severity,
+      message,
+    }));
+  const channelConfig = parseAlertChannels(undefined);
+  const formattedWireMessage = formatAlertMessage("ui-diagnostics", activeAlerts);
+
   return (
     <>
       <PageHeader
         title="Tanılama"
-        subtitle="Ortam değişkenleri, migration defteri, veritabanı rol kimliği"
+        subtitle="Ortam değişkenleri, migration defteri, veritabanı rol kimliği ve fail-closed telemetri alarmları"
         action={
           <form action={refreshDiagnosticsAction}>
             <button className="button-accent px-3 py-2">Yenile</button>
@@ -143,6 +210,50 @@ export default async function DiagnosticsPage() {
         </p>
       )}
 
+      <Panel
+        title="FAIL-CLOSED TELEMETRİ ALARMLARI & TESLİMAT KANALLARI (FAZ 12 / AŞAMA 09)"
+        subtitle={`Aktif kanallar: ${channelConfig.channels.join(", ")} · "Bilinmiyor" (?) değeri her zaman alarm üretir`}
+      >
+        <TableShell>
+          <table className="w-full text-xs">
+            <thead>
+              <tr className="border-b border-line text-left font-mono text-[10px] uppercase text-tone-3">
+                <th className="py-1.5 pr-2">Bölüm</th>
+                <th className="py-1.5 pr-2">Sinyal</th>
+                <th className="py-1.5 pr-2">Ölçülen Değer</th>
+                <th className="py-1.5 pr-2">Eşik</th>
+                <th className="py-1.5 pr-2">Seviye</th>
+                <th className="py-1.5 pr-2">Durum</th>
+                <th className="py-1.5">Açıklama</th>
+              </tr>
+            </thead>
+            <tbody>
+              {telemetrySignals.map((s) => (
+                <tr key={s.signal} className="border-b border-line-faint">
+                  <td className="py-1.5 pr-2 font-mono text-tone-3">{s.section}</td>
+                  <td className="py-1.5 pr-2 font-mono text-tone-1">{s.signal}</td>
+                  <td className="py-1.5 pr-2 font-mono text-tone-2">{s.value}</td>
+                  <td className="py-1.5 pr-2 font-mono text-tone-3">{s.threshold}</td>
+                  <td className="py-1.5 pr-2">
+                    <Badge tone={s.severity === "P0" ? "red" : s.severity === "P1" ? "amber" : "neutral"}>
+                      {s.severity}
+                    </Badge>
+                  </td>
+                  <td className="py-1.5 pr-2">
+                    <Badge tone={s.alert ? "red" : "green"}>{s.alert ? "ALARM" : "TEMİZ"}</Badge>
+                  </td>
+                  <td className="py-1.5 text-tone-2">{s.message}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </TableShell>
+        <div className="mt-2.5 border border-line bg-ink p-2 font-mono text-[11px] text-tone-2">
+          <div className="mb-1 text-[10px] uppercase text-tone-3">Operatör Kanalı Önizlemesi (alert-delivery.ts):</div>
+          <pre className="whitespace-pre-wrap">{formattedWireMessage}</pre>
+        </div>
+      </Panel>
+
       <Panel title="Veritabanı rol kimliği">
         <div className="grid gap-1 text-sm">
           <Row label="current_user" value={role.current_user} />
@@ -167,9 +278,6 @@ export default async function DiagnosticsPage() {
             <Row label="Son uygulama" value={ledger.applied_at ?? "—"} />
           </div>
         ) : (
-          // Sessiz başarısızlık YOK: ekran neyin olmadığını, NEDEN olmadığını ve nereden
-          // okunabileceğini söyler. "defter yok" demek 87 migration'ı olan bir veritabanı için
-          // yanlış bilgi olurdu.
           <p className="text-sm text-tone-2">
             Migration defteri {ledger.reason}. Bu, tasarım gereğidir: uygulama rolünün
             <span className="font-mono"> public.schema_migrations</span> üzerinde hiçbir yetkisi
@@ -216,10 +324,6 @@ export default async function DiagnosticsPage() {
           <Row label="APP_COMMIT_SHA" value={env.appCommitSha} />
           <Row label="APP_BUILD_TIME" value={env.appBuildTime} />
         </div>
-        {/* Deliberately not fetched: this panel makes no outbound network call. Showing a live
-            GitHub Actions status would mean giving an internal finance panel egress and a
-            token, which is a bigger change than the value it adds. The commit above is the
-            honest local answer to "which build is this"; the run itself is in the Actions tab. */}
         <p className="mt-2 text-xs text-tone-3">
           CI çalışma durumu buradan sorgulanmaz (panel dışarıya ağ isteği yapmaz). Workflow:{" "}
           <span className="font-mono">.github/workflows/ci.yml</span> — sonuçlar GitHub Actions

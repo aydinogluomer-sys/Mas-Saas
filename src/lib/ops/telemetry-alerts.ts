@@ -25,6 +25,114 @@ export function backupAgeAlert(ageHours: number, thresholdHours: number): boolea
   return !(ageHours <= thresholdHours);
 }
 
+export interface OffDeviceRunStatus {
+  value: string;
+  alert: boolean;
+  note: string;
+}
+
+/**
+ * Evaluates the latest daily backup run record (`backups/daily-runs.jsonl`) and optional
+ * off-device copy receipt (`<dump>.offdevice.json`) so an `exit 3` ("single copy / off-device
+ * missing") or failed nightly backup run can NEVER report a fake `TELEMETRY: ALL CLEAR` (Faz 43 / B3).
+ *
+ * When `daily-runs.jsonl` does not exist yet (`rawJsonl === null` or blank) and no broken
+ * off-device receipt is provided, `alert` stays `false` (`backupAgeAlert` covers dump presence).
+ * Corrupt JSON or any non-zero `exitCode` / `ok !== true` fails closed (`alert: true`).
+ */
+export function evaluateOffDeviceRunLog(
+  rawJsonl: string | null,
+  offDeviceReceipt?: { exists: boolean; offDeviceSatisfied?: boolean; sha256VerifiedAtDestination?: boolean } | null,
+): OffDeviceRunStatus {
+  if (offDeviceReceipt) {
+    if (!offDeviceReceipt.exists) {
+      return {
+        value: "HARİCİ KOPYA EKSİK",
+        alert: true,
+        note: "MAS_OFFDEVICE_BACKUP_DIR tanımlı ama en yeni dump için .offdevice.json makbuzu yok",
+      };
+    }
+    if (
+      offDeviceReceipt.offDeviceSatisfied !== true ||
+      offDeviceReceipt.sha256VerifiedAtDestination !== true
+    ) {
+      return {
+        value: "HARİCİ KOPYA DOĞRULANMADI",
+        alert: true,
+        note: `offDeviceSatisfied=${String(offDeviceReceipt.offDeviceSatisfied)} sha256Verified=${String(offDeviceReceipt.sha256VerifiedAtDestination)}`,
+      };
+    }
+  }
+
+  if (rawJsonl === null || rawJsonl.trim() === "") {
+    return {
+      value: "(henüz günlük koşu kaydı yok)",
+      alert: false,
+      note: "daily-runs.jsonl henüz oluşmadı",
+    };
+  }
+
+  const lines = rawJsonl
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter(Boolean);
+  const lastLine = lines[lines.length - 1]!;
+  let parsed: Record<string, unknown>;
+  try {
+    const candidate = JSON.parse(lastLine) as unknown;
+    if (candidate === null || typeof candidate !== "object" || Array.isArray(candidate)) {
+      return {
+        value: "BOZUK KOŞU KAYDI",
+        alert: true,
+        note: "daily-runs.jsonl son satırı JSON nesnesi değil",
+      };
+    }
+    parsed = candidate as Record<string, unknown>;
+  } catch {
+    return {
+      value: "BOZUK KOŞU KAYDI",
+      alert: true,
+      note: "daily-runs.jsonl son satırı ayrıştırılamadı (fail-closed)",
+    };
+  }
+
+  const exitCode = typeof parsed.exitCode === "number" ? parsed.exitCode : null;
+  const ok = parsed.ok === true;
+  const offDeviceOk = parsed.offDeviceOk === true;
+  const offDeviceNote =
+    typeof parsed.offDeviceNote === "string" && parsed.offDeviceNote.trim() !== ""
+      ? parsed.offDeviceNote.trim().slice(0, 140)
+      : null;
+
+  if (exitCode === 3) {
+    return {
+      value: "TEK KOPYA (exit 3)",
+      alert: true,
+      note: offDeviceNote ?? "harici (off-device) yedek kopyası doğrulanamadı",
+    };
+  }
+  if (!ok || (exitCode !== null && exitCode !== 0)) {
+    const stage = typeof parsed.stage === "string" ? parsed.stage : "bilinmiyor";
+    return {
+      value: `SON KOŞU BAŞARISIZ (exit ${exitCode ?? "?"})`,
+      alert: true,
+      note: `stage=${stage}`,
+    };
+  }
+  if (offDeviceOk) {
+    return {
+      value: "DOĞRULANDI",
+      alert: false,
+      note: offDeviceNote ?? "harici kopya doğrulandı",
+    };
+  }
+  return {
+    value: "KABUL EDİLDİ (exit 0)",
+    alert: false,
+    note: offDeviceNote ?? "MAS_OFFDEVICE_ACKNOWLEDGED_MISSING=1 ile bilinçli kabul",
+  };
+}
+
 /** Background jobs stuck in 'running' past the reaper window. `runningTooLong` is the count as
  *  text; "?" marks a failed query and alerts. Only an explicit "0" clears. */
 export function jobsStuckAlert(runningTooLong: string): boolean {

@@ -3,8 +3,9 @@
  *
  * Görev kaydı kalıcı bir sistem değişikliği olduğu için bu testler hiçbir şey KAYDETMEZ: yalnız
  * üretilen komutları ve ayar sertleştirmesini sınar. Ölçülen kusur: `schtasks /Create` görevi
- * StartWhenAvailable=False ve 72 saatlik süre sınırıyla kaydediyordu — 03:00'te uyuyan makinede
- * kaçırılan yedek hiç telafi edilmiyor, takılan bir koşu sonraki geceleri bloke ediyordu.
+ * StartWhenAvailable=False, InteractiveToken ve 72 saatlik süre sınırıyla kaydediyordu — 03:00'te
+ * uyuyan veya oturumu kapalı makinede kaçırılan yedek hiç telafi edilmiyor, takılan bir koşu
+ * sonraki geceleri bloke ediyordu.
  */
 import path from "node:path";
 import { describe, expect, it } from "vitest";
@@ -37,6 +38,15 @@ describe("buildScheduleSpec", () => {
     expect(a.slice(a.indexOf("/RL"), a.indexOf("/RL") + 2)).toEqual(["/RL", "LIMITED"]);
   });
 
+  it("arka plan işçisi (worker): 5 dakikada bir gözetim, mas-background-worker.cmd", () => {
+    const spec = buildScheduleSpec(ROOT, undefined, undefined, "worker");
+    expect(spec.taskName).toBe("MAS-Background-Worker");
+    expect(spec.wrapperPath.endsWith("mas-background-worker.cmd")).toBe(true);
+    const a = spec.createArgs;
+    expect(a.slice(a.indexOf("/SC"), a.indexOf("/SC") + 4)).toEqual(["/SC", "MINUTE", "/MO", "5"]);
+    expect(a.slice(a.indexOf("/RL"), a.indexOf("/RL") + 2)).toEqual(["/RL", "LIMITED"]);
+  });
+
   it("geçersiz --at ve bilinmeyen iş reddedilir", () => {
     expect(() => buildScheduleSpec(ROOT, undefined, "3:00")).toThrow(/HH:MM/);
     expect(() => buildScheduleSpec(ROOT, undefined, undefined, "reboot")).toThrow(/--job bilinmiyor/);
@@ -44,7 +54,7 @@ describe("buildScheduleSpec", () => {
 });
 
 describe("buildSettingsCommand — kayıttan sonra uygulanan sertleştirme", () => {
-  it("StartWhenAvailable, 2 saatlik süre sınırı, IgnoreNew, pilde başla/durma", () => {
+  it("StartWhenAvailable, 2 saatlik süre sınırı, IgnoreNew, S4U oturumsuz principal, pilde başla/durma", () => {
     const args = buildSettingsCommand("MAS-Nakit-Radar-Gunluk-Yedek");
     expect(args.slice(0, 3)).toEqual(["-NoProfile", "-NonInteractive", "-Command"]);
     const script = args[3];
@@ -53,7 +63,14 @@ describe("buildSettingsCommand — kayıttan sonra uygulanan sertleştirme", () 
     expect(script).toContain("-MultipleInstances IgnoreNew");
     expect(script).toContain("-AllowStartIfOnBatteries");
     expect(script).toContain("-DontStopIfGoingOnBatteries");
-    expect(script).toContain("Set-ScheduledTask -TaskName 'MAS-Nakit-Radar-Gunluk-Yedek' -Settings $s");
+    expect(script).toContain("-LogonType S4U -RunLevel Limited");
+    expect(script).toContain("Set-ScheduledTask -TaskName 'MAS-Nakit-Radar-Gunluk-Yedek' -Settings $s -Principal $p");
+  });
+
+  it("MAS-Background-Worker sürekli çalıştığı için süre sınırı [TimeSpan]::Zero (sınırsız)", () => {
+    const script = buildSettingsCommand("MAS-Background-Worker")[3];
+    expect(script).toContain("-ExecutionTimeLimit ([TimeSpan]::Zero)");
+    expect(script).toContain("-LogonType S4U -RunLevel Limited");
   });
 
   it.each(["x'; Unregister-ScheduledTask -TaskName y", "a;b", "a b", "", "a".repeat(65)])(

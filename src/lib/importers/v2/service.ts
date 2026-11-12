@@ -15,9 +15,10 @@
 // iddiası böylece bir kriptografik özetle kanıtlanır, oturum durumuna güvenilmez.
 import { createHash } from "node:crypto";
 import path from "node:path";
-import ExcelJS from "exceljs";
+import type ExcelJS from "exceljs";
 import type { Pool, PoolClient } from "pg";
 import { APP_ROLES, ROLE_LABEL, can, type AppRole } from "@/lib/authz/matrix";
+import { inspectZipSafety } from "../zip-guard";
 import { DATA_SHEETS } from "./contract";
 import {
   ExternalKeyBindingConflictError, StaleExternalKeyBindingError, mapWorkbook, type MapperResult,
@@ -105,7 +106,16 @@ export async function openWorkbook(buf: Buffer): Promise<{ ok: true; wb: ExcelJS
   if (buf.length < 4 || buf.readUInt32LE(0) !== 0x04034b50) {
     return { ok: false, rejection: { code: "CORRUPT_XLSX", message: "Dosya geçerli bir .xlsx değil (ZIP imzası yok). Excel'den 'Farklı Kaydet → .xlsx' ile kaydedin.", detail: `ilk baytlar: ${buf.subarray(0, 4).toString("hex")}` } };
   }
-  const wb = new ExcelJS.Workbook();
+  const zipSafety = inspectZipSafety(buf);
+  if (!zipSafety.ok) {
+    const code: RejectionCode =
+      zipSafety.code === "TOO_MANY_ENTRIES" || zipSafety.code === "UNCOMPRESSED_TOO_LARGE"
+        ? "TOO_LARGE"
+        : "CORRUPT_XLSX";
+    return { ok: false, rejection: { code, message: zipSafety.error, detail: zipSafety.code } };
+  }
+  const { default: ExcelJSRuntime } = await import("exceljs");
+  const wb = new ExcelJSRuntime.Workbook();
   try {
     await wb.xlsx.load(buf as unknown as ArrayBuffer);
   } catch (e) {

@@ -5,7 +5,7 @@ import { readFileSync } from "node:fs";
 import { Pool } from "pg";
 import { importWorkbook } from "../src/lib/importers/workbook-importer";
 import { ensureSystemActor } from "./db/seed-system-actor";
-import { ownerDatabaseUrl } from "./db/owner-url";
+import { assertDisposableTargetDb } from "./db/disposable-guard";
 
 // Owner connection, not the runtime one. This script TRUNCATEs the staging tables before
 // re-importing, and TRUNCATE is deliberately NOT granted to the application role: the app
@@ -14,7 +14,7 @@ import { ownerDatabaseUrl } from "./db/owner-url";
 // audit_logs append-only ever firing. The hardcoded superuser fallback that used to live
 // here is gone for the same reason src/lib/db.ts lost its own: a missing env var must not
 // silently reconnect an operator tool to mas_radar_dev.
-const connectionString = ownerDatabaseUrl();
+const connectionString = assertDisposableTargetDb(["MIGRATION_DATABASE_URL", "DATABASE_URL"], "import-real").url;
 if (!connectionString) {
   console.error("MIGRATION_DATABASE_URL (veya DATABASE_URL) tanımlı değil.");
   process.exit(1);

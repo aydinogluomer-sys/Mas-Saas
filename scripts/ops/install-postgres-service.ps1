@@ -94,8 +94,8 @@ function Get-FallbackTask {
   return Get-ScheduledTask -TaskName $LogonTaskName -ErrorAction SilentlyContinue
 }
 
-# Adim 3-6'dan herhangi biri duserse oturum acilis gorevi yeniden etkinlestirilir: sahip bir
-# sonraki oturum acilisinda yine bir veritabanina kavusur.
+# Adim 3-6'dan herhangi biri duserse (ya da Ctrl+C ile kesilirse) oturum acilis gorevi yeniden
+# etkinlestirilir: sahip bir sonraki oturum acilisinda yine bir veritabanina kavusur.
 function Restore-Fallback {
   if (-not $script:FallbackDisabled) { return }
   try {
@@ -104,6 +104,20 @@ function Restore-Fallback {
     Write-Warn "oturum acilis gorevi '$LogonTaskName' yeniden ETKINLESTIRILDI (hizmet kurulamadi)."
   } catch {
     Write-Warn "oturum acilis gorevi '$LogonTaskName' yeniden etkinlestirilemedi: $($_.Exception.Message)"
+  }
+}
+
+# Faz 43 (`B3`): 3. hatadan sonra da restart/60000 olarak kalici kurtarma politikasi uygular.
+function Set-ServiceRecoveryPolicy {
+  $null = Invoke-Native -FilePath 'sc.exe' -Arguments @('description', $ServiceName, 'MAS Nakit Radar PostgreSQL 16 (yalniz 127.0.0.1:5432)')
+  $failure = Invoke-Native -FilePath 'sc.exe' -Arguments @(
+    'failure', $ServiceName, 'reset=', '86400', 'actions=', 'restart/5000/restart/15000/restart/60000'
+  )
+  $null = Invoke-Native -FilePath 'sc.exe' -Arguments @('failureflag', $ServiceName, '1')
+  if ($failure.Code -ne 0) {
+    Write-Warn "hata durumunda yeniden baslatma ayarlanamadi: $($failure.Output -join ' ')"
+  } else {
+    Write-Ok 'hata kurtarma politikasi: restart/5000/restart/15000/restart/60000 (reset=86400)'
   }
 }
 
@@ -147,6 +161,7 @@ function Test-LoopbackHbaAddress([string]$Address, [string]$Mask) {
 # yontemine izin vermeli. 'trust' parolasiz giristir; 'md5'/'password' zayif ya da duz metindir.
 function Get-HbaProblems([string]$HbaPath) {
   $problems = New-Object System.Collections.Generic.List[string]
+  $activeLoopbackRules = 0
   $lineNo = 0
   foreach ($raw in Get-Content -LiteralPath $HbaPath) {
     $lineNo++
@@ -176,6 +191,7 @@ function Get-HbaProblems([string]$HbaPath) {
         $problems.Add("satir ${lineNo}: adres '$address' loopback degil - yalniz 127.0.0.1/32 ve ::1/128 kabul edilir")
       }
       $method = $fields[$methodIndex]
+      if ($method -eq 'scram-sha-256') { $activeLoopbackRules++ }
     } else {
       $problems.Add("satir ${lineNo}: taninmayan satir turu '$type'")
       continue
@@ -184,7 +200,9 @@ function Get-HbaProblems([string]$HbaPath) {
       $problems.Add("satir ${lineNo}: yontem '$method' kabul edilmez - yalniz scram-sha-256 (ya da reject)")
     }
   }
-  # Elemanlar boru hattina tek tek verilir; cagiran @(...) ile toplar (bos liste = 0 eleman).
+  if ($activeLoopbackRules -eq 0) {
+    $problems.Add('en az bir etkin host loopback scram-sha-256 kurali bulunamadi')
+  }
   return $problems.ToArray()
 }
 
@@ -327,8 +345,23 @@ $hbaFile = Join-Path $DataDir 'pg_hba.conf'
 if (-not (Test-Path -LiteralPath $pgVersionFile) -or ((Get-Content -LiteralPath $pgVersionFile -TotalCount 1).Trim() -ne '16')) {
   Stop-WithCode 12 "$DataDir bir PostgreSQL 16 kumesi degil (PG_VERSION) - bu script kume OLUSTURMAZ."
 }
-if (-not (Test-Path -LiteralPath $confFile) -or -not (Test-Path -LiteralPath $hbaFile)) {
-  Stop-WithCode 12 "postgresql.conf ya da pg_hba.conf eksik: $DataDir"
+if (-not (Test-Path -LiteralPath $confFile)) {
+  Stop-WithCode 12 "postgresql.conf eksik: $DataDir"
+}
+
+$hbaOverride = Get-ConfSetting -Files @($confFile, $autoConfFile) -Name 'hba_file'
+if ($hbaOverride.IncludeFound) {
+  Stop-WithCode 13 'postgresql.conf etkin bir include yonergesi iceriyor - hba_file yolu dogrulanamiyor.'
+}
+if ($null -ne $hbaOverride.Value -and [string]$hbaOverride.Value -ne '') {
+  $candidateHba = [string]$hbaOverride.Value
+  if (-not [IO.Path]::IsPathRooted($candidateHba)) {
+    $candidateHba = Join-Path $DataDir $candidateHba
+  }
+  $hbaFile = $candidateHba
+}
+if (-not (Test-Path -LiteralPath $hbaFile)) {
+  Stop-WithCode 12 "pg_hba.conf eksik: $hbaFile"
 }
 Write-Ok "veri dizini: $DataDir (PostgreSQL 16 kumesi)"
 
@@ -353,7 +386,7 @@ if ($hbaProblems.Count -gt 0) {
   foreach ($p in $hbaProblems) { Write-Host "  pg_hba.conf: $p" -ForegroundColor Red }
   Stop-WithCode 13 "pg_hba.conf yalniz loopback + scram-sha-256 degil ('trust' parolasiz giristir ve reddedilir)."
 }
-Write-Ok 'pg_hba.conf: yalniz loopback adresler, yalniz scram-sha-256'
+Write-Ok "pg_hba.conf ($hbaFile): yalniz loopback adresler, yalniz scram-sha-256"
 
 foreach ($l in @(Get-Listeners)) {
   if ($l.Exe -eq '' -or $l.Exe.ToLowerInvariant() -ne $Postgres.ToLowerInvariant()) {
@@ -382,7 +415,7 @@ if ($VerifyOnly) {
   exit 0
 }
 
-# --- ADIM 1: mevcut hizmet ---------------------------------------------------------------------
+# --- ADIM 1: mevcut hizmet (yarim kalan kurulumlari idempotent tamamlar) -----------------------
 Write-Step 'ADIM 1/8 - mevcut hizmet'
 $existing = Get-PgServiceCim
 if ($null -ne $existing) {
@@ -392,7 +425,16 @@ if ($null -ne $existing) {
     Stop-WithCode 15 ("'$ServiceName' adinda FARKLI yapilandirilmis bir hizmet var: " + ($mismatch -join '; ') + '. Sessizce yeniden kaydedilmez.')
   }
   Write-Ok "hizmet zaten kayitli ve dogru yapilandirilmis (durum: $($existing.State))"
+  if ($PSCmdlet.ShouldProcess($ServiceName, 'sc.exe failure restart/5000/restart/15000/restart/60000')) {
+    Set-ServiceRecoveryPolicy
+  }
   if ([string]$existing.State -ne 'Running') {
+    # Yarim kalan kurulumda elle calisan bir postmaster hala portu tutuyor olabilir; once durdur.
+    $manualStatus = Invoke-Native -FilePath $PgCtl -Arguments @('status', '-D', $DataDir)
+    if ($manualStatus.Code -eq 0 -and $PSCmdlet.ShouldProcess($DataDir, 'pg_ctl stop -m fast')) {
+      $stopManual = Invoke-Native -FilePath $PgCtl -Arguments @('stop', '-D', $DataDir, '-m', 'fast', '-w', '-t', '120')
+      if ($stopManual.Code -ne 0) { Stop-WithCode 16 "pg_ctl stop basarisiz (exit $($stopManual.Code)): $($stopManual.Output -join ' ')" }
+    }
     if ($PSCmdlet.ShouldProcess($ServiceName, 'Start-Service')) {
       try {
         Start-Service -Name $ServiceName
@@ -422,110 +464,115 @@ if ($null -ne $existing) {
 }
 Write-Ok 'kayitli hizmet yok - kurulacak'
 
-# --- ADIM 2: oturum acilis gorevini devre disi birak --------------------------------------------
-Write-Step "ADIM 2/8 - oturum acilis gorevi ($LogonTaskName)"
-$task = Get-FallbackTask
-if ($null -eq $task) {
-  Write-Ok 'gorev yok - atlandi'
-} elseif ([string]$task.State -eq 'Disabled') {
-  Write-Ok 'gorev zaten devre disi'
-} elseif ($PSCmdlet.ShouldProcess($LogonTaskName, 'Disable-ScheduledTask')) {
-  Disable-ScheduledTask -TaskName $LogonTaskName | Out-Null
-  $script:FallbackDisabled = $true
-  Write-Ok 'gorev devre disi birakildi (ikinci bir postmaster baslatamaz)'
-}
-
-# --- ADIM 3: elle baslatilmis ornegi durdur -----------------------------------------------------
-Write-Step 'ADIM 3/8 - calisan ornek'
-$status = Invoke-Native -FilePath $PgCtl -Arguments @('status', '-D', $DataDir)
-if ($status.Code -eq 0) {
-  if ($PSCmdlet.ShouldProcess($DataDir, 'pg_ctl stop -m fast')) {
-    $stop = Invoke-Native -FilePath $PgCtl -Arguments @('stop', '-D', $DataDir, '-m', 'fast', '-w', '-t', '120')
-    if ($stop.Code -ne 0) { Stop-WithCode 16 "pg_ctl stop basarisiz (exit $($stop.Code)): $($stop.Output -join ' ')" }
-    Write-Ok 'ornek hizli kapatma (-m fast) ile durduruldu; acik islemler geri alindi'
+$listeners = @()
+try {
+  # --- ADIM 2: oturum acilis gorevini devre disi birak ------------------------------------------
+  Write-Step "ADIM 2/8 - oturum acilis gorevi ($LogonTaskName)"
+  $task = Get-FallbackTask
+  if ($null -eq $task) {
+    Write-Ok 'gorev yok - atlandi'
+  } elseif ([string]$task.State -eq 'Disabled') {
+    Write-Ok 'gorev zaten devre disi'
+  } elseif ($PSCmdlet.ShouldProcess($LogonTaskName, 'Disable-ScheduledTask')) {
+    Disable-ScheduledTask -TaskName $LogonTaskName | Out-Null
+    $script:FallbackDisabled = $true
+    Write-Ok 'gorev devre disi birakildi (ikinci bir postmaster baslatamaz)'
   }
-} else {
-  if (Test-Path -LiteralPath (Join-Path $DataDir 'postmaster.pid')) {
-    Write-Warn 'postmaster.pid var ama calisan sunucu yok (eski kilit dosyasi) - SILINMEDI; PostgreSQL acilista kendisi degerlendirir.'
+
+  # --- ADIM 3: elle baslatilmis ornegi durdur ---------------------------------------------------
+  Write-Step 'ADIM 3/8 - calisan ornek'
+  $status = Invoke-Native -FilePath $PgCtl -Arguments @('status', '-D', $DataDir)
+  if ($status.Code -eq 0) {
+    if ($PSCmdlet.ShouldProcess($DataDir, 'pg_ctl stop -m fast')) {
+      $stop = Invoke-Native -FilePath $PgCtl -Arguments @('stop', '-D', $DataDir, '-m', 'fast', '-w', '-t', '120')
+      if ($stop.Code -ne 0) { Stop-WithCode 16 "pg_ctl stop basarisiz (exit $($stop.Code)): $($stop.Output -join ' ')" }
+      Write-Ok 'ornek hizli kapatma (-m fast) ile durduruldu; acik islemler geri alindi'
+    }
+  } else {
+    if (Test-Path -LiteralPath (Join-Path $DataDir 'postmaster.pid')) {
+      Write-Warn 'postmaster.pid var ama calisan sunucu yok (eski kilit dosyasi) - SILINMEDI; PostgreSQL acilista kendisi degerlendirir.'
+    }
+    Write-Ok 'calisan ornek yok'
   }
-  Write-Ok 'calisan ornek yok'
-}
 
-# --- ADIM 4: veri dizini ACL (yalniz SID ile) ---------------------------------------------------
-Write-Step 'ADIM 4/8 - veri dizini erisim listesi'
-$grants = @('*S-1-5-18:(OI)(CI)F', '*S-1-5-32-544:(OI)(CI)F', '*S-1-5-20:(OI)(CI)F', "*${ownerSid}:(OI)(CI)F")
-if ($PSCmdlet.ShouldProcess($DataDir, 'icacls /inheritance:r /grant:r SYSTEM, Administrators, NetworkService, sahip')) {
-  $r1 = Invoke-Native -FilePath 'icacls.exe' -Arguments (@($DataDir, '/inheritance:r', '/grant:r') + $grants)
-  if ($r1.Code -ne 0) { Stop-WithCode 18 "icacls /grant basarisiz: $($r1.Output -join ' ')" }
-  # Users, Authenticated Users, Everyone, CREATOR OWNER - acik izinleri varsa kaldirilir.
-  $r2 = Invoke-Native -FilePath 'icacls.exe' -Arguments @($DataDir, '/remove:g', '*S-1-5-32-545', '*S-1-5-11', '*S-1-1-0', '*S-1-3-0')
-  if ($r2.Code -ne 0) { Stop-WithCode 18 "icacls /remove basarisiz: $($r2.Output -join ' ')" }
-  # Alt dosya ve dizinler yalniz bu dort girdiyi miras alsin.
-  $r3 = Invoke-Native -FilePath 'icacls.exe' -Arguments @((Join-Path $DataDir '*'), '/reset', '/T', '/C', '/Q')
-  if ($r3.Code -ne 0) { Stop-WithCode 18 "icacls /reset basarisiz: $($r3.Output -join ' ')" }
-  $r4 = Invoke-Native -FilePath 'icacls.exe' -Arguments @($PgRoot, '/grant', '*S-1-5-20:(OI)(CI)RX')
-  if ($r4.Code -ne 0) { Stop-WithCode 18 "icacls $PgRoot NetworkService okuma/calistirma izni verilemedi: $($r4.Output -join ' ')" }
-  $script:ChangesMade = $true
+  # --- ADIM 4: veri dizini ACL (yalniz SID ile) -------------------------------------------------
+  Write-Step 'ADIM 4/8 - veri dizini erisim listesi'
+  $grants = @('*S-1-5-18:(OI)(CI)F', '*S-1-5-32-544:(OI)(CI)F', '*S-1-5-20:(OI)(CI)F', "*${ownerSid}:(OI)(CI)F")
+  if ($PSCmdlet.ShouldProcess($DataDir, 'icacls /inheritance:r /grant:r SYSTEM, Administrators, NetworkService, sahip')) {
+    $r1 = Invoke-Native -FilePath 'icacls.exe' -Arguments (@($DataDir, '/inheritance:r', '/grant:r') + $grants)
+    if ($r1.Code -ne 0) { Stop-WithCode 18 "icacls /grant basarisiz: $($r1.Output -join ' ')" }
+    # Users, Authenticated Users, Everyone, CREATOR OWNER - acik izinleri varsa kaldirilir.
+    $r2 = Invoke-Native -FilePath 'icacls.exe' -Arguments @($DataDir, '/remove:g', '*S-1-5-32-545', '*S-1-5-11', '*S-1-1-0', '*S-1-3-0')
+    if ($r2.Code -ne 0) { Stop-WithCode 18 "icacls /remove basarisiz: $($r2.Output -join ' ')" }
+    # Alt dosya ve dizinler yalniz bu dort girdiyi miras alsin.
+    $r3 = Invoke-Native -FilePath 'icacls.exe' -Arguments @((Join-Path $DataDir '*'), '/reset', '/T', '/C', '/Q')
+    if ($r3.Code -ne 0) { Stop-WithCode 18 "icacls /reset basarisiz: $($r3.Output -join ' ')" }
+    $r4 = Invoke-Native -FilePath 'icacls.exe' -Arguments @($PgRoot, '/grant', '*S-1-5-20:(OI)(CI)RX')
+    if ($r4.Code -ne 0) { Stop-WithCode 18 "icacls $PgRoot NetworkService okuma/calistirma izni verilemedi: $($r4.Output -join ' ')" }
+    $script:ChangesMade = $true
 
-  $acl = Get-Acl -LiteralPath $DataDir
-  if (-not $acl.AreAccessRulesProtected) { Stop-WithCode 18 "$DataDir hala ust dizinden miras aliyor." }
-  $actualSids = @($acl.GetAccessRules($true, $false, [System.Security.Principal.SecurityIdentifier]) |
-    ForEach-Object { $_.IdentityReference.Value } | Sort-Object -Unique)
-  if (($actualSids -join ',') -ne ($expectedAclSids -join ',')) {
-    Stop-WithCode 18 ("ACL beklenen SID kumesi degil. Beklenen: " + ($expectedAclSids -join ', ') + ' / Olculen: ' + ($actualSids -join ', '))
+    $acl = Get-Acl -LiteralPath $DataDir
+    if (-not $acl.AreAccessRulesProtected) { Stop-WithCode 18 "$DataDir hala ust dizinden miras aliyor." }
+    $actualSids = @($acl.GetAccessRules($true, $false, [System.Security.Principal.SecurityIdentifier]) |
+      ForEach-Object { $_.IdentityReference.Value } | Sort-Object -Unique)
+    if (($actualSids -join ',') -ne ($expectedAclSids -join ',')) {
+      Stop-WithCode 18 ("ACL beklenen SID kumesi degil. Beklenen: " + ($expectedAclSids -join ', ') + ' / Olculen: ' + ($actualSids -join ', '))
+    }
+    Write-Ok ("ACL: miras kapali, yalniz " + ($actualSids -join ', '))
   }
-  Write-Ok ("ACL: miras kapali, yalniz " + ($actualSids -join ', '))
-}
 
-# --- ADIM 5: hizmeti kaydet ve baslat -------------------------------------------------------------
-Write-Step "ADIM 5/8 - hizmet kaydi ($ServiceName, $NetworkServiceAccount, otomatik)"
-if ($PSCmdlet.ShouldProcess($ServiceName, "pg_ctl register -N $ServiceName -U `"$NetworkServiceAccount`" -S auto -D $DataDir")) {
-  # NetworkService'in parolasi yoktur; register cagrisina parola VERILMEZ.
-  $reg = Invoke-Native -FilePath $PgCtl -Arguments @('register', '-N', $ServiceName, '-U', $NetworkServiceAccount, '-S', 'auto', '-D', $DataDir)
-  if ($reg.Code -ne 0) { Stop-WithCode 17 "pg_ctl register basarisiz (exit $($reg.Code)): $($reg.Output -join ' ')" }
-  $script:ChangesMade = $true
-  Write-Ok 'hizmet kaydedildi'
-  $null = Invoke-Native -FilePath 'sc.exe' -Arguments @('description', $ServiceName, 'MAS Nakit Radar PostgreSQL 16 (yalniz 127.0.0.1:5432)')
-  $failure = Invoke-Native -FilePath 'sc.exe' -Arguments @('failure', $ServiceName, 'reset=', '86400', 'actions=', 'restart/60000/restart/60000//0')
-  if ($failure.Code -ne 0) { Write-Warn "hata durumunda yeniden baslatma ayarlanamadi: $($failure.Output -join ' ')" } else { Write-Ok 'hata durumunda 60 sn sonra yeniden baslatma' }
-}
-if ($PSCmdlet.ShouldProcess($ServiceName, 'Start-Service')) {
-  try {
-    Start-Service -Name $ServiceName
-    (Get-Service -Name $ServiceName).WaitForStatus('Running', (New-TimeSpan -Seconds 60))
-  } catch {
-    Write-Host '  Son gunluk satirlari icin: Get-EventLog -LogName Application -Source PostgreSQL -Newest 20' -ForegroundColor Yellow
-    Write-Host "  ve (logging_collector aciksa) $DataDir\log altindaki son dosya." -ForegroundColor Yellow
-    Stop-WithCode 17 "hizmet 60 sn icinde Running olmadi: $($_.Exception.Message)"
+  # --- ADIM 5: hizmeti kaydet ve baslat ---------------------------------------------------------
+  Write-Step "ADIM 5/8 - hizmet kaydi ($ServiceName, $NetworkServiceAccount, otomatik)"
+  if ($PSCmdlet.ShouldProcess($ServiceName, "pg_ctl register -N $ServiceName -U `"$NetworkServiceAccount`" -S auto -D $DataDir")) {
+    # NetworkService'in parolasi yoktur; register cagrisina parola VERILMEZ.
+    $reg = Invoke-Native -FilePath $PgCtl -Arguments @('register', '-N', $ServiceName, '-U', $NetworkServiceAccount, '-S', 'auto', '-D', $DataDir)
+    if ($reg.Code -ne 0) { Stop-WithCode 17 "pg_ctl register basarisiz (exit $($reg.Code)): $($reg.Output -join ' ')" }
+    $script:ChangesMade = $true
+    Write-Ok 'hizmet kaydedildi'
+    Set-ServiceRecoveryPolicy
   }
-  Write-Ok 'hizmet calisiyor'
-}
+  if ($PSCmdlet.ShouldProcess($ServiceName, 'Start-Service')) {
+    try {
+      Start-Service -Name $ServiceName
+      (Get-Service -Name $ServiceName).WaitForStatus('Running', (New-TimeSpan -Seconds 60))
+    } catch {
+      Write-Host '  Son gunluk satirlari icin: Get-EventLog -LogName Application -Source PostgreSQL -Newest 20' -ForegroundColor Yellow
+      Write-Host "  ve (logging_collector aciksa) $DataDir\log altindaki son dosya." -ForegroundColor Yellow
+      Stop-WithCode 17 "hizmet 60 sn icinde Running olmadi: $($_.Exception.Message)"
+    }
+    Write-Ok 'hizmet calisiyor'
+  }
 
-if ($WhatIfPreference) {
-  # Kayit yapilmadigi icin dogrulanacak bir hizmet yok; kalan adimlar da listelenir.
-  $null = $PSCmdlet.ShouldProcess($LogonTaskName, 'Unregister-ScheduledTask (dogrulama gectikten SONRA)')
-  Write-Info 'PROVA bitti - hicbir degisiklik yapilmadi. Gercek kurulum icin -WhatIf olmadan calistirin.'
-  exit 0
-}
+  if ($WhatIfPreference) {
+    $null = $PSCmdlet.ShouldProcess($LogonTaskName, 'Unregister-ScheduledTask (dogrulama gectikten SONRA)')
+    Write-Info 'PROVA bitti - hicbir degisiklik yapilmadi. Gercek kurulum icin -WhatIf olmadan calistirin.'
+    exit 0
+  }
 
-# --- ADIM 6: dogrula ----------------------------------------------------------------------------------
-Write-Step 'ADIM 6/8 - dogrulama'
+  # --- ADIM 6: dogrula --------------------------------------------------------------------------
+  Write-Step 'ADIM 6/8 - dogrulama'
 $listeners = Confirm-Service
 
-# --- ADIM 7: oturum acilis gorevini kaldir (yalniz dogrulama gectikten sonra) ---------------------
-Write-Step "ADIM 7/8 - oturum acilis gorevini kaldir ($LogonTaskName)"
-if ($null -ne (Get-FallbackTask)) {
-  if ($PSCmdlet.ShouldProcess($LogonTaskName, 'Unregister-ScheduledTask')) {
-    Unregister-ScheduledTask -TaskName $LogonTaskName -Confirm:$false
-    $script:FallbackDisabled = $false
-    $script:FallbackRemoved = $true
-    Write-Ok 'gorev kaldirildi - kume artik yalniz hizmetten baslar'
+# --- ADIM 7: oturum acilis gorevini kaldir (yalniz dogrulama gectikten sonra) -----------------
+  Write-Step "ADIM 7/8 - oturum acilis gorevini kaldir ($LogonTaskName)"
+  if ($null -ne (Get-FallbackTask)) {
+    if ($PSCmdlet.ShouldProcess($LogonTaskName, 'Unregister-ScheduledTask')) {
+      Unregister-ScheduledTask -TaskName $LogonTaskName -Confirm:$false
+      $script:FallbackDisabled = $false
+      $script:FallbackRemoved = $true
+      Write-Ok 'gorev kaldirildi - kume artik yalniz hizmetten baslar'
+    }
+  } else {
+    Write-Ok 'gorev yok - atlandi'
   }
-} else {
-  Write-Ok 'gorev yok - atlandi'
+} finally {
+  # Ctrl+C ya da beklenmeyen istisna durumunda hizmet henuz onaylanmamissa oturum gorevini geri ac.
+  if ($script:FallbackDisabled) {
+    Restore-Fallback
+  }
 }
 
-# --- ADIM 8: makbuz ------------------------------------------------------------------------------------
+# --- ADIM 8: makbuz -----------------------------------------------------------------------------
 Write-Step 'ADIM 8/8 - makbuz'
 Write-Receipt $listeners $expectedAclSids $pgMajor
 

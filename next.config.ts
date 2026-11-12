@@ -53,6 +53,16 @@ const nextConfig: NextConfig = {
   // Değişken tanımsızken davranış birebir eskisi: `.next`. Bu, "tek Next sunucusu `.next`'in
   // sahibidir" kuralını bozmadan ikinci bir derlemeye izin vermenin tek güvenli yolu.
   distDir: process.env.MAS_NEXT_DIST_DIR ?? ".next",
+  // Faz 10: Linux/konteynerda (veya Windows Geliştirici Modu açıkken MAS_NEXT_STANDALONE=1 ile)
+  // tam standalone dizini üretilir; standart Windows + pnpm ortamında fs.symlink EPERM hatasını
+  // önlemek için kopyalama atlanır ve scripts/ops/start-standalone.ts aynı minimal üretim
+  // sunucusunu required-server-files.json üzerinden doğrudan çalıştırır.
+  ...(process.platform !== "win32" || process.env.MAS_NEXT_STANDALONE === "1"
+    ? { output: "standalone" as const }
+    : {}),
+  // Ağır Excel/veritabanı/kripto paketlerini sunucu chunk'larına gömme; yalnız çağrıldıkları
+  // anda Node.js tarafından dış paket olarak yüklensin (Faz 7 lazy import ile birlikte çalışır).
+  serverExternalPackages: ["exceljs", "pg", "@node-rs/argon2"],
   // ESLint remains a required standalone quality gate (`npm run lint`).
   // The build worker cannot resolve pnpm's transitive plugin symlinks on this
   // Windows installation, so do not duplicate lint inside `next build`.
@@ -64,9 +74,9 @@ const nextConfig: NextConfig = {
   devIndicators: false,
   onDemandEntries: {
     // Keep pages in memory for 1 hour so switching modules never triggers a 10s recompile
-    maxInactiveAge: 60 * 60 * 1000,
+    maxInactiveAge: 5 * 60 * 1000,
     // Buffer up to 50 pages simultaneously
-    pagesBufferLength: 50,
+    pagesBufferLength: 8,
   },
   outputFileTracingRoot: projectRoot,
   // Derleme paralelliği — varsayılan `os.cpus()`, ortam değişkeniyle kısılabilir.
@@ -94,6 +104,7 @@ const nextConfig: NextConfig = {
   },
   async redirects() {
     return [
+      { source: "/overview", destination: "/", permanent: true },
       { source: "/ask", destination: "/insights/ask", permanent: true },
       { source: "/reports", destination: "/insights/reports", permanent: true },
       { source: "/reports/:reportId", destination: "/insights/reports/:reportId", permanent: true },

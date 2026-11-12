@@ -23,18 +23,16 @@ import path from "node:path";
 import { createHash } from "node:crypto";
 import { Pool } from "pg";
 import { ownerDatabaseUrl, isDisposableDatabaseName, databaseNameFromUrl } from "../db/owner-url";
+import { createDisposableLocalDb, dropDisposableLocalDb, psqlLocalSql, restoreIntoDisposableLocalDb } from "../db/pg-local-admin";
 
-const CONTAINER = process.env.MAS_DB_CONTAINER ?? "mas-radar-pg";
-const IN_CONTAINER_DUMP = process.env.MAS_P24B_NC_DUMP ?? "/tmp/pre.dump";
+const SOURCE_DUMP_PATH = process.env.MAS_P24B_NC_DUMP ?? path.join(".runtime", "p24b-pre.dump");
 const CLEANUP = "scripts/db/p24b-fixture-cleanup.ts";
 const SMOKE_DB = process.env.MAS_P24B_NC_SMOKE_DB ?? "mas_radar_p24b_ncsmoke_drill";
 
 interface Result { id: string; name: string; expected: string; exitCode: number; dbUnchanged: boolean; verdict: string; detail: string }
 const results: Result[] = [];
 
-function sh(args: string[], input?: Buffer): string {
-  return execFileSync("docker", args, { input, encoding: "utf8", maxBuffer: 512 * 1024 * 1024, stdio: ["pipe", "pipe", "pipe"] });
-}
+
 
 async function main(): Promise<void> {
   const url = ownerDatabaseUrl();
@@ -51,7 +49,7 @@ async function main(): Promise<void> {
   // `docker cp`, not `docker exec cat`: the dump is a binary custom-format archive and reading it
   // through a utf8-decoded stdout silently corrupts it. The corruption only surfaces later, as a
   // pg_restore failure inside the binding generator's smoke test — a long way from its cause.
-  execFileSync("docker", ["cp", `${CONTAINER}:${IN_CONTAINER_DUMP}`, dumpLocal], { stdio: "pipe" });
+  copyFileSync(SOURCE_DUMP_PATH, dumpLocal);
   const destPath = path.join(work, "backup.dump");
   copyFileSync(dumpLocal, destPath);
   const sha = createHash("sha256").update(readFileSync(destPath)).digest("hex");
@@ -83,11 +81,9 @@ async function main(): Promise<void> {
   }
 
   function restoreFresh(): void {
-    sh(["exec", CONTAINER, "psql", "-U", "postgres", "-d", "postgres", "-qc",
-      `select pg_terminate_backend(pid) from pg_stat_activity where datname='${db}' and pid<>pg_backend_pid()`]);
-    sh(["exec", CONTAINER, "dropdb", "-U", "postgres", "--if-exists", db]);
-    sh(["exec", CONTAINER, "createdb", "-U", "postgres", db]);
-    sh(["exec", CONTAINER, "pg_restore", "-U", "postgres", "-d", db, "--no-owner", IN_CONTAINER_DUMP]);
+    dropDisposableLocalDb(db);
+    createDisposableLocalDb(db);
+    restoreIntoDisposableLocalDb(db, dumpLocal);
   }
 
   let cachedBinding: string | null = null;
@@ -117,7 +113,7 @@ async function main(): Promise<void> {
     const bd: Record<string, unknown> = JSON.parse(cachedBinding);
 
     const mutSql = opts.dbMutation;
-    if (mutSql) sh(["exec", CONTAINER, "psql", "-U", "postgres", "-d", db, "-qc", mutSql]);
+    if (mutSql) psqlLocalSql(db, mutSql);
     const before = await fingerprint();
     mutate(rc, bd);
     const rcPath = path.join(work, `${id}-receipt.json`);

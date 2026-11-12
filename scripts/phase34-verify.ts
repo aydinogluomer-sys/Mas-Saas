@@ -40,9 +40,9 @@ import {
   runPeriodOverPeriod, runRollingTrend, runVarianceDecomposition,
   runWorkingCapitalDecomposition,
 } from "../src/lib/analytics/engine";
-import { requireDisposableOwnerDatabaseUrl } from "./db/owner-url";
+import { assertDisposableTargetDb } from "./db/disposable-guard";
 
-const pool = new Pool({ connectionString: requireDisposableOwnerDatabaseUrl("phase34:verify") });
+const pool = new Pool({ connectionString: assertDisposableTargetDb(undefined, "phase34:verify").url });
 
 interface Check { name: string; pass: boolean; detail: string }
 const checks: Check[] = [];
@@ -63,6 +63,7 @@ const readSrc = (rel: string) => readFileSync(path.join(ROOT, rel), "utf8");
 const purgeFixture = async () => {
   await pool.query(`delete from public.invoices where invoice_no like 'P34-FIXTURE-%'`).catch(() => undefined);
   await pool.query(`delete from public.parties where name like 'P34-FIXTURE %'`).catch(() => undefined);
+  await pool.query(`delete from public.cashflow_months where month_start in ('2099-01-01', '2099-02-01')`).catch(() => undefined);
 };
 
 function codeOnly(source: string): string {
@@ -357,9 +358,15 @@ async function main(): Promise<void> {
   const dbRoll = await runRollingTrend(pool, 30, asOf);
   const dbPop = await runPeriodOverPeriod(pool, "mom", asOf);
   const dbVar = await runVarianceDecomposition(pool, asOf);
+  await pool.query(
+    `insert into public.cashflow_months (month_start, opening_balance, projected_income, projected_expense, closing_balance)
+     values ('2099-01-01', 100000, 50000, 30000, 120000),
+            ('2099-02-01', 120000, 60000, 40000, 140000)
+     on conflict (month_start) do nothing`,
+  );
   const monthRange = await pool.query(
     `select to_char(min(month_start),'YYYY-MM') a, to_char(max(month_start),'YYYY-MM') b
-       from public.cashflow_months`);
+       from public.cashflow_months where opening_balance is not null`);
   const dbBridge = await runCashBridge(pool,
     monthRange.rows[0]?.a ?? asOf.slice(0, 7), monthRange.rows[0]?.b ?? asOf.slice(0, 7), asOf);
 
@@ -403,7 +410,7 @@ async function main(): Promise<void> {
     "Faz 30'un view'ı tek kaynak");
 
   /* ── 13. export ─────────────────────────────────────────────────────────────────────── */
-  const xlsx = toXlsxBuffer([waterfallToSheet(wf), heatmapToSheet(hm), treemapToSheet(tm)], s1);
+  const xlsx = await toXlsxBuffer([waterfallToSheet(wf), heatmapToSheet(hm), treemapToSheet(tm)], s1);
   record("XLSX gerçek bir xlsx (ZIP imzası PK)",
     xlsx.length > 1000 && xlsx[0] === 0x50 && xlsx[1] === 0x4b, `${xlsx.length} bayt`);
   const heatSheet = heatmapToSheet(hm);
@@ -413,7 +420,7 @@ async function main(): Promise<void> {
   const csv = rowsToCsv([["a", "b"], [1, null]]);
   record("CSV bilinmeyeni boş bırakıyor", csv.split("\n")[1] === "1;", JSON.stringify(csv.split("\n")[1]));
   record("XLSX'e KAYNAK sayfası ekleniyor (damga dosyayla birlikte gider)",
-    xlsx.length > toXlsxBuffer([waterfallToSheet(wf)]).length,
+    xlsx.length > (await toXlsxBuffer([waterfallToSheet(wf)])).length,
     "e-postayla dolaşan bir tabloda rakamın hangi sürümden çıktığı yazılı olmalı");
 
   const svgs = [waterfallToSvg(wf), heatmapToSvg(hm), treemapToSvg(tm)];
@@ -472,7 +479,7 @@ async function main(): Promise<void> {
     /z\.object\(/.test(readSrc("src/app/api/analytics/export/route.ts")),
     "query string kullanıcı girdisidir");
   record("export rotası kimlik doğruluyor",
-    /getCurrentUser\(\)/.test(readSrc("src/app/api/analytics/export/route.ts")),
+    /(?:getCurrentUser|requireApiSession)\(\)/.test(readSrc("src/app/api/analytics/export/route.ts")),
     "analiz verisi oturumsuz indirilemez");
   const migrateSrc = readSrc("scripts/db/migrate.ts");
   const anchorBlock = migrateSrc.slice(migrateSrc.indexOf("const ANCHORS"));

@@ -14,10 +14,10 @@ import { mapAcceptedChecks, mapLoans } from "../src/lib/financing/engine";
 import { generateDaily, generateMonthly, generateWeekly, loadDebtOverlay } from "../src/lib/reports/engine";
 import { istanbulDateISO } from "../src/lib/reports/rules";
 import { ensureSystemActor } from "./db/seed-system-actor";
-import { requireDisposableOwnerDatabaseUrl } from "./db/owner-url";
+import { assertDisposableTargetDb } from "./db/disposable-guard";
 
 const pool = new Pool({
-  connectionString: requireDisposableOwnerDatabaseUrl("phase6:verify"),
+  connectionString: assertDisposableTargetDb(undefined, "phase6:verify").url,
 });
 const fail = (m: string): never => { console.error("PHASE6 VERIFY FAIL:", m); process.exit(1); };
 const q = async (sql: string, p: unknown[] = []) => (await pool.query(sql, p)).rows;

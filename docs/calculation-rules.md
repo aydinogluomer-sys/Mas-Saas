@@ -90,3 +90,84 @@ Day risk flags: cluster (count ≥ 3 pending same day), large (any known ≥ 50k
 ## Horizon cards (Phase 4)
 
 Çapa ay = bugünün ayı (veri aralığındaysa), değilse ilk veri ayı. Ufuklar 3/6/12/24/36 ay; pencere veri sonunu aşarsa kart "veri sonu" rozetiyle kesilir (uydurma projeksiyon yapılmaz). Pencere toplamları yalnız bilinen tutarlarla; eksik ay sayısı kartta beyan edilir.
+
+## `FIN-03` Bilinmeyen Açılış Bakiyesi ve Döviz Kova Ayrımı (Faz 44 — Migration 0099)
+
+- **`BLANK ≠ ZERO` (`FIN-03`):** Bir aktif kasa/banka hesabında `opening_balance IS NULL` ise türetilen bakiye (`derived_balance`) **asla `0 + hareketler` olarak uydurulmaz**; `derived_balance = NULL`, `available_now = NULL`, `projected_contracted = NULL` ve `financing_need = NULL` (`status = 'unknown_opening_balance'`) olarak taşınır. Hareket bazlı net değişim (`movement_net` / `movements_only_total`) ayrı yardımcı satırda gösterilir.
+- **Hazine ↔ Nakit Akışı Mutabakatı:** Aktif `TRY` banka hesaplarından herhangi birinin `opening_balance` değeri `NULL` ise `treasury_cashflow_reconciliation` sahte `'divergent'` P0 alarmı üretmez; `'incomplete_opening_balance'` döndürür.
+- **Sıfır Sessiz Döviz Karışımı:** Kredi taksitleri (`loans.currency`), çekler (`checks.currency`), faturalar (`invoices.currency`), 13 haftalık tahmin (`cash_forecast_13w`) ve optimizasyon özetleri (`optimization_run_summary`) kendi para birimi kovalarında toplanır; `payment_instances.currency IS NULL` olan satırlar `'TRY'` varsayılmaz, `unknown_currency_count` olarak ayrı sayılır.
+- **Çapraz-Döviz Fatura Tahsisi Yasağı:** Kur çevrim kaydı olmadan farklı para birimli bir kaynak (`USD` banka hareketi / çek / ödeme) `TRY` faturaya tahsis edilemez (`ERRCODE = '23514'`, `cross_currency_allocation_forbidden` ve uygulama katmanı `DomainError("VALIDATION", ...)`).
+- **Fatura ↔ Çek / Ödeme Çift Sayım Engeli:** `settled_by_check_id` veya `linked_invoice_id` ile aktif bir çek ya da ödeme kalemine bağlanmış faturalar `liquidity_forecast_daily`, `financial_calendar` ve `payment_priority_queue` içinde ikinci kez sayılmaz.
+- **Yıllık Bütçe 12-Ay Dağılımı:** `period_kind = 'annual'` bütçe satırları ilk 11 aya `round(amount / 12, 2)`, 12. aya `amount - 11 * round(amount / 12, 2)` kuralıyla kuruş kaybı olmadan dağıtılır.
+
+## Çekirdek Finans Motorları Kuralları (Faz 46 — `C3`)
+
+- **5 Katmanlı Deterministik Davranışsal Tahsilat Tarihi (`expectedCollectionDateV2`):**
+  1. `badDebtFlagged === true` → `projectedDate: null, bucket: "doubtful_excluded"` (şüpheli alacak 7/30 günlük likidite girişine asla eklenmez).
+  2. Aktif ve kırılmamış ödeme sözü (`status = 'open' AND promised_date >= todayISO`) → `promised_date` (`bucket: "promised"`).
+  3. Müşterinin geçmiş kapanmış faturalarından (`invoice_allocations`) en az 3 örneklem varsa medyan `DBT` (`days_beyond_terms`, ihtiyatlı modda `P75`): `dueDate + dbt >= todayISO` ise o tarih (`bucket: "behavioral_dbt"`).
+  4. Henüz vadesi gelmemiş fatura (`dueDate >= todayISO`) → `dueDate + defaultLag` (`bucket: "scheduled"`).
+  5. Vadesi geçmiş ve beklenen tahsilat tarihi `todayISO` öncesinde kalan açık fatura → **asla `todayISO` üzerine yığılmaz ("Today Cliff" yasak)**; `projectedDate: null, bucket: "overdue_unscheduled"` olarak ayrı **"Takvime Bağlanmamış Gecikmiş Alacak"** kovasında gösterilir.
+- **Alacak Yoğunlaşması (`loadReceivableRisk`):** Açık `TRY` alacaklar için `concentrationRatio` hesaplanır; dövizli açık alacaklar para birimi bazında (`currencyConcentrationRatio`) ayrı döndürülür.
+- **Ufuk-İçi En Düşük Kasa ve 90 Takvim Günü Taban Böleni (`treasury`):**
+  - Likidite tabanı ihlali (`breachesFloor`) ve finansman ihtiyacı (`financingNeed`) yalnızca ufuk sonu kapanışına (`projectedContracted`) değil, `[todayISO .. todayISO + N]` aralığındaki **en düşük kümülatif günlük sözleşmeli bakiyeye (`minIntraHorizonBalance`, `worstDayISO`)** göre hesaplanır.
+  - Dinamik nakit tabanı (`bufferDays`), son 90 takvim günündeki toplam nakit çıkışının aktif işlem gün sayısına değil sabit **`90` takvim gününe** (`Big(total90dOutflow).div(90)`) bölünmesiyle bulunur.
+- **Çapası Korunan Kredi Taksit Vadeleri (`addMonthsPreservingAnchorDay`):**
+  - `2026-01-31` başlangıçlı taksit takviminde Şubat taksiti `2026-02-28` (artık yılda `29`), Mart taksiti tekrar **`2026-03-31`**, Nisan taksiti **`2026-04-30`** olur; Şubat nedeniyle 28'e kalıcı kilitlenme yapılmaz.
+  - Açık `0` KKDF + `0` BSMV toplamı `null` değil `0` olarak korunur.
+- **Canlı TCMB XML Bülten Tarihi (`parseTcmbBulletinDate`):**
+  - Gerçek TCMB kök etiketi `<Tarih_Date Tarih="DD.MM.YYYY" Date="MM/DD/YYYY" ...>` ayrıştırılır; hafta sonu/tatil sorgularında `bulletin_date` (TCMB bülten tarihi) ile `queried_date` ayrımı korunur.
+- **Banka Eşleştirici Yön ve Döviz Zorunluluğu (`scoreMatch`):**
+  - `tx.amount > 0` yalnız `inflow/sales`, `tx.amount < 0` yalnız `outflow/purchase` adaylarıyla ve yalnız `tx.currency === candidate.currency` olduğunda eşleşir; açık `0,00` borç/alacak satırları `null` yapılmaz, `0` olarak korunur.
+- **Likidite Optimizasyon Çözücüsü (`optimization`):**
+  - `openingCash === null` (`FIN-03`) olduğunda çözücü uydurma `0` kasa ile çalışmaz; açık durdurma gerekçesiyle durur.
+  - Günlük yüklemeler para birimi bazında (`currency = $1`) `payment_instances`, `checks`, `loan_installments` ve şablonsuz açık `purchase` faturalarını kapsar; `credit_facility_utilization` üzerinden gerçek `drawn_amount` okunur; üç amaç fonksiyonu (`max_liquidity_buffer`, `min_financing_cost`, `min_late_payment`) deterministik olarak farklı aksiyon sıralaması üretir.
+- **Türkiye Resmi Tatil ve Vergi/SGK Takvimi (`tr-holidays.ts`, `tr-tax-calendar.ts`):**
+  - **VUK Md. 18/4** uyarınca hafta sonuna veya resmi/dini bayram tatiline (arife yarım günü sonrası tam tatil günleri dahil) denk gelen son ödeme günleri takip eden ilk iş gününe (`nextTurkishBusinessDay`) kaydırılır.
+  - Takvim kalemleri: **KDV-2** (25'i), **MPHB** (26'sı), **KDV-1** (28'i), **SGK 4/a** (ay sonu), **Kurumlar Geçici Vergi** (**7566 Sayılı Kanun** uyumlu 4 dönem: Q1 17 Mayıs, Q2 17 Ağustos, Q3 17 Kasım, Q4 17 Şubat), **Kurumlar Vergisi Yıllık** (30 Nisan), **MTV 1. ve 2. Taksit** (31 Ocak, 31 Temmuz). Yürürlükten kaldırılan **BA/BS formları üretilmez**.
+
+## Ödeme Paketi (`payment_runs`), Çek Bordrosu, Paraşüt v4, Yönetim Defteri, Yasal Mizan Köprüsü, 13-Hafta Varyans ve CFO Zekâsı Kuralları (Faz 48–56)
+
+- **14 Günlük Kasa Alt Limiti Bariyeri (`payment_runs` — Faz 48 / `0101`):**
+  - Ödeme paketi toplamı (`total_amount`), paketin yürütme tarihini izleyen 14 gün içindeki en düşük kümülatif sözleşmeli kasayı (`projected_14d_min_cash`) aktif `min_cash` politikası (`min_cash_floor`) altına düşürüyorsa `breaches_cash_floor = true` işaretlenir ve onay kademesi yükseltilir.
+  - Yeni eklenen veya değiştirilen tedarikçi IBAN'ı 48 saatlik BEC soğuma süresini (`verified_at`) ve ikinci göz onayını tamamlamadan ödeme paketine dahil edilemez.
+- **Türkiye Çek/Senet Bordrosu ve Ciro Rücu Riski (`check_bordros` — Faz 49 / `0102`):**
+  - Tedarikçiye ciro edilen müşteri çeki (`status = 'endorsed'`), tedarikçi borcunu kapattığı ve şirket kasasına nakit girmeyeceği için `liquidity_forecast_daily` nakit girişlerinden düşer; ancak çekin vadesi geçip `'cleared'` olana dek **`900 / 901` nazım hesaplarında ve `contingent_recourse_amount` alanında şarta bağlı ciro rücu riski** olarak izlenir.
+  - Bankaya teminata verilen çeklerde (`in_bank_collateral`) kullanılabilir kredi marjı `amount * collateral_ltv_ratio` ile hesaplanır.
+- **Paraşüt API v4 (`S-1..S-10`) ve Hibrit Banka Tekilleştirme Kuralları (Faz 51 / `0104`):**
+  - `TRL` para birimi kodu kanonik `'TRY'` olarak normalize edilir; KDV tevkifatlı satış faturalarında nakit tahsilat beklentisi `gross_total` değil **`payable_amount = net_total_after_withholding`** üzerinden izlenir.
+  - Kendi banka hesaplarımız arasındaki virmanlar (`transaction_kind = 'own_transfer'`) hesap bazlı `bank_cash_position` bakiyesini günceller, ancak konsolide şirket nakit giriş/çıkış toplamlarına (`daily_cash_movement`, `working_capital_monthly_v`, `forecast_13w_variance_v`) dahil edilmez.
+  - Aynı gün, aynı kasa/banka hesabı, aynı işaretli kuruş tutarı ve VKN/IBAN/fatura no kesişimi taşıyan MT940 / `camt.053` / Paraşüt API banka hareketleri `cross_channel_dedupe_hash` ile tekilleştirilir; ikinci kanal satırı çift sayılmaz, mevcut satırın banka referansını zenginleştirir.
+- **Çift Taraflı TDHP Yönetim Defteri ve Yönetim EBITDA (Faz 52 / `0105`):**
+  - Kesinleşmiş (`posted`) her yönetim yevmiye fişinde `sum(debit_try) == sum(credit_try)` eşitliği PostgreSQL `DEFERRABLE INITIALLY DEFERRED` tetikleyicisiyle zorlanır; kuruş farkı `0,00`'dan farklı hiçbir fiş `COMMIT` edilemez.
+  - **Yönetim Bilançosu (`management_balance_sheet_v`):** Cari dönem net kâr/zararı dinamik olarak `590.DYN` / `591.DYN` özkaynak kalemine yansıtılır; her tarihte `Aktif Toplamı == Pasif (Yabancı Kaynak + Özkaynak) Toplamı` (`discrepancy_try = 0.00`).
+  - **Yönetim EBITDA (`management_income_statement_v`):** `Brüt Satışlar (600) - Satış İndirimleri (610/611) = Net Satışlar - SMM (620/621/622) = Brüt Kâr - Faaliyet Giderleri (630/631/632, 770) = Faaliyet Kârı (EBIT) + Amortisman Geri Eklemesi (257 / 770.99 D&A) = Yönetim EBITDA`. Kredi anapara ödemeleri (`300`) asla gider yazılmaz; yalnız faiz + BSMV + KKDF (`780`) finansman gideridir ve EBITDA sonrasında düşülür.
+- **12 Kök Nedenli Mali Müşavir Yasal Mizan Mutabakatı (Faz 53 / `0106`):**
+  - Luca/Logo hiyerarşik mizanlarında alt hesabı bulunan üst satırlar (`120`, `120.01`) `is_leaf = false` işaretlenir ve çift sayılmaz; mutabakat yalnız `is_leaf = true` yaprak satırlar üzerinden yürütülür.
+- **Otomatik 13-Hafta Tahmin ve Zamanlama Kayması vs. Kalıcı Varyans Şelalesi (Faz 54 / `0107`):**
+  - Dondurulmuş haftalık baz çizgi (`forecast_snapshots_13w`) ile gerçekleşen banka hareketleri karşılaştırılırken, beklenen hafta içinde tahsil edilmeyip açık kalan veya ileri haftaya ötelenen belgeler **`TIMING_SLIP` (Zamanlama Kayması)**; iptal edilen, tutarı değişen veya planda hiç olmayan nakit hareketleri **`PERMANENT_VARIANCE` (Kalıcı Varyans)** olarak ayrıştırılır.
+- **Gece Nakit/Gap7 Değişim Atfı, Nakit DSCR/CFADS, İkili Runway ve Başabaş Goal-Seek (Faz 55 / `F2`):**
+  - **Gece Nakit Özdeşliği:** `currentAvailableCash - previousAvailableCash == bankInflows + bankOutflows + fxValuationDelta + unexplainedResidual` (`cashIdentityDrift = 0.00`).
+  - **Nakit DSCR & CFADS:** `CFADS = Esas Faaliyet Nakit Girişleri - Esas Faaliyet Nakit Çıkışları - Ödenen Vergi/SGK - Bakım CapEx`; `Nakit DSCR = CFADS / (Kredi Anapara Servisi [300] + Faiz/BSMV/KKDF Servisi [780])`.
+  - **İkili Nakit Ömrü (Dual Runway):** Tarihsel brüt/net yanma hızı (`historicalRunwayDays`) ile ileri 13 haftalık tahminden türetilen 30 günlük ileri net yanma hızı (`forward13wRunwayDays`) yan yana hesaplanır ve en erken nakit tabanı ihlal tarihi (`firstFloorBreachDate`) raporlanır.
+  - **Deterministik Başabaş Goal-Seek:** Kümülatif nakit açığını tam `0,00` yapacak 4 bağımsız kaldıraç (1: İhtiyari gider kesintisi `%`, 2: Tedarikçi ödeme vadesi uzatımı `+DPO gün`, 3: Alacak tahsilat hızlandırması `-DSO gün`, 4: Ek net satış/tahsilat `TRY`) kapalı form `Big.js` denklemleriyle (`residualDeficitTry = 0.00`) çözülür.
+
+## Kuyruk Zarfı Değişmezliği, Kapalı Çevrim Otomasyon ve `v6` Derin CFO Zekâsı Kuralları (Faz 57–58 / Migration 0108)
+
+- **Arka Plan İş Kuyruğu Zarf Değişmezliği (`background_jobs` — Faz 57 / `0108`):**
+  - İş girdisi (`payload`) ile iş çıktısı (`result jsonb`) fiziksel olarak ayrılmıştır; `completeJob` hiçbir koşulda `payload` sütununu ezmez veya birleştirmez.
+  - `enforce_background_jobs_immutable_envelope()` (`BEFORE UPDATE`) tetikleyicisi `id`, `job_type`, `created_by`, `payload`, `dedupe_key` ve `created_at` zarf alanlarının sonradan değiştirilmesini `ERRCODE = '23514'` ile reddeder.
+- **Kapalı Çevrim Günlük Finansal Otomasyon Zinciri (`sync-pipeline.ts`):**
+  - Deterministik sıra: `Paraşüt v4 Senkronu (S-1..S-10)` → `TCMB Günlük Resmi Kur Senkronu` → `TDHP Yönetim Defteri Artımlı Senkronu + provisional_fx Yeniden Değerleme` → `13 Haftalık Nakit Tahmin Baz Çizgisi Dondurma` → `Sabah CFO Özeti & Denetim Kontrolleri`. Sıfır yeni belge geldiğinde (`syncedCount = 0`) dahi daha önce geçici kurla bekleyen (`provisional_fx`) belgelerin resmi TCMB kuruyla kesinleşmesi için yönetim defteri senkronu atlanmaz.
+- **TDHP `7xx` Fiili Gider ↔ Tezgâh Dakika (`TL/dk`) Canlı Başabaş Köprüsü (`actual-cost-bridge.ts`):**
+  - Onaylı (`posted`, ters kayıt netleştirilmiş) yönetim yevmiye satırlarından son `N` aylık ortalama fiili giderler üç katmanda ayrıştırılır: **Nakit İşletme `7xx`** (`710–779`, amortisman hariç), **Tam İşletme `7xx`** (`+ 730.99 / 770.99` amortisman payı) ve **Finansman `780`** (işletme başabaşından ayrı izlenir).
+  - **`BLANK ≠ ZERO`:** Yeterli `7xx` fiili yevmiye verisi yoksa (`status = 'insufficient_ledger_actuals'`) veya kapasite senaryosunda efektif dakika bilinmiyorsa (`<= 0` / `null`, `status = 'unknown_effective_minutes'`), fiili `TL/dk` başabaş değerleri **asla `0,00 TL/dk` olarak üretilmez** (`null` döner).
+  - **Gizli Marj Erimesi (`hiddenMarginErosion`):** Statik defter maliyet modelinde kârlı görünen (`fiyat > defter başabaş`) ancak canlı `7xx` tam maliyet başabaşının altında kalan (`fiyat < fiili tam başabaş`) müşteri tarife ve parça satırları deterministik olarak işaretlenir.
+- **TCMB Kur Şoku (`+%10 / +%20 / +%30`), Doğal Hedge ve Kovenant Kırılma Stres Motoru (`fx-stress.ts`):**
+  - Her yabancı para birimi (`USD`, `EUR`, `GBP` vb.) kendi yerel para birimi kovasında (`fxAssets`, `fxLiabilities`, `netNativePosition`, `naturalHedgeRatio = min(1, fxAssets / fxLiabilities)`) ayrı tutulur; farklı döviz birimleri asla birbirine toplanmaz.
+  - **`BLANK ≠ ZERO` & Sıfır Sahte `1.0` Kur:** Açık pozisyonu bulunan herhangi bir yabancı para için resmi TCMB kuru (`fx_rate_snapshots`) eksikse `status = 'missing_fx_rates'` ve `consolidatedShockDeltaTry = null` döner; hiçbir koşulda `1.0` yedek kuru kullanılmaz. `FIN-03` kapsamında kasa açılış bakiyesi bilinmiyorsa `hasUnknownCashOpening = true` korunur.
+  - Şoklanmış gelecek 12 aylık döviz borç servisi ve şoklanmış Net Borç doğrudan `computeCashDscrWindow` ve `evaluateCovenantThreshold` motorlarına beslenerek hangi kur şoku bandında `min_dscr`, `max_net_debt_to_ebitda` veya `min_cash_balance` sözleşme taahhüdünün (kovenant) kırıldığı hesaplanır.
+- **Karşı Taraf Davranışsal Çalışma Sermayesi ve Tahsilat Güvenilirlik Karnesi (`scorecard.ts`):**
+  - **`BLANK ≠ ZERO` (İnce Geçmiş Koruması):** Kapanmış fatura sayısı `< 3` olan karşı taraflarda medyan ve P75 `DBT` (`days beyond terms`) **asla `0 gün` sayılmaz** (`null` taşınır). Kapanmış ödeme sözü (`kept + broken === 0`) bulunmayan karşı taraflarda `promiseKeptRatio = null` taşınır. Yeterli geçmişi ve aktif çek/rücu sinyali olmayan yeni cariler `'insufficient_history'` (`Belirsiz — Yetersiz Geçmiş`) olarak sınıflandırılır.
+  - Portföydeki çekler (`activeCheckPortfolioByCurrency`), tedarikçiye ciro edilen müşteri çeklerinden doğan şarta bağlı rücu riski (`contingentRecourseByCurrency`) ve karşılıksız çekler (`bouncedByCurrency`) her para biriminin kendi kovasında (`Big.js`) tutulur.
+  - Deterministik davranışsal kademelendirme (`A` / `B` / `C` / `D` / `Belirsiz`) eşikleri ekranda açıkça `"Varsayım (Model Sabiti)"` olarak beyan edilir.

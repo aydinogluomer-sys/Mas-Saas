@@ -30,7 +30,8 @@ const TABLES_TO_RESET = [
   "cashflow_lines", "cashflow_months",
   "bank_transactions", "bank_accounts", "cash_accounts",
   "invoices", "orders", "products", "projects",
-  "budget_lines", "budgets", "fx_positions", "production_parts", "machine_assets",
+  "budget_lines", "budgets", "fx_positions", "production_parts", "cost_model_items", "cost_models",
+  "machine_assets", "facility_movements", "credit_facilities",
   "source_workbooks",
 ];
 
@@ -38,7 +39,8 @@ const TABLES_TO_RESET = [
 const DOMAIN_TABLES = [
   "payments", "checks", "loans", "loan_installments", "cashflow_lines",
   "bank_accounts", "bank_transactions", "invoices", "orders", "products",
-  "projects", "budget_lines", "fx_positions", "production_parts", "machine_assets",
+  "projects", "budget_lines", "fx_positions", "production_parts", "cost_model_items",
+  "machine_assets", "credit_facilities",
 ];
 
 async function main(): Promise<void> {
@@ -119,7 +121,8 @@ async function main(): Promise<void> {
       bank_accounts: "06_BANKA_HESAPLARI", bank_transactions: "07_BANKA_HAREKETLERI",
       invoices: "08_FATURALAR", orders: "09_SIPARISLER", products: "10_URUNLER",
       projects: "11_PROJELER", budget_lines: "12_BUTCE", fx_positions: "13_FX_POZISYONU",
-      production_parts: "14_KAPASITE", machine_assets: "16_MAKINE_ROI",
+      production_parts: "14_KAPASITE", cost_model_items: "15_MALIYET",
+      machine_assets: "16_MAKINE_ROI", credit_facilities: "17_KREDI_LIMITLERI",
     };
     for (const [table, sheet] of Object.entries(SHEET_OF_TABLE)) {
       assert(`${table} = ${sheet} hazır satır sayısı`, READY[sheet].ready, after1[table]);
@@ -223,6 +226,31 @@ async function main(): Promise<void> {
       "select name, fiscal_year from public.budgets limit 1");
     assert("senaryo bütçe başlığı oldu", "base_case", butce.name);
     assert("mali yıl dönemden okundu", 2026, Number(butce.fiscal_year));
+
+    // Faz 50 (0103): 14/15/16/17 tam alan kalıcılığı ve kredi limiti kullanım senkronu.
+    const parcaTam = await one<{ unit_sale_price: string | null; work_days_per_month: number | null; shift_count: number | null }>(
+      "select unit_sale_price, work_days_per_month, shift_count from public.production_parts where part_code = $1", ["MT-100"]);
+    assert("14_KAPASITE birim satış fiyatı saklandı", 260, Number(parcaTam.unit_sale_price));
+    assert("14_KAPASITE çalışma günü saklandı", 22, Number(parcaTam.work_days_per_month));
+    assert("14_KAPASITE vardiya sayısı saklandı", 1, Number(parcaTam.shift_count));
+
+    const maliyetNormal = await one<{ total_fixed_cost: string | null; break_even_tl_per_min: string | null }>(
+      "select total_fixed_cost, break_even_tl_per_min from public.cost_models where scenario_type = 'normal' limit 1");
+    assert("15_MALIYET normal senaryo toplam sabit maliyet (120000+80000)", 200000, Number(maliyetNormal.total_fixed_cost));
+    assert("15_MALIYET başabaş TL/dk hesaplandı (>0)", true, Number(maliyetNormal.break_even_tl_per_min) > 0);
+
+    const makineTam = await one<{ machine_code: string | null; monthly_revenue: string | null; useful_life_months: number | null }>(
+      "select machine_code, monthly_revenue, useful_life_months from public.machine_assets where name = $1", ["Awea"]);
+    assert("16_MAKINE_ROI makine kodu saklandı", "FR-01", makineTam.machine_code);
+    assert("16_MAKINE_ROI aylık gelir saklandı", 40000, Number(makineTam.monthly_revenue));
+    assert("16_MAKINE_ROI faydalı ömür saklandı", 120, Number(makineTam.useful_life_months));
+
+    const limitTam = await one<{ limit_amount: string; drawn_amount: string; available_amount: string }>(
+      "select limit_amount, drawn_amount, available_amount from public.credit_facility_utilization where facility_name = $1",
+      ["Vakıfbank Rotatif BCH"]);
+    assert("17_KREDI_LIMITLERI toplam limit", 2000000, Number(limitTam.limit_amount));
+    assert("17_KREDI_LIMITLERI kullanılan bakiye görünümle senkron", 450000, Number(limitTam.drawn_amount));
+    assert("17_KREDI_LIMITLERI kullanılabilir limit (2000000 - 450000)", 1550000, Number(limitTam.available_amount));
 
     /* ── 2. geçiş — AYNI dosya ────────────────────────────────────────────────────────── */
     console.log("\n── 2. IMPORT (aynı dosya) ──");
