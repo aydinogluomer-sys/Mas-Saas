@@ -143,7 +143,7 @@ export function EmptyState({ children, action }: { children: ReactNode; action?:
         background: "color-mix(in srgb, var(--surface-2) 62%, var(--surface-1))",
       }}
     >
-      <p className="font-mono text-xs" style={{ color: "var(--text-3)" }}>{children}</p>
+      <div className="font-mono text-xs" style={{ color: "var(--text-3)" }}>{children}</div>
       {action}
     </div>
   );

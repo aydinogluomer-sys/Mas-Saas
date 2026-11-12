@@ -3,8 +3,12 @@
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { requireActionPermission } from "@/lib/auth";
+import {
+  isHandledActionError,
+  isPgPeriodLockedError,
+  toUserActionErrorMessage,
+} from "@/lib/cashflow/period-lock";
 import { getPool } from "@/lib/db";
-import { DomainError } from "@/lib/domain-error";
 import { createManagementSubAccount } from "@/lib/ledger/accounts";
 import {
   approveDraftManagementEntry,
@@ -24,11 +28,12 @@ function strField(v: string | string[] | undefined, fallback = ""): string {
 }
 
 function domainRedirect(e: unknown): never {
-  if (e instanceof DomainError) {
-    redirect(`${BASE}?error=${encodeURIComponent(e.message)}`);
-  }
-  if (e instanceof Error && e.name === "ZodError") {
-    redirect(`${BASE}?error=${encodeURIComponent(e.message.slice(0, 240))}`);
+  if (isPgPeriodLockedError(e) || isHandledActionError(e)) {
+    redirect(
+      `${BASE}?error=${encodeURIComponent(
+        toUserActionErrorMessage(e, "Yönetim defteri işlemi tamamlanamadı."),
+      )}`,
+    );
   }
   throw e;
 }

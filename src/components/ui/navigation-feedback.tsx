@@ -25,13 +25,21 @@ const STUCK_NAVIGATION_TIMEOUT_MS = 3_000;
 
 const NavigationContext = createContext<NavigationContextValue | null>(null);
 
+function escapeAttrSelectorValue(value: string): string {
+  if (typeof CSS !== "undefined" && typeof CSS.escape === "function") {
+    return CSS.escape(value);
+  }
+  return value.replace(/["\\]/g, "\\$&");
+}
+
 function localHref(anchor: HTMLAnchorElement): string | null {
   if (anchor.target && anchor.target !== "_self") return null;
-  if (anchor.hasAttribute("download")) return null;
+  if (anchor.hasAttribute("download") || anchor.hasAttribute("data-no-nav-skeleton")) return null;
   const raw = anchor.getAttribute("href");
   if (!raw || raw.startsWith("#")) return null;
   const url = new URL(anchor.href, window.location.href);
   if (url.origin !== window.location.origin) return null;
+  if (url.pathname.startsWith("/api/")) return null;
   return `${url.pathname}${url.search}${url.hash}`;
 }
 
@@ -78,9 +86,10 @@ export function NavigationFeedbackProvider({ children }: { children: ReactNode }
     document.querySelectorAll<HTMLElement>(".is-pending").forEach((element) => element.classList.remove("is-pending"));
     document.querySelectorAll<HTMLElement>('[aria-current="page"]').forEach((element) => element.removeAttribute("aria-current"));
     
-    // Hızlı, doğrudan hedef selector — yüzlerce DOM linkini tek tek ayrıştırmayı önler
+    // Hızlı, doğrudan hedef selector — yüzlerce DOM linkini tek tek ayrıştırmayı önler; CSS.escape özel karakterleri korur
+    const escapedHref = escapeAttrSelectorValue(href);
     const matching = document.querySelectorAll<HTMLAnchorElement>(
-      `a[href="${href}"], .sidebar-link[href="${href}"], .module-tabs a[href="${href}"]`
+      `a[href="${escapedHref}"], .sidebar-link[href="${escapedHref}"], .module-tabs a[href="${escapedHref}"]`
     );
     matching.forEach((anchor) => {
       anchor.setAttribute("aria-current", "page");

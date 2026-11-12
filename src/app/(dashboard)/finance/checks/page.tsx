@@ -71,7 +71,7 @@ function summarizeBucket(
 export default async function ChecksPage({
   searchParams,
 }: {
-  searchParams: Promise<{ page?: string; flash?: string; error?: string }>;
+  searchParams: Promise<{ page?: string; flash?: string; result?: string; error?: string }>;
 }) {
   const denied = await requireRouteAccess("/finance/checks");
   if (denied) return denied;
@@ -171,12 +171,18 @@ export default async function ChecksPage({
         </div>
       ) : null}
 
-      {sp.flash ? (
+      {sp.result || sp.flash ? (
         <div
           role="status"
           className="mb-4 rounded border border-pos/40 bg-pos/10 px-3 py-2 text-xs text-pos"
         >
-          {sp.flash === "archived" ? "Kayıt arşive taşındı." : sp.flash}
+          {sp.result
+            ? sp.result
+            : sp.flash === "archived"
+              ? "Kayıt arşive taşındı."
+              : sp.flash === "saved"
+                ? "Bordro işlemi kaydedildi."
+                : sp.flash}
         </div>
       ) : null}
 

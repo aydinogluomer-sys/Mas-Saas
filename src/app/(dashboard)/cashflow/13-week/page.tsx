@@ -12,7 +12,9 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Panel } from "@/components/ui/panel";
 import { EmptyState, KeyStat, PageHeader, TableShell } from "@/components/ui/shell";
+import { SubmitButton } from "@/components/ui/submit-button";
 import { getPool } from "@/lib/db";
+import { intOrNull, moneyOrNull } from "@/lib/money";
 import { formatMoney } from "@/lib/money-format";
 import {
   addManual13WeekOverrideAction,
@@ -23,6 +25,15 @@ import {
 export const dynamic = "force-dynamic";
 
 const CURRENCIES = ["TRY", "USD", "EUR"] as const;
+
+function istanbulDateISO(): string {
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Europe/Istanbul",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(new Date());
+}
 
 export default async function Rolling13WeekForecastPage({
   searchParams,
@@ -51,7 +62,7 @@ export default async function Rolling13WeekForecastPage({
   const canAddOverride = session ? can(session.role, "forecast_lines", "insert") : false;
 
   const pool = getPool();
-  const todayISO = new Date().toISOString().slice(0, 10);
+  const todayISO = istanbulDateISO();
 
   const [forecast, snapshots] = await Promise.all([
     buildAutoSeeded13WeekForecast(pool, { asOfDate: todayISO, currency, dbtMode }),
@@ -66,12 +77,75 @@ export default async function Rolling13WeekForecastPage({
       ? sp.weekStart
       : selectedSnapshot?.snapshotWeekStart ?? forecast.snapshotWeekStart;
 
-  const waterfall = selectedSnapshot
-    ? await compute13wVarianceWaterfall(pool, {
-        snapshotId: selectedSnapshot.id,
-        weekStart: selectedWeekStart,
-      })
-    : null;
+  const [waterfall, varianceViewRes] = selectedSnapshot
+    ? await Promise.all([
+        compute13wVarianceWaterfall(pool, {
+          snapshotId: selectedSnapshot.id,
+          weekStart: selectedWeekStart,
+        }),
+        pool.query<{
+          snapshot_id: string;
+          snapshot_week_start: string;
+          as_of_date: string;
+          currency: string;
+          opening_cash: string | null;
+          unknown_opening_count: number;
+          week_index: number;
+          week_start: string;
+          week_end: string;
+          forecast_inflow: string;
+          forecast_outflow: string;
+          forecast_net: string;
+          forecast_line_count: number;
+          actual_inflow: string;
+          actual_outflow: string;
+          actual_net: string;
+          net_variance: string;
+        }>(
+          `select snapshot_id::text,
+                  to_char(snapshot_week_start, 'YYYY-MM-DD') as snapshot_week_start,
+                  to_char(as_of_date, 'YYYY-MM-DD') as as_of_date,
+                  currency,
+                  opening_cash::text,
+                  unknown_opening_count,
+                  week_index,
+                  to_char(week_start, 'YYYY-MM-DD') as week_start,
+                  to_char(week_end, 'YYYY-MM-DD') as week_end,
+                  forecast_inflow::text,
+                  forecast_outflow::text,
+                  forecast_net::text,
+                  forecast_line_count,
+                  actual_inflow::text,
+                  actual_outflow::text,
+                  actual_net::text,
+                  net_variance::text
+             from public.forecast_13w_variance_v
+            where snapshot_id = $1::uuid
+            order by week_index asc`,
+          [selectedSnapshot.id],
+        ),
+      ])
+    : [null, null];
+
+  const frozenVarianceRows = (varianceViewRes?.rows ?? []).map((r) => ({
+    snapshotId: r.snapshot_id,
+    snapshotWeekStart: r.snapshot_week_start,
+    asOfDate: r.as_of_date,
+    currency: r.currency || currency,
+    openingCash: moneyOrNull(r.opening_cash),
+    unknownOpeningCount: intOrNull(r.unknown_opening_count) ?? 0,
+    weekIndex: intOrNull(r.week_index) ?? 0,
+    weekStart: r.week_start,
+    weekEnd: r.week_end,
+    forecastInflow: moneyOrNull(r.forecast_inflow) ?? 0,
+    forecastOutflow: moneyOrNull(r.forecast_outflow) ?? 0,
+    forecastNet: moneyOrNull(r.forecast_net) ?? 0,
+    forecastLineCount: intOrNull(r.forecast_line_count) ?? 0,
+    actualInflow: moneyOrNull(r.actual_inflow) ?? 0,
+    actualOutflow: moneyOrNull(r.actual_outflow) ?? 0,
+    actualNet: moneyOrNull(r.actual_net) ?? 0,
+    netVariance: moneyOrNull(r.net_variance) ?? 0,
+  }));
 
   const fmt = (val: number | null) =>
     val === null ? "Bilinmiyor (FIN-03)" : formatMoney(val, currency);
@@ -89,8 +163,8 @@ export default async function Rolling13WeekForecastPage({
                 href={`/cashflow/13-week?currency=${cur}&dbtMode=${dbtMode}`}
                 className={`rounded border px-2.5 py-1 text-xs font-medium ${
                   currency === cur
-                    ? "border-sky-500 bg-sky-950/70 text-sky-200"
-                    : "border-slate-800 bg-slate-900/60 text-slate-400 hover:text-slate-200"
+                    ? "border-sky-600 bg-sky-50 text-sky-900"
+                    : "border-[var(--line)] bg-[var(--surface-1)] text-[var(--text-2)] hover:text-[var(--text-1)]"
                 }`}
               >
                 {cur}
@@ -108,12 +182,12 @@ export default async function Rolling13WeekForecastPage({
       />
 
       {sp.error ? (
-        <div className="rounded border border-red-800 bg-red-950/60 px-3 py-2 text-xs text-red-200">
+        <div className="rounded border border-red-300 bg-red-50 px-3 py-2 text-xs text-red-800">
           {sp.error}
         </div>
       ) : null}
       {sp.result ? (
-        <div className="rounded border border-emerald-800 bg-emerald-950/50 px-3 py-2 text-xs text-emerald-200">
+        <div className="rounded border border-emerald-300 bg-emerald-50 px-3 py-2 text-xs text-emerald-800">
           İşlem tamamlandı: {sp.result}
         </div>
       ) : null}
@@ -173,12 +247,12 @@ export default async function Rolling13WeekForecastPage({
 
       {/* Zero Today-Cliff Banner: Overdue Unscheduled Receivables */}
       {forecast.overdueUnscheduledCount > 0 ? (
-        <div className="rounded border border-amber-700/70 bg-amber-950/40 px-3.5 py-2.5 text-xs text-amber-200">
+        <div className="rounded border border-amber-300 bg-amber-50 px-3.5 py-2.5 text-xs text-amber-900">
           <div className="font-semibold">
             Takvime Bağlanmamış Gecikmiş Alacak Uyarısı ({forecast.overdueUnscheduledCount} fatura ·{" "}
             {formatMoney(forecast.overdueUnscheduledAmount, currency)})
           </div>
-          <p className="mt-0.5 text-amber-300/90">
+          <p className="mt-0.5 text-amber-800">
             Vadesi geçmiş ve aktif ödeme sözü (`promise_to_pay`) bulunmayan bu alacaklar, 1. haftada sahte nakit
             bolluğu yaratmamak için 13 haftalık nakit girişine <strong>dahil edilmemiştir</strong>. Tahsilat
             tarihi netleştiğinde ödeme sözü girerek haftalık projeksiyona dahil edebilirsiniz.
@@ -194,23 +268,23 @@ export default async function Rolling13WeekForecastPage({
         <div className="flex flex-wrap items-end gap-3">
           <form action={refreshAutoSeeded13WeekAction} className="flex flex-wrap items-end gap-2">
             <input type="hidden" name="currency" value={currency} />
-            <label className="text-xs text-slate-300">
+            <label className="text-xs text-[var(--text-2)]">
               Tahsilat Davranış Modu
               <select
                 name="dbtMode"
                 defaultValue={dbtMode}
-                className="mt-1 block rounded border border-slate-700 bg-slate-900 px-2.5 py-1.5 text-xs text-slate-100"
+                className="mt-1 block rounded border border-[var(--line)] bg-[var(--surface-1)] px-2.5 py-1.5 text-xs text-[var(--text-1)]"
               >
                 <option value="median">Medyan DBT (P50)</option>
                 <option value="p75">İhtiyatlı DBT (P75)</option>
               </select>
             </label>
-            <button
-              type="submit"
-              className="rounded border border-sky-600 bg-sky-900/60 px-3 py-1.5 text-xs font-medium text-sky-100 hover:bg-sky-800/70"
+            <SubmitButton
+              pendingLabel="Yenileniyor…"
+              className="rounded bg-sky-700 px-3 py-1.5 text-xs font-medium text-white hover:bg-sky-800 disabled:opacity-60"
             >
               Açık Kayıtlardan Otomatik Yenile
-            </button>
+            </SubmitButton>
           </form>
 
           {canFreeze ? (
@@ -218,12 +292,12 @@ export default async function Rolling13WeekForecastPage({
               <input type="hidden" name="currency" value={currency} />
               <input type="hidden" name="dbtMode" value={dbtMode} />
               <input type="hidden" name="asOfDate" value={todayISO} />
-              <button
-                type="submit"
-                className="rounded border border-emerald-600 bg-emerald-900/60 px-3 py-1.5 text-xs font-medium text-emerald-100 hover:bg-emerald-800/70"
+              <SubmitButton
+                pendingLabel="Donduruluyor…"
+                className="rounded bg-emerald-700 px-3 py-1.5 text-xs font-medium text-white hover:bg-emerald-800 disabled:opacity-60"
               >
                 Haftalık Tahmin Anlık Görüntüsünü Dondur ({forecast.snapshotWeekStart})
-              </button>
+              </SubmitButton>
             </form>
           ) : null}
         </div>
@@ -231,16 +305,16 @@ export default async function Rolling13WeekForecastPage({
         {canAddOverride ? (
           <form
             action={addManual13WeekOverrideAction}
-            className="mt-3 grid grid-cols-1 gap-2 border-t border-slate-800 pt-3 sm:grid-cols-5"
+            className="mt-3 grid grid-cols-1 gap-2 border-t border-[var(--line)] pt-3 sm:grid-cols-5"
           >
             <input type="hidden" name="currency" value={currency} />
             <input type="hidden" name="dbtMode" value={dbtMode} />
-            <label className="text-xs text-slate-300">
+            <label className="text-xs text-[var(--text-2)]">
               Hafta Başlangıcı (Pazartesi)
               <select
                 name="weekStart"
                 defaultValue={forecast.snapshotWeekStart}
-                className="mt-1 block w-full rounded border border-slate-700 bg-slate-900 px-2 py-1.5 text-xs text-slate-100"
+                className="mt-1 block w-full rounded border border-[var(--line)] bg-[var(--surface-1)] px-2 py-1.5 text-xs text-[var(--text-1)]"
               >
                 {forecast.weeks.map((w) => (
                   <option key={w.weekStart} value={w.weekStart}>
@@ -249,18 +323,18 @@ export default async function Rolling13WeekForecastPage({
                 ))}
               </select>
             </label>
-            <label className="text-xs text-slate-300">
+            <label className="text-xs text-[var(--text-2)]">
               Yön
               <select
                 name="direction"
                 defaultValue="outflow"
-                className="mt-1 block w-full rounded border border-slate-700 bg-slate-900 px-2 py-1.5 text-xs text-slate-100"
+                className="mt-1 block w-full rounded border border-[var(--line)] bg-[var(--surface-1)] px-2 py-1.5 text-xs text-[var(--text-1)]"
               >
                 <option value="inflow">Giriş (+)</option>
                 <option value="outflow">Çıkış (-)</option>
               </select>
             </label>
-            <label className="text-xs text-slate-300">
+            <label className="text-xs text-[var(--text-2)]">
               Tutar ({currency})
               <input
                 type="number"
@@ -269,26 +343,26 @@ export default async function Rolling13WeekForecastPage({
                 name="amount"
                 required
                 placeholder="50000"
-                className="mt-1 block w-full rounded border border-slate-700 bg-slate-900 px-2 py-1.5 text-xs text-slate-100"
+                className="mt-1 block w-full rounded border border-[var(--line)] bg-[var(--surface-1)] px-2 py-1.5 text-xs text-[var(--text-1)]"
               />
             </label>
-            <label className="text-xs text-slate-300">
+            <label className="text-xs text-[var(--text-2)]">
               Açıklama
               <input
                 type="text"
                 name="notes"
                 required
                 placeholder="Ek ekipman / tahsilat düzeltmesi"
-                className="mt-1 block w-full rounded border border-slate-700 bg-slate-900 px-2 py-1.5 text-xs text-slate-100"
+                className="mt-1 block w-full rounded border border-[var(--line)] bg-[var(--surface-1)] px-2 py-1.5 text-xs text-[var(--text-1)]"
               />
             </label>
             <div className="flex items-end">
-              <button
-                type="submit"
-                className="w-full rounded border border-slate-600 bg-slate-800 px-3 py-1.5 text-xs font-medium text-slate-100 hover:bg-slate-700"
+              <SubmitButton
+                pendingLabel="Ekleniyor…"
+                className="w-full rounded border border-[var(--line)] bg-[var(--surface-2)] px-3 py-1.5 text-xs font-medium text-[var(--text-1)] hover:opacity-90 disabled:opacity-60"
               >
                 Manuel Tahmin Satırı Ekle
-              </button>
+              </SubmitButton>
             </div>
           </form>
         ) : null}
@@ -300,81 +374,83 @@ export default async function Rolling13WeekForecastPage({
         subtitle="Haftalık açılış → kaynak bazlı giriş/çıkış → net akış → kapanış → minimum nakit tamponu farkı"
       >
         <TableShell>
-          <thead>
-            <tr className="border-b border-slate-800 text-left text-[11px] uppercase tracking-wider text-slate-400">
-              <th className="px-2 py-2">Hafta</th>
-              <th className="px-2 py-2">Tarih Aralığı</th>
-              <th className="px-2 py-2 text-right">Açılış</th>
-              <th className="px-2 py-2 text-right">Alacak (AR)</th>
-              <th className="px-2 py-2 text-right">Borç & Planlı</th>
-              <th className="px-2 py-2 text-right">Çek & Kredi</th>
-              <th className="px-2 py-2 text-right">Vergi/SGK & Manuel</th>
-              <th className="px-2 py-2 text-right">Net Akış</th>
-              <th className="px-2 py-2 text-right">Kapanış</th>
-              <th className="px-2 py-2 text-right">Taban Farkı</th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-slate-800/70 text-xs">
-            {forecast.weeks.map((w) => {
-              const arIn = w.inflowByCategory.contracted_ar + w.inflowByCategory.behavioral_ar;
-              const apOut = w.outflowByCategory.open_ap + w.outflowByCategory.scheduled_payment;
-              const checkLoanNet =
-                w.inflowByCategory.check_maturity -
-                (w.outflowByCategory.check_maturity + w.outflowByCategory.loan_installment);
-              const taxManualNet =
-                w.inflowByCategory.manual_override -
-                (w.outflowByCategory.statutory_tax_sgk + w.outflowByCategory.manual_override);
+          <table className="w-full text-xs">
+            <thead>
+              <tr className="border-b border-[var(--line)] text-left text-[11px] uppercase tracking-wider text-[var(--text-2)]">
+                <th className="px-2 py-2">Hafta</th>
+                <th className="px-2 py-2">Tarih Aralığı</th>
+                <th className="px-2 py-2 text-right">Açılış</th>
+                <th className="px-2 py-2 text-right">Alacak (AR)</th>
+                <th className="px-2 py-2 text-right">Borç &amp; Planlı</th>
+                <th className="px-2 py-2 text-right">Çek &amp; Kredi</th>
+                <th className="px-2 py-2 text-right">Vergi/SGK &amp; Manuel</th>
+                <th className="px-2 py-2 text-right">Net Akış</th>
+                <th className="px-2 py-2 text-right">Kapanış</th>
+                <th className="px-2 py-2 text-right">Taban Farkı</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-[var(--line)] text-xs">
+              {forecast.weeks.map((w) => {
+                const arIn = w.inflowByCategory.contracted_ar + w.inflowByCategory.behavioral_ar;
+                const apOut = w.outflowByCategory.open_ap + w.outflowByCategory.scheduled_payment;
+                const checkLoanNet =
+                  w.inflowByCategory.check_maturity -
+                  (w.outflowByCategory.check_maturity + w.outflowByCategory.loan_installment);
+                const taxManualNet =
+                  w.inflowByCategory.manual_override -
+                  (w.outflowByCategory.statutory_tax_sgk + w.outflowByCategory.manual_override);
 
-              return (
-                <tr
-                  key={w.weekIndex}
-                  className={w.breachesFloor ? "bg-red-950/25" : undefined}
-                >
-                  <td className="px-2 py-2 font-semibold text-slate-200">H{w.weekIndex}</td>
-                  <td className="px-2 py-2 text-slate-300">
-                    {w.weekStart} → {w.weekEnd}
-                    <span className="ml-1.5 text-[11px] text-slate-500">({w.lines.length} kayıt)</span>
-                  </td>
-                  <td className="px-2 py-2 text-right font-mono text-slate-300">
-                    {fmt(w.openingBalance)}
-                  </td>
-                  <td className="px-2 py-2 text-right font-mono text-emerald-300">
-                    +{formatMoney(arIn, currency)}
-                  </td>
-                  <td className="px-2 py-2 text-right font-mono text-rose-300">
-                    -{formatMoney(apOut, currency)}
-                  </td>
-                  <td className="px-2 py-2 text-right font-mono text-slate-300">
-                    {formatMoney(checkLoanNet, currency)}
-                  </td>
-                  <td className="px-2 py-2 text-right font-mono text-slate-300">
-                    {formatMoney(taxManualNet, currency)}
-                  </td>
-                  <td
-                    className={`px-2 py-2 text-right font-mono font-medium ${
-                      w.netFlow >= 0 ? "text-emerald-300" : "text-rose-300"
-                    }`}
+                return (
+                  <tr
+                    key={w.weekIndex}
+                    className={w.breachesFloor ? "bg-red-50/80" : undefined}
                   >
-                    {formatMoney(w.netFlow, currency)}
-                  </td>
-                  <td className="px-2 py-2 text-right font-mono font-semibold text-slate-100">
-                    {fmt(w.closingBalance)}
-                  </td>
-                  <td className="px-2 py-2 text-right font-mono">
-                    {w.floorHeadroom === null ? (
-                      <Badge tone="amber">FIN-03</Badge>
-                    ) : w.breachesFloor ? (
-                      <Badge tone="red">{formatMoney(w.floorHeadroom, currency)}</Badge>
-                    ) : (
-                      <span className="text-emerald-300">
-                        +{formatMoney(w.floorHeadroom, currency)}
-                      </span>
-                    )}
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
+                    <td className="px-2 py-2 font-semibold text-[var(--text-1)]">H{w.weekIndex}</td>
+                    <td className="px-2 py-2 text-[var(--text-2)]">
+                      {w.weekStart} → {w.weekEnd}
+                      <span className="ml-1.5 text-[11px] text-[var(--text-3)]">({w.lines.length} kayıt)</span>
+                    </td>
+                    <td className="px-2 py-2 text-right font-mono text-[var(--text-1)]">
+                      {fmt(w.openingBalance)}
+                    </td>
+                    <td className="px-2 py-2 text-right font-mono text-emerald-700">
+                      +{formatMoney(arIn, currency)}
+                    </td>
+                    <td className="px-2 py-2 text-right font-mono text-red-700">
+                      -{formatMoney(apOut, currency)}
+                    </td>
+                    <td className="px-2 py-2 text-right font-mono text-[var(--text-2)]">
+                      {formatMoney(checkLoanNet, currency)}
+                    </td>
+                    <td className="px-2 py-2 text-right font-mono text-[var(--text-2)]">
+                      {formatMoney(taxManualNet, currency)}
+                    </td>
+                    <td
+                      className={`px-2 py-2 text-right font-mono font-medium ${
+                        w.netFlow >= 0 ? "text-emerald-700" : "text-red-700"
+                      }`}
+                    >
+                      {formatMoney(w.netFlow, currency)}
+                    </td>
+                    <td className="px-2 py-2 text-right font-mono font-semibold text-[var(--text-1)]">
+                      {fmt(w.closingBalance)}
+                    </td>
+                    <td className="px-2 py-2 text-right font-mono">
+                      {w.floorHeadroom === null ? (
+                        <Badge tone="amber">FIN-03</Badge>
+                      ) : w.breachesFloor ? (
+                        <Badge tone="red">{formatMoney(w.floorHeadroom, currency)}</Badge>
+                      ) : (
+                        <span className="text-emerald-700">
+                          +{formatMoney(w.floorHeadroom, currency)}
+                        </span>
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
         </TableShell>
 
         <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-4">
@@ -384,17 +460,132 @@ export default async function Rolling13WeekForecastPage({
             return (
               <div
                 key={cat}
-                className="rounded border border-slate-800 bg-slate-900/50 px-2.5 py-2 text-xs"
+                className="rounded border border-[var(--line)] bg-[var(--surface-2)] px-2.5 py-2 text-xs"
               >
-                <div className="font-medium text-slate-300">{CATEGORY_BUCKET_LABELS[cat]}</div>
+                <div className="font-medium text-[var(--text-1)]">{CATEGORY_BUCKET_LABELS[cat]}</div>
                 <div className="mt-1 flex items-center justify-between font-mono text-[11px]">
-                  <span className="text-emerald-300">+{formatMoney(catIn, currency)}</span>
-                  <span className="text-rose-300">-{formatMoney(catOut, currency)}</span>
+                  <span className="text-emerald-700">+{formatMoney(catIn, currency)}</span>
+                  <span className="text-red-700">-{formatMoney(catOut, currency)}</span>
                 </div>
               </div>
             );
           })}
         </div>
+      </Panel>
+
+      {/* Frozen Forecast vs Actual Variance View (forecast_13w_variance_v) */}
+      <Panel
+        title="Dondurulmuş Tahmin vs. Fiili Sapma"
+        subtitle="Dondurulmuş 13 haftalık anlık görüntünün tüm haftalarında tahmin edilen giriş/çıkış ile gerçekleşen banka hareketlerinin (`own_transfer` hariç) karşılaştırması"
+        right={
+          snapshots.length > 1 ? (
+            <div className="flex flex-wrap items-center gap-1 text-xs">
+              {snapshots.slice(0, 4).map((snap) => {
+                const active = selectedSnapshot?.id === snap.id;
+                return (
+                  <Link
+                    key={snap.id}
+                    href={`/cashflow/13-week?currency=${currency}&dbtMode=${dbtMode}&snapshotId=${snap.id}`}
+                    className="rounded border px-2 py-0.5 font-mono text-[11px]"
+                    style={{
+                      background: active ? "var(--surface-2)" : "var(--surface-1)",
+                      borderColor: "var(--line)",
+                      color: active ? "var(--text-1)" : "var(--text-2)",
+                      fontWeight: active ? 600 : 400,
+                    }}
+                  >
+                    {snap.snapshotWeekStart}
+                  </Link>
+                );
+              })}
+            </div>
+          ) : undefined
+        }
+      >
+        {!selectedSnapshot || frozenVarianceRows.length === 0 ? (
+          <EmptyState>
+            Henüz dondurulmuş 13 haftalık anlık görüntü bulunmuyor. Pazartesi tahminini dondurduğunuzda 13 haftalık tahmini vs. fiili sapma tablosu burada listelenir.
+          </EmptyState>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-xs">
+              <thead>
+                <tr
+                  className="border-b text-left text-[11px] uppercase tracking-wider"
+                  style={{ borderColor: "var(--line)", color: "var(--text-2)" }}
+                >
+                  <th className="px-2 py-2">Hafta</th>
+                  <th className="px-2 py-2">Tarih Aralığı</th>
+                  <th className="px-2 py-2 text-right">Tahmin Giriş</th>
+                  <th className="px-2 py-2 text-right">Tahmin Çıkış</th>
+                  <th className="px-2 py-2 text-right">Tahmin Net</th>
+                  <th className="px-2 py-2 text-right">Fiili Giriş</th>
+                  <th className="px-2 py-2 text-right">Fiili Çıkış</th>
+                  <th className="px-2 py-2 text-right">Fiili Net</th>
+                  <th className="px-2 py-2 text-right">Net Sapma</th>
+                  <th className="px-2 py-2 text-right">Şelale</th>
+                </tr>
+              </thead>
+              <tbody>
+                {frozenVarianceRows.map((v) => {
+                  const isSelectedWeek = v.weekStart === selectedWeekStart;
+                  return (
+                    <tr
+                      key={`${v.snapshotId}-${v.weekIndex}`}
+                      className="border-t"
+                      style={{
+                        borderColor: "var(--line)",
+                        background: isSelectedWeek ? "var(--surface-2)" : "var(--surface-1)",
+                        color: "var(--text-1)",
+                      }}
+                    >
+                      <td className="px-2 py-2 font-mono font-semibold">H{v.weekIndex}</td>
+                      <td className="px-2 py-2 font-mono" style={{ color: "var(--text-2)" }}>
+                        {v.weekStart} → {v.weekEnd}
+                        <span className="ml-1 text-[10px]">({v.forecastLineCount} satır)</span>
+                      </td>
+                      <td className="px-2 py-2 text-right font-mono tabular-nums text-pos">
+                        +{formatMoney(v.forecastInflow, v.currency)}
+                      </td>
+                      <td className="px-2 py-2 text-right font-mono tabular-nums text-neg">
+                        -{formatMoney(v.forecastOutflow, v.currency)}
+                      </td>
+                      <td className="px-2 py-2 text-right font-mono tabular-nums">
+                        {formatMoney(v.forecastNet, v.currency)}
+                      </td>
+                      <td className="px-2 py-2 text-right font-mono tabular-nums text-pos">
+                        +{formatMoney(v.actualInflow, v.currency)}
+                      </td>
+                      <td className="px-2 py-2 text-right font-mono tabular-nums text-neg">
+                        -{formatMoney(v.actualOutflow, v.currency)}
+                      </td>
+                      <td className="px-2 py-2 text-right font-mono tabular-nums">
+                        {formatMoney(v.actualNet, v.currency)}
+                      </td>
+                      <td
+                        className={`px-2 py-2 text-right font-mono font-semibold tabular-nums ${
+                          v.netVariance < 0 ? "text-neg" : v.netVariance > 0 ? "text-pos" : ""
+                        }`}
+                      >
+                        {v.netVariance > 0 ? "+" : ""}
+                        {formatMoney(v.netVariance, v.currency)}
+                      </td>
+                      <td className="px-2 py-2 text-right font-mono">
+                        <Link
+                          href={`/cashflow/13-week?currency=${currency}&dbtMode=${dbtMode}&snapshotId=${v.snapshotId}&weekStart=${v.weekStart}`}
+                          className="hover:underline"
+                          style={{ color: "var(--text-2)" }}
+                        >
+                          {isSelectedWeek ? "Seçili" : "İncele →"}
+                        </Link>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
       </Panel>
 
       {/* Timing Slip vs. Permanent Variance Waterfall Panel */}
@@ -408,10 +599,10 @@ export default async function Rolling13WeekForecastPage({
           </EmptyState>
         ) : (
           <div className="space-y-3">
-            <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-slate-300">
+            <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-[var(--text-2)]">
               <div>
-                Anlık Görüntü Haftası: <strong>{selectedSnapshot.snapshotWeekStart}</strong> · İncelenen Hafta:{" "}
-                <strong>
+                Anlık Görüntü Haftası: <strong className="text-[var(--text-1)]">{selectedSnapshot.snapshotWeekStart}</strong> · İncelenen Hafta:{" "}
+                <strong className="text-[var(--text-1)]">
                   H{waterfall.weekIndex} ({waterfall.weekStart} → {waterfall.weekEnd})
                 </strong>
               </div>
@@ -457,60 +648,62 @@ export default async function Rolling13WeekForecastPage({
 
             {waterfall.details.length > 0 ? (
               <TableShell>
-                <thead>
-                  <tr className="border-b border-slate-800 text-left text-[11px] uppercase tracking-wider text-slate-400">
-                    <th className="px-2 py-2">Kalem</th>
-                    <th className="px-2 py-2">Sınıflandırma</th>
-                    <th className="px-2 py-2 text-right">Tahmin (Net)</th>
-                    <th className="px-2 py-2 text-right">Gerçekleşen</th>
-                    <th className="px-2 py-2 text-right">Zamanlama Kayması</th>
-                    <th className="px-2 py-2 text-right">Kalıcı Sapma</th>
-                    <th className="px-2 py-2">Açıklama</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-800/70 text-xs">
-                  {waterfall.details.map((d, idx) => {
-                    const permTotal =
-                      d.permanentInflowVarianceSigned + d.permanentOutflowVarianceSigned;
-                    return (
-                      <tr key={`${d.sourceEntityId ?? d.bankTransactionId ?? idx}-${idx}`}>
-                        <td className="px-2 py-2 font-medium text-slate-200">{d.label}</td>
-                        <td className="px-2 py-2">
-                          <Badge
-                            tone={
-                              d.kind === "matched_settled"
-                                ? "green"
+                <table className="w-full text-xs">
+                  <thead>
+                    <tr className="border-b border-[var(--line)] text-left text-[11px] uppercase tracking-wider text-[var(--text-2)]">
+                      <th className="px-2 py-2">Kalem</th>
+                      <th className="px-2 py-2">Sınıflandırma</th>
+                      <th className="px-2 py-2 text-right">Tahmin (Net)</th>
+                      <th className="px-2 py-2 text-right">Gerçekleşen</th>
+                      <th className="px-2 py-2 text-right">Zamanlama Kayması</th>
+                      <th className="px-2 py-2 text-right">Kalıcı Sapma</th>
+                      <th className="px-2 py-2">Açıklama</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-[var(--line)] text-xs">
+                    {waterfall.details.map((d, idx) => {
+                      const permTotal =
+                        d.permanentInflowVarianceSigned + d.permanentOutflowVarianceSigned;
+                      return (
+                        <tr key={`${d.sourceEntityId ?? d.bankTransactionId ?? idx}-${idx}`}>
+                          <td className="px-2 py-2 font-medium text-[var(--text-1)]">{d.label}</td>
+                          <td className="px-2 py-2">
+                            <Badge
+                              tone={
+                                d.kind === "matched_settled"
+                                  ? "green"
+                                  : d.kind === "timing_slip"
+                                    ? "amber"
+                                    : "red"
+                              }
+                            >
+                              {d.kind === "matched_settled"
+                                ? "Gerçekleşti"
                                 : d.kind === "timing_slip"
-                                  ? "amber"
-                                  : "red"
-                            }
-                          >
-                            {d.kind === "matched_settled"
-                              ? "Gerçekleşti"
-                              : d.kind === "timing_slip"
-                                ? "Zamanlama Kayması"
-                                : d.kind === "unplanned_bank_movement"
-                                  ? "Plansız Banka Hareketi"
-                                  : "Kalıcı İptal/Fark"}
-                          </Badge>
-                        </td>
-                        <td className="px-2 py-2 text-right font-mono text-slate-300">
-                          {formatMoney(d.forecastSignedAmount, currency)}
-                        </td>
-                        <td className="px-2 py-2 text-right font-mono text-slate-200">
-                          {formatMoney(d.actualSignedAmount, currency)}
-                        </td>
-                        <td className="px-2 py-2 text-right font-mono text-amber-300">
-                          {formatMoney(d.timingSlipSignedAmount, currency)}
-                        </td>
-                        <td className="px-2 py-2 text-right font-mono text-rose-300">
-                          {formatMoney(permTotal, currency)}
-                        </td>
-                        <td className="px-2 py-2 text-slate-400">{d.explanation}</td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
+                                  ? "Zamanlama Kayması"
+                                  : d.kind === "unplanned_bank_movement"
+                                    ? "Plansız Banka Hareketi"
+                                    : "Kalıcı İptal/Fark"}
+                            </Badge>
+                          </td>
+                          <td className="px-2 py-2 text-right font-mono text-[var(--text-2)]">
+                            {formatMoney(d.forecastSignedAmount, currency)}
+                          </td>
+                          <td className="px-2 py-2 text-right font-mono text-[var(--text-1)]">
+                            {formatMoney(d.actualSignedAmount, currency)}
+                          </td>
+                          <td className="px-2 py-2 text-right font-mono text-amber-700">
+                            {formatMoney(d.timingSlipSignedAmount, currency)}
+                          </td>
+                          <td className="px-2 py-2 text-right font-mono text-red-700">
+                            {formatMoney(permTotal, currency)}
+                          </td>
+                          <td className="px-2 py-2 text-[var(--text-2)]">{d.explanation}</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
               </TableShell>
             ) : null}
           </div>

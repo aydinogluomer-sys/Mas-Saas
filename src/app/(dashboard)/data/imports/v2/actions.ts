@@ -6,7 +6,6 @@
 // katmanı eşleşmezse yazmadan durur (service.ts başlığındaki gerekçe). Rol denetimi burada
 // BAĞIMSIZ olarak yapılır: sayfa kapısı (requireRouteAccess) bir UI kararıdır; eylem ise gerçek
 // yazma noktasıdır ve doğrudan çağrılabilir.
-import { revalidatePath } from "next/cache";
 import { requireSession } from "@/lib/auth";
 import { canPerform, canSeeRoute, type AppRole } from "@/lib/authz/matrix";
 import { getPool } from "@/lib/db";
@@ -92,10 +91,10 @@ export async function confirmV2Action(_prev: V2FlowState, formData: FormData): P
     await validateContinuity(pool).catch(() => undefined);
   }
   await refreshMetricSnapshots(pool, auth.actorId).catch(() => undefined);
-  revalidatePath("/data/imports");
-  revalidatePath("/data/imports/v2");
-  revalidatePath("/data/reviews");
-  revalidatePath("/data/quality");
+  // NOT: (dashboard) altındaki tüm sayfalar `dynamic = "force-dynamic"` olduğundan sunucu önbelleği
+  // tutmaz; her gezinme PostgreSQL'den taze okur. Next.js 15.5'te `useActionState` eylemi içinden
+  // `revalidatePath(...)` çağırmak `skipFlight: false` ile 147 KB tam sayfa Flight ağacını yanıta
+  // gömer ve `/data/imports/*` istemci yönlendirici geçiş kilitlenmesini (Bulgu #7) tetikler.
 
   const res = r.outcome.result;
   return {

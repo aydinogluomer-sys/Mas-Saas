@@ -2,6 +2,7 @@ import Link from "@/components/ui/app-link";
 import { Badge } from "@/components/ui/badge";
 import { Panel } from "@/components/ui/panel";
 import { EmptyState, KeyStat, PageHeader, TableShell } from "@/components/ui/shell";
+import { SubmitButton } from "@/components/ui/submit-button";
 import { getRequestUser } from "@/lib/auth";
 import { can } from "@/lib/authz/matrix";
 import { requireRouteAccess } from "@/lib/authz/route-guard";
@@ -83,18 +84,18 @@ export default async function TrialBalanceBridgePage({
       />
 
       {sp.error ? (
-        <div className="rounded border border-red-800/70 bg-red-950/40 px-4 py-2.5 text-xs text-red-200">
+        <div className="rounded border border-red-300 bg-red-50 px-4 py-2.5 text-xs text-red-800">
           {sp.error}
         </div>
       ) : null}
       {sp.result ? (
-        <div className="rounded border border-emerald-800/70 bg-emerald-950/40 px-4 py-2.5 text-xs text-emerald-200">
+        <div className="rounded border border-emerald-300 bg-emerald-50 px-4 py-2.5 text-xs text-emerald-800">
           İşlem tamamlandı: {sp.result}
         </div>
       ) : null}
 
       {summary && !summary.isSelfBalanced ? (
-        <div className="rounded border border-red-700 bg-red-950/60 px-4 py-3 text-xs text-red-100">
+        <div className="rounded border border-red-400 bg-red-50 px-4 py-3 text-xs text-red-900">
           <strong>KRİTİK MİZAN ÖZ-DENGE UYARISI:</strong> Yüklenen yasal mizan kendi içinde dengeli
           değil (Borç: {formatMoney(summary.statutoryTotalDebitTry)} TRY ≠ Alacak:{" "}
           {formatMoney(summary.statutoryTotalCreditTry)} TRY). Eksik sayfa veya bozuk mizan kesimi
@@ -144,35 +145,41 @@ export default async function TrialBalanceBridgePage({
           {canImport ? (
             <form
               action={importAndReconcileMizanAction}
-              className="grid grid-cols-1 gap-3 rounded border border-neutral-800 bg-neutral-950/60 p-3 text-xs sm:grid-cols-5"
+              className="grid grid-cols-1 gap-3 rounded border border-[var(--line)] bg-[var(--surface-2)] p-3 text-xs text-[var(--text-1)] sm:grid-cols-5"
             >
               <div>
-                <label className="mb-1 block text-[11px] text-neutral-400">Mizan Tarihi</label>
+                <label className="mb-1 block text-[11px] font-medium text-[var(--text-2)]">
+                  Mizan Tarihi
+                </label>
                 <input
                   type="date"
                   name="asOfDate"
                   required
-                  defaultValue={new Date().toISOString().slice(0, 10)}
-                  className="w-full rounded border border-neutral-800 bg-neutral-900 px-2 py-1.5"
+                  defaultValue="2026-06-30"
+                  className="w-full rounded border border-[var(--line)] bg-[var(--surface-1)] px-2 py-1.5 text-[var(--text-1)]"
                 />
               </div>
               <div>
-                <label className="mb-1 block text-[11px] text-neutral-400">Dönem Etiketi</label>
+                <label className="mb-1 block text-[11px] font-medium text-[var(--text-2)]">
+                  Dönem Etiketi
+                </label>
                 <input
                   type="text"
                   name="periodLabel"
                   required
                   placeholder="Ör. 2026-06 Haziran Mizanı"
                   defaultValue="2026-06 Dönem Sonu Mizanı"
-                  className="w-full rounded border border-neutral-800 bg-neutral-900 px-2 py-1.5"
+                  className="w-full rounded border border-[var(--line)] bg-[var(--surface-1)] px-2 py-1.5 text-[var(--text-1)]"
                 />
               </div>
               <div>
-                <label className="mb-1 block text-[11px] text-neutral-400">Kaynak Program</label>
+                <label className="mb-1 block text-[11px] font-medium text-[var(--text-2)]">
+                  Kaynak Program
+                </label>
                 <select
                   name="sourceSoftware"
                   defaultValue="Luca"
-                  className="w-full rounded border border-neutral-800 bg-neutral-900 px-2 py-1.5"
+                  className="w-full rounded border border-[var(--line)] bg-[var(--surface-1)] px-2 py-1.5 text-[var(--text-1)]"
                 >
                   <option value="Luca">Luca Mali Müşavir Paketi</option>
                   <option value="Logo">Logo Tiger / Go</option>
@@ -183,30 +190,30 @@ export default async function TrialBalanceBridgePage({
                 </select>
               </div>
               <div>
-                <label className="mb-1 block text-[11px] text-neutral-400">
+                <label className="mb-1 block text-[11px] font-medium text-[var(--text-2)]">
                   Mizan Dosyası (.xlsx / .csv / .xml)
                 </label>
                 <input
                   type="file"
                   name="file"
                   accept=".xlsx,.csv,.tsv,.xml,.txt"
-                  className="w-full rounded border border-neutral-800 bg-neutral-900 px-2 py-1 text-[11px]"
+                  className="w-full rounded border border-[var(--line)] bg-[var(--surface-1)] px-2 py-1 text-[11px] text-[var(--text-1)]"
                 />
               </div>
               <div className="flex items-end">
-                <button
-                  type="submit"
-                  className="w-full rounded bg-sky-700 px-3 py-1.5 font-medium text-white"
+                <SubmitButton
+                  pendingLabel="Yükleniyor…"
+                  className="w-full rounded bg-sky-700 px-3 py-1.5 font-medium text-white disabled:opacity-60"
                 >
                   Yasal Mizanı Yükle &amp; Köprüyü Çalıştır
-                </button>
+                </SubmitButton>
               </div>
               <div className="sm:col-span-5">
                 <textarea
                   name="rawMizanText"
                   rows={2}
                   placeholder="İsteğe bağlı: Dosya seçmek yerine CSV (Hesap Kodu;Hesap Adı;Borç;Alacak) veya XML mizan satırlarını doğrudan buraya yapıştırabilirsiniz."
-                  className="w-full rounded border border-neutral-800 bg-neutral-900 px-2 py-1.5 font-mono text-[11px]"
+                  className="w-full rounded border border-[var(--line)] bg-[var(--surface-1)] px-2 py-1.5 font-mono text-[11px] text-[var(--text-1)]"
                 />
               </div>
             </form>
@@ -218,7 +225,7 @@ export default async function TrialBalanceBridgePage({
                 <select
                   name="trialBalanceId"
                   defaultValue={summary?.statutoryTrialBalanceId ?? mizanListRes.rows[0].id}
-                  className="rounded border border-neutral-800 bg-neutral-900 px-2.5 py-1.5"
+                  className="rounded border border-[var(--line)] bg-[var(--surface-1)] px-2.5 py-1.5 text-[var(--text-1)]"
                 >
                   {mizanListRes.rows.map((m) => (
                     <option key={m.id} value={m.id}>
@@ -227,18 +234,20 @@ export default async function TrialBalanceBridgePage({
                     </option>
                   ))}
                 </select>
-                <button
-                  type="submit"
-                  className="rounded border border-neutral-700 bg-neutral-800 px-3 py-1.5 font-medium text-neutral-100"
+                <SubmitButton
+                  pendingLabel="Yenileniyor…"
+                  className="rounded border border-[var(--line)] bg-[var(--surface-2)] px-3 py-1.5 font-medium text-[var(--text-1)] disabled:opacity-60"
                 >
                   Seçili Mizanla Mutabakatı Yenile
-                </button>
+                </SubmitButton>
               </form>
             ) : null}
 
             {summary && canExport ? (
               <Link
                 href={`/api/ledger/reconciliation/${summary.runId}/export`}
+                download
+                data-no-nav-skeleton="true"
                 className="rounded bg-emerald-700 px-3 py-1.5 text-xs font-medium text-white"
               >
                 Mali Müşavir Mutabakat Paketi İndir (.xlsx — 3 Sekme)
@@ -255,97 +264,99 @@ export default async function TrialBalanceBridgePage({
       >
         {summary ? (
           <TableShell>
-            <thead>
-              <tr>
-                <th>TDHP Grubu</th>
-                <th>Hesap Grubu Adı</th>
-                <th className="text-right">MAS Yönetim Net (TRY)</th>
-                <th className="text-right">SMMM Yasal Net (TRY)</th>
-                <th className="text-right">Fark (MAS - Yasal)</th>
-                <th>Kök Neden Kodu</th>
-                <th>Durum</th>
-                <th>Teşhis &amp; Aday Kanıt Belgeleri</th>
-                <th>Aksiyon</th>
-              </tr>
-            </thead>
-            <tbody>
-              {summary.items.map((item) => (
-                <tr key={item.id}>
-                  <td className="font-mono text-xs font-semibold">{item.tdhpGroupCode}</td>
-                  <td className="text-xs">{item.tdhpGroupName}</td>
-                  <td className="text-right font-mono text-xs">
-                    {formatMoney(item.managementNetTry)}
-                  </td>
-                  <td className="text-right font-mono text-xs">
-                    {formatMoney(item.statutoryNetTry)}
-                  </td>
-                  <td
-                    className={`text-right font-mono text-xs font-semibold ${
-                      Math.abs(item.deltaTry) < 0.005
-                        ? "text-emerald-300"
-                        : item.deltaTry > 0
-                          ? "text-amber-300"
-                          : "text-red-300"
-                    }`}
-                  >
-                    {formatMoney(item.deltaTry)}
-                  </td>
-                  <td className="font-mono text-[11px]">{item.rootCauseCode}</td>
-                  <td>
-                    <Badge
-                      tone={
-                        item.severity === "match"
-                          ? "green"
-                          : item.severity === "critical"
-                            ? "red"
-                            : item.severity === "warning"
-                              ? "amber"
-                              : "blue"
-                      }
-                    >
-                      {item.severity}
-                    </Badge>
-                  </td>
-                  <td className="max-w-md space-y-1 text-xs">
-                    <div>{item.explanation}</div>
-                    {item.candidateEvidence.length > 0 ? (
-                      <div className="rounded border border-neutral-800 bg-neutral-950/70 p-1.5 text-[11px] text-neutral-300">
-                        <div className="font-semibold text-neutral-400">
-                          Aday MAS Kanıt Kayıtları ({item.candidateEvidence.length}):
-                        </div>
-                        <ul className="list-inside list-disc">
-                          {item.candidateEvidence.map((ev) => (
-                            <li key={`${ev.entityTable}:${ev.entityId}`}>
-                              <span className="font-mono">{ev.docDate}</span> ·{" "}
-                              <span className="font-mono font-semibold">{ev.docRef}</span> ·{" "}
-                              {formatMoney(ev.amountTry)} TRY — {ev.summary}
-                            </li>
-                          ))}
-                        </ul>
-                      </div>
-                    ) : null}
-                  </td>
-                  <td>
-                    {item.actionItemId ? (
-                      <Badge tone="green">Görev Açıldı</Badge>
-                    ) : item.severity !== "match" && canCreateTask ? (
-                      <form action={createReconciliationTaskAction}>
-                        <input type="hidden" name="itemId" value={item.id} />
-                        <input type="hidden" name="runId" value={summary.runId} />
-                        <button
-                          type="submit"
-                          className="rounded border border-amber-700/70 bg-amber-950/40 px-2 py-1 text-[11px] text-amber-200"
-                        >
-                          Görev Aç
-                        </button>
-                      </form>
-                    ) : (
-                      <span className="text-[11px] text-neutral-500">—</span>
-                    )}
-                  </td>
+            <table className="w-full text-xs">
+              <thead>
+                <tr>
+                  <th>TDHP Grubu</th>
+                  <th>Hesap Grubu Adı</th>
+                  <th className="text-right">MAS Yönetim Net (TRY)</th>
+                  <th className="text-right">SMMM Yasal Net (TRY)</th>
+                  <th className="text-right">Fark (MAS - Yasal)</th>
+                  <th>Kök Neden Kodu</th>
+                  <th>Durum</th>
+                  <th>Teşhis &amp; Aday Kanıt Belgeleri</th>
+                  <th>Aksiyon</th>
                 </tr>
-              ))}
-            </tbody>
+              </thead>
+              <tbody>
+                {summary.items.map((item) => (
+                  <tr key={item.id}>
+                    <td className="font-mono text-xs font-semibold">{item.tdhpGroupCode}</td>
+                    <td className="text-xs">{item.tdhpGroupName}</td>
+                    <td className="text-right font-mono text-xs">
+                      {formatMoney(item.managementNetTry)}
+                    </td>
+                    <td className="text-right font-mono text-xs">
+                      {formatMoney(item.statutoryNetTry)}
+                    </td>
+                    <td
+                      className={`text-right font-mono text-xs font-semibold ${
+                        Math.abs(item.deltaTry) < 0.005
+                          ? "text-emerald-700"
+                          : item.deltaTry > 0
+                            ? "text-amber-700"
+                            : "text-red-700"
+                      }`}
+                    >
+                      {formatMoney(item.deltaTry)}
+                    </td>
+                    <td className="font-mono text-[11px]">{item.rootCauseCode}</td>
+                    <td>
+                      <Badge
+                        tone={
+                          item.severity === "match"
+                            ? "green"
+                            : item.severity === "critical"
+                              ? "red"
+                              : item.severity === "warning"
+                                ? "amber"
+                                : "blue"
+                        }
+                      >
+                        {item.severity}
+                      </Badge>
+                    </td>
+                    <td className="max-w-md space-y-1 text-xs">
+                      <div>{item.explanation}</div>
+                      {item.candidateEvidence.length > 0 ? (
+                        <div className="rounded border border-[var(--line)] bg-[var(--surface-2)] p-1.5 text-[11px] text-[var(--text-2)]">
+                          <div className="font-semibold text-[var(--text-1)]">
+                            Aday MAS Kanıt Kayıtları ({item.candidateEvidence.length}):
+                          </div>
+                          <ul className="list-inside list-disc">
+                            {item.candidateEvidence.map((ev) => (
+                              <li key={`${ev.entityTable}:${ev.entityId}`}>
+                                <span className="font-mono">{ev.docDate}</span> ·{" "}
+                                <span className="font-mono font-semibold">{ev.docRef}</span> ·{" "}
+                                {formatMoney(ev.amountTry)} TRY — {ev.summary}
+                              </li>
+                            ))}
+                          </ul>
+                        </div>
+                      ) : null}
+                    </td>
+                    <td>
+                      {item.actionItemId ? (
+                        <Badge tone="green">Görev Açıldı</Badge>
+                      ) : item.severity !== "match" && canCreateTask ? (
+                        <form action={createReconciliationTaskAction}>
+                          <input type="hidden" name="itemId" value={item.id} />
+                          <input type="hidden" name="runId" value={summary.runId} />
+                          <SubmitButton
+                            pendingLabel="Açılıyor…"
+                            className="rounded border border-amber-400 bg-amber-50 px-2 py-1 text-[11px] font-medium text-amber-800 disabled:opacity-60"
+                          >
+                            Görev Aç
+                          </SubmitButton>
+                        </form>
+                      ) : (
+                        <span className="text-[11px] text-[var(--text-3)]">—</span>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </TableShell>
         ) : (
           <EmptyState>
@@ -361,68 +372,69 @@ export default async function TrialBalanceBridgePage({
           subtitle="Operasyonel Yönetim EBITDA'sından amortisman (770.99), finansman gideri (780) ve dönemsellik kesim farklarıyla yasal mizan 690 Vergi Öncesi Kâr/Zarar hesabına kuruşu kuruşuna köprü."
         >
           <TableShell>
-            <thead>
-              <tr>
-                <th>Köprü Adımı</th>
-                <th className="text-right">Tutar (TRY)</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr className="bg-emerald-950/30 font-bold text-emerald-300">
-                <td>1. MAS Yönetim EBITDA (Faaliyet Kârı + Amortisman Geri Eklemesi)</td>
-                <td className="text-right font-mono">{formatMoney(b.managementEbitdaTry)}</td>
-              </tr>
-              <tr>
-                <td>2. (-) MAS Amortisman ve İtfa Payları (`770.99` / `257`)</td>
-                <td className="text-right font-mono text-amber-300">
-                  -{formatMoney(b.lessManagementDepreciationTry)}
-                </td>
-              </tr>
-              <tr className="font-semibold">
-                <td>3. (=) MAS Faaliyet Kârı (EBIT)</td>
-                <td className="text-right font-mono">{formatMoney(b.managementEbitTry)}</td>
-              </tr>
-              <tr>
-                <td>4. (-) MAS Finansman Giderleri (`780` Faiz + BSMV + KKDF)</td>
-                <td className="text-right font-mono text-red-300">
-                  -{formatMoney(b.lessManagementFinancingTry)}
-                </td>
-              </tr>
-              <tr>
-                <td>5. (+) MAS Diğer Olağan Gelir ve Kârlar / Giderler Net (`642`–`656`)</td>
-                <td className="text-right font-mono">{formatMoney(b.plusManagementOtherNetTry)}</td>
-              </tr>
-              <tr className="border-t border-neutral-700 font-semibold">
-                <td>6. (=) MAS Yönetim Vergi Öncesi Kârı (`690` EBT)</td>
-                <td className="text-right font-mono">{formatMoney(b.management690EbtTry)}</td>
-              </tr>
-              <tr>
-                <td>7. (+/-) Satış Gelirleri Dönemsellik / Kesim Farkı (`600`–`619`)</td>
-                <td className="text-right font-mono">{formatMoney(b.revenueTimingGapTry)}</td>
-              </tr>
-              <tr>
-                <td>8. (+/-) Maliyet ve Faaliyet Giderleri Belge / Tahakkuk Farkı (`620`–`770`)</td>
-                <td className="text-right font-mono">{formatMoney(b.expenseTimingGapTry)}</td>
-              </tr>
-              <tr>
-                <td>9. (+/-) Finansman Gideri Kayıt Farkı (`780`)</td>
-                <td className="text-right font-mono">{formatMoney(b.financingTimingGapTry)}</td>
-              </tr>
-              <tr>
-                <td>10. (+/-) Diğer Gelir/Gider &amp; Yuvarlama Farkı</td>
-                <td className="text-right font-mono">
-                  {formatMoney(b.unexplainedBridgeResidualTry)}
-                </td>
-              </tr>
-              <tr className="border-t border-neutral-700 bg-sky-950/30 font-bold text-sky-200">
-                <td>11. (=) SMMM Yasal Mizan `690` Dönem Kârı / (Zararı)</td>
-                <td className="text-right font-mono">{formatMoney(b.statutory690EbtTry)}</td>
-              </tr>
-            </tbody>
+            <table className="w-full text-xs">
+              <thead>
+                <tr>
+                  <th>Köprü Adımı</th>
+                  <th className="text-right">Tutar (TRY)</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr className="bg-emerald-50 font-bold text-emerald-900">
+                  <td>1. MAS Yönetim EBITDA (Faaliyet Kârı + Amortisman Geri Eklemesi)</td>
+                  <td className="text-right font-mono">{formatMoney(b.managementEbitdaTry)}</td>
+                </tr>
+                <tr>
+                  <td>2. (-) MAS Amortisman ve İtfa Payları (`770.99` / `257`)</td>
+                  <td className="text-right font-mono text-amber-700">
+                    -{formatMoney(b.lessManagementDepreciationTry)}
+                  </td>
+                </tr>
+                <tr className="font-semibold">
+                  <td>3. (=) MAS Faaliyet Kârı (EBIT)</td>
+                  <td className="text-right font-mono">{formatMoney(b.managementEbitTry)}</td>
+                </tr>
+                <tr>
+                  <td>4. (-) MAS Finansman Giderleri (`780` Faiz + BSMV + KKDF)</td>
+                  <td className="text-right font-mono text-red-700">
+                    -{formatMoney(b.lessManagementFinancingTry)}
+                  </td>
+                </tr>
+                <tr>
+                  <td>5. (+) MAS Diğer Olağan Gelir ve Kârlar / Giderler Net (`642`–`656`)</td>
+                  <td className="text-right font-mono">{formatMoney(b.plusManagementOtherNetTry)}</td>
+                </tr>
+                <tr className="border-t border-[var(--line)] font-semibold">
+                  <td>6. (=) MAS Yönetim Vergi Öncesi Kârı (`690` EBT)</td>
+                  <td className="text-right font-mono">{formatMoney(b.management690EbtTry)}</td>
+                </tr>
+                <tr>
+                  <td>7. (+/-) Satış Gelirleri Dönemsellik / Kesim Farkı (`600`–`619`)</td>
+                  <td className="text-right font-mono">{formatMoney(b.revenueTimingGapTry)}</td>
+                </tr>
+                <tr>
+                  <td>8. (+/-) Maliyet ve Faaliyet Giderleri Belge / Tahakkuk Farkı (`620`–`770`)</td>
+                  <td className="text-right font-mono">{formatMoney(b.expenseTimingGapTry)}</td>
+                </tr>
+                <tr>
+                  <td>9. (+/-) Finansman Gideri Kayıt Farkı (`780`)</td>
+                  <td className="text-right font-mono">{formatMoney(b.financingTimingGapTry)}</td>
+                </tr>
+                <tr>
+                  <td>10. (+/-) Diğer Gelir/Gider &amp; Yuvarlama Farkı</td>
+                  <td className="text-right font-mono">
+                    {formatMoney(b.unexplainedBridgeResidualTry)}
+                  </td>
+                </tr>
+                <tr className="border-t border-[var(--line)] bg-sky-50 font-bold text-sky-900">
+                  <td>11. (=) SMMM Yasal Mizan `690` Dönem Kârı / (Zararı)</td>
+                  <td className="text-right font-mono">{formatMoney(b.statutory690EbtTry)}</td>
+                </tr>
+              </tbody>
+            </table>
           </TableShell>
         </Panel>
       ) : null}
     </div>
   );
 }
-

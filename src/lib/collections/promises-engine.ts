@@ -134,6 +134,17 @@ export async function resolvePromise(pool: Pool, raw: unknown, actorId: string):
        where id=$1`,
       [input.promiseId, input.status, actorId, input.note ?? null]);
 
+    if (input.status === "kept" || input.status === "cancelled") {
+      await client.query(
+        `update public.action_items
+            set status = $2
+          where related_entity_table = 'promise_to_pay'
+            and related_entity_id = $1
+            and status in ('open', 'in_progress')`,
+        [input.promiseId, input.status === "kept" ? "done" : "cancelled"],
+      );
+    }
+
     await audit(client, {
       actor: actorId, action: `promise_${input.status}`,
       entityTable: "promise_to_pay", entityId: input.promiseId,
@@ -280,6 +291,55 @@ export async function loadCollectionScores(pool: Pool, limit = 100): Promise<Col
     promisePendingCount: Number(r.promise_pending_count),
     promiseBrokenCount: Number(r.promise_broken_count),
     promiseKeptRatio: r.promise_kept_ratio == null ? null : Number(r.promise_kept_ratio),
+  }));
+}
+
+export interface BrokenPromiseRow {
+  promiseId: string;
+  partyId: string;
+  partyName: string;
+  invoiceId: string | null;
+  promisedAmount: number | null;
+  currency: string;
+  promisedDate: string;
+  channel: string;
+  note: string | null;
+  resolvedAt: string | null;
+}
+
+export async function loadBrokenPromises(
+  pool: Pick<Pool, "query">,
+  limit = 100,
+): Promise<BrokenPromiseRow[]> {
+  const res = await pool.query(
+    `select p.id::text as promise_id,
+            p.party_id::text as party_id,
+            pa.name as party_name,
+            p.invoice_id::text as invoice_id,
+            p.promised_amount,
+            p.currency,
+            to_char(p.promised_date, 'YYYY-MM-DD') as promised_date,
+            p.channel,
+            p.note,
+            to_char(p.resolved_at, 'YYYY-MM-DD') as resolved_at
+       from public.promise_to_pay p
+       join public.parties pa on pa.id = p.party_id
+      where p.status = 'broken'
+      order by p.promised_date desc, pa.name asc
+      limit $1`,
+    [limit],
+  );
+  return res.rows.map((r) => ({
+    promiseId: r.promise_id,
+    partyId: r.party_id,
+    partyName: r.party_name,
+    invoiceId: r.invoice_id ?? null,
+    promisedAmount: moneyOrNull(r.promised_amount),
+    currency: r.currency ?? "TRY",
+    promisedDate: r.promised_date,
+    channel: r.channel,
+    note: r.note ?? null,
+    resolvedAt: r.resolved_at ?? null,
   }));
 }
 

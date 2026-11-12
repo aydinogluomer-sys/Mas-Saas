@@ -31,7 +31,7 @@ export function RiskBadges({ reasons }: { reasons: string[] }) {
 // markInstancePaid/cancelInstance actually accept. Showing a button outside its set (e.g. for
 // cancelled/unknown) would offer an action whose click always fails with a domain error.
 const PAYABLE_FROM = new Set(["unpaid", "planned", "late", "partial"]);
-const CANCELLABLE_FROM = new Set(["unpaid", "planned", "late"]);
+const CANCELLABLE_FROM = new Set(["unpaid", "planned", "late", "partial"]);
 
 /**
  * `canMutate` ZORUNLUDUR ve varsayılanı YOKTUR — bilerek.
@@ -90,7 +90,7 @@ export function InstanceRowView({ r, backTo, showDate = false, canMutate }: { r:
           <input type="hidden" name="id" value={r.id} />
           <input type="hidden" name="backTo" value={backTo} />
           <input name="amount" inputMode="numeric" placeholder="tutar" required
-            className="min-w-0 flex-1 border border-line bg-black/40 px-2 py-1 font-mono text-xs sm:w-24 sm:flex-initial" />
+            className="field-control min-w-0 flex-1 px-2 py-1 font-mono text-xs sm:w-24 sm:flex-initial" />
           <button className="button-ghost px-2 py-1">kaydet</button>
         </form>
       )}
@@ -107,16 +107,23 @@ export function InstanceRowView({ r, backTo, showDate = false, canMutate }: { r:
             <input type="hidden" name="backTo" value={backTo} />
             {r.amount == null && (
               <input name="paidAmount" inputMode="numeric" placeholder="ödenen?"
-                className="min-w-0 flex-1 border border-line bg-black/40 px-2 py-1 font-mono text-xs sm:w-24 sm:flex-initial" />
+                className="field-control min-w-0 flex-1 px-2 py-1 font-mono text-xs sm:w-24 sm:flex-initial" />
             )}
             <button className="button-primary px-2 py-1">ödendi</button>
           </form>
+          {partial && (
+            <form action={markUnpaidAction} className="inline">
+              <input type="hidden" name="id" value={r.id} />
+              <input type="hidden" name="backTo" value={backTo} />
+              <button className="button-ghost px-2 py-1">geri al</button>
+            </form>
+          )}
           {r.amount != null && (
             <form action={markPartialAction} className="flex items-center gap-1">
               <input type="hidden" name="id" value={r.id} />
               <input type="hidden" name="backTo" value={backTo} />
               <input required name="paidAmount" inputMode="numeric" placeholder="kısmi tutar"
-                className="w-24 border border-line bg-black/40 px-2 py-1 font-mono text-xs" />
+                className="field-control w-24 px-2 py-1 font-mono text-xs" />
               <button className="button-ghost px-2 py-1">kısmi</button>
             </form>
           )}
@@ -125,7 +132,7 @@ export function InstanceRowView({ r, backTo, showDate = false, canMutate }: { r:
               <input type="hidden" name="id" value={r.id} />
               <input type="hidden" name="backTo" value={backTo} />
               <input required name="reason" placeholder="iptal nedeni"
-                className="w-28 border border-line bg-black/40 px-2 py-1 font-mono text-xs" />
+                className="field-control w-28 px-2 py-1 font-mono text-xs" />
               <button className="button-ghost px-2 py-1 text-neg">iptal</button>
             </form>
           )}

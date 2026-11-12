@@ -4,9 +4,13 @@ import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { requireActionPermission } from "@/lib/auth";
 import { createForecast, createForecastLine } from "@/lib/budget/engine";
+import {
+  isHandledActionError,
+  isPgPeriodLockedError,
+  toUserActionErrorMessage,
+} from "@/lib/cashflow/period-lock";
 import { freezeWeekly13wSnapshot, mondayOfWeek } from "@/lib/cashflow/rolling-13w-engine";
 import { getPool } from "@/lib/db";
-import { DomainError } from "@/lib/domain-error";
 import { formObject } from "@/lib/validation";
 
 const BASE = "/cashflow/13-week";
@@ -22,8 +26,12 @@ function normalizeDbtMode(raw: unknown): "median" | "p75" {
 }
 
 function domainRedirect(e: unknown, currency: string): never {
-  if (e instanceof DomainError) {
-    redirect(`${BASE}?currency=${encodeURIComponent(currency)}&error=${encodeURIComponent(e.message)}`);
+  if (isPgPeriodLockedError(e) || isHandledActionError(e)) {
+    redirect(
+      `${BASE}?currency=${encodeURIComponent(currency)}&error=${encodeURIComponent(
+        toUserActionErrorMessage(e, "13 haftalık nakit tahmini işlemi tamamlanamadı."),
+      )}`,
+    );
   }
   throw e;
 }

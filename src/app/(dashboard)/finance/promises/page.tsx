@@ -1,6 +1,6 @@
 import { getPool } from "@/lib/db";
 import {
-  loadCollectionActions, loadCollectionScores, loadOpenPromises,
+  loadBrokenPromises, loadCollectionActions, loadCollectionScores, loadOpenPromises,
 } from "@/lib/collections/promises-engine";
 import { BAND_LABEL, SCORE_REASON_LABEL, type ScoreBand } from "@/lib/collections/promises";
 import { formatMoney } from "@/lib/money-format";
@@ -8,6 +8,7 @@ import { Badge, type Tone } from "@/components/ui/badge";
 import { Panel, fmtTL } from "@/components/ui/panel";
 import { sumKnownReporting } from "@/lib/currency-policy";
 import { EmptyState, KeyStat, PageHeader, TableShell } from "@/components/ui/shell";
+import { SubmitButton } from "@/components/ui/submit-button";
 import { requireRouteAccess } from "@/lib/authz/route-guard";
 import { createPromiseAction, detectBrokenAction, resolvePromiseAction } from "./actions";
 
@@ -40,8 +41,9 @@ export default async function PromisesPage({
   if (denied) return denied;
   const sp = await searchParams;
   const pool = getPool();
-  const [open, scores, actions, parties, openSalesInvoices] = await Promise.all([
+  const [open, broken, scores, actions, parties, openSalesInvoices] = await Promise.all([
     loadOpenPromises(pool),
+    loadBrokenPromises(pool, 100),
     loadCollectionScores(pool, 50),
     loadCollectionActions(pool, 50),
     pool.query<{ id: string; name: string }>(
@@ -78,11 +80,19 @@ export default async function PromisesPage({
       />
 
       {sp.error ? (
-        <div className="rounded border border-amber-700/50 bg-amber-950/30 px-3 py-2 text-sm text-amber-200">{sp.error}</div>
+        <div className="mb-3 rounded border border-neg/40 bg-neg/10 px-3 py-2 text-sm text-neg">{sp.error}</div>
       ) : null}
       {sp.result === "detected" ? (
-        <div className="rounded border border-neutral-700 bg-neutral-900/60 px-3 py-2 text-sm text-neutral-300">
+        <div className="mb-3 rounded border border-pos/40 bg-pos/10 px-3 py-2 text-sm text-pos">
           Tespit çalıştı: {sp.n ?? 0} söz kırılmış olarak işaretlendi.
+        </div>
+      ) : sp.result === "resolved" ? (
+        <div className="mb-3 rounded border border-pos/40 bg-pos/10 px-3 py-2 text-sm text-pos">
+          Ödeme sözü durumu güncellendi.
+        </div>
+      ) : sp.result === "created" ? (
+        <div className="mb-3 rounded border border-pos/40 bg-pos/10 px-3 py-2 text-sm text-pos">
+          Yeni ödeme sözü kaydedildi.
         </div>
       ) : null}
 
@@ -109,22 +119,22 @@ export default async function PromisesPage({
           <TableShell>
             <table className="w-full text-sm">
               <thead>
-                <tr className="text-left text-xs uppercase text-neutral-500">
+                <tr className="text-left text-xs uppercase text-tone-3">
                   <th className="py-1">Cari</th><th>Söz tarihi</th><th className="text-right">Tutar</th>
                   <th>Kanal</th><th>Durum</th><th>Karar</th>
                 </tr>
               </thead>
               <tbody>
                 {open.map((p) => (
-                  <tr key={p.promiseId} className="border-t border-neutral-800 align-top">
+                  <tr key={p.promiseId} className="border-t border-line-faint align-top">
                     <td className="py-2">
                       {p.partyName}
-                      {p.note ? <span className="block text-xs text-neutral-600">{p.note}</span> : null}
+                      {p.note ? <span className="block text-xs text-tone-3">{p.note}</span> : null}
                     </td>
                     <td className="tabular-nums">{p.promisedDate}</td>
                     <td className="text-right font-mono tabular-nums">
                       {p.promisedAmount == null
-                        ? <span className="text-amber-400">tutar belirtilmedi</span>
+                        ? <span className="text-warn">tutar belirtilmedi</span>
                         : formatMoney(p.promisedAmount, p.currency)}
                     </td>
                     <td className="text-xs">{CHANNEL_LABEL[p.channel] ?? p.channel}</td>
@@ -136,9 +146,65 @@ export default async function PromisesPage({
                     <td className="py-2">
                       <form action={resolvePromiseAction} className="flex flex-wrap items-center gap-1">
                         <input type="hidden" name="promiseId" value={p.promiseId} />
-                        <button name="status" value="kept" className="rounded bg-emerald-800 px-2 py-1 text-xs">Tutuldu</button>
-                        <button name="status" value="broken" className="rounded bg-amber-800 px-2 py-1 text-xs">Kırıldı</button>
-                        <button name="status" value="cancelled" className="rounded bg-neutral-700 px-2 py-1 text-xs">İptal</button>
+                        <button name="status" value="kept" className="button-ghost px-2 py-1 text-xs text-pos">Tutuldu</button>
+                        <button name="status" value="broken" className="button-ghost px-2 py-1 text-xs text-warn">Kırıldı</button>
+                        <button name="status" value="cancelled" className="button-ghost px-2 py-1 text-xs text-tone-3">İptal</button>
+                      </form>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </TableShell>
+        )}
+      </Panel>
+
+      <Panel
+        title={`KIRILAN SÖZLER (GECİKMELİ TAHSİLAT KAPANIŞI) — ${broken.length}`}
+        subtitle="gecikmeli ödeme geldiğinde sözü tutuldu olarak işaretleyip takip görevini kapatın"
+      >
+        {broken.length === 0 ? (
+          <EmptyState>Kırılmış ödeme sözü kaydı yok.</EmptyState>
+        ) : (
+          <TableShell>
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="text-left text-xs uppercase text-tone-3">
+                  <th className="py-1">Cari</th>
+                  <th>Söz tarihi</th>
+                  <th className="text-right">Tutar</th>
+                  <th>Kanal</th>
+                  <th>Gecikmeli Tahsilat Kararı</th>
+                </tr>
+              </thead>
+              <tbody>
+                {broken.map((b) => (
+                  <tr key={b.promiseId} className="border-t border-line-faint align-top">
+                    <td className="py-2">
+                      {b.partyName}
+                      {b.note ? <span className="block text-xs text-tone-3">{b.note}</span> : null}
+                    </td>
+                    <td className="font-mono text-xs tabular-nums">{b.promisedDate}</td>
+                    <td className="text-right font-mono tabular-nums">
+                      {b.promisedAmount == null ? (
+                        <span className="text-warn">tutar belirtilmedi</span>
+                      ) : (
+                        formatMoney(b.promisedAmount, b.currency)
+                      )}
+                    </td>
+                    <td className="text-xs">{CHANNEL_LABEL[b.channel] ?? b.channel}</td>
+                    <td className="py-1.5">
+                      <form action={resolvePromiseAction} className="flex flex-wrap items-center gap-1.5">
+                        <input type="hidden" name="promiseId" value={b.promiseId} />
+                        <input type="hidden" name="status" value="kept" />
+                        <input
+                          name="note"
+                          placeholder="Gecikmeli tahsilat notu (opsiyonel)"
+                          className="field-control w-52 px-2 py-1 text-xs"
+                        />
+                        <SubmitButton pendingText="Güncelleniyor…" className="button-ghost px-2.5 py-1 text-xs text-pos">
+                          Tutuldu Olarak İşaretle
+                        </SubmitButton>
                       </form>
                     </td>
                   </tr>
@@ -209,14 +275,14 @@ export default async function PromisesPage({
           <TableShell>
             <table className="w-full text-sm">
               <thead>
-                <tr className="text-left text-xs uppercase text-neutral-500">
+                <tr className="text-left text-xs uppercase text-tone-3">
                   <th className="py-1">Cari</th><th className="text-right">Puan</th><th>Bant</th>
                   <th className="text-right">Gecikmiş (TRY)</th><th>Söz (açık/kırık)</th><th>Gerekçe</th>
                 </tr>
               </thead>
               <tbody>
                 {scores.map((s) => (
-                  <tr key={s.partyId} className="border-t border-neutral-800">
+                  <tr key={s.partyId} className="border-t border-line-faint">
                     <td className="py-2">{s.partyName}</td>
                     <td className="text-right tabular-nums">{s.collectionScore}</td>
                     <td>
@@ -226,7 +292,7 @@ export default async function PromisesPage({
                     </td>
                     <td className="text-right tabular-nums">{s.overdueAmount == null ? "—" : fmtTL(s.overdueAmount)}</td>
                     <td className="tabular-nums text-xs">{s.promisePendingCount} / {s.promiseBrokenCount}</td>
-                    <td className="text-xs text-neutral-400">
+                    <td className="text-xs text-tone-2">
                       {s.scoreReasons.length === 0
                         ? "—"
                         : s.scoreReasons.map((r) => SCORE_REASON_LABEL[r] ?? r).join(" · ")}
@@ -246,17 +312,17 @@ export default async function PromisesPage({
           <TableShell>
             <table className="w-full text-sm">
               <thead>
-                <tr className="text-left text-xs uppercase text-neutral-500">
+                <tr className="text-left text-xs uppercase text-tone-3">
                   <th className="py-1">Başlık</th><th>Önem</th><th>Durum</th><th>Not</th>
                 </tr>
               </thead>
               <tbody>
                 {actions.map((a: { id: string; title: string; severity: string; status: string; note: string | null }) => (
-                  <tr key={a.id} className="border-t border-neutral-800">
+                  <tr key={a.id} className="border-t border-line-faint">
                     <td className="py-2">{a.title}</td>
                     <td><Badge tone={a.severity === "critical" ? "red" : a.severity === "high" ? "amber" : "neutral"}>{ACTION_SEVERITY_TR[a.severity] ?? a.severity}</Badge></td>
                     <td className="text-xs">{ACTION_STATUS_TR[a.status] ?? a.status}</td>
-                    <td className="text-xs text-neutral-400">{a.note}</td>
+                    <td className="text-xs text-tone-2">{a.note}</td>
                   </tr>
                 ))}
               </tbody>

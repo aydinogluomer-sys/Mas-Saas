@@ -16,9 +16,43 @@ const CHECK_SETTLEABLE_FROM = new Set([
   "issued_to_vendor",
 ]);
 
-import { markCheckBouncedAction, markCheckClearedAction } from "@/app/(dashboard)/finance/actions";
+import {
+  cancelCheckAction,
+  classifyUnknownCheckAction,
+  markCheckBouncedAction,
+  markCheckClearedAction,
+} from "@/app/(dashboard)/finance/actions";
 
 export function CheckSettleForms({ id, status, backTo }: { id: string; status: string; backTo: string }) {
+  if (status === "unknown") {
+    return (
+      <>
+        <form action={classifyUnknownCheckAction}>
+          <input type="hidden" name="id" value={id} />
+          <input type="hidden" name="targetStatus" value="in_portfolio" />
+          <input type="hidden" name="backTo" value={backTo} />
+          <button type="submit" className="button-ghost px-2 py-1 text-pos">
+            portföye al
+          </button>
+        </form>
+        <form action={classifyUnknownCheckAction}>
+          <input type="hidden" name="id" value={id} />
+          <input type="hidden" name="targetStatus" value="issued_to_vendor" />
+          <input type="hidden" name="backTo" value={backTo} />
+          <button type="submit" className="button-ghost px-2 py-1 text-warn">
+            keşide (verilen)
+          </button>
+        </form>
+        <form action={cancelCheckAction}>
+          <input type="hidden" name="id" value={id} />
+          <input type="hidden" name="reason" value="Bilinmeyen çek iptal edildi" />
+          <button type="submit" className="button-ghost px-2 py-1 text-neg">
+            iptal
+          </button>
+        </form>
+      </>
+    );
+  }
   if (!CHECK_SETTLEABLE_FROM.has(status)) return null;
   return (
     <>

@@ -1,15 +1,30 @@
+"use client";
+
+import { Suspense } from "react";
+import { useSearchParams } from "next/navigation";
 import { Badge } from "@/components/ui/badge";
 import {
   activeFilterCount,
   DATE_PRESET_LABEL,
   DATE_PRESETS,
   describeFilters,
-  filtersToParams,
   type GlobalFilters,
 } from "@/lib/ui/filters";
-import { type ModuleKey, type SavedView } from "@/lib/ui/saved-views";
+import {
+  buildSavedViewHrefPreservingContext,
+  extractPreservedContextParams,
+  pickDefaultSavedView,
+  type ModuleKey,
+  type RawQueryParamMap,
+  type SavedView,
+} from "@/lib/ui/saved-views";
 import { describeSelection, EMPTY_SELECTION, PAGE_SIZES } from "@/lib/ui/table";
-import { deleteSavedViewAction, saveCurrentViewAction } from "@/app/(dashboard)/saved-views-actions";
+import {
+  applyDefaultSavedViewAction,
+  applySavedViewAction,
+  deleteSavedViewAction,
+  saveCurrentViewAction,
+} from "@/app/(dashboard)/saved-views-actions";
 
 export interface SavedViewsBarProps {
   moduleKey: ModuleKey;
@@ -18,27 +33,47 @@ export interface SavedViewsBarProps {
   currentFilters: GlobalFilters;
   todayISO: string;
   totalRows?: number;
+  contextParams?: RawQueryParamMap;
 }
 
-export function SavedViewsBar({
+function SavedViewsBarInner({
   moduleKey,
   basePath,
   views,
   currentFilters,
   todayISO,
   totalRows,
-}: SavedViewsBarProps) {
+  mergedContext,
+}: Omit<SavedViewsBarProps, "contextParams"> & {
+  mergedContext: Record<string, string>;
+}) {
   const count = activeFilterCount(currentFilters);
   const summary = describeFilters(currentFilters, todayISO);
-  const currentQuery = filtersToParams(currentFilters).toString();
-  const returnPath = currentQuery ? `${basePath}?${currentQuery}` : basePath;
+  const returnPath = buildSavedViewHrefPreservingContext(basePath, mergedContext, currentFilters);
+  const resetHref = buildSavedViewHrefPreservingContext(basePath, mergedContext, null);
+  const defaultView = pickDefaultSavedView(views);
+  const cleanPathname = (basePath.includes("?") ? basePath.slice(0, basePath.indexOf("?")) : basePath) || "/";
+  const serializedContext = JSON.stringify(mergedContext);
+
   const scopeLabel = describeSelection(
     totalRows != null ? { ...EMPTY_SELECTION, allMatching: true } : EMPTY_SELECTION,
     totalRows ?? null,
   );
 
+  const inputSurfaceStyle = {
+    background: "var(--surface-1)",
+    borderColor: "var(--line)",
+    color: "var(--text-1)",
+  } as const;
+
   return (
-    <div className="mb-3 border border-line bg-surface px-3 py-2.5">
+    <div
+      style={{
+        background: "var(--surface-1)",
+        borderColor: "var(--line)",
+      }}
+      className="mb-3 border px-3 py-2.5"
+    >
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="flex flex-wrap items-center gap-2">
           <span className="font-mono text-[11px] uppercase tracking-wider text-tone-3">
@@ -52,7 +87,7 @@ export function SavedViewsBar({
 
         <div className="flex flex-wrap items-center gap-1.5">
           <a
-            href={basePath}
+            href={resetHref}
             className={`border px-2 py-0.5 font-mono text-[11px] transition-colors ${
               count === 0
                 ? "border-accent bg-accent/10 text-tone-1"
@@ -61,20 +96,54 @@ export function SavedViewsBar({
           >
             Tümü (Varsayılan)
           </a>
+
+          {defaultView && count === 0 ? (
+            <form action={applyDefaultSavedViewAction} className="inline">
+              <input type="hidden" name="module_key" value={moduleKey} />
+              <input type="hidden" name="base_path" value={cleanPathname} />
+              <input type="hidden" name="context_json" value={serializedContext} />
+              <button
+                type="submit"
+                style={{
+                  background: "var(--surface-2)",
+                  borderColor: "var(--line)",
+                  color: "var(--text-1)",
+                }}
+                className="border px-2 py-0.5 font-mono text-[11px] hover:border-accent"
+                title={`Varsayılan görünümü uygula: ${describeFilters(defaultView.filters, todayISO)}`}
+              >
+                ★ Varsayılanı Uygula ({defaultView.name})
+              </button>
+            </form>
+          ) : null}
+
           {views.map((v) => {
-            const qs = filtersToParams(v.filters).toString();
-            const href = qs ? `${basePath}?${qs}` : basePath;
+            const href = buildSavedViewHrefPreservingContext(basePath, mergedContext, v.filters);
             return (
-              <div key={v.id} className="inline-flex items-center border border-line bg-surface-2">
-                <a
-                  href={href}
-                  className="px-2 py-0.5 font-mono text-[11px] text-tone-1 hover:text-accent"
-                  title={describeFilters(v.filters, todayISO)}
-                >
-                  {v.isDefault ? "★ " : ""}
-                  {v.name}
-                  {v.isShared ? " (paylaşılan)" : ""}
-                </a>
+              <div
+                key={v.id}
+                style={{
+                  background: "var(--surface-2)",
+                  borderColor: "var(--line)",
+                }}
+                className="inline-flex items-center border"
+              >
+                <form action={applySavedViewAction} className="inline">
+                  <input type="hidden" name="view_id" value={v.id} />
+                  <input type="hidden" name="module_key" value={moduleKey} />
+                  <input type="hidden" name="base_path" value={cleanPathname} />
+                  <input type="hidden" name="context_json" value={serializedContext} />
+                  <button
+                    type="submit"
+                    data-href={href}
+                    className="px-2 py-0.5 font-mono text-[11px] text-tone-1 hover:text-accent"
+                    title={describeFilters(v.filters, todayISO)}
+                  >
+                    {v.isDefault ? "★ " : ""}
+                    {v.name}
+                    {v.isShared ? " (paylaşılan)" : ""}
+                  </button>
+                </form>
                 {v.isMine && (
                   <form action={deleteSavedViewAction} className="inline">
                     <input type="hidden" name="view_id" value={v.id} />
@@ -100,13 +169,17 @@ export function SavedViewsBar({
           {PAGE_SIZES.join("/")})
         </summary>
         <div className="mt-2 grid grid-cols-1 gap-3 lg:grid-cols-2">
-          <form method="get" action={basePath} className="flex flex-wrap items-end gap-2 border border-line p-2">
+          <form method="get" action={cleanPathname} className="flex flex-wrap items-end gap-2 border border-line p-2">
+            {Object.entries(mergedContext).map(([k, v]) => (
+              <input key={k} type="hidden" name={k} value={v} />
+            ))}
             <div>
               <label className="block font-mono text-[10px] uppercase text-tone-3">Tarih Aralığı</label>
               <select
                 name="dp"
                 defaultValue={currentFilters.datePreset}
-                className="mt-0.5 border border-line bg-ink px-2 py-1 font-mono text-xs text-tone-1"
+                style={inputSurfaceStyle}
+                className="mt-0.5 border px-2 py-1 font-mono text-xs"
               >
                 {DATE_PRESETS.map((preset) => (
                   <option key={preset} value={preset}>
@@ -120,7 +193,8 @@ export function SavedViewsBar({
               <select
                 name="cur"
                 defaultValue={currentFilters.currency ?? ""}
-                className="mt-0.5 border border-line bg-ink px-2 py-1 font-mono text-xs text-tone-1"
+                style={inputSurfaceStyle}
+                className="mt-0.5 border px-2 py-1 font-mono text-xs"
               >
                 <option value="">Tümü</option>
                 <option value="TRY">TRY</option>
@@ -136,7 +210,8 @@ export function SavedViewsBar({
                 name="q"
                 defaultValue={currentFilters.q}
                 placeholder="Ünvan, açıklama veya belge no..."
-                className="mt-0.5 w-full border border-line bg-ink px-2 py-1 font-mono text-xs text-tone-1"
+                style={inputSurfaceStyle}
+                className="mt-0.5 w-full border px-2 py-1 font-mono text-xs"
               />
             </div>
             <button type="submit" className="button-ghost px-2.5 py-1 text-xs">
@@ -160,7 +235,8 @@ export function SavedViewsBar({
                 required
                 maxLength={120}
                 placeholder="Örn: USD Kritik Ödemeler"
-                className="mt-0.5 w-full border border-line bg-ink px-2 py-1 font-mono text-xs text-tone-1"
+                style={inputSurfaceStyle}
+                className="mt-0.5 w-full border px-2 py-1 font-mono text-xs"
               />
             </div>
             <label className="flex items-center gap-1 font-mono text-[11px] text-tone-2">
@@ -176,6 +252,34 @@ export function SavedViewsBar({
         </div>
       </details>
     </div>
+  );
+}
+
+function SavedViewsBarWithUrl(props: SavedViewsBarProps) {
+  const searchParams = useSearchParams();
+  const baseQuery = props.basePath.includes("?")
+    ? new URLSearchParams(props.basePath.slice(props.basePath.indexOf("?") + 1))
+    : null;
+  const mergedContext = {
+    ...extractPreservedContextParams(baseQuery),
+    ...extractPreservedContextParams(searchParams),
+    ...extractPreservedContextParams(props.contextParams),
+  };
+  return <SavedViewsBarInner {...props} mergedContext={mergedContext} />;
+}
+
+export function SavedViewsBar(props: SavedViewsBarProps) {
+  const baseQuery = props.basePath.includes("?")
+    ? new URLSearchParams(props.basePath.slice(props.basePath.indexOf("?") + 1))
+    : null;
+  const fallbackContext = {
+    ...extractPreservedContextParams(baseQuery),
+    ...extractPreservedContextParams(props.contextParams),
+  };
+  return (
+    <Suspense fallback={<SavedViewsBarInner {...props} mergedContext={fallbackContext} />}>
+      <SavedViewsBarWithUrl {...props} />
+    </Suspense>
   );
 }
 

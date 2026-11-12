@@ -92,8 +92,10 @@ function ExportBar({ name, onSvg, onPng }: { name: string; onSvg: () => void; on
       <button onClick={onPng} className="border border-line-strong px-2 py-1 font-mono text-[10px] uppercase">png</button>
       <button onClick={onSvg} className="border border-line-strong px-2 py-1 font-mono text-[10px] uppercase">svg</button>
       <a href={`/api/analytics/export?analysis=${encodeURIComponent(name)}&format=xlsx`}
+         download data-no-nav-skeleton="true"
          className="border border-line-strong px-2 py-1 font-mono text-[10px] uppercase">xlsx</a>
       <a href={`/api/analytics/export?analysis=${encodeURIComponent(name)}&format=csv`}
+         download data-no-nav-skeleton="true"
          className="border border-line-strong px-2 py-1 font-mono text-[10px] uppercase">csv</a>
       <button onClick={() => window.print()} className="border border-line-strong px-2 py-1 font-mono text-[10px] uppercase">pdf</button>
     </span>

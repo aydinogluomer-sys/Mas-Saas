@@ -145,13 +145,13 @@ export default async function StandardImportV2Page() {
                         <summary className="cursor-pointer font-mono text-[11px] text-tone-2 underline decoration-line-strong underline-offset-2 hover:text-tone-1">
                           kolonları göster ({sheet.columns.length})
                         </summary>
-                        <div className="mt-1.5 grid grid-cols-1 gap-1 border border-line bg-surface p-2 sm:grid-cols-2">
+                        <div className="mt-1.5 grid min-w-[260px] grid-cols-1 gap-1.5 border border-line bg-surface p-2.5 2xl:grid-cols-2">
                           {sheet.columns.map((col) => {
                             const t = targetFor(sheet.name, col.key);
                             return (
-                              <div key={col.key} className="flex items-start justify-between gap-2 border-b border-line-faint pb-1 text-[11px]">
-                                <span className="font-mono text-tone-1">{col.key}</span>
-                                <span className="font-mono text-right text-tone-3">
+                              <div key={col.key} className="flex min-w-0 flex-wrap items-baseline justify-between gap-x-3 gap-y-0.5 border-b border-line-faint pb-1 text-[11px]">
+                                <span className="min-w-0 break-all font-mono font-medium text-tone-1">{col.key}</span>
+                                <span className="min-w-0 break-words font-mono text-right text-tone-3">
                                   {!t
                                     ? "—"
                                     : t.kind === "domain"

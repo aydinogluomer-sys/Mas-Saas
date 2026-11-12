@@ -3,8 +3,13 @@
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { requireActionPermission } from "@/lib/auth";
+import {
+  isHandledActionError,
+  isPgPeriodLockedError,
+  toUserActionErrorMessage,
+} from "@/lib/cashflow/period-lock";
 import { getPool } from "@/lib/db";
-import { DomainError } from "@/lib/domain-error";
+import { revalidateFinancialViews } from "@/lib/revalidate-financial-views";
 import { formObject } from "@/lib/validation";
 import {
   cancelInvoice, changeInvoiceStatus, createInvoice, recordInvoicePayment,
@@ -13,7 +18,9 @@ import {
 const BASE = "/finance/invoices";
 
 function domainRedirect(e: unknown): never {
-  if (e instanceof DomainError) redirect(`${BASE}?error=${encodeURIComponent(e.message)}`);
+  if (isPgPeriodLockedError(e) || isHandledActionError(e)) {
+    redirect(`${BASE}?error=${encodeURIComponent(toUserActionErrorMessage(e, "Fatura işlemi tamamlanamadı."))}`);
+  }
   throw e;
 }
 
@@ -47,6 +54,7 @@ export async function createInvoiceAction(formData: FormData): Promise<void> {
   revalidatePath(BASE);
   revalidatePath("/finance/profitability");
   revalidatePath("/cashflow/budget");
+  revalidateFinancialViews();
   redirect(`${BASE}?result=created&invoice=${invoiceId}`);
 }
 
@@ -56,6 +64,7 @@ export async function changeStatusAction(formData: FormData): Promise<void> {
     await changeInvoiceStatus(getPool(), formObject(formData), session.id);
   } catch (e) { domainRedirect(e); }
   revalidatePath(BASE);
+  revalidateFinancialViews();
   redirect(`${BASE}?result=durum-guncellendi`);
 }
 
@@ -65,6 +74,7 @@ export async function recordPaymentAction(formData: FormData): Promise<void> {
     await recordInvoicePayment(getPool(), formObject(formData), session.id);
   } catch (e) { domainRedirect(e); }
   revalidatePath(BASE);
+  revalidateFinancialViews();
   redirect(`${BASE}?result=tahsilat-islendi`);
 }
 
@@ -75,5 +85,6 @@ export async function cancelInvoiceAction(formData: FormData): Promise<void> {
     await cancelInvoice(getPool(), formObject(formData), session.id);
   } catch (e) { domainRedirect(e); }
   revalidatePath(BASE);
+  revalidateFinancialViews();
   redirect(`${BASE}?result=iptal-edildi`);
 }

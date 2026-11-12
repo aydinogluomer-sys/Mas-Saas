@@ -7,12 +7,13 @@ import { Panel, fmtTL } from "@/components/ui/panel";
 import { markInstallmentPaidAction } from "@/app/(dashboard)/finance/actions";
 import { requireRouteAccess } from "@/lib/authz/route-guard";
 
+import { istanbulDateISO } from "@/lib/reports/rules";
+
 export const dynamic = "force-dynamic";
 
 // Must match LOAN_INSTALLMENT_PAYABLE_FROM in src/lib/financing/engine.ts — the statuses
-// markInstallmentPaid accepts, mirroring 0034's trigger allow-list. Showing the button on an
-// already-paid or cancelled installment would offer an action whose click always fails.
-const PAYABLE_FROM = new Set(["planned", "late"]);
+// markInstallmentPaid accepts, mirroring 0110's trigger allow-list.
+const PAYABLE_FROM = new Set(["planned", "late", "unpaid", "partial"]);
 
 const fmt0 = (v: number | null) =>
   v != null ? new Intl.NumberFormat("tr-TR", { maximumFractionDigits: 0 }).format(v) : "—";
@@ -31,7 +32,7 @@ export default async function LoanDetailPage({
   if (!loan) notFound();
   const installments = await loadLoanInstallments(pool, loanId);
 
-  const today = new Date().toISOString().slice(0, 10);
+  const today = istanbulDateISO();
   const head: Array<[string, string]> = [
     ["ANAPARA", fmt0(loan.principal)],
     ["TOPLAM ÖDEME", fmt0(loan.totalPayment)],
@@ -52,7 +53,11 @@ export default async function LoanDetailPage({
       >
         <div className="grid grid-cols-2 gap-2 sm:grid-cols-5">
           {head.map(([k, v]) => (
-            <div key={k} className="border border-line bg-black/40 p-2">
+            <div
+              key={k}
+              className="rounded border p-2"
+              style={{ borderColor: "var(--line)", background: "var(--surface-2)" }}
+            >
               <div className="font-mono text-[9px] uppercase tracking-wider text-tone-3">{k}</div>
               <div className="font-mono text-sm tabular-nums text-tone-1">{v}</div>
             </div>
@@ -117,7 +122,7 @@ export default async function LoanDetailPage({
                             type="date"
                             name="paidAt"
                             defaultValue={i.dueDate <= today ? i.dueDate : undefined}
-                            className="border border-line bg-black/40 px-1.5 py-0.5 font-mono text-[11px]"
+                            className="field-control px-1.5 py-0.5 font-mono text-[11px]"
                           />
                           <button className="button-ghost px-2 py-0.5 text-pos">ödendi</button>
                         </form>

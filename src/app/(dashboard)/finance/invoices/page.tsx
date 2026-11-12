@@ -4,13 +4,16 @@
 // `formatMoney` + Türkçe durum ve mükerrerlik sinyali etiketleri.
 
 import { Suspense } from "react";
+import Link from "@/components/ui/app-link";
 import { getCurrentUser } from "@/lib/auth";
 import { getPool, withReadConnection } from "@/lib/db";
+import { documentsForEntity } from "@/lib/documents/engine";
 import {
   countInvoices, listInvoices, loadDuplicateSuspects, loadInvoiceParties,
   loadLineMismatches, loadOpenItems,
 } from "@/lib/invoices/engine";
 import { loadCanonicalPayablesKpi, loadCanonicalReceivablesKpi } from "@/lib/metrics/canonical-kpis";
+import { moneyOrNull } from "@/lib/money";
 import { formatForeignCurrencyBadges, formatMoney } from "@/lib/money-format";
 import { Badge, type Tone } from "@/components/ui/badge";
 import { PaginationBar, parsePageParam } from "@/components/ui/pagination-bar";
@@ -59,12 +62,48 @@ export default async function InvoicesPage({
   const { page } = parsePageParam(sp.page, 50);
   const pool = getPool();
   const user = await getCurrentUser();
-  const [rawOpenItems, canonicalRec, canonicalPay, savedViews] = await Promise.all([
+  const [rawOpenItems, canonicalRec, canonicalPay, savedViews, overpaidRes] = await Promise.all([
     loadOpenItems(pool, 50),
     loadCanonicalReceivablesKpi(pool),
     loadCanonicalPayablesKpi(pool),
     listSavedViews(pool, "invoices", user?.id ?? null).catch(() => []),
+    pool.query<{
+      id: string;
+      invoice_no: string;
+      party_id: string;
+      party_name: string;
+      gross_amount: string;
+      paid_amount: string;
+      overpaid_by: string;
+      status: string;
+      currency: string;
+    }>(
+      `select io.id::text,
+              io.invoice_no,
+              io.party_id::text,
+              io.party_name,
+              io.gross_amount::text,
+              io.paid_amount::text,
+              io.overpaid_by::text,
+              io.status,
+              coalesce(inv.currency, 'TRY') as currency
+         from public.invoice_overpaid io
+         left join public.invoices inv on inv.id = io.id
+        order by io.overpaid_by desc
+        limit 25`,
+    ),
   ]);
+  const overpaidInvoices = overpaidRes.rows.map((r) => ({
+    id: r.id,
+    invoiceNo: r.invoice_no,
+    partyId: r.party_id,
+    partyName: r.party_name,
+    grossAmount: moneyOrNull(r.gross_amount) ?? 0,
+    paidAmount: moneyOrNull(r.paid_amount) ?? 0,
+    overpaidBy: moneyOrNull(r.overpaid_by) ?? 0,
+    status: r.status,
+    currency: r.currency || "TRY",
+  }));
   const qLower = currentFilters.q.trim().toLowerCase();
   const openItems = rawOpenItems.filter((item) => {
     if (currentFilters.currency && item.currency !== currentFilters.currency) return false;
@@ -107,6 +146,68 @@ export default async function InvoicesPage({
 
       {sp.error && <div className="mb-3 rounded border border-neg/40 bg-neg/10 p-2 text-sm text-neg">{sp.error}</div>}
       {sp.result && <div className="mb-3 rounded border border-pos/40 bg-pos/10 p-2 text-sm text-pos">{sp.result}</div>}
+
+      {overpaidInvoices.length > 0 ? (
+        <div
+          role="alert"
+          className="mb-4 rounded border p-3 text-xs"
+          style={{
+            background: "var(--surface-2)",
+            borderColor: "var(--line)",
+            color: "var(--text-1)",
+          }}
+        >
+          <div className="mb-1.5 flex flex-wrap items-center justify-between gap-2">
+            <div className="flex items-center gap-2 font-semibold">
+              <Badge tone="red" dot>İç Kontrol Uyarısı</Badge>
+              <span>Fazla Ödenmiş Faturalar Tespit Edildi ({overpaidInvoices.length} kayıt)</span>
+            </div>
+            <Link
+              href="/finance/receivables"
+              className="font-mono hover:underline"
+              style={{ color: "var(--text-2)" }}
+            >
+              Tahsisleri İncele →
+            </Link>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full text-xs">
+              <thead>
+                <tr className="text-left" style={{ color: "var(--text-2)" }}>
+                  <th className="py-1">Fatura No</th>
+                  <th>Karşı Taraf</th>
+                  <th className="text-right">Brüt Tutar</th>
+                  <th className="text-right">Ödenen</th>
+                  <th className="text-right">Fazla Ödeme</th>
+                  <th>Durum</th>
+                </tr>
+              </thead>
+              <tbody>
+                {overpaidInvoices.map((op) => (
+                  <tr key={op.id} className="border-t" style={{ borderColor: "var(--line)" }}>
+                    <td className="py-1 font-mono">{op.invoiceNo}</td>
+                    <td>{op.partyName}</td>
+                    <td className="text-right font-mono tabular-nums">
+                      {formatMoney(op.grossAmount, op.currency)}
+                    </td>
+                    <td className="text-right font-mono tabular-nums">
+                      {formatMoney(op.paidAmount, op.currency)}
+                    </td>
+                    <td className="text-right font-mono font-semibold tabular-nums text-neg">
+                      +{formatMoney(op.overpaidBy, op.currency)}
+                    </td>
+                    <td>
+                      <Badge tone={STATUS_TONE[op.status] ?? "neutral"}>
+                        {STATUS_LABEL_TR[op.status] ?? op.status}
+                      </Badge>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      ) : null}
 
       <div className="mb-4 grid grid-cols-2 gap-2 lg:grid-cols-4">
         <Panel title="AÇIK ALACAK (TRY)" subtitle={recForeignText ?? undefined}>
@@ -251,7 +352,8 @@ async function InvoicesQualityPanels() {
 
 async function InvoicesBottomSection({ page }: { page: number }) {
   const { limit, offset } = parsePageParam(String(page), 50);
-  const [invoices, totalInvoices, parties, projects, costCenters, departments] = await withReadConnection(getPool(), (db) =>
+  const pool = getPool();
+  const [invoices, totalInvoices, parties, projects, costCenters, departments] = await withReadConnection(pool, (db) =>
     Promise.all([
       listInvoices(db, { limit, offset }),
       countInvoices(db),
@@ -262,21 +364,56 @@ async function InvoicesBottomSection({ page }: { page: number }) {
     ]),
   );
 
+  // Fetch attached evidence documents via Pool (bounded to first 25 visible rows, never on a single PoolClient).
+  const docTargetInvoices = invoices.slice(0, 25);
+  const docEntries = await Promise.all(
+    docTargetInvoices.map(async (inv) => [inv.id, await documentsForEntity(pool, "invoices", inv.id)] as const),
+  );
+  const docsByInvoiceId = new Map(docEntries);
+
   return (
     <div className="mt-4 grid grid-cols-1 gap-4 lg:grid-cols-3">
       <div className="lg:col-span-2">
-        <Panel title={`SON FATURALAR — ${totalInvoices}`}>
+        <Panel
+          title={`SON FATURALAR — ${totalInvoices}`}
+          right={
+            <Link
+              href="/data/documents"
+              className="font-mono text-xs hover:underline"
+              style={{ color: "var(--text-2)" }}
+            >
+              Belge Merkezi →
+            </Link>
+          }
+        >
           {invoices.length === 0 ? (
             <p className="py-2 text-sm text-tone-3">Henüz fatura yok.</p>
           ) : (
             <>
-              {invoices.map((i) => (
+              {invoices.map((i) => {
+                const attachedDocs = docsByInvoiceId.get(i.id);
+                return (
                 <div key={i.id} className="flex flex-wrap items-center justify-between gap-2 border-b border-line-faint py-2 text-sm">
                   <span className="flex flex-wrap items-baseline gap-2">
                     <span className="font-mono text-xs">{i.invoiceNo}</span>
                     <b>{i.partyName}</b>
                     <span className="text-xs text-tone-3">{i.issueDate} · {i.lineCount} kalem</span>
                     <Badge tone={STATUS_TONE[i.status] ?? "neutral"}>{STATUS_LABEL_TR[i.status] ?? i.status}</Badge>
+                    {attachedDocs ? (
+                      attachedDocs.length > 0 ? (
+                        <Link href="/data/documents" title={attachedDocs.map((d) => d.title).join(", ")}>
+                          <Badge tone="green">{attachedDocs.length} kanıt belgesi</Badge>
+                        </Link>
+                      ) : (
+                        <Link
+                          href="/data/documents"
+                          className="font-mono text-[11px] hover:underline"
+                          style={{ color: "var(--text-2)" }}
+                        >
+                          + belge bağla
+                        </Link>
+                      )
+                    ) : null}
                   </span>
                   <span className="flex items-center gap-2">
                     <span className="font-mono tabular-nums">{formatMoney(i.grossAmount, i.currency)}</span>
@@ -299,7 +436,8 @@ async function InvoicesBottomSection({ page }: { page: number }) {
                     )}
                   </span>
                 </div>
-              ))}
+                );
+              })}
               <PaginationBar
                 basePath="/finance/invoices"
                 page={page}

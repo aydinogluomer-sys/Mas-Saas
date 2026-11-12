@@ -30,14 +30,20 @@ export function ModuleFrame({
   const { pendingHref } = useNavigationFeedback();
   const activePathname = pendingHref ? new URL(pendingHref, "http://local").pathname : pathname;
 
-  const isTabActive = (tab: ModuleTab) => {
+  const matchLength = (tab: ModuleTab) => {
     const paths = [tab.href, ...(tab.aliases ?? [])];
-    return paths.some((path) => {
-      if (activePathname === path) return true;
-      const depth = path.split("/").filter(Boolean).length;
-      return depth > 1 && activePathname.startsWith(`${path}/`);
-    });
+    let best = 0;
+    for (const path of paths) {
+      if (activePathname === path || activePathname.startsWith(`${path}/`)) {
+        if (path.length > best) best = path.length;
+      }
+    }
+    return best;
   };
+
+  const longestMatch = Math.max(0, ...tabs.map((tab) => matchLength(tab)));
+
+  const isTabActive = (tab: ModuleTab) => longestMatch > 0 && matchLength(tab) === longestMatch;
 
   const hasGroups = tabs.some((tab) => Boolean(tab.group));
   const groupedTabs: Array<{ group: string; items: ModuleTab[] }> = [];

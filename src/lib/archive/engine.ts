@@ -73,8 +73,26 @@ export async function restoreRecord(pool: Pool, entityRaw: string, id: string, a
   const client = await pool.connect();
   try {
     await client.query("begin");
+    const actorRes = await client.query<{ role: string; display_name: string }>(
+      `select role::text as role, display_name
+         from public.users
+        where id = $1 and is_active = true
+        limit 1`,
+      [actorId],
+    );
+    if (
+      actorRes.rowCount === 1 &&
+      actorRes.rows[0].role !== "admin" &&
+      actorRes.rows[0].role !== "finance_manager"
+    ) {
+      throw new DomainError(
+        "FORBIDDEN",
+        "Arşivden geri yükleme işlemi yalnız admin veya finans müdürü tarafından yapılabilir.",
+      );
+    }
     const before = await client.query(`select * from public.${entity} where id=$1 for update`, [id]);
     if (before.rowCount !== 1) throw new DomainError("NOT_FOUND", "Kayıt bulunamadı.");
+    await client.query("select set_config('app.allow_archive_restore', 'true', true)");
     const upd = await client.query(
       `update public.${entity}
        set archived_at=null,archive_reason=null,archived_by_label=null${entity === "payments" ? ",status='active'" : ""}
@@ -83,12 +101,16 @@ export async function restoreRecord(pool: Pool, entityRaw: string, id: string, a
     );
     if (upd.rowCount !== 1) throw new DomainError("FORBIDDEN", "Kayıt geri yüklenemedi veya yetkiniz yok.");
     await audit(client, {
-      actor: actorId, action: "restore_record", entityTable: entity, entityId: id,
-      before: before.rows[0], after: { archived: false },
+      actor: actorId,
+      action: "restore_record",
+      entityTable: entity,
+      entityId: id,
+      before: before.rows[0],
+      after: { archived: false, controlledRestore: true },
     });
     await client.query("commit");
   } catch (error) {
-    await client.query("rollback");
+    await client.query("rollback").catch(() => {});
     throw error;
   } finally {
     client.release();

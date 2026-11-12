@@ -728,12 +728,79 @@ export async function markInstallmentPaid(
 
 const CHECK_CANCELLABLE_FROM = new Set([
   "planned",
+  "unknown",
   "in_portfolio",
   "issued_to_vendor",
   "bounced",
   "returned",
 ]);
-const LOAN_INSTALLMENT_CANCELLABLE_FROM = new Set(["planned"]);
+const LOAN_INSTALLMENT_CANCELLABLE_FROM = new Set(["planned", "late", "unpaid", "partial"]);
+
+export async function classifyUnknownCheck(
+  pool: Pool,
+  checkId: string,
+  targetStatus: "in_portfolio" | "issued_to_vendor",
+  actorId: string,
+): Promise<void> {
+  if (targetStatus !== "in_portfolio" && targetStatus !== "issued_to_vendor") {
+    throw new DomainError("Geçersiz çek sınıflandırma hedefi.");
+  }
+  const client = await pool.connect();
+  try {
+    await client.query("begin");
+    const before = await client.query<{
+      id: string;
+      status: string;
+      direction: string;
+      amount: string | null;
+    }>(
+      `select id::text, status, direction, amount::text from public.checks where id = $1 for update`,
+      [checkId],
+    );
+    if (before.rowCount !== 1) throw new DomainError("check not found");
+    const row = before.rows[0];
+    if (row.status !== "unknown") {
+      throw new DomainError(`checks ${checkId}: '${row.status}' durumundaki çek yeniden sınıflandırılamaz`);
+    }
+    const nextDirection = targetStatus === "in_portfolio" ? "inflow" : "outflow";
+    const absAmt = row.amount == null ? null : Math.abs(Number(row.amount));
+    const signedAmt =
+      absAmt == null ? null : nextDirection === "outflow" ? -absAmt : absAmt;
+
+    await client.query(
+      `update public.checks
+          set status = $2,
+              direction = $3,
+              signed_amount = $4::numeric
+        where id = $1`,
+      [checkId, targetStatus, nextDirection, signedAmt],
+    );
+    await client.query(
+      `insert into public.check_events (check_id, event_type, event_note, created_by)
+       values ($1, $2, $3, $4)`,
+      [
+        checkId,
+        targetStatus === "in_portfolio" ? "received_to_portfolio" : "issued_to_vendor",
+        `Bilinmeyen ('unknown') çek '${targetStatus}' olarak sınıflandırıldı`,
+        actorId,
+      ],
+    );
+    await audit(client, {
+      actor: actorId,
+      action: "classify_unknown_check",
+      entityTable: "checks",
+      entityId: checkId,
+      before: row,
+      after: { status: targetStatus, direction: nextDirection, signed_amount: signedAmt },
+    });
+    await client.query("commit");
+  } catch (e) {
+    await client.query("rollback");
+    throw e;
+  } finally {
+    client.release();
+  }
+}
 
 export async function cancelCheck(pool: Pool, checkId: string, reason: string, actorId: string): Promise<void> {
   const trimmedReason = reason.trim();
@@ -778,7 +845,9 @@ export async function cancelLoanInstallment(pool: Pool, installmentId: string, r
       throw new DomainError(`loan_installments ${installmentId}: '${currentStatus}' durumundan iptal edilemez`);
     }
     await client.query(
-      `update public.loan_installments set status='cancelled', cancelled_at=now(), cancel_reason=$2 where id=$1`,
+      `update public.loan_installments
+          set status='cancelled', cancelled_at=now(), cancel_reason=$2, paid_at=null, paid_amount=null
+        where id=$1`,
       [installmentId, trimmedReason],
     );
     await audit(client, {

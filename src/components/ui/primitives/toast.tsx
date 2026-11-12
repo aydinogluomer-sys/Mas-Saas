@@ -16,7 +16,7 @@ export function AppToaster() {
   if (!ready) return null;
   return (
     <Toaster
-      theme="dark"
+      theme="light"
       position="bottom-right"
       toastOptions={{
         style: {
@@ -75,14 +75,18 @@ function FlashBridge() {
   const pathname = usePathname();
   const shown = useRef<string | null>(null);
   const flash = searchParams.get("flash");
+  const nonce = searchParams.get("nonce") ?? searchParams.get("_t") ?? "";
   const rawError = searchParams.get("error");
   const curatedError = rawError && Object.prototype.hasOwnProperty.call(FLASH_MESSAGES, rawError) ? rawError : null;
   const activeKey = flash ?? curatedError;
 
   useEffect(() => {
-    if (!activeKey) return;
+    if (!activeKey) {
+      shown.current = null;
+      return;
+    }
     const paramName = flash ? "flash" : "error";
-    const token = `${pathname}?${paramName}=${activeKey}`;
+    const token = `${pathname}?${paramName}=${activeKey}&nonce=${nonce}`;
     if (shown.current === token) return;
     shown.current = token;
     const entry = FLASH_MESSAGES[activeKey];
@@ -91,13 +95,16 @@ function FlashBridge() {
       else if (entry.kind === "error") toast.error(entry.text);
       else toast(entry.text);
     }
-    // Strip the flash param so a refresh does not re-fire (replaceState → no route change).
-    if (flash) {
+    // Strip curated flash/nonce params so a refresh does not re-fire (replaceState → no route change).
+    // Leave unknown ?flash=... untouched so server-rendered banners never lose custom messages.
+    if (flash && entry) {
       const url = new URL(window.location.href);
       url.searchParams.delete("flash");
+      url.searchParams.delete("nonce");
+      url.searchParams.delete("_t");
       window.history.replaceState(window.history.state, "", url);
     }
-  }, [activeKey, flash, pathname]);
+  }, [activeKey, flash, nonce, pathname]);
 
   return null;
 }

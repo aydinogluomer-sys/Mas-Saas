@@ -56,3 +56,6 @@ export function formatForeignCurrencyBadges(
   return parts.join(" · ");
 }
 
+export const formatForeignBucketNote = formatForeignCurrencyBadges;
+
+
