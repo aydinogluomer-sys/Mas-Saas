@@ -1,6 +1,13 @@
-# MAS Nakit Radar — Database Schema v2 Summary
+# MAS Nakit Radar — Veritabanı Şeması Kanonik Referansı (`Migration 0113`)
 
-See `implementation.md` for complete SQL snippets.
+> **Kanonik Canlı Katalog Özeti (`mas_radar_dev` — Yerel Windows PostgreSQL 16.14):**
+> - **Uygulanan Migration Aralığı:** `0001..0113` (**`113` migration** — `supabase/migrations/*.sql`, `public.schema_migrations` `max(version) = '0113'`)
+> - **Tablo Sayısı:** **`106` `public` tablo** (`105` iş/operasyon tablosu + `schema_migrations`) + **`1` `auth` tablosu** (`auth.users`) = **`107` toplam tablo** (`0112` ile `facility_drawdowns`, `working_capital_trend_reference` ve `forecast_accuracy_log` zombi tabloları emekliye ayrıldı)
+> - **Satır Düzeyi Güvenlik (RLS):** **`106 / 106` (`%100`)** `public` tabloda `relrowsecurity = true`
+> - **Görünüm (View) Sayısı:** **`87` `public` görünüm**, **`87 / 87` (`%100`)** `WITH (security_invoker = true)` ve yazma yetkileri iptal edilmiş (`0` materialized view)
+> - **Mimari Tarihçe Notu:** Aşağıdaki bölümler şemanın `0001` başlangıcından `0113` kanonik durumuna evrimini kronolojik olarak belgeler; eski faz başlıklarındaki ara tablo sayıları (örn. Faz 1 `22`, Faz 24B `58`) tarihsel bağlam içindir ve güncel canlı gerçek yukarıdaki **`0113` (`106` `public` tablo / `87` görünüm)** özetidir.
+
+Tam uygulama fazları için bkz. `implementation.md`.
 
 ## Raw source
 
@@ -106,7 +113,7 @@ Politika modeli:
 - `TRUNCATE` hiçbir tabloda `authenticated`'e verilmez. Uygulama hiç TRUNCATE kullanmaz;
   yalnız operatör/gate script'leri kullanır ve onlar owner bağlantısıyla çalışır.
 
-**Bilinen açık:** 0007'nin döngüsü yalnız o an var olan tabloları kapsadığı için sonradan
+**Kapatılan geçmiş açık (`0058` & `0098` ile kapatıldı — artık `106/106` = `%100` RLS aktif):** 0007'nin döngüsü yalnız o an var olan tabloları kapsadığı için Faz 15'te açık kalan
 eklenen 11 tabloda RLS hiç açılmamıştır (`capacity_models`, `cost_models`, `machine_assets`,
 `machine_roi_snapshots`, `part_profitability_runs`, `production_parts`, `scenario_assumptions`,
 `scenario_comparisons`, `scenario_run_lines`, `scenario_runs`, `scenarios`). Bunlarda erişimi
@@ -140,7 +147,7 @@ Bu bölüm Faz 18'de yazıldı: belge ~0021'de donmuştu, oysa 0022-0034 arası 
   bırakıldı** — ev kuralı: constraint ekleyen migration onu aynı anda doğrulamaz.
 - **0024 — arşivlenmiş kayıt dokunulmazlığı** trigger'ları: herhangi bir arşiv sinyali taşıyan
   satır dondurulur; tek istisna eksik arşiv meta verisinin sonradan tamamlanması ("legacy
-  metadata completion"). **Arşivden çıkarma yolu YOK** — kayıt yeniden açma kapsam dışı ve
+  metadata completion"). Kısmi UPDATE ile sessiz arşivden çıkarma yasaktır; **kontrollü arşivden çıkarma yolu Faz 59 (`0109`)** ile işlem-yerel `app.allow_archive_restore = 'true'` GUC kilidi + zorunlu gerekçe + `audit_logs` iziyle açılmıştır ve
   kısmi bir UPDATE ile sessizce olmamalı. `updated_at` muaf (`set_updated_at()` sahibi).
 
 ### Ödeme kalemi alan tutarlılığı (0025, 0028, 0029)
@@ -2715,6 +2722,59 @@ Salt indeks eklemesi (`0097_hot_path_partial_indexes.sql`); hiçbir tablo kolonu
 2. **Zarf Değişmezlik Bekçisi (`public.enforce_background_jobs_immutable_envelope` — `BEFORE UPDATE`):**
    - Çağıranın kendi RLS katmanında (`prosecdef = false`) çalışan tetikleyici, `INSERT` sonrasında `id`, `job_type`, `created_by`, `payload`, `dedupe_key` veya `created_at` kolonlarından herhangi birinin değiştirilmesini `ERRCODE = '23514'` (`background_jobs_envelope_immutable`) ile reddeder.
    - `background_job_queue_health` (`0081`) ve `integration_health` (`0086`) görünümlerinin `WITH (security_invoker = true)` kalkanı migration sonundaki `$verify$` bloğuyla doğrulanır.
+
+
+## Kontrollü Arşivden Çıkarma GUC Kilidi ve Tek-Operatör 4-Göz İstisna Yönetişimi (Faz 59, migration 0109)
+
+`0109_controlled_archive_restore_and_single_operator_policy.sql` yanlışlıkla arşivlenen finansal kayıtların denetimli geri alınmasını (`F-54`) ve tek-operatör/CFO iş istasyonunda maker-checker kilitlenmesini önleyen şeffaf istisna politikasını (`F-38`) kurar:
+
+1. **Kontrollü Arşivden Çıkarma (`public.enforce_archive_monotonic` güncellemesi):**
+   - Varsayılan olarak arşivlenmiş satırlarda (`payments`, `cashflow_lines`, `checks`, `loans`, `parties`, `categories`, `cash_accounts`) rastgele `UPDATE` yine `ERRCODE = 'P0001'` ile reddedilir.
+   - Yalnız aynı veritabanı işlemi içinde `SET LOCAL app.allow_archive_restore = 'true'` ayarlandığında ve tüm arşiv kolonları (`archived_at`, `archive_reason`, `archived_by_label` ve varsa `status = 'active'`) birlikte temizlendiğinde geçişe izin verilir; uygulama katmanı (`restoreArchivedEntity`) dönem kilidini denetler ve zorunlu gerekçeyle `audit_logs` (`restore_archived`) satırı yazar.
+2. **Tek-Operatör 4-Göz Yönetişimi (`public.approval_actions` & `public.approval_policies`):**
+   - `approval_actions.decision` CHECK kısıtı `'approved' | 'rejected' | 'cancelled' | 'self_approved_override'` değerlerini kapsayacak şekilde genişletilir ve en az 12 karakterlik `self_approval_justification` zorunluluğu (`approval_actions_self_override_justification_chk`) eklenir.
+   - `settings` tablosuna varsayılan `false` olan `allow_single_operator_self_approval` anahtarı tohumlanır; çok kullanıcılı modda sıkı `approver_id <> requested_by` 4-göz kuralı korunurken, tek-operatör modunda yalnız açık politika ve gerekçeyle `self_approved_override` kararına izin verilir.
+
+
+## Durum Makinesi Kilit Açma (`untrap`) ve Likidite Ödeme Sözü Tekilleştirmesi (Faz 59, migration 0110)
+
+`0110_state_machine_untrap_and_forecast_fixes.sql` operasyonel durum makinelerindeki geri dönüş kilitlerini (`F-49`, `F-50`) açar ve 13-hafta / günlük likidite görünümündeki ödeme sözü çift sayımını (`F-27`) temizler:
+
+1. **Ödeme Paketi ve Dönem Kilidi Geri Dönüşleri:**
+   - `enforce_payment_run_transition()` güncellenerek henüz dışa aktarılmamış `'approved'` ödeme paketlerinin `'cancelled'` durumuna çekilebilmesine izin verilir (`exported` ve `settled` paketler kilitli kalır).
+   - `cashflow_months` tablosunda yönetici onaylı dönem kilidi açma (`locked -> reviewed`) denetim iziyle desteklenir.
+2. **`public.liquidity_forecast_daily` Ödeme Sözü (`promised_payments`) Tekilleştirmesi:**
+   - Açık bir satış faturasına bağlı aktif ödeme sözü (`promised_payments.status = 'open'`, `invoice_id IS NOT NULL`) bulunduğunda nakit girişi ödeme sözü vadesinde zaten sayıldığı için aynı tutar fatura vadesinde ikinci kez sayılmaz (`WITH (security_invoker = true)` korunur).
+
+
+## TDHP `500.99` Açılış Bilançosu Denkleştirme Hesabı ve `FIN-03` Kasa/Banka Açılış Köprüsü (Faz 59, migration 0111)
+
+`0111_cfo_views_and_opening_equity_bridge.sql` hazine kasa/banka açılış bakiyelerini (`FIN-03`) çift taraflı TDHP Yönetim Defteriyle birleştirir (`F-16`, `F-45`):
+
+1. **TDHP `500.99` Hesabı ve `opening_balance` Yevmiye Kaynak Tipi:**
+   - `public.management_accounts` tablosuna `'500.99'` (`Açılış Bilançosu Denkleştirme Hesabı`, `parent_code = '500'`, `account_class = 'equity'`, `normal_side = 'credit'`, `ebitda_bucket = 'balance_sheet'`) tohumlanır.
+   - `public.management_journal_entries.source_type` CHECK kısıtına `'opening_balance'` eklenir.
+2. **`public.cash_accounts` Genişletmeleri:**
+   - `opening_balance_date date NOT NULL DEFAULT current_date` ve `opening_journal_entry_id uuid REFERENCES public.management_journal_entries(id) ON DELETE SET NULL` (+ kısmi B-tree indeks `idx_cash_accounts_opening_journal_entry_id`) eklenir.
+
+
+## Kullanılmayan Eski ("Zombie") Tabloların Veri Kayıpsız Emekliliği (Faz 59, migration 0112)
+
+`0112_retire_legacy_zombie_tables.sql` yeni okuma modelleri ve hareket tablolarıyla değiştirilmiş olan üç eski şema nesnesini (`F-36`) sıfır veri kaybıyla emekliye ayırır:
+
+1. **`public.facility_drawdowns` → `public.facility_movements` Göçü ve Emekliliği:**
+   - Varsa `facility_drawdowns` içindeki tüm satırlar idempotent biçimde `facility_movements` tablosuna aktarılır; `credit_facility_utilization` görünümü (`WITH (security_invoker = true)`) yalnız kanonik `facility_movements` kaynağını okuyacak şekilde yenilenir ve ardından `facility_drawdowns` düşürülür.
+2. **`public.working_capital_trend_reference` ve `public.forecast_accuracy_log` Emekliliği:**
+   - Yerlerini `working_capital_monthly_v` (`0103`) ve `forecast_13w_variance_v` (`0107`) görünümlerine bırakan `working_capital_trend_reference` ve `forecast_accuracy_log` tabloları kaldırılır; kanonik katalog **`106` `public` tablo** ve **`87` `public` görünüm** olarak netleşir.
+
+
+## `liquidity_forecast_daily` Çek ve Ödeme Tahsisatı (`invoice_allocations`) Tam Tekilleştirmesi (Faz 59, migration 0113)
+
+`0113_fix_liquidity_forecast_allocations_dedup.sql` `0110` görünüm yenilemesi sırasında daralan `invoice_allocations` alt sorgusunu geri kazandırarak hem ödeme sözlerini (`promised_payments`) hem de çek/ödeme tahsisatlarını (`invoice_allocations` içinde `source_type IN ('check', 'payment_instance')`) açık fatura bakiyesinden birlikte düşer:
+
+- Açık fatura nakit akışı katkısı: `greatest(0, coalesce(v.payable_amount, v.gross_amount) - greatest(coalesce(v.allocated_amount, 0), coalesce(v.paid_amount, 0)) - coalesce(ca.non_cash_alloc, 0) - coalesce(pp.promised_open, 0))`.
+- Görünüm `WITH (security_invoker = true)` ve salt-okunur yetki kalkanıyla (`REVOKE INSERT, UPDATE, DELETE, TRUNCATE`) korunur; `$verify$` bloğu `reloptions` içinde `security_invoker=true` varlığını zorunlu doğrular.
+
 
 
 

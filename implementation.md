@@ -47,11 +47,11 @@ Aşağıdaki fazlar ve dalgalar bu yol haritasından önce tamamlanmış olup ko
 
 ## 2. Kalıcı Doğrulama Kapıları (`Standing Gates`) ve Migrasyon Yazım Kuralları
 
-**Faz 39'dan Faz 56'ya kadar HER FAZ**, kendi özel kabul testlerine ek olarak aşağıdaki kalıcı kapıları kırmadan geçmek zorundadır:
+**Faz 39'dan Faz 59'a kadar HER FAZ**, kendi özel kabul testlerine ek olarak aşağıdaki kalıcı kapıları kırmadan geçmek zorundadır:
 
 1. **`pnpm typecheck` ve `pnpm lint`:** Sıfır TypeScript hatası, sıfır ESLint hatası ve sıfır uyarı.
 2. **`pnpm phase17:verify` (`scripts/phase17-verify.ts`):** `src/` altında sıfır `::float8` SQL dönüşümü; `supabase/migrations/*.sql` altında sıfır `float8` / `double precision` / `float4` / `real` kolon; `scripts/` altında yeni `::float8` eklenmesi yasak.
-3. **`pnpm phase18:verify` (`scripts/phase18-verify.ts`):** `src/` altında `src/lib/audit.ts` dışında sıfır `INSERT INTO public.audit_logs`; yerel `audit()` kopyası tanımlamak yasak; ham `ZodError.message` sızıntısı yasak; **eklenen her yeni SQL migration numarası (`0098`..`0107`) aynı faz içinde `docs/database-schema.md` dosyasına işlenmek zorundadır** (aksi halde `phase18:verify:258-271` anında kırmızı verir!).
+3. **`pnpm phase18:verify` (`scripts/phase18-verify.ts`):** `src/` altında `src/lib/audit.ts` dışında sıfır `INSERT INTO public.audit_logs`; yerel `audit()` kopyası tanımlamak yasak; ham `ZodError.message` sızıntısı yasak; **eklenen her yeni SQL migration numarası (`0098`..`0113`) aynı faz içinde `docs/database-schema.md` dosyasına işlenmek zorundadır** (aksi halde `phase18:verify:258-271` anında kırmızı verir!).
 4. **`pnpm boundary:verify` (`scripts/boundary-verify.ts`):** `src/` altında dış ağ `fetch()` çağrısı yalnız 4 izinli sınır dosyasında (`lib/ai/engine.ts`, `lib/fx/provider.ts`, `lib/integrations/types.ts`, `lib/reminders/transport.ts`); `process.env` erişimi sınır modüllerinde yalnız `lib/env.ts` ve `lib/integrations/types.ts` içinde; `lib/ai/engine.ts` ve `lib/reminders/transport.ts` içinde `@/lib/env` yalnız tembel `await import("@/lib/env")` ile okunur; AI/asistan/arama alt ağacında finansal tablo mutasyonu yasak.
 5. **Migration Dosya Kuralları (`scripts/db/migration-lib.ts:96-149` — `validateFileSet`):**
    - Dosya adı deseni: `^\d{4}_[a-z0-9_]+\.sql$` ve kesintisiz ardışık numara (`0098`, `0099`, `0100`, ...).
@@ -1059,17 +1059,55 @@ Aşağıdaki fazlar ve dalgalar bu yol haritasından önce tamamlanmış olup ko
 
 ---
 
-## 10. Yürütme Disiplini ve Sahibin Bekleyen Operasyonel Eylemleri
+### Faz 57 — Kapalı Çevrim Finansal Boru Hattı (`runClosedLoopFinancialPipeline`) ve Kendi Parolasını Değiştirme Atomik Denetim İzi
+
+- **Amaç:** Paraşüt API v4 salt-okunur çekiminden sonra banka oto-eşleştirme (`autoMatchUnmatched`), çift taraflı TDHP yönetim defteri kaydı (`syncAllDomainEventsToManagementLedger`), 13 haftalık dönen likidite dondurulmuş anlık görüntüsü (`freeze13WeekSnapshot`) ve vadesi geçen ödeme sözlerinin otomatik kırılması (`sweepBrokenPromises`) adımlarını tek deterministik orkestratör altında (`src/lib/integrations/parasut/sync-pipeline.ts` — `runClosedLoopFinancialPipeline`) birleştirmek; aynı zamanda ilk giriş zorunlu parola değişimi (`changeOwnPassword`) akışını `0096` RLS politikasıyla tam uyumlu atomik denetim kaydına bağlamak.
+- **Temel Teslimatlar:**
+  1. `src/lib/integrations/parasut/sync-pipeline.ts` — `runClosedLoopFinancialPipeline` 5 aşamalı kapalı çevrim orkestratörü (Faz 59 `F-31` ile `/data/integrations` aksiyonuna ve `scripts/ops/background-worker.ts` zamanlayıcısına doğrudan bağlandı).
+  2. `src/lib/users/engine.ts` (`changeOwnPassword`) — `must_change_password` bayrağı sıfırlanırken `audit_logs` kaydının aynı işlem içinde hatasız yazılması.
+
+---
+
+### Faz 58 (`Migration 0108`) — Arka Plan Kuyruk Zarfı Değişmezliği ve `v6` Derin CFO Zekâsı (`7xx` Fiili Gider ↔ Tezgâh Başabaş, TCMB Kur Stresi ve Tahsilat Karnesi)
+
+- **Amaç:** `public.background_jobs` tablosunda iş tanımı (`payload`) ile iş çıktısını (`result`) birbirinden ayırıp yürütme zarfını (`job_type`, `payload`, `max_attempts`, `created_by`, `created_at`) veritabanı tetikleyicisiyle değişmez kılmak; yönetim defteri `7xx` fiili üretim giderlerini tezgâh dakika maliyetleriyle, TCMB döviz kurlarını ise kovenant stres senaryolarıyla birleştirmek.
+- **SQL Migration (`0108_background_jobs_result_and_immutability.sql`):**
+  - `public.background_jobs` tablosuna `result jsonb` kolonu ve `trg_background_jobs_immutable_envelope` (`enforce_background_jobs_immutable_envelope()`) `BEFORE UPDATE` tetikleyicisi eklendi; `mas_radar_finance_operator` rolünün başkasının iş tanımını tahrif etmesi engellendi.
+- **Yeni / Güncellenen Motorlar:**
+  1. `src/lib/production/actual-cost-bridge.ts` — Yönetim defteri `710 / 720 / 730` fiili gider toplamlarını standart tezgâh kapasitesiyle karşılaştırıp canlı başabaş `TL/dk` sapmasını hesaplar.
+  2. `src/lib/fx/fx-stress.ts` — TCMB kurları üzerinden `+%10 / +%20 / +%30` kur şoku altında net döviz pozisyonu, 13-hafta nakit tabanı ve kovenant kırılma noktasını deterministik hesaplar.
+  3. `src/lib/receivables/scorecard.ts` — Karşı taraf bazında ağırlıklı gecikme (`DBT`), söz tutma oranı ve tahsilat güvenilirlik karnesini üretir.
+
+---
+
+### Faz 59 (`Migrations 0109..0113`) — 360° Canlı Denetim Tam Kapanışı (`F-01..F-74`), Kanonik `0113` Canlı Göçü, `FIN-03` + `500.99` Açılış Köprüsü ve Sıcak-Krem CFO İstasyonu
+
+- **Amaç:** Canlı ortam denetiminde (`mas_360_live_audit_report.md`) tespit edilen 74 bulgunun (`F-01..F-74`) ve `docs/MAS_360_SYNTHESIS_REPORT.md` içindeki kalan `9/115` açık/kısmi maddenin (`B1-02`, `B2-08`, `B3-07`, `B4-05`, `B5-04`, `B6-03`, `B7-02`, `B8-01`, `B9-04`) tamamını sıfır açık bırakacak biçimde kapatmak ve canlı `mas_radar_dev` veritabanını ön-yedekle **`0113`** kanonik şemasına yükseltmek.
+- **SQL Migration Zinciri (`0109..0113`) ve Canlı Veritabanı Durumu:**
+  1. `0109_controlled_archive_restore_and_single_operator_policy.sql` — `0024` arşiv tetikleyicisine yalnız işlem-yerel `set_config('app.allow_archive_restore', 'true', true)` GUC anahtarıyla çalışan kontrollü geri yükleme yolu (`F-54`) ve `approval_rules.allow_single_operator_self_approval` + `self_approved_override` gerekçeli tek-operatör 4-göz yönetişim desteği (`F-14`, `F-46`).
+  2. `0110_state_machine_untrap_and_forecast_fixes.sql` — `payment_runs` (`approved -> cancelled`) ve `cashflow_period_locks` hapis durum çıkışları, tevkifatlı fatura tam kapama (`payable_amount`), `checks.linked_invoice_id` hizalaması ve `liquidity_forecast_daily` görünümünde fatura bazlı ödeme sözü tutar düşümü (`F-15`, `F-20`, `F-24`).
+  3. `0111_cfo_views_and_opening_equity_bridge.sql` — `cash_accounts.opening_balance_date` kolonu ve TDHP `500.99 Açılış Bilançosu Denkleştirme Hesabı` tohumlaması (`F-16`, `F-45`).
+  4. `0112_retire_legacy_zombie_tables.sql` — Hiçbir iş akışına bağlı olmayan 3 zombi tablonun (`facility_drawdowns`, `working_capital_trend_reference`, `forecast_accuracy_log`) boşluk kontrolüyle (`RAISE EXCEPTION` korumalı) emekli edilmesi (`F-17` / `B4-05`).
+  5. `0113_fix_liquidity_forecast_promise_allocation_dedup.sql` — `liquidity_forecast_daily` görünümünde hem ödeme sözü (`promise_to_pay`) hem kısmi tahsisat (`allocated_amount` / `paid_amount`) bulunan faturalarda `greatest(paid_amount, allocated_amount) + open_promise` formülüyle çift sayımın tamamen kapatılması.
+  - **Canlı Şema Özeti (`mas_radar_dev` @ `0113`):** `113` migration (`0001..0113`), `106` `public` tablo (`%100` RLS) + `1` `auth.users` (`107` toplam tablo), `87` `public` görünüm (`%100` `security_invoker = true`), `0` materialized view.
+- **Uygulama, Güvenlik, UX ve Operasyon Teslimatları:**
+  - **Güvenlik & RBAC (`F-02`, `F-06..F-11`):** Düz metin `.env.local.bak-*` ve eski `.venv/` kalıntıları temizlendi; `MAS_LOCAL_PASSWORDLESS=0` üretim kilidi zorunlu kılındı; tüm panel sayfalarında `"Çıkış yap"` erişimi açıldı; `80/80` dashboard `page.tsx` dosyasında `requireRouteAccess` RBAC kontrolü (`tests/unit/route-access.test.ts` yapısal kapısıyla) mühürlendi.
+  - **Finansal Kesinlik & Orkestrasyon (`F-18..F-45`):** `rolling-13w-engine.ts` `vat_withholding_amount` (`KDV_2` & `KDV_1`), `covenants-and-dscr.ts` yatay görünüm kolonları (`totalEquity`), tekil `payable_amount - greatest(paid_amount, allocated_amount)` kalan borç denklemi, yönetim defteri `103/102` keşide çek ve tek-kaynak `102` kuralı, iptal/geri almada otomatik storno (`reverseManagementEntryWithClient`), `revalueProvisionalFxEntries`, `/finance/treasury` `FIN-03` + `500.99` açılış fişi CRUD ve `runClosedLoopFinancialPipeline` bağlantıları tamamlandı.
+  - **UX, Durum Makineleri & Operasyon (`F-54..F-72`):** `NavigationFeedbackProvider` dışa aktarma donması giderildi; `ledger`, `integrations`, `13-week`, `trial-balance-bridge` ve `imports/v2` ekranları sıcak-krem (`warm editorial paper`) CFO temasına geçirildi; `MAS-Background-Worker` (`pnpm ops:worker:schedule`), salt-okunur `pnpm backup:offdevice:verify` (`scripts/ops/verify-offdevice-backup.ts`), `17/17` yerel Windows PG16 `docs/ops/*.md` runbook'u (`0` `docker exec`) ve 9 çekirdek/kök doküman senkronize edildi.
+
+---
+
+## 10. Yürütme Disiplini ve Canlı Operasyonel Kontrol Listesi
 
 ### 10.1 Faz Uygulama Kuralı (Değiştirilemez)
 
-1. Fazlar **Faz 39'dan Faz 56'ya kadar kesin bağımlılık sırasıyla** uygulanır; bir fazın `5. Zorunlu Doğrulama & Kabul Kapısı` tamamen yeşil olmadan bir sonraki faza geçilmez.
-2. Hiçbir faz sırasında yerel kanonik veritabanına (`mas_radar_dev` — `127.0.0.1:5432`) test verisi yazılmaz, migration uygulanmaz veya doğrulama betiği koşturulmaz; tüm DB testleri yalnız tek kullanımlık `mas_radar_*_verify` veritabanlarında çalışır.
+1. Fazlar **Faz 39'dan Faz 59'a kadar kesin bağımlılık sırasıyla** uygulanmış ve doğrulanmıştır; yeni eklenecek her fazda tüm kalıcı kapıların (`typecheck`, `lint`, `phase17:verify`, `phase18:verify`, `boundary:verify`, `test`, DB doğrulamaları) yeşil olması zorunludur.
+2. Hiçbir doğrulama sırasında yerel kanonik veritabanına (`mas_radar_dev` — `127.0.0.1:5432`) test verisi yazılmaz; tüm DB doğrulama betikleri yalnız tek kullanımlık `mas_radar_*_verify` / `*_clone` veritabanlarında çalışır.
 3. 8 GB RAM makine disiplini gereği aynı anda birden fazla ağır derleme/Playwright kümesi açılmaz (`MAS_NEXT_CPUS=1`, `vitest maxWorkers: 2`).
 
-### 10.2 Kod Dışı Sahip Eylemleri (Canlı Cutover Öncesi Hatırlatma)
+### 10.2 Canlı Ortam ve Sahip Operasyonel Durumu (`Faz 59` / `0113` Sonrası)
 
-1. **Harici Yedek Diski (`P0-1`):** Harici USB diski veya yerel NAS paylaşımını takıp `.env.local` içine `MAS_OFFDEVICE_BACKUP_DIR` yolunu tanımlayın (Faz 43 sonrası gece yedeği hem PostgreSQL `.dump` hem doküman kasasını otomatik kopyalayıp doğrulayacaktır).
-2. **Windows PostgreSQL Servisi:** Yönetici PowerShell üzerinden `scripts\ops\install-postgres-service.ps1` betiğini (Faz 43 sertleştirmesi sonrasında) bir kez çalıştırarak `MAS-PostgreSQL16` servisini kalıcı otomatik kurtarmaya alın.
-3. **Eski Düz Metin Yedek ve Bulut Temizliği:** Kök dizindeki `.env.local.bak-20261029-092503` dosyasını güvenli biçimde silin ve duraklatılmış eski Supabase `"Mas-Saas"` bulut projesini silin veya parolasını sıfırlayın; kapalı devre kararı uyarınca `.env.local` içinde `AI_FORCE_DETERMINISTIC=1` ayarını netleştirin.
-4. **Aktif Kasa/Banka Açılış Bakiyeleri (`FIN-03`):** Gerçek veritabanındaki 6 aktif kasa/banka hesabının başlangıç açılış bakiyelerini (veya Faz 51 Paraşüt `/accounts` başlangıç mutabakatını) girin.
+1. **Canlı Şema ve Arka Plan İşçisi (`TAMAMLANDI`):** Ön-yedek alınarak canlı `mas_radar_dev` veritabanı **`0113`** sürümüne yükseltildi (`106` `public` tablo `%100` RLS, `87` görünüm `%100` `security_invoker = true`); `postgresql-x64-16` servisi, `MAS-Background-Worker` zamanlanmış görevi (`pnpm ops:worker:schedule`) ve düz metin yedek temizliği devreye alındı.
+2. **Harici Yedek Diski (`P0-1` — Fiziksel Medya Adımı):** `pnpm backup:offdevice:verify` betiği devreye alındı ve yerel yedek okunabilirliği (`pg_restore --list`) doğrulandı. Fiziksel USB/NAS diski (`MAS_OFFDEVICE_BACKUP_DIR`, örn. `D:\MAS-Backups\mas_radar_dev`) takıldığında `pnpm ops:backup:daily` + `pnpm backup:offdevice:verify -- --strict-offdevice` komutuyla fiziksel harici kopya makbuzu alınmalıdır.
+3. **Bulut ve Yapay Zekâ Politikası:** Eski duraklatılmış Supabase `"Mas-Saas"` bulut projesinin tamamen kapatılması sahip hesabındadır; yerel üretimde `.env.local` içinde `AI_FORCE_DETERMINISTIC=1` ve `MAS_LOCAL_PASSWORDLESS=0` kilitleri aktiftir.
+4. **Aktif Kasa/Banka Açılış Bakiyeleri (`FIN-03`):** `/finance/treasury` ekranındaki hesap/IBAN ve açılış bakiyesi (`opening_balance` + `opening_balance_date` -> otomatik `500.99` denkleştirme fişi) arayüzü canlıda hazırdır; operatör gerçek banka açılış bakiyelerini doğrudan bu ekrandan girebilir veya güncelleyebilir.

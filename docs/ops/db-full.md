@@ -10,29 +10,7 @@
 
 Disk dolduğunda ya da dolmaya yaklaştığında **veri kaybetmeden** yer açmak.
 
-### Bu makinede durum bugün böyle (ölçüldü)
-
-```text
-C: sürücüsü      : 238 GB toplam, ~13 GB boş  (%95 dolu)
-backups/         : 874 dosya, ~981 MB
-docker images    : 19.8 GB (16.3 GB geri kazanılabilir)
-docker volumes   : 2.5 GB (1.86 GB geri kazanılabilir)
-PostgreSQL verisi: 20 veritabanı, toplam ~346 MB — mas_radar_dev bunun 21 MB'ı
-```
-
-**Okunması gereken sonuç:** darlık veritabanından değil, **etraftaki artıklardan** geliyor.
-Yer açarken önce artıklara bakılır; veritabanına en son dokunulur.
-
-### Yanıltıcı ölçüm — buna dikkat
-
-Konteynerin içinden bakınca disk bol görünür:
-
-```text
-/var/lib/postgresql/data   ->  1007G toplam, 934G boş  (%3)
-```
-
-Bu **yanıltıcıdır**. O alan Docker'ın sanal diskidir ve o sanal disk **C: sürücüsünde** bir
-dosya olarak büyür. Gerçek sınır C:'nin boş alanıdır. Kararı her zaman C:'ye bakarak verin.
+Yerel PostgreSQL 16 kümesi (`C:\MAS\pgdata16`) ve yedek dizini (`backups/`) doğrudan Windows diski (`C:`) üzerinde yaşar. Darlık çoğu zaman `mas_radar_dev` veritabanının kendisinden değil, **artakalan doğrulama klonlarından, eski budanmamış `.dump` dosyalarından veya geçici `.next-*` derleme klasörlerinden** kaynaklanır. Yer açarken önce artıklara bakılır; gerçek veritabanına en son dokunulur.
 
 ---
 
@@ -42,7 +20,7 @@ dosya olarak büyür. Gerçek sınır C:'nin boş alanıdır. Kararı her zaman 
 |---|---|---|
 | 1 | Sorunun gerçekten disk olduğu ölçüldü | aşağıdaki 1. adım |
 | 2 | Neyin silineceği **okundu** (kuru koşu) | `pnpm ops:backup:prune` |
-| 3 | En az bir geçerli yedek elde | `docs/ops/backup.md` |
+| 3 | En az bir geçerli yedek elde ve okunabilir | `pnpm backup:offdevice:verify` ([backup.md](backup.md)) |
 
 ---
 
@@ -51,47 +29,55 @@ dosya olarak büyür. Gerçek sınır C:'nin boş alanıdır. Kararı her zaman 
 ```text
 TARGET DB NAME  : mas_radar_dev
 TARGET DB CLASS : REAL_READ_ONLY
-WRITE EXPECTED? : NO — veritabanına yazılmaz; silinen şeyler DOSYALAR (eski dump'lar,
-                  kullanılmayan docker imajları) ve HARCANABİLİR klon veritabanlarıdır.
+WRITE EXPECTED? : NO — gerçek veritabanına yazılmaz; silinen şeyler yalnız eski .dump dosyaları,
+                  geçici .next-* klasörleri ve HARCANABİLİR klon veritabanlarıdır.
 ```
 
 ---
 
 ## COMMANDS
 
-### 1) Ölçün — nereden geliyor
+### 1) Ölçün — doluluk nereden geliyor
 
 ```powershell
 cd "C:\Users\Trade Bilisim\Mas Saas"
 
 Get-PSDrive C | Select-Object Used, Free
-docker system df
-(Get-ChildItem backups -File | Measure-Object Length -Sum).Sum / 1MB
-(Get-ChildItem backups -File).Count
-docker exec mas-radar-pg psql -U postgres -c "select datname, pg_size_pretty(pg_database_size(datname)) from pg_database order by pg_database_size(datname) desc;"
+(Get-ChildItem backups -File -ErrorAction SilentlyContinue | Measure-Object Length -Sum).Sum / 1MB
+(Get-ChildItem backups -File -ErrorAction SilentlyContinue).Count
+
+$u = [Uri]((Select-String -Path .env.local -Pattern '^MIGRATION_DATABASE_URL=' | Select-Object -First 1).Line -replace '^MIGRATION_DATABASE_URL=','').Trim().Trim('"')
+$env:PGPASSWORD = [Uri]::UnescapeDataString(($u.UserInfo -split ':',2)[1])
+try {
+  & C:\MAS\pgsql16\bin\psql.exe -h 127.0.0.1 -p 5432 -U postgres -d postgres -c "SET default_transaction_read_only = on; select datname, pg_size_pretty(pg_database_size(datname)) from pg_database where datistemplate = false order by pg_database_size(datname) desc;"
+} finally {
+  Remove-Item Env:PGPASSWORD -ErrorAction SilentlyContinue
+}
 ```
 
 ### 2) Yer açma — güvenli sıra
 
-Bu sıra bilinçlidir: en güvenliden en dikkat isteyene doğru.
+#### Adım A — artık klon veritabanlarını düşürün (en güvenli, en hızlı kazanç)
 
-#### Adım A — artık klon veritabanlarını düşürün (en güvenli, en çok kazandıran)
-
-Doğrulama koşuları harcanabilir klonlar bırakır. `mas_radar_dev` **düşürülmez**; adı
-`verify`, `clone`, `restore`, `drill`, `probe`, `test` gibi işaretler taşıyanlar
-harcanabilirdir.
+Doğrulama koşuları zaman zaman harcanabilir klonlar bırakabilir. `mas_radar_dev`, `postgres`, `template0`, `template1` **ASLA düşürülmez**; yalnızca adında `verify`, `clone`, `restore`, `drill`, `probe`, `test`, `sandbox`, `tmp` geçen harcanabilir veritabanları düşürülür.
 
 ```powershell
-# ÖNCE listeyi okuyun
-docker exec mas-radar-pg psql -U postgres -c "select datname, pg_size_pretty(pg_database_size(datname)) from pg_database where datname not in ('postgres','template0','template1','mas_radar_dev') order by pg_database_size(datname) desc;"
+$u = [Uri]((Select-String -Path .env.local -Pattern '^MIGRATION_DATABASE_URL=' | Select-Object -First 1).Line -replace '^MIGRATION_DATABASE_URL=','').Trim().Trim('"')
+$env:PGPASSWORD = [Uri]::UnescapeDataString(($u.UserInfo -split ':',2)[1])
+try {
+  # ÖNCE listeyi okuyun:
+  & C:\MAS\pgsql16\bin\psql.exe -h 127.0.0.1 -p 5432 -U postgres -d postgres -c "SET default_transaction_read_only = on; select datname, pg_size_pretty(pg_database_size(datname)) from pg_database where datname not in ('postgres','template0','template1','mas_radar_dev') order by pg_database_size(datname) desc;"
 
-# Sonra TEK TEK düşürün — adı okuyarak
-docker exec mas-radar-pg dropdb -U postgres mas_radar_perf_verify
+  # Sonra TEK TEK düşürün — adı gözünüzle okuyarak yazın:
+  # & C:\MAS\pgsql16\bin\dropdb.exe -h 127.0.0.1 -p 5432 -U postgres mas_radar_perf_verify
+} finally {
+  Remove-Item Env:PGPASSWORD -ErrorAction SilentlyContinue
+}
 ```
 
-> Her `dropdb` komutunu ayrı ayrı, adı gözünüzle okuyarak yazın. Toplu/otomatik silme yok.
+> Her `dropdb.exe` komutunu ayrı ayrı, adı gözünüzle okuyarak çalıştırın. Toplu/otomatik silme yapmayın.
 
-#### Adım B — eski yedekleri budayın (politikayla)
+#### Adım B — eski yedekleri politikayla budayın
 
 Önce **ne silineceğini okuyun** — bu adım atlanmaz:
 
@@ -102,8 +88,7 @@ pnpm exec tsx scripts/ops/backup-prune.ts --verbose
 
 Politika: **günlük 7 · haftalık 4 · aylık 3**, 24 saatten genç hiçbir dosyaya dokunulmaz.
 
-**IMMUTABLE (hiçbir koşulda silinmez):** adında `mas_radar_dev` geçen dump'lar, `cutover_*`,
-`stage<N>_real*` ve yanında `<dump>.immutable` işaret dosyası olanlar.
+**IMMUTABLE (hiçbir koşulda silinmez):** adında `mas_radar_dev` geçen dump'lar, `cutover_*`, `stage<N>_real*` ve yanında `<dump>.immutable` işaret dosyası olanlar.
 
 Okuduktan sonra uygulayın:
 
@@ -117,41 +102,44 @@ Bir yedeği kalıcı korumak isterseniz:
 "2026 yil sonu kapanis" | Out-File -Encoding utf8 "backups\<dump-adi>.dump.immutable"
 ```
 
-#### Adım C — kullanılmayan Docker imajlarını temizleyin
-
-```powershell
-docker image ls
-docker image prune          # yalnız hiçbir konteynerin kullanmadığı "dangling" imajlar
-```
-
-> `docker system prune -a` **kullanmayın**: kullanımda olmayan ama başka projelerin ihtiyaç
-> duyduğu imajları da siler ve o projeleri saatlerce yeniden indirmeye mahkûm eder.
-
-#### Adım D — geçici derleme dizinleri
+#### Adım C — geçici derleme dizinlerini temizleyin
 
 ```powershell
 Get-ChildItem -Directory -Filter ".next-*" | Select-Object Name, FullName
 Remove-Item -Recurse -Force .next-restore-drill -ErrorAction SilentlyContinue
 ```
 
-> Canlı sunucunun kullandığı `.next` dizinini **silmeyin** — uygulama düşer.
+> Canlı sunucunun kullandığı `.next` dizinini sunucu açıkken **silmeyin**.
 
-#### Adım E — PostgreSQL tarafında ölü alan (yalnız gerekiyorsa)
+#### Adım D — PostgreSQL tarafında ölü alan analizi (`VACUUM ANALYZE`, yalnız gerekiyorsa)
 
-Bu adım nadiren gerekir ve **uygulama durdurulmuşken** yapılır (`docs/ops/stop.md`).
+Bu adım nadiren gerekir ve **uygulama durdurulmuşken** yapılır ([stop.md](stop.md)).
 
 ```powershell
-docker exec mas-radar-pg psql -U postgres -d mas_radar_dev -c "vacuum (verbose, analyze);"
+$u = [Uri]((Select-String -Path .env.local -Pattern '^MIGRATION_DATABASE_URL=' | Select-Object -First 1).Line -replace '^MIGRATION_DATABASE_URL=','').Trim().Trim('"')
+$env:PGPASSWORD = [Uri]::UnescapeDataString(($u.UserInfo -split ':',2)[1])
+try {
+  & C:\MAS\pgsql16\bin\psql.exe -h 127.0.0.1 -p 5432 -U postgres -d mas_radar_dev -c "vacuum (verbose, analyze);"
+} finally {
+  Remove-Item Env:PGPASSWORD -ErrorAction SilentlyContinue
+}
 ```
 
-`vacuum full` **bu runbook'ta yoktur**: tabloyu kilitler ve geçici olarak iki katı yer ister —
-disk zaten doluyken tam ters etki yapar.
+`vacuum full` **bu runbook'ta yoktur**: tabloyu kilitler ve geçici olarak iki katı disk alanı ister.
 
-### 3) Tekrar ölçün
+### 3) Tekrar ölçün ve veri bütünlüğünü doğrulayın
 
 ```powershell
 Get-PSDrive C | Select-Object Used, Free
-docker system df
+pnpm backup:offdevice:verify
+
+$u = [Uri]((Select-String -Path .env.local -Pattern '^MIGRATION_DATABASE_URL=' | Select-Object -First 1).Line -replace '^MIGRATION_DATABASE_URL=','').Trim().Trim('"')
+$env:PGPASSWORD = [Uri]::UnescapeDataString(($u.UserInfo -split ':',2)[1])
+try {
+  & C:\MAS\pgsql16\bin\psql.exe -h 127.0.0.1 -p 5432 -U postgres -d mas_radar_dev -t -A -c "SET default_transaction_read_only = on; select count(*), max(version) from public.schema_migrations;" -c "select count(*) from public.payments;" -c "select count(*) from public.users;"
+} finally {
+  Remove-Item Env:PGPASSWORD -ErrorAction SilentlyContinue
+}
 ```
 
 ---
@@ -159,18 +147,10 @@ docker system df
 ## EXPECTED
 
 ```text
-prune kuru koşu   ->  "Budanacak: n (x MB)" + "KURU KOŞU — hiçbir dosya silinmedi."
-prune --apply     ->  aynı sayı kadar dosya silindi, IMMUTABLE sayısı DEĞİŞMEDİ
-dropdb            ->  çıktı yok (sessiz başarı)
-C: boş alan       ->  işlemden sonra ARTMIŞ olmalı
-mas_radar_dev     ->  hâlâ listede, boyutu ~21 MB
-ledger/payments/users -> 87 / 20 / 17  (DEĞİŞMEMİŞ olmalı)
-```
-
-Son doğrulama — veriye dokunulmadığının kanıtı:
-
-```powershell
-docker exec mas-radar-pg psql -U postgres -d mas_radar_dev -t -A -c "select count(*) from public.schema_migrations;" -c "select count(*) from public.payments;" -c "select count(*) from public.users;"
+prune kuru koşu       ->  "Budanacak: n (x MB)" + "KURU KOŞU — hiçbir dosya silinmedi."
+prune --apply         ->  aynı sayı kadar dosya silindi, IMMUTABLE sayısı DEĞİŞMEDİ
+C: boş alan           ->  işlemden sonra ARTMIŞ olmalı
+schema_migrations     ->  113|0113 (DEĞİŞMEMİŞ olmalı)
 ```
 
 ---
@@ -179,42 +159,31 @@ docker exec mas-radar-pg psql -U postgres -d mas_radar_dev -t -A -c "select coun
 
 | Belirti | Anlamı | Ne yapılır |
 |---|---|---|
-| `could not extend file ... No space left on device` | PostgreSQL yazamıyor | Adım A + B'yi hemen uygulayın; uygulamayı durdurun |
-| `PANIC: could not write to file` | Kritik | Uygulamayı durdurun, yer açın, `docs/ops/docker-restart.md` |
-| Konteyner `Restarting` döngüsünde | Açılışta disk hatası | `docker logs --tail 100 mas-radar-pg` |
-| `dropdb: database "..." is being accessed by other users` | Bağlantı var | Uygulamayı/gate'i durdurun, tekrar deneyin |
-| `dropdb` `mas_radar_dev` için denendi | **YANLIŞ HEDEF** | **DURDURUN.** O veritabanı düşürülmez |
-| prune "Budanacak: 0" ama disk hâlâ dolu | Yer başka yerde | `docker system df`, Adım C/D |
-| `--apply` sonrası IMMUTABLE sayısı değişti | Beklenmedik | **DURUN** — `docs/ops/incident.md` |
-| Windows "disk dolu" uyarısı sürüyor | C: darlığı Docker sanal diskinden | Docker Desktop → Settings → Resources; ya da Adım C |
+| `could not extend file ... No space left on device` | PostgreSQL yazamıyor | Uygulamayı durdurun ([stop.md](stop.md)), Adım A + B + C'yi hemen uygulayın |
+| `PANIC: could not write to file` | Kritik disk doluluğu | Uygulamayı durdurun, yer açın, ardından [postgres-service.md](postgres-service.md) ile hizmeti başlatın |
+| `dropdb: database "..." is being accessed by other users` | Açık bağlantı var | Klonu kullanan doğrulama betiğini durdurun, tekrar deneyin |
+| `dropdb` `mas_radar_dev` için denendi | **YANLIŞ HEDEF** | **DURDURUN.** O veritabanı asla düşürülmez |
+| `--apply` sonrası IMMUTABLE sayısı değişti | Beklenmedik davranış | **DURUN** — [incident.md](incident.md) |
 
 ---
 
 ## STOP CONDITION
 
-1. `mas_radar_dev` üzerinde `dropdb` / `truncate` / `delete` düşünüyorsanız → **DURUN.**
-   Bu runbook o işlemleri içermez ve içermeyecektir.
-2. Geçerli bir yedeğiniz yokken silme yapacaksanız → önce `docs/ops/backup.md`.
-3. `--apply` sonrası satır sayıları değiştiyse → **P0**, `docs/ops/incident.md`.
-4. `docker system prune -a` yazmak üzereyseniz → yazmayın.
+1. `mas_radar_dev` üzerinde `dropdb` / `truncate` / `delete` düşünüyorsanız → **DURUN.** Bu runbook o işlemleri içermez ve içermeyecektir.
+2. Geçerli bir yedeğiniz yokken silme yapacaksanız → önce [backup.md](backup.md).
+3. `--apply` sonrası veritabanı satır sayıları değiştiyse → **P0**, [incident.md](incident.md).
 
 ---
 
 ## ROLLBACK
 
-**Silme geri alınamaz.** Koruma bu yüzden silme anına değil, öncesine konmuştur:
+**Silme geri alınamaz.** Koruma bu yüzden silme öncesine konmuştur:
 
-- Budama **varsayılan olarak kuru koşudur**; `--apply` olmadan hiçbir dosya silinmez.
-- IMMUTABLE sınıfı hem planlama hem silme anında **iki kez** kontrol edilir.
+- Budama varsayılan olarak kuru koşudur; `--apply` olmadan hiçbir dosya silinmez.
+- IMMUTABLE sınıfı iki kez kontrol edilir.
 - Harcanabilir klonlar tek tek, adı okunarak düşürülür.
 
-Yanlışlıkla bir yedek silindiyse: off-device kopyaya bakın
-(`MAS_OFFDEVICE_BACKUP_DIR`, `docs/ops/backup-schedule.md` §1). Orada da yoksa dosya gitmiştir;
-**yeni bir yedek alın** (`docs/ops/backup.md`) ve olayı kaydedin.
-
-Yanlışlıkla bir veritabanı düşürüldüyse: harcanabilir bir klonsa kaybı yoktur;
-`mas_radar_dev` ise bu bir **P0 felaket kurtarma olayıdır** → `docs/ops/incident.md` +
-`docs/ops/restore.md`.
+Yanlışlıkla bir yedek silindiyse harici yedek dizinine (`MAS_OFFDEVICE_BACKUP_DIR`, [backup-schedule.md](backup-schedule.md)) bakın ve hemen yeni bir yedek alın ([backup.md](backup.md)).
 
 ---
 
@@ -223,25 +192,17 @@ Yanlışlıkla bir veritabanı düşürüldüyse: harcanabilir bir klonsa kaybı
 ```text
 tarih/saat            :
 tetikleyen belirti    :
-C: boş (önce)         :
-docker system df (önce):
+C: boş (önce / sonra) :
 backups sayısı/boyut  :
-uygulanan adımlar     :  A / B / C / D / E
+uygulanan adımlar     :  A / B / C / D
 düşürülen klonlar     :  (adları)
-prune kuru koşu       :  budanacak n dosya, x MB
-prune --apply         :  silinen n dosya
-IMMUTABLE sayısı      :  önce ... sonra ...   (AYNI olmalı)
-C: boş (sonra)        :
-ledger/payments/users :  87 / 20 / 17
+prune --apply         :  silinen n dosya, IMMUTABLE korundu
+schema_migrations     :  113|0113
 ```
 
 ---
 
 ## SECRET HANDLING
 
-- Dump dosyaları **gerçek finansal veri** içerir. Yer açmak için bir yedeği "geçici olarak"
-  başka bir yere kopyalıyorsanız o hedef de korunmalıdır — masaüstüne, `Downloads`'a ya da
-  paylaşılan bir klasöre çıkarmayın.
-- Silinen dosya adları sır değildir; kanıt paketine yazılabilir.
-- `docker system df` ve `Get-PSDrive` çıktıları sır içermez.
-- Bu runbook'ta parola ya da bağlantı dizesi geçmez.
+- Dump dosyaları **gerçek finansal veri** içerir; yer açmak için masaüstüne, `Downloads`'a ya da paylaşılan korumasız bir klasöre taşımayın.
+- `PGPASSWORD` yalnız geçici `try/finally` bloğunda tutulur ve ekrana basılmaz.

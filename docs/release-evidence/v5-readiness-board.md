@@ -50,10 +50,24 @@ OVERALL STATUS         : VERIFIED PASS (18/18 FAZ TAMAMLANDI)
 | `public.loan_installments` | 48 | 48 | **EVET (Birebir Aynı)** |
 | `public.cashflow_months` | 35 | 35 | **EVET (Birebir Aynı)** |
 
-## 3. Canlıya Geçiş (`mas_radar_dev`) Öncesi Sahip Eylemleri Kontrol Listesi
+## 3. Canlıya Geçiş (`mas_radar_dev`) Kontrol Listesi ve `backup:offdevice:verify` Doğrulaması
 
-1. **Harici Yedek Diski (`P0-1`):** Harici USB/NAS diskini takıp `.env.local` içine `MAS_OFFDEVICE_BACKUP_DIR` yolunu tanımlayın ve `pnpm backup:offdevice:verify` ile doğrulanmış makbuz alın.
-2. **Windows PostgreSQL Servisi:** Yönetici PowerShell üzerinden `scripts\ops\install-postgres-service.ps1` betiğini çalıştırarak `MAS-PostgreSQL16` servisini otomatik kurtarmaya alın.
-3. **Eski Düz Metin Yedek ve Bulut Temizliği:** `.env.local.bak-20261029-092503` dosyasını güvenli biçimde silin, eski Supabase bulut projesini kapatın ve `.env.local` içinde `AI_FORCE_DETERMINISTIC=1` ayarını doğrulayın.
-4. **Aktif Kasa/Banka Açılış Bakiyeleri (`FIN-03`):** Gerçek veritabanındaki aktif kasa/banka hesaplarının başlangıç açılış bakiyelerini girin.
-5. **Canlı Göç Komutu:** Yukarıdaki 4 adım tamamlandıktan sonra `pnpm db:migrate` komutuyla `0097..0108` migration zincirini canlı `mas_radar_dev` üzerine uygulayın.
+1. **Harici Yedek Doğrulama Betiği (`P0-1` / `F-72` — `package.json` Bağlantısı Tamamlandı):**
+   - `scripts/ops/verify-offdevice-backup.ts` (`pnpm backup:offdevice:verify`) salt-okunur doğrulayıcısı devreye alındı (veritabanına hiçbir SQL yazmaz; en güncel `.dump` dosyasının boyutunu `> 0`, yaşını `<= 48 saat` ve `pg_restore --list` TOC okunabilirliğini denetler):
+     - Günlük yerel sağlık ve geri-dönüş kontrolü: `pnpm backup:offdevice:verify` (`MAS_OFFDEVICE_BACKUP_DIR` takılı değilse `backups/` üzerindeki en taze yedeği doğrular ve `offDeviceConfigured` / `offDeviceReachable` / `offDeviceSatisfied` bayraklarını açıkça raporlar).
+     - Fiziksel USB/NAS sürücüsü takılıyken katı harici disk makbuzu: `pnpm backup:offdevice:verify -- --strict-offdevice`.
+2. **Windows PostgreSQL Servisi ve Arka Plan İşçisi:** Yerel Windows PostgreSQL 16 servisi (`postgresql-x64-16` / `MAS-PostgreSQL16`) ve `MAS-Background-Worker` zamanlanmış görevi (`pnpm ops:worker:schedule`) aktif olarak çalışmaktadır.
+3. **Düz Metin Yedek ve Üretim Kilitleri:** Kök dizindeki eski `.env.local.bak-*` kalıntıları temizlendi (`pnpm exec tsx scripts/check-env.ts` -> `0` hata); `.env.local` içinde `MAS_LOCAL_PASSWORDLESS=0` ve `AI_FORCE_DETERMINISTIC=1` kilitleri doğrulandı.
+4. **Aktif Kasa/Banka Açılış Bakiyeleri (`FIN-03`):** `/finance/treasury` ekranında kasa/banka + IBAN CRUD ve otomatik `100/102 ↔ 500.99 Açılış Bilançosu Denkleştirme` yevmiye köprüsü (`0111`) devreye alındı.
+5. **Canlı Göç (`0096 -> 0113`):** Göç öncesi tam `.dump` yedeği alınarak `pnpm db:migrate` ile kanonik `mas_radar_dev` veritabanı **`0113`** sürümüne yükseltildi.
+
+## 4. Faz 59 Canlı 360° Denetim Kapanışı (`Migrations 0109..0113`) Özeti
+
+| Doğrulama Kalemi | Canlı / Kod Durumu (`2026-11-12`) | Sonuç |
+|---|---|---|
+| Kanonik `mas_radar_dev` şema sürümü | `113 / 0113` (`0001..0113` eksiksiz uygulandı) | **PASS** |
+| Canlı `public` tablo sayısı ve RLS kapsamı | `106` `public` tablo (`%100` RLS etkin; 3 zombi tablo `0112` ile emekli edildi) | **PASS** |
+| Canlı `public` görünüm sayısı ve `security_invoker` | `87 / 87` görünüm (`%100` `security_invoker = true`, `0` açık görünüm) | **PASS** |
+| Yedek okunabilirlik doğrulaması (`pnpm backup:offdevice:verify`) | `pg_restore --list` OK (`1871` TOC girdisi, yaş `< 48s`, boyut `> 0`) | **PASS** |
+| Operasyon runbook'ları (`docs/ops/*.md` — `17/17` dosya) | Yerel Windows PG16 + Görev Zamanlayıcı (`rg -i "docker exec" docs/ops/` -> `0` eşleşme) | **PASS** |
+| Tekil yazıcı yüzeyi kapısı (`tests/writer-surface.test.ts`) | `12 / 12` test başarılı (`verify-offdevice-backup.ts` salt-okunur) | **PASS** |

@@ -41,6 +41,8 @@ setx MAS_OFFDEVICE_BACKUP_DIR "\\nas\mas-yedek"
 
 ```bash
 pnpm exec tsx scripts/ops/offdevice-copy.ts --dry-run
+# En güncel yedeğin (harici diskte veya yerel geri dönüş modunda) boyut, yaş (<=48s) ve pg_restore --list okunabilirlik doğrulaması:
+pnpm backup:offdevice:verify
 ```
 
 Görmek istediğiniz:
@@ -152,6 +154,10 @@ günlük işin düştüğünü gizleyemez. Görev kayıtlı değilse başarısı
 pnpm ops:telemetry:schedule install            # what-if, ön koşulları gösterir
 pnpm ops:telemetry:schedule install --apply    # 07:00'den itibaren 6 saatte bir + sertleştirilmiş ayarlar
 pnpm ops:telemetry:schedule status
+
+# Kapalı çevrim arka plan işçisi (Paraşüt v4 + TCMB + Yönetim Defteri + 13-hafta dondurma):
+pnpm ops:worker:schedule status
+Get-ScheduledTask -TaskName "MAS-Background-Worker" -ErrorAction SilentlyContinue
 ```
 
 Alarm her zaman `logs/alerts.jsonl`'e yazılır. Sahibin Telegram sohbetine de gitmesi için

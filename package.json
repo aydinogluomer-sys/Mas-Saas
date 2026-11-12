@@ -99,6 +99,7 @@
     "ops:backup:daily": "node --import tsx scripts/ops/backup-daily.ts",
     "ops:backup:prune": "node --import tsx scripts/ops/backup-prune.ts",
     "ops:backup:offdevice": "node --import tsx scripts/ops/offdevice-copy.ts",
+    "backup:offdevice:verify": "tsx --env-file=.env.local scripts/ops/verify-offdevice-backup.ts",
     "ops:backup:schedule": "node --import tsx scripts/ops/schedule-windows.ts",
     "release:stage07-backup-gate": "node --import tsx scripts/release/stage07-backup-gate.ts",
     "db:fixture-cleanup": "node --import tsx scripts/db/fixture-cleanup.ts",

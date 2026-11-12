@@ -65,17 +65,22 @@ export async function generateVolume(pool: Pool, scale: VolumeScale = DEFAULT_SC
     await c.query(
       `insert into public.invoices
          (id, direction, invoice_no, party_id, issue_date, due_date, currency,
-          net_amount, tax_amount, gross_amount, status)
+          net_amount, tax_amount, gross_amount, paid_amount, status)
        select ${UUID_EXPR("i", "inv")},
               case when i % 2 = 0 then 'sales' else 'purchase' end,
               'PERF-' || i,
               ${UUID_EXPR("(1 + (i % $2))", "party")},
               (current_date - ((i % 1095))::int),
-              (current_date - ((i % 1095))::int + 45),
+              (current_date + 45 - ((i % 1095))::int),
               'TRY',
               ((i % 900) + 100)::numeric * 10,
               (((i % 900) + 100)::numeric * 10 * 0.20),
               (((i % 900) + 100)::numeric * 10 * 1.20),
+              case (array['open','open','partial','paid','draft'])[1 + (i % 5)]
+                when 'paid' then (((i % 900) + 100)::numeric * 10 * 1.20)
+                when 'partial' then round((((i % 900) + 100)::numeric * 10 * 1.20) * 0.50, 2)
+                else 0
+              end,
               (array['open','open','partial','paid','draft'])[1 + (i % 5)]
        from generate_series(1, $1) i
        on conflict do nothing`, [scale.invoices, scale.parties]);
@@ -130,27 +135,32 @@ export async function generateVolume(pool: Pool, scale: VolumeScale = DEFAULT_SC
       await c.query(
         `insert into public.payment_instances
            (id, payment_id, instance_month, due_date, amount, currency, status, direction,
-            amount_status, amount_source, paid_at)
+            amount_status, amount_source, paid_at, paid_amount)
          select ${UUID_EXPR("(p * 1000 + m)", "pi")},
                 ${UUID_EXPR("p", "pay")},
                 (date_trunc('month', current_date)::date + (((2 - m)) || ' months')::interval)::date,
-                (date_trunc('month', current_date)::date + (((2 - m)) || ' months')::interval)::date
-                  + ((p % 27))::int,
+                least(
+                  (date_trunc('month', current_date)::date + (((3 - m)) || ' months')::interval - interval '1 day')::date,
+                  (date_trunc('month', current_date)::date + (((2 - m)) || ' months')::interval)::date + ((p % 31))::int
+                ),
                 -- Every 17th row has an UNKNOWN amount, deliberately: the read models are full
                 -- of "null is not zero" branches and a generator with no nulls would measure the
                 -- easy half of every query.
                 case when (p * 36 + m) % 17 = 0 then null
                      else (((p * 36 + m) % 800) + 100)::numeric * 5 end,
                 'TRY',
-                (array['unpaid','paid','planned','late'])[1 + ((p * 36 + m) % 4)],
+                case when (p * 36 + m) % 17 = 0 then 'planned'
+                     else (array['unpaid','paid','planned','late'])[1 + ((p * 36 + m) % 4)] end,
                 case when (p * 36 + m) % 5 = 0 then 'inflow' else 'outflow' end,
                 case when (p * 36 + m) % 17 = 0 then 'missing' else 'known' end,
                 'generated',
                 -- paid_requires_paid_at fires on INSERT, so this cannot be a follow-up UPDATE.
                 -- paid_fields_scoped also forbids paid_at on any other status, so it is set for
                 -- exactly the 'paid' rows and left null everywhere else.
-                case when (array['unpaid','paid','planned','late'])[1 + ((p * 36 + m) % 4)] = 'paid'
-                     then now() else null end
+                case when (p * 36 + m) % 17 <> 0 and (array['unpaid','paid','planned','late'])[1 + ((p * 36 + m) % 4)] = 'paid'
+                     then now() else null end,
+                case when (p * 36 + m) % 17 <> 0 and (array['unpaid','paid','planned','late'])[1 + ((p * 36 + m) % 4)] = 'paid'
+                     then (((p * 36 + m) % 800) + 100)::numeric * 5 else null end
          from generate_series(1, $1) p, generate_series(0, $2 - 1) m
          on conflict do nothing`, [payCount, months]);
     }
@@ -158,15 +168,18 @@ export async function generateVolume(pool: Pool, scale: VolumeScale = DEFAULT_SC
     // ── checks ─────────────────────────────────────────────────────────────────────────
     await c.query(
       `insert into public.checks
-         (id, maturity_date, serial_no, amount, signed_amount, direction, status, counterparty_label)
+         (id, maturity_date, serial_no, amount, signed_amount, currency, direction, status, counterparty_label)
        select ${UUID_EXPR("i", "chk")},
               (current_date - 400 + ((i % 800))::int),
               'PERF-CHK-' || i,
               ((i % 3000) + 100)::numeric,
               case when i % 3 = 0 then ((i % 3000) + 100)::numeric
                    else -((i % 3000) + 100)::numeric end,
+              'TRY',
               case when i % 3 = 0 then 'inflow' else 'outflow' end,
-              (array['planned','cleared','bounced','planned'])[1 + (i % 4)],
+              case when i % 3 = 0
+                   then (array['in_portfolio','cleared','bounced','in_bank_collection'])[1 + (i % 4)]
+                   else (array['issued_to_vendor','cleared','bounced','issued_to_vendor'])[1 + (i % 4)] end,
               'PERF Karşı Taraf ' || (1 + (i % $2))
        from generate_series(1, $1) i
        on conflict do nothing`, [scale.checks, scale.parties]);
@@ -209,16 +222,37 @@ export async function generateVolume(pool: Pool, scale: VolumeScale = DEFAULT_SC
  * data and the next gate run would have measured a quietly different database.
  */
 export async function dropVolume(pool: Pool, scale: VolumeScale = DEFAULT_SCALE): Promise<void> {
-  await pool.query(`delete from public.audit_logs where action = 'perf_seed'`);
-  await pool.query(`delete from public.checks where serial_no like 'PERF-CHK-%'`);
-  await pool.query(
-    `delete from public.payment_instances where id in (
-       select ${UUID_EXPR("(p * 1000 + m)", "pi")}
-       from generate_series(1, $1) p, generate_series(0, 35) m)`,
-    [Math.max(1, Math.ceil(scale.paymentInstances / 36))]);
-  await pool.query(`delete from public.payments where name like 'PERF Ödeme %'`);
-  await pool.query(`delete from public.bank_transactions where dedupe_hash like 'perfhash-%'`);
-  await pool.query(`delete from public.invoices where invoice_no like 'PERF-%'`);
-  await pool.query(`delete from public.parties where name like 'PERF Karşı Taraf %'`);
+  const c = await pool.connect();
+  try {
+    await c.query("begin");
+    await c.query(`alter table public.audit_logs disable trigger audit_logs_block_update_delete`);
+    await c.query(`delete from public.audit_logs where action = 'perf_seed'`);
+    await c.query(`alter table public.audit_logs enable trigger audit_logs_block_update_delete`);
+    await c.query(`delete from public.checks where serial_no like 'PERF-CHK-%'`);
+    await c.query(
+      `delete from public.payment_instances where id in (
+         select ${UUID_EXPR("(p * 1000 + m)", "pi")}
+         from generate_series(1, $1) p, generate_series(0, 35) m)`,
+      [Math.max(1, Math.ceil(scale.paymentInstances / 36))],
+    );
+    await c.query(`delete from public.payments where name like 'PERF Ödeme %'`);
+    await c.query(`delete from public.bank_transactions where dedupe_hash like 'perfhash-%'`);
+    await c.query(
+      `delete from public.bank_accounts where cash_account_id in (
+         select id from public.cash_accounts where name = 'PERF Banka Hesabı'
+       )`,
+    );
+    await c.query(`delete from public.cash_accounts where name = 'PERF Banka Hesabı'`);
+    await c.query(`alter table public.invoices disable trigger invoices_block_issued_delete`);
+    await c.query(`delete from public.invoices where invoice_no like 'PERF-%'`);
+    await c.query(`alter table public.invoices enable trigger invoices_block_issued_delete`);
+    await c.query(`delete from public.parties where name like 'PERF Karşı Taraf %'`);
+    await c.query("commit");
+  } catch (e) {
+    await c.query("rollback");
+    throw e;
+  } finally {
+    c.release();
+  }
   await pool.query("analyze");
 }

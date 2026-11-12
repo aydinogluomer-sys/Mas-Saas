@@ -21,9 +21,9 @@
     "  pnpm interaction:gate         -> ratchet (PR kapisi, BLOKLAYICI)",
     "  pnpm interaction:gate:strict  -> strict  (tam guvence; cutover SONRASI sertlestirme hedefi)"
   ],
-  "untested": 557,
-  "pass": 1578,
-  "measuredAt": "2026-08-27T14:10:00+03:00",
-  "measuredAtCommit": "df4ae6f+",
-  "measuredNote": "2135 kesfedilen kontrol; navigation 1564 PASS, mutation 12 PASS / 120 UNTESTED, ui-state 2 PASS / 414 UNTESTED, export 0 PASS / 23 UNTESTED. FAIL=0, manifestosuz=0. Uretim derlemesi, harcanabilir DB (mas_radar_interaction_verify), 5 gercek oturum (rol basina tazelenmis), QA bypass kapali."
+  "untested": 358,
+  "pass": 2340,
+  "measuredAt": "2026-11-12T18:42:35+03:00",
+  "measuredAtCommit": "388038b+",
+  "measuredNote": "2698 kesfedilen kontrol (+563 yeni rota/CFO kontrolu); 2340 PASS (+762 yeni canli Playwright kaniti), 358 UNTESTED (-199 net borc azalisi), FAIL=0, manifestosuz=0. Uretim derlemesi, harcanabilir DB (mas_radar_interaction_verify, 0114), 5 gercek oturum (rol basina tazelenmis), MAS_LOCAL_PASSWORDLESS=0, QA bypass kapali."
 }

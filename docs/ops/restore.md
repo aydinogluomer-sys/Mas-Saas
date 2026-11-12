@@ -1,32 +1,23 @@
-# RUNBOOK — restore (yedekten geri yükle)
-
-> **WAVE 0 (2026-10-28) — DOCKER KALDIRILDI.** Bu belgedeki `docker …` ve `scripts/deploy/*.sh`
-> komutları ARTIK GEÇERSİZ; belge native PostgreSQL 16 için yeniden yazılacak. Şimdilik: restore
-> provası → `pnpm release:restore-drill` (yalnız harcanabilir hedef, native araçlar); küme →
-> [`postgres-service.md`](postgres-service.md). Gerçek veritabanına geri yüklemeden ÖNCE durun ve
-> [`incident.md`](incident.md)'yi izleyin.
+# RUNBOOK — restore (yedekten harcanabilir klona geri yükle)
 
 > **Kime:** MAS operatörüne. Yazılım geliştirici olmanız gerekmez.
 > **Çalışma dizini (her komut için):** `C:\Users\Trade Bilisim\Mas Saas`
-> **Politika:** `docs/backup-restore-policy.md` · **Yedek alma:** `docs/ops/backup.md`
+> **Politika:** `docs/backup-restore-policy.md` · **Yedek alma:** [backup.md](backup.md)
 
 ---
 
 ## PURPOSE
 
-Bir dump dosyasını **harcanabilir (disposable) bir hedefe** geri yükleyip verinin gerçekten
-kurtarılabilir olduğunu kanıtlamak.
+Bir `.dump` dosyasını yerel PostgreSQL 16 araçlarıyla (`C:\MAS\pgsql16\bin\createdb.exe`, `pg_restore.exe`, `dropdb.exe`) **harcanabilir (disposable) bir hedefe** geri yükleyip verinin gerçekten kurtarılabilir olduğunu kanıtlamak.
 
-Bu runbook'un kapsadığı tek senaryo budur. **Gerçek veritabanının üzerine geri yükleme
-(`mas_radar_dev`) bu runbook'ta YOKTUR.** O işlem bir felaket kurtarma kararıdır, ayrı bir
-onay gerektirir ve `docs/ops/cutover.md` → "DB RESTORE" kararı üzerinden yürütülür.
+Bu runbook'un kapsadığı tek senaryo budur. **Gerçek veritabanının üzerine geri yükleme (`mas_radar_dev`) bu runbook'ta YOKTUR.** O işlem bir felaket kurtarma kararıdır, ayrı bir onay gerektirir ve [cutover.md](cutover.md) → `"DB RESTORE"` kararı ile [incident.md](incident.md) üzerinden yürütülür.
 
 İki kullanım vardır:
 
 | Amaç | Sıklık | Yol |
 |---|---|---|
-| "Yedeğim geri yükleniyor mu?" tatbikatı | **Ayda bir** | Yol A (tam kapı) |
-| "Şu eski kayda bakmam lazım" | İhtiyaç oldukça | Yol B (elle restore) |
+| "Yedeğim geri yükleniyor mu?" tatbikatı | **Ayda bir** | Yol A (`pnpm release:restore-drill`) |
+| "Şu eski kayda bakmam lazım" | İhtiyaç oldukça | Yol B (yerel `createdb.exe` + `pg_restore.exe`) |
 
 ---
 
@@ -34,16 +25,15 @@ onay gerektirir ve `docs/ops/cutover.md` → "DB RESTORE" kararı üzerinden yü
 
 | # | Koşul | Nasıl doğrulanır |
 |---|---|---|
-| 1 | PostgreSQL ayakta | `docker exec mas-radar-pg pg_isready -U postgres` |
-| 2 | Geri yüklenecek dump dosyası var ve **okunabilir** | `docs/ops/backup.md` → "okunabilirliği kanıtlayın" |
+| 1 | Yerel PostgreSQL 16 ayakta | `& C:\MAS\pgsql16\bin\pg_isready.exe -h 127.0.0.1 -p 5432` |
+| 2 | Geri yüklenecek dump dosyası var ve **okunabilir** | `pnpm backup:offdevice:verify` → `PASS` |
 | 3 | Hedef adı **harcanabilir** bir ad | aşağıdaki adlandırma kuralı |
-| 4 | Diskte yer var | `docker exec mas-radar-pg psql -U postgres -t -A -c "select pg_size_pretty(sum(pg_database_size(datname))) from pg_database;"` |
+| 4 | Diskte yer var | `Get-PSDrive C \| Select-Object Used,Free` |
 | 5 | Kabukta bayat bağlantı değişkeni yok | `pnpm db:env:source` |
 
 ### Hedef adlandırma kuralı — atlanamaz
 
-Araçlar, hedefin **adında** harcanabilir olduğunu söylemesini şart koşar. Kabul edilen
-işaretlerden en az biri geçmelidir:
+Araçlar, hedefin **adında** harcanabilir olduğunu söylemesini şart koşar. Kabul edilen işaretlerden en az biri geçmelidir:
 
 ```text
 verify  test  tmp  temp  disposable  scratch  sandbox
@@ -59,7 +49,7 @@ mas_radar_dev   postgres   template0   template1
 Önerilen ad kalıbı:
 
 ```text
-mas_radar_restore_20260826
+mas_radar_restore_20261112
 ```
 
 ---
@@ -80,8 +70,7 @@ WRITE EXPECTED?  : YES — YALNIZ harcanabilir hedefe. Gerçek veritabanına HAY
 
 ### Yol A — tam tatbikat (yedek → restore → karşılaştırma → uygulama açılışı)
 
-Bu kapı "geri yüklendi" demekle yetinmez: satır sayılarını ve parasal toplamları kaynakla
-karşılaştırır, sonra uygulamayı geri yüklenen kopyaya karşı gerçekten başlatır.
+Bu kapı satır sayılarını ve parasal toplamları kaynakla karşılaştırır, sonra uygulamayı geri yüklenen kopyaya karşı izole portta başlatır:
 
 ```powershell
 cd "C:\Users\Trade Bilisim\Mas Saas"
@@ -93,70 +82,88 @@ $env:SMOKE_PORT = "3290"
 $env:MAS_NEXT_DIST_DIR = ".next-restore-drill"
 
 pnpm release:restore-drill
+
+Remove-Item Env:SOURCE_DATABASE_URL, Env:RESTORE_DB, Env:SMOKE_PORT, Env:MAS_NEXT_DIST_DIR -ErrorAction SilentlyContinue
 ```
 
-**Neden `SMOKE_PORT` ve `MAS_NEXT_DIST_DIR` veriliyor:** canlı sunucu port 3000'i ve `.next`
-dizinini kullanıyor. Bu iki değişken olmadan tatbikat canlı derlemeyi ezebilir. Tatbikat dolu
-bir portta **durur**, kimsenin sürecini öldürmez.
+**Neden `SMOKE_PORT` ve `MAS_NEXT_DIST_DIR` veriliyor:** canlı sunucu port 3000'i ve `.next` dizinini kullanır. Bu iki değişken canlı derlemenin ezilmesini engeller.
 
-### Yol B — tek bir dump'ı elle geri yükle (Git Bash gerektirir)
-
-```bash
-bash scripts/deploy/restore-db.sh backups/<dump-adi>.dump mas_radar_restore_20260826
-```
-
-Betik var olan bir veritabanının üzerine yazmayı **reddeder** (`FORCE=1` verilmedikçe).
-`FORCE=1` kullanmayın — bunun yerine yeni bir ad seçin.
-
-### Geri yüklenen kopyayı doğrulayın (kaynakla karşılaştırma)
+### Yol B — tek bir dump'ı yerel `pg_restore.exe` ile harcanabilir klona yükle
 
 ```powershell
-# HEDEF
-docker exec mas-radar-pg psql -U postgres -d mas_radar_restore_20260826 -t -A -c "select count(*) from public.schema_migrations;" -c "select count(*) from public.payments;" -c "select count(*) from public.users;"
+cd "C:\Users\Trade Bilisim\Mas Saas"
+$targetDb = "mas_radar_restore_20261112"
+$dumpFile = "backups\<dump-adi>.dump"
 
-# KAYNAK (yalnız okuma)
-docker exec mas-radar-pg psql -U postgres -d mas_radar_dev -t -A -c "select count(*) from public.schema_migrations;" -c "select count(*) from public.payments;" -c "select count(*) from public.users;"
+if ($targetDb -in @('mas_radar_dev','postgres','template0','template1') -or $targetDb -notmatch 'restore|clone|drill|verify|test|tmp|sandbox') {
+  throw "GÜVENLİK DURDURMASI: Hedef ad harcanabilir olmalı ($targetDb)."
+}
+
+$u = [Uri]((Select-String -Path .env.local -Pattern '^MIGRATION_DATABASE_URL=' | Select-Object -First 1).Line -replace '^MIGRATION_DATABASE_URL=','').Trim().Trim('"')
+$env:PGPASSWORD = [Uri]::UnescapeDataString(($u.UserInfo -split ':',2)[1])
+try {
+  & C:\MAS\pgsql16\bin\createdb.exe -h 127.0.0.1 -p 5432 -U postgres $targetDb
+  & C:\MAS\pgsql16\bin\pg_restore.exe -h 127.0.0.1 -p 5432 -U postgres -d $targetDb --no-owner --exit-on-error $dumpFile
+} finally {
+  Remove-Item Env:PGPASSWORD -ErrorAction SilentlyContinue
+}
+```
+
+### Geri yüklenen kopyayı doğrulayın (kaynakla salt-okunur karşılaştırma)
+
+```powershell
+$u = [Uri]((Select-String -Path .env.local -Pattern '^MIGRATION_DATABASE_URL=' | Select-Object -First 1).Line -replace '^MIGRATION_DATABASE_URL=','').Trim().Trim('"')
+$env:PGPASSWORD = [Uri]::UnescapeDataString(($u.UserInfo -split ':',2)[1])
+try {
+  Write-Host "--- HEDEF ($targetDb) ---"
+  & C:\MAS\pgsql16\bin\psql.exe -h 127.0.0.1 -p 5432 -U postgres -d $targetDb -t -A -c "SET default_transaction_read_only = on; select count(*), max(version) from public.schema_migrations;" -c "select count(*) from public.payments;" -c "select count(*) from public.users;"
+
+  Write-Host "--- KAYNAK (mas_radar_dev) ---"
+  & C:\MAS\pgsql16\bin\psql.exe -h 127.0.0.1 -p 5432 -U postgres -d mas_radar_dev -t -A -c "SET default_transaction_read_only = on; select count(*), max(version) from public.schema_migrations;" -c "select count(*) from public.payments;" -c "select count(*) from public.users;"
+} finally {
+  Remove-Item Env:PGPASSWORD -ErrorAction SilentlyContinue
+}
 ```
 
 ### Uygulamayı geri yüklenen kopyaya karşı açmak (isteğe bağlı, canlıyı bozmadan)
 
 ```powershell
-# ÖNCE canlı sunucu durdurulmalı ya da AYRI bir port + AYRI derleme dizini kullanılmalı.
 $env:DATABASE_URL = ((Select-String -Path .env.local -Pattern '^DATABASE_URL=' |
-  Select-Object -First 1).Line -replace '^DATABASE_URL=','') -replace 'mas_radar_dev','mas_radar_restore_20260826'
+  Select-Object -First 1).Line -replace '^DATABASE_URL=','') -replace 'mas_radar_dev','mas_radar_restore_20261112'
 $env:PORT = "3290"
 $env:MAS_NEXT_DIST_DIR = ".next-restore-drill"
 pnpm start
 ```
 
-Bu satır `.env.local`'deki gerçek kimliği alır ve **yalnız veritabanı adını** değiştirir; parola
-hiçbir yerde görünmez ve değiştirilmez.
-
-### Tatbikattan sonra temizlik — hedefi düşürün
+### Tatbikattan sonra temizlik — harcanabilir hedefi düşürün
 
 ```powershell
-docker exec mas-radar-pg dropdb -U postgres mas_radar_restore_20260826
-docker exec mas-radar-pg psql -U postgres -t -A -c "select datname from pg_database order by datname;"
-```
+$targetDb = "mas_radar_restore_20261112"
+if ($targetDb -eq "mas_radar_dev") { throw "ASLA mas_radar_dev düşürülmez!" }
 
-Bu makinede yer darlığı var; artakalan klonlar diski doldurur (`docs/ops/db-full.md`).
+$u = [Uri]((Select-String -Path .env.local -Pattern '^MIGRATION_DATABASE_URL=' | Select-Object -First 1).Line -replace '^MIGRATION_DATABASE_URL=','').Trim().Trim('"')
+$env:PGPASSWORD = [Uri]::UnescapeDataString(($u.UserInfo -split ':',2)[1])
+try {
+  & C:\MAS\pgsql16\bin\dropdb.exe -h 127.0.0.1 -p 5432 -U postgres $targetDb
+  & C:\MAS\pgsql16\bin\psql.exe -h 127.0.0.1 -p 5432 -U postgres -d postgres -t -A -c "select datname from pg_database where datistemplate = false order by datname;"
+} finally {
+  Remove-Item Env:PGPASSWORD -ErrorAction SilentlyContinue
+}
+Remove-Item -Recurse -Force .next-restore-drill -ErrorAction SilentlyContinue
+```
 
 ---
 
 ## EXPECTED
 
 ```text
-restore-db.sh             ->  "Restore complete." (exit 0)
-pnpm release:restore-drill->  BACKUP EXISTS / READABLE / RESTORABLE / DATA MATCHES / APP STARTS
-                              beşi de YES; exit 0
-hedef sayıları            ->  schema_migrations 87 · payments 20 · users 17
-                              (kaynakla BİREBİR aynı olmalı)
-/health (3290 portunda)   ->  {"status":"ok","app":"up","db":"up",...}
+pnpm release:restore-drill ->  BACKUP EXISTS / READABLE / RESTORABLE / DATA MATCHES / APP STARTS
+                               beşi de YES; exit 0
+hedef sayıları             ->  schema_migrations 113|0113 · payments & users kaynakla BİREBİR aynı
+/health (3290 portunda)    ->  {"status":"ok","app":"up","db":"up",...}
 ```
 
-> **Zamanlama tuzağı:** uygulama açılışı `prepare-runtime` üzerinden hedefe **yazar**. Bu
-> yüzden sayı karşılaştırması uygulama başlatılmadan **ÖNCE** yapılır. Tersi sırada
-> "restore veriyi bozdu" gibi görünen fark aslında uygulamanın kendi yazdığı satırlardır.
+> **Zamanlama tuzağı:** uygulama açılışı `prepare-runtime` üzerinden hedefe **yazar**. Bu yüzden sayı karşılaştırması uygulama başlatılmadan **ÖNCE** yapılır.
 
 ---
 
@@ -166,36 +173,26 @@ hedef sayıları            ->  schema_migrations 87 · payments 20 · users 17
 |---|---|---|
 | `GÜVENLİK DURDURMASI: '<ad>' korunan bir veritabanı` | Hedef olarak gerçek DB verildi | **Doğru davranış.** Harcanabilir bir ad seçin |
 | `'<ad>' disposable işaretlerinden hiçbirini taşımıyor` | Ad kuralı sağlanmadı | Adın içine `restore`/`clone`/`drill` ekleyin |
-| `target DB '<ad>' already exists` | Aynı adla eski bir kopya var | Yeni bir ad seçin (`FORCE=1` kullanmayın) |
+| `database "<ad>" already exists` | Aynı adla eski bir kopya var | Yeni bir tarih/ad seçin |
 | `pg_restore: error: could not read from input file` | **Dump bozuk** | Başka bir yedeği deneyin; hepsi bozuksa **P0** |
-| Satır sayıları kaynaktan **az** | Restore eksik | **P0** — `docs/ops/incident.md` |
-| `permission denied for table users` | GRANT'lar geri gelmedi | Roller küme genelindedir ve dump'ın içinde **yoktur**; aynı kümeye geri yüklüyorsanız zaten dururlar. Başka bir kümeye taşıdıysanız bu beklenen bir eksiktir — `docs/ops/incident.md` |
-| Port doluluk uyarısı | 3290 kullanımda | Başka bir port verin (3291, 3292…) |
-| `no space left on device` | Disk doldu | `docs/ops/db-full.md` |
+| Satır sayıları kaynaktan **az** | Restore eksik | **P0** — [incident.md](incident.md) |
+| `permission denied for table users` | Roller küme genelindedir | Yeni bir makineye taşıdıysanız önce rolleri oluşturup `pnpm db:migrate` uygulayın — [incident.md](incident.md) |
+| `no space left on device` | Disk doldu | [db-full.md](db-full.md) |
 
 ---
 
 ## STOP CONDITION
 
 1. Hedef adı harcanabilir değilse — araç zaten durur, **zorlamayın**.
-2. Elinizdeki **son iki** yedek de geri yüklenemiyorsa → **P0**, hemen `docs/ops/incident.md`.
-3. Geri yüklenen kopyanın satır sayıları kaynaktan **düşükse** → tatbikatı sonlandırın ve
-   olayı kaydedin; bu, yedeklerin güvenilmez olduğu anlamına gelir.
-4. `mas_radar_dev` üzerine geri yükleme düşünüyorsanız → **DURUN.** Bu karar bu runbook'ta
-   verilmez; `docs/ops/cutover.md` → "DB RESTORE" kararı.
+2. Elinizdeki **son iki** yedek de geri yüklenemiyorsa → **P0**, hemen [incident.md](incident.md).
+3. Geri yüklenen kopyanın satır sayıları kaynaktan **düşükse** → tatbikatı sonlandırın ve olayı kaydedin.
+4. `mas_radar_dev` üzerine geri yükleme düşünüyorsanız → **DURUN.** Bu karar yalnız [cutover.md](cutover.md) → `"DB RESTORE"` ve kullanıcı onayıyla verilir.
 
 ---
 
 ## ROLLBACK
 
-Bu runbook gerçek veritabanına dokunmadığı için "geri alma" yalnız temizliktir:
-
-```powershell
-docker exec mas-radar-pg dropdb -U postgres <harcanabilir-hedef-adı>
-Remove-Item -Recurse -Force .next-restore-drill -ErrorAction SilentlyContinue
-```
-
-Ayrı portta açtığınız sunucuyu kapatın (`docs/ops/stop.md` — port numarasını 3290 olarak okuyun).
+Bu runbook gerçek veritabanına dokunmadığı için "geri alma" yalnız harcanabilir hedefin `dropdb.exe` ile silinmesi ve `.next-restore-drill` klasörünün kaldırılmasıdır.
 
 ---
 
@@ -208,7 +205,7 @@ hedef veritabanı      :  (harcanabilir ad)
 BACKUP EXISTS         :
 BACKUP READABLE       :
 BACKUP RESTORABLE     :
-DATA MATCHES          :  kaynak 87/20/17  hedef ...
+DATA MATCHES          :  kaynak 113/0113 = hedef 113/0113
 APP STARTS            :
 exit kodu             :
 hedef düşürüldü mü    :  EVET/HAYIR
@@ -217,17 +214,11 @@ hedef düşürüldü mü    :  EVET/HAYIR
 Otomatik üretilen kanıt:
 
 - `docs/release-evidence/final-production-readiness/05-real-backup-restore.md`
-- `docs/release-evidence/faz6-restore-drill.md`
 
 ---
 
 ## SECRET HANDLING
 
-- Dump dosyası **gerçek finansal veri içerir**. Geri yüklenen kopya da öyledir — tatbikat
-  bittiğinde hedefi düşürün, ortada bırakmayın.
-- Hiçbir komutta bağlantı dizesi elle yazılmaz; kimlik `.env.local`'den okunur ve **yalnız
-  veritabanı adı** değiştirilir.
-- `pnpm db:app-role:password` bu runbook'ta **yoktur ve çağrılmaz**: roller küme genelindedir,
-  o komut canlı uygulamanın parolasını da geçersiz kılar (bkz. `docs/ops/password-rotation.md`).
-- Ekran görüntüsü paylaşırken satır sayıları sorun değildir; bağlantı dizesi görünen bir kare
-  paylaşılmaz.
+- Dump dosyası ve geri yüklenen klon **gerçek finansal veri içerir** — tatbikat bittiğinde klonu mutlaka düşürün.
+- Hiçbir komutta bağlantı dizesi veya parola elle yazılmaz; parola yalnız geçici `PGPASSWORD` süreç ortamında tutulur ve `finally` bloğunda silinir.
+- `pnpm db:app-role:password` bu runbook'ta **çağrılmaz**: roller küme genelindedir ve canlı uygulamanın parolasını da değiştirir ([password-rotation.md](password-rotation.md)).

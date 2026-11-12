@@ -39,20 +39,20 @@ const BASE = process.env.BASE_URL ?? "http://127.0.0.1:3310";
  * taramak aynı kontrolleri iki kez saymak olurdu. Yönlendirmelerin kendisi ayrı doğrulanır.
  */
 export const CRAWL_ROUTES: string[] = [
-  "/overview",
+  "/",
   "/payments", "/payments/items", "/payments/calendar", "/payments/history",
   "/payments/missing", "/payments/archive", "/payments/new",
-  "/cashflow", "/cashflow/monthly", "/cashflow/budget", "/cashflow/concentration", "/cashflow/controls",
+  "/cashflow", "/cashflow/13-week", "/cashflow/monthly", "/cashflow/budget", "/cashflow/concentration", "/cashflow/controls",
   "/finance", "/finance/bank", "/finance/checks", "/finance/checks/new", "/finance/loans", "/finance/loans/new",
   "/finance/facilities", "/finance/collections", "/finance/counterparties", "/finance/exposure",
-  "/finance/fx", "/finance/invoices", "/finance/maturities", "/finance/profitability",
+  "/finance/fx", "/finance/invoices", "/finance/ledger", "/finance/maturities", "/finance/profitability",
   "/finance/promises", "/finance/receivables", "/finance/treasury", "/finance/archive", "/finance/calendar",
   "/production", "/production/capacity", "/production/costs", "/production/profitability", "/production/roi",
   "/scenarios", "/scenarios/compare", "/scenarios/history", "/scenarios/optimization",
   "/insights", "/insights/ask", "/insights/analysis", "/insights/briefing",
   "/insights/reminders", "/insights/reports", "/insights/tasks",
-  "/data", "/data/quality", "/data/imports", "/data/assumptions", "/data/approvals",
-  "/data/documents", "/data/reconciliation", "/data/reviews", "/data/sources",
+  "/data", "/data/quality", "/data/imports", "/data/imports/v2", "/data/integrations", "/data/assumptions", "/data/approvals",
+  "/data/documents", "/data/reconciliation", "/data/reviews", "/data/sources", "/data/trial-balance-bridge",
   "/system", "/system/archive", "/system/audit", "/system/backup", "/system/controls",
   "/system/diagnostics", "/system/features", "/system/jobs", "/system/security",
 ];

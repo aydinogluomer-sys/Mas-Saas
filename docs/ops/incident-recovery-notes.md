@@ -53,9 +53,17 @@ Sonra üç şeyi de KANITLAYIN:
 
 ```bash
 git status --porcelain supabase/migrations/     # hiçbir şey yazmamalı
-ls supabase/migrations/*.sql | wc -l            # 87 olmalı
+ls supabase/migrations/*.sql | wc -l            # 113 olmalı (0001..0113)
 ls supabase/migrations/ | grep -c hidden-for    # 0 olmalı
 pnpm exec vitest run tests/financial            # ağaç hâlâ yükleniyor mu
+```
+
+PowerShell eşdeğeri:
+
+```powershell
+git status --porcelain supabase/migrations/
+(Get-ChildItem supabase\migrations\*.sql).Count                       # 113 olmalı (0001..0113)
+(Get-ChildItem supabase\migrations\*hidden-for* -ErrorAction SilentlyContinue).Count  # 0 olmalı
 ```
 
 ### En önemli kural
@@ -69,6 +77,6 @@ kadar geçen her commit'le zorlaşır.
 - `legacy-repair:verify` uzun sürer (10 dakikadan fazla). Zaman aşımına düşecek bir kabuğun
   içinde koşturmayın; arka planda başlatıp bitmesini bekleyin.
 - Koşu sırasında paralel olarak `db:migrate` / `real-clone-gate` / `stage07-backup-gate`
-  çalıştırmayın: hem aynı container'da yarışırlar hem de migration dizini o sırada eksiktir.
+  çalıştırmayın: hem aynı yerel PostgreSQL 16 kümesinde yarışırlar hem de migration dizini o sırada eksiktir.
 - Bir kesinti olduysa ilk iş yukarıdaki üç doğrulamayı koşturmaktır; `git status`'ün "58 silinmiş"
   çıktısını olduğu gibi okumak, yanlış kurtarmaya davetiyedir.

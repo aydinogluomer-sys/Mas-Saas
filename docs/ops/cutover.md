@@ -1,30 +1,29 @@
-# RUNBOOK — cutover (gerçek veritabanına geçiş) — operatör giriş kapısı
+# RUNBOOK — cutover (gerçek veritabanına geçiş ve sürüm yükseltme) — operatör giriş kapısı
 
 > **Kime:** MAS operatörüne.
-> **Bu belge cutover'ı ANLATMAZ.** Cutover'ın kendisi tek bir yerde yazılıdır:
+> **Bu belge cutover'ı tek başına ANLATMAZ.** Cutover kontrol listesi tek yerde yazılıdır:
 >
-> ### 👉 `docs/release-evidence/cutover-checklist.md` — A'dan L'ye, kopyala-yapıştır
+> ### `docs/release-evidence/cutover-checklist.md` — A'dan L'ye, kopyala-yapıştır
 >
 > Bu belge o listeye girmeden önce bilmeniz gereken **dört şeyi** söyler: sıra, kararlar,
-> tuzaklar, durma koşulları. Adımların kendisini burada tekrar etmiyoruz — iki kopya
-> arasındaki en küçük fark, cutover gecesi hangisinin doğru olduğunu bilememek demektir.
+> tuzaklar, durma koşulları.
 
 ---
 
 ## PURPOSE
 
-Uygulamayı gerçek veritabanı (`mas_radar_dev`, şema 0035 → 0087) üzerinde çalışır hâle
-getirmek — planlı, geri dönülebilir ve kanıtlı biçimde.
+Uygulamayı yerel Windows PostgreSQL 16 üzerindeki gerçek veritabanı (`mas_radar_dev`, kanonik şema **0113** — `113` migration `0001..0113`, `106` `public` tablo `%100` RLS, `87` görünüm `%100` `security_invoker = true`) üzerinde planlı, geri dönülebilir ve kanıtlı biçimde yükseltmek ve çalıştırmak.
 
 Yardımcı belgeler:
 
 | Belge | Ne için |
 |---|---|
 | `docs/release-evidence/cutover-checklist.md` | **Asıl liste** — A–L adımları, komutlar, beklenen çıktılar |
+| `docs/release-evidence/v5-readiness-board.md` | v5 / Faz 59 hazırlık ve canlıya geçiş tahtası |
 | `docs/real-db-cutover-runbook.md` | Adımların ardındaki gerekçe ve şema ayrıntısı |
 | `docs/release-evidence/env-local-cutover-steps.md` | `.env.local` değişikliğinin tam hâli |
-| `docs/ops/failed-migration.md` | D adımı düşerse |
-| `docs/ops/restore.md` | "DB RESTORE" kararı verilirse |
+| [failed-migration.md](failed-migration.md) | D adımı düşerse |
+| [restore.md](restore.md) | `"DB RESTORE"` kararı verilirse |
 
 ---
 
@@ -34,13 +33,13 @@ Cutover **başlamaz** eğer bunlardan biri sağlanmıyorsa:
 
 | # | Ön koşul | Kanıt |
 |---|---|---|
-| 1 | Açık **P0 yok** | `PROGRESS.md` → aşama defteri |
-| 2 | Doğrulanmış yedek + geri yükleme tatbikatı yapıldı | `pnpm exec tsx scripts/release/stage07-backup-gate.ts` |
-| 3 | Off-device yedek hedefi bağlı | `docs/ops/backup-schedule.md` §1 |
+| 1 | Açık **P0 yok** | `docs/MAS_360_SYNTHESIS_REPORT.md` & `docs/release-evidence/v5-readiness-board.md` |
+| 2 | Doğrulanmış yedek + geri yükleme tatbikatı yapıldı | `pnpm release:stage07-backup-gate` ve `pnpm backup:offdevice:verify` |
+| 3 | Off-device yedek hedefi bağlı | [backup-schedule.md](backup-schedule.md) §1 (`pnpm backup:offdevice:verify -- --strict-offdevice`) |
 | 4 | Hedef commit belli ve kod o commit'te olacak | C2 adımı |
-| 5 | Bakım penceresi ilan edildi, kullanıcılar bilgilendirildi | — |
-| 6 | Geri dönüş için `.env.local`'in eski hâli kaydedildi | L adımı |
-| 7 | Uygulama durdurulabilir durumda | `docs/ops/stop.md` |
+| 5 | Bakım penceresi ilan edildi, `MAS-Background-Worker` duraklatıldı | [stop.md](stop.md) |
+| 6 | Geri dönüş için `.env.local`'in eski hâli güvenli biçimde not edildi | L adımı |
+| 7 | Uygulama durdurulmuş ve açık bağlantı `0` | [stop.md](stop.md) |
 
 ---
 
@@ -49,11 +48,10 @@ Cutover **başlamaz** eğer bunlardan biri sağlanmıyorsa:
 ```text
 TARGET DB NAME  : mas_radar_dev
 TARGET DB CLASS : PRODUCTION_WRITE
-WRITE EXPECTED? : YES — şema 0035 -> 0087 uygulanır, rol LOGIN'e açılır, runtime kimliği çevrilir.
+WRITE EXPECTED? : YES — bekleyen migration'lar (0113'e kadar) uygulanır, mas_radar_app rolü doğrulanır.
 ```
 
-Bu, `mas_radar_dev`'in **PRODUCTION_WRITE** olarak kullanıldığı **tek** penceredir. Bu pencere
-dışında gerçek veritabanı `REAL_READ_ONLY / BACKUP SOURCE`'tur ve öyle davranılır.
+Bu, `mas_radar_dev`'in şema düzeyinde **PRODUCTION_WRITE** olarak kullanıldığı **tek** penceredir (`pnpm db:migrate` uygulama öncesi otomatik yedek de alır).
 
 ---
 
@@ -68,55 +66,41 @@ A  →  B  →  C  →  C1  →  C2  →  D  →  E  →  F  →  G  →  H  →
 | Adım | Ne | Bir cümlede neden burada |
 |---|---|---|
 | **A** | Doğrulanmış yedek | Geri dönülecek nokta olmadan hiçbir şey başlamaz |
-| **B** | Bakım / yazma dondurma | Migration sırasında yazan bir uygulama tutarsızlık üretir |
-| **C** | Owner bağlantısı | Şema değişikliğini yalnız owner yapar |
-| **C1** | **Ortam hijyeni** | Kabukta kalmış bayat bir değişken yanlış veritabanını hedef yapar |
+| **B** | Bakım / yazma dondurma (`stop.md` + `MAS-Background-Worker` duraklatma) | Migration sırasında yazan bir süreç tutarsızlık üretir |
+| **C** | Yerel PostgreSQL 16 owner bağlantısı | Şema değişikliğini yalnız `MIGRATION_DATABASE_URL` (owner) yapar |
+| **C1** | **Ortam hijyeni** (`pnpm db:env:source`) | Kabukta kalmış bayat bir değişken yanlış veritabanını hedef yapar |
 | **C2** | **Kod sürümünü hedef commit'e geçir** | Şema ile kod aynı sürümde olmalı — D'den ÖNCE |
-| **D** | Migration 0035 → 0087 | Asıl şema geçişi |
-| **E** | Ledger + parmak izi | Sayı aynı ama tutar değişmiş olabilir; ikisi de kontrol edilir |
-| **F** | `mas_radar_app` rolüne parola + LOGIN | Çalışma zamanı kimliği |
-| **G** | `.env.local` → `DATABASE_URL` çevrilir | Uygulama artık düşük yetkiyle bağlanır |
-| **H** | Build / start / health | Uygulama ayağa kalkar |
-| **I** | Çalışma zamanı kimliği | Gerçekten `mas_radar_app` ile mi bağlandı |
-| **J** | RLS negatif sondaları | Yetkisiz erişim gerçekten reddediliyor mu |
+| **D** | Migration geçişi (`pnpm db:migrate` → `0113`) | Asıl şema geçişi |
+| **E** | Ledger + parmak izi | Satır sayısı ve parasal parmak izi kontrol edilir |
+| **F** | `mas_radar_app` rolüne parola + `LOGIN` | Düşük yetkili çalışma zamanı kimliği |
+| **G** | `.env.local` → `DATABASE_URL` + `MAS_LOCAL_PASSWORDLESS=0` | Uygulama düşük yetkiyle ve parolalı kimlik doğrulamayla bağlanır |
+| **H** | `pnpm build` / `pnpm start` / `/health` | Uygulama ayağa kalkar ve `MAS-Background-Worker` etkinleştirilir |
+| **I** | Çalışma zamanı kimliği (`pnpm db:roles:verify`) | Gerçekten `mas_radar_app` ile mi bağlandı |
+| **J** | RLS & görünüm (`security_invoker`) negatif sondaları | Yetkisiz erişim gerçekten reddediliyor mu |
 | **K** | Gerçek uygulama duman testi | Ekranlar ve tutarlar doğru mu |
-| **L** | Geri dönüş kararı | Kapanış |
+| **L** | Kapanış veya geri dönüş kararı | Kanıt kaydı |
 
 #### C1 ve C2 neden ayrı ve neden tam burada
 
-Bu iki adım listeye **sonradan** eklendi, çünkü ikisinin de eksikliği bu makinede canlı
-ortamda patladı.
-
-- **C1 — ortam hijyeni.** `.env.local` düzeltildi, hata sürdü; sebep, eski bir PowerShell
-  oturumunda kalmış `DATABASE_URL` idi. Daha kötüsü: doğrulama kapısı **yanlış veritabanına**
-  karşı `8/8 kontrol geçti` dedi ve `18 kullanıcı satırı` bildirdi — gerçek veritabanında
-  **17** var. Bu adım gözle değil, kapıyla yapılır:
+- **C1 — ortam hijyeni:**
 
   ```powershell
   pnpm db:env:source
   ```
 
-  Beklenen son satır: `ENV SOURCE: gölgeleme yok.` `GÖLGELEME` görürseniz **cutover BURADA
-  durur**; yeni bir PowerShell açılır.
+  Beklenen son satır: `ENV SOURCE: gölgeleme yok.` `GÖLGELEME` görürseniz **cutover BURADA durur**; yeni bir PowerShell açılır.
 
-  > `tsx` ile çalışan komutlar `.env.local`'ı **okumaz**. Cutover adımlarını çalıştıracak
-  > kabukta değişkenler **açıkça** tanımlanmalıdır. Yukarıdaki kapı bunu da söyler.
+- **C2 — kod sürümü:** **Yeni kod + eski şema** ve **eski kod + yeni şema** desteklenmez. C2, D'den hemen önce ve D'ye kilitlidir.
 
-- **C2 — kod sürümü.** **Yeni kod + eski şema** ve **eski kod + yeni şema** — ikisi de
-  desteklenmeyen durumdur. C2, D'den hemen önce ve D'ye kilitlidir. Sıra bozulursa çıkan
-  belirti `permission denied for table users` olur ve migration'ın kendisiyle ilgisi yoktur.
-
-### Cutover'ı başlatmadan önceki son üç komut
+### Cutover'ı başlatmadan önceki son dört komut
 
 ```powershell
 cd "C:\Users\Trade Bilisim\Mas Saas"
+pnpm db:ensure                                              # Yerel PostgreSQL 16 hazır mı
 pnpm db:env:source                                          # C1'in kapısı
 git rev-parse HEAD; git status --porcelain                  # C2'nin girdisi
-pnpm exec tsx scripts/release/stage07-backup-gate.ts        # A'nın kanıtı
+pnpm release:stage07-backup-gate                            # A'nın kanıtı
 ```
-
-Üçü de temizse `docs/release-evidence/cutover-checklist.md` dosyasını açın ve **A adımından**
-başlayın.
 
 ---
 
@@ -125,9 +109,9 @@ başlayın.
 Cutover başarılı sayılır ancak şunların **tamamı** doğruysa:
 
 ```text
-E  ledger                 ->  87 satır, en son 0087
-E  veri sayıları          ->  A adımındaki yedekle AYNI (payments 20, users 17, ...)
-E  agregalar              ->  parmak izi eşleşiyor (sayı aynı ama TUTAR değişmiş olabilir)
+E  ledger                 ->  113 satır, en son 0113
+E  katalog                ->  106 public tablo (%100 RLS), 87 görünüm (%100 security_invoker=true)
+E  agregalar              ->  parmak izi eşleşiyor
 F  rol                    ->  rolcanlogin=t  rolsuper=f  rolbypassrls=f
 H  /health                ->  {"status":"ok","app":"up","db":"up",...}
 I  kimlik                 ->  Hedef: db=mas_radar_dev user=mas_radar_app
@@ -136,31 +120,17 @@ J  RLS negatif sondaları  ->  reddedildi (beklenen)
 K  ekranlar               ->  kritik rotalar açılıyor, tutarlar doğru
 ```
 
-Her adımın kendi "başarı böyle görünür / başarısızlık böyle görünür" tablosu **kontrol
-listesindedir**.
-
 ---
 
 ## FAILURE SIGNALS
 
-Bu makinede gerçekten yaşanmış dört tuzak. Ayrıntısı kontrol listesinin sonundadır.
-
-| # | Tuzak | Belirti | Kök sebep |
-|---|---|---|---|
-| 1 | **F/G, D'den önce** | `permission denied for table users` | Rol/şema sırası bozuldu |
-| 2 | **Oturum değişkeni** | Geri döndükten sonra bile aynı hata | Kabukta bayat `DATABASE_URL` (→ C1) |
-| 3 | **Kod veritabanının çok ilerisinde** | Ekranlar boş, sütun yok | Kod/şema eşleşmezliği (→ C2) |
-| 4 | **`.gitignore`'un `data/` deseni** | Eski koda dönerken dosyalar kayboluyor | Geri dönüş sırasında dikkat |
-
-Diğer sinyaller:
-
 | Belirti | Nereye |
 |---|---|
-| D adımı checksum hatasıyla düştü | `docs/ops/failed-migration.md` ARIZA 2 |
-| `git status` 58 silinmiş migration | `docs/ops/failed-migration.md` ARIZA 1 (OPS-01) |
-| Yedek `pg_restore --list` ile okunamıyor | `docs/ops/backup.md` — **cutover başlamaz** |
-| Disk hatası | `docs/ops/db-full.md` |
-| Konteyner düştü | `docs/ops/docker-restart.md` |
+| D adımı checksum veya SQL hatasıyla düştü | [failed-migration.md](failed-migration.md) |
+| `git status` silinmiş/gizlenmiş migration gösteriyor | [failed-migration.md](failed-migration.md) ARIZA 1 (`OPS-01`) |
+| Yedek `pg_restore --list` ile okunamıyor | [backup.md](backup.md) — **cutover başlamaz** |
+| Disk hatası | [db-full.md](db-full.md) |
+| Yerel PostgreSQL 16 hizmeti düştü | [postgres-service.md](postgres-service.md) |
 
 ---
 
@@ -171,26 +141,23 @@ Cutover **derhal durur** ve bir sonraki adıma geçilmez:
 1. `pnpm db:env:source` gölgeleme bildiriyorsa (C1).
 2. A adımındaki yedek okunamıyorsa ya da makbuz alanları eşleşmiyorsa.
 3. B adımında açık veritabanı bağlantısı **0'a inmiyorsa**.
-4. E adımında satır sayıları ya da agregalar yedekle **eşleşmiyorsa**.
+4. E adımında satır sayıları ya da agregalar yedekle **eşleşmiyorsa** (migration'ın kasıtlı şema emekliliği dışında).
 5. `system_identifier` beklenen kümeyle eşleşmiyorsa.
 6. Kod sürümü ile hedef commit farklıysa (C2 tamamlanmadıysa).
 7. Herhangi bir adımda ne olduğunu **anlamadığınız** bir çıktı gördüyseniz.
 
-Durduğunuzda: `docs/ops/incident.md` ile kanıt toplayın, sonra aşağıdaki beş karardan birini
-verin.
+Durduğunuzda: [incident.md](incident.md) ile kanıt toplayın, sonra aşağıdaki beş karardan birini verin.
 
 ---
 
 ## ROLLBACK
 
-Her arıza için **tek** ve **belirlenmiş** bir karar vardır. Tahminle seçilmez.
-
 | Karar | Ne zaman | Ne yapılır | Maliyet |
 |---|---|---|---|
 | **STOP** | Belirsizlik var, sebep bilinmiyor | Hiçbir şey yapma, olduğu yerde bırak, kanıt topla | Kesinti sürer |
-| **RETRY** | Geçici arıza (kilit, zaman aşımı, kapalı konteyner) | Aynı adımı tekrarla | Dakikalar |
-| **CONFIG ROLLBACK** | Şema ve parmak izi **sağlam**, sorun ayar/rol/ortamda | `.env.local` eski satırına döner, gerekirse rol kapatılır, yeniden başlatılır | Saniyeler — **şemaya dokunmaz** |
-| **DB RESTORE** | Şema/veri **bütünlüğü bozuk** (yalnız D/E sinyalleri) | A adımındaki yedekten geri yükleme | Saatler |
+| **RETRY** | Geçici arıza (kilit, zaman aşımı, kapalı hizmet) | Hizmeti kontrol et ([postgres-service.md](postgres-service.md)), adımı tekrarla | Dakikalar |
+| **CONFIG ROLLBACK** | Şema ve parmak izi **sağlam**, sorun ayar/rol/ortamda | `.env.local` eski satırına döner, yeniden başlatılır | Saniyeler — **şemaya dokunmaz** |
+| **DB RESTORE** | Şema/veri **bütünlüğü bozuk** (yalnız D/E sinyalleri) | A adımındaki yedekten kontrollü geri yükleme (sahip onayıyla) | Saatler |
 | **ESCALATE** | STOP koşullarından biri sürüyor | Kanıt paketiyle sahibine bildir | — |
 
 ### Değişmez kural
@@ -199,18 +166,9 @@ Her arıza için **tek** ve **belirlenmiş** bir karar vardır. Tahminle seçilm
 Ayar (config) problemi için veritabanı geri yüklenmez.
 ```
 
-Bu kural pahalıya öğrenildi. "Ne olur ne olmaz" diye yapılan bir DB restore, ayarla
-çözülebilecek bir sorunu saatlerce süren bir kurtarma işine çevirir ve o sırada alınan
-kararlar yeni hatalar üretir.
-
-**Config rollback'in tam komutları** kontrol listesinin L bölümündedir
-(`docs/release-evidence/cutover-checklist.md` → "L — Geri dönüş").
-
 ---
 
 ## EVIDENCE
-
-Cutover'ın kanıt paketi zorunludur ve şunları içerir:
 
 ```text
 tarih/saat (başlangıç - bitiş) :
@@ -219,8 +177,8 @@ hedef commit (C2)              :
 A yedek yolu + sha256 + makbuz :
 B açık bağlantı sayısı         :  0
 C1 env:source çıktısı          :  gölgeleme yok
-D migration raporu             :  state / pending uygulandı / yedek
-E ledger + sayı + agrega       :  87/0087 · 20 · 17 · parmak izi
+D migration raporu             :  state / 0113 uygulandı / ön-yedek
+E ledger + katalog + agrega    :  113/0113 · 106 tablo · 87 görünüm · parmak izi
 F rol nitelikleri              :  rolcanlogin/rolsuper/rolbypassrls
 H /health /ready /version      :
 I kimlik satırı                :  Hedef: db=mas_radar_dev user=mas_radar_app
@@ -229,23 +187,10 @@ K ekran duman testi            :
 L verilen karar                :  tamamlandı / CONFIG ROLLBACK / DB RESTORE
 ```
 
-Dosyalar:
-
-- `docs/release-evidence/final-production-readiness/09-cutover-rehearsal.md` (prova)
-- `docs/release-evidence/final-production-readiness/10-ready-for-cutover-board.md` (karar tahtası)
-- Cutover sonrası: `docs/release-evidence/final-production-readiness/` altında ilgili slot
-
 ---
 
 ## SECRET HANDLING
 
-- **Hiçbir bağlantı dizesi loglanmaz, yapıştırılmaz, ekran görüntüsüne alınmaz.** Bu, kontrol
-  listesinin C1 adımının açık talebidir.
-- Cutover kabuğunda değişkenler `.env.local`'den değeri ekrana yazmadan alınır; kapılar hedefi
-  yalnız `db=<ad> user=<ad>` olarak söyler.
-- F adımındaki rol parolası maskeli olarak verilir ve hiçbir kanıt dosyasına yazılmaz — yalnız
-  "verildi" olgusu kaydedilir (`docs/ops/password-rotation.md`).
-- Cutover yedekleri gerçek finansal veri içerir; `backups/` `.gitignore`'dadır ve dışarı
-  çıkarılmaz.
-- Cutover gecesi ekran paylaşımı yapılacaksa **terminal paylaşılmaz**; yalnız uygulama
-  penceresi paylaşılır.
+- **Hiçbir bağlantı dizesi loglanmaz, yapıştırılmaz, ekran görüntüsüne alınmaz.**
+- F adımındaki rol parolası maskeli olarak verilir ve hiçbir kanıt dosyasına yazılmaz ([password-rotation.md](password-rotation.md)).
+- Cutover yedekleri gerçek finansal veri içerir; `backups/` `.gitignore`'dadır ve dışarı çıkarılmaz.

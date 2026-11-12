@@ -77,8 +77,7 @@ pnpm exec tsx scripts/ops/schedule-windows.ts uninstall --job telemetry --apply
 Varsayılan periyot **07:00'den itibaren 6 saatte bir**. Günde bir koşu, takılı bir kuyruğu
 24 saat görmeden bırakırdı; kuyruk süpürücüsü 30 dakikada bir çalışıyor.
 
-Görev **KAYITLI DEĞİL** olarak bırakılmıştır. Zamanlanmış görev kalıcı ve dışa dönük bir sistem
-değişikliğidir; kaydı operatör açıkça ister (Aşama 07'deki yedek görevi ile aynı politika).
+Görev kaydı operatörün açık `install --apply` onayıyla Windows Görev Zamanlayıcı'ya (`MAS-Nakit-Radar-Telemetri-Gozetim`) yazılır. Kapalı çevrim arka plan işçisi (`MAS-Background-Worker`) için de aynı zamanlayıcı aracı `pnpm ops:worker:schedule` komutuyla kullanılır (`Get-ScheduledTask -TaskName "MAS-Nakit-Radar-Telemetri-Gozetim", "MAS-Background-Worker"`).
 
 Koşu kayıtları: `logs/telemetry-runs.jsonl` · son anlık görüntü: `logs/telemetry-latest.json` ·
 görev çıktısı: `logs/telemetry-watch-task.log`.

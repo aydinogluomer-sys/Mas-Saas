@@ -2,7 +2,7 @@
 
 > **Kime:** MAS operatörüne (sahibe). Yazılım geliştirici olmanız gerekmez.
 > **Çalışma dizini (her komut için):** `C:\Users\Trade Bilisim\Mas Saas`
-> **Yerine geçtiği belge:** `docs/ops/docker-restart.md` (Docker bu makineden kaldırıldı).
+> **Mimari Notu:** Konteyner tabanlı eski kurulum tamamen emekliye ayrılmıştır. MAS Nakit Radar yalnızca yerel Windows PostgreSQL 16 (`MAS-PostgreSQL16` veya standart EDB kurulumlarında `postgresql-x64-16`) üzerinde çalışır.
 
 ---
 
@@ -109,9 +109,9 @@ Yalnız doğrulamak için: `... install-postgres-service.ps1 -VerifyOnly`
 ## 2. Günlük durum kontrolü (yönetici gerekmez)
 
 ```powershell
-Get-Service MAS-PostgreSQL16                                   # Running bekleniyor
-& C:\MAS\pgsql16\bin\pg_isready.exe -h 127.0.0.1 -p 5432       # "accepting connections"
-pnpm db:ensure                                                  # "PostgreSQL hazır (native, 127.0.0.1:5432)."
+Get-Service MAS-PostgreSQL16, postgresql-x64-16 -ErrorAction SilentlyContinue  # Running bekleniyor
+& C:\MAS\pgsql16\bin\pg_isready.exe -h 127.0.0.1 -p 5432                       # "accepting connections"
+pnpm db:ensure                                                                  # "PostgreSQL hazır (native, 127.0.0.1:5432)."
 ```
 
 `pnpm dev` ve `pnpm start` ilk halkada `scripts/db/ensure.ts` çalıştırır: veritabanı kapalıysa

@@ -2,9 +2,7 @@
 
 > **Kime:** MAS operatörüne. Yazılım geliştirici olmanız gerekmez.
 > **Çalışma dizini (komut gerekiyorsa):** `C:\Users\Trade Bilisim\Mas Saas`
-> **Rol değiştirme, hesap kapatma, kilit açma:** `docs/ops/role-change.md`
-> **ACİL — bir hesabı hemen kapatmanız gerekiyorsa:** doğrudan `docs/ops/role-change.md` §"Hesabı
-> kapat".
+> **Rol değiştirme, hesap kapatma, kilit açma:** [role-change.md](role-change.md)
 
 ---
 
@@ -12,12 +10,11 @@
 
 Sisteme yeni bir adlandırılmış kullanıcı hesabı eklemek.
 
-Bu üründe **kayıt olma (signup) ekranı yoktur ve olmayacaktır.** Hesaplar yalnız iki yoldan
-açılır:
+Bu üründe **kayıt olma (signup) ekranı yoktur ve olmayacaktır.** Hesaplar yalnız iki yoldan açılır:
 
 | Yol | Ne zaman | Kim |
 |---|---|---|
-| **Uygulama içi** — `/system/security` | Normal durum | Giriş yapmış bir **yönetici (admin)** |
+| **Uygulama içi** — `/system/security` | Normal durum | Giriş yapmış bir **yönetici (`admin`)** |
 | **Komut satırı** — `seed-admin.ts` | Ortada hiç yönetici yoksa (ilk kurulum / kilitlenme) | Makineye erişimi olan operatör |
 
 ---
@@ -30,7 +27,7 @@ açılır:
 | 2 | Elinizde **yönetici** hesabı var | `/system/security` sayfası açılıyor |
 | 3 | Yeni hesap için kullanıcı adı, görünen ad ve **rol** kararlaştırıldı | — |
 | 4 | Parola en az **12 karakter** ve kullanıcı adıyla aynı değil | — |
-| 5 | Yedek güncel (hesap açmak veritabanına yazar) | `docs/ops/backup.md` |
+| 5 | Yedek güncel | `pnpm backup:offdevice:verify` ([backup.md](backup.md)) |
 
 Roller (en az yetkiliden en yetkiliye):
 
@@ -42,8 +39,7 @@ finance_manager   finans yöneticisi   — finansal yönetim
 admin             yönetici            — kullanıcı yönetimi + tam erişim
 ```
 
-**Kural:** ne yapacağı belli değilse `viewer` verin. Yetki sonradan yükseltilir; geri almak
-her zaman daha zordur.
+**Kural:** ne yapacağı kesinleşmemişse `viewer` verin. Yetki sonradan yükseltilebilir ([role-change.md](role-change.md)).
 
 ---
 
@@ -61,22 +57,19 @@ WRITE EXPECTED? : YES — public.users tablosuna bir satır eklenir + audit_logs
 
 ### Yol 1 — uygulama içinden (normal yol)
 
-1. Yönetici hesabıyla giriş yapın.
+1. Yönetici hesabıyla giriş yapın (`MAS_LOCAL_PASSWORDLESS=0` üretim kilidi altında gerçek kullanıcı/parolayla).
 2. **Sistem → Güvenlik** (`http://127.0.0.1:3000/system/security`).
-3. Sayfanın alt bölümündeki formu doldurun:
+3. Yeni kullanıcı formunu doldurun:
    - **Kullanıcı adı** (örn. `mehmet`)
    - **Görünen ad** (örn. `Mehmet Yılmaz`)
    - **Rol** (yukarıdaki listeden)
-   - **Parola (en az 12)**
+   - **Parola (en az 12 karakter)**
 4. **kullanıcı oluştur** düğmesine basın.
-5. Parolayı kullanıcıya **ağızdan ya da ayrı bir kanaldan** iletin ve ilk girişte
-   değiştirmesini söyleyin (değiştirme, aynı sayfadan yöneticinin "sıfırla" düğmesiyle yapılır).
+5. Parolayı kullanıcıya ayrı güvenli bir kanaldan iletin; kullanıcı ilk girişte kendi parolasını `/system/security` üzerinden değiştirebilir (Migration `0108` `changeOwnPassword` denetim iziyle).
 
 ### Yol 2 — hiç yönetici kalmadıysa (komut satırı)
 
-Parola **argüman olarak verilmez**; bu bilinçlidir — argümanlar kabuk geçmişinde ve görev
-yöneticisindeki süreç listesinde görünür. İki kanal vardır: `SEED_ADMIN_PASSWORD` ortam
-değişkeni ya da maskeli soru.
+Parola **argüman olarak verilmez** (`--password` bayrağı bilerek reddedilir). İki meşru kanal vardır: maskeli soru ya da geçici `SEED_ADMIN_PASSWORD` ortam değişkeni.
 
 ```powershell
 cd "C:\Users\Trade Bilisim\Mas Saas"
@@ -85,18 +78,21 @@ $env:MIGRATION_DATABASE_URL = ((Select-String -Path .env.local -Pattern '^MIGRAT
   Select-Object -First 1).Line -replace '^MIGRATION_DATABASE_URL=','')
 
 pnpm exec tsx scripts/db/seed-admin.ts --username omer --display-name "Omer Aydinoglu" --role admin
+
+Remove-Item Env:MIGRATION_DATABASE_URL -ErrorAction SilentlyContinue
 ```
-
-Komut parolayı **maskeli** olarak sorar (her karakter için `*`). Aynı kullanıcı adıyla tekrar
-çalıştırmak hesabı **günceller ve yeniden aktif eder** — unutulmuş parolayı sıfırlamanın
-belgeli yolu budur.
-
-> `--password` bayrağı bilerek reddedilir. Denerseniz komut açıklamalı bir hatayla durur.
 
 ### Doğrulama (yalnız okuma)
 
 ```powershell
-docker exec mas-radar-pg psql -U postgres -d mas_radar_dev -c "select username, display_name, role, is_active from public.users order by created_at desc limit 5;"
+$u = [Uri]((Select-String -Path .env.local -Pattern '^MIGRATION_DATABASE_URL=' | Select-Object -First 1).Line -replace '^MIGRATION_DATABASE_URL=','').Trim().Trim('"')
+$env:PGPASSWORD = [Uri]::UnescapeDataString(($u.UserInfo -split ':',2)[1])
+try {
+  & C:\MAS\pgsql16\bin\psql.exe -h 127.0.0.1 -p 5432 -U postgres -d mas_radar_dev -c "SET default_transaction_read_only = on; select username, display_name, role, is_active from public.users order by created_at desc limit 5;"
+  & C:\MAS\pgsql16\bin\psql.exe -h 127.0.0.1 -p 5432 -U postgres -d mas_radar_dev -c "SET default_transaction_read_only = on; select created_at, action, entity_table from public.audit_logs order by created_at desc limit 5;"
+} finally {
+  Remove-Item Env:PGPASSWORD -ErrorAction SilentlyContinue
+}
 ```
 
 ---
@@ -106,15 +102,8 @@ docker exec mas-radar-pg psql -U postgres -d mas_radar_dev -c "select username, 
 ```text
 Uygulama içi   ->  yeşil bildirim: kullanıcı oluşturuldu; satır listede görünür
 seed-admin     ->  hesabın oluşturulduğunu/güncellendiğini bildiren satır, exit 0
-psql sorgusu   ->  yeni kullanıcı: is_active = t, role = verdiğiniz rol
-users toplamı  ->  önceki sayı + 1   (bu belgenin yazıldığı gün: 17 -> 18)
+psql.exe       ->  yeni kullanıcı: is_active = t, role = verdiğiniz rol
 audit_logs     ->  create_user kaydı, gerçek yönetici kimliğiyle
-```
-
-Denetim kaydını görmek:
-
-```powershell
-docker exec mas-radar-pg psql -U postgres -d mas_radar_dev -c "select created_at, action, entity_table from public.audit_logs order by created_at desc limit 5;"
 ```
 
 ---
@@ -124,41 +113,26 @@ docker exec mas-radar-pg psql -U postgres -d mas_radar_dev -c "select created_at
 | Belirti | Anlamı | Ne yapılır |
 |---|---|---|
 | Sayfa açılmıyor / giriş ekranına atıyor | Hesabınız **admin** değil | Bir yönetici ile yapın |
-| "Parola en az 12 karakter olmalı." | Parola kısa | Uzatın |
-| Parola kullanıcı adıyla aynı | Reddedilir | Farklı parola |
-| Kullanıcı adı zaten var | Çakışma | Farklı ad seçin ya da mevcut hesabı `docs/ops/role-change.md` ile düzenleyin |
-| `permission denied for table users` | Şema/rol uyumsuz | **DURUN** — `docs/ops/failed-migration.md` |
-| `seed-admin` "TTY gerekli" diyor | Maskeli soru sorulamıyor | Aynı pencerede `$env:SEED_ADMIN_PASSWORD` tanımlayıp tekrar deneyin, sonra **`Remove-Item Env:SEED_ADMIN_PASSWORD`** ile silin |
-| `DATABASE_URL tanımlı değil` | `tsx` `.env.local`'ı okumaz | Yukarıdaki atama satırını çalıştırın |
-| Yeni kullanıcı listede yok ama hata da yok | Yanlış veritabanına bakıyor olabilirsiniz | `pnpm db:roles:verify` ilk satırındaki `db=` adını kontrol edin |
+| "Parola en az 12 karakter olmalı." | Parola kısa | En az 12 karakter kullanın |
+| Parola kullanıcı adıyla aynı | Reddedilir | Farklı bir parola seçin |
+| Kullanıcı adı zaten var | Çakışma | Farklı ad seçin ya da mevcut hesabı [role-change.md](role-change.md) ile düzenleyin |
+| `permission denied for table users` | Şema/rol uyumsuz | **DURUN** — [failed-migration.md](failed-migration.md) |
+| `seed-admin` "TTY gerekli" diyor | Etkileşimsiz kabuk | Aynı pencerede `$env:SEED_ADMIN_PASSWORD` tanımlayıp çalıştırın, hemen ardından `Remove-Item Env:SEED_ADMIN_PASSWORD` ile silin |
 
 ---
 
 ## STOP CONDITION
 
-1. `admin` rolü vermeniz istendi ama talebin sahibi belirsizse → **açmayın**, sorun.
-2. `pnpm db:roles:verify` kimlik satırı `mas_radar_dev` dışında bir ad gösteriyorsa → hiçbir
-   hesap açmayın, `docs/ops/incident.md`.
-3. Aynı kişi için ikinci bir hesap açmanız isteniyorsa → açmayın; mevcut hesabın rolünü
-   değiştirmek doğru yoldur (`docs/ops/role-change.md`).
-4. Güncel bir yedek yoksa → önce `docs/ops/backup.md`.
+1. `admin` rolü vermeniz istendi ama talebin sahibi belirsizse → **açmayın**, doğrulayın.
+2. `pnpm db:roles:verify` kimlik satırı `mas_radar_dev` dışında bir ad gösteriyorsa → hiçbir hesap açmayın, [incident.md](incident.md).
+3. Aynı kişi için ikinci bir hesap açmanız isteniyorsa → açmayın; mevcut hesabın rolünü değiştirmek doğru yoldur ([role-change.md](role-change.md)).
+4. Güncel bir yedek yoksa → önce [backup.md](backup.md).
 
 ---
 
 ## ROLLBACK
 
-**Kullanıcı silinmez.** Yanlış açılan hesap **pasifleştirilir**:
-
-`/system/security` → ilgili satır → **pasifleştir**
-
-Bu, hesabın açık oturumlarını da geçersiz kılar. Ayrıntı ve komut satırı karşılığı:
-`docs/ops/role-change.md`.
-
-Silme yerine pasifleştirmenin sebebi: denetim izi (`audit_logs`) ve geçmiş kayıtların
-kime ait olduğu korunmalıdır.
-
-> Veritabanı **en az bir aktif yönetici** kalmasını zorunlu tutar; bu kural arayüzde değil,
-> veritabanı seviyesinde bir tetikleyicidir. Son yöneticiyi pasifleştirme denemesi reddedilir.
+**Kullanıcı silinmez.** Yanlış açılan hesap `/system/security` ekranından **pasifleştirilir** ([role-change.md](role-change.md)). Veritabanı tetikleyicisi en az bir aktif `admin` kalmasını zorunlu tutar.
 
 ---
 
@@ -170,21 +144,12 @@ işlemi yapan      :  (yönetici kullanıcı adı)
 açılan hesap      :  kullanıcı adı / görünen ad
 verilen rol       :
 yol               :  uygulama içi / seed-admin
-users sayısı      :  önce ... sonra ...
-audit_logs kaydı  :  görüldü EVET/HAYIR
+audit_logs kaydı  :  EVET
 ```
-
-Parola **kanıt dosyasına yazılmaz.**
 
 ---
 
 ## SECRET HANDLING
 
 - **Parola hiçbir yere yazılmaz:** kanıt dosyasına, sohbete, e-postaya, ekran görüntüsüne.
-- Parola komut satırı argümanı olarak **kabul edilmez** — argümanlar kabuk geçmişinde ve süreç
-  listesinde görünür. İki kanal vardır: ortam değişkeni ya da maskeli soru.
-- `SEED_ADMIN_PASSWORD` kullandıysanız işiniz bitince aynı pencerede silin:
-  `Remove-Item Env:SEED_ADMIN_PASSWORD`
-- Parolalar veritabanında argon2id ile hash'lenir; düz metin hiçbir yerde saklanmaz — kimse,
-  yönetici dâhil, bir kullanıcının parolasını **okuyamaz**, yalnız sıfırlayabilir.
-- Denetim kaydı parolanın kendisini değil, "parola değişti" olgusunu yazar.
+- Parolalar veritabanında Argon2id ile hash'lenir; düz metin hiçbir yerde saklanmaz.

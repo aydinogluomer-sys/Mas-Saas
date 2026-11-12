@@ -1,8 +1,4 @@
-# RUNBOOK — stop (uygulamayı durdur)
-
-> **WAVE 0 (2026-10-28) — DOCKER KALDIRILDI.** Bu belgedeki `docker compose …` ve
-> `scripts/deploy/local-stop.sh` komutları ARTIK GEÇERSİZ. Veritabanını durdurmak gerekirse:
-> yönetici PowerShell'de `Stop-Service MAS-PostgreSQL16` ([`postgres-service.md`](postgres-service.md)).
+# RUNBOOK — stop (uygulamayı ve isteğe bağlı veritabanı hizmetini durdur)
 
 > **Kime:** MAS operatörüne. Yazılım geliştirici olmanız gerekmez.
 > **Çalışma dizini (her komut için):** `C:\Users\Trade Bilisim\Mas Saas`
@@ -17,11 +13,10 @@ Uygulamayı **kontrollü** biçimde durdurmak ve gerçekten durduğunu kanıtlam
 
 | Ne durur | Ne olur | Ne zaman |
 |---|---|---|
-| **Yalnız uygulama** (`next start`) | Ekranlar kapanır, veritabanı ayakta kalır | Günlük durdurma, yedek öncesi, cutover adım B |
-| **Uygulama + PostgreSQL** | Veritabanı da kapanır (veri korunur) | Makineyi kapatırken, bakım |
+| **Yalnız uygulama** (`pnpm start` / `start-standalone.ts`) | Ekranlar kapanır, PostgreSQL 16 ayakta kalır | Günlük durdurma, migration veya cutover adım B öncesi |
+| **Uygulama + Arka Plan İşçisi + PostgreSQL 16** | Zamanlanmış işçi askıya alınır, veritabanı hizmeti kapanır (veri `C:\MAS\pgdata16` içinde korunur) | Makine bakımı, tam sistem kapatma |
 
-**Veri hiçbir durumda silinmez.** Veriyi silen tek komut `docker compose down -v`'dir ve bu
-runbook'ta yer almaz; asla çalıştırmayın.
+**Veri hiçbir durumda silinmez.** `C:\MAS\pgdata16` dizinine asla elle dokunulmaz ([postgres-service.md](postgres-service.md)).
 
 ---
 
@@ -29,12 +24,10 @@ runbook'ta yer almaz; asla çalıştırmayın.
 
 | # | Koşul | Neden |
 |---|---|---|
-| 1 | Uygulamada devam eden bir içe aktarım / rapor üretimi yok | Yarıda kesilen iş `jobs` kuyruğunda `running` kalır |
-| 2 | Durduracağınız sürecin **hangi süreç** olduğunu biliyorsunuz | Bu makinede başka node süreçleri de var |
+| 1 | Uygulamada devam eden bir içe aktarım / rapor / Paraşüt eşitlemesi yok | Yarıda kesilen iş `jobs` kuyruğunda `running` kalır |
+| 2 | Durduracağınız sürecin **hangi süreç** olduğunu biliyorsunuz | Bu makinede başka Node süreçleri de çalışabilir |
 
-İkinci koşul ciddidir: bu makinede MAS dışındaki projelere ait node/vite süreçleri de
-çalışıyor. **`Stop-Process -Name node` gibi toplu bir komut asla kullanılmaz** — başka birinin
-işini öldürür.
+**`Stop-Process -Name node` gibi toplu bir komut asla kullanılmaz** — başka bir süreci veya devam eden bir yedekleme betiğini öldürebilir.
 
 ---
 
@@ -66,30 +59,33 @@ $pid3000 = (Get-NetTCPConnection -LocalPort 3000 -State Listen -ErrorAction Sile
   Select-Object -First 1).OwningProcess
 $pid3000
 
-# 2) DOĞRULAYIN: bu gerçekten MAS'ın Next sunucusu mu?
+# 2) DOĞRULAYIN: bu gerçekten MAS Nakit Radar sunucusu mu?
 Get-CimInstance Win32_Process -Filter "ProcessId = $pid3000" |
   Select-Object ProcessId, Name, CommandLine | Format-List
 ```
 
-Komut satırında **`next` ve `start`** kelimelerini görmelisiniz. Görmüyorsanız **DURUN** — o
-süreç başka bir uygulamaya aittir.
+Komut satırında **`Mas Saas`** ile **`start-standalone.ts`** veya **`next`** kelimelerini görmelisiniz. Görmüyorsanız **DURUN** — o süreç başka bir uygulamaya aittir.
 
 ```powershell
 # 3) Yalnız o süreci durdur
 Stop-Process -Id $pid3000
 ```
 
-### Yol 3 — veritabanını da kapatmak
+### Yol 3 — bakım penceresinde arka plan işçisini ve PostgreSQL 16 hizmetini de durdurmak
+
+Cutover veya şema bakımı sırasında arka plan işçisinin yeni bağlantı açmaması için önce görevi geçici olarak devre dışı bırakabilir, ardından gerekirse PostgreSQL hizmetini durdurabilirsiniz (yönetici PowerShell):
 
 ```powershell
-docker compose stop
+# 1) Arka plan işçisini bakım süresince duraklat (isteğe bağlı, cutover adım B için önerilir)
+Disable-ScheduledTask -TaskName "MAS-Background-Worker" -ErrorAction SilentlyContinue
+
+# 2) PostgreSQL 16 hizmetini durdur (yalnız tam makine bakımı için; migration yapacaksanız açık bırakın!)
+Stop-Service MAS-PostgreSQL16 -ErrorAction SilentlyContinue
+# Standart EDB hizmet adı kullanılıyorsa:
+# Stop-Service postgresql-x64-16 -ErrorAction SilentlyContinue
 ```
 
-Ya da hazır betikle (Git Bash gerektirir):
-
-```bash
-bash scripts/deploy/local-stop.sh
-```
+> Bakım bittiğinde `Enable-ScheduledTask -TaskName "MAS-Background-Worker"` ile işçiyi yeniden etkinleştirmeyi unutmayın.
 
 ---
 
@@ -100,7 +96,7 @@ bash scripts/deploy/local-stop.sh
 curl.exe -s -o NUL -w "%{http_code}`n" http://127.0.0.1:3000/ready
 ```
 
-- **Beklenen:** bağlantı kurulamıyor (`Failed to connect` / `000`). Yani cevap **yok**.
+- **Beklenen:** bağlantı kurulamıyor (`000`). Yani cevap **yok**.
 - `200` dönüyorsa sunucu hâlâ ayakta demektir.
 
 ```powershell
@@ -110,21 +106,27 @@ Get-NetTCPConnection -LocalPort 3000 -State Listen -ErrorAction SilentlyContinue
 
 - **Beklenen:** çıktı yok.
 
-Veritabanı tarafında açık bağlantı kalmadığının kanıtı (cutover öncesi zorunlu):
+Veritabanı tarafında açık bağlantı kalmadığının kanıtı (cutover / şema geçişi öncesi zorunlu, yalnız okuma):
 
 ```powershell
-docker exec mas-radar-pg psql -U postgres -t -A -c "select count(*) from pg_stat_activity where datname='mas_radar_dev' and pid <> pg_backend_pid();"
+$u = [Uri]((Select-String -Path .env.local -Pattern '^MIGRATION_DATABASE_URL=' | Select-Object -First 1).Line -replace '^MIGRATION_DATABASE_URL=','').Trim().Trim('"')
+$env:PGPASSWORD = [Uri]::UnescapeDataString(($u.UserInfo -split ':',2)[1])
+try {
+  & C:\MAS\pgsql16\bin\psql.exe -h 127.0.0.1 -p 5432 -U postgres -d mas_radar_dev -t -A -c "SET default_transaction_read_only = on; select count(*) from pg_stat_activity where datname='mas_radar_dev' and pid <> pg_backend_pid();"
+} finally {
+  Remove-Item Env:PGPASSWORD -ErrorAction SilentlyContinue
+}
 ```
 
-- **Beklenen:** `0`
+- **Beklenen:** `0` (son satır).
 
-Veritabanını da durdurduysanız:
+PostgreSQL 16 hizmetini de durdurduysanız:
 
 ```powershell
-docker ps --filter "name=mas-radar-pg" --format "{{.Names}} {{.Status}}"
+Get-Service MAS-PostgreSQL16, postgresql-x64-16 -ErrorAction SilentlyContinue | Select-Object Name, Status
 ```
 
-- **Beklenen:** çıktı yok (konteyner listede değil).
+- **Beklenen:** `Stopped`.
 
 ---
 
@@ -132,48 +134,47 @@ docker ps --filter "name=mas-radar-pg" --format "{{.Names}} {{.Status}}"
 
 | Belirti | Anlamı | Ne yapılır |
 |---|---|---|
-| Ctrl-C sonrası `/ready` hâlâ 200 | Süreç ölmedi ya da ikinci bir sunucu var | Yol 2 ile PID bulun; **iki** dinleyici varsa ikisini de doğrulayıp ayrı ayrı durdurun |
+| Ctrl-C sonrası `/ready` hâlâ 200 | Süreç ölmedi ya da ikinci bir sunucu var | Yol 2 ile PID bulun; dinleyiciyi doğrulayıp durdurun |
 | `Get-NetTCPConnection` boş ama `/health` cevap veriyor | Farklı bir portta ikinci örnek | `Get-NetTCPConnection -State Listen \| Where-Object {$_.LocalPort -in 3000..3300}` |
-| `Stop-Process` "Erişim reddedildi" | Süreç başka bir kullanıcıya ait | PowerShell'i yönetici olarak açın; komut satırını **tekrar doğrulayın** |
-| `pg_stat_activity` sayısı 0'a inmiyor | Açık bir oturum/işlem var | Kimin bağlı olduğunu görün (aşağıda) ve o istemciyi kapatın |
-| `docker compose stop` takılıyor | Docker meşgul | `docs/ops/docker-restart.md` |
+| `Stop-Process` "Erişim reddedildi" | Süreç yönetici hesabıyla başlatılmış | PowerShell'i yönetici olarak açın; komut satırını **tekrar doğrulayın** |
+| `pg_stat_activity` sayısı 0'a inmiyor | Açık bir oturum ya da çalışan `MAS-Background-Worker` var | Kimin bağlı olduğunu görün (aşağıda) ve istemciyi kapatın |
+| `Stop-Service MAS-PostgreSQL16` takılıyor | Uzun süren bir sorgu açık | [postgres-service.md](postgres-service.md) |
 
 Kimin bağlı olduğunu görmek (yalnız okuma):
 
 ```powershell
-docker exec mas-radar-pg psql -U postgres -c "select pid, usename, application_name, state from pg_stat_activity where datname='mas_radar_dev';"
+$u = [Uri]((Select-String -Path .env.local -Pattern '^MIGRATION_DATABASE_URL=' | Select-Object -First 1).Line -replace '^MIGRATION_DATABASE_URL=','').Trim().Trim('"')
+$env:PGPASSWORD = [Uri]::UnescapeDataString(($u.UserInfo -split ':',2)[1])
+try {
+  & C:\MAS\pgsql16\bin\psql.exe -h 127.0.0.1 -p 5432 -U postgres -d mas_radar_dev -c "SET default_transaction_read_only = on; select pid, usename, application_name, state from pg_stat_activity where datname='mas_radar_dev' and pid <> pg_backend_pid();"
+} finally {
+  Remove-Item Env:PGPASSWORD -ErrorAction SilentlyContinue
+}
 ```
 
-> Bağlantıyı zorla kesen `pg_terminate_backend` bu runbook'un kapsamında **değildir**. Devam
-> eden bir yazma işlemini kesmek veri tutarlılığı riski taşır; o karar `docs/ops/incident.md`
-> üzerinden verilir.
+> Bağlantıyı zorla kesen `pg_terminate_backend` bu runbook'un kapsamında **değildir**. Devam eden bir yazma işlemini kesmek veri tutarlılığı riski taşır; o karar [incident.md](incident.md) üzerinden verilir.
 
 ---
 
 ## STOP CONDITION
 
-1. Durduracağınız sürecin komut satırında `next start` yazmıyorsa → **durdurmayın**.
-2. Port 3000'de **birden fazla** dinleyici varsa → bu tek başına bir olaydır; durdurmadan önce
-   `docs/ops/incident.md` ile kayda geçirin (iki sunucu aynı `.next` dizinini bozmuş olabilir).
-3. Uygulamada bir içe aktarım sürüyorsa → bitmesini bekleyin.
+1. Durduracağınız sürecin komut satırında `start-standalone.ts` veya `next` yazmıyorsa → **durdurmayın**.
+2. Port 3000'de **birden fazla** dinleyici varsa → durdurmadan önce [incident.md](incident.md) ile kayda geçirin.
+3. Uygulamada bir içe aktarım veya ödeme paketi ihracı sürüyorsa → bitmesini bekleyin.
 
 ---
 
 ## ROLLBACK
 
-Durdurmanın geri alınması yeniden başlatmaktır: `docs/ops/start.md`.
+Durdurmanın geri alınması yeniden başlatmaktır: [start.md](start.md) (ve devre dışı bırakıldıysa `Enable-ScheduledTask -TaskName "MAS-Background-Worker"`).
 
 Yarıda kesilen bir arka plan işi kaldıysa, yeniden başlattıktan sonra kontrol edin:
 
 ```powershell
-$env:DATABASE_URL = ((Select-String -Path .env.local -Pattern '^DATABASE_URL=' |
-  Select-Object -First 1).Line -replace '^DATABASE_URL=','')
-$env:MIGRATION_DATABASE_URL = ((Select-String -Path .env.local -Pattern '^MIGRATION_DATABASE_URL=' |
-  Select-Object -First 1).Line -replace '^MIGRATION_DATABASE_URL=','')
 pnpm ops:telemetry
 ```
 
-`jobs_stuck` satırı `0` olmalıdır. Değilse `docs/ops/incident.md`.
+`jobs_stuck` satırı `0` olmalıdır. Değilse `pnpm ops:worker:once` çalıştırın veya [incident.md](incident.md) adımlarını izleyin.
 
 ---
 
@@ -181,19 +182,17 @@ pnpm ops:telemetry
 
 ```text
 tarih/saat            :
-durdurma yolu         : Ctrl-C / PID / docker compose stop
+durdurma yolu         : Ctrl-C / PID / Stop-Service MAS-PostgreSQL16
 durdurulan PID        :
-komut satırı doğrulandı mı (next start): EVET/HAYIR
-/ready cevabı         : (bağlantı yok bekleniyor)
-açık DB bağlantısı    : (0 bekleniyor)
+komut satırı doğrulandı mı : EVET/HAYIR
+/ready cevabı         : 000 (bağlantı yok bekleniyor)
+açık DB bağlantısı    : 0
 ```
 
 ---
 
 ## SECRET HANDLING
 
-- Bu runbook hiçbir sır okumaz ya da yazmaz.
-- `pnpm ops:telemetry` çalıştırırsanız kullanılan atama satırı değeri ekrana **yazmaz**.
-- Süreç komut satırını (`CommandLine`) paylaşırken dikkat edin: bir başlatma komutuna elle
-  parola eklenmişse orada görünür. Bu projede parola argümanla verilmez; görürseniz bu bir
-  bulgudur — `docs/ops/password-rotation.md`.
+- Bu runbook hiçbir sırrı ekrana veya günlüğe yazmaz.
+- `PGPASSWORD` yalnız geçici `try/finally` bloğunda tutulur ve anında temizlenir.
+- Süreç komut satırında (`CommandLine`) parola görürseniz bu bir güvenlik bulgusudur — [password-rotation.md](password-rotation.md).

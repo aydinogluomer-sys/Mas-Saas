@@ -374,7 +374,7 @@ test.describe("kabuk", () => {
       await page.waitForTimeout(65_000);
     }
 
-    await page.goto("/overview", { waitUntil: "networkidle" });
+    await page.goto("/", { waitUntil: "networkidle" });
 
     const liveBefore = Number(
       await scalar<string>(
@@ -395,14 +395,14 @@ test.describe("kabuk", () => {
     expect(liveAfter, "DB: çıkış sonrası canlı oturum sayısı azalmalı").toBeLessThan(liveBefore);
 
     // UI gizlemek yeterli değil: korunan rota GERÇEKTEN reddedilmeli.
-    await page.goto("/overview", { waitUntil: "domcontentloaded" });
+    await page.goto("/", { waitUntil: "domcontentloaded" });
     expect(new URL(page.url()).pathname, "çıkış sonrası korunan rota /login'e dönmeli").toBe("/login");
 
-    note("/overview", signatureFor("/overview", "↪Çıkış yap"), "viewer", [
+    note("/", signatureFor("/", "↪Çıkış yap"), "viewer", [
       `before: canlı viewer oturumu ${liveBefore}`,
       "click: gerçek 'Çıkış yap' düğmesi",
       `after DB: canlı oturum ${liveAfter} (iptal edildi)`,
-      "korunan rota /overview → /login (UI gizleme değil, backend reddi)",
+      "korunan rota / → /login (UI gizleme değil, backend reddi)",
     ]);
     await s.context.close();
   });
