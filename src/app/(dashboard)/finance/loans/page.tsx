@@ -4,10 +4,13 @@ import { loadLoans } from "@/lib/financing/engine";
 import { Panel } from "@/components/ui/panel";
 import { PageHeader } from "@/components/ui/shell";
 import { LoansTable, type LoanRow } from "@/components/finance/loans-table";
+import { requireRouteAccess } from "@/lib/authz/route-guard";
 
 export const dynamic = "force-dynamic";
 
 export default async function LoansPage() {
+  const denied = await requireRouteAccess("/finance/loans");
+  if (denied) return denied;
   const rows = await loadLoans(getPool());
   const data: LoanRow[] = rows.map((r) => ({
     id: r.id,

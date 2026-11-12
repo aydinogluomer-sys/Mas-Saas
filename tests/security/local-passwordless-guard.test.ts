@@ -9,6 +9,7 @@ const h = vi.hoisted(() => {
 
   const state = {
     token: null as string | null,
+    headers: {} as Record<string, string>,
     row: null as null | {
       id: string;
       username: string;
@@ -46,6 +47,15 @@ vi.mock("next/headers", () => ({
       h.state.token = null;
     },
   }),
+  headers: async () => ({
+    get: (name: string) => {
+      const lower = name.toLowerCase();
+      for (const [k, v] of Object.entries(h.state.headers)) {
+        if (k.toLowerCase() === lower) return v;
+      }
+      return null;
+    },
+  }),
 }));
 
 vi.mock("next/navigation", () => ({
@@ -60,6 +70,7 @@ vi.mock("@node-rs/argon2", () => ({ hash: async () => "x", verify: async () => f
 import {
   clearRequestSessionCache,
   getCurrentUser,
+  requireAdmin,
   requireApiSession,
   requireSession,
   safeRedirectPath,
@@ -80,6 +91,7 @@ describe("SA-1 — MAS_LOCAL_PASSWORDLESS ve oturum sınırı sertleştirmesi", 
     vi.stubEnv("MAS_ALLOW_PASSWORDLESS_IN_TEST", "");
     vi.stubEnv("MAS_QA_BYPASS_AUTH", "");
     h.state.token = null;
+    h.state.headers = {};
     h.state.row = null;
     h.state.calls = [];
     clearRequestSessionCache();
@@ -107,6 +119,18 @@ describe("SA-1 — MAS_LOCAL_PASSWORDLESS ve oturum sınırı sertleştirmesi", 
       expect(isLoopbackHostname("app.local")).toBe(false);
       expect(isLoopbackHostname("sub.localhost")).toBe(false);
       expect(isLoopbackHostname("")).toBe(false);
+    });
+
+    it("NODE_ENV=production altında MAS_LOCAL_PASSWORDLESS=1 ve loopback DB olsa bile her zaman false/null döner (F-06)", async () => {
+      vi.stubEnv("NODE_ENV", "production");
+      vi.stubEnv("MAS_LOCAL_PASSWORDLESS", "1");
+      vi.stubEnv("MAS_ALLOW_PASSWORDLESS_IN_TEST", "1");
+      vi.stubEnv("DATABASE_URL", "postgresql://mas_radar_app:x@127.0.0.1:5432/mas_radar_dev");
+      h.state.token = null;
+      h.state.headers = { host: "127.0.0.1:3000" };
+
+      expect(env.localPasswordless).toBe(false);
+      expect(await getCurrentUser()).toBeNull();
     });
 
     it("NODE_ENV=test altında MAS_ALLOW_PASSWORDLESS_IN_TEST=1 verilmedikçe her zaman false döner (.env.local sızıntı koruması)", () => {
@@ -209,6 +233,63 @@ describe("SA-1 — MAS_LOCAL_PASSWORDLESS ve oturum sınırı sertleştirmesi", 
       if (first) first.role = "viewer";
       const second = await getCurrentUser();
       expect(second?.role).toBe("admin");
+    });
+
+    it("loopback olmayan Host veya X-Forwarded-Host başlığı parolasız geçişi getCurrentUser() içinde engeller (F-06)", async () => {
+      vi.stubEnv("NODE_ENV", "development");
+      vi.stubEnv("MAS_LOCAL_PASSWORDLESS", "1");
+      vi.stubEnv("DATABASE_URL", "postgresql://mas_radar_app:x@127.0.0.1:5432/mas_radar_dev");
+      h.state.token = null;
+
+      // Non-loopback Host headers -> blocked
+      for (const badHost of ["192.168.1.10:3000", "10.0.0.5:3000", "mas.example.com", "0.0.0.0:3000"]) {
+        h.state.headers = { host: badHost };
+        expect(await getCurrentUser(), `host=${badHost}`).toBeNull();
+      }
+
+      // Reverse proxy forwarding external X-Forwarded-Host to local Host -> blocked
+      h.state.headers = {
+        host: "127.0.0.1:3000",
+        "x-forwarded-host": "mas.example.com",
+      };
+      expect(await getCurrentUser()).toBeNull();
+
+      // LAN Host attempting to spoof X-Forwarded-Host as loopback -> blocked
+      h.state.headers = {
+        host: "192.168.1.10:3000",
+        "x-forwarded-host": "127.0.0.1:3000",
+      };
+      expect(await getCurrentUser()).toBeNull();
+
+      // Valid loopback Host headers (IPv4, localhost, IPv6 bracketed) -> allowed in non-production
+      for (const okHost of ["127.0.0.1:3000", "localhost:3000", "[::1]:3000", "localhost"]) {
+        h.state.headers = { host: okHost };
+        const user = await getCurrentUser();
+        expect(user, `host=${okHost}`).not.toBeNull();
+        expect(user?.username).toBe("atilla");
+      }
+    });
+
+    it("must_change_password === true oturumları requireSession, requireAdmin ve requireApiSession kapılarında engellenir (F-07)", async () => {
+      h.state.token = "pending-password-change-session";
+      h.state.row = {
+        id: "22222222-2222-4222-8222-222222222222",
+        username: "admin.degisim",
+        display_name: "Admin Zorunlu Değişim",
+        role: "admin",
+        must_change_password: true,
+        session_id: "88888888-8888-4888-8888-888888888888",
+        last_seen_at: minutesAgo(1),
+        created_at: minutesAgo(5),
+      };
+
+      await withRequestSessionScope(async () => {
+        expect(await requireApiSession()).toBeNull();
+        await expect(requireSession()).rejects.toThrow("REDIRECT /change-password");
+        await expect(requireAdmin()).rejects.toThrow("REDIRECT /change-password");
+        const allowedPending = await requireSession({ allowMustChangePassword: true });
+        expect(allowedPending.mustChangePassword).toBe(true);
+      });
     });
   });
 

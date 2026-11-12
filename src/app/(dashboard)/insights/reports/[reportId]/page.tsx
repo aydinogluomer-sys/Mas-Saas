@@ -9,6 +9,7 @@ import { Badge } from "@/components/ui/badge";
 import { SourceProofDisclosure, aggregateConfidence, confidenceLabel, confidenceTone, type ProofItem } from "@/components/facts/source-proof";
 import { Panel } from "@/components/ui/panel";
 import { loadDecisionFacts } from "@/lib/facts/engine";
+import { requireRouteAccess } from "@/lib/authz/route-guard";
 
 export const dynamic = "force-dynamic";
 
@@ -21,6 +22,8 @@ export default async function ReportDetailPage({
   params: Promise<{ reportId: string }>;
   searchParams: Promise<{ ai?: string }>;
 }) {
+  const denied = await requireRouteAccess("/insights/reports/[reportId]");
+  if (denied) return denied;
   const { reportId } = await params;
   const { ai } = await searchParams;
   const pool = getPool();

@@ -3,8 +3,11 @@ import { FEATURE_REGISTRY } from "@/lib/feature-registry";
 import { Badge } from "@/components/ui/badge";
 import { Panel } from "@/components/ui/panel";
 import { PageHeader, TableShell } from "@/components/ui/shell";
+import { requireRouteAccess } from "@/lib/authz/route-guard";
 
-export default function FeaturesPage() {
+export default async function FeaturesPage() {
+  const denied = await requireRouteAccess("/system/features");
+  if (denied) return denied;
   return (
     <>
       <PageHeader

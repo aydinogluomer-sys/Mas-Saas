@@ -7,6 +7,7 @@ import { Panel } from "@/components/ui/panel";
 import { PageHeader } from "@/components/ui/shell";
 import { Button } from "@/components/ui/primitives/button";
 import { Input, Select } from "@/components/ui/primitives/input";
+import { requireRouteAccess } from "@/lib/authz/route-guard";
 
 export const dynamic = "force-dynamic";
 
@@ -23,6 +24,8 @@ type Review = {
 };
 
 export default async function ReviewsPage({ searchParams }: { searchParams: Promise<{ status?: string; severity?: string; q?: string }> }) {
+  const denied = await requireRouteAccess("/data/reviews");
+  if (denied) return denied;
   const sp = await searchParams;
   const status = sp.status ?? "open";
   const severity = sp.severity ?? "all";

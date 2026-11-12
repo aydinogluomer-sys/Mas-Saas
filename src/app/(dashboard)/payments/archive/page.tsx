@@ -4,9 +4,12 @@ import { listArchive } from "@/lib/archive/engine";
 import { ArchiveList } from "@/components/archive/archive-list";
 import { Panel } from "@/components/ui/panel";
 import { PageHeader } from "@/components/ui/shell";
+import { requireRouteAccess } from "@/lib/authz/route-guard";
 
 export const dynamic = "force-dynamic";
 export default async function PaymentArchive() {
+  const denied = await requireRouteAccess("/payments/archive");
+  if (denied) return denied;
   const rows = await listArchive(getPool(), "payments");
   return <>
     <PageHeader title="Ödeme Arşivi" subtitle="Arşivlenen kalemler yeni vade üretmez; geçmiş ödeme ve denetim kayıtları korunur." action={<Link href="/payments/items" className="button-accent px-3 py-2">Ödeme kalemlerine git</Link>} />

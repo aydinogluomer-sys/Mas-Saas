@@ -7,6 +7,7 @@ import { Badge, type Tone } from "@/components/ui/badge";
 import { Panel, fmtTL } from "@/components/ui/panel";
 import { PanelSkeleton } from "@/components/ui/panel-skeleton";
 import { KeyStat } from "@/components/ui/shell";
+import { requireRouteAccess } from "@/lib/authz/route-guard";
 import { foreignNote } from "@/lib/currency-policy";
 import { getPool } from "@/lib/db";
 import { closingTrend } from "@/lib/home/cockpit";
@@ -125,6 +126,17 @@ function OverviewSecondaryView({
       </div>
     </>
   );
+}
+
+export default async function AnaEkranPage() {
+  const denied = await requireRouteAccess("/");
+  if (denied) return denied;
+  const today = istanbulDateISO();
+  const warm = getWarmOverviewPair(getPool(), today);
+  if (warm) {
+    return <AnaEkranView today={today} primary={warm.primary} secondary={warm.secondary} />;
+  }
+  return AnaEkranAsync({ today });
 }
 
 async function OverviewSecondarySection({ primary }: { primary: OverviewPrimarySnapshot }) {
@@ -273,13 +285,4 @@ async function AnaEkranAsync({ today }: { today: string }) {
   const primary = await loadOverviewPrimary(pool, today);
   const secondary = primary.hasData ? await loadOverviewSecondary(pool, primary) : null;
   return <AnaEkranView today={today} primary={primary} secondary={secondary} />;
-}
-
-export default function AnaEkranPage() {
-  const today = istanbulDateISO();
-  const warm = getWarmOverviewPair(getPool(), today);
-  if (warm) {
-    return <AnaEkranView today={today} primary={warm.primary} secondary={warm.secondary} />;
-  }
-  return AnaEkranAsync({ today });
 }

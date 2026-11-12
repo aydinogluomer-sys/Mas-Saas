@@ -8,6 +8,7 @@ import { add, decimal, moneyOrNull, sub } from "@/lib/money";
 import { Badge } from "@/components/ui/badge";
 import { Panel } from "@/components/ui/panel";
 import { lockCashflowPeriodAction, reopenCashflowPeriodAction } from "../actions";
+import { requireRouteAccess } from "@/lib/authz/route-guard";
 
 export const dynamic = "force-dynamic";
 
@@ -28,6 +29,8 @@ export default async function CashflowMonthPage({
   params: Promise<{ monthId: string }>;
   searchParams?: Promise<{ error?: string; notice?: string }>;
 }) {
+  const denied = await requireRouteAccess("/cashflow/[monthId]");
+  if (denied) return denied;
   const { monthId } = await params;
   const sp = (await searchParams) ?? {};
   const [pool, user] = [getPool(), await getRequestUser()];

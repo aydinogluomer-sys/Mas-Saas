@@ -5,7 +5,7 @@ import { AppSidebar, type NavItem } from "@/components/ui/nav";
 import { CommandPaletteTrigger } from "@/components/search/command-palette-trigger";
 import { AppToaster, FlashToaster } from "@/components/ui/primitives/toast";
 import { requireSession } from "@/lib/auth";
-import { can, canSeeRoute, navigationFor } from "@/lib/authz/matrix";
+import { ROLE_LABEL, can, canSeeRoute, navigationFor } from "@/lib/authz/matrix";
 
 // Financial workspaces must read current PostgreSQL data at request time.
 // This also prevents production builds from opening dozens of DB-backed pages
@@ -40,7 +40,12 @@ export default async function DashboardLayout({ children }: { children: ReactNod
     .map((a) => ({ href: a.href, label: a.label, description: a.description, icon: a.icon }));
   const paletteItems = [...nav, ...allowedQuickActions];
   return <NavigationFeedbackProvider><div className="app-shell">
-    <AppSidebar items={nav} gate={false} logoutAction={logoutAction} />
+    <AppSidebar
+      items={nav}
+      gate={true}
+      logoutAction={logoutAction}
+      user={{ displayName: session.displayName, roleLabel: ROLE_LABEL[session.role] }}
+    />
     <div className="workspace-shell">
       <header className="workspace-bar">
         <div><span className="workspace-product">MAS Nakit Radar</span><span className="workspace-separator">/</span><span className="workspace-context">Finans operasyon merkezi</span></div>

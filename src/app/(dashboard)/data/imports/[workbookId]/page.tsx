@@ -7,6 +7,7 @@ import { mapCandidatesAction } from "@/app/(dashboard)/payments/actions";
 import { mapCashflowAction } from "@/app/(dashboard)/cashflow/actions";
 import { mapFinancingAction } from "@/app/(dashboard)/finance/actions";
 import { mapProductionAction } from "@/app/(dashboard)/production/actions";
+import { requireRouteAccess } from "@/lib/authz/route-guard";
 
 export const dynamic = "force-dynamic";
 
@@ -15,6 +16,8 @@ export default async function WorkbookDetailPage({
 }: {
   params: Promise<{ workbookId: string }>;
 }) {
+  const denied = await requireRouteAccess("/data/imports/[workbookId]");
+  if (denied) return denied;
   const { workbookId } = await params;
   const pool = getPool();
   const wb = await pool.query(

@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { APP_ROLES, type AppRole } from "./matrix";
@@ -10,61 +10,137 @@ import {
 } from "./route-access";
 
 /**
- * Faz 17-38 denetimi — the 5 tier × 15 route decision table, written out in full.
+ * Wave 1 (F-09..F-11) — 5 tier × 80 route decision table + 100% filesystem coverage gate.
  *
- * WHY THE TABLE IS LITERAL AND NOT DERIVED. Generating the expectations from canAccessRoute()
- * would make this file assert that the code equals itself — a test that passes no matter what
- * the policy becomes. Every cell below is therefore typed by hand from the entitlement its
- * route actually inherits, so that CHANGING the policy breaks this file and forces the change
- * to be stated out loud.
- *
- * WHERE EACH ROW COMES FROM (measured against the live catalogue, not assumed):
- *
- *  - The twelve `ALL` rows: every table behind those pages grants SELECT to all five tiers.
- *    Verified against pg_policies on a database migrated to 0087 — 27 tables, all five tiers
- *    on every one. That is 0058's "wide read, narrow write" shape, and a page gate stricter
- *    than the data layer would withhold numbers a colleague is entitled to read. Writes on
- *    those pages are refused where they must be: getPool() does SET ROLE per request and the
- *    policies decide, which is why a viewer may open /finance/bank and still not save an
- *    account.
- *
- *  - `/data/approvals` (approver, manager, admin): NOT a new rule. ROUTE_MIN_TIER has said this
- *    since Faz 36 — the maker-checker surface, where an operator raises requests but may not
- *    decide them. The database agrees independently: `approval` class gives finance_operator
- *    select+insert and NO update, so an operator could open the queue and fail every button.
- *
- *  - `/system/controls`, `/system/jobs` (manager, admin): inherited from MODULE_MIN_TIER
- *    "/system", also since Faz 24B. That entry's own comment claims "every page inside already
- *    refuses them" — which was the half that was not true, and is what this phase fixed.
+ * Every cell is written out literally (not derived from `canAccessRoute`) so any policy drift in
+ * `MODULE_MIN_TIER` or `ROUTE_MIN_TIER` fails loudly here.
  */
 const EXPECTED: Record<string, AppRole[]> = {
+  "/": [...APP_ROLES],
+
+  // Nakit Akışı (7)
+  "/cashflow": [...APP_ROLES],
+  "/cashflow/13-week": [...APP_ROLES],
+  "/cashflow/[monthId]": [...APP_ROLES],
+  "/cashflow/budget": [...APP_ROLES],
+  "/cashflow/concentration": [...APP_ROLES],
+  "/cashflow/controls": [...APP_ROLES],
+  "/cashflow/monthly": [...APP_ROLES],
+
+  // Veri Merkezi (15)
+  "/data": [...APP_ROLES],
+  "/data/approvals": ["finance_approver", "finance_manager", "admin"],
+  "/data/assumptions": [...APP_ROLES],
+  "/data/documents": [...APP_ROLES],
+  "/data/imports": [...APP_ROLES],
+  "/data/imports/[workbookId]": [...APP_ROLES],
+  "/data/imports/[workbookId]/reviews": [...APP_ROLES],
+  "/data/imports/[workbookId]/sheets/[sheetId]": [...APP_ROLES],
+  "/data/imports/v2": ["finance_operator", "finance_manager", "admin"],
+  "/data/integrations": ["finance_operator", "finance_manager", "admin"],
+  "/data/quality": [...APP_ROLES],
+  "/data/reconciliation": [...APP_ROLES],
+  "/data/reviews": [...APP_ROLES],
+  "/data/sources": [...APP_ROLES],
+  "/data/trial-balance-bridge": ["finance_operator", "finance_approver", "finance_manager", "admin"],
+
+  // Finansman (21)
+  "/finance": [...APP_ROLES],
+  "/finance/archive": [...APP_ROLES],
   "/finance/bank": [...APP_ROLES],
-  "/finance/invoices": [...APP_ROLES],
-  "/finance/receivables": [...APP_ROLES],
+  "/finance/calendar": [...APP_ROLES],
+  "/finance/checks": [...APP_ROLES],
+  "/finance/checks/new": [...APP_ROLES],
   "/finance/collections": [...APP_ROLES],
-  "/finance/treasury": [...APP_ROLES],
+  "/finance/counterparties": [...APP_ROLES],
+  "/finance/exposure": [...APP_ROLES],
   "/finance/facilities": [...APP_ROLES],
   "/finance/fx": [...APP_ROLES],
+  "/finance/invoices": [...APP_ROLES],
+  "/finance/ledger": [...APP_ROLES],
+  "/finance/loans": [...APP_ROLES],
+  "/finance/loans/[loanId]": [...APP_ROLES],
+  "/finance/loans/new": [...APP_ROLES],
+  "/finance/maturities": [...APP_ROLES],
   "/finance/profitability": [...APP_ROLES],
-  "/cashflow/budget": [...APP_ROLES],
-  "/data/approvals": ["finance_approver", "finance_manager", "admin"],
-  "/data/documents": [...APP_ROLES],
+  "/finance/promises": [...APP_ROLES],
+  "/finance/receivables": [...APP_ROLES],
+  "/finance/treasury": [...APP_ROLES],
+
+  // İçgörüler (9)
+  "/insights": [...APP_ROLES],
   "/insights/analysis": [...APP_ROLES],
+  "/insights/ask": [...APP_ROLES],
+  "/insights/ask/[responseId]": [...APP_ROLES],
   "/insights/briefing": [...APP_ROLES],
+  "/insights/reminders": [...APP_ROLES],
+  "/insights/reports": [...APP_ROLES],
+  "/insights/reports/[reportId]": [...APP_ROLES],
+  "/insights/tasks": [...APP_ROLES],
+
+  // Ödemeler (8)
+  "/payments": [...APP_ROLES],
+  "/payments/[paymentId]/edit": [...APP_ROLES],
+  "/payments/archive": [...APP_ROLES],
+  "/payments/calendar": [...APP_ROLES],
+  "/payments/history": [...APP_ROLES],
+  "/payments/items": [...APP_ROLES],
+  "/payments/missing": [...APP_ROLES],
+  "/payments/new": [...APP_ROLES],
+
+  // Üretim (5)
+  "/production": [...APP_ROLES],
+  "/production/capacity": [...APP_ROLES],
+  "/production/costs": [...APP_ROLES],
+  "/production/profitability": [...APP_ROLES],
+  "/production/roi": [...APP_ROLES],
+
+  // Senaryolar (5)
+  "/scenarios": [...APP_ROLES],
+  "/scenarios/[runId]": [...APP_ROLES],
+  "/scenarios/compare": [...APP_ROLES],
+  "/scenarios/history": [...APP_ROLES],
+  "/scenarios/optimization": [...APP_ROLES],
+
+  // Sistem (9)
+  "/system": ["finance_manager", "admin"],
+  "/system/archive": ["finance_manager", "admin"],
+  "/system/audit": ["finance_manager", "admin"],
+  "/system/backup": ["admin"],
   "/system/controls": ["finance_manager", "admin"],
+  "/system/diagnostics": ["admin"],
+  "/system/features": ["finance_manager", "admin"],
   "/system/jobs": ["finance_manager", "admin"],
-  // PHASE 4: yazma yüzeyi — DB'de source_workbooks INSERT'i olmayan viewer/approver giremez.
-  "/data/imports/v2": ["finance_operator", "finance_manager", "admin"],
+  "/system/security": ["admin"],
 };
 
-describe("requireRouteAccess — 5 katman × 16 route karar tablosu", () => {
+const ROOT = process.cwd();
+const DASHBOARD_DIR = path.join(ROOT, "src", "app", "(dashboard)");
+
+function pageFileForRoute(route: string): string {
+  return route === "/"
+    ? path.join(DASHBOARD_DIR, "page.tsx")
+    : path.join(DASHBOARD_DIR, ...route.slice(1).split("/"), "page.tsx");
+}
+
+function discoverDashboardPages(): Array<{ relFile: string; route: string; absFile: string }> {
+  return (readdirSync(DASHBOARD_DIR, { recursive: true }) as string[])
+    .map((entry) => entry.split(path.sep).join("/"))
+    .filter((rel) => rel === "page.tsx" || rel.endsWith("/page.tsx"))
+    .sort()
+    .map((relFile) => ({
+      relFile,
+      route: relFile === "page.tsx" ? "/" : `/${relFile.slice(0, -"/page.tsx".length)}`,
+      absFile: path.join(DASHBOARD_DIR, relFile),
+    }));
+}
+
+describe("requireRouteAccess — 5 katman × 80 route karar tablosu", () => {
   it("kapı listesi ile karar tablosu birebir aynı route kümesini kapsıyor", () => {
     expect([...PAGE_GUARDED_ROUTES].sort()).toEqual(Object.keys(EXPECTED).sort());
-    expect(PAGE_GUARDED_ROUTES).toHaveLength(16);
+    expect(PAGE_GUARDED_ROUTES).toHaveLength(80);
   });
 
-  // 75 kombinasyonun tamamı — her biri ayrı bir test, çünkü tek bir toplu assertion
-  // başarısız olduğunda HANGİ hücrenin kaydığını söylemez.
   for (const route of Object.keys(EXPECTED)) {
     for (const role of APP_ROLES) {
       const allowed = EXPECTED[route].includes(role);
@@ -80,28 +156,43 @@ describe("requireRouteAccess — 5 katman × 16 route karar tablosu", () => {
     }
   });
 
-  /**
-   * NEGATIF TARAFIN GERÇEKTEN VAR OLDUĞU. Bütün hücreleri "izin ver" yapan bozuk bir kapı,
-   * yukarıdaki 75 testin 67'sini geçerdi. Reddedilen kombinasyonların sayısını sabitlemek,
-   * kapının hâlâ bir kapı olduğunu tek satırda kanıtlar.
-   */
   it("tabloda gerçekten REDDEDİLEN kombinasyonlar var (kapı her şeye açık değil)", () => {
     const denied = Object.keys(EXPECTED).flatMap((route) =>
       APP_ROLES.filter((role) => !canAccessRoute(role, route)).map((role) => `${role}@${route}`),
     );
-    // viewer+operator @ approvals (2) · viewer+operator+approver @ controls,jobs (6)
-    // · viewer+approver @ imports/v2 (2) = 10
-    expect(denied).toHaveLength(10);
+    // admin-only (backup, security, diagnostics): 3 × 4 = 12
+    // system manager+admin (system, archive, audit, controls, features, jobs): 6 × 3 = 18
+    // approvals (viewer, operator): 2
+    // imports/v2 (viewer, approver): 2
+    // integrations (viewer, approver): 2
+    // trial-balance-bridge (viewer): 1
+    // Total = 37
+    expect(denied).toHaveLength(37);
     expect(denied).toContain("viewer@/system/jobs");
-    expect(denied).toContain("finance_operator@/data/approvals");
+    expect(denied).toContain("finance_operator@/system/audit");
     expect(denied).toContain("finance_approver@/system/controls");
+    expect(denied).toContain("finance_manager@/system/backup");
+    expect(denied).toContain("finance_manager@/system/security");
+    expect(denied).toContain("finance_manager@/system/diagnostics");
+    expect(denied).toContain("finance_operator@/data/approvals");
     expect(denied).toContain("viewer@/data/imports/v2");
     expect(denied).toContain("finance_approver@/data/imports/v2");
+    expect(denied).toContain("viewer@/data/integrations");
+    expect(denied).toContain("finance_approver@/data/integrations");
+    expect(denied).toContain("viewer@/data/trial-balance-bridge");
   });
 
   it("izleyici finans okuma sayfalarından MEN EDİLMEDİ (veri katmanından katı olmamak)", () => {
-    for (const route of ["/finance/bank", "/finance/invoices", "/finance/treasury",
-      "/finance/facilities", "/cashflow/budget", "/data/documents", "/insights/analysis"]) {
+    for (const route of [
+      "/",
+      "/finance/bank",
+      "/finance/invoices",
+      "/finance/treasury",
+      "/finance/facilities",
+      "/cashflow/budget",
+      "/data/documents",
+      "/insights/analysis",
+    ]) {
       expect(canAccessRoute("viewer", route)).toBe(true);
     }
   });
@@ -109,60 +200,51 @@ describe("requireRouteAccess — 5 katman × 16 route karar tablosu", () => {
   it("red mesajı hangi katmanda olunduğunu ve kimin girebileceğini SÖYLÜYOR", () => {
     const msg = accessDeniedMessage("viewer", "/system/jobs");
     expect(msg).toContain("erişim yetkiniz yok");
-    expect(msg).toContain("izleyici");            // ROLE_LABEL.viewer
-    expect(msg).toContain("finans yöneticisi");   // izin verilen katmanlardan biri
+    expect(msg).toContain("izleyici");
+    expect(msg).toContain("finans yöneticisi");
     expect(msg).toContain("yönetici");
   });
 
   it("red mesajı sayfanın İÇERİĞİNİ sızdırmıyor (yalnız yol adı ve katman)", () => {
-    // Kapının arkasında ne olduğunu anlatan bir red, red değildir.
-    //
-    // İLK YAZILIŞI HATALIYDI VE ÜRÜN DEĞİL TEST DÜZELTİLDİ. Sızıntı listesine "onay" konmuştu;
-    // mesaj bunu içeriyor, ama sayfa içeriğinden değil ROL ETİKETİNDEN: izin verilen katman
-    // "finans ONAYlayıcı". İzin verilen katmanı adıyla söylemek mesajın işi — kullanıcıya
-    // kimden erişim isteyeceğini söyleyen tek cümle o. Yani assertion yanlış kurulmuştu, kapı
-    // doğruydu. Assertion gevşetilmedi; yanlış kurulan hücre çıkarıldı ve yerine daha güçlü,
-    // gerçekten anlamlı bir kontrol kondu: mesajda hiçbir SAYI/VERİ geçmemeli.
     const msg = accessDeniedMessage("finance_operator", "/data/approvals");
     for (const leak of ["kuyruk", "tutar", "fatura", "IBAN", "bekleyen", "TL"]) {
       expect(msg.toLowerCase(), leak).not.toContain(leak.toLowerCase());
     }
-    // Rakam yok: bir red mesajı "3 bekleyen onay var" demeye başlarsa, reddettiği bilgiyi
-    // sızdırmış olur.
     expect(msg).not.toMatch(/\d/);
   });
 });
 
-/**
- * YAPISAL KONTROL — kapının GERÇEKTEN takılı olduğu.
- *
- * Yukarıdaki 75 test yalnız KARARIN doğru olduğunu kanıtlar; sayfanın o kararı sorduğunu
- * kanıtlamaz. Bu denetimi doğuran kusur tam olarak buydu: karar (canSeeRoute) aylardır doğruydu,
- * sayfa onu hiç sormuyordu. Bu yüzden burada dosyaların kendisi okunuyor.
- *
- * `if (denied) return denied;` yarısı da aranıyor: kapıyı çağırıp dönüşünü yok sayan bir sayfa,
- * hiç çağırmayan bir sayfayla aynı şeydir.
- */
-describe("route-access — 16 sayfanın kapıyı gerçekten çağırdığı", () => {
-  const ROOT = process.cwd();
+describe("route-access — dosya sistemi keşfi ve %100 kapı kapsamı (F-09..F-11)", () => {
+  const discovered = discoverDashboardPages();
+
+  it("src/app/(dashboard) altındaki TÜM page.tsx dosyaları PAGE_GUARDED_ROUTES içinde kayıtlıdır", () => {
+    expect(discovered.map((d) => d.route).sort()).toEqual([...PAGE_GUARDED_ROUTES].sort());
+  });
+
   for (const route of PAGE_GUARDED_ROUTES) {
     it(`page.tsx kapıyı çağırıyor ve dönüşüne uyuyor: ${route}`, () => {
-      const file = path.join(ROOT, "src", "app", "(dashboard)", ...route.slice(1).split("/"), "page.tsx");
+      const file = pageFileForRoute(route);
       const src = readFileSync(file, "utf8");
-      expect(src).toContain(`requireRouteAccess("${route}")`);
-      expect(src).toContain("if (denied) return denied;");
       expect(src).toContain('from "@/lib/authz/route-guard"');
+      expect(src).toContain(`const denied = await requireRouteAccess("${route}");`);
+      expect(src).toContain("if (denied) return denied;");
     });
   }
 
-  it("kapı, sayfanın İLK ifadesi (reddedilen katman için hiçbir sorgu çalışmıyor)", () => {
-    for (const route of PAGE_GUARDED_ROUTES) {
-      const file = path.join(ROOT, "src", "app", "(dashboard)", ...route.slice(1).split("/"), "page.tsx");
-      const src = readFileSync(file, "utf8");
-      const guardAt = src.indexOf("requireRouteAccess(");
+  it("keşfedilen her page.tsx dosyasında kapı getPool() çağrısından ÖNCE gelir", () => {
+    for (const { route, absFile } of discovered) {
+      const src = readFileSync(absFile, "utf8");
+      expect(src, `${route}: import eksik`).toContain('from "@/lib/authz/route-guard"');
+      expect(src, `${route}: const denied ataması eksik`).toContain(
+        `const denied = await requireRouteAccess("${route}");`,
+      );
+      expect(src, `${route}: if (denied) return denied; eksik`).toContain("if (denied) return denied;");
+      const guardAt = src.indexOf(`const denied = await requireRouteAccess("${route}");`);
       const poolAt = src.indexOf("getPool()");
-      // getPool() kullanmayan sayfa varsa o kontrolü atla; kullananda kapı ÖNCE gelmeli.
-      if (poolAt !== -1) expect(guardAt, route).toBeLessThan(poolAt);
+      expect(guardAt, route).toBeGreaterThan(-1);
+      if (poolAt !== -1) {
+        expect(guardAt, route).toBeLessThan(poolAt);
+      }
     }
   });
 });

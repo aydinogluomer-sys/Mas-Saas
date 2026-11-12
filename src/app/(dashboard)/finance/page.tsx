@@ -8,10 +8,13 @@ import { fmtTL, Panel } from "@/components/ui/panel";
 import { KpiCard, PageHeader } from "@/components/ui/shell";
 import { AnalyticsChart } from "@/components/charts/analytics-chart";
 import type { ChartModel } from "@/lib/analytics/chart";
+import { requireRouteAccess } from "@/lib/authz/route-guard";
 
 export const dynamic = "force-dynamic";
 
 export default async function FinanceSummaryPage() {
+  const denied = await requireRouteAccess("/finance");
+  if (denied) return denied;
   const pool = getPool();
   const today = istanbulDateISO();
   const [{ summary, months }, unknownOpening] = await Promise.all([

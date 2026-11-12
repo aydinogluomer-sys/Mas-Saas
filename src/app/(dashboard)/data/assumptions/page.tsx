@@ -6,6 +6,7 @@ import { Panel } from "@/components/ui/panel";
 import { EmptyState, KeyStat, PageHeader } from "@/components/ui/shell";
 import { createExternalAssumptionAction, setExternalAssumptionReviewStatusAction } from "./actions";
 import { archiveRecordAction } from "@/app/(dashboard)/system/archive/actions";
+import { requireRouteAccess } from "@/lib/authz/route-guard";
 
 export const dynamic = "force-dynamic";
 
@@ -49,6 +50,8 @@ export default async function AssumptionsPage({
 }: {
   searchParams?: Promise<{ error?: string; result?: string }>;
 }) {
+  const denied = await requireRouteAccess("/data/assumptions");
+  if (denied) return denied;
   const sp = (await searchParams) ?? {};
   const errorText =
     sp.error && Object.prototype.hasOwnProperty.call(ASSUMPTION_ERROR_TEXT, sp.error)

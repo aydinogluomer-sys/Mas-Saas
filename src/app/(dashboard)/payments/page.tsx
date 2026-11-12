@@ -1,4 +1,5 @@
 import { Suspense } from "react";
+import { requireRouteAccess } from "@/lib/authz/route-guard";
 import { getPool } from "@/lib/db";
 import { istanbulDateISO } from "@/lib/reports/rules";
 import { loadThresholds } from "@/lib/radar/engine";
@@ -154,16 +155,9 @@ function PaymentsDashboardView({
   </>;
 }
 
-async function PaymentsDashboardContent({ today, futureEnd }: { today: string; futureEnd: string }) {
-  const pool = getPool();
-  const [dashboard, thresholds] = await Promise.all([
-    loadPaymentDashboard(pool, today, futureEnd),
-    loadThresholds(pool),
-  ]);
-  return <PaymentsDashboardView today={today} dashboard={dashboard} thresholds={thresholds} />;
-}
-
-export default function PaymentsOverviewPage() {
+export default async function PaymentsOverviewPage() {
+  const denied = await requireRouteAccess("/payments");
+  if (denied) return denied;
   const today = istanbulDateISO();
   const anchor = new Date(`${today}T00:00:00Z`);
   const futureEnd = new Date(Date.UTC(anchor.getUTCFullYear(), anchor.getUTCMonth() + 24, anchor.getUTCDate())).toISOString().slice(0, 10);
@@ -174,4 +168,13 @@ export default function PaymentsOverviewPage() {
       <PaymentsDashboardContent today={today} futureEnd={futureEnd} />
     </Suspense>
   </>;
+}
+
+async function PaymentsDashboardContent({ today, futureEnd }: { today: string; futureEnd: string }) {
+  const pool = getPool();
+  const [dashboard, thresholds] = await Promise.all([
+    loadPaymentDashboard(pool, today, futureEnd),
+    loadThresholds(pool),
+  ]);
+  return <PaymentsDashboardView today={today} dashboard={dashboard} thresholds={thresholds} />;
 }

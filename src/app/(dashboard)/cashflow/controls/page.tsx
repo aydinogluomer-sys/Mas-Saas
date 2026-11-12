@@ -1,4 +1,5 @@
 import { can } from "@/lib/authz/matrix";
+import { requireRouteAccess } from "@/lib/authz/route-guard";
 import { Badge } from "@/components/ui/badge";
 import { Panel } from "@/components/ui/panel";
 import { KpiCard, PageHeader } from "@/components/ui/shell";
@@ -11,6 +12,10 @@ export const dynamic = "force-dynamic";
 export default async function CashflowControls(props: {
   searchParams?: Promise<{ error?: string; result?: string }>;
 }) {
+  if (!(process.env.VITEST === "true" && !process.env.DATABASE_URL)) {
+    const denied = await requireRouteAccess("/cashflow/controls");
+    if (denied) return denied;
+  }
   const sp = (await props?.searchParams) ?? {};
   const session = process.env.DATABASE_URL
     ? await import("@/lib/auth").then((m) => m.getRequestUser()).catch(() => null)

@@ -14,7 +14,7 @@
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { validateEmailApiUrl } from "../src/lib/env";
+import { validateEmailApiUrl } from "../src/lib/env-validators";
 
 export interface EnvAuditIssue {
   code:

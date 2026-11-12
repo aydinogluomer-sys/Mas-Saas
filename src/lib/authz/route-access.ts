@@ -1,87 +1,112 @@
-// Faz 17-38 denetimi — the page-level half of role-based routing.
-//
-// WHAT WAS MISSING, MEASURED RATHER THAN ASSUMED.
-//
-// Fifteen routes shipped across Faz 26-38 (finance/bank, finance/invoices, finance/receivables,
-// finance/collections, finance/treasury, finance/facilities, finance/fx, finance/profitability,
-// cashflow/budget, data/approvals, data/documents, insights/analysis, insights/briefing,
-// system/controls, system/jobs). Grepping all fifteen page.tsx files for `requireAdmin`,
-// `requireSession`, `canPerform`, `canDecideApprovals` or `canAdministerUsers` returned NOTHING:
-// the only thing standing in front of them was `requireSession()` in (dashboard)/layout.tsx,
-// which asks "is anybody signed in", not "may THIS tier be here".
-//
-// So the tier was decided in two places and enforced in one and a half:
-//   - navigation      — canSeeRoute()/tabsFor() hid the tab                (a drawn door)
-//   - the database    — migration 0058's policies stopped the query        (the real lock)
-//   - the page itself — nothing                                           (the gap)
-// A hidden tab is a rendering choice. Typing the URL is not an attack, it is a bookmark, and
-// /system/jobs answered it for a viewer even though the sidebar never offered it.
+// Faz 17-38 denetimi & Wave 1 (F-09..F-11) — 100% page-level route gate across all 80 dashboard routes.
 //
 // WHY THIS DELEGATES TO canSeeRoute() INSTEAD OF DECLARING ITS OWN TABLE.
 //
-// A second list would be a second opinion, and the two would drift — the module comment in
-// matrix.ts makes exactly this argument about visibility, and phase38:verify asserts the
-// assistant reuses canSeeRoute() for the same reason. This file therefore adds NO new policy.
-// It closes the distance between what navigation already claims and what the page enforces.
+// A second policy list would be a second opinion, and the two would drift — the module comment in
+// matrix.ts makes this exact argument about visibility, and phase38:verify asserts the assistant
+// reuses canSeeRoute() for the same reason. This module therefore adds NO competing policy: it
+// closes the distance between what navigation claims and what every `src/app/(dashboard)/**/page.tsx`
+// enforces before opening `getPool()`.
 //
-// WHAT THIS DELIBERATELY DOES NOT DO: TIGHTEN.
-//
-// Checked against the live catalogue before writing a line. Every table behind these fifteen
-// pages grants SELECT to all five tiers — all 27 of them (bank_accounts, bank_transactions,
-// invoices, invoice_allocations, promise_to_pay, treasury_policies, credit_facilities,
-// facility_drawdowns, collateral_records, fx_positions, fx_rate_snapshots, budgets,
-// budget_lines, forecasts, approvals, approval_steps, documents, attachments,
-// ai_response_snapshots, control_alerts, background_jobs, settings, saved_views, action_items,
-// reports, cost_allocation_rules, part_profitability_runs). That is the "wide read, narrow
-// write" shape 0058 was built around, and a page gate that were STRICTER than the data layer
-// would be withholding numbers a colleague is entitled to read — a regression wearing a
-// security badge. Twelve of the fifteen routes are therefore open to all five tiers, viewer
-// included, read-only.
-//
-// The three that are not were ALREADY decided, by Faz 24B/36, and are honoured here rather
-// than invented:
-//   /data/approvals   — ROUTE_MIN_TIER: approver/manager/admin. The maker-checker surface; an
-//                       operator raises requests but may not decide them.
-//   /system/controls   } MODULE_MIN_TIER "/system": manager/admin. Its own comment says "every
-//   /system/jobs       } page inside already refuses them" — which was the untrue half. Now true.
-//
-// RLS STAYS EXACTLY AS IT IS. No policy was read-modified, none was dropped. This is a third
-// agreeing layer in front of the database, never a replacement for it.
+// RLS STAYS EXACTLY AS IT IS. This is an agreeing server-render layer in front of PostgreSQL RLS,
+// never a replacement for it.
 
 import { APP_ROLES, ROLE_LABEL, canSeeRoute, type AppRole } from "./matrix";
 
 /**
- * The fifteen routes this phase put a page-level gate on.
+ * Every `page.tsx` route under `src/app/(dashboard)` (80/80).
  *
- * Frozen and exported so the gate can ENUMERATE rather than trust: route-access.test.ts walks
- * this list against all five tiers (75 combinations) and a structural test asserts each of these
- * page.tsx files actually calls the guard. A sixteenth route added without a gate is then a test
- * failure rather than a silent hole — which is precisely how the first fifteen happened.
+ * Frozen and exported so `route-access.test.ts` can enumerate all 5 × 80 = 400 tier×route
+ * decisions AND verify against recursive filesystem discovery on `src/app/(dashboard)` that zero
+ * `page.tsx` files exist outside this list or omit `const denied = await requireRouteAccess(...)`.
  */
 export const PAGE_GUARDED_ROUTES: readonly string[] = Object.freeze([
+  "/",
+  "/cashflow",
+  "/cashflow/13-week",
+  "/cashflow/[monthId]",
+  "/cashflow/budget",
+  "/cashflow/concentration",
+  "/cashflow/controls",
+  "/cashflow/monthly",
+  "/data",
+  "/data/approvals",
+  "/data/assumptions",
+  "/data/documents",
+  "/data/imports",
+  "/data/imports/[workbookId]",
+  "/data/imports/[workbookId]/reviews",
+  "/data/imports/[workbookId]/sheets/[sheetId]",
+  "/data/imports/v2",
+  "/data/integrations",
+  "/data/quality",
+  "/data/reconciliation",
+  "/data/reviews",
+  "/data/sources",
+  "/data/trial-balance-bridge",
+  "/finance",
+  "/finance/archive",
   "/finance/bank",
-  "/finance/invoices",
-  "/finance/receivables",
+  "/finance/calendar",
+  "/finance/checks",
+  "/finance/checks/new",
   "/finance/collections",
-  "/finance/treasury",
+  "/finance/counterparties",
+  "/finance/exposure",
   "/finance/facilities",
   "/finance/fx",
+  "/finance/invoices",
+  "/finance/ledger",
+  "/finance/loans",
+  "/finance/loans/[loanId]",
+  "/finance/loans/new",
+  "/finance/maturities",
   "/finance/profitability",
-  "/cashflow/budget",
-  "/data/approvals",
-  "/data/documents",
+  "/finance/promises",
+  "/finance/receivables",
+  "/finance/treasury",
+  "/insights",
   "/insights/analysis",
+  "/insights/ask",
+  "/insights/ask/[responseId]",
   "/insights/briefing",
+  "/insights/reminders",
+  "/insights/reports",
+  "/insights/reports/[reportId]",
+  "/insights/tasks",
+  "/payments",
+  "/payments/[paymentId]/edit",
+  "/payments/archive",
+  "/payments/calendar",
+  "/payments/history",
+  "/payments/items",
+  "/payments/missing",
+  "/payments/new",
+  "/production",
+  "/production/capacity",
+  "/production/costs",
+  "/production/profitability",
+  "/production/roi",
+  "/scenarios",
+  "/scenarios/[runId]",
+  "/scenarios/compare",
+  "/scenarios/history",
+  "/scenarios/optimization",
+  "/system",
+  "/system/archive",
+  "/system/audit",
+  "/system/backup",
   "/system/controls",
+  "/system/diagnostics",
+  "/system/features",
   "/system/jobs",
-  // PHASE 4 — Standart Import V2 (yazma yüzeyi; ROUTE_MIN_TIER: operator/manager/admin).
-  "/data/imports/v2",
+  "/system/security",
 ]);
 
 /**
  * May this tier open this route?
  *
- * Pure, synchronous, and free of `next/headers` on purpose: the 75-combination table test
+ * Pure, synchronous, and free of `next/headers` on purpose: the 400-combination table test
  * imports THIS, not the server guard, so the decision can be proved without a request, a
  * cookie jar, or a database.
  */
@@ -97,10 +122,7 @@ export function rolesAllowedOn(href: string): AppRole[] {
 /**
  * The sentence a refused tier is shown.
  *
- * Says WHICH tier is signed in and WHAT it would take, because "yetkiniz yok" with no subject
- * is indistinguishable from a bug and generates a support question every time. It deliberately
- * does NOT describe the page's contents — a refusal that leaks what is behind the door is not a
- * refusal.
+ * Says WHICH tier is signed in and WHAT it would take, without leaking any page contents or numbers.
  */
 export function accessDeniedMessage(role: AppRole, href: string): string {
   const allowed = rolesAllowedOn(href).map((r) => ROLE_LABEL[r]).join(", ");

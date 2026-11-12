@@ -9,6 +9,7 @@ import { Panel } from "@/components/ui/panel";
 import { ChartShell, Disclaimer, KpiCard } from "@/components/ui/shell";
 import { ScenarioChart } from "@/components/scenarios/chart";
 import { deleteScenarioRunAction } from "../actions";
+import { requireRouteAccess } from "@/lib/authz/route-guard";
 
 export const dynamic = "force-dynamic";
 
@@ -22,6 +23,8 @@ export default async function ScenarioRunPage({
 }: {
   params: Promise<{ runId: string }>;
 }) {
+  const denied = await requireRouteAccess("/scenarios/[runId]");
+  if (denied) return denied;
   const { runId } = await params;
   const pool = getPool();
   const data = await loadScenarioRun(pool, runId);

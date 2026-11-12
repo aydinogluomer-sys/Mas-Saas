@@ -206,7 +206,6 @@ export const TABLE_CLASS: Record<string, AccessClass> = {
   source_workbooks: "operational",
   promise_to_pay: "operational",
   credit_facilities: "operational",
-  facility_drawdowns: "operational",
   facility_movements: "operational",
   collateral_records: "operational",
   covenant_records: "operational",
@@ -271,6 +270,7 @@ export const TABLE_CLASS: Record<string, AccessClass> = {
   alert_escalation_rules: "config",
   approvals: "approval",
   approval_rules: "approval_config",
+  approval_governance_settings: "approval_config",
   users: "auth_users",
   sessions: "auth_sessions",
   schema_migrations: "ledger",
@@ -359,6 +359,8 @@ const ROUTE_MIN_TIER: Record<string, AppRole[]> = {
   "/system/diagnostics": ["admin"],
   "/data/approvals": ["finance_approver", "finance_manager", "admin"],
   "/data/imports/v2": ["finance_operator", "finance_manager", "admin"],
+  "/data/integrations": ["finance_operator", "finance_manager", "admin"],
+  "/data/trial-balance-bridge": ["finance_operator", "finance_approver", "finance_manager", "admin"],
 };
 
 export function canSeeRoute(role: AppRole, href: string): boolean {

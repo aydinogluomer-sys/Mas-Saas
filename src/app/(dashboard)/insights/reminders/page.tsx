@@ -5,6 +5,7 @@ import { Badge, type Tone } from "@/components/ui/badge";
 import { Num, Panel } from "@/components/ui/panel";
 import { EmptyState, KpiCard, PageHeader } from "@/components/ui/shell";
 import { dispatchRemindersAction, scheduleRemindersAction } from "./actions";
+import { requireRouteAccess } from "@/lib/authz/route-guard";
 
 export const dynamic = "force-dynamic";
 
@@ -18,6 +19,8 @@ const STATUS_LABEL: Record<string, string> = {
 const OFFSET_LABEL: Record<number, string> = { 7: "7 gün önce", 3: "3 gün önce", 1: "1 gün önce", 0: "bugün", [-1]: "gecikme" };
 
 export default async function RemindersPage() {
+  const denied = await requireRouteAccess("/insights/reminders");
+  if (denied) return denied;
   const pool = getPool();
   const [counts, deliveries] = await Promise.all([deliveryCounts(pool), loadDeliveries(pool)]);
   const today = istanbulDateISO();

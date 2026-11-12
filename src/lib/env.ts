@@ -9,66 +9,13 @@ function optional(value: string | undefined): string | undefined {
   return value === undefined || value === "" ? undefined : value;
 }
 
-export function isLoopbackHostname(hostname: string): boolean {
-  const h = hostname.trim().toLowerCase().replace(/^\[|\]$/g, "");
-  return h === "127.0.0.1" || h === "localhost" || h === "::1";
-}
+import {
+  isLoopbackHostname,
+  isPrivateOrLoopbackHost,
+  validateEmailApiUrl,
+} from "./env-validators";
 
-export function isPrivateOrLoopbackHost(hostname: string): boolean {
-  const h = hostname.trim().toLowerCase().replace(/^\[|\]$/g, "");
-  if (!h) return true;
-  if (
-    h === "localhost" ||
-    h === "0.0.0.0" ||
-    h === "::1" ||
-    h.endsWith(".localhost") ||
-    h.endsWith(".local") ||
-    h.endsWith(".internal")
-  ) {
-    return true;
-  }
-  if (/^127\./.test(h) || /^10\./.test(h) || /^192\.168\./.test(h) || /^169\.254\./.test(h)) {
-    return true;
-  }
-  const m172 = h.match(/^172\.(\d{1,3})\./);
-  if (m172) {
-    const second = Number(m172[1]);
-    if (second >= 16 && second <= 31) return true;
-  }
-  if (/^(fc|fd|fe80):/i.test(h)) return true;
-  return false;
-}
-
-export function validateEmailApiUrl(
-  rawUrl: string | undefined,
-  allowedHostsCsv: string | undefined,
-): string | null {
-  if (!rawUrl) return null;
-  let parsedUrl: URL;
-  try {
-    parsedUrl = new URL(rawUrl);
-  } catch {
-    return "EMAIL_API_URL geçerli bir HTTPS URL olmalı.";
-  }
-  if (parsedUrl.protocol !== "https:") {
-    return "EMAIL_API_URL yalnız 'https://' protokolünü kullanabilir.";
-  }
-  if (parsedUrl.username || parsedUrl.password) {
-    return "EMAIL_API_URL kullanıcı adı veya parola içeremez.";
-  }
-  const host = parsedUrl.hostname.toLowerCase();
-  if (isPrivateOrLoopbackHost(host)) {
-    return "EMAIL_API_URL yerel veya özel ağ adresine (SSRF) işaret edemez.";
-  }
-  const allowed = (allowedHostsCsv ?? "")
-    .split(",")
-    .map((s) => s.trim().toLowerCase())
-    .filter(Boolean);
-  if (allowed.length > 0 && !allowed.includes(host)) {
-    return `EMAIL_API_URL alan adı (${host}) MAS_ALLOWED_EMAIL_HOSTS beyaz listesinde değil.`;
-  }
-  return null;
-}
+export { isLoopbackHostname, isPrivateOrLoopbackHost, validateEmailApiUrl };
 
 const schema = z
   .object({
@@ -113,7 +60,11 @@ const schema = z
   });
 
 const parsed = schema.safeParse({
-  DATABASE_URL: process.env.DATABASE_URL,
+  DATABASE_URL:
+    process.env.DATABASE_URL ||
+    (process.env.VITEST === "true"
+      ? "postgresql://unit_test_no_connect:x@127.0.0.1:5432/mas_radar_unit_dummy"
+      : undefined),
   MIGRATION_DATABASE_URL: optional(process.env.MIGRATION_DATABASE_URL),
   DATABASE_POOL_MAX: process.env.DATABASE_POOL_MAX,
   DATABASE_STATEMENT_TIMEOUT_MS: optional(process.env.DATABASE_STATEMENT_TIMEOUT_MS),
@@ -186,6 +137,9 @@ export const env = Object.freeze({
     return process.env.MAS_QA_BYPASS_AUTH === "1";
   },
   get localPasswordless(): boolean {
+    if (process.env.NODE_ENV === "production") {
+      return false;
+    }
     if (process.env.NODE_ENV === "test" && process.env.MAS_ALLOW_PASSWORDLESS_IN_TEST !== "1") {
       return false;
     }

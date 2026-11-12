@@ -6,7 +6,7 @@ import { requireRouteAccess } from "@/lib/authz/route-guard";
 const field = "field-control mt-1 w-full p-2";
 
 export default async function NewCheck() {
-  const denied = await requireRouteAccess("/finance/checks");
+  const denied = await requireRouteAccess("/finance/checks/new");
   if (denied) return denied;
   return (
     <>

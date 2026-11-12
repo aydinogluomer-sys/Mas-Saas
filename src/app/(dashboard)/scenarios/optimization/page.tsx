@@ -12,6 +12,7 @@ import {
   runLiquidityOptimizationAction,
   runOptimizationCandidateAction,
 } from "../actions";
+import { requireRouteAccess } from "@/lib/authz/route-guard";
 
 export const dynamic = "force-dynamic";
 
@@ -34,6 +35,8 @@ export default async function OptimizationPage({
 }: {
   searchParams: Promise<{ runId?: string }>;
 }) {
+  const denied = await requireRouteAccess("/scenarios/optimization");
+  if (denied) return denied;
   const sp = await searchParams;
   const pool = getPool();
   const todayISO = new Date().toISOString().slice(0, 10);

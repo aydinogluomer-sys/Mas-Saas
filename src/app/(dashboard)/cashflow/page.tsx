@@ -9,6 +9,7 @@ import { loadCashMonths } from "@/lib/cashflow/engine";
 import { getPool } from "@/lib/db";
 import { buildProjection, horizonCards } from "@/lib/radar/rules";
 import { istanbulDateISO } from "@/lib/reports/rules";
+import { requireRouteAccess } from "@/lib/authz/route-guard";
 
 export const dynamic = "force-dynamic";
 const ym = (value: string | null) => value ? value.slice(0, 7) : "yok";
@@ -17,6 +18,8 @@ const VALID_PERIODS: AnalyticsPeriod[] = ["3m", "6m", "12m", "24m", "all"];
 const PERIOD_BY_HORIZON: Record<number, AnalyticsPeriod> = { 3: "3m", 6: "6m", 12: "12m", 24: "24m", 36: "all" };
 
 export default async function CashflowOverview({ searchParams }: { searchParams?: Promise<{ chartPeriod?: string }> }) {
+  const denied = await requireRouteAccess("/cashflow");
+  if (denied) return denied;
   const requested = (await searchParams)?.chartPeriod;
   const period: AnalyticsPeriod = VALID_PERIODS.includes(requested as AnalyticsPeriod) ? requested as AnalyticsPeriod : "12m";
   const months = await loadCashMonths(getPool());

@@ -4,6 +4,7 @@ import { createManualActionAction, setActionStatusAction } from "@/app/(dashboar
 import { Badge, type Tone } from "@/components/ui/badge";
 import { Panel } from "@/components/ui/panel";
 import { PageHeader } from "@/components/ui/shell";
+import { requireRouteAccess } from "@/lib/authz/route-guard";
 
 export const dynamic = "force-dynamic";
 
@@ -58,6 +59,8 @@ export default async function TasksPage({
 }: {
   searchParams: Promise<{ status?: Status; q?: string }>;
 }) {
+  const denied = await requireRouteAccess("/insights/tasks");
+  if (denied) return denied;
   const sp = await searchParams;
   const status = sp.status ?? "open";
   const q = (sp.q ?? "").trim();

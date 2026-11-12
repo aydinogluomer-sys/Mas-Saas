@@ -40,7 +40,22 @@ export function openCanonicalCommandPalette(): void {
   }
 }
 
-export function AppSidebar({ items, gate, logoutAction }: { items: NavItem[]; gate: boolean; logoutAction: () => Promise<void> }) {
+export interface SidebarUserSummary {
+  displayName: string;
+  roleLabel: string;
+}
+
+export function AppSidebar({
+  items,
+  gate = true,
+  logoutAction,
+  user,
+}: {
+  items: NavItem[];
+  gate?: boolean;
+  logoutAction: () => Promise<void>;
+  user?: SidebarUserSummary;
+}) {
   const pathname = usePathname();
   const [collapsed, setCollapsed] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
@@ -76,6 +91,22 @@ export function AppSidebar({ items, gate, logoutAction }: { items: NavItem[]; ga
           {items.slice(6).map((item) => <SidebarLink key={item.href} item={item} active={isActive(activePathname, item)} collapsed={collapsed} close={() => setMobileOpen(false)} />)}
         </nav>
         <div className="sidebar-footer">
+          {user && !collapsed && (
+            <div
+              className="mb-1 flex items-center justify-between gap-2 px-2.5 py-1.5 text-[11px]"
+              data-testid="sidebar-active-user"
+            >
+              <span className="truncate font-medium" style={{ color: "var(--text-2)" }} title={user.displayName}>
+                {user.displayName}
+              </span>
+              <span
+                className="shrink-0 rounded border px-1.5 py-0.5 font-mono text-[10px]"
+                style={{ borderColor: "var(--line)", color: "var(--text-3)" }}
+              >
+                {user.roleLabel}
+              </span>
+            </div>
+          )}
           <button
             type="button"
             className="sidebar-command"
@@ -84,7 +115,19 @@ export function AppSidebar({ items, gate, logoutAction }: { items: NavItem[]; ga
           >
             <span className="command-icon">⌕</span>{!collapsed && <><span>Hızlı erişim</span><kbd>Ctrl K</kbd></>}
           </button>
-          {gate && <form action={logoutAction}><button type="submit" className="sidebar-command"><span className="command-icon">↪</span>{!collapsed && <span>Çıkış yap</span>}</button></form>}
+          {gate && (
+            <form action={logoutAction}>
+              <button
+                type="submit"
+                className="sidebar-command"
+                title="Çıkış yap"
+                aria-label={collapsed ? "Çıkış yap" : undefined}
+              >
+                <span className="command-icon">↪</span>
+                {!collapsed && <span>Çıkış yap</span>}
+              </button>
+            </form>
+          )}
           <button className="sidebar-collapse" onClick={() => setCollapsed((v) => !v)} aria-label={collapsed ? "Menüyü genişlet" : "Menüyü daralt"}>{collapsed ? "›" : "‹"}</button>
         </div>
       </aside>

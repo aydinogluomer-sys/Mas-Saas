@@ -22,7 +22,8 @@ export default async function DataIntegrationsPage({
 }: {
   searchParams?: Promise<{ error?: string; result?: string }>;
 }) {
-  await requireRouteAccess("/data/integrations");
+  const denied = await requireRouteAccess("/data/integrations");
+  if (denied) return denied;
   const session = await getRequestUser();
   const sp = (await searchParams) ?? {};
   const pool = getPool();

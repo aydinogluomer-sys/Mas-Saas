@@ -13,6 +13,7 @@ import { InstanceRowView } from "@/components/radar/instance-row";
 import { requireSession } from "@/lib/auth";
 import { can } from "@/lib/authz/matrix";
 import { ActionFeedback } from "@/components/ui/action-feedback";
+import { requireRouteAccess } from "@/lib/authz/route-guard";
 
 export const dynamic = "force-dynamic";
 
@@ -22,6 +23,8 @@ const GUN = ["Pzt","Sal","Çar","Per","Cum","Cmt","Paz"];
 export default async function CalendarPage({
   searchParams,
 }: { searchParams: Promise<{ ym?: string; day?: string; date?: string; instance?: string; age?: string; error?: string }> }) {
+  const denied = await requireRouteAccess("/payments/calendar");
+  if (denied) return denied;
   const session = await requireSession();
   const sp = await searchParams;
   const today = istanbulDateISO();

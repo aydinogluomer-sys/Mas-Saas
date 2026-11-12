@@ -9,6 +9,7 @@ import { SavedViewsBar } from "@/components/ui/saved-views-bar";
 import { PaymentItemsTable, type PaymentItemRow } from "@/components/payments/payment-items-table";
 import { parseFilters } from "@/lib/ui/filters";
 import { listSavedViews } from "@/lib/ui/saved-views";
+import { requireRouteAccess } from "@/lib/authz/route-guard";
 
 export const dynamic = "force-dynamic";
 
@@ -17,6 +18,8 @@ export default async function PaymentItems({
 }: {
   searchParams: Promise<Record<string, string | undefined>>;
 }) {
+  const denied = await requireRouteAccess("/payments/items");
+  if (denied) return denied;
   const sp = await searchParams;
   const currentFilters = parseFilters(sp);
   const pool = getPool();

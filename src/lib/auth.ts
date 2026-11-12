@@ -4,6 +4,7 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash, randomBytes } from "node:crypto";
 import { cache } from "react";
+import * as nextHeaders from "next/headers";
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import { hash as argon2Hash, verify as argon2Verify } from "@node-rs/argon2";
@@ -12,6 +13,7 @@ import { audit } from "@/lib/audit";
 import { APP_ROLES, DB_ROLE, can, canSeeRoute, type Action, type AppRole } from "@/lib/authz/matrix";
 import { DomainError } from "@/lib/domain-error";
 import { env } from "@/lib/env";
+import { extractHostHeaderHostname, isLoopbackHostname } from "@/lib/env-validators";
 import { SESSION_COOKIE } from "@/lib/auth-constants";
 import { safeRedirectPath } from "@/lib/security/redirect";
 import { PASSWORD_MAX_LENGTH, PasswordChangeError, passwordSchema } from "@/lib/users/password-policy";
@@ -199,7 +201,29 @@ export async function getCurrentUser(): Promise<SessionUser | null> {
   // Any presented `mas_session` token that is revoked, expired, idle-timed-out, or tied to
   // a locked/inactive user MUST fail closed (`null`) and never resurrect as DEFAULT_LOCAL_USER.
   if (!token) {
-    return env.localPasswordless ? { ...DEFAULT_LOCAL_USER } : null;
+    if (!env.localPasswordless || process.env.NODE_ENV === "production") {
+      return null;
+    }
+    try {
+      const h = await nextHeaders.headers();
+      const forwardedHost = h.get("x-forwarded-host")?.trim() ?? "";
+      const hostHeader = h.get("host")?.trim() ?? "";
+      for (const rawHost of [forwardedHost, hostHeader]) {
+        if (!rawHost) continue;
+        for (const hop of rawHost.split(",")) {
+          const trimmed = hop.trim();
+          if (!trimmed) continue;
+          const hostname = extractHostHeaderHostname(trimmed);
+          if (!hostname || !isLoopbackHostname(hostname)) {
+            return null;
+          }
+        }
+      }
+    } catch {
+      // Called outside a Next.js HTTP request store (e.g. unit/CLI context).
+      // Production is already rejected above before reaching this block.
+    }
+    return { ...DEFAULT_LOCAL_USER };
   }
 
   const tokenHash = createHash("sha256").update(token).digest("hex");

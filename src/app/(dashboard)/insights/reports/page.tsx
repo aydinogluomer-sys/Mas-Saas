@@ -5,6 +5,7 @@ import { Badge, type Tone } from "@/components/ui/badge";
 import { Panel } from "@/components/ui/panel";
 import { EmptyState, PageHeader } from "@/components/ui/shell";
 import { generateReportAction } from "./actions";
+import { requireRouteAccess } from "@/lib/authz/route-guard";
 
 export const dynamic = "force-dynamic";
 
@@ -12,6 +13,8 @@ const TYPE_TONE: Record<string, Tone> = { daily: "green", weekly: "blue", monthl
 const TYPE_LABEL: Record<string, string> = { daily: "Günlük", weekly: "Haftalık", monthly: "Aylık", strategic: "Stratejik", data_quality: "Veri Kalitesi" };
 
 export default async function ReportsPage() {
+  const denied = await requireRouteAccess("/insights/reports");
+  if (denied) return denied;
   const pool = getPool();
   const reports = await listReports(pool);
 

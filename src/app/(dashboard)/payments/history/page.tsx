@@ -5,6 +5,7 @@ import { fmtTL, Panel } from "@/components/ui/panel";
 import { PageHeader } from "@/components/ui/shell";
 import { getPool, withReadConnection } from "@/lib/db";
 import { paymentHistoryCounts, paymentHistoryEvents } from "@/lib/radar/queries";
+import { requireRouteAccess } from "@/lib/authz/route-guard";
 
 export const dynamic = "force-dynamic";
 const TABS = [
@@ -26,6 +27,8 @@ export default async function PaymentHistoryPage({
 }: {
   searchParams: Promise<{ status?: string; q?: string; from?: string; to?: string; page?: string }>;
 }) {
+  const denied = await requireRouteAccess("/payments/history");
+  if (denied) return denied;
   const sp = await searchParams;
   const activeStatus = TABS.some(([status]) => status === (sp.status ?? ""))
     ? (sp.status ?? "")

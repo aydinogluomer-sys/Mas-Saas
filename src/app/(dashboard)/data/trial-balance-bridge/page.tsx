@@ -21,7 +21,8 @@ export default async function TrialBalanceBridgePage({
 }: {
   searchParams?: Promise<{ runId?: string; result?: string; error?: string }>;
 }) {
-  await requireRouteAccess("/data/trial-balance-bridge");
+  const denied = await requireRouteAccess("/data/trial-balance-bridge");
+  if (denied) return denied;
   const session = await getRequestUser();
   const sp = (await searchParams) ?? {};
   const pool = getPool();

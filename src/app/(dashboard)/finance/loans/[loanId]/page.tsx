@@ -5,6 +5,7 @@ import { loadLoanInstallments, loadLoans } from "@/lib/financing/engine";
 import { Badge, STATUS_TONE } from "@/components/ui/badge";
 import { Panel, fmtTL } from "@/components/ui/panel";
 import { markInstallmentPaidAction } from "@/app/(dashboard)/finance/actions";
+import { requireRouteAccess } from "@/lib/authz/route-guard";
 
 export const dynamic = "force-dynamic";
 
@@ -21,6 +22,8 @@ export default async function LoanDetailPage({
 }: {
   params: Promise<{ loanId: string }>;
 }) {
+  const denied = await requireRouteAccess("/finance/loans/[loanId]");
+  if (denied) return denied;
   const { loanId } = await params;
   const pool = getPool();
   const loans = await loadLoans(pool);

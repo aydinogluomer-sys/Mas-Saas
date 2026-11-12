@@ -4,6 +4,7 @@ import { Badge, STATUS_TONE } from "@/components/ui/badge";
 import { Num, Panel } from "@/components/ui/panel";
 import { EmptyState } from "@/components/ui/shell";
 import { UploadForm } from "@/components/imports/upload-form";
+import { requireRouteAccess } from "@/lib/authz/route-guard";
 
 export const dynamic = "force-dynamic";
 
@@ -28,6 +29,8 @@ const WORKBOOK_STATUS_TR: Record<string, string> = {
 };
 
 export default async function ImportsPage() {
+  const denied = await requireRouteAccess("/data/imports");
+  if (denied) return denied;
   const { rows } = await getPool().query<WorkbookListRow>(`
     select w.id, w.original_filename, w.status, w.parse_error,
            to_char(w.imported_at at time zone 'Europe/Istanbul', 'YYYY-MM-DD HH24:MI') as imported_at,

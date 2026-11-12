@@ -3,6 +3,7 @@ import { PaginationBar, parsePageParam } from "@/components/ui/pagination-bar";
 import { Panel } from "@/components/ui/panel";
 import { PageHeader } from "@/components/ui/shell";
 import { getPool, withReadConnection } from "@/lib/db";
+import { requireRouteAccess } from "@/lib/authz/route-guard";
 
 export const dynamic = "force-dynamic";
 
@@ -11,6 +12,8 @@ export default async function AuditPage({
 }: {
   searchParams?: Promise<{ page?: string }>;
 }) {
+  const denied = await requireRouteAccess("/system/audit");
+  if (denied) return denied;
   const sp = (await searchParams) ?? {};
   const { page, limit, offset } = parsePageParam(sp.page, 50);
 

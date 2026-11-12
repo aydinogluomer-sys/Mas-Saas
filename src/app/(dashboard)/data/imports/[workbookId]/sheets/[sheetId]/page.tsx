@@ -14,6 +14,7 @@ import {
   MonthlyCashflowPreviewView,
   PaymentMatrixPreview,
 } from "@/components/imports/previews";
+import { requireRouteAccess } from "@/lib/authz/route-guard";
 
 export const dynamic = "force-dynamic";
 
@@ -39,6 +40,8 @@ export default async function SheetPage({
   params: Promise<{ workbookId: string; sheetId: string }>;
   searchParams: Promise<{ view?: string; page?: string }>;
 }) {
+  const denied = await requireRouteAccess("/data/imports/[workbookId]/sheets/[sheetId]");
+  if (denied) return denied;
   const { workbookId, sheetId } = await params;
   const sp = await searchParams;
   const pool = getPool();

@@ -10,6 +10,7 @@ import { Panel } from "@/components/ui/panel";
 import { Badge } from "@/components/ui/badge";
 import { KpiCard, PageHeader, TableShell } from "@/components/ui/shell";
 import { requireAdmin } from "@/lib/auth";
+import { requireRouteAccess } from "@/lib/authz/route-guard";
 import { env, envPresence } from "@/lib/env";
 import {
   importStaleAlert,
@@ -56,6 +57,8 @@ async function readMigrationLedger(pool: Pool): Promise<MigrationLedger> {
 }
 
 export default async function DiagnosticsPage() {
+  const denied = await requireRouteAccess("/system/diagnostics");
+  if (denied) return denied;
   await requireAdmin();
   const pool = getPool();
 

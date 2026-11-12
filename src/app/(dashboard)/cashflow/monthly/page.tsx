@@ -4,6 +4,7 @@ import { Badge } from "@/components/ui/badge";
 import { fmtTL, Panel } from "@/components/ui/panel";
 import { PageHeader, TableShell } from "@/components/ui/shell";
 import { incomeExpenseModel } from "@/lib/analytics/models";
+import { requireRouteAccess } from "@/lib/authz/route-guard";
 import { loadCashMonths } from "@/lib/cashflow/engine";
 import { getPool } from "@/lib/db";
 import { loadDebtOverlay } from "@/lib/reports/engine";
@@ -16,6 +17,20 @@ type DebtOverlayList = Awaited<ReturnType<typeof loadDebtOverlay>>;
 
 let cachedMonthly: { freshUntil: number; expiresAt: number; months: CashMonthsList; debt: DebtOverlayList } | null = null;
 let revalidatingMonthly: Promise<void> | null = null;
+
+export default async function MonthlyCashflow() {
+  const denied = await requireRouteAccess("/cashflow/monthly");
+  if (denied) return denied;
+  if (process.env.VITEST !== "true" && cachedMonthly && Date.now() < cachedMonthly.expiresAt) {
+    if (Date.now() >= cachedMonthly.freshUntil && !revalidatingMonthly) {
+      revalidatingMonthly = fetchMonthlyUncached().then(() => undefined, () => undefined).finally(() => {
+        revalidatingMonthly = null;
+      });
+    }
+    return <MonthlyCashflowView months={cachedMonthly.months} debt={cachedMonthly.debt} />;
+  }
+  return MonthlyCashflowAsync();
+}
 
 async function fetchMonthlyUncached() {
   const pool = getPool();
@@ -39,16 +54,4 @@ function MonthlyCashflowView({ months, debt }: { months: CashMonthsList; debt: D
 async function MonthlyCashflowAsync() {
   const { months, debt } = await fetchMonthlyUncached();
   return <MonthlyCashflowView months={months} debt={debt} />;
-}
-
-export default function MonthlyCashflow() {
-  if (process.env.VITEST !== "true" && cachedMonthly && Date.now() < cachedMonthly.expiresAt) {
-    if (Date.now() >= cachedMonthly.freshUntil && !revalidatingMonthly) {
-      revalidatingMonthly = fetchMonthlyUncached().then(() => undefined, () => undefined).finally(() => {
-        revalidatingMonthly = null;
-      });
-    }
-    return <MonthlyCashflowView months={cachedMonthly.months} debt={cachedMonthly.debt} />;
-  }
-  return MonthlyCashflowAsync();
 }

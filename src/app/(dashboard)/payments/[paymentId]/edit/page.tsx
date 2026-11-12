@@ -13,7 +13,7 @@ export default async function EditPaymentPage({
   params: Promise<{ paymentId: string }>;
   searchParams: Promise<{ error?: string }>;
 }) {
-  const denied = await requireRouteAccess("/payments");
+  const denied = await requireRouteAccess("/payments/[paymentId]/edit");
   if (denied) return denied;
   const { paymentId } = await params;
   const sp = await searchParams;

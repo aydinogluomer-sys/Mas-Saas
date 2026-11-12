@@ -7,6 +7,7 @@ import { Badge, type Tone } from "@/components/ui/badge";
 import { Panel, fmtTL } from "@/components/ui/panel";
 import { isReportingCurrency } from "@/lib/currency-policy";
 import { EmptyState, KeyStat, PageHeader, TableShell } from "@/components/ui/shell";
+import { requireRouteAccess } from "@/lib/authz/route-guard";
 
 export const dynamic = "force-dynamic";
 
@@ -24,6 +25,8 @@ const CERTAINTY_TONE: Record<string, Tone> = {
 export default async function FinancialCalendarPage({
   searchParams,
 }: { searchParams: Promise<{ days?: string }> }) {
+  const denied = await requireRouteAccess("/finance/calendar");
+  if (denied) return denied;
   const sp = await searchParams;
   const days = [30, 60, 90].includes(Number(sp.days)) ? Number(sp.days) : 30;
   const pool = getPool();

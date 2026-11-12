@@ -3,6 +3,7 @@ import { Panel } from "@/components/ui/panel";
 import { Badge, type Tone } from "@/components/ui/badge";
 import { KpiCard, PageHeader, TableShell } from "@/components/ui/shell";
 import { requireAdmin } from "@/lib/auth";
+import { requireRouteAccess } from "@/lib/authz/route-guard";
 import { listUsers } from "@/lib/users/engine";
 import { APP_ROLES, ROLE_LABEL } from "@/lib/authz/matrix";
 import {
@@ -33,7 +34,9 @@ const ROLE_TONE: Record<string, Tone> = {
 };
 
 export default async function SecurityPage() {
-  // Admin-only: an operator reaching this URL is redirected before any user data is read.
+  // Admin-only: an operator reaching this URL is refused before any user data is read.
+  const denied = await requireRouteAccess("/system/security");
+  if (denied) return denied;
   const admin = await requireAdmin();
   const pool = getPool();
   const [counts, users] = await Promise.all([

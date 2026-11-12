@@ -4,6 +4,7 @@ import { getPool } from "@/lib/db";
 import { Badge, SEVERITY_TONE, STATUS_TONE } from "@/components/ui/badge";
 import { Panel } from "@/components/ui/panel";
 import { setReviewStatusAction } from "@/app/(dashboard)/data/imports/actions";
+import { requireRouteAccess } from "@/lib/authz/route-guard";
 
 export const dynamic = "force-dynamic";
 
@@ -37,6 +38,8 @@ export default async function ReviewsPage({
   params: Promise<{ workbookId: string }>;
   searchParams: Promise<{ status?: string }>;
 }) {
+  const denied = await requireRouteAccess("/data/imports/[workbookId]/reviews");
+  if (denied) return denied;
   const { workbookId } = await params;
   const sp = await searchParams;
   const filter = FILTERS.includes(sp.status as (typeof FILTERS)[number])

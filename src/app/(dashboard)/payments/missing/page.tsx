@@ -10,12 +10,15 @@ import Link from "@/components/ui/app-link";
 import { requireSession } from "@/lib/auth";
 import { can } from "@/lib/authz/matrix";
 import { ActionFeedback } from "@/components/ui/action-feedback";
+import { requireRouteAccess } from "@/lib/authz/route-guard";
 
 export const dynamic = "force-dynamic";
 // searchParams EKLENDİ: bu sayfa `radar/actions.ts`'in `backTo` hedeflerinden biridir ve
 // reddedilen her mutasyon buraya `?error=` ile döner. Parametreyi okumayan bir hedef, hatayı
 // sessizce yutar (ölçüldü: main metni hiç değişmiyordu).
 export default async function MissingPaymentsPage({ searchParams }: { searchParams?: Promise<{ error?: string }> }) {
+  const denied = await requireRouteAccess("/payments/missing");
+  if (denied) return denied;
   const sp = (await searchParams) ?? {};
   const session=await requireSession(); const pool=getPool(); const today=istanbulDateISO();
   const canMutate=can(session.role,"payment_instances","update"); const month=today.slice(0,7)+"-01"; const [missing,dayless]=await Promise.all([missingAmountInstances(pool,month),daylessPayments(pool)]);
