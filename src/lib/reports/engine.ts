@@ -3,6 +3,7 @@
 // (payments/instances/checks/loans/cashflow) — only appends to reports + audit_logs.
 // AI stays commentary-only: meta.commentary_prompt is a string, no model is called.
 
+import { randomUUID } from "node:crypto";
 import type { Pool } from "pg";
 import { addDaysISO, debtServiceByMonth } from "@/lib/financing/rules";
 import { loadDecisionFacts } from "@/lib/facts/engine";
@@ -17,15 +18,40 @@ import { audit } from "@/lib/audit";
 import {
   buildCommentaryPrompt, buildDailyReport, buildMonthlyReport, buildWeeklyReport,
   overlayDebtService,
-  type ReportInstance, type ReportMaturity,
+  type MonthlyActualBankCashStatus, type ReportInstance, type ReportMaturity,
 } from "./rules";
+import {
+  computeContentSha256,
+  loadBoardFinancialPackage,
+  loadReportProvenance,
+  renderBoardPackMarkdown,
+  type BoardFinancialPackage,
+  type ReportProvenance,
+} from "./board-pack";
 
-const toReportInstance = (r: {
-  name: string; due_date: string; amount: number | null; status: string; risk_level: string; risk_reasons: string[];
+export const toReportInstance = (r: {
+  name: string;
+  due_date: string;
+  amount: number | null;
+  original_amount?: number | null;
+  paid_amount?: number | null;
+  remaining_amount?: number | null;
+  status: string;
+  risk_level: string;
+  risk_reasons: string[];
   currency?: string | null;
 }): ReportInstance => ({
-  name: r.name, dueDate: r.due_date, amount: r.amount, status: r.status,
-  riskLevel: r.risk_level, riskReasons: r.risk_reasons,
+  name: r.name,
+  dueDate: r.due_date,
+  amount: r.amount,
+  originalAmount: r.original_amount ?? r.amount,
+  paidAmount: r.paid_amount ?? null,
+  paid_amount: r.paid_amount ?? null,
+  allocatedPaidAmount: r.paid_amount ?? null,
+  outstandingAmount: r.remaining_amount ?? undefined,
+  status: r.status,
+  riskLevel: r.risk_level,
+  riskReasons: r.risk_reasons,
   // PHASE 2.2 (#10): BASE sorgusu currency'yi secer; yoksa null (= bilinmiyor, TRY varsayilmaz).
   currency: r.currency ?? null,
 });
@@ -53,20 +79,35 @@ async function maturitiesBetweenHalfOpen(
 }
 
 async function writeReport(
-  pool: Pool, type: string, periodStart: string, periodEnd: string, bodyMd: string, meta: unknown, actorId: string,
+  pool: Pool,
+  type: string,
+  periodStart: string,
+  periodEnd: string,
+  bodyMd: string,
+  meta: Record<string, unknown> | null,
+  actorId: string,
+  explicitReportId?: string,
 ): Promise<string> {
+  const candidateId = explicitReportId ?? randomUUID();
   const client = await pool.connect();
   try {
     await client.query("begin");
     const ins = await client.query(
-      `insert into public.reports (report_type, period_start, period_end, body_md, meta)
-       values ($1,$2,$3,$4,$5) returning id`,
-      [type, periodStart, periodEnd, bodyMd, JSON.stringify(meta ?? null)],
+      `insert into public.reports (id, report_type, period_start, period_end, body_md, meta)
+       values ($1,$2,$3,$4,$5,$6) returning id`,
+      [candidateId, type, periodStart, periodEnd, bodyMd, JSON.stringify(meta ?? null)],
     );
+    if (ins.rowCount !== 1) {
+      throw new Error("Rapor oluşturulamadı");
+    }
     const id: string = ins.rows[0].id;
     await audit(client, {
       actor: actorId, action: `generate_report_${type}`, entityTable: "reports", entityId: id,
-      after: { periodStart, periodEnd },
+      after: {
+        periodStart,
+        periodEnd,
+        provenance: meta && typeof meta.provenance === "object" ? meta.provenance : undefined,
+      },
     });
     await client.query("commit");
     return id;
@@ -76,6 +117,54 @@ async function writeReport(
   } finally {
     client.release();
   }
+}
+
+async function buildFrozenMetaEnvelope(
+  pool: Pool,
+  asOfDateISO: string,
+  bodyMd: string,
+  reportScope: string,
+  reportMetrics: Record<string, unknown>,
+  existingBoardPack?: BoardFinancialPackage,
+  provenanceHints?: {
+    reconciliationAligned?: boolean;
+    missingPaymentAmountCount?: number;
+    controlAlertsOpenCount?: number;
+  },
+): Promise<{ reportId: string; provenance: ReportProvenance; snapshot: BoardFinancialPackage & { reportScope: string; reportMetrics: Record<string, unknown> } }> {
+  const reportId = randomUUID();
+  const asOfAt = new Date().toISOString();
+  const basePack = existingBoardPack ?? (await loadBoardFinancialPackage(pool, asOfDateISO));
+  const canonicalPayload = `${bodyMd}\n---\n${JSON.stringify({ reportScope, reportMetrics, executiveSummary: basePack.executiveSummary })}`;
+  const contentSha256 = computeContentSha256(canonicalPayload);
+  const missingFromMetrics =
+    provenanceHints?.missingPaymentAmountCount ??
+    (typeof reportMetrics.missingCount === "number" ? reportMetrics.missingCount : undefined);
+  const provenance = await loadReportProvenance(pool, asOfDateISO, {
+    snapshotId: reportId,
+    asOfAt,
+    contentForHash: canonicalPayload,
+    unknownOpeningAccountCount: basePack.unknownOpeningAccountCount,
+    knownOpeningAccountCount:
+      basePack.executiveSummary.consolidatedCashTry != null ? 1 : undefined,
+    missingPaymentAmountCount: missingFromMetrics,
+    reconciliationAligned:
+      provenanceHints?.reconciliationAligned ?? basePack.balanceSheet.balanced,
+    controlAlertsOpenCount:
+      provenanceHints?.controlAlertsOpenCount ?? basePack.executiveSummary.covenantBreachCount,
+  });
+  const finalProvenance: ReportProvenance = {
+    ...provenance,
+    snapshotId: reportId,
+    contentSha256,
+  };
+  const snapshot = {
+    ...basePack,
+    provenance: finalProvenance,
+    reportScope,
+    reportMetrics,
+  };
+  return { reportId, provenance: finalProvenance, snapshot };
 }
 
 /* ── daily ── */
@@ -110,10 +199,36 @@ export async function generateDaily(pool: Pool, todayISO: string, actorId: strin
       ...decisionFacts.slice(0, 3).map((f) => `${f.title}: ${f.value}`),
     ],
   });
-  const id = await writeReport(pool, "daily", todayISO, to, report.bodyMd, {
-    next7KnownTotal: report.next7KnownTotal, overdueCount: report.overdueCount,
-    missingCount: report.next7MissingCount, commentary_prompt: prompt,
-  }, actorId);
+  const { reportId, provenance, snapshot } = await buildFrozenMetaEnvelope(
+    pool,
+    todayISO,
+    report.bodyMd,
+    "daily",
+    {
+      next7KnownTotal: report.next7KnownTotal,
+      overdueCount: report.overdueCount,
+      overdueKnownTotal: report.overdueKnownTotal,
+      missingCount: report.next7MissingCount,
+    },
+  );
+  const id = await writeReport(
+    pool,
+    "daily",
+    todayISO,
+    to,
+    report.bodyMd,
+    {
+      next7KnownTotal: report.next7KnownTotal,
+      overdueCount: report.overdueCount,
+      overdueKnownTotal: report.overdueKnownTotal,
+      missingCount: report.next7MissingCount,
+      commentary_prompt: prompt,
+      provenance,
+      snapshot,
+    },
+    actorId,
+    reportId,
+  );
   return { id, bodyMd: report.bodyMd };
 }
 
@@ -152,10 +267,38 @@ export async function generateWeekly(pool: Pool, todayISO: string, actorId: stri
       ...decisionFacts.slice(0, 3).map((f) => `${f.title}: ${f.value}`),
     ],
   });
-  const id = await writeReport(pool, "weekly", todayISO, to, report.bodyMd, {
-    knownTotal: report.knownTotal, checkLoad: report.checkLoad,
-    installmentLoadMonth: report.installmentLoadMonth, commentary_prompt: prompt,
-  }, actorId);
+  const { reportId, provenance, snapshot } = await buildFrozenMetaEnvelope(
+    pool,
+    todayISO,
+    report.bodyMd,
+    "weekly",
+    {
+      knownTotal: report.knownTotal,
+      checkLoad: report.checkLoad,
+      installmentLoadWeek: report.installmentLoadWeek,
+      installmentLoadMonth: report.installmentLoadMonth,
+      missingCount: report.missingCount,
+    },
+  );
+  const id = await writeReport(
+    pool,
+    "weekly",
+    todayISO,
+    to,
+    report.bodyMd,
+    {
+      knownTotal: report.knownTotal,
+      checkLoad: report.checkLoad,
+      installmentLoadWeek: report.installmentLoadWeek,
+      installmentLoadMonth: report.installmentLoadMonth,
+      missingCount: report.missingCount,
+      commentary_prompt: prompt,
+      provenance,
+      snapshot,
+    },
+    actorId,
+    reportId,
+  );
   return { id, bodyMd: report.bodyMd };
 }
 
@@ -163,14 +306,18 @@ export async function generateWeekly(pool: Pool, todayISO: string, actorId: stri
 
 async function distribution(pool: Pool, monthStart: string, joinCol: string, nameSelect: string) {
   const r = await pool.query(
-    // PHASE 2.2 (#9): dagilim yalniz TRY kalemlerden; TRY-disi satirlar foreign_count ile doner.
+    // PHASE 2.2 (#9) & 4.A: Dağılım yalnız aktif, iptal edilmemiş TRY çıkış kalemlerinden hesaplanır.
     `select coalesce(${nameSelect}, '(atanmadı)') as key,
             sum(i.amount) filter (where i.currency = 'TRY') as amount,
             count(*) filter (where i.currency <> 'TRY')::int as foreign_count
      from public.payment_instances i
-     join public.payments p on p.id = i.payment_id
+     left join public.payments p on p.id = i.payment_id
      ${joinCol}
-     where i.instance_month = $1 and i.amount is not null
+     where i.instance_month = $1
+       and i.amount is not null
+       and i.status <> 'cancelled'
+       and i.cancelled_at is null
+       and coalesce(i.direction, 'outflow') = 'outflow'
      group by 1 order by amount desc nulls last`,
     [monthStart],
   );
@@ -179,9 +326,72 @@ async function distribution(pool: Pool, monthStart: string, joinCol: string, nam
   return r.rows.map((x) => ({ key: x.key as string, amount: moneyOrNull(x.amount) ?? 0, foreignCount: Number(x.foreign_count ?? 0) }));
 }
 
+async function loadMonthlyActualBankCashStatus(
+  pool: Pool,
+  periodEndISO: string,
+): Promise<MonthlyActualBankCashStatus | null> {
+  try {
+    const res = await pool.query<{
+      unknown_opening_n: number;
+      known_opening_n: number;
+      actual_cash_try: string | null;
+      bt_total: number;
+      bt_reconciled: number;
+      bt_unmatched: number;
+    }>(
+      `select
+         (select count(*) filter (where opening_balance is null)::int
+            from public.cash_accounts
+           where is_active = true and archived_at is null) as unknown_opening_n,
+         (select count(*) filter (where opening_balance is not null)::int
+            from public.cash_accounts
+           where is_active = true and archived_at is null and currency = 'TRY') as known_opening_n,
+         (select case
+                   when count(*) filter (where ca.opening_balance is null) > 0 then null::text
+                   when count(*) = 0 then null::text
+                   else sum(ca.opening_balance + coalesce(tx.net_tx, 0))::text
+                 end
+            from public.cash_accounts ca
+            left join lateral (
+              select sum(bt.amount) as net_tx
+                from public.bank_transactions bt
+               where bt.bank_account_id = ca.id
+                 and bt.status <> 'ignored'
+                 and bt.txn_date <= $1::date
+                 and coalesce(bt.currency, 'TRY') = 'TRY'
+            ) tx on true
+           where ca.is_active = true and ca.archived_at is null and ca.currency = 'TRY') as actual_cash_try,
+         (select count(*)::int from public.bank_transactions where status <> 'ignored' and txn_date <= $1::date) as bt_total,
+         (select count(*) filter (where status in ('matched', 'reconciled'))::int
+            from public.bank_transactions
+           where status <> 'ignored' and txn_date <= $1::date) as bt_reconciled,
+         (select count(*) filter (where status in ('unmatched', 'suggested'))::int
+            from public.bank_transactions
+           where status <> 'ignored' and txn_date <= $1::date) as bt_unmatched`,
+      [periodEndISO],
+    );
+    const row = res.rows[0];
+    if (!row) return null;
+    const unknownOpeningCount = Number(row.unknown_opening_n ?? 0);
+    const btTotal = Number(row.bt_total ?? 0);
+    return {
+      availableCashTry: unknownOpeningCount > 0 ? null : moneyOrNull(row.actual_cash_try),
+      unknownOpeningCount,
+      hasVerifiedBankFeed: btTotal > 0,
+      reconciledTxCount: Number(row.bt_reconciled ?? 0),
+      unmatchedTxCount: Number(row.bt_unmatched ?? 0),
+    };
+  } catch (err) {
+    const code = (err as { code?: string } | null)?.code;
+    if (code === "42P01" || code === "42703") return null;
+    throw err;
+  }
+}
+
 export async function generateMonthly(pool: Pool, monthStartISO: string, actorId: string): Promise<{ id: string; bodyMd: string }> {
   const nextMonthStart = addMonths(monthStartISO, 1);
-  const [summary, insts, providerDist, categoryDist, ownerDist, monthMaturities, cashRow, unassigned, decisionFacts] =
+  const periodEndISO = addDaysISO(nextMonthStart, -1);
+  const [summary, insts, providerDist, categoryDist, ownerDist, monthMaturities, cashRow, unassigned, decisionFacts, actualBankCashStatus] =
     await Promise.all([
       monthSummary(pool, monthStartISO),
       monthInstances(pool, monthStartISO),
@@ -196,16 +406,23 @@ export async function generateMonthly(pool: Pool, monthStartISO: string, actorId
         [monthStartISO],
       ),
       pool.query(
-        `select count(*) filter (where provider_party_id is null)::int as no_provider,
-                count(*) filter (where category_id is null)::int as no_category
-         from public.payments where status='active'`,
+        `select count(*) filter (where p.provider_party_id is null)::int as no_provider,
+                count(*) filter (where p.category_id is null)::int as no_category
+         from public.payment_instances i
+         left join public.payments p on p.id = i.payment_id
+         where i.instance_month = $1
+           and i.status <> 'cancelled'
+           and i.cancelled_at is null
+           and coalesce(i.direction, 'outflow') = 'outflow'`,
+        [monthStartISO],
       ),
       loadDecisionFacts(pool, monthStartISO),
+      loadMonthlyActualBankCashStatus(pool, periodEndISO),
     ]);
 
   const topPayments = [...insts]
-    .filter((i) => i.amount != null)
-    .sort((a, b) => (b.amount ?? 0) - (a.amount ?? 0))
+    .filter((i) => (i.original_amount ?? i.amount) != null)
+    .sort((a, b) => ((b.original_amount ?? b.amount) ?? 0) - ((a.original_amount ?? a.amount) ?? 0))
     .slice(0, 10)
     .map(toReportInstance);
 
@@ -216,8 +433,16 @@ export async function generateMonthly(pool: Pool, monthStartISO: string, actorId
 
   const report = buildMonthlyReport({
     monthStart: monthStartISO,
-    knownTotal: summary.known_total, knownRemaining: summary.known_remaining, paidKnown: summary.paid_known,
-    missingCount: summary.missing_count, totalCount: summary.total_count,
+    knownTotal: summary.known_total,
+    knownRemaining: summary.known_remaining,
+    paidKnown: summary.paid_known,
+    missingCount: summary.missing_count,
+    totalCount: summary.total_count,
+    cancelledCount: summary.cancelledCount,
+    cancelledKnownTotal: summary.cancelledKnownTotal,
+    settlementAdjustmentTry: summary.settlementAdjustmentTry,
+    overpaymentAdjustmentTry: summary.overpaymentAdjustmentTry,
+    foreignCount: summary.foreign_count,
     topPayments,
     providerDist, categoryDist, ownerDist,
     checksInMonth: monthMaturities.filter((m) => m.kind === "check" && m.direction === "outflow"),
@@ -228,6 +453,7 @@ export async function generateMonthly(pool: Pool, monthStartISO: string, actorId
           expense: moneyOrNull(cashRow.rows[0].expense), closing: moneyOrNull(cashRow.rows[0].closing),
         }
       : null,
+    actualBankCashStatus,
     dataQualityIssues: dq,
   });
   const prompt = buildCommentaryPrompt({
@@ -235,14 +461,67 @@ export async function generateMonthly(pool: Pool, monthStartISO: string, actorId
     deterministicFacts: [
       `bilinen yük ${summary.known_total}`,
       `ödenen ${summary.paid_known} kalan ${summary.known_remaining}`,
+      ...(summary.cancelledCount > 0
+        ? [`iptal edilen toplam dışı ${summary.cancelledCount} kalem (${summary.cancelledKnownTotal})`]
+        : []),
       `borç servisi ${report.debtServiceKnown}`,
       `${summary.missing_count} tutar eksik`,
       ...decisionFacts.slice(0, 4).map((f) => `${f.title}: ${f.value}`),
     ],
   });
-  const id = await writeReport(pool, "monthly", monthStartISO, addDaysISO(nextMonthStart, -1), report.bodyMd, {
-    knownTotal: summary.known_total, debtServiceKnown: report.debtServiceKnown, commentary_prompt: prompt,
-  }, actorId);
+  const { reportId, provenance, snapshot } = await buildFrozenMetaEnvelope(
+    pool,
+    periodEndISO,
+    report.bodyMd,
+    "monthly",
+    {
+      knownTotal: summary.known_total,
+      knownRemaining: summary.known_remaining,
+      paidKnown: summary.paid_known,
+      cancelledCount: summary.cancelledCount,
+      cancelledKnownTotal: summary.cancelledKnownTotal,
+      settlementAdjustmentTry: summary.settlementAdjustmentTry,
+      overpaymentAdjustmentTry: summary.overpaymentAdjustmentTry,
+      unexplainedGapTry: summary.unexplainedGapTry,
+      totalCount: summary.total_count,
+      missingCount: summary.missing_count,
+      noProviderCount: unassigned.rows[0].no_provider,
+      noCategoryCount: unassigned.rows[0].no_category,
+      debtServiceKnown: report.debtServiceKnown,
+      monetaryBasisByMetric: report.monetaryBasisByMetric,
+    },
+    undefined,
+    {
+      reconciliationAligned: summary.unexplainedGapTry === 0,
+      missingPaymentAmountCount: summary.missing_count,
+    },
+  );
+  const id = await writeReport(
+    pool,
+    "monthly",
+    monthStartISO,
+    periodEndISO,
+    report.bodyMd,
+    {
+      knownTotal: summary.known_total,
+      knownRemaining: summary.known_remaining,
+      paidKnown: summary.paid_known,
+      cancelledCount: summary.cancelledCount,
+      cancelledKnownTotal: summary.cancelledKnownTotal,
+      settlementAdjustmentTry: summary.settlementAdjustmentTry,
+      overpaymentAdjustmentTry: summary.overpaymentAdjustmentTry,
+      unexplainedGapTry: summary.unexplainedGapTry,
+      totalCount: summary.total_count,
+      missingCount: summary.missing_count,
+      debtServiceKnown: report.debtServiceKnown,
+      monetaryBasisByMetric: report.monetaryBasisByMetric,
+      commentary_prompt: prompt,
+      provenance,
+      snapshot,
+    },
+    actorId,
+    reportId,
+  );
   return { id, bodyMd: report.bodyMd };
 }
 
@@ -263,16 +542,75 @@ export async function loadDebtOverlay(pool: Pool) {
   );
 }
 
+/* ── board & bank financial package (M-58) ── */
+
+export async function generateBoardPackage(
+  pool: Pool,
+  todayISO: string,
+  actorId: string,
+): Promise<{ id: string; bodyMd: string; snapshot: BoardFinancialPackage }> {
+  const baseSnapshot = await loadBoardFinancialPackage(pool, todayISO);
+  const bodyMd = renderBoardPackMarkdown(baseSnapshot);
+  const periodStart = `${todayISO.slice(0, 7)}-01`;
+  const prompt = buildCommentaryPrompt({
+    scope: "monthly",
+    period: `${periodStart}..${todayISO}`,
+    deterministicFacts: [
+      `konsolide kasa ${baseSnapshot.executiveSummary.consolidatedCashTry ?? "bilinmiyor"}`,
+      `FAVÖK ${baseSnapshot.executiveSummary.managementEbitdaTry ?? "bilinmiyor"}`,
+      `13H en düşük kasa ${baseSnapshot.executiveSummary.worst13WeekCashTry ?? "bilinmiyor"}`,
+      `açık alacak ${baseSnapshot.executiveSummary.openArTry} açık borç ${baseSnapshot.executiveSummary.openApTry}`,
+      `kovenant ihlali ${baseSnapshot.executiveSummary.covenantBreachCount}`,
+    ],
+  });
+  const { reportId, provenance, snapshot } = await buildFrozenMetaEnvelope(
+    pool,
+    todayISO,
+    bodyMd,
+    "board_pack",
+    {
+      consolidatedCashTry: baseSnapshot.executiveSummary.consolidatedCashTry,
+      managementEbitdaTry: baseSnapshot.executiveSummary.managementEbitdaTry,
+      worst13WeekCashTry: baseSnapshot.executiveSummary.worst13WeekCashTry,
+    },
+    baseSnapshot,
+  );
+  const id = await writeReport(
+    pool,
+    "strategic",
+    periodStart,
+    todayISO,
+    bodyMd,
+    {
+      packageKind: "board_pack",
+      provenance,
+      snapshot,
+      commentary_prompt: prompt,
+    },
+    actorId,
+    reportId,
+  );
+  return { id, bodyMd, snapshot };
+}
+
 /* ── read-side for /reports ── */
 
 export async function listReports(pool: Pool) {
   const r = await pool.query(
     `select id, report_type, to_char(period_start,'YYYY-MM-DD') as period_start,
             to_char(period_end,'YYYY-MM-DD') as period_end,
+            meta,
             to_char(created_at at time zone 'Europe/Istanbul','YYYY-MM-DD HH24:MI') as created_at
      from public.reports order by created_at desc limit 50`,
   );
-  return r.rows as Array<{ id: string; report_type: string; period_start: string; period_end: string; created_at: string }>;
+  return r.rows as Array<{
+    id: string;
+    report_type: string;
+    period_start: string;
+    period_end: string;
+    meta: Record<string, unknown> | null;
+    created_at: string;
+  }>;
 }
 
 export async function loadReport(pool: Pool, id: string) {

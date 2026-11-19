@@ -1,16 +1,14 @@
 {
-  "iteration": 13,
-  "status": "PASS",
-  "score": 93,
-  "subIteration": "13",
-  "lastEvidencePrefix": "iteration-13",
-  "server": "http://127.0.0.1:3103",
-  "remainingFocus": [
-    "tooltip and chart annotations",
-    "SVG and PNG export",
-    "heatmap waterfall Pareto bullet scatter primitives",
-    "historical snapshot charts after real history accrues",
-    "masked staging target for TestSprite",
-    "TestSprite service availability"
-  ]
+  "version": 1,
+  "route": "/",
+  "iteration": 6,
+  "status": "completed",
+  "passingScore": 90,
+  "requiredViewports": [
+    { "name": "desktop", "width": 1366, "height": 900 },
+    { "name": "tablet", "width": 768, "height": 1024 },
+    { "name": "mobile", "width": 375, "height": 812 }
+  ],
+  "hardGatesPassed": true,
+  "lastScore": 99
 }

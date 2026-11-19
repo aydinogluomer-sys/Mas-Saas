@@ -323,13 +323,21 @@ describe("Sözleşme dışı kolon: hücre değeri KAYBOLMAZ, `values`'a da GEÇ
 });
 
 describe("Üst kayıt kabulü: reddedilen kredinin taksitleri ENGELLENİR (blocked_by_parent)", () => {
-  // Kanonik fixture'da KREDI-EUR-01 reddediliyor (EUR — finans toplama kısıtı). Buraya o
-  // krediye bağlı üç TEMİZ taksit eklenir. Eski davranışta üçü de "ready" sayılır, eşleyici
-  // krediyi defterde bulursa (önceki import) eski kayda bağlayıp yazardı.
-  const REJECTED_LOAN = "KREDI-EUR-01";
+  // Eksik anaparalı kredi (KREDI-RED-01) reddedilir; ona bağlı üç TEMİZ taksit eklenir.
+  const REJECTED_LOAN = "KREDI-RED-01";
+
+  function addRejectedLoan(wb: ExcelJS.Workbook): void {
+    const loanWs = wb.getWorksheet("03_KREDILER")!;
+    const loanSpec = sheetByName("03_KREDILER")!;
+    const badLoan: Record<string, unknown> = {
+      external_id: REJECTED_LOAN, kredi_adi: "Eksik anaparalı kredi", anapara: null, para_birimi: "TRY", vade_ay: 12,
+    };
+    loanWs.addRow(loanSpec.columns.map((c) => (c.key in badLoan ? badLoan[c.key] : null)));
+  }
 
   async function parseWithOrphanedInstallments(): Promise<WorkbookParseResult> {
     const wb = await buildFixtureWorkbook();
+    addRejectedLoan(wb);
     const ws = wb.getWorksheet("04_KREDI_TAKSITLERI")!;
     const spec = sheetByName("04_KREDI_TAKSITLERI")!;
     const taksitler: Array<Record<string, unknown>> = [1, 2, 3].map((n) => ({
@@ -347,14 +355,14 @@ describe("Üst kayıt kabulü: reddedilen kredinin taksitleri ENGELLENİR (block
     expect(engellenen).toHaveLength(3);
     expect(engellenen.every((x) => x.status === "blocked_by_parent")).toBe(true);
 
-    // Oracle 04: 3 okunan, 2 hazır, 1 reddedilen — üstüne 3 engellenen.
+    // Oracle 04: 3 okunan, 2 hazır, 1 reddedilen — üstüne 3 engellenen (+ 1 reddedilen kredi).
     const o = FIXTURE_ORACLE.sheets["04_KREDI_TAKSITLERI"];
     expect({ rowsRead: s.rowsRead, ready: s.ready, needsReview: s.needsReview, rejected: s.rejected, blockedByParent: s.blockedByParent })
       .toEqual({ rowsRead: o.rowsRead + 3, ready: o.ready, needsReview: o.needsReview, rejected: o.rejected, blockedByParent: 3 });
     expect(r.totals.blockedByParent).toBe(3);
-    expect(r.totals.rowsRead).toBe(FIXTURE_ORACLE.totals.rowsRead + 3);
+    expect(r.totals.rowsRead).toBe(FIXTURE_ORACLE.totals.rowsRead + 4);
     expect(r.totals.ready).toBe(FIXTURE_ORACLE.totals.ready);          // hazır sayısı ŞİŞMEZ
-    expect(r.totals.rejected).toBe(FIXTURE_ORACLE.totals.rejected);    // reddedilen de değil
+    expect(r.totals.rejected).toBe(FIXTURE_ORACLE.totals.rejected + 1); // yalnız eklenen bozuk kredi
   });
 
   it("sebep satıra yazılır: üst kaydın sayfası, satırı ve durumu", async () => {
@@ -391,6 +399,7 @@ describe("Üst kayıt kabulü: reddedilen kredinin taksitleri ENGELLENİR (block
 
   it("alt kaydın KENDİ kusuru varsa 'rejected' kalır, üst kayıt engeli yine kayda geçer", async () => {
     const wb = await buildFixtureWorkbook();
+    addRejectedLoan(wb);
     const ws = wb.getWorksheet("04_KREDI_TAKSITLERI")!;
     const spec = sheetByName("04_KREDI_TAKSITLERI")!;
     // 'paid' ama ödeme tarihi yok → kendi kusuru (missing_required_field, high).
@@ -645,15 +654,14 @@ describe("Birleştirilmiş hücre: değer YALNIZ ilk hücrede (Wave 0)", () => {
   });
 });
 
-describe("controlled-use v1 — para birimi kolonu olmayan tablolara ortuk TRY YAZILMAZ", () => {
-  it("05_NAKIT_AKISI USD satiri reddedilir (kaynakta korunur, inceleme acilir); TRY satir hazir; 16_MAKINE_ROI EUR reddedilir", async () => {
+describe("M-61 — çoklu para birimi (USD/EUR/GBP) finans ve referans tablolarında doğrudan desteklenir", () => {
+  it("02_CEKLER USD, 03_KREDILER EUR, 05_NAKIT_AKISI USD ve 16_MAKINE_ROI EUR satirlari ready olarak kabul edilir", async () => {
     const wb = await buildFixtureWorkbook();
     const cf = wb.getWorksheet("05_NAKIT_AKISI")!;
     const header = cf.getRow(1).values as Array<string | undefined>;
     const col = (h: string) => header.findIndex((v) => typeof v === "string" && v.trim().toLowerCase() === h.toLowerCase());
     const curCol = col("Para Birimi");
     expect(curCol).toBeGreaterThan(0);
-    // 2. satir (fixture'da hazir bir satir) USD yapilir
     const before = parseWorkbook(wb).sheets.find((s) => s.sheet === "05_NAKIT_AKISI")!;
     cf.getRow(2).getCell(curCol).value = "USD";
     const mk = wb.getWorksheet("16_MAKINE_ROI")!;
@@ -664,13 +672,16 @@ describe("controlled-use v1 — para birimi kolonu olmayan tablolara ortuk TRY Y
     const r = parseWorkbook(wb);
     const after = r.sheets.find((s) => s.sheet === "05_NAKIT_AKISI")!;
     const row2 = after.rows.find((x) => x.rowIndex === 2)!;
-    expect(row2.status).toBe("rejected");
-    expect(row2.issues.some((i) => i.type === "unsupported_currency_for_finance_aggregation" && /örtük TRY/.test(i.message))).toBe(true);
-    expect(row2.raw.para_birimi).toBe("USD"); // ham deger korunur
-    expect(after.ready).toBe(before.ready - 1);
+    expect(row2.status).toBe("ready");
+    expect(row2.values.para_birimi).toBe("USD");
+    expect(row2.raw.para_birimi).toBe("USD");
+    expect(after.ready).toBe(before.ready);
     const mkRow = r.sheets.find((s) => s.sheet === "16_MAKINE_ROI")!.rows.find((x) => x.rowIndex === 2)!;
-    expect(mkRow.status).toBe("rejected");
-    expect(CURRENCYLESS_DOMAIN_FAMILIES.has("cashflow")).toBe(true);
-    expect(CURRENCYLESS_DOMAIN_FAMILIES.has("payments")).toBe(false);
+    expect(mkRow.status).toBe("ready");
+    const cekUsd = r.sheets.find((s) => s.sheet === "02_CEKLER")!.rows.find((x) => x.externalId === "CEK-USD")!;
+    expect(cekUsd.status).toBe("ready");
+    const krediEur = r.sheets.find((s) => s.sheet === "03_KREDILER")!.rows.find((x) => x.externalId === "KREDI-EUR-01")!;
+    expect(krediEur.status).toBe("ready");
+    expect(CURRENCYLESS_DOMAIN_FAMILIES.size).toBe(0);
   });
 });

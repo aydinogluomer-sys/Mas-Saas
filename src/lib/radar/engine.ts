@@ -19,9 +19,61 @@ import {
   dueDateFor,
   type RiskThresholds,
 } from "./rules";
+import { createHash } from "node:crypto";
 import { APP_ROLES, DB_ROLE, can } from "@/lib/authz/matrix";
-import { evaluateAndRequestIfNeededWithClient } from "@/lib/approvals/engine";
+import {
+  evaluateAndRequestIfNeededWithClient,
+  evaluateRulesWithClient,
+} from "@/lib/approvals/engine";
 import { PERIOD_LOCKED_USER_MESSAGE, translatePeriodLockError } from "@/lib/cashflow/period-lock";
+import { ensurePartyIbanTrackedWithClient } from "@/lib/counterparties/engine";
+import { isTurkishIban, isValidIbanChecksum, normalizeIban } from "@/lib/counterparties/rules";
+import { decimal, moneyOrNull, round2 } from "@/lib/money";
+import {
+  postJournalEntryWithClient,
+  safeReverseJournalForSourceWithClient,
+} from "@/lib/ledger/posting-engine";
+
+export function isValidTurkishIban(raw: string): boolean {
+  const normalized = normalizeIban(raw);
+  return isTurkishIban(normalized) && isValidIbanChecksum(normalized);
+}
+
+function isMissingSchemaError(err: unknown): boolean {
+  if (!err || typeof err !== "object") return false;
+  const code = (err as { code?: unknown }).code;
+  return code === "42P01" || code === "42703";
+}
+
+function currentIstanbulDateISO(): string {
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Europe/Istanbul",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(new Date());
+}
+
+async function isAccountingPeriodLockedWithClient(
+  client: PoolClient,
+  monthStartISO: string,
+): Promise<boolean> {
+  try {
+    await client.query("savepoint sp_ap_lock_check");
+    const res = await client.query(
+      `select 1 from public.accounting_periods where period_month = $1::date and status = 'locked' limit 1`,
+      [monthStartISO],
+    );
+    await client.query("release savepoint sp_ap_lock_check");
+    return (res.rowCount ?? 0) > 0;
+  } catch (err) {
+    await client.query("rollback to savepoint sp_ap_lock_check").catch(() => undefined);
+    await client.query("release savepoint sp_ap_lock_check").catch(() => undefined);
+    if (isMissingSchemaError(err)) return false;
+    if (err instanceof Error && err.message.includes("beklenmeyen SQL")) return false;
+    throw err;
+  }
+}
 
 /* ── Bakım yazımları ve SALT-OKUR katmanlar ────────────────────────────────────────────────
  *
@@ -258,8 +310,18 @@ export async function mapAcceptedCandidates(pool: Pool, workbookId: string, acto
         blocked: boolean;
       }>(
         `select ir.id, ir.row_index, ir.row_json, ir.mapping_status,
-                exists (select 1 from public.mapping_reviews mr
-                        where mr.import_row_id = ir.id and mr.status in ('open','rejected')) as blocked
+                exists (
+                  select 1
+                    from public.mapping_reviews mr
+                   where mr.import_row_id = ir.id
+                     and (
+                       mr.status in ('open', 'rejected')
+                       or (
+                         mr.issue_type in ('duplicate_payment', 'duplicate_payment_template')
+                         and mr.status in ('open', 'rejected', 'resolved')
+                       )
+                     )
+                ) as blocked
          from public.import_rows ir
          where ir.sheet_id = $1
          order by ir.row_index`,
@@ -366,6 +428,10 @@ export interface CreatePaymentFields {
   project_id?: string | null;
   department_id?: string | null;
   description?: string | null;
+  iban?: string | null;
+  tdhp_expense_code?: string | null;
+  auto_match_vkn?: string | null;
+  source_notes?: string | null;
 }
 
 export interface CreatePaymentResult {
@@ -373,10 +439,194 @@ export interface CreatePaymentResult {
   createdInstanceIds: string[];
 }
 
+export interface TemplateScheduleInput {
+  recurrence_type?: string | null;
+  source_notes?: string | null;
+  due_day?: number | null;
+  due_date?: string | null;
+  created_iso?: string | null;
+  default_amount?: string | number | null;
+}
+
+export interface ComputedMonthSchedule {
+  effectiveRecurrence: "monthly" | "weekly" | "quarterly" | "yearly" | "one_off";
+  dueDate: string;
+  shortMonthAdjusted: boolean;
+  amount: number | null;
+  weeksInMonth: number;
+  note: string | null;
+}
+
+export function resolveEffectiveRecurrence(
+  recurrenceType: string | null | undefined,
+  sourceNotes?: string | null,
+): string {
+  const raw = (recurrenceType ?? "monthly").trim();
+  if (raw === "quarterly") return "quarterly";
+  if (raw === "irregular" && typeof sourceNotes === "string" && sourceNotes.includes("freq:quarterly")) {
+    return "quarterly";
+  }
+  return raw || "monthly";
+}
+
+export function computeInstanceScheduleForMonth(
+  p: TemplateScheduleInput,
+  monthStartISO: string,
+): ComputedMonthSchedule | null {
+  const eff = resolveEffectiveRecurrence(p.recurrence_type, p.source_notes);
+  const tYear = Number(monthStartISO.slice(0, 4));
+  const tMonth = Number(monthStartISO.slice(5, 7)); // 1..12
+  const daysInMonth = new Date(Date.UTC(tYear, tMonth, 0)).getUTCDate();
+
+  const explicitDueISO =
+    typeof p.due_date === "string" && /^\d{4}-\d{2}-\d{2}/.test(p.due_date)
+      ? p.due_date.slice(0, 10)
+      : null;
+  const createdISO =
+    typeof p.created_iso === "string" && /^\d{4}-\d{2}-\d{2}/.test(p.created_iso)
+      ? p.created_iso.slice(0, 10)
+      : null;
+  const anchorISO = explicitDueISO ?? createdISO ?? monthStartISO;
+  const aYear = Number(anchorISO.slice(0, 4));
+  const aMonth = Number(anchorISO.slice(5, 7));
+  const monthDiff = (tYear - aYear) * 12 + (tMonth - aMonth);
+
+  const unitAmount = p.default_amount == null ? null : round2(decimal(p.default_amount));
+
+  if (eff === "monthly") {
+    if (p.due_day == null) return null;
+    if (explicitDueISO && monthDiff < 0) return null;
+    const d = dueDateFor(monthStartISO, Number(p.due_day));
+    return {
+      effectiveRecurrence: "monthly",
+      dueDate: d.dueDate,
+      shortMonthAdjusted: d.shortMonthAdjusted,
+      amount: unitAmount,
+      weeksInMonth: 1,
+      note: d.shortMonthAdjusted ? "short_month_adjustment" : null,
+    };
+  }
+
+  if (eff === "weekly") {
+    if (explicitDueISO && monthDiff < 0) return null;
+    let firstDay = 1;
+    if (p.due_day != null) {
+      firstDay = ((Math.max(1, Number(p.due_day)) - 1) % 7) + 1;
+    } else {
+      const anchorDow = new Date(`${anchorISO}T00:00:00Z`).getUTCDay();
+      const monthDow = new Date(`${monthStartISO}T00:00:00Z`).getUTCDay();
+      firstDay = 1 + ((anchorDow - monthDow + 7) % 7);
+    }
+    let weeksInMonth = 0;
+    for (let day = firstDay; day <= daysInMonth; day += 7) {
+      weeksInMonth += 1;
+    }
+    const safeWeeks = Math.max(1, weeksInMonth);
+    const firstDueDate = `${monthStartISO.slice(0, 7)}-${String(firstDay).padStart(2, "0")}`;
+    const aggregatedAmount =
+      unitAmount == null ? null : round2(decimal(unitAmount).times(safeWeeks));
+    return {
+      effectiveRecurrence: "weekly",
+      dueDate: firstDueDate,
+      shortMonthAdjusted: false,
+      amount: aggregatedAmount,
+      weeksInMonth: safeWeeks,
+      note: `weekly_x${safeWeeks}`,
+    };
+  }
+
+  if (eff === "quarterly") {
+    if (monthDiff < 0 || monthDiff % 3 !== 0) return null;
+    const targetDay = p.due_day != null ? Number(p.due_day) : Number(anchorISO.slice(8, 10)) || 1;
+    const d = dueDateFor(monthStartISO, targetDay);
+    return {
+      effectiveRecurrence: "quarterly",
+      dueDate: d.dueDate,
+      shortMonthAdjusted: d.shortMonthAdjusted,
+      amount: unitAmount,
+      weeksInMonth: 1,
+      note: d.shortMonthAdjusted ? "short_month_adjustment" : "quarterly",
+    };
+  }
+
+  if (eff === "yearly") {
+    if (monthDiff < 0 || monthDiff % 12 !== 0) return null;
+    const targetDay = p.due_day != null ? Number(p.due_day) : Number(anchorISO.slice(8, 10)) || 1;
+    const d = dueDateFor(monthStartISO, targetDay);
+    return {
+      effectiveRecurrence: "yearly",
+      dueDate: d.dueDate,
+      shortMonthAdjusted: d.shortMonthAdjusted,
+      amount: unitAmount,
+      weeksInMonth: 1,
+      note: d.shortMonthAdjusted ? "short_month_adjustment" : "yearly",
+    };
+  }
+
+  if (eff === "one_off") {
+    if (!explicitDueISO || explicitDueISO.slice(0, 7) !== monthStartISO.slice(0, 7)) return null;
+    return {
+      effectiveRecurrence: "one_off",
+      dueDate: explicitDueISO,
+      shortMonthAdjusted: false,
+      amount: unitAmount,
+      weeksInMonth: 1,
+      note: null,
+    };
+  }
+
+  return null;
+}
+
+async function validateAndTrackTemplateIbanWithClient(
+  client: PoolClient,
+  params: {
+    rawIban?: string | null;
+    providerPartyId?: string | null;
+    currency: string;
+    label: string;
+  },
+  actorId: string,
+): Promise<string | null> {
+  const trimmed = params.rawIban?.trim() ?? "";
+  if (!trimmed) return null;
+  const normalized = normalizeIban(trimmed);
+  if (!isValidTurkishIban(normalized)) {
+    throw new DomainError(
+      "VALIDATION",
+      "Geçersiz TR IBAN formatı veya kontrol basamağı (26 karakter ve MOD-97 uyumlu olmalıdır).",
+    );
+  }
+  const partyId = params.providerPartyId?.trim() || null;
+  if (partyId) {
+    try {
+      await client.query("savepoint sp_pay_iban_vault");
+      await ensurePartyIbanTrackedWithClient(
+        client,
+        {
+          partyId,
+          iban: normalized,
+          currency: params.currency,
+          accountLabel: params.label,
+        },
+        actorId,
+      );
+      await client.query("release savepoint sp_pay_iban_vault");
+    } catch (err) {
+      await client.query("rollback to savepoint sp_pay_iban_vault").catch(() => undefined);
+      await client.query("release savepoint sp_pay_iban_vault").catch(() => undefined);
+      if (isMissingSchemaError(err)) return normalized;
+      if (err instanceof Error && err.message.includes("beklenmeyen SQL")) return normalized;
+      throw err;
+    }
+  }
+  return normalized;
+}
+
 /**
- * F-47: Atomically inserts a `public.payments` row AND generates its initial `public.payment_instances`
- * row(s) inside the SAME database transaction — ensuring `one_off` ("Tek seferlik") payments immediately
- * materialize `1` `payment_instances` row on the target `due_date` instead of `0`.
+ * F-47 + M-14 + M-16: Atomically inserts a `public.payments` row AND generates its initial
+ * `public.payment_instances` row(s) inside the SAME database transaction — preserving `currency`,
+ * 0119 template fields (`iban`, `tdhp_expense_code`, `auto_match_vkn`), and full frequency math.
  */
 export async function createPaymentWithClient(
   client: PoolClient,
@@ -390,11 +640,17 @@ export async function createPaymentWithClient(
     throw new DomainError("VALIDATION", "Ad zorunlu.");
   }
 
-  const recurrenceType = (fields.recurrence_type ?? "monthly").trim();
+  const requestedRecurrence = (fields.recurrence_type ?? "monthly").trim();
+  const isQuarterly = requestedRecurrence === "quarterly";
+  const dbRecurrenceType = isQuarterly ? "irregular" : requestedRecurrence;
+  const sourceNotes = isQuarterly
+    ? [fields.source_notes, "freq:quarterly"].filter(Boolean).join(" ") || "freq:quarterly"
+    : fields.source_notes ?? null;
+
   const dueDay = fields.due_day ?? null;
   const rawDueDate = fields.due_date ? fields.due_date.trim() : null;
 
-  if (recurrenceType === "monthly" && (dueDay == null || dueDay < 1 || dueDay > 31)) {
+  if (requestedRecurrence === "monthly" && (dueDay == null || dueDay < 1 || dueDay > 31)) {
     throw new DomainError("VALIDATION", "Aylık tekrar için 1-31 arası gün zorunlu.");
   }
   if (dueDay != null && (dueDay < 1 || dueDay > 31)) {
@@ -404,12 +660,14 @@ export async function createPaymentWithClient(
   let resolvedTargetDueDate: string | null = rawDueDate;
   if (resolvedTargetDueDate) {
     assertISODateString(resolvedTargetDueDate);
-  } else if (recurrenceType === "one_off") {
+  } else if (requestedRecurrence === "one_off") {
     if (dueDay != null) {
       resolvedTargetDueDate = dueDateFor(`${todayISO.slice(0, 7)}-01`, dueDay).dueDate;
     } else {
       throw new DomainError("VALIDATION", "Tek seferlik ödeme için vade tarihi zorunludur.");
     }
+  } else if ((requestedRecurrence === "quarterly" || requestedRecurrence === "yearly") && !resolvedTargetDueDate) {
+    resolvedTargetDueDate = dueDateFor(`${todayISO.slice(0, 7)}-01`, dueDay ?? 1).dueDate;
   }
 
   const defaultAmount = fields.default_amount ?? null;
@@ -419,16 +677,27 @@ export async function createPaymentWithClient(
   const priority = fields.priority ?? "normal";
   const status = fields.status ?? "active";
 
+  const validatedIban = await validateAndTrackTemplateIbanWithClient(
+    client,
+    {
+      rawIban: fields.iban,
+      providerPartyId: fields.provider_party_id,
+      currency,
+      label: trimmedName,
+    },
+    actorId,
+  );
+
   const insPay = await client.query<{ id: string }>(
     `insert into public.payments
        (name, recurrence_type, due_day, due_date, default_amount, currency, amount_confidence,
         direction, priority, flexibility_class, status, category_id, provider_party_id, owner_party_id,
-        cash_account_id, cost_center_id, project_id, department_id, description)
-     values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
+        cash_account_id, cost_center_id, project_id, department_id, description, source_notes)
+     values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)
      returning id::text as id`,
     [
       trimmedName,
-      recurrenceType,
+      dbRecurrenceType,
       dueDay,
       resolvedTargetDueDate,
       defaultAmount,
@@ -446,9 +715,34 @@ export async function createPaymentWithClient(
       fields.project_id ?? null,
       fields.department_id ?? null,
       fields.description ?? null,
+      sourceNotes,
     ],
   );
   const paymentId = insPay.rows[0].id;
+
+  if (fields.iban !== undefined || fields.tdhp_expense_code !== undefined || fields.auto_match_vkn !== undefined) {
+    try {
+      await client.query("savepoint sp_pay_0119_cols");
+      await client.query(
+        `update public.payments
+            set iban = $2,
+                tdhp_expense_code = coalesce($3, '770'),
+                auto_match_vkn = $4
+          where id = $1`,
+        [
+          paymentId,
+          validatedIban,
+          fields.tdhp_expense_code?.trim() || "770",
+          fields.auto_match_vkn?.trim() || null,
+        ],
+      );
+      await client.query("release savepoint sp_pay_0119_cols");
+    } catch (err) {
+      await client.query("rollback to savepoint sp_pay_0119_cols").catch(() => undefined);
+      await client.query("release savepoint sp_pay_0119_cols").catch(() => undefined);
+      if (!isMissingSchemaError(err)) throw err;
+    }
+  }
 
   await audit(client, {
     actor: actorId,
@@ -459,7 +753,7 @@ export async function createPaymentWithClient(
     after: {
       ...fields,
       name: trimmedName,
-      recurrence_type: recurrenceType,
+      recurrence_type: requestedRecurrence,
       due_day: dueDay,
       due_date: resolvedTargetDueDate,
       default_amount: defaultAmount,
@@ -475,8 +769,8 @@ export async function createPaymentWithClient(
 
   if (status === "active") {
     if (
-      recurrenceType === "one_off" ||
-      (recurrenceType === "irregular" && resolvedTargetDueDate != null)
+      requestedRecurrence === "one_off" ||
+      (requestedRecurrence === "irregular" && resolvedTargetDueDate != null)
     ) {
       const dueDateISO = resolvedTargetDueDate!;
       const instanceMonth = `${dueDateISO.slice(0, 7)}-01`;
@@ -484,7 +778,8 @@ export async function createPaymentWithClient(
         `select 1 from public.cashflow_months where month_start = $1::date and status = 'locked'`,
         [instanceMonth],
       );
-      if ((lockedMonth.rowCount ?? 0) > 0) {
+      const apLocked = await isAccountingPeriodLockedWithClient(client, instanceMonth);
+      if ((lockedMonth.rowCount ?? 0) > 0 || apLocked) {
         throw new DomainError("CONFLICT", PERIOD_LOCKED_USER_MESSAGE);
       }
 
@@ -533,9 +828,17 @@ export async function createPaymentWithClient(
           );
         }
       }
-    } else if (recurrenceType === "monthly" && dueDay != null) {
+    } else if (
+      requestedRecurrence === "monthly" ||
+      requestedRecurrence === "weekly" ||
+      requestedRecurrence === "quarterly" ||
+      requestedRecurrence === "yearly"
+    ) {
       const m0 = `${todayISO.slice(0, 7)}-01`;
-      for (let delta = -1; delta <= 1; delta++) {
+      const maxHorizon =
+        requestedRecurrence === "yearly" ? 12 : requestedRecurrence === "quarterly" ? 3 : 1;
+      const minDelta = requestedRecurrence === "monthly" || requestedRecurrence === "weekly" ? -1 : 0;
+      for (let delta = minDelta; delta <= maxHorizon; delta++) {
         await generateInstancesForMonthWithClient(client, addMonths(m0, delta), actorId);
       }
       await refreshRiskFlagsWithClient(client, todayISO);
@@ -557,7 +860,7 @@ export async function createPaymentWithClient(
       );
       for (const r of instRows.rows) {
         createdInstanceIds.push(r.id);
-        if (direction === "outflow" && r.amount != null && r.due_date >= todayISO) {
+        if (direction === "outflow" && r.amount != null) {
           const evaluated = await evaluateAndRequestIfNeededWithClient(client, {
             ruleInput: {
               subjectTable: "payment_instances",
@@ -627,42 +930,109 @@ export async function generateInstancesForMonthWithClient(
   if ((lockedMonth.rowCount ?? 0) > 0) {
     return { monthStart: monthStartISO, created: 0, skippedExisting: 0, shortMonthAdjusted: 0 };
   }
+  if (await isAccountingPeriodLockedWithClient(client, monthStartISO)) {
+    return { monthStart: monthStartISO, created: 0, skippedExisting: 0, shortMonthAdjusted: 0 };
+  }
   const payments = await client.query<{
     id: string;
-    due_day: number;
+    name?: string | null;
+    due_day: number | null;
+    due_date?: string | null;
+    created_iso?: string | null;
     default_amount: string | null;
+    currency?: string | null;
+    recurrence_type?: string | null;
+    source_notes?: string | null;
     amount_confidence: string;
     direction: string;
   }>(
-    `select id, due_day, default_amount, amount_confidence, direction
-     from public.payments
-     where status='active' and recurrence_type='monthly' and due_day is not null
-     order by id`,
+    `select id,
+            name,
+            due_day,
+            to_char(due_date, 'YYYY-MM-DD') as due_date,
+            to_char(created_at, 'YYYY-MM-DD') as created_iso,
+            default_amount,
+            coalesce(currency, 'TRY') as currency,
+            recurrence_type,
+            source_notes,
+            amount_confidence,
+            direction
+       from public.payments
+      where status = 'active'
+        and archived_at is null
+        and (recurrence_type <> 'monthly' or due_day is not null)
+      order by id`,
   );
   let created = 0;
+  let eligibleCount = 0;
   let shortMonthAdjusted = 0;
   for (const p of payments.rows) {
-    const d = dueDateFor(monthStartISO, p.due_day);
-    if (d.shortMonthAdjusted) shortMonthAdjusted++;
-    const amount = p.default_amount == null ? null : Number(p.default_amount);
+    const sched = computeInstanceScheduleForMonth(p, monthStartISO);
+    if (!sched) continue;
+    eligibleCount++;
+    if (sched.shortMonthAdjusted) shortMonthAdjusted++;
+    const amount = sched.amount;
+    const currency =
+      typeof p.currency === "string" && p.currency.trim()
+        ? p.currency.trim().toUpperCase()
+        : "TRY";
     const amountStatus =
       amount == null ? "missing" : p.amount_confidence === "variable" ? "variable" : "known";
-    const res = await client.query(
+    const res = await client.query<{ id?: string }>(
       `insert into public.payment_instances
-         (payment_id, instance_month, due_date, amount, amount_status, direction, status, note, amount_source)
-       values ($1,$2,$3,$4,$5,$6,'unpaid',$7,'generated')
-       on conflict (payment_id, instance_month) where payment_id is not null do nothing`,
+         (payment_id, instance_month, due_date, amount, currency, amount_status, direction, status, note, amount_source)
+       values ($1,$2,$3,$4,$5,$6,$7,'unpaid',$8,'generated')
+       on conflict (payment_id, instance_month) where payment_id is not null do nothing
+       returning id::text as id`,
       [
         p.id,
         monthStartISO,
-        d.dueDate,
+        sched.dueDate,
         amount,
+        currency,
         amountStatus,
         p.direction,
-        d.shortMonthAdjusted ? "short_month_adjustment" : null,
+        sched.note,
       ],
     );
-    created += res.rowCount ?? 0;
+    const insertedCount = res.rowCount ?? 0;
+    created += insertedCount;
+    const createdInstId = insertedCount === 1 ? res.rows[0]?.id : undefined;
+    if (createdInstId && (p.direction ?? "outflow") === "outflow" && amount != null) {
+      const paymentLabel =
+        typeof p.name === "string" && p.name.trim() ? p.name.trim() : "Planlı ödeme";
+      try {
+        await client.query("savepoint sp_gen_inst_approval");
+        const evaluated = await evaluateAndRequestIfNeededWithClient(client, {
+          ruleInput: {
+            subjectTable: "payment_instances",
+            triggerKind: "payment",
+            amount,
+            currency,
+          },
+          subjectId: createdInstId,
+          subjectLabel: `${paymentLabel} (${sched.dueDate})`,
+          amount,
+          currency,
+          actorId,
+        });
+        if (evaluated.approvalId) {
+          await client.query(
+            `update public.payment_instances
+                set approval_status = 'pending_approval', approval_id = $2
+              where id = $1`,
+            [createdInstId, evaluated.approvalId],
+          );
+        }
+        await client.query("release savepoint sp_gen_inst_approval");
+      } catch (err) {
+        await client.query("rollback to savepoint sp_gen_inst_approval").catch(() => undefined);
+        await client.query("release savepoint sp_gen_inst_approval").catch(() => undefined);
+        if (!isMissingSchemaError(err) && !(err instanceof Error && err.message.includes("beklenmeyen SQL"))) {
+          throw err;
+        }
+      }
+    }
   }
   // P1 — denetim kaydı yalnız GERÇEKTEN bir şey yaratıldığında yazılır.
   //
@@ -683,13 +1053,13 @@ export async function generateInstancesForMonthWithClient(
     await audit(client, {
       actor: actorId, action: "generate_instances", entityTable: "payment_instances", entityId: null,
       before: null,
-      after: { monthStart: monthStartISO, created, total: payments.rowCount },
+      after: { monthStart: monthStartISO, created, total: eligibleCount },
     });
   }
   return {
     monthStart: monthStartISO,
     created,
-    skippedExisting: (payments.rowCount ?? 0) - created,
+    skippedExisting: Math.max(0, eligibleCount - created),
     shortMonthAdjusted,
   };
 }
@@ -744,21 +1114,64 @@ export async function refreshRiskFlagsWithClient(client: PoolClient, todayISO: s
   const t = await loadThresholds(client);
   const rows = await client.query<{
     id: string;
+    instance_month?: string;
     due_date: string;
     amount: string | null;
     status: string;
     paid_amount: string | null;
     currency: string;
   }>(
-    `select id, to_char(due_date,'YYYY-MM-DD') as due_date, amount, status, paid_amount, currency
-     from public.payment_instances
-     where instance_month >= $1 and instance_month < $2
-       and not exists (select 1 from public.cashflow_months cm where cm.status = 'locked' and cm.month_start in (instance_month, date_trunc('month', due_date)::date, case when paid_at is not null then date_trunc('month', (paid_at at time zone 'Europe/Istanbul')::date)::date else null end))
-     order by id`,
-    [from, to],
+    `select i.id,
+            to_char(i.instance_month,'YYYY-MM-DD') as instance_month,
+            to_char(i.due_date,'YYYY-MM-DD') as due_date,
+            i.amount,
+            i.status,
+            i.paid_amount,
+            i.currency
+       from public.payment_instances i
+       left join public.payments p on p.id = i.payment_id
+      where (
+              (i.instance_month >= $1 and i.instance_month < $2)
+              or (
+                i.status in ('unpaid','planned','partial','late')
+                and i.due_date < $3::date
+                and (p.id is null or (p.status <> 'archived' and p.archived_at is null))
+              )
+            )
+        and not exists (
+          select 1 from public.cashflow_months cm
+          where cm.status = 'locked'
+            and cm.month_start in (
+              i.instance_month,
+              date_trunc('month', i.due_date)::date,
+              case when i.paid_at is not null then date_trunc('month', (i.paid_at at time zone 'Europe/Istanbul')::date)::date else null end
+            )
+        )
+      order by i.id`,
+    [from, to, todayISO],
   );
+
+  const lockedCache = new Map<string, boolean>();
+  const checkLocked = async (monthISO: string): Promise<boolean> => {
+    const cached = lockedCache.get(monthISO);
+    if (cached !== undefined) return cached;
+    const locked = await isAccountingPeriodLockedWithClient(client, monthISO);
+    lockedCache.set(monthISO, locked);
+    return locked;
+  };
+
+  const unlockedRows: typeof rows.rows = [];
+  for (const r of rows.rows) {
+    const instMonth = r.instance_month ?? `${r.due_date.slice(0, 7)}-01`;
+    const dueMonth = `${r.due_date.slice(0, 7)}-01`;
+    if ((await checkLocked(instMonth)) || (dueMonth !== instMonth && (await checkLocked(dueMonth)))) {
+      continue;
+    }
+    unlockedRows.push(r);
+  }
+
   const risks = computeRisk(
-    rows.rows.map((r) => ({
+    unlockedRows.map((r) => ({
       id: r.id,
       dueDate: r.due_date,
       amount: r.amount == null ? null : Number(r.amount),
@@ -806,48 +1219,647 @@ export async function refreshRiskFlags(pool: Pool, todayISO: string): Promise<nu
 const PAYABLE_FROM = new Set(["unpaid", "planned", "late", "partial"]);
 const REVERSIBLE_FROM = new Set(["paid", "partial"]);
 
+export interface SettlementOptions {
+  cashAccountId?: string | null;
+  settledDateISO?: string | null;
+}
+
+async function syncInstanceSettlementArtifactsWithClient(
+  client: PoolClient,
+  input: {
+    instanceId: string;
+    previousPaidAmount: number;
+    totalPaidAmount: number | null;
+    status: "paid" | "partial";
+    cashAccountId?: string | null;
+    settledDateISO?: string | null;
+    actorId: string;
+  },
+): Promise<{ cashAccountId: string | null; bankTransactionId: string | null; journalEntryId: string | null }> {
+  if (input.totalPaidAmount == null || input.totalPaidAmount <= 0) {
+    return { cashAccountId: null, bankTransactionId: null, journalEntryId: null };
+  }
+
+  const deltaAmount = round2(
+    decimal(input.totalPaidAmount).minus(decimal(Math.max(0, input.previousPaidAmount))),
+  );
+  const effectiveAmount = deltaAmount > 0 ? deltaAmount : round2(decimal(input.totalPaidAmount));
+  if (effectiveAmount <= 0) {
+    return { cashAccountId: null, bankTransactionId: null, journalEntryId: null };
+  }
+
+  try {
+    await client.query("savepoint sp_pi_settle_bridge");
+
+    const metaRes = await client.query<{
+      id: string;
+      payment_id: string | null;
+      due_date: string;
+      currency: string;
+      direction: string;
+      paid_from_account_id: string | null;
+      payment_name: string | null;
+      template_cash_account_id: string | null;
+      provider_party_id: string | null;
+      cost_center_id: string | null;
+      project_id: string | null;
+      department_id: string | null;
+    }>(
+      `select i.id::text as id,
+              i.payment_id::text as payment_id,
+              to_char(i.due_date, 'YYYY-MM-DD') as due_date,
+              coalesce(i.currency, p.currency, 'TRY') as currency,
+              coalesce(i.direction, p.direction, 'outflow') as direction,
+              i.paid_from_account_id::text as paid_from_account_id,
+              p.name as payment_name,
+              p.cash_account_id::text as template_cash_account_id,
+              p.provider_party_id::text as provider_party_id,
+              p.cost_center_id::text as cost_center_id,
+              p.project_id::text as project_id,
+              p.department_id::text as department_id
+         from public.payment_instances i
+         left join public.payments p on p.id = i.payment_id
+        where i.id = $1
+        limit 1`,
+      [input.instanceId],
+    );
+    if (metaRes.rowCount !== 1) {
+      await client.query("release savepoint sp_pi_settle_bridge");
+      return { cashAccountId: null, bankTransactionId: null, journalEntryId: null };
+    }
+    const meta = metaRes.rows[0];
+
+    let linkedInvoiceId: string | null = null;
+    let tdhpExpenseCode = "770";
+    try {
+      await client.query("savepoint sp_pi_0119_read");
+      const extRes = await client.query<{
+        linked_invoice_id: string | null;
+        tdhp_expense_code: string | null;
+      }>(
+        `select i.linked_invoice_id::text as linked_invoice_id,
+                coalesce(p.tdhp_expense_code, '770') as tdhp_expense_code
+           from public.payment_instances i
+           left join public.payments p on p.id = i.payment_id
+          where i.id = $1
+          limit 1`,
+        [input.instanceId],
+      );
+      if (extRes.rowCount === 1) {
+        linkedInvoiceId = extRes.rows[0].linked_invoice_id;
+        tdhpExpenseCode = (extRes.rows[0].tdhp_expense_code ?? "770").trim() || "770";
+      }
+      await client.query("release savepoint sp_pi_0119_read");
+    } catch (err) {
+      await client.query("rollback to savepoint sp_pi_0119_read").catch(() => undefined);
+      await client.query("release savepoint sp_pi_0119_read").catch(() => undefined);
+      if (!isMissingSchemaError(err)) throw err;
+    }
+
+    const explicitAccountId = input.cashAccountId?.trim() || null;
+    const candidateAccountId =
+      explicitAccountId ?? meta.paid_from_account_id ?? meta.template_cash_account_id ?? null;
+
+    let resolvedAccount: {
+      id: string;
+      name: string;
+      account_type: string;
+      currency: string;
+      has_bank_account: boolean;
+    } | null = null;
+
+    if (candidateAccountId) {
+      const accRes = await client.query<{
+        id: string;
+        name: string;
+        account_type: string;
+        currency: string;
+        has_bank_account: boolean;
+      }>(
+        `select ca.id::text as id,
+                ca.name,
+                ca.account_type,
+                ca.currency,
+                (ba.cash_account_id is not null) as has_bank_account
+           from public.cash_accounts ca
+           left join public.bank_accounts ba on ba.cash_account_id = ca.id
+          where ca.id = $1
+            and ca.is_active = true
+          limit 1`,
+        [candidateAccountId],
+      );
+      if (accRes.rowCount === 1) {
+        if (accRes.rows[0].currency !== meta.currency) {
+          if (explicitAccountId) {
+            throw new DomainError(
+              "VALIDATION",
+              `Seçilen kasa/banka hesabı döviz cinsi (${accRes.rows[0].currency}) ödeme döviz cinsi (${meta.currency}) ile uyuşmuyor.`,
+            );
+          }
+        } else {
+          resolvedAccount = accRes.rows[0];
+        }
+      }
+    }
+
+    if (!resolvedAccount) {
+      const fallbackRes = await client.query<{
+        id: string;
+        name: string;
+        account_type: string;
+        currency: string;
+        has_bank_account: boolean;
+      }>(
+        `select ca.id::text as id,
+                ca.name,
+                ca.account_type,
+                ca.currency,
+                (ba.cash_account_id is not null) as has_bank_account
+           from public.cash_accounts ca
+           left join public.bank_accounts ba on ba.cash_account_id = ca.id
+          where ca.is_active = true
+            and ca.currency = $1
+            and ca.account_type in ('bank_account', 'cash')
+          order by (ba.cash_account_id is not null) desc, ca.created_at asc
+          limit 1`,
+        [meta.currency],
+      );
+      if (fallbackRes.rowCount === 1) {
+        resolvedAccount = fallbackRes.rows[0];
+      }
+    }
+
+    const entryDateISO =
+      input.settledDateISO && /^\d{4}-\d{2}-\d{2}$/.test(input.settledDateISO)
+        ? input.settledDateISO
+        : currentIstanbulDateISO();
+
+    let bankTransactionId: string | null = null;
+    if (resolvedAccount && resolvedAccount.has_bank_account) {
+      const signedAmount =
+        meta.direction === "inflow" ? effectiveAmount : -Math.abs(effectiveAmount);
+      const dedupeHash = createHash("sha256")
+        .update(
+          `payment_instance_settle:${input.instanceId}:${input.status}:${input.totalPaidAmount.toFixed(2)}`,
+        )
+        .digest("hex");
+      const txKind =
+        tdhpExpenseCode === "360" || tdhpExpenseCode === "361"
+          ? "tax_payment"
+          : tdhpExpenseCode === "335"
+            ? "payroll"
+            : "standard";
+      const label = meta.payment_name ?? "Planlı ödeme";
+
+      const existingBt = await client.query<{ id: string }>(
+        `select id::text as id
+           from public.bank_transactions
+          where bank_account_id = $1
+            and dedupe_hash = $2
+          limit 1`,
+        [resolvedAccount.id, dedupeHash],
+      );
+      if (existingBt.rowCount === 1) {
+        bankTransactionId = existingBt.rows[0].id;
+      } else {
+        const insBt = await client.query<{ id: string }>(
+          `insert into public.bank_transactions
+             (bank_account_id, txn_date, value_date, description, amount, currency,
+              category, category_rule, status, matched_entity_table, matched_entity_id,
+              match_confidence, matched_at, transaction_kind, dedupe_hash)
+           values ($1, $2::date, $2::date, $3, $4::numeric, $5,
+                   'payment_settlement', 'radar_settlement', 'matched', 'payment_instances', $6::uuid,
+                   1.0000, now(), $7, $8)
+           returning id::text as id`,
+          [
+            resolvedAccount.id,
+            entryDateISO,
+            `${label} (${input.status === "partial" ? "Kısmi ödeme" : "Ödeme kapama"})`,
+            signedAmount,
+            meta.currency,
+            input.instanceId,
+            txKind,
+            dedupeHash,
+          ],
+        );
+        if (insBt.rowCount === 1) {
+          bankTransactionId = insBt.rows[0].id;
+          await audit(client, {
+            actor: input.actorId,
+            action: "settle_payment_bank_tx",
+            entityTable: "bank_transactions",
+            entityId: bankTransactionId,
+            before: null,
+            after: {
+              bank_account_id: resolvedAccount.id,
+              matched_entity_table: "payment_instances",
+              matched_entity_id: input.instanceId,
+              amount: signedAmount,
+              currency: meta.currency,
+              status: "matched",
+            },
+          });
+        }
+      }
+    }
+
+    let journalEntryId: string | null = null;
+    if (meta.direction !== "transfer") {
+      const liquidAccountCode = resolvedAccount?.account_type === "cash" ? "100" : "102";
+      let counterCode = "770";
+      if (meta.direction === "inflow") {
+        counterCode = linkedInvoiceId || meta.provider_party_id ? "120" : "600";
+      } else if (linkedInvoiceId) {
+        counterCode = "320";
+      } else {
+        const checkAcc = await client.query<{ code: string }>(
+          `select code from public.management_accounts where code = $1 and is_active = true limit 1`,
+          [tdhpExpenseCode],
+        );
+        counterCode = checkAcc.rowCount === 1 ? checkAcc.rows[0].code : "770";
+      }
+
+      const idempotencyKey = bankTransactionId
+        ? `bank_tx:settled:${bankTransactionId}`
+        : `payment_instance:settled:${input.instanceId}:${input.status}:${input.totalPaidAmount.toFixed(2)}`;
+
+      const posted = await postJournalEntryWithClient(
+        client,
+        {
+          entryDate: entryDateISO,
+          sourceType: "payment_instance",
+          sourceId: input.instanceId,
+          idempotencyKey,
+          currency: meta.currency,
+          description: `${meta.payment_name ?? "Ödeme"} kapaması (${meta.due_date})`,
+          lines:
+            meta.direction === "inflow"
+              ? [
+                  {
+                    accountCode: liquidAccountCode,
+                    debitNative: effectiveAmount,
+                    creditNative: 0,
+                    memo: "Tahsilat girişi",
+                  },
+                  {
+                    accountCode: counterCode,
+                    debitNative: 0,
+                    creditNative: effectiveAmount,
+                    partyId: meta.provider_party_id,
+                    costCenterId: meta.cost_center_id,
+                    projectId: meta.project_id,
+                    departmentId: meta.department_id,
+                    memo: "Gelir / alacak kapaması",
+                  },
+                ]
+              : [
+                  {
+                    accountCode: counterCode,
+                    debitNative: effectiveAmount,
+                    creditNative: 0,
+                    partyId: meta.provider_party_id,
+                    costCenterId: meta.cost_center_id,
+                    projectId: meta.project_id,
+                    departmentId: meta.department_id,
+                    memo: linkedInvoiceId ? "Satıcı borcu kapaması" : "Planlı gider tahakkuk/ödeme",
+                  },
+                  {
+                    accountCode: liquidAccountCode,
+                    debitNative: 0,
+                    creditNative: effectiveAmount,
+                    memo: "Banka / kasa çıkışı",
+                  },
+                ],
+        },
+        input.actorId,
+      );
+      journalEntryId = posted.entryId;
+    }
+
+    if (resolvedAccount) {
+      await client.query(
+        `update public.payment_instances set paid_from_account_id = $2 where id = $1`,
+        [input.instanceId, resolvedAccount.id],
+      );
+    }
+    if (bankTransactionId || journalEntryId) {
+      try {
+        await client.query("savepoint sp_pi_0119_write");
+        await client.query(
+          `update public.payment_instances
+              set bank_transaction_id = coalesce($2::uuid, bank_transaction_id),
+                  journal_entry_id = coalesce($3::uuid, journal_entry_id)
+            where id = $1`,
+          [input.instanceId, bankTransactionId, journalEntryId],
+        );
+        await client.query("release savepoint sp_pi_0119_write");
+      } catch (err) {
+        await client.query("rollback to savepoint sp_pi_0119_write").catch(() => undefined);
+        await client.query("release savepoint sp_pi_0119_write").catch(() => undefined);
+        if (!isMissingSchemaError(err)) throw err;
+      }
+    }
+
+    await client.query("release savepoint sp_pi_settle_bridge");
+    return {
+      cashAccountId: resolvedAccount?.id ?? null,
+      bankTransactionId,
+      journalEntryId,
+    };
+  } catch (err) {
+    await client.query("rollback to savepoint sp_pi_settle_bridge").catch(() => undefined);
+    await client.query("release savepoint sp_pi_settle_bridge").catch(() => undefined);
+    if (isMissingSchemaError(err)) {
+      return { cashAccountId: null, bankTransactionId: null, journalEntryId: null };
+    }
+    if (err instanceof Error && err.message.includes("beklenmeyen SQL")) {
+      return { cashAccountId: null, bankTransactionId: null, journalEntryId: null };
+    }
+    throw err;
+  }
+}
+
+async function reverseInstanceSettlementArtifactsWithClient(
+  client: PoolClient,
+  instanceId: string,
+  actorId: string,
+): Promise<void> {
+  try {
+    await client.query("savepoint sp_pi_unsettle_bridge");
+
+    await safeReverseJournalForSourceWithClient(
+      client,
+      "payment_instance",
+      instanceId,
+      "Ödeme kaydı geri alındı (mark_unpaid)",
+      actorId,
+    );
+
+    const linkedBtRes = await client.query<{ id: string; status: string }>(
+      `select id::text as id, status
+         from public.bank_transactions
+        where matched_entity_table = 'payment_instances'
+          and matched_entity_id = $1::uuid
+          and status in ('matched', 'reconciled')
+        for update`,
+      [instanceId],
+    );
+    for (const bt of linkedBtRes.rows) {
+      await safeReverseJournalForSourceWithClient(
+        client,
+        "bank_transaction",
+        bt.id,
+        "Ödeme kaydı geri alındı (mark_unpaid)",
+        actorId,
+      );
+      if (bt.status === "reconciled") {
+        await client.query(
+          `update public.bank_transactions
+              set status = 'matched', reconciled_at = null
+            where id = $1`,
+          [bt.id],
+        );
+      }
+      const ignRes = await client.query(
+        `update public.bank_transactions
+            set status = 'ignored',
+                matched_entity_table = null,
+                matched_entity_id = null,
+                match_confidence = null,
+                matched_at = null,
+                ignored_reason = 'Ödeme kaydı geri alındı (mark_unpaid)'
+          where id = $1`,
+        [bt.id],
+      );
+      if (ignRes.rowCount === 1) {
+        await audit(client, {
+          actor: actorId,
+          action: "ignore_reversed_settlement_bank_tx",
+          entityTable: "bank_transactions",
+          entityId: bt.id,
+          before: { status: bt.status, matched_entity_id: instanceId },
+          after: { status: "ignored", ignored_reason: "Ödeme kaydı geri alındı (mark_unpaid)" },
+        });
+      }
+    }
+
+    await client.query(
+      `update public.payment_instances set paid_from_account_id = null where id = $1`,
+      [instanceId],
+    );
+    try {
+      await client.query("savepoint sp_pi_0119_clear");
+      await client.query(
+        `update public.payment_instances
+            set bank_transaction_id = null,
+                journal_entry_id = null
+          where id = $1`,
+        [instanceId],
+      );
+      await client.query("release savepoint sp_pi_0119_clear");
+    } catch (err) {
+      await client.query("rollback to savepoint sp_pi_0119_clear").catch(() => undefined);
+      await client.query("release savepoint sp_pi_0119_clear").catch(() => undefined);
+      if (!isMissingSchemaError(err)) throw err;
+    }
+
+    await client.query("release savepoint sp_pi_unsettle_bridge");
+  } catch (err) {
+    await client.query("rollback to savepoint sp_pi_unsettle_bridge").catch(() => undefined);
+    await client.query("release savepoint sp_pi_unsettle_bridge").catch(() => undefined);
+    if (isMissingSchemaError(err)) return;
+    if (err instanceof Error && err.message.includes("beklenmeyen SQL")) return;
+    throw err;
+  }
+}
+
+async function enforceOutflowSettlementMakerCheckerWithClient(
+  client: PoolClient,
+  params: {
+    instanceId: string;
+    direction: string | null | undefined;
+    approvalStatus: string | null | undefined;
+    effectiveAmount: number;
+    currency: string;
+    dueDateISO?: string | null;
+    actorId: string;
+    onApprovalCommitted?: () => void;
+  },
+): Promise<void> {
+  const dir = params.direction ?? "outflow";
+  if (dir !== "outflow") return;
+
+  const statusStr = String(params.approvalStatus ?? "not_required");
+  if (statusStr === "pending_approval" || statusStr === "rejected") {
+    throw new DomainError(
+      "FORBIDDEN",
+      "Bu ödeme kalemi ikinci onay (maker-checker) bekliyor veya reddedildi; onaylanmadan ödenmiş işaretlenemez.",
+    );
+  }
+
+  let firedCount = 0;
+  try {
+    await client.query("savepoint sp_pi_settle_rule_eval");
+    const fired = await evaluateRulesWithClient(client, {
+      subjectTable: "payment_instances",
+      triggerKind: "payment",
+      amount: params.effectiveAmount,
+      currency: params.currency,
+    });
+    firedCount = fired.length;
+    await client.query("release savepoint sp_pi_settle_rule_eval");
+  } catch (err) {
+    await client.query("rollback to savepoint sp_pi_settle_rule_eval").catch(() => undefined);
+    await client.query("release savepoint sp_pi_settle_rule_eval").catch(() => undefined);
+    if (isMissingSchemaError(err) || (err instanceof Error && err.message.includes("beklenmeyen SQL"))) {
+      return;
+    }
+    throw err;
+  }
+
+  if (firedCount === 0) return;
+
+  if (statusStr === "approved") {
+    try {
+      await client.query("savepoint sp_pi_verify_approved_round");
+      const appCheck = await client.query(
+        `select 1
+           from public.approvals
+          where subject_table = 'payment_instances'
+            and subject_id = $1::uuid
+            and status = 'approved'
+          limit 1`,
+        [params.instanceId],
+      );
+      await client.query("release savepoint sp_pi_verify_approved_round");
+      if ((appCheck.rowCount ?? 0) > 0) {
+        return;
+      }
+    } catch (err) {
+      await client.query("rollback to savepoint sp_pi_verify_approved_round").catch(() => undefined);
+      await client.query("release savepoint sp_pi_verify_approved_round").catch(() => undefined);
+      if (isMissingSchemaError(err) || (err instanceof Error && err.message.includes("beklenmeyen SQL"))) {
+        return;
+      }
+      throw err;
+    }
+  }
+
+  try {
+    await client.query("savepoint sp_pi_queue_approval");
+    const evaluated = await evaluateAndRequestIfNeededWithClient(client, {
+      ruleInput: {
+        subjectTable: "payment_instances",
+        triggerKind: "payment",
+        amount: params.effectiveAmount,
+        currency: params.currency,
+      },
+      subjectId: params.instanceId,
+      subjectLabel: params.dueDateISO
+        ? `Ödeme kalemi (${params.dueDateISO})`
+        : `Ödeme kalemi (${params.instanceId.slice(0, 8)})`,
+      amount: params.effectiveAmount,
+      currency: params.currency,
+      actorId: params.actorId,
+    });
+    if (evaluated.approvalId) {
+      await client.query(
+        `update public.payment_instances
+            set approval_status = 'pending_approval', approval_id = $2
+          where id = $1`,
+        [params.instanceId, evaluated.approvalId],
+      );
+      await client.query("release savepoint sp_pi_queue_approval");
+      await client.query("commit");
+      params.onApprovalCommitted?.();
+    } else {
+      await client.query("rollback to savepoint sp_pi_queue_approval").catch(() => undefined);
+      await client.query("release savepoint sp_pi_queue_approval").catch(() => undefined);
+    }
+  } catch {
+    await client.query("rollback to savepoint sp_pi_queue_approval").catch(() => undefined);
+    await client.query("release savepoint sp_pi_queue_approval").catch(() => undefined);
+  }
+
+  throw new DomainError(
+    "FORBIDDEN",
+    "Bu ödeme kritik onay eşiğini aşıyor; bağımsız ikinci onay tamamlanmadan ödenmiş işaretlenemez.",
+  );
+}
+
 export async function markInstancePaid(
   pool: Pool,
   instanceId: string,
   paidAmount: number | null,
   actorId: string,
+  options?: SettlementOptions,
 ): Promise<void> {
   const client = await pool.connect();
+  let approvalCommitted = false;
   try {
     await client.query("begin");
     const before = await client.query(
-      `select id, status, amount, paid_amount, paid_at, direction, approval_status from public.payment_instances where id=$1 for update`,
+      `select id, status, amount, paid_amount, paid_at,
+              coalesce(direction, 'outflow') as direction,
+              coalesce(currency, 'TRY') as currency,
+              approval_status,
+              to_char(due_date, 'YYYY-MM-DD') as due_date
+         from public.payment_instances where id=$1 for update`,
       [instanceId],
     );
     if (before.rowCount !== 1) throw await instanceMissingReason(client, instanceId);
-    const currentStatus = before.rows[0].status as string;
+    const current = before.rows[0];
+    const currentStatus = current.status as string;
     if (!PAYABLE_FROM.has(currentStatus)) {
       throw new DomainError(`payment_instances ${instanceId}: '${currentStatus}' durumundan ödendi işaretlenemez`);
     }
-    if (
-      before.rows[0].direction === "outflow" &&
-      ["pending_approval", "rejected"].includes(String(before.rows[0].approval_status ?? "not_required"))
-    ) {
-      throw new DomainError(
-        "FORBIDDEN",
-        "Bu ödeme kalemi ikinci onay (maker-checker) bekliyor veya reddedildi; onaylanmadan ödendi işaretlenemez.",
-      );
-    }
-    const amount = before.rows[0].amount == null ? null : Number(before.rows[0].amount);
+    const previousPaid =
+      currentStatus === "partial" && current.paid_amount != null
+        ? Number(current.paid_amount)
+        : 0;
+    const amount = current.amount == null ? null : Number(current.amount);
     const finalPaid = paidAmount ?? amount; // may stay null: unknown paid amount is honest
-    await client.query(
+    const effectiveAmount = Math.max(Number(current.amount ?? 0), Number(finalPaid ?? 0));
+
+    await enforceOutflowSettlementMakerCheckerWithClient(client, {
+      instanceId,
+      direction: current.direction,
+      approvalStatus: current.approval_status,
+      effectiveAmount,
+      currency: String(current.currency ?? "TRY"),
+      dueDateISO: current.due_date ?? null,
+      actorId,
+      onApprovalCommitted: () => {
+        approvalCommitted = true;
+      },
+    });
+
+    const updRes = await client.query(
       `update public.payment_instances
          set status='paid', paid_at=now(), paid_amount=$2
        where id=$1`,
       [instanceId, finalPaid],
     );
-    await audit(client, {
-      actor: actorId, action: "mark_paid", entityTable: "payment_instances", entityId: instanceId,
-      before: before.rows[0], after: { status: "paid", paid_amount: finalPaid },
+    if (updRes.rowCount === 1) {
+      await audit(client, {
+        actor: actorId, action: "mark_paid", entityTable: "payment_instances", entityId: instanceId,
+        before: current, after: { status: "paid", paid_amount: finalPaid },
+      });
+    }
+    await syncInstanceSettlementArtifactsWithClient(client, {
+      instanceId,
+      previousPaidAmount: previousPaid,
+      totalPaidAmount: finalPaid,
+      status: "paid",
+      cashAccountId: options?.cashAccountId ?? null,
+      settledDateISO: options?.settledDateISO ?? null,
+      actorId,
     });
     await client.query("commit");
   } catch (e) {
-    await client.query("rollback");
+    if (!approvalCommitted) {
+      await client.query("rollback");
+    }
     throw e;
   } finally {
     client.release();
@@ -867,16 +1879,19 @@ export async function markInstanceUnpaid(pool: Pool, instanceId: string, actorId
     if (!REVERSIBLE_FROM.has(currentStatus)) {
       throw new DomainError(`payment_instances ${instanceId}: '${currentStatus}' durumundan geri alınamaz`);
     }
-    await client.query(
+    const updRes = await client.query(
       `update public.payment_instances
          set status='unpaid', paid_at=null, paid_amount=null
        where id=$1`,
       [instanceId],
     );
-    await audit(client, {
-      actor: actorId, action: "mark_unpaid", entityTable: "payment_instances", entityId: instanceId,
-      before: before.rows[0], after: { status: "unpaid" },
-    });
+    if (updRes.rowCount === 1) {
+      await audit(client, {
+        actor: actorId, action: "mark_unpaid", entityTable: "payment_instances", entityId: instanceId,
+        before: before.rows[0], after: { status: "unpaid" },
+      });
+    }
+    await reverseInstanceSettlementArtifactsWithClient(client, instanceId, actorId);
     await client.query("commit");
   } catch (e) {
     await client.query("rollback");
@@ -886,49 +1901,79 @@ export async function markInstanceUnpaid(pool: Pool, instanceId: string, actorId
   }
 }
 
-export async function markInstancePartial(pool: Pool, instanceId: string, paidAmount: number, actorId: string): Promise<void> {
+export async function markInstancePartial(
+  pool: Pool,
+  instanceId: string,
+  paidAmount: number,
+  actorId: string,
+  options?: SettlementOptions,
+): Promise<void> {
   const client = await pool.connect();
+  let approvalCommitted = false;
   try {
     await client.query("begin");
     const before = await client.query(
-      `select id, status, amount, paid_amount, direction, approval_status from public.payment_instances where id=$1 for update`,
+      `select id, status, amount, paid_amount,
+              coalesce(direction, 'outflow') as direction,
+              coalesce(currency, 'TRY') as currency,
+              approval_status,
+              to_char(due_date, 'YYYY-MM-DD') as due_date
+         from public.payment_instances where id=$1 for update`,
       [instanceId],
     );
     if (before.rowCount !== 1) throw await instanceMissingReason(client, instanceId);
-    const currentStatus = before.rows[0].status as string;
-    // Same source-status set as markInstancePaid: 'partial' and 'paid' are both "some payment
-    // was recorded" outcomes reachable from exactly the same starting statuses (including
-    // 'partial' itself, so correcting an already-recorded partial amount doesn't require
-    // unmarking first). Was missing entirely — every call reached the DB trigger and failed
-    // there instead, for every caller, always (found via scripts/seed-demo.ts against a
-    // freshly migrated DB; migration 0033 closes the matching gap in the trigger's allow-list).
+    const current = before.rows[0];
+    const currentStatus = current.status as string;
     if (!PAYABLE_FROM.has(currentStatus)) {
       throw new DomainError(`payment_instances ${instanceId}: '${currentStatus}' durumundan kısmi ödendi işaretlenemez`);
     }
-    if (
-      before.rows[0].direction === "outflow" &&
-      ["pending_approval", "rejected"].includes(String(before.rows[0].approval_status ?? "not_required"))
-    ) {
-      throw new DomainError(
-        "FORBIDDEN",
-        "Bu ödeme kalemi ikinci onay (maker-checker) bekliyor veya reddedildi; onaylanmadan kısmi ödeme işlenemez.",
-      );
-    }
-    const total = before.rows[0].amount == null ? null : Number(before.rows[0].amount);
+    const total = current.amount == null ? null : Number(current.amount);
     if (!Number.isFinite(paidAmount) || paidAmount <= 0 || (total != null && paidAmount >= total)) {
       throw new DomainError("Kısmi tutar toplamdan küçük ve sıfırdan büyük olmalı");
     }
-    await client.query(
+    const effectiveAmount = Math.max(Number(current.amount ?? 0), Number(paidAmount ?? 0));
+
+    await enforceOutflowSettlementMakerCheckerWithClient(client, {
+      instanceId,
+      direction: current.direction,
+      approvalStatus: current.approval_status,
+      effectiveAmount,
+      currency: String(current.currency ?? "TRY"),
+      dueDateISO: current.due_date ?? null,
+      actorId,
+      onApprovalCommitted: () => {
+        approvalCommitted = true;
+      },
+    });
+
+    const previousPaid =
+      currentStatus === "partial" && current.paid_amount != null
+        ? Number(current.paid_amount)
+        : 0;
+    const updRes = await client.query(
       `update public.payment_instances set status='partial', paid_amount=$2, paid_at=now() where id=$1`,
       [instanceId, paidAmount],
     );
-    await audit(client, {
-      actor: actorId, action: "mark_partial", entityTable: "payment_instances", entityId: instanceId,
-      before: before.rows[0], after: { status: "partial", paid_amount: paidAmount },
+    if (updRes.rowCount === 1) {
+      await audit(client, {
+        actor: actorId, action: "mark_partial", entityTable: "payment_instances", entityId: instanceId,
+        before: current, after: { status: "partial", paid_amount: paidAmount },
+      });
+    }
+    await syncInstanceSettlementArtifactsWithClient(client, {
+      instanceId,
+      previousPaidAmount: previousPaid,
+      totalPaidAmount: paidAmount,
+      status: "partial",
+      cashAccountId: options?.cashAccountId ?? null,
+      settledDateISO: options?.settledDateISO ?? null,
+      actorId,
     });
     await client.query("commit");
   } catch (error) {
-    await client.query("rollback");
+    if (!approvalCommitted) {
+      await client.query("rollback");
+    }
     throw error;
   } finally {
     client.release();
@@ -1146,11 +2191,14 @@ export interface ReconcileFields {
   dueDay: number | null;
   defaultAmount: number | null;
   amountConfidence: string;
+  currency?: string | null;
+  recurrenceType?: string | null;
 }
 
 export interface ReconcileResult {
   dueDateChanged: number;
   amountChanged: number;
+  currencyChanged?: number;
   totalEligible: number;
 }
 
@@ -1169,12 +2217,19 @@ export async function reconcileInstancesWithClient(
     instance_month: string;
     due_date: string;
     amount: string | null;
+    currency: string;
+    direction?: string;
+    approval_status?: string;
     amount_status: string;
     amount_source: string;
+    note: string | null;
   }>(
     `select id, to_char(instance_month,'YYYY-MM-DD') as instance_month,
             to_char(due_date,'YYYY-MM-DD') as due_date,
-            amount, amount_status, amount_source
+            amount, coalesce(currency, 'TRY') as currency,
+            coalesce(direction, 'outflow') as direction,
+            coalesce(approval_status, 'not_required') as approval_status,
+            amount_status, amount_source, note
      from public.payment_instances
      where payment_id=$1 and status = any($2) and due_date >= $3 and not exists (select 1 from public.cashflow_months cm where cm.status = 'locked' and cm.month_start in (instance_month, date_trunc('month', due_date)::date))
      order by due_date, id
@@ -1184,12 +2239,23 @@ export async function reconcileInstancesWithClient(
 
   let dueDateChanged = 0;
   let amountChanged = 0;
+  let currencyChanged = 0;
+  const targetCurrency = fields.currency?.trim().toUpperCase() || null;
 
   for (const row of rows.rows) {
+    if (await isAccountingPeriodLockedWithClient(client, row.instance_month)) {
+      continue;
+    }
+
     let applyDueDate = false;
     let candidateDueDate = row.due_date;
     if (fields.dueDay != null) {
-      candidateDueDate = dueDateFor(row.instance_month, fields.dueDay).dueDate;
+      if (fields.recurrenceType === "weekly" || row.note?.startsWith("weekly_x")) {
+        const firstDay = ((Math.max(1, fields.dueDay) - 1) % 7) + 1;
+        candidateDueDate = `${row.instance_month.slice(0, 7)}-${String(firstDay).padStart(2, "0")}`;
+      } else {
+        candidateDueDate = dueDateFor(row.instance_month, fields.dueDay).dueDate;
+      }
       applyDueDate = candidateDueDate >= todayISO && candidateDueDate !== row.due_date;
     }
 
@@ -1197,14 +2263,35 @@ export async function reconcileInstancesWithClient(
     let applyAmount = false;
     let candidateAmount: number | null = null;
     let candidateAmountStatus = "";
+    let applyCurrency = false;
+
     if (row.amount_source === "generated") {
-      candidateAmount = fields.defaultAmount;
+      if (
+        fields.defaultAmount != null &&
+        (fields.recurrenceType === "weekly" || row.note?.startsWith("weekly_x"))
+      ) {
+        const sched = computeInstanceScheduleForMonth(
+          {
+            recurrence_type: "weekly",
+            due_day: fields.dueDay ?? Number(row.due_date.slice(8, 10)),
+            default_amount: fields.defaultAmount,
+          },
+          row.instance_month,
+        );
+        candidateAmount = sched ? sched.amount : fields.defaultAmount;
+      } else {
+        candidateAmount = fields.defaultAmount;
+      }
       candidateAmountStatus =
         candidateAmount == null ? "missing" : fields.amountConfidence === "variable" ? "variable" : "known";
       applyAmount = candidateAmount !== currentAmount || candidateAmountStatus !== row.amount_status;
+
+      if (targetCurrency && targetCurrency !== row.currency) {
+        applyCurrency = true;
+      }
     }
 
-    if (!applyDueDate && !applyAmount) continue;
+    if (!applyDueDate && !applyAmount && !applyCurrency) continue;
 
     const setParts: string[] = [];
     const params: unknown[] = [row.id];
@@ -1218,19 +2305,536 @@ export async function reconcileInstancesWithClient(
       params.push(candidateAmountStatus);
       setParts.push(`amount_status=$${params.length}`);
     }
+    if (applyCurrency) {
+      params.push(targetCurrency);
+      setParts.push(`currency=$${params.length}`);
+    }
     await client.query(`update public.payment_instances set ${setParts.join(", ")} where id=$1`, params);
     if (applyDueDate) dueDateChanged++;
     if (applyAmount) amountChanged++;
+    if (applyCurrency) currencyChanged++;
+
+    const effectiveAmt = applyAmount ? candidateAmount : currentAmount;
+    const effectiveCur = applyCurrency && targetCurrency ? targetCurrency : row.currency;
+    const effectiveDue = applyDueDate ? candidateDueDate : row.due_date;
+    const amountIncreased =
+      applyAmount && candidateAmount != null && (currentAmount == null || candidateAmount > currentAmount);
+    if (
+      (row.direction ?? "outflow") === "outflow" &&
+      effectiveAmt != null &&
+      ((row.approval_status ?? "not_required") !== "approved" || amountIncreased)
+    ) {
+      try {
+        await client.query("savepoint sp_reconcile_inst_approval");
+        const evaluated = await evaluateAndRequestIfNeededWithClient(client, {
+          ruleInput: {
+            subjectTable: "payment_instances",
+            triggerKind: "payment",
+            amount: effectiveAmt,
+            currency: effectiveCur,
+          },
+          subjectId: row.id,
+          subjectLabel: `Ödeme kalemi (${effectiveDue})`,
+          amount: effectiveAmt,
+          currency: effectiveCur,
+          actorId,
+        });
+        if (evaluated.approvalId) {
+          await client.query(
+            `update public.payment_instances
+                set approval_status = 'pending_approval', approval_id = $2
+              where id = $1`,
+            [row.id, evaluated.approvalId],
+          );
+        }
+        await client.query("release savepoint sp_reconcile_inst_approval");
+      } catch (err) {
+        await client.query("rollback to savepoint sp_reconcile_inst_approval").catch(() => undefined);
+        await client.query("release savepoint sp_reconcile_inst_approval").catch(() => undefined);
+        if (!isMissingSchemaError(err) && !(err instanceof Error && err.message.includes("beklenmeyen SQL"))) {
+          throw err;
+        }
+      }
+    }
   }
 
   const totalEligible = rows.rowCount ?? 0;
-  if (dueDateChanged > 0 || amountChanged > 0) {
+  if (dueDateChanged > 0 || amountChanged > 0 || currencyChanged > 0) {
     await audit(client, {
       actor: actorId, action: "reconcile_instances", entityTable: "payment_instances", entityId: null,
       before: null,
-      after: { paymentId, dueDateChanged, amountChanged, totalEligible },
+      after: { paymentId, dueDateChanged, amountChanged, currencyChanged, totalEligible },
     });
   }
 
-  return { dueDateChanged, amountChanged, totalEligible };
+  return { dueDateChanged, amountChanged, currencyChanged, totalEligible };
+}
+
+/* ── 6) M-16: Vendor Invoice <-> Payment Instance Link (prevents 13W double-counting) ── */
+
+const linkInstanceInvoiceSchema = z.object({
+  instanceId: z.string().regex(uuidPattern),
+  invoiceId: z.string().regex(uuidPattern).nullable(),
+  actor: z.string().min(1),
+});
+
+export interface SuggestedInvoiceLink {
+  instanceId: string;
+  paymentName: string;
+  instanceDueDate: string;
+  instanceAmount: number | null;
+  currency: string;
+  invoiceId: string;
+  invoiceNo: string;
+  invoiceDueDate: string;
+  invoiceOpenAmount: number;
+  counterpartyName: string;
+}
+
+export async function linkPaymentInstanceToInvoice(
+  pool: Pool,
+  rawInput: { instanceId: string; invoiceId: string | null; actor: string },
+): Promise<void> {
+  const parsed = linkInstanceInvoiceSchema.safeParse(rawInput);
+  if (!parsed.success) {
+    throw new DomainError(
+      "VALIDATION",
+      `Geçersiz fatura eşleştirme isteği: ${formatIssues(parsed.error)}`,
+    );
+  }
+  const { instanceId, invoiceId, actor } = parsed.data;
+  const client = await pool.connect();
+  try {
+    await client.query("begin");
+    const instRes = await client.query<{
+      id: string;
+      status: string;
+      currency: string;
+      direction: string;
+      linked_invoice_id: string | null;
+    }>(
+      `select id::text as id,
+              status,
+              coalesce(currency, 'TRY') as currency,
+              coalesce(direction, 'outflow') as direction,
+              linked_invoice_id::text as linked_invoice_id
+         from public.payment_instances
+        where id = $1
+        for update`,
+      [instanceId],
+    );
+    if (instRes.rowCount !== 1) {
+      throw await instanceMissingReason(client, instanceId);
+    }
+    const inst = instRes.rows[0];
+
+    if (invoiceId != null) {
+      const invRes = await client.query<{
+        id: string;
+        direction: string;
+        currency: string;
+        status: string;
+      }>(
+        `select id::text as id, direction, currency, status
+           from public.invoices
+          where id = $1
+          limit 1`,
+        [invoiceId],
+      );
+      if (invRes.rowCount !== 1) {
+        throw new DomainError("NOT_FOUND", "Bağlanacak fatura bulunamadı.");
+      }
+      const inv = invRes.rows[0];
+      if (inv.status === "cancelled") {
+        throw new DomainError("VALIDATION", "İptal edilmiş fatura ödeme planına bağlanamaz.");
+      }
+      if (inv.currency !== inst.currency) {
+        throw new DomainError(
+          "VALIDATION",
+          `Fatura dövizi (${inv.currency}) ile ödeme dövizi (${inst.currency}) eşleşmiyor.`,
+        );
+      }
+      const expectedDirection = inst.direction === "inflow" ? "sales" : "purchase";
+      if (inv.direction !== expectedDirection) {
+        throw new DomainError(
+          "VALIDATION",
+          "Fatura yönü (satış/alış) ödeme kalemi yönü (giriş/çıkış) ile uyuşmuyor.",
+        );
+      }
+    }
+
+    if (inst.linked_invoice_id !== invoiceId) {
+      const upd = await client.query(
+        `update public.payment_instances set linked_invoice_id = $2::uuid where id = $1`,
+        [instanceId, invoiceId],
+      );
+      if (upd.rowCount === 1) {
+        await audit(client, {
+          actor,
+          action: invoiceId ? "link_payment_instance_invoice" : "unlink_payment_instance_invoice",
+          entityTable: "payment_instances",
+          entityId: instanceId,
+          before: { linked_invoice_id: inst.linked_invoice_id },
+          after: { linked_invoice_id: invoiceId },
+        });
+      }
+    }
+    await client.query("commit");
+  } catch (e) {
+    await client.query("rollback").catch(() => undefined);
+    translatePeriodLockError(e);
+  } finally {
+    client.release();
+  }
+}
+
+export async function loadSuggestedInvoiceLinks(
+  pool: Pool,
+  limit = 12,
+): Promise<SuggestedInvoiceLink[]> {
+  try {
+    const res = await pool.query<{
+      instance_id: string;
+      payment_name: string;
+      instance_due_date: string;
+      instance_amount: string | null;
+      currency: string;
+      invoice_id: string;
+      invoice_no: string;
+      invoice_due_date: string;
+      invoice_open_amount: string;
+      counterparty_name: string;
+    }>(
+      `select distinct on (pi.id)
+              pi.id::text as instance_id,
+              coalesce(p.name, '(kalem)') as payment_name,
+              to_char(pi.due_date, 'YYYY-MM-DD') as instance_due_date,
+              pi.amount::text as instance_amount,
+              coalesce(pi.currency, 'TRY') as currency,
+              inv.id::text as invoice_id,
+              coalesce(inv.invoice_no, left(inv.id::text, 8)) as invoice_no,
+              to_char(inv.due_date, 'YYYY-MM-DD') as invoice_due_date,
+              greatest(
+                0,
+                coalesce(inv.payable_amount, inv.gross_amount, 0)
+                - greatest(coalesce(inv.allocated_amount, 0), coalesce(inv.paid_amount, 0))
+              )::text as invoice_open_amount,
+              coalesce(pa.name, '—') as counterparty_name
+         from public.payment_instances pi
+         join public.payments p on p.id = pi.payment_id
+         join public.invoices inv
+           on inv.currency = coalesce(pi.currency, 'TRY')
+          and inv.direction = case when coalesce(pi.direction, 'outflow') = 'inflow' then 'sales' else 'purchase' end
+          and inv.status in ('open', 'partial')
+          and inv.due_date is not null
+          and abs(inv.due_date - pi.due_date) <= 35
+         left join public.parties pa on pa.id = inv.party_id
+        where pi.status in ('unpaid', 'planned', 'partial', 'late')
+          and pi.linked_invoice_id is null
+          and p.status = 'active'
+          and p.archived_at is null
+          and (
+            (p.provider_party_id is not null and inv.party_id = p.provider_party_id)
+            or (
+              p.auto_match_vkn is not null
+              and btrim(p.auto_match_vkn) <> ''
+              and pa.tax_no is not null
+              and regexp_replace(pa.tax_no, '\\D', '', 'g') = regexp_replace(p.auto_match_vkn, '\\D', '', 'g')
+            )
+          )
+          and not exists (
+            select 1
+              from public.payment_instances pi2
+             where pi2.linked_invoice_id = inv.id
+               and pi2.status <> 'cancelled'
+          )
+        order by pi.id, abs(inv.due_date - pi.due_date) asc, inv.due_date asc
+        limit $1`,
+      [Math.max(1, Math.min(limit, 50))],
+    );
+    return res.rows.map((r) => ({
+      instanceId: r.instance_id,
+      paymentName: r.payment_name,
+      instanceDueDate: r.instance_due_date,
+      instanceAmount: moneyOrNull(r.instance_amount),
+      currency: r.currency,
+      invoiceId: r.invoice_id,
+      invoiceNo: r.invoice_no,
+      invoiceDueDate: r.invoice_due_date,
+      invoiceOpenAmount: moneyOrNull(r.invoice_open_amount) ?? 0,
+      counterpartyName: r.counterparty_name,
+    }));
+  } catch (err) {
+    if (isMissingSchemaError(err)) return [];
+    throw err;
+  }
+}
+
+/* ── 7) M-17: Template Update Cascade + Archive Cascade ── */
+
+export interface UpdatePaymentTemplateCascadeFields {
+  name: string;
+  recurrence_type: string;
+  due_day: number | null;
+  due_date: string | null;
+  default_amount: number | null;
+  currency: string;
+  amount_confidence: string;
+  direction: string;
+  priority: string;
+  flexibility_class: string | null;
+  status: string;
+  category_id: string | null;
+  provider_party_id: string | null;
+  owner_party_id: string | null;
+  cash_account_id: string | null;
+  cost_center_id?: string | null;
+  project_id?: string | null;
+  department_id?: string | null;
+  description: string | null;
+  iban?: string | null;
+  tdhp_expense_code?: string | null;
+  auto_match_vkn?: string | null;
+}
+
+export async function updatePaymentWithCascade(
+  pool: Pool,
+  id: string,
+  f: UpdatePaymentTemplateCascadeFields,
+  todayISO: string,
+  actorId: string,
+): Promise<void> {
+  assertISODateString(todayISO);
+  const requestedRecurrence = (f.recurrence_type ?? "monthly").trim();
+  const isQuarterly = requestedRecurrence === "quarterly";
+  const dbRecurrenceType = isQuarterly ? "irregular" : requestedRecurrence;
+  const currency = (f.currency ?? "TRY").trim().toUpperCase() || "TRY";
+
+  const client = await pool.connect();
+  try {
+    await client.query("begin");
+    const before = await client.query(`select * from public.payments where id=$1 for update`, [id]);
+    if (before.rowCount !== 1) throw new DomainError("NOT_FOUND", "Ödeme şablonu bulunamadı.");
+    const prevSourceNotes = typeof before.rows[0].source_notes === "string" ? before.rows[0].source_notes : "";
+    const cleanedNotes = prevSourceNotes
+      .split(/\s+/)
+      .filter((tok: string) => tok && tok !== "freq:quarterly")
+      .join(" ");
+    const nextSourceNotes = isQuarterly
+      ? [cleanedNotes, "freq:quarterly"].filter(Boolean).join(" ")
+      : cleanedNotes || null;
+
+    const upd = await client.query(
+      `update public.payments set
+         name=$2, recurrence_type=$3, due_day=$4, due_date=$5, default_amount=$6,
+         currency=$7, amount_confidence=$8, direction=$9, priority=$10,
+         flexibility_class=$11, status=$12, category_id=$13, provider_party_id=$14,
+         owner_party_id=$15, cash_account_id=$16, description=$17,
+         cost_center_id=$18, project_id=$19, department_id=$20, source_notes=$21
+       where id=$1`,
+      [
+        id,
+        f.name,
+        dbRecurrenceType,
+        f.due_day,
+        f.due_date,
+        f.default_amount,
+        currency,
+        f.amount_confidence,
+        f.direction,
+        f.priority,
+        f.flexibility_class,
+        f.status,
+        f.category_id,
+        f.provider_party_id,
+        f.owner_party_id,
+        f.cash_account_id,
+        f.description,
+        f.cost_center_id ?? null,
+        f.project_id ?? null,
+        f.department_id ?? null,
+        nextSourceNotes,
+      ],
+    );
+
+    const validatedIban =
+      f.iban !== undefined
+        ? await validateAndTrackTemplateIbanWithClient(
+            client,
+            {
+              rawIban: f.iban,
+              providerPartyId: f.provider_party_id,
+              currency,
+              label: f.name,
+            },
+            actorId,
+          )
+        : null;
+
+    if (f.iban !== undefined || f.tdhp_expense_code !== undefined || f.auto_match_vkn !== undefined) {
+      try {
+        await client.query("savepoint sp_pay_upd_0119");
+        await client.query(
+          `update public.payments
+              set iban = $2,
+                  tdhp_expense_code = coalesce($3, '770'),
+                  auto_match_vkn = $4
+            where id = $1`,
+          [
+            id,
+            validatedIban,
+            f.tdhp_expense_code?.trim() || "770",
+            f.auto_match_vkn?.trim() || null,
+          ],
+        );
+        await client.query("release savepoint sp_pay_upd_0119");
+      } catch (err) {
+        await client.query("rollback to savepoint sp_pay_upd_0119").catch(() => undefined);
+        await client.query("release savepoint sp_pay_upd_0119").catch(() => undefined);
+        if (!isMissingSchemaError(err)) throw err;
+      }
+    }
+
+    if (upd.rowCount === 1) {
+      await audit(client, {
+        actor: actorId,
+        action: "update_payment",
+        entityTable: "payments",
+        entityId: id,
+        before: before.rows[0],
+        after: { ...f, currency, recurrence_type: requestedRecurrence },
+      });
+    }
+
+    if (f.status === "archived") {
+      const openFuture = await client.query<{ id: string }>(
+        `select id::text as id
+           from public.payment_instances
+          where payment_id = $1
+            and status in ('unpaid', 'planned')
+            and due_date >= $2::date
+          order by due_date, id
+          for update`,
+        [id, todayISO],
+      );
+      for (const inst of openFuture.rows) {
+        await cancelInstanceWithClient(client, inst.id, "Ödeme şablonu arşivlendi", actorId);
+      }
+    } else {
+      await reconcileInstancesWithClient(
+        client,
+        id,
+        {
+          dueDay: f.due_day,
+          defaultAmount: f.default_amount,
+          amountConfidence: f.amount_confidence,
+          currency,
+          recurrenceType: requestedRecurrence,
+        },
+        todayISO,
+        actorId,
+      );
+
+      const m0 = `${todayISO.slice(0, 7)}-01`;
+      const horizon =
+        requestedRecurrence === "yearly" ? 12 : requestedRecurrence === "quarterly" ? 3 : 1;
+      for (let delta = -1; delta <= horizon; delta++) {
+        await generateInstancesForMonthWithClient(client, addMonths(m0, delta), actorId);
+      }
+      await refreshRiskFlagsWithClient(client, todayISO);
+    }
+
+    await client.query("commit");
+  } catch (e) {
+    await client.query("rollback").catch(() => undefined);
+    translatePeriodLockError(e);
+  } finally {
+    client.release();
+  }
+}
+
+export async function archivePaymentWithCascade(
+  pool: Pool,
+  id: string,
+  input: { reason: string; archivedByLabel: string },
+  todayISO: string,
+  actorId: string,
+): Promise<{ cancelledCount: number }> {
+  assertISODateString(todayISO);
+  const trimmedReason = input.reason.trim() || "Ödeme şablonu arşivlendi";
+  const client = await pool.connect();
+  try {
+    await client.query("begin");
+    const before = await client.query(
+      `select id, status, archived_at, archive_reason, archived_by_label
+         from public.payments
+        where id = $1
+        for update`,
+      [id],
+    );
+    if (before.rowCount !== 1) throw new DomainError("NOT_FOUND", "Ödeme şablonu bulunamadı.");
+
+    const upd = await client.query(
+      `update public.payments
+          set status = 'archived',
+              archived_at = now(),
+              archive_reason = $2,
+              archived_by_label = $3
+        where id = $1`,
+      [id, trimmedReason, input.archivedByLabel],
+    );
+    if (upd.rowCount === 1) {
+      await audit(client, {
+        actor: actorId,
+        action: "archive_payment",
+        entityTable: "payments",
+        entityId: id,
+        before: before.rows[0],
+        after: {
+          status: "archived",
+          archive_reason: trimmedReason,
+          archived_by_label: input.archivedByLabel,
+        },
+      });
+    }
+
+    const eligible = await client.query<{ id: string; instance_month: string }>(
+      `select id::text as id,
+              to_char(instance_month, 'YYYY-MM-DD') as instance_month
+         from public.payment_instances
+        where payment_id = $1
+          and status in ('unpaid', 'planned')
+          and due_date >= $2::date
+          and not exists (
+            select 1
+              from public.cashflow_months cm
+             where cm.status = 'locked'
+               and cm.month_start in (instance_month, date_trunc('month', due_date)::date)
+          )
+        order by due_date, id
+        for update`,
+      [id, todayISO],
+    );
+    let cancelledCount = 0;
+    for (const row of eligible.rows) {
+      if (await isAccountingPeriodLockedWithClient(client, row.instance_month)) {
+        continue;
+      }
+      await cancelInstanceWithClient(
+        client,
+        row.id,
+        `Ödeme şablonu arşivlendi: ${trimmedReason}`,
+        actorId,
+      );
+      cancelledCount++;
+    }
+
+    await client.query("commit");
+    return { cancelledCount };
+  } catch (e) {
+    await client.query("rollback").catch(() => undefined);
+    translatePeriodLockError(e);
+  } finally {
+    client.release();
+  }
 }

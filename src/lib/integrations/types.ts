@@ -17,6 +17,19 @@ export const PARASUT_API_ORIGIN = "https://api.parasut.com" as const;
 export const DEFAULT_ALLOWED_INTEGRATION_HOSTS = [
   "api.parasut.com",
   "www.tcmb.gov.tr",
+  "portal.garantibbva.com.tr",
+  "api.garantibbva.com.tr",
+  "api.isbank.com.tr",
+  "api.yapikredi.com.tr",
+  "api.akbank.com",
+  "api.qnb.com.tr",
+  "earsivportal.efatura.gov.tr",
+  "api.fitbulut.com",
+  "efatura.uyumsoft.com.tr",
+  "api.izibiz.com.tr",
+  "connector.qnbefinans.com",
+  "api.iyzipay.com",
+  "www.paytr.com",
 ] as const;
 
 export function isBlockedIntegrationHost(hostname: string): boolean {
@@ -79,7 +92,7 @@ export function validateIntegrationEndpointUrl(
 }
 
 export function isAllowedCredentialEnvVar(name: string): boolean {
-  if (/^(MAS_INTEGRATION_|PARASUT_)[A-Z0-9_]+$/.test(name)) return true;
+  if (/^(MAS_INTEGRATION_|PARASUT_|OPENBANKING_|EINVOICE_|POS_)[A-Z0-9_]+$/.test(name)) return true;
   if (process.env.NODE_ENV !== "production" && /^P37_[A-Z0-9_]+$/.test(name)) return true;
   return false;
 }
@@ -135,6 +148,12 @@ export function realHttpClient(): HttpClient {
     },
   };
 }
+
+export const defaultHttpClient: HttpClient = {
+  send(request: HttpRequest): Promise<HttpResponse> {
+    return realHttpClient().send(request);
+  },
+};
 
 export function mockHttpClient(
   responses: Record<string, HttpResponse> | ((req: HttpRequest) => HttpResponse),
@@ -203,7 +222,7 @@ export const createConnectionSchema = z.object({
     .string()
     .refine(
       isAllowedCredentialEnvVar,
-      "credentialEnvVar yalnız MAS_INTEGRATION_* veya PARASUT_* önekli olabilir.",
+      "credentialEnvVar yalnız MAS_INTEGRATION_*, PARASUT_*, OPENBANKING_*, EINVOICE_* veya POS_* önekli olabilir.",
     )
     .optional(),
   config: connectionConfigSchema.default({}),

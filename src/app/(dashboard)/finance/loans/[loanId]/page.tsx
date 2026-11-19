@@ -3,20 +3,29 @@ import { notFound } from "next/navigation";
 import { getPool } from "@/lib/db";
 import { loadLoanInstallments, loadLoans } from "@/lib/financing/engine";
 import { Badge, STATUS_TONE } from "@/components/ui/badge";
-import { Panel, fmtTL } from "@/components/ui/panel";
+import { Panel } from "@/components/ui/panel";
 import { markInstallmentPaidAction } from "@/app/(dashboard)/finance/actions";
 import { requireRouteAccess } from "@/lib/authz/route-guard";
-
+import { formatMoney } from "@/lib/money-format";
 import { istanbulDateISO } from "@/lib/reports/rules";
 
 export const dynamic = "force-dynamic";
 
-// Must match LOAN_INSTALLMENT_PAYABLE_FROM in src/lib/financing/engine.ts — the statuses
-// markInstallmentPaid accepts, mirroring 0110's trigger allow-list.
 const PAYABLE_FROM = new Set(["planned", "late", "unpaid", "partial"]);
 
-const fmt0 = (v: number | null) =>
-  v != null ? new Intl.NumberFormat("tr-TR", { maximumFractionDigits: 0 }).format(v) : "—";
+const LOAN_KIND_LABELS: Record<string, string> = {
+  installment: "Taksitli Kredi (300/400)",
+  spot: "Spot Kredi (300)",
+  revolving: "Rotatif Kredi (300)",
+  leasing: "Finansal Kiralama (301/302)",
+};
+
+const INTEREST_TYPE_LABELS: Record<string, string> = {
+  fixed: "Sabit Faiz",
+  floating_tlref: "TLREF + Spread",
+  floating_sofr: "SOFR + Spread",
+  floating_euribor: "EURIBOR + Spread",
+};
 
 export default async function LoanDetailPage({
   params,
@@ -32,23 +41,33 @@ export default async function LoanDetailPage({
   if (!loan) notFound();
   const installments = await loadLoanInstallments(pool, loanId);
 
+  const cur = loan.currency || "TRY";
+  const fmt = (v: number | null | undefined) => (v != null ? formatMoney(v, cur) : "—");
+
   const today = istanbulDateISO();
   const head: Array<[string, string]> = [
-    ["ANAPARA", fmt0(loan.principal)],
-    ["TOPLAM ÖDEME", fmt0(loan.totalPayment)],
-    ["FİNANSMAN MALİYETİ", fmt0(loan.totalFinanceCost)],
-    ["TAKSİT", fmt0(loan.installmentAmount)],
-    ["VADE", `${loan.termMonths ?? "—"} ay`],
+    ["ANAPARA", fmt(loan.principal)],
+    ["TOPLAM ÖDEME", fmt(loan.totalPayment)],
+    ["FİNANSMAN MALİYETİ", fmt(loan.totalFinanceCost)],
+    ["TEMSİLİ TAKSİT", fmt(loan.installmentAmount)],
+    ["VADE / DÖVİZ", `${loan.termMonths ?? loan.installmentCount ?? "—"} ay · ${cur}`],
   ];
 
   return (
-    <>
+    <div className="space-y-4">
       <Panel
         title={loan.name}
         right={
-          <Link href="/finance" className="font-mono text-[10px] uppercase text-tone-2 underline underline-offset-2">
-            ← çek/kredi
-          </Link>
+          <div className="flex items-center gap-2">
+            <Badge tone="blue">{LOAN_KIND_LABELS[loan.loanKind ?? "installment"] ?? loan.loanKind ?? "installment"}</Badge>
+            <Badge tone="neutral">{INTEREST_TYPE_LABELS[loan.interestType ?? "fixed"] ?? loan.interestType ?? "fixed"}</Badge>
+            <Link
+              href="/finance/loans"
+              className="font-mono text-[10px] uppercase text-tone-2 underline underline-offset-2"
+            >
+              ← krediler
+            </Link>
+          </div>
         }
       >
         <div className="grid grid-cols-2 gap-2 sm:grid-cols-5">
@@ -65,11 +84,18 @@ export default async function LoanDetailPage({
         </div>
         <div className="mt-2 flex flex-wrap items-center gap-3 font-mono text-[10px] text-tone-3">
           <span>
-            ilk ödeme: {loan.firstPaymentDate ?? "—"} · uygulanan faiz %{loan.appliedRate ?? "—"} · aylık maliyet %
-            {loan.monthlyCostRate ?? "—"}
+            ilk ödeme: {loan.firstPaymentDate ?? "—"} · aylık faiz:{" "}
+            {loan.appliedRate != null ? `%${(loan.appliedRate * 100).toFixed(2)}` : "—"} · aylık maliyet:{" "}
+            {loan.monthlyCostRate != null ? `%${(loan.monthlyCostRate * 100).toFixed(2)}` : "—"}
           </span>
+          {loan.bsmvRate != null || loan.kkdfRate != null ? (
+            <span>
+              BSMV: %{((loan.bsmvRate ?? 0) * 100).toFixed(1)} · KKDF: %
+              {((loan.kkdfRate ?? 0) * 100).toFixed(1)}
+            </span>
+          ) : null}
           <span>
-            kalan: {loan.remainingCount}/{loan.installmentsLoaded} taksit · {fmtTL(loan.remainingAmount)}
+            kalan: {loan.remainingCount}/{loan.installmentsLoaded} taksit · {fmt(loan.remainingAmount)}
           </span>
           {loan.sourceWorkbookId && loan.sourceSheetId && (
             <Link
@@ -82,7 +108,7 @@ export default async function LoanDetailPage({
         </div>
       </Panel>
 
-      <Panel title={`TAKSİT PLANI — ${installments.length} (vadeler türetildi)`}>
+      <Panel title={`AMORTİSMAN & TAKSİT PLANI — ${installments.length} TAKSİT (${cur})`}>
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
             <thead>
@@ -91,8 +117,10 @@ export default async function LoanDetailPage({
                 <th className="py-1 pr-2">vade</th>
                 <th className="py-1 pr-2 text-right">taksit</th>
                 <th className="py-1 pr-2 text-right">anapara</th>
-                <th className="py-1 pr-2 text-right">faiz</th>
-                <th className="py-1 pr-2 text-right">vergi (KKDF+BSMV)</th>
+                <th className="py-1 pr-2 text-right">faiz (780)</th>
+                <th className="py-1 pr-2 text-right">BSMV</th>
+                <th className="py-1 pr-2 text-right">KKDF</th>
+                <th className="py-1 pr-2 text-right">toplam vergi</th>
                 <th className="py-1">durum</th>
                 <th className="py-1 pl-2">işlem</th>
               </tr>
@@ -104,10 +132,12 @@ export default async function LoanDetailPage({
                   <tr key={i.id} className="border-b border-line-faint">
                     <td className="py-1 pr-2 font-mono text-xs text-tone-3">{i.no}</td>
                     <td className={`py-1 pr-2 font-mono text-xs ${overdue ? "text-neg" : ""}`}>{i.dueDate}</td>
-                    <td className="py-1 pr-2 text-right font-mono tabular-nums">{fmt0(i.amount)}</td>
-                    <td className="py-1 pr-2 text-right font-mono tabular-nums text-tone-2">{fmt0(i.principal)}</td>
-                    <td className="py-1 pr-2 text-right font-mono tabular-nums text-tone-2">{fmt0(i.interest)}</td>
-                    <td className="py-1 pr-2 text-right font-mono tabular-nums text-tone-2">{fmt0(i.tax)}</td>
+                    <td className="py-1 pr-2 text-right font-mono tabular-nums">{fmt(i.amount)}</td>
+                    <td className="py-1 pr-2 text-right font-mono tabular-nums text-tone-2">{fmt(i.principal)}</td>
+                    <td className="py-1 pr-2 text-right font-mono tabular-nums text-tone-2">{fmt(i.interest)}</td>
+                    <td className="py-1 pr-2 text-right font-mono tabular-nums text-tone-3">{fmt(i.bsmv)}</td>
+                    <td className="py-1 pr-2 text-right font-mono tabular-nums text-tone-3">{fmt(i.kkdf)}</td>
+                    <td className="py-1 pr-2 text-right font-mono tabular-nums text-tone-2">{fmt(i.tax)}</td>
                     <td className="py-1">
                       <Badge tone={STATUS_TONE[i.status] ?? "neutral"}>{overdue ? "gecikmiş" : i.status}</Badge>
                     </td>
@@ -116,8 +146,6 @@ export default async function LoanDetailPage({
                         <form action={markInstallmentPaidAction} className="flex items-center gap-1">
                           <input type="hidden" name="id" value={i.id} />
                           <input type="hidden" name="backTo" value={`/finance/loans/${loanId}`} />
-                          {/* Empty = "paid today"; a past installment can be back-dated to its
-                              real payment date rather than silently stamped with now(). */}
                           <input
                             type="date"
                             name="paidAt"
@@ -135,6 +163,6 @@ export default async function LoanDetailPage({
           </table>
         </div>
       </Panel>
-    </>
+    </div>
   );
 }

@@ -215,7 +215,7 @@ function externalAssumptionFact(a: ExternalAssumption): DecisionFact {
     explanation: `Onaylı dış varsayım: ${a.label}. Kaynak: ${a.source_name} / ${a.source_date}.${period} Finansal kayıt değiştirmez.`,
     confidence: "source",
     freshness: a.source_date,
-    sourceHref: "/assumptions",
+    sourceHref: "/data/assumptions",
   };
 }
 
@@ -316,7 +316,7 @@ export async function loadDecisionFacts(pool: Pool, todayISO = istanbulDateISO()
       explanation: overdue.length > 0 ? "Açık/gecikmiş ödeme aksiyonu gerekiyor." : "Gecikmiş açık ödeme yok.",
       confidence: "source",
       freshness: todayISO,
-      sourceHref: "/radar",
+      sourceHref: "/payments",
     },
     {
       key: "missing_amount_count",
@@ -326,7 +326,7 @@ export async function loadDecisionFacts(pool: Pool, todayISO = istanbulDateISO()
       explanation: "Eksik tutar bilinmeyendir; hiçbir hesapta 0 sayılmaz.",
       confidence: "source",
       freshness: todayISO,
-      sourceHref: "/radar",
+      sourceHref: "/payments/missing",
     },
     {
       key: "debt_pressure_months",
@@ -336,7 +336,7 @@ export async function loadDecisionFacts(pool: Pool, todayISO = istanbulDateISO()
       explanation: "Çek/kredi yükünün negatif kasa ile üst üste geldiği aylar.",
       confidence: "calculated",
       freshness: todayISO,
-      sourceHref: "/financing",
+      sourceHref: "/finance",
     },
     {
       key: "check_maturity_30d",
@@ -346,7 +346,7 @@ export async function loadDecisionFacts(pool: Pool, todayISO = istanbulDateISO()
       explanation: "Önümüzdeki 30 gün içindeki açık çek çıkışları.",
       confidence: "source",
       freshness: todayISO,
-      sourceHref: "/financing",
+      sourceHref: "/finance/checks",
     },
     {
       key: "loan_service_30d",
@@ -356,7 +356,7 @@ export async function loadDecisionFacts(pool: Pool, todayISO = istanbulDateISO()
       explanation: "Önümüzdeki 30 gün içindeki kredi taksit yükü.",
       confidence: "source",
       freshness: todayISO,
-      sourceHref: "/financing",
+      sourceHref: "/finance/loans",
     },
     {
       key: "top_customer_concentration",
@@ -366,14 +366,14 @@ export async function loadDecisionFacts(pool: Pool, todayISO = istanbulDateISO()
       explanation: "Nakit girişlerinin tek müşteriye bağlılık oranı.",
       confidence: "calculated",
       freshness: todayISO,
-      sourceHref: "/cashflow",
+      sourceHref: "/cashflow/concentration",
     },
     {
       key: "production_margin_loss",
       title: "Zararına üretim fiyatı",
       value: String(marginLossCount),
       severity: countSeverity(marginLossCount, 1, 3),
-      explanation: "Akon TL/dk fiyatı, ilgili maliyet modelinin başabaşının altında kalan operasyonlar.",
+      explanation: "Müşteri kontrat TL/dk tarifesi, ilgili maliyet modelinin başabaşının altında kalan operasyonlar.",
       confidence: "calculated",
       freshness: todayISO,
       sourceHref: "/production",
@@ -386,7 +386,7 @@ export async function loadDecisionFacts(pool: Pool, todayISO = istanbulDateISO()
       explanation: "Kapasite TL/dk oranı güncel yılın gerisinde kalan modeller.",
       confidence: "needs_review",
       freshness: todayISO,
-      sourceHref: "/production",
+      sourceHref: "/production/capacity",
     },
     {
       key: "unresolved_review_count",
@@ -396,7 +396,7 @@ export async function loadDecisionFacts(pool: Pool, todayISO = istanbulDateISO()
       explanation: "Karar almayı engelleyebilecek açık/ret mapping review kayıtları.",
       confidence: "source",
       freshness: todayISO,
-      sourceHref: "/imports",
+      sourceHref: "/data/imports",
     },
   ];
 

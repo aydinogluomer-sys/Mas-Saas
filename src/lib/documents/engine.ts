@@ -78,6 +78,8 @@ export interface DocumentRow {
   byteSize: number | null;
   mimeType: string | null;
   uploadedAt: string | null;
+  storageBackend: string;
+  extractedMetadata: Record<string, unknown> | null;
 }
 
 const mapDoc = (x: Record<string, unknown>): DocumentRow => ({
@@ -93,7 +95,36 @@ const mapDoc = (x: Record<string, unknown>): DocumentRow => ({
   byteSize: x.byte_size == null ? null : Number(x.byte_size),
   mimeType: (x.mime_type as string | null) ?? null,
   uploadedAt: (x.uploaded_at as string | null) ?? null,
+  storageBackend: (x.storage_backend as string | null) ?? "local_cas",
+  extractedMetadata:
+    x.extracted_metadata && typeof x.extracted_metadata === "object"
+      ? (x.extracted_metadata as Record<string, unknown>)
+      : null,
 });
+
+function buildExtractedMetadata(
+  bytes: Buffer,
+  cleanName: string,
+  mimeType: string,
+  sha256Hex: string,
+): Record<string, unknown> {
+  const base: Record<string, unknown> = {
+    filename: cleanName,
+    mimeType,
+    sizeBytes: bytes.byteLength,
+    sha256Prefix: sha256Hex.slice(0, 16),
+  };
+  if (mimeType.includes("xml") || cleanName.toLowerCase().endsWith(".xml")) {
+    const snippet = bytes.subarray(0, 16384).toString("utf8");
+    const invId = snippet.match(/<(?:[A-Za-z0-9_]+:)?ID>([^<]{3,40})<\/(?:[A-Za-z0-9_]+:)?ID>/)?.[1]?.trim();
+    const issueDate = snippet.match(/<(?:[A-Za-z0-9_]+:)?IssueDate>(\d{4}-\d{2}-\d{2})<\/(?:[A-Za-z0-9_]+:)?IssueDate>/)?.[1];
+    const payable = snippet.match(/<(?:[A-Za-z0-9_]+:)?PayableAmount[^>]*>([^<]+)<\/(?:[A-Za-z0-9_]+:)?PayableAmount>/)?.[1]?.trim();
+    if (invId) base.invoiceNo = invId;
+    if (issueDate) base.issueDate = issueDate;
+    if (payable) base.payableAmount = payable;
+  }
+  return base;
+}
 
 export async function createDocument(
   pool: Pool,
@@ -178,10 +209,27 @@ export async function addVersion(
     if (docLock.rowCount === 0) {
       throw new DomainError("NOT_FOUND", "Doküman kaydı bulunamadı.");
     }
-    await client.query(`update public.documents set original_filename = $2 where id = $1`, [
-      documentId,
-      cleanName,
-    ]);
+    const storageBackend = process.env.MAS_S3_WORM_BUCKET ? "s3_worm" : "local_cas";
+    const extractedMeta = buildExtractedMetadata(bytes, cleanName, mimeType, stored.sha256);
+    await client.query("savepoint doc_meta_0119_sp");
+    try {
+      await client.query(
+        `update public.documents
+            set original_filename = $2,
+                storage_backend = $3,
+                extracted_metadata = coalesce(extracted_metadata, '{}'::jsonb) || $4::jsonb
+          where id = $1`,
+        [documentId, cleanName, storageBackend, JSON.stringify(extractedMeta)],
+      );
+      await client.query("release savepoint doc_meta_0119_sp");
+    } catch {
+      await client.query("rollback to savepoint doc_meta_0119_sp");
+      await client.query("release savepoint doc_meta_0119_sp");
+      await client.query(`update public.documents set original_filename = $2 where id = $1`, [
+        documentId,
+        cleanName,
+      ]);
+    }
 
     const next = await client.query<{ v: number }>(
       `select coalesce(max(version_no), 0) + 1 as v from public.attachments where document_id = $1`,
@@ -406,17 +454,35 @@ export async function linkDocument(
 }
 
 export async function listDocuments(pool: Pool, limit = 100): Promise<DocumentRow[]> {
-  const res = await pool.query(
-    `select document_id, title, doc_type, tags, status, version_no, original_filename,
-            file_sha256, byte_size, mime_type,
-            to_char(uploaded_at at time zone 'Europe/Istanbul','YYYY-MM-DD HH24:MI') as uploaded_at,
-            version_count
-       from public.document_current_version
-      order by uploaded_at desc nulls last, title
-      limit $1`,
-    [limit],
-  );
-  return res.rows.map(mapDoc);
+  try {
+    const res = await pool.query(
+      `select v.document_id, v.title, v.doc_type, v.tags, v.status, v.version_no, v.original_filename,
+              v.file_sha256, v.byte_size, v.mime_type,
+              to_char(v.uploaded_at at time zone 'Europe/Istanbul','YYYY-MM-DD HH24:MI') as uploaded_at,
+              v.version_count,
+              d.storage_backend,
+              d.extracted_metadata
+         from public.document_current_version v
+         join public.documents d on d.id = v.document_id
+        where d.archived_at is null
+        order by v.uploaded_at desc nulls last, v.title
+        limit $1`,
+      [limit],
+    );
+    return res.rows.map(mapDoc);
+  } catch {
+    const res = await pool.query(
+      `select document_id, title, doc_type, tags, status, version_no, original_filename,
+              file_sha256, byte_size, mime_type,
+              to_char(uploaded_at at time zone 'Europe/Istanbul','YYYY-MM-DD HH24:MI') as uploaded_at,
+              version_count
+         from public.document_current_version
+        order by uploaded_at desc nulls last, title
+        limit $1`,
+      [limit],
+    );
+    return res.rows.map(mapDoc);
+  }
 }
 
 export async function listRecentDocumentLinks(pool: Pool, limit = 50) {

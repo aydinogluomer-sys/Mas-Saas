@@ -9,10 +9,34 @@ import { providerFor } from "@/lib/fx/provider";
 import { parseTcmbXml } from "@/lib/fx/rules";
 import { moneyOrNull } from "@/lib/money";
 import {
+  integratorEInvoiceConnector,
+  isGibSpecialIntegratorProvider,
+} from "@/lib/integrations/einvoice/integrator-connector";
+import {
+  applyPain002StatusToPaymentRun,
+  parsePain002StatusReport,
+} from "@/lib/integrations/open-banking/pain002-status-parser";
+import {
+  isTurkishOpenBankingProvider,
+  turkishBankConnector,
+} from "@/lib/integrations/open-banking/turkish-bank-connector";
+import {
+  isPosSettlementProvider,
+  posSettlementConnector,
+} from "@/lib/integrations/pos/pos-settlement-connector";
+import {
   computeCrossChannelDedupeHash,
   normalizeParasutCurrency,
   parasutConnector,
 } from "./parasut/mappers";
+
+export {
+  applyPain002StatusToPaymentRun,
+  integratorEInvoiceConnector,
+  parsePain002StatusReport,
+  posSettlementConnector,
+  turkishBankConnector,
+};
 import type {
   ConnectorContext,
   HttpClient,
@@ -96,6 +120,12 @@ export function mapBankPayload(raw: unknown): BankTransactionPayload[] {
 }
 
 export function bankApiConnector(provider = "generic"): IntegrationConnector {
+  if (isPosSettlementProvider(provider)) {
+    return posSettlementConnector(provider);
+  }
+  if (isTurkishOpenBankingProvider(provider)) {
+    return turkishBankConnector(provider);
+  }
   return {
     kind: "bank_api",
     provider,
@@ -271,6 +301,9 @@ export function mapEInvoicePayload(raw: unknown): EInvoicePayload[] {
 }
 
 export function eInvoiceConnector(provider = "generic"): IntegrationConnector {
+  if (isGibSpecialIntegratorProvider(provider)) {
+    return integratorEInvoiceConnector(provider);
+  }
   return {
     kind: "einvoice",
     provider,
@@ -423,6 +456,8 @@ export function connectorFor(kind: string, provider?: string): IntegrationConnec
       return tcmbConnector();
     case "bank_api":
       return bankApiConnector(provider ?? "generic");
+    case "pos_settlement":
+      return posSettlementConnector(provider ?? "iyzico");
     case "einvoice":
       return eInvoiceConnector(provider ?? "generic");
     case "accounting":

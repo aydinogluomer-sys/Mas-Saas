@@ -8,6 +8,7 @@ import { loadOptimizationRuns, loadRecommendations } from "@/lib/optimization/en
 import { RULE_LABEL, type RuleCode } from "@/lib/optimization/rules";
 import { estimateOptimizationCandidates } from "@/lib/scenarios/engine";
 import {
+  executeOptimizationPlanAction,
   requestOptimizationApprovalAction,
   runLiquidityOptimizationAction,
   runOptimizationCandidateAction,
@@ -33,7 +34,7 @@ const ACTION_KIND_LABEL_TR: Record<string, string> = {
 export default async function OptimizationPage({
   searchParams,
 }: {
-  searchParams: Promise<{ runId?: string }>;
+  searchParams: Promise<{ runId?: string; executed?: string }>;
 }) {
   const denied = await requireRouteAccess("/scenarios/optimization");
   if (denied) return denied;
@@ -59,9 +60,15 @@ export default async function OptimizationPage({
         subtitle="Deterministik nakit tabanı çözücüsü (Faz 29/46) ve makro senaryo adayları; kaynak kayıtları doğrudan değiştirmez, onay kuyruğuna öneri üretir."
       />
 
+      {sp.executed === "1" ? (
+        <div className="rounded border border-pos/40 bg-pos/10 px-3 py-2 text-xs text-pos">
+          Onaylı optimizasyon planı başarıyla icra edildi: seçili vade revizyonları ve taslak ödeme paketi (`payment_runs`) oluşturuldu.
+        </div>
+      ) : null}
+
       <Panel
-        title="DETERMİNİSTİK LİKİDİTE OPTİMİZASYON ÇÖZÜCÜSÜ (FAZ 29 / FAZ 46)"
-        subtitle="Ödeme takvimi, çek vadeleri, kredi taksitleri, açık alım faturaları ve kullanılabilir rotatif limitleri birlikte tarayarak asgari nakit tabanını koruyacak öneriler üretir."
+        title="91 GÜNLÜK (13 HAFTALIK) DETERMİNİSTİK LİKİDİTE OPTİMİZASYON ÇÖZÜCÜSÜ"
+        subtitle="91 günlük tüm ufuk boyunca nakit tabanı ihlallerini en düşük finansman/erteleme maliyetiyle çözer; /data/approvals onayı sonrası tek tıkla icra edilir."
       >
         <form action={runLiquidityOptimizationAction} className="grid grid-cols-1 gap-2 sm:grid-cols-6">
           <div className="sm:col-span-2">
@@ -69,8 +76,8 @@ export default async function OptimizationPage({
             <input
               type="text"
               name="name"
-              defaultValue={`90G Likidite Çözücü (${todayISO})`}
-              className="mt-0.5 w-full border border-line bg-ink px-2 py-1.5 font-mono text-xs text-tone-1"
+              defaultValue={`91G (13H) Likidite Çözücü (${todayISO})`}
+              className="field-control mt-0.5 w-full px-2 py-1.5 font-mono text-xs"
             />
           </div>
           <div>
@@ -78,7 +85,7 @@ export default async function OptimizationPage({
             <select
               name="objective"
               defaultValue="max_liquidity_buffer"
-              className="mt-0.5 w-full border border-line bg-ink px-2 py-1.5 font-mono text-xs text-tone-1"
+              className="field-control mt-0.5 w-full px-2 py-1.5 font-mono text-xs"
             >
               <option value="max_liquidity_buffer">Maksimum likidite tamponu</option>
               <option value="min_financing_cost">Minimum finansman maliyeti</option>
@@ -91,7 +98,7 @@ export default async function OptimizationPage({
               type="date"
               name="anchorDate"
               defaultValue={todayISO}
-              className="mt-0.5 w-full border border-line bg-ink px-2 py-1.5 font-mono text-xs text-tone-1"
+              className="field-control mt-0.5 w-full px-2 py-1.5 font-mono text-xs"
             />
           </div>
           <div className="grid grid-cols-2 gap-2">
@@ -102,8 +109,8 @@ export default async function OptimizationPage({
                 name="horizonDays"
                 min={7}
                 max={365}
-                defaultValue={90}
-                className="mt-0.5 w-full border border-line bg-ink px-2 py-1.5 font-mono text-xs text-tone-1"
+                defaultValue={91}
+                className="field-control mt-0.5 w-full px-2 py-1.5 font-mono text-xs"
               />
             </div>
             <div>
@@ -111,7 +118,7 @@ export default async function OptimizationPage({
               <select
                 name="currency"
                 defaultValue="TRY"
-                className="mt-0.5 w-full border border-line bg-ink px-2 py-1.5 font-mono text-xs text-tone-1"
+                className="field-control mt-0.5 w-full px-2 py-1.5 font-mono text-xs"
               >
                 <option value="TRY">TRY</option>
                 <option value="USD">USD</option>
@@ -187,14 +194,29 @@ export default async function OptimizationPage({
                         {activeRun.resultDigest?.slice(0, 24) ?? "—"}
                       </div>
                     </div>
-                    {activeRun.recommendationCount > 0 && !activeRun.approvalStatus && (
-                      <form action={requestOptimizationApprovalAction}>
-                        <input type="hidden" name="runId" value={activeRun.runId} />
-                        <button type="submit" className="button-accent px-2.5 py-1 text-xs">
-                          Onay Kuyruğuna Gönder
-                        </button>
-                      </form>
-                    )}
+                    <div className="flex flex-wrap items-center gap-2">
+                      {activeRun.recommendationCount > 0 && !activeRun.approvalStatus && (
+                        <form action={requestOptimizationApprovalAction}>
+                          <input type="hidden" name="runId" value={activeRun.runId} />
+                          <button type="submit" className="button-accent px-2.5 py-1 text-xs">
+                            Onay Kuyruğuna Gönder
+                          </button>
+                        </form>
+                      )}
+                      {activeRun.approvalStatus === "pending" && (
+                        <Link href="/data/approvals" className="button-ghost px-2.5 py-1 text-xs">
+                          Onay Kuyruğunda Aç →
+                        </Link>
+                      )}
+                      {activeRun.approvalStatus === "approved" && (
+                        <form action={executeOptimizationPlanAction}>
+                          <input type="hidden" name="runId" value={activeRun.runId} />
+                          <button type="submit" className="button-accent px-2.5 py-1 text-xs font-semibold">
+                            ✓ Onaylı Planı İcra Et (Vade Revizyonu + Ödeme Paketi)
+                          </button>
+                        </form>
+                      )}
+                    </div>
                   </div>
 
                   {activeRecs.length === 0 ? (

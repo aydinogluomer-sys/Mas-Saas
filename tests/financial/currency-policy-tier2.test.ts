@@ -51,7 +51,16 @@ describe("#11 briefing summariseDay", () => {
       { amount: null, direction: "outflow", currency: "TRY" },
       { amount: 40, direction: "inflow" }, // alan yok → yapısal TRY
     ]);
-    expect(s).toEqual({ knownOutflow: 100, knownInflow: 40, unknownCount: 1, foreignCount: 1 });
+    expect(s).toEqual({
+      knownOutflow: 100,
+      knownInflow: 40,
+      unknownCount: 1,
+      foreignCount: 1,
+      consolidatedOutflowTry: 100,
+      consolidatedInflowTry: 40,
+      convertedForeignCount: 0,
+      unconvertibleForeignCount: 1,
+    });
   });
 });
 

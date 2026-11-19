@@ -25,7 +25,7 @@ import { istanbulDateISO } from "@/lib/reports/rules";
 import { Badge, type Tone } from "@/components/ui/badge";
 import { Panel, fmtTL } from "@/components/ui/panel";
 import { PageHeader } from "@/components/ui/shell";
-import { allocateAction, applyFifoAllocationAction, reverseAllocationAction } from "./actions";
+import { allocateAction, applyFifoAllocationAction, offsetCounterpartyAction, reverseAllocationAction } from "./actions";
 import { requireRouteAccess } from "@/lib/authz/route-guard";
 
 export const dynamic = "force-dynamic";
@@ -82,6 +82,8 @@ export default async function ReceivablesPage({
     partySummariesRes,
     collectionAllocsRes,
     partiesListRes,
+    cashAccountsRes,
+    openInvoicesPairRes,
   ] = await Promise.all([
     loadReceivables(pool, LIST_LIMIT),
     loadReceivableTotals(pool, today),
@@ -162,7 +164,44 @@ export default async function ReceivablesPage({
         order by p.name
         limit 200`,
     ),
+    pool.query<{ id: string; name: string; currency: string }>(
+      `select id::text, name, currency
+         from public.cash_accounts
+        where is_active = true
+        order by name`,
+    ),
+    pool.query<{
+      id: string;
+      party_id: string;
+      party_name: string;
+      direction: string;
+      invoice_no: string;
+      currency: string;
+      open_amt: string;
+    }>(
+      `select i.id::text, i.party_id::text, p.name as party_name, i.direction, i.invoice_no, i.currency,
+              (coalesce(i.payable_amount, i.gross_amount) - greatest(coalesce(i.allocated_amount, 0), coalesce(i.paid_amount, 0)))::text as open_amt
+         from public.invoices i
+         join public.parties p on p.id = i.party_id
+        where i.status in ('open', 'partial')
+          and (coalesce(i.payable_amount, i.gross_amount) - greatest(coalesce(i.allocated_amount, 0), coalesce(i.paid_amount, 0))) > 0
+        order by p.name, i.issue_date
+        limit 200`,
+    ),
   ]);
+  const activeCashAccounts = cashAccountsRes.rows;
+  const openSalesForOffset = openInvoicesPairRes.rows.filter((r) => r.direction === "sales");
+  const openPurchasePartyIds = new Set(
+    openInvoicesPairRes.rows.filter((r) => r.direction === "purchase").map((r) => `${r.party_id}:${r.currency}`),
+  );
+  const bilateralSalesInvoices = openSalesForOffset.filter((r) =>
+    openPurchasePartyIds.has(`${r.party_id}:${r.currency}`),
+  );
+  const bilateralPurchaseInvoices = openInvoicesPairRes.rows.filter(
+    (r) =>
+      r.direction === "purchase" &&
+      bilateralSalesInvoices.some((s) => s.party_id === r.party_id && s.currency === r.currency),
+  );
 
   const partySummaries = partySummariesRes.rows.map((r) => ({
     partyId: r.party_id,
@@ -370,9 +409,16 @@ export default async function ReceivablesPage({
                           <select
                             name="settlementSource"
                             defaultValue="manual"
-                            className="max-w-44 rounded border border-line-faint bg-transparent px-1 py-0.5 text-xs"
+                            className="max-w-48 rounded border border-line bg-surface px-1 py-0.5 text-xs text-tone-1"
                           >
-                            <option value="manual">Manuel tahsilat</option>
+                            <option value="manual">Manuel tahsis (hesapsız)</option>
+                            {activeCashAccounts
+                              .filter((ca) => ca.currency === r.currency)
+                              .map((ca) => (
+                                <option key={`cash_accounts:${ca.id}`} value={`cash_accounts:${ca.id}`}>
+                                  Banka/Kasa: {ca.name} ({ca.currency})
+                                </option>
+                              ))}
                             {unallocatedInflows.map((u) => (
                               <option key={`${u.sourceTable}:${u.sourceId}`} value={`${u.sourceTable}:${u.sourceId}`}>
                                 {(u.description || u.sourceTable).slice(0, 24)} · {fmtTL(u.unallocatedAmount)}
@@ -699,6 +745,55 @@ export default async function ReceivablesPage({
               )}
             </div>
           ) : null}
+        </Panel>
+      </div>
+
+      <div className="mt-4">
+        <Panel
+          title="120 ↔ 320 ÇİFT YÖNLÜ CARİ MAHSUP PROTOKOLÜ (TDHP 320 / 120)"
+          subtitle="Hem müşteri (120) hem tedarikçi (320) açık bakiyesi bulunan carilerde yazılı mahsup protokolüyle çift taraflı fatura kapama ve muhasebe fişi"
+        >
+          {bilateralSalesInvoices.length === 0 ? (
+            <p className="py-2 text-xs text-tone-3">
+              Şu anda aynı dövizde hem açık satış (120) hem açık alış (320) faturası bulunan cari tespit edilmedi.
+            </p>
+          ) : (
+            <form action={offsetCounterpartyAction} className="grid grid-cols-1 gap-2 text-xs sm:grid-cols-5">
+              <select name="salesInvoiceId" required className="field-control text-xs">
+                <option value="">Satış Faturası (120 Alacak)…</option>
+                {bilateralSalesInvoices.map((inv) => (
+                  <option key={inv.id} value={inv.id}>
+                    {inv.party_name} · {inv.invoice_no} ({formatMoney(Number(inv.open_amt), inv.currency)})
+                  </option>
+                ))}
+              </select>
+              <select name="purchaseInvoiceId" required className="field-control text-xs">
+                <option value="">Alış Faturası (320 Borç)…</option>
+                {bilateralPurchaseInvoices.map((inv) => (
+                  <option key={inv.id} value={inv.id}>
+                    {inv.party_name} · {inv.invoice_no} ({formatMoney(Number(inv.open_amt), inv.currency)})
+                  </option>
+                ))}
+              </select>
+              <input
+                name="amount"
+                type="number"
+                step="0.01"
+                min="0.01"
+                required
+                placeholder="Mahsup Tutarı"
+                className="field-control font-mono text-xs"
+              />
+              <input
+                name="protocolNote"
+                placeholder="Protokol / mutabakat no"
+                className="field-control text-xs"
+              />
+              <button type="submit" className="button-accent px-3 py-1.5 text-xs font-medium">
+                120 ↔ 320 Mahsup Fişi Kes
+              </button>
+            </form>
+          )}
         </Panel>
       </div>
 

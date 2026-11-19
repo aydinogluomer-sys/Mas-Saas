@@ -6,6 +6,7 @@ import { requireRouteAccess } from "@/lib/authz/route-guard";
 import { getPool } from "@/lib/db";
 import { documentsForEntity } from "@/lib/documents/engine";
 import { moneyOrNull } from "@/lib/money";
+import { resolveEffectiveRecurrence } from "@/lib/radar/engine";
 import { PaymentForm, type PaymentFormValues } from "@/components/radar/payment-form";
 import { updatePaymentAction } from "../../actions";
 
@@ -36,17 +37,27 @@ export default async function EditPaymentPage({
   const pool = getPool();
   const [r, attachedDocs] = await Promise.all([
     pool.query(
-      `select id, name, recurrence_type, due_day, to_char(due_date,'YYYY-MM-DD') as due_date,
-              default_amount, amount_confidence, direction, priority, flexibility_class, status,
-              category_id, provider_party_id, owner_party_id, cash_account_id,
-              cost_center_id, project_id, department_id, description
-       from public.payments where id=$1`,
+      `select p.id, p.name, p.recurrence_type, p.source_notes, p.due_day,
+              to_char(p.due_date,'YYYY-MM-DD') as due_date,
+              p.default_amount, coalesce(p.currency, 'TRY') as currency,
+              p.amount_confidence, p.direction, p.priority, p.flexibility_class, p.status,
+              p.category_id, p.provider_party_id, p.owner_party_id, p.cash_account_id,
+              p.cost_center_id, p.project_id, p.department_id, p.description,
+              to_jsonb(p)->>'iban' as iban,
+              coalesce(to_jsonb(p)->>'tdhp_expense_code', '770') as tdhp_expense_code,
+              to_jsonb(p)->>'auto_match_vkn' as auto_match_vkn
+       from public.payments p where p.id=$1`,
       [paymentId],
     ),
     documentsForEntity(pool, "payments", paymentId),
   ]);
   if (r.rowCount === 0) notFound();
-  const v = { ...r.rows[0], default_amount: moneyOrNull(r.rows[0].default_amount) } as PaymentFormValues;
+  const row = r.rows[0];
+  const v = {
+    ...row,
+    recurrence_type: resolveEffectiveRecurrence(row.recurrence_type, row.source_notes),
+    default_amount: moneyOrNull(row.default_amount),
+  } as PaymentFormValues;
   return (
     <div className="space-y-4">
       <PaymentForm action={updatePaymentAction} values={v} error={sp.error} title={`DÜZENLE — ${v.name}`} />

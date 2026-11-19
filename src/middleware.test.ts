@@ -68,7 +68,6 @@ describe("matcher — yalnız oturumsuz gereken statik ve sağlık yolları dı�
     "/version",
     "/robots.txt",
     "/manifest.json",
-    "/sw.js",
     "/icon.svg",
     "/favicon.ico",
     "/_next/static/chunks/main.js",
@@ -82,6 +81,7 @@ describe("matcher — yalnız oturumsuz gereken statik ve sağlık yolları dı�
 
   const GATED = [
     "/",
+    "/sw.js",
     "/overview",
     "/finance/receivables",
     "/data/imports",

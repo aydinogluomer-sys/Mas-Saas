@@ -147,11 +147,11 @@ describe("db.ts — mutlu yol", () => {
     const client = lastClient();
 
     expect(texts(client)).toEqual([
-      "select set_config('app.user_id', $1, false)",
+      "select set_config('app.user_id', $1, false), set_config('app.current_legal_entity_id', $2, false)",
       "set role mas_radar_viewer",
       "select 1",
     ]);
-    expect(client.calls[0].values).toEqual([USER]);
+    expect(client.calls[0].values).toEqual([USER, ""]);
     expect(client.released).toEqual([undefined]);
   });
 
@@ -167,7 +167,7 @@ describe("db.ts — mutlu yol", () => {
     await getPool().query("select 3");
 
     const identityWrites = client.calls.filter((c) => c.text.startsWith("select set_config('app.user_id', $1"));
-    expect(identityWrites.map((c) => c.values)).toEqual([[USER], [USER], [OTHER]]);
+    expect(identityWrites.map((c) => c.values)).toEqual([[USER, ""], [USER, ""], [OTHER, ""]]);
     // The ROLE is still cached per connection: one switch for three checkouts in the same tier.
     expect(texts(client).filter((t) => t.startsWith("set role"))).toEqual(["set role mas_radar_viewer"]);
   });
@@ -191,11 +191,11 @@ describe("db.ts — runAsUser (Wave 0: asenkron önizleme işçisi, kişinin KEN
     const client = lastClient();
 
     expect(texts(client)).toEqual([
-      "select set_config('app.user_id', $1, false)",
+      "select set_config('app.user_id', $1, false), set_config('app.current_legal_entity_id', $2, false)",
       "set role mas_radar_finance_operator",
       "select 1",
     ]);
-    expect(client.calls[0].values).toEqual([OTHER]);
+    expect(client.calls[0].values).toEqual([OTHER, ""]);
   });
 
   it("bağlam yalnız fonksiyonun içinde geçerlidir; dışarıdaki istek kendi katmanına döner", async () => {

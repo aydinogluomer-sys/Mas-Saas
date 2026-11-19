@@ -1,8 +1,10 @@
 "use server";
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
+import { executeApprovedOptimizationRun } from "@/lib/approvals/engine";
 import { getPool } from "@/lib/db";
 import { createAndRun, deleteScenarioRun, estimateOptimizationCandidates, type ScenarioType } from "@/lib/scenarios/engine";
+import { runUnifiedDynamicScenario } from "@/lib/scenarios/unified-engine";
 import { requestOptimizationApproval, runOptimization } from "@/lib/optimization/engine";
 import type { ScenarioAssumptions } from "@/lib/scenarios/rules";
 import { requireActionPermission } from "@/lib/auth";
@@ -83,9 +85,56 @@ export async function runOptimizationCandidateAction(formData: FormData): Promis
   redirect(`/scenarios/${runId}`);
 }
 
+export async function runUnifiedScenarioAction(formData: FormData): Promise<void> {
+  const session = await requireActionPermission("scenario_runs", "insert", "/scenarios");
+  const name = String(formData.get("name") ?? "").trim() || "13H Birleşik Dinamik Senaryo";
+  const description = strFromForm(formData.get("description"));
+  const fxShockPct = numFromForm(formData.get("fxShockPct")) ?? 0;
+  const collectionDelayDays = Math.max(0, Math.round(numFromForm(formData.get("collectionDelayDays")) ?? 0));
+  const paymentDelayDays = Math.max(0, Math.round(numFromForm(formData.get("paymentDelayDays")) ?? 0));
+  const revenueDeltaPct = numFromForm(formData.get("revenueDeltaPct")) ?? 0;
+  const passThroughPct = Math.max(0, numFromForm(formData.get("passThroughPct")) ?? 0);
+  const expenseDeltaRaw = numFromForm(formData.get("expenseDeltaPct"));
+  const minCashBufferRaw = numFromForm(formData.get("minCashBufferTry"));
+
+  const autoDrawEntries = formData.getAll("autoDrawFacility").map((v) => String(v));
+  const autoDrawFacility =
+    autoDrawEntries.length === 0
+      ? true
+      : autoDrawEntries.includes("on") || autoDrawEntries.includes("true");
+
+  const useExternalEntries = formData.getAll("useExternalAssumptions").map((v) => String(v));
+  const useExternalAssumptions =
+    useExternalEntries.length === 0
+      ? true
+      : useExternalEntries.includes("on") || useExternalEntries.includes("true");
+
+  const { runId } = await runUnifiedDynamicScenario(
+    getPool(),
+    {
+      name,
+      description,
+      fxShockPct,
+      collectionDelayDays,
+      paymentDelayDays,
+      revenueDeltaPct,
+      passThroughPct,
+      expenseDeltaPct: expenseDeltaRaw ?? undefined,
+      minCashBufferTry: minCashBufferRaw ?? undefined,
+      autoDrawFacility,
+      useExternalAssumptions,
+    },
+    session.id,
+  );
+  revalidatePath("/scenarios");
+  revalidatePath("/scenarios/history");
+  revalidatePath("/scenarios/compare");
+  redirect(`/scenarios/${runId}`);
+}
+
 export async function runLiquidityOptimizationAction(formData: FormData): Promise<void> {
   const session = await requireActionPermission("optimization_runs", "insert", "/scenarios/optimization");
-  const name = String(formData.get("name") ?? "").trim() || "90 Günlük Likidite Çözücü";
+  const name = String(formData.get("name") ?? "").trim() || "91 Günlük (13H) Likidite Çözücü";
   const objectiveRaw = String(formData.get("objective") ?? "max_liquidity_buffer");
   const objective =
     objectiveRaw === "min_financing_cost" || objectiveRaw === "min_late_payment"
@@ -93,7 +142,7 @@ export async function runLiquidityOptimizationAction(formData: FormData): Promis
       : "max_liquidity_buffer";
   const anchorDate =
     String(formData.get("anchorDate") ?? "").trim() || new Date().toISOString().slice(0, 10);
-  const horizonDays = Math.min(365, Math.max(7, Number(formData.get("horizonDays") ?? 90) || 90));
+  const horizonDays = Math.min(365, Math.max(7, Number(formData.get("horizonDays") ?? 91) || 91));
   const currency = String(formData.get("currency") ?? "TRY").trim() || "TRY";
 
   const { runId } = await runOptimization(
@@ -114,4 +163,16 @@ export async function requestOptimizationApprovalAction(formData: FormData): Pro
   revalidatePath("/scenarios/optimization");
   revalidatePath("/data/approvals");
   redirect(`/scenarios/optimization?runId=${runId}`);
+}
+
+export async function executeOptimizationPlanAction(formData: FormData): Promise<void> {
+  const session = await requireActionPermission("optimization_runs", "update", "/scenarios/optimization");
+  const runId = String(formData.get("runId") ?? "").trim();
+  if (runId) {
+    await executeApprovedOptimizationRun(getPool(), { runId }, session.id);
+  }
+  revalidatePath("/scenarios/optimization");
+  revalidatePath("/payments");
+  revalidatePath("/cashflow");
+  redirect(`/scenarios/optimization?runId=${runId}&executed=1`);
 }

@@ -1,26 +1,27 @@
 import Link from "@/components/ui/app-link";
+import { getRequestUser } from "@/lib/auth";
+import { can } from "@/lib/authz/matrix";
+import { requireRouteAccess } from "@/lib/authz/route-guard";
 import { getPool } from "@/lib/db";
-import { createManualActionAction, setActionStatusAction } from "@/app/(dashboard)/data/quality/actions";
+import {
+  assignActionOwnerAction,
+  autoCloseSettledActionsAction,
+  createManualActionAction,
+  setActionStatusAction,
+} from "@/app/(dashboard)/data/quality/actions";
+import {
+  countSettledOpenActionItems,
+  listAssignableUsers,
+  loadTasksWithOwners,
+} from "@/lib/action-items/engine";
+import type { ActionStatus } from "@/lib/data-quality/rules";
 import { Badge, type Tone } from "@/components/ui/badge";
 import { Panel } from "@/components/ui/panel";
-import { PageHeader } from "@/components/ui/shell";
-import { requireRouteAccess } from "@/lib/authz/route-guard";
+import { EmptyState, KpiCard, PageHeader } from "@/components/ui/shell";
 
 export const dynamic = "force-dynamic";
 
-type Status = "open" | "in_progress" | "blocked" | "done" | "cancelled";
-type Task = {
-  id: string;
-  title: string;
-  severity: string;
-  owner: string | null;
-  due_date: string | null;
-  status: Status;
-  source_type: string;
-  source_href: string | null;
-  note: string | null;
-  created_at: string;
-};
+type Status = ActionStatus;
 
 const tones: Record<Status, Tone> = {
   open: "amber",
@@ -48,33 +49,59 @@ const SEVERITY_TR: Record<string, string> = {
 const SOURCE_TR: Record<string, string> = {
   manual: "manuel",
   home_cockpit: "ana ekran",
+  home_action: "ana ekran",
   ai_answer: "soru-cevap",
+  ai_response: "soru-cevap",
   report: "rapor",
   review: "inceleme",
+  mapping_review: "eşleştirme incelemesi",
   collection: "tahsilat",
 };
 
 export default async function TasksPage({
   searchParams,
 }: {
-  searchParams: Promise<{ status?: Status; q?: string }>;
+  searchParams: Promise<{
+    status?: Status | "all";
+    q?: string;
+    owner?: string;
+    autoClosed?: string;
+  }>;
 }) {
   const denied = await requireRouteAccess("/insights/tasks");
   if (denied) return denied;
+
+  const user = await getRequestUser();
+  const canUpdate = user ? can(user.role, "action_items", "update") : false;
+  const canCreate = user ? can(user.role, "action_items", "insert") : false;
+
   const sp = await searchParams;
-  const status = sp.status ?? "open";
+  const status: Status | "all" = sp.status ?? "open";
   const q = (sp.q ?? "").trim();
-  const r = await getPool().query<Task>(
-    `select id::text, title, severity, owner, to_char(due_date,'YYYY-MM-DD') due_date, status,
-            source_type, source_href, note,
-            to_char(created_at at time zone 'Europe/Istanbul','YYYY-MM-DD HH24:MI') created_at
-     from action_items
-     where ($1::text='all' or status=$1)
-       and ($2::text='' or title ilike '%'||$2||'%' or coalesce(note,'') ilike '%'||$2||'%')
-     order by case severity when 'critical' then 0 when 'high' then 1 when 'medium' then 2 else 3 end,
-              due_date nulls last, created_at desc`,
-    [status, q],
-  );
+  const ownerFilter = (sp.owner ?? "").trim();
+  const autoClosedParam = sp.autoClosed !== undefined ? Number(sp.autoClosed) : null;
+
+  const pool = getPool();
+  const [tasks, users, settledReadyCount] = await Promise.all([
+    loadTasksWithOwners(pool, { status, q, ownerUserId: ownerFilter }),
+    listAssignableUsers(pool),
+    countSettledOpenActionItems(pool),
+  ]);
+
+  const criticalOpenCount = tasks.filter(
+    (t) => (t.severity === "critical" || t.severity === "high") && t.status !== "done" && t.status !== "cancelled",
+  ).length;
+  const assignedCount = tasks.filter((t) => Boolean(t.owner_user_id || t.owner_display)).length;
+
+  const currentQuery = (nextStatus: Status | "all") => {
+    const params = new URLSearchParams();
+    params.set("status", nextStatus);
+    if (q) params.set("q", q);
+    if (ownerFilter) params.set("owner", ownerFilter);
+    return `/insights/tasks?${params.toString()}`;
+  };
+  const backHref = currentQuery(status);
+
   const tabs: [Status | "all", string][] = [
     ["open", "Açık"],
     ["in_progress", "Devam eden"],
@@ -86,87 +113,232 @@ export default async function TasksPage({
 
   return (
     <>
-      <PageHeader title="Görevler" subtitle="AI, rapor, veri incelemesi ve manuel aksiyonların ortak çalışma alanı" />
-      <Panel title="Filtreler">
-        <form className="flex flex-wrap gap-2">
-          <input name="q" defaultValue={q} placeholder="Görev ara" className="field-control min-w-56 p-2" />
+      <PageHeader
+        title="Görevler & Ekip Aksiyonları"
+        subtitle="AI, rapor, tahsilat eskalasyonu ve veri incelemelerinden üretilen kullanıcı bazlı (owner_user_id) görev panosu"
+        actions={
+          canUpdate ? (
+            <form action={autoCloseSettledActionsAction}>
+              <input type="hidden" name="backTo" value={backHref} />
+              <button className="button-ghost px-3 py-2 text-xs">
+                Ödenen Kayıt Görevlerini Otomatik Kapat
+                {settledReadyCount > 0 ? ` (${settledReadyCount})` : ""}
+              </button>
+            </form>
+          ) : undefined
+        }
+      />
+
+      {autoClosedParam !== null && !Number.isNaN(autoClosedParam) ? (
+        <div
+          className="mb-3 rounded-lg border px-4 py-3 text-sm"
+          style={{
+            borderColor: "var(--pos)",
+            background: "var(--surface-1)",
+            color: "var(--text-1)",
+          }}
+        >
+          Tahsilat/ödeme mutabakatı tamamlanan <b>{autoClosedParam}</b> görev otomatik olarak <b>tamamlandı</b> durumuna alındı ve denetim izine yazıldı.
+        </div>
+      ) : null}
+
+      {settledReadyCount > 0 && canUpdate ? (
+        <div
+          className="mb-3 flex flex-wrap items-center justify-between gap-2 rounded-lg border px-4 py-3 text-sm"
+          style={{
+            borderColor: "var(--warn)",
+            background: "var(--surface-2)",
+            color: "var(--text-1)",
+          }}
+        >
+          <span>
+            Bağlı faturası, çeki veya ödeme satırı kapanmış <b>{settledReadyCount}</b> açık görev tespit edildi (
+            <code>auto_close_on_settlement = true</code>).
+          </span>
+          <form action={autoCloseSettledActionsAction}>
+            <input type="hidden" name="backTo" value={backHref} />
+            <button className="button-accent px-3 py-1.5 text-xs">
+              Şimdi Otomatik Kapat ({settledReadyCount})
+            </button>
+          </form>
+        </div>
+      ) : null}
+
+      <div className="mb-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+        <KpiCard label="Listelenen Görev" value={String(tasks.length)} hint={`Filtre: ${status === "all" ? "Tümü" : STATUS_TR[status]}`} />
+        <KpiCard label="Kritik / Yüksek Öncelik" value={String(criticalOpenCount)} hint="Açık & takip bekleyen" />
+        <KpiCard label="Sorumlusu Atanmış" value={String(assignedCount)} hint={`${users.length} ekip kullanıcısı`} />
+        <KpiCard label="Otomatik Kapanmaya Hazır" value={String(settledReadyCount)} hint="Bağlı finansal kaydı kapanan" />
+      </div>
+
+      <Panel title="Filtreler & Ekip Sorumlusu">
+        <form className="flex flex-wrap items-center gap-2">
+          <input name="q" defaultValue={q} placeholder="Başlık, not veya sorumlu ara..." className="field-control min-w-56 p-2" />
+          <select name="owner" defaultValue={ownerFilter} className="field-control p-2">
+            <option value="">Tüm Sorumlular</option>
+            <option value="unassigned">Atanmamış Görevler</option>
+            {users.map((u) => (
+              <option key={u.id} value={u.id}>
+                {u.label}
+              </option>
+            ))}
+          </select>
           <input type="hidden" name="status" value={status} />
-          <button className="button-accent px-3 py-2">Ara</button>
+          <button className="button-accent px-3 py-2">Filtrele</button>
+          {(q || ownerFilter) && (
+            <Link href={`/insights/tasks?status=${status}`} className="button-ghost px-3 py-2 text-xs">
+              Sıfırla
+            </Link>
+          )}
         </form>
         <div className="mt-2 flex flex-wrap gap-2">
           {tabs.map(([v, l]) => (
             <Link
               key={v}
-              href={`/insights/tasks?status=${v}${q ? `&q=${encodeURIComponent(q)}` : ""}`}
-              className={status === v ? "button-accent px-2 py-1" : "button-ghost px-2 py-1"}
+              href={currentQuery(v)}
+              className={status === v ? "button-accent px-2.5 py-1 text-xs" : "button-ghost px-2.5 py-1 text-xs"}
             >
               {l}
             </Link>
           ))}
         </div>
       </Panel>
-      <div className="grid gap-3 lg:grid-cols-[1fr_320px]">
-        <Panel title={`${r.rows.length} görev`}>
-          {r.rows.map((a) => (
-            <div key={a.id} className="border-b border-line-faint py-3">
-              <div className="flex flex-wrap items-start justify-between gap-2">
-                <div>
-                  <div className="flex gap-2">
-                    <Badge tone={tones[a.status]}>{STATUS_TR[a.status] ?? a.status}</Badge>
-                    <Badge tone="neutral">{SEVERITY_TR[a.severity] ?? a.severity}</Badge>
-                    <span className="text-xs text-tone-3">{SOURCE_TR[a.source_type] ?? a.source_type}</span>
+
+      <div className="mt-3 grid gap-3 lg:grid-cols-[1fr_340px]">
+        <Panel title={`${tasks.length} görev`}>
+          {tasks.length === 0 ? (
+            <EmptyState
+              title="Seçili filtrede görev bulunamadı"
+              description="Yeni manuel görev ekleyebilir veya Raporlar / Soru-Cevap / Veri Kalitesi ekranlarından aksiyon üretebilirsiniz."
+            />
+          ) : (
+            tasks.map((a) => (
+              <div key={a.id} className="border-b border-line-faint py-3 last:border-b-0">
+                <div className="flex flex-wrap items-start justify-between gap-2">
+                  <div>
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      <Badge tone={tones[a.status]}>{STATUS_TR[a.status] ?? a.status}</Badge>
+                      <Badge tone={a.severity === "critical" || a.severity === "high" ? "red" : "neutral"}>
+                        {SEVERITY_TR[a.severity] ?? a.severity}
+                      </Badge>
+                      <span className="text-xs text-tone-3">{SOURCE_TR[a.source_type] ?? a.source_type}</span>
+                      {a.auto_close_on_settlement && a.related_entity_table ? (
+                        <Badge tone="blue">Tahsilatta Otomatik Kapanır</Badge>
+                      ) : null}
+                    </div>
+                    <b className="mt-1 block text-sm">{a.title}</b>
+                    <p className="mt-0.5 text-xs text-tone-3">
+                      Sorumlu: <b>{a.owner_display ?? "Atanmamış"}</b> · Vade: {a.due_date ?? "tarih yok"} · Oluşturma: {a.created_at}
+                      {a.related_entity_table ? ` · Bağlı kayıt: ${a.related_entity_table}` : ""}
+                    </p>
+                    {a.note && <p className="mt-1.5 whitespace-pre-line text-sm text-tone-2">{a.note}</p>}
                   </div>
-                  <b className="mt-1 block">{a.title}</b>
-                  <p className="text-xs text-tone-3">
-                    {a.owner ?? "atanmamış"} · {a.due_date ?? "tarih yok"} · {a.created_at}
-                  </p>
-                  {a.note && <p className="mt-1 text-sm text-tone-3">{a.note}</p>}
+                  {a.source_href && (
+                    <Link className="text-sm text-info" href={a.source_href}>
+                      Kaynağa git →
+                    </Link>
+                  )}
                 </div>
-                {a.source_href && (
-                  <Link className="text-sm text-info" href={a.source_href}>
-                    Kaynağa git →
-                  </Link>
+
+                {!(["done", "cancelled"] as string[]).includes(a.status) && canUpdate && (
+                  <div className="mt-2.5 flex flex-wrap items-center gap-2">
+                    <form action={assignActionOwnerAction} className="flex items-center gap-1">
+                      <input type="hidden" name="actionId" value={a.id} />
+                      <input type="hidden" name="backTo" value={backHref} />
+                      <select
+                        name="ownerUserId"
+                        defaultValue={a.owner_user_id ?? ""}
+                        className="field-control px-2 py-1 text-xs"
+                        aria-label="Sorumlu ata"
+                      >
+                        <option value="">— Sorumlu Seç —</option>
+                        {users.map((u) => (
+                          <option key={u.id} value={u.id}>
+                            {u.label}
+                          </option>
+                        ))}
+                      </select>
+                      <button className="button-ghost px-2 py-1 text-xs">Ata</button>
+                    </form>
+
+                    {(["in_progress", "blocked", "cancelled"] as Status[]).map((s) => (
+                      <form key={s} action={setActionStatusAction}>
+                        <input type="hidden" name="id" value={a.id} />
+                        <input type="hidden" name="status" value={s} />
+                        <input type="hidden" name="backTo" value={backHref} />
+                        <button className="button-ghost px-2 py-1 text-xs">
+                          {s === "in_progress" ? "Başlat" : s === "blocked" ? "Engelle" : "İptal"}
+                        </button>
+                      </form>
+                    ))}
+                    <form action={setActionStatusAction} className="flex gap-1">
+                      <input type="hidden" name="id" value={a.id} />
+                      <input type="hidden" name="status" value="done" />
+                      <input type="hidden" name="backTo" value={backHref} />
+                      <input
+                        name="completionNote"
+                        required
+                        placeholder="Kapanış notu"
+                        className="field-control w-40 px-2 py-1 text-xs"
+                      />
+                      <button className="button-accent px-2.5 py-1 text-xs">Tamamla</button>
+                    </form>
+                  </div>
                 )}
               </div>
-              {!(["done", "cancelled"] as string[]).includes(a.status) && (
-                <div className="mt-2 flex flex-wrap gap-1">
-                  {(["in_progress", "blocked", "cancelled"] as Status[]).map((s) => (
-                    <form key={s} action={setActionStatusAction}>
-                      <input type="hidden" name="id" value={a.id} />
-                      <input type="hidden" name="status" value={s} />
-                      <input type="hidden" name="backTo" value={`/insights/tasks?status=${status}`} />
-                      <button className="button-ghost px-2 py-1">
-                        {s === "in_progress" ? "Başlat" : s === "blocked" ? "Engelle" : "İptal"}
-                      </button>
-                    </form>
-                  ))}
-                  <form action={setActionStatusAction} className="flex gap-1">
-                    <input type="hidden" name="id" value={a.id} />
-                    <input type="hidden" name="status" value="done" />
-                    <input type="hidden" name="backTo" value={`/insights/tasks?status=${status}`} />
-                    <input name="completionNote" required placeholder="Kapanış notu" className="field-control w-40 px-2 py-1" />
-                    <button className="button-accent px-2 py-1">Tamamla</button>
-                  </form>
-                </div>
-              )}
-            </div>
-          ))}
+            ))
+          )}
         </Panel>
+
         <Panel title="Manuel görev oluştur">
-          <form action={createManualActionAction} className="space-y-2">
-            <input type="hidden" name="backTo" value={`/insights/tasks?status=${status}`} />
-            <input name="title" required placeholder="Görev başlığı" className="field-control w-full p-2" />
-            <select name="severity" defaultValue="medium" className="field-control w-full p-2">
-              <option value="critical">Kritik</option>
-              <option value="high">Yüksek</option>
-              <option value="medium">Orta</option>
-              <option value="low">Düşük</option>
-            </select>
-            <input name="owner" placeholder="Sorumlu" className="field-control w-full p-2" />
-            <input name="dueDate" type="date" className="field-control w-full p-2" />
-            <textarea name="note" rows={3} placeholder="Not" className="field-control w-full p-2" />
-            <button className="button-accent px-3 py-2">Oluştur</button>
-          </form>
+          {canCreate ? (
+            <form action={createManualActionAction} className="space-y-2.5">
+              <input type="hidden" name="backTo" value={backHref} />
+              <div>
+                <label className="mb-1 block text-xs text-tone-3">Görev Başlığı *</label>
+                <input name="title" required placeholder="Örn. 30+ gün gecikmiş fatura mutabakatı" className="field-control w-full p-2 text-sm" />
+              </div>
+              <div>
+                <label className="mb-1 block text-xs text-tone-3">Öncelik</label>
+                <select name="severity" defaultValue="medium" className="field-control w-full p-2 text-sm">
+                  <option value="critical">Kritik</option>
+                  <option value="high">Yüksek</option>
+                  <option value="medium">Orta</option>
+                  <option value="low">Düşük</option>
+                </select>
+              </div>
+              <div>
+                <label className="mb-1 block text-xs text-tone-3">Ekip Sorumlusu (Kullanıcı Hesabı)</label>
+                <select name="ownerUserId" defaultValue={user?.id ?? ""} className="field-control w-full p-2 text-sm">
+                  <option value="">— Kullanıcı Seçilmedi —</option>
+                  {users.map((u) => (
+                    <option key={u.id} value={u.id}>
+                      {u.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="mb-1 block text-xs text-tone-3">Alternatif Sorumlu Etiketi (Opsiyonel)</label>
+                <input name="owner" placeholder="Dış danışman / departman adı" className="field-control w-full p-2 text-sm" />
+              </div>
+              <div>
+                <label className="mb-1 block text-xs text-tone-3">Hedef Vade Tarihi</label>
+                <input name="dueDate" type="date" className="field-control w-full p-2 text-sm" />
+              </div>
+              <label className="flex items-center gap-2 text-xs text-tone-2">
+                <input type="checkbox" name="autoCloseOnSettlement" defaultChecked />
+                Bağlı finansal kayıt ödendiğinde otomatik kapat
+              </label>
+              <div>
+                <label className="mb-1 block text-xs text-tone-3">Açıklama / Not</label>
+                <textarea name="note" rows={3} placeholder="Görev detayı veya mutabakat referansı" className="field-control w-full p-2 text-sm" />
+              </div>
+              <button className="button-accent w-full px-3 py-2 text-sm">Görevi Oluştur</button>
+            </form>
+          ) : (
+            <p className="text-sm text-tone-3">Manuel görev oluşturmak için operatör veya yönetici yetkisi gereklidir.</p>
+          )}
         </Panel>
       </div>
     </>

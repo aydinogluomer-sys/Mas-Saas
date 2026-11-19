@@ -227,19 +227,22 @@ async function main(): Promise<void> {
   /* ── 5. working capital ─────────────────────────────────────────────────────────────── */
   const inventoryTables = await q(
     `select count(*)::int n from information_schema.tables
-     where table_schema='public' and (table_name ilike '%invent%' or table_name ilike '%stock%')`);
-  record("ÖLÇÜLDÜ: şemada envanter tablosu YOK (DIO hesaplanamaz)",
-    Number(inventoryTables[0].n) === 0, "stok/envanter tablosu yok");
+     where table_schema='public' and table_name in ('inventory_items', 'inventory_movements')`);
+  record("ÖLÇÜLDÜ: Faz 60 (0118) stok tabloları (inventory_items & inventory_movements) mevcut",
+    Number(inventoryTables[0].n) === 2, `${inventoryTables[0].n}/2 stok tablosu aktif`);
 
-  const wc = await q(
-    `select dso_days, dpo_days, dio_days, dio_unmeasurable_reason,
-            cash_conversion_cycle_days, ccc_unmeasurable_reason, cash_cycle_excluding_inventory
-     from public.working_capital_metrics limit 1`);
-  record("DIO NULL ve gerekçeli — sıfır sayılmıyor",
-    wc[0].dio_days === null && wc[0].dio_unmeasurable_reason === "no_inventory_data",
+  const wcEmpty = await inRollback(async (c) => {
+    await c.query(`update public.inventory_items set is_active = false`);
+    return (await c.query(
+      `select dso_days, dpo_days, dio_days, dio_unmeasurable_reason,
+              cash_conversion_cycle_days, ccc_unmeasurable_reason, cash_cycle_excluding_inventory
+       from public.working_capital_metrics limit 1`)).rows;
+  });
+  record("aktif stok yokken DIO NULL ve gerekçeli — sıfır sayılmıyor",
+    wcEmpty[0].dio_days === null && wcEmpty[0].dio_unmeasurable_reason === "no_inventory_data",
     "DIO'yu 0 saymak döngüyü malzeme tutulan gün kadar KISALTIR, yani daha iyi gösterir");
-  record("CCC de NULL ve gerekçeli (üç terimden biri bilinmiyor)",
-    wc[0].cash_conversion_cycle_days === null && wc[0].ccc_unmeasurable_reason === "dio_unknown",
+  record("aktif stok yokken CCC de NULL ve gerekçeli (üç terimden biri bilinmiyor)",
+    wcEmpty[0].cash_conversion_cycle_days === null && wcEmpty[0].ccc_unmeasurable_reason === "dio_unknown",
     "iki terimden üç terimli bir metrik uydurulmuyor");
 
   const wcMath = await inRollback(async (c) => {

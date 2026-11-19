@@ -425,7 +425,7 @@ const writeLoan: FamilyWriter = async (ctx, row, entityId) => {
     total_finance_cost: num(v.finansman_maliyeti),
     status: str(v.durum) ?? "active",
     notes: str(v.notlar),
-    ...lineage(ctx, false),   // loans tablosunda source_row_id yok
+    ...lineage(ctx, true),
   }, true);
 };
 
@@ -543,6 +543,7 @@ const writeCashflowLine: FamilyWriter = async (ctx, row, entityId) => {
     party_id: await resolveParty(ctx.client, v.karsi_taraf, "company"),
     label: str(v.aciklama) ?? str(v.satir_tipi) ?? "(açıklamasız kalem)",
     amount,
+    currency: str(v.para_birimi) ?? "TRY",
     // BOŞ ≠ SIFIR'ın bu tablodaki karşılığı. Tutar yoksa 'missing'; 0 yazılmışsa 'known'.
     amount_status: amount === null ? "missing" : "known",
     date_value: v.tarih ?? null,
@@ -810,6 +811,10 @@ const writeOrder: FamilyWriter = async (ctx, row, entityId) => {
     party_id: await resolveParty(ctx.client, v.karsi_taraf, "company"),
     project_id: projectCode ? await lookupExternalKey(ctx.client, "projects", projectCode) : null,
     order_date: v.siparis_tarihi ?? null,
+    expected_delivery_date: v.beklenen_tarih ?? null,
+    order_amount: num(v.toplam_tutar),
+    currency: str(v.para_birimi) ?? "TRY",
+    fulfillment_stage: str(v.durum) ?? "open",
     notes: str(v.notlar),
   }, true);
 };
@@ -823,7 +828,10 @@ const writeProduct: FamilyWriter = async (ctx, row, entityId) => {
     entityId ?? await findByNaturalKey(ctx.client, "products", { code }), {
     code,
     name: str(v.urun_adi) ?? "(adsız ürün)",
-    unit: str(v.birim),
+    unit: str(v.birim) ?? "ADET",
+    unit_cost: num(v.standart_maliyet),
+    unit_price: num(v.satis_fiyati),
+    currency: str(v.para_birimi) ?? "TRY",
     is_active: v.aktif === null || v.aktif === undefined ? true : Boolean(v.aktif),
     notes: str(v.notlar),
   }, true);
@@ -839,6 +847,11 @@ const writeProject: FamilyWriter = async (ctx, row, entityId) => {
     code,
     name: str(v.proje_adi) ?? "(adsız proje)",
     party_id: await resolveParty(ctx.client, v.musteri, "customer"),
+    contract_value: num(v.sozlesme_degeri),
+    budget_cost: num(v.butce_maliyeti),
+    currency: str(v.para_birimi) ?? "TRY",
+    start_date: v.baslangic_tarihi ?? null,
+    end_date: v.bitis_tarihi ?? null,
     notes: str(v.notlar),
   }, true);
 };
@@ -1550,7 +1563,10 @@ export async function mapWorkbook(
     result.reviewsOpened++;
   }
 
-  await client.query("update public.source_workbooks set status = 'mapped' where id = $1", [workbookId]);
+  const wbUpd = await client.query("update public.source_workbooks set status = 'mapped' where id = $1", [workbookId]);
+  if (wbUpd.rowCount !== 1) {
+    throw new Error(`UPDATE public.source_workbooks id=${workbookId} başarısız oldu.`);
+  }
 
   result.stagedOnlyFamilies = [...stagedOnly].sort();
 

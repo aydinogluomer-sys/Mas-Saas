@@ -1,4 +1,4 @@
-// Faz 16 — operational diagnostics. A separate sub-page in the pattern of system/security and
+// Faz 16 / Faz 62 — operational diagnostics. A separate sub-page in the pattern of system/security and
 // system/backup; it does NOT modify src/app/(dashboard)/system/page.tsx, which keeps its own
 // KPI role (app/db/version/decision confidence).
 //
@@ -6,6 +6,7 @@
 // set/unset), no financial rows, no connection strings, no tokens.
 import type { Pool } from "pg";
 import { getPool } from "@/lib/db";
+import { readExpectedSchemaManifest } from "@/lib/db/schema-parity";
 import { Panel } from "@/components/ui/panel";
 import { Badge } from "@/components/ui/badge";
 import { KpiCard, PageHeader, TableShell } from "@/components/ui/shell";
@@ -15,6 +16,7 @@ import { env, envPresence } from "@/lib/env";
 import {
   importStaleAlert,
   jobsStuckAlert,
+  ledgerAlert,
   reconciliationAlert,
   runtimeIdentityAlert,
 } from "@/lib/ops/telemetry-alerts";
@@ -29,15 +31,51 @@ export const dynamic = "force-dynamic";
 
 interface RoleIdentity {
   current_user: string;
+  session_user: string;
+  session_rolsuper: boolean | null;
+  session_rolbypassrls: boolean | null;
   rolsuper: boolean | null;
   rolbypassrls: boolean | null;
 }
 
 type MigrationLedger =
-  | { readable: true; version: string | null; applied_at: string | null; total: number }
+  | {
+      readable: true;
+      version: string | null;
+      applied_at: string | null;
+      total: number;
+      checksum_digest: string | null;
+    }
   | { readable: false; reason: string };
 
-async function readMigrationLedger(pool: Pool): Promise<MigrationLedger> {
+async function readLedgerSummary(pool: Pool): Promise<MigrationLedger> {
+  try {
+    const rpcRes = await pool.query<{
+      migration_count: number;
+      latest_version: string | null;
+      checksum_digest: string | null;
+      last_applied_at: string | null;
+    }>(
+      `select migration_count,
+              latest_version,
+              checksum_digest,
+              last_applied_at::text as last_applied_at
+         from public.get_schema_ledger_summary()`,
+    );
+    const row = rpcRes.rows[0];
+    if (row) {
+      return {
+        readable: true,
+        version: row.latest_version ?? null,
+        applied_at: row.last_applied_at ?? null,
+        total: Number(row.migration_count ?? 0),
+        checksum_digest: row.checksum_digest ?? null,
+      };
+    }
+  } catch {
+    // Fallback to direct table read below when RPC is absent (e.g. pre-0122 owner connection).
+  }
+
   try {
     const res = await pool.query<{ version: string | null; applied_at: string | null; total: number }>(
       `select max(version) as version,
@@ -47,12 +85,18 @@ async function readMigrationLedger(pool: Pool): Promise<MigrationLedger> {
         where to_regclass('public.schema_migrations') is not null`,
     );
     const row = res.rows[0];
-    return { readable: true, version: row?.version ?? null, applied_at: row?.applied_at ?? null, total: row?.total ?? 0 };
+    return {
+      readable: true,
+      version: row?.version ?? null,
+      applied_at: row?.applied_at ?? null,
+      total: row?.total ?? 0,
+      checksum_digest: null,
+    };
   } catch (error) {
     if ((error as { code?: string }).code === "42501") {
-      return { readable: false, reason: "uygulama katmanına kapalı (yalnız owner bağlantısı)" };
+      return { readable: false, reason: "uygulama katmanına kapalı (get_schema_ledger_summary eksik)" };
     }
-    throw error;
+    return { readable: false, reason: "şema defteri sorgusu başarısız oldu" };
   }
 }
 
@@ -65,10 +109,13 @@ export default async function DiagnosticsPage() {
   const [roleRes, ledger, policyRes, stuckRes, importAgeRes, reconRes] = await Promise.all([
     pool.query<RoleIdentity>(
       `select current_user,
+              session_user,
+              (select rolsuper from pg_roles where rolname = session_user) as session_rolsuper,
+              (select rolbypassrls from pg_roles where rolname = session_user) as session_rolbypassrls,
               (select rolsuper from pg_roles where rolname = current_user) as rolsuper,
               (select rolbypassrls from pg_roles where rolname = current_user) as rolbypassrls`,
     ),
-    readMigrationLedger(pool),
+    readLedgerSummary(pool),
     pool.query<{ tablename: string; policyname: string }>(
       `select tablename, policyname from pg_policies
         where schemaname = 'public' and tablename in ('users','sessions')
@@ -91,13 +138,28 @@ export default async function DiagnosticsPage() {
         `select count(*)::text as cnt from public.treasury_cashflow_reconciliation
           where abs(coalesce(difference, 0)) > 0.01`,
       )
-      .catch(() => ({ rows: [{ cnt: "0" }] })),
+      .catch(() => ({ rows: [{ cnt: "?" }] })),
   ]);
 
   const role = roleRes.rows[0];
   const presence = envPresence();
+  const expectedManifest = readExpectedSchemaManifest();
+  const expectedLedgerStr =
+    expectedManifest.expectedCount > 0 && expectedManifest.expectedLatestVersion !== "?"
+      ? `${expectedManifest.expectedCount}/${expectedManifest.expectedLatestVersion}`
+      : "?";
+  const actualLedgerStr = ledger.readable
+    ? `${ledger.total}/${ledger.version ?? "yok"}`
+    : "?";
+  const isSchemaAligned = !ledgerAlert(actualLedgerStr, expectedLedgerStr);
 
-  const isLeastPrivilege = role.rolsuper === false && role.rolbypassrls === false;
+  const isLeastPrivilege =
+    role.session_user === "mas_radar_app" &&
+    role.session_rolsuper === false &&
+    role.session_rolbypassrls === false &&
+    role.rolsuper === false &&
+    role.rolbypassrls === false;
+
   const policyNames = new Set(policyRes.rows.map((r) => `${r.tablename}.${r.policyname}`));
   const expectedPolicies = [
     "users.users_deny_all",
@@ -109,7 +171,7 @@ export default async function DiagnosticsPage() {
 
   const missingRequired = presence.filter((p) => p.required && !p.set);
 
-  // Evaluate Faz 12 / Aşama 09 fail-closed telemetry predicates
+  // Evaluate Faz 12 / Aşama 09 / Faz 62 fail-closed telemetry predicates
   const stuckCountStr = stuckRes.rows[0]?.cnt ?? "?";
   const importAgeStr = importAgeRes.rows[0]?.age_days ?? "İÇE AKTARIM YOK";
   const reconMismatchStr = reconRes.rows[0]?.cnt ?? "?";
@@ -126,11 +188,20 @@ export default async function DiagnosticsPage() {
     {
       signal: "runtime_db_identity",
       section: "RUNTIME",
-      value: role.current_user,
-      threshold: "mas_radar_app (en az yetki)",
+      value: `${role.session_user} → ${role.current_user}`,
+      threshold: "session=mas_radar_app (NOBYPASSRLS / NOSUPERUSER)",
       severity: "P0",
-      alert: runtimeIdentityAlert(role.current_user) && !isLeastPrivilege,
-      message: "Uygulama bağlantısı düşük yetkili rol (mas_radar_app / NOBYPASSRLS) olmalı.",
+      alert: runtimeIdentityAlert(role.session_user) || !isLeastPrivilege,
+      message: "Fiziksel uygulama bağlantısı (session_user) düşük yetkili mas_radar_app rolü olmalı.",
+    },
+    {
+      signal: "schema_ledger_parity",
+      section: "DB",
+      value: actualLedgerStr,
+      threshold: expectedLedgerStr,
+      severity: "P0",
+      alert: !isSchemaAligned,
+      message: "Veritabanı migration defteri diskteki supabase/migrations manifestiyle birebir örtüşmeli.",
     },
     {
       signal: "jobs_stuck_running",
@@ -139,25 +210,28 @@ export default async function DiagnosticsPage() {
       threshold: "0 takılı iş (>30dk)",
       severity: "P1",
       alert: jobsStuckAlert(stuckCountStr),
-      message: "30 dakikadan uzun süredir 'running' durumunda kalan arka plan işi.",
+      message: "30 dakikadan uzun süredir 'running' durumunda kalan arka plan işi (? = sorgu hatası).",
     },
     {
       signal: "workbook_import_age_days",
       section: "APP",
-      value: `${importAgeStr} gün`,
+      value:
+        importAgeStr === "?" || importAgeStr === "İÇE AKTARIM YOK"
+          ? importAgeStr
+          : `${importAgeStr} gün`,
       threshold: "≤ 14 gün",
       severity: "P2",
       alert: importStaleAlert(importAgeStr, 14),
-      message: "Son çalışma kitabı içe aktarımının üzerinden geçen gün sayısı.",
+      message: "Son çalışma kitabı içe aktarımının üzerinden geçen gün sayısı (? = sorgu hatası).",
     },
     {
       signal: "treasury_cashflow_reconciliation",
       section: "APP",
-      value: `${reconMismatchStr} fark satırı`,
+      value: reconMismatchStr === "?" ? "? (okunamadı)" : `${reconMismatchStr} fark satırı`,
       threshold: "0 mutabakat farkı",
       severity: "P1",
       alert: reconciliationAlert(reconMismatchStr),
-      message: "Hazine ve nakit akışı mutabakat görünümünde fark bulunan dönem sayısı.",
+      message: "Hazine ve nakit akışı mutabakat görünümünde fark bulunan dönem sayısı (? = sorgu hatası, 0 sayılmaz).",
     },
   ];
 
@@ -189,7 +263,8 @@ export default async function DiagnosticsPage() {
       <div className="grid grid-cols-2 gap-2 lg:grid-cols-4">
         <KpiCard
           label="DB rolü"
-          value={role.current_user}
+          value={role.session_user}
+          note={`aktif: ${role.current_user}`}
           tone={isLeastPrivilege ? "pos" : "neg"}
         />
         <KpiCard
@@ -197,7 +272,12 @@ export default async function DiagnosticsPage() {
           value={isLeastPrivilege ? "düşük yetkili" : "YÜKSEK YETKİLİ"}
           tone={isLeastPrivilege ? "pos" : "neg"}
         />
-        <KpiCard label="Migration" value={ledger.readable ? (ledger.version ?? "defter yok") : "okunamıyor"} />
+        <KpiCard
+          label="Migration"
+          value={ledger.readable ? actualLedgerStr : "okunamıyor"}
+          note={`beklenen: ${expectedLedgerStr}`}
+          tone={isSchemaAligned ? "pos" : "neg"}
+        />
         <KpiCard
           label="Zorunlu env"
           value={missingRequired.length === 0 ? "tam" : `${missingRequired.length} eksik`}
@@ -207,9 +287,10 @@ export default async function DiagnosticsPage() {
 
       {!isLeastPrivilege && (
         <p className="border border-neg bg-neg/10 p-2 text-sm text-neg">
-          Uygulama superuser veya BYPASSRLS yetkili bir rolle bağlı. Bu durumda RLS politikaları
-          fiilen devre dışıdır. Faz 15 adımları (`pnpm db:app-role:password`, `pnpm db:migrate`,
-          `.env.local` içinde DATABASE_URL) tamamlanmamış olabilir.
+          Uygulama `mas_radar_app` dışı, superuser veya BYPASSRLS yetkili bir rolle bağlı
+          (`session_user={role.session_user}`). Bu durumda RLS politikaları fiilen devre dışıdır.
+          Faz 15 adımları (`pnpm db:app-role:password`, `pnpm db:migrate`, `.env.local` içinde
+          DATABASE_URL) tamamlanmamış olabilir.
         </p>
       )}
 
@@ -251,7 +332,7 @@ export default async function DiagnosticsPage() {
             </tbody>
           </table>
         </TableShell>
-        <div className="mt-2.5 border border-line bg-ink p-2 font-mono text-[11px] text-tone-2">
+        <div className="mt-2.5 border border-line bg-[var(--surface-2)] p-2 font-mono text-[11px] text-tone-2">
           <div className="mb-1 text-[10px] uppercase text-tone-3">Operatör Kanalı Önizlemesi (alert-delivery.ts):</div>
           <pre className="whitespace-pre-wrap">{formattedWireMessage}</pre>
         </div>
@@ -259,7 +340,22 @@ export default async function DiagnosticsPage() {
 
       <Panel title="Veritabanı rol kimliği">
         <div className="grid gap-1 text-sm">
+          <Row
+            label="session_user"
+            value={role.session_user}
+            bad={role.session_user !== "mas_radar_app"}
+          />
           <Row label="current_user" value={role.current_user} />
+          <Row
+            label="session_rolsuper"
+            value={String(role.session_rolsuper)}
+            bad={role.session_rolsuper !== false}
+          />
+          <Row
+            label="session_rolbypassrls"
+            value={String(role.session_rolbypassrls)}
+            bad={role.session_rolbypassrls !== false}
+          />
           <Row label="rolsuper" value={String(role.rolsuper)} bad={role.rolsuper !== false} />
           <Row label="rolbypassrls" value={String(role.rolbypassrls)} bad={role.rolbypassrls !== false} />
         </div>
@@ -276,15 +372,22 @@ export default async function DiagnosticsPage() {
       <Panel title="Migration defteri">
         {ledger.readable ? (
           <div className="grid gap-1 text-sm">
+            <Row
+              label="Şema defteri (gerçek / beklenen)"
+              value={`${actualLedgerStr} (beklenen: ${expectedLedgerStr})`}
+              bad={!isSchemaAligned}
+            />
             <Row label="Son sürüm" value={ledger.version ?? "—"} />
             <Row label="Kayıtlı migration" value={String(ledger.total)} />
             <Row label="Son uygulama" value={ledger.applied_at ?? "—"} />
+            {ledger.checksum_digest ? (
+              <Row label="Defter özeti (SHA-256)" value={`${ledger.checksum_digest.slice(0, 24)}…`} />
+            ) : null}
           </div>
         ) : (
-          <p className="text-sm text-tone-2">
-            Migration defteri {ledger.reason}. Bu, tasarım gereğidir: uygulama rolünün
-            <span className="font-mono"> public.schema_migrations</span> üzerinde hiçbir yetkisi
-            yoktur. Defteri görmek için owner bağlantısıyla{" "}
+          <p className="text-sm text-neg">
+            Migration defteri okunamadı ({ledger.reason}). Şema doğrulaması için{" "}
+            <span className="font-mono">pnpm db:migrate</span> ve{" "}
             <span className="font-mono">pnpm db:migrate:verify</span> çalıştırın.
           </p>
         )}

@@ -18,6 +18,7 @@ import {
   createDimension,
   deactivateIban,
   linkCheckCounterparty,
+  updateCounterparty,
   type DimensionTable,
 } from "@/lib/counterparties/engine";
 
@@ -39,7 +40,21 @@ export async function createCounterpartyAction(formData: FormData): Promise<void
     domainRedirect(e, BASE);
   }
   revalidatePath(BASE);
-  redirect(`${BASE}?result=created&party=${partyId}`);
+  redirect(`${BASE}?result=created&ledgerParty=${partyId}`);
+}
+
+export async function updateCounterpartyAction(formData: FormData): Promise<void> {
+  const session = await requireActionPermission("parties", "update", BASE);
+  let partyId: string;
+  try {
+    ({ partyId } = await updateCounterparty(getPool(), formObject(formData), session.id));
+  } catch (e) {
+    domainRedirect(e, BASE);
+  }
+  revalidatePath(BASE);
+  revalidatePath("/finance/invoices");
+  revalidatePath("/finance/receivables");
+  redirect(`${BASE}?result=updated&ledgerParty=${partyId}#cari-ekstre`);
 }
 
 export async function addIbanAction(formData: FormData): Promise<void> {

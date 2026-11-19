@@ -1,22 +1,36 @@
-// Phase 6B, Faz 25, Faz 40 (A2) & Wave 5B (F-52) reminder engine.
+// Phase 6B, Faz 25, Faz 40 (A2), Wave 5B (F-52) & Phase E (Agent 06) reminder engine.
 // BOUNDARY INVARIANT: Never access process.env or fetch here (transport.ts owns egress).
 
 import type { Pool } from "pg";
 import { z } from "zod";
 import { audit } from "@/lib/audit";
+import { computeObligationAmounts } from "@/lib/contracts/remediation-contracts";
 import { DomainError } from "@/lib/domain-error";
 import { moneyOrNull } from "@/lib/money";
 import { istanbulDateISO } from "@/lib/reports/rules";
 import { parseOrThrow } from "@/lib/validation";
 import {
+  buildReminderDigestHtml,
   buildReminderMessage,
+  classifyEscalationBucket,
+  daysOverdue,
   eligibleDeliveries,
+  ESCALATION_BUCKET_LABELS,
+  matchesReminderOffset,
+  resolveReminderAmounts,
   scheduledForDate,
   thresholdPasses,
   type EligibleDelivery,
+  type EscalationBucketKey,
+  type ReminderDigestItem,
   type ReminderRule,
   type ReminderTarget,
+  type ReminderTargetKind,
 } from "./rules";
+import {
+  computeNotificationIdempotencyKey,
+  enqueueOutboxNotification,
+} from "./outbox";
 import {
   emailTransport,
   redactBotToken,
@@ -72,7 +86,14 @@ export async function loadAllRules(pool: Pool): Promise<ReminderRule[]> {
 const upsertReminderRuleSchema = z.object({
   id: z.string().uuid("Geçerli kural kimliği gerekli").nullable().optional(),
   name: z.string().trim().min(1, "Kural adı gerekli").max(160),
-  targetKind: z.enum(["payment_instance", "check", "loan_installment", "invoice", "promise_to_pay"]),
+  targetKind: z.enum([
+    "payment_instance",
+    "check",
+    "loan_installment",
+    "invoice",
+    "promise_to_pay",
+    "covenant_record",
+  ]),
   offsetDays: z.number().int("Gün farkı tam sayı olmalı").min(-365).max(365),
   channel: z.enum(["telegram", "email"]).default("telegram"),
   minAmount: z.number().nonnegative("Minimum tutar negatif olamaz").nullable().optional(),
@@ -145,6 +166,9 @@ export async function upsertReminderRule(
           input.isActive,
         ],
       );
+      if (ins.rowCount !== 1) {
+        throw new DomainError("CONFLICT", "Hatırlatma kuralı kaydedilemedi.");
+      }
       ruleId = ins.rows[0].id;
     }
 
@@ -218,11 +242,25 @@ export async function ensureDefaultMaturityRules(pool: Pool, actorId?: string | 
   const existing = await pool.query<{ target_kind: string; n: number }>(
     `select target_kind, count(*)::int as n
        from public.reminders
-      where target_kind in ('check', 'loan_installment')
+      where target_kind in ('payment_instance', 'check', 'loan_installment', 'invoice', 'covenant_record')
       group by target_kind`,
   );
   const countByKind = new Map(existing.rows.map((r) => [r.target_kind, Number(r.n)]));
-  const defaults: Array<{ name: string; targetKind: "check" | "loan_installment"; offsetDays: number }> = [];
+  const defaults: Array<{ name: string; targetKind: ReminderRule["targetKind"]; offsetDays: number }> = [];
+
+  if ((countByKind.get("payment_instance") ?? 0) === 0) {
+    defaults.push(
+      { name: "Ödeme — 7 gün önce hazırlık", targetKind: "payment_instance", offsetDays: 7 },
+      { name: "Ödeme — 3 gün önce nakit kontrolü", targetKind: "payment_instance", offsetDays: 3 },
+      { name: "Ödeme — 1 gün önce yarın ödeme", targetKind: "payment_instance", offsetDays: 1 },
+      { name: "Ödeme — bugün ödeme günü", targetKind: "payment_instance", offsetDays: 0 },
+    );
+  }
+  defaults.push(
+    { name: "1–7 Gün gecikmiş ödeme kontrolü", targetKind: "payment_instance", offsetDays: -1 },
+    { name: "8–30 Gün gecikmiş ödeme ihtarı", targetKind: "payment_instance", offsetDays: -8 },
+    { name: "31+ Gün gecikmiş ödeme üst eskalasyon (iç inceleme)", targetKind: "payment_instance", offsetDays: -31 },
+  );
 
   if ((countByKind.get("check") ?? 0) === 0) {
     defaults.push(
@@ -230,7 +268,9 @@ export async function ensureDefaultMaturityRules(pool: Pool, actorId?: string | 
       { name: "Çek/Senet — 3 gün önce nakit/tahsilat kontrolü", targetKind: "check", offsetDays: 3 },
       { name: "Çek/Senet — 1 gün önce yarın vade", targetKind: "check", offsetDays: 1 },
       { name: "Çek/Senet — bugün vade günü", targetKind: "check", offsetDays: 0 },
-      { name: "Çek/Senet — vadesi geçmiş kontrolü", targetKind: "check", offsetDays: -1 },
+      { name: "Çek/Senet — 1-7 gün gecikmiş kontrolü", targetKind: "check", offsetDays: -1 },
+      { name: "Çek/Senet — 8-30 gün ihtar eskalasyonu", targetKind: "check", offsetDays: -8 },
+      { name: "Çek/Senet — 31+ gün üst eskalasyon (iç inceleme)", targetKind: "check", offsetDays: -31 },
     );
   }
   if ((countByKind.get("loan_installment") ?? 0) === 0) {
@@ -239,7 +279,26 @@ export async function ensureDefaultMaturityRules(pool: Pool, actorId?: string | 
       { name: "Kredi Taksiti — 3 gün önce bakiye kontrolü", targetKind: "loan_installment", offsetDays: 3 },
       { name: "Kredi Taksiti — 1 gün önce yarın ödeme", targetKind: "loan_installment", offsetDays: 1 },
       { name: "Kredi Taksiti — bugün taksit günü", targetKind: "loan_installment", offsetDays: 0 },
-      { name: "Kredi Taksiti — gecikmiş taksit uyarısı", targetKind: "loan_installment", offsetDays: -1 },
+    );
+  }
+  defaults.push(
+    { name: "1–7 Gün gecikmiş kredi taksiti", targetKind: "loan_installment", offsetDays: -1 },
+    { name: "8–30 Gün gecikmiş kredi taksiti ihtarı", targetKind: "loan_installment", offsetDays: -8 },
+    { name: "31+ Gün gecikmiş kredi taksiti üst eskalasyon (iç inceleme)", targetKind: "loan_installment", offsetDays: -31 },
+  );
+  if ((countByKind.get("invoice") ?? 0) === 0) {
+    defaults.push(
+      { name: "Fatura — 3 gün önce vade yaklaşımı", targetKind: "invoice", offsetDays: 3 },
+      { name: "Fatura — 1-7 gün gecikmiş tahsilat/ödeme takibi", targetKind: "invoice", offsetDays: -1 },
+      { name: "Fatura — 8-30 gün ihtar kademesi", targetKind: "invoice", offsetDays: -8 },
+      { name: "Fatura — 31+ gün üst eskalasyon (iç inceleme)", targetKind: "invoice", offsetDays: -31 },
+    );
+  }
+  if ((countByKind.get("covenant_record") ?? 0) === 0) {
+    defaults.push(
+      { name: "Kovenant — 14 gün önce test tarihi hazırlığı", targetKind: "covenant_record", offsetDays: 14 },
+      { name: "Kovenant — 3 gün önce kovenant ölçüm kontrolü", targetKind: "covenant_record", offsetDays: 3 },
+      { name: "Kovenant — test tarihi geçmiş eskalasyon", targetKind: "covenant_record", offsetDays: -1 },
     );
   }
   if (defaults.length === 0) return 0;
@@ -256,7 +315,7 @@ export async function ensureDefaultMaturityRules(pool: Pool, actorId?: string | 
          returning id`,
         [d.name, d.targetKind, d.offsetDays],
       );
-      if ((ins.rowCount ?? 0) > 0) {
+      if (ins.rowCount === 1) {
         created++;
         if (actorId) {
           await audit(client, {
@@ -279,54 +338,232 @@ export async function ensureDefaultMaturityRules(pool: Pool, actorId?: string | 
   }
 }
 
+type EngineReminderTarget = ReminderTarget & {
+  legalEntityId?: string | null;
+};
+
+function normalizeOptionalId(val: unknown): string | null {
+  if (typeof val !== "string") return null;
+  const trimmed = val.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+function safeMoneyOrNull(val: unknown): number | null {
+  if (val == null) return null;
+  if (typeof val === "number" || typeof val === "string") return moneyOrNull(val);
+  return null;
+}
+
+function mapPaymentInstanceAmounts(x: Record<string, unknown>): {
+  amount: number | null;
+  originalAmount: number | null;
+  paidAmount: number | null;
+  outstandingAmount: number | null;
+} {
+  const status = String(x.status ?? "unpaid");
+  const orig = safeMoneyOrNull(x.original_amount !== undefined ? x.original_amount : x.amount);
+  const paid = x.paid_amount !== undefined ? safeMoneyOrNull(x.paid_amount) : null;
+  const computed = computeObligationAmounts({
+    originalAmount: orig,
+    paidAmount: paid,
+    status,
+  });
+  const outstanding =
+    x.outstanding_amount !== undefined
+      ? safeMoneyOrNull(x.outstanding_amount)
+      : computed.outstandingAmount;
+  return {
+    amount: outstanding,
+    originalAmount: computed.originalAmount,
+    paidAmount: paid,
+    outstandingAmount: outstanding,
+  };
+}
+
+function mapLoanInstallmentAmounts(x: Record<string, unknown>): {
+  amount: number | null;
+  originalAmount: number | null;
+  paidAmount: number | null;
+  outstandingAmount: number | null;
+} {
+  const status = String(x.status ?? "unpaid");
+  const rawAmount = safeMoneyOrNull(x.amount);
+  const hasExplicitOriginal = x.original_amount !== undefined;
+  const orig = hasExplicitOriginal ? safeMoneyOrNull(x.original_amount) : rawAmount;
+  const paid = x.paid_amount !== undefined ? safeMoneyOrNull(x.paid_amount) : null;
+  const computed = computeObligationAmounts({
+    originalAmount: orig,
+    paidAmount: paid,
+    status,
+  });
+  const outstanding =
+    x.outstanding_amount !== undefined
+      ? safeMoneyOrNull(x.outstanding_amount)
+      : hasExplicitOriginal
+        ? computed.outstandingAmount
+        : rawAmount;
+  return {
+    amount: outstanding,
+    originalAmount: orig,
+    paidAmount: paid,
+    outstandingAmount: outstanding,
+  };
+}
+
 export async function loadPaymentTargets(
   pool: Pool,
   todayISO: string,
-  lookbackDays = 1,
+  lookbackDays = 3650,
   horizonDays = 7,
 ): Promise<ReminderTarget[]> {
   const r = await pool.query(
     `select i.id, coalesce(p.name,'(silinmiş kalem)') as name,
-            to_char(i.due_date,'YYYY-MM-DD') as due_date, i.amount, i.status,
+            to_char(i.due_date,'YYYY-MM-DD') as due_date, i.amount,
+            to_jsonb(i)->>'paid_amount' as paid_amount,
+            to_jsonb(i)->>'legal_entity_id' as legal_entity_id,
+            i.status,
             po.name as owner, pr.name as provider, i.risk_reasons
      from public.payment_instances i
      left join public.payments p on p.id = i.payment_id
      left join public.parties po on po.id = p.owner_party_id
      left join public.parties pr on pr.id = p.provider_party_id
-     where i.status in ('unpaid','partial')
+     where i.status in ('planned','unpaid','partial','late')
        and i.due_date between ($1::date - $2::int) and ($1::date + $3::int)`,
     [todayISO, lookbackDays, horizonDays],
   );
-  return r.rows.map((x) => ({
-    entityTable: "payment_instances", entityId: x.id, name: x.name,
-    dueDate: x.due_date, amount: moneyOrNull(x.amount), status: x.status,
-    owner: x.owner, provider: x.provider, riskReasons: x.risk_reasons ?? [],
-  }));
+  return r.rows.map((x) => {
+    const amounts = mapPaymentInstanceAmounts(x as Record<string, unknown>);
+    const target: EngineReminderTarget = {
+      entityTable: "payment_instances",
+      entityId: x.id,
+      name: x.name,
+      dueDate: x.due_date,
+      amount: amounts.amount,
+      originalAmount: amounts.originalAmount,
+      paidAmount: amounts.paidAmount,
+      outstandingAmount: amounts.outstandingAmount,
+      status: x.status,
+      owner: x.owner,
+      provider: x.provider,
+      riskReasons: x.risk_reasons ?? [],
+      legalEntityId: normalizeOptionalId(x.legal_entity_id),
+    };
+    return target;
+  });
 }
 
 export async function loadInvoiceTargets(
   pool: Pool,
   todayISO: string,
-  lookbackDays = 1,
-  horizonDays = 7,
+  lookbackDays = 3650,
+  horizonDays = 30,
 ): Promise<ReminderTarget[]> {
   const r = await pool.query(
-    `select v.id, coalesce(pa.name, v.invoice_no, '(cari yok)') as name,
+    `select v.id,
+            (case when v.direction = 'sales' then '[Tahsilat] ' else '[Ödeme] ' end) ||
+            coalesce(pa.name, v.invoice_no, '(cari yok)') ||
+            coalesce(' (' || v.invoice_no || ')', '') as name,
             to_char(v.due_date,'YYYY-MM-DD') as due_date,
-            (v.gross_amount - coalesce(v.allocated_amount,0)) as amount,
-            v.status, pa.name as owner
+            greatest(0, coalesce(v.payable_amount, v.gross_amount) - greatest(coalesce(v.allocated_amount,0), coalesce(v.paid_amount,0))) as amount,
+            to_jsonb(v)->>'legal_entity_id' as legal_entity_id,
+            v.status,
+            pa.name as owner,
+            v.direction
      from public.invoices v
      left join public.parties pa on pa.id = v.party_id
-     where v.direction = 'sales'
-       and v.status in ('open','partial')
+     where v.status in ('open','partial')
+       and v.archived_at is null
+       and v.bad_debt_at is null
+       and v.due_date is not null
        and v.due_date between ($1::date - $2::int) and ($1::date + $3::int)`,
     [todayISO, lookbackDays, horizonDays],
   );
-  return r.rows.map((x) => ({
-    entityTable: "invoices", entityId: x.id, name: x.name,
-    dueDate: x.due_date, amount: moneyOrNull(x.amount), status: x.status,
-    owner: x.owner, provider: null, riskReasons: [],
-  }));
+  return r.rows.map((x) => {
+    const dueDate = x.due_date as string;
+    const reasons: string[] = [];
+    if (dueDate < todayISO) {
+      const bucket = classifyEscalationBucket(dueDate, todayISO);
+      reasons.push(ESCALATION_BUCKET_LABELS[bucket]);
+    }
+    const target: EngineReminderTarget = {
+      entityTable: "invoices",
+      entityId: x.id as string,
+      name: x.name as string,
+      dueDate,
+      amount: moneyOrNull(x.amount),
+      status: x.status as string,
+      owner: (x.owner as string | null) ?? null,
+      provider: x.direction === "purchase" ? ((x.owner as string | null) ?? null) : null,
+      riskReasons: reasons,
+      legalEntityId: normalizeOptionalId(x.legal_entity_id),
+    };
+    return target;
+  });
+}
+
+export async function loadCovenantTargets(
+  pool: Pool,
+  todayISO: string,
+  lookbackDays = 180,
+  horizonDays = 60,
+): Promise<ReminderTarget[]> {
+  try {
+    const r = await pool.query(
+      `with cov_due as (
+         select cr.id,
+                coalesce(cf.name || ' — ', ln.name || ' — ', '')
+                  || cr.description
+                  || ' (' || cr.comparison || ' ' || cr.threshold_value::text || ')' as name,
+                (
+                  coalesce(cr.last_test_date, cr.created_at::date) +
+                  case cr.test_frequency
+                    when 'monthly' then interval '1 month'
+                    when 'quarterly' then interval '3 months'
+                    when 'semiannual' then interval '6 months'
+                    when 'annual' then interval '1 year'
+                    else interval '30 days'
+                  end
+                )::date as next_due_date,
+                coalesce(cr.last_test_result, 'not_tested') as test_status,
+                coalesce(cfp.name, ln.lender) as provider,
+                to_jsonb(cr)->>'legal_entity_id' as legal_entity_id
+           from public.covenant_records cr
+           left join public.credit_facilities cf on cf.id = cr.facility_id
+           left join public.parties cfp on cfp.id = cf.lender_party_id
+           left join public.loans ln on ln.id = cr.loan_id
+          where cr.status = 'active'
+       )
+       select id,
+              name,
+              to_char(next_due_date, 'YYYY-MM-DD') as due_date,
+              test_status as status,
+              provider,
+              legal_entity_id
+         from cov_due
+        where next_due_date between ($1::date - $2::int) and ($1::date + $3::int)
+           or test_status = 'breached'`,
+      [todayISO, lookbackDays, horizonDays],
+    );
+    return r.rows.map((x) => {
+      const target: EngineReminderTarget = {
+        entityTable: "covenant_records",
+        entityId: x.id as string,
+        name: x.name as string,
+        dueDate: x.due_date as string,
+        amount: null,
+        status: (x.status as string) || "compliant",
+        owner: null,
+        provider: (x.provider as string | null) ?? null,
+        riskReasons: x.status === "breach" || x.status === "breached" ? ["kovenant_ihlali"] : [],
+        legalEntityId: normalizeOptionalId(x.legal_entity_id),
+      };
+      return target;
+    });
+  } catch (err) {
+    const code = (err as { code?: string } | null)?.code;
+    if (code === "42P01" || code === "42703") return [];
+    throw err;
+  }
 }
 
 export async function loadPromiseTargets(
@@ -338,24 +575,36 @@ export async function loadPromiseTargets(
   const r = await pool.query(
     `select p.id, pa.name as name,
             to_char(p.promised_date,'YYYY-MM-DD') as due_date,
-            p.promised_amount as amount, p.status, pa.name as owner
+            p.promised_amount as amount,
+            to_jsonb(p)->>'legal_entity_id' as legal_entity_id,
+            p.status, pa.name as owner
      from public.promise_to_pay p
      join public.parties pa on pa.id = p.party_id
      where p.status = 'pending'
        and p.promised_date between ($1::date - $2::int) and ($1::date + $3::int)`,
     [todayISO, lookbackDays, horizonDays],
   );
-  return r.rows.map((x) => ({
-    entityTable: "promise_to_pay", entityId: x.id, name: x.name,
-    dueDate: x.due_date, amount: moneyOrNull(x.amount), status: x.status,
-    owner: x.owner, provider: null, riskReasons: [],
-  }));
+  return r.rows.map((x) => {
+    const target: EngineReminderTarget = {
+      entityTable: "promise_to_pay",
+      entityId: x.id,
+      name: x.name,
+      dueDate: x.due_date,
+      amount: moneyOrNull(x.amount),
+      status: x.status,
+      owner: x.owner,
+      provider: null,
+      riskReasons: [],
+      legalEntityId: normalizeOptionalId(x.legal_entity_id),
+    };
+    return target;
+  });
 }
 
 export async function loadCheckTargets(
   pool: Pool,
   todayISO: string,
-  lookbackDays = 365,
+  lookbackDays = 3650,
   horizonDays = 30,
 ): Promise<ReminderTarget[]> {
   const r = await pool.query(
@@ -369,6 +618,7 @@ export async function loadCheckTargets(
             ) as name,
             to_char(c.maturity_date, 'YYYY-MM-DD') as due_date,
             coalesce(c.amount, abs(c.signed_amount)) as amount,
+            to_jsonb(c)->>'legal_entity_id' as legal_entity_id,
             c.status,
             coalesce(pr.name, py.name) as owner,
             bp.name as provider
@@ -385,7 +635,7 @@ export async function loadCheckTargets(
     const dueDate = x.due_date as string;
     const reasons: string[] = [];
     if (dueDate < todayISO) reasons.push("vadesi geçmiş çek/senet");
-    return {
+    const target: EngineReminderTarget = {
       entityTable: "checks",
       entityId: x.id as string,
       name: x.name as string,
@@ -395,14 +645,16 @@ export async function loadCheckTargets(
       owner: (x.owner as string | null) ?? null,
       provider: (x.provider as string | null) ?? null,
       riskReasons: reasons,
+      legalEntityId: normalizeOptionalId(x.legal_entity_id),
     };
+    return target;
   });
 }
 
 export async function loadLoanInstallmentTargets(
   pool: Pool,
   todayISO: string,
-  lookbackDays = 365,
+  lookbackDays = 3650,
   horizonDays = 30,
 ): Promise<ReminderTarget[]> {
   const r = await pool.query(
@@ -414,6 +666,9 @@ export async function loadLoanInstallmentTargets(
             case when li.status = 'partial' and li.amount is not null and li.paid_amount is not null
                  then greatest(li.amount - li.paid_amount, 0)
                  else li.amount end as amount,
+            li.amount as original_amount,
+            li.paid_amount,
+            to_jsonb(l)->>'legal_entity_id' as legal_entity_id,
             li.status,
             lp.name as provider
        from public.loan_installments li
@@ -430,17 +685,23 @@ export async function loadLoanInstallmentTargets(
     const status = x.status as string;
     const reasons: string[] = [];
     if (dueDate < todayISO || status === "late") reasons.push("gecikmiş kredi taksiti");
-    return {
+    const amounts = mapLoanInstallmentAmounts(x as Record<string, unknown>);
+    const target: EngineReminderTarget = {
       entityTable: "loan_installments",
       entityId: x.id as string,
       name: x.name as string,
       dueDate,
-      amount: moneyOrNull(x.amount),
+      amount: amounts.amount,
+      originalAmount: amounts.originalAmount,
+      paidAmount: amounts.paidAmount,
+      outstandingAmount: amounts.outstandingAmount,
       status,
       owner: null,
       provider: (x.provider as string | null) ?? null,
       riskReasons: reasons,
+      legalEntityId: normalizeOptionalId(x.legal_entity_id),
     };
+    return target;
   });
 }
 
@@ -470,11 +731,12 @@ export function eligibleMaturityDeliveries(
         if (!LOAN_INSTALLMENT_REMINDER_STATUSES.has(target.status)) continue;
       }
 
-      const fireDate = scheduledForDate(target.dueDate, rule.offsetDays);
-      const matchesDate =
-        rule.offsetDays >= 0 ? fireDate === todayISO : fireDate <= todayISO;
-      if (!matchesDate) continue;
-      if (!thresholdPasses(rule.minAmount, target.amount)) continue;
+      if (!matchesReminderOffset(rule.offsetDays, target.dueDate, todayISO)) continue;
+      const resolved = resolveReminderAmounts(target);
+      if (!thresholdPasses(rule.minAmount, resolved.outstandingAmount)) continue;
+
+      const fireDate =
+        rule.offsetDays >= 0 ? todayISO : scheduledForDate(target.dueDate, rule.offsetDays);
 
       out.push({
         ruleId: rule.id,
@@ -482,7 +744,8 @@ export function eligibleMaturityDeliveries(
         entityTable: target.entityTable,
         entityId: target.entityId,
         scheduledFor: fireDate,
-        message: buildReminderMessage(rule, target),
+        message: buildReminderMessage(rule, target, todayISO),
+        escalationBucket: classifyEscalationBucket(target.dueDate, todayISO),
       });
     }
   }
@@ -497,25 +760,24 @@ export interface ScheduleResult {
 
 export async function scheduleReminders(pool: Pool, todayISO = istanbulDateISO()): Promise<ScheduleResult> {
   const rules = await loadActiveRules(pool);
-  const maxFutureOffset = Math.max(7, ...rules.filter((r) => r.offsetDays > 0).map((r) => r.offsetDays));
+  const maxFutureOffset = Math.max(14, ...rules.filter((r) => r.offsetDays > 0).map((r) => r.offsetDays));
   const maxPastOffset = Math.max(1, ...rules.filter((r) => r.offsetDays < 0).map((r) => Math.abs(r.offsetDays)));
-  const hasOverdueMaturityRule = rules.some(
-    (r) => (r.targetKind === "check" || r.targetKind === "loan_installment") && r.offsetDays < 0,
-  );
-  const maturityLookback = hasOverdueMaturityRule ? Math.max(365, maxPastOffset) : maxPastOffset;
+  const hasAnyOverdueRule = rules.some((r) => r.offsetDays < 0);
+  const overdueLookback = hasAnyOverdueRule ? Math.max(3650, maxPastOffset) : maxPastOffset;
 
-  const [paymentTargets, invoiceTargets, promiseTargets, checkTargets, loanInstallmentTargets] =
+  const [paymentTargets, invoiceTargets, promiseTargets, checkTargets, loanInstallmentTargets, covenantTargets] =
     await Promise.all([
-      loadPaymentTargets(pool, todayISO, maxPastOffset, maxFutureOffset),
-      loadInvoiceTargets(pool, todayISO, maxPastOffset, maxFutureOffset),
-      loadPromiseTargets(pool, todayISO, maxPastOffset, maxFutureOffset),
-      loadCheckTargets(pool, todayISO, maturityLookback, maxFutureOffset),
-      loadLoanInstallmentTargets(pool, todayISO, maturityLookback, maxFutureOffset),
+      loadPaymentTargets(pool, todayISO, overdueLookback, maxFutureOffset),
+      loadInvoiceTargets(pool, todayISO, overdueLookback, maxFutureOffset),
+      loadPromiseTargets(pool, todayISO, overdueLookback, maxFutureOffset),
+      loadCheckTargets(pool, todayISO, overdueLookback, maxFutureOffset),
+      loadLoanInstallmentTargets(pool, todayISO, overdueLookback, maxFutureOffset),
+      loadCovenantTargets(pool, todayISO, overdueLookback, maxFutureOffset),
     ]);
 
   const baseEligible = eligibleDeliveries(
     rules,
-    [...paymentTargets, ...invoiceTargets, ...promiseTargets],
+    [...paymentTargets, ...invoiceTargets, ...promiseTargets, ...covenantTargets],
     todayISO,
   );
   const maturityEligible = eligibleMaturityDeliveries(
@@ -535,7 +797,13 @@ export async function scheduleReminders(pool: Pool, todayISO = istanbulDateISO()
            (reminder_id, entity_table, entity_id, scheduled_for, status, payload)
          values ($1,$2,$3,$4,'pending',$5)
          on conflict (reminder_id, entity_table, entity_id, scheduled_for) do nothing`,
-        [d.ruleId, d.entityTable, d.entityId, d.scheduledFor, JSON.stringify({ message: d.message })],
+        [
+          d.ruleId,
+          d.entityTable,
+          d.entityId,
+          d.scheduledFor,
+          JSON.stringify({ message: d.message, escalationBucket: d.escalationBucket }),
+        ],
       );
       inserted += res.rowCount ?? 0;
     }
@@ -549,77 +817,1099 @@ export async function scheduleReminders(pool: Pool, todayISO = istanbulDateISO()
   return { eligible: eligible.length, inserted, duplicatesSkipped: eligible.length - inserted };
 }
 
+export interface EscalationRadarBucketSummary {
+  bucket: EscalationBucketKey;
+  label: string;
+  count: number;
+  knownAmountTry: number;
+  items: Array<{
+    entityTable: string;
+    entityId: string;
+    name: string;
+    dueDate: string;
+    daysLate: number;
+    amount: number | null;
+  }>;
+}
+
+export async function loadEscalationRadarSummary(
+  pool: Pool,
+  todayISO = istanbulDateISO(),
+): Promise<EscalationRadarBucketSummary[]> {
+  const [payments, invoices, promises, checks, loans, covenants] = await Promise.all([
+    loadPaymentTargets(pool, todayISO, 3650, 14),
+    loadInvoiceTargets(pool, todayISO, 3650, 14),
+    loadPromiseTargets(pool, todayISO, 3650, 14),
+    loadCheckTargets(pool, todayISO, 3650, 14),
+    loadLoanInstallmentTargets(pool, todayISO, 3650, 14),
+    loadCovenantTargets(pool, todayISO, 180, 30),
+  ]);
+
+  const all = [...payments, ...invoices, ...promises, ...checks, ...loans, ...covenants];
+  const keys: EscalationBucketKey[] = [
+    "upcoming",
+    "overdue_1_7",
+    "overdue_8_30",
+    "overdue_30_plus",
+  ];
+  const grouped = new Map<
+    EscalationBucketKey,
+    { count: number; sum: number; items: EscalationRadarBucketSummary["items"] }
+  >(keys.map((k) => [k, { count: 0, sum: 0, items: [] }]));
+
+  for (const t of all) {
+    const b = classifyEscalationBucket(t.dueDate, todayISO);
+    const entry = grouped.get(b)!;
+    entry.count += 1;
+    const effectiveAmount = resolveReminderAmounts(t).outstandingAmount;
+    if (effectiveAmount != null && Number.isFinite(effectiveAmount)) {
+      entry.sum = Math.round((entry.sum + effectiveAmount) * 100) / 100;
+    }
+    entry.items.push({
+      entityTable: t.entityTable,
+      entityId: t.entityId,
+      name: t.name,
+      dueDate: t.dueDate,
+      daysLate: daysOverdue(t.dueDate, todayISO),
+      amount: effectiveAmount,
+    });
+  }
+
+  return keys.map((k) => {
+    const g = grouped.get(k)!;
+    g.items.sort((a, b) => b.daysLate - a.daysLate || (b.amount ?? 0) - (a.amount ?? 0));
+    return {
+      bucket: k,
+      label: ESCALATION_BUCKET_LABELS[k],
+      count: g.count,
+      knownAmountTry: g.sum,
+      items: g.items.slice(0, 6),
+    };
+  });
+}
+
 export interface DispatchResult {
   attempted: number;
   sent: number;
   failed: number;
   skipped: number;
+  uncertain?: number;
 }
 
 export type TransportOrResolver = Transport | ((channel: Transport["channel"]) => Transport);
 
+const REMINDER_CHANNEL_DIGEST_THRESHOLD = 5;
+
+function isMissingOutboxTableError(err: unknown): boolean {
+  const code = (err as { code?: unknown } | null)?.code;
+  return code === "42P01" || code === "42703";
+}
+
+function isLegacyClaimingUnsupportedError(err: unknown): boolean {
+  const code = (err as { code?: unknown } | null)?.code;
+  if (code === "42703" || code === "42P01" || code === "22P02") return true;
+  const msg = String((err as Error | null)?.message ?? "");
+  return /beklenmeyen sql|unhandled sql|unexpected sql/i.test(msg);
+}
+
+function resolveActiveTransport(
+  transportOrResolver: TransportOrResolver,
+  channel: "telegram" | "email",
+): Transport {
+  if (typeof transportOrResolver === "function") {
+    return transportOrResolver(channel);
+  }
+  if (channel === "email" && transportOrResolver.channel !== "email") {
+    return emailTransport();
+  }
+  return transportOrResolver;
+}
+
+async function loadLiveTargetsForPending(
+  pool: Pool,
+  rows: ReadonlyArray<{ entity_table: string; entity_id: string }>,
+  todayISO: string,
+): Promise<Map<string, EngineReminderTarget>> {
+  const idsByTable = new Map<string, Set<string>>();
+  for (const r of rows) {
+    let set = idsByTable.get(r.entity_table);
+    if (!set) {
+      set = new Set<string>();
+      idsByTable.set(r.entity_table, set);
+    }
+    set.add(r.entity_id);
+  }
+
+  const out = new Map<string, EngineReminderTarget>();
+
+  const payIds = [...(idsByTable.get("payment_instances") ?? [])];
+  if (payIds.length > 0) {
+    const res = await pool.query(
+      `select i.id::text as id,
+              coalesce(p.name, '(silinmiş kalem)') as name,
+              to_char(i.due_date, 'YYYY-MM-DD') as due_date,
+              i.amount,
+              to_jsonb(i)->>'paid_amount' as paid_amount,
+              to_jsonb(i)->>'legal_entity_id' as legal_entity_id,
+              i.status,
+              po.name as owner,
+              pr.name as provider,
+              i.risk_reasons
+         from public.payment_instances i
+         left join public.payments p on p.id = i.payment_id
+         left join public.parties po on po.id = p.owner_party_id
+         left join public.parties pr on pr.id = p.provider_party_id
+        where i.id = any($1::uuid[])
+          and i.cancelled_at is null
+          and i.status in ('planned', 'unpaid', 'partial', 'late')
+          and (p.id is null or (p.archived_at is null and p.status = 'active'))`,
+      [payIds],
+    );
+    for (const x of res.rows) {
+      const amounts = mapPaymentInstanceAmounts(x as Record<string, unknown>);
+      out.set(`payment_instances:${x.id as string}`, {
+        entityTable: "payment_instances",
+        entityId: x.id as string,
+        name: x.name as string,
+        dueDate: x.due_date as string,
+        amount: amounts.amount,
+        originalAmount: amounts.originalAmount,
+        paidAmount: amounts.paidAmount,
+        outstandingAmount: amounts.outstandingAmount,
+        status: x.status as string,
+        owner: (x.owner as string | null) ?? null,
+        provider: (x.provider as string | null) ?? null,
+        riskReasons: (x.risk_reasons as string[] | null) ?? [],
+        legalEntityId: normalizeOptionalId(x.legal_entity_id),
+      });
+    }
+  }
+
+  const checkIds = [...(idsByTable.get("checks") ?? [])];
+  if (checkIds.length > 0) {
+    const res = await pool.query(
+      `select c.id::text as id,
+              coalesce(
+                nullif(btrim(c.counterparty_label), ''),
+                py.name,
+                pr.name,
+                nullif(btrim(c.serial_no), ''),
+                '(çek/senet)'
+              ) as name,
+              to_char(c.maturity_date, 'YYYY-MM-DD') as due_date,
+              coalesce(c.amount, abs(c.signed_amount)) as amount,
+              to_jsonb(c)->>'legal_entity_id' as legal_entity_id,
+              c.status,
+              coalesce(pr.name, py.name) as owner,
+              bp.name as provider
+         from public.checks c
+         left join public.parties pr on pr.id = c.payer_party_id
+         left join public.parties py on py.id = c.payee_party_id
+         left join public.parties bp on bp.id = c.bank_party_id
+        where c.id = any($1::uuid[])
+          and c.archived_at is null
+          and c.status in ('planned', 'in_portfolio', 'in_bank_collection', 'in_bank_collateral', 'issued_to_vendor')`,
+      [checkIds],
+    );
+    for (const x of res.rows) {
+      const dueDate = x.due_date as string;
+      const reasons: string[] = [];
+      if (dueDate < todayISO) reasons.push("vadesi geçmiş çek/senet");
+      out.set(`checks:${x.id as string}`, {
+        entityTable: "checks",
+        entityId: x.id as string,
+        name: x.name as string,
+        dueDate,
+        amount: moneyOrNull(x.amount),
+        status: x.status as string,
+        owner: (x.owner as string | null) ?? null,
+        provider: (x.provider as string | null) ?? null,
+        riskReasons: reasons,
+        legalEntityId: normalizeOptionalId(x.legal_entity_id),
+      });
+    }
+  }
+
+  const loanIds = [...(idsByTable.get("loan_installments") ?? [])];
+  if (loanIds.length > 0) {
+    const res = await pool.query(
+      `select li.id::text as id,
+              case when li.installment_no is not null
+                   then l.name || ' (Taksit #' || li.installment_no::text || ')'
+                   else l.name end as name,
+              to_char(li.due_date, 'YYYY-MM-DD') as due_date,
+              case when li.status = 'partial' and li.amount is not null and li.paid_amount is not null
+                   then greatest(li.amount - li.paid_amount, 0)
+                   else li.amount end as amount,
+              li.amount as original_amount,
+              li.paid_amount,
+              to_jsonb(l)->>'legal_entity_id' as legal_entity_id,
+              li.status,
+              lp.name as provider
+         from public.loan_installments li
+         join public.loans l on l.id = li.loan_id
+         left join public.parties lp on lp.id = l.lender_party_id
+        where li.id = any($1::uuid[])
+          and l.archived_at is null
+          and li.cancelled_at is null
+          and li.status in ('planned', 'unpaid', 'partial', 'late')`,
+      [loanIds],
+    );
+    for (const x of res.rows) {
+      const dueDate = x.due_date as string;
+      const status = x.status as string;
+      const reasons: string[] = [];
+      if (dueDate < todayISO || status === "late") reasons.push("gecikmiş kredi taksiti");
+      const amounts = mapLoanInstallmentAmounts(x as Record<string, unknown>);
+      out.set(`loan_installments:${x.id as string}`, {
+        entityTable: "loan_installments",
+        entityId: x.id as string,
+        name: x.name as string,
+        dueDate,
+        amount: amounts.amount,
+        originalAmount: amounts.originalAmount,
+        paidAmount: amounts.paidAmount,
+        outstandingAmount: amounts.outstandingAmount,
+        status,
+        owner: null,
+        provider: (x.provider as string | null) ?? null,
+        riskReasons: reasons,
+        legalEntityId: normalizeOptionalId(x.legal_entity_id),
+      });
+    }
+  }
+
+  const invIds = [...(idsByTable.get("invoices") ?? [])];
+  if (invIds.length > 0) {
+    const res = await pool.query(
+      `select v.id::text as id,
+              (case when v.direction = 'sales' then '[Tahsilat] ' else '[Ödeme] ' end) ||
+              coalesce(pa.name, v.invoice_no, '(cari yok)') ||
+              coalesce(' (' || v.invoice_no || ')', '') as name,
+              to_char(v.due_date, 'YYYY-MM-DD') as due_date,
+              greatest(0, coalesce(v.payable_amount, v.gross_amount) - greatest(coalesce(v.allocated_amount, 0), coalesce(v.paid_amount, 0))) as amount,
+              to_jsonb(v)->>'legal_entity_id' as legal_entity_id,
+              v.status,
+              pa.name as owner,
+              v.direction
+         from public.invoices v
+         left join public.parties pa on pa.id = v.party_id
+        where v.id = any($1::uuid[])
+          and v.status in ('open', 'partial')
+          and v.archived_at is null
+          and v.bad_debt_at is null
+          and v.due_date is not null`,
+      [invIds],
+    );
+    for (const x of res.rows) {
+      const dueDate = x.due_date as string;
+      const reasons: string[] = [];
+      if (dueDate < todayISO) {
+        reasons.push(ESCALATION_BUCKET_LABELS[classifyEscalationBucket(dueDate, todayISO)]);
+      }
+      out.set(`invoices:${x.id as string}`, {
+        entityTable: "invoices",
+        entityId: x.id as string,
+        name: x.name as string,
+        dueDate,
+        amount: moneyOrNull(x.amount),
+        status: x.status as string,
+        owner: (x.owner as string | null) ?? null,
+        provider: x.direction === "purchase" ? ((x.owner as string | null) ?? null) : null,
+        riskReasons: reasons,
+        legalEntityId: normalizeOptionalId(x.legal_entity_id),
+      });
+    }
+  }
+
+  const ptpIds = [...(idsByTable.get("promise_to_pay") ?? [])];
+  if (ptpIds.length > 0) {
+    const res = await pool.query(
+      `select p.id::text as id,
+              pa.name as name,
+              to_char(p.promised_date, 'YYYY-MM-DD') as due_date,
+              p.promised_amount as amount,
+              to_jsonb(p)->>'legal_entity_id' as legal_entity_id,
+              p.status,
+              pa.name as owner
+         from public.promise_to_pay p
+         join public.parties pa on pa.id = p.party_id
+        where p.id = any($1::uuid[])
+          and p.status = 'pending'`,
+      [ptpIds],
+    );
+    for (const x of res.rows) {
+      out.set(`promise_to_pay:${x.id as string}`, {
+        entityTable: "promise_to_pay",
+        entityId: x.id as string,
+        name: x.name as string,
+        dueDate: x.due_date as string,
+        amount: moneyOrNull(x.amount),
+        status: x.status as string,
+        owner: (x.owner as string | null) ?? null,
+        provider: null,
+        riskReasons: [],
+        legalEntityId: normalizeOptionalId(x.legal_entity_id),
+      });
+    }
+  }
+
+  const covIds = [...(idsByTable.get("covenant_records") ?? [])];
+  if (covIds.length > 0) {
+    try {
+      const res = await pool.query(
+        `with cov_due as (
+           select cr.id::text as id,
+                  coalesce(cf.name || ' — ', ln.name || ' — ', '')
+                    || cr.description
+                    || ' (' || cr.comparison || ' ' || cr.threshold_value::text || ')' as name,
+                  (
+                    coalesce(cr.last_test_date, cr.created_at::date) +
+                    case cr.test_frequency
+                      when 'monthly' then interval '1 month'
+                      when 'quarterly' then interval '3 months'
+                      when 'semiannual' then interval '6 months'
+                      when 'annual' then interval '1 year'
+                      else interval '30 days'
+                    end
+                  )::date as next_due_date,
+                  coalesce(cr.last_test_result, 'not_tested') as test_status,
+                  coalesce(cfp.name, ln.lender) as provider,
+                  to_jsonb(cr)->>'legal_entity_id' as legal_entity_id
+             from public.covenant_records cr
+             left join public.credit_facilities cf on cf.id = cr.facility_id
+             left join public.parties cfp on cfp.id = cf.lender_party_id
+             left join public.loans ln on ln.id = cr.loan_id
+            where cr.id = any($1::uuid[])
+              and cr.status = 'active'
+         )
+         select id, name, to_char(next_due_date, 'YYYY-MM-DD') as due_date, test_status as status, provider, legal_entity_id
+           from cov_due`,
+        [covIds],
+      );
+      for (const x of res.rows) {
+        const status = (x.status as string) || "compliant";
+        out.set(`covenant_records:${x.id as string}`, {
+          entityTable: "covenant_records",
+          entityId: x.id as string,
+          name: x.name as string,
+          dueDate: x.due_date as string,
+          amount: null,
+          status,
+          owner: null,
+          provider: (x.provider as string | null) ?? null,
+          riskReasons: status === "breach" || status === "breached" ? ["kovenant_ihlali"] : [],
+          legalEntityId: normalizeOptionalId(x.legal_entity_id),
+        });
+      }
+    } catch (err) {
+      if (!isMissingOutboxTableError(err)) throw err;
+    }
+  }
+
+  return out;
+}
+
+async function markReminderDeliveryStatusStrict(
+  pool: Pool,
+  id: string,
+  status: "sent" | "skipped" | "failed" | "delivery_uncertain",
+  opts: { error?: string | null; payload?: Record<string, unknown>; claimToken?: string | null } = {},
+): Promise<void> {
+  const claimToken = opts.claimToken ?? null;
+
+  if (status === "sent") {
+    let upd;
+    try {
+      if (claimToken) {
+        upd = opts.payload
+          ? await pool.query(
+              `update public.reminder_deliveries
+                  set status = 'sent',
+                      sent_at = now(),
+                      error = null,
+                      claim_token = null,
+                      payload = $2::jsonb
+                where id = $1
+                  and status in ('pending', 'claiming')
+                  and claim_token = $3::uuid`,
+              [id, JSON.stringify(opts.payload), claimToken],
+            )
+          : await pool.query(
+              `update public.reminder_deliveries
+                  set status = 'sent',
+                      sent_at = now(),
+                      error = null,
+                      claim_token = null
+                where id = $1
+                  and status in ('pending', 'claiming')
+                  and claim_token = $2::uuid`,
+              [id, claimToken],
+            );
+      } else {
+        upd = opts.payload
+          ? await pool.query(
+              `update public.reminder_deliveries
+                  set status = 'sent',
+                      sent_at = now(),
+                      error = null,
+                      payload = $2::jsonb
+                where id = $1
+                  and status in ('pending', 'claiming')`,
+              [id, JSON.stringify(opts.payload)],
+            )
+          : await pool.query(
+              `update public.reminder_deliveries
+                  set status = 'sent',
+                      sent_at = now(),
+                      error = null
+                where id = $1
+                  and status in ('pending', 'claiming')`,
+              [id],
+            );
+      }
+    } catch (err) {
+      if (!isLegacyClaimingUnsupportedError(err)) throw err;
+      upd = opts.payload
+        ? await pool.query(
+            `update public.reminder_deliveries
+                set status = 'sent',
+                    sent_at = now(),
+                    error = null,
+                    payload = $2::jsonb
+              where id = $1
+                and status in ('pending', 'claiming')`,
+            [id, JSON.stringify(opts.payload)],
+          )
+        : await pool.query(
+            `update public.reminder_deliveries
+                set status = 'sent',
+                    sent_at = now(),
+                    error = null
+              where id = $1
+                and status in ('pending', 'claiming')`,
+            [id],
+          );
+    }
+    if (upd.rowCount !== 1) {
+      throw new Error(`Hatırlatma teslimat güncellemesi (sent) başarısız: satır bulunamadı veya durum değişti (${id}).`);
+    }
+    return;
+  }
+
+  let upd;
+  try {
+    upd = claimToken
+      ? await pool.query(
+          `update public.reminder_deliveries
+              set status = $2,
+                  error = $3,
+                  claim_token = null
+            where id = $1
+              and status in ('pending', 'claiming')
+              and claim_token = $4::uuid`,
+          [id, status, opts.error ?? null, claimToken],
+        )
+      : await pool.query(
+          `update public.reminder_deliveries
+              set status = $2,
+                  error = $3
+            where id = $1
+              and status in ('pending', 'claiming')`,
+          [id, status, opts.error ?? null],
+        );
+  } catch (err) {
+    if (!isLegacyClaimingUnsupportedError(err)) throw err;
+    upd = await pool.query(
+      `update public.reminder_deliveries
+          set status = $2,
+              error = $3
+        where id = $1
+          and status in ('pending', 'claiming')`,
+      [id, status, opts.error ?? null],
+    );
+  }
+  if (upd.rowCount !== 1) {
+    throw new Error(`Hatırlatma teslimat güncellemesi (${status}) başarısız: satır bulunamadı veya durum değişti (${id}).`);
+  }
+}
+
+async function loadAlreadySentOutboxKeys(
+  pool: Pool,
+  keys: readonly string[],
+): Promise<Set<string>> {
+  if (keys.length === 0) return new Set();
+  try {
+    const res = await pool.query<{ idempotency_key: string }>(
+      `select idempotency_key
+         from public.notification_outbox
+        where idempotency_key = any($1::text[])
+          and status in ('sent', 'delivery_uncertain', 'claiming')`,
+      [keys],
+    );
+    return new Set(res.rows.map((r) => r.idempotency_key));
+  } catch (err) {
+    if (isMissingOutboxTableError(err)) return new Set();
+    if (isLegacyClaimingUnsupportedError(err)) {
+      try {
+        const fallback = await pool.query<{ idempotency_key: string }>(
+          `select idempotency_key
+             from public.notification_outbox
+            where idempotency_key = any($1::text[])
+              and status = 'sent'`,
+          [keys],
+        );
+        return new Set(fallback.rows.map((r) => r.idempotency_key));
+      } catch (innerErr) {
+        if (isMissingOutboxTableError(innerErr)) return new Set();
+        throw innerErr;
+      }
+    }
+    throw err;
+  }
+}
+
+async function recordOutboxOutcomeSafe(
+  pool: Pool,
+  entry: {
+    channel: "telegram" | "email";
+    idempotencyKey: string;
+    bodyText: string;
+    bodyFormat: "plain" | "html";
+    metadata: Record<string, unknown>;
+    legalEntityId?: string | null;
+  },
+  outcome: DeliveryResult,
+): Promise<void> {
+  try {
+    await enqueueOutboxNotification(pool, {
+      stream: "reminder_digest",
+      channel: entry.channel,
+      recipientTarget: `default:${entry.channel}`,
+      idempotencyKey: entry.idempotencyKey,
+      bodyText: entry.bodyText,
+      bodyFormat: entry.bodyFormat,
+      metadata: entry.metadata,
+      legalEntityId: entry.legalEntityId ?? null,
+    });
+    if (outcome.ok) {
+      await pool.query(
+        `update public.notification_outbox
+            set status = 'sent',
+                sent_at = now(),
+                attempt_count = attempt_count + 1,
+                last_error = null,
+                claim_token = null,
+                updated_at = now()
+          where idempotency_key = $1`,
+        [entry.idempotencyKey],
+      );
+    } else if (outcome.skippedUnconfigured) {
+      await pool.query(
+        `update public.notification_outbox
+            set status = 'skipped',
+                attempt_count = attempt_count + 1,
+                last_error = $2,
+                claim_token = null,
+                updated_at = now()
+          where idempotency_key = $1`,
+        [entry.idempotencyKey, redactBotToken(outcome.error ?? "skipped_unconfigured")],
+      );
+    } else if (outcome.uncertainOutcome === true) {
+      const safeError = redactBotToken(
+        outcome.error ?? "delivery_uncertain: gönderim sonrası yanıt doğrulanamadı",
+      );
+      try {
+        await pool.query(
+          `update public.notification_outbox
+              set status = 'delivery_uncertain',
+                  uncertain_at = now(),
+                  attempt_count = attempt_count + 1,
+                  last_error = $2,
+                  claim_token = null,
+                  updated_at = now()
+            where idempotency_key = $1`,
+          [entry.idempotencyKey, safeError],
+        );
+      } catch (uncertainErr) {
+        if (!isLegacyClaimingUnsupportedError(uncertainErr)) throw uncertainErr;
+        await pool.query(
+          `update public.notification_outbox
+              set status = 'delivery_uncertain',
+                  attempt_count = attempt_count + 1,
+                  last_error = $2,
+                  claim_token = null,
+                  updated_at = now()
+            where idempotency_key = $1`,
+          [entry.idempotencyKey, safeError],
+        );
+      }
+    } else {
+      const retrySec =
+        typeof outcome.retryAfterSeconds === "number" &&
+        Number.isFinite(outcome.retryAfterSeconds) &&
+        outcome.retryAfterSeconds > 0
+          ? Math.max(300, Math.ceil(outcome.retryAfterSeconds))
+          : 300;
+      await pool.query(
+        `update public.notification_outbox
+            set status = case when attempt_count + 1 >= max_attempts then 'dead_letter' else 'failed_retryable' end,
+                attempt_count = attempt_count + 1,
+                next_retry_at = now() + ($3::int * interval '1 second'),
+                last_error = $2,
+                claim_token = null,
+                updated_at = now()
+          where idempotency_key = $1`,
+        [entry.idempotencyKey, redactBotToken(outcome.error ?? "bilinmeyen hata"), retrySec],
+      );
+    }
+  } catch (err) {
+    if (!isMissingOutboxTableError(err)) throw err;
+  }
+}
+
+interface ClaimedDeliveryRow {
+  id: string;
+  reminder_id: string;
+  entity_table: string;
+  entity_id: string;
+  scheduled_for: string;
+  payload: { message?: string } | null;
+  claim_token?: string | null;
+  rule_name: string;
+  target_kind: ReminderTargetKind;
+  offset_days: number;
+  channel: Transport["channel"];
+  min_amount: string | number | null;
+  is_active: boolean;
+}
+
+async function claimPendingDeliveriesAtomic(
+  pool: Pool,
+  todayISO: string,
+): Promise<ClaimedDeliveryRow[]> {
+  try {
+    await pool.query(
+      `update public.reminder_deliveries
+          set status = 'pending',
+              claim_token = null
+        where status = 'claiming'
+          and claimed_at < now() - interval '10 minutes'`,
+    );
+  } catch (err) {
+    if (!isLegacyClaimingUnsupportedError(err)) throw err;
+  }
+
+  try {
+    const claimed = await pool.query<ClaimedDeliveryRow>(
+      `with due as (
+         select d.id
+           from public.reminder_deliveries d
+          where d.status = 'pending'
+            and d.scheduled_for <= $1::date
+          order by d.scheduled_for asc, d.id asc
+          for update skip locked
+       )
+       update public.reminder_deliveries d
+          set status = 'claiming',
+              claim_token = gen_random_uuid(),
+              claimed_at = now()
+         from due,
+              public.reminders r
+        where d.id = due.id
+          and r.id = d.reminder_id
+       returning d.id::text as id,
+                 d.reminder_id::text as reminder_id,
+                 d.entity_table,
+                 d.entity_id::text as entity_id,
+                 to_char(d.scheduled_for, 'YYYY-MM-DD') as scheduled_for,
+                 d.payload,
+                 d.claim_token::text as claim_token,
+                 r.name as rule_name,
+                 r.target_kind,
+                 r.offset_days,
+                 r.channel,
+                 r.min_amount,
+                 r.is_active`,
+      [todayISO],
+    );
+    const rows = [...claimed.rows];
+    rows.sort((a, b) =>
+      a.scheduled_for === b.scheduled_for
+        ? a.id.localeCompare(b.id)
+        : a.scheduled_for.localeCompare(b.scheduled_for),
+    );
+    return rows;
+  } catch (err) {
+    if (!isLegacyClaimingUnsupportedError(err)) throw err;
+    const legacy = await pool.query<ClaimedDeliveryRow>(
+      `select d.id::text as id,
+              d.reminder_id::text as reminder_id,
+              d.entity_table,
+              d.entity_id::text as entity_id,
+              to_char(d.scheduled_for, 'YYYY-MM-DD') as scheduled_for,
+              d.payload,
+              r.name as rule_name,
+              r.target_kind,
+              r.offset_days,
+              r.channel,
+              r.min_amount,
+              r.is_active
+         from public.reminder_deliveries d
+         join public.reminders r on r.id = d.reminder_id
+        where d.status = 'pending'
+          and d.scheduled_for <= $1::date
+        order by d.scheduled_for asc, d.id asc`,
+      [todayISO],
+    );
+    return legacy.rows;
+  }
+}
+
+function classifyThrownTransportError(e: unknown): DeliveryResult {
+  const errName = (e as Error)?.name ?? "";
+  const errMsg = (e as Error)?.message ?? String(e);
+  const isTimeout =
+    errName === "TimeoutError" ||
+    errName === "AbortError" ||
+    /timeout|aborted/i.test(errMsg);
+  return {
+    ok: false,
+    uncertainOutcome: isTimeout,
+    failureKind: isTimeout ? "timeout" : "temporary_infra_failure",
+    error: `transport threw: ${redactBotToken(errMsg)}`,
+  };
+}
+
 /**
- * Sends pending deliveries scheduled on/before today.
- *
- * Faz 40 (A2): Joins `public.reminders` to inspect each rule's `channel`. Email deliveries NEVER
- * leak onto a Telegram transport; if `channel === "email"` and the email endpoint is unconfigured,
- * the delivery row is recorded as `status='skipped'`, `error='skipped_unconfigured'`.
+ * Sends pending deliveries scheduled on/before today:
+ *  1. Expires stale upcoming/due-today rows (`offset_days >= 0` and `scheduled_for < todayISO - 1`).
+ *  2. Atomically claims due `pending` rows via `FOR UPDATE SKIP LOCKED` (`status = 'claiming'`, `claim_token = gen_random_uuid()`)
+ *     so concurrent worker processes never dispatch duplicate Telegram/email notifications.
+ *  3. Re-verifies each live target row is still open/unarchived/uncancelled and still in the rule's
+ *     disjoint bucket on `todayISO`, rebuilding the message fresh from live facts (`todayISO`).
+ *  4. Deduplicates via `public.notification_outbox` (`status in ('sent', 'delivery_uncertain', 'claiming')`),
+ *     preserves `'delivery_uncertain'` on post-send timeouts without blind retries, and consolidates
+ *     `> 5` simultaneous items per channel into a single structured digest (`buildReminderDigestHtml`).
  */
 export async function dispatchPending(
   pool: Pool,
   transportOrResolver: TransportOrResolver = transportFor,
   todayISO = istanbulDateISO(),
 ): Promise<DispatchResult> {
-  const pending = await pool.query<{
-    id: string;
-    payload: { message?: string } | null;
-    channel: Transport["channel"];
-  }>(
-    `select d.id, d.payload, r.channel
-     from public.reminder_deliveries d
-     join public.reminders r on r.id = d.reminder_id
-     where d.status='pending' and d.scheduled_for <= $1
-     order by d.scheduled_for`,
+  // 1) Expire stale upcoming / due-today deliveries so an August "Bugün ödeme" can NEVER fire in November.
+  const expiredRes = await pool.query(
+    `update public.reminder_deliveries d
+        set status = 'skipped',
+            error = 'expired_stale_window'
+       from public.reminders r
+      where d.reminder_id = r.id
+        and d.status = 'pending'
+        and r.offset_days >= 0
+        and d.scheduled_for < ($1::date - 1)`,
     [todayISO],
   );
-  let sent = 0, failed = 0, skipped = 0;
-  for (const row of pending.rows) {
-    const channel: Transport["channel"] = row.channel === "email" ? "email" : "telegram";
-    const activeTransport: Transport =
-      typeof transportOrResolver === "function"
-        ? transportOrResolver(channel)
-        : channel === "email" && transportOrResolver.channel !== "email"
-          ? emailTransport()
-          : transportOrResolver;
+  const expiredStaleCount = expiredRes.rowCount ?? 0;
 
-    const message: string = row.payload?.message ?? "";
-    let result: DeliveryResult;
-    try {
-      result = await activeTransport.send(message);
-    } catch (e) {
-      result = { ok: false, error: `transport threw: ${redactBotToken((e as Error).message)}` };
+  const claimedRows = await claimPendingDeliveriesAtomic(pool, todayISO);
+
+  let sent = 0;
+  let failed = 0;
+  let skipped = expiredStaleCount;
+  let uncertain = 0;
+
+  if (claimedRows.length === 0) {
+    return { attempted: expiredStaleCount, sent: 0, failed: 0, skipped, uncertain: 0 };
+  }
+
+  // 2) Live target re-verification + fresh message rendering as of `todayISO`.
+  const liveTargets = await loadLiveTargetsForPending(pool, claimedRows, todayISO);
+
+  interface VerifiedPendingItem {
+    deliveryId: string;
+    claimToken: string | null;
+    legalEntityId: string | null;
+    channel: "telegram" | "email";
+    entityTable: string;
+    entityId: string;
+    escalationBucket: EscalationBucketKey;
+    idempotencyKey: string;
+    freshMessage: string;
+    digestItem: ReminderDigestItem;
+  }
+
+  const verifiedItems: VerifiedPendingItem[] = [];
+
+  for (const row of claimedRows) {
+    const channel: "telegram" | "email" = row.channel === "email" ? "email" : "telegram";
+    const rule: ReminderRule = {
+      id: row.reminder_id,
+      name: row.rule_name,
+      targetKind: row.target_kind,
+      offsetDays: Number(row.offset_days),
+      channel,
+      minAmount: moneyOrNull(row.min_amount),
+      isActive: Boolean(row.is_active),
+    };
+
+    const liveTarget = liveTargets.get(`${row.entity_table}:${row.entity_id}`);
+    const resolvedAmounts = liveTarget ? resolveReminderAmounts(liveTarget) : null;
+    const bucketValid =
+      liveTarget !== undefined &&
+      resolvedAmounts !== null &&
+      rule.isActive &&
+      thresholdPasses(rule.minAmount, resolvedAmounts.outstandingAmount) &&
+      (rule.offsetDays < 0
+        ? matchesReminderOffset(rule.offsetDays, liveTarget.dueDate, todayISO)
+        : liveTarget.dueDate >= todayISO &&
+          (matchesReminderOffset(rule.offsetDays, liveTarget.dueDate, todayISO) ||
+            (rule.offsetDays > 0 && liveTarget.dueDate > todayISO)));
+
+    if (!liveTarget || !resolvedAmounts || !bucketValid) {
+      await markReminderDeliveryStatusStrict(pool, row.id, "skipped", {
+        error: "superseded_or_closed",
+        claimToken: row.claim_token ?? null,
+      });
+      skipped += 1;
+      continue;
     }
-    if (result.ok) {
-      await pool.query(
-        `update public.reminder_deliveries set status='sent', sent_at=now(), error=null where id=$1`,
-        [row.id],
+
+    const escalationBucket = classifyEscalationBucket(liveTarget.dueDate, todayISO);
+    const escalationTier =
+      rule.offsetDays >= 0 ? `upcoming_${rule.offsetDays}` : escalationBucket;
+    const cadenceSlot = scheduledForDate(liveTarget.dueDate, rule.offsetDays);
+    const legalEntityId = liveTarget.legalEntityId ?? null;
+    const stateVersion = [
+      liveTarget.dueDate,
+      liveTarget.status.trim().toLowerCase(),
+      resolvedAmounts.outstandingAmount == null
+        ? "null"
+        : resolvedAmounts.outstandingAmount.toFixed(2),
+    ].join(":");
+
+    const idempotencyKey = computeNotificationIdempotencyKey([
+      channel,
+      legalEntityId ?? "default",
+      row.entity_table,
+      row.entity_id,
+      rule.id,
+      escalationTier,
+      cadenceSlot,
+      stateVersion,
+    ]);
+
+    const freshMessage = buildReminderMessage(rule, liveTarget, todayISO);
+
+    verifiedItems.push({
+      deliveryId: row.id,
+      claimToken: row.claim_token ?? null,
+      legalEntityId,
+      channel,
+      entityTable: row.entity_table,
+      entityId: row.entity_id,
+      escalationBucket,
+      idempotencyKey,
+      freshMessage,
+      digestItem: {
+        entityTable: liveTarget.entityTable,
+        entityId: liveTarget.entityId,
+        name: liveTarget.name,
+        dueDate: liveTarget.dueDate,
+        amount: liveTarget.amount,
+        originalAmount: liveTarget.originalAmount,
+        paidAmount: liveTarget.paidAmount,
+        outstandingAmount: liveTarget.outstandingAmount,
+        status: liveTarget.status,
+        owner: liveTarget.owner,
+        provider: liveTarget.provider,
+        riskReasons: liveTarget.riskReasons,
+      },
+    });
+  }
+
+  // 3) Deduplicate against `notification_outbox` (`status in ('sent', 'delivery_uncertain', 'claiming')`) and batch `> 5` per channel.
+  const alreadySentKeys = await loadAlreadySentOutboxKeys(
+    pool,
+    verifiedItems.map((i) => i.idempotencyKey),
+  );
+
+  const byChannel: Record<"telegram" | "email", VerifiedPendingItem[]> = {
+    telegram: [],
+    email: [],
+  };
+
+  for (const item of verifiedItems) {
+    if (alreadySentKeys.has(item.idempotencyKey)) {
+      await markReminderDeliveryStatusStrict(pool, item.deliveryId, "skipped", {
+        error: "deduped_by_outbox",
+        claimToken: item.claimToken,
+      });
+      skipped += 1;
+      continue;
+    }
+    byChannel[item.channel].push(item);
+  }
+
+  for (const channel of ["telegram", "email"] as const) {
+    const channelItems = byChannel[channel];
+    if (channelItems.length === 0) continue;
+
+    const activeTransport = resolveActiveTransport(transportOrResolver, channel);
+
+    if (channelItems.length > REMINDER_CHANNEL_DIGEST_THRESHOLD) {
+      const digestHtml = buildReminderDigestHtml(
+        channelItems.map((c) => c.digestItem),
+        todayISO,
       );
-      sent++;
-    } else if (result.skippedUnconfigured) {
-      await pool.query(
-        `update public.reminder_deliveries set status='skipped', error='skipped_unconfigured' where id=$1`,
-        [row.id],
+      const batchKey = computeNotificationIdempotencyKey([
+        "reminder_digest_batch",
+        channel,
+        todayISO,
+        ...[...channelItems.map((c) => c.idempotencyKey)].sort(),
+      ]);
+
+      let result: DeliveryResult;
+      try {
+        result = await activeTransport.send(
+          digestHtml,
+          channel === "telegram" ? { parseMode: "HTML" } : undefined,
+        );
+      } catch (e) {
+        result = classifyThrownTransportError(e);
+      }
+
+      await recordOutboxOutcomeSafe(
+        pool,
+        {
+          channel,
+          idempotencyKey: batchKey,
+          bodyText: digestHtml,
+          bodyFormat: channel === "telegram" ? "html" : "plain",
+          metadata: {
+            todayISO,
+            itemCount: channelItems.length,
+            deliveryIds: channelItems.map((c) => c.deliveryId),
+          },
+        },
+        result,
       );
-      skipped++;
-    } else {
-      await pool.query(
-        `update public.reminder_deliveries set status='failed', error=$2 where id=$1`,
-        [row.id, redactBotToken(result.error ?? "bilinmeyen hata")],
+
+      for (const item of channelItems) {
+        await recordOutboxOutcomeSafe(
+          pool,
+          {
+            channel,
+            idempotencyKey: item.idempotencyKey,
+            bodyText: item.freshMessage,
+            bodyFormat: "plain",
+            metadata: { todayISO, batchKey, deliveryId: item.deliveryId },
+            legalEntityId: item.legalEntityId,
+          },
+          result,
+        );
+
+        if (result.ok) {
+          await markReminderDeliveryStatusStrict(pool, item.deliveryId, "sent", {
+            payload: {
+              message: item.freshMessage,
+              escalationBucket: item.escalationBucket,
+              batchedDigest: true,
+              evaluatedOn: todayISO,
+              ...(result.providerMessageIds ? { providerMessageIds: result.providerMessageIds } : {}),
+            },
+            claimToken: item.claimToken,
+          });
+          sent += 1;
+        } else if (result.skippedUnconfigured) {
+          await markReminderDeliveryStatusStrict(pool, item.deliveryId, "skipped", {
+            error: "skipped_unconfigured",
+            claimToken: item.claimToken,
+          });
+          skipped += 1;
+        } else if (result.uncertainOutcome === true) {
+          await markReminderDeliveryStatusStrict(pool, item.deliveryId, "delivery_uncertain", {
+            error: redactBotToken(
+              result.error ?? "delivery_uncertain: gönderim sonrası yanıt doğrulanamadı",
+            ),
+            claimToken: item.claimToken,
+          });
+          failed += 1;
+          uncertain += 1;
+        } else {
+          await markReminderDeliveryStatusStrict(pool, item.deliveryId, "failed", {
+            error: redactBotToken(result.error ?? "bilinmeyen hata"),
+            claimToken: item.claimToken,
+          });
+          failed += 1;
+        }
+      }
+      continue;
+    }
+
+    for (const item of channelItems) {
+      let result: DeliveryResult;
+      try {
+        result = await activeTransport.send(item.freshMessage);
+      } catch (e) {
+        result = classifyThrownTransportError(e);
+      }
+
+      await recordOutboxOutcomeSafe(
+        pool,
+        {
+          channel,
+          idempotencyKey: item.idempotencyKey,
+          bodyText: item.freshMessage,
+          bodyFormat: "plain",
+          metadata: { todayISO, deliveryId: item.deliveryId },
+          legalEntityId: item.legalEntityId,
+        },
+        result,
       );
-      failed++;
+
+      if (result.ok) {
+        await markReminderDeliveryStatusStrict(pool, item.deliveryId, "sent", {
+          payload: {
+            message: item.freshMessage,
+            escalationBucket: item.escalationBucket,
+            evaluatedOn: todayISO,
+            ...(result.providerMessageIds ? { providerMessageIds: result.providerMessageIds } : {}),
+          },
+          claimToken: item.claimToken,
+        });
+        sent += 1;
+      } else if (result.skippedUnconfigured) {
+        await markReminderDeliveryStatusStrict(pool, item.deliveryId, "skipped", {
+          error: "skipped_unconfigured",
+          claimToken: item.claimToken,
+        });
+        skipped += 1;
+      } else if (result.uncertainOutcome === true) {
+        await markReminderDeliveryStatusStrict(pool, item.deliveryId, "delivery_uncertain", {
+          error: redactBotToken(
+            result.error ?? "delivery_uncertain: gönderim sonrası yanıt doğrulanamadı",
+          ),
+          claimToken: item.claimToken,
+        });
+        failed += 1;
+        uncertain += 1;
+      } else {
+        await markReminderDeliveryStatusStrict(pool, item.deliveryId, "failed", {
+          error: redactBotToken(result.error ?? "bilinmeyen hata"),
+          claimToken: item.claimToken,
+        });
+        failed += 1;
+      }
     }
   }
-  return { attempted: pending.rows.length, sent, failed, skipped };
+
+  return {
+    attempted: expiredStaleCount + claimedRows.length,
+    sent,
+    failed,
+    skipped,
+    uncertain,
+  };
 }
 
 /* ── read-side for /reminders ── */
@@ -641,6 +1931,7 @@ export async function loadDeliveries(pool: Pool) {
               inv_p.name,
               inv.invoice_no,
               ptp_p.name,
+              cov.description,
               d.entity_id::text
             ) as target_name
      from public.reminder_deliveries d
@@ -654,6 +1945,7 @@ export async function loadDeliveries(pool: Pool) {
      left join public.parties inv_p on inv_p.id = inv.party_id
      left join public.promise_to_pay ptp on ptp.id = d.entity_id and d.entity_table = 'promise_to_pay'
      left join public.parties ptp_p on ptp_p.id = ptp.party_id
+     left join public.covenant_records cov on cov.id = d.entity_id and d.entity_table = 'covenant_records'
      order by d.scheduled_for desc, d.status`,
   );
   return r.rows as Array<{
@@ -683,5 +1975,6 @@ export async function deliveryCounts(pool: Pool) {
     sent: m.get("sent") ?? 0,
     failed: m.get("failed") ?? 0,
     skipped: m.get("skipped") ?? 0,
+    uncertain: m.get("delivery_uncertain") ?? 0,
   };
 }

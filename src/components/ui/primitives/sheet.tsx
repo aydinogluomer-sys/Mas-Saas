@@ -1,8 +1,7 @@
 "use client";
 
-// Right-side sheet built on Radix Dialog, restyled to MAS dark tokens.
-// Gains focus-trap, scroll-lock, Esc/backdrop close and full a11y wiring over the
-// previous bespoke drawer. Presentation only.
+// Right-side sheet built on Radix Dialog, styled to Editorial Precision v2 warm-cream tokens
+// with GPU translate3d slide-over (< 40ms response budget).
 import * as DialogPrimitive from "@radix-ui/react-dialog";
 import { cn } from "@/lib/utils";
 
@@ -21,12 +20,12 @@ export function SheetContent({
     <DialogPrimitive.Portal>
       <DialogPrimitive.Overlay
         className="fixed inset-0 z-40 data-[state=open]:animate-fade"
-        style={{ background: "var(--scrim)" }}
+        style={{ background: "var(--scrim)", backdropFilter: "blur(2px)" }}
       />
       <DialogPrimitive.Content
         className={cn(
-          "fixed right-0 top-0 z-50 flex h-full w-[min(560px,92vw)] flex-col overflow-y-auto p-5",
-          "outline-none data-[state=open]:animate-fade",
+          "fixed right-0 top-0 z-50 flex h-full w-[min(580px,94vw)] flex-col overflow-y-auto p-5",
+          "outline-none data-[state=open]:animate-drawer-in",
           className,
         )}
         style={{

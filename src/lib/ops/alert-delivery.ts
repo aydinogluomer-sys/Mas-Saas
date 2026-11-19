@@ -42,6 +42,13 @@
 
 import { appendFileSync, mkdirSync } from "node:fs";
 import path from "node:path";
+import type { Pool } from "pg";
+import {
+  evaluateAndRecordOpsIncidents,
+  markOpsIncidentsNotified,
+  type OpsIncidentNotification,
+  type OpsIncidentRecord,
+} from "@/lib/reminders/outbox";
 import { transportFor, type Transport } from "@/lib/reminders/transport";
 
 /** Rehber §31 sınıflandırması. Her uyarı bir severity TAŞIMAK zorunda — "önemli mi" sorusunun
@@ -59,6 +66,8 @@ export interface TelemetryAlert {
   threshold: string;
   severity: AlertSeverity;
   message: string;
+  /** True when snapshot execution failed or telemetry went blind (`UNKNOWN` incident state). */
+  snapshotUnavailable?: boolean;
 }
 
 export type AlertChannel = "log" | "telegram" | "email";
@@ -94,6 +103,8 @@ export interface DeliveryReport {
   outcomes: ChannelOutcome[];
   /** Denenen HER kanal başarılıysa true. Denenmemiş kanal bunu bozmaz. */
   allDelivered: boolean;
+  incidentNotifications?: OpsIncidentNotification[];
+  incidentRecords?: OpsIncidentRecord[];
 }
 
 /* ── sır maskeleme ───────────────────────────────────────────────────────────────────────── */
@@ -191,12 +202,39 @@ export function formatAlertMessage(runId: string, alerts: readonly TelemetryAler
   if (alerts.length === 0) return `MAS Nakit Radar telemetri: ALL CLEAR (run ${runId})`;
   const worst = alerts.some((a) => a.severity === "P0") ? "P0"
     : alerts.some((a) => a.severity === "P1") ? "P1" : "P2";
-  const lines = alerts.map((a) => `- [${a.severity}] ${a.signal} = ${a.value} (${a.threshold})`);
+  const lines = alerts.map((a) => {
+    const tag =
+      a.snapshotUnavailable || a.signal === "telemetry_snapshot_unavailable" || a.value.trim() === "?"
+        ? `[UNKNOWN][${a.severity}]`
+        : `[OPEN][${a.severity}]`;
+    return `- ${tag} ${a.signal} = ${a.value} (${a.threshold})`;
+  });
   return [
     `MAS Nakit Radar TELEMETRI ALARMI — ${alerts.length} sinyal, en yuksek ${worst}`,
     `run ${runId}`,
     ...lines,
   ].join("\n");
+}
+
+export function formatIncidentTransitionMessage(
+  runId: string,
+  notifications: readonly OpsIncidentNotification[],
+): string {
+  if (notifications.length === 0) {
+    return `MAS Nakit Radar telemetri: ALL CLEAR (run ${runId})`;
+  }
+  const hasFiring = notifications.some((n) => n.nextState === "OPEN" || n.nextState === "UNKNOWN");
+  const worst = notifications.some((n) => n.severity === "P0")
+    ? "P0"
+    : notifications.some((n) => n.severity === "P1")
+      ? "P1"
+      : "P2";
+
+  const header = hasFiring
+    ? `MAS Nakit Radar TELEMETRI ALARMI — ${notifications.length} sinyal, en yuksek ${worst}`
+    : `MAS Nakit Radar TELEMETRI COZULDU — ${notifications.length} sinyal normale dondu`;
+
+  return [header, `run ${runId}`, ...notifications.map((n) => `- ${n.formattedLine}`)].join("\n");
 }
 
 /** Uyarıları log satırlarına çevirir. Saf: dosya sistemi yok, test edilebilir. */
@@ -254,6 +292,12 @@ export interface DeliverOptions {
   /** Uyarı yokken de bir "heartbeat" satırı yaz. Varsayılan: evet — sessiz bir log,
    *  "sorun yok" ile "toplayıcı çalışmadı"yı ayırt edemez. */
   heartbeat?: boolean;
+  /** Opsiyonel PostgreSQL havuzu (`public.ops_incidents`). Bağlanamazsa yerel JSON dosyasına düşer. */
+  pool?: Pool | null;
+  /** Yerel olay durum dosyası yolu. Varsayılan: `path.join(path.dirname(logPath), "ops-incident-state.json")`. */
+  incidentStatePath?: string;
+  /** Korelasyon kimliği (`ops_incidents.correlation_id`). Varsayılan: `runId`. */
+  correlationId?: string;
 }
 
 export async function deliverAlerts(opts: DeliverOptions): Promise<DeliveryReport> {
@@ -277,30 +321,60 @@ export async function deliverAlerts(opts: DeliverOptions): Promise<DeliveryRepor
     });
   }
 
-  /* 2 — ek kanallar. Yalnız GERÇEK bir uyarı varken denenir: her koşuda "her şey yolunda"
-   *     bildirimi göndermek, kanalı sessize alınacak hâle getirir. */
+  /* 2 — olay durum makinesi (`OPEN` / `ACKNOWLEDGED` / `RESOLVED` / `UNKNOWN` / `SUPPRESSED`) ve ek kanallar. */
+  const stateFilePath =
+    opts.incidentStatePath ??
+    path.join(path.dirname(path.resolve(opts.logPath)), "ops-incident-state.json");
+
+  const incidentEval = await evaluateAndRecordOpsIncidents(
+    opts.pool ?? null,
+    opts.alerts.map((a) => ({
+      signal: a.signal,
+      severity: a.severity,
+      value: a.value,
+      note: a.threshold,
+      threshold: a.threshold,
+      snapshotUnavailable: a.snapshotUnavailable,
+    })),
+    {
+      now: at,
+      stateFilePath,
+      deferNotifiedStamp: true,
+      correlationId: opts.correlationId ?? opts.runId,
+    },
+  );
+
   const extra = opts.channels.filter((c): c is Exclude<AlertChannel, "log"> => c !== "log");
-  const body = redactSecrets(formatAlertMessage(opts.runId, opts.alerts), redactValues);
+  const outboundNotifications = incidentEval.notifications;
+  const body =
+    outboundNotifications.length > 0
+      ? redactSecrets(formatIncidentTransitionMessage(opts.runId, outboundNotifications), redactValues)
+      : "";
+
+  let anyExtraDeliveredOk = false;
   for (const channel of extra) {
-    if (opts.alerts.length === 0) {
+    if (outboundNotifications.length === 0) {
       outcomes.push({ channel, attempted: false, ok: true });
       continue;
     }
     const transport = opts.transports?.[channel] ?? transportFor(channel);
     try {
       const res = await transport.send(body);
+      if (res.ok) anyExtraDeliveredOk = true;
       outcomes.push({
         channel, attempted: true, ok: res.ok,
         error: res.ok ? undefined : redactSecrets(res.error ?? "bilinmeyen hata", redactValues),
       });
     } catch (e) {
-      // Taşıyıcı sözleşmesi fırlatmamayı vaat ediyor; yine de fırlatırsa bu bir teslimat
-      // başarısızlığıdır, bir çökme değil.
       outcomes.push({
         channel, attempted: true, ok: false,
         error: redactSecrets((e as Error).message ?? String(e), redactValues),
       });
     }
+  }
+
+  if (anyExtraDeliveredOk && outboundNotifications.length > 0) {
+    await markOpsIncidentsNotified(opts.pool ?? null, outboundNotifications, at, stateFilePath);
   }
 
   /* 3 — teslimat sonuçlarının KENDİSİ log'a yazılır. Rehber §14: teslimat başarısızlığı
@@ -320,5 +394,13 @@ export async function deliverAlerts(opts: DeliverOptions): Promise<DeliveryRepor
   }
 
   const allDelivered = outcomes.every((o) => !o.attempted || o.ok);
-  return { runId: opts.runId, alertCount: opts.alerts.length, logPath: opts.logPath, outcomes, allDelivered };
+  return {
+    runId: opts.runId,
+    alertCount: opts.alerts.length,
+    logPath: opts.logPath,
+    outcomes,
+    allDelivered,
+    incidentNotifications: outboundNotifications,
+    incidentRecords: incidentEval.records,
+  };
 }

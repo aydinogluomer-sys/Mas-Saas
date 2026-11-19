@@ -1,0 +1,394 @@
+{
+  "iteration": "02",
+  "totalChecks": 27,
+  "http500Count": 0,
+  "overflowFailures": [],
+  "darkSurfaceFailures": [],
+  "consoleErrorCount": 0,
+  "pageErrorCount": 0,
+  "chartProof": {
+    "route": "/",
+    "state3m": {
+      "yTicks": [
+        "218,5 B",
+        "163,9 B",
+        "109,2 B",
+        "54,6 B",
+        "0"
+      ],
+      "pathDs": [],
+      "rectHeights": [
+        {
+          "y": "174.44996393592677",
+          "h": "73.55003606407323"
+        },
+        {
+          "y": "174.44996393592677",
+          "h": "73.55003606407323"
+        },
+        {
+          "y": "174.44996393592677",
+          "h": "73.55003606407323"
+        },
+        {
+          "y": "53.21739130434781",
+          "h": "194.7826086956522"
+        },
+        {
+          "y": "104.47597254004576",
+          "h": "143.52402745995425"
+        },
+        {
+          "y": "222.370709382151",
+          "h": "25.629290617848994"
+        }
+      ]
+    },
+    "stateAll": {
+      "yTicks": [
+        "586,5 B",
+        "439,9 B",
+        "293,3 B",
+        "146,6 B",
+        "0"
+      ],
+      "pathDs": [],
+      "rectHeights": [
+        {
+          "y": "182.4063378005115",
+          "h": "65.5936621994885"
+        },
+        {
+          "y": "220.59900617220802",
+          "h": "27.40099382779198"
+        },
+        {
+          "y": "220.59900617220802",
+          "h": "27.40099382779198"
+        },
+        {
+          "y": "220.59900617220802",
+          "h": "27.40099382779198"
+        },
+        {
+          "y": "220.59900617220802",
+          "h": "27.40099382779198"
+        },
+        {
+          "y": "220.59900617220802",
+          "h": "27.40099382779198"
+        }
+      ]
+    },
+    "state3mFullHorizon": {
+      "yTicks": [
+        "258,7 B",
+        "194,1 B",
+        "129,4 B",
+        "64,7 B",
+        "0"
+      ],
+      "pathDs": [],
+      "rectHeights": [
+        {
+          "y": "185.8910806570048",
+          "h": "62.10891934299519"
+        },
+        {
+          "y": "185.8910806570048",
+          "h": "62.10891934299519"
+        },
+        {
+          "y": "185.8910806570048",
+          "h": "62.10891934299519"
+        },
+        {
+          "y": "83.51690821256038",
+          "h": "164.4830917874396"
+        },
+        {
+          "y": "126.80193236714975",
+          "h": "121.19806763285025"
+        },
+        {
+          "y": "226.35748792270533",
+          "h": "21.64251207729467"
+        }
+      ]
+    },
+    "yTicksChangedBetween3mAndAll": true,
+    "geometryChangedBetweenWindowAndFullScale": true
+  },
+  "checks": [
+    {
+      "route": "/",
+      "viewport": "desktop (1366x900)",
+      "status": 200,
+      "overflowPx": 0,
+      "darkSurfaceCount": 0,
+      "consoleErrors": [],
+      "pageErrors": [],
+      "screenshotPath": "C:\\Users\\Trade Bilisim\\Mas Saas\\awwwards-loop\\screenshots\\iteration-02\\awwwards_v2_desktop_overview.png"
+    },
+    {
+      "route": "/cashflow",
+      "viewport": "desktop (1366x900)",
+      "status": 200,
+      "overflowPx": 0,
+      "darkSurfaceCount": 0,
+      "consoleErrors": [],
+      "pageErrors": [],
+      "screenshotPath": "C:\\Users\\Trade Bilisim\\Mas Saas\\awwwards-loop\\screenshots\\iteration-02\\awwwards_v2_desktop_cashflow.png"
+    },
+    {
+      "route": "/cashflow/13-week",
+      "viewport": "desktop (1366x900)",
+      "status": 200,
+      "overflowPx": 0,
+      "darkSurfaceCount": 0,
+      "consoleErrors": [],
+      "pageErrors": [],
+      "screenshotPath": "C:\\Users\\Trade Bilisim\\Mas Saas\\awwwards-loop\\screenshots\\iteration-02\\awwwards_v2_desktop_cashflow-13w.png"
+    },
+    {
+      "route": "/finance",
+      "viewport": "desktop (1366x900)",
+      "status": 200,
+      "overflowPx": 0,
+      "darkSurfaceCount": 0,
+      "consoleErrors": [],
+      "pageErrors": [],
+      "screenshotPath": "C:\\Users\\Trade Bilisim\\Mas Saas\\awwwards-loop\\screenshots\\iteration-02\\awwwards_v2_desktop_finance.png"
+    },
+    {
+      "route": "/finance/ledger",
+      "viewport": "desktop (1366x900)",
+      "status": 200,
+      "overflowPx": 0,
+      "darkSurfaceCount": 0,
+      "consoleErrors": [],
+      "pageErrors": [],
+      "screenshotPath": "C:\\Users\\Trade Bilisim\\Mas Saas\\awwwards-loop\\screenshots\\iteration-02\\awwwards_v2_desktop_finance-ledger.png"
+    },
+    {
+      "route": "/finance/profitability",
+      "viewport": "desktop (1366x900)",
+      "status": 200,
+      "overflowPx": 0,
+      "darkSurfaceCount": 0,
+      "consoleErrors": [],
+      "pageErrors": [],
+      "screenshotPath": "C:\\Users\\Trade Bilisim\\Mas Saas\\awwwards-loop\\screenshots\\iteration-02\\awwwards_v2_desktop_finance-profitability.png"
+    },
+    {
+      "route": "/production",
+      "viewport": "desktop (1366x900)",
+      "status": 200,
+      "overflowPx": 0,
+      "darkSurfaceCount": 0,
+      "consoleErrors": [],
+      "pageErrors": [],
+      "screenshotPath": "C:\\Users\\Trade Bilisim\\Mas Saas\\awwwards-loop\\screenshots\\iteration-02\\awwwards_v2_desktop_production.png"
+    },
+    {
+      "route": "/scenarios",
+      "viewport": "desktop (1366x900)",
+      "status": 200,
+      "overflowPx": 0,
+      "darkSurfaceCount": 0,
+      "consoleErrors": [],
+      "pageErrors": [],
+      "screenshotPath": "C:\\Users\\Trade Bilisim\\Mas Saas\\awwwards-loop\\screenshots\\iteration-02\\awwwards_v2_desktop_scenarios.png"
+    },
+    {
+      "route": "/insights",
+      "viewport": "desktop (1366x900)",
+      "status": 200,
+      "overflowPx": 0,
+      "darkSurfaceCount": 0,
+      "consoleErrors": [],
+      "pageErrors": [],
+      "screenshotPath": "C:\\Users\\Trade Bilisim\\Mas Saas\\awwwards-loop\\screenshots\\iteration-02\\awwwards_v2_desktop_insights.png"
+    },
+    {
+      "route": "/data/imports",
+      "viewport": "desktop (1366x900)",
+      "status": 200,
+      "overflowPx": 0,
+      "darkSurfaceCount": 0,
+      "consoleErrors": [],
+      "pageErrors": [],
+      "screenshotPath": "C:\\Users\\Trade Bilisim\\Mas Saas\\awwwards-loop\\screenshots\\iteration-02\\awwwards_v2_desktop_data-imports.png"
+    },
+    {
+      "route": "/data/integrations",
+      "viewport": "desktop (1366x900)",
+      "status": 200,
+      "overflowPx": 0,
+      "darkSurfaceCount": 0,
+      "consoleErrors": [],
+      "pageErrors": [],
+      "screenshotPath": "C:\\Users\\Trade Bilisim\\Mas Saas\\awwwards-loop\\screenshots\\iteration-02\\awwwards_v2_desktop_data-integrations.png"
+    },
+    {
+      "route": "/system/features",
+      "viewport": "desktop (1366x900)",
+      "status": 200,
+      "overflowPx": 0,
+      "darkSurfaceCount": 0,
+      "consoleErrors": [],
+      "pageErrors": [],
+      "screenshotPath": "C:\\Users\\Trade Bilisim\\Mas Saas\\awwwards-loop\\screenshots\\iteration-02\\awwwards_v2_desktop_system-features.png"
+    },
+    {
+      "route": "/system/security",
+      "viewport": "desktop (1366x900)",
+      "status": 200,
+      "overflowPx": 0,
+      "darkSurfaceCount": 0,
+      "consoleErrors": [],
+      "pageErrors": [],
+      "screenshotPath": "C:\\Users\\Trade Bilisim\\Mas Saas\\awwwards-loop\\screenshots\\iteration-02\\awwwards_v2_desktop_system-security.png"
+    },
+    {
+      "route": "/",
+      "viewport": "tablet (768x1024)",
+      "status": 200,
+      "overflowPx": 0,
+      "darkSurfaceCount": 0,
+      "consoleErrors": [],
+      "pageErrors": [],
+      "screenshotPath": "C:\\Users\\Trade Bilisim\\Mas Saas\\awwwards-loop\\screenshots\\iteration-02\\awwwards_v2_tablet_overview.png"
+    },
+    {
+      "route": "/cashflow",
+      "viewport": "tablet (768x1024)",
+      "status": 200,
+      "overflowPx": 0,
+      "darkSurfaceCount": 0,
+      "consoleErrors": [],
+      "pageErrors": [],
+      "screenshotPath": "C:\\Users\\Trade Bilisim\\Mas Saas\\awwwards-loop\\screenshots\\iteration-02\\awwwards_v2_tablet_cashflow.png"
+    },
+    {
+      "route": "/cashflow/13-week",
+      "viewport": "tablet (768x1024)",
+      "status": 200,
+      "overflowPx": 0,
+      "darkSurfaceCount": 0,
+      "consoleErrors": [],
+      "pageErrors": [],
+      "screenshotPath": "C:\\Users\\Trade Bilisim\\Mas Saas\\awwwards-loop\\screenshots\\iteration-02\\awwwards_v2_tablet_cashflow-13w.png"
+    },
+    {
+      "route": "/finance/ledger",
+      "viewport": "tablet (768x1024)",
+      "status": 200,
+      "overflowPx": 0,
+      "darkSurfaceCount": 0,
+      "consoleErrors": [],
+      "pageErrors": [],
+      "screenshotPath": "C:\\Users\\Trade Bilisim\\Mas Saas\\awwwards-loop\\screenshots\\iteration-02\\awwwards_v2_tablet_finance-ledger.png"
+    },
+    {
+      "route": "/production",
+      "viewport": "tablet (768x1024)",
+      "status": 200,
+      "overflowPx": 0,
+      "darkSurfaceCount": 0,
+      "consoleErrors": [],
+      "pageErrors": [],
+      "screenshotPath": "C:\\Users\\Trade Bilisim\\Mas Saas\\awwwards-loop\\screenshots\\iteration-02\\awwwards_v2_tablet_production.png"
+    },
+    {
+      "route": "/scenarios",
+      "viewport": "tablet (768x1024)",
+      "status": 200,
+      "overflowPx": 0,
+      "darkSurfaceCount": 0,
+      "consoleErrors": [],
+      "pageErrors": [],
+      "screenshotPath": "C:\\Users\\Trade Bilisim\\Mas Saas\\awwwards-loop\\screenshots\\iteration-02\\awwwards_v2_tablet_scenarios.png"
+    },
+    {
+      "route": "/data/imports",
+      "viewport": "tablet (768x1024)",
+      "status": 200,
+      "overflowPx": 0,
+      "darkSurfaceCount": 0,
+      "consoleErrors": [],
+      "pageErrors": [],
+      "screenshotPath": "C:\\Users\\Trade Bilisim\\Mas Saas\\awwwards-loop\\screenshots\\iteration-02\\awwwards_v2_tablet_data-imports.png"
+    },
+    {
+      "route": "/",
+      "viewport": "mobile (375x812)",
+      "status": 200,
+      "overflowPx": 0,
+      "darkSurfaceCount": 0,
+      "consoleErrors": [],
+      "pageErrors": [],
+      "screenshotPath": "C:\\Users\\Trade Bilisim\\Mas Saas\\awwwards-loop\\screenshots\\iteration-02\\awwwards_v2_mobile_overview.png"
+    },
+    {
+      "route": "/cashflow",
+      "viewport": "mobile (375x812)",
+      "status": 200,
+      "overflowPx": 0,
+      "darkSurfaceCount": 0,
+      "consoleErrors": [],
+      "pageErrors": [],
+      "screenshotPath": "C:\\Users\\Trade Bilisim\\Mas Saas\\awwwards-loop\\screenshots\\iteration-02\\awwwards_v2_mobile_cashflow.png"
+    },
+    {
+      "route": "/cashflow/13-week",
+      "viewport": "mobile (375x812)",
+      "status": 200,
+      "overflowPx": 0,
+      "darkSurfaceCount": 0,
+      "consoleErrors": [],
+      "pageErrors": [],
+      "screenshotPath": "C:\\Users\\Trade Bilisim\\Mas Saas\\awwwards-loop\\screenshots\\iteration-02\\awwwards_v2_mobile_cashflow-13w.png"
+    },
+    {
+      "route": "/finance/ledger",
+      "viewport": "mobile (375x812)",
+      "status": 200,
+      "overflowPx": 0,
+      "darkSurfaceCount": 0,
+      "consoleErrors": [],
+      "pageErrors": [],
+      "screenshotPath": "C:\\Users\\Trade Bilisim\\Mas Saas\\awwwards-loop\\screenshots\\iteration-02\\awwwards_v2_mobile_finance-ledger.png"
+    },
+    {
+      "route": "/production",
+      "viewport": "mobile (375x812)",
+      "status": 200,
+      "overflowPx": 0,
+      "darkSurfaceCount": 0,
+      "consoleErrors": [],
+      "pageErrors": [],
+      "screenshotPath": "C:\\Users\\Trade Bilisim\\Mas Saas\\awwwards-loop\\screenshots\\iteration-02\\awwwards_v2_mobile_production.png"
+    },
+    {
+      "route": "/scenarios",
+      "viewport": "mobile (375x812)",
+      "status": 200,
+      "overflowPx": 0,
+      "darkSurfaceCount": 0,
+      "consoleErrors": [],
+      "pageErrors": [],
+      "screenshotPath": "C:\\Users\\Trade Bilisim\\Mas Saas\\awwwards-loop\\screenshots\\iteration-02\\awwwards_v2_mobile_scenarios.png"
+    },
+    {
+      "route": "/data/imports",
+      "viewport": "mobile (375x812)",
+      "status": 200,
+      "overflowPx": 0,
+      "darkSurfaceCount": 0,
+      "consoleErrors": [],
+      "pageErrors": [],
+      "screenshotPath": "C:\\Users\\Trade Bilisim\\Mas Saas\\awwwards-loop\\screenshots\\iteration-02\\awwwards_v2_mobile_data-imports.png"
+    }
+  ]
+}

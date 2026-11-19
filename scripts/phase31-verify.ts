@@ -312,7 +312,7 @@ async function main(): Promise<void> {
   /* ── 5. dashboard: PASS when clean, severity when not ───────────────────────────────── */
   const dash = await q(`select check_code, state, finding_count, enforcement from public.control_dashboard`);
   record("kontrol panosu her kaydı listeliyor (bulgu yokken de görünüyor)",
-    dash.length === 11, `${dash.length} kontrol`);
+    dash.length === 13, `${dash.length} kontrol`);
   const stateMismatch = dash.filter((d) => {
     const sev = d.state === "PASS" ? null : d.state;
     return Number(d.finding_count) === 0 ? d.state !== "PASS" : sev === null;

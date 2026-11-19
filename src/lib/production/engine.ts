@@ -16,6 +16,12 @@ import { normalizeTr } from "@/lib/importers/workbook-parser";
 import { decimal, divOrNull, money, moneyOrNull, mul, rate, rateOrNull } from "@/lib/money";
 import { breakEvenTLPerMin, partProfitability } from "./rules";
 import { isMissingSchemaError, sourceRevenue } from "./source-revenue";
+import { loadBomSummaries } from "./bom";
+import {
+  convertAmountToTry,
+  loadLatestSpotRatesToTry,
+  normalizeCurrency,
+} from "./fx-rates";
 import { audit } from "@/lib/audit";
 import { DomainError } from "@/lib/domain-error";
 import { parseOrThrow } from "@/lib/validation";
@@ -278,34 +284,101 @@ export async function calculatePartProfitability(pool: Pool, costModelId?: strin
     // rate per operation: prefer capacity torna/freze rates; fall back to blended break-even
     const tornaRate = model.torna ?? model.be ?? null;
     const frezeRate = model.freze ?? model.be ?? null;
+    const otherOpRate = model.be ?? frezeRate ?? tornaRate ?? null;
 
-    const parts = await client.query<{
-      id: string; part_code: string | null; part_name: string; quantity: number | null;
-      torna_minutes: string | null; freze_minutes: string | null; unit_sale_price: string | null; currency: string | null;
-    }>(`select id, part_code, part_name, quantity,
-               torna_minutes, freze_minutes, unit_sale_price, currency from public.production_parts`);
+    const [spotRates, bomSummary] = await Promise.all([
+      loadLatestSpotRatesToTry(client),
+      loadBomSummaries(client),
+    ]);
+
+    const parts = await client
+      .query<{
+        id: string;
+        part_code: string | null;
+        part_name: string;
+        quantity: number | null;
+        torna_minutes: string | null;
+        freze_minutes: string | null;
+        other_operation_minutes: string | null;
+        unit_sale_price: string | null;
+        currency: string | null;
+      }>(
+        `select id, part_code, part_name, quantity,
+                torna_minutes, freze_minutes, other_operation_minutes,
+                unit_sale_price, currency
+           from public.production_parts`,
+      )
+      .catch(async (err: unknown) => {
+        const code = (err as { code?: string } | null)?.code;
+        if (code === "42703") {
+          const fb = await client.query<{
+            id: string;
+            part_code: string | null;
+            part_name: string;
+            quantity: number | null;
+            torna_minutes: string | null;
+            freze_minutes: string | null;
+            unit_sale_price: string | null;
+            currency: string | null;
+          }>(
+            `select id, part_code, part_name, quantity,
+                    torna_minutes, freze_minutes, unit_sale_price, currency
+               from public.production_parts`,
+          );
+          return {
+            rows: fb.rows.map((r) => ({ ...r, other_operation_minutes: null })),
+            rowCount: fb.rowCount,
+          };
+        }
+        throw err;
+      });
+
     // Gelir kaynak satırda veya operatörün girdiği birim satış fiyatında yaşar:
-    // Operatör `unit_sale_price` tanımladıysa (manuel parça veya fiyat güncellemesi) doğrudan
-    // `unit_sale_price × quantity` kullanılır; aksi halde kaynak Excel satırından `sourceRevenue` okunur.
+    // Yabancı para birimli (USD/EUR) ihracat parçaları güncel TCMB alış/kapanış kuruyla TL'ye çevrilir;
+    // asla 1:1 TL kabul edilmez ve kur eksikse sahte 0 yerine null (needs_review) kalır.
     for (const p of parts.rows) {
       const revRow = await client.query<{ row_json: unknown }>(
         `select ir.row_json
          from public.import_rows ir join public.production_parts pp on pp.source_row_id = ir.id
-         where pp.id=$1`, [p.id],
+         where pp.id=$1`,
+        [p.id],
       );
-      const explicitUnitRevenue =
-        p.unit_sale_price != null && p.quantity != null && (p.currency ?? "TRY") === "TRY"
-          ? moneyOrNull(mul(p.unit_sale_price, p.quantity))
-          : null;
+      const partCurrency = normalizeCurrency(p.currency);
+      let explicitUnitRevenue: number | null = null;
+      let missingForeignFx = false;
+      if (p.unit_sale_price != null && p.quantity != null) {
+        const nativeTotal = moneyOrNull(mul(p.unit_sale_price, p.quantity));
+        if (nativeTotal != null) {
+          const conv = convertAmountToTry(nativeTotal, partCurrency, spotRates);
+          explicitUnitRevenue = conv.amountTry;
+          missingForeignFx = conv.missingFxRate;
+        }
+      }
+
+      const resolvedRevenue =
+        p.unit_sale_price != null
+          ? explicitUnitRevenue
+          : sourceRevenue(revRow.rows[0]?.row_json ?? null, p.quantity, spotRates);
+
+      const bomCost = bomSummary.byPartId[p.id];
       const prof = partProfitability(
         {
-          code: p.part_code, name: p.part_name, quantity: p.quantity,
+          code: p.part_code,
+          name: p.part_name,
+          quantity: p.quantity,
           tornaMinutesPerUnit: p.torna_minutes == null ? null : Number(p.torna_minutes),
           frezeMinutesPerUnit: p.freze_minutes == null ? null : Number(p.freze_minutes),
-          revenue: explicitUnitRevenue ?? sourceRevenue(revRow.rows[0]?.row_json ?? null, p.quantity),
+          otherOperationMinutesPerUnit:
+            p.other_operation_minutes == null ? null : Number(p.other_operation_minutes),
+          unitMaterialCostTry: bomCost?.totalBom710PerUnitTry ?? null,
+          revenue: resolvedRevenue,
         },
-        tornaRate, frezeRate,
+        tornaRate,
+        frezeRate,
+        otherOpRate,
       );
+      const effectiveConfidence =
+        missingForeignFx || bomCost?.missingCostOrFx ? "needs_review" : prof.confidence;
       const ins = await client.query(
         `insert into public.part_profitability_runs
            (part_id, cost_model_id, estimated_torna_cost, estimated_freze_cost, estimated_total_cost,
@@ -330,11 +403,11 @@ export async function calculatePartProfitability(pool: Pool, costModelId?: strin
             or public.part_profitability_runs.missing_operation_time is distinct from excluded.missing_operation_time`,
         [
           p.id, model.id, prof.estimatedTornaCost, prof.estimatedFrezeCost, prof.estimatedTotalCost,
-          prof.estimatedRevenue, prof.estimatedMargin, prof.marginRate, prof.confidence, prof.missingOperationTime,
+          prof.estimatedRevenue, prof.estimatedMargin, prof.marginRate, effectiveConfidence, prof.missingOperationTime,
         ],
       );
       res.runsCreated += ins.rowCount ?? 0;
-      if (prof.confidence === "needs_review") res.needsReview++;
+      if (effectiveConfidence === "needs_review") res.needsReview++;
     }
     await client.query("commit");
     return res;
@@ -749,9 +822,10 @@ export async function mapFinanceCostAllocations(pool: Pool, workbookId: string, 
 // declared shape, so callers could not read the flag the schema keeps precisely so a
 // 2023-derived rate is never presented as a current one. Type-only correction: the query,
 // the mapping and the returned values are unchanged.
-export async function loadCapacityModels(pool: Pool | PoolClient): Promise<Array<CapacityCandidate & { id: string; name: string; monthlyMinutes: number | null; isStaleRate: boolean | null; sheetId: string | null; workbookId: string | null; partCount: number; missingPartCount: number }>> {
+export async function loadCapacityModels(pool: Pool | PoolClient): Promise<Array<CapacityCandidate & { id: string; name: string; scenarioType: string; monthlyMinutes: number | null; isStaleRate: boolean | null; sheetId: string | null; workbookId: string | null; partCount: number; missingPartCount: number }>> {
   const r = await pool.query(`
-    select cm.id, cm.name, cm.efficiency_rate as efficiency,
+    select cm.id, cm.name, coalesce(cm.scenario_type, 'normal') as scenario_type,
+           cm.efficiency_rate as efficiency,
            cm.freze_rate_tl_per_min as freze, cm.torna_rate_tl_per_min as torna,
            cm.rate_year, cm.is_stale_rate, cm.monthly_minutes,
            cm.theoretical_monthly_revenue as theo_month, cm.theoretical_total_revenue as theo_total,
@@ -765,7 +839,7 @@ export async function loadCapacityModels(pool: Pool | PoolClient): Promise<Array
   });
   return r.rows.map((x) => ({
     // Rates, minutes and work-days keep RATE precision; the two theoretical revenues are TL.
-    id: x.id, name: x.name, efficiency: rateOrNull(x.efficiency),
+    id: x.id, name: x.name, scenarioType: String(x.scenario_type ?? "normal"), efficiency: rateOrNull(x.efficiency),
     frezeRateTLPerMin: rateOrNull(x.freze), tornaRateTLPerMin: rateOrNull(x.torna), rateYear: x.rate_year,
     theoreticalTotalRevenue: moneyOrNull(x.theo_total), theoreticalMonthlyRevenue: moneyOrNull(x.theo_month),
     minutesPerHour: null, workDaysPerMonth: rateOrNull(x.work_days), hoursPerDay: null, parts: [],
@@ -836,49 +910,134 @@ export async function loadCostBreakdown(pool: Pool, costModelId: string) {
   }
 }
 
-export async function loadPartProfitability(pool: Pool | PoolClient, limit = 100) {
+export async function loadPartProfitability(
+  pool: Pool | PoolClient,
+  limit = 100,
+  costModelId?: string | null,
+) {
   try {
-  const r = await pool.query(
-    `select pp.part_code, pp.part_name, pr.estimated_total_cost as cost,
-            pr.estimated_revenue as revenue, pr.estimated_margin as margin,
-            pr.margin_rate, pr.confidence, pr.missing_operation_time,
-            pp.source_workbook_id, pp.source_sheet_id, ir.row_index
-     from public.part_profitability_runs pr
-     join public.production_parts pp on pp.id = pr.part_id
-     left join public.import_rows ir on ir.id = pp.source_row_id
-     order by pr.estimated_margin asc nulls last limit $1`,
-    [limit],
-  );
-  // margin_rate is a ratio (RATE), the other three are TL. Ordering stays in SQL on the
-  // exact numeric, so the "worst margin first" ranking is unchanged by the decode.
-  return r.rows.map((x) => ({
-    ...x,
-    cost: moneyOrNull(x.cost), revenue: moneyOrNull(x.revenue),
-    margin: moneyOrNull(x.margin), margin_rate: rateOrNull(x.margin_rate),
-  })) as Array<{
-    part_code: string | null; part_name: string; cost: number | null; revenue: number | null;
-    margin: number | null; margin_rate: number | null; confidence: string; missing_operation_time: boolean;
-    source_workbook_id: string | null; source_sheet_id: string | null; row_index: number | null;
-  }>;
+    const r = await pool
+      .query(
+        `with ranked as (
+           select pp.id::text as part_id,
+                  pp.part_code,
+                  pp.part_name,
+                  pp.quantity,
+                  coalesce(pp.currency, 'TRY') as currency,
+                  pp.unit_sale_price,
+                  pp.other_operation_minutes,
+                  pr.cost_model_id::text as cost_model_id,
+                  cm.scenario_type,
+                  pr.estimated_total_cost as cost,
+                  pr.estimated_revenue as revenue,
+                  pr.estimated_margin as margin,
+                  pr.margin_rate,
+                  pr.confidence,
+                  pr.missing_operation_time,
+                  pp.source_workbook_id,
+                  pp.source_sheet_id,
+                  ir.row_index,
+                  row_number() over (
+                    partition by coalesce(nullif(upper(btrim(pp.part_code)), ''), pp.id::text)
+                    order by
+                      case
+                        when $2::uuid is not null and pr.cost_model_id = $2::uuid then 0
+                        when cm.scenario_type = 'normal' then 1
+                        else 2
+                      end asc,
+                      pr.created_at desc nulls last,
+                      pp.created_at desc nulls last
+                  ) as rn
+             from public.part_profitability_runs pr
+             join public.production_parts pp on pp.id = pr.part_id
+             left join public.cost_models cm on cm.id = pr.cost_model_id
+             left join public.import_rows ir on ir.id = pp.source_row_id
+            where ($2::uuid is null or pr.cost_model_id = $2::uuid)
+         )
+         select part_id, part_code, part_name, quantity, currency, unit_sale_price,
+                other_operation_minutes, cost_model_id, scenario_type,
+                cost, revenue, margin, margin_rate, confidence, missing_operation_time,
+                source_workbook_id, source_sheet_id, row_index
+           from ranked
+          where rn = 1
+          order by margin asc nulls last
+          limit $1`,
+        [limit, costModelId ?? null],
+      )
+      .catch(async (err: unknown) => {
+        const code = (err as { code?: string } | null)?.code;
+        if (code === "42703") {
+          return pool.query(
+            `select distinct on (coalesce(nullif(upper(btrim(pp.part_code)), ''), pp.id::text))
+                    pp.part_code, pp.part_name, pr.estimated_total_cost as cost,
+                    pr.estimated_revenue as revenue, pr.estimated_margin as margin,
+                    pr.margin_rate, pr.confidence, pr.missing_operation_time,
+                    pp.source_workbook_id, pp.source_sheet_id, ir.row_index
+               from public.part_profitability_runs pr
+               join public.production_parts pp on pp.id = pr.part_id
+               left join public.import_rows ir on ir.id = pp.source_row_id
+              order by coalesce(nullif(upper(btrim(pp.part_code)), ''), pp.id::text), pr.created_at desc
+              limit $1`,
+            [limit],
+          );
+        }
+        throw err;
+      });
+    return r.rows.map((x) => ({
+      ...x,
+      part_id: x.part_id ?? null,
+      quantity: x.quantity == null ? null : Number(x.quantity),
+      currency: x.currency ? normalizeCurrency(x.currency) : "TRY",
+      unit_sale_price: moneyOrNull(x.unit_sale_price ?? null),
+      other_operation_minutes: rateOrNull(x.other_operation_minutes ?? null),
+      cost: moneyOrNull(x.cost),
+      revenue: moneyOrNull(x.revenue),
+      margin: moneyOrNull(x.margin),
+      margin_rate: rateOrNull(x.margin_rate),
+    })) as Array<{
+      part_id?: string | null;
+      part_code: string | null;
+      part_name: string;
+      quantity?: number | null;
+      currency?: string;
+      unit_sale_price?: number | null;
+      other_operation_minutes?: number | null;
+      cost_model_id?: string | null;
+      scenario_type?: string | null;
+      cost: number | null;
+      revenue: number | null;
+      margin: number | null;
+      margin_rate: number | null;
+      confidence: string;
+      missing_operation_time: boolean;
+      source_workbook_id: string | null;
+      source_sheet_id: string | null;
+      row_index: number | null;
+    }>;
   } catch (err: unknown) {
     if (isMissingSchemaError(err)) return [];
     throw err;
   }
 }
 
-/** Total demanded operation minutes across mapped parts (qty × (torna+freze)).
- *  Matches source kapasite G5+H5 totals when all parts are captured. */
-/** The sum is a YEARLY total: it comes from production_parts, i.e. the source workbook's
- * G5/H5 minute sums that I8 totals as the year's theoretical capacity (docs/import-mapping.md
- * §5). The field name says so because capacity_models.monthly_minutes is MONTHLY, and the two
- * were being subtracted and divided as if they shared a period (Bulgu #6). Naming the period
- * makes that mistake visible at the call site instead of only in the rendered number. */
+/** Total demanded operation minutes across mapped parts (qty × (torna+freze+other)). */
 export async function loadCapacityDemand(pool: Pool): Promise<{ demandMinutesPerYear: number; partCount: number }> {
   try {
-  const r = await pool.query(
-    `select coalesce(sum(coalesce(quantity,0) * (coalesce(torna_minutes,0) + coalesce(freze_minutes,0))),0) as demand,
-            count(*)::int as n from public.production_parts`,
-  );
+    const r = await pool
+      .query(
+        `select coalesce(sum(coalesce(quantity,0) * (coalesce(torna_minutes,0) + coalesce(freze_minutes,0) + coalesce(other_operation_minutes,0))),0) as demand,
+                count(*)::int as n from public.production_parts`,
+      )
+      .catch(async (err: unknown) => {
+        const code = (err as { code?: string } | null)?.code;
+        if (code === "42703") {
+          return pool.query(
+            `select coalesce(sum(coalesce(quantity,0) * (coalesce(torna_minutes,0) + coalesce(freze_minutes,0))),0) as demand,
+                    count(*)::int as n from public.production_parts`,
+          );
+        }
+        throw err;
+      });
     return { demandMinutesPerYear: rateOrNull(r.rows[0].demand) ?? 0, partCount: r.rows[0].n };
   } catch (err: unknown) {
     if (isMissingSchemaError(err)) return { demandMinutesPerYear: 0, partCount: 0 };
@@ -1751,8 +1910,8 @@ const manualOperationRatesSchema = z.object({
   scenarioType: z.enum(["normal", "overtime", "custom"]).default("normal"),
   tornaRateTLPerMin: z.number().nonnegative("Torna TL/dk negatif olamaz").nullable().optional(),
   frezeRateTLPerMin: z.number().nonnegative("Freze TL/dk negatif olamaz").nullable().optional(),
-  akonTornaTLPerMin: z.number().nonnegative("Akon Torna TL/dk negatif olamaz").nullable().optional(),
-  akonFrezeTLPerMin: z.number().nonnegative("Akon Freze TL/dk negatif olamaz").nullable().optional(),
+  akonTornaTLPerMin: z.number().nonnegative("Kontrat Torna TL/dk negatif olamaz").nullable().optional(),
+  akonFrezeTLPerMin: z.number().nonnegative("Kontrat Freze TL/dk negatif olamaz").nullable().optional(),
   effectiveMonthlyMinutes: z.number().positive("Etkin aylık dakika pozitif olmalı").nullable().optional(),
   rateYear: z.number().int().min(2000).max(2100).nullable().optional(),
 });

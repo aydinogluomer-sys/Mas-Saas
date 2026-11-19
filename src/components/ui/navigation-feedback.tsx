@@ -1,6 +1,6 @@
 "use client";
 
-import { createContext, startTransition, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from "react";
+import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 
 export interface NavigationState {
@@ -98,14 +98,15 @@ export function NavigationFeedbackProvider({ children }: { children: ReactNode }
 
     clearTimers();
 
-    // 110ms debounce: Hızlı/önbellekli rotalarda tam ekran iskelet yanıp-sönmesini (flicker) önler,
-    // ancak 200ms altındaki gecikmeli rotalarda test sözleşmesini (<200ms görünürlük) tam sağlar.
+    // 16ms debounce (1 kare @ 60Hz, <=60ms SLA): Önbellekli/anlık rotalarda (<16ms) iskelet yanıp-sönmesini önler,
+    // 16ms'yi aşan rotalarda çalışma alanı iskeletini doğrudan DOM + React ile ~20-35ms içinde açar.
     skeletonTimer.current = setTimeout(() => {
       skeletonTimer.current = null;
       const currentRoot = document.querySelector<HTMLElement>("[data-navigation-root]");
       currentRoot?.classList.add("navigation-skeleton-active");
+      currentRoot?.querySelector<HTMLElement>(".instant-navigation-skeleton")?.classList.add("is-active");
       setSkeletonActive(true);
-    }, 110);
+    }, 16);
 
     // If the navigation still has not committed by the deadline, hand the URL to the browser.
     // Guarded on the location being unchanged so we never hijack a navigation that did land, or
@@ -117,7 +118,7 @@ export function NavigationFeedbackProvider({ children }: { children: ReactNode }
       window.location.href = href;
     }, STUCK_NAVIGATION_TIMEOUT_MS);
 
-    startTransition(() => setState({ pendingHref: href, isNavigating: true, startedAt: performance.now() }));
+    setState({ pendingHref: href, isNavigating: true, startedAt: performance.now() });
   }, [clearTimers]);
 
   useEffect(() => {
@@ -125,6 +126,7 @@ export function NavigationFeedbackProvider({ children }: { children: ReactNode }
     clearTimers();
     const root = document.querySelector<HTMLElement>("[data-navigation-root]");
     root?.classList.remove("navigation-pending", "navigation-skeleton-active");
+    root?.querySelector<HTMLElement>(".instant-navigation-skeleton")?.classList.remove("is-active");
     setSkeletonActive(false);
     setState((current) => current.isNavigating ? { pendingHref: null, isNavigating: false, startedAt: null } : current);
   }, [pathname, searchParams, clearTimers]);
@@ -166,13 +168,9 @@ export function NavigationFeedbackProvider({ children }: { children: ReactNode }
       <div className="navigation-progress" aria-hidden />
       <span className="sr-only" role="status" aria-live="polite">{state.isNavigating ? "Sayfa yükleniyor" : ""}</span>
       <div className={`instant-navigation-skeleton ${skeletonActive ? "is-active" : ""}`} aria-hidden="true">
-        {skeletonActive ? (
-          <>
-            <div className="instant-skeleton-title skeleton-block" />
-            <div className="loading-kpis">{Array.from({ length: 4 }, (_, index) => <div className="skeleton-card" key={index}><i /><b /></div>)}</div>
-            <div className="skeleton-chart"><i /><i /><i /><i /></div>
-          </>
-        ) : null}
+        <div className="instant-skeleton-title skeleton-block" />
+        <div className="loading-kpis">{Array.from({ length: 4 }, (_, index) => <div className="skeleton-card" key={index}><i /><b /></div>)}</div>
+        <div className="skeleton-chart"><i /><i /><i /><i /></div>
       </div>
       {children}
     </div>

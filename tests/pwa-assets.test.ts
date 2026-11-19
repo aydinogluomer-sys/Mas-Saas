@@ -1,16 +1,10 @@
-// PWA manifest, icon and service worker — the static assets the browser installs from.
+// PWA manifest, icon, and service-worker retirement checks.
 //
-// Moved out of tests/telegram-miniapp.test.ts when Wave 0 removed the Telegram mini-app (R1):
-// the mini-app engine and its write-action tests went with it, these asset checks did not belong
-// to it. The manifest keeps its install metadata and icon; its shortcut to /telegram/miniapp is
-// gone, because a shortcut to a page that no longer exists is a dead tile on the home screen.
-//
-// Wave 0 / S6 turned the service-worker check around. The layer's worker cached every financial
-// page the user opened and served it offline and after logout; this file used to assert that it
-// HAD fetch and push handlers. It now asserts the rule instead: no page is ever cached. sw.js is a
-// one-release kill-switch (clean up, then unregister) and nothing in src/ registers a worker.
-// The source checks strip comments first — the kill-switch explains in prose what it does NOT do,
-// and a test that matched its own explanation would prove nothing.
+// Wave 0 / S6 replaced the unreviewed caching worker with a one-release kill-switch;
+// Wave 2A completes the planned retirement (docs/todo.md:300-302): public/sw.js and
+// src/components/pwa/service-worker-cleanup.tsx are deleted, middleware no longer exempts sw.js,
+// manifest/viewport theme colors match the archival cotton-parchment palette (#F3EBDC),
+// and zero files in src/ register a service worker or write to Cache Storage.
 import { describe, it, expect } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
@@ -32,7 +26,7 @@ function sourceFiles(dir: string): string[] {
 }
 
 describe("PWA Assets & Configuration", () => {
-  it("has a valid public/manifest.json conforming to PWA spec", () => {
+  it("has a valid public/manifest.json conforming to PWA spec and warm parchment theme", () => {
     const manifestPath = path.join(ROOT, "public", "manifest.json");
     expect(fs.existsSync(manifestPath)).toBe(true);
 
@@ -41,7 +35,8 @@ describe("PWA Assets & Configuration", () => {
     expect(manifestContent.short_name).toBe("MAS Radar");
     expect(manifestContent.display).toBe("standalone");
     expect(manifestContent.start_url).toBe("/");
-    expect(manifestContent.theme_color).toBe("#0284c7");
+    expect(manifestContent.theme_color).toBe("#F3EBDC");
+    expect(manifestContent.background_color).toBe("#F3EBDC");
     expect(Array.isArray(manifestContent.icons)).toBe(true);
     expect(manifestContent.icons.length).toBeGreaterThan(0);
     expect(manifestContent.icons[0].src).toBe("/icon.svg");
@@ -60,32 +55,26 @@ describe("PWA Assets & Configuration", () => {
   });
 });
 
-describe("service worker — hiçbir sayfa önbelleğe alınmaz (Wave 0 / S6)", () => {
-  const sw = codeOnly(read("public/sw.js"));
-
-  it("sw.js bir kill-switch: fetch ya da push dinleyicisi yok", () => {
-    // A worker without a fetch handler answers nothing; every request goes to the network.
-    expect(sw).not.toMatch(/addEventListener\(\s*["']fetch["']/);
-    expect(sw).not.toMatch(/addEventListener\(\s*["']push["']/);
-    expect(sw).not.toMatch(/addEventListener\(\s*["']notificationclick["']/);
-    expect(sw).not.toMatch(/\bonfetch\b|\bonpush\b/);
+describe("service worker — emeklilik tamamlandı, hiçbir sayfa önbelleğe alınmaz (Wave 0 / S6)", () => {
+  it("public/sw.js, pwa-register.tsx ve service-worker-cleanup.tsx tamamen kaldırılmıştır", () => {
+    expect(fs.existsSync(path.join(ROOT, "public", "sw.js"))).toBe(false);
+    expect(fs.existsSync(path.join(ROOT, "src", "components", "pwa", "pwa-register.tsx"))).toBe(false);
+    expect(
+      fs.existsSync(path.join(ROOT, "src", "components", "pwa", "service-worker-cleanup.tsx")),
+    ).toBe(false);
   });
 
-  it("sw.js hiçbir şeyi önbelleğe yazmaz", () => {
-    expect(sw).not.toMatch(/caches\.open\s*\(/);
-    expect(sw).not.toMatch(/\.put\s*\(/);
-    expect(sw).not.toMatch(/\.addAll\s*\(/);
-    expect(sw).not.toMatch(/\.add\s*\(/);
+  it("src/middleware.ts artık sw.js yolunu oturum kontrolünden muaf tutmaz", () => {
+    const middlewareCode = codeOnly(read("src/middleware.ts"));
+    expect(middlewareCode).not.toMatch(/sw\\?\.js/);
   });
 
-  it("sw.js etkinleşince bütün önbellekleri siler ve kendi kaydını kaldırır", () => {
-    expect(sw).toMatch(/addEventListener\(\s*["']install["']/);
-    expect(sw).toMatch(/skipWaiting\s*\(\s*\)/);
-    expect(sw).toMatch(/addEventListener\(\s*["']activate["']/);
-    expect(sw).toMatch(/clients\.claim\s*\(\s*\)/);
-    expect(sw).toMatch(/caches\.keys\s*\(\s*\)/);
-    expect(sw).toMatch(/caches\.delete\s*\(/);
-    expect(sw).toMatch(/registration\.unregister\s*\(\s*\)/);
+  it("src/app/layout.tsx manifest bağlantısını ve #F3EBDC temasını korur; SW bileşenlerini bağlamaz", () => {
+    const layout = codeOnly(read("src/app/layout.tsx"));
+    expect(layout).toMatch(/manifest:\s*["']\/manifest\.json["']/);
+    expect(layout).toMatch(/themeColor:\s*["']#F3EBDC["']/);
+    expect(layout).not.toMatch(/PwaRegister/);
+    expect(layout).not.toMatch(/ServiceWorkerCleanup/);
   });
 
   it("src/ içinde hiçbir kod service worker KAYDETMEZ ya da Cache Storage'a yazmaz", () => {
@@ -94,24 +83,6 @@ describe("service worker — hiçbir sayfa önbelleğe alınmaz (Wave 0 / S6)", 
       return /serviceWorker\s*\.\s*register\s*\(/.test(code) || /caches\.open\s*\(/.test(code);
     });
     expect(offenders).toEqual([]);
-  });
-
-  it("katmanın kayıt bileşeni (kurulum bandı + 'çevrimdışı destek' vaadi) yok", () => {
-    expect(fs.existsSync(path.join(ROOT, "src", "components", "pwa", "pwa-register.tsx"))).toBe(false);
-  });
-
-  it("temizlik bileşeni kayıtları kaldırır, önbellekleri siler ve kök layout'ta takılı", () => {
-    const cleanup = codeOnly(read("src/components/pwa/service-worker-cleanup.tsx"));
-    expect(cleanup).toMatch(/getRegistrations\s*\(\s*\)/);
-    expect(cleanup).toMatch(/\.unregister\s*\(\s*\)/);
-    expect(cleanup).toMatch(/caches\s*\.keys\s*\(\s*\)/);
-    expect(cleanup).toMatch(/caches\.delete\s*\(/);
-
-    const layout = codeOnly(read("src/app/layout.tsx"));
-    expect(layout).toMatch(/<ServiceWorkerCleanup\s*\/>/);
-    expect(layout).not.toMatch(/PwaRegister/);
-    // The install metadata stays: manifest and icon are not a cache.
-    expect(layout).toMatch(/manifest:\s*["']\/manifest\.json["']/);
   });
 });
 

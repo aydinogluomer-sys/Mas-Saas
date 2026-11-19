@@ -186,8 +186,34 @@ export function createUnauthorizedRateLimiter(windowMs = UNAUTHORIZED_LOG_WINDOW
   };
 }
 
+export function parseAllowedTelegramUserIds(raw: string | undefined): Set<string> | null {
+  if (!raw) return null;
+  const ids = raw
+    .split(/[,;\s]+/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+  return ids.length > 0 ? new Set(ids) : null;
+}
+
+function normalizeAllowedUserSet(
+  input: ReadonlySet<string> | readonly (string | number)[] | null | undefined,
+): Set<string> | null {
+  if (input === undefined) {
+    return parseAllowedTelegramUserIds(process.env.TELEGRAM_ALLOWED_USER_IDS);
+  }
+  if (input === null) return null;
+  if (input instanceof Set) {
+    return input.size > 0 ? new Set([...input].map((v) => String(v).trim()).filter(Boolean)) : null;
+  }
+  const arr = [...(input as readonly (string | number)[])]
+    .map((v) => String(v).trim())
+    .filter(Boolean);
+  return arr.length > 0 ? new Set(arr) : null;
+}
+
 export interface TelegramWorkerDeps {
   allowedChatId: string;
+  allowedUserIds?: ReadonlySet<string> | readonly (string | number)[] | null;
   offsetPath: string;
   todayISO: () => string;
   pollUpdates: (offset: number, timeoutSec: number, signal?: AbortSignal) => Promise<TelegramPollResult>;
@@ -219,14 +245,27 @@ export async function processTelegramUpdatesBatch(
   initialOffset: number,
   deps: Pick<
     TelegramWorkerDeps,
-    "allowedChatId" | "offsetPath" | "todayISO" | "answerReadOnly" | "sendReply" | "onUnauthorizedDrop"
+    | "allowedChatId"
+    | "allowedUserIds"
+    | "offsetPath"
+    | "todayISO"
+    | "answerReadOnly"
+    | "sendReply"
+    | "onUnauthorizedDrop"
   >,
   rateLimiter = createUnauthorizedRateLimiter(),
 ): Promise<Omit<TelegramCycleResult, "polledOk">> {
-  const allowed = deps.allowedChatId.trim();
-  if (!allowed) {
+  const allowedChats = new Set(
+    deps.allowedChatId
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean),
+  );
+  if (allowedChats.size === 0) {
     throw new Error("TELEGRAM_CHAT_ID yapılandırılmamış; Telegram işçisi başlatılamaz.");
   }
+
+  const allowedUsers = normalizeAllowedUserSet(deps.allowedUserIds);
 
   let nextOffset = initialOffset;
   let answered = 0;
@@ -239,7 +278,7 @@ export async function processTelegramUpdatesBatch(
     if (upd.update_id < nextOffset) continue;
 
     const msg = upd.message;
-    if (!msg) {
+    if (!msg || msg.from?.is_bot === true) {
       ignoredEmpty += 1;
       nextOffset = upd.update_id + 1;
       await writeTelegramOffsetAtomic(deps.offsetPath, nextOffset);
@@ -247,7 +286,7 @@ export async function processTelegramUpdatesBatch(
     }
 
     const incomingChatId = String(msg.chat.id).trim();
-    if (incomingChatId !== allowed) {
+    if (!allowedChats.has(incomingChatId)) {
       // Faz 42 (B2): ZERO outbound HTTP reply to unauthorized chats (eliminates 429 DoS & probing).
       unauthorizedDropped += 1;
       const dropInfo = rateLimiter.recordDrop(incomingChatId);
@@ -263,6 +302,24 @@ export async function processTelegramUpdatesBatch(
       continue;
     }
 
+    if (allowedUsers && allowedUsers.size > 0) {
+      const senderUserId = msg.from?.id != null ? String(msg.from.id).trim() : "";
+      if (!senderUserId || !allowedUsers.has(senderUserId)) {
+        unauthorizedDropped += 1;
+        const dropInfo = rateLimiter.recordDrop(`${incomingChatId}:user:${senderUserId || "missing"}`);
+        if (dropInfo.shouldEmitAuditLog && deps.onUnauthorizedDrop) {
+          await deps.onUnauthorizedDrop({
+            chatHash: dropInfo.chatHash,
+            windowDropped: dropInfo.windowDropped,
+            totalDropped: dropInfo.totalDropped,
+          });
+        }
+        nextOffset = upd.update_id + 1;
+        await writeTelegramOffsetAtomic(deps.offsetPath, nextOffset);
+        continue;
+      }
+    }
+
     const text = (msg.text ?? "").trim();
     if (!text) {
       ignoredEmpty += 1;
@@ -273,7 +330,7 @@ export async function processTelegramUpdatesBatch(
 
     const boundedText = text.slice(0, MAX_INCOMING_TEXT_CHARS);
     const response = await deps.answerReadOnly(boundedText, deps.todayISO());
-    const delivery = await deps.sendReply(allowed, response.answer);
+    const delivery = await deps.sendReply(incomingChatId, response.answer);
 
     if (!delivery.ok) {
       // Do NOT advance offset past an unanswered owner question on transient outbound network errors.
@@ -404,6 +461,7 @@ async function main(): Promise<void> {
     const rateLimiter = createUnauthorizedRateLimiter();
     const deps: TelegramWorkerDeps = {
       allowedChatId,
+      allowedUserIds: parseAllowedTelegramUserIds(process.env.TELEGRAM_ALLOWED_USER_IDS),
       offsetPath: DEFAULT_TELEGRAM_OFFSET_PATH,
       todayISO: () => istanbulDateISO(),
       pollUpdates: (offset, timeoutSec, signal) => pollTelegramUpdates(offset, timeoutSec, signal),

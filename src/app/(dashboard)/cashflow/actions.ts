@@ -12,6 +12,7 @@ import {
 } from "@/lib/cashflow/period-lock";
 import { requireActionPermission, requireSession } from "@/lib/auth";
 import { safeRedirectPath } from "@/lib/security/redirect";
+import { istanbulDateISO } from "@/lib/time/istanbul";
 
 export async function mapCashflowAction(formData: FormData): Promise<void> {
   const session = await requireActionPermission("cashflow_months", "insert", "/cashflow");
@@ -25,7 +26,7 @@ export async function mapCashflowAction(formData: FormData): Promise<void> {
     monthsCreated = r.monthsCreated;
     linesCreated = r.linesCreated;
     await validateContinuity(pool);
-    await writeSnapshots(pool, new Date().toISOString().slice(0, 10));
+    await writeSnapshots(pool, istanbulDateISO());
   } catch (err) {
     if (isPgPeriodLockedError(err) || isHandledActionError(err)) {
       redirect(`/cashflow?error=${encodeURIComponent(toUserActionErrorMessage(err, "Nakit akışı eşleştirilemedi."))}`);
@@ -33,6 +34,7 @@ export async function mapCashflowAction(formData: FormData): Promise<void> {
     throw err;
   }
   revalidatePath("/cashflow");
+  revalidatePath("/cashflow/monthly");
   redirect(`/cashflow?months=${monthsCreated}&lines=${linesCreated}`);
 }
 
@@ -52,15 +54,17 @@ export async function lockCashflowPeriodAction(formData: FormData): Promise<void
     );
   } catch (err) {
     if (isPgPeriodLockedError(err) || isHandledActionError(err)) {
-      redirect(`${returnTo}?error=${encodeURIComponent(toUserActionErrorMessage(err, "Dönem kilitlenemedi."))}`);
+      redirect(`${returnTo}${returnTo.includes("?") ? "&" : "?"}error=${encodeURIComponent(toUserActionErrorMessage(err, "Dönem kilitlenemedi."))}`);
     }
     throw err;
   }
   revalidatePath("/cashflow");
+  revalidatePath("/cashflow/monthly");
+  revalidatePath("/cashflow/close");
   revalidatePath(`/cashflow/${res.monthId}`);
   revalidatePath(`/cashflow/${res.ym}`);
   const msg = `${res.ym} dönemi kilitlendi (parmak izi: ${res.lockFingerprint.slice(0, 12)}).`;
-  redirect(`${returnTo}?notice=${encodeURIComponent(msg)}`);
+  redirect(`${returnTo}${returnTo.includes("?") ? "&" : "?"}notice=${encodeURIComponent(msg)}`);
 }
 
 export async function reopenCashflowPeriodAction(formData: FormData): Promise<void> {
@@ -79,13 +83,15 @@ export async function reopenCashflowPeriodAction(formData: FormData): Promise<vo
     );
   } catch (err) {
     if (isPgPeriodLockedError(err) || isHandledActionError(err)) {
-      redirect(`${returnTo}?error=${encodeURIComponent(toUserActionErrorMessage(err, "Dönem kilidi açılamadı."))}`);
+      redirect(`${returnTo}${returnTo.includes("?") ? "&" : "?"}error=${encodeURIComponent(toUserActionErrorMessage(err, "Dönem kilidi açılamadı."))}`);
     }
     throw err;
   }
   revalidatePath("/cashflow");
+  revalidatePath("/cashflow/monthly");
+  revalidatePath("/cashflow/close");
   revalidatePath(`/cashflow/${res.monthId}`);
   revalidatePath(`/cashflow/${res.ym}`);
   const msg = `${res.ym} dönem kilidi gerekçeli olarak yeniden açıldı.`;
-  redirect(`${returnTo}?notice=${encodeURIComponent(msg)}`);
+  redirect(`${returnTo}${returnTo.includes("?") ? "&" : "?"}notice=${encodeURIComponent(msg)}`);
 }

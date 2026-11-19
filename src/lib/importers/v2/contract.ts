@@ -164,15 +164,10 @@ const externalId = (domainNote: string): ColumnSpec => ({
 });
 
 /**
- * V2.0'da çek ve kredi için şablonun sunduğu tek para birimi.
- *
- * Sebep depolama değil, TOPLAMA. `checks` ve `loans` üzerinde çalışan finans okuma modelleri
- * (vade akışı, due30, kalan tutar, aylık finans toplamları, anlık görüntü tüketicileri)
- * para birimi ayrımı ya da belirlenmiş bir kur dönüşümü yapmadan `sum(amount)` kullanıyor.
- * O yüzden 1000 USD + 1000 TRY = 2000 gibi bir sayı üretilebilir ve bu finansal olarak
- * geçersizdir. Kolonun var olması (migration 0090) bu problemi ÇÖZMEZ.
+ * Faz 60 (M-61): Çoklu para birimi (`TRY`, `USD`, `EUR`, `GBP`) çek, kredi, fatura ve nakit
+ * akışı tablolarında TCMB kur dönüşümüyle desteklenir. Geriye dönük sembol uyumluluğu korunur.
  */
-export const FINANCE_TRY_ONLY = ["TRY"] as const;
+export const FINANCE_TRY_ONLY = CURRENCIES;
 
 const currency = (required = true, templateValues?: readonly string[]): ColumnSpec => ({
   key: "para_birimi",
@@ -273,7 +268,7 @@ export const SHEET_CEKLER: SheetSpec = {
       note:
         "ZORUNLU. İŞARET ANLAMLIDIR: eksi (−) = sizin ödeyeceğiniz çek (outflow), " +
         "artı (+) = tahsil edeceğiniz çek (inflow). Sistem işareti KORUR, mutlak değere çevirmez.", width: 30 },
-    currency(true, FINANCE_TRY_ONLY),   // V2.0 finans toplama kısıtı — bkz. FINANCE_TRY_ONLY
+    currency(true),
     { key: "durum", header: "Durum", type: "enum", required: false,
       enumValues: CHECK_STATUS, aliases: ["durum", "status"],
       note: "planned / cleared / bounced / cancelled. Boşsa 'planned'.", width: 12 },
@@ -294,7 +289,7 @@ export const SHEET_KREDILER: SheetSpec = {
     { key: "banka", header: "Banka", type: "text", required: false,
       aliases: ["banka", "bank", "kurum"], note: "Krediyi veren kurum.", width: 20 },
     amount("anapara", "Anapara", "Kredi tutarı.", true),
-    currency(true, FINANCE_TRY_ONLY),   // V2.0 finans toplama kısıtı — bkz. FINANCE_TRY_ONLY
+    currency(true),
     { key: "vade_ay", header: "Vade (ay)", type: "integer", required: true,
       aliases: ["vade_ay", "vade", "term_months"], note: "ZORUNLU. Toplam taksit sayısı.", width: 12 },
     { key: "baz_faiz_orani", header: "Baz Faiz Oranı (%)", type: "percent", required: false,

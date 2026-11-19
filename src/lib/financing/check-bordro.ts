@@ -43,6 +43,7 @@ export const CHECK_BORDRO_OPERATIONS = [
   "send_to_bank_collection",
   "pledge_to_bank_collateral",
   "issue_own_check",
+  "factor_checks",
   "mark_cleared",
   "mark_bounced",
   "mark_returned",
@@ -79,6 +80,7 @@ export const CHECK_BORDRO_OPERATION_LABELS_TR: Record<CheckBordroOperation, stri
   send_to_bank_collection: "Bankaya Tahsile Ver",
   pledge_to_bank_collateral: "Bankaya Kredi Teminatına Ver (LTV)",
   issue_own_check: "Keşide Borç Çeki/Senedi Çıkışı",
+  factor_checks: "Faktoring / İskonto ile Kırdır (102 + 780)",
   mark_cleared: "Tahsil Edildi / Ödendi Kapat",
   mark_bounced: "Karşılıksız (Bounced / Rücu) İşaretle",
   mark_returned: "İade Edildi İşaretle",
@@ -113,6 +115,7 @@ export const checkBordroTransitionSchema = z.object({
   targetBankAccountId: z.uuid().nullable().optional(),
   targetFacilityId: z.uuid().nullable().optional(),
   ltvRatio: z.coerce.number().gt(0).lte(1).default(0.8),
+  discountFeeAmount: z.coerce.number().min(0).default(0),
   notes: z.string().trim().max(1000).nullable().optional(),
 });
 
@@ -146,6 +149,7 @@ interface LockedCheckRow {
   payer_party_id: string | null;
   payee_party_id: string | null;
   endorsed_to_party_id: string | null;
+  collection_bank_account_id: string | null;
   collateral_record_id: string | null;
   settled_invoice_id: string | null;
 }
@@ -156,6 +160,7 @@ const OPERATION_TO_BORDRO_TYPE: Record<CheckBordroOperation, CheckBordroType> = 
   send_to_bank_collection: "bank_collection",
   pledge_to_bank_collateral: "bank_collateral",
   issue_own_check: "own_issue",
+  factor_checks: "settlement",
   mark_cleared: "settlement",
   mark_bounced: "bounce_return",
   mark_returned: "bounce_return",
@@ -167,6 +172,7 @@ const OPERATION_TO_NEXT_STATUS: Record<CheckBordroOperation, string> = {
   send_to_bank_collection: "in_bank_collection",
   pledge_to_bank_collateral: "in_bank_collateral",
   issue_own_check: "issued_to_vendor",
+  factor_checks: "cleared",
   mark_cleared: "cleared",
   mark_bounced: "bounced",
   mark_returned: "returned",
@@ -184,6 +190,7 @@ const ALLOWED_SOURCE_STATUSES: Record<CheckBordroOperation, ReadonlySet<string>>
   send_to_bank_collection: new Set(["in_portfolio", "planned", "in_bank_collateral"]),
   pledge_to_bank_collateral: new Set(["in_portfolio", "planned"]),
   issue_own_check: new Set(["planned"]),
+  factor_checks: new Set(["in_portfolio", "planned", "in_bank_collection"]),
   mark_cleared: new Set([
     "planned",
     "in_portfolio",
@@ -353,6 +360,7 @@ export async function executeCheckBordroTransition(
               payer_party_id::text as payer_party_id,
               payee_party_id::text as payee_party_id,
               endorsed_to_party_id::text as endorsed_to_party_id,
+              collection_bank_account_id::text as collection_bank_account_id,
               collateral_record_id::text as collateral_record_id,
               settled_invoice_id::text as settled_invoice_id
          from public.checks
@@ -387,14 +395,18 @@ export async function executeCheckBordroTransition(
       }
 
       if (
-        ["receive_to_portfolio", "endorse_to_vendor", "send_to_bank_collection", "pledge_to_bank_collateral"].includes(
-          input.operation,
-        ) &&
+        [
+          "receive_to_portfolio",
+          "endorse_to_vendor",
+          "send_to_bank_collection",
+          "pledge_to_bank_collateral",
+          "factor_checks",
+        ].includes(input.operation) &&
         c.direction !== "inflow"
       ) {
         throw new DomainError(
           "CONFLICT",
-          `Portföy / ciro / banka tahsil / teminat bordroları yalnız müşteri çekleri (inflow) için uygulanabilir (${c.serial_no ?? c.id.slice(0, 8)} yönü: ${c.direction}).`,
+          `Portföy / ciro / banka tahsil / teminat / faktoring bordroları yalnız müşteri çekleri (inflow) için uygulanabilir (${c.serial_no ?? c.id.slice(0, 8)} yönü: ${c.direction}).`,
         );
       }
 
@@ -406,7 +418,7 @@ export async function executeCheckBordroTransition(
       }
 
       if (
-        ["endorse_to_vendor", "pledge_to_bank_collateral"].includes(input.operation) &&
+        ["endorse_to_vendor", "pledge_to_bank_collateral", "factor_checks"].includes(input.operation) &&
         (c.amount == null || decimal(c.amount).lte(0))
       ) {
         throw new DomainError(
@@ -506,10 +518,18 @@ export async function executeCheckBordroTransition(
       lockedInvoice = inv;
     }
 
-    if (input.operation === "send_to_bank_collection") {
+    if (
+      input.operation === "send_to_bank_collection" ||
+      input.operation === "factor_checks" ||
+      (input.operation === "mark_cleared" && input.targetBankAccountId)
+    ) {
       if (!input.targetBankAccountId) {
-        throw new DomainError("VALIDATION_ERROR", "Bankaya tahsil bordrosunda hedef banka hesabı seçilmelidir.");
+        throw new DomainError("VALIDATION_ERROR", "Bu işlemde hedef banka hesabı seçilmelidir.");
       }
+      await client.query(
+        `insert into public.bank_accounts (cash_account_id) values ($1) on conflict (cash_account_id) do nothing`,
+        [input.targetBankAccountId],
+      );
       const bankRes = await client.query<{ cash_account_id: string; currency: string; is_active: boolean }>(
         `select ba.cash_account_id::text as cash_account_id, ca.currency, ca.is_active
            from public.bank_accounts ba
@@ -518,15 +538,23 @@ export async function executeCheckBordroTransition(
         [input.targetBankAccountId],
       );
       if (bankRes.rowCount === 0 || !bankRes.rows[0].is_active) {
-        throw new DomainError("NOT_FOUND", "Tahsile verilecek aktif banka hesabı bulunamadı.");
+        throw new DomainError("NOT_FOUND", "Seçilen aktif banka hesabı bulunamadı.");
       }
       if (bankRes.rows[0].currency !== currency) {
         throw new DomainError(
           "CONFLICT",
-          `Çek para birimi (${currency}) ile tahsil banka hesabı para birimi (${bankRes.rows[0].currency}) eşleşmelidir.`,
+          `Çek/senet para birimi (${currency}) ile banka hesabı para birimi (${bankRes.rows[0].currency}) eşleşmelidir.`,
         );
       }
       resolvedTargetBankId = bankRes.rows[0].cash_account_id;
+    }
+
+    const totalDiscountFeeDec = decimal(input.discountFeeAmount ?? 0).round(2);
+    if (input.operation === "factor_checks" && totalDiscountFeeDec.lte(0)) {
+      throw new DomainError("VALIDATION_ERROR", "Faktoring / iskonto işleminde sıfırdan büyük iskonto/komisyon kesintisi girilmelidir.");
+    }
+    if (totalDiscountFeeDec.gt(0) && totalDiscountFeeDec.gte(totalDec)) {
+      throw new DomainError("VALIDATION_ERROR", "Faktoring iskonto kesintisi çek toplam tutarına eşit veya büyük olamaz.");
     }
 
     if (input.operation === "pledge_to_bank_collateral") {
@@ -759,7 +787,7 @@ export async function executeCheckBordroTransition(
           [c.id, payeeId, settledInvId, bordroId],
         );
         if (upd.rowCount !== 1) throw new DomainError("CONFLICT", "Keşide çek durumu güncellenemedi.");
-      } else if (input.operation === "mark_cleared") {
+      } else if (input.operation === "mark_cleared" || input.operation === "factor_checks") {
         eventType = "cleared";
         const rel = await releaseActiveCollateralRecord(
           client,
@@ -768,12 +796,88 @@ export async function executeCheckBordroTransition(
         );
         if (rel) releasedCollateralIds.push(rel);
 
+        // Faktoring komisyonu dağıtımı (son satır kuruş farkını emer)
+        let perCheckFeeDec = decimal(0);
+        if (totalDiscountFeeDec.gt(0) && c.amount != null && totalDec.gt(0)) {
+          const isLast = c.id === checks[checks.length - 1]?.id;
+          if (checks.length === 1) {
+            perCheckFeeDec = totalDiscountFeeDec;
+          } else if (!isLast) {
+            perCheckFeeDec = decimal(c.amount).div(totalDec).times(totalDiscountFeeDec).round(2);
+          } else {
+            const prevSum = checks
+              .slice(0, -1)
+              .reduce(
+                (acc, prev) =>
+                  acc.plus(
+                    prev.amount != null
+                      ? decimal(prev.amount).div(totalDec).times(totalDiscountFeeDec).round(2)
+                      : 0,
+                  ),
+                decimal(0),
+              );
+            perCheckFeeDec = totalDiscountFeeDec.minus(prevSum).round(2);
+          }
+        }
+
+        let settledBankTxnId: string | null = null;
+        const effectiveClearBankId =
+          priorStatus === "endorsed_to_vendor"
+            ? null
+            : resolvedTargetBankId ?? c.collection_bank_account_id ?? null;
+
+        if (effectiveClearBankId && c.amount != null && decimal(c.amount).gt(0)) {
+          await client.query(
+            `insert into public.bank_accounts (cash_account_id) values ($1) on conflict (cash_account_id) do nothing`,
+            [effectiveClearBankId],
+          );
+          const grossChkDec = decimal(c.amount).abs().round(2);
+          const netCashDec =
+            c.direction === "outflow"
+              ? grossChkDec.times(-1)
+              : grossChkDec.minus(perCheckFeeDec).round(2);
+          const txDesc =
+            perCheckFeeDec.gt(0)
+              ? `Çek/senet faktoring net tahsilat (${bordroNo} · ${c.serial_no ?? c.id.slice(0, 8)})`
+              : `Çek/senet ${c.direction === "outflow" ? "ödemesi" : "tahsilatı"} (${bordroNo} · ${c.serial_no ?? c.id.slice(0, 8)})`;
+
+          const txIns = await client.query<{ id: string }>(
+            `insert into public.bank_transactions
+               (bank_account_id, txn_date, value_date, amount, currency, description,
+                category_rule, status, matched_entity_table, matched_entity_id, matched_at, dedupe_hash)
+             values ($1, $2::date, $2::date, $3::numeric, $4, $5,
+                     'system_internal_settlement', 'matched', 'checks', $6, now(), $7)
+             on conflict (bank_account_id, dedupe_hash) do nothing
+             returning id::text as id`,
+            [
+              effectiveClearBankId,
+              bordroDate,
+              netCashDec.toFixed(2),
+              currency,
+              txDesc,
+              c.id,
+              `check_settle:${bordroId}:${c.id}`,
+            ],
+          );
+          settledBankTxnId = txIns.rows[0]?.id ?? null;
+        }
+
+        const isFactored = input.operation === "factor_checks" || perCheckFeeDec.gt(0);
         const upd = await client.query(
           `update public.checks
               set status = 'cleared',
+                  discount_fee_amount = case when $3::boolean then $4::numeric else discount_fee_amount end,
+                  factored_at = case when $3::boolean then now() else factored_at end,
+                  settled_bank_txn_id = coalesce($5, settled_bank_txn_id),
                   last_bordro_id = $2
             where id = $1`,
-          [c.id, bordroId],
+          [
+            c.id,
+            bordroId,
+            isFactored,
+            perCheckFeeDec.toFixed(2),
+            settledBankTxnId,
+          ],
         );
         if (upd.rowCount !== 1) throw new DomainError("CONFLICT", "Çek tahsil/ödeme kapanışı güncellenemedi.");
       } else if (input.operation === "mark_bounced") {
@@ -1087,10 +1191,25 @@ export interface CheckBordroTargets {
   openPurchaseInvoices: Array<{
     id: string;
     invoiceNo: string;
+    partyId?: string;
     partyName: string;
     openAmount: number;
     currency: string;
     dueDate: string | null;
+  }>;
+  openSalesInvoices?: Array<{
+    id: string;
+    invoiceNo: string;
+    partyId: string;
+    partyName: string;
+    openAmount: number;
+    currency: string;
+    dueDate: string | null;
+  }>;
+  counterparties?: Array<{
+    id: string;
+    name: string;
+    partyType: string;
   }>;
   bankAccounts: Array<{
     id: string;
@@ -1110,10 +1229,11 @@ export async function loadCheckBordroTargets(
   pool: Pick<Pool, "query">,
 ): Promise<CheckBordroTargets> {
   const { gather } = await import("@/lib/pg-concurrency");
-  const [invRes, bankRes, facRes] = await gather(pool, [
+  const [invRes, salesInvRes, partiesRes, bankRes, facRes] = await gather(pool, [
     () => pool.query(
       `select i.id::text as id,
               i.invoice_no,
+              i.party_id::text as party_id,
               pa.name as party_name,
               greatest(0, coalesce(i.payable_amount, i.gross_amount) - greatest(coalesce(i.paid_amount, 0), coalesce(i.allocated_amount, 0))) as open_amount,
               i.currency,
@@ -1132,6 +1252,7 @@ export async function loadCheckBordroTargets(
       return pool.query(
         `select i.id::text as id,
                 i.invoice_no,
+                i.party_id::text as party_id,
                 pa.name as party_name,
                 (i.gross_amount - coalesce(i.allocated_amount, 0)) as open_amount,
                 i.currency,
@@ -1146,13 +1267,39 @@ export async function loadCheckBordroTargets(
       ).catch(() => ({ rows: [] }));
     }),
     () => pool.query(
-      `select ba.cash_account_id::text as id,
+      `select i.id::text as id,
+              i.invoice_no,
+              i.party_id::text as party_id,
+              pa.name as party_name,
+              greatest(0, coalesce(i.payable_amount, i.gross_amount) - greatest(coalesce(i.paid_amount, 0), coalesce(i.allocated_amount, 0))) as open_amount,
+              i.currency,
+              to_char(coalesce(i.due_date, i.issue_date), 'YYYY-MM-DD') as due_date
+         from public.invoices i
+         join public.parties pa on pa.id = i.party_id
+        where i.direction = 'sales'
+          and i.status in ('open', 'partial')
+          and coalesce(i.payable_amount, i.gross_amount) > greatest(coalesce(i.paid_amount, 0), coalesce(i.allocated_amount, 0))
+        order by coalesce(i.due_date, i.issue_date) asc, i.invoice_no asc
+        limit 150`,
+    ).catch(() => ({ rows: [] })),
+    () => pool.query(
+      `select id::text as id, name, party_type
+         from public.parties
+        where is_active = true
+          and archived_at is null
+        order by name asc
+        limit 300`,
+    ).catch(() => ({ rows: [] })),
+    () => pool.query(
+      `select ca.id::text as id,
               ca.name,
               ba.bank_name,
               ca.currency
-         from public.bank_accounts ba
-         join public.cash_accounts ca on ca.id = ba.cash_account_id
+         from public.cash_accounts ca
+         left join public.bank_accounts ba on ba.cash_account_id = ca.id
         where ca.is_active = true
+          and ca.archived_at is null
+          and ca.account_type in ('bank', 'cash')
         order by ca.name asc`,
     ).catch(() => ({ rows: [] })),
     () => pool.query(
@@ -1163,6 +1310,7 @@ export async function loadCheckBordroTargets(
          from public.credit_facilities cf
          left join public.parties pa on pa.id = cf.lender_party_id
         where cf.status = 'active'
+          and cf.archived_at is null
         order by cf.name asc`,
     ).catch(() => ({ rows: [] })),
   ]);
@@ -1171,10 +1319,25 @@ export async function loadCheckBordroTargets(
     openPurchaseInvoices: invRes.rows.map((x) => ({
       id: x.id,
       invoiceNo: x.invoice_no,
+      partyId: x.party_id,
       partyName: x.party_name,
       openAmount: moneyOrNull(x.open_amount) ?? 0,
       currency: x.currency,
       dueDate: x.due_date ?? null,
+    })),
+    openSalesInvoices: salesInvRes.rows.map((x) => ({
+      id: x.id,
+      invoiceNo: x.invoice_no,
+      partyId: x.party_id,
+      partyName: x.party_name,
+      openAmount: moneyOrNull(x.open_amount) ?? 0,
+      currency: x.currency,
+      dueDate: x.due_date ?? null,
+    })),
+    counterparties: partiesRes.rows.map((x) => ({
+      id: x.id,
+      name: x.name,
+      partyType: x.party_type,
     })),
     bankAccounts: bankRes.rows.map((x) => ({
       id: x.id,
@@ -1190,4 +1353,269 @@ export async function loadCheckBordroTargets(
     })),
   };
 }
+
+/* ── Faz 60 (M-35, M-36): Çek / Emre Muharrer Senet Oluşturma + Açık Fatura Mahsubu + Bordro ── */
+
+export const createCheckWithSettlementSchema = z.object({
+  instrumentType: z.enum(["check", "promissory_note"]).default("check"),
+  direction: z.enum(["inflow", "outflow"]),
+  maturityDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Vade tarihi YYYY-AA-GG biçiminde olmalıdır."),
+  issueDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable().optional(),
+  issuePlace: z.string().trim().max(120).nullable().optional(),
+  drawerTaxNo: z.string().trim().max(24).nullable().optional(),
+  serialNo: z.string().trim().max(80).nullable().optional(),
+  amount: z.coerce.number().positive().nullable().optional(),
+  currency: z.string().trim().toUpperCase().regex(/^[A-Z]{3}$/).default("TRY"),
+  partyId: z.uuid().nullable().optional(),
+  counterpartyLabel: z.string().trim().max(180).nullable().optional(),
+  bankPartyId: z.uuid().nullable().optional(),
+  settledInvoiceId: z.uuid().nullable().optional(),
+  notes: z.string().trim().max(1000).nullable().optional(),
+});
+
+export async function createCheckWithBordroAndSettlement(
+  pool: Pool,
+  raw: unknown,
+  actorId: string,
+): Promise<{ checkId: string; bordroId: string | null; allocationId: string | null }> {
+  const input = parseOrThrow(createCheckWithSettlementSchema, raw, "Çek/senet kaydı");
+  const todayISO = istanbulTodayISO();
+  const bordroDate = input.issueDate ?? todayISO;
+
+  const client = await pool.connect();
+  try {
+    await client.query("begin");
+
+    let resolvedPartyId = input.partyId ?? null;
+    let resolvedPartyName: string | null = input.counterpartyLabel ?? null;
+    let resolvedCurrency = input.currency;
+    let allocationId: string | null = null;
+    let lockedInvDirection: string | null = null;
+
+    if (resolvedPartyId && !resolvedPartyName) {
+      const pRes = await client.query<{ name: string }>(
+        `select name from public.parties where id = $1`,
+        [resolvedPartyId],
+      );
+      resolvedPartyName = pRes.rows[0]?.name ?? null;
+    }
+
+    if (input.settledInvoiceId) {
+      if (input.amount == null || input.amount <= 0) {
+        throw new DomainError("VALIDATION_ERROR", "Açık fatura mahsubu yapılabilmesi için çek/senet tutarı girilmelidir.");
+      }
+      const invRes = await client.query<{
+        id: string;
+        direction: string;
+        status: string;
+        invoice_no: string;
+        party_id: string;
+        party_name: string;
+        currency: string;
+        open_amount: string;
+        approval_status: string;
+      }>(
+        `select i.id::text as id,
+                i.direction,
+                i.status,
+                i.invoice_no,
+                i.party_id::text as party_id,
+                pa.name as party_name,
+                i.currency,
+                greatest(0, coalesce(i.payable_amount, i.gross_amount) - greatest(coalesce(i.paid_amount, 0), coalesce(i.allocated_amount, 0)))::text as open_amount,
+                i.approval_status
+           from public.invoices i
+           join public.parties pa on pa.id = i.party_id
+          where i.id = $1
+          for update of i`,
+        [input.settledInvoiceId],
+      );
+      if (invRes.rowCount !== 1) {
+        throw new DomainError("NOT_FOUND", "Mahsup edilecek fatura bulunamadı.");
+      }
+      const inv = invRes.rows[0];
+      const expectedInvDir = input.direction === "inflow" ? "sales" : "purchase";
+      if (inv.direction !== expectedInvDir) {
+        throw new DomainError(
+          "CONFLICT",
+          input.direction === "inflow"
+            ? "Müşteriden alınan çek/senet yalnız açık satış faturasına (120) mahsup edilebilir."
+            : "Verilen keşide çek/senet yalnız açık alış faturasına (320) mahsup edilebilir.",
+        );
+      }
+      if (!["open", "partial"].includes(inv.status)) {
+        throw new DomainError("CONFLICT", `Fatura (${inv.invoice_no}) açık durumda değil.`);
+      }
+      if (inv.direction === "purchase" && ["pending_approval", "rejected"].includes(inv.approval_status)) {
+        throw new DomainError("FORBIDDEN", `Alış faturası (${inv.invoice_no}) onaylanmadan çek/senet ile kapatılamaz.`);
+      }
+      if (inv.currency !== resolvedCurrency) {
+        throw new DomainError(
+          "CONFLICT",
+          `Çek/senet para birimi (${resolvedCurrency}) ile fatura para birimi (${inv.currency}) aynı olmalıdır.`,
+        );
+      }
+      const amtDec = decimal(input.amount).round(2);
+      const openDec = decimal(inv.open_amount).round(2);
+      if (amtDec.gt(openDec)) {
+        throw new DomainError(
+          "CONFLICT",
+          `Çek/senet tutarı (${amtDec.toFixed(2)} ${resolvedCurrency}) faturanın açık bakiyesini (${openDec.toFixed(2)} ${inv.currency}) aşıyor.`,
+        );
+      }
+      resolvedPartyId = inv.party_id;
+      resolvedPartyName = inv.party_name;
+      resolvedCurrency = inv.currency;
+      lockedInvDirection = inv.direction;
+    }
+
+    const amtNum = input.amount != null ? money(decimal(input.amount)) : null;
+    const signedAmt =
+      amtNum == null ? null : input.direction === "outflow" ? -amtNum : amtNum;
+    const initialStatus =
+      amtNum != null && amtNum > 0
+        ? input.direction === "inflow"
+          ? "in_portfolio"
+          : "issued_to_vendor"
+        : "planned";
+
+    const payerPartyId = input.direction === "inflow" ? resolvedPartyId : null;
+    const payeePartyId = input.direction === "outflow" ? resolvedPartyId : null;
+
+    const insChk = await client.query<{ id: string }>(
+      `insert into public.checks
+         (instrument_type, maturity_date, issue_date, issue_place, drawer_tax_no,
+          serial_no, payer_party_id, payee_party_id, bank_party_id, counterparty_label,
+          amount, signed_amount, currency, direction, status, settled_invoice_id, linked_invoice_id, notes)
+       values ($1, $2::date, $3::date, $4, $5,
+               $6, $7, $8, $9, $10,
+               $11::numeric, $12::numeric, $13, $14, $15, $16, $16, $17)
+       returning id::text as id`,
+      [
+        input.instrumentType,
+        input.maturityDate,
+        input.issueDate ?? null,
+        input.issuePlace ?? null,
+        input.drawerTaxNo ?? null,
+        input.serialNo ?? null,
+        payerPartyId,
+        payeePartyId,
+        input.bankPartyId ?? null,
+        resolvedPartyName,
+        amtNum != null ? decimal(amtNum).toFixed(2) : null,
+        signedAmt != null ? decimal(signedAmt).toFixed(2) : null,
+        resolvedCurrency,
+        input.direction,
+        initialStatus,
+        input.settledInvoiceId ?? null,
+        input.notes ?? null,
+      ],
+    );
+    if (insChk.rowCount !== 1) {
+      throw new DomainError("CONFLICT", "Çek/senet kaydı oluşturulamadı.");
+    }
+    const checkId = insChk.rows[0].id;
+
+    if (input.settledInvoiceId && amtNum != null && amtNum > 0) {
+      const insAlloc = await client.query<{ id: string }>(
+        `insert into public.invoice_allocations
+           (invoice_id, source_table, source_id, allocated_amount, allocated_on, notes, created_by)
+         values ($1, 'checks', $2, $3::numeric, $4::date, $5, $6)
+         returning id::text as id`,
+        [
+          input.settledInvoiceId,
+          checkId,
+          decimal(amtNum).toFixed(2),
+          bordroDate,
+          `${input.instrumentType === "promissory_note" ? "Senet" : "Çek"} mahsubu (${input.serialNo ?? checkId.slice(0, 8)})`,
+          actorId,
+        ],
+      );
+      if (insAlloc.rowCount !== 1) {
+        throw new DomainError("CONFLICT", "Fatura mahsup kaydı (invoice_allocations) oluşturulamadı.");
+      }
+      allocationId = insAlloc.rows[0].id;
+      if (lockedInvDirection === "sales") {
+        await resolvePromisesForPaidInvoicesWithClient(client, [input.settledInvoiceId], actorId);
+      }
+    }
+
+    let bordroId: string | null = null;
+    if (initialStatus !== "planned" && amtNum != null && amtNum > 0) {
+      const bordroType: CheckBordroType =
+        input.direction === "inflow" ? "customer_receipt" : "own_issue";
+      const bordroNo = generateBordroNo(
+        bordroDate,
+        input.instrumentType === "promissory_note" ? "SNT" : "BRD",
+      );
+      const insBordro = await client.query<{ id: string }>(
+        `insert into public.check_bordros
+           (bordro_no, bordro_type, bordro_date, target_party_id, currency, total_amount, notes, created_by)
+         values ($1, $2, $3::date, $4, $5, $6::numeric, $7, $8)
+         returning id::text as id`,
+        [
+          bordroNo,
+          bordroType,
+          bordroDate,
+          resolvedPartyId,
+          resolvedCurrency,
+          decimal(amtNum).toFixed(2),
+          input.notes ?? null,
+          actorId,
+        ],
+      );
+      if (insBordro.rowCount === 1) {
+        bordroId = insBordro.rows[0].id;
+        await client.query(
+          `update public.checks set last_bordro_id = $2 where id = $1`,
+          [checkId, bordroId],
+        );
+        await client.query(
+          `insert into public.check_events (check_id, bordro_id, event_type, event_note, created_by)
+           values ($1, $2, $3, $4, $5)`,
+          [
+            checkId,
+            bordroId,
+            input.direction === "inflow" ? "received_to_portfolio" : "issued_to_vendor",
+            `İlk giriş bordrosu ${bordroNo}`,
+            actorId,
+          ],
+        );
+        await safeSyncDomainEventWithClient(client, { kind: "check_bordro", bordroId }, actorId);
+      }
+    } else {
+      await client.query(
+        `insert into public.check_events (check_id, event_type, event_note, created_by)
+         values ($1, 'created', 'manuel çek/senet girişi', $2)`,
+        [checkId, actorId],
+      );
+    }
+
+    await audit(client, {
+      actor: actorId,
+      action: "create_check_with_bordro",
+      entityTable: "checks",
+      entityId: checkId,
+      after: {
+        instrumentType: input.instrumentType,
+        direction: input.direction,
+        maturityDate: input.maturityDate,
+        amount: amtNum,
+        currency: resolvedCurrency,
+        status: initialStatus,
+        settledInvoiceId: input.settledInvoiceId ?? null,
+        bordroId,
+      },
+    });
+
+    await client.query("commit");
+    return { checkId, bordroId, allocationId };
+  } catch (e) {
+    await client.query("rollback");
+    throw e;
+  } finally {
+    client.release();
+  }
+}
+
 

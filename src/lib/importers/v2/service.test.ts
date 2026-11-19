@@ -124,11 +124,10 @@ describe("4.2 önizleme — sayaçlar ve listeler (DB'siz, salt-okunur client)",
     // Yalnız SELECT çalıştı (import_external_keys bakışı) — INSERT/UPDATE/DELETE yok.
     expect(queries.length).toBeGreaterThan(0);
     for (const q of queries) expect(q.trim().toLowerCase().startsWith("select")).toBe(true);
-    // Listeler dolu ve doğru türde.
+    // Listeler dolu ve doğru türde (M-61 ile USD/EUR çek ve krediler doğrudan kabul edilir).
     expect(rep.lists.missingRequired.length).toBeGreaterThan(0);
-    expect(rep.lists.nonTryFinance.length).toBeGreaterThan(0);
+    expect(rep.lists.nonTryFinance).toEqual([]);
     expect(rep.lists.duplicateSuspects.length).toBeGreaterThan(0);
-    for (const x of rep.lists.nonTryFinance) expect(["02_CEKLER", "03_KREDILER"]).toContain(x.sheet);
   });
 
   it("boş şablon: sıfır satır, sıfır yazma, ama şema tanınır", async () => {

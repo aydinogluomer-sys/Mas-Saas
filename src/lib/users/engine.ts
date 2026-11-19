@@ -13,6 +13,7 @@ import type { Pool, PoolClient } from "pg";
 import { z } from "zod";
 import { DomainError } from "@/lib/domain-error";
 import { hashPassword } from "@/lib/auth";
+import { encryptTotpSecret, verifyTotpCode } from "@/lib/auth/totp";
 import { audit } from "@/lib/audit";
 import { APP_ROLES, type AppRole } from "@/lib/authz/matrix";
 import { passwordSchema } from "./password-policy";
@@ -28,6 +29,7 @@ const roleSchema = z.enum(APP_ROLES);
 export const createUserSchema = z.object({
   username: usernameSchema,
   displayName: displayNameSchema,
+  email: z.string().trim().email("Geçerli bir e-posta adresi giriniz.").max(180).optional().nullable(),
   role: roleSchema,
   password: passwordSchema,
   mustChangePassword: z.boolean().optional(),
@@ -38,6 +40,7 @@ export interface UserListRow {
   id: string;
   username: string;
   displayName: string;
+  email?: string | null;
   role: AppRole;
   isActive: boolean;
   lockedUntil: string | null;
@@ -46,34 +49,83 @@ export interface UserListRow {
   lastSeenAt: string | null;
   activeSessions: number;
   mustChangePassword: boolean;
+  totpEnabled?: boolean;
+}
+
+export interface ActiveSessionRow {
+  id: string;
+  userId: string;
+  username: string;
+  displayName: string;
+  ipAddress: string | null;
+  userAgent: string | null;
+  createdAt: string;
+  lastSeenAt: string | null;
+  expiresAt: string;
 }
 
 export const RESERVED_USERNAMES: readonly string[] = ["system", "testsprite-qa"];
 
 export async function listUsers(pool: Pool): Promise<UserListRow[]> {
-  const res = await pool.query<{
-    id: string; username: string; display_name: string; role: AppRole;
-    is_active: boolean; locked_until: string | null; failed_login_count: number;
-    created_at: string; last_seen_at: string | null; active_sessions: number;
-    must_change_password: boolean;
-  }>(
-    `select u.id, u.username, u.display_name, u.role, u.is_active, u.locked_until,
-            u.failed_login_count, u.created_at, u.must_change_password,
-            max(s.last_seen_at) filter (where s.revoked_at is null) as last_seen_at,
-            count(s.id) filter (where s.revoked_at is null and s.expires_at > now())::int as active_sessions
-       from public.users u
-       left join public.sessions s on s.user_id = u.id
-      where u.username <> all($1::text[])
-      group by u.id
-      order by u.role, u.username`,
-    [RESERVED_USERNAMES],
-  );
-  return res.rows.map((r) => ({
-    id: r.id, username: r.username, displayName: r.display_name, role: r.role,
-    isActive: r.is_active, lockedUntil: r.locked_until, failedLoginCount: r.failed_login_count,
-    createdAt: r.created_at, lastSeenAt: r.last_seen_at, activeSessions: Number(r.active_sessions),
-    mustChangePassword: !!r.must_change_password,
-  }));
+  try {
+    const res = await pool.query<{
+      id: string; username: string; display_name: string; email: string | null; role: AppRole;
+      is_active: boolean; locked_until: string | null; failed_login_count: number;
+      created_at: string; last_seen_at: string | null; active_sessions: number;
+      must_change_password: boolean; totp_enabled: boolean;
+    }>(
+      `select u.id, u.username, u.display_name, u.email, u.role, u.is_active, u.locked_until,
+              u.failed_login_count, u.created_at, u.must_change_password,
+              (u.totp_enabled_at is not null) as totp_enabled,
+              max(s.last_seen_at) filter (where s.revoked_at is null) as last_seen_at,
+              count(s.id) filter (where s.revoked_at is null and s.expires_at > now())::int as active_sessions
+         from public.users u
+         left join public.sessions s on s.user_id = u.id
+        where u.username <> all($1::text[])
+        group by u.id
+        order by u.role, u.username`,
+      [RESERVED_USERNAMES],
+    );
+    return res.rows.map((r) => ({
+      id: r.id,
+      username: r.username,
+      displayName: r.display_name,
+      email: r.email,
+      role: r.role,
+      isActive: r.is_active,
+      lockedUntil: r.locked_until,
+      failedLoginCount: r.failed_login_count,
+      createdAt: r.created_at,
+      lastSeenAt: r.last_seen_at,
+      activeSessions: Number(r.active_sessions),
+      mustChangePassword: !!r.must_change_password,
+      totpEnabled: !!r.totp_enabled,
+    }));
+  } catch {
+    const res = await pool.query<{
+      id: string; username: string; display_name: string; role: AppRole;
+      is_active: boolean; locked_until: string | null; failed_login_count: number;
+      created_at: string; last_seen_at: string | null; active_sessions: number;
+      must_change_password: boolean;
+    }>(
+      `select u.id, u.username, u.display_name, u.role, u.is_active, u.locked_until,
+              u.failed_login_count, u.created_at, u.must_change_password,
+              max(s.last_seen_at) filter (where s.revoked_at is null) as last_seen_at,
+              count(s.id) filter (where s.revoked_at is null and s.expires_at > now())::int as active_sessions
+         from public.users u
+         left join public.sessions s on s.user_id = u.id
+        where u.username <> all($1::text[])
+        group by u.id
+        order by u.role, u.username`,
+      [RESERVED_USERNAMES],
+    );
+    return res.rows.map((r) => ({
+      id: r.id, username: r.username, displayName: r.display_name, role: r.role,
+      isActive: r.is_active, lockedUntil: r.locked_until, failedLoginCount: r.failed_login_count,
+      createdAt: r.created_at, lastSeenAt: r.last_seen_at, activeSessions: Number(r.active_sessions),
+      mustChangePassword: !!r.must_change_password,
+    }));
+  }
 }
 
 export const listUsersWithActivity = listUsers;
@@ -120,9 +172,20 @@ export async function createUser(pool: Pool, input: CreateUserInput, actorId: st
       [username, passwordHash, displayName, role, mustChangePassword],
     );
     const id = res.rows[0].id;
+    const cleanEmail = parsed.data.email?.trim() || null;
+    if (cleanEmail) {
+      await client.query("savepoint usr_email_sp");
+      try {
+        await client.query(`update public.users set email = $2 where id = $1`, [id, cleanEmail]);
+        await client.query("release savepoint usr_email_sp");
+      } catch {
+        await client.query("rollback to savepoint usr_email_sp");
+        await client.query("release savepoint usr_email_sp");
+      }
+    }
     await audit(client, {
       actor: actorId, action: "create_user", entityTable: "users", entityId: id, before: null,
-      after: { username, display_name: displayName, role, is_active: true, must_change_password: mustChangePassword },
+      after: { username, display_name: displayName, email: cleanEmail, role, is_active: true, must_change_password: mustChangePassword },
     });
     await client.query("commit");
     return id;
@@ -278,6 +341,167 @@ export async function unlockUser(pool: Pool, id: string, actorId: string): Promi
     await audit(client, {
       actor: actorId, action: "unlock_user", entityTable: "users", entityId: id, before,
       after: { ...before, unlocked: true },
+    });
+    await client.query("commit");
+  } catch (e) {
+    await client.query("rollback");
+    throw e;
+  } finally {
+    client.release();
+  }
+}
+
+export async function listActiveSessions(pool: Pool, limit = 50): Promise<ActiveSessionRow[]> {
+  try {
+    const res = await pool.query<{
+      id: string;
+      user_id: string;
+      username: string;
+      display_name: string;
+      ip_address: string | null;
+      user_agent: string | null;
+      created_at: string;
+      last_seen_at: string | null;
+      expires_at: string;
+    }>(
+      `select s.id::text,
+              s.user_id::text,
+              u.username,
+              u.display_name,
+              s.ip_address,
+              s.user_agent,
+              s.created_at::text,
+              s.last_seen_at::text,
+              s.expires_at::text
+         from public.sessions s
+         join public.users u on u.id = s.user_id
+        where s.revoked_at is null
+          and s.expires_at > now()
+          and u.username <> all($1::text[])
+        order by coalesce(s.last_seen_at, s.created_at) desc
+        limit $2`,
+      [RESERVED_USERNAMES, limit],
+    );
+    return res.rows.map((r) => ({
+      id: r.id,
+      userId: r.user_id,
+      username: r.username,
+      displayName: r.display_name,
+      ipAddress: r.ip_address,
+      userAgent: r.user_agent,
+      createdAt: r.created_at,
+      lastSeenAt: r.last_seen_at,
+      expiresAt: r.expires_at,
+    }));
+  } catch {
+    return [];
+  }
+}
+
+export async function revokeSingleSession(
+  pool: Pool,
+  sessionId: string,
+  actorId: string,
+): Promise<void> {
+  const client = await pool.connect();
+  try {
+    await client.query("begin");
+    const upd = await client.query<{ user_id: string }>(
+      `update public.sessions
+          set revoked_at = now()
+        where id = $1 and revoked_at is null
+        returning user_id::text`,
+      [sessionId],
+    );
+    if (upd.rowCount !== 1) {
+      throw new DomainError("NOT_FOUND", "Aktif oturum bulunamadı veya zaten sonlandırılmış.");
+    }
+    await audit(client, {
+      actor: actorId,
+      action: "revoke_single_session",
+      entityTable: "sessions",
+      entityId: sessionId,
+      after: { revoked: true, targetUserId: upd.rows[0].user_id },
+    });
+    await client.query("commit");
+  } catch (e) {
+    await client.query("rollback");
+    throw e;
+  } finally {
+    client.release();
+  }
+}
+
+export async function enrollAndVerifyUserTotp(
+  pool: Pool,
+  userId: string,
+  secretBase32: string,
+  code: string,
+  actorId: string,
+): Promise<void> {
+  if (!verifyTotpCode(secretBase32, code)) {
+    throw new DomainError("VALIDATION", "6 haneli TOTP doğrulama kodu geçersiz veya süresi dolmuş.");
+  }
+  const encrypted = encryptTotpSecret(secretBase32);
+  const client = await pool.connect();
+  try {
+    await client.query("begin");
+    await assertNotReserved(client, userId);
+    const before = await loadForAudit(client, userId);
+    const upd = await client.query(
+      `update public.users
+          set totp_secret_encrypted = $2,
+              totp_enabled_at = now()
+        where id = $1`,
+      [userId, encrypted],
+    );
+    if (upd.rowCount !== 1) {
+      throw new DomainError("CONFLICT", "TOTP etkinleştirilemedi.");
+    }
+    await audit(client, {
+      actor: actorId,
+      action: "enable_user_totp",
+      entityTable: "users",
+      entityId: userId,
+      before,
+      after: { ...before, totp_enabled: true },
+    });
+    await client.query("commit");
+  } catch (e) {
+    await client.query("rollback");
+    throw e;
+  } finally {
+    client.release();
+  }
+}
+
+export async function disableUserTotp(
+  pool: Pool,
+  userId: string,
+  actorId: string,
+): Promise<void> {
+  const client = await pool.connect();
+  try {
+    await client.query("begin");
+    await assertNotReserved(client, userId);
+    const before = await loadForAudit(client, userId);
+    const upd = await client.query(
+      `update public.users
+          set totp_secret_encrypted = null,
+              totp_enabled_at = null
+        where id = $1`,
+      [userId],
+    );
+    if (upd.rowCount !== 1) {
+      throw new DomainError("CONFLICT", "TOTP devre dışı bırakılamadı.");
+    }
+    await audit(client, {
+      actor: actorId,
+      action: "disable_user_totp",
+      entityTable: "users",
+      entityId: userId,
+      before,
+      after: { ...before, totp_enabled: false },
     });
     await client.query("commit");
   } catch (e) {

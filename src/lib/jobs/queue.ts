@@ -37,6 +37,8 @@ export interface JobRow {
   deadLetterReason: string | null;
   createdAt: string;
   nextRunAt: string;
+  heartbeatAt?: string | null;
+  artifactDocumentId?: string | null;
 }
 
 const mapJob = (x: Record<string, unknown>): JobRow => ({
@@ -55,6 +57,8 @@ const mapJob = (x: Record<string, unknown>): JobRow => ({
   deadLetterReason: (x.dead_letter_reason as string | null) ?? null,
   createdAt: String(x.created_at),
   nextRunAt: String(x.next_run_at),
+  heartbeatAt: x.heartbeat_at == null ? null : String(x.heartbeat_at),
+  artifactDocumentId: x.artifact_document_id == null ? null : String(x.artifact_document_id),
 });
 
 const COLS = `id, job_type, status, priority, attempts, max_attempts, payload,
@@ -183,16 +187,30 @@ export async function claimNextJob(
   }
 }
 
-/** Report progress. Cheap and frequent, so it takes no transaction and writes no audit row. */
+/** Report progress & worker heartbeat. Cheap and frequent, so it takes no transaction and writes no audit row. */
 export async function reportProgress(
   pool: Pool, jobId: string, done: number, total: number | null,
 ): Promise<void> {
-  await pool.query(
-    `update public.background_jobs
-        set progress_done = $2,
-            progress_total = coalesce($3, progress_total)
-      where id = $1 and status = 'running'`,
-    [jobId, Math.max(0, Math.floor(done)), total == null ? null : Math.max(0, Math.floor(total))]);
+  const cleanDone = Math.max(0, Math.floor(done));
+  const cleanTotal = total == null ? null : Math.max(0, Math.floor(total));
+  try {
+    await pool.query(
+      `update public.background_jobs
+          set progress_done = $2,
+              progress_total = coalesce($3, progress_total),
+              heartbeat_at = now()
+        where id = $1 and status = 'running'`,
+      [jobId, cleanDone, cleanTotal],
+    );
+  } catch {
+    await pool.query(
+      `update public.background_jobs
+          set progress_done = $2,
+              progress_total = coalesce($3, progress_total)
+        where id = $1 and status = 'running'`,
+      [jobId, cleanDone, cleanTotal],
+    );
+  }
 }
 
 export async function completeJob(
@@ -378,14 +396,30 @@ export async function cancelJob(
  * and leaving it there means the job never runs again AND its dedupe key stays occupied.
  */
 export async function reapStuckJobs(pool: Pool, olderThanMinutes = 30): Promise<number> {
-  const res = await pool.query(
-    `update public.background_jobs
-        set status = 'queued', next_run_at = now(),
-            last_error = 'İşçi yanıt vermedi, iş kuyruğa geri alındı'
-      where status = 'running'
-        and started_at < now() - ($1 || ' minutes')::interval
-      returning id`, [String(Math.max(1, Math.floor(olderThanMinutes)))]);
-  return res.rowCount ?? 0;
+  const mins = String(Math.max(1, Math.floor(olderThanMinutes)));
+  try {
+    const res = await pool.query(
+      `update public.background_jobs
+          set status = 'queued', next_run_at = now(),
+              last_error = 'İşçi yanıt vermedi (heartbeat zaman aşımı), iş kuyruğa geri alındı'
+        where status = 'running'
+          and coalesce(heartbeat_at, started_at) < now() - ($1 || ' minutes')::interval
+        returning id`,
+      [mins],
+    );
+    return res.rowCount ?? 0;
+  } catch {
+    const res = await pool.query(
+      `update public.background_jobs
+          set status = 'queued', next_run_at = now(),
+              last_error = 'İşçi yanıt vermedi, iş kuyruğa geri alındı'
+        where status = 'running'
+          and started_at < now() - ($1 || ' minutes')::interval
+        returning id`,
+      [mins],
+    );
+    return res.rowCount ?? 0;
+  }
 }
 
 /**
@@ -437,13 +471,28 @@ export async function reapStaleRunningJobs(
 }
 
 export async function listJobs(pool: Pool, limit = 100): Promise<JobRow[]> {
-  const res = await pool.query(
-    `select ${LIST_COLS} from public.background_jobs
-      order by case status when 'dead_letter' then 0 when 'running' then 1
-                           when 'failed' then 2 when 'queued' then 3 else 4 end,
-               created_at desc
-      limit $1`, [limit]);
-  return res.rows.map(mapJob);
+  try {
+    const res = await pool.query(
+      `select ${LIST_COLS}, heartbeat_at, artifact_document_id::text as artifact_document_id
+         from public.background_jobs
+        order by case status when 'dead_letter' then 0 when 'running' then 1
+                             when 'failed' then 2 when 'queued' then 3 else 4 end,
+                 created_at desc
+        limit $1`,
+      [limit],
+    );
+    return res.rows.map(mapJob);
+  } catch {
+    const res = await pool.query(
+      `select ${LIST_COLS} from public.background_jobs
+        order by case status when 'dead_letter' then 0 when 'running' then 1
+                             when 'failed' then 2 when 'queued' then 3 else 4 end,
+                 created_at desc
+        limit $1`,
+      [limit],
+    );
+    return res.rows.map(mapJob);
+  }
 }
 
 export async function loadJobWithResult(

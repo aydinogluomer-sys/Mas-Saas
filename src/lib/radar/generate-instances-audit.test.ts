@@ -31,14 +31,35 @@ interface AuditCall {
   after: { monthStart: string; created: number; total: number };
 }
 
+interface FakePaymentSeed {
+  id: string;
+  due_day: number | null;
+  due_date?: string | null;
+  created_iso?: string | null;
+  default_amount?: string | null;
+  currency?: string;
+  recurrence_type?: string;
+  source_notes?: string | null;
+}
+
+interface InsertedInstanceRecord {
+  paymentId: string;
+  month: string;
+  dueDate: string;
+  amount: number | null;
+  currency: string;
+  note: string | null;
+}
+
 class FakeDb {
   readonly audits: AuditCall[] = [];
   readonly insertedKeys: string[] = [];
+  readonly insertedRows: InsertedInstanceRecord[] = [];
   readonly monthsAttempted: string[] = [];
   private readonly existing: Set<string>;
 
   constructor(
-    private readonly payments: Array<{ id: string; due_day: number }>,
+    private readonly payments: FakePaymentSeed[],
     existing: Array<[string, string]> = [],
   ) {
     this.existing = new Set(existing.map(([p, m]) => `${p}|${m}`));
@@ -52,7 +73,13 @@ class FakeDb {
   query = async (sql: string, params?: unknown[]): Promise<{ rows: unknown[]; rowCount: number }> => {
     const s = sql.trim();
 
-    if (s.startsWith("begin") || s.startsWith("commit") || s.startsWith("rollback")) {
+    if (
+      s.startsWith("begin") ||
+      s.startsWith("commit") ||
+      s.startsWith("rollback") ||
+      s.startsWith("savepoint") ||
+      s.startsWith("release savepoint")
+    ) {
       return { rows: [], rowCount: 0 };
     }
     if (s.includes("select current_user")) {
@@ -62,7 +89,12 @@ class FakeDb {
       const rows = this.payments.map((p) => ({
         id: p.id,
         due_day: p.due_day,
-        default_amount: "1000",
+        due_date: p.due_date ?? null,
+        created_iso: p.created_iso ?? "2026-01-01",
+        default_amount: p.default_amount === undefined ? "1000" : p.default_amount,
+        currency: p.currency ?? "TRY",
+        recurrence_type: p.recurrence_type ?? "monthly",
+        source_notes: p.source_notes ?? null,
         amount_confidence: "known",
         direction: "outflow",
       }));
@@ -76,6 +108,14 @@ class FakeDb {
       if (this.existing.has(key)) return { rows: [], rowCount: 0 }; // on conflict do nothing
       this.existing.add(key);
       this.insertedKeys.push(key);
+      this.insertedRows.push({
+        paymentId,
+        month,
+        dueDate: String(params![2]),
+        amount: params![3] == null ? null : Number(params![3]),
+        currency: String(params![4]),
+        note: params![7] == null ? null : String(params![7]),
+      });
       return { rows: [], rowCount: 1 };
     }
     if (s.includes("into public.audit_logs")) {
@@ -87,6 +127,7 @@ class FakeDb {
     }
     if (s.includes("from public.settings")) return { rows: [], rowCount: 0 };
     if (s.includes("from public.cashflow_months")) return { rows: [], rowCount: 0 };
+    if (s.includes("from public.accounting_periods")) return { rows: [], rowCount: 0 };
     // Risk tazeleme penceresi: bu testlerde boş, çünkü ölçülen şey risk mantığı değil.
     if (s.includes("from public.payment_instances")) return { rows: [], rowCount: 0 };
     if (s.includes("update public.payment_instances")) return { rows: [], rowCount: 0 };
@@ -165,5 +206,41 @@ describe("generate_instances denetim kaydı", () => {
     expect(db.insertedKeys).toEqual(PAYMENTS.map((p) => `${p.id}|${missing}`));
     expect(db.audits).toHaveLength(1);
     expect(db.audits[0].after).toEqual({ monthStart: missing, created: 3, total: 3 });
+  });
+
+  it("CASE E — M-14 döviz cinsi (USD/EUR) ve haftalık / çeyreklik / yıllık / tek seferlik sıklık matematiğini korur", async () => {
+    const seeds: FakePaymentSeed[] = [
+      { id: "usd-weekly", due_day: 1, default_amount: "250.50", currency: "USD", recurrence_type: "weekly" },
+      { id: "eur-quarterly", due_day: 15, due_date: "2027-01-15", default_amount: "1200", currency: "EUR", recurrence_type: "irregular", source_notes: "freq:quarterly" },
+      { id: "usd-yearly", due_day: 10, due_date: "2026-04-10", default_amount: "5000", currency: "USD", recurrence_type: "yearly" },
+      { id: "eur-oneoff", due_day: null, due_date: "2027-04-22", default_amount: "850", currency: "EUR", recurrence_type: "one_off" },
+    ];
+    const db = new FakeDb(seeds);
+
+    // 2027-04-01:
+    // - usd-weekly (due_day=1 -> days 1,8,15,22,29 = 5 weeks in 30-day April -> 250.50 * 5 = 1252.5)
+    // - eur-quarterly (2027-01 -> 2027-04 is +3 months -> eligible!)
+    // - usd-yearly (2026-04 -> 2027-04 is +12 months -> eligible!)
+    // - eur-oneoff (due_date 2027-04-22 -> eligible!)
+    const apr = await generateInstancesForMonthWithClient(db.asClient(), "2027-04-01", ACTOR);
+    expect(apr.created).toBe(4);
+    expect(db.insertedRows).toEqual([
+      { paymentId: "usd-weekly", month: "2027-04-01", dueDate: "2027-04-01", amount: 1252.5, currency: "USD", note: "weekly_x5" },
+      { paymentId: "eur-quarterly", month: "2027-04-01", dueDate: "2027-04-15", amount: 1200, currency: "EUR", note: "quarterly" },
+      { paymentId: "usd-yearly", month: "2027-04-01", dueDate: "2027-04-10", amount: 5000, currency: "USD", note: "yearly" },
+      { paymentId: "eur-oneoff", month: "2027-04-01", dueDate: "2027-04-22", amount: 850, currency: "EUR", note: null },
+    ]);
+
+    // 2027-05-01: only usd-weekly is eligible (days 1,8,15,22,29 = 5 weeks in 31-day May)
+    const may = await generateInstancesForMonthWithClient(db.asClient(), "2027-05-01", ACTOR);
+    expect(may.created).toBe(1);
+    expect(db.insertedRows[4]).toEqual({
+      paymentId: "usd-weekly",
+      month: "2027-05-01",
+      dueDate: "2027-05-01",
+      amount: 1252.5,
+      currency: "USD",
+      note: "weekly_x5",
+    });
   });
 });

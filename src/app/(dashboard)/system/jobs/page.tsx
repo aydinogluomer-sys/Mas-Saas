@@ -212,19 +212,32 @@ export default async function JobsPage() {
                     <td className="text-right font-mono">{j.attempts}/{j.maxAttempts}</td>
                     <td className="max-w-[20rem] truncate text-tone-3">{j.lastError ?? "—"}</td>
                     <td className="text-right">
-                      {j.status === "queued" ? (
-                        <form action={cancelJobAction} className="inline">
-                          <input type="hidden" name="jobId" value={j.id} />
-                          <button
-                            type="submit"
-                            className="button-ghost px-2 py-0.5 font-mono text-[10px] uppercase"
+                      <div className="flex flex-wrap items-center justify-end gap-1.5">
+                        {j.status === "succeeded" &&
+                        (j.jobType === "large_export" || Boolean(j.artifactDocumentId)) ? (
+                          <a
+                            href={`/api/jobs/${j.id}/artifact`}
+                            download
+                            data-no-nav-skeleton="true"
+                            className="button-accent px-2 py-0.5 font-mono text-[10px] uppercase"
                           >
-                            İptal Et
-                          </button>
-                        </form>
-                      ) : (
-                        <span className="font-mono text-[10px] text-tone-4">—</span>
-                      )}
+                            Çıktıyı İndir
+                          </a>
+                        ) : null}
+                        {j.status === "queued" ? (
+                          <form action={cancelJobAction} className="inline">
+                            <input type="hidden" name="jobId" value={j.id} />
+                            <button
+                              type="submit"
+                              className="button-ghost px-2 py-0.5 font-mono text-[10px] uppercase"
+                            >
+                              İptal Et
+                            </button>
+                          </form>
+                        ) : !j.artifactDocumentId && j.jobType !== "large_export" ? (
+                          <span className="font-mono text-[10px] text-tone-4">—</span>
+                        ) : null}
+                      </div>
                     </td>
                   </tr>
                 ))}

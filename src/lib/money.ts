@@ -163,6 +163,11 @@ export function money(value: NumericInput): number {
   return roundMoney(value).toNumber();
 }
 
+/** Alias for `money(value)` — exact half-up rounding to 2 decimal places returned as a JS number. */
+export function round2(value: NumericInput): number {
+  return roundMoney(value).toNumber();
+}
+
 /**
  * The replacement for a `::float8`-cast rate, ratio or per-unit column.
  *

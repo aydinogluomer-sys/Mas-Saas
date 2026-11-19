@@ -79,7 +79,7 @@ export default async function WorkbookDetailPage({
           <form action={mapFinancingAction} className="mt-2">
             <input type="hidden" name="workbookId" value={w.id} />
             <button type="submit"
-              className="border border-violet-700 bg-violet-950/40 px-3 py-2 font-mono text-[10px] uppercase tracking-wider text-violet-300">
+              className="border border-[var(--accent)] bg-[var(--surface-2)] px-3 py-2 font-mono text-[10px] uppercase tracking-wider text-[var(--accent)]">
               çek/kredi aktar →
             </button>
             <span className="ml-2 text-[11px] text-tone-3">ÇEKLER → çek defteri (işaretli tutar=yön), faiz hesaplama → kredi+taksit; çift-kayıt/açık incelemeler hariç</span>

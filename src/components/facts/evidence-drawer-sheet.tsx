@@ -1,8 +1,9 @@
 "use client";
 
+import { ArrowUpRight, Clock3, FileCheck2 } from "lucide-react";
 import Link from "@/components/ui/app-link";
 import { Badge } from "@/components/ui/badge";
-import { Sheet, SheetClose, SheetContent, SheetTitle } from "@/components/ui/primitives/sheet";
+import { SlideOverDrawer } from "@/components/ui/slide-over-drawer";
 import { confidenceLabel, confidenceTone, type ProofItem } from "./source-proof";
 
 export function EvidenceDrawerSheet({
@@ -15,43 +16,77 @@ export function EvidenceDrawerSheet({
   items: ProofItem[];
 }) {
   return (
-    <Sheet open={open} onOpenChange={onOpenChange}>
-      <SheetContent aria-describedby={undefined}>
-        <div className="flex items-center justify-between gap-3">
-          <div>
-            <div className="module-eyebrow">Hesaplama ve kaynak</div>
-            <SheetTitle className="text-lg font-semibold">Bu sonuç neden çıktı?</SheetTitle>
-          </div>
-          <SheetClose className="button-ghost px-3 py-2">Kapat</SheetClose>
-        </div>
-        <div className="mt-5 space-y-3">
-          {items.length ? (
-            items.map((item, index) => (
-              <article key={`${item.key ?? item.title}-${index}`} className="border border-line p-3">
-                <div className="flex items-start justify-between gap-2">
-                  <strong className="text-sm">{item.title}</strong>
-                  <Badge tone={confidenceTone(item.confidence)}>
-                    {confidenceLabel(item.confidence)}
-                  </Badge>
+    <SlideOverDrawer
+      open={open}
+      onOpenChange={onOpenChange}
+      eyebrow="Hesaplama ve Kaynak İzi"
+      title="Bu sonuç neden çıktı?"
+      subtitle="Rakamın türetildiği kanonik tablolar, güncellik zamanı ve doğrudan kayıt bağlantıları."
+      badge={<Badge tone="blue">{items.length} kanıt</Badge>}
+    >
+      <div className="space-y-3">
+        {items.length ? (
+          items.map((item, index) => (
+            <article
+              key={`${item.key ?? item.title}-${index}`}
+              className="border p-3.5"
+              style={{
+                background: "var(--surface-0)",
+                borderColor: "var(--line-card)",
+                borderRadius: "var(--radius-md)",
+                boxShadow: "var(--shadow-card)",
+              }}
+            >
+              <div className="flex items-start justify-between gap-2">
+                <div className="flex items-center gap-2 min-w-0">
+                  <FileCheck2 size={15} strokeWidth={1.75} className="shrink-0" style={{ color: "var(--info)" }} aria-hidden />
+                  <strong className="truncate text-[13.5px] font-semibold tracking-[-0.01em]" style={{ color: "var(--text-1)" }}>
+                    {item.title}
+                  </strong>
                 </div>
-                {item.value != null && <div className="mt-1 font-mono text-base">{item.value}</div>}
-                {item.explanation && <p className="mt-2 text-xs text-tone-3">{item.explanation}</p>}
-                {item.freshness && (
-                  <p className="mt-2 text-[10px] text-tone-3">Güncellik: {item.freshness}</p>
+                <Badge tone={confidenceTone(item.confidence)}>{confidenceLabel(item.confidence)}</Badge>
+              </div>
+              {item.value != null && (
+                <div
+                  className="mt-2 text-[20px] font-bold tracking-[-0.02em] tabular-nums"
+                  style={{ color: "var(--text-1)" }}
+                >
+                  {item.value}
+                </div>
+              )}
+              {item.explanation && (
+                <p className="mt-1.5 text-[12.5px] leading-relaxed" style={{ color: "var(--text-2)" }}>
+                  {item.explanation}
+                </p>
+              )}
+              <div className="mt-2.5 flex flex-wrap items-center justify-between gap-2">
+                {item.freshness ? (
+                  <span className="inline-flex items-center gap-1 text-[11px]" style={{ color: "var(--text-3)" }}>
+                    <Clock3 size={12} strokeWidth={1.75} aria-hidden />
+                    <span>Güncellik: {item.freshness}</span>
+                  </span>
+                ) : (
+                  <span />
                 )}
                 {item.sourceHref && (
-                  <Link href={item.sourceHref} className="mt-3 inline-block text-xs text-info underline">
-                    Kaynak kayda git →
+                  <Link
+                    href={item.sourceHref}
+                    className="inline-flex items-center gap-1 text-[12px] font-semibold transition-colors hover:underline"
+                    style={{ color: "var(--info)" }}
+                  >
+                    <span>{item.sourceLabel ?? "Kaynak kayda git"}</span>
+                    <ArrowUpRight size={13} strokeWidth={1.75} aria-hidden />
                   </Link>
                 )}
-              </article>
-            ))
-          ) : (
-            <p className="text-sm text-tone-3">Bu sinyal için doğrudan kaynak paketi bulunamadı.</p>
-          )}
-        </div>
-      </SheetContent>
-    </Sheet>
+              </div>
+            </article>
+          ))
+        ) : (
+          <p className="text-[13px]" style={{ color: "var(--text-3)" }}>
+            Bu sinyal için doğrudan kaynak paketi bulunamadı.
+          </p>
+        )}
+      </div>
+    </SlideOverDrawer>
   );
 }
-

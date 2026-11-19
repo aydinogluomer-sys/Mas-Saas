@@ -1,14 +1,20 @@
 import Link from "@/components/ui/app-link";
 import { notFound } from "next/navigation";
+import { AnalyticsChart } from "@/components/charts/analytics-chart";
+import { ActionFeedback } from "@/components/ui/action-feedback";
+import { Badge } from "@/components/ui/badge";
+import { fmtTL, Panel } from "@/components/ui/panel";
+import { TableShell } from "@/components/ui/shell";
 import { getRequestUser } from "@/lib/auth";
 import { canManagePeriodLock } from "@/lib/authz/matrix";
+import { requireRouteAccess } from "@/lib/authz/route-guard";
+import { loadHybridMonthDetail } from "@/lib/cashflow/live-hybrid";
 import { evaluatePeriodCloseReadiness } from "@/lib/cashflow/period-lock";
 import { getPool } from "@/lib/db";
-import { add, decimal, moneyOrNull, sub } from "@/lib/money";
-import { Badge } from "@/components/ui/badge";
-import { Panel } from "@/components/ui/panel";
+import { add, decimal, sub } from "@/lib/money";
+import { formatMoney } from "@/lib/money-format";
+import { istanbulDateISO } from "@/lib/reports/rules";
 import { lockCashflowPeriodAction, reopenCashflowPeriodAction } from "../actions";
-import { requireRouteAccess } from "@/lib/authz/route-guard";
 
 export const dynamic = "force-dynamic";
 
@@ -22,6 +28,12 @@ const GROUPS: Array<[string, string]> = [
   ["adjustment", "YAN TAKİP (adjustment)"],
 ];
 
+const TMS7_LABEL = {
+  operating: "İşletme",
+  investing: "Yatırım (CAPEX)",
+  financing: "Finansman",
+} as const;
+
 export default async function CashflowMonthPage({
   params,
   searchParams,
@@ -33,48 +45,15 @@ export default async function CashflowMonthPage({
   if (denied) return denied;
   const { monthId } = await params;
   const sp = (await searchParams) ?? {};
+  const today = istanbulDateISO();
   const [pool, user] = [getPool(), await getRequestUser()];
   const canLock = user != null && canManagePeriodLock(user.role);
 
-  const mRes = await pool.query(
-    `select cm.id, to_char(cm.month_start,'YYYY-MM') as ym,
-            cm.opening_balance as opening, cm.projected_income as income,
-            cm.projected_expense as expense, cm.monthly_delta as delta,
-            cm.closing_balance as closing, cm.status, cm.confidence,
-            cm.source_workbook_id, cm.source_sheet_id, ss.sheet_name
-     from public.cashflow_months cm
-     left join public.source_sheets ss on ss.id = cm.source_sheet_id
-     where cm.id::text = $1 or to_char(cm.month_start, 'YYYY-MM') = $1`,
-    [monthId],
-  );
-  if (mRes.rowCount === 0) notFound();
-  const raw = mRes.rows[0];
-  const m = {
-    ...raw,
-    opening: moneyOrNull(raw.opening),
-    income: moneyOrNull(raw.income),
-    expense: moneyOrNull(raw.expense),
-    delta: moneyOrNull(raw.delta),
-    closing: moneyOrNull(raw.closing),
-  };
+  const m = await loadHybridMonthDetail(pool, monthId, today);
+  if (!m) notFound();
 
-  const [lines, readiness] = await Promise.all([
-    pool.query(
-      `select cl.id, cl.line_type, cl.direction, cl.label, cl.amount,
-              cl.amount_status, p.name as party, ir.row_index
-       from public.cashflow_lines cl
-       left join public.parties p on p.id = cl.party_id
-       left join public.import_rows ir on ir.id = cl.source_row_id
-       where cl.cashflow_month_id = $1
-       order by cl.line_type, ir.row_index nulls last`,
-      [m.id],
-    ),
-    evaluatePeriodCloseReadiness(pool, m.id),
-  ]);
+  const readiness = await evaluatePeriodCloseReadiness(pool, m.cashflowMonthId ?? m.accountingPeriodId ?? m.ym);
 
-  const lineRows = lines.rows.map((l) => ({ ...l, amount: moneyOrNull(l.amount) }));
-
-  // devir + gelir − gider = kasa, checked within ±1 TL. Faz 17: evaluated in decimal.
   const identity =
     m.opening != null && m.income != null && m.expense != null && m.closing != null
       ? sub(sub(add(m.opening, m.income), m.expense), m.closing).abs().lte(decimal(1))
@@ -90,30 +69,21 @@ export default async function CashflowMonthPage({
   const fmt = (v: number | null) =>
     v != null ? new Intl.NumberFormat("tr-TR", { maximumFractionDigits: 0 }).format(v) : "—";
 
-  const others = lineRows.filter((l) => !GROUPS.some(([t]) => t === l.line_type));
+  const others = m.importedLines.filter((l) => !GROUPS.some(([t]) => t === l.line_type));
   const returnTo = `/cashflow/${encodeURIComponent(monthId)}`;
 
   return (
     <>
-      {sp.error ? (
-        <div className="mb-3 rounded border border-red-700/60 bg-red-950/30 px-3 py-2 text-xs text-red-200">
-          {sp.error}
-        </div>
-      ) : null}
-      {sp.notice ? (
-        <div className="mb-3 rounded border border-emerald-700/60 bg-emerald-950/30 px-3 py-2 text-xs text-emerald-200">
-          {sp.notice}
-        </div>
-      ) : null}
+      <ActionFeedback error={sp.error} success={sp.notice} />
 
       <Panel
         title={`NAKİT AKIŞ — ${m.ym}`}
         right={
-          <span className="flex items-center gap-2">
-            {m.status === "locked" ? (
+          <span className="flex flex-wrap items-center gap-2">
+            {readiness.status === "locked" ? (
               <Badge tone="green">DÖNEM KİLİTLİ 🔒</Badge>
             ) : (
-              <Badge tone="neutral">{m.status}</Badge>
+              <Badge tone="neutral">{readiness.status}</Badge>
             )}
             {identity == null ? (
               <Badge tone="amber">kimlik doğrulanamadı</Badge>
@@ -122,15 +92,15 @@ export default async function CashflowMonthPage({
             ) : (
               <Badge tone="red">kimlik UYUŞMUYOR</Badge>
             )}
-            <Link href="/cashflow" className="font-mono text-[10px] uppercase text-tone-2 underline underline-offset-2">
-              ← nakit akış
+            <Link href="/cashflow/monthly" className="font-mono text-[10px] uppercase text-tone-2 underline underline-offset-2">
+              ← aylık görünüm
             </Link>
           </span>
         }
       >
         <div className="grid grid-cols-2 gap-2 sm:grid-cols-5">
           {head.map(([k, v]) => (
-            <div key={k} className="border border-line bg-black/40 p-2">
+            <div key={k} className="border border-line bg-surface-2 p-2">
               <div className="font-mono text-[9px] uppercase tracking-wider text-tone-3">{k}</div>
               <div className={`font-mono text-sm tabular-nums ${v != null && v < 0 ? "text-neg" : "text-tone-1"}`}>
                 {fmt(v)}
@@ -139,7 +109,7 @@ export default async function CashflowMonthPage({
           ))}
         </div>
         <div className="mt-2 flex flex-wrap items-center gap-3 font-mono text-[10px] text-tone-3">
-          <span>durum: {m.status} · güven: {m.confidence}</span>
+          <span>durum: {readiness.status} · kaynak: {m.confidence}</span>
           {m.source_workbook_id && m.source_sheet_id && (
             <Link
               className="underline decoration-line-strong underline-offset-2"
@@ -150,6 +120,38 @@ export default async function CashflowMonthPage({
           )}
         </div>
       </Panel>
+
+      <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+        <div className="border border-line bg-surface-1 p-3">
+          <div className="font-mono text-[10px] uppercase tracking-wider text-tone-3">TMS 7 İşletme (Operating)</div>
+          <div className={`mt-1 font-mono text-sm tabular-nums ${m.tms7.operatingNet < 0 ? "text-neg" : "text-pos"}`}>
+            {fmtTL(m.tms7.operatingNet)}
+          </div>
+          <div className="font-mono text-[11px] text-tone-3">
+            +{fmtTL(m.tms7.operatingInflow)} / −{fmtTL(m.tms7.operatingOutflow)}
+          </div>
+        </div>
+        <div className="border border-line bg-surface-1 p-3">
+          <div className="font-mono text-[10px] uppercase tracking-wider text-tone-3">TMS 7 Yatırım (Investing)</div>
+          <div className={`mt-1 font-mono text-sm tabular-nums ${m.tms7.investingNet < 0 ? "text-neg" : "text-tone-1"}`}>
+            {fmtTL(m.tms7.investingNet)}
+          </div>
+          <div className="font-mono text-[11px] text-tone-3">
+            +{fmtTL(m.tms7.investingInflow)} / −{fmtTL(m.tms7.investingOutflow)}
+          </div>
+        </div>
+        <div className="border border-line bg-surface-1 p-3">
+          <div className="font-mono text-[10px] uppercase tracking-wider text-tone-3">TMS 7 Finansman (Financing)</div>
+          <div className={`mt-1 font-mono text-sm tabular-nums ${m.tms7.financingNet < 0 ? "text-neg" : "text-tone-1"}`}>
+            {fmtTL(m.tms7.financingNet)}
+          </div>
+          <div className="font-mono text-[11px] text-tone-3">
+            +{fmtTL(m.tms7.financingInflow)} / −{fmtTL(m.tms7.financingOutflow)}
+          </div>
+        </div>
+      </div>
+
+      <AnalyticsChart model={m.dailyChartModel} kind="bar" defaultPeriod="3m" />
 
       <Panel
         title="DÖNEM KAPANIŞ KONTROL LİSTESİ & DÖNEM KİLİDİ"
@@ -171,7 +173,7 @@ export default async function CashflowMonthPage({
         <div className="space-y-2">
           <div className="grid grid-cols-1 gap-2 md:grid-cols-2">
             {readiness.items.map((item) => (
-              <div key={item.code} className="flex items-start justify-between gap-3 border border-line bg-black/30 p-2.5 text-xs">
+              <div key={item.code} className="flex items-start justify-between gap-3 border border-line bg-surface-2 p-2.5 text-xs">
                 <div>
                   <div className="font-medium text-tone-1">{item.label}</div>
                   <div className="mt-0.5 text-[11px] text-tone-3">{item.detail}</div>
@@ -196,7 +198,7 @@ export default async function CashflowMonthPage({
           ) : null}
 
           {readiness.reopenedAt ? (
-            <div className="font-mono text-[11px] text-amber-300/90">
+            <div className="font-mono text-[11px] text-warn">
               son kilit açma: {readiness.reopenedAt}
               {readiness.reopenedByName ? ` · ${readiness.reopenedByName}` : ""}
               {readiness.reopenReason ? ` · gerekçe: "${readiness.reopenReason}"` : ""}
@@ -205,7 +207,7 @@ export default async function CashflowMonthPage({
 
           {canLock && readiness.status !== "locked" ? (
             <form action={lockCashflowPeriodAction} className="mt-2 flex flex-wrap items-end gap-2 border-t border-line pt-2.5">
-              <input type="hidden" name="monthId" value={m.id} />
+              <input type="hidden" name="monthId" value={m.cashflowMonthId ?? m.accountingPeriodId ?? m.ym} />
               <input type="hidden" name="returnTo" value={returnTo} />
               <label className="flex min-w-60 flex-1 flex-col gap-1">
                 <span className="font-mono text-[10px] uppercase tracking-wider text-tone-3">
@@ -235,15 +237,15 @@ export default async function CashflowMonthPage({
           ) : null}
 
           {canLock && readiness.status === "locked" ? (
-            <details className="mt-2 border border-amber-800/50 bg-amber-950/20 p-2.5">
-              <summary className="cursor-pointer font-mono text-xs text-amber-200">
+            <details className="mt-2 border border-warn bg-surface-2 p-2.5">
+              <summary className="cursor-pointer font-mono text-xs text-warn">
                 Kilidi yeniden aç
               </summary>
               <form action={reopenCashflowPeriodAction} className="mt-2.5 flex flex-wrap items-end gap-2">
-                <input type="hidden" name="monthId" value={m.id} />
+                <input type="hidden" name="monthId" value={m.cashflowMonthId ?? m.accountingPeriodId ?? m.ym} />
                 <input type="hidden" name="returnTo" value={returnTo} />
                 <label className="flex min-w-70 flex-1 flex-col gap-1">
-                  <span className="font-mono text-[10px] uppercase tracking-wider text-amber-200/80">
+                  <span className="font-mono text-[10px] uppercase tracking-wider text-warn">
                     Zorunlu yeniden açma gerekçesi (en az 10 karakter)
                   </span>
                   <input
@@ -256,7 +258,7 @@ export default async function CashflowMonthPage({
                     className="field-control px-2 py-1.5 text-xs"
                   />
                 </label>
-                <button type="submit" className="button-ghost px-3 py-1.5 text-xs text-amber-200">
+                <button type="submit" className="button-ghost px-3 py-1.5 text-xs text-warn">
                   Kilidi aç
                 </button>
               </form>
@@ -271,11 +273,55 @@ export default async function CashflowMonthPage({
         </div>
       </Panel>
 
+      {m.liveLines.length > 0 && (
+        <Panel
+          title={`CANLI BANKA & AÇIK VADE HAREKETLERİ — ${m.liveLines.length}`}
+          subtitle="Banka ekstrelerinden gerçekleşen işlemler ve ay içindeki açık tahsilat/ödeme vadeleri"
+        >
+          <TableShell>
+            <table className="w-full text-xs">
+              <thead>
+                <tr className="text-left font-mono text-[10px] uppercase text-tone-4">
+                  <th className="py-1">Tarih</th>
+                  <th>Kaynak</th>
+                  <th>TMS 7</th>
+                  <th>Açıklama / Karşı Taraf</th>
+                  <th className="text-right">Tutar</th>
+                </tr>
+              </thead>
+              <tbody>
+                {m.liveLines.map((line) => (
+                  <tr key={line.id} className="border-t border-line-faint">
+                    <td className="py-1.5 font-mono">{line.date}</td>
+                    <td>
+                      <Badge tone={line.origin === "bank_actual" ? "green" : "blue"}>
+                        {line.origin === "bank_actual" ? "Fiili Banka" : "Açık Vade"}
+                      </Badge>
+                    </td>
+                    <td>
+                      <Badge tone="neutral">{TMS7_LABEL[line.tms7]}</Badge>
+                    </td>
+                    <td>
+                      {line.label}
+                      {line.counterparty && <span className="ml-2 text-tone-3">· {line.counterparty}</span>}
+                    </td>
+                    <td className={`text-right font-mono tabular-nums ${line.amountSigned < 0 ? "text-neg" : "text-pos"}`}>
+                      {line.amountSigned < 0 ? "−" : "+"}
+                      {formatMoney(Math.abs(line.amountSigned), line.currency)}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </TableShell>
+        </Panel>
+      )}
+
       {GROUPS.map(([type, title]) => {
-        const list = lineRows.filter((l) => l.line_type === type);
+        const list = m.importedLines.filter((l) => l.line_type === type);
         if (list.length === 0) return null;
         return (
-          <Panel key={type} title={`${title} — ${list.length}`}>
+          <Panel key={type} title={`${title} (EXCEL) — ${list.length}`}>
             <table className="w-full text-sm">
               <tbody>
                 {list.map((l) => (

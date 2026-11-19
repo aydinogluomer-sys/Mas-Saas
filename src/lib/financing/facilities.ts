@@ -150,6 +150,8 @@ import type { Pool } from "pg";
 import { z } from "zod";
 import { audit } from "@/lib/audit";
 import { DomainError } from "@/lib/domain-error";
+import { postJournalEntryWithClient } from "@/lib/ledger/posting-engine";
+import { money, rateOrNull, roundMoney as round2 } from "@/lib/money";
 import { parseOrThrow } from "@/lib/validation";
 
 export const COLLATERAL_TYPES = [
@@ -225,6 +227,7 @@ export const recordFacilityMovementSchema = z.object({
   movementDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Hareket tarihi YYYY-AA-GG olmalı"),
   amount: z.coerce.number().positive("Hareket tutarı sıfırdan büyük olmalı"),
   currency: z.string().trim().toUpperCase().regex(/^[A-Z]{3}$/).default("TRY"),
+  cashAccountId: z.uuid().nullable().optional(),
   bankTxId: z.uuid().nullable().optional(),
   notes: z.string().trim().max(1000).optional(),
 });
@@ -322,12 +325,14 @@ export async function recordFacilityMovement(
     await client.query("begin");
     const facBefore = await client.query<{
       id: string;
+      name: string;
+      lender_party_id: string | null;
       limit_amount: string;
       drawn_amount: string;
       currency: string;
       status: string;
     }>(
-      `select id, limit_amount, drawn_amount, currency, status
+      `select id, name, lender_party_id::text as lender_party_id, limit_amount, drawn_amount, currency, status
          from public.credit_facilities
         where id = $1
           for update`,
@@ -335,6 +340,56 @@ export async function recordFacilityMovement(
     );
     if (facBefore.rowCount === 0) {
       throw new DomainError("NOT_FOUND", "Kredi limiti bulunamadı.");
+    }
+    const fac = facBefore.rows[0];
+    const effCurrency = input.currency || fac.currency;
+
+    let resolvedBankTxId: string | null = input.bankTxId ?? null;
+    if (
+      input.cashAccountId &&
+      !resolvedBankTxId &&
+      (input.movementType === "drawdown" || input.movementType === "repayment")
+    ) {
+      const caRes = await client.query<{ id: string; name: string; currency: string; is_active: boolean }>(
+        `select id::text as id, name, currency, is_active
+           from public.cash_accounts
+          where id = $1 and archived_at is null`,
+        [input.cashAccountId],
+      );
+      if (caRes.rowCount !== 1 || !caRes.rows[0].is_active) {
+        throw new DomainError("NOT_FOUND", "Seçilen kasa/banka hesabı bulunamadı veya pasif.");
+      }
+      if (caRes.rows[0].currency !== effCurrency) {
+        throw new DomainError(
+          "CONFLICT",
+          `Kredi limiti para birimi (${effCurrency}) ile banka hesabı para birimi (${caRes.rows[0].currency}) eşleşmelidir.`,
+        );
+      }
+      await client.query(
+        `insert into public.bank_accounts (cash_account_id) values ($1) on conflict (cash_account_id) do nothing`,
+        [input.cashAccountId],
+      );
+      const amtDec = round2(decimal(input.amount));
+      const signedBankAmt =
+        input.movementType === "drawdown" ? amtDec.toFixed(2) : amtDec.times(-1).toFixed(2);
+      const txUid = globalThis.crypto.randomUUID().slice(0, 8);
+      const txIns = await client.query<{ id: string }>(
+        `insert into public.bank_transactions
+           (bank_account_id, txn_date, value_date, amount, currency, description,
+            category_rule, status, dedupe_hash)
+         values ($1, $2::date, $2::date, $3::numeric, $4, $5,
+                 'system_internal_settlement', 'unmatched', $6)
+         returning id::text as id`,
+        [
+          input.cashAccountId,
+          input.movementDate,
+          signedBankAmt,
+          effCurrency,
+          `Kredi limiti ${input.movementType === "drawdown" ? "kullanımı" : "geri ödemesi"}: ${fac.name}`,
+          `facility_mov:${input.facilityId}:${txUid}`,
+        ],
+      );
+      resolvedBankTxId = txIns.rows[0]?.id ?? null;
     }
 
     const ins = await client.query<{ id: string }>(
@@ -347,12 +402,42 @@ export async function recordFacilityMovement(
         input.movementType,
         input.movementDate,
         input.amount,
-        input.currency || facBefore.rows[0].currency,
-        input.bankTxId ?? null,
+        effCurrency,
+        resolvedBankTxId,
         input.notes ?? null,
         actorId,
       ],
     );
+    const movementId = ins.rows[0].id;
+
+    if (
+      (input.movementType === "drawdown" || input.movementType === "repayment") &&
+      (input.cashAccountId || resolvedBankTxId)
+    ) {
+      const amtStr = round2(decimal(input.amount)).toFixed(2);
+      await postJournalEntryWithClient(
+        client,
+        {
+          entryDate: input.movementDate,
+          sourceType: "facility_movement",
+          sourceId: movementId,
+          idempotencyKey: `facility_mov:${movementId}`,
+          description: `Kredi Limiti ${input.movementType === "drawdown" ? "Kullanımı (102/300)" : "Geri Ödemesi (300/102)"}: ${fac.name}`,
+          currency: effCurrency,
+          lines:
+            input.movementType === "drawdown"
+              ? [
+                  { accountCode: "102", debitNative: amtStr, memo: `BCH/Rotatif kredi kullanımı (${fac.name})` },
+                  { accountCode: "300", creditNative: amtStr, partyId: fac.lender_party_id, memo: `Kısa vadeli banka kredileri (${fac.name})` },
+                ]
+              : [
+                  { accountCode: "300", debitNative: amtStr, partyId: fac.lender_party_id, memo: `BCH/Rotatif kredi anapara kapaması (${fac.name})` },
+                  { accountCode: "102", creditNative: amtStr, memo: `Bankadan kredi geri ödemesi (${fac.name})` },
+                ],
+        },
+        actorId,
+      );
+    }
 
     const facAfter = await client.query<{ limit_amount: string; drawn_amount: string }>(
       `select limit_amount, drawn_amount from public.credit_facilities where id = $1`,
@@ -572,4 +657,511 @@ export async function upsertCovenant(pool: Pool, raw: unknown, actorId: string):
   } finally {
     client.release();
   }
+}
+
+/* ── Faz 60 (M-41): BCH / Rotatif Kredi Günlük Adat Tahakkuku & Teminat Mektupları (910/911) ── */
+
+export interface FacilityAdatBreakdown {
+  interestAmount: number;
+  bsmvAmount: number;
+  kkdfAmount: number;
+  totalCharge: number;
+}
+
+export function calculateFacilityAdatAccrual(input: {
+  averageUtilizedBalance: NumericInput;
+  daysInPeriod: number;
+  annualRatePct: NumericInput;
+  bsmvRate?: NumericInput;
+  kkdfRate?: NumericInput;
+}): FacilityAdatBreakdown {
+  const avgBal = decimal(input.averageUtilizedBalance);
+  const days = Math.max(1, Math.min(31, Math.round(input.daysInPeriod)));
+  const ratePct = decimal(input.annualRatePct);
+  const bsmvRate = input.bsmvRate != null ? decimal(input.bsmvRate) : decimal("0.05");
+  const kkdfRate = input.kkdfRate != null ? decimal(input.kkdfRate) : decimal("0");
+  const normBsmv = bsmvRate.gt(1) ? bsmvRate.div(100) : bsmvRate;
+  const normKkdf = kkdfRate.gt(1) ? kkdfRate.div(100) : kkdfRate;
+
+  // Türk bankacılık BCH 360-gün adat formülü: Anapara_Ort * Yıllık_Oran(%) / 100 * Gün / 360
+  const interestDec = round2(avgBal.times(ratePct).div(100).times(days).div(360));
+  const bsmvDec = round2(interestDec.times(normBsmv));
+  const kkdfDec = round2(interestDec.times(normKkdf));
+  const totalDec = round2(interestDec.plus(bsmvDec).plus(kkdfDec));
+
+  return {
+    interestAmount: money(interestDec),
+    bsmvAmount: money(bsmvDec),
+    kkdfAmount: money(kkdfDec),
+    totalCharge: money(totalDec),
+  };
+}
+
+export const accrueFacilityInterestSchema = z.object({
+  facilityId: z.uuid("Kredi limiti seçilmelidir."),
+  accrualMonth: z.string().regex(/^\d{4}-\d{2}(-\d{2})?$/, "Tahakkuk dönemi YYYY-AA biçiminde olmalıdır."),
+  averageUtilizedBalance: z.coerce.number().positive("Ortalama kullanılan bakiye sıfırdan büyük olmalıdır."),
+  daysInPeriod: z.coerce.number().int().min(1).max(31).default(30),
+  annualRatePct: z.coerce.number().min(0).max(500),
+  bsmvRate: z.coerce.number().min(0).max(100).default(0.05),
+  kkdfRate: z.coerce.number().min(0).max(100).default(0),
+});
+
+export async function accrueFacilityInterest(
+  pool: Pool,
+  raw: unknown,
+  actorId: string,
+): Promise<{ accrualId: string; breakdown: FacilityAdatBreakdown; journalEntryId: string | null }> {
+  const input = parseOrThrow(accrueFacilityInterestSchema, raw, "BCH / rotatif kredi adat tahakkuku");
+  const monthStart = `${input.accrualMonth.slice(0, 7)}-01`;
+  const breakdown = calculateFacilityAdatAccrual(input);
+
+  const client = await pool.connect();
+  try {
+    await client.query("begin");
+    const facRes = await client.query<{ id: string; name: string; currency: string; lender_party_id: string | null }>(
+      `select id::text as id, name, currency, lender_party_id::text as lender_party_id
+         from public.credit_facilities
+        where id = $1 and archived_at is null`,
+      [input.facilityId],
+    );
+    if (facRes.rowCount !== 1) {
+      throw new DomainError("NOT_FOUND", "Kredi limiti bulunamadı.");
+    }
+    const fac = facRes.rows[0];
+
+    let journalEntryId: string | null = null;
+    if (breakdown.totalCharge > 0) {
+      const je = await postJournalEntryWithClient(
+        client,
+        {
+          entryDate: monthStart,
+          sourceType: "facility_movement",
+          sourceId: fac.id,
+          idempotencyKey: `facility_adat:${fac.id}:${monthStart}`,
+          description: `BCH / Rotatif Kredi Adat & BSMV Tahakkuku (${monthStart.slice(0, 7)} · ${fac.name})`,
+          currency: fac.currency,
+          lines: [
+            {
+              accountCode: "780",
+              debitNative: decimal(breakdown.totalCharge).toFixed(2),
+              partyId: fac.lender_party_id,
+              memo: `BCH adat faizi (${breakdown.interestAmount.toFixed(2)}) + BSMV (${breakdown.bsmvAmount.toFixed(2)})`,
+            },
+            {
+              accountCode: "300",
+              creditNative: decimal(breakdown.totalCharge).toFixed(2),
+              partyId: fac.lender_party_id,
+              memo: `Dönem sonu kredi faiz tahakkuku (${fac.name})`,
+            },
+          ],
+        },
+        actorId,
+      );
+      journalEntryId = je.entryId;
+    }
+
+    const ins = await client.query<{ id: string }>(
+      `insert into public.facility_interest_accruals
+         (facility_id, accrual_month, average_utilized_balance, days_in_period,
+          annual_rate_pct, interest_amount, bsmv_amount, kkdf_amount, total_charge,
+          currency, journal_entry_id)
+       values ($1, $2::date, $3::numeric, $4, $5::numeric, $6::numeric, $7::numeric, $8::numeric, $9::numeric, $10, $11)
+       on conflict (facility_id, accrual_month) do update
+         set average_utilized_balance = excluded.average_utilized_balance,
+             days_in_period = excluded.days_in_period,
+             annual_rate_pct = excluded.annual_rate_pct,
+             interest_amount = excluded.interest_amount,
+             bsmv_amount = excluded.bsmv_amount,
+             kkdf_amount = excluded.kkdf_amount,
+             total_charge = excluded.total_charge,
+             journal_entry_id = coalesce(excluded.journal_entry_id, public.facility_interest_accruals.journal_entry_id)
+       returning id::text as id`,
+      [
+        fac.id,
+        monthStart,
+        decimal(input.averageUtilizedBalance).round(2).toFixed(2),
+        input.daysInPeriod,
+        decimal(input.annualRatePct).round(4).toFixed(4),
+        decimal(breakdown.interestAmount).toFixed(2),
+        decimal(breakdown.bsmvAmount).toFixed(2),
+        decimal(breakdown.kkdfAmount).toFixed(2),
+        decimal(breakdown.totalCharge).toFixed(2),
+        fac.currency,
+        journalEntryId,
+      ],
+    );
+    if (ins.rowCount !== 1) {
+      throw new DomainError("CONFLICT", "BCH adat tahakkuku kaydedilemedi.");
+    }
+    const accrualId = ins.rows[0].id;
+
+    await audit(client, {
+      actor: actorId,
+      action: "accrue_facility_interest",
+      entityTable: "facility_interest_accruals",
+      entityId: accrualId,
+      after: {
+        facilityId: fac.id,
+        accrualMonth: monthStart,
+        ...breakdown,
+        currency: fac.currency,
+        journalEntryId,
+      },
+    });
+
+    await client.query("commit");
+    return { accrualId, breakdown, journalEntryId };
+  } catch (e) {
+    await client.query("rollback");
+    throw e;
+  } finally {
+    client.release();
+  }
+}
+
+export const GUARANTEE_TYPES = ["gecici", "kesin", "avans", "gumruk", "mahkeme", "diger"] as const;
+export type GuaranteeType = (typeof GUARANTEE_TYPES)[number];
+
+export const GUARANTEE_TYPE_LABELS: Record<GuaranteeType, string> = {
+  gecici: "Geçici Teminat Mektubu",
+  kesin: "Kesin Teminat Mektubu",
+  avans: "Avans Teminat Mektubu",
+  gumruk: "Gümrük / Vergi Dairesi Mektubu",
+  mahkeme: "Mahkeme / İcra Teminat Mektubu",
+  diger: "Diğer Teminat Mektubu",
+};
+
+export function calculateGuaranteeQuarterlyCommission(
+  amount: NumericInput,
+  commissionRateAnnual: NumericInput,
+): number {
+  const amtDec = decimal(amount);
+  const rawRate = decimal(commissionRateAnnual);
+  const normRate = rawRate.gt(1) ? rawRate.div(100) : rawRate;
+  return money(round2(amtDec.times(normRate).div(4)));
+}
+
+export const createLetterOfGuaranteeSchema = z.object({
+  facilityId: z.uuid().nullable().optional(),
+  beneficiaryPartyId: z.uuid().nullable().optional(),
+  beneficiaryName: z.string().trim().min(2, "Muhatap kurum/şirket adı girilmelidir.").max(180),
+  guaranteeType: z.enum(GUARANTEE_TYPES).default("kesin"),
+  referenceNo: z.string().trim().min(2, "Mektup referans no girilmelidir.").max(80),
+  amount: z.coerce.number().positive("Mektup tutarı sıfırdan büyük olmalıdır."),
+  currency: z.string().trim().toUpperCase().regex(/^[A-Z]{3}$/).default("TRY"),
+  commissionRateAnnual: z.coerce.number().min(0).max(100).default(0.015),
+  issueDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  expiryDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable().optional(),
+});
+
+export async function createLetterOfGuarantee(
+  pool: Pool,
+  raw: unknown,
+  actorId: string,
+): Promise<{ id: string; quarterlyCommissionAmount: number; journalEntryId: string }> {
+  const input = parseOrThrow(createLetterOfGuaranteeSchema, raw, "Teminat mektubu kaydı");
+  const rawComm = decimal(input.commissionRateAnnual);
+  const normComm = rawComm.gt(1) ? rawComm.div(100) : rawComm;
+  const quarterlyComm = calculateGuaranteeQuarterlyCommission(input.amount, normComm);
+
+  const client = await pool.connect();
+  try {
+    await client.query("begin");
+    const lgId = globalThis.crypto.randomUUID();
+    const amtStr = round2(decimal(input.amount)).toFixed(2);
+
+    const je = await postJournalEntryWithClient(
+      client,
+      {
+        entryDate: input.issueDate,
+        sourceType: "facility_movement",
+        sourceId: lgId,
+        idempotencyKey: `lg_issue:${lgId}`,
+        description: `Verilen Teminat Mektubu Nazım Kaydı (${input.referenceNo} · ${input.beneficiaryName})`,
+        currency: input.currency,
+        lines: [
+          {
+            accountCode: "910",
+            debitNative: amtStr,
+            partyId: input.beneficiaryPartyId ?? null,
+            memo: `${GUARANTEE_TYPE_LABELS[input.guaranteeType]} (${input.referenceNo})`,
+          },
+          {
+            accountCode: "911",
+            creditNative: amtStr,
+            partyId: input.beneficiaryPartyId ?? null,
+            memo: `Muhatap: ${input.beneficiaryName}`,
+          },
+        ],
+      },
+      actorId,
+    );
+
+    const ins = await client.query<{ id: string }>(
+      `insert into public.letter_of_guarantees
+         (id, facility_id, beneficiary_party_id, beneficiary_name, guarantee_type,
+          reference_no, amount, currency, commission_rate_annual, quarterly_commission_amount,
+          issue_date, expiry_date, is_active, journal_entry_id)
+       values ($1, $2, $3, $4, $5, $6, $7::numeric, $8, $9::numeric, $10::numeric, $11::date, $12::date, true, $13)
+       returning id::text as id`,
+      [
+        lgId,
+        input.facilityId ?? null,
+        input.beneficiaryPartyId ?? null,
+        input.beneficiaryName,
+        input.guaranteeType,
+        input.referenceNo,
+        amtStr,
+        input.currency,
+        normComm.round(4).toFixed(4),
+        decimal(quarterlyComm).toFixed(2),
+        input.issueDate,
+        input.expiryDate ?? null,
+        je.entryId,
+      ],
+    );
+    if (ins.rowCount !== 1) {
+      throw new DomainError("CONFLICT", "Teminat mektubu kaydedilemedi.");
+    }
+
+    await audit(client, {
+      actor: actorId,
+      action: "create_letter_of_guarantee",
+      entityTable: "letter_of_guarantees",
+      entityId: lgId,
+      after: {
+        referenceNo: input.referenceNo,
+        beneficiaryName: input.beneficiaryName,
+        guaranteeType: input.guaranteeType,
+        amount: input.amount,
+        currency: input.currency,
+        quarterlyCommissionAmount: quarterlyComm,
+        journalEntryId: je.entryId,
+      },
+    });
+
+    await client.query("commit");
+    return { id: lgId, quarterlyCommissionAmount: quarterlyComm, journalEntryId: je.entryId };
+  } catch (e) {
+    await client.query("rollback");
+    throw e;
+  } finally {
+    client.release();
+  }
+}
+
+export async function returnLetterOfGuarantee(
+  pool: Pool,
+  guaranteeId: string,
+  returnedDate: string | null,
+  actorId: string,
+): Promise<void> {
+  const client = await pool.connect();
+  try {
+    await client.query("begin");
+    const res = await client.query<{
+      id: string;
+      reference_no: string;
+      beneficiary_name: string;
+      beneficiary_party_id: string | null;
+      amount: string;
+      currency: string;
+      issue_date: string;
+      is_active: boolean;
+    }>(
+      `select id::text as id, reference_no, beneficiary_name,
+              beneficiary_party_id::text as beneficiary_party_id,
+              amount::text, currency, to_char(issue_date, 'YYYY-MM-DD') as issue_date, is_active
+         from public.letter_of_guarantees
+        where id = $1
+        for update`,
+      [guaranteeId],
+    );
+    if (res.rowCount !== 1) {
+      throw new DomainError("NOT_FOUND", "Teminat mektubu bulunamadı.");
+    }
+    const row = res.rows[0];
+    if (!row.is_active) {
+      throw new DomainError("CONFLICT", "Bu teminat mektubu zaten iade edilmiş.");
+    }
+    const effDate =
+      returnedDate && /^\d{4}-\d{2}-\d{2}$/.test(returnedDate)
+        ? returnedDate
+        : new Date().toISOString().slice(0, 10);
+
+    const upd = await client.query(
+      `update public.letter_of_guarantees
+          set is_active = false,
+              returned_at = $2::date,
+              updated_at = now()
+        where id = $1`,
+      [guaranteeId, effDate],
+    );
+    if (upd.rowCount !== 1) {
+      throw new DomainError("CONFLICT", "Teminat mektubu iadesi güncellenemedi.");
+    }
+
+    const amtStr = round2(decimal(row.amount)).toFixed(2);
+    await postJournalEntryWithClient(
+      client,
+      {
+        entryDate: effDate,
+        sourceType: "facility_movement",
+        sourceId: row.id,
+        idempotencyKey: `lg_return:${row.id}`,
+        description: `İade Edilen Teminat Mektubu Nazım Kapanışı (${row.reference_no})`,
+        currency: row.currency,
+        lines: [
+          {
+            accountCode: "911",
+            debitNative: amtStr,
+            partyId: row.beneficiary_party_id,
+            memo: `Mektup iadesi: ${row.beneficiary_name}`,
+          },
+          {
+            accountCode: "910",
+            creditNative: amtStr,
+            partyId: row.beneficiary_party_id,
+            memo: `Nazım hesap kapanışı (${row.reference_no})`,
+          },
+        ],
+      },
+      actorId,
+    );
+
+    await audit(client, {
+      actor: actorId,
+      action: "return_letter_of_guarantee",
+      entityTable: "letter_of_guarantees",
+      entityId: guaranteeId,
+      before: { is_active: true },
+      after: { is_active: false, returned_at: effDate },
+    });
+
+    await client.query("commit");
+  } catch (e) {
+    await client.query("rollback");
+    throw e;
+  } finally {
+    client.release();
+  }
+}
+
+export interface FacilityAccrualRow {
+  id: string;
+  facilityId: string;
+  facilityName: string;
+  accrualMonth: string;
+  averageUtilizedBalance: number;
+  daysInPeriod: number;
+  annualRatePct: number;
+  interestAmount: number;
+  bsmvAmount: number;
+  kkdfAmount: number;
+  totalCharge: number;
+  currency: string;
+  isSettled: boolean;
+}
+
+export interface LetterOfGuaranteeRow {
+  id: string;
+  facilityId: string | null;
+  facilityName: string | null;
+  beneficiaryName: string;
+  guaranteeType: GuaranteeType;
+  referenceNo: string;
+  amount: number;
+  currency: string;
+  commissionRateAnnual: number;
+  quarterlyCommissionAmount: number;
+  issueDate: string;
+  expiryDate: string | null;
+  isActive: boolean;
+  returnedAt: string | null;
+}
+
+export async function loadFacilityAccrualsAndGuarantees(pool: Pick<Pool, "query">): Promise<{
+  accruals: FacilityAccrualRow[];
+  guarantees: LetterOfGuaranteeRow[];
+}> {
+  const [accRes, lgRes] = await Promise.all([
+    pool
+      .query(
+        `select a.id::text as id,
+                a.facility_id::text as facility_id,
+                cf.name as facility_name,
+                to_char(a.accrual_month, 'YYYY-MM') as accrual_month,
+                a.average_utilized_balance,
+                a.days_in_period,
+                a.annual_rate_pct,
+                a.interest_amount,
+                a.bsmv_amount,
+                a.kkdf_amount,
+                a.total_charge,
+                a.currency,
+                a.is_settled
+           from public.facility_interest_accruals a
+           join public.credit_facilities cf on cf.id = a.facility_id
+          order by a.accrual_month desc, a.created_at desc
+          limit 40`,
+      )
+      .catch(() => ({ rows: [] })),
+    pool
+      .query(
+        `select lg.id::text as id,
+                lg.facility_id::text as facility_id,
+                cf.name as facility_name,
+                lg.beneficiary_name,
+                lg.guarantee_type,
+                lg.reference_no,
+                lg.amount,
+                lg.currency,
+                lg.commission_rate_annual,
+                lg.quarterly_commission_amount,
+                to_char(lg.issue_date, 'YYYY-MM-DD') as issue_date,
+                to_char(lg.expiry_date, 'YYYY-MM-DD') as expiry_date,
+                lg.is_active,
+                to_char(lg.returned_at, 'YYYY-MM-DD') as returned_at
+           from public.letter_of_guarantees lg
+           left join public.credit_facilities cf on cf.id = lg.facility_id
+          order by lg.is_active desc, lg.expiry_date asc nulls last, lg.issue_date desc
+          limit 50`,
+      )
+      .catch(() => ({ rows: [] })),
+  ]);
+
+  return {
+    accruals: accRes.rows.map((r) => ({
+      id: r.id,
+      facilityId: r.facility_id,
+      facilityName: r.facility_name,
+      accrualMonth: r.accrual_month,
+      averageUtilizedBalance: moneyOrNull(r.average_utilized_balance) ?? 0,
+      daysInPeriod: Number(r.days_in_period ?? 30),
+      annualRatePct: rateOrNull(r.annual_rate_pct) ?? 0,
+      interestAmount: moneyOrNull(r.interest_amount) ?? 0,
+      bsmvAmount: moneyOrNull(r.bsmv_amount) ?? 0,
+      kkdfAmount: moneyOrNull(r.kkdf_amount) ?? 0,
+      totalCharge: moneyOrNull(r.total_charge) ?? 0,
+      currency: r.currency,
+      isSettled: Boolean(r.is_settled),
+    })),
+    guarantees: lgRes.rows.map((r) => ({
+      id: r.id,
+      facilityId: r.facility_id ?? null,
+      facilityName: r.facility_name ?? null,
+      beneficiaryName: r.beneficiary_name,
+      guaranteeType: (r.guarantee_type as GuaranteeType) ?? "kesin",
+      referenceNo: r.reference_no,
+      amount: moneyOrNull(r.amount) ?? 0,
+      currency: r.currency,
+      commissionRateAnnual: rateOrNull(r.commission_rate_annual) ?? 0.015,
+      quarterlyCommissionAmount: moneyOrNull(r.quarterly_commission_amount) ?? 0,
+      issueDate: r.issue_date,
+      expiryDate: r.expiry_date ?? null,
+      isActive: Boolean(r.is_active),
+      returnedAt: r.returned_at ?? null,
+    })),
+  };
 }

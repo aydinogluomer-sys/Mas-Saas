@@ -20,9 +20,21 @@ import {
   loadProductionParts,
 } from "@/lib/production/engine";
 import {
+  loadActivePartiesForProduction,
+  loadBomSummaries,
+  loadCustomerRateCards,
+  loadWorkCenters,
+  OPERATION_TYPE_LABEL,
+  WORK_CENTER_OPERATION_TYPES,
+  type WorkCenterOperationType,
+} from "@/lib/production/erp-lite";
+import {
+  addBomLineAction,
   recalculateProfitabilityAction,
+  toggleCustomerRateCardAction,
   upsertCatalogProductAction,
   upsertCostModelItemAction,
+  upsertCustomerRateCardAction,
   upsertOperationRatesAction,
   upsertProductionPartAction,
 } from "../actions";
@@ -40,18 +52,34 @@ export default async function CostsPage({
   const role = session?.role ?? "viewer";
   const canEditCosts = can(role, "cost_models", "insert");
   const canEditRates = can(role, "cost_models", "update");
+  const canEditRateCards = can(role, "customer_rate_cards", "insert");
+  const canEditBom = can(role, "bom_headers", "insert");
   const canEditParts = can(role, "production_parts", "insert");
   const canEditProducts = can(role, "products", "insert");
   const canRecalculate = can(role, "part_profitability_runs", "insert");
   const sp = searchParams ? await searchParams : {};
 
   const p = getPool();
-  const [models, bridge, parts, catalogProducts, capacityModels] = await Promise.all([
+  const [
+    models,
+    bridge,
+    parts,
+    catalogProducts,
+    capacityModels,
+    rateCardsOverview,
+    bomOverview,
+    workCentersOverview,
+    parties,
+  ] = await Promise.all([
     loadCostModels(p),
     loadActualCostBridge(p),
     loadProductionParts(p, 200),
     loadCatalogProducts(p, 200),
     loadCapacityModels(p),
+    loadCustomerRateCards(p),
+    loadBomSummaries(p),
+    loadWorkCenters(p),
+    loadActivePartiesForProduction(p),
   ]);
   const details = await Promise.all(
     models.map(async (m) => ({ m, lines: await loadCostBreakdown(p, m.id) })),
@@ -162,22 +190,22 @@ export default async function CostsPage({
             <>
               <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-4">
                 <KpiCard
+                  label="ABC Atölye Dönüşüm (720+730+D&A) TL/dk"
+                  value={fmtTlPerMin(bridge.abcShopFloorTlPerMin ?? bridge.bookBreakEvenTlPerMin)}
+                  tone="info"
+                  note={`Saf atölye: ${fmtTL(bridge.avgMonthlyShopFloor720_730Try)} + D&A ${fmtTL(bridge.avgMonthlyDepreciationDaTry)}`}
+                />
+                <KpiCard
                   label="Kitabi (Model) Başabaş TL/dk"
                   value={fmtTlPerMin(bridge.bookBreakEvenTlPerMin)}
                   note={`Baz senaryo: ${bridge.primaryScenario ?? "—"}`}
-                />
-                <KpiCard
-                  label="Fiili Nakit (7xx Amortisman Hariç) TL/dk"
-                  value={fmtTlPerMin(bridge.actualCashBreakEvenTlPerMin)}
-                  tone="info"
-                  note={`Aylık ort. ${fmtTL(bridge.avgMonthlyOperating7xxExclDaTry)} (710–770 nakit)`}
                 />
                 <KpiCard
                   label="Fiili Tam (7xx + Amortisman) TL/dk"
                   value={fmtTlPerMin(bridge.actualFullBreakEvenTlPerMin)}
                   tone={hasErosionAlert ? "warn" : "neutral"}
                   emphasize
-                  note={`Aylık ort. ${fmtTL(bridge.avgMonthlyFull7xxInclDaTry)} (D&A: ${fmtTL(bridge.avgMonthlyDepreciationDaTry)})`}
+                  note={`Aylık ort. ${fmtTL(bridge.avgMonthlyFull7xxInclDaTry)} (Nakit: ${fmtTlPerMin(bridge.actualCashBreakEvenTlPerMin)})`}
                 />
                 <KpiCard
                   label="Sapma (Δ TL/dk)"
@@ -194,6 +222,60 @@ export default async function CostsPage({
                 />
               </div>
 
+              <div
+                className="grid grid-cols-1 gap-2 rounded border p-3 text-xs sm:grid-cols-4"
+                style={{
+                  borderColor: "var(--line)",
+                  background: "var(--surface-2)",
+                  color: "var(--text-1)",
+                }}
+              >
+                <div>
+                  <span className="font-mono text-[10px] uppercase" style={{ color: "var(--text-3)" }}>
+                    1 · TDHP 710 Direkt Malzeme (BOM + Fire)
+                  </span>
+                  <div className="mt-0.5 font-mono text-sm font-semibold">
+                    {fmtTL(bridge.avgMonthlyDirectMaterial710Try)}/ay
+                  </div>
+                  <p className="text-[11px]" style={{ color: "var(--text-3)" }}>
+                    Birim BOM reçetesi ve TCMB kuru ile parçaya doğrudan yüklenir; tezgâh dakikasına bölünmez.
+                  </p>
+                </div>
+                <div>
+                  <span className="font-mono text-[10px] uppercase" style={{ color: "var(--text-3)" }}>
+                    2 · TDHP 720–730 İşçilik & GÜG (Atölye)
+                  </span>
+                  <div className="mt-0.5 font-mono text-sm font-semibold">
+                    {fmtTL(bridge.avgMonthlyShopFloor720_730Try)}/ay
+                  </div>
+                  <p className="text-[11px]" style={{ color: "var(--text-3)" }}>
+                    Torna, freze ve diğer operasyon dakikalarına ({fmtTlPerMin(bridge.abcShopFloorTlPerMin)}) dağıtılır.
+                  </p>
+                </div>
+                <div>
+                  <span className="font-mono text-[10px] uppercase" style={{ color: "var(--text-3)" }}>
+                    3 · TDHP 760–770 Dönem Gideri (OPEX)
+                  </span>
+                  <div className="mt-0.5 font-mono text-sm font-semibold">
+                    {fmtTL(bridge.avgMonthlyOpex760_770ExclDaTry)}/ay
+                  </div>
+                  <p className="text-[11px]" style={{ color: "var(--text-3)" }}>
+                    Pazarlama & Genel Yönetim faaliyet kâr köprüsünde izlenir; birim atölye maliyetini çarpıtmaz.
+                  </p>
+                </div>
+                <div>
+                  <span className="font-mono text-[10px] uppercase" style={{ color: "var(--text-3)" }}>
+                    4 · TDHP 780 Finansman Giderleri
+                  </span>
+                  <div className="mt-0.5 font-mono text-sm font-semibold" style={{ color: "var(--warn)" }}>
+                    {fmtTL(bridge.avgMonthlyFinancing780Try)}/ay
+                  </div>
+                  <p className="text-[11px]" style={{ color: "var(--text-3)" }}>
+                    Faiz, BSMV ve KKDF işletme kârı sonrası ayrı izlenir.
+                  </p>
+                </div>
+              </div>
+
               {bridge.models.length > 0 ? (
                 <TableShell>
                   <table className="w-full border-collapse text-left text-xs">
@@ -204,93 +286,100 @@ export default async function CostsPage({
                       >
                         <th className="py-2 pr-3">Model / Senaryo</th>
                         <th className="py-2 px-2 text-right">Etkin Dk</th>
+                        <th className="py-2 px-2 text-right">ABC 720-730 TL/dk</th>
                         <th className="py-2 px-2 text-right">Kitabi TL/dk</th>
-                        <th className="py-2 px-2 text-right">Fiili Nakit TL/dk</th>
                         <th className="py-2 px-2 text-right">Fiili Tam TL/dk</th>
                         <th className="py-2 px-2 text-right">Sapma (Δ TL/dk)</th>
-                        <th className="py-2 pl-2">Akon Tarife Kontrolü</th>
+                        <th className="py-2 pl-2">Müşteri Kontrat Tarife Kontrolü</th>
                       </tr>
                     </thead>
                     <tbody>
-                      {bridge.models.map((row) => (
-                        <tr
-                          key={row.modelId}
-                          className="border-b"
-                          style={{ borderColor: "var(--line-faint)", color: "var(--text-1)" }}
-                        >
-                          <td className="py-2 pr-3 font-mono">
-                            <span className="font-semibold">{row.modelName}</span>{" "}
-                            <span style={{ color: "var(--text-3)" }}>({row.scenario})</span>
-                          </td>
-                          <td className="py-2 px-2 text-right font-mono tabular-nums">
-                            {row.effectiveMinutes !== null
-                              ? row.effectiveMinutes.toLocaleString("tr-TR")
-                              : "—"}
-                          </td>
-                          <td className="py-2 px-2 text-right font-mono tabular-nums">
-                            {fmtTlPerMin(row.bookBreakEvenTlPerMin)}
-                          </td>
-                          <td className="py-2 px-2 text-right font-mono tabular-nums">
-                            {fmtTlPerMin(row.actualCashBreakEvenTlPerMin)}
-                          </td>
-                          <td className="py-2 px-2 text-right font-mono font-semibold tabular-nums">
-                            {fmtTlPerMin(row.actualFullBreakEvenTlPerMin)}
-                          </td>
-                          <td
-                            className="py-2 px-2 text-right font-mono tabular-nums"
-                            style={{
-                              color:
-                                row.rateDriftTlPerMin !== null && row.rateDriftTlPerMin > 0
-                                  ? "var(--neg)"
-                                  : row.rateDriftTlPerMin !== null && row.rateDriftTlPerMin < 0
-                                    ? "var(--pos)"
-                                    : "var(--text-3)",
-                            }}
+                      {bridge.models.map((row) => {
+                        const displayRates =
+                          row.rateCardComparisons && row.rateCardComparisons.length > 0
+                            ? row.rateCardComparisons
+                            : row.customerRates;
+                        return (
+                          <tr
+                            key={row.modelId}
+                            className="border-b"
+                            style={{ borderColor: "var(--line-faint)", color: "var(--text-1)" }}
                           >
-                            {fmtSignedTlPerMin(row.rateDriftTlPerMin)}
-                            {row.rateDriftPct !== null ? ` (${fmtSignedPct(row.rateDriftPct)})` : ""}
-                          </td>
-                          <td className="py-2 pl-2">
-                            <div className="flex flex-wrap items-center gap-1.5">
-                              {row.customerRates.map((cr) => {
-                                if (cr.priceTlPerMin === null) {
+                            <td className="py-2 pr-3 font-mono">
+                              <span className="font-semibold">{row.modelName}</span>{" "}
+                              <span style={{ color: "var(--text-3)" }}>({row.scenario})</span>
+                            </td>
+                            <td className="py-2 px-2 text-right font-mono tabular-nums">
+                              {row.effectiveMinutes !== null
+                                ? row.effectiveMinutes.toLocaleString("tr-TR")
+                                : "—"}
+                            </td>
+                            <td className="py-2 px-2 text-right font-mono tabular-nums" style={{ color: "var(--info)" }}>
+                              {fmtTlPerMin(row.abcShopFloorTlPerMin)}
+                            </td>
+                            <td className="py-2 px-2 text-right font-mono tabular-nums">
+                              {fmtTlPerMin(row.bookBreakEvenTlPerMin)}
+                            </td>
+                            <td className="py-2 px-2 text-right font-mono font-semibold tabular-nums">
+                              {fmtTlPerMin(row.actualFullBreakEvenTlPerMin)}
+                            </td>
+                            <td
+                              className="py-2 px-2 text-right font-mono tabular-nums"
+                              style={{
+                                color:
+                                  row.rateDriftTlPerMin !== null && row.rateDriftTlPerMin > 0
+                                    ? "var(--neg)"
+                                    : row.rateDriftTlPerMin !== null && row.rateDriftTlPerMin < 0
+                                      ? "var(--pos)"
+                                      : "var(--text-3)",
+                              }}
+                            >
+                              {fmtSignedTlPerMin(row.rateDriftTlPerMin)}
+                              {row.rateDriftPct !== null ? ` (${fmtSignedPct(row.rateDriftPct)})` : ""}
+                            </td>
+                            <td className="py-2 pl-2">
+                              <div className="flex flex-wrap items-center gap-1.5">
+                                {displayRates.map((cr, idx) => {
+                                  const key = `${cr.label}-${cr.operation}-${idx}`;
+                                  if (cr.priceTlPerMin === null) {
+                                    return (
+                                      <span
+                                        key={key}
+                                        className="font-mono text-[11px]"
+                                        style={{ color: "var(--text-3)" }}
+                                      >
+                                        {cr.label}: —
+                                      </span>
+                                    );
+                                  }
+                                  if (cr.hiddenMarginErosion) {
+                                    return (
+                                      <Badge key={key} tone="red">
+                                        {cr.label} {fmtTlPerMin(cr.priceTlPerMin)} · Gizli Erime (
+                                        {fmtSignedTlPerMin(cr.actualFullMarginTlPerMin)})
+                                      </Badge>
+                                    );
+                                  }
+                                  if (cr.actualFullLoss) {
+                                    return (
+                                      <Badge key={key} tone="amber">
+                                        {cr.label} {fmtTlPerMin(cr.priceTlPerMin)} · Zararına (
+                                        {fmtSignedTlPerMin(cr.actualFullMarginTlPerMin)})
+                                      </Badge>
+                                    );
+                                  }
                                   return (
-                                    <span
-                                      key={cr.operation}
-                                      className="font-mono text-[11px]"
-                                      style={{ color: "var(--text-3)" }}
-                                    >
-                                      {cr.label}: —
-                                    </span>
-                                  );
-                                }
-                                if (cr.hiddenMarginErosion) {
-                                  return (
-                                    <Badge key={cr.operation} tone="red">
-                                      {cr.label} {fmtTlPerMin(cr.priceTlPerMin)} · Gizli Erime (
+                                    <Badge key={key} tone="green">
+                                      {cr.label} {fmtTlPerMin(cr.priceTlPerMin)} · Pozitif (
                                       {fmtSignedTlPerMin(cr.actualFullMarginTlPerMin)})
                                     </Badge>
                                   );
-                                }
-                                if (cr.actualFullLoss) {
-                                  return (
-                                    <Badge key={cr.operation} tone="amber">
-                                      {cr.label} {fmtTlPerMin(cr.priceTlPerMin)} · Zararına (
-                                      {fmtSignedTlPerMin(cr.actualFullMarginTlPerMin)})
-                                    </Badge>
-                                  );
-                                }
-                                return (
-                                  <Badge key={cr.operation} tone="green">
-                                    {cr.label} {fmtTlPerMin(cr.priceTlPerMin)} · Pozitif (
-                                    {fmtSignedTlPerMin(cr.actualFullMarginTlPerMin)})
-                                  </Badge>
-                                );
-                              })}
-                            </div>
-                          </td>
-                        </tr>
-                      ))}
+                                })}
+                              </div>
+                            </td>
+                          </tr>
+                        );
+                      })}
                     </tbody>
                   </table>
                 </TableShell>
@@ -379,7 +468,7 @@ export default async function CostsPage({
                     color: "var(--text-3)",
                   }}
                 >
-                  Değerlendirilen {bridge.evaluatedPartCount} parça ve tanımlı Akon tarifelerinde kitabi kârdan fiili 7xx zararına dönen gizli marj erimesi saptanmadı.
+                  Değerlendirilen {bridge.evaluatedPartCount} parça ve tanımlı müşteri kontrat tarifelerinde kitabi kârdan fiili 7xx zararına dönen gizli marj erimesi saptanmadı.
                 </div>
               )}
             </>
@@ -546,7 +635,7 @@ export default async function CostsPage({
                     step="0.0001"
                     min="0"
                     defaultValue={primaryModel?.akonTorna ?? ""}
-                    placeholder="Müşteri (Akon) Torna TL/dk"
+                    placeholder="Varsayılan Kontrat Torna TL/dk"
                     className="rounded border px-2 py-1"
                     style={{ borderColor: "var(--line)", background: "var(--surface-1)", color: "var(--text-1)" }}
                   />
@@ -556,7 +645,7 @@ export default async function CostsPage({
                     step="0.0001"
                     min="0"
                     defaultValue={primaryModel?.akonFreze ?? ""}
-                    placeholder="Müşteri (Akon) Freze TL/dk"
+                    placeholder="Varsayılan Kontrat Freze TL/dk"
                     className="rounded border px-2 py-1"
                     style={{ borderColor: "var(--line)", background: "var(--surface-1)", color: "var(--text-1)" }}
                   />
@@ -635,10 +724,20 @@ export default async function CostsPage({
                     step="0.01"
                     min="0"
                     defaultValue={selectedPart?.unitSalePrice ?? ""}
-                    placeholder="Birim satış fiyatı (TL)"
+                    placeholder="Birim satış fiyatı"
                     className="rounded border px-2 py-1"
                     style={{ borderColor: "var(--line)", background: "var(--surface-1)", color: "var(--text-1)" }}
                   />
+                  <select
+                    name="currency"
+                    defaultValue={selectedPart?.currency ?? "TRY"}
+                    className="rounded border px-2 py-1"
+                    style={{ borderColor: "var(--line)", background: "var(--surface-1)", color: "var(--text-1)" }}
+                  >
+                    <option value="TRY">TRY (TL)</option>
+                    <option value="USD">USD (İhracat / Döviz)</option>
+                    <option value="EUR">EUR (İhracat / Döviz)</option>
+                  </select>
                   <input
                     name="tornaMinutes"
                     type="number"
@@ -665,7 +764,7 @@ export default async function CostsPage({
                     step="0.01"
                     min="0"
                     defaultValue={selectedPart?.otherOperationMinutes ?? ""}
-                    placeholder="Diğer op. dk / adet"
+                    placeholder="Diğer op. dk / adet (Taşlama/Kalite)"
                     className="rounded border px-2 py-1"
                     style={{ borderColor: "var(--line)", background: "var(--surface-1)", color: "var(--text-1)" }}
                   />
@@ -703,10 +802,293 @@ export default async function CostsPage({
       ) : null}
 
       <Panel
-        title="ÜRETİM PARÇALARI VE BİRİM MALİYET GİRDİLERİ"
-        subtitle="Parça başı torna/freze operasyon süreleri ve birim satış fiyatları"
-        right={<Badge tone="neutral">{parts.length} parça</Badge>}
+        title="ÇOKLU MÜŞTERİ & DÖVİZLİ TARİFE KARTLARI (CUSTOMER RATE CARDS)"
+        subtitle="Tek müşteri varsayımı olmadan müşteri/kontrat ve operasyon bazlı TRY, USD, EUR dakika tarifeleri"
+        right={
+          <div className="flex items-center gap-2">
+            <Badge tone="blue">{rateCardsOverview.activeCount} aktif tarife</Badge>
+            <Link
+              href="/production?tab=rates"
+              className="font-mono text-[11px] underline"
+              style={{ color: "var(--text-1)" }}
+            >
+              Tam Tarife Yönetimi →
+            </Link>
+          </div>
+        }
       >
+        <div className="space-y-3">
+          {canEditRateCards ? (
+            <details className="rounded border p-2.5" style={{ borderColor: "var(--line-faint)", background: "var(--surface-1)" }}>
+              <summary className="cursor-pointer font-mono text-xs font-semibold" style={{ color: "var(--text-1)" }}>
+                + Yeni müşteri kontrat dakika tarifesi (TRY / USD / EUR) ekle
+              </summary>
+              <form action={upsertCustomerRateCardAction} className="mt-2 grid grid-cols-1 gap-2 text-xs sm:grid-cols-5">
+                <input type="hidden" name="backTo" value="/production/costs" />
+                <select
+                  name="partyId"
+                  defaultValue=""
+                  className="rounded border px-2 py-1"
+                  style={{ borderColor: "var(--line)", background: "var(--surface-1)", color: "var(--text-1)" }}
+                >
+                  <option value="">Cari seçin (opsiyonel)</option>
+                  {parties.map((pa) => (
+                    <option key={pa.id} value={pa.id}>
+                      {pa.name}
+                    </option>
+                  ))}
+                </select>
+                <input
+                  name="customerLabel"
+                  required
+                  placeholder="Müşteri / Kontrat adı"
+                  className="rounded border px-2 py-1"
+                  style={{ borderColor: "var(--line)", background: "var(--surface-1)", color: "var(--text-1)" }}
+                />
+                <select
+                  name="operationType"
+                  defaultValue="torna"
+                  className="rounded border px-2 py-1"
+                  style={{ borderColor: "var(--line)", background: "var(--surface-1)", color: "var(--text-1)" }}
+                >
+                  {WORK_CENTER_OPERATION_TYPES.map((op) => (
+                    <option key={op} value={op}>
+                      {OPERATION_TYPE_LABEL[op]}
+                    </option>
+                  ))}
+                </select>
+                <div className="flex gap-1">
+                  <input
+                    name="ratePerMinute"
+                    type="number"
+                    step="0.0001"
+                    min="0.0001"
+                    required
+                    placeholder="Birim/dk"
+                    className="w-full rounded border px-2 py-1"
+                    style={{ borderColor: "var(--line)", background: "var(--surface-1)", color: "var(--text-1)" }}
+                  />
+                  <select
+                    name="currency"
+                    defaultValue="TRY"
+                    className="rounded border px-2 py-1"
+                    style={{ borderColor: "var(--line)", background: "var(--surface-1)", color: "var(--text-1)" }}
+                  >
+                    <option value="TRY">TRY</option>
+                    <option value="USD">USD</option>
+                    <option value="EUR">EUR</option>
+                  </select>
+                </div>
+                <button
+                  type="submit"
+                  className="rounded border px-2 py-1 font-medium"
+                  style={{
+                    borderColor: "var(--line)",
+                    background: "var(--surface-2)",
+                    color: "var(--text-1)",
+                  }}
+                >
+                  Tarife kartını kaydet
+                </button>
+              </form>
+            </details>
+          ) : null}
+
+          {rateCardsOverview.cards.length === 0 ? (
+            <EmptyState>
+              Henüz müşteri tarife kartı (`customer_rate_cards`) tanımlanmamış. Müşteri ve operasyon bazlı TRY/USD/EUR dakika satış tarifelerini buradan tanımlayabilirsiniz.
+            </EmptyState>
+          ) : (
+            <TableShell>
+              <table className="w-full border-collapse text-left text-xs">
+                <thead>
+                  <tr
+                    className="border-b font-mono text-[10px] uppercase"
+                    style={{ borderColor: "var(--line)", color: "var(--text-3)" }}
+                  >
+                    <th className="py-2 pr-2">Müşteri / Kontrat</th>
+                    <th className="py-2 px-2">Operasyon</th>
+                    <th className="py-2 px-2 text-right">Kontrat Tarifesi</th>
+                    <th className="py-2 px-2 text-right">TL Karşılığı (TCMB)</th>
+                    <th className="py-2 px-2">Geçerlilik</th>
+                    <th className="py-2 pl-2 text-right">Durum</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {rateCardsOverview.cards.map((rc) => (
+                    <tr
+                      key={rc.id}
+                      className="border-b"
+                      style={{ borderColor: "var(--line-faint)", color: "var(--text-1)" }}
+                    >
+                      <td className="py-1.5 pr-2 font-medium">{rc.displayCustomerName}</td>
+                      <td className="py-1.5 px-2">
+                        {OPERATION_TYPE_LABEL[rc.operationType as WorkCenterOperationType] ?? rc.operationType}
+                        {rc.workCenterCode ? ` (${rc.workCenterCode})` : ""}
+                      </td>
+                      <td className="py-1.5 px-2 text-right font-mono tabular-nums">
+                        {rc.ratePerMinute.toLocaleString("tr-TR", { minimumFractionDigits: 2, maximumFractionDigits: 4 })}{" "}
+                        {rc.currency}/dk
+                      </td>
+                      <td className="py-1.5 px-2 text-right font-mono font-semibold tabular-nums">
+                        {rc.ratePerMinuteTry != null ? fmtTlPerMin(rc.ratePerMinuteTry) : "Kur eksik"}
+                      </td>
+                      <td className="py-1.5 px-2 font-mono text-[11px]" style={{ color: "var(--text-3)" }}>
+                        {rc.validFrom}
+                        {rc.validTo ? ` → ${rc.validTo}` : " → Açık"}
+                      </td>
+                      <td className="py-1.5 pl-2 text-right">
+                        {canEditRateCards ? (
+                          <form action={toggleCustomerRateCardAction} className="inline">
+                            <input type="hidden" name="backTo" value="/production/costs" />
+                            <input type="hidden" name="id" value={rc.id} />
+                            <input type="hidden" name="isActive" value={rc.isActive ? "false" : "true"} />
+                            <button
+                              type="submit"
+                              className="rounded border px-2 py-0.5 font-mono text-[10px]"
+                              style={{
+                                borderColor: "var(--line)",
+                                background: "var(--surface-2)",
+                                color: rc.isActive ? "var(--pos)" : "var(--text-3)",
+                              }}
+                            >
+                              {rc.isActive ? "Aktif (Pasife Al)" : "Pasif (Aktifleştir)"}
+                            </button>
+                          </form>
+                        ) : (
+                          <Badge tone={rc.isActive ? "green" : "neutral"}>{rc.isActive ? "Aktif" : "Pasif"}</Badge>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </TableShell>
+          )}
+        </div>
+      </Panel>
+
+      <Panel
+        title="ÜRETİM PARÇALARI, DİĞER OPERASYON SÜRELERİ VE BOM (TDHP 710) MALİYET GİRDİLERİ"
+        subtitle="Parça başı torna, freze, diğer operasyon dakikaları, BOM 710 hammadde reçetesi ve dövizli birim satış fiyatları"
+        right={
+          <div className="flex items-center gap-2">
+            <Badge tone="neutral">{parts.length} parça</Badge>
+            <Badge tone="blue">{bomOverview.boms.length} BOM reçetesi</Badge>
+          </div>
+        }
+      >
+        {canEditBom && parts.length > 0 ? (
+          <details className="mb-3 rounded border p-2.5" style={{ borderColor: "var(--line-faint)", background: "var(--surface-1)" }}>
+            <summary className="cursor-pointer font-mono text-xs font-semibold" style={{ color: "var(--text-1)" }}>
+              + Parçaya hızlı BOM (TDHP 710 Direkt Malzeme & Fire %) satırı ekle
+            </summary>
+            <form action={addBomLineAction} className="mt-2 grid grid-cols-1 gap-2 text-xs sm:grid-cols-5">
+              <input type="hidden" name="backTo" value="/production/costs" />
+              <select
+                name="partId"
+                required
+                defaultValue={selectedPart?.id ?? ""}
+                className="rounded border px-2 py-1"
+                style={{ borderColor: "var(--line)", background: "var(--surface-1)", color: "var(--text-1)" }}
+              >
+                <option value="" disabled>
+                  Parça seçin
+                </option>
+                {parts.map((pt) => (
+                  <option key={pt.id} value={pt.id}>
+                    {pt.partCode ? `${pt.partCode} · ` : ""}{pt.partName}
+                  </option>
+                ))}
+              </select>
+              <input
+                name="materialLabel"
+                required
+                placeholder="Hammadde / çelik / döküm kalemi"
+                className="rounded border px-2 py-1"
+                style={{ borderColor: "var(--line)", background: "var(--surface-1)", color: "var(--text-1)" }}
+              />
+              <input
+                name="qtyPerUnit"
+                type="number"
+                step="0.0001"
+                min="0.0001"
+                required
+                placeholder="Birim sarf (örn. 2.5 kg)"
+                className="rounded border px-2 py-1"
+                style={{ borderColor: "var(--line)", background: "var(--surface-1)", color: "var(--text-1)" }}
+              />
+              <input
+                name="scrapPct"
+                type="number"
+                step="0.1"
+                min="0"
+                max="99"
+                defaultValue="5"
+                placeholder="Fire % (örn. 5)"
+                className="rounded border px-2 py-1"
+                style={{ borderColor: "var(--line)", background: "var(--surface-1)", color: "var(--text-1)" }}
+              />
+              <div className="flex gap-1">
+                <input
+                  name="unitCostOverride"
+                  type="number"
+                  step="0.01"
+                  min="0"
+                  required
+                  placeholder="Birim malzeme fiyatı"
+                  className="w-full rounded border px-2 py-1"
+                  style={{ borderColor: "var(--line)", background: "var(--surface-1)", color: "var(--text-1)" }}
+                />
+                <select
+                  name="currency"
+                  defaultValue="TRY"
+                  className="rounded border px-2 py-1"
+                  style={{ borderColor: "var(--line)", background: "var(--surface-1)", color: "var(--text-1)" }}
+                >
+                  <option value="TRY">TRY</option>
+                  <option value="USD">USD</option>
+                  <option value="EUR">EUR</option>
+                </select>
+              </div>
+              <select
+                name="workCenterId"
+                defaultValue=""
+                className="rounded border px-2 py-1 sm:col-span-2"
+                style={{ borderColor: "var(--line)", background: "var(--surface-1)", color: "var(--text-1)" }}
+              >
+                <option value="">İş istasyonu (opsiyonel)</option>
+                {workCentersOverview.items.map((wc) => (
+                  <option key={wc.id} value={wc.id}>
+                    {wc.code} · {wc.name}
+                  </option>
+                ))}
+              </select>
+              <input
+                name="subcontractCostPerUnit"
+                type="number"
+                step="0.01"
+                min="0"
+                defaultValue="0"
+                placeholder="Fason gider / adet (ops.)"
+                className="rounded border px-2 py-1"
+                style={{ borderColor: "var(--line)", background: "var(--surface-1)", color: "var(--text-1)" }}
+              />
+              <button
+                type="submit"
+                className="rounded border px-2 py-1 font-medium sm:col-span-2"
+                style={{
+                  borderColor: "var(--line)",
+                  background: "var(--surface-2)",
+                  color: "var(--text-1)",
+                }}
+              >
+                BOM 710 Satırını Ekle & Kârlılığı Güncelle
+              </button>
+            </form>
+          </details>
+        ) : null}
+
         {parts.length === 0 ? (
           <EmptyState>
             Henüz kayıtlı üretim parçası yok. Yukarıdaki formdan tekil parça ekleyebilir veya kapasite çalışma kitabını içe aktarabilirsiniz.
@@ -724,50 +1106,66 @@ export default async function CostsPage({
                   <th className="py-2 px-2 text-right">Adet</th>
                   <th className="py-2 px-2 text-right">Torna Dk</th>
                   <th className="py-2 px-2 text-right">Freze Dk</th>
+                  <th className="py-2 px-2 text-right">Diğer Op. Dk</th>
+                  <th className="py-2 px-2 text-right">BOM 710 / Adet</th>
                   <th className="py-2 px-2 text-right">Birim Satış</th>
                   <th className="py-2 px-2">Kaynak</th>
                   {canEditParts ? <th className="py-2 pl-2 text-right">İşlem</th> : null}
                 </tr>
               </thead>
               <tbody>
-                {parts.slice(0, 50).map((pt) => (
-                  <tr
-                    key={pt.id}
-                    className="border-b"
-                    style={{ borderColor: "var(--line-faint)", color: "var(--text-1)" }}
-                  >
-                    <td className="py-1.5 pr-2 font-mono">{pt.partCode ?? "—"}</td>
-                    <td className="py-1.5 px-2">{pt.partName}</td>
-                    <td className="py-1.5 px-2 text-right font-mono tabular-nums">
-                      {pt.quantity?.toLocaleString("tr-TR") ?? "—"}
-                    </td>
-                    <td className="py-1.5 px-2 text-right font-mono tabular-nums">
-                      {pt.tornaMinutes != null ? pt.tornaMinutes.toLocaleString("tr-TR") : "—"}
-                    </td>
-                    <td className="py-1.5 px-2 text-right font-mono tabular-nums">
-                      {pt.frezeMinutes != null ? pt.frezeMinutes.toLocaleString("tr-TR") : "—"}
-                    </td>
-                    <td className="py-1.5 px-2 text-right font-mono tabular-nums">
-                      {pt.unitSalePrice != null ? fmtTL(pt.unitSalePrice) : "—"}
-                    </td>
-                    <td className="py-1.5 px-2">
-                      <Badge tone={pt.isManual ? "blue" : "neutral"}>
-                        {pt.isManual ? "Manuel" : "Çalışma Kitabı"}
-                      </Badge>
-                    </td>
-                    {canEditParts ? (
-                      <td className="py-1.5 pl-2 text-right">
-                        <Link
-                          href={`/production/costs?editPart=${encodeURIComponent(pt.id)}`}
-                          className="font-mono text-[11px] underline"
-                          style={{ color: "var(--text-2)" }}
-                        >
-                          Düzenle
-                        </Link>
+                {parts.slice(0, 60).map((pt) => {
+                  const bom = bomOverview.byPartId[pt.id];
+                  const ccy = (pt.currency || "TRY").toUpperCase();
+                  return (
+                    <tr
+                      key={pt.id}
+                      className="border-b"
+                      style={{ borderColor: "var(--line-faint)", color: "var(--text-1)" }}
+                    >
+                      <td className="py-1.5 pr-2 font-mono">{pt.partCode ?? "—"}</td>
+                      <td className="py-1.5 px-2">{pt.partName}</td>
+                      <td className="py-1.5 px-2 text-right font-mono tabular-nums">
+                        {pt.quantity?.toLocaleString("tr-TR") ?? "—"}
                       </td>
-                    ) : null}
-                  </tr>
-                ))}
+                      <td className="py-1.5 px-2 text-right font-mono tabular-nums">
+                        {pt.tornaMinutes != null ? pt.tornaMinutes.toLocaleString("tr-TR") : "—"}
+                      </td>
+                      <td className="py-1.5 px-2 text-right font-mono tabular-nums">
+                        {pt.frezeMinutes != null ? pt.frezeMinutes.toLocaleString("tr-TR") : "—"}
+                      </td>
+                      <td className="py-1.5 px-2 text-right font-mono tabular-nums">
+                        {pt.otherOperationMinutes != null ? pt.otherOperationMinutes.toLocaleString("tr-TR") : "—"}
+                      </td>
+                      <td className="py-1.5 px-2 text-right font-mono tabular-nums">
+                        {bom?.totalBom710PerUnitTry != null ? fmtTL(bom.totalBom710PerUnitTry) : "—"}
+                      </td>
+                      <td className="py-1.5 px-2 text-right font-mono tabular-nums">
+                        {pt.unitSalePrice != null
+                          ? ccy === "TRY"
+                            ? fmtTL(pt.unitSalePrice)
+                            : `${pt.unitSalePrice.toLocaleString("tr-TR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${ccy}`
+                          : "—"}
+                      </td>
+                      <td className="py-1.5 px-2">
+                        <Badge tone={pt.isManual ? "blue" : "neutral"}>
+                          {pt.isManual ? "Manuel" : "Çalışma Kitabı"}
+                        </Badge>
+                      </td>
+                      {canEditParts ? (
+                        <td className="py-1.5 pl-2 text-right">
+                          <Link
+                            href={`/production/costs?editPart=${encodeURIComponent(pt.id)}`}
+                            className="font-mono text-[11px] underline"
+                            style={{ color: "var(--text-2)" }}
+                          >
+                            Düzenle
+                          </Link>
+                        </td>
+                      ) : null}
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </TableShell>

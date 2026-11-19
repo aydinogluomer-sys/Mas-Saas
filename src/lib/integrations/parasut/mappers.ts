@@ -758,7 +758,7 @@ async function resolveOrStageParty(
     }
   }
 
-  // 5) Unknown party -> stage in integration_staged_parties (NEVER insert into public.parties!)
+  // 5) Unknown party -> stage in integration_staged_parties (NEVER write directly to parties!)
   const extContactId =
     contact.externalId ??
     `name:${createHash("sha256").update(rawName || "unknown").digest("hex").slice(0, 16)}`;

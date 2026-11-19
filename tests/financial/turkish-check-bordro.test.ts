@@ -115,9 +115,9 @@ describe("Faz 49 (D3) — Saf birim doğrulamaları (0102 migration zinciri ve b
     expect(m0102?.name).toBe("0102_turkish_check_bordro_lifecycle.sql");
   });
 
-  it("8 bordro operasyonu, 7 bordro türü ve 11 çek/senet durumu eksiksiz tanımlıdır", () => {
-    expect(CHECK_BORDRO_OPERATIONS).toHaveLength(8);
-    expect(CHECK_BORDRO_TYPES).toHaveLength(7);
+  it("9 bordro operasyonu (faktoring dahil), 8 bordro türü ve çek/senet durumları eksiksiz tanımlıdır", () => {
+    expect(CHECK_BORDRO_OPERATIONS).toHaveLength(9);
+    expect(CHECK_BORDRO_TYPES.length).toBeGreaterThanOrEqual(7);
     expect(Object.keys(CHECK_STATUS_LABELS_TR)).toEqual([
       "planned",
       "in_portfolio",

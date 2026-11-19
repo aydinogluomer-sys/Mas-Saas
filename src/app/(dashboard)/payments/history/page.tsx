@@ -1,9 +1,10 @@
 import Link from "@/components/ui/app-link";
 import { Badge } from "@/components/ui/badge";
 import { PaginationBar, parsePageParam } from "@/components/ui/pagination-bar";
-import { fmtTL, Panel } from "@/components/ui/panel";
+import { Panel } from "@/components/ui/panel";
 import { PageHeader } from "@/components/ui/shell";
 import { getPool, withReadConnection } from "@/lib/db";
+import { formatMoney } from "@/lib/money-format";
 import { paymentHistoryCounts, paymentHistoryEvents } from "@/lib/radar/queries";
 import { requireRouteAccess } from "@/lib/authz/route-guard";
 
@@ -164,9 +165,9 @@ export default async function PaymentHistoryPage({
                       {row.previousStatus ?? "—"} → {row.nextStatus} · {row.occurredAt}
                     </p>
                   </div>
-                  <div className="text-right text-xs">
-                    <div>İşlem: {fmtTL(row.paidAmount)}</div>
-                    <div className="text-tone-3">Kalan: {fmtTL(row.remainingAmount)}</div>
+                  <div className="text-right font-mono text-xs tabular-nums">
+                    <div>İşlem: {formatMoney(row.paidAmount, row.currency)}</div>
+                    <div className="text-tone-3">Kalan: {formatMoney(row.remainingAmount, row.currency)}</div>
                   </div>
                   <Link
                     href={`/payments/calendar?instance=${row.instanceId}`}

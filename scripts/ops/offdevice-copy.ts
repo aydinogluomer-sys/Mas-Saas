@@ -17,14 +17,15 @@
 // Kullanım:
 //   MAS_OFFDEVICE_BACKUP_DIR=... pnpm exec tsx scripts/ops/offdevice-copy.ts [--dump <yol>] [--dry-run] [--prune]
 import {
-  closeSync, existsSync, fsyncSync, mkdirSync, openSync, renameSync, unlinkSync, writeFileSync,
+  closeSync, existsSync, fsyncSync, mkdirSync, openSync, readdirSync, renameSync, statSync, unlinkSync, writeFileSync,
 } from "node:fs";
+import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { createListVerifier, withPgRuntimeConfig } from "../db/backup-adapter";
 import { readEnvLocal } from "../db/app-url";
 import {
-  DEFAULT_RETENTION, classifyOffDeviceTarget, copyToTargetVerified, executePrune, formatBytes,
-  listDumps, newestDump, planPrune, pruneUnverifiedQuarantinedDumps, sha256OfFile,
+  DEFAULT_RETENTION, classifyOffDeviceTarget, copyToTargetVerified, detectBackupPathOverlap, executePrune, formatBytes,
+  listDumps, newestDump, normalizeBackupPath, planPrune, pruneUnverifiedQuarantinedDumps, sha256OfFile,
   type CopyVerifyResult,
   type OffDeviceCopyRecord,
   OFFDEVICE_RECORD_KIND,
@@ -50,8 +51,92 @@ function arg(flag: string): string | undefined {
   return i === -1 ? undefined : process.argv[i + 1];
 }
 
-/** Kopyanın kaydı: hedefteki dosyanın yanına, hedefte yazılır. */
+/**
+ * Preflight kapısı: `targetDir` kaynak dizinle aynıysa ya da iç içe çakışıyorsa HİÇBİR dosyaya
+ * dokunulmadan hata fırlatır.
+ */
+export function assertDistinctOffDeviceTarget(targetDir: string, sourceDir: string): void {
+  const overlap = detectBackupPathOverlap(targetDir, sourceDir);
+  if (overlap !== null) {
+    throw new Error(
+      `GÜVENLİK DURDURMASI: Off-device hedef dizini kaynak dizinle çakışıyor (${overlap}: '${targetDir}' <-> '${sourceDir}'). ` +
+        "Hiçbir dosyaya dokunulmadan durduruldu.",
+    );
+  }
+}
+
+/**
+ * Doğrulaması düşen hedef kopyayı, olası `.tmp-*` kısmi dosyaları ve geçersiz `.offdevice.json`
+ * kalıntısını temizler; kaynak dizine veya kaynak dosyaya ASLA dokunmaz.
+ */
+export function cleanupFailedOffDeviceCopy(
+  targetDir: string,
+  destPath: string | null,
+  sourcePath: string,
+): void {
+  const sourceDir = path.dirname(sourcePath);
+  if (detectBackupPathOverlap(targetDir, sourceDir) !== null) return;
+
+  if (destPath && normalizeBackupPath(destPath).canonical !== normalizeBackupPath(sourcePath).canonical) {
+    try {
+      if (existsSync(destPath)) unlinkSync(destPath);
+    } catch { /* zaten yok */ }
+    const staleRecord = `${destPath}.offdevice.json`;
+    try {
+      if (existsSync(staleRecord)) unlinkSync(staleRecord);
+    } catch { /* zaten yok */ }
+  }
+
+  if (existsSync(targetDir)) {
+    const baseName = path.basename(sourcePath);
+    try {
+      for (const name of readdirSync(targetDir)) {
+        if (name.startsWith(baseName) && name.includes(".tmp-")) {
+          try { unlinkSync(path.join(targetDir, name)); } catch { /* zaten yok */ }
+        }
+      }
+    } catch { /* dizin okunamadıysa yut */ }
+  }
+}
+
+/** Kopyanın kaydı: YALNIZ sha256 + boyut + pg_restore --list doğrulandıktan sonra hedefte yazılır. */
 export function writeOffDeviceRecord(result: CopyVerifyResult): string {
+  if (
+    result.sha256Match !== true ||
+    result.bytesMatch !== true ||
+    result.destRestoreListable !== true ||
+    (result.destTocEntryCount !== null && result.destTocEntryCount <= 0) ||
+    !result.sourceSha256 ||
+    result.destSha256 !== result.sourceSha256 ||
+    result.destBytes <= 0 ||
+    result.destBytes !== result.sourceBytes
+  ) {
+    if (result.destPath && result.sourcePath) {
+      cleanupFailedOffDeviceCopy(path.dirname(result.destPath), result.destPath, result.sourcePath);
+    }
+    throw new Error(
+      `Off-device doğrulaması başarısız (sha256Match=${String(result.sha256Match)}, ` +
+        `bytesMatch=${String(result.bytesMatch)}, destRestoreListable=${String(result.destRestoreListable)}) — ` +
+        ".offdevice.json makbuzu YAZILMADI.",
+    );
+  }
+
+  if (!existsSync(result.destPath)) {
+    throw new Error(
+      `Hedefteki kopya diskte bulunamadı (${result.destPath}) — .offdevice.json makbuzu YAZILMADI.`,
+    );
+  }
+
+  const diskBytes = statSync(result.destPath).size;
+  const diskSha256 = sha256OfFile(result.destPath);
+  if (diskBytes !== result.sourceBytes || diskSha256 !== result.sourceSha256) {
+    cleanupFailedOffDeviceCopy(path.dirname(result.destPath), result.destPath, result.sourcePath);
+    throw new Error(
+      `Hedefteki dosyanın diskteki SHA-256/boyutu kaynakla eşleşmiyor (beklenen ${result.sourceSha256.slice(0, 12)}…, ` +
+        `diskte ${diskSha256.slice(0, 12)}…) — bozuk kopya kaldırıldı, .offdevice.json YAZILMADI.`,
+    );
+  }
+
   const recordPath = `${result.destPath}.offdevice.json`;
   // TİP AÇIKÇA YAZILDI: alan adları backup-lib.ts'teki TEK tanımdan gelir. Bir alanı burada
   // yeniden adlandırmak artık derleme hatası verir — `fixture-cleanup.ts` ile sessizce
@@ -80,11 +165,16 @@ export function writeOffDeviceRecord(result: CopyVerifyResult): string {
   // aynı temp+fsync+rename yolunu kullanan küçük bir sarmalayıcı.
   const text = JSON.stringify(record, null, 2);
   const temp = `${recordPath}.tmp-${process.pid}-${Date.now()}`;
-  writeFileSync(temp, text, "utf8");
-  const fd = openSync(temp, "r+");
-  try { fsyncSync(fd); } finally { closeSync(fd); }
-  if (existsSync(recordPath)) unlinkSync(recordPath);
-  renameSync(temp, recordPath);
+  try {
+    writeFileSync(temp, text, "utf8");
+    const fd = openSync(temp, "r+");
+    try { fsyncSync(fd); } finally { closeSync(fd); }
+    if (existsSync(recordPath)) unlinkSync(recordPath);
+    renameSync(temp, recordPath);
+  } catch (err) {
+    try { if (existsSync(temp)) unlinkSync(temp); } catch { /* zaten yok */ }
+    throw err;
+  }
   return recordPath;
 }
 
@@ -103,6 +193,18 @@ async function main(): Promise<void> {
     process.exit(2);
   }
 
+  const classification = classifyOffDeviceTarget(targetDir, sourceDir);
+  if (
+    detectBackupPathOverlap(targetDir, sourceDir) !== null ||
+    detectBackupPathOverlap(classification.targetDir, sourceDir) !== null
+  ) {
+    console.error(
+      `GÜVENLİK DURDURMASI: Off-device hedef dizini kaynak dizinle çakışıyor ('${classification.targetDir}' <-> '${sourceDir}'). ` +
+        `Kanıt: ${classification.evidence}`,
+    );
+    process.exit(1);
+  }
+
   const explicit = arg("--dump");
   const dumpPath = explicit ?? newestDump(sourceDir, "")?.fullPath;
   if (!dumpPath || !existsSync(dumpPath)) {
@@ -110,7 +212,13 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
-  const classification = classifyOffDeviceTarget(targetDir, sourceDir);
+  if (detectBackupPathOverlap(classification.targetDir, path.dirname(dumpPath)) !== null) {
+    console.error(
+      `GÜVENLİK DURDURMASI: Off-device hedef dizini dump kaynak diziniyle çakışıyor ('${classification.targetDir}' <-> '${path.dirname(dumpPath)}').`,
+    );
+    process.exit(1);
+  }
+
   console.log(`Kaynak dump      : ${dumpPath}`);
   console.log(`Hedef dizin      : ${classification.targetDir}`);
   console.log(`Hedef sınıfı     : ${classification.kind}`);
@@ -123,11 +231,35 @@ async function main(): Promise<void> {
     return;
   }
 
-  if (!existsSync(classification.targetDir)) mkdirSync(classification.targetDir, { recursive: true });
-  const result = copyToTargetVerified(dumpPath, classification.targetDir, {
-    verifyListable: createListVerifier(pgToolEnv()),
-    sourceDir,
-  });
+  let result: CopyVerifyResult;
+  try {
+    if (process.platform !== "win32" && /^[A-Za-z]:([\\/]|$)/.test(classification.targetDir)) {
+      throw Object.assign(
+        new Error(`ENOENT: no such file or directory, mkdir '${classification.targetDir}'`),
+        { code: "ENOENT", syscall: "mkdir", path: classification.targetDir },
+      );
+    }
+    if (!existsSync(classification.targetDir)) mkdirSync(classification.targetDir, { recursive: true });
+    result = copyToTargetVerified(dumpPath, classification.targetDir, {
+      verifyListable: createListVerifier(pgToolEnv()),
+      sourceDir,
+    });
+  } catch (err) {
+    cleanupFailedOffDeviceCopy(classification.targetDir, null, dumpPath);
+    console.error(err instanceof Error ? err.message : String(err));
+    process.exit(1);
+  }
+
+  if (result.sha256Match !== true || result.bytesMatch !== true || result.destRestoreListable !== true) {
+    cleanupFailedOffDeviceCopy(classification.targetDir, result.destPath, dumpPath);
+    console.error(
+      `Off-device doğrulaması BAŞARISIZ (sha256Match=${String(result.sha256Match)}, ` +
+        `bytesMatch=${String(result.bytesMatch)}, destRestoreListable=${String(result.destRestoreListable)}) — ` +
+        ".offdevice.json makbuzu yazılmadı.",
+    );
+    process.exit(1);
+  }
+
   const recordPath = writeOffDeviceRecord(result);
 
   if (process.argv.includes("--prune")) {
@@ -150,8 +282,6 @@ async function main(): Promise<void> {
   console.log(
     `OFF_DEVICE PHYSICAL TARGET = ${classification.offDeviceSatisfied ? "OK" : "BLOCKED — ayrı bir aygıt kanıtlanamadı"}`,
   );
-
-  if (!result.sha256Match || !result.bytesMatch) process.exit(1);
 }
 
 const isDirectRun = (() => {

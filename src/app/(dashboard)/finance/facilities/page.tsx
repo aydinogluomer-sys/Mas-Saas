@@ -14,6 +14,9 @@ import {
   FACILITY_STATUS_LABEL,
   FACILITY_TYPES,
   FACILITY_TYPE_LABEL,
+  GUARANTEE_TYPES,
+  GUARANTEE_TYPE_LABELS,
+  loadFacilityAccrualsAndGuarantees,
   type CollateralType,
   type FacilityStatus,
   type FacilityType,
@@ -21,9 +24,12 @@ import {
 import { formatMoney } from "@/lib/money-format";
 import { isMissingSchemaError, loadCovenantAndDscrRadar } from "@/lib/financing/covenants-and-dscr";
 import {
+  accrueFacilityInterestAction,
   addCollateralAction,
   createFacilityAction,
+  createLetterOfGuaranteeAction,
   recordFacilityMovementAction,
+  returnLetterOfGuaranteeAction,
   upsertCovenantAction,
 } from "./actions";
 
@@ -124,6 +130,15 @@ interface IdNameRow {
   name: string;
 }
 
+interface CashAccountRow {
+  id: string;
+  name: string;
+  currency: string;
+  account_type: string;
+}
+
+const fieldCls = "field-control px-2.5 py-1.5 text-xs";
+
 export default async function FacilitiesPage({
   searchParams,
 }: {
@@ -135,6 +150,7 @@ export default async function FacilitiesPage({
   const session = await getRequestUser();
   const canWrite = session ? can(session.role, "credit_facilities", "insert") : false;
   const todayIso = new Date().toISOString().slice(0, 10);
+  const currentMonthIso = todayIso.slice(0, 7);
 
   const pool = getPool();
   const safeQuery = <R extends QueryResultRow>(sql: string): Promise<{ rows: R[]; rowCount: number }> =>
@@ -146,7 +162,18 @@ export default async function FacilitiesPage({
       },
     );
 
-  const [facilities, ladder, collateral, covenants, movements, lenders, loans, dscrRadar] = await Promise.all([
+  const [
+    facilities,
+    ladder,
+    collateral,
+    covenants,
+    movements,
+    lenders,
+    loans,
+    cashAccounts,
+    dscrRadar,
+    accrualsAndGuarantees,
+  ] = await Promise.all([
     pool
       .query<FacilityUtilizationRow>(
         `select facility_id, facility_name, facility_type, currency, status, lender_name,
@@ -223,9 +250,17 @@ export default async function FacilitiesPage({
     safeQuery<IdNameRow>(
       `select id, name from public.loans where archived_at is null and status = 'active' order by name limit 100`,
     ),
+    safeQuery<CashAccountRow>(
+      `select id::text as id, name, currency, account_type
+         from public.cash_accounts
+        where is_active = true
+        order by name asc`,
+    ),
     loadCovenantAndDscrRadar(pool, { asOfDate: todayIso, currency: "TRY" }),
+    loadFacilityAccrualsAndGuarantees(pool),
   ]);
 
+  const { accruals, guarantees } = accrualsAndGuarantees;
   const active = facilities.rows.filter((f) => f.status === "active");
   const activeTry = active.filter((f) => isReportingCurrency(f.currency));
   const foreignActive = active.length - activeTry.length;
@@ -234,6 +269,7 @@ export default async function FacilitiesPage({
   const totalAvailable = activeTry.reduce((s, f) => s + Number(f.available_amount ?? 0), 0);
   const mismatchedDrawdowns = facilities.rows.reduce((s, f) => s + Number(f.foreign_drawdown_count ?? 0), 0);
   const breached = covenants.rows.filter((c) => c.last_test_result === "breached");
+  const activeGuarantees = guarantees.filter((g) => g.isActive);
   const expiringSoon = facilities.rows.filter(
     (f) =>
       f.days_to_expiry != null &&
@@ -253,11 +289,16 @@ export default async function FacilitiesPage({
     })),
   ];
 
+  const detailsBoxStyle = {
+    borderColor: "var(--line)",
+    background: "var(--surface-2)",
+  };
+
   return (
-    <>
+    <div className="space-y-5">
       <PageHeader
-        title="Kredi Limitleri"
-        subtitle="Rotatif limitler, çekimler/geri ödemeler, teminatlar ve kovenantlar"
+        title="Kredi Limitleri, BCH Adat & Teminat Mektupları"
+        subtitle="Rotatif/BCH limitleri, 102 ↔ 300 çekiş/geri ödemeler, günlük adat faiz tahakkuku (780/300), 910/911 nazım teminat mektupları ve kovenantlar"
         meta={
           <Badge tone={breached.length > 0 ? "red" : "green"} dot>
             {breached.length > 0 ? `${breached.length} kovenant ihlali` : "kovenant ihlali yok"}
@@ -266,20 +307,36 @@ export default async function FacilitiesPage({
       />
 
       {sp.error ? (
-        <div className="rounded border border-red-800 bg-red-950/60 px-3 py-2 text-xs text-red-200">{sp.error}</div>
+        <div
+          className="rounded border px-3 py-2 text-xs"
+          style={{
+            borderColor: "color-mix(in oklab, var(--neg) 35%, var(--line))",
+            background: "var(--neg-soft)",
+            color: "var(--neg)",
+          }}
+        >
+          {sp.error}
+        </div>
       ) : null}
       {sp.result ? (
-        <div className="rounded border border-emerald-800 bg-emerald-950/50 px-3 py-2 text-xs text-emerald-200">
+        <div
+          className="rounded border px-3 py-2 text-xs"
+          style={{
+            borderColor: "color-mix(in oklab, var(--pos) 35%, var(--line))",
+            background: "var(--pos-soft)",
+            color: "var(--pos)",
+          }}
+        >
           İşlem tamamlandı: {sp.result}
         </div>
       ) : null}
 
-      <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+      <div className="grid grid-cols-2 gap-2 sm:grid-cols-5">
         <KeyStat
           label="Toplam limit (aktif, TRY)"
           value={fmtTL(totalLimit)}
           tone="info"
-          sub={foreignActive > 0 ? `${foreignActive} limit TRY-dışı — toplamda yok` : undefined}
+          sub={foreignActive > 0 ? `${foreignActive} limit TRY-dışı — tabloda ayrı dövizli` : undefined}
         />
         <KeyStat
           label="Kullanılan"
@@ -287,11 +344,17 @@ export default async function FacilitiesPage({
           tone={totalDrawn > 0 ? "warn" : "neutral"}
           sub={
             mismatchedDrawdowns > 0
-              ? `${mismatchedDrawdowns} çekiş limitin para biriminden farklı — kullanımda yok`
+              ? `${mismatchedDrawdowns} çekiş limitin para biriminden farklı`
               : undefined
           }
         />
         <KeyStat label="Kullanılabilir" value={fmtTL(totalAvailable)} tone="pos" />
+        <KeyStat
+          label="Aktif Teminat Mektubu"
+          value={activeGuarantees.length}
+          tone="info"
+          sub="910 / 911 nazım hesap"
+        />
         <KeyStat
           label="90 günde vadesi dolan"
           value={expiringSoon.length}
@@ -301,7 +364,7 @@ export default async function FacilitiesPage({
 
       <Panel
         title="NAKİT DSCR & CFADS KÖPRÜSÜ VE KOVENANT ERKEN UYARI RADARI"
-        subtitle="DSCR = CFADS / (Anapara + Faiz + BSMV + KKDF) · %10 erken uyarı tamponu · Net Borç / Yönetim EBITDA (Faz 52)"
+        subtitle="DSCR = CFADS / (Anapara + Faiz + BSMV + KKDF) · %10 erken uyarı tamponu · Net Borç / Yönetim EBITDA"
         right={
           <Badge
             tone={dscrRadar.breachedCount > 0 ? "red" : dscrRadar.warningCount > 0 ? "amber" : "green"}
@@ -318,7 +381,11 @@ export default async function FacilitiesPage({
         <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
           <KeyStat
             label="Son 3 Ay Nakit DSCR"
-            value={dscrRadar.dscrWindows.trailing3m.dscr == null ? "—" : `${dscrRadar.dscrWindows.trailing3m.dscr.toFixed(2)}x`}
+            value={
+              dscrRadar.dscrWindows.trailing3m.dscr == null
+                ? "—"
+                : `${dscrRadar.dscrWindows.trailing3m.dscr.toFixed(2)}x`
+            }
             sub={`CFADS: ${fmtTL(dscrRadar.dscrWindows.trailing3m.cfads)} · Borç Servisi: ${fmtTL(dscrRadar.dscrWindows.trailing3m.totalDebtService)}`}
             tone={
               dscrRadar.dscrWindows.trailing3m.dscr == null
@@ -330,7 +397,11 @@ export default async function FacilitiesPage({
           />
           <KeyStat
             label="Gelecek 3 Ay Nakit DSCR"
-            value={dscrRadar.dscrWindows.forward3m.dscr == null ? "—" : `${dscrRadar.dscrWindows.forward3m.dscr.toFixed(2)}x`}
+            value={
+              dscrRadar.dscrWindows.forward3m.dscr == null
+                ? "—"
+                : `${dscrRadar.dscrWindows.forward3m.dscr.toFixed(2)}x`
+            }
             sub={`CFADS: ${fmtTL(dscrRadar.dscrWindows.forward3m.cfads)} · Borç Servisi: ${fmtTL(dscrRadar.dscrWindows.forward3m.totalDebtService)}`}
             tone={
               dscrRadar.dscrWindows.forward3m.dscr == null
@@ -342,7 +413,11 @@ export default async function FacilitiesPage({
           />
           <KeyStat
             label="Gelecek 12 Ay Nakit DSCR"
-            value={dscrRadar.dscrWindows.forward12m.dscr == null ? "—" : `${dscrRadar.dscrWindows.forward12m.dscr.toFixed(2)}x`}
+            value={
+              dscrRadar.dscrWindows.forward12m.dscr == null
+                ? "—"
+                : `${dscrRadar.dscrWindows.forward12m.dscr.toFixed(2)}x`
+            }
             sub={`CFADS: ${fmtTL(dscrRadar.dscrWindows.forward12m.cfads)} · Borç Servisi: ${fmtTL(dscrRadar.dscrWindows.forward12m.totalDebtService)}`}
             tone={
               dscrRadar.dscrWindows.forward12m.dscr == null
@@ -369,12 +444,12 @@ export default async function FacilitiesPage({
 
       {canWrite ? (
         <Panel
-          title="LİMİT, HAREKET, TEMİNAT VE KOVENANT GİRİŞİ"
-          subtitle="kullanım ve geri ödemeler drawn_amount değerini atomik ve limit-aşımı korumalı günceller"
+          title="LİMİT, BANKA KULLANIMI (102↔300), BCH ADAT, TEMİNAT MEKTUBU VE KOVENANT İŞLEMLERİ"
+          subtitle="Kullanım/geri ödemeler drawn_amount değerini atomik günceller; banka hesabı seçildiğinde 102 ↔ 300 yevmiye fişi ve banka hareketi üretir."
         >
           <div className="grid gap-3 lg:grid-cols-2">
-            <details className="rounded border border-neutral-800 bg-neutral-950/50 p-3" open={facilities.rows.length === 0}>
-              <summary className="cursor-pointer text-xs font-medium text-neutral-200">
+            <details className="rounded border p-3" style={detailsBoxStyle} open={facilities.rows.length === 0}>
+              <summary className="cursor-pointer text-xs font-semibold text-tone-1">
                 + Yeni Kredi Limiti Tanımla
               </summary>
               <form action={createFacilityAction} className="mt-3 grid grid-cols-2 gap-2 text-xs">
@@ -382,17 +457,21 @@ export default async function FacilitiesPage({
                   name="name"
                   required
                   placeholder="Limit adı (ör. Garanti BBVA Rotatif BCH)"
-                  className="col-span-2 rounded border border-neutral-800 bg-neutral-900 px-2 py-1.5"
+                  className={`col-span-2 ${fieldCls}`}
                 />
-                <select name="facilityType" className="rounded border border-neutral-800 bg-neutral-900 px-2 py-1.5">
+                <select name="facilityType" className={fieldCls}>
                   {FACILITY_TYPES.map((t) => (
-                    <option key={t} value={t}>{FACILITY_TYPE_LABEL[t]}</option>
+                    <option key={t} value={t}>
+                      {FACILITY_TYPE_LABEL[t]}
+                    </option>
                   ))}
                 </select>
-                <select name="lenderPartyId" className="rounded border border-neutral-800 bg-neutral-900 px-2 py-1.5">
+                <select name="lenderPartyId" className={fieldCls}>
                   <option value="">Banka / Finansör seç (opsiyonel)</option>
                   {lenders.rows.map((p) => (
-                    <option key={p.id} value={p.id}>{p.name}</option>
+                    <option key={p.id} value={p.id}>
+                      {p.name}
+                    </option>
                   ))}
                 </select>
                 <input
@@ -402,9 +481,9 @@ export default async function FacilitiesPage({
                   min="0"
                   required
                   placeholder="Toplam kredi limiti"
-                  className="rounded border border-neutral-800 bg-neutral-900 px-2 py-1.5"
+                  className={`${fieldCls} font-mono`}
                 />
-                <select name="currency" className="rounded border border-neutral-800 bg-neutral-900 px-2 py-1.5">
+                <select name="currency" className={fieldCls}>
                   <option value="TRY">TRY</option>
                   <option value="USD">USD</option>
                   <option value="EUR">EUR</option>
@@ -416,38 +495,30 @@ export default async function FacilitiesPage({
                   step="0.0001"
                   min="0"
                   placeholder="Yıllık faiz oranı % (opsiyonel)"
-                  className="rounded border border-neutral-800 bg-neutral-900 px-2 py-1.5"
+                  className={`${fieldCls} font-mono`}
                 />
-                <input
-                  name="expiryDate"
-                  type="date"
-                  placeholder="Vade bitiş tarihi"
-                  className="rounded border border-neutral-800 bg-neutral-900 px-2 py-1.5"
-                />
-                <button className="col-span-2 rounded bg-sky-700 px-3 py-1.5 font-medium text-white">
+                <input name="expiryDate" type="date" placeholder="Vade bitiş tarihi" className={fieldCls} />
+                <button type="submit" className="button-accent col-span-2 px-3 py-1.5 text-xs font-medium">
                   Kredi limitini kaydet
                 </button>
               </form>
             </details>
 
             {facilities.rows.length > 0 ? (
-              <details className="rounded border border-neutral-800 bg-neutral-950/50 p-3">
-                <summary className="cursor-pointer text-xs font-medium text-neutral-200">
-                  + Kullanım (Drawdown) / Geri Ödeme / Limit Revizyonu İşle
+              <details className="rounded border p-3" style={detailsBoxStyle}>
+                <summary className="cursor-pointer text-xs font-semibold text-tone-1">
+                  + Kullanım (Drawdown 102/300) / Geri Ödeme (300/102) / Limit Revizyonu
                 </summary>
                 <form action={recordFacilityMovementAction} className="mt-3 grid grid-cols-2 gap-2 text-xs">
-                  <select
-                    name="facilityId"
-                    required
-                    className="col-span-2 rounded border border-neutral-800 bg-neutral-900 px-2 py-1.5"
-                  >
+                  <select name="facilityId" required className={`col-span-2 ${fieldCls}`}>
                     {facilities.rows.map((f) => (
                       <option key={f.facility_id} value={f.facility_id}>
-                        {f.facility_name} ({formatMoney(f.drawn_amount, f.currency)} / {formatMoney(f.limit_amount, f.currency)})
+                        {f.facility_name} ({formatMoney(f.drawn_amount, f.currency)} /{" "}
+                        {formatMoney(f.limit_amount, f.currency)})
                       </option>
                     ))}
                   </select>
-                  <select name="movementType" className="rounded border border-neutral-800 bg-neutral-900 px-2 py-1.5">
+                  <select name="movementType" className={fieldCls}>
                     <option value="drawdown">Kullanım / Çekiş (drawdown)</option>
                     <option value="repayment">Geri Ödeme (repayment)</option>
                     <option value="limit_revision">Limit Revizyonu (limit_revision)</option>
@@ -457,7 +528,7 @@ export default async function FacilitiesPage({
                     type="date"
                     defaultValue={todayIso}
                     required
-                    className="rounded border border-neutral-800 bg-neutral-900 px-2 py-1.5"
+                    className={fieldCls}
                   />
                   <input
                     name="amount"
@@ -466,47 +537,198 @@ export default async function FacilitiesPage({
                     min="0.01"
                     required
                     placeholder="Tutar"
-                    className="rounded border border-neutral-800 bg-neutral-900 px-2 py-1.5"
+                    className={`${fieldCls} font-mono`}
                   />
-                  <select name="currency" className="rounded border border-neutral-800 bg-neutral-900 px-2 py-1.5">
+                  <select name="currency" className={fieldCls}>
                     <option value="TRY">TRY</option>
                     <option value="USD">USD</option>
                     <option value="EUR">EUR</option>
                     <option value="GBP">GBP</option>
                   </select>
+                  <select name="cashAccountId" defaultValue="" className={`col-span-2 ${fieldCls}`}>
+                    <option value="">— Banka hesabı seç (seçilirse 102 ↔ 300 fişi + banka hareketi üretir) —</option>
+                    {cashAccounts.rows.map((ca) => (
+                      <option key={ca.id} value={ca.id}>
+                        {ca.name} · {ca.currency} ({ca.account_type})
+                      </option>
+                    ))}
+                  </select>
                   <input
                     name="notes"
                     placeholder="Dekont / açıklama (opsiyonel)"
-                    className="col-span-2 rounded border border-neutral-800 bg-neutral-900 px-2 py-1.5"
+                    className={`col-span-2 ${fieldCls}`}
                   />
-                  <button className="col-span-2 rounded bg-emerald-700 px-3 py-1.5 font-medium text-white">
+                  <button type="submit" className="button-accent col-span-2 px-3 py-1.5 text-xs font-medium">
                     Hareketi kaydet
                   </button>
                 </form>
               </details>
             ) : null}
 
+            {facilities.rows.length > 0 ? (
+              <details className="rounded border p-3" style={detailsBoxStyle}>
+                <summary className="cursor-pointer text-xs font-semibold text-tone-1">
+                  + BCH / Rotatif Kredi Günlük Adat Faiz & BSMV Tahakkuku (780 / 300)
+                </summary>
+                <form action={accrueFacilityInterestAction} className="mt-3 grid grid-cols-2 gap-2 text-xs">
+                  <select name="facilityId" required className={`col-span-2 ${fieldCls}`}>
+                    {facilities.rows.map((f) => (
+                      <option key={f.facility_id} value={f.facility_id}>
+                        {f.facility_name} ({f.currency})
+                      </option>
+                    ))}
+                  </select>
+                  <input
+                    name="accrualMonth"
+                    type="month"
+                    defaultValue={currentMonthIso}
+                    required
+                    className={fieldCls}
+                  />
+                  <input
+                    name="daysInPeriod"
+                    type="number"
+                    min="1"
+                    max="31"
+                    defaultValue="30"
+                    required
+                    placeholder="Gün sayısı (ör. 30)"
+                    className={`${fieldCls} font-mono`}
+                  />
+                  <input
+                    name="averageUtilizedBalance"
+                    type="number"
+                    step="0.01"
+                    min="0.01"
+                    required
+                    placeholder="Ortalama kullanılan bakiye"
+                    className={`${fieldCls} font-mono`}
+                  />
+                  <input
+                    name="annualRatePct"
+                    type="number"
+                    step="0.01"
+                    min="0"
+                    required
+                    defaultValue="52.00"
+                    placeholder="Yıllık faiz %"
+                    className={`${fieldCls} font-mono`}
+                  />
+                  <input
+                    name="bsmvRate"
+                    type="number"
+                    step="0.005"
+                    min="0"
+                    defaultValue="0.05"
+                    placeholder="BSMV oranı (0.05)"
+                    className={`${fieldCls} font-mono`}
+                  />
+                  <input
+                    name="kkdfRate"
+                    type="number"
+                    step="0.005"
+                    min="0"
+                    defaultValue="0"
+                    placeholder="KKDF oranı (0)"
+                    className={`${fieldCls} font-mono`}
+                  />
+                  <button type="submit" className="button-accent col-span-2 px-3 py-1.5 text-xs font-medium">
+                    Adat Faiz & BSMV Tahakkuk Fişi Üret (780 / 300)
+                  </button>
+                </form>
+              </details>
+            ) : null}
+
+            <details className="rounded border p-3" style={detailsBoxStyle}>
+              <summary className="cursor-pointer text-xs font-semibold text-tone-1">
+                + Verilen Teminat Mektubu Kaydet (910 / 911 Nazım & Çeyreklik Komisyon)
+              </summary>
+              <form action={createLetterOfGuaranteeAction} className="mt-3 grid grid-cols-2 gap-2 text-xs">
+                <select name="facilityId" defaultValue="" className={fieldCls}>
+                  <option value="">— Bağlı gayrinakdi kredi limiti (opsiyonel) —</option>
+                  {facilities.rows.map((f) => (
+                    <option key={f.facility_id} value={f.facility_id}>
+                      {f.facility_name} ({f.currency})
+                    </option>
+                  ))}
+                </select>
+                <select name="guaranteeType" defaultValue="kesin" className={fieldCls}>
+                  {GUARANTEE_TYPES.map((gt) => (
+                    <option key={gt} value={gt}>
+                      {GUARANTEE_TYPE_LABELS[gt]}
+                    </option>
+                  ))}
+                </select>
+                <input
+                  name="beneficiaryName"
+                  required
+                  placeholder="Muhatap kurum / şirket (ör. TEDAŞ / BOTAŞ)"
+                  className={fieldCls}
+                />
+                <input
+                  name="referenceNo"
+                  required
+                  placeholder="Mektup referans no (ör. TM-2026-1094)"
+                  className={`${fieldCls} font-mono`}
+                />
+                <input
+                  name="amount"
+                  type="number"
+                  step="0.01"
+                  min="0.01"
+                  required
+                  placeholder="Mektup tutarı"
+                  className={`${fieldCls} font-mono`}
+                />
+                <select name="currency" defaultValue="TRY" className={fieldCls}>
+                  <option value="TRY">TRY</option>
+                  <option value="USD">USD</option>
+                  <option value="EUR">EUR</option>
+                  <option value="GBP">GBP</option>
+                </select>
+                <input
+                  name="commissionRateAnnual"
+                  type="number"
+                  step="0.001"
+                  min="0"
+                  defaultValue="0.015"
+                  placeholder="Yıllık komisyon (ör. 0.015 = %1,5)"
+                  className={`${fieldCls} font-mono`}
+                />
+                <input name="issueDate" type="date" defaultValue={todayIso} required className={fieldCls} />
+                <input
+                  name="expiryDate"
+                  type="date"
+                  placeholder="Vade tarihi (süresiz ise boş)"
+                  className={`col-span-2 ${fieldCls}`}
+                />
+                <button type="submit" className="button-accent col-span-2 px-3 py-1.5 text-xs font-medium">
+                  Teminat Mektubunu ve 910/911 Nazım Fişini Kaydet
+                </button>
+              </form>
+            </details>
+
             {subjectOptions.length > 0 ? (
-              <details className="rounded border border-neutral-800 bg-neutral-950/50 p-3">
-                <summary className="cursor-pointer text-xs font-medium text-neutral-200">
+              <details className="rounded border p-3" style={detailsBoxStyle}>
+                <summary className="cursor-pointer text-xs font-semibold text-tone-1">
                   + Teminat Ekle (İpotek / Rehin / Kefalet / Blokaj)
                 </summary>
                 <form action={addCollateralAction} className="mt-3 grid grid-cols-2 gap-2 text-xs">
-                  <select
-                    name="subject"
-                    required
-                    className="col-span-2 rounded border border-neutral-800 bg-neutral-900 px-2 py-1.5"
-                  >
+                  <select name="subject" required className={`col-span-2 ${fieldCls}`}>
                     {subjectOptions.map((s) => (
-                      <option key={s.value} value={s.value}>{s.label}</option>
+                      <option key={s.value} value={s.value}>
+                        {s.label}
+                      </option>
                     ))}
                   </select>
-                  <select name="collateralType" className="rounded border border-neutral-800 bg-neutral-900 px-2 py-1.5">
+                  <select name="collateralType" className={fieldCls}>
                     {COLLATERAL_TYPES.map((t) => (
-                      <option key={t} value={t}>{COLLATERAL_TYPE_LABEL[t]}</option>
+                      <option key={t} value={t}>
+                        {COLLATERAL_TYPE_LABEL[t]}
+                      </option>
                     ))}
                   </select>
-                  <select name="valuationSource" className="rounded border border-neutral-800 bg-neutral-900 px-2 py-1.5">
+                  <select name="valuationSource" className={fieldCls}>
                     <option value="">Değerleme kaynağı (opsiyonel)</option>
                     <option value="bank">Banka ekspertizi</option>
                     <option value="independent">Bağımsız değerleme</option>
@@ -518,24 +740,16 @@ export default async function FacilitiesPage({
                     step="0.01"
                     min="0"
                     placeholder="Değerleme tutarı (boş = değerlenmedi)"
-                    className="rounded border border-neutral-800 bg-neutral-900 px-2 py-1.5"
+                    className={`${fieldCls} font-mono`}
                   />
-                  <select name="currency" className="rounded border border-neutral-800 bg-neutral-900 px-2 py-1.5">
+                  <select name="currency" className={fieldCls}>
                     <option value="TRY">TRY</option>
                     <option value="USD">USD</option>
                     <option value="EUR">EUR</option>
                   </select>
-                  <input
-                    name="valuationDate"
-                    type="date"
-                    className="rounded border border-neutral-800 bg-neutral-900 px-2 py-1.5"
-                  />
-                  <input
-                    name="description"
-                    placeholder="Teminat tanımı"
-                    className="rounded border border-neutral-800 bg-neutral-900 px-2 py-1.5"
-                  />
-                  <button className="col-span-2 rounded bg-neutral-800 px-3 py-1.5 text-neutral-100 hover:bg-neutral-700">
+                  <input name="valuationDate" type="date" className={fieldCls} />
+                  <input name="description" placeholder="Teminat tanımı" className={fieldCls} />
+                  <button type="submit" className="button-ghost col-span-2 px-3 py-1.5 text-xs font-medium">
                     Teminatı kaydet
                   </button>
                 </form>
@@ -543,15 +757,12 @@ export default async function FacilitiesPage({
             ) : null}
 
             {subjectOptions.length > 0 ? (
-              <details className="rounded border border-neutral-800 bg-neutral-950/50 p-3">
-                <summary className="cursor-pointer text-xs font-medium text-neutral-200">
+              <details className="rounded border p-3" style={detailsBoxStyle}>
+                <summary className="cursor-pointer text-xs font-semibold text-tone-1">
                   + Kovenant Maddesi ve Ölçüm Ekle / Güncelle
                 </summary>
                 <form action={upsertCovenantAction} className="mt-3 grid grid-cols-2 gap-2 text-xs">
-                  <select
-                    name="covenantId"
-                    className="col-span-2 rounded border border-neutral-800 bg-neutral-900 px-2 py-1.5"
-                  >
+                  <select name="covenantId" className={`col-span-2 ${fieldCls}`}>
                     <option value="">— Yeni kovenant oluştur —</option>
                     {covenants.rows.map((c) => (
                       <option key={c.id} value={c.id}>
@@ -559,26 +770,27 @@ export default async function FacilitiesPage({
                       </option>
                     ))}
                   </select>
-                  <select
-                    name="subject"
-                    className="col-span-2 rounded border border-neutral-800 bg-neutral-900 px-2 py-1.5"
-                  >
+                  <select name="subject" className={`col-span-2 ${fieldCls}`}>
                     {subjectOptions.map((s) => (
-                      <option key={s.value} value={s.value}>{s.label}</option>
+                      <option key={s.value} value={s.value}>
+                        {s.label}
+                      </option>
                     ))}
                   </select>
-                  <select name="covenantType" className="rounded border border-neutral-800 bg-neutral-900 px-2 py-1.5">
+                  <select name="covenantType" className={fieldCls}>
                     {COVENANT_TYPES.map((t) => (
-                      <option key={t} value={t}>{t}</option>
+                      <option key={t} value={t}>
+                        {t}
+                      </option>
                     ))}
                   </select>
                   <input
                     name="description"
                     required
                     placeholder="Kovenant açıklaması (ör. DSCR >= 1.20)"
-                    className="rounded border border-neutral-800 bg-neutral-900 px-2 py-1.5"
+                    className={fieldCls}
                   />
-                  <select name="comparison" className="rounded border border-neutral-800 bg-neutral-900 px-2 py-1.5">
+                  <select name="comparison" className={fieldCls}>
                     <option value="gte">&gt;= (en az)</option>
                     <option value="lte">&lt;= (en çok)</option>
                     <option value="gt">&gt; (büyük)</option>
@@ -590,22 +802,17 @@ export default async function FacilitiesPage({
                     step="0.0001"
                     required
                     placeholder="Eşik değeri (ör. 1.20)"
-                    className="rounded border border-neutral-800 bg-neutral-900 px-2 py-1.5"
+                    className={`${fieldCls} font-mono`}
                   />
-                  <input
-                    name="lastTestDate"
-                    type="date"
-                    placeholder="Ölçüm tarihi (opsiyonel)"
-                    className="rounded border border-neutral-800 bg-neutral-900 px-2 py-1.5"
-                  />
+                  <input name="lastTestDate" type="date" placeholder="Ölçüm tarihi (opsiyonel)" className={fieldCls} />
                   <input
                     name="lastTestValue"
                     type="number"
                     step="0.0001"
                     placeholder="Son ölçüm değeri (opsiyonel)"
-                    className="rounded border border-neutral-800 bg-neutral-900 px-2 py-1.5"
+                    className={`${fieldCls} font-mono`}
                   />
-                  <button className="col-span-2 rounded bg-neutral-800 px-3 py-1.5 text-neutral-100 hover:bg-neutral-700">
+                  <button type="submit" className="button-ghost col-span-2 px-3 py-1.5 text-xs font-medium">
                     Kovenantı kaydet
                   </button>
                 </form>
@@ -615,14 +822,14 @@ export default async function FacilitiesPage({
         </Panel>
       ) : null}
 
-      <Panel title="LİMİTLER" subtitle="limit / kullanılan / kullanılabilir">
+      <Panel title="KREDİ LİMİTLERİ" subtitle="limit / kullanılan / kullanılabilir">
         {facilities.rows.length === 0 ? (
           <EmptyState>Kayıtlı kredi limiti yok.</EmptyState>
         ) : (
           <TableShell>
             <table className="w-full text-sm">
               <thead>
-                <tr className="text-left text-xs uppercase text-neutral-500">
+                <tr className="text-left text-xs uppercase text-tone-3">
                   <th className="py-1">Limit adı</th>
                   <th>Tür</th>
                   <th>Banka</th>
@@ -636,21 +843,27 @@ export default async function FacilitiesPage({
               </thead>
               <tbody>
                 {facilities.rows.map((f) => (
-                  <tr key={f.facility_id} className="border-t border-neutral-800">
-                    <td className="py-2">{f.facility_name}</td>
-                    <td className="text-xs">{FACILITY_TYPE_LABEL[f.facility_type as FacilityType] ?? f.facility_type}</td>
-                    <td className="text-xs text-neutral-400">{f.lender_name ?? "—"}</td>
+                  <tr key={f.facility_id} className="border-t border-line">
+                    <td className="py-2 font-medium text-tone-1">{f.facility_name}</td>
+                    <td className="text-xs text-tone-2">
+                      {FACILITY_TYPE_LABEL[f.facility_type as FacilityType] ?? f.facility_type}
+                    </td>
+                    <td className="text-xs text-tone-3">{f.lender_name ?? "—"}</td>
                     <td className="text-right font-mono tabular-nums">{formatMoney(f.limit_amount, f.currency)}</td>
                     <td className="text-right font-mono tabular-nums">{formatMoney(f.drawn_amount, f.currency)}</td>
-                    <td className="text-right font-mono tabular-nums">{formatMoney(f.available_amount, f.currency)}</td>
+                    <td className="text-right font-mono tabular-nums">
+                      {formatMoney(f.available_amount, f.currency)}
+                    </td>
                     <td className="text-right tabular-nums">
                       {f.utilization_ratio == null ? "—" : `%${(Number(f.utilization_ratio) * 100).toFixed(1)}`}
-                      {f.over_limit ? <span className="ml-1 text-red-400">aşım</span> : null}
+                      {f.over_limit ? <span className="ml-1 text-neg">aşım</span> : null}
                     </td>
                     <td className="text-xs tabular-nums">
                       {f.expiry_date ?? "—"}
-                      {f.days_to_expiry != null && Number(f.days_to_expiry) >= 0 && Number(f.days_to_expiry) <= 90 ? (
-                        <span className="block text-amber-400">{f.days_to_expiry} gün</span>
+                      {f.days_to_expiry != null &&
+                      Number(f.days_to_expiry) >= 0 &&
+                      Number(f.days_to_expiry) <= 90 ? (
+                        <span className="block text-warn">{f.days_to_expiry} gün</span>
                       ) : null}
                     </td>
                     <td>
@@ -666,12 +879,110 @@ export default async function FacilitiesPage({
         )}
       </Panel>
 
+      <div className="grid gap-4 lg:grid-cols-2">
+        <Panel
+          title="BCH / ROTATİF ADAT FAİZ TAHAKKUKLARI (780 / 300)"
+          subtitle="Dönem içi ortalama kullanılan bakiye × gün × (faiz/360) + BSMV/KKDF"
+        >
+          {accruals.length === 0 ? (
+            <EmptyState>Henüz BCH / rotatif adat faiz tahakkuku kaydı yok.</EmptyState>
+          ) : (
+            <TableShell>
+              <table className="w-full text-xs">
+                <thead>
+                  <tr className="text-left uppercase text-tone-3">
+                    <th className="py-1">Dönem</th>
+                    <th>Limit</th>
+                    <th className="text-right">Ort. Bakiye</th>
+                    <th className="text-right">Faiz + BSMV</th>
+                    <th className="text-right">Toplam (780)</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {accruals.map((a) => (
+                    <tr key={a.id} className="border-t border-line">
+                      <td className="py-1.5 font-mono">{a.accrualMonth}</td>
+                      <td>{a.facilityName}</td>
+                      <td className="text-right font-mono tabular-nums">
+                        {formatMoney(a.averageUtilizedBalance, a.currency)}
+                      </td>
+                      <td className="text-right font-mono tabular-nums text-tone-2">
+                        {formatMoney(a.interestAmount + a.bsmvAmount + a.kkdfAmount, a.currency)}
+                      </td>
+                      <td className="text-right font-mono font-semibold tabular-nums">
+                        {formatMoney(a.totalCharge, a.currency)}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </TableShell>
+          )}
+        </Panel>
+
+        <Panel
+          title="TEMİNAT MEKTUPLARI (910 / 911 NAZIM HESAPLAR)"
+          subtitle="Gayrinakdi kredi kullanımı, çeyreklik komisyon yükü ve mektup iade kapanışı"
+        >
+          {guarantees.length === 0 ? (
+            <EmptyState>Kayıtlı teminat mektubu yok.</EmptyState>
+          ) : (
+            <TableShell>
+              <table className="w-full text-xs">
+                <thead>
+                  <tr className="text-left uppercase text-tone-3">
+                    <th className="py-1">Ref / Muhatap</th>
+                    <th>Tür</th>
+                    <th className="text-right">Tutar</th>
+                    <th className="text-right">3 Aylık Kom.</th>
+                    <th>Durum / İade</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {guarantees.map((g) => (
+                    <tr key={g.id} className="border-t border-line">
+                      <td className="py-1.5">
+                        <span className="font-mono font-medium">{g.referenceNo}</span>
+                        <span className="block text-[11px] text-tone-3">{g.beneficiaryName}</span>
+                      </td>
+                      <td>{GUARANTEE_TYPE_LABELS[g.guaranteeType] ?? g.guaranteeType}</td>
+                      <td className="text-right font-mono tabular-nums">{formatMoney(g.amount, g.currency)}</td>
+                      <td className="text-right font-mono tabular-nums text-tone-2">
+                        {formatMoney(g.quarterlyCommissionAmount, g.currency)}
+                      </td>
+                      <td>
+                        {g.isActive ? (
+                          <div className="flex items-center gap-1.5">
+                            <Badge tone="green">aktif</Badge>
+                            {canWrite ? (
+                              <form action={returnLetterOfGuaranteeAction} className="inline">
+                                <input type="hidden" name="guaranteeId" value={g.id} />
+                                <input type="hidden" name="returnedDate" value={todayIso} />
+                                <button type="submit" className="button-ghost px-2 py-0.5 text-[11px]">
+                                  İade Et
+                                </button>
+                              </form>
+                            ) : null}
+                          </div>
+                        ) : (
+                          <Badge tone="neutral">iade ({g.returnedAt ?? "—"})</Badge>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </TableShell>
+          )}
+        </Panel>
+      </div>
+
       {movements.rows.length > 0 ? (
         <Panel title="SON LİMİT HAREKETLERİ" subtitle="kullanım, geri ödeme ve limit revizyonları">
           <TableShell>
             <table className="w-full text-sm">
               <thead>
-                <tr className="text-left text-xs uppercase text-neutral-500">
+                <tr className="text-left text-xs uppercase text-tone-3">
                   <th className="py-1">Tarih</th>
                   <th>Limit</th>
                   <th>Tür</th>
@@ -681,12 +992,12 @@ export default async function FacilitiesPage({
               </thead>
               <tbody>
                 {movements.rows.map((m) => (
-                  <tr key={m.id} className="border-t border-neutral-800">
-                    <td className="py-1.5 tabular-nums text-xs">{m.movement_date}</td>
+                  <tr key={m.id} className="border-t border-line">
+                    <td className="py-1.5 text-xs tabular-nums">{m.movement_date}</td>
                     <td className="text-xs">{m.facility_name}</td>
                     <td className="text-xs">{MOVEMENT_TR[m.movement_type] ?? m.movement_type}</td>
                     <td className="text-right font-mono tabular-nums">{formatMoney(m.amount, m.currency)}</td>
-                    <td className="text-xs text-neutral-500">{m.notes ?? "—"}</td>
+                    <td className="text-xs text-tone-3">{m.notes ?? "—"}</td>
                   </tr>
                 ))}
               </tbody>
@@ -702,7 +1013,7 @@ export default async function FacilitiesPage({
           <TableShell>
             <table className="w-full text-sm">
               <thead>
-                <tr className="text-left text-xs uppercase text-neutral-500">
+                <tr className="text-left text-xs uppercase text-tone-3">
                   <th className="py-1">Vade aralığı</th>
                   <th className="text-right">Taksit</th>
                   <th className="text-right">Vadesi dolan limit (çekilen)</th>
@@ -712,17 +1023,21 @@ export default async function FacilitiesPage({
               </thead>
               <tbody>
                 {ladder.rows.map((b) => (
-                  <tr key={b.bucket_label} className="border-t border-neutral-800">
+                  <tr key={b.bucket_label} className="border-t border-line">
                     <td className="py-2">
                       {b.bucket_label}
-                      <span className="block text-xs text-neutral-600">
+                      <span className="block text-xs text-tone-3">
                         {b.installment_count} taksit · {b.facility_count} limit
                       </span>
                     </td>
                     <td className="text-right tabular-nums">{fmtTL(Number(b.installment_due))}</td>
                     <td className="text-right tabular-nums">{fmtTL(Number(b.facility_drawn_expiring))}</td>
-                    <td className="text-right tabular-nums text-neutral-500">{fmtTL(Number(b.facility_limit_expiring))}</td>
-                    <td className="text-right tabular-nums font-medium">{fmtTL(Number(b.total_cash_exposure))}</td>
+                    <td className="text-right tabular-nums text-tone-3">
+                      {fmtTL(Number(b.facility_limit_expiring))}
+                    </td>
+                    <td className="text-right font-medium tabular-nums">
+                      {fmtTL(Number(b.total_cash_exposure))}
+                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -738,7 +1053,7 @@ export default async function FacilitiesPage({
           <TableShell>
             <table className="w-full text-sm">
               <thead>
-                <tr className="text-left text-xs uppercase text-neutral-500">
+                <tr className="text-left text-xs uppercase text-tone-3">
                   <th className="py-1">Tür</th>
                   <th>Konu</th>
                   <th className="text-right">Değer</th>
@@ -748,25 +1063,27 @@ export default async function FacilitiesPage({
               </thead>
               <tbody>
                 {collateral.rows.map((c) => (
-                  <tr key={c.id} className="border-t border-neutral-800">
+                  <tr key={c.id} className="border-t border-line">
                     <td className="py-2">
                       {COLLATERAL_TYPE_LABEL[c.collateral_type as CollateralType] ?? c.collateral_type}
-                      {c.description ? <span className="block text-xs text-neutral-600">{c.description}</span> : null}
+                      {c.description ? <span className="block text-xs text-tone-3">{c.description}</span> : null}
                     </td>
                     <td className="text-xs">{c.subject_name ?? "—"}</td>
                     <td className="text-right font-mono tabular-nums">
                       {c.value_amount == null ? (
-                        <span className="text-amber-400">değerlenmedi</span>
+                        <span className="text-warn">değerlenmedi</span>
                       ) : (
                         formatMoney(c.value_amount, c.currency)
                       )}
                     </td>
-                    <td className="text-xs text-neutral-400">
+                    <td className="text-xs text-tone-3">
                       {c.valuation_date ?? "—"}
                       {c.valuation_source ? ` · ${c.valuation_source}` : ""}
                     </td>
                     <td>
-                      <Badge tone={c.released_at ? "neutral" : "green"}>{c.released_at ? "serbest" : "bağlı"}</Badge>
+                      <Badge tone={c.released_at ? "neutral" : "green"}>
+                        {c.released_at ? "serbest" : "bağlı"}
+                      </Badge>
                     </td>
                   </tr>
                 ))}
@@ -783,7 +1100,7 @@ export default async function FacilitiesPage({
           <TableShell>
             <table className="w-full text-sm">
               <thead>
-                <tr className="text-left text-xs uppercase text-neutral-500">
+                <tr className="text-left text-xs uppercase text-tone-3">
                   <th className="py-1">Kovenant</th>
                   <th>Konu</th>
                   <th className="text-right">Eşik</th>
@@ -794,22 +1111,22 @@ export default async function FacilitiesPage({
               </thead>
               <tbody>
                 {covenants.rows.map((v) => (
-                  <tr key={v.id} className="border-t border-neutral-800">
+                  <tr key={v.id} className="border-t border-line">
                     <td className="py-2">
                       {v.description}
-                      <span className="block text-xs text-neutral-600">{v.covenant_type}</span>
+                      <span className="block text-xs text-tone-3">{v.covenant_type}</span>
                     </td>
                     <td className="text-xs">{v.subject_name ?? "—"}</td>
-                    <td className="text-right tabular-nums text-xs">
+                    <td className="text-right text-xs tabular-nums">
                       {v.comparison} {Number(v.threshold_value)}
                     </td>
-                    <td className="text-right tabular-nums text-xs">
+                    <td className="text-right text-xs tabular-nums">
                       {v.last_test_value == null ? "—" : Number(v.last_test_value)}
-                      {v.last_test_date ? <span className="block text-neutral-600">{v.last_test_date}</span> : null}
+                      {v.last_test_date ? <span className="block text-tone-3">{v.last_test_date}</span> : null}
                     </td>
                     <td>
                       {v.last_test_result == null ? (
-                        <span className="text-xs text-neutral-600">ölçülmedi</span>
+                        <span className="text-xs text-tone-3">ölçülmedi</span>
                       ) : (
                         <Badge
                           tone={
@@ -836,6 +1153,6 @@ export default async function FacilitiesPage({
           </TableShell>
         )}
       </Panel>
-    </>
+    </div>
   );
 }

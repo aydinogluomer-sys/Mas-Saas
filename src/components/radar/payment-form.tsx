@@ -10,6 +10,7 @@ export interface PaymentFormValues {
   due_day?: number | null;
   due_date?: string | null;
   default_amount?: number | null;
+  currency?: string | null;
   amount_confidence?: string;
   direction?: string;
   priority?: string;
@@ -23,12 +24,15 @@ export interface PaymentFormValues {
   project_id?: string | null;
   department_id?: string | null;
   description?: string | null;
+  iban?: string | null;
+  tdhp_expense_code?: string | null;
+  auto_match_vkn?: string | null;
 }
 
 const L = ({ children }: { children: React.ReactNode }) => (
   <label className="mb-1 block font-mono text-[10px] uppercase tracking-wider text-tone-3">{children}</label>
 );
-const inputCls = "w-full border border-line bg-black/40 px-2 py-2 text-sm";
+const inputCls = "field-control w-full px-2 py-2 text-sm";
 
 function Select({ name, value, options, allowEmpty = true }: {
   name: string; value: string | null | undefined; options: Array<[string, string]>; allowEmpty?: boolean;
@@ -73,19 +77,36 @@ export function PaymentFormFields({
         <div>
           <L>Tekrar</L>
           <Select name="recurrence_type" value={values.recurrence_type ?? "monthly"} allowEmpty={false}
-            options={[["monthly", "Her ay"], ["irregular", "Düzensiz (günsüz)"], ["one_off", "Tek seferlik"]]} />
+            options={[
+              ["monthly", "Her ay"],
+              ["weekly", "Her hafta (aylık 4/5 hafta toplamı)"],
+              ["quarterly", "Üç ayda bir (Çeyreklik)"],
+              ["yearly", "Yıllık"],
+              ["irregular", "Düzensiz (günsüz)"],
+              ["one_off", "Tek seferlik"],
+            ]} />
         </div>
         <div>
           <L>Son ödeme günü (aylıkta zorunlu, 1-31)</L>
           <input name="due_day" inputMode="numeric" defaultValue={values.due_day ?? ""} className={`${inputCls} font-mono`} placeholder="boş = günsüz" />
         </div>
         <div>
-          <L>Tek seferlik tarih</L>
+          <L>Başlangıç / Tek seferlik vade tarihi</L>
           <input type="date" name="due_date" defaultValue={values.due_date ?? ""} className={inputCls} />
         </div>
         <div>
-          <L>Varsayılan tutar (TL) — boş bırakılabilir, 0 SAYILMAZ</L>
+          <L>Varsayılan tutar — boş bırakılabilir, 0 SAYILMAZ</L>
           <input name="default_amount" inputMode="numeric" defaultValue={values.default_amount ?? ""} className={`${inputCls} font-mono`} placeholder="bilinmiyor" />
+        </div>
+        <div>
+          <L>Döviz cinsi</L>
+          <Select name="currency" value={values.currency ?? "TRY"} allowEmpty={false}
+            options={[
+              ["TRY", "TRY — Türk Lirası"],
+              ["USD", "USD — ABD Doları"],
+              ["EUR", "EUR — Euro"],
+              ["GBP", "GBP — İngiliz Sterlini"],
+            ]} />
         </div>
         <div>
           <L>Tutar güveni</L>
@@ -124,6 +145,28 @@ export function PaymentFormFields({
           <Select name="cash_account_id" value={values.cash_account_id} options={accounts.map((a) => [a.id, a.name])} />
         </div>
         <div>
+          <L>Alacaklı IBAN (isteğe bağlı)</L>
+          <input name="iban" defaultValue={values.iban ?? ""} className={`${inputCls} font-mono`} placeholder="TR00..." />
+        </div>
+        <div>
+          <L>TDHP Gider / Yükümlülük Hesap Kodu</L>
+          <Select name="tdhp_expense_code" value={values.tdhp_expense_code ?? "770"} allowEmpty={false}
+            options={[
+              ["770", "770 — Genel Yönetim Giderleri"],
+              ["760", "760 — Pazarlama Satış Dağıtım"],
+              ["740", "740 — Hizmet Üretim Maliyeti"],
+              ["730", "730 — Genel Üretim Giderleri"],
+              ["320", "320 — Satıcılar (Fatura Kapama)"],
+              ["335", "335 — Personele Borçlar"],
+              ["360", "360 — Ödenecek Vergi ve Fonlar"],
+              ["361", "361 — Ödenecek Sosyal Güvenlik Kesintileri"],
+            ]} />
+        </div>
+        <div>
+          <L>Otomatik Fatura Eşleme VKN/TCKN</L>
+          <input name="auto_match_vkn" defaultValue={values.auto_match_vkn ?? ""} className={`${inputCls} font-mono`} placeholder="10 veya 11 hane" />
+        </div>
+        <div>
           <L>Proje</L>
           <Select name="project_id" value={values.project_id} options={projects.map((p) => [p.id, p.name])} />
         </div>
@@ -146,8 +189,8 @@ export function PaymentFormFields({
         </div>
         {values.id && (
           <p className="text-[11px] text-tone-3 sm:col-span-2">
-            Not: değişiklikler geçmiş ve bu ay üretilmiş kayıtları değiştirmez; yeni aylar yeni değerlerle üretilir.
-            Eksik tutarı bu aya özel girmek için Ödemeler &gt; Eksik Veri panelini kullanın.
+            Not: tutar, döviz ve gün güncellemeleri henüz ödenmemiş ileri tarihli şablon örneklerine yansıtılır;
+            geçmiş dönem veya elle değiştirilmiş tutarlara dokunulmaz.
           </p>
         )}
       </form>
@@ -164,7 +207,7 @@ export function PaymentFormFields({
               required
               name="archive_reason"
               placeholder="arşivleme nedeni"
-              className="border border-line bg-black/40 px-2 py-2 font-mono text-[10px] text-tone-2"
+              className="field-control px-2 py-2 font-mono text-[10px] text-tone-2"
             />
             <button
               type="submit"

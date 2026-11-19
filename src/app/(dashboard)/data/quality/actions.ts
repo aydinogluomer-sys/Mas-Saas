@@ -11,6 +11,7 @@ import {
   createManualAction,
   setActionStatus,
 } from "@/lib/data-quality/engine";
+import { assignActionItemOwner, autoCloseSettledActionItems } from "@/lib/action-items/engine";
 import { normalizeActionStatus, type DqSeverity } from "@/lib/data-quality/rules";
 import { requireActionPermission, safeRedirectPath } from "@/lib/auth";
 
@@ -78,17 +79,51 @@ export async function createActionFromReportAction(formData: FormData): Promise<
 
 export async function createManualActionAction(formData: FormData): Promise<void> {
   const session = await requireActionPermission("action_items", "insert", "/data/quality");
+  const ownerUserIdRaw = String(formData.get("ownerUserId") ?? "").trim();
+  const autoCloseRaw = formData.get("autoCloseOnSettlement");
   await createManualAction(getPool(), {
     title: String(formData.get("title") ?? ""),
     severity: severityFromForm(formData.get("severity")),
     owner: String(formData.get("owner") ?? "").trim() || null,
+    ownerUserId: ownerUserIdRaw || null,
+    autoCloseOnSettlement: autoCloseRaw === null ? true : autoCloseRaw === "on" || autoCloseRaw === "true",
     dueDate: String(formData.get("dueDate") ?? "").trim() || null,
     note: String(formData.get("note") ?? "").trim() || null,
+    relatedEntityTable: String(formData.get("relatedEntityTable") ?? "").trim() || null,
+    relatedEntityId: String(formData.get("relatedEntityId") ?? "").trim() || null,
   }, session.id);
   const b = backTo(formData, "/insights/tasks");
   revalidatePath("/data/quality");
   revalidatePath("/insights/tasks");
   redirect(b);
+}
+
+export async function assignActionOwnerAction(formData: FormData): Promise<void> {
+  const session = await requireActionPermission("action_items", "update", "/insights/tasks");
+  const actionId = String(formData.get("actionId") ?? "").trim();
+  const ownerUserIdRaw = String(formData.get("ownerUserId") ?? "").trim();
+  if (actionId) {
+    await assignActionItemOwner(
+      getPool(),
+      { actionId, ownerUserId: ownerUserIdRaw || null },
+      session.id,
+    );
+  }
+  const b = backTo(formData, "/insights/tasks");
+  revalidatePath("/data/quality");
+  revalidatePath("/insights/tasks");
+  redirect(b);
+}
+
+export async function autoCloseSettledActionsAction(formData: FormData): Promise<void> {
+  const session = await requireActionPermission("action_items", "update", "/insights/tasks");
+  const res = await autoCloseSettledActionItems(getPool(), session.id);
+  const b = backTo(formData, "/insights/tasks");
+  revalidatePath("/data/quality");
+  revalidatePath("/insights/tasks");
+  revalidatePath("/");
+  const sep = b.includes("?") ? "&" : "?";
+  redirect(`${b}${sep}autoClosed=${res.closedCount}`);
 }
 
 export async function setActionStatusAction(formData: FormData): Promise<void> {

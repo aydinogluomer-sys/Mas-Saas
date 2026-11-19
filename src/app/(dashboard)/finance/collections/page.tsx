@@ -1,5 +1,9 @@
 // Faz 23, Faz 47 (D1) & Faz 48 (D2) — Tahsilat Riski, Ödeme Önceliği ve Ödeme Çalıştırma Paketi (`payment_runs`).
 
+import { StackedRibbonSvg, type StackedRibbonSegment } from "@/components/charts/folio-visuals";
+import { SubmitButton } from "@/components/ui/submit-button";
+import { getRequestUser } from "@/lib/auth";
+import { can } from "@/lib/authz/matrix";
 import { getPool } from "@/lib/db";
 import { loadBankableAccounts } from "@/lib/bank/engine";
 import {
@@ -7,6 +11,7 @@ import {
 } from "@/lib/collections/engine";
 import { isReportingCurrency } from "@/lib/currency-policy";
 import { loadCanonicalReceivablesKpi, loadCanonicalTreasuryCashKpi } from "@/lib/metrics/canonical-kpis";
+import { decimal, money } from "@/lib/money";
 import { formatForeignCurrencyBadges, formatMoney } from "@/lib/money-format";
 import { loadPayableRunCandidates, loadPaymentRuns } from "@/lib/payments/payment-runs";
 import { istanbulDateISO } from "@/lib/reports/rules";
@@ -20,6 +25,7 @@ import {
   createPaymentRunAction,
   markBadDebtAction,
   submitPaymentRunAction,
+  uploadPain002StatusAction,
 } from "./actions";
 import { requireRouteAccess } from "@/lib/authz/route-guard";
 
@@ -35,7 +41,7 @@ const RUN_STATUS_TONE: Record<string, Tone> = {
   draft: "neutral",
   pending_approval: "amber",
   approved: "blue",
-  exported: "violet",
+  exported: "blue",
   settled: "green",
   cancelled: "red",
 };
@@ -68,12 +74,16 @@ function addDays(iso: string, n: number): string {
 
 export default async function CollectionsPage({
   searchParams,
-}: { searchParams: Promise<{ error?: string; result?: string }> }) {
+}: { searchParams: Promise<{ error?: string; result?: string; runCurrency?: string }> }) {
   const denied = await requireRouteAccess("/finance/collections");
   if (denied) return denied;
+  const session = await getRequestUser();
+  const canUpdateRuns = session ? can(session.role, "payment_runs", "update") : false;
   const sp = await searchParams;
   const pool = getPool();
   const today = istanbulDateISO();
+  const rawRunCurrency = (sp.runCurrency ?? "TRY").trim().toUpperCase();
+  const activeRunCurrency = ["TRY", "USD", "EUR", "GBP"].includes(rawRunCurrency) ? rawRunCurrency : "TRY";
 
   const [treasuryCash, canonicalRec] = await Promise.all([
     loadCanonicalTreasuryCashKpi(pool),
@@ -86,21 +96,106 @@ export default async function CollectionsPage({
     loadPaymentSchedule(pool, scheduleAvailableCash, 100),
     loadCollectionProfiles(pool, 30),
     loadPaymentCalendar(pool, today, addDays(today, 30)),
-    loadPayableRunCandidates(pool, "TRY", 40),
+    loadPayableRunCandidates(pool, activeRunCurrency, 40),
     loadPaymentRuns(pool, 15),
     loadBankableAccounts(pool),
   ]);
 
   const sourceBankAccounts = bankAccounts.filter(
-    (a) => a.has_bank_profile && Boolean(a.iban_normalized) && a.currency === "TRY",
+    (a) => a.has_bank_profile && Boolean(a.iban_normalized) && a.currency === activeRunCurrency,
   );
 
   const critical = risks.filter((r) => r.severity === "kritik");
   const flagged = risks.filter((r) => r.badDebtFlagged);
   // Expected collections weighted by probability — strictly TRY-only so USD/EUR invoices are never mixed.
   const tryRisks = risks.filter((r) => isReportingCurrency(r.currency));
-  const weightedTry = Math.round(tryRisks.reduce((n, r) => n + r.openAmount * r.probability, 0) * 100) / 100;
+  const weightedTry = money(
+    tryRisks.reduce((acc, r) => acc.plus(decimal(r.openAmount).times(r.probability)), decimal(0)),
+  );
   const foreignBadges = formatForeignCurrencyBadges(canonicalRec.foreignBuckets);
+
+  // Tahsilat Risk & Ödeme Paketi Durum Dağılımı (StackedRibbonSvg)
+  const sumTryBySeverity = (sev: string) =>
+    money(
+      tryRisks
+        .filter((r) => r.severity === sev)
+        .reduce((acc, r) => acc.plus(r.openAmount), decimal(0)),
+    );
+  const sevNormalTry = sumTryBySeverity("yok");
+  const sevWatchTry = sumTryBySeverity("izle");
+  const sevHighTry = sumTryBySeverity("yüksek");
+  const sevCritTry = sumTryBySeverity("kritik");
+
+  const receivableRiskSegments: StackedRibbonSegment[] = [
+    {
+      key: "sev-yok",
+      label: "Normal",
+      value: sevNormalTry,
+      formattedValue: fmtTL(sevNormalTry),
+      tone: "pos",
+    },
+    {
+      key: "sev-izle",
+      label: "İzle",
+      value: sevWatchTry,
+      formattedValue: fmtTL(sevWatchTry),
+      tone: "info",
+    },
+    {
+      key: "sev-yuksek",
+      label: "Yüksek Risk",
+      value: sevHighTry,
+      formattedValue: fmtTL(sevHighTry),
+      tone: "warn",
+    },
+    {
+      key: "sev-kritik",
+      label: "Kritik Gecikme",
+      value: sevCritTry,
+      formattedValue: fmtTL(sevCritTry),
+      tone: "neg",
+    },
+  ];
+
+  const runCountByStatuses = (statuses: string[]) =>
+    paymentRuns.filter((r) => statuses.includes(r.status)).length;
+  const runDraftPending = runCountByStatuses(["draft", "pending_approval"]);
+  const runApprovedExported = runCountByStatuses(["approved", "exported"]);
+  const runSettled = runCountByStatuses(["settled"]);
+  const runCancelled = runCountByStatuses(["cancelled"]);
+
+  const paymentRunStatusSegments: StackedRibbonSegment[] = [
+    {
+      key: "runs-draft-pending",
+      label: "Taslak / Onayda",
+      value: runDraftPending,
+      formattedValue: `${runDraftPending} paket`,
+      tone: "warn",
+    },
+    {
+      key: "runs-approved-exported",
+      label: "Onaylı / Talimat İhraç",
+      value: runApprovedExported,
+      formattedValue: `${runApprovedExported} paket`,
+      tone: "info",
+    },
+    {
+      key: "runs-settled",
+      label: "Bankada Kapandı (ACSC)",
+      value: runSettled,
+      formattedValue: `${runSettled} paket`,
+      tone: "pos",
+    },
+    {
+      key: "runs-cancelled",
+      label: "İptal / Red (RJCT)",
+      value: runCancelled,
+      formattedValue: `${runCancelled} paket`,
+      tone: "neg",
+    },
+  ];
+
+  const reconcilableRuns = paymentRuns.filter((r) => r.status !== "cancelled");
 
   return (
     <>
@@ -138,6 +233,30 @@ export default async function CollectionsPage({
           {treasuryCash.availableNowTry == null && (
             <div className="text-[10px] text-warn">açılış bakiyesi eksik ({treasuryCash.unknownOpeningCountTry} hesap)</div>
           )}
+        </Panel>
+      </div>
+
+      {/* Görsel Tahsilat Risk & Ödeme Paketi Durum Dağılımı */}
+      <div className="mb-4 grid grid-cols-1 gap-3 lg:grid-cols-2">
+        <Panel
+          title="Tahsilat Risk Kompozisyonu (TRY Açık Alacak)"
+          subtitle="Deterministik vade aşımı ve DBT kurallarına göre açık alacak dağılımı"
+        >
+          <StackedRibbonSvg
+            title="Alacak Risk Şeridi (Normal · İzle · Yüksek · Kritik)"
+            segments={receivableRiskSegments}
+            emptyLabel="Açık TRY alacak kaydı bulunmuyor"
+          />
+        </Panel>
+        <Panel
+          title="Ödeme Paketi (Payment Run) Durum Dağılımı"
+          subtitle="Onay, pain.001 ihraç ve pain.002 banka kapanış akıbet dağılımı"
+        >
+          <StackedRibbonSvg
+            title="Ödeme Paketi Yaşam Döngüsü"
+            segments={paymentRunStatusSegments}
+            emptyLabel="Henüz oluşturulmuş ödeme paketi yok"
+          />
         </Panel>
       </div>
 
@@ -245,15 +364,34 @@ export default async function CollectionsPage({
             (BEC dolandırıcılık kalkanı + TR <code>MOD-97</code>) doğrulanmadan banka ödeme talimatı indirilemez.
           </p>
 
+          <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+            <span className="font-mono text-xs text-tone-2">Paket Para Birimi Seçimi (TRY EFT · EUR SEPA · USD/GBP SWIFT):</span>
+            <div className="flex gap-1.5 text-xs">
+              {(["TRY", "USD", "EUR", "GBP"] as const).map((ccy) => (
+                <a
+                  key={ccy}
+                  href={`/finance/collections?runCurrency=${ccy}`}
+                  className={`rounded border px-2.5 py-1 font-mono ${
+                    activeRunCurrency === ccy
+                      ? "border-accent bg-accent/10 font-semibold text-accent"
+                      : "border-line text-tone-2 hover:bg-elev"
+                  }`}
+                >
+                  {ccy}
+                </a>
+              ))}
+            </div>
+          </div>
+
           <form action={createPaymentRunAction} className="mb-4 rounded border border-line-faint p-3 text-sm">
-            <input type="hidden" name="currency" value="TRY" />
+            <input type="hidden" name="currency" value={activeRunCurrency} />
             <div className="mb-3 grid grid-cols-1 gap-2 md:grid-cols-4">
               <select
                 name="sourceBankAccountId"
                 required
-                className="rounded border border-line-faint bg-transparent px-2 py-1 text-xs"
+                className="rounded border border-line bg-surface px-2 py-1 text-xs text-tone-1"
               >
-                <option value="">Çıkış yapılacak TRY banka hesabı…</option>
+                <option value="">Çıkış yapılacak {activeRunCurrency} banka hesabı…</option>
                 {sourceBankAccounts.map((a) => (
                   <option key={a.id} value={a.id}>
                     {a.name} ({a.iban_normalized})
@@ -265,29 +403,29 @@ export default async function CollectionsPage({
                 name="plannedExecutionDate"
                 defaultValue={today}
                 required
-                className="rounded border border-line-faint bg-transparent px-2 py-1 font-mono text-xs"
+                className="rounded border border-line bg-surface px-2 py-1 font-mono text-xs text-tone-1"
               />
               <input
                 name="notes"
                 placeholder="Paket açıklaması (isteğe bağlı)"
-                className="rounded border border-line-faint bg-transparent px-2 py-1 text-xs"
+                className="rounded border border-line bg-surface px-2 py-1 text-xs text-tone-1"
               />
               <button
                 disabled={sourceBankAccounts.length === 0 || runCandidates.length === 0}
                 className="button-primary px-3 py-1 text-xs font-medium disabled:opacity-40"
               >
-                Ödeme paketi oluştur
+                {activeRunCurrency} Ödeme Paketi Oluştur
               </button>
             </div>
 
             {sourceBankAccounts.length === 0 && (
               <p className="mb-2 text-xs text-warn">
-                IBAN tanımlı aktif TRY banka hesabı yok — önce Banka Merkezi&apos;nde kaynak hesap IBAN bilgisi tanımlayın.
+                IBAN tanımlı aktif {activeRunCurrency} banka hesabı yok — önce Banka Merkezi&apos;nde kaynak hesap IBAN bilgisi tanımlayın.
               </p>
             )}
 
             {runCandidates.length === 0 ? (
-              <p className="text-xs text-tone-3">Pakete eklenebilecek açık TRY borç/ödeme kalemi bulunmuyor.</p>
+              <p className="text-xs text-tone-3">Pakete eklenebilecek açık {activeRunCurrency} borç/ödeme kalemi bulunmuyor.</p>
             ) : (
               <div className="max-h-64 overflow-auto">
                 <table className="w-full text-xs">
@@ -501,6 +639,85 @@ export default async function CollectionsPage({
               </table>
             </div>
           )}
+
+          {/* ISO 20022 pain.002 Banka Ödeme Akıbet Raporu Mutabakatı */}
+          {canUpdateRuns ? (
+            <div className="mt-4 rounded-[var(--radius-md)] border border-line bg-surface-2 p-3.5 text-xs">
+              <div className="flex flex-wrap items-center justify-between gap-2 border-b border-line-faint pb-2">
+                <div>
+                  <div className="font-mono text-[10.5px] font-semibold uppercase tracking-[0.06em] text-info">
+                    HOST-TO-HOST · ISO 20022 CstmrPmtStsRpt
+                  </div>
+                  <h3 className="mt-0.5 text-[13.5px] font-bold text-tone-1">
+                    ISO 20022 pain.002 Banka Ödeme Akıbet Raporu Mutabakatı
+                  </h3>
+                  <p className="mt-0.5 text-[11.5px] text-tone-2">
+                    Bankadan dönen <code>pain.002.001.03</code> durum raporunu yükleyin veya yapıştırın;{" "}
+                    <span className="font-semibold text-pos">ACSC</span> (ödendi),{" "}
+                    <span className="font-semibold text-neg">RJCT</span> (reddedildi / serbest bırakıldı) ve{" "}
+                    <span className="font-semibold text-warn">PDNG</span> (takas bekliyor) kalemleri otomatik mutabık kılınır.
+                  </p>
+                </div>
+                <Badge tone="blue">XXE Korumalı · Maks 2 MB</Badge>
+              </div>
+
+              {reconcilableRuns.length === 0 ? (
+                <p className="mt-2.5 text-xs text-tone-3">
+                  Akıbet raporu uygulanabilecek aktif ödeme paketi bulunmuyor — önce yukarıdan bir ödeme paketi oluşturun.
+                </p>
+              ) : (
+                <form action={uploadPain002StatusAction} className="mt-3 space-y-2.5">
+                  <div className="grid grid-cols-1 gap-2.5 md:grid-cols-2">
+                    <label className="flex flex-col gap-1 font-medium text-tone-2">
+                      <span>Mutabakat Yapılacak Ödeme Paketi</span>
+                      <select
+                        name="runId"
+                        required
+                        className="field-control px-2.5 py-1.5 text-base sm:text-xs"
+                      >
+                        <option value="">Ödeme paketi seçin…</option>
+                        {reconcilableRuns.map((run) => (
+                          <option key={run.id} value={run.id}>
+                            {run.runCode} · {run.plannedExecutionDate} · {formatMoney(run.totalAmount, run.currency)} (
+                            {RUN_STATUS_TR[run.status] ?? run.status})
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+
+                    <label className="flex flex-col gap-1 font-medium text-tone-2">
+                      <span>pain.002 XML Dosyası Yükle (.xml, maks 2 MB)</span>
+                      <input
+                        type="file"
+                        name="pain002File"
+                        accept=".xml,application/xml,text/xml"
+                        className="field-control px-2.5 py-1 text-base sm:text-xs"
+                      />
+                    </label>
+                  </div>
+
+                  <label className="flex flex-col gap-1 font-medium text-tone-2">
+                    <span>veya Banka pain.002 XML Metnini Yapıştırın</span>
+                    <textarea
+                      name="pain002Xml"
+                      rows={3}
+                      placeholder="<?xml version=&quot;1.0&quot; encoding=&quot;UTF-8&quot;?><Document xmlns=&quot;urn:iso:std:iso:20022:tech:xsd:pain.002.001.03&quot;>..."
+                      className="field-control font-mono px-2.5 py-1.5 text-base sm:text-[11.5px]"
+                    />
+                  </label>
+
+                  <div className="flex justify-end">
+                    <SubmitButton
+                      pendingLabel="pain.002 Akıbet Raporu İşleniyor…"
+                      className="button-accent px-3.5 py-2 text-xs font-semibold disabled:opacity-60"
+                    >
+                      pain.002 Akıbet Raporunu Uygula
+                    </SubmitButton>
+                  </div>
+                </form>
+              )}
+            </div>
+          ) : null}
         </Panel>
       </div>
 

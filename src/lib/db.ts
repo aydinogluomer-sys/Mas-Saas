@@ -91,9 +91,13 @@ export function getRawPool(): Pool {
 /** Marks which tier role and user id a physical connection is currently sitting in. */
 const CURRENT_ROLE = Symbol.for("mas.currentDbRole");
 const CURRENT_USER = Symbol.for("mas.currentUserId");
+const CURRENT_ENTITY = Symbol.for("mas.currentLegalEntityId");
+const CURRENT_TIMEOUT = Symbol.for("mas.currentStatementTimeoutMs");
 type TaggedClient = PoolClient & {
   [CURRENT_ROLE]?: string | null;
   [CURRENT_USER]?: string | null;
+  [CURRENT_ENTITY]?: string | null;
+  [CURRENT_TIMEOUT]?: number | null;
 };
 
 /**
@@ -122,8 +126,16 @@ async function applyRole(client: TaggedClient, dbRole: string | null): Promise<v
   if (current === dbRole) return;
   if (dbRole === null) {
     await client.query("reset role");
-    await client.query("select set_config('app.user_id', '', false)");
+    await client.query(
+      "select set_config('app.user_id', '', false), set_config('app.current_legal_entity_id', '', false)",
+    );
+    if ((client[CURRENT_TIMEOUT] ?? null) !== null) {
+      const defaultTimeout = env.databaseStatementTimeoutMs ?? 30_000;
+      await client.query(`set statement_timeout = ${defaultTimeout}`);
+      client[CURRENT_TIMEOUT] = null;
+    }
     client[CURRENT_USER] = "";
+    client[CURRENT_ENTITY] = "";
   } else {
     // dbRole never comes from user input — it is looked up from the five-entry DB_ROLE map in
     // @/lib/authz/matrix — but it is still an identifier being concatenated, so it is
@@ -132,6 +144,31 @@ async function applyRole(client: TaggedClient, dbRole: string | null): Promise<v
     await client.query(`set role ${dbRole}`);
   }
   client[CURRENT_ROLE] = dbRole;
+}
+
+const USER_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function normalizeOptionalEntityId(legalEntityId?: string | null): string | null {
+  if (legalEntityId == null) return null;
+  const trimmed = legalEntityId.trim();
+  if (!trimmed || trimmed === "consolidated") return null;
+  if (!USER_ID.test(trimmed)) {
+    throw new Error("Geçersiz tüzel kişilik kimliği");
+  }
+  return trimmed;
+}
+
+function normalizeStatementTimeoutMs(ms?: number): number | null {
+  if (ms == null) return null;
+  if (!Number.isFinite(ms) || ms < 500) {
+    throw new Error("Geçersiz statement_timeout değeri");
+  }
+  return Math.min(600_000, Math.round(ms));
+}
+
+export interface RunAsSystemOptions {
+  legalEntityId?: string | null;
+  statementTimeoutMs?: number;
 }
 
 /**
@@ -149,19 +186,49 @@ async function applyRole(client: TaggedClient, dbRole: string | null): Promise<v
  * AsyncLocalStorage is safe here in a way it would not be inside a React render — a script is a
  * single async chain with no component boundaries for the store to fail to cross.
  */
-const systemContext = new AsyncLocalStorage<{ dbRole: string; userId: string | null }>();
+const systemContext = new AsyncLocalStorage<{
+  dbRole: string;
+  userId: string | null;
+  legalEntityId: string | null;
+  statementTimeoutMs: number | null;
+}>();
 
-export function runAsSystem<T>(fn: () => Promise<T>): Promise<T> {
-  return systemContext.run({ dbRole: "mas_radar_finance_manager", userId: null }, fn);
+export function runAsSystem<T>(
+  fn: () => Promise<T>,
+  opts?: RunAsSystemOptions,
+): Promise<T>;
+export function runAsSystem<T>(
+  actorId: string | null,
+  fn: () => Promise<T>,
+  opts?: RunAsSystemOptions,
+): Promise<T>;
+export function runAsSystem<T>(
+  first: (() => Promise<T>) | string | null,
+  second?: (() => Promise<T>) | RunAsSystemOptions,
+  third?: RunAsSystemOptions,
+): Promise<T> {
+  const isFnFirst = typeof first === "function";
+  const actorId = isFnFirst ? null : first;
+  const fn = (isFnFirst ? first : second) as () => Promise<T>;
+  const opts = (isFnFirst ? second : third) as RunAsSystemOptions | undefined;
+  if (actorId !== null && !USER_ID.test(actorId)) {
+    throw new Error("Geçersiz sistem aktör kimliği");
+  }
+  return systemContext.run(
+    {
+      dbRole: "mas_radar_finance_manager",
+      userId: actorId,
+      legalEntityId: normalizeOptionalEntityId(opts?.legalEntityId),
+      statementTimeoutMs: normalizeStatementTimeoutMs(opts?.statementTimeoutMs),
+    },
+    fn,
+  );
 }
 
 /**
  * The read-only machine identity: the viewer tier.
  *
- * For a caller with no person behind it that only ever READS — today exactly one, the Telegram
- * assistant (src/app/api/telegram/assistant/route.ts), which authenticates bot.py with a shared
- * secret rather than a session. runAsSystem() would have handed it finance_manager, i.e. write
- * access to payments, checks and loans that a question-answering path never needs. Viewer reads
+ * For a caller with no person behind it that only ever READS. Viewer reads
  * the same invoice/party data every dashboard tier reads (0058 gives all five tiers SELECT on the
  * operational and reference tables, and the receivables views are granted like any table) and
  * writes nothing — "a viewer cannot write to ANY table" is the invariant db:roles-rls:verify
@@ -174,59 +241,106 @@ export function runAsSystem<T>(fn: () => Promise<T>): Promise<T> {
  * change, with actor and entity equal to current_app_user()) cannot fire here: this identity
  * carries no user id, current_app_user() is NULL, and the policy matches nothing.
  */
-export function runAsReadOnlySystem<T>(fn: () => Promise<T>): Promise<T> {
-  return systemContext.run({ dbRole: "mas_radar_viewer", userId: null }, fn);
+export function runAsReadOnlySystem<T>(
+  fn: () => Promise<T>,
+  opts?: { legalEntityId?: string | null },
+): Promise<T> {
+  return systemContext.run(
+    {
+      dbRole: "mas_radar_viewer",
+      userId: null,
+      legalEntityId: normalizeOptionalEntityId(opts?.legalEntityId),
+      statementTimeoutMs: null,
+    },
+    fn,
+  );
 }
-
-const USER_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /**
  * A named person's tier, for work done ON THEIR BEHALF outside a request.
  *
- * Exactly one caller today: the async Import V2 preview worker (scripts/ops/process-import-jobs.ts
- * → src/lib/importers/v2/async-runner.ts), which previews a workbook a user queued earlier. Using
- * runAsSystem() there would read as finance_manager on behalf of an operator; using the user's own
- * tier means the worker can see nothing that person could not, and `app.user_id` names them for
- * the row policies exactly as their own request would.
+ * Used by background workers acting on behalf of a specific user (e.g., Import V2 preview worker).
+ * Using the user's own tier means the worker can see nothing that person could not, and `app.user_id`
+ * names them for the row policies (plus optional `legalEntityId` for entity-scoped isolation)
+ * exactly as their own request would.
  *
  * The identity MUST be the user's row in public.users, re-read by the caller at the moment of use
  * (active, not under a forced password change, permitted) — never an id or a role taken from a
  * request body or a job payload. The role is therefore typed, and still refused at runtime unless
  * it is one of the five tiers: this function hands it to SET ROLE.
  */
-export function runAsUser<T>(user: { id: string; role: AppRole }, fn: () => Promise<T>): Promise<T> {
+export function runAsUser<T>(
+  user: { id: string; role: AppRole; legalEntityId?: string | null },
+  fn: () => Promise<T>,
+  legalEntityId?: string | null,
+): Promise<T> {
   if (!(APP_ROLES as readonly string[]).includes(user.role)) {
     throw new Error(`Bilinmeyen kullanıcı katmanı: ${String(user.role)}`);
   }
   if (!USER_ID.test(user.id)) throw new Error("Geçersiz kullanıcı kimliği");
-  return systemContext.run({ dbRole: DB_ROLE[user.role], userId: user.id }, fn);
+  const resolvedEntityId = normalizeOptionalEntityId(
+    legalEntityId !== undefined ? legalEntityId : user.legalEntityId,
+  );
+  return systemContext.run(
+    {
+      dbRole: DB_ROLE[user.role],
+      userId: user.id,
+      legalEntityId: resolvedEntityId,
+      statementTimeoutMs: null,
+    },
+    fn,
+  );
 }
 
-async function contextFor(): Promise<{ dbRole: string | null; userId: string | null }> {
+async function contextFor(): Promise<{
+  dbRole: string | null;
+  userId: string | null;
+  legalEntityId: string | null;
+  statementTimeoutMs: number | null;
+}> {
   const system = systemContext.getStore();
   if (system) return system;
   try {
     // Imported lazily to break the cycle: the context resolver reads the session, and reading
     // the session needs a pool from this module.
     const { getDbContext } = await import("@/lib/authz/context");
-    return await getDbContext();
+    const ctx = await getDbContext();
+    return {
+      dbRole: ctx.dbRole,
+      userId: ctx.userId,
+      legalEntityId: ctx.legalEntityId ?? null,
+      statementTimeoutMs: null,
+    };
   } catch {
     // No request context (a script, a background task) — no tier, and therefore no access to
     // business tables. Failing closed is the only safe reading of "I don't know who this is".
-    return { dbRole: null, userId: null };
+    return { dbRole: null, userId: null, legalEntityId: null, statementTimeoutMs: null };
   }
 }
 
 async function prepare(client: TaggedClient, forceUserConfig = true): Promise<void> {
-  const { dbRole, userId } = await contextFor();
-  // Order matters: set the user id BEFORE switching role. `app.user_id` is what the row-level
-  // policies read (approvals' maker-checker rule, users_self_read), and set_config must run
-  // while the connection still has the privilege to run it.
+  const { dbRole, userId, legalEntityId, statementTimeoutMs } = await contextFor();
+  const prevTimeout = client[CURRENT_TIMEOUT] ?? null;
+  if (statementTimeoutMs !== prevTimeout) {
+    const effectiveTimeout = statementTimeoutMs ?? (env.databaseStatementTimeoutMs ?? 30_000);
+    await client.query(`set statement_timeout = ${effectiveTimeout}`);
+    client[CURRENT_TIMEOUT] = statementTimeoutMs;
+  }
+  // Order matters: set the user id & active legal entity BEFORE switching role.
   if (dbRole !== null) {
     const targetUser = userId ?? "";
-    if (forceUserConfig || client[CURRENT_USER] !== targetUser) {
-      await client.query("select set_config('app.user_id', $1, false)", [targetUser]);
+    const targetEntity = legalEntityId ?? "";
+    if (
+      forceUserConfig ||
+      client[CURRENT_USER] !== targetUser ||
+      client[CURRENT_ENTITY] !== targetEntity
+    ) {
+      await client.query(
+        "select set_config('app.user_id', $1, false), set_config('app.current_legal_entity_id', $2, false)",
+        [targetUser, targetEntity],
+      );
       client[CURRENT_USER] = targetUser;
+      client[CURRENT_ENTITY] = targetEntity;
     }
   }
   await applyRole(client, dbRole);

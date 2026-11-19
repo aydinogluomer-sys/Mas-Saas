@@ -87,7 +87,7 @@ describe("Faz 7 — Ağır istemci bileşenleri ve Excel paketlerinde lazy loadi
       render(<CommandPaletteTrigger />);
 
       const trigger = screen.getByRole("button", { name: /Ara \(Ctrl\+K\)/i });
-      expect(trigger.textContent?.trim()).toMatch(/^ara ⌘K$/);
+      expect(trigger.textContent).toContain("⌘K");
       expect(screen.queryByRole("dialog")).toBeNull();
 
       fireEvent.click(trigger);

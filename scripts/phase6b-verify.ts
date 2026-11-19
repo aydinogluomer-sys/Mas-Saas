@@ -42,7 +42,9 @@ async function main() {
   // audit_logs.actor_id is an FK to public.users(id) since 0032; verify scripts run
   // without a session, so they attribute to the reserved "system" account.
   const actorId = await ensureSystemActor(pool);
-  await pool.query(`truncate public.source_workbooks, public.payments, public.payment_instances, public.reminder_deliveries restart identity cascade`);
+  await pool.query(
+    `truncate public.source_workbooks, public.payments, public.payment_instances, public.reminder_deliveries, public.notification_outbox restart identity cascade`,
+  );
 
   const r = await importWorkbook(pool, readFileSync(SRC), "TEMİZ.xlsx", actorId);
   if (!r.ok) fail("import failed");
@@ -65,14 +67,23 @@ async function main() {
   const allPending = (await q(`select count(*)::int n from public.reminder_deliveries where status='pending'`))[0].n;
   if (allPending !== s1.inserted) fail("scheduled rows not all pending");
 
-  // eligibility correctness: every scheduled delivery's instance due_date matches an offset
-  const bad = await q(`
-    select d.id from public.reminder_deliveries d
-    join public.reminders r on r.id=d.reminder_id
-    join public.payment_instances i on i.id=d.entity_id
-    where (i.due_date - r.offset_days) <> $1::date`, [TODAY]);
-  if (bad.length > 0) fail(`${bad.length} deliveries scheduled for wrong offset/date`);
-  console.log(`eligibility ✓ ${s1.inserted} teslimat, hepsi doğru offset gününde (due − offset = bugün)`);
+  // eligibility correctness: every scheduled delivery matches disjoint upcoming/overdue bucket semantics
+  const bad = await q(
+    `select d.id
+       from public.reminder_deliveries d
+       join public.reminders r on r.id = d.reminder_id
+       join public.payment_instances i on i.id = d.entity_id
+      where not (
+        (r.offset_days >= 0 and (i.due_date - r.offset_days) = $1::date)
+        or (r.offset_days = -1 and ($1::date - i.due_date) between 1 and 7)
+        or (r.offset_days = -8 and ($1::date - i.due_date) between 8 and 30)
+        or (r.offset_days = -31 and ($1::date - i.due_date) >= 31)
+        or (r.offset_days < 0 and r.offset_days not in (-1, -8, -31) and ($1::date - i.due_date) = (-r.offset_days))
+      )`,
+    [TODAY],
+  );
+  if (bad.length > 0) fail(`${bad.length} deliveries scheduled for wrong offset/disjoint bucket`);
+  console.log(`eligibility ✓ ${s1.inserted} teslimat, hepsi ayrık (disjoint) kademe/offset kuralında`);
 
   // 2) duplicate prevention: re-schedule inserts nothing
   const s2 = await scheduleReminders(pool, TODAY);
@@ -90,25 +101,38 @@ async function main() {
   if (!uniqueFired) fail("DB unique delivery key not enforced");
   console.log("DB benzersiz teslimat anahtarı ✓");
 
-  // 3) dispatch success (mock) → sent + sent_at, message carried
+  // 3) dispatch success (mock) → sent + sent_at, message carried (> 5 items batched into 1 consolidated digest)
   const okMock = mockTransport();
   const d1 = await dispatchPending(pool, okMock, TODAY);
   console.log("dispatch#1 (mock ok):", JSON.stringify(d1));
   if (d1.sent !== s1.inserted || d1.failed !== 0) fail("mock success dispatch wrong counts");
   const sentRows = await q(`select count(*)::int n from public.reminder_deliveries where status='sent' and sent_at is not null`);
   if (sentRows[0].n !== s1.inserted) fail("sent rows missing sent_at");
-  if (okMock.sent.length !== s1.inserted) fail("transport did not receive all messages");
+  const expectedOutboundMessages = s1.inserted > 5 ? 1 : s1.inserted;
+  if (okMock.sent.length !== expectedOutboundMessages) {
+    fail(`transport message count mismatch: got ${okMock.sent.length}, expected ${expectedOutboundMessages}`);
+  }
   if (!okMock.sent.every((m) => /tutar:/.test(m) && /durum:/.test(m))) fail("message missing required fields");
-  console.log(`gönderim ✓ ${d1.sent} 'sent' + sent_at + mesaj alanları (tutar/durum) taşındı`);
+  if (okMock.sent.some((m) => /\b(unpaid|missing_amount|critical_payment)\b/.test(m))) {
+    fail("raw English snake_case token leaked into rendered message");
+  }
+  console.log(`gönderim ✓ ${d1.sent} 'sent' (${okMock.sent.length} dış ileti) + Türkçe alanlar doğrulandı`);
 
-  // 4) idempotent dispatch: no pending left
+  // 4) idempotent dispatch: no pending left + outbox dedupe guard
   const d2 = await dispatchPending(pool, okMock, TODAY);
   if (d2.attempted !== 0) fail("dispatch re-sent already-sent deliveries");
-  console.log("tekrar gönderim ✓ (attempted=0, 'sent' yeniden gönderilmez)");
-
-  // 5) failure path: reset one to pending, dispatch with failing mock → 'failed' + error logged
   const target = (await q(`select id from public.reminder_deliveries limit 1`))[0].id;
   await pool.query(`update public.reminder_deliveries set status='pending', sent_at=null where id=$1`, [target]);
+  const dedupeMock = mockTransport();
+  const dDedupe = await dispatchPending(pool, dedupeMock, TODAY);
+  if (dDedupe.skipped !== 1 || dedupeMock.sent.length !== 0) {
+    fail("outbox idempotency failed to block duplicate re-send");
+  }
+  console.log("tekrar gönderim & outbox idempotensi ✓ ('sent' yeniden gönderilmez)");
+
+  // 5) failure path: clear outbox + reset one to pending, dispatch with failing mock → 'failed' + error logged
+  await pool.query(`truncate public.notification_outbox restart identity cascade`);
+  await pool.query(`update public.reminder_deliveries set status='pending', sent_at=null, error=null where id=$1`, [target]);
   const d3 = await dispatchPending(pool, mockTransport({ failOn: () => true }), TODAY);
   if (d3.failed !== 1 || d3.sent !== 0) fail("failure dispatch wrong counts");
   const failed = (await q(`select status, error from public.reminder_deliveries where id=$1`, [target]))[0];

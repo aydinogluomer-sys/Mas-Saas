@@ -27,6 +27,9 @@ import {
   type Decimal,
 } from "@/lib/money";
 import { loadCapacityModels, loadCostModels, loadPartProfitability } from "./engine";
+import { loadBomSummaries } from "./bom";
+import { convertAmountToTry, loadLatestSpotRatesToTry, normalizeCurrency } from "./fx-rates";
+import { loadCustomerRateCards, type CustomerRateCardRow } from "./rate-cards";
 import {
   breakEvenTLPerMin,
   partProfitability,
@@ -48,6 +51,10 @@ export interface MonthlyLedger7xxRow {
   periodMonth: string;
   /** TDHP 710..749 üretim maliyet hesapları (amortisman hariç, ebitda_bucket = 'cogs'). */
   production710_730Try: number;
+  /** TDHP 710 Direkt İlk Madde ve Malzeme Giderleri (BOM & hammadde sarfı; tezgâh dakikasına bölünmez). */
+  directMaterial710Try?: number;
+  /** TDHP 720 + 730 Direkt İşçilik ve Genel Üretim Giderleri (gerçek atölye dönüşüm havuzu). */
+  shopFloor720_730Try?: number;
   /** TDHP 750..779 faaliyet giderleri (770.99 amortisman hariç, ebitda_bucket = 'opex'). */
   opex760_770ExclDaTry: number;
   /** TDHP 7xx amortisman ve itfa payları (770.99 / 730.99, ebitda_bucket = 'da_addback'). */
@@ -80,14 +87,18 @@ export interface ComputeActualCostBridgeInput {
   monthlyLedger7xx: MonthlyLedger7xxRow[];
   costModels: CostModelBridgeInput[];
   parts?: PartBridgeInput[];
+  rateCards?: CustomerRateCardRow[];
   lookbackMonths?: number;
   maxErosionParts?: number;
   isStaleCapacityRate?: boolean;
 }
 
 export interface CustomerRateBridgeComparison {
-  operation: "freze" | "torna";
+  operation: string;
   label: string;
+  customerName?: string;
+  currency?: string;
+  nativeRatePerMin?: number | null;
   priceTlPerMin: number | null;
   bookMarginTlPerMin: number | null;
   bookMarginPct: number | null;
@@ -97,6 +108,8 @@ export interface CustomerRateBridgeComparison {
   actualFullMarginTlPerMin: number | null;
   actualFullMarginPct: number | null;
   actualFullLoss: boolean;
+  /** Aylık 720+730 saf atölye dönüşüm maliyetine karşı tarife marjı (ABC). */
+  abcShopFloorMarginTlPerMin?: number | null;
   /**
    * Statik/kitabi başabaşa göre kârlı görünen (`price > bookBreakEven`) ancak fiili 7xx tam
    * başabaş altında zarara dönen (`price < actualFullBreakEven`) gizli marj erimesi sinyali.
@@ -112,6 +125,8 @@ export interface ModelActualCostBridge {
   staticMonthlyCostTry: number | null;
   effectiveMinutes: number | null;
   bookBreakEvenTlPerMin: number | null;
+  /** ABC Saf Atölye Dönüşüm Maliyeti: yalnız TDHP (720 + 730 + amortisman) / etkin tezgâh dakikası. */
+  abcShopFloorTlPerMin: number | null;
   actualCashBreakEvenTlPerMin: number | null;
   actualFullBreakEvenTlPerMin: number | null;
   /** Tam fiili başabaş (`actualFullBreakEvenTlPerMin` ile özdeş; ölçülemez durumda `null`). */
@@ -127,6 +142,7 @@ export interface ModelActualCostBridge {
   akonFrezeComparison: CustomerRateBridgeComparison;
   akonTornaComparison: CustomerRateBridgeComparison;
   customerRates: CustomerRateBridgeComparison[];
+  rateCardComparisons: CustomerRateBridgeComparison[];
   hasHiddenRateErosion: boolean;
 }
 
@@ -157,6 +173,10 @@ export interface ActualCostBridgeResult {
   monthCount: number;
   totalPosted7xxEntries: number;
   avgMonthlyProduction710_730Try: number | null;
+  /** ABC: Aylık ortalama TDHP 710 Direkt İlk Madde & Malzeme (BOM'a bağlı, dakikaya bölünmez). */
+  avgMonthlyDirectMaterial710Try: number | null;
+  /** ABC: Aylık ortalama TDHP 720 + 730 Direkt İşçilik & Genel Üretim Giderleri (atölye havuzu). */
+  avgMonthlyShopFloor720_730Try: number | null;
   avgMonthlyOpex760_770ExclDaTry: number | null;
   avgMonthlyOperating7xxExclDaTry: number | null;
   avgMonthlyDepreciationDaTry: number | null;
@@ -164,6 +184,8 @@ export interface ActualCostBridgeResult {
   avgMonthlyFinancing780Try: number | null;
   primaryScenario: string | null;
   bookBreakEvenTlPerMin: number | null;
+  /** ABC Saf Atölye Dönüşüm TL/dk: (720 + 730 + Amortisman) / Etkin Dakika. */
+  abcShopFloorTlPerMin: number | null;
   actualCashBreakEvenTlPerMin: number | null;
   actualFullBreakEvenTlPerMin: number | null;
   actualBreakEvenTlPerMin: number | null;
@@ -234,17 +256,19 @@ function exactNonNegativeTlPerMin(
 }
 
 /**
- * Müşteri TL/dk tarifesini (örn. Akon Freze / Akon Torna) kitabi başabaş, nakit 7xx başabaş ve
- * tam 7xx (+ amortisman) başabaş karşısında `priceMargin` (`rules.ts`) ile sınar; tüm fark ve
- * yüzdeleri `Big.js` üzerinden 2 ondalığa yuvarlar.
+ * Müşteri kontrat TL/dk tarifesini kitabi başabaş, nakit 7xx başabaş, tam 7xx (+ amortisman)
+ * başabaş ve ABC saf atölye dönüşüm TL/dk karşısında `priceMargin` (`rules.ts`) ile sınar;
+ * tüm fark ve yüzdeleri `Big.js` üzerinden 2 ondalığa yuvarlar.
  */
 function buildCustomerRateComparison(
-  operation: "freze" | "torna",
+  operation: string,
   label: string,
   rawPrice: number | null,
   bookBreakEven: number | null,
   actualCashBreakEven: number | null,
   actualFullBreakEven: number | null,
+  abcShopFloorBreakEven?: number | null,
+  extra?: { customerName?: string; currency?: string; nativeRatePerMin?: number | null },
 ): CustomerRateBridgeComparison {
   const priceTlPerMin = rawPrice !== null && Number.isFinite(rawPrice) ? moneyOrNull(rawPrice) : null;
 
@@ -278,6 +302,11 @@ function buildCustomerRateComparison(
       : null;
   const actualFullLoss = actualFullMarginTlPerMin !== null ? actualFullMarginTlPerMin < 0 : fullPm.loss;
 
+  const abcShopFloorMarginTlPerMin =
+    priceTlPerMin !== null && abcShopFloorBreakEven !== undefined && abcShopFloorBreakEven !== null
+      ? moneyOrNull(sub(priceTlPerMin, abcShopFloorBreakEven))
+      : null;
+
   const hiddenMarginErosion =
     bookMarginTlPerMin !== null &&
     bookMarginTlPerMin > 0 &&
@@ -289,6 +318,9 @@ function buildCustomerRateComparison(
   return {
     operation,
     label,
+    ...(extra?.customerName ? { customerName: extra.customerName } : {}),
+    ...(extra?.currency ? { currency: extra.currency } : {}),
+    ...(extra?.nativeRatePerMin !== undefined ? { nativeRatePerMin: extra.nativeRatePerMin } : {}),
     priceTlPerMin,
     bookMarginTlPerMin,
     bookMarginPct,
@@ -298,12 +330,17 @@ function buildCustomerRateComparison(
     actualFullMarginTlPerMin,
     actualFullMarginPct,
     actualFullLoss,
+    abcShopFloorMarginTlPerMin,
     hiddenMarginErosion,
   };
 }
 
 /**
- * Saf ve deterministik TDHP 7xx Fiili Gider ↔ Tezgâh Dakika (TL/dk) başabaş köprü motoru.
+ * Saf ve deterministik TDHP 7xx Fiili Gider ↔ Tezgâh Dakika (TL/dk) & ABC Köprü motoru.
+ * ABC Ayrımı (M-47):
+ * - TDHP 710 Direkt İlk Madde & Malzeme: BOM reçetesine ve fire oranına bağlıdır, tezgâh dakikasına bölünmez.
+ * - TDHP 720 + 730 Direkt İşçilik & Genel Üretim Giderleri (+ üretim amortismanı): etkin tezgâh dakikasına bölünür (`abcShopFloorTlPerMin`).
+ * - TDHP 760 + 770 Pazarlama & Genel Yönetim ve 780 Finansman: Faaliyet Kâr Köprüsünde (Operating Profit Bridge) dönem gideri olarak izlenir.
  */
 export function computeActualCostBridge(
   input: ComputeActualCostBridgeInput,
@@ -320,19 +357,32 @@ export function computeActualCostBridge(
     .slice()
     .sort((a, b) => b.periodMonth.localeCompare(a.periodMonth))
     .slice(0, lookbackMonths)
-    .map((m) => ({
-      periodMonth: m.periodMonth,
-      production710_730Try: money(m.production710_730Try),
-      opex760_770ExclDaTry: money(m.opex760_770ExclDaTry),
-      depreciationDaTry: money(m.depreciationDaTry),
-      financing780Try: money(m.financing780Try),
-      postedEntryCount: Math.trunc(m.postedEntryCount),
-    }));
+    .map((m) => {
+      const prodTotal = money(m.production710_730Try);
+      const dm710 = m.directMaterial710Try !== undefined ? money(m.directMaterial710Try) : 0;
+      const shop720_730 =
+        m.shopFloor720_730Try !== undefined
+          ? money(m.shopFloor720_730Try)
+          : money(sub(prodTotal, dm710));
+      return {
+        periodMonth: m.periodMonth,
+        production710_730Try: prodTotal,
+        directMaterial710Try: dm710,
+        shopFloor720_730Try: shop720_730,
+        opex760_770ExclDaTry: money(m.opex760_770ExclDaTry),
+        depreciationDaTry: money(m.depreciationDaTry),
+        financing780Try: money(m.financing780Try),
+        postedEntryCount: Math.trunc(m.postedEntryCount),
+      };
+    });
 
   const monthCount = activeMonths.length;
   const totalPosted7xxEntries = activeMonths.reduce((acc, m) => acc + m.postedEntryCount, 0);
 
   let avgProdDec: Decimal | null = null;
+  let avgDm710Dec: Decimal | null = null;
+  let avgShop720_730Dec: Decimal | null = null;
+  let avgAbcShopInclDaDec: Decimal | null = null;
   let avgOpexExclDaDec: Decimal | null = null;
   let avgOperatingExclDaDec: Decimal | null = null;
   let avgDaDec: Decimal | null = null;
@@ -341,13 +391,19 @@ export function computeActualCostBridge(
 
   if (monthCount > 0) {
     const prodSum = sumDecimal(activeMonths.map((m) => m.production710_730Try));
+    const dm710Sum = sumDecimal(activeMonths.map((m) => m.directMaterial710Try ?? 0));
+    const shopSum = sumDecimal(activeMonths.map((m) => m.shopFloor720_730Try ?? m.production710_730Try));
     const opexSum = sumDecimal(activeMonths.map((m) => m.opex760_770ExclDaTry));
     const daSum = sumDecimal(activeMonths.map((m) => m.depreciationDaTry));
     const finSum = sumDecimal(activeMonths.map((m) => m.financing780Try));
     const operatingSum = add(prodSum, opexSum);
     const fullSum = add(operatingSum, daSum);
+    const abcShopInclDaSum = add(shopSum, daSum);
 
     avgProdDec = divOrNull(prodSum, monthCount);
+    avgDm710Dec = divOrNull(dm710Sum, monthCount);
+    avgShop720_730Dec = divOrNull(shopSum, monthCount);
+    avgAbcShopInclDaDec = divOrNull(abcShopInclDaSum, monthCount);
     avgOpexExclDaDec = divOrNull(opexSum, monthCount);
     avgOperatingExclDaDec = divOrNull(operatingSum, monthCount);
     avgDaDec = divOrNull(daSum, monthCount);
@@ -359,6 +415,8 @@ export function computeActualCostBridge(
   // asla 0,00 TL/dk başabaş üretilmez.
   const hasSufficientOperatingActuals =
     monthCount > 0 && avgFullInclDaDec !== null && avgFullInclDaDec.gt(0);
+
+  const activeRateCards = (input.rateCards ?? []).filter((rc) => rc.isActive);
 
   const models: ModelActualCostBridge[] = input.costModels.map((m) => {
     const validEffMinutes =
@@ -382,6 +440,10 @@ export function computeActualCostBridge(
       modelStatus = "ready";
     }
 
+    const abcShopFloorTlPerMin =
+      modelStatus === "ready"
+        ? exactPositiveBreakEvenTlPerMin(avgAbcShopInclDaDec, validEffMinutes)
+        : null;
     const actualCashBreakEvenTlPerMin =
       modelStatus === "ready"
         ? exactPositiveBreakEvenTlPerMin(avgOperatingExclDaDec, validEffMinutes)
@@ -428,22 +490,46 @@ export function computeActualCostBridge(
 
     const akonFrezeComparison = buildCustomerRateComparison(
       "freze",
-      "Akon Freze",
+      "Kontrat Freze Tarifesi",
       m.akonFreze,
       bookBreakEvenTlPerMin,
       actualCashBreakEvenTlPerMin,
       actualFullBreakEvenTlPerMin,
+      abcShopFloorTlPerMin,
     );
     const akonTornaComparison = buildCustomerRateComparison(
       "torna",
-      "Akon Torna",
+      "Kontrat Torna Tarifesi",
       m.akonTorna,
       bookBreakEvenTlPerMin,
       actualCashBreakEvenTlPerMin,
       actualFullBreakEvenTlPerMin,
+      abcShopFloorTlPerMin,
     );
-    const customerRates = [akonFrezeComparison, akonTornaComparison];
-    const hasHiddenRateErosion = customerRates.some((cr) => cr.hiddenMarginErosion);
+    const rateCardComparisons: CustomerRateBridgeComparison[] = activeRateCards.map((rc) =>
+      buildCustomerRateComparison(
+        rc.operationType,
+        `${rc.displayCustomerName} — ${rc.operationType.toUpperCase()}`,
+        rc.ratePerMinuteTry,
+        bookBreakEvenTlPerMin,
+        actualCashBreakEvenTlPerMin,
+        actualFullBreakEvenTlPerMin,
+        abcShopFloorTlPerMin,
+        {
+          customerName: rc.displayCustomerName,
+          currency: rc.currency,
+          nativeRatePerMin: rc.ratePerMinute,
+        },
+      ),
+    );
+    const customerRates =
+      rateCardComparisons.length > 0
+        ? rateCardComparisons
+        : [akonFrezeComparison, akonTornaComparison];
+    const hasHiddenRateErosion =
+      customerRates.some((cr) => cr.hiddenMarginErosion) ||
+      akonFrezeComparison.hiddenMarginErosion ||
+      akonTornaComparison.hiddenMarginErosion;
 
     return {
       modelId: m.id,
@@ -453,6 +539,7 @@ export function computeActualCostBridge(
       staticMonthlyCostTry,
       effectiveMinutes: validEffMinutes,
       bookBreakEvenTlPerMin,
+      abcShopFloorTlPerMin,
       actualCashBreakEvenTlPerMin,
       actualFullBreakEvenTlPerMin,
       actualBreakEvenTlPerMin: actualFullBreakEvenTlPerMin,
@@ -463,6 +550,7 @@ export function computeActualCostBridge(
       akonFrezeComparison,
       akonTornaComparison,
       customerRates,
+      rateCardComparisons,
       hasHiddenRateErosion,
     };
   });
@@ -502,9 +590,9 @@ export function computeActualCostBridge(
   const refFullRate = primaryModel?.actualFullBreakEvenTlPerMin ?? null;
 
   for (const part of partsList) {
-    // Mevcut rules.ts `partProfitability` ile operasyon süresi ve null kurallarını uygula
-    const bookProf = partProfitability(part, refBookRate, refBookRate);
-    const fullProf = partProfitability(part, refFullRate, refFullRate);
+    // Mevcut rules.ts `partProfitability` ile operasyon süresi (other_operation_minutes dahil) ve null kurallarını uygula
+    const bookProf = partProfitability(part, refBookRate, refBookRate, refBookRate);
+    const fullProf = partProfitability(part, refFullRate, refFullRate, refFullRate);
 
     if (
       status !== "ready" ||
@@ -531,7 +619,13 @@ export function computeActualCostBridge(
       part.frezeMinutesPerUnit !== null && Number.isFinite(part.frezeMinutesPerUnit)
         ? mul(part.frezeMinutesPerUnit, part.quantity)
         : zero();
-    const totalMinDec = add(tornaMinDec, frezeMinDec);
+    const otherMinDec =
+      part.otherOperationMinutesPerUnit != null &&
+      Number.isFinite(part.otherOperationMinutesPerUnit) &&
+      part.otherOperationMinutesPerUnit > 0
+        ? mul(part.otherOperationMinutesPerUnit, part.quantity)
+        : zero();
+    const totalMinDec = add(add(tornaMinDec, frezeMinDec), otherMinDec);
 
     if (totalMinDec.lte(0)) {
       unmeasurablePartCount++;
@@ -540,10 +634,17 @@ export function computeActualCostBridge(
 
     evaluatedPartCount++;
 
+    const matTotalDec =
+      part.unitMaterialCostTry != null &&
+      Number.isFinite(part.unitMaterialCostTry) &&
+      part.unitMaterialCostTry > 0
+        ? mul(part.unitMaterialCostTry, part.quantity)
+        : zero();
+
     const revenueDec = decimal(part.revenue);
-    const bookCostDec = mul(totalMinDec, refBookRate);
+    const bookCostDec = add(mul(totalMinDec, refBookRate), matTotalDec);
     const bookMarginDec = sub(revenueDec, bookCostDec);
-    const fullCostDec = mul(totalMinDec, refFullRate);
+    const fullCostDec = add(mul(totalMinDec, refFullRate), matTotalDec);
     const fullMarginDec = sub(revenueDec, fullCostDec);
 
     const bookCostTry = money(bookCostDec);
@@ -552,9 +653,11 @@ export function computeActualCostBridge(
     const actualFullMarginTry = money(fullMarginDec);
 
     const actualCashCostTry =
-      refCashRate !== null ? money(mul(totalMinDec, refCashRate)) : null;
+      refCashRate !== null ? money(add(mul(totalMinDec, refCashRate), matTotalDec)) : null;
     const actualCashMarginTry =
-      refCashRate !== null ? money(sub(revenueDec, mul(totalMinDec, refCashRate))) : null;
+      refCashRate !== null
+        ? money(sub(revenueDec, add(mul(totalMinDec, refCashRate), matTotalDec)))
+        : null;
 
     if (bookMarginTry > 0) bookProfitablePartCount++;
     if (actualFullMarginTry < 0) actualLossPartCount++;
@@ -598,6 +701,10 @@ export function computeActualCostBridge(
     monthCount,
     totalPosted7xxEntries,
     avgMonthlyProduction710_730Try: hasSufficientOperatingActuals ? moneyOrNull(avgProdDec) : null,
+    avgMonthlyDirectMaterial710Try: hasSufficientOperatingActuals ? moneyOrNull(avgDm710Dec) : null,
+    avgMonthlyShopFloor720_730Try: hasSufficientOperatingActuals
+      ? moneyOrNull(avgShop720_730Dec)
+      : null,
     avgMonthlyOpex760_770ExclDaTry: hasSufficientOperatingActuals ? moneyOrNull(avgOpexExclDaDec) : null,
     avgMonthlyOperating7xxExclDaTry: hasSufficientOperatingActuals
       ? moneyOrNull(avgOperatingExclDaDec)
@@ -607,6 +714,8 @@ export function computeActualCostBridge(
     avgMonthlyFinancing780Try: monthCount > 0 ? moneyOrNull(avgFinancingDec) : null,
     primaryScenario: primaryModel?.scenario ?? null,
     bookBreakEvenTlPerMin: primaryModel?.bookBreakEvenTlPerMin ?? null,
+    abcShopFloorTlPerMin:
+      status === "ready" ? (primaryModel?.abcShopFloorTlPerMin ?? null) : null,
     actualCashBreakEvenTlPerMin:
       status === "ready" ? (primaryModel?.actualCashBreakEvenTlPerMin ?? null) : null,
     actualFullBreakEvenTlPerMin:
@@ -637,6 +746,8 @@ async function loadMonthlyLedger7xxRows(
     .query<{
       period_month: string;
       production_710_730_try: string;
+      direct_material_710_try?: string;
+      shop_floor_720_730_try?: string;
       opex_760_770_excl_da_try: string;
       depreciation_da_try: string;
       financing_780_try: string;
@@ -648,6 +759,14 @@ async function loadMonthlyLedger7xxRows(
            when a.ebitda_bucket = 'cogs' then coalesce(l.debit_try, 0) - coalesce(l.credit_try, 0)
            else 0
          end), 0)::numeric(16,2)::text as production_710_730_try,
+         coalesce(sum(case
+           when a.ebitda_bucket = 'cogs' and a.tdhp_root_code in ('710', '711') then coalesce(l.debit_try, 0) - coalesce(l.credit_try, 0)
+           else 0
+         end), 0)::numeric(16,2)::text as direct_material_710_try,
+         coalesce(sum(case
+           when a.ebitda_bucket = 'cogs' and a.tdhp_root_code not in ('710', '711') then coalesce(l.debit_try, 0) - coalesce(l.credit_try, 0)
+           else 0
+         end), 0)::numeric(16,2)::text as shop_floor_720_730_try,
          coalesce(sum(case
            when a.ebitda_bucket = 'opex' then coalesce(l.debit_try, 0) - coalesce(l.credit_try, 0)
            else 0
@@ -688,87 +807,105 @@ async function loadMonthlyLedger7xxRows(
       throw err;
     });
 
-  return (res?.rows ?? []).map((r) => ({
-    periodMonth: r.period_month,
-    production710_730Try: money(r.production_710_730_try),
-    opex760_770ExclDaTry: money(r.opex_760_770_excl_da_try),
-    depreciationDaTry: money(r.depreciation_da_try),
-    financing780Try: money(r.financing_780_try),
-    postedEntryCount: Number(r.posted_entry_count),
-  }));
+  return (res?.rows ?? []).map((r) => {
+    const prod = money(r.production_710_730_try);
+    const dm710 =
+      r.direct_material_710_try !== undefined ? money(r.direct_material_710_try) : 0;
+    const shop =
+      r.shop_floor_720_730_try !== undefined
+        ? money(r.shop_floor_720_730_try)
+        : money(sub(prod, dm710));
+    return {
+      periodMonth: r.period_month,
+      production710_730Try: prod,
+      directMaterial710Try: dm710,
+      shopFloor720_730Try: shop,
+      opex760_770ExclDaTry: money(r.opex_760_770_excl_da_try),
+      depreciationDaTry: money(r.depreciation_da_try),
+      financing780Try: money(r.financing_780_try),
+      postedEntryCount: Number(r.posted_entry_count),
+    };
+  });
 }
 
 async function loadBridgeParts(
   pool: Pool,
   fallbackRevenuesByCode: Map<string, number | null>,
 ): Promise<PartBridgeInput[]> {
-  const res = await pool
-    .query<{
-      id: string;
-      part_code: string | null;
-      part_name: string;
-      quantity: number | string | null;
-      torna_minutes: string | number | null;
-      freze_minutes: string | number | null;
-      unit_sale_price: string | number | null;
-      currency: string | null;
-      row_json: unknown;
-    }>(
-      `select pp.id::text as id,
-              pp.part_code,
-              pp.part_name,
-              pp.quantity,
-              pp.torna_minutes::text as torna_minutes,
-              pp.freze_minutes::text as freze_minutes,
-              pp.unit_sale_price::text as unit_sale_price,
-              pp.currency,
-              ir.row_json
-         from public.production_parts pp
-         left join public.import_rows ir on ir.id = pp.source_row_id
-        order by pp.part_code nulls last, pp.part_name`,
-    )
-    .catch((err: unknown) => {
-      const code = (err as { code?: string } | null)?.code;
-      if (code === "42703") {
-        return pool
-          .query<{
-            id: string;
-            part_code: string | null;
-            part_name: string;
-            quantity: number | string | null;
-            torna_minutes: string | number | null;
-            freze_minutes: string | number | null;
-            unit_sale_price: string | number | null;
-            currency: string | null;
-            row_json: unknown;
-          }>(
-            `select pp.id::text as id,
-                    pp.part_code,
-                    pp.part_name,
-                    pp.quantity,
-                    pp.torna_minutes::text as torna_minutes,
-                    pp.freze_minutes::text as freze_minutes,
-                    null::text as unit_sale_price,
-                    'TRY'::text as currency,
-                    ir.row_json
-               from public.production_parts pp
-               left join public.import_rows ir on ir.id = pp.source_row_id
-              order by pp.part_code nulls last, pp.part_name`,
-          )
-          .catch((e2: unknown) => {
-            if (isMissingSchemaError(e2)) return { rows: [], rowCount: 0 };
-            throw e2;
-          });
-      }
-      if (isMissingSchemaError(err)) return { rows: [], rowCount: 0 };
-      throw err;
-    });
+  const [spotRates, bomSummary, res] = await Promise.all([
+    loadLatestSpotRatesToTry(pool),
+    loadBomSummaries(pool),
+    pool
+      .query<{
+        id: string;
+        part_code: string | null;
+        part_name: string;
+        quantity: number | string | null;
+        torna_minutes: string | number | null;
+        freze_minutes: string | number | null;
+        other_operation_minutes?: string | number | null;
+        unit_sale_price: string | number | null;
+        currency: string | null;
+        row_json: unknown;
+      }>(
+        `select pp.id::text as id,
+                pp.part_code,
+                pp.part_name,
+                pp.quantity,
+                pp.torna_minutes::text as torna_minutes,
+                pp.freze_minutes::text as freze_minutes,
+                pp.other_operation_minutes::text as other_operation_minutes,
+                pp.unit_sale_price::text as unit_sale_price,
+                pp.currency,
+                ir.row_json
+           from public.production_parts pp
+           left join public.import_rows ir on ir.id = pp.source_row_id
+          order by pp.part_code nulls last, pp.part_name`,
+      )
+      .catch((err: unknown) => {
+        const code = (err as { code?: string } | null)?.code;
+        if (code === "42703") {
+          return pool
+            .query<{
+              id: string;
+              part_code: string | null;
+              part_name: string;
+              quantity: number | string | null;
+              torna_minutes: string | number | null;
+              freze_minutes: string | number | null;
+              other_operation_minutes?: string | number | null;
+              unit_sale_price: string | number | null;
+              currency: string | null;
+              row_json: unknown;
+            }>(
+              `select pp.id::text as id,
+                      pp.part_code,
+                      pp.part_name,
+                      pp.quantity,
+                      pp.torna_minutes::text as torna_minutes,
+                      pp.freze_minutes::text as freze_minutes,
+                      null::text as unit_sale_price,
+                      'TRY'::text as currency,
+                      ir.row_json
+                 from public.production_parts pp
+                 left join public.import_rows ir on ir.id = pp.source_row_id
+                order by pp.part_code nulls last, pp.part_name`,
+            )
+            .catch((e2: unknown) => {
+              if (isMissingSchemaError(e2)) return { rows: [], rowCount: 0 };
+              throw e2;
+            });
+        }
+        if (isMissingSchemaError(err)) return { rows: [], rowCount: 0 };
+        throw err;
+      }),
+  ]);
 
   return (res?.rows ?? []).map((row) => {
     const qty = row.quantity === null || row.quantity === undefined ? null : Number(row.quantity);
     let rev: number | null = null;
     try {
-      rev = sourceRevenue(row.row_json ?? null, qty);
+      rev = sourceRevenue(row.row_json ?? null, qty, spotRates);
     } catch {
       rev = null;
     }
@@ -776,14 +913,18 @@ async function loadBridgeParts(
       rev === null &&
       row.unit_sale_price !== null &&
       row.unit_sale_price !== undefined &&
-      qty !== null &&
-      (row.currency === null || row.currency === undefined || row.currency === "TRY")
+      qty !== null
     ) {
-      rev = moneyOrNull(mul(row.unit_sale_price, qty));
+      const nativeTotal = moneyOrNull(mul(row.unit_sale_price, qty));
+      if (nativeTotal !== null) {
+        const ccy = normalizeCurrency(row.currency);
+        rev = convertAmountToTry(nativeTotal, ccy, spotRates).amountTry;
+      }
     }
     if (rev === null && row.part_code !== null) {
       rev = fallbackRevenuesByCode.get(row.part_code) ?? null;
     }
+    const bom = bomSummary.byPartId[row.id];
     return {
       id: row.id,
       code: row.part_code,
@@ -791,6 +932,11 @@ async function loadBridgeParts(
       quantity: qty,
       tornaMinutesPerUnit: rateOrNull(row.torna_minutes),
       frezeMinutesPerUnit: rateOrNull(row.freze_minutes),
+      otherOperationMinutesPerUnit:
+        row.other_operation_minutes !== undefined
+          ? rateOrNull(row.other_operation_minutes)
+          : null,
+      unitMaterialCostTry: bom?.totalBom710PerUnitTry ?? null,
       revenue: rev,
     };
   });
@@ -798,8 +944,8 @@ async function loadBridgeParts(
 
 /**
  * Veritabanından 0105 çift taraflı yönetim defterindeki posted 7xx özetini, maliyet modellerini,
- * kapasite modellerini ve üretim parçalarını okuyup canlı başabaş köprüsünü hesaplar.
- * 0105 öncesi şemalarda veya boş tablolarda hata fırlatmadan `insufficient_ledger_actuals` döner.
+ * kapasite modellerini, müşteri tarife kartlarını ve üretim parçalarını okuyup canlı ABC &
+ * başabaş köprüsünü hesaplar.
  */
 export async function loadActualCostBridge(
   pool: Pool,
@@ -811,12 +957,14 @@ export async function loadActualCostBridge(
       ? options.asOfDate.trim()
       : null;
 
-  const [monthlyLedger7xx, costModels, capacityModels, storedProfitability] = await Promise.all([
-    loadMonthlyLedger7xxRows(pool, asOfDate, lookbackMonths),
-    loadCostModels(pool),
-    loadCapacityModels(pool),
-    loadPartProfitability(pool, 200),
-  ]);
+  const [monthlyLedger7xx, costModels, capacityModels, storedProfitability, rateCardsOverview] =
+    await Promise.all([
+      loadMonthlyLedger7xxRows(pool, asOfDate, lookbackMonths),
+      loadCostModels(pool),
+      loadCapacityModels(pool),
+      loadPartProfitability(pool, 200),
+      loadCustomerRateCards(pool),
+    ]);
 
   const fallbackRevenuesByCode = new Map<string, number | null>();
   for (const sp of storedProfitability) {
@@ -832,6 +980,7 @@ export async function loadActualCostBridge(
     monthlyLedger7xx,
     costModels,
     parts,
+    rateCards: rateCardsOverview.cards,
     lookbackMonths,
     isStaleCapacityRate,
   });

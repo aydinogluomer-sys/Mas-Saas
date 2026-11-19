@@ -1,7 +1,9 @@
 import Link from "@/components/ui/app-link";
+import { AnalyticsChart } from "@/components/charts/analytics-chart";
+import type { ChartModel } from "@/lib/analytics/chart";
 import { getPool } from "@/lib/db";
-import { loadDataQualityCenter } from "@/lib/data-quality/engine";
-import { loadMetricHistory } from "@/lib/analytics/snapshots";
+import { loadSystemQualityHeader } from "@/lib/data-quality/engine";
+import { loadMetricHistories } from "@/lib/analytics/snapshots";
 import { Badge } from "@/components/ui/badge";
 import { Panel, fmtTL } from "@/components/ui/panel";
 import { EmptyState, KpiCard, PageHeader, TableShell } from "@/components/ui/shell";
@@ -10,6 +12,13 @@ import pkg from "../../../../package.json";
 import { requireRouteAccess } from "@/lib/authz/route-guard";
 
 export const dynamic = "force-dynamic";
+
+const SYSTEM_METRIC_KEYS = [
+  "decision_confidence",
+  "data_reviews_open",
+  "data_missing_amounts",
+  "cash_worst_closing",
+] as const;
 
 const SYSTEM_METRIC_LABELS: Record<string, { label: string; isCurrency?: boolean }> = {
   decision_confidence: { label: "Karar Güveni (%)" },
@@ -27,23 +36,47 @@ export default async function StatusPage({
   if (denied) return denied;
   const sp = await searchParams;
   const p = getPool();
-  const [dq, db, histConfidence, histReviews, histMissing, histWorstClosing] = await Promise.all([
-    loadDataQualityCenter(p),
-    p.query("select 1").then(() => "çalışıyor").catch(() => "hata"),
-    loadMetricHistory(p, "decision_confidence", 30),
-    loadMetricHistory(p, "data_reviews_open", 30),
-    loadMetricHistory(p, "data_missing_amounts", 30),
-    loadMetricHistory(p, "cash_worst_closing", 30),
+  const [dbProbe, dq, combinedHistory] = await Promise.all([
+    p.query("select 1").then(() => true).catch(() => false),
+    loadSystemQualityHeader(p).catch(() => ({
+      decisionConfidence: 0,
+      decisionConfidenceLabel: "düşük",
+      workbookVersions: [],
+    })),
+    loadMetricHistories(p, SYSTEM_METRIC_KEYS, 30).catch(() => []),
   ]);
-
-  const combinedHistory = [
-    ...histConfidence,
-    ...histReviews,
-    ...histMissing,
-    ...histWorstClosing,
-  ].sort((a, b) =>
-    b.snapshot_date.localeCompare(a.snapshot_date) || a.metric_key.localeCompare(b.metric_key),
-  );
+  const db = dbProbe ? "çalışıyor" : "hata";
+  const confidencePoints = combinedHistory
+    .filter((r) => r.metric_key === "decision_confidence" && r.value_numeric != null)
+    .slice()
+    .sort((a, b) => a.snapshot_date.localeCompare(b.snapshot_date))
+    .map((r) => ({
+      key: r.snapshot_date,
+      label: r.snapshot_date,
+      value: Number(r.value_numeric ?? 0),
+    }));
+  const metricChartModel: ChartModel | null =
+    confidencePoints.length >= 2
+      ? {
+          title: "Karar Güveni Tarihsel İzi (%)",
+          description: "Son 30 günlük sistem veri kalitesi ve karar güveni anlık görüntüleri",
+          asOf: confidencePoints[confidencePoints.length - 1]?.key ?? new Date().toISOString().slice(0, 10),
+          sourceLabel: "Sistem metrik anlık görüntüleri",
+          sourceHref: "/system/diagnostics",
+          timeDirection: "historical",
+          summaryMode: "endpoint",
+          availableGranularities: ["day", "week", "month"],
+          series: [
+            {
+              id: "decision_confidence",
+              label: "Karar Güveni (%)",
+              tone: "positive",
+              format: "percent",
+              points: confidencePoints,
+            },
+          ],
+        }
+      : null;
 
   return (
     <>
@@ -79,6 +112,12 @@ export default async function StatusPage({
         <p className="text-sm">{dq.workbookVersions[0]?.original_filename ?? "İçe aktarım yok"}</p>
         <p className="text-xs text-tone-3">{dq.workbookVersions[0]?.imported_at ?? "—"}</p>
       </Panel>
+
+      {metricChartModel ? (
+        <Panel title="KARAR GÜVENİ GRAFİK İZİ" subtitle="Günlük karar güveni metrik anlık görüntüleri">
+          <AnalyticsChart model={metricChartModel} defaultPeriod="3m" height={240} />
+        </Panel>
+      ) : null}
 
       <Panel
         title="TARİHSEL METRİK TRENDİ (METRIC_SNAPSHOTS)"

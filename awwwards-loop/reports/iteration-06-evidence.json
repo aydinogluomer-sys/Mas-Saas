@@ -1,0 +1,138 @@
+[
+  {
+    "check": "Faz1A+Akis4+Faz2A_Overview_Flows",
+    "viewport": "desktop",
+    "status": 200,
+    "overflowPx": 0,
+    "consoleErrors": [],
+    "pageErrors": []
+  },
+  {
+    "check": "Faz1B_Redirect_/system/approvals->/data/approvals",
+    "viewport": "desktop",
+    "status": 200,
+    "overflowPx": 0,
+    "consoleErrors": [],
+    "pageErrors": []
+  },
+  {
+    "check": "Faz1B_Redirect_/bank->/finance/bank",
+    "viewport": "desktop",
+    "status": 200,
+    "overflowPx": 0,
+    "consoleErrors": [],
+    "pageErrors": []
+  },
+  {
+    "check": "Faz1B+Faz3A+Akis5_Payments_Overdue_Bulk_Inspector",
+    "viewport": "desktop",
+    "status": 200,
+    "overflowPx": 0,
+    "consoleErrors": [],
+    "pageErrors": []
+  },
+  {
+    "check": "Faz2B_3A_payments_missing_desk",
+    "viewport": "desktop",
+    "status": 200,
+    "overflowPx": 0,
+    "consoleErrors": [],
+    "pageErrors": []
+  },
+  {
+    "check": "Faz2B_3A_data_reviews_desk",
+    "viewport": "desktop",
+    "status": 200,
+    "overflowPx": 0,
+    "consoleErrors": [],
+    "pageErrors": []
+  },
+  {
+    "check": "Faz2B_3A_payments_items_table",
+    "viewport": "desktop",
+    "status": 200,
+    "overflowPx": 0,
+    "consoleErrors": [],
+    "pageErrors": []
+  },
+  {
+    "check": "tablet:/",
+    "viewport": "tablet",
+    "status": 200,
+    "overflowPx": 0,
+    "consoleErrors": [],
+    "pageErrors": []
+  },
+  {
+    "check": "tablet:/payments?filter=overdue",
+    "viewport": "tablet",
+    "status": 200,
+    "overflowPx": 0,
+    "consoleErrors": [],
+    "pageErrors": []
+  },
+  {
+    "check": "tablet:/payments/missing",
+    "viewport": "tablet",
+    "status": 200,
+    "overflowPx": 0,
+    "consoleErrors": [],
+    "pageErrors": []
+  },
+  {
+    "check": "tablet:/data/reviews",
+    "viewport": "tablet",
+    "status": 200,
+    "overflowPx": 0,
+    "consoleErrors": [],
+    "pageErrors": []
+  },
+  {
+    "check": "tablet:/payments/items",
+    "viewport": "tablet",
+    "status": 200,
+    "overflowPx": 0,
+    "consoleErrors": [],
+    "pageErrors": []
+  },
+  {
+    "check": "mobile:/",
+    "viewport": "mobile",
+    "status": 200,
+    "overflowPx": 0,
+    "consoleErrors": [],
+    "pageErrors": []
+  },
+  {
+    "check": "mobile:/payments?filter=overdue",
+    "viewport": "mobile",
+    "status": 200,
+    "overflowPx": 0,
+    "consoleErrors": [],
+    "pageErrors": []
+  },
+  {
+    "check": "mobile:/payments/missing",
+    "viewport": "mobile",
+    "status": 200,
+    "overflowPx": 0,
+    "consoleErrors": [],
+    "pageErrors": []
+  },
+  {
+    "check": "mobile:/data/reviews",
+    "viewport": "mobile",
+    "status": 200,
+    "overflowPx": 0,
+    "consoleErrors": [],
+    "pageErrors": []
+  },
+  {
+    "check": "mobile:/payments/items",
+    "viewport": "mobile",
+    "status": 200,
+    "overflowPx": 0,
+    "consoleErrors": [],
+    "pageErrors": []
+  }
+]

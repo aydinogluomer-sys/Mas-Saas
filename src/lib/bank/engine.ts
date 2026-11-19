@@ -2,6 +2,7 @@
 
 import type { Pool, PoolClient } from "pg";
 import { z } from "zod";
+import { evaluateRulesWithClient } from "@/lib/approvals/engine";
 import { audit } from "@/lib/audit";
 import { translatePeriodLockError } from "@/lib/cashflow/period-lock";
 import { DomainError } from "@/lib/domain-error";
@@ -125,7 +126,7 @@ export interface StatementImportResult {
   ok: boolean;
   workbookId: string;
   error?: string;
-  format?: "xlsx" | "csv";
+  format?: "xlsx" | "csv" | "mt940" | "camt053";
   rowsSeen: number;
   inserted: number;
   duplicates: number;
@@ -587,10 +588,12 @@ async function settleBankMatchInternal(
       amount: string | null;
       txn_date: string;
       currency: string;
+      category_rule?: string | null;
     }>(
       `select bt.id::text, bt.status, bt.matched_entity_table, bt.matched_entity_id::text,
               bt.amount::text as amount, to_char(bt.txn_date,'YYYY-MM-DD') as txn_date,
-              coalesce(bt.currency, ca.currency, 'TRY') as currency
+              coalesce(bt.currency, ca.currency, 'TRY') as currency,
+              bt.category_rule
          from public.bank_transactions bt
          left join public.cash_accounts ca on ca.id = bt.bank_account_id
         where bt.id = $1
@@ -599,6 +602,7 @@ async function settleBankMatchInternal(
     );
     if (before.rowCount === 0) throw new DomainError("NOT_FOUND", "Banka hareketi bulunamadı.");
     const txRow = before.rows[0];
+    const isRealStatementTx = txRow.category_rule !== "radar_settlement";
     const current = txRow.status;
     if (!["unmatched", "suggested"].includes(current)) {
       throw new DomainError("CONFLICT", `'${current}' durumundaki bir hareket doğrudan eşleştirilemez.`);
@@ -661,6 +665,32 @@ async function settleBankMatchInternal(
       }
 
       const ceilingDec = decimal(inv.payable_amount ?? inv.gross_amount);
+      if (inv.direction === "purchase" && inv.approval_status !== "approved") {
+        let firedCount = 0;
+        try {
+          await client.query("savepoint sp_bank_inv_approval_gate");
+          const fired = await evaluateRulesWithClient(client, {
+            subjectTable: "invoices",
+            triggerKind: "invoice",
+            amount: ceilingDec.toFixed(2),
+            currency: inv.currency,
+          });
+          firedCount = fired.length;
+          await client.query("release savepoint sp_bank_inv_approval_gate");
+        } catch (err) {
+          await client.query("rollback to savepoint sp_bank_inv_approval_gate").catch(() => undefined);
+          await client.query("release savepoint sp_bank_inv_approval_gate").catch(() => undefined);
+          const code = (err as { code?: string } | null)?.code;
+          const msg = err instanceof Error ? err.message : String(err);
+          if (code !== "42P01" && code !== "42703" && !msg.includes("beklenmeyen SQL")) throw err;
+        }
+        if (firedCount > 0) {
+          throw new DomainError(
+            "FORBIDDEN",
+            `Alış faturası (${inv.invoice_no}) kritik onay eşiğini aşıyor; bağımsız ikinci onay (maker-checker) tamamlanmadan kapatılamaz.`,
+          );
+        }
+      }
       const settledSoFarDec = decimal(inv.paid_amount).gt(decimal(inv.allocated_amount))
         ? decimal(inv.paid_amount)
         : decimal(inv.allocated_amount);
@@ -751,13 +781,74 @@ async function settleBankMatchInternal(
         nextStatus = newPaidDec.gte(totalDec) ? "paid" : "partial";
       }
 
-      const updPi = await client.query(
-        `update public.payment_instances
-            set status = $2, paid_amount = $3::numeric, paid_at = ($4::date)::timestamptz
-          where id = $1`,
-        [input.targetId, nextStatus, newPaidDec.toFixed(2), txDate],
-      );
-      if (updPi.rowCount !== 1) {
+      if (pi.direction === "outflow" && pi.approval_status !== "approved") {
+        const effectiveOutflowDec =
+          pi.amount != null && decimal(pi.amount).gt(newPaidDec)
+            ? decimal(pi.amount)
+            : newPaidDec;
+        let firedCount = 0;
+        try {
+          await client.query("savepoint sp_bank_pi_approval_gate");
+          const fired = await evaluateRulesWithClient(client, {
+            subjectTable: "payment_instances",
+            triggerKind: "payment",
+            amount: effectiveOutflowDec.toFixed(2),
+            currency: pi.currency,
+          });
+          firedCount = fired.length;
+          await client.query("release savepoint sp_bank_pi_approval_gate");
+        } catch (err) {
+          await client.query("rollback to savepoint sp_bank_pi_approval_gate").catch(() => undefined);
+          await client.query("release savepoint sp_bank_pi_approval_gate").catch(() => undefined);
+          const code = (err as { code?: string } | null)?.code;
+          const msg = err instanceof Error ? err.message : String(err);
+          if (code !== "42P01" && code !== "42703" && !msg.includes("beklenmeyen SQL")) throw err;
+        }
+        if (firedCount > 0) {
+          throw new DomainError(
+            "FORBIDDEN",
+            "Ödeme kalemi kritik onay eşiğini aşıyor; bağımsız ikinci onay (maker-checker) tamamlanmadan kapatılamaz.",
+          );
+        }
+      }
+
+      let updPiRowCount = 0;
+      if (isRealStatementTx) {
+        await client.query("savepoint sp_bank_pi_reconcile_col");
+        try {
+          const updPiRec = await client.query(
+            `update public.payment_instances
+                set status = $2,
+                    paid_amount = $3::numeric,
+                    paid_at = ($4::date)::timestamptz,
+                    reconciliation_status = 'reconciled'
+              where id = $1`,
+            [input.targetId, nextStatus, newPaidDec.toFixed(2), txDate],
+          );
+          updPiRowCount = updPiRec.rowCount ?? 0;
+          await client.query("release savepoint sp_bank_pi_reconcile_col");
+        } catch (err) {
+          await client.query("rollback to savepoint sp_bank_pi_reconcile_col").catch(() => undefined);
+          await client.query("release savepoint sp_bank_pi_reconcile_col").catch(() => undefined);
+          if ((err as { code?: string } | null)?.code !== "42703") throw err;
+          const updPiFallback = await client.query(
+            `update public.payment_instances
+                set status = $2, paid_amount = $3::numeric, paid_at = ($4::date)::timestamptz
+              where id = $1`,
+            [input.targetId, nextStatus, newPaidDec.toFixed(2), txDate],
+          );
+          updPiRowCount = updPiFallback.rowCount ?? 0;
+        }
+      } else {
+        const updPi = await client.query(
+          `update public.payment_instances
+              set status = $2, paid_amount = $3::numeric, paid_at = ($4::date)::timestamptz
+            where id = $1`,
+          [input.targetId, nextStatus, newPaidDec.toFixed(2), txDate],
+        );
+        updPiRowCount = updPi.rowCount ?? 0;
+      }
+      if (updPiRowCount !== 1) {
         throw new DomainError("CONFLICT", "Ödeme kalemi güncellenemedi.");
       }
       targetFullySettled = nextStatus === "paid";
@@ -849,13 +940,43 @@ async function settleBankMatchInternal(
         );
       }
 
-      const updLi = await client.query(
-        `update public.loan_installments
-            set status = 'paid', paid_amount = amount, paid_at = ($2::date)::timestamptz
-          where id = $1`,
-        [input.targetId, txDate],
-      );
-      if (updLi.rowCount !== 1) {
+      let updLiRowCount = 0;
+      if (isRealStatementTx) {
+        await client.query("savepoint sp_bank_li_reconcile_col");
+        try {
+          const updLiRec = await client.query(
+            `update public.loan_installments
+                set status = 'paid',
+                    paid_amount = amount,
+                    paid_at = ($2::date)::timestamptz,
+                    reconciliation_status = 'reconciled'
+              where id = $1`,
+            [input.targetId, txDate],
+          );
+          updLiRowCount = updLiRec.rowCount ?? 0;
+          await client.query("release savepoint sp_bank_li_reconcile_col");
+        } catch (err) {
+          await client.query("rollback to savepoint sp_bank_li_reconcile_col").catch(() => undefined);
+          await client.query("release savepoint sp_bank_li_reconcile_col").catch(() => undefined);
+          if ((err as { code?: string } | null)?.code !== "42703") throw err;
+          const updLiFallback = await client.query(
+            `update public.loan_installments
+                set status = 'paid', paid_amount = amount, paid_at = ($2::date)::timestamptz
+              where id = $1`,
+            [input.targetId, txDate],
+          );
+          updLiRowCount = updLiFallback.rowCount ?? 0;
+        }
+      } else {
+        const updLi = await client.query(
+          `update public.loan_installments
+              set status = 'paid', paid_amount = amount, paid_at = ($2::date)::timestamptz
+            where id = $1`,
+          [input.targetId, txDate],
+        );
+        updLiRowCount = updLi.rowCount ?? 0;
+      }
+      if (updLiRowCount !== 1) {
         throw new DomainError("CONFLICT", "Kredi taksiti güncellenemedi.");
       }
       targetFullySettled = true;
@@ -988,6 +1109,8 @@ export async function acceptMatch(pool: Pool, raw: unknown, actorId: string): Pr
   const input = parseOrThrow(matchDecisionSchema, raw, "Eşleştirme");
   await settleBankMatchInternal(pool, input, actorId, { manual: false });
 }
+
+export const matchTransaction = acceptMatch;
 
 /**
  * F-48: Operator-initiated manual settlement of an unmatched/suggested bank transaction

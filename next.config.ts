@@ -72,6 +72,12 @@ const nextConfig: NextConfig = {
   // nobody checked; `pnpm typecheck` is the same gate, run on its own.
   // No dev overlay indicator — keeps visual-regression screenshots deterministic.
   devIndicators: false,
+  webpack(config) {
+    if (process.env.MAS_DISABLE_WEBPACK_CACHE === "1") {
+      config.cache = false;
+    }
+    return config;
+  },
   onDemandEntries: {
     // Keep pages in memory for 1 hour so switching modules never triggers a 10s recompile
     maxInactiveAge: 5 * 60 * 1000,
@@ -121,6 +127,9 @@ const nextConfig: NextConfig = {
       { source: "/calendar", destination: "/payments/calendar", permanent: true },
       { source: "/admin", destination: "/system", permanent: true },
       { source: "/phases", destination: "/system/features", permanent: true },
+      { source: "/system/approvals", destination: "/data/approvals", permanent: true },
+      { source: "/approvals", destination: "/data/approvals", permanent: true },
+      { source: "/bank", destination: "/finance/bank", permanent: true },
     ];
   },
 };

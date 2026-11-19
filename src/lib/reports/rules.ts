@@ -4,6 +4,11 @@
 // records and AI is commentary-only (buildCommentaryPrompt returns a prompt string,
 // no API call, no mutation). Null amount stays "TUTAR EKSİK", never 0.
 
+import {
+  computeObligationAmounts,
+  type MonetaryEpistemicBasis,
+  type ReportConfidenceGrade,
+} from "@/lib/contracts/remediation-contracts";
 import { addDaysISO } from "@/lib/financing/rules";
 import { decimal, money } from "@/lib/money";
 
@@ -21,6 +26,11 @@ export interface ReportInstance {
   name: string;
   dueDate: string; // ISO
   amount: number | null;
+  originalAmount?: number | null;
+  paidAmount?: number | null;
+  paid_amount?: number | null;
+  allocatedPaidAmount?: number | null;
+  outstandingAmount?: number | null;
   status: string;
   riskLevel: string;
   riskReasons: string[];
@@ -37,7 +47,42 @@ export interface ReportMaturity {
 }
 
 const OPEN = new Set(["unpaid", "partial", "planned", "late"]);
-const isOpen = (s: string) => OPEN.has(s);
+const isOpen = (s: string) => OPEN.has(s.trim().toLowerCase());
+
+/**
+ * Contract A (`I-012`) pure helper resolving `{ orig, paid, rem }` for a `ReportInstance`.
+ * - `null` original amount stays `null` (`BLANK != ZERO`).
+ * - Partially paid obligations expose `rem` (`outstandingAmount`) rather than overstating
+ *   unpaid/overdue exposure by the already-paid portion.
+ */
+export function resolveReportInstanceAmounts(i: ReportInstance): {
+  orig: number | null;
+  paid: number | null;
+  rem: number | null;
+} {
+  const rawPaid = i.paidAmount ?? i.allocatedPaidAmount ?? i.paid_amount ?? null;
+  const rawOrig = i.originalAmount !== undefined ? i.originalAmount : i.amount;
+  const computed = computeObligationAmounts({
+    originalAmount: rawOrig,
+    paidAmount: rawPaid,
+    status: i.status,
+  });
+  const orig = computed.originalAmount;
+  if (orig == null) {
+    return { orig: null, paid: computed.allocatedPaidAmount, rem: null };
+  }
+  const paid = rawPaid != null && Number.isFinite(rawPaid) ? rawPaid : null;
+  const statusNorm = i.status.trim().toLowerCase();
+  const rem =
+    i.outstandingAmount != null && Number.isFinite(i.outstandingAmount)
+      ? i.outstandingAmount
+      : orig != null && paid != null && statusNorm === "partial"
+        ? Math.max(0, Math.round((orig - paid) * 100) / 100)
+        : statusNorm === "cancelled" || statusNorm === "paid"
+          ? computed.outstandingAmount
+          : orig;
+  return { orig, paid, rem };
+}
 
 // PHASE 2.2 (#10): para birimi alanı taşıyan kalemlerde yalnız TRY toplanır; alanı olmayan
 // (çek/taksit — yapısal TRY) kalemler eskisi gibi toplanır. `foreign` = toplamda olmayan kalem.
@@ -46,8 +91,30 @@ function sumKnown(items: Array<{ amount: number | null; currency?: string | null
   return { total: k.total, missing: k.missing, foreign: k.foreignCount };
 }
 
+function sumKnownInstances(items: ReportInstance[]): { total: number; missing: number; foreign: number } {
+  const k = sumKnownReporting(items, (i) => resolveReportInstanceAmounts(i).rem, { positiveOnly: true });
+  return { total: k.total, missing: k.missing, foreign: k.foreignCount };
+}
+
 const fmtTL = (n: number | null): string =>
-  n == null ? "TUTAR EKSİK" : new Intl.NumberFormat("tr-TR", { maximumFractionDigits: 0 }).format(n) + " TL";
+  n == null
+    ? "TUTAR EKSİK"
+    : new Intl.NumberFormat("tr-TR", { minimumFractionDigits: 0, maximumFractionDigits: 2 }).format(n) + " TL";
+
+function formatReportInstanceAmount(i: ReportInstance): string {
+  const { orig, paid, rem } = resolveReportInstanceAmounts(i);
+  if (orig == null) return fmtTL(null);
+  const statusNorm = i.status.trim().toLowerCase();
+  if (statusNorm === "partial" && (paid != null || rem !== orig)) {
+    const effectiveRem = rem ?? orig;
+    const effectivePaid = paid ?? Math.max(0, Math.round((orig - effectiveRem) * 100) / 100);
+    return `kalan ${fmtTL(effectiveRem)} (asıl: ${fmtTL(orig)} · ödenen: ${fmtTL(effectivePaid)})`;
+  }
+  if (statusNorm === "paid") {
+    return fmtTL(orig);
+  }
+  return fmtTL(rem);
+}
 
 /* ── 1) daily report ── */
 
@@ -76,14 +143,19 @@ export function buildDailyReport(input: DailyReportInput, todayISO: string): Dai
   const tomorrow = addDaysISO(todayISO, 1);
   const dueToday = input.dueSoon.filter((i) => i.dueDate === todayISO);
   const dueTomorrow = input.dueSoon.filter((i) => i.dueDate === tomorrow);
-  const { total: next7KnownTotal, missing: next7MissingCount, foreign: next7ForeignCount } = sumKnown(input.dueSoon);
-  const overdueKnown = sumKnown(input.overdue);
+  const { total: next7KnownTotal, missing: next7MissingCount, foreign: next7ForeignCount } = sumKnownInstances(input.dueSoon);
+  const overdueKnown = sumKnownInstances(input.overdue);
   const checksNext7 = input.maturities.filter((m) => m.kind === "check" && m.direction === "outflow");
   // Eşik TRY (`critical_payment_threshold_try`): TRY-dışı kalem eşikle tartılmaz (Tier 1 kuralı).
-  const criticalItems = input.dueSoon.filter(
-    (i) => i.amount != null && (i.currency === undefined || isReportingCurrency(i.currency))
-      && i.amount >= input.criticalThreshold && isOpen(i.status),
-  );
+  const criticalItems = input.dueSoon.filter((i) => {
+    const { rem } = resolveReportInstanceAmounts(i);
+    return (
+      rem != null &&
+      (i.currency === undefined || isReportingCurrency(i.currency)) &&
+      rem >= input.criticalThreshold &&
+      isOpen(i.status)
+    );
+  });
 
   const actions: string[] = [];
   if (dueToday.length) actions.push(`Bugün ${dueToday.length} ödeme — nakit hazırla`);
@@ -94,7 +166,8 @@ export function buildDailyReport(input: DailyReportInput, todayISO: string): Dai
   if (checksNext7.length) actions.push(`${checksNext7.length} çek 7 gün içinde vadesinde`);
   if (actions.length === 0) actions.push("Kritik aksiyon yok — rutin kontrol yeterli");
 
-  const line = (i: ReportInstance) => `- ${i.dueDate} · ${i.name} · ${fmtTL(i.amount)}${i.riskLevel !== "none" ? ` · ⚠ ${i.riskLevel}` : ""}`;
+  const line = (i: ReportInstance) =>
+    `- ${i.dueDate} · ${i.name} · ${formatReportInstanceAmount(i)}${i.riskLevel !== "none" ? ` · ⚠ ${i.riskLevel}` : ""}`;
   const bodyMd = [
     `# Günlük Rapor — ${todayISO}`,
     ``,
@@ -149,10 +222,17 @@ export interface WeeklyReport {
 
 export function buildWeeklyReport(input: WeeklyReportInput, todayISO: string): WeeklyReport {
   const to = addDaysISO(todayISO, 7);
-  const { total: knownTotal, missing: missingCount } = sumKnown(input.weekInstances);
+  const { total: knownTotal, missing: missingCount } = sumKnownInstances(input.weekInstances);
   const largest = [...input.weekInstances]
-    .filter((i) => i.amount != null && i.amount >= input.largeThreshold)
-    .sort((a, b) => (b.amount ?? 0) - (a.amount ?? 0))
+    .filter((i) => {
+      const { rem } = resolveReportInstanceAmounts(i);
+      return (
+        rem != null &&
+        (i.currency === undefined || isReportingCurrency(i.currency)) &&
+        rem >= input.largeThreshold
+      );
+    })
+    .sort((a, b) => (resolveReportInstanceAmounts(b).rem ?? 0) - (resolveReportInstanceAmounts(a).rem ?? 0))
     .slice(0, 5);
   // Faz 46 (C3): Only outflow checks belong in weekly check debt load (never customer inflow checks).
   const checkLoad = sumKnown(
@@ -181,7 +261,7 @@ export function buildWeeklyReport(input: WeeklyReportInput, todayISO: string): W
     `- kredi taksiti (ay): ${fmtTL(installmentLoadMonth)}`,
     ``,
     `## En büyük ödemeler`,
-    ...(largest.length ? largest.map((i) => `- ${i.dueDate} · ${i.name} · ${fmtTL(i.amount)}`) : ["- yok"]),
+    ...(largest.length ? largest.map((i) => `- ${i.dueDate} · ${i.name} · ${formatReportInstanceAmount(i)}`) : ["- yok"]),
     ``,
     `## Riskli günler (${input.riskDays.length})`,
     ...(input.riskDays.length
@@ -201,6 +281,18 @@ export function buildWeeklyReport(input: WeeklyReportInput, todayISO: string): W
 /* ── 3) monthly report ── */
 
 export interface ConcentrationRow { key: string; amount: number }
+export interface MonthlyActualBankCashStatus {
+  availableCashTry: number | null;
+  unknownOpeningCount: number;
+  hasVerifiedBankFeed: boolean;
+  reconciledTxCount: number;
+  unmatchedTxCount: number;
+}
+export interface MonthlyProvenanceBadge {
+  confidenceGrade?: ReportConfidenceGrade;
+  workbookStaleDays?: number | null;
+  missingMaterialInputs?: readonly string[];
+}
 export interface MonthlyReportInput {
   monthStart: string;
   knownTotal: number;
@@ -208,6 +300,11 @@ export interface MonthlyReportInput {
   paidKnown: number;
   missingCount: number;
   totalCount: number;
+  cancelledCount?: number;
+  cancelledKnownTotal?: number;
+  settlementAdjustmentTry?: number;
+  overpaymentAdjustmentTry?: number;
+  foreignCount?: number;
   topPayments: ReportInstance[]; // pre-sorted desc by amount, top 10
   providerDist: ConcentrationRow[];
   categoryDist: ConcentrationRow[];
@@ -215,6 +312,8 @@ export interface MonthlyReportInput {
   checksInMonth: ReportMaturity[];
   installmentsInMonth: ReportMaturity[];
   cashMonth: { opening: number | null; income: number | null; expense: number | null; closing: number | null } | null;
+  actualBankCashStatus?: MonthlyActualBankCashStatus | null;
+  provenance?: MonthlyProvenanceBadge | null;
   dataQualityIssues: string[];
 }
 
@@ -222,6 +321,7 @@ export interface MonthlyReport {
   monthStart: string;
   paidUnpaidSplit: { paid: number; remaining: number };
   debtServiceKnown: number;
+  monetaryBasisByMetric: Record<string, MonetaryEpistemicBasis>;
   bodyMd: string;
 }
 
@@ -235,28 +335,97 @@ export function buildMonthlyReport(input: MonthlyReportInput): MonthlyReport {
   ).total;
   const debtServiceKnown = money(decimal(checksOutflow).plus(decimal(installmentsOutflow)));
   const cm = input.cashMonth;
+  const act = input.actualBankCashStatus;
+  const prov = input.provenance;
+  const cancelledCount = input.cancelledCount ?? 0;
+  const cancelledKnownTotal = input.cancelledKnownTotal ?? 0;
+  const settlementAdjustmentTry = input.settlementAdjustmentTry ?? 0;
+  const overpaymentAdjustmentTry = input.overpaymentAdjustmentTry ?? 0;
+  const foreignCount = input.foreignCount ?? 0;
   const distBlock = (title: string, rows: ConcentrationRow[]) =>
     [`### ${title}`, ...(rows.length ? rows.slice(0, 5).map((r) => `- ${r.key}: ${fmtTL(r.amount)}`) : ["- yok"])];
+
+  const availableBankCashBasis: MonetaryEpistemicBasis =
+    act == null || act.unknownOpeningCount > 0 || act.availableCashTry == null
+      ? "UNKNOWN"
+      : "ACTUAL";
+  const bankReconciledBasis: MonetaryEpistemicBasis =
+    act == null || !act.hasVerifiedBankFeed ? "UNKNOWN" : "RECONCILED";
+
+  const monetaryBasisByMetric: Record<string, MonetaryEpistemicBasis> = {
+    availableBankCash: availableBankCashBasis,
+    scheduledOutflows: "PLANNED",
+    workbookMonthlyCash: "FORECAST",
+    bankReconciledFlows: bankReconciledBasis,
+  };
+
+  const actualCashText =
+    act == null
+      ? null
+      : availableBankCashBasis === "UNKNOWN"
+        ? `[UNKNOWN] Bilinmiyor (${act.unknownOpeningCount > 0 ? `FIN-03: ${act.unknownOpeningCount} aktif hesapta açılış bakiyesi tanımsız` : "doğrulanmış banka/kasa bakiyesi yok"})`
+        : `[ACTUAL] ${fmtTL(act.availableCashTry)}`;
+
+  const bankReconText =
+    act == null
+      ? null
+      : bankReconciledBasis === "UNKNOWN"
+        ? "[UNKNOWN] Bilinmiyor (banka ekstresi hareketi yok)"
+        : `[RECONCILED] ${act.reconciledTxCount} mutabık · ${act.unmatchedTxCount} eşleşmemiş banka hareketi`;
+
+  const qualityLines: string[] = [...input.dataQualityIssues];
+  if (prov?.confidenceGrade) {
+    qualityLines.push(`Güven derecesi: ${prov.confidenceGrade}`);
+  }
+  if (prov?.missingMaterialInputs?.length) {
+    for (const m of prov.missingMaterialInputs) {
+      if (!qualityLines.includes(m)) qualityLines.push(m);
+    }
+  }
 
   const bodyMd = [
     `# Aylık Rapor — ${input.monthStart.slice(0, 7)}`,
     ``,
-    ...(cm
+    ...(act
       ? [
-          `## Nakit akış`,
-          `- devir: ${fmtTL(cm.opening)} · gelir: ${fmtTL(cm.income)} · gider: ${fmtTL(cm.expense)} · kasa: ${fmtTL(cm.closing)}`,
+          `## Fiili Kasa & Banka Mutabakat Durumu (ACTUAL / RECONCILED / UNKNOWN)`,
+          `- fiili kullanılabilir kasa: ${actualCashText}`,
+          `- banka ekstresi ve mutabakat: ${bankReconText}`,
           ``,
         ]
       : []),
-    `## Ödeme yükü`,
-    `- bilinen toplam: ${fmtTL(input.knownTotal)}`,
-    `- ödenen (bilinen): ${fmtTL(input.paidKnown)} · kalan (bilinen): ${fmtTL(input.knownRemaining)}`,
-    `- kalem: ${input.totalCount} · tutar eksik: ${input.missingCount}`,
-    `- borç servisi (çek+taksit, bilinen): ${fmtTL(debtServiceKnown)}`,
+    ...(cm
+      ? [
+          `## Tahmini Nakit Akışı ([FORECAST] — Çalışma Kitabı Projeksiyonu, Fiili Banka Bakiyesi Değildir)`,
+          `- devir: ${fmtTL(cm.opening)} · gelir: ${fmtTL(cm.income)} · gider: ${fmtTL(cm.expense)} · kasa ([FORECAST]): ${fmtTL(cm.closing)}`,
+          ...(act && availableBankCashBasis === "UNKNOWN" && cm.closing != null
+            ? [
+                `- ⚠ Epistemik ayrım: Çalışma kitabı tahmini kapanışı (${fmtTL(cm.closing)}) yalnızca [FORECAST] projeksiyondur; fiili banka kasası [UNKNOWN] durumdadır.`,
+              ]
+            : []),
+          ``,
+        ]
+      : []),
+    `## Ödeme yükü (PLANNED / ACTUAL)`,
+    `- bilinen toplam: ${fmtTL(input.knownTotal)} [PLANNED]`,
+    `- ödenen (bilinen): ${fmtTL(input.paidKnown)} [ACTUAL] · kalan (bilinen): ${fmtTL(input.knownRemaining)} [PLANNED]`,
+    ...(settlementAdjustmentTry !== 0
+      ? [`- kapama farkı / iskonto düzeltmesi: ${fmtTL(settlementAdjustmentTry)}`]
+      : []),
+    ...(overpaymentAdjustmentTry !== 0
+      ? [`- fazla ödeme düzeltmesi: ${fmtTL(overpaymentAdjustmentTry)}`]
+      : []),
+    ...(cancelledCount > 0
+      ? [`- İptal edilen (toplam dışı): ${cancelledCount} kalem · ${fmtTL(cancelledKnownTotal)}`]
+      : []),
+    `- kalem: ${input.totalCount} · tutar eksik: ${input.missingCount}${foreignCount > 0 ? ` · ${foreignNote(foreignCount)}` : ""}`,
+    `- borç servisi (çek+taksit, bilinen): ${fmtTL(debtServiceKnown)} [PLANNED]`,
     ``,
     `## En büyük 10 ödeme`,
     ...(input.topPayments.length
-      ? input.topPayments.map((i) => `- ${i.name} · ${fmtTL(i.amount)}${i.status === "paid" ? " · ✓ödendi" : ""}`)
+      ? input.topPayments.map(
+          (i) => `- ${i.name} · ${formatReportInstanceAmount(i)}${i.status === "paid" ? " · ✓ödendi" : ""}`,
+        )
       : ["- yok"]),
     ``,
     ...distBlock("Sağlayıcı dağılımı", input.providerDist),
@@ -266,13 +435,15 @@ export function buildMonthlyReport(input: MonthlyReportInput): MonthlyReport {
     ...distBlock("Sahip (owner) dağılımı", input.ownerDist),
     ``,
     `## Veri kalitesi`,
-    ...(input.dataQualityIssues.length ? input.dataQualityIssues.map((d) => `- ${d}`) : ["- sorun yok"]),
+    ...(qualityLines.length ? qualityLines.map((d) => `- ${d}`) : ["- sorun yok"]),
   ].join("\n");
 
   return {
     monthStart: input.monthStart,
     paidUnpaidSplit: { paid: input.paidKnown, remaining: input.knownRemaining },
-    debtServiceKnown, bodyMd,
+    debtServiceKnown,
+    monetaryBasisByMetric,
+    bodyMd,
   };
 }
 

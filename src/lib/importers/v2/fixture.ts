@@ -253,8 +253,8 @@ export const FIXTURE_ORACLE = {
   schema: { name: SCHEMA_NAME, version: SCHEMA_VERSION },
   sheets: {
     "01_ODEMELER":        { rowsRead: 4, ready: 3, needsReview: 0, rejected: 1 },
-    "02_CEKLER":          { rowsRead: 5, ready: 2, needsReview: 2, rejected: 1 },
-    "03_KREDILER":        { rowsRead: 2, ready: 1, needsReview: 0, rejected: 1 },
+    "02_CEKLER":          { rowsRead: 5, ready: 3, needsReview: 2, rejected: 0 },
+    "03_KREDILER":        { rowsRead: 2, ready: 2, needsReview: 0, rejected: 0 },
     "04_KREDI_TAKSITLERI":{ rowsRead: 3, ready: 2, needsReview: 0, rejected: 1 },
     "05_NAKIT_AKISI":     { rowsRead: 6, ready: 5, needsReview: 0, rejected: 1 },
     "06_BANKA_HESAPLARI": { rowsRead: 2, ready: 2, needsReview: 0, rejected: 0 },
@@ -290,7 +290,6 @@ export const FIXTURE_ORACLE = {
   ] as Array<{ sheet: string; row: number; key: string; expected: unknown }>,
 
   expectedIssueTypes: [
-    "unsupported_currency_for_finance_aggregation",  // 02 ve 03: TRY dışı satır
     "missing_required_field",   // 01 satır 5: aylık ama vade günü yok
     "duplicate_check",          // 02: Çağdaş ×2, seri no yok
     "missing_reference",        // 04 satır 4 ve 07 satır 5
@@ -302,5 +301,5 @@ export const FIXTURE_ORACLE = {
   ] as const,
 
   /** Toplam — sayfa oracle'larının toplamı, ayrıca elle doğrulandı. */
-  totals: { rowsRead: 57, ready: 41, needsReview: 3, rejected: 13 },
+  totals: { rowsRead: 57, ready: 43, needsReview: 3, rejected: 11 },
 } as const;

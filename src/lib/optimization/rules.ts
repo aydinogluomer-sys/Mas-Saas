@@ -38,6 +38,7 @@ export const RULE_CODES = [
   "fazla_nakit_geri_odeme",
   "tampon_korunuyor",
   "limit_yetersiz",
+  "erken_odeme_iskontosu",
 ] as const;
 export type RuleCode = (typeof RULE_CODES)[number];
 
@@ -49,6 +50,7 @@ export const RULE_LABEL: Record<RuleCode, string> = {
   fazla_nakit_geri_odeme: "Fazla nakit — geri ödeme mümkün",
   tampon_korunuyor: "Tampon korunuyor",
   limit_yetersiz: "Kullanılabilir limit yetersiz",
+  erken_odeme_iskontosu: "Tedarikçi erken ödeme iskontosu avantajlı",
 };
 
 export type OptimizationSubjectTable =
@@ -72,6 +74,10 @@ export interface PaymentCandidate {
   hardDeadline: boolean;
   /** Latest date this may be moved to, when deferral is allowed at all. */
   latestDate?: string | null;
+  /** Earliest date for early-payment supplier discount evaluation (defaults to anchorDate). */
+  earliestDate?: string | null;
+  /** Optional supplier early-payment discount decimal (e.g. 0.03 = 3% discount). */
+  earlyPaymentDiscountPct?: number | null;
   /** Source table for polymorphic recommendation attribution (defaults to 'payment_instances'). */
   subjectTable?: Exclude<OptimizationSubjectTable, "credit_facilities">;
 }
@@ -224,176 +230,278 @@ export function optimize(input: OptimizationInput): OptimizationResult {
   // Working copies so the "after" projection reflects proposals without mutating input.
   const workingPayments = input.payments.map((p) => ({ ...p }));
   const workingInflows = input.inflows.map((f) => ({ ...f }));
+  const workingFacilities = input.facilities.map((f) => ({ ...f }));
 
   if (breachDates.length > 0) {
-    const firstBreach = breachDates[0];
-    const balanceAtBreach = before.find((p) => p.date === firstBreach)?.balance ?? 0;
-    let gap = round2(decimal(floor).minus(decimal(balanceAtBreach)));
+    // M-54: Multi-period 91-day solver across ALL breach troughs in the horizon.
+    // `unclosedMarkers` prevents emitting duplicate `limit_yetersiz` rows on subsequent days
+    // for an already-reported unclosable deficit while still waking up on any NEW deeper trough!
+    const unclosedMarkers: Array<{ date: string; amount: number }> = [];
+    const deferredPaymentIds = new Set<string>();
+    const reportedHardIds = new Set<string>();
+    const maxPasses = Math.max(1, input.horizonDays + 2);
 
-    const deferSoftPayments = (order: "largest_first" | "smallest_first") => {
-      const deferrable = workingPayments
-        .filter((p) => !p.hardDeadline && p.dueDate <= firstBreach)
-        .sort((a, b) => {
-          const cmp = order === "smallest_first"
-            ? Number(decimal(a.amount).minus(decimal(b.amount)))
-            : Number(decimal(b.amount).minus(decimal(a.amount)));
-          return cmp || tiebreakId(a.id, b.id);
-        });
+    for (let pass = 0; pass < maxPasses; pass += 1) {
+      const probeSeries = projectBalances({
+        anchorDate: input.anchorDate,
+        horizonDays: input.horizonDays,
+        openingCash,
+        inflows: [...workingInflows, ...unclosedMarkers],
+        payments: workingPayments,
+      });
+      const nextBreachPoint = probeSeries.find((pt) => pt.balance < floor);
+      if (!nextBreachPoint) break;
 
-      for (const p of deferrable) {
-        if (gap <= 0) break;
+      const currentBreach = nextBreachPoint.date;
+      let gap = round2(decimal(floor).minus(decimal(nextBreachPoint.balance)));
 
-        const without = projectBalances({
-          anchorDate: input.anchorDate,
-          horizonDays: input.horizonDays,
-          openingCash,
-          inflows: workingInflows,
-          payments: workingPayments.filter((x) => x.id !== p.id),
-        });
-        const affordable = without.find(
-          (d) => d.date > p.dueDate
-            && decimal(d.balance).minus(decimal(p.amount)).gte(decimal(floor)),
+      const deferSoftPayments = (order: "largest_first" | "smallest_first") => {
+        const deferrable = workingPayments
+          .filter((p) => !p.hardDeadline && !deferredPaymentIds.has(p.id) && p.dueDate <= currentBreach)
+          .sort((a, b) => {
+            const cmp =
+              order === "smallest_first"
+                ? Number(decimal(a.amount).minus(decimal(b.amount)))
+                : Number(decimal(b.amount).minus(decimal(a.amount)));
+            return cmp || tiebreakId(a.id, b.id);
+          });
+
+        for (const p of deferrable) {
+          if (gap <= 0) break;
+
+          const without = projectBalances({
+            anchorDate: input.anchorDate,
+            horizonDays: input.horizonDays,
+            openingCash,
+            inflows: [...workingInflows, ...unclosedMarkers],
+            payments: workingPayments.filter((x) => x.id !== p.id),
+          });
+          const affordable = without.find(
+            (d) =>
+              d.date > currentBreach &&
+              d.date > p.dueDate &&
+              decimal(d.balance).minus(decimal(p.amount)).gte(decimal(floor)),
+          );
+          if (!affordable) continue;
+          const target = affordable.date;
+          if (p.latestDate && target > p.latestDate) continue;
+
+          recommendations.push({
+            rank: recommendations.length + 1,
+            actionKind: "defer_payment",
+            subjectTable: p.subjectTable ?? "payment_instances",
+            subjectId: p.id,
+            subjectLabel: p.label,
+            currentDate: p.dueDate,
+            proposedDate: target,
+            amount: round2(p.amount),
+            expectedEffect: round2(p.amount),
+            rationaleCodes: ["nakit_tabani_ihlali", "ertelenebilir_odeme"],
+            rationaleNote:
+              `${currentBreach} tarihinde bakiye tabanın ${gap.toFixed(2)} altında; ` +
+              `bu ödeme ${target} tarihine ertelenirse taban korunur.`,
+            confidence: 0.8,
+          });
+          gap = round2(decimal(gap).minus(decimal(p.amount)));
+          p.dueDate = target;
+          deferredPaymentIds.add(p.id);
+        }
+      };
+
+      const drawCheapestFacilities = () => {
+        if (gap <= 0) return;
+        const byCost = [...workingFacilities]
+          .filter((f) => f.available > 0)
+          .sort((a, b) => {
+            const ar = a.interestRate ?? Number.POSITIVE_INFINITY;
+            const br = b.interestRate ?? Number.POSITIVE_INFINITY;
+            return ar - br || tiebreakId(a.id, b.id);
+          });
+
+        for (const f of byCost) {
+          if (gap <= 0) break;
+          const draw = round2(Math.min(gap, f.available));
+          if (draw <= 0) continue;
+          recommendations.push({
+            rank: recommendations.length + 1,
+            actionKind: "draw_facility",
+            subjectTable: "credit_facilities",
+            subjectId: f.id,
+            subjectLabel: f.label,
+            currentDate: null,
+            proposedDate: currentBreach,
+            amount: draw,
+            expectedEffect: draw,
+            rationaleCodes: ["nakit_tabani_ihlali", "limit_cekimi_gerekli"],
+            rationaleNote:
+              `${currentBreach} tarihindeki ${gap.toFixed(2)} açık için en düşük maliyetli limitten çekim.`,
+            confidence: 0.75,
+          });
+          workingInflows.push({ date: currentBreach, amount: draw });
+          f.available = round2(decimal(f.available).minus(decimal(draw)));
+          gap = round2(decimal(gap).minus(decimal(draw)));
+        }
+      };
+
+      const reportBlockedHardDeadlines = () => {
+        const blocked = workingPayments.filter(
+          (p) => p.hardDeadline && !reportedHardIds.has(p.id) && p.dueDate <= currentBreach,
         );
-        if (!affordable) continue;
-        const target = affordable.date;
-        if (p.latestDate && target > p.latestDate) continue;
+        if (gap > 0 && blocked.length > 0) {
+          const biggest = [...blocked].sort(
+            (a, b) => Number(decimal(b.amount).minus(decimal(a.amount))) || tiebreakId(a.id, b.id),
+          )[0];
+          reportedHardIds.add(biggest.id);
+          recommendations.push({
+            rank: recommendations.length + 1,
+            actionKind: "hold_buffer",
+            subjectTable: biggest.subjectTable ?? "payment_instances",
+            subjectId: biggest.id,
+            subjectLabel: biggest.label,
+            currentDate: biggest.dueDate,
+            proposedDate: null,
+            amount: round2(biggest.amount),
+            expectedEffect: 0,
+            rationaleCodes: ["sert_vade_ertelenemez"],
+            rationaleNote: "Sert vadeli ödeme ertelenemez; açık finansmanla kapatılmalı.",
+            confidence: 0.9,
+          });
+        }
+      };
 
-        recommendations.push({
-          rank: recommendations.length + 1,
-          actionKind: "defer_payment",
-          subjectTable: p.subjectTable ?? "payment_instances",
-          subjectId: p.id,
-          subjectLabel: p.label,
-          currentDate: p.dueDate,
-          proposedDate: target,
-          amount: round2(p.amount),
-          expectedEffect: round2(p.amount),
-          rationaleCodes: ["nakit_tabani_ihlali", "ertelenebilir_odeme"],
-          rationaleNote:
-            `${firstBreach} tarihinde bakiye tabanın ${gap.toFixed(2)} altında; ` +
-            `bu ödeme ${target} tarihine ertelenirse taban korunur.`,
-          confidence: 0.8,
-        });
-        gap = round2(decimal(gap).minus(decimal(p.amount)));
-        p.dueDate = target;
+      if (input.objective === "min_late_payment") {
+        drawCheapestFacilities();
+        if (gap > 0) {
+          deferSoftPayments("largest_first");
+          reportBlockedHardDeadlines();
+        }
+      } else if (input.objective === "min_financing_cost") {
+        deferSoftPayments("smallest_first");
+        reportBlockedHardDeadlines();
+        drawCheapestFacilities();
+      } else {
+        deferSoftPayments("largest_first");
+        reportBlockedHardDeadlines();
+        drawCheapestFacilities();
       }
-    };
 
-    const drawCheapestFacilities = () => {
-      if (gap <= 0) return;
-      const byCost = [...input.facilities]
-        .filter((f) => f.available > 0)
-        .sort((a, b) => {
-          const ar = a.interestRate ?? Number.POSITIVE_INFINITY;
-          const br = b.interestRate ?? Number.POSITIVE_INFINITY;
-          return (ar - br) || tiebreakId(a.id, b.id);
-        });
-
-      for (const f of byCost) {
-        if (gap <= 0) break;
-        const draw = Math.min(gap, f.available);
-        recommendations.push({
-          rank: recommendations.length + 1,
-          actionKind: "draw_facility",
-          subjectTable: "credit_facilities",
-          subjectId: f.id,
-          subjectLabel: f.label,
-          currentDate: null,
-          proposedDate: firstBreach,
-          amount: round2(draw),
-          expectedEffect: round2(draw),
-          rationaleCodes: ["nakit_tabani_ihlali", "limit_cekimi_gerekli"],
-          rationaleNote:
-            `${firstBreach} tarihindeki ${gap.toFixed(2)} açık için en düşük maliyetli limitten çekim.`,
-          confidence: 0.75,
-        });
-        workingInflows.push({ date: firstBreach, amount: round2(draw) });
-        gap = round2(decimal(gap).minus(decimal(draw)));
-      }
-    };
-
-    const reportBlockedHardDeadlines = () => {
-      const blocked = workingPayments.filter((p) => p.hardDeadline && p.dueDate <= firstBreach);
-      if (gap > 0 && blocked.length > 0) {
-        const biggest = [...blocked].sort(
-          (a, b) => Number(decimal(b.amount).minus(decimal(a.amount))) || tiebreakId(a.id, b.id),
-        )[0];
+      if (gap > 0) {
         recommendations.push({
           rank: recommendations.length + 1,
           actionKind: "hold_buffer",
-          subjectTable: biggest.subjectTable ?? "payment_instances",
-          subjectId: biggest.id,
-          subjectLabel: biggest.label,
-          currentDate: biggest.dueDate,
-          proposedDate: null,
-          amount: round2(biggest.amount),
+          subjectTable: null,
+          subjectId: null,
+          subjectLabel: null,
+          currentDate: null,
+          proposedDate: currentBreach,
+          amount: round2(gap),
           expectedEffect: 0,
-          rationaleCodes: ["sert_vade_ertelenemez"],
-          rationaleNote: "Sert vadeli ödeme ertelenemez; açık finansmanla kapatılmalı.",
+          rationaleCodes: ["limit_yetersiz"],
+          rationaleNote:
+            `Kalan ${gap.toFixed(2)} açık mevcut limitlerle kapatılamıyor — ek finansman gerekli.`,
           confidence: 0.9,
         });
+        unclosedMarkers.push({ date: currentBreach, amount: round2(gap) });
       }
-    };
-
-    if (input.objective === "min_late_payment") {
-      // Draw available credit facilities first so supplier payments stay on time whenever headroom exists.
-      drawCheapestFacilities();
-      if (gap > 0) {
-        deferSoftPayments("largest_first");
-        reportBlockedHardDeadlines();
-      }
-    } else if (input.objective === "min_financing_cost") {
-      // Zero-interest deferrals first (smallest sufficient volume), then cheapest facility draw.
-      deferSoftPayments("smallest_first");
-      reportBlockedHardDeadlines();
-      drawCheapestFacilities();
-    } else {
-      // max_liquidity_buffer: largest soft deferrals first, then cheapest facility draw.
-      deferSoftPayments("largest_first");
-      reportBlockedHardDeadlines();
-      drawCheapestFacilities();
     }
+  } else {
+    // M-54: Evaluate profitable early-payment supplier discounts (`advance_payment`) when cash stays >= floor
+    const maxFacilityRate = workingFacilities.reduce(
+      (mx, f) => (f.interestRate != null && f.interestRate > mx ? f.interestRate : mx),
+      0,
+    );
+    const discountCandidates = workingPayments
+      .filter((p) => {
+        const disc = p.earlyPaymentDiscountPct ?? 0;
+        const targetEarly = p.earliestDate ?? input.anchorDate;
+        return disc > 0 && targetEarly >= input.anchorDate && targetEarly < p.dueDate;
+      })
+      .sort((a, b) => {
+        const savA = decimal(a.amount).times(decimal(a.earlyPaymentDiscountPct ?? 0));
+        const savB = decimal(b.amount).times(decimal(b.earlyPaymentDiscountPct ?? 0));
+        return Number(savB.minus(savA)) || tiebreakId(a.id, b.id);
+      });
 
-    if (gap > 0) {
-      // Reported, never hidden: the solver could not close the gap.
+    for (const cand of discountCandidates) {
+      const discPct = cand.earlyPaymentDiscountPct ?? 0;
+      const targetEarly = cand.earliestDate ?? input.anchorDate;
+      const daysEarly = Math.max(
+        1,
+        Math.round((Date.parse(`${cand.dueDate}T00:00:00Z`) - Date.parse(`${targetEarly}T00:00:00Z`)) / 86_400_000),
+      );
+      const annualizedYield = Number(decimal(discPct).times(365).div(daysEarly));
+      if (annualizedYield <= maxFacilityRate) continue;
+
+      const discountedAmount = round2(decimal(cand.amount).times(decimal(1).minus(decimal(discPct))));
+      const discountSaved = round2(decimal(cand.amount).minus(decimal(discountedAmount)));
+      if (discountSaved <= 0) continue;
+
+      const trialPayments = workingPayments.map((wp) =>
+        wp.id === cand.id ? { ...wp, dueDate: targetEarly, amount: discountedAmount } : wp,
+      );
+      const trialSeries = projectBalances({
+        anchorDate: input.anchorDate,
+        horizonDays: input.horizonDays,
+        openingCash,
+        inflows: workingInflows,
+        payments: trialPayments,
+      });
+      const staysAboveFloor = trialSeries.every((pt) => pt.balance >= floor);
+      if (!staysAboveFloor) continue;
+
+      const prevDate = cand.dueDate;
+      cand.dueDate = targetEarly;
+      cand.amount = discountedAmount;
       recommendations.push({
         rank: recommendations.length + 1,
-        actionKind: "hold_buffer",
-        subjectTable: null,
-        subjectId: null,
-        subjectLabel: null,
-        currentDate: null,
-        proposedDate: firstBreach,
-        amount: round2(gap),
-        expectedEffect: 0,
-        rationaleCodes: ["limit_yetersiz"],
+        actionKind: "advance_payment",
+        subjectTable: cand.subjectTable ?? "payment_instances",
+        subjectId: cand.id,
+        subjectLabel: cand.label,
+        currentDate: prevDate,
+        proposedDate: targetEarly,
+        amount: discountedAmount,
+        expectedEffect: discountSaved,
+        rationaleCodes: ["erken_odeme_iskontosu", "tampon_korunuyor"],
         rationaleNote:
-          `Kalan ${gap.toFixed(2)} açık mevcut limitlerle kapatılamıyor — ek finansman gerekli.`,
-        confidence: 0.9,
+          `${prevDate} vadeli ödeme ${targetEarly} tarihine çekilirse %${(discPct * 100).toFixed(1)} erken ödeme iskontosu (${discountSaved.toFixed(2)}) kazanılır ve nakit tabanı korunur.`,
+        confidence: 0.85,
       });
     }
-  } else if ((input.drawnAmount ?? 0) > 0) {
-    // No breach anywhere in the horizon: money is sitting idle while a facility accrues interest.
-    const minBalance = worstBefore?.balance ?? 0;
-    const spare = round2(decimal(minBalance).minus(decimal(floor)));
-    if (spare > 0) {
-      const repay = Math.min(spare, input.drawnAmount ?? 0);
-      recommendations.push({
-        rank: 1,
-        actionKind: "repay_facility",
-        subjectTable: null,
-        subjectId: null,
-        subjectLabel: null,
-        currentDate: null,
-        proposedDate: input.anchorDate,
-        amount: round2(repay),
-        expectedEffect: round2(repay),
-        rationaleCodes: ["fazla_nakit_geri_odeme", "tampon_korunuyor"],
-        rationaleNote:
-          `Ufuk boyunca en düşük bakiye tabanın ${spare.toFixed(2)} üzerinde; ` +
-          `bu tutar geri ödenirse taban yine korunur.`,
-        confidence: 0.7,
+
+    if ((input.drawnAmount ?? 0) > 0) {
+      const postDiscountSeries = projectBalances({
+        anchorDate: input.anchorDate,
+        horizonDays: input.horizonDays,
+        openingCash,
+        inflows: workingInflows,
+        payments: workingPayments,
       });
+      const minBalance =
+        postDiscountSeries.reduce(
+          (acc, p) => (acc === null || p.balance < acc.balance ? p : acc),
+          null as { date: string; balance: number } | null,
+        )?.balance ?? 0;
+      const spare = round2(decimal(minBalance).minus(decimal(floor)));
+      if (spare > 0) {
+        const repay = Math.min(spare, input.drawnAmount ?? 0);
+        recommendations.push({
+          rank: recommendations.length + 1,
+          actionKind: "repay_facility",
+          subjectTable: null,
+          subjectId: null,
+          subjectLabel: null,
+          currentDate: null,
+          proposedDate: input.anchorDate,
+          amount: round2(repay),
+          expectedEffect: round2(repay),
+          rationaleCodes: ["fazla_nakit_geri_odeme", "tampon_korunuyor"],
+          rationaleNote:
+            `Ufuk boyunca en düşük bakiye tabanın ${spare.toFixed(2)} üzerinde; ` +
+            `bu tutar geri ödenirse taban yine korunur.`,
+          confidence: 0.7,
+        });
+      }
     }
   }
 

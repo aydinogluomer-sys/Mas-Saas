@@ -7,8 +7,23 @@ import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { getPool } from "@/lib/db";
 import { requireAdmin } from "@/lib/auth";
+import {
+  SSO_PROVIDER_KEYS,
+  upsertSsoProvider,
+  type SsoProviderKey,
+} from "@/lib/auth/password-reset";
 import { DomainError } from "@/lib/domain-error";
-import { createUser, resetUserPassword, forcePasswordChange, setUserActive, setUserRole, unlockUser } from "@/lib/users/engine";
+import {
+  createUser,
+  disableUserTotp,
+  enrollAndVerifyUserTotp,
+  forcePasswordChange,
+  resetUserPassword,
+  revokeSingleSession,
+  setUserActive,
+  setUserRole,
+  unlockUser,
+} from "@/lib/users/engine";
 import { APP_ROLES, type AppRole } from "@/lib/authz/matrix";
 
 const PAGE = "/system/security";
@@ -23,7 +38,9 @@ function done(flash: string): never {
 /** DomainError carries a message written for the user; anything else is an unexpected system
  * fault and must propagate untouched rather than being flattened into a friendly flash. */
 function fail(e: unknown): never {
-  if (e instanceof DomainError) redirect(`${PAGE}?flash=user_error`);
+  if (e instanceof DomainError || (e instanceof Error && e.name === "ZodError")) {
+    redirect(`${PAGE}?flash=user_error`);
+  }
   throw e;
 }
 
@@ -40,12 +57,14 @@ export async function createUserAction(formData: FormData): Promise<void> {
   // own list. An unrecognised value becomes `viewer` — the least privileged tier — rather than
   // the most convenient one, so a malformed request can never mint an approver.
   const role = asAppRole(formData.get("role"), "viewer");
+  const emailRaw = String(formData.get("email") ?? "").trim();
   try {
     await createUser(
       getPool(),
       {
         username: String(formData.get("username") ?? ""),
         displayName: String(formData.get("displayName") ?? ""),
+        email: emailRaw || undefined,
         role,
         password: String(formData.get("password") ?? ""),
       },
@@ -55,6 +74,42 @@ export async function createUserAction(formData: FormData): Promise<void> {
     fail(e);
   }
   done("user_created");
+}
+
+export async function revokeSessionAction(formData: FormData): Promise<void> {
+  const admin = await requireAdmin();
+  const sessionId = String(formData.get("sessionId") ?? "").trim();
+  if (!sessionId) redirect(`${PAGE}?flash=user_error`);
+  try {
+    await revokeSingleSession(getPool(), sessionId, admin.id);
+  } catch (e) {
+    fail(e);
+  }
+  done("session_revoked");
+}
+
+export async function enableTotpAction(formData: FormData): Promise<void> {
+  const admin = await requireAdmin();
+  const userId = String(formData.get("userId") ?? admin.id).trim();
+  const secretBase32 = String(formData.get("secretBase32") ?? "").trim();
+  const code = String(formData.get("code") ?? "").trim();
+  try {
+    await enrollAndVerifyUserTotp(getPool(), userId, secretBase32, code, admin.id);
+  } catch (e) {
+    fail(e);
+  }
+  done("totp_enabled");
+}
+
+export async function disableTotpAction(formData: FormData): Promise<void> {
+  const admin = await requireAdmin();
+  const userId = String(formData.get("userId") ?? "").trim();
+  try {
+    await disableUserTotp(getPool(), userId, admin.id);
+  } catch (e) {
+    fail(e);
+  }
+  done("totp_disabled");
 }
 
 export async function resetPasswordAction(formData: FormData): Promise<void> {
@@ -126,4 +181,46 @@ export async function unlockUserAction(formData: FormData): Promise<void> {
     fail(e);
   }
   done("user_unlocked");
+}
+
+function asSsoProviderKey(raw: FormDataEntryValue | null): SsoProviderKey | null {
+  const value = String(raw ?? "").trim();
+  return (SSO_PROVIDER_KEYS as readonly string[]).includes(value)
+    ? (value as SsoProviderKey)
+    : null;
+}
+
+export async function upsertSsoProviderAction(formData: FormData): Promise<void> {
+  const admin = await requireAdmin();
+  const providerKey = asSsoProviderKey(formData.get("providerKey"));
+  if (!providerKey) redirect(`${PAGE}?flash=user_error`);
+
+  const displayName = String(formData.get("displayName") ?? "").trim();
+  const issuerUrl = String(formData.get("issuerUrl") ?? "").trim() || null;
+  const clientId = String(formData.get("clientId") ?? "").trim() || null;
+  const domainsRaw = String(formData.get("allowedDomains") ?? "");
+  const allowedDomains = domainsRaw
+    .split(",")
+    .map((d) => d.trim().toLowerCase().replace(/^@/, ""))
+    .filter(Boolean);
+  const rawEnabled = String(formData.get("isEnabled") ?? "").trim().toLowerCase();
+  const isEnabled = rawEnabled === "true" || rawEnabled === "on" || rawEnabled === "1";
+
+  try {
+    await upsertSsoProvider(
+      getPool(),
+      {
+        providerKey,
+        displayName,
+        issuerUrl,
+        clientId,
+        allowedDomains,
+        isEnabled,
+      },
+      admin.id,
+    );
+  } catch (e) {
+    fail(e);
+  }
+  done("saved");
 }

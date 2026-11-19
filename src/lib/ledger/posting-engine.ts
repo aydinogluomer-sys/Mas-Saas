@@ -23,17 +23,30 @@ export type JournalSourceType =
   | "bank_transaction"
   | "check_bordro"
   | "loan_installment"
+  | "loan_disbursement"
+  | "facility_movement"
+  | "interbank_transfer"
+  | "counterparty_offset"
+  | "doubtful_provision"
+  | "period_closing"
+  | "payroll_tax_accrual"
+  | "production_movement"
   | "payment_instance"
   | "manual_adjustment"
   | "fx_revaluation"
-  | "reversal";
+  | "reversal"
+  | "opening_balance";
 
 export type JournalEntryStatus = "draft" | "provisional_fx" | "posted" | "reversed";
 
 export interface JournalLineInput {
   accountCode: string;
-  debitNative?: number;
-  creditNative?: number;
+  debitNative?: number | string;
+  creditNative?: number | string;
+  lineCurrency?: string;
+  fxRateOverride?: number | null;
+  debitTryOverride?: number | string | null;
+  creditTryOverride?: number | string | null;
   partyId?: string | null;
   projectId?: string | null;
   costCenterId?: string | null;
@@ -87,6 +100,69 @@ export async function resolveFxRateOrNull(
   if (!res.rows[0]?.rate) return null;
   const parsed = Number(res.rows[0].rate);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+}
+
+export interface BalancedTryJournalLineInput {
+  accountCode: string;
+  debit: number | string;
+  credit: number | string;
+  memo?: string | null;
+  partyId?: string | null;
+}
+
+export interface PostBalancedJournalEntrySpec {
+  entryDate: string;
+  description: string;
+  sourceType: JournalSourceType | "manual";
+  sourceTable?: string | null;
+  sourceId?: string | null;
+  idempotencyKey?: string;
+  lines: BalancedTryJournalLineInput[];
+}
+
+/**
+ * Convenience wrapper for balanced TRY journal entries (doubtful AR provisions,
+ * 320 <-> 120 counterparty offsets, EFT/SWIFT fee write-offs, inline FX settlements).
+ */
+export async function postBalancedJournalEntry(
+  client: PoolClient,
+  spec: PostBalancedJournalEntrySpec,
+  actorId: string | null,
+): Promise<PostJournalEntryResult> {
+  const resolvedSourceType: JournalSourceType =
+    spec.sourceType === "manual" ? "manual_adjustment" : spec.sourceType;
+  const sig = spec.lines
+    .map((l) => `${l.accountCode}:${decimal(l.debit || 0).toFixed(2)}:${decimal(l.credit || 0).toFixed(2)}`)
+    .join("|");
+  const idempotencyKey =
+    spec.idempotencyKey ??
+    `balanced:${resolvedSourceType}:${spec.sourceTable ?? "je"}:${spec.sourceId ?? spec.entryDate}:${sig}`;
+
+  return postJournalEntryWithClient(
+    client,
+    {
+      entryDate: spec.entryDate,
+      sourceType: resolvedSourceType,
+      sourceId: spec.sourceId ?? null,
+      idempotencyKey,
+      description: spec.description,
+      currency: "TRY",
+      fxRate: 1,
+      status: "posted",
+      lines: spec.lines.map((l) => ({
+        accountCode: l.accountCode,
+        debitNative: l.debit,
+        creditNative: l.credit,
+        lineCurrency: "TRY",
+        fxRateOverride: 1,
+        debitTryOverride: l.debit,
+        creditTryOverride: l.credit,
+        partyId: l.partyId ?? null,
+        memo: l.memo ?? null,
+      })),
+    },
+    actorId,
+  );
 }
 
 /**
@@ -145,10 +221,39 @@ export async function postJournalEntryWithClient(
       ? spec.fxRate
       : await resolveFxRateOrNull(client, currency, spec.entryDate);
 
+  const hasPerLineOverrides = spec.lines.some(
+    (l) =>
+      l.lineCurrency !== undefined ||
+      l.fxRateOverride !== undefined ||
+      l.debitTryOverride != null ||
+      l.creditTryOverride != null,
+  );
+
+  // Check if any line in a multi-currency entry lacks a known FX rate
+  let missingAnyFx = currency !== "TRY" && (explicitFx == null || explicitFx <= 0);
+  if (hasPerLineOverrides) {
+    missingAnyFx = false;
+    for (const l of spec.lines) {
+      const lc = (l.lineCurrency ?? currency).trim().toUpperCase();
+      if (lc === "TRY") continue;
+      if (l.debitTryOverride != null || l.creditTryOverride != null) continue;
+      const lf =
+        l.fxRateOverride !== undefined
+          ? l.fxRateOverride
+          : lc === currency
+            ? explicitFx
+            : await resolveFxRateOrNull(client, lc, spec.entryDate);
+      if (lf == null || lf <= 0) {
+        missingAnyFx = true;
+        break;
+      }
+    }
+  }
+
   const effectiveStatus: JournalEntryStatus =
     spec.status === "draft"
       ? "draft"
-      : currency !== "TRY" && (explicitFx == null || explicitFx <= 0)
+      : missingAnyFx
         ? "provisional_fx"
         : "posted";
 
@@ -174,6 +279,7 @@ export async function postJournalEntryWithClient(
 
   for (let i = 0; i < spec.lines.length; i++) {
     const line = spec.lines[i];
+    const lineCurr = (line.lineCurrency ?? currency).trim().toUpperCase();
     const debitNat = decimal(line.debitNative ?? 0).round(2);
     const creditNat = decimal(line.creditNative ?? 0).round(2);
     if (
@@ -191,14 +297,33 @@ export async function postJournalEntryWithClient(
     let creditTry: string | null = null;
     let fxRateToStore: number | null = null;
 
-    if (effectiveStatus !== "provisional_fx" && explicitFx != null && explicitFx > 0) {
-      fxRateToStore = explicitFx;
-      if (debitNat.gt(0)) {
-        debitTry = debitNat.times(explicitFx).round(2).toFixed(2);
+    if (effectiveStatus !== "provisional_fx") {
+      const resolvedLineFx =
+        line.fxRateOverride !== undefined
+          ? line.fxRateOverride
+          : lineCurr === "TRY"
+            ? 1
+            : lineCurr === currency
+              ? explicitFx
+              : await resolveFxRateOrNull(client, lineCurr, spec.entryDate);
+
+      if (line.debitTryOverride != null && debitNat.gt(0)) {
+        fxRateToStore = resolvedLineFx && resolvedLineFx > 0 ? resolvedLineFx : 1;
+        debitTry = decimal(line.debitTryOverride).round(2).toFixed(2);
         creditTry = "0.00";
-      } else {
+      } else if (line.creditTryOverride != null && creditNat.gt(0)) {
+        fxRateToStore = resolvedLineFx && resolvedLineFx > 0 ? resolvedLineFx : 1;
         debitTry = "0.00";
-        creditTry = creditNat.times(explicitFx).round(2).toFixed(2);
+        creditTry = decimal(line.creditTryOverride).round(2).toFixed(2);
+      } else if (resolvedLineFx != null && resolvedLineFx > 0) {
+        fxRateToStore = resolvedLineFx;
+        if (debitNat.gt(0)) {
+          debitTry = debitNat.times(resolvedLineFx).round(2).toFixed(2);
+          creditTry = "0.00";
+        } else {
+          debitTry = "0.00";
+          creditTry = creditNat.times(resolvedLineFx).round(2).toFixed(2);
+        }
       }
     }
 
@@ -210,7 +335,7 @@ export async function postJournalEntryWithClient(
       projectId: line.projectId ?? null,
       costCenterId: line.costCenterId ?? null,
       departmentId: line.departmentId ?? null,
-      nativeCurrency: currency,
+      nativeCurrency: lineCurr,
       debitNative: debitNat.toFixed(2),
       creditNative: creditNat.toFixed(2),
       fxRate: fxRateToStore,
@@ -221,7 +346,7 @@ export async function postJournalEntryWithClient(
   }
 
   // If FX conversion caused a 1-kuruş rounding residual on a natively balanced entry, absorb it on the last credit/debit line
-  if (effectiveStatus === "posted" && currency !== "TRY") {
+  if (effectiveStatus === "posted" && !hasPerLineOverrides && currency !== "TRY") {
     const natDebit = preparedLines.reduce((acc, l) => acc.plus(l.debitNative), decimal(0));
     const natCredit = preparedLines.reduce((acc, l) => acc.plus(l.creditNative), decimal(0));
     if (natDebit.eq(natCredit)) {
@@ -356,19 +481,22 @@ export async function syncDomainEventWithClient(
       department_id: string | null;
       issue_date: string;
       currency: string;
+      discount_total: string | null;
       net_amount: string | null;
       tax_amount: string | null;
       gross_amount: string;
       withholding_amount: string | null;
       vat_withholding_amount: string | null;
+      income_tax_withholding_total: string | null;
       payable_amount: string | null;
       status: string;
       spender_employee_name: string | null;
     }>(
       `select id::text, direction, invoice_no, party_id::text, department_id::text,
               to_char(issue_date, 'YYYY-MM-DD') as issue_date, currency,
-              net_amount::text, tax_amount::text, gross_amount::text,
-              withholding_amount::text, vat_withholding_amount::text, payable_amount::text,
+              discount_total::text, net_amount::text, tax_amount::text, gross_amount::text,
+              withholding_amount::text, vat_withholding_amount::text,
+              income_tax_withholding_total::text, payable_amount::text,
               status, spender_employee_name
          from public.invoices
         where id = $1`,
@@ -382,20 +510,55 @@ export async function syncDomainEventWithClient(
     const gross = money(inv.gross_amount);
     if (gross <= 0) return null;
 
+    const discountTotal = moneyOrNull(inv.discount_total) ?? 0;
     const net = moneyOrNull(inv.net_amount);
     const tax = moneyOrNull(inv.tax_amount);
     const withholding = moneyOrNull(inv.withholding_amount) ?? 0;
     const vatWithholding = moneyOrNull(inv.vat_withholding_amount) ?? 0;
-    const totalDeduction = Number(decimal(withholding).plus(vatWithholding).round(2).toFixed(2));
+    const incomeTaxWithholding = moneyOrNull(inv.income_tax_withholding_total) ?? 0;
+    const effectiveIncomeWithholding = withholding > 0 ? withholding : incomeTaxWithholding;
+    const totalDeduction = Number(
+      decimal(effectiveIncomeWithholding).plus(vatWithholding).round(2).toFixed(2),
+    );
     const payable =
       moneyOrNull(inv.payable_amount) ??
       Number(decimal(gross).minus(totalDeduction).round(2).toFixed(2));
+
+    const lineGroupsRes = await client.query<{
+      cost_center_id: string | null;
+      project_id: string | null;
+      department_id: string | null;
+      line_net: string;
+    }>(
+      `select cost_center_id::text,
+              project_id::text,
+              coalesce(department_id, $2::uuid)::text as department_id,
+              coalesce(sum(net_amount), 0)::text as line_net
+         from public.invoice_lines
+        where invoice_id = $1
+        group by cost_center_id, project_id, coalesce(department_id, $2::uuid)`,
+      [inv.id, inv.department_id],
+    );
+    const dimensionalSlices = lineGroupsRes.rows
+      .map((g) => ({
+        costCenterId: g.cost_center_id,
+        projectId: g.project_id,
+        departmentId: g.department_id,
+        amount: money(g.line_net),
+      }))
+      .filter((g) => g.amount > 0);
+    const slicesSum = dimensionalSlices.reduce((acc, s) => acc.plus(s.amount), decimal(0));
+    const useDimensionalSlices =
+      !net || dimensionalSlices.length === 0
+        ? false
+        : slicesSum.minus(net).abs().lte("0.05") &&
+          (dimensionalSlices.length > 1 ||
+            dimensionalSlices.some((s) => s.costCenterId != null || s.projectId != null));
 
     const needsTaxSplitReview = net === null || tax === null;
     const lines: JournalLineInput[] = [];
 
     if (inv.direction === "sales") {
-      // Borç 120 Alıcılar (payable) + varsa Borç 193 Peşin Ödenen Vergiler/Stopaj (totalDeduction)
       lines.push({
         accountCode: "120",
         debitNative: payable,
@@ -413,13 +576,43 @@ export async function syncDomainEventWithClient(
         });
       }
       if (!needsTaxSplitReview && net !== null && tax !== null) {
-        lines.push({
-          accountCode: "600",
-          creditNative: net,
-          partyId: inv.party_id,
-          departmentId: inv.department_id,
-          memo: `Yurtiçi satış geliri (${inv.invoice_no})`,
-        });
+        if (discountTotal > 0 && !useDimensionalSlices) {
+          const preDiscountSales = Number(decimal(net).plus(discountTotal).round(2).toFixed(2));
+          lines.push({
+            accountCode: "611",
+            debitNative: discountTotal,
+            partyId: inv.party_id,
+            departmentId: inv.department_id,
+            memo: `Satış iskontosu (${inv.invoice_no})`,
+          });
+          lines.push({
+            accountCode: "600",
+            creditNative: preDiscountSales,
+            partyId: inv.party_id,
+            departmentId: inv.department_id,
+            memo: `Yurtiçi brüt satış geliri (${inv.invoice_no})`,
+          });
+        } else if (useDimensionalSlices) {
+          for (const s of dimensionalSlices) {
+            lines.push({
+              accountCode: "600",
+              creditNative: s.amount,
+              partyId: inv.party_id,
+              costCenterId: s.costCenterId,
+              projectId: s.projectId,
+              departmentId: s.departmentId,
+              memo: `Yurtiçi satış geliri (${inv.invoice_no})`,
+            });
+          }
+        } else {
+          lines.push({
+            accountCode: "600",
+            creditNative: net,
+            partyId: inv.party_id,
+            departmentId: inv.department_id,
+            memo: `Yurtiçi satış geliri (${inv.invoice_no})`,
+          });
+        }
         if (tax > 0) {
           lines.push({
             accountCode: "391",
@@ -430,7 +623,6 @@ export async function syncDomainEventWithClient(
           });
         }
       } else {
-        // S-6 BLANK ≠ ZERO: KDV bilinmiyorsa uydurma 0 KDV satırı açılmaz; needs_tax_split_review=true
         lines.push({
           accountCode: "600",
           creditNative: gross,
@@ -440,12 +632,23 @@ export async function syncDomainEventWithClient(
         });
       }
     } else {
-      // Alış / gider faturası: Borç 770/620/632 + Borç 191, Alacak 320 (veya çalışan harcamasında 335)
       const expenseCode = event.expenseAccountCode ?? "770";
       const creditAccountCode = inv.spender_employee_name ? "335" : "320";
 
       if (!needsTaxSplitReview && net !== null && tax !== null) {
-        if (net > 0) {
+        if (useDimensionalSlices) {
+          for (const s of dimensionalSlices) {
+            lines.push({
+              accountCode: expenseCode,
+              debitNative: s.amount,
+              partyId: inv.party_id,
+              costCenterId: s.costCenterId,
+              projectId: s.projectId,
+              departmentId: s.departmentId,
+              memo: `Alış/gider tahakkuku (${inv.invoice_no})`,
+            });
+          }
+        } else if (net > 0) {
           lines.push({
             accountCode: expenseCode,
             debitNative: net,
@@ -464,7 +667,6 @@ export async function syncDomainEventWithClient(
           });
         }
       } else {
-        // S-6 BLANK ≠ ZERO: satırsız basit gider fişinde uydurma 0 KDV satırı açılmaz
         lines.push({
           accountCode: expenseCode,
           debitNative: gross,
@@ -518,6 +720,7 @@ export async function syncDomainEventWithClient(
       currency: string;
       description: string | null;
       transaction_kind: string;
+      category_rule: string | null;
       status: string;
       matched_entity_table: string | null;
       matched_entity_id: string | null;
@@ -527,6 +730,7 @@ export async function syncDomainEventWithClient(
               coalesce(currency, (select ca.currency from public.cash_accounts ca where ca.id = bank_account_id), 'TRY') as currency,
               description,
               coalesce(transaction_kind, 'standard') as transaction_kind,
+              category_rule,
               coalesce(status, 'unmatched') as status,
               matched_entity_table,
               matched_entity_id::text
@@ -537,6 +741,7 @@ export async function syncDomainEventWithClient(
     const tx = txRes.rows[0];
     if (!tx) return null;
     if (tx.status === "ignored") return null;
+    if (tx.category_rule === "system_internal_settlement") return null;
     if (tx.matched_entity_table === "check_bordros" || tx.matched_entity_table === "loan_installments") {
       return null;
     }
@@ -544,6 +749,67 @@ export async function syncDomainEventWithClient(
     const rawAmt = money(tx.amount);
     const absAmt = Math.abs(rawAmt);
     if (absAmt <= 0) return null;
+
+    if (
+      (tx.status === "unmatched" || tx.status === "suggested") &&
+      tx.transaction_kind === "standard"
+    ) {
+      const suspenseLines: JournalLineInput[] =
+        rawAmt > 0
+          ? [
+              { accountCode: "102", debitNative: absAmt, memo: tx.description ?? "Banka girişi (mutabakat bekliyor)" },
+              { accountCode: "102.99", creditNative: absAmt, memo: "Eşleşmemiş banka tahsilatı geçici hesabı" },
+            ]
+          : [
+              { accountCode: "102.99", debitNative: absAmt, memo: "Eşleşmemiş banka çıkışı geçici hesabı" },
+              { accountCode: "102", creditNative: absAmt, memo: tx.description ?? "Banka çıkışı (mutabakat bekliyor)" },
+            ];
+      return postJournalEntryWithClient(
+        client,
+        {
+          entryDate: tx.txn_date,
+          sourceType: "bank_transaction",
+          sourceId: tx.id,
+          idempotencyKey: `bank_tx:suspense:${tx.id}`,
+          description: `Banka Geçici Mutabakat (102.99): ${tx.description ?? tx.id.slice(0, 8)}`,
+          currency: tx.currency,
+          lines: suspenseLines,
+        },
+        actorId,
+      );
+    }
+
+    const priorSuspense = await client.query<{ id: string; status: JournalEntryStatus; entry_no: string }>(
+      `select id::text, status, entry_no::text
+         from public.management_journal_entries
+        where source_type = 'bank_transaction'
+          and source_id = $1::uuid
+          and idempotency_key like ('bank_tx:suspense:' || $1::text || '%')
+          and status in ('posted', 'provisional_fx', 'draft')
+        for update`,
+      [tx.id],
+    );
+    for (const sp of priorSuspense.rows) {
+      if (sp.status === "posted") {
+        await reverseManagementEntryWithClient(
+          client,
+          sp.id,
+          "Banka hareketi eşleştirildiği için 102.99 geçici hesap kapatıldı",
+          actorId,
+          tx.txn_date,
+        );
+      } else {
+        await client.query(`delete from public.management_journal_entries where id = $1`, [sp.id]);
+        await audit(client, {
+          actor: actorId,
+          action: "discard_unposted_source_journal_entry",
+          entityTable: "management_journal_entries",
+          entityId: sp.id,
+          before: { entryNo: Number(sp.entry_no), status: sp.status, sourceType: "bank_transaction", sourceId: tx.id },
+          after: { discarded: true, reason: "102.99 geçici kayıt kapatıldı" },
+        });
+      }
+    }
 
     if (tx.matched_entity_table === "checks" && tx.matched_entity_id) {
       const hasSettlementBordro = await client.query(
@@ -561,12 +827,14 @@ export async function syncDomainEventWithClient(
 
       const chkRes = await client.query<{
         direction: string;
+        instrument_type: string;
         payer_party_id: string | null;
         payee_party_id: string | null;
         had_collection: boolean;
         had_collateral: boolean;
       }>(
         `select c.direction,
+                coalesce(c.instrument_type, 'check') as instrument_type,
                 c.payer_party_id::text as payer_party_id,
                 c.payee_party_id::text as payee_party_id,
                 exists (
@@ -584,35 +852,42 @@ export async function syncDomainEventWithClient(
         [tx.matched_entity_id],
       );
       const chk = chkRes.rows[0];
+      const isNote = chk?.instrument_type === "promissory_note";
       const checkLines: JournalLineInput[] = [];
       if (rawAmt > 0 || chk?.direction === "inflow") {
-        const checkAccount = chk?.had_collateral ? "101.03" : chk?.had_collection ? "101.02" : "101.01";
+        const checkAccount = isNote
+          ? "121"
+          : chk?.had_collateral
+            ? "101.03"
+            : chk?.had_collection
+              ? "101.02"
+              : "101.01";
         checkLines.push(
           {
             accountCode: "102",
             debitNative: absAmt,
             partyId: chk?.payer_party_id ?? null,
-            memo: tx.description ?? "Banka ekstresiyle çek tahsilatı",
+            memo: tx.description ?? "Banka ekstresiyle çek/senet tahsilatı",
           },
           {
             accountCode: checkAccount,
             creditNative: absAmt,
             partyId: chk?.payer_party_id ?? null,
-            memo: "Tahsil edilen müşteri çekinin kapanışı",
+            memo: "Tahsil edilen müşteri çek/senedinin kapanışı",
           },
         );
       } else {
         checkLines.push(
           {
-            accountCode: "103",
+            accountCode: isNote ? "321" : "103",
             debitNative: absAmt,
             partyId: chk?.payee_party_id ?? null,
-            memo: tx.description ?? "Verilen çekin bankadan ödenmesi",
+            memo: tx.description ?? "Verilen çek/senedin bankadan ödenmesi",
           },
           {
             accountCode: "102",
             creditNative: absAmt,
-            memo: "Keşide çek banka çıkışı",
+            memo: "Keşide çek/senet banka çıkışı",
           },
         );
       }
@@ -627,6 +902,201 @@ export async function syncDomainEventWithClient(
           description: `Banka Çek Kapanışı: ${tx.description ?? tx.id.slice(0, 8)}`,
           currency: tx.currency,
           lines: checkLines,
+        },
+        actorId,
+      );
+    }
+
+    const allocRes = await client.query<{
+      allocated_amount: string;
+      invoice_id: string;
+      invoice_no: string;
+      direction: "sales" | "purchase";
+      party_id: string | null;
+      currency: string;
+      issue_date: string;
+      spender_employee_name: string | null;
+    }>(
+      `select ia.allocated_amount::text,
+              i.id::text as invoice_id,
+              i.invoice_no,
+              i.direction,
+              i.party_id::text as party_id,
+              i.currency,
+              to_char(i.issue_date, 'YYYY-MM-DD') as issue_date,
+              i.spender_employee_name
+         from public.invoice_allocations ia
+         join public.invoices i on i.id = ia.invoice_id
+        where ia.source_table = 'bank_transactions'
+          and ia.source_id = $1::uuid
+          and ia.reversed_at is null
+        order by ia.created_at asc, ia.id asc`,
+      [tx.id],
+    );
+
+    if (allocRes.rows.length > 0 && allocRes.rows.every((a) => a.currency === tx.currency)) {
+      const settleFx = await resolveFxRateOrNull(client, tx.currency, tx.txn_date);
+      const splitLines: JournalLineInput[] = [];
+      const totalAllocated = allocRes.rows.reduce((acc, a) => acc.plus(a.allocated_amount), decimal(0));
+      let totalRealizedFxTry = decimal(0);
+
+      if (rawAmt > 0) {
+        const bankTry = settleFx ? decimal(absAmt).times(settleFx).round(2) : null;
+        splitLines.push({
+          accountCode: "102",
+          debitNative: absAmt,
+          lineCurrency: tx.currency,
+          fxRateOverride: settleFx,
+          debitTryOverride: bankTry ? Number(bankTry.toFixed(2)) : undefined,
+          memo: tx.description ?? "Müşteri tahsilatı banka girişi",
+        });
+
+        const feeDiff = totalAllocated.minus(absAmt).round(2);
+        if (feeDiff.gt(0)) {
+          const feeTry = settleFx ? feeDiff.times(settleFx).round(2) : null;
+          splitLines.push({
+            accountCode: "780",
+            debitNative: Number(feeDiff.toFixed(2)),
+            lineCurrency: tx.currency,
+            fxRateOverride: settleFx,
+            debitTryOverride: feeTry ? Number(feeTry.toFixed(2)) : undefined,
+            memo: "Tahsilat banka/POS kesinti ve komisyon farkı (780)",
+          });
+        }
+
+        for (const alloc of allocRes.rows) {
+          const allocAmt = money(alloc.allocated_amount);
+          const issueFx =
+            tx.currency === "TRY"
+              ? 1
+              : (await resolveFxRateOrNull(client, tx.currency, alloc.issue_date)) ?? settleFx;
+          const arTry = issueFx ? decimal(allocAmt).times(issueFx).round(2) : null;
+          if (tx.currency !== "TRY" && settleFx != null && issueFx != null) {
+            const settledTry = decimal(allocAmt).times(settleFx).round(2);
+            totalRealizedFxTry = totalRealizedFxTry.plus(settledTry.minus(arTry!));
+          }
+          splitLines.push({
+            accountCode: alloc.direction === "sales" ? "120" : "320",
+            creditNative: allocAmt,
+            lineCurrency: tx.currency,
+            fxRateOverride: issueFx,
+            creditTryOverride: arTry ? Number(arTry.toFixed(2)) : undefined,
+            partyId: alloc.party_id,
+            memo: `Fatura tahsilat mahsubu (${alloc.invoice_no})`,
+          });
+        }
+
+        const excess = decimal(absAmt).minus(totalAllocated).round(2);
+        if (excess.gt(0)) {
+          const exTry = settleFx ? excess.times(settleFx).round(2) : null;
+          splitLines.push({
+            accountCode: "120",
+            creditNative: Number(excess.toFixed(2)),
+            lineCurrency: tx.currency,
+            fxRateOverride: settleFx,
+            creditTryOverride: exTry ? Number(exTry.toFixed(2)) : undefined,
+            partyId: allocRes.rows[0]?.party_id ?? null,
+            memo: "Tahsis fazlası müşteri cari avansı",
+          });
+        }
+      } else {
+        for (const alloc of allocRes.rows) {
+          const allocAmt = money(alloc.allocated_amount);
+          const issueFx =
+            tx.currency === "TRY"
+              ? 1
+              : (await resolveFxRateOrNull(client, tx.currency, alloc.issue_date)) ?? settleFx;
+          const apTry = issueFx ? decimal(allocAmt).times(issueFx).round(2) : null;
+          if (tx.currency !== "TRY" && settleFx != null && issueFx != null) {
+            const settledTry = decimal(allocAmt).times(settleFx).round(2);
+            totalRealizedFxTry = totalRealizedFxTry.plus(apTry!.minus(settledTry));
+          }
+          splitLines.push({
+            accountCode: alloc.spender_employee_name ? "335" : "320",
+            debitNative: allocAmt,
+            lineCurrency: tx.currency,
+            fxRateOverride: issueFx,
+            debitTryOverride: apTry ? Number(apTry.toFixed(2)) : undefined,
+            partyId: alloc.party_id,
+            memo: `Fatura ödeme mahsubu (${alloc.invoice_no})`,
+          });
+        }
+
+        const outflowExcess = decimal(absAmt).minus(totalAllocated).round(2);
+        if (outflowExcess.gt(0)) {
+          const exTry = settleFx ? outflowExcess.times(settleFx).round(2) : null;
+          const isSmallFee = outflowExcess.lte(decimal(absAmt).times("0.05")) || outflowExcess.lte(500);
+          splitLines.push({
+            accountCode: isSmallFee ? "780" : "320",
+            debitNative: Number(outflowExcess.toFixed(2)),
+            lineCurrency: tx.currency,
+            fxRateOverride: settleFx,
+            debitTryOverride: exTry ? Number(exTry.toFixed(2)) : undefined,
+            partyId: isSmallFee ? null : (allocRes.rows[0]?.party_id ?? null),
+            memo: isSmallFee ? "EFT/Havale banka masraf farkı (780)" : "Tahsis fazlası tedarikçi cari ödemesi",
+          });
+        }
+
+        const bankOutTry = settleFx ? decimal(absAmt).times(settleFx).round(2) : null;
+        splitLines.push({
+          accountCode: "102",
+          creditNative: absAmt,
+          lineCurrency: tx.currency,
+          fxRateOverride: settleFx,
+          creditTryOverride: bankOutTry ? Number(bankOutTry.toFixed(2)) : undefined,
+          memo: tx.description ?? "Tedarikçi ödemesi banka çıkışı",
+        });
+
+        const discountShortfall = totalAllocated.minus(absAmt).round(2);
+        if (discountShortfall.gt(0)) {
+          const discTry = settleFx ? discountShortfall.times(settleFx).round(2) : null;
+          splitLines.push({
+            accountCode: "642",
+            creditNative: Number(discountShortfall.toFixed(2)),
+            lineCurrency: tx.currency,
+            fxRateOverride: settleFx,
+            creditTryOverride: discTry ? Number(discTry.toFixed(2)) : undefined,
+            memo: "Ödeme erken kapama / yuvarlama farkı",
+          });
+        }
+      }
+
+      if (tx.currency !== "TRY" && settleFx != null && !totalRealizedFxTry.eq(0)) {
+        const fxGainLossAbs = Number(totalRealizedFxTry.abs().round(2).toFixed(2));
+        if (fxGainLossAbs > 0) {
+          if (totalRealizedFxTry.gt(0)) {
+            splitLines.push({
+              accountCode: "646",
+              creditNative: fxGainLossAbs,
+              lineCurrency: "TRY",
+              fxRateOverride: 1,
+              creditTryOverride: fxGainLossAbs,
+              memo: "Tahsilat/ödeme gerçekleşen kambiyo kârı (646)",
+            });
+          } else {
+            splitLines.push({
+              accountCode: "656",
+              debitNative: fxGainLossAbs,
+              lineCurrency: "TRY",
+              fxRateOverride: 1,
+              debitTryOverride: fxGainLossAbs,
+              memo: "Tahsilat/ödeme gerçekleşen kambiyo zararı (656)",
+            });
+          }
+        }
+      }
+
+      return postJournalEntryWithClient(
+        client,
+        {
+          entryDate: tx.txn_date,
+          sourceType: "bank_transaction",
+          sourceId: tx.id,
+          idempotencyKey: `bank_tx:settled:${tx.id}`,
+          description: `Banka Fatura Tahsisatı (${allocRes.rows.length} belge): ${tx.description ?? tx.id.slice(0, 8)}`,
+          currency: tx.currency,
+          fxRate: settleFx ?? undefined,
+          lines: splitLines,
         },
         actorId,
       );
@@ -710,111 +1180,196 @@ export async function syncDomainEventWithClient(
     const amt = money(b.total_amount);
     if (amt <= 0) return null;
 
+    const chkMetaRes = await client.query<{
+      direction: string;
+      instrument_type: string;
+      payer_party_id: string | null;
+      payee_party_id: string | null;
+      endorsed_to_party_id: string | null;
+      discount_fee_total: string;
+      had_collateral: boolean;
+      had_collection: boolean;
+      was_endorsed_before_bounce: boolean;
+    }>(
+      `select (array_agg(c.direction))[1] as direction,
+              coalesce((array_agg(c.instrument_type))[1], 'check') as instrument_type,
+              (array_agg(c.payer_party_id::text) filter (where c.payer_party_id is not null))[1] as payer_party_id,
+              (array_agg(c.payee_party_id::text) filter (where c.payee_party_id is not null))[1] as payee_party_id,
+              (array_agg(c.endorsed_to_party_id::text) filter (where c.endorsed_to_party_id is not null))[1] as endorsed_to_party_id,
+              coalesce(sum(coalesce(c.discount_fee_amount, 0)), 0)::text as discount_fee_total,
+              bool_or(exists (
+                select 1 from public.check_events ce2
+                join public.check_bordros cb2 on cb2.id = ce2.bordro_id
+                where ce2.check_id = c.id and cb2.bordro_type = 'bank_collateral'
+              )) as had_collateral,
+              bool_or(exists (
+                select 1 from public.check_events ce3
+                join public.check_bordros cb3 on cb3.id = ce3.bordro_id
+                where ce3.check_id = c.id and cb3.bordro_type = 'bank_collection'
+              )) as had_collection,
+              bool_or(exists (
+                select 1 from public.check_events ce4
+                where ce4.check_id = c.id
+                  and ce4.bordro_id = $1::uuid
+                  and ce4.event_type = 'recourse_returned'
+              ) or (
+                c.endorsed_to_party_id is not null
+                and exists (
+                  select 1 from public.check_events ce5
+                  join public.check_bordros cb5 on cb5.id = ce5.bordro_id
+                  where ce5.check_id = c.id and cb5.bordro_type = 'vendor_endorsement'
+                )
+              )) as was_endorsed_before_bounce
+         from public.checks c
+        where exists (
+          select 1 from public.check_events ce where ce.check_id = c.id and ce.bordro_id = $1::uuid
+        )
+           or c.last_bordro_id = $1::uuid`,
+      [b.id],
+    );
+    const chkMeta = chkMetaRes.rows[0];
+    const isNote = chkMeta?.instrument_type === "promissory_note";
+    const portfolioAcc = isNote ? "121" : "101.01";
+    const collectionAcc = isNote ? "121" : "101.02";
+    const collateralAcc = isNote ? "121" : "101.03";
+    const issuedAcc = isNote ? "321" : "103";
+    const docLabel = isNote ? "senet" : "çek";
+
     const lines: JournalLineInput[] = [];
     switch (b.bordro_type) {
       case "customer_receipt":
         lines.push(
-          { accountCode: "101.01", debitNative: amt, partyId: b.target_party_id, memo: `Müşteri çeki girişi (${b.bordro_no})` },
-          { accountCode: "120", creditNative: amt, partyId: b.target_party_id, memo: `Müşteri çeki alacak mahsubu (${b.bordro_no})` },
+          { accountCode: portfolioAcc, debitNative: amt, partyId: b.target_party_id ?? chkMeta?.payer_party_id ?? null, memo: `Müşteri ${docLabel} girişi (${b.bordro_no})` },
+          { accountCode: "120", creditNative: amt, partyId: b.target_party_id ?? chkMeta?.payer_party_id ?? null, memo: `Müşteri ${docLabel} alacak mahsubu (${b.bordro_no})` },
         );
         break;
       case "vendor_endorsement":
         lines.push(
-          { accountCode: "320", debitNative: amt, partyId: b.target_party_id, memo: `Tedarikçiye çek cirosu (${b.bordro_no})` },
-          { accountCode: "101.01", creditNative: amt, partyId: b.target_party_id, memo: `Portföyden ciro çıkışı (${b.bordro_no})` },
+          { accountCode: "320", debitNative: amt, partyId: b.target_party_id, memo: `Tedarikçiye ${docLabel} cirosu (${b.bordro_no})` },
+          { accountCode: portfolioAcc, creditNative: amt, partyId: b.target_party_id, memo: `Portföyden ciro çıkışı (${b.bordro_no})` },
           { accountCode: "900", debitNative: amt, partyId: b.target_party_id, memo: `Ciro rücu riski nazım borç (${b.bordro_no})` },
           { accountCode: "901", creditNative: amt, partyId: b.target_party_id, memo: `Ciro rücu riski nazım alacak (${b.bordro_no})` },
         );
         break;
       case "bank_collection":
+        if (isNote) return null;
         lines.push(
-          { accountCode: "101.02", debitNative: amt, memo: `Bankaya tahsile verilen çekler (${b.bordro_no})` },
+          { accountCode: collectionAcc, debitNative: amt, memo: `Bankaya tahsile verilen çekler (${b.bordro_no})` },
           { accountCode: "101.01", creditNative: amt, memo: `Portföyden tahsile çıkış (${b.bordro_no})` },
         );
         break;
       case "bank_collateral":
+        if (isNote) return null;
         lines.push(
-          { accountCode: "101.03", debitNative: amt, memo: `Bankaya teminata verilen çekler (${b.bordro_no})` },
+          { accountCode: collateralAcc, debitNative: amt, memo: `Bankaya teminata verilen çekler (${b.bordro_no})` },
           { accountCode: "101.01", creditNative: amt, memo: `Portföyden teminata çıkış (${b.bordro_no})` },
         );
         break;
       case "own_issue":
         lines.push(
-          { accountCode: "320", debitNative: amt, partyId: b.target_party_id, memo: `Keşide çek tedarikçi ödemesi (${b.bordro_no})` },
-          { accountCode: "103", creditNative: amt, partyId: b.target_party_id, memo: `Verilen çekler ve ödeme emirleri (${b.bordro_no})` },
+          { accountCode: "320", debitNative: amt, partyId: b.target_party_id ?? chkMeta?.payee_party_id ?? null, memo: `Keşide ${docLabel} tedarikçi ödemesi (${b.bordro_no})` },
+          { accountCode: issuedAcc, creditNative: amt, partyId: b.target_party_id ?? chkMeta?.payee_party_id ?? null, memo: `Verilen ${docLabel}ler (${b.bordro_no})` },
         );
         break;
       case "settlement":
       case "bounce_return": {
-        const chkMetaRes = await client.query<{
-          direction: string;
-          payer_party_id: string | null;
-          payee_party_id: string | null;
-          had_collateral: boolean;
-        }>(
-          `select c.direction,
-                  c.payer_party_id::text as payer_party_id,
-                  c.payee_party_id::text as payee_party_id,
-                  exists (
-                    select 1 from public.check_events ce2
-                    join public.check_bordros cb2 on cb2.id = ce2.bordro_id
-                    where ce2.check_id = c.id and cb2.bordro_type = 'bank_collateral'
-                  ) as had_collateral
-             from public.checks c
-            where exists (
-              select 1 from public.check_events ce where ce.check_id = c.id and ce.bordro_id = $1::uuid
-            )
-               or c.last_bordro_id = $1::uuid
-            limit 1`,
-          [b.id],
-        );
-        const chkMeta = chkMetaRes.rows[0];
         const isOutflow = chkMeta?.direction === "outflow";
-        const inflowCheckAccount = chkMeta?.had_collateral ? "101.03" : "101.02";
+        const inflowCheckAccount = isNote
+          ? "121"
+          : chkMeta?.had_collateral
+            ? "101.03"
+            : chkMeta?.had_collection
+              ? "101.02"
+              : "101.01";
 
         if (b.bordro_type === "settlement") {
           if (isOutflow) {
             lines.push(
               {
-                accountCode: "103",
+                accountCode: issuedAcc,
                 debitNative: amt,
                 partyId: b.target_party_id ?? chkMeta?.payee_party_id ?? null,
-                memo: `Verilen çekin bankadan ödenmesi (${b.bordro_no})`,
+                memo: `Verilen ${docLabel}in bankadan ödenmesi (${b.bordro_no})`,
               },
               {
                 accountCode: "102",
                 creditNative: amt,
-                memo: `Keşide çek banka çıkışı (${b.bordro_no})`,
+                memo: `Keşide ${docLabel} banka çıkışı (${b.bordro_no})`,
               },
             );
-          } else {
+          } else if (chkMeta?.was_endorsed_before_bounce) {
+            const endorsedVendorId = chkMeta?.endorsed_to_party_id ?? b.target_party_id ?? null;
             lines.push(
-              { accountCode: "102", debitNative: amt, memo: `Çek tahsilatı (${b.bordro_no})` },
-              { accountCode: inflowCheckAccount, creditNative: amt, memo: `Tahsildeki çekin kapanışı (${b.bordro_no})` },
+              { accountCode: "901", debitNative: amt, partyId: endorsedVendorId, memo: `Ciro edilen ${docLabel} vadesinde tahsil — rücu nazım kapanışı (${b.bordro_no})` },
+              { accountCode: "900", creditNative: amt, partyId: endorsedVendorId, memo: `Ciro edilen ${docLabel} vadesinde tahsil — rücu nazım kapanışı (${b.bordro_no})` },
             );
+          } else {
+            const discountFee = money(chkMeta?.discount_fee_total ?? 0);
+            if (discountFee > 0 && discountFee < amt) {
+              const netProceeds = Number(decimal(amt).minus(discountFee).round(2).toFixed(2));
+              lines.push(
+                { accountCode: "102", debitNative: netProceeds, memo: `Faktoring / iskonto net banka girişi (${b.bordro_no})` },
+                { accountCode: "780", debitNative: discountFee, memo: `Çek/senet kırdırma iskonto ve komisyon gideri (${b.bordro_no})` },
+                { accountCode: inflowCheckAccount, creditNative: amt, partyId: chkMeta?.payer_party_id ?? null, memo: `İskonto edilen ${docLabel} kapanışı (${b.bordro_no})` },
+              );
+            } else {
+              lines.push(
+                { accountCode: "102", debitNative: amt, memo: `${isNote ? "Senet" : "Çek"} tahsilatı (${b.bordro_no})` },
+                { accountCode: inflowCheckAccount, creditNative: amt, partyId: chkMeta?.payer_party_id ?? null, memo: `Tahsil edilen ${docLabel} kapanışı (${b.bordro_no})` },
+              );
+            }
           }
         } else {
           if (isOutflow) {
             const vendorPartyId = b.target_party_id ?? chkMeta?.payee_party_id ?? null;
             lines.push(
               {
-                accountCode: "103",
+                accountCode: issuedAcc,
                 debitNative: amt,
                 partyId: vendorPartyId,
-                memo: `Karşılıksız keşide çek yükümlülük dönüşü (${b.bordro_no})`,
+                memo: `Karşılıksız keşide ${docLabel} yükümlülük dönüşü (${b.bordro_no})`,
               },
               {
                 accountCode: "320",
                 creditNative: amt,
                 partyId: vendorPartyId,
-                memo: `Karşılıksız keşide çek tedarikçi borcu (${b.bordro_no})`,
+                memo: `Karşılıksız keşide ${docLabel} tedarikçi borcu (${b.bordro_no})`,
+              },
+            );
+          } else if (chkMeta?.was_endorsed_before_bounce) {
+            const drawerPartyId = chkMeta?.payer_party_id ?? null;
+            const endorsedVendorId = chkMeta?.endorsed_to_party_id ?? b.target_party_id ?? null;
+            lines.push(
+              {
+                accountCode: "120",
+                debitNative: amt,
+                partyId: drawerPartyId,
+                memo: `Cirodan karşılıksız dönen ${docLabel} keşideci rücu borçlandırması (${b.bordro_no})`,
+              },
+              {
+                accountCode: "320",
+                creditNative: amt,
+                partyId: endorsedVendorId,
+                memo: `Karşılıksız dönen ciro ${docLabel}i nedeniyle tedarikçi cari borç iadesi (${b.bordro_no})`,
+              },
+              {
+                accountCode: "901",
+                debitNative: amt,
+                partyId: endorsedVendorId,
+                memo: `Ciro rücu riski nazım hesap kapanışı (${b.bordro_no})`,
+              },
+              {
+                accountCode: "900",
+                creditNative: amt,
+                partyId: endorsedVendorId,
+                memo: `Ciro rücu riski nazım hesap kapanışı (${b.bordro_no})`,
               },
             );
           } else {
             const custPartyId = b.target_party_id ?? chkMeta?.payer_party_id ?? null;
             lines.push(
-              { accountCode: "120", debitNative: amt, partyId: custPartyId, memo: `Karşılıksız çek rücu borçlandırması (${b.bordro_no})` },
-              { accountCode: inflowCheckAccount, creditNative: amt, partyId: custPartyId, memo: `Karşılıksız çek tahsilden düşümü (${b.bordro_no})` },
+              { accountCode: "120", debitNative: amt, partyId: custPartyId, memo: `Karşılıksız ${docLabel} rücu borçlandırması (${b.bordro_no})` },
+              { accountCode: inflowCheckAccount, creditNative: amt, partyId: custPartyId, memo: `Karşılıksız ${docLabel} portföy/tahsilden düşümü (${b.bordro_no})` },
             );
           }
         }
@@ -831,7 +1386,7 @@ export async function syncDomainEventWithClient(
         sourceType: "check_bordro",
         sourceId: b.id,
         idempotencyKey: `check_bordro:${b.id}`,
-        description: `Çek Bordrosu (${b.bordro_type}): ${b.bordro_no}`,
+        description: `${isNote ? "Senet" : "Çek"} Bordrosu (${b.bordro_type}): ${b.bordro_no}`,
         currency: b.currency,
         lines,
       },
@@ -848,9 +1403,12 @@ export async function syncDomainEventWithClient(
       principal_component: string | null;
       interest_component: string | null;
       tax_component: string | null;
+      bsmv_component: string | null;
+      kkdf_component: string | null;
       status: string;
       currency: string;
       loan_name: string;
+      loan_kind: string;
     }>(
       `select li.id::text,
               to_char(li.due_date, 'YYYY-MM-DD') as due_date,
@@ -859,9 +1417,12 @@ export async function syncDomainEventWithClient(
               li.principal_component::text,
               li.interest_component::text,
               li.tax_component::text,
+              li.bsmv_component::text,
+              li.kkdf_component::text,
               li.status,
               l.currency,
-              l.name as loan_name
+              l.name as loan_name,
+              coalesce(l.loan_kind, 'installment') as loan_kind
          from public.loan_installments li
          join public.loans l on l.id = li.loan_id
         where li.id = $1`,
@@ -874,7 +1435,13 @@ export async function syncDomainEventWithClient(
     if (totalAmt <= 0) return null;
 
     const interest = moneyOrNull(li.interest_component) ?? 0;
-    const tax = moneyOrNull(li.tax_component) ?? 0;
+    const bsmv = moneyOrNull(li.bsmv_component) ?? 0;
+    const kkdf = moneyOrNull(li.kkdf_component) ?? 0;
+    const explicitTax = moneyOrNull(li.tax_component);
+    const tax =
+      explicitTax != null
+        ? explicitTax
+        : Number(decimal(bsmv).plus(kkdf).round(2).toFixed(2));
     const financeCost = Number(decimal(interest).plus(tax).round(2).toFixed(2));
     const explicitPrincipal = moneyOrNull(li.principal_component);
     const principal =
@@ -884,25 +1451,55 @@ export async function syncDomainEventWithClient(
     const adjustedFinanceCost = Number(decimal(totalAmt).minus(principal).round(2).toFixed(2));
 
     const lines: JournalLineInput[] = [];
-    if (principal > 0) {
+    if (li.loan_kind === "leasing") {
+      const grossLeaseRental = Number(decimal(principal).plus(interest).round(2).toFixed(2));
+      if (grossLeaseRental > 0) {
+        lines.push({
+          accountCode: "301",
+          debitNative: grossLeaseRental,
+          memo: `Finansal kiralama kira taksit anapara+faiz düşümü (${li.loan_name})`,
+        });
+      }
+      if (adjustedFinanceCost > 0) {
+        lines.push({
+          accountCode: "780",
+          debitNative: adjustedFinanceCost,
+          memo: `Finansal kiralama dönemsel faiz tahakkuku (${li.loan_name})`,
+        });
+      }
       lines.push({
-        accountCode: "300",
-        debitNative: principal,
-        memo: `Kredi anapara ödemesi (${li.loan_name})`,
+        accountCode: "102",
+        creditNative: totalAmt,
+        memo: `Finansal kiralama taksit banka çıkışı (${li.loan_name})`,
+      });
+      if (interest > 0) {
+        lines.push({
+          accountCode: "302",
+          creditNative: interest,
+          memo: `Ertelenmiş finansal kiralama borçlanma maliyeti itfası (${li.loan_name})`,
+        });
+      }
+    } else {
+      if (principal > 0) {
+        lines.push({
+          accountCode: "300",
+          debitNative: principal,
+          memo: `Kredi anapara ödemesi (${li.loan_name})`,
+        });
+      }
+      if (adjustedFinanceCost > 0) {
+        lines.push({
+          accountCode: "780",
+          debitNative: adjustedFinanceCost,
+          memo: `Kredi faiz + BSMV/KKDF gideri (${li.loan_name})`,
+        });
+      }
+      lines.push({
+        accountCode: "102",
+        creditNative: totalAmt,
+        memo: `Kredi taksit ödemesi banka çıkışı (${li.loan_name})`,
       });
     }
-    if (adjustedFinanceCost > 0) {
-      lines.push({
-        accountCode: "780",
-        debitNative: adjustedFinanceCost,
-        memo: `Kredi faiz + BSMV/KKDF gideri (${li.loan_name})`,
-      });
-    }
-    lines.push({
-      accountCode: "102",
-      creditNative: totalAmt,
-      memo: `Kredi taksit ödemesi banka çıkışı (${li.loan_name})`,
-    });
 
     return postJournalEntryWithClient(
       client,
@@ -911,7 +1508,7 @@ export async function syncDomainEventWithClient(
         sourceType: "loan_installment",
         sourceId: li.id,
         idempotencyKey: `loan_installment:paid:${li.id}`,
-        description: `Kredi Taksit Ödemesi (${li.loan_name})`,
+        description: `${li.loan_kind === "leasing" ? "Finansal Kiralama" : "Kredi"} Taksit Ödemesi (${li.loan_name})`,
         currency: li.currency,
         lines,
       },
@@ -926,6 +1523,8 @@ export async function syncDomainEventWithClient(
  * Re-values any `provisional_fx` journal entries whose transaction date now has a TCMB FX rate
  * in `public.fx_rate_snapshots`, transitioning them to `'posted'`.
  */
+export const revalueProvisionalJournalEntries = revalueProvisionalFxEntries;
+
 export async function revalueProvisionalFxEntries(
   pool: Pool,
   actorId: string | null,

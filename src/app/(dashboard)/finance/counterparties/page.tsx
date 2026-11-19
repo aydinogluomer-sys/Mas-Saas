@@ -11,15 +11,16 @@ import {
   listDimension,
   loadAllActiveIbans,
   loadCounterpartyExposure,
+  loadCounterpartyProfile,
   loadCounterpartyScorecards,
   loadPartyCandidates,
+  loadUnifiedCounterpartyStatement,
   loadUnresolvedCounterparties,
   type CounterpartyBehavioralTier,
   type CounterpartyScorecard,
 } from "@/lib/counterparties/engine";
 import { assessExposure, suggestCounterparties } from "@/lib/counterparties/rules";
 import { formatMoney } from "@/lib/money-format";
-import { loadCurrentAccountLedger } from "@/lib/receivables/engine";
 import { Badge, type Tone } from "@/components/ui/badge";
 import { Panel, fmtTL } from "@/components/ui/panel";
 import { PageHeader } from "@/components/ui/shell";
@@ -29,6 +30,7 @@ import {
   createDimensionAction,
   deactivateIbanAction,
   linkCounterpartyAction,
+  updateCounterpartyAction,
 } from "./actions";
 
 export const dynamic = "force-dynamic";
@@ -145,9 +147,12 @@ export default async function CounterpartiesPage({
     candidates.find((c) => c.id === selectedLedgerPartyId)?.name ??
     exposure.find((e) => e.partyId === selectedLedgerPartyId)?.partyName ??
     null;
-  const ledgerRows = selectedLedgerPartyId
-    ? await loadCurrentAccountLedger(pool, selectedLedgerPartyId, 200)
-    : [];
+  const [ledgerRows, selectedPartyProfile] = selectedLedgerPartyId
+    ? await Promise.all([
+        loadUnifiedCounterpartyStatement(pool, selectedLedgerPartyId, 250),
+        loadCounterpartyProfile(pool, selectedLedgerPartyId),
+      ])
+    : [[], null];
   // `overCreditLimit === null` = limit TRY değil, karşılaştırılamadı — aşım sayılmaz, ayrı sayılır.
   const overLimit = withExposure.filter((e) => e.overCreditLimit === true).length;
   const limitNotComparable = withExposure.filter((e) => e.creditLimit != null && !e.creditLimitComparable).length;
@@ -170,6 +175,7 @@ export default async function CounterpartiesPage({
   const M = COUNTERPARTY_SCORECARD_MODEL_CONSTANTS;
 
   const canInsertParty = can(role, "parties", "insert");
+  const canUpdateParty = can(role, "parties", "update");
   const canInsertIban = can(role, "ibans", "insert");
   const canUpdateIban = can(role, "ibans", "update");
   const canInsertDimension = can(role, "cost_centers", "insert");
@@ -178,7 +184,7 @@ export default async function CounterpartiesPage({
     <>
       <PageHeader
         title="Karşı taraflar (cari hesap)"
-        subtitle="Risk yoğunlaşması, IBAN kasası, organizasyonel boyutlar ve eşleşmemiş kaynak etiketleri"
+        subtitle="Risk yoğunlaşması, birleşik cari ekstre (fatura · tahsis · çek · banka), IBAN kasası ve organizasyonel boyutlar"
         meta={
           <Badge tone={overLimit > 0 ? "red" : unresolved.length > 0 ? "amber" : "green"} dot>
             {overLimit > 0 ? `${overLimit} limit aşımı` : `${unresolved.length} eşleşmemiş etiket`}
@@ -188,7 +194,11 @@ export default async function CounterpartiesPage({
 
       {sp.error && <div className="mb-3 rounded border border-neg/40 bg-neg/10 p-2 text-sm text-neg">{sp.error}</div>}
       {sp.warn && <div className="mb-3 rounded border border-warn/40 bg-warn/10 p-2 text-sm text-warn">{sp.warn}</div>}
-      {sp.result && <div className="mb-3 rounded border border-pos/40 bg-pos/10 p-2 text-sm text-pos">{sp.result}</div>}
+      {sp.result && (
+        <div className="mb-3 rounded border border-pos/40 bg-pos/10 p-2 text-sm text-pos">
+          {sp.result === "updated" ? "Cari hesap bilgileri ve profil güncellendi." : sp.result}
+        </div>
+      )}
 
       <Panel
         title={`CARİ VE RİSK YOĞUNLAŞMASI — ${displayedParties.length} karşı taraf`}
@@ -196,13 +206,13 @@ export default async function CounterpartiesPage({
           <div className="flex items-center gap-1 text-xs">
             <Link
               href="/finance/counterparties?tab=all"
-              className={`rounded border px-2 py-1 ${tab === "all" ? "border-line-strong bg-white/10 font-semibold" : "border-line-faint text-tone-3"}`}
+              className={`rounded border px-2 py-1 ${tab === "all" ? "border-line-strong bg-surface-2 font-semibold text-tone-1" : "border-line-faint text-tone-3 hover:bg-surface-2"}`}
             >
               Tümü ({exposure.length})
             </Link>
             <Link
               href="/finance/counterparties?tab=active"
-              className={`rounded border px-2 py-1 ${tab === "active" ? "border-line-strong bg-white/10 font-semibold" : "border-line-faint text-tone-3"}`}
+              className={`rounded border px-2 py-1 ${tab === "active" ? "border-line-strong bg-surface-2 font-semibold text-tone-1" : "border-line-faint text-tone-3 hover:bg-surface-2"}`}
             >
               Aktif Hareketliler ({withExposure.length})
             </Link>
@@ -298,8 +308,8 @@ export default async function CounterpartiesPage({
 
       <div id="cari-ekstre" className="mt-4">
         <Panel
-          title={`CARİ HESAP EKSTRESİ (BORÇ / ALACAK HAREKET DÖKÜMÜ)${selectedLedgerPartyName ? ` — ${selectedLedgerPartyName}` : ""}`}
-          subtitle="Seçili karşı tarafın fatura ve tahsis hareketleri tarih sırasıyla listelenir; yürüyen bakiye her döviz için kendi para biriminde korunur"
+          title={`BİRLEŞİK CARİ HESAP EKSTRESİ (FATURA · TAHSİS · ÇEK · BANKA)${selectedLedgerPartyName ? ` — ${selectedLedgerPartyName}` : ""}`}
+          subtitle="Seçili karşı tarafın fatura, tahsis, çek/ciro ve IBAN-eşleşen banka hareketleri kronolojik sırada listelenir; yürüyen bakiye her döviz için kendi para biriminde korunur"
           right={
             candidates.length > 0 ? (
               <form method="get" action="/finance/counterparties" className="flex items-center gap-1.5 text-xs">
@@ -307,12 +317,7 @@ export default async function CounterpartiesPage({
                 <select
                   name="ledgerParty"
                   defaultValue={selectedLedgerPartyId ?? ""}
-                  className="rounded border px-2 py-1"
-                  style={{
-                    background: "var(--surface-1)",
-                    borderColor: "var(--line)",
-                    color: "var(--text-1)",
-                  }}
+                  className="field-control px-2 py-1 text-xs"
                 >
                   {candidates.map((c) => (
                     <option key={c.id} value={c.id}>
@@ -322,12 +327,7 @@ export default async function CounterpartiesPage({
                 </select>
                 <button
                   type="submit"
-                  className="rounded border px-2.5 py-1 font-medium"
-                  style={{
-                    background: "var(--surface-2)",
-                    borderColor: "var(--line)",
-                    color: "var(--text-1)",
-                  }}
+                  className="button-ghost px-2.5 py-1 text-xs font-medium"
                 >
                   Ekstreyi Göster
                 </button>
@@ -335,19 +335,82 @@ export default async function CounterpartiesPage({
             ) : undefined
           }
         >
+          {canUpdateParty && selectedPartyProfile ? (
+            <details className="mb-3 rounded border border-line bg-surface-2 p-2.5">
+              <summary className="cursor-pointer font-mono text-xs font-semibold text-tone-1">
+                ✎ Seçili Cari Kartı ve Kredi Limitini Güncelle ({selectedPartyProfile.name})
+              </summary>
+              <form action={updateCounterpartyAction} className="mt-2.5 grid grid-cols-1 gap-2 text-xs sm:grid-cols-4">
+                <input type="hidden" name="partyId" value={selectedPartyProfile.partyId} />
+                <label className="flex flex-col gap-0.5 sm:col-span-2">
+                  <span className="font-mono text-[10px] uppercase text-tone-3">Ticari Ünvan</span>
+                  <input name="name" required defaultValue={selectedPartyProfile.name} className="field-control px-2 py-1 text-xs" />
+                </label>
+                <label className="flex flex-col gap-0.5">
+                  <span className="font-mono text-[10px] uppercase text-tone-3">Cari Tipi</span>
+                  <select name="partyType" defaultValue={selectedPartyProfile.partyType} className="field-control px-2 py-1 text-xs">
+                    {["vendor", "customer", "bank", "company", "person", "provider", "internal_owner", "unknown"].map((t) => (
+                      <option key={t} value={t}>{t}</option>
+                    ))}
+                  </select>
+                </label>
+                <label className="flex flex-col gap-0.5">
+                  <span className="font-mono text-[10px] uppercase text-tone-3">Durum</span>
+                  <select name="isActive" defaultValue={selectedPartyProfile.isActive ? "true" : "false"} className="field-control px-2 py-1 text-xs">
+                    <option value="true">Aktif</option>
+                    <option value="false">Pasif</option>
+                  </select>
+                </label>
+                <label className="flex flex-col gap-0.5">
+                  <span className="font-mono text-[10px] uppercase text-tone-3">VKN / TCKN</span>
+                  <input name="taxNumber" defaultValue={selectedPartyProfile.taxNumber ?? ""} placeholder="Vergi no" className="field-control px-2 py-1 font-mono text-xs" />
+                </label>
+                <label className="flex flex-col gap-0.5">
+                  <span className="font-mono text-[10px] uppercase text-tone-3">Vergi Dairesi</span>
+                  <input name="taxOffice" defaultValue={selectedPartyProfile.taxOffice ?? ""} placeholder="Vergi dairesi" className="field-control px-2 py-1 text-xs" />
+                </label>
+                <label className="flex flex-col gap-0.5">
+                  <span className="font-mono text-[10px] uppercase text-tone-3">Kredi Limiti (TL)</span>
+                  <input name="creditLimit" type="number" step="0.01" min="0" defaultValue={selectedPartyProfile.creditLimit ?? ""} className="field-control px-2 py-1 font-mono text-xs tabular-nums" />
+                </label>
+                <label className="flex flex-col gap-0.5">
+                  <span className="font-mono text-[10px] uppercase text-tone-3">Vade (Gün)</span>
+                  <input name="paymentTermsDays" type="number" min="0" defaultValue={selectedPartyProfile.paymentTermsDays ?? ""} className="field-control px-2 py-1 font-mono text-xs tabular-nums" />
+                </label>
+                <label className="flex flex-col gap-0.5">
+                  <span className="font-mono text-[10px] uppercase text-tone-3">Şehir</span>
+                  <input name="city" defaultValue={selectedPartyProfile.city ?? ""} className="field-control px-2 py-1 text-xs" />
+                </label>
+                <label className="flex flex-col gap-0.5 sm:col-span-2">
+                  <span className="font-mono text-[10px] uppercase text-tone-3">Adres</span>
+                  <input name="addressLine" defaultValue={selectedPartyProfile.addressLine ?? ""} className="field-control px-2 py-1 text-xs" />
+                </label>
+                <label className="flex flex-col gap-0.5">
+                  <span className="font-mono text-[10px] uppercase text-tone-3">İletişim E-Posta</span>
+                  <input name="contactEmail" defaultValue={selectedPartyProfile.contactEmail ?? ""} className="field-control px-2 py-1 text-xs" />
+                </label>
+                <div className="sm:col-span-4">
+                  <button type="submit" className="button-primary px-3 py-1.5 text-xs">
+                    Cari Bilgilerini Kaydet
+                  </button>
+                </div>
+              </form>
+            </details>
+          ) : null}
+
           {!selectedLedgerPartyId ? (
-            <p className="py-2 text-sm" style={{ color: "var(--text-2)" }}>
+            <p className="py-2 text-sm text-tone-2">
               Ekstresini görüntülemek için bir karşı taraf seçin.
             </p>
           ) : ledgerRows.length === 0 ? (
-            <p className="py-2 text-sm" style={{ color: "var(--text-2)" }}>
-              Seçili karşı taraf için henüz fatura veya tahsis hareketi bulunmuyor.
+            <p className="py-2 text-sm text-tone-2">
+              Seçili karşı taraf için henüz fatura, tahsis, çek veya banka hareketi bulunmuyor.
             </p>
           ) : (
             <div className="overflow-x-auto">
               <table className="w-full text-xs">
                 <thead>
-                  <tr className="text-left" style={{ color: "var(--text-2)" }}>
+                  <tr className="text-left text-tone-2">
                     <th className="py-1.5 pr-2">Tarih</th>
                     <th className="py-1.5 pr-2">Hareket Türü</th>
                     <th className="py-1.5 pr-2">Referans</th>
@@ -361,22 +424,41 @@ export default async function CounterpartiesPage({
                 <tbody>
                   {ledgerRows.map((m, idx) => {
                     const cur = m.currency ?? "TRY";
+                    const typeTone: Tone =
+                      m.movementType === "invoice"
+                        ? "blue"
+                        : m.movementType === "allocation"
+                          ? "green"
+                          : m.movementType === "check"
+                            ? "amber"
+                            : "neutral";
+                    const typeLabel =
+                      m.movementType === "invoice"
+                        ? "Fatura"
+                        : m.movementType === "allocation"
+                          ? "Tahsis / Ödeme"
+                          : m.movementType === "check"
+                            ? "Çek / Ciro"
+                            : "Banka EFT/Havale";
+                    const dirLabel =
+                      m.direction === "sales"
+                        ? "Satış"
+                        : m.direction === "purchase"
+                          ? "Alış"
+                          : m.direction === "inflow"
+                            ? "Giriş"
+                            : "Çıkış";
                     return (
                       <tr
-                        key={`${m.invoiceId}-${m.movementDate}-${m.movementType}-${idx}`}
-                        className="border-t"
-                        style={{ borderColor: "var(--line)", color: "var(--text-1)" }}
+                        key={`${m.sourceId}-${m.movementDate}-${m.movementType}-${idx}`}
+                        className="border-t border-line text-tone-1"
                       >
                         <td className="py-1.5 pr-2 font-mono">{m.movementDate}</td>
                         <td className="py-1.5 pr-2">
-                          <Badge tone={m.movementType === "invoice" ? "blue" : "green"}>
-                            {m.movementType === "invoice" ? "Fatura" : "Tahsis / Ödeme"}
-                          </Badge>
+                          <Badge tone={typeTone}>{typeLabel}</Badge>
                         </td>
                         <td className="py-1.5 pr-2 font-mono">{m.reference ?? "—"}</td>
-                        <td className="py-1.5 pr-2" style={{ color: "var(--text-2)" }}>
-                          {m.direction === "sales" ? "Satış" : "Alış"}
-                        </td>
+                        <td className="py-1.5 pr-2 text-tone-2">{dirLabel}</td>
                         <td className="py-1.5 pr-2 font-mono">{cur}</td>
                         <td className="py-1.5 pr-2 text-right font-mono tabular-nums">
                           {m.debitAmount > 0 ? formatMoney(m.debitAmount, cur) : "—"}
@@ -385,7 +467,7 @@ export default async function CounterpartiesPage({
                           {m.creditAmount > 0 ? formatMoney(m.creditAmount, cur) : "—"}
                         </td>
                         <td className="py-1.5 text-right font-mono font-semibold tabular-nums">
-                          {m.runningBalance == null ? "—" : formatMoney(m.runningBalance, cur)}
+                          {formatMoney(m.runningBalance, cur)}
                         </td>
                       </tr>
                     );
@@ -565,7 +647,7 @@ export default async function CounterpartiesPage({
                           </option>
                         ))}
                       </select>
-                      <button className="rounded border border-line-faint px-2 py-0.5 text-xs hover:bg-white/5">
+                      <button className="button-ghost px-2 py-0.5 text-xs">
                         eşleştir
                       </button>
                     </form>
@@ -602,7 +684,7 @@ export default async function CounterpartiesPage({
               <input name="addressLine" placeholder="Adres" className="col-span-2 rounded border border-line-faint bg-transparent px-2 py-1" />
               <input name="creditLimit" type="number" step="0.01" min="0" placeholder="Kredi limiti (TL)" className="rounded border border-line-faint bg-transparent px-2 py-1" />
               <input name="paymentTermsDays" type="number" min="0" placeholder="Vade (gün)" className="rounded border border-line-faint bg-transparent px-2 py-1" />
-              <button className="col-span-2 rounded border border-line-faint px-2 py-1 hover:bg-white/5">Karşı taraf ekle</button>
+              <button className="button-ghost col-span-2 px-2 py-1 text-xs">Karşı taraf ekle</button>
             </form>
           ) : (
             <p className="text-xs text-tone-3">Yeni cari açmak için finans yöneticisi veya yönetici yetkisi gerekir.</p>
@@ -635,7 +717,7 @@ export default async function CounterpartiesPage({
                   <input type="checkbox" name="isPrimary" value="true" />
                   <span>Birincil IBAN</span>
                 </label>
-                <button className="rounded border border-line-faint px-2 py-1 hover:bg-white/5 sm:col-span-2">
+                <button className="button-ghost px-2 py-1 text-xs sm:col-span-2">
                   IBAN kaydet
                 </button>
               </form>
@@ -694,7 +776,7 @@ export default async function CounterpartiesPage({
                 <input name="code" required placeholder="Kod (örn. DEP-URETIM)" className="rounded border border-line-faint bg-transparent px-2 py-1 font-mono" />
                 <input name="name" required placeholder="Ad (örn. Üretim)" className="rounded border border-line-faint bg-transparent px-2 py-1" />
                 <input name="notes" placeholder="Not (opsiyonel)" className="rounded border border-line-faint bg-transparent px-2 py-1 sm:col-span-2" />
-                <button className="rounded border border-line-faint px-2 py-1 hover:bg-white/5">
+                <button className="button-ghost px-2 py-1 text-xs">
                   Boyut oluştur
                 </button>
               </form>

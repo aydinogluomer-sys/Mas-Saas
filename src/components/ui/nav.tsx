@@ -2,7 +2,23 @@
 
 import Link from "@/components/ui/app-link";
 import { usePathname } from "next/navigation";
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useState, type ComponentType } from "react";
+import {
+  ChevronLeft,
+  ChevronRight,
+  CreditCard,
+  Database,
+  Factory,
+  Landmark,
+  LayoutDashboard,
+  LogOut,
+  Menu,
+  Search,
+  ShieldCheck,
+  SlidersHorizontal,
+  Sparkles,
+  TrendingUp,
+} from "lucide-react";
 import { useNavigationFeedback } from "@/components/ui/navigation-feedback";
 
 export interface NavItem {
@@ -13,20 +29,21 @@ export interface NavItem {
   icon: "overview" | "payments" | "cashflow" | "finance" | "production" | "scenarios" | "insights" | "data" | "system";
 }
 
-const ICONS: Record<NavItem["icon"], ReactNode> = {
-  overview: <path d="M4 13h6V4H4v9Zm10 7h6V11h-6v9ZM4 20h6v-3H4v3Zm10-13h6V4h-6v3Z" />,
-  payments: <path d="M4 6h16v12H4V6Zm0 4h16M8 14h3" />,
-  cashflow: <path d="M4 17 9 12l4 3 7-9M16 6h4v4" />,
-  finance: <path d="M3 9h18M5 9v9m4-9v9m6-9v9m4-9v9M3 18h18M12 4l9 5H3l9-5Z" />,
-  production: <path d="M4 20V9l5 3V8l5 3V4h6v16H4Zm4-4h2m4 0h2" />,
-  scenarios: <path d="M5 19V5m0 7h5l3-5 3 10 3-5" />,
-  insights: <path d="M9 18h6m-5 3h4M8 14a7 7 0 1 1 8 0c-1 .7-1 1.5-1 2H9c0-.5 0-1.3-1-2Z" />,
-  data: <path d="M4 6c0-2 16-2 16 0v12c0 2-16 2-16 0V6Zm0 0c0 2 16 2 16 0m-16 6c0 2 16 2 16 0" />,
-  system: <path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Zm0-12v2m0 13v2m8.5-8.5h-2m-13 0h-2m15.4-6.4-1.5 1.5M6.6 17.4l-1.5 1.5m13.8 0-1.5-1.5M6.6 6.6 5.1 5.1" />,
+const ICON_COMPONENTS: Record<NavItem["icon"], ComponentType<{ size?: number; strokeWidth?: number; className?: string }>> = {
+  overview: LayoutDashboard,
+  payments: CreditCard,
+  cashflow: TrendingUp,
+  finance: Landmark,
+  production: Factory,
+  scenarios: SlidersHorizontal,
+  insights: Sparkles,
+  data: Database,
+  system: ShieldCheck,
 };
 
 function Icon({ name }: { name: NavItem["icon"] }) {
-  return <svg viewBox="0 0 24 24" aria-hidden className="h-4.5 w-4.5 shrink-0 fill-none stroke-current stroke-[1.6]">{ICONS[name]}</svg>;
+  const LucideIcon = ICON_COMPONENTS[name];
+  return <LucideIcon size={16} strokeWidth={1.75} className="shrink-0" aria-hidden />;
 }
 
 function isActive(pathname: string, item: NavItem) {
@@ -77,31 +94,94 @@ export function AppSidebar({
 
   return (
     <>
-      <button className="mobile-menu-button" onClick={() => setMobileOpen(true)} aria-label="Ana menüyü aç">☰</button>
+      <button className="mobile-menu-button" onClick={() => setMobileOpen(true)} aria-label="Ana menüyü aç">
+        <Menu size={16} strokeWidth={1.75} aria-hidden />
+      </button>
       {mobileOpen && <button className="sidebar-scrim" aria-label="Menüyü kapat" onClick={() => setMobileOpen(false)} />}
       <aside className={`app-sidebar ${collapsed ? "is-collapsed" : ""} ${mobileOpen ? "is-mobile-open" : ""}`}>
         <div className="sidebar-brand">
-          <div className="brand-mark" aria-hidden>MR</div>
-          {!collapsed && <div><div className="brand-title">MAS Nakit Radar</div><div className="brand-subtitle">Finans operasyon merkezi</div></div>}
+          <div className="brand-mark" aria-hidden>
+            MR
+          </div>
+          {!collapsed && (
+            <div>
+              <div className="brand-title">MAS Nakit Radar</div>
+              <div className="brand-subtitle">Finans operasyon merkezi</div>
+            </div>
+          )}
         </div>
         <nav className="sidebar-nav" aria-label="Ana çalışma alanları">
-          <div className="sidebar-section-label">{collapsed ? "" : "Çalışma alanları"}</div>
-          {items.slice(0, 6).map((item) => <SidebarLink key={item.href} item={item} active={isActive(activePathname, item)} collapsed={collapsed} close={() => setMobileOpen(false)} />)}
-          <div className="sidebar-section-label sidebar-section-break">{collapsed ? "" : "Destek ve yönetim"}</div>
-          {items.slice(6).map((item) => <SidebarLink key={item.href} item={item} active={isActive(activePathname, item)} collapsed={collapsed} close={() => setMobileOpen(false)} />)}
+          {items.slice(0, 3).length > 0 && (
+            <>
+              {!collapsed && <div className="sidebar-section-label">01 · Günlük Nakit & İcra</div>}
+              {items.slice(0, 3).map((item) => (
+                <SidebarLink
+                  key={item.href}
+                  item={item}
+                  active={isActive(activePathname, item)}
+                  collapsed={collapsed}
+                  close={() => setMobileOpen(false)}
+                />
+              ))}
+            </>
+          )}
+          {items.slice(3, 6).length > 0 && (
+            <>
+              {!collapsed && (
+                <div className="sidebar-section-label sidebar-section-break">
+                  02 · Bilanço, Üretim & Stres
+                </div>
+              )}
+              {items.slice(3, 6).map((item) => (
+                <SidebarLink
+                  key={item.href}
+                  item={item}
+                  active={isActive(activePathname, item)}
+                  collapsed={collapsed}
+                  close={() => setMobileOpen(false)}
+                />
+              ))}
+            </>
+          )}
+          {items.slice(6).length > 0 && (
+            <>
+              {!collapsed && (
+                <div className="sidebar-section-label sidebar-section-break">
+                  03 · Zeka, Veri & Denetim
+                </div>
+              )}
+              {items.slice(6).map((item) => (
+                <SidebarLink
+                  key={item.href}
+                  item={item}
+                  active={isActive(activePathname, item)}
+                  collapsed={collapsed}
+                  close={() => setMobileOpen(false)}
+                />
+              ))}
+            </>
+          )}
         </nav>
         <div className="sidebar-footer">
           {user && !collapsed && (
             <div
-              className="mb-1 flex items-center justify-between gap-2 px-2.5 py-1.5 text-[11px]"
+              className="mb-1 flex items-center justify-between gap-2 px-2.5 py-1.5 text-[11.5px]"
               data-testid="sidebar-active-user"
             >
-              <span className="truncate font-medium" style={{ color: "var(--text-2)" }} title={user.displayName}>
+              <span
+                className="truncate font-semibold"
+                style={{ color: "var(--sidebar-text)" }}
+                title={user.displayName}
+              >
                 {user.displayName}
               </span>
               <span
-                className="shrink-0 rounded border px-1.5 py-0.5 font-mono text-[10px]"
-                style={{ borderColor: "var(--line)", color: "var(--text-3)" }}
+                className="shrink-0 rounded border px-1.5 py-0.5 font-mono text-[10px] font-medium"
+                style={{
+                  borderColor: "var(--sidebar-border)",
+                  background: "var(--sidebar-bg-2)",
+                  color: "var(--sidebar-brass)",
+                }}
               >
                 {user.roleLabel}
               </span>
@@ -113,7 +193,15 @@ export function AppSidebar({
             onClick={openCanonicalCommandPalette}
             title="Komut menüsü"
           >
-            <span className="command-icon">⌕</span>{!collapsed && <><span>Hızlı erişim</span><kbd>Ctrl K</kbd></>}
+            <span className="command-icon">
+              <Search size={15} strokeWidth={1.75} aria-hidden />
+            </span>
+            {!collapsed && (
+              <>
+                <span>Hızlı erişim</span>
+                <kbd>Ctrl K</kbd>
+              </>
+            )}
           </button>
           {gate && (
             <form action={logoutAction}>
@@ -123,20 +211,57 @@ export function AppSidebar({
                 title="Çıkış yap"
                 aria-label={collapsed ? "Çıkış yap" : undefined}
               >
-                <span className="command-icon">↪</span>
+                <span className="command-icon">
+                  <LogOut size={15} strokeWidth={1.75} aria-hidden />
+                </span>
                 {!collapsed && <span>Çıkış yap</span>}
               </button>
             </form>
           )}
-          <button className="sidebar-collapse" onClick={() => setCollapsed((v) => !v)} aria-label={collapsed ? "Menüyü genişlet" : "Menüyü daralt"}>{collapsed ? "›" : "‹"}</button>
+          <button
+            className="sidebar-collapse"
+            onClick={() => setCollapsed((v) => !v)}
+            aria-label={collapsed ? "Menüyü genişlet" : "Menüyü daralt"}
+          >
+            {collapsed ? (
+              <ChevronRight size={15} strokeWidth={1.75} aria-hidden />
+            ) : (
+              <ChevronLeft size={15} strokeWidth={1.75} aria-hidden />
+            )}
+          </button>
         </div>
       </aside>
     </>
   );
 }
 
-// No hover/focus prefetch handlers (Wave 0): they called router.prefetch, a FULL server render of
-// the target page. <Link>'s own default prefetch is the only one left — see NavigationFeedbackProvider.
-function SidebarLink({ item, active, collapsed, close }: { item: NavItem; active: boolean; collapsed: boolean; close: () => void }) {
-  return <Link href={item.href} onClick={close} aria-current={active ? "page" : undefined} className={`sidebar-link ${active ? "is-active" : ""}`} title={collapsed ? item.label : undefined}><Icon name={item.icon} />{!collapsed && <span><strong>{item.label}</strong>{item.description && <small>{item.description}</small>}</span>}{active && <i aria-hidden />}</Link>;
+function SidebarLink({
+  item,
+  active,
+  collapsed,
+  close,
+}: {
+  item: NavItem;
+  active: boolean;
+  collapsed: boolean;
+  close: () => void;
+}) {
+  return (
+    <Link
+      href={item.href}
+      onClick={close}
+      aria-current={active ? "page" : undefined}
+      className={`sidebar-link ${active ? "is-active" : ""}`}
+      title={collapsed ? item.label : undefined}
+    >
+      <Icon name={item.icon} />
+      {!collapsed && (
+        <span>
+          <strong>{item.label}</strong>
+          {item.description && <small>{item.description}</small>}
+        </span>
+      )}
+      {active && <i aria-hidden />}
+    </Link>
+  );
 }

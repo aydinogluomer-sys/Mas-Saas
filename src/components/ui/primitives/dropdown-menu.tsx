@@ -1,19 +1,9 @@
 "use client";
 
-// Radix DropdownMenu, restyled to MAS dark tokens. Used to build the row ActionMenu.
-// IMPORTANT: menu items that navigate must render a real <Link>/<a> (caught by the
-// global instant-navigation click interceptor); mutations must submit a <form action={serverAction}>.
+// Radix DropdownMenu, styled to Editorial Precision v2 warm-cream tokens.
 import * as DropdownMenuPrimitive from "@radix-ui/react-dropdown-menu";
+import { Check, MoreHorizontal } from "lucide-react";
 import { cn } from "@/lib/utils";
-
-// Inline check glyph — the project ships no icon library (all icons are inline SVG).
-function CheckGlyph() {
-  return (
-    <svg viewBox="0 0 16 16" width="12" height="12" aria-hidden fill="none" stroke="currentColor" strokeWidth="2">
-      <path d="M3.5 8.5l3 3 6-7" strokeLinecap="round" strokeLinejoin="round" />
-    </svg>
-  );
-}
 
 export const DropdownMenu = DropdownMenuPrimitive.Root;
 export const DropdownMenuTrigger = DropdownMenuPrimitive.Trigger;
@@ -85,7 +75,7 @@ export function DropdownMenuCheckboxItem({
     >
       <span className="absolute left-2 flex h-3.5 w-3.5 items-center justify-center">
         <DropdownMenuPrimitive.ItemIndicator>
-          <CheckGlyph />
+          <Check size={12} strokeWidth={2} aria-hidden />
         </DropdownMenuPrimitive.ItemIndicator>
       </span>
       {children}
@@ -99,7 +89,7 @@ export function DropdownMenuLabel({
 }: React.ComponentPropsWithoutRef<typeof DropdownMenuPrimitive.Label>) {
   return (
     <DropdownMenuPrimitive.Label
-      className={cn("px-2 py-1.5 font-mono text-[10px] uppercase tracking-wider text-tone-3", className)}
+      className={cn("px-2 py-1.5 text-[11px] font-semibold uppercase tracking-[0.06em] text-tone-3", className)}
       {...props}
     />
   );
@@ -118,7 +108,7 @@ export function ActionMenu({ label = "İşlemler", children }: { label?: string;
   return (
     <DropdownMenu>
       <DropdownMenuTrigger className="button-ghost px-2 py-1" aria-label={label} title={label}>
-        <span aria-hidden>⋯</span>
+        <MoreHorizontal size={15} strokeWidth={1.75} aria-hidden />
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end">{children}</DropdownMenuContent>
     </DropdownMenu>

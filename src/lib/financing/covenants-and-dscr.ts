@@ -20,7 +20,7 @@
 
 import type { Pool, PoolClient } from "pg";
 import { decimal, money, moneyOrNull, rateOrNull } from "@/lib/money";
-import { gather } from "@/lib/pg-concurrency";
+import { gather, isPool, withPinnedRead } from "@/lib/pg-concurrency";
 
 type Queryable = Pick<Pool, "query"> | Pick<PoolClient, "query">;
 
@@ -341,58 +341,61 @@ export async function loadCovenantAndDscrRadar(
 ): Promise<CovenantAndDscrRadar> {
   const asOfDate = options.asOfDate ?? new Date().toISOString().slice(0, 10);
   const currency = (options.currency ?? "TRY").trim().toUpperCase();
+  if (isPool(client)) {
+    return withPinnedRead(client, (pinned) => loadCovenantAndDscrRadar(pinned, options));
+  }
 
   const trail3Start = addDaysISO(asOfDate, -90);
   const fwd3End = addDaysISO(asOfDate, 90);
   const fwd12End = addDaysISO(asOfDate, 365);
 
-  // 1. Kullanılabilir nakit (FIN-03 uyumlu)
-  const posRes = await client
-    .query<{
-      available_now: string | null;
-      unknown_opening_count: number | string;
-    }>(
-      `select available_now, unknown_opening_count
-         from public.treasury_position_summary
-        where currency = $1`,
-      [currency],
-    )
-    .catch((err: unknown) => {
-      const code = (err as { code?: string } | null)?.code;
-      if (code === "42703") {
-        return client
-          .query<{
-            available_now: string | null;
-            unknown_opening_count: number | string;
-          }>(
-            `select available_now, 0::int as unknown_opening_count
-               from public.treasury_position_summary
-              where currency = $1`,
-            [currency],
-          )
-          .catch((e2: unknown) => {
-            if (isMissingSchemaError(e2)) {
-              return { rows: [], rowCount: 0 };
-            }
-            throw e2;
-          });
-      }
-      if (isMissingSchemaError(err)) {
-        return { rows: [], rowCount: 0 };
-      }
-      throw err;
-    });
-  const posRow = posRes.rows[0];
-  const unknownOpeningCount = posRes.rowCount === 0 ? 0 : Number(posRow?.unknown_opening_count ?? 0);
-  const availableCash: number | null =
-    posRes.rowCount === 0
-      ? 0
-      : unknownOpeningCount > 0
-        ? null
-        : moneyOrNull(posRow?.available_now) ?? 0;
-
-  // 2. Kalan kredi anapara bakiyesi + kullanılan rotatif kredi limiti
-  const [loanRemRes, facDrawnRes] = await gather(client, [
+  const [
+    posRes,
+    loanRemRes,
+    facDrawnRes,
+    tbMetaRes,
+    trailBankRes,
+    allInstallmentsRes,
+    fwdMonthsRes,
+  ] = await gather(client, [
+    // 1. Kullanılabilir nakit (FIN-03 uyumlu)
+    () =>
+      client
+        .query<{
+          available_now: string | null;
+          unknown_opening_count: number | string;
+        }>(
+          `select available_now, unknown_opening_count
+             from public.treasury_position_summary
+            where currency = $1`,
+          [currency],
+        )
+        .catch((err: unknown) => {
+          const code = (err as { code?: string } | null)?.code;
+          if (code === "42703") {
+            return client
+              .query<{
+                available_now: string | null;
+                unknown_opening_count: number | string;
+              }>(
+                `select available_now, 0::int as unknown_opening_count
+                   from public.treasury_position_summary
+                  where currency = $1`,
+                [currency],
+              )
+              .catch((e2: unknown) => {
+                if (isMissingSchemaError(e2)) {
+                  return { rows: [], rowCount: 0 };
+                }
+                throw e2;
+              });
+          }
+          if (isMissingSchemaError(err)) {
+            return { rows: [], rowCount: 0 };
+          }
+          throw err;
+        }),
+    // 2A. Kalan kredi anapara bakiyesi
     () =>
       client
         .query<{ rem_principal: string }>(
@@ -434,6 +437,7 @@ export async function loadCovenantAndDscrRadar(
           }
           throw err;
         }),
+    // 2B. Kullanılan rotatif kredi limiti
     () =>
       client
         .query<{ drawn: string }>(
@@ -450,7 +454,173 @@ export async function loadCovenantAndDscrRadar(
           }
           throw err;
         }),
+    // 3A. Yönetim Mizanı meta
+    () =>
+      client
+        .query<{ entry_total: number | string; dep_credit: string }>(
+          `select
+             coalesce(sum(entry_count), 0)::int as entry_total,
+             coalesce(
+               sum(case when account_code in ('257', '268') then credit_total_try - debit_total_try else 0 end),
+               0
+             )::numeric(14,2)::text as dep_credit
+           from public.management_trial_balance_v`,
+        )
+        .catch((err: unknown) => {
+          if (isMissingSchemaError(err)) {
+            return { rows: [] as Array<{ entry_total: number | string; dep_credit: string }>, rowCount: 0 };
+          }
+          throw err;
+        }),
+    // 4A. Son 3 ay gerçekleşen banka nakit akışı
+    () =>
+      client
+        .query<{
+          direction: string;
+          matched_entity_table: string | null;
+          total_amt: string;
+        }>(
+          `select
+             bt.direction,
+             bt.matched_entity_table,
+             coalesce(sum(abs(bt.amount)), 0)::numeric(14,2) as total_amt
+           from public.bank_transactions bt
+           where bt.currency = $1
+             and bt.status <> 'ignored'
+             and coalesce(bt.transaction_kind, 'standard') <> 'own_transfer'
+             and bt.txn_date >= $2::date
+             and bt.txn_date <= $3::date
+           group by bt.direction, bt.matched_entity_table`,
+          [currency, trail3Start, asOfDate],
+        )
+        .catch((err: unknown) => {
+          const code = (err as { code?: string } | null)?.code;
+          if (code === "42703") {
+            return client
+              .query<{
+                direction: string;
+                matched_entity_table: string | null;
+                total_amt: string;
+              }>(
+                `select
+                   case when bt.amount >= 0 then 'inflow' else 'outflow' end as direction,
+                   bt.matched_entity_table,
+                   coalesce(sum(abs(bt.amount)), 0)::numeric(14,2) as total_amt
+                 from public.bank_transactions bt
+                 join public.bank_accounts ba on ba.cash_account_id = bt.bank_account_id
+                 join public.cash_accounts ca on ca.id = ba.cash_account_id
+                 where ca.currency = $1
+                   and bt.status <> 'ignored'
+                   and bt.txn_date >= $2::date
+                   and bt.txn_date <= $3::date
+                 group by 1, bt.matched_entity_table`,
+                [currency, trail3Start, asOfDate],
+              )
+              .catch((e2: unknown) => {
+                if (isMissingSchemaError(e2)) return { rows: [], rowCount: 0 };
+                throw e2;
+              });
+          }
+          if (isMissingSchemaError(err)) return { rows: [], rowCount: 0 };
+          throw err;
+        }),
+    // 4B. Taksitler
+    () =>
+      client
+        .query<{
+          due_date: string;
+          amount: string;
+          principal_component: string | null;
+          interest_component: string | null;
+          tax_component: string | null;
+          status: string;
+        }>(
+          `select
+             to_char(li.due_date, 'YYYY-MM-DD') as due_date,
+             li.amount::text,
+             li.principal_component::text,
+             li.interest_component::text,
+             li.tax_component::text,
+             li.status
+           from public.loan_installments li
+           join public.loans l on l.id = li.loan_id
+           where l.archived_at is null
+             and l.currency = $1
+             and li.status <> 'cancelled'
+             and li.due_date >= $2::date
+             and li.due_date <= $3::date
+           order by li.due_date, li.id`,
+          [currency, trail3Start, fwd12End],
+        )
+        .catch((err: unknown) => {
+          const code = (err as { code?: string } | null)?.code;
+          if (code === "42703") {
+            if (currency !== "TRY") return { rows: [], rowCount: 0 };
+            return client
+              .query<{
+                due_date: string;
+                amount: string;
+                principal_component: string | null;
+                interest_component: string | null;
+                tax_component: string | null;
+                status: string;
+              }>(
+                `select
+                   to_char(li.due_date, 'YYYY-MM-DD') as due_date,
+                   li.amount::text,
+                   null::text as principal_component,
+                   null::text as interest_component,
+                   null::text as tax_component,
+                   li.status
+                 from public.loan_installments li
+                 join public.loans l on l.id = li.loan_id
+                 where l.archived_at is null
+                   and li.status <> 'cancelled'
+                   and li.due_date >= $1::date
+                   and li.due_date <= $2::date
+                 order by li.due_date, li.id`,
+                [trail3Start, fwd12End],
+              )
+              .catch((e2: unknown) => {
+                if (isMissingSchemaError(e2)) return { rows: [], rowCount: 0 };
+                throw e2;
+              });
+          }
+          if (isMissingSchemaError(err)) return { rows: [], rowCount: 0 };
+          throw err;
+        }),
+    // 4C. İleri 12 ay projeksiyonları
+    () =>
+      client
+        .query<{
+          month_start: string;
+          income: string | null;
+          expense: string | null;
+        }>(
+          `select
+             to_char(month_start, 'YYYY-MM-DD') as month_start,
+             projected_income::text as income,
+             projected_expense::text as expense
+           from public.cashflow_months
+           where month_start >= date_trunc('month', $1::date)::date
+             and month_start <= date_trunc('month', $2::date)::date
+           order by month_start`,
+          [asOfDate, fwd12End],
+        )
+        .catch((err: unknown) => {
+          if (isMissingSchemaError(err)) return { rows: [], rowCount: 0 };
+          throw err;
+        }),
   ]);
+
+  const posRow = posRes.rows[0];
+  const unknownOpeningCount = posRes.rowCount === 0 ? 0 : Number(posRow?.unknown_opening_count ?? 0);
+  const availableCash: number | null =
+    posRes.rowCount === 0
+      ? 0
+      : unknownOpeningCount > 0
+        ? null
+        : moneyOrNull(posRow?.available_now) ?? 0;
 
   const totalLoanPrincipalRemaining = moneyOrNull(loanRemRes.rows[0]?.rem_principal) ?? 0;
   const totalFacilityDrawn = moneyOrNull(facDrawnRes.rows[0]?.drawn) ?? 0;
@@ -460,52 +630,53 @@ export async function loadCovenantAndDscrRadar(
       ? null
       : money(totalGrossDebtDec.minus(decimal(availableCash)).toString());
 
-  // 3. Faz 52 Yönetim EBITDA'sı (`management_income_statement_v`) ve Özkaynak (`management_balance_sheet_v`)
+  // 3B. Faz 52 Yönetim EBITDA'sı (`management_income_statement_v`) ve Özkaynak (`management_balance_sheet_v`)
   let managementEbitda: number | null = null;
   let totalEquity: number | null = null;
 
-  const tbMetaRes = await client
-    .query<{ entry_total: number | string; dep_credit: string }>(
-      `select
-         coalesce(sum(entry_count), 0)::int as entry_total,
-         coalesce(
-           sum(case when account_code in ('257', '268') then credit_total_try - debit_total_try else 0 end),
-           0
-         )::numeric(14,2)::text as dep_credit
-       from public.management_trial_balance_v`,
-    )
-    .catch((err: unknown) => {
-      if (isMissingSchemaError(err)) {
-        return { rows: [] as Array<{ entry_total: number | string; dep_credit: string }>, rowCount: 0 };
-      }
-      throw err;
-    });
-
   const ledgerEntryTotal = Number(tbMetaRes.rows[0]?.entry_total ?? 0);
   if (ledgerEntryTotal > 0) {
-    const directIsRes = await client
-      .query<{
-        management_ebitda_try: string | null;
-        ebit_try: string | null;
-        da_addback_try: string | null;
-      }>(
-        `select management_ebitda_try::text, ebit_try::text, da_addback_try::text
-           from public.management_income_statement_v
-          limit 1`,
-      )
-      .catch((err: unknown) => {
-        if (isMissingSchemaError(err)) {
-          return {
-            rows: [] as Array<{
-              management_ebitda_try: string | null;
-              ebit_try: string | null;
-              da_addback_try: string | null;
-            }>,
-            rowCount: 0,
-          };
-        }
-        throw err;
-      });
+    const [directIsRes, equityRes] = await gather(client, [
+      () =>
+        client
+          .query<{
+            management_ebitda_try: string | null;
+            ebit_try: string | null;
+            da_addback_try: string | null;
+          }>(
+            `select management_ebitda_try::text, ebit_try::text, da_addback_try::text
+               from public.management_income_statement_v
+              limit 1`,
+          )
+          .catch((err: unknown) => {
+            if (isMissingSchemaError(err)) {
+              return {
+                rows: [] as Array<{
+                  management_ebitda_try: string | null;
+                  ebit_try: string | null;
+                  da_addback_try: string | null;
+                }>,
+                rowCount: 0,
+              };
+            }
+            throw err;
+          }),
+      () =>
+        client
+          .query<{ total_equity: string | null; row_cnt: number | string }>(
+            `select
+               coalesce(sum(amount_try), 0)::numeric(14,2)::text as total_equity,
+               count(*)::int as row_cnt
+             from public.management_balance_sheet_v
+             where section = 'equity'`,
+          )
+          .catch((err: unknown) => {
+            if (isMissingSchemaError(err)) {
+              return { rows: [] as Array<{ total_equity: string | null; row_cnt: number | string }>, rowCount: 0 };
+            }
+            throw err;
+          }),
+    ]);
 
     if ((directIsRes.rowCount ?? 0) > 0 && directIsRes.rows[0]?.ebit_try != null) {
       const ebitDec = decimal(directIsRes.rows[0].ebit_try);
@@ -515,20 +686,6 @@ export async function loadCovenantAndDscrRadar(
       managementEbitda = money(ebitDec.plus(effectiveDaDec).toString());
     }
 
-    const equityRes = await client
-      .query<{ total_equity: string | null; row_cnt: number | string }>(
-        `select
-           coalesce(sum(amount_try), 0)::numeric(14,2)::text as total_equity,
-           count(*)::int as row_cnt
-         from public.management_balance_sheet_v
-         where section = 'equity'`,
-      )
-      .catch((err: unknown) => {
-        if (isMissingSchemaError(err)) {
-          return { rows: [] as Array<{ total_equity: string | null; row_cnt: number | string }>, rowCount: 0 };
-        }
-        throw err;
-      });
     if ((equityRes.rowCount ?? 0) > 0 && Number(equityRes.rows[0]?.row_cnt ?? 0) > 0) {
       totalEquity = moneyOrNull(equityRes.rows[0]?.total_equity);
     }
@@ -543,146 +700,6 @@ export async function loadCovenantAndDscrRadar(
     netDebt === null || managementEbitda === null || managementEbitda <= 0
       ? null
       : Number(decimal(netDebt).div(decimal(managementEbitda)).toFixed(4));
-
-  // 4. Son 3 ay gerçekleşen banka nakit akışı (borç servisi öncesi) ve gerçekleşen/vadesi geçen taksitler
-  const [trailBankRes, allInstallmentsRes, fwdMonthsRes] = await gather(client, [
-    () =>
-      client
-        .query<{
-        direction: string;
-        matched_entity_table: string | null;
-        total_amt: string;
-      }>(
-        `select
-           bt.direction,
-           bt.matched_entity_table,
-           coalesce(sum(abs(bt.amount)), 0)::numeric(14,2) as total_amt
-         from public.bank_transactions bt
-         where bt.currency = $1
-           and bt.status <> 'ignored'
-           and coalesce(bt.transaction_kind, 'standard') <> 'own_transfer'
-           and bt.txn_date >= $2::date
-           and bt.txn_date <= $3::date
-         group by bt.direction, bt.matched_entity_table`,
-        [currency, trail3Start, asOfDate],
-      )
-      .catch((err: unknown) => {
-        const code = (err as { code?: string } | null)?.code;
-        if (code === "42703") {
-          return client
-            .query<{
-              direction: string;
-              matched_entity_table: string | null;
-              total_amt: string;
-            }>(
-              `select
-                 case when bt.amount >= 0 then 'inflow' else 'outflow' end as direction,
-                 bt.matched_entity_table,
-                 coalesce(sum(abs(bt.amount)), 0)::numeric(14,2) as total_amt
-               from public.bank_transactions bt
-               join public.bank_accounts ba on ba.cash_account_id = bt.bank_account_id
-               join public.cash_accounts ca on ca.id = ba.cash_account_id
-               where ca.currency = $1
-                 and bt.status <> 'ignored'
-                 and bt.txn_date >= $2::date
-                 and bt.txn_date <= $3::date
-               group by 1, bt.matched_entity_table`,
-              [currency, trail3Start, asOfDate],
-            )
-            .catch((e2: unknown) => {
-              if (isMissingSchemaError(e2)) return { rows: [], rowCount: 0 };
-              throw e2;
-            });
-        }
-        if (isMissingSchemaError(err)) return { rows: [], rowCount: 0 };
-        throw err;
-      }),
-    () =>
-      client
-        .query<{
-          due_date: string;
-          amount: string;
-          principal_component: string | null;
-          interest_component: string | null;
-          tax_component: string | null;
-          status: string;
-        }>(
-        `select
-           to_char(li.due_date, 'YYYY-MM-DD') as due_date,
-           li.amount::text,
-           li.principal_component::text,
-           li.interest_component::text,
-           li.tax_component::text,
-           li.status
-         from public.loan_installments li
-         join public.loans l on l.id = li.loan_id
-         where l.archived_at is null
-           and l.currency = $1
-           and li.status <> 'cancelled'
-           and li.due_date >= $2::date
-           and li.due_date <= $3::date
-         order by li.due_date, li.id`,
-        [currency, trail3Start, fwd12End],
-      )
-      .catch((err: unknown) => {
-        const code = (err as { code?: string } | null)?.code;
-        if (code === "42703") {
-          if (currency !== "TRY") return { rows: [], rowCount: 0 };
-          return client
-            .query<{
-              due_date: string;
-              amount: string;
-              principal_component: string | null;
-              interest_component: string | null;
-              tax_component: string | null;
-              status: string;
-            }>(
-              `select
-                 to_char(li.due_date, 'YYYY-MM-DD') as due_date,
-                 li.amount::text,
-                 null::text as principal_component,
-                 null::text as interest_component,
-                 null::text as tax_component,
-                 li.status
-               from public.loan_installments li
-               join public.loans l on l.id = li.loan_id
-               where l.archived_at is null
-                 and li.status <> 'cancelled'
-                 and li.due_date >= $1::date
-                 and li.due_date <= $2::date
-               order by li.due_date, li.id`,
-              [trail3Start, fwd12End],
-            )
-            .catch((e2: unknown) => {
-              if (isMissingSchemaError(e2)) return { rows: [], rowCount: 0 };
-              throw e2;
-            });
-        }
-        if (isMissingSchemaError(err)) return { rows: [], rowCount: 0 };
-        throw err;
-      }),
-    () =>
-      client
-        .query<{
-          month_start: string;
-          income: string | null;
-          expense: string | null;
-        }>(
-        `select
-           to_char(month_start, 'YYYY-MM-DD') as month_start,
-           projected_income::text as income,
-           projected_expense::text as expense
-         from public.cashflow_months
-         where month_start >= date_trunc('month', $1::date)::date
-           and month_start <= date_trunc('month', $2::date)::date
-         order by month_start`,
-        [asOfDate, fwd12End],
-      )
-      .catch((err: unknown) => {
-        if (isMissingSchemaError(err)) return { rows: [], rowCount: 0 };
-        throw err;
-      }),
-  ]);
 
   let trailInflowDec = decimal(0);
   let trailOutflowBeforeDebtDec = decimal(0);

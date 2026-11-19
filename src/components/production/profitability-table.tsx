@@ -7,6 +7,10 @@ import { DataTable } from "@/components/ui/primitives/data-table";
 export interface ProfitabilityRow {
   part_code: string | null;
   part_name: string;
+  quantity?: number | null;
+  currency?: string;
+  unit_sale_price?: number | null;
+  scenario_type?: string | null;
   revenue: number | null;
   cost: number | null;
   margin: number | null;
@@ -16,31 +20,114 @@ export interface ProfitabilityRow {
 }
 
 const tl = (value: number | null, tone?: "neg" | "pos") => (
-  <span className={tone === "neg" ? "tnum text-neg" : tone === "pos" ? "tnum text-pos" : "tnum"}>{fmtTL(value)}</span>
+  <span
+    className="tnum"
+    style={{
+      color:
+        tone === "neg"
+          ? "var(--neg)"
+          : tone === "pos"
+            ? "var(--pos)"
+            : "var(--text-1)",
+    }}
+  >
+    {fmtTL(value)}
+  </span>
 );
+
+function fmtNativeUnit(price: number | null | undefined, ccy: string | undefined): string {
+  if (price == null) return "—";
+  const c = (ccy || "TRY").toUpperCase();
+  const numStr = price.toLocaleString("tr-TR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  return `${numStr} ${c}`;
+}
 
 const columns: ColumnDef<ProfitabilityRow>[] = [
   {
-    id: "part", header: "Parça", meta: { label: "Parça" },
+    id: "part",
+    header: "Parça",
+    meta: { label: "Parça" },
     accessorFn: (row) => `${row.part_code ?? "—"} · ${row.part_name}`,
     cell: ({ row, getValue }) => (
       <span>
-        {getValue<string>()}
-        {row.original.missing_operation_time && <small className="ml-2 text-warn">süre eksik</small>}
+        <span className="font-medium">{getValue<string>()}</span>
+        {row.original.missing_operation_time ? (
+          <small className="ml-2 font-mono text-[11px]" style={{ color: "var(--warn)" }}>
+            süre eksik
+          </small>
+        ) : null}
       </span>
     ),
   },
-  { accessorKey: "revenue", header: "Gelir", meta: { label: "Gelir", align: "right" }, cell: ({ getValue }) => tl(getValue<number | null>()) },
-  { accessorKey: "cost", header: "Maliyet", meta: { label: "Maliyet", align: "right" }, cell: ({ getValue }) => tl(getValue<number | null>()) },
   {
-    accessorKey: "margin", header: "Marj", meta: { label: "Marj", align: "right" },
-    cell: ({ getValue }) => { const v = getValue<number | null>(); return tl(v, (v ?? 0) < 0 ? "neg" : "pos"); },
+    id: "currency_price",
+    header: "Döviz / Birim Fiyat",
+    meta: { label: "Döviz / Birim Fiyat", align: "right" },
+    accessorFn: (row) => row.unit_sale_price ?? -1,
+    cell: ({ row }) => {
+      const ccy = (row.original.currency || "TRY").toUpperCase();
+      return (
+        <span className="tnum font-mono text-xs" style={{ color: ccy !== "TRY" ? "var(--info)" : "var(--text-2)" }}>
+          {row.original.unit_sale_price != null ? fmtNativeUnit(row.original.unit_sale_price, ccy) : ccy}
+        </span>
+      );
+    },
   },
   {
-    accessorKey: "margin_rate", header: "Marj %", meta: { label: "Marj %", align: "right" },
-    cell: ({ getValue }) => { const v = getValue<number | null>(); return <span className="tnum">{v == null ? "—" : `%${(v * 100).toFixed(1)}`}</span>; },
+    accessorKey: "revenue",
+    header: "Gelir (TL · TCMB)",
+    meta: { label: "Gelir (TL)", align: "right" },
+    cell: ({ getValue }) => tl(getValue<number | null>()),
   },
-  { accessorKey: "confidence", header: "Güven", meta: { label: "Güven" }, cell: ({ getValue }) => getValue<string | null>() ?? "—" },
+  {
+    accessorKey: "cost",
+    header: "Maliyet (710 BOM + İşleme)",
+    meta: { label: "Maliyet (TL)", align: "right" },
+    cell: ({ getValue }) => tl(getValue<number | null>()),
+  },
+  {
+    accessorKey: "margin",
+    header: "Net Marj (TL)",
+    meta: { label: "Net Marj", align: "right" },
+    cell: ({ getValue }) => {
+      const v = getValue<number | null>();
+      return tl(v, v == null ? undefined : v < 0 ? "neg" : "pos");
+    },
+  },
+  {
+    accessorKey: "margin_rate",
+    header: "Marj %",
+    meta: { label: "Marj %", align: "right" },
+    cell: ({ getValue }) => {
+      const v = getValue<number | null>();
+      return (
+        <span
+          className="tnum font-mono"
+          style={{ color: v == null ? "var(--text-3)" : v < 0 ? "var(--neg)" : "var(--pos)" }}
+        >
+          {v == null ? "—" : `%${(v * 100).toFixed(1)}`}
+        </span>
+      );
+    },
+  },
+  {
+    accessorKey: "confidence",
+    header: "Güven",
+    meta: { label: "Güven" },
+    cell: ({ getValue }) => {
+      const val = getValue<string | null>();
+      if (!val) return "—";
+      const isWarn = val === "needs_review";
+      return (
+        <span
+          className="font-mono text-xs"
+          style={{ color: isWarn ? "var(--warn)" : "var(--pos)" }}
+        >
+          {val === "needs_review" ? "inceleme gerekli" : val}
+        </span>
+      );
+    },
+  },
 ];
 
 export function ProfitabilityTable({ rows }: { rows: ProfitabilityRow[] }) {
@@ -54,7 +141,7 @@ export function ProfitabilityTable({ rows }: { rows: ProfitabilityRow[] }) {
       pageSize={25}
       exportFileName="parca-karliligi"
       emptyLabel="Parça kaydı yok."
-      minWidth={820}
+      minWidth={900}
     />
   );
 }

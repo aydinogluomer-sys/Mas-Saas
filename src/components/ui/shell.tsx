@@ -1,78 +1,147 @@
 import type { ReactNode } from "react";
+import { AlertTriangle, ChevronRight, Inbox, Info } from "lucide-react";
 import Link from "@/components/ui/app-link";
+import { ActionSubBar } from "@/components/ui/action-sub-bar";
 
-/* ── PageHeader: title + subtitle + meta + primary action, consistent per route ── */
+/**
+ * Splits a formatted financial string (e.g. "1.250.000 TL", "₺420.000", "14,2 gün", "%18,4")
+ * so the numeric core renders at full KPI weight while the unit suffix/prefix gets subtle separation.
+ * Preserves exact DOM textContent for screen readers and automated assertions.
+ */
+function renderValueWithUnit(value: ReactNode): ReactNode {
+  if (typeof value !== "string") return value;
+  const suffixMatch = /^([+-]?[\d.,\s]+)\s+(TL|TRY|USD|EUR|GBP|₺|\$|€|gün|hafta|ay|adet|puan)$/i.exec(value.trim());
+  if (suffixMatch) {
+    return (
+      <>
+        <span>{suffixMatch[1]}</span>{" "}
+        <span className="font-mono text-[0.58em] font-semibold uppercase tracking-[0.04em] opacity-75">
+          {suffixMatch[2]}
+        </span>
+      </>
+    );
+  }
+  const prefixMatch = /^(₺|\$|€)\s*([+-]?[\d.,\s]+)$/.exec(value.trim());
+  if (prefixMatch) {
+    return (
+      <>
+        <span className="mr-0.5 font-mono text-[0.62em] font-semibold tracking-normal opacity-75">
+          {prefixMatch[1]}
+        </span>
+        <span>{prefixMatch[2]}</span>
+      </>
+    );
+  }
+  return value;
+}
+
+/* ── PageHeader: zero-box inline Editorial ActionSubBar across all 82 dashboard routes ── */
 export function PageHeader({
   title,
   subtitle,
   meta,
   action,
+  actions,
 }: {
   title: ReactNode;
   subtitle?: ReactNode;
   meta?: ReactNode;
   action?: ReactNode;
+  actions?: ReactNode;
 }) {
-  return (
-    <header className="flex flex-wrap items-end justify-between gap-3 border-b pb-3" style={{ borderColor: "var(--line)" }}>
-      <div className="min-w-0">
-        <h1 className="font-mono text-base font-semibold tracking-[0.08em]" style={{ color: "var(--text-1)" }}>
-          {title}
-        </h1>
-        {subtitle && (
-          <p className="mt-1 font-mono text-[11px]" style={{ color: "var(--text-3)" }}>
-            {subtitle}
-          </p>
-        )}
-        {meta && <div className="mt-1.5 flex flex-wrap items-center gap-2" data-volatile>{meta}</div>}
-      </div>
-      {action && <div className="shrink-0">{action}</div>}
-    </header>
-  );
+  return <ActionSubBar title={title} subtitle={subtitle} meta={meta} action={action ?? actions} />;
 }
 
-/* ── KpiCard: label · value · optional delta/badge/note. Financial sign is clear. ── */
+/* ── KpiCard: Editorial Financial Cockpit — non-truncated 2-line mono label, top semantic accent bar, 24–28px tabular KPI value ── */
 export function KpiCard({
   label,
   value,
   tone = "neutral",
   badge,
   note,
+  hint,
   emphasize = false,
+  trend,
+  href,
 }: {
   label: ReactNode;
   value: ReactNode;
   tone?: "neutral" | "pos" | "neg" | "warn" | "info";
   badge?: ReactNode;
   note?: ReactNode;
+  hint?: ReactNode;
   emphasize?: boolean;
+  trend?: ReactNode;
+  href?: string;
 }) {
+  const effectiveNote = note ?? hint;
   const valueColor =
-    tone === "neg" ? "var(--neg)" : tone === "pos" ? "var(--pos)" : tone === "warn" ? "var(--warn)" : tone === "info" ? "var(--info)" : "var(--text-1)";
-  return (
+    tone === "neg"
+      ? "var(--neg)"
+      : tone === "pos"
+        ? "var(--pos)"
+        : tone === "warn"
+          ? "var(--warn)"
+          : tone === "info"
+            ? "var(--info)"
+            : "var(--text-1)";
+  const accentBorderColor =
+    tone === "neg"
+      ? "var(--neg)"
+      : tone === "pos"
+        ? "var(--pos)"
+        : tone === "warn"
+          ? "var(--warn)"
+          : tone === "info"
+            ? "var(--info)"
+            : "var(--line-strong)";
+
+  const card = (
     <div
-      className="card-hover border p-3"
+      className="card-hover command-surface flex h-full flex-col justify-between border p-3.5"
       style={{
-        background: "var(--surface-1)",
-        borderColor: "var(--line)",
-        borderRadius: "var(--radius)",
-        boxShadow: "0 1px 2px rgba(24, 22, 20, 0.035)",
+        borderColor: "var(--line-card)",
+        borderTop: `2px solid ${accentBorderColor}`,
+        borderRadius: "var(--radius-md)",
       }}
     >
-      <div className="flex items-center justify-between gap-2">
-        <span className="truncate font-mono text-[9px] font-semibold uppercase tracking-[0.12em]" style={{ color: "var(--text-3)" }}>
+      <div className="flex items-start justify-between gap-2">
+        <span
+          className="min-w-0 line-clamp-2 font-mono text-[11px] font-semibold uppercase leading-snug tracking-[0.06em]"
+          style={{ color: "var(--text-3)" }}
+        >
           {label}
         </span>
-        {badge}
+        {badge && <div className="shrink-0">{badge}</div>}
       </div>
       <div
-        className={`mt-1.5 font-mono font-semibold tabular-nums ${emphasize ? "text-lg" : "text-sm"}`}
+        data-kpi-value=""
+        className={`mt-2 font-bold leading-[1.1] tracking-[-0.03em] tabular-nums ${
+          emphasize ? "text-[26px] sm:text-[28px]" : "text-[24px] sm:text-[26px]"
+        }`}
         style={{ color: valueColor }}
       >
-        {value}
+        {renderValueWithUnit(value)}
       </div>
-      {note && <div className="mt-1 font-mono text-[9px]" style={{ color: "var(--text-4)" }}>{note}</div>}
+      {(effectiveNote || trend) && (
+        <div className="mt-2 flex items-end justify-between gap-2">
+          {effectiveNote && (
+            <div className="min-w-0 text-[11.5px] leading-snug" style={{ color: "var(--text-3)" }}>
+              {effectiveNote}
+            </div>
+          )}
+          {trend && <div className="shrink-0">{trend}</div>}
+        </div>
+      )}
     </div>
+  );
+
+  return href ? (
+    <Link href={href} className="block h-full">
+      {card}
+    </Link>
+  ) : (
+    card
   );
 }
 
@@ -81,20 +150,23 @@ export function StatBox({ k, v, tone }: { k: ReactNode; v: ReactNode; tone?: "ne
   const color = tone === "neg" ? "var(--neg)" : tone === "pos" ? "var(--pos)" : tone === "warn" ? "var(--warn)" : "var(--text-1)";
   return (
     <div
-      className="border p-2.5"
+      className="command-surface border p-2.5"
       style={{
-        background: "var(--surface-1)",
-        borderColor: "var(--line)",
-        borderRadius: "var(--radius)",
+        borderColor: "var(--line-card)",
+        borderRadius: "var(--radius-md)",
       }}
     >
-      <div className="font-mono text-[9px] font-semibold uppercase tracking-wider" style={{ color: "var(--text-3)" }}>{k}</div>
-      <div className="mt-0.5 font-mono text-sm font-semibold tabular-nums" style={{ color }}>{v}</div>
+      <div className="line-clamp-2 font-mono text-[10.5px] font-semibold uppercase leading-snug tracking-[0.055em]" style={{ color: "var(--text-3)" }}>
+        {k}
+      </div>
+      <div className="mt-1 text-[16.5px] font-bold tracking-[-0.02em] tabular-nums" style={{ color }}>
+        {renderValueWithUnit(v)}
+      </div>
     </div>
   );
 }
 
-/* ── ChartShell: title + hint + source + accessible summary + empty state ── */
+/* ── ChartShell: Editorial serif title + warm flax-linen header band + accessible summary + empty state ── */
 export function ChartShell({
   title,
   hint,
@@ -106,44 +178,103 @@ export function ChartShell({
   title: ReactNode;
   hint?: ReactNode;
   source?: ReactNode;
-  summary?: string; // screen-reader text description of the chart data
+  summary?: string;
   empty?: boolean;
   children: ReactNode;
 }) {
   return (
     <figure
-      className="border p-3"
-      style={{ background: "var(--surface-1)", borderColor: "var(--line)", borderRadius: "var(--radius)" }}
+      className="card-hover command-surface overflow-hidden border"
+      style={{
+        borderColor: "var(--line-card)",
+        borderRadius: "var(--radius-md)",
+      }}
     >
-      <figcaption className="mb-2 flex flex-wrap items-baseline justify-between gap-2">
-        <span className="font-mono text-[11px] uppercase tracking-[0.14em]" style={{ color: "var(--text-2)" }}>{title}</span>
-        {hint && <span className="font-mono text-[10px]" style={{ color: "var(--text-4)" }}>{hint}</span>}
+      <figcaption
+        className="flex flex-wrap items-baseline justify-between gap-2 px-3.5 py-2.5"
+        style={{
+          background: "var(--panel-head-bg)",
+          borderBottom: "1px solid var(--line)",
+        }}
+      >
+        <span
+          className="leading-snug"
+          style={{
+            fontFamily: "var(--font-editorial)",
+            fontSize: "15.5px",
+            fontWeight: 700,
+            letterSpacing: "-0.01em",
+            color: "var(--text-1)",
+          }}
+        >
+          {title}
+        </span>
+        {hint && (
+          <span className="text-[11.5px]" style={{ color: "var(--text-3)" }}>
+            {hint}
+          </span>
+        )}
       </figcaption>
-      {empty ? (
-        <EmptyState>Grafik için yeterli veri yok.</EmptyState>
-      ) : (
-        <>
-          {summary && <span className="sr-only">{summary}</span>}
-          {children}
-        </>
-      )}
-      {source && <div className="mt-2 font-mono text-[9px]" style={{ color: "var(--text-4)" }}>{source}</div>}
+      <div className="p-3.5">
+        {empty ? (
+          <EmptyState>Grafik için yeterli veri yok.</EmptyState>
+        ) : (
+          <>
+            {summary && <span className="sr-only">{summary}</span>}
+            {children}
+          </>
+        )}
+        {source && (
+          <div className="mt-2.5 text-[11px]" style={{ color: "var(--text-3)" }}>
+            {source}
+          </div>
+        )}
+      </div>
     </figure>
   );
 }
 
-/* ── EmptyState: consistent, calm empty message ── */
-export function EmptyState({ children, action }: { children: ReactNode; action?: ReactNode }) {
+/* ── EmptyState: consistent, calm editorial empty message with crisp icon ── */
+export function EmptyState({
+  children,
+  title,
+  description,
+  action,
+}: {
+  children?: ReactNode;
+  title?: ReactNode;
+  description?: ReactNode;
+  action?: ReactNode;
+}) {
   return (
     <div
-      className="flex flex-col items-center gap-2 border border-dashed px-4 py-6 text-center"
+      className="flex flex-col items-center gap-2.5 border border-dashed px-4 py-6 text-center"
       style={{
         borderColor: "var(--line-strong)",
-        borderRadius: "var(--radius)",
-        background: "color-mix(in srgb, var(--surface-2) 62%, var(--surface-1))",
+        borderRadius: "var(--radius-md)",
+        background: "color-mix(in srgb, var(--surface-2) 55%, var(--surface-1))",
       }}
     >
-      <div className="font-mono text-xs" style={{ color: "var(--text-3)" }}>{children}</div>
+      <span
+        className="inline-flex h-8 w-8 items-center justify-center rounded-full border"
+        style={{
+          background: "var(--surface-1)",
+          borderColor: "var(--line)",
+          color: "var(--text-3)",
+        }}
+        aria-hidden
+      >
+        <Inbox size={16} strokeWidth={1.75} />
+      </span>
+      <div className="max-w-lg text-[13px] leading-relaxed" style={{ color: "var(--text-2)" }}>
+        {title && (
+          <div className="font-semibold" style={{ color: "var(--text-1)" }}>
+            {title}
+          </div>
+        )}
+        {description && <div className={title ? "mt-1" : undefined}>{description}</div>}
+        {children}
+      </div>
       {action}
     </div>
   );
@@ -159,7 +290,7 @@ export function CommandLink({
   tone?: "accent" | "ghost";
 }) {
   return (
-    <Link href={href} className={`${tone === "accent" ? "button-accent" : "button-ghost"} px-3 py-2`}>
+    <Link href={href} className={`${tone === "accent" ? "button-accent" : "button-ghost"} px-3 py-1.5`}>
       {children}
     </Link>
   );
@@ -187,22 +318,26 @@ export function ModuleEmptyState({
   return (
     <section
       className="command-surface border p-4"
-      style={{ borderRadius: "var(--radius)", borderLeft: "2px solid var(--info)" }}
+      style={{ borderRadius: "var(--radius-md)", borderLeft: "2px solid var(--info)" }}
     >
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-[minmax(0,1fr)_320px]">
         <div className="min-w-0">
-          <div className="font-mono text-[10px] uppercase tracking-[0.14em]" style={{ color: "var(--text-3)" }}>
+          <div className="text-[11px] font-semibold uppercase tracking-[0.06em]" style={{ color: "var(--info)" }}>
             {eyebrow}
           </div>
-          <h2 className="mt-2 text-lg font-semibold" style={{ color: "var(--text-1)" }}>
+          <h2 className="mt-1.5 text-lg font-bold tracking-[-0.02em]" style={{ color: "var(--text-1)" }}>
             {title}
           </h2>
-          <p className="mt-2 max-w-3xl text-sm leading-6" style={{ color: "var(--text-2)" }}>
+          <p className="mt-1.5 max-w-3xl text-[13.5px] leading-6" style={{ color: "var(--text-2)" }}>
             {body}
           </p>
           <div className="mt-4 flex flex-wrap gap-2">
             <CommandLink href={primaryHref}>{primaryLabel}</CommandLink>
-            {secondaryHref && secondaryLabel && <CommandLink href={secondaryHref} tone="ghost">{secondaryLabel}</CommandLink>}
+            {secondaryHref && secondaryLabel && (
+              <CommandLink href={secondaryHref} tone="ghost">
+                {secondaryLabel}
+              </CommandLink>
+            )}
           </div>
         </div>
         {steps && steps.length > 0 && (
@@ -210,13 +345,15 @@ export function ModuleEmptyState({
             className="border-t pt-3 lg:border-l lg:border-t-0 lg:pl-4 lg:pt-0"
             style={{ borderColor: "var(--line-faint)" }}
           >
-            <div className="font-mono text-[10px] uppercase tracking-[0.14em]" style={{ color: "var(--text-3)" }}>
-              Siradaki adimlar
+            <div className="text-[11px] font-semibold uppercase tracking-[0.06em]" style={{ color: "var(--text-3)" }}>
+              Sıradaki adımlar
             </div>
             <ol className="mt-2 space-y-2">
               {steps.map((step, i) => (
-                <li key={i} className="flex gap-2 text-sm" style={{ color: "var(--text-2)" }}>
-                  <span className="font-mono text-[11px]" style={{ color: "var(--text-4)" }}>{i + 1}.</span>
+                <li key={i} className="flex gap-2 text-[13px]" style={{ color: "var(--text-2)" }}>
+                  <span className="font-mono text-[11px] font-semibold" style={{ color: "var(--text-3)" }}>
+                    {i + 1}.
+                  </span>
                   <span>{step}</span>
                 </li>
               ))}
@@ -231,13 +368,13 @@ export function ModuleEmptyState({
 /* ── TableShell: horizontal-scroll wrapper with a clear affordance on overflow ── */
 export function TableShell({ children }: { children: ReactNode }) {
   return (
-    <div className="-mx-3 overflow-x-auto px-3" role="region" aria-label="veri tablosu" tabIndex={0}>
+    <div className="-mx-3.5 overflow-x-auto px-3.5" role="region" aria-label="veri tablosu" tabIndex={0}>
       {children}
     </div>
   );
 }
 
-/* ── KeyStat: large hero number for the Ana Ekran cockpit (decision-first) ── */
+/* ── KeyStat: large hero number for the Ana Ekran cockpit (26–29px bold tabular-nums) ── */
 export function KeyStat({
   label,
   value,
@@ -252,23 +389,61 @@ export function KeyStat({
   href?: string;
 }) {
   const color =
-    tone === "neg" ? "var(--neg)" : tone === "pos" ? "var(--pos)" : tone === "warn" ? "var(--warn)" : tone === "info" ? "var(--info)" : "var(--text-1)";
+    tone === "neg"
+      ? "var(--neg)"
+      : tone === "pos"
+        ? "var(--pos)"
+        : tone === "warn"
+          ? "var(--warn)"
+          : tone === "info"
+            ? "var(--info)"
+            : "var(--text-1)";
+  const accentBorderColor =
+    tone === "neg"
+      ? "var(--neg)"
+      : tone === "pos"
+        ? "var(--pos)"
+        : tone === "warn"
+          ? "var(--warn)"
+          : tone === "info"
+            ? "var(--info)"
+            : "var(--line-strong)";
   const inner = (
     <div
-      className="card-hover flex h-full flex-col justify-between border p-3.5"
+      className="card-hover command-surface flex h-full flex-col justify-between border p-4"
       style={{
-        background: "var(--surface-1)",
-        borderColor: "var(--line)",
-        borderRadius: "var(--radius)",
-        boxShadow: "0 1px 2px rgba(24, 22, 20, 0.035)",
+        borderColor: "var(--line-card)",
+        borderTop: `2px solid ${accentBorderColor}`,
+        borderRadius: "var(--radius-md)",
       }}
     >
-      <div className="font-mono text-[10px] font-semibold uppercase tracking-[0.1em]" style={{ color: "var(--text-3)" }}>{label}</div>
-      <div className="mt-2 font-mono text-2xl font-semibold leading-none tabular-nums" style={{ color }}>{value}</div>
-      {sub && <div className="mt-1.5 text-[11px]" style={{ color: "var(--text-4)" }}>{sub}</div>}
+      <div
+        className="line-clamp-2 font-mono text-[11px] font-semibold uppercase leading-snug tracking-[0.06em]"
+        style={{ color: "var(--text-3)" }}
+      >
+        {label}
+      </div>
+      <div
+        data-kpi-value=""
+        className="mt-2 text-[26px] font-bold leading-[1.08] tracking-[-0.03em] tabular-nums sm:text-[29px]"
+        style={{ color }}
+      >
+        {renderValueWithUnit(value)}
+      </div>
+      {sub && (
+        <div className="mt-2 text-[12px] leading-snug" style={{ color: "var(--text-3)" }}>
+          {sub}
+        </div>
+      )}
     </div>
   );
-  return href ? <a href={href} className="block">{inner}</a> : inner;
+  return href ? (
+    <Link href={href} className="block h-full">
+      {inner}
+    </Link>
+  ) : (
+    inner
+  );
 }
 
 /* ── DetailsDisclosure: native, accessible, JS-free collapse for technical detail ── */
@@ -282,15 +457,30 @@ export function DetailsDisclosure({
   defaultOpen?: boolean;
 }) {
   return (
-    <details open={defaultOpen} className="group border" style={{ borderColor: "var(--line-faint)", borderRadius: "var(--radius)", background: "var(--surface-1)" }}>
+    <details
+      open={defaultOpen}
+      className="group border"
+      style={{
+        borderColor: "var(--line-card)",
+        borderRadius: "var(--radius-md)",
+        background: "var(--surface-1)",
+      }}
+    >
       <summary
-        className="cursor-pointer list-none px-3 py-2 text-[11px] uppercase tracking-[0.12em] outline-none [&::-webkit-details-marker]:hidden"
-        style={{ color: "var(--text-3)" }}
+        className="flex cursor-pointer list-none items-center gap-1.5 px-3 py-2 text-[12px] font-semibold tracking-[-0.005em] outline-none [&::-webkit-details-marker]:hidden"
+        style={{ color: "var(--text-2)" }}
       >
-        <span className="mr-1 inline-block transition-transform group-open:rotate-90" aria-hidden>▸</span>
-        {label}
+        <ChevronRight
+          size={14}
+          strokeWidth={1.75}
+          className="shrink-0 transition-transform duration-75 group-open:rotate-90"
+          aria-hidden
+        />
+        <span>{label}</span>
       </summary>
-      <div className="border-t p-3" style={{ borderColor: "var(--line-faint)" }}>{children}</div>
+      <div className="border-t p-3" style={{ borderColor: "var(--line-faint)" }}>
+        {children}
+      </div>
     </details>
   );
 }
@@ -298,17 +488,21 @@ export function DetailsDisclosure({
 /* ── Disclaimer: analytics/scenario "not accounting truth" banner ── */
 export function Disclaimer({ tone = "warn", children }: { tone?: "warn" | "accent"; children: ReactNode }) {
   const color = tone === "accent" ? "var(--accent)" : "var(--warn)";
+  const IconComp = tone === "accent" ? Info : AlertTriangle;
   return (
     <div
-      className="border px-3 py-2"
+      className="flex items-start gap-2 border px-3 py-2"
       style={{
-        borderColor: `color-mix(in srgb, ${color} 42%, var(--line))`,
-        background: `color-mix(in srgb, ${color} 7%, var(--surface-1))`,
-        borderRadius: "var(--radius)",
+        borderColor: `color-mix(in srgb, ${color} 32%, var(--line))`,
+        background: `color-mix(in srgb, ${color} 6%, var(--surface-1))`,
+        borderRadius: "var(--radius-md)",
       }}
       role="note"
     >
-      <span className="font-mono text-[11px] font-medium uppercase tracking-wider" style={{ color }}>{children}</span>
+      <IconComp size={15} strokeWidth={1.75} className="mt-0.5 shrink-0" style={{ color }} aria-hidden />
+      <span className="text-[12px] font-medium leading-snug" style={{ color }}>
+        {children}
+      </span>
     </div>
   );
 }

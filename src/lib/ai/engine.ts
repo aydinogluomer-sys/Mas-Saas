@@ -12,6 +12,7 @@ import {
   selectFactsForQuestion,
   type AiResponseMode,
 } from "./rules";
+import { executePlannedTools, type ToolEvidenceRecord } from "./tools";
 
 function extractOutputText(json: unknown): string | null {
   if (!json || typeof json !== "object") return null;
@@ -86,6 +87,7 @@ export interface AskAnswerResult {
   sourceFactKeys: string[];
   sourceHrefs: string[];
   safetyNotes: string[];
+  toolEvidence?: ToolEvidenceRecord[];
 }
 
 export interface AnswerQuestionInput {
@@ -104,15 +106,25 @@ export async function answerQuestion(
   actorId: string,
 ): Promise<AskAnswerResult> {
   const question = sanitizeQuestion(input.question);
+  const todayISO = istanbulDateISO();
   let facts: DecisionFact[];
   if (input.preScopedFacts) {
     facts = [...input.preScopedFacts];
   } else {
-    const loaded = await loadDecisionFacts(pool, istanbulDateISO());
+    const loaded = await loadDecisionFacts(pool, todayISO);
     facts = input.role ? scopeFactsForRole(input.role, loaded).visible : loaded;
   }
+
+  let toolEvidences: ToolEvidenceRecord[] = [];
+  if (!mutationIntent(question) && typeof pool?.query === "function") {
+    const toolRun = await executePlannedTools(pool, question, todayISO, input.role);
+    const scopedToolFacts = input.role ? scopeFactsForRole(input.role, toolRun.facts).visible : toolRun.facts;
+    facts = [...scopedToolFacts, ...facts];
+    toolEvidences = toolRun.evidences;
+  }
+
   const selectedFacts = selectFactsForQuestion(question, facts);
-  const draft = buildDeterministicAnswer(question, facts);
+  const draft = buildDeterministicAnswer(question, facts, toolEvidences);
   const safetyNotes = [...draft.safetyNotes];
   let answerMd = draft.answerMd;
   let responseMode: AiResponseMode = "deterministic";
@@ -122,7 +134,18 @@ export async function answerQuestion(
     try {
       const modelAnswer = await callOpenAI(question, selectedFacts);
       if (modelAnswer) {
-        answerMd = modelAnswer.text;
+        const evidenceFooter =
+          toolEvidences.length > 0
+            ? [
+                "",
+                "---",
+                "SQL Kanıt İzi (Salt-Okunur):",
+                ...toolEvidences.map(
+                  (ev) => `- ${ev.tool} · Tablo: ${ev.table} · Kayıt: ${ev.count} · Baz: ${ev.asOf} · ${ev.sourceHref}`,
+                ),
+              ].join("\n")
+            : "";
+        answerMd = `${modelAnswer.text}${evidenceFooter}`;
         responseMode = "openai";
         model = modelAnswer.model;
       }
@@ -133,7 +156,12 @@ export async function answerQuestion(
   }
 
   const sourceFactKeys = selectedFacts.map((f) => f.key);
-  const sourceHrefs = [...new Set(selectedFacts.map((f) => f.sourceHref))];
+  const sourceHrefs = [
+    ...new Set([
+      ...toolEvidences.map((ev) => ev.sourceHref),
+      ...selectedFacts.map((f) => f.sourceHref),
+    ]),
+  ];
   const client = await pool.connect();
   try {
     await client.query("begin");
@@ -150,16 +178,29 @@ export async function answerQuestion(
         sourceHrefs,
         input.reportId ?? null,
         safetyNotes,
-        JSON.stringify({ selectedFactCount: selectedFacts.length }),
+        JSON.stringify({
+          selectedFactCount: selectedFacts.length,
+          toolEvidence: toolEvidences,
+        }),
       ],
     );
     const id = ins.rows[0].id;
     await audit(client, {
       actor: actorId, action: "answer_question", entityTable: "ai_response_snapshots", entityId: id,
-      after: { responseMode, model, reportId: input.reportId ?? null, sourceFactKeys },
+      after: { responseMode, model, reportId: input.reportId ?? null, sourceFactKeys, toolCount: toolEvidences.length },
     });
     await client.query("commit");
-    return { id, question, answerMd, responseMode, model, sourceFactKeys, sourceHrefs, safetyNotes };
+    return {
+      id,
+      question,
+      answerMd,
+      responseMode,
+      model,
+      sourceFactKeys,
+      sourceHrefs,
+      safetyNotes,
+      toolEvidence: toolEvidences,
+    };
   } catch (e) {
     await client.query("rollback");
     throw e;

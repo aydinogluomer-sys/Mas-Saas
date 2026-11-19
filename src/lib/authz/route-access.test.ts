@@ -18,11 +18,12 @@ import {
 const EXPECTED: Record<string, AppRole[]> = {
   "/": [...APP_ROLES],
 
-  // Nakit Akışı (7)
+  // Nakit Akışı (8)
   "/cashflow": [...APP_ROLES],
   "/cashflow/13-week": [...APP_ROLES],
   "/cashflow/[monthId]": [...APP_ROLES],
   "/cashflow/budget": [...APP_ROLES],
+  "/cashflow/close": [...APP_ROLES],
   "/cashflow/concentration": [...APP_ROLES],
   "/cashflow/controls": [...APP_ROLES],
   "/cashflow/monthly": [...APP_ROLES],
@@ -88,10 +89,11 @@ const EXPECTED: Record<string, AppRole[]> = {
   "/payments/missing": [...APP_ROLES],
   "/payments/new": [...APP_ROLES],
 
-  // Üretim (5)
+  // Üretim (6)
   "/production": [...APP_ROLES],
   "/production/capacity": [...APP_ROLES],
   "/production/costs": [...APP_ROLES],
+  "/production/kiosk": [...APP_ROLES],
   "/production/profitability": [...APP_ROLES],
   "/production/roi": [...APP_ROLES],
 
@@ -135,10 +137,10 @@ function discoverDashboardPages(): Array<{ relFile: string; route: string; absFi
     }));
 }
 
-describe("requireRouteAccess — 5 katman × 80 route karar tablosu", () => {
+describe("requireRouteAccess — 5 katman × 82 route karar tablosu", () => {
   it("kapı listesi ile karar tablosu birebir aynı route kümesini kapsıyor", () => {
     expect([...PAGE_GUARDED_ROUTES].sort()).toEqual(Object.keys(EXPECTED).sort());
-    expect(PAGE_GUARDED_ROUTES).toHaveLength(80);
+    expect(PAGE_GUARDED_ROUTES).toHaveLength(82);
   });
 
   for (const route of Object.keys(EXPECTED)) {

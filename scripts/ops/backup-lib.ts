@@ -339,16 +339,105 @@ function windowsPhysicalDisk(root: string): PhysicalDiskIdentity | null {
  * yerel eşitleme klasörü). O durumda sınıf `OPERATOR_ATTESTED` olur: kabul edilir ama
  * otomatik tespitten AYRI etiketlenir, çünkü kanıtın kaynağı ölçüm değil beyandır.
  */
+export type BackupPathOverlapKind = "identical" | "target_inside_source" | "source_inside_target";
+
+export interface NormalizedBackupPath {
+  /** Karşılaştırma için normalize edilmiş yol (`/` ayraçlı, sondaki `/` kırpılmış, Windows/UNC'de küçük harf). */
+  canonical: string;
+  /** Kök volume veya UNC paylaşım anahtarı (`"c:\\"`, `"//sunucu/paylasim"`, `"/"`). */
+  rootKey: string;
+  /** Kullanıcıya ve makbuza yazılacak normalize gösterim yolu. */
+  displayPath: string;
+  isUnc: boolean;
+  isWindowsDrive: boolean;
+}
+
+/**
+ * Windows sürücü harflerini (`C:\...`, `c:/...`), UNC ağ paylaşımlarını (`\\nas\pay\...`, `//NAS/pay/...`)
+ * ve POSIX yollarını platformdan bağımsız biçimde normalize eder.
+ */
+export function normalizeBackupPath(rawPath: string): NormalizedBackupPath {
+  const trimmed = rawPath.trim();
+  const isUnc = /^(\\\\|\/\/)/.test(trimmed);
+  const isWindowsDrive = !isUnc && /^[A-Za-z]:([\\/]|$)/.test(trimmed);
+
+  if (isUnc) {
+    const stripped = trimmed.replace(/^[\\/]+/, "").replace(/\//g, "\\");
+    const winNorm = path.win32.normalize(`\\\\${stripped}`);
+    const displayPath = winNorm.length > 2 ? winNorm.replace(/\\+$/, "") : winNorm;
+    const posixLike = `//${displayPath.replace(/^\\+/, "").replace(/\\/g, "/")}`;
+    const canonical = posixLike.toLowerCase();
+    const parsedRoot = path.win32.parse(winNorm).root;
+    const rootKey = parsedRoot
+      ? `//${parsedRoot.replace(/^\\+/, "").replace(/\\+$/, "").replace(/\\/g, "/")}`.toLowerCase()
+      : canonical;
+    return { canonical, rootKey, displayPath, isUnc: true, isWindowsDrive: false };
+  }
+
+  if (isWindowsDrive) {
+    const withSlash = /^[A-Za-z]:$/.test(trimmed) ? `${trimmed}\\` : trimmed.replace(/\//g, "\\");
+    const winNorm = path.win32.normalize(withSlash);
+    const parsed = path.win32.parse(winNorm);
+    const drivePrefix = parsed.root.replace(/\\+$/, "").toLowerCase(); // ör. "c:"
+    const rootKey = `${drivePrefix}\\`; // ör. "c:\"
+    const isRootOnly = winNorm.replace(/\\+$/, "").toLowerCase() === drivePrefix;
+    const displayPath = isRootOnly ? `${parsed.root.slice(0, 2)}\\` : winNorm.replace(/\\+$/, "");
+    const canonical = winNorm.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
+    return { canonical, rootKey, displayPath, isUnc: false, isWindowsDrive: true };
+  }
+
+  const resolved = path.resolve(trimmed);
+  if (process.platform === "win32") {
+    return normalizeBackupPath(resolved);
+  }
+  const parsed = path.posix.parse(resolved);
+  const canonical = resolved.length > 1 ? resolved.replace(/\/+$/, "") : resolved;
+  return {
+    canonical,
+    rootKey: parsed.root || "/",
+    displayPath: canonical,
+    isUnc: false,
+    isWindowsDrive: false,
+  };
+}
+
+/**
+ * Kaynak ve hedef yedek dizinlerinin aynı dizin olup olmadığını veya birinin diğerinin alt klasörü
+ * olup olmadığını platformdan bağımsız olarak saptar (`null` = çakışma yok).
+ */
+export function detectBackupPathOverlap(
+  targetDir: string,
+  sourceDir: string | null | undefined,
+): BackupPathOverlapKind | null {
+  if (!sourceDir || sourceDir.trim() === "") return null;
+  if (!targetDir || targetDir.trim() === "") return null;
+  const t = normalizeBackupPath(targetDir);
+  const s = normalizeBackupPath(sourceDir);
+  const caseInsensitive = t.isUnc || t.isWindowsDrive || s.isUnc || s.isWindowsDrive;
+  const tc = caseInsensitive ? t.canonical.toLowerCase() : t.canonical;
+  const sc = caseInsensitive ? s.canonical.toLowerCase() : s.canonical;
+
+  if (tc === sc) return "identical";
+  const sPrefix = sc === "/" ? "/" : `${sc}/`;
+  const tPrefix = tc === "/" ? "/" : `${tc}/`;
+  if (tc.startsWith(sPrefix)) return "target_inside_source";
+  if (sc.startsWith(tPrefix)) return "source_inside_target";
+  return null;
+}
+
 export function classifyOffDeviceTarget(targetDir: string, sourceDir: string): OffDeviceClassification {
-  const resolved = path.resolve(targetDir);
+  const normTarget = normalizeBackupPath(targetDir);
+  const hasSource = typeof sourceDir === "string" && sourceDir.trim() !== "";
+  const normSource = hasSource ? normalizeBackupPath(sourceDir) : null;
   const declaredKind = process.env.MAS_OFFDEVICE_DECLARED_KIND ?? null;
   const operatorAttestation = process.env.MAS_OFFDEVICE_OPERATOR_ATTESTATION ?? null;
-  const sourceRoot = path.parse(path.resolve(sourceDir)).root.toLowerCase();
-  const targetRoot = path.parse(resolved).root.toLowerCase();
-  const sameVolumeAsSource = sourceRoot === targetRoot;
+  const targetRoot = normTarget.rootKey;
+  const sourceRoot = normSource ? normSource.rootKey : "";
+  const overlap = detectBackupPathOverlap(targetDir, sourceDir);
+  const sameVolumeAsSource = overlap !== null || (normSource !== null && targetRoot === sourceRoot);
 
   const base = {
-    targetDir: resolved,
+    targetDir: normTarget.displayPath,
     sameVolumeAsSource,
     declaredKind,
     operatorAttestation,
@@ -359,21 +448,67 @@ export function classifyOffDeviceTarget(targetDir: string, sourceDir: string): O
     samePhysicalDisk: null as boolean | null,
   };
 
-  if (resolved.startsWith("\\\\") || resolved.startsWith("//")) {
+  if (overlap !== null) {
+    const overlapDetail =
+      overlap === "identical"
+        ? `Hedef dizin kaynak dizinle AYNI (${normTarget.displayPath} === ${normSource?.displayPath ?? sourceDir}) — source === target`
+        : overlap === "target_inside_source"
+          ? `Hedef dizin kaynak dizinin ALT KLASÖRÜ (${normTarget.displayPath} ⊂ ${normSource?.displayPath ?? sourceDir})`
+          : `Kaynak dizin hedef dizinin ALT KLASÖRÜ (${normSource?.displayPath ?? sourceDir} ⊂ ${normTarget.displayPath})`;
+    return {
+      ...base,
+      sameVolumeAsSource: true,
+      kind: "LOCAL_STANDIN",
+      offDeviceSatisfied: false,
+      driveType: null,
+      evidence: `${overlapDetail}; kaynak ve hedef çakışıyor, off-device kopya olamaz (rehber §30.5).`,
+    };
+  }
+
+  if (normTarget.isUnc) {
+    if (sameVolumeAsSource) {
+      return {
+        ...base,
+        kind: "LOCAL_STANDIN",
+        offDeviceSatisfied: false,
+        driveType: null,
+        evidence:
+          `UNC yolu kaynakla aynı ağ paylaşımında (${targetRoot}) — ` +
+          "aynı paylaşımdaki ikinci klasör bağımsız off-device kopya sayılmaz.",
+      };
+    }
     return {
       ...base, kind: "UNC_NETWORK_SHARE", offDeviceSatisfied: true, driveType: null,
-      evidence: "UNC yolu — hedef bu makinenin yerel diski değil.",
+      evidence: "UNC yolu — hedef bu makinenin yerel diski değil ve kaynaktan bağımsız ağ paylaşımı.",
     };
   }
 
   const driveType = process.platform === "win32" ? windowsDriveType(targetRoot) : null;
   if (driveType === 2) {
+    if (sameVolumeAsSource) {
+      return {
+        ...base,
+        kind: "LOCAL_STANDIN",
+        offDeviceSatisfied: false,
+        driveType,
+        evidence: `Hedef kaynakla aynı çıkarılabilir volume üzerinde (kök ${targetRoot}) — ayrı aygıt değil.`,
+      };
+    }
     return {
       ...base, kind: "REMOVABLE_VOLUME", offDeviceSatisfied: true, driveType,
       evidence: `Win32_LogicalDisk DriveType=2 (çıkarılabilir) — kök ${targetRoot}`,
     };
   }
   if (driveType === 4) {
+    if (sameVolumeAsSource) {
+      return {
+        ...base,
+        kind: "LOCAL_STANDIN",
+        offDeviceSatisfied: false,
+        driveType,
+        evidence: `Hedef kaynakla aynı ağ sürücüsü üzerinde (kök ${targetRoot}) — ayrı aygıt değil.`,
+      };
+    }
     return {
       ...base, kind: "NETWORK_DRIVE", offDeviceSatisfied: true, driveType,
       evidence: `Win32_LogicalDisk DriveType=4 (ağ sürücüsü) — kök ${targetRoot}`,
@@ -551,21 +686,50 @@ export function offDeviceCleanupBlockers(raw: unknown): string[] {
   return out;
 }
 
-function copyOneVerified(sourcePath: string, destDir: string): { destPath: string; destBytes: number; destSha256: string; sourceSha256: string; sourceBytes: number; durability: DurabilityMetadata } {
+function copyOneVerified(
+  sourcePath: string,
+  destDir: string,
+  copyFileImpl: (src: string, dest: string) => void = copyFileSync,
+): {
+  destPath: string;
+  destBytes: number;
+  destSha256: string;
+  sourceSha256: string;
+  sourceBytes: number;
+  durability: DurabilityMetadata;
+} {
   const sourceBytes = statSync(sourcePath).size;
   const sourceSha256 = sha256OfFile(sourcePath);
+  if (process.platform !== "win32" && /^[A-Za-z]:([\\/]|$)/.test(destDir.trim())) {
+    throw Object.assign(
+      new Error(`ENOENT: no such file or directory, mkdir '${destDir}'`),
+      { code: "ENOENT", syscall: "mkdir", path: destDir },
+    );
+  }
   if (!existsSync(destDir)) mkdirSync(destDir, { recursive: true });
   const destPath = path.join(destDir, path.basename(sourcePath));
+  if (normalizeBackupPath(destPath).canonical === normalizeBackupPath(sourcePath).canonical) {
+    throw new Error(
+      `GÜVENLİK DURDURMASI: Hedef dosya yolu kaynak dump ile aynı (${destPath} === ${sourcePath}).`,
+    );
+  }
   const tempPath = `${destPath}.tmp-${process.pid}-${Date.now()}`;
   // Temp + fsync + atomik rename: yarım kopyalanmış bir dosya asla nihai adıyla görünmez.
-  // Kopyalama sırasında elektrik kesilirse geriye `*.tmp-*` kalır, "yedek" adında bir çöp değil.
-  copyFileSync(sourcePath, tempPath);
-  {
+  // Kopyalama sırasında hata olursa `*.tmp-*` artığı da temizlenir.
+  try {
+    copyFileImpl(sourcePath, tempPath);
     const fd = openSync(tempPath, "r+");
     try { fsyncSync(fd); } finally { closeSync(fd); }
+    if (existsSync(destPath)) unlinkSync(destPath);
+    renameSync(tempPath, destPath);
+  } catch (err) {
+    try {
+      if (existsSync(tempPath)) unlinkSync(tempPath);
+    } catch {
+      /* geçici dosya zaten yok */
+    }
+    throw err;
   }
-  if (existsSync(destPath)) unlinkSync(destPath);
-  renameSync(tempPath, destPath);
   const durability = attemptDirectoryFsync(destDir);
 
   const destBytes = statSync(destPath).size;
@@ -587,8 +751,8 @@ function copyOneVerified(sourcePath: string, destDir: string): { destPath: strin
  * zincirini kendisi seçmez, hiçbir veritabanına bağlanmaz. Doğrulayıcının fırlattığı hata
  * YUTULMAZ — okunamayan bir kopya "kopyalandı ama doğrulanamadı" diye sessizce geçmez.
  *
- * `classify` yalnız test seam'idir: gerçek sınıflandırma Windows'ta PowerShell ile disk topolojisi
- * ölçer ve birim testte o ölçümün kendisi değil, kopya/doğrulama zinciri sınanır.
+ * `classify` ve `copyFileImpl` yalnız test seam'leridir: gerçek sınıflandırma Windows'ta PowerShell
+ * ile disk topolojisi ölçer ve birim testte kopya/bozulma/doğrulama zinciri izole sınanır.
  */
 export function copyToTargetVerified(
   sourcePath: string,
@@ -597,12 +761,22 @@ export function copyToTargetVerified(
     verifyListable?: (destPath: string) => { tocEntryCount: number };
     sourceDir?: string;
     classify?: (targetDir: string, sourceDir: string) => OffDeviceClassification;
+    copyFileImpl?: (src: string, dest: string) => void;
   } = {},
 ): CopyVerifyResult {
   if (!existsSync(sourcePath)) throw new Error(`Kaynak dump yok: ${sourcePath}`);
-  const classification = (opts.classify ?? classifyOffDeviceTarget)(destDir, opts.sourceDir ?? path.dirname(sourcePath));
+  const effectiveSourceDir = opts.sourceDir ?? path.dirname(sourcePath);
+  if (
+    detectBackupPathOverlap(destDir, effectiveSourceDir) === "identical" ||
+    detectBackupPathOverlap(destDir, path.dirname(sourcePath)) === "identical"
+  ) {
+    throw new Error(
+      `GÜVENLİK DURDURMASI: Hedef dizin kaynak dizinle aynı olamaz (${destDir} === ${effectiveSourceDir}).`,
+    );
+  }
+  const classification = (opts.classify ?? classifyOffDeviceTarget)(destDir, effectiveSourceDir);
 
-  const main = copyOneVerified(sourcePath, destDir);
+  const main = copyOneVerified(sourcePath, destDir, opts.copyFileImpl);
   const sha256Match = main.destSha256 === main.sourceSha256;
   const bytesMatch = main.destBytes === main.sourceBytes;
   if (!sha256Match || !bytesMatch) {
@@ -613,19 +787,25 @@ export function copyToTargetVerified(
     );
   }
 
-  // Makbuz, yan dosyalar ve doküman kasası arşiv çifti (-documents.tar.gz / -documents.manifest.json)
-  // birlikte kopyalanır ve hedefte SHA-256 doğrulamasından geçer.
+  // Makbuz, yan dosyalar, şifreli kopya (.enc), .sha256 özeti ve doküman kasası arşiv çifti
+  // (-documents.tar.gz / -documents.manifest.json) birlikte kopyalanır ve hedefte SHA-256 doğrulamasından geçer.
   const sidecarsCopied: string[] = [];
   const candidateCompanions = [
     `${sourcePath}.receipt.json`,
     `${sourcePath}.stage07.json`,
+    `${sourcePath}.sha256`,
+    `${sourcePath}.enc`,
     ...documentCompanionPaths(sourcePath),
   ];
   for (const sidecar of candidateCompanions) {
     if (!existsSync(sidecar)) continue;
-    const copied = copyOneVerified(sidecar, destDir);
+    const copied = copyOneVerified(sidecar, destDir, opts.copyFileImpl);
     if (copied.destSha256 !== copied.sourceSha256 || copied.destBytes !== copied.sourceBytes) {
       try { unlinkSync(copied.destPath); } catch { /* zaten yok */ }
+      try { unlinkSync(main.destPath); } catch { /* zaten yok */ }
+      for (const prev of sidecarsCopied) {
+        try { unlinkSync(path.join(destDir, prev)); } catch { /* zaten yok */ }
+      }
       throw new Error(`Yan dosya / doküman arşivi kopyası eşleşmedi (silindi): ${sidecar}`);
     }
     sidecarsCopied.push(path.basename(copied.destPath));
@@ -694,7 +874,26 @@ export const IMMUTABLE_NAME_PATTERNS: readonly RegExp[] = Object.freeze([
   /mas_radar_dev/i,
 ]);
 
-const SIDECAR_SUFFIXES = [".receipt.json", ".stage07.json", ".offdevice.json", ".immutable"] as const;
+export const SIDECAR_SUFFIXES = [
+  ".receipt.json",
+  ".stage07.json",
+  ".offdevice.json",
+  ".immutable",
+  ".enc",
+  ".sha256",
+] as const;
+
+/** `<dump>.sha256` yan dosyasını atomik (temp + fsync + rename) olarak yazar ve geri doğrular. */
+export function writeSha256Sidecar(
+  targetFilePath: string,
+  precomputedSha256?: string,
+): { sidecarPath: string; sha256: string } {
+  const sha = precomputedSha256 ?? sha256OfFile(targetFilePath);
+  const sidecarPath = `${targetFilePath}.sha256`;
+  const content = `${sha}  ${path.basename(targetFilePath)}\n`;
+  writeBufferAtomic(sidecarPath, Buffer.from(content, "utf8"));
+  return { sidecarPath: path.resolve(sidecarPath), sha256: sha };
+}
 
 function extraProtectedPatterns(): RegExp[] {
   const raw = process.env.MAS_BACKUP_PROTECTED_PATTERNS;
@@ -797,6 +996,23 @@ export interface PrunePlan {
  * `immutable` sınıfı hiçbir koşulda budanmaz — pre/post-cutover yedekleri geri dönülecek tek
  * noktadır ve "yer açmak için" silinmeleri geri alınamaz tek hatadır (politika §2).
  */
+export const VERIFIED_SIDECAR_SUFFIXES = [
+  ".receipt.json",
+  ".stage07.json",
+  ".offdevice.json",
+  ".sha256",
+] as const;
+
+/**
+ * Bir dump girdisinin doğrulanmış bir makbuz veya SHA-256 yan dosyasına sahip olup olmadığını döner.
+ */
+export function isVerifiedDumpEntry(entry: Pick<DumpEntry, "sidecars">): boolean {
+  return entry.sidecars.some((s) => {
+    const lower = s.toLowerCase();
+    return VERIFIED_SIDECAR_SUFFIXES.some((suffix) => lower.endsWith(suffix));
+  });
+}
+
 export function planPrune(entries: DumpEntry[], policy: RetentionPolicy = DEFAULT_RETENTION, now: Date = new Date()): PrunePlan {
   const sorted = [...entries].sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime());
   const rolling = sorted.filter((e) => e.retentionClass === "rolling");
@@ -823,12 +1039,22 @@ export function planPrune(entries: DumpEntry[], policy: RetentionPolicy = DEFAUL
     if (ageHours < policy.minAgeHours) {
       return { entry, keep: true, reason: `çok yeni (${ageHours.toFixed(1)} saat < ${policy.minAgeHours})` };
     }
-    if (entry.fullPath === newestRolling) return { entry, keep: true, reason: "en yeni rolling yedek" };
+    if (entry.fullPath === newestRolling && policy.daily > 0) return { entry, keep: true, reason: "en yeni rolling yedek" };
     if (keepDaily.has(entry.fullPath)) return { entry, keep: true, reason: `günlük kova (son ${policy.daily} gün)` };
     if (keepWeekly.has(entry.fullPath)) return { entry, keep: true, reason: `haftalık kova (son ${policy.weekly} hafta)` };
     if (keepMonthly.has(entry.fullPath)) return { entry, keep: true, reason: `aylık kova (son ${policy.monthly} ay)` };
     return { entry, keep: false, reason: "hiçbir retention kovasına girmiyor" };
   });
+
+  // ASLA son doğrulanmış yedeği silme: girdilerde en az bir doğrulanmış dump varsa ve standart
+  // retention yuvalarında (ör. yalnız daha yeni doğrulanmamış bir dump günlük kovayı doldurduğu için
+  // ya da tüm doğrulanmış yedekler yaş eşiğini aştığı için) HİÇBİR doğrulanmış yedek korunmadıysa,
+  // en yeni doğrulanmış yedeği zorunlu olarak koru.
+  const verifiedDecisions = decisions.filter((d) => isVerifiedDumpEntry(d.entry));
+  if (verifiedDecisions.length > 0 && !verifiedDecisions.some((d) => d.keep)) {
+    verifiedDecisions[0]!.keep = true;
+    verifiedDecisions[0]!.reason = "sole_verified_backup_protected";
+  }
 
   const pruned = decisions.filter((d) => !d.keep);
   return {

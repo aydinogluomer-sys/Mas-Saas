@@ -1,19 +1,23 @@
+import Link from "@/components/ui/app-link";
 import { getPool } from "@/lib/db";
 import { istanbulDateISO } from "@/lib/reports/rules";
-import { ANALYSES, METRICS } from "@/lib/analytics/registry";
+import { ANALYSES } from "@/lib/analytics/registry";
 import {
-  runAgeingDistribution, runCashBridge, runParetoConcentration,
-  runPeriodOverPeriod, runVarianceDecomposition, runWorkingCapitalDecomposition,
+  runAgeingDistribution,
+  runParetoConcentration,
+  runVarianceDecomposition,
 } from "@/lib/analytics/engine";
+import { loadInsightsHubBundle } from "@/lib/analytics/insights-engine";
 import { loadMetricHistory, type MetricSnapshotRow } from "@/lib/analytics/snapshots";
 import { heatmapModel, treemapModel, waterfallModel } from "@/lib/analytics/chart-types";
 import { formatMetric } from "@/lib/analytics/analyses";
 import { describeStamp } from "@/lib/analytics/reproducibility";
-import { COMPARISON_LABEL } from "@/lib/analytics/periods";
+import { COMPARISON_LABEL, type PeriodComparison } from "@/lib/analytics/periods";
 import { intOrNull, moneyOrNull, rateOrNull } from "@/lib/money";
+import { AnalyticsChart } from "@/components/charts/analytics-chart";
 import { HeatmapChart, TreemapChart, WaterfallChart } from "@/components/charts/advanced-charts";
 import { Badge } from "@/components/ui/badge";
-import { Panel } from "@/components/ui/panel";
+import { Panel, fmtTL } from "@/components/ui/panel";
 import { EmptyState, KeyStat, PageHeader, TableShell } from "@/components/ui/shell";
 import { requireRouteAccess } from "@/lib/authz/route-guard";
 
@@ -103,41 +107,39 @@ const SNAPSHOT_SERIES_META: Array<{
   { key: "decision_confidence", label: "Karar Güveni Skoru (%)", format: "count", filterDimension: "total" },
 ];
 
-export default async function AnalysisPage() {
-  // Faz 17-38 denetimi — sayfa seviyesi rol kapisi. Navigasyonun kullandigi AYNI karar
-  // (canSeeRoute); ikinci bir liste, ikinci bir fikir ve kacinilmaz bir kayma demekti.
+const COMPARISON_MODES: PeriodComparison[] = ["mom", "qoq", "yoy"];
+
+interface AnalysisPageProps {
+  searchParams?: Promise<{ comparison?: string }>;
+}
+
+export default async function AnalysisPage({ searchParams }: AnalysisPageProps) {
   const denied = await requireRouteAccess("/insights/analysis");
   if (denied) return denied;
+  const sp = (await searchParams) ?? {};
+  const comparison: PeriodComparison =
+    sp.comparison === "qoq" || sp.comparison === "yoy" ? sp.comparison : "mom";
+
   const pool = getPool();
   const asOf = istanbulDateISO();
 
-  const months = await pool.query(
-    `select to_char(min(month_start),'YYYY-MM') a, to_char(max(month_start),'YYYY-MM') b
-       from public.cashflow_months`);
-  const fromMonth = (months.rows[0]?.a as string | null) ?? asOf.slice(0, 7);
-  const toMonth = (months.rows[0]?.b as string | null) ?? asOf.slice(0, 7);
-
   const [
+    insights,
     variance,
     pareto,
-    workingCapital,
-    bridge,
     ageingSales,
     ageingPurchase,
-    pop,
     wcMonthlySeries,
     histWorstClosing,
     histMaturityOutflow,
     histLoanRemaining,
     histDecisionConfidence,
   ] = await Promise.all([
+    loadInsightsHubBundle(pool, asOf, comparison),
     runVarianceDecomposition(pool, asOf),
     runParetoConcentration(pool, asOf),
-    runWorkingCapitalDecomposition(pool, asOf),
-    runCashBridge(pool, fromMonth, toMonth, asOf),
     runAgeingDistribution(pool, "sales", asOf),
     runAgeingDistribution(pool, "purchase", asOf),
-    runPeriodOverPeriod(pool, "mom", asOf),
     loadWorkingCapitalMonthlySeries(pool),
     loadMetricHistory(pool, "cash_worst_closing", 90),
     loadMetricHistory(pool, "maturity_outflow", 90),
@@ -152,34 +154,43 @@ export default async function AnalysisPage() {
     decision_confidence: histDecisionConfidence,
   };
 
-  const bridgeChart = waterfallModel({
-    title: "Nakit köprüsü", description: `${fromMonth} → ${toMonth} nakit hareketi`,
-    format: "currency", asOf, sourceLabel: "cashflow_months",
-    steps: bridge.result.rows.map((r) => ({ key: r.key, label: r.label, value: r.value, kind: r.kind })),
-    unknownCount: bridge.result.unknownCount,
-  });
+  const { cfoBridge, liveWc, rollingTrendChart, popRows } = insights;
 
   const varianceChart = waterfallModel({
-    title: "Varyans ayrıştırma", description: "Bütçe sapmasına en çok katkı veren kalemler",
-    format: "currency", asOf, sourceLabel: "budget_vs_actual",
+    title: "Varyans ayrıştırma",
+    description: "Bütçe sapmasına en çok katkı veren kalemler",
+    format: "currency",
+    asOf,
+    sourceLabel: "budget_vs_actual",
     steps: variance.result.rows.slice(0, 10).map((r) => ({
-      key: r.key, label: r.label, value: r.value,
-      kind: r.value >= 0 ? "increase" as const : "decrease" as const,
+      key: r.key,
+      label: r.label,
+      value: r.value,
+      kind: r.value >= 0 ? ("increase" as const) : ("decrease" as const),
     })),
     unknownCount: variance.result.unknownCount,
   });
 
   const paretoChart = treemapModel({
-    title: "Alacak yoğunlaşması", description: "Açık alacağın karşı taraflara dağılımı",
-    format: "currency", asOf, sourceLabel: "invoices + parties",
+    title: "Alacak yoğunlaşması",
+    description: "Açık alacağın karşı taraflara dağılımı",
+    format: "currency",
+    asOf,
+    sourceLabel: "invoices + parties",
     items: pareto.result.rows.map((r) => ({ key: r.key, label: r.label, value: r.value })),
     maxTiles: 12,
   });
 
   const ageingChart = heatmapModel({
-    title: "Yaşlandırma dağılımı", description: "Açık alacak ve borcun vade kovalarına dağılımı",
-    format: "currency", asOf, sourceLabel: "invoices",
-    rows: [{ key: "sales", label: "Alacak" }, { key: "purchase", label: "Borç" }],
+    title: "Yaşlandırma dağılımı",
+    description: "Açık alacak ve borcun vade kovalarına dağılımı",
+    format: "currency",
+    asOf,
+    sourceLabel: "invoices",
+    rows: [
+      { key: "sales", label: "Alacak" },
+      { key: "purchase", label: "Borç" },
+    ],
     columns: ageingSales.result.rows.map((r) => ({ key: r.bucketKey, label: r.bucketLabel })),
     values: [
       ...ageingSales.result.rows.map((r) => ({ rowKey: "sales", columnKey: r.bucketKey, value: r.amount })),
@@ -187,58 +198,267 @@ export default async function AnalysisPage() {
     ],
   });
 
-  const wcRows = workingCapital.result.rows;
-  const recentPop = pop.result.rows.slice(-6).reverse();
+  const hasFullCcc = liveWc.cashConversionCycleDays != null;
+  const cccDisplay = hasFullCcc
+    ? formatMetric(liveWc.cashConversionCycleDays, "days")
+    : formatMetric(liveWc.cycleExcludingInventoryDays, "days");
+  const cccNote = hasFullCcc
+    ? `Tam CCC = DSO (${formatMetric(liveWc.dsoDays, "days")}) + DIO (${formatMetric(liveWc.dioDays, "days")}) − DPO (${formatMetric(liveWc.dpoDays, "days")})`
+    : `Envanter hariç (DSO − DPO) · ${liveWc.dioUnmeasurableReason ?? "DIO ölçülemez"}`;
+
+  const hasRollingData = rollingTrendChart.series.some((s) => s.points.some((p) => p.value != null));
 
   return (
     <>
       <PageHeader
         title="Analiz Merkezi"
-        subtitle={`${Object.keys(ANALYSES).length} adlandırılmış analiz · deterministik, yapay zekâ kullanılmaz`}
-        meta={<Badge tone="blue" dot>ilk dilim</Badge>}
+        subtitle={`${Object.keys(ANALYSES).length} adlandırılmış analiz · 11 adımlı CFO nakit köprüsü, MoM/QoQ/YoY varyans ve canlı CCC`}
+        meta={<Badge tone="green" dot>deterministik</Badge>}
       />
 
-      <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+      <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-5">
         <KeyStat
-          label="Yoğunlaşma"
+          label={hasFullCcc ? "Tam Nakit Döngüsü (CCC)" : "Nakit Döngüsü (Env. Hariç)"}
+          value={cccDisplay}
+          tone={hasFullCcc ? "pos" : "neutral"}
+          sub={cccNote}
+        />
+        <KeyStat
+          label="Stok Devir Süresi (DIO)"
+          value={formatMetric(liveWc.dioDays, "days")}
+          tone={liveWc.dioDays != null ? "pos" : "neutral"}
+          sub={
+            liveWc.dioDays != null
+              ? `TDHP 150-157 Stok: ${liveWc.inventoryBalanceTry == null ? "—" : fmtTL(liveWc.inventoryBalanceTry)}`
+              : liveWc.dioUnmeasurableReason ?? "TDHP 150-153 stok bakiyesi bekleniyor"
+          }
+        />
+        <KeyStat
+          label="Net İşletme Nakit Akışı (90G)"
+          value={cfoBridge.netOperatingCashTry == null ? "—" : fmtTL(cfoBridge.netOperatingCashTry)}
+          tone={(cfoBridge.netOperatingCashTry ?? 0) >= 0 ? "pos" : "neg"}
+          sub={
+            cfoBridge.ebitdaCashConversionPct != null
+              ? `FAVÖK Nakit Dönüşümü: %${cfoBridge.ebitdaCashConversionPct}`
+              : cfoBridge.managementEbitdaTry != null
+                ? `TDHP FAVÖK: ${fmtTL(cfoBridge.managementEbitdaTry)}`
+                : "90 günlük konsolide nakit akışı"
+          }
+        />
+        <KeyStat
+          label="Alacak Yoğunlaşması (Pareto)"
           value={pareto.summary ? `${pareto.summary.vitalFewCount} / ${pareto.summary.totalCount}` : "—"}
           tone={pareto.summary && pareto.summary.vitalFewCount <= 3 ? "warn" : "neutral"}
           sub={pareto.summary ? `açık alacağın %${Math.round(pareto.summary.threshold * 100)}'i` : "veri yok"}
         />
         <KeyStat
-          label="Nakit döngüsü"
-          value={formatMetric(workingCapital.cycleDays, "days")}
-          tone="neutral"
-          sub="envanter hariç — DIO ölçülemez"
-        />
-        <KeyStat
-          label="Nakit köprüsü mutabık mı"
-          value={bridge.reconciles == null ? "—" : bridge.reconciles ? "evet" : "HAYIR"}
-          tone={bridge.reconciles === false ? "neg" : bridge.reconciles ? "pos" : "neutral"}
-          sub={bridge.result.unmeasurableReason
-            ?? (bridge.difference == null ? "kapanış bildirilmemiş" : `fark ${formatMetric(bridge.difference, "currency")}`)}
-        />
-        <KeyStat
-          label="Bütçe sapması olan kalem"
+          label="Bütçe Sapması Olan Kalem"
           value={String(variance.result.rows.length)}
           tone={variance.result.rows.length > 0 ? "warn" : "pos"}
           sub={`${variance.result.unknownCount} kalem eksik veri`}
         />
       </div>
 
-      <Panel title="NAKİT KÖPRÜSÜ (ŞELALE)">
-        {/* An unknown opening balance is said, not drawn from 0 (cashBridge, Wave 0 R10). */}
-        {bridge.result.rows.length === 0 ? <EmptyState>{bridge.result.unmeasurableReason ?? "Nakit akış verisi yok."}</EmptyState> : (
+      <Panel
+        title="11 ADIMLI CFO NAKİT VE İŞLETME AKIŞI KÖPRÜSÜ (ŞELALE)"
+        subtitle={`${cfoBridge.windowStartISO} → ${cfoBridge.windowEndISO} · Açılış Kasası → Tahsilat → POS → Tedarikçi → Maaş/SGK → Vergi → İşletme Sonrası Kasa → CAPEX → Kredi Servisi → Kur → Kapanış`}
+        right={
+          cfoBridge.reconciles != null ? (
+            <Badge tone={cfoBridge.reconciles ? "green" : "red"} dot>
+              {cfoBridge.reconciles ? "kuruş mutabakatı tam" : `fark: ${fmtTL(cfoBridge.difference)}`}
+            </Badge>
+          ) : undefined
+        }
+      >
+        {cfoBridge.steps.length === 0 ? (
+          <EmptyState>{cfoBridge.unmeasurableReason ?? "Nakit köprüsü için kasa/banka verisi yok."}</EmptyState>
+        ) : (
           <>
-            <WaterfallChart model={bridgeChart} exportKey="cash_bridge" />
-            {/* A bridge that does not add up is reported, never silently drawn. */}
-            {bridge.reconciles === false && (
-              <p className="mt-2 font-mono text-[11px] text-neg">
-                Hesaplanan kapanış ile bildirilen kapanış {formatMetric(bridge.difference, "currency")} farklı —
-                köprü mutabık değil, grafik bu farkı gizlemiyor.
+            <WaterfallChart model={cfoBridge.chart} exportKey="cfo_11_step_cash_bridge" />
+            <div className="mt-3 overflow-x-auto border-t border-line pt-2">
+              <table className="w-full text-xs">
+                <thead>
+                  <tr className="text-left font-mono text-[10px] uppercase text-tone-4">
+                    <th className="py-1">Adım</th>
+                    <th className="text-right">Katkı / Seviye (TL)</th>
+                    <th className="text-right">Kümülatif Kasa (TL)</th>
+                    <th className="text-right">Tür</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {cfoBridge.steps.map((s) => (
+                    <tr key={s.key} className="border-t border-line-faint">
+                      <td className="py-1 font-medium">{s.label}</td>
+                      <td
+                        className={`text-right font-mono ${
+                          s.kind === "decrease" ? "text-neg" : s.kind === "increase" ? "text-pos" : "font-semibold"
+                        }`}
+                      >
+                        {fmtTL(s.value)}
+                      </td>
+                      <td className="text-right font-mono text-tone-2">{fmtTL(s.runningTotal)}</td>
+                      <td className="text-right font-mono text-[10px] uppercase text-tone-3">
+                        {s.kind === "start"
+                          ? "Açılış"
+                          : s.kind === "end"
+                            ? "Ara/Son Bakiye"
+                            : s.kind === "increase"
+                              ? "Giriş (+)"
+                              : "Çıkış (-)"}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            {cfoBridge.managementEbitdaTry != null ? (
+              <p className="mt-2 font-mono text-[11px] text-tone-2">
+                TDHP Yönetim FAVÖK: <strong>{fmtTL(cfoBridge.managementEbitdaTry)}</strong> · Dönem Net Kâr:{" "}
+                <strong>{cfoBridge.netIncomeTry == null ? "—" : fmtTL(cfoBridge.netIncomeTry)}</strong> · Net İşletme Nakit Akışı:{" "}
+                <strong>{cfoBridge.netOperatingCashTry == null ? "—" : fmtTL(cfoBridge.netOperatingCashTry)}</strong>
               </p>
-            )}
-            <p className="mt-1 font-mono text-[10px] text-tone-4">{describeStamp(bridge.stamp)}</p>
+            ) : null}
+          </>
+        )}
+      </Panel>
+
+      <Panel
+        title="6 AYLIK HAREKETLİ NAKİT AKIŞI TRENDİ (ROLLING TREND)"
+        subtitle="Aylık konsolide tahsilat, ödeme ve 6 aylık hareketli ortalama net nakit üretim eğrisi"
+      >
+        {!hasRollingData ? (
+          <EmptyState>6 aylık hareketli trend için yeterli aylık nakit akışı gözlemi bulunmuyor.</EmptyState>
+        ) : (
+          <AnalyticsChart model={rollingTrendChart} kind="line" defaultPeriod="6m" />
+        )}
+      </Panel>
+
+      <Panel
+        title="CANLI İŞLETME SERMAYESİ AYRIŞTIRMA (DSO + DIO − DPO = CCC)"
+        subtitle="working_capital_metrics · alacak, stok ve borç devir süreleri"
+      >
+        <TableShell>
+          <table className="w-full text-xs">
+            <thead>
+              <tr className="text-left font-mono text-[10px] uppercase text-tone-4">
+                <th className="py-1">Bileşen</th>
+                <th className="text-right">Gün</th>
+                <th className="text-right">Bakiye (TL)</th>
+                <th>Etki</th>
+                <th>Metodoloji / Durum</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr className="border-t border-line-faint">
+                <td className="py-1.5 font-medium">Alacak Tahsil Süresi (DSO)</td>
+                <td className="text-right font-mono">{formatMetric(liveWc.dsoDays, "days")}</td>
+                <td className="text-right font-mono">{formatMetric(liveWc.receivablesOpenTry, "currency")}</td>
+                <td className="font-mono text-tone-3">+ uzatır</td>
+                <td className="text-tone-3">Açık satış faturaları / son 365g satışlar × 365</td>
+              </tr>
+              <tr className="border-t border-line-faint">
+                <td className="py-1.5 font-medium">Stokta Kalma Süresi (DIO)</td>
+                <td className="text-right font-mono">{formatMetric(liveWc.dioDays, "days")}</td>
+                <td className="text-right font-mono">{formatMetric(liveWc.inventoryBalanceTry, "currency")}</td>
+                <td className="font-mono text-tone-3">+ uzatır</td>
+                <td className="text-tone-3">
+                  {liveWc.dioDays != null
+                    ? "TDHP 150-157 stok bakiyesi / SMM (620-622) × 365"
+                    : liveWc.dioUnmeasurableReason ?? "Stok veya SMM verisi yok"}
+                </td>
+              </tr>
+              <tr className="border-t border-line-faint">
+                <td className="py-1.5 font-medium">Ticari Borç Ödeme Süresi (DPO)</td>
+                <td className="text-right font-mono">{formatMetric(liveWc.dpoDays, "days")}</td>
+                <td className="text-right font-mono">{formatMetric(liveWc.payablesOpenTry, "currency")}</td>
+                <td className="font-mono text-tone-3">− kısaltır</td>
+                <td className="text-tone-3">Açık alış faturaları / son 365g alışlar × 365</td>
+              </tr>
+              <tr className="border-t border-line font-semibold">
+                <td className="py-1.5">Tam Nakit Dönüşüm Döngüsü (CCC = DSO + DIO − DPO)</td>
+                <td className="text-right font-mono">{formatMetric(liveWc.cashConversionCycleDays, "days")}</td>
+                <td className="text-right font-mono">—</td>
+                <td className="font-mono text-tone-2">net döngü</td>
+                <td className="text-tone-3">
+                  {liveWc.cashConversionCycleDays != null
+                    ? "Tam stok dahil CCC aktif"
+                    : `Env. hariç (DSO − DPO): ${formatMetric(liveWc.cycleExcludingInventoryDays, "days")} · ${liveWc.cccUnmeasurableReason ?? "DIO bekleniyor"}`}
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </TableShell>
+      </Panel>
+
+      <Panel
+        title={`DÖNEMSEL VARYANS KARŞILAŞTIRMA — ${COMPARISON_LABEL[comparison].toUpperCase()}`}
+        subtitle={`Kaynak: ${insights.popSourceLabel} · MoM (Aylık), QoQ (Çeyreklik) ve YoY (Yıllık) karşılaştırma`}
+        right={
+          <div className="flex items-center gap-1">
+            {COMPARISON_MODES.map((m) => (
+              <Link
+                key={m}
+                href={`/insights/analysis?comparison=${m}`}
+                style={{
+                  background: comparison === m ? "var(--text-1)" : "var(--surface-2)",
+                  color: comparison === m ? "var(--surface-1)" : "var(--text-1)",
+                  border: "1px solid var(--line)",
+                }}
+                className="px-2.5 py-1 font-mono text-[10px] uppercase tracking-wider"
+              >
+                {m.toUpperCase()}
+              </Link>
+            ))}
+          </div>
+        }
+      >
+        {popRows.length === 0 ? (
+          <EmptyState>Aylık seri bulunmuyor.</EmptyState>
+        ) : (
+          <>
+            <TableShell>
+              <table className="w-full text-xs">
+                <thead>
+                  <tr className="text-left font-mono text-[10px] uppercase text-tone-4">
+                    <th className="py-1">Dönem</th>
+                    <th className="text-right">Cari Dönem</th>
+                    <th className="text-right">Karşılaştırma Bazı</th>
+                    <th className="text-right">Mutlak Fark (Δ)</th>
+                    <th className="text-right">Yüzde Değişim (%)</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {popRows.map((r) => (
+                    <tr key={r.key} className="border-t border-line-faint">
+                      <td className="py-1 font-mono">{r.key}</td>
+                      <td className="text-right font-mono">{formatMetric(r.current, "currency")}</td>
+                      <td className="text-right font-mono text-tone-3">{formatMetric(r.previous, "currency")}</td>
+                      <td
+                        className={`text-right font-mono ${
+                          r.delta != null && r.delta < 0
+                            ? "text-neg"
+                            : r.delta != null && r.delta > 0
+                              ? "text-pos"
+                              : ""
+                        }`}
+                      >
+                        {formatMetric(r.delta, "currency")}
+                      </td>
+                      <td className="text-right font-mono text-tone-2">
+                        {r.changeRatio == null ? (
+                          <span title={r.unmeasurableReason ?? ""}>—</span>
+                        ) : (
+                          formatMetric(r.changeRatio, "percent")
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </TableShell>
+            <p className="mt-2 font-mono text-[10px] text-tone-4">
+              Eksik dönem sıfır sayılmaz: baz dönem yoksa değişim &ldquo;—&rdquo; olarak gösterilir, %-100 uydurulmaz.
+            </p>
           </>
         )}
       </Panel>
@@ -283,84 +503,53 @@ export default async function AnalysisPage() {
         )}
       </Panel>
 
-      <Panel title="İŞLETME SERMAYESİ AYRIŞTIRMA">
-        <TableShell>
-          <table className="w-full text-xs">
-            <thead>
-              <tr className="text-left font-mono text-[10px] uppercase text-tone-4">
-                <th className="py-1">Bileşen</th><th className="text-right">Gün</th>
-                <th>Etki</th><th>Not</th>
-              </tr>
-            </thead>
-            <tbody>
-              {wcRows.map((r) => (
-                <tr key={r.key} className="border-t border-line-faint">
-                  <td className="py-1">{r.label}</td>
-                  {/* Unmeasurable renders as a dash with a reason — never as 0 days. */}
-                  <td className="text-right font-mono">{formatMetric(r.days, "days")}</td>
-                  <td className="font-mono text-tone-3">{r.sign > 0 ? "uzatır" : "kısaltır"}</td>
-                  <td className="text-tone-3">{r.unmeasurableReason ?? "—"}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </TableShell>
-        <p className="mt-2 font-mono text-[10px] text-tone-4">
-          {METRICS.dio_days.description} Bu yüzden sonuç TAM nakit dönüşüm döngüsü değildir ve adı
-          bunu söylüyor. {describeStamp(workingCapital.stamp)}
-        </p>
-      </Panel>
-
       <Panel
-        title="AYLIK İŞLETME SERMAYESİ TRENDİ (DSO / DPO / CCC)"
+        title="AYLIK İŞLETME SERMAYESİ TRENDİ (DSO / DIO / DPO / CCC)"
         subtitle="working_capital_monthly_v · son 12 dönem konsolide alacak, borç, nakit döngüsü ve net TRY nakit akışı"
       >
         {wcMonthlySeries.length === 0 ? (
           <EmptyState>Aylık işletme sermayesi serisi için yeterli fatura veya banka hareketi bulunmuyor.</EmptyState>
         ) : (
-          <>
-            <TableShell>
-              <table className="w-full text-xs">
-                <thead>
-                  <tr className="text-left font-mono text-[10px] uppercase text-tone-4">
-                    <th className="py-1">Dönem</th>
-                    <th className="text-right">Açık Alacak</th>
-                    <th className="text-right">Açık Borç</th>
-                    <th className="text-right">Net İS (Env. Hariç)</th>
-                    <th className="text-right">DSO</th>
-                    <th className="text-right">DPO</th>
-                    <th className="text-right">CCC (Env. Hariç)</th>
-                    <th className="text-right">Net Nakit (TRY)</th>
-                    <th className="text-right">Döviz Kalem</th>
+          <TableShell>
+            <table className="w-full text-xs">
+              <thead>
+                <tr className="text-left font-mono text-[10px] uppercase text-tone-4">
+                  <th className="py-1">Dönem</th>
+                  <th className="text-right">Açık Alacak</th>
+                  <th className="text-right">Açık Borç</th>
+                  <th className="text-right">Net İS (Env. Hariç)</th>
+                  <th className="text-right">DSO</th>
+                  <th className="text-right">DIO</th>
+                  <th className="text-right">DPO</th>
+                  <th className="text-right">CCC (Env. Hariç)</th>
+                  <th className="text-right">Net Nakit (TRY)</th>
+                  <th className="text-right">Döviz Kalem</th>
+                </tr>
+              </thead>
+              <tbody>
+                {wcMonthlySeries.map((m) => (
+                  <tr key={m.periodMonth} className="border-t border-line-faint">
+                    <td className="py-1 font-mono">{m.periodMonth}</td>
+                    <td className="text-right font-mono">{formatMetric(m.receivablesOpen, "currency")}</td>
+                    <td className="text-right font-mono">{formatMetric(m.payablesOpen, "currency")}</td>
+                    <td className="text-right font-mono">{formatMetric(m.netWorkingCapitalExInventory, "currency")}</td>
+                    <td className="text-right font-mono">{formatMetric(m.dsoDays, "days")}</td>
+                    <td className="text-right font-mono">{formatMetric(m.dioDays, "days")}</td>
+                    <td className="text-right font-mono">{formatMetric(m.dpoDays, "days")}</td>
+                    <td className="text-right font-mono font-semibold">{formatMetric(m.cashCycleExInventory, "days")}</td>
+                    <td className={`text-right font-mono ${m.cashNetTry != null && m.cashNetTry < 0 ? "text-neg" : ""}`}>
+                      {formatMetric(m.cashNetTry, "currency")}
+                    </td>
+                    <td className="text-right font-mono text-tone-3">
+                      {m.foreignInvoiceCount + m.foreignCashTxCount > 0
+                        ? `${m.foreignInvoiceCount} fat · ${m.foreignCashTxCount} bnk`
+                        : "0"}
+                    </td>
                   </tr>
-                </thead>
-                <tbody>
-                  {wcMonthlySeries.map((m) => (
-                    <tr key={m.periodMonth} className="border-t border-line-faint">
-                      <td className="py-1 font-mono">{m.periodMonth}</td>
-                      <td className="text-right font-mono">{formatMetric(m.receivablesOpen, "currency")}</td>
-                      <td className="text-right font-mono">{formatMetric(m.payablesOpen, "currency")}</td>
-                      <td className="text-right font-mono">{formatMetric(m.netWorkingCapitalExInventory, "currency")}</td>
-                      <td className="text-right font-mono">{formatMetric(m.dsoDays, "days")}</td>
-                      <td className="text-right font-mono">{formatMetric(m.dpoDays, "days")}</td>
-                      <td className="text-right font-mono font-semibold">{formatMetric(m.cashCycleExInventory, "days")}</td>
-                      <td className={`text-right font-mono ${m.cashNetTry != null && m.cashNetTry < 0 ? "text-neg" : ""}`}>
-                        {formatMetric(m.cashNetTry, "currency")}
-                      </td>
-                      <td className="text-right font-mono text-tone-3">
-                        {m.foreignInvoiceCount + m.foreignCashTxCount > 0
-                          ? `${m.foreignInvoiceCount} fat · ${m.foreignCashTxCount} bnk`
-                          : "0"}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </TableShell>
-            <p className="mt-2 font-mono text-[10px] text-tone-4">
-              Hesaplar arası transferler (own_transfer) konsolide aylık nakit giriş/çıkış toplamından düşülür; DIO envanter takibi olmadığı için hesaplanmaz.
-            </p>
-          </>
+                ))}
+              </tbody>
+            </table>
+          </TableShell>
         )}
       </Panel>
 
@@ -439,46 +628,6 @@ export default async function AnalysisPage() {
               </tbody>
             </table>
           </TableShell>
-        )}
-      </Panel>
-
-      <Panel title={`DÖNEMSEL KARŞILAŞTIRMA — ${COMPARISON_LABEL.mom.toUpperCase()}`}>
-        {recentPop.length === 0 ? <EmptyState>Aylık seri yok.</EmptyState> : (
-          <>
-            <TableShell>
-              <table className="w-full text-xs">
-                <thead>
-                  <tr className="text-left font-mono text-[10px] uppercase text-tone-4">
-                    <th className="py-1">Ay</th><th className="text-right">Bu ay</th>
-                    <th className="text-right">Önceki</th><th className="text-right">Fark</th>
-                    <th className="text-right">Değişim</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {recentPop.map((r) => (
-                    <tr key={r.key} className="border-t border-line-faint">
-                      <td className="py-1 font-mono">{r.key}</td>
-                      <td className="text-right font-mono">{formatMetric(r.current, "currency")}</td>
-                      <td className="text-right font-mono text-tone-3">{formatMetric(r.previous, "currency")}</td>
-                      <td className={`text-right font-mono ${r.delta != null && r.delta < 0 ? "text-neg" : ""}`}>
-                        {formatMetric(r.delta, "currency")}
-                      </td>
-                      {/* An unmeasurable comparison shows WHY, instead of a fabricated −100%. */}
-                      <td className="text-right font-mono text-tone-2">
-                        {r.changeRatio == null
-                          ? <span title={r.unmeasurableReason ?? ""}>—</span>
-                          : formatMetric(r.changeRatio, "percent")}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </TableShell>
-            <p className="mt-2 font-mono text-[10px] text-tone-4">
-              Eksik dönem sıfır sayılmaz: önceki dönem yoksa değişim &ldquo;—&rdquo; olarak
-              gösterilir, %-100 olarak değil. {describeStamp(pop.stamp)}
-            </p>
-          </>
         )}
       </Panel>
     </>

@@ -27,6 +27,30 @@ function domainRedirect(e: unknown): never {
 export async function createInvoiceAction(formData: FormData): Promise<void> {
   const session = await requireActionPermission("invoices", "insert", BASE);
   const f = formObject(formData);
+
+  const descriptions = formData.getAll("lineDescription").map((v) => String(v ?? "").trim());
+  const quantities = formData.getAll("lineQuantity").map((v) => String(v ?? "").trim());
+  const unitPrices = formData.getAll("lineUnitPrice").map((v) => String(v ?? "").trim());
+  const taxRates = formData.getAll("lineTaxRate").map((v) => String(v ?? "").trim());
+  const discountRates = formData.getAll("lineDiscountRate").map((v) => String(v ?? "").trim());
+  const stopajRates = formData.getAll("lineIncomeTaxWithholdingRate").map((v) => String(v ?? "").trim());
+  const units = formData.getAll("lineUnit").map((v) => String(v ?? "").trim());
+
+  const lines = descriptions
+    .map((desc, idx) => ({
+      description: desc,
+      quantity: quantities[idx] || "1",
+      unitPrice: unitPrices[idx] || "0",
+      taxRate: taxRates[idx] || "0",
+      discountRate: discountRates[idx] || "0",
+      incomeTaxWithholdingRate: stopajRates[idx] || "0",
+      unit: units[idx] || undefined,
+      costCenterId: f.costCenterId || undefined,
+      projectId: f.projectId || undefined,
+      departmentId: f.departmentId || undefined,
+    }))
+    .filter((l) => l.description.length > 0);
+
   let invoiceId: string;
   try {
     ({ invoiceId } = await createInvoice(getPool(), {
@@ -39,8 +63,9 @@ export async function createInvoiceAction(formData: FormData): Promise<void> {
       costCenterId: f.costCenterId || undefined,
       projectId: f.projectId || undefined,
       departmentId: f.departmentId || undefined,
+      linkedPaymentInstanceId: f.linkedPaymentInstanceId || undefined,
       notes: f.notes || undefined,
-      lines: [{
+      lines: lines.length > 0 ? lines : [{
         description: f.lineDescription,
         quantity: f.lineQuantity,
         unitPrice: f.lineUnitPrice,
@@ -70,10 +95,22 @@ export async function changeStatusAction(formData: FormData): Promise<void> {
 
 export async function recordPaymentAction(formData: FormData): Promise<void> {
   const session = await requireActionPermission("invoices", "update", BASE);
+  const f = formObject(formData);
   try {
-    await recordInvoicePayment(getPool(), formObject(formData), session.id);
+    await recordInvoicePayment(
+      getPool(),
+      {
+        invoiceId: f.invoiceId,
+        amount: f.amount,
+        cashAccountId: f.cashAccountId || undefined,
+        fxRate: f.fxRate || undefined,
+      },
+      session.id,
+    );
   } catch (e) { domainRedirect(e); }
   revalidatePath(BASE);
+  revalidatePath("/finance/bank");
+  revalidatePath("/finance/ledger");
   revalidateFinancialViews();
   redirect(`${BASE}?result=tahsilat-islendi`);
 }

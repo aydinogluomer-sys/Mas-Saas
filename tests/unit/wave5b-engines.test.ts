@@ -415,6 +415,16 @@ function createProductionFakePool() {
       return { rows, rowCount: rows.length };
     }
 
+    if (
+      sql.includes("from public.fx_rate_snapshots") ||
+      sql.includes("from public.fx_rates") ||
+      sql.includes("from public.external_assumptions") ||
+      sql.includes("from public.bom_headers") ||
+      sql.includes("from public.bom_lines")
+    ) {
+      return { rows: [], rowCount: 0 };
+    }
+
     throw new Error(`Unhandled SQL in production fake pool: ${sql}`);
   });
 
@@ -949,7 +959,8 @@ describe("Wave 5B — F-52 Reminders Rule CRUD + Checks & Loan Installments Matu
       if (
         sql.includes("from public.payment_instances") ||
         sql.includes("from public.invoices") ||
-        sql.includes("from public.promise_to_pay")
+        sql.includes("from public.promise_to_pay") ||
+        sql.includes("from public.covenant_records")
       ) {
         return { rows: [], rowCount: 0 };
       }
@@ -1027,9 +1038,9 @@ describe("Wave 5B — F-52 Reminders Rule CRUD + Checks & Loan Installments Matu
     const fakeClient = { query, release: vi.fn() } as unknown as PoolClient;
     const fakePool = { query, connect: vi.fn(async () => fakeClient) } as unknown as Pool;
 
-    // 1. Seed default check + loan_installment rules & test custom rule CRUD + toggle
+    // 1. Seed default check + loan_installment + sales/purchase invoice + tax/SGK rules & test custom rule CRUD + toggle
     const seeded = await ensureDefaultMaturityRules(fakePool, ACTOR_ID);
-    expect(seeded).toBe(10); // 5 check + 5 loan_installment
+    expect(seeded).toBe(19);
 
     const customEmailRuleId = await upsertReminderRule(
       fakePool,

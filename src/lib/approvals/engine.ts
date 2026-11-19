@@ -9,7 +9,7 @@ import { z } from "zod";
 import { audit } from "@/lib/audit";
 import { isTurkishIban, isValidIbanChecksum } from "@/lib/counterparties/rules";
 import { DomainError } from "@/lib/domain-error";
-import { intOrNull, moneyOrNull } from "@/lib/money";
+import { decimal, intOrNull, money, moneyOrNull } from "@/lib/money";
 import { parseOrThrow } from "@/lib/validation";
 import { firingRules, requestKindFor, type ApprovalRuleConfig, type RuleInput } from "./rules";
 
@@ -130,14 +130,14 @@ export async function evaluateSelfApprovalEligibility(
     `select count(*)::int as cnt
        from public.users
       where is_active = true
-        and role in ('admin', 'finance_manager')`,
+        and role in ('finance_approver', 'finance_manager', 'admin')`,
   );
   const activeApproverCount = Number(countRes.rows[0]?.cnt ?? 0);
 
   if (activeApproverCount >= 2) {
     throw new DomainError(
       "FORBIDDEN",
-      `Sistemde ${activeApproverCount} aktif onaycı (admin / finans yöneticisi) bulunduğu için 4-göz (maker-checker) kuralı zorunludur; kendi oluşturduğunuz kaydı başka bir onaycı karara bağlamalıdır.`,
+      `Sistemde ${activeApproverCount} aktif onaycı (admin / finans yöneticisi / onaylayıcı) bulunduğu için 4-göz (maker-checker) kuralı zorunludur; kendi oluşturduğunuz kaydı başka bir onaycı karara bağlamalıdır.`,
     );
   }
 
@@ -249,7 +249,7 @@ export async function loadActiveApproverCount(pool: Pick<Pool, "query">): Promis
       `select count(*)::int as cnt
          from public.users
         where is_active = true
-          and role in ('admin', 'finance_manager')`,
+          and role in ('finance_approver', 'finance_manager', 'admin')`,
     )
     .catch(() => ({ rows: [{ cnt: 0 }], rowCount: 1 }));
   return Number(r.rows[0]?.cnt ?? 0);
@@ -281,6 +281,22 @@ export async function updateApprovalGovernanceSettings(
   try {
     await client.query("begin");
     await assertAdminActorWithClient(client, actorId);
+
+    if (input.allowSingleOperatorSelfApproval) {
+      const countRes = await client.query<{ cnt: number | string }>(
+        `select count(*)::int as cnt
+           from public.users
+          where is_active = true
+            and role in ('finance_approver', 'finance_manager', 'admin')`,
+      );
+      const activeApproverCount = Number(countRes.rows[0]?.cnt ?? 0);
+      if (activeApproverCount >= 2) {
+        throw new DomainError(
+          "FORBIDDEN",
+          `Sistemde ${activeApproverCount} aktif onaycı bulunduğu için tek operatör öz-onay istisnası etkinleştirilemez (zorunlu 4-göz maker-checker).`,
+        );
+      }
+    }
 
     const beforeRes = await client.query<{
       allow_single_operator_self_approval: boolean;
@@ -793,9 +809,22 @@ async function applySubjectWriteback(
     return "draft";
   }
 
-  // 3) Faz 48 (D2): IBAN BEC fraud shield writeback
+  // 3) Faz 48 (D2): IBAN BEC fraud shield writeback (hard-gated on ISO 13616 MOD-97 checksum)
   if (tbl === "ibans") {
     if (decision === "approved") {
+      const pre = await client.query<{ iban_normalized: string; is_active: boolean }>(
+        `select iban_normalized, is_active from public.ibans where id=$1 for update`,
+        [subjectId],
+      );
+      assertWritebackRow(pre.rowCount, tbl);
+      const candidateIban = String(pre.rows[0].iban_normalized ?? "").trim();
+      const trLengthInvalid = candidateIban.startsWith("TR") && !isTurkishIban(candidateIban);
+      if (!isValidIbanChecksum(candidateIban) || trLengthInvalid) {
+        throw new DomainError(
+          "VALIDATION",
+          "BEC Kalkanı: IBAN biçimi veya ISO 13616 MOD-97 kontrol basamağı geçersiz olduğu için IBAN kaydı onaylanamaz; lütfen kaydı reddedip geçerli bir IBAN tanımlayın.",
+        );
+      }
       const wb = await client.query<{ iban_normalized: string; is_active: boolean }>(
         `update public.ibans
             set approval_status='approved', verified_by=$2, verified_at=now(), approval_id=$3
@@ -868,7 +897,415 @@ async function applySubjectWriteback(
     return "draft";
   }
 
+  // 6) Dalga 2B (M-54): Optimization runs (`optimization_runs`) approval writeback & execution
+  if (tbl === "optimization_runs") {
+    if (decision !== "approved") {
+      return decision === "rejected" ? "rejected" : "reworked";
+    }
+    const roleRes = await client.query<{ rol: string }>(`select current_user::text as rol`);
+    const dbRole = roleRes.rows[0]?.rol ?? "";
+    // `mas_radar_finance_approver` is a pure checker without operational INSERT rights on `payment_runs`;
+    // managers/admins/operators execute immediately on approval, while pure approvers unlock one-click execution.
+    if (dbRole === "mas_radar_finance_approver") {
+      return "approved_ready_for_execution";
+    }
+    await applyApprovedOptimizationRecommendationsInTx(client, subjectId, actorId, approvalId);
+    return "executed";
+  }
+
   return null;
+}
+
+export interface OptimizationExecutionSummary {
+  runId: string;
+  alreadyExecuted: boolean;
+  deferredCount: number;
+  advancedCount: number;
+  paymentRunId: string | null;
+  paymentRunCode: string | null;
+  paymentRunItemCount: number;
+}
+
+async function applyApprovedOptimizationRecommendationsInTx(
+  client: PoolClient,
+  runId: string,
+  actorId: string,
+  approvalId: string | null,
+): Promise<OptimizationExecutionSummary> {
+  const runRes = await client.query<{
+    id: string;
+    name: string;
+    currency: string;
+    anchor_date: string;
+    notes: string | null;
+  }>(
+    `select id::text, name, currency, to_char(anchor_date, 'YYYY-MM-DD') as anchor_date, notes
+       from public.optimization_runs
+      where id = $1
+      for update`,
+    [runId],
+  );
+  if (runRes.rowCount !== 1) {
+    throw new DomainError("NOT_FOUND", "Optimizasyon çalışması bulunamadı.");
+  }
+  const optRun = runRes.rows[0];
+  if (optRun.notes && optRun.notes.includes("[EXECUTED:")) {
+    return {
+      runId,
+      alreadyExecuted: true,
+      deferredCount: 0,
+      advancedCount: 0,
+      paymentRunId: null,
+      paymentRunCode: null,
+      paymentRunItemCount: 0,
+    };
+  }
+
+  const recsRes = await client.query<{
+    id: string;
+    action_kind: string;
+    subject_table: string | null;
+    subject_id: string | null;
+    subject_label: string | null;
+    current_date_value: string | null;
+    proposed_date: string | null;
+    amount: string | null;
+    currency: string;
+  }>(
+    `select id::text, action_kind, subject_table, subject_id::text, subject_label,
+            to_char(current_date_value, 'YYYY-MM-DD') as current_date_value,
+            to_char(proposed_date, 'YYYY-MM-DD') as proposed_date,
+            amount::text, currency
+       from public.optimization_recommendations
+      where run_id = $1
+      order by rank asc`,
+    [runId],
+  );
+
+  let deferredCount = 0;
+  let advancedCount = 0;
+  const draftBatchItems: Array<{
+    targetType: "payment_instance" | "invoice";
+    targetId: string;
+    partyId: string | null;
+    ibanId: string | null;
+    beneficiaryName: string;
+    beneficiaryIban: string;
+    ibanVerified: boolean;
+    amount: number;
+    currency: string;
+    dueDate: string | null;
+    description: string;
+  }> = [];
+
+  for (const rec of recsRes.rows) {
+    if (
+      (rec.action_kind === "defer_payment" || rec.action_kind === "advance_payment") &&
+      rec.proposed_date &&
+      rec.subject_id
+    ) {
+      if (rec.subject_table === "payment_instances") {
+        const upd = await client.query(
+          `update public.payment_instances
+              set due_date = $2::date,
+                  due_day = extract(day from $2::date)::int
+            where id = $1::uuid
+              and status in ('planned', 'unpaid', 'partial', 'late')`,
+          [rec.subject_id, rec.proposed_date],
+        );
+        if (upd.rowCount === 1) {
+          if (rec.action_kind === "defer_payment") deferredCount += 1;
+          else advancedCount += 1;
+          await audit(client, {
+            actor: actorId,
+            action:
+              rec.action_kind === "defer_payment"
+                ? "optimization_defer_payment_instance"
+                : "optimization_advance_payment_instance",
+            entityTable: "payment_instances",
+            entityId: rec.subject_id,
+            before: { dueDate: rec.current_date_value },
+            after: { dueDate: rec.proposed_date, optimizationRunId: runId },
+          });
+        }
+
+        // Taslak ödeme paketi adayı (`payment_run_items`)
+        const piMeta = await client.query<{
+          party_id: string | null;
+          party_name: string | null;
+          iban_id: string | null;
+          iban_norm: string | null;
+          iban_approved: boolean;
+          rem_amount: string | null;
+          already_in_run: boolean;
+        }>(
+          `select
+             coalesce(p.provider_party_id, p.counterparty_id)::text as party_id,
+             coalesce(pa.name, p.name, $2) as party_name,
+             ib.id::text as iban_id,
+             coalesce(ib.iban_normalized, p.iban) as iban_norm,
+             (ib.id is not null and ib.is_active = true and ib.approval_status = 'approved') as iban_approved,
+             greatest(0, case when pi.status = 'partial' then pi.amount - coalesce(pi.paid_amount, 0) else pi.amount end)::numeric(14,2)::text as rem_amount,
+             exists (
+               select 1 from public.payment_run_items pri
+                where pri.target_type = 'payment_instance'
+                  and pri.target_id = pi.id
+                  and pri.status = 'included'
+             ) as already_in_run
+           from public.payment_instances pi
+           left join public.payments p on p.id = pi.payment_id
+           left join public.parties pa on pa.id = coalesce(p.provider_party_id, p.counterparty_id)
+           left join lateral (
+             select i.id, i.iban_normalized, i.is_active, i.approval_status
+               from public.ibans i
+              where i.party_id = coalesce(p.provider_party_id, p.counterparty_id)
+                and i.is_active = true
+              order by (i.approval_status = 'approved') desc, i.is_primary desc, i.created_at desc
+              limit 1
+           ) ib on true
+           where pi.id = $1::uuid`,
+          [rec.subject_id, rec.subject_label ?? "Planlı Ödeme"],
+        );
+        const m = piMeta.rows[0];
+        const amt = moneyOrNull(rec.amount) ?? moneyOrNull(m?.rem_amount) ?? 0;
+        if (m && !m.already_in_run && amt > 0 && rec.currency === optRun.currency) {
+          const rawIban = (m.iban_norm ?? "").trim();
+          const verified =
+            Boolean(m.iban_approved) && isTurkishIban(rawIban) && isValidIbanChecksum(rawIban);
+          if (rawIban && verified) {
+            draftBatchItems.push({
+              targetType: "payment_instance",
+              targetId: rec.subject_id,
+              partyId: m.party_id,
+              ibanId: m.iban_id,
+              beneficiaryName: (m.party_name ?? "Planlı Ödeme").trim() || "Planlı Ödeme",
+              beneficiaryIban: rawIban,
+              ibanVerified: true,
+              amount: amt,
+              currency: rec.currency,
+              dueDate: rec.proposed_date,
+              description: `Optimizasyon (${optRun.name}): ${rec.subject_label ?? "Planlı Ödeme"}`,
+            });
+          }
+        }
+      } else if (rec.subject_table === "invoices") {
+        const upd = await client.query(
+          `update public.invoices
+              set due_date = $2::date
+            where id = $1::uuid
+              and direction = 'purchase'
+              and status in ('open', 'partial')`,
+          [rec.subject_id, rec.proposed_date],
+        );
+        if (upd.rowCount === 1) {
+          if (rec.action_kind === "defer_payment") deferredCount += 1;
+          else advancedCount += 1;
+          await audit(client, {
+            actor: actorId,
+            action:
+              rec.action_kind === "defer_payment"
+                ? "optimization_defer_invoice"
+                : "optimization_advance_invoice",
+            entityTable: "invoices",
+            entityId: rec.subject_id,
+            before: { dueDate: rec.current_date_value },
+            after: { dueDate: rec.proposed_date, optimizationRunId: runId },
+          });
+        }
+
+        const invMeta = await client.query<{
+          party_id: string | null;
+          party_name: string | null;
+          iban_id: string | null;
+          iban_norm: string | null;
+          iban_approved: boolean;
+          open_amount: string | null;
+          already_in_run: boolean;
+        }>(
+          `select
+             inv.party_id::text,
+             coalesce(pa.name, $2) as party_name,
+             ib.id::text as iban_id,
+             ib.iban_normalized as iban_norm,
+             (ib.id is not null and ib.is_active = true and ib.approval_status = 'approved') as iban_approved,
+             greatest(0, inv.gross_amount - coalesce(inv.allocated_amount, 0))::numeric(14,2)::text as open_amount,
+             exists (
+               select 1 from public.payment_run_items pri
+                where pri.target_type = 'invoice'
+                  and pri.target_id = inv.id
+                  and pri.status = 'included'
+             ) as already_in_run
+           from public.invoices inv
+           left join public.parties pa on pa.id = inv.party_id
+           left join lateral (
+             select i.id, i.iban_normalized, i.is_active, i.approval_status
+               from public.ibans i
+              where i.party_id = inv.party_id
+                and i.is_active = true
+              order by (i.approval_status = 'approved') desc, i.is_primary desc, i.created_at desc
+              limit 1
+           ) ib on true
+           where inv.id = $1::uuid`,
+          [rec.subject_id, rec.subject_label ?? "Alım Faturası"],
+        );
+        const m = invMeta.rows[0];
+        const amt = moneyOrNull(rec.amount) ?? moneyOrNull(m?.open_amount) ?? 0;
+        if (m && !m.already_in_run && amt > 0 && rec.currency === optRun.currency) {
+          const rawIban = (m.iban_norm ?? "").trim();
+          const verified =
+            Boolean(m.iban_approved) && isTurkishIban(rawIban) && isValidIbanChecksum(rawIban);
+          if (rawIban && verified) {
+            draftBatchItems.push({
+              targetType: "invoice",
+              targetId: rec.subject_id,
+              partyId: m.party_id,
+              ibanId: m.iban_id,
+              beneficiaryName: (m.party_name ?? "Tedarikçi").trim() || "Tedarikçi",
+              beneficiaryIban: rawIban,
+              ibanVerified: true,
+              amount: amt,
+              currency: rec.currency,
+              dueDate: rec.proposed_date,
+              description: `Optimizasyon (${optRun.name}): ${rec.subject_label ?? "Alım Faturası"}`,
+            });
+          }
+        }
+      }
+    }
+  }
+
+  let paymentRunId: string | null = null;
+  let paymentRunCode: string | null = null;
+
+  if (draftBatchItems.length > 0) {
+    const bankRes = await client.query<{ cash_account_id: string }>(
+      `select ba.cash_account_id::text
+         from public.bank_accounts ba
+         join public.cash_accounts ca on ca.id = ba.cash_account_id
+        where ca.is_active = true
+          and ca.archived_at is null
+          and ca.currency = $1
+        order by ca.created_at asc
+        limit 1`,
+      [optRun.currency],
+    );
+    const userExists = await client.query<{ ok: number }>(
+      `select 1 as ok from public.users where id = $1::uuid`,
+      [actorId],
+    );
+
+    if (bankRes.rowCount === 1 && userExists.rowCount === 1) {
+      const totalAmount = money(
+        draftBatchItems.reduce((acc, it) => acc.plus(decimal(it.amount)), decimal(0)),
+      );
+      const earliestExecDate = draftBatchItems.reduce(
+        (minD, it) => (it.dueDate && it.dueDate < minD ? it.dueDate : minD),
+        draftBatchItems[0].dueDate ?? optRun.anchor_date,
+      );
+      const shortId = runId.replace(/-/g, "").slice(0, 8).toUpperCase();
+      const stamp = Date.now().toString().slice(-5);
+      const codeCandidate = `OPT-${shortId}-${stamp}`;
+
+      const prIns = await client.query<{ id: string }>(
+        `insert into public.payment_runs (
+           run_code, planned_execution_date, source_bank_account_id,
+           currency, total_amount, item_count, status, created_by, notes
+         ) values ($1, $2::date, $3::uuid, $4, $5, $6, 'draft', $7::uuid, $8)
+         returning id::text`,
+        [
+          codeCandidate,
+          earliestExecDate,
+          bankRes.rows[0].cash_account_id,
+          optRun.currency,
+          totalAmount,
+          draftBatchItems.length,
+          actorId,
+          `Onaylı likidite optimizasyon planından oluşturuldu (${optRun.name})`,
+        ],
+      );
+      if (prIns.rowCount === 1) {
+        paymentRunId = prIns.rows[0].id;
+        paymentRunCode = codeCandidate;
+        for (const item of draftBatchItems) {
+          const itemIns = await client.query(
+            `insert into public.payment_run_items (
+               run_id, target_type, target_id, party_id, iban_id,
+               beneficiary_name, beneficiary_iban, amount, currency,
+               due_date, description, iban_verified, status
+             ) values ($1::uuid,$2,$3::uuid,$4::uuid,$5::uuid,$6,$7,$8,$9,$10::date,$11,$12,'included')`,
+            [
+              paymentRunId,
+              item.targetType,
+              item.targetId,
+              item.partyId,
+              item.ibanId,
+              item.beneficiaryName,
+              item.beneficiaryIban,
+              item.amount,
+              item.currency,
+              item.dueDate,
+              item.description,
+              item.ibanVerified,
+            ],
+          );
+          if (itemIns.rowCount !== 1) {
+            throw new DomainError("CONFLICT", "Taslak ödeme paketi kalemi oluşturulamadı.");
+          }
+        }
+        await audit(client, {
+          actor: actorId,
+          action: "create_draft_payment_run_from_optimization",
+          entityTable: "payment_runs",
+          entityId: paymentRunId,
+          after: {
+            runCode: paymentRunCode,
+            optimizationRunId: runId,
+            itemCount: draftBatchItems.length,
+            totalAmount,
+          },
+        });
+      }
+    }
+  }
+
+  const execTag = `[EXECUTED:${paymentRunCode ?? "NO_BATCH"}:defer=${deferredCount}:adv=${advancedCount}]`;
+  const noteUpd = await client.query(
+    `update public.optimization_runs
+        set notes = case
+          when notes is null or btrim(notes) = '' then $2
+          else notes || ' | ' || $2
+        end
+      where id = $1::uuid`,
+    [runId, execTag],
+  );
+  if (noteUpd.rowCount !== 1) {
+    throw new DomainError("CONFLICT", "Optimizasyon icra durumu güncellenemedi.");
+  }
+
+  await audit(client, {
+    actor: actorId,
+    action: "execute_optimization_run",
+    entityTable: "optimization_runs",
+    entityId: runId,
+    after: {
+      approvalId,
+      deferredCount,
+      advancedCount,
+      paymentRunId,
+      paymentRunCode,
+      paymentRunItemCount: paymentRunId ? draftBatchItems.length : 0,
+    },
+  });
+
+  return {
+    runId,
+    alreadyExecuted: false,
+    deferredCount,
+    advancedCount,
+    paymentRunId,
+    paymentRunCode,
+    paymentRunItemCount: paymentRunId ? draftBatchItems.length : 0,
+  };
 }
 
 /**
@@ -886,7 +1323,22 @@ export async function decideApproval(pool: Pool, raw: unknown, actorId: string):
     const before = await client.query(
       `select id, subject_table, subject_id, status, requested_by, round_no
        from public.approvals where id=$1 for update`, [input.approvalId]);
-    if (before.rowCount === 0) throw new DomainError("NOT_FOUND", "Onay kaydı bulunamadı.");
+    if (before.rowCount === 0) {
+      const visible = await client.query<{ requested_by: string | null }>(
+        `select requested_by::text as requested_by from public.approvals where id=$1`,
+        [input.approvalId],
+      );
+      if ((visible.rowCount ?? 0) > 0) {
+        if (visible.rows[0]?.requested_by === actorId) {
+          throw new DomainError(
+            "FORBIDDEN",
+            "4-göz (maker-checker) kuralı gereği kendi oluşturduğunuz onay talebini kendiniz karara bağlayamazsınız.",
+          );
+        }
+        throw new DomainError("FORBIDDEN", "Bu onay kaydını karara bağlama yetkiniz yok.");
+      }
+      throw new DomainError("NOT_FOUND", "Onay kaydı bulunamadı.");
+    }
     const a = before.rows[0];
 
     if (!["pending", "reworked"].includes(a.status)) {
@@ -899,6 +1351,21 @@ export async function decideApproval(pool: Pool, raw: unknown, actorId: string):
     let selfApprovedOverride = false;
     let selfApprovalJustification: string | null = null;
     if (a.requested_by && a.requested_by === actorId) {
+      if (String(a.subject_table) === "ibans") {
+        const becCountRes = await client.query<{ cnt: number | string }>(
+          `select count(*)::int as cnt
+             from public.users
+            where is_active = true
+              and role in ('finance_approver', 'finance_manager', 'admin')`,
+        );
+        const becApproverCount = Number(becCountRes.rows[0]?.cnt ?? 0);
+        if (becApproverCount >= 2) {
+          throw new DomainError(
+            "FORBIDDEN",
+            "BEC Kalkanı: Sistemde en az 2 aktif onaycı bulunduğu için IBAN kaydı onu ekleyen kişi tarafından karara bağlanamaz (zorunlu 4-göz maker-checker).",
+          );
+        }
+      }
       const elig = await evaluateSelfApprovalEligibility(
         client,
         actorId,
@@ -1158,6 +1625,58 @@ export async function loadApprovalCounts(pool: Pool) {
     pending: intOrNull(x.pending) ?? 0, reworked: intOrNull(x.reworked) ?? 0,
     approved: intOrNull(x.approved) ?? 0, rejected: intOrNull(x.rejected) ?? 0,
   };
+}
+
+const executeOptimizationSchema = z.object({
+  runId: z.uuid(),
+});
+
+/**
+ * Dalga 2B (`M-54`): Onaylanmış bir `optimization_runs` çalışmasının önerilerini
+ * atomik olarak icra eder (`payment_instances` / `invoices` vade güncellemesi + taslak `payment_runs`).
+ */
+export async function executeApprovedOptimizationRun(
+  pool: Pool,
+  raw: unknown,
+  actorId: string,
+): Promise<OptimizationExecutionSummary> {
+  const { runId } = parseOrThrow(
+    executeOptimizationSchema,
+    typeof raw === "string" ? { runId: raw } : raw,
+    "Optimizasyon icrası",
+  );
+  const client = await pool.connect();
+  try {
+    await client.query("begin");
+    const appRes = await client.query<{ id: string; status: string }>(
+      `select id::text, status
+         from public.approvals
+        where subject_table = 'optimization_runs'
+          and subject_id = $1::uuid
+        order by round_no desc
+        limit 1`,
+      [runId],
+    );
+    if (appRes.rowCount === 0 || appRes.rows[0].status !== "approved") {
+      throw new DomainError(
+        "CONFLICT",
+        "Optimizasyon planı henüz onaylanmamış; icra öncesi /data/approvals üzerinden onaylanmalıdır.",
+      );
+    }
+    const summary = await applyApprovedOptimizationRecommendationsInTx(
+      client,
+      runId,
+      actorId,
+      appRes.rows[0].id,
+    );
+    await client.query("commit");
+    return summary;
+  } catch (e) {
+    await client.query("rollback");
+    throw e;
+  } finally {
+    client.release();
+  }
 }
 
 export type { PoolClient };

@@ -6,7 +6,7 @@ import { cancelInstanceAction, markPaidAction, markPartialAction, markUnpaidActi
 
 const REASON_TONE: Record<string, Tone> = {
   missing_amount: "amber", negative_amount: "red", large_payment: "amber",
-  critical_payment: "red", same_day_cluster: "violet", overdue: "red",
+  critical_payment: "red", same_day_cluster: "blue", overdue: "red",
   // PHASE 2.2 (T1-b): TRY eşiği bu tutara uygulanamadı — "risk yok" değil, inceleme gerekli.
   unsupported_currency: "amber",
 };
@@ -51,12 +51,25 @@ const CANCELLABLE_FROM = new Set(["unpaid", "planned", "late", "partial"]);
  * Gizleme, yetki DEĞİLDİR ve onun yerine geçmez: backend reddi ayrıca test edilir
  * (tests/interaction/authz.spec.ts).
  */
-export function InstanceRowView({ r, backTo, showDate = false, canMutate }: { r: InstanceRow; backTo: string; showDate?: boolean; canMutate: boolean }) {
+export function InstanceRowView({
+  r,
+  backTo,
+  showDate = false,
+  canMutate,
+  accounts,
+}: {
+  r: InstanceRow;
+  backTo: string;
+  showDate?: boolean;
+  canMutate: boolean;
+  accounts?: Array<{ id: string; name: string; currency: string }>;
+}) {
   const paid = r.status === "paid";
   const partial = r.status === "partial";
   const payable = canMutate && PAYABLE_FROM.has(r.status);
   const cancellable = canMutate && CANCELLABLE_FROM.has(r.status);
   const ccy = r.currency ?? "TRY";
+  const matchingAccounts = (accounts ?? []).filter((a) => a.currency === ccy);
   const displayAmount = paid && r.paid_amount != null
     ? r.paid_amount
     : partial
@@ -65,12 +78,14 @@ export function InstanceRowView({ r, backTo, showDate = false, canMutate }: { r:
   return (
     <div className="payment-instance-row row-hover grid grid-cols-1 gap-2 border-b border-line-faint px-1 py-2 sm:grid-cols-[minmax(180px,1fr)_auto] sm:items-center">
       <div className="min-w-0">
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <span className="truncate">{r.name}</span>
           {showDate && <span className="font-mono text-[10px] text-tone-3">{r.due_date.slice(8)}.{r.due_date.slice(5, 7)}</span>}
           {r.note === "short_month_adjustment" && <Badge tone="neutral">ay-sonu kırpma</Badge>}
+          {r.note?.startsWith("weekly_x") && <Badge tone="neutral">{r.note.replace("weekly_x", "")} hf</Badge>}
+          {r.linked_invoice_id && <Badge tone="blue">fatura bağlı</Badge>}
         </div>
-        <div className="mt-0.5 flex items-center gap-2">
+        <div className="mt-0.5 flex flex-wrap items-center gap-2">
           <span className={`font-mono text-xs tabular-nums ${r.amount != null && r.amount < 0 ? "text-neg" : paid ? "text-pos" : "text-tone-2"}`}>
             {formatMoney(displayAmount, ccy)}
           </span>
@@ -105,6 +120,21 @@ export function InstanceRowView({ r, backTo, showDate = false, canMutate }: { r:
           <form action={markPaidAction} className="flex items-center gap-1">
             <input type="hidden" name="id" value={r.id} />
             <input type="hidden" name="backTo" value={backTo} />
+            {matchingAccounts.length > 0 && (
+              <select
+                name="cashAccountId"
+                defaultValue={r.paid_from_account_id ?? ""}
+                aria-label="Ödeme hesabı"
+                className="field-control max-w-36 px-1.5 py-1 text-xs"
+              >
+                <option value="">(otomatik hesap)</option>
+                {matchingAccounts.map((a) => (
+                  <option key={a.id} value={a.id}>
+                    {a.name}
+                  </option>
+                ))}
+              </select>
+            )}
             {r.amount == null && (
               <input name="paidAmount" inputMode="numeric" placeholder="ödenen?"
                 className="field-control min-w-0 flex-1 px-2 py-1 font-mono text-xs sm:w-24 sm:flex-initial" />

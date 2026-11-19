@@ -47,6 +47,9 @@ const FLASH_MESSAGES: Record<string, { text: string; kind: "success" | "error" |
   user_unlocked: { text: "Hesap kilidi kaldırıldı.", kind: "success" },
   user_self: { text: "Kendi hesabınızın erişimini kaldıramazsınız.", kind: "error" },
   user_error: { text: "Kullanıcı işlemi tamamlanamadı. Girilen bilgileri kontrol edin.", kind: "error" },
+  session_revoked: { text: "Seçilen aktif oturum sonlandırıldı.", kind: "success" },
+  totp_enabled: { text: "İki aşamalı doğrulama (2FA TOTP) doğrulandı ve etkinleştirildi.", kind: "success" },
+  totp_disabled: { text: "İki aşamalı doğrulama (2FA TOTP) devre dışı bırakıldı.", kind: "success" },
   // Forced password change (0095). Both keys were emitted before Wave 0 but missing here, so the
   // success of either action showed nothing at all. tests/flash-keys.test.ts now fails on any key
   // an action emits that this map does not know.

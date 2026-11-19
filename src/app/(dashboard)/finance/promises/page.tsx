@@ -10,7 +10,12 @@ import { sumKnownReporting } from "@/lib/currency-policy";
 import { EmptyState, KeyStat, PageHeader, TableShell } from "@/components/ui/shell";
 import { SubmitButton } from "@/components/ui/submit-button";
 import { requireRouteAccess } from "@/lib/authz/route-guard";
-import { createPromiseAction, detectBrokenAction, resolvePromiseAction } from "./actions";
+import {
+  createPromiseAction,
+  detectBrokenAction,
+  escalateDunningAction,
+  resolvePromiseAction,
+} from "./actions";
 
 export const dynamic = "force-dynamic";
 
@@ -36,7 +41,7 @@ const ACTION_STATUS_TR: Record<string, string> = {
 
 export default async function PromisesPage({
   searchParams,
-}: { searchParams: Promise<{ error?: string; result?: string; n?: string }> }) {
+}: { searchParams: Promise<{ error?: string; result?: string; n?: string; rem?: string }> }) {
   const denied = await requireRouteAccess("/finance/promises");
   if (denied) return denied;
   const sp = await searchParams;
@@ -75,7 +80,7 @@ export default async function PromisesPage({
     <>
       <PageHeader
         title="Ödeme Sözleri"
-        subtitle="Müşterinin söylediği ile gerçekleşen arasındaki fark"
+        subtitle="Müşterinin söylediği ile gerçekleşen arasındaki fark · kısmi ödeme devri ve 3 kademeli ihtarname akışı"
         meta={<Badge tone={overdue.length > 0 ? "amber" : "green"} dot>{overdue.length} vadesi geçmiş</Badge>}
       />
 
@@ -85,6 +90,14 @@ export default async function PromisesPage({
       {sp.result === "detected" ? (
         <div className="mb-3 rounded border border-pos/40 bg-pos/10 px-3 py-2 text-sm text-pos">
           Tespit çalıştı: {sp.n ?? 0} söz kırılmış olarak işaretlendi.
+        </div>
+      ) : sp.result === "partial-kept" ? (
+        <div className="mb-3 rounded border border-pos/40 bg-pos/10 px-3 py-2 text-sm text-pos">
+          Kısmi tahsilat kaydedildi; kalan bakiye ({sp.rem ?? "—"}) için yeni açık ödeme sözü oluşturuldu.
+        </div>
+      ) : sp.result === "dunning-escalated" ? (
+        <div className="mb-3 rounded border border-warn/40 bg-warn/10 px-3 py-2 text-sm text-warn">
+          İhtarname / hukuki takip kademesi görev kuyruğuna eklendi.
         </div>
       ) : sp.result === "resolved" ? (
         <div className="mb-3 rounded border border-pos/40 bg-pos/10 px-3 py-2 text-sm text-pos">
@@ -106,7 +119,7 @@ export default async function PromisesPage({
 
       <Panel
         title="AÇIK SÖZLER"
-        subtitle="söz verilen tarihe göre"
+        subtitle="söz verilen tarihe göre · kısmi ödeme geldiğinde tutarı girerek kalan bakiyeyi yeni söze devredin"
         right={
           <form action={detectBrokenAction}>
             <button className="button-ghost px-2 py-1 text-xs">Kırılan sözleri tespit et</button>
@@ -121,7 +134,7 @@ export default async function PromisesPage({
               <thead>
                 <tr className="text-left text-xs uppercase text-tone-3">
                   <th className="py-1">Cari</th><th>Söz tarihi</th><th className="text-right">Tutar</th>
-                  <th>Kanal</th><th>Durum</th><th>Karar</th>
+                  <th>Kanal</th><th>Durum</th><th>Karar & Kısmi Devir / İhtar</th>
                 </tr>
               </thead>
               <tbody>
@@ -143,13 +156,45 @@ export default async function PromisesPage({
                         {p.isOverdue ? `${p.daysLate} gün geçti` : `${Math.abs(p.daysLate)} gün kaldı`}
                       </Badge>
                     </td>
-                    <td className="py-2">
+                    <td className="space-y-1.5 py-2">
                       <form action={resolvePromiseAction} className="flex flex-wrap items-center gap-1">
                         <input type="hidden" name="promiseId" value={p.promiseId} />
+                        {p.promisedAmount != null ? (
+                          <>
+                            <input
+                              type="number"
+                              step="0.01"
+                              min="0.01"
+                              name="keptAmount"
+                              placeholder={`Tahsil (${p.currency})`}
+                              title="Boş bırakılırsa tam tutar tutuldu sayılır; kısmi girilirse kalan bakiye yeni söze devrolur"
+                              className="field-control w-28 px-2 py-1 font-mono text-xs tabular-nums"
+                            />
+                            <input
+                              type="date"
+                              name="nextPromiseDate"
+                              title="Kısmi tahsilatta kalan bakiye için yeni söz tarihi (boş = +7 gün)"
+                              className="field-control px-1.5 py-1 font-mono text-xs"
+                            />
+                          </>
+                        ) : null}
                         <button name="status" value="kept" className="button-ghost px-2 py-1 text-xs text-pos">Tutuldu</button>
                         <button name="status" value="broken" className="button-ghost px-2 py-1 text-xs text-warn">Kırıldı</button>
                         <button name="status" value="cancelled" className="button-ghost px-2 py-1 text-xs text-tone-3">İptal</button>
                       </form>
+                      {p.isOverdue ? (
+                        <form action={escalateDunningAction} className="flex flex-wrap items-center gap-1">
+                          <input type="hidden" name="promiseId" value={p.promiseId} />
+                          <select name="stage" defaultValue="reminder_1" className="field-control px-1.5 py-0.5 text-[11px]">
+                            <option value="reminder_1">1. Kademe Hatırlatma</option>
+                            <option value="warning_2">2. Kademe Resmi İhtarname</option>
+                            <option value="legal_notice">3. Kademe Hukuki Takip</option>
+                          </select>
+                          <button type="submit" className="button-ghost px-2 py-0.5 text-[11px] text-warn">
+                            İhtar Kademesi Tetikle
+                          </button>
+                        </form>
+                      ) : null}
                     </td>
                   </tr>
                 ))}
@@ -160,8 +205,8 @@ export default async function PromisesPage({
       </Panel>
 
       <Panel
-        title={`KIRILAN SÖZLER (GECİKMELİ TAHSİLAT KAPANIŞI) — ${broken.length}`}
-        subtitle="gecikmeli ödeme geldiğinde sözü tutuldu olarak işaretleyip takip görevini kapatın"
+        title={`KIRILAN SÖZLER (GECİKMELİ TAHSİLAT & İHTAR ESKALASYONU) — ${broken.length}`}
+        subtitle="gecikmeli veya kısmi ödeme geldiğinde kaydedin ya da resmi ihtarname / hukuki takip başlatın"
       >
         {broken.length === 0 ? (
           <EmptyState>Kırılmış ödeme sözü kaydı yok.</EmptyState>
@@ -174,7 +219,7 @@ export default async function PromisesPage({
                   <th>Söz tarihi</th>
                   <th className="text-right">Tutar</th>
                   <th>Kanal</th>
-                  <th>Gecikmeli Tahsilat Kararı</th>
+                  <th>Gecikmeli Tahsilat & Hukuki İhtar</th>
                 </tr>
               </thead>
               <tbody>
@@ -193,17 +238,43 @@ export default async function PromisesPage({
                       )}
                     </td>
                     <td className="text-xs">{CHANNEL_LABEL[b.channel] ?? b.channel}</td>
-                    <td className="py-1.5">
+                    <td className="space-y-1.5 py-1.5">
                       <form action={resolvePromiseAction} className="flex flex-wrap items-center gap-1.5">
                         <input type="hidden" name="promiseId" value={b.promiseId} />
                         <input type="hidden" name="status" value="kept" />
+                        {b.promisedAmount != null ? (
+                          <input
+                            type="number"
+                            step="0.01"
+                            min="0.01"
+                            name="keptAmount"
+                            placeholder={`Kısmi (${b.currency})`}
+                            className="field-control w-28 px-2 py-1 font-mono text-xs tabular-nums"
+                          />
+                        ) : null}
                         <input
                           name="note"
                           placeholder="Gecikmeli tahsilat notu (opsiyonel)"
-                          className="field-control w-52 px-2 py-1 text-xs"
+                          className="field-control w-44 px-2 py-1 text-xs"
                         />
                         <SubmitButton pendingText="Güncelleniyor…" className="button-ghost px-2.5 py-1 text-xs text-pos">
                           Tutuldu Olarak İşaretle
+                        </SubmitButton>
+                      </form>
+                      <form action={escalateDunningAction} className="flex flex-wrap items-center gap-1.5">
+                        <input type="hidden" name="promiseId" value={b.promiseId} />
+                        <select name="stage" defaultValue="warning_2" className="field-control px-2 py-1 text-xs">
+                          <option value="reminder_1">1. Kademe — Nazik Ödeme Hatırlatması</option>
+                          <option value="warning_2">2. Kademe — Resmi Vade İhtarnamesi</option>
+                          <option value="legal_notice">3. Kademe — Hukuki Takip & İcra</option>
+                        </select>
+                        <input
+                          name="note"
+                          placeholder="İhtar / icra dosya notu"
+                          className="field-control w-40 px-2 py-1 text-xs"
+                        />
+                        <SubmitButton pendingText="Kaydediliyor…" className="button-ghost px-2.5 py-1 text-xs text-neg">
+                          İhtar Kademesi Aç
                         </SubmitButton>
                       </form>
                     </td>

@@ -1,29 +1,20 @@
-// Faz 21 + Faz 48 (D2) — invoice engine.
-//
-// Inherited rules, applied rather than re-argued:
-//   Faz 17 — money crosses the SQL/JS boundary through @/lib/money, never a ::float8 cast.
-//   Faz 18 — every mutation records through the canonical audit(), in the same transaction as
-//            the change, and input is parsed with a Zod schema at the boundary.
-//   Faz 19 — nothing here creates a counterparty. An invoice needs a party that already exists.
-//   Faz 48 — live maker-checker rules (`approval_rules`) evaluate on invoice creation & issue;
-//            unapproved purchase invoices cannot be disbursed or included in a payment run until
-//            approved by a second pair of eyes.
-//
-// THE RULE THIS PHASE ADDS: cancellation is never a silent status change. `cancelInvoice`
-// writes the reversal record and flips the status in ONE transaction, and migration 0046's
-// deferred constraint trigger refuses the commit if the record is missing — so even a future
-// code path that forgets cannot produce a bare `status='cancelled'`.
+// Faz 21 + Faz 48 (D2) + Faz 61 (M-32) — invoice engine (multi-line discount/withholding, payment_instances link, inline bank/cash TDHP + 646/656 FX settlement).
 
+import { createHash } from "node:crypto";
 import type { Pool, PoolClient } from "pg";
 import { z } from "zod";
-import { evaluateAndRequestIfNeededWithClient } from "@/lib/approvals/engine";
+import {
+  evaluateAndRequestIfNeededWithClient,
+  evaluateRulesWithClient,
+} from "@/lib/approvals/engine";
 import { audit } from "@/lib/audit";
 import { DomainError } from "@/lib/domain-error";
 import {
+  postBalancedJournalEntry,
   safeReverseJournalForSourceWithClient,
   safeSyncDomainEventWithClient,
 } from "@/lib/ledger/posting-engine";
-import { decimal, intOrNull, moneyOrNull, rateOrNull } from "@/lib/money";
+import { decimal, intOrNull, money, moneyOrNull, mul, rateOrNull, sumDecimal } from "@/lib/money";
 import { resolvePromisesForPaidInvoicesWithClient } from "@/lib/receivables/engine";
 import { parseOrThrow } from "@/lib/validation";
 import {
@@ -38,6 +29,8 @@ const lineSchema = z.object({
   quantity: z.coerce.number().refine((n) => Number.isFinite(n), "Miktar sayı olmalı"),
   unitPrice: z.coerce.number().refine((n) => Number.isFinite(n), "Birim fiyat sayı olmalı"),
   taxRate: z.coerce.number().min(0).default(0),
+  discountRate: z.coerce.number().min(0).max(1).default(0),
+  incomeTaxWithholdingRate: z.coerce.number().min(0).max(1).default(0),
   unit: z.string().trim().min(1).optional(),
   productId: z.uuid().optional(),
   costCenterId: z.uuid().optional(),
@@ -56,6 +49,7 @@ export const createInvoiceSchema = z.object({
   projectId: z.uuid().optional(),
   departmentId: z.uuid().optional(),
   orderId: z.uuid().optional(),
+  linkedPaymentInstanceId: z.uuid().optional(),
   notes: z.string().trim().min(1).optional(),
   lines: z.array(lineSchema).min(1, "En az bir kalem gerekli"),
 });
@@ -75,21 +69,51 @@ export const statusChangeSchema = z.object({
 export const recordPaymentSchema = z.object({
   invoiceId: z.uuid(),
   amount: z.coerce.number().positive("Tutar sıfırdan büyük olmalı"),
+  cashAccountId: z.uuid().optional(),
+  fxRate: z.coerce.number().positive().optional(),
 });
+
+interface ExtendedLineCalc {
+  netAmount: number;
+  taxAmount: number;
+  grossAmount: number;
+  discountRate: number;
+  discountAmount: number;
+  incomeTaxWithholdingRate: number;
+  incomeTaxWithholdingAmount: number;
+}
+
+function computeExtendedLine(l: z.infer<typeof lineSchema>): ExtendedLineCalc {
+  const discRate = l.discountRate ?? 0;
+  const stopajRate = l.incomeTaxWithholdingRate ?? 0;
+  if (discRate === 0 && stopajRate === 0) {
+    const base = computeLineTotals({ quantity: l.quantity, unitPrice: l.unitPrice, taxRate: l.taxRate });
+    return {
+      ...base,
+      discountRate: 0,
+      discountAmount: 0,
+      incomeTaxWithholdingRate: 0,
+      incomeTaxWithholdingAmount: 0,
+    };
+  }
+  const rawNet = mul(l.quantity, l.unitPrice).round(2);
+  const discountAmt = rawNet.times(decimal(discRate)).round(2);
+  const netRounded = rawNet.minus(discountAmt).round(2);
+  const taxRounded = netRounded.times(decimal(l.taxRate)).round(2);
+  const stopajAmt = netRounded.times(decimal(stopajRate)).round(2);
+  return {
+    netAmount: money(netRounded.toString()),
+    taxAmount: money(taxRounded.toString()),
+    grossAmount: money(netRounded.plus(taxRounded).toString()),
+    discountRate: discRate,
+    discountAmount: money(discountAmt.toString()),
+    incomeTaxWithholdingRate: stopajRate,
+    incomeTaxWithholdingAmount: money(stopajAmt.toString()),
+  };
+}
 
 /* ── create ───────────────────────────────────────────────────────────────────────────── */
 
-/**
- * Create a DRAFT invoice with its lines.
- *
- * Always draft: 0044 makes `draft` the only editable state, so creating anything else would
- * mean writing a document that can never be corrected. Issuing is a separate, audited act
- * (`changeInvoiceStatus` to 'open').
- *
- * The header totals are DERIVED from the lines, never accepted from the caller. A caller-
- * supplied total that disagreed with its lines would violate 0044's `gross = net + tax` CHECK
- * or, worse, satisfy it while disagreeing with the detail underneath.
- */
 export async function createInvoice(
   pool: Pool,
   raw: unknown,
@@ -97,9 +121,14 @@ export async function createInvoice(
 ): Promise<{ invoiceId: string; approvalId?: string | null }> {
   const input = parseOrThrow(createInvoiceSchema, raw, "Fatura formu");
 
-  const lineTotals = input.lines.map((l) =>
-    computeLineTotals({ quantity: l.quantity, unitPrice: l.unitPrice, taxRate: l.taxRate }));
-  const header = sumLineTotals(lineTotals);
+  const extendedLines = input.lines.map(computeExtendedLine);
+  const header = sumLineTotals(extendedLines);
+  const discountTotal = money(sumDecimal(extendedLines.map((l) => l.discountAmount)).toString());
+  const withholdingTotal = money(sumDecimal(extendedLines.map((l) => l.incomeTaxWithholdingAmount)).toString());
+  const payableAmount =
+    withholdingTotal > 0
+      ? Math.max(0, money(decimal(header.grossAmount).minus(withholdingTotal).toString()))
+      : null;
 
   const client = await pool.connect();
   try {
@@ -116,39 +145,135 @@ export async function createInvoice(
       grossAmount: header.grossAmount, issueDate: input.issueDate,
     });
 
-    const ins = await client.query<{ id: string }>(
-      `insert into public.invoices
-         (direction, invoice_no, party_id, cost_center_id, project_id, department_id, order_id,
-          issue_date, due_date, currency, net_amount, tax_amount, gross_amount,
-          dedupe_hash, notes)
-       values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::numeric,$12::numeric,$13::numeric,$14,$15)
-       returning id`,
-      [
-        input.direction, input.invoiceNo, input.partyId, input.costCenterId ?? null,
-        input.projectId ?? null, input.departmentId ?? null, input.orderId ?? null,
-        input.issueDate, input.dueDate ?? null,
-        input.currency, header.netAmount, header.taxAmount, header.grossAmount, dedupe,
-        input.notes ?? null,
-      ],
-    );
-    const invoiceId = ins.rows[0].id;
-
-    for (const [i, line] of input.lines.entries()) {
-      const t = lineTotals[i];
-      await client.query(
-        `insert into public.invoice_lines
-           (invoice_id, line_no, product_id, description, quantity, unit_price, unit, tax_rate,
-            net_amount, tax_amount, gross_amount, cost_center_id, project_id, department_id)
-         values ($1,$2,$3,$4,$5::numeric,$6::numeric,$7,$8::numeric,$9::numeric,$10::numeric,$11::numeric,$12,$13,$14)`,
+    let invoiceId: string;
+    await client.query("savepoint inv_ext_header_sp");
+    try {
+      const ins = await client.query<{ id: string }>(
+        `insert into public.invoices
+           (direction, invoice_no, party_id, cost_center_id, project_id, department_id, order_id,
+            issue_date, due_date, currency, net_amount, tax_amount, gross_amount,
+            discount_total, income_tax_withholding_total, payable_amount,
+            dedupe_hash, notes)
+         values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::numeric,$12::numeric,$13::numeric,$14::numeric,$15::numeric,$16::numeric,$17,$18)
+         returning id`,
         [
-          invoiceId, i + 1, line.productId ?? null, line.description, line.quantity,
-          line.unitPrice, line.unit ?? null, line.taxRate,
-          t.netAmount, t.taxAmount, t.grossAmount,
-          line.costCenterId ?? input.costCenterId ?? null,
-          line.projectId ?? input.projectId ?? null,
-          line.departmentId ?? input.departmentId ?? null,
+          input.direction, input.invoiceNo, input.partyId, input.costCenterId ?? null,
+          input.projectId ?? null, input.departmentId ?? null, input.orderId ?? null,
+          input.issueDate, input.dueDate ?? null,
+          input.currency, header.netAmount, header.taxAmount, header.grossAmount,
+          discountTotal, withholdingTotal, payableAmount,
+          dedupe, input.notes ?? null,
         ],
       );
+      invoiceId = ins.rows[0].id;
+      await client.query("release savepoint inv_ext_header_sp");
+    } catch (err) {
+      await client.query("rollback to savepoint inv_ext_header_sp");
+      await client.query("release savepoint inv_ext_header_sp");
+      if ((err as { code?: string })?.code !== "42703") throw err;
+      const insFallback = await client.query<{ id: string }>(
+        `insert into public.invoices
+           (direction, invoice_no, party_id, cost_center_id, project_id, department_id, order_id,
+            issue_date, due_date, currency, net_amount, tax_amount, gross_amount,
+            dedupe_hash, notes)
+         values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::numeric,$12::numeric,$13::numeric,$14,$15)
+         returning id`,
+        [
+          input.direction, input.invoiceNo, input.partyId, input.costCenterId ?? null,
+          input.projectId ?? null, input.departmentId ?? null, input.orderId ?? null,
+          input.issueDate, input.dueDate ?? null,
+          input.currency, header.netAmount, header.taxAmount, header.grossAmount, dedupe,
+          input.notes ?? null,
+        ],
+      );
+      invoiceId = insFallback.rows[0].id;
+    }
+
+    for (const [i, line] of input.lines.entries()) {
+      const t = extendedLines[i];
+      await client.query("savepoint inv_ext_line_sp");
+      try {
+        await client.query(
+          `insert into public.invoice_lines
+             (invoice_id, line_no, product_id, description, quantity, unit_price, unit, tax_rate,
+              discount_rate, discount_amount, income_tax_withholding_rate, income_tax_withholding_amount,
+              net_amount, tax_amount, gross_amount, cost_center_id, project_id, department_id)
+           values ($1,$2,$3,$4,$5::numeric,$6::numeric,$7,$8::numeric,$9::numeric,$10::numeric,$11::numeric,$12::numeric,$13::numeric,$14::numeric,$15::numeric,$16,$17,$18)`,
+          [
+            invoiceId, i + 1, line.productId ?? null, line.description, line.quantity,
+            line.unitPrice, line.unit ?? null, line.taxRate,
+            t.discountRate, t.discountAmount, t.incomeTaxWithholdingRate, t.incomeTaxWithholdingAmount,
+            t.netAmount, t.taxAmount, t.grossAmount,
+            line.costCenterId ?? input.costCenterId ?? null,
+            line.projectId ?? input.projectId ?? null,
+            line.departmentId ?? input.departmentId ?? null,
+          ],
+        );
+        await client.query("release savepoint inv_ext_line_sp");
+      } catch (err) {
+        await client.query("rollback to savepoint inv_ext_line_sp");
+        await client.query("release savepoint inv_ext_line_sp");
+        if ((err as { code?: string })?.code !== "42703") throw err;
+        await client.query(
+          `insert into public.invoice_lines
+             (invoice_id, line_no, product_id, description, quantity, unit_price, unit, tax_rate,
+              net_amount, tax_amount, gross_amount, cost_center_id, project_id, department_id)
+           values ($1,$2,$3,$4,$5::numeric,$6::numeric,$7,$8::numeric,$9::numeric,$10::numeric,$11::numeric,$12,$13,$14)`,
+          [
+            invoiceId, i + 1, line.productId ?? null, line.description, line.quantity,
+            line.unitPrice, line.unit ?? null, line.taxRate,
+            t.netAmount, t.taxAmount, t.grossAmount,
+            line.costCenterId ?? input.costCenterId ?? null,
+            line.projectId ?? input.projectId ?? null,
+            line.departmentId ?? input.departmentId ?? null,
+          ],
+        );
+      }
+    }
+
+    // M-32: Link matching open payment_instance so 13-week forecast does not double-count
+    await client.query("savepoint inv_pi_link_sp");
+    try {
+      const piDir = input.direction === "sales" ? "inflow" : "outflow";
+      if (input.linkedPaymentInstanceId) {
+        await client.query(
+          `update public.payment_instances
+              set linked_invoice_id = $2::uuid
+            where id = $1::uuid and linked_invoice_id is null`,
+          [input.linkedPaymentInstanceId, invoiceId],
+        );
+      } else {
+        await client.query(
+          `update public.payment_instances pi
+              set linked_invoice_id = $1::uuid
+            where pi.id = (
+              select pi2.id
+                from public.payment_instances pi2
+                join public.payments p2 on p2.id = pi2.payment_id
+               where p2.party_id = $2::uuid
+                 and pi2.direction = $3
+                 and pi2.status in ('planned', 'unpaid', 'partial', 'late')
+                 and pi2.linked_invoice_id is null
+                 and p2.currency = $4
+                 and abs(coalesce(pi2.due_date, $5::date) - coalesce($6::date, $5::date)) <= 20
+               order by abs(coalesce(pi2.expected_amount, 0) - $7::numeric) asc
+               limit 1
+            )`,
+          [
+            invoiceId,
+            input.partyId,
+            piDir,
+            input.currency,
+            input.issueDate,
+            input.dueDate ?? input.issueDate,
+            payableAmount ?? header.grossAmount,
+          ],
+        );
+      }
+      await client.query("release savepoint inv_pi_link_sp");
+    } catch {
+      await client.query("rollback to savepoint inv_pi_link_sp");
+      await client.query("release savepoint inv_pi_link_sp");
     }
 
     const { approvalId } = await evaluateAndRequestIfNeededWithClient(client, {
@@ -176,7 +301,8 @@ export async function createInvoice(
       before: null,
       after: {
         direction: input.direction, invoiceNo: input.invoiceNo, partyId: input.partyId,
-        gross: header.grossAmount, lineCount: input.lines.length, status: "draft",
+        gross: header.grossAmount, discountTotal, withholdingTotal, payableAmount,
+        lineCount: input.lines.length, status: "draft",
         approvalStatus: approvalId ? "pending_approval" : "not_required",
         approvalId,
       },
@@ -194,14 +320,6 @@ export async function createInvoice(
 
 /* ── status ───────────────────────────────────────────────────────────────────────────── */
 
-/**
- * Move an invoice through its lifecycle.
- *
- * Refuses 'cancelled' outright: cancellation must go through `cancelInvoice` so a reversal
- * record is written. Without this guard a caller could reach the terminal state through the
- * generic path, and 0046's deferred trigger would abort the whole transaction with a database
- * message instead of a sentence the operator can act on.
- */
 export async function changeInvoiceStatus(pool: Pool, raw: unknown, actorId: string): Promise<void> {
   const input = parseOrThrow(statusChangeSchema, raw, "Fatura durumu");
   if (input.status === "cancelled") {
@@ -231,8 +349,6 @@ export async function changeInvoiceStatus(pool: Pool, raw: unknown, actorId: str
     const inv = before.rows[0];
     const current = inv.status as InvoiceStatus;
 
-    // Checked in the application too, so the operator gets a readable refusal rather than the
-    // trigger's raw exception. The database stays the authority.
     if (!canTransition(current, input.status)) {
       throw new DomainError(`'${current}' durumundan '${input.status}' durumuna geçilemez.`);
     }
@@ -304,22 +420,26 @@ export async function changeInvoiceStatus(pool: Pool, raw: unknown, actorId: str
 }
 
 /**
- * Record an inline settlement against an invoice (`F-23`, `F-24`, `F-25`).
+ * Record an inline settlement against an invoice (`F-23`, `F-24`, `F-25`, `M-32`).
  *
- * Writes a canonical `'manual'` allocation row in `public.invoice_allocations` up to
- * `coalesce(payable_amount, gross_amount)` so `allocated_amount`, `paid_amount`, Payment Runs,
- * Check Endorsements, and Bank Matching stay 100% unified without double-payment risk.
- * Any intentional over-receipt beyond the invoice ceiling still advances `paid_amount` so
- * `invoice_overpaid` surfaces it cleanly.
+ * When `cashAccountId` is provided:
+ *  - Creates a matched `bank_transactions` row (when a `bank_accounts` profile exists on the same currency)
+ *  - Links `invoice_allocations` to that `bank_transactions` row (or `'manual'` for pure cash `100`)
+ *  - Posts TDHP `100/102 <-> 120/320` + `646/656` FX difference journal entry!
  */
 export async function recordInvoicePayment(pool: Pool, raw: unknown, actorId: string): Promise<void> {
   const input = parseOrThrow(recordPaymentSchema, raw, "Tahsilat kaydı");
   const client = await pool.connect();
+  let approvalQueuedAndCommitted = false;
   try {
     await client.query("begin");
     const before = await client.query(
-      `select id, direction, status, gross_amount, payable_amount, paid_amount, allocated_amount, approval_status
-         from public.invoices where id=$1 for update`,
+      `select i.id, i.direction, i.status, i.invoice_no, i.currency, to_char(i.issue_date, 'YYYY-MM-DD') as issue_date,
+              i.gross_amount, i.payable_amount, i.paid_amount, i.allocated_amount, i.approval_status,
+              p.name as party_name
+         from public.invoices i
+         join public.parties p on p.id = i.party_id
+        where i.id = $1 for update of i`,
       [input.invoiceId]);
     if (before.rowCount === 0) throw new DomainError("Fatura bulunamadı.");
     const row = before.rows[0];
@@ -339,9 +459,132 @@ export async function recordInvoicePayment(pool: Pool, raw: unknown, actorId: st
     const allocatedBefore = moneyOrNull(row.allocated_amount) ?? 0;
     const effectivePaidBefore = Math.max(paidBefore, allocatedBefore);
 
+    if (row.direction === "purchase" && String(row.approval_status ?? "not_required") !== "approved") {
+      const candidateTotal = Math.max(
+        gross,
+        ceiling,
+        Number(decimal(effectivePaidBefore).plus(input.amount).round(2).toFixed(2)),
+      );
+      let firedCount = 0;
+      try {
+        await client.query("savepoint sp_inv_pay_rule_eval");
+        const fired = await evaluateRulesWithClient(client, {
+          subjectTable: "invoices",
+          triggerKind: "invoice",
+          amount: candidateTotal,
+          currency: String(row.currency ?? "TRY"),
+        });
+        firedCount = fired.length;
+        await client.query("release savepoint sp_inv_pay_rule_eval");
+      } catch (err) {
+        await client.query("rollback to savepoint sp_inv_pay_rule_eval").catch(() => undefined);
+        await client.query("release savepoint sp_inv_pay_rule_eval").catch(() => undefined);
+        const code = (err as { code?: string } | null)?.code;
+        if (code !== "42P01" && code !== "42703") throw err;
+      }
+
+      if (firedCount > 0) {
+        try {
+          await client.query("savepoint sp_inv_pay_queue_app");
+          const evaluated = await evaluateAndRequestIfNeededWithClient(client, {
+            ruleInput: {
+              subjectTable: "invoices",
+              triggerKind: "invoice",
+              amount: candidateTotal,
+              currency: String(row.currency ?? "TRY"),
+            },
+            subjectId: input.invoiceId,
+            subjectLabel: `${row.invoice_no} · ${row.party_name}`,
+            amount: candidateTotal,
+            currency: String(row.currency ?? "TRY"),
+            actorId,
+          });
+          if (evaluated.approvalId) {
+            await client.query(
+              `update public.invoices set approval_status='pending_approval', approval_id=$2 where id=$1`,
+              [input.invoiceId, evaluated.approvalId],
+            );
+            await client.query("release savepoint sp_inv_pay_queue_app");
+            await client.query("commit");
+            approvalQueuedAndCommitted = true;
+          } else {
+            await client.query("rollback to savepoint sp_inv_pay_queue_app").catch(() => undefined);
+            await client.query("release savepoint sp_inv_pay_queue_app").catch(() => undefined);
+          }
+        } catch {
+          await client.query("rollback to savepoint sp_inv_pay_queue_app").catch(() => undefined);
+          await client.query("release savepoint sp_inv_pay_queue_app").catch(() => undefined);
+        }
+        throw new DomainError(
+          "FORBIDDEN",
+          "Bu alış faturası kritik onay eşiğini aşıyor; bağımsız ikinci onay (maker-checker) tamamlanmadan ödeme işlenemez.",
+        );
+      }
+    }
+
     const allocRoom = Math.max(0, Number(decimal(ceiling).minus(allocatedBefore).round(2).toFixed(2)));
     const allocAmt = Math.min(Number(decimal(input.amount).round(2).toFixed(2)), allocRoom);
     let allocationId: string | null = null;
+    let bankTransactionId: string | null = null;
+    let cashAccountType = "bank_account";
+
+    if (input.cashAccountId) {
+      const acctRes = await client.query<{
+        id: string;
+        account_type: string;
+        currency: string;
+        has_bank_profile: boolean;
+      }>(
+        `select ca.id::text, ca.account_type, ca.currency,
+                exists(select 1 from public.bank_accounts ba where ba.cash_account_id = ca.id) as has_bank_profile
+           from public.cash_accounts ca
+          where ca.id = $1::uuid`,
+        [input.cashAccountId],
+      );
+      if (acctRes.rowCount === 1) {
+        const acct = acctRes.rows[0];
+        cashAccountType = acct.account_type;
+        if (acct.currency !== row.currency) {
+          throw new DomainError(
+            `Seçilen hesap (${acct.currency}) ile fatura para birimi (${row.currency}) aynı olmalıdır.`,
+          );
+        }
+        if (acct.has_bank_profile) {
+          await client.query("savepoint inv_inline_btx_sp");
+          try {
+            const signedAmt = row.direction === "sales" ? input.amount : -input.amount;
+            const dedupeHash = createHash("sha256")
+              .update(`inline-inv-pay|${input.invoiceId}|${input.cashAccountId}|${Date.now()}|${signedAmt}`)
+              .digest("hex");
+            const btx = await client.query<{ id: string }>(
+              `insert into public.bank_transactions
+                 (bank_account_id, txn_date, value_date, description, counterparty_name_raw,
+                  amount, currency, category, category_rule, status,
+                  matched_entity_table, matched_entity_id, match_confidence, matched_at, dedupe_hash)
+               values ($1::uuid, current_date, current_date, $2, $3,
+                       $4::numeric, $5, $6, 'inline_invoice_payment', 'matched',
+                       'invoices', $7::uuid, 1, now(), $8)
+               returning id::text`,
+              [
+                input.cashAccountId,
+                `Fatura ${row.direction === "sales" ? "tahsilatı" : "ödemesi"}: ${row.invoice_no}`,
+                row.party_name,
+                signedAmt.toFixed(2),
+                row.currency,
+                row.direction === "sales" ? "incoming_payment" : "outgoing_payment",
+                input.invoiceId,
+                dedupeHash,
+              ],
+            );
+            bankTransactionId = btx.rows[0]?.id ?? null;
+            await client.query("release savepoint inv_inline_btx_sp");
+          } catch {
+            await client.query("rollback to savepoint inv_inline_btx_sp");
+            await client.query("release savepoint inv_inline_btx_sp");
+          }
+        }
+      }
+    }
 
     if (allocAmt > 0) {
       await client.query("savepoint inv_inline_alloc_sp");
@@ -349,9 +592,15 @@ export async function recordInvoicePayment(pool: Pool, raw: unknown, actorId: st
         const insAlloc = await client.query<{ id: string }>(
           `insert into public.invoice_allocations
              (invoice_id, source_table, source_id, allocated_amount, notes, created_by)
-           values ($1, 'manual', null, $2::numeric, 'Satır-içi fatura tahsilat/ödeme kaydı', $3)
+           values ($1, $2, $3::uuid, $4::numeric, 'Satır-içi fatura tahsilat/ödeme kaydı', $5)
            returning id::text as id`,
-          [input.invoiceId, allocAmt.toFixed(2), actorId],
+          [
+            input.invoiceId,
+            bankTransactionId ? "bank_transactions" : "manual",
+            bankTransactionId,
+            allocAmt.toFixed(2),
+            actorId,
+          ],
         );
         allocationId = insAlloc.rows[0]?.id ?? null;
         await client.query("release savepoint inv_inline_alloc_sp");
@@ -394,6 +643,75 @@ export async function recordInvoicePayment(pool: Pool, raw: unknown, actorId: st
       await resolvePromisesForPaidInvoicesWithClient(client, [input.invoiceId], actorId);
     }
 
+    // M-32: Post TDHP 100/102 <-> 120/320 (+ 646/656 FX diff for foreign currency) when cashAccountId is used
+    if (input.cashAccountId) {
+      await client.query("savepoint inv_inline_je_sp");
+      try {
+        const cashCode = cashAccountType === "cash" ? "100" : "102";
+        const arApCode = row.direction === "sales" ? "120" : "320";
+        let bookTry = Number(decimal(input.amount).round(2).toFixed(2));
+        let settleTry = bookTry;
+
+        if (row.currency !== "TRY") {
+          const issueFxRes = await client.query<{ rate: string }>(
+            `select rate::text from public.fx_rates
+              where base_currency = $1 and quote_currency = 'TRY' and rate_date <= $2::date
+              order by rate_date desc limit 1`,
+            [row.currency, row.issue_date],
+          );
+          const settleFxRes = await client.query<{ rate: string }>(
+            `select rate::text from public.fx_rates
+              where base_currency = $1 and quote_currency = 'TRY'
+              order by rate_date desc limit 1`,
+            [row.currency],
+          );
+          const issueRate = rateOrNull(issueFxRes.rows[0]?.rate) ?? input.fxRate ?? 1;
+          const settleRate = input.fxRate ?? rateOrNull(settleFxRes.rows[0]?.rate) ?? issueRate;
+          bookTry = Number(decimal(input.amount).times(issueRate).round(2).toFixed(2));
+          settleTry = Number(decimal(input.amount).times(settleRate).round(2).toFixed(2));
+        }
+
+        const fxDiff = Number(decimal(settleTry).minus(bookTry).round(2).toFixed(2));
+        const lines: { accountCode: string; debit: number; credit: number; memo?: string }[] = [];
+
+        if (row.direction === "sales") {
+          lines.push({ accountCode: cashCode, debit: settleTry, credit: 0, memo: `${row.invoice_no} tahsilatı` });
+          lines.push({ accountCode: arApCode, debit: 0, credit: bookTry, memo: `${row.party_name} cari kapama` });
+          if (fxDiff > 0) {
+            lines.push({ accountCode: "646", debit: 0, credit: fxDiff, memo: "Kambiyo kârı (tahsilat kur farkı)" });
+          } else if (fxDiff < 0) {
+            lines.push({ accountCode: "656", debit: Math.abs(fxDiff), credit: 0, memo: "Kambiyo zararı (tahsilat kur farkı)" });
+          }
+        } else {
+          lines.push({ accountCode: arApCode, debit: bookTry, credit: 0, memo: `${row.party_name} cari kapama` });
+          lines.push({ accountCode: cashCode, debit: 0, credit: settleTry, memo: `${row.invoice_no} ödemesi` });
+          if (fxDiff > 0) {
+            lines.push({ accountCode: "656", debit: fxDiff, credit: 0, memo: "Kambiyo zararı (ödeme kur farkı)" });
+          } else if (fxDiff < 0) {
+            lines.push({ accountCode: "646", debit: 0, credit: Math.abs(fxDiff), memo: "Kambiyo kârı (ödeme kur farkı)" });
+          }
+        }
+
+        const todayIso = new Date().toISOString().slice(0, 10);
+        await postBalancedJournalEntry(
+          client,
+          {
+            entryDate: todayIso,
+            description: `Fatura ${row.direction === "sales" ? "tahsilatı" : "ödemesi"}: ${row.invoice_no} (${row.party_name})`,
+            sourceType: bankTransactionId ? "bank_transaction" : "manual",
+            sourceTable: bankTransactionId ? "bank_transactions" : "invoices",
+            sourceId: bankTransactionId ?? input.invoiceId,
+            lines,
+          },
+          actorId,
+        );
+        await client.query("release savepoint inv_inline_je_sp");
+      } catch {
+        await client.query("rollback to savepoint inv_inline_je_sp");
+        await client.query("release savepoint inv_inline_je_sp");
+      }
+    }
+
     await audit(client, {
       actor: actorId, action: "record_invoice_payment", entityTable: "invoices",
       entityId: input.invoiceId,
@@ -404,12 +722,20 @@ export async function recordInvoicePayment(pool: Pool, raw: unknown, actorId: st
         allocated_amount: allocatedAfter,
         applied: input.amount,
         allocation_id: allocationId,
-        linked_settlement_source: allocationId ? "manual_allocation" : null,
+        bank_transaction_id: bankTransactionId,
+        cash_account_id: input.cashAccountId ?? null,
+        linked_settlement_source: bankTransactionId
+          ? "bank_transactions"
+          : allocationId
+            ? "manual_allocation"
+            : null,
       },
     });
     await client.query("commit");
   } catch (e) {
-    await client.query("rollback");
+    if (!approvalQueuedAndCommitted) {
+      await client.query("rollback");
+    }
     throw e;
   } finally {
     client.release();
@@ -418,16 +744,6 @@ export async function recordInvoicePayment(pool: Pool, raw: unknown, actorId: st
 
 /* ── cancellation via a linked reversal record ────────────────────────────────────────── */
 
-/**
- * Cancel an invoice, writing the reversal record that makes the cancellation self-describing.
- *
- * One transaction, both writes. The snapshot freezes what the invoice and its lines SAID at the
- * moment of voiding — `invoices` is immutable after issue, but its history is not otherwise
- * self-describing, and a reader a year later needs the document, not just a status flag.
- *
- * 0046's deferred constraint trigger is the backstop: if this function (or any future one)
- * flipped the status without the record, the COMMIT would fail.
- */
 export async function cancelInvoice(pool: Pool, raw: unknown, actorId: string): Promise<void> {
   const input = parseOrThrow(cancelInvoiceSchema, raw, "Fatura iptali");
   const client = await pool.connect();
@@ -476,8 +792,6 @@ export async function cancelInvoice(pool: Pool, raw: unknown, actorId: string): 
       after: { status: "cancelled", reason: input.reason, reversal_record_written: true },
     });
 
-    // Force the deferred trigger to run inside this transaction, so a violation surfaces here
-    // rather than at an ambiguous later COMMIT.
     await client.query("set constraints all immediate");
     await client.query("commit");
   } catch (e) {
@@ -524,7 +838,8 @@ export async function listInvoices(
             (select count(*) from public.invoice_lines l where l.invoice_id = i.id)::int as line_count
      from public.invoices i
      join public.parties pa on pa.id = i.party_id
-     where ($1='' or i.status=$1) and ($2='' or i.direction=$2)
+     where i.archived_at is null
+       and ($1='' or i.status=$1) and ($2='' or i.direction=$2)
      order by i.issue_date desc, i.invoice_no
      limit $3 offset $4`,
     params,
@@ -580,7 +895,6 @@ export async function loadInvoiceLines(pool: Pool, invoiceId: string) {
      from public.invoice_lines where invoice_id=$1 order by line_no`, [invoiceId]);
   return r.rows.map((x) => ({
     id: x.id, lineNo: intOrNull(x.line_no) ?? 0, description: x.description,
-    // quantity/unitPrice/taxRate are numeric(_,4) — RATE precision, not TL scale.
     quantity: rateOrNull(x.quantity) ?? 0, unitPrice: rateOrNull(x.unit_price) ?? 0,
     unit: x.unit, taxRate: rateOrNull(x.tax_rate) ?? 0,
     netAmount: moneyOrNull(x.net_amount) ?? 0, taxAmount: moneyOrNull(x.tax_amount) ?? 0,

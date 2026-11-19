@@ -43,6 +43,13 @@ export default async function BriefingPage({ searchParams }: BriefingPageProps) 
   // gerekçesi briefingStatus()'ta, birim testli.
   const status = briefingStatus(facts);
   const delta = facts.overnightDelta;
+  const provenance = facts.provenance;
+  const staleWorkbookWarning =
+    provenance?.workbookStaleDays != null && provenance.workbookStaleDays > 30;
+  const schemaBadgeText =
+    provenance?.migrationCount != null && provenance.schemaVersion
+      ? `${provenance.migrationCount}/${provenance.schemaVersion}`
+      : provenance?.schemaVersion ?? "—";
 
   return (
     <>
@@ -120,6 +127,41 @@ export default async function BriefingPage({ searchParams }: BriefingPageProps) 
         </div>
       ) : null}
 
+      {provenance ? (
+        <div
+          role="region"
+          aria-label="Veri Kaynağı ve Güncellik Kanıtı"
+          style={{
+            background: "var(--surface-2)",
+            border: "1px solid var(--line)",
+            color: "var(--text-2)",
+          }}
+          className="flex flex-wrap items-center justify-between gap-2 px-3 py-2 text-xs"
+        >
+          <div className="flex flex-wrap items-center gap-2 font-mono text-[11px]">
+            <Badge tone={staleWorkbookWarning ? "amber" : "green"} dot>
+              Veri Kaynağı &amp; Güncellik Kanıtı
+            </Badge>
+            <span>{`as_of: ${provenance.asOfDate}`}</span>
+            <span className="text-tone-4">·</span>
+            <span title={provenance.snapshotId}>{`snapshot_id: ${provenance.snapshotId.slice(0, 8)}`}</span>
+            <span className="text-tone-4">·</span>
+            <span>{`şema: ${schemaBadgeText}`}</span>
+            <span className="text-tone-4">·</span>
+            <span>{`son ekstre: ${provenance.lastBankTxAt ?? "banka ekstresi yok"}`}</span>
+          </div>
+          <div className="flex flex-wrap items-center gap-2 font-mono text-[11px]">
+            {provenance.workbookStaleDays != null ? (
+              <Badge tone={staleWorkbookWarning ? "amber" : "neutral"} dot={staleWorkbookWarning}>
+                {`son Excel ithalatı: ${provenance.workbookStaleDays} gün eski`}
+              </Badge>
+            ) : (
+              <Badge tone="neutral">son Excel ithalatı: kayıt yok</Badge>
+            )}
+          </div>
+        </div>
+      ) : null}
+
       {unknownOpening.totalUnknown > 0 ? (
         <div
           role="status"
@@ -132,7 +174,7 @@ export default async function BriefingPage({ searchParams }: BriefingPageProps) 
         >
           <div className="flex flex-wrap items-center gap-2">
             <Badge tone="amber" dot>FIN-03</Badge>
-            <span>{`Açılış bakiyesi tanımsız ${unknownOpening.totalUnknown} aktif hesap var — kullanılabilir nakit yalnız hareketlerden hesaplanıyor (FIN-03).`}</span>
+            <span>{`Açılış bakiyesi tanımsız ${unknownOpening.totalUnknown} aktif hesap var — kullanılabilir nakit ve likidite açığı doğrulanana kadar Bilinmiyor (FIN-03) olarak işaretlendi.`}</span>
           </div>
           {unknownOpening.byCurrency.length > 0 ? (
             <span className="font-mono text-[11px]">
@@ -162,6 +204,78 @@ export default async function BriefingPage({ searchParams }: BriefingPageProps) 
       </Panel>
 
       <Panel
+        title="ÇOKLU DÖVİZ KONSOLİDASYONU (TCMB KUR ÇEVRİMİ)"
+        subtitle={
+          facts.fxRatesAsOf
+            ? `fx_rate_snapshots (${facts.fxRatesAsOf}) üzerinden TRY karşılığına çevrilen kasa ve yükümlülükler`
+            : "TCMB döviz kurları ile konsolide kasa ve yükümlülük özeti"
+        }
+        right={
+          <Badge tone={(facts.unconvertibleForeignCount ?? 0) === 0 ? "green" : "amber"} dot>
+            {(facts.unconvertibleForeignCount ?? 0) === 0
+              ? `TCMB ${facts.fxRatesAsOf ?? "güncel"}`
+              : `${facts.unconvertibleForeignCount} kur eksik`}
+          </Badge>
+        }
+      >
+        <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+          <KeyStat
+            label="Konsolide Kasa (TCMB TL)"
+            value={facts.consolidatedCashTry == null ? "—" : fmtTL(facts.consolidatedCashTry)}
+            tone={facts.consolidatedCashTry == null ? "neutral" : "pos"}
+            sub={`Saf TRY Kasa: ${facts.availableCash == null ? "—" : fmtTL(facts.availableCash)}`}
+            href="/treasury"
+          />
+          <KeyStat
+            label="Konsolide 7G Açık (TCMB TL)"
+            value={facts.consolidatedGap7Try == null ? "—" : fmtTL(facts.consolidatedGap7Try)}
+            tone={
+              facts.consolidatedGap7Try == null
+                ? "neutral"
+                : facts.consolidatedGap7Try > 0
+                  ? "neg"
+                  : "pos"
+            }
+            sub={`Saf TRY 7G Açık: ${facts.liquidityGap7 == null ? "—" : fmtTL(facts.liquidityGap7)}`}
+            href="/treasury"
+          />
+          <KeyStat
+            label="Bugün Konsolide Çıkış"
+            value={fmtTL(facts.todayConsolidatedOutflowTry ?? facts.todayOutflowKnown)}
+            tone={(facts.todayConsolidatedOutflowTry ?? facts.todayOutflowKnown) > 0 ? "warn" : "neutral"}
+            sub={`Saf TRY: ${fmtTL(facts.todayOutflowKnown)} · Döviz: ${facts.todayForeignCurrencyCount} kalem`}
+            href="/payments"
+          />
+          <KeyStat
+            label="Gecikmiş Konsolide Çıkış"
+            value={fmtTL(facts.overdueConsolidatedOutflowTry ?? facts.overdueKnownOutflow)}
+            tone={facts.overdueCount > 0 ? "neg" : "pos"}
+            sub={`Saf TRY: ${fmtTL(facts.overdueKnownOutflow)} · Döviz: ${facts.overdueForeignCurrencyCount} kalem`}
+            href="/payments"
+          />
+        </div>
+        {(facts.currencyPositions ?? []).length > 0 ? (
+          <div className="mt-3 flex flex-wrap gap-2 border-t border-line pt-2 font-mono text-[11px] text-tone-2">
+            {(facts.currencyPositions ?? []).map((p) => (
+              <span
+                key={p.currency}
+                style={{ background: "var(--surface-2)", border: "1px solid var(--line)" }}
+                className="px-2 py-1"
+              >
+                <strong>{p.currency}:</strong>{" "}
+                {p.availableNow == null
+                  ? "—"
+                  : new Intl.NumberFormat("tr-TR", { maximumFractionDigits: 2 }).format(p.availableNow)}
+                {p.currency !== "TRY"
+                  ? ` × ${p.rateToTry == null ? "kur yok" : p.rateToTry.toFixed(4)} = ${p.tryEquivalent == null ? "—" : fmtTL(p.tryEquivalent)}`
+                  : ""}
+              </span>
+            ))}
+          </div>
+        ) : null}
+      </Panel>
+
+      <Panel
         title="DÜNDEN BUGÜNE DEĞİŞİM ATFI (DELTA)"
         subtitle={
           delta
@@ -170,9 +284,21 @@ export default async function BriefingPage({ searchParams }: BriefingPageProps) 
         }
         right={
           delta ? (
-            <Badge tone={delta.cashDeltaIdentityBalanced ? "green" : "amber"} dot>
-              {delta.cashDeltaIdentityBalanced ? "kuruş özdeşliği tam" : "fark var"}
-            </Badge>
+            delta.deltaAvailableCash === null ||
+            delta.previousAvailableCash === null ||
+            delta.currentAvailableCash === null ? (
+              <Badge tone="amber" dot>
+                Mutabakat ölçülemez · FIN-03
+              </Badge>
+            ) : delta.identityUnmeasurable || !delta.hasVerifiedBankFeed ? (
+              <Badge tone="amber" dot>
+                Mutabakat ölçülemez · Ekstre yok
+              </Badge>
+            ) : (
+              <Badge tone={delta.cashDeltaIdentityBalanced ? "green" : "amber"} dot>
+                {delta.cashDeltaIdentityBalanced ? "kuruş özdeşliği tam" : "fark var"}
+              </Badge>
+            )
           ) : undefined
         }
       >
@@ -190,19 +316,49 @@ export default async function BriefingPage({ searchParams }: BriefingPageProps) 
             <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-6">
               <KeyStat
                 label="Δ Kullanılabilir Nakit"
-                value={delta.deltaAvailableCash == null ? "—" : fmtTL(delta.deltaAvailableCash)}
-                tone={(delta.deltaAvailableCash ?? 0) >= 0 ? "pos" : "neg"}
-                sub={`Önceki (${delta.fromDateISO}): ${delta.previousAvailableCash == null ? "—" : fmtTL(delta.previousAvailableCash)}`}
+                value={
+                  delta.deltaAvailableCash == null
+                    ? "Bilinmiyor (FIN-03 açılış eksik)"
+                    : fmtTL(delta.deltaAvailableCash)
+                }
+                tone={
+                  delta.deltaAvailableCash == null
+                    ? "warn"
+                    : delta.deltaAvailableCash >= 0
+                      ? "pos"
+                      : "neg"
+                }
+                sub={`Önceki (${delta.fromDateISO}): ${
+                  delta.previousAvailableCash == null
+                    ? "Bilinmiyor (FIN-03 açılış eksik)"
+                    : fmtTL(delta.previousAvailableCash)
+                }`}
               />
               <KeyStat
                 label="① Banka Tahsilatları (+)"
-                value={fmtTL(delta.realizedBankInflows)}
-                tone="pos"
+                value={
+                  delta.realizedBankInflows == null
+                    ? !delta.hasVerifiedBankFeed
+                      ? "Bilinmiyor (banka ekstresi yok)"
+                      : "Bilinmiyor (FIN-03 açılış eksik)"
+                    : fmtTL(delta.realizedBankInflows)
+                }
+                tone={delta.realizedBankInflows == null ? "neutral" : "pos"}
               />
               <KeyStat
                 label="② Banka Ödemeleri (-)"
-                value={fmtTL(delta.realizedBankOutflows)}
-                tone={delta.realizedBankOutflows < 0 ? "neg" : "neutral"}
+                value={
+                  delta.realizedBankOutflows == null
+                    ? !delta.hasVerifiedBankFeed
+                      ? "Bilinmiyor (banka ekstresi yok)"
+                      : "Bilinmiyor (FIN-03 açılış eksik)"
+                    : fmtTL(delta.realizedBankOutflows)
+                }
+                tone={
+                  delta.realizedBankOutflows != null && delta.realizedBankOutflows < 0
+                    ? "neg"
+                    : "neutral"
+                }
               />
               <KeyStat
                 label="③ 7G Pencereye Yeni Giren"
@@ -216,9 +372,19 @@ export default async function BriefingPage({ searchParams }: BriefingPageProps) 
               />
               <KeyStat
                 label="⑤ Kur & Düzeltme · ΔGap7"
-                value={fmtTL(delta.fxAndAdjustmentImpact)}
+                value={
+                  delta.fxAndAdjustmentImpact == null
+                    ? delta.previousAvailableCash == null || delta.currentAvailableCash == null
+                      ? "Bilinmiyor (FIN-03 açılış eksik)"
+                      : "Bilinmiyor (banka ekstresi yok)"
+                    : fmtTL(delta.fxAndAdjustmentImpact)
+                }
                 tone="neutral"
-                sub={`7G Açık Δ: ${delta.deltaLiquidityGap7 == null ? "—" : fmtTL(delta.deltaLiquidityGap7)}`}
+                sub={`7G Açık Δ: ${
+                  delta.deltaLiquidityGap7 == null
+                    ? "Bilinmiyor (FIN-03 açılış eksik)"
+                    : fmtTL(delta.deltaLiquidityGap7)
+                }`}
               />
             </div>
 

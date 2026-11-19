@@ -242,18 +242,27 @@ async function findCandidateEvidenceForGroup(
       issue_date: string;
       gross_amount: string;
       party_name: string | null;
+      has_je: boolean;
     }>(
       `select i.id::text,
               i.invoice_no,
               to_char(i.issue_date, 'YYYY-MM-DD') as issue_date,
               i.gross_amount::text,
-              p.name as party_name
+              p.name as party_name,
+              exists (
+                select 1 from public.management_journal_entries je
+                 where je.source_table = 'invoices' and je.source_id = i.id and je.status = 'posted'
+              ) as has_je
          from public.invoices i
          left join public.parties p on p.id = i.party_id
         where i.direction = 'sales'
           and i.status not in ('cancelled')
           and i.issue_date <= $1::date
-        order by i.issue_date desc
+        order by
+          (i.issue_date >= date_trunc('month', $1::date)::date) desc,
+          has_je asc,
+          i.gross_amount desc,
+          i.issue_date desc
         limit 5`,
       [asOfDate],
     );
@@ -264,7 +273,7 @@ async function findCandidateEvidenceForGroup(
         docRef: r.invoice_no,
         docDate: r.issue_date,
         amountTry: money(r.gross_amount),
-        summary: `Satış faturası (${r.party_name ?? "Müşteri"}): ${r.invoice_no}`,
+        summary: `${r.has_je ? "Kesim/Cutoff adayı" : "Yevmiyesiz fatura"} (${r.party_name ?? "Müşteri"}): ${r.invoice_no}`,
       });
     }
   } else if (groupCode === "320" || groupCode === "335") {
@@ -275,19 +284,28 @@ async function findCandidateEvidenceForGroup(
       gross_amount: string;
       spender_employee_name: string | null;
       party_name: string | null;
+      has_je: boolean;
     }>(
       `select i.id::text,
               i.invoice_no,
               to_char(i.issue_date, 'YYYY-MM-DD') as issue_date,
               i.gross_amount::text,
               i.spender_employee_name,
-              p.name as party_name
+              p.name as party_name,
+              exists (
+                select 1 from public.management_journal_entries je
+                 where je.source_table = 'invoices' and je.source_id = i.id and je.status = 'posted'
+              ) as has_je
          from public.invoices i
          left join public.parties p on p.id = i.party_id
         where i.direction = 'purchase'
           and i.status not in ('cancelled')
           and i.issue_date <= $1::date
-        order by i.issue_date desc
+        order by
+          (i.issue_date >= date_trunc('month', $1::date)::date) desc,
+          has_je asc,
+          i.gross_amount desc,
+          i.issue_date desc
         limit 5`,
       [asOfDate],
     );
@@ -300,7 +318,7 @@ async function findCandidateEvidenceForGroup(
         amountTry: money(r.gross_amount),
         summary: r.spender_employee_name
           ? `Çalışan harcama fişi (${r.spender_employee_name}): ${r.invoice_no}`
-          : `Alış/gider faturası (${r.party_name ?? "Tedarikçi"}): ${r.invoice_no}`,
+          : `${r.has_je ? "Dönem sonu alış faturası" : "Yevmiyesiz alış faturası"} (${r.party_name ?? "Tedarikçi"}): ${r.invoice_no}`,
       });
     }
   } else if (groupCode === "101" || groupCode === "103") {
@@ -318,7 +336,7 @@ async function findCandidateEvidenceForGroup(
               total_amount::text
          from public.check_bordros
         where bordro_date <= $1::date
-        order by bordro_date desc
+        order by (bordro_date >= date_trunc('month', $1::date)::date) desc, bordro_date desc
         limit 5`,
       [asOfDate],
     );
@@ -339,15 +357,21 @@ async function findCandidateEvidenceForGroup(
       amount: string;
       description: string | null;
       reference_no: string | null;
+      status: string;
     }>(
       `select id::text,
               to_char(txn_date, 'YYYY-MM-DD') as tx_date,
               abs(amount)::numeric(16,2)::text as amount,
               description,
-              reference_no
+              reference_no,
+              status
          from public.bank_transactions
         where txn_date <= $1::date
-        order by txn_date desc
+          and status <> 'ignored'
+        order by
+          (status in ('unmatched', 'suggested')) desc,
+          (txn_date >= date_trunc('month', $1::date)::date) desc,
+          txn_date desc
         limit 5`,
       [asOfDate],
     );
@@ -358,7 +382,7 @@ async function findCandidateEvidenceForGroup(
         docRef: r.reference_no ?? r.id.slice(0, 8),
         docDate: r.tx_date,
         amountTry: money(r.amount),
-        summary: `Banka hareketi: ${r.description ?? "Ekstre satırı"}`,
+        summary: `Banka hareketi [${r.status}]: ${r.description ?? "Ekstre satırı"}`,
       });
     }
   } else if (groupCode === "300/400") {
@@ -1177,4 +1201,147 @@ export async function buildCpaReconciliationPackBuffer(
 
   const arrayBuffer = await wb.xlsx.writeBuffer();
   return Buffer.from(arrayBuffer);
+}
+
+export interface SubAccountVknBridgeRow {
+  accountCode: string;
+  accountName: string;
+  tdhpRootCode: "120" | "320";
+  statutoryNetTry: number;
+  matchedPartyId: string | null;
+  matchedPartyName: string | null;
+  matchedVkn: string | null;
+  matchMethod: "vkn" | "name" | "unmatched";
+  masOpenNetTry: number;
+  deltaTry: number;
+  aligned: boolean;
+}
+
+/**
+ * M-63: Sub-account (`120.xx` / `320.xx`) ↔ Counterparty VKN & Normalized Name Reconciliation.
+ * Matches leaf sub-accounts in the statutory CPA mizan against MAS `parties` + `counterparty_profiles.tax_number`
+ * and compares statutory sub-account balance against MAS open TRY receivables/payables as of `asOfDate`.
+ */
+export async function loadSubAccountCounterpartyBridge(
+  pool: Pool,
+  statutoryTrialBalanceId: string,
+  asOfDate: string,
+): Promise<SubAccountVknBridgeRow[]> {
+  const [linesRes, partiesRes] = await Promise.all([
+    pool.query<{
+      account_code: string;
+      account_name: string;
+      tdhp_root_code: "120" | "320";
+      debit_total_try: string;
+      credit_total_try: string;
+    }>(
+      `select account_code, account_name, tdhp_root_code::text as tdhp_root_code,
+              debit_total_try::text, credit_total_try::text
+         from public.statutory_trial_balance_lines
+        where trial_balance_id = $1::uuid
+          and is_leaf = true
+          and tdhp_root_code in ('120', '320')
+        order by account_code asc
+        limit 250`,
+      [statutoryTrialBalanceId],
+    ),
+    pool.query<{
+      party_id: string;
+      name: string;
+      normalized_name: string;
+      tax_number: string | null;
+      open_ar_try: string;
+      open_ap_try: string;
+    }>(
+      `select p.id::text as party_id,
+              p.name,
+              p.normalized_name,
+              cp.tax_number,
+              coalesce((
+                select sum(greatest(coalesce(i.payable_amount, i.gross_amount) - i.allocated_amount, 0))
+                  from public.invoices i
+                 where i.party_id = p.id
+                   and i.direction = 'sales'
+                   and i.status in ('open', 'partial')
+                   and i.currency = 'TRY'
+                   and i.issue_date <= $1::date
+              ), 0)::numeric(16,2)::text as open_ar_try,
+              coalesce((
+                select sum(greatest(coalesce(i.payable_amount, i.gross_amount) - i.allocated_amount, 0))
+                  from public.invoices i
+                 where i.party_id = p.id
+                   and i.direction = 'purchase'
+                   and i.status in ('open', 'partial')
+                   and i.currency = 'TRY'
+                   and i.issue_date <= $1::date
+              ), 0)::numeric(16,2)::text as open_ap_try
+         from public.parties p
+         left join public.counterparty_profiles cp on cp.party_id = p.id
+        where p.is_active = true`,
+      [asOfDate],
+    ),
+  ]);
+
+  const parties = partiesRes.rows.map((p) => ({
+    partyId: p.party_id,
+    name: p.name,
+    norm: p.normalized_name,
+    vkn: p.tax_number ? p.tax_number.replace(/\D+/g, "") : null,
+    openArTry: money(p.open_ar_try),
+    openApTry: money(p.open_ap_try),
+  }));
+
+  return linesRes.rows.map((line) => {
+    const dr = money(line.debit_total_try);
+    const cr = money(line.credit_total_try);
+    const statutoryNetTry =
+      line.tdhp_root_code === "120"
+        ? Number(decimal(dr).minus(cr).round(2).toFixed(2))
+        : Number(decimal(cr).minus(dr).round(2).toFixed(2));
+
+    const combinedText = `${line.account_code} ${line.account_name}`;
+    const vknCandidate = combinedText.match(/\b(\d{10,11})\b/)?.[1] ?? null;
+    const normAccountName = line.account_name
+      .toLocaleLowerCase("tr-TR")
+      .replace(/\b(alıcılar|alicilar|satıcılar|saticilar|hesabı|hesabi|tic\.?|ltd\.?|şti\.?|a\.?ş\.?)\b/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+
+    let matched = vknCandidate
+      ? parties.find((p) => p.vkn && p.vkn === vknCandidate) ?? null
+      : null;
+    let matchMethod: "vkn" | "name" | "unmatched" = matched ? "vkn" : "unmatched";
+
+    if (!matched && normAccountName.length >= 3) {
+      matched =
+        parties.find(
+          (p) =>
+            p.norm === normAccountName ||
+            p.norm.includes(normAccountName) ||
+            normAccountName.includes(p.norm),
+        ) ?? null;
+      if (matched) matchMethod = "name";
+    }
+
+    const masOpenNetTry = matched
+      ? line.tdhp_root_code === "120"
+        ? matched.openArTry
+        : matched.openApTry
+      : 0;
+    const deltaTry = Number(decimal(masOpenNetTry).minus(statutoryNetTry).round(2).toFixed(2));
+
+    return {
+      accountCode: line.account_code,
+      accountName: line.account_name,
+      tdhpRootCode: line.tdhp_root_code,
+      statutoryNetTry,
+      matchedPartyId: matched?.partyId ?? null,
+      matchedPartyName: matched?.name ?? null,
+      matchedVkn: matched?.vkn ?? vknCandidate,
+      matchMethod,
+      masOpenNetTry,
+      deltaTry,
+      aligned: matched !== null && Math.abs(deltaTry) < 1,
+    };
+  });
 }

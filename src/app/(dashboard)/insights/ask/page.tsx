@@ -3,7 +3,8 @@ import { askQuestionAction } from "./actions";
 import { getRequestUser } from "@/lib/auth";
 import { requireRouteAccess } from "@/lib/authz/route-guard";
 import { getPool } from "@/lib/db";
-import { listAiResponses } from "@/lib/ai/engine";
+import { listAiResponses, loadAiResponse } from "@/lib/ai/engine";
+import type { ToolEvidenceRecord } from "@/lib/ai/tools";
 import { summarizeConversationWindow } from "@/lib/assistant/context";
 import {
   buildFinancialContext,
@@ -20,11 +21,13 @@ import { EmptyState, KeyStat, PageHeader } from "@/components/ui/shell";
 export const dynamic = "force-dynamic";
 
 const samples = [
-  "Bugün ne ödenecek?",
-  "7 günde ne kadar çıkış var?",
-  "Kasa ne zaman negatife düşüyor?",
-  "En büyük yoğunlaşma nerede?",
-  "Hangi aksiyon öncelikli?",
+  "Gecikmiş açık satış ve alış faturaları ne kadar?",
+  "13 haftalık likidite ve kasa projeksiyonu nedir?",
+  "TDHP 102 mizan bakiyesi ve yönetim EBITDA tutarı nedir?",
+  "Son 30 günlük banka hareketleri ve eşleşmemiş ekstre satırları neler?",
+  "Cari bakiye ve çek yoğunlaşması en yüksek firmalar hangileri?",
+  "Üretim parça marjları, tarife kartları ve OEE durumu nedir?",
+  "Aktif kredi kovenant ve DSCR boşluğu ne durumda?",
 ];
 
 const telegramSamples = [
@@ -59,7 +62,10 @@ export default async function AskPage({
       ? sp.conversationId.trim()
       : null;
 
-  const [recent, tgResult, conversations, finContext, selectedConversation] = await Promise.all([
+  const requestedResponseId =
+    sp.responseId && UUID_RE.test(sp.responseId.trim()) ? sp.responseId.trim() : null;
+
+  const [recent, tgResult, conversations, finContext, selectedConversation, selectedResponse] = await Promise.all([
     listAiResponses(pool, 20).catch((err: unknown) => {
       if (isMissingSchemaError(err)) return [];
       throw err;
@@ -71,7 +77,12 @@ export default async function AskPage({
     listConversations(pool, 25),
     buildFinancialContext(pool, role, todayISO),
     requestedConversationId ? loadConversationDetail(pool, requestedConversationId) : Promise.resolve(null),
+    requestedResponseId ? loadAiResponse(pool, requestedResponseId).catch(() => undefined) : Promise.resolve(undefined),
   ]);
+
+  const activeToolEvidence: ToolEvidenceRecord[] = Array.isArray(selectedResponse?.meta?.toolEvidence)
+    ? (selectedResponse?.meta?.toolEvidence as ToolEvidenceRecord[])
+    : [];
 
   const threadSummary = summarizeConversationWindow(conversations);
 
@@ -176,6 +187,44 @@ export default async function AskPage({
                   </div>
                   <div className="whitespace-pre-wrap leading-relaxed" style={{ color: "var(--text-2)" }}>
                     {turn.answerMd}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        ) : null}
+
+        {activeToolEvidence.length > 0 ? (
+          <div
+            className="mb-4 rounded border p-3 text-xs"
+            style={{
+              borderColor: "var(--line)",
+              background: "var(--surface-2)",
+              color: "var(--text-1)",
+            }}
+          >
+            <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+              <span className="font-semibold">Salt-Okunur SQL Araç Kanıt İzi ({activeToolEvidence.length} sorgu çalıştırıldı)</span>
+              <Badge tone="green">SELECT-only parametrik kanıt</Badge>
+            </div>
+            <div className="grid gap-2 sm:grid-cols-2">
+              {activeToolEvidence.map((ev) => (
+                <div
+                  key={`${ev.tool}-${ev.table}`}
+                  className="rounded border p-2"
+                  style={{ borderColor: "var(--line-faint)", background: "var(--surface-1)" }}
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="font-mono font-semibold">{ev.tool}</span>
+                    <Link href={ev.sourceHref} className="font-mono text-[11px] underline" style={{ color: "var(--info)" }}>
+                      {ev.sourceHref} →
+                    </Link>
+                  </div>
+                  <div className="mt-1 font-mono text-[11px]" style={{ color: "var(--text-3)" }}>
+                    Tablo: {ev.table} · Kayıt: {ev.count} · Baz: {ev.asOf}
+                  </div>
+                  <div className="mt-1" style={{ color: "var(--text-2)" }}>
+                    {ev.headline}
                   </div>
                 </div>
               ))}

@@ -336,7 +336,10 @@ describe("Faz 42 (B2) — JobDispatcher resultPayload kalıcılığı ve Import 
         if (text.includes("where status = 'failed' and next_run_at <= now()")) {
           return { rowCount: 2, rows: [{ id: "j1" }, { id: "j2" }] };
         }
-        if (text.includes("where status = 'running'") && text.includes("started_at < now()")) {
+        if (
+          text.includes("where status = 'running'") &&
+          (text.includes("started_at < now()") || text.includes("coalesce(heartbeat_at, started_at) < now()"))
+        ) {
           return { rowCount: 1, rows: [{ id: "j3" }] };
         }
         return { rowCount: 0, rows: [] };

@@ -1058,10 +1058,16 @@ export async function approvePaymentRun(
       throw new DomainError("NOT_FOUND", "Ödeme paketi bulunamadı.");
     }
     const run = runRes.rows[0];
-    if (!["draft", "pending_approval"].includes(run.status)) {
+    if (run.status === "draft") {
       throw new DomainError(
         "CONFLICT",
-        `Yalnız 'draft' veya 'pending_approval' durumundaki ödeme paketi onaylanabilir (mevcut: '${run.status}').`,
+        "Ödeme paketi onaylanmadan önce onaya gönderilmelidir (pending_approval).",
+      );
+    }
+    if (run.status !== "pending_approval") {
+      throw new DomainError(
+        "CONFLICT",
+        `Yalnız 'pending_approval' durumundaki ödeme paketi onaylanabilir (mevcut: '${run.status}').`,
       );
     }
 

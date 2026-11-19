@@ -113,6 +113,36 @@ export const ANOMALY_LABEL: Record<AnomalyRule, string> = {
   iban_changed: "IBAN değişmiş",
 };
 
+export const CONTROL_EVIDENCE_LABEL = {
+  approval_bypass: "Onay Atlanmış Eşik Üstü Ödemeler",
+  iban_changed: "Doğrulanmamış Yeni / Değişen IBAN Kayıtları (Son 30 Gün)",
+  duplicate_check: "Olası Mükerrer Çek / Senet Kayıtları",
+  duplicate_payment_template: "Olası Mükerrer Ödeme Şablonları",
+} as const;
+
+export const CHECK_DIRECTION_LABEL: Record<string, string> = {
+  outflow: "Keşide (Borç Çeki)",
+  inflow: "Müşteri Çeki (Tahsilat)",
+};
+
+export const PAYMENT_RECURRENCE_LABEL: Record<string, string> = {
+  monthly: "Aylık",
+  weekly: "Haftalık",
+  quarterly: "3 Aylık",
+  yearly: "Yıllık",
+  one_off: "Tek Seferlik",
+  irregular: "Düzensiz",
+};
+
+export const IBAN_CHANGE_TYPE_LABEL: Record<string, string> = {
+  added: "Yeni IBAN Eklendi",
+  insert: "Yeni IBAN Eklendi",
+  updated: "IBAN Güncellendi",
+  update: "IBAN Güncellendi",
+  deactivated: "IBAN Pasife Alındı",
+  primary_changed: "Birincil IBAN Değişti",
+};
+
 export interface AnomalyAssessment {
   score: number;
   severity: Severity;
@@ -234,3 +264,32 @@ export function falsePositiveRate(resolvedCount: number, falsePositiveCount: num
   if (closed <= 0) return null;
   return Number(decimal(falsePositiveCount).div(decimal(closed)).toFixed(4));
 }
+
+/* ── internal workflow classification boundary ────────────────────────────────────────── */
+
+/**
+ * Every control, anomaly, and overdue escalation label in MAS Nexus represents an INTERNAL
+ * operational review classification — never an automatic statutory legal filing or court action.
+ */
+export const INTERNAL_WORKFLOW_CLASSIFICATION_ONLY = true as const;
+
+const STATUTORY_LEGAL_CLAIM_PATTERNS: ReadonlyArray<RegExp> = Object.freeze([
+  /\bicra\s+takibi\s+başlatıl/i,
+  /\byasal\s+takip\s+başlatıl/i,
+  /\bhukuki\s+(?:işlem|süreç|takip)\s+başlatıl/i,
+  /\bdava\s+açıl/i,
+  /\bmahkemeye\s+(?:sevk|intikal)/i,
+  /\botomatik\s+(?:icra|dava|ihtarname)/i,
+  /\bihtarname\s+(?:çekildi|gönderildi)/i,
+]);
+
+/**
+ * Returns `true` if a control/escalation label or rationale falsely claims that automatic
+ * statutory legal proceedings were initiated solely from an internal rule or day count.
+ */
+export function hasStatutoryLegalProceedingClaim(text: string): boolean {
+  const normalized = text.trim();
+  if (!normalized) return false;
+  return STATUTORY_LEGAL_CLAIM_PATTERNS.some((re) => re.test(normalized));
+}
+

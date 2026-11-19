@@ -202,7 +202,7 @@ export function V2ImportFlow() {
         <input
           type="file" accept=".xlsx" data-testid="v2-file"
           onChange={(e) => setFile(e.target.files?.[0] ?? null)}
-          className="border border-line bg-black/40 p-2 font-mono text-xs file:mr-3 file:border-0 file:bg-surface-3 file:px-2 file:py-1 file:font-mono file:text-xs file:text-tone-1"
+          className="border border-line bg-surface-2 p-2 font-mono text-xs text-tone-1 file:mr-3 file:border-0 file:bg-surface-3 file:px-2 file:py-1 file:font-mono file:text-xs file:text-tone-1"
         />
         <form action={previewAction} onSubmit={attach} id="v2-preview-form" className="contents">
           <input type="file" name="file" className="hidden" tabIndex={-1} aria-hidden="true" />

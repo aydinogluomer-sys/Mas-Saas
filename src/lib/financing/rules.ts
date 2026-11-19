@@ -29,6 +29,7 @@ export interface MaturityItem {
   id: string;
   dueDate: string; // ISO date
   amount: number | null; // absolute value; null = unknown
+  currency?: string; // ISO-4217 currency code (default TRY)
   direction: CheckDirection;
   kind: "check" | "loan_installment";
   label: string;

@@ -161,12 +161,14 @@ const HEADER_SYNONYMS: Array<[StatementField, string[]]> = [
 export function detectStatementColumns(header: Record<string, string>): Partial<Record<StatementField, string>> {
   const out: Partial<Record<StatementField, string>> = {};
   const taken = new Set<string>();
+  const foldHeaderKey = (v: string): string => normalizeTr(v).replace(/ı/g, "i");
   for (const [field, synonyms] of HEADER_SYNONYMS) {
+    const foldedSynonyms = synonyms.map(foldHeaderKey);
     for (const [col, rawText] of Object.entries(header)) {
       if (taken.has(col) || out[field]) continue;
-      const text = normalizeTr(String(rawText ?? ""));
+      const text = foldHeaderKey(String(rawText ?? ""));
       if (!text) continue;
-      if (synonyms.some((syn) => text === syn || text.includes(syn))) {
+      if (foldedSynonyms.some((syn) => text === syn || text.includes(syn))) {
         out[field] = col;
         taken.add(col);
         break;

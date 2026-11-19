@@ -28,7 +28,18 @@ import {
   markCheckCleared,
   markInstallmentPaid,
 } from "@/lib/financing/engine";
+import {
+  createLoanWithAmortization,
+  LOAN_INTEREST_TYPES,
+  LOAN_KINDS,
+  LOAN_SCHEDULE_METHODS,
+  type LoanInterestType,
+  type LoanKind,
+  type LoanScheduleMethod,
+} from "@/lib/financing/loans-amortization";
 import { addMonthsPreservingAnchorDay } from "@/lib/financing/rules";
+import { isMissingSchemaError } from "@/lib/ledger/accounts";
+import { postJournalEntryWithClient } from "@/lib/ledger/posting-engine";
 import { revalidateFinancialViews } from "@/lib/revalidate-financial-views";
 import { cancelActionSchema } from "@/lib/validation/financial";
 
@@ -54,6 +65,16 @@ export async function createCheckAction(formData: FormData) {
   const rawCurrency = String(formData.get("currency") ?? "TRY").trim().toUpperCase();
   const currency = ALLOWED_CURRENCIES.has(rawCurrency) ? rawCurrency : "TRY";
   if (!date) throw new DomainError("VALIDATION_ERROR", "Vade tarihi zorunlu.");
+
+  const partyIdRaw = String(formData.get("partyId") ?? "").trim() || null;
+  const settledInvoiceId = String(formData.get("settledInvoiceId") ?? "").trim() || null;
+  const issueDate = String(formData.get("issueDate") ?? "").trim() || null;
+  const issuePlace = String(formData.get("issuePlace") ?? "").trim() || null;
+  const drawerTaxNo = String(formData.get("drawerTaxNo") ?? "").trim() || null;
+  const serial = String(formData.get("serial") ?? "").trim() || null;
+  const counterpartyInput = String(formData.get("counterparty") ?? "").trim() || null;
+  const notes = String(formData.get("notes") ?? "").trim() || null;
+
   const signed =
     amount == null
       ? null
@@ -72,29 +93,162 @@ export async function createCheckAction(formData: FormData) {
   let createdId: string;
   try {
     await client.query("begin");
-    const result = await client.query<{ id: string }>(
-      `insert into public.checks
-         (maturity_date, serial_no, counterparty_label, amount, signed_amount,
-          currency, instrument_type, direction, status, notes)
-       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-       returning id`,
-      [
-        date,
-        String(formData.get("serial") ?? "").trim() || null,
-        String(formData.get("counterparty") ?? "").trim() || null,
-        amount,
-        signed,
-        currency,
-        instrumentType,
-        direction,
-        initialStatus,
-        String(formData.get("notes") ?? "").trim() || null,
-      ],
-    );
+
+    let resolvedPartyId = partyIdRaw;
+    let resolvedPartyName = counterpartyInput;
+    if (resolvedPartyId) {
+      const pRes = await client.query<{ name: string; tax_no: string | null }>(
+        `select name, tax_no from public.parties where id = $1`,
+        [resolvedPartyId],
+      );
+      if (pRes.rows[0] && !resolvedPartyName) {
+        resolvedPartyName = pRes.rows[0].name;
+      }
+    }
+
+    let lockedInvoice: {
+      id: string;
+      invoice_no: string;
+      direction: string;
+      currency: string;
+      party_id: string | null;
+      open_amount: string;
+    } | null = null;
+
+    if (settledInvoiceId) {
+      if (amount == null || amount <= 0) {
+        throw new DomainError("VALIDATION_ERROR", "Fatura mahsubu için çek/senet tutarı sıfırdan büyük olmalıdır.");
+      }
+      if (direction === "unknown") {
+        throw new DomainError("VALIDATION_ERROR", "Fatura mahsubu için evrak yönü (tahsil / ödeme) seçilmelidir.");
+      }
+      const invRes = await client.query<{
+        id: string;
+        invoice_no: string;
+        direction: string;
+        currency: string;
+        party_id: string | null;
+        open_amount: string;
+      }>(
+        `select id::text as id,
+                coalesce(invoice_no, left(id::text, 8)) as invoice_no,
+                direction,
+                coalesce(currency, 'TRY') as currency,
+                party_id::text as party_id,
+                greatest(
+                  0,
+                  coalesce(payable_amount, gross_amount) -
+                  greatest(coalesce(paid_amount, 0), coalesce(allocated_amount, 0))
+                )::numeric(14,2)::text as open_amount
+           from public.invoices
+          where id = $1
+            and status in ('open', 'partial')
+            and archived_at is null
+          for update`,
+        [settledInvoiceId],
+      );
+      if (invRes.rowCount !== 1) {
+        throw new DomainError("NOT_FOUND", "Seçilen açık fatura bulunamadı veya kapanmış.");
+      }
+      lockedInvoice = invRes.rows[0];
+      if (lockedInvoice.currency !== currency) {
+        throw new DomainError(
+          "CONFLICT",
+          `Evrak para birimi (${currency}) ile fatura para birimi (${lockedInvoice.currency}) eşleşmelidir.`,
+        );
+      }
+      const expectedDirection = direction === "inflow" ? "sales" : "purchase";
+      if (lockedInvoice.direction !== expectedDirection) {
+        throw new DomainError(
+          "CONFLICT",
+          direction === "inflow"
+            ? "Müşteri tahsilat evrakı yalnız satış (120) faturasıyla mahsuplaştırılabilir."
+            : "Tedarikçi ödeme evrakı yalnız alış (320) faturasıyla mahsuplaştırılabilir.",
+        );
+      }
+      if (decimal(amount).gt(decimal(lockedInvoice.open_amount).plus("0.01"))) {
+        throw new DomainError(
+          "CONFLICT",
+          `Evrak tutarı (${amount} ${currency}) faturanın açık bakiyesini (${lockedInvoice.open_amount} ${currency}) aşıyor.`,
+        );
+      }
+      if (!resolvedPartyId && lockedInvoice.party_id) {
+        resolvedPartyId = lockedInvoice.party_id;
+      }
+    }
+
+    const payerPartyId = direction === "inflow" ? resolvedPartyId : null;
+    const payeePartyId = direction === "outflow" ? resolvedPartyId : null;
+
+    let result: { rows: Array<{ id: string }>; rowCount: number | null };
+    await client.query("savepoint chk_insert_v6_sp");
+    try {
+      result = await client.query<{ id: string }>(
+        `insert into public.checks
+           (maturity_date, serial_no, counterparty_label, payer_party_id, payee_party_id,
+            settled_invoice_id, issue_date, issue_place, drawer_tax_no,
+            amount, signed_amount, currency, instrument_type, direction, status, notes)
+         values ($1::date, $2, $3, $4, $5, $6, $7::date, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+         returning id::text as id`,
+        [
+          date,
+          serial,
+          resolvedPartyName,
+          payerPartyId,
+          payeePartyId,
+          lockedInvoice ? lockedInvoice.id : null,
+          issueDate,
+          issuePlace,
+          drawerTaxNo,
+          amount,
+          signed,
+          currency,
+          instrumentType,
+          direction,
+          initialStatus,
+          notes,
+        ],
+      );
+      await client.query("release savepoint chk_insert_v6_sp");
+    } catch (insErr) {
+      await client.query("rollback to savepoint chk_insert_v6_sp");
+      await client.query("release savepoint chk_insert_v6_sp");
+      const pgCode = (insErr as { code?: string })?.code;
+      if (pgCode !== "42703") throw insErr;
+      result = await client.query<{ id: string }>(
+        `insert into public.checks
+           (maturity_date, serial_no, counterparty_label, amount, signed_amount,
+            currency, instrument_type, direction, status, notes)
+         values ($1::date, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+         returning id::text as id`,
+        [date, serial, resolvedPartyName, amount, signed, currency, instrumentType, direction, initialStatus, notes],
+      );
+    }
+
     if (result.rowCount !== 1) {
       throw new DomainError("CONFLICT", "Çek/senet kaydı oluşturulamadı.");
     }
     createdId = result.rows[0].id;
+
+    if (lockedInvoice && amount != null && amount > 0) {
+      const allocAmt = decimal(amount).gt(decimal(lockedInvoice.open_amount))
+        ? decimal(lockedInvoice.open_amount).toFixed(2)
+        : decimal(amount).toFixed(2);
+      await client.query(
+        `insert into public.invoice_allocations
+           (invoice_id, source_table, source_id, allocated_amount, allocated_on, notes, created_by)
+         values ($1, 'checks', $2, $3::numeric, $4::date, $5, $6)`,
+        [
+          lockedInvoice.id,
+          createdId,
+          allocAmt,
+          issueDate ?? date,
+          `Evrak kaydı ile fatura mahsubu (${serial ?? createdId.slice(0, 8)})`,
+          session.id,
+        ],
+      );
+    }
+
     await client.query(
       `insert into public.check_events (check_id, event_type, event_note, created_by)
        values ($1, 'created', $2, $3)`,
@@ -104,12 +258,79 @@ export async function createCheckAction(formData: FormData) {
         session.id,
       ],
     );
+
+    if (amount != null && amount > 0 && (direction === "inflow" || direction === "outflow")) {
+      const entryDate = issueDate ?? date;
+      const amtStr = decimal(amount).toFixed(2);
+      const debitCode =
+        direction === "inflow"
+          ? instrumentType === "promissory_note"
+            ? "121"
+            : "101"
+          : "320";
+      const creditCode =
+        direction === "inflow"
+          ? "120"
+          : instrumentType === "promissory_note"
+            ? "321"
+            : "103";
+
+      await client.query("savepoint chk_open_je_sp");
+      try {
+        await postJournalEntryWithClient(
+          client,
+          {
+            entryDate,
+            sourceType: "check_bordro",
+            sourceId: createdId,
+            idempotencyKey: `check_create:${createdId}`,
+            description: `${
+              direction === "inflow" ? "Alınan" : "Keşide Edilen"
+            } ${instrumentType === "promissory_note" ? "Senet" : "Çek"} Kaydı (${serial ?? createdId.slice(0, 8)})`,
+            currency,
+            lines: [
+              {
+                accountCode: debitCode,
+                debitNative: amtStr,
+                partyId: resolvedPartyId,
+                memo: `${resolvedPartyName ?? "Cari"} (${serial ?? "evrak"})`,
+              },
+              {
+                accountCode: creditCode,
+                creditNative: amtStr,
+                partyId: resolvedPartyId,
+                memo: lockedInvoice
+                  ? `Fatura mahsubu: ${lockedInvoice.invoice_no}`
+                  : `${resolvedPartyName ?? "Cari"} (${serial ?? "evrak"})`,
+              },
+            ],
+          },
+          session.id,
+        );
+        await client.query("release savepoint chk_open_je_sp");
+      } catch (jeErr) {
+        await client.query("rollback to savepoint chk_open_je_sp");
+        await client.query("release savepoint chk_open_je_sp");
+        if (!isMissingSchemaError(jeErr)) throw jeErr;
+      }
+    }
+
     await audit(client, {
       actor: session.id,
       action: "create_check",
       entityTable: "checks",
       entityId: createdId,
-      after: { date, amount, currency, instrumentType, direction, status: initialStatus },
+      after: {
+        date,
+        amount,
+        currency,
+        instrumentType,
+        direction,
+        status: initialStatus,
+        settledInvoiceId: lockedInvoice?.id ?? null,
+        issueDate,
+        issuePlace,
+      },
     });
     await client.query("commit");
   } catch (error) {
@@ -123,7 +344,8 @@ export async function createCheckAction(formData: FormData) {
   }
   revalidatePath("/finance");
   revalidatePath("/finance/checks");
-  redirect("/finance/checks");
+  revalidateFinancialViews();
+  redirect("/finance/checks?flash=saved");
 }
 
 export async function executeCheckBordroAction(formData: FormData): Promise<void> {
@@ -145,6 +367,7 @@ export async function executeCheckBordroAction(formData: FormData): Promise<void
   const targetBankAccountId = String(formData.get("targetBankAccountId") ?? "").trim() || null;
   const targetFacilityId = String(formData.get("targetFacilityId") ?? "").trim() || null;
   const rawLtv = number(formData.get("ltvRatio"));
+  const rawDiscountFee = number(formData.get("discountFeeAmount"));
   const notes = String(formData.get("notes") ?? "").trim() || null;
 
   let res;
@@ -159,6 +382,7 @@ export async function executeCheckBordroAction(formData: FormData): Promise<void
         targetBankAccountId,
         targetFacilityId,
         ltvRatio: rawLtv ?? 0.8,
+        discountFeeAmount: rawDiscountFee != null && rawDiscountFee >= 0 ? rawDiscountFee : 0,
         notes,
       },
       session.id,
@@ -186,7 +410,69 @@ export async function createLoanAction(formData: FormData) {
   const principal = number(formData.get("principal"));
   const rawCount = number(formData.get("installmentCount"));
   const installment = number(formData.get("installmentAmount"));
-  const first = String(formData.get("firstPaymentDate") ?? "");
+  const first = String(formData.get("firstPaymentDate") ?? "").trim();
+  const rawScheduleMethod = String(formData.get("scheduleMethod") ?? "").trim();
+  const rawAnnualRate = number(formData.get("annualInterestRatePct"));
+
+  // M-38: Full commercial amortization / spot / leasing / TLREF-SOFR-EURIBOR generator
+  if (rawScheduleMethod || rawAnnualRate != null) {
+    const rawKind = String(formData.get("loanKind") ?? "installment").trim();
+    const loanKind: LoanKind = (LOAN_KINDS as readonly string[]).includes(rawKind)
+      ? (rawKind as LoanKind)
+      : "installment";
+    const scheduleMethod: LoanScheduleMethod = (LOAN_SCHEDULE_METHODS as readonly string[]).includes(
+      rawScheduleMethod,
+    )
+      ? (rawScheduleMethod as LoanScheduleMethod)
+      : loanKind === "leasing"
+        ? "leasing"
+        : loanKind === "spot"
+          ? "spot"
+          : "annuity";
+    const rawIntType = String(formData.get("interestType") ?? "fixed").trim();
+    const interestType: LoanInterestType = (LOAN_INTEREST_TYPES as readonly string[]).includes(rawIntType)
+      ? (rawIntType as LoanInterestType)
+      : "fixed";
+    const rawCurrency = String(formData.get("currency") ?? "TRY").trim().toUpperCase();
+    const currency = ALLOWED_CURRENCIES.has(rawCurrency) ? rawCurrency : "TRY";
+
+    try {
+      const created = await createLoanWithAmortization(
+        getPool(),
+        {
+          name,
+          lenderPartyId: String(formData.get("lenderPartyId") ?? "").trim() || null,
+          currency,
+          loanKind,
+          scheduleMethod,
+          interestType,
+          principal: principal ?? 0,
+          installmentCount: rawCount ?? 12,
+          firstPaymentDate: first,
+          disbursementDate: String(formData.get("disbursementDate") ?? "").trim() || first,
+          annualInterestRatePct: rawAnnualRate ?? 0,
+          referenceRatePct: number(formData.get("referenceRatePct")),
+          spreadBps: number(formData.get("spreadBps")),
+          bsmvRate: number(formData.get("bsmvRate")) ?? 0.05,
+          kkdfRate: number(formData.get("kkdfRate")) ?? 0,
+          disbursementAccountId: String(formData.get("disbursementAccountId") ?? "").trim() || null,
+          notes: String(formData.get("notes") ?? "").trim() || null,
+        },
+        session.id,
+      );
+      revalidatePath("/finance");
+      revalidatePath("/finance/loans");
+      revalidateFinancialViews();
+      redirect(`/finance/loans/${created.loanId}`);
+    } catch (error) {
+      if (isPgPeriodLockedError(error) || isHandledActionError(error)) {
+        errorRedirect("/finance/loans/new", toUserActionErrorMessage(error, "Kredi ödeme planı oluşturulamadı."));
+      }
+      throw error;
+    }
+  }
+
+  // Legacy flat-installment fallback
   if (!name || principal == null || rawCount == null || installment == null || !first) {
     throw new DomainError("VALIDATION_ERROR", "Kredi temel alanları zorunlu.");
   }
@@ -230,6 +516,7 @@ export async function createLoanAction(formData: FormData) {
     client.release();
   }
   revalidatePath("/finance");
+  revalidatePath("/finance/loans");
   redirect("/finance/loans");
 }
 

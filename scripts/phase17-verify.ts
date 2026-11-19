@@ -71,13 +71,6 @@ const SRC_DOC_ALLOWANCES: Allowance[] = [
       "kanıtlandığını anlatıyor; iki JSDoc 'bu yardımcı hangi cast'in yerine geçer' diyor. " +
       "Dosyada tek satır SQL yok.",
   },
-  {
-    file: "src/lib/radar/queries.ts",
-    occurrences: 2,
-    reason:
-      "Dokümantasyon: dosya başlığı ve paymentHistoryEvents'in JSDoc'u, Faz 17'de düzeltilen " +
-      "karışık ::numeric/::float8 tutarsızlığını anlatıyor. İkisi de yorum satırı.",
-  },
 ];
 
 /**

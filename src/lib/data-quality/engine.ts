@@ -1,5 +1,5 @@
 import type { Pool, PoolClient } from "pg";
-import { gather } from "@/lib/pg-concurrency";
+import { gather, withPinnedRead } from "@/lib/pg-concurrency";
 import {
   classifyWorkbookChange,
   decisionConfidenceLabel,
@@ -75,8 +75,99 @@ export interface DataQualityBlocker extends ReviewSignal {
   source_href: string;
 }
 
+export async function loadSystemQualityHeader(pool: Pool | PoolClient) {
+  const [summaryRes, capacityModels] = await gather(pool, [
+    () =>
+      pool.query<{
+        open_review_count: number;
+        high_open_count: number;
+        reconciliation_signal_count: number;
+        external_pending_count: number;
+        missing_amount_count: number;
+        wb_id: string | null;
+        wb_filename: string | null;
+        wb_imported_at: string | null;
+        wb_status: string | null;
+      }>(
+        `with rev as (
+           select
+             count(*) filter (where status in ('open','rejected'))::int as open_review_count,
+             count(*) filter (where status in ('open','rejected') and severity in ('critical','high'))::int as high_open_count,
+             count(*) filter (
+               where issue_type in ('cashflow_identity_mismatch','continuity_break','month_gap')
+                 and status in ('open','rejected')
+             )::int as reconciliation_signal_count
+           from public.mapping_reviews
+         ),
+         wb as (
+           select id::text as wb_id,
+                  original_filename as wb_filename,
+                  to_char(imported_at at time zone 'Europe/Istanbul','YYYY-MM-DD HH24:MI') as wb_imported_at,
+                  status as wb_status
+           from public.source_workbooks
+           order by imported_at desc
+           limit 1
+         )
+         select
+           rev.open_review_count,
+           rev.high_open_count,
+           rev.reconciliation_signal_count,
+           (select count(*)::int from public.external_assumptions where review_status='pending_review') as external_pending_count,
+           (
+             (select count(*)::int from public.payment_instances where amount is null and status in ('unpaid','partial','planned','late')) +
+             (select count(*)::int from public.cashflow_lines where amount is null)
+           )::int as missing_amount_count,
+           wb.wb_id,
+           wb.wb_filename,
+           wb.wb_imported_at,
+           wb.wb_status
+         from rev
+         left join wb on true`,
+      ),
+    () => loadCapacityModels(pool),
+  ]);
+
+  const row = summaryRes.rows[0];
+  const openReviewCount = Number(row?.open_review_count ?? 0);
+  const highOpenCount = Number(row?.high_open_count ?? 0);
+  const reconciliationSignalCount = Number(row?.reconciliation_signal_count ?? 0);
+  const externalPendingCount = Number(row?.external_pending_count ?? 0);
+  const missingAmountCount = Number(row?.missing_amount_count ?? 0);
+  const staleProductionRateCount = capacityModels.filter(
+    (c) => (c as unknown as { isStaleRate?: boolean }).isStaleRate,
+  ).length;
+  const decisionConfidence = decisionConfidenceScore({
+    openReviewCount,
+    highOpenCount,
+    reconciliationSignalCount,
+    missingAmountCount,
+    staleProductionRateCount,
+    externalPendingCount,
+  });
+
+  return {
+    decisionConfidence,
+    decisionConfidenceLabel: decisionConfidenceLabel(decisionConfidence),
+    workbookVersions:
+      row?.wb_id && row.wb_filename && row.wb_imported_at && row.wb_status
+        ? [
+            {
+              id: row.wb_id,
+              original_filename: row.wb_filename,
+              imported_at: row.wb_imported_at,
+              status: row.wb_status,
+            },
+          ]
+        : [],
+  };
+}
+
 export async function loadDataQualityCenter(pool: Pool | PoolClient) {
-  const [reviewCounts, issueCounts, openReviews, actions, specialSheets, externalPending, workbookVersions, reconciliationSignals, workbookStats, changedSheets, cashflowReconciliation, missingAmounts, auditTrail, capacityModels] = await gather(pool, [
+  return withPinnedRead(pool, loadDataQualityCenterInner);
+}
+
+async function loadDataQualityCenterInner(pool: Pool | PoolClient) {
+  const [reviewCounts, issueCounts, openReviews, actions, specialSheets, scalarSignals, workbookVersions, workbookStats, changedSheets, cashflowReconciliation, auditTrail, capacityModels] = await gather(pool, [
     () => pool.query<{ status: string; severity: DqSeverity; n: number }>(
       `select status, severity, count(*)::int n
        from public.mapping_reviews group by status, severity`,
@@ -90,8 +181,8 @@ export async function loadDataQualityCenter(pool: Pool | PoolClient) {
       `select m.id, m.workbook_id, w.original_filename as workbook_name, m.sheet_id,
               m.issue_type, m.severity, m.message, m.status, m.created_at,
               s.sheet_name, r.row_index,
-              case when m.sheet_id is null then '/imports/' || m.workbook_id::text || '/reviews'
-                   else '/imports/' || m.workbook_id::text || '/sheets/' || m.sheet_id::text end as source_href
+              case when m.sheet_id is null then '/data/imports/' || m.workbook_id::text || '/reviews'
+                   else '/data/imports/' || m.workbook_id::text || '/sheets/' || m.sheet_id::text end as source_href
        from public.mapping_reviews m
        join public.source_workbooks w on w.id=m.workbook_id
        left join public.source_sheets s on s.id=m.sheet_id
@@ -123,8 +214,23 @@ export async function loadDataQualityCenter(pool: Pool | PoolClient) {
           or lower(s.sheet_name) like '%aylık%özet%'
        order by w.imported_at desc, s.sheet_index`,
     ),
-    () => pool.query<{ n: number }>(
-      `select count(*)::int n from public.external_assumptions where review_status='pending_review'`,
+    () => pool.query<{
+      external_pending: number;
+      reconciliation_signals: number;
+      missing_amounts: number;
+    }>(
+      `select
+         (select count(*)::int from public.external_assumptions where review_status='pending_review') as external_pending,
+         (
+           select count(*)::int
+           from public.mapping_reviews
+           where issue_type in ('cashflow_identity_mismatch','continuity_break','month_gap')
+             and status in ('open','rejected')
+         ) as reconciliation_signals,
+         (
+           (select count(*)::int from public.payment_instances where amount is null and status in ('unpaid','partial','planned','late')) +
+           (select count(*)::int from public.cashflow_lines where amount is null)
+         )::int as missing_amounts`,
     ),
     () => pool.query<{ id: string; original_filename: string; imported_at: string; status: string }>(
       `select id::text, original_filename,
@@ -133,12 +239,6 @@ export async function loadDataQualityCenter(pool: Pool | PoolClient) {
        from public.source_workbooks
        order by imported_at desc
        limit 6`,
-    ),
-    () => pool.query<{ n: number }>(
-      `select count(*)::int n
-       from public.mapping_reviews
-       where issue_type in ('cashflow_identity_mismatch','continuity_break','month_gap')
-         and status in ('open','rejected')`,
     ),
     () => pool.query<{
       workbook_id: string;
@@ -158,12 +258,24 @@ export async function loadDataQualityCenter(pool: Pool | PoolClient) {
          limit 2
        )
        select l.id::text as workbook_id, l.original_filename, l.imported_at,
-              (select count(*)::int from public.source_sheets s where s.workbook_id=l.id) as sheet_count,
+              ss.sheet_count,
               (select count(*)::int from public.import_rows r where r.workbook_id=l.id) as row_count,
-              (select count(*)::int from public.source_cells c where c.workbook_id=l.id) as cell_count,
-              (select count(*)::int from public.source_cells c where c.workbook_id=l.id and c.formula is not null and c.formula <> '') as formula_count,
-              (select count(*)::int from public.source_sheets s where s.workbook_id=l.id and s.detected_type='monthly_cashflow') as monthly_sheet_count
+              sc.cell_count,
+              sc.formula_count,
+              ss.monthly_sheet_count
        from last2 l
+       cross join lateral (
+         select count(*)::int as sheet_count,
+                count(*) filter (where s.detected_type='monthly_cashflow')::int as monthly_sheet_count
+         from public.source_sheets s
+         where s.workbook_id = l.id
+       ) ss
+       cross join lateral (
+         select count(*)::int as cell_count,
+                count(*) filter (where c.formula is not null and c.formula <> '')::int as formula_count
+         from public.source_cells c
+         where c.workbook_id = l.id
+       ) sc
        order by l.imported_at desc`,
     ),
     () => pool.query<{ sheet_name: string; side: string }>(
@@ -222,8 +334,8 @@ export async function loadDataQualityCenter(pool: Pool | PoolClient) {
                   else null
                 end as source_closing
          from public.cashflow_months cm
-         left join public.source_cells b1 on b1.sheet_id = cm.source_sheet_id and upper(b1.address) = 'B1'
-         left join public.source_cells j1 on j1.sheet_id = cm.source_sheet_id and upper(j1.address) = 'J1'
+         left join public.source_cells b1 on b1.sheet_id = cm.source_sheet_id and b1.address in ('B1', 'b1')
+         left join public.source_cells j1 on j1.sheet_id = cm.source_sheet_id and j1.address in ('J1', 'j1')
        )
        select to_char(month_start, 'YYYY-MM-DD') as month_start,
               app_opening,
@@ -242,12 +354,6 @@ export async function loadDataQualityCenter(pool: Pool | PoolClient) {
        order by month_start desc
        limit 24`,
     ),
-    () => pool.query<{ n: number }>(
-      `select (
-         (select count(*)::int from public.payment_instances where amount is null and status in ('unpaid','partial','planned','late')) +
-         (select count(*)::int from public.cashflow_lines where amount is null)
-       )::int as n`,
-    ),
     () => pool.query<AuditTrailItem>(
       `select action, entity_table, entity_id::text,
               to_char(created_at at time zone 'Europe/Istanbul','YYYY-MM-DD HH24:MI') as created_at
@@ -259,6 +365,7 @@ export async function loadDataQualityCenter(pool: Pool | PoolClient) {
     () => loadCapacityModels(pool),
   ]);
 
+  const scalarRow = scalarSignals.rows[0];
   const blockers = rankReviewSignals(openReviews.rows, 5);
   const openReviewCount = reviewCounts.rows
     .filter((r) => r.status === "open" || r.status === "rejected")
@@ -267,15 +374,16 @@ export async function loadDataQualityCenter(pool: Pool | PoolClient) {
     .filter((r) => (r.status === "open" || r.status === "rejected") && (r.severity === "critical" || r.severity === "high"))
     .reduce((sum, r) => sum + r.n, 0);
   const staleProductionRateCount = capacityModels.filter((c) => (c as unknown as { isStaleRate?: boolean }).isStaleRate).length;
-  const missingAmountCount = Number(missingAmounts.rows[0]?.n ?? 0);
-  const reconciliationSignalCount = Number(reconciliationSignals.rows[0]?.n ?? 0);
+  const missingAmountCount = Number(scalarRow?.missing_amounts ?? 0);
+  const reconciliationSignalCount = Number(scalarRow?.reconciliation_signals ?? 0);
+  const externalPendingCount = Number(scalarRow?.external_pending ?? 0);
   const decisionConfidence = decisionConfidenceScore({
     openReviewCount,
     highOpenCount,
     reconciliationSignalCount,
     missingAmountCount,
     staleProductionRateCount,
-    externalPendingCount: Number(externalPending.rows[0]?.n ?? 0),
+    externalPendingCount,
   });
   const workbookChangedSheets = changedSheets.rows.map((s) => {
     const c = classifyWorkbookChange(s.sheet_name);
@@ -286,7 +394,7 @@ export async function loadDataQualityCenter(pool: Pool | PoolClient) {
     openReviewCount,
     highOpenCount,
     actionOpenCount: actions.rows.length,
-    externalPendingCount: Number(externalPending.rows[0]?.n ?? 0),
+    externalPendingCount,
     missingAmountCount,
     staleProductionRateCount,
     decisionConfidence,
@@ -347,7 +455,7 @@ export async function createActionFromReview(pool: Pool, reviewId: string, actor
       `select m.id, m.workbook_id, w.original_filename as workbook_name, m.sheet_id,
               m.issue_type, m.severity, m.message, m.status, m.created_at,
               s.sheet_name, r.row_index,
-              '/imports/' || m.workbook_id::text || '/reviews?status=' || m.status as source_href
+              '/data/imports/' || m.workbook_id::text || '/reviews?status=' || m.status as source_href
        from public.mapping_reviews m
        join public.source_workbooks w on w.id=m.workbook_id
        left join public.source_sheets s on s.id=m.sheet_id
@@ -369,6 +477,9 @@ export async function createActionFromReview(pool: Pool, reviewId: string, actor
        returning id`,
       [reviewActionTitle(r), r.severity, dueIn(r.severity === "critical" || r.severity === "high" ? 1 : 3), safeHref, r.id, r.message, actorId],
     );
+    if (ins.rowCount !== 1) {
+      throw new DomainError("FORBIDDEN", "Görev kaydı oluşturulamadı.");
+    }
     const id = ins.rows[0].id;
     await audit(client, {
       actor: actorId, action: "create_action_from_review", entityTable: "action_items", entityId: id,
@@ -409,6 +520,9 @@ export async function createActionFromHomeSignal(
        values ($1,$2,$3,'open','home_action',$4,$5,$6,$7) returning id`,
       [input.title, input.severity, dueIn(input.severity === "critical" || input.severity === "high" ? 1 : 7), input.sourceFactKey, safeHref, input.note ?? null, actorId],
     );
+    if (ins.rowCount !== 1) {
+      throw new DomainError("FORBIDDEN", "Görev kaydı oluşturulamadı.");
+    }
     const id = ins.rows[0].id;
     await audit(client, {
       actor: actorId, action: "create_action_from_home", entityTable: "action_items", entityId: id,
@@ -431,9 +545,9 @@ export async function createActionFromAiResponse(pool: Pool, aiResponseId: strin
     const existing = await client.query<{ id: string }>(
       `select id from public.action_items
        where source_type='ai_response'
-         and related_entity_table='ai_response_snapshots'
-         and related_entity_id=$1
-         and status in ('open','in_progress','blocked')
+        and related_entity_table='ai_response_snapshots'
+        and related_entity_id=$1
+        and status in ('open','in_progress','blocked')
        limit 1`,
       [aiResponseId],
     );
@@ -457,7 +571,7 @@ export async function createActionFromAiResponse(pool: Pool, aiResponseId: strin
       await client.query("commit");
       return null;
     }
-    const sourceHref = r.report_id ? `/reports/${r.report_id}?ai=${r.id}` : `/ask?response=${r.id}`;
+    const sourceHref = r.report_id ? `/insights/reports/${r.report_id}?ai=${r.id}` : `/insights/ask/${r.id}`;
     const ins = await client.query<{ id: string }>(
       `insert into public.action_items
          (title, severity, due_date, status, source_type, source_href,
@@ -473,6 +587,9 @@ export async function createActionFromAiResponse(pool: Pool, aiResponseId: strin
         actorId,
       ],
     );
+    if (ins.rowCount !== 1) {
+      throw new DomainError("FORBIDDEN", "Görev kaydı oluşturulamadı.");
+    }
     const id = ins.rows[0].id;
     await audit(client, {
       actor: actorId, action: "create_action_from_ai_response", entityTable: "action_items", entityId: id,
@@ -522,7 +639,7 @@ export async function createActionFromReport(pool: Pool, reportId: string, actor
       await client.query("commit");
       return null;
     }
-    const sourceHref = `/reports/${r.id}`;
+    const sourceHref = `/insights/reports/${r.id}`;
     const ins = await client.query<{ id: string }>(
       `insert into public.action_items
          (title, severity, due_date, status, source_type, source_href,
@@ -538,6 +655,9 @@ export async function createActionFromReport(pool: Pool, reportId: string, actor
         actorId,
       ],
     );
+    if (ins.rowCount !== 1) {
+      throw new DomainError("FORBIDDEN", "Görev kaydı oluşturulamadı.");
+    }
     const id = ins.rows[0].id;
     await audit(client, {
       actor: actorId, action: "create_action_from_report", entityTable: "action_items", entityId: id,
@@ -555,23 +675,69 @@ export async function createActionFromReport(pool: Pool, reportId: string, actor
 
 export async function createManualAction(
   pool: Pool,
-  input: { title: string; severity: DqSeverity; owner?: string | null; dueDate?: string | null; note?: string | null },
+  input: {
+    title: string;
+    severity: DqSeverity;
+    owner?: string | null;
+    ownerUserId?: string | null;
+    autoCloseOnSettlement?: boolean;
+    dueDate?: string | null;
+    note?: string | null;
+    relatedEntityTable?: string | null;
+    relatedEntityId?: string | null;
+  },
   actorId: string,
 ): Promise<string | null> {
   const title = input.title.trim().slice(0, 240);
   if (!title) return null;
+  const ownerUserId = input.ownerUserId && /^[0-9a-f-]{36}$/i.test(input.ownerUserId.trim())
+    ? input.ownerUserId.trim()
+    : null;
+  const relatedEntityId = input.relatedEntityId && /^[0-9a-f-]{36}$/i.test(input.relatedEntityId.trim())
+    ? input.relatedEntityId.trim()
+    : null;
+  const relatedEntityTable = relatedEntityId && input.relatedEntityTable?.trim()
+    ? input.relatedEntityTable.trim()
+    : null;
+  const autoClose = input.autoCloseOnSettlement !== false;
+
   const client = await pool.connect();
   try {
     await client.query("begin");
+    let resolvedOwner = input.owner?.trim() || null;
+    if (ownerUserId && !resolvedOwner) {
+      const lbl = await client.query<{ label: string | null }>(
+        `select public.user_display_label($1::uuid) as label`,
+        [ownerUserId],
+      );
+      resolvedOwner = lbl.rows[0]?.label?.trim() || null;
+    }
+
     const ins = await client.query<{ id: string }>(
-      `insert into public.action_items (title, severity, owner, due_date, status, source_type, note, created_by)
-       values ($1,$2,$3,$4,'open','manual',$5,$6) returning id`,
-      [title, input.severity, input.owner ?? null, input.dueDate || null, input.note ?? null, actorId],
+      `insert into public.action_items
+         (title, severity, owner, owner_user_id, auto_close_on_settlement, due_date, status, source_type,
+          related_entity_table, related_entity_id, note, created_by)
+       values ($1,$2,$3,$4::uuid,$5,$6,'open','manual',$7,$8::uuid,$9,$10) returning id`,
+      [
+        title,
+        input.severity,
+        resolvedOwner,
+        ownerUserId,
+        autoClose,
+        input.dueDate || null,
+        relatedEntityTable,
+        relatedEntityId,
+        input.note ?? null,
+        actorId,
+      ],
     );
+    if (ins.rowCount !== 1) {
+      throw new DomainError("FORBIDDEN", "Görev kaydı oluşturulamadı.");
+    }
     const id = ins.rows[0].id;
     await audit(client, {
       actor: actorId, action: "create_manual_action", entityTable: "action_items", entityId: id,
-      before: null, after: input,
+      before: null, after: { ...input, owner: resolvedOwner, ownerUserId, autoCloseOnSettlement: autoClose },
     });
     await client.query("commit");
     return id;

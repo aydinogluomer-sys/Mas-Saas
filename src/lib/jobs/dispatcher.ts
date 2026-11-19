@@ -294,7 +294,7 @@ export function registerBuiltInJobHandlers(
     };
   });
 
-  target.register("large_export", async ({ pool, job, reportProgress: onProgress }) => {
+  target.register("large_export", async ({ pool, actorId, job, reportProgress: onProgress }) => {
     const { rowsToCsv, toXlsxBuffer } = await import("@/lib/analytics/export");
     const dataset =
       job.payload.dataset === "payment_instances" ||
@@ -466,6 +466,37 @@ export function registerBuiltInJobHandlers(
         : Buffer.from(rowsToCsv(sheetRows), "utf8");
     const sha256 = createHash("sha256").update(bytes).digest("hex");
 
+    let artifactDocumentId: string | null = null;
+    if (bytes.byteLength > 0) {
+      try {
+        const { uploadValidatedDocument } = await import("@/lib/documents/engine");
+        const uploaded = await uploadValidatedDocument(
+          pool,
+          {
+            title: `Büyük Dışa Aktarma — ${sheetName} (${rowCount} satır)`,
+            docType: "report",
+            tags: ["large-export", dataset],
+            bytes,
+            mimeType:
+              format === "xlsx"
+                ? "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                : "text/csv",
+            originalFilename: `${dataset}-${job.id.slice(0, 8)}.${format}`,
+          },
+          actorId,
+        );
+        artifactDocumentId = uploaded.documentId;
+        await pool
+          .query(
+            `update public.background_jobs set artifact_document_id = $2::uuid where id = $1`,
+            [job.id, artifactDocumentId],
+          )
+          .catch(() => undefined);
+      } catch {
+        // Fallback to inlineBase64 when running against a lightweight mock pool
+      }
+    }
+
     await onProgress(2, 2);
     return {
       success: true,
@@ -477,6 +508,7 @@ export function registerBuiltInJobHandlers(
         rowCount,
         byteLength: bytes.byteLength,
         sha256,
+        artifactDocumentId,
         generatedAt: new Date().toISOString(),
         inlineBase64: bytes.byteLength <= 65_536 ? bytes.toString("base64") : null,
       },

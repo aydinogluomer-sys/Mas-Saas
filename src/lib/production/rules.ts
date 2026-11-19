@@ -80,14 +80,19 @@ export interface PartInput {
   quantity: number | null;
   tornaMinutesPerUnit: number | null;
   frezeMinutesPerUnit: number | null;
+  otherOperationMinutesPerUnit?: number | null;
+  unitMaterialCostTry?: number | null;
   revenue: number | null; // source FİYAT (total for the qty)
 }
 
 export interface PartProfitability {
   tornaTotalMinutes: number | null;
   frezeTotalMinutes: number | null;
+  otherTotalMinutes?: number | null;
   estimatedTornaCost: number | null;
   estimatedFrezeCost: number | null;
+  estimatedOtherOpCost?: number | null;
+  estimatedMaterialCost?: number | null;
   estimatedTotalCost: number | null;
   estimatedRevenue: number | null;
   estimatedMargin: number | null;
@@ -97,31 +102,51 @@ export interface PartProfitability {
 }
 
 /**
- * Part cost = total operation minutes × break-even TL/dk (per operation rate).
- * Missing BOTH torna and freze time ⇒ flagged + confidence needs_review; the row is
+ * Part cost = total operation minutes × break-even TL/dk (per operation rate) + BOM 710 material cost.
+ * Missing ALL operation times ⇒ flagged + confidence needs_review; the row is
  * still produced (traceable), amounts stay null where source is null.
  */
 export function partProfitability(
   part: PartInput,
   tornaTLPerMin: number | null,
   frezeTLPerMin: number | null,
+  otherTLPerMin?: number | null,
 ): PartProfitability {
   const qty = part.quantity ?? null;
+  const hasOtherOp =
+    part.otherOperationMinutesPerUnit != null && part.otherOperationMinutesPerUnit > 0;
   const tornaTotal = part.tornaMinutesPerUnit != null && qty != null ? part.tornaMinutesPerUnit * qty : null;
   const frezeTotal = part.frezeMinutesPerUnit != null && qty != null ? part.frezeMinutesPerUnit * qty : null;
+  const otherTotal =
+    hasOtherOp && qty != null ? (part.otherOperationMinutesPerUnit as number) * qty : null;
+
+  const fallbackOpRate = otherTLPerMin ?? frezeTLPerMin ?? tornaTLPerMin ?? null;
   const tornaCost = tornaTotal != null && tornaTLPerMin != null ? tornaTotal * tornaTLPerMin : null;
   const frezeCost = frezeTotal != null && frezeTLPerMin != null ? frezeTotal * frezeTLPerMin : null;
-  const totalCost =
-    tornaCost == null && frezeCost == null ? null : (tornaCost ?? 0) + (frezeCost ?? 0);
+  const otherCost = otherTotal != null && fallbackOpRate != null ? otherTotal * fallbackOpRate : null;
+  const materialCost =
+    part.unitMaterialCostTry != null && part.unitMaterialCostTry > 0 && qty != null
+      ? part.unitMaterialCostTry * qty
+      : null;
+
+  const hasAnyShopCost = tornaCost != null || frezeCost != null || otherCost != null;
+  const totalCost = !hasAnyShopCost
+    ? null
+    : (tornaCost ?? 0) + (frezeCost ?? 0) + (otherCost ?? 0) + (materialCost ?? 0);
+
   const revenue = part.revenue;
   const margin = totalCost != null && revenue != null ? revenue - totalCost : null;
   const marginRate = margin != null && revenue != null && revenue !== 0 ? margin / revenue : null;
-  const missingOperationTime = part.tornaMinutesPerUnit == null && part.frezeMinutesPerUnit == null;
+  const missingOperationTime =
+    part.tornaMinutesPerUnit == null && part.frezeMinutesPerUnit == null && !hasOtherOp;
   return {
     tornaTotalMinutes: tornaTotal,
     frezeTotalMinutes: frezeTotal,
+    ...(otherTotal != null ? { otherTotalMinutes: otherTotal } : {}),
     estimatedTornaCost: tornaCost,
     estimatedFrezeCost: frezeCost,
+    ...(otherCost != null ? { estimatedOtherOpCost: otherCost } : {}),
+    ...(materialCost != null ? { estimatedMaterialCost: materialCost } : {}),
     estimatedTotalCost: totalCost,
     estimatedRevenue: revenue,
     estimatedMargin: margin,
@@ -142,7 +167,7 @@ export interface PriceMargin {
 }
 
 /**
- * Margin of a customer price (e.g. Akon's freze/torna TL/dk) over the blended break-even.
+ * Margin of a customer contract rate (freze/torna TL/dk) over the blended break-even.
  * null-safe: any unknown side ⇒ null margin (never assumed 0). `loss` flags a price that
  * fails to cover the break-even — the sharpest capacity/cost signal for the operator.
  */

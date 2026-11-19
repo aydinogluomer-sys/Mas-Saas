@@ -32,7 +32,7 @@ export const runOptimizationSchema = z.object({
   name: z.string().trim().min(1, "Çalışma adı zorunlu"),
   objective: z.enum(["min_financing_cost", "max_liquidity_buffer", "min_late_payment"]),
   anchorDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Tarih YYYY-AA-GG olmalı"),
-  horizonDays: z.number().int().min(1).max(365).default(90),
+  horizonDays: z.number().int().min(1).max(365).default(91),
   currency: z.string().trim().length(3).default("TRY"),
   scenarioRunId: z.uuid().nullable().optional(),
 });
@@ -382,27 +382,35 @@ export async function requestOptimizationApproval(
 
 export async function loadOptimizationRuns(pool: Pool, limit = 50) {
   const res = await pool.query(
-    `select run_id, name, objective, to_char(anchor_date,'YYYY-MM-DD') as anchor_date,
-            horizon_days, currency, recommendation_count, total_expected_effect,
-            timing_actions, financing_actions, approval_status, approval_round, result_digest
-     from public.optimization_run_summary
-     order by anchor_date desc, name
+    `select s.run_id, s.name, s.objective, to_char(s.anchor_date,'YYYY-MM-DD') as anchor_date,
+            s.horizon_days, s.currency, s.recommendation_count, s.total_expected_effect,
+            s.timing_actions, s.financing_actions, s.approval_status, s.approval_round, s.result_digest,
+            o.notes
+     from public.optimization_run_summary s
+     left join public.optimization_runs o on o.id = s.run_id
+     order by s.anchor_date desc, s.name
      limit $1`, [limit]);
-  return res.rows.map((r) => ({
-    runId: r.run_id,
-    name: r.name,
-    objective: r.objective,
-    anchorDate: r.anchor_date,
-    horizonDays: Number(r.horizon_days),
-    currency: r.currency,
-    recommendationCount: Number(r.recommendation_count),
-    totalExpectedEffect: moneyOrNull(r.total_expected_effect) ?? 0,
-    timingActions: Number(r.timing_actions),
-    financingActions: Number(r.financing_actions),
-    approvalStatus: r.approval_status as string | null,
-    approvalRound: r.approval_round == null ? null : Number(r.approval_round),
-    resultDigest: r.result_digest as string | null,
-  }));
+  return res.rows.map((r) => {
+    const notes = (r.notes as string | null) ?? null;
+    const isExecuted = notes != null && notes.includes("[EXECUTED:");
+    return {
+      runId: r.run_id,
+      name: r.name,
+      objective: r.objective,
+      anchorDate: r.anchor_date,
+      horizonDays: Number(r.horizon_days),
+      currency: r.currency,
+      recommendationCount: Number(r.recommendation_count),
+      totalExpectedEffect: moneyOrNull(r.total_expected_effect) ?? 0,
+      timingActions: Number(r.timing_actions),
+      financingActions: Number(r.financing_actions),
+      approvalStatus: r.approval_status as string | null,
+      approvalRound: r.approval_round == null ? null : Number(r.approval_round),
+      resultDigest: r.result_digest as string | null,
+      notes,
+      isExecuted,
+    };
+  });
 }
 
 export async function loadRecommendations(pool: Pool, runId: string) {

@@ -1,11 +1,11 @@
-# MAS Nakit Radar — Veritabanı Şeması Kanonik Referansı (`Migration 0115`)
+# MAS Nakit Radar — Veritabanı Şeması Kanonik Referansı (`Migration 0124`)
 
 > **Kanonik Canlı Katalog Özeti (`mas_radar_dev` — Yerel Windows PostgreSQL 16.14):**
-> - **Uygulanan Migration Aralığı:** `0001..0115` (**`115` migration** — `supabase/migrations/*.sql`, `public.schema_migrations` `max(version) = '0115'`)
-> - **Tablo Sayısı:** **`106` `public` tablo** (`105` iş/operasyon tablosu + `schema_migrations`) + **`1` `auth` tablosu** (`auth.users`) = **`107` toplam tablo** (`0112` ile `facility_drawdowns`, `working_capital_trend_reference` ve `forecast_accuracy_log` zombi tabloları emekliye ayrıldı)
-> - **Satır Düzeyi Güvenlik (RLS):** **`106 / 106` (`%100`)** `public` tabloda `relrowsecurity = true`
-> - **Görünüm (View) Sayısı:** **`87` `public` görünüm**, **`87 / 87` (`%100`)** `WITH (security_invoker = true)` ve yazma yetkileri iptal edilmiş (`0` materialized view)
-> - **Mimari Tarihçe Notu:** Aşağıdaki bölümler şemanın `0001` başlangıcından `0115` kanonik durumuna evrimini kronolojik olarak belgeler; eski faz başlıklarındaki ara tablo sayıları (örn. Faz 1 `22`, Faz 24B `58`) tarihsel bağlam içindir ve güncel canlı gerçek yukarıdaki **`0115` (`106` `public` tablo / `87` görünüm)** özetidir.
+> - **Uygulanan Migration Aralığı:** `0001..0124` (**`124` migration** — `supabase/migrations/*.sql`, `public.schema_migrations` `max(version) = '0124'`)
+> - **Tablo Sayısı:** **`132` `public` tablo** (`131` iş/operasyon/güvenlik tablosu + `schema_migrations`) + **`1` `auth` tablosu** (`auth.users`) = **`133` toplam tablo** (`0112` ile zombi tablolar emekliye ayrıldı; `0116..0123` ile grup şirket/şube, hazine, tam üretim, birleşik senaryo, grup içi eliminasyon, parola sıfırlama/SSO/yorum, `notification_outbox`, `ops_incidents` ve `user_legal_entities` tabloları eklendi)
+> - **Satır Düzeyi Güvenlik (RLS):** **`132 / 132` (`%100`)** `public` tabloda `relrowsecurity = true`
+> - **Görünüm (View) Sayısı:** **`91` `public` görünüm**, **`91 / 91` (`%100`)** `WITH (security_invoker = true)` ve yazma yetkileri iptal edilmiş (`0` materialized view; `0124` ile `public.valid_workbook_imports` eklendi)
+> - **Mimari Tarihçe Notu:** Aşağıdaki bölümler şemanın `0001` başlangıcından `0124` kanonik durumuna evrimini kronolojik olarak belgeler; eski faz başlıklarındaki ara tablo sayıları (örn. Faz 1 `22`, Faz 24B `58`, Faz 59 `106`) tarihsel bağlam içindir ve güncel canlı gerçek yukarıdaki **`0124` (`132` `public` tablo / `91` görünüm)** özetidir.
 
 Tam uygulama fazları için bkz. `implementation.md`.
 
@@ -2792,4 +2792,108 @@ Salt indeks eklemesi (`0097_hot_path_partial_indexes.sql`); hiçbir tablo kolonu
 `0115_reminder_deliveries_operational_rls.sql` hatırlatıcı gönderim kuyruğunun yaşam döngüsü (`pending -> sent | skipped | failed`) için RLS sınıfını düzeltir (`F-52`, `F-69`):
 
 - `0058` içinde yanlışlıkla salt-eklenir `evidence` sınıfına konulan `public.reminder_deliveries` tablosu, `dispatchPending()` fonksiyonunun durum ve zaman damgası (`status`, `sent_at`, `error`) güncelleyebilmesi için üst tablosu `public.reminders` ile uyumlu biçimde `operational` RLS sınıfına (`reminder_deliveries_insert_enter`, `reminder_deliveries_update_enter`, `reminder_deliveries_delete_manage`) geçirilir.
+
+
+
+## Grup İçi Çoklu Tüzel Kişilik (`legal_entities` / `branches`) ve Bağımsız Muhasebe Dönem Otoritesi (Faz 60, migration 0116)
+
+`0116_group_entities_and_period_authority.sql` grup içi holding/çoklu şirket mimarisini ve Excel `cashflow_months` tablosundan bağımsız dönem kilidi otoritesini kurar:
+
+1. **Grup İçi Tüzel Kişilikler ve Şubeler (`public.legal_entities`, `public.branches` — `reference` sınıfı):**
+   - VKN (`tax_id_vkn`), Mersis (`mersis_no`), vergi dairesi ve baz döviz (`base_currency`) alanlarıyla birden fazla tüzel kişilik ve şube tanımlanır; işlem-yerel `current_legal_entity_id()` GUC fonksiyonu aktif şirket bağlamını taşır.
+   - Çekirdek operasyonel tablolara (`cash_accounts`, `payments`, `invoices`, `checks`, `loans`, `credit_facilities`, `management_journal_entries`, `budgets`, `cost_centers`, `projects`) geriye dönük uyumlu `legal_entity_id` ve `branch_id` yabancı anahtarları + kısmi indeksler eklenir.
+2. **Bağımsız Dönem Kilidi Otoritesi (`public.accounting_periods` — `operational` sınıfı):**
+   - `enforce_accounting_period_lock_transition()` tetikleyicisi ile `open -> reviewed -> locked` ve gerekçeli `locked -> reviewed` geçişlerini yönetir; `assert_date_not_in_locked_period()` fonksiyonu hem `cashflow_months` hem `accounting_periods` kilitlerini denetler.
+
+
+## Hazine POS/Kart/Vadeli/Virman, Vergi Tahakkuku, Çek/Senet (`121/321`), Kredi Amortisman ve Canlı Döviz Görünümü (Faz 60, migration 0117)
+
+`0117_treasury_tax_checks_loans_and_ledger_closure.sql` hazine, finansman, TDHP hesap planı ve KDV hariç bütçe/kârlılık görünümlerini tamamlar:
+
+1. **TDHP Hesap Planı ve Yevmiye Kaynak Türleri:**
+   - `102.05`, `102.99`, `108`, `121`, `128`, `129`, `150`, `151`, `152`, `253`, `257`, `301`, `302`, `309`, `321`, `654`, `910`, `911` hesapları tohumlanır; `management_journal_entries.source_type` kısıtı kredi açılışı, limit hareketi, virman, cari mahsup, şüpheli karşılık, dönem kapanışı, bordro/vergi ve üretim hareketlerini kapsar.
+2. **Hazine, Vergi, Çek/Kredi ve Teminat Tabloları (`operational` sınıfı):**
+   - `pos_settlement_batches` (`108` POS valör), `corporate_card_statements` (`309` ekstre kesim/ödeme), `payroll_tax_accruals` (`NET_MAAS`, `MPHB_STOPAJ`, `SGK_4A`, `KURUMLAR_GECICI_VERGI`), `term_deposits`, `interbank_transfers`, `letter_of_guarantees` ve `facility_interest_accruals` (günlük adat); `loans` ve `loan_installments` üzerinde `loan_kind`, `interest_type`, `bsmv_rate`, `kkdf_rate`, `bsmv_component`, `kkdf_component`.
+3. **`public.live_fx_exposure_v` ve KDV Hariç Görünümler (`WITH (security_invoker = true)`):**
+   - Yabancı para kasa/banka, açık faturalar, çek/senet, kredi taksitleri ve forward kayıtlarını TCMB spot kurlarıyla birleştirir; `costing_invoice_facts`, `budget_actuals_monthly` ve `budget_vs_actual` görünümlerini KDV hariç `net_amount` esasına geçirir.
+
+
+## Tam Kapsamlı Üretim Modülü: İş İstasyonları, `150/151/152` Stok (`DIO`), BOM, İş Emirleri (`OEE`) ve Tarife Kartları (Faz 60, migration 0118)
+
+`0118_full_production_bom_inventory_workorders_oee.sql` üretim modülünü tam kapsamlı maliyet/operasyon yapısına kavuşturur:
+
+1. **Referans ve Operasyon Tabloları:**
+   - `work_centers`, `inventory_items` (`150/151/152` stok kartları) ve `customer_rate_cards` (`reference` sınıfı; tarihsel `cost_models` tarifelerini çoklu müşteri/döviz yapısına taşır).
+   - `bom_headers`, `bom_lines` (hammadde miktarı + `scrap_pct` + operasyon rotası), `work_orders` (`work_orders_status_transition_guard()` ile tam yaşam döngüsü, fiili süre, duruş ve hurda) ve `inventory_movements` (`operational` sınıfı); `machine_roi_snapshots` üzerinde `npv_try`, `irr_pct`, `tax_shield_amount`, `discounted_payback_months`.
+2. **Canlı `DIO` ve `CCC` (`public.working_capital_metrics` — `WITH (security_invoker = true)`):**
+   - Aktif stok kaydı yokken `BLANK != ZERO` kuralıyla `dio_days = NULL` (`no_inventory_data`) kalır; stok girildiğinde canlı `dio_days` ve `cash_conversion_cycle_days = DSO + DIO - DPO` hesaplanır.
+
+
+## Birleşik Dinamik Senaryo Haftalık Kırılımı, Split-Brain Kapatma Kolonları, MFA/İş Kuyruğu ve V2 Kalıcılığı (Faz 60, migration 0119)
+
+`0119_scenarios_approvals_jobs_security_and_v2_columns.sql` senaryo, ödeme/fatura bütünlüğü, güvenlik ve V2 veri merkezi şema gereksinimlerini tamamlar:
+
+1. **`public.scenario_run_weeks` (`derived` sınıfı) & `scenario_runs` Genişletmeleri:**
+   - Haftalık baz vs senaryo kasa, otomatik BCH limit çekimi (`auto_facility_draw`), ek `780` faiz+vergi, kalan limit boşluğu ve proforma DSCR / kovenant ihlali kolonları.
+2. **Ödeme/Fatura, Arşiv, Görev, Güvenlik ve V2 Kolonları:**
+   - `payment_instances` (`linked_invoice_id`, `bank_transaction_id`, `journal_entry_id`), `invoices` & `invoice_lines` (iskonto, gelir vergisi stopajı, `ubl_uuid`, şüpheli alacak karşılık fişi ve arşiv metaverisi), `action_items.owner_user_id`, `reminders.target_kind` (`invoice`, `covenant_record`), `users` (`email`, `totp_secret_encrypted`, `totp_enabled_at`), `sessions` (`ip_address`, `user_agent`), `background_jobs` (`heartbeat_at`, `artifact_document_id`), `documents` (`extracted_metadata`, `storage_backend`) ve V2 `orders` (`fulfillment_stage`, `order_amount`, `currency`), `products`, `projects`, `cashflow_lines.currency` kalıcılık kolonları.
+
+
+
+## V2 Çoklu Kredi Sayfası (`03_KREDILER`) Satır Bazlı İzlenebilirlik ve Tekillik (Faz 60, migration 0120)
+
+`0120_multi_loan_sheet_row_lineage.sql`, `0008_financing_idempotency.sql` içinde belgelenmiş olan tek-kredi-sayfası varsayımını çoklu kredi ve çoklu döviz (`TRY`, `EUR`, `USD`) içeren V2 `03_KREDILER` sayfası için satır düzeyine taşır:
+
+1. **`public.loans.source_row_id`:** `public.import_rows(id)` referansı eklenerek V2 `03_KREDILER` satırlarının her biri kaynak satırına birebir bağlanır.
+2. **Çift Katmanlı İdempotensi İndeksleri:** `loans_source_row_uq` (`source_row_id IS NOT NULL`) V2 çoklu kredi satırlarında tekilliği korurken, `loans_source_sheet_legacy_uq` (`source_sheet_id IS NOT NULL AND source_row_id IS NULL`) tarihsel sayfa-bazlı kredi kayıtlarının idempotensisini bozmadan sürdürür.
+
+
+## Grup İçi Konsolidasyon Eliminasyonu, Parola Sıfırlama, SSO Sağlayıcıları, İşbirliği Yorumları ve Atölye Kiosk Kolonları (Faz 61, migration 0121)
+
+`0121_enterprise_gaps_kiosk_intercompany_reset_comments.sql` kurumsal çoklu-şirket konsolidasyonu, self-servis kimlik kurtarma, SSO/Passkey yönetimi, kayıt üstü `@mention` işbirliği ve atölye kiosk duruş takibini şema düzeyinde tamamlar:
+
+1. **Grup İçi Konsolidasyon Eliminasyonu (`public.intercompany_elimination_runs`, `public.intercompany_elimination_lines` — `operational` sınıfı):**
+   - Solo şirket defterlerini bozmadan `120 ↔ 320` cari bakiye (`ar_ap_120_320`) ve `600 ↔ 770/730` gelir-gider (`rev_exp_600_7xx`) eliminasyon fişlerini `numeric(18,2)` kesinliği ve `intercompany_elimination_runs_status_transition_guard()` geçiş bekçisiyle kaydeder.
+2. **Self-Servis Parola Sıfırlama ve Kurumsal SSO (`public.password_reset_tokens` — `auth_users` + `app_runtime`, `public.sso_identity_providers` — `config` sınıfı):**
+   - `password_reset_tokens` yalnız SHA-256 özeti (`token_sha256`), 30 dakikalık `expires_at` ve tek-kullanımlık `consumed_at` tutar; katmansız `/login` akışı için `mas_radar_app` çalışma politikasıyla (`sessions_app_runtime` simetriği) korunur.
+   - `sso_identity_providers` (`entra_id`, `google_workspace`, `custom_oidc`, `webauthn_passkey`) kurumsal OIDC ve Passkey yapılandırmasını sır saklamadan yönetir.
+3. **Kayıt Üstü İşbirliği Yorumları ve Atölye Kiosk Kolonları (`public.entity_comments` — `personal` / owner-scoped, `public.work_orders` genişletmesi):**
+   - `entity_comments` tablosu ve GIN indeksli `mentioned_usernames` dizisi tüm kayıtlar üzerinde `@kullanici` bildirim akışını sağlar; `public.user_username_label(uuid)` yardımcısı hassas alanları açmadan katmanlar arası yazar etiketini çözer.
+   - `public.work_orders` tablosu atölye operatör kiosku için `downtime_reason`, `last_kiosk_event_at` ve `operator_note` kolonlarıyla genişletilir.
+
+
+## Teknik & Finansal Denetim Sertleştirmesi: Şema Uyum RPC, Bildirim Kuyruğu, Olay Durum Makinesi, Mükerrer Kontrol, Çıkış Onay Tetikleyicisi ve Kısıtlayıcı Tüzel Kişilik RLS (Faz 62, migration 0122)
+
+`0122_audit_hardening_schema_outbox_controls_entity_rls.sql` bağımsız teknik ve finansal denetimde belirlenen altyapı, mutabakat, bildirim tekilliği, onay güvenliği ve çoklu-şirket izolasyon katmanlarını veritabanı düzeyinde mühürler:
+
+1. **Çalışma Rolü Hijyeni ve Şema Uyum Özeti (`public.get_schema_ledger_summary()` — `SECURITY DEFINER`):**
+   - `mas_radar_app` üzerindeki artık `authenticated` üyeliği temizlenir; `public.schema_migrations` tablosunu doğrudan açmadan `(migration_count, latest_version, checksum_digest, last_applied_at)` özetini döndüren güvenli RPC tanımlanır.
+2. **İdempotent Bildirim Kuyruğu ve Durumlu Operasyon Olayları (`public.notification_outbox`, `public.ops_incidents` — `operational` sınıfı):**
+   - `notification_outbox` (`idempotency_key UNIQUE`, `claim_token`, `attempt_count`, `next_retry_at`) tüm Telegram/e-posta bildirimlerinde mükerrer gönderimi engeller; `ops_incidents` (`OK`, `OPEN`, `ACKNOWLEDGED`, `RESOLVED`, `UNKNOWN`) P0/P1 telemetri sinyallerinin sessizce kaybolmasını önler; `control_alerts` eskalasyon sayaçları ve `-1/-8/-31` gecikme kuralları tamamlanır.
+3. **Mükerrer Çek/Şablon Kontrolleri, DSO Gözlem Penceresi Koruması ve Ödeme Çıkış Onay Tetikleyicisi:**
+   - `public.control_duplicate_checks` ve `public.control_duplicate_payments` (`WITH (security_invoker = true)`) görünümleri `control_dashboard`'a eklenir; `control_iban_changes` onaylanmış IBAN'ları aktif kritik uyarıdan ayırır; `control_approval_bypass` ve `enforce_outflow_settlement_approval_gate()` tetikleyicisi eşik üstü onaysız ödeme kapamalarını veritabanı seviyesinde reddeder.
+   - `public.dso_dpo_components` ve `public.working_capital_metrics` taslak/arşiv faturaları dışlar ve tek faturalık `< 14` günlük geçmişte cebirsel `365.0 gün` sapmasını engeller.
+4. **Kısıtlayıcı (`AS RESTRICTIVE`) Tüzel Kişilik RLS İzolasyonu ve Kullanıcı-Şirket Eşlemesi (`public.user_legal_entities` — `config` sınıfı):**
+   - `accounting_periods` dönem kilidi şirket bazlı tekilleştirilir (`accounting_periods_entity_month_uq`) ve 20 operasyon/rapor tablosunda `public.matches_active_legal_entity(legal_entity_id)` kısıtlayıcı RLS politikası devreye alınır.
+
+
+## Ödeme Çıkış Onay Tetikleyicisi `approval_rules.trigger_kind` Hizalaması (Faz 62, migration 0123)
+
+`0123_fix_settlement_approval_trigger_column.sql`, `public.enforce_outflow_settlement_approval_gate()` tetikleyicisindeki kural sorgusunu `0054_approval_rules.sql` şemasındaki `trigger_kind = 'amount_threshold'` ve `applies_to` kapsamıyla hizalar; böylece eşik altı normal ödemeler kesintisiz kapanırken eşik üstü onaysız çıkışlar `42501` (`APPROVAL_REQUIRED`) ile veritabanı seviyesinde reddedilir.
+
+
+## Belirsiz Gönderim Koruması, Atomik Hatırlatıcı Kilitleme, Olay Bastırma/Kanıt Kolonları, Geçerli İçe Aktarım Görünümü ve `31+` Eskalasyon Adlandırması (Faz 63, migration 0124)
+
+`0124_remediation_outbox_incidents_import_freshness.sql` hiçbir tarihsel satır veya teslimat izini silmeden (`%100` eklemeli ve idempotent) bildirim tekilliği, olay yaşam döngüsü, geçerli çalışma kitabı tazeliği ve gecikme eskalasyon adlandırmasını şema katmanında tamamlar (`I-002`, `I-005`, `I-006`, `I-007`, `I-013`):
+
+1. **`public.notification_outbox` Belirsiz Teslimat (`delivery_uncertain`) ve İzlenebilirlik Kolonları:**
+   - `notification_outbox_status_check` kısıtı `('pending', 'claiming', 'sent', 'failed_retryable', 'delivery_uncertain', 'dead_letter', 'skipped')` durumlarını kapsayacak biçimde genişletilir; zaman aşımı veya çok parçalı kısmi gönderim durumları için `uncertain_at timestamptz` ve uçtan uca izleme için `correlation_id text` kolonları eklenir.
+2. **`public.reminder_deliveries` Atomik Satır Sahiplenme (`claiming`) ve Kısmi İndeks:**
+   - `reminder_deliveries_status_check` kısıtı `('pending', 'claiming', 'sent', 'failed', 'skipped', 'delivery_uncertain')` durumlarını kapsayacak şekilde genişletilir; eşzamanlı `FOR UPDATE SKIP LOCKED` işçileri için `claim_token uuid`, `claimed_at timestamptz` kolonları ve `reminder_deliveries_pending_sched_idx` (`ON public.reminder_deliveries (status, scheduled_for, id) WHERE status IN ('pending', 'claiming')`) kısmi B-tree indeksi eklenir.
+3. **`public.ops_incidents` Bastırma (`SUPPRESSED`) ve Doğrulanmış Kapanış Kanıtı Kolonları:**
+   - `ops_incidents_state_check` kısıtı `('OK', 'OPEN', 'ACKNOWLEDGED', 'RESOLVED', 'UNKNOWN', 'SUPPRESSED')` durumlarını kapsayacak biçimde genişletilir; `suppressed_until timestamptz`, `suppression_reason text`, `last_checked_at timestamptz`, `last_success_at timestamptz`, `resolution_evidence jsonb` ve `correlation_id text` kolonları eklenir.
+4. **Geçerli Çalışma Kitabı İçe Aktarım Görünümü (`public.valid_workbook_imports` — `WITH (security_invoker = true)`, `I-005`):**
+   - `public.source_workbooks sw` üzerinde yalnız `sw.status IN ('parsed', 'mapped')` olan ve `public.import_rows ir` (`ir.workbook_id = sw.id`) içinde en az bir satır barındıran geçerli içe aktarımları döndürür; beş uygulama katmanına yalnız `SELECT` verilirken tüm yazma yetkileri iptal edilir (`91 / 91` görünümde `security_invoker = true` `%100` korunur).
+5. **`-31` Gecikme Kuralı Adlandırma Standardizasyonu (`I-006` / Bölüm 7):**
+   - `public.reminders` tablosunda `offset_days = -31` olan kurallarda `'30+'` ifadesi `'31+'` olarak, yasal işlem iddiası taşıyan `'hukuki eskalasyon'` ifadesi ise `'üst eskalasyon (iç inceleme)'` olarak güncellenir; kural kimlikleri (`id`) ve `reminder_deliveries` geçmişi korunur.
 

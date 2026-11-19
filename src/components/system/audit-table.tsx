@@ -6,6 +6,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/primiti
 
 export interface AuditRow {
   id: string;
+  actor: string;
   action: string;
   entity: string;
   created_at: string;
@@ -14,7 +15,11 @@ export interface AuditRow {
 }
 
 function pretty(value: string): string {
-  try { return JSON.stringify(JSON.parse(value), null, 2); } catch { return value; }
+  try {
+    return JSON.stringify(JSON.parse(value), null, 2);
+  } catch {
+    return value;
+  }
 }
 
 const jsonCell = (value: string) => {
@@ -22,21 +27,50 @@ const jsonCell = (value: string) => {
   return (
     <Tooltip>
       <TooltipTrigger asChild>
-        <pre className="max-w-xs cursor-help truncate whitespace-nowrap text-[10px] text-tone-3">{value}</pre>
+        <pre className="max-w-xs cursor-help truncate whitespace-nowrap text-[10px] text-tone-3">
+          {value}
+        </pre>
       </TooltipTrigger>
       <TooltipContent className="max-w-md">
-        <pre className="max-h-72 overflow-hidden whitespace-pre-wrap break-words text-[10px] leading-snug">{pretty(value)}</pre>
+        <pre className="max-h-72 overflow-hidden whitespace-pre-wrap break-words text-[10px] leading-snug">
+          {pretty(value)}
+        </pre>
       </TooltipContent>
     </Tooltip>
   );
 };
 
 const columns: ColumnDef<AuditRow>[] = [
-  { accessorKey: "created_at", header: "Zaman", meta: { label: "Zaman" }, cell: ({ getValue }) => <span className="font-mono">{getValue<string>()}</span> },
+  {
+    accessorKey: "created_at",
+    header: "Zaman",
+    meta: { label: "Zaman" },
+    cell: ({ getValue }) => <span className="font-mono">{getValue<string>()}</span>,
+  },
+  {
+    accessorKey: "actor",
+    header: "Kim Yaptı",
+    meta: { label: "Kim Yaptı" },
+    cell: ({ getValue }) => (
+      <span className="font-mono text-xs text-[var(--text-1)]">{getValue<string>()}</span>
+    ),
+  },
   { accessorKey: "action", header: "İşlem", meta: { label: "İşlem" } },
   { accessorKey: "entity", header: "Varlık", meta: { label: "Varlık" } },
-  { accessorKey: "before", header: "Önce", enableSorting: false, meta: { label: "Önce" }, cell: ({ getValue }) => jsonCell(getValue<string>()) },
-  { accessorKey: "after", header: "Sonra", enableSorting: false, meta: { label: "Sonra" }, cell: ({ getValue }) => jsonCell(getValue<string>()) },
+  {
+    accessorKey: "before",
+    header: "Önce",
+    enableSorting: false,
+    meta: { label: "Önce" },
+    cell: ({ getValue }) => jsonCell(getValue<string>()),
+  },
+  {
+    accessorKey: "after",
+    header: "Sonra",
+    enableSorting: false,
+    meta: { label: "Sonra" },
+    cell: ({ getValue }) => jsonCell(getValue<string>()),
+  },
 ];
 
 export function AuditTable({ rows }: { rows: AuditRow[] }) {
@@ -45,12 +79,12 @@ export function AuditTable({ rows }: { rows: AuditRow[] }) {
       columns={columns}
       data={rows}
       stateKey="audit"
-      searchPlaceholder="Denetim ara (işlem, varlık, tarih…)"
+      searchPlaceholder="Denetim ara (kim yaptı, işlem, varlık, tarih…)"
       initialSorting={[{ id: "created_at", desc: true }]}
       pageSize={25}
       exportFileName="denetim-kayitlari"
       emptyLabel="Denetim kaydı yok."
-      minWidth={880}
+      minWidth={940}
     />
   );
 }

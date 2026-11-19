@@ -1,15 +1,17 @@
 // Read-side queries for radar/calendar/payments pages.
 //
 // Faz 17: money columns are selected as `numeric` and parsed with @/lib/money instead of
-// being cast to `::float8` in SQL. Every query below feeds a typed interface whose amount
+// binary floating-point casts in SQL. Every query below feeds a typed interface whose amount
 // fields are `number | null`, so the parse is not optional bookkeeping — node-postgres hands
 // back `numeric` as a STRING, and returning `.rows` unmapped would leave TypeScript believing
 // in numbers while the runtime carried strings. `mapInstanceRow` is that boundary.
 import type { Pool } from "pg";
-import { moneyOrNull, intOrNull } from "@/lib/money";
+import { computeObligationAmounts } from "@/lib/contracts/remediation-contracts";
+import { decimal, moneyOrNull, intOrNull, round2 } from "@/lib/money";
 import {
   addMonths, dayFlags, dayFlagsFromAggregate, type RiskInputInstance, type RiskThresholds,
 } from "./rules";
+import { computeInstanceScheduleForMonth } from "./engine";
 
 export interface InstanceRow {
   id: string;
@@ -20,6 +22,12 @@ export interface InstanceRow {
   amount_status: string;
   status: string;
   paid_amount: number | null;
+  /** Contract A: Original scheduled/contractual obligation amount (`null` = unknown, NEVER coerced to 0). */
+  original_amount?: number | null;
+  /** Contract A: Remaining unpaid exposure (`null` when `amount === null`; `0` when paid/cancelled/overpaid). */
+  remaining_amount?: number | null;
+  /** Contract A: Non-zero when `paid_amount > amount` on a settled/partial obligation. */
+  overpayment_amount?: number;
   risk_level: string;
   risk_reasons: string[];
   note: string | null;
@@ -29,6 +37,8 @@ export interface InstanceRow {
   category?: string | null;
   source_linked?: boolean;
   flexibility?: "critical" | "flexible" | "optional" | null;
+  linked_invoice_id?: string | null;
+  paid_from_account_id?: string | null;
 }
 
 const BASE = `
@@ -37,7 +47,9 @@ const BASE = `
          i.amount, i.amount_status, i.status,
          i.paid_amount, i.risk_level, i.risk_reasons, i.note,
          i.currency, i.direction, p.priority, p.flexibility_class as flexibility, c.name as category,
-         (i.source_row_id is not null or p.source_row_id is not null) as source_linked
+         (i.source_row_id is not null or p.source_row_id is not null) as source_linked,
+         to_jsonb(i)->>'linked_invoice_id' as linked_invoice_id,
+         to_jsonb(i)->>'paid_from_account_id' as paid_from_account_id
   from public.payment_instances i
   left join public.payments p on p.id = i.payment_id
   left join public.categories c on c.id = p.category_id
@@ -45,11 +57,22 @@ const BASE = `
 
 /** The single decode point for every `BASE` query. Ordering still happens in SQL on the
  * exact `numeric`, so dropping the cast did not change any `order by i.amount` result. */
-function mapInstanceRow(r: Record<string, unknown>): InstanceRow {
+export function mapInstanceRow(r: Record<string, unknown>): InstanceRow {
+  const amount = moneyOrNull(r.amount as string | number | null);
+  const paid_amount = moneyOrNull(r.paid_amount as string | number | null);
+  const effectiveStatus = r.cancelled_at != null ? "cancelled" : String(r.status ?? "unpaid");
+  const computed = computeObligationAmounts({
+    originalAmount: amount,
+    paidAmount: paid_amount,
+    status: effectiveStatus,
+  });
   return {
     ...(r as unknown as InstanceRow),
-    amount: moneyOrNull(r.amount as string | null),
-    paid_amount: moneyOrNull(r.paid_amount as string | null),
+    amount,
+    paid_amount,
+    original_amount: computed.originalAmount,
+    remaining_amount: computed.outstandingAmount,
+    overpayment_amount: computed.overpaymentAmount,
   };
 }
 
@@ -73,10 +96,15 @@ export async function instancesBetween(pool: Pool, fromISO: string, toISO: strin
   ).rows.map(mapInstanceRow);
 }
 
-export async function overdueOpen(pool: Pool, todayISO: string): Promise<InstanceRow[]> {
+export async function overdueOpen(pool: Pick<Pool, "query">, todayISO: string): Promise<InstanceRow[]> {
   return (
     await pool.query(
-      BASE + `where i.due_date < $1 and i.status in ('unpaid','partial','planned','late') order by i.due_date`,
+      BASE +
+        `where i.due_date < $1
+           and i.status in ('unpaid','partial','planned','late')
+           and i.status <> 'cancelled'
+           and i.cancelled_at is null
+         order by i.due_date`,
       [todayISO],
     )
   ).rows.map(mapInstanceRow);
@@ -324,41 +352,551 @@ export async function loadPaymentDashboard(
   };
 }
 
-export async function monthSummary(pool: Pool, monthStartISO: string) {
+export interface MonthSummaryResult {
+  known_total: number;
+  known_remaining: number;
+  paid_known: number;
+  missing_count: number;
+  /** PHASE 2.2: TRY-dışı kalem sayısı — hiçbir toplama girmedi. */
+  foreign_count: number;
+  total_count: number;
+  cancelledCount: number;
+  cancelledKnownTotal: number;
+  settlementAdjustmentTry: number;
+  overpaymentAdjustmentTry: number;
+  unexplainedGapTry: number;
+}
+
+export async function monthSummary(
+  pool: Pick<Pool, "query">,
+  monthStartISO: string,
+): Promise<MonthSummaryResult> {
   const r = await pool.query(
-    // PHASE 2.2 (#2): uc toplam da yalniz TRY; TRY-disi satirlar foreign_count ile doner.
+    // PHASE 2.2 (#2), 4.A & Agent 04 (I-009/I-012): Aktif çıkış (outflow) kalemleri ve iptal edilenlerin ayrıştırılması;
+    // known_total + overpaymentAdjustmentTry === paid_known + known_remaining + settlementAdjustmentTry özdeşliğini korur.
     `select
-       coalesce(sum(amount) filter (where amount is not null and currency = 'TRY'),0) as known_total,
-       coalesce(sum(greatest(amount - coalesce(paid_amount, 0), 0)) filter (where amount is not null and currency = 'TRY' and status in ('unpaid','partial','planned','late')),0) as known_remaining,
-       coalesce(sum(case when status = 'paid' then coalesce(paid_amount, amount) when status = 'partial' then coalesce(paid_amount, 0) else 0 end) filter (where currency = 'TRY'),0) as paid_known,
-       count(*) filter (where amount is null and status <> 'cancelled')::int as missing_count,
-       count(*) filter (where currency <> 'TRY' and status <> 'cancelled')::int as foreign_count,
-       count(*)::int as total_count
+       coalesce(sum(amount) filter (
+         where status <> 'cancelled'
+           and cancelled_at is null
+           and coalesce(direction, 'outflow') = 'outflow'
+           and amount is not null
+           and currency = 'TRY'
+       ), 0) as known_total,
+       coalesce(sum(greatest(amount - coalesce(paid_amount, 0), 0)) filter (
+         where status <> 'cancelled'
+           and cancelled_at is null
+           and coalesce(direction, 'outflow') = 'outflow'
+           and amount is not null
+           and currency = 'TRY'
+           and status in ('unpaid','partial','planned','late')
+       ), 0) as known_remaining,
+       coalesce(sum(
+         case
+           when status = 'paid' then coalesce(paid_amount, amount)
+           when status = 'partial' then coalesce(paid_amount, 0)
+           else 0
+         end
+       ) filter (
+         where status <> 'cancelled'
+           and cancelled_at is null
+           and coalesce(direction, 'outflow') = 'outflow'
+           and amount is not null
+           and currency = 'TRY'
+       ), 0) as paid_known,
+       count(*) filter (
+         where status <> 'cancelled'
+           and cancelled_at is null
+           and coalesce(direction, 'outflow') = 'outflow'
+           and amount is null
+       )::int as missing_count,
+       count(*) filter (
+         where status <> 'cancelled'
+           and cancelled_at is null
+           and coalesce(direction, 'outflow') = 'outflow'
+           and currency <> 'TRY'
+       )::int as foreign_count,
+       count(*) filter (
+         where status <> 'cancelled'
+           and cancelled_at is null
+           and coalesce(direction, 'outflow') = 'outflow'
+       )::int as total_count,
+       count(*) filter (
+         where (status = 'cancelled' or cancelled_at is not null)
+           and coalesce(direction, 'outflow') = 'outflow'
+       )::int as cancelled_count,
+       coalesce(sum(amount) filter (
+         where (status = 'cancelled' or cancelled_at is not null)
+           and coalesce(direction, 'outflow') = 'outflow'
+           and amount is not null
+           and currency = 'TRY'
+       ), 0) as cancelled_known_total,
+       coalesce(sum(greatest(amount - coalesce(paid_amount, amount), 0)) filter (
+         where status = 'paid'
+           and cancelled_at is null
+           and coalesce(direction, 'outflow') = 'outflow'
+           and amount is not null
+           and currency = 'TRY'
+       ), 0) as settlement_adjustment_try,
+       coalesce(sum(greatest(coalesce(paid_amount, 0) - amount, 0)) filter (
+         where status <> 'cancelled'
+           and cancelled_at is null
+           and coalesce(direction, 'outflow') = 'outflow'
+           and amount is not null
+           and currency = 'TRY'
+           and status in ('paid', 'partial')
+       ), 0) as overpayment_adjustment_try
      from public.payment_instances where instance_month = $1`,
     [monthStartISO],
   );
-  // The three sums are computed exactly by Postgres and only lose their exactness on the way
-  // into JS; `money()` rounds once at TL scale instead of letting float8 do it in binary.
-  // The two counts keep their `::int` casts — int4 already arrives as a JS number.
-  const row = r.rows[0] as Record<string, unknown>;
+  // The sums are computed exactly by Postgres and only decoded at TL scale via @/lib/money.
+  const row = (r.rows[0] ?? {}) as Record<string, unknown>;
+  const known_total =
+    moneyOrNull((row.known_total as string | number | null | undefined) ?? null) ?? 0;
+  const known_remaining =
+    moneyOrNull((row.known_remaining as string | number | null | undefined) ?? null) ?? 0;
+  const paid_known =
+    moneyOrNull((row.paid_known as string | number | null | undefined) ?? null) ?? 0;
+  const missing_count =
+    intOrNull((row.missing_count as number | string | null | undefined) ?? null) ?? 0;
+  const foreign_count =
+    intOrNull((row.foreign_count as number | string | null | undefined) ?? null) ?? 0;
+  const total_count =
+    intOrNull((row.total_count as number | string | null | undefined) ?? null) ?? 0;
+  const cancelledCount =
+    intOrNull((row.cancelled_count as number | string | null | undefined) ?? null) ?? 0;
+  const cancelledKnownTotal =
+    moneyOrNull((row.cancelled_known_total as string | number | null | undefined) ?? null) ?? 0;
+  const settlementAdjustmentTry =
+    moneyOrNull((row.settlement_adjustment_try as string | number | null | undefined) ?? null) ?? 0;
+  const overpaymentAdjustmentTry =
+    moneyOrNull((row.overpayment_adjustment_try as string | number | null | undefined) ?? null) ?? 0;
+  const rawGap = round2(
+    decimal(known_total)
+      .plus(overpaymentAdjustmentTry)
+      .minus(decimal(paid_known).plus(known_remaining).plus(settlementAdjustmentTry)),
+  );
+  const unexplainedGapTry = rawGap === 0 ? 0 : rawGap;
+
   return {
-    known_total: moneyOrNull(row.known_total as string) ?? 0,
-    known_remaining: moneyOrNull(row.known_remaining as string) ?? 0,
-    paid_known: moneyOrNull(row.paid_known as string) ?? 0,
-    missing_count: intOrNull(row.missing_count as number) ?? 0,
-    /** PHASE 2.2: TRY-dışı kalem sayısı — hiçbir toplama girmedi. */
-    foreign_count: intOrNull(row.foreign_count as number) ?? 0,
-    total_count: intOrNull(row.total_count as number) ?? 0,
+    known_total,
+    known_remaining,
+    paid_known,
+    missing_count,
+    foreign_count,
+    total_count,
+    cancelledCount,
+    cancelledKnownTotal,
+    settlementAdjustmentTry,
+    overpaymentAdjustmentTry,
+    unexplainedGapTry,
   };
+}
+
+export type DistributionBy = "provider" | "category" | "owner";
+
+export interface DistributionBucket {
+  key: string;
+  /** Active known TRY scheduled outflow total (`sum(amount)`), reconciling with `monthSummary.known_total`. */
+  amount: number;
+  /** Active known TRY unpaid/remaining exposure, reconciling with `monthSummary.known_remaining`. */
+  remainingAmount: number;
+  /** Active known TRY paid outflow total, reconciling with `monthSummary.paid_known`. */
+  paidAmount: number;
+  /** Active known TRY row count in this bucket. */
+  count: number;
+  /** Active non-TRY row count in this bucket (excluded from TRY sums). */
+  foreignCount: number;
+}
+
+/**
+ * Monthly outflow distribution by `provider`, `category`, or `owner`.
+ * Uses 1:1 PK `LEFT JOIN`s (zero row multiplication) and excludes `cancelled` and `inflow`
+ * rows identically to `monthSummary`.
+ */
+export async function distribution(
+  pool: Pick<Pool, "query">,
+  monthStartISO: string,
+  by: DistributionBy,
+): Promise<DistributionBucket[]> {
+  let joinClause: string;
+  let keyExpr: string;
+  switch (by) {
+    case "provider":
+      joinClause = "left join public.parties pr on pr.id = p.provider_party_id";
+      keyExpr = "coalesce(pr.name, '(atanmadı)')";
+      break;
+    case "category":
+      joinClause = "left join public.categories c on c.id = p.category_id";
+      keyExpr = "coalesce(c.name, '(atanmadı)')";
+      break;
+    case "owner":
+      joinClause = "left join public.parties o on o.id = p.owner_party_id";
+      keyExpr = "coalesce(o.name, '(atanmadı)')";
+      break;
+    default: {
+      const exhaustive: never = by;
+      throw new TypeError(`Geçersiz dağılım boyutu: ${String(exhaustive)}`);
+    }
+  }
+
+  const r = await pool.query(
+    `select ${keyExpr} as key,
+            coalesce(sum(i.amount) filter (where i.currency = 'TRY'), 0) as amount,
+            coalesce(sum(greatest(i.amount - coalesce(i.paid_amount, 0), 0)) filter (
+              where i.currency = 'TRY'
+                and i.status in ('unpaid','partial','planned','late')
+            ), 0) as remaining_amount,
+            coalesce(sum(
+              case
+                when i.status = 'paid' then coalesce(i.paid_amount, i.amount)
+                when i.status = 'partial' then coalesce(i.paid_amount, 0)
+                else 0
+              end
+            ) filter (where i.currency = 'TRY'), 0) as paid_amount,
+            count(*) filter (where i.currency = 'TRY')::int as try_count,
+            count(*) filter (where i.currency <> 'TRY')::int as foreign_count
+       from public.payment_instances i
+       left join public.payments p on p.id = i.payment_id
+       ${joinClause}
+      where i.instance_month = $1
+        and i.amount is not null
+        and i.status <> 'cancelled'
+        and i.cancelled_at is null
+        and coalesce(i.direction, 'outflow') = 'outflow'
+      group by 1
+      order by amount desc nulls last, key asc`,
+    [monthStartISO],
+  );
+
+  return r.rows.map((x: Record<string, unknown>) => ({
+    key: String(x.key ?? "(atanmadı)"),
+    amount: moneyOrNull((x.amount as string | number | null | undefined) ?? null) ?? 0,
+    remainingAmount:
+      moneyOrNull((x.remaining_amount as string | number | null | undefined) ?? null) ?? 0,
+    paidAmount: moneyOrNull((x.paid_amount as string | number | null | undefined) ?? null) ?? 0,
+    count: intOrNull((x.try_count as number | string | null | undefined) ?? null) ?? 0,
+    foreignCount: intOrNull((x.foreign_count as number | string | null | undefined) ?? null) ?? 0,
+  }));
 }
 
 export async function missingAmountInstances(pool: Pool, monthStartISO: string): Promise<InstanceRow[]> {
   return (
     await pool.query(
-      BASE + `where i.instance_month = $1 and i.amount is null and i.status in ('unpaid','partial','planned','late') order by i.due_date nulls last`,
+      BASE + `where i.instance_month = $1 and i.amount is null and i.status in ('unpaid','partial','planned','late') and i.cancelled_at is null order by i.due_date nulls last`,
       [monthStartISO],
     )
   ).rows.map(mapInstanceRow);
+}
+
+/** M-17: All open missing-amount instances across ALL months (past, current, future). */
+export async function allMissingAmountInstances(pool: Pool): Promise<InstanceRow[]> {
+  return (
+    await pool.query(
+      BASE +
+        `where i.amount is null
+           and i.status in ('unpaid','partial','planned','late')
+           and i.status <> 'cancelled'
+           and i.cancelled_at is null
+         order by i.due_date asc nulls last, i.instance_month asc`,
+    )
+  ).rows.map(mapInstanceRow);
+}
+
+export type DashboardCurrencyMode = "TRY" | "USD" | "EUR" | "CONSOLIDATED";
+
+export interface CurrencyDashboardResult {
+  buckets: PaymentDashboardBucket[];
+  currencyMode: DashboardCurrencyMode;
+  unconvertibleForeignCount: number;
+  fxRatesUsed: Record<string, { rate: number; rateDate: string }>;
+}
+
+/**
+ * M-15: Pure read-only chart data loader supporting TRY | USD | EUR | CONSOLIDATED.
+ * Zero DB writes — projects virtual future template instances in memory for months that
+ * do not yet have a `payment_instances` row, and converts foreign obligations using the
+ * latest TCMB `fx_rate_snapshots` when `CONSOLIDATED` is requested (keeping unconvertible
+ * rows explicit instead of assuming 1:1).
+ */
+export async function loadPaymentDashboardForCurrency(
+  pool: Pool,
+  todayISO: string,
+  futureEndISO: string,
+  currencyMode: DashboardCurrencyMode = "TRY",
+): Promise<CurrencyDashboardResult> {
+  const [openRes, existingPairRes, templatesRes] = await Promise.all([
+    pool.query<{
+      due_date: string;
+      status: string;
+      amount: string | null;
+      remaining: string | null;
+      currency: string;
+      decision_flexibility: "critical" | "flexible" | "optional" | "unclassified";
+    }>(
+      `select to_char(i.due_date, 'YYYY-MM-DD') as due_date,
+              i.status,
+              i.amount::text as amount,
+              case when i.amount is null then null else greatest(i.amount - coalesce(i.paid_amount, 0), 0)::text end as remaining,
+              coalesce(i.currency, 'TRY') as currency,
+              case when p.flexibility_class in ('critical','flexible','optional') then p.flexibility_class
+                   when p.priority in ('critical','high') or i.risk_level='critical' then 'critical'
+                   when p.priority='low' then 'optional' else 'unclassified' end as decision_flexibility
+         from public.payment_instances i
+         left join public.payments p on p.id = i.payment_id
+        where i.due_date <= $2::date
+          and (i.due_date >= $1::date or i.status in ('unpaid','partial','planned','late'))
+          and i.status in ('unpaid','partial','planned','late','unknown')
+          and i.status <> 'cancelled'
+          and i.cancelled_at is null`,
+      [todayISO, futureEndISO],
+    ),
+    pool.query<{ payment_id: string; instance_month: string }>(
+      `select payment_id::text as payment_id,
+              to_char(instance_month, 'YYYY-MM-DD') as instance_month
+         from public.payment_instances
+        where payment_id is not null
+          and instance_month >= date_trunc('month', $1::date)::date
+          and instance_month <= date_trunc('month', $2::date)::date`,
+      [todayISO, futureEndISO],
+    ),
+    pool.query<{
+      id: string;
+      due_day: number | null;
+      due_date: string | null;
+      created_iso: string | null;
+      default_amount: string | null;
+      currency: string;
+      recurrence_type: string | null;
+      source_notes: string | null;
+      priority: string | null;
+      flexibility_class: string | null;
+    }>(
+      `select id::text as id,
+              due_day,
+              to_char(due_date, 'YYYY-MM-DD') as due_date,
+              to_char(created_at, 'YYYY-MM-DD') as created_iso,
+              default_amount::text as default_amount,
+              coalesce(currency, 'TRY') as currency,
+              recurrence_type,
+              source_notes,
+              priority,
+              flexibility_class
+         from public.payments
+        where status = 'active'
+          and archived_at is null`,
+    ),
+  ]);
+
+  const fxRatesUsed: Record<string, { rate: number; rateDate: string }> = {};
+  if (currencyMode === "CONSOLIDATED") {
+    try {
+      const fxRes = await pool.query<{ base_currency: string; rate: string; rate_date: string }>(
+        `select distinct on (base_currency)
+                upper(base_currency) as base_currency,
+                rate::text as rate,
+                to_char(rate_date, 'YYYY-MM-DD') as rate_date
+           from public.fx_rate_snapshots
+          where quote_currency = 'TRY'
+            and rate > 0
+          order by upper(base_currency), rate_date desc, fetched_at desc`,
+      );
+      for (const r of fxRes.rows) {
+        const parsedRate = moneyOrNull(r.rate);
+        if (parsedRate != null && parsedRate > 0) {
+          fxRatesUsed[r.base_currency] = { rate: parsedRate, rateDate: r.rate_date };
+        }
+      }
+    } catch (err) {
+      const code = err && typeof err === "object" ? (err as { code?: string }).code : undefined;
+      if (code !== "42P01" && code !== "42703") throw err;
+    }
+  }
+
+  const existingMonths = new Set<string>(
+    existingPairRes.rows.map((r) => `${r.payment_id}:${r.instance_month}`),
+  );
+
+  interface RawChartItem {
+    dueDate: string;
+    status: string;
+    amount: number | null;
+    remaining: number | null;
+    currency: string;
+    decisionFlexibility: "critical" | "flexible" | "optional" | "unclassified";
+  }
+
+  const items: RawChartItem[] = openRes.rows.map((r) => ({
+    dueDate: r.due_date,
+    status: r.status,
+    amount: moneyOrNull(r.amount),
+    remaining: moneyOrNull(r.remaining),
+    currency: (r.currency || "TRY").toUpperCase(),
+    decisionFlexibility: r.decision_flexibility,
+  }));
+
+  // Virtual read-only projection for months without materialized payment_instances
+  const startMonth = `${todayISO.slice(0, 7)}-01`;
+  const endMonth = `${futureEndISO.slice(0, 7)}-01`;
+  for (let m = startMonth, guard = 0; m <= endMonth && guard < 36; m = addMonths(m, 1), guard++) {
+    for (const tpl of templatesRes.rows) {
+      if (existingMonths.has(`${tpl.id}:${m}`)) continue;
+      const sched = computeInstanceScheduleForMonth(tpl, m);
+      if (!sched) continue;
+      if (sched.dueDate < todayISO || sched.dueDate > futureEndISO) continue;
+      const decisionFlexibility: RawChartItem["decisionFlexibility"] =
+        tpl.flexibility_class === "critical" ||
+        tpl.flexibility_class === "flexible" ||
+        tpl.flexibility_class === "optional"
+          ? tpl.flexibility_class
+          : tpl.priority === "critical" || tpl.priority === "high"
+            ? "critical"
+            : tpl.priority === "low"
+              ? "optional"
+              : "unclassified";
+      items.push({
+        dueDate: sched.dueDate,
+        status: "planned",
+        amount: sched.amount,
+        remaining: sched.amount,
+        currency: (tpl.currency || "TRY").toUpperCase(),
+        decisionFlexibility,
+      });
+    }
+  }
+
+  const bucketMap = new Map<
+    string,
+    {
+      dueDate: string;
+      status: PaymentDashboardBucket["status"];
+      count: number;
+      knownSum: ReturnType<typeof decimal>;
+      unknownCount: number;
+      maxAmount: number | null;
+      openCount: number;
+      flagKnownSum: ReturnType<typeof decimal>;
+      flagMaxAmount: number | null;
+      flagForeignCount: number;
+      foreignCurrencyCount: number;
+      criticalCount: number;
+      flexibleCount: number;
+      optionalCount: number;
+      unclassifiedCount: number;
+    }
+  >();
+
+  let unconvertibleForeignCount = 0;
+
+  for (const item of items) {
+    // Single-currency foreign filter: when viewing USD or EUR specifically, show only that currency
+    if ((currencyMode === "USD" || currencyMode === "EUR") && item.currency !== currencyMode) {
+      continue;
+    }
+
+    const pressureStatus: PaymentDashboardBucket["status"] =
+      item.dueDate < todayISO ? "overdue" : item.status === "partial" ? "partial" : "planned";
+    const key = `${item.dueDate}:${pressureStatus}`;
+    let acc = bucketMap.get(key);
+    if (!acc) {
+      acc = {
+        dueDate: item.dueDate,
+        status: pressureStatus,
+        count: 0,
+        knownSum: decimal(0),
+        unknownCount: 0,
+        maxAmount: null,
+        openCount: 0,
+        flagKnownSum: decimal(0),
+        flagMaxAmount: null,
+        flagForeignCount: 0,
+        foreignCurrencyCount: 0,
+        criticalCount: 0,
+        flexibleCount: 0,
+        optionalCount: 0,
+        unclassifiedCount: 0,
+      };
+      bucketMap.set(key, acc);
+    }
+
+    acc.count += 1;
+    if (item.decisionFlexibility === "critical") acc.criticalCount += 1;
+    else if (item.decisionFlexibility === "flexible") acc.flexibleCount += 1;
+    else if (item.decisionFlexibility === "optional") acc.optionalCount += 1;
+    else acc.unclassifiedCount += 1;
+
+    const isOpenStatus =
+      item.status === "unpaid" ||
+      item.status === "partial" ||
+      item.status === "planned" ||
+      item.status === "late";
+    if (isOpenStatus) acc.openCount += 1;
+
+    let fxMultiplier: ReturnType<typeof decimal> | null = null;
+    if (currencyMode === "CONSOLIDATED") {
+      if (item.currency === "TRY") {
+        fxMultiplier = decimal(1);
+      } else if (fxRatesUsed[item.currency]) {
+        fxMultiplier = decimal(fxRatesUsed[item.currency].rate);
+      } else {
+        fxMultiplier = null;
+      }
+    } else if (item.currency === currencyMode) {
+      fxMultiplier = decimal(1);
+    }
+
+    if (fxMultiplier == null) {
+      acc.foreignCurrencyCount += 1;
+      if (isOpenStatus) acc.flagForeignCount += 1;
+      if (currencyMode === "CONSOLIDATED") unconvertibleForeignCount += 1;
+      if (item.remaining == null) acc.unknownCount += 1;
+      continue;
+    }
+
+    if (item.remaining == null) {
+      acc.unknownCount += 1;
+    } else {
+      const convertedRemaining = decimal(item.remaining).times(fxMultiplier);
+      acc.knownSum = acc.knownSum.plus(convertedRemaining);
+      const remNum = round2(convertedRemaining);
+      if (acc.maxAmount == null || remNum > acc.maxAmount) acc.maxAmount = remNum;
+    }
+
+    if (isOpenStatus && item.amount != null && item.amount > 0) {
+      const convertedAmount = decimal(item.amount).times(fxMultiplier);
+      acc.flagKnownSum = acc.flagKnownSum.plus(convertedAmount);
+      const amtNum = round2(convertedAmount);
+      if (acc.flagMaxAmount == null || amtNum > acc.flagMaxAmount) acc.flagMaxAmount = amtNum;
+    }
+  }
+
+  const buckets: PaymentDashboardBucket[] = [...bucketMap.values()]
+    .sort((a, b) =>
+      a.dueDate === b.dueDate ? a.status.localeCompare(b.status) : a.dueDate.localeCompare(b.dueDate),
+    )
+    .map((b) => ({
+      dueDate: b.dueDate,
+      status: b.status,
+      count: b.count,
+      knownAmount: round2(b.knownSum),
+      unknownCount: b.unknownCount,
+      maxAmount: b.maxAmount,
+      openCount: b.openCount,
+      flagKnownSum: round2(b.flagKnownSum),
+      flagMaxAmount: b.flagMaxAmount,
+      flagForeignCount: b.flagForeignCount,
+      foreignCurrencyCount: b.foreignCurrencyCount,
+      criticalCount: b.criticalCount,
+      flexibleCount: b.flexibleCount,
+      optionalCount: b.optionalCount,
+      unclassifiedCount: b.unclassifiedCount,
+    }));
+
+  return {
+    buckets,
+    currencyMode,
+    unconvertibleForeignCount,
+    fxRatesUsed,
+  };
 }
 
 export async function daylessPayments(pool: Pool) {
@@ -389,7 +927,15 @@ export async function riskyDays(pool: Pool, todayISO: string, horizonDays: numbe
 
 export async function monthInstances(pool: Pool, monthStartISO: string): Promise<InstanceRow[]> {
   return (
-    await pool.query(BASE + `where i.instance_month = $1 order by i.due_date`, [monthStartISO])
+    await pool.query(
+      BASE +
+        `where i.instance_month = $1
+           and i.status <> 'cancelled'
+           and i.cancelled_at is null
+           and coalesce(i.direction, 'outflow') = 'outflow'
+         order by i.due_date`,
+      [monthStartISO],
+    )
   ).rows.map(mapInstanceRow);
 }
 
@@ -403,18 +949,23 @@ export async function paidInstances(pool: Pool, limit = 100): Promise<InstanceRo
 }
 
 export interface PaymentHistoryEvent {
-  id:string; instanceId:string; paymentName:string; eventType:"paid"|"partial"|"reopened"|"cancelled";
-  previousStatus:string|null; nextStatus:string; amount:number|null; paidAmount:number|null; remainingAmount:number|null;
-  occurredAt:string; sourceLinked:boolean;
+  id: string;
+  instanceId: string;
+  paymentName: string;
+  eventType: "paid" | "partial" | "reopened" | "cancelled";
+  previousStatus: string | null;
+  nextStatus: string;
+  amount: number | null;
+  paidAmount: number | null;
+  remainingAmount: number | null;
+  currency: string;
+  occurredAt: string;
+  sourceLinked: boolean;
 }
 
 /**
- * Faz 17 fixed a genuine inconsistency here, not merely a cast: `audit_events` read the same
- * JSON field `after_data->>'paid_amount'` TWO different ways in one select list — as
- * `::float8` for the `paid_amount` column and as `::numeric` inside the `remaining_amount`
- * arithmetic. The two columns could therefore disagree about the same underlying value, so
- * `amount − paid_amount` did not always equal the reported `remaining_amount`. Both now parse
- * as `numeric` and the whole row is decoded once in JS.
+ * Both `paid_amount` and `remaining_amount` parse as `numeric` in SQL and decode once in JS,
+ * preserving `coalesce(i.currency, p.currency, 'TRY')` per event row.
  */
 export async function paymentHistoryEvents(
   pool: Pick<Pool, "query">,
@@ -422,7 +973,8 @@ export async function paymentHistoryEvents(
 ): Promise<PaymentHistoryEvent[]> {
   const limit = Math.max(1, Math.min(250, filters.limit ?? 50));
   const offset = Math.max(0, filters.offset ?? 0);
-  const result=await pool.query(`
+  const result = await pool.query(
+    `
     with audit_events as (
       select a.id,a.entity_id instance_id,coalesce(p.name,'(silinmiş kalem)') payment_name,
         case when a.action='mark_paid' then 'paid' when a.action='mark_unpaid' then 'reopened'
@@ -430,19 +982,36 @@ export async function paymentHistoryEvents(
         a.before_data->>'status' previous_status,coalesce(a.after_data->>'status','unknown') next_status,
         i.amount amount,nullif(a.after_data->>'paid_amount','')::numeric paid_amount,
         case when i.amount is null then null else greatest(0,i.amount-coalesce(nullif(a.after_data->>'paid_amount','')::numeric,0)) end remaining_amount,
+        coalesce(i.currency, p.currency, 'TRY') currency,
         to_char(a.created_at,'YYYY-MM-DD HH24:MI') occurred_at,(i.source_row_id is not null) source_linked
       from public.audit_logs a left join public.payment_instances i on i.id=a.entity_id left join public.payments p on p.id=i.payment_id
       where a.entity_table='payment_instances' and (a.action in ('mark_paid','mark_unpaid') or a.after_data->>'status' in ('partial','cancelled'))
     ), current_events as (
       select i.id,i.id,coalesce(p.name,'(silinmiş kalem)'),i.status,null,i.status,i.amount,i.paid_amount,
         case when i.amount is null then null else greatest(0,i.amount-coalesce(i.paid_amount,0)) end,
+        coalesce(i.currency, p.currency, 'TRY'),
         to_char(coalesce(i.paid_at,i.updated_at),'YYYY-MM-DD HH24:MI'),(i.source_row_id is not null)
       from public.payment_instances i left join public.payments p on p.id=i.payment_id
       where i.status in ('partial','cancelled') and not exists(select 1 from audit_events a where a.instance_id=i.id and a.next_status=i.status)
     ) select * from (select * from audit_events union all select * from current_events) h
     where ($1='' or event_type=$1) and ($2='' or payment_name ilike '%'||$2||'%') and ($3='' or occurred_at::text >= $3) and ($4='' or occurred_at::text <= $4||' 23:59')
-    order by occurred_at desc, id desc limit $5 offset $6`,[filters.status??"",filters.q??"",filters.from??"",filters.to??"",limit,offset]);
-  return result.rows.map(r=>({id:r.id,instanceId:r.instance_id,paymentName:r.payment_name,eventType:r.event_type,previousStatus:r.previous_status,nextStatus:r.next_status,amount:moneyOrNull(r.amount),paidAmount:moneyOrNull(r.paid_amount),remainingAmount:moneyOrNull(r.remaining_amount),occurredAt:r.occurred_at,sourceLinked:r.source_linked}));
+    order by occurred_at desc, id desc limit $5 offset $6`,
+    [filters.status ?? "", filters.q ?? "", filters.from ?? "", filters.to ?? "", limit, offset],
+  );
+  return result.rows.map((r) => ({
+    id: r.id,
+    instanceId: r.instance_id,
+    paymentName: r.payment_name,
+    eventType: r.event_type,
+    previousStatus: r.previous_status,
+    nextStatus: r.next_status,
+    amount: moneyOrNull(r.amount),
+    paidAmount: moneyOrNull(r.paid_amount),
+    remainingAmount: moneyOrNull(r.remaining_amount),
+    currency: (r.currency as string | undefined) ?? "TRY",
+    occurredAt: r.occurred_at,
+    sourceLinked: r.source_linked,
+  }));
 }
 
 export async function paymentHistoryCounts(

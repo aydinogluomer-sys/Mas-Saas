@@ -1,6 +1,9 @@
+import Link from "@/components/ui/app-link";
+import { AnalyticsChart } from "@/components/charts/analytics-chart";
 import { getRequestUser } from "@/lib/auth";
 import { can, canApprovePlanningLines } from "@/lib/authz/matrix";
 import { requireRouteAccess } from "@/lib/authz/route-guard";
+import type { ChartModel } from "@/lib/analytics/chart";
 import {
   loadBudgetsCatalog,
   loadBudgetVarianceSummary,
@@ -95,6 +98,56 @@ export default async function BudgetPage({
   const todayIso = new Date().toISOString().slice(0, 10);
   const monthStartIso = `${todayIso.slice(0, 7)}-01`;
 
+  const byMonth = new Map<string, { budget: number; actual: number }>();
+  for (const r of tryRows) {
+    const ym = r.periodStart.slice(0, 7);
+    const prev = byMonth.get(ym) ?? { budget: 0, actual: 0 };
+    prev.budget += r.budgetAmount;
+    prev.actual += r.actualAmount ?? 0;
+    byMonth.set(ym, prev);
+  }
+  const sortedMonths = Array.from(byMonth.entries()).sort(([a], [b]) => a.localeCompare(b));
+  const budgetChartModel: ChartModel = {
+    title: "Bütçe vs Gerçekleşen (KDV Hariç TRY)",
+    description: "Onaylı bütçe dönem toplamları ile KDV hariç fatura net_amount ve TDHP 6xx/7xx gerçekleşenlerinin karşılaştırması.",
+    sourceLabel: "budget_vs_actual (KDV hariç net_amount + TDHP)",
+    sourceHref: "/cashflow/budget",
+    asOf: todayIso,
+    timeDirection: "both",
+    availableGranularities: ["month"],
+    defaultGranularityByPeriod: { "3m": "month", "6m": "month", "12m": "month", "24m": "month", all: "month" },
+    summaryMode: "sum",
+    currencyCode: "TRY",
+    series: [
+      {
+        id: "budget_try",
+        label: "Onaylı Bütçe (TRY)",
+        tone: "info",
+        format: "currency",
+        projectionKind: "projected",
+        points: sortedMonths.map(([ym, v]) => ({
+          key: `${ym}-01`,
+          label: ym,
+          value: Math.round(v.budget * 100) / 100,
+          projectionKind: "projected",
+        })),
+      },
+      {
+        id: "actual_try",
+        label: "Gerçekleşen KDV Hariç (TRY)",
+        tone: "positive",
+        format: "currency",
+        projectionKind: "confirmed",
+        points: sortedMonths.map(([ym, v]) => ({
+          key: `${ym}-01`,
+          label: ym,
+          value: Math.round(v.actual * 100) / 100,
+          projectionKind: "confirmed",
+        })),
+      },
+    ],
+  };
+
   return (
     <>
       <PageHeader
@@ -118,13 +171,13 @@ export default async function BudgetPage({
 
       <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
         <KeyStat
-          label="Bütçe (onaylı, TRY)"
+          label="Bütçe (onaylı, KDV hariç TRY)"
           value={fmtTL(budgetTotal)}
           tone="info"
           sub={foreignRows > 0 ? `${foreignRows} satır TRY-dışı — toplamda yok` : undefined}
         />
         <KeyStat
-          label="Gerçekleşen (TRY)"
+          label="Gerçekleşen (KDV hariç TRY)"
           value={fmtTL(actualTotal)}
           tone={actualTotal > budgetTotal ? "warn" : "pos"}
         />
@@ -135,6 +188,17 @@ export default async function BudgetPage({
           tone={notMeasured.length > 0 ? "warn" : "pos"}
         />
       </div>
+
+      <Panel
+        title="BÜTÇE vs GERÇEKLEŞEN GRAFİĞİ (KDV HARİÇ NET TUTAR)"
+        subtitle="Onaylı TRY bütçe kalemleri ile KDV hariç net_amount + TDHP 6xx/7xx fiili tahakkuklarının dönemlik sapma görünümü"
+      >
+        {sortedMonths.length === 0 ? (
+          <EmptyState>Grafik oluşturmak için en az bir onaylı TRY bütçe satırı gereklidir.</EmptyState>
+        ) : (
+          <AnalyticsChart model={budgetChartModel} kind="bar" defaultPeriod="12m" height={280} />
+        )}
+      </Panel>
 
       <Panel
         title={`BÜTÇE SAPMA ÖZETİ — ${varianceSummaries.length}`}
@@ -725,48 +789,31 @@ export default async function BudgetPage({
         )}
       </Panel>
 
-      <Panel title="13 HAFTALIK NAKİT UFKU" subtitle="boş haftalar dahil — eksik hafta sessizce düşmez">
-        {weeks.length === 0 ? (
-          <EmptyState>Aktif 13 haftalık tahmin yok.</EmptyState>
-        ) : (
-          <TableShell>
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="text-left text-xs uppercase" style={{ color: "var(--text-2)" }}>
-                  <th className="py-1">Hafta</th>
-                  <th>Aralık</th>
-                  <th className="text-right">Giriş</th>
-                  <th className="text-right">Çıkış</th>
-                  <th className="text-right">Net</th>
-                  <th className="text-right">Net (yalnız sözleşmeli)</th>
-                  <th className="text-right">Net (güven ağırlıklı)</th>
-                </tr>
-              </thead>
-              <tbody>
-                {weeks.map((w) => (
-                  <tr key={`${w.forecastId}-${w.currency}-${w.weekNo}`} className="border-t" style={{ borderColor: "var(--line)" }}>
-                    <td className="py-2 tabular-nums">{w.weekNo}</td>
-                    <td className="text-xs tabular-nums">{w.weekStart} → {w.weekEnd}</td>
-                    <td className="text-right font-mono tabular-nums">{formatMoney(w.inflow, w.currency)}</td>
-                    <td className="text-right font-mono tabular-nums">{formatMoney(w.outflow, w.currency)}</td>
-                    <td className={`text-right font-mono tabular-nums ${w.netFlow < 0 ? "text-neg" : ""}`}>
-                      {formatMoney(w.netFlow, w.currency)}
-                    </td>
-                    <td className="text-right font-mono tabular-nums" style={{ color: "var(--text-2)" }}>
-                      {formatMoney(w.netFlowContracted, w.currency)}
-                    </td>
-                    <td className="text-right font-mono tabular-nums" style={{ color: "var(--text-2)" }}>
-                      {formatMoney(w.netFlowConfidenceWeighted, w.currency)}
-                      {w.estimatedLineCount > 0 ? (
-                        <span className="block text-[10px] text-warn">{w.estimatedLineCount} tahmini</span>
-                      ) : null}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </TableShell>
-        )}
+      <Panel
+        title="KANONİK 13 HAFTALIK LİKİDİTE UFKU KÖPRÜSÜ"
+        subtitle="Çift otorite (split-brain) çelişkisini önlemek için 13 haftalık nakit tahmini tekil kanonik motordan (/cashflow/13-week) yönetilir"
+        right={
+          <Link href="/cashflow/13-week" className="button-accent px-3 py-1.5 text-xs font-medium">
+            Kanonik 13H Likidite Ekranını Aç →
+          </Link>
+        }
+      >
+        <div
+          className="flex flex-wrap items-center justify-between gap-3 rounded border p-3 text-xs"
+          style={CARD_STYLE}
+        >
+          <div className="space-y-1">
+            <div className="font-semibold" style={{ color: "var(--text-1)" }}>
+              Tekil 13 Haftalık Nakit Otoritesi (`rolling-13w-engine`)
+            </div>
+            <p style={{ color: "var(--text-2)" }}>
+              Açık faturalar, çek/senet vadeleri, kredi taksitleri, `190/191/391` devreden KDV mahsubu, `360` MPHB,
+              `361` SGK, `108` POS valör çözülmesi ve kurumsal kart ekstreleri ile burada girilen onaylı{" "}
+              <b>{weeks.length}</b> manuel tahmin haftası otomatik birleştirilir.
+            </p>
+          </div>
+          <Badge tone="blue">{weeks.length} tahmin haftası bağlı</Badge>
+        </div>
       </Panel>
 
       <Panel title="TAHMİN DOĞRULUĞU" subtitle="yalnız ölçülmüş satırlar — ölçülmemiş satır mükemmel sayılmaz">

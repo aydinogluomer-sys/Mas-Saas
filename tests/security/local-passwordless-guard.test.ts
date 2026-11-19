@@ -224,6 +224,7 @@ describe("SA-1 — MAS_LOCAL_PASSWORDLESS ve oturum sınırı sertleştirmesi", 
 
       // 2. Opted-in on loopback: returns isolated copy of DEFAULT_LOCAL_USER without touching DB
       vi.stubEnv("MAS_ALLOW_PASSWORDLESS_IN_TEST", "1");
+      h.state.headers = { host: "127.0.0.1:3000" };
       const first = await getCurrentUser();
       expect(first).not.toBeNull();
       expect(first?.username).toBe("atilla");

@@ -1,23 +1,14 @@
-// P0 — çek/kredi para birimi güvenliği kanıtı.
+// P0 / Karar 2 — çek ve kredi çoklu döviz güvenliği kanıtı.
 //
-// İDDİA: V2.0 import sözleşmesi, TRY dışı çek ve kredi kayıtlarının finans toplamlarına
-// karışmasını engeller; ama o kayıtları da sessizce ATMAZ.
-//
-// Bu script iddiayı iki adımda ölçer:
-//
-//   A) NEGATİF KONTROL — tehlike gerçek mi?
-//      Importer'ı ATLAYARAK doğrudan veritabanına bir TRY ve bir USD çek yazılır. Mevcut
-//      finans okuma modeli (`loadFinanceDashboard`) çağrılır. Bu model `sum(amount)` yapıyor
-//      ve para birimi boyutu taşımıyor, dolayısıyla iki tutarı TEK bir sayıda toplar.
-//      Ölçüm bunu gösterir: sorun varsayımsal değil.
-//
-//   B) SÖZLEŞME — V2 import bu tehlikeyi engelliyor mu?
-//      Kanonik fixture (TRY + USD çek, TRY + EUR kredi) import edilir; sonra AYNI fixture'ın
-//      TRY dışı satırları çıkarılmış hâli import edilir. İki koşunun finans KPI'ları BİREBİR
-//      aynı olmalı — yani TRY dışı satırlar hiçbir toplama katkı vermemiş olmalı.
-//
-// B adımı A'sız yeterli olmazdı: KPI'ların eşit çıkması, kısıt işlediği için mi yoksa ortada
-// hiç tehlike olmadığı için mi bilinemezdi.
+// İDDİA:
+//   A) `loadFinanceDashboard` okuma modeli farklı para birimlerini ham sayı olarak ASLA
+//      tek toplamda karıştırmaz (10.000 TRY + 1.000 USD ≠ 11.000 TRY); TRY toplamını
+//      saf tutar, yabancı para kalemlerini `byCurrency` kırılımında ayırır ve kur yoksa
+//      `missingFxCurrencies` ile dürüstçe işaretler.
+//   B) V2 import sözleşmesi (Karar 2 ile `FINANCE_TRY_ONLY` kilidi kaldırıldıktan sonra)
+//      USD çek ve EUR kredi satırlarını gerçek para birimleriyle domain tablolarına yazar;
+//      buna rağmen saf TRY finans KPI'ları (`due30`, `remainingAmount`) TRY-only kaynakla
+//      birebir aynı kalır, döviz yükümlülükleri ise döviz kırılımında eksiksiz izlenir.
 import { Pool } from "pg";
 import type ExcelJS from "exceljs";
 import { buildFixtureWorkbook } from "../../src/lib/importers/v2/fixture";
@@ -39,8 +30,8 @@ const RESET = [
   "import_external_keys", "mapping_reviews", "import_rows", "source_cells", "source_sheets",
   "payments", "checks", "loan_installments", "loans", "cashflow_lines", "cashflow_months",
   "bank_transactions", "bank_accounts", "cash_accounts", "invoices", "orders", "products",
-  "projects", "budget_lines", "budgets", "fx_positions", "production_parts", "machine_assets",
-  "source_workbooks",
+  "projects", "budget_lines", "budgets", "fx_positions", "production_parts", "cost_model_items",
+  "cost_models", "machine_assets", "facility_movements", "credit_facilities", "source_workbooks",
 ];
 
 const TODAY = "2026-09-04";
@@ -52,7 +43,6 @@ async function buildTryOnlyWorkbook(): Promise<ExcelJS.Workbook> {
     const ws = wb.getWorksheet(sheetName)!;
     const header = ws.getRow(1).values as unknown[];
     const curCol = header.findIndex((h) => String(h ?? "").includes("Para Birimi"));
-    // Sondan başa: satır silmek sonraki satır numaralarını kaydırır.
     for (let r = ws.rowCount; r >= 2; r--) {
       const v = ws.getRow(r).getCell(curCol).value;
       if (typeof v === "string" && v !== "" && v !== "TRY") ws.spliceRows(r, 1);
@@ -83,8 +73,8 @@ async function main(): Promise<void> {
        on conflict (username) do update set display_name = excluded.display_name
        returning id`)).rows[0].id;
 
-    /* ── A · NEGATİF KONTROL: mevcut okuma modeli para birimi ayırmıyor ──────────────── */
-    console.log("── A · NEGATİF KONTROL (importer atlanarak doğrudan yazma) ──");
+    /* ── A · OKUMA MODELİ DÖVİZ İZOLASYONU ──────────────────────────────────────────── */
+    console.log("── A · OKUMA MODELİ DÖVİZ İZOLASYONU (10.000 TRY + 1.000 USD) ──");
     await wipe();
     await client.query(
       `insert into public.checks (maturity_date, amount, signed_amount, direction, status, currency)
@@ -92,16 +82,15 @@ async function main(): Promise<void> {
               ($1,  1000,  -1000, 'outflow', 'planned', 'USD')`,
       ["2026-09-20"],
     );
-    const kirli = await loadFinanceDashboard(pool, TODAY);
-    console.log(`   due30 = ${kirli.summary.due30}  (10.000 TRY + 1.000 USD)`);
-    evidence.negativeControl = { due30: kirli.summary.due30, openChecks: kirli.summary.openChecks };
+    const izole = await loadFinanceDashboard(pool, TODAY);
+    evidence.directIsolation = izole.summary;
 
-    // 11000 çıkması, iki FARKLI para biriminin tek sayı gibi toplandığının kanıtı.
-    assert("okuma modeli iki para birimini TEK sayıda topluyor (tehlike gerçek)", 11000, kirli.summary.due30);
-    assert("iki çek de akışta görünüyor", 2, kirli.summary.openChecks);
+    assert("saf TRY due30 toplamı USD tutarıyla kirlenmedi (10000)", 10000, izole.summary.due30);
+    assert("iki çek de açık çek sayısında görünüyor", 2, izole.summary.openChecks);
+    assert("kur yokken USD eksik kur listesinde dürüstçe raporlandı", ["USD"], izole.summary.missingFxCurrencies);
 
-    /* ── B · SÖZLEŞME: V2 import TRY dışını domain'e sokmuyor ────────────────────────── */
-    console.log("\n── B · V2 IMPORT SÖZLEŞMESİ ──");
+    /* ── B · V2 ÇOKLU DÖVİZ IMPORT SÖZLEŞMESİ ───────────────────────────────────────── */
+    console.log("\n── B · V2 ÇOKLU DÖVİZ IMPORT SÖZLEŞMESİ ──");
     await wipe();
     const actorId = await actor();
 
@@ -116,28 +105,13 @@ async function main(): Promise<void> {
       "select count(*) c from public.checks where currency <> 'TRY'")).rows[0].c)
       + Number((await client.query<{ c: string }>(
         "select count(*) c from public.loans where currency <> 'TRY'")).rows[0].c);
-    assert("TRY dışı çek/kredi domain'e HİÇ yazılmadı", 0, nonTryDomain);
-
-    // Ama kaybolmadılar: ham hâlleriyle hazırlık katmanında duruyorlar.
-    const staged = await client.query<{ row_json: Record<string, unknown> }>(
-      `select row_json from public.import_rows
-        where row_json->>'para_birimi' is not null and row_json->>'para_birimi' <> 'TRY'
-          and detected_entity_type in ('checks','loans')`);
-    assert("TRY dışı satırlar kaynakta KORUNDU", 2, staged.rowCount);
-
-    const reviews = await client.query<{ severity: string; message: string }>(
-      `select severity, message from public.mapping_reviews
-        where issue_type = 'unsupported_currency_for_finance_aggregation'`);
-    assert("TRY dışı her satır için inceleme açıldı", 2, reviews.rowCount);
-    assert("incelemeler yüksek şiddetli", ["high", "high"], reviews.rows.map((r) => r.severity).sort());
-    assert("inceleme mesajı sebebi söylüyor", true,
-      reviews.rows.every((r) => r.message.includes("KORUNMUŞTUR") && r.message.includes("TRY")));
+    assert("USD çek ve EUR kredi gerçek para birimleriyle domain'e yazıldı", 2, nonTryDomain);
 
     const karisikKpi = await loadFinanceDashboard(pool, TODAY);
     evidence.mixedSourceKpi = karisikKpi.summary;
     evidence.mixedImport = { perTable: tam.perTable, rowsRejected: tam.rowsRejected };
 
-    /* ── B2 · TRY-ONLY kaynak ile birebir aynı sonuç ─────────────────────────────────── */
+    /* ── B2 · TRY-ONLY KAYNAK İLE SAF TRY KPI EŞİTLİĞİ ──────────────────────────────── */
     console.log("\n── B2 · TRY-ONLY kaynak karşılaştırması ──");
     await wipe();
     const actorId2 = await actor();
@@ -149,21 +123,16 @@ async function main(): Promise<void> {
     const temizKpi = await loadFinanceDashboard(pool, TODAY);
     evidence.tryOnlyKpi = temizKpi.summary;
 
-    console.log(`   karışık kaynak : ${JSON.stringify(karisikKpi.summary)}`);
-    console.log(`   TRY-only kaynak: ${JSON.stringify(temizKpi.summary)}`);
+    assert("saf TRY due30 özeti TRY dışı satırlardan etkilenmedi", temizKpi.summary.due30, karisikKpi.summary.due30);
+    assert("saf TRY remainingAmount özeti TRY dışı satırlardan etkilenmedi",
+      temizKpi.summary.remainingAmount, karisikKpi.summary.remainingAmount);
 
-    // ASIL İDDİA. TRY dışı satırlar dosyada olsa da olmasa da finans KPI'ları AYNI.
-    assert("finans özeti TRY dışı satırlardan etkilenmedi", temizKpi.summary, karisikKpi.summary);
-    assert("aylık kırılım da etkilenmedi",
-      JSON.stringify(temizKpi.months), JSON.stringify(karisikKpi.months));
-
-    /* ── Özet ────────────────────────────────────────────────────────────────────────── */
     const failed = checks.filter((c) => !c.gecti);
     console.log(`\n${"─".repeat(60)}`);
     console.log(`Kontrol: ${checks.length} · geçti: ${checks.length - failed.length} · düştü: ${failed.length}`);
     evidence.checks = checks.map((c) => ({ ad: c.ad, gecti: c.gecti }));
     evidence.verdict = failed.length === 0 ? "PASS" : "FAIL";
-    evidence.multiCurrencyFinanceAnalytics = "NOT_IMPLEMENTED";
+    evidence.multiCurrencyFinanceAnalytics = "IMPLEMENTED";
     console.log(JSON.stringify(evidence, null, 2));
     if (failed.length > 0) process.exitCode = 1;
   } finally {

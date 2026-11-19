@@ -19,6 +19,11 @@ import { decimal, money, moneyOrNull, rateOrNull } from "@/lib/money";
 import { audit } from "@/lib/audit";
 import { executeCheckBordroTransition } from "./check-bordro";
 import {
+  consolidateCurrencyAmounts,
+  loadLatestTryFxRateMap,
+  type CurrencyBreakdownItem,
+} from "./fx-consolidation";
+import {
   addMonthsPreservingAnchorDay,
   reconcileLoan,
   scheduleDueDates,
@@ -88,10 +93,23 @@ export async function mapAcceptedChecks(pool: Pool, workbookId: string, actorId:
         row_json: RowJson;
         mapping_status: string;
         blocked: boolean;
+        resolved_duplicate: boolean;
       }>(
         `select ir.id, ir.row_index, ir.row_json, ir.mapping_status,
-                exists (select 1 from public.mapping_reviews mr
-                        where mr.import_row_id = ir.id and mr.status in ('open','rejected')) as blocked
+                exists (
+                  select 1 from public.mapping_reviews mr
+                   where mr.import_row_id = ir.id
+                     and (
+                       mr.status in ('open', 'rejected')
+                       or (mr.issue_type = 'duplicate_check' and mr.status in ('open', 'rejected', 'resolved'))
+                     )
+                ) as blocked,
+                exists (
+                  select 1 from public.mapping_reviews mr
+                   where mr.import_row_id = ir.id
+                     and mr.issue_type = 'duplicate_check'
+                     and mr.status = 'resolved'
+                ) as resolved_duplicate
          from public.import_rows ir where ir.sheet_id=$1 order by ir.row_index`,
         [sheet.id],
       );
@@ -107,8 +125,13 @@ export async function mapAcceptedChecks(pool: Pool, workbookId: string, actorId:
           continue;
         }
         if (row.blocked) {
-          // duplicate_check / unparsed_row open ⇒ waits for human (import both in staging, not ledger)
-          result.excluded.push({ rowIndex: c.rowIndex, reason: "açık/ret inceleme" });
+          // 5.C: duplicate_check only imports on explicit 'accepted'; 'resolved' marks it excluded.
+          result.excluded.push({
+            rowIndex: c.rowIndex,
+            reason: row.resolved_duplicate
+              ? "mükerrer çek dışlandı (resolved — yalnız accepted içeri alınır)"
+              : "açık/ret inceleme",
+          });
           continue;
         }
         result.eligible++;
@@ -225,7 +248,7 @@ export async function mapLoans(pool: Pool, workbookId: string, actorId: string):
             simple_interest_rate, applied_interest_rate, monthly_cost_rate, annual_cost_rate,
             bsmv_rate, kkdf_rate, installment_amount, total_payment, total_finance_cost, status)
          values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,'active')
-         on conflict (source_sheet_id) where source_sheet_id is not null do nothing
+         on conflict (source_sheet_id) where source_sheet_id is not null and source_row_id is null do nothing
          returning id`,
         [
           `Kredi — ${sheet.sheet_name}`, lenderId, workbookId, sheet.id,
@@ -430,6 +453,10 @@ export interface LoanRow {
   name: string;
   principal: number | null;
   currency?: string;
+  loanKind?: string;
+  interestType?: string;
+  bsmvRate?: number | null;
+  kkdfRate?: number | null;
   termMonths: number | null;
   installmentCount: number | null;
   firstPaymentDate: string | null;
@@ -450,7 +477,8 @@ export async function loadLoans(pool: Pool | PoolClient): Promise<LoanRow[]> {
   let r;
   try {
     r = await pool.query(`
-      select l.id, l.name, l.principal, l.currency, l.term_months, l.installment_count,
+      select l.id, l.name, l.principal, l.currency, l.loan_kind, l.interest_type,
+             l.bsmv_rate, l.kkdf_rate, l.term_months, l.installment_count,
              to_char(l.first_payment_date,'YYYY-MM-DD') as first_payment_date,
              l.installment_amount,
              l.total_payment, l.total_finance_cost,
@@ -458,8 +486,8 @@ export async function loadLoans(pool: Pool | PoolClient): Promise<LoanRow[]> {
              l.source_workbook_id, l.source_sheet_id,
              count(li.id)::int as installments_loaded,
              count(li.id) filter (where li.status='paid')::int as paid_count,
-             count(li.id) filter (where li.status <> 'paid')::int as remaining_count,
-             coalesce(sum(li.amount) filter (where li.status <> 'paid'),0) as remaining_amount
+             count(li.id) filter (where li.status not in ('paid','cancelled'))::int as remaining_count,
+             coalesce(sum(greatest(li.amount - coalesce(li.paid_amount, 0), 0)) filter (where li.status not in ('paid','cancelled')),0) as remaining_amount
       from public.loans l
       left join public.loan_installments li on li.loan_id=l.id
       where l.archived_at is null
@@ -469,7 +497,9 @@ export async function loadLoans(pool: Pool | PoolClient): Promise<LoanRow[]> {
     const pgCode = (err as { code?: string })?.code;
     if (pgCode !== "42703") throw err;
     r = await pool.query(`
-      select l.id, l.name, l.principal, 'TRY'::text as currency, l.term_months, l.installment_count,
+      select l.id, l.name, l.principal, 'TRY'::text as currency, 'installment'::text as loan_kind,
+             'fixed'::text as interest_type, null::numeric as bsmv_rate, null::numeric as kkdf_rate,
+             l.term_months, l.installment_count,
              to_char(l.first_payment_date,'YYYY-MM-DD') as first_payment_date,
              l.installment_amount,
              l.total_payment, l.total_finance_cost,
@@ -477,8 +507,8 @@ export async function loadLoans(pool: Pool | PoolClient): Promise<LoanRow[]> {
              l.source_workbook_id, l.source_sheet_id,
              count(li.id)::int as installments_loaded,
              count(li.id) filter (where li.status='paid')::int as paid_count,
-             count(li.id) filter (where li.status <> 'paid')::int as remaining_count,
-             coalesce(sum(li.amount) filter (where li.status <> 'paid'),0) as remaining_amount
+             count(li.id) filter (where li.status not in ('paid','cancelled'))::int as remaining_count,
+             coalesce(sum(li.amount) filter (where li.status not in ('paid','cancelled')),0) as remaining_amount
       from public.loans l
       left join public.loan_installments li on li.loan_id=l.id
       where l.archived_at is null
@@ -489,7 +519,10 @@ export async function loadLoans(pool: Pool | PoolClient): Promise<LoanRow[]> {
     // The four TL figures decode at money scale; the two interest rates are numeric(8,4)
     // and decode at RATE_DP so their fourth decimal survives (reconcileLoan compares
     // total_payment − principal − finance_cost against a ±1 TL tolerance).
-    id: x.id, name: x.name, principal: moneyOrNull(x.principal), currency: String(x.currency ?? "TRY"), termMonths: x.term_months,
+    id: x.id, name: x.name, principal: moneyOrNull(x.principal), currency: String(x.currency ?? "TRY"),
+    loanKind: String(x.loan_kind ?? "installment"), interestType: String(x.interest_type ?? "fixed"),
+    bsmvRate: rateOrNull(x.bsmv_rate), kkdfRate: rateOrNull(x.kkdf_rate),
+    termMonths: x.term_months,
     installmentCount: x.installment_count, firstPaymentDate: x.first_payment_date,
     installmentAmount: moneyOrNull(x.installment_amount), totalPayment: moneyOrNull(x.total_payment),
     totalFinanceCost: moneyOrNull(x.total_finance_cost),
@@ -502,45 +535,81 @@ export async function loadLoans(pool: Pool | PoolClient): Promise<LoanRow[]> {
 
 export async function loadLoanInstallments(pool: Pool, loanId: string): Promise<Array<{
   id: string; no: number | null; dueDate: string; amount: number; principal: number | null;
-  interest: number | null; tax: number | null; status: string;
+  interest: number | null; tax: number | null; bsmv?: number | null; kkdf?: number | null; status: string;
 }>> {
-  const r = await pool.query(
-    `select id, installment_no as no, to_char(due_date,'YYYY-MM-DD') as due_date,
-            amount, principal_component as principal,
-            interest_component as interest, tax_component as tax, status
-     from public.loan_installments where loan_id=$1 order by installment_no`,
-    [loanId],
-  );
+  let r;
+  try {
+    r = await pool.query(
+      `select id, installment_no as no, to_char(due_date,'YYYY-MM-DD') as due_date,
+              amount, principal_component as principal,
+              interest_component as interest, tax_component as tax,
+              bsmv_component as bsmv, kkdf_component as kkdf, status
+       from public.loan_installments where loan_id=$1 order by installment_no`,
+      [loanId],
+    );
+  } catch (err) {
+    const pgCode = (err as { code?: string })?.code;
+    if (pgCode !== "42703") throw err;
+    r = await pool.query(
+      `select id, installment_no as no, to_char(due_date,'YYYY-MM-DD') as due_date,
+              amount, principal_component as principal,
+              interest_component as interest, tax_component as tax,
+              null::numeric as bsmv, null::numeric as kkdf, status
+       from public.loan_installments where loan_id=$1 order by installment_no`,
+      [loanId],
+    );
+  }
   return r.rows.map((x) => ({
     id: x.id, no: x.no, dueDate: x.due_date, amount: moneyOrNull(x.amount) ?? 0,
     principal: moneyOrNull(x.principal), interest: moneyOrNull(x.interest),
-    tax: moneyOrNull(x.tax), status: x.status,
+    tax: moneyOrNull(x.tax), bsmv: moneyOrNull(x.bsmv), kkdf: moneyOrNull(x.kkdf), status: x.status,
   }));
 }
 
 /** Union of open checks + unpaid loan installments as a single maturity stream. */
 export async function loadMaturityItems(pool: Pool | PoolClient): Promise<MaturityItem[]> {
-  const checks = await pool.query(`
-    select c.id, to_char(c.maturity_date,'YYYY-MM-DD') as due, c.amount,
-           c.direction, coalesce(pe.name, pa.name, c.counterparty_label, pb.name, 'çek') as label
-    from public.checks c
-    left join public.parties pe on pe.id=c.payee_party_id
-    left join public.parties pa on pa.id=c.payer_party_id
-    left join public.parties pb on pb.id=c.bank_party_id
-    where c.status in ('planned','unknown','in_portfolio','in_bank_collection','in_bank_collateral','issued_to_vendor') and c.archived_at is null`);
-  const inst = await pool.query(`
-    select li.id, to_char(li.due_date,'YYYY-MM-DD') as due, li.amount, l.name
-    from public.loan_installments li join public.loans l on l.id=li.loan_id
-    where li.status in ('planned','unpaid','partial','late') and l.archived_at is null`);
+  let checks;
+  let inst;
+  try {
+    checks = await pool.query(`
+      select c.id, to_char(c.maturity_date,'YYYY-MM-DD') as due, c.amount, coalesce(c.currency, 'TRY') as currency,
+             c.direction, coalesce(pe.name, pa.name, c.counterparty_label, pb.name, 'çek') as label
+      from public.checks c
+      left join public.parties pe on pe.id=c.payee_party_id
+      left join public.parties pa on pa.id=c.payer_party_id
+      left join public.parties pb on pb.id=c.bank_party_id
+      where c.status in ('planned','unknown','in_portfolio','in_bank_collection','in_bank_collateral','issued_to_vendor') and c.archived_at is null`);
+    inst = await pool.query(`
+      select li.id, to_char(li.due_date,'YYYY-MM-DD') as due, li.amount, coalesce(l.currency, 'TRY') as currency, l.name
+      from public.loan_installments li join public.loans l on l.id=li.loan_id
+      where li.status in ('planned','unpaid','partial','late') and l.archived_at is null`);
+  } catch (err) {
+    const pgCode = (err as { code?: string })?.code;
+    if (pgCode !== "42703") throw err;
+    checks = await pool.query(`
+      select c.id, to_char(c.maturity_date,'YYYY-MM-DD') as due, c.amount, 'TRY'::text as currency,
+             c.direction, coalesce(pe.name, pa.name, c.counterparty_label, pb.name, 'çek') as label
+      from public.checks c
+      left join public.parties pe on pe.id=c.payee_party_id
+      left join public.parties pa on pa.id=c.payer_party_id
+      left join public.parties pb on pb.id=c.bank_party_id
+      where c.status in ('planned','unknown','in_portfolio','in_bank_collection','in_bank_collateral','issued_to_vendor') and c.archived_at is null`);
+    inst = await pool.query(`
+      select li.id, to_char(li.due_date,'YYYY-MM-DD') as due, li.amount, 'TRY'::text as currency, l.name
+      from public.loan_installments li join public.loans l on l.id=li.loan_id
+      where li.status in ('planned','unpaid','partial','late') and l.archived_at is null`);
+  }
   const items: MaturityItem[] = [];
   for (const c of checks.rows)
     items.push({
       id: `chk:${c.id}`, dueDate: c.due, amount: moneyOrNull(c.amount),
+      currency: String(c.currency ?? "TRY"),
       direction: c.direction, kind: "check", label: c.label,
     });
   for (const i of inst.rows)
     items.push({
       id: `ins:${i.id}`, dueDate: i.due, amount: moneyOrNull(i.amount),
+      currency: String(i.currency ?? "TRY"),
       direction: "outflow", kind: "loan_installment", label: i.name,
     });
   return items;
@@ -549,6 +618,11 @@ export async function loadMaturityItems(pool: Pool | PoolClient): Promise<Maturi
 export interface FinanceDashboardSummary {
   remainingAmount: number;
   due30: number;
+  remainingConsolidatedTry: number;
+  due30ConsolidatedTry: number;
+  remainingByCurrency: CurrencyBreakdownItem[];
+  due30ByCurrency: CurrencyBreakdownItem[];
+  missingFxCurrencies: string[];
   openChecks: number;
   activeLoans: number;
 }
@@ -559,73 +633,143 @@ export interface FinanceDashboardMonth {
   direction: "inflow" | "outflow" | "unknown";
   count: number;
   knownAmount: number;
+  byCurrency?: CurrencyBreakdownItem[];
+  missingFxCount?: number;
   missingCount: number;
 }
 
-/**
- * Bounded aggregates for the finance landing page.
- *
- * The previous page loaded every check, every loan and the complete maturity stream, then threw
- * almost all row detail away. At realistic volume that moved thousands of rows through pg,
- * JavaScript decoding and the RSC render for four KPIs and a monthly chart. Detail routes still
- * use the full loaders; this read model returns exactly what the summary screen renders.
- */
 export async function loadFinanceDashboard(
   pool: Pool,
   todayISO: string,
 ): Promise<{ summary: FinanceDashboardSummary; months: FinanceDashboardMonth[] }> {
   const stream = `
-    select c.maturity_date as due_date, c.amount, c.direction::text as direction, 'check'::text as kind
+    select c.maturity_date as due_date, c.amount, coalesce(c.currency, 'TRY') as currency,
+           c.direction::text as direction, 'check'::text as kind
     from public.checks c
     where c.status in ('planned','unknown','in_portfolio','in_bank_collection','in_bank_collateral','issued_to_vendor') and c.archived_at is null
     union all
-    select li.due_date, li.amount, 'outflow'::text, 'loan_installment'::text
+    select li.due_date,
+           greatest(li.amount - coalesce(li.paid_amount, 0), 0) as amount,
+           coalesce(l.currency, 'TRY') as currency,
+           'outflow'::text, 'loan_installment'::text
     from public.loan_installments li
     join public.loans l on l.id=li.loan_id
     where li.status in ('planned','unpaid','partial','late') and l.archived_at is null`;
 
-  const [summaryResult, monthResult] = await Promise.all([
+  const [countsRes, remCurrRes, due30CurrRes, monthCurrRes, fxMap] = await Promise.all([
     pool.query(`
-      with maturity as (${stream})
       select
         (select count(*)::int from public.checks
           where status in ('planned','unknown','in_portfolio','in_bank_collection','in_bank_collateral','issued_to_vendor') and archived_at is null) as open_checks,
-        (select count(*)::int from public.loans where archived_at is null) as active_loans,
-        (select coalesce(sum(li.amount),0)
-          from public.loan_installments li join public.loans l on l.id=li.loan_id
-          where li.status <> 'paid' and l.archived_at is null) as remaining_amount,
-        coalesce(sum(amount) filter (
-          where due_date >= $1::date and due_date < $1::date + 30
-            and direction = 'outflow' and amount is not null
-        ),0) as due30
-      from maturity`, [todayISO]),
+        (select count(*)::int from public.loans where archived_at is null) as active_loans`),
+    pool.query(`
+      select coalesce(l.currency, 'TRY') as currency,
+             coalesce(sum(greatest(li.amount - coalesce(li.paid_amount, 0), 0)), 0)::text as amt
+      from public.loan_installments li
+      join public.loans l on l.id = li.loan_id
+      where li.status <> 'paid' and li.status <> 'cancelled' and l.archived_at is null
+      group by coalesce(l.currency, 'TRY')`),
+    pool.query(`
+      with maturity as (${stream})
+      select currency, coalesce(sum(amount), 0)::text as amt
+      from maturity
+      where due_date >= $1::date and due_date < $1::date + 30
+        and direction = 'outflow' and amount is not null
+      group by currency`, [todayISO]),
     pool.query(`
       with maturity as (${stream})
       select to_char(date_trunc('month',due_date),'YYYY-MM-01') as month_start,
-             kind, direction, count(*)::int as event_count,
-             coalesce(sum(amount) filter (where amount is not null),0) as known_amount,
+             kind, direction, currency,
+             count(*)::int as event_count,
+             coalesce(sum(amount) filter (where amount is not null),0)::text as known_amount,
              count(*) filter (where amount is null)::int as missing_count
       from maturity
       where due_date >= $1::date and due_date < ($1::date + interval '24 months')
-      group by date_trunc('month',due_date), kind, direction
-      order by date_trunc('month',due_date), kind, direction`, [todayISO]),
+      group by date_trunc('month',due_date), kind, direction, currency
+      order by date_trunc('month',due_date), kind, direction, currency`, [todayISO]),
+    loadLatestTryFxRateMap(pool, todayISO),
   ]);
-  const summaryRow = summaryResult.rows[0] ?? {};
+
+  const remCons = consolidateCurrencyAmounts(
+    remCurrRes.rows.map((r) => ({ currency: String(r.currency ?? "TRY"), amount: r.amt })),
+    fxMap,
+  );
+  const due30Cons = consolidateCurrencyAmounts(
+    due30CurrRes.rows.map((r) => ({ currency: String(r.currency ?? "TRY"), amount: r.amt })),
+    fxMap,
+  );
+
+  const monthGroups = new Map<
+    string,
+    {
+      monthStart: string;
+      kind: FinanceDashboardMonth["kind"];
+      direction: FinanceDashboardMonth["direction"];
+      count: number;
+      missingCount: number;
+      currencyInputs: Array<{ currency: string; amount: string }>;
+    }
+  >();
+
+  for (const row of monthCurrRes.rows) {
+    const key = `${row.month_start}|${row.kind}|${row.direction}`;
+    let g = monthGroups.get(key);
+    if (!g) {
+      g = {
+        monthStart: row.month_start as string,
+        kind: row.kind as FinanceDashboardMonth["kind"],
+        direction: row.direction as FinanceDashboardMonth["direction"],
+        count: 0,
+        missingCount: 0,
+        currencyInputs: [],
+      };
+      monthGroups.set(key, g);
+    }
+    g.count += Number(row.event_count ?? 0);
+    g.missingCount += Number(row.missing_count ?? 0);
+    g.currencyInputs.push({
+      currency: String(row.currency ?? "TRY"),
+      amount: String(row.known_amount ?? "0"),
+    });
+  }
+
+  const allMissingFx = new Set<string>([
+    ...remCons.missingFxCurrencies,
+    ...due30Cons.missingFxCurrencies,
+  ]);
+
+  const months: FinanceDashboardMonth[] = [];
+  for (const g of monthGroups.values()) {
+    const mc = consolidateCurrencyAmounts(g.currencyInputs, fxMap);
+    for (const m of mc.missingFxCurrencies) allMissingFx.add(m);
+    months.push({
+      monthStart: g.monthStart,
+      kind: g.kind,
+      direction: g.direction,
+      count: g.count,
+      knownAmount: mc.consolidatedTry,
+      byCurrency: mc.byCurrency,
+      missingFxCount: mc.missingFxCurrencies.length,
+      missingCount: g.missingCount,
+    });
+  }
+
+  const countRow = countsRes.rows[0] ?? {};
+  const pureTryRemaining = remCons.byCurrency.find((c) => c.currency === "TRY")?.nativeAmount ?? 0;
+  const pureTryDue30 = due30Cons.byCurrency.find((c) => c.currency === "TRY")?.nativeAmount ?? 0;
   return {
     summary: {
-      remainingAmount: moneyOrNull(summaryRow.remaining_amount) ?? 0,
-      due30: moneyOrNull(summaryRow.due30) ?? 0,
-      openChecks: Number(summaryRow.open_checks ?? 0),
-      activeLoans: Number(summaryRow.active_loans ?? 0),
+      remainingAmount: pureTryRemaining,
+      due30: pureTryDue30,
+      remainingConsolidatedTry: remCons.consolidatedTry,
+      due30ConsolidatedTry: due30Cons.consolidatedTry,
+      remainingByCurrency: remCons.byCurrency,
+      due30ByCurrency: due30Cons.byCurrency,
+      missingFxCurrencies: [...allMissingFx],
+      openChecks: Number(countRow.open_checks ?? 0),
+      activeLoans: Number(countRow.active_loans ?? 0),
     },
-    months: monthResult.rows.map((row) => ({
-      monthStart: row.month_start as string,
-      kind: row.kind as FinanceDashboardMonth["kind"],
-      direction: row.direction as FinanceDashboardMonth["direction"],
-      count: Number(row.event_count),
-      knownAmount: moneyOrNull(row.known_amount) ?? 0,
-      missingCount: Number(row.missing_count),
-    })),
+    months,
   };
 }
 
@@ -683,24 +827,89 @@ export async function markInstallmentPaid(
   installmentId: string,
   paidAt: string | null,
   actorId: string,
+  options?: { cashAccountId?: string | null },
 ): Promise<void> {
+  const normalizedPaidAt = paidAt && paidAt.trim() !== "" ? paidAt.trim() : null;
+  if (normalizedPaidAt && Number.isNaN(Date.parse(normalizedPaidAt))) {
+    throw new DomainError("VALIDATION", "Geçersiz ödeme tarihi biçimi.");
+  }
   const client = await pool.connect();
   try {
     await client.query("begin");
-    const before = await client.query(
-      `select id, status from public.loan_installments where id=$1 for update`,
+    const before = await client.query<{
+      id: string;
+      status: string;
+      amount: string;
+      installment_no: number | null;
+      loan_name: string;
+      currency: string;
+    }>(
+      `select li.id, li.status, li.amount::text as amount, li.installment_no,
+              l.name as loan_name, coalesce(l.currency, 'TRY') as currency
+         from public.loan_installments li
+         join public.loans l on l.id = li.loan_id
+        where li.id = $1
+        for update of li`,
       [installmentId],
     );
     if (before.rowCount !== 1) throw new DomainError("loan installment not found");
-    const currentStatus = before.rows[0].status as string;
+    const row = before.rows[0];
+    const currentStatus = row.status;
     if (!LOAN_INSTALLMENT_PAYABLE_FROM.has(currentStatus)) {
       throw new DomainError(`loan_installments ${installmentId}: '${currentStatus}' durumundan ödendi işaretlenemez`);
     }
-    const result = await client.query(
-      `update public.loan_installments set status='paid', paid_at=coalesce($2::timestamptz, now()) where id=$1
+    const result = await client.query<{ paid_at: string }>(
+      `update public.loan_installments
+          set status='paid',
+              paid_at=coalesce($2::timestamptz, now()),
+              paid_amount=coalesce(paid_amount, amount)
+        where id=$1
        returning to_char(paid_at,'YYYY-MM-DD') as paid_at`,
-      [installmentId, paidAt],
+      [installmentId, normalizedPaidAt],
     );
+    const paidDateISO = result.rows[0].paid_at;
+
+    let bankTxnId: string | null = null;
+    if (options?.cashAccountId) {
+      const caRes = await client.query<{ id: string; currency: string; is_active: boolean }>(
+        `select id::text as id, currency, is_active from public.cash_accounts where id = $1`,
+        [options.cashAccountId],
+      );
+      if (caRes.rowCount !== 1 || !caRes.rows[0].is_active) {
+        throw new DomainError("NOT_FOUND", "Seçilen ödeme kasa/banka hesabı bulunamadı veya pasif.");
+      }
+      if (caRes.rows[0].currency !== row.currency) {
+        throw new DomainError(
+          "CONFLICT",
+          `Taksit para birimi (${row.currency}) ile banka hesabı para birimi (${caRes.rows[0].currency}) eşleşmelidir.`,
+        );
+      }
+      await client.query(
+        `insert into public.bank_accounts (cash_account_id) values ($1) on conflict (cash_account_id) do nothing`,
+        [options.cashAccountId],
+      );
+      const signedOutflow = decimal(row.amount).abs().times(-1).toFixed(2);
+      const txIns = await client.query<{ id: string }>(
+        `insert into public.bank_transactions
+           (bank_account_id, txn_date, value_date, amount, currency, description,
+            category_rule, status, matched_entity_table, matched_entity_id, matched_at, dedupe_hash)
+         values ($1, $2::date, $2::date, $3::numeric, $4, $5,
+                 'system_internal_settlement', 'matched', 'loan_installments', $6, now(), $7)
+         on conflict (bank_account_id, dedupe_hash) do nothing
+         returning id::text as id`,
+        [
+          options.cashAccountId,
+          paidDateISO,
+          signedOutflow,
+          row.currency,
+          `Kredi taksit ödemesi: ${row.loan_name} #${row.installment_no ?? "-"}`,
+          installmentId,
+          `loan_inst_paid:${installmentId}`,
+        ],
+      );
+      bankTxnId = txIns.rows[0]?.id ?? null;
+    }
+
     await safeSyncDomainEventWithClient(
       client,
       { kind: "loan_installment", installmentId },
@@ -711,9 +920,8 @@ export async function markInstallmentPaid(
       action: "mark_installment_paid",
       entityTable: "loan_installments",
       entityId: installmentId,
-      // Same reversed-order helper as above; `currentStatus` is the prior status.
       before: { status: currentStatus },
-      after: { status: "paid", paid_at: result.rows[0].paid_at },
+      after: { status: "paid", paid_at: paidDateISO, cashAccountId: options?.cashAccountId ?? null, bankTxnId },
     });
     await client.query("commit");
   } catch (e) {
@@ -763,9 +971,9 @@ export async function classifyUnknownCheck(
       throw new DomainError(`checks ${checkId}: '${row.status}' durumundaki çek yeniden sınıflandırılamaz`);
     }
     const nextDirection = targetStatus === "in_portfolio" ? "inflow" : "outflow";
-    const absAmt = row.amount == null ? null : Math.abs(Number(row.amount));
+    const absDec = row.amount == null ? null : decimal(row.amount).abs();
     const signedAmt =
-      absAmt == null ? null : nextDirection === "outflow" ? -absAmt : absAmt;
+      absDec == null ? null : money(nextDirection === "outflow" ? absDec.times(-1) : absDec);
 
     await client.query(
       `update public.checks
@@ -804,6 +1012,9 @@ export async function classifyUnknownCheck(
 
 export async function cancelCheck(pool: Pool, checkId: string, reason: string, actorId: string): Promise<void> {
   const trimmedReason = reason.trim();
+  if (!trimmedReason) {
+    throw new DomainError("VALIDATION", "İptal gerekçesi boş bırakılamaz.");
+  }
   const client = await pool.connect();
   try {
     await client.query("begin");
@@ -832,6 +1043,9 @@ export async function cancelCheck(pool: Pool, checkId: string, reason: string, a
 
 export async function cancelLoanInstallment(pool: Pool, installmentId: string, reason: string, actorId: string): Promise<void> {
   const trimmedReason = reason.trim();
+  if (!trimmedReason) {
+    throw new DomainError("VALIDATION", "İptal gerekçesi boş bırakılamaz.");
+  }
   const client = await pool.connect();
   try {
     await client.query("begin");

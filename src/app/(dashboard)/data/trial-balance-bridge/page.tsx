@@ -7,7 +7,10 @@ import { getRequestUser } from "@/lib/auth";
 import { can } from "@/lib/authz/matrix";
 import { requireRouteAccess } from "@/lib/authz/route-guard";
 import { getPool } from "@/lib/db";
-import { loadReconciliationRun } from "@/lib/ledger/trial-balance-bridge";
+import {
+  loadReconciliationRun,
+  loadSubAccountCounterpartyBridge,
+} from "@/lib/ledger/trial-balance-bridge";
 import { formatMoney } from "@/lib/money";
 import {
   createReconciliationTaskAction,
@@ -64,13 +67,20 @@ export default async function TrialBalanceBridgePage({
       .catch(() => ({ rows: [], rowCount: 0 })),
   ]);
 
+  const subAccountRows = summary
+    ? await loadSubAccountCounterpartyBridge(
+        pool,
+        summary.statutoryTrialBalanceId,
+        summary.asOfDate,
+      ).catch(() => [])
+    : [];
   const b = summary?.ebitdaTo690Bridge;
 
   return (
     <div className="space-y-5">
       <PageHeader
         title="Yönetim Defteri ↔ SMMM Yasal Mizan Mutabakat Köprüsü (12 Kök Neden)"
-        subtitle="Luca, Logo, Mikro, Zirve ve Paraşüt yasal mizanlarını (.xlsx / .csv / .xml) çift sayım korumalı (is_leaf) içeri aktarır; MAS Çift Taraflı Yönetim Defteri ile karşılaştırıp farkları 12 deterministik kök nedene ayırır ve 3 sekmeli Mali Müşavir Mutabakat Paketi (.xlsx) üretir."
+        subtitle="Luca, Logo, Mikro, Zirve ve Paraşüt yasal mizanlarını (.xlsx / .csv / .xml) çift sayım korumalı (is_leaf) içeri aktarır; 120.xx/320.xx alt hesapları VKN bazında carilerle eşleştirir ve 3 sekmeli Mali Müşavir Mutabakat Paketi (.xlsx) üretir."
         meta={
           summary ? (
             <Badge tone={summary.discrepancyGroupCount === 0 ? "green" : "amber"} dot>
@@ -84,18 +94,18 @@ export default async function TrialBalanceBridgePage({
       />
 
       {sp.error ? (
-        <div className="rounded border border-red-300 bg-red-50 px-4 py-2.5 text-xs text-red-800">
+        <div className="rounded border border-neg/40 bg-neg/10 px-4 py-2.5 text-xs text-neg">
           {sp.error}
         </div>
       ) : null}
       {sp.result ? (
-        <div className="rounded border border-emerald-300 bg-emerald-50 px-4 py-2.5 text-xs text-emerald-800">
+        <div className="rounded border border-pos/40 bg-pos/10 px-4 py-2.5 text-xs text-pos">
           İşlem tamamlandı: {sp.result}
         </div>
       ) : null}
 
       {summary && !summary.isSelfBalanced ? (
-        <div className="rounded border border-red-400 bg-red-50 px-4 py-3 text-xs text-red-900">
+        <div className="rounded border border-neg/40 bg-neg/10 px-4 py-3 text-xs text-neg">
           <strong>KRİTİK MİZAN ÖZ-DENGE UYARISI:</strong> Yüklenen yasal mizan kendi içinde dengeli
           değil (Borç: {formatMoney(summary.statutoryTotalDebitTry)} TRY ≠ Alacak:{" "}
           {formatMoney(summary.statutoryTotalCreditTry)} TRY). Eksik sayfa veya bozuk mizan kesimi
@@ -203,7 +213,7 @@ export default async function TrialBalanceBridgePage({
               <div className="flex items-end">
                 <SubmitButton
                   pendingLabel="Yükleniyor…"
-                  className="w-full rounded bg-sky-700 px-3 py-1.5 font-medium text-white disabled:opacity-60"
+                  className="button-accent w-full rounded px-3 py-1.5 font-medium disabled:opacity-60"
                 >
                   Yasal Mizanı Yükle &amp; Köprüyü Çalıştır
                 </SubmitButton>
@@ -248,7 +258,7 @@ export default async function TrialBalanceBridgePage({
                 href={`/api/ledger/reconciliation/${summary.runId}/export`}
                 download
                 data-no-nav-skeleton="true"
-                className="rounded bg-emerald-700 px-3 py-1.5 text-xs font-medium text-white"
+                className="button-accent rounded px-3 py-1.5 text-xs font-medium"
               >
                 Mali Müşavir Mutabakat Paketi İndir (.xlsx — 3 Sekme)
               </Link>
@@ -380,13 +390,13 @@ export default async function TrialBalanceBridgePage({
                 </tr>
               </thead>
               <tbody>
-                <tr className="bg-emerald-50 font-bold text-emerald-900">
+                <tr className="bg-[var(--surface-2)] font-bold text-pos">
                   <td>1. MAS Yönetim EBITDA (Faaliyet Kârı + Amortisman Geri Eklemesi)</td>
                   <td className="text-right font-mono">{formatMoney(b.managementEbitdaTry)}</td>
                 </tr>
                 <tr>
                   <td>2. (-) MAS Amortisman ve İtfa Payları (`770.99` / `257`)</td>
-                  <td className="text-right font-mono text-amber-700">
+                  <td className="text-right font-mono text-warn">
                     -{formatMoney(b.lessManagementDepreciationTry)}
                   </td>
                 </tr>
@@ -396,7 +406,7 @@ export default async function TrialBalanceBridgePage({
                 </tr>
                 <tr>
                   <td>4. (-) MAS Finansman Giderleri (`780` Faiz + BSMV + KKDF)</td>
-                  <td className="text-right font-mono text-red-700">
+                  <td className="text-right font-mono text-neg">
                     -{formatMoney(b.lessManagementFinancingTry)}
                   </td>
                 </tr>
@@ -426,13 +436,110 @@ export default async function TrialBalanceBridgePage({
                     {formatMoney(b.unexplainedBridgeResidualTry)}
                   </td>
                 </tr>
-                <tr className="border-t border-[var(--line)] bg-sky-50 font-bold text-sky-900">
+                <tr className="border-t border-[var(--line)] bg-[var(--surface-2)] font-bold text-[var(--accent)]">
                   <td>11. (=) SMMM Yasal Mizan `690` Dönem Kârı / (Zararı)</td>
                   <td className="text-right font-mono">{formatMoney(b.statutory690EbtTry)}</td>
                 </tr>
               </tbody>
             </table>
           </TableShell>
+        </Panel>
+      ) : null}
+
+      {/* ④ M-63: 120.xx / 320.xx Alt Hesap ↔ Cari (VKN / Ünvan) Bazlı Mizan Köprüsü */}
+      {summary ? (
+        <Panel
+          title="④ 120.XX / 320.XX ALT HESAP ↔ CARİ (VKN / ÜNVAN) BAZLI MİZAN KÖPRÜSÜ"
+          subtitle="Yasal mizandaki 120.xx Alıcılar ve 320.xx Satıcılar yaprak alt hesaplarını VKN/TCKN veya normalize ünvan üzerinden MAS açık cari fatura bakiyeleriyle eşleştirir."
+          right={
+            <Badge tone="neutral">
+              {subAccountRows.filter((r) => r.aligned).length} / {subAccountRows.length} alt hesap mutabık
+            </Badge>
+          }
+        >
+          {subAccountRows.length > 0 ? (
+            <TableShell>
+              <table className="w-full text-xs">
+                <thead>
+                  <tr>
+                    <th>Alt Hesap Kodu</th>
+                    <th>Yasal Mizan Hesap Adı</th>
+                    <th>Kök</th>
+                    <th>Eşleşen MAS Cari &amp; VKN</th>
+                    <th>Eşleşme Yöntemi</th>
+                    <th className="text-right">MAS Açık Cari (TRY)</th>
+                    <th className="text-right">Yasal Mizan Net (TRY)</th>
+                    <th className="text-right">Fark (MAS - Yasal)</th>
+                    <th>Durum</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {subAccountRows.map((row) => (
+                    <tr key={row.accountCode}>
+                      <td className="font-mono text-xs font-semibold">{row.accountCode}</td>
+                      <td className="text-xs">{row.accountName}</td>
+                      <td className="font-mono text-xs">{row.tdhpRootCode}</td>
+                      <td className="text-xs">
+                        {row.matchedPartyName ? (
+                          <div>
+                            <span className="font-medium text-[var(--text-1)]">
+                              {row.matchedPartyName}
+                            </span>
+                            {row.matchedVkn ? (
+                              <span className="ml-1.5 font-mono text-[11px] text-[var(--text-3)]">
+                                ({row.matchedVkn})
+                              </span>
+                            ) : null}
+                          </div>
+                        ) : (
+                          <span className="text-[var(--text-3)]">Eşleşen cari bulunamadı</span>
+                        )}
+                      </td>
+                      <td>
+                        <Badge
+                          tone={
+                            row.matchMethod === "vkn"
+                              ? "green"
+                              : row.matchMethod === "name"
+                                ? "blue"
+                                : "amber"
+                          }
+                        >
+                          {row.matchMethod === "vkn"
+                            ? "VKN Tam Eşleşme"
+                            : row.matchMethod === "name"
+                              ? "Ünvan Eşleşmesi"
+                              : "Eşleşmedi"}
+                        </Badge>
+                      </td>
+                      <td className="text-right font-mono text-xs tabular-nums">
+                        {formatMoney(row.masOpenNetTry)}
+                      </td>
+                      <td className="text-right font-mono text-xs tabular-nums">
+                        {formatMoney(row.statutoryNetTry)}
+                      </td>
+                      <td
+                        className={`text-right font-mono text-xs font-semibold tabular-nums ${
+                          row.aligned ? "text-pos" : "text-neg"
+                        }`}
+                      >
+                        {formatMoney(row.deltaTry)}
+                      </td>
+                      <td>
+                        <Badge tone={row.aligned ? "green" : "amber"}>
+                          {row.aligned ? "Mutabık" : "Fark Var"}
+                        </Badge>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </TableShell>
+          ) : (
+            <EmptyState>
+              Bu mizanda kırılımlı `120.xx` veya `320.xx` alt hesap satırı bulunmuyor — SMMM mizanınızı alt hesap kırılımlı yüklediğinizde cari bazlı mutabakat satırları burada listelenir.
+            </EmptyState>
+          )}
         </Panel>
       ) : null}
     </div>

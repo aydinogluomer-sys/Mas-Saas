@@ -15,6 +15,7 @@ import type { Pool, PoolClient } from "pg";
 import { z } from "zod";
 import { evaluateAndRequestIfNeededWithClient } from "@/lib/approvals/engine";
 import { audit } from "@/lib/audit";
+import { raiseAlertWithClient } from "@/lib/controls/engine";
 import { DomainError } from "@/lib/domain-error";
 import { intOrNull, moneyOrNull, rateOrNull } from "@/lib/money";
 import { normalizeTr } from "@/lib/importers/workbook-parser";
@@ -346,26 +347,6 @@ export async function loadIbanHistory(pool: Pool, partyId: string, limit = 50) {
   }>;
 }
 
-export async function loadCounterpartyProfile(pool: Pool, partyId: string) {
-  const r = await pool.query(
-    `select party_id::text, tax_number, tax_office, address_line, city, country_code,
-            credit_limit, credit_limit_currency, payment_terms_days,
-            contact_name, contact_email, contact_phone, notes
-     from public.counterparty_profiles where party_id=$1`,
-    [partyId],
-  );
-  const x = r.rows[0];
-  if (!x) return null;
-  return {
-    partyId: x.party_id, taxNumber: x.tax_number, taxOffice: x.tax_office,
-    addressLine: x.address_line, city: x.city, countryCode: x.country_code,
-    creditLimit: moneyOrNull(x.credit_limit), creditLimitCurrency: x.credit_limit_currency,
-    paymentTermsDays: intOrNull(x.payment_terms_days),
-    contactName: x.contact_name, contactEmail: x.contact_email, contactPhone: x.contact_phone,
-    notes: x.notes,
-  };
-}
-
 /** Candidate list for the resolve UI's suggestion shortlist. Read-only. */
 export async function loadPartyCandidates(pool: Pool, limit = 500): Promise<Array<{ id: string; name: string }>> {
   const r = await pool.query(
@@ -512,6 +493,447 @@ export async function upsertCounterpartyProfile(
   }
 }
 
+export const updateCounterpartySchema = createCounterpartySchema.extend({
+  partyId: z.uuid(),
+  isActive: z.preprocess(
+    (v) => (v === "false" ? false : v === "true" ? true : undefined),
+    z.boolean().optional(),
+  ),
+});
+
+export interface CounterpartyProfileDetail {
+  partyId: string;
+  name: string;
+  partyType: string;
+  isActive: boolean;
+  taxNumber: string | null;
+  taxOffice: string | null;
+  addressLine: string | null;
+  city: string | null;
+  countryCode: string;
+  creditLimit: number | null;
+  paymentTermsDays: number | null;
+  contactName: string | null;
+  contactEmail: string | null;
+  contactPhone: string | null;
+  notes: string | null;
+}
+
+export async function loadCounterpartyProfile(
+  pool: Pool,
+  partyId: string,
+): Promise<CounterpartyProfileDetail | null> {
+  const r = await pool.query<{
+    id: string;
+    name: string;
+    party_type: string;
+    is_active: boolean;
+    tax_number: string | null;
+    tax_office: string | null;
+    address_line: string | null;
+    city: string | null;
+    country_code: string | null;
+    credit_limit: string | null;
+    payment_terms_days: string | null;
+    contact_name: string | null;
+    contact_email: string | null;
+    contact_phone: string | null;
+    notes: string | null;
+  }>(
+    `select p.id::text, p.name, p.party_type, p.is_active,
+            cp.tax_number, cp.tax_office, cp.address_line, cp.city, cp.country_code,
+            cp.credit_limit::text, cp.payment_terms_days::text,
+            cp.contact_name, cp.contact_email, cp.contact_phone, cp.notes
+       from public.parties p
+       left join public.counterparty_profiles cp on cp.party_id = p.id
+      where p.id = $1::uuid`,
+    [partyId],
+  );
+  if (r.rowCount !== 1) return null;
+  const row = r.rows[0];
+  return {
+    partyId: row.id,
+    name: row.name,
+    partyType: row.party_type,
+    isActive: Boolean(row.is_active),
+    taxNumber: row.tax_number ?? null,
+    taxOffice: row.tax_office ?? null,
+    addressLine: row.address_line ?? null,
+    city: row.city ?? null,
+    countryCode: row.country_code ?? "TR",
+    creditLimit: moneyOrNull(row.credit_limit),
+    paymentTermsDays: intOrNull(row.payment_terms_days),
+    contactName: row.contact_name ?? null,
+    contactEmail: row.contact_email ?? null,
+    contactPhone: row.contact_phone ?? null,
+    notes: row.notes ?? null,
+  };
+}
+
+/**
+ * M-36: Explicit operator update of counterparty header (`parties`) + `counterparty_profiles`.
+ * Never inserts a new party; strictly updates an existing party row and upserts its 1:1 profile.
+ */
+export async function updateCounterparty(
+  pool: Pool,
+  raw: unknown,
+  actorId: string,
+): Promise<{ partyId: string }> {
+  const input = parseOrThrow(updateCounterpartySchema, raw, "Karşı taraf güncelleme formu");
+  const normalized = normalizeTr(input.name);
+  const client = await pool.connect();
+  try {
+    await client.query("begin");
+    const beforeParty = await client.query<{
+      id: string;
+      name: string;
+      normalized_name: string;
+      party_type: string;
+      is_active: boolean;
+    }>(
+      `select id::text, name, normalized_name, party_type, is_active
+         from public.parties
+        where id = $1::uuid
+        for update`,
+      [input.partyId],
+    );
+    if (beforeParty.rowCount !== 1) {
+      throw new DomainError("NOT_FOUND", "Güncellenecek karşı taraf bulunamadı.");
+    }
+
+    const dup = await client.query(
+      `select 1 from public.parties
+        where normalized_name = $1 and party_type = $2 and id <> $3::uuid`,
+      [normalized, input.partyType, input.partyId],
+    );
+    if ((dup.rowCount ?? 0) > 0) {
+      throw new DomainError("CONFLICT", "Aynı ünvan ve tipte başka bir cari kartı zaten mevcut.");
+    }
+
+    const nextActive = input.isActive ?? beforeParty.rows[0].is_active;
+    const upd = await client.query(
+      `update public.parties
+          set name = $2,
+              normalized_name = $3,
+              party_type = $4,
+              is_active = $5
+        where id = $1::uuid`,
+      [input.partyId, input.name, normalized, input.partyType, nextActive],
+    );
+
+    await client.query(
+      `insert into public.counterparty_profiles
+         (party_id, tax_number, tax_office, address_line, city, country_code,
+          credit_limit, payment_terms_days, contact_name, contact_email, contact_phone, notes)
+       values ($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+       on conflict (party_id) do update set
+         tax_number = excluded.tax_number,
+         tax_office = excluded.tax_office,
+         address_line = excluded.address_line,
+         city = excluded.city,
+         country_code = excluded.country_code,
+         credit_limit = excluded.credit_limit,
+         payment_terms_days = excluded.payment_terms_days,
+         contact_name = excluded.contact_name,
+         contact_email = excluded.contact_email,
+         contact_phone = excluded.contact_phone,
+         notes = excluded.notes`,
+      [
+        input.partyId,
+        input.taxNumber ?? null,
+        input.taxOffice ?? null,
+        input.addressLine ?? null,
+        input.city ?? null,
+        input.countryCode ?? "TR",
+        input.creditLimit ?? null,
+        input.paymentTermsDays ?? null,
+        input.contactName ?? null,
+        input.contactEmail ?? null,
+        input.contactPhone ?? null,
+        input.notes ?? null,
+      ],
+    );
+
+    if (upd.rowCount === 1) {
+      await audit(client, {
+        actor: actorId,
+        action: "update_counterparty",
+        entityTable: "parties",
+        entityId: input.partyId,
+        before: beforeParty.rows[0],
+        after: {
+          name: input.name,
+          partyType: input.partyType,
+          isActive: nextActive,
+          taxNumber: input.taxNumber ?? null,
+          creditLimit: input.creditLimit ?? null,
+          paymentTermsDays: input.paymentTermsDays ?? null,
+        },
+      });
+    }
+
+    await client.query("commit");
+    return { partyId: input.partyId };
+  } catch (e) {
+    await client.query("rollback").catch(() => {});
+    throw e;
+  } finally {
+    client.release();
+  }
+}
+
+export interface UnifiedStatementRow {
+  sourceId: string;
+  movementDate: string;
+  movementType: "invoice" | "allocation" | "check" | "bank";
+  reference: string | null;
+  direction: "sales" | "purchase" | "inflow" | "outflow";
+  currency: string;
+  debitAmount: number;
+  creditAmount: number;
+  runningBalance: number;
+}
+
+/**
+ * M-36: Chronological Unified Counterparty Statement (Birleşik Cari Hesap Ekstresi)
+ * combining `current_account_ledger` (`invoices` + `invoice_allocations`), unallocated `checks`,
+ * and unallocated IBAN-linked `bank_transactions` with per-currency running balance.
+ */
+export async function loadUnifiedCounterpartyStatement(
+  pool: Pool,
+  partyId: string,
+  limit = 250,
+): Promise<UnifiedStatementRow[]> {
+  const r = await pool.query<{
+    source_id: string;
+    movement_date: string;
+    movement_type: "invoice" | "allocation" | "check" | "bank";
+    reference: string | null;
+    direction: "sales" | "purchase" | "inflow" | "outflow";
+    currency: string;
+    debit_amount: string;
+    credit_amount: string;
+  }>(
+    `with unified as (
+       select
+         l.invoice_id::text as source_id,
+         to_char(l.movement_date, 'YYYY-MM-DD') as movement_date,
+         case when l.movement_type = 'invoice' then 'invoice' else 'allocation' end as movement_type,
+         l.reference,
+         l.direction::text as direction,
+         coalesce(l.currency, i.currency, 'TRY') as currency,
+         coalesce(l.debit_amount, 0)::text as debit_amount,
+         coalesce(l.credit_amount, 0)::text as credit_amount
+       from public.current_account_ledger l
+       left join public.invoices i on i.id = l.invoice_id
+       where l.party_id = $1::uuid
+
+       union all
+
+       select
+         c.id::text as source_id,
+         to_char(coalesce(c.maturity_date, c.created_at::date), 'YYYY-MM-DD') as movement_date,
+         'check'::text as movement_type,
+         coalesce(c.serial_no, 'Çek #' || left(c.id::text, 8)) as reference,
+         c.direction::text as direction,
+         coalesce(c.currency, 'TRY') as currency,
+         case
+           when c.payee_party_id = $1::uuid or c.endorsed_to_party_id = $1::uuid
+             then coalesce(c.amount, 0)::text
+           else '0'
+         end as debit_amount,
+         case
+           when c.payer_party_id = $1::uuid and c.payee_party_id is distinct from $1::uuid
+             then coalesce(c.amount, 0)::text
+           else '0'
+         end as credit_amount
+       from public.checks c
+       where c.archived_at is null
+         and c.status <> 'cancelled'
+         and (c.payer_party_id = $1::uuid or c.payee_party_id = $1::uuid or c.endorsed_to_party_id = $1::uuid)
+         and not exists (
+           select 1
+             from public.invoice_allocations ia
+            where ia.source_table = 'checks'
+              and ia.source_id = c.id
+              and ia.reversed_at is null
+         )
+
+       union all
+
+       select
+         bt.id::text as source_id,
+         to_char(bt.txn_date, 'YYYY-MM-DD') as movement_date,
+         'bank'::text as movement_type,
+         coalesce(nullif(btrim(bt.reference_no), ''), left(bt.description, 42)) as reference,
+         bt.direction::text as direction,
+         coalesce(bt.currency, 'TRY') as currency,
+         case when bt.amount < 0 then abs(bt.amount)::text else '0' end as debit_amount,
+         case when bt.amount > 0 then bt.amount::text else '0' end as credit_amount
+       from public.bank_transactions bt
+       where bt.status <> 'ignored'
+         and regexp_replace(upper(coalesce(bt.counterparty_iban_raw, '')), '\s+', '', 'g') in (
+           select ib.iban_normalized
+             from public.ibans ib
+            where ib.party_id = $1::uuid
+         )
+         and not exists (
+           select 1
+             from public.invoice_allocations ia
+            where ia.source_table = 'bank_transactions'
+              and ia.source_id = bt.id
+              and ia.reversed_at is null
+         )
+     )
+     select source_id, movement_date,
+            movement_type::text as movement_type,
+            reference, direction, currency, debit_amount, credit_amount
+       from unified
+      order by movement_date asc, movement_type asc, source_id asc
+      limit $2`,
+    [partyId, limit],
+  );
+
+  const runningByCurrency = new Map<string, number>();
+  return r.rows.map((row) => {
+    const cur = row.currency || "TRY";
+    const debit = moneyOrNull(row.debit_amount) ?? 0;
+    const credit = moneyOrNull(row.credit_amount) ?? 0;
+    const prev = runningByCurrency.get(cur) ?? 0;
+    const next = Math.round((prev + debit - credit) * 100) / 100;
+    runningByCurrency.set(cur, next);
+    return {
+      sourceId: row.source_id,
+      movementDate: row.movement_date,
+      movementType: row.movement_type,
+      reference: row.reference,
+      direction: row.direction,
+      currency: cur,
+      debitAmount: debit,
+      creditAmount: credit,
+      runningBalance: next,
+    };
+  });
+}
+
+async function raiseIbanChangedControlAlertSafely(
+  client: PoolClient,
+  params: { ibanId: string; partyName: string; ibanNormalized: string },
+  actorId: string | null,
+): Promise<void> {
+  try {
+    await client.query("savepoint sp_iban_ctrl_alert");
+    await raiseAlertWithClient(
+      client,
+      {
+        checkCode: "iban_changed",
+        severity: "critical",
+        subjectTable: "ibans",
+        subjectId: params.ibanId,
+        subjectLabel: `${params.partyName} · ${params.ibanNormalized}`,
+        title: `Yeni / doğrulanmamış IBAN kaydı: ${params.partyName} (${params.ibanNormalized})`,
+        detail:
+          "BEC Kalkanı: İkinci onay (maker-checker) tamamlanana kadar bu IBAN dışa ödeme ihracında bloklanır.",
+        ruleCodes: ["iban_changed"],
+      },
+      actorId,
+    );
+    await client.query("release savepoint sp_iban_ctrl_alert");
+  } catch (err) {
+    await client.query("rollback to savepoint sp_iban_ctrl_alert").catch(() => undefined);
+    await client.query("release savepoint sp_iban_ctrl_alert").catch(() => undefined);
+    const code = (err as { code?: string } | null)?.code;
+    const msg = err instanceof Error ? err.message : String(err);
+    if (code === "42P01" || code === "42703" || msg.includes("beklenmeyen SQL")) {
+      return;
+    }
+    throw err;
+  }
+}
+
+/**
+ * Ensures a counterparty's IBAN exists in `public.ibans` inside an active transaction, registering
+ * it with full `new_iban_requires_approval` maker-checker + real-time `iban_changed` control alert
+ * if not yet tracked.
+ */
+export async function ensurePartyIbanTrackedWithClient(
+  client: PoolClient,
+  params: {
+    partyId: string;
+    iban: string;
+    currency: string;
+    accountLabel?: string | null;
+  },
+  actorId: string,
+): Promise<{ ibanId: string; created: boolean; approvalId: string | null }> {
+  const inspection = inspectIban(params.iban);
+  const existing = await client.query<{ id: string }>(
+    `select id::text as id
+       from public.ibans
+      where party_id = $1::uuid
+        and iban_normalized = $2
+      limit 1`,
+    [params.partyId, inspection.normalized],
+  );
+  if ((existing.rowCount ?? 0) > 0) {
+    return { ibanId: existing.rows[0].id, created: false, approvalId: null };
+  }
+
+  const partyRes = await client.query<{ name: string }>(
+    `select name from public.parties where id = $1::uuid`,
+    [params.partyId],
+  );
+  if (partyRes.rowCount === 0) {
+    throw new DomainError("NOT_FOUND", "IBAN tanımlanacak karşı taraf bulunamadı.");
+  }
+  const partyName = partyRes.rows[0].name;
+
+  const ins = await client.query<{ id: string }>(
+    `insert into public.ibans (party_id, iban, bank_name, account_label, currency, is_primary)
+     values ($1::uuid, $2, null, $3, $4, false)
+     returning id::text as id`,
+    [params.partyId, inspection.normalized, params.accountLabel ?? null, params.currency],
+  );
+  const ibanId = ins.rows[0].id;
+
+  const { approvalId } = await evaluateAndRequestIfNeededWithClient(client, {
+    ruleInput: { subjectTable: "ibans", triggerKind: "new_iban", currency: params.currency },
+    subjectId: ibanId,
+    subjectLabel: `${partyName} · ${inspection.normalized}`,
+    currency: params.currency,
+    actorId,
+  });
+  if (approvalId) {
+    await client.query(
+      `update public.ibans set approval_status='pending_approval', approval_id=$2 where id=$1`,
+      [ibanId, approvalId],
+    );
+    await raiseIbanChangedControlAlertSafely(
+      client,
+      { ibanId, partyName, ibanNormalized: inspection.normalized },
+      actorId,
+    );
+  }
+
+  await audit(client, {
+    actor: actorId,
+    action: "add_iban",
+    entityTable: "ibans",
+    entityId: ibanId,
+    before: null,
+    after: {
+      partyId: params.partyId,
+      ibanNormalized: inspection.normalized,
+      checksumValid: inspection.checksumValid,
+      isPrimary: false,
+      approvalStatus: approvalId ? "pending_approval" : "approved",
+      approvalId,
+    },
+  });
+
+  return { ibanId, created: true, approvalId };
+}
+
 /**
  * Add a bank account.
  *
@@ -522,8 +944,9 @@ export async function upsertCounterpartyProfile(
  *
  * Faz 48 (D2): Live BEC fraud shield — when `new_iban_requires_approval` is active in
  * `public.approval_rules`, the newly added IBAN starts in `approval_status = 'pending_approval'`
- * with a maker-checker `approvals` round opened in the same transaction; outbound `pain.001` /
- * EFT export is strictly blocked until a second pair of eyes approves it.
+ * with a maker-checker `approvals` round AND a real-time `iban_changed` `control_alerts` finding
+ * opened in the same transaction; outbound `pain.001` / EFT export is strictly blocked until a
+ * second pair of eyes approves it.
  */
 export async function addIban(
   pool: Pool,
@@ -577,6 +1000,11 @@ export async function addIban(
       await client.query(
         `update public.ibans set approval_status='pending_approval', approval_id=$2 where id=$1`,
         [ibanId, approvalId],
+      );
+      await raiseIbanChangedControlAlertSafely(
+        client,
+        { ibanId, partyName, ibanNormalized: inspection.normalized },
+        actorId,
       );
     }
 

@@ -5,10 +5,18 @@ import { apiError, withApiHandler } from "@/lib/api-response";
 import { CORRELATION_HEADER } from "@/lib/correlation";
 import { istanbulDateISO } from "@/lib/reports/rules";
 import { loadThresholds } from "@/lib/radar/engine";
-import { loadPaymentDashboard } from "@/lib/radar/queries";
+import { loadPaymentDashboardForCurrency, type DashboardCurrencyMode } from "@/lib/radar/queries";
 import { paymentDashboardChart } from "@/lib/radar/payment-dashboard-chart";
 
 export const dynamic = "force-dynamic";
+
+function parseCurrencyMode(raw: string | null): DashboardCurrencyMode {
+  const normalized = (raw ?? "TRY").trim().toUpperCase();
+  if (normalized === "USD" || normalized === "EUR" || normalized === "CONSOLIDATED") {
+    return normalized;
+  }
+  return "TRY";
+}
 
 /**
  * `/payments` panosunun grafik verisi — sayfa render'ından AYRILDI.
@@ -39,22 +47,36 @@ export async function GET(request: Request) {
     const user = await requireApiSession();
     if (!user) return apiError(401, "Yetkisiz.", { code: "unauthorized", requestId });
 
+    const url = new URL(request.url);
+    const currencyMode = parseCurrencyMode(url.searchParams.get("currency"));
+
     const today = istanbulDateISO();
     const anchor = new Date(`${today}T00:00:00Z`);
     const futureEnd = new Date(Date.UTC(anchor.getUTCFullYear(), anchor.getUTCMonth() + 24, anchor.getUTCDate()))
       .toISOString()
       .slice(0, 10);
     const pool = getPool();
-    const [{ buckets }, thresholds] = await Promise.all([
-      loadPaymentDashboard(pool, today, futureEnd),
+    const [{ buckets, unconvertibleForeignCount }, thresholds] = await Promise.all([
+      loadPaymentDashboardForCurrency(pool, today, futureEnd, currencyMode),
       loadThresholds(pool),
     ]);
 
-    return NextResponse.json(paymentDashboardChart(buckets, today, thresholds.critical), {
-      // `private`: kullanıcıya özel finansal veri; paylaşılan bir önbelleğe asla girmemeli.
-      // 30 sn, sayfa içi tekrar isteklerini emmeye yeter ve gerçek finansal veriyi uzun süre
-      // bayat tutmaz.
-      headers: { "Cache-Control": "private, max-age=30", [CORRELATION_HEADER]: requestId },
-    });
+    const criticalThreshold =
+      currencyMode === "TRY" || currencyMode === "CONSOLIDATED" ? thresholds.critical : undefined;
+    const currencyLabel =
+      currencyMode === "CONSOLIDATED" ? "Konsolide TRY Karşılığı" : currencyMode;
+
+    return NextResponse.json(
+      paymentDashboardChart(buckets, today, criticalThreshold, {
+        currencyLabel,
+        unconvertibleCount: unconvertibleForeignCount,
+      }),
+      {
+        // `private`: kullanıcıya özel finansal veri; paylaşılan bir önbelleğe asla girmemeli.
+        // 30 sn, sayfa içi tekrar isteklerini emmeye yeter ve gerçek finansal veriyi uzun süre
+        // bayat tutmaz.
+        headers: { "Cache-Control": "private, max-age=30", [CORRELATION_HEADER]: requestId },
+      },
+    );
   });
 }

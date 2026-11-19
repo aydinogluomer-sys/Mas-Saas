@@ -41,6 +41,12 @@
 import type { Pool, PoolClient } from "pg";
 import { parseNumber } from "@/lib/importers/v2/values";
 import { decimal, money, moneyOrNull, mul } from "@/lib/money";
+import {
+  convertAmountToTry,
+  loadLatestSpotRatesToTry,
+  normalizeCurrency,
+  type SpotRateMap,
+} from "./fx-rates";
 
 export function isMissingSchemaError(err: unknown): boolean {
   const code = (err as { code?: string } | null)?.code;
@@ -70,26 +76,30 @@ const isRecord = (v: unknown): v is Record<string, unknown> =>
  * @param rowJson  `import_rows.row_json` — jsonb'den geldiği hâliyle (nesne).
  * @param quantity `production_parts.quantity` — V2'de birim fiyatı toplama çevirmek için.
  */
-export function readSourceRevenue(rowJson: unknown, quantity: number | null): SourceRevenue {
+export function readSourceRevenue(
+  rowJson: unknown,
+  quantity: number | null,
+  spotRates?: SpotRateMap,
+): SourceRevenue {
   if (!isRecord(rowJson)) return { revenue: null, source: "none" };
 
   // ── V2: sözleşme anahtarı VARSA (değeri null olsa bile) satır V2'dir ────────────────
   if (V2_REVENUE_KEY in rowJson) {
     const parsed = parseNumber(rowJson[V2_REVENUE_KEY]);
-    // "ambiguous" da kabul: parser aynı hücreyi aynı kuralla çözüp satırı incelemeye
-    // düşürmüş, kullanıcı kabul etmişse değer budur. "invalid"/"blank" → bilinmiyor.
-    // "ambiguous" YALNIZ biçim belirsizliğidir ('35.000'); Excel formül hatası 'invalid' döner
-    // (values.ts) ve burada null olur — kırık bir fiyat formülü gelire 0 diye girmez.
     const unitPrice = parsed.status === "ok" || parsed.status === "ambiguous" ? parsed.value : null;
     if (unitPrice === null || quantity === null) return { revenue: null, source: "v2" };
-    return { revenue: moneyOrNull(mul(unitPrice, quantity)), source: "v2" };
+    const nativeTotal = moneyOrNull(mul(unitPrice, quantity));
+    if (nativeTotal === null) return { revenue: null, source: "v2" };
+    const rawCcy =
+      typeof rowJson.para_birimi === "string" ? normalizeCurrency(rowJson.para_birimi) : "TRY";
+    if (rawCcy !== "TRY" && spotRates) {
+      const conv = convertAmountToTry(nativeTotal, rawCcy, spotRates);
+      return { revenue: conv.amountTry, source: "v2" };
+    }
+    return { revenue: nativeTotal, source: "v2" };
   }
 
   // ── Legacy: `I.v` — davranış aynen korunur ──────────────────────────────────────────
-  //
-  // Eski okuyucu `(row_json->'I'->>'v')::numeric` idi: sayı → değer, boş → null, sayı olmayan
-  // metin → HATA. `moneyOrNull` birebir aynı sözleşmeyi uygular (boş metin null, saçma metin
-  // TypeError). Legacy yolun hata davranışı BİLEREK yumuşatılmıyor — bu düzeltme V2 içindir.
   const legacyCell = rowJson[LEGACY_REVENUE_COLUMN];
   if (isRecord(legacyCell) && "v" in legacyCell) {
     const v = legacyCell.v;
@@ -102,8 +112,12 @@ export function readSourceRevenue(rowJson: unknown, quantity: number | null): So
 }
 
 /** `readSourceRevenue` — yalnız tutar. */
-export function sourceRevenue(rowJson: unknown, quantity: number | null): number | null {
-  return readSourceRevenue(rowJson, quantity).revenue;
+export function sourceRevenue(
+  rowJson: unknown,
+  quantity: number | null,
+  spotRates?: SpotRateMap,
+): number | null {
+  return readSourceRevenue(rowJson, quantity, spotRates).revenue;
 }
 
 export interface SourceRevenuePartItem {
@@ -207,6 +221,8 @@ export async function loadSourceRevenueSummary(
     return emptySourceRevenueSummary();
   }
 
+  const spotRates = await loadLatestSpotRatesToTry(pool);
+
   let v2Count = 0;
   let legacyCount = 0;
   let noneCount = 0;
@@ -220,19 +236,17 @@ export async function loadSourceRevenueSummary(
     const qty = row.quantity == null ? null : Number(row.quantity);
     let parsed: SourceRevenue;
     try {
-      parsed = readSourceRevenue(row.row_json ?? null, qty);
+      parsed = readSourceRevenue(row.row_json ?? null, qty, spotRates);
     } catch {
       parsed = { revenue: null, source: "legacy" };
     }
 
     let effRevenue = parsed.revenue;
-    if (
-      effRevenue == null &&
-      row.unit_sale_price != null &&
-      qty != null &&
-      (row.currency ?? "TRY") === "TRY"
-    ) {
-      effRevenue = moneyOrNull(mul(row.unit_sale_price, qty));
+    if (effRevenue == null && row.unit_sale_price != null && qty != null) {
+      const nativeTotal = moneyOrNull(mul(row.unit_sale_price, qty));
+      if (nativeTotal != null) {
+        effRevenue = convertAmountToTry(nativeTotal, row.currency ?? "TRY", spotRates).amountTry;
+      }
     }
 
     if (parsed.source === "v2") {

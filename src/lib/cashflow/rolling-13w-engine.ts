@@ -18,6 +18,7 @@
  */
 
 import type { Pool, PoolClient } from "pg";
+import { z } from "zod";
 import { audit } from "@/lib/audit";
 import { generateTrStatutoryObligations, type TrStatutoryObligation } from "@/lib/calendar/tr-tax-calendar";
 import {
@@ -25,7 +26,9 @@ import {
   type CollectionSignalsV2,
 } from "@/lib/collections/rules";
 import { DomainError } from "@/lib/domain-error";
-import { decimal, intOrNull, money, moneyOrNull, rateOrNull } from "@/lib/money";
+import { decimal, intOrNull, money, moneyOrNull, rateOrNull, round2 } from "@/lib/money";
+import { gather, isPool as isPgPool, withPinnedRead } from "@/lib/pg-concurrency";
+import { formatIssues } from "@/lib/validation";
 
 type Queryable = Pick<Pool, "query"> | Pick<PoolClient, "query">;
 
@@ -109,6 +112,11 @@ export interface AutoSeeded13WeekForecast {
   overdueUnscheduledItems: OverdueUnscheduledReceivableItem[];
   doubtfulExcludedCount: number;
   doubtfulExcludedAmount: number;
+  vatCarryforward190Opening?: number;
+  vatCarryforward190Applied?: number;
+  posBatchInflowTotal?: number;
+  corporateCardOutflowTotal?: number;
+  payrollTaxAccrualOutflowTotal?: number;
   statutoryDeadlines: TrStatutoryObligation[];
   weeks: Forecast13wWeekBucket[];
 }
@@ -242,34 +250,765 @@ export async function buildAutoSeeded13WeekForecast(
   if (!/^[A-Z]{3}$/.test(currency)) {
     throw new DomainError("VALIDATION", `Geçersiz para birimi: ${currency}`);
   }
+  if (isPgPool(client)) {
+    return withPinnedRead(client, (pinned) => buildAutoSeeded13WeekForecast(pinned, options));
+  }
 
   const snapshotWeekStart = mondayOfWeek(asOfDate);
   const horizonEnd = addDaysISO(snapshotWeekStart, 90); // 13 weeks * 7 - 1 = 90 days
+  const statutoryDeadlines: TrStatutoryObligation[] =
+    currency === "TRY" ? generateTrStatutoryObligations(snapshotWeekStart, horizonEnd) : [];
 
-  // 1. Opening treasury cash position (FIN-03 null-safe)
-  const posRes = await client.query<{
-    available_now: string | null;
-    unknown_opening_count: number | string;
-  }>(
-    `select available_now, unknown_opening_count
-       from public.treasury_position_summary
-      where currency = $1`,
-    [currency],
-  ).catch((err: unknown) => {
-    const code = (err as { code?: string })?.code;
-    if (code === "42703") {
-      return client.query<{
-        available_now: string | null;
-        unknown_opening_count: number | string;
-      }>(
-        `select available_now, 0::int as unknown_opening_count
-           from public.treasury_position_summary
-          where currency = $1`,
+  type CheckMaturityRow = {
+    id: string;
+    maturity_date: string;
+    direction: string;
+    amount: string;
+    counterparty_label: string | null;
+    party_id: string | null;
+    party_name: string | null;
+  };
+  type LoanInstallmentRow = {
+    id: string;
+    due_date: string;
+    remaining_amount: string;
+    loan_name: string;
+    installment_no: number;
+    party_id: string | null;
+    party_name: string | null;
+  };
+
+  const regRes = await client
+    .query<{
+      has_mgmt: string | null;
+      has_pta: string | null;
+      has_pos: string | null;
+      has_card: string | null;
+    }>(
+      `select
+         to_regclass('public.management_accounts')::text as has_mgmt,
+         to_regclass('public.payroll_tax_accruals')::text as has_pta,
+         to_regclass('public.pos_settlement_batches')::text as has_pos,
+         to_regclass('public.corporate_card_statements')::text as has_card`,
+    )
+    .catch(() => ({
+      rows: [{ has_mgmt: null, has_pta: null, has_pos: null, has_card: null }],
+    }));
+  const regRow = regRes.rows[0] ?? {
+    has_mgmt: null,
+    has_pta: null,
+    has_pos: null,
+    has_card: null,
+  };
+
+  const [
+    posRes,
+    floorRes,
+    arRes,
+    ptpRes,
+    piRes,
+    apRes,
+    checkRes,
+    loanRes,
+    vatByPeriodRes,
+    manualRes,
+    vat190Res,
+    payrollTaxRes,
+    posBatchRes,
+    corpCardRes,
+  ] = await gather(client, [
+    // 1. Opening treasury cash position (FIN-03 null-safe)
+    () =>
+      client
+        .query<{
+          available_now: string | null;
+          unknown_opening_count: number | string;
+        }>(
+          `select available_now, unknown_opening_count
+             from public.treasury_position_summary
+            where currency = $1`,
+          [currency],
+        )
+        .catch((err: unknown) => {
+          const code = (err as { code?: string })?.code;
+          if (code === "42703") {
+            return client.query<{
+              available_now: string | null;
+              unknown_opening_count: number | string;
+            }>(
+              `select available_now, 0::int as unknown_opening_count
+                 from public.treasury_position_summary
+                where currency = $1`,
+              [currency],
+            );
+          }
+          throw err;
+        }),
+    // 2. Minimum cash floor policy for currency
+    () =>
+      client.query<{ threshold_amount: string | null }>(
+        `select threshold_amount
+           from public.treasury_policies
+          where policy_kind = 'min_cash'
+            and is_active
+            and cash_account_id is null
+            and currency = $1
+          limit 1`,
         [currency],
-      );
-    }
-    throw err;
-  });
+      ),
+    // 3. Open Sales Invoices (behavioral V2 + Faz 44 deduplication shield)
+    () =>
+      client
+        .query<{
+          invoice_id: string;
+          party_id: string | null;
+          party_name: string | null;
+          invoice_no: string;
+          issue_date: string;
+          due_date: string | null;
+          open_amount: string;
+          days_overdue: number | string | null;
+          bad_debt_flagged: boolean;
+          party_avg_days_to_settle: string | null;
+          party_settled_count: number | string | null;
+          party_late_ratio: string | null;
+          party_invoice_count: number | string | null;
+          partially_settled: boolean;
+          active_promise_date: string | null;
+          dbt_samples: Array<number | string | null> | null;
+        }>(
+          `with active_promises as (
+             select
+               p.invoice_id,
+               p.party_id,
+               to_char(min(p.promised_date), 'YYYY-MM-DD') as promised_date
+             from public.promise_to_pay p
+             where p.status = 'pending'
+               and p.promised_date >= $1::date
+               and p.currency = $2
+             group by p.invoice_id, p.party_id
+           ),
+           party_dbt as (
+             select
+               s.party_id,
+               array_agg(s.dbt_days order by s.dbt_days) as dbt_samples
+             from (
+               select
+                 inv.party_id,
+                 inv.id,
+                 (max(a.allocated_on) - inv.due_date)::int as dbt_days
+               from public.invoices inv
+               join public.invoice_allocations a on a.invoice_id = inv.id and a.reversed_at is null
+               where inv.direction = 'sales'
+                 and inv.status in ('settled', 'paid')
+                 and inv.due_date is not null
+               group by inv.party_id, inv.id, inv.due_date
+             ) s
+             group by s.party_id
+           )
+           select
+             rcs.invoice_id::text,
+             rcs.party_id::text,
+             rcs.party_name,
+             rcs.invoice_no,
+             to_char(rcs.issue_date, 'YYYY-MM-DD') as issue_date,
+             to_char(rcs.due_date, 'YYYY-MM-DD') as due_date,
+             rcs.open_amount,
+             rcs.days_overdue,
+             rcs.bad_debt_flagged,
+             rcs.party_avg_days_to_settle,
+             rcs.party_settled_count,
+             rcs.party_late_ratio,
+             rcs.party_invoice_count,
+             rcs.partially_settled,
+             coalesce(ap_inv.promised_date, ap_party.promised_date) as active_promise_date,
+             pdbt.dbt_samples
+           from public.receivable_collection_signals rcs
+           join public.invoices v on v.id = rcs.invoice_id
+           left join active_promises ap_inv on ap_inv.invoice_id = rcs.invoice_id
+           left join (
+             select party_id, min(promised_date) as promised_date
+             from active_promises
+             where invoice_id is null
+             group by party_id
+           ) ap_party on ap_party.party_id = rcs.party_id
+           left join party_dbt pdbt on pdbt.party_id = rcs.party_id
+           where rcs.currency = $2
+             and rcs.open_amount > 0
+             and not (
+               v.settled_by_check_id is not null
+               and exists (
+                 select 1 from public.checks c0
+                 where c0.id = v.settled_by_check_id
+                   and c0.archived_at is null
+                   and c0.status <> 'cancelled'
+               )
+             )
+             and not exists (
+               select 1
+               from public.payment_instances pi2
+               left join public.payments p2 on p2.id = pi2.payment_id
+               where pi2.linked_invoice_id = v.id
+                 and pi2.status <> 'cancelled'
+                 and (p2.id is null or (p2.status = 'active' and p2.archived_at is null))
+             )
+             and not exists (
+               select 1
+               from public.checks c2
+               where coalesce(c2.settled_invoice_id, c2.linked_invoice_id) = v.id
+                 and c2.archived_at is null
+                 and c2.status in ('planned', 'in_portfolio', 'in_bank_collection', 'in_bank_collateral', 'issued_to_vendor')
+                 and not exists (
+                   select 1
+                   from public.invoice_allocations ia
+                   where ia.invoice_id = v.id
+                     and ia.source_table = 'checks'
+                     and ia.source_id = c2.id
+                     and ia.reversed_at is null
+                 )
+             )
+           order by rcs.due_date nulls last, rcs.invoice_id`,
+          [asOfDate, currency],
+        )
+        .catch((err: unknown) => {
+          const code = (err as { code?: string })?.code;
+          if (code === "42P01" || code === "42703") {
+            return client.query<{
+              invoice_id: string;
+              party_id: string | null;
+              party_name: string | null;
+              invoice_no: string;
+              issue_date: string;
+              due_date: string | null;
+              open_amount: string;
+              days_overdue: number | string | null;
+              bad_debt_flagged: boolean;
+              party_avg_days_to_settle: string | null;
+              party_settled_count: number | string | null;
+              party_late_ratio: string | null;
+              party_invoice_count: number | string | null;
+              partially_settled: boolean;
+              active_promise_date: string | null;
+              dbt_samples: Array<number | string | null> | null;
+            }>(
+              `select
+                 rcs.invoice_id::text,
+                 rcs.party_id::text,
+                 rcs.party_name,
+                 rcs.invoice_no,
+                 to_char(rcs.issue_date, 'YYYY-MM-DD') as issue_date,
+                 to_char(rcs.due_date, 'YYYY-MM-DD') as due_date,
+                 rcs.open_amount,
+                 rcs.days_overdue,
+                 rcs.bad_debt_flagged,
+                 rcs.party_avg_days_to_settle,
+                 rcs.party_settled_count,
+                 rcs.party_late_ratio,
+                 rcs.party_invoice_count,
+                 rcs.partially_settled,
+                 null::text as active_promise_date,
+                 null::int[] as dbt_samples
+               from public.receivable_collection_signals rcs
+               join public.invoices v on v.id = rcs.invoice_id
+               where v.currency = $1
+                 and rcs.open_amount > 0
+               order by rcs.due_date nulls last, rcs.invoice_id`,
+              [currency],
+            );
+          }
+          throw err;
+        }),
+    // 4. Standalone promise_to_pay (not linked to a specific invoice)
+    () =>
+      client
+        .query<{
+          id: string;
+          party_id: string | null;
+          party_name: string | null;
+          promised_date: string;
+          promised_amount: string;
+          notes: string | null;
+        }>(
+          `select
+             pr.id::text,
+             pr.party_id::text,
+             pa.name as party_name,
+             to_char(pr.promised_date, 'YYYY-MM-DD') as promised_date,
+             pr.promised_amount,
+             pr.note as notes
+           from public.promise_to_pay pr
+           left join public.parties pa on pa.id = pr.party_id
+           where pr.status = 'pending'
+             and pr.invoice_id is null
+             and pr.currency = $1
+             and pr.promised_date >= $2::date
+             and pr.promised_date <= $3::date
+             and pr.promised_amount > 0
+           order by pr.promised_date, pr.id`,
+          [currency, snapshotWeekStart, horizonEnd],
+        )
+        .catch((err: unknown) => {
+          const code = (err as { code?: string })?.code;
+          if (code === "42P01" || code === "42703") return { rows: [] };
+          throw err;
+        }),
+    // 5. Scheduled payment_instances (outflow & inflow, excluding transfers)
+    () =>
+      client.query<{
+        id: string;
+        due_date: string;
+        direction: string | null;
+        remaining_amount: string;
+        label: string;
+        party_id: string | null;
+        party_name: string | null;
+      }>(
+        `select
+           pi.id::text,
+           to_char(pi.due_date, 'YYYY-MM-DD') as due_date,
+           coalesce(pi.direction, 'outflow') as direction,
+           greatest(
+             0,
+             case when pi.status = 'partial' then pi.amount - coalesce(pi.paid_amount, 0) else pi.amount end
+           )::numeric(14,2) as remaining_amount,
+           coalesce(p.name, '(Planlı Ödeme)') as label,
+           p.provider_party_id::text as party_id,
+           pa.name as party_name
+         from public.payment_instances pi
+         left join public.payments p on p.id = pi.payment_id
+         left join public.parties pa on pa.id = p.provider_party_id
+         where pi.status in ('planned', 'unpaid', 'partial', 'late')
+           and (p.id is null or (p.status = 'active' and p.archived_at is null))
+           and coalesce(pi.direction, 'outflow') <> 'transfer'
+           and pi.currency = $1
+           and pi.due_date between $2::date and $3::date
+           and pi.amount is not null
+         order by pi.due_date, pi.id`,
+        [currency, snapshotWeekStart, horizonEnd],
+      ),
+    // 6. Open Purchase Invoices (open_ap) with Faz 44 deduplication shield
+    () =>
+      client
+        .query<{
+          id: string;
+          invoice_no: string;
+          due_date: string;
+          open_amount: string;
+          party_id: string | null;
+          party_name: string | null;
+        }>(
+          `select
+             v.id::text,
+             v.invoice_no,
+             to_char(v.due_date, 'YYYY-MM-DD') as due_date,
+             (v.gross_amount - coalesce(v.allocated_amount, 0))::numeric(14,2) as open_amount,
+             v.party_id::text,
+             pa.name as party_name
+           from public.invoices v
+           left join public.parties pa on pa.id = v.party_id
+           where v.direction = 'purchase'
+             and v.status in ('open', 'partial')
+             and v.currency = $1
+             and v.due_date between $2::date and $3::date
+             and v.gross_amount > coalesce(v.allocated_amount, 0)
+             and not (
+               v.settled_by_check_id is not null
+               and exists (
+                 select 1 from public.checks c0
+                 where c0.id = v.settled_by_check_id
+                   and c0.archived_at is null
+                   and c0.status <> 'cancelled'
+               )
+             )
+             and not exists (
+               select 1
+               from public.payment_instances pi2
+               left join public.payments p2 on p2.id = pi2.payment_id
+               where pi2.linked_invoice_id = v.id
+                 and pi2.status <> 'cancelled'
+                 and (p2.id is null or (p2.status = 'active' and p2.archived_at is null))
+             )
+             and not exists (
+               select 1
+               from public.checks c2
+               where coalesce(c2.settled_invoice_id, c2.linked_invoice_id) = v.id
+                 and c2.archived_at is null
+                 and c2.status in ('planned', 'in_portfolio', 'in_bank_collection', 'in_bank_collateral', 'issued_to_vendor')
+                 and not exists (
+                   select 1
+                   from public.invoice_allocations ia
+                   where ia.invoice_id = v.id
+                     and ia.source_table = 'checks'
+                     and ia.source_id = c2.id
+                     and ia.reversed_at is null
+                 )
+             )
+           order by v.due_date, v.id`,
+          [currency, snapshotWeekStart, horizonEnd],
+        )
+        .catch((err: unknown) => {
+          const code = (err as { code?: string })?.code;
+          if (code === "42703") {
+            return client.query<{
+              id: string;
+              invoice_no: string;
+              due_date: string;
+              open_amount: string;
+              party_id: string | null;
+              party_name: string | null;
+            }>(
+              `select
+                 v.id::text,
+                 v.invoice_no,
+                 to_char(v.due_date, 'YYYY-MM-DD') as due_date,
+                 (v.gross_amount - coalesce(v.allocated_amount, 0))::numeric(14,2) as open_amount,
+                 v.party_id::text,
+                 pa.name as party_name
+               from public.invoices v
+               left join public.parties pa on pa.id = v.party_id
+               where v.direction = 'purchase'
+                 and v.status in ('open', 'partial')
+                 and v.currency = $1
+                 and v.due_date between $2::date and $3::date
+                 and v.gross_amount > coalesce(v.allocated_amount, 0)
+               order by v.due_date, v.id`,
+              [currency, snapshotWeekStart, horizonEnd],
+            );
+          }
+          throw err;
+        }),
+    // 7. Checks & Promissory Notes (check_maturity)
+    () =>
+      client
+        .query<CheckMaturityRow>(
+          `select
+             ch.id::text,
+             to_char(ch.maturity_date, 'YYYY-MM-DD') as maturity_date,
+             ch.direction,
+             abs(ch.amount)::numeric(14,2) as amount,
+             ch.counterparty_label,
+             coalesce(ch.payee_party_id, ch.payer_party_id)::text as party_id,
+             coalesce(pe.name, py.name, ch.counterparty_label) as party_name
+           from public.checks ch
+           left join public.parties pe on pe.id = ch.payee_party_id
+           left join public.parties py on py.id = ch.payer_party_id
+           where ch.archived_at is null
+             and ch.status in ('planned', 'in_portfolio', 'in_bank_collection', 'issued_to_vendor')
+             and ch.currency = $1
+             and ch.maturity_date between $2::date and $3::date
+             and ch.amount > 0
+           order by ch.maturity_date, ch.id`,
+          [currency, snapshotWeekStart, horizonEnd],
+        )
+        .then(
+          (r): { rows: CheckMaturityRow[] } => ({ rows: r.rows }),
+          async (err: unknown): Promise<{ rows: CheckMaturityRow[] }> => {
+            const code = (err as { code?: string })?.code;
+            if (code === "42703") {
+              if (currency !== "TRY") return { rows: [] };
+              const fallback = await client.query<CheckMaturityRow>(
+                `select
+                   ch.id::text,
+                   to_char(ch.maturity_date, 'YYYY-MM-DD') as maturity_date,
+                   ch.direction,
+                   abs(ch.amount)::numeric(14,2) as amount,
+                   ch.counterparty_label,
+                   coalesce(ch.payee_party_id, ch.payer_party_id)::text as party_id,
+                   coalesce(pe.name, py.name, ch.counterparty_label) as party_name
+                 from public.checks ch
+                 left join public.parties pe on pe.id = ch.payee_party_id
+                 left join public.parties py on py.id = ch.payer_party_id
+                 where ch.archived_at is null
+                   and ch.status in ('planned', 'in_portfolio', 'in_bank_collection', 'issued_to_vendor')
+                   and ch.maturity_date between $1::date and $2::date
+                   and ch.amount > 0
+                 order by ch.maturity_date, ch.id`,
+                [snapshotWeekStart, horizonEnd],
+              );
+              return { rows: fallback.rows };
+            }
+            throw err;
+          },
+        ),
+    // 8. Loan Installments (loan_installment)
+    () =>
+      client
+        .query<LoanInstallmentRow>(
+          `select
+             li.id::text,
+             to_char(li.due_date, 'YYYY-MM-DD') as due_date,
+             greatest(
+               0,
+               case when li.status = 'partial' then li.amount - coalesce(li.paid_amount, 0) else li.amount end
+             )::numeric(14,2) as remaining_amount,
+             coalesce(l.name, 'Kredi') as loan_name,
+             li.installment_no,
+             l.lender_party_id::text as party_id,
+             pa.name as party_name
+           from public.loan_installments li
+           join public.loans l on l.id = li.loan_id
+           left join public.parties pa on pa.id = l.lender_party_id
+           where l.archived_at is null
+             and li.status in ('planned', 'unpaid', 'partial', 'late')
+             and l.currency = $1
+             and li.due_date between $2::date and $3::date
+             and li.amount > 0
+           order by li.due_date, li.id`,
+          [currency, snapshotWeekStart, horizonEnd],
+        )
+        .then(
+          (r): { rows: LoanInstallmentRow[] } => ({ rows: r.rows }),
+          async (err: unknown): Promise<{ rows: LoanInstallmentRow[] }> => {
+            const code = (err as { code?: string })?.code;
+            if (code === "42703") {
+              if (currency !== "TRY") return { rows: [] };
+              const fallback = await client.query<LoanInstallmentRow>(
+                `select
+                   li.id::text,
+                   to_char(li.due_date, 'YYYY-MM-DD') as due_date,
+                   greatest(
+                     0,
+                     case when li.status = 'partial' then li.amount - coalesce(li.paid_amount, 0) else li.amount end
+                   )::numeric(14,2) as remaining_amount,
+                   coalesce(l.name, 'Kredi') as loan_name,
+                   li.installment_no,
+                   l.lender_party_id::text as party_id,
+                   pa.name as party_name
+                 from public.loan_installments li
+                 join public.loans l on l.id = li.loan_id
+                 left join public.parties pa on pa.id = l.lender_party_id
+                 where l.archived_at is null
+                   and li.status in ('planned', 'unpaid', 'partial', 'late')
+                   and li.due_date between $1::date and $2::date
+                   and li.amount > 0
+                 order by li.due_date, li.id`,
+                [snapshotWeekStart, horizonEnd],
+              );
+              return { rows: fallback.rows };
+            }
+            throw err;
+          },
+        ),
+    // 9. Turkish Statutory Tax & SGK Calendar (TRY only)
+    () =>
+      currency === "TRY" && statutoryDeadlines.length > 0
+        ? client
+            .query<{
+              tax_period: string;
+              sales_vat: string;
+              purchase_vat: string;
+              withheld_vat: string;
+            }>(
+              `select
+                 to_char(issue_date, 'YYYY-MM') as tax_period,
+                 coalesce(
+                   sum(coalesce(tax_amount, 0) - coalesce(vat_withholding_amount, 0))
+                     filter (where direction = 'sales' and status <> 'cancelled'),
+                   0
+                 )::numeric(14,2) as sales_vat,
+                 coalesce(
+                   sum(coalesce(tax_amount, 0))
+                     filter (where direction = 'purchase' and status <> 'cancelled'),
+                   0
+                 )::numeric(14,2) as purchase_vat,
+                 coalesce(
+                   sum(coalesce(vat_withholding_amount, 0))
+                     filter (where direction = 'purchase' and status <> 'cancelled'),
+                   0
+                 )::numeric(14,2) as withheld_vat
+               from public.invoices
+               where currency = 'TRY'
+               group by to_char(issue_date, 'YYYY-MM')`,
+            )
+            .catch((err: unknown) => {
+              const code = (err as { code?: string })?.code;
+              if (code === "42703") {
+                return client.query<{
+                  tax_period: string;
+                  sales_vat: string;
+                  purchase_vat: string;
+                  withheld_vat: string;
+                }>(
+                  `select
+                     to_char(issue_date, 'YYYY-MM') as tax_period,
+                     coalesce(
+                       sum(coalesce(tax_amount, 0))
+                         filter (where direction = 'sales' and status <> 'cancelled'),
+                       0
+                     )::numeric(14,2) as sales_vat,
+                     coalesce(
+                       sum(coalesce(tax_amount, 0))
+                         filter (where direction = 'purchase' and status <> 'cancelled'),
+                       0
+                     )::numeric(14,2) as purchase_vat,
+                     0::numeric(14,2)::text as withheld_vat
+                   from public.invoices
+                   where currency = 'TRY'
+                   group by to_char(issue_date, 'YYYY-MM')`,
+                );
+              }
+              throw err;
+            })
+        : Promise.resolve({
+            rows: [] as Array<{
+              tax_period: string;
+              sales_vat: string;
+              purchase_vat: string;
+              withheld_vat: string;
+            }>,
+          }),
+    // 10. Manual Overrides from active weekly_13 forecasts (forecast_lines where source_kind = 'manual')
+    () =>
+      client.query<{
+        id: string;
+        period_start: string;
+        direction: "inflow" | "outflow";
+        amount: string;
+        notes: string | null;
+        forecast_name: string;
+      }>(
+        `select
+           fl.id::text,
+           to_char(fl.period_start, 'YYYY-MM-DD') as period_start,
+           fl.direction,
+           abs(fl.amount)::numeric(14,2) as amount,
+           fl.notes,
+           f.name as forecast_name
+         from public.forecast_lines fl
+         join public.forecasts f on f.id = fl.forecast_id
+         where f.is_active
+           and f.horizon_kind = 'weekly_13'
+           and coalesce(fl.currency, f.currency, 'TRY') = $1
+           and fl.version_status in ('draft', 'approved')
+           and fl.source_kind = 'manual'
+           and fl.period_start between $2::date and $3::date
+           and abs(fl.amount) > 0
+         order by fl.period_start, fl.id`,
+        [currency, snapshotWeekStart, horizonEnd],
+      ),
+    // 11. TDHP 190 Devreden KDV carryforward balance (TRY only)
+    () =>
+      currency === "TRY" && regRow.has_mgmt
+        ? client.query<{ vat_carry_190: string }>(
+            `select greatest(0, coalesce(sum(coalesce(jl.debit_try, 0) - coalesce(jl.credit_try, 0)), 0))::numeric(14,2) as vat_carry_190
+               from public.management_accounts ma
+               join public.management_journal_lines jl on jl.account_id = ma.id
+               join public.management_journal_entries je on je.id = jl.entry_id and je.status = 'posted'
+              where ma.code = '190' or ma.code like '190.%'`,
+          )
+        : Promise.resolve({ rows: [{ vat_carry_190: "0.00" }] }),
+    // 12. Open Payroll & Tax Accruals (0117 payroll_tax_accruals)
+    () =>
+      regRow.has_pta
+        ? client.query<{
+            id: string;
+            period_ym: string;
+            obligation_kind: string;
+            due_date: string;
+            open_amount: string;
+            notes: string | null;
+          }>(
+            `select
+               id::text,
+               to_char(period_month, 'YYYY-MM') as period_ym,
+               obligation_kind,
+               to_char(due_date, 'YYYY-MM-DD') as due_date,
+               greatest(0, accrued_amount - coalesce(paid_amount, 0))::numeric(14,2) as open_amount,
+               notes
+             from public.payroll_tax_accruals
+             where is_paid = false
+               and accrued_amount > coalesce(paid_amount, 0)
+               and currency = $1
+               and due_date between $2::date and $3::date
+             order by due_date, id`,
+            [currency, snapshotWeekStart, horizonEnd],
+          )
+        : Promise.resolve({
+            rows: [] as Array<{
+              id: string;
+              period_ym: string;
+              obligation_kind: string;
+              due_date: string;
+              open_amount: string;
+              notes: string | null;
+            }>,
+          }),
+    // 13. Unsettled POS Valor Batches (0117 pos_settlement_batches)
+    () =>
+      regRow.has_pos
+        ? client.query<{
+            id: string;
+            pos_terminal_label: string;
+            sale_date: string;
+            expected_value_date: string;
+            net_settlement_amount: string;
+            account_name: string | null;
+          }>(
+            `select
+               psb.id::text,
+               psb.pos_terminal_label,
+               to_char(psb.sale_date, 'YYYY-MM-DD') as sale_date,
+               to_char(psb.expected_value_date, 'YYYY-MM-DD') as expected_value_date,
+               psb.net_settlement_amount::numeric(14,2) as net_settlement_amount,
+               ca.name as account_name
+             from public.pos_settlement_batches psb
+             left join public.cash_accounts ca on ca.id = psb.cash_account_id
+             where psb.is_settled = false
+               and psb.net_settlement_amount > 0
+               and psb.currency = $1
+               and psb.expected_value_date between $2::date and $3::date
+             order by psb.expected_value_date, psb.id`,
+            [currency, snapshotWeekStart, horizonEnd],
+          )
+        : Promise.resolve({
+            rows: [] as Array<{
+              id: string;
+              pos_terminal_label: string;
+              sale_date: string;
+              expected_value_date: string;
+              net_settlement_amount: string;
+              account_name: string | null;
+            }>,
+          }),
+    // 14. Unsettled Corporate Card Statements (0117 corporate_card_statements)
+    () =>
+      regRow.has_card
+        ? client.query<{
+            id: string;
+            statement_ym: string;
+            cutoff_date: string;
+            due_date: string;
+            remaining_amount: string;
+            card_name: string | null;
+          }>(
+            `select
+               ccs.id::text,
+               to_char(ccs.statement_month, 'YYYY-MM') as statement_ym,
+               to_char(ccs.cutoff_date, 'YYYY-MM-DD') as cutoff_date,
+               to_char(ccs.due_date, 'YYYY-MM-DD') as due_date,
+               greatest(0, ccs.statement_amount - coalesce(ccs.paid_amount, 0))::numeric(14,2) as remaining_amount,
+               ca.name as card_name
+             from public.corporate_card_statements ccs
+             left join public.cash_accounts ca on ca.id = ccs.card_account_id
+             where ccs.is_settled = false
+               and ccs.statement_amount > coalesce(ccs.paid_amount, 0)
+               and ccs.currency = $1
+               and ccs.due_date between $2::date and $3::date
+             order by ccs.due_date, ccs.id`,
+            [currency, snapshotWeekStart, horizonEnd],
+          )
+        : Promise.resolve({
+            rows: [] as Array<{
+              id: string;
+              statement_ym: string;
+              cutoff_date: string;
+              due_date: string;
+              remaining_amount: string;
+              card_name: string | null;
+            }>,
+          }),
+  ]);
+
   const posRow = posRes.rows[0];
   const unknownOpeningCount = posRes.rowCount === 0 ? 0 : Number(posRow?.unknown_opening_count ?? 0);
   const openingCash: number | null =
@@ -279,17 +1018,6 @@ export async function buildAutoSeeded13WeekForecast(
         ? null
         : moneyOrNull(posRow?.available_now) ?? 0;
 
-  // 2. Minimum cash floor policy for currency
-  const floorRes = await client.query<{ threshold_amount: string | null }>(
-    `select threshold_amount
-       from public.treasury_policies
-      where policy_kind = 'min_cash'
-        and is_active
-        and cash_account_id is null
-        and currency = $1
-      limit 1`,
-    [currency],
-  );
   const minCashFloor = floorRes.rowCount ? moneyOrNull(floorRes.rows[0]?.threshold_amount) : null;
 
   const seededLinesByWeek = new Map<number, Forecast13wSeededLine[]>();
@@ -308,166 +1036,6 @@ export async function buildAutoSeeded13WeekForecast(
       amount: money(decimal(line.amount).toString()),
     });
   };
-
-  // 3. Open Sales Invoices (behavioral V2 + Faz 44 deduplication shield)
-  const arRes = await client.query<{
-    invoice_id: string;
-    party_id: string | null;
-    party_name: string | null;
-    invoice_no: string;
-    issue_date: string;
-    due_date: string | null;
-    open_amount: string;
-    days_overdue: number | string | null;
-    bad_debt_flagged: boolean;
-    party_avg_days_to_settle: string | null;
-    party_settled_count: number | string | null;
-    party_late_ratio: string | null;
-    party_invoice_count: number | string | null;
-    partially_settled: boolean;
-    active_promise_date: string | null;
-    dbt_samples: Array<number | string | null> | null;
-  }>(
-    `with active_promises as (
-       select
-         p.invoice_id,
-         p.party_id,
-         to_char(min(p.promised_date), 'YYYY-MM-DD') as promised_date
-       from public.promise_to_pay p
-       where p.status = 'pending'
-         and p.promised_date >= $1::date
-         and p.currency = $2
-       group by p.invoice_id, p.party_id
-     ),
-     party_dbt as (
-       select
-         s.party_id,
-         array_agg(s.dbt_days order by s.dbt_days) as dbt_samples
-       from (
-         select
-           inv.party_id,
-           inv.id,
-           (max(a.allocated_on) - inv.due_date)::int as dbt_days
-         from public.invoices inv
-         join public.invoice_allocations a on a.invoice_id = inv.id and a.reversed_at is null
-         where inv.direction = 'sales'
-           and inv.status in ('settled', 'paid')
-           and inv.due_date is not null
-         group by inv.party_id, inv.id, inv.due_date
-       ) s
-       group by s.party_id
-     )
-     select
-       rcs.invoice_id::text,
-       rcs.party_id::text,
-       rcs.party_name,
-       rcs.invoice_no,
-       to_char(rcs.issue_date, 'YYYY-MM-DD') as issue_date,
-       to_char(rcs.due_date, 'YYYY-MM-DD') as due_date,
-       rcs.open_amount,
-       rcs.days_overdue,
-       rcs.bad_debt_flagged,
-       rcs.party_avg_days_to_settle,
-       rcs.party_settled_count,
-       rcs.party_late_ratio,
-       rcs.party_invoice_count,
-       rcs.partially_settled,
-       coalesce(ap_inv.promised_date, ap_party.promised_date) as active_promise_date,
-       pdbt.dbt_samples
-     from public.receivable_collection_signals rcs
-     join public.invoices v on v.id = rcs.invoice_id
-     left join active_promises ap_inv on ap_inv.invoice_id = rcs.invoice_id
-     left join (
-       select party_id, min(promised_date) as promised_date
-       from active_promises
-       where invoice_id is null
-       group by party_id
-     ) ap_party on ap_party.party_id = rcs.party_id
-     left join party_dbt pdbt on pdbt.party_id = rcs.party_id
-     where rcs.currency = $2
-       and rcs.open_amount > 0
-       and not (
-         v.settled_by_check_id is not null
-         and exists (
-           select 1 from public.checks c0
-           where c0.id = v.settled_by_check_id
-             and c0.archived_at is null
-             and c0.status <> 'cancelled'
-         )
-       )
-       and not exists (
-         select 1
-         from public.payment_instances pi2
-         left join public.payments p2 on p2.id = pi2.payment_id
-         where pi2.linked_invoice_id = v.id
-           and pi2.status <> 'cancelled'
-           and (p2.id is null or (p2.status = 'active' and p2.archived_at is null))
-       )
-       and not exists (
-         select 1
-         from public.checks c2
-         where coalesce(c2.settled_invoice_id, c2.linked_invoice_id) = v.id
-           and c2.archived_at is null
-           and c2.status in ('planned', 'in_portfolio', 'in_bank_collection', 'in_bank_collateral', 'issued_to_vendor')
-           and not exists (
-             select 1
-             from public.invoice_allocations ia
-             where ia.invoice_id = v.id
-               and ia.source_table = 'checks'
-               and ia.source_id = c2.id
-               and ia.reversed_at is null
-           )
-       )
-     order by rcs.due_date nulls last, rcs.invoice_id`,
-    [asOfDate, currency],
-  ).catch((err: unknown) => {
-    const code = (err as { code?: string })?.code;
-    if (code === "42P01" || code === "42703") {
-      return client.query<{
-        invoice_id: string;
-        party_id: string | null;
-        party_name: string | null;
-        invoice_no: string;
-        issue_date: string;
-        due_date: string | null;
-        open_amount: string;
-        days_overdue: number | string | null;
-        bad_debt_flagged: boolean;
-        party_avg_days_to_settle: string | null;
-        party_settled_count: number | string | null;
-        party_late_ratio: string | null;
-        party_invoice_count: number | string | null;
-        partially_settled: boolean;
-        active_promise_date: string | null;
-        dbt_samples: Array<number | string | null> | null;
-      }>(
-        `select
-           rcs.invoice_id::text,
-           rcs.party_id::text,
-           rcs.party_name,
-           rcs.invoice_no,
-           to_char(rcs.issue_date, 'YYYY-MM-DD') as issue_date,
-           to_char(rcs.due_date, 'YYYY-MM-DD') as due_date,
-           rcs.open_amount,
-           rcs.days_overdue,
-           rcs.bad_debt_flagged,
-           rcs.party_avg_days_to_settle,
-           rcs.party_settled_count,
-           rcs.party_late_ratio,
-           rcs.party_invoice_count,
-           rcs.partially_settled,
-           null::text as active_promise_date,
-           null::int[] as dbt_samples
-         from public.receivable_collection_signals rcs
-         join public.invoices v on v.id = rcs.invoice_id
-         where v.currency = $1
-           and rcs.open_amount > 0
-         order by rcs.due_date nulls last, rcs.invoice_id`,
-        [currency],
-      );
-    }
-    throw err;
-  });
 
   const overdueUnscheduledItems: OverdueUnscheduledReceivableItem[] = [];
   let overdueUnscheduledAmountDec = decimal(0);
@@ -518,7 +1086,6 @@ export async function buildAutoSeeded13WeekForecast(
       continue;
     }
 
-    // If projectedDate is between asOfDate and snapshotWeekStart + 90, place in its week
     const categoryBucket: Forecast13wCategoryBucket =
       expected.bucket === "behavioral_dbt" ? "behavioral_ar" : "contracted_ar";
     const sourceClassification: Forecast13wSourceClassification =
@@ -542,37 +1109,6 @@ export async function buildAutoSeeded13WeekForecast(
     });
   }
 
-  // 4. Standalone promise_to_pay (not linked to a specific invoice)
-  const ptpRes = await client.query<{
-    id: string;
-    party_id: string | null;
-    party_name: string | null;
-    promised_date: string;
-    promised_amount: string;
-    notes: string | null;
-  }>(
-    `select
-       pr.id::text,
-       pr.party_id::text,
-       pa.name as party_name,
-       to_char(pr.promised_date, 'YYYY-MM-DD') as promised_date,
-       pr.promised_amount,
-       pr.note as notes
-     from public.promise_to_pay pr
-     left join public.parties pa on pa.id = pr.party_id
-     where pr.status = 'pending'
-       and pr.invoice_id is null
-       and pr.currency = $1
-       and pr.promised_date >= $2::date
-       and pr.promised_date <= $3::date
-       and pr.promised_amount > 0
-     order by pr.promised_date, pr.id`,
-    [currency, snapshotWeekStart, horizonEnd],
-  ).catch((err: unknown) => {
-    const code = (err as { code?: string })?.code;
-    if (code === "42P01" || code === "42703") return { rows: [] };
-    throw err;
-  });
   for (const ptp of ptpRes.rows) {
     const amt = moneyOrNull(ptp.promised_amount) ?? 0;
     if (amt <= 0) continue;
@@ -590,39 +1126,6 @@ export async function buildAutoSeeded13WeekForecast(
     });
   }
 
-  // 5. Scheduled payment_instances (outflow & inflow, excluding transfers)
-  const piRes = await client.query<{
-    id: string;
-    due_date: string;
-    direction: string | null;
-    remaining_amount: string;
-    label: string;
-    party_id: string | null;
-    party_name: string | null;
-  }>(
-    `select
-       pi.id::text,
-       to_char(pi.due_date, 'YYYY-MM-DD') as due_date,
-       coalesce(pi.direction, 'outflow') as direction,
-       greatest(
-         0,
-         case when pi.status = 'partial' then pi.amount - coalesce(pi.paid_amount, 0) else pi.amount end
-       )::numeric(14,2) as remaining_amount,
-       coalesce(p.name, '(Planlı Ödeme)') as label,
-       p.provider_party_id::text as party_id,
-       pa.name as party_name
-     from public.payment_instances pi
-     left join public.payments p on p.id = pi.payment_id
-     left join public.parties pa on pa.id = p.provider_party_id
-     where pi.status in ('planned', 'unpaid', 'partial', 'late')
-       and (p.id is null or (p.status = 'active' and p.archived_at is null))
-       and coalesce(pi.direction, 'outflow') <> 'transfer'
-       and pi.currency = $1
-       and pi.due_date between $2::date and $3::date
-       and pi.amount is not null
-     order by pi.due_date, pi.id`,
-    [currency, snapshotWeekStart, horizonEnd],
-  );
   for (const pi of piRes.rows) {
     const amt = moneyOrNull(pi.remaining_amount) ?? 0;
     if (amt <= 0) continue;
@@ -640,94 +1143,6 @@ export async function buildAutoSeeded13WeekForecast(
     });
   }
 
-  // 6. Open Purchase Invoices (open_ap) with Faz 44 deduplication shield
-  const apRes = await client.query<{
-    id: string;
-    invoice_no: string;
-    due_date: string;
-    open_amount: string;
-    party_id: string | null;
-    party_name: string | null;
-  }>(
-    `select
-       v.id::text,
-       v.invoice_no,
-       to_char(v.due_date, 'YYYY-MM-DD') as due_date,
-       (v.gross_amount - coalesce(v.allocated_amount, 0))::numeric(14,2) as open_amount,
-       v.party_id::text,
-       pa.name as party_name
-     from public.invoices v
-     left join public.parties pa on pa.id = v.party_id
-     where v.direction = 'purchase'
-       and v.status in ('open', 'partial')
-       and v.currency = $1
-       and v.due_date between $2::date and $3::date
-       and v.gross_amount > coalesce(v.allocated_amount, 0)
-       and not (
-         v.settled_by_check_id is not null
-         and exists (
-           select 1 from public.checks c0
-           where c0.id = v.settled_by_check_id
-             and c0.archived_at is null
-             and c0.status <> 'cancelled'
-         )
-       )
-       and not exists (
-         select 1
-         from public.payment_instances pi2
-         left join public.payments p2 on p2.id = pi2.payment_id
-         where pi2.linked_invoice_id = v.id
-           and pi2.status <> 'cancelled'
-           and (p2.id is null or (p2.status = 'active' and p2.archived_at is null))
-       )
-       and not exists (
-         select 1
-         from public.checks c2
-         where coalesce(c2.settled_invoice_id, c2.linked_invoice_id) = v.id
-           and c2.archived_at is null
-           and c2.status in ('planned', 'in_portfolio', 'in_bank_collection', 'in_bank_collateral', 'issued_to_vendor')
-           and not exists (
-             select 1
-             from public.invoice_allocations ia
-             where ia.invoice_id = v.id
-               and ia.source_table = 'checks'
-               and ia.source_id = c2.id
-               and ia.reversed_at is null
-           )
-       )
-     order by v.due_date, v.id`,
-    [currency, snapshotWeekStart, horizonEnd],
-  ).catch((err: unknown) => {
-    const code = (err as { code?: string })?.code;
-    if (code === "42703") {
-      return client.query<{
-        id: string;
-        invoice_no: string;
-        due_date: string;
-        open_amount: string;
-        party_id: string | null;
-        party_name: string | null;
-      }>(
-        `select
-           v.id::text,
-           v.invoice_no,
-           to_char(v.due_date, 'YYYY-MM-DD') as due_date,
-           (v.gross_amount - coalesce(v.allocated_amount, 0))::numeric(14,2) as open_amount,
-           v.party_id::text,
-           pa.name as party_name
-         from public.invoices v
-         left join public.parties pa on pa.id = v.party_id
-         where v.direction = 'purchase'
-           and v.status in ('open', 'partial')
-           and v.currency = $1
-           and v.due_date between $2::date and $3::date
-           and v.gross_amount > coalesce(v.allocated_amount, 0)
-         order by v.due_date, v.id`,
-        [currency, snapshotWeekStart, horizonEnd],
-      );
-    }
-    throw err;
-  });
   for (const ap of apRes.rows) {
     const amt = moneyOrNull(ap.open_amount) ?? 0;
     if (amt <= 0) continue;
@@ -745,67 +1160,6 @@ export async function buildAutoSeeded13WeekForecast(
     });
   }
 
-  // 7. Checks & Promissory Notes (check_maturity)
-  type CheckMaturityRow = {
-    id: string;
-    maturity_date: string;
-    direction: string;
-    amount: string;
-    counterparty_label: string | null;
-    party_id: string | null;
-    party_name: string | null;
-  };
-  const checkRes = await client
-    .query<CheckMaturityRow>(
-      `select
-         ch.id::text,
-         to_char(ch.maturity_date, 'YYYY-MM-DD') as maturity_date,
-         ch.direction,
-         abs(ch.amount)::numeric(14,2) as amount,
-         ch.counterparty_label,
-         coalesce(ch.payee_party_id, ch.payer_party_id)::text as party_id,
-         coalesce(pe.name, py.name, ch.counterparty_label) as party_name
-       from public.checks ch
-       left join public.parties pe on pe.id = ch.payee_party_id
-       left join public.parties py on py.id = ch.payer_party_id
-       where ch.archived_at is null
-         and ch.status in ('planned', 'in_portfolio', 'in_bank_collection', 'issued_to_vendor')
-         and ch.currency = $1
-         and ch.maturity_date between $2::date and $3::date
-         and ch.amount > 0
-       order by ch.maturity_date, ch.id`,
-      [currency, snapshotWeekStart, horizonEnd],
-    )
-    .then(
-      (r): { rows: CheckMaturityRow[] } => ({ rows: r.rows }),
-      async (err: unknown): Promise<{ rows: CheckMaturityRow[] }> => {
-        const code = (err as { code?: string })?.code;
-        if (code === "42703") {
-          if (currency !== "TRY") return { rows: [] };
-          const fallback = await client.query<CheckMaturityRow>(
-            `select
-               ch.id::text,
-               to_char(ch.maturity_date, 'YYYY-MM-DD') as maturity_date,
-               ch.direction,
-               abs(ch.amount)::numeric(14,2) as amount,
-               ch.counterparty_label,
-               coalesce(ch.payee_party_id, ch.payer_party_id)::text as party_id,
-               coalesce(pe.name, py.name, ch.counterparty_label) as party_name
-             from public.checks ch
-             left join public.parties pe on pe.id = ch.payee_party_id
-             left join public.parties py on py.id = ch.payer_party_id
-             where ch.archived_at is null
-               and ch.status in ('planned', 'in_portfolio', 'in_bank_collection', 'issued_to_vendor')
-               and ch.maturity_date between $1::date and $2::date
-               and ch.amount > 0
-             order by ch.maturity_date, ch.id`,
-            [snapshotWeekStart, horizonEnd],
-          );
-          return { rows: fallback.rows };
-        }
-        throw err;
-      },
-    );
   for (const ch of checkRes.rows) {
     const amt = moneyOrNull(ch.amount) ?? 0;
     if (amt <= 0) continue;
@@ -823,73 +1177,6 @@ export async function buildAutoSeeded13WeekForecast(
     });
   }
 
-  // 8. Loan Installments (loan_installment)
-  type LoanInstallmentRow = {
-    id: string;
-    due_date: string;
-    remaining_amount: string;
-    loan_name: string;
-    installment_no: number;
-    party_id: string | null;
-    party_name: string | null;
-  };
-  const loanRes = await client
-    .query<LoanInstallmentRow>(
-      `select
-         li.id::text,
-         to_char(li.due_date, 'YYYY-MM-DD') as due_date,
-         greatest(
-           0,
-           case when li.status = 'partial' then li.amount - coalesce(li.paid_amount, 0) else li.amount end
-         )::numeric(14,2) as remaining_amount,
-         coalesce(l.name, 'Kredi') as loan_name,
-         li.installment_no,
-         l.lender_party_id::text as party_id,
-         pa.name as party_name
-       from public.loan_installments li
-       join public.loans l on l.id = li.loan_id
-       left join public.parties pa on pa.id = l.lender_party_id
-       where l.archived_at is null
-         and li.status in ('planned', 'unpaid', 'partial', 'late')
-         and l.currency = $1
-         and li.due_date between $2::date and $3::date
-         and li.amount > 0
-       order by li.due_date, li.id`,
-      [currency, snapshotWeekStart, horizonEnd],
-    )
-    .then(
-      (r): { rows: LoanInstallmentRow[] } => ({ rows: r.rows }),
-      async (err: unknown): Promise<{ rows: LoanInstallmentRow[] }> => {
-        const code = (err as { code?: string })?.code;
-        if (code === "42703") {
-          if (currency !== "TRY") return { rows: [] };
-          const fallback = await client.query<LoanInstallmentRow>(
-            `select
-               li.id::text,
-               to_char(li.due_date, 'YYYY-MM-DD') as due_date,
-               greatest(
-                 0,
-                 case when li.status = 'partial' then li.amount - coalesce(li.paid_amount, 0) else li.amount end
-               )::numeric(14,2) as remaining_amount,
-               coalesce(l.name, 'Kredi') as loan_name,
-               li.installment_no,
-               l.lender_party_id::text as party_id,
-               pa.name as party_name
-             from public.loan_installments li
-             join public.loans l on l.id = li.loan_id
-             left join public.parties pa on pa.id = l.lender_party_id
-             where l.archived_at is null
-               and li.status in ('planned', 'unpaid', 'partial', 'late')
-               and li.due_date between $1::date and $2::date
-               and li.amount > 0
-             order by li.due_date, li.id`,
-            [snapshotWeekStart, horizonEnd],
-          );
-          return { rows: fallback.rows };
-        }
-        throw err;
-      },
-    );
   for (const li of loanRes.rows) {
     const amt = moneyOrNull(li.remaining_amount) ?? 0;
     if (amt <= 0) continue;
@@ -907,81 +1194,105 @@ export async function buildAutoSeeded13WeekForecast(
     });
   }
 
-  // 9. Turkish Statutory Tax & SGK Calendar (TRY only)
-  const statutoryDeadlines: TrStatutoryObligation[] =
-    currency === "TRY" ? generateTrStatutoryObligations(snapshotWeekStart, horizonEnd) : [];
+  let posBatchInflowDec = decimal(0);
+  for (const pos of posBatchRes.rows) {
+    const amt = moneyOrNull(pos.net_settlement_amount) ?? 0;
+    if (amt <= 0) continue;
+    posBatchInflowDec = posBatchInflowDec.plus(decimal(amt));
+    pushLine({
+      dueDate: pos.expected_value_date,
+      direction: "inflow",
+      categoryBucket: "contracted_ar",
+      sourceClassification: "scheduled",
+      sourceEntityTable: "pos_settlement_batches",
+      sourceEntityId: pos.id,
+      partyId: null,
+      partyName: pos.account_name,
+      label: pos.account_name
+        ? `POS Valör Tahsilatı · ${pos.pos_terminal_label} (${pos.account_name})`
+        : `POS Valör Tahsilatı · ${pos.pos_terminal_label}`,
+      amount: amt,
+    });
+  }
+
+  let corporateCardOutflowDec = decimal(0);
+  for (const card of corpCardRes.rows) {
+    const amt = moneyOrNull(card.remaining_amount) ?? 0;
+    if (amt <= 0) continue;
+    corporateCardOutflowDec = corporateCardOutflowDec.plus(decimal(amt));
+    pushLine({
+      dueDate: card.due_date,
+      direction: "outflow",
+      categoryBucket: "scheduled_payment",
+      sourceClassification: "scheduled",
+      sourceEntityTable: "corporate_card_statements",
+      sourceEntityId: card.id,
+      partyId: null,
+      partyName: card.card_name,
+      label: `Kurumsal Kart Ekstresi · ${card.card_name ?? "Kart"} (${card.statement_ym} · Kesim ${card.cutoff_date})`,
+      amount: amt,
+    });
+  }
+
+  const OBLIGATION_LABELS_TR: Record<string, string> = {
+    NET_MAAS: "Personel Net Maaş Tahakkuku",
+    MPHB_STOPAJ: "Muhtasar ve Prim Hizmet Beyannamesi (MPHB Stopaj)",
+    SGK_4A: "4/A SGK İşçi + İşveren Prim Ödemesi",
+    DAMGA_VERGISI: "Damga Vergisi Tahakkuku",
+    KURUMLAR_GECICI_VERGI: "Kurumlar Geçici Vergi Tahakkuku",
+  };
+  let payrollTaxAccrualOutflowDec = decimal(0);
+  for (const pta of payrollTaxRes.rows) {
+    const amt = moneyOrNull(pta.open_amount) ?? 0;
+    if (amt <= 0) continue;
+    payrollTaxAccrualOutflowDec = payrollTaxAccrualOutflowDec.plus(decimal(amt));
+    const kindLabel = OBLIGATION_LABELS_TR[pta.obligation_kind] ?? pta.obligation_kind;
+    pushLine({
+      dueDate: pta.due_date,
+      direction: "outflow",
+      categoryBucket: "statutory_tax_sgk",
+      sourceClassification: "statutory_tax",
+      sourceEntityTable: "payroll_tax_accruals",
+      sourceEntityId: pta.id,
+      partyId: null,
+      partyName: pta.obligation_kind === "SGK_4A" ? "SGK" : pta.obligation_kind === "NET_MAAS" ? "Personel" : "GİB",
+      label: pta.notes ? `${kindLabel} (${pta.period_ym}) · ${pta.notes}` : `${kindLabel} (${pta.period_ym})`,
+      amount: amt,
+    });
+  }
+
+  const vatCarry190Opening =
+    currency === "TRY" ? money(decimal(vat190Res.rows[0]?.vat_carry_190 ?? 0).toString()) : 0;
+  let vatCarry190AppliedDec = decimal(0);
 
   if (currency === "TRY" && statutoryDeadlines.length > 0) {
-    // Compute deterministic VAT / Withheld VAT obligations by YYYY-MM taxPeriod from invoices
-    const vatByPeriodRes = await client.query<{
-      tax_period: string;
-      sales_vat: string;
-      purchase_vat: string;
-      withheld_vat: string;
-    }>(
-      `select
-         to_char(issue_date, 'YYYY-MM') as tax_period,
-         coalesce(
-           sum(coalesce(tax_amount, 0) - coalesce(vat_withholding_amount, 0))
-             filter (where direction = 'sales' and status <> 'cancelled'),
-           0
-         )::numeric(14,2) as sales_vat,
-         coalesce(
-           sum(coalesce(tax_amount, 0))
-             filter (where direction = 'purchase' and status <> 'cancelled'),
-           0
-         )::numeric(14,2) as purchase_vat,
-         coalesce(
-           sum(coalesce(vat_withholding_amount, 0))
-             filter (where direction = 'purchase' and status <> 'cancelled'),
-           0
-         )::numeric(14,2) as withheld_vat
-       from public.invoices
-       where currency = 'TRY'
-       group by to_char(issue_date, 'YYYY-MM')`,
-    ).catch((err: unknown) => {
-      const code = (err as { code?: string })?.code;
-      if (code === "42703") {
-        return client.query<{
-          tax_period: string;
-          sales_vat: string;
-          purchase_vat: string;
-          withheld_vat: string;
-        }>(
-          `select
-             to_char(issue_date, 'YYYY-MM') as tax_period,
-             coalesce(
-               sum(coalesce(tax_amount, 0))
-                 filter (where direction = 'sales' and status <> 'cancelled'),
-               0
-             )::numeric(14,2) as sales_vat,
-             coalesce(
-               sum(coalesce(tax_amount, 0))
-                 filter (where direction = 'purchase' and status <> 'cancelled'),
-               0
-             )::numeric(14,2) as purchase_vat,
-             0::numeric(14,2)::text as withheld_vat
-           from public.invoices
-           where currency = 'TRY'
-           group by to_char(issue_date, 'YYYY-MM')`,
-        );
-      }
-      throw err;
-    });
-    const vatMap = new Map<string, { kdv1: number; kdv2: number }>();
+    const vatMap = new Map<string, { rawDiff: ReturnType<typeof decimal>; kdv2: number }>();
     for (const r of vatByPeriodRes.rows) {
       const salesVat = decimal(r.sales_vat ?? 0);
       const purchaseVat = decimal(r.purchase_vat ?? 0);
-      const netKdv1 = salesVat.gt(purchaseVat) ? money(salesVat.minus(purchaseVat).toString()) : 0;
+      const rawDiff = salesVat.minus(purchaseVat);
       const kdv2 = money(decimal(r.withheld_vat ?? 0).toString());
-      vatMap.set(r.tax_period, { kdv1: netKdv1, kdv2 });
+      vatMap.set(r.tax_period, { rawDiff, kdv2 });
     }
+
+    let runningCarry190 = decimal(vatCarry190Opening);
 
     for (const ob of statutoryDeadlines) {
       const periodVat = vatMap.get(ob.taxPeriod);
       let taxAmount = 0;
-      if (ob.code === "KDV_1" && periodVat && periodVat.kdv1 > 0) {
-        taxAmount = periodVat.kdv1;
+      if (ob.code === "KDV_1" && periodVat) {
+        if (periodVat.rawDiff.gt(0)) {
+          const carryUsed = runningCarry190.gt(periodVat.rawDiff)
+            ? periodVat.rawDiff
+            : runningCarry190;
+          const netPayableDec = periodVat.rawDiff.minus(carryUsed);
+          runningCarry190 = runningCarry190.minus(carryUsed);
+          vatCarry190AppliedDec = vatCarry190AppliedDec.plus(carryUsed);
+          taxAmount = netPayableDec.gt(0) ? money(netPayableDec.toString()) : 0;
+        } else if (periodVat.rawDiff.lt(0)) {
+          runningCarry190 = runningCarry190.plus(periodVat.rawDiff.abs());
+          taxAmount = 0;
+        }
       } else if (ob.code === "KDV_2" && periodVat && periodVat.kdv2 > 0) {
         taxAmount = periodVat.kdv2;
       }
@@ -1002,34 +1313,6 @@ export async function buildAutoSeeded13WeekForecast(
     }
   }
 
-  // 10. Manual Overrides from active weekly_13 forecasts (forecast_lines where source_kind = 'manual')
-  const manualRes = await client.query<{
-    id: string;
-    period_start: string;
-    direction: "inflow" | "outflow";
-    amount: string;
-    notes: string | null;
-    forecast_name: string;
-  }>(
-    `select
-       fl.id::text,
-       to_char(fl.period_start, 'YYYY-MM-DD') as period_start,
-       fl.direction,
-       abs(fl.amount)::numeric(14,2) as amount,
-       fl.notes,
-       f.name as forecast_name
-     from public.forecast_lines fl
-     join public.forecasts f on f.id = fl.forecast_id
-     where f.is_active
-       and f.horizon_kind = 'weekly_13'
-       and coalesce(fl.currency, f.currency, 'TRY') = $1
-       and fl.version_status in ('draft', 'approved')
-       and fl.source_kind = 'manual'
-       and fl.period_start between $2::date and $3::date
-       and abs(fl.amount) > 0
-     order by fl.period_start, fl.id`,
-    [currency, snapshotWeekStart, horizonEnd],
-  );
   for (const m of manualRes.rows) {
     const amt = moneyOrNull(m.amount) ?? 0;
     if (amt <= 0) continue;
@@ -1147,6 +1430,11 @@ export async function buildAutoSeeded13WeekForecast(
     overdueUnscheduledItems,
     doubtfulExcludedCount,
     doubtfulExcludedAmount: money(doubtfulExcludedAmountDec.toString()),
+    vatCarryforward190Opening: vatCarry190Opening,
+    vatCarryforward190Applied: money(vatCarry190AppliedDec.toString()),
+    posBatchInflowTotal: money(posBatchInflowDec.toString()),
+    corporateCardOutflowTotal: money(corporateCardOutflowDec.toString()),
+    payrollTaxAccrualOutflowTotal: money(payrollTaxAccrualOutflowDec.toString()),
     statutoryDeadlines,
     weeks,
   };
@@ -1618,6 +1906,54 @@ export async function compute13wVarianceWaterfall(
       };
     }
 
+    if (entityTable === "pos_settlement_batches") {
+      const r = await client.query<{ is_settled: boolean }>(
+        `select is_settled from public.pos_settlement_batches where id = $1`,
+        [entityId],
+      );
+      if (r.rowCount === 0) {
+        return { isTimingSlip: false, reason: "POS valör partisi silinmiş (kalıcı sapma)" };
+      }
+      return {
+        isTimingSlip: true,
+        reason: r.rows[0].is_settled
+          ? "POS valör partisi farklı bir haftada hesaba geçti (zamanlama kayması)"
+          : "POS valör partisi henüz hesaba geçmedi; sonraki haftaya sarktı (zamanlama kayması)",
+      };
+    }
+
+    if (entityTable === "corporate_card_statements") {
+      const r = await client.query<{ is_settled: boolean }>(
+        `select is_settled from public.corporate_card_statements where id = $1`,
+        [entityId],
+      );
+      if (r.rowCount === 0) {
+        return { isTimingSlip: false, reason: "Kurumsal kart ekstresi silinmiş (kalıcı sapma)" };
+      }
+      return {
+        isTimingSlip: true,
+        reason: r.rows[0].is_settled
+          ? "Kurumsal kart ekstresi farklı bir haftada ödendi (zamanlama kayması)"
+          : "Kurumsal kart ekstresi hâlâ açık / sonraki haftaya sarktı (zamanlama kayması)",
+      };
+    }
+
+    if (entityTable === "payroll_tax_accruals") {
+      const r = await client.query<{ is_paid: boolean }>(
+        `select is_paid from public.payroll_tax_accruals where id = $1`,
+        [entityId],
+      );
+      if (r.rowCount === 0) {
+        return { isTimingSlip: false, reason: "Vergi/SGK/bordro tahakkuk kaydı silinmiş (kalıcı sapma)" };
+      }
+      return {
+        isTimingSlip: true,
+        reason: r.rows[0].is_paid
+          ? "Vergi/SGK/bordro tahakkuku farklı bir haftada ödendi (zamanlama kayması)"
+          : "Vergi/SGK/bordro tahakkuku hâlâ açık / sonraki haftaya sarktı (zamanlama kayması)",
+      };
+    }
+
     return {
       isTimingSlip: false,
       reason: "Manuel tahmin satırı bu hafta gerçekleşmedi (kalıcı sapma)",
@@ -1843,6 +2179,801 @@ export async function listFrozen13wSnapshots(
     frozenAt: r.frozen_at,
     lineCount: Number(r.line_count ?? 0),
   }));
+}
+
+export interface UnconvertibleFxExposure {
+  currency: string;
+  openingCash: number | null;
+  totalInflow: number;
+  totalOutflow: number;
+  unknownOpeningCount: number;
+}
+
+export interface Consolidated13WeekForecastResult {
+  forecast: AutoSeeded13WeekForecast;
+  fxRatesUsed: Record<string, { rate: number; rateDate: string }>;
+  unconvertibleFx: UnconvertibleFxExposure[];
+}
+
+/**
+ * Builds a Consolidated TRY-Equivalent 13-week rolling forecast across active currencies
+ * using the latest `fx_rate_snapshots` (`quote_currency = 'TRY'`).
+ * Foreign currencies without a valid TCMB/snapshot FX rate are NEVER coerced to 1:1;
+ * they are excluded from the TRY rollup and surfaced explicitly in `unconvertibleFx`.
+ */
+export async function buildConsolidated13WeekForecast(
+  client: Queryable,
+  options: {
+    asOfDate?: string;
+    dbtMode?: "median" | "p75";
+  } = {},
+): Promise<Consolidated13WeekForecastResult> {
+  if (isPgPool(client)) {
+    return withPinnedRead(client, (pinned) => buildConsolidated13WeekForecast(pinned, options));
+  }
+
+  const [currenciesRes, fxRes] = await gather(client, [
+    () =>
+      client
+        .query<{ currency: string }>(
+          `select distinct currency
+             from public.treasury_position_summary
+            where currency is not null and currency ~ '^[A-Z]{3}$'`,
+        )
+        .catch(() => ({ rows: [] as Array<{ currency: string }> })),
+    () =>
+      client
+        .query<{ base_currency: string; rate: string; rate_date: string }>(
+          `select distinct on (base_currency)
+             base_currency,
+             rate::numeric(14,6)::text as rate,
+             to_char(rate_date, 'YYYY-MM-DD') as rate_date
+           from public.fx_rate_snapshots
+           where quote_currency = 'TRY'
+             and rate > 0
+           order by base_currency, rate_date desc, fetched_at desc`,
+        )
+        .catch(() => ({
+          rows: [] as Array<{ base_currency: string; rate: string; rate_date: string }>,
+        })),
+  ]);
+
+  const currencySet = new Set<string>(["TRY", "USD", "EUR"]);
+  for (const r of currenciesRes.rows) {
+    if (r.currency) currencySet.add(r.currency.toUpperCase());
+  }
+  const currencies = ["TRY", ...Array.from(currencySet).filter((c) => c !== "TRY").sort()];
+
+  const fxMap = new Map<string, { rateStr: string; rateNum: number; rateDate: string }>();
+  for (const r of fxRes.rows) {
+    const rateNum = rateOrNull(r.rate);
+    if (rateNum !== null && rateNum > 0) {
+      fxMap.set(r.base_currency.toUpperCase(), {
+        rateStr: r.rate,
+        rateNum,
+        rateDate: r.rate_date,
+      });
+    }
+  }
+
+  const baseTry = await buildAutoSeeded13WeekForecast(client, {
+    asOfDate: options.asOfDate,
+    currency: "TRY",
+    dbtMode: options.dbtMode,
+  });
+
+  const fxRatesUsed: Record<string, { rate: number; rateDate: string }> = {};
+  const unconvertibleFx: UnconvertibleFxExposure[] = [];
+
+  let unknownOpeningCount = baseTry.unknownOpeningCount;
+  let openingCashDec: ReturnType<typeof decimal> | null =
+    baseTry.openingCash === null ? null : decimal(baseTry.openingCash);
+  const minCashFloor = baseTry.minCashFloor;
+
+  const mergedLinesByWeek = new Map<number, Forecast13wSeededLine[]>();
+  for (const w of baseTry.weeks) {
+    mergedLinesByWeek.set(
+      w.weekIndex,
+      w.lines.map((l) => ({ ...l })),
+    );
+  }
+
+  const overdueItems: OverdueUnscheduledReceivableItem[] = [...baseTry.overdueUnscheduledItems];
+  let overdueAmountDec = decimal(baseTry.overdueUnscheduledAmount);
+  let doubtfulCount = baseTry.doubtfulExcludedCount;
+  let doubtfulAmountDec = decimal(baseTry.doubtfulExcludedAmount);
+  let posInflowDec = decimal(baseTry.posBatchInflowTotal ?? 0);
+  let cardOutflowDec = decimal(baseTry.corporateCardOutflowTotal ?? 0);
+  let ptaOutflowDec = decimal(baseTry.payrollTaxAccrualOutflowTotal ?? 0);
+
+  for (const cur of currencies) {
+    if (cur === "TRY") continue;
+    const fc = await buildAutoSeeded13WeekForecast(client, {
+      asOfDate: options.asOfDate,
+      currency: cur,
+      dbtMode: options.dbtMode,
+    });
+
+    const hasExposure =
+      (fc.openingCash !== null && fc.openingCash !== 0) ||
+      fc.unknownOpeningCount > 0 ||
+      fc.totalInflow > 0 ||
+      fc.totalOutflow > 0 ||
+      fc.overdueUnscheduledAmount > 0;
+
+    if (!hasExposure) continue;
+
+    const fx = fxMap.get(cur);
+    if (!fx) {
+      unconvertibleFx.push({
+        currency: cur,
+        openingCash: fc.openingCash,
+        totalInflow: fc.totalInflow,
+        totalOutflow: fc.totalOutflow,
+        unknownOpeningCount: fc.unknownOpeningCount,
+      });
+      continue;
+    }
+
+    fxRatesUsed[cur] = { rate: fx.rateNum, rateDate: fx.rateDate };
+    const rateDec = decimal(fx.rateStr);
+
+    if (fc.unknownOpeningCount > 0 || fc.openingCash === null) {
+      unknownOpeningCount += Math.max(1, fc.unknownOpeningCount);
+      openingCashDec = null;
+    } else if (openingCashDec !== null) {
+      openingCashDec = openingCashDec.plus(decimal(fc.openingCash).times(rateDec));
+    }
+
+    for (const item of fc.overdueUnscheduledItems) {
+      const convOpen = money(decimal(item.openAmount).times(rateDec).toString());
+      overdueItems.push({
+        ...item,
+        invoiceNo: `${item.invoiceNo} [${cur}]`,
+        openAmount: convOpen,
+        currency: "TRY",
+      });
+      overdueAmountDec = overdueAmountDec.plus(decimal(convOpen));
+    }
+
+    doubtfulCount += fc.doubtfulExcludedCount;
+    doubtfulAmountDec = doubtfulAmountDec.plus(decimal(fc.doubtfulExcludedAmount).times(rateDec));
+    posInflowDec = posInflowDec.plus(decimal(fc.posBatchInflowTotal ?? 0).times(rateDec));
+    cardOutflowDec = cardOutflowDec.plus(decimal(fc.corporateCardOutflowTotal ?? 0).times(rateDec));
+    ptaOutflowDec = ptaOutflowDec.plus(decimal(fc.payrollTaxAccrualOutflowTotal ?? 0).times(rateDec));
+
+    for (const w of fc.weeks) {
+      const targetLines = mergedLinesByWeek.get(w.weekIndex) ?? [];
+      for (const l of w.lines) {
+        const convAmt = money(decimal(l.amount).times(rateDec).toString());
+        if (convAmt <= 0) continue;
+        targetLines.push({
+          ...l,
+          label: `${l.label} [${cur} @ ${fx.rateNum}]`,
+          amount: convAmt,
+        });
+      }
+      mergedLinesByWeek.set(w.weekIndex, targetLines);
+    }
+  }
+
+  const openingCash: number | null =
+    openingCashDec === null ? null : money(openingCashDec.toString());
+  let runningOpening = openingCash === null ? null : decimal(openingCash);
+  let totalInflowDec = decimal(0);
+  let totalOutflowDec = decimal(0);
+  let worstWeekStart: string | null = null;
+  let worstClosingDec: ReturnType<typeof decimal> | null = null;
+  let firstFloorBreachWeekStart: string | null = null;
+  const weeks: Forecast13wWeekBucket[] = [];
+
+  for (let w = 1; w <= 13; w += 1) {
+    const weekStart = addDaysISO(baseTry.snapshotWeekStart, (w - 1) * 7);
+    const weekEnd = addDaysISO(weekStart, 6);
+    const lines = mergedLinesByWeek.get(w) ?? [];
+
+    const inflowByCat = emptyCategoryMap();
+    const outflowByCat = emptyCategoryMap();
+    let inflowDec = decimal(0);
+    let outflowDec = decimal(0);
+
+    for (const l of lines) {
+      const amtDec = decimal(l.amount);
+      if (l.direction === "inflow") {
+        inflowDec = inflowDec.plus(amtDec);
+        inflowByCat[l.categoryBucket] = money(
+          decimal(inflowByCat[l.categoryBucket]).plus(amtDec).toString(),
+        );
+      } else {
+        outflowDec = outflowDec.plus(amtDec);
+        outflowByCat[l.categoryBucket] = money(
+          decimal(outflowByCat[l.categoryBucket]).plus(amtDec).toString(),
+        );
+      }
+    }
+
+    const netDec = inflowDec.minus(outflowDec);
+    totalInflowDec = totalInflowDec.plus(inflowDec);
+    totalOutflowDec = totalOutflowDec.plus(outflowDec);
+
+    const closingDec = runningOpening === null ? null : runningOpening.plus(netDec);
+    const floorHeadroomDec =
+      closingDec === null || minCashFloor === null ? null : closingDec.minus(decimal(minCashFloor));
+    const breachesFloor =
+      closingDec === null
+        ? null
+        : minCashFloor !== null
+          ? closingDec.lt(decimal(minCashFloor))
+          : closingDec.lt(0);
+
+    if (closingDec !== null) {
+      if (worstClosingDec === null || closingDec.lt(worstClosingDec)) {
+        worstClosingDec = closingDec;
+        worstWeekStart = weekStart;
+      }
+      if (breachesFloor && firstFloorBreachWeekStart === null) {
+        firstFloorBreachWeekStart = weekStart;
+      }
+    }
+
+    weeks.push({
+      weekIndex: w,
+      weekStart,
+      weekEnd,
+      openingBalance: runningOpening === null ? null : money(runningOpening.toString()),
+      inflow: money(inflowDec.toString()),
+      outflow: money(outflowDec.toString()),
+      netFlow: money(netDec.toString()),
+      closingBalance: closingDec === null ? null : money(closingDec.toString()),
+      minCashFloor,
+      floorHeadroom: floorHeadroomDec === null ? null : money(floorHeadroomDec.toString()),
+      breachesFloor,
+      inflowByCategory: inflowByCat,
+      outflowByCategory: outflowByCat,
+      lines,
+    });
+
+    runningOpening = closingDec;
+  }
+
+  const totalNetDec = totalInflowDec.minus(totalOutflowDec);
+
+  return {
+    forecast: {
+      asOfDate: baseTry.asOfDate,
+      snapshotWeekStart: baseTry.snapshotWeekStart,
+      horizonEnd: baseTry.horizonEnd,
+      currency: "TRY",
+      openingCash,
+      unknownOpeningCount,
+      minCashFloor,
+      totalInflow: money(totalInflowDec.toString()),
+      totalOutflow: money(totalOutflowDec.toString()),
+      totalNetFlow: money(totalNetDec.toString()),
+      endingCash: runningOpening === null ? null : money(runningOpening.toString()),
+      worstWeekStart,
+      worstClosingBalance: worstClosingDec === null ? null : money(worstClosingDec.toString()),
+      firstFloorBreachWeekStart,
+      overdueUnscheduledCount: overdueItems.length,
+      overdueUnscheduledAmount: money(overdueAmountDec.toString()),
+      overdueUnscheduledItems: overdueItems,
+      doubtfulExcludedCount: doubtfulCount,
+      doubtfulExcludedAmount: money(doubtfulAmountDec.toString()),
+      vatCarryforward190Opening: baseTry.vatCarryforward190Opening ?? 0,
+      vatCarryforward190Applied: baseTry.vatCarryforward190Applied ?? 0,
+      posBatchInflowTotal: money(posInflowDec.toString()),
+      corporateCardOutflowTotal: money(cardOutflowDec.toString()),
+      payrollTaxAccrualOutflowTotal: money(ptaOutflowDec.toString()),
+      statutoryDeadlines: baseTry.statutoryDeadlines,
+      weeks,
+    },
+    fxRatesUsed,
+    unconvertibleFx,
+  };
+}
+
+/* ── Faz 60 (M-23): Audited CFO Operational Inputs for Tax/SGK, POS Valor & Card Statements ── */
+
+export const recordPayrollTaxAccrualSchema = z.object({
+  periodMonth: z
+    .string()
+    .trim()
+    .regex(/^\d{4}-\d{2}(-\d{2})?$/, "Dönem YYYY-AA biçiminde olmalı"),
+  obligationKind: z.enum([
+    "NET_MAAS",
+    "MPHB_STOPAJ",
+    "SGK_4A",
+    "DAMGA_VERGISI",
+    "KURUMLAR_GECICI_VERGI",
+  ]),
+  dueDate: z.string().trim().regex(/^\d{4}-\d{2}-\d{2}$/, "Vade tarihi YYYY-AA-GG olmalı"),
+  accruedAmount: z.coerce.number().positive("Tahakkuk tutarı 0'dan büyük olmalı"),
+  paidAmount: z.coerce.number().min(0).default(0),
+  currency: z.string().trim().toUpperCase().regex(/^[A-Z]{3}$/).default("TRY"),
+  notes: z.string().trim().max(500).optional(),
+});
+
+export const recordPosSettlementBatchSchema = z.object({
+  cashAccountId: z.uuid("Geçerli bir kasa/banka hesabı seçilmelidir"),
+  posTerminalLabel: z.string().trim().min(2, "POS terminal etiketi en az 2 karakter olmalı").max(120),
+  saleDate: z.string().trim().regex(/^\d{4}-\d{2}-\d{2}$/, "Satış tarihi YYYY-AA-GG olmalı"),
+  expectedValueDate: z
+    .string()
+    .trim()
+    .regex(/^\d{4}-\d{2}-\d{2}$/, "Beklenen valör tarihi YYYY-AA-GG olmalı"),
+  grossAmount: z.coerce.number().positive("Brüt POS satış tutarı 0'dan büyük olmalı"),
+  commissionRatePct: z.coerce.number().min(0).max(100).default(0),
+  currency: z.string().trim().toUpperCase().regex(/^[A-Z]{3}$/).default("TRY"),
+});
+
+export const recordCorporateCardStatementSchema = z.object({
+  cardAccountId: z.uuid("Geçerli bir kurumsal kart/banka hesabı seçilmelidir"),
+  payFromAccountId: z.uuid().nullable().optional(),
+  statementMonth: z
+    .string()
+    .trim()
+    .regex(/^\d{4}-\d{2}(-\d{2})?$/, "Ekstre dönemi YYYY-AA biçiminde olmalı"),
+  cutoffDate: z.string().trim().regex(/^\d{4}-\d{2}-\d{2}$/, "Hesap kesim tarihi YYYY-AA-GG olmalı"),
+  dueDate: z.string().trim().regex(/^\d{4}-\d{2}-\d{2}$/, "Son ödeme tarihi YYYY-AA-GG olmalı"),
+  statementAmount: z.coerce.number().positive("Ekstre borcu 0'dan büyük olmalı"),
+  minimumPaymentAmount: z.coerce.number().min(0).nullable().optional(),
+  paidAmount: z.coerce.number().min(0).default(0),
+  currency: z.string().trim().toUpperCase().regex(/^[A-Z]{3}$/).default("TRY"),
+});
+
+export async function recordPayrollTaxAccrual(
+  pool: Pool,
+  raw: unknown,
+  actorId: string,
+): Promise<{ id: string }> {
+  const parsed = recordPayrollTaxAccrualSchema.safeParse(raw);
+  if (!parsed.success) {
+    throw new DomainError(
+      "VALIDATION",
+      `Vergi/SGK/bordro tahakkuku geçersiz: ${formatIssues(parsed.error)}`,
+    );
+  }
+  const input = parsed.data;
+  const periodMonth = `${input.periodMonth.slice(0, 7)}-01`;
+  const accruedStr = round2(decimal(input.accruedAmount));
+  const paidStr = round2(decimal(input.paidAmount));
+  const isPaid = decimal(paidStr).gte(decimal(accruedStr));
+
+  const client = await pool.connect();
+  try {
+    await client.query("begin");
+    const res = await client.query<{ id: string }>(
+      `insert into public.payroll_tax_accruals (
+         period_month,
+         obligation_kind,
+         due_date,
+         accrued_amount,
+         paid_amount,
+         currency,
+         is_paid,
+         notes,
+         updated_at
+       )
+       values ($1::date, $2, $3::date, $4::numeric, $5::numeric, $6, $7, $8, now())
+       on conflict (period_month, obligation_kind) do update
+         set due_date = excluded.due_date,
+             accrued_amount = excluded.accrued_amount,
+             paid_amount = excluded.paid_amount,
+             currency = excluded.currency,
+             is_paid = excluded.is_paid,
+             notes = excluded.notes,
+             updated_at = now()
+       returning id::text`,
+      [
+        periodMonth,
+        input.obligationKind,
+        input.dueDate,
+        accruedStr,
+        paidStr,
+        input.currency,
+        isPaid,
+        input.notes ?? null,
+      ],
+    );
+    if (res.rowCount !== 1) {
+      throw new DomainError("CONFLICT", "Vergi/SGK/bordro tahakkuk kaydı yazılamadı.");
+    }
+    const id = res.rows[0].id;
+    await audit(client, {
+      actor: actorId,
+      action: "upsert_payroll_tax_accrual",
+      entityTable: "payroll_tax_accruals",
+      entityId: id,
+      after: {
+        periodMonth,
+        obligationKind: input.obligationKind,
+        dueDate: input.dueDate,
+        accruedAmount: money(accruedStr),
+        paidAmount: money(paidStr),
+        currency: input.currency,
+        isPaid,
+        automated: false,
+      },
+    });
+    await client.query("commit");
+    return { id };
+  } catch (e) {
+    await client.query("rollback");
+    throw e;
+  } finally {
+    client.release();
+  }
+}
+
+export async function recordPosSettlementBatch(
+  pool: Pool,
+  raw: unknown,
+  actorId: string,
+): Promise<{ id: string }> {
+  const parsed = recordPosSettlementBatchSchema.safeParse(raw);
+  if (!parsed.success) {
+    throw new DomainError("VALIDATION", `POS valör kaydı geçersiz: ${formatIssues(parsed.error)}`);
+  }
+  const input = parsed.data;
+  if (input.expectedValueDate < input.saleDate) {
+    throw new DomainError(
+      "VALIDATION",
+      "Beklenen POS valör tarihi satış tarihinden önce olamaz.",
+    );
+  }
+  const rateFracDec = decimal(input.commissionRatePct).div(100);
+  const grossDec = decimal(input.grossAmount);
+  const commissionStr = round2(grossDec.times(rateFracDec));
+  const netStr = round2(grossDec.minus(decimal(commissionStr)));
+  const grossStr = round2(grossDec);
+  const rateFracStr = rateFracDec.toFixed(4);
+
+  const client = await pool.connect();
+  try {
+    await client.query("begin");
+    const res = await client.query<{ id: string }>(
+      `insert into public.pos_settlement_batches (
+         cash_account_id,
+         pos_terminal_label,
+         sale_date,
+         expected_value_date,
+         gross_amount,
+         commission_rate,
+         commission_amount,
+         net_settlement_amount,
+         currency,
+         is_settled
+       )
+       values ($1::uuid, $2, $3::date, $4::date, $5::numeric, $6::numeric, $7::numeric, $8::numeric, $9, false)
+       returning id::text`,
+      [
+        input.cashAccountId,
+        input.posTerminalLabel,
+        input.saleDate,
+        input.expectedValueDate,
+        grossStr,
+        rateFracStr,
+        commissionStr,
+        netStr,
+        input.currency,
+      ],
+    );
+    if (res.rowCount !== 1) {
+      throw new DomainError("CONFLICT", "POS valör partisi kaydedilemedi.");
+    }
+    const id = res.rows[0].id;
+    await audit(client, {
+      actor: actorId,
+      action: "create_pos_settlement_batch",
+      entityTable: "pos_settlement_batches",
+      entityId: id,
+      after: {
+        cashAccountId: input.cashAccountId,
+        posTerminalLabel: input.posTerminalLabel,
+        saleDate: input.saleDate,
+        expectedValueDate: input.expectedValueDate,
+        grossAmount: money(grossStr),
+        commissionAmount: money(commissionStr),
+        netSettlementAmount: money(netStr),
+        currency: input.currency,
+        automated: false,
+      },
+    });
+    await client.query("commit");
+    return { id };
+  } catch (e) {
+    await client.query("rollback");
+    throw e;
+  } finally {
+    client.release();
+  }
+}
+
+export async function recordCorporateCardStatement(
+  pool: Pool,
+  raw: unknown,
+  actorId: string,
+): Promise<{ id: string }> {
+  const parsed = recordCorporateCardStatementSchema.safeParse(raw);
+  if (!parsed.success) {
+    throw new DomainError(
+      "VALIDATION",
+      `Kurumsal kart ekstresi geçersiz: ${formatIssues(parsed.error)}`,
+    );
+  }
+  const input = parsed.data;
+  const statementMonth = `${input.statementMonth.slice(0, 7)}-01`;
+  const stmtStr = round2(decimal(input.statementAmount));
+  const minPayStr =
+    input.minimumPaymentAmount != null ? round2(decimal(input.minimumPaymentAmount)) : null;
+  const paidStr = round2(decimal(input.paidAmount));
+  const isSettled = decimal(paidStr).gte(decimal(stmtStr));
+
+  const client = await pool.connect();
+  try {
+    await client.query("begin");
+    const res = await client.query<{ id: string }>(
+      `insert into public.corporate_card_statements (
+         card_account_id,
+         pay_from_account_id,
+         statement_month,
+         cutoff_date,
+         due_date,
+         statement_amount,
+         minimum_payment_amount,
+         paid_amount,
+         currency,
+         is_settled,
+         updated_at
+       )
+       values ($1::uuid, $2::uuid, $3::date, $4::date, $5::date, $6::numeric, $7::numeric, $8::numeric, $9, $10, now())
+       on conflict (card_account_id, statement_month) do update
+         set pay_from_account_id = excluded.pay_from_account_id,
+             cutoff_date = excluded.cutoff_date,
+             due_date = excluded.due_date,
+             statement_amount = excluded.statement_amount,
+             minimum_payment_amount = excluded.minimum_payment_amount,
+             paid_amount = excluded.paid_amount,
+             currency = excluded.currency,
+             is_settled = excluded.is_settled,
+             updated_at = now()
+       returning id::text`,
+      [
+        input.cardAccountId,
+        input.payFromAccountId ?? null,
+        statementMonth,
+        input.cutoffDate,
+        input.dueDate,
+        stmtStr,
+        minPayStr,
+        paidStr,
+        input.currency,
+        isSettled,
+      ],
+    );
+    if (res.rowCount !== 1) {
+      throw new DomainError("CONFLICT", "Kurumsal kart ekstresi kaydedilemedi.");
+    }
+    const id = res.rows[0].id;
+    await audit(client, {
+      actor: actorId,
+      action: "upsert_corporate_card_statement",
+      entityTable: "corporate_card_statements",
+      entityId: id,
+      after: {
+        cardAccountId: input.cardAccountId,
+        statementMonth,
+        cutoffDate: input.cutoffDate,
+        dueDate: input.dueDate,
+        statementAmount: money(stmtStr),
+        paidAmount: money(paidStr),
+        currency: input.currency,
+        isSettled,
+        automated: false,
+      },
+    });
+    await client.query("commit");
+    return { id };
+  } catch (e) {
+    await client.query("rollback");
+    throw e;
+  } finally {
+    client.release();
+  }
+}
+
+export async function load13wOperationalInputs(pool: Pool) {
+  return withPinnedRead(pool, async (client) => {
+    const reg = await client
+      .query<{
+        has_pta: string | null;
+        has_pos: string | null;
+        has_card: string | null;
+      }>(
+        `select
+           to_regclass('public.payroll_tax_accruals')::text as has_pta,
+           to_regclass('public.pos_settlement_batches')::text as has_pos,
+           to_regclass('public.corporate_card_statements')::text as has_card`,
+      )
+      .catch(() => ({ rows: [{ has_pta: null, has_pos: null, has_card: null }] }));
+    const r0 = reg.rows[0] ?? { has_pta: null, has_pos: null, has_card: null };
+
+    const [acctRes, ptaRes, posRes, cardRes] = await gather(client, [
+      () =>
+        client
+          .query<{ id: string; name: string; account_type: string; currency: string }>(
+            `select id::text, name, account_type, currency
+               from public.cash_accounts
+              where is_active = true
+              order by currency = 'TRY' desc, name asc`,
+          )
+          .catch(() => ({
+            rows: [] as Array<{ id: string; name: string; account_type: string; currency: string }>,
+          })),
+      () =>
+        r0.has_pta
+          ? client.query<{
+              id: string;
+              period_ym: string;
+              obligation_kind: string;
+              due_date: string;
+              accrued_amount: string;
+              paid_amount: string;
+              currency: string;
+              is_paid: boolean;
+              notes: string | null;
+            }>(
+              `select
+                 id::text,
+                 to_char(period_month, 'YYYY-MM') as period_ym,
+                 obligation_kind,
+                 to_char(due_date, 'YYYY-MM-DD') as due_date,
+                 accrued_amount::text,
+                 paid_amount::text,
+                 currency,
+                 is_paid,
+                 notes
+               from public.payroll_tax_accruals
+               where is_paid = false
+               order by due_date asc
+               limit 20`,
+            )
+          : Promise.resolve({
+              rows: [] as Array<{
+                id: string;
+                period_ym: string;
+                obligation_kind: string;
+                due_date: string;
+                accrued_amount: string;
+                paid_amount: string;
+                currency: string;
+                is_paid: boolean;
+                notes: string | null;
+              }>,
+            }),
+      () =>
+        r0.has_pos
+          ? client.query<{
+              id: string;
+              pos_terminal_label: string;
+              sale_date: string;
+              expected_value_date: string;
+              gross_amount: string;
+              commission_amount: string;
+              net_settlement_amount: string;
+              currency: string;
+              account_name: string | null;
+            }>(
+              `select
+                 psb.id::text,
+                 psb.pos_terminal_label,
+                 to_char(psb.sale_date, 'YYYY-MM-DD') as sale_date,
+                 to_char(psb.expected_value_date, 'YYYY-MM-DD') as expected_value_date,
+                 psb.gross_amount::text,
+                 psb.commission_amount::text,
+                 psb.net_settlement_amount::text,
+                 psb.currency,
+                 ca.name as account_name
+               from public.pos_settlement_batches psb
+               left join public.cash_accounts ca on ca.id = psb.cash_account_id
+               where psb.is_settled = false
+               order by psb.expected_value_date asc
+               limit 20`,
+            )
+          : Promise.resolve({
+              rows: [] as Array<{
+                id: string;
+                pos_terminal_label: string;
+                sale_date: string;
+                expected_value_date: string;
+                gross_amount: string;
+                commission_amount: string;
+                net_settlement_amount: string;
+                currency: string;
+                account_name: string | null;
+              }>,
+            }),
+      () =>
+        r0.has_card
+          ? client.query<{
+              id: string;
+              statement_ym: string;
+              cutoff_date: string;
+              due_date: string;
+              statement_amount: string;
+              paid_amount: string;
+              currency: string;
+              card_name: string | null;
+            }>(
+              `select
+                 ccs.id::text,
+                 to_char(ccs.statement_month, 'YYYY-MM') as statement_ym,
+                 to_char(ccs.cutoff_date, 'YYYY-MM-DD') as cutoff_date,
+                 to_char(ccs.due_date, 'YYYY-MM-DD') as due_date,
+                 ccs.statement_amount::text,
+                 ccs.paid_amount::text,
+                 ccs.currency,
+                 ca.name as card_name
+               from public.corporate_card_statements ccs
+               left join public.cash_accounts ca on ca.id = ccs.card_account_id
+               where ccs.is_settled = false
+               order by ccs.due_date asc
+               limit 20`,
+            )
+          : Promise.resolve({
+              rows: [] as Array<{
+                id: string;
+                statement_ym: string;
+                cutoff_date: string;
+                due_date: string;
+                statement_amount: string;
+                paid_amount: string;
+                currency: string;
+                card_name: string | null;
+              }>,
+            }),
+    ]);
+
+    return {
+      accounts: acctRes.rows.map((a) => ({
+        id: a.id,
+        name: a.name,
+        accountType: a.account_type,
+        currency: a.currency,
+      })),
+      payrollTaxAccruals: ptaRes.rows.map((r) => ({
+        id: r.id,
+        periodYm: r.period_ym,
+        obligationKind: r.obligation_kind,
+        dueDate: r.due_date,
+        accruedAmount: moneyOrNull(r.accrued_amount) ?? 0,
+        paidAmount: moneyOrNull(r.paid_amount) ?? 0,
+        currency: r.currency,
+        notes: r.notes,
+      })),
+      posBatches: posRes.rows.map((r) => ({
+        id: r.id,
+        posTerminalLabel: r.pos_terminal_label,
+        saleDate: r.sale_date,
+        expectedValueDate: r.expected_value_date,
+        grossAmount: moneyOrNull(r.gross_amount) ?? 0,
+        commissionAmount: moneyOrNull(r.commission_amount) ?? 0,
+        netSettlementAmount: moneyOrNull(r.net_settlement_amount) ?? 0,
+        currency: r.currency,
+        accountName: r.account_name,
+      })),
+      cardStatements: cardRes.rows.map((r) => ({
+        id: r.id,
+        statementYm: r.statement_ym,
+        cutoffDate: r.cutoff_date,
+        dueDate: r.due_date,
+        statementAmount: moneyOrNull(r.statement_amount) ?? 0,
+        paidAmount: moneyOrNull(r.paid_amount) ?? 0,
+        currency: r.currency,
+        cardName: r.card_name,
+      })),
+    };
+  });
 }
 
 export { ALL_CATEGORIES };

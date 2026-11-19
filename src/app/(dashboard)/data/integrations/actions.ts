@@ -5,16 +5,22 @@ import { redirect } from "next/navigation";
 import { z } from "zod";
 import { audit } from "@/lib/audit";
 import { requireActionPermission } from "@/lib/auth";
+import { can } from "@/lib/authz/matrix";
 import { createCounterparty } from "@/lib/counterparties/engine";
 import { getPool } from "@/lib/db";
 import { DomainError } from "@/lib/domain-error";
 import { importHybridBankStatement } from "@/lib/importers/bank-formats/mt940-camt053-parasut";
+import { importUblTrUpload } from "@/lib/integrations/einvoice/ubl-tr-parser";
 import { createConnection, enqueueSync } from "@/lib/integrations/engine";
 import {
   normalizeParasutCurrency,
   replayDeferredParasutInvoices,
 } from "@/lib/integrations/parasut/mappers";
 import { runClosedLoopFinancialPipeline } from "@/lib/integrations/parasut/sync-pipeline";
+import {
+  parsePosSettlementPayload,
+  persistPosSettlementBatches,
+} from "@/lib/integrations/pos/pos-settlement-connector";
 import { istanbulDateISO } from "@/lib/reports/rules";
 import { revalidateFinancialViews } from "@/lib/revalidate-financial-views";
 import { formObject, parseOrThrow } from "@/lib/validation";
@@ -43,9 +49,15 @@ export async function createIntegrationConnectionAction(formData: FormData): Pro
     const config: Record<string, unknown> = {};
     const baseUrl = strField(f.baseUrl);
     const companyId = strField(f.companyId);
+    const ownTaxNumber = strField(f.ownTaxNumber);
+    const consentId = strField(f.consentId);
+    const cashAccountId = strField(f.cashAccountId);
     const sinceDaysRaw = strField(f.sinceDays);
     if (baseUrl) config.baseUrl = baseUrl;
     if (companyId) config.companyId = companyId;
+    if (ownTaxNumber) config.ownTaxNumber = ownTaxNumber;
+    if (consentId) config.consentId = consentId;
+    if (cashAccountId) config.cashAccountId = cashAccountId;
     if (sinceDaysRaw && Number.isFinite(Number(sinceDaysRaw))) {
       config.sinceDays = Number(sinceDaysRaw);
     }
@@ -399,4 +411,246 @@ export async function importHybridBankStatementAction(formData: FormData): Promi
   revalidatePath(BASE);
   revalidatePath("/finance/bank");
   redirect(`${BASE}?result=hibrit-ekstre-aktarildi`);
+}
+
+export async function importUblTrInvoiceAction(formData: FormData): Promise<void> {
+  const session = await requireActionPermission("invoices", "insert", BASE);
+  const file = formData.get("file");
+  const defaultDirectionRaw = String(formData.get("defaultDirection") ?? "purchase").trim();
+  const defaultDirection = defaultDirectionRaw === "sales" ? "sales" : "purchase";
+  const ownTaxNumber = String(formData.get("ownTaxNumber") ?? "").trim() || null;
+
+  if (!(file instanceof File) || file.size === 0) {
+    redirect(
+      `${BASE}?error=${encodeURIComponent("Yüklenecek GİB UBL-TR (.xml veya .zip) dosyası seçilmelidir.")}`,
+    );
+  }
+
+  let resultMsg = "ubl-efatura-aktarildi";
+  try {
+    const bytes = Buffer.from(await file.arrayBuffer());
+    const summary = await importUblTrUpload(getPool(), {
+      bytes,
+      filename: file.name || "efatura.xml",
+      defaultDirection,
+      ownTaxNumber,
+      actorId: session.id,
+    });
+    resultMsg = `ubl-efatura (aktarilan:${summary.importedCount}, cari-aday:${summary.stagedPartyCount}, mukerrer:${summary.duplicateCount})`;
+  } catch (e) {
+    domainRedirect(e);
+  }
+
+  revalidatePath(BASE);
+  revalidatePath("/finance/invoices");
+  revalidatePath("/finance/ledger");
+  revalidatePath("/data/documents");
+  revalidateFinancialViews();
+  redirect(`${BASE}?result=${encodeURIComponent(resultMsg)}`);
+}
+
+const posUploadSchema = z.object({
+  provider: z
+    .string()
+    .trim()
+    .min(2, "POS sağlayıcısı seçilmelidir.")
+    .max(40),
+  cashAccountId: z.string().uuid("Geçerli bir banka/kasa hesabı seçin.").optional(),
+});
+
+export async function importPosSettlementBatchAction(formData: FormData): Promise<void> {
+  const session = await requireActionPermission("pos_settlement_batches", "insert", BASE);
+  const rawProvider = String(formData.get("provider") ?? "iyzico").trim().toLowerCase();
+  const rawCashAccount = String(formData.get("cashAccountId") ?? "").trim();
+  const file = formData.get("file");
+
+  if (!(file instanceof File) || file.size === 0) {
+    redirect(
+      `${BASE}?error=${encodeURIComponent("Yüklenecek POS gün sonu hakediş dosyası (.csv veya .json) seçilmelidir.")}`,
+    );
+  }
+  if (file.size > 10 * 1024 * 1024) {
+    redirect(
+      `${BASE}?error=${encodeURIComponent("POS hakediş dosyası en fazla 10 MB olabilir.")}`,
+    );
+  }
+
+  let resultMsg = "pos-hakedis-aktarildi";
+  try {
+    const parsedInput = parseOrThrow(posUploadSchema, {
+      provider: rawProvider || "iyzico",
+      cashAccountId: rawCashAccount || undefined,
+    });
+
+    const bodyText = Buffer.from(await file.arrayBuffer()).toString("utf8");
+    const batches = parsePosSettlementPayload(
+      bodyText,
+      parsedInput.provider,
+      file.type || null,
+    );
+
+    if (batches.length === 0) {
+      throw new DomainError(
+        "VALIDATION",
+        "Dosyada geçerli POS hakediş satırı bulunamadı (satış tarihi, valör tarihi, brüt ve net tutar alanları zorunludur — BLANK ≠ ZERO).",
+      );
+    }
+
+    const pool = getPool();
+    const todayISO = istanbulDateISO();
+
+    const existingConnRes = await pool
+      .query<{ id: string }>(
+        `select id::text
+           from public.integration_connections
+          order by (integration_kind = 'bank_api' and lower(coalesce(provider, '')) = lower($1)) desc,
+                   (integration_kind = 'bank_api') desc,
+                   created_at desc
+          limit 1`,
+        [parsedInput.provider],
+      )
+      .catch(() => ({ rows: [] as Array<{ id: string }> }));
+
+    const existingConnId = existingConnRes.rows[0]?.id;
+
+    if (existingConnId || can(session.role, "integration_connections", "insert")) {
+      const outcome = await persistPosSettlementBatches(pool, {
+        provider: parsedInput.provider,
+        batches,
+        cashAccountId: parsedInput.cashAccountId ?? null,
+        connectionId: existingConnId,
+        asOfISO: todayISO,
+        actorId: session.id,
+      });
+
+      if (!outcome.ok) {
+        throw new DomainError(
+          outcome.error ?? "POS gün sonu hakediş yığını kaydedilemedi.",
+        );
+      }
+
+      const discCount = outcome.discrepancyCount ?? 0;
+      resultMsg = `pos-hakedis (aktarilan:${outcome.imported ?? 0}, mukerrer:${outcome.skipped ?? 0}, uyusmazlik:${discCount})`;
+    } else {
+      // Fallback for non-admin operators when zero integration_connections rows exist yet
+      const client = await pool.connect();
+      let imported = 0;
+      let skipped = 0;
+      let discCount = 0;
+      try {
+        await client.query("begin");
+        let targetAccountId = parsedInput.cashAccountId ?? null;
+        if (!targetAccountId) {
+          const fallbackAcct = await client.query<{ id: string }>(
+            `select id::text
+               from public.cash_accounts
+              where is_active = true
+              order by case when account_type = 'bank' then 0 else 1 end, created_at asc
+              limit 1`,
+          );
+          targetAccountId = fallbackAcct.rows[0]?.id ?? null;
+        }
+        if (!targetAccountId) {
+          throw new DomainError(
+            "POS hakedişi için aktif kasa/banka hesabı bulunamadı.",
+          );
+        }
+
+        for (const batch of batches) {
+          if (batch.hasDiscrepancy) discCount += 1;
+
+          const dup = await client.query<{ id: string }>(
+            `select id::text
+               from public.pos_settlement_batches
+              where cash_account_id = $1::uuid
+                and pos_terminal_label = $2
+                and sale_date = $3::date
+                and expected_value_date = $4::date
+                and gross_amount = $5::numeric
+                and net_settlement_amount = $6::numeric
+                and currency = $7
+              limit 1`,
+            [
+              targetAccountId,
+              batch.terminalOrProvider,
+              batch.settlementDate,
+              batch.valueDate,
+              batch.grossAmount,
+              batch.netAmount,
+              batch.currency,
+            ],
+          );
+          if ((dup.rowCount ?? 0) > 0) {
+            skipped += 1;
+            continue;
+          }
+
+          const ins = await client.query<{ id: string }>(
+            `insert into public.pos_settlement_batches
+               (cash_account_id, pos_terminal_label, sale_date, expected_value_date,
+                gross_amount, commission_rate, commission_amount, net_settlement_amount,
+                currency, is_settled)
+             values ($1::uuid, $2, $3::date, $4::date,
+                     $5::numeric, $6::numeric, $7::numeric, $8::numeric,
+                     $9, false)
+             returning id::text`,
+            [
+              targetAccountId,
+              batch.terminalOrProvider,
+              batch.settlementDate,
+              batch.valueDate,
+              batch.grossAmount,
+              batch.commissionRate,
+              batch.commissionAmount,
+              batch.netAmount,
+              batch.currency,
+            ],
+          );
+
+          if (ins.rowCount === 1 && ins.rows[0]?.id) {
+            imported += 1;
+            await audit(client, {
+              actor: session.id,
+              action: "pos_settlement_batch_insert",
+              entityTable: "pos_settlement_batches",
+              entityId: ins.rows[0].id,
+              after: {
+                provider: parsedInput.provider,
+                externalId: batch.externalId,
+                posTerminalLabel: batch.terminalOrProvider,
+                saleDate: batch.settlementDate,
+                expectedValueDate: batch.valueDate,
+                grossAmount: batch.grossAmount,
+                commissionAmount: batch.commissionAmount,
+                bsmvAmount: batch.bsmvAmount,
+                netSettlementAmount: batch.netAmount,
+                expectedNetAmount: batch.expectedNetAmount,
+                discrepancyAmount: batch.discrepancyAmount,
+                hasDiscrepancy: batch.hasDiscrepancy,
+                currency: batch.currency,
+              },
+            });
+          } else {
+            skipped += 1;
+          }
+        }
+
+        await client.query("commit");
+      } catch (innerErr) {
+        await client.query("rollback").catch(() => undefined);
+        throw innerErr;
+      } finally {
+        client.release();
+      }
+      resultMsg = `pos-hakedis (aktarilan:${imported}, mukerrer:${skipped}, uyusmazlik:${discCount})`;
+    }
+  } catch (e) {
+    domainRedirect(e);
+  }
+
+  revalidatePath(BASE);
+  revalidatePath("/finance/treasury");
+  revalidatePath("/finance/calendar");
+  revalidateFinancialViews();
+  redirect(`${BASE}?result=${encodeURIComponent(resultMsg)}`);
 }

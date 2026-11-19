@@ -4,6 +4,8 @@ import { istanbulDateISO } from "@/lib/reports/rules";
 import { loadThresholds } from "@/lib/radar/engine";
 import { addMonths, monthInstances, overdueOpen, toRiskInput } from "@/lib/radar/queries";
 import { dayFlags, daysInMonth } from "@/lib/radar/rules";
+import { moneyOrNull } from "@/lib/money";
+import { formatMoney } from "@/lib/money-format";
 import { getTurkishHoliday } from "@/lib/calendar/tr-holidays";
 import { generateTrStatutoryObligations, type TrStatutoryObligation } from "@/lib/calendar/tr-tax-calendar";
 import { Badge } from "@/components/ui/badge";
@@ -20,9 +22,45 @@ export const dynamic = "force-dynamic";
 const AY = ["Ocak","Şubat","Mart","Nisan","Mayıs","Haziran","Temmuz","Ağustos","Eylül","Ekim","Kasım","Aralık"];
 const GUN = ["Pzt","Sal","Çar","Per","Cum","Cmt","Paz"];
 
+interface UnifiedCalendarObligation {
+  sourceKind: "invoice" | "check" | "loan_installment" | "promise_to_pay";
+  sourceId: string;
+  eventDate: string;
+  label: string;
+  counterpartyName: string | null;
+  amountSigned: number;
+  currency: string;
+  status: string;
+}
+
+const SOURCE_KIND_LABEL: Record<UnifiedCalendarObligation["sourceKind"], string> = {
+  invoice: "Fatura",
+  check: "Çek/Senet",
+  loan_installment: "Kredi Taksiti",
+  promise_to_pay: "Tahsilat Sözü",
+};
+
+const SOURCE_KIND_HREF: Record<UnifiedCalendarObligation["sourceKind"], string> = {
+  invoice: "/invoices",
+  check: "/checks",
+  loan_installment: "/loans",
+  promise_to_pay: "/collections",
+};
+
 export default async function CalendarPage({
   searchParams,
-}: { searchParams: Promise<{ ym?: string; day?: string; date?: string; instance?: string; age?: string; error?: string }> }) {
+}: {
+  searchParams: Promise<{
+    ym?: string;
+    month?: string;
+    from?: string;
+    day?: string;
+    date?: string;
+    instance?: string;
+    age?: string;
+    error?: string;
+  }>;
+}) {
   const denied = await requireRouteAccess("/payments/calendar");
   if (denied) return denied;
   const session = await requireSession();
@@ -32,23 +70,89 @@ export default async function CalendarPage({
   const instanceDate = sp.instance && /^[0-9a-f-]{36}$/i.test(sp.instance)
     ? (await pool.query<{due_date:string}>("select to_char(due_date,'YYYY-MM-DD') due_date from public.payment_instances where id=$1", [sp.instance])).rows[0]?.due_date
     : null;
-  const explicitDate = /^\d{4}-\d{2}-\d{2}$/.test(sp.date ?? "") ? sp.date : instanceDate;
-  const ym = /^\d{4}-\d{2}$/.test(sp.ym ?? "") ? sp.ym! : explicitDate?.slice(0, 7) ?? today.slice(0, 7);
+  const explicitDate = /^\d{4}-\d{2}-\d{2}$/.test(sp.date ?? "")
+    ? sp.date
+    : /^\d{4}-\d{2}-\d{2}$/.test(sp.from ?? "")
+      ? sp.from
+      : instanceDate;
+  const requestedYm =
+    /^\d{4}-\d{2}$/.test(sp.ym ?? "")
+      ? sp.ym!
+      : /^\d{4}-\d{2}$/.test(sp.month ?? "")
+        ? sp.month!
+        : explicitDate?.slice(0, 7) ?? today.slice(0, 7);
+  const ym = requestedYm;
   const monthStart = ym + "-01";
   const selDay = sp.day && /^\d{1,2}$/.test(sp.day) ? Number(sp.day) : explicitDate ? Number(explicitDate.slice(8)) : null;
-
-  // Faz 3: GET render salt-okunurdur; pencere ve risk bayrakları yazma/bakım yollarında yenilenir.
-  const [rows, t] = await Promise.all([monthInstances(pool, monthStart), loadThresholds(pool)]);
 
   const [y, m] = ym.split("-").map(Number);
   const dim = daysInMonth(y, m);
   const monthEnd = `${ym}-${String(dim).padStart(2, "0")}`;
+
+  // Faz 3 + M-14: GET render salt-okunurdur; unified takvimde açık fatura/çek/kredi/sözler de gösterilir.
+  const [rows, t, unifiedRes, cashAccountsRes] = await Promise.all([
+    monthInstances(pool, monthStart),
+    loadThresholds(pool),
+    pool
+      .query<{
+        source_kind: UnifiedCalendarObligation["sourceKind"];
+        source_id: string;
+        event_date: string;
+        label: string;
+        counterparty_name: string | null;
+        amount_signed: string;
+        currency: string;
+        status: string;
+      }>(
+        `select source_kind,
+                source_id::text as source_id,
+                to_char(event_date, 'YYYY-MM-DD') as event_date,
+                label,
+                counterparty_name,
+                amount_signed::text as amount_signed,
+                coalesce(currency, 'TRY') as currency,
+                status
+           from public.financial_calendar
+          where event_date >= $1::date
+            and event_date <= $2::date
+            and source_kind in ('invoice', 'check', 'loan_installment', 'promise_to_pay')
+          order by event_date asc, abs(amount_signed) desc`,
+        [monthStart, monthEnd],
+      )
+      .catch(() => ({ rows: [] })),
+    pool
+      .query<{ id: string; name: string; currency: string }>(
+        `select id::text as id, name, coalesce(currency, 'TRY') as currency
+           from public.cash_accounts
+          where is_active = true
+          order by name`,
+      )
+      .catch(() => ({ rows: [] })),
+  ]);
+
+  const unifiedRows: UnifiedCalendarObligation[] = unifiedRes.rows.map((u) => ({
+    sourceKind: u.source_kind,
+    sourceId: u.source_id,
+    eventDate: u.event_date,
+    label: u.label,
+    counterpartyName: u.counterparty_name,
+    amountSigned: moneyOrNull(u.amount_signed) ?? 0,
+    currency: u.currency,
+    status: u.status,
+  }));
+
   const firstDow = (new Date(Date.UTC(y, m - 1, 1)).getUTCDay() + 6) % 7;
   const byDay = new Map<number, typeof rows>();
   for (const r of rows) {
     const d = Number(r.due_date.slice(8));
     if (!byDay.has(d)) byDay.set(d, []);
     byDay.get(d)!.push(r);
+  }
+  const unifiedByDay = new Map<number, UnifiedCalendarObligation[]>();
+  for (const u of unifiedRows) {
+    const d = Number(u.eventDate.slice(8));
+    if (!unifiedByDay.has(d)) unifiedByDay.set(d, []);
+    unifiedByDay.get(d)!.push(u);
   }
   const taxObligations = generateTrStatutoryObligations(monthStart, monthEnd);
   const taxByDay = new Map<number, TrStatutoryObligation[]>();
@@ -99,11 +203,20 @@ export default async function CalendarPage({
           {cells.map((d, i) => {
             if (d == null) return <div key={`e${i}`} />;
             const list = byDay.get(d) ?? [];
+            const unified = unifiedByDay.get(d) ?? [];
             const taxes = taxByDay.get(d) ?? [];
             const holiday = holidayByDay.get(d);
             const f = dayFlags(list.map(toRiskInput), t);
-            const allPaid = list.length > 0 && list.every((x) => x.status === "paid");
-            const border = allPaid ? "border-pos" : f.critical ? "border-neg" : f.cluster || f.large || taxes.length > 0 ? "border-warn" : list.length ? "border-info" : "border-line-faint";
+            const allPaid = list.length > 0 && list.every((x) => x.status === "paid") && unified.length === 0;
+            const border = allPaid
+              ? "border-pos"
+              : f.critical
+                ? "border-neg"
+                : f.cluster || f.large || taxes.length > 0
+                  ? "border-warn"
+                  : list.length || unified.length
+                    ? "border-info"
+                    : "border-line-faint";
             const isToday = isCurrent && d === todayD;
             return (
               <Link key={d} href={`/payments/calendar?ym=${ym}&day=${d}`}
@@ -120,6 +233,9 @@ export default async function CalendarPage({
                     {f.foreignCount > 0 && <div className="font-mono text-[9px] text-warn">{f.foreignCount} TRY-dışı</div>}
                   </>
                 )}
+                {unified.length > 0 && (
+                  <div className="font-mono text-[8px] text-info">+{unified.length} belge</div>
+                )}
                 {taxes.length > 0 && (
                   <div className="mt-0.5 truncate font-mono text-[8px] uppercase text-info">
                     {taxes.map((tx) => tx.code.replace("_", "-")).join(", ")}
@@ -132,13 +248,13 @@ export default async function CalendarPage({
         <div className="mt-2 flex flex-wrap gap-3 text-[10px] text-tone-3">
           <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 border border-neg" /> kritik</span>
           <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 border border-warn" /> yığılma / büyük / vergi-SGK günü</span>
-          <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 border border-info" /> ödeme var</span>
+          <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 border border-info" /> ödeme / belge var</span>
           <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 border border-pos" /> tamamı ödendi</span>
         </div>
       </Panel>
 
       {selDay != null && (
-        <Panel title={`${selDay} ${AY[m - 1].toUpperCase()} — ${(byDay.get(selDay) ?? []).length} ÖDEME${(taxByDay.get(selDay) ?? []).length ? ` · ${(taxByDay.get(selDay) ?? []).length} YASAL YÜKÜMLÜLÜK` : ""}`}
+        <Panel title={`${selDay} ${AY[m - 1].toUpperCase()} — ${(byDay.get(selDay) ?? []).length} ÖDEME${(unifiedByDay.get(selDay) ?? []).length ? ` · ${(unifiedByDay.get(selDay) ?? []).length} BELGE` : ""}${(taxByDay.get(selDay) ?? []).length ? ` · ${(taxByDay.get(selDay) ?? []).length} YASAL YÜKÜMLÜLÜK` : ""}`}
           right={<Link href={`/payments/calendar?ym=${ym}`} className="font-mono text-[10px] uppercase text-tone-2 underline underline-offset-2">kapat</Link>}>
           {holidayByDay.get(selDay) && (
             <div className="mb-2 border border-warn p-2 text-xs text-warn">
@@ -160,10 +276,87 @@ export default async function CalendarPage({
             </div>
           )}
           {(byDay.get(selDay) ?? []).length === 0
-            ? <p className="text-sm text-tone-3">Bu güne kayıtlı şirket ödemesi yok.</p>
+            ? <p className="text-sm text-tone-3">Bu güne kayıtlı düzenli şirket ödemesi yok.</p>
             : (byDay.get(selDay) ?? []).map((r) => (
-                <InstanceRowView canMutate={canMutate} key={r.id} r={r} backTo={`/payments/calendar?ym=${ym}&day=${selDay}`} />
+                <InstanceRowView
+                  canMutate={canMutate}
+                  accounts={cashAccountsRes.rows}
+                  key={r.id}
+                  r={r}
+                  backTo={`/payments/calendar?ym=${ym}&day=${selDay}`}
+                />
               ))}
+          {(unifiedByDay.get(selDay) ?? []).length > 0 && (
+            <div className="mt-3 space-y-1 border-t border-line-faint pt-2">
+              <div className="font-mono text-[10px] uppercase tracking-wider text-tone-3">
+                Aynı Gündeki Açık Fatura / Çek / Kredi / Sözler
+              </div>
+              {(unifiedByDay.get(selDay) ?? []).map((u) => (
+                <div
+                  key={`${u.sourceKind}:${u.sourceId}`}
+                  className="flex flex-wrap items-center justify-between gap-2 border-b border-line-faint py-1.5 text-xs"
+                >
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Badge tone={u.amountSigned < 0 ? "amber" : "green"}>{SOURCE_KIND_LABEL[u.sourceKind]}</Badge>
+                    <Link href={SOURCE_KIND_HREF[u.sourceKind]} className="underline underline-offset-2">
+                      {u.label}
+                    </Link>
+                    {u.counterpartyName && <span className="text-tone-3">· {u.counterpartyName}</span>}
+                  </div>
+                  <span className={`font-mono tabular-nums ${u.amountSigned < 0 ? "text-neg" : "text-pos"}`}>
+                    {u.amountSigned < 0 ? "−" : "+"}
+                    {formatMoney(Math.abs(u.amountSigned), u.currency)}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+        </Panel>
+      )}
+
+      {unifiedRows.length > 0 && (
+        <Panel
+          title="BİRLEŞİK FİNANSAL TAKVİM KALEMLERİ (FATURA · ÇEK · KREDİ · TAHSİLAT SÖZÜ)"
+          subtitle="Çift sayım korumalı açık belgeler — her kalem kendi para biriminde gösterilir"
+          right={<Badge tone="blue">{unifiedRows.length} açık belge</Badge>}
+        >
+          <TableShell>
+            <table className="w-full text-xs">
+              <thead>
+                <tr className="text-left font-mono text-[10px] uppercase text-tone-4">
+                  <th className="py-1">Tarih</th>
+                  <th>Tür</th>
+                  <th>Belge / Açıklama</th>
+                  <th>Karşı Taraf</th>
+                  <th>Döviz</th>
+                  <th className="text-right">Açık Tutar</th>
+                </tr>
+              </thead>
+              <tbody>
+                {unifiedRows.slice(0, 30).map((u) => (
+                  <tr key={`${u.sourceKind}:${u.sourceId}`} className="border-t border-line-faint">
+                    <td className="py-1.5 font-mono">{u.eventDate}</td>
+                    <td>
+                      <Badge tone={u.amountSigned < 0 ? "amber" : "green"}>
+                        {SOURCE_KIND_LABEL[u.sourceKind]}
+                      </Badge>
+                    </td>
+                    <td>
+                      <Link href={SOURCE_KIND_HREF[u.sourceKind]} className="underline underline-offset-2">
+                        {u.label}
+                      </Link>
+                    </td>
+                    <td className="text-tone-3">{u.counterpartyName ?? "—"}</td>
+                    <td className="font-mono">{u.currency}</td>
+                    <td className={`text-right font-mono tabular-nums ${u.amountSigned < 0 ? "text-neg" : "text-pos"}`}>
+                      {u.amountSigned < 0 ? "−" : "+"}
+                      {formatMoney(Math.abs(u.amountSigned), u.currency)}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </TableShell>
         </Panel>
       )}
 

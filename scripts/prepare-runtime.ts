@@ -7,27 +7,50 @@ import { loadEnvConfig } from "@next/env";
 loadEnvConfig(process.cwd());
 
 async function main() {
-  const [{ getPool, getRawPool, runAsSystem }, { ensureWindow }, { istanbulDateISO }, { ensureSystemActor }] =
-    await Promise.all([
-      import("../src/lib/db"),
-      import("../src/lib/radar/engine"),
-      import("../src/lib/reports/rules"),
-      import("./db/seed-system-actor"),
-    ]);
+  const [
+    { getPool, getRawPool, runAsSystem },
+    { assertSchemaParity },
+    { ensureWindow },
+    { istanbulDateISO },
+    { ensureSystemActor, getSystemActorId },
+  ] = await Promise.all([
+    import("../src/lib/db"),
+    import("../src/lib/db/schema-parity"),
+    import("../src/lib/radar/engine"),
+    import("../src/lib/reports/rules"),
+    import("./db/seed-system-actor"),
+  ]);
 
   const pool = getPool();
   try {
-    // Faz 24B: this runs before any request, so there is no session to derive a tier from.
-    // runAsSystem states the identity explicitly rather than letting the job quietly inherit
-    // one — without it every write here is refused by RLS, which is exactly what happened the
-    // first time the server was started under the new model.
-    // Two identities, because these are two different kinds of work.
-    //
-    // Provisioning the system account touches public.users, which no tier may write — account
-    // administration belongs to admin. But this is not an admin acting: it is the application
-    // maintaining its OWN service account, which is precisely what Faz 15's mas_radar_app
-    // policy on users exists for. So it runs unswitched, on the raw pool.
-    const actorId = await ensureSystemActor(getRawPool());
+    // Faz 62: Fail closed before serving traffic if PostgreSQL schema_migrations lags behind
+    // `supabase/migrations/*.sql`.
+    await assertSchemaParity(getRawPool());
+
+    // After 0122 revoked `authenticated` from `mas_radar_app`, `mas_radar_app` holds SELECT/UPDATE
+    // on `public.users` (enough to read the pre-seeded 'system' actor on normal boot without
+    // owner credentials), while initial seeding on a brand-new DB uses `ownerDatabaseUrl()`.
+    let actorId: string;
+    try {
+      actorId = await getSystemActorId(getRawPool());
+    } catch {
+      const [{ Pool }, { ownerDatabaseUrl }] = await Promise.all([
+        import("pg"),
+        import("./db/owner-url"),
+      ]);
+      const ownerUrl = ownerDatabaseUrl();
+      if (!ownerUrl) {
+        actorId = await ensureSystemActor(getRawPool());
+      } else {
+        const ownerPool = new Pool({ connectionString: ownerUrl, max: 1 });
+        try {
+          actorId = await ensureSystemActor(ownerPool);
+        } finally {
+          await ownerPool.end();
+        }
+      }
+    }
+
     // Generating the payment window is ordinary operational work, and it runs as a tier.
     await runAsSystem(async () => {
       await ensureWindow(pool, istanbulDateISO(), actorId, 24);

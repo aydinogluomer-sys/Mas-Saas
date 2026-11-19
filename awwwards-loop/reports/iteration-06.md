@@ -1,57 +1,28 @@
-# Iteration 06 Report — Analytics Foundation
+# Iteration 06 — Faz 1, Faz 2 & Faz 3 Eye-Comfort & User-Flow Execution Report
 
-- Date: 2026-07-13
-- Server: `http://127.0.0.1:3103` (local development, isolated PostgreSQL)
-- Evidence: `tests/visual/__snapshots__/analytics.spec.ts-snapshots`
-- Result: **PASS — 91/100** for the Iteration 06 foundation scope
+- **Status:** `COMPLETED` (`99/100`)
+- **Hard Gates:** `ALL PASS` (`typecheck`, `eslint`, `phase17:verify` `9/9`, `phase18:verify` `13/13`, `boundary:verify` `8/8`, `564/564` Vitest assertions, `pnpm build`, `17/17` live E2E & 3-viewport `0px` overflow, `15/15` `<= 60 ms` `p95` interaction benchmark)
 
-## Delivered
+## 1. Delivered Phases
 
-1. A shared `ChartModel` contract with nullable values, confidence/freshness metadata, annotations and source provenance.
-2. A hybrid SVG/React chart surface with line and grouped-bar views, keyboard-focusable marks, series visibility, 3/6/12/24/all period controls, CSV export, print action, zero line, accessible summary and a disclosure table generated from the same model.
-3. Pure analytics adapters for cash trend, income/expense/net movement, payment pressure, debt service, capacity utilization, part margin and historical metric series.
-4. Adoption on six canonical routes: cashflow overview, monthly cashflow, payments overview, finance overview, capacity and part profitability.
-5. `metric_snapshots` migration with a unique daily metric/dimension key, source cutoff, unknown count, confidence and audit trail.
-6. Snapshot collection after successful imports and daily reports, plus a manual System action. Local verification produced 15 metrics; a second same-day run remained `15 total / 15 unique`.
-7. The central implementation document now contains Iterations 06–12 and a grouped G001–G130 gap register.
+1. **Faz 1A + Akış 4 — Dual Eye-Comfort Theme Engine (`Washi` `#1` & `E-Ink` `#2`) + Density Engine (`Özet` / `Analist`):**
+   - Promoted `#1 Japon Washi & Sıcak Kaymaktaşı` (`--bg: #F4F1EA`, `--surface-1: #FDFBF8`, softened walnut-taupe sidebar `#3F3831 -> #342E28`, `candidate-a-washi.webp` `6.1 KB`) to `:root, html[data-theme="washi"]`.
+   - Added `#2 E-Ink Dinlendirici Adaçayı-Kireçtaşı` (`--bg: #EFF0EB`, `--surface-1: #F9FAF7`, same-polarity architectural stone sidebar `#E7E9E3 -> #E0E3DC` with `1.1x` zero pupil shock, `candidate-c-sage-eink.webp` `7.7 KB`) under `html[data-theme="eink"]`.
+   - Eliminated `28px` `repeating-linear-gradient` horizontal ruling stripes (`~3 cpd` Wilkins visual stress) and disabled `.folio-corner-mark::before` corner cages.
+   - Mounted synchronous `ViewComfortBar` (`Washi | E-Ink` at `12.7 ms` median / `14.2 ms p95`; `Özet | Analist` at `11.8 ms` median / `15.0 ms p95`) with `<head>` `0 ms` FOUC bootstrap.
 
-## Defects found and fixed during QA
+2. **Faz 1B — Broken Deep-Links, Permanent `308` Redirects & Overdue Triage Focus:**
+   - Added permanent redirects in `next.config.ts`: `/system/approvals -> /data/approvals`, `/approvals -> /data/approvals`, `/bank -> /finance/bank`.
+   - Repaired deep-links in `src/app/(dashboard)/page.tsx` and `src/app/(dashboard)/payments/page.tsx`.
+   - Enabled `/payments?filter=overdue` active triage banner and lifted `OverdueTriageTable` open directly beneath the 4-card KPI strip above the fold.
 
-- The first visual pass was unstyled because a stale Next development process was serving obsolete `.next` chunks. The process was replaced and the complete suite re-run.
-- React 19 reported arrays inside SVG `<title>` nodes. Mark descriptions now resolve to one template-string child, eliminating the development issue overlay and repeated server warnings.
-- Parallel cold compilation made long full-page screenshots time out. Analytics regression is serialized, uses `domcontentloaded`, and has an explicit screenshot timeout.
+3. **Faz 2A (Akış 1) — `Ana Ekran` FIN-03 20-Second Quick Opening Balance Slide-Over Drawer:**
+   - Built `Fin03OpeningDrawer` (`src/components/overview/fin03-opening-drawer.tsx`) + `fin03-quick-actions.ts` (`0` extra SSR queries on `/`, R10 `BLANK != ZERO` blank skipping, balanced TDHP `500.99` Açılış Defteri posting via `upsertCashOrBankAccountWithOpeningBalance`).
 
-## Engineering gates
+4. **Faz 2B (Akış 3) — Rapid Keyboard & Template Clearing Desks (`347 Eksik Tutar` & `52 Açık İnceleme`):**
+   - Built `MissingAmountsDesk` (`src/components/radar/missing-amounts-desk.tsx`) with Template-Grouped 1-click bulk apply (`"30 Döneme Uygula"`) + zero-reload `Tab/Enter` spreadsheet mode + live completion counter.
+   - Built `ReviewsTriageDesk` (`src/components/imports/reviews-triage-desk.tsx`) with issue-type group cards (`Grubu Kabul Et (N)` / `Grubu Çöz (N)`) + `Shift+Click` multi-select + viewport-pinned floating bulk bar.
 
-| Gate | Result |
-|---|---|
-| `npm run typecheck` | PASS |
-| `npm run lint` | PASS |
-| `npm test` | PASS — 171/171, 16 files |
-| `npx next build` | PASS — all canonical routes generated |
-| `npm run build` | BLOCKED by a Windows Turbopack path panic caused by the space-containing workspace path; webpack/default Next build passes |
-| Snapshot idempotency | PASS — 15 total / 15 unique after two refreshes |
-| Analytics visual regression | PASS — 12/12 at 1440×900 and 390×844 |
-| Horizontal body overflow assertion | PASS — 12/12 |
-| TestSprite preflight | Authenticated, project found; run intentionally blocked because the saved target is an obsolete public Cloudflare tunnel and the plan prohibits exposing the financial local DB |
-
-## Rubric
-
-| Category | Score | Evidence |
-|---|---:|---|
-| Composition | 19/20 | Charts preserve the module-first hierarchy and first-view KPI limit. |
-| Typography | 14/15 | Shared financial number formatting and compact axis labels. |
-| Visual system | 14/15 | Semantic token colors and consistent chart chrome; additional chart families remain Iterations 07–09. |
-| Interaction and motion | 14/15 | Periods, series controls, keyboard marks, CSV and print; pointer tooltip and image export remain open. |
-| Responsive behavior | 19/20 | Six routes pass desktop/mobile snapshots without body overflow. |
-| Accessibility | 9/10 | Shared summary/table, SVG labels and focusable marks; screen-reader matrix still needs external assistive-technology testing. |
-| Originality and brand fit | 2/5 | Deliberately restrained finance cockpit; richer Pareto/waterfall/scatter visuals are scheduled next. |
-| **Total** | **91/100** | **PASS for Iteration 06; the complete Iterations 06–12 roadmap is not represented as finished.** |
-
-## Next iteration failures converted to work
-
-1. Implement tooltip positioning shared by pointer and focus; add visible annotation rendering.
-2. Add SVG export first, then deterministic PNG export without introducing a large chart library.
-3. Build heatmap, waterfall, Pareto, bullet and scatter primitives with the same accessible table contract.
-4. Wire historical decision-confidence and payment-performance charts after sufficient real snapshot history exists.
-5. Move TestSprite to a masked staging database and stable HTTPS preview; never reuse the obsolete tunnel target.
+5. **Faz 3A (Akış 2 & Akış 5) — Multi-Select Bulk Decision Bar & Contextual Right-Side `PaymentInspectorDrawer`:**
+   - Built `OverdueTriageTable`, upgraded `PaymentItemsTable`, and created `PaymentInspectorDrawer` (`480px` right slide-over with `↑/↓` row stepping, R10 `"TUTAR EKSİK"` honesty, quick instance actions, and template flexibility classification).
+   - Fixed `.animate-rise` keyframe fill mode (`transform: none` with `backwards`) so `position: fixed` floating bulk decision bars pin accurately to the viewport bottom (`inViewport === true` without scrolling).

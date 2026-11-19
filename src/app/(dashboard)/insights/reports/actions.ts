@@ -4,7 +4,7 @@ import { redirect } from "next/navigation";
 import { z } from "zod";
 import { getPool } from "@/lib/db";
 import { answerReportQuestion } from "@/lib/ai/engine";
-import { generateDaily, generateMonthly, generateWeekly } from "@/lib/reports/engine";
+import { generateBoardPackage, generateDaily, generateMonthly, generateWeekly } from "@/lib/reports/engine";
 import { dispatchBriefing, generateCfoBriefing } from "@/lib/briefing/engine";
 import { transportFor } from "@/lib/reminders/transport";
 import { istanbulDateISO } from "@/lib/reports/rules";
@@ -31,6 +31,7 @@ export async function generateReportAction(formData: FormData): Promise<void> {
   if (type === "daily") ({ id } = await generateDaily(pool, today, session.id));
   else if (type === "weekly") ({ id } = await generateWeekly(pool, today, session.id));
   else if (type === "monthly") ({ id } = await generateMonthly(pool, today.slice(0, 7) + "-01", session.id));
+  else if (type === "board_pack" || type === "strategic") ({ id } = await generateBoardPackage(pool, today, session.id));
   else return;
   if (type === "daily") await refreshMetricSnapshots(pool, session.id, today).catch(() => undefined);
   revalidatePath("/insights/reports");

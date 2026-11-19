@@ -14,8 +14,19 @@ import { formatMoney } from "@/lib/money-format";
 import { Badge, type Tone } from "@/components/ui/badge";
 import { Panel, fmtTL } from "@/components/ui/panel";
 import { EmptyState, KeyStat, KpiCard, PageHeader, TableShell } from "@/components/ui/shell";
-import { updatePolicyAction, upsertTreasuryAccountAction } from "./actions";
+import {
+  createCorporateCardStatementAction,
+  createPosSettlementBatchAction,
+  createTermDepositAction,
+  executeInterbankTransferAction,
+  payCorporateCardStatementAction,
+  settlePosSettlementBatchAction,
+  settleTermDepositAction,
+  updatePolicyAction,
+  upsertTreasuryAccountAction,
+} from "./actions";
 import { loadCovenantAndDscrRadar } from "@/lib/financing/covenants-and-dscr";
+import { loadTreasuryWorkspaceOps } from "@/lib/financing/treasury-ops";
 import {
   formatNativeFx,
   formatTcmbRate,
@@ -85,6 +96,7 @@ export default async function TreasuryPage({
     fxStress,
     editableAccounts,
     dailyMovements,
+    treasuryOps,
   ] = await Promise.all([
     loadCashPositions(pool),
     loadPositionSummary(pool),
@@ -95,7 +107,12 @@ export default async function TreasuryPage({
     loadFxStressOverlay(pool, { asOfDate: today, dscrRadar: dscrRadarPromise }),
     loadEditableCashAndBankAccounts(pool),
     loadDailyCashMovements(pool, 30),
+    loadTreasuryWorkspaceOps(pool),
   ]);
+  const activeLiquidAccounts = editableAccounts.filter((a) => a.isActive);
+  const cardAccounts = editableAccounts.filter(
+    (a) => a.isActive && (a.accountType === "credit_card" || a.accountType === "loan" || a.accountType === "bank_account"),
+  );
   const fxBand20 = fxStress.shockBands.find((b) => b.shockPct === 20) ?? fxStress.shockBands[1];
   const divergent = recon.filter((r) => r.status === "divergent");
   const breaches = gaps.filter((g) => g.breachesFloor === true);
@@ -345,6 +362,515 @@ export default async function TreasuryPage({
           )}
         </div>
       </Panel>
+
+      <div className="grid grid-cols-1 gap-3 xl:grid-cols-2">
+        <Panel
+          title="Bankalar Arası Virman & Döviz Alım/Satım (100/102 ↔ 100/102)"
+          subtitle="Atomik çift bacaklı own_transfer banka hareketi, 780 EFT/işlem masrafı ve çapraz kur 646/656 kambiyo fişi (ciro/gider şişmesi yaratmaz)"
+        >
+          <div className="space-y-3">
+            <form
+              action={executeInterbankTransferAction}
+              className="grid grid-cols-1 gap-2 rounded border p-3 text-xs sm:grid-cols-3"
+              style={{ background: "var(--surface-2)", borderColor: "var(--line)" }}
+            >
+              <select name="fromAccountId" required className="field-control px-2 py-1.5 text-xs">
+                <option value="">Gönderen hesap seçin</option>
+                {activeLiquidAccounts.map((a) => (
+                  <option key={`from-${a.id}`} value={a.id}>
+                    {`${a.name} (${a.currency})`}
+                  </option>
+                ))}
+              </select>
+              <select name="toAccountId" required className="field-control px-2 py-1.5 text-xs">
+                <option value="">Alıcı hesap seçin</option>
+                {activeLiquidAccounts.map((a) => (
+                  <option key={`to-${a.id}`} value={a.id}>
+                    {`${a.name} (${a.currency})`}
+                  </option>
+                ))}
+              </select>
+              <input
+                name="transferDate"
+                type="date"
+                required
+                defaultValue={today}
+                className="field-control px-2 py-1.5 font-mono text-xs"
+              />
+              <input
+                name="fromAmount"
+                type="number"
+                step="0.01"
+                min="0.01"
+                required
+                placeholder="Gönderilen tutar"
+                className="field-control px-2 py-1.5 font-mono text-xs"
+              />
+              <input
+                name="toAmount"
+                type="number"
+                step="0.01"
+                min="0.01"
+                placeholder="Alınan tutar (farklı dövizse)"
+                className="field-control px-2 py-1.5 font-mono text-xs"
+              />
+              <input
+                name="fxRate"
+                type="number"
+                step="0.0001"
+                min="0.0001"
+                placeholder="İşlem kuru (opsiyonel)"
+                className="field-control px-2 py-1.5 font-mono text-xs"
+              />
+              <input
+                name="feeAmount"
+                type="number"
+                step="0.01"
+                min="0"
+                defaultValue="0"
+                placeholder="Masraf (780)"
+                className="field-control px-2 py-1.5 font-mono text-xs"
+              />
+              <input
+                name="description"
+                placeholder="Açıklama (ör. Döviz alımı / Merkez virman)"
+                className="field-control px-2 py-1.5 text-xs"
+              />
+              <button type="submit" className="button-primary px-3 py-1.5 text-xs">
+                Virman işle
+              </button>
+            </form>
+
+            {treasuryOps.transfers.length === 0 ? (
+              <EmptyState>Henüz kayıtlı bankalar arası virman veya döviz dönüşümü yok.</EmptyState>
+            ) : (
+              <TableShell>
+                <table className="w-full text-xs">
+                  <thead>
+                    <tr className="text-left uppercase" style={{ color: "var(--text-2)" }}>
+                      <th className="py-1">Tarih</th>
+                      <th>Gönderen → Alıcı</th>
+                      <th className="text-right">Çıkan</th>
+                      <th className="text-right">Giren</th>
+                      <th className="text-right">Masraf</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {treasuryOps.transfers.slice(0, 8).map((tr) => (
+                      <tr
+                        key={tr.id}
+                        className="border-t"
+                        style={{ borderColor: "var(--line)", color: "var(--text-1)" }}
+                      >
+                        <td className="py-1.5 font-mono">{tr.transferDate}</td>
+                        <td>
+                          {tr.fromAccountName} → {tr.toAccountName}
+                        </td>
+                        <td className="text-right font-mono tabular-nums text-neg">
+                          {formatMoney(tr.fromAmount, tr.fromCurrency)}
+                        </td>
+                        <td className="text-right font-mono tabular-nums text-pos">
+                          {formatMoney(tr.toAmount, tr.toCurrency)}
+                        </td>
+                        <td className="text-right font-mono tabular-nums" style={{ color: "var(--text-2)" }}>
+                          {tr.feeAmount > 0 ? formatMoney(tr.feeAmount, tr.fromCurrency) : "—"}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </TableShell>
+            )}
+          </div>
+        </Panel>
+
+        <Panel
+          title="Vadeli Mevduat Yönetimi (102.05 · Brüt Faiz 642 & Stopaj 193)"
+          subtitle="Vadesiz hesaptan vadeli mevduat bağlama ve vade dönüşünde otomatik brüt faiz + stopaj tahakkuku"
+        >
+          <div className="space-y-3">
+            <form
+              action={createTermDepositAction}
+              className="grid grid-cols-1 gap-2 rounded border p-3 text-xs sm:grid-cols-4"
+              style={{ background: "var(--surface-2)", borderColor: "var(--line)" }}
+            >
+              <select name="cashAccountId" required className="field-control px-2 py-1.5 text-xs sm:col-span-2">
+                <option value="">Banka hesabı seçin</option>
+                {activeLiquidAccounts.map((a) => (
+                  <option key={`td-acct-${a.id}`} value={a.id}>
+                    {`${a.name} (${a.currency})`}
+                  </option>
+                ))}
+              </select>
+              <input
+                name="depositName"
+                required
+                placeholder="Vadeli hesap etiketi (ör. 32 Gün TL Vadeli)"
+                className="field-control px-2 py-1.5 text-xs sm:col-span-2"
+              />
+              <input
+                name="principalAmount"
+                type="number"
+                step="0.01"
+                min="0.01"
+                required
+                placeholder="Anapara"
+                className="field-control px-2 py-1.5 font-mono text-xs"
+              />
+              <input
+                name="annualInterestRate"
+                type="number"
+                step="0.01"
+                min="0"
+                required
+                placeholder="Yıllık faiz %"
+                className="field-control px-2 py-1.5 font-mono text-xs"
+              />
+              <input
+                name="withholdingTaxRate"
+                type="number"
+                step="0.001"
+                min="0"
+                defaultValue="7.5"
+                placeholder="Stopaj %"
+                className="field-control px-2 py-1.5 font-mono text-xs"
+              />
+              <div className="flex items-center gap-1">
+                <input
+                  name="startDate"
+                  type="date"
+                  required
+                  defaultValue={today}
+                  className="field-control min-w-0 flex-1 px-1.5 py-1.5 font-mono text-[11px]"
+                />
+                <input
+                  name="maturityDate"
+                  type="date"
+                  required
+                  className="field-control min-w-0 flex-1 px-1.5 py-1.5 font-mono text-[11px]"
+                />
+              </div>
+              <div className="sm:col-span-4 flex justify-end">
+                <button type="submit" className="button-primary px-3 py-1.5 text-xs">
+                  Vadeli mevduat bağla
+                </button>
+              </div>
+            </form>
+
+            {treasuryOps.termDeposits.length === 0 ? (
+              <EmptyState>Henüz bağlanmış vadeli mevduat kaydı yok.</EmptyState>
+            ) : (
+              <TableShell>
+                <table className="w-full text-xs">
+                  <thead>
+                    <tr className="text-left uppercase" style={{ color: "var(--text-2)" }}>
+                      <th className="py-1">Vadeli Hesap</th>
+                      <th className="text-right">Anapara</th>
+                      <th className="text-right">Oran</th>
+                      <th>Vade</th>
+                      <th className="text-right">Net Faiz</th>
+                      <th>İşlem</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {treasuryOps.termDeposits.map((td) => (
+                      <tr
+                        key={td.id}
+                        className="border-t"
+                        style={{ borderColor: "var(--line)", color: "var(--text-1)" }}
+                      >
+                        <td className="py-1.5">
+                          <div className="font-medium">{td.depositName}</div>
+                          <div className="text-[11px]" style={{ color: "var(--text-2)" }}>
+                            {td.accountName}
+                          </div>
+                        </td>
+                        <td className="text-right font-mono tabular-nums">
+                          {formatMoney(td.principalAmount, td.currency)}
+                        </td>
+                        <td className="text-right font-mono tabular-nums">%{td.annualInterestRate.toFixed(2)}</td>
+                        <td className="font-mono text-[11px]">{td.maturityDate}</td>
+                        <td className="text-right font-mono tabular-nums text-pos">
+                          {formatMoney(td.expectedNetInterest, td.currency)}
+                        </td>
+                        <td>
+                          {td.isActive ? (
+                            <form action={settleTermDepositAction} className="inline-flex items-center gap-1">
+                              <input type="hidden" name="depositId" value={td.id} />
+                              <input type="hidden" name="settledDate" value={today} />
+                              <button type="submit" className="button-ghost px-2 py-0.5 text-[11px]">
+                                Vadeyi Boz/Kapat
+                              </button>
+                            </form>
+                          ) : (
+                            <Badge tone="green">Kapandı</Badge>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </TableShell>
+            )}
+          </div>
+        </Panel>
+
+        <Panel
+          title="POS Valör Kuyruğu (108 Hazır Değerler → 102 Banka + 780 Komisyon)"
+          subtitle="POS çekim partilerinin valör tarihine kadar blokaj takibi ve hesaba geçiş fişi"
+        >
+          <div className="space-y-3">
+            <form
+              action={createPosSettlementBatchAction}
+              className="grid grid-cols-1 gap-2 rounded border p-3 text-xs sm:grid-cols-3"
+              style={{ background: "var(--surface-2)", borderColor: "var(--line)" }}
+            >
+              <select name="cashAccountId" required className="field-control px-2 py-1.5 text-xs">
+                <option value="">POS bağlı banka hesabı</option>
+                {activeLiquidAccounts.map((a) => (
+                  <option key={`pos-acct-${a.id}`} value={a.id}>
+                    {`${a.name} (${a.currency})`}
+                  </option>
+                ))}
+              </select>
+              <input
+                name="posTerminalLabel"
+                required
+                placeholder="POS Terminal (ör. Garanti Sanal POS)"
+                className="field-control px-2 py-1.5 text-xs"
+              />
+              <input
+                name="grossAmount"
+                type="number"
+                step="0.01"
+                min="0.01"
+                required
+                placeholder="Brüt çekim tutarı"
+                className="field-control px-2 py-1.5 font-mono text-xs"
+              />
+              <input
+                name="saleDate"
+                type="date"
+                required
+                defaultValue={today}
+                className="field-control px-2 py-1.5 font-mono text-xs"
+              />
+              <input
+                name="expectedValueDate"
+                type="date"
+                required
+                className="field-control px-2 py-1.5 font-mono text-xs"
+              />
+              <div className="flex items-center gap-1.5">
+                <input
+                  name="commissionRate"
+                  type="number"
+                  step="0.01"
+                  min="0"
+                  defaultValue="2.5"
+                  placeholder="Komisyon %"
+                  className="field-control min-w-0 flex-1 px-2 py-1.5 font-mono text-xs"
+                />
+                <button type="submit" className="button-primary shrink-0 px-3 py-1.5 text-xs">
+                  POS ekle
+                </button>
+              </div>
+            </form>
+
+            {treasuryOps.posBatches.length === 0 ? (
+              <EmptyState>Valör bekleyen veya kapanmış POS partisi bulunmuyor.</EmptyState>
+            ) : (
+              <TableShell>
+                <table className="w-full text-xs">
+                  <thead>
+                    <tr className="text-left uppercase" style={{ color: "var(--text-2)" }}>
+                      <th className="py-1">Terminal</th>
+                      <th>Valör</th>
+                      <th className="text-right">Brüt</th>
+                      <th className="text-right">Komisyon</th>
+                      <th className="text-right">Net Geçen</th>
+                      <th>Durum</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {treasuryOps.posBatches.map((pb) => (
+                      <tr
+                        key={pb.id}
+                        className="border-t"
+                        style={{ borderColor: "var(--line)", color: "var(--text-1)" }}
+                      >
+                        <td className="py-1.5">
+                          <div className="font-medium">{pb.posTerminalLabel}</div>
+                          <div className="text-[11px]" style={{ color: "var(--text-2)" }}>
+                            {pb.accountName}
+                          </div>
+                        </td>
+                        <td className="font-mono text-[11px]">{pb.expectedValueDate}</td>
+                        <td className="text-right font-mono tabular-nums">
+                          {formatMoney(pb.grossAmount, pb.currency)}
+                        </td>
+                        <td className="text-right font-mono tabular-nums text-neg">
+                          {formatMoney(pb.commissionAmount, pb.currency)}
+                        </td>
+                        <td className="text-right font-mono tabular-nums text-pos">
+                          {formatMoney(pb.netSettlementAmount, pb.currency)}
+                        </td>
+                        <td>
+                          {!pb.isSettled ? (
+                            <form action={settlePosSettlementBatchAction}>
+                              <input type="hidden" name="batchId" value={pb.id} />
+                              <input type="hidden" name="settledDate" value={today} />
+                              <button type="submit" className="button-ghost px-2 py-0.5 text-[11px]">
+                                Hesaba Geçir
+                              </button>
+                            </form>
+                          ) : (
+                            <Badge tone="green">Hesaba Geçti</Badge>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </TableShell>
+            )}
+          </div>
+        </Panel>
+
+        <Panel
+          title="Kurumsal Kredi Kartı Ekstreleri (309 Diğer Mali Borçlar ↔ 102)"
+          subtitle="Hesap kesim tarihi, son ödeme vadesi ve banka hesabından ekstre ödeme kapatması"
+        >
+          <div className="space-y-3">
+            <form
+              action={createCorporateCardStatementAction}
+              className="grid grid-cols-1 gap-2 rounded border p-3 text-xs sm:grid-cols-3"
+              style={{ background: "var(--surface-2)", borderColor: "var(--line)" }}
+            >
+              <select name="cardAccountId" required className="field-control px-2 py-1.5 text-xs">
+                <option value="">Kart hesabı seçin</option>
+                {cardAccounts.map((a) => (
+                  <option key={`card-acct-${a.id}`} value={a.id}>
+                    {`${a.name} (${a.currency})`}
+                  </option>
+                ))}
+              </select>
+              <input
+                name="statementMonth"
+                type="month"
+                required
+                defaultValue={today.slice(0, 7)}
+                className="field-control px-2 py-1.5 font-mono text-xs"
+              />
+              <input
+                name="statementAmount"
+                type="number"
+                step="0.01"
+                min="0.01"
+                required
+                placeholder="Ekstre borcu"
+                className="field-control px-2 py-1.5 font-mono text-xs"
+              />
+              <input
+                name="cutoffDate"
+                type="date"
+                required
+                defaultValue={today}
+                title="Hesap kesim tarihi"
+                className="field-control px-2 py-1.5 font-mono text-xs"
+              />
+              <input
+                name="dueDate"
+                type="date"
+                required
+                title="Son ödeme tarihi"
+                className="field-control px-2 py-1.5 font-mono text-xs"
+              />
+              <div className="flex items-center gap-1.5">
+                <select name="payFromAccountId" className="field-control min-w-0 flex-1 px-2 py-1.5 text-xs">
+                  <option value="">Ödeme bankası (opsiyonel)</option>
+                  {activeLiquidAccounts.map((a) => (
+                    <option key={`card-pay-${a.id}`} value={a.id}>
+                      {`${a.name} (${a.currency})`}
+                    </option>
+                  ))}
+                </select>
+                <button type="submit" className="button-primary shrink-0 px-3 py-1.5 text-xs">
+                  Ekstre kaydet
+                </button>
+              </div>
+            </form>
+
+            {treasuryOps.cardStatements.length === 0 ? (
+              <EmptyState>Kayıtlı kurumsal kart ekstresi bulunmuyor.</EmptyState>
+            ) : (
+              <TableShell>
+                <table className="w-full text-xs">
+                  <thead>
+                    <tr className="text-left uppercase" style={{ color: "var(--text-2)" }}>
+                      <th className="py-1">Kart / Dönem</th>
+                      <th>Son Ödeme</th>
+                      <th className="text-right">Ekstre</th>
+                      <th className="text-right">Kalan</th>
+                      <th>Öde</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {treasuryOps.cardStatements.map((cs) => (
+                      <tr
+                        key={cs.id}
+                        className="border-t"
+                        style={{ borderColor: "var(--line)", color: "var(--text-1)" }}
+                      >
+                        <td className="py-1.5">
+                          <div className="font-medium">{cs.cardAccountName}</div>
+                          <div className="font-mono text-[11px]" style={{ color: "var(--text-2)" }}>
+                            {cs.statementMonth}
+                          </div>
+                        </td>
+                        <td className="font-mono text-[11px]">{cs.dueDate}</td>
+                        <td className="text-right font-mono tabular-nums">
+                          {formatMoney(cs.statementAmount, cs.currency)}
+                        </td>
+                        <td className="text-right font-mono tabular-nums text-neg">
+                          {formatMoney(cs.remainingAmount, cs.currency)}
+                        </td>
+                        <td>
+                          {!cs.isSettled ? (
+                            <form action={payCorporateCardStatementAction} className="flex items-center gap-1">
+                              <input type="hidden" name="statementId" value={cs.id} />
+                              <input type="hidden" name="paymentDate" value={today} />
+                              <select
+                                name="payFromAccountId"
+                                required
+                                className="field-control w-28 px-1 py-0.5 text-[11px]"
+                              >
+                                <option value="">Banka seç</option>
+                                {activeLiquidAccounts
+                                  .filter((a) => a.currency === cs.currency)
+                                  .map((a) => (
+                                    <option key={`pay-cs-${cs.id}-${a.id}`} value={a.id}>
+                                      {a.name}
+                                    </option>
+                                  ))}
+                              </select>
+                              <button type="submit" className="button-ghost px-2 py-0.5 text-[11px]">
+                                Öde
+                              </button>
+                            </form>
+                          ) : (
+                            <Badge tone="green">Ödendi</Badge>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </TableShell>
+            )}
+          </div>
+        </Panel>
+      </div>
 
       <Panel
         title="Döviz Açık Pozisyonu & Doğal Hedge Özeti (TCMB Kur Şoku Duyarlılığı)"

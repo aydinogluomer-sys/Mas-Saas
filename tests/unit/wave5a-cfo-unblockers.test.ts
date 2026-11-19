@@ -570,6 +570,9 @@ describe("F-47 — /payments/new 'Tek seferlik' (one_off) Atomik payment_instanc
       if (/from public\.cashflow_months/i.test(sql)) {
         return { rows: [], rowCount: 0 };
       }
+      if (/from public\.accounting_periods/i.test(sql)) {
+        return { rows: [], rowCount: 0 };
+      }
       if (/from public\.payment_instances/i.test(sql) && /^select/i.test(sql)) {
         return { rows: [], rowCount: 0 };
       }

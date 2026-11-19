@@ -28,6 +28,7 @@ import {
   rejectCandidateAction,
   runMatcherAction,
   saveBankAccountAction,
+  splitMatchBankTransactionAction,
   unignoreTransactionAction,
   unmatchTransactionAction,
   upsertBankOrCashAccountAction,
@@ -406,17 +407,18 @@ export default async function BankPage({
       </div>
 
       <div className="mt-4 grid grid-cols-1 gap-4 lg:grid-cols-3">
-        <Panel title="EKSTRE YÜKLE">
+        <Panel title="EKSTRE YÜKLE (CSV · XLSX · SWIFT MT940 · CAMT.053 XML)">
           <p className="mb-2 text-xs text-tone-3">
-            CSV veya XLSX. Aynı dönem tekrar yüklenirse satırlar çoğalmaz — yinelenenler
-            birleştirilir ve sayısı bildirilir.
+            CSV, XLSX, SWIFT <b>MT940</b> (<code>.mt940</code> / <code>.sta</code>) veya ISO 20022{" "}
+            <b>CAMT.053</b> (<code>.xml</code>). Aynı dönem tekrar yüklenirse satırlar çoğalmaz —
+            yinelenenler parmak iziyle birleştirilir ve sayısı bildirilir.
           </p>
           <form action={importStatementAction} className="grid gap-2 text-sm">
             <select name="bankAccountId" required className="field-control text-xs">
               <option value="">Hesap seçin…</option>
               {withProfile.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
             </select>
-            <input type="file" name="statement" accept=".csv,.txt,.tsv,.xlsx" required className="text-xs" />
+            <input type="file" name="statement" accept=".csv,.txt,.tsv,.xlsx,.mt940,.sta,.xml" required className="text-xs" />
             <button className="button-ghost px-2 py-1 text-xs">İçe aktar</button>
           </form>
           <form action={runMatcherAction} className="mt-3 border-t border-line-faint pt-3">
@@ -566,6 +568,67 @@ export default async function BankPage({
                         Manuel Eşleştir & Kapat
                       </button>
                     </form>
+
+                    {compatibleTargets.some((m) => m.targetTable === "invoices") && (
+                      <details className="text-xs">
+                        <summary className="cursor-pointer font-medium text-accent hover:underline">
+                          Çoklu Fatura Bölüştür / EFT Masraf Farkı (780)
+                        </summary>
+                        <form
+                          action={splitMatchBankTransactionAction}
+                          className="mt-2 grid grid-cols-1 gap-2 rounded border border-line bg-elev/40 p-2.5 sm:grid-cols-4"
+                        >
+                          <input type="hidden" name="transactionId" value={t.id} />
+                          {[1, 2, 3].map((slot) => (
+                            <div key={slot} className="flex flex-col gap-1">
+                              <span className="text-[10px] text-tone-3">Fatura #{slot}</span>
+                              <select
+                                name={`invoiceId${slot}`}
+                                defaultValue=""
+                                required={slot === 1}
+                                className="field-control text-xs"
+                              >
+                                <option value="">Fatura seçin…</option>
+                                {compatibleTargets
+                                  .filter((m) => m.targetTable === "invoices")
+                                  .map((m) => (
+                                    <option key={m.targetId} value={m.targetId}>
+                                      {m.referenceLabel}
+                                      {m.counterpartyName ? ` · ${m.counterpartyName}` : ""}
+                                      {m.openAmount != null ? ` (${formatMoney(m.openAmount, m.currency)})` : ""}
+                                    </option>
+                                  ))}
+                              </select>
+                              <input
+                                name={`amount${slot}`}
+                                type="number"
+                                step="0.01"
+                                min="0.01"
+                                required={slot === 1}
+                                placeholder={`Dağıtılan (${t.currency})`}
+                                className="field-control font-mono text-xs"
+                              />
+                            </div>
+                          ))}
+                          <div className="flex flex-col justify-between gap-1">
+                            <div>
+                              <span className="text-[10px] text-tone-3">Banka Masraf Kesintisi (780)</span>
+                              <input
+                                name="bankFeeAmount"
+                                type="number"
+                                step="0.01"
+                                min="0"
+                                placeholder="0.00 (opsiyonel)"
+                                className="field-control mt-1 font-mono text-xs"
+                              />
+                            </div>
+                            <button type="submit" className="button-accent px-2.5 py-1.5 text-xs">
+                              Bölüştür & Kapat
+                            </button>
+                          </div>
+                        </form>
+                      </details>
+                    )}
 
                     <form action={ignoreTransactionAction} className="flex items-center gap-1.5">
                       <input type="hidden" name="transactionId" value={t.id} />

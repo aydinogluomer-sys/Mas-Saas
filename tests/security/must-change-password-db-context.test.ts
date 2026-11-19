@@ -30,6 +30,7 @@ describe("Dalga 1 #1 — getDbContext zorunlu parola değişiminde iş katmanı 
         dbRole: DB_ROLE[role],
         userId: "11111111-1111-4111-8111-111111111111",
         role,
+        legalEntityId: null,
       });
     }
   });
@@ -49,6 +50,7 @@ describe("Dalga 1 #1 — getDbContext zorunlu parola değişiminde iş katmanı 
         dbRole: null,
         userId: null,
         role: null,
+        legalEntityId: null,
       });
     }
   });
@@ -59,6 +61,7 @@ describe("Dalga 1 #1 — getDbContext zorunlu parola değişiminde iş katmanı 
       dbRole: null,
       userId: null,
       role: null,
+      legalEntityId: null,
     });
 
     mockGetRequestUser.mockResolvedValueOnce({
@@ -72,6 +75,7 @@ describe("Dalga 1 #1 — getDbContext zorunlu parola değişiminde iş katmanı 
       dbRole: null,
       userId: null,
       role: null,
+      legalEntityId: null,
     });
   });
 });

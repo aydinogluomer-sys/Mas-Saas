@@ -484,6 +484,27 @@ function createInMemoryFinancialPool(state: InMemoryFinancialState): Pool {
       };
     }
 
+    // 14b. Invoice lines dimensional slice lookup (M-43 cost-center/project split)
+    if (sql.includes("from public.invoice_lines") && sql.includes("group by cost_center_id")) {
+      return { rows: [], rowCount: 0 };
+    }
+
+    // 14c. Bank suspense (102.99) lookup & invoice_allocations settlement lookup
+    if (
+      sql.includes("from public.management_journal_entries") &&
+      sql.includes("bank_tx:suspense:")
+    ) {
+      return { rows: [], rowCount: 0 };
+    }
+    if (sql.includes("from public.invoice_allocations ia")) {
+      return { rows: [], rowCount: 0 };
+    }
+
+    // 15. Control alerts snooze wake-up (M-67)
+    if (sql.includes("update public.control_alerts") && sql.includes("snooze_until")) {
+      return { rows: [], rowCount: 0 };
+    }
+
     throw new Error(`Beklenmeyen SQL sorgusu (mock): ${sqlRaw}`);
   };
 

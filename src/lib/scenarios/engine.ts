@@ -814,7 +814,10 @@ export async function loadScenarioRun(pool: Pool, runId: string) {
             to_char(r.scenario_first_negative,'YYYY-MM-DD') as scen_first_neg,
             to_char(r.worst_month,'YYYY-MM-DD') as worst_month, r.worst_balance,
             r.max_cash_gap as max_gap, to_char(r.recovery_month,'YYYY-MM-DD') as recovery_month,
-            r.month_count, r.null_month_count, r.confidence, r.notes
+            r.month_count, r.null_month_count, r.confidence, r.notes,
+            r.total_auto_facility_draw, r.total_incremental_interest_tax,
+            r.deferred_receivables_carryover, r.projected_ebitda_try,
+            r.projected_min_dscr, coalesce(r.covenant_breach_count, 0) as covenant_breach_count
      from public.scenario_runs r join public.scenarios s on s.id=r.scenario_id where r.id=$1`,
     [runId],
   );
@@ -837,6 +840,12 @@ export async function loadScenarioRun(pool: Pool, runId: string) {
       base_final: moneyOrNull(run.rows[0].base_final), scen_final: moneyOrNull(run.rows[0].scen_final),
       final_delta: moneyOrNull(run.rows[0].final_delta), worst_balance: moneyOrNull(run.rows[0].worst_balance),
       max_gap: moneyOrNull(run.rows[0].max_gap),
+      total_auto_facility_draw: moneyOrNull(run.rows[0].total_auto_facility_draw),
+      total_incremental_interest_tax: moneyOrNull(run.rows[0].total_incremental_interest_tax),
+      deferred_receivables_carryover: moneyOrNull(run.rows[0].deferred_receivables_carryover),
+      projected_ebitda_try: moneyOrNull(run.rows[0].projected_ebitda_try),
+      projected_min_dscr: rateOrNull(run.rows[0].projected_min_dscr),
+      covenant_breach_count: Number(run.rows[0].covenant_breach_count ?? 0),
     },
     lines: lines.rows.map((x) => ({
       ...x,
@@ -851,15 +860,50 @@ export async function loadScenarioRun(pool: Pool, runId: string) {
 
 export async function listScenarioRuns(pool: Pool) {
   const r = await pool.query(
-    `select r.id, s.name, s.scenario_type, r.final_delta, r.confidence,
+    `select r.id, s.name, s.scenario_type, r.assumptions, r.final_delta, r.confidence,
             to_char(r.scenario_first_negative,'YYYY-MM-DD') as scen_first_neg,
-            to_char(r.run_at at time zone 'Europe/Istanbul','YYYY-MM-DD HH24:MI') as run_at
+            to_char(r.run_at at time zone 'Europe/Istanbul','YYYY-MM-DD HH24:MI') as run_at,
+            r.total_auto_facility_draw,
+            r.total_incremental_interest_tax,
+            r.deferred_receivables_carryover,
+            r.projected_min_dscr,
+            coalesce(r.covenant_breach_count, 0) as covenant_breach_count
      from public.scenario_runs r join public.scenarios s on s.id=r.scenario_id
      where r.archived_at is null
      order by r.run_at desc limit 50`,
   );
-  return r.rows.map((x) => ({ ...x, final_delta: moneyOrNull(x.final_delta) })) as Array<{ id: string; name: string; scenario_type: string; final_delta: number | null; confidence: string; scen_first_neg: string | null; run_at: string }>;
+  return r.rows.map((x) => ({
+    ...x,
+    is_unified_13w: (x.assumptions as { engine?: string } | null)?.engine === "unified_13w",
+    final_delta: moneyOrNull(x.final_delta),
+    total_auto_facility_draw: moneyOrNull(x.total_auto_facility_draw),
+    total_incremental_interest_tax: moneyOrNull(x.total_incremental_interest_tax),
+    deferred_receivables_carryover: moneyOrNull(x.deferred_receivables_carryover),
+    projected_min_dscr: rateOrNull(x.projected_min_dscr),
+    covenant_breach_count: Number(x.covenant_breach_count ?? 0),
+  })) as Array<{
+    id: string;
+    name: string;
+    scenario_type: string;
+    is_unified_13w: boolean;
+    final_delta: number | null;
+    confidence: string;
+    scen_first_neg: string | null;
+    run_at: string;
+    total_auto_facility_draw: number | null;
+    total_incremental_interest_tax: number | null;
+    deferred_receivables_carryover: number | null;
+    projected_min_dscr: number | null;
+    covenant_breach_count: number;
+  }>;
 }
+
+export {
+  loadScenarioComparisonMatrix,
+  loadUnifiedScenarioWeeks,
+  runUnifiedDynamicScenario,
+  simulateUnified13WeekScenario,
+} from "./unified-engine";
 
 /** Safe: only removes scenario_* rows (cascade). Baseline is untouched. Audited. */
 export async function deleteScenarioRun(pool: Pool, runId: string, actorId: string): Promise<void> {

@@ -1,8 +1,9 @@
 // Version/build metadata. Exposes only non-sensitive provenance (name, version, commit,
-// build time, runtime). NO secrets, NO env values, NO financial data.
+// build time, expected schema ledger, runtime). NO secrets, NO env values, NO financial data.
 import { NextResponse } from "next/server";
 import { readFileSync } from "node:fs";
 import path from "node:path";
+import { readExpectedSchemaManifest } from "@/lib/db/schema-parity";
 import { env } from "@/lib/env";
 import pkg from "../../../package.json";
 
@@ -24,6 +25,7 @@ function readBuildId(): string {
 }
 
 export async function GET() {
+  const expectedSchema = readExpectedSchemaManifest();
   return NextResponse.json({
     name: pkg.name,
     version: pkg.version,
@@ -34,6 +36,7 @@ export async function GET() {
     // üstüne yeni env ile start edilmiş) ve bu, cutover'da tespit edilmesi gereken bir durumdur.
     buildId: readBuildId(),
     provenance: env.appCommitSha === "unknown" ? "MISSING" : "BUILD_EMBEDDED",
+    expectedSchemaLedger: `${expectedSchema.expectedCount}/${expectedSchema.expectedLatestVersion}`,
     node: process.version,
     // AŞAMA 09 — rehber §14 RUNTIME listesindeki "uptime". Süreç ne kadardır ayakta; bir
     // yeniden başlatma bunu sıfırlar, dolayısıyla iki ardışık telemetri anlık görüntüsü

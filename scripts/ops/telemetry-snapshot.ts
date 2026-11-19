@@ -1,4 +1,4 @@
-// Faz 12 — the operational signals, in one command, with the fail-closed alerts as assertions.
+// Faz 12 / Faz 62 — the operational signals, in one command, with the fail-closed alerts as assertions.
 //
 // WHY A SCRIPT AND NOT A DASHBOARD.
 //
@@ -15,22 +15,6 @@
 // as "probably fine". An alert that goes quiet when its own data source breaks is worse than no
 // alert: it reports health it cannot see.
 //
-// ═══ AŞAMA 09 — bu script'e EKLENENLER ═══
-//
-// Rehber §14: "Ama 'script exit 1 veriyor' tek başına production alerting sayılmaz." Üç şey eklendi
-// ve stdout sözleşmesi (scripts/ops/telemetry-verify.ts onu ayrıştırıyor) BOZULMADI:
-//
-//   1. TESLİMAT. Uyarılar `src/lib/ops/alert-delivery.ts` üzerinden kalıcı bir JSONL alert log'una
-//      yazılır (birincil, her zaman var) ve yapılandırıldıysa Telegram/e-postaya iletilir.
-//      Teslimat başarısızlığının KENDİSİ görünür: log'a yazılır ve AYRI bir çıkış kodu (2) verir.
-//   2. MAKİNE OKUNUR ÇIKTI. `--json <yol>` / `TELEMETRY_JSON_OUT` ile aynı anlık görüntü yapısal
-//      olarak da yazılır — zamanlanmış iş ve ileride bir pano bunu tüketir. İnsan okunur stdout
-//      OLDUĞU GİBİ korunur.
-//   3. GENİŞLETİLMİŞ KAPSAM. Rehber §14'ün runtime/DB/app listesinden gerçekten ölçülebilenler
-//      eklendi (DB uptime, en uzun aktif sorgu, arka plan/içe aktarım hataları, kilitli hesap,
-//      GERÇEK /ready + /health probe'ları). Ölçülemeyenler UYDURULMADI: NOT_OBTAINABLE listesinde
-//      adı, sebebi ve neyin gerekeceği yazılı — hem stdout'ta hem JSON çıktısında.
-//
 // ÇIKIŞ KODLARI:
 //   0  uyarı yok, teslimat tamam
 //   1  en az bir uyarı var, teslimat tamam
@@ -39,10 +23,6 @@
 // Usage:
 //   MIGRATION_DATABASE_URL=…  [DATABASE_URL=…]  pnpm ops:telemetry
 //   MIGRATION_DATABASE_URL=…  pnpm ops:telemetry --json logs/telemetry-latest.json
-//
-// DATABASE_URL is optional and, when present, is used for exactly one check — that the runtime
-// really connects as `mas_radar_app`. Without it that check reports NOT DETERMINED (which counts
-// as a failure, per the paragraph above).
 
 import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
@@ -69,27 +49,15 @@ const BACKUP_MAX_AGE_HOURS = 36;      // günlük yedek + kaçırılan bir gün 
 const JOB_STUCK_MINUTES = 30;         // reaper 30 dakikada bir süpürüyor
 const IMPORT_STALE_DAYS = 45;         // aylık çalışma dosyası ritmi + pay
 
-// Where backups live. Configurable via MAS_BACKUP_DIR so the alert can point at the real backup
-// target on the deployment machine — and so the verify can point it at a controlled temp directory
-// to prove the alert both fires (no dump) and clears (a fresh dump). Defaults to ./backups.
 const BACKUP_DIR = process.env.MAS_BACKUP_DIR ?? path.join(process.cwd(), "backups");
-// Yedek yaşını YALNIZ zamanlanmış günlük işin dosyaları belirler (`daily-*.dump`; etiket
-// backup-daily.ts ile aynı değişkenden). Her `db:migrate` de backups/ altına bir ön-migrasyon
-// dump'ı yazar; onları saymak, günlük iş haftalarca düşerken alarmı susturabiliyordu — ölçüldü:
-// en yeni dosya bir `migrate-mas_radar_dev-…` dump'ıydı ve günlük görev o sırada her gece exit 1
-// veriyordu. Alarm artık "bir dump var mı" değil, "günlük yedek işi çalışıyor mu" sorusudur.
 const BACKUP_LABEL = process.env.MAS_BACKUP_LABEL ?? "daily";
 const OFFDEVICE_BACKUP_DIR = (process.env.MAS_OFFDEVICE_BACKUP_DIR ?? "").trim();
 
-// Kalıcı alert log'u. backups/daily-runs.jsonl ile aynı JSONL deseni; ayrı bir dizinde çünkü
-// backups/ yedek dosyalarının retention budamasına tabi ve bir alarm geçmişi budanmamalı.
 const ALERT_LOG = process.env.MAS_ALERT_LOG ?? path.join(process.cwd(), "logs", "alerts.jsonl");
 
-// Uygulama probe'larının kökü. Tanımlı DEĞİLSE /ready ve /health ÖLÇÜLMEZ (uydurulmaz):
-// değer "(MAS_APP_BASE_URL yok — ölçülmedi)" olur ve bu bir uyarı SAYILMAZ. Tanımlıysa probe
-// gerçekten koşar ve 2xx dışındaki her cevap (ya da bağlanamama) UYARI verir — fail-closed.
 const APP_BASE_URL = (process.env.MAS_APP_BASE_URL ?? "").replace(/\/+$/, "");
-const PROBE_TIMEOUT_MS = 4000;
+const PROBE_TIMEOUT_MS = 8000;
+const SQL_UNKNOWN_NOTE = "UNKNOWN — veritabanı sorgusu başarısız, 0 sayılmaz";
 
 const RUN_ID = process.env.MAS_TELEMETRY_RUN_ID ?? `tel-${new Date().toISOString().replace(/[:.]/g, "-")}`;
 
@@ -104,13 +72,6 @@ function jsonOutPath(): string | null {
   return process.env.TELEMETRY_JSON_OUT || null;
 }
 
-/**
- * Rehber §14 listesinde olup BU MİMARİDE ölçülemeyen sinyaller.
- *
- * Boş bir yuvayı sahte bir metrikle doldurmak, kapsam iddiasını yalan yapar (rehber §28: "PASS
- * çünkü script PASS dedi" yasak ifadelerden). Bu yüzden her biri adıyla, sebebiyle ve neyin
- * gerekeceğiyle burada duruyor ve JSON çıktısının birinci sınıf alanı.
- */
 const NOT_OBTAINABLE: ReadonlyArray<{ signal: string; reason: string; wouldRequire: string }> = Object.freeze([
   {
     signal: "restart_count",
@@ -173,92 +134,176 @@ async function one<T>(sql: string, fallback: T): Promise<T> {
   }
 }
 
-/** Tek HTTP probe. Zaman aşımı zorunlu: cevap vermeyen bir uç, "ölçüm askıda kaldı" değil,
- *  "sağlıksız" demektir — asılı kalan bir telemetri koşusu zamanlayıcıda sessiz bir arızadır. */
+function unwrapErrorMessage(e: unknown): string {
+  if (e instanceof Error) {
+    const cause = (e as { cause?: unknown }).cause;
+    const causeMsg =
+      cause instanceof Error
+        ? cause.message
+        : typeof (cause as { message?: unknown } | undefined)?.message === "string"
+          ? String((cause as { message: string }).message)
+          : "";
+    return causeMsg && !e.message.includes(causeMsg) ? `${e.message} (${causeMsg})` : e.message;
+  }
+  return String(e);
+}
+
+/** HTTP probe with 8000ms timeout + 1 retry on transient socket/timeout errors, unwrapping cause. */
 async function probe(url: string): Promise<{ status: number | null; ms: number; error?: string; body?: string }> {
   const started = Date.now();
-  const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), PROBE_TIMEOUT_MS);
-  try {
-    const res = await fetch(url, { signal: ctrl.signal, cache: "no-store" });
-    const body = (await res.text()).slice(0, 400);
-    return { status: res.status, ms: Date.now() - started, body };
-  } catch (e) {
-    return { status: null, ms: Date.now() - started, error: (e as Error).name === "AbortError"
-      ? `zaman aşımı ${PROBE_TIMEOUT_MS}ms` : (e as Error).message.slice(0, 80) };
-  } finally {
-    clearTimeout(timer);
+  let lastError = "bilinmeyen ağ hatası";
+
+  for (let attempt = 1; attempt <= 2; attempt += 1) {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), PROBE_TIMEOUT_MS);
+    try {
+      const res = await fetch(url, { signal: ctrl.signal, cache: "no-store" });
+      const body = (await res.text()).slice(0, 600);
+      return { status: res.status, ms: Date.now() - started, body };
+    } catch (e) {
+      if ((e as Error)?.name === "AbortError") {
+        lastError = `zaman aşımı ${PROBE_TIMEOUT_MS}ms`;
+      } else {
+        lastError = unwrapErrorMessage(e).slice(0, 140);
+      }
+      if (attempt < 2) {
+        await new Promise((r) => setTimeout(r, 250));
+      }
+    } finally {
+      clearTimeout(timer);
+    }
   }
+
+  return { status: null, ms: Date.now() - started, error: lastError };
 }
 
 async function main(): Promise<void> {
   currentSection = "RUNTIME";
   console.log("── RUNTIME ────────────────────────────────────────────────────────────");
 
-  // Commit SHA is exposed by /version at runtime; here it is read from the environment the app
-  // would have been built with, so a snapshot taken from the shell still identifies the build.
-  record("commit_sha", process.env.APP_COMMIT_SHA ?? "(APP_COMMIT_SHA yok)",
-    false, "canlıda /version");
+  let resolvedCommitSha: string | null = process.env.APP_COMMIT_SHA?.trim() || null;
 
-  /* ── /ready + /health — AŞAMA 09'da GERÇEK probe oldu ──────────────────────────────────
-   *
-   * Bunlar eskiden yalnız "/ready" ve "/health" METİNLERİNİ basıyordu: hiçbir şey ölçülmüyor,
-   * ama çıktı ölçülmüş gibi görünüyordu. Rehber §14 "health, ready" istiyor — yolun adını değil,
-   * cevabını. MAS_APP_BASE_URL tanımlıysa gerçekten çağrılır; tanımlı değilse ÖLÇÜLMEDİĞİ
-   * yazılır ve sağlıklı SAYILMAZ (uyarı da vermez — yapılandırılmamış bir probe'un her koşuda
-   * kırmızı yanması, kapıyı okunmaz yapar; bu sınır kanıt dosyasında açıkça belgeli).
-   */
   if (APP_BASE_URL === "") {
+    record("commit_sha", resolvedCommitSha ?? "(APP_COMMIT_SHA yok)", false, "canlıda /version");
     record("probe_liveness", "(MAS_APP_BASE_URL yok — ölçülmedi)", false, "/ready · ölçmek için MAS_APP_BASE_URL verin");
     record("probe_dependency", "(MAS_APP_BASE_URL yok — ölçülmedi)", false, "/health · ölçmek için MAS_APP_BASE_URL verin");
     record("app_uptime_seconds", "(MAS_APP_BASE_URL yok — ölçülmedi)", false, "/version → uptimeSeconds");
   } else {
-    const ready = await probe(`${APP_BASE_URL}/ready`);
-    record("probe_liveness", ready.status === null ? `BAĞLANAMADI: ${ready.error}` : `HTTP ${ready.status} (${ready.ms}ms)`,
-      ready.status !== 200, "/ready — süreç ayakta mı", "P1");
+    const [ready, health, version] = await Promise.all([
+      probe(`${APP_BASE_URL}/ready`),
+      probe(`${APP_BASE_URL}/health`),
+      probe(`${APP_BASE_URL}/version`),
+    ]);
 
-    const health = await probe(`${APP_BASE_URL}/health`);
-    record("probe_dependency", health.status === null ? `BAĞLANAMADI: ${health.error}` : `HTTP ${health.status} (${health.ms}ms)`,
-      health.status !== 200, "/health — DB kopuksa 503; trafik gönderilsin mi", "P1");
-
-    const version = await probe(`${APP_BASE_URL}/version`);
     let uptime = version.status === null ? `BAĞLANAMADI: ${version.error}` : `(HTTP ${version.status} — alan yok)`;
     try {
-      const parsedBody = JSON.parse(version.body ?? "{}") as { uptimeSeconds?: number };
+      const parsedBody = JSON.parse(version.body ?? "{}") as {
+        uptimeSeconds?: number;
+        commit?: string;
+        buildId?: string;
+      };
       if (typeof parsedBody.uptimeSeconds === "number") uptime = `${parsedBody.uptimeSeconds}`;
-    } catch { /* JSON değilse yukarıdaki değer kalır */ }
+      if (!resolvedCommitSha) {
+        const candidateCommit = parsedBody.commit?.trim();
+        if (candidateCommit && candidateCommit !== "unknown") {
+          resolvedCommitSha = candidateCommit;
+        } else if (parsedBody.buildId && parsedBody.buildId !== "unreadable" && parsedBody.buildId !== "unknown") {
+          resolvedCommitSha = parsedBody.buildId.trim();
+        }
+      }
+    } catch {
+      /* JSON değilse yukarıdaki değer kalır */
+    }
+
+    record(
+      "commit_sha",
+      resolvedCommitSha ?? "(APP_COMMIT_SHA yok)",
+      false,
+      process.env.APP_COMMIT_SHA ? "ortamdan (APP_COMMIT_SHA)" : "canlı /version yanıtından",
+    );
+    record(
+      "probe_liveness",
+      ready.status === null ? `BAĞLANAMADI: ${ready.error}` : `HTTP ${ready.status} (${ready.ms}ms)`,
+      ready.status !== 200,
+      "/ready — süreç ayakta mı",
+      "P1",
+    );
+    record(
+      "probe_dependency",
+      health.status === null ? `BAĞLANAMADI: ${health.error}` : `HTTP ${health.status} (${health.ms}ms)`,
+      health.status !== 200,
+      "/health — DB/rol/şema sağlıksızsa 503; trafik gönderilsin mi",
+      "P1",
+    );
     record("app_uptime_seconds", uptime, false, "/version → uptimeSeconds; süreç yeniden başladıysa sıfırlanır");
   }
 
   currentSection = "DB";
   console.log("\n── VERİTABANI ─────────────────────────────────────────────────────────");
 
+  let dbReachable = false;
+  let dbReachableNote = "PostgreSQL bağlantısı doğrulandı";
+  try {
+    await pool.query("select 1");
+    dbReachable = true;
+  } catch (e) {
+    dbReachableNote = `UNKNOWN — veritabanına ulaşılamadı: ${unwrapErrorMessage(e).slice(0, 120)}`;
+  }
+  record("db_reachable", dbReachable ? "up" : "down", !dbReachable, dbReachableNote, "P0");
+
   const conns = await one<string>(`select count(*)::text from pg_stat_activity where datname = current_database()`, "?");
-  record("db_connections", conns, false, "");
+  record("db_connections", conns, conns === "?", conns === "?" ? SQL_UNKNOWN_NOTE : "", "P0");
 
   const dbSize = await one<string>(`select pg_size_pretty(pg_database_size(current_database()))`, "?");
-  record("db_size", dbSize, false, "");
+  record("db_size", dbSize, dbSize === "?", dbSize === "?" ? SQL_UNKNOWN_NOTE : "", "P1");
 
-  // Rehber §14 "uptime" — küme tarafı ölçülebilir ve gerçek: postmaster ne zamandır ayakta.
-  // Uygulama süreci uptime'ı ayrı bir sinyal (app_uptime_seconds), ikisi karıştırılmamalı.
   const dbUptime = await one<string>(
-    `select date_trunc('second', now() - pg_postmaster_start_time())::text`, "?");
-  record("db_uptime", dbUptime, false, "postmaster başlangıcından beri");
+    `select date_trunc('second', now() - pg_postmaster_start_time())::text`,
+    "?",
+  );
+  record(
+    "db_uptime",
+    dbUptime,
+    dbUptime === "?",
+    dbUptime === "?" ? SQL_UNKNOWN_NOTE : "postmaster başlangıcından beri",
+    "P1",
+  );
 
   const lockWaits = await one<string>(`select count(*)::text from pg_locks where not granted`, "?");
-  record("db_lock_waits", lockWaits, Number(lockWaits) > 0, Number(lockWaits) > 0 ? "bekleyen kilit var" : "");
+  const lockWaitsAlert = lockWaits === "?" || Number(lockWaits) > 0;
+  record(
+    "db_lock_waits",
+    lockWaits,
+    lockWaitsAlert,
+    lockWaits === "?" ? SQL_UNKNOWN_NOTE : Number(lockWaits) > 0 ? "bekleyen kilit var" : "",
+    "P1",
+  );
 
   const rolledBack = await one<string>(
-    `select coalesce(xact_rollback,0)::text from pg_stat_database where datname = current_database()`, "?");
-  record("db_failed_transactions", rolledBack, false, "kümülatif; ani artış incelenir");
+    `select coalesce(xact_rollback,0)::text from pg_stat_database where datname = current_database()`,
+    "?",
+  );
+  record(
+    "db_failed_transactions",
+    rolledBack,
+    rolledBack === "?",
+    rolledBack === "?" ? SQL_UNKNOWN_NOTE : "kümülatif; ani artış incelenir",
+    "P1",
+  );
 
-  // Rehber §14 "slow queries" — O ANDA koşan en uzun sorgu. GEÇMİŞ yavaş sorgu şekilleri bu
-  // süreçten görülemez (NOT_OBTAINABLE'a bakın); bu sinyal nokta-zamanlıdır ve öyle etiketlenir.
   const longest = await one<string>(
     `select coalesce(round(max(extract(epoch from (now() - query_start))))::text, '0')
        from pg_stat_activity
-      where datname = current_database() and state = 'active' and pid <> pg_backend_pid()`, "?");
-  record("db_longest_active_query_s", longest, false, "nokta-zamanlı; geçmiş için pg_stat_statements gerekir");
+      where datname = current_database() and state = 'active' and pid <> pg_backend_pid()`,
+    "?",
+  );
+  record(
+    "db_longest_active_query_s",
+    longest,
+    longest === "?",
+    longest === "?" ? SQL_UNKNOWN_NOTE : "nokta-zamanlı; geçmiş için pg_stat_statements gerekir",
+    "P1",
+  );
 
   /* ── ALERT 1 — backup age & off-device status (Faz 43 / B3) ──────────────────────────── */
   let backupAgeHours = Number.POSITIVE_INFINITY;
@@ -270,11 +315,13 @@ async function main(): Promise<void> {
       if (ageH < backupAgeHours) { backupAgeHours = ageH; newest = f; }
     }
   } catch { /* dizin yok — sonsuz yaş, alert */ }
-  record("backup_age_hours",
+  record(
+    "backup_age_hours",
     Number.isFinite(backupAgeHours) ? backupAgeHours.toFixed(1) : "YEDEK YOK",
     backupAgeAlert(backupAgeHours, BACKUP_MAX_AGE_HOURS),
     `eşik ${BACKUP_MAX_AGE_HOURS}s · yalnız ${BACKUP_LABEL}-*.dump · en yeni: ${newest}`,
-    "P1"); // §31 P1: "backup schedule/off-device control not operational before pilot"
+    "P1",
+  );
 
   const runLogPath = path.join(BACKUP_DIR, "daily-runs.jsonl");
   const rawRunLog = existsSync(runLogPath) ? readFileSync(runLogPath, "utf8") : null;
@@ -320,107 +367,172 @@ async function main(): Promise<void> {
   /* ── ALERT 2 — background queue stuck ─────────────────────────────────────────────────── */
   const stuck = await one<string>(
     `select count(*)::text from public.background_jobs
-      where status = 'running' and started_at < now() - interval '${JOB_STUCK_MINUTES} minutes'`, "?");
+      where status = 'running' and started_at < now() - interval '${JOB_STUCK_MINUTES} minutes'`,
+    "?",
+  );
   const deadLettered = await one<string>(
-    `select count(*)::text from public.background_jobs where dead_lettered_at is not null`, "?");
-  record("jobs_stuck", stuck, jobsStuckAlert(stuck), `> ${JOB_STUCK_MINUTES} dk 'running'`, "P1");
-  record("jobs_dead_lettered", deadLettered, false, "bilgi — elle replay gerekir");
+    `select count(*)::text from public.background_jobs where dead_lettered_at is not null`,
+    "?",
+  );
+  record(
+    "jobs_stuck",
+    stuck,
+    jobsStuckAlert(stuck),
+    stuck === "?" ? SQL_UNKNOWN_NOTE : `> ${JOB_STUCK_MINUTES} dk 'running'`,
+    "P1",
+  );
+  record(
+    "jobs_dead_lettered",
+    deadLettered,
+    deadLettered === "?",
+    deadLettered === "?" ? SQL_UNKNOWN_NOTE : "bilgi — elle replay gerekir",
+    "P1",
+  );
 
-  // Rehber §14 "background failures". Son 24 saatte terminal-hata durumuna düşen işler.
-  // Bilgi sinyali: tek bir başarısız iş yeniden denenir ve normaldir; ALARM eşiği takılı kuyruk
-  // (jobs_stuck) ve dead-letter tarafında zaten var — burada ikinci bir eşik uydurulmadı.
   const jobsFailed = await one<string>(
     `select count(*)::text from public.background_jobs
-      where status in ('failed','dead_letter') and coalesce(finished_at, updated_at) > now() - interval '24 hours'`, "?");
-  record("jobs_failed_24h", jobsFailed, false, "arka plan hataları — ani artış incelenir");
+      where status in ('failed','dead_letter') and coalesce(finished_at, updated_at) > now() - interval '24 hours'`,
+    "?",
+  );
+  record(
+    "jobs_failed_24h",
+    jobsFailed,
+    jobsFailed === "?",
+    jobsFailed === "?" ? SQL_UNKNOWN_NOTE : "arka plan hataları — ani artış incelenir",
+    "P1",
+  );
 
-  // Rehber §14 "failed import". Aynı tablo, yalnız içe aktarım tipleri: bir raporun düşmesiyle
-  // bir muhasebe dosyasının düşmesi aynı şey değildir.
   const importsFailed = await one<string>(
     `select count(*)::text from public.background_jobs
       where job_type in ('excel_import','bank_statement_import')
         and status in ('failed','dead_letter')
-        and coalesce(finished_at, updated_at) > now() - interval '24 hours'`, "?");
-  record("import_failures_24h", importsFailed, false, "excel/banka içe aktarımı — 24 saat");
+        and coalesce(finished_at, updated_at) > now() - interval '24 hours'`,
+    "?",
+  );
+  record(
+    "import_failures_24h",
+    importsFailed,
+    importsFailed === "?",
+    importsFailed === "?" ? SQL_UNKNOWN_NOTE : "excel/banka içe aktarımı — 24 saat",
+    "P1",
+  );
 
   /* ── ALERT 3 — latest import stale ────────────────────────────────────────────────────── */
-  // Column is imported_at, not created_at — source_workbooks records WHEN a workbook was imported,
-  // and it has no created_at. With the wrong name the query threw every run, the signal read "?"
-  // and the alert fired even on a perfectly fresh import: fail-closed, but useless. Caught by the
-  // integration verify, which now asserts the empty-table sentinel exactly so a column rename here
-  // cannot silently regress it again.
-  const importAgeDays = await one<string>(
-    `select coalesce(round(extract(epoch from (now() - max(imported_at))) / 86400)::text, 'İÇE AKTARIM YOK')
-       from public.source_workbooks`, "?");
-  record("latest_import_age_days", importAgeDays,
+  const importAgeDays = await (async (): Promise<string> => {
+    try {
+      const res = await pool.query<{ age_days: string }>(
+        `select coalesce(round(extract(epoch from (now() - max(imported_at))) / 86400)::text, 'İÇE AKTARIM YOK') as age_days
+           from public.valid_workbook_imports`,
+      );
+      return res.rows[0]?.age_days ?? "?";
+    } catch {
+      return await one<string>(
+        `select coalesce(round(extract(epoch from (now() - max(source_workbooks.imported_at))) / 86400)::text, 'İÇE AKTARIM YOK')
+           from public.source_workbooks
+          where status in ('parsed', 'mapped')
+            and exists (
+              select 1
+                from public.import_rows ir
+               where ir.workbook_id = source_workbooks.id
+            )`,
+        "?",
+      );
+    }
+  })();
+  record(
+    "latest_import_age_days",
+    importAgeDays,
     importStaleAlert(importAgeDays, IMPORT_STALE_DAYS),
-    `eşik ${IMPORT_STALE_DAYS} gün`,
-    "P2"); // §31: bayat kaynak veriyi BOZMAZ, geciktirir — P0/P1 listelerinde yok
+    importAgeDays === "?" ? SQL_UNKNOWN_NOTE : `eşik ${IMPORT_STALE_DAYS} gün`,
+    "P2",
+  );
 
   /* ── ALERT 4 — reconciliation mismatch ────────────────────────────────────────────────── */
   const reconMismatch = await one<string>(
-    `select count(*)::text from public.treasury_cashflow_reconciliation where coalesce(difference, 0) <> 0`, "?");
-  record("reconciliation_mismatch", reconMismatch,
-    reconciliationAlert(reconMismatch), "sıfırdan farklı satır sayısı",
-    "P0"); // §31 P0: "incorrect monetary KPI" / "double counting"
+    `select count(*)::text from public.treasury_cashflow_reconciliation where coalesce(difference, 0) <> 0`,
+    "?",
+  );
+  record(
+    "reconciliation_mismatch",
+    reconMismatch,
+    reconciliationAlert(reconMismatch),
+    reconMismatch === "?" ? SQL_UNKNOWN_NOTE : "sıfırdan farklı satır sayısı",
+    "P0",
+  );
 
   /* ── ALERT 5 — runtime identity ───────────────────────────────────────────────────────── */
-  //
-  // The one check that needs the RUNTIME connection rather than the owner one. Without
-  // DATABASE_URL it reports NOT DETERMINED, and not-determined counts as an alert — this is
-  // precisely the signal that was silently wrong on the real machine (P0-2: DATABASE_URL still
-  // pointed at `postgres`, so every RLS policy written since Faz 15 was inert).
   let runtimeUser = "(DATABASE_URL verilmedi)";
   if (process.env.DATABASE_URL) {
     const rt = new Pool({ connectionString: process.env.DATABASE_URL, max: 1 });
     try {
       runtimeUser = (await rt.query<{ u: string }>(`select current_user u`)).rows[0].u;
     } catch (e) {
-      runtimeUser = `BAĞLANAMADI: ${(e as Error).message.slice(0, 60)}`;
+      runtimeUser = `BAĞLANAMADI: ${unwrapErrorMessage(e).slice(0, 80)}`;
     } finally {
       await rt.end().catch(() => {});
     }
   }
-  record("runtime_user", runtimeUser, runtimeIdentityAlert(runtimeUser), "mas_radar_app olmalı — değilse RLS baypas",
-    "P0"); // §31 P0: "owner/superuser runtime" + "RLS bypass"
+  record(
+    "runtime_user",
+    runtimeUser,
+    runtimeIdentityAlert(runtimeUser),
+    "mas_radar_app olmalı — değilse RLS baypas",
+    "P0",
+  );
 
   /* ── ALERT 6 — schema ledger ──────────────────────────────────────────────────────────── */
   const ledger = await one<string>(
-    `select count(*)::text || '/' || coalesce(max(version), 'yok') from public.schema_migrations`, "?");
+    `select count(*)::text || '/' || coalesce(max(version), 'yok') from public.schema_migrations`,
+    "?",
+  );
   const expected = (() => {
     try {
       const files = readdirSync(path.join(process.cwd(), "supabase", "migrations"))
-        .filter((f) => f.endsWith(".sql")).sort();
+        .filter((f) => f.endsWith(".sql"))
+        .sort();
       return `${files.length}/${files[files.length - 1].slice(0, 4)}`;
-    } catch { return "?"; }
+    } catch {
+      return "?";
+    }
   })();
-  record("schema_ledger", ledger, ledgerAlert(ledger, expected), `beklenen ${expected}`,
-    "P0"); // §31 P0: "wrong ledger"
+  record(
+    "schema_ledger",
+    ledger,
+    ledgerAlert(ledger, expected),
+    ledger === "?" ? `${SQL_UNKNOWN_NOTE} (beklenen ${expected})` : `beklenen ${expected}`,
+    "P0",
+  );
 
-  /* ── auth / kimlik doğrulama — AŞAMA 09'da GERÇEK kaynağa taşındı ──────────────────────
-   *
-   * BULUNAN DEFEKT. Bu sinyal `audit_logs where action ilike '%login%fail%'` sorguluyordu.
-   * Ölçüldü: `src/app/login/actions.ts` başarısız girişte audit_logs'a HİÇBİR satır yazmıyor
-   * (BİLEREK — kullanıcı adını loglamak, yanlış kutuya yazılmış parolayı loglamak demektir).
-   * Yani sorgu YAPISAL olarak her zaman 0 döndürüyordu: ölü bir metrik, kapsam iddiası yalan.
-   *
-   * Gerçek ve kalıcı kaynak `public.users`: `failed_login_count` (başarılı girişte sıfırlanır)
-   * ve `locked_until` (0031'deki 5-deneme/15-dakika kilidi). İkisi de gerçekten yazılıyor.
-   */
+  /* ── auth / kimlik doğrulama ──────────────────────────────────────────────────────────── */
   const failedLogins = await one<string>(
-    `select coalesce(sum(failed_login_count), 0)::text from public.users`, "?");
-  record("auth_failed_logins", failedLogins, false, "users.failed_login_count toplamı — başarılı girişte sıfırlanır");
+    `select coalesce(sum(failed_login_count), 0)::text from public.users`,
+    "?",
+  );
+  record(
+    "auth_failed_logins",
+    failedLogins,
+    failedLogins === "?",
+    failedLogins === "?" ? SQL_UNKNOWN_NOTE : "users.failed_login_count toplamı — başarılı girişte sıfırlanır",
+    "P1",
+  );
 
   const lockedAccounts = await one<string>(
-    `select count(*)::text from public.users where locked_until is not null and locked_until > now()`, "?");
-  record("auth_locked_accounts", lockedAccounts, false, "şu an kilitli hesap (0031: 5 deneme / 15 dk)");
+    `select count(*)::text from public.users where locked_until is not null and locked_until > now()`,
+    "?",
+  );
+  record(
+    "auth_locked_accounts",
+    lockedAccounts,
+    lockedAccounts === "?",
+    lockedAccounts === "?" ? SQL_UNKNOWN_NOTE : "şu an kilitli hesap (0031: 5 deneme / 15 dk)",
+    "P1",
+  );
 
   /* ── ölçülemeyenler ───────────────────────────────────────────────────────────────────── */
   console.log("\n── ÖLÇÜLEMEYEN (rehber §14 listesinde var, bu mimaride toplayıcısı yok) ──");
   for (const n of NOT_OBTAINABLE) console.log(`ÖLÇÜLEMEZ  ${n.signal.padEnd(30)} ${n.reason.slice(0, 96)}`);
 
   /* ── özet + teslimat ──────────────────────────────────────────────────────────────────── */
-
   const alerts = signals.filter((s) => s.alert);
   console.log(`\n${signals.length - alerts.length}/${signals.length} sinyal normal.`);
   if (alerts.length > 0) {
@@ -429,11 +541,10 @@ async function main(): Promise<void> {
   }
   console.log(alerts.length === 0 ? "TELEMETRY: ALL CLEAR" : "TELEMETRY: ALERT");
 
-  // Ortamda GERÇEKTEN tanımlı sır değerleri — teslimat katmanına maskelenmek üzere verilir.
-  // Adları burada, DEĞERLERİ hiçbir yerde basılmaz.
   const redactValues = [
     "TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID", "EMAIL_API_KEY", "EMAIL_API_URL", "EMAIL_TO",
     "OPENAI_API_KEY", "DATABASE_URL", "MIGRATION_DATABASE_URL", "SEED_ADMIN_PASSWORD",
+    "BACKUP_ENCRYPTION_KEY",
   ].map((k) => process.env[k]).filter((v): v is string => typeof v === "string" && v.length > 0);
 
   const { channels, unknown } = parseAlertChannels(process.env.MAS_ALERT_CHANNELS);
@@ -452,24 +563,18 @@ async function main(): Promise<void> {
     logPath: ALERT_LOG,
     channels,
     redactValues,
+    pool: dbReachable ? pool : null,
   });
 
   console.log(`ALERT LOG: ${ALERT_LOG}`);
   for (const o of delivery.outcomes) {
     console.log(`  kanal ${o.channel.padEnd(9)} ${o.attempted ? (o.ok ? "İLETİLDİ" : `İLETİLEMEDİ — ${o.error ?? ""}`) : "denenmedi (uyarı yok)"}`);
   }
-  // Bilinmeyen kanal jetonu = sessizce kapanmış bir teslimat. Fail-closed.
   const channelConfigOk = unknown.length === 0;
   if (!channelConfigOk) {
     console.error(`MAS_ALERT_CHANNELS bilinmeyen kanal içeriyor: ${unknown.join(", ")} — teslimat yapılandırması güvenilmez.`);
   }
-  /* ── yapısal çıktı ─────────────────────────────────────────────────────────────────────
-   *
-   * TESLİMAT SATIRINDAN ÖNCE yazılır ve BİLEREK öyle: yazılamayan bir JSON da bir teslimat
-   * başarısızlığıdır (zamanlanmış iş koşu kaydını bu dosyadan kuruyor), dolayısıyla
-   * "TELEMETRY DELIVERY: OK" satırı ancak JSON da yazıldıktan sonra basılabilir. Aksi hâlde
-   * stdout "OK" derken çıkış kodu 2 olurdu — raporu okuyan kişiyi yanıltan tam olarak bu.
-   */
+
   const out = jsonOutPath();
   let jsonOk = true;
   const deliveredChannels = delivery.allDelivered && channelConfigOk;
@@ -480,7 +585,7 @@ async function main(): Promise<void> {
         kind: "mas-telemetry-snapshot-v1",
         runId: RUN_ID,
         generatedAt: new Date().toISOString(),
-        commitSha: process.env.APP_COMMIT_SHA ?? null,
+        commitSha: resolvedCommitSha,
         thresholds: {
           backupMaxAgeHours: BACKUP_MAX_AGE_HOURS,
           jobStuckMinutes: JOB_STUCK_MINUTES,
@@ -513,8 +618,6 @@ async function main(): Promise<void> {
   console.log(delivered ? "TELEMETRY DELIVERY: OK" : "TELEMETRY DELIVERY: FAILED");
 
   await pool.end();
-  // Teslimat başarısızlığı en yüksek önceliktedir: bilinen bir uyarıdan daha kötüdür, çünkü
-  // bundan sonraki uyarıların HİÇBİRİ görülmeyecek demektir.
   process.exit(!delivered ? 2 : alerts.length === 0 ? 0 : 1);
 }
 

@@ -1,4 +1,5 @@
 export const EDITORIAL_LINEN_TEXTURE = "/textures/editorial-linen-cream.webp" as const;
+export const ARCHIVAL_PARCHMENT_TILE = "/textures/archival-parchment-tile.webp" as const;
 
 export type CanonicalModuleKey =
   | "overview"
@@ -10,6 +11,54 @@ export type CanonicalModuleKey =
   | "insights"
   | "data"
   | "system";
+
+export type LifecycleStep = 1 | 2 | 3 | 4 | 5;
+
+export interface LifecycleStageSpec {
+  readonly step: LifecycleStep;
+  readonly shortLabel: string;
+  readonly label: string;
+  readonly href: string;
+  readonly description: string;
+}
+
+export const LIFECYCLE_STAGES: readonly LifecycleStageSpec[] = [
+  {
+    step: 1,
+    shortLabel: "1 · Veri Girişi",
+    label: "Veri Girişi & İçe Aktarım",
+    href: "/data/imports",
+    description: "Excel çalışma kitabı, banka ekstresi, e-Fatura ve açık bankacılık akışlarını içeri alın.",
+  },
+  {
+    step: 2,
+    shortLabel: "2 · Mutabakat & Güven",
+    label: "Mutabakat & Karar Güveni",
+    href: "/data/reconciliation",
+    description: "4-yönlü alt-defter bakiyelerini TDHP yönetim defteri, yasal mizan ve inceleme kuyruğuyla doğrulayın.",
+  },
+  {
+    step: 3,
+    shortLabel: "3 · Günlük Nakit & İcra",
+    label: "Günlük Nakit & Ödeme İcrası",
+    href: "/payments",
+    description: "Bugünkü serbest nakit, ödeme vadeleri, çek/kredi portföyü ve üretim ekonomisini yönetin.",
+  },
+  {
+    step: 4,
+    shortLabel: "4 · 13H Tahmin & Senaryo",
+    label: "13H Projeksiyon & Stres Senaryosu",
+    href: "/cashflow/13-week",
+    description: "13 haftalık nakit dar boğazlarını, döviz likiditesini ve stres senaryolarını simüle edin.",
+  },
+  {
+    step: 5,
+    shortLabel: "5 · CFO Raporu & Kontrol",
+    label: "CFO Raporu & Dönem Kapanışı",
+    href: "/insights/briefing",
+    description: "Kanıtlı CFO brifingi, iç kontrol denetimi ve dönem kapanışı güvencesini tamamlayın.",
+  },
+] as const;
 
 export interface ModuleQuickAction {
   readonly href: string;
@@ -24,6 +73,8 @@ export interface ModuleFramingSpec {
   readonly rootHref: string;
   readonly prefixes: readonly string[];
   readonly artworkSrc: string;
+  readonly lifecycleStage: LifecycleStep;
+  readonly lifecycleLabel: string;
   readonly quickActions: readonly ModuleQuickAction[];
 }
 
@@ -35,10 +86,12 @@ export const MODULE_FRAMING: Record<CanonicalModuleKey, ModuleFramingSpec> = {
     title: "Ana Ekran",
     rootHref: "/",
     prefixes: ["/overview"],
-    artworkSrc: "/modules/overview-cream.webp",
+    artworkSrc: "/visuals/treasury-ledger-hero.webp",
+    lifecycleStage: 3,
+    lifecycleLabel: "Günlük Nakit & Kokpit",
     quickActions: [
       { href: "/payments", label: "Ödeme radarı" },
-      { href: "/cashflow", label: "Nakit projeksiyonu" },
+      { href: "/cashflow/13-week", label: "13H nakit tahmini" },
       { href: "/finance", label: "Hazine özeti" },
     ],
   },
@@ -49,7 +102,9 @@ export const MODULE_FRAMING: Record<CanonicalModuleKey, ModuleFramingSpec> = {
     title: "Ödemeler",
     rootHref: "/payments",
     prefixes: ["/payments", "/radar", "/calendar"],
-    artworkSrc: "/modules/payments-cream.webp",
+    artworkSrc: "/visuals/payments-radar-hero.webp",
+    lifecycleStage: 3,
+    lifecycleLabel: "Günlük Ödeme İcrası",
     quickActions: [
       { href: "/payments/new", label: "Yeni ödeme ekle" },
       { href: "/payments/calendar", label: "Ödeme takvimi" },
@@ -62,7 +117,9 @@ export const MODULE_FRAMING: Record<CanonicalModuleKey, ModuleFramingSpec> = {
     title: "Nakit Akışı",
     rootHref: "/cashflow",
     prefixes: ["/cashflow"],
-    artworkSrc: "/modules/cashflow-cream.webp",
+    artworkSrc: "/visuals/cashflow-locks-hero.webp",
+    lifecycleStage: 4,
+    lifecycleLabel: "13H Projeksiyon & Likidite",
     quickActions: [
       { href: "/cashflow/13-week", label: "13 haftalık tahmin" },
       { href: "/scenarios", label: "Senaryoda dene" },
@@ -75,7 +132,9 @@ export const MODULE_FRAMING: Record<CanonicalModuleKey, ModuleFramingSpec> = {
     title: "Finansman",
     rootHref: "/finance",
     prefixes: ["/finance", "/financing"],
-    artworkSrc: "/modules/finance-cream.webp",
+    artworkSrc: "/visuals/finance-vault-hero.webp",
+    lifecycleStage: 3,
+    lifecycleLabel: "Hazine, Portföy & Defter",
     quickActions: [
       { href: "/finance/checks/new", label: "Yeni çek" },
       { href: "/finance/loans/new", label: "Yeni kredi" },
@@ -88,7 +147,9 @@ export const MODULE_FRAMING: Record<CanonicalModuleKey, ModuleFramingSpec> = {
     title: "Üretim",
     rootHref: "/production",
     prefixes: ["/production"],
-    artworkSrc: "/modules/production-cream.webp",
+    artworkSrc: "/visuals/precision-production-hero.webp",
+    lifecycleStage: 3,
+    lifecycleLabel: "Üretim Ekonomisi & Atölye",
     quickActions: [
       { href: "/production/capacity", label: "Kapasite modeli" },
       { href: "/production/profitability", label: "Parça kârlılığı" },
@@ -101,7 +162,9 @@ export const MODULE_FRAMING: Record<CanonicalModuleKey, ModuleFramingSpec> = {
     title: "Senaryolar",
     rootHref: "/scenarios",
     prefixes: ["/scenarios"],
-    artworkSrc: "/modules/scenarios-cream.webp",
+    artworkSrc: "/visuals/scenarios-armillary-hero.webp",
+    lifecycleStage: 4,
+    lifecycleLabel: "Stres Testi & Karar Simülasyonu",
     quickActions: [
       { href: "/scenarios", label: "Yeni senaryo" },
       { href: "/scenarios/compare", label: "Karşılaştırma" },
@@ -114,7 +177,9 @@ export const MODULE_FRAMING: Record<CanonicalModuleKey, ModuleFramingSpec> = {
     title: "İçgörüler",
     rootHref: "/insights/ask",
     prefixes: ["/insights", "/ask", "/reports", "/reminders"],
-    artworkSrc: "/modules/insights-cream.webp",
+    artworkSrc: "/visuals/insights-prism-hero.webp",
+    lifecycleStage: 5,
+    lifecycleLabel: "CFO Brifingi & Raporlama",
     quickActions: [
       { href: "/insights/reports", label: "Rapor oluştur" },
       { href: "/insights/briefing", label: "CFO brifingi" },
@@ -127,7 +192,9 @@ export const MODULE_FRAMING: Record<CanonicalModuleKey, ModuleFramingSpec> = {
     title: "Veri Merkezi",
     rootHref: "/data/quality",
     prefixes: ["/data", "/imports", "/data-quality", "/assumptions"],
-    artworkSrc: "/modules/data-cream.webp",
+    artworkSrc: "/visuals/data-archive-hero.webp",
+    lifecycleStage: 1,
+    lifecycleLabel: "Veri Girişi & Mutabakat",
     quickActions: [
       { href: "/data/imports", label: "Excel yükle" },
       { href: "/data/reconciliation", label: "Mutabakat" },
@@ -140,7 +207,9 @@ export const MODULE_FRAMING: Record<CanonicalModuleKey, ModuleFramingSpec> = {
     title: "Sistem",
     rootHref: "/system",
     prefixes: ["/system", "/admin", "/phases"],
-    artworkSrc: "/modules/system-cream.webp",
+    artworkSrc: "/visuals/internal-controls-hero.webp",
+    lifecycleStage: 5,
+    lifecycleLabel: "İç Kontrol & Dönem Güvencesi",
     quickActions: [
       { href: "/system/controls", label: "Kontrol merkezi" },
       { href: "/system/audit", label: "Denetim kayıtları" },
@@ -149,6 +218,20 @@ export const MODULE_FRAMING: Record<CanonicalModuleKey, ModuleFramingSpec> = {
 };
 
 const ORDERED_MODULES: readonly ModuleFramingSpec[] = Object.values(MODULE_FRAMING);
+
+const STAGE_2_PREFIXES = [
+  "/data/reconciliation",
+  "/data/quality",
+  "/data/reviews",
+  "/data/approvals",
+  "/data/trial-balance-bridge",
+  "/data-quality",
+  "/cashflow/controls",
+] as const;
+
+const STAGE_5_PREFIXES = [
+  "/cashflow/close",
+] as const;
 
 function matchPathToModule(pathValue: string | null | undefined): ModuleFramingSpec | null {
   if (!pathValue) return null;
@@ -162,6 +245,22 @@ function matchPathToModule(pathValue: string | null | undefined): ModuleFramingS
     }
   }
   return null;
+}
+
+export function resolveLifecycleStage(pathname: string | null | undefined): LifecycleStageSpec {
+  const clean = (pathname ?? "/").split("?")[0] || "/";
+  for (const prefix of STAGE_2_PREFIXES) {
+    if (clean === prefix || clean.startsWith(`${prefix}/`)) {
+      return LIFECYCLE_STAGES[1];
+    }
+  }
+  for (const prefix of STAGE_5_PREFIXES) {
+    if (clean === prefix || clean.startsWith(`${prefix}/`)) {
+      return LIFECYCLE_STAGES[4];
+    }
+  }
+  const moduleSpec = matchPathToModule(clean) ?? MODULE_FRAMING.overview;
+  return LIFECYCLE_STAGES[moduleSpec.lifecycleStage - 1];
 }
 
 export function resolveModuleFraming(input: {

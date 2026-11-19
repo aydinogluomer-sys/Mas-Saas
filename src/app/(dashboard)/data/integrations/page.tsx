@@ -1,3 +1,4 @@
+import { StackedRibbonSvg } from "@/components/charts/folio-visuals";
 import { getRequestUser } from "@/lib/auth";
 import { can } from "@/lib/authz/matrix";
 import { requireRouteAccess } from "@/lib/authz/route-guard";
@@ -5,11 +6,14 @@ import { Badge } from "@/components/ui/badge";
 import { Panel } from "@/components/ui/panel";
 import { EmptyState, KeyStat, PageHeader, TableShell } from "@/components/ui/shell";
 import { getPool } from "@/lib/db";
+import { decimal, money, moneyOrNull } from "@/lib/money";
 import { formatMoney } from "@/lib/money-format";
 import { listConnections } from "@/lib/integrations/engine";
 import {
   createIntegrationConnectionAction,
   importHybridBankStatementAction,
+  importPosSettlementBatchAction,
+  importUblTrInvoiceAction,
   resolveStagedPartyAction,
   runClosedLoopSyncAction,
   saveAccountMappingAction,
@@ -36,6 +40,8 @@ export default async function DataIntegrationsPage({
   const canResolveParties = session ? can(session.role, "integration_staged_parties", "update") : false;
   const canCreateParties = session ? can(session.role, "parties", "insert") : false;
   const canImportBank = session ? can(session.role, "bank_transactions", "insert") : false;
+  const canImportInvoices = session ? can(session.role, "invoices", "insert") : false;
+  const canImportPos = session ? can(session.role, "pos_settlement_batches", "insert") : false;
 
   const [
     connections,
@@ -47,6 +53,7 @@ export default async function DataIntegrationsPage({
     partiesRes,
     productsCountRes,
     productsRes,
+    posBatchesRes,
   ] = await Promise.all([
     listConnections(pool),
     pool
@@ -195,6 +202,45 @@ export default async function DataIntegrationsPage({
           limit 25`,
       )
       .catch(() => ({ rows: [] })),
+    pool
+      .query<{
+        id: string;
+        pos_terminal_label: string;
+        cash_account_name: string | null;
+        sale_date: string;
+        expected_value_date: string;
+        gross_amount: string;
+        commission_rate: string;
+        commission_amount: string;
+        net_settlement_amount: string;
+        currency: string;
+        is_settled: boolean;
+        provider: string | null;
+        payload_json: Record<string, unknown> | null;
+      }>(
+        `select psb.id::text,
+                psb.pos_terminal_label,
+                ca.name as cash_account_name,
+                to_char(psb.sale_date, 'YYYY-MM-DD') as sale_date,
+                to_char(psb.expected_value_date, 'YYYY-MM-DD') as expected_value_date,
+                psb.gross_amount::text as gross_amount,
+                psb.commission_rate::text as commission_rate,
+                psb.commission_amount::text as commission_amount,
+                psb.net_settlement_amount::text as net_settlement_amount,
+                psb.currency,
+                psb.is_settled,
+                iel.provider,
+                irp.payload_json
+           from public.pos_settlement_batches psb
+           left join public.cash_accounts ca on ca.id = psb.cash_account_id
+           left join public.integration_entity_links iel
+             on iel.entity_table = 'pos_settlement_batches' and iel.entity_id = psb.id
+           left join public.integration_raw_payloads irp
+             on irp.id = iel.last_payload_id
+          order by psb.sale_date desc, psb.created_at desc
+          limit 40`,
+      )
+      .catch(() => ({ rows: [] })),
   ]);
 
   const pendingStagedCount = stagedPartiesRes.rows.filter((r) => r.status === "pending").length;
@@ -203,8 +249,92 @@ export default async function DataIntegrationsPage({
   const totalProductsCount = productsCountRes.rows[0]?.total ?? 0;
   const activeProductsCount = productsCountRes.rows[0]?.active_count ?? 0;
 
+  // Exact @/lib/money reconciliation of POS settlement batches (TDHP 108)
+  const posRows = posBatchesRes.rows.map((row) => {
+    const gross = money(row.gross_amount);
+    const comm = money(row.commission_amount);
+    const rawJson = row.payload_json ?? {};
+    const rawBsmvCandidate =
+      rawJson.bsmv_amount ??
+      rawJson.bsmvAmount ??
+      rawJson.taxAmount ??
+      rawJson.bsmvTutari ??
+      rawJson.bsmv_tutari;
+    const bsmv =
+      typeof rawBsmvCandidate === "string" || typeof rawBsmvCandidate === "number"
+        ? (moneyOrNull(String(rawBsmvCandidate).replace(",", ".")) ?? 0)
+        : 0;
+    const commPlusBsmv = money(decimal(comm).plus(bsmv));
+    const net = money(row.net_settlement_amount);
+    const expectedNetDec = decimal(gross).minus(commPlusBsmv);
+    const discrepancyDec = decimal(net).minus(expectedNetDec);
+    const discrepancy = money(discrepancyDec);
+    const hasDiscrepancy = !discrepancyDec.eq(0);
+    return {
+      ...row,
+      gross,
+      comm,
+      bsmv,
+      commPlusBsmv,
+      net,
+      discrepancy,
+      hasDiscrepancy,
+    };
+  });
+
+  const posTryRows = posRows.filter((r) => r.currency === "TRY");
+  const hasPosTry = posTryRows.length > 0;
+  const posGrossTry = hasPosTry
+    ? money(posTryRows.reduce((acc, r) => acc.plus(r.gross), decimal(0)))
+    : null;
+  const posCommBsmvTry = hasPosTry
+    ? money(posTryRows.reduce((acc, r) => acc.plus(r.commPlusBsmv), decimal(0)))
+    : null;
+  const posNetTry = hasPosTry
+    ? money(posTryRows.reduce((acc, r) => acc.plus(r.net), decimal(0)))
+    : null;
+  const posDiscrepancyCount = posRows.filter((r) => r.hasDiscrepancy).length;
+
+  const channelRibbonSegments = [
+    {
+      key: "raw_evidence",
+      label: "SHA-256 Ham JSON Kanıtı",
+      value: rawPayloadCount,
+      formattedValue: `${rawPayloadCount}`,
+      tone: "info" as const,
+    },
+    {
+      key: "pos_batches",
+      label: "POS 108 Hakediş Yığını",
+      value: posRows.length,
+      formattedValue: `${posRows.length}`,
+      tone: "accent" as const,
+    },
+    {
+      key: "mapped_accounts",
+      label: "Eşlenen Banka/Kasa",
+      value: mappingsRes.rows.length,
+      formattedValue: `${mappingsRes.rows.length}`,
+      tone: "pos" as const,
+    },
+    {
+      key: "products",
+      label: "Ürün Kataloğu",
+      value: activeProductsCount,
+      formattedValue: `${activeProductsCount}`,
+      tone: "neutral" as const,
+    },
+    {
+      key: "staged_parties",
+      label: "Cari Aday Havuzu",
+      value: stagedPartiesRes.rows.length,
+      formattedValue: `${stagedPartiesRes.rows.length}`,
+      tone: pendingStagedCount > 0 ? ("warn" as const) : ("pos" as const),
+    },
+  ];
+
   const inputClass =
-    "rounded border px-2 py-1.5 text-xs focus:outline-none";
+    "rounded border px-2 py-1.5 text-base sm:text-xs focus:outline-none";
   const inputStyle = {
     background: "var(--surface-1)",
     borderColor: "var(--line)",
@@ -214,11 +344,11 @@ export default async function DataIntegrationsPage({
   return (
     <div className="space-y-4">
       <PageHeader
-        title="Entegrasyon Merkezi — Salt-Okunur Paraşüt API v4 & Hibrit Banka Hattı"
-        subtitle="Yalnız https://api.parasut.com/v4/... GET uçları üzerinden SHA-256 ham JSON kanıtlı senkronizasyon, cari aday onay kuyruğu ve MT940 / ISO 20022 camt.053 / Excel çapraz-kanal tekilleştirme."
+        title="Kurumsal Entegrasyon Merkezi — Türk Açık Bankacılık, GİB e-Fatura & POS 108"
+        subtitle="Garanti BBVA · İş Bankası · Yapı Kredi · Akbank · QNB açık bankacılık (CAMT.053 & BKM JSON), Foriba/FitBulut · Uyumsoft · İzibiz · QNB eFinans UBL-TR 1.2, iyzico/PayTR POS 108 gün sonu mutabakatı ve Paraşüt API v4."
         meta={
-          <Badge tone={pendingStagedCount > 0 ? "amber" : "green"} dot>
-            {enabledConnCount} aktif bağlantı · {pendingStagedCount} bekleyen cari aday · {activeProductsCount} aktif ürün/hizmet
+          <Badge tone={pendingStagedCount > 0 || posDiscrepancyCount > 0 ? "amber" : "green"} dot>
+            {enabledConnCount} aktif bağlantı · {posRows.length} POS yığını · {pendingStagedCount} bekleyen cari aday
           </Badge>
         }
         action={
@@ -228,7 +358,7 @@ export default async function DataIntegrationsPage({
                 type="submit"
                 className="button-accent px-3 py-2 font-mono text-xs uppercase tracking-wider"
               >
-                Kapalı Çevrim Tam Senkron (TCMB + Paraşüt + Defter + 13H)
+                Kapalı Çevrim Tam Senkron (TCMB + Banka + e-Fatura + POS + 13H)
               </button>
             </form>
           ) : null
@@ -264,7 +394,7 @@ export default async function DataIntegrationsPage({
         <KeyStat label="Aktif Bağlantı" value={enabledConnCount} tone={enabledConnCount > 0 ? "pos" : "neutral"} />
         <KeyStat label="Senkron Koşusu" value={syncRunsRes.rows.length} tone="info" />
         <KeyStat label="SHA-256 Ham JSON Kanıtı" value={rawPayloadCount} tone="pos" />
-        <KeyStat label="Eşlenen Hesap" value={mappingsRes.rows.length} tone="neutral" />
+        <KeyStat label="POS 108 Yığını" value={posRows.length} tone={posDiscrepancyCount > 0 ? "warn" : "info"} sub={posDiscrepancyCount > 0 ? `${posDiscrepancyCount} uyuşmazlık` : "mutabık"} />
         <KeyStat
           label="Bekleyen Cari Aday"
           value={pendingStagedCount}
@@ -276,6 +406,47 @@ export default async function DataIntegrationsPage({
           tone={totalProductsCount > 0 ? "info" : "neutral"}
           sub={`${activeProductsCount} aktif kalem`}
         />
+      </div>
+
+      {/* Kanal Bazlı Aktif/Senkron Kayıt Dağılımı + 3 Kurumsal Türkiye Konnektör Koridoru */}
+      <div className="folio-corner-mark rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface-1)] p-4 shadow-[var(--shadow-xs)]">
+        <StackedRibbonSvg
+          title="Entegrasyon Kanalları Arası Senkronize Kayıt Dağılımı"
+          segments={channelRibbonSegments}
+          emptyLabel="Henüz entegrasyon kanallarından çekilmiş kayıt yok — bağlantı ekleyip ilk senkronu tetikleyin veya dosya aktarın."
+        />
+        <div className="mt-3.5 grid gap-2.5 border-t border-[var(--border)] pt-3.5 text-xs md:grid-cols-3">
+          <div className="rounded border border-[var(--border)] bg-[var(--surface-2)]/60 p-2.5">
+            <div className="flex items-center justify-between gap-2">
+              <span className="font-semibold text-tone-1">1. Türk Açık Bankacılık (`bank_api`)</span>
+              <Badge tone="blue">CAMT.053 &amp; BKM</Badge>
+            </div>
+            <p className="mt-1 text-[11px] leading-relaxed text-tone-3">
+              Garanti BBVA (<code>garanti</code>), İş Bankası (<code>isbank</code>), Yapı Kredi (<code>yapikredi</code>),
+              Akbank (<code>akbank</code>), QNB (<code>qnb</code>) ve BKM Açık Bankacılık Geçidi (<code>bkm_tos</code>).
+            </p>
+          </div>
+          <div className="rounded border border-[var(--border)] bg-[var(--surface-2)]/60 p-2.5">
+            <div className="flex items-center justify-between gap-2">
+              <span className="font-semibold text-tone-1">2. GİB Özel Entegratör (`einvoice`)</span>
+              <Badge tone="green">UBL-TR 1.2</Badge>
+            </div>
+            <p className="mt-1 text-[11px] leading-relaxed text-tone-3">
+              Foriba / FitBulut (<code>fitbulut</code>), Uyumsoft (<code>uyumsoft</code>), İzibiz (<code>izibiz</code>)
+              ve QNB eFinans (<code>qnb_efinans</code>) — ETTN tekilleştirme ve S-10 cari kalkanı.
+            </p>
+          </div>
+          <div className="rounded border border-[var(--border)] bg-[var(--surface-2)]/60 p-2.5">
+            <div className="flex items-center justify-between gap-2">
+              <span className="font-semibold text-tone-1">3. POS Gün Sonu (`108` Hazır Değerler)</span>
+              <Badge tone="amber">iyzico · PayTR · Banka</Badge>
+            </div>
+            <p className="mt-1 text-[11px] leading-relaxed text-tone-3">
+              <code>iyzico</code>, <code>paytr</code> ve banka üye işyeri (<code>bank_pos</code>) hakedişlerinde{" "}
+              <code>Brüt − Komisyon − BSMV = Net</code> kuruş denetimi.
+            </p>
+          </div>
+        </div>
       </div>
 
       {/* 1) Bağlantılar */}
@@ -371,45 +542,79 @@ export default async function DataIntegrationsPage({
         {canManageConnections ? (
           <form
             action={createIntegrationConnectionAction}
-            className="mt-3 grid grid-cols-2 gap-2 rounded border p-3 text-xs sm:grid-cols-6"
+            className="mt-3 grid grid-cols-1 gap-2 rounded border p-3 text-xs sm:grid-cols-4 lg:grid-cols-8"
             style={{ background: "var(--surface-2)", borderColor: "var(--line)" }}
           >
             <select
               name="integrationKind"
-              defaultValue="accounting"
-              className={inputClass}
+              defaultValue="bank_api"
+              className={`sm:col-span-2 ${inputClass}`}
               style={inputStyle}
             >
-              <option value="accounting">Muhasebe (Paraşüt API v4)</option>
-              <option value="fx_rate">Döviz Kuru (TCMB)</option>
-              <option value="bank_api">Banka API</option>
-              <option value="einvoice">e-Fatura</option>
+              <option value="bank_api">
+                Türk Açık Bankacılık &amp; POS API (Garanti, İş, YK, Akbank, QNB, iyzico, PayTR)
+              </option>
+              <option value="einvoice">
+                GİB Özel Entegratör API (Foriba/FitBulut, Uyumsoft, İzibiz, QNB eFinans)
+              </option>
+              <option value="accounting">Muhasebe — Paraşüt API v4 (Canlı)</option>
+              <option value="fx_rate">Döviz Kuru — TCMB Bülteni + Arşiv (Canlı)</option>
             </select>
             <input
               name="name"
               required
-              placeholder="Bağlantı adı (ör. Paraşüt Ana Firma)"
+              placeholder="Bağlantı adı (ör. Garanti BBVA Açık Banka)"
               className={inputClass}
               style={inputStyle}
             />
-            <input
+            <select
               name="provider"
-              defaultValue="parasut"
-              placeholder="Sağlayıcı (parasut)"
+              defaultValue="garanti"
+              className={inputClass}
+              style={inputStyle}
+              aria-label="Entegrasyon sağlayıcısı"
+            >
+              <optgroup label="Türk Açık Bankacılık (CAMT.053 / BKM JSON)">
+                <option value="garanti">Garanti BBVA (garanti)</option>
+                <option value="isbank">Türkiye İş Bankası (isbank)</option>
+                <option value="yapikredi">Yapı Kredi (yapikredi)</option>
+                <option value="akbank">Akbank (akbank)</option>
+                <option value="qnb">QNB (qnb)</option>
+                <option value="bkm_tos">BKM Açık Bankacılık (bkm_tos)</option>
+              </optgroup>
+              <optgroup label="GİB Özel Entegratör (UBL-TR 1.2)">
+                <option value="fitbulut">Foriba / FitBulut (fitbulut)</option>
+                <option value="uyumsoft">Uyumsoft (uyumsoft)</option>
+                <option value="izibiz">İzibiz (izibiz)</option>
+                <option value="qnb_efinans">QNB eFinans (qnb_efinans)</option>
+              </optgroup>
+              <optgroup label="POS Gün Sonu Hakediş (108)">
+                <option value="iyzico">iyzico Hakediş (iyzico)</option>
+                <option value="paytr">PayTR Hakediş (paytr)</option>
+                <option value="bank_pos">Banka Üye İşyeri POS (bank_pos)</option>
+              </optgroup>
+              <optgroup label="Muhasebe & Merkez Bankası">
+                <option value="parasut">Paraşüt API v4 (parasut)</option>
+                <option value="tcmb">TCMB Döviz Bülteni (tcmb)</option>
+              </optgroup>
+            </select>
+            <input
+              name="baseUrl"
+              placeholder="API Uç Noktası (https://...)"
               className={inputClass}
               style={inputStyle}
             />
             <input
-              name="companyId"
-              placeholder="Paraşüt Firma No (company_id)"
-              className={inputClass}
+              name="ownTaxNumber"
+              placeholder="VKN / Firma No (opsiyonel)"
+              className={`font-mono ${inputClass}`}
               style={inputStyle}
             />
             <input
               name="credentialEnvVar"
-              defaultValue="PARASUT_PASSWORD"
-              placeholder="Env adı (PARASUT_PASSWORD)"
-              className={inputClass}
+              defaultValue="OPEN_BANKING_TOKEN"
+              placeholder="Env adı (ör. GARANTI_API_TOKEN)"
+              className={`font-mono ${inputClass}`}
               style={inputStyle}
             />
             <button
@@ -674,6 +879,241 @@ export default async function DataIntegrationsPage({
           )}
         </Panel>
       </div>
+
+      {/* 3B) GİB UBL-TR 1.2 e-Fatura / e-Arşiv (.xml / .zip) İçe Aktarma Masası (M-64) */}
+      <Panel
+        title="GİB UBL-TR 1.2 E-FATURA / E-ARŞİV (.XML VE .ZIP) ATOMİK İÇE AKTARMA MASASI"
+        subtitle="GİB UBL-TR 1.2 standart XML veya toplu ZIP paketlerini ayrıştırır; ETTN (ubl_uuid) ile mükerrer kaydı önler, tanınmayan VKN'leri S-10 cari aday kuyruğuna düşürür ve eşleşen faturaları SHA-256 doküman kanıtı + TDHP yönetim yevmiyesiyle birlikte kaydeder."
+        right={<Badge tone="green">UBL-TR 1.2 · XML / ZIP Aktif</Badge>}
+      >
+        {canImportInvoices ? (
+          <form
+            action={importUblTrInvoiceAction}
+            className="grid grid-cols-1 gap-2 rounded border p-3 text-xs sm:grid-cols-4"
+            style={{ background: "var(--surface-2)", borderColor: "var(--line)" }}
+          >
+            <div>
+              <label className="mb-1 block text-[11px]" style={{ color: "var(--text-2)" }}>
+                Varsayılan Fatura Yönü
+              </label>
+              <select
+                name="defaultDirection"
+                defaultValue="purchase"
+                className={`w-full ${inputClass}`}
+                style={inputStyle}
+              >
+                <option value="purchase">Gelen e-Fatura (Alış / Gider)</option>
+                <option value="sales">Giden e-Fatura / e-Arşiv (Satış)</option>
+              </select>
+            </div>
+            <div>
+              <label className="mb-1 block text-[11px]" style={{ color: "var(--text-2)" }}>
+                Kendi VKN / TCKN (Otomatik Yön Tespiti İçin)
+              </label>
+              <input
+                name="ownTaxNumber"
+                placeholder="Ör. 1234567890 (opsiyonel)"
+                className={`w-full font-mono ${inputClass}`}
+                style={inputStyle}
+              />
+            </div>
+            <div>
+              <label className="mb-1 block text-[11px]" style={{ color: "var(--text-2)" }}>
+                UBL-TR Dosyası (`.xml` veya `.zip`)
+              </label>
+              <input
+                type="file"
+                name="file"
+                required
+                accept=".xml,.zip"
+                className={`w-full ${inputClass}`}
+                style={inputStyle}
+              />
+            </div>
+            <div className="flex items-end">
+              <button
+                type="submit"
+                className="button-accent w-full px-3 py-1.5 font-medium"
+              >
+                UBL-TR e-Fatura Paketi İçe Aktar
+              </button>
+            </div>
+          </form>
+        ) : (
+          <EmptyState>
+            UBL-TR e-Fatura içe aktarmak için fatura oluşturma yetkisi gereklidir.
+          </EmptyState>
+        )}
+      </Panel>
+
+      {/* 3C) POS Gün Sonu Mutabakatı (TDHP 108 Hazır Değerler / Kredi Kartı Alacakları) */}
+      <Panel
+        title="POS GÜN SONU MUTABAKATI (TDHP 108 HAZIR DEĞERLER / KREDİ KARTI ALACAKLARI)"
+        subtitle="iyzico, PayTR ve banka üye işyeri gün sonu CSV/JSON dosyalarını idempotent olarak pos_settlement_batches tablosuna kaydeder; Brüt Satış − (Komisyon + BSMV) = Net Hakediş denklemini kuruş hassasiyetiyle denetler."
+        right={
+          <Badge tone={posDiscrepancyCount > 0 ? "amber" : "green"} dot>
+            {posDiscrepancyCount > 0
+              ? `${posDiscrepancyCount} komisyon uyuşmazlık uyarısı`
+              : "108 POS mutabakatı temiz"}
+          </Badge>
+        }
+      >
+        <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+          <KeyStat
+            label="Brüt Satış (TRY)"
+            value={formatMoney(posGrossTry, "TRY")}
+            tone="info"
+            sub={hasPosTry ? `${posTryRows.length} TRY yığını` : "henüz POS yığını yok"}
+          />
+          <KeyStat
+            label="Komisyon + BSMV (TRY)"
+            value={formatMoney(posCommBsmvTry, "TRY")}
+            tone="neutral"
+            sub="kesinti toplamı"
+          />
+          <KeyStat
+            label="Net Hakediş (TRY)"
+            value={formatMoney(posNetTry, "TRY")}
+            tone="pos"
+            sub="valörde hesaba geçecek"
+          />
+          <KeyStat
+            label="Komisyon Uyuşmazlık Uyarısı"
+            value={posDiscrepancyCount}
+            tone={posDiscrepancyCount > 0 ? "warn" : "pos"}
+            sub="Brüt − Kesinti ≠ Net"
+          />
+        </div>
+
+        {canImportPos ? (
+          <form
+            action={importPosSettlementBatchAction}
+            className="mt-3 grid grid-cols-1 gap-2 rounded border p-3 text-xs sm:grid-cols-4"
+            style={{ background: "var(--surface-2)", borderColor: "var(--line)" }}
+          >
+            <div>
+              <label className="mb-1 block text-[11px]" style={{ color: "var(--text-2)" }}>
+                POS Sağlayıcısı / Kanal
+              </label>
+              <select
+                name="provider"
+                defaultValue="iyzico"
+                className={`w-full ${inputClass}`}
+                style={inputStyle}
+              >
+                <option value="iyzico">iyzico Gün Sonu Hakediş (JSON / CSV)</option>
+                <option value="paytr">PayTR Hakediş Raporu (JSON / CSV)</option>
+                <option value="bank_pos">Banka Üye İşyeri POS Gün Sonu (CSV / JSON)</option>
+              </select>
+            </div>
+            <div>
+              <label className="mb-1 block text-[11px]" style={{ color: "var(--text-2)" }}>
+                Hedef Valör Hesabı (Opsiyonel)
+              </label>
+              <select
+                name="cashAccountId"
+                defaultValue=""
+                className={`w-full ${inputClass}`}
+                style={inputStyle}
+              >
+                <option value="">Otomatik eşlenen / aktif banka hesabı</option>
+                {bankAccountsRes.rows.map((ba) => (
+                  <option key={ba.id} value={ba.id}>
+                    {ba.name} ({ba.currency}) {ba.iban ? `— ${ba.iban}` : ""}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="mb-1 block text-[11px]" style={{ color: "var(--text-2)" }}>
+                POS Hakediş Dosyası (`.csv` veya `.json`)
+              </label>
+              <input
+                type="file"
+                name="file"
+                required
+                accept=".csv,.json,text/csv,application/json"
+                className={`w-full ${inputClass}`}
+                style={inputStyle}
+              />
+            </div>
+            <div className="flex items-end">
+              <button
+                type="submit"
+                className="button-accent w-full px-3 py-1.5 font-medium"
+              >
+                POS Gün Sonu Yığınını Aktar
+              </button>
+            </div>
+          </form>
+        ) : null}
+
+        <div className="mt-3">
+          {posRows.length > 0 ? (
+            <TableShell>
+              <table className="w-full text-xs">
+                <thead>
+                  <tr className="text-left font-mono text-[10px] uppercase text-tone-4">
+                    <th className="py-1.5 pr-2">Terminal / Sağlayıcı</th>
+                    <th className="py-1.5 pr-2">Satış Tarihi</th>
+                    <th className="py-1.5 pr-2">Beklenen Valör</th>
+                    <th className="py-1.5 pr-2 text-right">Brüt Satış</th>
+                    <th className="py-1.5 pr-2 text-right">Komisyon + BSMV</th>
+                    <th className="py-1.5 pr-2 text-right">Net Hakediş</th>
+                    <th className="py-1.5 pr-2">Valör Hesabı</th>
+                    <th className="py-1.5">Mutabakat Durumu</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {posRows.map((row) => (
+                    <tr key={row.id} className="border-t border-line-faint">
+                      <td className="py-1.5 pr-2 font-medium" style={{ color: "var(--text-1)" }}>
+                        <div>{row.pos_terminal_label}</div>
+                        {row.provider ? (
+                          <span className="font-mono text-[10px] text-tone-3">{row.provider}</span>
+                        ) : null}
+                      </td>
+                      <td className="py-1.5 pr-2 font-mono text-xs tabular-nums">{row.sale_date}</td>
+                      <td className="py-1.5 pr-2 font-mono text-xs tabular-nums">
+                        {row.expected_value_date}
+                      </td>
+                      <td className="py-1.5 pr-2 text-right font-mono text-xs tabular-nums">
+                        {formatMoney(row.gross, row.currency)}
+                      </td>
+                      <td className="py-1.5 pr-2 text-right font-mono text-xs tabular-nums">
+                        {formatMoney(row.commPlusBsmv, row.currency)}
+                      </td>
+                      <td className="py-1.5 pr-2 text-right font-mono text-xs font-semibold tabular-nums">
+                        {formatMoney(row.net, row.currency)}
+                      </td>
+                      <td className="py-1.5 pr-2 text-xs text-tone-2">
+                        {row.cash_account_name ?? "—"}
+                      </td>
+                      <td className="py-1.5">
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          {row.hasDiscrepancy ? (
+                            <Badge tone="amber" dot>
+                              Komisyon Uyuşmazlık ({formatMoney(row.discrepancy, row.currency)})
+                            </Badge>
+                          ) : (
+                            <Badge tone={row.is_settled ? "green" : "blue"}>
+                              {row.is_settled ? "Hesaba Geçti" : "108 Valör Bekliyor"}
+                            </Badge>
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </TableShell>
+          ) : (
+            <EmptyState>
+              Henüz kayıtlı POS gün sonu hakediş yığını yok — iyzico, PayTR veya banka üye işyeri CSV/JSON dosyasını yukarıdan aktarabilirsiniz.
+            </EmptyState>
+          )}
+        </div>
+      </Panel>
 
       {/* 4) Entegre Ürün / Hizmet Kataloğu (F-41) */}
       <Panel

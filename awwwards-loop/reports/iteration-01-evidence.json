@@ -1,0 +1,377 @@
+{
+  "totalChecks": 24,
+  "http500Count": 0,
+  "overflowFailures": [
+    {
+      "route": "/finance/ledger",
+      "viewport": "tablet (768x1024)",
+      "status": 200,
+      "overflowPx": 3,
+      "darkSurfaceCount": 0,
+      "consoleErrors": [],
+      "pageErrors": [],
+      "screenshotPath": "C:\\Users\\Trade Bilisim\\Mas Saas\\awwwards-loop\\screenshots\\iteration-01\\awwwards_v2_tablet_finance-ledger.png"
+    }
+  ],
+  "darkSurfaceFailures": [],
+  "consoleErrorCount": 2,
+  "pageErrorCount": 0,
+  "chartProof": {
+    "route": "/",
+    "state3m": {
+      "yTicks": [
+        "218,5 B",
+        "163,9 B",
+        "109,2 B",
+        "54,6 B",
+        "0"
+      ],
+      "pathDs": [],
+      "rectHeights": [
+        {
+          "y": null,
+          "h": "7"
+        },
+        {
+          "y": null,
+          "h": "7"
+        },
+        {
+          "y": null,
+          "h": "7"
+        },
+        {
+          "y": null,
+          "h": "7"
+        },
+        {
+          "y": null,
+          "h": "7"
+        },
+        {
+          "y": null,
+          "h": "7"
+        }
+      ]
+    },
+    "stateAll": {
+      "yTicks": [
+        "586,5 B",
+        "439,9 B",
+        "293,3 B",
+        "146,6 B",
+        "0"
+      ],
+      "pathDs": [],
+      "rectHeights": [
+        {
+          "y": null,
+          "h": "7"
+        },
+        {
+          "y": null,
+          "h": "7"
+        },
+        {
+          "y": null,
+          "h": "7"
+        },
+        {
+          "y": null,
+          "h": "7"
+        },
+        {
+          "y": null,
+          "h": "7"
+        },
+        {
+          "y": null,
+          "h": "7"
+        }
+      ]
+    },
+    "state3mFullHorizon": {
+      "yTicks": [
+        "258,7 B",
+        "194,1 B",
+        "129,4 B",
+        "64,7 B",
+        "0"
+      ],
+      "pathDs": [],
+      "rectHeights": [
+        {
+          "y": null,
+          "h": "7"
+        },
+        {
+          "y": null,
+          "h": "7"
+        },
+        {
+          "y": null,
+          "h": "7"
+        },
+        {
+          "y": null,
+          "h": "7"
+        },
+        {
+          "y": null,
+          "h": "7"
+        },
+        {
+          "y": null,
+          "h": "7"
+        }
+      ]
+    },
+    "yTicksChangedBetween3mAndAll": true,
+    "geometryChangedBetweenWindowAndFullScale": true
+  },
+  "checks": [
+    {
+      "route": "/",
+      "viewport": "desktop (1366x900)",
+      "status": 200,
+      "overflowPx": 0,
+      "darkSurfaceCount": 0,
+      "consoleErrors": [],
+      "pageErrors": [],
+      "screenshotPath": "C:\\Users\\Trade Bilisim\\Mas Saas\\awwwards-loop\\screenshots\\iteration-01\\awwwards_v2_desktop_overview.png"
+    },
+    {
+      "route": "/cashflow",
+      "viewport": "desktop (1366x900)",
+      "status": 200,
+      "overflowPx": 0,
+      "darkSurfaceCount": 0,
+      "consoleErrors": [],
+      "pageErrors": [],
+      "screenshotPath": "C:\\Users\\Trade Bilisim\\Mas Saas\\awwwards-loop\\screenshots\\iteration-01\\awwwards_v2_desktop_cashflow.png"
+    },
+    {
+      "route": "/cashflow/13-week",
+      "viewport": "desktop (1366x900)",
+      "status": 200,
+      "overflowPx": 0,
+      "darkSurfaceCount": 0,
+      "consoleErrors": [
+        "Error: An error occurred in the Server Components render. The specific message is omitted in production builds to avoid leaking sensitive details. A digest property is included on this error instance which may provide additional details about the nature of the error.",
+        "[DashboardError] Error: An error occurred in the Server Components render. The specific message is omitted in production builds to avoid leaking sensitive details. A digest property is included on this error instance which may provide additional details about the nature of the error."
+      ],
+      "pageErrors": [],
+      "screenshotPath": "C:\\Users\\Trade Bilisim\\Mas Saas\\awwwards-loop\\screenshots\\iteration-01\\awwwards_v2_desktop_cashflow-13w.png"
+    },
+    {
+      "route": "/finance",
+      "viewport": "desktop (1366x900)",
+      "status": 200,
+      "overflowPx": 0,
+      "darkSurfaceCount": 0,
+      "consoleErrors": [],
+      "pageErrors": [],
+      "screenshotPath": "C:\\Users\\Trade Bilisim\\Mas Saas\\awwwards-loop\\screenshots\\iteration-01\\awwwards_v2_desktop_finance.png"
+    },
+    {
+      "route": "/finance/ledger",
+      "viewport": "desktop (1366x900)",
+      "status": 200,
+      "overflowPx": 0,
+      "darkSurfaceCount": 0,
+      "consoleErrors": [],
+      "pageErrors": [],
+      "screenshotPath": "C:\\Users\\Trade Bilisim\\Mas Saas\\awwwards-loop\\screenshots\\iteration-01\\awwwards_v2_desktop_finance-ledger.png"
+    },
+    {
+      "route": "/production",
+      "viewport": "desktop (1366x900)",
+      "status": 200,
+      "overflowPx": 0,
+      "darkSurfaceCount": 0,
+      "consoleErrors": [],
+      "pageErrors": [],
+      "screenshotPath": "C:\\Users\\Trade Bilisim\\Mas Saas\\awwwards-loop\\screenshots\\iteration-01\\awwwards_v2_desktop_production.png"
+    },
+    {
+      "route": "/scenarios",
+      "viewport": "desktop (1366x900)",
+      "status": 200,
+      "overflowPx": 0,
+      "darkSurfaceCount": 0,
+      "consoleErrors": [],
+      "pageErrors": [],
+      "screenshotPath": "C:\\Users\\Trade Bilisim\\Mas Saas\\awwwards-loop\\screenshots\\iteration-01\\awwwards_v2_desktop_scenarios.png"
+    },
+    {
+      "route": "/insights",
+      "viewport": "desktop (1366x900)",
+      "status": 200,
+      "overflowPx": 0,
+      "darkSurfaceCount": 0,
+      "consoleErrors": [],
+      "pageErrors": [],
+      "screenshotPath": "C:\\Users\\Trade Bilisim\\Mas Saas\\awwwards-loop\\screenshots\\iteration-01\\awwwards_v2_desktop_insights.png"
+    },
+    {
+      "route": "/data/imports",
+      "viewport": "desktop (1366x900)",
+      "status": 200,
+      "overflowPx": 0,
+      "darkSurfaceCount": 0,
+      "consoleErrors": [],
+      "pageErrors": [],
+      "screenshotPath": "C:\\Users\\Trade Bilisim\\Mas Saas\\awwwards-loop\\screenshots\\iteration-01\\awwwards_v2_desktop_data-imports.png"
+    },
+    {
+      "route": "/data/integrations",
+      "viewport": "desktop (1366x900)",
+      "status": 200,
+      "overflowPx": 0,
+      "darkSurfaceCount": 0,
+      "consoleErrors": [],
+      "pageErrors": [],
+      "screenshotPath": "C:\\Users\\Trade Bilisim\\Mas Saas\\awwwards-loop\\screenshots\\iteration-01\\awwwards_v2_desktop_data-integrations.png"
+    },
+    {
+      "route": "/system/features",
+      "viewport": "desktop (1366x900)",
+      "status": 200,
+      "overflowPx": 0,
+      "darkSurfaceCount": 0,
+      "consoleErrors": [],
+      "pageErrors": [],
+      "screenshotPath": "C:\\Users\\Trade Bilisim\\Mas Saas\\awwwards-loop\\screenshots\\iteration-01\\awwwards_v2_desktop_system-features.png"
+    },
+    {
+      "route": "/system/security",
+      "viewport": "desktop (1366x900)",
+      "status": 200,
+      "overflowPx": 0,
+      "darkSurfaceCount": 0,
+      "consoleErrors": [],
+      "pageErrors": [],
+      "screenshotPath": "C:\\Users\\Trade Bilisim\\Mas Saas\\awwwards-loop\\screenshots\\iteration-01\\awwwards_v2_desktop_system-security.png"
+    },
+    {
+      "route": "/",
+      "viewport": "tablet (768x1024)",
+      "status": 200,
+      "overflowPx": 0,
+      "darkSurfaceCount": 0,
+      "consoleErrors": [],
+      "pageErrors": [],
+      "screenshotPath": "C:\\Users\\Trade Bilisim\\Mas Saas\\awwwards-loop\\screenshots\\iteration-01\\awwwards_v2_tablet_overview.png"
+    },
+    {
+      "route": "/cashflow",
+      "viewport": "tablet (768x1024)",
+      "status": 200,
+      "overflowPx": 0,
+      "darkSurfaceCount": 0,
+      "consoleErrors": [],
+      "pageErrors": [],
+      "screenshotPath": "C:\\Users\\Trade Bilisim\\Mas Saas\\awwwards-loop\\screenshots\\iteration-01\\awwwards_v2_tablet_cashflow.png"
+    },
+    {
+      "route": "/finance/ledger",
+      "viewport": "tablet (768x1024)",
+      "status": 200,
+      "overflowPx": 3,
+      "darkSurfaceCount": 0,
+      "consoleErrors": [],
+      "pageErrors": [],
+      "screenshotPath": "C:\\Users\\Trade Bilisim\\Mas Saas\\awwwards-loop\\screenshots\\iteration-01\\awwwards_v2_tablet_finance-ledger.png"
+    },
+    {
+      "route": "/production",
+      "viewport": "tablet (768x1024)",
+      "status": 200,
+      "overflowPx": 0,
+      "darkSurfaceCount": 0,
+      "consoleErrors": [],
+      "pageErrors": [],
+      "screenshotPath": "C:\\Users\\Trade Bilisim\\Mas Saas\\awwwards-loop\\screenshots\\iteration-01\\awwwards_v2_tablet_production.png"
+    },
+    {
+      "route": "/scenarios",
+      "viewport": "tablet (768x1024)",
+      "status": 200,
+      "overflowPx": 0,
+      "darkSurfaceCount": 0,
+      "consoleErrors": [],
+      "pageErrors": [],
+      "screenshotPath": "C:\\Users\\Trade Bilisim\\Mas Saas\\awwwards-loop\\screenshots\\iteration-01\\awwwards_v2_tablet_scenarios.png"
+    },
+    {
+      "route": "/data/imports",
+      "viewport": "tablet (768x1024)",
+      "status": 200,
+      "overflowPx": 0,
+      "darkSurfaceCount": 0,
+      "consoleErrors": [],
+      "pageErrors": [],
+      "screenshotPath": "C:\\Users\\Trade Bilisim\\Mas Saas\\awwwards-loop\\screenshots\\iteration-01\\awwwards_v2_tablet_data-imports.png"
+    },
+    {
+      "route": "/",
+      "viewport": "mobile (375x812)",
+      "status": 200,
+      "overflowPx": 0,
+      "darkSurfaceCount": 0,
+      "consoleErrors": [],
+      "pageErrors": [],
+      "screenshotPath": "C:\\Users\\Trade Bilisim\\Mas Saas\\awwwards-loop\\screenshots\\iteration-01\\awwwards_v2_mobile_overview.png"
+    },
+    {
+      "route": "/cashflow",
+      "viewport": "mobile (375x812)",
+      "status": 200,
+      "overflowPx": 0,
+      "darkSurfaceCount": 0,
+      "consoleErrors": [],
+      "pageErrors": [],
+      "screenshotPath": "C:\\Users\\Trade Bilisim\\Mas Saas\\awwwards-loop\\screenshots\\iteration-01\\awwwards_v2_mobile_cashflow.png"
+    },
+    {
+      "route": "/finance/ledger",
+      "viewport": "mobile (375x812)",
+      "status": 200,
+      "overflowPx": 0,
+      "darkSurfaceCount": 0,
+      "consoleErrors": [],
+      "pageErrors": [],
+      "screenshotPath": "C:\\Users\\Trade Bilisim\\Mas Saas\\awwwards-loop\\screenshots\\iteration-01\\awwwards_v2_mobile_finance-ledger.png"
+    },
+    {
+      "route": "/production",
+      "viewport": "mobile (375x812)",
+      "status": 200,
+      "overflowPx": 0,
+      "darkSurfaceCount": 0,
+      "consoleErrors": [],
+      "pageErrors": [],
+      "screenshotPath": "C:\\Users\\Trade Bilisim\\Mas Saas\\awwwards-loop\\screenshots\\iteration-01\\awwwards_v2_mobile_production.png"
+    },
+    {
+      "route": "/scenarios",
+      "viewport": "mobile (375x812)",
+      "status": 200,
+      "overflowPx": 0,
+      "darkSurfaceCount": 0,
+      "consoleErrors": [],
+      "pageErrors": [],
+      "screenshotPath": "C:\\Users\\Trade Bilisim\\Mas Saas\\awwwards-loop\\screenshots\\iteration-01\\awwwards_v2_mobile_scenarios.png"
+    },
+    {
+      "route": "/data/imports",
+      "viewport": "mobile (375x812)",
+      "status": 200,
+      "overflowPx": 0,
+      "darkSurfaceCount": 0,
+      "consoleErrors": [],
+      "pageErrors": [],
+      "screenshotPath": "C:\\Users\\Trade Bilisim\\Mas Saas\\awwwards-loop\\screenshots\\iteration-01\\awwwards_v2_mobile_data-imports.png"
+    }
+  ]
+}

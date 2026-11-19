@@ -131,7 +131,7 @@ describe("Wave 4B — F-35, F-37, F-38, F-41, F-43, F-44 bağlantı sözleşmesi
     expect(recActions).toContain("proposeAllocation");
     expect(recPage).toContain("public.invoice_party_summary");
     expect(recPage).toContain("public.collection_allocations");
-    expect(cpPage).toContain("loadCurrentAccountLedger");
+    expect(cpPage).toMatch(/loadCurrentAccountLedger|loadUnifiedCounterpartyStatement/);
   });
 
   it("F-38: bütçe ve kontroller ekranları recordActual, setLineVersion ve budget_variance_summary bağlar", () => {

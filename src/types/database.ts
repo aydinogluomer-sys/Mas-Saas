@@ -3,6 +3,40 @@
 
 export type Json = string | number | boolean | null | { [key: string]: Json } | Json[];
 
+export interface AccountingPeriodsRow {
+  id: string;
+  legal_entity_id: string | null;
+  period_month: string;
+  status: string;
+  checklist_json: Json;
+  close_note: string | null;
+  locked_at: string | null;
+  locked_by: string | null;
+  reopened_at: string | null;
+  reopened_by: string | null;
+  reopen_reason: string | null;
+  lock_fingerprint: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface AccountingPeriodsInsert {
+  id?: string;
+  legal_entity_id?: string | null;
+  period_month: string;
+  status?: string;
+  checklist_json?: Json;
+  close_note?: string | null;
+  locked_at?: string | null;
+  locked_by?: string | null;
+  reopened_at?: string | null;
+  reopened_by?: string | null;
+  reopen_reason?: string | null;
+  lock_fingerprint?: string | null;
+  created_at?: string;
+  updated_at?: string;
+}
+
 export interface ActionItemsRow {
   id: string;
   title: string;
@@ -22,6 +56,8 @@ export interface ActionItemsRow {
   archived_at: string | null;
   archive_reason: string | null;
   archived_by_label: string | null;
+  owner_user_id: string | null;
+  auto_close_on_settlement: boolean;
 }
 
 export interface ActionItemsInsert {
@@ -43,6 +79,8 @@ export interface ActionItemsInsert {
   archived_at?: string | null;
   archive_reason?: string | null;
   archived_by_label?: string | null;
+  owner_user_id?: string | null;
+  auto_close_on_settlement?: boolean;
 }
 
 export interface AiResponseSnapshotsRow {
@@ -314,6 +352,8 @@ export interface BackgroundJobsRow {
   created_at: string;
   updated_at: string;
   result: Json | null;
+  heartbeat_at: string | null;
+  artifact_document_id: string | null;
 }
 
 export interface BackgroundJobsInsert {
@@ -337,6 +377,8 @@ export interface BackgroundJobsInsert {
   created_at?: string;
   updated_at?: string;
   result?: Json | null;
+  heartbeat_at?: string | null;
+  artifact_document_id?: string | null;
 }
 
 export interface BankAccountsRow {
@@ -475,6 +517,88 @@ export interface BankTransactionsInsert {
   cross_channel_dedupe_hash?: string | null;
 }
 
+export interface BomHeadersRow {
+  id: string;
+  part_id: string;
+  version_code: string;
+  batch_size: number;
+  subcontract_cost_per_unit: number;
+  subcontract_currency: string;
+  is_active: boolean;
+  notes: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface BomHeadersInsert {
+  id?: string;
+  part_id: string;
+  version_code?: string;
+  batch_size?: number;
+  subcontract_cost_per_unit?: number;
+  subcontract_currency?: string;
+  is_active?: boolean;
+  notes?: string | null;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface BomLinesRow {
+  id: string;
+  bom_id: string;
+  line_no: number;
+  raw_material_item_id: string | null;
+  material_label: string;
+  qty_per_unit: number;
+  scrap_pct: number;
+  unit_cost_override: number | null;
+  currency: string;
+  work_center_id: string | null;
+  std_setup_minutes: number;
+  std_run_minutes: number;
+  created_at: string;
+}
+
+export interface BomLinesInsert {
+  id?: string;
+  bom_id: string;
+  line_no?: number;
+  raw_material_item_id?: string | null;
+  material_label: string;
+  qty_per_unit?: number;
+  scrap_pct?: number;
+  unit_cost_override?: number | null;
+  currency?: string;
+  work_center_id?: string | null;
+  std_setup_minutes?: number;
+  std_run_minutes?: number;
+  created_at?: string;
+}
+
+export interface BranchesRow {
+  id: string;
+  legal_entity_id: string;
+  code: string;
+  name: string;
+  city: string | null;
+  is_headquarters: boolean;
+  is_active: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface BranchesInsert {
+  id?: string;
+  legal_entity_id: string;
+  code: string;
+  name: string;
+  city?: string | null;
+  is_headquarters?: boolean;
+  is_active?: boolean;
+  created_at?: string;
+  updated_at?: string;
+}
+
 export interface BudgetLinesRow {
   id: string;
   budget_id: string;
@@ -532,6 +656,8 @@ export interface BudgetsRow {
   created_by: string | null;
   created_at: string;
   updated_at: string;
+  legal_entity_id: string | null;
+  branch_id: string | null;
 }
 
 export interface BudgetsInsert {
@@ -545,6 +671,8 @@ export interface BudgetsInsert {
   created_by?: string | null;
   created_at?: string;
   updated_at?: string;
+  legal_entity_id?: string | null;
+  branch_id?: string | null;
 }
 
 export interface CapacityModelsRow {
@@ -607,6 +735,11 @@ export interface CashAccountsRow {
   created_at: string;
   opening_balance_date: string;
   opening_journal_entry_id: string | null;
+  legal_entity_id: string | null;
+  branch_id: string | null;
+  archived_at: string | null;
+  archive_reason: string | null;
+  archived_by_label: string | null;
 }
 
 export interface CashAccountsInsert {
@@ -621,6 +754,11 @@ export interface CashAccountsInsert {
   created_at?: string;
   opening_balance_date?: string;
   opening_journal_entry_id?: string | null;
+  legal_entity_id?: string | null;
+  branch_id?: string | null;
+  archived_at?: string | null;
+  archive_reason?: string | null;
+  archived_by_label?: string | null;
 }
 
 export interface CashflowLinesRow {
@@ -637,6 +775,7 @@ export interface CashflowLinesRow {
   date_value: string | null;
   notes: string | null;
   created_at: string;
+  currency: string;
 }
 
 export interface CashflowLinesInsert {
@@ -653,6 +792,7 @@ export interface CashflowLinesInsert {
   date_value?: string | null;
   notes?: string | null;
   created_at?: string;
+  currency?: string;
 }
 
 export interface CashflowMonthsRow {
@@ -829,6 +969,14 @@ export interface ChecksRow {
   collateral_ltv_ratio: number | null;
   settled_invoice_id: string | null;
   last_bordro_id: string | null;
+  legal_entity_id: string | null;
+  branch_id: string | null;
+  issue_date: string | null;
+  issue_place: string | null;
+  drawer_tax_no: string | null;
+  discount_fee_amount: number | null;
+  factored_at: string | null;
+  settled_bank_txn_id: string | null;
 }
 
 export interface ChecksInsert {
@@ -865,6 +1013,14 @@ export interface ChecksInsert {
   collateral_ltv_ratio?: number | null;
   settled_invoice_id?: string | null;
   last_bordro_id?: string | null;
+  legal_entity_id?: string | null;
+  branch_id?: string | null;
+  issue_date?: string | null;
+  issue_place?: string | null;
+  drawer_tax_no?: string | null;
+  discount_fee_amount?: number | null;
+  factored_at?: string | null;
+  settled_bank_txn_id?: string | null;
 }
 
 export interface CollateralRecordsRow {
@@ -961,6 +1117,38 @@ export interface ControlAlertsInsert {
   updated_at?: string;
 }
 
+export interface CorporateCardStatementsRow {
+  id: string;
+  card_account_id: string;
+  pay_from_account_id: string | null;
+  statement_month: string;
+  cutoff_date: string;
+  due_date: string;
+  statement_amount: number;
+  minimum_payment_amount: number | null;
+  paid_amount: number;
+  currency: string;
+  is_settled: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CorporateCardStatementsInsert {
+  id?: string;
+  card_account_id: string;
+  pay_from_account_id?: string | null;
+  statement_month: string;
+  cutoff_date: string;
+  due_date: string;
+  statement_amount: number;
+  minimum_payment_amount?: number | null;
+  paid_amount?: number;
+  currency?: string;
+  is_settled?: boolean;
+  created_at?: string;
+  updated_at?: string;
+}
+
 export interface CostAllocationRulesRow {
   id: string;
   code: string;
@@ -1027,6 +1215,8 @@ export interface CostCentersRow {
   notes: string | null;
   created_at: string;
   updated_at: string;
+  legal_entity_id: string | null;
+  branch_id: string | null;
 }
 
 export interface CostCentersInsert {
@@ -1037,6 +1227,8 @@ export interface CostCentersInsert {
   notes?: string | null;
   created_at?: string;
   updated_at?: string;
+  legal_entity_id?: string | null;
+  branch_id?: string | null;
 }
 
 export interface CostModelItemsRow {
@@ -1218,6 +1410,11 @@ export interface CreditFacilitiesRow {
   created_at: string;
   updated_at: string;
   drawn_amount: number;
+  legal_entity_id: string | null;
+  branch_id: string | null;
+  archived_at: string | null;
+  archive_reason: string | null;
+  archived_by_label: string | null;
 }
 
 export interface CreditFacilitiesInsert {
@@ -1237,6 +1434,41 @@ export interface CreditFacilitiesInsert {
   created_at?: string;
   updated_at?: string;
   drawn_amount?: number;
+  legal_entity_id?: string | null;
+  branch_id?: string | null;
+  archived_at?: string | null;
+  archive_reason?: string | null;
+  archived_by_label?: string | null;
+}
+
+export interface CustomerRateCardsRow {
+  id: string;
+  party_id: string | null;
+  customer_label: string;
+  work_center_id: string | null;
+  operation_type: string;
+  rate_per_minute: number;
+  currency: string;
+  valid_from: string;
+  valid_to: string | null;
+  is_active: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CustomerRateCardsInsert {
+  id?: string;
+  party_id?: string | null;
+  customer_label: string;
+  work_center_id?: string | null;
+  operation_type?: string;
+  rate_per_minute: number;
+  currency?: string;
+  valid_from?: string;
+  valid_to?: string | null;
+  is_active?: boolean;
+  created_at?: string;
+  updated_at?: string;
 }
 
 export interface DepartmentsRow {
@@ -1297,6 +1529,9 @@ export interface DocumentsRow {
   created_at: string;
   updated_at: string;
   original_filename: string | null;
+  extracted_metadata: Json | null;
+  storage_backend: string;
+  archived_by_label: string | null;
 }
 
 export interface DocumentsInsert {
@@ -1313,6 +1548,9 @@ export interface DocumentsInsert {
   created_at?: string;
   updated_at?: string;
   original_filename?: string | null;
+  extracted_metadata?: Json | null;
+  storage_backend?: string;
+  archived_by_label?: string | null;
 }
 
 export interface ExternalAssumptionsRow {
@@ -1363,6 +1601,40 @@ export interface ExternalAssumptionsInsert {
   archived_at?: string | null;
   archive_reason?: string | null;
   archived_by_label?: string | null;
+}
+
+export interface FacilityInterestAccrualsRow {
+  id: string;
+  facility_id: string;
+  accrual_month: string;
+  average_utilized_balance: number;
+  days_in_period: number;
+  annual_rate_pct: number;
+  interest_amount: number;
+  bsmv_amount: number;
+  kkdf_amount: number;
+  total_charge: number;
+  currency: string;
+  journal_entry_id: string | null;
+  is_settled: boolean;
+  created_at: string;
+}
+
+export interface FacilityInterestAccrualsInsert {
+  id?: string;
+  facility_id: string;
+  accrual_month: string;
+  average_utilized_balance: number;
+  days_in_period: number;
+  annual_rate_pct: number;
+  interest_amount: number;
+  bsmv_amount?: number;
+  kkdf_amount?: number;
+  total_charge: number;
+  currency?: string;
+  journal_entry_id?: string | null;
+  is_settled?: boolean;
+  created_at?: string;
 }
 
 export interface FacilityMovementsRow {
@@ -1908,6 +2180,116 @@ export interface IntegrationSyncRunsInsert {
   updated_at?: string;
 }
 
+export interface InterbankTransfersRow {
+  id: string;
+  from_account_id: string;
+  to_account_id: string;
+  transfer_date: string;
+  from_amount: number;
+  from_currency: string;
+  to_amount: number;
+  to_currency: string;
+  fx_rate: number;
+  fee_amount: number;
+  outflow_bank_txn_id: string | null;
+  inflow_bank_txn_id: string | null;
+  journal_entry_id: string | null;
+  description: string | null;
+  created_by: string | null;
+  created_at: string;
+}
+
+export interface InterbankTransfersInsert {
+  id?: string;
+  from_account_id: string;
+  to_account_id: string;
+  transfer_date?: string;
+  from_amount: number;
+  from_currency?: string;
+  to_amount: number;
+  to_currency?: string;
+  fx_rate?: number;
+  fee_amount?: number;
+  outflow_bank_txn_id?: string | null;
+  inflow_bank_txn_id?: string | null;
+  journal_entry_id?: string | null;
+  description?: string | null;
+  created_by?: string | null;
+  created_at?: string;
+}
+
+export interface InventoryItemsRow {
+  id: string;
+  legal_entity_id: string | null;
+  sku: string;
+  name: string;
+  item_type: string;
+  tdhp_account_code: string;
+  unit: string;
+  currency: string;
+  standard_unit_cost: number;
+  on_hand_qty: number;
+  reorder_point: number;
+  lead_time_days: number;
+  linked_part_id: string | null;
+  is_active: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface InventoryItemsInsert {
+  id?: string;
+  legal_entity_id?: string | null;
+  sku: string;
+  name: string;
+  item_type?: string;
+  tdhp_account_code?: string;
+  unit?: string;
+  currency?: string;
+  standard_unit_cost?: number;
+  on_hand_qty?: number;
+  reorder_point?: number;
+  lead_time_days?: number;
+  linked_part_id?: string | null;
+  is_active?: boolean;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface InventoryMovementsRow {
+  id: string;
+  item_id: string;
+  movement_type: string;
+  qty: number;
+  unit_cost: number;
+  currency: string;
+  fx_rate_to_try: number;
+  work_order_id: string | null;
+  invoice_id: string | null;
+  journal_entry_id: string | null;
+  occurred_on: string;
+  notes: string | null;
+  created_by: string | null;
+  created_at: string;
+}
+
+export interface InventoryMovementsInsert {
+  id?: string;
+  item_id: string;
+  movement_type: string;
+  qty: number;
+  unit_cost?: number;
+  currency?: string;
+  fx_rate_to_try?: number;
+  work_order_id?: string | null;
+  invoice_id?: string | null;
+  journal_entry_id?: string | null;
+  occurred_on?: string;
+  notes?: string | null;
+  created_by?: string | null;
+  created_at?: string;
+}
+
 export interface InvoiceAllocationsRow {
   id: string;
   invoice_id: string;
@@ -1959,6 +2341,10 @@ export interface InvoiceLinesRow {
   created_at: string;
   updated_at: string;
   department_id: string | null;
+  discount_rate: number | null;
+  discount_amount: number | null;
+  income_tax_withholding_rate: number | null;
+  income_tax_withholding_amount: number | null;
 }
 
 export interface InvoiceLinesInsert {
@@ -1980,6 +2366,10 @@ export interface InvoiceLinesInsert {
   created_at?: string;
   updated_at?: string;
   department_id?: string | null;
+  discount_rate?: number | null;
+  discount_amount?: number | null;
+  income_tax_withholding_rate?: number | null;
+  income_tax_withholding_amount?: number | null;
 }
 
 export interface InvoiceReversalsRow {
@@ -2049,6 +2439,17 @@ export interface InvoicesRow {
   external_status: string | null;
   external_key: string | null;
   spender_employee_name: string | null;
+  legal_entity_id: string | null;
+  branch_id: string | null;
+  discount_total: number;
+  income_tax_withholding_total: number;
+  ubl_uuid: string | null;
+  source_document_id: string | null;
+  is_doubtful: boolean;
+  doubtful_provision_entry_id: string | null;
+  archived_at: string | null;
+  archive_reason: string | null;
+  archived_by_label: string | null;
 }
 
 export interface InvoicesInsert {
@@ -2094,6 +2495,85 @@ export interface InvoicesInsert {
   external_status?: string | null;
   external_key?: string | null;
   spender_employee_name?: string | null;
+  legal_entity_id?: string | null;
+  branch_id?: string | null;
+  discount_total?: number;
+  income_tax_withholding_total?: number;
+  ubl_uuid?: string | null;
+  source_document_id?: string | null;
+  is_doubtful?: boolean;
+  doubtful_provision_entry_id?: string | null;
+  archived_at?: string | null;
+  archive_reason?: string | null;
+  archived_by_label?: string | null;
+}
+
+export interface LegalEntitiesRow {
+  id: string;
+  code: string;
+  name: string;
+  tax_id_vkn: string | null;
+  mersis_no: string | null;
+  tax_office: string | null;
+  base_currency: string;
+  is_default: boolean;
+  is_active: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface LegalEntitiesInsert {
+  id?: string;
+  code: string;
+  name: string;
+  tax_id_vkn?: string | null;
+  mersis_no?: string | null;
+  tax_office?: string | null;
+  base_currency?: string;
+  is_default?: boolean;
+  is_active?: boolean;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface LetterOfGuaranteesRow {
+  id: string;
+  facility_id: string | null;
+  beneficiary_party_id: string | null;
+  beneficiary_name: string;
+  guarantee_type: string;
+  reference_no: string;
+  amount: number;
+  currency: string;
+  commission_rate_annual: number;
+  quarterly_commission_amount: number;
+  issue_date: string;
+  expiry_date: string | null;
+  is_active: boolean;
+  returned_at: string | null;
+  journal_entry_id: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface LetterOfGuaranteesInsert {
+  id?: string;
+  facility_id?: string | null;
+  beneficiary_party_id?: string | null;
+  beneficiary_name: string;
+  guarantee_type?: string;
+  reference_no: string;
+  amount: number;
+  currency?: string;
+  commission_rate_annual?: number;
+  quarterly_commission_amount?: number;
+  issue_date?: string;
+  expiry_date?: string | null;
+  is_active?: boolean;
+  returned_at?: string | null;
+  journal_entry_id?: string | null;
+  created_at?: string;
+  updated_at?: string;
 }
 
 export interface LoanInstallmentsRow {
@@ -2111,6 +2591,8 @@ export interface LoanInstallmentsRow {
   cancelled_at: string | null;
   cancel_reason: string | null;
   paid_amount: number | null;
+  bsmv_component: number | null;
+  kkdf_component: number | null;
 }
 
 export interface LoanInstallmentsInsert {
@@ -2128,6 +2610,8 @@ export interface LoanInstallmentsInsert {
   cancelled_at?: string | null;
   cancel_reason?: string | null;
   paid_amount?: number | null;
+  bsmv_component?: number | null;
+  kkdf_component?: number | null;
 }
 
 export interface LoansRow {
@@ -2157,6 +2641,15 @@ export interface LoansRow {
   archive_reason: string | null;
   archived_by_label: string | null;
   currency: string;
+  legal_entity_id: string | null;
+  branch_id: string | null;
+  loan_kind: string;
+  interest_type: string;
+  reference_rate_pct: number | null;
+  spread_bps: number | null;
+  disbursement_account_id: string | null;
+  opening_journal_entry_id: string | null;
+  source_row_id: string | null;
 }
 
 export interface LoansInsert {
@@ -2186,6 +2679,15 @@ export interface LoansInsert {
   archive_reason?: string | null;
   archived_by_label?: string | null;
   currency?: string;
+  legal_entity_id?: string | null;
+  branch_id?: string | null;
+  loan_kind?: string;
+  interest_type?: string;
+  reference_rate_pct?: number | null;
+  spread_bps?: number | null;
+  disbursement_account_id?: string | null;
+  opening_journal_entry_id?: string | null;
+  source_row_id?: string | null;
 }
 
 export interface MachineAssetsRow {
@@ -2270,6 +2772,13 @@ export interface MachineRoiSnapshotsRow {
   confidence: string;
   notes: string | null;
   created_at: string;
+  useful_life_years: number | null;
+  discount_rate_pct: number | null;
+  annual_depreciation: number | null;
+  tax_shield_amount: number | null;
+  npv_try: number | null;
+  irr_pct: number | null;
+  discounted_payback_months: number | null;
 }
 
 export interface MachineRoiSnapshotsInsert {
@@ -2286,6 +2795,13 @@ export interface MachineRoiSnapshotsInsert {
   confidence?: string;
   notes?: string | null;
   created_at?: string;
+  useful_life_years?: number | null;
+  discount_rate_pct?: number | null;
+  annual_depreciation?: number | null;
+  tax_shield_amount?: number | null;
+  npv_try?: number | null;
+  irr_pct?: number | null;
+  discounted_payback_months?: number | null;
 }
 
 export interface ManagementAccountsRow {
@@ -2331,6 +2847,8 @@ export interface ManagementJournalEntriesRow {
   approved_at: string | null;
   created_by: string | null;
   created_at: string;
+  legal_entity_id: string | null;
+  branch_id: string | null;
 }
 
 export interface ManagementJournalEntriesInsert {
@@ -2349,6 +2867,8 @@ export interface ManagementJournalEntriesInsert {
   approved_at?: string | null;
   created_by?: string | null;
   created_at?: string;
+  legal_entity_id?: string | null;
+  branch_id?: string | null;
 }
 
 export interface ManagementJournalLinesRow {
@@ -2523,6 +3043,10 @@ export interface OrdersRow {
   notes: string | null;
   created_at: string;
   updated_at: string;
+  order_amount: number | null;
+  currency: string | null;
+  expected_delivery_date: string | null;
+  fulfillment_stage: string | null;
 }
 
 export interface OrdersInsert {
@@ -2535,6 +3059,10 @@ export interface OrdersInsert {
   notes?: string | null;
   created_at?: string;
   updated_at?: string;
+  order_amount?: number | null;
+  currency?: string | null;
+  expected_delivery_date?: string | null;
+  fulfillment_stage?: string | null;
 }
 
 export interface PartProfitabilityRunsRow {
@@ -2580,6 +3108,9 @@ export interface PartiesRow {
   approval_id: string | null;
   approved_by: string | null;
   approved_at: string | null;
+  archived_at: string | null;
+  archive_reason: string | null;
+  archived_by_label: string | null;
 }
 
 export interface PartiesInsert {
@@ -2595,6 +3126,9 @@ export interface PartiesInsert {
   approval_id?: string | null;
   approved_by?: string | null;
   approved_at?: string | null;
+  archived_at?: string | null;
+  archive_reason?: string | null;
+  archived_by_label?: string | null;
 }
 
 export interface PaymentInstancesRow {
@@ -2627,6 +3161,8 @@ export interface PaymentInstancesRow {
   approval_id: string | null;
   approved_by: string | null;
   approved_at: string | null;
+  bank_transaction_id: string | null;
+  journal_entry_id: string | null;
 }
 
 export interface PaymentInstancesInsert {
@@ -2658,6 +3194,8 @@ export interface PaymentInstancesInsert {
   approval_id?: string | null;
   approved_by?: string | null;
   approved_at?: string | null;
+  bank_transaction_id?: string | null;
+  journal_entry_id?: string | null;
 }
 
 export interface PaymentRunItemsRow {
@@ -2792,6 +3330,11 @@ export interface PaymentsRow {
   cost_center_id: string | null;
   project_id: string | null;
   department_id: string | null;
+  legal_entity_id: string | null;
+  branch_id: string | null;
+  iban: string | null;
+  tdhp_expense_code: string | null;
+  auto_match_vkn: string | null;
 }
 
 export interface PaymentsInsert {
@@ -2824,6 +3367,81 @@ export interface PaymentsInsert {
   cost_center_id?: string | null;
   project_id?: string | null;
   department_id?: string | null;
+  legal_entity_id?: string | null;
+  branch_id?: string | null;
+  iban?: string | null;
+  tdhp_expense_code?: string | null;
+  auto_match_vkn?: string | null;
+}
+
+export interface PayrollTaxAccrualsRow {
+  id: string;
+  period_month: string;
+  obligation_kind: string;
+  due_date: string;
+  accrued_amount: number;
+  paid_amount: number;
+  currency: string;
+  department_id: string | null;
+  cost_center_id: string | null;
+  journal_entry_id: string | null;
+  is_paid: boolean;
+  notes: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface PayrollTaxAccrualsInsert {
+  id?: string;
+  period_month: string;
+  obligation_kind: string;
+  due_date: string;
+  accrued_amount: number;
+  paid_amount?: number;
+  currency?: string;
+  department_id?: string | null;
+  cost_center_id?: string | null;
+  journal_entry_id?: string | null;
+  is_paid?: boolean;
+  notes?: string | null;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface PosSettlementBatchesRow {
+  id: string;
+  cash_account_id: string;
+  pos_terminal_label: string;
+  sale_date: string;
+  expected_value_date: string;
+  gross_amount: number;
+  commission_rate: number;
+  commission_amount: number;
+  net_settlement_amount: number;
+  currency: string;
+  is_settled: boolean;
+  settled_at: string | null;
+  settled_bank_txn_id: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface PosSettlementBatchesInsert {
+  id?: string;
+  cash_account_id: string;
+  pos_terminal_label: string;
+  sale_date: string;
+  expected_value_date: string;
+  gross_amount: number;
+  commission_rate?: number;
+  commission_amount?: number;
+  net_settlement_amount: number;
+  currency?: string;
+  is_settled?: boolean;
+  settled_at?: string | null;
+  settled_bank_txn_id?: string | null;
+  created_at?: string;
+  updated_at?: string;
 }
 
 export interface ProductionPartsRow {
@@ -2875,6 +3493,9 @@ export interface ProductsRow {
   notes: string | null;
   created_at: string;
   updated_at: string;
+  unit_cost: number | null;
+  unit_price: number | null;
+  currency: string | null;
 }
 
 export interface ProductsInsert {
@@ -2886,6 +3507,9 @@ export interface ProductsInsert {
   notes?: string | null;
   created_at?: string;
   updated_at?: string;
+  unit_cost?: number | null;
+  unit_price?: number | null;
+  currency?: string | null;
 }
 
 export interface ProjectsRow {
@@ -2898,6 +3522,13 @@ export interface ProjectsRow {
   notes: string | null;
   created_at: string;
   updated_at: string;
+  legal_entity_id: string | null;
+  branch_id: string | null;
+  contract_value: number | null;
+  budget_cost: number | null;
+  currency: string | null;
+  start_date: string | null;
+  end_date: string | null;
 }
 
 export interface ProjectsInsert {
@@ -2910,6 +3541,13 @@ export interface ProjectsInsert {
   notes?: string | null;
   created_at?: string;
   updated_at?: string;
+  legal_entity_id?: string | null;
+  branch_id?: string | null;
+  contract_value?: number | null;
+  budget_cost?: number | null;
+  currency?: string | null;
+  start_date?: string | null;
+  end_date?: string | null;
 }
 
 export interface PromiseToPayRow {
@@ -3126,6 +3764,44 @@ export interface ScenarioRunLinesInsert {
   created_at?: string;
 }
 
+export interface ScenarioRunWeeksRow {
+  id: string;
+  run_id: string;
+  week_index: number;
+  week_start: string;
+  baseline_inflow: number;
+  baseline_outflow: number;
+  baseline_closing_cash: number | null;
+  scenario_inflow: number;
+  scenario_outflow: number;
+  auto_facility_draw: number;
+  incremental_interest_tax: number;
+  scenario_closing_cash: number | null;
+  remaining_facility_headroom: number | null;
+  projected_dscr: number | null;
+  covenant_breach: boolean;
+  created_at: string;
+}
+
+export interface ScenarioRunWeeksInsert {
+  id?: string;
+  run_id: string;
+  week_index: number;
+  week_start: string;
+  baseline_inflow?: number;
+  baseline_outflow?: number;
+  baseline_closing_cash?: number | null;
+  scenario_inflow?: number;
+  scenario_outflow?: number;
+  auto_facility_draw?: number;
+  incremental_interest_tax?: number;
+  scenario_closing_cash?: number | null;
+  remaining_facility_headroom?: number | null;
+  projected_dscr?: number | null;
+  covenant_breach?: boolean;
+  created_at?: string;
+}
+
 export interface ScenarioRunsRow {
   id: string;
   scenario_id: string;
@@ -3148,6 +3824,12 @@ export interface ScenarioRunsRow {
   archived_at: string | null;
   archive_reason: string | null;
   archived_by_label: string | null;
+  total_auto_facility_draw: number | null;
+  total_incremental_interest_tax: number | null;
+  deferred_receivables_carryover: number | null;
+  projected_ebitda_try: number | null;
+  projected_min_dscr: number | null;
+  covenant_breach_count: number;
 }
 
 export interface ScenarioRunsInsert {
@@ -3172,6 +3854,12 @@ export interface ScenarioRunsInsert {
   archived_at?: string | null;
   archive_reason?: string | null;
   archived_by_label?: string | null;
+  total_auto_facility_draw?: number | null;
+  total_incremental_interest_tax?: number | null;
+  deferred_receivables_carryover?: number | null;
+  projected_ebitda_try?: number | null;
+  projected_min_dscr?: number | null;
+  covenant_breach_count?: number;
 }
 
 export interface ScenariosRow {
@@ -3220,6 +3908,8 @@ export interface SessionsRow {
   expires_at: string;
   revoked_at: string | null;
   last_seen_at: string | null;
+  ip_address: string | null;
+  user_agent: string | null;
 }
 
 export interface SessionsInsert {
@@ -3230,6 +3920,8 @@ export interface SessionsInsert {
   expires_at: string;
   revoked_at?: string | null;
   last_seen_at?: string | null;
+  ip_address?: string | null;
+  user_agent?: string | null;
 }
 
 export interface SettingsRow {
@@ -3381,6 +4073,38 @@ export interface StatutoryTrialBalancesInsert {
   imported_at?: string;
 }
 
+export interface TermDepositsRow {
+  id: string;
+  cash_account_id: string;
+  deposit_name: string;
+  principal_amount: number;
+  currency: string;
+  annual_interest_rate: number;
+  withholding_tax_rate: number;
+  start_date: string;
+  maturity_date: string;
+  expected_net_interest: number;
+  is_active: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface TermDepositsInsert {
+  id?: string;
+  cash_account_id: string;
+  deposit_name: string;
+  principal_amount: number;
+  currency?: string;
+  annual_interest_rate: number;
+  withholding_tax_rate?: number;
+  start_date: string;
+  maturity_date: string;
+  expected_net_interest?: number;
+  is_active?: boolean;
+  created_at?: string;
+  updated_at?: string;
+}
+
 export interface TreasuryPoliciesRow {
   id: string;
   code: string;
@@ -3489,6 +4213,9 @@ export interface UsersRow {
   created_at: string;
   updated_at: string;
   must_change_password: boolean;
+  email: string | null;
+  totp_secret_encrypted: string | null;
+  totp_enabled_at: string | null;
 }
 
 export interface UsersInsert {
@@ -3503,11 +4230,97 @@ export interface UsersInsert {
   created_at?: string;
   updated_at?: string;
   must_change_password?: boolean;
+  email?: string | null;
+  totp_secret_encrypted?: string | null;
+  totp_enabled_at?: string | null;
+}
+
+export interface WorkCentersRow {
+  id: string;
+  legal_entity_id: string | null;
+  code: string;
+  name: string;
+  operation_type: string;
+  machine_count: number;
+  shifts_per_day: number;
+  shift_minutes: number;
+  working_days_per_month: number;
+  target_oee_pct: number;
+  hourly_power_kw: number;
+  standard_rate_per_min_try: number | null;
+  is_active: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface WorkCentersInsert {
+  id?: string;
+  legal_entity_id?: string | null;
+  code: string;
+  name: string;
+  operation_type?: string;
+  machine_count?: number;
+  shifts_per_day?: number;
+  shift_minutes?: number;
+  working_days_per_month?: number;
+  target_oee_pct?: number;
+  hourly_power_kw?: number;
+  standard_rate_per_min_try?: number | null;
+  is_active?: boolean;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface WorkOrdersRow {
+  id: string;
+  order_no: string;
+  part_id: string | null;
+  bom_id: string | null;
+  work_center_id: string;
+  party_id: string | null;
+  planned_qty: number;
+  good_qty: number;
+  scrap_qty: number;
+  planned_minutes: number;
+  actual_run_minutes: number;
+  downtime_minutes: number;
+  downtime_reason: string | null;
+  status: string;
+  due_date: string | null;
+  started_at: string | null;
+  completed_at: string | null;
+  created_by: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface WorkOrdersInsert {
+  id?: string;
+  order_no: string;
+  part_id?: string | null;
+  bom_id?: string | null;
+  work_center_id: string;
+  party_id?: string | null;
+  planned_qty: number;
+  good_qty?: number;
+  scrap_qty?: number;
+  planned_minutes: number;
+  actual_run_minutes?: number;
+  downtime_minutes?: number;
+  downtime_reason?: string | null;
+  status?: string;
+  due_date?: string | null;
+  started_at?: string | null;
+  completed_at?: string | null;
+  created_by?: string | null;
+  created_at?: string;
+  updated_at?: string;
 }
 
 export interface Database {
   public: {
     Tables: {
+      accounting_periods: { Row: AccountingPeriodsRow; Insert: AccountingPeriodsInsert };
       action_items: { Row: ActionItemsRow; Insert: ActionItemsInsert };
       ai_response_snapshots: { Row: AiResponseSnapshotsRow; Insert: AiResponseSnapshotsInsert };
       alert_escalation_rules: { Row: AlertEscalationRulesRow; Insert: AlertEscalationRulesInsert };
@@ -3522,6 +4335,9 @@ export interface Database {
       bank_accounts: { Row: BankAccountsRow; Insert: BankAccountsInsert };
       bank_transaction_match_candidates: { Row: BankTransactionMatchCandidatesRow; Insert: BankTransactionMatchCandidatesInsert };
       bank_transactions: { Row: BankTransactionsRow; Insert: BankTransactionsInsert };
+      bom_headers: { Row: BomHeadersRow; Insert: BomHeadersInsert };
+      bom_lines: { Row: BomLinesRow; Insert: BomLinesInsert };
+      branches: { Row: BranchesRow; Insert: BranchesInsert };
       budget_lines: { Row: BudgetLinesRow; Insert: BudgetLinesInsert };
       budgets: { Row: BudgetsRow; Insert: BudgetsInsert };
       capacity_models: { Row: CapacityModelsRow; Insert: CapacityModelsInsert };
@@ -3535,6 +4351,7 @@ export interface Database {
       checks: { Row: ChecksRow; Insert: ChecksInsert };
       collateral_records: { Row: CollateralRecordsRow; Insert: CollateralRecordsInsert };
       control_alerts: { Row: ControlAlertsRow; Insert: ControlAlertsInsert };
+      corporate_card_statements: { Row: CorporateCardStatementsRow; Insert: CorporateCardStatementsInsert };
       cost_allocation_rules: { Row: CostAllocationRulesRow; Insert: CostAllocationRulesInsert };
       cost_breakdown_lines: { Row: CostBreakdownLinesRow; Insert: CostBreakdownLinesInsert };
       cost_centers: { Row: CostCentersRow; Insert: CostCentersInsert };
@@ -3543,10 +4360,12 @@ export interface Database {
       counterparty_profiles: { Row: CounterpartyProfilesRow; Insert: CounterpartyProfilesInsert };
       covenant_records: { Row: CovenantRecordsRow; Insert: CovenantRecordsInsert };
       credit_facilities: { Row: CreditFacilitiesRow; Insert: CreditFacilitiesInsert };
+      customer_rate_cards: { Row: CustomerRateCardsRow; Insert: CustomerRateCardsInsert };
       departments: { Row: DepartmentsRow; Insert: DepartmentsInsert };
       document_links: { Row: DocumentLinksRow; Insert: DocumentLinksInsert };
       documents: { Row: DocumentsRow; Insert: DocumentsInsert };
       external_assumptions: { Row: ExternalAssumptionsRow; Insert: ExternalAssumptionsInsert };
+      facility_interest_accruals: { Row: FacilityInterestAccrualsRow; Insert: FacilityInterestAccrualsInsert };
       facility_movements: { Row: FacilityMovementsRow; Insert: FacilityMovementsInsert };
       finance_cost_allocations: { Row: FinanceCostAllocationsRow; Insert: FinanceCostAllocationsInsert };
       forecast_lines: { Row: ForecastLinesRow; Insert: ForecastLinesInsert };
@@ -3565,10 +4384,15 @@ export interface Database {
       integration_raw_payloads: { Row: IntegrationRawPayloadsRow; Insert: IntegrationRawPayloadsInsert };
       integration_staged_parties: { Row: IntegrationStagedPartiesRow; Insert: IntegrationStagedPartiesInsert };
       integration_sync_runs: { Row: IntegrationSyncRunsRow; Insert: IntegrationSyncRunsInsert };
+      interbank_transfers: { Row: InterbankTransfersRow; Insert: InterbankTransfersInsert };
+      inventory_items: { Row: InventoryItemsRow; Insert: InventoryItemsInsert };
+      inventory_movements: { Row: InventoryMovementsRow; Insert: InventoryMovementsInsert };
       invoice_allocations: { Row: InvoiceAllocationsRow; Insert: InvoiceAllocationsInsert };
       invoice_lines: { Row: InvoiceLinesRow; Insert: InvoiceLinesInsert };
       invoice_reversals: { Row: InvoiceReversalsRow; Insert: InvoiceReversalsInsert };
       invoices: { Row: InvoicesRow; Insert: InvoicesInsert };
+      legal_entities: { Row: LegalEntitiesRow; Insert: LegalEntitiesInsert };
+      letter_of_guarantees: { Row: LetterOfGuaranteesRow; Insert: LetterOfGuaranteesInsert };
       loan_installments: { Row: LoanInstallmentsRow; Insert: LoanInstallmentsInsert };
       loans: { Row: LoansRow; Insert: LoansInsert };
       machine_assets: { Row: MachineAssetsRow; Insert: MachineAssetsInsert };
@@ -3588,6 +4412,8 @@ export interface Database {
       payment_run_items: { Row: PaymentRunItemsRow; Insert: PaymentRunItemsInsert };
       payment_runs: { Row: PaymentRunsRow; Insert: PaymentRunsInsert };
       payments: { Row: PaymentsRow; Insert: PaymentsInsert };
+      payroll_tax_accruals: { Row: PayrollTaxAccrualsRow; Insert: PayrollTaxAccrualsInsert };
+      pos_settlement_batches: { Row: PosSettlementBatchesRow; Insert: PosSettlementBatchesInsert };
       production_parts: { Row: ProductionPartsRow; Insert: ProductionPartsInsert };
       products: { Row: ProductsRow; Insert: ProductsInsert };
       projects: { Row: ProjectsRow; Insert: ProjectsInsert };
@@ -3600,6 +4426,7 @@ export interface Database {
       scenario_assumptions: { Row: ScenarioAssumptionsRow; Insert: ScenarioAssumptionsInsert };
       scenario_comparisons: { Row: ScenarioComparisonsRow; Insert: ScenarioComparisonsInsert };
       scenario_run_lines: { Row: ScenarioRunLinesRow; Insert: ScenarioRunLinesInsert };
+      scenario_run_weeks: { Row: ScenarioRunWeeksRow; Insert: ScenarioRunWeeksInsert };
       scenario_runs: { Row: ScenarioRunsRow; Insert: ScenarioRunsInsert };
       scenarios: { Row: ScenariosRow; Insert: ScenariosInsert };
       schema_migrations: { Row: SchemaMigrationsRow; Insert: SchemaMigrationsInsert };
@@ -3610,10 +4437,13 @@ export interface Database {
       source_workbooks: { Row: SourceWorkbooksRow; Insert: SourceWorkbooksInsert };
       statutory_trial_balance_lines: { Row: StatutoryTrialBalanceLinesRow; Insert: StatutoryTrialBalanceLinesInsert };
       statutory_trial_balances: { Row: StatutoryTrialBalancesRow; Insert: StatutoryTrialBalancesInsert };
+      term_deposits: { Row: TermDepositsRow; Insert: TermDepositsInsert };
       treasury_policies: { Row: TreasuryPoliciesRow; Insert: TreasuryPoliciesInsert };
       trial_balance_reconciliation_items: { Row: TrialBalanceReconciliationItemsRow; Insert: TrialBalanceReconciliationItemsInsert };
       trial_balance_reconciliation_runs: { Row: TrialBalanceReconciliationRunsRow; Insert: TrialBalanceReconciliationRunsInsert };
       users: { Row: UsersRow; Insert: UsersInsert };
+      work_centers: { Row: WorkCentersRow; Insert: WorkCentersInsert };
+      work_orders: { Row: WorkOrdersRow; Insert: WorkOrdersInsert };
     };
   };
 }

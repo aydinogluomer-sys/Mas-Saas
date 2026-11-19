@@ -1,0 +1,244 @@
+[
+  {
+    "route": "/login",
+    "viewport": "desktop",
+    "status": 200,
+    "overflowPx": 0,
+    "consoleErrors": [],
+    "pageErrors": []
+  },
+  {
+    "route": "/",
+    "viewport": "desktop",
+    "status": 200,
+    "overflowPx": 0,
+    "svgCount": 6,
+    "consoleErrors": [],
+    "pageErrors": []
+  },
+  {
+    "route": "/payments",
+    "viewport": "desktop",
+    "status": 200,
+    "overflowPx": 0,
+    "svgCount": 2,
+    "consoleErrors": [],
+    "pageErrors": []
+  },
+  {
+    "route": "/cashflow",
+    "viewport": "desktop",
+    "status": 200,
+    "overflowPx": 0,
+    "svgCount": 7,
+    "consoleErrors": [],
+    "pageErrors": []
+  },
+  {
+    "route": "/finance",
+    "viewport": "desktop",
+    "status": 200,
+    "overflowPx": 0,
+    "svgCount": 5,
+    "consoleErrors": [],
+    "pageErrors": []
+  },
+  {
+    "route": "/finance/ledger",
+    "viewport": "desktop",
+    "status": 200,
+    "overflowPx": 0,
+    "svgCount": 2,
+    "consoleErrors": [],
+    "pageErrors": []
+  },
+  {
+    "route": "/finance/collections",
+    "viewport": "desktop",
+    "status": 200,
+    "overflowPx": 0,
+    "svgCount": 2,
+    "consoleErrors": [],
+    "pageErrors": []
+  },
+  {
+    "route": "/production",
+    "viewport": "desktop",
+    "status": 200,
+    "overflowPx": 0,
+    "svgCount": 2,
+    "consoleErrors": [],
+    "pageErrors": []
+  },
+  {
+    "route": "/production/kiosk",
+    "viewport": "desktop",
+    "status": 200,
+    "overflowPx": 0,
+    "svgCount": 0,
+    "consoleErrors": [],
+    "pageErrors": []
+  },
+  {
+    "route": "/scenarios",
+    "viewport": "desktop",
+    "status": 200,
+    "overflowPx": 0,
+    "svgCount": 3,
+    "consoleErrors": [],
+    "pageErrors": []
+  },
+  {
+    "route": "/insights/reminders",
+    "viewport": "desktop",
+    "status": 200,
+    "overflowPx": 0,
+    "svgCount": 3,
+    "consoleErrors": [],
+    "pageErrors": []
+  },
+  {
+    "route": "/data/quality",
+    "viewport": "desktop",
+    "status": 200,
+    "overflowPx": 0,
+    "svgCount": 6,
+    "consoleErrors": [],
+    "pageErrors": []
+  },
+  {
+    "route": "/data/integrations",
+    "viewport": "desktop",
+    "status": 200,
+    "overflowPx": 0,
+    "svgCount": 1,
+    "consoleErrors": [],
+    "pageErrors": []
+  },
+  {
+    "route": "/data/documents",
+    "viewport": "desktop",
+    "status": 200,
+    "overflowPx": 0,
+    "svgCount": 1,
+    "consoleErrors": [],
+    "pageErrors": []
+  },
+  {
+    "route": "/system/controls",
+    "viewport": "desktop",
+    "status": 200,
+    "overflowPx": 0,
+    "svgCount": 1,
+    "consoleErrors": [],
+    "pageErrors": []
+  },
+  {
+    "route": "/system/security",
+    "viewport": "desktop",
+    "status": 200,
+    "overflowPx": 0,
+    "svgCount": 1,
+    "consoleErrors": [],
+    "pageErrors": []
+  },
+  {
+    "route": "/",
+    "viewport": "tablet",
+    "status": 200,
+    "overflowPx": 0,
+    "svgCount": 6,
+    "consoleErrors": [],
+    "pageErrors": []
+  },
+  {
+    "route": "/finance",
+    "viewport": "tablet",
+    "status": 200,
+    "overflowPx": 0,
+    "svgCount": 5,
+    "consoleErrors": [],
+    "pageErrors": []
+  },
+  {
+    "route": "/production/kiosk",
+    "viewport": "tablet",
+    "status": 200,
+    "overflowPx": 0,
+    "svgCount": 0,
+    "consoleErrors": [],
+    "pageErrors": []
+  },
+  {
+    "route": "/data/quality",
+    "viewport": "tablet",
+    "status": 200,
+    "overflowPx": 0,
+    "svgCount": 6,
+    "consoleErrors": [],
+    "pageErrors": []
+  },
+  {
+    "route": "/system/controls",
+    "viewport": "tablet",
+    "status": 200,
+    "overflowPx": 0,
+    "svgCount": 1,
+    "consoleErrors": [],
+    "pageErrors": []
+  },
+  {
+    "route": "/",
+    "viewport": "mobile",
+    "status": 200,
+    "overflowPx": 0,
+    "svgCount": 6,
+    "consoleErrors": [],
+    "pageErrors": []
+  },
+  {
+    "route": "/finance",
+    "viewport": "mobile",
+    "status": 200,
+    "overflowPx": 0,
+    "svgCount": 5,
+    "consoleErrors": [],
+    "pageErrors": []
+  },
+  {
+    "route": "/production/kiosk",
+    "viewport": "mobile",
+    "status": 200,
+    "overflowPx": 0,
+    "svgCount": 0,
+    "consoleErrors": [],
+    "pageErrors": []
+  },
+  {
+    "route": "/data/quality",
+    "viewport": "mobile",
+    "status": 200,
+    "overflowPx": 0,
+    "svgCount": 6,
+    "consoleErrors": [],
+    "pageErrors": []
+  },
+  {
+    "route": "/system/controls",
+    "viewport": "mobile",
+    "status": 200,
+    "overflowPx": 0,
+    "svgCount": 1,
+    "consoleErrors": [],
+    "pageErrors": []
+  },
+  {
+    "route": "SPA:/->/payments->/cashflow->/finance",
+    "viewport": "desktop",
+    "status": 200,
+    "overflowPx": 0,
+    "svgCount": 0,
+    "consoleErrors": [],
+    "pageErrors": []
+  }
+]

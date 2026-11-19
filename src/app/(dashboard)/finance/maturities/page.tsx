@@ -1,12 +1,16 @@
+import { AnalyticsChart } from "@/components/charts/analytics-chart";
 import { Badge } from "@/components/ui/badge";
-import { fmtTL, Panel } from "@/components/ui/panel";
+import { Panel } from "@/components/ui/panel";
 import { EmptyState, PageHeader, TableShell } from "@/components/ui/shell";
+import type { ChartModel } from "@/lib/analytics/chart";
 import { requireRouteAccess } from "@/lib/authz/route-guard";
 import { getPool } from "@/lib/db";
 import { loadMaturityItems } from "@/lib/financing/engine";
+import { loadLatestTryFxRateMap, convertSingleAmountToTry } from "@/lib/financing/fx-consolidation";
 import { groupMaturities } from "@/lib/financing/rules";
-import { intOrNull, moneyOrNull } from "@/lib/money";
+import { decimal, intOrNull, moneyOrNull } from "@/lib/money";
 import { formatMoney } from "@/lib/money-format";
+import { istanbulDateISO } from "@/lib/reports/rules";
 
 export const dynamic = "force-dynamic";
 
@@ -15,7 +19,8 @@ export default async function MaturitiesPage() {
   if (denied) return denied;
 
   const pool = getPool();
-  const [items, ladderRes] = await Promise.all([
+  const today = istanbulDateISO();
+  const [items, ladderRes, rateMap] = await Promise.all([
     loadMaturityItems(pool),
     pool.query<{
       currency: string;
@@ -42,6 +47,7 @@ export default async function MaturitiesPage() {
          from public.debt_maturity_ladder_by_currency
         order by currency, sort_order`,
     ),
+    loadLatestTryFxRateMap(pool, today),
   ]);
 
   const groups = groupMaturities(items, "week");
@@ -58,15 +64,54 @@ export default async function MaturitiesPage() {
     totalCashExposure: moneyOrNull(r.total_cash_exposure) ?? 0,
   }));
 
+  const uniqueBuckets = [...new Map(ladderRows.map((r) => [r.bucketLabel, r.sortOrder])).entries()]
+    .sort((a, b) => a[1] - b[1])
+    .map(([label]) => label);
+  const ladderCurrencies = [...new Set(ladderRows.map((r) => r.currency))];
+
+  const ladderChart: ChartModel = {
+    title: "Borç Vade Merdiveni (Konsolide TRY Karşılığı)",
+    description:
+      "Kredi taksitleri ve vadesi dolan kredi limit kullanımlarının vade dilimlerine göre dağılımı (dövizler TCMB son kur ile çevrilir).",
+    asOf: today,
+    timeDirection: "forward",
+    preferredView: "stacked",
+    summaryMode: "sum",
+    minimumVisibleSeries: ladderCurrencies.length > 0 ? ladderCurrencies : ["TRY"],
+    sourceLabel: "Borç vade merdiveni",
+    sourceHref: "/finance/maturities",
+    unknownCount: 0,
+    annotations: [],
+    series: (ladderCurrencies.length > 0 ? ladderCurrencies : ["TRY"]).map((ccy, idx) => ({
+      id: ccy,
+      label: `${ccy} Nakit Maruziyeti (TL Karşılığı)`,
+      tone: idx === 0 ? "negative" : idx === 1 ? "warning" : "info",
+      format: "currency",
+      points: uniqueBuckets.map((bucket) => {
+        const match = ladderRows.find((r) => r.currency === ccy && r.bucketLabel === bucket);
+        const tryVal = match
+          ? convertSingleAmountToTry(match.totalCashExposure, ccy, rateMap).tryEquivalent ?? 0
+          : 0;
+        return {
+          key: bucket,
+          label: bucket,
+          value: tryVal,
+        };
+      }),
+    })),
+  };
+
   return (
     <>
       <PageHeader
-        title="Vade Takvimi"
-        subtitle="Döviz bazlı borç vade merdiveni ile çek ve kredi taksitlerinin birleşik haftalık görünümü"
+        title="Vade Takvimi & Borç Vade Merdiveni"
+        subtitle="Döviz bazlı borç vade merdiveni grafiği ile çek/senet ve kredi taksitlerinin para birimi ayrıştırılmış haftalık görünümü"
       />
 
+      {ladderRows.length > 0 ? <AnalyticsChart model={ladderChart} kind="bar" defaultPeriod="all" /> : null}
+
       <Panel
-        title="Döviz Bazlı Borç Vade Merdiveni"
+        title="Döviz Bazlı Borç Vade Merdiveni Tablosu"
         subtitle="Kredi taksitleri ve vadesi dolan rotatif/spot kredi limit kullanımları para birimleri birbirine karıştırılmadan vade dilimlerinde izlenir"
       >
         {ladderRows.length === 0 ? (
@@ -120,36 +165,62 @@ export default async function MaturitiesPage() {
         )}
       </Panel>
 
-      {groups.map((g) => (
-        <Panel
-          key={g.key}
-          title={`${g.key} · ${g.from} — ${g.to}`}
-          right={<span className="text-xs">{g.count} vade</span>}
-        >
-          <div className="grid grid-cols-2 gap-2 text-sm sm:grid-cols-4">
-            <span>
-              Ödenecek
-              <br />
-              <b className="text-neg">{fmtTL(g.knownOutflow)}</b>
-            </span>
-            <span>
-              Tahsil
-              <br />
-              <b className="text-pos">{fmtTL(g.knownInflow)}</b>
-            </span>
-            <span>
-              Eksik tutar
-              <br />
-              <b>{g.missingCount}</b>
-            </span>
-            <span>
-              Yönü belirsiz
-              <br />
-              <b>{g.unknownDirectionCount}</b>
-            </span>
-          </div>
-        </Panel>
-      ))}
+      {groups.map((g) => {
+        const outByCcy = new Map<string, ReturnType<typeof decimal>>();
+        const inByCcy = new Map<string, ReturnType<typeof decimal>>();
+        for (const it of g.items) {
+          if (it.amount == null) continue;
+          const ccy = (it.currency ?? "TRY").toUpperCase();
+          if (it.direction === "outflow") {
+            outByCcy.set(ccy, (outByCcy.get(ccy) ?? decimal(0)).plus(it.amount));
+          } else if (it.direction === "inflow") {
+            inByCcy.set(ccy, (inByCcy.get(ccy) ?? decimal(0)).plus(it.amount));
+          }
+        }
+        const outText =
+          outByCcy.size > 0
+            ? [...outByCcy.entries()]
+                .map(([ccy, d]) => formatMoney(Number(d.round(2).toFixed(2)), ccy))
+                .join(" · ")
+            : "—";
+        const inText =
+          inByCcy.size > 0
+            ? [...inByCcy.entries()]
+                .map(([ccy, d]) => formatMoney(Number(d.round(2).toFixed(2)), ccy))
+                .join(" · ")
+            : "—";
+
+        return (
+          <Panel
+            key={g.key}
+            title={`${g.key} · ${g.from} — ${g.to}`}
+            right={<span className="font-mono text-xs">{g.count} vade</span>}
+          >
+            <div className="grid grid-cols-2 gap-2 text-sm sm:grid-cols-4">
+              <span>
+                Ödenecek (Orijinal Döviz)
+                <br />
+                <b className="font-mono text-neg">{outText}</b>
+              </span>
+              <span>
+                Tahsil (Orijinal Döviz)
+                <br />
+                <b className="font-mono text-pos">{inText}</b>
+              </span>
+              <span>
+                Eksik tutar
+                <br />
+                <b className="font-mono">{g.missingCount}</b>
+              </span>
+              <span>
+                Yönü belirsiz
+                <br />
+                <b className="font-mono">{g.unknownDirectionCount}</b>
+              </span>
+            </div>
+          </Panel>
+        );
+      })}
     </>
   );
 }

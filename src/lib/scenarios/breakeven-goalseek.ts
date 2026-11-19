@@ -108,10 +108,20 @@ function addDaysISO(iso: string, days: number): string {
   return new Date(ms).toISOString().slice(0, 10);
 }
 
-function horizonDaysOf(h: GoalSeekHorizon): number {
+export function horizonDaysOf(h: GoalSeekHorizon): number {
   if (h === "14d") return 14;
   if (h === "13w") return 91;
   return 365;
+}
+
+/**
+ * Ufuk ay katsayısı (`M-51`): 13 haftalık (`3` ay) veya 12 aylık (`12` ay) ufuktaki toplam nakit/borç
+ * servisi açığını aylık etkin kapasite dakikasına bölerken `3x–12x` abartıyı önlemek için aylık yüke indirger.
+ */
+export function horizonMonthsOf(h: GoalSeekHorizon): number {
+  if (h === "14d") return 1;
+  if (h === "13w") return 3;
+  return 12;
 }
 
 function fmtPlainTl(amount: number): string {
@@ -150,8 +160,10 @@ export function solveBreakevenLevers(input: BreakevenGoalSeekInput): BreakevenGo
 
     const minsDec = decimal(mins);
     const costDec = decimal(cost);
+    const horizonMonths = horizonMonthsOf(input.horizon);
+    const monthlyShortfallBurdenDec = decimal(shortfallAmount).div(decimal(horizonMonths));
     const baseRateDec = costDec.div(minsDec);
-    const adjRateDec = costDec.plus(decimal(shortfallAmount)).div(minsDec);
+    const adjRateDec = costDec.plus(monthlyShortfallBurdenDec).div(minsDec);
 
     const baseBreakevenTlPerMin = Number(baseRateDec.toFixed(4));
     const cashGapAdjustedBreakevenTlPerMin = Number(adjRateDec.toFixed(4));
@@ -173,7 +185,7 @@ export function solveBreakevenLevers(input: BreakevenGoalSeekInput): BreakevenGo
       effectiveMonthlyMinutes: mins,
       summary:
         shortfallAmount > 0
-          ? `Maliyet başabaş tabanı ${baseBreakevenTlPerMin.toFixed(2)} TL/dk; nakit açığını kapatacak başabaş tabanı ${cashGapAdjustedBreakevenTlPerMin.toFixed(2)} TL/dk.`
+          ? `Maliyet başabaş tabanı ${baseBreakevenTlPerMin.toFixed(2)} TL/dk; ${horizonMonths} aylık ufukta aylık ek yük dahil başabaş tabanı ${cashGapAdjustedBreakevenTlPerMin.toFixed(2)} TL/dk.`
           : `Maliyet başabaş taban fiyatı ${baseBreakevenTlPerMin.toFixed(2)} TL/dk.`,
     };
   };
@@ -531,9 +543,59 @@ export async function loadAndSolveBreakevenLevers(
          and v.due_date >= $2::date
          and v.due_date <= $3::date
          and v.gross_amount > coalesce(v.allocated_amount, 0)
+         and not (
+           v.settled_by_check_id is not null
+           and exists (
+             select 1 from public.checks c0
+             where c0.id = v.settled_by_check_id
+               and c0.archived_at is null
+               and c0.status <> 'cancelled'
+           )
+         )
+         and not exists (
+           select 1
+           from public.payment_instances pi2
+           left join public.payments p2 on p2.id = pi2.payment_id
+           where pi2.linked_invoice_id = v.id
+             and pi2.status <> 'cancelled'
+             and (p2.id is null or (p2.status = 'active' and p2.archived_at is null))
+         )
+         and not exists (
+           select 1
+           from public.checks c2
+           where coalesce(c2.settled_invoice_id, c2.linked_invoice_id) = v.id
+             and c2.archived_at is null
+             and c2.status in ('planned', 'in_portfolio', 'in_bank_collection', 'in_bank_collateral', 'issued_to_vendor')
+         )
        order by v.due_date, v.id`,
       [currency, asOfDate, arHorizonEnd],
-    ),
+    ).catch((err: unknown) => {
+      const code = (err as { code?: string })?.code;
+      if (code === "42703") {
+        return client.query<{
+          invoice_no: string;
+          due_date: string;
+          open_amount: string;
+        }>(
+          `select
+             v.invoice_no,
+             to_char(v.due_date, 'YYYY-MM-DD') as due_date,
+             (v.gross_amount - coalesce(v.allocated_amount, 0))::numeric(14,2) as open_amount
+           from public.invoices v
+           where v.direction = 'sales'
+             and v.status in ('open', 'partial')
+             and v.bad_debt_at is null
+             and v.currency = $1
+             and v.due_date is not null
+             and v.due_date >= $2::date
+             and v.due_date <= $3::date
+             and v.gross_amount > coalesce(v.allocated_amount, 0)
+           order by v.due_date, v.id`,
+          [currency, asOfDate, arHorizonEnd],
+        );
+      }
+      throw err;
+    }),
     () => client.query<{
       flow_date: string;
       direction: "inflow" | "outflow";
@@ -556,6 +618,17 @@ export async function loadAndSolveBreakevenLevers(
            and pi.currency = $1
            and pi.due_date between $2::date and $3::date
            and pi.amount is not null
+           and not exists (
+             select 1
+             from public.loan_installments li2
+             join public.loans l2 on l2.id = li2.loan_id
+             where l2.archived_at is null
+               and l2.currency = pi.currency
+               and li2.status in ('planned', 'unpaid', 'partial', 'late')
+               and li2.due_date = pi.due_date
+               and abs(li2.amount - pi.amount) <= 0.01
+               and coalesce(pi.direction, 'outflow') <> 'inflow'
+           )
 
          union all
 
@@ -571,7 +644,30 @@ export async function loadAndSolveBreakevenLevers(
            and v.currency = $1
            and v.due_date between $2::date and $3::date
            and v.gross_amount > coalesce(v.allocated_amount, 0)
-           and v.settled_by_check_id is null
+           and not (
+             v.settled_by_check_id is not null
+             and exists (
+               select 1 from public.checks c0
+               where c0.id = v.settled_by_check_id
+                 and c0.archived_at is null
+                 and c0.status <> 'cancelled'
+             )
+           )
+           and not exists (
+             select 1
+             from public.payment_instances pi2
+             left join public.payments p2 on p2.id = pi2.payment_id
+             where pi2.linked_invoice_id = v.id
+               and pi2.status <> 'cancelled'
+               and (p2.id is null or (p2.status = 'active' and p2.archived_at is null))
+           )
+           and not exists (
+             select 1
+             from public.checks c2
+             where coalesce(c2.settled_invoice_id, c2.linked_invoice_id) = v.id
+               and c2.archived_at is null
+               and c2.status in ('planned', 'in_portfolio', 'in_bank_collection', 'in_bank_collateral', 'issued_to_vendor')
+           )
 
          union all
 
@@ -593,7 +689,7 @@ export async function loadAndSolveBreakevenLevers(
          select
            to_char(li.due_date, 'YYYY-MM-DD') as flow_date,
            'outflow'::text as direction,
-           li.amount::numeric(14,2) as amount,
+           greatest(0, case when li.status = 'partial' then li.amount - coalesce(li.paid_amount, 0) else li.amount end)::numeric(14,2) as amount,
            false as is_discretionary,
            (coalesce(l.name, 'Kredi') || ' Taksit') as label
          from public.loan_installments li

@@ -1,8 +1,7 @@
 import { getPool } from "@/lib/db";
-import { istanbulDateISO } from "@/lib/reports/rules";
 
-import { daylessPayments, missingAmountInstances } from "@/lib/radar/queries";
-import { InstanceRowView } from "@/components/radar/instance-row";
+import { allMissingAmountInstances, daylessPayments } from "@/lib/radar/queries";
+import { MissingAmountsDesk } from "@/components/radar/missing-amounts-desk";
 import { Badge } from "@/components/ui/badge";
 import { Panel } from "@/components/ui/panel";
 import { PageHeader } from "@/components/ui/shell";
@@ -20,11 +19,39 @@ export default async function MissingPaymentsPage({ searchParams }: { searchPara
   const denied = await requireRouteAccess("/payments/missing");
   if (denied) return denied;
   const sp = (await searchParams) ?? {};
-  const session=await requireSession(); const pool=getPool(); const today=istanbulDateISO();
-  const canMutate=can(session.role,"payment_instances","update"); const month=today.slice(0,7)+"-01"; const [missing,dayless]=await Promise.all([missingAmountInstances(pool,month),daylessPayments(pool)]);
-  return <><PageHeader title="Eksik ödeme verileri" subtitle="Tutarı veya takvim günü bilinmediği için karar toplamlarına güvenle katılamayan kayıtlar." meta={<Badge tone={missing.length+dayless.length?"amber":"green"} dot>{missing.length+dayless.length} kayıt</Badge>} />
-    <ActionFeedback error={sp.error} />
-    <Panel title="TUTARI EKSİK ÖDEMELER"><p className="mb-3 text-xs text-tone-3">Bilinmeyen tutarlar sıfır sayılmaz. Buradaki giriş yalnız ilgili ödeme örneğini tamamlar.</p>{missing.length?missing.map(r=><InstanceRowView canMutate={canMutate} key={r.id} r={r} backTo="/payments/missing" showDate/>):<p className="text-sm text-tone-3">Eksik tutarlı ödeme yok.</p>}</Panel>
-    <Panel title="TAKVİM GÜNÜ EKSİK KALANLAR">{dayless.length?dayless.map(p=><Link key={p.id} href={`/payments/${p.id}/edit`} className="row-hover block border-b border-line-faint py-2 text-sm underline underline-offset-2">{p.name}</Link>):<p className="text-sm text-tone-3">Takvim günü eksik ödeme yok.</p>}</Panel>
-  </>;
+  const session = await requireSession();
+  const pool = getPool();
+  const canMutate = can(session.role, "payment_instances", "update");
+  const [missing, dayless] = await Promise.all([allMissingAmountInstances(pool), daylessPayments(pool)]);
+  return (
+    <>
+      <PageHeader
+        title="Eksik ödeme verileri"
+        subtitle="Geçmiş, cari ve ileri dönemlerde tutarı veya takvim günü bilinmediği için karar toplamlarına güvenle katılamayan tüm açık kayıtlar."
+        meta={<Badge tone={missing.length + dayless.length ? "amber" : "green"} dot>{missing.length + dayless.length} kayıt</Badge>}
+      />
+      <ActionFeedback error={sp.error} />
+      <Panel title="TUTARI EKSİK ÖDEMELER (TÜM DÖNEMLER)">
+        <p className="mb-3 text-xs text-tone-3">
+          Bilinmeyen tutarlar sıfır sayılmaz. Şablon bazlı toplu eritme ile açık dönemleri tek seferde tamamlayabilir veya klavye tablosunda Enter ile alt alta hızlı giriş yapabilirsiniz.
+        </p>
+        {missing.length ? (
+          <MissingAmountsDesk initialRows={missing} canMutate={canMutate} />
+        ) : (
+          <p className="text-sm text-tone-3">Eksik tutarlı ödeme yok.</p>
+        )}
+      </Panel>
+      <Panel title="TAKVİM GÜNÜ EKSİK KALANLAR">
+        {dayless.length ? (
+          dayless.map((p) => (
+            <Link key={p.id} href={`/payments/${p.id}/edit`} className="row-hover block border-b border-line-faint py-2 text-sm underline underline-offset-2">
+              {p.name}
+            </Link>
+          ))
+        ) : (
+          <p className="text-sm text-tone-3">Takvim günü eksik ödeme yok.</p>
+        )}
+      </Panel>
+    </>
+  );
 }

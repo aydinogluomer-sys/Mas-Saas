@@ -1,5 +1,6 @@
 import type { DecisionFact } from "@/lib/facts/engine";
 import { sortBySeverity } from "@/lib/facts/rules";
+import type { ToolEvidenceRecord } from "./tools";
 
 export type AiResponseMode = "deterministic" | "openai" | "fallback";
 
@@ -76,22 +77,40 @@ function norm(s: string) {
     .toLowerCase();
 }
 
-export function selectFactsForQuestion(question: string, facts: DecisionFact[], limit = 5): DecisionFact[] {
+export function selectFactsForQuestion(question: string, facts: DecisionFact[], limit = 7): DecisionFact[] {
   const q = norm(question);
   const scored = facts.map((fact) => {
     const hay = norm(`${fact.key} ${fact.title} ${fact.value} ${fact.explanation}`);
     let score = 0;
-    if (q.includes("negatif") || q.includes("eksi") || q.includes("kasa")) {
-      if (fact.key.includes("negative") || fact.key.includes("cash") || fact.key.includes("debt")) score += 3;
+    if (fact.key.startsWith("sql_")) {
+      score += 5;
     }
-    if (q.includes("cek") || q.includes("kredi") || q.includes("borc")) {
-      if (fact.key.includes("check") || fact.key.includes("loan") || fact.key.includes("debt")) score += 3;
+    if (q.includes("negatif") || q.includes("eksi") || q.includes("kasa") || q.includes("likidite") || q.includes("13 hafta")) {
+      if (fact.key.includes("negative") || fact.key.includes("cash") || fact.key.includes("debt") || fact.key.includes("13w")) score += 3;
     }
-    if (q.includes("akon") || q.includes("basabas") || q.includes("uretim")) {
+    if (q.includes("cek") || q.includes("kredi") || q.includes("borc") || q.includes("kovenant") || q.includes("dscr")) {
+      if (fact.key.includes("check") || fact.key.includes("loan") || fact.key.includes("debt") || fact.key.includes("covenant")) score += 3;
+    }
+    if (
+      q.includes("basabas") ||
+      q.includes("uretim") ||
+      q.includes("tarife") ||
+      q.includes("fiyat") ||
+      q.includes("marj") ||
+      q.includes("maliyet") ||
+      q.includes("oee") ||
+      q.includes("parca")
+    ) {
       if (fact.key.includes("production") || fact.key.includes("stale")) score += 3;
     }
-    if (q.includes("musteri") || q.includes("gelir")) {
-      if (fact.key.includes("customer") || fact.key.includes("concentration")) score += 3;
+    if (q.includes("musteri") || q.includes("gelir") || q.includes("cari") || q.includes("alacak") || q.includes("fatura")) {
+      if (fact.key.includes("customer") || fact.key.includes("concentration") || fact.key.includes("invoice") || fact.key.includes("counterparty")) score += 3;
+    }
+    if (q.includes("mizan") || q.includes("ebitda") || q.includes("defter") || q.includes("kar")) {
+      if (fact.key.includes("trial_balance")) score += 4;
+    }
+    if (q.includes("banka") || q.includes("ekstre") || q.includes("hareket")) {
+      if (fact.key.includes("bank")) score += 4;
     }
     if (q.includes("eksik") || q.includes("veri") || q.includes("inceleme")) {
       if (fact.key.includes("missing") || fact.key.includes("review")) score += 3;
@@ -115,7 +134,11 @@ export function selectFactsForQuestion(question: string, facts: DecisionFact[], 
   return chosen.slice(0, limit);
 }
 
-export function buildDeterministicAnswer(question: string, facts: DecisionFact[]): AiAnswerDraft {
+export function buildDeterministicAnswer(
+  question: string,
+  facts: DecisionFact[],
+  toolEvidences: readonly ToolEvidenceRecord[] = [],
+): AiAnswerDraft {
   const clean = sanitizeQuestion(question);
   const selectedFacts = selectFactsForQuestion(clean, facts);
   const safetyNotes: string[] = [];
@@ -123,16 +146,33 @@ export function buildDeterministicAnswer(question: string, facts: DecisionFact[]
   if (asksMutation) safetyNotes.push("Kullanici istegi finansal kayit mutasyonu iceriyor; cevap yalniz aciklama/oneri verdi.");
 
   const lead =
-    selectedFacts.length === 0
+    selectedFacts.length === 0 && toolEvidences.length === 0
       ? "Bu soruya yanit verecek guvenli fact bulunamadi."
       : asksMutation
         ? "Finansal kayit degistiremem; yalniz mevcut guvenli veriyi aciklayabilirim."
-        : "Mevcut guvenli fact katmanina gore kisa cevap:";
+        : "Salt-okunur SQL araclari ve guvenli fact katmanina gore analitik yanit:";
+
+  const toolSection =
+    !asksMutation && toolEvidences.length > 0
+      ? [
+          "",
+          "SQL Sorgu Bulgulari (Salt-Okunur):",
+          ...toolEvidences.flatMap((ev) => [
+            `- [${ev.tool}] ${ev.headline} (Tablo: ${ev.table} · Kayit: ${ev.count} · Baz: ${ev.asOf})`,
+            ...ev.details.slice(0, 4).map((d) => `  • ${d}`),
+          ]),
+        ]
+      : [];
 
   const reasons = selectedFacts
+    .filter((f) => !f.key.startsWith("sql_") || toolEvidences.length === 0)
     .map((f) => `- ${f.title}: ${f.value}. ${f.explanation}`)
     .join("\n");
-  const sources = [...new Set(selectedFacts.map((f) => f.sourceHref))]
+  const allHrefs = [
+    ...toolEvidences.map((ev) => ev.sourceHref),
+    ...selectedFacts.map((f) => f.sourceHref),
+  ];
+  const sources = [...new Set(allHrefs)]
     .map((href) => `- ${href}`)
     .join("\n");
 
@@ -144,9 +184,10 @@ export function buildDeterministicAnswer(question: string, facts: DecisionFact[]
   return {
     answerMd: [
       lead,
+      ...toolSection,
       "",
       "Nedenler:",
-      reasons || "- Uygun deterministik sinyal yok.",
+      reasons || "- Tum birincil sayilar yukaridaki salt-okunur SQL araclarindan dogrudan hesaplandi.",
       "",
       action,
       "",

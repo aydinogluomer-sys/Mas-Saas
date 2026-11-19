@@ -180,12 +180,19 @@ describe("Eşleyicisi olmayan aileler sessizce kaybolmaz", () => {
 });
 
 describe("Reddedilen kredinin taksitleri: yazılmaz, blocked_by_parent, önizleme = yazma", () => {
-  const REJECTED_LOAN = "KREDI-EUR-01";
-  const OLD_LOAN_ID = "loan-old-eur-from-previous-import";
+  const REJECTED_LOAN = "KREDI-RED-01";
+  const OLD_LOAN_ID = "loan-old-rejected-from-previous-import";
   const ACTOR = "00000000-0000-0000-0000-000000000001";
 
   async function parseWithOrphanedInstallments(): Promise<WorkbookParseResult> {
     const wb = await buildFixtureWorkbook();
+    const loanWs = wb.getWorksheet("03_KREDILER")!;
+    const loanSpec = sheetByName("03_KREDILER")!;
+    const badLoan: Record<string, unknown> = {
+      external_id: REJECTED_LOAN, kredi_adi: "Eksik anaparalı kredi", anapara: null, para_birimi: "TRY", vade_ay: 12,
+    };
+    loanWs.addRow(loanSpec.columns.map((c) => (c.key in badLoan ? badLoan[c.key] : null)));
+
     const ws = wb.getWorksheet("04_KREDI_TAKSITLERI")!;
     const spec = sheetByName("04_KREDI_TAKSITLERI")!;
     for (const n of [1, 2, 3]) {
@@ -220,7 +227,7 @@ describe("Reddedilen kredinin taksitleri: yazılmaz, blocked_by_parent, önizlem
 
     const statuses = [...fake.mappingStatuses.values()];
     expect(statuses.filter((x) => x === "blocked_by_parent")).toHaveLength(3);
-    expect(statuses.filter((x) => x === "rejected")).toHaveLength(FIXTURE_ORACLE.totals.rejected);
+    expect(statuses.filter((x) => x === "rejected")).toHaveLength(FIXTURE_ORACLE.totals.rejected + 1);
     expect(statuses).toHaveLength(r.rowsStaged);
 
     const sebepler = fake.inserts("mapping_reviews").filter((v) => v[3] === "blocked_by_parent");

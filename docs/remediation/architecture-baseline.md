@@ -1,0 +1,38 @@
+# MAS Nexus — Architecture Baseline (Phase A Discovery)
+
+## 1. Runtime Topology & Technology Stack
+- **Application Framework:** Next.js 16 App Router (`standalone` production server via `scripts/ops/start-standalone.ts`, Node.js `>=22.0.0`, TypeScript strict mode, `pnpm`).
+- **Canonical Database:** Local native PostgreSQL 16 (`127.0.0.1:5432`, database `mas_radar_dev` in this single-host workstation deployment; `MAS_PG_RUNTIME=native`, `MAS_PG_BIN_DIR=C:\MAS\pgsql16\bin`).
+  - **Application Runtime Role:** `DATABASE_URL` connects strictly as `mas_radar_app` (`NOSUPERUSER`, `NOBYPASSRLS`). Inside authenticated/scoped requests (`src/lib/db.ts`), `getPool()` switches transaction-locally via `SET LOCAL ROLE` into one of 5 RBAC tier roles (`mas_radar_viewer`, `mas_radar_finance_operator`, `mas_radar_finance_approver`, `mas_radar_finance_manager`, `mas_radar_admin`) and binds `app.user_id` and `app.current_legal_entity_id`.
+  - **Owner / Migration / Ops Role:** `MIGRATION_DATABASE_URL` (`postgres`) is restricted to `scripts/db/migrate.ts`, `scripts/ops/backup-daily.ts`, and `scripts/ops/telemetry-snapshot.ts`.
+- **Background Scheduler & Cron Processes:**
+  1. `scripts/ops/background-worker.ts` (`pnpm ops:worker` / `pnpm ops:worker:once`): 5-second queue tick (`background_jobs`, `import_jobs`, stuck-job reaper) + hourly/daily financial maintenance (`scheduleReminders`, `dispatchPending`, `claimAndDispatchOutbox`, overdue loan/payment rollovers, automated control evaluation, daily report, 13-week cash forecast freeze, morning CFO briefing).
+  2. `scripts/ops/telemetry-watch.ts` (`pnpm ops:telemetry:watch`): Executes `scripts/ops/telemetry-snapshot.ts`, evaluates operational signals, updates incident state (`public.ops_incidents` + `logs/ops-incident-state.json`), and dispatches transitions to `logs/alerts.jsonl` and configured channels (`telegram` / `email`).
+  3. `scripts/ops/backup-daily.ts` (`pnpm ops:backup:daily`) & `scripts/ops/offdevice-copy.ts` (`pnpm ops:backup:offdevice`): Creates `pg_dump -Fc` archives, `.sha256` / `.enc` sidecars, Stage-07 receipts, and off-device copies with `.offdevice.json` verification receipts.
+  4. `scripts/ops/telegram-assistant-worker.ts` (`pnpm ops:telegram:worker`): Long-polls inbound Telegram assistant commands (`getUpdates`) restricted to `allowedChatIds`.
+- **Outbound Network Boundary (`scripts/boundary-verify.ts`):**
+  - Application domain modules under `src/lib/**` have zero raw `process.env` and zero raw `fetch()` except explicitly allow-listed boundary adapters (`src/lib/env.ts`, `src/lib/reminders/transport.ts`, `src/lib/integrations/*`).
+
+## 2. Database & Financial Domain Surface
+- **Applied Migrations at Discovery Start:** `0001` through `0123` (`123/0123`), `132` RLS-enabled public tables, `90` `security_invoker = true` views.
+- **Core Financial Tables:**
+  - Obligations & Schedules: `payments`, `payment_instances`, `loans`, `loan_installments`, `checks`, `invoices`, `promise_to_pay`, `covenant_records`.
+  - Cash & Ledger: `accounts` (`6` accounts currently with `opening_balance IS NULL` -> `FIN-03`), `bank_transactions` (`0` rows imported), `cash_flow_entries` (workbook forecast), `journal_entries`, `journal_lines`, `allocations`.
+  - Governance & Controls: `approval_rules`, `approval_requests`, `ibans`, `control_registry`, `control_alerts`, `legal_entities`, `user_legal_entities`, `audit_logs`.
+  - Data Pipeline: `source_workbooks` (`TEMİZ.xlsx`, imported `2026-07-17T13:14:28.804Z`), `source_sheets`, `source_rows`, `source_cells`, `review_items`, `import_jobs`.
+  - Notifications & Reliability: `reminders`, `reminder_deliveries`, `notification_outbox`, `ops_incidents`.
+
+## 3. Git Worktree & Existing Modifications Baseline
+- Active branch: `master` (HEAD `247b637`).
+- Existing worktree contains Phase 1–3 UI/UX enhancements and initial audit-hardening migrations (`0116..0123`). All existing uncommitted user changes are preserved intact per Non-Negotiable Execution Contract Rule #4.
+
+## 4. Confirmed Pre-Remediation Gaps Identified During Phase A Discovery
+While migrations `0122–0123` established core tables (`notification_outbox`, `ops_incidents`, `get_schema_ledger_summary`, `enforce_outflow_settlement_approval_gate`), deep Phase A code & live-DB forensics uncovered **8 active implementation defects** requiring surgical remediation:
+1. **Partial-Payment Overstatement & Display Ambiguity (`I-012`, `I-009`, `Scenario 6`):** Live row `VAKIF KREDİ 2` (`0fbd2b5b-0a12-41b5-9bbe-23c8d079f03d`, due `2026-07-23`) has `amount = 30000.00`, `paid_amount = 12000.00`, `status = 'partial'` (outstanding `18000.00`). Both `toReportInstance()` (`src/lib/reports/engine.ts:32-40`) and `loadPaymentTargets()` (`src/lib/reminders/engine.ts:346-361`) drop `paid_amount`, causing daily/weekly reports and overdue reminders to sum and display the full `30,000 TRY` instead of `18,000 TRY` remaining.
+2. **Silent Suppression of `P2` Incidents & Unwired DB Incident Persistence (`I-005`, `I-013`):** `evaluateAndRecordOpsIncidents()` (`src/lib/reminders/outbox.ts:635`) skips notifications whenever `sig.severity === "P2"` — silently suppressing even the initial `OK -> OPEN` transition of `latest_import_age_days = 124` (`lastNotifiedAt: null` in `logs/ops-incident-state.json`). In addition, `scripts/ops/telemetry-snapshot.ts:544` omits `pool` when calling `deliverAlerts()`, leaving `public.ops_incidents` unpopulated during CLI telemetry runs, and `ops_incidents` lacks `SUPPRESSED`, `resolution_evidence`, and `correlation_id`.
+3. **Concurrent Cron Duplicate Dispatch Race (`I-007`, `Scenario 4`):** `dispatchPending()` (`src/lib/reminders/engine.ts:1209-1241`) selects `status = 'pending'` without `FOR UPDATE SKIP LOCKED` or atomic `'claiming'` state transition, allowing two concurrent workers to both send the same Telegram reminder before the second fails on status update.
+4. **Uncertain Telegram Delivery & `429 retry_after` Handling (`I-007`, `Section 6`):** `sendTelegramChatMessage()` (`src/lib/reminders/transport.ts:449-460`) does not distinguish post-request timeout / multi-chunk partial delivery (`delivery_uncertain`) from pre-send refusal, nor does it parse Telegram `429 parameters.retry_after`.
+5. **Ambiguous Day-30 Escalation Label & Statutory Legal Wording (`I-006`, `Scenario 2`, `Section 7`):** `classifyEscalationBucket()` routes day 30 to `overdue_8_30` (`8-30 Gün`) and day 31+ to `overdue_30_plus` labeled `"30+ Gün Hukuki Eskalasyon"`, creating a boundary contradiction at day 30 and asserting statutory legal action from a generic day counter. Furthermore, `overdueLookback = 365` drops obligations `>= 366` days overdue.
+6. **Batch Maintenance Success Stamping on Sub-Step Failure & Advisory Lock (`I-004`, `Agent 02`):** `runScheduledMaintenance()` (`scripts/ops/background-worker.ts:774-811, 828-960`) catches sub-step errors and still stamps `state.lastHourlySlot` / `state.lastDailyDate`, masking partial batch failures and lacking a PostgreSQL `pg_try_advisory_lock` guard.
+7. **Empty / Failed Workbook Import Freshness Bypass (`I-005`, `Agent 10`):** `telemetry-snapshot.ts:421-425` and `board-pack.ts` compute `max(imported_at)` over `public.source_workbooks` without requiring `status = 'parsed'` and `>= 1` `source_rows`, allowing an empty or failed import to falsely clear `latest_import_age_days`.
+8. **Backup Source/Target Independence & Last-Valid-Backup Retention Guard (`I-003`, `Agent 03`):** `planPrune()` / `offdevice-copy.ts` require explicit preflight protection ensuring off-device destination never resolves to `sourceDir` and pruning never deletes the sole remaining verified backup.

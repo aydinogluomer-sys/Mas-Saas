@@ -12,11 +12,11 @@
 //
 // Does not import @/lib/ai. The negative control in the gate proves it.
 
-import type { Pool } from "pg";
+import type { Pool, PoolClient } from "pg";
 import { z } from "zod";
 import { audit } from "@/lib/audit";
 import { DomainError } from "@/lib/domain-error";
-import { moneyOrNull, rateOrNull } from "@/lib/money";
+import { intOrNull, moneyOrNull, rateOrNull } from "@/lib/money";
 import { parseOrThrow } from "@/lib/validation";
 import {
   ANOMALY_RULES, assessAnomaly, canTransition, controlState, falsePositiveRate, isEscalationDue,
@@ -43,6 +43,81 @@ export const raiseAlertSchema = z.object({
 });
 
 /**
+ * Transaction-aware helper so synchronous domain writes (such as registering an unapproved IBAN)
+ * can raise or bump a `control_alerts` finding atomically in the same transaction.
+ */
+export async function raiseAlertWithClient(
+  client: PoolClient,
+  raw: unknown,
+  actorId: string | null,
+): Promise<string> {
+  const input = parseOrThrow(raiseAlertSchema, raw, "Kontrol uyarısı");
+  const anomaly = assessAnomaly(
+    input.ruleCodes.filter((r): r is AnomalyRule =>
+      (ANOMALY_RULES as readonly string[]).includes(r)),
+  );
+
+  const existing = await client.query(
+    `select id, occurrence_count from public.control_alerts
+     where check_code = $1
+       and subject_table is not distinct from $2
+       and subject_id is not distinct from $3
+       and status in ('open','acknowledged','snoozed')
+     for update`,
+    [input.checkCode, input.subjectTable ?? null, input.subjectId ?? null],
+  );
+
+  if ((existing.rowCount ?? 0) > 0) {
+    const id = existing.rows[0].id as string;
+    await client.query(
+      `update public.control_alerts
+          set last_seen_at = now(), occurrence_count = occurrence_count + 1
+        where id = $1`,
+      [id],
+    );
+    return id;
+  }
+
+  const res = await client.query(
+    `insert into public.control_alerts
+       (check_code, severity, subject_table, subject_id, subject_label, title, detail,
+        rule_codes, anomaly_score, amount)
+     values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+     returning id`,
+    [
+      input.checkCode,
+      input.severity,
+      input.subjectTable ?? null,
+      input.subjectId ?? null,
+      input.subjectLabel ?? null,
+      input.title,
+      input.detail ?? null,
+      input.ruleCodes,
+      anomaly.score > 0 ? anomaly.score : null,
+      input.amount ?? null,
+    ],
+  );
+  const id = res.rows[0].id as string;
+
+  await audit(client, {
+    actor: actorId,
+    action: "raise_control_alert",
+    entityTable: "control_alerts",
+    entityId: id,
+    after: {
+      checkCode: input.checkCode,
+      severity: input.severity,
+      ruleCodes: input.ruleCodes,
+      anomalyScore: anomaly.score,
+      // Recorded explicitly: raising a finding changes no financial record.
+      mutatedFinancialRecords: false,
+      automated: true,
+    },
+  });
+  return id;
+}
+
+/**
  * Raise a finding, or re-record one already known.
  *
  * IDEMPOTENT BY DESIGN. Re-running the controls must not pile up duplicate rows for the same
@@ -52,59 +127,12 @@ export const raiseAlertSchema = z.object({
  * creates a new alert, which is why the index excludes closed statuses.
  */
 export async function raiseAlert(pool: Pool, raw: unknown, actorId: string): Promise<string> {
+  // Validate upfront before acquiring a connection so malformed input never touches the pool.
   const input = parseOrThrow(raiseAlertSchema, raw, "Kontrol uyarısı");
-  // Only KNOWN anomaly rules contribute to the score. The first version cast the whole array
-  // through a predicate that returned true for everything, which lint flagged — and it was also
-  // wrong: a control-only rule code (or a typo) would have scored as an anomaly weight lookup of
-  // `undefined`. Filtering against the registry means an unrecognised code is carried on the
-  // alert for the record but cannot silently move the number.
-  const anomaly = assessAnomaly(
-    input.ruleCodes.filter((r): r is AnomalyRule =>
-      (ANOMALY_RULES as readonly string[]).includes(r)));
-
   const client = await pool.connect();
   try {
     await client.query("begin");
-    const existing = await client.query(
-      `select id, occurrence_count from public.control_alerts
-       where check_code = $1
-         and subject_table is not distinct from $2
-         and subject_id is not distinct from $3
-         and status in ('open','acknowledged','snoozed')
-       for update`,
-      [input.checkCode, input.subjectTable ?? null, input.subjectId ?? null]);
-
-    if ((existing.rowCount ?? 0) > 0) {
-      const id = existing.rows[0].id;
-      await client.query(
-        `update public.control_alerts
-           set last_seen_at = now(), occurrence_count = occurrence_count + 1
-         where id = $1`, [id]);
-      await client.query("commit");
-      return id;
-    }
-
-    const res = await client.query(
-      `insert into public.control_alerts
-         (check_code, severity, subject_table, subject_id, subject_label, title, detail,
-          rule_codes, anomaly_score, amount)
-       values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
-       returning id`,
-      [input.checkCode, input.severity, input.subjectTable ?? null, input.subjectId ?? null,
-       input.subjectLabel ?? null, input.title, input.detail ?? null,
-       input.ruleCodes, anomaly.score > 0 ? anomaly.score : null, input.amount ?? null]);
-    const id = res.rows[0].id;
-
-    await audit(client, {
-      actor: actorId, action: "raise_control_alert",
-      entityTable: "control_alerts", entityId: id,
-      after: {
-        checkCode: input.checkCode, severity: input.severity,
-        ruleCodes: input.ruleCodes, anomalyScore: anomaly.score,
-        // Recorded explicitly: raising a finding changes no financial record.
-        mutatedFinancialRecords: false, automated: true,
-      },
-    });
+    const id = await raiseAlertWithClient(client, input, actorId);
     await client.query("commit");
     return id;
   } catch (e) {
@@ -332,14 +360,240 @@ export async function loadFalsePositiveRates(pool: Pool) {
   }));
 }
 
+export interface ApprovalBypassEvidenceRow {
+  paymentInstanceId: string;
+  paymentName: string;
+  amount: number | null;
+  dueDate: string | null;
+  thresholdAmount: number | null;
+  currency: string;
+  tryEquivalent: number | null;
+  needsFxReview: boolean;
+}
+
+export interface IbanChangeEvidenceRow {
+  eventId: string;
+  ibanId: string | null;
+  changeType: string;
+  changedAt: string;
+  partyName: string | null;
+  ibanNormalized: string;
+  approvalStatus: string;
+  requiresVerification: boolean;
+}
+
+export interface DuplicateCheckEvidenceRow {
+  checkId: string;
+  duplicateOfCheckId: string;
+  counterpartyLabel: string;
+  amount: number | null;
+  currency: string;
+  direction: string;
+  maturityDate: string | null;
+  serialNo: string | null;
+}
+
+export interface DuplicatePaymentEvidenceRow {
+  paymentId: string;
+  duplicateOfPaymentId: string;
+  paymentName: string;
+  recurrenceType: string;
+  dueDay: number | null;
+  defaultAmount: number | null;
+  currency: string;
+}
+
+export interface ControlEvidenceSummary {
+  approvalBypasses: ApprovalBypassEvidenceRow[];
+  recentIbanChanges: IbanChangeEvidenceRow[];
+  duplicateChecks: DuplicateCheckEvidenceRow[];
+  duplicatePayments: DuplicatePaymentEvidenceRow[];
+}
+
+function isMissingViewOrCol(err: unknown): boolean {
+  const code = (err as { code?: string } | null)?.code;
+  return code === "42P01" || code === "42703";
+}
+
+export async function loadControlEvidenceSummary(
+  pool: Pool,
+  limit = 50,
+): Promise<ControlEvidenceSummary> {
+  const safeLimit = Math.max(1, Math.min(limit, 200));
+
+  const [bypassRes, ibanRes, dupCheckRes, dupPayRes] = await Promise.all([
+    pool
+      .query<{
+        payment_instance_id: string;
+        payment_name: string;
+        amount: string | null;
+        due_date: string | null;
+        threshold_amount: string | null;
+        currency: string;
+        try_equivalent: string | null;
+        needs_fx_review: boolean;
+      }>(
+        `select payment_instance_id::text as payment_instance_id,
+                payment_name,
+                amount::text as amount,
+                to_char(due_date, 'YYYY-MM-DD') as due_date,
+                threshold_amount::text as threshold_amount,
+                coalesce(currency, 'TRY') as currency,
+                try_equivalent::text as try_equivalent,
+                coalesce(needs_fx_review, false) as needs_fx_review
+           from public.control_approval_bypass
+          order by due_date desc nulls last, payment_instance_id
+          limit $1`,
+        [safeLimit],
+      )
+      .catch((err: unknown) => {
+        if (isMissingViewOrCol(err)) return { rows: [] };
+        throw err;
+      }),
+    pool
+      .query<{
+        event_id: string;
+        iban_id: string | null;
+        change_type: string;
+        changed_at: string;
+        party_name: string | null;
+        iban_normalized: string;
+        approval_status: string;
+        requires_verification: boolean;
+      }>(
+        `select cic.event_id::text as event_id,
+                cic.iban_id::text as iban_id,
+                cic.change_type,
+                to_char(cic.changed_at at time zone 'Europe/Istanbul', 'YYYY-MM-DD HH24:MI') as changed_at,
+                pa.name as party_name,
+                coalesce(
+                  ib.iban_normalized,
+                  cic.after_data->>'iban_normalized',
+                  cic.before_data->>'iban_normalized',
+                  ''
+                ) as iban_normalized,
+                coalesce(ib.approval_status, 'pending_approval') as approval_status,
+                coalesce(cic.requires_verification, true) as requires_verification
+           from public.control_iban_changes cic
+           left join public.ibans ib on ib.id = cic.iban_id
+           left join public.parties pa on pa.id = ib.party_id
+          where cic.is_recent = true
+          order by cic.changed_at desc
+          limit $1`,
+        [safeLimit],
+      )
+      .catch((err: unknown) => {
+        if (isMissingViewOrCol(err)) return { rows: [] };
+        throw err;
+      }),
+    pool
+      .query<{
+        check_id: string;
+        duplicate_of_check_id: string;
+        counterparty_label: string;
+        amount: string | null;
+        currency: string;
+        direction: string;
+        maturity_date: string | null;
+        serial_no: string | null;
+      }>(
+        `select check_id::text as check_id,
+                duplicate_of_check_id::text as duplicate_of_check_id,
+                counterparty_label,
+                amount::text as amount,
+                coalesce(currency, 'TRY') as currency,
+                direction,
+                to_char(maturity_date, 'YYYY-MM-DD') as maturity_date,
+                serial_no
+           from public.control_duplicate_checks
+          order by amount desc nulls last, maturity_date asc nulls last, check_id
+          limit $1`,
+        [safeLimit],
+      )
+      .catch((err: unknown) => {
+        if (isMissingViewOrCol(err)) return { rows: [] };
+        throw err;
+      }),
+    pool
+      .query<{
+        payment_id: string;
+        duplicate_of_payment_id: string;
+        payment_name: string;
+        recurrence_type: string;
+        due_day: number | string | null;
+        default_amount: string | null;
+        currency: string;
+      }>(
+        `select payment_id::text as payment_id,
+                duplicate_of_payment_id::text as duplicate_of_payment_id,
+                payment_name,
+                recurrence_type,
+                due_day,
+                default_amount::text as default_amount,
+                coalesce(currency, 'TRY') as currency
+           from public.control_duplicate_payments
+          order by default_amount desc nulls last, payment_name asc, payment_id
+          limit $1`,
+        [safeLimit],
+      )
+      .catch((err: unknown) => {
+        if (isMissingViewOrCol(err)) return { rows: [] };
+        throw err;
+      }),
+  ]);
+
+  return {
+    approvalBypasses: bypassRes.rows.map((r) => ({
+      paymentInstanceId: r.payment_instance_id,
+      paymentName: r.payment_name,
+      amount: moneyOrNull(r.amount),
+      dueDate: r.due_date,
+      thresholdAmount: moneyOrNull(r.threshold_amount),
+      currency: r.currency || "TRY",
+      tryEquivalent: moneyOrNull(r.try_equivalent),
+      needsFxReview: Boolean(r.needs_fx_review),
+    })),
+    recentIbanChanges: ibanRes.rows.map((r) => ({
+      eventId: r.event_id,
+      ibanId: r.iban_id,
+      changeType: r.change_type,
+      changedAt: r.changed_at,
+      partyName: r.party_name,
+      ibanNormalized: r.iban_normalized,
+      approvalStatus: r.approval_status,
+      requiresVerification: Boolean(r.requires_verification),
+    })),
+    duplicateChecks: dupCheckRes.rows.map((r) => ({
+      checkId: r.check_id,
+      duplicateOfCheckId: r.duplicate_of_check_id,
+      counterpartyLabel: r.counterparty_label,
+      amount: moneyOrNull(r.amount),
+      currency: r.currency || "TRY",
+      direction: r.direction,
+      maturityDate: r.maturity_date,
+      serialNo: r.serial_no,
+    })),
+    duplicatePayments: dupPayRes.rows.map((r) => ({
+      paymentId: r.payment_id,
+      duplicateOfPaymentId: r.duplicate_of_payment_id,
+      paymentName: r.payment_name,
+      recurrenceType: r.recurrence_type,
+      dueDay: intOrNull(r.due_day),
+      defaultAmount: moneyOrNull(r.default_amount),
+      currency: r.currency || "TRY",
+    })),
+  };
+}
+
 export async function loadAnomalies(pool: Pool) {
-  const [round, split, newPayee, baseline, hour] = await Promise.all([
+  const [round, split, newPayee, baseline, hour, evidence] = await Promise.all([
     pool.query(`select payment_instance_id, payment_name, amount, due_date from public.anomaly_round_number_payments limit 50`),
     // PHASE 2.2 (0093): sayım/toplam yalnız TRY; foreign_currency_count aynı gün TRY-dışı kalemleri sayar.
     pool.query(`select party_id, party_name, due_date, payment_count, total_amount, largest_single, foreign_currency_count from public.anomaly_split_payments limit 50`),
     pool.query(`select party_id, party_name, first_payment_date, payment_count, total_amount from public.anomaly_new_payee limit 50`),
     pool.query(`select payment_instance_id, party_name, amount, avg_amount, sample_count, times_baseline from public.anomaly_amount_vs_baseline limit 50`),
     pool.query(`select txn_id, txn_date, amount, recorded_hour, caveat from public.anomaly_unusual_record_hour limit 50`),
+    loadControlEvidenceSummary(pool, 50),
   ]);
   return {
     roundNumber: round.rows,
@@ -348,5 +602,6 @@ export async function loadAnomalies(pool: Pool) {
     aboveBaseline: baseline.rows,
     // The caveat travels with the rows: this is RECORD time, not transaction time.
     unusualRecordHour: hour.rows,
+    ...evidence,
   };
 }

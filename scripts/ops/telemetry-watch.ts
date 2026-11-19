@@ -25,15 +25,23 @@
 //   (bağlantı .env.local'den okunur; ortam değişkeni verilmişse o kazanır)
 
 import { execFileSync } from "node:child_process";
-import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, unlinkSync } from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import {
+  deliverAlerts,
+  parseAlertChannels,
+  type AlertChannel,
+} from "../../src/lib/ops/alert-delivery";
+import {
+  emailTransport,
+  sendTelegramChatMessage,
+  type Transport,
+} from "../../src/lib/reminders/transport";
 
 const ROOT = process.cwd();
 const SNAPSHOT = path.join(ROOT, "scripts", "ops", "telemetry-snapshot.ts");
 const LOG_DIR = process.env.MAS_TELEMETRY_LOG_DIR ?? path.join(ROOT, "logs");
-const RUN_LOG = path.join(LOG_DIR, "telemetry-runs.jsonl");
-const JSON_OUT = path.join(LOG_DIR, "telemetry-latest.json");
 
 /** Rehber §14 + Faz 43 zamanlanmış kontroller → hangi sinyalden okunur. */
 const SCHEDULED_CHECKS: ReadonlyArray<{ check: string; signal: string | null }> = Object.freeze([
@@ -109,12 +117,107 @@ interface SnapshotJson {
   delivery: { alertLogPath: string; channels: string[]; allDelivered: boolean };
 }
 
-export async function runTelemetryWatch(): Promise<number> {
+function buildWatchAlertTransports(
+  resolvedEnv: NodeJS.ProcessEnv,
+  overrides?: Partial<Record<Exclude<AlertChannel, "log">, Transport>>,
+): Partial<Record<Exclude<AlertChannel, "log">, Transport>> {
+  const tgToken = resolvedEnv.TELEGRAM_BOT_TOKEN?.trim();
+  const tgChat = resolvedEnv.TELEGRAM_CHAT_ID?.trim();
+  const tgTransport: Transport = {
+    channel: "telegram",
+    async send(message: string) {
+      if (!tgToken || !tgChat) {
+        return { ok: false, error: "TELEGRAM_BOT_TOKEN/CHAT_ID tanımlı değil" };
+      }
+      return await sendTelegramChatMessage(tgChat, message, {
+        token: tgToken,
+        allowedChatIds: tgChat,
+      });
+    },
+  };
+
+  const mailTransport = emailTransport({
+    to: resolvedEnv.EMAIL_TO,
+    apiUrl: resolvedEnv.EMAIL_API_URL,
+    apiKey: resolvedEnv.EMAIL_API_KEY,
+    from: resolvedEnv.EMAIL_FROM,
+    subject: "MAS Nakit Radar — Telemetri Anlık Görüntü Alınamadı [UNKNOWN]",
+  });
+
+  return {
+    telegram: overrides?.telegram ?? tgTransport,
+    email: overrides?.email ?? mailTransport,
+  };
+}
+
+export interface TelemetryWatchOptions {
+  logDir?: string;
+  snapshotScriptPath?: string;
+  envLocalOverride?: Record<string, string>;
+  transports?: Partial<Record<Exclude<AlertChannel, "log">, Transport>>;
+}
+
+export async function runTelemetryWatch(opts: TelemetryWatchOptions = {}): Promise<number> {
   const startedAt = new Date();
-  const envLocal = readEnvLocal();
+  const envLocal = opts.envLocalOverride ?? readEnvLocal();
+  const activeLogDir = opts.logDir ?? LOG_DIR;
+  const activeRunLog = path.join(activeLogDir, "telemetry-runs.jsonl");
+  const activeJsonOut = path.join(activeLogDir, "telemetry-latest.json");
+  const activeAlertLog = process.env.MAS_ALERT_LOG ?? path.join(activeLogDir, "alerts.jsonl");
+  const activeSnapshot = opts.snapshotScriptPath ?? SNAPSHOT;
+
+  mkdirSync(activeLogDir, { recursive: true });
+
   const ownerUrl = process.env.MIGRATION_DATABASE_URL || envLocal["MIGRATION_DATABASE_URL"] || "";
   const runtimeUrl = process.env.DATABASE_URL || envLocal["DATABASE_URL"] || "";
+  const env = buildWatchSubprocessEnv(process.env, envLocal, ownerUrl, runtimeUrl);
+  const watchCorrelationId =
+    env.MAS_TELEMETRY_RUN_ID || `tel-watch-${startedAt.toISOString().replace(/[:.]/g, "-")}`;
+  if (!env.MAS_TELEMETRY_RUN_ID) {
+    env.MAS_TELEMETRY_RUN_ID = watchCorrelationId;
+  }
+
+  const notifySnapshotUnavailable = async (reasonValue: string, exitCode: number) => {
+    const { channels } = parseAlertChannels(env.MAS_ALERT_CHANNELS);
+    const redactValues = [
+      "TELEGRAM_BOT_TOKEN",
+      "TELEGRAM_CHAT_ID",
+      "EMAIL_API_KEY",
+      "EMAIL_API_URL",
+      "EMAIL_TO",
+      "OPENAI_API_KEY",
+      "DATABASE_URL",
+      "MIGRATION_DATABASE_URL",
+      "SEED_ADMIN_PASSWORD",
+    ]
+      .map((k) => env[k])
+      .filter((v): v is string => typeof v === "string" && v.length > 0);
+
+    const blindRunId = `watch-blind-${startedAt.toISOString().replace(/[:.]/g, "-")}`;
+    return await deliverAlerts({
+      runId: blindRunId,
+      correlationId: blindRunId,
+      alerts: [
+        {
+          signal: "telemetry_snapshot_unavailable",
+          section: "RUNTIME",
+          value: reasonValue,
+          threshold: `anlık görüntü tamamlanmalı (exit ${exitCode})`,
+          severity: "P0",
+          message: `telemetry_snapshot_unavailable = ${reasonValue} (exit ${exitCode})`,
+          snapshotUnavailable: true,
+        },
+      ],
+      logPath: activeAlertLog,
+      channels,
+      transports: buildWatchAlertTransports(env, opts.transports),
+      redactValues,
+      now: new Date(),
+    });
+  };
+
   if (!ownerUrl) {
+    await notifySnapshotUnavailable("MIGRATION_DATABASE_URL_MISSING", 3).catch(() => undefined);
     console.error("MIGRATION_DATABASE_URL yok (ne ortamda ne .env.local'de). Telemetri koşamaz.");
     return 3;
   }
@@ -122,14 +225,20 @@ export async function runTelemetryWatch(): Promise<number> {
   const dbName = (() => { try { return new URL(ownerUrl).pathname.replace(/^\//, ""); } catch { return "(okunamadı)"; } })();
   console.log(`[${startedAt.toISOString()}] MAS telemetri gözetimi — kaynak '${dbName}'`);
 
-  mkdirSync(LOG_DIR, { recursive: true });
-
-  const env = buildWatchSubprocessEnv(process.env, envLocal, ownerUrl, runtimeUrl);
+  // Eski (örn. 6 saatlik) telemetry-latest.json dosyasını koşturmadan ÖNCE sil ki
+  // çöken bir alt süreç (exit 3) bayat dosyayı okuyup sahte ALL CLEAR üretemesin.
+  if (existsSync(activeJsonOut)) {
+    try {
+      unlinkSync(activeJsonOut);
+    } catch {
+      // Silinemezse aşağıda çıkış kodu kontrolü de devrede.
+    }
+  }
 
   let snapshotCode = 0;
   let stdout = "";
   try {
-    stdout = execFileSync(process.execPath, ["--import", "tsx", SNAPSHOT, "--json", JSON_OUT], {
+    stdout = execFileSync(process.execPath, ["--import", "tsx", activeSnapshot, "--json", activeJsonOut], {
       cwd: ROOT, env, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: 180_000,
     });
   } catch (e) {
@@ -141,18 +250,28 @@ export async function runTelemetryWatch(): Promise<number> {
 
   let snap: SnapshotJson | null = null;
   try {
-    if (existsSync(JSON_OUT)) snap = JSON.parse(readFileSync(JSON_OUT, "utf8")) as SnapshotJson;
+    if (existsSync(activeJsonOut)) snap = JSON.parse(readFileSync(activeJsonOut, "utf8")) as SnapshotJson;
   } catch { snap = null; }
 
-  // Anlık görüntü hiç koşamadıysa "sorun yok" DEMEZ: hiçbir şey bilmiyoruz, exit 3.
-  if (snap === null) {
+  const snapshotBlind =
+    snap === null || (snapshotCode !== 0 && snapshotCode !== 1 && snapshotCode !== 2);
+
+  // Anlık görüntü hiç koşamadıysa "sorun yok" DEMEZ: hiçbir şey bilmiyoruz, UNKNOWN bildir + exit 3.
+  if (snapshotBlind || snap === null) {
+    const blindReport = await notifySnapshotUnavailable(
+      `SNAPSHOT_UNAVAILABLE (exit ${snapshotCode})`,
+      snapshotCode,
+    );
     const record = {
       startedAt: startedAt.toISOString(), finishedAt: new Date().toISOString(),
-      source_db: dbName, verdict: "SNAPSHOT_UNAVAILABLE", snapshotExit: snapshotCode,
+      source_db: dbName, runId: blindReport.runId, correlationId: blindReport.runId,
+      verdict: "SNAPSHOT_UNAVAILABLE", snapshotExit: snapshotCode,
+      delivered: blindReport.allDelivered,
+      alertLog: activeAlertLog,
       checks: SCHEDULED_CHECKS.map((c) => ({ check: c.check, verdict: "UNKNOWN" })),
     };
-    appendFileSync(RUN_LOG, `${JSON.stringify(record)}\n`, "utf8");
-    console.error(`TELEMETRY WATCH: SNAPSHOT UNAVAILABLE (exit ${snapshotCode}) — koşu kaydı: ${RUN_LOG}`);
+    appendFileSync(activeRunLog, `${JSON.stringify(record)}\n`, "utf8");
+    console.error(`TELEMETRY WATCH: SNAPSHOT UNAVAILABLE (exit ${snapshotCode}) — koşu kaydı: ${activeRunLog}`);
     return 3;
   }
 
@@ -174,6 +293,7 @@ export async function runTelemetryWatch(): Promise<number> {
     finishedAt: new Date().toISOString(),
     source_db: dbName,
     runId: snap.runId,
+    correlationId: snap.runId,
     verdict: snap.verdict,
     alertCount: snap.alertCount,
     alertingSignals: snap.signals.filter((s) => s.alert).map((s) => ({ name: s.name, severity: s.severity })),
@@ -183,12 +303,12 @@ export async function runTelemetryWatch(): Promise<number> {
     snapshotExit: snapshotCode,
     checks,
   };
-  appendFileSync(RUN_LOG, `${JSON.stringify(record)}\n`, "utf8");
+  appendFileSync(activeRunLog, `${JSON.stringify(record)}\n`, "utf8");
 
   console.log("\n── ZAMANLANMIŞ KONTROLLER (rehber §14) ────────────────────────────────");
   for (const c of checks) console.log(`  ${c.verdict.padEnd(20)} ${c.check.padEnd(24)} ${c.value}`);
-  console.log(`Koşu kaydı : ${RUN_LOG}`);
-  console.log(`Anlık JSON : ${JSON_OUT}`);
+  console.log(`Koşu kaydı : ${activeRunLog}`);
+  console.log(`Anlık JSON : ${activeJsonOut}`);
   console.log(`Alert log  : ${snap.delivery.alertLogPath}`);
 
   if (!snap.delivery.allDelivered) {

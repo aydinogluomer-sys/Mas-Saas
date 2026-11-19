@@ -9,6 +9,7 @@ import { audit } from "@/lib/audit";
 import { DomainError } from "@/lib/domain-error";
 import { intOrNull, moneyOrNull, rateOrNull } from "@/lib/money";
 import { parseOrThrow } from "@/lib/validation";
+import { withPinnedRead } from "@/lib/pg-concurrency";
 import { decideApproval, requestApprovalWithClient } from "@/lib/approvals/engine";
 import {
   SOURCE_CONFIDENCE, accuracy, canTransition, variance,
@@ -668,6 +669,10 @@ export async function loadBudgetVarianceSummary(pool: Pool): Promise<BudgetVaria
 }
 
 export async function loadBudgetsCatalog(pool: Pool) {
+  return withPinnedRead(pool, loadBudgetsCatalogInner);
+}
+
+async function loadBudgetsCatalogInner(pool: Pool) {
   const [budgets, lines, forecasts, forecastLines, costCenters, departments, projects, categories] =
     await Promise.all([
       pool.query(

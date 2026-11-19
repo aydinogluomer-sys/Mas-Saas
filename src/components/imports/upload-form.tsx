@@ -16,7 +16,7 @@ export function UploadForm() {
   return (
     <form action={uploadWorkbookAction} className="flex flex-wrap items-center gap-2">
       <input type="file" name="file" required accept=".xlsx,.csv"
-        className="border border-line bg-black/40 p-2 font-mono text-xs file:mr-3 file:border-0 file:bg-surface-3 file:px-2 file:py-1 file:font-mono file:text-xs file:text-tone-1" />
+        className="border border-line bg-[var(--surface-1)] p-2 font-mono text-xs file:mr-3 file:border-0 file:bg-[var(--surface-2)] file:px-2 file:py-1 file:font-mono file:text-xs file:text-tone-1" />
       <SubmitButton />
       <span className="font-mono text-[10px] text-tone-3">
         ham veri olduğu gibi korunur · bozuk dosya hata kaydıyla saklanır

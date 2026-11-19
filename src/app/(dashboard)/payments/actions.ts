@@ -3,16 +3,24 @@ import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { getPool } from "@/lib/db";
 import {
+  archivePaymentWithCascade,
   cancelInstance,
   createPayment,
   ensureWindow,
+  linkPaymentInstanceToInvoice,
   mapAcceptedCandidates,
   markInstancePaid,
   markInstancePartial,
   markInstanceUnpaid,
   setInstanceAmount,
+  updatePaymentWithCascade,
 } from "@/lib/radar/engine";
-import { archivePayment, updatePaymentAndReconcile } from "@/lib/payments/engine";
+import { requestApprovalsForOpenPaymentInstances } from "@/lib/payments/engine";
+import {
+  createPaymentRun,
+  submitPaymentRunForApproval,
+  type PaymentRunTargetType,
+} from "@/lib/payments/payment-runs";
 import {
   isPgPeriodLockedError,
   PERIOD_LOCKED_USER_MESSAGE,
@@ -41,7 +49,7 @@ function readForm(formData: FormData) {
     due_day: num(formData.get("due_day")),
     due_date: opt(formData.get("due_date")),
     default_amount: num(formData.get("default_amount")), // empty stays NULL, never 0
-    currency: opt(formData.get("currency")) ?? "TRY",
+    currency: (opt(formData.get("currency")) ?? "TRY").toUpperCase(),
     amount_confidence: String(formData.get("amount_confidence") ?? "known"),
     direction: String(formData.get("direction") ?? "outflow"),
     priority: String(formData.get("priority") ?? "normal"),
@@ -55,6 +63,9 @@ function readForm(formData: FormData) {
     project_id: opt(formData.get("project_id")),
     department_id: opt(formData.get("department_id")),
     description: opt(formData.get("description")),
+    iban: opt(formData.get("iban")),
+    tdhp_expense_code: opt(formData.get("tdhp_expense_code")),
+    auto_match_vkn: opt(formData.get("auto_match_vkn")),
   };
 }
 
@@ -67,6 +78,7 @@ function validate(f: ReturnType<typeof readForm>): string | null {
     return "Tek seferlik ödeme için vade tarihi zorunlu.";
   }
   if (f.due_day != null && (f.due_day < 1 || f.due_day > 31)) return "Gün 1-31 arası olmalı.";
+  if (!["TRY", "USD", "EUR", "GBP"].includes(f.currency)) return "Geçersiz döviz kodu.";
   return null;
 }
 
@@ -113,13 +125,18 @@ export async function updatePaymentAction(formData: FormData): Promise<void> {
   const f = readForm(formData);
   const err = validate(f);
   if (err) redirect(`/payments/${id}/edit?error=${encodeURIComponent(err)}`);
+  const todayISO = istanbulDateISO();
+  const pool = getPool();
   try {
-    await updatePaymentAndReconcile(getPool(), id, f, istanbulDateISO(), session.id);
+    await updatePaymentWithCascade(pool, id, f, todayISO, session.id);
+    await requestApprovalsForOpenPaymentInstances(pool, id, todayISO, session.id);
   } catch (e) {
     handleCaughtPaymentError(e, `/payments/${id}/edit`);
   }
   revalidatePath("/payments");
   revalidatePath("/payments/items");
+  revalidatePath("/payments/calendar");
+  revalidatePath("/cashflow");
   revalidatePath("/");
   redirect("/payments/items");
 }
@@ -131,7 +148,7 @@ export async function archivePaymentAction(formData: FormData): Promise<void> {
   if (!id) return;
   if (!reason) redirect(`/payments/${id}/edit?error=${encodeURIComponent("Arşivleme nedeni zorunlu.")}`);
   try {
-    await archivePayment(
+    await archivePaymentWithCascade(
       getPool(),
       id,
       { reason, archivedByLabel: session.displayName },
@@ -143,6 +160,7 @@ export async function archivePaymentAction(formData: FormData): Promise<void> {
   }
   revalidatePath("/payments");
   revalidatePath("/payments/items");
+  revalidatePath("/payments/calendar");
   revalidatePath("/");
   redirect("/payments/items");
 }
@@ -158,10 +176,11 @@ export async function markPaidAction(formData: FormData): Promise<void> {
   const id = String(formData.get("id") ?? "");
   const raw = String(formData.get("paidAmount") ?? "").trim();
   const paidAmount = raw === "" ? null : Number(raw);
+  const cashAccountId = opt(formData.get("cashAccountId"));
   if (!id || (raw !== "" && !Number.isFinite(paidAmount))) return;
   const backTo = backOf(formData);
   try {
-    await markInstancePaid(getPool(), id, paidAmount, session.id);
+    await markInstancePaid(getPool(), id, paidAmount, session.id, { cashAccountId });
   } catch (e) {
     handleCaughtPaymentError(e, backTo);
   }
@@ -187,14 +206,86 @@ export async function markPartialAction(formData: FormData): Promise<void> {
   const session = await requireActionPermission("payment_instances", "update", "/payments");
   const id = String(formData.get("id") ?? "");
   const paid = Number(formData.get("paidAmount"));
+  const cashAccountId = opt(formData.get("cashAccountId"));
   const backTo = backOf(formData);
   try {
-    await markInstancePartial(getPool(), id, paid, session.id);
+    await markInstancePartial(getPool(), id, paid, session.id, { cashAccountId });
   } catch (e) {
     handleCaughtPaymentError(e, backTo);
   }
   revalidatePath("/payments/history");
   revalidateFinancialViews();
+  redirect(backTo);
+}
+
+export async function linkInvoiceToInstanceAction(formData: FormData): Promise<void> {
+  const session = await requireActionPermission("payment_instances", "update", "/payments");
+  const instanceId = String(formData.get("instanceId") ?? "").trim();
+  const invoiceId = opt(formData.get("invoiceId"));
+  const backTo = backOf(formData);
+  if (!instanceId) return;
+  try {
+    await linkPaymentInstanceToInvoice(getPool(), {
+      instanceId,
+      invoiceId,
+      actor: session.id,
+    });
+  } catch (e) {
+    handleCaughtPaymentError(e, backTo);
+  }
+  revalidatePath(backTo);
+  revalidatePath("/payments");
+  revalidatePath("/cashflow/13-week");
+  revalidateFinancialViews();
+}
+
+export async function createQuickPaymentRunAction(formData: FormData): Promise<void> {
+  const session = await requireActionPermission("payment_runs", "insert", "/payments");
+  const backTo = backOf(formData);
+  const sourceBankAccountId = String(formData.get("sourceBankAccountId") ?? "").trim();
+  const plannedExecutionDate = String(formData.get("plannedExecutionDate") ?? istanbulDateISO()).trim();
+  const currency = (opt(formData.get("currency")) ?? "TRY").toUpperCase();
+  const notes = opt(formData.get("notes")) ?? undefined;
+  const rawTargets = formData.getAll("selectedTarget").map((v) => String(v).trim()).filter(Boolean);
+  if (!sourceBankAccountId || rawTargets.length === 0) {
+    errorRedirect(backTo, "Kaynak banka hesabı ve en az bir ödeme kalemi seçilmelidir.");
+  }
+  const items = rawTargets.map((token) => {
+    const [targetType, targetId] = token.split(":");
+    return {
+      targetType: targetType as PaymentRunTargetType,
+      targetId,
+    };
+  });
+  try {
+    await createPaymentRun(
+      getPool(),
+      { sourceBankAccountId, plannedExecutionDate, currency, notes, items },
+      session.id,
+      istanbulDateISO(),
+    );
+  } catch (e) {
+    handleCaughtPaymentError(e, backTo);
+  }
+  revalidatePath("/payments");
+  revalidatePath("/bank");
+  revalidateFinancialViews();
+  redirect(backTo);
+}
+
+export async function submitPaymentRunAction(formData: FormData): Promise<void> {
+  const session = await requireActionPermission("payment_runs", "update", "/payments");
+  const backTo = backOf(formData);
+  const runId = String(formData.get("runId") ?? "").trim();
+  const note = opt(formData.get("note")) ?? undefined;
+  if (!runId) return;
+  try {
+    await submitPaymentRunForApproval(getPool(), { runId, note }, session.id);
+  } catch (e) {
+    handleCaughtPaymentError(e, backTo);
+  }
+  revalidatePath("/payments");
+  revalidatePath("/approvals");
   redirect(backTo);
 }
 

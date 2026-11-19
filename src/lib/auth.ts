@@ -157,6 +157,46 @@ export async function createSessionCookie(userId: string): Promise<void> {
   });
 }
 
+export const MANUAL_LOGOUT_COOKIE = "mas_manual_logout";
+
+export async function isStrictLoopbackRequest(): Promise<boolean> {
+  try {
+    const h = await nextHeaders.headers();
+    const forwardedHost = h.get("x-forwarded-host")?.trim() ?? "";
+    const hostHeader = h.get("host")?.trim() ?? "";
+    if (!hostHeader && !forwardedHost) return false;
+    for (const rawHost of [forwardedHost, hostHeader]) {
+      if (!rawHost) continue;
+      for (const hop of rawHost.split(",")) {
+        const trimmed = hop.trim();
+        if (!trimmed) continue;
+        const hostname = extractHostHeaderHostname(trimmed);
+        if (!hostname || !isLoopbackHostname(hostname)) {
+          return false;
+        }
+      }
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export async function resolveLocalWorkstationAutoLoginUserId(): Promise<string | null> {
+  if (!env.localWorkstationAutologin) return null;
+  if (!(await isStrictLoopbackRequest())) return null;
+  const res = await getRawPool().query<{ id: string }>(
+    `select id
+       from public.users
+      where is_active = true
+        and role = 'admin'
+        and (locked_until is null or locked_until <= now())
+      order by coalesce(must_change_password, false) asc, (username = 'atilla') desc, created_at asc
+      limit 1`,
+  );
+  return res.rowCount === 1 ? res.rows[0].id : null;
+}
+
 // Reserved, is_active=false account used only by the TestSprite QA harness — never a real
 // login. Deliberately never created by any migration (production/dev databases never carry
 // it); only disposable/test DB fixtures seed this row. If MAS_QA_BYPASS_AUTH is left on by
@@ -208,9 +248,24 @@ export async function getCurrentUser(): Promise<SessionUser | null> {
       const h = await nextHeaders.headers();
       const forwardedHost = h.get("x-forwarded-host")?.trim() ?? "";
       const hostHeader = h.get("host")?.trim() ?? "";
-      for (const rawHost of [forwardedHost, hostHeader]) {
-        if (!rawHost) continue;
-        for (const hop of rawHost.split(",")) {
+      if (!hostHeader) {
+        return null;
+      }
+      let sawLoopbackHost = false;
+      for (const hop of hostHeader.split(",")) {
+        const trimmed = hop.trim();
+        if (!trimmed) continue;
+        const hostname = extractHostHeaderHostname(trimmed);
+        if (!hostname || !isLoopbackHostname(hostname)) {
+          return null;
+        }
+        sawLoopbackHost = true;
+      }
+      if (!sawLoopbackHost) {
+        return null;
+      }
+      if (forwardedHost) {
+        for (const hop of forwardedHost.split(",")) {
           const trimmed = hop.trim();
           if (!trimmed) continue;
           const hostname = extractHostHeaderHostname(trimmed);
@@ -220,8 +275,9 @@ export async function getCurrentUser(): Promise<SessionUser | null> {
         }
       }
     } catch {
-      // Called outside a Next.js HTTP request store (e.g. unit/CLI context).
-      // Production is already rejected above before reaching this block.
+      // Outside a Next.js HTTP request store (CLI script, background worker, or non-HTTP unit test):
+      // fail closed (`null`) so background callers never silently escalate to DEFAULT_LOCAL_USER (`admin`).
+      return null;
     }
     return { ...DEFAULT_LOCAL_USER };
   }
@@ -281,12 +337,17 @@ export async function getCurrentUser(): Promise<SessionUser | null> {
     }
   }
 
+  const bypassForcedChange =
+    Boolean(row.must_change_password) &&
+    env.localWorkstationAutologin &&
+    (await isStrictLoopbackRequest());
+
   return {
     id: row.id,
     username: row.username,
     displayName: row.display_name,
     role: row.role,
-    mustChangePassword: Boolean(row.must_change_password),
+    mustChangePassword: bypassForcedChange ? false : Boolean(row.must_change_password),
   };
 }
 
@@ -364,7 +425,12 @@ export interface RequireSessionOptions {
 
 export async function requireSession(options?: RequireSessionOptions): Promise<SessionUser> {
   const user = await getRequestUser();
-  if (!user) redirect("/login");
+  if (!user) {
+    if (env.localWorkstationAutologin && (await isStrictLoopbackRequest())) {
+      redirect("/login?autologin=1");
+    }
+    redirect("/login");
+  }
   const allowPending = Boolean(options?.allowMustChangePassword || options?.allowPasswordChangePending);
   if (user.mustChangePassword && !allowPending) {
     redirect("/change-password");

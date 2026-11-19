@@ -157,8 +157,22 @@ async function main(): Promise<void> {
     record("runtime_user: gerçek current_user okunuyor (owner → 'postgres') ve ALERT",
       signalState(ownerRun.out, "runtime_user") === "ALERT" && /postgres/.test(rtLine), rtLine);
 
-    // ── latest_import: clears when a recent workbook exists ─────────────────────────────────
-    await pool.query(`insert into public.source_workbooks (original_filename) values ('telemetry-verify.xlsx')`);
+    // ── latest_import: clears when a recent VALID workbook (parsed + >=1 import_rows) exists ─
+    await pool.query(`
+      with wb as (
+        insert into public.source_workbooks (original_filename, status)
+        values ('telemetry-verify.xlsx', 'parsed')
+        returning id
+      ), sh as (
+        insert into public.source_sheets
+          (workbook_id, sheet_name, sheet_name_normalized, sheet_index, row_count, column_count, detected_type, parse_confidence)
+        select id, 'Sheet1', 'sheet1', 0, 1, 1, 'payment_schedule', 'high' from wb
+        returning id, workbook_id
+      )
+      insert into public.import_rows
+        (workbook_id, sheet_id, row_index, row_json, row_hash, detected_entity_type)
+      select workbook_id, id, 1, '{"A":{"v":"test","t":"s"}}'::jsonb, 'telemetry-verify-hash', 'payment'
+      from sh`);
     const importRun = runTelemetry({ MAS_BACKUP_DIR: freshBackupDir, DATABASE_URL: "" });
     record("latest_import: taze içe aktarım varken ok",
       signalState(importRun.out, "latest_import_age_days") === "ok",

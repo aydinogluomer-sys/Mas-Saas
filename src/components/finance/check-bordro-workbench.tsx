@@ -36,6 +36,7 @@ const OPERATION_ALLOWED_SOURCES: Record<CheckBordroOperation, ReadonlySet<string
   send_to_bank_collection: new Set(["in_portfolio", "planned", "in_bank_collateral"]),
   pledge_to_bank_collateral: new Set(["in_portfolio", "planned"]),
   issue_own_check: new Set(["planned"]),
+  factor_checks: new Set(["in_portfolio", "planned", "in_bank_collection"]),
   mark_cleared: new Set([
     "planned",
     "in_portfolio",
@@ -70,7 +71,8 @@ function isEligibleForOperation(c: BordroCandidateCheck, op: CheckBordroOperatio
     op === "receive_to_portfolio" ||
     op === "endorse_to_vendor" ||
     op === "send_to_bank_collection" ||
-    op === "pledge_to_bank_collateral"
+    op === "pledge_to_bank_collateral" ||
+    op === "factor_checks"
   ) {
     return c.direction === "inflow";
   }
@@ -265,6 +267,45 @@ export function CheckBordroWorkbench({
               className="field-control mt-1 w-full p-2 text-xs font-mono"
             />
           </label>
+        </div>
+      )}
+
+      {operation === "factor_checks" && (
+        <div className="grid gap-3 rounded border border-edge bg-surface-2 p-3 sm:grid-cols-3">
+          <label className="text-xs font-medium text-tone-2 sm:col-span-2">
+            Net nakdin aktarılacağı banka hesabı (102 — zorunlu, aynı para birimi)
+            <select
+              name="targetBankAccountId"
+              required
+              defaultValue=""
+              className="field-control mt-1 w-full p-2 text-xs"
+            >
+              <option value="">— Banka hesabı seçin —</option>
+              {targets.bankAccounts.map((ba) => (
+                <option key={ba.id} value={ba.id}>
+                  {ba.name}
+                  {ba.bankName ? ` (${ba.bankName})` : ""} · {ba.currency}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="text-xs font-medium text-tone-2">
+            İskonto faizi + komisyon kesintisi (780)
+            <input
+              type="number"
+              name="discountFeeAmount"
+              step="0.01"
+              min="0"
+              defaultValue="0"
+              required
+              className="field-control mt-1 w-full p-2 text-xs font-mono"
+            />
+          </label>
+          <p className="text-[11px] text-tone-3 sm:col-span-3">
+            Faktoring / iskonto işlemi net tutarı seçilen banka hesabına yatırır (<code className="font-mono">102</code>),
+            faiz ve komisyon kesintisini finansman giderine (<code className="font-mono">780</code>) işler ve evrakları{" "}
+            <code className="font-mono">101/121</code> portföyünden düşürür.
+          </p>
         </div>
       )}
 

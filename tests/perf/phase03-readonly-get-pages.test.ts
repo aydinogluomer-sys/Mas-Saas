@@ -131,7 +131,7 @@ describe("Faz 3 — GET sayfalarında veritabanına yazma işlemleri sıfırland
 
     // 1 devir kırığı + 1 ay boşluğu = "2 zincir sorunu"
     expect(serialized).toContain("2");
-    expect(h.sqlCalls).toHaveLength(3);
+    expect(h.sqlCalls).toHaveLength(7);
     expect(h.sqlCalls.every((sql) => /^\s*select\b/i.test(sql))).toBe(true);
   });
 

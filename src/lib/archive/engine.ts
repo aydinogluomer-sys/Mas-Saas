@@ -6,6 +6,11 @@ export type ArchiveEntity =
   | "payments"
   | "checks"
   | "loans"
+  | "invoices"
+  | "credit_facilities"
+  | "parties"
+  | "cash_accounts"
+  | "documents"
   | "scenario_runs"
   | "external_assumptions"
   | "action_items";
@@ -14,6 +19,11 @@ const ALLOWED = new Set<ArchiveEntity>([
   "payments",
   "checks",
   "loans",
+  "invoices",
+  "credit_facilities",
+  "parties",
+  "cash_accounts",
+  "documents",
   "scenario_runs",
   "external_assumptions",
   "action_items",
@@ -43,6 +53,8 @@ export async function archiveRecord(
   actorDisplayName: string,
 ) {
   const entity = assertEntity(entityRaw);
+  const effectiveReason = reason?.trim() || "Arşivlendi";
+  const effectiveActor = actorDisplayName?.trim() || "Sistem";
   const client = await pool.connect();
   try {
     await client.query("begin");
@@ -52,12 +64,39 @@ export async function archiveRecord(
       `update public.${entity}
        set archived_at=now(),archive_reason=$2,archived_by_label=$3${entity === "payments" ? ",status='archived'" : ""}
        where id=$1`,
-      [id, reason || null, actorDisplayName],
+      [id, effectiveReason, effectiveActor],
     );
     if (upd.rowCount !== 1) throw new DomainError("FORBIDDEN", "Kayıt arşivlenemedi veya yetkiniz yok.");
+
+    let cancelledFutureInstances = 0;
+    if (entity === "payments") {
+      const cancelRes = await client.query(
+        `update public.payment_instances
+            set status = 'cancelled',
+                cancelled_at = now(),
+                cancel_reason = $2,
+                paid_at = null,
+                paid_amount = null
+          where payment_id = $1
+            and status in ('planned', 'unpaid', 'late', 'unknown')
+            and due_date >= current_date`,
+        [id, `Ana ödeme kalemi arşivlendi: ${effectiveReason}`],
+      );
+      cancelledFutureInstances = cancelRes.rowCount ?? 0;
+    }
+
     await audit(client, {
-      actor: actorId, action: "archive_record", entityTable: entity, entityId: id,
-      before: before.rows[0], after: { archived: true, reason, actor: actorDisplayName },
+      actor: actorId,
+      action: "archive_record",
+      entityTable: entity,
+      entityId: id,
+      before: before.rows[0],
+      after: {
+        archived: true,
+        reason: effectiveReason,
+        actor: effectiveActor,
+        ...(entity === "payments" ? { cancelledFutureInstances } : {}),
+      },
     });
     await client.query("commit");
   } catch (error) {
@@ -127,6 +166,21 @@ const archiveQueries: Record<ArchiveEntity, string> = {
   loans: `select 'loans' entity_table,id,name label,archived_at,archive_reason,
     (source_workbook_id is not null) source_linked,'/finance/archive' restore_href
     from public.loans where archived_at is not null`,
+  invoices: `select 'invoices' entity_table,id,invoice_no label,archived_at,archive_reason,
+    (source_document_id is not null) source_linked,'/finance/archive' restore_href
+    from public.invoices where archived_at is not null`,
+  credit_facilities: `select 'credit_facilities' entity_table,id,name label,archived_at,archive_reason,
+    false source_linked,'/finance/archive' restore_href
+    from public.credit_facilities where archived_at is not null`,
+  parties: `select 'parties' entity_table,id,name label,archived_at,archive_reason,
+    false source_linked,'/finance/archive' restore_href
+    from public.parties where archived_at is not null`,
+  cash_accounts: `select 'cash_accounts' entity_table,id,name label,archived_at,archive_reason,
+    false source_linked,'/finance/archive' restore_href
+    from public.cash_accounts where archived_at is not null`,
+  documents: `select 'documents' entity_table,id,title label,archived_at,archive_reason,
+    false source_linked,'/system/archive' restore_href
+    from public.documents where archived_at is not null`,
   scenario_runs: `select 'scenario_runs' entity_table,r.id,s.name label,r.archived_at,r.archive_reason,
     false source_linked,'/scenarios/history' restore_href
     from public.scenario_runs r join public.scenarios s on s.id=r.scenario_id

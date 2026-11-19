@@ -7,7 +7,11 @@ const amount = (rows: PaymentDashboardBucket[]) => rows.reduce((sum, row) => sum
 export function paymentDashboardChart(
   buckets: PaymentDashboardBucket[],
   asOf: string,
-  criticalThreshold: number,
+  criticalThreshold: number | undefined,
+  options?: {
+    currencyLabel?: string;
+    unconvertibleCount?: number;
+  },
 ): ChartModel {
   const statuses = ["overdue", "partial", "planned"] as const;
   const byDate = new Map<string, PaymentDashboardBucket[]>();
@@ -17,9 +21,14 @@ export function paymentDashboardChart(
     byDate.set(bucket.dueDate, rows);
   }
   const dates = [...byDate.keys()].sort();
+  const ccySuffix = options?.currencyLabel ? ` (${options.currencyLabel})` : "";
+  const extraNote =
+    options?.unconvertibleCount && options.unconvertibleCount > 0
+      ? ` · TCMB kuru eksik ${options.unconvertibleCount} döviz kalemi hariç`
+      : "";
   return {
-    title: "Günlük ödeme baskısı",
-    description: "Gecikmiş borçlar ve önümüzdeki dönemin kalan ödeme yükü.",
+    title: `Günlük ödeme baskısı${ccySuffix}`,
+    description: `Gecikmiş borçlar ve önümüzdeki dönemin kalan ödeme yükü${extraNote}.`,
     asOf,
     timeDirection: "forward",
     preferredView: "stacked",
@@ -31,9 +40,17 @@ export function paymentDashboardChart(
     sourceLabel: "Ödeme kalemleri",
     sourceHref: "/payments/items",
     unknownCount: buckets.reduce((sum, row) => sum + row.unknownCount, 0),
-    annotations: dates
-      .filter((date) => amount(byDate.get(date) ?? []) >= criticalThreshold)
-      .map((date) => ({ pointKey: date, label: "Kritik günlük eşik aşıldı", severity: "critical" as const, href: `/payments/calendar?date=${date}` })),
+    annotations:
+      criticalThreshold != null
+        ? dates
+            .filter((date) => amount(byDate.get(date) ?? []) >= criticalThreshold)
+            .map((date) => ({
+              pointKey: date,
+              label: "Kritik günlük eşik aşıldı",
+              severity: "critical" as const,
+              href: `/payments/calendar?date=${date}`,
+            }))
+        : [],
     series: statuses.map((status) => ({
       id: status,
       label: status === "overdue" ? "Gecikmiş" : status === "partial" ? "Kısmi" : "Planlı",

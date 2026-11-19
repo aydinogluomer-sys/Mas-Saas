@@ -421,6 +421,7 @@ async function testLegacyCompleteAndIdempotency(): Promise<void> {
     const DECLARED_POPULATING_MIGRATIONS = new Set([
       "approval_rules", "approvals", "treasury_policies", "cost_allocation_rules",
       "alert_escalation_rules", "management_accounts", "approval_governance_settings",
+      "legal_entities", "branches", "accounting_periods", "work_centers", "customer_rate_cards",
     ]);
     const undeclaredPopulated = newTables.filter(
       (k) => postCounts[k] !== 0 && !DECLARED_POPULATING_MIGRATIONS.has(k),

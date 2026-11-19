@@ -4,6 +4,7 @@ import { redirect } from "next/navigation";
 import { z } from "zod";
 import { getPool } from "@/lib/db";
 import { dispatchBriefing, generateCfoBriefing } from "@/lib/briefing/engine";
+import { renderBriefingTelegramText, type BriefingFacts } from "@/lib/briefing/rules";
 import { transportFor } from "@/lib/reminders/transport";
 import { istanbulDateISO } from "@/lib/reports/rules";
 import { requireActionPermission } from "@/lib/auth";
@@ -33,8 +34,12 @@ export async function dispatchMorningBriefingAction(formData: FormData): Promise
   const pool = getPool();
   const today = istanbulDateISO();
 
-  const existing = await pool.query<{ id: string; body_md: string }>(
-    `select id, body_md
+  const existing = await pool.query<{
+    id: string;
+    body_md: string;
+    meta: Record<string, unknown> | null;
+  }>(
+    `select id, body_md, meta
        from public.reports
       where report_type = 'cfo_briefing'
         and period_start = $1::date
@@ -45,16 +50,37 @@ export async function dispatchMorningBriefingAction(formData: FormData): Promise
 
   let reportId: string;
   let bodyMd: string;
+  let facts: BriefingFacts | undefined;
   if (existing.rows[0]) {
     reportId = existing.rows[0].id;
     bodyMd = existing.rows[0].body_md;
+    const rawMeta = existing.rows[0].meta;
+    const rawSnap =
+      rawMeta && typeof rawMeta.snapshot === "object" && rawMeta.snapshot !== null
+        ? (rawMeta.snapshot as Record<string, unknown>)
+        : null;
+    if (rawSnap && typeof rawSnap.briefingFacts === "object" && rawSnap.briefingFacts !== null) {
+      facts = rawSnap.briefingFacts as BriefingFacts;
+    }
   } else {
     const generated = await generateCfoBriefing(pool, today, session.id);
     reportId = generated.reportId;
     bodyMd = generated.bodyMd;
+    facts = generated.facts;
   }
 
-  const res = await dispatchBriefing(pool, transportFor(parsed.channel), bodyMd, reportId, session.id);
+  const isTelegram = parsed.channel === "telegram";
+  const outboundBody = isTelegram
+    ? renderBriefingTelegramText(facts ?? bodyMd, { masked: true })
+    : bodyMd;
+  const res = await dispatchBriefing(
+    pool,
+    transportFor(parsed.channel),
+    outboundBody,
+    reportId,
+    session.id,
+    isTelegram ? { masked: true, facts } : { masked: false, facts },
+  );
   revalidatePath("/insights/briefing");
   revalidatePath("/insights/reports");
   if (res.ok) {

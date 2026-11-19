@@ -217,9 +217,13 @@ async function main(): Promise<void> {
 
     // Kredi: para birimi (0090) ve anapara.
     const kredi = await one<{ currency: string; principal: string }>(
-      "select currency, principal from public.loans limit 1");
+      "select currency, principal from public.loans where name = $1 limit 1", ["Vakıf yatırım kredisi"]);
     assert("kredinin para birimi saklandı (0090)", "TRY", kredi.currency);
     assert("kredi anaparası korundu", true, Number(kredi.principal) > 0);
+    const eurKredi = await one<{ currency: string; principal: string }>(
+      "select currency, principal from public.loans where name = $1 limit 1", ["EUR makine kredisi"]);
+    assert("EUR kredinin para birimi saklandı (Karar 2)", "EUR", eurKredi.currency);
+    assert("EUR kredi anaparası korundu (5000)", 5000, Number(eurKredi.principal));
 
     // Bütçe: senaryo BAŞLIK olarak ayrıldı, satıra yazılmadı.
     const butce = await one<{ name: string; fiscal_year: number }>(

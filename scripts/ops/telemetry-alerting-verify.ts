@@ -228,8 +228,22 @@ async function main(): Promise<void> {
     /* ════ ÖN KOŞUL — sağlıklı taban durumu kurulur ═══════════════════════════════════════
      * Boş bir veritabanı SAĞLIKLI DEĞİLDİR: hiç içe aktarım yoksa `latest_import` fail-closed
      * ateşler (ve doğrusu budur). "Sağlıklı durumda alarm yok" kriterini ölçebilmek için taze
-     * bir içe aktarım kaydı gerekiyor. */
-    await pool.query(`insert into public.source_workbooks (original_filename) values ('${TAG}-fresh.xlsx')`);
+     * ve geçerli (`status = 'parsed'` + >=1 `import_rows`) bir içe aktarım kaydı gerekiyor. */
+    await pool.query(`
+      with wb as (
+        insert into public.source_workbooks (original_filename, status)
+        values ('${TAG}-fresh.xlsx', 'parsed')
+        returning id
+      ), sh as (
+        insert into public.source_sheets
+          (workbook_id, sheet_name, sheet_name_normalized, sheet_index, row_count, column_count, detected_type, parse_confidence)
+        select id, 'Sheet1', 'sheet1', 0, 1, 1, 'payment_schedule', 'high' from wb
+        returning id, workbook_id
+      )
+      insert into public.import_rows
+        (workbook_id, sheet_id, row_index, row_json, row_hash, detected_entity_type)
+      select workbook_id, id, 1, '{"A":{"v":"test","t":"s"}}'::jsonb, '${TAG}-hash', 'payment'
+      from sh`);
 
     /* ════ S0 — SAĞLIKLI: alarm YOK ═══════════════════════════════════════════════════════ */
     const healthy = runSnapshot("healthy", healthyEnv());
@@ -363,8 +377,8 @@ async function main(): Promise<void> {
     // ── S4 reconciliation != 0 ────────────────────────────────────────────────────────────
     await pool.query(`
       with acc as (
-        insert into public.cash_accounts (name, account_type, currency)
-        values ('${TAG}', 'bank_account', 'TRY') returning id
+        insert into public.cash_accounts (name, account_type, currency, opening_balance)
+        values ('${TAG}', 'bank_account', 'TRY', 0) returning id
       ), ba as (
         insert into public.bank_accounts (cash_account_id, bank_name)
         select id, '${TAG}' from acc returning cash_account_id

@@ -1,34 +1,7 @@
-// AŞAMA 07 Bölüm D — günlük rolling yedek işi. Zamanlanmış görevin çalıştırdığı ŞEY budur.
+// AŞAMA 07 Bölüm D / Faz 62 — günlük rolling yedek işi. Zamanlanmış görevin çalıştırdığı ŞEY budur.
 //
-// TEK KOŞUDA: dump al → doküman kasasını arşivle → makbuz yaz → off-device kopya + hedefte doğrula → retention budaması.
-//
-// VERİ SINIFI: kaynak `mas_radar_dev` = REAL_READ_ONLY. Bu script kaynağa YALNIZ `pg_dump`
-// ve okuma sorguları (system_identifier, schema_migrations, sürüm) uygular; tek bir yazma yoktur.
-// Native yolda pg_dump ve psql ayrıca `default_transaction_read_only=on` ile açılır.
-//
-// KAYNAK SABİT. Yedeklenen tek veritabanı bu makinedeki kümede (loopback) `mas_radar_dev`dir ve
-// bu, HİÇBİR bağlantı açılmadan önce kontrol edilir (assertCanonicalBackupSource). 2026-10-18 ile
-// 10-28 arasında owner URL'i bir bulut kiracısının `postgres` veritabanına çevrilmişti ve görev her
-// gece onu yedeklemeye çalıştı; onu yalnız küme kimliği kapısı durdurdu. Kaynak artık URL'in
-// gösterdiği şeye göre değil, sabit bir kurala göre seçilir.
-//
-// NEDEN `scripts/db/backup-receipt.ts` DEĞİL. O CLI temiz bir git ağacı ve beklenen bir
-// branch/HEAD ister — doğru bir taleptir ve CUTOVER yedeği için vazgeçilmezdir. Ama gece 03:00'te
-// zamanlayıcıdan koşan bir işin git ağacının temiz olduğunu VARSAYAMAYIZ; öyle bir koşul günlük
-// yedeği "bugün çalışmadı"ya çevirir. Bu iş bu yüzden aynı DAYANIKLILIK zincirini
-// (BackupAdapter.backup: fsync → temp doğrulama → atomik rename → final doğrulama) kullanır,
-// git durumunu ise gizlemek yerine makbuza OLDUĞU GİBİ yazar (`git_tree_clean`). Kaybedilen
-// garanti açıkça kaydedilir; sessizce zayıflatılmaz.
-//
-// KÜME KİMLİĞİ İKİ KEZ. TCP havuzunun okuduğu system_identifier, pg_dump'ın kullanacağı araç
-// yolundan dump'tan ÖNCE ve SONRA yeniden okunur (backup-receipt.ts ile aynı iki-nokta kanıtı):
-// aynı adlı iki farklı Postgres örneği en sinsi yedek hatasıdır ve kimlik yedek sırasında
-// değişmemelidir.
-//
-// KOŞU KAYDI HER ÇIKIŞTA. `backups/daily-runs.jsonl` eskiden yalnız başarılı koşuları yazıyordu;
-// 2026-09-15'ten sonraki her başarısız gece makine-okunur hiçbir iz bırakmadı. Artık sıfırdan
-// farklı her çıkış da `{ ok:false, exitCode, stage, error }` satırı yazar (hata metni sırlardan
-// arındırılmış olarak).
+// TEK KOŞUDA: dump al → doküman kasasını arşivle → Stage-07 makbuz + .sha256 (+ opsiyonel .enc) yaz →
+//             off-device kopya (+ opsiyonel ikincil yerel kasa kopyası) + hedefte doğrula → retention budaması.
 //
 // ÇIKIŞ KODLARI (zamanlayıcı bunları görür):
 //   0  yedek + doğrulama + off-device kopya tamam
@@ -41,12 +14,24 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { Pool } from "pg";
 import { redactSecrets } from "@/lib/ops/alert-delivery";
+import { encryptBackupFileAes256Gcm } from "@/lib/ops/backup-crypto";
 import { createBackupAdapter, describeAdapter, withPgRuntimeConfig, type BackupAdapter } from "../db/backup-adapter";
 import { parseNativeTarget } from "../db/pg-native";
 import {
-  DEFAULT_RETENTION, archiveDocumentVault, classifyOffDeviceTarget, copyToTargetVerified, executePrune,
-  formatBytes, listDumps, planPrune, pruneUnverifiedQuarantinedDumps, sha256OfFile, writeStage07Receipt,
-  type DocumentVaultArchiveResult, type Stage07Receipt,
+  DEFAULT_RETENTION,
+  archiveDocumentVault,
+  classifyOffDeviceTarget,
+  copyToTargetVerified,
+  executePrune,
+  formatBytes,
+  listDumps,
+  planPrune,
+  pruneUnverifiedQuarantinedDumps,
+  sha256OfFile,
+  writeSha256Sidecar,
+  writeStage07Receipt,
+  type DocumentVaultArchiveResult,
+  type Stage07Receipt,
 } from "./backup-lib";
 import { writeOffDeviceRecord } from "./offdevice-copy";
 
@@ -76,6 +61,7 @@ export interface ResolvedDailyBackupConfig {
   label: string;
   runLog: string;
   offDeviceDir: string;
+  secondaryVaultDir: string;
   pruneApply: boolean;
   acknowledgedMissing: boolean;
   documentStorageDir: string;
@@ -99,6 +85,7 @@ export function resolveDailyBackupConfig(
     label,
     runLog: path.join(backupDir, "daily-runs.jsonl"),
     offDeviceDir: pick("MAS_OFFDEVICE_BACKUP_DIR"),
+    secondaryVaultDir: pick("MAS_LOCAL_SECONDARY_VAULT_DIR"),
     pruneApply: pick("MAS_BACKUP_PRUNE_APPLY") === "1",
     acknowledgedMissing: pick("MAS_OFFDEVICE_ACKNOWLEDGED_MISSING") === "1",
     documentStorageDir: pick("MAS_DOCUMENT_STORAGE_DIR") || path.join(cwd, ".data", "documents"),
@@ -199,7 +186,6 @@ export async function runDailyBackup(): Promise<number> {
   if (!ownerUrl) {
     return fail("config", new Error("MIGRATION_DATABASE_URL yok (ne ortamda ne .env.local'de). Yedek alınamaz."), null);
   }
-  // Kaynak kapısı HİÇBİR bağlantıdan önce: yanlış bir hedefe tek bir paket bile gitmez.
   try {
     assertCanonicalBackupSource(ownerUrl);
   } catch (err) {
@@ -207,9 +193,6 @@ export async function runDailyBackup(): Promise<number> {
   }
   const dbName = CANONICAL_BACKUP_SOURCE_DB;
 
-  // Araç zinciri ayarları (MAS_PG_RUNTIME, MAS_PG_BIN_DIR, MAS_BACKUP_TIMEOUT_MS): önce süreç
-  // ortamı, yoksa .env.local. Yalnız bu sır-olmayan anahtarlar taşınır; .env.local'in geri kalanı
-  // sürece sızmaz.
   let adapter: BackupAdapter;
   try {
     adapter = createBackupAdapter({ ownerUrl, env: withPgRuntimeConfig(process.env, envLocal) });
@@ -229,8 +212,6 @@ export async function runDailyBackup(): Promise<number> {
     )).rows[0];
     if (meta.db !== dbName) throw new Error(`Bağlanılan veritabanı ('${meta.db}') beklenenden ('${dbName}') farklı.`);
 
-    // TCP bağlantısı ile pg_dump'ın kullanacağı araç yolu AYNI cluster mı — aynı isimli iki farklı
-    // Postgres örneği en sinsi yedek hatasıdır.
     adapter.verifyTarget(dbName, meta.sysid);
 
     const ledger = (await pool.query<{ n: string; last: string | null }>(
@@ -244,9 +225,6 @@ export async function runDailyBackup(): Promise<number> {
     const backup = await adapter.backup({ dbName, label, outDir: backupDir, requireCriticalTables: true });
     dumpPath = backup.path;
 
-    // Kimlik dump SIRASINDA değişmemiş olmalı. Kanıtlanamazsa dump makbuzsuz kalır ve `.dump`
-    // adından çıkarılır: yedek-yaşı alarmı makbuzsuz, kökeni kanıtlanmamış bir dosyayı "taze
-    // yedek" sayamaz. Dosya SİLİNMEZ — geçici bir psql hatası iyi bir dump'ı yok etmemeli.
     stage = "identity";
     try {
       adapter.verifyTarget(dbName, meta.sysid);
@@ -286,7 +264,16 @@ export async function runDailyBackup(): Promise<number> {
       documents_file_count: docArchive?.fileCount ?? 0,
     };
     const receiptSha = writeStage07Receipt(`${backup.path}.stage07.json`, receipt);
+    const shaSidecar = writeSha256Sidecar(backup.path, backup.sha256);
+    const encryptionKey = (process.env.BACKUP_ENCRYPTION_KEY ?? envLocal.BACKUP_ENCRYPTION_KEY ?? "").trim();
+    if (encryptionKey.length >= 16) {
+      const encInfo = encryptBackupFileAes256Gcm(backup.path, `${backup.path}.enc`, encryptionKey);
+      console.log(
+        `Şifreli   : ${encInfo.encryptedPath} (AES-256-GCM, ${formatBytes(encInfo.encryptedBytes)}, sha256 ${encInfo.encryptedSha256.slice(0, 16)}…)`,
+      );
+    }
     console.log(`Yedek     : ${backup.path} (${formatBytes(backup.bytes)}, sha256 ${backup.sha256.slice(0, 16)}…)`);
+    console.log(`SHA-256   : ${shaSidecar.sidecarPath}`);
     if (docArchive) {
       console.log(`Dokümanlar: ${docArchive.archivePath} (${docArchive.fileCount} dosya, ${formatBytes(docArchive.archiveBytes)}, sha256 ${docArchive.archiveSha256.slice(0, 16)}…)`);
     }
@@ -299,11 +286,14 @@ export async function runDailyBackup(): Promise<number> {
   }
   await pool.end();
 
-  /* ── off-device kopya ─────────────────────────────────────────────────────────────────── */
+  /* ── off-device kopya + dürüst ikincil yerel kasa yedeği ─────────────────────────────── */
 
   let offDeviceOk = false;
   let offDeviceNote = "MAS_OFFDEVICE_BACKUP_DIR tanımlı değil";
+  let secondaryVaultOk = false;
+  let secondaryVaultNote: string | null = null;
   const targetDir = cfg.offDeviceDir;
+
   if (targetDir) {
     const classification = classifyOffDeviceTarget(targetDir, backupDir);
     try {
@@ -329,6 +319,23 @@ export async function runDailyBackup(): Promise<number> {
       "Off-device hedef tanımlı DEĞİL. Tek kopya yedek değildir (politika §3): " +
         "harici disk/NAS bağlayıp MAS_OFFDEVICE_BACKUP_DIR ayarlayın.",
     );
+  }
+
+  // Opsiyonel yerel ikincil kasa (MAS_LOCAL_SECONDARY_VAULT_DIR): harici aygıt yerine GEÇMEZ
+  // (`offDeviceOk` değişmez), ama harici disk takılı değilken ikinci bir doğrulanmış kopya tutar.
+  if (cfg.secondaryVaultDir && path.resolve(cfg.secondaryVaultDir) !== path.resolve(backupDir)) {
+    try {
+      const secondaryCopied = copyToTargetVerified(dumpPath, path.resolve(cfg.secondaryVaultDir), {
+        verifyListable: (p) => adapter.verifyRestoreListable(p),
+        sourceDir: backupDir,
+      });
+      secondaryVaultOk = secondaryCopied.sha256Match && secondaryCopied.bytesMatch && secondaryCopied.destRestoreListable;
+      secondaryVaultNote = `yerel ikincil kasa doğrulandı (${secondaryCopied.destPath})`;
+      console.log(`İkincil kasa (yerel, off-device sayılmaz): ${secondaryCopied.destPath}`);
+    } catch (err) {
+      secondaryVaultNote = `ikincil kasa kopyası başarısız: ${(err as Error).message}`;
+      console.warn(`İkincil kasa kopyası BAŞARISIZ: ${(err as Error).message}`);
+    }
   }
 
   /* ── retention (yerel + harici hedef + *.dump.unverified temizliği) ───────────────────── */
@@ -385,6 +392,8 @@ export async function runDailyBackup(): Promise<number> {
     schema_ledger: receipt.schema_ledger,
     offDeviceOk,
     offDeviceNote,
+    secondaryVaultOk,
+    secondaryVaultNote,
     pruneApplied: pruneApply,
     prunedPlanned: plan.prunedCount,
     bytesFreed: freed,

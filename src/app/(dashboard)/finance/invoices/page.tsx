@@ -1,7 +1,4 @@
-// Faz 21 & Faz 47 (D1) — Fatura Merkezi.
-//
-// Sayfalanmamış kanonik açık alacak/borç KPI toplamları (`canonical-kpis.ts`) + döviz-duyarlı
-// `formatMoney` + Türkçe durum ve mükerrerlik sinyali etiketleri.
+// Faz 21 & Faz 47 (D1) + Faz 61 (M-32) — Fatura Merkezi (Çoklu satır + İskonto/Stopaj + Banka/Kasa atomik tahsilat + 646/656 kur farkı).
 
 import { Suspense } from "react";
 import Link from "@/components/ui/app-link";
@@ -15,6 +12,7 @@ import {
 import { loadCanonicalPayablesKpi, loadCanonicalReceivablesKpi } from "@/lib/metrics/canonical-kpis";
 import { moneyOrNull } from "@/lib/money";
 import { formatForeignCurrencyBadges, formatMoney } from "@/lib/money-format";
+import { MultiLineInvoiceForm } from "@/components/finance/multi-line-invoice-form";
 import { Badge, type Tone } from "@/components/ui/badge";
 import { PaginationBar, parsePageParam } from "@/components/ui/pagination-bar";
 import { Panel } from "@/components/ui/panel";
@@ -24,7 +22,7 @@ import { PageHeader } from "@/components/ui/shell";
 import { parseFilters } from "@/lib/ui/filters";
 import { listSavedViews } from "@/lib/ui/saved-views";
 import {
-  cancelInvoiceAction, changeStatusAction, createInvoiceAction, recordPaymentAction,
+  cancelInvoiceAction, changeStatusAction, recordPaymentAction,
 } from "./actions";
 import { requireRouteAccess } from "@/lib/authz/route-guard";
 
@@ -62,7 +60,7 @@ export default async function InvoicesPage({
   const { page } = parsePageParam(sp.page, 50);
   const pool = getPool();
   const user = await getCurrentUser();
-  const [rawOpenItems, canonicalRec, canonicalPay, savedViews, overpaidRes] = await Promise.all([
+  const [rawOpenItems, canonicalRec, canonicalPay, savedViews, overpaidRes, cashAccountsRes] = await Promise.all([
     loadOpenItems(pool, 50),
     loadCanonicalReceivablesKpi(pool),
     loadCanonicalPayablesKpi(pool),
@@ -92,7 +90,14 @@ export default async function InvoicesPage({
         order by io.overpaid_by desc
         limit 25`,
     ),
+    pool.query<{ id: string; name: string; currency: string; account_type: string }>(
+      `select id::text, name, currency, account_type
+         from public.cash_accounts
+        where is_active = true
+        order by name`,
+    ),
   ]);
+  const cashAccounts = cashAccountsRes.rows;
   const overpaidInvoices = overpaidRes.rows.map((r) => ({
     id: r.id,
     invoiceNo: r.invoice_no,
@@ -127,7 +132,7 @@ export default async function InvoicesPage({
     <>
       <PageHeader
         title="Fatura Merkezi"
-        subtitle="Açık kalemler, vade yaşlandırma, mükerrer tespiti ve iptal/ters kayıt"
+        subtitle="Çok kalemli faturalama (iskonto/stopaj), banka/kasa atomik tahsilat (100/102 ↔ 120/320 + 646/656 kur farkı) ve iptal/ters kayıt"
         meta={
           <Badge tone={totalOverdue > 0 ? "red" : "green"} dot>
             {totalOverdue > 0 ? `${totalOverdue} vadesi geçmiş` : `${totalOpenCount} açık kalem`}
@@ -230,37 +235,53 @@ export default async function InvoicesPage({
                 <tr className="text-left text-xs text-tone-3">
                   <th>No</th><th>Karşı taraf</th><th>Yön</th><th>Vade</th>
                   <th className="text-right">Tutar</th><th className="text-right">Ödenen</th>
-                  <th className="text-right">Kalan</th><th>Yaşlandırma</th><th>Durum</th><th />
+                  <th className="text-right">Kalan</th><th>Yaşlandırma</th><th>Durum</th><th>Hızlı Kapama (100/102)</th>
                 </tr>
               </thead>
               <tbody>
-                {openItems.map((i) => (
-                  <tr key={i.id} className="border-t border-line-faint">
-                    <td className="py-2 font-mono text-xs">{i.invoiceNo}</td>
-                    <td>{i.partyName}</td>
-                    <td className="text-xs text-tone-3">{i.direction === "sales" ? "satış" : "alış"}</td>
-                    <td className="font-mono text-xs">{i.dueDate ?? "—"}</td>
-                    <td className="text-right font-mono tabular-nums">{formatMoney(i.grossAmount, i.currency)}</td>
-                    <td className="text-right font-mono tabular-nums">{formatMoney(i.paidAmount, i.currency)}</td>
-                    <td className={`text-right font-mono tabular-nums ${i.remaining < 0 ? "text-warn" : ""}`}>
-                      {formatMoney(i.remaining, i.currency)}
-                    </td>
-                    <td><Badge tone={AGE_TONE[i.ageingBucket] ?? "neutral"}>{i.ageingBucket}</Badge></td>
-                    <td><Badge tone={STATUS_TONE[i.status] ?? "neutral"}>{STATUS_LABEL_TR[i.status] ?? i.status}</Badge></td>
-                    <td>
-                      <form action={recordPaymentAction} className="flex items-center gap-1">
-                        <input type="hidden" name="invoiceId" value={i.id} />
-                        <input
-                          name="amount" type="number" step="0.01" min="0.01" placeholder="tutar"
-                          className="w-20 rounded border border-line-faint bg-transparent px-1 py-0.5 text-xs"
-                        />
-                        <button className="text-xs text-pos hover:underline">
-                          {i.direction === "sales" ? "tahsil" : "ödeme"}
-                        </button>
-                      </form>
-                    </td>
-                  </tr>
-                ))}
+                {openItems.map((i) => {
+                  const matchingAccounts = cashAccounts.filter((ca) => ca.currency === i.currency);
+                  return (
+                    <tr key={i.id} className="border-t border-line-faint">
+                      <td className="py-2 font-mono text-xs">{i.invoiceNo}</td>
+                      <td>{i.partyName}</td>
+                      <td className="text-xs text-tone-3">{i.direction === "sales" ? "satış" : "alış"}</td>
+                      <td className="font-mono text-xs">{i.dueDate ?? "—"}</td>
+                      <td className="text-right font-mono tabular-nums">{formatMoney(i.grossAmount, i.currency)}</td>
+                      <td className="text-right font-mono tabular-nums">{formatMoney(i.paidAmount, i.currency)}</td>
+                      <td className={`text-right font-mono tabular-nums ${i.remaining < 0 ? "text-warn" : ""}`}>
+                        {formatMoney(i.remaining, i.currency)}
+                      </td>
+                      <td><Badge tone={AGE_TONE[i.ageingBucket] ?? "neutral"}>{i.ageingBucket}</Badge></td>
+                      <td><Badge tone={STATUS_TONE[i.status] ?? "neutral"}>{STATUS_LABEL_TR[i.status] ?? i.status}</Badge></td>
+                      <td>
+                        <form action={recordPaymentAction} className="flex flex-wrap items-center gap-1">
+                          <input type="hidden" name="invoiceId" value={i.id} />
+                          <select
+                            name="cashAccountId"
+                            defaultValue=""
+                            className="max-w-[130px] rounded border border-line bg-surface px-1 py-0.5 text-[11px] text-tone-1"
+                          >
+                            <option value="">Cari mahsup (hesapsız)</option>
+                            {matchingAccounts.map((ca) => (
+                              <option key={ca.id} value={ca.id}>
+                                {ca.name} ({ca.currency})
+                              </option>
+                            ))}
+                          </select>
+                          <input
+                            name="amount" type="number" step="0.01" min="0.01" placeholder="tutar"
+                            required
+                            className="w-20 rounded border border-line bg-surface px-1 py-0.5 font-mono text-xs text-tone-1"
+                          />
+                          <button className="rounded border border-line px-1.5 py-0.5 text-xs font-medium text-pos hover:bg-elev">
+                            {i.direction === "sales" ? "tahsil" : "ödeme"}
+                          </button>
+                        </form>
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
@@ -353,7 +374,7 @@ async function InvoicesQualityPanels() {
 async function InvoicesBottomSection({ page }: { page: number }) {
   const { limit, offset } = parsePageParam(String(page), 50);
   const pool = getPool();
-  const [invoices, totalInvoices, parties, projects, costCenters, departments] = await withReadConnection(pool, (db) =>
+  const [invoices, totalInvoices, parties, projects, costCenters, departments, openPiRes] = await withReadConnection(pool, (db) =>
     Promise.all([
       listInvoices(db, { limit, offset }),
       countInvoices(db),
@@ -361,10 +382,22 @@ async function InvoicesBottomSection({ page }: { page: number }) {
       db.query<{ id: string; code: string; name: string }>(`select id::text, code, name from public.projects where is_active order by code limit 200`),
       db.query<{ id: string; code: string; name: string }>(`select id::text, code, name from public.cost_centers where is_active order by code limit 200`),
       db.query<{ id: string; code: string; name: string }>(`select id::text, code, name from public.departments where is_active order by code limit 200`),
+      db
+        .query<{ id: string; label: string }>(
+          `select pi.id::text,
+                  (p.name || ' · ' || coalesce(to_char(pi.due_date, 'YYYY-MM-DD'), to_char(pi.instance_month, 'YYYY-MM')) || ' · ' || coalesce(pi.expected_amount::text, '0') || ' ' || p.currency) as label
+             from public.payment_instances pi
+             join public.payments p on p.id = pi.payment_id
+            where pi.status in ('planned', 'unpaid', 'partial', 'late')
+              and pi.linked_invoice_id is null
+              and p.archived_at is null
+            order by pi.due_date nulls last
+            limit 80`,
+        )
+        .catch(() => ({ rows: [] as { id: string; label: string }[] })),
     ]),
   );
 
-  // Fetch attached evidence documents via Pool (bounded to first 25 visible rows, never on a single PoolClient).
   const docTargetInvoices = invoices.slice(0, 25);
   const docEntries = await Promise.all(
     docTargetInvoices.map(async (inv) => [inv.id, await documentsForEntity(pool, "invoices", inv.id)] as const),
@@ -429,7 +462,7 @@ async function InvoicesBottomSection({ page }: { page: number }) {
                         <input type="hidden" name="invoiceId" value={i.id} />
                         <input
                           name="reason" required minLength={3} placeholder="iptal gerekçesi"
-                          className="w-32 rounded border border-line-faint bg-transparent px-1 py-0.5 text-[11px]"
+                          className="w-32 rounded border border-line bg-surface px-1 py-0.5 text-[11px] text-tone-1"
                         />
                         <button className="text-xs text-neg hover:underline">iptal</button>
                       </form>
@@ -449,49 +482,17 @@ async function InvoicesBottomSection({ page }: { page: number }) {
         </Panel>
       </div>
 
-      <Panel title="YENİ FATURA (TASLAK)">
+      <Panel title="YENİ FATURA (ÇOK KALEMLİ TASLAK)">
         <p className="mb-2 text-xs text-tone-3">
-          Fatura her zaman <b>taslak</b> olarak açılır — düzenlenmiş bir faturanın içeriği
-          değiştirilemez, düzeltme iptal+yeniden düzenlemeyle yapılır.
+          Fatura her zaman <b>taslak</b> olarak açılır; N adet kalem, satır bazlı iskonto, KDV ve GV stopaj kesintisi desteklenir.
         </p>
-        <form action={createInvoiceAction} className="grid gap-2 text-sm">
-          <select name="direction" required className="rounded border border-line-faint bg-transparent px-2 py-1">
-            <option value="sales">satış</option>
-            <option value="purchase">alış</option>
-          </select>
-          <select name="partyId" required className="rounded border border-line-faint bg-transparent px-2 py-1">
-            <option value="">Karşı taraf…</option>
-            {parties.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
-          </select>
-          <input name="invoiceNo" required placeholder="Fatura no" className="rounded border border-line-faint bg-transparent px-2 py-1" />
-          <div className="grid grid-cols-2 gap-1">
-            <input name="issueDate" type="date" required className="rounded border border-line-faint bg-transparent px-2 py-1" />
-            <select name="currency" defaultValue="TRY" className="rounded border border-line-faint bg-transparent px-2 py-1">
-              {["TRY", "USD", "EUR", "GBP"].map((cur) => <option key={cur} value={cur}>{cur}</option>)}
-            </select>
-          </div>
-          <input name="dueDate" type="date" className="rounded border border-line-faint bg-transparent px-2 py-1" />
-          <select name="projectId" defaultValue="" className="rounded border border-line-faint bg-transparent px-2 py-1 text-xs">
-            <option value="">Proje (opsiyonel)…</option>
-            {projects.rows.map((p) => <option key={p.id} value={p.id}>{p.code} · {p.name}</option>)}
-          </select>
-          <select name="costCenterId" defaultValue="" className="rounded border border-line-faint bg-transparent px-2 py-1 text-xs">
-            <option value="">Masraf merkezi (opsiyonel)…</option>
-            {costCenters.rows.map((c) => <option key={c.id} value={c.id}>{c.code} · {c.name}</option>)}
-          </select>
-          <select name="departmentId" defaultValue="" className="rounded border border-line-faint bg-transparent px-2 py-1 text-xs">
-            <option value="">Departman (opsiyonel)…</option>
-            {departments.rows.map((d) => <option key={d.id} value={d.id}>{d.code} · {d.name}</option>)}
-          </select>
-          <div className="mt-1 border-t border-line-faint pt-2 text-[11px] text-tone-3">Kalem</div>
-          <input name="lineDescription" required placeholder="Açıklama" className="rounded border border-line-faint bg-transparent px-2 py-1" />
-          <div className="grid grid-cols-3 gap-1">
-            <input name="lineQuantity" type="number" step="0.0001" defaultValue="1" required placeholder="Miktar" className="rounded border border-line-faint bg-transparent px-1 py-1" />
-            <input name="lineUnitPrice" type="number" step="0.0001" required placeholder="Birim fiyat" className="rounded border border-line-faint bg-transparent px-1 py-1" />
-            <input name="lineTaxRate" type="number" step="0.01" defaultValue="0.20" placeholder="KDV" className="rounded border border-line-faint bg-transparent px-1 py-1" />
-          </div>
-          <button className="rounded border border-line-faint px-2 py-1 hover:bg-white/5">Taslak oluştur</button>
-        </form>
+        <MultiLineInvoiceForm
+          parties={parties.map((p) => ({ id: p.id, label: p.name }))}
+          projects={projects.rows.map((p) => ({ id: p.id, label: `${p.code} · ${p.name}` }))}
+          costCenters={costCenters.rows.map((c) => ({ id: c.id, label: `${c.code} · ${c.name}` }))}
+          departments={departments.rows.map((d) => ({ id: d.id, label: `${d.code} · ${d.name}` }))}
+          openPaymentInstances={openPiRes.rows}
+        />
       </Panel>
     </div>
   );

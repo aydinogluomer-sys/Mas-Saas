@@ -14,6 +14,9 @@ export const ALLOWED_DOCUMENT_MIMES = {
   "image/png": "png",
   "image/jpeg": "jpg",
   "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": "xlsx",
+  "application/xml": "xml",
+  "text/xml": "xml",
+  "text/csv": "csv",
 } as const;
 
 export type AllowedDocumentMime = keyof typeof ALLOWED_DOCUMENT_MIMES;
@@ -27,6 +30,10 @@ export function documentRoot(): string {
     process.env.MAS_DOCUMENT_ROOT ??
     path.join(process.cwd(), "data", "documents")
   );
+}
+
+export function resolveActiveDocumentStorageBackend(): "local_cas" | "s3_worm" {
+  return process.env.MAS_S3_WORM_BUCKET ? "s3_worm" : "local_cas";
 }
 
 export function sha256(bytes: Buffer): string {
@@ -59,6 +66,13 @@ function matchesMagicSignature(bytes: Buffer, safeExt: SafeDocumentExt): boolean
   if (safeExt === "jpg") {
     return bytes.byteLength >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff;
   }
+  if (safeExt === "xml") {
+    const head = bytes.subarray(0, 512).toString("utf8").replace(/^\uFEFF/, "").trimStart();
+    return head.startsWith("<?xml") || /^<(?:[A-Za-z0-9_]+:)?(?:Invoice|Document|CreditNote|DespatchAdvice|Mizan|TrialBalance)/i.test(head);
+  }
+  if (safeExt === "csv") {
+    return bytes.byteLength > 0 && !bytes.subarray(0, 512).includes(0x00);
+  }
   // .xlsx is a ZIP container starting with PK\x03\x04
   return (
     bytes.byteLength >= 4 &&
@@ -85,12 +99,23 @@ export function validateDocumentUpload(
     throw new DomainError("VALIDATION", "Doküman boyutu 25 MB sınırını aşamaz.");
   }
 
-  let normalizedMime = rawMimeType.trim().toLowerCase();
+  let normalizedMime = rawMimeType.trim().toLowerCase().split(";")[0]?.trim() ?? "";
+  const lowerName = originalFilename.toLowerCase();
   if (
     (!normalizedMime || normalizedMime === "application/octet-stream") &&
-    originalFilename.toLowerCase().endsWith(".xlsx")
+    lowerName.endsWith(".xlsx")
   ) {
     normalizedMime = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+  } else if (
+    (!normalizedMime || normalizedMime === "application/octet-stream" || normalizedMime === "text/plain") &&
+    lowerName.endsWith(".xml")
+  ) {
+    normalizedMime = "application/xml";
+  } else if (
+    (!normalizedMime || normalizedMime === "application/octet-stream" || normalizedMime === "text/plain") &&
+    lowerName.endsWith(".csv")
+  ) {
+    normalizedMime = "text/csv";
   } else if (normalizedMime === "image/jpg") {
     normalizedMime = "image/jpeg";
   }
@@ -98,7 +123,7 @@ export function validateDocumentUpload(
   if (!(normalizedMime in ALLOWED_DOCUMENT_MIMES)) {
     throw new DomainError(
       "VALIDATION",
-      "Desteklenmeyen dosya türü. Yalnız PDF, PNG, JPEG ve XLSX kabul edilir.",
+      "Desteklenmeyen dosya türü. Yalnız PDF, PNG, JPEG, XLSX, XML ve CSV kabul edilir.",
     );
   }
 
@@ -130,7 +155,7 @@ export function storagePathFor(hash: string, safeExt?: SafeDocumentExt): string 
   if (!/^[0-9a-f]{64}$/.test(hash)) {
     throw new Error("storagePathFor: geçersiz sha256");
   }
-  if (safeExt !== undefined && !["pdf", "png", "jpg", "xlsx"].includes(safeExt)) {
+  if (safeExt !== undefined && !["pdf", "png", "jpg", "xlsx", "xml", "csv"].includes(safeExt)) {
     throw new Error("storagePathFor: geçersiz uzantı");
   }
   const leaf = safeExt ? `${hash}.${safeExt}` : hash;

@@ -35,8 +35,6 @@ const LEDGER: ColumnTarget = { kind: "ledger" };
 const no = (reason: string): ColumnTarget => ({ kind: "not_persisted", reason });
 
 /** Sık tekrar eden sebepler — aynı gerekçe her yerde aynı kelimelerle yazılsın diye. */
-const NO_CURRENCY_COLUMN = (table: string): string =>
-  `${table} para birimi saklamıyor; bu tablodaki tutarlar şirketin ana para birimi (TRY) kabul ediliyor.`;
 const NO_NOTES_COLUMN = (table: string): string =>
   `${table} tablosunda serbest not kolonu yok. Not, kaynak satırda (import_rows.row_json) korunur.`;
 
@@ -116,7 +114,7 @@ export const COLUMN_TARGETS: Readonly<Record<string, ColumnTarget>> = Object.fre
   "05_NAKIT_AKISI.aciklama": d("cashflow_lines.label"),
   "05_NAKIT_AKISI.yon": d("cashflow_lines.direction"),
   "05_NAKIT_AKISI.tutar": d("cashflow_lines.amount"),
-  "05_NAKIT_AKISI.para_birimi": no(NO_CURRENCY_COLUMN("cashflow_lines")),
+  "05_NAKIT_AKISI.para_birimi": d("cashflow_lines.currency"),
   // Gerçekleşen/planlanan ayrımı satırda değil ayda tutuluyor (cashflow_months.confidence).
   // Aynı ayda hem gerçekleşen hem planlanan satır olabildiği için satır düzeyinde yazmak
   // ayın güven düzeyini satırdan satıra çelişkiye düşürürdü.
@@ -176,49 +174,41 @@ export const COLUMN_TARGETS: Readonly<Record<string, ColumnTarget>> = Object.fre
   "08_FATURALAR.project_external_id": d("invoices.project_id"),
   "08_FATURALAR.notlar": d("invoices.notes"),
 
-  /* ── 09_SIPARISLER → orders ──────────────────────────────────────────────────────── */
-  // `orders` bir REFERANS tablosu: kod, taraf, proje, tarih. Parasal hiçbir şey taşımıyor —
-  // siparişin tutarı sisteme faturayla giriyor. Şablonun sorduğu tutar/durum/tip alanlarının
-  // bu tabloda karşılığı yok.
+  /* ── 09_SIPARISLER → orders (0119 ile tutar/para birimi/teslim/aşama kalıcılığı) ─── */
   "09_SIPARISLER.external_id": LEDGER,
   "09_SIPARISLER.siparis_tipi": no("orders tablosunda sipariş tipi kolonu yok."),
   "09_SIPARISLER.siparis_no": d("orders.code"),
   "09_SIPARISLER.siparis_tarihi": d("orders.order_date"),
-  "09_SIPARISLER.beklenen_tarih": no("orders tablosunda beklenen teslim tarihi kolonu yok."),
+  "09_SIPARISLER.beklenen_tarih": d("orders.expected_delivery_date"),
   "09_SIPARISLER.karsi_taraf": d("orders.party_id"),
-  "09_SIPARISLER.toplam_tutar": no(
-    "orders tutar saklamıyor; siparişin parasal karşılığı faturaya (invoices) yazılır.",
-  ),
-  "09_SIPARISLER.para_birimi": no(NO_CURRENCY_COLUMN("orders")),
-  "09_SIPARISLER.durum": no("orders tablosunda durum kolonu yok; yalnız is_active var."),
+  "09_SIPARISLER.toplam_tutar": d("orders.order_amount"),
+  "09_SIPARISLER.para_birimi": d("orders.currency"),
+  "09_SIPARISLER.durum": d("orders.fulfillment_stage"),
   "09_SIPARISLER.project_external_id": d("orders.project_id"),
   "09_SIPARISLER.notlar": d("orders.notes"),
 
-  /* ── 10_URUNLER → products ───────────────────────────────────────────────────────── */
+  /* ── 10_URUNLER → products (0119 ile birim maliyet/fiyat/para birimi kalıcılığı) ─── */
   "10_URUNLER.external_id": LEDGER,
   "10_URUNLER.sku": d("products.code"),
   "10_URUNLER.urun_adi": d("products.name"),
   "10_URUNLER.kategori": no("products tablosunda kategori kolonu yok."),
   "10_URUNLER.birim": d("products.unit"),
-  // Fiyat ve maliyet ZAMANLA DEĞİŞİR; ürünün üzerine tek bir değer yazmak, geçmiş bir
-  // satışın hangi fiyattan yapıldığını kaybetmek olurdu. Bunun için tarihli bir fiyat
-  // tablosu gerekir ve henüz yok.
-  "10_URUNLER.standart_maliyet": no("products tablosunda maliyet kolonu yok; tarihli fiyat modeli henüz tasarlanmadı."),
-  "10_URUNLER.satis_fiyati": no("products tablosunda fiyat kolonu yok; tarihli fiyat modeli henüz tasarlanmadı."),
-  "10_URUNLER.para_birimi": no(NO_CURRENCY_COLUMN("products")),
+  "10_URUNLER.standart_maliyet": d("products.unit_cost"),
+  "10_URUNLER.satis_fiyati": d("products.unit_price"),
+  "10_URUNLER.para_birimi": d("products.currency"),
   "10_URUNLER.aktif": d("products.is_active"),
   "10_URUNLER.notlar": d("products.notes"),
 
-  /* ── 11_PROJELER → projects ──────────────────────────────────────────────────────── */
+  /* ── 11_PROJELER → projects (0119 ile sözleşme değeri/bütçe/tarih aralığı kalıcılığı) */
   "11_PROJELER.external_id": LEDGER,
   "11_PROJELER.proje_adi": d("projects.name"),
   "11_PROJELER.musteri": d("projects.party_id"),
-  "11_PROJELER.baslangic_tarihi": no("projects tablosunda tarih aralığı kolonu yok."),
-  "11_PROJELER.bitis_tarihi": no("projects tablosunda tarih aralığı kolonu yok."),
+  "11_PROJELER.baslangic_tarihi": d("projects.start_date"),
+  "11_PROJELER.bitis_tarihi": d("projects.end_date"),
   "11_PROJELER.durum": no("projects tablosunda durum kolonu yok; yalnız is_active var."),
-  "11_PROJELER.sozlesme_degeri": no("projects tablosunda sözleşme değeri kolonu yok."),
-  "11_PROJELER.butce_maliyeti": no("projects bütçe saklamıyor; bütçe budget_lines üzerinden proje kırılımıyla tutulur."),
-  "11_PROJELER.para_birimi": no(NO_CURRENCY_COLUMN("projects")),
+  "11_PROJELER.sozlesme_degeri": d("projects.contract_value"),
+  "11_PROJELER.butce_maliyeti": d("projects.budget_cost"),
+  "11_PROJELER.para_birimi": d("projects.currency"),
   "11_PROJELER.notlar": d("projects.notes"),
 
   /* ── 12_BUTCE → budget_lines (+ budgets) ─────────────────────────────────────────── */

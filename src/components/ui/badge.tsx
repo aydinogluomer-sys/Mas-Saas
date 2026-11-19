@@ -1,15 +1,41 @@
 import type { ReactNode } from "react";
 
-// Tone → token-derived colors (color-mix over the global palette), so badge
-// tints track the design tokens. Tuned for WCAG AA text contrast on dark surfaces.
-const mix = (token: string, pct: number) => `color-mix(in srgb, var(${token}) ${pct}%, transparent)`;
+/**
+ * Eye-Comfort Dual-Theme Semantic Badge — calibrated for Warm Washi (#FDFBF8 / #F4F1EA)
+ * and E-Ink Sage-Limestone (#F9FAF7 / #EFF0EB) surfaces with strict WCAG AA (>= 5.5:1)
+ * foreground contrast, zero #FFFFFF mixes, and zero violet hue leaks.
+ */
 const TONES = {
-  neutral: { bg: mix("--surface-3", 85), fg: "var(--text-2)", bd: "var(--line-strong)" },
-  blue: { bg: mix("--info", 12), fg: "color-mix(in srgb, var(--info) 82%, white)", bd: mix("--info", 40) },
-  green: { bg: mix("--pos", 11), fg: "var(--pos)", bd: mix("--pos", 38) },
-  amber: { bg: mix("--warn", 10), fg: "var(--warn)", bd: mix("--warn", 38) },
-  red: { bg: mix("--neg", 11), fg: "var(--neg)", bd: mix("--neg", 38) },
-  violet: { bg: mix("--accent", 13), fg: "color-mix(in srgb, var(--accent) 82%, white)", bd: mix("--accent", 40) },
+  neutral: {
+    bg: "var(--surface-2)",
+    fg: "var(--text-2)",
+    bd: "var(--line)",
+  },
+  blue: {
+    bg: "color-mix(in srgb, var(--info) 8%, var(--surface-1))",
+    fg: "var(--info)",
+    bd: "color-mix(in srgb, var(--info) 22%, var(--line))",
+  },
+  green: {
+    bg: "color-mix(in srgb, var(--pos) 8%, var(--surface-1))",
+    fg: "var(--pos)",
+    bd: "color-mix(in srgb, var(--pos) 24%, var(--line))",
+  },
+  amber: {
+    bg: "color-mix(in srgb, var(--warn) 9%, var(--surface-1))",
+    fg: "var(--warn)",
+    bd: "color-mix(in srgb, var(--warn) 24%, var(--line))",
+  },
+  red: {
+    bg: "color-mix(in srgb, var(--neg) 8%, var(--surface-1))",
+    fg: "var(--neg)",
+    bd: "color-mix(in srgb, var(--neg) 24%, var(--line))",
+  },
+  violet: {
+    bg: "color-mix(in srgb, var(--accent) 8%, var(--surface-1))",
+    fg: "var(--accent)",
+    bd: "color-mix(in srgb, var(--accent) 22%, var(--line))",
+  },
 } as const;
 
 export type Tone = keyof typeof TONES;
@@ -26,10 +52,21 @@ export function Badge({
   const c = TONES[tone];
   return (
     <span
-      className="inline-flex items-center gap-1 border px-1.5 py-0.5 font-mono text-[10px] uppercase leading-none tracking-wider"
-      style={{ background: c.bg, color: c.fg, borderColor: c.bd, borderRadius: "var(--radius-sm)" }}
+      className="tnum inline-flex items-center gap-1.5 border px-2 py-0.5 text-[11px] font-semibold leading-tight tracking-[0.01em]"
+      style={{
+        background: c.bg,
+        color: c.fg,
+        borderColor: c.bd,
+        borderRadius: "var(--radius-sm)",
+      }}
     >
-      {dot && <span className="inline-block h-1.5 w-1.5 rounded-full" style={{ background: c.fg }} aria-hidden />}
+      {dot && (
+        <span
+          className="inline-block h-1.5 w-1.5 shrink-0 rounded-full"
+          style={{ background: c.fg }}
+          aria-hidden
+        />
+      )}
       {children}
     </span>
   );
@@ -46,14 +83,23 @@ export const SHEET_TYPE_TONE: Record<string, Tone> = {
   cost_model_overtime: "neutral",
   unknown: "red",
 };
+
 export const SEVERITY_TONE: Record<string, Tone> = {
-  low: "neutral", medium: "amber", high: "red", critical: "red",
+  low: "neutral",
+  medium: "amber",
+  high: "red",
+  critical: "red",
 };
+
 export const STATUS_TONE: Record<string, Tone> = {
-  pending: "amber", parsed: "green", mapped: "blue", failed: "red",
-  open: "amber", accepted: "green", rejected: "neutral", resolved: "blue",
-  // Financing lifecycle (checks + loan_installments). Without these every settlement
-  // status rendered "neutral", so a bounced check looked exactly like a planned one.
+  pending: "amber",
+  parsed: "green",
+  mapped: "blue",
+  failed: "red",
+  open: "amber",
+  accepted: "green",
+  rejected: "neutral",
+  resolved: "blue",
   planned: "neutral",
   in_portfolio: "blue",
   endorsed_to_vendor: "violet",
@@ -63,5 +109,8 @@ export const STATUS_TONE: Record<string, Tone> = {
   cleared: "green",
   bounced: "red",
   returned: "neutral",
-  paid: "green", late: "amber", cancelled: "neutral", unknown: "amber",
+  paid: "green",
+  late: "amber",
+  cancelled: "neutral",
+  unknown: "amber",
 };

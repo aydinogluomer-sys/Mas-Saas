@@ -512,17 +512,142 @@ async function assertNoNavSkeletonFreeze(page: Page): Promise<void> {
   await expect(page.locator("[data-navigation-root]")).not.toHaveClass(/navigation-skeleton-active/);
 }
 
+async function cleanupUiStateFixtures(): Promise<void> {
+  const safeExec = async (c: { query: (sql: string, params?: unknown[]) => Promise<unknown> }, sql: string) => {
+    try {
+      await c.query(sql);
+    } catch {
+      // Append-only event/audit triggers or optional tables never block cleanup of remaining synthetic fixtures.
+    }
+  };
+
+  await db(async (c) => {
+    // 1. Üretim kârlılık çalışmaları, parça, maliyet ve kapasite modelleri
+    await safeExec(
+      c,
+      `delete from public.part_profitability_runs
+        where part_id in (select id from public.production_parts where part_code like 'IX-UI-%')
+           or cost_model_id in (select id from public.cost_models where model_name = 'IX-UI Maliyet Modeli')`,
+    );
+    await safeExec(c, `delete from public.production_parts where part_code like 'IX-UI-%'`);
+    await safeExec(c, `delete from public.cost_models where model_name = 'IX-UI Maliyet Modeli'`);
+    await safeExec(
+      c,
+      `delete from public.machine_minute_allocations
+        where notes = 'IX-UI kapasite fixture'
+           or capacity_model_id in (select id from public.capacity_models where name = 'IX-UI Kapasite Modeli')`,
+    );
+    await safeExec(c, `delete from public.capacity_models where name = 'IX-UI Kapasite Modeli'`);
+
+    // 2. Sentetik satış faturası ve kalemleri
+    await safeExec(
+      c,
+      `delete from public.invoice_allocations
+        where invoice_id in (
+          select id from public.invoices
+           where invoice_no like 'IX-UI-%' or dedupe_hash = 'ix-ui-fifo-001-hash'
+        )`,
+    );
+    await safeExec(
+      c,
+      `delete from public.invoice_lines
+        where invoice_id in (
+          select id from public.invoices
+           where invoice_no like 'IX-UI-%' or dedupe_hash = 'ix-ui-fifo-001-hash'
+        )`,
+    );
+    await safeExec(
+      c,
+      `delete from public.invoices
+        where invoice_no like 'IX-UI-%' or dedupe_hash = 'ix-ui-fifo-001-hash'`,
+    );
+
+    // 3. Sentetik kredi limiti, kredi ve taksitleri
+    await safeExec(c, `delete from public.credit_facilities where name = 'IX-UI Rotatif Kredi Limiti'`);
+    await safeExec(
+      c,
+      `delete from public.loan_installments
+        where loan_id in (select id from public.loans where name = 'IX-UI İşletme Kredisi')`,
+    );
+    await safeExec(c, `delete from public.loans where name = 'IX-UI İşletme Kredisi'`);
+
+    // 4. Sentetik ödeme örnekleri ve şablonları (`00-IX`, `ZZ-IX`, `IX-UI`)
+    await safeExec(
+      c,
+      `delete from public.payment_run_items
+        where payment_instance_id in (
+          select pi.id
+            from public.payment_instances pi
+            join public.payments p on p.id = pi.payment_id
+           where p.name like '00-IX%' or p.name like 'ZZ-IX%' or p.name like 'IX-UI%'
+        )`,
+    );
+    await safeExec(
+      c,
+      `delete from public.payment_instances
+        where payment_id in (
+          select id from public.payments
+           where name like '00-IX%' or name like 'ZZ-IX%' or name like 'IX-UI%'
+        )`,
+    );
+    await safeExec(
+      c,
+      `delete from public.payments
+        where name like '00-IX%' or name like 'ZZ-IX%' or name like 'IX-UI%'`,
+    );
+
+    // 5. Sentetik banka / kasa hesabı, IBAN, karşı taraf ve nakit akış satırları
+    await safeExec(
+      c,
+      `delete from public.bank_accounts
+        where cash_account_id in (select id from public.cash_accounts where name like 'IX-UI%')`,
+    );
+    await safeExec(c, `delete from public.cash_accounts where name like 'IX-UI%'`);
+    await safeExec(
+      c,
+      `delete from public.iban_change_events
+        where iban_id in (
+          select id from public.ibans
+           where party_id in (select id from public.parties where name like 'IX-UI%')
+        )`,
+    );
+    await safeExec(
+      c,
+      `delete from public.ibans
+        where party_id in (select id from public.parties where name like 'IX-UI%')`,
+    );
+    await safeExec(
+      c,
+      `delete from public.counterparty_profiles
+        where party_id in (select id from public.parties where name like 'IX-UI%')`,
+    );
+    await safeExec(c, `delete from public.parties where name like 'IX-UI%'`);
+    await safeExec(c, `delete from public.cashflow_lines where label like 'IX-UI %'`);
+    await safeExec(
+      c,
+      `delete from public.cashflow_months cm
+        where cm.source_workbook_id is null
+          and coalesce(cm.status, 'draft') <> 'locked'
+          and cm.opening_balance in (140000, 170000)
+          and not exists (
+            select 1 from public.cashflow_lines cl where cl.cashflow_month_id = cm.id
+          )`,
+    );
+  });
+}
+
 test.beforeAll(async () => {
   fixtureInfo = await ensureUiStateFixtures();
 });
 
-test.afterAll(() => {
+test.afterAll(async () => {
   mkdirSync(OUT, { recursive: true });
   writeFileSync(
     path.join(OUT, "evidence-ui-state-and-exports.json"),
     `${JSON.stringify({ rows: evidence }, null, 2)}\n`,
     "utf8",
   );
+  await cleanupUiStateFixtures();
 });
 
 test.describe("görsel analitik dışa aktarma (/insights/analysis: png, svg, pdf)", () => {

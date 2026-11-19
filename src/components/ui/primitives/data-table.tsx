@@ -1,6 +1,6 @@
 "use client";
 
-// Generic data table (TanStack) restyled to MAS dark tokens.
+// Generic data table (TanStack) styled to Editorial Precision v2 tokens.
 // Client island only: it sorts/filters/paginates in-browser from serializable rows
 // passed by an RSC page. It performs NO mutations — row actions live in cell renderers
 // as <Link>/<form action={serverAction}> so the instant-nav + financial-safety contracts hold.
@@ -269,7 +269,7 @@ export function DataTable<TData>({
                           type="button"
                           onClick={header.column.getToggleSortingHandler()}
                           className={cn(
-                            "inline-flex items-center gap-1 font-mono text-[10px] uppercase tracking-wider",
+                            "inline-flex items-center gap-1 text-[11px] font-semibold uppercase tracking-[0.06em]",
                             align === "right" && "flex-row-reverse",
                           )}
                         >

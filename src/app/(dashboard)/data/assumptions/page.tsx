@@ -29,6 +29,15 @@ const TYPE_LABEL: Record<string, string> = {
   loan_rate: "kredi",
   other: "diğer",
 };
+const CONSUMER_ENGINES: Record<string, string[]> = {
+  fx_rate: ["13H Likidite", "Senaryo Motoru", "Üretim FX"],
+  interest_rate: ["Senaryo Revolver", "CAPEX İskonto (NPV/IRR)"],
+  loan_rate: ["Senaryo Revolver", "Hazine Kredi Maliyeti"],
+  personnel_cost: ["Üretim İşçilik (720)", "Senaryo Bütçe"],
+  energy_cost: ["Üretim GÜG (730)", "Senaryo Bütçe"],
+  inflation_rate: ["Senaryo Motoru", "Bütçe Varyans"],
+  other: ["Senaryo Motoru"],
+};
 const SOURCE_KIND_LABEL: Record<string, string> = {
   manual: "manuel",
   imported: "içe aktarılan",
@@ -169,6 +178,11 @@ export default async function AssumptionsPage({
                   <Badge tone="green">onaylı</Badge>
                 </div>
                 <div className="mt-1 font-mono text-sm tabular-nums" style={{ color: "var(--accent)" }}>{a.value_numeric} {a.unit}</div>
+                <div className="mt-1.5 flex flex-wrap gap-1">
+                  {(CONSUMER_ENGINES[a.assumption_type] ?? CONSUMER_ENGINES.other).map((eng) => (
+                    <Badge key={eng} tone="blue">{eng}</Badge>
+                  ))}
+                </div>
                 <div className="mt-1 font-mono text-[10px]" style={{ color: "var(--text-4)" }}>{sourceLabel(a.source_name, a.source_date)}</div>
               </div>
             ))}
@@ -187,7 +201,7 @@ export default async function AssumptionsPage({
               <thead>
                 <tr className="border-b border-line text-left font-mono text-[10px] uppercase tracking-wider text-tone-3">
                   <th className="py-1 pr-2">tip</th>
-                  <th className="py-1 pr-2">başlık</th>
+                  <th className="py-1 pr-2">başlık &amp; tüketen motorlar</th>
                   <th className="py-1 pr-2 text-right">değer</th>
                   <th className="py-1 pr-2">kaynak</th>
                   <th className="py-1 pr-2">inceleme</th>
@@ -200,6 +214,11 @@ export default async function AssumptionsPage({
                     <td className="py-1.5 pr-2 font-mono text-xs">{TYPE_LABEL[a.assumption_type] ?? a.assumption_type}</td>
                     <td className="py-1.5 pr-2">
                       <div>{a.label}</div>
+                      <div className="mt-1 flex flex-wrap gap-1">
+                        {(CONSUMER_ENGINES[a.assumption_type] ?? CONSUMER_ENGINES.other).map((eng) => (
+                          <Badge key={eng} tone="neutral">{eng}</Badge>
+                        ))}
+                      </div>
                       {a.notes && <div className="mt-0.5 text-[11px]" style={{ color: "var(--text-4)" }}>{a.notes}</div>}
                     </td>
                     <td className="py-1.5 pr-2 text-right font-mono tabular-nums">{a.value_numeric} {a.unit}</td>

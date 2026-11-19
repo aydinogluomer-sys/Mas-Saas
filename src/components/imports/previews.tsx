@@ -107,7 +107,7 @@ export function MonthlyCashflowPreviewView({ data }: { data: CashflowData }) {
     <div>
       <div className="mb-3 grid grid-cols-2 gap-2 sm:grid-cols-5">
         {head.map(([k, v]) => (
-          <div key={k} className="border border-line bg-black/40 p-2">
+          <div key={k} className="border border-line bg-[var(--surface-2)] p-2">
             <div className="font-mono text-[9px] uppercase tracking-wider text-tone-3">{k}</div>
             <div className={`font-mono text-sm tabular-nums ${v != null && v < 0 ? "text-neg" : "text-tone-1"}`}>
               {v != null ? new Intl.NumberFormat("tr-TR").format(v) : "—"}
