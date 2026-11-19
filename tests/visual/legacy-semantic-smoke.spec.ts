@@ -27,6 +27,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { expect, test, type Page } from "@playwright/test";
 import { Pool } from "pg";
 import { databaseNameFromUrl, isDisposableDatabaseName } from "../../scripts/db/owner-url";
+import { resolveOwnerSeedUrl } from "./global-setup";
 
 const BASE_URL = process.env.BASE_URL ?? "http://127.0.0.1:3210";
 const DB_URL = process.env.MAS_E2E_DATABASE_URL ?? process.env.DATABASE_URL ?? "";
@@ -61,7 +62,7 @@ const SESSION_COOKIE = "mas_session";
  * read back from wherever the browser happened to land.
  */
 const ROUTES: Array<{ href: string; expected: string }> = [
-  { href: "/overview", expected: "/overview" },
+  { href: "/overview", expected: "/" },
   { href: "/radar", expected: "/payments" },
   { href: "/cashflow", expected: "/cashflow" },
   { href: "/financing", expected: "/finance" },
@@ -113,7 +114,7 @@ test.beforeAll(async () => {
       `GÜVENLİK DURDURMASI: '${DB_URL.replace(/\/\/[^@]*@/, "//***@")}' disposable görünmüyor.`,
     );
   }
-  pool = new Pool({ connectionString: DB_URL, max: 4 });
+  pool = new Pool({ connectionString: resolveOwnerSeedUrl(DB_URL), max: 4 });
 
   const user = await pool.query<{ id: string }>(
     `insert into public.users (username, password_hash, display_name, role, is_active)

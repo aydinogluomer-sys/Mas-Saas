@@ -69,7 +69,7 @@ function verifierUrl(): string {
   }
   const url = new URL(raw);
   if (process.env.MAS_E2E_VERIFIER_URL) return process.env.MAS_E2E_VERIFIER_URL;
-  const migrationBase = process.env.MIGRATION_DATABASE_URL ?? readEnvLocal().MIGRATION_DATABASE_URL;
+  const migrationBase = process.env.MIGRATION_DATABASE_URL ?? (() => { try { return readEnvLocal().MIGRATION_DATABASE_URL; } catch { return undefined; } })();
   if (migrationBase && name) return swapDatabase(migrationBase, name);
   url.username = "postgres";
   url.password = "postgres";

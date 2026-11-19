@@ -25,6 +25,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { expect, test, type Page } from "@playwright/test";
 import { Pool } from "pg";
 import { databaseNameFromUrl, isDisposableDatabaseName } from "../../scripts/db/owner-url";
+import { resolveOwnerSeedUrl } from "./global-setup";
 
 const BASE_URL = process.env.BASE_URL ?? "http://127.0.0.1:3210";
 const DB_URL = process.env.MAS_E2E_DATABASE_URL ?? process.env.DATABASE_URL ?? "";
@@ -119,7 +120,7 @@ test.beforeAll(async () => {
     // Aynı fail-closed refleks: bu paket users/sessions'a YAZIYOR.
     throw new Error(`GÜVENLİK DURDURMASI: '${DB_URL.replace(/\/\/[^@]*@/, "//***@")}' disposable görünmüyor.`);
   }
-  pool = new Pool({ connectionString: DB_URL, max: 4 });
+  pool = new Pool({ connectionString: resolveOwnerSeedUrl(DB_URL), max: 4 });
   // En az bir aktif admin — 0031'in değişmezi; admin rolü zaten aşağıda basılıyor.
   for (const role of ROLES) await mintSession(role);
 });

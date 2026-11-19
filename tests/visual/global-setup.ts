@@ -32,6 +32,33 @@ import { chromium } from "@playwright/test";
 import { hash as argon2Hash } from "@node-rs/argon2";
 import { Pool } from "pg";
 import { databaseNameFromUrl, isDisposableDatabaseName } from "../../scripts/db/owner-url";
+import { readEnvLocal, swapDatabase } from "../../scripts/db/app-url";
+
+/**
+ * Elevates an already-verified disposable E2E database URL (`mas_radar_app`) to the database owner
+ * (`postgres` or `MIGRATION_DATABASE_URL`) so E2E harnesses can seed `public.users` / `public.sessions`
+ * while the Next.js server under test continues running on least-privilege `mas_radar_app`.
+ */
+export function resolveOwnerSeedUrl(rawUrl: string): string {
+  const name = databaseNameFromUrl(rawUrl);
+  if (!isDisposableDatabaseName(name)) {
+    throw new Error(`GÜVENLİK DURDURMASI: '${rawUrl.replace(/\/\/[^@]*@/, "//***@")}' disposable görünmüyor.`);
+  }
+  if (process.env.MAS_E2E_VERIFIER_URL?.trim()) return process.env.MAS_E2E_VERIFIER_URL.trim();
+  const localMig = (() => {
+    try {
+      return readEnvLocal().MIGRATION_DATABASE_URL?.trim();
+    } catch {
+      return undefined;
+    }
+  })();
+  const migrationBase = process.env.MIGRATION_DATABASE_URL?.trim() || localMig;
+  if (migrationBase && name) return swapDatabase(migrationBase, name);
+  const parsed = new URL(rawUrl);
+  parsed.username = "postgres";
+  parsed.password = "postgres";
+  return parsed.toString();
+}
 
 /**
  * Copied from src/lib/auth.ts rather than imported.
@@ -199,7 +226,7 @@ async function globalSetup(): Promise<void> {
   rmSync(AUTH_DIR, { recursive: true, force: true });
   mkdirSync(AUTH_DIR, { recursive: true });
 
-  const pool = new Pool({ connectionString: dbUrl, max: 4 });
+  const pool = new Pool({ connectionString: resolveOwnerSeedUrl(dbUrl), max: 4 });
   const passwordHash = await argon2Hash(TEST_PASSWORD, ARGON2_OPTIONS);
 
   try {

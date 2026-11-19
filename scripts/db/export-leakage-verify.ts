@@ -352,7 +352,7 @@ async function main(): Promise<void> {
         /getPool\(\)/.test(src) && !/getRawPool/.test(src),
         "ham havuz oturum arama yolunun kimliğidir; bir dışa aktarım onu asla almamalı");
       record(`${route}: oturumsuz istek reddediliyor`,
-        /getCurrentUser\(\)/.test(src) && /401/.test(src), "");
+        /(requireApiSession|getCurrentUser)\(\)/.test(src) && (/requireApiSession\(\)/.test(src) || /401/.test(src)), "");
     }
 
     /* ── 8. ledger sızıntısının export yüzeyinde de olmadığı ──────────────────────────── */

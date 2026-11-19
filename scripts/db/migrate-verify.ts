@@ -596,7 +596,7 @@ async function testClusterIdentity(): Promise<void> {
   createDb(db);
   try {
     const realIdentifier = psqlSql(db, "select system_identifier from pg_control_system();").trim();
-    const adapterEnv = withPgRuntimeConfig(process.env, readEnvLocal());
+    const adapterEnv = withPgRuntimeConfig(process.env, (() => { try { return readEnvLocal(); } catch { return {}; } })());
 
     try {
       createBackupAdapter({ ownerUrl: dbUrl(db), env: adapterEnv }).verifyTarget(db, realIdentifier);
