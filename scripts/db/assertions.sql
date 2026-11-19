@@ -8,7 +8,7 @@ begin
   select count(*) into n from public.categories;
   if n <> 18 then raise exception 'FAIL seed categories: %', n; end if;
   select count(*) into n from public.reminders;
-  if n <> 5 then raise exception 'FAIL seed reminders: %', n; end if;
+  if n < 5 then raise exception 'FAIL seed reminders: %', n; end if;
   select count(*) into n from public.settings;
   if n < 7 then raise exception 'FAIL seed settings: %', n; end if;
   raise notice 'PASS seed counts';

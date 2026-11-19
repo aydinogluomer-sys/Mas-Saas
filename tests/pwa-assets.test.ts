@@ -69,10 +69,10 @@ describe("service worker — emeklilik tamamlandı, hiçbir sayfa önbelleğe al
     expect(middlewareCode).not.toMatch(/sw\\?\.js/);
   });
 
-  it("src/app/layout.tsx manifest bağlantısını ve #F3EBDC temasını korur; SW bileşenlerini bağlamaz", () => {
+  it("src/app/layout.tsx manifest bağlantısını ve #F4F1EA temasını korur; SW bileşenlerini bağlamaz", () => {
     const layout = codeOnly(read("src/app/layout.tsx"));
     expect(layout).toMatch(/manifest:\s*["']\/manifest\.json["']/);
-    expect(layout).toMatch(/themeColor:\s*["']#F3EBDC["']/);
+    expect(layout).toMatch(/themeColor:\s*["']#F4F1EA["']/);
     expect(layout).not.toMatch(/PwaRegister/);
     expect(layout).not.toMatch(/ServiceWorkerCleanup/);
   });

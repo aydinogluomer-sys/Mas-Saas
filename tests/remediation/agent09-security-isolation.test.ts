@@ -238,14 +238,22 @@ async function captureLiveDbFingerprint(pool: Pool): Promise<DbImmutableFingerpr
   }
 }
 
-describe("AGENT 09 — Security, Approval Workflows, IBAN Hard-Gates & Multi-Entity Isolation", () => {
+function resolveLiveAppDbUrl(): string {
+  if (process.env.DATABASE_URL?.trim()) return process.env.DATABASE_URL.trim();
+  try {
+    return readEnvLocal().DATABASE_URL?.trim() ?? "";
+  } catch {
+    return "";
+  }
+}
+
+describe.skipIf(!resolveLiveAppDbUrl())("AGENT 09 — Security, Approval Workflows, IBAN Hard-Gates & Multi-Entity Isolation", () => {
   let livePool: Pool;
   let baselineFingerprint: DbImmutableFingerprint;
 
   beforeAll(async () => {
-    const envLocal = readEnvLocal();
     livePool = new Pool({
-      connectionString: envLocal.DATABASE_URL,
+      connectionString: resolveLiveAppDbUrl(),
       max: 2,
       idleTimeoutMillis: 10_000,
       connectionTimeoutMillis: 30_000,

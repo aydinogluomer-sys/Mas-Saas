@@ -49,7 +49,17 @@ function resolveOwnerUrl(): string {
   return ownerUrl;
 }
 
-describe("Agent 07 — Telemetry, Incident State Machine & Observability", () => {
+function hasLiveDbConfig(): boolean {
+  if (process.env.MIGRATION_DATABASE_URL?.trim() || process.env.DATABASE_URL?.trim()) return true;
+  try {
+    const envLocal = readEnvLocal();
+    return Boolean(envLocal.MIGRATION_DATABASE_URL?.trim() || envLocal.DATABASE_URL?.trim());
+  } catch {
+    return false;
+  }
+}
+
+describe.skipIf(!hasLiveDbConfig())("Agent 07 — Telemetry, Incident State Machine & Observability", () => {
   let ownerPool: Pool;
 
   beforeAll(async () => {

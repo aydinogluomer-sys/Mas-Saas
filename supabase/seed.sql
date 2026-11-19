@@ -30,11 +30,13 @@ insert into public.settings (key, value, description) values
  ('negative_cash_threshold_try','0','Negatif kasa eşiği'),
  ('high_customer_concentration_ratio','0.40','Müşteri konsantrasyon eşiği'),
  ('high_bank_exposure_ratio','0.40','Banka exposure eşiği'),
- ('timezone','"Europe/Istanbul"','Rapor/hatırlatma saat dilimi');
+ ('timezone','"Europe/Istanbul"','Rapor/hatırlatma saat dilimi')
+on conflict (key) do nothing;
 
 insert into public.reminders (name, target_kind, offset_days, channel) values
  ('7 gün önce — hazırlık','payment_instance',7,'telegram'),
  ('3 gün önce — nakit hazır mı','payment_instance',3,'telegram'),
  ('1 gün önce — yarın ödeme','payment_instance',1,'telegram'),
  ('Ödeme günü — bugün','payment_instance',0,'telegram'),
- ('1 gün sonra — ödendi mi','payment_instance',-1,'telegram');
+ ('1 gün sonra — ödendi mi','payment_instance',-1,'telegram')
+on conflict (target_kind, offset_days, channel) do nothing;

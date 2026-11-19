@@ -85,7 +85,17 @@ async function captureDatabaseDigest(pool: Pool): Promise<DatabaseLineageDigest>
   return res.rows[0]!;
 }
 
-describe("Agent 10 — Data Pipeline, Valid-Import Freshness & 6-Dimension Data Quality (Phase D)", () => {
+function hasLiveDbConfig(): boolean {
+  if (process.env.MIGRATION_DATABASE_URL?.trim() || process.env.DATABASE_URL?.trim()) return true;
+  try {
+    const envLocal = readEnvLocal();
+    return Boolean(envLocal.MIGRATION_DATABASE_URL?.trim() || envLocal.DATABASE_URL?.trim());
+  } catch {
+    return false;
+  }
+}
+
+describe.skipIf(!hasLiveDbConfig())("Agent 10 — Data Pipeline, Valid-Import Freshness & 6-Dimension Data Quality (Phase D)", () => {
   let ownerReadOnlyPool: Pool;
   let preTestDigest: DatabaseLineageDigest;
 

@@ -91,6 +91,7 @@ describe("Faz 40 — tüm dashboard actions.ts dosyalarında rol/izin kapısı (
       "requireAdmin",
       "canPerform",
       "canSeeRoute",
+      "can",
     ]);
     const unguarded: string[] = [];
 

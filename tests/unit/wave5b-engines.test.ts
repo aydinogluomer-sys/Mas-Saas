@@ -1040,7 +1040,7 @@ describe("Wave 5B — F-52 Reminders Rule CRUD + Checks & Loan Installments Matu
 
     // 1. Seed default check + loan_installment + sales/purchase invoice + tax/SGK rules & test custom rule CRUD + toggle
     const seeded = await ensureDefaultMaturityRules(fakePool, ACTOR_ID);
-    expect(seeded).toBe(19);
+    expect(seeded).toBe(28);
 
     const customEmailRuleId = await upsertReminderRule(
       fakePool,

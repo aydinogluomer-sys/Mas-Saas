@@ -147,7 +147,17 @@ function createMonthSummaryMockPool(rows: SyntheticLedgerRow[], omitOverpaymentC
   } as unknown as Pool;
 }
 
-describe("Agent 04 — Financial Ledger, Reconciliation & Data Integrity Verification", () => {
+function hasLiveDbConfig(): boolean {
+  if (process.env.MIGRATION_DATABASE_URL?.trim() || process.env.DATABASE_URL?.trim()) return true;
+  try {
+    const envLocal = readEnvLocal();
+    return Boolean(envLocal.MIGRATION_DATABASE_URL?.trim() || envLocal.DATABASE_URL?.trim());
+  } catch {
+    return false;
+  }
+}
+
+describe.skipIf(!hasLiveDbConfig())("Agent 04 — Financial Ledger, Reconciliation & Data Integrity Verification", () => {
   let ownerReadOnlyPool: Pool;
   let preTestDigest: FinancialTableDigest;
 

@@ -33,7 +33,16 @@ function resolveConnectionUrls(): { appUrl: string; ownerUrl: string } {
   return { appUrl, ownerUrl };
 }
 
-describe("Agent 01 — Database Reliability, Migration 0124 & RLS Verification", () => {
+function hasLiveAppDbConfig(): boolean {
+  if (process.env.DATABASE_URL?.trim()) return true;
+  try {
+    return Boolean(readEnvLocal().DATABASE_URL?.trim());
+  } catch {
+    return false;
+  }
+}
+
+describe.skipIf(!hasLiveAppDbConfig())("Agent 01 — Database Reliability, Migration 0124 & RLS Verification", () => {
   let appPool: Pool;
   let ownerPool: Pool;
 
