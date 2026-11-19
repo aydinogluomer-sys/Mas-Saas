@@ -5,8 +5,8 @@
 // Hem sunucuda rol-süzülmüş 78+ rota/iş-akışı geçişini (`items` + Türkçe eş anlamlılar)
 // hem de `/api/search` tam metin PostgreSQL RLS varlık aramasını tek pencerede birleştirir.
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useRouter } from "next/navigation";
+import { useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
+import { AppRouterContext } from "next/dist/shared/lib/app-router-context.shared-runtime";
 import type { NavItem } from "@/components/ui/nav";
 import { formatMoney } from "@/lib/money-format";
 import {
@@ -52,7 +52,7 @@ export function CommandPalette({
   defaultOpen?: boolean;
   items?: Array<NavItem & Partial<PaletteCommandItem>>;
 } = {}) {
-  const router = useRouter();
+  const router = useContext(AppRouterContext);
   const [open, setOpen] = useState(defaultOpen);
   const [query, setQuery] = useState("");
   const [activeIntent, setActiveIntent] = useState<OperationalIntentKey | "all">("all");
@@ -235,7 +235,11 @@ export function CommandPalette({
         e.preventDefault();
         setOpen(false);
         window.dispatchEvent(new CustomEvent("mas:navigation-start"));
-        router.push(target.href);
+        if (router) {
+          router.push(target.href);
+        } else {
+          window.location.assign(target.href);
+        }
       }
     }
   };

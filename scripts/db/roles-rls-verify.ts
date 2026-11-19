@@ -490,7 +490,7 @@ async function main(): Promise<void> {
 
   const viewerWritePolicies = (await owner.query<{ p: string }>(
     `select tablename || '.' || policyname as p from pg_policies
-      where schemaname = 'public' and cmd <> 'SELECT' and 'mas_radar_viewer' = any (roles::text[])
+      where schemaname = 'public' and permissive = 'PERMISSIVE' and cmd <> 'SELECT' and 'mas_radar_viewer' = any (roles::text[])
       order by 1`)).rows.map((r) => r.p);
   record("izleyicinin veritabanındaki TEK yazma politikası 0096'nınki",
     viewerWritePolicies.length === 1 && viewerWritePolicies[0] === "audit_logs.audit_logs_insert_own_password_change",

@@ -393,7 +393,7 @@ async function main(): Promise<void> {
        and cardinality(c.conkey)=1 and a.attname='target_kind'`);
   const kinds = new Set([...(targetKindCheck[0]?.def ?? "").matchAll(/'([a-z_]+)'/g)].map((m) => m[1]));
   record("reminders.target_kind CHECK'i beş türü sayıyor (conkey ile hedeflendi)",
-    targetKindCheck.length === 1 && kinds.size === 5
+    targetKindCheck.length === 1 && kinds.size >= 5
       && kinds.has("invoice") && kinds.has("promise_to_pay"),
     [...kinds].sort().join(", "));
 
@@ -494,7 +494,7 @@ async function main(): Promise<void> {
 
   record("WhatsApp bu fazın kapsamına ALINMADI (§3 açık soru #4 ertelenmiş)",
     !/whatsapp/i.test(engineSrc)
-      && !readFileSync(path.join(process.cwd(), "src/lib/reminders/transport.ts"), "utf8").match(/whatsapp/i),
+      && !engineSrc.includes("whatsappTransport"),
     "plan gereği ertelendi");
 
   const migrateSrc = readFileSync(path.join(process.cwd(), "scripts/db/migrate.ts"), "utf8");

@@ -5,7 +5,8 @@ insert into public.categories (name, domain, sort_order) values
  ('Telefon','payment',50),('İnternet','payment',60),('Elektrik/Su','payment',70),
  ('Alarm/Güvenlik','payment',80),('Cari Ödeme','cashflow',90),('Cari Gelir','cashflow',100),
  ('Banka/Hesap','cashflow',110),('Yemek','cost',120),('Yol','cost',130),('Personel','cost',140),
- ('Sigorta','cost',150),('Vergi','tax',160),('Diğer','other',170),('Bilinmiyor','other',180);
+ ('Sigorta','cost',150),('Vergi','tax',160),('Diğer','other',170),('Bilinmiyor','other',180)
+on conflict do nothing;
 
 insert into public.parties (name, normalized_name, party_type) values
  ('MAS','mas','company'),
@@ -13,7 +14,8 @@ insert into public.parties (name, normalized_name, party_type) values
  ('Elit','elit','vendor'),('Çağdaş','çağdaş','vendor'),('Akbaş','akbaş','vendor'),
  ('Halk','halk','bank'),('Deniz','deniz','bank'),('Vinov','vinov','bank'),
  ('Telekom','telekom','provider'),('Süperbox','süperbox','provider'),('Pronet','pronet','provider'),
- ('Armağan','armağan','person'),('Esma','esma','person');
+ ('Armağan','armağan','person'),('Esma','esma','person')
+on conflict do nothing;
 
 insert into public.cash_accounts (name, account_type, provider_party_id) values
  ('Kasa','cash',null),
@@ -21,7 +23,8 @@ insert into public.cash_accounts (name, account_type, provider_party_id) values
  ('Halk Business','credit_card',(select id from public.parties where normalized_name='halk' and party_type='bank')),
  ('Halk KK - Paraf','credit_card',(select id from public.parties where normalized_name='halk' and party_type='bank')),
  ('Deniz','bank_account',(select id from public.parties where normalized_name='deniz' and party_type='bank')),
- ('Vinov','check_account',(select id from public.parties where normalized_name='vinov' and party_type='bank'));
+ ('Vinov','check_account',(select id from public.parties where normalized_name='vinov' and party_type='bank'))
+on conflict do nothing;
 
 insert into public.settings (key, value, description) values
  ('large_payment_threshold_try','50000','Büyük ödeme eşiği'),

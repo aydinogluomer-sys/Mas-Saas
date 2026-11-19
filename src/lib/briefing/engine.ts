@@ -81,7 +81,7 @@ async function loadSpotFxRatesToTry(
  * obligations are neither raw-summed nor silently dropped.
  */
 async function loadBriefingCore(pool: Pool, todayISO: string) {
-  const [summary, gaps, floorCurrencies, working, controls, alerts, promises, todayInstances, overdue, fxSnap, wcExtRes, fin03MetaRes] =
+  const [summary, gaps, floorCurrencies, working, controls, alerts, promises, todayInstances, overdue, fxSnap, fin03MetaRes] =
     await Promise.all([
       loadPositionSummary(pool),
       loadLiquidityGap(pool),
@@ -93,17 +93,6 @@ async function loadBriefingCore(pool: Pool, todayISO: string) {
       instancesOn(pool, todayISO),
       overdueOpen(pool, todayISO),
       loadSpotFxRatesToTry(pool, todayISO),
-      pool
-        .query<{ dio_days: string | null; cash_conversion_cycle_days: string | null }>(
-          `select dio_days::text as dio_days,
-                  cash_conversion_cycle_days::text as cash_conversion_cycle_days
-             from public.working_capital_metrics
-            limit 1`,
-        )
-        .catch((err: unknown) => {
-          if (isMissingSchemaError(err)) return { rows: [] };
-          throw err;
-        }),
       pool
         .query<{ unknown_opening_n?: number; stored_briefing_id?: string | null }>(
           `select
@@ -245,7 +234,6 @@ async function loadBriefingCore(pool: Pool, todayISO: string) {
     }),
   });
 
-  const wcExt = wcExtRes.rows[0];
   const facts: BriefingFacts = {
     todayISO,
     availableCash: tryPos?.availableNow ?? null,
@@ -271,8 +259,8 @@ async function loadBriefingCore(pool: Pool, todayISO: string) {
     overduePromises: promises.filter((p) => p.isOverdue).length,
     dsoDays: working?.dsoDays ?? null,
     dpoDays: working?.dpoDays ?? null,
-    dioDays: rateOrNull(wcExt?.dio_days),
-    cashConversionCycleDays: rateOrNull(wcExt?.cash_conversion_cycle_days),
+    dioDays: working?.dioDays ?? null,
+    cashConversionCycleDays: working?.cashConversionCycleDays ?? null,
     cycleExcludingInventory: working?.cycleExcludingInventory ?? null,
     overnightDelta,
     fxRatesAsOf: fxSnap.latestDate,

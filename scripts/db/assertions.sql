@@ -61,10 +61,10 @@ begin
 
   -- 8) reminder delivery duplicate key
   insert into public.reminder_deliveries (reminder_id, entity_table, entity_id, scheduled_for)
-  select id, 'payment_instances', iid, date '2027-02-27' from public.reminders where offset_days = 1;
+  select id, 'payment_instances', iid, date '2027-02-27' from public.reminders where offset_days = 1 and target_kind = 'payment_instance';
   begin
     insert into public.reminder_deliveries (reminder_id, entity_table, entity_id, scheduled_for)
-    select id, 'payment_instances', iid, date '2027-02-27' from public.reminders where offset_days = 1;
+    select id, 'payment_instances', iid, date '2027-02-27' from public.reminders where offset_days = 1 and target_kind = 'payment_instance';
     raise exception 'FAIL reminder duplicate key did not fire';
   exception when unique_violation then raise notice 'PASS reminder duplicate prevention'; end;
 

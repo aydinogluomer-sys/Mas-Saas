@@ -134,7 +134,7 @@ async function main(): Promise<void> {
     select table_name, column_name from information_schema.columns
     where table_schema = 'public'
       and (column_name ~ '(stddev|std_dev|variance$|_variance$|distribution|probability|percentile|confidence_interval)')
-      and column_name not in ('variance_amount','variance_ratio','variance_verdict')`);
+      and column_name not in ('variance_amount','variance_ratio','variance_verdict','net_variance')`);
   record("şemada DAĞILIM verisi yok — Monte Carlo'nun girdisi mevcut değil",
     distributionCols.rowCount === 0,
     distributionCols.rowCount === 0

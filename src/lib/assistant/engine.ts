@@ -266,7 +266,16 @@ export async function ask(
     actorId,
   );
 
-  const visibleUsed = scoped.visible.filter((f) => result.sourceFactKeys.includes(f.key));
+  const candidateUsedFacts = scopeFactsForRole(role, [
+    ...(result.selectedFacts ?? []),
+    ...scoped.visible,
+  ]).visible;
+  const seenUsedKeys = new Set<string>();
+  const visibleUsed = candidateUsedFacts.filter((f) => {
+    if (!result.sourceFactKeys.includes(f.key) || seenUsedKeys.has(f.key)) return false;
+    seenUsedKeys.add(f.key);
+    return true;
+  });
 
   const notice = withheldNotice(scoped);
   const safetyNotes = [...result.safetyNotes];

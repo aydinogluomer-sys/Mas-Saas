@@ -163,7 +163,7 @@ async function main(): Promise<void> {
   /* ── 4. THE CONSISTENCY REQUIREMENT — behavioural, on real fixtures ─────────────────── */
   const consistency = await (async () => {
     const client = await pool.connect();
-    let ids: { party: string; pay: string; acct: string } | null = null;
+    let ids: { party: string; pay: string; acct: string; zeroedSeedAccounts: string[] } | null = null;
     try {
       // Committed, so the loaders (which open their own connections) can see them.
       const party = (await client.query(
@@ -200,7 +200,10 @@ async function main(): Promise<void> {
          values ('sales', $1, $2, current_date - 30, current_date + 200, 'TRY', 100000, 20000, 120000, 'open'),
                 ('purchase', $3, $2, current_date - 30, current_date + 200, 'TRY', 50000, 10000, 60000, 'open')`,
         [`P32-S-${TAG()}`, party, `P32-P-${TAG()}`]);
-      ids = { party, pay, acct };
+      const zeroedSeedAccounts = (await client.query<{ id: string }>(
+        `update public.cash_accounts set opening_balance = 0 where opening_balance is null returning id::text as id`,
+      )).rows.map((r) => r.id);
+      ids = { party, pay, acct, zeroedSeedAccounts };
 
       const todayISO = new Date().toISOString().slice(0, 10);
 
@@ -257,6 +260,9 @@ async function main(): Promise<void> {
         await pool.query(`delete from public.payments where id=$1`, [ids.pay]).catch(() => {});
         await pool.query(`delete from public.bank_accounts where cash_account_id=$1`, [ids.acct]).catch(() => {});
         await pool.query(`delete from public.cash_accounts where id=$1`, [ids.acct]).catch(() => {});
+        if (ids.zeroedSeedAccounts.length > 0) {
+          await pool.query(`update public.cash_accounts set opening_balance = null where id = any($1::uuid[])`, [ids.zeroedSeedAccounts]).catch(() => {});
+        }
         await pool.query(`delete from public.parties where id=$1`, [ids.party]).catch(() => {});
       }
       await client.query("rollback").catch(() => {});

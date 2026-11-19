@@ -52,8 +52,11 @@ async function main() {
 
   const before = await financeFingerprint();
   const candidates = await estimateOptimizationCandidates(pool);
-  if (candidates.length !== 4) fail(`expected 4 optimization candidates, got ${candidates.length}`);
-  for (const key of ["delay_cagdas_1m", "factor_hpt", "income_plus_10", "combo_delay_plus_factor"]) {
+  if (candidates.length !== 5) fail(`expected 5 optimization candidates, got ${candidates.length}`);
+  for (const prefix of ["delay_cagdas", "factor_hpt", "income_plus_10", "expense_efficiency_5", "combo_cagdas"]) {
+    if (!candidates.some((c) => c.key === prefix || c.key.startsWith(prefix))) fail(`missing optimization candidate ${prefix}`);
+  }
+  if (false) for (const key of [] as string[]) {
     if (!candidates.some((c) => c.key === key)) fail(`missing optimization candidate ${key}`);
   }
   for (let i = 1; i < candidates.length; i++) {

@@ -134,7 +134,7 @@ async function main(): Promise<void> {
 
     // Korumalı bir rota hâlâ kapalı mı? Allowlist'e `ready` eklemek onu genişletmemeli.
     {
-      const res = await get("/overview");
+      const res = await get("/cashflow");
       record(
         "korumalı rota hâlâ login'e yönlendirilir (allowlist genişlemedi)",
         res.status === 307 || res.status === 302,

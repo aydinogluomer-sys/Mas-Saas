@@ -27,27 +27,40 @@ export interface SchemaParityResult {
 
 type QueryablePool = Pick<Pool, "query">;
 
-export function readExpectedSchemaManifest(cwd: string = process.cwd()): ExpectedSchemaManifest {
-  const migrationsDir = path.join(cwd, "supabase", "migrations");
-  try {
-    if (existsSync(migrationsDir)) {
-      const sqlFiles = readdirSync(migrationsDir)
-        .filter((f) => f.endsWith(".sql"))
-        .sort();
-      if (sqlFiles.length > 0) {
-        const versions = sqlFiles
-          .map((f) => /^(\d{4})/.exec(f)?.[1] ?? f.slice(0, 4))
-          .filter((v) => v.length > 0)
+export function readExpectedSchemaManifest(cwd?: string): ExpectedSchemaManifest {
+  const baseCwd = cwd ?? process.cwd();
+  const candidateRoots =
+    cwd !== undefined
+      ? [baseCwd]
+      : [
+          ...(process.env.MAS_PROJECT_ROOT?.trim() ? [process.env.MAS_PROJECT_ROOT.trim()] : []),
+          baseCwd,
+          path.resolve(baseCwd, ".."),
+          path.resolve(baseCwd, "..", ".."),
+        ];
+
+  for (const rootDir of candidateRoots) {
+    const migrationsDir = path.join(rootDir, "supabase", "migrations");
+    try {
+      if (existsSync(migrationsDir)) {
+        const sqlFiles = readdirSync(migrationsDir)
+          .filter((f) => f.endsWith(".sql"))
           .sort();
-        const latest = versions[versions.length - 1] ?? "?";
-        return {
-          expectedCount: sqlFiles.length,
-          expectedLatestVersion: latest,
-        };
+        if (sqlFiles.length > 0) {
+          const versions = sqlFiles
+            .map((f) => /^(\d{4})/.exec(f)?.[1] ?? f.slice(0, 4))
+            .filter((v) => v.length > 0)
+            .sort();
+          const latest = versions[versions.length - 1] ?? "?";
+          return {
+            expectedCount: sqlFiles.length,
+            expectedLatestVersion: latest,
+          };
+        }
       }
+    } catch {
+      // Try next candidate root or fall through to environment fallback.
     }
-  } catch {
-    // Fall through to environment fallback if filesystem manifest cannot be read.
   }
 
   const envCountRaw = process.env.APP_EXPECTED_MIGRATION_COUNT?.trim();

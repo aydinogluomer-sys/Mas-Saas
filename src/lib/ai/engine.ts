@@ -88,6 +88,7 @@ export interface AskAnswerResult {
   sourceHrefs: string[];
   safetyNotes: string[];
   toolEvidence?: ToolEvidenceRecord[];
+  selectedFacts?: DecisionFact[];
 }
 
 export interface AnswerQuestionInput {
@@ -200,6 +201,7 @@ export async function answerQuestion(
       sourceHrefs,
       safetyNotes,
       toolEvidence: toolEvidences,
+      selectedFacts,
     };
   } catch (e) {
     await client.query("rollback");

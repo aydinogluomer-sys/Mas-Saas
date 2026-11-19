@@ -76,7 +76,7 @@ async function main() {
     fail("report action missing related report pointer");
   if (!aiAction || aiAction.related_entity_table !== "ai_response_snapshots" || aiAction.related_entity_id !== aiId)
     fail("ai action missing related response pointer");
-  if (aiAction.source_href !== `/reports/${reportId}?ai=${aiId}`) fail("ai action source link must point back to report AI answer");
+  if (aiAction.source_href !== `/insights/reports/${reportId}?ai=${aiId}`) fail("ai action source link must point back to report AI answer");
 
   const audits = await q(
     `select action, count(*)::int n from public.audit_logs

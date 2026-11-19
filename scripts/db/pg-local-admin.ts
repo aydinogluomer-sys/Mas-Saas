@@ -23,10 +23,18 @@ function assertSafeDisposableDb(name: string): void {
   }
 }
 
+function safeReadEnvLocal(): Record<string, string> {
+  try {
+    return readEnvLocal();
+  } catch {
+    return {};
+  }
+}
+
 function resolveRawOwnerBaseUrl(): string {
   const fromProcess = process.env.MIGRATION_DATABASE_URL?.trim();
   if (fromProcess) return fromProcess;
-  const envLocal = readEnvLocal();
+  const envLocal = safeReadEnvLocal();
   const fromFile = envLocal.MIGRATION_DATABASE_URL?.trim();
   if (fromFile) return fromFile;
   const port = process.env.MAS_PG_PORT?.trim() || "5432";
@@ -41,7 +49,7 @@ export function resolveLocalOwnerUrl(dbName = "postgres"): string {
 }
 
 function adminContext(): { target: NativePgTarget; bins: PgBinaries; env: Record<string, string | undefined> } {
-  const envLocal = readEnvLocal();
+  const envLocal = safeReadEnvLocal();
   const mergedEnv: Record<string, string | undefined> = {
     ...process.env,
     MAS_PG_BIN_DIR: process.env.MAS_PG_BIN_DIR ?? envLocal.MAS_PG_BIN_DIR,
@@ -193,7 +201,7 @@ export function dumpDatabaseToFileLocal(
   outPath: string,
   extraArgs: string[] = [],
 ): void {
-  const envLocal = readEnvLocal();
+  const envLocal = safeReadEnvLocal();
   const mergedEnv: Record<string, string | undefined> = {
     ...process.env,
     MAS_PG_BIN_DIR: process.env.MAS_PG_BIN_DIR ?? envLocal.MAS_PG_BIN_DIR,

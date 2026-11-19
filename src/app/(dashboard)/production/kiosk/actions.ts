@@ -5,7 +5,7 @@ import { redirect } from "next/navigation";
 import { z } from "zod";
 import { audit } from "@/lib/audit";
 import { requireSession } from "@/lib/auth";
-import { can } from "@/lib/authz/matrix";
+import { can, canSeeRoute } from "@/lib/authz/matrix";
 import { getPool } from "@/lib/db";
 import { DomainError } from "@/lib/domain-error";
 import { decimal, money, rate } from "@/lib/money";
@@ -75,7 +75,7 @@ export async function kioskStartWorkOrderAction(formData: FormData): Promise<voi
   const session = await requireSession();
   const f = formObject(formData);
   const codeFilter = strField(f.codeFilter);
-  if (!can(session.role, "work_orders", "update")) {
+  if (!canSeeRoute(session.role, BASE) || !can(session.role, "work_orders", "update")) {
     redirectWithFlash("error", "Atölye iş emri başlatma yetkiniz yok.", codeFilter);
   }
 
@@ -169,7 +169,7 @@ export async function kioskReportDowntimeAction(formData: FormData): Promise<voi
   const session = await requireSession();
   const f = formObject(formData);
   const codeFilter = strField(f.codeFilter);
-  if (!can(session.role, "work_orders", "update")) {
+  if (!canSeeRoute(session.role, BASE) || !can(session.role, "work_orders", "update")) {
     redirectWithFlash("error", "Atölye duruş bildirimi yetkiniz yok.", codeFilter);
   }
 
@@ -286,7 +286,7 @@ export async function kioskRecordOutputAndScrapAction(formData: FormData): Promi
   const session = await requireSession();
   const f = formObject(formData);
   const codeFilter = strField(f.codeFilter);
-  if (!can(session.role, "work_orders", "update")) {
+  if (!canSeeRoute(session.role, BASE) || !can(session.role, "work_orders", "update")) {
     redirectWithFlash("error", "Üretim ve fire kayıt yetkiniz yok.", codeFilter);
   }
 
@@ -396,7 +396,7 @@ export async function kioskCompleteWorkOrderAction(formData: FormData): Promise<
   const session = await requireSession();
   const f = formObject(formData);
   const codeFilter = strField(f.codeFilter);
-  if (!can(session.role, "work_orders", "update")) {
+  if (!canSeeRoute(session.role, BASE) || !can(session.role, "work_orders", "update")) {
     redirectWithFlash("error", "İş emri tamamlama yetkiniz yok.", codeFilter);
   }
 

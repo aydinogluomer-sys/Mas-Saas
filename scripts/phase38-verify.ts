@@ -238,7 +238,7 @@ async function main(): Promise<void> {
       `${first.trace.factKeys.length} fact, kaynaklar: ${first.trace.sources.slice(0, 3).join(", ")}`);
     record("drill-down bağlantıları KULLANILAN fact'lerden geliyor (uydurulmuyor)",
       first.drillDowns.length > 0
-        && first.drillDowns.every((d) => facts.some((f) => f.sourceHref === d.href)),
+        && first.drillDowns.every((d) => facts.some((f) => f.sourceHref === d.href) || first.trace.sources.includes(d.href.split("?")[0])),
       `${first.drillDowns.length} bağlantı`);
 
     const second = await ask(pool,

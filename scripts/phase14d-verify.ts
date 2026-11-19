@@ -81,7 +81,7 @@ async function main() {
   if (!pendingLoanRateId) fail("pending internet external assumption not created");
 
   const facts = await loadDecisionFacts(pool, "2026-07-08");
-  if (!facts.some((f) => f.key === "external_energy_cost" && f.sourceHref === "/assumptions"))
+  if (!facts.some((f) => f.key === "external_energy_cost" && f.sourceHref === "/data/assumptions"))
     fail("approved external assumption did not become a decision fact");
   if (facts.some((f) => f.key === "external_loan_rate"))
     fail("pending internet assumption must not become a decision fact");
