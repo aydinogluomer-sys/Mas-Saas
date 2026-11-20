@@ -4,7 +4,7 @@ import { logoutAction } from "@/app/login/actions";
 import { CommandPaletteTrigger } from "@/components/search/command-palette-trigger";
 import { EntitySwitcher } from "@/components/ui/entity-switcher";
 import { HeaderCollabBar, type ExecutiveLocale } from "@/components/ui/header-collab-bar";
-import { NavigationFeedbackProvider } from "@/components/ui/navigation-feedback";
+import { NavigationFeedbackProvider, WorkspaceMainSlot } from "@/components/ui/navigation-feedback";
 import { AppSidebar, type NavItem } from "@/components/ui/nav";
 import { AppToaster, FlashToaster } from "@/components/ui/primitives/toast";
 import { ViewComfortBar } from "@/components/ui/view-comfort-bar";
@@ -114,7 +114,9 @@ export default async function DashboardLayout({ children }: { children: ReactNod
               </span>
             </div>
           </header>
-          <main className="workspace-content animate-rise">{children}</main>
+          <main className="workspace-content animate-rise">
+            <WorkspaceMainSlot>{children}</WorkspaceMainSlot>
+          </main>
         </div>
         <AppToaster />
         <FlashToaster />

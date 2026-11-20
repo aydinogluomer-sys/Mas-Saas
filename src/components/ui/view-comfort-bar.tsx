@@ -15,27 +15,27 @@ const THEME_COLOR_META: Record<EyeComfortTheme, string> = {
 
 function readInitialDomTheme(): EyeComfortTheme {
   if (typeof document === "undefined") return "washi";
-  const ds = document.documentElement.dataset.theme;
-  if (ds === "washi" || ds === "eink") return ds;
   try {
     const stored = window.localStorage.getItem(THEME_STORAGE_KEY);
     if (stored === "washi" || stored === "eink") return stored;
   } catch {
     // Ignore storage access errors in restricted sandboxes
   }
+  const ds = document.documentElement.dataset.theme;
+  if (ds === "washi" || ds === "eink") return ds;
   return "washi";
 }
 
 function readInitialDomDensity(): WorkspaceDensity {
   if (typeof document === "undefined") return "analyst";
-  const ds = document.documentElement.dataset.density;
-  if (ds === "executive" || ds === "analyst") return ds;
   try {
     const stored = window.localStorage.getItem(DENSITY_STORAGE_KEY);
     if (stored === "executive" || stored === "analyst") return stored;
   } catch {
     // Ignore storage access errors in restricted sandboxes
   }
+  const ds = document.documentElement.dataset.density;
+  if (ds === "executive" || ds === "analyst") return ds;
   return "analyst";
 }
 

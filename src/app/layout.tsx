@@ -1,5 +1,4 @@
 import type { Metadata, Viewport } from "next";
-import Script from "next/script";
 import { GeistSans } from "geist/font/sans";
 import { GeistMono } from "geist/font/mono";
 import "./globals.css";
@@ -10,8 +9,6 @@ export const viewport: Viewport = {
   initialScale: 1,
   maximumScale: 5,
 };
-
-const COMFORT_BOOTSTRAP_SCRIPT = `(function(){try{var d=document.documentElement,t=localStorage.getItem("mas_theme"),m=localStorage.getItem("mas_density");if(t==="washi"||t==="eink")d.dataset.theme=t;if(m==="analyst"||m==="executive")d.dataset.density=m;}catch(e){}})();`;
 
 // Geist is bundled locally via the npm package (next/font/local under the hood):
 // no Google Fonts egress needed at build time.
@@ -42,12 +39,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       suppressHydrationWarning
       className={`${GeistSans.variable} ${GeistMono.variable}`}
     >
-      <body className="antialiased">
-        <Script id="mas-comfort-bootstrap" strategy="beforeInteractive">
-          {COMFORT_BOOTSTRAP_SCRIPT}
-        </Script>
-        {children}
-      </body>
+      <body className="antialiased">{children}</body>
     </html>
   );
 }
