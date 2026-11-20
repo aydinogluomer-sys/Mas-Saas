@@ -1,6 +1,15 @@
 "use client";
 
-import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from "react";
+import {
+  Suspense,
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 
 export interface NavigationState {
@@ -57,9 +66,16 @@ function localHref(anchor: HTMLAnchorElement): string | null {
  * click could show figures captured minutes earlier. Links keep next/link's default (AUTO)
  * prefetch, which stops at the nearest loading boundary instead of rendering the page itself.
  */
+function NavigationSearchCommitObserver({ onCommit }: { onCommit: () => void }) {
+  const searchParams = useSearchParams();
+  useEffect(() => {
+    onCommit();
+  }, [searchParams, onCommit]);
+  return null;
+}
+
 export function NavigationFeedbackProvider({ children }: { children: ReactNode }) {
   const pathname = usePathname();
-  const searchParams = useSearchParams();
   const router = useRouter();
   const [state, setState] = useState<NavigationState>({ pendingHref: null, isNavigating: false, startedAt: null });
   const [skeletonActive, setSkeletonActive] = useState(false);
@@ -121,15 +137,21 @@ export function NavigationFeedbackProvider({ children }: { children: ReactNode }
     setState({ pendingHref: href, isNavigating: true, startedAt: performance.now() });
   }, [clearTimers]);
 
-  useEffect(() => {
+  const commitNavigation = useCallback(() => {
     // The navigation committed — timers and skeleton are no longer needed.
     clearTimers();
     const root = document.querySelector<HTMLElement>("[data-navigation-root]");
     root?.classList.remove("navigation-pending", "navigation-skeleton-active");
     root?.querySelector<HTMLElement>(".instant-navigation-skeleton")?.classList.remove("is-active");
     setSkeletonActive(false);
-    setState((current) => current.isNavigating ? { pendingHref: null, isNavigating: false, startedAt: null } : current);
-  }, [pathname, searchParams, clearTimers]);
+    setState((current) =>
+      current.isNavigating ? { pendingHref: null, isNavigating: false, startedAt: null } : current,
+    );
+  }, [clearTimers]);
+
+  useEffect(() => {
+    commitNavigation();
+  }, [pathname, commitNavigation]);
 
   useEffect(() => clearTimers, [clearTimers]);
 
@@ -172,6 +194,9 @@ export function NavigationFeedbackProvider({ children }: { children: ReactNode }
         <div className="loading-kpis">{Array.from({ length: 4 }, (_, index) => <div className="skeleton-card" key={index}><i /><b /></div>)}</div>
         <div className="skeleton-chart"><i /><i /><i /><i /></div>
       </div>
+      <Suspense fallback={null}>
+        <NavigationSearchCommitObserver onCommit={commitNavigation} />
+      </Suspense>
       {children}
     </div>
   </NavigationContext.Provider>;
