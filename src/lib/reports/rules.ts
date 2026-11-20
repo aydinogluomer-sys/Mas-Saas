@@ -8,6 +8,7 @@ import {
   computeObligationAmounts,
   type MonetaryEpistemicBasis,
   type ReportConfidenceGrade,
+  type SourceCompletenessStatus,
 } from "@/lib/contracts/remediation-contracts";
 import { addDaysISO } from "@/lib/financing/rules";
 import { decimal, money } from "@/lib/money";
@@ -47,7 +48,34 @@ export interface ReportMaturity {
 }
 
 const OPEN = new Set(["unpaid", "partial", "planned", "late"]);
+const CLOSED = new Set(["cancelled", "paid", "cleared", "collected"]);
 const isOpen = (s: string) => OPEN.has(s.trim().toLowerCase());
+const isClosed = (s: string) => CLOSED.has(s.trim().toLowerCase());
+const isCancelled = (s: string) => s.trim().toLowerCase() === "cancelled";
+const REPORT_STALE_THRESHOLD_DAYS = 45;
+
+function isUnverifiedReportCashStatus(status?: SourceCompletenessStatus | null): boolean {
+  return (
+    status === "PARTIAL_MISSING_OPENING" ||
+    status === "LEGACY_UNVERIFIED" ||
+    status === "SCHEMA_INCOMPATIBLE" ||
+    status === "SOURCE_UNAVAILABLE"
+  );
+}
+
+function buildReportStaleWatermark(
+  sourceFreshnessDays: number | null | undefined,
+  sourceId?: string | null,
+): string | null {
+  const srcSuffix = sourceId ? ` · source_id=${sourceId}` : "";
+  if (sourceFreshnessDays === null || sourceFreshnessDays === undefined || !Number.isFinite(sourceFreshnessDays)) {
+    return `[STALE DATA WATERMARK · STALE_SOURCE_WARNING] Geçerli çalışma kitabı içe aktarımı yok (sourceFreshnessDays=null${srcSuffix}) — kaynak tazeliği doğrulanamadı.`;
+  }
+  if (sourceFreshnessDays > REPORT_STALE_THRESHOLD_DAYS) {
+    return `[STALE DATA WATERMARK · STALE_SOURCE_WARNING] Son geçerli çalışma kitabı içe aktarımı ${sourceFreshnessDays} gün eski (> ${REPORT_STALE_THRESHOLD_DAYS} gün eşiği${srcSuffix}) — projeksiyon verisi bayattır.`;
+  }
+  return null;
+}
 
 /**
  * Contract A (`I-012`) pure helper resolving `{ orig, paid, rem }` for a `ReportInstance`.
@@ -116,6 +144,160 @@ function formatReportInstanceAmount(i: ReportInstance): string {
   return fmtTL(rem);
 }
 
+/* ── shared bank/cash & provenance lineage shapes ── */
+
+export type ReportReconciliationState = "ALIGNED" | "MISMATCH" | "UNVERIFIED";
+
+export interface ReportActualBankCashStatus {
+  availableCashTry: number | null;
+  unknownOpeningCount: number;
+  hasVerifiedBankFeed: boolean;
+  reconciledTxCount: number;
+  unmatchedTxCount: number;
+  cashSourceStatus?: SourceCompletenessStatus;
+}
+
+export type MonthlyActualBankCashStatus = ReportActualBankCashStatus;
+
+export interface ReportProvenanceBadge {
+  snapshotId?: string | null;
+  asOfDate?: string | null;
+  businessDateISO?: string | null;
+  confidenceGrade?: ReportConfidenceGrade;
+  workbookStaleDays?: number | null;
+  sourceFreshnessDays?: number | null;
+  sourceWorkbookId?: string | null;
+  source_id?: string | null;
+  lastWorkbookImportAt?: string | null;
+  latestValidImportAt?: string | null;
+  lastWorkbookFilename?: string | null;
+  lastBankTxAt?: string | null;
+  reconciliationAligned?: boolean;
+  reconciliationStatus?: ReportReconciliationState;
+  monetaryBasisByMetric?: Readonly<Record<string, MonetaryEpistemicBasis>>;
+  missingMaterialInputs?: readonly string[];
+  staleDataWatermark?: string | null;
+}
+
+export type MonthlyProvenanceBadge = ReportProvenanceBadge;
+
+function evaluateReportCashAndLineage(
+  asOf: string,
+  act?: ReportActualBankCashStatus | null,
+  prov?: ReportProvenanceBadge | null,
+) {
+  const unverifiedCashStatus = isUnverifiedReportCashStatus(act?.cashSourceStatus);
+  const availableBankCashBasis: MonetaryEpistemicBasis =
+    act == null ||
+    unverifiedCashStatus ||
+    act.unknownOpeningCount > 0 ||
+    act.availableCashTry == null ||
+    !Number.isFinite(act.availableCashTry) ||
+    (!act.hasVerifiedBankFeed &&
+      act.availableCashTry === 0 &&
+      act.cashSourceStatus !== "NO_ACTIVE_ACCOUNTS_VERIFIED")
+      ? (act == null && prov?.monetaryBasisByMetric?.availableBankCash
+          ? prov.monetaryBasisByMetric.availableBankCash
+          : "UNKNOWN")
+      : "ACTUAL";
+
+  const bankReconciledBasis: MonetaryEpistemicBasis =
+    act == null || !act.hasVerifiedBankFeed || act.cashSourceStatus === "SCHEMA_INCOMPATIBLE"
+      ? (act == null && prov?.monetaryBasisByMetric?.bankReconciledFlows
+          ? prov.monetaryBasisByMetric.bankReconciledFlows
+          : "UNKNOWN")
+      : "RECONCILED";
+
+  const monetaryBasisByMetric: Record<string, MonetaryEpistemicBasis> = {
+    availableBankCash: availableBankCashBasis,
+    scheduledOutflows: prov?.monetaryBasisByMetric?.scheduledOutflows ?? "PLANNED",
+    workbookMonthlyCash: prov?.monetaryBasisByMetric?.workbookMonthlyCash ?? "FORECAST",
+    bankReconciledFlows: bankReconciledBasis,
+  };
+
+  const sourceFreshnessDays =
+    prov?.sourceFreshnessDays !== undefined
+      ? prov.sourceFreshnessDays
+      : (prov?.workbookStaleDays ?? null);
+  const sourceWorkbookId = prov?.source_id ?? prov?.sourceWorkbookId ?? null;
+  const latestValidImportAt = prov?.latestValidImportAt ?? prov?.lastWorkbookImportAt ?? null;
+  const businessDateISO = prov?.businessDateISO ?? prov?.asOfDate ?? asOf;
+  const reconciliationAligned = prov?.reconciliationAligned ?? true;
+  const reconciliationStatus: ReportReconciliationState =
+    prov?.reconciliationStatus ??
+    (!reconciliationAligned
+      ? "MISMATCH"
+      : availableBankCashBasis === "UNKNOWN" || bankReconciledBasis === "UNKNOWN"
+        ? "UNVERIFIED"
+        : "ALIGNED");
+
+  const confidenceGrade: ReportConfidenceGrade =
+    prov?.confidenceGrade ??
+    (availableBankCashBasis === "UNKNOWN"
+      ? "UNVERIFIED_CASH_BASIS"
+      : sourceFreshnessDays != null && sourceFreshnessDays > REPORT_STALE_THRESHOLD_DAYS
+        ? "STALE_SOURCE_WARNING"
+        : !reconciliationAligned || bankReconciledBasis === "UNKNOWN" || sourceFreshnessDays === null
+          ? "PARTIAL_MISSING_INPUTS"
+          : "VERIFIED_COMPLETE");
+
+  const staleDataWatermark =
+    prov?.staleDataWatermark !== undefined
+      ? prov.staleDataWatermark
+      : prov != null
+        ? buildReportStaleWatermark(
+            sourceFreshnessDays,
+            sourceWorkbookId ?? prov.lastWorkbookFilename ?? null,
+          )
+        : null;
+
+  const actualCashText =
+    act == null
+      ? null
+      : availableBankCashBasis === "UNKNOWN"
+        ? `[UNKNOWN] Bilinmiyor (${
+            act.unknownOpeningCount > 0
+              ? `FIN-03: ${act.unknownOpeningCount} aktif hesapta açılış bakiyesi tanımsız`
+              : act.cashSourceStatus === "SCHEMA_INCOMPATIBLE"
+                ? "SCHEMA_INCOMPATIBLE: finansal kaynak şeması uyumsuz"
+                : act.cashSourceStatus === "LEGACY_UNVERIFIED"
+                  ? "LEGACY_UNVERIFIED: açılış bütünlüğü doğrulanamadı"
+                  : "doğrulanmış banka/kasa bakiyesi yok"
+          })`
+        : `[ACTUAL] ${fmtTL(act.availableCashTry)}`;
+
+  const bankReconText =
+    act == null
+      ? null
+      : bankReconciledBasis === "UNKNOWN"
+        ? act.cashSourceStatus === "SCHEMA_INCOMPATIBLE"
+          ? "[UNKNOWN] Bilinmiyor (SCHEMA_INCOMPATIBLE — banka ekstresi şeması uyumsuz)"
+          : "[UNKNOWN] Bilinmiyor (banka ekstresi hareketi yok)"
+        : `[RECONCILED] ${act.reconciledTxCount} mutabık · ${act.unmatchedTxCount} eşleşmemiş banka hareketi`;
+
+  const lineageSummaryLine =
+    prov != null
+      ? `Kaynak izi (lineage): as_of=${businessDateISO} · source_id=${sourceWorkbookId ?? "yok"} · latest_valid_import_at=${latestValidImportAt ?? "yok"} · source_freshness_days=${sourceFreshnessDays ?? "null"} · mutabakat=${reconciliationStatus} (aligned=${String(reconciliationAligned)})`
+      : null;
+
+  return {
+    asOf: businessDateISO,
+    businessDateISO,
+    monetaryBasisByMetric,
+    confidenceGrade,
+    sourceFreshnessDays,
+    latestValidImportAt,
+    source_id: sourceWorkbookId,
+    sourceWorkbookId,
+    reconciliationAligned,
+    reconciliationStatus,
+    staleDataWatermark,
+    actualCashText,
+    bankReconText,
+    lineageSummaryLine,
+  };
+}
+
 /* ── 1) daily report ── */
 
 export interface DailyReportInput {
@@ -123,31 +305,68 @@ export interface DailyReportInput {
   overdue: ReportInstance[]; // open instances due < today
   maturities: ReportMaturity[]; // checks + installments due in [today, today+7]
   criticalThreshold: number;
+  cancelled?: ReportInstance[];
+  cancelledCount?: number;
+  cancelledKnownTotal?: number;
+  actualBankCashStatus?: ReportActualBankCashStatus | null;
+  provenance?: ReportProvenanceBadge | null;
 }
 
 export interface DailyReport {
   date: string;
+  asOf: string;
+  businessDateISO: string;
   dueToday: ReportInstance[];
   dueTomorrow: ReportInstance[];
   next7KnownTotal: number;
   next7MissingCount: number;
   overdueCount: number;
   overdueKnownTotal: number;
+  cancelledCount: number;
+  cancelledKnownTotal: number;
   checksNext7: ReportMaturity[];
   criticalItems: ReportInstance[];
   actions: string[];
+  monetaryBasisByMetric: Record<string, MonetaryEpistemicBasis>;
+  confidenceGrade: ReportConfidenceGrade;
+  sourceFreshnessDays: number | null;
+  latestValidImportAt: string | null;
+  source_id: string | null;
+  sourceWorkbookId: string | null;
+  reconciliationAligned: boolean;
+  reconciliationStatus: ReportReconciliationState;
+  staleDataWatermark: string | null;
   bodyMd: string;
 }
 
 export function buildDailyReport(input: DailyReportInput, todayISO: string): DailyReport {
   const tomorrow = addDaysISO(todayISO, 1);
-  const dueToday = input.dueSoon.filter((i) => i.dueDate === todayISO);
-  const dueTomorrow = input.dueSoon.filter((i) => i.dueDate === tomorrow);
-  const { total: next7KnownTotal, missing: next7MissingCount, foreign: next7ForeignCount } = sumKnownInstances(input.dueSoon);
-  const overdueKnown = sumKnownInstances(input.overdue);
+  const cancelledFromLists = [
+    ...input.dueSoon.filter((i) => isCancelled(i.status)),
+    ...input.overdue.filter((i) => isCancelled(i.status)),
+    ...(input.cancelled ?? []),
+  ];
+  const cancelledSum = sumKnownReporting(
+    cancelledFromLists,
+    (i) => resolveReportInstanceAmounts(i).orig,
+    { positiveOnly: true },
+  );
+  const cancelledCount = cancelledFromLists.length + (input.cancelledCount ?? 0);
+  const cancelledKnownTotal = money(
+    decimal(cancelledSum.total).plus(decimal(input.cancelledKnownTotal ?? 0)),
+  );
+
+  const openDueSoon = input.dueSoon.filter((i) => !isClosed(i.status));
+  const openOverdue = input.overdue.filter((i) => !isClosed(i.status));
+
+  const dueToday = openDueSoon.filter((i) => i.dueDate === todayISO);
+  const dueTomorrow = openDueSoon.filter((i) => i.dueDate === tomorrow);
+  const { total: next7KnownTotal, missing: next7MissingCount, foreign: next7ForeignCount } =
+    sumKnownInstances(openDueSoon);
+  const overdueKnown = sumKnownInstances(openOverdue);
   const checksNext7 = input.maturities.filter((m) => m.kind === "check" && m.direction === "outflow");
   // Eşik TRY (`critical_payment_threshold_try`): TRY-dışı kalem eşikle tartılmaz (Tier 1 kuralı).
-  const criticalItems = input.dueSoon.filter((i) => {
+  const criticalItems = openDueSoon.filter((i) => {
     const { rem } = resolveReportInstanceAmounts(i);
     return (
       rem != null &&
@@ -157,9 +376,15 @@ export function buildDailyReport(input: DailyReportInput, todayISO: string): Dai
     );
   });
 
+  const lineage = evaluateReportCashAndLineage(
+    todayISO,
+    input.actualBankCashStatus,
+    input.provenance,
+  );
+
   const actions: string[] = [];
   if (dueToday.length) actions.push(`Bugün ${dueToday.length} ödeme — nakit hazırla`);
-  if (input.overdue.length) actions.push(`${input.overdue.length} geciken kalem — acil kontrol`);
+  if (openOverdue.length) actions.push(`${openOverdue.length} geciken kalem — acil kontrol`);
   if (next7MissingCount) actions.push(`${next7MissingCount} kalemde tutar eksik — kaynağı doğrula`);
   if (next7ForeignCount) actions.push(`${next7ForeignCount} kalem TRY-dışı — toplamda yok, ayrıca değerlendir`);
   if (criticalItems.length) actions.push(`${criticalItems.length} kritik ödeme (≥${fmtTL(input.criticalThreshold)}) — öncelik ver`);
@@ -170,6 +395,15 @@ export function buildDailyReport(input: DailyReportInput, todayISO: string): Dai
     `- ${i.dueDate} · ${i.name} · ${formatReportInstanceAmount(i)}${i.riskLevel !== "none" ? ` · ⚠ ${i.riskLevel}` : ""}`;
   const bodyMd = [
     `# Günlük Rapor — ${todayISO}`,
+    ...(lineage.staleDataWatermark ? [``, `> ${lineage.staleDataWatermark}`] : []),
+    ...(input.actualBankCashStatus
+      ? [
+          ``,
+          `## Fiili Kasa & Banka Mutabakat Durumu (ACTUAL / RECONCILED / UNKNOWN)`,
+          `- fiili kullanılabilir kasa: ${lineage.actualCashText}`,
+          `- banka ekstresi ve mutabakat: ${lineage.bankReconText}`,
+        ]
+      : []),
     ``,
     `## Bugün (${dueToday.length})`,
     ...(dueToday.length ? dueToday.map(line) : ["- yok"]),
@@ -178,21 +412,56 @@ export function buildDailyReport(input: DailyReportInput, todayISO: string): Dai
     ...(dueTomorrow.length ? dueTomorrow.map(line) : ["- yok"]),
     ``,
     `## 7 gün bilinen toplam: ${fmtTL(next7KnownTotal)}${next7MissingCount ? ` · ${next7MissingCount} kalem tutar eksik` : ""}${next7ForeignCount ? ` · ${foreignNote(next7ForeignCount)}` : ""}`,
+    ...(cancelledCount > 0
+      ? [`- İptal edilen (toplam dışı): ${cancelledCount} kalem · ${fmtTL(cancelledKnownTotal)}`]
+      : []),
     ``,
-    `## Geciken (${input.overdue.length}) — bilinen ${fmtTL(overdueKnown.total)}${overdueKnown.foreign ? ` · ${foreignNote(overdueKnown.foreign)}` : ""}`,
-    ...(input.overdue.length ? input.overdue.slice(0, 10).map(line) : ["- yok"]),
+    `## Geciken (${openOverdue.length}) — bilinen ${fmtTL(overdueKnown.total)}${overdueKnown.foreign ? ` · ${foreignNote(overdueKnown.foreign)}` : ""}`,
+    ...(openOverdue.length ? openOverdue.slice(0, 10).map(line) : ["- yok"]),
     ``,
     `## 7 gün içindeki çekler (${checksNext7.length})`,
     ...(checksNext7.length ? checksNext7.map((m) => `- ${m.dueDate} · ${m.label} · ${fmtTL(m.amount)}`) : ["- yok"]),
+    ...(input.provenance
+      ? [
+          ``,
+          `## Veri kaynağı ve güven derecesi`,
+          `- Güven derecesi: ${lineage.confidenceGrade}`,
+          ...(lineage.lineageSummaryLine ? [`- ${lineage.lineageSummaryLine}`] : []),
+          ...(input.provenance.missingMaterialInputs?.length
+            ? input.provenance.missingMaterialInputs.map((m) => `- ${m}`)
+            : []),
+        ]
+      : []),
     ``,
     `## Aksiyon listesi`,
     ...actions.map((a) => `- [ ] ${a}`),
   ].join("\n");
 
   return {
-    date: todayISO, dueToday, dueTomorrow, next7KnownTotal, next7MissingCount,
-    overdueCount: input.overdue.length, overdueKnownTotal: overdueKnown.total,
-    checksNext7, criticalItems, actions, bodyMd,
+    date: todayISO,
+    asOf: lineage.asOf,
+    businessDateISO: lineage.businessDateISO,
+    dueToday,
+    dueTomorrow,
+    next7KnownTotal,
+    next7MissingCount,
+    overdueCount: openOverdue.length,
+    overdueKnownTotal: overdueKnown.total,
+    cancelledCount,
+    cancelledKnownTotal,
+    checksNext7,
+    criticalItems,
+    actions,
+    monetaryBasisByMetric: lineage.monetaryBasisByMetric,
+    confidenceGrade: lineage.confidenceGrade,
+    sourceFreshnessDays: lineage.sourceFreshnessDays,
+    latestValidImportAt: lineage.latestValidImportAt,
+    source_id: lineage.source_id,
+    sourceWorkbookId: lineage.sourceWorkbookId,
+    reconciliationAligned: lineage.reconciliationAligned,
+    reconciliationStatus: lineage.reconciliationStatus,
+    staleDataWatermark: lineage.staleDataWatermark,
+    bodyMd,
   };
 }
 
@@ -204,11 +473,15 @@ export interface WeeklyReportInput {
   installmentsMonth: ReportMaturity[]; // loan installments due in current month
   riskDays: Array<{ date: string; cluster: boolean; critical: boolean; large: boolean; knownSum: number; count: number }>;
   largeThreshold: number;
+  actualBankCashStatus?: ReportActualBankCashStatus | null;
+  provenance?: ReportProvenanceBadge | null;
 }
 
 export interface WeeklyReport {
   from: string;
   to: string;
+  asOf: string;
+  businessDateISO: string;
   knownTotal: number;
   missingCount: number;
   largest: ReportInstance[];
@@ -217,13 +490,23 @@ export interface WeeklyReport {
   installmentLoadMonth: number;
   riskDays: WeeklyReportInput["riskDays"];
   actions: string[];
+  monetaryBasisByMetric: Record<string, MonetaryEpistemicBasis>;
+  confidenceGrade: ReportConfidenceGrade;
+  sourceFreshnessDays: number | null;
+  latestValidImportAt: string | null;
+  source_id: string | null;
+  sourceWorkbookId: string | null;
+  reconciliationAligned: boolean;
+  reconciliationStatus: ReportReconciliationState;
+  staleDataWatermark: string | null;
   bodyMd: string;
 }
 
 export function buildWeeklyReport(input: WeeklyReportInput, todayISO: string): WeeklyReport {
   const to = addDaysISO(todayISO, 7);
-  const { total: knownTotal, missing: missingCount } = sumKnownInstances(input.weekInstances);
-  const largest = [...input.weekInstances]
+  const openWeekInstances = input.weekInstances.filter((i) => !isClosed(i.status));
+  const { total: knownTotal, missing: missingCount } = sumKnownInstances(openWeekInstances);
+  const largest = [...openWeekInstances]
     .filter((i) => {
       const { rem } = resolveReportInstanceAmounts(i);
       return (
@@ -245,6 +528,12 @@ export function buildWeeklyReport(input: WeeklyReportInput, todayISO: string): W
     input.installmentsMonth.filter((m) => m.direction !== "inflow"),
   ).total;
 
+  const lineage = evaluateReportCashAndLineage(
+    todayISO,
+    input.actualBankCashStatus,
+    input.provenance,
+  );
+
   const actions: string[] = [];
   if (input.riskDays.length) actions.push(`${input.riskDays.length} riskli gün — yığılma/kritik kontrol`);
   if (missingCount) actions.push(`${missingCount} kalemde tutar eksik`);
@@ -254,6 +543,15 @@ export function buildWeeklyReport(input: WeeklyReportInput, todayISO: string): W
 
   const bodyMd = [
     `# Haftalık Rapor — ${todayISO} → ${to}`,
+    ...(lineage.staleDataWatermark ? [``, `> ${lineage.staleDataWatermark}`] : []),
+    ...(input.actualBankCashStatus
+      ? [
+          ``,
+          `## Fiili Kasa & Banka Mutabakat Durumu (ACTUAL / RECONCILED / UNKNOWN)`,
+          `- fiili kullanılabilir kasa: ${lineage.actualCashText}`,
+          `- banka ekstresi ve mutabakat: ${lineage.bankReconText}`,
+        ]
+      : []),
     ``,
     `## Bilinen ödeme yükü: ${fmtTL(knownTotal)}${missingCount ? ` · ${missingCount} eksik` : ""}`,
     `- çek yükü (hafta): ${fmtTL(checkLoad)}`,
@@ -267,32 +565,51 @@ export function buildWeeklyReport(input: WeeklyReportInput, todayISO: string): W
     ...(input.riskDays.length
       ? input.riskDays.map((d) => `- ${d.date} · ${d.count} kalem · ${fmtTL(d.knownSum)}${d.critical ? " · KRİTİK" : ""}${d.cluster ? " · yığılma" : ""}`)
       : ["- yok"]),
+    ...(input.provenance
+      ? [
+          ``,
+          `## Veri kaynağı ve güven derecesi`,
+          `- Güven derecesi: ${lineage.confidenceGrade}`,
+          ...(lineage.lineageSummaryLine ? [`- ${lineage.lineageSummaryLine}`] : []),
+          ...(input.provenance.missingMaterialInputs?.length
+            ? input.provenance.missingMaterialInputs.map((m) => `- ${m}`)
+            : []),
+        ]
+      : []),
     ``,
     `## Hazırlık aksiyonları`,
     ...actions.map((a) => `- [ ] ${a}`),
   ].join("\n");
 
   return {
-    from: todayISO, to, knownTotal, missingCount, largest,
-    checkLoad, installmentLoadWeek, installmentLoadMonth, riskDays: input.riskDays, actions, bodyMd,
+    from: todayISO,
+    to,
+    asOf: lineage.asOf,
+    businessDateISO: lineage.businessDateISO,
+    knownTotal,
+    missingCount,
+    largest,
+    checkLoad,
+    installmentLoadWeek,
+    installmentLoadMonth,
+    riskDays: input.riskDays,
+    actions,
+    monetaryBasisByMetric: lineage.monetaryBasisByMetric,
+    confidenceGrade: lineage.confidenceGrade,
+    sourceFreshnessDays: lineage.sourceFreshnessDays,
+    latestValidImportAt: lineage.latestValidImportAt,
+    source_id: lineage.source_id,
+    sourceWorkbookId: lineage.sourceWorkbookId,
+    reconciliationAligned: lineage.reconciliationAligned,
+    reconciliationStatus: lineage.reconciliationStatus,
+    staleDataWatermark: lineage.staleDataWatermark,
+    bodyMd,
   };
 }
 
 /* ── 3) monthly report ── */
 
 export interface ConcentrationRow { key: string; amount: number }
-export interface MonthlyActualBankCashStatus {
-  availableCashTry: number | null;
-  unknownOpeningCount: number;
-  hasVerifiedBankFeed: boolean;
-  reconciledTxCount: number;
-  unmatchedTxCount: number;
-}
-export interface MonthlyProvenanceBadge {
-  confidenceGrade?: ReportConfidenceGrade;
-  workbookStaleDays?: number | null;
-  missingMaterialInputs?: readonly string[];
-}
 export interface MonthlyReportInput {
   monthStart: string;
   knownTotal: number;
@@ -319,9 +636,19 @@ export interface MonthlyReportInput {
 
 export interface MonthlyReport {
   monthStart: string;
+  asOf: string;
+  businessDateISO: string;
   paidUnpaidSplit: { paid: number; remaining: number };
   debtServiceKnown: number;
   monetaryBasisByMetric: Record<string, MonetaryEpistemicBasis>;
+  confidenceGrade: ReportConfidenceGrade;
+  sourceFreshnessDays: number | null;
+  latestValidImportAt: string | null;
+  source_id: string | null;
+  sourceWorkbookId: string | null;
+  reconciliationAligned: boolean;
+  reconciliationStatus: ReportReconciliationState;
+  staleDataWatermark: string | null;
   bodyMd: string;
 }
 
@@ -345,52 +672,31 @@ export function buildMonthlyReport(input: MonthlyReportInput): MonthlyReport {
   const distBlock = (title: string, rows: ConcentrationRow[]) =>
     [`### ${title}`, ...(rows.length ? rows.slice(0, 5).map((r) => `- ${r.key}: ${fmtTL(r.amount)}`) : ["- yok"])];
 
-  const availableBankCashBasis: MonetaryEpistemicBasis =
-    act == null || act.unknownOpeningCount > 0 || act.availableCashTry == null
-      ? "UNKNOWN"
-      : "ACTUAL";
-  const bankReconciledBasis: MonetaryEpistemicBasis =
-    act == null || !act.hasVerifiedBankFeed ? "UNKNOWN" : "RECONCILED";
-
-  const monetaryBasisByMetric: Record<string, MonetaryEpistemicBasis> = {
-    availableBankCash: availableBankCashBasis,
-    scheduledOutflows: "PLANNED",
-    workbookMonthlyCash: "FORECAST",
-    bankReconciledFlows: bankReconciledBasis,
-  };
-
-  const actualCashText =
-    act == null
-      ? null
-      : availableBankCashBasis === "UNKNOWN"
-        ? `[UNKNOWN] Bilinmiyor (${act.unknownOpeningCount > 0 ? `FIN-03: ${act.unknownOpeningCount} aktif hesapta açılış bakiyesi tanımsız` : "doğrulanmış banka/kasa bakiyesi yok"})`
-        : `[ACTUAL] ${fmtTL(act.availableCashTry)}`;
-
-  const bankReconText =
-    act == null
-      ? null
-      : bankReconciledBasis === "UNKNOWN"
-        ? "[UNKNOWN] Bilinmiyor (banka ekstresi hareketi yok)"
-        : `[RECONCILED] ${act.reconciledTxCount} mutabık · ${act.unmatchedTxCount} eşleşmemiş banka hareketi`;
+  const lineage = evaluateReportCashAndLineage(input.monthStart, act, prov);
+  const availableBankCashBasis = lineage.monetaryBasisByMetric.availableBankCash;
 
   const qualityLines: string[] = [...input.dataQualityIssues];
-  if (prov?.confidenceGrade) {
-    qualityLines.push(`Güven derecesi: ${prov.confidenceGrade}`);
-  }
-  if (prov?.missingMaterialInputs?.length) {
-    for (const m of prov.missingMaterialInputs) {
-      if (!qualityLines.includes(m)) qualityLines.push(m);
+  if (prov) {
+    qualityLines.push(`Güven derecesi: ${lineage.confidenceGrade}`);
+    if (lineage.lineageSummaryLine) {
+      qualityLines.push(lineage.lineageSummaryLine);
+    }
+    if (prov.missingMaterialInputs?.length) {
+      for (const m of prov.missingMaterialInputs) {
+        if (!qualityLines.includes(m)) qualityLines.push(m);
+      }
     }
   }
 
   const bodyMd = [
     `# Aylık Rapor — ${input.monthStart.slice(0, 7)}`,
+    ...(lineage.staleDataWatermark ? [``, `> ${lineage.staleDataWatermark}`] : []),
     ``,
     ...(act
       ? [
           `## Fiili Kasa & Banka Mutabakat Durumu (ACTUAL / RECONCILED / UNKNOWN)`,
-          `- fiili kullanılabilir kasa: ${actualCashText}`,
-          `- banka ekstresi ve mutabakat: ${bankReconText}`,
+          `- fiili kullanılabilir kasa: ${lineage.actualCashText}`,
+          `- banka ekstresi ve mutabakat: ${lineage.bankReconText}`,
           ``,
         ]
       : []),
@@ -440,9 +746,19 @@ export function buildMonthlyReport(input: MonthlyReportInput): MonthlyReport {
 
   return {
     monthStart: input.monthStart,
+    asOf: lineage.asOf,
+    businessDateISO: lineage.businessDateISO,
     paidUnpaidSplit: { paid: input.paidKnown, remaining: input.knownRemaining },
     debtServiceKnown,
-    monetaryBasisByMetric,
+    monetaryBasisByMetric: lineage.monetaryBasisByMetric,
+    confidenceGrade: lineage.confidenceGrade,
+    sourceFreshnessDays: lineage.sourceFreshnessDays,
+    latestValidImportAt: lineage.latestValidImportAt,
+    source_id: lineage.source_id,
+    sourceWorkbookId: lineage.sourceWorkbookId,
+    reconciliationAligned: lineage.reconciliationAligned,
+    reconciliationStatus: lineage.reconciliationStatus,
+    staleDataWatermark: lineage.staleDataWatermark,
     bodyMd,
   };
 }

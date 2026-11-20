@@ -251,7 +251,7 @@ async function findCandidateEvidenceForGroup(
               p.name as party_name,
               exists (
                 select 1 from public.management_journal_entries je
-                 where je.source_table = 'invoices' and je.source_id = i.id and je.status = 'posted'
+                 where je.source_type = 'invoice' and je.source_id = i.id and je.status = 'posted'
               ) as has_je
          from public.invoices i
          left join public.parties p on p.id = i.party_id
@@ -294,7 +294,7 @@ async function findCandidateEvidenceForGroup(
               p.name as party_name,
               exists (
                 select 1 from public.management_journal_entries je
-                 where je.source_table = 'invoices' and je.source_id = i.id and je.status = 'posted'
+                 where je.source_type = 'invoice' and je.source_id = i.id and je.status = 'posted'
               ) as has_je
          from public.invoices i
          left join public.parties p on p.id = i.party_id

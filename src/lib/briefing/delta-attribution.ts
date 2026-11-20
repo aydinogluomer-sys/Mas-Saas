@@ -17,9 +17,24 @@
  */
 
 import type { Pool, PoolClient } from "pg";
+import type {
+  MonetaryEpistemicBasis,
+  SourceCompletenessStatus,
+} from "@/lib/contracts/remediation-contracts";
 import { decimal, money, moneyOrNull } from "@/lib/money";
 
 type Queryable = Pick<Pool, "query"> | Pick<PoolClient, "query">;
+
+export function isUnverifiedCashSourceStatus(
+  status?: SourceCompletenessStatus | null,
+): boolean {
+  return (
+    status === "PARTIAL_MISSING_OPENING" ||
+    status === "LEGACY_UNVERIFIED" ||
+    status === "SCHEMA_INCOMPATIBLE" ||
+    status === "SOURCE_UNAVAILABLE"
+  );
+}
 
 export type OvernightDeltaCategory =
   | "realized_bank_inflows"
@@ -61,6 +76,9 @@ export interface OvernightDeltaAttribution {
   hasVerifiedBankFeed: boolean;
   hasFxSnapshots: boolean;
   identityUnmeasurable: boolean;
+  cashSourceStatus?: SourceCompletenessStatus;
+  schemaIncompatibleSources?: string[];
+  monetaryBasisByMetric: Record<string, MonetaryEpistemicBasis>;
   previousAvailableCash: number | null;
   currentAvailableCash: number | null;
   deltaAvailableCash: number | null;
@@ -92,6 +110,8 @@ export interface BuildOvernightDeltaInput {
   hasPriorSnapshot?: boolean;
   hasVerifiedBankFeed?: boolean;
   hasFxSnapshots?: boolean;
+  cashSourceStatus?: SourceCompletenessStatus;
+  schemaIncompatibleSources?: readonly string[];
   previousAvailableCash: number | null;
   currentAvailableCash: number | null;
   previousLiquidityGap7: number | null;
@@ -149,6 +169,43 @@ export function buildOvernightDeltaAttribution(
   input: BuildOvernightDeltaInput,
 ): OvernightDeltaAttribution {
   const currency = (input.currency ?? "TRY").trim().toUpperCase();
+  const schemaIncompatibleSources = [...(input.schemaIncompatibleSources ?? [])];
+  const unverifiedSource =
+    isUnverifiedCashSourceStatus(input.cashSourceStatus) ||
+    schemaIncompatibleSources.length > 0;
+  const hasVerifiedBankFeed =
+    Boolean(input.hasVerifiedBankFeed ?? true) &&
+    input.cashSourceStatus !== "SCHEMA_INCOMPATIBLE" &&
+    !schemaIncompatibleSources.includes("bank_transactions");
+  const hasFxSnapshots = Boolean(input.hasFxSnapshots ?? true);
+
+  const effectivePreviousCash =
+    !unverifiedSource &&
+    input.previousAvailableCash !== null &&
+    input.previousAvailableCash !== undefined &&
+    Number.isFinite(input.previousAvailableCash) &&
+    !(
+      input.hasVerifiedBankFeed === false &&
+      input.previousAvailableCash === 0 &&
+      input.cashSourceStatus !== "NO_ACTIVE_ACCOUNTS_VERIFIED"
+    )
+      ? input.previousAvailableCash
+      : null;
+
+  const effectiveCurrentCash =
+    !unverifiedSource &&
+    input.currentAvailableCash !== null &&
+    input.currentAvailableCash !== undefined &&
+    Number.isFinite(input.currentAvailableCash) &&
+    !(
+      input.hasVerifiedBankFeed === false &&
+      input.currentAvailableCash === 0 &&
+      input.cashSourceStatus !== "NO_ACTIVE_ACCOUNTS_VERIFIED"
+    )
+      ? input.currentAvailableCash
+      : null;
+
+  const cashKnown = effectivePreviousCash !== null && effectiveCurrentCash !== null;
   const items: OvernightDeltaComponentItem[] = [];
 
   let inflowsDec = decimal(0);
@@ -156,15 +213,17 @@ export function buildOvernightDeltaAttribution(
     const mag = decimal(row.amount ?? 0).abs();
     if (mag.lte(0)) continue;
     inflowsDec = inflowsDec.plus(mag);
-    items.push({
-      category: "realized_bank_inflows",
-      label: row.description?.trim() || "Banka Tahsilatı",
-      counterpartyName: row.counterpartyName ?? null,
-      amountSigned: money(mag.toString()),
-      eventDate: row.txnDate,
-      sourceTable: "bank_transactions",
-      sourceId: row.id ?? null,
-    });
+    if (hasVerifiedBankFeed && cashKnown) {
+      items.push({
+        category: "realized_bank_inflows",
+        label: row.description?.trim() || "Banka Tahsilatı",
+        counterpartyName: row.counterpartyName ?? null,
+        amountSigned: money(mag.toString()),
+        eventDate: row.txnDate,
+        sourceTable: "bank_transactions",
+        sourceId: row.id ?? null,
+      });
+    }
   }
 
   let outflowsDec = decimal(0); // negative or zero
@@ -173,15 +232,17 @@ export function buildOvernightDeltaAttribution(
     if (mag.lte(0)) continue;
     const signed = mag.times(-1);
     outflowsDec = outflowsDec.plus(signed);
-    items.push({
-      category: "realized_bank_outflows",
-      label: row.description?.trim() || "Banka Ödemesi / Masrafı",
-      counterpartyName: row.counterpartyName ?? null,
-      amountSigned: money(signed.toString()),
-      eventDate: row.txnDate,
-      sourceTable: "bank_transactions",
-      sourceId: row.id ?? null,
-    });
+    if (hasVerifiedBankFeed && cashKnown) {
+      items.push({
+        category: "realized_bank_outflows",
+        label: row.description?.trim() || "Banka Ödemesi / Masrafı",
+        counterpartyName: row.counterpartyName ?? null,
+        amountSigned: money(signed.toString()),
+        eventDate: row.txnDate,
+        sourceTable: "bank_transactions",
+        sourceId: row.id ?? null,
+      });
+    }
   }
 
   let newObligationsDec = decimal(0);
@@ -216,23 +277,11 @@ export function buildOvernightDeltaAttribution(
     });
   }
 
-  const hasVerifiedBankFeed = input.hasVerifiedBankFeed ?? true;
-  const hasFxSnapshots = input.hasFxSnapshots ?? true;
-  const cashKnown =
-    input.previousAvailableCash !== null && input.currentAvailableCash !== null;
-
+  // F-15 & RG-10: Never fabricate 0 TL realized bank inflows/outflows when cash basis is unknown or bank feed is unverified.
   const realizedBankInflows: number | null =
-    hasVerifiedBankFeed && cashKnown
-      ? money(inflowsDec.toString())
-      : hasVerifiedBankFeed && (input.bankInflows.length > 0 || input.bankOutflows.length > 0)
-        ? money(inflowsDec.toString())
-        : null;
+    hasVerifiedBankFeed && cashKnown ? money(inflowsDec.toString()) : null;
   const realizedBankOutflows: number | null =
-    hasVerifiedBankFeed && cashKnown
-      ? money(outflowsDec.toString())
-      : hasVerifiedBankFeed && (input.bankInflows.length > 0 || input.bankOutflows.length > 0)
-        ? money(outflowsDec.toString())
-        : null;
+    hasVerifiedBankFeed && cashKnown ? money(outflowsDec.toString()) : null;
   const newlyEntered7dObligations = money(newObligationsDec.toString());
   const slippedPromisesAndOverdueAr = money(slippedDec.toString());
 
@@ -243,7 +292,7 @@ export function buildOvernightDeltaAttribution(
   let fxAndAdjustmentDec: ReturnType<typeof decimal> | null = null;
 
   if (cashKnown) {
-    const deltaCashDec = decimal(input.currentAvailableCash!).minus(decimal(input.previousAvailableCash!));
+    const deltaCashDec = decimal(effectiveCurrentCash).minus(decimal(effectivePreviousCash));
     deltaAvailableCash = money(deltaCashDec.toString());
     if (hasVerifiedBankFeed) {
       fxAndAdjustmentDec =
@@ -266,11 +315,16 @@ export function buildOvernightDeltaAttribution(
   }
 
   const deltaLiquidityGap7 =
-    input.previousLiquidityGap7 !== null && input.currentLiquidityGap7 !== null
+    !unverifiedSource &&
+    input.previousLiquidityGap7 !== null &&
+    input.currentLiquidityGap7 !== null &&
+    Number.isFinite(input.previousLiquidityGap7) &&
+    Number.isFinite(input.currentLiquidityGap7)
       ? money(decimal(input.currentLiquidityGap7).minus(decimal(input.previousLiquidityGap7)).toString())
       : null;
 
-  const identityUnmeasurable = !cashKnown || !hasVerifiedBankFeed || fxAndAdjustmentDec === null;
+  const identityUnmeasurable =
+    unverifiedSource || !cashKnown || !hasVerifiedBankFeed || fxAndAdjustmentDec === null;
   let cashDeltaIdentityDiff = 0;
   let cashDeltaIdentityBalanced = false;
   if (!identityUnmeasurable && deltaAvailableCash !== null && fxAndAdjustmentDec !== null) {
@@ -280,6 +334,21 @@ export function buildOvernightDeltaAttribution(
     cashDeltaIdentityBalanced = diffDec.abs().lte(decimal("0.005"));
   }
 
+  const resolvedCashSourceStatus: SourceCompletenessStatus =
+    input.cashSourceStatus ??
+    (schemaIncompatibleSources.length > 0
+      ? "SCHEMA_INCOMPATIBLE"
+      : cashKnown
+        ? "COMPLETE"
+        : "SOURCE_UNAVAILABLE");
+
+  const monetaryBasisByMetric: Record<string, MonetaryEpistemicBasis> = {
+    availableBankCash: effectiveCurrentCash !== null ? "ACTUAL" : "UNKNOWN",
+    bankReconciledFlows: hasVerifiedBankFeed && cashKnown ? "RECONCILED" : "UNKNOWN",
+    scheduledOutflows: "PLANNED",
+    slippedReceivables: "PLANNED",
+  };
+
   return {
     fromDateISO: input.fromDateISO,
     toDateISO: input.toDateISO,
@@ -288,11 +357,14 @@ export function buildOvernightDeltaAttribution(
     hasVerifiedBankFeed,
     hasFxSnapshots,
     identityUnmeasurable,
-    previousAvailableCash: input.previousAvailableCash,
-    currentAvailableCash: input.currentAvailableCash,
+    cashSourceStatus: resolvedCashSourceStatus,
+    schemaIncompatibleSources,
+    monetaryBasisByMetric,
+    previousAvailableCash: effectivePreviousCash,
+    currentAvailableCash: effectiveCurrentCash,
     deltaAvailableCash,
-    previousLiquidityGap7: input.previousLiquidityGap7,
-    currentLiquidityGap7: input.currentLiquidityGap7,
+    previousLiquidityGap7: unverifiedSource ? null : input.previousLiquidityGap7,
+    currentLiquidityGap7: unverifiedSource ? null : input.currentLiquidityGap7,
     deltaLiquidityGap7,
     realizedBankInflows,
     realizedBankOutflows,
@@ -351,6 +423,7 @@ export async function loadOvernightDeltaAttribution(
   const fxRates = options.fxRates;
   const multiCurrency = Boolean(fxRates && currency === "TRY");
   const defaultFromISO = addDaysISO(todayISO, -1);
+  const schemaIncompatibleSet = new Set<string>();
 
   // 1. Son kaydedilmiş cfo_briefing raporunu kontrol et
   const prevRepRes = await client
@@ -374,7 +447,10 @@ export async function loadOvernightDeltaAttribution(
       [todayISO],
     )
     .catch((err: unknown) => {
-      if (isMissingSchemaError(err)) return { rows: [], rowCount: 0 };
+      if (isMissingSchemaError(err)) {
+        schemaIncompatibleSet.add("reports");
+        return { rows: [], rowCount: 0 };
+      }
       throw err;
     });
 
@@ -409,40 +485,10 @@ export async function loadOvernightDeltaAttribution(
       [currency, fromDateISO, todayISO, multiCurrency],
     )
     .catch((err: unknown) => {
-      const code = (err as { code?: string } | null)?.code;
-      if (code === "42703") {
-        return client
-          .query<{
-            id: string;
-            txn_date: string;
-            amount: string;
-            currency: string;
-            description: string | null;
-            counterparty_name: string | null;
-          }>(
-            `select
-               bt.id::text,
-               to_char(bt.txn_date, 'YYYY-MM-DD') as txn_date,
-               bt.amount,
-               ca.currency,
-               bt.description,
-               null::text as counterparty_name
-             from public.bank_transactions bt
-             join public.bank_accounts ba on ba.cash_account_id = bt.bank_account_id
-             join public.cash_accounts ca on ca.id = ba.cash_account_id
-             where ($4::boolean or ca.currency = $1)
-               and bt.status <> 'ignored'
-               and bt.txn_date > $2::date
-               and bt.txn_date <= $3::date
-             order by bt.txn_date, bt.id`,
-            [currency, fromDateISO, todayISO, multiCurrency],
-          )
-          .catch((e2: unknown) => {
-            if (isMissingSchemaError(e2)) return { rows: [], rowCount: 0 };
-            throw e2;
-          });
+      if (isMissingSchemaError(err)) {
+        schemaIncompatibleSet.add("bank_transactions");
+        return { rows: [], rowCount: 0 };
       }
-      if (isMissingSchemaError(err)) return { rows: [], rowCount: 0 };
       throw err;
     });
 
@@ -766,7 +812,11 @@ export async function loadOvernightDeltaAttribution(
       [currency, todayISO],
     )
     .catch((err: unknown) => {
-      if (isMissingSchemaError(err)) return { rows: [] as Array<Record<string, never>> };
+      if (isMissingSchemaError(err)) {
+        schemaIncompatibleSet.add("cash_accounts");
+        schemaIncompatibleSet.add("bank_transactions");
+        return { rows: [] as Array<Record<string, never>> };
+      }
       throw err;
     });
 
@@ -779,28 +829,44 @@ export async function loadOvernightDeltaAttribution(
       }
     | undefined;
 
+  const hasCashOrBankSchemaDrift =
+    schemaIncompatibleSet.has("bank_transactions") ||
+    schemaIncompatibleSet.has("cash_accounts");
+
   const hasVerifiedBankFeed =
-    feedMeta && feedMeta.bank_tx_count !== undefined
+    !hasCashOrBankSchemaDrift &&
+    (feedMeta && feedMeta.bank_tx_count !== undefined
       ? Number(feedMeta.bank_tx_count ?? 0) > 0
-      : bankRes.rows.length > 0;
+      : bankInflows.length > 0 || bankOutflows.length > 0);
   const hasFxSnapshots =
     feedMeta && feedMeta.fx_count !== undefined
       ? Number(feedMeta.fx_count ?? 0) > 0
       : Boolean(fxRates && Object.keys(fxRates).some((k) => k !== "TRY"));
 
-  const currentAvailableCash =
-    options.currentAvailableCash !== undefined
+  const unknownOpeningCount = Number(feedMeta?.unknown_opening_n ?? 0);
+  const currentAvailableCash = hasCashOrBankSchemaDrift
+    ? null
+    : options.currentAvailableCash !== undefined
       ? options.currentAvailableCash
-      : feedMeta && Number(feedMeta.unknown_opening_n ?? 0) === 0
+      : feedMeta && unknownOpeningCount === 0
         ? moneyOrNull(feedMeta.derived_cash ?? null)
         : null;
-  const currentLiquidityGap7 = options.currentLiquidityGap7 ?? null;
+  const currentLiquidityGap7 = hasCashOrBankSchemaDrift ? null : (options.currentLiquidityGap7 ?? null);
+
+  const cashSourceStatus: SourceCompletenessStatus = hasCashOrBankSchemaDrift
+    ? "SCHEMA_INCOMPATIBLE"
+    : unknownOpeningCount > 0
+      ? "PARTIAL_MISSING_OPENING"
+      : currentAvailableCash === null
+        ? "SOURCE_UNAVAILABLE"
+        : "COMPLETE";
 
   const rawPrevCash = multiCurrency
     ? (prevRep?.meta?.consolidatedCashTry ?? prevRep?.meta?.availableCash)
     : prevRep?.meta?.availableCash;
-  const previousAvailableCash: number | null =
-    prevRep?.meta && rawPrevCash !== undefined
+  const previousAvailableCash: number | null = hasCashOrBankSchemaDrift
+    ? null
+    : prevRep?.meta && rawPrevCash !== undefined
       ? moneyOrNull(rawPrevCash as number | string | null)
       : currentAvailableCash !== null && hasVerifiedBankFeed
         ? money(decimal(currentAvailableCash).minus(netBankMovementsDec).toString())
@@ -809,8 +875,9 @@ export async function loadOvernightDeltaAttribution(
   const rawPrevGap7 = multiCurrency
     ? (prevRep?.meta?.consolidatedGap7Try ?? prevRep?.meta?.liquidityGap7)
     : prevRep?.meta?.liquidityGap7;
-  const previousLiquidityGap7: number | null =
-    prevRep?.meta && rawPrevGap7 !== undefined
+  const previousLiquidityGap7: number | null = hasCashOrBankSchemaDrift
+    ? null
+    : prevRep?.meta && rawPrevGap7 !== undefined
       ? moneyOrNull(rawPrevGap7 as number | string | null)
       : null;
 
@@ -851,6 +918,8 @@ export async function loadOvernightDeltaAttribution(
     hasPriorSnapshot,
     hasVerifiedBankFeed,
     hasFxSnapshots,
+    cashSourceStatus,
+    schemaIncompatibleSources: [...schemaIncompatibleSet],
     previousAvailableCash,
     currentAvailableCash,
     previousLiquidityGap7,
@@ -887,11 +956,18 @@ export function formatOvernightDeltaBridgeMd(
   options: { masked?: boolean } = {},
 ): string {
   const masked = Boolean(options.masked);
-  const bankNullLabel = !delta.hasVerifiedBankFeed
-    ? "Bilinmiyor (banka ekstresi yok)"
+  const isSchemaDrifted = delta.cashSourceStatus === "SCHEMA_INCOMPATIBLE";
+  const cashNullLabel = isSchemaDrifted
+    ? "Bilinmiyor (SCHEMA_INCOMPATIBLE — şema uyumsuz)"
     : "Bilinmiyor (FIN-03 açılış eksik)";
-  const fxNullLabel =
-    delta.previousAvailableCash == null || delta.currentAvailableCash == null
+  const bankNullLabel = isSchemaDrifted
+    ? "Bilinmiyor (SCHEMA_INCOMPATIBLE — şema uyumsuz)"
+    : !delta.hasVerifiedBankFeed
+      ? "Bilinmiyor (banka ekstresi yok)"
+      : "Bilinmiyor (FIN-03 açılış eksik)";
+  const fxNullLabel = isSchemaDrifted
+    ? "Bilinmiyor (SCHEMA_INCOMPATIBLE — şema uyumsuz)"
+    : delta.previousAvailableCash == null || delta.currentAvailableCash == null
       ? "Bilinmiyor (FIN-03 açılış eksik)"
       : "Bilinmiyor (banka ekstresi yok)";
   const lines: string[] = [];
@@ -900,14 +976,14 @@ export function formatOvernightDeltaBridgeMd(
     `- Nakit Değişimi (ΔCash): ${fmtSignedTl(
       delta.deltaAvailableCash,
       masked,
-      "Bilinmiyor (FIN-03 açılış eksik)",
+      cashNullLabel,
     )} (Önceki: ${
       delta.previousAvailableCash == null
-        ? "Bilinmiyor (FIN-03 açılış eksik)"
+        ? cashNullLabel
         : fmtSignedTl(delta.previousAvailableCash, masked)
     } → Bugün: ${
       delta.currentAvailableCash == null
-        ? "Bilinmiyor (FIN-03 açılış eksik)"
+        ? cashNullLabel
         : fmtSignedTl(delta.currentAvailableCash, masked)
     })`,
   );
@@ -930,7 +1006,7 @@ export function formatOvernightDeltaBridgeMd(
     `- 7 Günlük Likidite Açığı Değişimi (ΔGap7): ${fmtSignedTl(
       delta.deltaLiquidityGap7,
       masked,
-      "Bilinmiyor (FIN-03 açılış eksik)",
+      cashNullLabel,
     )}`,
   );
   return lines.join("\n");

@@ -199,7 +199,14 @@ for (const { module, tab, role } of CLICK_PATHS) {
     const seen = watch(page);
     await useRole(page, role);
     await page.goto(module, { waitUntil: "domcontentloaded" });
-    const link = page.locator(`a[href="${tab}"]`).first();
+    let link = page.locator(`a[href="${tab}"]:visible`).first();
+    if ((await link.count()) === 0) {
+      const allRoutesToggle = page.locator("summary.module-all-routes-summary").first();
+      if (await allRoutesToggle.isVisible()) {
+        await allRoutesToggle.click();
+      }
+      link = page.locator(`a[href="${tab}"]:visible`).first();
+    }
     await expect(link, `${tab} bağlantısı ${role} için görünmüyor`).toBeVisible({ timeout: 30_000 });
     await link.click();
     await page.waitForURL(`**${tab}`, { timeout: 30_000 });

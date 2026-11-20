@@ -17,7 +17,7 @@
 // Kullanım:
 //   MAS_OFFDEVICE_BACKUP_DIR=... pnpm exec tsx scripts/ops/offdevice-copy.ts [--dump <yol>] [--dry-run] [--prune]
 import {
-  closeSync, existsSync, fsyncSync, mkdirSync, openSync, readdirSync, renameSync, statSync, unlinkSync, writeFileSync,
+  existsSync, mkdirSync, readFileSync, readdirSync, statSync, unlinkSync,
 } from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
@@ -26,10 +26,33 @@ import { readEnvLocal } from "../db/app-url";
 import {
   DEFAULT_RETENTION, classifyOffDeviceTarget, copyToTargetVerified, detectBackupPathOverlap, executePrune, formatBytes,
   listDumps, newestDump, normalizeBackupPath, planPrune, pruneUnverifiedQuarantinedDumps, sha256OfFile,
+  writeBufferAtomic,
   type CopyVerifyResult,
   type OffDeviceCopyRecord,
+  type OffDeviceTargetKind,
   OFFDEVICE_RECORD_KIND,
 } from "./backup-lib";
+
+export const LATEST_OFFDEVICE_POINTER_FILENAME = "latest-verified-offdevice.json";
+export const LATEST_OFFDEVICE_POINTER_KIND = "mas-latest-verified-offdevice-pointer-v1";
+
+export interface LatestVerifiedOffDevicePointer {
+  pointerKind: typeof LATEST_OFFDEVICE_POINTER_KIND;
+  updatedAt: string;
+  copiedAt: string;
+  dumpFileName: string;
+  destPath: string;
+  destBytes: number;
+  destSha256: string;
+  destTocEntryCount: number;
+  offDeviceReceiptFileName: string;
+  offDeviceReceiptPath: string;
+  offDeviceReceiptSha256: string;
+  sidecarsCopied: string[];
+  targetKind: OffDeviceTargetKind;
+  offDeviceSatisfied: boolean;
+  targetEvidence: string;
+}
 
 function safeEnvLocal(): Record<string, string> {
   try { return readEnvLocal(); } catch { return {}; }
@@ -65,9 +88,34 @@ export function assertDistinctOffDeviceTarget(targetDir: string, sourceDir: stri
   }
 }
 
+function hasIntactPriorVerifiedOffDeviceCopy(destPath: string): boolean {
+  const recordPath = `${destPath}.offdevice.json`;
+  if (!existsSync(destPath) || !existsSync(recordPath)) return false;
+  try {
+    const parsed = JSON.parse(readFileSync(recordPath, "utf8")) as Partial<OffDeviceCopyRecord>;
+    if (
+      parsed.receiptKind !== OFFDEVICE_RECORD_KIND ||
+      parsed.sha256VerifiedAtDestination !== true ||
+      parsed.bytesVerifiedAtDestination !== true ||
+      parsed.destRestoreListable !== true ||
+      typeof parsed.destSha256 !== "string" ||
+      typeof parsed.destBytes !== "number" ||
+      parsed.destBytes <= 0
+    ) {
+      return false;
+    }
+    const diskBytes = statSync(destPath).size;
+    if (diskBytes !== parsed.destBytes) return false;
+    return sha256OfFile(destPath) === parsed.destSha256;
+  } catch {
+    return false;
+  }
+}
+
 /**
- * Doğrulaması düşen hedef kopyayı, olası `.tmp-*` kısmi dosyaları ve geçersiz `.offdevice.json`
- * kalıntısını temizler; kaynak dizine veya kaynak dosyaya ASLA dokunmaz.
+ * Doğrulaması düşen hedef kopyayı, olası `.tmp-*` / `.aborted-*` kısmi dosyaları ve geçersiz
+ * `.offdevice.json` kalıntısını temizler; kaynak dizine, kaynak dosyaya ya da diskte bütünlüğü
+ * hâlâ sağlam olan ÖNCEKİ doğrulanmış hedef kopyaya ASLA dokunmaz (`F-10`).
  */
 export function cleanupFailedOffDeviceCopy(
   targetDir: string,
@@ -78,20 +126,22 @@ export function cleanupFailedOffDeviceCopy(
   if (detectBackupPathOverlap(targetDir, sourceDir) !== null) return;
 
   if (destPath && normalizeBackupPath(destPath).canonical !== normalizeBackupPath(sourcePath).canonical) {
-    try {
-      if (existsSync(destPath)) unlinkSync(destPath);
-    } catch { /* zaten yok */ }
-    const staleRecord = `${destPath}.offdevice.json`;
-    try {
-      if (existsSync(staleRecord)) unlinkSync(staleRecord);
-    } catch { /* zaten yok */ }
+    if (!hasIntactPriorVerifiedOffDeviceCopy(destPath)) {
+      try {
+        if (existsSync(destPath)) unlinkSync(destPath);
+      } catch { /* zaten yok */ }
+      const staleRecord = `${destPath}.offdevice.json`;
+      try {
+        if (existsSync(staleRecord)) unlinkSync(staleRecord);
+      } catch { /* zaten yok */ }
+    }
   }
 
   if (existsSync(targetDir)) {
     const baseName = path.basename(sourcePath);
     try {
       for (const name of readdirSync(targetDir)) {
-        if (name.startsWith(baseName) && name.includes(".tmp-")) {
+        if (name.startsWith(baseName) && (name.includes(".tmp-") || name.includes(".aborted-"))) {
           try { unlinkSync(path.join(targetDir, name)); } catch { /* zaten yok */ }
         }
       }
@@ -99,13 +149,86 @@ export function cleanupFailedOffDeviceCopy(
   }
 }
 
-/** Kopyanın kaydı: YALNIZ sha256 + boyut + pg_restore --list doğrulandıktan sonra hedefte yazılır. */
-export function writeOffDeviceRecord(result: CopyVerifyResult): string {
+/**
+ * Kanonik `latest-verified-offdevice.json` işaretçi manifestini YALNIZ `copyToTargetVerified` ve
+ * `<dump>.offdevice.json` makbuzu başarıyla doğrulandıktan sonra geri alınabilir (rollback-safe)
+ * atomik yazımla günceller (`F-10` / `F-11`).
+ */
+export function writeLatestVerifiedOffDevicePointer(
+  result: CopyVerifyResult,
+  recordPath: string,
+  opts: { renameImpl?: (oldPath: string, newPath: string) => void } = {},
+): string | null {
   if (
     result.sha256Match !== true ||
     result.bytesMatch !== true ||
     result.destRestoreListable !== true ||
-    (result.destTocEntryCount !== null && result.destTocEntryCount <= 0) ||
+    result.destTocEntryCount === null ||
+    result.destTocEntryCount <= 0 ||
+    !existsSync(result.destPath) ||
+    !existsSync(recordPath)
+  ) {
+    return null;
+  }
+
+  const targetDir = path.dirname(result.destPath);
+  const pointerPath = path.join(targetDir, LATEST_OFFDEVICE_POINTER_FILENAME);
+
+  // F-11 Dürüstlük Koruması: hedefte fiziksel olarak doğrulanmış (`offDeviceSatisfied: true`) bir
+  // işaretçi zaten varsa ve yeni koşu `LOCAL_STANDIN` (`offDeviceSatisfied: false`) ise kanonik
+  // fiziksel işaretçiyi asla yerel stand-in ile ezme.
+  if (!result.classification.offDeviceSatisfied && existsSync(pointerPath)) {
+    try {
+      const existing = JSON.parse(readFileSync(pointerPath, "utf8")) as Partial<LatestVerifiedOffDevicePointer>;
+      if (
+        existing.offDeviceSatisfied === true &&
+        typeof existing.destPath === "string" &&
+        existsSync(existing.destPath)
+      ) {
+        return null;
+      }
+    } catch {
+      /* bozuk işaretçi yeni geçerli kayıtla güncellenebilir */
+    }
+  }
+
+  const pointerPayload: LatestVerifiedOffDevicePointer = {
+    pointerKind: LATEST_OFFDEVICE_POINTER_KIND,
+    updatedAt: new Date().toISOString(),
+    copiedAt: result.copiedAt,
+    dumpFileName: path.basename(result.destPath),
+    destPath: result.destPath,
+    destBytes: result.destBytes,
+    destSha256: result.destSha256,
+    destTocEntryCount: result.destTocEntryCount,
+    offDeviceReceiptFileName: path.basename(recordPath),
+    offDeviceReceiptPath: recordPath,
+    offDeviceReceiptSha256: sha256OfFile(recordPath),
+    sidecarsCopied: result.sidecarsCopied,
+    targetKind: result.classification.kind,
+    offDeviceSatisfied: result.classification.offDeviceSatisfied,
+    targetEvidence: result.classification.evidence,
+  };
+
+  writeBufferAtomic(
+    pointerPath,
+    Buffer.from(`${JSON.stringify(pointerPayload, null, 2)}\n`, "utf8"),
+    { renameImpl: opts.renameImpl },
+  );
+  return pointerPath;
+}
+
+/** Kopyanın kaydı: YALNIZ sha256 + boyut + pg_restore --list doğrulandıktan sonra hedefte yazılır. */
+export function writeOffDeviceRecord(
+  result: CopyVerifyResult,
+  opts: { renameImpl?: (oldPath: string, newPath: string) => void; updatePointer?: boolean } = {},
+): string {
+  if (
+    result.sha256Match !== true ||
+    result.bytesMatch !== true ||
+    result.destRestoreListable !== true ||
+    result.destTocEntryCount === null ||
+    result.destTocEntryCount <= 0 ||
     !result.sourceSha256 ||
     result.destSha256 !== result.sourceSha256 ||
     result.destBytes <= 0 ||
@@ -138,10 +261,6 @@ export function writeOffDeviceRecord(result: CopyVerifyResult): string {
   }
 
   const recordPath = `${result.destPath}.offdevice.json`;
-  // TİP AÇIKÇA YAZILDI: alan adları backup-lib.ts'teki TEK tanımdan gelir. Bir alanı burada
-  // yeniden adlandırmak artık derleme hatası verir — `fixture-cleanup.ts` ile sessizce
-  // ayrışan alan adı hatası (targetSha256Verified vs sha256VerifiedAtDestination) bu yüzden
-  // tekrar edemez.
   const record: OffDeviceCopyRecord = {
     receiptKind: OFFDEVICE_RECORD_KIND,
     copiedAt: result.copiedAt,
@@ -161,20 +280,17 @@ export function writeOffDeviceRecord(result: CopyVerifyResult): string {
     targetEvidence: result.classification.evidence,
     durability: result.durability,
   };
-  // writeStage07Receipt'in şema doğrulaması bu kayda uymadığı için doğrudan atomik yazım:
-  // aynı temp+fsync+rename yolunu kullanan küçük bir sarmalayıcı.
-  const text = JSON.stringify(record, null, 2);
-  const temp = `${recordPath}.tmp-${process.pid}-${Date.now()}`;
-  try {
-    writeFileSync(temp, text, "utf8");
-    const fd = openSync(temp, "r+");
-    try { fsyncSync(fd); } finally { closeSync(fd); }
-    if (existsSync(recordPath)) unlinkSync(recordPath);
-    renameSync(temp, recordPath);
-  } catch (err) {
-    try { if (existsSync(temp)) unlinkSync(temp); } catch { /* zaten yok */ }
-    throw err;
+
+  writeBufferAtomic(
+    recordPath,
+    Buffer.from(`${JSON.stringify(record, null, 2)}\n`, "utf8"),
+    { renameImpl: opts.renameImpl },
+  );
+
+  if (opts.updatePointer !== false) {
+    writeLatestVerifiedOffDevicePointer(result, recordPath, { renameImpl: opts.renameImpl });
   }
+
   return recordPath;
 }
 
@@ -261,6 +377,7 @@ async function main(): Promise<void> {
   }
 
   const recordPath = writeOffDeviceRecord(result);
+  const pointerPath = path.join(path.dirname(result.destPath), LATEST_OFFDEVICE_POINTER_FILENAME);
 
   if (process.argv.includes("--prune")) {
     const plan = planPrune(listDumps(classification.targetDir), DEFAULT_RETENTION);
@@ -277,6 +394,9 @@ async function main(): Promise<void> {
   console.log(`hedefte pg_restore --list : ${result.destRestoreListable ? `${result.destTocEntryCount} TOC girdisi` : "okunamadı"}`);
   console.log(`yan dosyalar     : ${result.sidecarsCopied.length > 0 ? result.sidecarsCopied.join(", ") : "yok"}`);
   console.log(`kayıt            : ${recordPath} (sha256 ${sha256OfFile(recordPath).slice(0, 16)}…)`);
+  if (existsSync(pointerPath)) {
+    console.log(`kanonik işaretçi : ${pointerPath}`);
+  }
   console.log("");
   console.log(`OFF_DEVICE TOOLING         = VERIFIED`);
   console.log(

@@ -15,29 +15,66 @@ import type {
   FinancialReportSnapshotContract,
   MonetaryEpistemicBasis,
   ReportConfidenceGrade,
+  SourceCompletenessStatus,
 } from "@/lib/contracts/remediation-contracts";
 import { decimal, money, moneyOrNull, rateOrNull } from "@/lib/money";
 
 export const REPORT_CALCULATION_VERSION = "mas-reports-v2.1";
 export const WORKBOOK_STALE_THRESHOLD_DAYS = 45;
 
+export type ReportReconciliationStatus = "ALIGNED" | "MISMATCH" | "UNVERIFIED";
+
+export function isUnverifiedCashBasisStatus(
+  status?: SourceCompletenessStatus | null,
+): boolean {
+  return (
+    status === "PARTIAL_MISSING_OPENING" ||
+    status === "LEGACY_UNVERIFIED" ||
+    status === "SCHEMA_INCOMPATIBLE" ||
+    status === "SOURCE_UNAVAILABLE"
+  );
+}
+
+export function buildStaleDataWatermark(
+  sourceFreshnessDays: number | null | undefined,
+  options: { sourceId?: string | null; thresholdDays?: number } = {},
+): string | null {
+  const threshold = options.thresholdDays ?? WORKBOOK_STALE_THRESHOLD_DAYS;
+  const srcSuffix = options.sourceId ? ` · source_id=${options.sourceId}` : "";
+  if (sourceFreshnessDays === null || sourceFreshnessDays === undefined || !Number.isFinite(sourceFreshnessDays)) {
+    return `[STALE DATA WATERMARK · STALE_SOURCE_WARNING] Geçerli çalışma kitabı içe aktarımı yok (sourceFreshnessDays=null${srcSuffix}) — kaynak tazeliği doğrulanamadı.`;
+  }
+  if (sourceFreshnessDays > threshold) {
+    return `[STALE DATA WATERMARK · STALE_SOURCE_WARNING] Son geçerli çalışma kitabı içe aktarımı ${sourceFreshnessDays} gün eski (> ${threshold} gün eşiği${srcSuffix}) — projeksiyon verisi bayattır.`;
+  }
+  return null;
+}
+
 export interface ReportProvenance {
   snapshotId: string;
   asOfDate: string;
+  businessDateISO: string;
   asOfAt: string;
   schemaVersion: string | null;
   migrationCount: number | null;
+  sourceWorkbookId: string | null;
+  source_id: string | null;
   lastWorkbookImportAt: string | null;
+  latestValidImportAt: string | null;
   lastWorkbookFilename: string | null;
   workbookStaleDays: number | null;
   lastBankTxAt: string | null;
   contentSha256: string;
   /** Contract E (`FinancialReportSnapshotContract`) provenance & confidence metadata */
   calculationVersion: string;
-  sourceFreshnessDays?: number | null;
+  sourceFreshnessDays: number | null;
+  isStaleSource: boolean;
+  staleDataWatermark: string | null;
+  cashSourceStatus?: SourceCompletenessStatus;
   monetaryBasisByMetric: Record<string, MonetaryEpistemicBasis>;
   missingMaterialInputs: string[];
   reconciliationAligned?: boolean;
+  reconciliationStatus: ReportReconciliationStatus;
   controlAlertsOpenCount?: number;
   confidenceGrade: ReportConfidenceGrade;
 }
@@ -103,6 +140,8 @@ export interface BoardFinancialPackage {
   generatedAtISO: string;
   fxRatesAsOf: string | null;
   unknownOpeningAccountCount?: number;
+  cashSourceStatus?: SourceCompletenessStatus;
+  schemaIncompatibleSources?: string[];
   provenance?: ReportProvenance;
   executiveSummary: {
     consolidatedCashTry: number | null;
@@ -166,6 +205,8 @@ export interface EvaluateContractEInput {
   hasVerifiedBankFeed: boolean;
   workbookStaleDays: number | null;
   hasValidWorkbookImport: boolean;
+  cashSourceStatus?: SourceCompletenessStatus;
+  schemaIncompatibleSources?: readonly string[];
   missingPaymentAmountCount?: number;
   reconciliationAligned?: boolean;
   controlAlertsOpenCount?: number;
@@ -176,18 +217,23 @@ export function evaluateReportContractE(input: EvaluateContractEInput): {
   monetaryBasisByMetric: Record<string, MonetaryEpistemicBasis>;
   missingMaterialInputs: string[];
   reconciliationAligned: boolean;
+  reconciliationStatus: ReportReconciliationStatus;
   controlAlertsOpenCount: number;
   confidenceGrade: ReportConfidenceGrade;
 } {
   const unknownOpenings = input.unknownOpeningAccountCount;
   const knownOpenings = input.knownOpeningAccountCount;
+  const unverifiedCashStatus =
+    isUnverifiedCashBasisStatus(input.cashSourceStatus) ||
+    (input.schemaIncompatibleSources?.length ?? 0) > 0;
   const availableBankCashBasis: MonetaryEpistemicBasis =
-    unknownOpenings != null && unknownOpenings === 0 && (knownOpenings ?? 0) > 0
+    !unverifiedCashStatus && unknownOpenings != null && unknownOpenings === 0 && (knownOpenings ?? 0) > 0
       ? "ACTUAL"
       : "UNKNOWN";
-  const bankReconciledFlowsBasis: MonetaryEpistemicBasis = input.hasVerifiedBankFeed
-    ? "RECONCILED"
-    : "UNKNOWN";
+  const bankReconciledFlowsBasis: MonetaryEpistemicBasis =
+    input.hasVerifiedBankFeed && input.cashSourceStatus !== "SCHEMA_INCOMPATIBLE"
+      ? "RECONCILED"
+      : "UNKNOWN";
 
   const monetaryBasisByMetric: Record<string, MonetaryEpistemicBasis> = {
     availableBankCash: availableBankCashBasis,
@@ -197,6 +243,12 @@ export function evaluateReportContractE(input: EvaluateContractEInput): {
   };
 
   const missingMaterialInputs: string[] = [];
+  if (
+    input.cashSourceStatus === "SCHEMA_INCOMPATIBLE" ||
+    (input.schemaIncompatibleSources?.length ?? 0) > 0
+  ) {
+    missingMaterialInputs.push("SCHEMA_INCOMPATIBLE: Finansal kaynak şeması uyumsuz");
+  }
   if (unknownOpenings != null && unknownOpenings > 0) {
     missingMaterialInputs.push(
       `FIN-03: Nakit hesap açılış bakiyesi eksik (${unknownOpenings} aktif hesap)`,
@@ -231,6 +283,12 @@ export function evaluateReportContractE(input: EvaluateContractEInput): {
     missingMaterialInputs.push("Finansal mutabakat farkı mevcut");
   }
 
+  const reconciliationStatus: ReportReconciliationStatus = !reconciliationAligned
+    ? "MISMATCH"
+    : availableBankCashBasis === "UNKNOWN" || !input.hasVerifiedBankFeed
+      ? "UNVERIFIED"
+      : "ALIGNED";
+
   const isStaleSource =
     input.workbookStaleDays != null && input.workbookStaleDays > WORKBOOK_STALE_THRESHOLD_DAYS;
 
@@ -250,6 +308,7 @@ export function evaluateReportContractE(input: EvaluateContractEInput): {
     monetaryBasisByMetric,
     missingMaterialInputs,
     reconciliationAligned,
+    reconciliationStatus,
     controlAlertsOpenCount: Math.max(0, input.controlAlertsOpenCount ?? 0),
     confidenceGrade,
   };
@@ -280,6 +339,10 @@ export interface LoadReportProvenanceOptions {
   asOfAt?: string;
   unknownOpeningAccountCount?: number;
   knownOpeningAccountCount?: number;
+  cashSourceStatus?: SourceCompletenessStatus;
+  schemaIncompatibleSources?: readonly string[];
+  sourceWorkbookId?: string | null;
+  source_id?: string | null;
   missingPaymentAmountCount?: number;
   reconciliationAligned?: boolean;
   controlAlertsOpenCount?: number;
@@ -295,12 +358,15 @@ export async function loadReportProvenance(
   const contentSha256 = computeContentSha256(options.contentForHash ?? `${snapshotId}:${asOfDateISO}:${asOfAt}`);
 
   if (!pool || typeof pool.query !== "function") {
+    const fallbackSourceId = options.sourceWorkbookId ?? options.source_id ?? null;
     const evaluated = evaluateReportContractE({
       unknownOpeningAccountCount: options.unknownOpeningAccountCount ?? null,
       knownOpeningAccountCount: options.knownOpeningAccountCount ?? null,
       hasVerifiedBankFeed: false,
       workbookStaleDays: null,
       hasValidWorkbookImport: false,
+      cashSourceStatus: options.cashSourceStatus,
+      schemaIncompatibleSources: options.schemaIncompatibleSources,
       missingPaymentAmountCount: options.missingPaymentAmountCount,
       reconciliationAligned: options.reconciliationAligned,
       controlAlertsOpenCount: options.controlAlertsOpenCount,
@@ -308,15 +374,22 @@ export async function loadReportProvenance(
     return {
       snapshotId,
       asOfDate: asOfDateISO,
+      businessDateISO: asOfDateISO,
       asOfAt,
       schemaVersion: null,
       migrationCount: null,
+      sourceWorkbookId: fallbackSourceId,
+      source_id: fallbackSourceId,
       lastWorkbookImportAt: null,
+      latestValidImportAt: null,
       lastWorkbookFilename: null,
       workbookStaleDays: null,
       lastBankTxAt: null,
       contentSha256,
       sourceFreshnessDays: null,
+      isStaleSource: true,
+      staleDataWatermark: buildStaleDataWatermark(null, { sourceId: fallbackSourceId }),
+      cashSourceStatus: options.cashSourceStatus,
       ...evaluated,
     };
   }
@@ -324,6 +397,13 @@ export async function loadReportProvenance(
   const needCashAccountsProbe =
     options.unknownOpeningAccountCount === undefined &&
     options.knownOpeningAccountCount === undefined;
+
+  type ProvenanceWbRow = {
+    last_wb_id?: string | null;
+    last_wb_at: string | null;
+    last_wb_date: string | null;
+    last_wb_name: string | null;
+  };
 
   const [schemaRes, wbRes, btRes, cashDiagRes] = await Promise.all([
     pool
@@ -342,8 +422,9 @@ export async function loadReportProvenance(
           .catch(() => ({ rows: [] as Array<{ migration_count: number | string | null; latest_version: string | null }> }));
       }),
     pool
-      .query<{ last_wb_at: string | null; last_wb_date: string | null; last_wb_name: string | null }>(
-        `select to_char(imported_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') as last_wb_at,
+      .query<ProvenanceWbRow>(
+        `select id::text as last_wb_id,
+                to_char(imported_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') as last_wb_at,
                 to_char((imported_at at time zone 'Europe/Istanbul')::date, 'YYYY-MM-DD') as last_wb_date,
                 original_filename as last_wb_name
            from public.valid_workbook_imports
@@ -353,8 +434,9 @@ export async function loadReportProvenance(
       .catch(async (err: unknown) => {
         if (!isIgnorableProvenanceError(err)) throw err;
         return pool
-          .query<{ last_wb_at: string | null; last_wb_date: string | null; last_wb_name: string | null }>(
-            `select to_char(sw.imported_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') as last_wb_at,
+          .query<ProvenanceWbRow>(
+            `select sw.id::text as last_wb_id,
+                    to_char(sw.imported_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') as last_wb_at,
                     to_char((sw.imported_at at time zone 'Europe/Istanbul')::date, 'YYYY-MM-DD') as last_wb_date,
                     sw.original_filename as last_wb_name
                from public.source_workbooks sw
@@ -369,7 +451,7 @@ export async function loadReportProvenance(
           )
           .catch((fallbackErr: unknown) => {
             if (isIgnorableProvenanceError(fallbackErr)) {
-              return { rows: [] as Array<{ last_wb_at: string | null; last_wb_date: string | null; last_wb_name: string | null }> };
+              return { rows: [] as ProvenanceWbRow[] };
             }
             throw fallbackErr;
           });
@@ -417,6 +499,10 @@ export async function loadReportProvenance(
     typeof schemaRow?.latest_version === "string" && schemaRow.latest_version.length > 0
       ? schemaRow.latest_version
       : null;
+  const sourceWorkbookId =
+    typeof wbRow?.last_wb_id === "string" && wbRow.last_wb_id.length > 0
+      ? wbRow.last_wb_id
+      : (options.sourceWorkbookId ?? options.source_id ?? null);
   const lastWorkbookImportAt =
     typeof wbRow?.last_wb_at === "string" && wbRow.last_wb_at.length > 0 ? wbRow.last_wb_at : null;
   const lastWorkbookFilename =
@@ -458,23 +544,38 @@ export async function loadReportProvenance(
     hasVerifiedBankFeed: lastBankTxAt !== null,
     workbookStaleDays,
     hasValidWorkbookImport: lastWorkbookImportAt !== null,
+    cashSourceStatus: options.cashSourceStatus,
+    schemaIncompatibleSources: options.schemaIncompatibleSources,
     missingPaymentAmountCount: options.missingPaymentAmountCount,
     reconciliationAligned: options.reconciliationAligned,
     controlAlertsOpenCount: options.controlAlertsOpenCount,
   });
 
+  const isStaleSource =
+    workbookStaleDays === null || workbookStaleDays > WORKBOOK_STALE_THRESHOLD_DAYS;
+  const staleDataWatermark = buildStaleDataWatermark(workbookStaleDays, {
+    sourceId: sourceWorkbookId ?? lastWorkbookFilename,
+  });
+
   return {
     snapshotId,
     asOfDate: asOfDateISO,
+    businessDateISO: asOfDateISO,
     asOfAt,
     schemaVersion,
     migrationCount,
+    sourceWorkbookId,
+    source_id: sourceWorkbookId,
     lastWorkbookImportAt,
+    latestValidImportAt: lastWorkbookImportAt,
     lastWorkbookFilename,
     workbookStaleDays,
     lastBankTxAt,
     contentSha256,
     sourceFreshnessDays: workbookStaleDays,
+    isStaleSource,
+    staleDataWatermark,
+    cashSourceStatus: options.cashSourceStatus,
     ...evaluated,
   };
 }
@@ -509,10 +610,11 @@ function escapeHtml(raw: string): string {
 export async function loadBoardFinancialPackage(
   pool: Pool,
   asOf: string,
-): Promise<BoardFinancialPackage> {
+): Promise<BoardFinancialPackage & { provenance: ReportProvenance }> {
   const horizonEnd = addDaysISO(asOf, 91);
+  const schemaIncompatibleSet = new Set<string>();
 
-  const [fxRes, cashRes, isRes, bsRes, wcRes, liqRes, invRes, facRes, covRes] =
+  const [fxRes, cashRes, btMetaRes, isRes, bsRes, wcRes, liqRes, invRes, facRes, covRes] =
     await Promise.all([
       pool
         .query<{ base_currency: string; rate: string; rate_date: string }>(
@@ -552,7 +654,23 @@ export async function loadBoardFinancialPackage(
         )
         .catch((err: unknown) => {
           if (isMissingRelation(err)) {
+            schemaIncompatibleSet.add("cash_accounts");
             return { rows: [] as Array<{ currency: string; bal: string | null; known_n: number; unknown_opening_n: number }> };
+          }
+          throw err;
+        }),
+      pool
+        .query<{ last_bt_at: string | null }>(
+          `select to_char(max(txn_date), 'YYYY-MM-DD') as last_bt_at
+             from public.bank_transactions
+            where status <> 'ignored'
+              and txn_date <= $1::date`,
+          [asOf],
+        )
+        .catch((err: unknown) => {
+          if (isMissingRelation(err)) {
+            schemaIncompatibleSet.add("bank_transactions");
+            return { rows: [] as Array<{ last_bt_at: string | null }> };
           }
           throw err;
         }),
@@ -744,9 +862,14 @@ export async function loadBoardFinancialPackage(
     (sum, c) => sum + Number(c.known_n ?? 0),
     0,
   );
+  const lastBtAt = btMetaRes.rows[0]?.last_bt_at;
+  const hasVerifiedBankFeed =
+    !schemaIncompatibleSet.has("bank_transactions") &&
+    typeof lastBtAt === "string" &&
+    lastBtAt.length > 0;
   let cashKnown = false;
   let cashDec = decimal(0);
-  if (unknownOpeningAccountCount === 0) {
+  if (unknownOpeningAccountCount === 0 && !schemaIncompatibleSet.has("cash_accounts")) {
     for (const c of cashRes.rows) {
       if (c.known_n === 0) continue;
       const rate = fxMap.get(c.currency.toUpperCase());
@@ -758,8 +881,18 @@ export async function loadBoardFinancialPackage(
       cashDec = cashDec.plus(decimal(c.bal).times(decimal(rate)));
     }
   }
+  const cashSchemaDrifted =
+    schemaIncompatibleSet.has("cash_accounts") ||
+    schemaIncompatibleSet.has("bank_transactions");
+  const cashSourceStatus: SourceCompletenessStatus = cashSchemaDrifted
+    ? "SCHEMA_INCOMPATIBLE"
+    : unknownOpeningAccountCount > 0
+      ? "PARTIAL_MISSING_OPENING"
+      : !cashKnown || (cashDec.eq(0) && !hasVerifiedBankFeed)
+        ? "SOURCE_UNAVAILABLE"
+        : "COMPLETE";
   const consolidatedCashTry =
-    unknownOpeningAccountCount > 0 || !cashKnown ? null : money(cashDec.toString());
+    cashSourceStatus !== "COMPLETE" ? null : money(cashDec.toString());
 
   const isRow = isRes.rows[0];
   const incomeStatement: BoardIncomeStatementLine[] = [
@@ -946,11 +1079,14 @@ export async function loadBoardFinancialPackage(
 
   const wc = wcRes.rows[0];
   const generatedAtISO = new Date().toISOString();
+  const schemaIncompatibleSources = [...schemaIncompatibleSet];
   const basePackage: BoardFinancialPackage = {
     asOf,
     generatedAtISO,
     fxRatesAsOf,
     unknownOpeningAccountCount,
+    cashSourceStatus,
+    schemaIncompatibleSources,
     executiveSummary: {
       consolidatedCashTry,
       netSalesTry: moneyOrNull(isRow?.net_sales_try),
@@ -987,7 +1123,9 @@ export async function loadBoardFinancialPackage(
   const provenance = await loadReportProvenance(pool, asOf, {
     asOfAt: generatedAtISO,
     unknownOpeningAccountCount,
-    knownOpeningAccountCount,
+    knownOpeningAccountCount: consolidatedCashTry === null ? 0 : knownOpeningAccountCount,
+    cashSourceStatus,
+    schemaIncompatibleSources,
     reconciliationAligned: bsBalanced,
     controlAlertsOpenCount: covenantBreachCount,
     contentForHash: JSON.stringify({
@@ -1007,9 +1145,18 @@ export async function loadBoardFinancialPackage(
   };
 }
 
-function fmtCashOrFin03(val: number | null | undefined, unknownOpeningCount?: number): string {
+function fmtCashOrFin03(
+  val: number | null | undefined,
+  unknownOpeningCount?: number,
+  cashSourceStatus?: SourceCompletenessStatus,
+): string {
   if (val == null) {
-    return (unknownOpeningCount ?? 0) > 0 ? "Bilinmiyor (FIN-03 açılış eksik)" : "—";
+    if (cashSourceStatus === "SCHEMA_INCOMPATIBLE") {
+      return "Bilinmiyor (SCHEMA_INCOMPATIBLE — şema uyumsuz)";
+    }
+    return (unknownOpeningCount ?? 0) > 0
+      ? "Bilinmiyor (FIN-03 açılış eksik)"
+      : "Bilinmiyor (doğrulanmış banka/kasa bakiyesi yok)";
   }
   return fmtTl(val);
 }
@@ -1019,15 +1166,22 @@ export function renderBoardPackMarkdown(pack: BoardFinancialPackage): string {
   const prov = pack.provenance;
   const lines: string[] = [];
   lines.push(`# YÖNETİM KURULU VE BANKA FİNANSAL PAKETİ — ${pack.asOf}`);
-  lines.push(`TCMB Kur Bazı: ${pack.fxRatesAsOf ?? "Yerel TRY"}`);
+  lines.push(`TCMB Kur Bazı: ${pack.fxRatesAsOf ?? "Yerel TRY"} · İş Günü (As-Of): ${prov?.businessDateISO ?? pack.asOf}`);
   if (prov) {
+    if (prov.staleDataWatermark) {
+      lines.push(`> ${prov.staleDataWatermark}`);
+    }
     const staleNote =
       prov.workbookStaleDays != null
         ? `${prov.workbookStaleDays} gün eski`
         : "yok";
+    const basisEntries = Object.entries(prov.monetaryBasisByMetric)
+      .map(([k, v]) => `${k}=${v}`)
+      .join(" · ");
     lines.push(
-      `Veri Kaynağı Kanıtı: snapshot=${prov.snapshotId.slice(0, 8)} · şema=${prov.schemaVersion ?? "—"} · sürüm=${prov.calculationVersion} · güven=${prov.confidenceGrade} · son Excel=${staleNote} · son ekstre=${prov.lastBankTxAt ?? "yok"}`,
+      `Veri Kaynağı Kanıtı: snapshot=${prov.snapshotId.slice(0, 8)} · as_of=${prov.asOfDate} · şema=${prov.schemaVersion ?? "—"} · sürüm=${prov.calculationVersion} · güven=${prov.confidenceGrade} · source_id=${prov.source_id ?? "yok"} · son_ithalat=${prov.latestValidImportAt ?? "yok"} · son Excel=${staleNote} · son ekstre=${prov.lastBankTxAt ? `${prov.lastBankTxAt} [RECONCILED]` : "yok [UNKNOWN]"} · mutabakat=${prov.reconciliationStatus} (aligned=${String(prov.reconciliationAligned ?? true)})`,
     );
+    lines.push(`Epistemik Taksonomi (monetaryBasisByMetric): ${basisEntries}`);
     if (prov.missingMaterialInputs.length > 0) {
       lines.push(`Veri Kısıtları: ${prov.missingMaterialInputs.join(" · ")}`);
     }
@@ -1035,15 +1189,15 @@ export function renderBoardPackMarkdown(pack: BoardFinancialPackage): string {
   lines.push("");
   lines.push("## 1. YÖNETİCİ ÖZETİ (EXECUTIVE SUMMARY)");
   lines.push(
-    `- Konsolide Hazır Değerler (Kasa + Banka) [${s.consolidatedCashTry == null ? "UNKNOWN" : "ACTUAL"}]: ${fmtCashOrFin03(s.consolidatedCashTry, pack.unknownOpeningAccountCount)}`,
+    `- Konsolide Hazır Değerler (Kasa + Banka) [${s.consolidatedCashTry == null ? "UNKNOWN" : "ACTUAL"}]: ${fmtCashOrFin03(s.consolidatedCashTry, pack.unknownOpeningAccountCount, pack.cashSourceStatus)}`,
   );
   lines.push(
-    `- 13 Haftalık En Düşük Kasa Projeksiyonu [${s.worst13WeekCashTry == null ? "UNKNOWN" : "FORECAST"}]: ${fmtCashOrFin03(s.worst13WeekCashTry, pack.unknownOpeningAccountCount)}`,
+    `- 13 Haftalık En Düşük Kasa Projeksiyonu [${s.worst13WeekCashTry == null ? "UNKNOWN" : "FORECAST"}]: ${fmtCashOrFin03(s.worst13WeekCashTry, pack.unknownOpeningAccountCount, pack.cashSourceStatus)}`,
   );
   lines.push(`- TDHP Net Satışlar: ${fmtTl(s.netSalesTry)}`);
   lines.push(`- Yönetim FAVÖK (EBITDA): ${fmtTl(s.managementEbitdaTry)}`);
   lines.push(`- Dönem Net Kârı / Zararı: ${fmtTl(s.netIncomeTry)}`);
-  lines.push(`- Açık Ticari Alacaklar (120): ${fmtTl(s.openArTry)} · Açık Ticari Borçlar (320): ${fmtTl(s.openApTry)}`);
+  lines.push(`- Açık Ticari Alacaklar (120) [PLANNED]: ${fmtTl(s.openArTry)} · Açık Ticari Borçlar (320) [PLANNED]: ${fmtTl(s.openApTry)}`);
   lines.push(
     `- İşletme Sermayesi Döngüsü: DSO ${s.dsoDays ?? "—"}g · DIO ${s.dioDays ?? "—"}g · DPO ${s.dpoDays ?? "—"}g · CCC ${s.cccDays ?? "—"}g`,
   );
@@ -1068,10 +1222,10 @@ export function renderBoardPackMarkdown(pack: BoardFinancialPackage): string {
   );
   lines.push("");
 
-  lines.push("## 4. 13 HAFTALIK LİKİDİTE PROJEKSİYONU");
+  lines.push("## 4. 13 HAFTALIK LİKİDİTE PROJEKSİYONU (PLANNED / FORECAST)");
   for (const w of pack.liquidity13Week) {
     lines.push(
-      `- H${String(w.weekNo).padStart(2, "0")} (${w.weekStart}..${w.weekEnd}): Giriş ${fmtTl(w.inflowTry)} | Çıkış ${fmtTl(w.outflowTry)} | Net ${fmtTl(w.netFlowTry)} | Kapanış ${fmtTl(w.closingCashTry)}`,
+      `- H${String(w.weekNo).padStart(2, "0")} (${w.weekStart}..${w.weekEnd}): Giriş [PLANNED] ${fmtTl(w.inflowTry)} | Çıkış [PLANNED] ${fmtTl(w.outflowTry)} | Net ${fmtTl(w.netFlowTry)} | Kapanış [${w.closingCashTry == null ? "UNKNOWN" : "FORECAST"}] ${fmtTl(w.closingCashTry)}`,
     );
   }
   lines.push("");
@@ -1136,6 +1290,11 @@ export async function buildBoardPackExcelBuffer(
             note: `Şema: ${pack.provenance.schemaVersion ?? "—"} · Üretim: ${pack.provenance.asOfAt}`,
           },
           {
+            metric: "Kaynak Çalışma Kitabı Kimliği (source_id)",
+            val: pack.provenance.source_id ?? "Yok",
+            note: `Dosya: ${pack.provenance.lastWorkbookFilename ?? "Yok"}`,
+          },
+          {
             metric: "Son Çalışma Kitabı İthalatı",
             val: pack.provenance.lastWorkbookImportAt ?? "Yok",
             note:
@@ -1143,10 +1302,19 @@ export async function buildBoardPackExcelBuffer(
                 ? `${pack.provenance.workbookStaleDays} gün eski`
                 : "İthalat kaydı yok",
           },
+          ...(pack.provenance.staleDataWatermark
+            ? [
+                {
+                  metric: "Bayat Veri Filigranı (Stale Watermark)",
+                  val: "STALE_SOURCE_WARNING",
+                  note: pack.provenance.staleDataWatermark,
+                },
+              ]
+            : []),
           {
             metric: "Son Banka Hareketi Tarihi",
             val: pack.provenance.lastBankTxAt ?? "Ekstre yok",
-            note: `SHA-256: ${pack.provenance.contentSha256.slice(0, 16)}`,
+            note: `Mutabakat: ${pack.provenance.reconciliationStatus} · SHA-256: ${pack.provenance.contentSha256.slice(0, 16)}`,
           },
           {
             metric: "Güven Derecesi (Confidence Grade)",
@@ -1408,12 +1576,13 @@ export function renderExecutiveReportHtml(
     <button class="btn" onclick="window.print()">PDF Olarak Yazdır / Kaydet</button>
   </div>
   <h1>YÖNETİM KURULU VE BANKA FİNANSAL PAKETİ</h1>
-  <div class="meta">Dönem: ${escapeHtml(report.period_start)} → ${escapeHtml(report.period_end)} · Üretim: ${escapeHtml(report.created_at)} · TCMB Kur Bazı: ${escapeHtml(pack.fxRatesAsOf ?? "TRY")}${pack.provenance ? ` · Snapshot: ${escapeHtml(pack.provenance.snapshotId.slice(0, 8))} · Şema: ${escapeHtml(pack.provenance.schemaVersion ?? "—")} · Son Excel: ${escapeHtml(pack.provenance.workbookStaleDays != null ? `${pack.provenance.workbookStaleDays} gün eski` : "yok")}` : ""}</div>
+  <div class="meta">Dönem: ${escapeHtml(report.period_start)} → ${escapeHtml(report.period_end)} · İş Günü (As-Of): ${escapeHtml(pack.asOf)} · Üretim: ${escapeHtml(report.created_at)} · TCMB Kur Bazı: ${escapeHtml(pack.fxRatesAsOf ?? "TRY")}${pack.provenance ? ` · Snapshot: ${escapeHtml(pack.provenance.snapshotId.slice(0, 8))} · Şema: ${escapeHtml(pack.provenance.schemaVersion ?? "—")} · Güven: ${escapeHtml(pack.provenance.confidenceGrade)} · source_id: ${escapeHtml(pack.provenance.source_id ?? "yok")} · Mutabakat: ${escapeHtml(pack.provenance.reconciliationStatus)} · Son Excel: ${escapeHtml(pack.provenance.workbookStaleDays != null ? `${pack.provenance.workbookStaleDays} gün eski` : "yok")}` : ""}</div>
+  ${pack.provenance?.staleDataWatermark ? `<div class="meta" style="padding:8px 10px;border:1px solid #b45309;background:#fffbeb;color:#92400e;font-weight:700;">${escapeHtml(pack.provenance.staleDataWatermark)}</div>` : ""}
 
   <div class="kpis">
-    <div class="kpi"><div class="lbl">Konsolide Hazır Değerler</div><div class="val">${escapeHtml(fmtCashOrFin03(s.consolidatedCashTry, pack.unknownOpeningAccountCount))}</div></div>
+    <div class="kpi"><div class="lbl">Konsolide Hazır Değerler [${s.consolidatedCashTry == null ? "UNKNOWN" : "ACTUAL"}]</div><div class="val">${escapeHtml(fmtCashOrFin03(s.consolidatedCashTry, pack.unknownOpeningAccountCount, pack.cashSourceStatus))}</div></div>
     <div class="kpi"><div class="lbl">Yönetim FAVÖK (EBITDA)</div><div class="val">${escapeHtml(fmtTl(s.managementEbitdaTry))}</div></div>
-    <div class="kpi"><div class="lbl">13H En Düşük Kasa</div><div class="val">${escapeHtml(fmtCashOrFin03(s.worst13WeekCashTry, pack.unknownOpeningAccountCount))}</div></div>
+    <div class="kpi"><div class="lbl">13H En Düşük Kasa [${s.worst13WeekCashTry == null ? "UNKNOWN" : "FORECAST"}]</div><div class="val">${escapeHtml(fmtCashOrFin03(s.worst13WeekCashTry, pack.unknownOpeningAccountCount, pack.cashSourceStatus))}</div></div>
     <div class="kpi"><div class="lbl">Boş Kredi Limiti</div><div class="val">${escapeHtml(fmtTl(s.creditAvailableTry))}</div></div>
   </div>
 
@@ -1465,13 +1634,18 @@ export function renderReportCsv(pack: BoardFinancialPackage): string {
     ["Bolum", "Kod_Veya_Anahtar", "Aciklama", "Tutar_TRY", "Ek_Bilgi"],
     ...(pack.provenance
       ? [
-          ["PROVENANCE", "SNAPSHOT_ID", "Anlik Goruntu Kimligi", pack.provenance.snapshotId, `as_of:${pack.provenance.asOfAt}`],
+          ["PROVENANCE", "SNAPSHOT_ID", "Anlik Goruntu Kimligi", pack.provenance.snapshotId, `as_of:${pack.provenance.asOfDate}|at:${pack.provenance.asOfAt}`],
           ["PROVENANCE", "SCHEMA_VERSION", "Sema Surumu", pack.provenance.schemaVersion ?? "", `mig:${pack.provenance.migrationCount ?? ""}`],
+          ["PROVENANCE", "SOURCE_ID", "Kaynak Calisma Kitabi Kimligi", pack.provenance.source_id ?? "", pack.provenance.lastWorkbookFilename ?? ""],
           ["PROVENANCE", "WORKBOOK_STALE_DAYS", "Son Excel Ithalati Yasi (Gun)", String(pack.provenance.workbookStaleDays ?? ""), pack.provenance.lastWorkbookImportAt ?? ""],
+          ...(pack.provenance.staleDataWatermark
+            ? [["PROVENANCE", "STALE_WATERMARK", "Bayat Veri Filigrani", "STALE_SOURCE_WARNING", pack.provenance.staleDataWatermark]]
+            : []),
+          ["PROVENANCE", "RECONCILIATION_STATUS", "Mutabakat Durumu", pack.provenance.reconciliationStatus, `aligned:${String(pack.provenance.reconciliationAligned ?? true)}`],
           ["PROVENANCE", "CONFIDENCE_GRADE", "Guven Derecesi", pack.provenance.confidenceGrade, pack.provenance.calculationVersion],
         ]
       : []),
-    ["OZET", "CASH", "Konsolide Hazir Degerler", pack.executiveSummary.consolidatedCashTry == null ? ((pack.unknownOpeningAccountCount ?? 0) > 0 ? "BILINMIYOR_FIN03" : "") : String(pack.executiveSummary.consolidatedCashTry), pack.fxRatesAsOf ?? "TRY"],
+    ["OZET", "CASH", "Konsolide Hazir Degerler", pack.executiveSummary.consolidatedCashTry == null ? (pack.cashSourceStatus === "SCHEMA_INCOMPATIBLE" ? "BILINMIYOR_SCHEMA_INCOMPATIBLE" : (pack.unknownOpeningAccountCount ?? 0) > 0 ? "BILINMIYOR_FIN03" : "BILINMIYOR_UNKNOWN") : String(pack.executiveSummary.consolidatedCashTry), pack.fxRatesAsOf ?? "TRY"],
     ["OZET", "EBITDA", "Yonetim FAVOK", String(pack.executiveSummary.managementEbitdaTry ?? ""), "TRY"],
     ["OZET", "NET_INCOME", "Donem Net Kari", String(pack.executiveSummary.netIncomeTry ?? ""), "TRY"],
     ["OZET", "AR_OPEN", "Acik Alacaklar", String(pack.executiveSummary.openArTry), "TRY"],

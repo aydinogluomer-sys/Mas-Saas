@@ -251,3 +251,117 @@ export interface FinancialReportSnapshotContract {
   confidenceGrade: ReportConfidenceGrade;
   contentSha256: string;
 }
+
+// ── V2 Hardening Contracts: Source Completeness, Durable Send Phase & Release Verdict ──
+
+export type SourceCompletenessStatus =
+  | "COMPLETE"
+  | "NO_ACTIVE_ACCOUNTS_VERIFIED"
+  | "PARTIAL_MISSING_OPENING"
+  | "LEGACY_UNVERIFIED"
+  | "SCHEMA_INCOMPATIBLE"
+  | "SOURCE_UNAVAILABLE";
+
+/**
+ * Durable pre-send phase stored in `notification_outbox.metadata.dispatchPhase`
+ * and `reminder_deliveries.payload.dispatchPhase` to separate pre-network `claimed`
+ * from post-intent `sending` (`F-08`, `F-09`).
+ */
+export type OutboxDurableDispatchPhase =
+  | "prepared"
+  | "claimed"
+  | "sending"
+  | "sent"
+  | "failed_retryable"
+  | "delivery_uncertain"
+  | "dead_letter"
+  | "skipped";
+
+export type ReleaseGateCanonicalStatus =
+  | "PASS"
+  | "FAIL"
+  | "BLOCKED"
+  | "UNKNOWN"
+  | "NOT_VERIFIED"
+  | "NOT_APPLICABLE";
+
+export type GlobalReleaseConditionId =
+  | "G-01"
+  | "G-02"
+  | "G-03"
+  | "G-04"
+  | "G-05"
+  | "G-06"
+  | "G-07";
+
+export interface ReleaseGateManifestEntry {
+  id: string;
+  title: string;
+  status: ReleaseGateCanonicalStatus;
+  evidence: string;
+  scope: "ci_and_host" | "host_physical_only" | "operational_steward";
+}
+
+export interface ReleaseVerdictManifest {
+  schemaVersion: "mas-release-verdict-v2";
+  generatedAtISO: string;
+  baseAuditCommitSha: string;
+  parentHeadCommitSha: string;
+  verifiedCommitSha: string;
+  branch: string;
+  githubCiRunId: number | null;
+  githubCiRunUrl: string | null;
+  githubCiJobsPassed: number;
+  githubCiJobsTotal: number;
+  ci8of8SameShaPass: boolean;
+  liveDbMutations: number;
+  realExternalSends: number;
+  releaseGates: readonly ReleaseGateManifestEntry[];
+  globalConditions: Readonly<Record<GlobalReleaseConditionId, {
+    title: string;
+    status: ReleaseGateCanonicalStatus;
+    evidence: string;
+  }>>;
+  openBlockers: readonly string[];
+  verdict: "GO" | "NO-GO";
+  verdictReason: string;
+}
+
+/**
+ * Computes `GO` vs `NO-GO` strictly from the worst open gate (`F-19`):
+ * Any `FAIL`, `BLOCKED`, `UNKNOWN`, `NOT_VERIFIED`, non-8/8 GitHub CI on the same SHA,
+ * or non-zero live DB mutation forces `NO-GO`.
+ */
+export function computeUnifiedReleaseVerdict(input: {
+  ci8of8SameShaPass: boolean;
+  liveDbMutations: number;
+  realExternalSends: number;
+  releaseGates: readonly { id: string; status: ReleaseGateCanonicalStatus }[];
+  globalConditions: Readonly<Record<GlobalReleaseConditionId, { status: ReleaseGateCanonicalStatus }>>;
+}): { verdict: "GO" | "NO-GO"; blockingIds: string[] } {
+  const blockingIds: string[] = [];
+  if (!input.ci8of8SameShaPass) {
+    blockingIds.push("CI_NOT_8_OF_8_SAME_SHA");
+  }
+  if (input.liveDbMutations !== 0) {
+    blockingIds.push("LIVE_DB_MUTATION_NON_ZERO");
+  }
+  if (input.realExternalSends !== 0) {
+    blockingIds.push("REAL_EXTERNAL_SENDS_NON_ZERO");
+  }
+  for (const g of input.releaseGates) {
+    if (g.status !== "PASS" && g.status !== "NOT_APPLICABLE") {
+      blockingIds.push(`${g.id}:${g.status}`);
+    }
+  }
+  for (const [id, cond] of Object.entries(input.globalConditions)) {
+    if (cond.status !== "PASS" && cond.status !== "NOT_APPLICABLE") {
+      blockingIds.push(`${id}:${cond.status}`);
+    }
+  }
+  return {
+    verdict: blockingIds.length === 0 ? "GO" : "NO-GO",
+    blockingIds,
+  };
+}
+

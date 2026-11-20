@@ -7,11 +7,23 @@
 
 import type { Pool, PoolClient } from "pg";
 import type { ChartModel } from "@/lib/analytics/chart";
+import type {
+  MonetaryEpistemicBasis,
+  SourceCompletenessStatus,
+} from "@/lib/contracts/remediation-contracts";
+import { DomainError } from "@/lib/domain-error";
 import { decimal, moneyOrNull, round2 } from "@/lib/money";
 import { addMonths, daysInMonth, type CashMonth } from "@/lib/radar/rules";
 import { loadCashMonths } from "./engine";
 
 export type Tms7ActivityKind = "operating" | "investing" | "financing";
+
+export interface HybridCashflowLoadOptions {
+  /** Throw explicit `DomainError("CONFLICT", "SCHEMA_INCOMPATIBLE: ...")` on `42P01`/`42703` schema drift. */
+  failClosedOnSchemaError?: boolean;
+  /** Alias for `failClosedOnSchemaError` (`F-14`). */
+  failOnSchemaDrift?: boolean;
+}
 
 export interface Tms7Summary {
   operatingInflow: number;
@@ -31,6 +43,8 @@ export interface HybridCashMonth extends CashMonth {
   status: string;
   sourceKind: "live" | "hybrid" | "imported";
   sourceLabel: string;
+  confidence?: string;
+  epistemicBasis?: MonetaryEpistemicBasis;
   sheetId: string | null;
   workbookId: string | null;
   actualInflow: number;
@@ -76,6 +90,9 @@ export interface HybridMonthDetail {
   closing: number | null;
   status: string;
   confidence: string;
+  epistemicBasis: MonetaryEpistemicBasis;
+  sourceStatus: SourceCompletenessStatus;
+  schemaIncompatibleSources: string[];
   sourceLabel: string;
   hasUnknownOpeningBalances: boolean;
   source_workbook_id: string | null;
@@ -159,24 +176,67 @@ function isMissingSchema(err: unknown): boolean {
   return code === "42P01" || code === "42703";
 }
 
+const KNOWN_UNDERLYING_RELATIONS = [
+  "cash_accounts",
+  "bank_accounts",
+  "bank_transactions",
+  "liquidity_forecast_daily",
+  "financial_calendar",
+  "payment_instances",
+  "payments",
+  "checks",
+  "loans",
+  "loan_installments",
+  "invoices",
+  "accounting_periods",
+  "cashflow_months",
+  "cashflow_lines",
+] as const;
+
+function recordSchemaError(target: Set<string>, primarySource: string, err: unknown): void {
+  target.add(primarySource);
+  if (err && typeof err === "object") {
+    const msg = `${(err as { message?: string }).message ?? ""} ${(err as { table?: string }).table ?? ""}`.toLowerCase();
+    for (const rel of KNOWN_UNDERLYING_RELATIONS) {
+      if (msg.includes(rel)) {
+        target.add(rel);
+      }
+    }
+  }
+}
+
 export async function loadHybridCashMonths(
   pool: Pool | PoolClient,
   todayISO: string,
+  opts?: HybridCashflowLoadOptions,
 ): Promise<{
   months: HybridCashMonth[];
   sourceMode: "live" | "hybrid" | "imported";
+  sourceStatus: SourceCompletenessStatus;
+  schemaIncompatibleSources: string[];
+  openingBalance: number | null;
+  confidence: string;
+  epistemicBasis: MonetaryEpistemicBasis;
   tms7Total: Tms7Summary;
   hasUnknownOpeningBalances: boolean;
   knownOpeningCount: number;
   unknownOpeningCount: number;
 }> {
+  const strictSchema = Boolean(opts?.failClosedOnSchemaError || opts?.failOnSchemaDrift);
+  const incompatibleSet = new Set<string>();
   const anchorMonth = `${todayISO.slice(0, 7)}-01`;
   const defaultStartMonth = addMonths(anchorMonth, -6);
   const defaultEndMonth = addMonths(anchorMonth, 12);
   const horizonExclusive = addMonths(defaultEndMonth, 1);
 
   const [importedMonths, openingRes, bankRes, forecastRes, apRes] = await Promise.all([
-    loadCashMonths(pool),
+    loadCashMonths(pool).catch((err: unknown) => {
+      if (isMissingSchema(err)) {
+        recordSchemaError(incompatibleSet, "cashflow_months", err);
+        return [];
+      }
+      throw err;
+    }),
     pool
       .query<{ total_opening: string | null; known_count: number; unknown_count: number }>(
         `select sum(opening_balance) filter (where opening_balance is not null)::text as total_opening,
@@ -189,7 +249,8 @@ export async function loadHybridCashMonths(
       )
       .catch((err: unknown) => {
         if (isMissingSchema(err)) {
-          return { rows: [{ total_opening: null, known_count: 0, unknown_count: 0 }] };
+          recordSchemaError(incompatibleSet, "cash_accounts", err);
+          return { rows: [] as Array<{ total_opening: string | null; known_count: number; unknown_count: number }> };
         }
         throw err;
       }),
@@ -216,7 +277,10 @@ export async function loadHybridCashMonths(
           order by txn_date asc`,
       )
       .catch((err: unknown) => {
-        if (isMissingSchema(err)) return { rows: [] };
+        if (isMissingSchema(err)) {
+          recordSchemaError(incompatibleSet, "bank_transactions", err);
+          return { rows: [] };
+        }
         throw err;
       }),
     pool
@@ -235,7 +299,10 @@ export async function loadHybridCashMonths(
         [todayISO, horizonExclusive],
       )
       .catch((err: unknown) => {
-        if (isMissingSchema(err)) return { rows: [] };
+        if (isMissingSchema(err)) {
+          recordSchemaError(incompatibleSet, "liquidity_forecast_daily", err);
+          return { rows: [] };
+        }
         throw err;
       }),
     pool
@@ -246,10 +313,22 @@ export async function loadHybridCashMonths(
            from public.accounting_periods`,
       )
       .catch((err: unknown) => {
-        if (isMissingSchema(err)) return { rows: [] };
+        if (isMissingSchema(err)) {
+          recordSchemaError(incompatibleSet, "accounting_periods", err);
+          return { rows: [] };
+        }
         throw err;
       }),
   ]);
+
+  const schemaIncompatibleSources = [...incompatibleSet];
+  const hasSchemaError = schemaIncompatibleSources.length > 0;
+  if (hasSchemaError && strictSchema) {
+    throw new DomainError(
+      "CONFLICT",
+      `SCHEMA_INCOMPATIBLE: Canlı hibrit nakit akışı şema uyumsuzluğu (${schemaIncompatibleSources.join(", ")}).`,
+    );
+  }
 
   const importedByMonth = new Map(importedMonths.map((m) => [m.monthStart, m]));
   const apByMonth = new Map(apRes.rows.map((a) => [a.month_start, a]));
@@ -332,19 +411,79 @@ export async function loadHybridCashMonths(
     }
   }
 
-  const knownOpeningCount = Number(openingRes.rows[0]?.known_count ?? 0);
-  const unknownOpeningCount = Number(openingRes.rows[0]?.unknown_count ?? 0);
+  const rawOpeningRow = openingRes.rows[0];
+  const hasExplicitOpeningRow =
+    rawOpeningRow != null &&
+    Object.prototype.hasOwnProperty.call(rawOpeningRow, "known_count") &&
+    Object.prototype.hasOwnProperty.call(rawOpeningRow, "unknown_count");
+  const knownOpeningCount = hasExplicitOpeningRow ? Number(rawOpeningRow.known_count ?? 0) : 0;
+  const unknownOpeningCount = hasExplicitOpeningRow ? Number(rawOpeningRow.unknown_count ?? 0) : 0;
   const hasUnknownOpeningBalances = unknownOpeningCount > 0;
+  const liveFlowsSchemaBroken =
+    incompatibleSet.has("bank_transactions") || incompatibleSet.has("liquidity_forecast_daily");
+
   const baseOpening: ReturnType<typeof decimal> | null =
-    !hasUnknownOpeningBalances && knownOpeningCount > 0 && openingRes.rows[0]?.total_opening != null
-      ? decimal(openingRes.rows[0].total_opening).plus(priorNetBeforeWindow)
+    !hasSchemaError &&
+    hasExplicitOpeningRow &&
+    !hasUnknownOpeningBalances &&
+    knownOpeningCount > 0 &&
+    rawOpeningRow?.total_opening != null
+      ? decimal(rawOpeningRow.total_opening).plus(priorNetBeforeWindow)
       : null;
+  const openingBalance: number | null = baseOpening !== null ? round2(baseOpening) : null;
   const hasAnyLive =
     knownOpeningCount > 0 ||
     bankRes.rows.length > 0 ||
     forecastRes.rows.length > 0;
 
-  //FIN-03: When unknown_count > 0 (or no verified cash accounts exist), runningOpening stays null (NEVER coerced to 0).
+  let sourceStatus: SourceCompletenessStatus;
+  if (hasSchemaError) {
+    sourceStatus = "SCHEMA_INCOMPATIBLE";
+  } else if (hasUnknownOpeningBalances) {
+    sourceStatus = "PARTIAL_MISSING_OPENING";
+  } else if (!hasExplicitOpeningRow) {
+    sourceStatus = "SOURCE_UNAVAILABLE";
+  } else if (knownOpeningCount === 0) {
+    sourceStatus = "NO_ACTIVE_ACCOUNTS_VERIFIED";
+  } else if (rawOpeningRow?.total_opening != null) {
+    sourceStatus = "COMPLETE";
+  } else {
+    sourceStatus = "SOURCE_UNAVAILABLE";
+  }
+
+  const sourceMode: "live" | "hybrid" | "imported" =
+    importedMonths.length > 0 && hasAnyLive
+      ? "hybrid"
+      : importedMonths.length > 0
+        ? "imported"
+        : "live";
+
+  const epistemicBasis: MonetaryEpistemicBasis =
+    sourceStatus === "SCHEMA_INCOMPATIBLE" ||
+    sourceStatus === "PARTIAL_MISSING_OPENING" ||
+    sourceStatus === "SOURCE_UNAVAILABLE"
+      ? "UNKNOWN"
+      : sourceMode === "imported"
+        ? "FORECAST"
+        : forecastRes.rows.length > 0 || importedMonths.length > 0
+          ? "PLANNED"
+          : "ACTUAL";
+
+  const topConfidence =
+    sourceStatus === "SCHEMA_INCOMPATIBLE"
+      ? "SCHEMA_INCOMPATIBLE"
+      : sourceStatus === "PARTIAL_MISSING_OPENING"
+        ? "PARTIAL_MISSING_OPENING"
+        : sourceStatus === "SOURCE_UNAVAILABLE"
+          ? "SOURCE_UNAVAILABLE"
+          : sourceMode === "hybrid"
+            ? "hybrid_live"
+            : sourceMode === "imported"
+              ? "source_imported"
+              : "live_tms7";
+
+  // FIN-03 & F-14: When unknown_count > 0, schema is incompatible, or no verified cash accounts exist,
+  // runningOpening stays null (NEVER coerced to 0).
   const months: HybridCashMonth[] = [];
   const totalTms7 = emptyTms7Acc();
   let runningOpening: ReturnType<typeof decimal> | null = baseOpening;
@@ -374,7 +513,7 @@ export async function loadHybridCashMonths(
       tms.opOut = impOut;
       totalTms7.opIn = totalTms7.opIn.plus(impIn);
       totalTms7.opOut = totalTms7.opOut.plus(impOut);
-      if (!hasUnknownOpeningBalances) {
+      if (!hasSchemaError && !hasUnknownOpeningBalances) {
         if (imp.closing != null) {
           runningOpening = decimal(imp.closing);
         } else if (imp.opening != null) {
@@ -385,13 +524,17 @@ export async function loadHybridCashMonths(
         id,
         ym,
         monthStart: cur,
-        opening: imp.opening,
+        opening: hasSchemaError ? null : imp.opening,
         income: imp.income,
         expense: imp.expense,
-        closing: imp.closing,
+        closing: hasSchemaError ? null : imp.closing,
         status: effectiveStatus,
         sourceKind: "imported",
-        sourceLabel: "Forecast (Excel Tahmini)",
+        sourceLabel: hasSchemaError
+          ? "Şema Uyumsuzluğu (SCHEMA_INCOMPATIBLE) · Forecast (Excel Tahmini)"
+          : "Forecast (Excel Tahmini)",
+        confidence: hasSchemaError ? "SCHEMA_INCOMPATIBLE" : "source_imported",
+        epistemicBasis: hasSchemaError ? "UNKNOWN" : "FORECAST",
         sheetId: imp.sheetId,
         workbookId: imp.workbookId,
         actualInflow: 0,
@@ -403,11 +546,11 @@ export async function loadHybridCashMonths(
       continue;
     }
 
-    const openingVal = runningOpening !== null ? round2(runningOpening) : null;
-    const incomeVal = round2(liveIn);
-    const expenseVal = round2(liveOut);
+    const openingVal = !hasSchemaError && runningOpening !== null ? round2(runningOpening) : null;
+    const incomeVal = liveFlowsSchemaBroken ? null : round2(liveIn);
+    const expenseVal = liveFlowsSchemaBroken ? null : round2(liveOut);
     const nextClosingDec =
-      runningOpening !== null
+      !hasSchemaError && !liveFlowsSchemaBroken && runningOpening !== null
         ? runningOpening.plus(liveIn).minus(liveOut).plus(liveTransfer)
         : null;
     const closingVal = nextClosingDec !== null ? round2(nextClosingDec) : null;
@@ -431,9 +574,13 @@ export async function loadHybridCashMonths(
       closing: closingVal,
       status: effectiveStatus,
       sourceKind: imp ? "hybrid" : "live",
-      sourceLabel: imp
-        ? "Hibrit (Fiili Banka + Forecast (Excel Tahmini))"
-        : "Canlı Banka (Actual) + Açık Vadeler (Planned)",
+      sourceLabel: hasSchemaError
+        ? "Şema Uyumsuzluğu (SCHEMA_INCOMPATIBLE)"
+        : imp
+          ? "Hibrit (Fiili Banka + Forecast (Excel Tahmini))"
+          : "Canlı Banka (Actual) + Açık Vadeler (Planned)",
+      confidence: topConfidence,
+      epistemicBasis,
       sheetId: imp?.sheetId ?? null,
       workbookId: imp?.workbookId ?? null,
       actualInflow: b ? round2(b.actualIn) : 0,
@@ -444,16 +591,14 @@ export async function loadHybridCashMonths(
     });
   }
 
-  const sourceMode: "live" | "hybrid" | "imported" =
-    importedMonths.length > 0 && hasAnyLive
-      ? "hybrid"
-      : importedMonths.length > 0
-        ? "imported"
-        : "live";
-
   return {
     months,
     sourceMode,
+    sourceStatus,
+    schemaIncompatibleSources,
+    openingBalance,
+    confidence: topConfidence,
+    epistemicBasis,
     tms7Total: finalizeTms7(totalTms7),
     hasUnknownOpeningBalances,
     knownOpeningCount,
@@ -461,52 +606,65 @@ export async function loadHybridCashMonths(
   };
 }
 
+export const loadLiveHybridCashflow = loadHybridCashMonths;
+
 export async function loadHybridMonthDetail(
   pool: Pool | PoolClient,
   monthIdOrYm: string,
   todayISO: string,
+  opts?: HybridCashflowLoadOptions,
 ): Promise<HybridMonthDetail | null> {
+  const strictSchema = Boolean(opts?.failClosedOnSchemaError || opts?.failOnSchemaDrift);
+  const detailIncompatibleSet = new Set<string>();
   const trimmed = monthIdOrYm.trim();
   const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(trimmed);
   const isYm = /^\d{4}-\d{2}$/.test(trimmed);
   const isYmd = /^\d{4}-\d{2}-01$/.test(trimmed);
 
-  const cmRes = await pool.query<{
-    id: string;
-    ym: string;
-    month_start: string;
-    opening: string | null;
-    income: string | null;
-    expense: string | null;
-    delta: string | null;
-    closing: string | null;
-    status: string;
-    confidence: string;
-    source_workbook_id: string | null;
-    source_sheet_id: string | null;
-    sheet_name: string | null;
-  }>(
-    `select cm.id::text as id,
-            to_char(cm.month_start, 'YYYY-MM') as ym,
-            to_char(cm.month_start, 'YYYY-MM-DD') as month_start,
-            cm.opening_balance::text as opening,
-            cm.projected_income::text as income,
-            cm.projected_expense::text as expense,
-            cm.monthly_delta::text as delta,
-            cm.closing_balance::text as closing,
-            cm.status,
-            cm.confidence,
-            cm.source_workbook_id::text as source_workbook_id,
-            cm.source_sheet_id::text as source_sheet_id,
-            ss.sheet_name
-       from public.cashflow_months cm
-       left join public.source_sheets ss on ss.id = cm.source_sheet_id
-      where cm.id::text = $1
-         or to_char(cm.month_start, 'YYYY-MM') = $1
-         or to_char(cm.month_start, 'YYYY-MM-DD') = $1
-      limit 1`,
-    [trimmed],
-  );
+  const cmRes = await pool
+    .query<{
+      id: string;
+      ym: string;
+      month_start: string;
+      opening: string | null;
+      income: string | null;
+      expense: string | null;
+      delta: string | null;
+      closing: string | null;
+      status: string;
+      confidence: string;
+      source_workbook_id: string | null;
+      source_sheet_id: string | null;
+      sheet_name: string | null;
+    }>(
+      `select cm.id::text as id,
+              to_char(cm.month_start, 'YYYY-MM') as ym,
+              to_char(cm.month_start, 'YYYY-MM-DD') as month_start,
+              cm.opening_balance::text as opening,
+              cm.projected_income::text as income,
+              cm.projected_expense::text as expense,
+              cm.monthly_delta::text as delta,
+              cm.closing_balance::text as closing,
+              cm.status,
+              cm.confidence,
+              cm.source_workbook_id::text as source_workbook_id,
+              cm.source_sheet_id::text as source_sheet_id,
+              ss.sheet_name
+         from public.cashflow_months cm
+         left join public.source_sheets ss on ss.id = cm.source_sheet_id
+        where cm.id::text = $1
+           or to_char(cm.month_start, 'YYYY-MM') = $1
+           or to_char(cm.month_start, 'YYYY-MM-DD') = $1
+        limit 1`,
+      [trimmed],
+    )
+    .catch((err: unknown) => {
+      if (isMissingSchema(err)) {
+        recordSchemaError(detailIncompatibleSet, "cashflow_months", err);
+        return { rows: [] };
+      }
+      throw err;
+    });
 
   let apRow: { id: string; ym: string; month_start: string; status: string } | null = null;
   try {
@@ -524,7 +682,11 @@ export async function loadHybridMonthDetail(
     );
     apRow = apRes.rows[0] ?? null;
   } catch (err) {
-    if (!isMissingSchema(err)) throw err;
+    if (isMissingSchema(err)) {
+      recordSchemaError(detailIncompatibleSet, "accounting_periods", err);
+    } else {
+      throw err;
+    }
   }
 
   const cmRow = cmRes.rows[0] ?? null;
@@ -543,7 +705,7 @@ export async function loadHybridMonthDetail(
   const dim = daysInMonth(yr, mo);
 
   const [hybridAll, bankLinesRes, forecastLinesRes, importedLinesRes] = await Promise.all([
-    loadHybridCashMonths(pool, todayISO),
+    loadHybridCashMonths(pool, todayISO, opts),
     pool
       .query<{
         id: string;
@@ -571,7 +733,10 @@ export async function loadHybridMonthDetail(
         [monthStart, nextMonthStart],
       )
       .catch((err: unknown) => {
-        if (isMissingSchema(err)) return { rows: [] };
+        if (isMissingSchema(err)) {
+          recordSchemaError(detailIncompatibleSet, "bank_transactions", err);
+          return { rows: [] };
+        }
         throw err;
       }),
     pool
@@ -598,37 +763,60 @@ export async function loadHybridMonthDetail(
         [monthStart, nextMonthStart, todayISO],
       )
       .catch((err: unknown) => {
-        if (isMissingSchema(err)) return { rows: [] };
+        if (isMissingSchema(err)) {
+          recordSchemaError(detailIncompatibleSet, "financial_calendar", err);
+          return { rows: [] };
+        }
         throw err;
       }),
     cmRow
-      ? pool.query<{
-          id: string;
-          line_type: string;
-          direction: string;
-          label: string;
-          amount: string | null;
-          amount_status: string;
-          party: string | null;
-          row_index: number | null;
-        }>(
-          `select cl.id::text as id,
-                  cl.line_type,
-                  cl.direction,
-                  cl.label,
-                  cl.amount::text as amount,
-                  cl.amount_status,
-                  p.name as party,
-                  ir.row_index
-             from public.cashflow_lines cl
-             left join public.parties p on p.id = cl.party_id
-             left join public.import_rows ir on ir.id = cl.source_row_id
-            where cl.cashflow_month_id = $1::uuid
-            order by cl.line_type, ir.row_index nulls last`,
-          [cmRow.id],
-        )
+      ? pool
+          .query<{
+            id: string;
+            line_type: string;
+            direction: string;
+            label: string;
+            amount: string | null;
+            amount_status: string;
+            party: string | null;
+            row_index: number | null;
+          }>(
+            `select cl.id::text as id,
+                    cl.line_type,
+                    cl.direction,
+                    cl.label,
+                    cl.amount::text as amount,
+                    cl.amount_status,
+                    p.name as party,
+                    ir.row_index
+               from public.cashflow_lines cl
+               left join public.parties p on p.id = cl.party_id
+               left join public.import_rows ir on ir.id = cl.source_row_id
+              where cl.cashflow_month_id = $1::uuid
+              order by cl.line_type, ir.row_index nulls last`,
+            [cmRow.id],
+          )
+          .catch((err: unknown) => {
+            if (isMissingSchema(err)) {
+              recordSchemaError(detailIncompatibleSet, "cashflow_lines", err);
+              return { rows: [] };
+            }
+            throw err;
+          })
       : Promise.resolve({ rows: [] }),
   ]);
+
+  for (const s of hybridAll.schemaIncompatibleSources) {
+    detailIncompatibleSet.add(s);
+  }
+  const schemaIncompatibleSources = [...detailIncompatibleSet];
+  const hasSchemaError = schemaIncompatibleSources.length > 0;
+  if (hasSchemaError && strictSchema) {
+    throw new DomainError(
+      "CONFLICT",
+      `SCHEMA_INCOMPATIBLE: Aylık hibrit nakit akışı şema uyumsuzluğu (${schemaIncompatibleSources.join(", ")}).`,
+    );
+  }
 
   const summaryMonth = hybridAll.months.find((x) => x.monthStart === monthStart);
 
@@ -711,7 +899,9 @@ export async function loadHybridMonthDetail(
     preferredView: "grouped",
     summaryMode: "sum",
     availableGranularities: ["day", "week"],
-    sourceLabel: "Banka & Finansal Takvim",
+    sourceLabel: hasSchemaError
+      ? "Şema Uyumsuzluğu (SCHEMA_INCOMPATIBLE)"
+      : "Banka & Finansal Takvim",
     sourceHref: `/payments/calendar?ym=${ym}`,
     series: [
       {
@@ -739,39 +929,78 @@ export async function loadHybridMonthDetail(
     ],
   };
 
-  const opening = cmRow
-    ? moneyOrNull(cmRow.opening) ?? summaryMonth?.opening ?? null
-    : summaryMonth?.opening ?? null;
+  const liveFlowsBrokenInDetail =
+    detailIncompatibleSet.has("bank_transactions") ||
+    detailIncompatibleSet.has("liquidity_forecast_daily") ||
+    detailIncompatibleSet.has("financial_calendar");
+
+  const opening = hasSchemaError
+    ? null
+    : cmRow
+      ? moneyOrNull(cmRow.opening) ?? summaryMonth?.opening ?? null
+      : summaryMonth?.opening ?? null;
   const income =
     cmRow && liveLines.length === 0
       ? moneyOrNull(cmRow.income)
-      : summaryMonth?.income ?? round2(tms7Acc.opIn.plus(tms7Acc.invIn).plus(tms7Acc.finIn));
+      : liveFlowsBrokenInDetail
+        ? null
+        : summaryMonth !== undefined
+          ? summaryMonth.income
+          : round2(tms7Acc.opIn.plus(tms7Acc.invIn).plus(tms7Acc.finIn));
   const expense =
     cmRow && liveLines.length === 0
       ? moneyOrNull(cmRow.expense)
-      : summaryMonth?.expense ?? round2(tms7Acc.opOut.plus(tms7Acc.invOut).plus(tms7Acc.finOut));
+      : liveFlowsBrokenInDetail
+        ? null
+        : summaryMonth !== undefined
+          ? summaryMonth.expense
+          : round2(tms7Acc.opOut.plus(tms7Acc.invOut).plus(tms7Acc.finOut));
   const delta =
     income != null && expense != null
       ? round2(decimal(income).minus(expense))
-      : cmRow
+      : !hasSchemaError && cmRow
         ? moneyOrNull(cmRow.delta)
         : null;
-  const closing =
-    cmRow && liveLines.length === 0
+  const closing = hasSchemaError
+    ? null
+    : cmRow && liveLines.length === 0
       ? moneyOrNull(cmRow.closing)
-      : summaryMonth?.closing ??
-        (opening != null && delta != null ? round2(decimal(opening).plus(delta)) : null);
+      : summaryMonth !== undefined
+        ? summaryMonth.closing
+        : opening != null && delta != null
+          ? round2(decimal(opening).plus(delta))
+          : null;
 
   const effectiveStatus =
     apRow?.status === "locked" || cmRow?.status === "locked"
       ? "locked"
       : apRow?.status ?? cmRow?.status ?? "open";
 
-  const sourceLabel = cmRow
-    ? liveLines.length > 0
-      ? "Hibrit (Fiili Banka + Forecast (Excel Tahmini))"
-      : "Forecast (Excel Tahmini)"
-    : "Canlı Banka (Actual) + Açık Vadeler (Planned)";
+  const sourceStatus: SourceCompletenessStatus = hasSchemaError
+    ? "SCHEMA_INCOMPATIBLE"
+    : hybridAll.sourceStatus;
+
+  const epistemicBasis: MonetaryEpistemicBasis = hasSchemaError
+    ? "UNKNOWN"
+    : cmRow && liveLines.length === 0
+      ? "FORECAST"
+      : hybridAll.epistemicBasis;
+
+  const sourceLabel = hasSchemaError
+    ? "Şema Uyumsuzluğu (SCHEMA_INCOMPATIBLE)"
+    : cmRow
+      ? liveLines.length > 0
+        ? "Hibrit (Fiili Banka + Forecast (Excel Tahmini))"
+        : "Forecast (Excel Tahmini)"
+      : "Canlı Banka (Actual) + Açık Vadeler (Planned)";
+
+  const confidence = hasSchemaError
+    ? "SCHEMA_INCOMPATIBLE"
+    : cmRow
+      ? liveLines.length > 0
+        ? "hybrid_live · Forecast (Excel Tahmini)"
+        : `${cmRow.confidence} · Forecast (Excel Tahmini)`
+      : "live_tms7";
 
   return {
     id: cmRow?.id ?? apRow?.id ?? ym,
@@ -785,11 +1014,10 @@ export async function loadHybridMonthDetail(
     delta,
     closing,
     status: effectiveStatus,
-    confidence: cmRow
-      ? liveLines.length > 0
-        ? "hybrid_live · Forecast (Excel Tahmini)"
-        : `${cmRow.confidence} · Forecast (Excel Tahmini)`
-      : "live_tms7",
+    confidence,
+    epistemicBasis,
+    sourceStatus,
+    schemaIncompatibleSources,
     sourceLabel,
     hasUnknownOpeningBalances: hybridAll.hasUnknownOpeningBalances,
     source_workbook_id: cmRow?.source_workbook_id ?? null,

@@ -14,7 +14,7 @@
 //   5. YALNIZ `mas_radar_dr_verify_test` veritabanını düşürür (`dropDisposableLocalDb`) ve kanıt
 //      makbuzunu `backups/latest-restore-drill.json` olarak atomik yazar.
 import { execFileSync } from "node:child_process";
-import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, renameSync, statSync, unlinkSync, writeSync } from "node:fs";
+import { existsSync, mkdirSync, statSync } from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { Pool } from "pg";
@@ -34,6 +34,7 @@ import {
 import {
   formatBytes,
   sha256OfFile,
+  writeBufferAtomic,
   writeSha256Sidecar,
   writeStage07Receipt,
   type Stage07Receipt,
@@ -128,23 +129,14 @@ async function readFinancialSnapshot(pool: Pool): Promise<FinancialSnapshot> {
   };
 }
 
-function writeJsonAtomic(filePath: string, payload: unknown): void {
+export function writeDrillReceiptAtomic(
+  filePath: string,
+  payload: unknown,
+  opts: { renameImpl?: (oldPath: string, newPath: string) => void } = {},
+): void {
   const resolved = path.resolve(filePath);
-  mkdirSync(path.dirname(resolved), { recursive: true });
-  const tempPath = `${resolved}.tmp-${process.pid}-${Date.now()}`;
   const buf = Buffer.from(`${JSON.stringify(payload, null, 2)}\n`, "utf8");
-  const fd = openSync(tempPath, "wx");
-  try {
-    let written = 0;
-    while (written < buf.length) {
-      written += writeSync(fd, buf, written, buf.length - written);
-    }
-    fsyncSync(fd);
-  } finally {
-    closeSync(fd);
-  }
-  if (existsSync(resolved)) unlinkSync(resolved);
-  renameSync(tempPath, resolved);
+  writeBufferAtomic(resolved, buf, { renameImpl: opts.renameImpl });
 }
 
 function readGitState(): { sha: string; branch: string; clean: boolean } {
@@ -398,7 +390,7 @@ export async function runFastRestoreDrill(): Promise<void> {
       passed,
     };
 
-    writeJsonAtomic(drillReceiptPath, drillReceipt);
+    writeDrillReceiptAtomic(drillReceiptPath, drillReceipt);
     console.log(`\nMakbuz yazıldı: ${drillReceiptPath}`);
 
     if (!passed) {

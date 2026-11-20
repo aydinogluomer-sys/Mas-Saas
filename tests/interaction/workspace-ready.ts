@@ -36,12 +36,17 @@ export const PRELOAD_MARKER = "[data-initial-preload]";
  * (geri gelmiş ve takılmış bir ön yükleme), sessizce devam edip "tıklanamadı" demek değil.
  */
 export async function waitForWorkspaceReady(page: Page, timeoutMs = 45_000): Promise<void> {
+  await page.waitForLoadState("load", { timeout: timeoutMs }).catch(() => {});
   await page.locator(PRELOAD_MARKER).waitFor({ state: "detached", timeout: timeoutMs });
   if ((await page.locator("[data-navigation-root]").count()) > 0) {
     await page.locator('html[data-navigation-ready="true"]').waitFor({
       state: "attached",
       timeout: timeoutMs,
     });
+    await page.waitForLoadState("networkidle", { timeout: 5_000 }).catch(() => {});
+    await page
+      .evaluate(() => new Promise<void>((r) => requestAnimationFrame(() => requestAnimationFrame(() => r()))))
+      .catch(() => {});
   }
 }
 

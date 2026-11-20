@@ -135,7 +135,7 @@ async function crawlRole(browser: Browser, role: SeededRole): Promise<{ controls
     consoleErrors.length = 0;
     let status = 0;
     try {
-      const res = await page.goto(route, { waitUntil: "domcontentloaded", timeout: 45_000 });
+      const res = await page.goto(route, { waitUntil: "load", timeout: 45_000 });
       status = res?.status() ?? 0;
       await page.waitForLoadState("networkidle", { timeout: 20_000 }).catch(() => {});
       // ÖN YÜKLEME PERDESİ KAPANMADAN SAYMA. Perde açıkken kontroller DOM'da durur ama

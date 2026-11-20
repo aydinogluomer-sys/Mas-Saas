@@ -1,22 +1,34 @@
-import type { Pool } from "pg";
+import { Pool } from "pg";
 import { describe, expect, it } from "vitest";
 
 import {
+  buildOvernightDeltaAttribution,
+  formatOvernightDeltaBridgeMd,
+  loadOvernightDeltaAttribution,
+} from "@/lib/briefing/delta-attribution";
+import {
   briefingStatus,
+  buildMorningBriefing,
   headline,
   renderBriefing,
   summariseDay,
   todaysActions,
   type BriefingFacts,
 } from "@/lib/briefing/rules";
-import { mapInstanceRow } from "@/lib/radar/queries";
+import type { SourceCompletenessStatus } from "@/lib/contracts/remediation-contracts";
+import { readExpectedSchemaManifest } from "@/lib/db/schema-parity";
+import { mapInstanceRow, monthSummary } from "@/lib/radar/queries";
 import {
   REPORT_CALCULATION_VERSION,
   WORKBOOK_STALE_THRESHOLD_DAYS,
+  buildBoardPackExcelBuffer,
+  buildStaleDataWatermark,
   evaluateReportContractE,
   loadBoardFinancialPackage,
   loadReportProvenance,
   renderBoardPackMarkdown,
+  renderExecutiveReportHtml,
+  renderReportCsv,
   toFinancialReportSnapshotContract,
 } from "@/lib/reports/board-pack";
 import {
@@ -33,6 +45,8 @@ import {
   resolveReportInstanceAmounts,
   type ReportInstance,
 } from "@/lib/reports/rules";
+import { readEnvLocal } from "../../scripts/db/app-url";
+import { SUBPROCESS_TEST_TIMEOUT_MS } from "../setup/test-timeouts";
 
 const ACTOR_ID = "00000000-0000-4000-8000-000000000008";
 
@@ -420,7 +434,7 @@ describe("Agent 08 — CFO Reporting & Cash-Flow Intelligence Remediation (Phase
         executedSqlPrimary.push(norm);
 
         if (norm.includes("get_schema_ledger_summary")) {
-          return { rows: [{ migration_count: 124, latest_version: "0124" }], rowCount: 1 };
+          return { rows: [{ migration_count: readExpectedSchemaManifest().expectedCount, latest_version: readExpectedSchemaManifest().expectedLatestVersion }], rowCount: 1 };
         }
         if (norm.includes("from public.valid_workbook_imports")) {
           // Empty workbook uploaded on 2026-11-18 is excluded by valid_workbook_imports view;
@@ -468,7 +482,7 @@ describe("Agent 08 — CFO Reporting & Cash-Flow Intelligence Remediation (Phase
     const snapshotContract = toFinancialReportSnapshotContract(provStale);
     expect(snapshotContract.snapshotId).toBe("11111111-2222-4333-8444-555555555555");
     expect(snapshotContract.businessDateISO).toBe(asOf);
-    expect(snapshotContract.schemaVersion).toBe("0124");
+    expect(snapshotContract.schemaVersion).toBe(readExpectedSchemaManifest().expectedLatestVersion);
     expect(snapshotContract.sourceFreshnessDays).toBe(124);
     expect(snapshotContract.confidenceGrade).toBe("UNVERIFIED_CASH_BASIS");
     expect(snapshotContract.contentSha256).toMatch(/^[0-9a-f]{64}$/);
@@ -478,7 +492,7 @@ describe("Agent 08 — CFO Reporting & Cash-Flow Intelligence Remediation (Phase
       async query(sql: string) {
         const norm = sql.replace(/\s+/g, " ").trim().toLowerCase();
         if (norm.includes("get_schema_ledger_summary")) {
-          return { rows: [{ migration_count: 124, latest_version: "0124" }], rowCount: 1 };
+          return { rows: [{ migration_count: readExpectedSchemaManifest().expectedCount, latest_version: readExpectedSchemaManifest().expectedLatestVersion }], rowCount: 1 };
         }
         if (norm.includes("from public.valid_workbook_imports")) {
           return { rows: [], rowCount: 0 };
@@ -595,7 +609,7 @@ describe("Agent 08 — CFO Reporting & Cash-Flow Intelligence Remediation (Phase
 
       // Provenance & schema
       if (sql.includes("get_schema_ledger_summary")) {
-        return { rows: [{ migration_count: 124, latest_version: "0124" }], rowCount: 1 };
+        return { rows: [{ migration_count: readExpectedSchemaManifest().expectedCount, latest_version: readExpectedSchemaManifest().expectedLatestVersion }], rowCount: 1 };
       }
       if (sql.includes("from public.valid_workbook_imports")) {
         return {
@@ -856,4 +870,565 @@ describe("Agent 08 — CFO Reporting & Cash-Flow Intelligence Remediation (Phase
     expect(boardMd).toContain("DSO —g");
     expect(boardMd).not.toContain("DSO 0g");
   });
+
+  it("6. V2 (F-15 / RG-10): never fabricates 0 TL actual cash or realized bank flows when cashSourceStatus is unverified/SCHEMA_INCOMPATIBLE or hasVerifiedBankFeed === false across all 5 builders", async () => {
+    const unverifiedStatuses: SourceCompletenessStatus[] = [
+      "PARTIAL_MISSING_OPENING",
+      "LEGACY_UNVERIFIED",
+      "SCHEMA_INCOMPATIBLE",
+      "SOURCE_UNAVAILABLE",
+    ];
+
+    // (a) buildOvernightDeltaAttribution: asymmetric bankOutflows > 0 with bankInflows = [] while cash is null/unverified MUST NOT fabricate 0 TL realizedBankInflows
+    const asymmetricUnknownDelta = buildOvernightDeltaAttribution({
+      fromDateISO: "2026-11-17",
+      toDateISO: "2026-11-18",
+      previousAvailableCash: null,
+      currentAvailableCash: null,
+      previousLiquidityGap7: null,
+      currentLiquidityGap7: null,
+      hasVerifiedBankFeed: true,
+      bankInflows: [],
+      bankOutflows: [
+        {
+          id: "bt-syn-out-1",
+          txnDate: "2026-11-18",
+          amount: 50_000,
+          description: "Sentetik Banka Çıkışı",
+          counterpartyName: "Sentetik Tedarikçi A",
+        },
+      ],
+      newlyEntered7dObligations: [],
+      slippedPromisesAndOverdueAr: [],
+    });
+    expect(asymmetricUnknownDelta.realizedBankInflows).toBeNull();
+    expect(asymmetricUnknownDelta.realizedBankOutflows).toBeNull();
+    expect(asymmetricUnknownDelta.cashDeltaIdentityBalanced).toBe(false);
+    const asymmetricMd = formatOvernightDeltaBridgeMd(asymmetricUnknownDelta);
+    expect(asymmetricMd).not.toContain("Tahsilatları (+): 0,00 TL");
+    expect(asymmetricMd).not.toContain("Tahsilatları (+): 0 TL");
+
+    // (b) loadOvernightDeltaAttribution on 42P01 / 42703 schema drift marks SCHEMA_INCOMPATIBLE and never emits 0 TL cash or bank flows
+    const schemaBrokenClient = {
+      async query() {
+        throw Object.assign(new Error("relation public.bank_transactions does not exist"), {
+          code: "42P01",
+        });
+      },
+    } as unknown as Pool;
+    const brokenDelta = await loadOvernightDeltaAttribution(schemaBrokenClient, "2026-11-18", {
+      currentAvailableCash: 0,
+    });
+    expect(brokenDelta.cashSourceStatus).toBe("SCHEMA_INCOMPATIBLE");
+    expect(brokenDelta.currentAvailableCash).toBeNull();
+    expect(brokenDelta.deltaAvailableCash).toBeNull();
+    expect(brokenDelta.realizedBankInflows).toBeNull();
+    expect(brokenDelta.realizedBankOutflows).toBeNull();
+    expect(brokenDelta.cashDeltaIdentityBalanced).toBe(false);
+    expect(formatOvernightDeltaBridgeMd(brokenDelta)).toContain("SCHEMA_INCOMPATIBLE");
+
+    // (c) All 4 unverified statuses across buildDailyReport, buildMonthlyReport, and buildMorningBriefing
+    for (const status of unverifiedStatuses) {
+      const daily = buildDailyReport(
+        {
+          dueSoon: [],
+          overdue: [],
+          maturities: [],
+          criticalThreshold: 100_000,
+          actualBankCashStatus: {
+            availableCashTry: 0,
+            unknownOpeningCount: status === "PARTIAL_MISSING_OPENING" ? 2 : 0,
+            hasVerifiedBankFeed: false,
+            reconciledTxCount: 0,
+            unmatchedTxCount: 0,
+            cashSourceStatus: status,
+          },
+        },
+        "2026-11-18",
+      );
+      expect(daily.monetaryBasisByMetric.availableBankCash).toBe("UNKNOWN");
+      expect(daily.monetaryBasisByMetric.bankReconciledFlows).toBe("UNKNOWN");
+      expect(daily.bodyMd).toContain("[UNKNOWN]");
+      expect(daily.bodyMd).not.toContain("[ACTUAL] 0 TL");
+
+      const monthly = buildMonthlyReport({
+        monthStart: "2026-11-01",
+        knownTotal: 100_000,
+        knownRemaining: 100_000,
+        paidKnown: 0,
+        missingCount: 0,
+        totalCount: 1,
+        topPayments: [],
+        providerDist: [],
+        categoryDist: [],
+        ownerDist: [],
+        checksInMonth: [],
+        installmentsInMonth: [],
+        cashMonth: null,
+        actualBankCashStatus: {
+          availableCashTry: 0,
+          unknownOpeningCount: status === "PARTIAL_MISSING_OPENING" ? 2 : 0,
+          hasVerifiedBankFeed: false,
+          reconciledTxCount: 0,
+          unmatchedTxCount: 0,
+          cashSourceStatus: status,
+        },
+        dataQualityIssues: [],
+      });
+      expect(monthly.monetaryBasisByMetric.availableBankCash).toBe("UNKNOWN");
+      expect(monthly.monetaryBasisByMetric.bankReconciledFlows).toBe("UNKNOWN");
+      expect(monthly.bodyMd).not.toContain("[ACTUAL] 0 TL");
+
+      const briefingMd = buildMorningBriefing({
+        todayISO: "2026-11-18",
+        availableCash: 0,
+        consolidatedCashTry: 0,
+        minCashFloor: null,
+        liquidityGap7: null,
+        liquidityGap30: null,
+        projectedContracted7: null,
+        todayOutflowKnown: 0,
+        todayInflowKnown: 0,
+        todayCount: 0,
+        todayUnknownAmountCount: 0,
+        todayForeignCurrencyCount: 0,
+        overdueForeignCurrencyCount: 0,
+        overdueCount: 0,
+        overdueKnownOutflow: 0,
+        criticalControls: [],
+        openAlertCount: 0,
+        newCriticalAlerts: [],
+        promisesDueToday: 0,
+        overduePromises: 0,
+        dsoDays: null,
+        dpoDays: null,
+        cycleExcludingInventory: null,
+        cashSourceStatus: status,
+        hasVerifiedBankFeed: false,
+      });
+      expect(briefingMd).toContain("Kullanılabilir nakit: — [UNKNOWN]");
+      expect(briefingMd).not.toContain("Kullanılabilir nakit: 0 TL");
+      expect(briefingMd).not.toContain("Konsolide çok-dövizli nakit: 0 TL");
+    }
+
+    // (d) loadBoardFinancialPackage: 0.00 opening balance with NO verified bank feed (last_bt_at = null) or 42P01 schema drift MUST NOT emit 0,00 TL [ACTUAL]
+    const unverifiedZeroBoardPool = {
+      async query(sql: string) {
+        const norm = sql.replace(/\s+/g, " ").trim().toLowerCase();
+        if (norm.includes("from public.cash_accounts ca")) {
+          return {
+            rows: [{ currency: "TRY", bal: "0.00", known_n: 1, unknown_opening_n: 0 }],
+            rowCount: 1,
+          };
+        }
+        if (norm.includes("from public.bank_transactions")) {
+          return { rows: [{ last_bt_at: null }], rowCount: 1 };
+        }
+        return { rows: [], rowCount: 0 };
+      },
+    } as unknown as Pool;
+    const unverifiedBoard = await loadBoardFinancialPackage(unverifiedZeroBoardPool, "2026-11-18");
+    const unverifiedBoardMd = renderBoardPackMarkdown(unverifiedBoard);
+    expect(unverifiedBoard.executiveSummary.consolidatedCashTry).toBeNull();
+    expect(unverifiedBoard.provenance?.confidenceGrade).toBe("UNVERIFIED_CASH_BASIS");
+    expect(unverifiedBoardMd).not.toContain("[ACTUAL]: 0,00 TL");
+
+    const schemaDriftBoardPool = {
+      async query(sql: string) {
+        const norm = sql.replace(/\s+/g, " ").trim().toLowerCase();
+        if (norm.includes("from public.cash_accounts") || norm.includes("from public.bank_transactions")) {
+          throw Object.assign(new Error("relation does not exist"), { code: "42P01" });
+        }
+        return { rows: [], rowCount: 0 };
+      },
+    } as unknown as Pool;
+    const driftedBoard = await loadBoardFinancialPackage(schemaDriftBoardPool, "2026-11-18");
+    expect(driftedBoard.cashSourceStatus).toBe("SCHEMA_INCOMPATIBLE");
+    expect(driftedBoard.executiveSummary.consolidatedCashTry).toBeNull();
+    expect(renderBoardPackMarkdown(driftedBoard)).toContain("SCHEMA_INCOMPATIBLE");
+  });
+
+  it("7. V2 (RG-10): enforces cashDeltaIdentityBalanced === false whenever previous/current cash is null, bank feed is unverified, or cashSourceStatus is unverified", () => {
+    const baseInput = {
+      fromDateISO: "2026-11-17",
+      toDateISO: "2026-11-18",
+      previousLiquidityGap7: 0,
+      currentLiquidityGap7: 0,
+      bankInflows: [],
+      bankOutflows: [],
+      newlyEntered7dObligations: [],
+      slippedPromisesAndOverdueAr: [],
+    };
+
+    const prevNull = buildOvernightDeltaAttribution({
+      ...baseInput,
+      previousAvailableCash: null,
+      currentAvailableCash: 100_000,
+      hasVerifiedBankFeed: true,
+    });
+    expect(prevNull.cashDeltaIdentityBalanced).toBe(false);
+
+    const currNull = buildOvernightDeltaAttribution({
+      ...baseInput,
+      previousAvailableCash: 100_000,
+      currentAvailableCash: null,
+      hasVerifiedBankFeed: true,
+    });
+    expect(currNull.cashDeltaIdentityBalanced).toBe(false);
+
+    const noBankFeed = buildOvernightDeltaAttribution({
+      ...baseInput,
+      previousAvailableCash: 100_000,
+      currentAvailableCash: 100_000,
+      hasVerifiedBankFeed: false,
+    });
+    expect(noBankFeed.cashDeltaIdentityBalanced).toBe(false);
+
+    const schemaUnverified = buildOvernightDeltaAttribution({
+      ...baseInput,
+      previousAvailableCash: 100_000,
+      currentAvailableCash: 100_000,
+      hasVerifiedBankFeed: true,
+      cashSourceStatus: "SCHEMA_INCOMPATIBLE",
+    });
+    expect(schemaUnverified.cashDeltaIdentityBalanced).toBe(false);
+
+    const verifiedBalanced = buildOvernightDeltaAttribution({
+      ...baseInput,
+      previousAvailableCash: 100_000,
+      currentAvailableCash: 125_000,
+      hasVerifiedBankFeed: true,
+      bankInflows: [{ id: "in-1", txnDate: "2026-11-18", amount: 40_000 }],
+      bankOutflows: [{ id: "out-1", txnDate: "2026-11-18", amount: 15_000 }],
+      explicitFxImpact: 0,
+    });
+    expect(verifiedBalanced.cashDeltaIdentityBalanced).toBe(true);
+    expect(verifiedBalanced.cashDeltaIdentityDiff).toBe(0);
+  });
+
+  it("8. V2 (F-15 / RG-10): surfaces full epistemic taxonomy, source_id lineage, reconciliationStatus, stale watermark (>45d & null), and deterministic contentSha256 across reports & board package", async () => {
+    expect(buildStaleDataWatermark(10, { sourceId: "wb-10" })).toBeNull();
+    expect(buildStaleDataWatermark(46, { sourceId: "wb-46" })).toContain("STALE DATA WATERMARK");
+    expect(buildStaleDataWatermark(null)).toContain("STALE DATA WATERMARK");
+
+    const makeLineagePool = (wbRow: {
+      last_wb_id: string;
+      last_wb_at: string;
+      last_wb_date: string;
+      last_wb_name: string;
+    } | null) => {
+      const execQuery = async (rawSql: string, params: unknown[] = []) => {
+        const sql = rawSql.replace(/\s+/g, " ").trim().toLowerCase();
+        if (sql === "begin" || sql === "commit" || sql === "rollback") {
+          return { rows: [], rowCount: 0 };
+        }
+        if (sql.startsWith("insert into public.reports")) {
+          return { rows: [{ id: String(params[0]) }], rowCount: 1 };
+        }
+        if (sql.startsWith("insert into public.audit_logs")) {
+          return { rows: [{ id: "audit-1" }], rowCount: 1 };
+        }
+        if (sql.includes("get_schema_ledger_summary")) {
+          return {
+            rows: [
+              {
+                migration_count: readExpectedSchemaManifest().expectedCount,
+                latest_version: readExpectedSchemaManifest().expectedLatestVersion,
+              },
+            ],
+            rowCount: 1,
+          };
+        }
+        if (sql.includes("from public.valid_workbook_imports")) {
+          return wbRow ? { rows: [wbRow], rowCount: 1 } : { rows: [], rowCount: 0 };
+        }
+        if (sql.includes("from public.cash_accounts ca")) {
+          return {
+            rows: [{ currency: "TRY", bal: "250000.00", known_n: 2, unknown_opening_n: 0 }],
+            rowCount: 1,
+          };
+        }
+        if (sql.includes("actual_cash_try") && sql.includes("bt_reconciled")) {
+          return {
+            rows: [
+              {
+                unknown_opening_n: 0,
+                known_opening_n: 2,
+                actual_cash_try: "250000.00",
+                bt_total: 5,
+                bt_reconciled: 5,
+                bt_unmatched: 0,
+              },
+            ],
+            rowCount: 1,
+          };
+        }
+        if (sql.includes("from public.cash_accounts")) {
+          return { rows: [{ unknown_opening_n: 0, known_opening_n: 2 }], rowCount: 1 };
+        }
+        if (sql.includes("from public.bank_transactions")) {
+          return { rows: [{ last_bt_at: "2026-11-18" }], rowCount: 1 };
+        }
+        if (sql.includes("known_remaining") && sql.includes("cancelled_known_total")) {
+          return {
+            rows: [
+              {
+                known_total: "100000.00",
+                known_remaining: "80000.00",
+                paid_known: "20000.00",
+                missing_count: 0,
+                foreign_count: 0,
+                total_count: 2,
+                cancelled_count: 0,
+                cancelled_known_total: "0.00",
+                settlement_adjustment_try: "0.00",
+                overpayment_adjustment_try: "0.00",
+              },
+            ],
+            rowCount: 1,
+          };
+        }
+        if (sql.includes("no_provider") && sql.includes("no_category")) {
+          return { rows: [{ no_provider: 0, no_category: 0 }], rowCount: 1 };
+        }
+        return { rows: [], rowCount: 0 };
+      };
+      return {
+        query: execQuery,
+        async connect() {
+          return {
+            query: execQuery,
+            release() {},
+          };
+        },
+      } as unknown as Pool;
+    };
+
+    // (a) Stale workbook (> 45d: 124d) with verified cash -> STALE_SOURCE_WARNING + watermark + source_id + deterministic contentSha256
+    const stalePool = makeLineagePool({
+      last_wb_id: "wb-stale-0124",
+      last_wb_at: "2026-07-17T09:00:00Z",
+      last_wb_date: "2026-07-17",
+      last_wb_name: "synthetic_workbook.xlsx",
+    });
+
+    const packA = await loadBoardFinancialPackage(stalePool, "2026-11-18");
+    const packB = await loadBoardFinancialPackage(stalePool, "2026-11-18");
+    const provA = packA.provenance!;
+    const provB = packB.provenance!;
+
+    expect(provA.contentSha256).toBe(provB.contentSha256);
+    expect(provA.confidenceGrade).toBe("STALE_SOURCE_WARNING");
+    expect(provA.sourceWorkbookId).toBe("wb-stale-0124");
+    expect(provA.source_id).toBe("wb-stale-0124");
+    expect(provA.latestValidImportAt).toBe("2026-07-17T09:00:00Z");
+    expect(provA.businessDateISO).toBe("2026-11-18");
+    expect(provA.sourceFreshnessDays).toBe(124);
+    expect(provA.reconciliationAligned).toBe(true);
+    expect(provA.reconciliationStatus).toBe("ALIGNED");
+    expect(provA.staleDataWatermark).toContain("STALE DATA WATERMARK");
+
+    const boardMd = renderBoardPackMarkdown(packA);
+    expect(boardMd).toContain("STALE DATA WATERMARK");
+    expect(boardMd).toContain("wb-stale-0124");
+    expect(boardMd).toContain("ACTUAL");
+    expect(boardMd).toContain("RECONCILED");
+    expect(boardMd).toContain("PLANNED");
+    expect(boardMd).toContain("FORECAST");
+
+    const boardHtml = renderExecutiveReportHtml(
+      {
+        id: "11111111-1111-4111-8111-111111111111",
+        report_type: "strategic",
+        period_start: "2026-11-01",
+        period_end: "2026-11-18",
+        body_md: boardMd,
+        created_at: "2026-11-18 09:00",
+      },
+      packA,
+    );
+    expect(boardHtml).toContain("STALE DATA WATERMARK");
+    expect(boardHtml).toContain("wb-stale-0124");
+
+    const boardCsv = renderReportCsv(packA);
+    expect(boardCsv).toContain("wb-stale-0124");
+    expect(boardCsv).toContain("STALE DATA WATERMARK");
+
+    const xlsxBuffer = await buildBoardPackExcelBuffer(
+      {
+        id: "11111111-1111-4111-8111-111111111111",
+        report_type: "strategic",
+        period_start: "2026-11-01",
+        period_end: "2026-11-18",
+        body_md: boardMd,
+      },
+      packA,
+    );
+    expect(xlsxBuffer.byteLength).toBeGreaterThan(1_000);
+
+    const genMonthly = await generateMonthly(stalePool, "2026-11-01", ACTOR_ID);
+    expect(genMonthly.bodyMd).toContain("STALE DATA WATERMARK");
+    expect(genMonthly.bodyMd).toContain("wb-stale-0124");
+    expect(genMonthly.bodyMd).toContain("STALE_SOURCE_WARNING");
+
+    // (b) Missing workbook (sourceFreshnessDays === null) -> explicit stale watermark emitted
+    const nullWbPool = makeLineagePool(null);
+    const nullWbPack = await loadBoardFinancialPackage(nullWbPool, "2026-11-18");
+    expect(nullWbPack.provenance?.sourceFreshnessDays).toBeNull();
+    expect(nullWbPack.provenance?.staleDataWatermark).toContain("STALE DATA WATERMARK");
+    expect(renderBoardPackMarkdown(nullWbPack)).toContain("STALE DATA WATERMARK");
+
+    // (c) Fresh workbook (10d <= 45d) -> staleDataWatermark is null and NOT emitted
+    const freshPool = makeLineagePool({
+      last_wb_id: "wb-fresh-0010",
+      last_wb_at: "2026-11-08T09:00:00Z",
+      last_wb_date: "2026-11-08",
+      last_wb_name: "fresh_workbook.xlsx",
+    });
+    const freshPack = await loadBoardFinancialPackage(freshPool, "2026-11-18");
+    expect(freshPack.provenance?.sourceFreshnessDays).toBe(10);
+    expect(freshPack.provenance?.confidenceGrade).toBe("VERIFIED_COMPLETE");
+    expect(freshPack.provenance?.staleDataWatermark).toBeNull();
+    expect(renderBoardPackMarkdown(freshPack)).not.toContain("STALE DATA WATERMARK");
+  });
+
+  it("9. V2 (RG-04 / RG-05): preserves 30,000 TRY cancelled obligation separate from active exposure and partial tri-value in buildDailyReport & buildMonthlyReport", () => {
+    const partialObligation: ReportInstance = {
+      name: "Sentetik Kredi Taksiti",
+      dueDate: "2026-11-18",
+      amount: 30_000,
+      originalAmount: 30_000,
+      paidAmount: 10_000,
+      outstandingAmount: 20_000,
+      status: "partial",
+      riskLevel: "high",
+      riskReasons: [],
+      currency: "TRY",
+    };
+    const cancelledObligation30k: ReportInstance = {
+      name: "İptal Edilen Tedarik Ödemesi",
+      dueDate: "2026-11-18",
+      amount: 30_000,
+      originalAmount: 30_000,
+      paidAmount: 0,
+      status: "cancelled",
+      riskLevel: "none",
+      riskReasons: [],
+      currency: "TRY",
+    };
+
+    const daily = buildDailyReport(
+      {
+        dueSoon: [partialObligation, cancelledObligation30k],
+        overdue: [],
+        maturities: [],
+        criticalThreshold: 50_000,
+      },
+      "2026-11-18",
+    );
+
+    expect(daily.dueToday).toHaveLength(1);
+    expect(daily.next7KnownTotal).toBe(20_000);
+    expect(daily.cancelledCount).toBe(1);
+    expect(daily.cancelledKnownTotal).toBe(30_000);
+    expect(daily.bodyMd).toContain("kalan 20.000 TL (asıl: 30.000 TL · ödenen: 10.000 TL)");
+    expect(daily.bodyMd).toContain("İptal edilen (toplam dışı): 1 kalem · 30.000 TL");
+    expect(daily.bodyMd).not.toContain("İptal Edilen Tedarik Ödemesi · 0 TL");
+  });
 });
+
+function resolveOptionalReadOnlyUrl(): string {
+  let fileEnv: Record<string, string> = {};
+  try {
+    fileEnv = readEnvLocal();
+  } catch {
+    // Disposable static CI has no .env.local
+  }
+  return (
+    process.env.MIGRATION_DATABASE_URL?.trim() ||
+    fileEnv.MIGRATION_DATABASE_URL?.trim() ||
+    process.env.DATABASE_URL?.trim() ||
+    fileEnv.DATABASE_URL?.trim() ||
+    ""
+  );
+}
+
+const optionalRoUrl = resolveOptionalReadOnlyUrl();
+
+describe.runIf(Boolean(optionalRoUrl))(
+  "Agent 08 — Live Read-Only RG-10 & Zero-Mutation Verification (default_transaction_read_only=on)",
+  () => {
+    it(
+      "10. verifies RG-10 board-pack provenance lineage, reproducible contentSha256, 30k cancelled obligation, and 0 DB mutations on read-only connection",
+      async () => {
+        const roPool = new Pool({
+          connectionString: optionalRoUrl,
+          max: 4,
+          connectionTimeoutMillis: 30_000,
+          options: "-c default_transaction_read_only=on",
+        });
+        try {
+          const roCheck = await roPool.query<{ transaction_read_only: string }>(
+            "SHOW transaction_read_only",
+          );
+          expect(roCheck.rows[0]?.transaction_read_only).toBe("on");
+
+          const readDigest = async () => {
+            const res = await roPool.query<{
+              rep_cnt: number;
+              aud_cnt: number;
+              pi_cnt: number;
+              pi_sum: string;
+              bt_cnt: number;
+            }>(`
+              select
+                (select count(*)::int from public.reports) as rep_cnt,
+                (select count(*)::int from public.audit_logs) as aud_cnt,
+                (select count(*)::int from public.payment_instances) as pi_cnt,
+                (select coalesce(sum(amount), 0)::numeric(16,2)::text from public.payment_instances) as pi_sum,
+                (select count(*)::int from public.bank_transactions) as bt_cnt
+            `);
+            return res.rows[0]!;
+          };
+
+          const before = await readDigest();
+
+          const packA = await loadBoardFinancialPackage(roPool, "2026-11-18");
+          const packB = await loadBoardFinancialPackage(roPool, "2026-11-18");
+          const [novSummary, liveDelta] = await Promise.all([
+            monthSummary(roPool, "2026-11-01"),
+            loadOvernightDeltaAttribution(roPool, "2026-11-18"),
+          ]);
+
+          expect(packA.executiveSummary.consolidatedCashTry).toBeNull();
+          expect(packA.provenance).toBeDefined();
+          expect(packA.provenance?.contentSha256).toMatch(/^[0-9a-f]{64}$/);
+          expect(packA.provenance?.contentSha256).toBe(packB.provenance?.contentSha256);
+          expect(packA.provenance?.confidenceGrade).toBe("UNVERIFIED_CASH_BASIS");
+          expect(packA.provenance?.businessDateISO).toBe("2026-11-18");
+          expect(typeof packA.provenance?.source_id).toBe("string");
+          expect((packA.provenance?.source_id ?? "").length).toBeGreaterThan(0);
+          expect(packA.provenance?.staleDataWatermark).toContain("STALE DATA WATERMARK");
+
+          const md = renderBoardPackMarkdown(packA);
+          expect(md).toContain("STALE DATA WATERMARK");
+          expect(md).not.toContain("[ACTUAL]: 0,00 TL");
+
+          expect(novSummary.cancelledKnownTotal).toBe(30_000);
+          expect(novSummary.unexplainedGapTry).toBe(0);
+
+          expect(liveDelta.currentAvailableCash).toBeNull();
+          expect(liveDelta.realizedBankInflows).toBeNull();
+          expect(liveDelta.realizedBankOutflows).toBeNull();
+          expect(liveDelta.cashDeltaIdentityBalanced).toBe(false);
+
+          const after = await readDigest();
+          expect(after).toEqual(before);
+        } finally {
+          await roPool.end();
+        }
+      },
+      SUBPROCESS_TEST_TIMEOUT_MS,
+    );
+  },
+);

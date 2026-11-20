@@ -196,6 +196,18 @@ const CASES: MutationCase[] = [
     route: "/scenarios",
     label: "Gelir %10 düşerse",
     role: "finance_operator",
+    setup: async () => {
+      await db(async (c) => {
+        const cnt = (await c.query<{ n: number }>("select count(*)::int as n from public.cashflow_months")).rows[0]?.n ?? 0;
+        if (cnt === 0) {
+          await c.query(
+            `insert into public.cashflow_months (month_start, opening_balance, projected_income, projected_expense, monthly_delta, closing_balance, confidence, status)
+             values (date_trunc('month', current_date)::date, 250000, 320000, 305000, 15000, 265000, 'calculated', 'draft')
+             on conflict (month_start) do nothing`,
+          );
+        }
+      });
+    },
     countSql: "select count(*)::int from public.scenario_runs",
     direction: "increase",
   },

@@ -41,7 +41,7 @@ import { requireDisposableOwnerDatabaseUrl } from "./db/owner-url";
 // requireDisposableOwnerDatabaseUrl() inverts that default: the target must SAY it is expendable
 // (a disposable marker in its NAME) before anything truncates it, and `mas_radar_dev` is refused
 // outright. It fails loudly and before a connection is opened.
-const pool = new Pool({ connectionString: requireDisposableOwnerDatabaseUrl("seed:demo") });
+const pool = new Pool({ connectionString: requireDisposableOwnerDatabaseUrl("seed:demo"), max: 3 });
 
 async function main() {
   const actorId = await ensureSystemActor(pool);
@@ -61,8 +61,17 @@ async function main() {
        public.machine_roi_snapshots, public.action_items, public.ai_response_snapshots,
        public.metric_snapshots restart identity cascade`,
   );
+  await pool.query(
+    `insert into public.cost_allocation_rules (code, description, cost_kind, allocation_basis, is_active)
+     values
+       ('machine_by_minutes', 'Makine maliyeti — makine dakikalarına göre', 'machine', 'machine_minutes', true),
+       ('common_by_revenue', 'Ortak giderler — ciro payına göre', 'common', 'revenue_share', true),
+       ('personnel_by_revenue', 'Personel gideri — ciro payına göre', 'personnel', 'revenue_share', false),
+       ('energy_by_minutes', 'Enerji gideri — makine dakikalarına göre', 'energy', 'machine_minutes', false)
+     on conflict (code) do nothing`,
+  );
   const realWorkbookPath = "data/source/mesaili_nakit_akış_tek_vardiya_TEMİZ.xlsx";
-  const hasRealWorkbook = existsSync(realWorkbookPath);
+  const hasRealWorkbook = process.env.MAS_FORCE_SYNTHETIC_SEED !== "1" && existsSync(realWorkbookPath);
   const workbookBuffer = hasRealWorkbook
     ? readFileSync(realWorkbookPath)
     : await (async () => {
@@ -105,16 +114,18 @@ async function main() {
 
   const today = new Date().toISOString().slice(0, 10);
   const pm = await mapAcceptedCandidates(pool, r.workbookId, actorId);
-  if (!hasRealWorkbook && pm.created === 0) {
-    await pool.query(
-      `insert into public.payments (name, recurrence_type, due_day, default_amount, currency, direction, status, source_workbook_id)
-       values
-         ('Sentetik Kira Ödemesi', 'monthly', 5, 45000, 'TRY', 'outflow', 'active', $1),
-         ('Sentetik Enerji Faturası', 'monthly', 12, null, 'TRY', 'outflow', 'active', $1),
-         ('Sentetik Tedarikçi Ödemesi', 'monthly', 18, 28000, 'TRY', 'outflow', 'active', $1),
-         ('Sentetik Vergi / SGK', 'monthly', 26, 62000, 'TRY', 'outflow', 'active', $1)`,
-      [r.workbookId],
-    );
+  if (!hasRealWorkbook) {
+    if (pm.created === 0) {
+      await pool.query(
+        `insert into public.payments (name, recurrence_type, due_day, default_amount, currency, direction, status, source_workbook_id)
+         values
+           ('Sentetik Kira Ödemesi', 'monthly', 5, 45000, 'TRY', 'outflow', 'active', $1),
+           ('Sentetik Enerji Faturası', 'monthly', 12, null, 'TRY', 'outflow', 'active', $1),
+           ('Sentetik Tedarikçi Ödemesi', 'monthly', 18, 28000, 'TRY', 'outflow', 'active', $1),
+           ('Sentetik Vergi / SGK', 'monthly', 26, 62000, 'TRY', 'outflow', 'active', $1)`,
+        [r.workbookId],
+      );
+    }
     await pool.query(
       `insert into public.cashflow_months (month_start, opening_balance, projected_income, projected_expense, monthly_delta, closing_balance, confidence, status, source_workbook_id)
        select (date_trunc('month', current_date)::date + ((m || ' months')::interval))::date,
@@ -139,13 +150,14 @@ async function main() {
       [r.workbookId],
     );
     const synLoan = await pool.query<{ id: string }>(
-      `insert into public.loans (name, principal, annual_rate, term_months, total_payment, total_finance_cost, status, source_workbook_id)
-       values ('Sentetik İşletme Kredisi', 600000, 0.42, 12, 744000, 144000, 'active', $1)
+      `insert into public.loans
+         (name, principal, term_months, installment_count, first_payment_date, installment_amount, total_payment, total_finance_cost, status, source_workbook_id)
+       values ('Sentetik İşletme Kredisi', 600000, 12, 12, current_date + 30, 62000, 744000, 144000, 'active', $1)
        returning id`,
       [r.workbookId],
     );
     await pool.query(
-      `insert into public.loan_installments (loan_id, installment_no, due_date, amount, principal_part, interest_part, status)
+      `insert into public.loan_installments (loan_id, installment_no, due_date, amount, principal_component, interest_component, status)
        select $1, n, (current_date + (n * 30))::date, 62000, 50000, 12000, 'planned'
          from generate_series(1, 6) as n`,
       [synLoan.rows[0].id],

@@ -1,4 +1,4 @@
-// Faz 12 / Faz 62 — the pure alert predicates behind scripts/ops/telemetry-snapshot.ts.
+// Faz 12 / Faz 62 / V2 Hardening (Agent 07) — pure fail-closed alert predicates behind scripts/ops/telemetry-snapshot.ts.
 //
 // WHY THESE LIVE APART FROM THE SNAPSHOT SCRIPT.
 //
@@ -15,13 +15,45 @@
 // goes blind reports health it cannot see, which is worse than no alert at all. Each function's
 // doc says exactly how its unknown/malformed input maps to `true`.
 //
-// The SQL-backed signals arrive as text because scripts/ops/telemetry-snapshot.ts reads them with
-// a `select … ::text` helper; "?" is that helper's marker for a query that threw.
+// BOUNDARY INVARIANT: Zero `process.env`, zero `fetch`, zero file/DB side effects.
+
+/**
+ * True when a telemetry observation could not be read or parsed (`?`, `null`, `undefined`, empty
+ * string, `NaN`, `PARSE_ERROR`, `BOZUK KOŞU KAYDI`, or `SNAPSHOT_UNAVAILABLE`).
+ * Unreadable telemetry MUST map to `UNKNOWN` incident state and MUST NEVER clear to `OK` / `ALL CLEAR`.
+ */
+export function isUnreadableTelemetryValue(raw: string | null | undefined): boolean {
+  if (raw == null || typeof raw !== "string") return true;
+  const trimmed = raw.trim();
+  if (trimmed === "" || trimmed === "?") return true;
+  return /^(?:null|undefined|nan|parse[_ -]?error|bozuk\s+ko[sş]u\s+kayd[iı]|snapshot_unavailable)(?:\b|$)/i.test(
+    trimmed,
+  );
+}
+
+function parseFiniteNonNegativeMetric(raw: string | null | undefined): number | null {
+  if (raw == null || typeof raw !== "string") return null;
+  const trimmed = raw.trim();
+  if (trimmed === "" || trimmed === "?") return null;
+  if (!/^\d+(?:\.\d+)?$/.test(trimmed)) return null;
+  const n = Number(trimmed);
+  return Number.isFinite(n) && n >= 0 ? n : null;
+}
 
 /** Backup age in hours. `ageHours` is +Infinity when no dump exists and NaN when a stat failed;
- *  both satisfy `!(x <= threshold)`, so both alert. A genuinely fresh backup (age ≤ threshold) is
- *  the only value that clears. */
+ *  both (plus negative or non-finite values) fail closed and alert. A genuinely fresh backup
+ *  (`0 <= age <= threshold`) is the only value that clears. */
 export function backupAgeAlert(ageHours: number, thresholdHours: number): boolean {
+  if (
+    typeof ageHours !== "number" ||
+    typeof thresholdHours !== "number" ||
+    !Number.isFinite(ageHours) ||
+    !Number.isFinite(thresholdHours) ||
+    ageHours < 0 ||
+    thresholdHours < 0
+  ) {
+    return true;
+  }
   return !(ageHours <= thresholdHours);
 }
 
@@ -41,10 +73,10 @@ export interface OffDeviceRunStatus {
  * `note` instead of being masked by generic `.offdevice.json makbuzu yok`.
  */
 export function evaluateOffDeviceRunLog(
-  rawJsonl: string | null,
+  rawJsonl: string | null | undefined,
   offDeviceReceipt?: { exists: boolean; offDeviceSatisfied?: boolean; sha256VerifiedAtDestination?: boolean } | null,
 ): OffDeviceRunStatus {
-  if (rawJsonl !== null && rawJsonl.trim() !== "") {
+  if (typeof rawJsonl === "string" && rawJsonl.trim() !== "") {
     const lines = rawJsonl
       .split(/\r?\n/)
       .map((l) => l.trim())
@@ -163,21 +195,34 @@ export function evaluateOffDeviceRunLog(
 }
 
 /** Background jobs stuck in 'running' past the reaper window. `runningTooLong` is the count as
- *  text; "?" marks a failed query and alerts. Only an explicit "0" clears. */
-export function jobsStuckAlert(runningTooLong: string): boolean {
-  return runningTooLong === "?" || Number(runningTooLong) > 0;
+ *  text; `?`, `null`, empty string, or malformed text alerts fail-closed. Only an explicit `"0"` clears. */
+export function jobsStuckAlert(runningTooLong: string | null | undefined): boolean {
+  const n = parseFiniteNonNegativeMetric(runningTooLong);
+  return n === null || n > 0;
 }
 
-/** Age in days of the most recent imported workbook. "?" = query failed, "İÇE AKTARIM YOK" =
- *  no workbook has ever been imported; both alert, as does any age past the threshold. */
-export function importStaleAlert(ageDays: string, thresholdDays: number): boolean {
-  return ageDays === "?" || ageDays === "İÇE AKTARIM YOK" || Number(ageDays) > thresholdDays;
+/** Outbox rows held in `delivery_uncertain` awaiting operator reconciliation (`F-09`).
+ *  `?`, `null`, empty string, or malformed text alerts fail-closed; only an explicit `"0"` clears. */
+export function outboxUncertainAlert(uncertainCount: string | null | undefined): boolean {
+  const n = parseFiniteNonNegativeMetric(uncertainCount);
+  return n === null || n > 0;
+}
+
+/** Age in days of the most recent imported workbook. `?`, `null`, empty, parse error, or
+ *  `İÇE AKTARIM YOK` all alert, as does any age past `thresholdDays`. */
+export function importStaleAlert(ageDays: string | null | undefined, thresholdDays: number): boolean {
+  if (typeof thresholdDays !== "number" || !Number.isFinite(thresholdDays) || thresholdDays < 0) {
+    return true;
+  }
+  const n = parseFiniteNonNegativeMetric(ageDays);
+  return n === null || !(n <= thresholdDays);
 }
 
 /** Treasury↔cashflow reconciliation. `mismatchCount` is the number of rows whose difference is
- *  non-zero, as text. Any non-zero count — or a failed query ("?") — alerts; only "0" clears. */
-export function reconciliationAlert(mismatchCount: string): boolean {
-  return mismatchCount === "?" || Number(mismatchCount) !== 0;
+ *  non-zero, as text. Any non-zero count — or `?`, `null`, empty, or malformed text — alerts; only `"0"` clears. */
+export function reconciliationAlert(mismatchCount: string | null | undefined): boolean {
+  const n = parseFiniteNonNegativeMetric(mismatchCount);
+  return n === null || n !== 0;
 }
 
 /** Runtime database identity. Anything other than the low-privilege application role alerts —
@@ -189,10 +234,21 @@ export function runtimeIdentityAlert(currentUser: string | null | undefined): bo
 }
 
 /** Schema migration ledger. `actual` and `expected` are "count/maxVersion" strings (e.g.
- *  "87/0087"); "?" marks a read that failed on the DB side (actual) or the migrations-directory
- *  side (expected). Strictly fail-closed: a "?" on EITHER side alerts — including the both-"?"
- *  corner a plain `actual !== expected` would let through — because two blind reads agreeing is
- *  not evidence the ledger is intact. */
-export function ledgerAlert(actual: string, expected: string): boolean {
-  return actual === "?" || expected === "?" || actual !== expected;
+ *  "125/0125"); "?" (or null/empty/malformed) marks a read that failed on either side.
+ *  Strictly fail-closed: unreadable on EITHER side alerts — including both-"?" / both-empty —
+ *  because two blind reads agreeing is not evidence the ledger is intact. */
+export function ledgerAlert(
+  actual: string | null | undefined,
+  expected: string | null | undefined,
+): boolean {
+  if (isUnreadableTelemetryValue(actual) || isUnreadableTelemetryValue(expected)) {
+    return true;
+  }
+  const a = actual!.trim();
+  const e = expected!.trim();
+  const validLedgerShape = /^\d+\/(?!yok$|\?$)\S+$/i;
+  if (!validLedgerShape.test(a) || !validLedgerShape.test(e)) {
+    return true;
+  }
+  return a !== e;
 }

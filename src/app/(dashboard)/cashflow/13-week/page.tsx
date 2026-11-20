@@ -359,7 +359,7 @@ export default async function Rolling13WeekForecastPage({
       ) : null}
       {sp.result ? (
         <div className="rounded border border-pos/40 bg-pos/10 px-3 py-2 text-xs text-pos">
-          İşlem tamamlandı: {sp.result}
+          İşlem tamamlandı: {sp.result.replace(/^otomatik-yenilendi-\d+$/, "otomatik-yenilendi")}
         </div>
       ) : null}
 
@@ -541,7 +541,11 @@ export default async function Rolling13WeekForecastPage({
         subtitle="Açık kayıtlardan yeniden hesapla, Pazartesi anlık görüntüsünü dondur veya manuel CFO düzeltme satırı ekle"
       >
         <div className="flex flex-wrap items-end gap-3">
-          <form action={refreshAutoSeeded13WeekAction} className="flex flex-wrap items-end gap-2">
+          <form
+            key={`${currencyTab}:${dbtMode}:${sp.result ?? "initial"}`}
+            action={refreshAutoSeeded13WeekAction}
+            className="flex flex-wrap items-end gap-2"
+          >
             <input type="hidden" name="currency" value={currencyTab} />
             <label className="text-xs" style={{ color: "var(--text-2)" }}>
               Tahsilat Davranış Modu

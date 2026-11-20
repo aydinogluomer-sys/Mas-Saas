@@ -362,6 +362,89 @@ export interface DeliveryResult {
   uncertainOutcome?: boolean;
   failureKind?: ExternalOperationOutcomeKind;
   providerMessageIds?: string[];
+  providerMessageId?: string | number | null;
+  messageIds?: readonly (string | number)[];
+}
+
+function classifyFetchTransportException(
+  fetchErr: unknown,
+  chunksSentCount: number,
+): { uncertainOutcome: boolean; failureKind: ExternalOperationOutcomeKind; safeMessage: string } {
+  const errObj = fetchErr as {
+    name?: unknown;
+    code?: unknown;
+    message?: unknown;
+    cause?: { name?: unknown; code?: unknown; message?: unknown };
+  } | null;
+  const errName = typeof errObj?.name === "string" ? errObj.name : "";
+  const causeName = typeof errObj?.cause?.name === "string" ? errObj.cause.name : "";
+  const errCode = typeof errObj?.code === "string" ? errObj.code : "";
+  const causeCode = typeof errObj?.cause?.code === "string" ? errObj.cause.code : "";
+  const rawMsg =
+    typeof errObj?.message === "string" ? errObj.message : String(fetchErr ?? "unknown error");
+  const causeMsg = typeof errObj?.cause?.message === "string" ? errObj.cause.message : "";
+  const combinedCode = `${errCode} ${causeCode}`;
+  const combinedMsg = `${rawMsg} ${causeMsg}`;
+
+  const definitelyPreConnect =
+    /\b(?:ECONNREFUSED|ENOTFOUND|EAI_AGAIN|ERR_INVALID_URL)\b/i.test(combinedCode) ||
+    /\b(?:ECONNREFUSED|ENOTFOUND|EAI_AGAIN|ERR_INVALID_URL)\b/i.test(combinedMsg);
+
+  const isTimeout =
+    errName === "TimeoutError" ||
+    errName === "AbortError" ||
+    causeName === "TimeoutError" ||
+    causeName === "AbortError" ||
+    /\b(?:ETIMEDOUT|UND_ERR_HEADERS_TIMEOUT|UND_ERR_BODY_TIMEOUT)\b/i.test(combinedCode) ||
+    /\b(?:ETIMEDOUT|UND_ERR_HEADERS_TIMEOUT|UND_ERR_BODY_TIMEOUT)\b|timeout|timed\s*out|aborted/i.test(
+      combinedMsg,
+    );
+
+  const isAmbiguousSocketReset =
+    /\b(?:ECONNRESET|EPIPE|UND_ERR_SOCKET|ERR_SOCKET_CLOSED)\b/i.test(combinedCode) ||
+    /\b(?:ECONNRESET|EPIPE|UND_ERR_SOCKET|ERR_SOCKET_CLOSED)\b|socket hang up|other side closed|connection reset/i.test(
+      combinedMsg,
+    );
+
+  const safeMessage = redactBotToken(rawMsg);
+
+  if (chunksSentCount > 0) {
+    return {
+      uncertainOutcome: true,
+      failureKind: isTimeout ? "timeout" : "unknown_outcome",
+      safeMessage,
+    };
+  }
+
+  if (definitelyPreConnect && !isTimeout && !isAmbiguousSocketReset) {
+    return {
+      uncertainOutcome: false,
+      failureKind: "temporary_infra_failure",
+      safeMessage,
+    };
+  }
+
+  if (isTimeout) {
+    return {
+      uncertainOutcome: true,
+      failureKind: "timeout",
+      safeMessage,
+    };
+  }
+
+  if (isAmbiguousSocketReset) {
+    return {
+      uncertainOutcome: true,
+      failureKind: "unknown_outcome",
+      safeMessage,
+    };
+  }
+
+  return {
+    uncertainOutcome: false,
+    failureKind: "temporary_infra_failure",
+    safeMessage,
+  };
 }
 
 export type NotificationChannel = "telegram" | "email" | "sms" | "whatsapp";
@@ -506,53 +589,49 @@ export async function sendTelegramChatMessage(
           signal: AbortSignal.timeout(10_000),
         });
       } catch (fetchErr) {
-        const errName = (fetchErr as Error)?.name ?? "";
-        const errMsg = (fetchErr as Error)?.message ?? String(fetchErr);
-        const isTimeout =
-          errName === "TimeoutError" ||
-          errName === "AbortError" ||
-          /timeout|aborted/i.test(errMsg);
-        if (isTimeout || chunksSentCount > 0) {
-          return {
-            ok: false,
-            uncertainOutcome: true,
-            failureKind: isTimeout ? "timeout" : "unknown_outcome",
-            providerMessageIds,
-            error: `telegram erişilemedi: ${redactBotToken(errMsg)}`,
-          };
-        }
+        const classified = classifyFetchTransportException(fetchErr, chunksSentCount);
         return {
           ok: false,
-          uncertainOutcome: false,
-          failureKind: "temporary_infra_failure",
+          uncertainOutcome: classified.uncertainOutcome,
+          failureKind: classified.failureKind,
           providerMessageIds,
-          error: `telegram erişilemedi: ${redactBotToken(errMsg)}`,
+          providerMessageId: providerMessageIds[0] ?? null,
+          messageIds: [...providerMessageIds],
+          error: `telegram erişilemedi: ${classified.safeMessage}`,
         };
       }
 
       if (!res.ok) {
         if (res.status === 429) {
-          const retryAfterSeconds = await extractTelegramRetryAfterSeconds(res);
+          const extractedRetry = await extractTelegramRetryAfterSeconds(res);
           return {
             ok: false,
-            retryAfterSeconds,
+            // Only schedule retry backoff when 0 chunks were delivered; partial multi-chunk 429 is uncertain!
+            retryAfterSeconds: chunksSentCount === 0 ? extractedRetry : null,
             uncertainOutcome: chunksSentCount > 0,
             failureKind: "rate_limited",
             providerMessageIds,
+            providerMessageId: providerMessageIds[0] ?? null,
+            messageIds: [...providerMessageIds],
             error: `telegram HTTP 429`,
           };
         }
+        const isGatewayTimeout = res.status === 504;
         const failureKind: ExternalOperationOutcomeKind =
           res.status === 401 || res.status === 403
             ? "permission_failure"
-            : res.status >= 500
-              ? "temporary_infra_failure"
-              : "permanent_config_failure";
+            : isGatewayTimeout
+              ? "timeout"
+              : res.status >= 500
+                ? "temporary_infra_failure"
+                : "permanent_config_failure";
         return {
           ok: false,
-          uncertainOutcome: chunksSentCount > 0,
+          uncertainOutcome: chunksSentCount > 0 || isGatewayTimeout,
           failureKind,
           providerMessageIds,
+          providerMessageId: providerMessageIds[0] ?? null,
+          messageIds: [...providerMessageIds],
           error: `telegram HTTP ${res.status}`,
         };
       }
@@ -561,8 +640,21 @@ export async function sendTelegramChatMessage(
         const rawText = typeof res.text === "function" ? await res.text() : "";
         if (rawText) {
           const parsed = JSON.parse(rawText) as {
+            ok?: boolean;
+            description?: string;
             result?: { message_id?: number | string };
           };
+          if (parsed && parsed.ok === false) {
+            return {
+              ok: false,
+              uncertainOutcome: chunksSentCount > 0,
+              failureKind: "permanent_config_failure",
+              providerMessageIds,
+              providerMessageId: providerMessageIds[0] ?? null,
+              messageIds: [...providerMessageIds],
+              error: redactBotToken(parsed.description ?? "telegram API ok=false"),
+            };
+          }
           const msgId = parsed?.result?.message_id;
           if (
             (typeof msgId === "number" && Number.isFinite(msgId)) ||
@@ -582,19 +674,16 @@ export async function sendTelegramChatMessage(
       uncertainOutcome: false,
       failureKind: "success",
       providerMessageIds,
+      providerMessageId: providerMessageIds[0] ?? null,
+      messageIds: [...providerMessageIds],
     };
   } catch (e) {
-    const errName = (e as Error)?.name ?? "";
-    const errMsg = (e as Error)?.message ?? String(e);
-    const isTimeout =
-      errName === "TimeoutError" ||
-      errName === "AbortError" ||
-      /timeout|aborted/i.test(errMsg);
+    const classified = classifyFetchTransportException(e, 0);
     return {
       ok: false,
-      uncertainOutcome: isTimeout,
-      failureKind: isTimeout ? "timeout" : "temporary_infra_failure",
-      error: `telegram erişilemedi: ${redactBotToken(errMsg)}`,
+      uncertainOutcome: classified.uncertainOutcome,
+      failureKind: classified.failureKind,
+      error: `telegram erişilemedi: ${classified.safeMessage}`,
     };
   }
 }
@@ -620,17 +709,12 @@ export function telegramTransport(defaultOpts: { parseMode?: "HTML" } = {}): Tra
           parseMode: sendOpts?.parseMode ?? defaultOpts.parseMode,
         });
       } catch (e) {
-        const errName = (e as Error)?.name ?? "";
-        const errMsg = (e as Error)?.message ?? String(e);
-        const isTimeout =
-          errName === "TimeoutError" ||
-          errName === "AbortError" ||
-          /timeout|aborted/i.test(errMsg);
+        const classified = classifyFetchTransportException(e, 0);
         return {
           ok: false,
-          uncertainOutcome: isTimeout,
-          failureKind: isTimeout ? "timeout" : "temporary_infra_failure",
-          error: `telegram erişilemedi: ${redactBotToken(errMsg)}`,
+          uncertainOutcome: classified.uncertainOutcome,
+          failureKind: classified.failureKind,
+          error: `telegram erişilemedi: ${classified.safeMessage}`,
         };
       }
     },

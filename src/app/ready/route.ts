@@ -15,14 +15,22 @@
 // Returns no secrets and no financial data. Exempt from the login gate in src/middleware.ts —
 // a probe that needs a password is not a probe.
 import { NextResponse } from "next/server";
-import { CORRELATION_HEADER, readOrCreateCorrelationId } from "@/lib/correlation";
+import { CORRELATION_HEADER, newCorrelationId, readOrCreateCorrelationId } from "@/lib/correlation";
 
 export const dynamic = "force-dynamic";
 
 export async function GET(request: Request) {
-  const requestId = readOrCreateCorrelationId(request.headers);
+  const requestId = request?.headers
+    ? readOrCreateCorrelationId(request.headers)
+    : newCorrelationId();
   return NextResponse.json(
     { status: "ready", app: "up", time: new Date().toISOString() },
-    { status: 200, headers: { [CORRELATION_HEADER]: requestId } },
+    {
+      status: 200,
+      headers: {
+        [CORRELATION_HEADER]: requestId,
+        "Cache-Control": "no-store",
+      },
+    },
   );
 }

@@ -30,7 +30,7 @@ export default async function CashflowConcentration() {
           where quote_currency = 'TRY' and rate > 0
           order by base_currency, rate_date desc, fetched_at desc
        )
-       select coalesce(p.name, inv.counterparty_name, 'Bilinmeyen Müşteri') as key,
+       select coalesce(p.name, 'Bilinmeyen Müşteri') as key,
               (case
                  when inv.currency = 'TRY' then inv.net_amount
                  else inv.net_amount * coalesce(fx.rate, 1)
@@ -43,19 +43,17 @@ export default async function CashflowConcentration() {
           and inv.archived_at is null
           and (inv.currency = 'TRY' or fx.rate is not null)
        union all
-       select coalesce(p.name, bt.counterparty_name, bt.description, 'Eşleşmemiş Banka Girişi') as key,
+       select coalesce(bt.counterparty_name_raw, bt.description, 'Eşleşmemiş Banka Girişi') as key,
               (case
                  when ca.currency = 'TRY' then bt.amount
                  else bt.amount * coalesce(fx.rate, 1)
                end)::numeric(14,2)::text as amount
          from public.bank_transactions bt
          join public.cash_accounts ca on ca.id = bt.bank_account_id
-         left join public.parties p on p.id = bt.party_id
          left join latest_fx fx on fx.base_currency = ca.currency
         where bt.amount > 0
-          and bt.status <> 'ignored'
-          and bt.match_status = 'unmatched'
-          and coalesce(bt.classification, '') <> 'own_transfer'
+          and bt.status = 'unmatched'
+          and coalesce(bt.transaction_kind, '') <> 'own_transfer'
           and (ca.currency = 'TRY' or fx.rate is not null)`,
     ),
     pool.query(
@@ -65,7 +63,7 @@ export default async function CashflowConcentration() {
           where quote_currency = 'TRY' and rate > 0
           order by base_currency, rate_date desc, fetched_at desc
        )
-       select coalesce(p.name, inv.counterparty_name, 'Bilinmeyen Tedarikçi') as key,
+       select coalesce(p.name, 'Bilinmeyen Tedarikçi') as key,
               (case
                  when inv.currency = 'TRY' then inv.net_amount
                  else inv.net_amount * coalesce(fx.rate, 1)
@@ -78,19 +76,17 @@ export default async function CashflowConcentration() {
           and inv.archived_at is null
           and (inv.currency = 'TRY' or fx.rate is not null)
        union all
-       select coalesce(p.name, bt.counterparty_name, bt.description, 'Eşleşmemiş Banka Çıkışı') as key,
+       select coalesce(bt.counterparty_name_raw, bt.description, 'Eşleşmemiş Banka Çıkışı') as key,
               (case
                  when ca.currency = 'TRY' then abs(bt.amount)
                  else abs(bt.amount) * coalesce(fx.rate, 1)
                end)::numeric(14,2)::text as amount
          from public.bank_transactions bt
          join public.cash_accounts ca on ca.id = bt.bank_account_id
-         left join public.parties p on p.id = bt.party_id
          left join latest_fx fx on fx.base_currency = ca.currency
         where bt.amount < 0
-          and bt.status <> 'ignored'
-          and bt.match_status = 'unmatched'
-          and coalesce(bt.classification, '') <> 'own_transfer'
+          and bt.status = 'unmatched'
+          and coalesce(bt.transaction_kind, '') <> 'own_transfer'
           and (ca.currency = 'TRY' or fx.rate is not null)`,
     ),
   ]);

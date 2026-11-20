@@ -13,10 +13,14 @@ const mockProbePoolRef = vi.hoisted(() => ({
   current: null as Pick<Pool, "query"> | null,
 }));
 
-vi.mock("@/lib/db", () => ({
-  getRawPool: vi.fn(() => mockProbePoolRef.current),
-  getPool: vi.fn(() => mockProbePoolRef.current),
-}));
+vi.mock("@/lib/db", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/db")>();
+  return {
+    ...actual,
+    getRawPool: vi.fn(() => mockProbePoolRef.current),
+    getPool: vi.fn(() => mockProbePoolRef.current),
+  };
+});
 
 import { readExpectedSchemaManifest } from "@/lib/db/schema-parity";
 import { GET as getHealth } from "@/app/health/route";
@@ -39,6 +43,8 @@ import "@/lib/reports/engine";
 import {
   MAINTENANCE_ADVISORY_LOCK_KEY_1,
   MAINTENANCE_ADVISORY_LOCK_KEY_2,
+  dispatchDailyCfoBriefingIdempotent,
+  istanbulHourSlot,
   readWorkerScheduleState,
   runScheduledMaintenance,
   writeWorkerScheduleStateAtomic,
@@ -473,9 +479,10 @@ describe("AGENT 02 — Scheduler Reliability, PostgreSQL Advisory Lock & Probe R
     expect(contenderRes).toEqual({
       hourlyRan: false,
       dailyRan: false,
+      skippedLocked: true,
       todayISO: "2026-11-18",
       hourSlot: "2026-11-18T09",
-      details: { skippedReason: "concurrent_lock_held" },
+      details: { skippedReason: "concurrent_lock_held", skippedLocked: true },
     });
 
     // Maintenance executed strictly ONCE across both concurrent invocations
@@ -547,13 +554,17 @@ describe("AGENT 02 — Scheduler Reliability, PostgreSQL Advisory Lock & Probe R
     const healthResOk = await getHealth();
     expect(healthResOk.status).toBe(200);
     expect(healthResOk.headers.get("x-request-id")).toBeTruthy();
+    expect(healthResOk.headers.get("cache-control")).toBe("no-store");
     const healthBodyOk = await healthResOk.json();
     expect(healthBodyOk.status).toBe("ok");
+    expect(healthBodyOk.telemetryState).toBe("OK");
     expect(healthBodyOk.db).toBe("up");
+    expect(healthBodyOk.checks.telemetryState).toBe("OK");
     expect(healthBodyOk.checks.runtimeRoleSafe).toBe(true);
     expect(healthBodyOk.checks.schemaParity.aligned).toBe(true);
     expect(healthBodyOk.checks.workerHeartbeatFresh).toBe(true);
     expect(healthBodyOk.checks.lastBatchStatus).toBe("ok");
+    expect(healthBodyOk.checks.workerTelemetryState).toBe("OK");
 
     // 2. DB outage with sensitive credentials in PG error -> /ready stays 200, /health returns 503 with zero secret leakage
     await writeWorkerScheduleStateAtomic(statePath, {
@@ -657,5 +668,637 @@ describe("AGENT 02 — Scheduler Reliability, PostgreSQL Advisory Lock & Probe R
     expect(healthUnsafeRole.status).toBe(503);
     const unsafeRoleJson = await healthUnsafeRole.json();
     expect(unsafeRoleJson.checks.runtimeRoleSafe).toBe(false);
+    expect(unsafeRoleJson.telemetryState).toBe("DEGRADED");
+
+    // 5. Non-mas_radar_app role even with rolsuper=false & rolbypassrls=false (e.g. table owner mas_radar_owner) -> MUST return 503
+    mockProbePoolRef.current = {
+      query: (async (sql: string) => {
+        if (sql.includes("from pg_roles")) {
+          return {
+            rows: [
+              {
+                current_user: "mas_radar_owner",
+                session_user: "mas_radar_owner",
+                rolsuper: false,
+                rolbypassrls: false,
+              },
+            ],
+            rowCount: 1,
+          };
+        }
+        return {
+          rows: [
+            {
+              migration_count: manifest.expectedCount,
+              latest_version: manifest.expectedLatestVersion,
+              checksum_digest: "aligned-digest",
+              last_applied_at: nowISO,
+            },
+          ],
+          rowCount: 1,
+        };
+      }) as Pool["query"],
+    };
+
+    const healthWrongUser = await getHealth();
+    expect(healthWrongUser.status).toBe(503);
+    const wrongUserJson = await healthWrongUser.json();
+    expect(wrongUserJson.status).toBe("degraded");
+    expect(wrongUserJson.checks.runtimeRoleSafe).toBe(false);
+    expect(wrongUserJson.telemetryState).toBe("DEGRADED");
+    expect(JSON.stringify(wrongUserJson)).not.toContain("mas_radar_owner");
+
+    // 6. UNKNOWN telemetry state on DB outage (ECONNREFUSED), unreadable schema ledger, and corrupt worker state JSON
+    expect(outageJson.telemetryState).toBe("UNKNOWN");
+    expect(outageJson.checks.telemetryState).toBe("UNKNOWN");
+
+    mockProbePoolRef.current = {
+      query: (async (sql: string) => {
+        if (sql.includes("from pg_roles")) {
+          return {
+            rows: [
+              {
+                current_user: "mas_radar_app",
+                session_user: "mas_radar_app",
+                rolsuper: false,
+                rolbypassrls: false,
+              },
+            ],
+            rowCount: 1,
+          };
+        }
+        return { rows: [], rowCount: 0 };
+      }) as Pool["query"],
+    };
+    const healthUnreadableLedger = await getHealth();
+    expect(healthUnreadableLedger.status).toBe(503);
+    const unreadableLedgerJson = await healthUnreadableLedger.json();
+    expect(unreadableLedgerJson.telemetryState).toBe("UNKNOWN");
+    expect(unreadableLedgerJson.checks.schemaParity.aligned).toBe(false);
+
+    // Corrupt worker state JSON -> surfaces UNKNOWN telemetry degradation (503) while /ready stays 200
+    writeFileSync(statePath, "{corrupt-worker-json", "utf8");
+    mockProbePoolRef.current = {
+      query: (async (sql: string) => {
+        if (sql.includes("from pg_roles")) {
+          return {
+            rows: [
+              {
+                current_user: "mas_radar_app",
+                session_user: "mas_radar_app",
+                rolsuper: false,
+                rolbypassrls: false,
+              },
+            ],
+            rowCount: 1,
+          };
+        }
+        return {
+          rows: [
+            {
+              migration_count: manifest.expectedCount,
+              latest_version: manifest.expectedLatestVersion,
+              checksum_digest: "aligned-digest",
+              last_applied_at: nowISO,
+            },
+          ],
+          rowCount: 1,
+        };
+      }) as Pool["query"],
+    };
+
+    const readyZeroArg = await (getReady as (req?: Request) => Promise<Response>)();
+    expect(readyZeroArg.status).toBe(200);
+    expect(readyZeroArg.headers.get("cache-control")).toBe("no-store");
+    const readyZeroArgBody = await readyZeroArg.json();
+    expect(readyZeroArgBody.status).toBe("ready");
+    expect("db" in readyZeroArgBody).toBe(false);
+
+    const healthCorruptWorker = await getHealth();
+    expect(healthCorruptWorker.status).toBe(503);
+    const corruptWorkerJson = await healthCorruptWorker.json();
+    expect(corruptWorkerJson.status).toBe("degraded");
+    expect(corruptWorkerJson.telemetryState).toBe("UNKNOWN");
+    expect(corruptWorkerJson.checks.workerTelemetryState).toBe("UNKNOWN");
+    expect(corruptWorkerJson.checks.workerHeartbeatFresh).toBe(false);
+
+    // Unreadable '?' heartbeat timestamp in worker state file -> also fails closed to UNKNOWN (503)
+    writeFileSync(
+      statePath,
+      JSON.stringify({ lastHeartbeatAt: "?", lastBatchStatus: "ok" }),
+      "utf8",
+    );
+    const healthQuestionHeartbeat = await getHealth();
+    expect(healthQuestionHeartbeat.status).toBe(503);
+    const questionHeartbeatJson = await healthQuestionHeartbeat.json();
+    expect(questionHeartbeatJson.telemetryState).toBe("UNKNOWN");
+    expect(questionHeartbeatJson.checks.workerTelemetryState).toBe("UNKNOWN");
+
+    // Missing worker state file (ENOENT, e.g. fresh container / CI phase16:verify) -> DB/role/schema healthy returns 200 ok
+    process.env.MAS_WORKER_STATE_PATH = path.join(dir, "nonexistent-worker-state.json");
+    const healthMissingWorkerFile = await getHealth();
+    expect(healthMissingWorkerFile.status).toBe(200);
+    const missingWorkerFileJson = await healthMissingWorkerFile.json();
+    expect(missingWorkerFileJson.status).toBe("ok");
+    expect(missingWorkerFileJson.telemetryState).toBe("OK");
+    expect(missingWorkerFileJson.checks.workerHeartbeatFresh).toBeNull();
+    expect(missingWorkerFileJson.checks.workerTelemetryState).toBe("UNKNOWN");
+  });
+
+  it("blocks lastHourlySlot & lastDailyDate stamp on secondary subtask failure, per-row savepoint ECONNREFUSED, morning briefing outbox failure, or mid-slot crash while always unlocking advisory lock", async () => {
+    const dir = createTempDir("mas-agent02-partial-failures-");
+    const statePath = path.join(dir, "background-worker-state.json");
+
+    await writeWorkerScheduleStateAtomic(statePath, {
+      lastHourlySlot: "2026-11-18T07",
+      lastDailyDate: "2026-11-17",
+      updatedAt: "2026-11-18T04:00:00.000Z",
+      lastHourlySuccessAt: "2026-11-18T04:00:00.000Z",
+      lastDailySuccessAt: "2026-11-17T06:00:00.000Z",
+      lastBatchStatus: "ok",
+    });
+
+    // Sub-case A: Hourly secondary subtask (`enqueueDueSyncs` on `public.integration_health`) fails with ECONNREFUSED
+    // AFTER `scheduleReminders`, `dispatchPending`, and `claimAndDispatchOutbox` all succeed.
+    let unlockedCountA = 0;
+    const secondaryFailPool = {
+      totalCount: 2,
+      async connect() {
+        return {
+          async query(rawSql: string) {
+            const sql = rawSql.replace(/\s+/g, " ").trim().toLowerCase();
+            if (sql.includes("pg_try_advisory_lock")) {
+              return { rows: [{ acquired: true, pg_try_advisory_lock: true }], rowCount: 1 };
+            }
+            if (sql.includes("pg_advisory_unlock")) {
+              unlockedCountA += 1;
+              return { rows: [{ pg_advisory_unlock: true }], rowCount: 1 };
+            }
+            if (sql.includes("from public.integration_health")) {
+              throw Object.assign(new Error("connect ECONNREFUSED 127.0.0.1:5432"), {
+                code: "ECONNREFUSED",
+              });
+            }
+            return { rows: [], rowCount: 0 };
+          },
+          release() {},
+        };
+      },
+      async query(rawSql: string) {
+        const sql = rawSql.replace(/\s+/g, " ").trim().toLowerCase();
+        if (sql.includes("from public.integration_health")) {
+          throw Object.assign(new Error("connect ECONNREFUSED 127.0.0.1:5432"), {
+            code: "ECONNREFUSED",
+          });
+        }
+        return { rows: [], rowCount: 0 };
+      },
+    } as unknown as Pool;
+
+    const secondaryRes = await runScheduledMaintenance({
+      pool: secondaryFailPool,
+      systemActorId: SYSTEM_ACTOR_ID,
+      statePath,
+      todayISO: "2026-11-17", // isolate hourly slot 08
+      hourSlot: "2026-11-18T08",
+      enableTcmbSync: false,
+      enableMorningBriefingDispatch: false,
+    });
+    expect(secondaryRes.hourlyRan).toBe(false);
+    expect(secondaryRes.details?.batchStatus).toBe("partial_failure");
+    expect(unlockedCountA).toBe(1);
+    expect((await readWorkerScheduleState(statePath)).lastHourlySlot).toBe("2026-11-18T07");
+
+    // Sub-case B: Daily `rolloverOverduePaymentInstances` encounters ECONNREFUSED mid-loop inside a per-row savepoint
+    let unlockedCountB = 0;
+    const savepointDropPool = {
+      totalCount: 2,
+      async connect() {
+        return {
+          async query(rawSql: string, params: unknown[] = []) {
+            const sql = rawSql.replace(/\s+/g, " ").trim().toLowerCase();
+            if (sql.includes("pg_try_advisory_lock")) {
+              return { rows: [{ acquired: true, pg_try_advisory_lock: true }], rowCount: 1 };
+            }
+            if (sql.includes("pg_advisory_unlock")) {
+              unlockedCountB += 1;
+              return { rows: [{ pg_advisory_unlock: true }], rowCount: 1 };
+            }
+            if (sql.includes("from public.payment_instances") && sql.includes("for update skip locked")) {
+              return {
+                rows: [
+                  {
+                    id: "00000000-0000-4000-8000-000000000101",
+                    payment_id: "00000000-0000-4000-8000-000000000201",
+                    status: "unpaid",
+                    due_date: "2026-11-10",
+                  },
+                ],
+                rowCount: 1,
+              };
+            }
+            if (sql.startsWith("update public.payment_instances") && sql.includes("set status = 'late'")) {
+              throw Object.assign(new Error("connect ECONNREFUSED 127.0.0.1:5432"), {
+                code: "ECONNREFUSED",
+              });
+            }
+            if (sql.includes("from public.reports where report_type = 'daily'")) {
+              return { rows: [{ id: `rep-${String(params[0] ?? "2026-11-18")}` }], rowCount: 1 };
+            }
+            if (sql.includes("from public.forecast_snapshots_13w")) {
+              return { rows: [{ id: "snap-1", as_of_date: "2026-11-18" }], rowCount: 1 };
+            }
+            return { rows: [], rowCount: 0 };
+          },
+          release() {},
+        };
+      },
+      async query() {
+        return { rows: [], rowCount: 0 };
+      },
+    } as unknown as Pool;
+
+    const savepointDropRes = await runScheduledMaintenance({
+      pool: savepointDropPool,
+      systemActorId: SYSTEM_ACTOR_ID,
+      statePath,
+      todayISO: "2026-11-18",
+      hourSlot: "2026-11-18T07", // isolate daily
+      enableTcmbSync: false,
+      enableMorningBriefingDispatch: false,
+    });
+    expect(savepointDropRes.dailyRan).toBe(false);
+    expect(savepointDropRes.details?.batchStatus).toBe("partial_failure");
+    expect(unlockedCountB).toBe(1);
+    expect((await readWorkerScheduleState(statePath)).lastDailyDate).toBe("2026-11-17");
+
+    // Sub-case C: Morning CFO briefing outbox delivery failure (`sent = 0, retried = 1`) at 08:00 TRT
+    // -> MUST NOT stamp `lastHourlySlot` as ok when morningBriefing is enabled and fails to deliver.
+    const briefingFailPool = {
+      totalCount: 2,
+      async connect() {
+        return {
+          async query(rawSql: string, params: unknown[] = []) {
+            const sql = rawSql.replace(/\s+/g, " ").trim().toLowerCase();
+            if (sql.includes("pg_try_advisory_lock")) {
+              return { rows: [{ acquired: true, pg_try_advisory_lock: true }], rowCount: 1 };
+            }
+            if (sql.includes("pg_advisory_unlock")) {
+              return { rows: [{ pg_advisory_unlock: true }], rowCount: 1 };
+            }
+            if (sql.startsWith("insert into public.reports")) {
+              return { rows: [{ id: "rep-briefing-1" }], rowCount: 1 };
+            }
+            if (sql.includes("with due as") && sql.includes("update public.notification_outbox")) {
+              return {
+                rows: [
+                  {
+                    id: "ob-briefing-1",
+                    stream: "cfo_briefing",
+                    channel: "telegram",
+                    recipient_target: "default:telegram",
+                    idempotency_key: "cfo_briefing:2026-11-17:telegram",
+                    subject: "CFO Sabah Brifingi",
+                    body_text: "test",
+                    body_format: "plain",
+                    metadata: {},
+                    claim_token: "33333333-3333-4333-8333-333333333333",
+                    attempt_count: 0,
+                    max_attempts: 5,
+                  },
+                ],
+                rowCount: 1,
+              };
+            }
+            if (sql.startsWith("update public.notification_outbox")) {
+              return { rows: [{ id: String(params[0] ?? "ob-briefing-1") }], rowCount: 1 };
+            }
+            return { rows: [], rowCount: 0 };
+          },
+          release() {},
+        };
+      },
+      async query(rawSql: string, params: unknown[] = []) {
+        const sql = rawSql.replace(/\s+/g, " ").trim().toLowerCase();
+        if (sql.startsWith("insert into public.reports")) {
+          return { rows: [{ id: "rep-briefing-1" }], rowCount: 1 };
+        }
+        if (sql.startsWith("update public.notification_outbox")) {
+          return { rows: [{ id: String(params[0] ?? "ob-briefing-1") }], rowCount: 1 };
+        }
+        return { rows: [], rowCount: 0 };
+      },
+    } as unknown as Pool;
+
+    // Force transport failure via unconfigured/failing ECONNREFUSED on briefing outbox
+    const briefingDropPool = {
+      ...briefingFailPool,
+      async connect() {
+        const base = await briefingFailPool.connect();
+        return {
+          ...base,
+          async query(rawSql: string, params?: unknown[]) {
+            const sql = rawSql.replace(/\s+/g, " ").trim().toLowerCase();
+            if (sql.startsWith("insert into public.notification_outbox")) {
+              throw Object.assign(new Error("connect ECONNREFUSED 127.0.0.1:5432"), {
+                code: "ECONNREFUSED",
+              });
+            }
+            return base.query(rawSql, params);
+          },
+        };
+      },
+      async query(rawSql: string, params?: unknown[]) {
+        const sql = rawSql.replace(/\s+/g, " ").trim().toLowerCase();
+        if (sql.startsWith("insert into public.notification_outbox")) {
+          throw Object.assign(new Error("connect ECONNREFUSED 127.0.0.1:5432"), {
+            code: "ECONNREFUSED",
+          });
+        }
+        return (briefingFailPool.query as (s: string, p?: unknown[]) => Promise<unknown>)(
+          rawSql,
+          params,
+        );
+      },
+    } as unknown as Pool;
+
+    const briefingDropRes = await runScheduledMaintenance({
+      pool: briefingDropPool,
+      systemActorId: SYSTEM_ACTOR_ID,
+      statePath,
+      todayISO: "2026-11-17",
+      hourSlot: "2026-11-18T08",
+      enableTcmbSync: false,
+      enableMorningBriefingDispatch: true,
+      briefingHourTrt: 8,
+    });
+    expect(briefingDropRes.hourlyRan).toBe(false);
+    expect(briefingDropRes.details?.batchStatus).toBe("partial_failure");
+    expect((await readWorkerScheduleState(statePath)).lastHourlySlot).toBe("2026-11-18T07");
+
+    // Sub-case D: Mid-slot worker crash (unhandled fatal throw before state write, e.g. statePath is a directory)
+    // -> advisory lock is STILL unlocked in `finally`, and prior valid state file remains uncorrupted.
+    const crashDirAsFile = createTempDir("mas-agent02-crash-dir-");
+    const harness = createControllableMaintenancePool("healthy");
+    await expect(
+      runScheduledMaintenance({
+        pool: harness.pool,
+        systemActorId: SYSTEM_ACTOR_ID,
+        statePath: crashDirAsFile, // EISDIR when atomic rename tries to overwrite directory
+        todayISO: "2026-11-18",
+        hourSlot: "2026-11-18T08",
+        enableTcmbSync: false,
+        enableMorningBriefingDispatch: false,
+      }),
+    ).rejects.toThrow();
+    expect(harness.getHeldSessionId()).toBeNull();
+  });
+
+  it("enforces non-reentrant advisory lock even when a single-session pool wrapper yields the same PoolClient", async () => {
+    const dir = createTempDir("mas-agent02-nonreentrant-");
+    const stateA = path.join(dir, "worker-a.json");
+    const stateB = path.join(dir, "worker-b.json");
+    await writeWorkerScheduleStateAtomic(stateA, {
+      lastHourlySlot: "2026-11-18T09",
+      lastDailyDate: "2026-11-17",
+      updatedAt: "2026-11-18T06:00:00.000Z",
+    });
+    await writeWorkerScheduleStateAtomic(stateB, {
+      lastHourlySlot: "2026-11-18T09",
+      lastDailyDate: "2026-11-17",
+      updatedAt: "2026-11-18T06:00:00.000Z",
+    });
+
+    let pgReentrantCount = 0;
+    let scheduleRuns = 0;
+    const sharedSessionClient = {
+      async query(rawSql: string) {
+        const sql = rawSql.replace(/\s+/g, " ").trim().toLowerCase();
+        if (sql.includes("pg_try_advisory_lock")) {
+          // Simulates PostgreSQL's native session-level reentrancy: SAME session gets `true` twice!
+          pgReentrantCount += 1;
+          return { rows: [{ acquired: true, pg_try_advisory_lock: true }], rowCount: 1 };
+        }
+        if (sql.includes("pg_advisory_unlock")) {
+          pgReentrantCount = Math.max(0, pgReentrantCount - 1);
+          return { rows: [{ pg_advisory_unlock: true }], rowCount: 1 };
+        }
+        if (sql.includes("from public.reminders") && sql.startsWith("select")) {
+          scheduleRuns += 1;
+          await new Promise((r) => setTimeout(r, 40));
+        }
+        return { rows: [], rowCount: 0 };
+      },
+      release() {},
+    };
+
+    const singleSessionPool = {
+      totalCount: 1,
+      async connect() {
+        return sharedSessionClient;
+      },
+      async query(sql: string) {
+        return sharedSessionClient.query(sql);
+      },
+    } as unknown as Pool;
+
+    const [resA, resB] = await Promise.all([
+      runScheduledMaintenance({
+        pool: singleSessionPool,
+        systemActorId: SYSTEM_ACTOR_ID,
+        statePath: stateA,
+        todayISO: "2026-11-17",
+        hourSlot: "2026-11-18T10",
+        enableTcmbSync: false,
+        enableMorningBriefingDispatch: false,
+      }),
+      new Promise<Awaited<ReturnType<typeof runScheduledMaintenance>>>((resolve, reject) => {
+        setTimeout(() => {
+          runScheduledMaintenance({
+            pool: singleSessionPool,
+            systemActorId: SYSTEM_ACTOR_ID,
+            statePath: stateB,
+            todayISO: "2026-11-17",
+            hourSlot: "2026-11-18T10",
+            enableTcmbSync: false,
+            enableMorningBriefingDispatch: false,
+          }).then(resolve, reject);
+        }, 5);
+      }),
+    ]);
+
+    expect(resA.hourlyRan).toBe(true);
+    expect(resB.skippedLocked).toBe(true);
+    expect(resB.hourlyRan).toBe(false);
+    expect(scheduleRuns).toBe(1);
+    expect(pgReentrantCount).toBe(0);
+  });
+
+  it("computes Europe/Istanbul 20:59:59Z vs 21:00:00Z midnight & hourSlot boundaries consistently across winter, summer, DST, and year-end without T24 or split-brain", async () => {
+    const boundaryCases = [
+      // Winter (January)
+      {
+        beforeUtc: "2026-01-15T20:59:59Z",
+        expectedBeforeSlot: "2026-01-15T23",
+        afterUtc: "2026-01-15T21:00:00Z",
+        expectedAfterSlot: "2026-01-16T00",
+        expectedAfterDate: "2026-01-16",
+      },
+      // EU Spring DST Sunday (Turkey stays permanent UTC+3)
+      {
+        beforeUtc: "2026-03-29T20:59:59Z",
+        expectedBeforeSlot: "2026-03-29T23",
+        afterUtc: "2026-03-29T21:00:00Z",
+        expectedAfterSlot: "2026-03-30T00",
+        expectedAfterDate: "2026-03-30",
+      },
+      // Summer (July)
+      {
+        beforeUtc: "2026-07-15T20:59:59Z",
+        expectedBeforeSlot: "2026-07-15T23",
+        afterUtc: "2026-07-15T21:00:00Z",
+        expectedAfterSlot: "2026-07-16T00",
+        expectedAfterDate: "2026-07-16",
+      },
+      // EU Autumn DST Sunday
+      {
+        beforeUtc: "2026-10-25T20:59:59Z",
+        expectedBeforeSlot: "2026-10-25T23",
+        afterUtc: "2026-10-25T21:00:00Z",
+        expectedAfterSlot: "2026-10-26T00",
+        expectedAfterDate: "2026-10-26",
+      },
+      // Year-end rollover (2026 -> 2027)
+      {
+        beforeUtc: "2026-12-31T20:59:59Z",
+        expectedBeforeSlot: "2026-12-31T23",
+        afterUtc: "2026-12-31T21:00:00Z",
+        expectedAfterSlot: "2027-01-01T00",
+        expectedAfterDate: "2027-01-01",
+      },
+    ];
+
+    for (const c of boundaryCases) {
+      const slotBefore = istanbulHourSlot(new Date(c.beforeUtc));
+      const slotAfter = istanbulHourSlot(new Date(c.afterUtc));
+      expect(slotBefore).toBe(c.expectedBeforeSlot);
+      expect(slotAfter).toBe(c.expectedAfterSlot);
+      expect(slotAfter).not.toContain("T24");
+    }
+
+    expect(() => istanbulHourSlot(new Date(Number.NaN))).toThrow(/istanbulHourSlot/);
+
+    // Verify `runScheduledMaintenance({ now })` derives coherent todayISO & hourSlot across 20:59:59Z -> 21:00:00Z
+    const dir = createTempDir("mas-agent02-midnight-");
+    const statePath = path.join(dir, "midnight-state.json");
+    const harness = createControllableMaintenancePool("healthy");
+
+    const runBeforeMidnight = await runScheduledMaintenance({
+      pool: harness.pool,
+      systemActorId: SYSTEM_ACTOR_ID,
+      statePath,
+      now: new Date("2026-07-15T20:59:59Z"),
+      enableTcmbSync: false,
+      enableMorningBriefingDispatch: false,
+    });
+    expect(runBeforeMidnight.todayISO).toBe("2026-07-15");
+    expect(runBeforeMidnight.hourSlot).toBe("2026-07-15T23");
+    expect(runBeforeMidnight.hourlyRan).toBe(true);
+    expect(runBeforeMidnight.dailyRan).toBe(true);
+
+    // 1 second later at 21:00:00Z = 00:00:00 Istanbul on 2026-07-16 -> BOTH hourly and daily roll over!
+    const runAtMidnight = await runScheduledMaintenance({
+      pool: harness.pool,
+      systemActorId: SYSTEM_ACTOR_ID,
+      statePath,
+      now: new Date("2026-07-15T21:00:00Z"),
+      enableTcmbSync: false,
+      enableMorningBriefingDispatch: false,
+    });
+    expect(runAtMidnight.todayISO).toBe("2026-07-16");
+    expect(runAtMidnight.hourSlot).toBe("2026-07-16T00");
+    expect(runAtMidnight.hourlyRan).toBe(true);
+    expect(runAtMidnight.dailyRan).toBe(true);
+  });
+
+  it("honors Agent 07 F-09 delivery_uncertain / dead_letter hold and targetHourTrt gate in dispatchDailyCfoBriefingIdempotent with zero duplicate sends", async () => {
+    let transportSends = 0;
+    let outboxLookupStatus = "delivery_uncertain";
+
+    const mockBriefingPool = {
+      async query(rawSql: string) {
+        const sql = rawSql.replace(/\s+/g, " ").trim().toLowerCase();
+        if (sql.includes("from public.notification_outbox") && sql.includes("where idempotency_key = $1")) {
+          return {
+            rows: [{ id: "ob-uncertain-1", status: outboxLookupStatus }],
+            rowCount: 1,
+          };
+        }
+        throw new Error(`Unexpected SQL when outbox is held: ${rawSql}`);
+      },
+    } as unknown as Pool;
+
+    // 1. Before briefing hour (07:00 TRT < 08:00 TRT) -> skipped without touching DB or transport
+    const beforeHour = await dispatchDailyCfoBriefingIdempotent({
+      pool: mockBriefingPool,
+      systemActorId: SYSTEM_ACTOR_ID,
+      todayISO: "2026-11-18",
+      hourSlot: "2026-11-18T07",
+      targetHourTrt: 8,
+      transportResolver: () => ({
+        channel: "telegram",
+        async send() {
+          transportSends += 1;
+          return { ok: true };
+        },
+      }),
+    });
+    expect(beforeHour).toEqual({
+      attempted: false,
+      dispatched: false,
+      idempotencyKey: null,
+      skippedReason: "before_briefing_hour",
+    });
+    expect(transportSends).toBe(0);
+
+    // 2. At 08:00 TRT when outbox row is held in `delivery_uncertain` (F-09 crash window) -> zero re-generation & zero sends
+    const heldUncertain = await dispatchDailyCfoBriefingIdempotent({
+      pool: mockBriefingPool,
+      systemActorId: SYSTEM_ACTOR_ID,
+      todayISO: "2026-11-18",
+      hourSlot: "2026-11-18T08",
+      targetHourTrt: 8,
+      transportResolver: () => ({
+        channel: "telegram",
+        async send() {
+          transportSends += 1;
+          return { ok: true };
+        },
+      }),
+    });
+    expect(heldUncertain).toEqual({
+      attempted: false,
+      dispatched: false,
+      idempotencyKey: "cfo_briefing:2026-11-18:telegram",
+      skippedReason: "already_delivery_uncertain",
+    });
+    expect(transportSends).toBe(0);
+
+    // 3. At 09:00 TRT when outbox row is `dead_letter` -> held without re-enqueuing
+    outboxLookupStatus = "dead_letter";
+    const heldDeadLetter = await dispatchDailyCfoBriefingIdempotent({
+      pool: mockBriefingPool,
+      systemActorId: SYSTEM_ACTOR_ID,
+      todayISO: "2026-11-18",
+      hourSlot: "2026-11-18T09",
+      targetHourTrt: 8,
+    });
+    expect(heldDeadLetter).toEqual({
+      attempted: false,
+      dispatched: false,
+      idempotencyKey: "cfo_briefing:2026-11-18:telegram",
+      skippedReason: "already_dead_letter",
+    });
+    expect(transportSends).toBe(0);
   });
 });

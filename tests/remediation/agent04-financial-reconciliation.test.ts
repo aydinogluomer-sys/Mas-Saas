@@ -1,7 +1,9 @@
 import { Pool } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
+import { loadHybridCashMonths } from "@/lib/cashflow/live-hybrid";
 import { computeObligationAmounts } from "@/lib/contracts/remediation-contracts";
+import { loadCanonicalKpis } from "@/lib/metrics/canonical-kpis";
 import { round2, sumMoney } from "@/lib/money";
 import {
   distribution,
@@ -576,5 +578,28 @@ describe.skipIf(!hasLiveDbConfig())("Agent 04 — Financial Ledger, Reconciliati
     expect(bankPillar!.status).toBe("unknown_opening_balance");
     expect(bankPillar!.subledgerTry).toBeNull();
     expect(bankPillar!.unknownOpeningCount).toBe(6);
+  }, SUBPROCESS_TEST_TIMEOUT_MS);
+
+  it("6. enforces V2 F-03 & F-14 on live mas_radar_dev: loadCanonicalKpis and loadHybridCashMonths keep cash null (PARTIAL_MISSING_OPENING) with 0 schema drift", async () => {
+    const kpiSnapshot = await loadCanonicalKpis(ownerReadOnlyPool, "2026-11-18", {
+      failOnSchemaDrift: true,
+    });
+    expect(kpiSnapshot.treasuryCash.availableNowTry).toBeNull();
+    expect(kpiSnapshot.treasuryCash.accountCountTry).toBe(6);
+    expect(kpiSnapshot.treasuryCash.unknownOpeningCountTry).toBe(6);
+    expect(kpiSnapshot.treasuryCash.unknownCashAccountCount).toBe(6);
+    expect(kpiSnapshot.treasuryCash.cashSourceStatus).toBe("PARTIAL_MISSING_OPENING");
+    expect(kpiSnapshot.treasuryCash.legacyUnverified).toBe(false);
+    expect(kpiSnapshot.cashSourceStatus).toBe("PARTIAL_MISSING_OPENING");
+
+    const hybrid = await loadHybridCashMonths(ownerReadOnlyPool, "2026-11-18", {
+      failOnSchemaDrift: true,
+    });
+    expect(hybrid.sourceStatus).toBe("PARTIAL_MISSING_OPENING");
+    expect(hybrid.schemaIncompatibleSources).toEqual([]);
+    expect(hybrid.openingBalance).toBeNull();
+    expect(hybrid.hasUnknownOpeningBalances).toBe(true);
+    expect(hybrid.unknownOpeningCount).toBe(6);
+    expect(hybrid.epistemicBasis).toBe("UNKNOWN");
   }, SUBPROCESS_TEST_TIMEOUT_MS);
 });

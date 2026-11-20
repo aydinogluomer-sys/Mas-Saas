@@ -104,8 +104,9 @@ export function readSourceRevenue(
   if (isRecord(legacyCell) && "v" in legacyCell) {
     const v = legacyCell.v;
     if (v === null || v === undefined) return { revenue: null, source: "legacy" };
-    const text = typeof v === "number" ? v : String(v);
-    return { revenue: moneyOrNull(text), source: "legacy" };
+    const rawVal = isRecord(v) ? v.result : v;
+    if (rawVal === null || rawVal === undefined || (typeof rawVal !== "number" && typeof rawVal !== "string")) return { revenue: null, source: "legacy" };
+    return { revenue: moneyOrNull(rawVal), source: "legacy" };
   }
 
   return { revenue: null, source: "none" };

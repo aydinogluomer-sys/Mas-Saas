@@ -293,6 +293,15 @@ test.describe("gezinme süpürmesi", () => {
           for (let i = 0; i < count; i++) {
             const link = candidates.nth(i);
             try {
+              await link
+                .evaluate((el) => {
+                  let d = el.closest("details");
+                  while (d) {
+                    (d as HTMLDetailsElement).open = true;
+                    d = d.parentElement?.closest("details") ?? null;
+                  }
+                })
+                .catch(() => {});
               await link.scrollIntoViewIfNeeded({ timeout: SLOW ? 15_000 : 5_000 });
               await Promise.all([
                 page.waitForURL(() => true, { timeout: NAV_TIMEOUT }).catch(() => {}),

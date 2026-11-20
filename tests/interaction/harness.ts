@@ -34,9 +34,13 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { Client } from "pg";
 import { expect, test, type BrowserContext, type Page } from "@playwright/test";
-import { ROLE_STATE_FILES, statePathFor, type SeededRole } from "../visual/global-setup";
-import { databaseNameFromUrl, isDisposableDatabaseName } from "../../scripts/db/owner-url";
-import { readEnvLocal, swapDatabase } from "../../scripts/db/app-url";
+import {
+  ROLE_STATE_FILES,
+  resolveOwnerSeedUrl,
+  statePathFor,
+  type ResolveOwnerSeedUrlOptions,
+  type SeededRole,
+} from "../visual/global-setup";
 
 export { ROLE_STATE_FILES, statePathFor };
 export type { SeededRole };
@@ -44,36 +48,22 @@ export type { SeededRole };
 export const ALL_ROLES = Object.keys(ROLE_STATE_FILES) as SeededRole[];
 
 /**
- * Doğrulayıcının bağlantı dizesi.
+ * Doğrulayıcının bağlantı dizesi (`F-05`).
  *
- * `MAS_E2E_DATABASE_URL` uygulamanın konuştuğu veritabanını gösterir; doğrulama da AYNI
- * veritabanına bakmak zorundadır, yoksa "yazılmamış" sonucu anlamsız olur. Owner'a yükseltme
- * yalnız KULLANICI ADINDA yapılır: aynı host/port/db, farklı rol.
+ * `MAS_E2E_DATABASE_URL` uygulamanın konuştuğu veritabanını gösterir; doğrulama da AYNI küme ve
+ * AYNI harcanabilir veritabanına bakmak zorundadır. Tek gerçek kaynak olarak `resolveOwnerSeedUrl`
+ * kullanılır — örtük `postgres:postgres` geri dönüşü engellenir.
  */
-function verifierUrl(): string {
-  const raw = process.env.MAS_E2E_DATABASE_URL ?? process.env.DATABASE_URL ?? "";
-  if (!raw) {
+export function verifierUrl(opts?: ResolveOwnerSeedUrlOptions): string {
+  const env = opts?.env ?? process.env;
+  const raw = env.MAS_E2E_DATABASE_URL ?? env.DATABASE_URL ?? "";
+  if (!raw.trim()) {
     throw new Error(
       "MAS_E2E_DATABASE_URL tanımlı değil. Etkileşim kapısı DB'den before/after okur; " +
         "hedefi tahmin etmesi kasıtlı olarak engellendi.",
     );
   }
-  const name = databaseNameFromUrl(raw);
-  // Bu kapı satır YAZAN akışları tetikler (ödendi, arşivle, oluştur…). Hedefin harcanabilir
-  // olduğunu ADIYLA söylemesi şart — `scripts/db/owner-url.ts` ile aynı sözlük, aynı reflek.
-  if (!isDisposableDatabaseName(name)) {
-    throw new Error(
-      `GÜVENLİK DURDURMASI: '${name ?? "(okunamadı)"}' disposable görünmüyor. ` +
-        "Etkileşim kapısı gerçek mutation tetikler; gerçek veritabanına ASLA çalıştırılmaz.",
-    );
-  }
-  const url = new URL(raw);
-  if (process.env.MAS_E2E_VERIFIER_URL) return process.env.MAS_E2E_VERIFIER_URL;
-  const migrationBase = process.env.MIGRATION_DATABASE_URL ?? (() => { try { return readEnvLocal().MIGRATION_DATABASE_URL; } catch { return undefined; } })();
-  if (migrationBase && name) return swapDatabase(migrationBase, name);
-  url.username = "postgres";
-  url.password = "postgres";
-  return url.toString();
+  return resolveOwnerSeedUrl(raw, opts);
 }
 
 /** Tek seferlik, kısa ömürlü doğrulama bağlantısı. Havuz YOK: testler sıralı çalışır. */
@@ -151,7 +141,7 @@ export async function ensureMissingAmountInstance(): Promise<string> {
          (payment_id, instance_month, due_date, amount, amount_status, direction, status, amount_source)
        values ($1, date_trunc('month', now())::date,
                (date_trunc('month', now()) + interval '11 days')::date,
-               null, 'unknown', 'outflow', 'unpaid', 'legacy_unknown')
+               null, 'missing', 'outflow', 'unpaid', 'legacy_unknown')
        returning id`,
       [paymentId],
     );

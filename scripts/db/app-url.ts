@@ -14,6 +14,13 @@
 import { existsSync, readFileSync } from "node:fs";
 import net from "node:net";
 import path from "node:path";
+import { isDisposableDatabaseName } from "./owner-url";
+
+const NON_SECRET_PG_RUNTIME_KEYS = Object.freeze([
+  "MAS_PG_RUNTIME",
+  "MAS_PG_BIN_DIR",
+  "MAS_BACKUP_TIMEOUT_MS",
+] as const);
 
 /**
  * Bağlantı dizesinde YALNIZ veritabanı adını değiştirir.
@@ -57,4 +64,61 @@ export function portInUse(port: string | number): Promise<boolean> {
     socket.once("timeout", () => done(false));
     socket.once("error", () => done(false));
   });
+}
+
+/**
+ * Hedef veritabanı için çalışma zamanı ortamını çözer (`F-06`):
+ * - `.env.local` mevcutsa yalnız sır olmayan PG araç anahtarlarını (`MAS_PG_RUNTIME`,
+ *   `MAS_PG_BIN_DIR`, `MAS_BACKUP_TIMEOUT_MS`) süreç ortamıyla birleştirir; parola sızdırmaz.
+ * - `.env.local` yoksa:
+ *   1) Hedef harcanabilir (`isDisposableDatabaseName(targetDbName) === true`) DEĞİLSE fail-closed reddeder.
+ *   2) Süreç ortamında açık bir CI/runtime tanımı (`MIGRATION_DATABASE_URL`, `MAS_PG_RUNTIME`
+ *      veya `PGHOST`) yoksa sessiz yerel superuser geri dönüşünü engellemek için fail-closed reddeder.
+ *   3) Asla örtük `postgres:postgres` kimliği üretmez; yalnız açık `procEnv` değerlerini döndürür.
+ */
+export function resolveRuntimeEnvForTarget(
+  targetDbName: string,
+  procEnv: Readonly<Record<string, string | undefined>> = process.env,
+  readEnvLocalFn: () => Record<string, string> = readEnvLocal,
+): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(procEnv)) {
+    if (typeof v === "string") {
+      out[k] = v;
+    }
+  }
+
+  let fileEnv: Record<string, string>;
+  try {
+    fileEnv = readEnvLocalFn();
+  } catch (err) {
+    if (!isDisposableDatabaseName(targetDbName)) {
+      const shown = targetDbName.trim() || "(boş)";
+      throw new Error(
+        `GÜVENLİK DURDURMASI: .env.local okunamadı ve '${shown}' harcanabilir (disposable) bir hedef değil ` +
+          `(${err instanceof Error ? err.message : String(err)}).`,
+      );
+    }
+    const hasExplicitCiRuntime = Boolean(
+      procEnv.MIGRATION_DATABASE_URL?.trim() ||
+        procEnv.MAS_PG_RUNTIME?.trim() ||
+        procEnv.PGHOST?.trim(),
+    );
+    if (!hasExplicitCiRuntime) {
+      throw new Error(
+        `GÜVENLİK DURDURMASI: .env.local yok ve harcanabilir hedef '${targetDbName}' için açık CI çalışma zamanı ` +
+          "(MIGRATION_DATABASE_URL, MAS_PG_RUNTIME veya PGHOST) tanımlanmadı — örtük superuser geri dönüşü engellendi.",
+      );
+    }
+    return out;
+  }
+
+  for (const key of NON_SECRET_PG_RUNTIME_KEYS) {
+    const existing = out[key]?.trim();
+    const fromFile = fileEnv[key]?.trim();
+    if (!existing && fromFile) {
+      out[key] = fromFile;
+    }
+  }
+  return out;
 }

@@ -346,6 +346,48 @@ export async function importUblTrUpload(
     let stagedPartyCount = 0;
     const invoiceNumbers: string[] = [];
 
+    // Resolve or provision (if admin/owner) an integration_connections + integration_sync_runs lineage anchor
+    let einvoiceConnId: string | null =
+      (
+        await client.query<{ id: string }>(
+          `select id::text as id
+             from public.integration_connections
+            where integration_kind = 'einvoice'
+            order by created_at asc
+            limit 1`,
+        )
+      ).rows[0]?.id ?? null;
+
+    if (!einvoiceConnId) {
+      const canCreateConn =
+        (
+          await client.query<{ ok: boolean }>(
+            `select coalesce(rolsuper or rolbypassrls or rolname = 'mas_radar_admin', false) as ok
+               from pg_roles
+              where rolname = current_user`,
+          )
+        ).rows[0]?.ok ?? false;
+      if (canCreateConn) {
+        const connIns = await client.query<{ id: string }>(
+          `insert into public.integration_connections (integration_kind, name, provider, status)
+           values ('einvoice', 'GİB UBL-TR e-Fatura Dosya Aktarımı', 'gib_ubl_tr', 'enabled')
+           returning id::text as id`,
+        );
+        einvoiceConnId = connIns.rows[0]?.id ?? null;
+      }
+    }
+
+    let syncRunId: string | null = null;
+    if (einvoiceConnId) {
+      const runIns = await client.query<{ id: string }>(
+        `insert into public.integration_sync_runs (integration_id, status, fetched_count)
+         values ($1::uuid, 'running', $2)
+         returning id::text as id`,
+        [einvoiceConnId, parsedInvoices.length],
+      );
+      syncRunId = runIns.rows[0]?.id ?? null;
+    }
+
     for (const { xml, parsed } of parsedInvoices) {
       const payloadSha = createHash("sha256").update(xml, "utf8").digest("hex");
 
@@ -392,14 +434,16 @@ export async function importUblTrUpload(
         partyId = byName.rows[0]?.id ?? null;
       }
 
-      // Record raw SHA-256 evidence payload
-      await client.query(
-        `insert into public.integration_raw_payloads
-           (provider, resource_type, external_id, payload_sha256, payload_json)
-         values ('gib_ubl_tr', 'ubl_invoice', $1, $2, $3::jsonb)
-         on conflict do nothing`,
-        [parsed.ublUuid, payloadSha, JSON.stringify(parsed)],
-      );
+      // Record raw SHA-256 evidence payload when sync_run_id anchor is available
+      if (syncRunId) {
+        await client.query(
+          `insert into public.integration_raw_payloads
+             (sync_run_id, resource_type, external_id, payload_sha256, payload_json)
+           values ($1::uuid, 'ubl_invoice', $2, $3, $4::jsonb)
+           on conflict (resource_type, external_id, payload_sha256) do nothing`,
+          [syncRunId, parsed.ublUuid, payloadSha, JSON.stringify(parsed)],
+        );
+      }
 
       if (!partyId) {
         // S-10 Shield: Stage unknown counterparty for explicit operator review
@@ -562,6 +606,32 @@ export async function importUblTrUpload(
       importedCount += 1;
       invoiceNumbers.push(parsed.invoiceNo);
     }
+
+    if (syncRunId) {
+      await client.query(
+        `update public.integration_sync_runs
+            set status = 'succeeded',
+                finished_at = now(),
+                upserted_count = $2,
+                staged_party_count = $3
+          where id = $1::uuid`,
+        [syncRunId, importedCount, stagedPartyCount],
+      );
+    }
+
+    await audit(client, {
+      actor: params.actorId,
+      action: "import_ubl_tr_upload",
+      entityTable: syncRunId ? "integration_sync_runs" : "integration_staged_parties",
+      entityId: syncRunId,
+      after: {
+        parsedCount: parsedInvoices.length,
+        importedCount,
+        duplicateCount,
+        stagedPartyCount,
+        invoiceNumbers,
+      },
+    });
 
     await client.query("commit");
     return {

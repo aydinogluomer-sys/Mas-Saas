@@ -1,0 +1,213 @@
+# MAS Nexus — Repository Secret & Financial Exposure Policy (.gitleaks.toml)
+# Owned exclusively by Agent 13 (F-01 — Public Repository Exposure, Secret Scan & Disclosure Containment).
+# Consumed by Gitleaks v8+ CLI (`gitleaks git` / `gitleaks dir`) and CI secret-exposure verification (`Agent 12`).
+# NOTE: All regular expressions strictly adhere to Go `regexp` (RE2) syntax (no lookarounds or backreferences).
+
+title = "MAS Nexus Secret & Financial PII Exposure Policy"
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Skip lockfile, visual snapshot PNGs, and self-referential policy config"
+paths = [
+  '''^\.gitleaks\.toml$''',
+  '''^pnpm-lock\.yaml$''',
+  '''^tests/visual/__snapshots__/.*''',
+]
+
+[[allowlists]]
+description = "Documented non-secret disposable CI and Playwright visual harness markers"
+regexTarget = "match"
+regexes = [
+  '''^ci-only-not-a-secret-0123456789$''',
+  '''^faz2-visual-harness-not-a-secret$''',
+]
+
+[[rules]]
+id = "mas-telegram-bot-token"
+description = "Telegram Bot API token ([0-9]{8,10}:[A-Za-z0-9_-]{35})"
+regex = '''\b([0-9]{8,10}:[A-Za-z0-9_-]{35})\b'''
+secretGroup = 1
+tags = ["secret", "telegram", "mas-nexus"]
+
+  [[rules.allowlists]]
+  description = "Ignore explicit dummy/synthetic Telegram bot token markers"
+  regexTarget = "match"
+  regexes = [
+    '''(?:not-a-secret|NOT-A-SECRET|dummy|DUMMY|fake|FAKE|mock|MOCK|example|EXAMPLE|placeholder|PLACEHOLDER|00000000|12345678)''',
+  ]
+
+  [[rules.allowlists]]
+  description = "Ignore synthetic redaction probes inside unit/security test suites"
+  paths = [
+    '''^tests/.*\.(?:test|spec)\.tsx?$''',
+    '''^src/.*\.test\.tsx?$''',
+    '''^scripts/qa/verify-rg-15-gates\.ts$''',
+  ]
+
+[[rules]]
+id = "mas-telegram-bot-url-token"
+description = "Telegram Bot API endpoint URL containing an unmasked bot token"
+regex = '''/bot([0-9]{5,12}:[A-Za-z0-9_-]{12,})'''
+secretGroup = 1
+keywords = ["/bot"]
+tags = ["secret", "telegram", "url", "mas-nexus"]
+
+  [[rules.allowlists]]
+  description = "Ignore masked tokens and synthetic redaction unit-test probes"
+  paths = [
+    '''^tests/.*\.(?:test|spec)\.tsx?$''',
+    '''^src/.*\.test\.tsx?$''',
+    '''^scripts/qa/verify-rg-15-gates\.ts$''',
+  ]
+
+[[rules]]
+id = "mas-postgres-connection-credentials"
+description = "PostgreSQL connection URI with non-CI / non-placeholder password"
+regex = '''postgres(?:ql)?://[^:\s"'`]+:([^@\s"'`]+)@[^\s"'`]+'''
+secretGroup = 1
+keywords = ["postgres://", "postgresql://"]
+tags = ["secret", "database", "postgresql", "mas-nexus"]
+
+  [[rules.allowlists]]
+  description = "Allow documented disposable CI passwords, templates, shell interpolations, and masked comments"
+  regexTarget = "match"
+  regexes = [
+    '''^ci-only-not-a-secret-0123456789$''',
+    '''^faz2-visual-harness-not-a-secret$''',
+    '''^postgres$''',
+    '''^CHANGE_ME$''',
+    '''^nopass$''',
+    '''^\*+$''',
+    '''^…+$''',
+    '''^[xX]$''',
+    '''^(?:PAROLA|PASSWORD|SECRET|SIFRE|parola|password|secret|sifre)$''',
+    '''^\$\{\{?[^}]+\}?\}$''',
+    '''^\$[A-Za-z_][A-Za-z0-9_]*$''',
+    '''^<[^>]+>$''',
+    '''^\[[^\]]+\]$''',
+  ]
+
+  [[rules.allowlists]]
+  description = "Allow non-connecting unit-test fallback sentinel in src/lib/env.ts"
+  regexTarget = "line"
+  regexes = [
+    '''unit_test_no_connect''',
+  ]
+
+  [[rules.allowlists]]
+  description = "Allow synthetic PostgreSQL redaction and URL-parser unit tests"
+  paths = [
+    '''^tests/.*\.(?:test|spec)\.tsx?$''',
+    '''^src/.*\.test\.tsx?$''',
+    '''^scripts/qa/verify-rg-15-gates\.ts$''',
+    '''^scripts/ops/telemetry-alerting-verify\.ts$''',
+  ]
+
+[[rules]]
+id = "mas-bearer-token"
+description = "Hardcoded HTTP Authorization Bearer token"
+regex = '''\bBearer\s+([A-Za-z0-9._~+/=-]{20,})'''
+secretGroup = 1
+keywords = ["bearer"]
+tags = ["secret", "auth", "bearer", "mas-nexus"]
+
+  [[rules.allowlists]]
+  description = "Ignore masked Bearer placeholders and dummy markers"
+  regexTarget = "match"
+  regexes = [
+    '''^\*+$''',
+    '''(?:not-a-secret|NOT-A-SECRET|dummy|DUMMY|fake|FAKE|mock|MOCK|example|EXAMPLE|placeholder|PLACEHOLDER)''',
+  ]
+
+  [[rules.allowlists]]
+  description = "Ignore synthetic Bearer token redaction probes in test/verify harnesses"
+  paths = [
+    '''^tests/.*\.(?:test|spec)\.tsx?$''',
+    '''^src/.*\.test\.tsx?$''',
+    '''^scripts/qa/verify-rg-15-gates\.ts$''',
+    '''^scripts/ops/telemetry-alerting-verify\.ts$''',
+  ]
+
+[[rules]]
+id = "mas-jwt-token"
+description = "Three-segment JSON Web Token (JWT)"
+regex = '''\b(eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,})\b'''
+secretGroup = 1
+keywords = ["eyj"]
+tags = ["secret", "auth", "jwt", "mas-nexus"]
+
+  [[rules.allowlists]]
+  description = "Ignore synthetic JWTs inside automated unit/security tests"
+  paths = [
+    '''^tests/.*\.(?:test|spec)\.tsx?$''',
+    '''^src/.*\.test\.tsx?$''',
+  ]
+
+[[rules]]
+id = "mas-private-key-header"
+description = "PEM, OpenSSH, or PGP private key block header"
+regex = '''-----BEGIN (?:RSA |EC |DSA |OPENSSH |ENCRYPTED |PGP )?PRIVATE KEY-----'''
+keywords = ["-----begin"]
+tags = ["secret", "private-key", "mas-nexus"]
+
+[[rules]]
+id = "mas-env-secret-assignment"
+description = "Hardcoded secret assigned to sensitive MAS Nexus environment variable"
+regex = '''\b(?:TELEGRAM_BOT_TOKEN|TELEGRAM_INTERNAL_API_KEY|OPENAI_API_KEY|EMAIL_API_KEY|SEED_ADMIN_PASSWORD|MAS_RADAR_APP_DB_PASSWORD)\s*=\s*["']?([^\s#"'\r\n]{8,})["']?'''
+secretGroup = 1
+keywords = [
+  "telegram_bot_token",
+  "telegram_internal_api_key",
+  "openai_api_key",
+  "email_api_key",
+  "seed_admin_password",
+  "mas_radar_app_db_password",
+]
+tags = ["secret", "env", "mas-nexus"]
+
+  [[rules.allowlists]]
+  description = "Allow CI disposable password, template placeholders, and variable expansions"
+  regexTarget = "match"
+  regexes = [
+    '''^ci-only-not-a-secret-0123456789$''',
+    '''^faz2-visual-harness-not-a-secret$''',
+    '''^CHANGE_ME$''',
+    '''^\$\{\{?[^}]+\}?\}$''',
+    '''^\$[A-Za-z_][A-Za-z0-9_]*$''',
+    '''^<[^>]+>$''',
+    '''(?:not-a-secret|NOT-A-SECRET|dummy|DUMMY|fake|FAKE|mock|MOCK|placeholder|PLACEHOLDER|example|EXAMPLE)''',
+  ]
+
+  [[rules.allowlists]]
+  description = "Ignore synthetic env assignments inside automated test suites"
+  paths = [
+    '''^tests/.*\.(?:test|spec)\.tsx?$''',
+    '''^src/.*\.test\.tsx?$''',
+  ]
+
+[[rules]]
+id = "mas-turkish-iban"
+description = "Unredacted 26-character Turkish IBAN (TR + 24 digits) outside approved synthetic test fixtures"
+regex = '''\b(TR[0-9]{2}(?:\s?[0-9]{4}){5}\s?[0-9]{2})\b'''
+secretGroup = 1
+keywords = ["tr"]
+tags = ["pii", "financial", "iban", "mas-nexus"]
+
+  [[rules.allowlists]]
+  description = "Allow zeroed UI input format mask placeholder"
+  regexTarget = "match"
+  regexes = [
+    '''^TR00\s?0000(?:\s?0000){4}\s?00$''',
+  ]
+
+  [[rules.allowlists]]
+  description = "Allow synthetic ISO 13616 / MOD-97 test fixtures inside approved test and verification files"
+  paths = [
+    '''^tests/.*\.(?:test|spec)\.tsx?$''',
+    '''^src/.*\.test\.tsx?$''',
+    '''^scripts/phase(?:19|20)-verify\.ts$''',
+    '''^scripts/db/constraints-verify\.ts$''',
+    '''^scripts/qa/verify-rg-15-gates\.ts$''',
+  ]

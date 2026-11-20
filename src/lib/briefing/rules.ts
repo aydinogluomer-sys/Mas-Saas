@@ -6,10 +6,31 @@ import {
   computeObligationAmounts,
   type MonetaryEpistemicBasis,
   type ReportConfidenceGrade,
+  type SourceCompletenessStatus,
 } from "@/lib/contracts/remediation-contracts";
 import { decimal, moneyOrNull, type NumericInput } from "@/lib/money";
 import { partitionByCurrency } from "@/lib/currency-policy";
-import { formatOvernightDeltaBridgeMd, type OvernightDeltaAttribution } from "./delta-attribution";
+import {
+  formatOvernightDeltaBridgeMd,
+  isUnverifiedCashSourceStatus,
+  type OvernightDeltaAttribution,
+} from "./delta-attribution";
+
+const BRIEFING_STALE_THRESHOLD_DAYS = 45;
+
+function buildBriefingStaleWatermark(
+  sourceFreshnessDays: number | null | undefined,
+  sourceId?: string | null,
+): string | null {
+  const srcSuffix = sourceId ? ` · source_id=${sourceId}` : "";
+  if (sourceFreshnessDays === null || sourceFreshnessDays === undefined || !Number.isFinite(sourceFreshnessDays)) {
+    return `[STALE DATA WATERMARK · STALE_SOURCE_WARNING] Geçerli çalışma kitabı içe aktarımı yok (sourceFreshnessDays=null${srcSuffix}) — kaynak tazeliği doğrulanamadı.`;
+  }
+  if (sourceFreshnessDays > BRIEFING_STALE_THRESHOLD_DAYS) {
+    return `[STALE DATA WATERMARK · STALE_SOURCE_WARNING] Son geçerli çalışma kitabı içe aktarımı ${sourceFreshnessDays} gün eski (> ${BRIEFING_STALE_THRESHOLD_DAYS} gün eşiği${srcSuffix}) — projeksiyon verisi bayattır.`;
+  }
+  return null;
+}
 
 export interface BriefingCurrencyPosition {
   currency: string;
@@ -21,19 +42,27 @@ export interface BriefingCurrencyPosition {
 export interface BriefingProvenance {
   snapshotId: string;
   asOfDate: string;
+  businessDateISO?: string | null;
   asOfAt: string;
   schemaVersion: string | null;
   migrationCount?: number | null;
+  sourceWorkbookId?: string | null;
+  source_id?: string | null;
   lastWorkbookImportAt: string | null;
+  latestValidImportAt?: string | null;
   lastWorkbookFilename?: string | null;
   workbookStaleDays: number | null;
   lastBankTxAt: string | null;
   contentSha256: string;
   calculationVersion?: string;
   sourceFreshnessDays?: number | null;
+  isStaleSource?: boolean;
+  staleDataWatermark?: string | null;
+  cashSourceStatus?: SourceCompletenessStatus;
   monetaryBasisByMetric?: Readonly<Record<string, MonetaryEpistemicBasis>>;
   missingMaterialInputs?: readonly string[];
   reconciliationAligned?: boolean;
+  reconciliationStatus?: "ALIGNED" | "MISMATCH" | "UNVERIFIED";
   controlAlertsOpenCount?: number;
   confidenceGrade?: ReportConfidenceGrade;
 }
@@ -41,6 +70,8 @@ export interface BriefingProvenance {
 export interface BriefingFacts {
   todayISO: string;
   availableCash: number | null;
+  cashSourceStatus?: SourceCompletenessStatus;
+  hasVerifiedBankFeed?: boolean;
   minCashFloor: number | null;
   liquidityGap7: number | null;
   liquidityGap30: number | null;
@@ -225,18 +256,61 @@ export function collectCriticalFindings(
  * or imply liquidity safety when `liquidityGap7 == null` or `availableCash == null` (e.g. FIN-03
  * unknown opening balance or missing TRY position).
  */
+function resolveEffectiveBriefingCash(f: {
+  availableCash?: number | null;
+  consolidatedCashTry?: number | null;
+  cashSourceStatus?: SourceCompletenessStatus;
+  hasVerifiedBankFeed?: boolean;
+  provenance?: BriefingProvenance | null;
+}): { availableCash: number | null; consolidatedCashTry: number | null } {
+  const unverifiedStatus =
+    isUnverifiedCashSourceStatus(f.cashSourceStatus) ||
+    isUnverifiedCashSourceStatus(f.provenance?.cashSourceStatus);
+  const effectiveAvailableCash =
+    !unverifiedStatus &&
+    f.availableCash !== null &&
+    f.availableCash !== undefined &&
+    Number.isFinite(f.availableCash) &&
+    !(
+      f.hasVerifiedBankFeed === false &&
+      f.availableCash === 0 &&
+      f.cashSourceStatus !== "NO_ACTIVE_ACCOUNTS_VERIFIED"
+    )
+      ? f.availableCash
+      : null;
+
+  const effectiveConsolidatedCashTry =
+    !unverifiedStatus &&
+    f.consolidatedCashTry !== null &&
+    f.consolidatedCashTry !== undefined &&
+    Number.isFinite(f.consolidatedCashTry) &&
+    !(
+      f.hasVerifiedBankFeed === false &&
+      f.consolidatedCashTry === 0 &&
+      f.cashSourceStatus !== "NO_ACTIVE_ACCOUNTS_VERIFIED"
+    )
+      ? f.consolidatedCashTry
+      : null;
+
+  return {
+    availableCash: effectiveAvailableCash,
+    consolidatedCashTry: effectiveConsolidatedCashTry,
+  };
+}
+
 export function headline(
   f: BriefingFacts,
   options: { masked?: boolean } = {},
 ): { text: string; tone: "neg" | "warn" | "pos" } {
   const masked = Boolean(options.masked);
+  const { availableCash: effectiveCash } = resolveEffectiveBriefingCash(f);
   if (f.liquidityGap7 != null && f.liquidityGap7 > 0) {
     return { text: `7 gün içinde ${tl(f.liquidityGap7, masked)} likidite açığı var.`, tone: "neg" };
   }
   if (f.criticalControls.length > 0) {
     return { text: `${f.criticalControls.length} kritik kontrol bulgusu açık.`, tone: "neg" };
   }
-  if (f.availableCash != null && f.minCashFloor != null && f.availableCash < f.minCashFloor) {
+  if (effectiveCash != null && f.minCashFloor != null && effectiveCash < f.minCashFloor) {
     return { text: `Nakit, ${tl(f.minCashFloor, masked)} tabanının altında.`, tone: "neg" };
   }
   if (f.overdueCount > 0) {
@@ -245,7 +319,7 @@ export function headline(
   if (f.todayCount > 0) {
     return { text: `Bugün ${f.todayCount} kalem, ${tl(f.todayOutflowKnown, masked)} çıkış.`, tone: "warn" };
   }
-  if (f.liquidityGap7 == null || f.availableCash == null) {
+  if (f.liquidityGap7 == null || effectiveCash == null) {
     return {
       text: "7 günlük likidite açığı hesaplanamadı — likidite pozisyonu bilinmiyor / ölçülemez (açılış bakiyesi eksik).",
       tone: "warn",
@@ -255,12 +329,19 @@ export function headline(
 }
 
 export function briefingStatus(
-  f: Pick<BriefingFacts, "criticalControls" | "liquidityGap7"> & { availableCash?: number | null },
+  f: Pick<BriefingFacts, "criticalControls" | "liquidityGap7"> & {
+    availableCash?: number | null;
+    cashSourceStatus?: SourceCompletenessStatus;
+    hasVerifiedBankFeed?: boolean;
+    provenance?: BriefingProvenance | null;
+  },
 ): { text: string; tone: "neg" | "neutral" | "pos" } {
+  const hasExplicitCash = Object.prototype.hasOwnProperty.call(f, "availableCash");
+  const { availableCash: effectiveCash } = resolveEffectiveBriefingCash(f);
   if (f.criticalControls.length > 0) {
     return { text: `${f.criticalControls.length} kritik kontrol`, tone: "neg" };
   }
-  if (f.liquidityGap7 == null || f.availableCash === null) {
+  if (f.liquidityGap7 == null || (hasExplicitCash && effectiveCash === null)) {
     return { text: "likidite bilinmiyor", tone: "neutral" };
   }
   if (f.liquidityGap7 > 0) return { text: "likidite açığı var", tone: "neg" };
@@ -273,10 +354,11 @@ export function todaysActions(
   options: { masked?: boolean } = {},
 ): string[] {
   const masked = Boolean(options.masked);
+  const { availableCash: effectiveCash } = resolveEffectiveBriefingCash(f);
   const a: string[] = [];
   if (f.liquidityGap7 != null && f.liquidityGap7 > 0) {
     a.push(`Likidite açığını kapat: ${tl(f.liquidityGap7, masked)} (7 gün).`);
-  } else if (f.liquidityGap7 == null || f.availableCash == null) {
+  } else if (f.liquidityGap7 == null || effectiveCash == null) {
     a.push("7 günlük likidite pozisyonu bilinmiyor (ölçülemez) — kasa/banka açılış bakiyelerini tamamla.");
   }
   for (const c of collectCriticalFindings(f)) {
@@ -299,17 +381,42 @@ export function todaysActions(
 export function renderBriefing(f: BriefingFacts, options: { masked?: boolean } = {}): string {
   const masked = Boolean(options.masked);
   const h = headline(f, options);
-  const cashBasis: MonetaryEpistemicBasis = f.availableCash == null ? "UNKNOWN" : "ACTUAL";
+  const { availableCash: effectiveCash, consolidatedCashTry: effectiveConsolidatedCash } =
+    resolveEffectiveBriefingCash(f);
+  const cashBasis: MonetaryEpistemicBasis = effectiveCash == null ? "UNKNOWN" : "ACTUAL";
+
+  const prov = f.provenance;
+  const provFreshnessDays =
+    prov != null
+      ? prov.sourceFreshnessDays !== undefined
+        ? prov.sourceFreshnessDays
+        : prov.workbookStaleDays
+      : undefined;
+  const provSourceId = prov ? (prov.source_id ?? prov.sourceWorkbookId ?? null) : null;
+  const staleWatermark =
+    prov != null
+      ? prov.staleDataWatermark !== undefined
+        ? prov.staleDataWatermark
+        : buildBriefingStaleWatermark(
+            provFreshnessDays,
+            provSourceId ?? prov.lastWorkbookFilename ?? null,
+          )
+      : null;
+
   const lines: string[] = [];
   lines.push(`# CFO Sabah Brifingi — ${f.todayISO}`);
   lines.push("");
   lines.push(`**${h.text}**`);
+  if (staleWatermark) {
+    lines.push("");
+    lines.push(`> ${staleWatermark}`);
+  }
   lines.push("");
   lines.push("## Nakit");
-  lines.push(`- Kullanılabilir nakit: ${tl(f.availableCash, masked)} [${cashBasis}]`);
-  if (f.consolidatedCashTry != null && f.consolidatedCashTry !== f.availableCash) {
+  lines.push(`- Kullanılabilir nakit: ${tl(effectiveCash, masked)} [${cashBasis}]`);
+  if (effectiveConsolidatedCash != null && effectiveConsolidatedCash !== effectiveCash) {
     lines.push(
-      `- Konsolide çok-dövizli nakit (TCMB${f.fxRatesAsOf ? ` ${f.fxRatesAsOf}` : ""}): ${tl(f.consolidatedCashTry, masked)} [ACTUAL]`,
+      `- Konsolide çok-dövizli nakit (TCMB${f.fxRatesAsOf ? ` ${f.fxRatesAsOf}` : ""}): ${tl(effectiveConsolidatedCash, masked)} [ACTUAL]`,
     );
   }
   if (f.workbookForecastClosingTry !== undefined) {
@@ -327,7 +434,7 @@ export function renderBriefing(f: BriefingFacts, options: { masked?: boolean } =
   lines.push(
     `- 30 gün likidite açığı: ${f.liquidityGap30 == null ? "— (bilinmiyor / ölçülemez) [UNKNOWN]" : `${tl(f.liquidityGap30, masked)} [PLANNED]`}`,
   );
-  if (f.availableCash == null || f.liquidityGap7 == null) {
+  if (effectiveCash == null || f.liquidityGap7 == null) {
     lines.push("- **Likidite uyarısı: 7 günlük likidite açığı / nakit pozisyonu bilinmiyor (ölçülemez).**");
   }
   lines.push("");
@@ -381,17 +488,44 @@ export function renderBriefing(f: BriefingFacts, options: { masked?: boolean } =
   }
   lines.push(
     `- Nakit döngüsü (envanter hariç): ${f.cycleExcludingInventory == null ? "—" : `${f.cycleExcludingInventory} gün`}`);
-  if (f.provenance) {
+  if (prov) {
+    const resolvedConfidence =
+      prov.confidenceGrade ??
+      (effectiveCash == null
+        ? "UNVERIFIED_CASH_BASIS"
+        : provFreshnessDays != null && provFreshnessDays > BRIEFING_STALE_THRESHOLD_DAYS
+          ? "STALE_SOURCE_WARNING"
+          : "PARTIAL_MISSING_INPUTS");
+    const resolvedAligned = prov.reconciliationAligned ?? true;
+    const resolvedReconStatus =
+      prov.reconciliationStatus ??
+      (!resolvedAligned
+        ? "MISMATCH"
+        : effectiveCash == null || !prov.lastBankTxAt
+          ? "UNVERIFIED"
+          : "ALIGNED");
+    const resolvedBasis: Record<string, MonetaryEpistemicBasis> = {
+      availableBankCash: cashBasis,
+      scheduledOutflows: "PLANNED",
+      workbookMonthlyCash: "FORECAST",
+      bankReconciledFlows: prov.lastBankTxAt ? "RECONCILED" : "UNKNOWN",
+      ...(prov.monetaryBasisByMetric ?? {}),
+    };
+    const basisSummary = Object.entries(resolvedBasis)
+      .map(([k, v]) => `${k}=${v}`)
+      .join(" · ");
     lines.push("");
     lines.push("## Veri kaynağı ve güven derecesi");
+    lines.push(`- Güven derecesi: ${resolvedConfidence}`);
     lines.push(
-      `- Güven derecesi: ${f.provenance.confidenceGrade ?? (f.availableCash == null ? "UNVERIFIED_CASH_BASIS" : "PARTIAL_MISSING_INPUTS")}`,
+      `- Son çalışma kitabı: ${provFreshnessDays != null ? `${provFreshnessDays} gün eski` : "yok"} · Son banka ekstresi: ${prov.lastBankTxAt ? `${prov.lastBankTxAt} [RECONCILED]` : "yok [UNKNOWN]"}`,
     );
     lines.push(
-      `- Son çalışma kitabı: ${f.provenance.workbookStaleDays != null ? `${f.provenance.workbookStaleDays} gün eski` : "yok"} · Son banka ekstresi: ${f.provenance.lastBankTxAt ? `${f.provenance.lastBankTxAt} [RECONCILED]` : "yok [UNKNOWN]"}`,
+      `- Kaynak izi (lineage): as_of=${prov.businessDateISO ?? prov.asOfDate ?? f.todayISO} · source_id=${provSourceId ?? "yok"} · latest_valid_import_at=${prov.latestValidImportAt ?? prov.lastWorkbookImportAt ?? "yok"} · source_freshness_days=${provFreshnessDays ?? "null"} · mutabakat=${resolvedReconStatus} (aligned=${String(resolvedAligned)})`,
     );
-    if (f.provenance.missingMaterialInputs && f.provenance.missingMaterialInputs.length > 0) {
-      lines.push(`- Eksik girdiler: ${f.provenance.missingMaterialInputs.join(" · ")}`);
+    lines.push(`- Epistemik baz (monetaryBasisByMetric): ${basisSummary}`);
+    if (prov.missingMaterialInputs && prov.missingMaterialInputs.length > 0) {
+      lines.push(`- Eksik girdiler: ${prov.missingMaterialInputs.join(" · ")}`);
     }
   }
   lines.push("");
@@ -402,6 +536,8 @@ export function renderBriefing(f: BriefingFacts, options: { masked?: boolean } =
   for (const x of actions) lines.push(`- ${x}`);
   return lines.join("\n");
 }
+
+export const buildMorningBriefing = renderBriefing;
 
 function maskUnmaskedTlAmounts(text: string): string {
   return text.replace(

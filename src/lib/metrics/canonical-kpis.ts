@@ -5,12 +5,19 @@
 // yabancı para toplamlarını TRY'ye karıştırma veya yutma) tek kaynaktan sıfırlar.
 
 import type { Pool, PoolClient } from "pg";
+import type { SourceCompletenessStatus } from "@/lib/contracts/remediation-contracts";
+import { DomainError } from "@/lib/domain-error";
 import { intOrNull, moneyOrNull } from "@/lib/money";
 import { istanbulDateISO } from "@/lib/reports/rules";
 import type { CurrencyAmountBucket } from "@/lib/money-format";
 import { gather } from "@/lib/pg-concurrency";
 
 type DbQueryable = Pick<Pool, "query"> | Pick<PoolClient, "query">;
+
+export interface CanonicalKpiLoadOptions {
+  failClosedOnSchemaError?: boolean;
+  failOnSchemaDrift?: boolean;
+}
 
 export interface CanonicalOpenLedgerKpi {
   /** Yalnız `currency = 'TRY'` açık kayıtların sayfalanmamış tam DB toplamı. */
@@ -30,12 +37,16 @@ export interface CanonicalOpenLedgerKpi {
 export interface CanonicalTreasuryCashKpi {
   /**
    * `treasury_position_summary` üzerinden gerçek `TRY` `available_now` bakiyesi.
-   * `FIN-03`: Herhangi bir aktif TRY hesabının açılış bakiyesi belirsizse (`unknownOpeningCountTry > 0`)
-   * `null` döner — uydurma bakiye üretilmez!
+   * `FIN-03` & `F-03`: Herhangi bir aktif TRY hesabının açılış bakiyesi belirsizse,
+   * şema eksikse (`42703`/`42P01`), `available_now` NULL ise veya doğrulanmamış boş görünüm
+   * dönüyorsa `null` döner — uydurma `0` üretilmez (`UNKNOWN != 0`)!
    */
   availableNowTry: number | null;
   accountCountTry: number;
   unknownOpeningCountTry: number;
+  unknownCashAccountCount: number;
+  cashSourceStatus: SourceCompletenessStatus;
+  legacyUnverified: boolean;
   foreignBuckets: Array<{
     currency: string;
     availableNow: number | null;
@@ -56,6 +67,8 @@ export interface CanonicalOutflow7dKpi {
 export interface CanonicalKpiSnapshot {
   todayISO: string;
   treasuryCash: CanonicalTreasuryCashKpi;
+  cashSourceStatus: SourceCompletenessStatus;
+  legacyUnverified: boolean;
   openReceivables: CanonicalOpenLedgerKpi;
   openPayables: CanonicalOpenLedgerKpi;
   outflow7d: CanonicalOutflow7dKpi;
@@ -129,77 +142,240 @@ export async function loadCanonicalPayablesKpi(db: DbQueryable): Promise<Canonic
   return loadOpenLedgerFromView(db, "payables_open");
 }
 
-export async function loadCanonicalTreasuryCashKpi(db: DbQueryable): Promise<CanonicalTreasuryCashKpi> {
-  const r = await db.query<{
-    currency: string;
-    account_count: number;
-    unknown_opening_count: number;
-    available_now: string | null;
-  }>(
-    `select
-       currency,
-       account_count::int as account_count,
-       coalesce(unknown_opening_count, 0)::int as unknown_opening_count,
-       available_now::text as available_now
-     from public.treasury_position_summary
-     order by (currency = 'TRY') desc, currency`,
-  ).catch((err: unknown) => {
-    const code = (err as { code?: string })?.code;
-    if (code === "42703") {
-      return db.query<{
-        currency: string;
-        account_count: number;
-        unknown_opening_count: number;
-        available_now: string | null;
-      }>(
-        `select
-           currency,
-           account_count::int as account_count,
-           0::int as unknown_opening_count,
-           available_now::text as available_now
-         from public.treasury_position_summary
-         order by (currency = 'TRY') desc, currency`,
-      );
-    }
-    throw err;
-  });
+export async function loadCanonicalTreasuryCashKpi(
+  db: DbQueryable,
+  opts?: CanonicalKpiLoadOptions,
+): Promise<CanonicalTreasuryCashKpi> {
+  const strictSchema = Boolean(opts?.failClosedOnSchemaError || opts?.failOnSchemaDrift);
+  let legacyFallback = false;
+  let schemaIncompatible = false;
 
-  let availableNowTry: number | null = 0;
+  const r = await db
+    .query<{
+      currency: string;
+      account_count: number;
+      unknown_opening_count: number;
+      available_now: string | null;
+    }>(
+      `select
+         currency,
+         account_count::int as account_count,
+         coalesce(unknown_opening_count, 0)::int as unknown_opening_count,
+         available_now::text as available_now
+       from public.treasury_position_summary
+       order by (currency = 'TRY') desc, currency`,
+    )
+    .catch(async (err: unknown) => {
+      const code = (err as { code?: string })?.code;
+      if (code === "42P01") {
+        if (strictSchema) {
+          throw new DomainError(
+            "CONFLICT",
+            "SCHEMA_INCOMPATIBLE: treasury_position_summary görünümü mevcut değil.",
+          );
+        }
+        schemaIncompatible = true;
+        return { rows: [] };
+      }
+      if (code === "42703") {
+        if (strictSchema) {
+          throw new DomainError(
+            "CONFLICT",
+            "SCHEMA_INCOMPATIBLE: treasury_position_summary.unknown_opening_count kolonu eksik.",
+          );
+        }
+        legacyFallback = true;
+        return db
+          .query<{
+            currency: string;
+            account_count: number;
+            unknown_opening_count: number;
+            available_now: string | null;
+          }>(
+            `select
+               currency,
+               account_count::int as account_count,
+               0::int as unknown_opening_count,
+               available_now::text as available_now
+             from public.treasury_position_summary
+             order by (currency = 'TRY') desc, currency`,
+          )
+          .catch((fallbackErr: unknown) => {
+            const fbCode = (fallbackErr as { code?: string })?.code;
+            if (fbCode === "42P01" || fbCode === "42703") {
+              schemaIncompatible = true;
+              return { rows: [] };
+            }
+            throw fallbackErr;
+          });
+      }
+      throw err;
+    });
+
+  if (schemaIncompatible) {
+    return {
+      availableNowTry: null,
+      accountCountTry: 0,
+      unknownOpeningCountTry: 0,
+      unknownCashAccountCount: 0,
+      cashSourceStatus: "SCHEMA_INCOMPATIBLE",
+      legacyUnverified: false,
+      foreignBuckets: [],
+    };
+  }
+
+  let availableNowTry: number | null = null;
   let accountCountTry = 0;
   let unknownOpeningCountTry = 0;
+  let tryAvailableParsed: number | null = null;
   let sawTry = false;
   const foreignBuckets: CanonicalTreasuryCashKpi["foreignBuckets"] = [];
 
   for (const row of r.rows) {
     const accountCount = intOrNull(row.account_count) ?? 0;
     const unknownCount = intOrNull(row.unknown_opening_count) ?? 0;
-    const available = unknownCount > 0 ? null : moneyOrNull(row.available_now);
+    const rawAvailable =
+      row.available_now !== undefined
+        ? row.available_now
+        : ((row as { available?: string | null }).available ?? null);
+    const parsedAvailable = moneyOrNull(rawAvailable);
+
     if (row.currency === "TRY") {
       sawTry = true;
       accountCountTry = accountCount;
       unknownOpeningCountTry = unknownCount;
-      availableNowTry = unknownCount > 0 ? null : (available ?? 0);
+      tryAvailableParsed = parsedAvailable;
     } else {
+      const foreignAvailable =
+        !legacyFallback &&
+        unknownCount === 0 &&
+        accountCount > 0 &&
+        parsedAvailable !== null &&
+        Number.isFinite(parsedAvailable)
+          ? parsedAvailable
+          : null;
       foreignBuckets.push({
         currency: row.currency,
-        availableNow: available,
+        availableNow: foreignAvailable,
         accountCount,
         unknownOpeningCount: unknownCount,
       });
     }
   }
 
-  if (!sawTry) {
-    availableNowTry = 0;
+  if (legacyFallback) {
+    const unknownCashAccountCount =
+      unknownOpeningCountTry +
+      foreignBuckets.reduce((sum, b) => sum + b.unknownOpeningCount, 0);
+    return {
+      availableNowTry: null,
+      accountCountTry,
+      unknownOpeningCountTry,
+      unknownCashAccountCount,
+      cashSourceStatus: "LEGACY_UNVERIFIED",
+      legacyUnverified: true,
+      foreignBuckets,
+    };
   }
+
+  let cashSourceStatus: SourceCompletenessStatus;
+
+  if (sawTry && unknownOpeningCountTry > 0) {
+    availableNowTry = null;
+    cashSourceStatus = "PARTIAL_MISSING_OPENING";
+  } else if (sawTry && accountCountTry > 0) {
+    if (tryAvailableParsed !== null && Number.isFinite(tryAvailableParsed)) {
+      availableNowTry = tryAvailableParsed;
+      cashSourceStatus = "COMPLETE";
+    } else {
+      availableNowTry = null;
+      cashSourceStatus = "SOURCE_UNAVAILABLE";
+    }
+  } else {
+    // No TRY row (or accountCountTry <= 0): never fabricate 0 unless 0 active TRY accounts are explicitly proven on intact schema.
+    const verifyRes = await db
+      .query<{
+        active_try_count: number | string | null;
+        unknown_try_count: number | string | null;
+      }>(
+        `select
+           count(*)::int as active_try_count,
+           count(*) filter (where opening_balance is null)::int as unknown_try_count
+         from public.cash_accounts
+         where is_active = true
+           and archived_at is null
+           and coalesce(currency, 'TRY') = 'TRY'`,
+      )
+      .catch((verifyErr: unknown) => {
+        const vCode = (verifyErr as { code?: string })?.code;
+        if (vCode === "42P01" || vCode === "42703") {
+          if (strictSchema) {
+            throw new DomainError(
+              "CONFLICT",
+              "SCHEMA_INCOMPATIBLE: cash_accounts şeması doğrulanamadı.",
+            );
+          }
+          return { kind: "schema_error" as const, rows: [] };
+        }
+        return { kind: "unavailable_error" as const, rows: [] };
+      });
+
+    if ("kind" in verifyRes && verifyRes.kind === "schema_error") {
+      availableNowTry = null;
+      cashSourceStatus = "SCHEMA_INCOMPATIBLE";
+    } else if (
+      ("kind" in verifyRes && verifyRes.kind === "unavailable_error") ||
+      !Array.isArray(verifyRes.rows) ||
+      verifyRes.rows.length !== 1
+    ) {
+      availableNowTry = null;
+      cashSourceStatus = "SOURCE_UNAVAILABLE";
+    } else {
+      const vRow = verifyRes.rows[0];
+      const hasExplicitCounts =
+        vRow != null &&
+        Object.prototype.hasOwnProperty.call(vRow, "active_try_count") &&
+        Object.prototype.hasOwnProperty.call(vRow, "unknown_try_count");
+      const activeTryCount = hasExplicitCounts ? intOrNull(vRow.active_try_count) : null;
+      const unknownTryCount = hasExplicitCounts ? intOrNull(vRow.unknown_try_count) : null;
+
+      if (activeTryCount === null || unknownTryCount === null) {
+        availableNowTry = null;
+        cashSourceStatus = "SOURCE_UNAVAILABLE";
+      } else if (activeTryCount === 0 && unknownTryCount === 0) {
+        accountCountTry = 0;
+        unknownOpeningCountTry = 0;
+        availableNowTry = 0;
+        cashSourceStatus = "NO_ACTIVE_ACCOUNTS_VERIFIED";
+      } else if (unknownTryCount > 0) {
+        accountCountTry = Math.max(accountCountTry, activeTryCount);
+        unknownOpeningCountTry = unknownTryCount;
+        availableNowTry = null;
+        cashSourceStatus = "PARTIAL_MISSING_OPENING";
+      } else {
+        accountCountTry = Math.max(accountCountTry, activeTryCount);
+        availableNowTry = null;
+        cashSourceStatus = "SOURCE_UNAVAILABLE";
+      }
+    }
+  }
+
+  const unknownCashAccountCount =
+    unknownOpeningCountTry +
+    foreignBuckets.reduce((sum, b) => sum + b.unknownOpeningCount, 0);
 
   return {
     availableNowTry,
     accountCountTry,
     unknownOpeningCountTry,
+    unknownCashAccountCount,
+    cashSourceStatus,
+    legacyUnverified: false,
     foreignBuckets,
   };
 }
+
+export const loadLiveCashPosition = loadCanonicalTreasuryCashKpi;
 
 export async function loadCanonicalOutflow7dKpi(
   db: DbQueryable,
@@ -265,9 +441,10 @@ export async function loadCanonicalOutflow7dKpi(
 export async function loadCanonicalKpis(
   db: DbQueryable,
   todayISO = istanbulDateISO(),
+  opts?: CanonicalKpiLoadOptions,
 ): Promise<CanonicalKpiSnapshot> {
   const [treasuryCash, openReceivables, openPayables, outflow7d] = await gather(db, [
-    () => loadCanonicalTreasuryCashKpi(db),
+    () => loadCanonicalTreasuryCashKpi(db, opts),
     () => loadCanonicalReceivablesKpi(db),
     () => loadCanonicalPayablesKpi(db),
     () => loadCanonicalOutflow7dKpi(db, todayISO),
@@ -275,6 +452,8 @@ export async function loadCanonicalKpis(
   return {
     todayISO,
     treasuryCash,
+    cashSourceStatus: treasuryCash.cashSourceStatus,
+    legacyUnverified: treasuryCash.legacyUnverified,
     openReceivables,
     openPayables,
     outflow7d,

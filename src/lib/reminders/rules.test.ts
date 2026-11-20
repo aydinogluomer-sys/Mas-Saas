@@ -11,19 +11,31 @@ import {
   evaluateAndRecordOpsIncidents,
 } from "./outbox";
 import {
+  CHRONIC_HISTORICAL_OVERDUE_DAYS,
+  ESCALATION_BUCKET_LABELS,
+  bucketToCanonicalStage,
   buildReminderDigestHtml,
   buildReminderMessage,
   classifyEscalationBucket,
+  containsUnsubstantiatedLegalClaim,
+  daysOverdue,
   eligibleDeliveries,
+  evaluateEscalationDecision,
   formatRiskReasonTr,
   formatStatusLabelTr,
+  isChronicHistoricalOverdue,
   isEligible,
+  isOpenObligationStatus,
   matchesReminderOffset,
+  resolveReminderAmounts,
+  sanitizeReminderLegalWording,
   scheduledForDate,
+  stageForOverdueDays,
   thresholdPasses,
   type ReminderRule,
   type ReminderTarget,
 } from "./rules";
+import { istanbulDateISO } from "@/lib/time/istanbul";
 import {
   buildFolioEmailHtml,
   escapeTelegramHtml,
@@ -528,18 +540,24 @@ describe("Outbox idempotency key & Stateful Ops Incident State Machine (5.B & 5.
       if (sql === "begin" || sql === "commit" || sql === "rollback") {
         return { rows: [], rowCount: 0 };
       }
-      if (sql.includes("where status = 'claiming'")) {
+      if (sql.includes("where status = 'claiming'") && !sql.includes("claim_token = $2::uuid")) {
         return { rows: [], rowCount: 0 };
       }
       if (sql.includes("for update skip locked")) {
         return { rows, rowCount: rows.length };
       }
+      if (sql.includes("where id = $1 and status = 'claiming' and claim_token = $2::uuid")) {
+        return { rows: [], rowCount: simulateClaimStolen ? 0 : 1 };
+      }
       if (sql.includes("where id = $1 and claim_token = $2::uuid")) {
         if (simulateClaimStolen) return { rows: [], rowCount: 0 };
-        if (params.length >= 3 && typeof params[2] === "string") {
+        if (params.length >= 3 && typeof params[2] === "string" && !params[2].startsWith("{")) {
           capturedDeadLetterStatus = params[2];
         }
         return { rows: [], rowCount: 1 };
+      }
+      if (sql.includes("where idempotency_key = $1 and status = 'claiming' and claim_token is null")) {
+        return { rows: [], rowCount: 0 };
       }
       throw new Error(`Unexpected outbox SQL: ${sql}`);
     });
@@ -613,6 +631,9 @@ describe("Outbox idempotency key & Stateful Ops Incident State Machine (5.B & 5.
 
     const poolQuery = vi.fn(async (sqlRaw: string, params: unknown[] = []) => {
       const sql = sqlRaw.replace(/\s+/g, " ").trim().toLowerCase();
+      if (sql === "begin" || sql === "commit" || sql === "rollback") {
+        return { rows: [], rowCount: 0 };
+      }
       if (sql.includes("error = 'expired_stale_window'")) {
         // Simulate 2 stale August 2026-08-10 "Bugün ödeme" rows expired upfront!
         return { rows: [], rowCount: 2 };
@@ -652,15 +673,29 @@ describe("Outbox idempotency key & Stateful Ops Incident State Machine (5.B & 5.
           rowCount: outboxSentKeys.size,
         };
       }
+      if (sql.includes("from public.notification_outbox") && sql.includes("where idempotency_key = $1")) {
+        const key = String(params[0] ?? "");
+        if (outboxSentKeys.has(key)) {
+          return { rows: [{ id: `ob-${key.slice(0, 8)}`, status: "sent", metadata: {} }], rowCount: 1 };
+        }
+        return { rows: [], rowCount: 0 };
+      }
       if (sql.startsWith("insert into public.notification_outbox")) {
         const key = String(params[3]);
         outboxSentKeys.add(key);
         return { rows: [{ id: `ob-${key.slice(0, 8)}` }], rowCount: 1 };
       }
       if (sql.startsWith("update public.notification_outbox")) {
-        return { rows: [], rowCount: 1 };
+        return { rows: [{ id: String(params[0] ?? "ob-1") }], rowCount: 1 };
       }
       if (sql.startsWith("update public.reminder_deliveries")) {
+        if (sql.includes("where status = 'claiming'") && !sql.includes("where id = $1")) {
+          return { rows: [], rowCount: 0 };
+        }
+        if (!sql.includes("set status =")) {
+          const targetCount = Array.isArray(params[0]) ? params[0].length : 1;
+          return { rows: [], rowCount: targetCount };
+        }
         const id = String(params[0]);
         if (sql.includes("set status = 'sent'")) {
           updatedDeliveries.set(id, {
@@ -680,7 +715,12 @@ describe("Outbox idempotency key & Stateful Ops Incident State Machine (5.B & 5.
     });
 
     const tg = mockTransport({ channel: "telegram" });
-    const res = await dispatchPending({ query: poolQuery } as unknown as Pool, tg, "2026-11-17");
+    const fakeDispatchClient = { query: poolQuery, release: vi.fn() } as unknown as PoolClient;
+    const fakeDispatchPool = {
+      query: poolQuery,
+      connect: vi.fn(async () => fakeDispatchClient),
+    } as unknown as Pool;
+    const res = await dispatchPending(fakeDispatchPool, tg, "2026-11-17");
 
     // 2 expired_stale_window + 2 superseded_or_closed = 4 skipped; 6 valid sent in 1 consolidated digest!
     expect(res.skipped).toBe(4);
@@ -892,5 +932,139 @@ describe("Outbox idempotency key & Stateful Ops Incident State Machine (5.B & 5.
       "control_alert_auto_resolved",
       "payment_instance_overdue_rollover",
     ]);
+  });
+});
+
+describe("V2 Agent 05 — Temporal Boundaries, Istanbul Midnight, Disjoint Escalation & Wording Safety (RG-06 & F-20)", () => {
+  const stdRules: ReminderRule[] = [
+    rule({ id: "r-p7", offsetDays: 7 }),
+    rule({ id: "r-p3", offsetDays: 3 }),
+    rule({ id: "r-p1", offsetDays: 1 }),
+    rule({ id: "r-0", offsetDays: 0 }),
+    rule({ id: "r-n1", offsetDays: -1 }),
+    rule({ id: "r-n8", offsetDays: -8 }),
+    rule({ id: "r-n31", offsetDays: -31 }),
+  ];
+
+  it("locks exact overdue day calculation and stage classification at 0, 1, 7, 8, 30, 31, 123, 364, and 400 days", () => {
+    expect(CHRONIC_HISTORICAL_OVERDUE_DAYS).toBe(365);
+    const asOf = "2026-11-18";
+    const matrix = [
+      { due: "2026-11-18", days: 0, bucket: "upcoming", stage: "NOT_DUE", ruleId: "r-0", chronic: false },
+      { due: "2026-11-17", days: 1, bucket: "overdue_1_7", stage: "OVERDUE_1_7", ruleId: "r-n1", chronic: false },
+      { due: "2026-11-11", days: 7, bucket: "overdue_1_7", stage: "OVERDUE_1_7", ruleId: "r-n1", chronic: false },
+      { due: "2026-11-10", days: 8, bucket: "overdue_8_30", stage: "OVERDUE_8_30", ruleId: "r-n8", chronic: false },
+      { due: "2026-10-19", days: 30, bucket: "overdue_8_30", stage: "OVERDUE_8_30", ruleId: "r-n8", chronic: false },
+      { due: "2026-10-18", days: 31, bucket: "overdue_30_plus", stage: "OVERDUE_31_PLUS", ruleId: "r-n31", chronic: false },
+      { due: "2026-07-18", days: 123, bucket: "overdue_30_plus", stage: "OVERDUE_31_PLUS", ruleId: "r-n31", chronic: false },
+      { due: "2025-11-19", days: 364, bucket: "overdue_30_plus", stage: "OVERDUE_31_PLUS", ruleId: "r-n31", chronic: false },
+      { due: "2025-10-14", days: 400, bucket: "overdue_30_plus", stage: "OVERDUE_31_PLUS", ruleId: "r-n31", chronic: true },
+    ] as const;
+
+    for (const row of matrix) {
+      expect(daysOverdue(row.due, asOf)).toBe(row.days);
+      expect(classifyEscalationBucket(row.due, asOf)).toBe(row.bucket);
+      expect(bucketToCanonicalStage(row.bucket)).toBe(row.stage);
+      expect(stageForOverdueDays(row.days)).toBe(row.stage);
+      expect(isChronicHistoricalOverdue(row.due, asOf)).toBe(row.chronic);
+
+      const deliveries = eligibleDeliveries(
+        stdRules,
+        [target({ entityId: `g-${row.days}`, dueDate: row.due, status: row.days > 0 ? "late" : "unpaid" })],
+        asOf,
+      );
+      expect(deliveries).toHaveLength(1);
+      expect(deliveries[0]!.ruleId).toBe(row.ruleId);
+      expect(containsUnsubstantiatedLegalClaim(deliveries[0]!.message)).toBe(false);
+    }
+  });
+
+  it("enforces disjoint bucket invariant across -30..+500 day sweep for all open obligation kinds", () => {
+    const dueDate = "2026-05-01";
+    const kinds: Array<{ table: string; kind: ReminderRule["targetKind"]; openStatus: string }> = [
+      { table: "payment_instances", kind: "payment_instance", openStatus: "unpaid" },
+      { table: "checks", kind: "check", openStatus: "in_portfolio" },
+      { table: "loan_installments", kind: "loan_installment", openStatus: "unpaid" },
+      { table: "invoices", kind: "invoice", openStatus: "open" },
+      { table: "promise_to_pay", kind: "promise_to_pay", openStatus: "pending" },
+      { table: "covenant_records", kind: "covenant_record", openStatus: "compliant" },
+    ];
+
+    for (const k of kinds) {
+      const kindRules = stdRules.map((r) => ({ ...r, targetKind: k.kind }));
+      const overdueOnly = kindRules.filter((r) => r.offsetDays < 0);
+      for (let delta = -30; delta <= 500; delta++) {
+        const asOf = scheduledForDate(dueDate, -delta);
+        const t = target({ entityTable: k.table, dueDate, status: k.openStatus });
+        const allMatched = kindRules.filter((r) => isEligible(r, t, asOf));
+        const overdueMatched = overdueOnly.filter((r) => isEligible(r, t, asOf));
+        expect(allMatched.length).toBeLessThanOrEqual(1);
+        expect(overdueMatched).toHaveLength(delta > 0 ? 1 : 0);
+      }
+    }
+  });
+
+  it("blocks paid, cleared, collected, and cancelled obligations and immediately exits overdue on future reschedule", () => {
+    const asOf = "2026-11-18";
+    for (const closed of ["paid", "cleared", "collected", "cancelled", "canceled"]) {
+      expect(isOpenObligationStatus("payment_instances", closed)).toBe(false);
+      expect(isOpenObligationStatus("checks", closed)).toBe(false);
+      expect(resolveReminderAmounts({ amount: 40_000, status: closed }).outstandingAmount).toBe(0);
+      expect(resolveReminderAmounts({ amount: null, status: closed }).outstandingAmount).toBeNull();
+      expect(
+        eligibleDeliveries(stdRules, [target({ dueDate: "2026-11-18", status: closed }), target({ dueDate: "2026-10-01", status: closed })], asOf),
+      ).toHaveLength(0);
+
+      const dec = evaluateEscalationDecision({
+        obligationId: `c-${closed}`,
+        entityTable: "payment_instances",
+        dueDateISO: "2026-10-01",
+        asOfDateISO: asOf,
+        status: closed,
+      });
+      expect(dec.currentStage).toBe("NOT_DUE");
+      expect(dec.eligibleForCurrentNotification).toBe(false);
+    }
+
+    // Rescheduled from overdue (2026-10-15 -> 34d late) into future (2026-11-28 -> 10d ahead)
+    const resched = evaluateEscalationDecision({
+      obligationId: "resched-future",
+      entityTable: "payment_instances",
+      dueDateISO: "2026-11-28",
+      rescheduledFromDateISO: "2026-10-15",
+      asOfDateISO: asOf,
+      status: "planned",
+    });
+    expect(resched.currentStage).toBe("NOT_DUE");
+    expect(resched.previousStage).toBe("OVERDUE_31_PLUS");
+    expect(resched.transitionReason).toBe("rescheduled");
+    expect(resched.eligibleForCurrentNotification).toBe(false);
+    expect(
+      eligibleDeliveries(
+        stdRules.filter((r) => r.offsetDays <= 0),
+        [target({ dueDate: "2026-11-28", rescheduledFromDate: "2026-10-15", status: "planned" })],
+        asOf,
+      ),
+    ).toHaveLength(0);
+  });
+
+  it("verifies Europe/Istanbul UTC+3 boundary (20:59:59Z vs 21:00:00Z), fail-closed NaN guards, and zero unsubstantiated legal claims", () => {
+    expect(istanbulDateISO(new Date("2026-03-29T20:59:59Z"))).toBe("2026-03-29");
+    expect(istanbulDateISO(new Date("2026-03-29T21:00:00Z"))).toBe("2026-03-30");
+    expect(istanbulDateISO(new Date("2026-10-25T20:59:59Z"))).toBe("2026-10-25");
+    expect(istanbulDateISO(new Date("2026-10-25T21:00:00Z"))).toBe("2026-10-26");
+
+    expect(stageForOverdueDays(Number.NaN)).toBe("NOT_DUE");
+    expect(scheduledForDate("2026-11-18", 1e15)).toBe("");
+    expect(scheduledForDate("2026-11-18", 2.5)).toBe("");
+    expect(buildReminderDigestHtml([{ name: "Bozuk", dueDate: "2026-13-45", amount: 1000, status: "unpaid" }], "2026-11-18")).toContain(
+      "Bekleyen hatırlatma yok.",
+    );
+
+    for (const label of Object.values(ESCALATION_BUCKET_LABELS)) {
+      expect(containsUnsubstantiatedLegalClaim(label)).toBe(false);
+    }
+    const scrubbed = sanitizeReminderLegalWording("Hukuki takip başlatıldı · İcra başlatıldı · Hukuki eskalasyon");
+    expect(containsUnsubstantiatedLegalClaim(scrubbed)).toBe(false);
   });
 });

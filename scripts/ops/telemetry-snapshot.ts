@@ -32,8 +32,10 @@ import {
   backupAgeAlert,
   evaluateOffDeviceRunLog,
   importStaleAlert,
+  isUnreadableTelemetryValue,
   jobsStuckAlert,
   ledgerAlert,
+  outboxUncertainAlert,
   reconciliationAlert,
   runtimeIdentityAlert,
 } from "@/lib/ops/telemetry-alerts";
@@ -123,7 +125,13 @@ function record(name: string, value: string, alert: boolean, note: string, sever
   console.log(`${alert ? "ALERT" : "  ok "}  ${name.padEnd(34)} ${value}${note ? `  — ${note}` : ""}`);
 }
 
-const pool = new Pool({ connectionString: requireOwnerDatabaseUrl() });
+const READONLY_TELEMETRY =
+  process.env.MAS_TELEMETRY_READONLY === "1" || process.env.MAS_READONLY_DB === "1";
+
+const pool = new Pool({
+  connectionString: requireOwnerDatabaseUrl(),
+  ...(READONLY_TELEMETRY ? { options: "-c default_transaction_read_only=on" } : {}),
+});
 
 async function one<T>(sql: string, fallback: T): Promise<T> {
   try {
@@ -389,6 +397,18 @@ async function main(): Promise<void> {
     "P1",
   );
 
+  const outboxUncertain = await one<string>(
+    `select count(*)::text from public.notification_outbox where status = 'delivery_uncertain'`,
+    "?",
+  );
+  record(
+    "outbox_delivery_uncertain",
+    outboxUncertain,
+    outboxUncertainAlert(outboxUncertain),
+    outboxUncertain === "?" ? SQL_UNKNOWN_NOTE : "belirsiz gonderim - operator mutabakati gerekir (F-09)",
+    "P1",
+  );
+
   const jobsFailed = await one<string>(
     `select count(*)::text from public.background_jobs
       where status in ('failed','dead_letter') and coalesce(finished_at, updated_at) > now() - interval '24 hours'`,
@@ -555,6 +575,7 @@ async function main(): Promise<void> {
     threshold: a.note,
     severity: a.severity ?? "P2",
     message: `${a.name} = ${a.value} (${a.note})`,
+    unreadable: isUnreadableTelemetryValue(a.value),
   }));
 
   const delivery = await deliverAlerts({
@@ -563,7 +584,7 @@ async function main(): Promise<void> {
     logPath: ALERT_LOG,
     channels,
     redactValues,
-    pool: dbReachable ? pool : null,
+    pool: dbReachable && !READONLY_TELEMETRY ? pool : null,
   });
 
   console.log(`ALERT LOG: ${ALERT_LOG}`);

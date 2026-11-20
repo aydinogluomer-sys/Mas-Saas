@@ -7,8 +7,8 @@ import { readFileSync, readdirSync, unlinkSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { Pool } from "pg";
 import { MIGRATIONS_DIR, validateFileSet } from "./migration-lib";
-import { createBackupAdapter, withPgRuntimeConfig } from "./backup-adapter";
-import { readEnvLocal } from "./app-url";
+import { createBackupAdapter } from "./backup-adapter";
+import { resolveRuntimeEnvForTarget } from "./app-url";
 import { createDisposableLocalDb, dropDisposableLocalDb, psqlLocalFile, psqlLocalSql, resolveLocalOwnerUrl, restoreIntoDisposableLocalDb } from "./pg-local-admin";
 import {
   LEGACY_ANOMALY_INSTANCE_ID,
@@ -596,7 +596,7 @@ async function testClusterIdentity(): Promise<void> {
   createDb(db);
   try {
     const realIdentifier = psqlSql(db, "select system_identifier from pg_control_system();").trim();
-    const adapterEnv = withPgRuntimeConfig(process.env, (() => { try { return readEnvLocal(); } catch { return {}; } })());
+    const adapterEnv = resolveRuntimeEnvForTarget(db, process.env);
 
     try {
       createBackupAdapter({ ownerUrl: dbUrl(db), env: adapterEnv }).verifyTarget(db, realIdentifier);
@@ -610,6 +610,23 @@ async function testClusterIdentity(): Promise<void> {
       record("Cluster-identity: yanlış identifier ile reddedilir", false, "beklenmedik şekilde geçti");
     } catch {
       record("Cluster-identity: yanlış identifier ile reddedilir", true);
+    }
+
+    try {
+      resolveRuntimeEnvForTarget(
+        "mas_radar_dev",
+        { MIGRATION_DATABASE_URL: "postgres://postgres:postgres@127.0.0.1:5432/mas_radar_dev" },
+        () => {
+          throw new Error(".env.local yok");
+        },
+      );
+      record(
+        "Cluster-identity: .env.local yokken mas_radar_dev hedefi fail-closed reddedilir",
+        false,
+        "beklenmedik şekilde geçti",
+      );
+    } catch {
+      record("Cluster-identity: .env.local yokken mas_radar_dev hedefi fail-closed reddedilir", true);
     }
   } finally {
     dropDb(db);

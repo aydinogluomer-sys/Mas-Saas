@@ -98,8 +98,16 @@ export function classifyEscalationBucket(
   return "overdue_30_plus";
 }
 
+export const CHRONIC_HISTORICAL_OVERDUE_DAYS = 365;
+
+const MAX_SAFE_CALENDAR_OFFSET_DAYS = 365_000;
+
+export function isChronicHistoricalOverdue(dueDateISO: string, todayISO: string): boolean {
+  return daysOverdue(dueDateISO, todayISO) >= CHRONIC_HISTORICAL_OVERDUE_DAYS;
+}
+
 export function stageForOverdueDays(overdueDays: number): CanonicalEscalationStage {
-  if (overdueDays <= 0) return "NOT_DUE";
+  if (!Number.isFinite(overdueDays) || overdueDays <= 0) return "NOT_DUE";
   if (overdueDays <= 7) return "OVERDUE_1_7";
   if (overdueDays <= 30) return "OVERDUE_8_30";
   return "OVERDUE_31_PLUS";
@@ -138,11 +146,41 @@ const OPEN_BY_KIND: Record<ReminderTargetKind, ReadonlySet<string>> = {
 const CLOSED_STATUSES: ReadonlySet<string> = new Set([
   "paid",
   "cancelled",
+  "canceled",
   "cleared",
   "collected",
   "kept",
   "draft",
+  "void",
+  "archived",
+  "settled",
+  "closed",
 ]);
+
+const SETTLED_OR_CANCELLED_STATUSES: ReadonlySet<string> = new Set([
+  "paid",
+  "cancelled",
+  "canceled",
+  "cleared",
+  "collected",
+  "kept",
+]);
+
+export function isOpenObligationStatus(
+  entityTable: string | null | undefined,
+  status: string | null | undefined,
+): boolean {
+  if (typeof status !== "string") return false;
+  const normalizedStatus = status.trim().toLowerCase();
+  if (!normalizedStatus) return false;
+  if (typeof entityTable === "string" && entityTable.trim().length > 0) {
+    const kind = targetKindOf(entityTable.trim());
+    if (kind !== null) {
+      return (OPEN_BY_KIND[kind] ?? new Set<string>()).has(normalizedStatus);
+    }
+  }
+  return !CLOSED_STATUSES.has(normalizedStatus);
+}
 
 const DEFAULT_HISTORICAL_OVERDUE_DAYS = 90;
 
@@ -190,7 +228,10 @@ export function evaluateEscalationDecision(
     historicalThresholdDays = DEFAULT_HISTORICAL_OVERDUE_DAYS,
   } = input;
 
-  if (!isValidISODate(dueDateISO) || !isValidISODate(asOfDateISO)) {
+  const statusOpen =
+    status === undefined ? true : isOpenObligationStatus(entityTable, status);
+
+  if (!isValidISODate(dueDateISO) || !isValidISODate(asOfDateISO) || !statusOpen) {
     return {
       obligationId,
       entityTable,
@@ -241,22 +282,11 @@ export function evaluateEscalationDecision(
     transitionReason = "escalated_to_31_plus";
   }
 
-  let statusOpen = true;
-  if (status !== undefined) {
-    const normalizedStatus = status.trim().toLowerCase();
-    const kind = targetKindOf(entityTable);
-    if (kind !== null) {
-      statusOpen = (OPEN_BY_KIND[kind] ?? new Set<string>()).has(normalizedStatus);
-    } else {
-      statusOpen = !CLOSED_STATUSES.has(normalizedStatus);
-    }
-  }
-
   const alreadyNotifiedSameStage =
     !isRescheduled && lastNotifiedStage != null && lastNotifiedStage === currentStage;
 
   let eligibleForCurrentNotification = false;
-  if (statusOpen && !alreadyNotifiedSameStage) {
+  if (!alreadyNotifiedSameStage) {
     if (offsetDays !== undefined) {
       eligibleForCurrentNotification = matchesReminderOffset(offsetDays, dueDateISO, asOfDateISO);
     } else {
@@ -264,7 +294,11 @@ export function evaluateEscalationDecision(
     }
   }
 
-  const isHistoricalEvent = overdueDays > historicalThresholdDays;
+  const effectiveHistoricalThreshold =
+    Number.isFinite(historicalThresholdDays) && historicalThresholdDays >= 0
+      ? historicalThresholdDays
+      : DEFAULT_HISTORICAL_OVERDUE_DAYS;
+  const isHistoricalEvent = overdueDays > effectiveHistoricalThreshold;
 
   return {
     obligationId,
@@ -307,7 +341,8 @@ export function resolveReminderAmounts(target: {
   const rawOrig = target.originalAmount !== undefined ? target.originalAmount : target.amount;
   const orig = rawOrig != null && Number.isFinite(rawOrig) ? rawOrig : null;
 
-  const normalizedStatus = target.status.trim().toLowerCase();
+  const normalizedStatus =
+    typeof target.status === "string" ? target.status.trim().toLowerCase() : "";
 
   if (orig == null) {
     const explicitRem =
@@ -322,11 +357,25 @@ export function resolveReminderAmounts(target: {
     };
   }
 
+  const contractStatus = normalizedStatus === "canceled" ? "cancelled" : normalizedStatus;
   const computed = computeObligationAmounts({
     originalAmount: orig,
     paidAmount: paid,
-    status: normalizedStatus,
+    status: contractStatus,
   });
+
+  if (SETTLED_OR_CANCELLED_STATUSES.has(normalizedStatus)) {
+    const closedRem =
+      target.outstandingAmount != null && Number.isFinite(target.outstandingAmount)
+        ? target.outstandingAmount
+        : 0;
+    return {
+      originalAmount: orig,
+      paidAmount: computed.allocatedPaidAmount,
+      outstandingAmount: closedRem,
+      hasPartialBreakdown: false,
+    };
+  }
 
   const rem =
     target.outstandingAmount != null && Number.isFinite(target.outstandingAmount)
@@ -338,7 +387,7 @@ export function resolveReminderAmounts(target: {
   const hasPartialBreakdown =
     rem != null &&
     ((normalizedStatus === "partial" && (paid != null || orig !== rem)) ||
-      (paid != null && paid > 0 && orig !== rem));
+      (rem > 0 && paid != null && paid > 0 && orig !== rem));
 
   const effectivePaid = hasPartialBreakdown
     ? (paid ?? Math.max(0, Math.round((orig - rem) * 100) / 100))
@@ -393,34 +442,92 @@ const RISK_REASON_LABELS_TR: Readonly<Record<string, string>> = {
   short_month_adjustment: "Kısa ay uyarlaması",
   variable_amount: "Değişken tutar",
   fx_unconverted: "Kur çevrimi bekliyor",
+  hukuki_eskalasyon: "Üst eskalasyon (iç inceleme)",
+  hukuki_takip_başlatıldı: "Üst eskalasyon (iç inceleme)",
+  hukuki_takip_baslatildi: "Üst eskalasyon (iç inceleme)",
+  icra_başlatıldı: "Üst eskalasyon (iç inceleme)",
+  icra_baslatildi: "Üst eskalasyon (iç inceleme)",
+  icra_takibi_başlatıldı: "Üst eskalasyon (iç inceleme)",
+  icra_takibi_baslatildi: "Üst eskalasyon (iç inceleme)",
+  yasal_takip_başlatıldı: "Üst eskalasyon (iç inceleme)",
+  yasal_takip_baslatildi: "Üst eskalasyon (iç inceleme)",
 };
 
+const FORBIDDEN_LEGAL_CLAIM_SUBSTRINGS = [
+  "hukuki takip başlatıldı",
+  "hukuki takip baslatildi",
+  "icra başlatıldı",
+  "icra baslatildi",
+  "icra takibi başlatıldı",
+  "icra takibi baslatildi",
+  "hukuki eskalasyon",
+  "yasal takip başlatıldı",
+  "yasal takip baslatildi",
+] as const;
+
+const LEGAL_CLAIM_SCRUB_PATTERNS: readonly RegExp[] = [
+  /[hH][uU][kK][uU][kK](?:i\u0307|[iİıI])[\s_]+[tT][aA][kK](?:i\u0307|[iİıI])[pP][\s_]+[bB][aA][şŞsS][lL][aA][tT](?:i\u0307|[iİıI])[lL][dD](?:i\u0307|[iİıI])/g,
+  /(?:i\u0307|[iİıI])[cC][rR][aA](?:[\s_]+[tT][aA][kK](?:i\u0307|[iİıI])[bB](?:i\u0307|[iİıI]))?[\s_]+[bB][aA][şŞsS][lL][aA][tT](?:i\u0307|[iİıI])[lL][dD](?:i\u0307|[iİıI])/g,
+  /[hH][uU][kK][uU][kK](?:i\u0307|[iİıI])[\s_]+[eE][sS][kK][aA][lL][aA][sS][yY][oO][nN]/g,
+  /[yY][aA][sS][aA][lL][\s_]+[tT][aA][kK](?:i\u0307|[iİıI])[pP][\s_]+[bB][aA][şŞsS][lL][aA][tT](?:i\u0307|[iİıI])[lL][dD](?:i\u0307|[iİıI])/g,
+];
+
+export function sanitizeReminderLegalWording(text: string): string {
+  let out = text;
+  for (const pattern of LEGAL_CLAIM_SCRUB_PATTERNS) {
+    out = out.replace(pattern, "Üst eskalasyon (iç inceleme)");
+  }
+  return out;
+}
+
+export function containsUnsubstantiatedLegalClaim(text: string): boolean {
+  const normalized = text
+    .toLocaleLowerCase("tr-TR")
+    .replace(/\u0307/g, "")
+    .replace(/_/g, " ")
+    .replace(/\s+/g, " ");
+  return FORBIDDEN_LEGAL_CLAIM_SUBSTRINGS.some((claim) => normalized.includes(claim));
+}
+
 export function formatStatusLabelTr(status: string): string {
+  if (typeof status !== "string") return "";
   const key = status.trim().toLowerCase();
   const mapped = STATUS_LABELS_TR[key];
   if (mapped) return mapped;
-  return status.replace(/_/g, " ").trim();
+  return sanitizeReminderLegalWording(status.replace(/_/g, " ").trim());
 }
 
 export function formatRiskReasonTr(reason: string): string {
+  if (typeof reason !== "string") return "";
   const trimmed = reason.trim();
-  const mapped = RISK_REASON_LABELS_TR[trimmed.toLowerCase()];
+  const normalizedKey = trimmed
+    .toLocaleLowerCase("tr-TR")
+    .replace(/\u0307/g, "")
+    .replace(/\s+/g, "_");
+  const mapped = RISK_REASON_LABELS_TR[normalizedKey] ?? RISK_REASON_LABELS_TR[trimmed.toLowerCase()];
   if (mapped) return mapped;
-  return trimmed.replace(/_/g, " ");
+  return sanitizeReminderLegalWording(trimmed.replace(/_/g, " "));
 }
 
 /** Date a reminder should fire = due_date shifted back by offset (offset 7 -> 7 days before; -8 -> 8 days after due). */
 export function scheduledForDate(dueDateISO: string, offsetDays: number): string {
-  if (!isValidISODate(dueDateISO) || !Number.isFinite(offsetDays)) return "";
-  return addDaysISO(dueDateISO, -offsetDays);
+  if (
+    !isValidISODate(dueDateISO) ||
+    !Number.isInteger(offsetDays) ||
+    Math.abs(offsetDays) > MAX_SAFE_CALENDAR_OFFSET_DAYS
+  ) {
+    return "";
+  }
+  const candidate = addDaysISO(dueDateISO, -offsetDays);
+  return isValidISODate(candidate) ? candidate : "";
 }
 
 /**
- * min_amount threshold. null amount is UNKNOWN, never treated as 0 or excluded.
+ * min_amount threshold. null / non-finite amount is UNKNOWN, never treated as 0 or excluded.
  */
 export function thresholdPasses(minAmount: number | null, amount: number | null): boolean {
-  if (minAmount == null) return true;
-  if (amount == null) return true;
+  if (minAmount == null || !Number.isFinite(minAmount)) return true;
+  if (amount == null || !Number.isFinite(amount)) return true;
   return amount >= minAmount;
 }
 
@@ -437,7 +544,12 @@ export function matchesReminderOffset(
   dueDateISO: string,
   todayISO: string,
 ): boolean {
-  if (!isValidISODate(dueDateISO) || !isValidISODate(todayISO) || !Number.isFinite(offsetDays)) {
+  if (
+    !isValidISODate(dueDateISO) ||
+    !isValidISODate(todayISO) ||
+    !Number.isInteger(offsetDays) ||
+    Math.abs(offsetDays) > MAX_SAFE_CALENDAR_OFFSET_DAYS
+  ) {
     return false;
   }
   if (offsetDays >= 0) {
@@ -462,7 +574,7 @@ export function isEligible(rule: ReminderRule, target: ReminderTarget, todayISO:
   const kind = targetKindOf(target.entityTable);
   if (kind === null) return false;
   if (rule.targetKind !== kind) return false;
-  if (!(OPEN_BY_KIND[kind] ?? new Set<string>()).has(target.status.trim().toLowerCase())) {
+  if (!isOpenObligationStatus(target.entityTable, target.status)) {
     return false;
   }
   if (!matchesReminderOffset(rule.offsetDays, target.dueDate, todayISO)) return false;
@@ -594,18 +706,19 @@ export function buildReminderMessage(
     bucket = classifyEscalationBucket(target.dueDate, todayISO);
     head =
       bucket === "upcoming"
-        ? (OFFSET_HEAD[rule.offsetDays] ?? rule.name)
+        ? sanitizeReminderLegalWording(OFFSET_HEAD[rule.offsetDays] ?? rule.name)
         : ESCALATION_BUCKET_HEADERS[bucket];
   } else if (validDates && rule.offsetDays < 0) {
     const daysUntil = -daysOverdue(target.dueDate, todayISO);
     head = OFFSET_HEAD[daysUntil] ?? "📋 Vadesi Yaklaşan ödeme";
   } else {
-    head = OFFSET_HEAD[rule.offsetDays] ?? rule.name;
+    head = sanitizeReminderLegalWording(OFFSET_HEAD[rule.offsetDays] ?? rule.name);
   }
 
+  const rawName = sanitizeReminderLegalWording(target.name);
   const displayName = masked
-    ? maskSensitiveLabel(target.name, target.entityId)
-    : target.name.replace(
+    ? maskSensitiveLabel(rawName, target.entityId)
+    : rawName.replace(
         /\bTR\d{2}[\s-]?(?:[0-9A-Z]{4}[\s-]?){5}([0-9A-Z]{2})\b/gi,
         (_m, tail: string) => `TR** **** **** **** **** **${tail.toUpperCase()}`,
       );
@@ -620,7 +733,11 @@ export function buildReminderMessage(
   ];
 
   if (validDates && target.dueDate < todayISO && bucket && bucket !== "upcoming") {
-    parts.push(`kademe: ${ESCALATION_BUCKET_LABELS[bucket]} (${daysOverdue(target.dueDate, todayISO)} gün)`);
+    const lateDays = daysOverdue(target.dueDate, todayISO);
+    parts.push(`kademe: ${ESCALATION_BUCKET_LABELS[bucket]} (${lateDays} gün)`);
+    if (lateDays >= CHRONIC_HISTORICAL_OVERDUE_DAYS) {
+      parts.push("kronik gecikme: 365+ gün geçmiş dönem devri (iç inceleme)");
+    }
   }
   if (
     target.rescheduledFromDate &&
@@ -675,8 +792,16 @@ export function buildReminderDigestHtml(
   todayISO: string,
   opts: BuildReminderDigestOptions = {},
 ): string {
-  if (items.length === 0) {
-    return `<b>MAS Nakit Radar — Günlük Hatırlatma Özeti (${escapeDigestHtml(todayISO)})</b>\nBekleyen hatırlatma yok.`;
+  const safeTodayLabel = escapeDigestHtml(typeof todayISO === "string" ? todayISO : "");
+  if (!isValidISODate(todayISO) || items.length === 0) {
+    return `<b>MAS Nakit Radar — Günlük Hatırlatma Özeti (${safeTodayLabel})</b>\nBekleyen hatırlatma yok.`;
+  }
+
+  const activeItems = items.filter(
+    (item) => isValidISODate(item.dueDate) && isOpenObligationStatus(item.entityTable, item.status),
+  );
+  if (activeItems.length === 0) {
+    return `<b>MAS Nakit Radar — Günlük Hatırlatma Özeti (${safeTodayLabel})</b>\nBekleyen hatırlatma yok.`;
   }
 
   const masked = Boolean(opts.masked);
@@ -702,7 +827,7 @@ export function buildReminderDigestHtml(
   let totalKnownTry = 0;
   let totalMissingCount = 0;
 
-  for (const item of items) {
+  for (const item of activeItems) {
     const b = classifyEscalationBucket(item.dueDate, todayISO);
     byTier.get(b)!.push(item);
     const resolved = resolveReminderAmounts(item);
@@ -714,8 +839,8 @@ export function buildReminderDigestHtml(
   }
 
   const lines: string[] = [
-    `<b>MAS Nakit Radar — Toplu Hatırlatma Özeti (${escapeDigestHtml(todayISO)})</b>`,
-    `Toplam: <b>${items.length}</b> kalem · bilinen tutar: <b>${escapeDigestHtml(fmtTL(totalKnownTry))}</b>${
+    `<b>MAS Nakit Radar — Toplu Hatırlatma Özeti (${safeTodayLabel})</b>`,
+    `Toplam: <b>${activeItems.length}</b> kalem · bilinen tutar: <b>${escapeDigestHtml(fmtTL(totalKnownTry))}</b>${
       totalMissingCount > 0 ? ` · tutar eksik: <b>${totalMissingCount}</b> kalem` : ""
     }`,
   ];
@@ -751,7 +876,8 @@ export function buildReminderDigestHtml(
     );
 
     for (const row of sorted.slice(0, maxPerTier)) {
-      const rawLabel = masked ? maskSensitiveLabel(row.name, row.entityId) : row.name;
+      const scrubbedRowName = sanitizeReminderLegalWording(row.name);
+      const rawLabel = masked ? maskSensitiveLabel(scrubbedRowName, row.entityId) : scrubbedRowName;
       const safeLabel = escapeDigestHtml(
         rawLabel.replace(
           /\bTR\d{2}[\s-]?(?:[0-9A-Z]{4}[\s-]?){5}([0-9A-Z]{2})\b/gi,
@@ -759,7 +885,12 @@ export function buildReminderDigestHtml(
         ),
       );
       const lateDays = daysOverdue(row.dueDate, todayISO);
-      const ageTag = lateDays > 0 ? ` (${lateDays}g gecikmiş)` : "";
+      const ageTag =
+        lateDays >= CHRONIC_HISTORICAL_OVERDUE_DAYS
+          ? ` (${lateDays}g gecikmiş · 365+ kronik devir)`
+          : lateDays > 0
+            ? ` (${lateDays}g gecikmiş)`
+            : "";
       const rowResolved = resolveReminderAmounts(row);
       lines.push(
         `• ${safeLabel} · <code>${escapeDigestHtml(row.dueDate)}</code>${escapeDigestHtml(ageTag)} — tutar: ${escapeDigestHtml(formatReminderAmountDisplay(rowResolved))} · durum: ${escapeDigestHtml(formatStatusLabelTr(row.status))}`,

@@ -246,7 +246,7 @@ export const capexSimulationFormSchema = z.object({
     .optional()
     .nullable(),
   purchaseCostTry: z.coerce.number().positive("Yatırım bedeli (TL) > 0 olmalı"),
-  usefulLifeYears: z.coerce.number().int().min(1, "Ekonomik ömür en az 1 yıl").max(50, "En fazla 50 yıl").default(5),
+  usefulLifeYears: z.coerce.number().int().min(1, "Ekonomik ömür en az 1 yıl").max(30, "En fazla 30 yıl").default(5),
   discountRatePct: z.coerce.number().min(0, "İskonto oranı >= 0").max(300, "İskonto oranı <= 300").default(35),
   annualRevenueTry: z.coerce.number().min(0, "Yıllık beklenen gelir >= 0"),
   annualOperatingCostTry: z.coerce.number().min(0, "Yıllık işletme gideri >= 0"),
@@ -289,14 +289,13 @@ export async function loadCapexRoiSnapshots(client: Queryable): Promise<CapexRoi
          coalesce(s.useful_life_years, case when a.useful_life_months is not null and a.useful_life_months >= 12 then round(a.useful_life_months / 12.0)::int else null end) as useful_life_years,
          a.useful_life_months,
          s.discount_rate_pct::text,
-         s.annual_revenue::text,
-         s.annual_cost::text,
+         s.revenue::text as annual_revenue,
+         s.cost::text as annual_cost,
          s.annual_depreciation::text,
          s.tax_shield_amount::text,
          s.net_after_tax::text,
          s.npv_try::text,
          s.irr_pct::text,
-         s.payback_months::text,
          s.discounted_payback_months::text,
          s.confidence,
          coalesce(s.notes, a.notes) as notes
@@ -311,6 +310,7 @@ export async function loadCapexRoiSnapshots(client: Queryable): Promise<CapexRoi
       const discountRatePct = numOrNull(r.discount_rate_pct);
       const annualRevenueTry = numOrNull(r.annual_revenue);
       const annualCostTry = numOrNull(r.annual_cost);
+      const netAfterTaxRaw = numOrNull(r.net_after_tax);
 
       // Compute on-the-fly fallback if legacy snapshot predates 0118 columns AND has purchase_cost + revenue + cost
       let computedFallback: CapexFeasibilityResult | null = null;
@@ -330,6 +330,12 @@ export async function loadCapexRoiSnapshots(client: Queryable): Promise<CapexRoi
         });
       }
 
+      const netAfterTaxTry = netAfterTaxRaw ?? computedFallback?.annualAfterTaxCashFlowTry ?? null;
+      const derivedPaybackMonths =
+        purchaseCostTry != null && purchaseCostTry > 0 && netAfterTaxTry != null && netAfterTaxTry > 0
+          ? round2(decimal(purchaseCostTry).div(decimal(netAfterTaxTry)).times(12))
+          : null;
+
       return {
         snapshotId: r.snapshot_id,
         assetId: r.asset_id,
@@ -345,12 +351,10 @@ export async function loadCapexRoiSnapshots(client: Queryable): Promise<CapexRoi
           numOrNull(r.annual_depreciation) ?? computedFallback?.annualDepreciationTry ?? null,
         taxShieldAmountTry:
           numOrNull(r.tax_shield_amount) ?? computedFallback?.taxShieldAmountTry ?? null,
-        netAfterTaxTry:
-          numOrNull(r.net_after_tax) ?? computedFallback?.annualAfterTaxCashFlowTry ?? null,
+        netAfterTaxTry,
         npvTry: numOrNull(r.npv_try) ?? computedFallback?.npvTry ?? null,
         irrPct: numOrNull(r.irr_pct) ?? computedFallback?.irrPct ?? null,
-        paybackMonths:
-          numOrNull(r.payback_months) ?? computedFallback?.simplePaybackMonths ?? null,
+        paybackMonths: derivedPaybackMonths ?? computedFallback?.simplePaybackMonths ?? null,
         discountedPaybackMonths:
           numOrNull(r.discounted_payback_months) ?? computedFallback?.discountedPaybackMonths ?? null,
         confidence: r.confidence,
@@ -406,8 +410,7 @@ export async function simulateAndSaveCapexRoi(
                 monthly_operating_cost = $6,
                 utilization_rate = coalesce($7, utilization_rate),
                 useful_life_months = $8,
-                notes = coalesce($9, notes),
-                updated_at = now()
+                notes = coalesce($9, notes)
           where id = $1`,
         [
           assetId,
@@ -451,12 +454,27 @@ export async function simulateAndSaveCapexRoi(
 
     const snapIns = await client.query<{ id: string }>(
       `insert into public.machine_roi_snapshots
-         (machine_asset_id, snapshot_year, annual_revenue, annual_cost, remaining_margin,
-          tax_amount, net_after_tax, payback_months, confidence, notes,
+         (machine_asset_id, snapshot_year, revenue, cost, remaining,
+          tax, net_after_tax, confidence, notes,
           useful_life_years, discount_rate_pct, annual_depreciation, tax_shield_amount,
           npv_try, irr_pct, discounted_payback_months)
-       values ($1, $2, $3, $4, $5, $6, $7, $8, 'estimated', $9,
-               $10, $11, $12, $13, $14, $15, $16)
+       values ($1, $2, $3, $4, $5, $6, $7, 'calculated', $8,
+               $9, $10, $11, $12, $13, $14, $15)
+       on conflict (machine_asset_id, snapshot_year) do update set
+         revenue = excluded.revenue,
+         cost = excluded.cost,
+         remaining = excluded.remaining,
+         tax = excluded.tax,
+         net_after_tax = excluded.net_after_tax,
+         confidence = excluded.confidence,
+         notes = excluded.notes,
+         useful_life_years = excluded.useful_life_years,
+         discount_rate_pct = excluded.discount_rate_pct,
+         annual_depreciation = excluded.annual_depreciation,
+         tax_shield_amount = excluded.tax_shield_amount,
+         npv_try = excluded.npv_try,
+         irr_pct = excluded.irr_pct,
+         discounted_payback_months = excluded.discounted_payback_months
        returning id::text`,
       [
         assetId,
@@ -466,7 +484,6 @@ export async function simulateAndSaveCapexRoi(
         feasibility.annualEbitdaTry,
         feasibility.annualCorporateTaxTry,
         feasibility.annualAfterTaxCashFlowTry,
-        feasibility.simplePaybackMonths,
         input.notes ?? null,
         feasibility.usefulLifeYears,
         feasibility.discountRatePct,

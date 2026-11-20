@@ -145,13 +145,12 @@ export async function runLiquidityOptimizationAction(formData: FormData): Promis
   const horizonDays = Math.min(365, Math.max(7, Number(formData.get("horizonDays") ?? 91) || 91));
   const currency = String(formData.get("currency") ?? "TRY").trim() || "TRY";
 
-  const { runId } = await runOptimization(
+  await runOptimization(
     getPool(),
     { name, objective, anchorDate, horizonDays, currency },
     session.id,
   );
   revalidatePath("/scenarios/optimization");
-  redirect(`/scenarios/optimization?runId=${runId}`);
 }
 
 export async function requestOptimizationApprovalAction(formData: FormData): Promise<void> {

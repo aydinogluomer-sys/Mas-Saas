@@ -126,7 +126,7 @@ const KEEP_SERVER = process.env.ROUTE_SLO_KEEP_SERVER === "1";
  */
 interface RouteSpec { href: string; expected: string }
 const ROUTES: readonly RouteSpec[] = [
-  { href: "/overview", expected: "/overview" },
+  { href: "/overview", expected: "/" },
   { href: "/radar", expected: "/payments" },
   { href: "/cashflow", expected: "/cashflow" },
   { href: "/payments", expected: "/payments" },

@@ -130,29 +130,35 @@ async function buildFrozenMetaEnvelope(
     reconciliationAligned?: boolean;
     missingPaymentAmountCount?: number;
     controlAlertsOpenCount?: number;
+    existingProvenance?: ReportProvenance;
+    explicitReportId?: string;
   },
 ): Promise<{ reportId: string; provenance: ReportProvenance; snapshot: BoardFinancialPackage & { reportScope: string; reportMetrics: Record<string, unknown> } }> {
-  const reportId = randomUUID();
-  const asOfAt = new Date().toISOString();
+  const reportId = provenanceHints?.explicitReportId ?? randomUUID();
+  const asOfAt = provenanceHints?.existingProvenance?.asOfAt ?? new Date().toISOString();
   const basePack = existingBoardPack ?? (await loadBoardFinancialPackage(pool, asOfDateISO));
   const canonicalPayload = `${bodyMd}\n---\n${JSON.stringify({ reportScope, reportMetrics, executiveSummary: basePack.executiveSummary })}`;
   const contentSha256 = computeContentSha256(canonicalPayload);
   const missingFromMetrics =
     provenanceHints?.missingPaymentAmountCount ??
     (typeof reportMetrics.missingCount === "number" ? reportMetrics.missingCount : undefined);
-  const provenance = await loadReportProvenance(pool, asOfDateISO, {
-    snapshotId: reportId,
-    asOfAt,
-    contentForHash: canonicalPayload,
-    unknownOpeningAccountCount: basePack.unknownOpeningAccountCount,
-    knownOpeningAccountCount:
-      basePack.executiveSummary.consolidatedCashTry != null ? 1 : undefined,
-    missingPaymentAmountCount: missingFromMetrics,
-    reconciliationAligned:
-      provenanceHints?.reconciliationAligned ?? basePack.balanceSheet.balanced,
-    controlAlertsOpenCount:
-      provenanceHints?.controlAlertsOpenCount ?? basePack.executiveSummary.covenantBreachCount,
-  });
+  const provenance =
+    provenanceHints?.existingProvenance ??
+    (await loadReportProvenance(pool, asOfDateISO, {
+      snapshotId: reportId,
+      asOfAt,
+      contentForHash: canonicalPayload,
+      unknownOpeningAccountCount: basePack.unknownOpeningAccountCount,
+      knownOpeningAccountCount:
+        basePack.executiveSummary.consolidatedCashTry != null ? 1 : 0,
+      cashSourceStatus: basePack.cashSourceStatus,
+      schemaIncompatibleSources: basePack.schemaIncompatibleSources,
+      missingPaymentAmountCount: missingFromMetrics,
+      reconciliationAligned:
+        provenanceHints?.reconciliationAligned ?? basePack.balanceSheet.balanced,
+      controlAlertsOpenCount:
+        provenanceHints?.controlAlertsOpenCount ?? basePack.executiveSummary.covenantBreachCount,
+    }));
   const finalProvenance: ReportProvenance = {
     ...provenance,
     snapshotId: reportId,
@@ -170,21 +176,41 @@ async function buildFrozenMetaEnvelope(
 /* ── daily ── */
 
 export async function generateDaily(pool: Pool, todayISO: string, actorId: string): Promise<{ id: string; bodyMd: string }> {
+  const reportId = randomUUID();
+  const asOfAt = new Date().toISOString();
   const to = addDaysISO(todayISO, 7);
   const t = await loadThresholds(pool);
-  const [soon, overdue, maturities, decisionFacts] = await Promise.all([
+  const [soon, overdue, maturities, decisionFacts, basePack, actualBankCashStatus] = await Promise.all([
     instancesBetween(pool, todayISO, to),
     overdueOpen(pool, todayISO),
     maturitiesBetween(pool, todayISO, to),
     loadDecisionFacts(pool, todayISO),
+    loadBoardFinancialPackage(pool, todayISO),
+    loadMonthlyActualBankCashStatus(pool, todayISO),
   ]);
   const open = new Set(["unpaid", "partial", "planned", "late"]);
+  const dueSoonInstances = soon.filter((i) => open.has(i.status)).map(toReportInstance);
+  const overdueInstances = overdue.map(toReportInstance);
+  const missingCountHint = dueSoonInstances.filter((i) => (i.originalAmount ?? i.amount) == null).length;
+  const preProvenance = await loadReportProvenance(pool, todayISO, {
+    snapshotId: reportId,
+    asOfAt,
+    unknownOpeningAccountCount: basePack.unknownOpeningAccountCount,
+    knownOpeningAccountCount: basePack.executiveSummary.consolidatedCashTry != null ? 1 : 0,
+    cashSourceStatus: basePack.cashSourceStatus,
+    schemaIncompatibleSources: basePack.schemaIncompatibleSources,
+    missingPaymentAmountCount: missingCountHint,
+    reconciliationAligned: basePack.balanceSheet.balanced,
+    controlAlertsOpenCount: basePack.executiveSummary.covenantBreachCount,
+  });
   const report = buildDailyReport(
     {
-      dueSoon: soon.filter((i) => open.has(i.status)).map(toReportInstance),
-      overdue: overdue.map(toReportInstance),
+      dueSoon: dueSoonInstances,
+      overdue: overdueInstances,
       maturities,
       criticalThreshold: t.critical,
+      actualBankCashStatus,
+      provenance: preProvenance,
     },
     todayISO,
   );
@@ -199,7 +225,7 @@ export async function generateDaily(pool: Pool, todayISO: string, actorId: strin
       ...decisionFacts.slice(0, 3).map((f) => `${f.title}: ${f.value}`),
     ],
   });
-  const { reportId, provenance, snapshot } = await buildFrozenMetaEnvelope(
+  const { provenance, snapshot } = await buildFrozenMetaEnvelope(
     pool,
     todayISO,
     report.bodyMd,
@@ -209,6 +235,12 @@ export async function generateDaily(pool: Pool, todayISO: string, actorId: strin
       overdueCount: report.overdueCount,
       overdueKnownTotal: report.overdueKnownTotal,
       missingCount: report.next7MissingCount,
+      monetaryBasisByMetric: report.monetaryBasisByMetric,
+    },
+    basePack,
+    {
+      existingProvenance: preProvenance,
+      explicitReportId: reportId,
     },
   );
   const id = await writeReport(
@@ -222,6 +254,7 @@ export async function generateDaily(pool: Pool, todayISO: string, actorId: strin
       overdueCount: report.overdueCount,
       overdueKnownTotal: report.overdueKnownTotal,
       missingCount: report.next7MissingCount,
+      monetaryBasisByMetric: report.monetaryBasisByMetric,
       commentary_prompt: prompt,
       provenance,
       snapshot,
@@ -235,25 +268,44 @@ export async function generateDaily(pool: Pool, todayISO: string, actorId: strin
 /* ── weekly ── */
 
 export async function generateWeekly(pool: Pool, todayISO: string, actorId: string): Promise<{ id: string; bodyMd: string }> {
+  const reportId = randomUUID();
+  const asOfAt = new Date().toISOString();
   const to = addDaysISO(todayISO, 7);
   const monthStart = todayISO.slice(0, 7) + "-01";
   const nextMonthStart = addMonths(monthStart, 1);
   const t = await loadThresholds(pool);
-  const [week, matWeek, matMonth, rdays, decisionFacts] = await Promise.all([
+  const [week, matWeek, matMonth, rdays, decisionFacts, basePack, actualBankCashStatus] = await Promise.all([
     instancesBetween(pool, todayISO, to),
     maturitiesBetween(pool, todayISO, to),
     maturitiesBetweenHalfOpen(pool, monthStart, nextMonthStart),
     riskyDays(pool, todayISO, 7, t),
     loadDecisionFacts(pool, todayISO),
+    loadBoardFinancialPackage(pool, todayISO),
+    loadMonthlyActualBankCashStatus(pool, todayISO),
   ]);
   const open = new Set(["unpaid", "partial", "planned", "late"]);
+  const weekOpenInstances = week.filter((i) => open.has(i.status)).map(toReportInstance);
+  const missingCountHint = weekOpenInstances.filter((i) => (i.originalAmount ?? i.amount) == null).length;
+  const preProvenance = await loadReportProvenance(pool, todayISO, {
+    snapshotId: reportId,
+    asOfAt,
+    unknownOpeningAccountCount: basePack.unknownOpeningAccountCount,
+    knownOpeningAccountCount: basePack.executiveSummary.consolidatedCashTry != null ? 1 : 0,
+    cashSourceStatus: basePack.cashSourceStatus,
+    schemaIncompatibleSources: basePack.schemaIncompatibleSources,
+    missingPaymentAmountCount: missingCountHint,
+    reconciliationAligned: basePack.balanceSheet.balanced,
+    controlAlertsOpenCount: basePack.executiveSummary.covenantBreachCount,
+  });
   const report = buildWeeklyReport(
     {
-      weekInstances: week.filter((i) => open.has(i.status)).map(toReportInstance),
+      weekInstances: weekOpenInstances,
       maturitiesWeek: matWeek,
       installmentsMonth: matMonth.filter((m) => m.kind === "loan_installment" && m.direction !== "inflow"),
       riskDays: rdays.map((d) => ({ date: d.date, cluster: d.cluster, critical: d.critical, large: d.large, knownSum: d.knownSum, count: d.count })),
       largeThreshold: t.large,
+      actualBankCashStatus,
+      provenance: preProvenance,
     },
     todayISO,
   );
@@ -267,7 +319,7 @@ export async function generateWeekly(pool: Pool, todayISO: string, actorId: stri
       ...decisionFacts.slice(0, 3).map((f) => `${f.title}: ${f.value}`),
     ],
   });
-  const { reportId, provenance, snapshot } = await buildFrozenMetaEnvelope(
+  const { provenance, snapshot } = await buildFrozenMetaEnvelope(
     pool,
     todayISO,
     report.bodyMd,
@@ -278,6 +330,12 @@ export async function generateWeekly(pool: Pool, todayISO: string, actorId: stri
       installmentLoadWeek: report.installmentLoadWeek,
       installmentLoadMonth: report.installmentLoadMonth,
       missingCount: report.missingCount,
+      monetaryBasisByMetric: report.monetaryBasisByMetric,
+    },
+    basePack,
+    {
+      existingProvenance: preProvenance,
+      explicitReportId: reportId,
     },
   );
   const id = await writeReport(
@@ -292,6 +350,7 @@ export async function generateWeekly(pool: Pool, todayISO: string, actorId: stri
       installmentLoadWeek: report.installmentLoadWeek,
       installmentLoadMonth: report.installmentLoadMonth,
       missingCount: report.missingCount,
+      monetaryBasisByMetric: report.monetaryBasisByMetric,
       commentary_prompt: prompt,
       provenance,
       snapshot,
@@ -373,25 +432,45 @@ async function loadMonthlyActualBankCashStatus(
     const row = res.rows[0];
     if (!row) return null;
     const unknownOpeningCount = Number(row.unknown_opening_n ?? 0);
+    const knownOpeningCount = Number(row.known_opening_n ?? 0);
     const btTotal = Number(row.bt_total ?? 0);
+    const parsedCash = unknownOpeningCount > 0 ? null : moneyOrNull(row.actual_cash_try);
+    const cashSourceStatus =
+      unknownOpeningCount > 0
+        ? "PARTIAL_MISSING_OPENING"
+        : knownOpeningCount === 0 || parsedCash === null || (parsedCash === 0 && btTotal === 0)
+          ? "SOURCE_UNAVAILABLE"
+          : "COMPLETE";
     return {
-      availableCashTry: unknownOpeningCount > 0 ? null : moneyOrNull(row.actual_cash_try),
+      availableCashTry: cashSourceStatus === "COMPLETE" ? parsedCash : null,
       unknownOpeningCount,
       hasVerifiedBankFeed: btTotal > 0,
       reconciledTxCount: Number(row.bt_reconciled ?? 0),
       unmatchedTxCount: Number(row.bt_unmatched ?? 0),
+      cashSourceStatus,
     };
   } catch (err) {
     const code = (err as { code?: string } | null)?.code;
-    if (code === "42P01" || code === "42703") return null;
+    if (code === "42P01" || code === "42703") {
+      return {
+        availableCashTry: null,
+        unknownOpeningCount: 0,
+        hasVerifiedBankFeed: false,
+        reconciledTxCount: 0,
+        unmatchedTxCount: 0,
+        cashSourceStatus: "SCHEMA_INCOMPATIBLE",
+      };
+    }
     throw err;
   }
 }
 
 export async function generateMonthly(pool: Pool, monthStartISO: string, actorId: string): Promise<{ id: string; bodyMd: string }> {
+  const reportId = randomUUID();
+  const asOfAt = new Date().toISOString();
   const nextMonthStart = addMonths(monthStartISO, 1);
   const periodEndISO = addDaysISO(nextMonthStart, -1);
-  const [summary, insts, providerDist, categoryDist, ownerDist, monthMaturities, cashRow, unassigned, decisionFacts, actualBankCashStatus] =
+  const [summary, insts, providerDist, categoryDist, ownerDist, monthMaturities, cashRow, unassigned, decisionFacts, actualBankCashStatus, basePack] =
     await Promise.all([
       monthSummary(pool, monthStartISO),
       monthInstances(pool, monthStartISO),
@@ -418,7 +497,11 @@ export async function generateMonthly(pool: Pool, monthStartISO: string, actorId
       ),
       loadDecisionFacts(pool, monthStartISO),
       loadMonthlyActualBankCashStatus(pool, periodEndISO),
+      loadBoardFinancialPackage(pool, periodEndISO),
     ]);
+
+  const noProviderCount = Number(unassigned.rows[0]?.no_provider ?? 0);
+  const noCategoryCount = Number(unassigned.rows[0]?.no_category ?? 0);
 
   const topPayments = [...insts]
     .filter((i) => (i.original_amount ?? i.amount) != null)
@@ -428,8 +511,20 @@ export async function generateMonthly(pool: Pool, monthStartISO: string, actorId
 
   const dq: string[] = [];
   if (summary.missing_count > 0) dq.push(`${summary.missing_count} kalemde tutar eksik`);
-  if (unassigned.rows[0].no_provider > 0) dq.push(`${unassigned.rows[0].no_provider} kalemde sağlayıcı atanmamış`);
-  if (unassigned.rows[0].no_category > 0) dq.push(`${unassigned.rows[0].no_category} kalemde kategori atanmamış`);
+  if (noProviderCount > 0) dq.push(`${noProviderCount} kalemde sağlayıcı atanmamış`);
+  if (noCategoryCount > 0) dq.push(`${noCategoryCount} kalemde kategori atanmamış`);
+
+  const preProvenance = await loadReportProvenance(pool, periodEndISO, {
+    snapshotId: reportId,
+    asOfAt,
+    unknownOpeningAccountCount: basePack.unknownOpeningAccountCount,
+    knownOpeningAccountCount: basePack.executiveSummary.consolidatedCashTry != null ? 1 : 0,
+    cashSourceStatus: actualBankCashStatus?.cashSourceStatus ?? basePack.cashSourceStatus,
+    schemaIncompatibleSources: basePack.schemaIncompatibleSources,
+    missingPaymentAmountCount: summary.missing_count,
+    reconciliationAligned: summary.unexplainedGapTry === 0,
+    controlAlertsOpenCount: basePack.executiveSummary.covenantBreachCount,
+  });
 
   const report = buildMonthlyReport({
     monthStart: monthStartISO,
@@ -454,6 +549,7 @@ export async function generateMonthly(pool: Pool, monthStartISO: string, actorId
         }
       : null,
     actualBankCashStatus,
+    provenance: preProvenance,
     dataQualityIssues: dq,
   });
   const prompt = buildCommentaryPrompt({
@@ -469,7 +565,7 @@ export async function generateMonthly(pool: Pool, monthStartISO: string, actorId
       ...decisionFacts.slice(0, 4).map((f) => `${f.title}: ${f.value}`),
     ],
   });
-  const { reportId, provenance, snapshot } = await buildFrozenMetaEnvelope(
+  const { provenance, snapshot } = await buildFrozenMetaEnvelope(
     pool,
     periodEndISO,
     report.bodyMd,
@@ -485,15 +581,17 @@ export async function generateMonthly(pool: Pool, monthStartISO: string, actorId
       unexplainedGapTry: summary.unexplainedGapTry,
       totalCount: summary.total_count,
       missingCount: summary.missing_count,
-      noProviderCount: unassigned.rows[0].no_provider,
-      noCategoryCount: unassigned.rows[0].no_category,
+      noProviderCount,
+      noCategoryCount,
       debtServiceKnown: report.debtServiceKnown,
       monetaryBasisByMetric: report.monetaryBasisByMetric,
     },
-    undefined,
+    basePack,
     {
       reconciliationAligned: summary.unexplainedGapTry === 0,
       missingPaymentAmountCount: summary.missing_count,
+      existingProvenance: preProvenance,
+      explicitReportId: reportId,
     },
   );
   const id = await writeReport(

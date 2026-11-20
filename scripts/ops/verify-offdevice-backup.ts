@@ -29,9 +29,16 @@ import {
   classifyOffDeviceTarget,
   formatBytes,
   newestDump,
+  offDeviceCleanupBlockers,
   sha256OfFile,
+  type OffDeviceClassification,
   type OffDeviceCopyRecord,
 } from "./backup-lib";
+import {
+  LATEST_OFFDEVICE_POINTER_FILENAME,
+  LATEST_OFFDEVICE_POINTER_KIND,
+  type LatestVerifiedOffDevicePointer,
+} from "./offdevice-copy";
 
 const DEFAULT_MAX_AGE_HOURS = 48;
 
@@ -41,10 +48,22 @@ export interface VerifyOffDeviceOptions {
   maxAgeHours?: number;
   explicitDumpPath?: string;
   now?: Date;
+  localBackupDir?: string;
+  offDeviceBackupDir?: string;
+  classify?: (targetDir: string, sourceDir: string) => OffDeviceClassification;
+  verifyList?: (
+    dumpPath: string,
+    requireCriticalTables?: boolean,
+  ) => {
+    restoreListable: boolean;
+    tocEntryCount: number;
+    criticalTablesPresent: VerifyOffDeviceReport["criticalTablesPresent"];
+  };
 }
 
 export interface VerifyOffDeviceReport {
   ok: boolean;
+  offDeviceGateStatus: "PASS" | "BLOCKED";
   checkedAt: string;
   mode: "offdevice" | "local_fallback";
   offDeviceConfigured: boolean;
@@ -63,6 +82,8 @@ export interface VerifyOffDeviceReport {
   sha256: string | null;
   offDeviceReceiptPresent: boolean;
   offDeviceReceiptShaMatch: boolean | null;
+  canonicalPointerPresent: boolean;
+  canonicalPointerValid: boolean | null;
   restoreListable: boolean;
   tocEntryCount: number;
   criticalTablesPresent: {
@@ -91,11 +112,17 @@ function argValue(flag: string): string | undefined {
 
 export function verifyOffDeviceBackup(opts: VerifyOffDeviceOptions = {}): VerifyOffDeviceReport {
   const envLocal = safeEnvLocal();
-  const localDir = (process.env.MAS_BACKUP_DIR || envLocal["MAS_BACKUP_DIR"] || "backups").trim();
+  const localDir = (
+    opts.localBackupDir ??
+    process.env.MAS_BACKUP_DIR ??
+    envLocal["MAS_BACKUP_DIR"] ??
+    "backups"
+  ).trim();
   const resolvedLocalDir = path.resolve(localDir);
   const rawOffDeviceDir = (
-    process.env.MAS_OFFDEVICE_BACKUP_DIR ||
-    envLocal["MAS_OFFDEVICE_BACKUP_DIR"] ||
+    opts.offDeviceBackupDir ??
+    process.env.MAS_OFFDEVICE_BACKUP_DIR ??
+    envLocal["MAS_OFFDEVICE_BACKUP_DIR"] ??
     ""
   ).trim();
 
@@ -106,6 +133,7 @@ export function verifyOffDeviceBackup(opts: VerifyOffDeviceOptions = {}): Verify
   const now = opts.now ?? new Date();
   const warnings: string[] = [];
   const errors: string[] = [];
+  const classifyFn = opts.classify ?? classifyOffDeviceTarget;
 
   let mode: "offdevice" | "local_fallback" = offDeviceConfigured ? "offdevice" : "local_fallback";
   let offDeviceReachable = false;
@@ -116,7 +144,7 @@ export function verifyOffDeviceBackup(opts: VerifyOffDeviceOptions = {}): Verify
   let inspectedDir = resolvedLocalDir;
 
   if (offDeviceConfigured) {
-    const classification = classifyOffDeviceTarget(rawOffDeviceDir, localDir);
+    const classification = classifyFn(rawOffDeviceDir, localDir);
     targetKind = classification.kind;
     targetEvidence = classification.evidence;
     offDeviceReachable = existsSync(classification.targetDir);
@@ -175,6 +203,7 @@ export function verifyOffDeviceBackup(opts: VerifyOffDeviceOptions = {}): Verify
     }
     return {
       ok: false,
+      offDeviceGateStatus: "BLOCKED",
       checkedAt: now.toISOString(),
       mode,
       offDeviceConfigured,
@@ -193,6 +222,8 @@ export function verifyOffDeviceBackup(opts: VerifyOffDeviceOptions = {}): Verify
       sha256: null,
       offDeviceReceiptPresent: false,
       offDeviceReceiptShaMatch: null,
+      canonicalPointerPresent: false,
+      canonicalPointerValid: null,
       restoreListable: false,
       tocEntryCount: 0,
       criticalTablesPresent: null,
@@ -221,6 +252,7 @@ export function verifyOffDeviceBackup(opts: VerifyOffDeviceOptions = {}): Verify
     errors.push(`Dizinde doğrulanacak .dump yedeği bulunamadı: ${inspectedDir}`);
     return {
       ok: false,
+      offDeviceGateStatus: "BLOCKED",
       checkedAt: now.toISOString(),
       mode,
       offDeviceConfigured,
@@ -239,6 +271,8 @@ export function verifyOffDeviceBackup(opts: VerifyOffDeviceOptions = {}): Verify
       sha256: null,
       offDeviceReceiptPresent: false,
       offDeviceReceiptShaMatch: null,
+      canonicalPointerPresent: false,
+      canonicalPointerValid: null,
       restoreListable: false,
       tocEntryCount: 0,
       criticalTablesPresent: null,
@@ -267,6 +301,7 @@ export function verifyOffDeviceBackup(opts: VerifyOffDeviceOptions = {}): Verify
   const offDeviceReceiptPath = `${dumpPath}.offdevice.json`;
   const offDeviceReceiptPresent = existsSync(offDeviceReceiptPath);
   let offDeviceReceiptShaMatch: boolean | null = null;
+  let offDeviceReceiptClean = false;
   if (offDeviceReceiptPresent && sha256) {
     try {
       const parsed = JSON.parse(readFileSync(offDeviceReceiptPath, "utf8")) as Partial<OffDeviceCopyRecord>;
@@ -274,10 +309,41 @@ export function verifyOffDeviceBackup(opts: VerifyOffDeviceOptions = {}): Verify
       if (!offDeviceReceiptShaMatch) {
         errors.push(`Off-device makbuz SHA-256 özeti diskteki dosyayla uyuşmuyor: ${offDeviceReceiptPath}`);
       }
+      const receiptBlockers = offDeviceCleanupBlockers(parsed);
+      offDeviceReceiptClean = receiptBlockers.length === 0 && offDeviceReceiptShaMatch;
+      if (strictOffDevice && receiptBlockers.length > 0) {
+        errors.push(`Off-device makbuzu katı kapı doğrulamasından geçemedi: ${receiptBlockers.join("; ")}`);
+      }
     } catch (err) {
       offDeviceReceiptShaMatch = false;
       errors.push(
         `Off-device makbuzu okunamadı (${offDeviceReceiptPath}): ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  } else if (strictOffDevice) {
+    errors.push(`Strict off-device modunda .offdevice.json doğrulama makbuzu bulunamadı: ${offDeviceReceiptPath}`);
+  }
+
+  const pointerPath = path.join(inspectedDir, LATEST_OFFDEVICE_POINTER_FILENAME);
+  const canonicalPointerPresent = mode === "offdevice" && existsSync(pointerPath);
+  let canonicalPointerValid: boolean | null = null;
+  if (canonicalPointerPresent) {
+    try {
+      const parsedPtr = JSON.parse(readFileSync(pointerPath, "utf8")) as Partial<LatestVerifiedOffDevicePointer>;
+      const ptrTargetExists = typeof parsedPtr.destPath === "string" && existsSync(parsedPtr.destPath);
+      const ptrShaMatch =
+        ptrTargetExists &&
+        typeof parsedPtr.destSha256 === "string" &&
+        sha256OfFile(parsedPtr.destPath!) === parsedPtr.destSha256;
+      canonicalPointerValid =
+        parsedPtr.pointerKind === LATEST_OFFDEVICE_POINTER_KIND && ptrTargetExists && ptrShaMatch;
+      if (!canonicalPointerValid) {
+        errors.push(`Kanonik off-device işaretçisi (${pointerPath}) bozuk veya diskteki dump ile eşleşmiyor.`);
+      }
+    } catch (err) {
+      canonicalPointerValid = false;
+      errors.push(
+        `Kanonik off-device işaretçisi okunamadı (${pointerPath}): ${err instanceof Error ? err.message : String(err)}`,
       );
     }
   }
@@ -288,8 +354,8 @@ export function verifyOffDeviceBackup(opts: VerifyOffDeviceOptions = {}): Verify
 
   if (sizeBytes > 0) {
     try {
-      const pgEnv = withPgRuntimeConfig(process.env, envLocal);
-      const verifyList = createListVerifier(pgEnv);
+      const verifyList =
+        opts.verifyList ?? createListVerifier(withPgRuntimeConfig(process.env, envLocal));
       const listRes = verifyList(dumpPath, true);
       restoreListable = listRes.restoreListable;
       tocEntryCount = listRes.tocEntryCount;
@@ -305,8 +371,19 @@ export function verifyOffDeviceBackup(opts: VerifyOffDeviceOptions = {}): Verify
     }
   }
 
+  const ok = errors.length === 0 && sizeBytes > 0 && freshEnough && restoreListable && tocEntryCount > 0;
+  const offDeviceGateStatus: "PASS" | "BLOCKED" =
+    ok &&
+    mode === "offdevice" &&
+    offDeviceSatisfied &&
+    offDeviceReceiptPresent &&
+    offDeviceReceiptClean
+      ? "PASS"
+      : "BLOCKED";
+
   return {
-    ok: errors.length === 0 && sizeBytes > 0 && freshEnough && restoreListable && tocEntryCount > 0,
+    ok,
+    offDeviceGateStatus,
     checkedAt: now.toISOString(),
     mode,
     offDeviceConfigured,
@@ -325,6 +402,8 @@ export function verifyOffDeviceBackup(opts: VerifyOffDeviceOptions = {}): Verify
     sha256,
     offDeviceReceiptPresent,
     offDeviceReceiptShaMatch,
+    canonicalPointerPresent,
+    canonicalPointerValid,
     restoreListable,
     tocEntryCount,
     criticalTablesPresent,
@@ -387,6 +466,7 @@ function main(): void {
     console.log(
       `\nBACKUP_VERIFY_STATUS     = ${report.ok ? "PASS" : "FAIL"} (mode=${report.mode}, offDeviceConfigured=${report.offDeviceConfigured}, offDeviceReachable=${report.offDeviceReachable}, offDeviceSatisfied=${report.offDeviceSatisfied})`,
     );
+    console.log(`OFF_DEVICE_GATE_STATUS   = ${report.offDeviceGateStatus}`);
   }
 
   if (!report.ok) {

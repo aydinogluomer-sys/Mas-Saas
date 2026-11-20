@@ -65,7 +65,9 @@ export async function refreshAutoSeeded13WeekAction(formData: FormData): Promise
   const dbtMode = normalizeDbtMode(f.dbtMode);
   revalidatePath(BASE);
   revalidatePath("/cashflow/budget");
-  redirect(`${BASE}?currency=${currency}&dbtMode=${dbtMode}&result=otomatik-yenilendi`);
+  if (dbtMode !== "median" || currency !== "TRY") {
+    redirect(`${BASE}?currency=${currency}&dbtMode=${dbtMode}&result=otomatik-yenilendi`);
+  }
 }
 
 export async function freeze13WeekSnapshotAction(formData: FormData): Promise<void> {

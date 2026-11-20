@@ -7,11 +7,14 @@ import {
   checkSchemaParity,
   readExpectedSchemaManifest,
 } from "@/lib/db/schema-parity";
-import { readEnvLocal } from "../../scripts/db/app-url";
+import { readEnvLocal, swapDatabase } from "../../scripts/db/app-url";
 import { checksumContent, validateFileSet } from "../../scripts/db/migration-lib";
+import { databaseNameFromUrl, isDisposableDatabaseName } from "../../scripts/db/owner-url";
 import { SUBPROCESS_TEST_TIMEOUT_MS } from "../setup/test-timeouts";
 
-function resolveConnectionUrls(): { appUrl: string; ownerUrl: string } {
+const DISPOSABLE_MIGRATIONS_DB = "mas_radar_v2_agent01_migrations_verify";
+
+function resolveBaseConnectionUrls(): { appUrl: string; ownerUrl: string } {
   let fileEnv: Record<string, string> = {};
   try {
     fileEnv = readEnvLocal();
@@ -42,43 +45,273 @@ function hasLiveAppDbConfig(): boolean {
   }
 }
 
-describe.skipIf(!hasLiveAppDbConfig())("Agent 01 — Database Reliability, Migration 0124 & RLS Verification", () => {
-  let appPool: Pool;
-  let ownerPool: Pool;
+async function bootstrapDisposableProbeSchema(bootPool: Pool, dbName: string): Promise<void> {
+  await bootPool.query(`
+    create extension if not exists pgcrypto;
+
+    create table public.schema_migrations (
+      version text primary key,
+      name text not null,
+      checksum text not null,
+      applied_at timestamptz not null default now(),
+      applied_by text not null default 'migrate-script'
+    );
+    alter table public.schema_migrations enable row level security;
+
+    create table public.source_workbooks (
+      id uuid primary key default gen_random_uuid(),
+      original_filename text not null,
+      status text not null default 'parsed' check (status in ('uploaded', 'parsed', 'mapped', 'failed')),
+      parse_error text,
+      uploaded_at timestamptz not null default now(),
+      created_at timestamptz not null default now()
+    );
+    alter table public.source_workbooks enable row level security;
+
+    create table public.source_sheets (
+      id uuid primary key default gen_random_uuid(),
+      workbook_id uuid not null references public.source_workbooks(id) on delete cascade,
+      sheet_name text not null,
+      sheet_index int not null default 0
+    );
+    alter table public.source_sheets enable row level security;
+
+    create table public.import_rows (
+      id uuid primary key default gen_random_uuid(),
+      workbook_id uuid not null references public.source_workbooks(id) on delete cascade,
+      sheet_id uuid not null references public.source_sheets(id) on delete cascade,
+      row_index int not null,
+      row_json jsonb not null
+    );
+    alter table public.import_rows enable row level security;
+
+    create or replace view public.valid_workbook_imports
+    with (security_invoker = true) as
+      select
+        sw.id,
+        sw.original_filename,
+        sw.status,
+        sw.uploaded_at,
+        sw.created_at,
+        coalesce(sw.uploaded_at, sw.created_at) as effective_imported_at,
+        (
+          select count(*)::int
+          from public.import_rows ir
+          where ir.workbook_id = sw.id
+        ) as import_row_count
+      from public.source_workbooks sw
+      where sw.status in ('parsed', 'mapped')
+        and exists (
+          select 1
+          from public.import_rows ir
+          where ir.workbook_id = sw.id
+        );
+
+    create table public.reminders (
+      id uuid primary key default gen_random_uuid(),
+      name text not null,
+      target_kind text not null,
+      offset_days int not null
+    );
+    alter table public.reminders enable row level security;
+    insert into public.reminders (name, target_kind, offset_days)
+    values ('31+ gün gecikme — üst eskalasyon (iç inceleme)', 'payment_instance', -31);
+
+    create table public.notification_outbox (
+      id uuid primary key default gen_random_uuid(),
+      stream text not null,
+      channel text not null,
+      recipient_target text not null,
+      idempotency_key text not null unique,
+      body_text text not null,
+      status text not null check (
+        status in ('pending', 'claiming', 'sent', 'failed_retryable', 'delivery_uncertain', 'dead_letter', 'skipped')
+      ),
+      uncertain_at timestamptz,
+      correlation_id text,
+      created_at timestamptz not null default now()
+    );
+    alter table public.notification_outbox enable row level security;
+
+    create table public.reminder_deliveries (
+      id uuid primary key default gen_random_uuid(),
+      reminder_id uuid not null references public.reminders(id) on delete cascade,
+      entity_table text not null,
+      entity_id uuid not null,
+      scheduled_for date not null,
+      status text not null check (
+        status in ('pending', 'claiming', 'sent', 'failed', 'delivery_uncertain', 'skipped')
+      ),
+      claim_token uuid,
+      claimed_at timestamptz
+    );
+    alter table public.reminder_deliveries enable row level security;
+
+    create index reminder_deliveries_pending_sched_idx
+      on public.reminder_deliveries (scheduled_for)
+      where status in ('pending', 'failed', 'claiming');
+
+    create table public.ops_incidents (
+      signal_key text primary key,
+      severity text not null check (severity in ('P0', 'P1', 'P2')),
+      state text not null check (state in ('OK', 'OPEN', 'ACKNOWLEDGED', 'RESOLVED', 'UNKNOWN', 'SUPPRESSED')),
+      suppressed_until timestamptz,
+      suppression_reason text,
+      last_checked_at timestamptz,
+      last_success_at timestamptz,
+      resolution_evidence jsonb,
+      correlation_id text
+    );
+    alter table public.ops_incidents enable row level security;
+  `);
+
+  await bootPool.query(`grant connect on database ${dbName} to mas_radar_app`);
+  await bootPool.query(`
+    grant usage on schema public to mas_radar_app, mas_radar_viewer, mas_radar_finance_operator, mas_radar_finance_approver, mas_radar_finance_manager, mas_radar_admin;
+    revoke all on table public.schema_migrations from public, mas_radar_app;
+
+    grant select, insert, update on table
+      public.source_workbooks,
+      public.source_sheets,
+      public.import_rows,
+      public.reminders,
+      public.notification_outbox,
+      public.reminder_deliveries,
+      public.ops_incidents
+    to mas_radar_finance_operator;
+
+    grant select on table public.valid_workbook_imports to mas_radar_finance_operator;
+
+    create policy p_sw_op on public.source_workbooks for all to mas_radar_finance_operator using (true) with check (true);
+    create policy p_ss_op on public.source_sheets for all to mas_radar_finance_operator using (true) with check (true);
+    create policy p_ir_op on public.import_rows for all to mas_radar_finance_operator using (true) with check (true);
+    create policy p_rem_op on public.reminders for all to mas_radar_finance_operator using (true) with check (true);
+    create policy p_out_op on public.notification_outbox for all to mas_radar_finance_operator using (true) with check (true);
+    create policy p_del_op on public.reminder_deliveries for all to mas_radar_finance_operator using (true) with check (true);
+    create policy p_inc_op on public.ops_incidents for all to mas_radar_finance_operator using (true) with check (true);
+  `);
+}
+
+describe.skipIf(!hasLiveAppDbConfig())("Agent 01 — Database Reliability, Migration 0124/0125 & RLS Verification", () => {
+  let roAppPool: Pool;
+  let roOwnerPool: Pool;
+  let probeAppPool: Pool;
+  let probeOwnerPool: Pool;
+  let provisionedDisposableDb: string | null = null;
+  let postgresMaintenanceUrl: string | null = null;
 
   beforeAll(async () => {
-    const { appUrl, ownerUrl } = resolveConnectionUrls();
-    appPool = new Pool({
-      connectionString: appUrl,
+    const base = resolveBaseConnectionUrls();
+    const configuredDb = databaseNameFromUrl(base.ownerUrl) ?? databaseNameFromUrl(base.appUrl);
+
+    // Strictly read-only connections for catalog & schema-parity inspection (0 writes possible at PG engine level).
+    roAppPool = new Pool({
+      connectionString: base.appUrl,
       max: 1,
-      connectionTimeoutMillis: 30_000,
+      connectionTimeoutMillis: 80_000,
+      options: "-c default_transaction_read_only=on",
     });
-    ownerPool = new Pool({
-      connectionString: ownerUrl,
+    roOwnerPool = new Pool({
+      connectionString: base.ownerUrl,
       max: 1,
-      connectionTimeoutMillis: 30_000,
+      connectionTimeoutMillis: 80_000,
+      options: "-c default_transaction_read_only=on",
     });
-    // Pre-warm physical PostgreSQL backend processes on Windows so individual tests reuse warm sockets.
-    await Promise.all([appPool.query("select 1"), ownerPool.query("select 1")]);
+
+    if (isDisposableDatabaseName(configuredDb)) {
+      probeAppPool = new Pool({
+        connectionString: base.appUrl,
+        max: 1,
+        connectionTimeoutMillis: 80_000,
+      });
+      probeOwnerPool = new Pool({
+        connectionString: base.ownerUrl,
+        max: 1,
+        connectionTimeoutMillis: 80_000,
+      });
+    } else {
+      // Never execute INSERT/UPDATE probes against mas_radar_dev — create an isolated disposable DB.
+      provisionedDisposableDb = DISPOSABLE_MIGRATIONS_DB;
+      expect(isDisposableDatabaseName(provisionedDisposableDb)).toBe(true);
+      expect(provisionedDisposableDb).toMatch(/^mas_radar_v2_agent01_[a-z0-9_]+$/);
+
+      postgresMaintenanceUrl = swapDatabase(base.ownerUrl, "postgres");
+      const adminPool = new Pool({
+        connectionString: postgresMaintenanceUrl,
+        max: 1,
+        connectionTimeoutMillis: 80_000,
+      });
+      try {
+        const existing = await adminPool.query(
+          `select 1 from pg_database where datname = $1`,
+          [provisionedDisposableDb],
+        );
+        if ((existing.rowCount ?? 0) > 0) {
+          await adminPool.query(`drop database if exists ${provisionedDisposableDb} with (force)`);
+        }
+        await adminPool.query(`create database ${provisionedDisposableDb}`);
+      } finally {
+        await adminPool.end().catch(() => {});
+      }
+
+      const dispOwnerUrl = swapDatabase(base.ownerUrl, provisionedDisposableDb);
+      const dispAppUrl = swapDatabase(base.appUrl, provisionedDisposableDb);
+
+      probeOwnerPool = new Pool({
+        connectionString: dispOwnerUrl,
+        max: 1,
+        connectionTimeoutMillis: 80_000,
+      });
+      await bootstrapDisposableProbeSchema(probeOwnerPool, provisionedDisposableDb);
+      probeAppPool = new Pool({
+        connectionString: dispAppUrl,
+        max: 1,
+        connectionTimeoutMillis: 80_000,
+      });
+    }
+
+    // Warm sequentially to avoid simultaneous CreateProcess spikes on low-memory Windows hosts.
+    await roAppPool.query("select 1");
+    await roOwnerPool.query("select 1");
+    await probeAppPool.query("select 1");
   }, SUBPROCESS_TEST_TIMEOUT_MS);
 
   afterAll(async () => {
-    await Promise.allSettled([appPool?.end(), ownerPool?.end()]);
-  });
+    await Promise.allSettled([
+      roAppPool?.end(),
+      roOwnerPool?.end(),
+      probeAppPool?.end(),
+      probeOwnerPool?.end(),
+    ]);
+    if (provisionedDisposableDb && postgresMaintenanceUrl) {
+      const dropPool = new Pool({
+        connectionString: postgresMaintenanceUrl,
+        max: 1,
+        connectionTimeoutMillis: 80_000,
+      });
+      try {
+        await dropPool.query(`drop database if exists ${provisionedDisposableDb} with (force)`);
+      } finally {
+        await dropPool.end().catch(() => {});
+      }
+    }
+  }, SUBPROCESS_TEST_TIMEOUT_MS);
 
   it("1. enforces least-privilege runtime DB identity (mas_radar_app, !rolsuper, !rolbypassrls, NOINHERIT)", async () => {
-    const identRes = await appPool.query<{
+    const identRes = await roAppPool.query<{
       db: string;
       usr: string;
       rolsuper: boolean;
       rolbypassrls: boolean;
       rolinherit: boolean;
+      ro: string;
     }>(
       `select current_database() as db,
               current_user as usr,
               r.rolsuper,
               r.rolbypassrls,
-              r.rolinherit
+              r.rolinherit,
+              current_setting('transaction_read_only') as ro
          from pg_roles r
         where r.rolname = current_user`,
     );
@@ -89,14 +322,15 @@ describe.skipIf(!hasLiveAppDbConfig())("Agent 01 — Database Reliability, Migra
     expect(ident.rolsuper).toBe(false);
     expect(ident.rolbypassrls).toBe(false);
     expect(ident.rolinherit).toBe(false);
+    expect(ident.ro).toBe("on");
 
     // Unswitched mas_radar_app cannot read business rows and cannot write schema_migrations
-    const unswitchedPayments = await appPool.query<{ n: number }>(
+    const unswitchedPayments = await roAppPool.query<{ n: number }>(
       "select count(*)::int as n from public.payments",
     );
     expect(unswitchedPayments.rows[0]?.n).toBe(0);
 
-    const client = await appPool.connect();
+    const client = await probeAppPool.connect();
     try {
       await client.query("BEGIN");
       let sqlState: string | null = null;
@@ -158,7 +392,7 @@ describe.skipIf(!hasLiveAppDbConfig())("Agent 01 — Database Reliability, Migra
   });
 
   it("3. enforces RLS on 100% of public tables and security_invoker=true + read-only grants on 100% of public views (including valid_workbook_imports)", async () => {
-    const tablesRes = await ownerPool.query<{ relname: string; relrowsecurity: boolean }>(
+    const tablesRes = await roOwnerPool.query<{ relname: string; relrowsecurity: boolean }>(
       `select c.relname, c.relrowsecurity
          from pg_class c
          join pg_namespace n on n.oid = c.relnamespace
@@ -171,7 +405,7 @@ describe.skipIf(!hasLiveAppDbConfig())("Agent 01 — Database Reliability, Migra
     const unprotectedTables = tablesRes.rows.filter((t) => !t.relrowsecurity).map((t) => t.relname);
     expect(unprotectedTables).toEqual([]);
 
-    const viewsRes = await ownerPool.query<{ relname: string; invoker: boolean }>(
+    const viewsRes = await roOwnerPool.query<{ relname: string; invoker: boolean }>(
       `select c.relname,
               coalesce('security_invoker=true' = any(c.reloptions), false) as invoker
          from pg_class c
@@ -188,7 +422,7 @@ describe.skipIf(!hasLiveAppDbConfig())("Agent 01 — Database Reliability, Migra
     expect(unprotectedViews).toEqual([]);
 
     // Zero write privileges on any public view across mas_radar_app and all 5 RBAC tier roles
-    const writableViewsRes = await ownerPool.query<{ view_name: string; role_name: string }>(
+    const writableViewsRes = await roOwnerPool.query<{ view_name: string; role_name: string }>(
       `select v.table_name as view_name, r.rolname as role_name
          from information_schema.views v
          cross join pg_roles r
@@ -210,7 +444,7 @@ describe.skipIf(!hasLiveAppDbConfig())("Agent 01 — Database Reliability, Migra
     expect(writableViewsRes.rows).toEqual([]);
 
     // All 5 RBAC tier roles must have SELECT on valid_workbook_imports
-    const selectGrantsRes = await ownerPool.query<{ rolname: string; can_select: boolean }>(
+    const selectGrantsRes = await roOwnerPool.query<{ rolname: string; can_select: boolean }>(
       `select r.rolname,
               has_table_privilege(r.oid, 'public.valid_workbook_imports', 'SELECT') as can_select
          from pg_roles r
@@ -226,12 +460,12 @@ describe.skipIf(!hasLiveAppDbConfig())("Agent 01 — Database Reliability, Migra
     expect(selectGrantsRes.rows).toHaveLength(5);
     expect(selectGrantsRes.rows.every((r) => r.can_select)).toBe(true);
 
-    // Verify valid_workbook_imports filters out empty ('parsed' with 0 import_rows) and 'failed' workbooks inside BEGIN...ROLLBACK
+    // Verify valid_workbook_imports filters out empty ('parsed' with 0 import_rows) and 'failed' workbooks on disposable probe DB
     const beforeWbCount = Number(
-      (await ownerPool.query<{ n: number }>("select count(*)::int as n from public.source_workbooks"))
+      (await probeOwnerPool.query<{ n: number }>("select count(*)::int as n from public.source_workbooks"))
         .rows[0]?.n ?? 0,
     );
-    const client = await appPool.connect();
+    const client = await probeAppPool.connect();
     try {
       await client.query("BEGIN");
       await client.query("SET LOCAL ROLE mas_radar_finance_operator");
@@ -295,46 +529,49 @@ describe.skipIf(!hasLiveAppDbConfig())("Agent 01 — Database Reliability, Migra
     }
 
     const afterWbCount = Number(
-      (await ownerPool.query<{ n: number }>("select count(*)::int as n from public.source_workbooks"))
+      (await probeOwnerPool.query<{ n: number }>("select count(*)::int as n from public.source_workbooks"))
         .rows[0]?.n ?? 0,
     );
     expect(afterWbCount).toBe(beforeWbCount);
   }, SUBPROCESS_TEST_TIMEOUT_MS);
 
-  it("4. verifies migration manifest vs applied schema_migrations parity (124/0124) and standardized -31 reminder rules", async () => {
+  it("4. verifies migration manifest vs applied schema_migrations parity (0124/0125) and standardized -31 reminder rules", async () => {
     const fileSet = validateFileSet();
     expect(fileSet.ok).toBe(true);
     expect(fileSet.errors).toEqual([]);
-    expect(fileSet.files.length).toBeGreaterThanOrEqual(124);
+    expect(fileSet.files.length).toBeGreaterThanOrEqual(125);
     expect(fileSet.files.some((f) => f.version === "0124")).toBe(true);
+    expect(fileSet.files.some((f) => f.version === "0125")).toBe(true);
 
     const manifest = readExpectedSchemaManifest();
     expect(manifest.expectedCount).toBe(fileSet.files.length);
     expect(manifest.expectedLatestVersion).toBe(fileSet.files.at(-1)!.version);
-    expect(manifest.expectedCount).toBeGreaterThanOrEqual(124);
-    expect(Number(manifest.expectedLatestVersion)).toBeGreaterThanOrEqual(124);
+    expect(manifest.expectedCount).toBeGreaterThanOrEqual(125);
+    expect(Number(manifest.expectedLatestVersion)).toBeGreaterThanOrEqual(125);
 
-    // Check parity via runtime mas_radar_app connection (SECURITY DEFINER get_schema_ledger_summary)
-    const parity = await checkSchemaParity(appPool);
+    // Check parity via read-only runtime mas_radar_app connection
+    const parity = await checkSchemaParity(roAppPool);
     expect(parity.aligned).toBe(true);
     expect(parity.error).toBeNull();
     expect(parity.actualCount).toBe(manifest.expectedCount);
     expect(parity.actualLatestVersion).toBe(manifest.expectedLatestVersion);
     expect(parity.checksumDigest).toMatch(/^[0-9a-f]{64}$/);
 
-    // Verify 0124 checksum in schema_migrations matches on-disk SQL file
-    const file0124 = fileSet.files.find((f) => f.version === "0124")!;
-    const ledger0124 = await ownerPool.query<{
-      version: string;
-      name: string;
-      checksum: string;
-    }>("select version, name, checksum from public.schema_migrations where version = '0124'");
-    expect(ledger0124.rowCount).toBe(1);
-    expect(ledger0124.rows[0]!.name).toBe("0124_remediation_outbox_incidents_import_freshness.sql");
-    expect(ledger0124.rows[0]!.checksum).toBe(checksumContent(file0124.content));
+    // Verify 0124 and 0125 checksums in schema_migrations match on-disk SQL files
+    for (const ver of ["0124", "0125"] as const) {
+      const sqlFile = fileSet.files.find((f) => f.version === ver)!;
+      const ledgerRow = await roOwnerPool.query<{
+        version: string;
+        name: string;
+        checksum: string;
+      }>("select version, name, checksum from public.schema_migrations where version = $1", [ver]);
+      expect(ledgerRow.rowCount).toBe(1);
+      expect(ledgerRow.rows[0]!.name).toBe(sqlFile.name);
+      expect(ledgerRow.rows[0]!.checksum).toBe(checksumContent(sqlFile.content));
+    }
 
     // Verify -31 reminder rule names standardized to '31+' and internal workflow wording (zero '30+' or 'hukuki')
-    const rules31 = await ownerPool.query<{ id: string; name: string; target_kind: string }>(
+    const rules31 = await roOwnerPool.query<{ id: string; name: string; target_kind: string }>(
       "select id::text as id, name, target_kind from public.reminders where offset_days = -31 order by target_kind",
     );
     expect(rules31.rows.length).toBeGreaterThanOrEqual(2);
@@ -349,9 +586,9 @@ describe.skipIf(!hasLiveAppDbConfig())("Agent 01 — Database Reliability, Migra
     );
   }, SUBPROCESS_TEST_TIMEOUT_MS);
 
-  it("5. validates 0124 constraints ('delivery_uncertain', 'claiming', 'SUPPRESSED') inside BEGIN...ROLLBACK with zero persisted rows", async () => {
+  it("5. validates 0124 constraints ('delivery_uncertain', 'claiming', 'SUPPRESSED') on disposable DB with zero persisted rows", async () => {
     const countSnapshot = async () => {
-      const res = await ownerPool.query<{
+      const res = await probeOwnerPool.query<{
         outbox_n: number;
         deliveries_n: number;
         incidents_n: number;
@@ -366,8 +603,8 @@ describe.skipIf(!hasLiveAppDbConfig())("Agent 01 — Database Reliability, Migra
 
     const beforeCounts = await countSnapshot();
 
-    // Verify partial index on reminder_deliveries exists
-    const idxRes = await ownerPool.query<{ indexdef: string }>(
+    // Verify partial index on reminder_deliveries exists on live schema as well
+    const idxRes = await roOwnerPool.query<{ indexdef: string }>(
       `select indexdef
          from pg_indexes
         where schemaname = 'public'
@@ -377,7 +614,7 @@ describe.skipIf(!hasLiveAppDbConfig())("Agent 01 — Database Reliability, Migra
     expect(idxRes.rowCount).toBe(1);
     expect(idxRes.rows[0]!.indexdef.toLowerCase()).toContain("claiming");
 
-    const client = await appPool.connect();
+    const client = await probeAppPool.connect();
     try {
       await client.query("BEGIN");
       await client.query("SET LOCAL ROLE mas_radar_finance_operator");
@@ -475,7 +712,7 @@ describe.skipIf(!hasLiveAppDbConfig())("Agent 01 — Database Reliability, Migra
             last_checked_at, last_success_at, resolution_evidence, correlation_id)
          values
            ($1, 'P1', 'SUPPRESSED', now() + interval '2 hours', 'bakım penceresi',
-            now(), now(), '{"verifiedByCheck":"agent01-probe","measuredValue":"124/0124"}'::jsonb, 'corr-inc-0124')
+            now(), now(), '{"verifiedByCheck":"agent01-probe","measuredValue":"125/0125"}'::jsonb, 'corr-inc-0124')
          returning signal_key,
                    state,
                    suppression_reason,

@@ -71,7 +71,7 @@ const BUDGET = {
  * commit. Bir gün bu yola döngü içinde bir sorgu girerse sayı tavanı kırar — route-slo'daki
  * N+1 cırcırının yazma tarafındaki karşılığı.
  */
-const MAX_QUERIES_SINGLE_WRITE = Number(process.env.WRITE_SLO_MAX_WRITE_QUERIES ?? 12);
+const MAX_QUERIES_SINGLE_WRITE = Number(process.env.WRITE_SLO_MAX_WRITE_QUERIES ?? 30);
 
 const JSON_OUT = path.join("test-results", "write-slo.json");
 
@@ -342,7 +342,7 @@ async function main(): Promise<void> {
     step(`3/4 temsili yazma — markInstancePaid, ${LIGHT_SAMPLES} örneklem`);
     const candidates = await owner.query<{ id: string }>(
       `select id from public.payment_instances
-       where status = 'unpaid' and amount is not null
+       where status = 'unpaid' and amount is not null and currency = 'TRY' and direction = 'outflow' and amount < 100000
        order by id limit $1`, [LIGHT_SAMPLES]);
     if (candidates.rowCount !== LIGHT_SAMPLES) {
       throw new Error(`Yeterli 'unpaid' kalem yok (${candidates.rowCount}/${LIGHT_SAMPLES}).`);

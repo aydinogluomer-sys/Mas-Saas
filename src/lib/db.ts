@@ -43,7 +43,7 @@ declare global {
   var __masPoolVersion: number | undefined;
 }
 
-const POOL_CONFIG_VERSION = 2;
+const POOL_CONFIG_VERSION = 3;
 if (global.__masPoolVersion !== POOL_CONFIG_VERSION) {
   global.__masPool = undefined;
   global.__masRawPool = undefined;
@@ -318,8 +318,12 @@ async function contextFor(): Promise<{
   }
 }
 
-async function prepare(client: TaggedClient, forceUserConfig = true): Promise<void> {
-  const { dbRole, userId, legalEntityId, statementTimeoutMs } = await contextFor();
+async function prepare(
+  client: TaggedClient,
+  forceUserConfig = true,
+  resolvedCtx?: Awaited<ReturnType<typeof contextFor>>,
+): Promise<void> {
+  const { dbRole, userId, legalEntityId, statementTimeoutMs } = resolvedCtx ?? (await contextFor());
   const prevTimeout = client[CURRENT_TIMEOUT] ?? null;
   if (statementTimeoutMs !== prevTimeout) {
     const effectiveTimeout = statementTimeoutMs ?? (env.databaseStatementTimeoutMs ?? 30_000);
@@ -418,6 +422,10 @@ export function getPool(): Pool {
     const base = createPool();
 
     const scopedQuery = async (...args: unknown[]): Promise<QueryResult<QueryResultRow>> => {
+      // Resolve request/role context BEFORE checking out a connection from `base`.
+      // Otherwise N >= max concurrent `pool.query()` calls check out all pool clients first and
+      // self-deadlock when `getDbContext()` needs a read-only entity membership query (`loadAssignedUserEntityIds`).
+      const resolvedCtx = await contextFor();
       const client = await connectWithRetry(base);
       // Faz 33: the one choke point every pooled query already passes through, which is why the
       // slow-query timer lives here rather than at ~530 call sites. Only the DURATION and the
@@ -430,7 +438,7 @@ export function getPool(): Pool {
       let unusable: Error | undefined;
       try {
         try {
-          await prepare(client);
+          await prepare(client, true, resolvedCtx);
         } catch (e) {
           unusable = e instanceof Error ? e : new Error(String(e));
           throw e;
@@ -457,9 +465,10 @@ export function getPool(): Pool {
     };
 
     const scopedConnect = async (): Promise<PoolClient> => {
+      const resolvedCtx = await contextFor();
       const client = await connectWithRetry(base);
       try {
-        await prepare(client);
+        await prepare(client, true, resolvedCtx);
       } catch (e) {
         // Destroyed, not pooled — the same reasoning as scopedQuery above.
         client.release(e instanceof Error ? e : new Error(String(e)));

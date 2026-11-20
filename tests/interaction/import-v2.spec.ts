@@ -18,12 +18,13 @@
  *   DATABASE_URL=…/<disposable-app> PORT=3310 MAS_NEXT_DIST_DIR=.next-v2-verify pnpm start
  *   BASE_URL=http://127.0.0.1:3310 MAS_E2E_DATABASE_URL=…/<disposable> pnpm interaction:test -- import-v2
  */
+import { execFileSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import ExcelJS from "exceljs";
 import { expect, test } from "@playwright/test";
 import { buildFixtureWorkbook, FIXTURE_ORACLE } from "../../src/lib/importers/v2/fixture";
-import { db, openAs, scalar, rows, type SeededRole } from "./harness";
+import { db, openAs, scalar, rows, verifierUrl, type SeededRole } from "./harness";
 
 const OUT = path.join(process.cwd(), "docs", "interaction-audit");
 const ROUTE = "/data/imports/v2";
@@ -32,6 +33,15 @@ const evidence: Array<Record<string, unknown>> = [];
 test.afterAll(() => {
   mkdirSync(OUT, { recursive: true });
   writeFileSync(path.join(OUT, "evidence-import-v2.json"), JSON.stringify({ route: ROUTE, rows: evidence }, null, 2) + "\n", "utf8");
+  execFileSync(process.execPath, ["--import", "tsx", "scripts/seed-demo.ts"], {
+    cwd: process.cwd(),
+    stdio: "inherit",
+    env: {
+      ...process.env,
+      MIGRATION_DATABASE_URL: verifierUrl(),
+      MAS_FORCE_SYNTHETIC_SEED: process.env.MAS_FORCE_SYNTHETIC_SEED ?? "1",
+    },
+  });
 });
 
 async function fixtureBuffer(): Promise<Buffer> {

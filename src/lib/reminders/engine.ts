@@ -1,6 +1,7 @@
 // Phase 6B, Faz 25, Faz 40 (A2), Wave 5B (F-52) & Phase E (Agent 06) reminder engine.
 // BOUNDARY INVARIANT: Never access process.env or fetch here (transport.ts owns egress).
 
+import { createHash, randomUUID } from "node:crypto";
 import type { Pool } from "pg";
 import { z } from "zod";
 import { audit } from "@/lib/audit";
@@ -28,8 +29,13 @@ import {
   type ReminderTargetKind,
 } from "./rules";
 import {
+  classifyThrownTransportError,
   computeNotificationIdempotencyKey,
   enqueueOutboxNotification,
+  finalizeOutboxSendingOutcome,
+  prepareOutboxSendingIntent,
+  recoverStaleOutboxClaims,
+  type PreparedOutboxSendingIntent,
 } from "./outbox";
 import {
   emailTransport,
@@ -1299,25 +1305,49 @@ async function markReminderDeliveryStatusStrict(
 
   let upd;
   try {
-    upd = claimToken
-      ? await pool.query(
-          `update public.reminder_deliveries
-              set status = $2,
-                  error = $3,
-                  claim_token = null
-            where id = $1
-              and status in ('pending', 'claiming')
-              and claim_token = $4::uuid`,
-          [id, status, opts.error ?? null, claimToken],
-        )
-      : await pool.query(
-          `update public.reminder_deliveries
-              set status = $2,
-                  error = $3
-            where id = $1
-              and status in ('pending', 'claiming')`,
-          [id, status, opts.error ?? null],
-        );
+    if (opts.payload) {
+      upd = claimToken
+        ? await pool.query(
+            `update public.reminder_deliveries
+                set status = $2,
+                    error = $3,
+                    claim_token = null,
+                    payload = coalesce(payload, '{}'::jsonb) || $4::jsonb
+              where id = $1
+                and status in ('pending', 'claiming')
+                and claim_token = $5::uuid`,
+            [id, status, opts.error ?? null, JSON.stringify(opts.payload), claimToken],
+          )
+        : await pool.query(
+            `update public.reminder_deliveries
+                set status = $2,
+                    error = $3,
+                    payload = coalesce(payload, '{}'::jsonb) || $4::jsonb
+              where id = $1
+                and status in ('pending', 'claiming')`,
+            [id, status, opts.error ?? null, JSON.stringify(opts.payload)],
+          );
+    } else {
+      upd = claimToken
+        ? await pool.query(
+            `update public.reminder_deliveries
+                set status = $2,
+                    error = $3,
+                    claim_token = null
+              where id = $1
+                and status in ('pending', 'claiming')
+                and claim_token = $4::uuid`,
+            [id, status, opts.error ?? null, claimToken],
+          )
+        : await pool.query(
+            `update public.reminder_deliveries
+                set status = $2,
+                    error = $3
+              where id = $1
+                and status in ('pending', 'claiming')`,
+            [id, status, opts.error ?? null],
+          );
+    }
   } catch (err) {
     if (!isLegacyClaimingUnsupportedError(err)) throw err;
     upd = await pool.query(
@@ -1369,16 +1399,270 @@ async function loadAlreadySentOutboxKeys(
   }
 }
 
+interface OutboxIntentEntryInput {
+  channel: "telegram" | "email";
+  idempotencyKey: string;
+  bodyText: string;
+  bodyFormat: "plain" | "html";
+  metadata: Record<string, unknown>;
+  legalEntityId?: string | null;
+}
+
+interface DurableOutboxSendingHandle {
+  outboxId: string | null;
+  claimToken: string | null;
+  alreadyHandled: boolean;
+  existingStatus: string | null;
+  legacyFallback: boolean;
+}
+
+async function beginDurableOutboxSendingIntent(
+  pool: Pool,
+  entry: OutboxIntentEntryInput,
+): Promise<DurableOutboxSendingHandle> {
+  try {
+    const prepared: PreparedOutboxSendingIntent = await prepareOutboxSendingIntent(pool, {
+      stream: "reminder_digest",
+      channel: entry.channel,
+      recipientTarget: `default:${entry.channel}`,
+      idempotencyKey: entry.idempotencyKey,
+      bodyText: entry.bodyText,
+      bodyFormat: entry.bodyFormat,
+      metadata: entry.metadata,
+      legalEntityId: entry.legalEntityId ?? null,
+    });
+
+    if (!prepared.alreadyHandled && prepared.outboxId && prepared.claimToken) {
+      return {
+        outboxId: prepared.outboxId,
+        claimToken: prepared.claimToken,
+        alreadyHandled: false,
+        existingStatus: prepared.existingStatus,
+        legacyFallback: false,
+      };
+    }
+
+    if (prepared.alreadyHandled && prepared.outboxId && prepared.existingStatus === "claiming") {
+      const checkPending = await pool.query<{ status?: string }>(
+        `select status
+           from public.notification_outbox
+          where idempotency_key = $1
+          limit 1`,
+        [entry.idempotencyKey],
+      );
+      const currentStatus = checkPending.rows[0]?.status;
+      if (currentStatus === "pending" || currentStatus === "failed_retryable") {
+        const fallbackToken = randomUUID();
+        const sendingMeta = JSON.stringify({
+          ...entry.metadata,
+          dispatchPhase: "sending",
+          sendingStartedAt: new Date().toISOString(),
+        });
+        const fallbackClaim = await pool.query(
+          `update public.notification_outbox
+              set status = 'claiming',
+                  claimed_at = now(),
+                  metadata = coalesce(metadata, '{}'::jsonb) || $2::jsonb,
+                  updated_at = now()
+            where idempotency_key = $1
+              and status in ('pending', 'failed_retryable')
+              and claim_token is null`,
+          [entry.idempotencyKey, sendingMeta],
+        );
+        if ((fallbackClaim.rowCount ?? 0) === 1) {
+          return {
+            outboxId: prepared.outboxId,
+            claimToken: fallbackToken,
+            alreadyHandled: false,
+            existingStatus: currentStatus,
+            legacyFallback: false,
+          };
+        }
+      }
+    }
+
+    return {
+      outboxId: prepared.outboxId,
+      claimToken: null,
+      alreadyHandled: true,
+      existingStatus: prepared.existingStatus,
+      legacyFallback: false,
+    };
+  } catch (err) {
+    if (isMissingOutboxTableError(err) || isLegacyClaimingUnsupportedError(err)) {
+      return {
+        outboxId: null,
+        claimToken: null,
+        alreadyHandled: false,
+        existingStatus: null,
+        legacyFallback: true,
+      };
+    }
+    throw err;
+  }
+}
+
+async function releaseUnstartedOutboxIntentBestEffort(
+  pool: Pool,
+  handle: DurableOutboxSendingHandle,
+): Promise<void> {
+  if (!handle.outboxId || !handle.claimToken) return;
+  try {
+    await pool.query(
+      `update public.notification_outbox
+          set status = 'pending',
+              claim_token = null,
+              metadata = coalesce(metadata, '{}'::jsonb) || '{"dispatchPhase":"prepared"}'::jsonb,
+              updated_at = now()
+        where id = $1
+          and status = 'claiming'
+          and claim_token = $2::uuid`,
+      [handle.outboxId, handle.claimToken],
+    );
+  } catch {
+    // Non-fatal cleanup if delivery claim was lost prior to network I/O.
+  }
+}
+
+async function completeDurableOutboxSendingOutcome(
+  pool: Pool,
+  handle: DurableOutboxSendingHandle,
+  entry: OutboxIntentEntryInput,
+  outcome: DeliveryResult,
+): Promise<void> {
+  if (handle.legacyFallback || !handle.outboxId || !handle.claimToken) {
+    await recordOutboxOutcomeSafe(pool, entry, outcome);
+    return;
+  }
+  try {
+    await finalizeOutboxSendingOutcome(pool, {
+      outboxId: handle.outboxId,
+      claimToken: handle.claimToken,
+      idempotencyKey: entry.idempotencyKey,
+      delivery: outcome,
+    });
+  } catch (err) {
+    if (isMissingOutboxTableError(err) || isLegacyClaimingUnsupportedError(err)) {
+      await recordOutboxOutcomeSafe(pool, entry, outcome);
+      return;
+    }
+    throw err;
+  }
+}
+
+async function markReminderDeliverySendingStarted(
+  pool: Pool,
+  id: string,
+  claimToken: string | null,
+  meta: {
+    outboxIdempotencyKey: string;
+    outboxId?: string | null;
+    batchKey?: string | null;
+  },
+): Promise<boolean> {
+  const sendingPatch = JSON.stringify({
+    dispatchPhase: "sending",
+    sendingStartedAt: new Date().toISOString(),
+    outboxIdempotencyKey: meta.outboxIdempotencyKey,
+    ...(meta.outboxId ? { outboxId: meta.outboxId } : {}),
+    ...(meta.batchKey ? { batchKey: meta.batchKey } : {}),
+  });
+
+  if (!claimToken) {
+    try {
+      const upd = await pool.query(
+        `update public.reminder_deliveries
+            set payload = coalesce(payload, '{}'::jsonb) || $2::jsonb
+          where id = $1
+            and status = 'pending'`,
+        [id, sendingPatch],
+      );
+      return (upd.rowCount ?? 0) === 1;
+    } catch (err) {
+      if (isLegacyClaimingUnsupportedError(err)) return true;
+      throw err;
+    }
+  }
+
+  try {
+    const upd = await pool.query(
+      `update public.reminder_deliveries
+          set status = 'claiming',
+              payload = coalesce(payload, '{}'::jsonb) || $3::jsonb
+        where id = $1
+          and status = 'claiming'
+          and claim_token = $2::uuid`,
+      [id, claimToken, sendingPatch],
+    );
+    return (upd.rowCount ?? 0) === 1;
+  } catch (err) {
+    if (isLegacyClaimingUnsupportedError(err)) return true;
+    throw err;
+  }
+}
+
+function buildProviderMessagePayloadFields(
+  result: DeliveryResult,
+): { providerMessageIds?: string[]; providerMessageId?: string | null } {
+  const rawIds =
+    Array.isArray(result.providerMessageIds) && result.providerMessageIds.length > 0
+      ? result.providerMessageIds
+      : Array.isArray(result.messageIds) && result.messageIds.length > 0
+        ? result.messageIds
+        : result.providerMessageId != null && String(result.providerMessageId).trim() !== ""
+          ? [String(result.providerMessageId).trim()]
+          : [];
+  const ids = rawIds.map((v) => String(v).trim()).filter(Boolean);
+  if (ids.length === 0) return {};
+  return {
+    providerMessageIds: ids,
+    providerMessageId:
+      result.providerMessageId != null ? String(result.providerMessageId) : (ids[0] ?? null),
+  };
+}
+
+async function recordUncertainDeliveryOpsIncidentBestEffort(
+  pool: Pool,
+  uncertainCount: number,
+): Promise<void> {
+  if (uncertainCount <= 0) return;
+  try {
+    const valueStr = String(uncertainCount);
+    const fingerprint = createHash("sha256")
+      .update(`outbox_delivery_uncertain|P1|OPEN|${valueStr}`, "utf8")
+      .digest("hex")
+      .slice(0, 16);
+    await pool.query(
+      `insert into public.ops_incidents
+         (signal_key, severity, state, last_value, state_fingerprint, note, opened_at, occurrence_count, updated_at)
+       values ($1, $2, $3, $4, $5, $6, now(), 1, now())
+       on conflict (signal_key) do update
+         set severity = excluded.severity,
+             state = case when public.ops_incidents.state = 'SUPPRESSED' then public.ops_incidents.state else 'OPEN' end,
+             last_value = excluded.last_value,
+             state_fingerprint = excluded.state_fingerprint,
+             note = excluded.note,
+             opened_at = coalesce(public.ops_incidents.opened_at, now()),
+             resolved_at = null,
+             occurrence_count = public.ops_incidents.occurrence_count + 1,
+             updated_at = now()`,
+      [
+        "outbox_delivery_uncertain",
+        "P1",
+        "OPEN",
+        valueStr,
+        fingerprint,
+        "sending fazında kesilen hatırlatma delivery_uncertain durumuna alındı; operatör mutabakatı gerekli",
+      ],
+    );
+  } catch {
+    // Non-fatal on minimal unit-test mock pools that omit `public.ops_incidents`.
+  }
+}
+
 async function recordOutboxOutcomeSafe(
   pool: Pool,
-  entry: {
-    channel: "telegram" | "email";
-    idempotencyKey: string;
-    bodyText: string;
-    bodyFormat: "plain" | "html";
-    metadata: Record<string, unknown>;
-    legalEntityId?: string | null;
-  },
+  entry: OutboxIntentEntryInput,
   outcome: DeliveryResult,
 ): Promise<void> {
   try {
@@ -1474,7 +1758,7 @@ interface ClaimedDeliveryRow {
   entity_table: string;
   entity_id: string;
   scheduled_for: string;
-  payload: { message?: string } | null;
+  payload: Record<string, unknown> | null;
   claim_token?: string | null;
   rule_name: string;
   target_kind: ReminderTargetKind;
@@ -1489,15 +1773,45 @@ async function claimPendingDeliveriesAtomic(
   todayISO: string,
 ): Promise<ClaimedDeliveryRow[]> {
   try {
+    await recoverStaleOutboxClaims(pool, 10);
+  } catch (err) {
+    if (!isMissingOutboxTableError(err) && !isLegacyClaimingUnsupportedError(err)) {
+      throw err;
+    }
+  }
+
+  let postSendingUncertainRecovered = 0;
+  try {
+    // F-08: Stale claims that ALREADY entered `dispatchPhase = 'sending'` MUST transition
+    // atomically to `'delivery_uncertain'` (NEVER back to `'pending'`, preventing duplicate sends).
+    const uncertainRes = await pool.query(
+      `update public.reminder_deliveries
+          set status = 'delivery_uncertain',
+              claim_token = null,
+              error = coalesce(error, 'crash_window_after_sending_started: operator_reconciliation_required'),
+              payload = coalesce(payload, '{}'::jsonb) || '{"dispatchPhase":"delivery_uncertain","requiresOperatorReconciliation":true}'::jsonb
+        where status = 'claiming'
+          and claimed_at < now() - interval '10 minutes'
+          and coalesce(payload->>'dispatchPhase', '') = 'sending'`,
+    );
+    postSendingUncertainRecovered = uncertainRes.rowCount ?? 0;
+
+    // Only pre-send stale claims (`dispatchPhase <> 'sending'`, zero external send initiated) recover to `'pending'`.
     await pool.query(
       `update public.reminder_deliveries
           set status = 'pending',
-              claim_token = null
+              claim_token = null,
+              payload = coalesce(payload, '{}'::jsonb) || '{"dispatchPhase":"pending"}'::jsonb
         where status = 'claiming'
-          and claimed_at < now() - interval '10 minutes'`,
+          and claimed_at < now() - interval '10 minutes'
+          and coalesce(payload->>'dispatchPhase', '') <> 'sending'`,
     );
   } catch (err) {
     if (!isLegacyClaimingUnsupportedError(err)) throw err;
+  }
+
+  if (postSendingUncertainRecovered > 0) {
+    await recordUncertainDeliveryOpsIncidentBestEffort(pool, postSendingUncertainRecovered);
   }
 
   try {
@@ -1513,7 +1827,8 @@ async function claimPendingDeliveriesAtomic(
        update public.reminder_deliveries d
           set status = 'claiming',
               claim_token = gen_random_uuid(),
-              claimed_at = now()
+              claimed_at = now(),
+              payload = coalesce(d.payload, '{}'::jsonb) || '{"dispatchPhase":"claimed"}'::jsonb
          from due,
               public.reminders r
         where d.id = due.id
@@ -1566,31 +1881,17 @@ async function claimPendingDeliveriesAtomic(
   }
 }
 
-function classifyThrownTransportError(e: unknown): DeliveryResult {
-  const errName = (e as Error)?.name ?? "";
-  const errMsg = (e as Error)?.message ?? String(e);
-  const isTimeout =
-    errName === "TimeoutError" ||
-    errName === "AbortError" ||
-    /timeout|aborted/i.test(errMsg);
-  return {
-    ok: false,
-    uncertainOutcome: isTimeout,
-    failureKind: isTimeout ? "timeout" : "temporary_infra_failure",
-    error: `transport threw: ${redactBotToken(errMsg)}`,
-  };
-}
-
 /**
  * Sends pending deliveries scheduled on/before today:
  *  1. Expires stale upcoming/due-today rows (`offset_days >= 0` and `scheduled_for < todayISO - 1`).
- *  2. Atomically claims due `pending` rows via `FOR UPDATE SKIP LOCKED` (`status = 'claiming'`, `claim_token = gen_random_uuid()`)
- *     so concurrent worker processes never dispatch duplicate Telegram/email notifications.
+ *  2. Recovers stale claims safely (`dispatchPhase = 'sending'` -> `'delivery_uncertain'`; pre-send -> `'pending'`)
+ *     and atomically claims due `pending` rows via `FOR UPDATE SKIP LOCKED` (`status = 'claiming'`, `claim_token = gen_random_uuid()`).
  *  3. Re-verifies each live target row is still open/unarchived/uncancelled and still in the rule's
  *     disjoint bucket on `todayISO`, rebuilding the message fresh from live facts (`todayISO`).
- *  4. Deduplicates via `public.notification_outbox` (`status in ('sent', 'delivery_uncertain', 'claiming')`),
- *     preserves `'delivery_uncertain'` on post-send timeouts without blind retries, and consolidates
- *     `> 5` simultaneous items per channel into a single structured digest (`buildReminderDigestHtml`).
+ *  4. Durably commits `dispatchPhase = 'sending'` in BOTH `notification_outbox` and `reminder_deliveries`
+ *     BEFORE invoking `activeTransport.send()`, captures `providerMessageId` / `providerMessageIds`,
+ *     holds `'delivery_uncertain'` on post-send crashes/timeouts/partial chunks without blind retries,
+ *     and consolidates `> 5` simultaneous items per channel into a single structured digest (`buildReminderDigestHtml`).
  */
 export async function dispatchPending(
   pool: Pool,
@@ -1768,45 +2069,103 @@ export async function dispatchPending(
         ...[...channelItems.map((c) => c.idempotencyKey)].sort(),
       ]);
 
+      const batchEntry: OutboxIntentEntryInput = {
+        channel,
+        idempotencyKey: batchKey,
+        bodyText: digestHtml,
+        bodyFormat: channel === "telegram" ? "html" : "plain",
+        metadata: {
+          todayISO,
+          itemCount: channelItems.length,
+          deliveryIds: channelItems.map((c) => c.deliveryId),
+        },
+      };
+
+      // Pre-send durable intent #1: batch outbox key
+      const batchHandle = await beginDurableOutboxSendingIntent(pool, batchEntry);
+      if (batchHandle.alreadyHandled) {
+        for (const item of channelItems) {
+          await markReminderDeliveryStatusStrict(pool, item.deliveryId, "skipped", {
+            error: "deduped_by_outbox",
+            claimToken: item.claimToken,
+          });
+          skipped += 1;
+        }
+        continue;
+      }
+
+      // Pre-send durable intent #2: per-item outbox + reminder_deliveries `dispatchPhase = 'sending'`
+      const activeDigestItems: Array<{
+        item: VerifiedPendingItem;
+        entry: OutboxIntentEntryInput;
+        handle: DurableOutboxSendingHandle;
+      }> = [];
+
+      for (const item of channelItems) {
+        const itemEntry: OutboxIntentEntryInput = {
+          channel,
+          idempotencyKey: item.idempotencyKey,
+          bodyText: item.freshMessage,
+          bodyFormat: "plain",
+          metadata: { todayISO, batchKey, deliveryId: item.deliveryId },
+          legalEntityId: item.legalEntityId,
+        };
+        const itemHandle = await beginDurableOutboxSendingIntent(pool, itemEntry);
+        if (itemHandle.alreadyHandled) {
+          await markReminderDeliveryStatusStrict(pool, item.deliveryId, "skipped", {
+            error: "deduped_by_outbox",
+            claimToken: item.claimToken,
+          });
+          skipped += 1;
+          continue;
+        }
+
+        const deliveryFenceOk = await markReminderDeliverySendingStarted(
+          pool,
+          item.deliveryId,
+          item.claimToken,
+          {
+            outboxIdempotencyKey: item.idempotencyKey,
+            outboxId: itemHandle.outboxId,
+            batchKey,
+          },
+        );
+        if (!deliveryFenceOk) {
+          await releaseUnstartedOutboxIntentBestEffort(pool, itemHandle);
+          continue;
+        }
+
+        activeDigestItems.push({ item, entry: itemEntry, handle: itemHandle });
+      }
+
+      if (activeDigestItems.length === 0) {
+        await releaseUnstartedOutboxIntentBestEffort(pool, batchHandle);
+        continue;
+      }
+
+      const finalDigestHtml =
+        activeDigestItems.length === channelItems.length
+          ? digestHtml
+          : buildReminderDigestHtml(
+              activeDigestItems.map((x) => x.item.digestItem),
+              todayISO,
+            );
+
       let result: DeliveryResult;
       try {
         result = await activeTransport.send(
-          digestHtml,
+          finalDigestHtml,
           channel === "telegram" ? { parseMode: "HTML" } : undefined,
         );
       } catch (e) {
         result = classifyThrownTransportError(e);
       }
 
-      await recordOutboxOutcomeSafe(
-        pool,
-        {
-          channel,
-          idempotencyKey: batchKey,
-          bodyText: digestHtml,
-          bodyFormat: channel === "telegram" ? "html" : "plain",
-          metadata: {
-            todayISO,
-            itemCount: channelItems.length,
-            deliveryIds: channelItems.map((c) => c.deliveryId),
-          },
-        },
-        result,
-      );
+      const providerFields = buildProviderMessagePayloadFields(result);
+      await completeDurableOutboxSendingOutcome(pool, batchHandle, batchEntry, result);
 
-      for (const item of channelItems) {
-        await recordOutboxOutcomeSafe(
-          pool,
-          {
-            channel,
-            idempotencyKey: item.idempotencyKey,
-            bodyText: item.freshMessage,
-            bodyFormat: "plain",
-            metadata: { todayISO, batchKey, deliveryId: item.deliveryId },
-            legalEntityId: item.legalEntityId,
-          },
-          result,
-        );
+      for (const { item, entry, handle } of activeDigestItems) {
+        await completeDurableOutboxSendingOutcome(pool, handle, entry, result);
 
         if (result.ok) {
           await markReminderDeliveryStatusStrict(pool, item.deliveryId, "sent", {
@@ -1815,7 +2174,8 @@ export async function dispatchPending(
               escalationBucket: item.escalationBucket,
               batchedDigest: true,
               evaluatedOn: todayISO,
-              ...(result.providerMessageIds ? { providerMessageIds: result.providerMessageIds } : {}),
+              dispatchPhase: "sent",
+              ...providerFields,
             },
             claimToken: item.claimToken,
           });
@@ -1823,6 +2183,7 @@ export async function dispatchPending(
         } else if (result.skippedUnconfigured) {
           await markReminderDeliveryStatusStrict(pool, item.deliveryId, "skipped", {
             error: "skipped_unconfigured",
+            payload: { dispatchPhase: "skipped" },
             claimToken: item.claimToken,
           });
           skipped += 1;
@@ -1831,6 +2192,11 @@ export async function dispatchPending(
             error: redactBotToken(
               result.error ?? "delivery_uncertain: gönderim sonrası yanıt doğrulanamadı",
             ),
+            payload: {
+              dispatchPhase: "delivery_uncertain",
+              requiresOperatorReconciliation: true,
+              ...providerFields,
+            },
             claimToken: item.claimToken,
           });
           failed += 1;
@@ -1838,6 +2204,7 @@ export async function dispatchPending(
         } else {
           await markReminderDeliveryStatusStrict(pool, item.deliveryId, "failed", {
             error: redactBotToken(result.error ?? "bilinmeyen hata"),
+            payload: { dispatchPhase: "failed_retryable" },
             claimToken: item.claimToken,
           });
           failed += 1;
@@ -1847,6 +2214,42 @@ export async function dispatchPending(
     }
 
     for (const item of channelItems) {
+      const itemEntry: OutboxIntentEntryInput = {
+        channel,
+        idempotencyKey: item.idempotencyKey,
+        bodyText: item.freshMessage,
+        bodyFormat: "plain",
+        metadata: { todayISO, deliveryId: item.deliveryId },
+        legalEntityId: item.legalEntityId,
+      };
+
+      // Pre-send durable intent BEFORE external transport send (`F-08`):
+      // 1. Claim/insert `notification_outbox` with `metadata.dispatchPhase = 'sending'`
+      const outboxHandle = await beginDurableOutboxSendingIntent(pool, itemEntry);
+      if (outboxHandle.alreadyHandled) {
+        await markReminderDeliveryStatusStrict(pool, item.deliveryId, "skipped", {
+          error: "deduped_by_outbox",
+          claimToken: item.claimToken,
+        });
+        skipped += 1;
+        continue;
+      }
+
+      // 2. Stamp `reminder_deliveries.payload.dispatchPhase = 'sending'` asserting `(id, claim_token)`
+      const deliveryFenceOk = await markReminderDeliverySendingStarted(
+        pool,
+        item.deliveryId,
+        item.claimToken,
+        {
+          outboxIdempotencyKey: item.idempotencyKey,
+          outboxId: outboxHandle.outboxId,
+        },
+      );
+      if (!deliveryFenceOk) {
+        await releaseUnstartedOutboxIntentBestEffort(pool, outboxHandle);
+        continue;
+      }
+
       let result: DeliveryResult;
       try {
         result = await activeTransport.send(item.freshMessage);
@@ -1854,18 +2257,8 @@ export async function dispatchPending(
         result = classifyThrownTransportError(e);
       }
 
-      await recordOutboxOutcomeSafe(
-        pool,
-        {
-          channel,
-          idempotencyKey: item.idempotencyKey,
-          bodyText: item.freshMessage,
-          bodyFormat: "plain",
-          metadata: { todayISO, deliveryId: item.deliveryId },
-          legalEntityId: item.legalEntityId,
-        },
-        result,
-      );
+      const providerFields = buildProviderMessagePayloadFields(result);
+      await completeDurableOutboxSendingOutcome(pool, outboxHandle, itemEntry, result);
 
       if (result.ok) {
         await markReminderDeliveryStatusStrict(pool, item.deliveryId, "sent", {
@@ -1873,7 +2266,8 @@ export async function dispatchPending(
             message: item.freshMessage,
             escalationBucket: item.escalationBucket,
             evaluatedOn: todayISO,
-            ...(result.providerMessageIds ? { providerMessageIds: result.providerMessageIds } : {}),
+            dispatchPhase: "sent",
+            ...providerFields,
           },
           claimToken: item.claimToken,
         });
@@ -1881,6 +2275,7 @@ export async function dispatchPending(
       } else if (result.skippedUnconfigured) {
         await markReminderDeliveryStatusStrict(pool, item.deliveryId, "skipped", {
           error: "skipped_unconfigured",
+          payload: { dispatchPhase: "skipped" },
           claimToken: item.claimToken,
         });
         skipped += 1;
@@ -1889,6 +2284,11 @@ export async function dispatchPending(
           error: redactBotToken(
             result.error ?? "delivery_uncertain: gönderim sonrası yanıt doğrulanamadı",
           ),
+          payload: {
+            dispatchPhase: "delivery_uncertain",
+            requiresOperatorReconciliation: true,
+            ...providerFields,
+          },
           claimToken: item.claimToken,
         });
         failed += 1;
@@ -1896,6 +2296,7 @@ export async function dispatchPending(
       } else {
         await markReminderDeliveryStatusStrict(pool, item.deliveryId, "failed", {
           error: redactBotToken(result.error ?? "bilinmeyen hata"),
+          payload: { dispatchPhase: "failed_retryable" },
           claimToken: item.claimToken,
         });
         failed += 1;

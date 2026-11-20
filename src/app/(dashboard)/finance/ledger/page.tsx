@@ -69,8 +69,10 @@ export default async function ManagementLedgerPage({
   const curMonthLastDay = new Date(
     Date.UTC(Number(curYearStr), Number(curMonthStr), 0),
   ).getUTCDate();
-  const previewStart = sp.from ?? `${currentPeriodYm}-01`;
-  const previewEnd = sp.to ?? `${currentPeriodYm}-${String(curMonthLastDay).padStart(2, "0")}`;
+  const fromFilter = sp.from?.trim() || null;
+  const toFilter = sp.to?.trim() || null;
+  const previewStart = fromFilter ?? `${currentPeriodYm}-01`;
+  const previewEnd = toFilter ?? `${currentPeriodYm}-${String(curMonthLastDay).padStart(2, "0")}`;
 
   const [
     report,
@@ -82,7 +84,7 @@ export default async function ManagementLedgerPage({
     icPartiesRes,
     icInvoicesRes,
   ] = await Promise.all([
-    loadDateFilteredLedgerReport(pool, { from: sp.from ?? null, to: sp.to ?? null }),
+    loadDateFilteredLedgerReport(pool, { from: fromFilter, to: toFilter }),
     loadManagementAccounts(pool),
     pool
       .query<{ id: string; code: string | null; name: string }>(
@@ -127,7 +129,7 @@ export default async function ManagementLedgerPage({
          group by je.id
          order by je.entry_date desc, je.entry_no desc
          limit 50`,
-        [sp.from ?? null, sp.to ?? null],
+        [fromFilter, toFilter],
       )
       .catch((err: unknown) => {
         if (isMissingSchemaError(err)) return { rows: [], rowCount: 0 };

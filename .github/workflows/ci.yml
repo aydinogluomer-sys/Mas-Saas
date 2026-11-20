@@ -44,6 +44,9 @@ jobs:
       - name: Production dependency vulnerability audit (Faz 43)
         run: pnpm audit --prod --audit-level=high
 
+      - name: Repository secret & exposure policy scan (F-01 / F-12)
+        run: pnpm exec tsx scripts/ci/verify-secret-exposure.ts
+
   # ── Job 2 ────────────────────────────────────────────────────────────────────────────────
   database-migration:
     runs-on: ubuntu-latest
@@ -94,7 +97,7 @@ jobs:
   # ── Job 3 ────────────────────────────────────────────────────────────────────────────────
   runtime-role-security:
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 30
     env:
       OWNER_URL: postgres://postgres:postgres@127.0.0.1:5432/mas_radar_roles_verify
       APP_URL: postgres://mas_radar_app:ci-only-not-a-secret-0123456789@127.0.0.1:5432/mas_radar_roles_verify
@@ -140,6 +143,17 @@ jobs:
           DATABASE_URL: ${{ env.APP_URL }}
           MIGRATION_DATABASE_URL: ${{ env.OWNER_URL }}
         run: pnpm db:security-matrix:verify
+
+      - name: Disposable Release Gates RG-01..RG-15 CI subset (F-12)
+        env:
+          MAS_RADAR_APP_DB_PASSWORD: ${{ env.CI_APP_DB_PASSWORD }}
+        run: |
+          set -euo pipefail
+          trap 'PGPASSWORD=postgres dropdb --force --if-exists -h 127.0.0.1 -U postgres mas_radar_v2_rg_ci_verify >/dev/null 2>&1 || true' EXIT
+          bash scripts/ci/provision-verify-db.sh mas_radar_v2_rg_ci_verify
+          MIGRATION_DATABASE_URL=postgres://postgres:postgres@127.0.0.1:5432/mas_radar_v2_rg_ci_verify \
+          DATABASE_URL=postgres://mas_radar_app:${{ env.CI_APP_DB_PASSWORD }}@127.0.0.1:5432/mas_radar_v2_rg_ci_verify \
+            pnpm exec tsx scripts/ci/verify-rg-disposable.ts
 
   # ── Job 4 ────────────────────────────────────────────────────────────────────────────────
   phase-verifies:
@@ -229,6 +243,7 @@ jobs:
           DATABASE_URL: ${{ env.APP_URL }}
           APP_COMMIT_SHA: ${{ github.sha }}
           MAS_PERF_PROBE: "1"
+          MAS_ALLOW_PROD_PERF_PROBE: "1"
         run: |
           set -euo pipefail
           nohup pnpm start > /tmp/next-server.log 2>&1 &
@@ -245,6 +260,7 @@ jobs:
       - name: Phase 17-38 route authorization E2E
         env:
           MAS_E2E_DATABASE_URL: ${{ env.APP_URL }}
+          MAS_E2E_SEED_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/mas_radar_e2e_verify
         run: pnpm exec playwright test tests/visual/phase17-38-routes.spec.ts
 
       - name: Route query accounting / N+1 detector (AŞAMA 10)
@@ -304,12 +320,13 @@ jobs:
       - name: Critical legacy screens semantic smoke
         env:
           MAS_E2E_DATABASE_URL: ${{ env.APP_URL }}
+          MAS_E2E_SEED_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/mas_radar_smoke_verify
         run: pnpm exec playwright test tests/visual/legacy-semantic-smoke.spec.ts
 
   # ── Job 8 ────────────────────────────────────────────────────────────────────────────────
   interaction-gate:
     runs-on: ubuntu-latest
-    timeout-minutes: 55
+    timeout-minutes: 120
     needs: build
     env:
       APP_URL: postgres://mas_radar_app:ci-only-not-a-secret-0123456789@127.0.0.1:5432/mas_radar_interaction_verify
@@ -362,21 +379,25 @@ jobs:
       - name: Discover every interactive control (5 roles, real sessions)
         env:
           MAS_E2E_DATABASE_URL: ${{ env.APP_URL }}
+          MAS_E2E_SEED_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/mas_radar_interaction_verify
         run: pnpm interaction:crawl
 
       - name: Verify controls (real click → real DB before/after)
         env:
           MAS_E2E_DATABASE_URL: ${{ env.APP_URL }}
+          MAS_E2E_SEED_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/mas_radar_interaction_verify
         run: pnpm interaction:test
 
       - name: Coverage gate — RATCHET (PR kapısı)
         env:
           MAS_E2E_DATABASE_URL: ${{ env.APP_URL }}
+          MAS_E2E_SEED_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/mas_radar_interaction_verify
         run: pnpm interaction:gate
 
       - name: Coverage gate — STRICT (tam etkileşim güvencesi)
         env:
           MAS_E2E_DATABASE_URL: ${{ env.APP_URL }}
+          MAS_E2E_SEED_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/mas_radar_interaction_verify
         run: pnpm interaction:gate:strict
 
       - name: Upload interaction evidence

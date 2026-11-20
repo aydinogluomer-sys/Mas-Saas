@@ -7,6 +7,7 @@ import {
   DEFAULT_VALID_IMPORT_STALE_DAYS,
   buildCheckBusinessSignature,
   buildPaymentTemplateBusinessSignature,
+  evaluateCashAccountCompleteness,
   evaluateCompletenessDimension,
   evaluateConsistencyDimension,
   evaluateInstanceCompleteness,
@@ -21,9 +22,14 @@ import {
   isValidObligationCurrency,
   isWorkbookValidImport,
   normalizeBusinessSignatureToken,
+  type CashAccountCompletenessRow,
+  type CheckUniquenessCandidate,
+  type PaymentInstanceCompletenessRow,
   type QueryablePool,
   type WorkbookImportRecord,
 } from "@/lib/data-quality/remediation-metrics";
+import { computeObligationAmounts } from "@/lib/contracts/remediation-contracts";
+import { DomainError } from "@/lib/domain-error";
 import { mapAcceptedChecks } from "@/lib/financing/engine";
 import { extractChecks } from "@/lib/importers/extractors";
 import type { CellVal, SheetRow } from "@/lib/importers/row-utils";
@@ -44,6 +50,8 @@ interface DatabaseLineageDigest {
   scenarios_count: number;
   actions_count: number;
   check_events_count: number;
+  ca_count: number;
+  ca_null_opening_count: number;
 }
 
 function resolveOwnerReadOnlyUrl(): string {
@@ -80,7 +88,9 @@ async function captureDatabaseDigest(pool: Pool): Promise<DatabaseLineageDigest>
       (select count(*)::int from public.external_assumptions) as ea_count,
       (select count(*)::int from public.scenarios) as scenarios_count,
       (select count(*)::int from public.action_items) as actions_count,
-      (select count(*)::int from public.check_events) as check_events_count
+      (select count(*)::int from public.check_events) as check_events_count,
+      (select count(*)::int from public.cash_accounts) as ca_count,
+      (select count(*) filter (where opening_balance is null)::int from public.cash_accounts where is_active = true and archived_at is null) as ca_null_opening_count
   `);
   return res.rows[0]!;
 }
@@ -95,32 +105,7 @@ function hasLiveDbConfig(): boolean {
   }
 }
 
-describe.skipIf(!hasLiveDbConfig())("Agent 10 — Data Pipeline, Valid-Import Freshness & 6-Dimension Data Quality (Phase D)", () => {
-  let ownerReadOnlyPool: Pool;
-  let preTestDigest: DatabaseLineageDigest;
-
-  beforeAll(async () => {
-    ownerReadOnlyPool = new Pool({
-      connectionString: resolveOwnerReadOnlyUrl(),
-      max: 1,
-      connectionTimeoutMillis: 30_000,
-      options: "-c default_transaction_read_only=on",
-    });
-    const roRes = await ownerReadOnlyPool.query<{ transaction_read_only: string }>(
-      "SHOW transaction_read_only",
-    );
-    expect(roRes.rows[0]?.transaction_read_only).toBe("on");
-    preTestDigest = await captureDatabaseDigest(ownerReadOnlyPool);
-  }, SUBPROCESS_TEST_TIMEOUT_MS);
-
-  afterAll(async () => {
-    if (ownerReadOnlyPool) {
-      const postTestDigest = await captureDatabaseDigest(ownerReadOnlyPool);
-      expect(postTestDigest).toEqual(preTestDigest);
-      await ownerReadOnlyPool.end();
-    }
-  });
-
+describe("Agent 10 — Deterministic Valid-Import Freshness, Blank!=Zero, Grain & Duplicate Invariants (RG-09, F-15, F-16)", () => {
   it("1. enforces strict boundary & read-only source invariants on src/lib/data-quality/remediation-metrics.ts", () => {
     const metricsFile = path.resolve(
       process.cwd(),
@@ -774,15 +759,387 @@ describe.skipIf(!hasLiveDbConfig())("Agent 10 — Data Pipeline, Valid-Import Fr
     });
   });
 
+  it("7. [V2 F-15 / RG-09] fails closed on 42P01 / 42703 / unreadable valid_workbook_imports view (isStale: true, freshnessStatus: SCHEMA_INCOMPATIBLE | UNKNOWN — NEVER treats missing view as fresh)", async () => {
+    const asOf = "2026-11-20T05:00:00.000Z";
+
+    // (a) 42P01 undefined_table on valid_workbook_imports -> fail-closed SCHEMA_INCOMPATIBLE
+    const missingViewPool: QueryablePool = {
+      async query() {
+        throw Object.assign(new Error('relation "public.valid_workbook_imports" does not exist'), {
+          code: "42P01",
+        });
+      },
+    };
+    const missingViewRes = await evaluateValidImportFreshnessFromDb(missingViewPool, { asOf });
+    expect(missingViewRes.isStale).toBe(true);
+    expect(missingViewRes.freshnessStatus).toBe("SCHEMA_INCOMPATIBLE");
+    expect(missingViewRes.errorCode).toBe("42P01");
+    expect(missingViewRes.latestValidImport).toBeNull();
+    expect(missingViewRes.latestValidWorkbookId).toBeNull();
+    expect(missingViewRes.latestValidImportAgeDays).toBeNull();
+    expect(missingViewRes.viewParityVerified).toBe(false);
+
+    // Strict mode throws DomainError('CONFLICT', 'SCHEMA_INCOMPATIBLE: ...')
+    await expect(
+      evaluateValidImportFreshnessFromDb(missingViewPool, { asOf, failOnSchemaDrift: true }),
+    ).rejects.toThrow(DomainError);
+
+    // (b) 42703 undefined_column on valid_workbook_imports / import_rows -> fail-closed SCHEMA_INCOMPATIBLE
+    const missingColumnPool: QueryablePool = {
+      async query() {
+        throw Object.assign(new Error('column "imported_at" does not exist'), {
+          code: "42703",
+        });
+      },
+    };
+    const missingColRes = await evaluateValidImportFreshnessFromDb(missingColumnPool, { asOf });
+    expect(missingColRes.isStale).toBe(true);
+    expect(missingColRes.freshnessStatus).toBe("SCHEMA_INCOMPATIBLE");
+    expect(missingColRes.errorCode).toBe("42703");
+    expect(missingColRes.latestValidImport).toBeNull();
+    expect(missingColRes.latestValidImportAgeDays).toBeNull();
+    expect(missingColRes.viewParityVerified).toBe(false);
+
+    // (c) Unreadable view / permission failure (42501) -> fail-closed UNKNOWN
+    const unreadablePool: QueryablePool = {
+      async query() {
+        throw Object.assign(new Error("permission denied for view valid_workbook_imports"), {
+          code: "42501",
+        });
+      },
+    };
+    const unreadableRes = await evaluateValidImportFreshnessFromDb(unreadablePool, { asOf });
+    expect(unreadableRes.isStale).toBe(true);
+    expect(unreadableRes.freshnessStatus).toBe("UNKNOWN");
+    expect(unreadableRes.errorCode).toBe("42501");
+    expect(unreadableRes.latestValidImport).toBeNull();
+    expect(unreadableRes.latestValidImportAgeDays).toBeNull();
+    expect(unreadableRes.viewParityVerified).toBe(false);
+
+    // (d) Unverified view parity (in_valid_view = null / mismatched) -> fail-closed UNKNOWN, isStale: true
+    const brokenParityPool: QueryablePool = {
+      async query() {
+        return {
+          rows: [
+            {
+              id: "wb-fresh-unverified",
+              original_filename: "synthetic_v2.xlsx",
+              status: "mapped",
+              imported_at: "2026-11-19T12:00:00.000Z",
+              import_row_count: 25,
+              in_valid_view: null,
+            },
+          ],
+          rowCount: 1,
+        } as never;
+      },
+    };
+    const brokenParityRes = await evaluateValidImportFreshnessFromDb(brokenParityPool, { asOf });
+    expect(brokenParityRes.viewParityVerified).toBe(false);
+    expect(brokenParityRes.freshnessStatus).toBe("UNKNOWN");
+    expect(brokenParityRes.isStale).toBe(true);
+    expect(brokenParityRes.latestValidImport).toBeNull();
+  });
+
+  it("8. [V2 F-15 / RG-09] enforces >= 45d stale threshold boundary (44d fresh vs 45d stale) and excludes all-rejected or null-timestamp workbooks from latestValidImport", () => {
+    const asOf = "2026-11-20T12:00:00.000Z";
+
+    // Exact 44 days ago -> fresh (< 45d)
+    const fresh44d = evaluateTimelinessDimension(
+      [
+        {
+          id: "wb-44d",
+          originalFilename: "ok_44d.xlsx",
+          status: "mapped",
+          importedAt: "2026-10-07T12:00:00.000Z",
+          importRowCount: 40,
+          inValidWorkbookImportsView: true,
+        },
+      ],
+      { asOf },
+    );
+    expect(fresh44d.latestValidImportAgeDays).toBe(44);
+    expect(fresh44d.isStale).toBe(false);
+    expect(fresh44d.freshnessStatus).toBe("FRESH");
+    expect(fresh44d.latestValidImport?.id).toBe("wb-44d");
+
+    // Exact 45 days ago -> >= 45d stale alarm MUST remain open (isStale: true, freshnessStatus: STALE)!
+    // Plus today's all-rejected workbook (importRowCount: 12, nonRejectedImportRowCount: 0) and failed null-timestamp workbook MUST NOT advance latestValidImport!
+    const stale45dWithAdversarialUploads = evaluateTimelinessDimension(
+      [
+        {
+          id: "wb-45d",
+          originalFilename: "stale_45d.xlsx",
+          status: "parsed",
+          importedAt: "2026-10-06T12:00:00.000Z",
+          importRowCount: 120,
+          inValidWorkbookImportsView: true,
+        },
+        {
+          id: "wb-all-rejected-today",
+          originalFilename: "all_rejected_rows.xlsx",
+          status: "parsed",
+          importedAt: "2026-11-20T11:00:00.000Z",
+          importRowCount: 12,
+          nonRejectedImportRowCount: 0,
+        },
+        {
+          id: "wb-corrupt-ts",
+          originalFilename: "failed_no_ts.xlsx",
+          status: "failed",
+          importedAt: "",
+          importRowCount: 0,
+        },
+      ],
+      { asOf },
+    );
+    expect(stale45dWithAdversarialUploads.latestValidWorkbookId).toBe("wb-45d");
+    expect(stale45dWithAdversarialUploads.latestValidImportAgeDays).toBe(45);
+    expect(stale45dWithAdversarialUploads.isStale).toBe(true);
+    expect(stale45dWithAdversarialUploads.freshnessStatus).toBe("STALE");
+    expect(stale45dWithAdversarialUploads.latestValidImport?.id).toBe("wb-45d");
+
+    // Parsed non-empty workbook with corrupt/missing timestamp fails closed to UNKNOWN
+    const unreadableCandidate = evaluateTimelinessDimension(
+      [
+        {
+          id: "wb-44d",
+          originalFilename: "ok_44d.xlsx",
+          status: "mapped",
+          importedAt: "2026-10-07T12:00:00.000Z",
+          importRowCount: 40,
+          inValidWorkbookImportsView: true,
+        },
+        {
+          id: "wb-parsed-bad-ts",
+          originalFilename: "corrupt_ts.xlsx",
+          status: "parsed",
+          importedAt: "not-a-date",
+          importRowCount: 15,
+        },
+      ],
+      { asOf },
+    );
+    expect(unreadableCandidate.isStale).toBe(true);
+    expect(unreadableCandidate.freshnessStatus).toBe("UNKNOWN");
+    expect(unreadableCandidate.latestValidImport).toBeNull();
+  });
+
+  it("9. [V2 F-15 / RG-09] preserves BLANK != ZERO across amount_status='missing' obligations and cash_accounts.opening_balance IS NULL", () => {
+    const nullObligation = computeObligationAmounts({
+      originalAmount: null,
+      paidAmount: null,
+      status: "unpaid",
+    });
+    expect(nullObligation.originalAmount).toBeNull();
+    expect(nullObligation.outstandingAmount).toBeNull();
+
+    const instances: PaymentInstanceCompletenessRow[] = [
+      {
+        id: "pi-known-zero",
+        paymentId: "tpl-1",
+        instanceMonth: "2026-11-01",
+        status: "unpaid",
+        direction: "outflow",
+        amount: "0.00",
+        amountStatus: "known",
+        providerPartyId: "p-1",
+        categoryId: "c-1",
+        ownerPartyId: "o-1",
+      },
+      {
+        id: "pi-status-missing",
+        paymentId: "tpl-2",
+        instanceMonth: "2026-11-01",
+        status: "unpaid",
+        direction: "outflow",
+        // Even if raw string is "0.00", explicit amount_status = 'missing' MUST surface as missing!
+        amount: "0.00",
+        amountStatus: "missing",
+        providerPartyId: null,
+        categoryId: null,
+        ownerPartyId: null,
+      },
+      {
+        id: "pi-null-amount",
+        paymentId: "tpl-3",
+        instanceMonth: "2026-11-01",
+        status: "planned",
+        direction: "outflow",
+        amount: null,
+        providerPartyId: null,
+        categoryId: null,
+        ownerPartyId: null,
+      },
+    ];
+
+    const cashAccounts: CashAccountCompletenessRow[] = [
+      { id: "ca-null-1", currency: "TRY", accountType: "bank_account", isActive: true, openingBalance: null },
+      { id: "ca-null-2", currency: "TRY", accountType: "cash", isActive: true, openingBalance: "" },
+      { id: "ca-zero-known", currency: "TRY", accountType: "bank_account", isActive: true, openingBalance: "0.00" },
+      { id: "ca-positive", currency: "TRY", accountType: "bank_account", isActive: true, openingBalance: "25000.50" },
+      { id: "ca-archived-null", currency: "TRY", accountType: "credit_card", isActive: false, archivedAt: "2026-09-01T00:00:00Z", openingBalance: null },
+    ];
+
+    const comp = evaluateCompletenessDimension({
+      templates: [],
+      instances,
+      cashAccounts,
+    });
+
+    expect(comp.instanceGrain.activeOutflowInstances).toBe(3);
+    expect(comp.instanceGrain.missingAmountCount).toBe(2);
+    expect(comp.instanceGrain.openMissingAmountCount).toBe(2);
+
+    const caGrain = comp.cashAccountGrain;
+    expect(caGrain).not.toBeNull();
+    expect(caGrain!.grain).toBe("cash_accounts");
+    expect(caGrain!.totalAccounts).toBe(5);
+    expect(caGrain!.activeAccounts).toBe(4);
+    expect(caGrain!.archivedOrInactiveAccounts).toBe(1);
+    expect(caGrain!.missingOpeningBalanceCount).toBe(2);
+    expect(caGrain!.knownOpeningBalanceCount).toBe(2);
+    expect(caGrain!.knownZeroOpeningBalanceCount).toBe(1);
+    expect(caGrain!.sourceStatus).toBe("PARTIAL_MISSING_OPENING");
+
+    expect(evaluateCashAccountCompleteness([]).sourceStatus).toBe("NO_ACTIVE_ACCOUNTS_VERIFIED");
+    expect(
+      evaluateCashAccountCompleteness([{ id: "ca-ok", isActive: true, openingBalance: "0.00" }])
+        .sourceStatus,
+    ).toBe("COMPLETE");
+    expect(evaluateCashAccountCompleteness([], { schemaIncompatible: true }).sourceStatus).toBe(
+      "SCHEMA_INCOMPATIBLE",
+    );
+  });
+
+  it("10. [V2 F-16] flags duplicate check candidates matching (party_id, amount, maturity_date) for human review with 0 auto-merges and 0 mutations, while keeping distinct serial numbers separate", () => {
+    const checks: CheckUniquenessCandidate[] = [
+      {
+        id: "chk-p1-a",
+        partyId: "party-vendor-alpha",
+        counterparty: "TEDARİKÇİ ALPHA A.Ş.",
+        maturityDate: "2026-09-30",
+        amount: "75000.00",
+        currency: "TRY",
+        direction: "outflow",
+        status: "planned",
+        serialNo: null,
+      },
+      {
+        id: "chk-p1-b",
+        partyId: "party-vendor-alpha",
+        // Differing free-text label, same canonical (party_id, amount, maturity_date)
+        counterparty: "Tedarikci Alpha",
+        maturityDate: "2026-09-30",
+        amount: 75_000,
+        currency: "TRY",
+        direction: "outflow",
+        status: "planned",
+        serialNo: null,
+      },
+      {
+        id: "chk-distinct-serial-1",
+        partyId: "party-vendor-beta",
+        counterparty: "TEDARİKÇİ BETA",
+        maturityDate: "2026-10-15",
+        amount: "50000.00",
+        currency: "TRY",
+        direction: "outflow",
+        status: "issued_to_vendor",
+        serialNo: "SER-9001",
+      },
+      {
+        id: "chk-distinct-serial-2",
+        partyId: "party-vendor-beta",
+        counterparty: "TEDARİKÇİ BETA",
+        maturityDate: "2026-10-15",
+        amount: "50000.00",
+        currency: "TRY",
+        direction: "outflow",
+        status: "issued_to_vendor",
+        serialNo: "SER-9002",
+      },
+    ];
+
+    const u = evaluateUniquenessDimension({ checks });
+    expect(u.autoMergedCount).toBe(0);
+    expect(u.autoDeletedCount).toBe(0);
+    expect(u.mutationsPerformed).toBe(0);
+    expect(u.duplicateCheckSignatureClusters).toHaveLength(1);
+    expect(u.duplicateCheckSignatureClusters[0]!.memberIds).toEqual(["chk-p1-a", "chk-p1-b"]);
+    expect(u.humanReviewRequiredCount).toBe(1);
+    expect(u.duplicateCheckHumanReviewCandidates).toHaveLength(1);
+    expect(u.duplicateCheckHumanReviewCandidates[0]).toMatchObject({
+      partyId: "party-vendor-alpha",
+      memberIds: ["chk-p1-a", "chk-p1-b"],
+      count: 2,
+      missingSerialCount: 2,
+      reviewStatus: "PENDING_HUMAN_DOCUMENT_REVIEW",
+      requiresHumanReview: true,
+    });
+  });
+});
+
+describe.skipIf(!hasLiveDbConfig())("Agent 10 — Live Read-Only PostgreSQL 6-Dimension Data Quality Verification (prod_db_writes = 0)", () => {
+  let ownerReadOnlyPool: Pool;
+  let preTestDigest: DatabaseLineageDigest;
+  let dbName = "";
+
+  beforeAll(async () => {
+    ownerReadOnlyPool = new Pool({
+      connectionString: resolveOwnerReadOnlyUrl(),
+      max: 1,
+      connectionTimeoutMillis: 30_000,
+      options: "-c default_transaction_read_only=on",
+    });
+    const roRes = await ownerReadOnlyPool.query<{
+      transaction_read_only: string;
+      db_name: string;
+    }>("SELECT current_setting('transaction_read_only') AS transaction_read_only, current_database() AS db_name");
+    expect(roRes.rows[0]?.transaction_read_only).toBe("on");
+    dbName = roRes.rows[0]?.db_name ?? "";
+
+    // Enforce SQLSTATE 25006 negative write probe: session MUST reject any mutation attempt
+    await expect(
+      ownerReadOnlyPool.query("DELETE FROM public.source_workbooks WHERE false"),
+    ).rejects.toMatchObject({ code: "25006" });
+
+    preTestDigest = await captureDatabaseDigest(ownerReadOnlyPool);
+  }, SUBPROCESS_TEST_TIMEOUT_MS);
+
+  afterAll(async () => {
+    if (ownerReadOnlyPool) {
+      const postTestDigest = await captureDatabaseDigest(ownerReadOnlyPool);
+      expect(postTestDigest).toEqual(preTestDigest);
+      await ownerReadOnlyPool.end();
+    }
+  });
+
   it(
-    "7. evaluates all 6 dimensions live against read-only mas_radar_dev (TEMİZ.xlsx, 1,601 import_rows, 62 mapping_reviews, zero DB mutations)",
+    "11. evaluates all 6 dimensions live against read-only PostgreSQL (zero DB mutations; verifies mas_radar_dev telemetry when connected to mas_radar_dev)",
     async () => {
       const report = await evaluateRemediationDataQuality(ownerReadOnlyPool, {
         asOf: "2026-11-18T15:14:51.000Z",
         instanceMonthScope: "2026-11-01",
       });
 
-      // Dimension 1: Completeness (Template grain vs Instance grain — I-011)
+      // Universal structural invariants that hold on both disposable CI DBs and live mas_radar_dev
+      expect(report.mutationsPerformed).toBe(0);
+      expect(report.uniqueness.autoMergedCount).toBe(0);
+      expect(report.uniqueness.autoDeletedCount).toBe(0);
+      expect(report.uniqueness.mutationsPerformed).toBe(0);
+      expect(report.sourceTraceability.mutationsPerformed).toBe(0);
+      expect(report.consistency.hasZeroJoinMultiplication).toBe(true);
+      expect(report.consistency.isConsistent).toBe(true);
+      expect(report.validity.isDomainCurrencyAndStatusValid).toBe(true);
+      expect(report.timeliness.viewParityVerified).toBe(true);
+      expect(report.completeness.cashAccountGrain).not.toBeNull();
+
+      if (dbName !== "mas_radar_dev" || preTestDigest.ir_count !== 1_601) {
+        return;
+      }
+
+      // Dimension 1: Completeness (Template grain vs Instance grain vs CashAccount grain — I-011 & F-15)
       expect(report.completeness.templateGrain).toEqual({
         grain: "payments_template",
         totalTemplates: 19,
@@ -796,6 +1153,13 @@ describe.skipIf(!hasLiveDbConfig())("Agent 10 — Data Pipeline, Valid-Import Fr
         amountCompletenessRatio: report.completeness.templateGrain.amountCompletenessRatio,
       });
       expect(report.completeness.templateGrain.amountCompletenessRatio).toBeCloseTo(6 / 18, 8);
+
+      const liveCashGrain = report.completeness.cashAccountGrain!;
+      expect(liveCashGrain.grain).toBe("cash_accounts");
+      expect(liveCashGrain.activeAccounts).toBe(6);
+      expect(liveCashGrain.missingOpeningBalanceCount).toBe(6);
+      expect(liveCashGrain.knownOpeningBalanceCount).toBe(0);
+      expect(liveCashGrain.sourceStatus).toBe("PARTIAL_MISSING_OPENING");
 
       expect(report.completeness.instanceGrain.grain).toBe("payment_instances");
       expect(report.completeness.instanceGrain.monthScope).toBe("all");
@@ -834,7 +1198,7 @@ describe.skipIf(!hasLiveDbConfig())("Agent 10 — Data Pipeline, Valid-Import Fr
       expect(report.validity.isDomainCurrencyAndStatusValid).toBe(true);
       expect(report.validity.stagingAcceptanceRatio).toBe(1);
 
-      // Dimension 3: Uniqueness (Çağdaş × 3 active 2026-08-31 + 1 archived 2026-10-31, AKR × 2 active, 0 auto-merges)
+      // Dimension 3: Uniqueness (2 active duplicate clusters = 5 active candidate checks, 0 auto-merges)
       expect(report.uniqueness.totalCheckCount).toBe(7);
       expect(report.uniqueness.activeCheckCount).toBe(6);
       expect(report.uniqueness.archivedCheckCount).toBe(1);
@@ -842,6 +1206,7 @@ describe.skipIf(!hasLiveDbConfig())("Agent 10 — Data Pipeline, Valid-Import Fr
       expect(report.uniqueness.controlDuplicateCheckPairCount).toBe(4);
       expect(report.uniqueness.controlDuplicateCheckInvolvedIds).toHaveLength(5);
       expect(report.uniqueness.controlDuplicatePaymentPairCount).toBe(0);
+      expect(report.uniqueness.humanReviewRequiredCount).toBe(2);
 
       const cagdasCluster = report.uniqueness.duplicateCheckSignatureClusters.find(
         (c) => c.counterpartyNormalized === "çağdaş",
@@ -871,7 +1236,7 @@ describe.skipIf(!hasLiveDbConfig())("Agent 10 — Data Pipeline, Valid-Import Fr
       expect(report.consistency.hasZeroJoinMultiplication).toBe(true);
       expect(report.consistency.isConsistent).toBe(true);
 
-      // Dimension 5: Timeliness / Valid-Import Freshness (TEMİZ.xlsx, 124 days old -> isStale = true)
+      // Dimension 5: Timeliness / Valid-Import Freshness (124 days old -> isStale = true, freshnessStatus = STALE)
       expect(report.timeliness.totalWorkbookCount).toBe(1);
       expect(report.timeliness.validWorkbookCount).toBe(1);
       expect(report.timeliness.emptyWorkbooksExcludedCount).toBe(0);
@@ -880,6 +1245,7 @@ describe.skipIf(!hasLiveDbConfig())("Agent 10 — Data Pipeline, Valid-Import Fr
       expect(report.timeliness.latestValidImportAgeDays).toBe(124);
       expect(report.timeliness.staleThresholdDays).toBe(45);
       expect(report.timeliness.isStale).toBe(true);
+      expect(report.timeliness.freshnessStatus).toBe("STALE");
       expect(report.timeliness.viewParityVerified).toBe(true);
 
       // Dimension 6: Source Traceability & Demo/Seed Lineage (I-016)

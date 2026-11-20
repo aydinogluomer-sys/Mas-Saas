@@ -43,9 +43,11 @@
 import { appendFileSync, mkdirSync } from "node:fs";
 import path from "node:path";
 import type { Pool } from "pg";
+import { isUnreadableTelemetryValue } from "@/lib/ops/telemetry-alerts";
 import {
   evaluateAndRecordOpsIncidents,
   markOpsIncidentsNotified,
+  type IncidentResolutionEvidence,
   type OpsIncidentNotification,
   type OpsIncidentRecord,
 } from "@/lib/reminders/outbox";
@@ -68,6 +70,8 @@ export interface TelemetryAlert {
   message: string;
   /** True when snapshot execution failed or telemetry went blind (`UNKNOWN` incident state). */
   snapshotUnavailable?: boolean;
+  /** True when signal value could not be read or parsed (`?`, null, parse error -> `UNKNOWN`). */
+  unreadable?: boolean;
 }
 
 export type AlertChannel = "log" | "telegram" | "email";
@@ -203,11 +207,15 @@ export function formatAlertMessage(runId: string, alerts: readonly TelemetryAler
   const worst = alerts.some((a) => a.severity === "P0") ? "P0"
     : alerts.some((a) => a.severity === "P1") ? "P1" : "P2";
   const lines = alerts.map((a) => {
+    const safeVal = typeof a.value === "string" && a.value.trim() !== "" ? a.value : "?";
     const tag =
-      a.snapshotUnavailable || a.signal === "telemetry_snapshot_unavailable" || a.value.trim() === "?"
+      a.snapshotUnavailable ||
+      a.unreadable ||
+      a.signal === "telemetry_snapshot_unavailable" ||
+      isUnreadableTelemetryValue(a.value)
         ? `[UNKNOWN][${a.severity}]`
         : `[OPEN][${a.severity}]`;
-    return `- ${tag} ${a.signal} = ${a.value} (${a.threshold})`;
+    return `- ${tag} ${a.signal} = ${safeVal} (${a.threshold})`;
   });
   return [
     `MAS Nakit Radar TELEMETRI ALARMI — ${alerts.length} sinyal, en yuksek ${worst}`,
@@ -251,15 +259,18 @@ export function buildLogEntries(
       message: redactSecrets("telemetri tamam — uyaran sinyal yok", redactValues),
     }];
   }
-  return alerts.map((a) => ({
-    ts, runId, kind: "alert" as const,
-    signal: a.signal,
-    section: a.section,
-    severity: a.severity,
-    value: redactSecrets(a.value, redactValues),
-    threshold: redactSecrets(a.threshold, redactValues),
-    message: redactSecrets(a.message, redactValues),
-  }));
+  return alerts.map((a) => {
+    const rawVal = typeof a.value === "string" && a.value.trim() !== "" ? a.value : "?";
+    return {
+      ts, runId, kind: "alert" as const,
+      signal: a.signal,
+      section: a.section,
+      severity: a.severity,
+      value: redactSecrets(rawVal, redactValues),
+      threshold: redactSecrets(a.threshold ?? "", redactValues),
+      message: redactSecrets(a.message ?? `${a.signal} = ${rawVal}`, redactValues),
+    };
+  });
 }
 
 /* ── kalıcı log ──────────────────────────────────────────────────────────────────────────── */
@@ -298,6 +309,10 @@ export interface DeliverOptions {
   incidentStatePath?: string;
   /** Korelasyon kimliği (`ops_incidents.correlation_id`). Varsayılan: `runId`. */
   correlationId?: string;
+  /** Opsiyonel sinyal bazlı çözüm kanıtı doğrulaması (`RG-08` / `F-20`). */
+  resolutionEvidenceBySignal?: Readonly<
+    Record<string, Partial<IncidentResolutionEvidence> | null | undefined>
+  >;
 }
 
 export async function deliverAlerts(opts: DeliverOptions): Promise<DeliveryReport> {
@@ -331,16 +346,18 @@ export async function deliverAlerts(opts: DeliverOptions): Promise<DeliveryRepor
     opts.alerts.map((a) => ({
       signal: a.signal,
       severity: a.severity,
-      value: a.value,
+      value: typeof a.value === "string" && a.value.trim() !== "" ? a.value : "?",
       note: a.threshold,
       threshold: a.threshold,
       snapshotUnavailable: a.snapshotUnavailable,
+      unreadable: a.unreadable ?? isUnreadableTelemetryValue(a.value),
     })),
     {
       now: at,
       stateFilePath,
       deferNotifiedStamp: true,
       correlationId: opts.correlationId ?? opts.runId,
+      resolutionEvidenceBySignal: opts.resolutionEvidenceBySignal,
     },
   );
 

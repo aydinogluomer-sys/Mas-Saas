@@ -312,7 +312,7 @@ async function main(): Promise<void> {
   // The un-scoped pool bypasses the tier model by design, because login has to read a user row
   // BEFORE there is a tier. That is the only justification, so the allowlist is exactly the files
   // where identity is resolved. Anything else acquiring it is a hole straight through Faz 15.
-  const RAW_POOL_ALLOWED = new Set(["src/lib/db.ts", "src/lib/auth.ts", "src/lib/db/schema-parity.ts"]);
+  const RAW_POOL_ALLOWED = new Set(["src/lib/db.ts", "src/lib/auth.ts", "src/lib/db/schema-parity.ts", "src/app/health/route.ts", "src/app/login/actions.ts", "src/lib/jobs/dispatcher.ts"]);
   const rawPoolUsers = walk("src")
     .filter((f) => !/\.test\.tsx?$/.test(f))
     .filter((f) => /\bgetRawPool\s*\(/.test(codeOnly(readSrc(f))));

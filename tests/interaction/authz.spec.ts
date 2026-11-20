@@ -20,7 +20,7 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { expect, test } from "@playwright/test";
-import { clickAndSettle, ensureMissingAmountInstance, openAs, rows, scalar, signatureFor, type Evidence, type SeededRole } from "./harness";
+import { clickAndSettle, ensureMissingAmountInstance, openAs, rows, scalar, signatureFromDom, type Evidence, type SeededRole } from "./harness";
 
 const OUT = path.join(process.cwd(), "docs", "interaction-audit");
 const evidence: Evidence[] = [];
@@ -80,6 +80,7 @@ test.describe("yetki zorlaması — payment_instances", () => {
           }
           return { action: form.getAttribute("action") ?? location.pathname, fields };
         });
+        const paidSig = await signatureFromDom(op.page, "ödendi");
         await op.context.close();
         expect(formSpec, "yetkili rolde 'ödendi' formu bulunamadı — S2 kurulamadı").not.toBeNull();
 
@@ -129,7 +130,7 @@ test.describe("yetki zorlaması — payment_instances", () => {
           `S2 sonucu: DB status=${afterRow.status} (değişmedi), audit ${auditBefore}→${auditAfter} (yazılmadı) — backend reddetti`,
         );
 
-        evidence.push({ route: "/payments/missing", control: signatureFor("/payments/missing", "ödendi"), role, verdict: "PASS", proof });
+        evidence.push({ route: "/payments/missing", control: paidSig, role, verdict: "PASS", proof });
         await s.context.close();
         return;
       }
@@ -193,7 +194,7 @@ test.describe("yetki zorlaması — payment_instances", () => {
 
       evidence.push({
         route: "/payments/missing",
-        control: signatureFor("/payments/missing", "ödendi"),
+        control: await signatureFromDom(page, "ödendi"),
         role,
         verdict: "PASS",
         proof,

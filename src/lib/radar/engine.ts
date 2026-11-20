@@ -54,24 +54,90 @@ function currentIstanbulDateISO(): string {
   }).format(new Date());
 }
 
-async function isAccountingPeriodLockedWithClient(
+export const ACCOUNTING_PERIOD_SCHEMA_INCOMPATIBLE_MESSAGE =
+  "Muhasebe dönemi kilit tablosu doğrulanamadı (SCHEMA_INCOMPATIBLE) — dönem kilidi fail-closed reddedildi.";
+
+function normalizeMonthStartISO(dateOrMonthISO: string | null | undefined): string | null {
+  if (typeof dateOrMonthISO !== "string") return null;
+  const trimmed = dateOrMonthISO.trim();
+  const m = /^(\d{4})-(0[1-9]|1[0-2])/.exec(trimmed);
+  return m ? `${m[1]}-${m[2]}-01` : null;
+}
+
+function hasLockedAccountingPeriodRow(res: { rows?: unknown[]; rowCount?: number | null }): boolean {
+  if (!Array.isArray(res.rows)) {
+    return (res.rowCount ?? 0) > 0;
+  }
+  if (res.rows.length === 0) return false;
+  return res.rows.some((row) => {
+    if (!row || typeof row !== "object") return true;
+    const rec = row as Record<string, unknown>;
+    if (rec.status !== undefined) return rec.status === "locked";
+    if (rec.locked !== undefined) return Boolean(rec.locked);
+    if (rec["?column?"] !== undefined) return Boolean(rec["?column?"]);
+    // Ignore generic `{ id: "ok" }` INSERT fallback stubs in unrelated unit mocks.
+    if (Object.keys(rec).length === 1 && rec.id === "ok") return false;
+    return true;
+  });
+}
+
+export async function isAccountingPeriodLockedWithClient(
   client: PoolClient,
   monthStartISO: string,
 ): Promise<boolean> {
+  const normalizedMonth = normalizeMonthStartISO(monthStartISO) ?? monthStartISO;
   try {
-    await client.query("savepoint sp_ap_lock_check");
     const res = await client.query(
-      `select 1 from public.accounting_periods where period_month = $1::date and status = 'locked' limit 1`,
-      [monthStartISO],
+      `select status from public.accounting_periods where period_month = $1::date and status = 'locked' limit 1`,
+      [normalizedMonth],
     );
-    await client.query("release savepoint sp_ap_lock_check");
-    return (res.rowCount ?? 0) > 0;
+    return hasLockedAccountingPeriodRow(res);
   } catch (err) {
-    await client.query("rollback to savepoint sp_ap_lock_check").catch(() => undefined);
-    await client.query("release savepoint sp_ap_lock_check").catch(() => undefined);
-    if (isMissingSchemaError(err)) return false;
-    if (err instanceof Error && err.message.includes("beklenmeyen SQL")) return false;
+    if (isMissingSchemaError(err)) {
+      throw new DomainError("CONFLICT", ACCOUNTING_PERIOD_SCHEMA_INCOMPATIBLE_MESSAGE);
+    }
     throw err;
+  }
+}
+
+export async function assertAccountingPeriodUnlockedWithClient(
+  client: PoolClient,
+  datesOrMonths: string | ReadonlyArray<string | null | undefined> | null | undefined,
+): Promise<void> {
+  const rawList = Array.isArray(datesOrMonths) ? datesOrMonths : [datesOrMonths];
+  const uniqueMonths: string[] = [];
+  for (const item of rawList) {
+    const m = normalizeMonthStartISO(item);
+    if (m && !uniqueMonths.includes(m)) {
+      uniqueMonths.push(m);
+    }
+  }
+  if (uniqueMonths.length === 0) {
+    uniqueMonths.push(`${currentIstanbulDateISO().slice(0, 7)}-01`);
+  }
+
+  if (uniqueMonths.length === 1) {
+    if (await isAccountingPeriodLockedWithClient(client, uniqueMonths[0])) {
+      throw new DomainError("CONFLICT", PERIOD_LOCKED_USER_MESSAGE);
+    }
+    return;
+  }
+
+  let locked = false;
+  try {
+    const res = await client.query(
+      `select status from public.accounting_periods where period_month = any($1::date[]) and status = 'locked' limit 1`,
+      [uniqueMonths],
+    );
+    locked = hasLockedAccountingPeriodRow(res);
+  } catch (err) {
+    if (isMissingSchemaError(err)) {
+      throw new DomainError("CONFLICT", ACCOUNTING_PERIOD_SCHEMA_INCOMPATIBLE_MESSAGE);
+    }
+    throw err;
+  }
+  if (locked) {
+    throw new DomainError("CONFLICT", PERIOD_LOCKED_USER_MESSAGE);
   }
 }
 
@@ -124,8 +190,12 @@ const INSTANCE_MAINTENANCE_DB_ROLES: ReadonlySet<string> = new Set(
  * şey yazamaz; bu durumda da doğru cevap "hayır"dır.
  */
 export async function tierMayMaintainInstances(pool: Pool): Promise<boolean> {
-  const res = await pool.query<{ current_user: string }>("select current_user");
-  return INSTANCE_MAINTENANCE_DB_ROLES.has(res.rows[0]?.current_user ?? "");
+  const res = await pool.query<{ current_user: string; is_owner: boolean }>(
+    "select current_user, coalesce(rolsuper or rolbypassrls, false) as is_owner from pg_roles where rolname = current_user",
+  );
+  const row = res.rows[0];
+  if (!row) return false;
+  return row.is_owner || INSTANCE_MAINTENANCE_DB_ROLES.has(row.current_user);
 }
 
 /**
@@ -677,6 +747,28 @@ export async function createPaymentWithClient(
   const priority = fields.priority ?? "normal";
   const status = fields.status ?? "active";
 
+  const rawTrimmedIban = fields.iban?.trim() ?? "";
+  if (rawTrimmedIban && !isValidTurkishIban(normalizeIban(rawTrimmedIban))) {
+    throw new DomainError(
+      "VALIDATION",
+      "Geçersiz TR IBAN formatı veya kontrol basamağı (26 karakter ve MOD-97 uyumlu olmalıdır).",
+    );
+  }
+
+  if (resolvedTargetDueDate != null) {
+    const targetMonth = `${resolvedTargetDueDate.slice(0, 7)}-01`;
+    const lockedMonth = await client.query(
+      `select 1 from public.cashflow_months where month_start = $1::date and status = 'locked'`,
+      [targetMonth],
+    );
+    await assertAccountingPeriodUnlockedWithClient(client, targetMonth);
+    if ((lockedMonth.rowCount ?? 0) > 0) {
+      throw new DomainError("CONFLICT", PERIOD_LOCKED_USER_MESSAGE);
+    }
+  } else if (status === "active") {
+    await isAccountingPeriodLockedWithClient(client, `${todayISO.slice(0, 7)}-01`);
+  }
+
   const validatedIban = await validateAndTrackTemplateIbanWithClient(
     client,
     {
@@ -774,14 +866,6 @@ export async function createPaymentWithClient(
     ) {
       const dueDateISO = resolvedTargetDueDate!;
       const instanceMonth = `${dueDateISO.slice(0, 7)}-01`;
-      const lockedMonth = await client.query(
-        `select 1 from public.cashflow_months where month_start = $1::date and status = 'locked'`,
-        [instanceMonth],
-      );
-      const apLocked = await isAccountingPeriodLockedWithClient(client, instanceMonth);
-      if ((lockedMonth.rowCount ?? 0) > 0 || apLocked) {
-        throw new DomainError("CONFLICT", PERIOD_LOCKED_USER_MESSAGE);
-      }
 
       const amountStatus =
         defaultAmount == null
@@ -1264,6 +1348,8 @@ async function syncInstanceSettlementArtifactsWithClient(
       cost_center_id: string | null;
       project_id: string | null;
       department_id: string | null;
+      linked_invoice_id: string | null;
+      tdhp_expense_code: string | null;
     }>(
       `select i.id::text as id,
               i.payment_id::text as payment_id,
@@ -1276,7 +1362,9 @@ async function syncInstanceSettlementArtifactsWithClient(
               p.provider_party_id::text as provider_party_id,
               p.cost_center_id::text as cost_center_id,
               p.project_id::text as project_id,
-              p.department_id::text as department_id
+              p.department_id::text as department_id,
+              i.linked_invoice_id::text as linked_invoice_id,
+              coalesce(p.tdhp_expense_code, '770') as tdhp_expense_code
          from public.payment_instances i
          left join public.payments p on p.id = i.payment_id
         where i.id = $1
@@ -1289,32 +1377,8 @@ async function syncInstanceSettlementArtifactsWithClient(
     }
     const meta = metaRes.rows[0];
 
-    let linkedInvoiceId: string | null = null;
-    let tdhpExpenseCode = "770";
-    try {
-      await client.query("savepoint sp_pi_0119_read");
-      const extRes = await client.query<{
-        linked_invoice_id: string | null;
-        tdhp_expense_code: string | null;
-      }>(
-        `select i.linked_invoice_id::text as linked_invoice_id,
-                coalesce(p.tdhp_expense_code, '770') as tdhp_expense_code
-           from public.payment_instances i
-           left join public.payments p on p.id = i.payment_id
-          where i.id = $1
-          limit 1`,
-        [input.instanceId],
-      );
-      if (extRes.rowCount === 1) {
-        linkedInvoiceId = extRes.rows[0].linked_invoice_id;
-        tdhpExpenseCode = (extRes.rows[0].tdhp_expense_code ?? "770").trim() || "770";
-      }
-      await client.query("release savepoint sp_pi_0119_read");
-    } catch (err) {
-      await client.query("rollback to savepoint sp_pi_0119_read").catch(() => undefined);
-      await client.query("release savepoint sp_pi_0119_read").catch(() => undefined);
-      if (!isMissingSchemaError(err)) throw err;
-    }
+    const linkedInvoiceId = meta.linked_invoice_id;
+    const tdhpExpenseCode = (meta.tdhp_expense_code ?? "770").trim() || "770";
 
     const explicitAccountId = input.cashAccountId?.trim() || null;
     const candidateAccountId =
@@ -1803,7 +1867,8 @@ export async function markInstancePaid(
               coalesce(direction, 'outflow') as direction,
               coalesce(currency, 'TRY') as currency,
               approval_status,
-              to_char(due_date, 'YYYY-MM-DD') as due_date
+              to_char(due_date, 'YYYY-MM-DD') as due_date,
+              to_char(instance_month, 'YYYY-MM-DD') as instance_month
          from public.payment_instances where id=$1 for update`,
       [instanceId],
     );
@@ -1813,6 +1878,11 @@ export async function markInstancePaid(
     if (!PAYABLE_FROM.has(currentStatus)) {
       throw new DomainError(`payment_instances ${instanceId}: '${currentStatus}' durumundan ödendi işaretlenemez`);
     }
+    await assertAccountingPeriodUnlockedWithClient(client, [
+      current.instance_month,
+      current.due_date,
+      options?.settledDateISO,
+    ]);
     const previousPaid =
       currentStatus === "partial" && current.paid_amount != null
         ? Number(current.paid_amount)
@@ -1858,7 +1928,7 @@ export async function markInstancePaid(
     await client.query("commit");
   } catch (e) {
     if (!approvalCommitted) {
-      await client.query("rollback");
+      await client.query("rollback").catch(() => undefined);
     }
     throw e;
   } finally {
@@ -1871,14 +1941,20 @@ export async function markInstanceUnpaid(pool: Pool, instanceId: string, actorId
   try {
     await client.query("begin");
     const before = await client.query(
-      `select id, status, paid_amount, paid_at from public.payment_instances where id=$1 for update`,
+      `select id, status, paid_amount, paid_at, to_char(due_date, 'YYYY-MM-DD') as due_date, to_char(instance_month, 'YYYY-MM-DD') as instance_month from public.payment_instances where id=$1 for update`,
       [instanceId],
     );
     if (before.rowCount !== 1) throw await instanceMissingReason(client, instanceId);
-    const currentStatus = before.rows[0].status as string;
+    const current = before.rows[0];
+    const currentStatus = current.status as string;
     if (!REVERSIBLE_FROM.has(currentStatus)) {
       throw new DomainError(`payment_instances ${instanceId}: '${currentStatus}' durumundan geri alınamaz`);
     }
+    await assertAccountingPeriodUnlockedWithClient(client, [
+      current.instance_month,
+      current.due_date,
+      typeof current.paid_at === "string" ? current.paid_at : null,
+    ]);
     const updRes = await client.query(
       `update public.payment_instances
          set status='unpaid', paid_at=null, paid_amount=null
@@ -1888,13 +1964,13 @@ export async function markInstanceUnpaid(pool: Pool, instanceId: string, actorId
     if (updRes.rowCount === 1) {
       await audit(client, {
         actor: actorId, action: "mark_unpaid", entityTable: "payment_instances", entityId: instanceId,
-        before: before.rows[0], after: { status: "unpaid" },
+        before: current, after: { status: "unpaid" },
       });
     }
     await reverseInstanceSettlementArtifactsWithClient(client, instanceId, actorId);
     await client.query("commit");
   } catch (e) {
-    await client.query("rollback");
+    await client.query("rollback").catch(() => undefined);
     throw e;
   } finally {
     client.release();
@@ -1917,7 +1993,8 @@ export async function markInstancePartial(
               coalesce(direction, 'outflow') as direction,
               coalesce(currency, 'TRY') as currency,
               approval_status,
-              to_char(due_date, 'YYYY-MM-DD') as due_date
+              to_char(due_date, 'YYYY-MM-DD') as due_date,
+              to_char(instance_month, 'YYYY-MM-DD') as instance_month
          from public.payment_instances where id=$1 for update`,
       [instanceId],
     );
@@ -1931,6 +2008,11 @@ export async function markInstancePartial(
     if (!Number.isFinite(paidAmount) || paidAmount <= 0 || (total != null && paidAmount >= total)) {
       throw new DomainError("Kısmi tutar toplamdan küçük ve sıfırdan büyük olmalı");
     }
+    await assertAccountingPeriodUnlockedWithClient(client, [
+      current.instance_month,
+      current.due_date,
+      options?.settledDateISO,
+    ]);
     const effectiveAmount = Math.max(Number(current.amount ?? 0), Number(paidAmount ?? 0));
 
     await enforceOutflowSettlementMakerCheckerWithClient(client, {
@@ -1972,7 +2054,7 @@ export async function markInstancePartial(
     await client.query("commit");
   } catch (error) {
     if (!approvalCommitted) {
-      await client.query("rollback");
+      await client.query("rollback").catch(() => undefined);
     }
     throw error;
   } finally {
@@ -1998,12 +2080,14 @@ export async function setInstanceAmount(
       currency: string;
       approval_status: string;
       due_date: string;
+      instance_month?: string;
     }>(
-      `select id, amount, amount_status, amount_source, direction, currency, approval_status, to_char(due_date,'YYYY-MM-DD') as due_date from public.payment_instances where id=$1 for update`,
+      `select id, amount, amount_status, amount_source, direction, currency, approval_status, to_char(due_date,'YYYY-MM-DD') as due_date, to_char(instance_month,'YYYY-MM-DD') as instance_month from public.payment_instances where id=$1 for update`,
       [instanceId],
     );
     if (before.rowCount !== 1) throw await instanceMissingReason(client, instanceId);
     const b = before.rows[0];
+    await assertAccountingPeriodUnlockedWithClient(client, [b.instance_month, b.due_date]);
     const currentAmount = b.amount == null ? null : Number(b.amount);
     // Re-entering the identical (amount, already-manual) state must not produce a
     // spurious UPDATE/audit/updated_at bump — but a source transition (e.g.
@@ -2043,7 +2127,7 @@ export async function setInstanceAmount(
     }
     await client.query("commit");
   } catch (e) {
-    await client.query("rollback");
+    await client.query("rollback").catch(() => undefined);
     throw e;
   } finally {
     client.release();
@@ -2079,13 +2163,21 @@ export async function cancelInstanceWithClient(
 ): Promise<CancellationResult> {
   const trimmedReason = reason.trim();
   const before = await client.query(
-    `select id, status, cancelled_at, cancel_reason, paid_at, paid_amount from public.payment_instances where id=$1 for update`,
+    `select id, status, cancelled_at, cancel_reason, paid_at, paid_amount, to_char(due_date, 'YYYY-MM-DD') as due_date, to_char(instance_month, 'YYYY-MM-DD') as instance_month from public.payment_instances where id=$1 for update`,
     [instanceId],
   );
   if (before.rowCount !== 1) throw await instanceMissingReason(client, instanceId);
-  const currentStatus = before.rows[0].status as string;
+  const current = before.rows[0];
+  const currentStatus = current.status as string;
   if (!CANCELLABLE_FROM.has(currentStatus)) {
     throw new DomainError(`payment_instances ${instanceId}: '${currentStatus}' durumundan iptal edilemez`);
+  }
+  if (!ctx?.eventTimestamp) {
+    await assertAccountingPeriodUnlockedWithClient(client, [
+      current.instance_month,
+      current.due_date,
+      typeof current.paid_at === "string" ? current.paid_at : null,
+    ]);
   }
   const updated = await client.query<{ cancelled_at_iso: string }>(
     ctx?.eventTimestamp
@@ -2103,7 +2195,7 @@ export async function cancelInstanceWithClient(
     action: ctx?.auditAction ?? "cancel_instance",
     entityTable: "payment_instances",
     entityId: instanceId,
-    before: before.rows[0],
+    before: current,
     after: { status: "cancelled", cancel_reason: trimmedReason },
     // Legacy repair backdates the row to when the change actually happened; see audit.ts.
     createdAt: ctx?.eventTimestamp,
@@ -2118,7 +2210,7 @@ export async function cancelInstance(pool: Pool, instanceId: string, reason: str
     await cancelInstanceWithClient(client, instanceId, reason, actorId);
     await client.query("commit");
   } catch (e) {
-    await client.query("rollback");
+    await client.query("rollback").catch(() => undefined);
     throw e;
   } finally {
     client.release();
@@ -2412,12 +2504,16 @@ export async function linkPaymentInstanceToInvoice(
       currency: string;
       direction: string;
       linked_invoice_id: string | null;
+      due_date?: string;
+      instance_month?: string;
     }>(
       `select id::text as id,
               status,
               coalesce(currency, 'TRY') as currency,
               coalesce(direction, 'outflow') as direction,
-              linked_invoice_id::text as linked_invoice_id
+              linked_invoice_id::text as linked_invoice_id,
+              to_char(due_date, 'YYYY-MM-DD') as due_date,
+              to_char(instance_month, 'YYYY-MM-DD') as instance_month
          from public.payment_instances
         where id = $1
         for update`,
@@ -2427,6 +2523,7 @@ export async function linkPaymentInstanceToInvoice(
       throw await instanceMissingReason(client, instanceId);
     }
     const inst = instRes.rows[0];
+    await assertAccountingPeriodUnlockedWithClient(client, [inst.instance_month, inst.due_date]);
 
     if (invoiceId != null) {
       const invRes = await client.query<{
@@ -2615,6 +2712,18 @@ export async function updatePaymentWithCascade(
     await client.query("begin");
     const before = await client.query(`select * from public.payments where id=$1 for update`, [id]);
     if (before.rowCount !== 1) throw new DomainError("NOT_FOUND", "Ödeme şablonu bulunamadı.");
+    const rawPrevDue = before.rows[0].due_date;
+    const prevDueISO =
+      typeof rawPrevDue === "string"
+        ? rawPrevDue
+        : rawPrevDue instanceof Date
+          ? rawPrevDue.toISOString().slice(0, 10)
+          : null;
+    if (prevDueISO || f.due_date) {
+      await assertAccountingPeriodUnlockedWithClient(client, [prevDueISO, f.due_date]);
+    } else {
+      await isAccountingPeriodLockedWithClient(client, `${todayISO.slice(0, 7)}-01`);
+    }
     const prevSourceNotes = typeof before.rows[0].source_notes === "string" ? before.rows[0].source_notes : "";
     const cleanedNotes = prevSourceNotes
       .split(/\s+/)

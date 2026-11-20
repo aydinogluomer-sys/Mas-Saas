@@ -293,3 +293,58 @@ export function hasStatutoryLegalProceedingClaim(text: string): boolean {
   return STATUTORY_LEGAL_CLAIM_PATTERNS.some((re) => re.test(normalized));
 }
 
+/* ── BEC IBAN verification & control-alert gate (pure, deterministic) ─────────────────── */
+
+export type IbanVerificationBlockReason =
+  | "invalid_iban_checksum_or_format"
+  | "unverified_iban"
+  | "maker_equals_checker";
+
+export interface IbanControlStatusEvaluation {
+  canWritebackVerified: boolean;
+  requiresControlAlert: boolean;
+  blockReason: IbanVerificationBlockReason | null;
+}
+
+/**
+ * Pure deterministic evaluator ensuring unverified, invalid-MOD-97, or self-verified IBANs
+ * raise a control alert (when active) and never silently write back as verified.
+ */
+export function evaluateIbanControlStatus(input: {
+  approvalStatus: string | null;
+  isActive: boolean;
+  verifiedAt: string | null;
+  makerId?: string | null;
+  verifierId?: string | null;
+  checksumValid: boolean;
+  trLengthValid: boolean;
+}): IbanControlStatusEvaluation {
+  if (!input.checksumValid || !input.trLengthValid) {
+    return {
+      canWritebackVerified: false,
+      requiresControlAlert: Boolean(input.isActive),
+      blockReason: "invalid_iban_checksum_or_format",
+    };
+  }
+  if (input.approvalStatus !== "approved" || !input.verifiedAt) {
+    return {
+      canWritebackVerified: false,
+      requiresControlAlert: Boolean(input.isActive),
+      blockReason: "unverified_iban",
+    };
+  }
+  if (input.makerId && input.verifierId && input.makerId === input.verifierId) {
+    return {
+      canWritebackVerified: false,
+      requiresControlAlert: Boolean(input.isActive),
+      blockReason: "maker_equals_checker",
+    };
+  }
+  return {
+    canWritebackVerified: Boolean(input.isActive),
+    requiresControlAlert: false,
+    blockReason: null,
+  };
+}
+
+

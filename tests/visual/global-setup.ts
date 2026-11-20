@@ -34,30 +34,188 @@ import { Pool } from "pg";
 import { databaseNameFromUrl, isDisposableDatabaseName } from "../../scripts/db/owner-url";
 import { readEnvLocal, swapDatabase } from "../../scripts/db/app-url";
 
+export interface ResolveOwnerSeedUrlOptions {
+  env?: NodeJS.ProcessEnv;
+  readEnvLocalFn?: () => Record<string, string>;
+}
+
+const FORBIDDEN_LOW_PRIVILEGE_SEED_ROLES = new Set([
+  "mas_radar_app",
+  "mas_radar_viewer",
+  "mas_radar_finance_operator",
+  "mas_radar_finance_approver",
+  "mas_radar_finance_manager",
+  "mas_radar_admin",
+  "mas_radar_readonly",
+]);
+
+function parsePgUrlStrict(rawUrl: string, label: string): URL {
+  let parsed: URL;
+  try {
+    parsed = new URL(rawUrl);
+  } catch {
+    throw new Error(`GÜVENLİK DURDURMASI (F-05): '${label}' geçerli bir PostgreSQL bağlantı dizesi değil.`);
+  }
+  if (parsed.protocol !== "postgres:" && parsed.protocol !== "postgresql:") {
+    throw new Error(`GÜVENLİK DURDURMASI (F-05): '${label}' protokolü postgres:// veya postgresql:// olmalı.`);
+  }
+  return parsed;
+}
+
+function normalizeClusterHost(rawHost: string): string {
+  const cleaned = rawHost.trim().toLowerCase().replace(/^\[|\]$/g, "");
+  if (cleaned === "localhost" || cleaned === "127.0.0.1") {
+    return "127.0.0.1";
+  }
+  return cleaned;
+}
+
 /**
  * Elevates an already-verified disposable E2E database URL (`mas_radar_app`) to the database owner
- * (`postgres` or `MIGRATION_DATABASE_URL`) so E2E harnesses can seed `public.users` / `public.sessions`
- * while the Next.js server under test continues running on least-privilege `mas_radar_app`.
+ * (`MAS_E2E_SEED_DATABASE_URL` / `MAS_E2E_VERIFIER_URL` / same-cluster `MIGRATION_DATABASE_URL`)
+ * so E2E harnesses can seed `public.users` / `public.sessions` while the Next.js server under test
+ * continues running on least-privilege `mas_radar_app`.
+ *
+ * Fail-closed invariants (`F-05`):
+ *   1. Both `rawAppUrl` and the resolved seed URL must target a disposable database.
+ *   2. Exact database-name equality (`seedDbName === appDbName`) is enforced.
+ *   3. Same PostgreSQL cluster (`host` + `port`, with `localhost <-> 127.0.0.1` loopback equivalence) is enforced.
+ *   4. Low-privilege runtime roles (`mas_radar_app`, tier roles) are rejected before hitting `42501`.
+ *   5. Never fabricates an implicit `postgres:postgres` credential when seed/migration env is absent.
  */
-export function resolveOwnerSeedUrl(rawUrl: string): string {
-  const name = databaseNameFromUrl(rawUrl);
-  if (!isDisposableDatabaseName(name)) {
-    throw new Error(`GÜVENLİK DURDURMASI: '${rawUrl.replace(/\/\/[^@]*@/, "//***@")}' disposable görünmüyor.`);
+export function resolveOwnerSeedUrl(rawAppUrl: string, opts?: ResolveOwnerSeedUrlOptions): string {
+  const trimmedApp = rawAppUrl.trim();
+  if (!trimmedApp) {
+    throw new Error("GÜVENLİK DURDURMASI (F-05): MAS_E2E_DATABASE_URL (veya DATABASE_URL) boş olamaz.");
   }
-  if (process.env.MAS_E2E_VERIFIER_URL?.trim()) return process.env.MAS_E2E_VERIFIER_URL.trim();
-  const localMig = (() => {
-    try {
-      return readEnvLocal().MIGRATION_DATABASE_URL?.trim();
-    } catch {
-      return undefined;
+  const appParsed = parsePgUrlStrict(trimmedApp, "MAS_E2E_DATABASE_URL");
+  const appDbName = databaseNameFromUrl(trimmedApp);
+  if (!appDbName || !isDisposableDatabaseName(appDbName)) {
+    throw new Error(
+      `GÜVENLİK DURDURMASI (F-05): '${appDbName ?? "(okunamadı)"}' harcanabilir (disposable) bir E2E veritabanı görünmüyor.`,
+    );
+  }
+
+  const env = opts?.env ?? process.env;
+  const readEnvLocalFn = opts?.readEnvLocalFn ?? readEnvLocal;
+
+  const explicitSeed = env.MAS_E2E_SEED_DATABASE_URL?.trim();
+  const verifierAlias = env.MAS_E2E_VERIFIER_URL?.trim();
+
+  let seedUrl: string | undefined;
+  if (explicitSeed) {
+    seedUrl = explicitSeed;
+  } else if (verifierAlias) {
+    seedUrl = verifierAlias;
+  } else {
+    const localMig = (() => {
+      try {
+        return readEnvLocalFn().MIGRATION_DATABASE_URL?.trim();
+      } catch {
+        return undefined;
+      }
+    })();
+    const migrationBase = env.MIGRATION_DATABASE_URL?.trim() || localMig;
+    if (migrationBase) {
+      seedUrl = swapDatabase(migrationBase, appDbName);
     }
-  })();
-  const migrationBase = process.env.MIGRATION_DATABASE_URL?.trim() || localMig;
-  if (migrationBase && name) return swapDatabase(migrationBase, name);
-  const parsed = new URL(rawUrl);
-  parsed.username = "postgres";
-  parsed.password = "postgres";
-  return parsed.toString();
+  }
+
+  if (!seedUrl) {
+    throw new Error(
+      `GÜVENLİK DURDURMASI (F-05): '${appDbName}' için açık bir owner seed bağlantısı bulunamadı ` +
+        "(MAS_E2E_SEED_DATABASE_URL, MAS_E2E_VERIFIER_URL veya MIGRATION_DATABASE_URL tanımlı değil). " +
+        "Örtük 'postgres:postgres' geri dönüşü engellendi.",
+    );
+  }
+
+  const seedParsed = parsePgUrlStrict(seedUrl, "MAS_E2E_SEED_DATABASE_URL");
+  const seedDbName = databaseNameFromUrl(seedUrl);
+  if (!seedDbName || !isDisposableDatabaseName(seedDbName)) {
+    throw new Error(
+      `GÜVENLİK DURDURMASI (F-05): Owner seed hedef veritabanı '${seedDbName ?? "(okunamadı)"}' harcanabilir (disposable) değil.`,
+    );
+  }
+
+  if (seedDbName !== appDbName) {
+    throw new Error(
+      `GÜVENLİK DURDURMASI (F-05): E2E uygulama veritabanı ('${appDbName}') ile owner seed veritabanı ('${seedDbName}') uyuşmuyor.`,
+    );
+  }
+
+  const appHost = normalizeClusterHost(appParsed.hostname);
+  const seedHost = normalizeClusterHost(seedParsed.hostname);
+  const appPort = appParsed.port || "5432";
+  const seedPort = seedParsed.port || "5432";
+  if (appHost !== seedHost || appPort !== seedPort) {
+    throw new Error(
+      `GÜVENLİK DURDURMASI (F-05): E2E uygulama kümesi (${appParsed.hostname}:${appPort}) ile owner seed kümesi (${seedParsed.hostname}:${seedPort}) uyuşmuyor.`,
+    );
+  }
+
+  const seedUser = decodeURIComponent(seedParsed.username ?? "").trim().toLowerCase();
+  if (!seedUser) {
+    throw new Error("GÜVENLİK DURDURMASI (F-05): Owner seed bağlantısında veritabanı kullanıcı adı eksik.");
+  }
+  if (FORBIDDEN_LOW_PRIVILEGE_SEED_ROLES.has(seedUser)) {
+    throw new Error(
+      `GÜVENLİK DURDURMASI (F-05): Owner seed bağlantısı düşük yetkili uygulama rolü ('${seedUser}') kullanamaz ` +
+        "(public.users INSERT -> 42501); ayrıcalıklı MAS_E2E_SEED_DATABASE_URL tanımlayın.",
+    );
+  }
+
+  return seedUrl;
+}
+
+interface OwnerSeedIdentityRow {
+  db: string;
+  usr: string;
+  rolsuper: boolean;
+  rolbypassrls: boolean;
+  is_db_owner: boolean;
+  can_seed_users: boolean;
+}
+
+/**
+ * Live SQL pre-seed verification (`F-05`) executed before `globalSetup()` touches `public.users`.
+ * Confirms `current_database()` matches `expectedDbName` and the connected role holds owner /
+ * superuser / RLS-bypass privileges plus `INSERT, UPDATE` on `public.users`.
+ */
+export async function verifyOwnerSeedPoolIdentity(
+  pool: Pick<Pool, "query">,
+  expectedDbName: string,
+): Promise<void> {
+  const res = await pool.query<OwnerSeedIdentityRow>(`
+    select
+      current_database() as db,
+      current_user as usr,
+      r.rolsuper as rolsuper,
+      r.rolbypassrls as rolbypassrls,
+      pg_catalog.pg_has_role(current_user, d.datdba, 'USAGE') as is_db_owner,
+      pg_catalog.has_table_privilege(current_user, 'public.users', 'INSERT, UPDATE') as can_seed_users
+    from pg_catalog.pg_roles r
+    join pg_catalog.pg_database d on d.datname = current_database()
+    where r.rolname = current_user
+  `);
+  const row = res.rows[0];
+  if (!row) {
+    throw new Error("GÜVENLİK DURDURMASI (F-05): Owner seed kimlik sorgusu satır döndürmedi.");
+  }
+  if (!isDisposableDatabaseName(row.db) || row.db !== expectedDbName) {
+    throw new Error(
+      `GÜVENLİK DURDURMASI (F-05): Owner seed havuzu '${row.db}' veritabanına bağlandı; beklenen harcanabilir hedef '${expectedDbName}' ile uyuşmuyor.`,
+    );
+  }
+  const usrLower = row.usr.trim().toLowerCase();
+  if (
+    FORBIDDEN_LOW_PRIVILEGE_SEED_ROLES.has(usrLower) ||
+    !(row.rolsuper || row.rolbypassrls || row.is_db_owner) ||
+    !row.can_seed_users
+  ) {
+    throw new Error(
+      `GÜVENLİK DURDURMASI (F-05): Owner seed rolü '${row.usr}' yeterli owner/superuser/RLS-bypass veya public.users yazma yetkisine sahip değil (42501 önlendi).`,
+    );
+  }
 }
 
 /**
@@ -111,7 +269,7 @@ const LOGIN_RATE_WINDOW_MS = 60_000;
  */
 async function logInThroughForm(page: import("@playwright/test").Page, role: SeededRole): Promise<void> {
   for (let attempt = 1; attempt <= 3; attempt++) {
-    await page.goto("/login", { waitUntil: "domcontentloaded" });
+    await page.goto("/login", { waitUntil: "networkidle" });
     await page.fill('input[name="username"]', usernameFor(role));
     await page.fill('input[name="password"]', TEST_PASSWORD);
     // Wait for a predicate that covers EVERY outcome loginAction can produce, because it always
@@ -205,9 +363,10 @@ async function globalSetup(): Promise<void> {
   // harness, which had never heard of it: the Faz 7 rehearsal failed at the smoke step for a reason
   // that had nothing to do with the cutover. A gate that misfires on correct input is a gate people
   // learn to route around, so there is now exactly one list.
-  if (!isDisposableDatabaseName(databaseNameFromUrl(dbUrl))) {
+  const appDbName = databaseNameFromUrl(dbUrl);
+  if (!appDbName || !isDisposableDatabaseName(appDbName)) {
     throw new Error(
-      `GÜVENLİK DURDURMASI: '${dbUrl.replace(/\/\/[^@]*@/, "//***@")}' disposable görünmüyor. ` +
+      `GÜVENLİK DURDURMASI: '${appDbName ?? "(okunamadı)"}' disposable görünmüyor. ` +
         "Görsel harness gerçek kullanıcı satırı yazar; hedefin harcanabilir olduğunu adıyla söylemesi gerekir.",
     );
   }
@@ -226,10 +385,12 @@ async function globalSetup(): Promise<void> {
   rmSync(AUTH_DIR, { recursive: true, force: true });
   mkdirSync(AUTH_DIR, { recursive: true });
 
-  const pool = new Pool({ connectionString: resolveOwnerSeedUrl(dbUrl), max: 4 });
+  const ownerSeedUrl = resolveOwnerSeedUrl(dbUrl);
+  const pool = new Pool({ connectionString: ownerSeedUrl, max: 4 });
   const passwordHash = await argon2Hash(TEST_PASSWORD, ARGON2_OPTIONS);
 
   try {
+    await verifyOwnerSeedPoolIdentity(pool, appDbName);
     for (const role of Object.keys(ROLE_STATE_FILES) as SeededRole[]) {
       // must_change_password is reset with the password for the same reason the lock is: since
       // 0095 /system/security can force a change on any row, and getCurrentUser() reads the flag

@@ -106,6 +106,7 @@ test.describe("ödemeler", () => {
     expect(before.status, "ön koşul: seçilen örnek ödenmemiş olmalı").not.toBe("paid");
     expect(before.paid_at, "ön koşul: paid_at null olmalı").toBeNull();
 
+    const paidSig = await signatureFromDom(page, "ödendi");
     await clickAndSettle(page, () => paidButton.click());
 
     // Sunucu aksiyonunun commit'i ile tarayıcının "idle" görmesi arasındaki pencere için
@@ -122,7 +123,7 @@ test.describe("ödemeler", () => {
     const afterReload = await instanceRow(id);
     expect(afterReload.status, "reload sonrası hâlâ paid").toBe("paid");
 
-    note(PAID_ROUTE, signatureFor(PAID_ROUTE, "ödendi"), "finance_operator", [
+    note(PAID_ROUTE, paidSig, "finance_operator", [
       `before: status=${before.status} paid_at=null`,
       `click: gerçek 'ödendi' düğmesi (instance ${id})`,
       `after DB: status=paid paid_at=${after.paid_at}`,
@@ -216,6 +217,7 @@ test.describe("ödemeler", () => {
 
     const form = page.locator("form").filter({ has: page.locator(`input[name="id"][value="${id}"]`) }).first();
     await form.locator('input[name="amount"]').fill("12345");
+    const saveSig = await signatureFromDom(page, "kaydet");
     await clickAndSettle(page, () => form.getByRole("button", { name: "kaydet", exact: true }).click());
 
     await expectDbEventually(
@@ -228,7 +230,7 @@ test.describe("ödemeler", () => {
     await hardReload(page);
     expect(Number((await instanceRow(id)).amount), "reload sonrası kalıcı").toBe(12345);
 
-    note("/payments/missing", signatureFor("/payments/missing", "kaydet"), "finance_operator", [
+    note("/payments/missing", saveSig, "finance_operator", [
       "before DB: amount=NULL (bilinmeyen, sıfır değil)",
       `click: 'kaydet' (instance ${id}, girilen 12345)`,
       `after DB: amount=${after.amount}`,
@@ -384,6 +386,7 @@ test.describe("kabuk", () => {
     );
     expect(liveBefore, "ön koşul: canlı bir viewer oturumu olmalı").toBeGreaterThan(0);
 
+    const logoutSig = await signatureFromDom(page, "Çıkış yap");
     await clickAndSettle(page, () => page.getByRole("button", { name: /Çıkış yap/ }).first().click());
 
     const liveAfter = Number(
@@ -398,7 +401,7 @@ test.describe("kabuk", () => {
     await page.goto("/", { waitUntil: "domcontentloaded" });
     expect(new URL(page.url()).pathname, "çıkış sonrası korunan rota /login'e dönmeli").toBe("/login");
 
-    note("/", signatureFor("/", "↪Çıkış yap"), "viewer", [
+    note("/", logoutSig, "viewer", [
       `before: canlı viewer oturumu ${liveBefore}`,
       "click: gerçek 'Çıkış yap' düğmesi",
       `after DB: canlı oturum ${liveAfter} (iptal edildi)`,

@@ -95,6 +95,8 @@ interface MockOutboxRow {
   metadata: Record<string, unknown>;
   status: string;
   claim_token: string | null;
+  claimed_at?: Date | null;
+  provider_message_ids?: string[];
   attempt_count: number;
   max_attempts: number;
   next_retry_at_sec_offset: number;
@@ -123,6 +125,11 @@ function createAgent06MockPool(seed: {
   const outboxByKey = new Map<string, MockOutboxRow>();
   const lockedDeliveryIds = new Set<string>();
   const lockedOutboxIds = new Set<string>();
+  let faultHook: ((sqlNormalized: string) => void) | null = null;
+
+  function setFaultHook(fn: ((sqlNormalized: string) => void) | null) {
+    faultHook = fn;
+  }
 
   function executeSql(
     rawSql: string,
@@ -131,6 +138,10 @@ function createAgent06MockPool(seed: {
     heldOutbox?: Set<string>,
   ): { rows: unknown[]; rowCount: number } {
     const sql = rawSql.replace(/\s+/g, " ").trim().toLowerCase();
+
+    if (faultHook) {
+      faultHook(sql);
+    }
 
     if (sql === "begin" || sql === "commit" || sql === "rollback") {
       if (sql === "commit" || sql === "rollback") {
@@ -328,21 +339,51 @@ function createAgent06MockPool(seed: {
       return { rows: [], rowCount: count };
     }
 
-    // Stale 'claiming' recovery (> 10 minutes)
+    if (sql.includes("public.ops_incidents")) {
+      return { rows: [], rowCount: 1 };
+    }
+
+    // Stale 'claiming' recovery (> 10 minutes) separated by dispatchPhase
     if (
       sql.startsWith("update public.reminder_deliveries") &&
       sql.includes("where status = 'claiming'") &&
       !sql.includes("returning")
     ) {
       const tenMinAgo = getNowMs() - 10 * 60 * 1_000;
+      const onlySending =
+        sql.includes("dispatchphase") &&
+        sql.includes("= 'sending'") &&
+        !sql.includes("<> 'sending'");
+      const excludeSending =
+        sql.includes("dispatchphase") && sql.includes("<> 'sending'");
+      const targetUncertain = sql.includes("set status = 'delivery_uncertain'");
       let recovered = 0;
       for (const d of deliveries.values()) {
-        if (d.status === "claiming" && d.claimed_at && d.claimed_at.getTime() < tenMinAgo) {
+        if (d.status !== "claiming" || !d.claimed_at || d.claimed_at.getTime() >= tenMinAgo) {
+          continue;
+        }
+        const phase = String(d.payload?.dispatchPhase ?? "");
+        if (onlySending && phase !== "sending") continue;
+        if (excludeSending && phase === "sending") continue;
+        if (targetUncertain) {
+          d.status = "delivery_uncertain";
+          d.claim_token = null;
+          d.error =
+            d.error ?? "crash_window_after_sending_started: operator_reconciliation_required";
+          d.payload = {
+            ...(d.payload ?? {}),
+            dispatchPhase: "delivery_uncertain",
+            requiresOperatorReconciliation: true,
+          };
+        } else {
           d.status = "pending";
           d.claim_token = null;
           d.claimed_at = null;
-          recovered += 1;
+          if (d.payload) {
+            d.payload = { ...d.payload, dispatchPhase: "pending" };
+          }
         }
+        recovered += 1;
       }
       return { rows: [], rowCount: recovered };
     }
@@ -369,6 +410,7 @@ function createAgent06MockPool(seed: {
         d.status = "claiming";
         d.claim_token = randomUUID();
         d.claimed_at = new Date(getNowMs());
+        d.payload = { ...(d.payload ?? {}), dispatchPhase: "claimed" };
         claimed.push({
           id: d.id,
           reminder_id: d.reminder_id,
@@ -388,12 +430,15 @@ function createAgent06MockPool(seed: {
       return { rows: claimed, rowCount: claimed.length };
     }
 
-    // Finalize reminder_deliveries status
+    // Row-level updates on reminder_deliveries (sending phase stamp + final status)
     if (sql.startsWith("update public.reminder_deliveries")) {
       const id = String(params[0]);
       const d = deliveries.get(id);
       if (!d) return { rows: [], rowCount: 0 };
       if (d.status !== "pending" && d.status !== "claiming") {
+        return { rows: [], rowCount: 0 };
+      }
+      if (sql.includes("and status = 'claiming'") && d.status !== "claiming") {
         return { rows: [], rowCount: 0 };
       }
       if (sql.includes("claim_token =") && d.claim_token) {
@@ -402,23 +447,47 @@ function createAgent06MockPool(seed: {
         );
         if (!tokenMatched) return { rows: [], rowCount: 0 };
       }
+      if (sql.includes("set status = 'claiming'")) {
+        d.status = "claiming";
+        if (typeof params[2] === "string") {
+          d.payload = {
+            ...(d.payload ?? {}),
+            ...(JSON.parse(params[2]) as Record<string, unknown>),
+          };
+        }
+        return { rows: [{ id: d.id }], rowCount: 1 };
+      }
       if (sql.includes("set status = 'sent'")) {
         d.status = "sent";
         d.error = null;
         d.claim_token = null;
-        if (params[1] && typeof params[1] === "string" && sql.includes("payload = $2::jsonb")) {
-          d.payload = JSON.parse(params[1]) as Record<string, unknown>;
+        if (params[1] && typeof params[1] === "string" && sql.includes("payload =")) {
+          d.payload = {
+            ...(d.payload ?? {}),
+            ...(JSON.parse(params[1]) as Record<string, unknown>),
+          };
         }
       } else {
         d.status = String(params[1]);
         d.error = params[2] != null ? String(params[2]) : null;
         d.claim_token = null;
+        if (typeof params[3] === "string" && sql.includes("payload =")) {
+          d.payload = {
+            ...(d.payload ?? {}),
+            ...(JSON.parse(params[3]) as Record<string, unknown>),
+          };
+        }
       }
       return { rows: [{ id: d.id }], rowCount: 1 };
     }
 
     // Outbox deduplication lookup
     if (sql.includes("from public.notification_outbox") && sql.startsWith("select")) {
+      if (sql.includes("where id = $1")) {
+        const id = String(params[0]);
+        const found = [...outboxByKey.values()].find((o) => o.id === id);
+        return found ? { rows: [{ ...found }], rowCount: 1 } : { rows: [], rowCount: 0 };
+      }
       const keys = new Set<string>(
         Array.isArray(params[0]) ? (params[0] as string[]) : [String(params[0] ?? "")],
       );
@@ -426,7 +495,7 @@ function createAgent06MockPool(seed: {
       for (const o of outboxByKey.values()) {
         if (!keys.has(o.idempotency_key)) continue;
         if (
-          sql.includes("delivery_uncertain") &&
+          sql.includes("status in ('sent', 'delivery_uncertain', 'claiming')") &&
           o.status !== "sent" &&
           o.status !== "delivery_uncertain" &&
           o.status !== "claiming"
@@ -434,7 +503,13 @@ function createAgent06MockPool(seed: {
           continue;
         }
         if (sql.includes("status = 'sent'") && o.status !== "sent") continue;
-        rows.push({ id: o.id, idempotency_key: o.idempotency_key, status: o.status });
+        rows.push({
+          id: o.id,
+          idempotency_key: o.idempotency_key,
+          status: o.status,
+          attempt_count: o.attempt_count,
+          max_attempts: o.max_attempts,
+        });
       }
       return { rows, rowCount: rows.length };
     }
@@ -480,6 +555,8 @@ function createAgent06MockPool(seed: {
         metadata: metadataRaw ? (JSON.parse(metadataRaw) as Record<string, unknown>) : {},
         status: "pending",
         claim_token: null,
+        claimed_at: null,
+        provider_message_ids: [],
         attempt_count: 0,
         max_attempts: Number(maxAttempts ?? 5),
         next_retry_at_sec_offset: 0,
@@ -487,6 +564,46 @@ function createAgent06MockPool(seed: {
         legal_entity_id: legalEntityId ?? null,
       });
       return { rows: [{ id }], rowCount: 1 };
+    }
+
+    // Outbox stale 'claiming' recovery (recoverStaleOutboxClaims)
+    if (
+      sql.startsWith("update public.notification_outbox") &&
+      sql.includes("where status = 'claiming'") &&
+      !sql.includes("returning")
+    ) {
+      const staleMinutes = Number(params[0] ?? 10);
+      const cutoffMs = getNowMs() - staleMinutes * 60 * 1_000;
+      const onlySending =
+        sql.includes("dispatchphase") &&
+        sql.includes("= 'sending'") &&
+        !sql.includes("<> 'sending'");
+      const excludeSending =
+        sql.includes("dispatchphase") && sql.includes("<> 'sending'");
+      let count = 0;
+      for (const o of outboxByKey.values()) {
+        if (o.status !== "claiming" || !o.claimed_at || o.claimed_at.getTime() >= cutoffMs) {
+          continue;
+        }
+        const phase = String(o.metadata?.dispatchPhase ?? "");
+        if (onlySending && phase !== "sending") continue;
+        if (excludeSending && phase === "sending") continue;
+        if (sql.includes("set status = 'delivery_uncertain'")) {
+          o.status = "delivery_uncertain";
+          o.claim_token = null;
+          o.metadata = {
+            ...o.metadata,
+            dispatchPhase: "delivery_uncertain",
+            requiresOperatorReconciliation: true,
+          };
+        } else {
+          o.status = "failed_retryable";
+          o.claim_token = null;
+          o.metadata = { ...o.metadata, dispatchPhase: "failed_retryable" };
+        }
+        count += 1;
+      }
+      return { rows: [], rowCount: count };
     }
 
     // Outbox atomic claim (claimAndDispatchOutbox)
@@ -508,6 +625,8 @@ function createAgent06MockPool(seed: {
         if (lockedOutboxIds.has(o.id)) continue;
         o.status = "claiming";
         o.claim_token = randomUUID();
+        o.claimed_at = new Date(getNowMs());
+        o.metadata = { ...o.metadata, dispatchPhase: "claimed" };
         claimed.push({ ...o });
       }
       return { rows: claimed, rowCount: claimed.length };
@@ -515,20 +634,48 @@ function createAgent06MockPool(seed: {
 
     // Outbox updates
     if (sql.startsWith("update public.notification_outbox")) {
-      if (sql.includes("where status = 'claiming'")) {
-        return { rows: [], rowCount: 0 };
-      }
       let target: MockOutboxRow | undefined;
       if (sql.includes("where idempotency_key = $1")) {
         target = outboxByKey.get(String(params[0]));
+      } else if (
+        sql.includes("where id = $1") &&
+        sql.includes("status in ('pending', 'failed_retryable')")
+      ) {
+        const id = String(params[0]);
+        target = [...outboxByKey.values()].find(
+          (o) => o.id === id && (o.status === "pending" || o.status === "failed_retryable"),
+        );
+        if (!target) return { rows: [], rowCount: 0 };
+        target.status = "claiming";
+        target.claim_token = String(params[1]);
+        target.claimed_at = new Date(getNowMs());
+        if (typeof params[2] === "string") {
+          target.metadata = {
+            ...target.metadata,
+            ...(JSON.parse(params[2]) as Record<string, unknown>),
+          };
+        }
+        return { rows: [{ id: target.id }], rowCount: 1 };
       } else {
         const id = String(params[0]);
         const token = String(params[1] ?? "");
         target = [...outboxByKey.values()].find(
-          (o) => o.id === id && (!sql.includes("claim_token") || o.claim_token === token),
+          (o) => o.id === id && (!sql.includes("claim_token = $2") || o.claim_token === token),
         );
       }
       if (!target) return { rows: [], rowCount: 0 };
+
+      if (
+        sql.includes("'dispatchphase', 'sending'") &&
+        sql.includes("where id = $1 and status = 'claiming'")
+      ) {
+        if (target.status !== "claiming") return { rows: [], rowCount: 0 };
+        target.metadata = {
+          ...target.metadata,
+          dispatchPhase: "sending",
+        };
+        return { rows: [{ id: target.id }], rowCount: 1 };
+      }
 
       const literalMatch = sql.match(/set\s+status\s*=\s*'([a-z_]+)'/);
       const paramMatch = sql.match(/set\s+status\s*=\s*\$(\d+)/);
@@ -546,8 +693,28 @@ function createAgent06MockPool(seed: {
       } else if (sql.includes("next_retry_at = now() + ($3::int")) {
         target.next_retry_at_sec_offset = Number(params[2] ?? 0);
       }
-      target.attempt_count += 1;
-      target.claim_token = null;
+      for (const p of params) {
+        if (Array.isArray(p) && p.every((x) => typeof x === "string")) {
+          if (p.length > 0) target.provider_message_ids = [...(p as string[])];
+        } else if (typeof p === "string" && p.startsWith("{") && p.includes("dispatchPhase")) {
+          try {
+            target.metadata = {
+              ...target.metadata,
+              ...(JSON.parse(p) as Record<string, unknown>),
+            };
+          } catch {
+            // ignore
+          }
+        }
+      }
+      if (sql.includes("claim_token = null")) {
+        target.claim_token = null;
+      }
+      if (sql.includes("attempt_count = attempt_count + 1")) {
+        target.attempt_count += 1;
+      } else if (sql.includes("attempt_count = $4")) {
+        target.attempt_count = Number(params[3]);
+      }
       return { rows: [{ id: target.id }], rowCount: 1 };
     }
 
@@ -575,7 +742,7 @@ function createAgent06MockPool(seed: {
     },
   } as unknown as Pool;
 
-  return { pool, rules, payments, loans, deliveries, outboxByKey };
+  return { pool, rules, payments, loans, deliveries, outboxByKey, setFaultHook };
 }
 
 describe("Agent 06 — Telegram Notification Engine, Atomic Claiming & Idempotency (Phase E)", () => {
@@ -1326,5 +1493,91 @@ describe("Agent 06 — Telegram Notification Engine, Atomic Claiming & Idempoten
       }
       expect(chunk).not.toMatch(/<[^>]*$/);
     }
+  });
+
+  it("10. [V2 F-08] commits durable SENDING intent before transport.send() and transitions stale post-sending claims to 'delivery_uncertain' with 0 duplicate resends", async () => {
+    let clockMs = Date.parse("2026-11-18T09:00:00Z");
+    const asOf = "2026-11-18";
+    const entityId = "06060606-0010-4000-8000-000000000010";
+
+    const ctx = createAgent06MockPool({
+      nowMs: () => clockMs,
+      rules: [
+        {
+          id: "rule-pay-0",
+          name: "Bugün Ödeme",
+          target_kind: "payment_instance",
+          offset_days: 0,
+          channel: "telegram",
+          min_amount: null,
+          is_active: true,
+        },
+      ],
+      paymentInstances: [
+        {
+          id: entityId,
+          name: "Sentetik Tedarik Ödemesi",
+          due_date: asOf,
+          amount: "65000.00",
+          paid_amount: "0.00",
+          status: "unpaid",
+          provider: "Sentetik Tedarik",
+        },
+      ],
+    });
+
+    await scheduleReminders(ctx.pool, asOf);
+
+    const sentPayloads: string[] = [];
+    let crashArmed = false;
+    ctx.setFaultHook((sql) => {
+      if (
+        crashArmed &&
+        (sql.includes("notification_outbox") || sql.includes("reminder_deliveries"))
+      ) {
+        throw new Error("Simulated crash after Telegram 200 OK before DB finalization");
+      }
+    });
+
+    const tgTransport: Transport = {
+      channel: "telegram",
+      send: (msg) =>
+        sendTelegramChatMessage("-100111", msg, {
+          token: "123:TEST_TOKEN",
+          allowedChatIds: ["-100111"],
+          fetchImpl: (async (_url, init) => {
+            const parsed = JSON.parse(String(init?.body)) as { text: string };
+            sentPayloads.push(parsed.text);
+            crashArmed = true;
+            return new Response(
+              JSON.stringify({ ok: true, result: { message_id: 99101 } }),
+              { status: 200, headers: { "content-type": "application/json" } },
+            );
+          }) as typeof fetch,
+        }),
+    };
+
+    await expect(dispatchPending(ctx.pool, tgTransport, asOf)).rejects.toThrow(
+      /Simulated crash after Telegram 200 OK/,
+    );
+    expect(sentPayloads).toHaveLength(1);
+
+    // Advance +15 minutes (> 10 minute stale claim window) and re-run cron worker
+    ctx.setFaultHook(null);
+    crashArmed = false;
+    clockMs += 15 * 60 * 1_000;
+
+    await scheduleReminders(ctx.pool, asOf);
+    const secondRun = await dispatchPending(ctx.pool, tgTransport, asOf);
+    expect(secondRun.sent).toBe(0);
+    expect(sentPayloads).toHaveLength(1);
+
+    const delivery = [...ctx.deliveries.values()][0]!;
+    expect(delivery.status).toBe("delivery_uncertain");
+    expect(delivery.claim_token).toBeNull();
+
+    const outboxRow = [...ctx.outboxByKey.values()][0]!;
+    expect(outboxRow.status).toBe("delivery_uncertain");
+    expect(outboxRow.claim_token).toBeNull();
   });
 });

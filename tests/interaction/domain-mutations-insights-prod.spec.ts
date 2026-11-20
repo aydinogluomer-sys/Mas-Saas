@@ -38,32 +38,35 @@ test.afterAll(() => {
 });
 
 const EXPECTED_SLICE: ReadonlyArray<{ route: string; label: string }> = [
-  { route: "/", label: "Görev oluştur" },
+  { route: "/", label: "Görev Oluştur" },
   { route: "/scenarios", label: "Gider %10 artarsa" },
   { route: "/scenarios", label: "Gelir %10 artarsa" },
   { route: "/scenarios", label: "Senaryoyu çalıştır" },
-  { route: "/scenarios/compare", label: "Karşılaştır" },
+  { route: "/scenarios/compare", label: "Matrisi Güncelle" },
   { route: "/scenarios/history", label: "Arşivle" },
   { route: "/scenarios/optimization", label: "Çalıştır ve kaydet" },
   { route: "/insights/ask", label: "Cevapla" },
-  { route: "/insights/ask", label: "Bugün ne ödenecek?" },
-  { route: "/insights/ask", label: "7 günde ne kadar çıkış var?" },
-  { route: "/insights/ask", label: "Kasa ne zaman negatife düşüyor?" },
-  { route: "/insights/ask", label: "En büyük yoğunlaşma nerede?" },
-  { route: "/insights/ask", label: "Hangi aksiyon öncelikli?" },
+  { route: "/insights/ask", label: "Gecikmiş açık satış ve alış faturaları ne kadar?" },
+  { route: "/insights/ask", label: "13 haftalık likidite ve kasa projeksiyonu nedir?" },
+  { route: "/insights/ask", label: "TDHP 102 mizan bakiyesi ve yönetim EBITDA tutarı nedir?" },
+  { route: "/insights/ask", label: "Son 30 günlük banka hareketleri ve eşleşmemiş ekstre satırları neler?" },
+  { route: "/insights/ask", label: "Cari bakiye ve çek yoğunlaşması en yüksek firmalar hangileri?" },
+  { route: "/insights/ask", label: "Üretim parça marjları, tarife kartları ve OEE durumu nedir?" },
+  { route: "/insights/ask", label: "Aktif kredi kovenant ve DSCR boşluğu ne durumda?" },
   { route: "/insights/briefing", label: "Brifingi Kanallara Gönder" },
   { route: "/insights/briefing", label: "Brifingi üret ve kaydet" },
   { route: "/insights/reports", label: "Haftalık üret →" },
   { route: "/insights/reports", label: "Aylık üret →" },
+  { route: "/insights/reports", label: "Yönetim Kurulu & Banka Paketi üret →" },
   { route: "/insights/reports", label: "Brifingi Kanallara Gönder" },
   { route: "/insights/reports", label: "Telegram'a ilet" },
   { route: "/insights/tasks", label: "Engelle" },
   { route: "/insights/tasks", label: "İptal" },
   { route: "/insights/tasks", label: "Tamamla" },
-  { route: "/insights/tasks", label: "Oluştur" },
+  { route: "/insights/tasks", label: "Görevi Oluştur" },
   { route: "/production/costs", label: "Kârlılığı Şimdi Yeniden Hesapla" },
-  { route: "/insights/reminders", label: "Vade taraması çalıştır (Ödeme · Fatura · Söz · Çek · Kredi) →" },
-  { route: "/insights/reminders", label: "Bekleyenleri gönder (Telegram / E-posta) →" },
+  { route: "/insights/reminders", label: "Vade Taraması Çalıştır →" },
+  { route: "/insights/reminders", label: "Bekleyenleri Gönder →" },
   { route: "/insights/reminders", label: "Kaydet" },
   { route: "/insights/reminders", label: "Pasife Al" },
   { route: "/production", label: "Parametreyi kaydet" },
@@ -483,10 +486,14 @@ const SERVER_MUTATION_CASES: ServerMutationCase[] = [
   {
     id: "home/create-task-from-insight",
     route: "/",
-    label: "Görev oluştur",
+    label: "Görev Oluştur",
     role: "finance_operator",
     setup: async () => {
       await setupHomeActionPrecondition();
+    },
+    locateButton: async (page) => {
+      const details = await ensureDetailsOpen(page, "Bugün Yapılacaklar");
+      return details.getByRole("button", { name: "Görev Oluştur", exact: true }).first();
     },
     countSql: () =>
       "select count(*)::int from public.action_items where source_type = 'home_action' and status = 'open'",
@@ -585,7 +592,7 @@ const SERVER_MUTATION_CASES: ServerMutationCase[] = [
   {
     id: "insights/ask-suggested-1",
     route: "/insights/ask",
-    label: "Bugün ne ödenecek?",
+    label: "Gecikmiş açık satış ve alış faturaları ne kadar?",
     role: "finance_operator",
     countSql: () => "select count(*)::int from public.ai_response_snapshots",
     auditSql: () => "select count(*)::int from public.audit_logs where entity_table = 'ai_response_snapshots'",
@@ -593,7 +600,7 @@ const SERVER_MUTATION_CASES: ServerMutationCase[] = [
   {
     id: "insights/ask-suggested-2",
     route: "/insights/ask",
-    label: "7 günde ne kadar çıkış var?",
+    label: "13 haftalık likidite ve kasa projeksiyonu nedir?",
     role: "finance_operator",
     countSql: () => "select count(*)::int from public.ai_response_snapshots",
     auditSql: () => "select count(*)::int from public.audit_logs where entity_table = 'ai_response_snapshots'",
@@ -601,7 +608,7 @@ const SERVER_MUTATION_CASES: ServerMutationCase[] = [
   {
     id: "insights/ask-suggested-3",
     route: "/insights/ask",
-    label: "Kasa ne zaman negatife düşüyor?",
+    label: "TDHP 102 mizan bakiyesi ve yönetim EBITDA tutarı nedir?",
     role: "finance_operator",
     countSql: () => "select count(*)::int from public.ai_response_snapshots",
     auditSql: () => "select count(*)::int from public.audit_logs where entity_table = 'ai_response_snapshots'",
@@ -609,7 +616,7 @@ const SERVER_MUTATION_CASES: ServerMutationCase[] = [
   {
     id: "insights/ask-suggested-4",
     route: "/insights/ask",
-    label: "En büyük yoğunlaşma nerede?",
+    label: "Son 30 günlük banka hareketleri ve eşleşmemiş ekstre satırları neler?",
     role: "finance_operator",
     countSql: () => "select count(*)::int from public.ai_response_snapshots",
     auditSql: () => "select count(*)::int from public.audit_logs where entity_table = 'ai_response_snapshots'",
@@ -617,7 +624,23 @@ const SERVER_MUTATION_CASES: ServerMutationCase[] = [
   {
     id: "insights/ask-suggested-5",
     route: "/insights/ask",
-    label: "Hangi aksiyon öncelikli?",
+    label: "Cari bakiye ve çek yoğunlaşması en yüksek firmalar hangileri?",
+    role: "finance_operator",
+    countSql: () => "select count(*)::int from public.ai_response_snapshots",
+    auditSql: () => "select count(*)::int from public.audit_logs where entity_table = 'ai_response_snapshots'",
+  },
+  {
+    id: "insights/ask-suggested-6",
+    route: "/insights/ask",
+    label: "Üretim parça marjları, tarife kartları ve OEE durumu nedir?",
+    role: "finance_operator",
+    countSql: () => "select count(*)::int from public.ai_response_snapshots",
+    auditSql: () => "select count(*)::int from public.audit_logs where entity_table = 'ai_response_snapshots'",
+  },
+  {
+    id: "insights/ask-suggested-7",
+    route: "/insights/ask",
+    label: "Aktif kredi kovenant ve DSCR boşluğu ne durumda?",
     role: "finance_operator",
     countSql: () => "select count(*)::int from public.ai_response_snapshots",
     auditSql: () => "select count(*)::int from public.audit_logs where entity_table = 'ai_response_snapshots'",
@@ -667,6 +690,14 @@ const SERVER_MUTATION_CASES: ServerMutationCase[] = [
     label: "Aylık üret →",
     role: "finance_operator",
     countSql: () => "select count(*)::int from public.reports where report_type = 'monthly'",
+    auditSql: () => "select count(*)::int from public.audit_logs where entity_table = 'reports'",
+  },
+  {
+    id: "insights/reports-board-pack",
+    route: "/insights/reports",
+    label: "Yönetim Kurulu & Banka Paketi üret →",
+    role: "finance_operator",
+    countSql: () => "select count(*)::int from public.reports where report_type = 'strategic'",
     auditSql: () => "select count(*)::int from public.audit_logs where entity_table = 'reports'",
   },
   {
@@ -791,7 +822,7 @@ const SERVER_MUTATION_CASES: ServerMutationCase[] = [
   {
     id: "insights/tasks-create",
     route: "/insights/tasks",
-    label: "Oluştur",
+    label: "Görevi Oluştur",
     role: "finance_operator",
     fill: async (_page, button, { stamp }) => {
       const form = button.locator("xpath=ancestor::form[1]");
@@ -817,7 +848,7 @@ const SERVER_MUTATION_CASES: ServerMutationCase[] = [
   {
     id: "insights/reminders-plan-due-scan",
     route: "/insights/reminders",
-    label: "Vade taraması çalıştır (Ödeme · Fatura · Söz · Çek · Kredi) →",
+    label: "Vade Taraması Çalıştır →",
     role: "finance_operator",
     setup: async () => setupDuePromiseScanFixture(),
     countSql: ({ targetId }) =>
@@ -826,7 +857,7 @@ const SERVER_MUTATION_CASES: ServerMutationCase[] = [
   {
     id: "insights/reminders-dispatch-pending",
     route: "/insights/reminders",
-    label: "Bekleyenleri gönder (Telegram / E-posta) →",
+    label: "Bekleyenleri Gönder →",
     role: "finance_operator",
     setup: async () => setupPendingReminderDeliveryFixture(),
     countSql: ({ targetId }) =>
@@ -1005,7 +1036,7 @@ const SERVER_MUTATION_CASES: ServerMutationCase[] = [
     label: "Makineyi kaydet",
     role: "finance_manager",
     locateButton: async (page) => {
-      const details = await ensureDetailsOpen(page, "+ Makine / yıllık ROI kaydı ekle veya güncelle");
+      const details = await ensureDetailsOpen(page, "+ Klasik makine / yıllık ROI kaydı ekle veya güncelle");
       return details.getByRole("button", { name: "Makineyi kaydet", exact: true }).first();
     },
     fill: async (_page, button, { stamp }) => {
@@ -1029,11 +1060,11 @@ const SERVER_MUTATION_CASES: ServerMutationCase[] = [
   },
 ];
 
-/* ── Statik dilim kapsam kontrolü (34/34 çift birebir kapsanmalı) ────────────────────────── */
+/* ── Statik dilim kapsam kontrolü ────────────────────────────────────────────────────────── */
 {
   const covered = new Set<string>([
     ...SERVER_MUTATION_CASES.map((c) => `${c.route}|${c.label}`),
-    "/scenarios/compare|Karşılaştır",
+    "/scenarios/compare|Matrisi Güncelle",
   ]);
   if (covered.size !== EXPECTED_SLICE.length) {
     throw new Error(`Dilim kapsam hatası: beklenen ${EXPECTED_SLICE.length}, tanımlanan ${covered.size}`);
@@ -1169,7 +1200,7 @@ for (const tc of SERVER_MUTATION_CASES) {
 
 /* ── 2) `/scenarios/compare` -> `Karşılaştır` (GET formu + DB senaryo çifti + DOM/reload) ─ */
 
-test("scenarios/compare: 'Karşılaştır' (/scenarios/compare) iki DB senaryosunu karşılaştırır ve reload sonrası korur", async ({
+test("scenarios/compare: 'Matrisi Güncelle' (/scenarios/compare) iki DB senaryosunu karşılaştırır ve reload sonrası korur", async ({
   browser,
 }) => {
   test.setTimeout(240_000);
@@ -1186,12 +1217,12 @@ test("scenarios/compare: 'Karşılaştır' (/scenarios/compare) iki DB senaryosu
   const { page } = session;
 
   try {
-    const button = page.getByRole("button", { name: "Karşılaştır", exact: true }).first();
-    await expect(button, "/scenarios/compare üzerinde 'Karşılaştır' düğmesi görünür olmalı").toBeVisible({
+    const button = page.getByRole("button", { name: "Matrisi Güncelle", exact: true }).first();
+    await expect(button, "/scenarios/compare üzerinde 'Matrisi Güncelle' düğmesi görünür olmalı").toBeVisible({
       timeout: 20_000,
     });
 
-    const controlSignature = await buttonSignature(button, "/scenarios/compare", "Karşılaştır");
+    const controlSignature = await buttonSignature(button, "/scenarios/compare", "Matrisi Güncelle");
     const form = button.locator("xpath=ancestor::form[1]");
 
     await form.locator('select[name="a"]').selectOption(runAId);
@@ -1215,10 +1246,9 @@ test("scenarios/compare: 'Karşılaştır' (/scenarios/compare) iki DB senaryosu
       "scenarios/compare: uygulama hata ekranı üretti",
     ).toBe(false);
 
-    const comparisonHeading = `${nameA} ↔ ${nameB}`;
-    await expect(page.getByText("Final fark A", { exact: false }).first()).toBeVisible({ timeout: 15_000 });
-    await expect(page.getByText("Final fark B", { exact: false }).first()).toBeVisible({ timeout: 15_000 });
-    await expect(page.getByText(comparisonHeading, { exact: false }).first()).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByText("Net Kasa Farkı (Δ)", { exact: false }).first()).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByText(`A: ${nameA}`, { exact: false }).first()).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByText(`B: ${nameB}`, { exact: false }).first()).toBeVisible({ timeout: 15_000 });
 
     const dbPairAfter = await count(
       "select count(*)::int from public.scenario_runs where id in ($1::uuid, $2::uuid) and archived_at is null",
@@ -1232,7 +1262,7 @@ test("scenarios/compare: 'Karşılaştır' (/scenarios/compare) iki DB senaryosu
     const reloadedUrl = new URL(page.url());
     expect(reloadedUrl.searchParams.get("a")).toBe(runAId);
     expect(reloadedUrl.searchParams.get("b")).toBe(runBId);
-    await expect(page.getByText(comparisonHeading, { exact: false }).first()).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByText(`A: ${nameA}`, { exact: false }).first()).toBeVisible({ timeout: 15_000 });
 
     assertClean(session, "scenarios/compare");
 
@@ -1243,9 +1273,9 @@ test("scenarios/compare: 'Karşılaştır' (/scenarios/compare) iki DB senaryosu
       verdict: "PASS",
       proof: [
         `DB önkoşul: 2 aktif scenario_runs satırı doğrulandı (${runAId}, ${runBId})`,
-        "click: gerçek 'Karşılaştır' düğmesi (/scenarios/compare)",
+        "click: gerçek 'Matrisi Güncelle' düğmesi (/scenarios/compare)",
         `URL durumu: ?a=${runAId}&b=${runBId}`,
-        `DOM karşılaştırma paneli: '${comparisonHeading}' ve 'Final fark A / B' KPI kartları render edildi`,
+        `DOM karşılaştırma matrisi: 'A: ${nameA}', 'B: ${nameB}' ve 'Net Kasa Farkı (Δ)' satırı render edildi`,
         "reload sonrası: URL ve karşılaştırma tablosu korundu",
       ],
     });

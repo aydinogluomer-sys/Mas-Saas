@@ -48,7 +48,7 @@ function record(name: string, pass: boolean, detail = ""): void {
 /** Run the real snapshot; it exits 1 on any alert, so capture output from the throw too. */
 function runTelemetry(overrides: Record<string, string>): { code: number; out: string } {
   const env: NodeJS.ProcessEnv = {
-    ...process.env, MIGRATION_DATABASE_URL: url, MAS_ALERT_LOG: VERIFY_ALERT_LOG, ...overrides,
+    ...process.env, MIGRATION_DATABASE_URL: url, MAS_ALERT_LOG: VERIFY_ALERT_LOG, MAS_ALERT_CHANNELS: "log", ...overrides,
   };
   try {
     const out = execFileSync(process.execPath, ["--import", "tsx", SNAPSHOT], {
@@ -166,7 +166,7 @@ async function main(): Promise<void> {
       ), sh as (
         insert into public.source_sheets
           (workbook_id, sheet_name, sheet_name_normalized, sheet_index, row_count, column_count, detected_type, parse_confidence)
-        select id, 'Sheet1', 'sheet1', 0, 1, 1, 'payment_schedule', 'high' from wb
+        select id, 'Sheet1', 'sheet1', 0, 1, 1, 'payment_day_matrix', 'high' from wb
         returning id, workbook_id
       )
       insert into public.import_rows

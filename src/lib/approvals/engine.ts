@@ -7,7 +7,7 @@
 import type { Pool, PoolClient } from "pg";
 import { z } from "zod";
 import { audit } from "@/lib/audit";
-import { isTurkishIban, isValidIbanChecksum } from "@/lib/counterparties/rules";
+import { isTurkishIban, isValidIbanChecksum, normalizeIban } from "@/lib/counterparties/rules";
 import { DomainError } from "@/lib/domain-error";
 import { decimal, intOrNull, money, moneyOrNull } from "@/lib/money";
 import { parseOrThrow } from "@/lib/validation";
@@ -159,7 +159,7 @@ export async function evaluateSelfApprovalEligibility(
     .catch((err: unknown) => {
       if (isMissingRelationOrCol(err)) {
         return {
-          rows: [{ allow_single_operator_self_approval: true, min_justification_length: 10 }],
+          rows: [{ allow_single_operator_self_approval: false, min_justification_length: 10 }],
           rowCount: 1,
         };
       }
@@ -168,7 +168,7 @@ export async function evaluateSelfApprovalEligibility(
 
   const govRow = govRes.rows[0];
   const allowSingleOperator =
-    govRow == null ? true : Boolean(govRow.allow_single_operator_self_approval);
+    govRow == null ? false : Boolean(govRow.allow_single_operator_self_approval);
   const minJustificationLength = Math.max(
     10,
     intOrNull(govRow?.min_justification_length) ?? 10,
@@ -181,7 +181,7 @@ export async function evaluateSelfApprovalEligibility(
     );
   }
 
-  if (actorRole !== "admin" || activeApproverCount > 1) {
+  if (actorRole !== "admin" || activeApproverCount !== 1) {
     throw new DomainError(
       "FORBIDDEN",
       "Tek aktif onaycı öz-onay istisnası yalnızca aktif 'admin' rolü için geçerlidir (maker-checker).",
@@ -229,7 +229,7 @@ export async function loadApprovalGovernanceSettings(
   const row = r.rows[0];
   if (!row) {
     return {
-      allowSingleOperatorSelfApproval: true,
+      allowSingleOperatorSelfApproval: false,
       minJustificationLength: 10,
       updatedBy: null,
       updatedAt: null,
@@ -763,20 +763,34 @@ async function applySubjectWriteback(
       );
       assertWritebackRow(wb.rowCount, tbl);
 
-      // Refresh iban_verified on included items whose linked counterparty IBAN is active + approved + valid TR IBAN
-      const items = await client.query<{ id: string; beneficiary_iban: string }>(
-        `select pri.id, pri.beneficiary_iban
+      // Refresh iban_verified ONLY on included items whose linked counterparty IBAN is active + approved + verified + exact match + valid TR IBAN
+      const items = await client.query<{
+        id: string;
+        beneficiary_iban: string | null;
+        iban_normalized?: string | null;
+        verified_at?: string | null;
+      }>(
+        `select pri.id, pri.beneficiary_iban, ib.iban_normalized, ib.verified_at::text as verified_at
            from public.payment_run_items pri
            join public.ibans ib on ib.id = pri.iban_id
           where pri.run_id = $1
             and pri.status = 'included'
             and pri.iban_verified = false
             and ib.is_active = true
-            and ib.approval_status = 'approved'`,
+            and ib.approval_status = 'approved'
+            and ib.verified_at is not null`,
         [subjectId],
       );
       const validItemIds = items.rows
-        .filter((r) => isTurkishIban(r.beneficiary_iban) && isValidIbanChecksum(r.beneficiary_iban))
+        .filter((r) => {
+          const beneficiary = typeof r.beneficiary_iban === "string" ? r.beneficiary_iban : "";
+          if (!beneficiary) return false;
+          if ("verified_at" in r && r.verified_at == null) return false;
+          if (typeof r.iban_normalized === "string" && r.iban_normalized.trim() !== "") {
+            if (normalizeIban(beneficiary) !== normalizeIban(r.iban_normalized)) return false;
+          }
+          return isTurkishIban(beneficiary) && isValidIbanChecksum(beneficiary);
+        })
         .map((r) => r.id);
       if (validItemIds.length > 0) {
         await client.query(
@@ -838,8 +852,11 @@ async function applySubjectWriteback(
         await client.query(
           `update public.payment_run_items
               set iban_verified = true
-            where iban_id = $1 and status = 'included' and iban_verified = false`,
-          [subjectId],
+            where iban_id = $1
+              and status = 'included'
+              and iban_verified = false
+              and upper(regexp_replace(beneficiary_iban, '\\s', '', 'g')) = $2`,
+          [subjectId, normalizeIban(row.iban_normalized)],
         );
       }
       return "approved";
@@ -1043,8 +1060,8 @@ async function applyApprovedOptimizationRecommendationsInTx(
              coalesce(p.provider_party_id, p.counterparty_id)::text as party_id,
              coalesce(pa.name, p.name, $2) as party_name,
              ib.id::text as iban_id,
-             coalesce(ib.iban_normalized, p.iban) as iban_norm,
-             (ib.id is not null and ib.is_active = true and ib.approval_status = 'approved') as iban_approved,
+             ib.iban_normalized as iban_norm,
+             (ib.id is not null and ib.is_active = true and ib.approval_status = 'approved' and ib.verified_at is not null) as iban_approved,
              greatest(0, case when pi.status = 'partial' then pi.amount - coalesce(pi.paid_amount, 0) else pi.amount end)::numeric(14,2)::text as rem_amount,
              exists (
                select 1 from public.payment_run_items pri
@@ -1056,11 +1073,11 @@ async function applyApprovedOptimizationRecommendationsInTx(
            left join public.payments p on p.id = pi.payment_id
            left join public.parties pa on pa.id = coalesce(p.provider_party_id, p.counterparty_id)
            left join lateral (
-             select i.id, i.iban_normalized, i.is_active, i.approval_status
+             select i.id, i.iban_normalized, i.is_active, i.approval_status, i.verified_at
                from public.ibans i
               where i.party_id = coalesce(p.provider_party_id, p.counterparty_id)
                 and i.is_active = true
-              order by (i.approval_status = 'approved') desc, i.is_primary desc, i.created_at desc
+              order by (i.approval_status = 'approved' and i.verified_at is not null) desc, i.is_primary desc, i.created_at desc
               limit 1
            ) ib on true
            where pi.id = $1::uuid`,
@@ -1127,7 +1144,7 @@ async function applyApprovedOptimizationRecommendationsInTx(
              coalesce(pa.name, $2) as party_name,
              ib.id::text as iban_id,
              ib.iban_normalized as iban_norm,
-             (ib.id is not null and ib.is_active = true and ib.approval_status = 'approved') as iban_approved,
+             (ib.id is not null and ib.is_active = true and ib.approval_status = 'approved' and ib.verified_at is not null) as iban_approved,
              greatest(0, inv.gross_amount - coalesce(inv.allocated_amount, 0))::numeric(14,2)::text as open_amount,
              exists (
                select 1 from public.payment_run_items pri
@@ -1138,11 +1155,11 @@ async function applyApprovedOptimizationRecommendationsInTx(
            from public.invoices inv
            left join public.parties pa on pa.id = inv.party_id
            left join lateral (
-             select i.id, i.iban_normalized, i.is_active, i.approval_status
+             select i.id, i.iban_normalized, i.is_active, i.approval_status, i.verified_at
                from public.ibans i
               where i.party_id = inv.party_id
                 and i.is_active = true
-              order by (i.approval_status = 'approved') desc, i.is_primary desc, i.created_at desc
+              order by (i.approval_status = 'approved' and i.verified_at is not null) desc, i.is_primary desc, i.created_at desc
               limit 1
            ) ib on true
            where inv.id = $1::uuid`,
@@ -1350,7 +1367,17 @@ export async function decideApproval(pool: Pool, raw: unknown, actorId: string):
 
     let selfApprovedOverride = false;
     let selfApprovalJustification: string | null = null;
-    if (a.requested_by && a.requested_by === actorId) {
+    let isSelfMaker = Boolean(a.requested_by && a.requested_by === actorId);
+    if (!isSelfMaker && String(a.subject_table) === "payment_runs" && input.decision === "approved") {
+      const prMakerRes = await client.query<{ created_by: string | null }>(
+        `select created_by::text as created_by from public.payment_runs where id = $1`,
+        [a.subject_id],
+      );
+      if (prMakerRes.rows[0]?.created_by === actorId) {
+        isSelfMaker = true;
+      }
+    }
+    if (isSelfMaker) {
       if (String(a.subject_table) === "ibans") {
         const becCountRes = await client.query<{ cnt: number | string }>(
           `select count(*)::int as cnt

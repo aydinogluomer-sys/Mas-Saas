@@ -33,6 +33,7 @@ import {
   parseAlertChannels,
   type AlertChannel,
 } from "../../src/lib/ops/alert-delivery";
+import { isUnreadableTelemetryValue } from "../../src/lib/ops/telemetry-alerts";
 import {
   emailTransport,
   sendTelegramChatMessage,
@@ -115,6 +116,26 @@ interface SnapshotJson {
   verdict: string;
   signals: Array<{ name: string; value: string; alert: boolean; severity: string | null }>;
   delivery: { alertLogPath: string; channels: string[]; allDelivered: boolean };
+}
+
+function parseSnapshotJsonStrict(raw: string): SnapshotJson | null {
+  try {
+    const parsed = JSON.parse(raw) as Partial<SnapshotJson> | null;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+    if (typeof parsed.runId !== "string" || parsed.runId.trim() === "") return null;
+    if (typeof parsed.alertCount !== "number" || !Number.isFinite(parsed.alertCount)) return null;
+    if (!Array.isArray(parsed.signals)) return null;
+    if (
+      !parsed.delivery ||
+      typeof parsed.delivery !== "object" ||
+      typeof parsed.delivery.allDelivered !== "boolean"
+    ) {
+      return null;
+    }
+    return parsed as SnapshotJson;
+  } catch {
+    return null;
+  }
 }
 
 function buildWatchAlertTransports(
@@ -249,19 +270,24 @@ export async function runTelemetryWatch(opts: TelemetryWatchOptions = {}): Promi
   process.stdout.write(stdout);
 
   let snap: SnapshotJson | null = null;
-  try {
-    if (existsSync(activeJsonOut)) snap = JSON.parse(readFileSync(activeJsonOut, "utf8")) as SnapshotJson;
-  } catch { snap = null; }
+  if (existsSync(activeJsonOut)) {
+    try {
+      snap = parseSnapshotJsonStrict(readFileSync(activeJsonOut, "utf8"));
+    } catch {
+      snap = null;
+    }
+  }
 
   const snapshotBlind =
     snap === null || (snapshotCode !== 0 && snapshotCode !== 1 && snapshotCode !== 2);
 
-  // Anlık görüntü hiç koşamadıysa "sorun yok" DEMEZ: hiçbir şey bilmiyoruz, UNKNOWN bildir + exit 3.
+  // Anlık görüntü hiç koşamadıysa veya JSON bozuksa "sorun yok" DEMEZ: UNKNOWN bildir + exit 3.
   if (snapshotBlind || snap === null) {
-    const blindReport = await notifySnapshotUnavailable(
-      `SNAPSHOT_UNAVAILABLE (exit ${snapshotCode})`,
-      snapshotCode,
-    );
+    const blindReason =
+      snap === null && (snapshotCode === 0 || snapshotCode === 1)
+        ? `SNAPSHOT_PARSE_ERROR (exit ${snapshotCode})`
+        : `SNAPSHOT_UNAVAILABLE (exit ${snapshotCode})`;
+    const blindReport = await notifySnapshotUnavailable(blindReason, snapshotCode || 3);
     const record = {
       startedAt: startedAt.toISOString(), finishedAt: new Date().toISOString(),
       source_db: dbName, runId: blindReport.runId, correlationId: blindReport.runId,
@@ -280,13 +306,19 @@ export async function runTelemetryWatch(opts: TelemetryWatchOptions = {}): Promi
       return { check: c.check, signal: null, verdict: snap.verdict, value: `${snap.alertCount} uyarı` };
     }
     const s = snap.signals.find((x) => x.name === c.signal);
+    const unreadable = s === undefined || isUnreadableTelemetryValue(s.value);
     return {
       check: c.check,
       signal: c.signal,
-      verdict: s === undefined ? "MISSING" : s.alert ? "ALERT" : "OK",
+      verdict: unreadable ? "UNKNOWN" : s.alert ? "ALERT" : "OK",
       value: s?.value ?? "(sinyal yok)",
     };
   });
+
+  const hasUnreadableScheduledSignal = checks.some((c) => c.verdict === "UNKNOWN");
+  if (hasUnreadableScheduledSignal && snap.alertCount === 0) {
+    await notifySnapshotUnavailable("SCHEDULED_SIGNAL_UNREADABLE", 1);
+  }
 
   const record = {
     startedAt: startedAt.toISOString(),
@@ -315,8 +347,8 @@ export async function runTelemetryWatch(opts: TelemetryWatchOptions = {}): Promi
     console.error("TELEMETRY WATCH: ALERT DELIVERY FAILED — alarm borusu kırık, uyarılar operatöre ULAŞMIYOR.");
     return 2;
   }
-  if (snap.alertCount > 0) {
-    console.warn(`TELEMETRY WATCH: ${snap.alertCount} UYARI teslim edildi.`);
+  if (snap.alertCount > 0 || hasUnreadableScheduledSignal) {
+    console.warn(`TELEMETRY WATCH: ${Math.max(snap.alertCount, 1)} UYARI/UNKNOWN teslim edildi.`);
     return 1;
   }
   console.log("TELEMETRY WATCH: ALL CLEAR");

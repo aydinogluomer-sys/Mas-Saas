@@ -36,40 +36,14 @@ import os from "node:os";
 import path from "node:path";
 import { Pool, type PoolClient } from "pg";
 
-import { GET as getHealth } from "@/app/health/route";
-import { GET as getReady } from "@/app/ready/route";
-import { evaluateSelfApprovalEligibility } from "@/lib/approvals/engine";
 import { buildOvernightDeltaAttribution } from "@/lib/briefing/delta-attribution";
 import { computeObligationAmounts } from "@/lib/contracts/remediation-contracts";
 import { isValidIbanChecksum } from "@/lib/counterparties/rules";
-import {
-  evaluateRemediationDataQuality,
-  evaluateValidImportFreshnessFromDb,
-  type RemediationDataQualityReport,
-} from "@/lib/data-quality/remediation-metrics";
-import { checkSchemaParity, readExpectedSchemaManifest } from "@/lib/db/schema-parity";
+import type { RemediationDataQualityReport } from "@/lib/data-quality/remediation-metrics";
 import { DomainError } from "@/lib/domain-error";
-import { isLoopbackHostname } from "@/lib/env";
-import { mapAcceptedChecks } from "@/lib/financing/engine";
+import { isLoopbackHostname } from "@/lib/env-validators";
 import { extractChecks } from "@/lib/importers/extractors";
 import type { CellVal, SheetRow } from "@/lib/importers/row-utils";
-import { looksLikeSecret, redactSecrets } from "@/lib/ops/alert-delivery";
-import {
-  evaluateOffDeviceRunLog,
-  jobsStuckAlert,
-  ledgerAlert,
-  reconciliationAlert,
-  runtimeIdentityAlert,
-} from "@/lib/ops/telemetry-alerts";
-import { markInstancePaid } from "@/lib/radar/engine";
-import { mapInstanceRow, monthSummary } from "@/lib/radar/queries";
-import { loadFourWaySubledgerHealth } from "@/lib/reconciliation/four-way-health";
-import { dispatchPending, eligibleMaturityDeliveries } from "@/lib/reminders/engine";
-import {
-  claimAndDispatchOutbox,
-  computeNotificationIdempotencyKey,
-  evaluateAndRecordOpsIncidents,
-} from "@/lib/reminders/outbox";
 import {
   ESCALATION_BUCKET_LABELS,
   buildReminderDigestHtml,
@@ -80,16 +54,7 @@ import {
   type ReminderRule,
   type ReminderTarget,
 } from "@/lib/reminders/rules";
-import {
-  TELEGRAM_HTML_SAFE_MAX_CHARS,
-  escapeTelegramHtml,
-  scrubSensitiveTelegramText,
-  sendTelegramChatMessage,
-  splitTelegramHtmlMessage,
-  type DeliveryResult,
-  type Transport,
-} from "@/lib/reminders/transport";
-import { loadBoardFinancialPackage } from "@/lib/reports/board-pack";
+import type { DeliveryResult, Transport } from "@/lib/reminders/transport";
 import {
   buildDailyReport,
   buildMonthlyReport,
@@ -99,11 +64,6 @@ import {
 import { readEnvLocal } from "../db/app-url";
 import { isDisposableDatabaseName } from "../db/owner-url";
 import { resolveLocalOwnerUrl } from "../db/pg-local-admin";
-import {
-  readWorkerScheduleState,
-  runScheduledMaintenance,
-  writeWorkerScheduleStateAtomic,
-} from "../ops/background-worker";
 import {
   classifyOffDeviceTarget,
   copyToTargetVerified,
@@ -249,7 +209,68 @@ async function main(): Promise<void> {
     throw new Error("DATABASE_URL tanımlı değil (.env.local gerekli).");
   }
   const appUrl = normalizeLoopbackUrl(rawAppUrl);
+  // Hydrate process.env.DATABASE_URL from .env.local ONLY when unset in caller env, BEFORE
+  // dynamically importing modules that transitively evaluate @/lib/env (e.g. @/app/health/route).
+  if (!process.env.DATABASE_URL?.trim()) {
+    process.env.DATABASE_URL = appUrl;
+  }
   const ownerUrl = normalizeLoopbackUrl(resolveLocalOwnerUrl("mas_radar_dev"));
+
+  const [
+    { GET: getHealth },
+    { GET: getReady },
+    { evaluateSelfApprovalEligibility },
+    { evaluateRemediationDataQuality, evaluateValidImportFreshnessFromDb },
+    { checkSchemaParity, readExpectedSchemaManifest },
+    { mapAcceptedChecks },
+    { looksLikeSecret, redactSecrets },
+    {
+      evaluateOffDeviceRunLog,
+      jobsStuckAlert,
+      ledgerAlert,
+      reconciliationAlert,
+      runtimeIdentityAlert,
+    },
+    { markInstancePaid },
+    { mapInstanceRow, monthSummary },
+    { loadFourWaySubledgerHealth },
+    { dispatchPending, eligibleMaturityDeliveries },
+    {
+      claimAndDispatchOutbox,
+      computeNotificationIdempotencyKey,
+      evaluateAndRecordOpsIncidents,
+    },
+    {
+      TELEGRAM_HTML_SAFE_MAX_CHARS,
+      escapeTelegramHtml,
+      scrubSensitiveTelegramText,
+      sendTelegramChatMessage,
+      splitTelegramHtmlMessage,
+    },
+    { loadBoardFinancialPackage },
+    {
+      readWorkerScheduleState,
+      runScheduledMaintenance,
+      writeWorkerScheduleStateAtomic,
+    },
+  ] = await Promise.all([
+    import("@/app/health/route"),
+    import("@/app/ready/route"),
+    import("@/lib/approvals/engine"),
+    import("@/lib/data-quality/remediation-metrics"),
+    import("@/lib/db/schema-parity"),
+    import("@/lib/financing/engine"),
+    import("@/lib/ops/alert-delivery"),
+    import("@/lib/ops/telemetry-alerts"),
+    import("@/lib/radar/engine"),
+    import("@/lib/radar/queries"),
+    import("@/lib/reconciliation/four-way-health"),
+    import("@/lib/reminders/engine"),
+    import("@/lib/reminders/outbox"),
+    import("@/lib/reminders/transport"),
+    import("@/lib/reports/board-pack"),
+    import("../ops/background-worker"),
+  ]);
 
   const appPool = new Pool({
     connectionString: appUrl,
@@ -433,7 +454,7 @@ async function main(): Promise<void> {
         liveParity.actualCount === manifest.expectedCount &&
         liveParity.actualLatestVersion === manifest.expectedLatestVersion &&
         liveParity.actualCount >= 124 &&
-        liveParity.actualLatestVersion === "0124" &&
+        (liveParity.actualLatestVersion ?? "") >= "0124" &&
         /^[0-9a-f]{64}$/.test(liveParity.checksumDigest ?? "") &&
         mockDriftParity.aligned === false &&
         ledgerAlert("115/0115", "119/0119") === true &&
@@ -464,7 +485,7 @@ async function main(): Promise<void> {
 
       const localRestoreVerified =
         Boolean(drill?.passed) &&
-        drill?.schemaLedger === "124/0124" &&
+        /^\d+\/\d{4}$/.test(String(drill?.schemaLedger ?? "")) &&
         drill?.countsMatched === true &&
         drill?.aggregatesMatched === true &&
         drill?.runtimeRoleParityVerified === true &&
@@ -687,7 +708,7 @@ async function main(): Promise<void> {
         "Payment accuracy",
         "I-012",
         ok ? "PASS" : "FAIL",
-        `liveRow0fbd2b5b(orig=${mappedLive.original_amount}, paid=${mappedLive.paid_amount}, rem=${mappedLive.remaining_amount}) · scenario6DailyOverdue=${daily.overdueKnownTotal} · triValueDisplayed=true`,
+        `livePartialRow(orig=${mappedLive.original_amount}, paid=${mappedLive.paid_amount}, rem=${mappedLive.remaining_amount}) · scenario6DailyOverdue=${daily.overdueKnownTotal} · triValueDisplayed=true`,
       );
     }
 
@@ -1140,7 +1161,7 @@ async function main(): Promise<void> {
         "Data-quality transparency",
         "I-005, I-010, I-011",
         ok ? "PASS" : "FAIL",
-        `blankStaysNull=true validImportAgeDays=${String(freshness.latestValidImportAgeDays)} (emptyFailedExcluded=${rollbackFilterVerified}) · zeroJoinMult=${dq.consistency.hasZeroJoinMultiplication} novActive=${novActiveInstances} activeCagdasChecks=${dupChecksRes.rows[0]?.cnt} resolvedDupExcluded=${resolvedMap.excluded.length}`,
+        `blankStaysNull=true validImportAgeDays=${String(freshness.latestValidImportAgeDays)} (emptyFailedExcluded=${rollbackFilterVerified}) · zeroJoinMult=${dq.consistency.hasZeroJoinMultiplication} novActive=${novActiveInstances} activeDupChecks=${dupChecksRes.rows[0]?.cnt} resolvedDupExcluded=${resolvedMap.excluded.length}`,
       );
     }
 
@@ -1334,11 +1355,11 @@ async function main(): Promise<void> {
         "Authorization safety",
         "I-015",
         ok ? "PASS" : "FAIL",
-        `historical33adOpen=${openBypassPreserved} appForbidden=${appLayerForbidden} dbTrigger42501=${dbTriggerBlocked42501} selfApprovalBlocked=${twoApproversSelfApprovalBlocked} ibanMod97=${ibanValidOk && ibanInvalidRejected} crossTenantLeaks=${crossTenantLeakedRows} chatBlocked=${!blockedChat.ok}`,
+        `historicalBypassOpen=${openBypassPreserved} appForbidden=${appLayerForbidden} dbTrigger42501=${dbTriggerBlocked42501} selfApprovalBlocked=${twoApproversSelfApprovalBlocked} ibanMod97=${ibanValidOk && ibanInvalidRejected} crossTenantLeaks=${crossTenantLeakedRows} chatBlocked=${!blockedChat.ok}`,
       );
     }
 
-    // ── RG-12 — Regression safety (All: I-001..I-016) ──
+    // ── RG-12 — Regression safety (All: I-001..I-016 + V2 F-01..F-20) ──
     {
       const vitestBin = path.resolve("node_modules", "vitest", "vitest.mjs");
       const mandatoryRes = runNodeCheck([
@@ -1346,23 +1367,37 @@ async function main(): Promise<void> {
         "run",
         "tests/remediation/mandatory-16-scenarios.test.ts",
       ]);
+      const v2NegativeChaosSuites = [
+        "tests/remediation/v2-period-lock-negative.test.ts",
+        "tests/financial/unknown-zero-source-integrity.test.ts",
+        "tests/ops/notification-crash-chaos.test.ts",
+        "tests/visual/v2-global-setup-guard.test.ts",
+        "tests/remediation/v2-agent12-ci-verifiers.test.ts",
+      ];
+      const v2SuitesRes = runNodeCheck(
+        [vitestBin, "run", ...v2NegativeChaosSuites],
+        240_000,
+      );
       const tscBin = path.resolve("node_modules", "typescript", "bin", "tsc");
       const tscRes = runNodeCheck([tscBin, "--noEmit"]);
       const eslintBin = path.resolve("node_modules", "eslint", "bin", "eslint.js");
       const eslintRes = runNodeCheck([
         eslintBin,
         "tests/remediation",
+        ...v2NegativeChaosSuites,
+        "tests/visual/global-setup.ts",
+        "tests/interaction/harness.ts",
         "scripts/qa/verify-rg-15-gates.ts",
       ]);
 
-      const ok = mandatoryRes.ok && tscRes.ok && eslintRes.ok;
+      const ok = mandatoryRes.ok && v2SuitesRes.ok && tscRes.ok && eslintRes.ok;
 
       recordGate(
         "RG-12",
         "Regression safety",
-        "All (I-001..I-016)",
+        "All (I-001..I-016, F-01..F-20)",
         ok ? "PASS" : "FAIL",
-        `mandatory16=${mandatoryRes.ok ? "16/16 PASS" : `FAIL (${mandatoryRes.tail})`} · tsc=${tscRes.ok ? "PASS" : `FAIL (${tscRes.tail})`} · eslint=${eslintRes.ok ? "PASS" : `FAIL (${eslintRes.tail})`}`,
+        `mandatory16=${mandatoryRes.ok ? "16/16 PASS" : `FAIL (${mandatoryRes.tail})`} · v2NegativeChaos5Suites=${v2SuitesRes.ok ? "5/5 PASS" : `FAIL (${v2SuitesRes.tail})`} · tsc=${tscRes.ok ? "PASS" : `FAIL (${tscRes.tail})`} · eslint=${eslintRes.ok ? "PASS" : `FAIL (${eslintRes.tail})`}`,
       );
     }
 

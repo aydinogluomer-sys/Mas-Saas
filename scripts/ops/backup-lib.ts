@@ -25,7 +25,7 @@
 // IsBoot, IsSystem) ölçülür ve karar `offdevice-topology.ts`'deki saf yükleme bırakılır.
 // Yön aynı: gevşetme değil, doğru soruyu sorma. Farklı sürücü harfi hâlâ hiçbir şey kanıtlamaz.
 import { execFileSync } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import {
   closeSync, copyFileSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync,
   readdirSync, renameSync, statSync, unlinkSync, writeSync,
@@ -83,10 +83,120 @@ export function documentCompanionPaths(dumpPath: string): string[] {
   return DOC_COMPANION_SUFFIXES.map((suffix) => `${stem}${suffix}`);
 }
 
+let atomicSuffixSeq = 0;
+
+function uniqueAtomicSuffix(): string {
+  atomicSuffixSeq += 1;
+  return `${process.pid}-${Date.now()}-${atomicSuffixSeq}-${randomBytes(4).toString("hex")}`;
+}
+
+export interface ReplaceFileRollbackOptions {
+  expectedBytes?: number;
+  expectedSha256?: string;
+  renameImpl?: (oldPath: string, newPath: string) => void;
+  validateBeforeCommit?: (destPath: string) => void;
+}
+
+/**
+ * Geri alınabilir (rollback-safe) atomik dosya ikamesi (`F-10` crash-window zırhı):
+ * - ASLA `rename` öncesinde `unlinkSync(destPath)` çağırmaz.
+ * - `destPath` zaten mevcutsa önce `${destPath}.prev-*` yoluna taşır, ardından doğrulanmış
+ *   `tempPath` dosyasını `destPath` olarak yayınlar.
+ * - `rename` veya yayın-sonrası disk/şema doğrulaması başarısız olursa mevcut `.prev-*` kopyasını
+ *   atomik olarak `destPath` yoluna geri yükler; böylece önceki doğrulanmış yedek/makbuz %100 korunur.
+ * - `.prev-*` dosyası YALNIZ yayın ve disk doğrulaması tamamlandıktan sonra silinir.
+ */
+export function replaceFileRollbackSafe(
+  tempPath: string,
+  destPath: string,
+  opts: ReplaceFileRollbackOptions = {},
+): DurabilityMetadata {
+  const renameFn = opts.renameImpl ?? renameSync;
+  const dir = path.dirname(destPath);
+  const hadPrev = existsSync(destPath);
+  const prevPath = hadPrev ? `${destPath}.prev-${uniqueAtomicSuffix()}` : null;
+  let prevMoved = false;
+
+  try {
+    if (hadPrev && prevPath) {
+      renameFn(destPath, prevPath);
+      prevMoved = true;
+    }
+    renameFn(tempPath, destPath);
+
+    if (opts.expectedBytes !== undefined) {
+      const actualBytes = statSync(destPath).size;
+      if (actualBytes !== opts.expectedBytes) {
+        throw new Error(
+          `Atomik yayın sonrası bayt uyuşmazlığı (${destPath}): beklenen=${opts.expectedBytes}, diskte=${actualBytes}`,
+        );
+      }
+    }
+    if (opts.expectedSha256 !== undefined) {
+      const actualSha = sha256OfFile(destPath);
+      if (actualSha !== opts.expectedSha256) {
+        throw new Error(
+          `Atomik yayın sonrası SHA-256 uyuşmazlığı (${destPath}): beklenen=${opts.expectedSha256.slice(0, 12)}…, diskte=${actualSha.slice(0, 12)}…`,
+        );
+      }
+    }
+    if (opts.validateBeforeCommit) {
+      opts.validateBeforeCommit(destPath);
+    }
+  } catch (err) {
+    try {
+      if (existsSync(tempPath)) unlinkSync(tempPath);
+    } catch {
+      /* geçici dosya zaten yok */
+    }
+    if (hadPrev && prevMoved && prevPath && existsSync(prevPath)) {
+      const abortedPath = `${destPath}.aborted-${uniqueAtomicSuffix()}`;
+      let movedAborted = false;
+      try {
+        if (existsSync(destPath)) {
+          renameSync(destPath, abortedPath);
+          movedAborted = true;
+        }
+        renameSync(prevPath, destPath);
+      } finally {
+        if (movedAborted) {
+          try {
+            if (existsSync(abortedPath)) unlinkSync(abortedPath);
+          } catch {
+            /* temizlik tamam */
+          }
+        }
+      }
+    } else if (!hadPrev) {
+      try {
+        if (existsSync(destPath)) unlinkSync(destPath);
+      } catch {
+        /* zaten yok */
+      }
+    }
+    throw err;
+  }
+
+  if (prevPath && existsSync(prevPath)) {
+    try {
+      unlinkSync(prevPath);
+    } catch {
+      /* .prev dosyası zaten kaldırıldı */
+    }
+  }
+  return attemptDirectoryFsync(dir);
+}
+
 function collectVaultFiles(rootDir: string, currentDir: string, out: string[]): void {
   const entries = readdirSync(currentDir, { withFileTypes: true });
   for (const entry of entries) {
-    if (entry.name.includes(".tmp-")) continue;
+    if (
+      entry.name.includes(".tmp-") ||
+      entry.name.includes(".prev-") ||
+      entry.name.includes(".aborted-")
+    ) {
+      continue;
+    }
     const full = path.join(currentDir, entry.name);
     if (entry.isDirectory()) {
       collectVaultFiles(rootDir, full, out);
@@ -162,23 +272,49 @@ function encodeTarEntry(posixRelPath: string, content: Buffer): Buffer[] {
   return chunks;
 }
 
-function writeBufferAtomic(destPath: string, data: Buffer): void {
+export function writeBufferAtomic(
+  destPath: string,
+  data: Buffer,
+  opts: { renameImpl?: (oldPath: string, newPath: string) => void } = {},
+): DurabilityMetadata {
   const dir = path.dirname(destPath);
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-  const tempPath = `${destPath}.tmp-${process.pid}-${Date.now()}`;
-  const fd = openSync(tempPath, "wx");
+  const tempPath = `${destPath}.tmp-${uniqueAtomicSuffix()}`;
+  const expectedSha = createHash("sha256").update(data).digest("hex");
+  let fd: number | null = null;
   try {
+    fd = openSync(tempPath, "wx");
     let written = 0;
     while (written < data.length) {
       written += writeSync(fd, data, written, data.length - written);
     }
     fsyncSync(fd);
-  } finally {
     closeSync(fd);
+    fd = null;
+
+    const tempBytes = statSync(tempPath).size;
+    const tempSha = sha256OfFile(tempPath);
+    if (tempBytes !== data.length || tempSha !== expectedSha) {
+      throw new Error(
+        `Geçici dosya doğrulaması başarısız (${tempPath}): beklenen=${data.length}B/${expectedSha.slice(0, 12)}…, yazılan=${tempBytes}B/${tempSha.slice(0, 12)}…`,
+      );
+    }
+  } catch (err) {
+    if (fd !== null) {
+      try { closeSync(fd); } catch { /* ignore */ }
+    }
+    try {
+      if (existsSync(tempPath)) unlinkSync(tempPath);
+    } catch {
+      /* geçici dosya zaten yok */
+    }
+    throw err;
   }
-  if (existsSync(destPath)) unlinkSync(destPath);
-  renameSync(tempPath, destPath);
-  attemptDirectoryFsync(dir);
+  return replaceFileRollbackSafe(tempPath, destPath, {
+    expectedBytes: data.length,
+    expectedSha256: expectedSha,
+    renameImpl: opts.renameImpl,
+  });
 }
 
 /**
@@ -686,20 +822,15 @@ export function offDeviceCleanupBlockers(raw: unknown): string[] {
   return out;
 }
 
-function copyOneVerified(
-  sourcePath: string,
-  destDir: string,
-  copyFileImpl: (src: string, dest: string) => void = copyFileSync,
-): {
+interface StagedVerifiedCopy {
+  sourcePath: string;
   destPath: string;
-  destBytes: number;
-  destSha256: string;
-  sourceSha256: string;
+  tempPath: string;
   sourceBytes: number;
-  durability: DurabilityMetadata;
-} {
-  const sourceBytes = statSync(sourcePath).size;
-  const sourceSha256 = sha256OfFile(sourcePath);
+  sourceSha256: string;
+}
+
+function ensureTargetDirReady(destDir: string): void {
   if (process.platform !== "win32" && /^[A-Za-z]:([\\/]|$)/.test(destDir.trim())) {
     throw Object.assign(
       new Error(`ENOENT: no such file or directory, mkdir '${destDir}'`),
@@ -707,21 +838,68 @@ function copyOneVerified(
     );
   }
   if (!existsSync(destDir)) mkdirSync(destDir, { recursive: true });
+}
+
+function assertImmutableOverwriteAllowed(
+  destPath: string,
+  sourceBytes: number,
+  sourceSha256: string,
+): void {
+  if (!existsSync(destPath)) return;
+  const isImmutable =
+    classifyRetention(path.basename(destPath)).retentionClass === "immutable" ||
+    existsSync(`${destPath}.immutable`);
+  if (!isImmutable) return;
+
+  const existingBytes = statSync(destPath).size;
+  const existingSha256 = sha256OfFile(destPath);
+  if (existingBytes !== sourceBytes || existingSha256 !== sourceSha256) {
+    throw new Error(
+      `GÜVENLİK DURDURMASI: IMMUTABLE yedek farklı içerikle üzerine yazılamaz ` +
+        `(${destPath}; mevcut sha256=${existingSha256.slice(0, 12)}…, yeni sha256=${sourceSha256.slice(0, 12)}…).`,
+    );
+  }
+}
+
+/**
+ * Kaynağı `${destPath}.tmp-*` yoluna evreler, `fsyncSync` uygular ve HEDEF DOSYAYA HİÇ
+ * DOKUNMADAN geçici dosya üzerinde bayt + SHA-256 doğrulaması yapar (`F-10`).
+ */
+function stageOneVerifiedTemp(
+  sourcePath: string,
+  destDir: string,
+  copyFileImpl: (src: string, dest: string) => void = copyFileSync,
+  labelForError = "Hedefteki kopya",
+): StagedVerifiedCopy {
+  const sourceBytes = statSync(sourcePath).size;
+  if (sourceBytes <= 0) {
+    throw new Error(`Kaynak dosya boş (0 bayt): ${sourcePath}`);
+  }
+  const sourceSha256 = sha256OfFile(sourcePath);
+  ensureTargetDirReady(destDir);
   const destPath = path.join(destDir, path.basename(sourcePath));
   if (normalizeBackupPath(destPath).canonical === normalizeBackupPath(sourcePath).canonical) {
     throw new Error(
       `GÜVENLİK DURDURMASI: Hedef dosya yolu kaynak dump ile aynı (${destPath} === ${sourcePath}).`,
     );
   }
-  const tempPath = `${destPath}.tmp-${process.pid}-${Date.now()}`;
-  // Temp + fsync + atomik rename: yarım kopyalanmış bir dosya asla nihai adıyla görünmez.
-  // Kopyalama sırasında hata olursa `*.tmp-*` artığı da temizlenir.
+  const tempPath = `${destPath}.tmp-${uniqueAtomicSuffix()}`;
   try {
     copyFileImpl(sourcePath, tempPath);
     const fd = openSync(tempPath, "r+");
-    try { fsyncSync(fd); } finally { closeSync(fd); }
-    if (existsSync(destPath)) unlinkSync(destPath);
-    renameSync(tempPath, destPath);
+    try {
+      fsyncSync(fd);
+    } finally {
+      closeSync(fd);
+    }
+    const tempBytes = statSync(tempPath).size;
+    const tempSha256 = sha256OfFile(tempPath);
+    if (tempBytes !== sourceBytes || tempSha256 !== sourceSha256) {
+      throw new Error(
+        `${labelForError} kaynakla eşleşmedi (mevcut hedef korundu, geçici kopya silindi): ` +
+          `bayt ${sourceBytes} → ${tempBytes}, sha256 ${sourceSha256.slice(0, 12)}… → ${tempSha256.slice(0, 12)}… (${sourcePath})`,
+      );
+    }
   } catch (err) {
     try {
       if (existsSync(tempPath)) unlinkSync(tempPath);
@@ -730,109 +908,226 @@ function copyOneVerified(
     }
     throw err;
   }
-  const durability = attemptDirectoryFsync(destDir);
-
-  const destBytes = statSync(destPath).size;
-  const destSha256 = sha256OfFile(destPath);
-  return { destPath, destBytes, destSha256, sourceSha256, sourceBytes, durability };
+  return { sourcePath, destPath, tempPath, sourceBytes, sourceSha256 };
 }
 
 /**
- * Dump'ı hedefe kopyalar ve HEDEFTEKİ dosyayı yeniden okuyarak sha256 + boyut doğrular.
+ * Doğrulanmış ana dump + yan dosya grubunu geri alınabilir (rollback-safe) atomik işlemle yayınlar:
+ * - Mevcut hedef dosyaların HİÇBİRİ `rename` öncesinde silinmez (`unlink` yasak); önce `.prev-*` yoluna taşınır.
+ * - Herhangi bir `renameImpl` adımı veya yayın-sonrası disk doğrulaması başarısız olursa tüm yeni
+ *   dosyalar geri çekilir ve tüm `.prev-*` dosyaları orijinal yollarına geri yüklenir.
+ * - `.prev-*` dosyaları YALNIZ ana dump ve TÜM yan dosyalar yayınlanıp diskte yeniden doğrulandıktan sonra silinir.
+ */
+function replaceBatchRollbackSafe(
+  stagedItems: readonly StagedVerifiedCopy[],
+  destDir: string,
+  renameImpl: (oldPath: string, newPath: string) => void = renameSync,
+  validateMainDest?: (mainDestPath: string) => void,
+): DurabilityMetadata {
+  const records = stagedItems.map((item) => {
+    const hadPrev = existsSync(item.destPath);
+    return {
+      item,
+      hadPrev,
+      prevPath: hadPrev ? `${item.destPath}.prev-${uniqueAtomicSuffix()}` : null,
+      prevMoved: false,
+      tempPromoted: false,
+    };
+  });
+
+  try {
+    for (const rec of records) {
+      if (rec.hadPrev && rec.prevPath) {
+        renameImpl(rec.item.destPath, rec.prevPath);
+        rec.prevMoved = true;
+      }
+      renameImpl(rec.item.tempPath, rec.item.destPath);
+      rec.tempPromoted = true;
+    }
+
+    for (const rec of records) {
+      const diskBytes = statSync(rec.item.destPath).size;
+      const diskSha256 = sha256OfFile(rec.item.destPath);
+      if (diskBytes !== rec.item.sourceBytes || diskSha256 !== rec.item.sourceSha256) {
+        throw new Error(
+          `Atomik yayın sonrası hedef doğrulaması başarısız (${rec.item.destPath}): ` +
+            `bayt ${rec.item.sourceBytes} → ${diskBytes}, sha256 ${rec.item.sourceSha256.slice(0, 12)}… → ${diskSha256.slice(0, 12)}…`,
+        );
+      }
+    }
+
+    if (validateMainDest && records[0]) {
+      validateMainDest(records[0].item.destPath);
+    }
+  } catch (err) {
+    for (let i = records.length - 1; i >= 0; i -= 1) {
+      const rec = records[i]!;
+      try {
+        if (existsSync(rec.item.tempPath)) unlinkSync(rec.item.tempPath);
+      } catch {
+        /* geçici dosya zaten yok */
+      }
+      if (rec.hadPrev && rec.prevMoved && rec.prevPath && existsSync(rec.prevPath)) {
+        const abortedPath = `${rec.item.destPath}.aborted-${uniqueAtomicSuffix()}`;
+        let movedAborted = false;
+        try {
+          if (existsSync(rec.item.destPath)) {
+            renameSync(rec.item.destPath, abortedPath);
+            movedAborted = true;
+          }
+          renameSync(rec.prevPath, rec.item.destPath);
+        } finally {
+          if (movedAborted) {
+            try {
+              if (existsSync(abortedPath)) unlinkSync(abortedPath);
+            } catch {
+              /* temizlik tamam */
+            }
+          }
+        }
+      } else if (!rec.hadPrev && (rec.tempPromoted || existsSync(rec.item.destPath))) {
+        try {
+          if (existsSync(rec.item.destPath)) unlinkSync(rec.item.destPath);
+        } catch {
+          /* zaten yok */
+        }
+      }
+    }
+    throw err;
+  }
+
+  for (const rec of records) {
+    if (rec.prevPath && existsSync(rec.prevPath)) {
+      try {
+        unlinkSync(rec.prevPath);
+      } catch {
+        /* .prev dosyası zaten kaldırıldı */
+      }
+    }
+  }
+  return attemptDirectoryFsync(destDir);
+}
+
+export interface CopyToTargetOptions {
+  verifyListable?: (destPath: string) => { tocEntryCount: number };
+  sourceDir?: string;
+  classify?: (targetDir: string, sourceDir: string) => OffDeviceClassification;
+  copyFileImpl?: (src: string, dest: string) => void;
+  renameImpl?: (oldPath: string, newPath: string) => void;
+}
+
+/**
+ * Dump'ı hedefe önce `.tmp-*` olarak evreler, HEDEFTEKİ MEVCUT YEDEĞE DOKUNMADAN `fsync` + bayt +
+ * SHA-256 + `pg_restore --list` TOC + tüm yan dosyaları doğrular; YALNIZ tüm ön-doğrulamalar
+ * geçtikten sonra geri alınabilir (rollback-safe) atomik ikameyle yayınlar (`F-10`).
  *
- * "copy komutu başarılı döndü" ile "kopya bit-bit aynı" arasındaki fark, sessiz bozulmanın
- * yaşadığı yerdir: ağ paylaşımı yarım yazar, USB kablosu takılır, hedef disk dolar. Hash
- * hedeften OKUNARAK yeniden hesaplanır; eşleşmezse kopya SİLİNİR ve hata yükseltilir —
- * bozuk bir dosya "yedek" adıyla ortalıkta bırakılmaz.
- *
- * `verifyListable` verilirse HEDEFTEKİ dosya ayrıca `pg_restore --list` ile ayrıştırılır:
- * kopyanın yalnız aynı baytları değil, hâlâ GEÇERLİ BİR ARŞİV olduğunu da gösterir. Doğrulayıcı
- * enjekte edilir (scripts/db/backup-adapter.ts → createListVerifier): bu kütüphane hiçbir araç
- * zincirini kendisi seçmez, hiçbir veritabanına bağlanmaz. Doğrulayıcının fırlattığı hata
- * YUTULMAZ — okunamayan bir kopya "kopyalandı ama doğrulanamadı" diye sessizce geçmez.
- *
- * `classify` ve `copyFileImpl` yalnız test seam'leridir: gerçek sınıflandırma Windows'ta PowerShell
- * ile disk topolojisi ölçer ve birim testte kopya/bozulma/doğrulama zinciri izole sınanır.
+ * Hedefte IMMUTABLE sınıfında bir yedek zaten mevcutsa ve kaynak içerik farklıysa üzerine yazmayı
+ * kesin olarak reddeder (`GÜVENLİK DURDURMASI: IMMUTABLE yedek farklı içerikle üzerine yazılamaz`).
  */
 export function copyToTargetVerified(
   sourcePath: string,
   destDir: string,
-  opts: {
-    verifyListable?: (destPath: string) => { tocEntryCount: number };
-    sourceDir?: string;
-    classify?: (targetDir: string, sourceDir: string) => OffDeviceClassification;
-    copyFileImpl?: (src: string, dest: string) => void;
-  } = {},
+  opts: CopyToTargetOptions = {},
 ): CopyVerifyResult {
   if (!existsSync(sourcePath)) throw new Error(`Kaynak dump yok: ${sourcePath}`);
   const effectiveSourceDir = opts.sourceDir ?? path.dirname(sourcePath);
-  if (
-    detectBackupPathOverlap(destDir, effectiveSourceDir) === "identical" ||
-    detectBackupPathOverlap(destDir, path.dirname(sourcePath)) === "identical"
-  ) {
+  const overlapEffective = detectBackupPathOverlap(destDir, effectiveSourceDir);
+  const overlapDumpDir = detectBackupPathOverlap(destDir, path.dirname(sourcePath));
+  const overlap = overlapEffective ?? overlapDumpDir;
+  if (overlap === "identical") {
     throw new Error(
       `GÜVENLİK DURDURMASI: Hedef dizin kaynak dizinle aynı olamaz (${destDir} === ${effectiveSourceDir}).`,
     );
   }
-  const classification = (opts.classify ?? classifyOffDeviceTarget)(destDir, effectiveSourceDir);
-
-  const main = copyOneVerified(sourcePath, destDir, opts.copyFileImpl);
-  const sha256Match = main.destSha256 === main.sourceSha256;
-  const bytesMatch = main.destBytes === main.sourceBytes;
-  if (!sha256Match || !bytesMatch) {
-    try { unlinkSync(main.destPath); } catch { /* zaten yok */ }
+  if (overlap !== null) {
     throw new Error(
-      `Hedefteki kopya kaynakla eşleşmedi (kopya silindi): ` +
-        `bayt ${main.sourceBytes} → ${main.destBytes}, sha256 ${main.sourceSha256.slice(0, 12)}… → ${main.destSha256.slice(0, 12)}…`,
+      `GÜVENLİK DURDURMASI: Hedef dizin kaynak dizinle iç içe çakışıyor (${overlap}: '${destDir}' <-> '${effectiveSourceDir}').`,
     );
   }
 
-  // Makbuz, yan dosyalar, şifreli kopya (.enc), .sha256 özeti ve doküman kasası arşiv çifti
-  // (-documents.tar.gz / -documents.manifest.json) birlikte kopyalanır ve hedefte SHA-256 doğrulamasından geçer.
-  const sidecarsCopied: string[] = [];
-  const candidateCompanions = [
-    `${sourcePath}.receipt.json`,
-    `${sourcePath}.stage07.json`,
-    `${sourcePath}.sha256`,
-    `${sourcePath}.enc`,
-    ...documentCompanionPaths(sourcePath),
-  ];
-  for (const sidecar of candidateCompanions) {
-    if (!existsSync(sidecar)) continue;
-    const copied = copyOneVerified(sidecar, destDir, opts.copyFileImpl);
-    if (copied.destSha256 !== copied.sourceSha256 || copied.destBytes !== copied.sourceBytes) {
-      try { unlinkSync(copied.destPath); } catch { /* zaten yok */ }
-      try { unlinkSync(main.destPath); } catch { /* zaten yok */ }
-      for (const prev of sidecarsCopied) {
-        try { unlinkSync(path.join(destDir, prev)); } catch { /* zaten yok */ }
-      }
-      throw new Error(`Yan dosya / doküman arşivi kopyası eşleşmedi (silindi): ${sidecar}`);
-    }
-    sidecarsCopied.push(path.basename(copied.destPath));
-  }
+  const classification = (opts.classify ?? classifyOffDeviceTarget)(destDir, effectiveSourceDir);
+  ensureTargetDirReady(destDir);
 
+  const preSourceBytes = statSync(sourcePath).size;
+  if (preSourceBytes <= 0) {
+    throw new Error(`Kaynak dump boş (0 bayt): ${sourcePath}`);
+  }
+  const preSourceSha256 = sha256OfFile(sourcePath);
+  const mainDestPath = path.join(destDir, path.basename(sourcePath));
+  assertImmutableOverwriteAllowed(mainDestPath, preSourceBytes, preSourceSha256);
+
+  const stagedAll: StagedVerifiedCopy[] = [];
   let destRestoreListable = false;
   let destTocEntryCount: number | null = null;
-  if (opts.verifyListable) {
-    // Sayı arşivin kendi `TOC Entries:` başlığından gelir (eskiden yorum olmayan satır sayısıydı);
-    // ikisi de > 0 olmak zorunda, anlamı aynı: hedefteki dosya ayrıştırılabilir bir arşiv.
-    destTocEntryCount = opts.verifyListable(main.destPath).tocEntryCount;
-    destRestoreListable = destTocEntryCount > 0;
+
+  try {
+    const mainStaged = stageOneVerifiedTemp(sourcePath, destDir, opts.copyFileImpl, "Hedefteki kopya");
+    stagedAll.push(mainStaged);
+
+    const candidateCompanions = [
+      `${sourcePath}.receipt.json`,
+      `${sourcePath}.stage07.json`,
+      `${sourcePath}.sha256`,
+      `${sourcePath}.enc`,
+      ...documentCompanionPaths(sourcePath),
+    ];
+    for (const sidecar of candidateCompanions) {
+      if (!existsSync(sidecar)) continue;
+      const sidecarStaged = stageOneVerifiedTemp(
+        sidecar,
+        destDir,
+        opts.copyFileImpl,
+        "Yan dosya / doküman arşivi kopyası",
+      );
+      stagedAll.push(sidecarStaged);
+    }
+  } catch (err) {
+    for (const staged of stagedAll) {
+      try {
+        if (existsSync(staged.tempPath)) unlinkSync(staged.tempPath);
+      } catch {
+        /* geçici dosya zaten yok */
+      }
+    }
+    throw err;
   }
+
+  const durability = replaceBatchRollbackSafe(
+    stagedAll,
+    destDir,
+    opts.renameImpl,
+    opts.verifyListable
+      ? (finalDestPath) => {
+          const tocRes = opts.verifyListable!(finalDestPath);
+          destTocEntryCount = tocRes.tocEntryCount;
+          if (!Number.isFinite(destTocEntryCount) || destTocEntryCount <= 0) {
+            throw new Error(
+              `Hedefteki yedek kopyası pg_restore --list TOC doğrulamasından geçemedi ` +
+                `(tocEntryCount=${String(destTocEntryCount)}); mevcut hedef geri yüklendi.`,
+            );
+          }
+          destRestoreListable = true;
+        }
+      : undefined,
+  );
+  const mainFinal = stagedAll[0]!;
+  const finalBytes = statSync(mainFinal.destPath).size;
+  const finalSha256 = sha256OfFile(mainFinal.destPath);
+  const sidecarsCopied = stagedAll.slice(1).map((s) => path.basename(s.destPath));
 
   return {
     sourcePath: path.resolve(sourcePath),
-    sourceBytes: main.sourceBytes,
-    sourceSha256: main.sourceSha256,
-    destPath: main.destPath,
-    destBytes: main.destBytes,
-    destSha256: main.destSha256,
-    sha256Match,
-    bytesMatch,
+    sourceBytes: mainFinal.sourceBytes,
+    sourceSha256: mainFinal.sourceSha256,
+    destPath: mainFinal.destPath,
+    destBytes: finalBytes,
+    destSha256: finalSha256,
+    sha256Match: finalSha256 === mainFinal.sourceSha256,
+    bytesMatch: finalBytes === mainFinal.sourceBytes,
     destRestoreListable,
     destTocEntryCount,
     sidecarsCopied,
-    durability: main.durability,
+    durability,
     classification,
     copiedAt: new Date().toISOString(),
   };
@@ -1014,8 +1309,12 @@ export function isVerifiedDumpEntry(entry: Pick<DumpEntry, "sidecars">): boolean
 }
 
 export function planPrune(entries: DumpEntry[], policy: RetentionPolicy = DEFAULT_RETENTION, now: Date = new Date()): PrunePlan {
-  const sorted = [...entries].sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime());
-  const rolling = sorted.filter((e) => e.retentionClass === "rolling");
+  const sorted = [...entries].sort((a, b) => {
+    const at = Number.isNaN(a.timestamp.getTime()) ? Number.MAX_SAFE_INTEGER : a.timestamp.getTime();
+    const bt = Number.isNaN(b.timestamp.getTime()) ? Number.MAX_SAFE_INTEGER : b.timestamp.getTime();
+    return bt - at;
+  });
+  const rolling = sorted.filter((e) => e.retentionClass === "rolling" && !Number.isNaN(e.timestamp.getTime()));
 
   const pickNewestPerBucket = (keyOf: (d: Date) => string, limit: number): Set<string> => {
     const seen = new Map<string, DumpEntry>();
@@ -1034,6 +1333,9 @@ export function planPrune(entries: DumpEntry[], policy: RetentionPolicy = DEFAUL
   const decisions: PruneDecision[] = sorted.map((entry) => {
     if (entry.retentionClass === "immutable") {
       return { entry, keep: true, reason: `IMMUTABLE — ${entry.immutableReason ?? "korumalı sınıf"}` };
+    }
+    if (Number.isNaN(entry.timestamp.getTime())) {
+      return { entry, keep: true, reason: "zaman damgası okunamadı (fail-safe koruma)" };
     }
     const ageHours = (now.getTime() - entry.timestamp.getTime()) / 3_600_000;
     if (ageHours < policy.minAgeHours) {
@@ -1185,28 +1487,67 @@ export const STAGE07_RECEIPT_FIELDS: readonly (keyof Stage07Receipt)[] = Object.
   "file_size", "sha256", "pg_version", "pg_dump_version",
 ]);
 
-/** Makbuzu atomik yazar (temp + fsync + rename) ve geri okuyup doğrular. */
-export function writeStage07Receipt(receiptPath: string, receipt: Stage07Receipt): string {
-  const text = JSON.stringify(receipt, null, 2);
-  const tempPath = `${receiptPath}.tmp-${process.pid}-${Date.now()}`;
-  const fd = openSync(tempPath, "wx");
-  try {
-    const buf = Buffer.from(text, "utf8");
-    let written = 0;
-    while (written < buf.length) written += writeSync(fd, buf, written, buf.length - written);
-    fsyncSync(fd);
-  } finally {
-    closeSync(fd);
-  }
-  if (existsSync(receiptPath)) unlinkSync(receiptPath);
-  renameSync(tempPath, receiptPath);
-  attemptDirectoryFsync(path.dirname(receiptPath));
-  const reread = JSON.parse(readFileSync(receiptPath, "utf8")) as Stage07Receipt;
+function assertValidStage07ReceiptObject(parsed: Stage07Receipt): void {
   for (const field of STAGE07_RECEIPT_FIELDS) {
-    if (reread[field] === undefined || reread[field] === null || reread[field] === "") {
+    if (parsed[field] === undefined || parsed[field] === null || parsed[field] === "") {
       throw new Error(`Stage07 makbuzunda zorunlu alan boş: ${field}`);
     }
   }
+}
+
+/**
+ * Makbuzu önce geçici dosyaya yazar + `fsync` eder + diskten geri okuyarak 9 zorunlu alanı doğrular;
+ * YALNIZ doğrulama geçerse geri alınabilir (rollback-safe) atomik ikameyle yayınlar (`F-10`).
+ */
+export function writeStage07Receipt(
+  receiptPath: string,
+  receipt: Stage07Receipt,
+  opts: { renameImpl?: (oldPath: string, newPath: string) => void } = {},
+): string {
+  const dir = path.dirname(receiptPath);
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+
+  const text = JSON.stringify(receipt, null, 2);
+  const buf = Buffer.from(text, "utf8");
+  const expectedSha256 = createHash("sha256").update(buf).digest("hex");
+  const tempPath = `${receiptPath}.tmp-${uniqueAtomicSuffix()}`;
+
+  let fd: number | null = null;
+  try {
+    fd = openSync(tempPath, "wx");
+    let written = 0;
+    while (written < buf.length) written += writeSync(fd, buf, written, buf.length - written);
+    fsyncSync(fd);
+    closeSync(fd);
+    fd = null;
+
+    const tempReread = JSON.parse(readFileSync(tempPath, "utf8")) as Stage07Receipt;
+    assertValidStage07ReceiptObject(tempReread);
+    if (sha256OfFile(tempPath) !== expectedSha256) {
+      throw new Error(`Stage07 geçici makbuz SHA-256 doğrulaması başarısız: ${tempPath}`);
+    }
+  } catch (err) {
+    if (fd !== null) {
+      try { closeSync(fd); } catch { /* ignore */ }
+    }
+    try {
+      if (existsSync(tempPath)) unlinkSync(tempPath);
+    } catch {
+      /* geçici dosya zaten yok */
+    }
+    throw err;
+  }
+
+  replaceFileRollbackSafe(tempPath, receiptPath, {
+    expectedBytes: buf.length,
+    expectedSha256,
+    renameImpl: opts.renameImpl,
+    validateBeforeCommit: (finalPath) => {
+      const reread = JSON.parse(readFileSync(finalPath, "utf8")) as Stage07Receipt;
+      assertValidStage07ReceiptObject(reread);
+    },
+  });
+
   return sha256OfFile(receiptPath);
 }
 

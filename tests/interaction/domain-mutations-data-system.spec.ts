@@ -175,9 +175,9 @@ async function assertNoUiFailure(page: Page, contextLabel: string): Promise<void
 async function buildValidImportWorkbookBuffer(tag: string): Promise<Buffer> {
   const wb = new ExcelJS.Workbook();
   const ws = wb.addWorksheet("IX_Serbest_Veri");
-  ws.addRow(["Açıklama", "Tutar", "Para Birimi", "Referans"]);
-  ws.addRow([`IX Serbest Aktarım Satırı 1 (${tag})`, 18500.5, "TRY", `IX-IMP-1-${tag}`]);
-  ws.addRow([`IX Serbest Aktarım Satırı 2 (${tag})`, 9250.25, "TRY", `IX-IMP-2-${tag}`]);
+  ws.addRow(["Kayıt Kodu (external_id)", "Açıklama", "Tutar", "Para Birimi", "Tekrar Tipi", "Vade Günü (1-31)"]);
+  ws.addRow([`IX-IMP-1-${tag}`, `IX Serbest Aktarım Satırı 1 (${tag})`, 18500.5, "TRY", "monthly", 15]);
+  ws.addRow([`IX-IMP-2-${tag}`, `IX Serbest Aktarım Satırı 2 (${tag})`, 9250.25, "TRY", "monthly", 20]);
   return Buffer.from(await wb.xlsx.writeBuffer());
 }
 
@@ -443,14 +443,14 @@ async function ensureSecurityFixtureUser(opts: {
  * ═══════════════════════════════════════════════════════════════════════════════════════════ */
 
 test.describe("/data/imports mutasyonları", () => {
-  test("imports/upload: 'İÇE AKTAR' gerçek .xlsx dosyasını ayrıştırıp source_workbooks + import_rows yazar", async ({
+  test("imports/upload: '1 · Sütunları Analiz Et' -> 3 adımlı sihirbaz gerçek .xlsx dosyasını ayrıştırıp source_workbooks + import_rows yazar", async ({
     browser,
   }) => {
     test.setTimeout(240_000);
     const route = "/data/imports";
     const role: SeededRole = "finance_operator";
     const tag = `${Date.now()}`;
-    const filename = `ix-serbest-import-${tag}.xlsx`;
+    const filename = `ix-odeme-import-${tag}.xlsx`;
     const buffer = await buildValidImportWorkbookBuffer(tag);
 
     const session = await openAs(browser, role);
@@ -459,11 +459,11 @@ test.describe("/data/imports mutasyonları", () => {
       await page.goto(route, { waitUntil: "domcontentloaded" });
       await waitForWorkspaceReady(page);
 
-      const fileInput = page.locator('form input[type="file"][name="file"]').first();
-      const button = page.getByRole("button", { name: "İÇE AKTAR", exact: true }).first();
+      const fileInput = page.getByTestId("wizard-file-input");
+      const button = page.getByRole("button", { name: "1 · Sütunları Analiz Et", exact: true }).first();
       await expect(button).toBeVisible({ timeout: 20_000 });
 
-      const sig = await resolveControlSignature(route, button, "button", "İÇE AKTAR");
+      const sig = await resolveControlSignature(route, button, "button", "1 · Sütunları Analiz Et");
 
       const beforeWb = await count("select count(*)::int from public.source_workbooks");
       const beforeRows = await count("select count(*)::int from public.import_rows");
@@ -475,13 +475,29 @@ test.describe("/data/imports mutasyonları", () => {
       });
 
       await submitAndSettle(page, () => button.click());
-      await assertNoUiFailure(page, "imports/upload");
+      await assertNoUiFailure(page, "imports/upload:inspect");
+
+      const previewBtn = page
+        .getByRole("button", { name: "2 · Eşleştirmeyi Doğrula & Satırları Önizle", exact: true })
+        .first();
+      await expect(previewBtn).toBeVisible({ timeout: 30_000 });
+      await submitAndSettle(page, () => previewBtn.click());
+      await assertNoUiFailure(page, "imports/upload:preview");
+
+      const confirmBtn = page
+        .getByRole("button", { name: "3 · Onayla ve Atomik Olarak İçe Aktar", exact: true })
+        .first();
+      await expect(confirmBtn).toBeVisible({ timeout: 30_000 });
+      await submitAndSettle(page, () => confirmBtn.click());
+      await assertNoUiFailure(page, "imports/upload:confirm");
+
+      await expect(page.getByTestId("wizard-import-result")).toBeVisible({ timeout: 30_000 });
 
       await expect
         .poll(
           () =>
             count(
-              "select count(*)::int from public.source_workbooks where original_filename = $1 and status = 'parsed'",
+              "select count(*)::int from public.source_workbooks where original_filename = $1 and status in ('parsed', 'mapped', 'imported', 'completed')",
               [filename],
             ),
           { timeout: 30_000 },
@@ -497,10 +513,14 @@ test.describe("/data/imports mutasyonları", () => {
       await waitForWorkspaceReady(page);
       await page.goto(route, { waitUntil: "domcontentloaded" });
       await waitForWorkspaceReady(page);
+      const historyDetails = page.locator("details.parchment-disclosure").first();
+      if ((await historyDetails.count()) > 0 && !(await historyDetails.evaluate((el) => (el as HTMLDetailsElement).open))) {
+        await historyDetails.locator("summary").first().click();
+      }
       await expect(page.getByText(filename).first()).toBeVisible({ timeout: 20_000 });
 
       const afterReload = await count(
-        "select count(*)::int from public.source_workbooks where original_filename = $1 and status = 'parsed'",
+        "select count(*)::int from public.source_workbooks where original_filename = $1 and status in ('parsed', 'mapped', 'imported', 'completed')",
         [filename],
       );
       expect(afterReload).toBe(1);
@@ -514,8 +534,8 @@ test.describe("/data/imports mutasyonları", () => {
         verdict: "PASS",
         proof: [
           `before DB source_workbooks=${beforeWb}, import_rows=${beforeRows}`,
-          `upload + click: '${filename}' ile gerçek 'İÇE AKTAR' düğmesi (${route})`,
-          `after DB source_workbooks=${afterWb}, import_rows=${afterRows} (status='parsed')`,
+          `upload + 3 adımlı sihirbaz: '${filename}' ile '1 · Sütunları Analiz Et' -> Önizle -> Atomik İçe Aktar (${route})`,
+          `after DB source_workbooks=${afterWb}, import_rows=${afterRows}`,
           `reload + liste kontrolü: '${filename}' kalıcı olarak listelendi`,
         ],
       });
@@ -1796,8 +1816,8 @@ test.describe("/data/integrations mutasyonları", () => {
   }) => {
     test.setTimeout(240_000);
     const route = "/data/integrations";
-    const role: SeededRole = "finance_operator";
-    const label = "Kapalı Çevrim Tam Senkron (TCMB + Paraşüt + Defter + 13H)";
+    const role: SeededRole = "finance_manager";
+    const label = "Kapalı Çevrim Tam Senkron (TCMB + Banka + e-Fatura + POS + 13H)";
 
     const session = await openAs(browser, role);
     const { page } = session;
@@ -1891,8 +1911,8 @@ test.describe("/data/integrations mutasyonları", () => {
 
       await form.locator('select[name="integrationKind"]').selectOption("accounting");
       await form.locator('input[name="name"]').fill(connName);
-      await form.locator('input[name="provider"]').fill("parasut");
-      await form.locator('input[name="companyId"]').fill("123456");
+      await form.locator('select[name="provider"]').selectOption("parasut");
+      await form.locator('input[name="ownTaxNumber"]').fill("6120000001");
       await form.locator('input[name="credentialEnvVar"]').fill("PARASUT_PASSWORD");
 
       await submitAndSettle(page, () => button.click());

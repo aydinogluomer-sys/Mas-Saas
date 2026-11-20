@@ -138,14 +138,11 @@ async function resolveFinanceSignature(
 /** Kontrol kapalı bir `<details>` içindeyse önce `<summary>` üzerinden açar. */
 async function openEnclosingDetailsIfClosed(target: Locator): Promise<void> {
   if ((await target.count()) === 0) {
-    // Kapalı `<details>` içindeki düğmeler ARIA ağacından gizlendiği için (`getByRole` 0 döner)
-    // sayfadaki kapalı `<details>` çekmecelerini `<summary>` tıklamasıyla açarız.
-    const closedSummaries = target.page().locator("details:not([open]) > summary");
-    const count = await closedSummaries.count();
-    for (let i = 0; i < count; i += 1) {
-      await closedSummaries.first().scrollIntoViewIfNeeded().catch(() => {});
-      await closedSummaries.first().click();
-    }
+    await target.page().evaluate(() => {
+      document.querySelectorAll("main details:not([open])").forEach((d) => {
+        (d as HTMLDetailsElement).open = true;
+      });
+    });
     return;
   }
   const details = target.locator("xpath=ancestor::details[1]");
@@ -164,7 +161,7 @@ async function openEnclosingDetailsIfClosed(target: Locator): Promise<void> {
 }
 
 async function gotoReady(page: Page, route: string): Promise<void> {
-  await page.goto(route, { waitUntil: "domcontentloaded" });
+  await page.goto(route, { waitUntil: "networkidle" });
   await waitForWorkspaceReady(page);
 }
 
@@ -822,7 +819,7 @@ test("[08/35] /finance/checks — Bordroyu uygula (checks/bordro-execute)", asyn
   }
 });
 
-test("[09/35] /finance/checks/new — Çeki kaydet (checks/create)", async ({ browser }) => {
+test("[09/35] /finance/checks/new — Çeki / Senedi Kaydet (checks/create)", async ({ browser }) => {
   const route = "/finance/checks/new";
   const role: SeededRole = "finance_operator";
   const today = istanbulTodayIso();
@@ -837,11 +834,11 @@ test("[09/35] /finance/checks/new — Çeki kaydet (checks/create)", async ({ br
   const session = await openAs(browser, role);
   try {
     await gotoReady(session.page, route);
-    const signature = await resolveFinanceSignature(route, "Çeki kaydet", session.page);
+    const signature = await resolveFinanceSignature(route, "Çeki / Senedi Kaydet", session.page);
 
     const form = session.page
       .locator("form")
-      .filter({ has: session.page.getByRole("button", { name: "Çeki kaydet", exact: true }) })
+      .filter({ has: session.page.getByRole("button", { name: "Çeki / Senedi Kaydet", exact: true }) })
       .first();
 
     await form.locator('select[name="instrumentType"]').selectOption("check");
@@ -858,8 +855,8 @@ test("[09/35] /finance/checks/new — Çeki kaydet (checks/create)", async ({ br
       route,
       role,
       signature,
-      labelForProof: "Çeki kaydet",
-      button: form.getByRole("button", { name: "Çeki kaydet", exact: true }),
+      labelForProof: "Çeki / Senedi Kaydet",
+      button: form.getByRole("button", { name: "Çeki / Senedi Kaydet", exact: true }),
       readState: async () =>
         Number(
           await scalar<string>(`select count(*)::int from public.checks where serial_no = $1`, [
@@ -874,7 +871,7 @@ test("[09/35] /finance/checks/new — Çeki kaydet (checks/create)", async ({ br
   }
 });
 
-test("[10/35] /finance/loans/new — Krediyi ve planı oluştur (loans/create)", async ({ browser }) => {
+test("[10/35] /finance/loans/new — Krediyi ve Amortisman Planını Oluştur (loans/create)", async ({ browser }) => {
   const route = "/finance/loans/new";
   const role: SeededRole = "finance_operator";
   const today = istanbulTodayIso();
@@ -895,21 +892,21 @@ test("[10/35] /finance/loans/new — Krediyi ve planı oluştur (loans/create)",
     await gotoReady(session.page, route);
     const signature = await resolveFinanceSignature(
       route,
-      "Krediyi ve planı oluştur",
+      "Krediyi ve Amortisman Planını Oluştur",
       session.page,
     );
 
     const form = session.page
       .locator("form")
       .filter({
-        has: session.page.getByRole("button", { name: "Krediyi ve planı oluştur", exact: true }),
+        has: session.page.getByRole("button", { name: "Krediyi ve Amortisman Planını Oluştur", exact: true }),
       })
       .first();
 
     await form.locator('input[name="name"]').fill(loanName);
     await form.locator('input[name="principal"]').fill("90000");
     await form.locator('input[name="installmentCount"]').fill("3");
-    await form.locator('input[name="installmentAmount"]').fill("31500");
+    await form.locator('input[name="annualInterestRatePct"]').fill("36.00");
     await form.locator('input[name="firstPaymentDate"]').fill(today);
 
     await executeAndVerifyMutation({
@@ -918,8 +915,8 @@ test("[10/35] /finance/loans/new — Krediyi ve planı oluştur (loans/create)",
       route,
       role,
       signature,
-      labelForProof: "Krediyi ve planı oluştur",
-      button: form.getByRole("button", { name: "Krediyi ve planı oluştur", exact: true }),
+      labelForProof: "Krediyi ve Amortisman Planını Oluştur",
+      button: form.getByRole("button", { name: "Krediyi ve Amortisman Planını Oluştur", exact: true }),
       readState: async () => {
         const loansCount = Number(
           await scalar<string>(`select count(*)::int from public.loans where name = $1`, [
@@ -945,7 +942,7 @@ test("[10/35] /finance/loans/new — Krediyi ve planı oluştur (loans/create)",
   }
 });
 
-test("[11/35] /finance/collections — Ödeme paketi oluştur (collections/payment-run-create)", async ({
+test("[11/35] /finance/collections — TRY Ödeme Paketi Oluştur (collections/payment-run-create)", async ({
   browser,
 }) => {
   const route = "/finance/collections";
@@ -1006,13 +1003,13 @@ test("[11/35] /finance/collections — Ödeme paketi oluştur (collections/payme
     await gotoReady(session.page, route);
     const signature = await resolveFinanceSignature(
       route,
-      "Ödeme paketi oluştur",
+      "TRY Ödeme Paketi Oluştur",
       session.page,
     );
 
     const runForm = session.page
       .locator("form")
-      .filter({ has: session.page.getByRole("button", { name: "Ödeme paketi oluştur", exact: true }) })
+      .filter({ has: session.page.getByRole("button", { name: "TRY Ödeme Paketi Oluştur", exact: true }) })
       .first();
 
     await runForm.locator('select[name="sourceBankAccountId"]').selectOption(sourceBankId);
@@ -1032,8 +1029,8 @@ test("[11/35] /finance/collections — Ödeme paketi oluştur (collections/payme
       route,
       role,
       signature,
-      labelForProof: "Ödeme paketi oluştur",
-      button: runForm.getByRole("button", { name: "Ödeme paketi oluştur", exact: true }),
+      labelForProof: "TRY Ödeme Paketi Oluştur",
+      button: runForm.getByRole("button", { name: "TRY Ödeme Paketi Oluştur", exact: true }),
       readState: async () =>
         Number(
           await scalar<string>(
@@ -1161,7 +1158,7 @@ test("[13/35] /finance/invoices — Görünümü Kaydet (filter/save-view)", asy
   }
 });
 
-test("[14/35] /finance/invoices — Taslak oluştur (invoices/draft)", async ({ browser }) => {
+test("[14/35] /finance/invoices — Taslak Fatura Oluştur (invoices/draft)", async ({ browser }) => {
   const route = "/finance/invoices";
   const role: SeededRole = "finance_operator";
   const today = istanbulTodayIso();
@@ -1177,11 +1174,11 @@ test("[14/35] /finance/invoices — Taslak oluştur (invoices/draft)", async ({ 
   const session = await openAs(browser, role);
   try {
     await gotoReady(session.page, route);
-    const signature = await resolveFinanceSignature(route, "Taslak oluştur", session.page);
+    const signature = await resolveFinanceSignature(route, "Taslak Fatura Oluştur", session.page);
 
     const draftForm = session.page
       .locator("form")
-      .filter({ has: session.page.getByRole("button", { name: "Taslak oluştur", exact: true }) })
+      .filter({ has: session.page.getByRole("button", { name: "Taslak Fatura Oluştur", exact: true }) })
       .first();
 
     await draftForm.locator('select[name="direction"]').selectOption("sales");
@@ -1193,7 +1190,7 @@ test("[14/35] /finance/invoices — Taslak oluştur (invoices/draft)", async ({ 
     await draftForm.locator('input[name="lineDescription"]').fill(`IX Taslak Kalem ${suffix}`);
     await draftForm.locator('input[name="lineQuantity"]').fill("2");
     await draftForm.locator('input[name="lineUnitPrice"]').fill("3500");
-    await draftForm.locator('input[name="lineTaxRate"]').fill("0.20");
+    await draftForm.locator('select[name="lineTaxRate"]').selectOption("0.20");
 
     await executeAndVerifyMutation({
       id: "finance-invoices-draft-create",
@@ -1201,8 +1198,8 @@ test("[14/35] /finance/invoices — Taslak oluştur (invoices/draft)", async ({ 
       route,
       role,
       signature,
-      labelForProof: "Taslak oluştur",
-      button: draftForm.getByRole("button", { name: "Taslak oluştur", exact: true }),
+      labelForProof: "Taslak Fatura Oluştur",
+      button: draftForm.getByRole("button", { name: "Taslak Fatura Oluştur", exact: true }),
       readState: async () =>
         await scalar<string>(
           `select status || '|lines=' || (select count(*)::int from public.invoice_lines il where il.invoice_id = i.id)::text
@@ -1921,7 +1918,7 @@ test("[27/35] /finance/ledger — Operasyonel Kayıtlardan Yönetim Defterini Se
   const session = await openAs(browser, role);
   try {
     await gotoReady(session.page, route);
-    const label = "Operasyonel Kayıtlardan Yönetim Defterini Senkronla (Idempotent)";
+    const label = "Operasyonel Kayıtlardan Defteri Senkronla";
     const signature = await resolveFinanceSignature(route, label, session.page);
 
     const syncBtn = session.page.getByRole("button", { name: label, exact: true }).first();
@@ -2040,7 +2037,7 @@ test("[28/35] /finance/ledger — Geçici Kur Fişlerini Değerle (TCMB) (ledger
   }
 });
 
-test("[29/35] /finance/ledger — Tahakkuk Fişi Kaydet (ledger/post-manual-adjustment)", async ({
+test("[29/35] /finance/ledger — Çok Satırlı Yevmiye Fişini Kaydet (ledger/post-manual-adjustment)", async ({
   browser,
 }) => {
   const route = "/finance/ledger";
@@ -2056,7 +2053,7 @@ test("[29/35] /finance/ledger — Tahakkuk Fişi Kaydet (ledger/post-manual-adju
   const session = await openAs(browser, role);
   try {
     await gotoReady(session.page, route);
-    const label = "Tahakkuk Fişi Kaydet";
+    const label = "Çok Satırlı Yevmiye Fişini Kaydet";
     const signature = await resolveFinanceSignature(route, label, session.page);
 
     const form = session.page
@@ -2065,9 +2062,13 @@ test("[29/35] /finance/ledger — Tahakkuk Fişi Kaydet (ledger/post-manual-adju
       .first();
 
     await form.locator('input[name="entryDate"]').fill(today);
-    await form.locator('input[name="amount"]').fill("8750.00");
     await form.locator('select[name="currency"]').selectOption("TRY");
+    await form.locator('select[name="status"]').selectOption("posted");
     await form.locator('input[name="description"]').fill(accrualDesc);
+    await form.locator('input[name="lineDebit"]').nth(0).fill("8750.00");
+    await form.locator('input[name="lineCredit"]').nth(0).fill("0");
+    await form.locator('input[name="lineDebit"]').nth(1).fill("0");
+    await form.locator('input[name="lineCredit"]').nth(1).fill("8750.00");
 
     await executeAndVerifyMutation({
       id: "finance-ledger-manual-accrual",

@@ -123,23 +123,29 @@ export async function touchWorkerHeartbeat(
 }
 
 export function istanbulHourSlot(now = new Date()): string {
-  const parts = new Intl.DateTimeFormat("sv-SE", {
+  if (Number.isNaN(now.getTime())) {
+    throw new Error("istanbulHourSlot: geçersiz Date girdisi");
+  }
+  const parts = new Intl.DateTimeFormat("en-US", {
     timeZone: "Europe/Istanbul",
     year: "numeric",
     month: "2-digit",
     day: "2-digit",
     hour: "2-digit",
-    hour12: false,
+    hourCycle: "h23",
   }).formatToParts(now);
   const pick = (type: string) => parts.find((p) => p.type === type)?.value ?? "00";
-  return `${pick("year")}-${pick("month")}-${pick("day")}T${pick("hour")}`;
+  const rawHour = pick("hour");
+  const normalizedHour = rawHour === "24" ? "00" : rawHour.padStart(2, "0");
+  return `${pick("year")}-${pick("month")}-${pick("day")}T${normalizedHour}`;
 }
 
 export const MAINTENANCE_STATEMENT_TIMEOUT_SQL = "SET LOCAL statement_timeout = '120s'";
 
 function isMockUnexpectedSqlError(err: unknown): boolean {
   const msg = err instanceof Error ? err.message : typeof err === "string" ? err : "";
-  return msg.toLowerCase().includes("beklenmeyen sql");
+  const lower = msg.toLowerCase();
+  return lower.includes("beklenmeyen sql") || lower.includes("[vitest] no \"");
 }
 
 function isMissingSchemaError(err: unknown): boolean {
@@ -159,8 +165,34 @@ function isIgnorableMaintenanceError(err: unknown): boolean {
   return isMockUnexpectedSqlError(err) || isMissingSchemaError(err);
 }
 
+function isFatalMaintenanceRowError(err: unknown): boolean {
+  const code = (err as { code?: unknown } | null)?.code;
+  if (typeof code === "string") {
+    if (
+      code === "ECONNREFUSED" ||
+      code === "ECONNRESET" ||
+      code === "ETIMEDOUT" ||
+      code === "EPIPE" ||
+      code === "ENOTFOUND" ||
+      code === "EAI_AGAIN" ||
+      code === "57014" ||
+      /^(?:08|53|57|58|XX)/i.test(code)
+    ) {
+      return true;
+    }
+  }
+  const msg = err instanceof Error ? err.message : typeof err === "string" ? err : "";
+  return /(?:econnrefused|econnreset|etimedout|epipe|enotfound|connection terminated|terminating connection|statement timeout|canceling statement)/i.test(
+    msg,
+  );
+}
+
 const MAINTENANCE_LOCK_SQL = `select pg_try_advisory_lock(${MAINTENANCE_ADVISORY_LOCK_KEY_1}, ${MAINTENANCE_ADVISORY_LOCK_KEY_2}) as acquired`;
 const MAINTENANCE_UNLOCK_SQL = `select pg_advisory_unlock(${MAINTENANCE_ADVISORY_LOCK_KEY_1}, ${MAINTENANCE_ADVISORY_LOCK_KEY_2})`;
+
+// Guards against PostgreSQL's native same-session `pg_try_advisory_lock` reentrancy if a single-session
+// pool wrapper or mock yields the exact same client/pool instance while a maintenance lock is held.
+const activeAdvisoryLockHolders = new WeakSet<object>();
 
 async function acquireMaintenanceAdvisoryLock(pool: Pool): Promise<{
   status: "acquired" | "contended" | "mock_bypassed" | "error";
@@ -175,6 +207,11 @@ async function acquireMaintenanceAdvisoryLock(pool: Pool): Promise<{
     let lockClient: PoolClient | null = null;
     try {
       lockClient = await pool.connect();
+      const lockClientObj = lockClient as unknown as object;
+      if (activeAdvisoryLockHolders.has(lockClientObj)) {
+        lockClient.release();
+        return { status: "contended", release: async () => undefined };
+      }
       const res = await lockClient.query<{
         acquired?: boolean;
         pg_try_advisory_lock?: boolean;
@@ -191,6 +228,7 @@ async function acquireMaintenanceAdvisoryLock(pool: Pool): Promise<{
         return { status: "contended", release: async () => undefined };
       }
       const heldClient = lockClient;
+      activeAdvisoryLockHolders.add(lockClientObj);
       let unlocked = false;
       return {
         status: "acquired",
@@ -202,12 +240,14 @@ async function acquireMaintenanceAdvisoryLock(pool: Pool): Promise<{
           } catch {
             // PostgreSQL automatically drops session-level advisory locks if the connection dies.
           } finally {
+            activeAdvisoryLockHolders.delete(lockClientObj);
             heldClient.release();
           }
         },
       };
     } catch (err) {
       if (lockClient) {
+        activeAdvisoryLockHolders.delete(lockClient as unknown as object);
         lockClient.release();
       }
       if (isIgnorableMaintenanceError(err)) {
@@ -237,6 +277,11 @@ async function acquireMaintenanceAdvisoryLock(pool: Pool): Promise<{
         return { status: "mock_bypassed", release: async () => undefined };
       }
       const client = await mockPool.connect();
+      const clientObj = client as unknown as object;
+      if (activeAdvisoryLockHolders.has(clientObj)) {
+        client.release();
+        return { status: "contended", release: async () => undefined };
+      }
       try {
         const res = await client.query<{
           acquired?: boolean;
@@ -253,6 +298,7 @@ async function acquireMaintenanceAdvisoryLock(pool: Pool): Promise<{
           client.release();
           return { status: "contended", release: async () => undefined };
         }
+        activeAdvisoryLockHolders.add(clientObj);
         let unlocked = false;
         return {
           status: "acquired",
@@ -264,16 +310,22 @@ async function acquireMaintenanceAdvisoryLock(pool: Pool): Promise<{
             } catch {
               // Ignore unlock errors on mock teardown.
             } finally {
+              activeAdvisoryLockHolders.delete(clientObj);
               client.release();
             }
           },
         };
       } catch (innerErr) {
+        activeAdvisoryLockHolders.delete(clientObj);
         client.release();
         throw innerErr;
       }
     }
 
+    const mockPoolObj = mockPool as unknown as object;
+    if (activeAdvisoryLockHolders.has(mockPoolObj)) {
+      return { status: "contended", release: async () => undefined };
+    }
     const res = await queryFn<{
       acquired?: boolean;
       pg_try_advisory_lock?: boolean;
@@ -288,16 +340,22 @@ async function acquireMaintenanceAdvisoryLock(pool: Pool): Promise<{
     if (!acquired) {
       return { status: "contended", release: async () => undefined };
     }
+    activeAdvisoryLockHolders.add(mockPoolObj);
     let unlocked = false;
     return {
       status: "acquired",
       release: async () => {
         if (unlocked) return;
         unlocked = true;
-        await queryFn(MAINTENANCE_UNLOCK_SQL).catch(() => undefined);
+        try {
+          await queryFn(MAINTENANCE_UNLOCK_SQL).catch(() => undefined);
+        } finally {
+          activeAdvisoryLockHolders.delete(mockPoolObj);
+        }
       },
     };
   } catch (err) {
+    activeAdvisoryLockHolders.delete(mockPool as unknown as object);
     if (isIgnorableMaintenanceError(err)) {
       return { status: "mock_bypassed", release: async () => undefined };
     }
@@ -442,8 +500,8 @@ export async function rolloverOverdueLoanInstallments(
           await client.query("release savepoint sp_li_rollover");
         }
       } catch (rowErr) {
-        if (hasSavepoint) {
-          await client.query("rollback to savepoint sp_li_rollover").catch(() => undefined);
+        if (hasSavepoint && !isFatalMaintenanceRowError(rowErr)) {
+          await client.query("rollback to savepoint sp_li_rollover");
           await client.query("release savepoint sp_li_rollover").catch(() => undefined);
           continue;
         }
@@ -534,8 +592,8 @@ export async function rolloverOverduePaymentInstances(
           await client.query("release savepoint sp_pi_rollover");
         }
       } catch (rowErr) {
-        if (hasSavepoint) {
-          await client.query("rollback to savepoint sp_pi_rollover").catch(() => undefined);
+        if (hasSavepoint && !isFatalMaintenanceRowError(rowErr)) {
+          await client.query("rollback to savepoint sp_pi_rollover");
           await client.query("release savepoint sp_pi_rollover").catch(() => undefined);
           continue;
         }
@@ -872,7 +930,13 @@ export async function dispatchDailyCfoBriefingIdempotent(deps: {
     [idempotencyKey],
   );
   const priorStatus = existingOutbox.rows[0]?.status;
-  if (priorStatus === "sent" || priorStatus === "claiming" || priorStatus === "skipped") {
+  if (
+    priorStatus === "sent" ||
+    priorStatus === "claiming" ||
+    priorStatus === "skipped" ||
+    priorStatus === "delivery_uncertain" ||
+    priorStatus === "dead_letter"
+  ) {
     return {
       attempted: false,
       dispatched: false,
@@ -910,6 +974,7 @@ export async function dispatchDailyCfoBriefingIdempotent(deps: {
   });
 
   const ok = dispatchRes.sent > 0;
+  const deliveryFailed = !ok && (dispatchRes.retried > 0 || dispatchRes.deadLettered > 0);
   await audit(deps.pool, {
     actor: deps.systemActorId,
     action: "dispatch_cfo_briefing",
@@ -931,12 +996,14 @@ export async function dispatchDailyCfoBriefingIdempotent(deps: {
     attempted: true,
     dispatched: ok,
     idempotencyKey,
+    ...(deliveryFailed ? { error: "cfo_briefing_outbox_delivery_failed" } : {}),
   };
 }
 
 export interface MaintenanceSummary {
   hourlyRan: boolean;
   dailyRan: boolean;
+  skippedLocked?: boolean;
   todayISO: string;
   hourSlot: string;
   details?: Record<string, unknown>;
@@ -949,6 +1016,7 @@ export async function runScheduledMaintenance(deps: {
   pool: Pool;
   systemActorId: string;
   statePath?: string;
+  now?: Date;
   todayISO?: string;
   hourSlot?: string;
   force?: boolean;
@@ -962,8 +1030,9 @@ export async function runScheduledMaintenance(deps: {
     import("../../src/lib/logger"),
   ]);
   const statePath = deps.statePath ?? DEFAULT_BACKGROUND_STATE_PATH;
-  const todayISO = deps.todayISO ?? istanbulDateISO();
-  const hourSlot = deps.hourSlot ?? istanbulHourSlot();
+  const now = deps.now ?? new Date();
+  const todayISO = deps.todayISO ?? istanbulDateISO(now);
+  const hourSlot = deps.hourSlot ?? istanbulHourSlot(now);
   const correlationId = deps.correlationId ?? randomUUID();
 
   const state = await readWorkerScheduleState(statePath);
@@ -979,9 +1048,10 @@ export async function runScheduledMaintenance(deps: {
     return {
       hourlyRan: false,
       dailyRan: false,
+      skippedLocked: true,
       todayISO,
       hourSlot,
-      details: { skippedReason: "concurrent_lock_held" },
+      details: { skippedReason: "concurrent_lock_held", skippedLocked: true },
     };
   }
 
@@ -1122,19 +1192,48 @@ export async function runScheduledMaintenance(deps: {
             import("../../src/lib/integrations/engine"),
           ]);
 
-          swept = await sweepStaleStagedFiles(maintPool).catch(() => ({ removed: 0 }));
+          const recordHourlySubtaskError = (step: string, err: unknown) => {
+            if (!isIgnorableMaintenanceError(err)) {
+              const msg = err instanceof Error ? err.message : String(err);
+              hourlyErrors.push(`${step}: ${msg}`);
+              log.error("background_worker_hourly_subtask_failed", {
+                step,
+                todayISO,
+                hourSlot,
+                correlationId,
+                error: msg,
+              });
+            }
+          };
+
+          swept = await sweepStaleStagedFiles(maintPool).catch((err) => {
+            recordHourlySubtaskError("sweepStaleStagedFiles", err);
+            return { removed: 0 };
+          });
           snoozeWakeup = await wakeSnoozedControlAlerts(
             maintPool,
             todayISO,
             deps.systemActorId,
-          ).catch(() => ({ wokenCount: 0 }));
-          await validateContinuity(maintPool).catch(() => undefined);
-          await loadOverviewSnapshot(maintPool, todayISO).catch(() => undefined);
+          ).catch((err) => {
+            recordHourlySubtaskError("wakeSnoozedControlAlerts", err);
+            return { wokenCount: 0 };
+          });
+          await validateContinuity(maintPool).catch((err) => {
+            recordHourlySubtaskError("validateContinuity", err);
+            return undefined;
+          });
+          await loadOverviewSnapshot(maintPool, todayISO).catch((err) => {
+            recordHourlySubtaskError("loadOverviewSnapshot", err);
+            return undefined;
+          });
           parasutDue = await enqueueDueSyncs(
             maintPool,
             deps.systemActorId,
             todayISO,
-          ).catch(() => ({ enqueued: 0, skipped: 0 }));
+          ).catch((err) => {
+            recordHourlySubtaskError("enqueueDueSyncs", err);
+            return { enqueued: 0, skipped: 0 };
+          });
 
           let ledgerErrHandled = false;
           managementLedgerSync = await syncManagementLedgerSafely(
