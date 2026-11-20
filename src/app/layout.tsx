@@ -1,4 +1,5 @@
 import type { Metadata, Viewport } from "next";
+import Script from "next/script";
 import { GeistSans } from "geist/font/sans";
 import { GeistMono } from "geist/font/mono";
 import "./globals.css";
@@ -42,11 +43,9 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       className={`${GeistSans.variable} ${GeistMono.variable}`}
     >
       <body className="antialiased">
-        <script
-          id="mas-comfort-bootstrap"
-          suppressHydrationWarning
-          dangerouslySetInnerHTML={{ __html: COMFORT_BOOTSTRAP_SCRIPT }}
-        />
+        <Script id="mas-comfort-bootstrap" strategy="beforeInteractive">
+          {COMFORT_BOOTSTRAP_SCRIPT}
+        </Script>
         {children}
       </body>
     </html>
