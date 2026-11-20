@@ -2,7 +2,8 @@
 
 import Link from "@/components/ui/app-link";
 import { usePathname } from "next/navigation";
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { Suspense, useEffect, useRef, useState, type ReactNode } from "react";
+import { ModuleLoading } from "@/components/ui/loading-state";
 import { useNavigationFeedback } from "@/components/ui/navigation-feedback";
 import { resolveModuleFraming } from "@/lib/navigation/module-framing";
 
@@ -228,7 +229,9 @@ export function ModuleFrame({
         )}
       </section>
 
-      <div className="module-content">{children}</div>
+      <div className="module-content">
+        <Suspense fallback={<ModuleLoading />}>{children}</Suspense>
+      </div>
     </>
   );
 }
