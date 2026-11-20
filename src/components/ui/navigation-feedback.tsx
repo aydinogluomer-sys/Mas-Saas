@@ -202,10 +202,6 @@ export function NavigationFeedbackProvider({ children }: { children: ReactNode }
   </NavigationContext.Provider>;
 }
 
-export function WorkspaceMainSlot({ children }: { children: ReactNode }) {
-  return <>{children}</>;
-}
-
 export function useNavigationFeedback() {
   const value = useContext(NavigationContext);
   if (!value) throw new Error("useNavigationFeedback must be used inside NavigationFeedbackProvider");
