@@ -1,10 +1,9 @@
-import { Suspense, type ReactNode } from "react";
+import type { ReactNode } from "react";
 import { cookies } from "next/headers";
 import { logoutAction } from "@/app/login/actions";
 import { CommandPaletteTrigger } from "@/components/search/command-palette-trigger";
 import { EntitySwitcher } from "@/components/ui/entity-switcher";
 import { HeaderCollabBar, type ExecutiveLocale } from "@/components/ui/header-collab-bar";
-import { ModuleLoading } from "@/components/ui/loading-state";
 import { NavigationFeedbackProvider } from "@/components/ui/navigation-feedback";
 import { AppSidebar, type NavItem } from "@/components/ui/nav";
 import { AppToaster, FlashToaster } from "@/components/ui/primitives/toast";
@@ -115,9 +114,7 @@ export default async function DashboardLayout({ children }: { children: ReactNod
               </span>
             </div>
           </header>
-          <main className="workspace-content animate-rise">
-            <Suspense fallback={<ModuleLoading />}>{children}</Suspense>
-          </main>
+          <main className="workspace-content animate-rise">{children}</main>
         </div>
         <AppToaster />
         <FlashToaster />

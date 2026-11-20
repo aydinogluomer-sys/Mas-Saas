@@ -38,6 +38,10 @@ const nextConfig: NextConfig = {
   // Derleme kimliği = commit SHA. `.next/BUILD_ID` artık hangi commit'ten üretildiğini kendi
   // adıyla söyler; /version'daki `buildId` ile `commit` aynı değeri taşımalıdır.
   generateBuildId: () => commitSha,
+  // Next.js 15.5 Streaming Metadata (`AsyncMetadataOutlet`) önyükleme sırasında <body> sonuna
+  // zamanuyumsuz <!--$?--><template id="B:..."> sınırları ekler; kapalı devre kurumsal panelde
+  // başlık/meta etiketlerinin <head> içinde senkron üretilmesi hidrasyon determinizmini korur.
+  htmlLimitedBots: /.*/,
   env: {
     APP_COMMIT_SHA: commitSha,
     APP_BUILD_TIME: buildTime,
