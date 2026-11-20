@@ -2089,7 +2089,9 @@ test.describe("rota bazlı UI durumu kontrolleri (çekmeceler, filtreler, önizl
         "admin",
       );
 
-      const itemsBulkCb = page.locator('main input[type="checkbox"]').first();
+      const itemsBulkCb = page.getByRole("checkbox", {
+        name: "Filtrelenen tüm ödeme kalemlerini seç",
+      });
       if ((await itemsBulkCb.count()) > 0) {
         await itemsBulkCb.check();
         await expect(itemsBulkCb).toBeChecked();

@@ -41,10 +41,14 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       suppressHydrationWarning
       className={`${GeistSans.variable} ${GeistMono.variable}`}
     >
-      <head suppressHydrationWarning>
-        <script dangerouslySetInnerHTML={{ __html: COMFORT_BOOTSTRAP_SCRIPT }} />
-      </head>
-      <body className="antialiased">{children}</body>
+      <body className="antialiased">
+        <script
+          id="mas-comfort-bootstrap"
+          suppressHydrationWarning
+          dangerouslySetInnerHTML={{ __html: COMFORT_BOOTSTRAP_SCRIPT }}
+        />
+        {children}
+      </body>
     </html>
   );
 }
