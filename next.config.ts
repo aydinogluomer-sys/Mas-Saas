@@ -130,6 +130,11 @@ const nextConfig: NextConfig = {
       { source: "/system/approvals", destination: "/data/approvals", permanent: true },
       { source: "/approvals", destination: "/data/approvals", permanent: true },
       { source: "/bank", destination: "/finance/bank", permanent: true },
+      { source: "/treasury", destination: "/finance/treasury", permanent: true },
+      { source: "/checks", destination: "/finance/checks", permanent: true },
+      { source: "/invoices", destination: "/finance/invoices", permanent: true },
+      { source: "/loans", destination: "/finance/loans", permanent: true },
+      { source: "/collections", destination: "/finance/collections", permanent: true },
     ];
   },
 };

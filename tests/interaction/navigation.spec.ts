@@ -43,6 +43,44 @@ interface NavEvidence {
 
 const OUT = path.join(process.cwd(), "docs", "interaction-audit");
 
+const PERMANENT_REDIRECT_MAP: Readonly<Record<string, string>> = {
+  "/overview": "/",
+  "/ask": "/insights/ask",
+  "/reports": "/insights/reports",
+  "/reminders": "/insights/reminders",
+  "/assumptions": "/data/assumptions",
+  "/data-quality": "/data/quality",
+  "/imports": "/data/imports",
+  "/financing": "/finance",
+  "/radar": "/payments",
+  "/calendar": "/payments/calendar",
+  "/admin": "/system",
+  "/phases": "/system/features",
+  "/system/approvals": "/data/approvals",
+  "/approvals": "/data/approvals",
+  "/bank": "/finance/bank",
+  "/treasury": "/finance/treasury",
+  "/checks": "/finance/checks",
+  "/invoices": "/finance/invoices",
+  "/loans": "/finance/loans",
+  "/collections": "/finance/collections",
+};
+
+function resolveExpectedPathSearch(rawHref: string, baseUrl: string): string {
+  const parsed = new URL(rawHref, baseUrl);
+  let pathname = parsed.pathname;
+  if (PERMANENT_REDIRECT_MAP[pathname]) {
+    pathname = PERMANENT_REDIRECT_MAP[pathname];
+  } else if (pathname.startsWith("/reports/")) {
+    pathname = `/insights${pathname}`;
+  } else if (pathname.startsWith("/financing/loans/")) {
+    pathname = pathname.replace(/^\/financing\/loans\//, "/finance/loans/");
+  } else if (pathname.startsWith("/imports/")) {
+    pathname = `/data${pathname}`;
+  }
+  return `${pathname}${parsed.search}`;
+}
+
 /** Uygulama dışına çıkan ya da gezinme olmayan href'ler. */
 function isInAppLink(href: string): boolean {
   if (!href) return false;
@@ -64,6 +102,24 @@ test.describe("gezinme süpürmesi", () => {
           where not exists (
             select 1 from public.action_items
              where source_href = '/radar' and status = 'open'
+          )`,
+      );
+      await c.query(
+        `insert into public.checks
+           (maturity_date, serial_no, amount, signed_amount, currency, direction, status, counterparty_label)
+         select (now() at time zone 'Europe/Istanbul')::date,
+                'IX-NAV-CHK-001',
+                15000,
+                -15000,
+                'TRY',
+                'outflow',
+                'planned',
+                'IX Gezinme Çeki'
+          where not exists (
+            select 1 from public.financial_calendar
+             where source_kind = 'check'
+               and event_date >= date_trunc('month', (now() at time zone 'Europe/Istanbul')::date)::date
+               and event_date < (date_trunc('month', (now() at time zone 'Europe/Istanbul')::date) + interval '1 month')::date
           )`,
       );
     });
@@ -290,23 +346,100 @@ test.describe("gezinme süpürmesi", () => {
 
           let clickedOk = false;
           let lastClickError = "";
+          let handledAsDownloadOrPopup = false;
           for (let i = 0; i < count; i++) {
             const link = candidates.nth(i);
             try {
-              await link
+              const prep = await link
                 .evaluate((el) => {
                   let d = el.closest("details");
                   while (d) {
                     (d as HTMLDetailsElement).open = true;
                     d = d.parentElement?.closest("details") ?? null;
                   }
+                  const a = el as HTMLAnchorElement;
+                  return {
+                    insideHiddenPalette: Boolean(
+                      el.closest('[role="dialog"][aria-label="Evrensel arama"][hidden]'),
+                    ),
+                    rawHref: a.getAttribute("href") ?? "",
+                    hasDownload: a.hasAttribute("download"),
+                    targetAttr: a.getAttribute("target") ?? "",
+                  };
                 })
-                .catch(() => {});
+                .catch(() => ({
+                  insideHiddenPalette: false,
+                  rawHref: href,
+                  hasDownload: false,
+                  targetAttr: "",
+                }));
+
+              if (prep.insideHiddenPalette) {
+                await page.evaluate(() => {
+                  window.dispatchEvent(new CustomEvent("mas:open-command-palette"));
+                });
+                await page
+                  .locator('[role="dialog"][aria-label="Evrensel arama"]:not([hidden])')
+                  .waitFor({ state: "visible", timeout: CLICK_TIMEOUT });
+              }
+
               await link.scrollIntoViewIfNeeded({ timeout: SLOW ? 15_000 : 5_000 });
-              await Promise.all([
-                page.waitForURL(() => true, { timeout: NAV_TIMEOUT }).catch(() => {}),
-                link.click({ timeout: CLICK_TIMEOUT }),
-              ]);
+
+              const isBinaryDownload =
+                prep.hasDownload ||
+                /^\/data\/imports\/v2\/template(?:\?|$)/i.test(prep.rawHref) ||
+                (/^\/api\/.*\/(export|download)(?:\?|$)/i.test(prep.rawHref) &&
+                  !/[?&]format=html\b/i.test(prep.rawHref));
+
+              if (isBinaryDownload) {
+                const [download] = await Promise.all([
+                  page.waitForEvent("download", { timeout: NAV_TIMEOUT }),
+                  link.click({ timeout: CLICK_TIMEOUT }),
+                ]);
+                const dlFailure = await download.failure();
+                if (dlFailure) {
+                  throw new Error(`dosya indirme başarısız (${prep.rawHref}): ${dlFailure}`);
+                }
+                const suggested = download.suggestedFilename();
+                expect(suggested.length, `${href}: indirilen dosya adı boş`).toBeGreaterThan(0);
+                proof.push(`download ${target.sourceRoute} → ${prep.rawHref} (${suggested})`);
+                handledAsDownloadOrPopup = true;
+              } else if (prep.targetAttr === "_blank") {
+                const [popup] = await Promise.all([
+                  session.context.waitForEvent("page", { timeout: NAV_TIMEOUT }),
+                  link.click({ timeout: CLICK_TIMEOUT }),
+                ]);
+                await popup.waitForLoadState("domcontentloaded", { timeout: NAV_TIMEOUT });
+                const popupPath = new URL(popup.url()).pathname;
+                if (popupPath === "/login") {
+                  await popup.close().catch(() => {});
+                  throw new Error(`yeni sekme /login'e düşürdü — beklenen ${prep.rawHref}`);
+                }
+                proof.push(`popup ${target.sourceRoute} → ${popupPath}`);
+                await popup.close().catch(() => {});
+                handledAsDownloadOrPopup = true;
+              } else {
+                const beforeUrl = page.url();
+                const uBefore = new URL(beforeUrl);
+                const beforePathSearch = `${uBefore.pathname}${uBefore.search}`;
+                const expectedPathSearch = resolveExpectedPathSearch(prep.rawHref || href, beforeUrl);
+                const expectsUrlChange = expectedPathSearch !== beforePathSearch;
+
+                await Promise.all([
+                  expectsUrlChange
+                    ? page.waitForURL(
+                        (u) => `${u.pathname}${u.search}` !== beforePathSearch,
+                        { timeout: NAV_TIMEOUT },
+                      )
+                    : Promise.resolve(),
+                  link.click({ timeout: CLICK_TIMEOUT }),
+                ]);
+                await page
+                  .locator("[data-navigation-root].navigation-pending")
+                  .waitFor({ state: "detached", timeout: NAV_TIMEOUT })
+                  .catch(() => {});
+              }
+
               clickedOk = true;
               if (i > 0) proof.push(`aday #${i} tıklandı (önceki adaylar örtülüydü)`);
               break;
@@ -315,18 +448,21 @@ test.describe("gezinme süpürmesi", () => {
             }
           }
           if (!clickedOk) throw new Error(`${count} adayın hiçbiri tıklanamadı — ${lastClickError}`);
-          await page.waitForLoadState("domcontentloaded", { timeout: NAV_TIMEOUT }).catch(() => {});
 
-          const landed = new URL(page.url()).pathname;
-          proof.push(`click ${target.sourceRoute} → ${landed}`);
+          if (!handledAsDownloadOrPopup) {
+            await waitForWorkspaceReady(page, NAV_TIMEOUT);
 
-          // /login'e düşmek bir gezinme başarısı DEĞİLDİR: oturum düştü ya da yetki reddedildi demektir.
-          if (landed === "/login") throw new Error(`link /login'e düşürdü (oturum/yetki) — beklenen ${href}`);
+            const landed = new URL(page.url()).pathname;
+            proof.push(`click ${target.sourceRoute} → ${landed}`);
 
-          // Hedef ekran GERÇEKTEN render oldu mu? Kabuk her rotada aynıdır; ayırt edici olan <h1>.
-          const heading = page.locator("main h1").first();
-          await expect(heading, `${href}: hedef ekranın kendi başlığı görünmedi`).toBeVisible({ timeout: SLOW ? 45_000 : 20_000 });
-          proof.push(`başlık görünür: "${(await heading.innerText()).slice(0, 60)}"`);
+            // /login'e düşmek bir gezinme başarısı DEĞİLDİR: oturum düştü ya da yetki reddedildi demektir.
+            if (landed === "/login") throw new Error(`link /login'e düşürdü (oturum/yetki) — beklenen ${href}`);
+
+            // Hedef ekran GERÇEKTEN render oldu mu? Kabuk her rotada aynıdır; ayırt edici olan <h1>.
+            const heading = page.locator("main h1").first();
+            await expect(heading, `${href}: hedef ekranın kendi başlığı görünmedi`).toBeVisible({ timeout: SLOW ? 45_000 : 20_000 });
+            proof.push(`başlık görünür: "${(await heading.innerText()).slice(0, 60)}"`);
+          }
 
           const clientErrors = [...new Set(session.clientErrors)];
           const serverErrors = [...new Set(session.serverErrors)];

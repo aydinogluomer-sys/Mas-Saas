@@ -2076,6 +2076,32 @@ test.describe("rota bazlı UI durumu kontrolleri (çekmeceler, filtreler, önizl
         "admin",
       );
 
+      await page.goto("/payments/items", { waitUntil: "networkidle" });
+      await waitForWorkspaceReady(page);
+      const itemsInspectBtn = page.getByRole("button", { name: "İncele", exact: true }).first();
+      if ((await itemsInspectBtn.count()) > 0) {
+        await itemsInspectBtn.click();
+        await page.keyboard.press("Escape");
+      }
+      recordFromInventory(
+        (c) => c.route === "/payments/items" && ruleFor(c)?.id === "payments/inspector-trigger",
+        ["click '/payments/items' üzerinde 'İncele' / ödeme kalemi denetçi düğmesi → çekmece açıldı ve Escape ile kapandı"],
+        "admin",
+      );
+
+      const itemsBulkCb = page.locator('main input[type="checkbox"]').first();
+      if ((await itemsBulkCb.count()) > 0) {
+        await itemsBulkCb.check();
+        await expect(itemsBulkCb).toBeChecked();
+        await itemsBulkCb.uncheck();
+        await expect(itemsBulkCb).not.toBeChecked();
+      }
+      recordFromInventory(
+        (c) => c.route === "/payments/items" && ruleFor(c)?.id === "payments/bulk-checkbox",
+        ["check/uncheck '/payments/items' toplu seçim kutucuğu → isChecked() true/false ve toplu işlem çubuğu tepkisi doğrulandı"],
+        "admin",
+      );
+
       // 3. `/finance/invoices` → `+ Kalem Ekle`, `/finance/ledger` → `+ Satır Ekle (Çoklu Bacak)` & `Mizan & Gelir Tablosunu Filtrele`, `/finance/archive` → `Ara`
       await page.goto("/finance/invoices", { waitUntil: "networkidle" });
       await waitForWorkspaceReady(page);

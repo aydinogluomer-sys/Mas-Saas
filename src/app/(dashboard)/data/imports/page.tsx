@@ -1,4 +1,6 @@
 import Link from "@/components/ui/app-link";
+import { getRequestUser } from "@/lib/auth";
+import { canSeeRoute } from "@/lib/authz/matrix";
 import { getPool } from "@/lib/db";
 import { Badge, STATUS_TONE } from "@/components/ui/badge";
 import { Num, Panel } from "@/components/ui/panel";
@@ -31,6 +33,11 @@ const WORKBOOK_STATUS_TR: Record<string, string> = {
 export default async function ImportsPage() {
   const denied = await requireRouteAccess("/data/imports");
   if (denied) return denied;
+  const session = await getRequestUser();
+  const role = session?.role ?? "viewer";
+  const canImportV2 = canSeeRoute(role, "/data/imports/v2");
+  const canSeeBridge = canSeeRoute(role, "/data/trial-balance-bridge");
+  const canSeeIntegrations = canSeeRoute(role, "/data/integrations");
   const { rows } = await getPool().query<WorkbookListRow>(`
     select w.id, w.original_filename, w.status, w.parse_error,
            to_char(w.imported_at at time zone 'Europe/Istanbul', 'YYYY-MM-DD HH24:MI') as imported_at,
@@ -42,6 +49,7 @@ export default async function ImportsPage() {
   `);
 
   const openReviewsTotal = rows.reduce((sum, r) => sum + (r.open_reviews ?? 0), 0);
+  const hasHeaderActions = canImportV2 || canSeeBridge || canSeeIntegrations;
 
   return (
     <div className="space-y-3.5">
@@ -49,17 +57,25 @@ export default async function ImportsPage() {
         title="Veri İçe Aktarım Merkezi"
         subtitle="3 adımlı akıllı kolon eşleştirme sihirbazı (.xlsx & .csv) · V2 atomik motoru · tam kaynak izlenebilirliği"
         action={
-          <div className="flex flex-wrap items-center gap-1.5">
-            <Link href="/data/imports/v2" className="button-ghost px-2.5 py-1 text-[11.5px]">
-              V2 Şablon (17 Sayfa) →
-            </Link>
-            <Link href="/data/trial-balance-bridge" className="button-ghost px-2.5 py-1 text-[11.5px]">
-              SMMM Mizan Köprüsü →
-            </Link>
-            <Link href="/data/integrations" className="button-accent px-2.5 py-1 text-[11.5px]">
-              Canlı Entegrasyonlar →
-            </Link>
-          </div>
+          hasHeaderActions ? (
+            <div className="flex flex-wrap items-center gap-1.5">
+              {canImportV2 ? (
+                <Link href="/data/imports/v2" className="button-ghost px-2.5 py-1 text-[11.5px]">
+                  V2 Şablon (17 Sayfa) →
+                </Link>
+              ) : null}
+              {canSeeBridge ? (
+                <Link href="/data/trial-balance-bridge" className="button-ghost px-2.5 py-1 text-[11.5px]">
+                  SMMM Mizan Köprüsü →
+                </Link>
+              ) : null}
+              {canSeeIntegrations ? (
+                <Link href="/data/integrations" className="button-accent px-2.5 py-1 text-[11.5px]">
+                  Canlı Entegrasyonlar →
+                </Link>
+              ) : null}
+            </div>
+          ) : undefined
         }
       />
 
@@ -67,7 +83,7 @@ export default async function ImportsPage() {
         title="Akıllı Kolon Eşleştirme ve İçe Aktarım Sihirbazı (.xlsx & .csv)"
         subtitle="Sabit şablon dayatması olmadan herhangi bir Excel veya CSV dosyasının başlıklarını V2 veri alanlarıyla eşleştirip tek atomik işlemde içe aktarın"
       >
-        <ColumnMappingWizard templateHref="/data/imports/v2/template" />
+        <ColumnMappingWizard templateHref={canImportV2 ? "/data/imports/v2/template" : null} />
       </Panel>
 
       <details className="parchment-disclosure" open={rows.length <= 6}>

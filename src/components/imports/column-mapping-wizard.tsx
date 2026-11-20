@@ -59,7 +59,7 @@ function MetricBox({ label, value, tone }: { label: string; value: number; tone?
   );
 }
 
-export function ColumnMappingWizard({ templateHref }: { templateHref: string }) {
+export function ColumnMappingWizard({ templateHref }: { templateHref?: string | null }) {
   const [inspected, inspectAction] = useActionState(inspectWizardAction, IDLE);
   const [previewed, previewAction] = useActionState(previewWizardAction, IDLE);
   const [confirmed, confirmAction] = useActionState(confirmWizardAction, IDLE);
@@ -135,9 +135,16 @@ export function ColumnMappingWizard({ templateHref }: { templateHref: string }) 
           <StepPill step={2} active={currentStep === 2} done={currentStep > 2} title="Kolon Eşleştirme & Tanıma" />
           <StepPill step={3} active={currentStep === 3} done={latest.phase === "imported"} title="Atomik Önizleme & Kayıt" />
         </div>
-        <a data-hard-nav="true" href={templateHref} className="button-ghost px-2.5 py-1 text-xs">
-          Standart V2 Şablonu İndir (.xlsx)
-        </a>
+        {templateHref ? (
+          <a
+            data-hard-nav="true"
+            href={templateHref}
+            download="mas-standart-sablon-v2.xlsx"
+            className="button-ghost px-2.5 py-1 text-xs"
+          >
+            Standart V2 Şablonu İndir (.xlsx)
+          </a>
+        ) : null}
       </div>
 
       {/* STEP 1: FILE PICKER */}

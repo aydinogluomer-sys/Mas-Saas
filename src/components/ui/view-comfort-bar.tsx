@@ -42,8 +42,9 @@ function readInitialDomDensity(): WorkspaceDensity {
 function syncThemeColorMeta(theme: EyeComfortTheme) {
   if (typeof document === "undefined") return;
   const meta = document.querySelector<HTMLMetaElement>('meta[name="theme-color"]');
-  if (meta) {
-    meta.content = THEME_COLOR_META[theme];
+  const targetColor = THEME_COLOR_META[theme];
+  if (meta && meta.content !== targetColor) {
+    meta.content = targetColor;
   }
 }
 
@@ -54,8 +55,12 @@ export function ViewComfortBar() {
   useEffect(() => {
     const currentTheme = readInitialDomTheme();
     const currentDensity = readInitialDomDensity();
-    document.documentElement.dataset.theme = currentTheme;
-    document.documentElement.dataset.density = currentDensity;
+    if (document.documentElement.dataset.theme !== currentTheme) {
+      document.documentElement.dataset.theme = currentTheme;
+    }
+    if (document.documentElement.dataset.density !== currentDensity) {
+      document.documentElement.dataset.density = currentDensity;
+    }
     syncThemeColorMeta(currentTheme);
     setTheme(currentTheme);
     setDensity(currentDensity);
